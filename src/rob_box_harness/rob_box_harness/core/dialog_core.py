@@ -128,6 +128,18 @@ _SILENT_DONE_MARKERS: frozenset[str] = frozenset(
     {"done", "task complete", "task_complete", "готово", "всё", "выполнено"}
 )
 
+#: ``finish_reason`` values that mean "the model produced NO usable output"
+#: even though the HTTP call succeeded. DeepSeek documents
+#: ``insufficient_system_resource`` (HTTP 200, generation interrupted by
+#: provider resource pressure) and ``content_filter`` (content omitted by
+#: filters); ``length`` with empty content means max_tokens was exhausted
+#: before any token was emitted (issue #1253). All three are retryable —
+#: the corrective retry in ``_run_with_tools`` gives the model a second
+#: chance instead of shipping silence to the user.
+_SILENT_FINISH_REASONS: frozenset[str] = frozenset(
+    {"insufficient_system_resource", "content_filter", "length"}
+)
+
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------
@@ -521,7 +533,7 @@ class DialogCore:
 
     @staticmethod
     def _is_silent_response(response: LLMResponse) -> bool:
-        """Issue #1217 — did the LLM do nothing useful for the user?
+        """Issue #1217/#1253 — did the LLM do nothing useful for the user?
 
         ``True`` when the response carries no tool calls AND its content is
         either empty or a bare completion marker (``done`` / ``готово`` /
@@ -530,11 +542,22 @@ class DialogCore:
         means it skipped the actual work — the user hears nothing and nothing
         happened. Any substantive text is NOT silent even without tools
         (a plain-text answer is a valid response).
+
+        Issue #1253 — additionally, a ``finish_reason`` that means
+        "generation was interrupted / output omitted" (DeepSeek
+        ``insufficient_system_resource``, ``content_filter``, ``length`` with
+        empty content) is silent even when the aggregator carried a partial
+        content: the user would hear a truncated fragment, so the corrective
+        retry should fire instead.
         """
         if response.tool_calls:
             return False
         content = (response.content or "").strip().lower()
-        return (not content) or content in _SILENT_DONE_MARKERS
+        if (not content) or content in _SILENT_DONE_MARKERS:
+            return True
+        # Issue #1253 — interrupted / filtered generation is not a valid
+        # final answer even with a partial content fragment.
+        return response.finish_reason in _SILENT_FINISH_REASONS
 
     @staticmethod
     def _is_silent_spoken(spoken: str, tools_called: Iterable[str]) -> bool:
@@ -586,6 +609,11 @@ class DialogCore:
         tools_called: list[str] = []
         seen: set[str] = set()
         speak_text_count: int = 0
+        # Issue #1253 — any tool that returned ``is_error=True`` this turn.
+        # When a tool failed and the LLM answers with ONLY words (no retry
+        # tool-call, no speak_text) that is babble, not an answer — the
+        # robot would voice «дан» / «бит не получился» instead of acting.
+        tool_error_occurred: bool = False
         response: LLMResponse = await self._stream_response(
             messages, tools=openai_tools
         )
@@ -705,6 +733,8 @@ class DialogCore:
 
             for call in response.tool_calls:
                 tool_result = results_by_call_id[call.id]
+                if tool_result.is_error:
+                    tool_error_occurred = True
                 messages.append(
                     LLMMessage(
                         role="tool",
@@ -721,6 +751,33 @@ class DialogCore:
                 "DialogCore: tool loop hit _MAX_TOOL_ITERATIONS=%d; "
                 "returning the last spoken text as-is.",
                 _MAX_TOOL_ITERATIONS,
+            )
+
+        # Issue #1253 — babble filter on tool error. A tool failed
+        # (is_error=True) and the LLM answered with ONLY words: no retry
+        # tool-call in this final response and no speak_text during the
+        # turn. Voicing that text would make the robot say «дан» / «бит не
+        # получился» while nothing actually happened. System transition:
+        # return empty spoken so dialogue_node moves to the next round
+        # instead of parroting the babble.
+        if (
+            tool_error_occurred
+            and not response.tool_calls
+            and "speak_text" not in seen
+            and response.content
+            and self._is_silent_response(response)
+        ):
+            logging.getLogger(__name__).warning(
+                "DialogCore: tool error + babble-only final answer — "
+                f"suppressing spoken text {response.content[:80]!r} "
+                "(system transition)"
+            )
+            return (
+                "",
+                tools_called,
+                response.finish_reason,
+                response.raw,
+                speak_text_count,
             )
 
         return (
