@@ -206,6 +206,34 @@ except Exception:
     printf '%s' "$st"
 }
 
+# --- archive карточки по MERGED PR (ретро 14.08 t_0bd15be9) -----------------
+# done → archive; blocked → unblock + complete + archive. Раньше архив-маппинг
+# скипал status!=done: blocked-карточка с ВЛИТЫМ фиксом висела вечно (recovery
+# «родитель закроется процессом», а процесса для blocked нет). Фикс влит (PR
+# MERGED) ⇒ критерий карточки выполнен независимо от причины blocked
+# (timeout/needs_input/capability) → unblock (reason «фикс влит, критерий
+# выполнен») → complete → archive. Идемпотентно: повторный тик видит archived.
+archive_merged_card() {  # $1=card_id $2=issue/pr number (для логов)
+    local cid="$1" num="$2" cstate=""
+    [ -z "$cid" ] && return 0
+    cstate="$(kanban_card_status "$cid")"
+    if [ "$cstate" = "done" ]; then
+        "$HERMES_BIN" kanban --board "$KANBAN_BOARD" archive "$cid" >/dev/null 2>&1 \
+            && log "issue #${num}: card ${cid} archived (merged)" || true
+    elif [ "$cstate" = "blocked" ]; then
+        if "$HERMES_BIN" kanban --board "$KANBAN_BOARD" unblock \
+                --reason "фикс влит, критерий выполнен" "$cid" >/dev/null 2>&1 \
+            && "$HERMES_BIN" kanban --board "$KANBAN_BOARD" complete \
+                --summary "фикс влит, критерий выполнен (ретро 14.08 t_0bd15be9)" "$cid" >/dev/null 2>&1; then
+            "$HERMES_BIN" kanban --board "$KANBAN_BOARD" archive "$cid" >/dev/null 2>&1 \
+                && log "issue #${num}: card ${cid} unblocked+completed+archived (merged, was blocked)" \
+                || log "issue #${num}: WARNING card ${cid} complete ok, archive failed — retry next tick"
+        else
+            log "issue #${num}: WARNING card ${cid} blocked → unblock/complete failed — retry next tick"
+        fi
+    fi
+}
+
 # --- rate-limit конфликт/UNSTABLE-комментариев (ретро 12.08 t_8af6bf29) -----
 # scan-all-prs комментил карточку 'ОБЯЗАН rebase' КАЖДЫЙ тик (~10 мин) при
 # PR CONFLICTING → шум. Теперь: коммент не чаще 1 раза в 2 часа. Таймстамп
@@ -730,14 +758,11 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
                         # archive-блока (стр. 774-783) → done-карточка оставалась
                         # done НАВСЕГДА при смерженном PR (t_41fec39e: issue #1217
                         # закрыта Q22-путём, PR #1220 merged, карточка done 21:25).
-                        # Архивируем здесь (close успешен → destructive cleanup
-                        # разрешён по ADR-0014 §4 req 4).
+                        # Ретро 14.08 t_0bd15be9: helper также закрывает blocked
+                        # (unblock → complete → archive). Здесь destructive
+                        # cleanup разрешён: close успешен (ADR-0014 §4 req 4).
                         if [ -n "${task_id:-}" ]; then
-                            _q22_state="$(kanban_card_status "$task_id")"
-                            if [ "$_q22_state" = "done" ]; then
-                                "$HERMES_BIN" kanban --board "$KANBAN_BOARD" archive "$task_id" >/dev/null 2>&1 \
-                                    && log "issue #${number}: card ${task_id} archived (Q22 merge, done)" || true
-                            fi
+                            archive_merged_card "$task_id" "$number"
                         fi
                     else
                         log "issue #${number}: WARNING gh issue close failed (Q22 orphan) — retry next tick"
@@ -791,15 +816,14 @@ except Exception:
         else
             log "issue #${number}: branch ${branch} already gone"
         fi
-        # 4) Archive the card (done → archived) so the board stays clean.
+        # 4) Archive the card (done/blocked → archived) so the board stays clean.
+        # Ретро 14.08 t_0bd15be9: blocked-карточка с MERGED PR висела вечно —
+        # архив-маппинг скипал status!=done, recovery-воркер не завершал
+        # родителя («родитель закроется процессом»), а процесса для blocked
+        # нет. Фикс влит (PR MERGED) ⇒ критерий карточки выполнен независимо
+        # от причины blocked: unblock → complete → archive (см. helper).
         if [ -n "$card_id" ]; then
-            # ретро 12.08 t_8af6bf29: `hermes kanban show` падает после v0.20.0
-            # (sqlite3.ProgrammingError) — статус читаем из kanban DB напрямую.
-            card_state="$(kanban_card_status "$card_id")"
-            if [ "$card_state" = "done" ]; then
-                "$HERMES_BIN" kanban --board "$KANBAN_BOARD" archive "$card_id" >/dev/null 2>&1 \
-                    && log "issue #${number}: card ${card_id} archived (merged)" || true
-            fi
+            archive_merged_card "$card_id" "$number"
         fi
         # 5) Dedup cleanup-коммента (ретро 10.08 t_9caf5d52): раньше коммент
         #    «✅ PR #N смержен» постился КАЖДЫЙ тик (5 мин) → 6 одинаковых на
@@ -1935,12 +1959,13 @@ except Exception:
     pass
 ' 2>/dev/null || true)"
 
-# Для каждой done-карточки: архивируем, если (a) её id встречается в head-ветке
-# смерженного PR, (b) title упоминает смерженный PR (#N) / его ветку, или
-# (c) собственный branch_name карточки (exact) — смерженный head PR.
+# Для каждой done/blocked-карточки: архивируем, если (a) её id встречается в
+# head-ветке смерженного PR, (b) title упоминает смерженный PR (#N) / его
+# ветку, или (c) собственный branch_name карточки (exact) — смерженный head PR.
+# blocked → unblock + complete + archive (ретро 14.08 t_0bd15be9).
 while IFS=$'\t' read -r c_id c_status c_branch c_title; do
     [ -z "$c_id" ] && continue
-    [ "$c_status" != "done" ] && continue
+    [ "$c_status" != "done" ] && [ "$c_status" != "blocked" ] && continue
     _matched="$(printf '%s\n' "$_arch_refs" | awk -F'\t' -v id="$c_id" '
         {
             # Извлекаем t_<hex>-токен из head-ветки и сравниваем ТОЧНО с id
@@ -1964,16 +1989,41 @@ while IFS=$'\t' read -r c_id c_status c_branch c_title; do
         continue
     fi
     _arch_pr="${_matched%%$'\t'*}"
-    log "retro-card-archive: card ${c_id} done + merged PR #${_arch_pr} → archive"
-    if [ "$DRY_RUN" = "true" ]; then
-        log "DRY-RUN would archive card ${c_id} (PR #${_arch_pr})"
-        retro_archived=$((retro_archived+1)); continue
-    fi
-    if "$HERMES_BIN" kanban --board "$KANBAN_BOARD" archive "$c_id" >/dev/null 2>&1; then
-        retro_archived=$((retro_archived+1))
-        log "retro-card-archive: card ${c_id} archived (PR #${_arch_pr} merged)"
+    if [ "$c_status" = "done" ]; then
+        log "retro-card-archive: card ${c_id} done + merged PR #${_arch_pr} → archive"
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would archive card ${c_id} (PR #${_arch_pr})"
+            retro_archived=$((retro_archived+1)); continue
+        fi
+        if "$HERMES_BIN" kanban --board "$KANBAN_BOARD" archive "$c_id" >/dev/null 2>&1; then
+            retro_archived=$((retro_archived+1))
+            log "retro-card-archive: card ${c_id} archived (PR #${_arch_pr} merged)"
+        else
+            log "retro-card-archive: WARNING archive failed for ${c_id} (PR #${_arch_pr})"
+        fi
     else
-        log "retro-card-archive: WARNING archive failed for ${c_id} (PR #${_arch_pr})"
+        # Ретро 14.08 t_0bd15be9: blocked-карточка с MERGED PR (например,
+        # t_36c9ac4e — фикс #1224 влит, карточка timeout×2 → blocked) висела
+        # вечно: этот проход скипал status!=done, а recovery не завершала
+        # родителя. Фикс влит ⇒ критерий выполнен: unblock → complete → archive.
+        log "retro-card-archive: card ${c_id} blocked + merged PR #${_arch_pr} → unblock+complete+archive"
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would unblock+complete+archive card ${c_id} (PR #${_arch_pr})"
+            retro_archived=$((retro_archived+1)); continue
+        fi
+        if "$HERMES_BIN" kanban --board "$KANBAN_BOARD" unblock \
+                --reason "фикс влит, критерий выполнен" "$c_id" >/dev/null 2>&1 \
+            && "$HERMES_BIN" kanban --board "$KANBAN_BOARD" complete \
+                --summary "фикс влит, критерий выполнен (ретро 14.08 t_0bd15be9)" "$c_id" >/dev/null 2>&1; then
+            if "$HERMES_BIN" kanban --board "$KANBAN_BOARD" archive "$c_id" >/dev/null 2>&1; then
+                retro_archived=$((retro_archived+1))
+                log "retro-card-archive: card ${c_id} unblocked+completed+archived (PR #${_arch_pr} merged, was blocked)"
+            else
+                log "retro-card-archive: WARNING archive failed for ${c_id} (PR #${_arch_pr})"
+            fi
+        else
+            log "retro-card-archive: WARNING unblock/complete failed for blocked ${c_id} (PR #${_arch_pr})"
+        fi
     fi
 done < <(printf '%s\n' "$_arch_cards")
 

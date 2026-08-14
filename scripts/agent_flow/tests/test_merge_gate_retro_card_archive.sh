@@ -201,6 +201,38 @@ test_F_unmatched_done_card_not_archived() {
 }
 
 # ===========================================================================
+# H. Ретро 14.08 t_0bd15be9: blocked-карточка, чей id (t_<hex>) есть в
+#    head-ветке MERGED PR (кейс t_36c9ac4e: фикс #1224 влит, карточка
+#    timeout×2 → blocked) → unblock + complete + archive. Раньше проход
+#    скипал status!=done → blocked-карточка висела вечно.
+# ===========================================================================
+test_H_blocked_retro_card_unblock_complete_archive() {
+    new_test
+    local pr=1224 head='z-devops/t_36c9ac4e-merge-gate-archive-retro-cards'
+    fixture_archive "$pr" "$head" '2026-08-14T03:05:42Z'
+    set_state KANBAN_LIST_JSON "[{\"id\":\"t_36c9ac4e\",\"status\":\"blocked\",\"branch_name\":\"\",\"title\":\"ретро: merge-gate не архивирует ретро-карточки\"}]"
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # 1) Unblock вызван с reason «фикс влит, критерий выполнен».
+    local unblock_calls
+    unblock_calls="$(printf '%s\n' "$journal" | grep -c 'kanban --board robbox unblock --reason .* t_36c9ac4e' || true)"
+    assert_eq "1" "$unblock_calls" "blocked retro card: unblock called with фикс влит reason"
+
+    # 2) Complete вызван с summary.
+    local complete_calls
+    complete_calls="$(printf '%s\n' "$journal" | grep -c 'kanban --board robbox complete --summary .* t_36c9ac4e' || true)"
+    assert_eq "1" "$complete_calls" "blocked retro card: complete called"
+
+    # 3) Archive вызван ПОСЛЕ unblock+complete.
+    local archive_calls
+    archive_calls="$(printf '%s\n' "$journal" | grep -c 'kanban --board robbox archive t_36c9ac4e' || true)"
+    assert_eq "1" "$archive_calls" "blocked retro card: archived after unblock+complete"
+}
+
+# ===========================================================================
 # Run
 # ===========================================================================
 run_test "A. retro-card-archive: done card by branch t_<hex> → archived" test_A_retro_card_archived_by_branch_task_id
@@ -210,5 +242,6 @@ run_test "D. retro-card-archive: CLOSED-not-merged PR → NOT archived" test_D_c
 run_test "E. retro-card-archive: non-done card → NOT archived" test_E_non_done_card_not_archived
 run_test "F. retro-card-archive: unmatched done card → NOT archived" test_F_unmatched_done_card_not_archived
 run_test "G. Q22 orphan-close → done card archived (t_41fec39e)" test_G_q22_orphan_close_archives_card
+run_test "H. MERGED PR + blocked retro card → unblock+complete+archive (t_0bd15be9)" test_H_blocked_retro_card_unblock_complete_archive
 
 summary

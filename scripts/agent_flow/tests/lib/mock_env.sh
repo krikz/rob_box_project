@@ -763,15 +763,19 @@ run_merge_gate() {
         HERMES_HOME=/tmp/_unused
         HERMES_BIN=hermes  # mocked
         # Ретро 12.08 t_8af6bf29: merge-gate читает kanban-статус напрямую из
-        # sqlite (KANBAN_DB_PATH), а не через `hermes kanban show` (падает после
+        # sqlite (KANBAN_DB), а не через `hermes kanban show` (падает после
         # v0.20.0). В тестах БД недоступна → хелпер фолбэчится на мок hermes
         # show --json (см. bin/hermes ниже). Указываем несуществующий путь,
         # чтобы тесты НЕ читали реальную /home/builder/.hermes/.../kanban.db.
-        KANBAN_DB_PATH="$TEST_TMP/nonexistent-kanban.db"
+        # ВАЖНО: merge-gate форсит HOME=/home/builder (стр. 46), поэтому
+        # переменная ДОЛЖНА называться KANBAN_DB (не KANBAN_DB_PATH — её
+        # скрипт не читает, и тест G падал, читая реальную БД: ретро 14.08
+        # t_0bd15be9).
+        KANBAN_DB="$TEST_TMP/nonexistent-kanban.db"
         # Isolate the flock sentinel: the production merge-gate cron holds
         # /tmp/agent-flow-merge-gate.lock and would make tests flaky.
         LOCK_FILE="$TEST_TMP/merge-gate.lock"
-        export GH_REPO KANBAN_BOARD DRY_RUN ISSUE_LIMIT HERMES_HOME HERMES_BIN KANBAN_DB_PATH LOCK_FILE
+        export GH_REPO KANBAN_BOARD DRY_RUN ISSUE_LIMIT HERMES_HOME HERMES_BIN KANBAN_DB LOCK_FILE
         # The script sources a profile .env if present — override HOME
         # and PROFILE_ENV paths so it can't load real config.
         export HOME=/tmp
