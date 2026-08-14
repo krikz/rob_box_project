@@ -417,6 +417,101 @@ print(f"Dispatcher: {'alive' if dispatcher_alive else 'dead'} (restarted: {resta
 PYEOF
 
 # ============================================================================
+# Local worktree sweep (ретро 14.08 t_ee70ffc2)
+# Проблема: /tmp/wt-* и /home/builder/wt-* worktree от завершённых карточек
+# не чистятся: cleanup-249 чистит /tmp только на build-хосте 10.1.1.249,
+# merge-gate free_stale_worktrees_for чистит только worktree своей карточки.
+# Каждая завершённая карточка оставляет worktree-мусор (~2-3 ГБ).
+# Решение: раз в WT_SWEEP_COOLDOWN_SEC (default 3600с) перебираем каталоги
+# /tmp/wt-* и /home/builder/wt-*; если каталог старше WT_SWEEP_AGE_HOURS
+# (default 48ч) и его ветки НЕТ в origin (git ls-remote) → git worktree
+# remove --force + prune. Осиротевшие (gitdir отсутствует) → rm -rf.
+# Guard: ветка есть в origin → не трогаем; develop/main/master → не трогаем;
+# flock e2e/merge-gate/triage занят → тик пропускаем целиком.
+# ============================================================================
+WT_SWEEP_AGE_HOURS="${WT_SWEEP_AGE_HOURS:-48}"
+WT_SWEEP_COOLDOWN_SEC="${WT_SWEEP_COOLDOWN_SEC:-3600}"
+WT_SWEEP_STATE="${WT_SWEEP_STATE:-$HERMES_HOME/state/agent-flow-wt-sweep.last}"
+WT_SWEEP_LOG="${WT_SWEEP_LOG:-$HERMES_HOME/logs/agent-flow-wt-sweep.log}"
+WT_SWEEP_PATTERNS="${WT_SWEEP_PATTERNS:-/tmp/wt-* /home/builder/wt-*}"
+WT_SWEEP_LOCKS="${WT_SWEEP_LOCKS:-/tmp/agent-flow-e2e-process.lock /tmp/agent-flow-merge-gate.lock /tmp/agent-flow-triage.lock}"
+
+sweep_stale_local_worktrees() {
+    local now last_run age_cutoff pat d gitdir_file gitdir branch repo_root removed=0
+    local lock
+    # 1. cooldown: не чаще раза в WT_SWEEP_COOLDOWN_SEC
+    if [ -f "$WT_SWEEP_STATE" ]; then
+        last_run="$(cat "$WT_SWEEP_STATE" 2>/dev/null || echo 0)"
+        now="$(date +%s)"
+        [ $(( now - last_run )) -lt "$WT_SWEEP_COOLDOWN_SEC" ] && return 0
+    fi
+    # 2. flock-guard: активные процессы agent-flow → пропуск тика
+    for lock in $WT_SWEEP_LOCKS; do
+        if [ -f "$lock" ] && ! flock -n "$lock" -c true 2>/dev/null; then
+            log "🛑 wt-sweep: $lock занят активным процессом — тик пропущен"
+            return 0
+        fi
+    done
+    # 3. кандидаты: каталоги по паттернам, старше AGE_HOURS (локально, без сети)
+    age_cutoff=$(( $(date +%s) - WT_SWEEP_AGE_HOURS * 3600 ))
+    local -a candidates=()
+    local mtime
+    for pat in $WT_SWEEP_PATTERNS; do
+        for d in $pat; do
+            [ -d "$d" ] || continue
+            mtime="$(stat -c %Y "$d" 2>/dev/null || echo "")"
+            [ -n "$mtime" ] || continue
+            [ "$mtime" -lt "$age_cutoff" ] || continue
+            candidates+=("$d")
+        done
+    done
+    [ "${#candidates[@]}" -eq 0 ] && return 0
+    # 4. рефы origin (один ls-remote на тик; сеть недоступна → пропуск)
+    local remote_refs
+    remote_refs="$(git -C "$REPO_DIR" ls-remote origin 2>/dev/null | awk '{print $2}' || true)"
+    [ -n "$remote_refs" ] || { log "🛑 wt-sweep: ls-remote origin пуст/ошибка — тик пропущен"; return 0; }
+    # 5. разбор кандидатов
+    for d in "${candidates[@]}"; do
+        gitdir_file="$d/.git"
+        # не наш worktree (нет .git-файла) → не трогаем
+        [ -f "$gitdir_file" ] || { log "wt-sweep: skip $d (нет .git-файла)"; continue; }
+        gitdir="$(sed -n 's/^gitdir: //p' "$gitdir_file" | head -1)"
+        # осиротевший каталог (.git-файл есть, gitdir отсутствует) → rm -rf
+        if [ -z "$gitdir" ] || [ ! -d "$gitdir" ]; then
+            rm -rf -- "$d" && {
+                log "wt-sweep: removed orphan $d"
+                echo "$(date -Is) REMOVED_ORPHAN $d" >> "$WT_SWEEP_LOG"
+                removed=$((removed+1))
+            }
+            continue
+        fi
+        branch="$(git -C "$d" branch --show-current 2>/dev/null || true)"
+        case "$branch" in
+            develop|main|master) continue ;;
+        esac
+        # ветка в origin → активная, не трогаем
+        if [ -n "$branch" ] && printf '%s\n' "$remote_refs" | grep -Fxq "refs/heads/$branch"; then
+            continue
+        fi
+        repo_root="${gitdir%/.git/worktrees/*}"
+        if [ -n "$repo_root" ] && [ -d "$repo_root/.git" ] \
+            && git -C "$repo_root" worktree remove --force "$d" 2>/dev/null; then
+            git -C "$repo_root" worktree prune 2>/dev/null || true
+            log "wt-sweep: removed $d (branch '${branch:-detached}' не в origin)"
+            echo "$(date -Is) REMOVED $d branch=${branch:-detached} repo=$repo_root" >> "$WT_SWEEP_LOG"
+            removed=$((removed+1))
+        else
+            log "wt-sweep: FAILED remove $d (branch '${branch:-detached}')"
+        fi
+    done
+    mkdir -p "$(dirname "$WT_SWEEP_STATE")"
+    echo "$(date +%s)" > "$WT_SWEEP_STATE"
+    [ "$removed" -gt 0 ] && log "wt-sweep: removed $removed stale worktree(s)"
+    return 0
+}
+sweep_stale_local_worktrees || true
+
+# ============================================================================
 # SOT→host auto-sync (ретро 13.08 t_767ab9b8)
 # Проблема: фиксы agent-flow-*.sh в develop неактивны на хосте, пока кто-то
 # вручную не запустит install.sh (лаг 13.07→13.14 UTC 13.08; при 429-квоте
