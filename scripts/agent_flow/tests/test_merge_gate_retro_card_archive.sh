@@ -233,6 +233,55 @@ test_H_blocked_retro_card_unblock_complete_archive() {
 }
 
 # ===========================================================================
+# I. Ретро 14.08 t_0a765152: карточка-продолжение REOPENED issue с branch_name
+#    УЖЕ ВЛИТОГО PR (#1217: PR #1220 merged на z-{agent}/1217-e2e-40-deepseek,
+#    триаж создал t_7cc96c7d с ТОЙ ЖЕ веткой; на ветке ЕСТЬ OPEN PR #1231 —
+#    новая работа карточки ещё в полёте) → НЕ архивируется, даже если done.
+#    Раньше exact-match (c) архивировал ЖИВУЮ карточку (09:36Z).
+# ===========================================================================
+test_I_followup_card_with_open_pr_not_archived() {
+    new_test
+    local pr=1220 head='z-{agent}/1217-e2e-40-deepseek'
+    fixture_archive "$pr" "$head" '2026-08-13T21:24:57Z'
+    # На той же ветке есть OPEN PR #1231 (новая работа follow-up карточки).
+    set_state PR_LIST_ALL_OPEN_JSON "[{\"number\":1231,\"headRefName\":\"z-{agent}/1217-e2e-40-deepseek\",\"state\":\"OPEN\",\"baseRefName\":\"develop\"}]"
+    set_state KANBAN_LIST_JSON "[{\"id\":\"t_7cc96c7d\",\"status\":\"done\",\"branch_name\":\"z-{agent}/1217-e2e-40-deepseek\",\"title\":\"e2e 40-кейс прогон: deepseek пустой ответ\"}]"
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    local archive_calls
+    archive_calls="$(printf '%s\n' "$journal" | grep -c 'kanban --board robbox archive t_7cc96c7d' || true)"
+    assert_eq "0" "$archive_calls" "follow-up done card with OPEN PR on merged branch NOT archived (I)"
+}
+
+# ===========================================================================
+# J. Ретро 14.08 t_0a765152: то же для blocked — карточка-продолжение ушла
+#    в blocked (timeout), на ветке есть OPEN PR (#1231) → НЕ unblock+complete
+#    +archive (раньше t_0bd15be9 ложно завершал живую follow-up карточку).
+# ===========================================================================
+test_J_followup_blocked_card_with_open_pr_not_archived() {
+    new_test
+    local pr=1220 head='z-{agent}/1217-e2e-40-deepseek'
+    fixture_archive "$pr" "$head" '2026-08-13T21:24:57Z'
+    set_state PR_LIST_ALL_OPEN_JSON "[{\"number\":1231,\"headRefName\":\"z-{agent}/1217-e2e-40-deepseek\",\"state\":\"OPEN\",\"baseRefName\":\"develop\"}]"
+    set_state KANBAN_LIST_JSON "[{\"id\":\"t_7cc96c7d\",\"status\":\"blocked\",\"branch_name\":\"z-{agent}/1217-e2e-40-deepseek\",\"title\":\"e2e 40-кейс прогон: deepseek пустой ответ\"}]"
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    local unblock_calls archive_calls complete_calls
+    unblock_calls="$(printf '%s\n' "$journal" | grep -c 'kanban --board robbox unblock .* t_7cc96c7d' || true)"
+    complete_calls="$(printf '%s\n' "$journal" | grep -c 'kanban --board robbox complete .* t_7cc96c7d' || true)"
+    archive_calls="$(printf '%s\n' "$journal" | grep -c 'kanban --board robbox archive t_7cc96c7d' || true)"
+    assert_eq "0" "$unblock_calls" "follow-up blocked card NOT unblocked (J)"
+    assert_eq "0" "$complete_calls" "follow-up blocked card NOT completed (J)"
+    assert_eq "0" "$archive_calls" "follow-up blocked card NOT archived (J)"
+}
+
+# ===========================================================================
 # Run
 # ===========================================================================
 run_test "A. retro-card-archive: done card by branch t_<hex> → archived" test_A_retro_card_archived_by_branch_task_id
@@ -243,5 +292,7 @@ run_test "E. retro-card-archive: non-done card → NOT archived" test_E_non_done
 run_test "F. retro-card-archive: unmatched done card → NOT archived" test_F_unmatched_done_card_not_archived
 run_test "G. Q22 orphan-close → done card archived (t_41fec39e)" test_G_q22_orphan_close_archives_card
 run_test "H. MERGED PR + blocked retro card → unblock+complete+archive (t_0bd15be9)" test_H_blocked_retro_card_unblock_complete_archive
+run_test "I. follow-up card + OPEN PR on merged branch → NOT archived (t_0a765152)" test_I_followup_card_with_open_pr_not_archived
+run_test "J. follow-up blocked card + OPEN PR on merged branch → NOT archived (t_0a765152)" test_J_followup_blocked_card_with_open_pr_not_archived
 
 summary
