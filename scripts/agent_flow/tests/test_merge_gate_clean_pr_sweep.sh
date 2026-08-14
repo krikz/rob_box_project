@@ -141,11 +141,39 @@ test_C4_labeled_pr_skipped() {
 }
 
 # ===========================================================================
+# C5. CLEAN PR без меток, НО head-ветка уже влита через ДРУГОЙ PR → sweep
+#     НЕ ставит needs-review (переиспользование ветки влитого PR, ретро
+#     14.08 t_28afb585 — сценарий #1238/#1218). Обрабатывает
+#     stale_branch_scan_all, а не clean-pr-sweep.
+# ===========================================================================
+test_C5_merged_branch_head_pr_skipped() {
+    new_test
+    fixture_clean_pr 3307 'z-architect/voice-selection-proposal' \
+        'fix(teleop #3307): Dockerfile BASE_IMAGE' CLEAN 'docker/main/teleop/Dockerfile'
+    # head-ветка уже влита через PR #1218 (другой PR) → stale-branch.
+    set_state "PR_MERGED_HEAD_z-architect/voice-selection-proposal_JSON" '[{"number":1218,"state":"MERGED"}]'
+
+    run_merge_gate
+
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    local review_calls
+    review_calls="$(printf '%s\n' "$journal" | grep -c 'gh pr edit 3307 .*--add-label needs-review' || true)"
+    assert_eq "0" "$review_calls" "CLEAN PR с head на влитой ветке → needs-review NOT set (обрабатывает stale_branch_scan_all)" || return 1
+
+    local e2e_calls
+    e2e_calls="$(printf '%s\n' "$journal" | grep -c -- '--add-label needs-e2e' || true)"
+    assert_eq "0" "$e2e_calls" "CLEAN PR с head на влитой ветке → needs-e2e NOT set" || return 1
+}
+
+# ===========================================================================
 # Run all tests.
 # ===========================================================================
 run_test "C1. CI-only CLEAN PR → needs-review" test_C1_ci_only_clean_pr_gets_needs_review
 run_test "C2. functional + OPEN issue → needs-e2e" test_C2_functional_clean_pr_open_issue_gets_needs_e2e
 run_test "C3. functional + CLOSED issue → needs-review" test_C3_functional_clean_pr_closed_issue_gets_needs_review
 run_test "C4. labeled PR → skipped" test_C4_labeled_pr_skipped
+run_test "C5. merged-branch head PR → skipped" test_C5_merged_branch_head_pr_skipped
 
 summary

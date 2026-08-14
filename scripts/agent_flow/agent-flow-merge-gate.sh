@@ -105,6 +105,30 @@ fi
 log() { printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*" >&2; }
 run() { if [ "$DRY_RUN" = "true" ]; then printf '%s DRY-RUN %s\n' "$LOG_PREFIX" "$*" >&2; else eval "$@"; fi; }
 
+# --- функциональные файлы PR (ретро 14.08 t_28afb585) -----------------------
+# Возвращает 1, если среди файлов PR есть НЕ-docs/ci (функциональный код:
+# docker/, src/, и т.п.), 0 если все файлы в .github/, scripts/agent_flow/,
+# docs/ (docs/ci-only) или файлы неизвестны. Используется чтобы отличить
+# «аддитивное продолжение docs/ci-ветки» (разрешено, #1197 docs W7) от
+# «новый функциональный фикс на уже влитой ветке» (блок, #1238).
+pr_has_functional_files() {  # $1=pr_number → 1/0
+    local pr_num="$1" files_json
+    files_json="$(gh pr view "$pr_num" --repo "$GH_REPO" --json files \
+        --jq '[.files[].path]' 2>/dev/null || echo '[]')"
+    printf '%s' "$files_json" | python3 -c '
+import json, sys
+try:
+    files = json.load(sys.stdin)
+except Exception:
+    files = []
+ok = bool(files) and not all(
+    f.startswith(".github/") or f.startswith("scripts/agent_flow/") or f.startswith("docs/")
+    for f in files
+)
+print("1" if ok else "0")
+' 2>/dev/null || echo 0
+}
+
 # --- stale-branch re-commit guard для ВСЕХ open PR (ретро 12.08 t_d3aeaa9b) --
 # Сценарий: ветка УЖЕ влита в develop (есть MERGED PR с тем же head), но
 # воркер продолжал коммитить в неё ПОСЛЕ merge (база устарела; re-коммиты =
@@ -114,6 +138,14 @@ run() { if [ "$DRY_RUN" = "true" ]; then printf '%s DRY-RUN %s\n' "$LOG_PREFIX" 
 # отличный от текущего. Блокируем: коммент в issue/PR + НЕ ставим needs-e2e.
 # Вызывается ДО раннего exit при отсутствии hermes-issues (ретро-ветки
 # devops/architect issues не имеют — иначе guard бы не сработал вообще).
+#
+# Ретро 14.08 t_28afb585: аддитивный PR (deletions≤20) на влитой ветке — НЕ
+# регрессия, НО только если это продолжение ТОЙ ЖЕ темы (docs/ci, #1197 docs
+# W7: +308/-1). Если аддитивный PR несёт НОВЫЕ функциональные файлы на уже
+# влитой ветке (#1238: e2e+teleop фиксы на ветке docs-PR #1218) — это
+# переиспользование ветки влитого PR с новым фиксом → блокируем и снимаем
+# needs-review (поставленный без e2e). Новый фикс обязан идти в НОВОЙ ветке
+# z-{agent}/t_<card>-<slug>.
 stale_branch_scan_all() {
     _stale_all_prs="$(gh pr list --repo "$GH_REPO" --state open \
         --json number,headRefName,title,additions,deletions 2>/dev/null || echo '[]')"
@@ -132,7 +164,42 @@ for pr in data:
             # до-пушил НОВЫЙ контент (#1197 docs W7: +308/-1). Регрессия =
             # удаление влитых фиксов → deletions значимы. Блокируем только её.
             if [ "${_spr_deletions:-0}" -le 20 ] 2>/dev/null; then
-                log "stale-branch-scan: ветка ${_spr_head} влита через PR #${_spr_prev_merged}, но PR #${_spr_num} аддитивный (del=${_spr_deletions:-0}) — НЕ регрессия, не блокируем (ретро 13.08 t_a3f170fe)"
+                # Ретро 14.08 t_28afb585: аддитивный PR на влитой ветке — НЕ
+                # регрессия, НО только если это продолжение ТОЙ ЖЕ темы
+                # (docs/ci, #1197 docs W7). Если аддитивный PR несёт НОВЫЕ
+                # функциональные файлы (docker/, src/ и т.п.) на уже влитой
+                # ветке (#1238: e2e+teleop фиксы на ветке docs-PR #1218) —
+                # это переиспользование ветки влитого PR с новым фиксом →
+                # блокируем и снимаем needs-review (поставленный без e2e).
+                _spr_func="$(pr_has_functional_files "$_spr_num")"
+                if [ "$_spr_func" = "1" ]; then
+                    log "stale-branch-scan: 🛑 ветка ${_spr_head} влита через PR #${_spr_prev_merged}, PR #${_spr_num} аддитивный, но несёт ФУНКЦИОНАЛЬНЫЕ файлы — block (ретро 14.08 t_28afb585)"
+                    if [ "$DRY_RUN" = "true" ]; then
+                        log "DRY-RUN would: comment stale-branch block + remove needs-review on PR #${_spr_num}"
+                        continue
+                    fi
+                    _spr_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+                    _spr_dup="$(gh api "repos/${GH_REPO}/issues/${_spr_num}/comments?since=${_spr_dedup_since}&per_page=100" \
+                        --jq '[.[] | select(.body | startswith("🛑 **stale-branch reuse"))] | length' 2>/dev/null || echo 0)"
+                    if [ "${_spr_dup:-0}" -eq 0 ]; then
+                        gh pr comment "$_spr_num" --repo "$GH_REPO" --body \
+                            "🛑 **stale-branch reuse with new functional fix** (merge-gate, ретро 14.08 t_28afb585)
+
+Ветка \`${_spr_head}\` уже была влита в develop через PR #${_spr_prev_merged}. PR #${_spr_num} аддитивный, НО несёт НОВЫЕ функциональные фиксы (docker/, src/ и т.п.) поверх уже влитой ветки — это переиспользование ветки влитого PR (повтор паттерна #1238/#1218).
+
+**Что делать:**
+1. Создай **новую** ветку от свежего origin/develop: \`git fetch origin develop && git checkout -b z-{agent}/t_<card>-<slug> origin/develop\`.
+2. Перенеси ТОЛЬКО этот фикс (cherry-pick/rebase), один PR = одна тема.
+3. Закрой/удали этот PR и открой новый с новой ветки.
+4. needs-review ставится только после e2e-прогона PR.
+
+Снято: \`needs-review\` (поставлен без e2e). Merge-gate **не поставит needs-e2e** на PR с уже влитой ветки." >/dev/null 2>&1 || true
+                    fi
+                    # Снимаем needs-review, поставленный без e2e (ретро 14.08 t_28afb585).
+                    gh pr edit "$_spr_num" --repo "$GH_REPO" --remove-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
+                else
+                    log "stale-branch-scan: ветка ${_spr_head} влита через PR #${_spr_prev_merged}, но PR #${_spr_num} аддитивный docs/ci (del=${_spr_deletions:-0}) — НЕ регрессия, не блокируем (ретро 13.08 t_a3f170fe)"
+                fi
             else
             log "stale-branch-scan: 🛑 ветка ${_spr_head} уже влита через PR #${_spr_prev_merged}, PR #${_spr_num} снова OPEN — block"
             if [ "$DRY_RUN" = "true" ]; then
@@ -598,7 +665,39 @@ print(f"pr_additions={pr_additions}")
             # до-пушил НОВЫЙ контент (#1197 docs W7: +308/-1). Регрессия =
             # удаление влитых фиксов → deletions значимы. Блокируем только её.
             if [ "${pr_deletions:-0}" -le 20 ] 2>/dev/null; then
-                log "issue #${number}: ветка ${branch} влита через PR #${_prev_merged_pr}, но PR #${pr_number} аддитивный (del=${pr_deletions:-0}) — НЕ регрессия, не блокируем (ретро 13.08 t_a3f170fe)"
+                # Ретро 14.08 t_28afb585: как в stale_branch_scan_all — аддитивный
+                # PR на влитой ветке разрешён только для docs/ci-продолжения;
+                # функциональные файлы на уже влитой ветке = переиспользование
+                # ветки влитого PR (#1238) → блок + снятие needs-review.
+                _pr_func="$(pr_has_functional_files "$pr_number")"
+                if [ "$_pr_func" = "1" ]; then
+                    log "issue #${number}: 🛑 ветка ${branch} влита через PR #${_prev_merged_pr}, PR #${pr_number} аддитивный, но несёт ФУНКЦИОНАЛЬНЫЕ файлы — block (ретро 14.08 t_28afb585)"
+                    if [ "$DRY_RUN" = "true" ]; then
+                        log "DRY-RUN would: comment stale-branch block + remove needs-review on PR #${pr_number}"
+                        skipped=$((skipped+1)); continue
+                    fi
+                    _stale_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+                    _stale_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_stale_dedup_since}&per_page=100" \
+                        --jq '[.[] | select(.body | startswith("🛑 **stale-branch reuse"))] | length' 2>/dev/null || echo 0)"
+                    if [ "${_stale_dup:-0}" -eq 0 ]; then
+                        gh issue comment "$number" --repo "$GH_REPO" --body \
+                            "🛑 **stale-branch reuse with new functional fix** (merge-gate, ретро 14.08 t_28afb585)
+
+Ветка \`${branch}\` уже была влита в develop через PR #${_prev_merged_pr}. PR #${pr_number} аддитивный, НО несёт НОВЫЕ функциональные фиксы поверх уже влитой ветки — переиспользование ветки влитого PR (повтор паттерна #1238/#1218).
+
+**Что делать:**
+1. Создай **новую** ветку от свежего origin/develop: \`git fetch origin develop && git checkout -b z-{agent}/t_<card>-<slug> origin/develop\`.
+2. Перенеси ТОЛЬКО этот фикс (cherry-pick/rebase), один PR = одна тема.
+3. Закрой/удали этот PR и открой новый с новой ветки.
+4. needs-review ставится только после e2e-прогона PR.
+
+Снято: \`needs-review\` (поставлен без e2e). Merge-gate **не поставит needs-e2e** на PR с уже влитой ветки." >/dev/null 2>&1 || true
+                    fi
+                    gh pr edit "$pr_number" --repo "$GH_REPO" --remove-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
+                    skipped=$((skipped+1)); continue
+                else
+                    log "issue #${number}: ветка ${branch} влита через PR #${_prev_merged_pr}, но PR #${pr_number} аддитивный docs/ci (del=${pr_deletions:-0}) — НЕ регрессия, не блокируем (ретро 13.08 t_a3f170fe)"
+                fi
             else
             log "issue #${number}: 🛑 stale-branch re-commit — ветка ${branch} уже влита через PR #${_prev_merged_pr}, PR #${pr_number} снова OPEN — block"
             if [ "$DRY_RUN" = "true" ]; then
@@ -638,7 +737,30 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
     # needs-review на PR + снимаем needs-e2e с PR (если осталась от старого
     # цикла). Идемпотентно: повторный тик add-label — no-op. НЕ трогаем
     # MERGED PR — их закрывает post-merge reconcile (ADR-0014) ниже.
+    #
+    # Ретро 14.08 t_28afb585 (пункт 4): needs-review только если PR реально
+    # протестирован — PR создан ДО момента навешивания e2e-done. Если PR
+    # создан ПОСЛЕ e2e-done (переиспользование ветки/новый PR поверх уже
+    # протестированного состояния), e2e-раунд его НЕ покрывал → не ставим
+    # needs-review, возвращаем в e2e-ротацию (needs-e2e) вместо «тихого»
+    # ревью непротестированного кода.
     if has_label "$labels_norm" "$DONE_LABEL" && [ "$pr_state" = "OPEN" ]; then
+        _done_at="$(gh api "repos/${GH_REPO}/issues/${number}/timeline?per_page=100" \
+            --jq '[.[] | select(.event=="labeled" and .label.name=="'"$DONE_LABEL"'")][-1].created_at' 2>/dev/null || echo '')"
+        _pr_created="$(gh pr view "$pr_number" --repo "$GH_REPO" --json createdAt \
+            --jq '.createdAt' 2>/dev/null || echo '')"
+        if [ -n "$_done_at" ] && [ -n "$_pr_created" ] && [ "$_done_at" != "null" ] && [ "$_pr_created" != "null" ] \
+            && [ "$_pr_created" \> "$_done_at" ] 2>/dev/null; then
+            log "issue #${number}: ${DONE_LABEL} (${_done_at}) РАНЬШЕ создания PR #${pr_number} (${_pr_created}) — PR не тестировался, needs-review НЕ ставлю, возврат в ${NEEDS_E2E_LABEL} (ретро 14.08 t_28afb585)"
+            if [ "$DRY_RUN" != "true" ]; then
+                gh issue edit "$number" --repo "$GH_REPO" --remove-label "$DONE_LABEL" >/dev/null 2>&1 || true
+                gh issue edit "$number" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+                gh pr edit "$pr_number" --repo "$GH_REPO" --remove-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
+                gh issue comment "$number" --repo "$GH_REPO" --body \
+                    "agent-flow: ⏪ e2e-done снят — PR #${pr_number} создан ПОСЛЕ последнего e2e-раунда (${_done_at}); возврат в needs-e2e, следующий тик протестирует новую ветку (ретро 14.08 t_28afb585)." >/dev/null 2>&1 || true
+            fi
+            labeled=$((labeled+1)); continue
+        fi
         log "issue #${number}: ${DONE_LABEL} + OPEN PR #${pr_number} → reconcile ${NEEDS_REVIEW_LABEL}"
         if [ "$DRY_RUN" != "true" ]; then
             gh pr edit "$pr_number" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
@@ -1569,6 +1691,19 @@ fi
 while IFS=$'\t' read -r c_pr c_head c_issue c_title c_labels c_files; do
     [ -z "$c_pr" ] && continue
     [ "$c_issue" = "-" ] && c_issue=""
+    # Ретро 14.08 t_28afb585: PR с head-ветки, уже влитой через ДРУГОЙ PR,
+    # не должен получать needs-review/needs-e2e от clean-pr-sweep — это
+    # переиспользование ветки влитого PR (#1238). Его обрабатывает
+    # stale_branch_scan_all (блок-коммент + снятие needs-review). Без этого
+    # clean-pr-sweep классифицировал такой PR как functional+no-issue →
+    # ставил needs-review БЕЗ e2e (именно так #1238 получил needs-review
+    # в 12:06Z при последнем e2e-раунде в 10:35Z).
+    _c_prev_merged="$(gh pr list --repo "$GH_REPO" --state merged --head "$c_head" \
+        --json number --jq '.[0].number // ""' 2>/dev/null || true)"
+    if [ -n "$_c_prev_merged" ] && [ "$_c_prev_merged" != "$c_pr" ]; then
+        log "clean-pr-sweep: PR #${c_pr} head ${c_head} уже влит через PR #${_c_prev_merged} — skip (stale_branch_scan_all обработает, ретро 14.08 t_28afb585)"
+        skipped=$((skipped+1)); continue
+    fi
     # CI-only? (как ретро-путь t_061d466e): все файлы в .github/, scripts/agent_flow/, docs/
     _ci_only="$(printf '%s' "$c_files" | python3 -c '
 import sys
