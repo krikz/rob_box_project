@@ -2161,7 +2161,13 @@ class DialogueNode(Node):
             try:
                 with start_span(
                     "dialogue.llm_call",
-                    {"provider": _llm_provider_name},
+                    {
+                        "provider": _llm_provider_name,
+                        # Модель LLM: не все провайдеры хранят её публично —
+                        # getattr-защита, атрибут опционален (может быть пустым).
+                        "model": getattr(self._llm, "model", "")
+                        or getattr(self._llm, "_model", ""),
+                    },
                 ) as _llm_span:
                     result: DialogResult = await self._core.process_input(
                         user_input,

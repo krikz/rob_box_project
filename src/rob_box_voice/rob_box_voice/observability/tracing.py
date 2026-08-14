@@ -253,9 +253,15 @@ def start_span(
     if not _OTEL_AVAILABLE:
         yield _NoopSpan(name, attributes)
         return
-    tracer = _trace_api.get_tracer(tracer_name)
-    with tracer.start_as_current_span(name, attributes=attributes or {}) as span:
-        yield span
+    try:
+        tracer = _trace_api.get_tracer(tracer_name)
+        with tracer.start_as_current_span(name, attributes=attributes or {}) as span:
+            yield span
+    except Exception as exc:  # noqa: BLE001
+        # OTel не должен ломать прод-код: если span не создался (битый
+        # провайдер/инструментация) — работаем с no-op span'ом.
+        _log.warning("start_span(%r) failed: %r", name, exc)
+        yield _NoopSpan(name, attributes)
 
 
 def start_span_handle(
@@ -281,10 +287,15 @@ def start_span_handle(
     """
     if not _OTEL_AVAILABLE:
         return _NoopSpan(name, attributes)
-    tracer = _trace_api.get_tracer(tracer_name)
-    cm = tracer.start_as_current_span(name, attributes=attributes or {})
-    span = cm.__enter__()
-    return _SpanHandle(cm, span)
+    try:
+        tracer = _trace_api.get_tracer(tracer_name)
+        cm = tracer.start_as_current_span(name, attributes=attributes or {})
+        span = cm.__enter__()
+        return _SpanHandle(cm, span)
+    except Exception as exc:  # noqa: BLE001
+        # OTel не должен ломать прод-код: если span не создался — no-op.
+        _log.warning("start_span_handle(%r) failed: %r", name, exc)
+        return _NoopSpan(name, attributes)
 
 
 __all__ = [
