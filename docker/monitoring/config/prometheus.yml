@@ -49,6 +49,15 @@ scrape_configs:
           host: 'vision-pi'
           service: 'supercollider'
 
+  # Issue #1234, этап 2 — otel-collector: свои метрики (health pipeline).
+  # Collector слушает /metrics на :8888 (host-сеть, та же машина мониторинга).
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['localhost:8888']
+        labels:
+          host: 'monitoring'
+          service: 'otel-collector'
+
   # Scrape Prometheus itself
   - job_name: 'prometheus'
     static_configs:

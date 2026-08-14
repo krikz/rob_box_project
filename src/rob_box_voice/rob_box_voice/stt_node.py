@@ -46,10 +46,14 @@ except ImportError:  # pragma: no cover — модуль всегда есть �
 # Issue #1160 — Prometheus metrics (этап 1 observability).
 # ``prometheus_client`` — optional dep; если её нет, всё превращается в
 # no-op и старт сервера тихо возвращает ``False``.
+# Issue #1234 — OpenTelemetry traces (этап 2): init_tracing в __init__,
+# ``start_span`` — span ``stt.recognize`` вокруг распознавания.
 from rob_box_voice.observability import (
+    init_tracing,
     is_metrics_enabled,
     record_stt_recognize,
     start_metrics_server,
+    start_span,
 )
 
 try:
@@ -80,6 +84,12 @@ class STTNode(Node):
 
     def __init__(self):
         super().__init__("stt_node")
+
+        # Issue #1234 — OpenTelemetry traces (этап 2). STT-нода не создаёт
+        # httpx-клиентов (Yandex gRPC + Vosk offline), но нам нужен
+        # корневой span ``stt.recognize``. Если opentelemetry-пакетов нет —
+        # no-op (см. observability.tracing).
+        init_tracing("stt_node")
 
         # Параметры Vosk (fallback)
         self.declare_parameter("model_path", "/models/vosk-model-small-ru-0.22")
@@ -407,13 +417,28 @@ class STTNode(Node):
         # Идём через единый select_recognition: primary=Yandex, fallback=Vosk,
         # 1 retry на primary, soft-timeout yandex_timeout_s. Возвращает
         # (text, attempts) — text может быть None при итоговом отклонении.
+        # Issue #1234 — OpenTelemetry span ``stt.recognize`` (этап 2):
+        # обёртка всего распознавания (включая retry/fallback). Атрибуты
+        # provider/success/duration проставляем после. no-op без OTel.
+        _stt_trace_start = time.monotonic()
         if _STT_FALLBACK_AVAILABLE:
-            text, attempts = self._recognize_with_fallback(audio_bytes)
-            # Issue #979 — final_text передаём только если фраза реально
-            # ПРИНЯТА: иначе rejected(short) («не» от Vosk) залогируется как
-            # «accepted» — ложь, вводит в заблуждение при отладке.
-            _accepted = bool(text) and not is_short_phrase(text, min_chars=self.min_text_chars)
-            log_attempts(self.get_logger(), attempts, final_text=text if _accepted else None)
+            with start_span("stt.recognize") as _stt_span:
+                text, attempts = self._recognize_with_fallback(audio_bytes)
+                # Issue #979 — final_text передаём только если фраза реально
+                # ПРИНЯТА: иначе rejected(short) («не» от Vosk) залогируется как
+                # «accepted» — ложь, вводит в заблуждение при отладке.
+                _accepted = bool(text) and not is_short_phrase(text, min_chars=self.min_text_chars)
+                log_attempts(self.get_logger(), attempts, final_text=text if _accepted else None)
+                # Финальный провайдер — последняя попытка (или "yandex" по
+                # умолчанию; при пустом списке попыток — "unknown").
+                _stt_provider = (
+                    attempts[-1].provider if attempts else "unknown"
+                )
+                _stt_span.set_attribute("provider", _stt_provider)
+                _stt_span.set_attribute("success", _accepted)
+                _stt_span.set_attribute(
+                    "duration_s", time.monotonic() - _stt_trace_start
+                )
             # Issue #1160 — Prometheus metrics: учитываем каждую попытку
             # (включая retry и fallback на Vosk). ``result``:
             # success = финальный непустой текст; empty = итоговый отказ.

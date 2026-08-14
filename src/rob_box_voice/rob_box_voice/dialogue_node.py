@@ -85,12 +85,14 @@ from rob_box_voice.speaker_profiles import (
 # ``prometheus_client`` — optional dep; если её нет, всё превращается в
 # no-op и старт сервера тихо возвращает ``False``.
 from rob_box_voice.observability import (
+    init_tracing,
     is_metrics_enabled,
     record_barge_in,
     record_fallback,
     record_session_duration,
     record_voice_llm_request,
     start_metrics_server,
+    start_span,
 )
 
 ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
@@ -276,6 +278,12 @@ class DialogueNode(Node):
     """ROS2 shell that composes DialogCore over the harness ports."""
     def __init__(self) -> None:  # noqa: D401 — ROS2 ctor signature
         super().__init__("dialogue_node")
+        # Issue #1234 — OpenTelemetry traces (этап 2). ВАЖНО: вызываем
+        # ДО _build_llm(), потому что LLM-провайдеры (openai SDK / httpx)
+        # создают свои httpx-клиенты при конструировании — авто-инструментация
+        # httpx должна быть включена раньше, чтобы их вызовы попали в трейс.
+        # Если opentelemetry-пакетов нет — no-op (см. observability.tracing).
+        init_tracing("dialogue_node")
         self._declare_params()
         self._system_prompt: str = self._load_system_prompt()
         self._verbose_llm: bool = bool(self.get_parameter("verbose_llm").value)
@@ -2146,15 +2154,37 @@ class DialogueNode(Node):
                 self._llm, "name", type(self._llm).__name__
             )
             _llm_metric_recorded = False
+            # Issue #1234 — OpenTelemetry span ``dialogue.llm_call`` (этап 2).
+            # Обёртка process_input → LLM: атрибуты provider/model/fallback/
+            # duration. ``start_span`` — no-op без OTel; с OTel httpx-вызовы
+            # LLM-провайдера (openai SDK) станут child-spans под этим span'ом.
             try:
-                result: DialogResult = await self._core.process_input(
-                    user_input,
-                    is_dj_auto=was_dj_auto,
-                    speaker_tag=speaker_tag,
-                    speaker_context=speaker_context,
-                    dynamic_system=dynamic_system,
-                    preclassified_event=DialogueEvent.STT_RESULT,
-                )
+                with start_span(
+                    "dialogue.llm_call",
+                    {
+                        "provider": _llm_provider_name,
+                        # Модель LLM: не все провайдеры хранят её публично —
+                        # getattr-защита, атрибут опционален (может быть пустым).
+                        "model": getattr(self._llm, "model", "")
+                        or getattr(self._llm, "_model", ""),
+                    },
+                ) as _llm_span:
+                    result: DialogResult = await self._core.process_input(
+                        user_input,
+                        is_dj_auto=was_dj_auto,
+                        speaker_tag=speaker_tag,
+                        speaker_context=speaker_context,
+                        dynamic_system=dynamic_system,
+                        preclassified_event=DialogueEvent.STT_RESULT,
+                    )
+                    _llm_span.set_attribute(
+                        "fallback",
+                        _llm_provider_name == "HealthAwareFallbackLLM",
+                    )
+                    _llm_span.set_attribute(
+                        "duration_s",
+                        time.monotonic() - _llm_metric_start,
+                    )
             finally:
                 if not _llm_metric_recorded and is_metrics_enabled():
                     _llm_metric_recorded = True

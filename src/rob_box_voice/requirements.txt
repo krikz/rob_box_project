@@ -54,3 +54,12 @@ sqlite-vec>=0.1.9
 # Prometheus client: /metrics endpoint для Grafana. Optional — если пакет
 # не установлен, rob_box_voice.observability превращается в no-op.
 prometheus_client>=0.20.0
+
+# === OpenTelemetry traces (issue #1234, этап 2) ===
+# OTel SDK + OTLP-экспортёр + httpx auto-instrumentation. Optional — если
+# пакетов нет, rob_box_voice.observability.tracing превращается в no-op.
+# Endpoint задаётся через OTEL_EXPORTER_OTLP_ENDPOINT (default
+# http://10.1.1.249:4317 — otel-collector на мониторинг-машине).
+opentelemetry-sdk>=1.24.0
+opentelemetry-exporter-otlp>=1.24.0
+opentelemetry-instrumentation-httpx>=0.45b0
