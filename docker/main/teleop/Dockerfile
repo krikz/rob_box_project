@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1
-FROM ghcr.io/krikz/rob_box_base:ros2-zenoh-humble-latest
+# Локальная сборка: docker build --build-arg BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh-humble-latest
+FROM ${BASE_IMAGE}
 
 # Install joy node from ROS 2 packages and Serial dependencies
 RUN apt-get update && apt-get install -y \
