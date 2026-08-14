@@ -595,13 +595,27 @@ cd ~/rob_box_project/docker/build
 
 ### Полная очистка registry
 
-Для удаления ВСЕХ неиспользуемых blob'ов:
+Для удаления ВСЕХ тегов (полный сброс):
 
 ```bash
 ./scripts/cleanup_registry.sh --all
 ```
 
-**⚠️ Внимание:** Это удалит все неиспользуемые слои и освободит место, но НЕ удалит сами теги/образы.
+**⚠️ Внимание:** Это удалит все теги и затем соберёт неиспользуемые blob'ы.
+Используйте осторожно — образы придётся пересобирать.
+
+### Автоочистка (keep N)
+
+Оставить последние N версий каждого сервиса (rolling-теги `dev`/`latest`/`local`
+не удаляются):
+
+```bash
+./scripts/cleanup_registry.sh --keep 5 --dry-run  # Просмотр
+./scripts/cleanup_registry.sh --keep 5            # Удалить старые + GC
+```
+
+Cron раз в сутки в 04:00 (`cleanup_registry.sh --keep 5`) устанавливается
+автоматически в `setup.sh`. Подробности: [docs/REGISTRY_CLEANUP.md](docs/REGISTRY_CLEANUP.md).
 
 ---
 
