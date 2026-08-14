@@ -20,8 +20,7 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     cd /workspace && \
     colcon build \
         --packages-select rob_box_teleop \
-        --cmake-args -DCMAKE_BUILD_TYPE=Release \
-        --symlink-install
+        --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 WORKDIR /workspace
 
