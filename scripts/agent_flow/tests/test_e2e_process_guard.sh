@@ -14,6 +14,7 @@
 #   D. ветка PR вне конвенции → fallback '<number> in:title'  → кандидат, round создаётся
 #   E. e2e-done от sweep → живой чек меток скипает merge      → merge не выполняется
 #   F. кандидат снят sweep'ом того же тика (t_fe266643)       → round НЕ создаётся
+#   H. ветка СОЗДАНА, кандидат снят ДО прогона (t_4268f2bf)   → round удаляется (gh api DELETE)
 #
 # Run:
 #   bash scripts/agent_flow/tests/test_e2e_process_guard.sh
@@ -209,6 +210,16 @@ except Exception: print("")'
             _rb="$(printf '%s' "$*" | sed -nE 's/.*--branch[[:space:]]+([^ ]+).*/\1/p')"
             _data="$(get_state "RUN_${_rb}_JSON")"
             [ -n "$_data" ] || _data='[]'
+            # Ретро 14.08 t_4268f2bf: post-tick cleanup пустой round-ветки
+            # спрашивает ОБЩЕЕ число run'ов (--json databaseId --jq 'length');
+            # dedup (ниже) считает только queued/in_progress (--json status).
+            if printf '%s' "$*" | grep -q 'databaseId'; then
+                printf '%s' "$_data" | python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin); print(len(d))
+except Exception: print(0)'
+                exit 0
+            fi
             printf '%s' "$_data" | python3 -c 'import json,sys
 try:
     d=json.load(sys.stdin)
@@ -711,6 +722,61 @@ test_G_completed_round_not_active() {
     assert_contains "live candidate(s) — создаю round" "$errlog" "G: completed round не блокирует новый round"
 }
 
+# ===========================================================================
+# H. Ветка СОЗДАНА, кандидат снят ДО прогона (ретро 14.08 t_4268f2bf,
+#    round-101/102/104/107/109): guard видит живого кандидата (первый снимок)
+#    → round_ensure СОЗДАЁТ round-N (git push в журнале) → но живой чек меток
+#    в основном цикле видит e2e-done (кандидат снят sweep/merge-gate/
+#    пользовательским merge между guard и merge) → merge скипается, на round-N
+#    0 run'ов → post-tick cleanup УДАЛЯЕТ round-ветку через gh api DELETE
+#    refs/heads. Отличие от F: там кандидат снят ДО создания (round=NONE,
+#    ветка не создаётся); здесь ветка СОЗДАНА, но пуста → удаляется.
+# ---------------------------------------------------------------------------
+test_H_branch_created_candidate_removed_deleted() {
+    new_test
+    install_e2e_mocks
+    make_repo_dir
+
+    local issue=4901
+    local title="fix #${issue} demo"
+    local slug
+    slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
+        | cut -c1-40)"
+    local branch="z-{agent}/${issue}-${slug}"
+
+    # Первый снимок: issue #4901 needs-e2e с OPEN PR → живой кандидат.
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"${title}\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"needs-e2e\"}],\"body\":\"\"}]"
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    # Живой чек меток ПЕРЕД merge (основной цикл): кандидат уже снят
+    # (e2e-done) → merge скипается, build/e2e не запускаются.
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"e2e-done"}]}'
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":4902,\"state\":\"OPEN\",\"headRefName\":\"${branch}\"}]"
+    set_state "PR_4902_VIEW_JSON" "{\"title\":\"${title}\",\"labels\":[{\"name\":\"agent:devops\"}]}"
+    set_state "BRANCH_PRESENT_${branch}" 1
+    # ROUND_BRANCHES не задан → round_ensure создаст z-{e2e}/test-round-1.
+    # RUN_z-{e2e}/test-round-1_JSON не задан → [] → 0 run'ов → cleanup DELETE.
+
+    run_e2e
+
+    local journal errlog
+    journal="$(cat "$GH_JOURNAL")"
+    errlog="$(cat "$TEST_TMP/stderr.log")"
+
+    assert_contains "live candidate(s) — создаю round" "$errlog" "H: guard пропустил к round_ensure"
+    assert_contains "git push" "$journal" "H: round-ветка создана (git push выполнен)"
+    assert_contains "live labels" "$errlog" "H: живой чек меток выполнен"
+    assert_contains "skip merge" "$errlog" "H: merge скипнут (кандидат снят до прогона)"
+    assert_not_contains "merged & pushed" "$errlog" "H: НЕТ push смерженной ветки (merge не выполнялся)"
+    assert_contains "0 run'ов" "$errlog" "H: cleanup увидел 0 run'ов на созданной ветке"
+    assert_contains "gh api -X DELETE" "$journal" "H: round-ветка удалена через gh api"
+    assert_contains "test-round-1" "$journal" "H: удалена именно созданная round-ветка"
+    assert_contains "deleted (empty round branch" "$errlog" "H: лог подтверждает удаление"
+    local counter
+    counter="$(cat "$TEST_TMP/round-counter" 2>/dev/null || echo '')"
+    assert_eq "1" "$counter" "H: round-ветка была создана (счётчик инкрементирован), затем удалена"
+}
+
 
 # ===========================================================================
 run_test "A. issues без PR → round НЕ создаётся" test_A_no_prs_no_round
@@ -721,5 +787,6 @@ run_test "E. e2e-done от sweep → живой чек меток скипает
 run_test "F. кандидат снят sweep'ом того же тика → round НЕ создаётся" test_F_candidate_swept_same_tick
 run_test "F2. issue в АКТИВНОМ round → round НЕ создаётся (dedup)" test_F_active_round_dedup_no_new_round
 run_test "G. round завершён → dedup НЕ блокирует новый round" test_G_completed_round_not_active
+run_test "H. ветка создана, кандидат снят до прогона → round удаляется (t_4268f2bf)" test_H_branch_created_candidate_removed_deleted
 
 summary
