@@ -30,15 +30,23 @@ agent-PR → e2e → close цикла (см. `docs/design/AGENT_FLOW_PROPOSAL.md
 2. `/home/builder/.hermes/profiles/agent-flow/scripts/` — gateway agent-flow
 3. `/home/builder/.hermes/profiles/architect/scripts/` — gateway architect
 
-Чтобы избежать drift, **используй `install.sh` для раскладки symlinks**:
+Чтобы избежать drift, **используй `install.sh` для раскладки hardlink-копий**:
 
 ```bash
 bash <repo>/scripts/agent_flow/install.sh --dry-run   # только посмотреть
 bash <repo>/scripts/agent_flow/install.sh             # реальная раскладка
 ```
 
-После этого все три пути — симлинки на файлы в репо. Правка в репо
-видима везде.
+После этого все пути (agent-flow / architect / devops profiles +
+`~/.hermes/scripts`) — hardlink-копии (inode) или одинаковое содержимое.
+Правка в репо видима везде после следующего `install.sh`.
+
+**Контроль дрейфа: `agent-flow-drift-detect.sh`** (cron, every 30m).
+Эталон — `origin/develop` (после `git fetch origin develop`), НЕ локальное
+дерево: при local!=origin локальное дерево больше НЕ используется как
+эталон (ретро 13.08 t_9a3f2e0c — слепота дрейфа host↔origin при
+устаревшем local). Автофикс через `install.sh`; если не помог — сразу
+создаётся kanban-карточка (create_drift_card), не ждём следующего тика.
 
 ## Скрипты
 
