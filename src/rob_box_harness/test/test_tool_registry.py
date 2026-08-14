@@ -71,6 +71,12 @@ FLAT_TOOL_NAMES: tuple[str, ...] = (
     # пока недоступен». The MCP side ``SearchWebTool`` dispatches the real
     # call.
     "search_web",
+    # Issue #1219 — persistent TTS voice selection (LLM voice choice).
+    # The MCP-side ``SetVoiceTool`` validates the voice and stores
+    # current_voice in-memory; adding the spec here exposes the tool to
+    # the LLM through ``provider.update_tools()`` (same pattern as
+    # register_speaker).
+    "set_voice",
 )
 
 SKILL_TOOL_NAMES: tuple[str, ...] = (

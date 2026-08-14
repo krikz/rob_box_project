@@ -430,6 +430,12 @@ class DialogueNode(Node):
         self.create_subscription(
             String, "/voice/tts/finished", self._on_tts_finished, 10,
             callback_group=cbg)
+        # Issue #1219 — LLM voice selection: mcp_server (SetVoiceTool)
+        # публикует смену голоса JSON {"voice": str, "provider": str};
+        # dialogue_node хранит current_voice для контекста [TTS].
+        self.create_subscription(
+            String, "/voice/tts/current_voice", self._on_tts_current_voice, 10,
+            callback_group=cbg)
         # Issue #980 — fire music_cleanup only after the *last* TTS chunk of a
         # batch (rap, poetry), not after the first. tts_node publishes this
         # event once ``batch_index == batch_total`` for a given ``batch_id``.
@@ -633,6 +639,12 @@ class DialogueNode(Node):
         self.declare_parameter("faq_mode_enabled", False)
         self.declare_parameter("faq_event_config_file", "")
         self._startup_greeting_fired = False
+        # Issue #1219 — LLM voice selection: активный TTS-провайдер для
+        # контекста [TTS]. Должен совпадать с tts_node.yaml provider
+        # (minimax). Рядом храним current_voice (установленный set_voice),
+        # который приходит от mcp_server через /voice/tts/current_voice.
+        self.declare_parameter("tts_provider", "minimax")
+        self._current_tts_voice: str | None = None
         # Issue #1160 — Prometheus metrics endpoint. 9100 = voice (LLM
         # latency / fallback). 0 = отключить старт сервера (полезно для
         # юнит-тестов и CI, где рконфликтует с другими тестами).
@@ -1475,6 +1487,31 @@ class DialogueNode(Node):
                 f"batch_id={batch_id!r}, batch_total={batch_total!r}"
             )
 
+    def _on_tts_current_voice(self, msg: String) -> None:
+        """Issue #1219 — LLM voice selection: обновить current_voice.
+
+        mcp_server (SetVoiceTool) публикует JSON {"voice": str, "provider": str}
+        в /voice/tts/current_voice при вызове set_voice. Храним голос для
+        контекста [TTS] (Q8): LLM видит current_voice и может вернуть его
+        дефолтным голосом или сменить снова.
+        """
+        try:
+            payload = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return
+        voice = payload.get("voice")
+        if not voice:
+            return
+        self._current_tts_voice = str(voice)
+        try:
+            provider = payload.get("provider") or self.get_parameter("tts_provider").value
+        except Exception:  # noqa: BLE001 — stub без параметра
+            provider = payload.get("provider")
+        self.get_logger().info(
+            f"🎙️ [issue 1219] TTS current_voice → '{self._current_tts_voice}' "
+            f"(provider: {provider})"
+        )
+
     def _on_tts_batch_registered(self, msg: String) -> None:
         """Pre-register an in-flight TTS batch (issue #992).
 
@@ -1811,9 +1848,20 @@ class DialogueNode(Node):
 
         # tts provider (читаем из yaml параметра)
         try:
-            tts_provider = str(self.get_parameter("provider").value or "yandex")
+            tts_provider = str(self.get_parameter("tts_provider").value or "minimax")
         except Exception:
-            tts_provider = "yandex"
+            tts_provider = "minimax"
+        # Issue #1219 — LLM voice selection: строка [TTS] для LLM (Q8).
+        # current_voice — установленный set_voice (None → дефолт провайдера).
+        try:
+            from .tts_voice_registry import format_tts_context
+
+            tts_context_line = format_tts_context(
+                tts_provider,
+                current_voice=getattr(self, "_current_tts_voice", None),
+            )
+        except Exception:  # noqa: BLE001 — registry недоступен, не валим диалог
+            tts_context_line = f"[TTS] provider: {tts_provider}"
         # голос по умолчанию — Yandex anton (определяем по TTS config)
         tts_voice = "Yandex_Maxim"  # default — male
 
@@ -1838,6 +1886,8 @@ class DialogueNode(Node):
         lines.append(f"    <tts_voice>{tts_voice}</tts_voice>")
         lines.append(f"    <tts_provider>{tts_provider}</tts_provider>")
         lines.append("  </hardware>")
+        # Issue #1219 — LLM voice selection (Q8): единая строка с голосами.
+        lines.append(f"  <tts_context>{tts_context_line}</tts_context>")
         lines.append("</system_context>")
         # W7c (issue #968): активные задачи планировщика (voice/music/anim
         # каналы) — LLM видит «что сейчас исполняется» перед каждым ходом

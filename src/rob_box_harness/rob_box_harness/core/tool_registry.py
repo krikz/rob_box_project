@@ -92,6 +92,18 @@ def _build_flat_specs() -> tuple[ToolSpec, ...]:
                 "type": "object",
                 "properties": {
                     "text": _TEXT_PROPERTY,
+                    "voice": {
+                        "type": "string",
+                        "description": (
+                            "TTS voice for this reply (issue #1219). Name of a "
+                            "voice of the active provider (see [TTS] voices in "
+                            "system context): e.g. alena/zahar (yandex), "
+                            "male-qn-qingse/female-shaonv (minimax), aidar/baya "
+                            "(silero). Omit to use the set_voice voice or the "
+                            "provider default. Unknown voice falls back to the "
+                            "default; the actual voice is returned as voice_used."
+                        ),
+                    },
                     "animation": {
                         "type": "string",
                         "description": (
@@ -110,6 +122,40 @@ def _build_flat_specs() -> tuple[ToolSpec, ...]:
                     },
                 },
                 "required": ["text"],
+            },
+        ),
+        # Issue #1219 — persistent TTS voice selection. The MCP-side
+        # ``SetVoiceTool`` lives in ``rob_box_mcp_tools.tools.dialogue``;
+        # this harness-side spec is what the LLM actually sees in
+        # chat-completion ``tools=`` (same pattern as register_speaker).
+        # Wire-up: ``SetVoiceTool.execute(voice)`` validates against the
+        # active provider's voice list and stores current_voice in-memory
+        # (VoiceStateStore); the next speak_text without voice= uses it.
+        ToolSpec(
+            name="set_voice",
+            description=(
+                "Set the TTS voice for the dialogue (persistent until changed). "
+                "Use when: (1) the user asks «говори голосом X» — pass voice=X; "
+                "(2) you want to tell a story with different characters "
+                "(old man → zahar, girl → alena, etc.); (3) you want to return "
+                "to the default voice — pass voice=<default_voice>. "
+                "Available voices are listed in the system context: [TTS] voices=... "
+                "After set_voice, the next speak_text without voice= uses the "
+                "set voice."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "voice": {
+                        "type": "string",
+                        "description": (
+                            "Voice name to set (from the [TTS] voices=... list): "
+                            "e.g. alena, zahar, jane (yandex); male-qn-qingse, "
+                            "female-shaonv (minimax); aidar, baya (silero)."
+                        ),
+                    },
+                },
+                "required": ["voice"],
             },
         ),
         ToolSpec(

@@ -26,6 +26,9 @@ dialogue_node:
     - роб
     dialogue_timeout: 300.0
     llm_providers: "minimax,deepseek"   # issue #1089: первый = primary, остальные = fallbacks
+    # Issue #1219 — активный TTS-провайдер для LLM-контекста [TTS].
+    # Должен совпадать с tts_node.yaml provider (minimax).
+    tts_provider: minimax
     system_prompt_file: master_prompt_compact.txt
     history_max_turns: 20
     faq_mode_enabled: false

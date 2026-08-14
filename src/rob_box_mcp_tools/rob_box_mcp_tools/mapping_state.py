@@ -45,6 +45,7 @@ MAPPING_WHITELIST: frozenset = frozenset({
     "set_volume",
     "set_pitch",
     "set_speed",
+    "set_voice",
     "move_direction",   # allow manual driving while mapping
 })
 

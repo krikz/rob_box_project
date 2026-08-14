@@ -53,6 +53,7 @@ from .tools import (
     ListenForResponseTool,
     EstimateTtsDurationTool,
     RegisterSpeakerTool,
+    SetVoiceTool,
     MemorySaveTool,
     MemorySearchTool,
     MemoryContextTool,
@@ -73,6 +74,7 @@ from .tools import (
 )
 from .waypoint_store import WaypointStore
 from .mapping_state import MappingState
+from .voice_state import VoiceStateStore
 
 try:
     from rob_box_voice.core.voice_memory import VoiceMemory as _VoiceMemory
@@ -97,6 +99,10 @@ class MCPServer(Node):
         # Параметры ноды
         # Issue 986: музыка орала, голос не был слышен — понизили max_amp с 0.7 до 0.42
         self.declare_parameter("music_max_amp", 0.42)
+        # Issue #1219 — активный TTS-провайдер для валидации голосов в
+        # speak_text/set_voice. Должен совпадать с tts_node.yaml provider
+        # (minimax). Используется для выбора списка голосов (Q4).
+        self.declare_parameter("tts_provider", "minimax")
 
         # Реестр инструментов
         self.registry = MCPToolRegistry()
@@ -489,9 +495,14 @@ class MCPServer(Node):
         self.registry.register(FaqSearchTool(self))
 
         # Dialogue tools (критично для агентного диалога!)
-        self.registry.register(SpeakTextTool(self))
+        # Issue #1219 — SpeakTextTool и SetVoiceTool делят VoiceStateStore:
+        # set_voice персистентно меняет голос на диалог, speak_text без
+        # voice= говорит установленным голосом (Q7).
+        voice_store = VoiceStateStore()
+        self.registry.register(SpeakTextTool(self, voice_store=voice_store))
         self.registry.register(EstimateTtsDurationTool(self))
         self.registry.register(ListenForResponseTool(self))
+        self.registry.register(SetVoiceTool(self, voice_store=voice_store))
         # Issue #1101 — LLM-driven speaker registration (replaces regex NLU).
         # LLM extracts name from user_input and calls register_speaker(name=X)
         # via MCP. speaker_id_node binds d-vector to name in /data/speakers.db.
