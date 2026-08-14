@@ -23,6 +23,7 @@ from rob_box_voice.tts_voice_registry import (  # noqa: E402
     DEFAULT_VOICES,
     PROVIDER_VOICES,
     default_voice_for,
+    effective_provider,
     format_tts_context,
     resolve_voice,
     voices_for,
@@ -126,3 +127,34 @@ def test_format_context_minimax() -> None:
     assert "default_voice: male-qn-qingse" in line
     assert "current_voice: female-shaonv" in line
     assert "male-qn-qingse" in line
+
+
+# ── effective_provider (issue #1229) ──────────────────────────────────────────
+
+
+def _dead(dead_names):
+    dead = set(dead_names)
+    return lambda provider: provider in dead
+
+
+def test_effective_provider_first_alive() -> None:
+    chain = ["minimax", "yandex", "silero"]
+    # Никто не мёртв → minimax (первый в цепочке).
+    assert effective_provider(chain, _dead([])) == "minimax"
+
+
+def test_effective_provider_skips_dead() -> None:
+    chain = ["minimax", "yandex", "silero"]
+    # MiniMax в кэше мёртвых (429/quota) → yandex (issue #1229).
+    assert effective_provider(chain, _dead(["minimax"])) == "yandex"
+
+
+def test_effective_provider_all_dead_falls_to_last() -> None:
+    chain = ["minimax", "yandex", "silero"]
+    assert effective_provider(chain, _dead(["minimax", "yandex"])) == "silero"
+    assert effective_provider(chain, _dead(["minimax", "yandex", "silero"])) == "silero"
+
+
+def test_effective_provider_empty_chain() -> None:
+    assert effective_provider([], _dead([])) is None
+    assert effective_provider(None, _dead([])) is None

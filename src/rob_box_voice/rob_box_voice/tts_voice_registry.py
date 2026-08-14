@@ -87,6 +87,34 @@ def resolve_voice(provider: str, requested: str | None) -> tuple[str, bool]:
     return default_voice_for(provider), True
 
 
+def effective_provider(
+    provider_chain: list[str] | tuple[str, ...] | None,
+    is_dead,
+) -> str | None:
+    """Первый «живой» провайдер в цепочке (issue #1229).
+
+    Цепочка приоритетов TTS (minimax → yandex → silero) с кэшем
+    «мёртвых» провайдеров. ``is_dead(provider) -> bool`` — колбэк,
+    возвращающий True для провайдера в кэше «мёртвых» (квота/сеть).
+
+    Args:
+        provider_chain: упорядоченная цепочка провайдеров (может быть
+            None/пустой — тогда возвращаем None).
+        is_dead: callable(provider) -> bool.
+
+    Returns:
+        Первый провайдер цепочки, который НЕ мёртв. Если все мёртвы —
+        последний провайдер цепочки (Silero всегда последний и офлайн,
+        это осознанный «аварийный» выбор). Для пустой цепочки — None.
+    """
+    if not provider_chain:
+        return None
+    for provider in provider_chain:
+        if not is_dead(provider):
+            return provider
+    return provider_chain[-1]
+
+
 def format_tts_context(
     provider: str,
     default_voice: str | None = None,

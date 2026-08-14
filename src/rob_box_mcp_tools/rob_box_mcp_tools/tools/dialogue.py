@@ -37,6 +37,26 @@ except ImportError:  # pragma: no cover — fallback для minimal environments
         return []
 
 
+def _active_tts_provider(node) -> str:
+    """Активный TTS-провайдер для валидации голосов (issue #1229).
+
+    Приоритет: фактический провайдер от tts_node (``node.actual_tts_provider``,
+    после фолбека minimax→yandex это yandex) → параметр ``tts_provider``
+    (номинальный, из YAML) → дефолт ``minimax``.
+
+    Без этого speak_text/set_voice валидировали голоса по номинальному
+    провайдеру, LLM выбирала minimax-голоса (male-chengshu и т.п.),
+    которых нет у yandex после фолбека, и робот говорил тем же голосом.
+    """
+    actual = getattr(node, "actual_tts_provider", None)
+    if actual:
+        return str(actual)
+    try:
+        return str(node.get_parameter("tts_provider").value or "minimax")
+    except Exception:  # noqa: BLE001 — stub/tests без параметра
+        return "minimax"
+
+
 class SpeakTextTool(MCPTool):
     """Инструмент для произнесения текста голосом."""
 
@@ -293,12 +313,9 @@ class SpeakTextTool(MCPTool):
         import uuid
 
         # Issue #1219 — LLM voice selection: определяем активного провайдера
-        # (ROS-параметр tts_provider, заданный в mcp_server; дефолт minimax —
-        # совпадает с src/rob_box_voice/config/tts_node.yaml).
-        try:
-            provider = str(self.node.get_parameter("tts_provider").value or "minimax")
-        except Exception:  # noqa: BLE001 — stub/tests без параметра
-            provider = "minimax"
+        # (фактический от tts_node после фолбека, иначе ROS-параметр
+        # tts_provider; дефолт minimax — совпадает с tts_node.yaml).
+        provider = _active_tts_provider(self.node)
         # Резолв голоса (issue #1219, Q6/Q7): разовый voice= из speak_text
         # важнее установленного set_voice; если оба отсутствуют — дефолт
         # провайдера. Неизвестный голос → дефолт + voice_used в результате.
@@ -954,11 +971,9 @@ class SetVoiceTool(MCPTool):
                 error="voice_empty",
                 message="Параметр voice не может быть пустым — передай имя голоса из [TTS] voices=...",
             )
-        # Активный провайдер — как в speak_text (mcp_server param tts_provider).
-        try:
-            provider = str(self.node.get_parameter("tts_provider").value or "minimax")
-        except Exception:  # noqa: BLE001 — stub/tests без параметра
-            provider = "minimax"
+        # Активный провайдер — как в speak_text (фактический от tts_node
+        # после фолбека, иначе mcp_server param tts_provider).
+        provider = _active_tts_provider(self.node)
         # Валидация против списка провайдера (Q6): неизвестный голос не
         # сохраняем — LLM получит ошибку и сможет поправиться. Это строже,
         # чем speak_text (там fallback на дефолт), т.к. set_voice — явный

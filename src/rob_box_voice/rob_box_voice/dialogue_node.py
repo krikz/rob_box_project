@@ -436,6 +436,14 @@ class DialogueNode(Node):
         self.create_subscription(
             String, "/voice/tts/current_voice", self._on_tts_current_voice, 10,
             callback_group=cbg)
+        # Issue #1229 — фактический провайдер TTS (после фолбека) от tts_node.
+        # JSON {"provider": str, "voice": str, ...}. Используется в контексте
+        # [TTS], чтобы LLM видела голоса РЕАЛЬНОГО провайдера (а не
+        # номинального minimax), и не выбирала голоса, которых нет у
+        # фактического провайдера.
+        self.create_subscription(
+            String, "/voice/tts/provider_state", self._on_tts_provider_state, 10,
+            callback_group=cbg)
         # Issue #980 — fire music_cleanup only after the *last* TTS chunk of a
         # batch (rap, poetry), not after the first. tts_node publishes this
         # event once ``batch_index == batch_total`` for a given ``batch_id``.
@@ -645,6 +653,12 @@ class DialogueNode(Node):
         # который приходит от mcp_server через /voice/tts/current_voice.
         self.declare_parameter("tts_provider", "minimax")
         self._current_tts_voice: str | None = None
+        # Issue #1229 — фактический провайдер TTS (после фолбека) и голос,
+        # который РЕАЛЬНО использовал tts_node. Приходят из /voice/tts/
+        # provider_state; используются в LLM-контексте [TTS], чтобы LLM
+        # видела голоса фактического провайдера, а не номинального.
+        self._actual_tts_provider: str | None = None
+        self._actual_tts_voice: str | None = None
         # Issue #1160 — Prometheus metrics endpoint. 9100 = voice (LLM
         # latency / fallback). 0 = отключить старт сервера (полезно для
         # юнит-тестов и CI, где рконфликтует с другими тестами).
@@ -1512,6 +1526,31 @@ class DialogueNode(Node):
             f"(provider: {provider})"
         )
 
+    def _on_tts_provider_state(self, msg: String) -> None:
+        """Issue #1229 — обновить фактический провайдер TTS (от tts_node).
+
+        tts_node публикует JSON {"provider": str, "voice": str,
+        "default_voice": str, "reason": str} после старта, при фолбеке
+        провайдера (квота/сеть) и после каждого успешного синтеза.
+        Храним фактического провайдера и голос — LLM-контекст [TTS]
+        строится по ним (голоса РЕАЛЬНОГО провайдера, а не номинального).
+        """
+        try:
+            payload = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return
+        provider = payload.get("provider")
+        if not provider:
+            return
+        self._actual_tts_provider = str(provider)
+        voice = payload.get("voice")
+        if voice:
+            self._actual_tts_voice = str(voice)
+        self.get_logger().info(
+            f"🎙️ [issue 1229] TTS actual provider → '{self._actual_tts_provider}' "
+            f"(voice: {self._actual_tts_voice}, reason: {payload.get('reason')})"
+        )
+
     def _on_tts_batch_registered(self, msg: String) -> None:
         """Pre-register an in-flight TTS batch (issue #992).
 
@@ -1851,14 +1890,25 @@ class DialogueNode(Node):
             tts_provider = str(self.get_parameter("tts_provider").value or "minimax")
         except Exception:
             tts_provider = "minimax"
+        # Issue #1229 — фактический провайдер (после фолбека) имеет приоритет
+        # над номинальным из параметра. tts_node публикует его в
+        # /voice/tts/provider_state после старта/фолбека/синтеза.
+        actual_provider = getattr(self, "_actual_tts_provider", None)
+        if actual_provider:
+            tts_provider = actual_provider
         # Issue #1219 — LLM voice selection: строка [TTS] для LLM (Q8).
         # current_voice — установленный set_voice (None → дефолт провайдера).
+        # Issue #1229 — если tts_node сообщил фактический голос (например,
+        # при фолбеке minimax→yandex реально звучал anton), показываем его:
+        # LLM видит, ЧТО реально прозвучало, а не что было запрошено.
+        actual_voice = getattr(self, "_actual_tts_voice", None)
+        current_voice = actual_voice or getattr(self, "_current_tts_voice", None)
         try:
             from .tts_voice_registry import format_tts_context
 
             tts_context_line = format_tts_context(
                 tts_provider,
-                current_voice=getattr(self, "_current_tts_voice", None),
+                current_voice=current_voice,
             )
         except Exception:  # noqa: BLE001 — registry недоступен, не валим диалог
             tts_context_line = f"[TTS] provider: {tts_provider}"

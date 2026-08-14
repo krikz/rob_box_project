@@ -127,6 +127,52 @@ class TestSpeakTextVoiceParam:
         assert result.data["voice_used"] == "alena"
         assert result.data["provider"] == "yandex"
 
+    def test_actual_provider_wins_over_param(self, mock_node):
+        """Issue #1229 — фактический провайдер от tts_node имеет приоритет.
+
+        После фолбека minimax→yandex mcp_server получает
+        actual_tts_provider=yandex из /voice/tts/provider_state. SpeakTextTool
+        должен валидировать голоса по yandex, а не по номинальному
+        tts_provider=minimax — иначе LLM выбирает minimax-голоса, которых
+        нет у фактического провайдера, и робот говорит тем же голосом.
+        """
+        mock_node._declared_params = {"tts_provider": "minimax"}
+        mock_node.actual_tts_provider = "yandex"
+
+        def _get_parameter(name):
+            return type("P", (), {"value": mock_node._declared_params.get(name, "minimax")})()
+
+        mock_node.get_parameter = _get_parameter
+        tool = SpeakTextTool(mock_node)
+        # minimax-голос недоступен у фактического yandex → дефолт anton.
+        result = tool.execute(text="Привет", voice="male-chengshu")
+        assert result.data["voice_used"] == "anton"
+        assert result.data["voice_fell_back"] is True
+        assert result.data["provider"] == "yandex"
+        payloads = _published_tts_payloads(tool)
+        assert all(p.get("voice") == "anton" for p in payloads)
+        # yandex-голос проходит валидацию у фактического провайдера.
+        result2 = tool.execute(text="Привет", voice="zahar")
+        assert result2.data["voice_used"] == "zahar"
+        assert result2.data["voice_fell_back"] is False
+
+    def test_actual_provider_used_without_explicit_voice(self, mock_node):
+        """Issue #1229 — current_voice из store резолвится по фактическому провайдеру."""
+        store = VoiceStateStore()
+        store.set_voice("male-chengshu")  # minimax-голос, установленный ранее
+        mock_node._declared_params = {"tts_provider": "minimax"}
+        mock_node.actual_tts_provider = "yandex"
+
+        def _get_parameter(name):
+            return type("P", (), {"value": mock_node._declared_params.get(name, "minimax")})()
+
+        mock_node.get_parameter = _get_parameter
+        tool = SpeakTextTool(mock_node, voice_store=store)
+        result = tool.execute(text="Привет")
+        # minimax-голос в store недоступен у фактического yandex → anton.
+        assert result.data["voice_used"] == "anton"
+        assert result.data["provider"] == "yandex"
+
 
 @pytest.mark.unit
 class TestSetVoiceTool:
@@ -170,6 +216,32 @@ class TestSetVoiceTool:
         result = speak_tool.execute(text="Привет")
         assert result.data["voice_used"] == "female-shaonv"
         assert result.data["voice_fell_back"] is False
+
+    def test_set_voice_actual_provider_validation(self, mock_node):
+        """Issue #1229 — set_voice валидирует по ФАКТИЧЕСКОМУ провайдеру.
+
+        После фолбека minimax→yandex (actual_tts_provider=yandex) голос
+        minimax (male-chengshu) должен быть ОТКЛОНЁН, а не молча принят —
+        иначе LLM думает, что голос установлен, а робот говорит anton.
+        """
+        mock_node._declared_params = {"tts_provider": "minimax"}
+        mock_node.actual_tts_provider = "yandex"
+
+        def _get_parameter(name):
+            return type("P", (), {"value": mock_node._declared_params.get(name, "minimax")})()
+
+        mock_node.get_parameter = _get_parameter
+        tool = SetVoiceTool(mock_node)
+        result = tool.execute(voice="male-chengshu")
+        assert result.success is False
+        assert result.data["error"] == "voice_unavailable"
+        assert result.data["provider"] == "yandex"
+        assert "zahar" in result.data["available"]
+        # yandex-голос принимается у фактического провайдера.
+        result2 = tool.execute(voice="zahar")
+        assert result2.success is True
+        assert result2.data["voice_set"] == "zahar"
+        assert result2.data["provider"] == "yandex"
 
 
 @pytest.mark.unit

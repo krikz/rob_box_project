@@ -16,8 +16,10 @@ implementations live in :class:`rob_box_harness.executors.ros_mcp
 
 The inventory mirrors ``dialogue_node._make_tools`` /
 ``_make_output_tools`` / ``_build_skills`` from the legacy code path,
-decomposed into 29 *flat* tools and 5 *skill* sub-agents (per
-``06-01-PLAN.md`` §W2).
+decomposed into 32 *flat* tools and 5 *skill* sub-agents (per
+``06-01-PLAN.md`` §W2). ``voice_settings`` was removed in issue #1229 —
+LLM must not call it (set_voice + speak_text(voice=) cover voice
+selection; the MCP-side ``set_volume``/``set_pitch`` still exist).
 
 Tool specs use :class:`rob_box_harness.tools.ToolSpec` so they can be
 passed straight to :class:`FakeToolProvider` for unit tests and to
@@ -72,12 +74,12 @@ async def _default_handler(args: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# The 29 flat tools (audio / memory / status / navigation / music / tracks)
+# The 32 flat tools (audio / memory / status / navigation / music / tracks)
 # ---------------------------------------------------------------------------
 
 
 def _build_flat_specs() -> tuple[ToolSpec, ...]:
-    """Build the 29 flat tool specs.
+    """Build the 32 flat tool specs.
 
     Names and descriptions follow the legacy ``dialogue_node`` so the
     LLM-facing contract is stable across the harness migration.
@@ -326,18 +328,6 @@ def _build_flat_specs() -> tuple[ToolSpec, ...]:
             name="get_current_pose",
             description="Return the robot's current pose as (x, y, theta).",
             parameters={"type": "object", "properties": {}},
-        ),
-        ToolSpec(
-            name="voice_settings",
-            description="Adjust voice / TTS settings (rate, pitch, voice id).",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "rate": _FLOAT_PROPERTY,
-                    "pitch": _FLOAT_PROPERTY,
-                    "voice_id": _TEXT_PROPERTY,
-                },
-            },
         ),
         ToolSpec(
             name="search_samples",
@@ -676,7 +666,7 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, tuple[ToolSpec, ToolHandler]] = {}
-        # Pre-register all 34 tools with the default no-op handler.
+        # Pre-register all 37 tools with the default no-op handler.
         for spec in _build_flat_specs() + _build_skill_specs():
             self._tools[spec.name] = (spec, _default_handler)
 
