@@ -56,6 +56,13 @@ tts_node:
     minimax_max_retries: 2
     minimax_retry_backoff_ms: 500
     minimax_streaming: false
+    # Issue #1229 — файл персистентного состояния фактического провайдера
+    # TTS (после фолбека minimax→yandex). tts_node пишет сюда {provider,
+    # dead_providers} при смене провайдера; при рестарте контейнера кэш
+    # «мёртвых» восстанавливается, и LLM-контекст [TTS] сразу показывает
+    # реального провайдера (не номинального minimax). Пустая строка —
+    # отключить персистентность.
+    provider_state_file: /data/tts_provider_state.json
     audio_topic: /voice/audio/speech
     audio_output_sample_rate: 16000
     audio_qos_reliability: best_effort

@@ -1546,9 +1546,13 @@ class DialogueNode(Node):
         voice = payload.get("voice")
         if voice:
             self._actual_tts_voice = str(voice)
+        # getattr — защита для тестовых стабов без __init__ (атрибут
+        # инициализируется в __init__, но handler может вызваться и на
+        # голом объекте; лог не должен падать).
+        actual_voice = getattr(self, "_actual_tts_voice", None)
         self.get_logger().info(
             f"🎙️ [issue 1229] TTS actual provider → '{self._actual_tts_provider}' "
-            f"(voice: {self._actual_tts_voice}, reason: {payload.get('reason')})"
+            f"(voice: {actual_voice}, reason: {payload.get('reason')})"
         )
 
     def _on_tts_batch_registered(self, msg: String) -> None:
