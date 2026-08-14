@@ -129,6 +129,27 @@ print("1" if ok else "0")
 ' 2>/dev/null || echo 0
 }
 
+# --- proposal-ветки архитектора (ретро 15.08 t_6024f414) --------------------
+# Долгоживущие ветки вида z-architect/<slug> БЕЗ номера issue и БЕЗ t_<card>
+# (например z-architect/voice-selection-proposal). По процессу proposal-ветка
+# живёт после merge: в неё добавляются новые коммиты и открывается следующий
+# PR (кейс #1247 → #1254 → #1255). Это НЕ ретро-ветка (z-architect/t_<id>-...)
+# и НЕ issue-ветка (z-architect/NNNN-...). Stale-branch guard (t_28afb585)
+# НЕ должен блокировать такие PR и снимать needs-review — иначе proposal-цикл
+# рвётся и PR невидим для очереди ревью товарища Шифу.
+is_proposal_branch() {  # $1=head → 1/0
+    local head="$1"
+    case "$head" in
+        z-architect/*)
+            case "$head" in
+                z-architect/t_*|z-architect/[0-9]*-*) return 1 ;;
+            esac
+            return 0
+            ;;
+        *) return 1 ;;
+    esac
+}
+
 # --- stale-branch re-commit guard для ВСЕХ open PR (ретро 12.08 t_d3aeaa9b) --
 # Сценарий: ветка УЖЕ влита в develop (есть MERGED PR с тем же head), но
 # воркер продолжал коммитить в неё ПОСЛЕ merge (база устарела; re-коммиты =
@@ -159,6 +180,15 @@ for pr in data:
         _spr_prev_merged="$(gh pr list --repo "$GH_REPO" --state merged --head "$_spr_head" \
             --json number --jq '.[0].number // ""' 2>/dev/null || true)"
         if [ -n "$_spr_prev_merged" ] && [ "$_spr_prev_merged" != "$_spr_num" ]; then
+            # Ретро 15.08 t_6024f414: proposal-ветки архитектора (z-architect/*
+            # без issue-номера и без t_<card>) ЖИВУТ после merge — в них легально
+            # добавляются новые коммиты и открывается следующий PR (#1247 →
+            # #1254 → #1255). Для них stale-branch guard НЕ применяется: PR
+            # остаётся в нормальном процессе (clean-pr-sweep поставит
+            # needs-review). Иначе proposal-цикл рвётся и PR невидим для ревью.
+            if is_proposal_branch "$_spr_head"; then
+                log "stale-branch-scan: ветка ${_spr_head} — proposal-ветка архитектора (ретро 15.08 t_6024f414) — НЕ блокирую, needs-review не снимаю"
+            else
             # Ретро 13.08 t_a3f170fe: guard бьёт по ИМЕНИ ветки, но аддитивный
             # PR (docs/ci, deletions≈0) — НЕ регрессия: ветка влита, воркер
             # до-пушил НОВЫЙ контент (#1197 docs W7: +308/-1). Регрессия =
@@ -221,6 +251,7 @@ for pr in data:
 3. Закрой/удали этот PR (ветка влита, PR-дифф регрессионный).
 
 Merge-gate **не поставит needs-e2e** на PR с уже влитой ветки." >/dev/null 2>&1 || true
+            fi
             fi
             fi
         fi
@@ -1700,9 +1731,18 @@ while IFS=$'\t' read -r c_pr c_head c_issue c_title c_labels c_files; do
     # в 12:06Z при последнем e2e-раунде в 10:35Z).
     _c_prev_merged="$(gh pr list --repo "$GH_REPO" --state merged --head "$c_head" \
         --json number --jq '.[0].number // ""' 2>/dev/null || true)"
+    # Ретро 15.08 t_6024f414: proposal-ветки архитектора (z-architect/* без
+    # issue-номера и без t_<card>) живут после merge — это НЕ stale-branch
+    # reuse, а легальный proposal-цикл (#1247 → #1254 → #1255). Такой PR
+    # НЕ скипаем: идём в обычную классификацию (functional + нет issue →
+    # needs-review на PR), чтобы товарищ Шифу увидел его в очереди ревью.
+    if is_proposal_branch "$c_head"; then
+        log "clean-pr-sweep: PR #${c_pr} head ${c_head} — proposal-ветка архитектора (ретро 15.08 t_6024f414) — НЕ скипаю, классифицирую normally"
+    else
     if [ -n "$_c_prev_merged" ] && [ "$_c_prev_merged" != "$c_pr" ]; then
         log "clean-pr-sweep: PR #${c_pr} head ${c_head} уже влит через PR #${_c_prev_merged} — skip (stale_branch_scan_all обработает, ретро 14.08 t_28afb585)"
         skipped=$((skipped+1)); continue
+    fi
     fi
     # CI-only? (как ретро-путь t_061d466e): все файлы в .github/, scripts/agent_flow/, docs/
     _ci_only="$(printf '%s' "$c_files" | python3 -c '
