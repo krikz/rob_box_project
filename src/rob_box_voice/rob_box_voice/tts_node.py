@@ -382,6 +382,14 @@ class TTSNode(Node):
         # в кэше — не долбим его на каждый ход (см. _mark_provider_dead).
         self.declare_parameter("provider_dead_ttl_s", 300.0)
         self.declare_parameter("provider_dead_ttl_transient_s", 30.0)
+        # Issue #1229 — файл персистентного состояния фактического
+        # провайдера TTS (переживает рестарт контейнера; пустая строка =
+        # отключено). tts_node пишет {provider, dead_until_ts, ...} при
+        # смене «эффективного» провайдера (фолбек после квоты/сети);
+        # mcp_server/dialogue_node читают его через /voice/tts/provider_state,
+        # чтобы LLM-контекст и валидация голосов отражали РЕАЛЬНОГО
+        # провайдера, а не номинального из параметра provider.
+        self.declare_parameter("provider_state_file", "/data/tts_provider_state.json")
 
         # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос!)
         self.declare_parameter("yandex_api_key", "")
@@ -522,10 +530,19 @@ class TTSNode(Node):
         self.provider_dead_ttl_transient_s = max(
             1.0, float(self.get_parameter("provider_dead_ttl_transient_s").value)
         )
+        # Issue #1229 — файл персистентного состояния эффективного провайдера.
+        self.provider_state_file = str(
+            self.get_parameter("provider_state_file").value or ""
+        )
         # Провайдеры, помеченные мёртвыми (quota/сеть/ошибка) до определённого
         # момента времени (time.monotonic). Ключ — имя провайдера.
         self._provider_dead_until: Dict[str, float] = {}
         self._provider_dead_reason: Dict[str, str] = {}
+        # Восстанавливаем кэш «мёртвых» из персистентного файла (issue #1229):
+        # после рестарта робот сразу знает фактического провайдера (квота
+        # MiniMax не заканчивается за время рестарта) — LLM-контекст не врёт
+        # с первого хода.
+        self._load_persisted_provider_state()
 
         # Yandex Cloud TTS gRPC v3
         self.yandex_api_key = self.get_parameter("yandex_api_key").value or os.getenv("YANDEX_API_KEY", "")
@@ -781,6 +798,14 @@ class TTSNode(Node):
         self.finished_pub = self.create_publisher(
             String, "/voice/tts/finished", 10
         )  # Публикация завершения произношения
+        # Issue #1229 — фактический провайдер TTS (после фолбека). mcp_server
+        # и dialogue_node подписываются на этот топик, чтобы валидация голосов
+        # и LLM-контекст [TTS] отражали РЕАЛЬНОГО провайдера, а не номинального
+        # из параметра provider. Публикуется при старте (из персистентного
+        # файла), при пометке провайдера мёртвым и после успешного синтеза.
+        self.provider_state_pub = self.create_publisher(
+            String, "/voice/tts/provider_state", 10
+        )
         # Issue #980 — single event per multi-chunk TTS batch (rap, poetry).
         # tts_node publishes one ``/voice/tts/batch_complete`` after the last
         # chunk lands so dialogue_node can fire ``music_cleanup`` exactly once.
@@ -841,6 +866,10 @@ class TTSNode(Node):
 
         # Публикуем начальное состояние
         self.publish_state("ready")
+        # Issue #1229 — публикуем фактического провайдера сразу при старте
+        # (значение из персистентного файла, если он есть). dialogue_node /
+        # mcp_server получают корректный контекст ДО первого диалога.
+        self._publish_provider_state("startup")
 
         self.get_logger().info("✅ TTSNode инициализирован")
         self.get_logger().info(
@@ -1584,11 +1613,154 @@ class TTSNode(Node):
             f"💀 {provider_name} помечен мёртвым на {ttl_s:.0f}s "
             f"({type(error).__name__}: {error})"
         )
+        # Issue #1229 — провайдер упал → публикуем фактического провайдера
+        # (первый «живой» в цепочке после падения).
+        publish = getattr(self, "_publish_provider_state", None)
+        if publish is not None:
+            try:
+                publish("provider_dead")
+            except Exception:  # noqa: BLE001 — диагностика не должна падать
+                pass
 
     def _provider_dead_until_s(self, provider_name: str) -> float:
         """Сколько секунд осталось провайдеру в кэше «мёртвых» (для логов)."""
         until = getattr(self, "_provider_dead_until", {}).get(provider_name, 0.0)
         return max(0.0, until - time.monotonic())
+
+    # ── Issue #1229 — фактический провайдер TTS ─────────────────────────────
+    # tts_node — единственный, кто ЗНАЕТ фактического провайдера (после
+    # фолбека из-за квоты/сети). Публикуем его состояние в /voice/tts/
+    # provider_state: mcp_server (валидация голосов в speak_text/set_voice)
+    # и dialogue_node (LLM-контекст [TTS]) используют РЕАЛЬНОГО провайдера,
+    # а не номинального из параметра provider.
+
+    def _load_persisted_provider_state(self) -> None:
+        """Восстановить кэш «мёртвых» провайдеров из файла (issue #1229).
+
+        Файл пишется :meth:`_persist_provider_state` при смене эффективного
+        провайдера. При старте загружаем только записи, срок действия
+        которых ещё не истёк (dead_until_ts в будущем) — просроченные
+        игнорируем, чтобы дать провайдеру шанс «ожить».
+        """
+        path = getattr(self, "provider_state_file", "") or ""
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError, TypeError):
+            return  # нет файла / битый JSON — не мешаем старту
+        if not isinstance(data, dict):
+            return
+        dead = data.get("dead_providers") or {}
+        now = time.time()
+        for provider, until_ts in dead.items():
+            try:
+                until_ts = float(until_ts)
+            except (TypeError, ValueError):
+                continue
+            if until_ts > now:
+                # Кэш «мёртвых» хранится в time.monotonic; файл — в wall-clock.
+                # Конвертируем: монопольный сдвиг ≈ (time.monotonic - time.time).
+                # Надёжнее пересчитать TTL от текущего момента: провайдер
+                # остаётся мёртвым до истечения исходного TTL.
+                ttl_left_s = until_ts - now
+                self._provider_dead_until[provider] = time.monotonic() + ttl_left_s
+        if dead:
+            self.get_logger().info(
+                f"💾 [issue 1229] Восстановлен кэш мёртвых провайдеров из "
+                f"{path}: {dead}"
+            )
+
+    def _effective_provider(self) -> str | None:
+        """Фактический провайдер TTS: первый «живой» в цепочке (issue #1229).
+
+        Цепочка minimax → yandex → silero; провайдеры в кэше «мёртвых»
+        (квота/сеть) пропускаются. Если все мёртвы — последний (silero).
+        """
+        chain = getattr(self, "provider_chain", None)
+        if not chain:
+            chain = TTSNode._chain_from_provider(
+                getattr(self, "provider", "minimax")
+            )
+        try:
+            from .tts_voice_registry import effective_provider as _effective
+        except Exception:  # noqa: BLE001 — registry недоступен
+            return chain[0] if chain else None
+        return _effective(chain, self._provider_is_dead)
+
+    def _persist_provider_state(self, payload: dict) -> None:
+        """Записать состояние эффективного провайдера в файл (best-effort)."""
+        path = getattr(self, "provider_state_file", "") or ""
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False)
+        except OSError as exc:  # noqa: BLE001 — файл не критичен для TTS
+            self.get_logger().debug(
+                f"⚠️ [issue 1229] Не удалось записать provider_state "
+                f"{path}: {exc}"
+            )
+
+    def _publish_provider_state(
+        self,
+        reason: str,
+        provider: str | None = None,
+        voice: str | None = None,
+    ) -> None:
+        """Опубликовать фактического провайдера TTS (issue #1229).
+
+        Args:
+            reason: "startup" | "provider_dead" | "synthesis_ok" — для логов.
+            provider: фактический провайдер; None → вычислить самим.
+            voice: фактически использованный голос (для synthesis_ok).
+
+        Публикует JSON ``{"provider": str, "voice": str, "default_voice": str,
+        "reason": str, "ts": float}`` в /voice/tts/provider_state и пишет
+        персистентный файл (dead_providers для восстановления кэша).
+        """
+        pub = getattr(self, "provider_state_pub", None)
+        if pub is None:
+            return  # тестовый stub без топика
+        eff = provider or self._effective_provider()
+        if not eff:
+            return
+        from .tts_voice_registry import default_voice_for as _default_voice
+
+        default_voice = _default_voice(eff)
+        used_voice = voice or default_voice
+        payload = {
+            "provider": eff,
+            "voice": used_voice,
+            "default_voice": default_voice,
+            "reason": reason,
+            "ts": time.time(),
+        }
+        try:
+            msg = String()
+            msg.data = json.dumps(payload, ensure_ascii=False)
+            pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001 — best-effort диагностика
+            self.get_logger().warn(
+                f"⚠️ [issue 1229] Не удалось опубликовать provider_state: {exc}"
+            )
+        self.get_logger().info(
+            f"🎙️ [issue 1229] TTS provider_state → '{eff}' "
+            f"(voice: {used_voice}, reason: {reason})"
+        )
+        # Персистим кэш «мёртвых» (wall-clock), чтобы рестарт не сбрасывал
+        # знание о недоступном провайдере.
+        dead_payload = {}
+        dead_until = getattr(self, "_provider_dead_until", {})
+        now_wall = time.time()
+        for prov, until_mono in dead_until.items():
+            remaining = until_mono - time.monotonic()
+            if remaining > 0:
+                dead_payload[prov] = now_wall + remaining
+        self._persist_provider_state(
+            {"provider": eff, "dead_providers": dead_payload}
+        )
 
     def _synthesize_and_play(
         self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None, speech_id: str = None,
@@ -1651,6 +1823,7 @@ class TTSNode(Node):
             sample_rate = 16000  # Yandex возвращает 16kHz
             result = {}
             used_provider = None
+            used_voice = None  # issue #1229 — фактический голос (для provider_state)
             # getattr-fallback: тестовые стабы (bare ``_Stub``) не несут
             # ``provider_chain``/``_effective_provider_chain`` — выводим
             # цепочку из ``provider`` (см. ``_chain_from_provider``).
@@ -1702,6 +1875,7 @@ class TTSNode(Node):
                         audio_np = result["audio_np"]
                         sample_rate = result["sample_rate"]
                         used_provider = "minimax"
+                        used_voice = _mm_voice
                         self.get_logger().info(
                             f"✅ MiniMax T2A v2 OK: {len(audio_np)} samples @ {sample_rate} Hz "
                             f"(model={self.minimax_model}, voice={_mm_voice}, voice_used={_mm_voice})"
@@ -1763,6 +1937,7 @@ class TTSNode(Node):
                         audio_np = self._synthesize_yandex(text, ssml_attributes, voice=_yandex_voice)
                         sample_rate = 22050  # Yandex обычно возвращает 22050 Hz или 48000 Hz
                         used_provider = "yandex"
+                        used_voice = _yandex_voice
                         _yandex_succeeded = True
                     except Exception as e:
                         mark_dead = getattr(self, "_mark_provider_dead", None)
@@ -1883,6 +2058,8 @@ class TTSNode(Node):
                 try:
                     audio_np = self._synthesize_silero(text, ssml_attributes, voice=_silero_voice)
                     _silero_succeeded = True
+                    used_provider = "silero"
+                    used_voice = _silero_voice
                 finally:
                     if is_metrics_enabled():
                         record_tts_synthesize(
@@ -1909,6 +2086,17 @@ class TTSNode(Node):
             if not (used_provider == "minimax" and result.get("already_published", False)):
                 topic_audio = self._prepare_audio_for_topic(audio_np, sample_rate)
                 self._publish_audio(topic_audio)
+
+            # Issue #1229 — после успешного синтеза публикуем фактического
+            # провайдера и голос: dialogue_node/mcp_server обновят контекст
+            # [TTS] и валидацию (LLM увидит голоса РЕАЛЬНОГО провайдера).
+            if used_provider:
+                publish = getattr(self, "_publish_provider_state", None)
+                if publish is not None:
+                    try:
+                        publish("synthesis_ok", provider=used_provider, voice=used_voice)
+                    except Exception:  # noqa: BLE001 — диагностика не должна падать
+                        pass
 
             # Capture raw duration BEFORE resample/chipmunk for #949.
             # This is the actual synthesis duration (pre-effects) so

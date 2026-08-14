@@ -197,3 +197,81 @@ def test_voice_forwarded_via_kwargs_not_positional() -> None:
     node._synthesize_and_play.assert_called_once()
     _, kwargs = node._synthesize_and_play.call_args
     assert kwargs.get("voice") == "zahar"
+
+
+# ── Issue #1229 — provider_state publishing ───────────────────────────────────
+
+
+def _node_with_provider_state() -> _Bare:
+    """``_playback_node`` + provider_state_pub (issue #1229 publish path)."""
+    node = _playback_node()
+    node.provider_state_pub = MagicMock()
+    node.provider_state_file = ""  # без персистентного файла
+    node.provider_chain = ["minimax", "yandex", "silero"]
+    node._provider_is_dead = lambda provider: False
+    node._provider_dead_until = {}
+    # _Bare не наследует TTSNode — привязываем метод publish явно, чтобы
+    # getattr(self, "_publish_provider_state") в _synthesize_and_play сработал.
+    node._publish_provider_state = TTSNode._publish_provider_state.__get__(
+        node, type(node)
+    )
+    return node
+
+
+def test_provider_state_published_after_yandex_synthesis() -> None:
+    """После успешного синтеза yandex публикуется фактический провайдер.
+
+    Issue #1229: tts_node — единственный, кто знает фактического провайдера
+    после фолбека; publish позволяет dialogue_node/mcp_server обновить
+    LLM-контекст [TTS] и валидацию голосов.
+    """
+    node = _node_with_provider_state()
+    node.provider = "yandex"
+    node.provider_chain = ["yandex", "silero"]
+    node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+    _run_with_voice(node, voice="zahar")
+    assert node.provider_state_pub.publish.call_count >= 1
+    last_payload = node.provider_state_pub.publish.call_args_list[-1][0][0].data
+    import json as _json
+
+    payload = _json.loads(last_payload)
+    assert payload["provider"] == "yandex"
+    assert payload["voice"] == "zahar"
+    assert payload["default_voice"] == "anton"
+    assert payload["reason"] == "synthesis_ok"
+
+
+def test_provider_state_published_after_minimax_synthesis() -> None:
+    node = _node_with_provider_state()
+    node.provider = "minimax"
+    _run_with_voice(node, voice="female-shaonv")
+    import json as _json
+
+    payload = _json.loads(
+        node.provider_state_pub.publish.call_args_list[-1][0][0].data
+    )
+    assert payload["provider"] == "minimax"
+    assert payload["voice"] == "female-shaonv"
+    assert payload["reason"] == "synthesis_ok"
+
+
+def test_provider_state_without_pub_is_noop() -> None:
+    """Stub без provider_state_pub (старые тесты) — publish не падает."""
+    node = _playback_node()
+    _run_with_voice(node, voice=None)
+    # Никаких исключений — _publish_provider_state вернулся на getattr-guard.
+
+
+def test_effective_provider_skips_dead() -> None:
+    """_effective_provider возвращает yandex, когда minimax в кэше мёртвых."""
+    node = _node_with_provider_state()
+    node.provider = "minimax"
+    node.provider_chain = ["minimax", "yandex", "silero"]
+    node._provider_is_dead = lambda p: p == "minimax"
+    assert TTSNode._effective_provider.__get__(node, type(node))() == "yandex"
+
+
+def test_effective_provider_first_when_all_alive() -> None:
+    node = _node_with_provider_state()
+    node.provider = "minimax"
+    assert TTSNode._effective_provider.__get__(node, type(node))() == "minimax"

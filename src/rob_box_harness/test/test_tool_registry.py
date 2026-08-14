@@ -1,13 +1,13 @@
 """Tests for the harness-side ``ToolRegistry``.
 
 The registry is a **manifest-only** ToolProvider — it owns the
-``ToolSpec`` for each of the 34 tools that ``dialogue_node`` exposes
-(29 flat + 5 skill sub-agents). The actual handlers are registered
+``ToolSpec`` for each of the 37 tools that ``dialogue_node`` exposes
+(32 flat + 5 skill sub-agents). The actual handlers are registered
 separately by the ``ROSMCPToolProvider`` which bridges ROS2 topics,
 so the registry stays ROS2-free and unit-testable.
 
 Coverage:
-* All 34 tools pre-registered with non-empty descriptions
+* All 37 tools pre-registered with non-empty descriptions
 * list_tools() returns tuple of ToolSpec
 * ToolSpec names are unique (no duplicates)
 * get(name) / get_handler(name) work
@@ -47,7 +47,6 @@ FLAT_TOOL_NAMES: tuple[str, ...] = (
     "delete_waypoint",
     "clear_waypoints",
     "get_current_pose",
-    "voice_settings",
     "search_samples",
     "execute_music_code",
     "stop_music",
@@ -100,8 +99,10 @@ EXPECTED_TOOL_NAMES: frozenset[str] = frozenset(FLAT_TOOL_NAMES) | frozenset(
 def test_default_registry_contains_all_known_tools() -> None:
     """The default ToolRegistry must pre-register every known tool.
 
-    Bumped to 36 over time (was 34): estimate_tts_duration added in #949,
-    register_speaker added when fixing #1101 tool-catalog wiring. The test
+    Bumped to 37 over time (was 34): estimate_tts_duration added in #949,
+    register_speaker added when fixing #1101 tool-catalog wiring,
+    voice_settings removed in #1229 (LLM must not call it — set_voice +
+    speak_text(voice=) cover the voice-selection path). The test
     asserts membership against ``EXPECTED_TOOL_NAMES`` so missing tools
     (the original bug) are caught with a clear diff.
     """

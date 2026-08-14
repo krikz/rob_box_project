@@ -336,3 +336,40 @@ def test_music_fallback_subscription_survives_missing_qos_profile(monkeypatch):
         "Не удалось подписаться" in message
         for message in server.get_logger().warning_messages
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #1229 — /voice/tts/provider_state (фактический провайдер TTS)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_tts_provider_state_updates_actual_provider(monkeypatch):
+    """tts_node публикует фактического провайдера после фолбека → mcp_server
+    запоминает его для валидации голосов в speak_text/set_voice."""
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server.actual_tts_provider = None
+
+    msg = module.String()
+    msg.data = '{"provider": "yandex", "voice": "anton", "reason": "provider_dead"}'
+    module.MCPServer._on_tts_provider_state(server, msg)
+
+    assert server.actual_tts_provider == "yandex"
+
+
+@pytest.mark.unit
+def test_tts_provider_state_ignores_empty_payload(monkeypatch):
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server.actual_tts_provider = None
+
+    msg = module.String()
+    msg.data = "not-json"
+    module.MCPServer._on_tts_provider_state(server, msg)
+    assert server.actual_tts_provider is None
+
+    msg2 = module.String()
+    msg2.data = ""
+    module.MCPServer._on_tts_provider_state(server, msg2)
+    assert server.actual_tts_provider is None

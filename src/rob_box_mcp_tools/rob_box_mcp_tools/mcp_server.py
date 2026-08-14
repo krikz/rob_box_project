@@ -173,6 +173,23 @@ class MCPServer(Node):
         except ImportError:
             self.get_logger().warning("⚠️ PerceptionEvent не найден, мониторинг контекста отключен")
 
+        # Issue #1229 — фактический провайдер TTS (после фолбека) от tts_node.
+        # tts_node публикует JSON {"provider": str, "voice": str, ...} после
+        # старта/фолбека/синтеза. SpeakTextTool/SetVoiceTool валидируют голоса
+        # по РЕАЛЬНОМУ провайдеру (а не номинальному tts_provider из YAML):
+        # иначе LLM выбирает minimax-голоса, которых нет у yandex после
+        # фолбека, и слышит один и тот же дефолтный голос.
+        self.actual_tts_provider: str | None = None
+        try:
+            self._provider_state_sub = self.create_subscription(
+                String, "/voice/tts/provider_state", self._on_tts_provider_state, 10
+            )
+            self.get_logger().info("🎙️ Подписан на /voice/tts/provider_state (issue #1229)")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ Не удалось подписаться на /voice/tts/provider_state: {exc}"
+            )
+
         # Таймер для периодической публикации списка инструментов
         self.tools_timer = self.create_timer(10.0, self.publish_tools)
 
@@ -258,6 +275,27 @@ class MCPServer(Node):
     # ------------------------------------------------------------------
     # Music cleanup hooks — safety-net (issue #935)
     # ------------------------------------------------------------------
+    def _on_tts_provider_state(self, msg: "String") -> None:
+        """Issue #1229 — запомнить фактического провайдера TTS от tts_node.
+
+        tts_node публикует JSON {"provider": str, "voice": str, ...} после
+        старта/фолбека/синтеза. SpeakTextTool/SetVoiceTool читают
+        ``self.actual_tts_provider`` через ``node.actual_tts_provider`` и
+        валидируют голоса по РЕАЛЬНОМУ провайдеру (Q4/Q6).
+        """
+        try:
+            payload = json.loads(msg.data) if msg.data else {}
+        except (TypeError, ValueError):
+            return
+        provider = payload.get("provider") if isinstance(payload, dict) else None
+        if not provider:
+            return
+        self.actual_tts_provider = str(provider)
+        self.get_logger().info(
+            f"🎙️ [issue 1229] actual TTS provider → '{self.actual_tts_provider}' "
+            f"(reason: {payload.get('reason')})"
+        )
+
     def _on_dj_mode(self, msg: "String") -> None:
         """Track DJ-mode state so the watchdog doesn't kill DJ sets.
 
