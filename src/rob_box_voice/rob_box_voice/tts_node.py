@@ -122,10 +122,15 @@ except ImportError:  # pragma: no cover — only triggered if rob_box_llm not bu
 # Issue #1160 — Prometheus metrics (этап 1 observability).
 # ``prometheus_client`` — optional dep; если её нет, всё превращается в
 # no-op и старт сервера тихо возвращает ``False``.
+# Issue #1234 — OpenTelemetry traces (этап 2): init_tracing вызывается в
+# __init__ ДО создания MiniMax-провайдера (его httpx-клиент должен попасть
+# под авто-инструментацию); ``start_span_handle`` — для span ``tts.synthesize``.
 from rob_box_voice.observability import (
+    init_tracing,
     is_metrics_enabled,
     record_tts_synthesize,
     start_metrics_server,
+    start_span_handle,
 )
 
 
@@ -368,6 +373,12 @@ class TTSNode(Node):
 
     def __init__(self):
         super().__init__("tts_node")
+
+        # Issue #1234 — OpenTelemetry traces (этап 2). Вызываем ДО создания
+        # провайдеров (MiniMax provider открывает httpx-клиент при первом
+        # синтезе) — авто-инструментация httpx должна быть включена раньше.
+        # Если opentelemetry-пакетов нет — no-op (см. observability.tracing).
+        init_tracing("tts_node")
 
         # Параметры
         # yandex (primary) | silero (fallback) | minimax (HTTP, opt-in)
@@ -1812,6 +1823,19 @@ class TTSNode(Node):
         if self.normalize_text:
             text = normalize_for_tts(text)
 
+        # Issue #1234 — OpenTelemetry span ``tts.synthesize`` (этап 2).
+        # Открываем ДО try и закрываем в finally: покрывает всю цепочку
+        # синтеза (minimax → yandex → silero) + fallback. Атрибуты provider/
+        # fallback/duration проставляем в finally (provider известен только
+        # после цепочки). ``start_span_handle`` — no-op без OTel.
+        _tts_trace_start = time.monotonic()
+        _tts_trace = start_span_handle(
+            "tts.synthesize",
+            {
+                "model": getattr(self, "minimax_model", ""),
+                "voice": getattr(self, "minimax_voice", ""),
+            },
+        )
         try:
             # Issue #1083: цепочка приоритетов TTS — minimax → yandex → silero.
             # Раньше при provider=minimax ошибка MiniMax (в т.ч. 2056 Token
@@ -2323,6 +2347,21 @@ class TTSNode(Node):
             # Очищаем processing_dialogue_id при ошибке
             if dialogue_id and self.processing_dialogue_id == dialogue_id:
                 self.processing_dialogue_id = None
+
+        finally:
+            # Issue #1234 — закрываем span ``tts.synthesize``: проставляем
+            # фактического провайдера, fallback-флаг и длительность. Переменные
+            # ``used_provider``/``provider_chain`` живут в try — читаем через
+            # locals(), т.к. при раннем raise их может не быть.
+            _used_provider = locals().get("used_provider") or "none"
+            _chain = locals().get("provider_chain") or []
+            _primary = _chain[0] if _chain else getattr(self, "provider", "minimax")
+            _tts_trace.set_attribute("provider", _used_provider)
+            _tts_trace.set_attribute("fallback", _used_provider != _primary)
+            _tts_trace.set_attribute(
+                "duration_s", time.monotonic() - _tts_trace_start
+            )
+            _tts_trace.close()
 
     def _synthesize_silero(
         self, text: str, ssml_attributes: dict | None = None, voice: str | None = None

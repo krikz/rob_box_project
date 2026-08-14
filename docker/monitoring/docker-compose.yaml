@@ -72,9 +72,49 @@ services:
     depends_on:
       - prometheus
       - loki
+      - tempo
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # Issue #1234, этап 2 — OpenTelemetry Collector: приём OTLP-трейсов от
+  # voice-нод (dialogue/tts/stt) и экспорт в Tempo. Слушает 4317 (gRPC) и
+  # 4318 (HTTP) на host-сети; voice-ноды шлют на OTEL_EXPORTER_OTLP_ENDPOINT
+  # (default http://10.1.1.249:4317).
+  otel-collector:
+    image: otel/opentelemetry-collector:0.105.0
+    container_name: otel-collector
+    network_mode: host
+    volumes:
+      - ./config/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    command:
+      - '--config=/etc/otelcol/config.yaml'
+    restart: unless-stopped
+    healthcheck:
+      # Дистрибутив collector'а — distroless (нет wget/curl/shell); используем
+      # собственный validate-режим бинарника для проверки конфига/живости.
+      test: ["CMD", "/otelcol", "validate", "--config=/etc/otelcol/config.yaml"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # Issue #1234, этап 2 — Tempo: хранилище трейсов (retention 24h).
+  # HTTP API :3200 (datasource для Grafana); OTLP gRPC/HTTP :4321/:4322
+  # (приём от otel-collector; 4317 занят collector'ом на host-сети).
+  tempo:
+    image: grafana/tempo:2.6.0
+    container_name: tempo
+    network_mode: host
+    volumes:
+      - ./config/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    command: ['-config.file=/etc/tempo.yaml']
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3200/ready || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -83,3 +123,4 @@ volumes:
   prometheus-data:
   loki-data:
   grafana-data:
+  tempo-data:
