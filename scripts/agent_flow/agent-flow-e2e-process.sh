@@ -1303,8 +1303,8 @@ while IFS=$'\t' read -r number title labels body; do
         --json number --jq 'if length>0 then .[0].number else "" end' 2>/dev/null || echo "")"
 
     # Получаем labels/title PR для detect_pr_kind (lint vs functional).
-    pr_meta="$(gh pr view "$pr_number" --repo "$GH_REPO" --json title,labels \
-        --jq '{title: .title, labels: ([.labels[].name] | join(","))}' 2>/dev/null || echo '{}')"
+    pr_meta="$(gh pr view "$pr_number" --repo "$GH_REPO" --json title,labels,deletions \
+        --jq '{title: .title, labels: ([.labels[].name] | join(",")), deletions: .deletions}' 2>/dev/null || echo '{}')"
     pr_title="$(printf '%s' "$pr_meta" | python3 -c 'import json,sys
 try:
     print(json.load(sys.stdin).get("title",""))
@@ -1313,6 +1313,12 @@ except Exception: pass' 2>/dev/null || true)"
 try:
     print((json.load(sys.stdin).get("labels","") or "").lower())
 except Exception: pass' 2>/dev/null || true)"
+    # Ретро 14.08 t_7d6b4b65: deletions PR — для аддитивного escape-hatch
+    # в merged-branch guard (del ≤ 20 = аддитивный, как в merge-gate).
+    pr_deletions="$(printf '%s' "$pr_meta" | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("deletions", 0) or 0)
+except Exception: print(0)' 2>/dev/null || echo 0)"
     pr_kind="$(detect_pr_kind "${pr_labels_csv:-}" "${pr_title:-}")"
 
     # --- lint-ветка (ретро t_d0151eb3): e2e не нужен -----------------
@@ -1393,11 +1399,21 @@ EOF
         _ep_prev_merged="$(gh pr list --repo "$GH_REPO" --state merged --head "$branch" \
             --json number --jq '.[0].number // ""' 2>/dev/null || true)"
         if [ -n "$_ep_prev_merged" ] && [ "$_ep_prev_merged" != "$pr_number" ]; then
+            # Ретро 14.08 t_7d6b4b65 (escape-hatch): аддитивные функциональные
+            # фиксы на влитой ветке (PR #1247: del=8, ветка уже в #1218) —
+            # diff vs develop НЕ удаляет влитые фиксы → НЕ блокируем, льём в
+            # round (e2e протестирует НОВЫЕ фиксы). Совпадает с правилом
+            # merge-gate stale_branch_scan_all (del ≤ 20 = аддитивный, ретро
+            # 13.08 t_a3f170fe). Блокируем только регрессионные (del > 20).
+            if [ "${pr_deletions:-0}" -le 20 ] 2>/dev/null; then
+                log "issue #${number}: ветка ${branch} влита через PR #${_ep_prev_merged}, НО PR #${pr_number} аддитивный (del=${pr_deletions:-0}) — льём в round (escape-hatch ретро 14.08 t_7d6b4b65)"
+            else
             log "issue #${number}: 🛑 ветка ${branch} уже влита через PR #${_ep_prev_merged}, PR #${pr_number} — НЕ льём в round (ретро 14.08 t_28afb585)"
             if [ "$DRY_RUN" != "true" ]; then
                 gh pr edit "$pr_number" --repo "$GH_REPO" --remove-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
             fi
             skipped=$((skipped+1)); continue
+            fi
         fi
     fi
     log "issue #${number}: merging ${branch} directly into ${ROUND_BRANCH}"
