@@ -85,19 +85,26 @@ else
 fi
 SCRIPT_DIR="$REPO_DIR/scripts/agent_flow"
 
-# Канонические пути (все должны стать hardlink-ами на одну и ту же inode)
-TARGET_DIRS=(
-    "/home/builder/.hermes/profiles/agent-flow/scripts"
-    "/home/builder/.hermes/profiles/architect/scripts"
-    "/home/builder/.hermes/profiles/devops/scripts"
-    "/home/builder/.hermes/scripts"
-)
+# Канонические пути (все должны стать hardlink-ами на одну и ту же inode).
+# Переопределяются INSTALL_TARGET_DIRS (colon-separated) для тестов и
+# нестандартных хостов (см. tests/test_drift_detect_branch_active.sh).
+if [ -n "${INSTALL_TARGET_DIRS:-}" ]; then
+    IFS=':' read -r -a TARGET_DIRS <<< "$INSTALL_TARGET_DIRS"
+else
+    TARGET_DIRS=(
+        "/home/builder/.hermes/profiles/agent-flow/scripts"
+        "/home/builder/.hermes/profiles/architect/scripts"
+        "/home/builder/.hermes/profiles/devops/scripts"
+        "/home/builder/.hermes/scripts"
+    )
+fi
 
 # ~/.hermes/scripts/ проходит через guard в
 # hermes-agent/cron/scheduler.py::_validate_script_path.
 # Любой symlink наружу этой директории будет отклонён, поэтому
 # для HERMES_SCRIPTS_DIR симлинки ЗАПРЕЩЕНЫ (см. ретро 11.08 t_a6a236e0d9f0470e).
-HERMES_SCRIPTS_DIR="/home/builder/.hermes/scripts"
+# Переопределяется для тестов (fixture-директория вместо реального ~/.hermes).
+HERMES_SCRIPTS_DIR="${HERMES_SCRIPTS_DIR:-/home/builder/.hermes/scripts}"
 
 run() {
     if $DRY_RUN; then
