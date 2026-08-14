@@ -433,22 +433,17 @@ jobs:
             git config user.name "Rob Box CI"
             git add "$VERSIONS_FILE"
             if ! git diff --cached --quiet; then
-              # 🔴 РЕВЕРТ #1139 (13.08): коммитим .image-versions ПРЯМО в текущую
-              # ветку (как было до #1139). Отдельная ветка ci/image-versions
-              # ломала деплой: DevOps Agent пустыми коммитами «ci: trigger PR
-              # checks» перезаписывал ветку, SHA-теги терялись, deploy тянул
-              # старые образы → робот получал старый код (ретро 13.08).
-              CURRENT_BRANCH="$(git branch --show-current)"
-              git commit -m "ci: vision SHA tags → ${NEW_TAG} [skip ci]"
-              # Retry push (гонка: Main и Vision параллельно коммитят в develop)
-              for i in 1 2 3 4 5; do
-                git pull --rebase origin "$CURRENT_BRANCH" >/dev/null 2>&1 || true
-                if git push origin "HEAD:${CURRENT_BRANCH}" >/dev/null 2>&1; then
-                  echo "✅ Committed .image-versions: all vision tags → ${NEW_TAG} (branch ${CURRENT_BRANCH})"
-                  break
-                fi
-                sleep 5
-              done
+              # ✅ РЕТРО #1139 v2 (13.08, t_bd9b7713): .image-versions коммитим
+              # в ОТДЕЛЬНУЮ per-service ветку ci/image-versions-vision — develop
+              # не засоряется 'ci: vision SHA tags' коммитами, гонка main/vision
+              # исключена (у каждого сервиса своя ветка). Ветка базируется на
+              # origin-типе и НЕ сбрасывается от develop → теги накапливаются
+              # и не теряются (в отличие от v1 #1139, где checkout -B от
+              # develop сбрасывал ветку и deploy тянул старые образы).
+              bash scripts/ci/commit-image-versions.sh \
+                "ci/image-versions-vision" \
+                "ci: vision SHA tags → ${NEW_TAG} [skip ci]" \
+                "$VERSIONS_FILE"
             fi
           else
             echo "⚠️  $VERSIONS_FILE not found"
