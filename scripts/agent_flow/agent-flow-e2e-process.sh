@@ -1675,6 +1675,45 @@ for t in data:
         if ! wait_workflow "$DEPLOY_WORKFLOW" "$ROUND_BRANCH" "$E2E_DEPLOY_TIMEOUT" "deploy" "$d_epoch"; then
             gh issue comment "$number" --repo "$GH_REPO" --body \
                 "agent-flow: ❌ deploy failed on ${ROUND_BRANCH} — e2e skipped. See https://github.com/${GH_REPO}/actions" >/dev/null 2>&1 || true
+            # Ретро 14.08 (t_d01fe536): deploy fail — НЕ молча errored. Раньше тик
+            # просто комментил и errored++, recovery-карточки не было, re-round не
+            # создавался (counter не инкрементился) — issue #1229 закрылся БЕЗ e2e.
+            # Теперь: создаём recovery-карточку devops'у на re-deploy round-ветки
+            # (или re-round). Идемпотентно по round-ветке в title (любой статус).
+            _deploy_rec_title="🔧 re-deploy ${ROUND_BRANCH} — deploy failed (issue #${number})"
+            _deploy_rec_exists="$(hermes kanban --board "$KANBAN_BOARD" list --json 2>/dev/null | python3 -c "
+import json,sys
+try:
+    data = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(0)
+for t in data:
+    if t.get('title','').startswith('🔧 re-deploy ${ROUND_BRANCH}'):
+        print(t['id'], t.get('status',''))
+        break
+" 2>/dev/null | head -1)"
+            _deploy_rec_id="${_deploy_rec_exists%% *}"
+            _deploy_rec_status="${_deploy_rec_exists#* }"
+            if [ -n "$_deploy_rec_id" ] && [ "$_deploy_rec_status" != "done" ] && [ "$_deploy_rec_status" != "archived" ]; then
+                log "issue #${number}: deploy recovery card ${_deploy_rec_id} already active (${_deploy_rec_status}) — skip"
+            else
+                _deploy_rec_body="## 🔧 re-deploy ${ROUND_BRANCH} — deploy failed (issue #${number})
+Deploy workflow (${DEPLOY_WORKFLOW}) упал на round-ветке — e2e не запущен.
+Run: https://github.com/${GH_REPO}/actions
+Задача: передеплой ${ROUND_BRANCH} (re-run '${DEPLOY_WORKFLOW}' с environment=test,
+registry_source=local) или создай re-round. После зелёного deploy следующий тик
+e2e-process повторит прогон (issue остаётся needs-e2e).
+Типовая причина (14.08 round-109): compose-конфликт voice-resources-init /
+vision_default на Pi — перед up добавлен 'docker rm -f voice-resources-init'."
+                hermes kanban --board "$KANBAN_BOARD" create \
+                    --assignee devops \
+                    --priority 90 \
+                    --max-runtime 1800 \
+                    --body "$_deploy_rec_body" \
+                    "$_deploy_rec_title" >/dev/null 2>&1 \
+                    && log "issue #${number}: deploy recovery card created (devops, re-deploy ${ROUND_BRANCH})" \
+                    || log "issue #${number}: WARNING deploy recovery card create failed (${ROUND_BRANCH})"
+            fi
             errored=$((errored+1)); continue
         fi
     fi

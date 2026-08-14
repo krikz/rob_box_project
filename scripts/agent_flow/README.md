@@ -70,6 +70,15 @@ bash <repo>/scripts/agent_flow/install.sh             # реальная рас�
 (`E2E_VERDICT PASS|FAIL` из атомарного харнесса), выставляет лейблы
 `e2e-done` / `e2e:rejected` / `e2e:infra-fail`, комментит карточку.
 
+**Deploy-fail → recovery-карточка (ретро 14.08 t_d01fe536):** при
+падении деплоя (compose-конфликт, робот недоступен и т.п.) процесс
+НЕ просто комментит `errored++` — он создаёт kanban-карточку
+`🔧 re-deploy <round> — deploy failed` (assignee=devops, priority 90).
+Идемпотентно по round-ветке в title: активная карточка → skip, done/
+archived → свежая ready-карточка. Урок: round-109 упал на
+`voice-resources-init` compose-конфликте, issue #1229 закрылся БЕЗ e2e
+(40 кейсов не гонялись), recovery не создавался.
+
 **Содержит контракт `## e2e` блока в issue** — что воркеры должны
 написать в body issue, чтобы процесс нашёл параметры теста (voice_text,
 voice, scenario_file, patterns, volume и т.д.). Подробности —

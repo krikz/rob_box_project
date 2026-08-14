@@ -339,11 +339,19 @@ jobs:
           echo "🚀 Starting Vision Pi containers..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+          # Ретро 14.08 t_d01fe536: одноразовый init-контейнер voice-resources-init
+          # (Exited) из прошлого деплоя блокирует compose up — «Conflict. The container
+          # name /voice-resources-init is already in use» + «network vision_default already
+          # exists» (deploy round-109 06:03Z упал на этом). Принудительно удаляем его и
+          # stale-сеть перед up; если сеть ещё используется — rm молча не сработает (|| true).
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             echo '🔧 retro t_d01fe536: cleanup stale one-shot init container'; \
+             docker rm -f voice-resources-init 2>/dev/null || true; \
+             docker network rm vision_default 2>/dev/null || true; \
              docker compose up -d --pull never"
 
       # ==================== MAIN PI DEPLOYMENT ====================
@@ -994,6 +1002,7 @@ jobs:
       # ==================== SUMMARY ====================
 
       - name: "Deployment Summary"
+        id: deploy_summary
         if: always() && !inputs.dry_run
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -1033,12 +1042,74 @@ jobs:
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "✅ DEPLOYMENT SUCCESSFUL"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "deploy_status=success" >> "$GITHUB_OUTPUT"
           else
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "❌ DEPLOYMENT COMPLETED WITH ISSUES"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "Check the logs above and created GitHub issue for details"
+            echo "deploy_status=issues" >> "$GITHUB_OUTPUT"
           fi
+
+      # ==================== ISSUE CREATION (retro 14.08 t_d01fe536) ====================
+      # Ретро 14.08 t_d01fe536: deploy round-109 упал на compose-конфликте
+      # voice-resources-init ('DEPLOYMENT COMPLETED WITH ISSUES', Critical: 0 /
+      # Failed Containers: 0) — issue НЕ создавался, потому что старый шаг
+      # «Analyze Results and Create Issue» выше отключён (if: false, плодил
+      # дубликаты) и срабатывал только на critical-findings из логов. Теперь
+      # ЛЮБОЙ 'DEPLOYMENT COMPLETED WITH ISSUES' → один issue на (branch, env, день),
+      # дедуп по маркеру в body. deploy-sweep пропускает такие issue (нет
+      # deploy-problem-сигнатуры) — они остаются для ручного триажа/карточки.
+
+      - name: "🚨 Create Deployment Issue (any issues)"
+        if: always() && !inputs.dry_run && steps.deploy_summary.outputs.deploy_status == 'issues'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🚨 Deployment completed with issues — creating GitHub issue..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          BRANCH="${{ github.ref_name }}"
+          ENV_NAME="${{ inputs.environment }}"
+          TS="${{ steps.setup.outputs.timestamp }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MARKER="deploy-fail:${BRANCH}:${ENV_NAME}:$(date -u +%Y-%m-%d)"
+
+          # Дедуп: открытый issue с тем же маркером уже есть → не плодим дубликат,
+          # только комментируем новый run (ретро 14.08: старый шаг был отключён
+          # именно из-за дубликатов).
+          EXISTING="$(gh issue list --repo "${{ github.repository }}" --label deployment --state open --limit 200 --json number,body 2>/dev/null | jq --arg m "$MARKER" '[.[] | select(.body | contains($m))][0].number // empty' 2>/dev/null || true)"
+          if [ -n "$EXISTING" ]; then
+            echo "✅ Issue #${EXISTING} already tracks ${BRANCH}/${ENV_NAME} today — skip create, comment run"
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body \
+              "Ещё один failing deploy run: $RUN_URL" >/dev/null 2>&1 || true
+            exit 0
+          fi
+
+          BODY_FILE="$(mktemp)"
+          printf '%s\n' \
+            '## 🚨 Deployment Completed With Issues' \
+            '' \
+            "<!-- deploy-signature: ${MARKER} -->" \
+            '' \
+            "**Branch:** \`${BRANCH}\`" \
+            "**Environment:** \`${ENV_NAME}\`" \
+            "**Timestamp:** ${TS}" \
+            "**Workflow Run:** ${RUN_URL}" \
+            '' \
+            'Deployment completed with issues (non-success status). See the workflow log for details.' \
+            > "$BODY_FILE"
+
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "🚨 Deploy issues on ${BRANCH} (${ENV_NAME}) — $(date -u +%Y-%m-%d)" \
+            --body-file "$BODY_FILE" \
+            --label deployment \
+            >/dev/null 2>&1 \
+            && echo "✅ Created deployment issue for ${BRANCH} (${ENV_NAME})" \
+            || echo "⚠️  Failed to create deployment issue (may already exist)"
+          rm -f "$BODY_FILE"
 
       - name: "Dry Run Summary"
         if: inputs.dry_run
