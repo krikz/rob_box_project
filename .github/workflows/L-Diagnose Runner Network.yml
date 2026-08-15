@@ -28,6 +28,11 @@ jobs:
           if ! command -v nmcli >/dev/null 2>&1; then
             sudo apt-get update -qq && sudo apt-get install -y network-manager || echo "WARN: network-manager install failed"
           fi
+          # NetworkManager мог только что установиться и ещё не запущен — поднимаем.
+          if command -v nmcli >/dev/null 2>&1; then
+            sudo systemctl start NetworkManager 2>/dev/null || sudo service network-manager start 2>/dev/null || true
+            sleep 2
+          fi
           command -v ip && command -v nmcli || echo "NOTE: ip/nmcli всё ещё недоступны"
 
       - name: "Сетевая диагностика"
@@ -77,10 +82,14 @@ jobs:
           echo "--- пробую ROS2 / ROS2HIVE коннекшены ---"
           for CONN in ROS2 ROS2HIVE; do
             echo ">>> nmcli connection up $CONN"
-            # nmcli connection up требует root на большинстве настроек NetworkManager
+            # nmcli connection up требует root на большинстве настроек NetworkManager.
+            # ВАЖНО: не даём set -e убить шаг при неудаче (ретро 15.08 t_e1bf9a80:
+            # OUT=$(nmcli ...) в assignment с -e обрывал workflow до вывода ошибки).
+            set +e
             OUT=$(sudo nmcli connection up "$CONN" 2>&1)
             RC=$?
-            echo "$OUT" | tail -2
+            set -e
+            echo "$OUT" | tail -5
             echo "RC=$RC"
             if [ $RC -eq 0 ]; then
               echo "✅ Подключился к $CONN"

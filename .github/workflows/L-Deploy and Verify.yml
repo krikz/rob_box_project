@@ -149,9 +149,17 @@ jobs:
             sudo apt-get update -qq && sudo apt-get install -y network-manager || echo "WARN: network-manager install failed"
           fi
           if command -v nmcli >/dev/null 2>&1; then
+            # NetworkManager мог только что установиться и ещё не запущен — поднимаем.
+            sudo systemctl start NetworkManager 2>/dev/null || sudo service network-manager start 2>/dev/null || true
+            sleep 2
             for CONN in ROS2 ROS2HIVE; do
               echo ">>> sudo nmcli connection up $CONN"
-              if sudo nmcli connection up "$CONN" >/dev/null 2>&1; then
+              set +e
+              OUT=$(sudo nmcli connection up "$CONN" 2>&1)
+              RC=$?
+              set -e
+              echo "$OUT" | tail -3
+              if [ $RC -eq 0 ]; then
                 echo "✅ Reconnected to $CONN"
                 break
               fi
