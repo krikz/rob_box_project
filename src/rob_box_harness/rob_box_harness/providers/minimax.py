@@ -443,15 +443,36 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
                         await queue.put(None)
 
                 task = asyncio.create_task(_runner())
-                while True:
-                    item = await queue.get()
-                    if item is None:
-                        break
-                    if isinstance(item, BaseException):
-                        raise item
-                    yield item
-                # Drain so we don't leak the background task.
-                await task
+                try:
+                    while True:
+                        item = await queue.get()
+                        if item is None:
+                            break
+                        if isinstance(item, BaseException):
+                            raise item
+                        yield item
+                finally:
+                    # 🔴 FIX (issue #1280): barge-in — consumer отменён
+                    # (CancelledError) или генератор закрыт (aclose).
+                    # Раньше _runner() НЕ отменялся вообще: фоновый task
+                    # продолжал тянуть чанки из inner_stream, HTTP-запрос
+                    # к провайдеру жил до конца генерации (трата квоты
+                    # на старую тему, «робот добивает старую тему»).
+                    # Теперь отменяем и дожидаемся runner, затем
+                    # принудительно закрываем inner_stream — соединение
+                    # рвётся сразу.
+                    if not task.done():
+                        task.cancel()
+                    try:
+                        await task
+                    except BaseException:
+                        pass
+                    aclose = getattr(inner_stream, "aclose", None)
+                    if aclose is not None:
+                        try:
+                            await aclose()
+                        except Exception:
+                            pass
                 self._reset_429_counter()
                 return
             except (RateLimitError, TimeoutError) as exc:
