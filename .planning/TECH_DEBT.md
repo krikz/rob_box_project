@@ -96,7 +96,7 @@
 |----|----------|------|----------|-------------|-------------|
 | SL-1 | docker/build/ — 8 полных копий репозитория для раннеров | docker/build/ | low | accept | CI/CD overhead; accept как компромисс простоты vs скорость |
 | SL-2 | Один Zenoh router = SPOF | docker/main/zenoh-router/ | medium | defer:M2 | Redundancy возможна; low priority для lab env |
-| SL-3 | LLM providers — только облако, offline fallback отключён | rob_box_voice/dialogue_node.py | medium | defer:M3 | Offline LLM (Ollama local) в планах для M3 |
+| SL-3 | LLM providers — только облако, offline fallback отключён | rob_box_voice/dialogue_node.py | medium | defer:M3 | Offline LLM (Ollama local) в планах для M3; план: `docs/plans/2026-08-15-offline-llm-m3.md` (issue #836) |
 
 ---
 
