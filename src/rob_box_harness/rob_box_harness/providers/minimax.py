@@ -320,6 +320,21 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         """Reset the consecutive-429 streak after a successful response."""
         self._consecutive_429s = 0
 
+    def reset_dialog_state(self) -> None:
+        """TASK-042 / issue #807 — reset per-dialog error counters.
+
+        Called when a new wake-word dialog starts so past 429 streaks from
+        the previous dialog don't cascade into the fresh dialog (the counter
+        would otherwise hit ``CONSECUTIVE_429_LIMIT`` on the first request
+        of the new dialog).
+        """
+        if self._consecutive_429s:
+            _log.info(
+                f"[llm_429_metric] provider=minimax reset_dialog_state "
+                f"consecutive={self._consecutive_429s} → 0"
+            )
+            self._consecutive_429s = 0
+
     # ---- capability introspection ----------------------------------------
 
     @property

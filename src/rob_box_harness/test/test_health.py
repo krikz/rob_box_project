@@ -93,6 +93,17 @@ class _FakeProvider:
         return ProviderCapabilities(text=True)
 
 
+class _ResettableFakeProvider(_FakeProvider):
+    """Fake provider that records ``reset_dialog_state`` calls."""
+
+    def __init__(self, name: str, fail: BaseException | None = None) -> None:
+        super().__init__(name, fail)
+        self.reset_calls = 0
+
+    def reset_dialog_state(self) -> None:
+        self.reset_calls += 1
+
+
 class _FakeClock:
     """Injectable clock for HealthCache TTL tests."""
 
@@ -332,7 +343,32 @@ async def test_premarked_unavailable_primary_not_called_at_all() -> None:
 
     assert response.content == "from-deepseek"
     assert primary.calls == 0  # dead provider never touched
-    assert fallback.calls == 1
+
+
+def test_reset_dialog_state_delegates_to_inner_providers() -> None:
+    """TASK-042: reset_dialog_state reaches every inner provider that has it."""
+    primary = _ResettableFakeProvider("minimax")
+    fallback = _FakeProvider("deepseek")  # no reset_dialog_state hook — skipped
+    wrapper = HealthAwareFallbackLLM([primary, fallback], cache=HealthCache())
+
+    wrapper.reset_dialog_state()
+
+    assert primary.reset_calls == 1
+    # Provider without the hook is skipped without error.
+
+
+def test_reset_dialog_state_survives_inner_exception() -> None:
+    """TASK-042: a throwing reset_dialog_state must not break the loop."""
+    primary = _ResettableFakeProvider("minimax")
+
+    def _boom() -> None:
+        raise RuntimeError("reset boom")
+
+    primary.reset_dialog_state = _boom  # type: ignore[method-assign]
+    wrapper = HealthAwareFallbackLLM([primary], cache=HealthCache())
+
+    # Must not raise — the reset is best-effort.
+    wrapper.reset_dialog_state()
 
 
 @pytest.mark.asyncio

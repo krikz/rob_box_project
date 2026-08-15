@@ -488,6 +488,25 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
     def capabilities_for(self, model: str | None) -> ProviderCapabilities:
         return self._providers[0].capabilities_for(model)
 
+    def reset_dialog_state(self) -> None:
+        """TASK-042 / issue #807 — reset per-dialog error counters.
+
+        Delegates to every inner provider so a fresh wake-word dialog never
+        inherits the previous dialog's error streaks (e.g. MiniMax
+        consecutive-429). Providers without the hook are skipped.
+        """
+        for provider in self._providers:
+            reset = getattr(provider, "reset_dialog_state", None)
+            if callable(reset):
+                try:
+                    reset()
+                except Exception as exc:  # noqa: BLE001 — reset must not break the dialog
+                    self._log.warning(
+                        "[health] reset_dialog_state failed for provider=%s (%r)",
+                        getattr(provider, "name", type(provider).__name__),
+                        exc,
+                    )
+
     # ---- chain construction ---------------------------------------------
 
     def _provider_name(self, provider: LLMProvider) -> str:

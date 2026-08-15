@@ -5,11 +5,12 @@ test_agent_loop.py — Unit-тесты агентского цикла DialogueN
 Не требует ROS2 — rclpy замокан в conftest.py.
 """
 
+import asyncio
 import json
 import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
 
@@ -344,6 +345,50 @@ class TestAgentLoopFinalResponse:
 # ─────────────────────────────────────────────────────────────────────────────
 #  Тесты retry при timeout
 # ─────────────────────────────────────────────────────────────────────────────
+
+class TestDialogStateReset:
+    """TASK-042 / issue #807 — per-dialog state reset on new wake word."""
+
+    def test_reset_dialog_state_clears_memory_and_llm(self):
+        """Новый диалог (was_idle) очищает историю scope и сбрасывает
+        ошибки провайдера; прошлые диалоги не засоряют контекст."""
+        n = object.__new__(DialogueNode)
+        n.get_logger = lambda: MagicMock()
+        # _memory с clear_turns — проверяем, что вызван для _DIALOG_SCOPE.
+        memory = MagicMock()
+        memory.clear_turns = AsyncMock(return_value=3)
+        n._memory = memory
+        # _llm с reset_dialog_state — проверяем, что вызван.
+        llm = MagicMock()
+        n._llm = llm
+
+        asyncio.run(n._reset_dialog_state())
+
+        memory.clear_turns.assert_awaited_once_with(DialogueNode._DIALOG_SCOPE)
+        llm.reset_dialog_state.assert_called_once_with()
+
+    def test_reset_dialog_state_memory_failure_nonfatal(self):
+        """Ошибка clear_turns не роняет диалог — логируем и продолжаем."""
+        n = object.__new__(DialogueNode)
+        n.get_logger = lambda: MagicMock()
+        memory = MagicMock()
+        memory.clear_turns = AsyncMock(side_effect=RuntimeError("db locked"))
+        n._memory = memory
+        n._llm = MagicMock()
+
+        # Не должно бросать.
+        asyncio.run(n._reset_dialog_state())
+
+    def test_reset_dialog_state_missing_hooks_nonfatal(self):
+        """Нет clear_turns / reset_dialog_state (стабы, старые провайдеры) —
+        reset просто пропускается."""
+        n = object.__new__(DialogueNode)
+        n.get_logger = lambda: MagicMock()
+        n._memory = MagicMock(spec=[])  # нет clear_turns
+        n._llm = MagicMock(spec=[])     # нет reset_dialog_state
+
+        asyncio.run(n._reset_dialog_state())  # не должно бросать
+
 
 class TestAgentLoopRetry:
 

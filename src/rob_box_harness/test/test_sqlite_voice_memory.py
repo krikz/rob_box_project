@@ -114,6 +114,26 @@ class TestTurnsCRUD:
         with pytest.raises(ValueError, match="positive"):
             _run(store.load_recent("s", limit=0))
 
+    def test_clear_turns_removes_scope_only(self) -> None:
+        """TASK-042: clear_turns wipes the dialog scope, leaves others intact."""
+        store = _make_store()
+        _run(store.init())
+        _run(store.append_turn("dialog", Turn(role="user", content="привет")))
+        _run(store.append_turn("dialog", Turn(role="assistant", content="здравствуй")))
+        _run(store.append_turn("other", Turn(role="user", content="keep")))
+        removed = _run(store.clear_turns("dialog"))
+        assert removed == 2
+        assert _run(store.load_recent("dialog")) == []
+        # Other scopes untouched.
+        assert len(_run(store.load_recent("other"))) == 1
+
+    def test_clear_turns_empty_scope_returns_zero(self) -> None:
+        store = _make_store()
+        _run(store.init())
+        assert _run(store.clear_turns("dialog")) == 0
+        # Second clear is idempotent.
+        assert _run(store.clear_turns("dialog")) == 0
+
 
 class TestFactsCRUD:
 

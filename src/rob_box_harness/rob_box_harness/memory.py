@@ -133,6 +133,20 @@ class MemoryStore(abc.ABC):
     async def append_turn(self, scope: str, turn: Turn) -> None:
         """Append ``turn`` to ``scope``. Idempotent on (role, content)."""
 
+    async def clear_turns(self, scope: str) -> int:
+        """Remove every stored turn for ``scope``.
+
+        Used to start a fresh dialog on each wake word (issue #807 / TASK-042):
+        without it, ``load_recent`` mixes turns from previous dialogs into the
+        new dialog's context, the LLM continues old topics and the input
+        token count grows dialog over dialog.
+
+        Returns the number of rows removed. Concrete stores override; the
+        default raises ``NotImplementedError`` so test doubles that never
+        call it keep working.
+        """
+        raise NotImplementedError("clear_turns is not implemented")
+
     @abc.abstractmethod
     async def save_fact(self, scope: str, fact: Fact) -> None:
         """Persist ``fact`` under ``scope``."""
@@ -299,6 +313,11 @@ class InMemoryStore(MemoryStore):
         """Append ``turn`` to ``scope``; oldest are dropped at the deque cap."""
         bucket = self._turns.setdefault(scope, deque(maxlen=self._max_recent))
         bucket.append(turn)
+
+    async def clear_turns(self, scope: str) -> int:
+        """Drop every turn stored under ``scope``; returns the count removed."""
+        bucket = self._turns.pop(scope, None)
+        return len(bucket) if bucket else 0
 
     async def save_fact(self, scope: str, fact: Fact) -> None:
         """Persist ``fact`` under ``scope``, replacing any same-key fact."""

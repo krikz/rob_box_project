@@ -354,6 +354,7 @@ class DialogueNode(Node):
             tools=self._build_tool_provider(),
             memory=self._memory,
             dsm=self._dsm,
+            user_id=self._DIALOG_SCOPE,
             history_trim_limit=int(self.get_parameter("history_max_turns").value),
             inactivity_timeout=float(self.get_parameter("dialogue_timeout").value),
             system_prompt=self._system_prompt,
@@ -1811,6 +1812,7 @@ class DialogueNode(Node):
                 user_input,
                 is_dj_auto=is_dj_auto,
                 is_babble_retry=is_babble_retry,
+                was_idle=was_idle,
                 raw_user_command=raw_user_command,
                 speaker_tag=speaker_tag,
                 speaker_duration_s=speaker_duration_s,
@@ -2057,12 +2059,16 @@ class DialogueNode(Node):
             )
             return None
 
+    #: Dialog scope used for conversation memory (matches DialogCore user_id).
+    _DIALOG_SCOPE: str = "default"
+
     async def _run_turn(
         self,
         user_input: str,
         *,
         is_dj_auto: bool = False,
         is_babble_retry: bool = False,
+        was_idle: bool = False,
         raw_user_command: str | None = None,
         speaker_tag: str | None = None,
         speaker_duration_s: float = 0.0,
@@ -2076,6 +2082,13 @@ class DialogueNode(Node):
         # synchronous DJ retry dispatched from inside this turn's
         # ``finally`` block does not race with the parent's flag reset.
         was_dj_auto = is_dj_auto
+        # 🔴 FIX (TASK-042 / issue #807): новый диалог из IDLE (wake word)
+        # начинает с ЧИСТОЙ истории — без этого ``load_recent`` подмешивает
+        # реплики прошлых диалогов в контекст, LLM продолжает старые темы
+        # («робот продолжает старую тему») и входные токены растут с каждым
+        # диалогом. Прошлые сессии остаются доступны через memory_context.
+        if was_idle and not is_dj_auto and not is_babble_retry:
+            await self._reset_dialog_state()
         # Issue #992 Bug D — reset the babble-retry budget only at the
         # TOP of a *user-initiated* turn. When ``is_babble_retry=True``
         # we are inside the LLM-triggered follow-up dispatched by
@@ -2474,6 +2487,43 @@ class DialogueNode(Node):
     )
 
 
+
+    async def _reset_dialog_state(self) -> None:
+        """TASK-042 / issue #807 — reset per-dialog LLM state on a new wake word.
+
+        * Clears conversation history (SQLite ``turns``) so the LLM context
+          for the new dialog never mixes in turns from previous dialogs.
+        * Resets provider error counters (MiniMax consecutive-429) so past
+          timeouts / rate-limits don't cascade into the fresh dialog.
+
+        Reset failures are non-fatal: we log and continue — memory must not
+        break the dialogue.
+        """
+        # 1. Clear conversation history for the dialog scope.
+        try:
+            memory = getattr(self, "_memory", None)
+            clear_turns: Any = getattr(memory, "clear_turns", None)
+            if callable(clear_turns):
+                removed = await clear_turns(self._DIALOG_SCOPE)
+                if removed:
+                    self.get_logger().info(
+                        f"🧹 [TASK-042] conversation history cleared at new "
+                        f"wake word ({removed} turns removed)"
+                    )
+        except Exception as exc:  # noqa: BLE001 — memory must not break dialogue
+            self.get_logger().warning(
+                f"⚠️ [TASK-042] clear_turns failed: {exc!r}"
+            )
+
+        # 2. Reset provider error counters (e.g. MiniMax consecutive-429).
+        try:
+            reset = getattr(self._llm, "reset_dialog_state", None)
+            if callable(reset):
+                reset()
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [TASK-042] reset_dialog_state failed: {exc!r}"
+            )
 
     # 🔴 FIX (live 06.08): «хватит диджеить/выключи музыку» — юзер просит
     # остановить музыку/DJ, а НЕ замолчать робота. Подстрока «хватит»

@@ -65,6 +65,27 @@ async def test_load_recent_rejects_zero_limit() -> None:
 
 
 @pytest.mark.asyncio
+async def test_clear_turns_removes_scope_only() -> None:
+    """TASK-042: clear_turns wipes the dialog scope, leaves others intact."""
+    store = InMemoryStore()
+    await store.append_turn("dialog", Turn(role="user", content="привет"))
+    await store.append_turn("dialog", Turn(role="assistant", content="здравствуй"))
+    await store.append_turn("other", Turn(role="user", content="keep"))
+    removed = await store.clear_turns("dialog")
+    assert removed == 2
+    assert await store.load_recent("dialog") == []
+    assert len(await store.load_recent("other")) == 1
+
+
+@pytest.mark.asyncio
+async def test_clear_turns_empty_scope_returns_zero() -> None:
+    """TASK-042: clearing an empty scope returns 0 and is idempotent."""
+    store = InMemoryStore()
+    assert await store.clear_turns("dialog") == 0
+    assert await store.clear_turns("dialog") == 0
+
+
+@pytest.mark.asyncio
 async def test_save_fact_is_idempotent() -> None:
     """Saving a fact with the same key replaces the prior one."""
     store = InMemoryStore()

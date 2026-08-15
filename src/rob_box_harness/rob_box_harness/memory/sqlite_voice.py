@@ -327,6 +327,22 @@ class SQLiteVoiceMemory(MemoryStore):
 
         return await self._run_sync(_append)
 
+    async def clear_turns(self, scope: str) -> int:
+        """Remove every stored turn for ``scope`` (issue #807 / TASK-042).
+
+        Called when a new wake-word dialog starts so the LLM context never
+        mixes turns from previous dialogs. Returns the number of rows removed.
+        """
+
+        def _clear(conn: sqlite3.Connection) -> int:
+            cursor = conn.execute(
+                "DELETE FROM turns WHERE scope = ?", (scope,)
+            )
+            conn.commit()
+            return cursor.rowcount
+
+        return await self._run_sync(_clear)
+
     async def save_fact(self, scope: str, fact: Fact) -> None:
         """Persist ``fact`` under ``scope``, replacing existing fact with the same key.
 

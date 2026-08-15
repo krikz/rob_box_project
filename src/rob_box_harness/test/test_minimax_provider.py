@@ -822,6 +822,21 @@ async def test_complete_resets_429_counter_on_success(
     assert call["n"] == 6
 
 
+def test_reset_dialog_state_resets_429_counter() -> None:
+    """TASK-042: reset_dialog_state clears the consecutive-429 streak so a
+    new wake-word dialog never inherits the previous dialog's rate-limit
+    cascade (the counter would otherwise hit CONSECUTIVE_429_LIMIT on the
+    first request of the fresh dialog)."""
+    p, _client = _make_minimax()
+    # Simulate a prior dialog that left a streak.
+    p._consecutive_429s = 2
+    p.reset_dialog_state()
+    assert p._consecutive_429s == 0
+    # Reset on a zero streak is a no-op.
+    p.reset_dialog_state()
+    assert p._consecutive_429s == 0
+
+
 @pytest.mark.asyncio
 async def test_stream_falls_back_after_three_consecutive_429s(
     monkeypatch: pytest.MonkeyPatch,
