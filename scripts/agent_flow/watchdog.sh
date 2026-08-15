@@ -93,7 +93,7 @@ fi
 # Python 3 (with sqlite3) without depending on the sqlite3 CLI.
 python3 - "$HERMES_HOME" "$KANBAN_BOARDS_DIR" "$HEARTBEAT_STALE_SECONDS" "$TELEGRAM_STUCK_MINUTES" "$PROVIDER_ACTIONS_FILE" \
     <<'PYEOF'
-import os, sys, glob, subprocess, time
+import os, sys, glob, subprocess, time, sqlite3
 from datetime import datetime
 
 hermes_home = sys.argv[1]
