@@ -205,7 +205,11 @@ def test_extract_relevant_log_line_ignores_known_main_warnings() -> None:
     assert deprecated_line is None
 
 
-def test_extract_relevant_log_line_prefers_real_supercollider_error() -> None:
+def test_extract_relevant_log_line_ignores_supercollider_g_new_startup_noise() -> None:
+    """Issue #778/#672/#840: Renardo sends /g_new before scsynth finished
+    allocating group IDs. Music stack comes up healthy afterwards, so the
+    deploy gate must not file a critical issue for this startup race.
+    """
     log_text = "\n".join(
         [
             "Zeroconf: failed to create client: Daemon not running",
@@ -215,7 +219,115 @@ def test_extract_relevant_log_line_prefers_real_supercollider_error() -> None:
 
     line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
 
-    assert line == "FAILURE IN SERVER /g_new negative node IDs are reserved"
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_minimax_2056_quota() -> None:
+    """Issue #1193: MiniMax Token Plan exhausted (error 2056) is an external
+    billing limit; TTS falls back to Yandex. Not a deployment failure.
+    """
+    log_text = (
+        "[tts_node-5] [ERROR] [1786776215.499241163] [tts_node]: "
+        "MiniMax auth error, NO retry: minimax API error 2056: "
+        "Token Plan usage limit reached: Upgrade your Token Plan or "
+        "purchase Credits for more usage."
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_python_exception_ignored() -> None:
+    """nav2 shutdown noise: interpreter closes stdout while a pipe reader
+    (`ros2 topic list | head`) already hung up — benign (round-117).
+    """
+    log_text = (
+        "Exception ignored in: <_io.TextIOWrapper name='<stdout>' mode='w' "
+        "encoding='utf-8'>"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_zenoh_responsefinal_warning() -> None:
+    """Stale zenoh reply to an already-timed-out query — benign (round-117)."""
+    log_text = (
+        "2026-08-15T06:42:47.152056Z  WARN rx-0 ThreadId(08) "
+        "zenoh::api::session: Received ResponseFinal for unknown Request: 0"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_telegram_echo_drop_warning() -> None:
+    """telegram_node boot: bot up but no chat bound yet — normal (round-117)."""
+    log_text = (
+        "[WARN] [1786776214.623560688] [telegram_node]: Dropping dialogue "
+        "echo, bot not ready / no active chat (app=True, loop=True, "
+        "chat_id=None, text_len=32)"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_tts_none_voice_warning() -> None:
+    """Issue #1219: voice 'None' → default voice fallback — the chain works."""
+    log_text = (
+        "[tts_node-5] [WARN] [1786776214.627448550] [tts_node]: "
+        "⚠️ [issue 1219] Голос 'None' недоступен у MiniMax — "
+        "использую дефолтный 'male-qn-qingse'"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_rtabmap_ini_autocreate_warning() -> None:
+    """rtabmap ini auto-created on shutdown — benign (round-117)."""
+    log_text = (
+        '[rtabmap-2] [ WARN] (2026-08-15 06:44:25.435) Parameters.cpp:1325::'
+        'readINIImpl() Section "Core" in /config/rtabmap/rtabmap.ini doesn\'t '
+        'exist... Ignore this warning if the ini file does not exist yet. The '
+        "ini file will be automatically created when rtabmap will close."
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_perception_uart_warning() -> None:
+    """Optional UART IMU not attached — expected in the lab rig (round-117)."""
+    log_text = (
+        "[perception_bridge-1] [WARN] [1786776266.903651194] "
+        "[perception_bridge]: Sensor UART /dev/ttyAMA0 not available; "
+        "reads will no-op until hardware is attached."
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_nav2_scouted_peer_warning() -> None:
+    """zenoh startup handshake: peer scouted but not yet connectable — noise."""
+    log_text = (
+        "2026-08-15T06:44:31.378308Z  WARN net-0 ThreadId(03) "
+        "zenoh::net::runtime::orchestrator: Unable to connect to any locator "
+        "of scouted peer b4faae00ce67d5ff3e7ae0a317e27441: [tcp/[::1]:40231]"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="warning")
+
+    assert line is None
 
 
 def test_extract_relevant_log_line_ignores_sound_sample_named_error() -> None:
@@ -237,7 +349,9 @@ def test_extract_relevant_log_line_ignores_workflow_section_headers() -> None:
     critical_line = MODULE.extract_relevant_log_line(critical_log, scope="vision", severity="critical")
     warning_line = MODULE.extract_relevant_log_line(warning_log, scope="vision", severity="warning")
 
-    assert critical_line == "FAILURE IN SERVER /g_new negative node IDs are reserved"
+    # Both are noise: /g_new startup race (issue #778) and pending_speeches
+    # race are benign — neither should surface as a deploy issue.
+    assert critical_line is None
     assert warning_line is None
 
 

@@ -58,6 +58,24 @@ CRITICAL_EXCLUDE_COMMON = [
     # probe failure, not an audio outage (retro 12.08 t_d3e44336).
     r"alsa lib control\.c.*invalid ctl",
     r"dmix_respeaker",
+    # SuperCollider startup noise (issue #778, #672, #840): Renardo/FoxDot
+    # sends /g_new before scsynth finished allocating group IDs. The music
+    # stack comes up healthy afterwards (voice-assistant reports
+    # "Music stack healthy" / "sclang готов" / "Missing critical SynthDefs:
+    # none"), so this is a benign startup race, not an audio outage.
+    r"failure in server /g_new negative node ids are reserved",
+    # External MiniMax quota/auth (issue #1193): error 2056 "Token Plan usage
+    # limit reached" is a billing limit, not a code bug. TTS chain falls back
+    # to Yandex/Silero, so the robot keeps speaking. e2e-process already
+    # treats 2056 as infra-fail — the deploy gate must not file a critical
+    # issue for it.
+    r"minimax api error 2056",
+    r"token plan usage limit",
+    # Python shutdown noise (nav2): "_io.TextIOWrapper ... Exception ignored
+    # in:" is printed when the interpreter closes stdout while a pipe reader
+    # (e.g. `ros2 topic list | head`) already hung up. Benign — the follow-up
+    # BrokenPipeError line is already excluded above (retro 15.08 t_a14ac65d).
+    r"exception ignored in:",
 ]
 CRITICAL_EXCLUDE_BY_SCOPE = {
     "main": [
@@ -110,6 +128,21 @@ WARNING_EXCLUDE_COMMON = [
     # PyAudio overflow: input overrun is handled by the audio pipeline,
     # no data loss reported (retro 12.08 t_d3e44336).
     r"pyaudio painputoverflow",
+    # zenoh session noise: "Received ResponseFinal for unknown Request"
+    # is a stale reply to an already-timed-out query — benign (deploy
+    # run round-117, ceiling-camera).
+    r"received responsefinal for unknown request",
+    # telegram_node startup echo: "Dropping dialogue echo, bot not ready /
+    # no active chat" means the bot is up but no chat is bound yet — normal
+    # boot behaviour, not a deployment failure (round-117, telegram-bot).
+    r"dropping dialogue echo, bot not ready",
+    # tts_node voice fallback (issue #1219): voice 'None' → default voice.
+    # The chain keeps working; the warning itself is the fix notification.
+    r"голос 'none' недоступен у minimax",
+    # rtabmap ini auto-create: "Section \"Core\" ... doesn't exist" with the
+    # explicit "Ignore this warning if the ini file does not exist yet" —
+    # rtabmap creates the file on shutdown, benign (round-117).
+    r"section .* in /config/rtabmap/rtabmap.ini doesn't exist",
 ]
 WARNING_EXCLUDE_BY_SCOPE = {
     "main": [
@@ -119,6 +152,14 @@ WARNING_EXCLUDE_BY_SCOPE = {
         r"no real-time kernel",
         r"old-style arguments are deprecated; see --help for new-style arguments",
         r"total warnings:",
+        # perception_bridge: "Sensor UART /dev/ttyAMA0 not available; reads
+        # will no-op until hardware is attached" — the UART IMU is optional
+        # lab hardware, absence is expected in the test rig (round-117).
+        r"sensor uart /dev/ttyama0 not available",
+        # zenoh peer discovery: "Unable to connect to any locator of scouted
+        # peer" during startup handshake is transient network noise, not an
+        # outage (round-117, nav2).
+        r"unable to connect to any locator of scouted peer",
     ],
     "vision": [],
 }
