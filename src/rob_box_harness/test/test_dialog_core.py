@@ -26,6 +26,8 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -1585,3 +1587,297 @@ def test_run_with_tools_executes_in_safe_order_but_returns_original_order() -> N
     assert [c.name for c in ordered] == ["speak_text", "stop_music"]
     # And the original tuple is untouched (frozen dataclass semantics).
     assert [c.name for c in calls] == ["stop_music", "speak_text"]
+
+
+# ---------------------------------------------------------------------------
+# BUG-12 (TASK-043): unbounded local messages list → sliding window
+# ---------------------------------------------------------------------------
+
+
+def _tool_exchange(assistant_id: str, result: str = "echo:ok") -> list[LLMMessage]:
+    """One tool exchange = assistant tool_calls message + tool result."""
+    return [
+        LLMMessage(
+            role="assistant",
+            content="",
+            tool_calls=(
+                ToolCall(id=assistant_id, name="echo", arguments={"text": "x"}),
+            ),
+        ),
+        LLMMessage(
+            role="tool",
+            content=result,
+            tool_call_id=assistant_id,
+        ),
+    ]
+
+
+def _prefix_messages() -> list[LLMMessage]:
+    """System + user prefix that must survive windowing."""
+    return [
+        LLMMessage(role="system", content="You are a helpful robot."),
+        LLMMessage(role="user", content="Повтори за мной."),
+    ]
+
+
+def _tool_loop_script(
+    count: int,
+    tool_name: str = "echo",
+    final: str = "final",
+) -> list[LLMResponse]:
+    """Build a scripted LLM response list: ``count`` tool calls + final text.
+
+    Mirrors the helper used by the older tool-loop tests: every tool call
+    uses a fresh ``call_<i>`` id so the fake provider's ``_handler_map``
+    can serve them all through one echo handler.
+    """
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(
+                    id=f"call_{i}",
+                    name=tool_name,
+                    arguments={"text": str(i)},
+                ),
+            ),
+        )
+        for i in range(count)
+    ]
+    scripted.append(LLMResponse(content=final, tool_calls=()))
+    return scripted
+
+
+def test_apply_tool_window_keeps_prefix_and_last_k_exchanges(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """BUG-12 — window keeps system/user prefix and the last K exchanges.
+
+    With 8 tool exchanges and a window of 5, the first 3 exchanges
+    (assistant tool_calls AND their tool results) must be dropped,
+    while the system/user prefix and the last 5 exchanges survive.
+    """
+    from rob_box_harness.core import dialog_core as dc
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+
+    messages: list[LLMMessage] = _prefix_messages()
+    for i in range(8):
+        messages.extend(_tool_exchange(f"call_{i}", result=f"echo:{i}"))
+
+    core_obj._apply_tool_window(messages)
+
+    # Prefix survived.
+    assert [m.role for m in messages[:2]] == ["system", "user"]
+    assert messages[0].content == "You are a helpful robot."
+
+    # Only the last 5 exchanges remain → 2 prefix + 5*2 = 12 messages.
+    assert len(messages) == 2 + 2 * dc._TOOL_WINDOW_EXCHANGES
+
+    # The dropped exchanges' results are gone (call_0 … call_2).
+    contents = [m.content for m in messages]
+    assert "echo:0" not in contents
+    assert "echo:1" not in contents
+    assert "echo:2" not in contents
+    # The last exchanges survived.
+    assert "echo:7" in contents
+    assert "echo:6" in contents
+
+    # Wire-format sanity: no orphaned tool message without its assistant.
+    tool_ids = [m.tool_call_id for m in messages if m.role == "tool"]
+    assistant_ids = [
+        tc.id
+        for m in messages
+        if m.role == "assistant" and m.tool_calls
+        for tc in m.tool_calls
+    ]
+    assert set(tool_ids) == set(assistant_ids)
+
+
+def test_apply_tool_window_leaves_short_lists_untouched(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """BUG-12 — lists with ≤ K exchanges are not modified."""
+    from rob_box_harness.core import dialog_core as dc
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+
+    messages: list[LLMMessage] = _prefix_messages()
+    for i in range(dc._TOOL_WINDOW_EXCHANGES):  # exactly K — no compaction
+        messages.extend(_tool_exchange(f"call_{i}", result=f"echo:{i}"))
+
+    before = list(messages)
+    core_obj._apply_tool_window(messages)
+
+    assert len(messages) == len(before)
+    assert [m.role for m in messages] == [m.role for m in before]
+    assert [m.content for m in messages] == [m.content for m in before]
+
+
+def test_apply_tool_window_drops_only_tool_material(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """BUG-12 — non-tool messages between exchanges are preserved.
+
+    A user clarification after a tool result is not part of a tool
+    exchange and must survive windowing (the prefix scan only removes
+    assistant-tool_calls + tool messages).
+    """
+    from rob_box_harness.core import dialog_core as dc
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+
+    messages: list[LLMMessage] = _prefix_messages()
+    for i in range(8):
+        messages.extend(_tool_exchange(f"call_{i}", result=f"echo:{i}"))
+        if i == 2:
+            messages.append(
+                LLMMessage(role="user", content="продолжай, но короче")
+            )
+
+    core_obj._apply_tool_window(messages)
+
+    # Non-tool user turns survive windowing (prefix is kept verbatim).
+    contents = [m.content for m in messages]
+    assert "продолжай, но короче" in contents
+    assert messages[0].content == "You are a helpful robot."
+
+    # Old tool exchanges (call_0 … call_2) are still dropped as a whole.
+    assert "echo:0" not in contents
+    assert "echo:1" not in contents
+    assert "echo:2" not in contents
+    assert "echo:7" in contents
+
+
+def test_estimate_input_tokens_bounded_after_30_iterations(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """BUG-12 acceptance — input tokens stay ≤20k even at 30 iterations.
+
+    Simulates 30 tool exchanges (each with a verbose result) and asserts
+    the sliding-windowed list estimates well below 20k tokens.
+    """
+    from rob_box_harness.core import dialog_core as dc
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+
+    messages: list[LLMMessage] = _prefix_messages()
+    for i in range(30):
+        verbose = "x" * 400 + f" result {i}"  # ~100 tokens per result
+        messages.extend(_tool_exchange(f"call_{i}", result=verbose))
+
+    core_obj._apply_tool_window(messages)
+    estimate = dc._estimate_input_tokens(messages)
+
+    assert estimate <= 20_000, f"input token estimate {estimate} > 20k"
+
+
+def test_tool_loop_input_tokens_bounded_across_iterations(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """BUG-12 acceptance — tokens at iteration 20+ ≤ iteration 10 + 3000.
+
+    Runs a scripted 30-iteration tool loop (monkeypatched cap) and
+    compares the estimated input token count of the LLM request at
+    iteration 10 vs iteration 20+. With the sliding window the count
+    must not grow by more than 3000 tokens.
+    """
+    from rob_box_harness.core import dialog_core as dc
+
+    # Lift the loop cap so the window actually engages (default 8).
+    original_cap = dc._MAX_TOOL_ITERATIONS
+    dc._MAX_TOOL_ITERATIONS = 30
+    try:
+        count = 30
+        llm.responses = _tool_loop_script(
+            count, tool_name="echo", final="done"
+        )
+
+        async def echo(args: dict[str, object]) -> str:
+            # Verbose result — ~100 tokens each, so unbounded growth
+            # would be obvious.
+            return "y" * 400 + f":{args.get('text')}"
+
+        tools_provider._handler_map = {"echo": echo}
+
+        core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+        asyncio.run(core_obj.handle_wake_word(""))
+
+        result = asyncio.run(core_obj.process_input("q", history=[]))
+        assert result.error is None
+        assert result.spoken_text == "done"
+
+        # Estimate input tokens for each LLM call (messages materialised
+        # by the fake provider).
+        estimates = [
+            dc._estimate_input_tokens(call_msgs) for call_msgs, _ in llm.calls
+        ]
+        assert len(estimates) == count + 1  # initial + 30 iterations
+
+        it10 = estimates[10]
+        it20 = estimates[20]
+        assert it20 <= it10 + 3000, (
+            f"iteration 20 input tokens {it20} > iteration 10 {it10} + 3000"
+        )
+        # And the whole run stays under the 20k log acceptance.
+        assert max(estimates) <= 20_000, (
+            f"max input token estimate {max(estimates)} > 20k"
+        )
+    finally:
+        dc._MAX_TOOL_ITERATIONS = original_cap
+
+
+def test_token_usage_logged_per_llm_call(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """BUG-12 acceptance — logs 'Token usage: input=X' per LLM call.
+
+    The fake provider returns no usage, so the estimate fallback fires
+    and the INFO line still carries a numeric input count.
+    """
+    from rob_box_harness.core import dialog_core as dc
+
+    llm.responses = _tool_loop_script(3, tool_name="echo", final="final")
+
+    async def echo(args: dict[str, object]) -> str:
+        return f"echo:{args.get('text')}"
+
+    tools_provider._handler_map = {"echo": echo}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    with caplog.at_level(logging.INFO, logger="rob_box_harness.core.dialog_core"):
+        asyncio.run(core_obj.process_input("q", history=[]))
+
+    usage_lines = [
+        r.getMessage()
+        for r in caplog.records
+        if "Token usage: input=" in r.getMessage()
+    ]
+    # Initial call + 3 tool iterations = 4 log lines.
+    assert len(usage_lines) == 4, usage_lines
+
+    for line in usage_lines:
+        m = re.search(r"Token usage: input=(\d+)", line)
+        assert m, f"malformed usage log: {line!r}"
+        assert int(m.group(1)) > 0
