@@ -386,7 +386,9 @@ services:
   # non-ROS service: LLM inference server, HTTP API на localhost:11434 (profile: ai).
   # Не использует ROS/Zenoh, depends_on: zenoh-router не требуется.
   ollama:
-    image: ollama/ollama:latest
+    # Pinned to 0.32.13 (SEC-6): was ollama/ollama:latest (unpinned → non-reproducible, supply-chain risk).
+    # Bump manually: docker compose --profile ai pull ollama && docker compose up -d ollama
+    image: ollama/ollama:0.32.13
     container_name: ollama
     profiles: ["ai"]
     network_mode: host
