@@ -62,6 +62,7 @@ from rob_box_harness.providers import (
 )
 from rob_box_harness.tools import FakeToolProvider, ToolProvider
 
+from rob_box_voice.core.command_parser import CommandParser, IntentType
 from rob_box_voice.core.dialogue_text import (
     has_wake_word, is_silence_command, is_unsilence_command, strip_wake_word,
 )
@@ -288,6 +289,21 @@ class DialogueNode(Node):
         self._system_prompt: str = self._load_system_prompt()
         self._verbose_llm: bool = bool(self.get_parameter("verbose_llm").value)
         self._wake_words: List[str] = list(self.get_parameter("wake_words").value)
+        # Issue #1279 — gate команд движения/статуса: фразы, которые уже
+        # распознаны command_node (NAVIGATE/STOP/STATUS/MAP), НЕ должны
+        # дублироваться через LLM (LLM интерпретирует «вперёд» как музыку).
+        # Используем ТОТ ЖЕ CommandParser, что и command_node, чтобы
+        # классификация совпадала 1:1 (один источник правды — core).
+        self._command_intent_gate_enabled: bool = bool(
+            self.get_parameter("command_intent_gate_enabled").value
+        )
+        self._command_intent_gate_confidence: float = float(
+            self.get_parameter("command_intent_gate_confidence").value
+        )
+        self._command_parser = CommandParser(
+            wake_words=["робот", "робокс", "робобокс"],
+            confidence_base=0.8,
+        )
 
         self._loop = asyncio.new_event_loop()
         self._asyncio_loop_executor = concurrent.futures.ThreadPoolExecutor(
@@ -381,6 +397,7 @@ class DialogueNode(Node):
             "empty_after_strip": 0,
             "stt_rejected": 0,
             "music_stop": 0,
+            "command_intent": 0,
         }
         self._last_skip_summary_ts: float = time.monotonic()
         self._tts_control_pub = self.create_publisher(
@@ -417,6 +434,15 @@ class DialogueNode(Node):
             )
         self.create_subscription(
             String, "/voice/stt/result", self._on_stt, qos_r, callback_group=cbg)
+        # Issue #1279 — command_node публикует feedback («Двигаюсь вперёд»,
+        # «Останавливаюсь») на /voice/command/feedback после выполнения
+        # команды движения/статуса. dialogue_node озвучивает его через TTS,
+        # чтобы пользователь СЛЫШАЛ подтверждение команды (раньше feedback
+        # публиковался, но никем не озвучивался — dialogue_node вместо него
+        # гнал фразу в LLM и получал музыку вместо движения).
+        self.create_subscription(
+            String, "/voice/command/feedback", self._on_command_feedback,
+            qos_r, callback_group=cbg)
         # Issue #1077 — speaker_tag от Yandex speaker_analysis (отдельный
         # топик, чтобы не ломать plain-text контракт /voice/stt/result).
         # JSON: {"speaker_tag", "text", "duration_s"}. stt_node публикует
@@ -634,6 +660,17 @@ class DialogueNode(Node):
         self.declare_parameter("enable_mcp_tools", True)
         self.declare_parameter("llm_timeout_sec", 90.0)
         self.declare_parameter("verbose_llm", True)
+        # Issue #1279 — gate команд движения/статуса. command_node уже
+        # обрабатывает NAVIGATE/STOP/STATUS/MAP (публикует
+        # /voice/command/intent и выполняет), dialogue_node НЕ должен
+        # дублировать обработку через LLM: иначе LLM интерпретирует
+        # «вперёд» как музыку → execute_music_code вместо движения.
+        # True = фразы-команды НЕ идут в LLM (обрабатывает command_node).
+        self.declare_parameter("command_intent_gate_enabled", True)
+        # Порог уверенности CommandParser, при котором фраза считается
+        # «уже обработанной командой» (совпадает с command_node.yaml
+        # confidence_threshold: 0.7).
+        self.declare_parameter("command_intent_gate_confidence", 0.7)
         # 🔴 FIX (live 06.08): стриминг LLM через конфиг (llm_streaming).
         # Замер без стриминга: false → complete() (полный ответ).
         self.declare_parameter("llm_streaming", False)
@@ -1364,6 +1401,29 @@ class DialogueNode(Node):
         with self._speaker_lock:
             self._current_speaker = data
 
+    def _on_command_feedback(self, msg: String) -> None:
+        """Issue #1279 — озвучить feedback command_node через TTS.
+
+        command_node публикует «Двигаюсь вперёд», «Останавливаюсь» и т.п.
+        на /voice/command/feedback после выполнения команды движения/
+        статуса. Раньше этот feedback никто не озвучивал (только
+        context_aggregator_node слушал топик для контекста), а dialogue_node
+        параллельно гнал ту же фразу в LLM — оттуда и «музыка вместо
+        движения». Теперь, когда command-intent gate (issue #1279) убирает
+        фразу из LLM-пути, feedback command_node озвучивается здесь, чтобы
+        пользователь слышал подтверждение команды.
+        """
+        text = (msg.data or "").strip()
+        if not text:
+            return
+        self.get_logger().info(f"💬 [command_node feedback] {text[:120]}")
+        try:
+            self._speak_direct(text)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [issue 1279] Не удалось озвучить command feedback: {exc}"
+            )
+
     def _on_stt(self, msg: String) -> None:
         text = (msg.data or "").strip()
         if not text:
@@ -1464,6 +1524,37 @@ class DialogueNode(Node):
                 self._handle_silence()
                 return
             # иначе это music-stop, фоллс на LLM ниже
+        # Issue #1279 — command-intent gate: фразы, которые command_node
+        # уже распознал как команды движения/статуса (NAVIGATE/STOP/
+        # STATUS/MAP/...), НЕ дублируем через LLM. Иначе LLM интерпретирует
+        # «вперёд» как музыку → execute_music_code вместо движения.
+        # Используем тот же CommandParser с тем же входом (raw STT-текст),
+        # что и command_node (один источник правды —
+        # rob_box_voice.core.command_parser), поэтому классификация
+        # совпадает 1:1.
+        # Music-stop фразы («стоп музыку», «хватит диджеить») НЕ гейтим —
+        # они должны дойти до LLM, чтобы тот вызвал stop_music.
+        if (
+            getattr(self, "_command_intent_gate_enabled", False)
+            and tg_chat_id is None
+            and not any(
+                kw in text_lower for kw in self._MUSIC_STOP_OVERRIDES
+            )
+        ):
+            command = self._command_parser.parse(text)
+            if (
+                command.intent != IntentType.UNKNOWN
+                and command.confidence >= self._command_intent_gate_confidence
+            ):
+                self._llm_skipped_counter["command_intent"] += 1
+                self._cancel_run("command intent (issue 1279)")
+                self.get_logger().info(
+                    f"🎯 [issue 1279] command intent="
+                    f"{command.intent.value} conf={command.confidence:.2f} "
+                    f"— LLM dispatch skipped (command_node handles): "
+                    f"{text[:60]!r}"
+                )
+                return
         self._cancel_run("new STT input")
         sfx = String()
         sfx.data = "thinking"

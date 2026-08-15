@@ -41,6 +41,14 @@ dialogue_node:
     max_tokens: 500
     agent_max_turns: 20
     enable_mcp_tools: true
+    # Issue #1279 — command-intent gate: фразы-команды (NAVIGATE/STOP/STATUS/
+    # MAP) обрабатывает command_node, dialogue_node НЕ дублирует их через
+    # LLM (иначе LLM интерпретирует «вперёд» как музыку → execute_music_code
+    # вместо движения). True = команды не идут в LLM.
+    command_intent_gate_enabled: true
+    # Порог уверенности CommandParser (совпадает с command_node.yaml
+    # confidence_threshold: 0.7).
+    command_intent_gate_confidence: 0.7
     llm_timeout_sec: 90.0
     verbose_llm: true
     llm_streaming: true
