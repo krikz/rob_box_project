@@ -1585,3 +1585,176 @@ def test_run_with_tools_executes_in_safe_order_but_returns_original_order() -> N
     assert [c.name for c in ordered] == ["speak_text", "stop_music"]
     # And the original tuple is untouched (frozen dataclass semantics).
     assert [c.name for c in calls] == ["stop_music", "speak_text"]
+
+
+# ---------------------------------------------------------------------------
+# PF-2 (#827) — bounded local messages list (TASK-043 context rot)
+# ---------------------------------------------------------------------------
+
+
+def test_compact_stale_tool_results_clears_old_payloads() -> None:
+    """Tool results older than keep_last exchanges are replaced by a placeholder.
+
+    The message structure (role / tool_call_id) is preserved so
+    OpenAI-compatible providers still accept the history.
+    """
+    from rob_box_harness.core.dialog_core import (
+        _KEEP_LAST_TOOL_EXCHANGES,
+        _TOOL_RESULT_CLEARED,
+        _compact_stale_tool_results,
+    )
+    from rob_box_llm.provider import ToolResult
+
+    # 7 exchanges: assistant(tool_calls) + tool result.
+    messages: list[LLMMessage] = []
+    for i in range(7):
+        messages.append(
+            LLMMessage(
+                role="assistant",
+                content="",
+                tool_calls=(ToolCall(id=f"c{i}", name="echo", arguments={}),),
+            )
+        )
+        messages.append(
+            LLMMessage(
+                role="tool",
+                content=f"payload-{i}",
+                tool_call_id=f"c{i}",
+                tool_result=ToolResult(
+                    tool_call_id=f"c{i}", content=f"payload-{i}"
+                ),
+            )
+        )
+
+    cleared = _compact_stale_tool_results(messages)
+
+    # 7 exchanges - keep_last(5) = 2 old tool results cleared.
+    assert cleared == 7 - _KEEP_LAST_TOOL_EXCHANGES
+    tool_msgs = [m for m in messages if m.role == "tool"]
+    assert tool_msgs[0].tool_result.content == _TOOL_RESULT_CLEARED
+    assert tool_msgs[1].tool_result.content == _TOOL_RESULT_CLEARED
+    # The most recent keep_last exchanges are intact.
+    assert tool_msgs[2].tool_result.content == "payload-2"
+    assert tool_msgs[-1].tool_result.content == "payload-6"
+    # Structure preserved: tool_call_id survives on cleared messages.
+    assert tool_msgs[0].tool_result.tool_call_id == "c0"
+    assert tool_msgs[0].tool_call_id == "c0"
+
+
+def test_compact_stale_tool_results_keeps_all_when_under_limit() -> None:
+    """≤ keep_last exchanges → nothing is cleared (no premature compaction)."""
+    from rob_box_harness.core.dialog_core import _compact_stale_tool_results
+    from rob_box_llm.provider import ToolResult
+
+    messages: list[LLMMessage] = []
+    for i in range(3):
+        messages.append(
+            LLMMessage(
+                role="assistant",
+                content="",
+                tool_calls=(ToolCall(id=f"c{i}", name="echo", arguments={}),),
+            )
+        )
+        messages.append(
+            LLMMessage(
+                role="tool",
+                content=f"payload-{i}",
+                tool_call_id=f"c{i}",
+                tool_result=ToolResult(
+                    tool_call_id=f"c{i}", content=f"payload-{i}"
+                ),
+            )
+        )
+
+    cleared = _compact_stale_tool_results(messages)
+    assert cleared == 0
+    tool_msgs = [m for m in messages if m.role == "tool"]
+    assert all(m.tool_result.content != "[tool result cleared]" for m in tool_msgs)
+
+
+def test_compact_stale_tool_results_disabled_with_zero() -> None:
+    """keep_last=0 disables compaction (legacy unbounded behaviour opt-out)."""
+    from rob_box_harness.core.dialog_core import _compact_stale_tool_results
+    from rob_box_llm.provider import ToolResult
+
+    messages: list[LLMMessage] = []
+    for i in range(7):
+        messages.append(
+            LLMMessage(
+                role="assistant",
+                content="",
+                tool_calls=(ToolCall(id=f"c{i}", name="echo", arguments={}),),
+            )
+        )
+        messages.append(
+            LLMMessage(
+                role="tool",
+                content=f"payload-{i}",
+                tool_call_id=f"c{i}",
+                tool_result=ToolResult(
+                    tool_call_id=f"c{i}", content=f"payload-{i}"
+                ),
+            )
+        )
+
+    cleared = _compact_stale_tool_results(messages, keep_last=0)
+    assert cleared == 0
+    tool_msgs = [m for m in messages if m.role == "tool"]
+    assert all(m.tool_result.content == f"payload-{i}" for i, m in enumerate(tool_msgs))
+
+
+def test_process_input_tool_loop_compacts_stale_results(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """A long tool loop does not grow the local messages list without bound.
+
+    PF-2 (#827): with more than _KEEP_LAST_TOOL_EXCHANGES iterations the
+    old tool results must be replaced by the placeholder so the token count
+    stops growing (TASK-043 acceptance: bounded context per agent run).
+    """
+    from rob_box_harness.core import dialog_core as dc
+
+    iterations = dc._MAX_TOOL_ITERATIONS  # 8 — more than keep_last (5)
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(ToolCall(id=f"c{i}", name="echo",
+                                 arguments={"text": str(i)}),),
+        )
+        for i in range(iterations)
+    ] + [LLMResponse(content="ok", tool_calls=())]
+    llm.responses = scripted
+
+    async def echo(args: dict[str, object]) -> str:
+        return f"e:{args.get('text')}"
+
+    tools_provider._handler_map = {"echo": echo}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("q", history=[]))
+    assert result.error is None
+    assert result.spoken_text == "ok"
+
+    # Inspect the last complete() call: messages were compacted in place.
+    final_messages = llm.calls[-1][0]
+    tool_msgs = [m for m in final_messages if m.role == "tool"]
+    # 8 exchanges → 8 tool messages; only the last keep_last stay intact.
+    assert len(tool_msgs) == iterations
+    cleared = [
+        m for m in tool_msgs
+        if m.tool_result.content == dc._TOOL_RESULT_CLEARED
+    ]
+    assert len(cleared) == iterations - dc._KEEP_LAST_TOOL_EXCHANGES
+    kept = [
+        m for m in tool_msgs
+        if m.tool_result.content != dc._TOOL_RESULT_CLEARED
+    ]
+    assert len(kept) == dc._KEEP_LAST_TOOL_EXCHANGES
+    # Fresh results survived; the payloads of old exchanges are gone.
+    assert kept[-1].tool_result.content == f"e:{iterations - 1}"
+    assert kept[0].tool_result.content == f"e:{iterations - dc._KEEP_LAST_TOOL_EXCHANGES}"

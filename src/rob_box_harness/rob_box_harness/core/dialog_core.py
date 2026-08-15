@@ -56,6 +56,21 @@ if TYPE_CHECKING:
 #: fails loudly rather than running away.
 _MAX_TOOL_ITERATIONS: int = 8
 
+#: PF-2 (#827) / TASK-043 / TASK-044 — скользящее окно для локального
+#: messages list внутри одного agent run. Сколько последних tool exchanges
+#: (assistant(tool_calls) + его tool results) хранить нетронутыми. Более
+#: старые tool results заменяются плейсхолдером ``_TOOL_RESULT_CLEARED``,
+#: чтобы большой JSON-результат прошлых итераций не копился в контексте
+#: и не раздувал token count (context rot после 15+ итераций).
+#: keep_last=5 — рекомендация TASK-044 ("tool result clearing is one of the
+#: safest forms of compaction").
+_KEEP_LAST_TOOL_EXCHANGES: int = 5
+
+#: Плейсхолдер, которым заменяется содержимое устаревших tool results.
+#: Структура сообщения (role/tool_call_id) сохраняется — OpenAI-совместимые
+#: провайдеры по-прежнему принимают историю, но большой payload отбрасывается.
+_TOOL_RESULT_CLEARED: str = "[tool result cleared]"
+
 # W7a (issue #968, INSIGHT #1): a single LLM response may carry several
 # tool_calls in one batch (e.g. ``speak_text`` + ``stop_music``). Executing
 # them in the model's raw order fires destructive tools before the voice
@@ -116,6 +131,66 @@ def _order_tool_calls(
         if has_voice and call.name in _DEFER_TO_END_TOOLS
     }
     return ordered, deferred_call_ids
+
+
+def _compact_stale_tool_results(
+    messages: list[LLMMessage],
+    keep_last: int = _KEEP_LAST_TOOL_EXCHANGES,
+) -> int:
+    """Replace tool-result payloads older than the last ``keep_last`` exchanges.
+
+    PF-2 (#827) / TASK-043 / TASK-044 — bounded local messages list.
+
+    Walks ``messages`` and locates every *tool exchange*: an
+    ``assistant(tool_calls)`` message followed by its ``tool`` result
+    messages. When more than ``keep_last`` exchanges are present, the
+    ``tool`` messages of the older exchanges get their payload replaced
+    with :data:`_TOOL_RESULT_CLEARED` (the message structure, role and
+    ``tool_call_id`` stay — OpenAI-compatible providers still accept the
+    history). The most recent ``keep_last`` exchanges are left intact so
+    the model can keep acting on fresh results.
+
+    Returns the number of ``tool`` messages whose payload was cleared.
+
+    The list is mutated in place (same contract as
+    :meth:`DialogCore._run_with_tools`, which appends to it across tool
+    iterations). ``keep_last <= 0`` disables the compaction entirely —
+    callers that want the legacy unbounded behaviour can pass ``0``.
+    """
+    if keep_last <= 0:
+        return 0
+    # Find each exchange start: an assistant message that carries tool_calls.
+    exchange_starts = [
+        i
+        for i, msg in enumerate(messages)
+        if msg.role == "assistant" and msg.tool_calls
+    ]
+    if len(exchange_starts) <= keep_last:
+        return 0
+    # Everything before the (keep_last)-th most recent exchange is stale.
+    first_kept = exchange_starts[-keep_last]
+    cleared = 0
+    for i, msg in enumerate(messages[:first_kept]):
+        if msg.role == "tool" and msg.tool_result is not None:
+            messages[i] = LLMMessage(
+                role="tool",
+                content=_TOOL_RESULT_CLEARED,
+                tool_call_id=msg.tool_call_id,
+                tool_result=ToolResult(
+                    tool_call_id=msg.tool_result.tool_call_id,
+                    content=_TOOL_RESULT_CLEARED,
+                    is_error=msg.tool_result.is_error,
+                ),
+            )
+            cleared += 1
+    if cleared:
+        logging.getLogger(__name__).debug(
+            "DialogCore: compacted %d stale tool result(s), keeping last "
+            "%d exchange(s)",
+            cleared,
+            keep_last,
+        )
+    return cleared
 
 
 #: Completion markers the master prompt teaches the LLM to return AFTER the
@@ -743,6 +818,13 @@ class DialogCore:
                         tool_result=tool_result,
                     )
                 )
+
+            # PF-2 (#827): bounded local messages list. Compact stale tool
+            # results so a long tool loop (up to _MAX_TOOL_ITERATIONS) cannot
+            # grow the context without bound — old JSON payloads are replaced
+            # with a placeholder, the last _KEEP_LAST_TOOL_EXCHANGES stay
+            # intact for the model to act on.
+            _compact_stale_tool_results(messages)
 
             response = await self._stream_response(messages, tools=openai_tools)
 

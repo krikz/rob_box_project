@@ -2916,6 +2916,12 @@ class DialogueNode(Node):
     #: Maximum tool-call iterations before forced stop (agent loop guard).
     MAX_ITERATIONS: int = 30
 
+    #: PF-2 (#827) — скользящее окно для локального messages list legacy
+    #: agent loop. Сколько последних tool results держать в контексте;
+    #: более старые отбрасываются, чтобы за MAX_ITERATIONS итераций
+    #: messages не рос без ограничений (TASK-043 context rot).
+    AGENT_LOOP_KEEP_LAST_TOOL_RESULTS: int = 5
+
     def _continue_after_tool_calls(
         self,
         messages: list,
@@ -2974,6 +2980,13 @@ class DialogueNode(Node):
                     current_tool_calls, current_messages
                 )
                 current_tool_results.extend(new_results)
+                # PF-2 (#827): скользящее окно — не копим tool results за
+                # MAX_ITERATIONS итераций (TASK-043 context rot). Держим
+                # только последние AGENT_LOOP_KEEP_LAST_TOOL_RESULTS, чтобы
+                # локальный messages list не рос без ограничений.
+                _keep = self.AGENT_LOOP_KEEP_LAST_TOOL_RESULTS
+                if len(current_tool_results) > _keep:
+                    current_tool_results = current_tool_results[-_keep:]
 
             # Stream the next LLM turn with the tool results in context.
             result_dict: dict = {

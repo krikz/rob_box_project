@@ -340,6 +340,56 @@ class TestAgentLoopFinalResponse:
         assert node.llm_processing is False
         assert node.dialogue_in_progress is False
 
+    def test_tool_results_sliding_window_limits_context_growth(self, node):
+        """PF-2 (#827): локальный messages list не растёт без ограничений.
+
+        Даже когда LLM бесконечно возвращает tool_calls (MAX_ITERATIONS=8
+        в этом тесте), ``current_tool_results`` обрезается до
+        ``AGENT_LOOP_KEEP_LAST_TOOL_RESULTS`` (5) — старые tool results
+        не копятся в контексте (TASK-043 context rot).
+        """
+        import concurrent.futures
+
+        node.__class__.MAX_ITERATIONS = 8  # временно уменьшаем лимит
+
+        class FakeExecutor:
+            def __init__(self, *a, **kw): pass
+            def submit(self, fn):
+                f = concurrent.futures.Future()
+                defaults = fn.__defaults__ if hasattr(fn, '__defaults__') and fn.__defaults__ else ()
+                if defaults:
+                    result_dict = defaults[0]
+                    result_dict['tool_calls'] = [
+                        {'id': 'tc0', 'type': 'function',
+                         'function': {'name': 'play_sound', 'arguments': '{}'}}
+                    ]
+                    result_dict['full_response'] = ''
+                    result_dict['chunk_count'] = 0
+                f.set_result(None)
+                return f
+            def shutdown(self, wait=False): pass
+
+        node._execute_tool_calls = lambda tc, msgs: [
+            {'tool_call_id': 'tc0', 'tool_name': 'play_sound',
+             'success': True, 'message': 'ok'}
+        ]
+
+        with patch('rob_box_voice.dialogue_node.ThreadPoolExecutor', FakeExecutor):
+            node._continue_after_tool_calls(
+                messages=[{"role": "system", "content": "sys"}],
+                tool_calls=[{'id': 'tc0', 'type': 'function',
+                             'function': {'name': 'play_sound', 'arguments': '{}'}}],
+                tool_results=[],
+            )
+
+        node.__class__.MAX_ITERATIONS = 30  # восстанавливаем
+
+        # Скользящее окно: даже после 8 итераций в контекст уходит не
+        # больше AGENT_LOOP_KEEP_LAST_TOOL_RESULTS tool results.
+        kept = getattr(node, "_current_streaming_tool_results", None)
+        assert kept is not None
+        assert len(kept) <= node.AGENT_LOOP_KEEP_LAST_TOOL_RESULTS
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Тесты retry при timeout
