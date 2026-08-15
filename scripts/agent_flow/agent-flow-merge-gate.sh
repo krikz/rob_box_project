@@ -228,6 +228,76 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
     return 0
 }
 
+# --- duplicate-file scan для ВСЕХ open PR (ретро 15.08 t_20383d32) ----------
+# Сценарий: две ПАРАЛЛЕЛЬНЫЕ карточки пришли к одному корневому фиксу и каждая
+# добавила ОДИН И ТОТ ЖЕ файл с ИДЕНТИЧНЫМ содержимым (одинаковый blob sha):
+# PR #1262 (t_392d6000 setup.cfg) и PR #1267 (issue #1266 setup.cfg) — оба
+# добавили src/rob_box_teleop/setup.cfg (blob 66dad822). Триаж/e2e не dedup-ит
+# PR по изменяемым файлам → фикс задвоен, при merge первого второй получит
+# add/add конфликт или пустой diff.
+# Guard: тянем pulls/N/files (filename+sha) для open PR с needs-review/needs-e2e
+# (кандидаты на ревью/мерж), ищем пару (filename, sha) в РАЗНЫХ PR →
+# инфо-коммент на оба PR (dedup 24h). НЕ блокируем CI и НЕ снимаем needs-e2e:
+# решение «какой влить, какой закрыть» — за Шифу при ревью.
+# Вызывается рядом со stale_branch_scan_all (основной путь + no-issues путь).
+duplicate_file_scan_all() {
+    _dup_prs="$(gh pr list --repo "$GH_REPO" --state open \
+        --json number,headRefName,labels 2>/dev/null || echo '[]')"
+    # Собираем (filename, sha) -> [pr...] только для needs-review/needs-e2e PR.
+    printf '%s' "$_dup_prs" | python3 -c '
+import json, sys, subprocess
+GH_REPO = sys.argv[1]
+data = json.load(sys.stdin)
+seen = {}
+for pr in data:
+    labels = {l.get("name","") for l in pr.get("labels", [])}
+    if not ({"needs-review", "needs-e2e"} & labels):
+        continue
+    num = pr["number"]
+    r = subprocess.run(
+        ["gh", "api", f"repos/{GH_REPO}/pulls/{num}/files?per_page=100"],
+        capture_output=True, text=True)
+    try:
+        files = json.loads(r.stdout or "[]")
+    except Exception:
+        files = []
+    for f in files:
+        fname = f.get("filename", "")
+        sha = f.get("sha", "")
+        if fname and sha:
+            seen.setdefault((fname, sha), []).append(num)
+# Печатаем дубли: (filename, sha) встречается в >=2 РАЗНЫХ PR.
+for (fname, sha), prs in sorted(seen.items()):
+    uniq = sorted(set(prs))
+    if len(uniq) < 2:
+        continue
+    for i in range(len(uniq)):
+        for j in range(i+1, len(uniq)):
+            print(f"{fname}\t{sha}\t{uniq[i]}\t{uniq[j]}")
+' "$GH_REPO" 2>/dev/null | while IFS=$'\t' read -r _df _ds _dp1 _dp2; do
+        [ -z "$_df" ] && continue
+        log "duplicate-file-scan: файл ${_df} (blob ${_ds}) в PR #${_dp1} и PR #${_dp2} — ИДЕНТИЧНЫЙ контент (ретро 15.08 t_20383d32)"
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would: duplicate-file comment on PR #${_dp1} и PR #${_dp2}"
+            continue
+        fi
+        _dd_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+        for _pr in "$_dp1" "$_dp2"; do
+            _other="$([ "$_pr" = "$_dp1" ] && echo "$_dp2" || echo "$_dp1")"
+            _dup_cnt="$(gh api "repos/${GH_REPO}/issues/${_pr}/comments?since=${_dd_since}&per_page=100" \
+                --jq '[.[] | select(.body | contains("duplicate file detected"))] | length' 2>/dev/null || echo 0)"
+            if [ "${_dup_cnt:-0}" -eq 0 ]; then
+                gh pr comment "$_pr" --repo "$GH_REPO" --body \
+                    "⚠️ **duplicate file detected** (merge-gate, ретро 15.08 t_20383d32)
+
+Файл \`${_df}\` (blob \`${_ds}\`) уже изменён в открытом PR #${_other} с ИДЕНТИЧНЫМ содержимым — фикс задвоен двумя независимыми карточками.
+
+**Что делать (при ревью Шифу):** влейте ОДИН из PR (обычно более широкий — с доп. фиксами), второй закройте как дубль или rebase на develop после merge первого. Merge-gate **НЕ блокирует** CI/e2e — это информационное предупреждение." >/dev/null 2>&1 || true
+            fi
+        done
+    done
+    return 0
+}
 # --- kanban card status helper (ретро 12.08 t_8af6bf29) ---------------------
 # 'hermes kanban show' ПАДАЕТ после hermes-agent v0.20.0 (sqlite3.ProgrammingError
 # 'Cannot operate on a closed database' в task_graph_context — краш после вывода
@@ -1334,6 +1404,9 @@ log "scan-all-prs: scanning ALL open PRs for UNSTABLE/CONFLICTING (not just need
 # Функция stale_branch_scan_all() вызывается здесь (основной путь с issues)
 # и в блоке no-issues (до раннего exit).
 stale_branch_scan_all
+# Дубль-файл scan (ретро 15.08 t_20383d32): тот же паттерн вызова, что у
+# stale_branch_scan_all — основной путь + no-issues путь сходятся сюда.
+duplicate_file_scan_all
 
 # Маппинг head-branch → task_id через wt/... ветки (t_51b5ad24-respeaker-downmix-tests → t_51b5ad24)
 _prs_json="$(gh pr list --repo "$GH_REPO" --state open \
