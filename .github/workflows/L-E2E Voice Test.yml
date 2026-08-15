@@ -143,6 +143,11 @@ jobs:
       - name: E2E voice test (atomic harness)
         env:
           SSHPASS: open
+          # Передаём user-ввод через env, НЕ интерполяцией в скрипт:
+          # значение с кавычкой/пробелом (ретро 15.08 round-120, issue #1331)
+          # ломало генерацию скрипта (`PATTERNS_VAL="музык" "` → unexpected EOF).
+          E2E_PATTERNS_INPUT: ${{ inputs.patterns }}
+          E2E_ACCEPTANCE_INPUT: ${{ inputs.acceptance_check }}
         run: |
           RID="${{ github.run_id }}"
           YKEY="$(cat "$YKEY_LOCAL")"
@@ -154,9 +159,9 @@ jobs:
             CMD="/tmp/e2e_voice_test.sh --text '${{ inputs.voice_text }}' --voice '${{ inputs.voice }}'"
           fi
           # patterns: если acceptance_check (legacy) задан, а patterns нет — используем его
-          PATTERNS_VAL="${{ inputs.patterns }}"
+          PATTERNS_VAL="$E2E_PATTERNS_INPUT"
           if [ -z "$PATTERNS_VAL" ]; then
-            PATTERNS_VAL="${{ inputs.acceptance_check }}"
+            PATTERNS_VAL="$E2E_ACCEPTANCE_INPUT"
           fi
           [ -n "$PATTERNS_VAL" ] && CMD="$CMD --patterns '$PATTERNS_VAL'"
           CMD="$CMD --retries ${{ inputs.retries }} --react-window ${{ inputs.react_window }}"
