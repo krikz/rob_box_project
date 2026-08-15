@@ -83,10 +83,16 @@ def main() -> int:
     else:
         print(format_music_stack_report(status))
         if not status.is_healthy and not status.fatal_errors:
-            # Missing-log case isn't shown by format_music_stack_report
-            # (fatal_errors is empty when the file is absent). Surface it
-            # so the operator notices instead of a silent degraded mode.
-            print(f"Log file not found: {log_path}")
+            # Degraded-without-fatal-errors case: the log file exists (created by
+            # the shell redirect at sclang launch) but contains no OSCdef/loaded
+            # SynthDef markers yet — sclang is still booting, or the stack is
+            # genuinely missing critical SynthDefs. load_sclang_health already
+            # covers the truly-missing file with a fatal error; here we surface
+            # the no-fatal-error degraded state so the operator can inspect the
+            # log instead of a silent degraded mode (issue #1276, retro 15.08
+            # t_124aa954: deploy workflow filed a false critical_log because
+            # validation ran before sclang wrote its log).
+            print(f"sclang log has no OSCdef/SynthDef markers yet: {log_path}")
 
     return 0 if status.is_healthy else 1
 

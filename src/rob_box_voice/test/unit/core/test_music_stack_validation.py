@@ -76,6 +76,24 @@ SynthDef preload ok: wobblebass
     assert result.fatal_errors == ()
 
 
+def test_classify_sclang_log_empty_log_reports_all_criticals_missing():
+    """Empty sclang log (file created by shell redirect, sclang still booting).
+
+    The validator must report degraded but must NOT fabricate fatal errors —
+    the caller (start_voice_assistant.sh / deploy detector) decides whether an
+    empty log at check time is a real outage or a startup race (issue #1276,
+    retro 15.08 t_124aa954: deploy workflow filed a false critical_log because
+    validation ran before sclang wrote its log).
+    """
+
+    result = classify_sclang_log("", critical_synths=["strings", "wobblebass"])
+
+    assert result.is_healthy is False
+    assert result.oscdef_registered is False
+    assert set(result.missing_synths) == {"strings", "wobblebass"}
+    assert result.fatal_errors == ()
+
+
 def test_classify_sclang_log_requires_positive_confirmation_for_each_critical_synth():
     log_text = """
 FoxDot OSCdef registered. Ready to compile SynthDefs.

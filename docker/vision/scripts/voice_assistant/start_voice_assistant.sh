@@ -84,24 +84,51 @@ if command -v sclang > /dev/null 2>&1; then
         sclang -i none /tmp/foxdot_init_resolved.sc > /tmp/sclang.log 2>&1 &
     SCLANG_PID=$!
     echo "sclang запущен (PID: ${SCLANG_PID})"
-    # Ждём 5с чтобы sclang подключился к scsynth и зарегистрировал OSCdef
-    sleep 5
+
+    # Критические SynthDef-ы — тот же список, что валидирует
+    # validate_music_stack.py (должен совпадать с foxdot_init.sc).
+    CRITICAL_SYNTHS=(strings wobblebass pianovel warmpad retrobass supersawlead imperialbrass marchstrings strangerpulsepad strangerarp strangerbrass)
+
+    # Ждём пока sclang зарегистрирует OSCdef И прелоадит все критические
+    # SynthDef-ы (максимум 90с). Раньше был фиксированный sleep 5: на
+    # медленной загрузке /tmp/sclang.log ещё пуст → validate_music_stack.py
+    # считает ВСЕ критические SynthDef-ы отсутствующими → деплой-воркфлоу
+    # заводит ложный critical_log "Missing critical SynthDefs: strings, ..."
+    # (issue #1276, ретро 15.08 t_124aa954; тот же паттерн, что ADR-0016
+    # для nav2 odom race). Маркер готовности — "SynthDef preload ok: <name>"
+    # из foxdot_init.sc, печатается ПОСЛЕ завершения path.load.
+    MUSIC_READY_TIMEOUT=90
+    MUSIC_READY_ELAPSED=0
+    MUSIC_READY=0
+    while [ $MUSIC_READY_ELAPSED -lt $MUSIC_READY_TIMEOUT ]; do
+        MUSIC_READY=1
+        for synth in "${CRITICAL_SYNTHS[@]}"; do
+            if ! grep -q "SynthDef preload ok: ${synth}" /tmp/sclang.log 2>/dev/null; then
+                MUSIC_READY=0
+                break
+            fi
+        done
+        if [ $MUSIC_READY -eq 1 ]; then
+            break
+        fi
+        sleep 2
+        MUSIC_READY_ELAPSED=$((MUSIC_READY_ELAPSED + 2))
+    done
+    if [ $MUSIC_READY -eq 1 ]; then
+        echo "✓ sclang OSCdef + критические SynthDef-ы готовы (${MUSIC_READY_ELAPSED}s)"
+    else
+        echo "⚠ Критические SynthDef-ы не прелоажены за ${MUSIC_READY_TIMEOUT}s — продолжаем с валидацией"
+    fi
     if [ -f /ws/src/rob_box_voice/scripts/validate_music_stack.py ]; then
         echo "Проверка music stack readiness..."
         MUSIC_STACK_RC=0
+        CRITICAL_ARGS=()
+        for synth in "${CRITICAL_SYNTHS[@]}"; do
+            CRITICAL_ARGS+=(--critical-synth "$synth")
+        done
         python3 /ws/src/rob_box_voice/scripts/validate_music_stack.py \
             /tmp/sclang.log \
-            --critical-synth strings \
-            --critical-synth wobblebass \
-            --critical-synth pianovel \
-            --critical-synth warmpad \
-            --critical-synth retrobass \
-            --critical-synth supersawlead \
-            --critical-synth imperialbrass \
-            --critical-synth marchstrings \
-            --critical-synth strangerpulsepad \
-            --critical-synth strangerarp \
-            --critical-synth strangerbrass || MUSIC_STACK_RC=$?
+            "${CRITICAL_ARGS[@]}" || MUSIC_STACK_RC=$?
         if [ "${MUSIC_STACK_RC}" -eq 0 ]; then
             echo "✓ Music stack validation passed"
         else
