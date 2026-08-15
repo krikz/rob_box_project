@@ -1079,15 +1079,20 @@ jobs:
             echo "deploy_status=issues" >> "$GITHUB_OUTPUT"
           fi
 
-      # ==================== ISSUE CREATION (retro 14.08 t_d01fe536) ====================
+      # ==================== ISSUE CREATION (retro 14.08 t_d01fe536 + 15.08 t_feca724c) ====================
       # Ретро 14.08 t_d01fe536: deploy round-109 упал на compose-конфликте
       # voice-resources-init ('DEPLOYMENT COMPLETED WITH ISSUES', Critical: 0 /
       # Failed Containers: 0) — issue НЕ создавался, потому что старый шаг
       # «Analyze Results and Create Issue» выше отключён (if: false, плодил
       # дубликаты) и срабатывал только на critical-findings из логов. Теперь
       # ЛЮБОЙ 'DEPLOYMENT COMPLETED WITH ISSUES' → один issue на (branch, env, день),
-      # дедуп по маркеру в body. deploy-sweep пропускает такие issue (нет
-      # deploy-problem-сигнатуры) — они остаются для ручного триажа/карточки.
+      # дедуп по маркеру в body.
+      # Ретро 15.08 t_feca724c: issues создавались БЕЗ метки hermes → агентный
+      # триаж их не видел, карточек не было, воркеры не обрабатывали (#1246/#1260
+      # висели OPEN сутками). Теперь при создании проставляем hermes (триаж
+      # превратит в kanban-карточку) + agent:devops (роль воркера — деплой-проблемы
+      # это зона devops). deploy-sweep пропускает такие issue (нет
+      # deploy-problem-сигнатуры) — они идут в триаж, а не в auto-close.
 
       - name: "🚨 Create Deployment Issue (any issues)"
         if: always() && !inputs.dry_run && steps.deploy_summary.outputs.deploy_status == 'issues'
@@ -1110,6 +1115,10 @@ jobs:
           EXISTING="$(gh issue list --repo "${{ github.repository }}" --label deployment --state open --limit 200 --json number,body 2>/dev/null | jq --arg m "$MARKER" '[.[] | select(.body | contains($m))][0].number // empty' 2>/dev/null || true)"
           if [ -n "$EXISTING" ]; then
             echo "✅ Issue #${EXISTING} already tracks ${BRANCH}/${ENV_NAME} today — skip create, comment run"
+            # Ретро 15.08 t_feca724c: старые deploy-issues (созданные до фикса)
+            # не имеют hermes-метки → триаж их не видит. Догоняем метки здесь,
+            # чтобы существующий issue тоже стал kanban-карточкой.
+            gh issue edit "$EXISTING" --repo "${{ github.repository }}" --add-label hermes --add-label agent:devops >/dev/null 2>&1 || true
             gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body \
               "Ещё один failing deploy run: $RUN_URL" >/dev/null 2>&1 || true
             exit 0
@@ -1134,8 +1143,10 @@ jobs:
             --title "🚨 Deploy issues on ${BRANCH} (${ENV_NAME}) — $(date -u +%Y-%m-%d)" \
             --body-file "$BODY_FILE" \
             --label deployment \
+            --label hermes \
+            --label agent:devops \
             >/dev/null 2>&1 \
-            && echo "✅ Created deployment issue for ${BRANCH} (${ENV_NAME})" \
+            && echo "✅ Created deployment issue for ${BRANCH} (${ENV_NAME}) [labels: deployment, hermes, agent:devops]" \
             || echo "⚠️  Failed to create deployment issue (may already exist)"
           rm -f "$BODY_FILE"
 
