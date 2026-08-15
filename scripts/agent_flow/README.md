@@ -56,6 +56,15 @@ host↔origin автофикс выполняется из ВРЕМЕННОГО 
 <wt>/scripts/agent_flow/install.sh` → `git worktree remove --force <wt>`.
 Карточка создаётся только если и этот путь не помог (md5-сверка после).
 
+**Защита install.sh от не-develop worktree (ретро 15.08 t_768244d6):**
+`install.sh` сам проверяет git-ветку `REPO_DIR` (если это git-репозиторий):
+при ветке ≠ `develop`/`main`/`master` (и не detached) он берёт файлы из
+`origin/develop` через `git archive`, а НЕ из рабочего дерева. Это закрывает
+случай «главный worktree застрял на влитой z-ветке → install.sh раскладывает
+устаревшие скрипты» (host merge-gate без b41c491d, ретро-PR висели без
+needs-review). Сознательная раскладка из своей ветки (тест фикса до merge):
+`INSTALL_FROM_BRANCH=1 bash install.sh`.
+
 ## Скрипты
 
 ### `agent-flow-triage.sh` — no_agent=true, every 30m
