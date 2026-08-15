@@ -222,21 +222,26 @@ def main() -> None:
         text = json.dumps(t, ensure_ascii=False)
         chars = len(text)
         tokens = len(enc.encode(text))
-        rows.append((name, chars, tokens, len(t["function"].get("description", ""))))
+        desc = t["function"].get("description", "")
+        desc_tokens = len(enc.encode(desc))
+        rows.append((name, chars, tokens, len(desc), desc_tokens))
 
     total_chars = sum(r[1] for r in rows)
     total_tokens = sum(r[2] for r in rows)
-    for name, chars, tokens, desc_len in rows:
-        print(f"{tokens:5d} tok {chars:6d} ch  desc={desc_len:5d}  {name}")
+    total_desc_tokens = sum(r[4] for r in rows)
+    for name, chars, tokens, desc_len, desc_tokens in rows:
+        print(f"{tokens:5d} tok {chars:6d} ch  desc={desc_len:5d} ({desc_tokens:3d} tok)  {name}")
     print()
-    print(f"TOTAL: {total_tokens} tokens, {total_chars} chars, {len(rows)} tools")
+    print(f"TOTAL (full tool JSON): {total_tokens} tokens, {total_chars} chars, {len(rows)} tools")
+    print(f"OVERHEAD (descriptions only, what the LLM reads): {total_desc_tokens} tokens")
+    print(f"  target: < 2500 (issue #813) — {'OK' if total_desc_tokens < 2500 else 'NOT MET'}")
     print(f"Average per tool: {total_tokens // max(len(rows), 1)} tokens")
 
     # Overlap analysis helpers
     print()
     print("=== Overlap candidates (issue #813) ===")
     by_prefix = {}
-    for name, _, _, _ in rows:
+    for name, _, _, _, _ in rows:
         prefix = name.split("_")[0] if "_" in name else name
         by_prefix.setdefault(prefix, []).append(name)
     for prefix, names in sorted(by_prefix.items()):
