@@ -3369,9 +3369,19 @@ class DialogueNode(Node):
             return
         # 💡 Diagnostic: log the actual state before deciding what to do.
         # Helps answer "why did the robot stay silent?" without guesswork.
+        # TASK-038 — iteration statistics: how many LLM round-trips this
+        # turn took (acceptance «средний iteration count ≤ 3 для 90%
+        # запросов»). Logged from DialogResult.tool_iterations so the
+        # criterion is verifiable from dialogue_node logs.
+        _iterations = getattr(result, "tool_iterations", None)
         self.get_logger().info(
             f"🔍 [handle_result] spoken={spoken!r} (len={len(spoken)}) "
             f"tools={list(tools_called)!r} user_input={user_input!r}"
+            + (
+                f" iterations={_iterations}"
+                if _iterations is not None
+                else ""
+            )
         )
         if not spoken:
             # 🔴 FIX (live 10:49): пустой spoken НЕ всегда ошибка — LLM

@@ -181,6 +181,12 @@ class DialogResult:
     # TRACK (сыграй баха — at most one short accept phrase, music
     # lives until the user stops it).
     speak_text_count: int = 0
+    #: Agent-loop iteration count for this turn (TASK-038 statistics).
+    #: ``1`` = the model answered on the first LLM call; ``2`` = one tool
+    #: batch then a final plain-text answer; etc. Lets dialogue_node log
+    #: the «средний iteration count ≤ 3 для 90% запросов» acceptance
+    #: criterion from real traffic instead of guessing.
+    tool_iterations: int = 0
     error: BaseException | None = None
     # ── LLM diagnostics (live 16:58) ────────────────────────────────────
     # When the LLM returns empty content (MiniMax M3 Interleaved Thinking
@@ -489,12 +495,13 @@ class DialogCore:
                             metadata=user_metadata,
                         ),
                     )
-                spoken, tools_called, finish_reason, raw_response, speak_text_count = (
+                spoken, tools_called, finish_reason, raw_response, speak_text_count, tool_iterations = (
                     await self._run_with_tools(messages)
                 )
                 result.spoken_text = spoken
                 result.tools_called = list(tools_called)
                 result.speak_text_count = speak_text_count
+                result.tool_iterations = tool_iterations
                 result.finish_reason = finish_reason
                 result.raw_response = raw_response
                 if not is_dj_auto:
@@ -576,9 +583,9 @@ class DialogCore:
     async def _run_with_tools(
         self,
         messages: list[LLMMessage],
-    ) -> tuple[str, list[str], str | None, Any, int]:
+    ) -> tuple[str, list[str], str | None, Any, int, int]:
         """Run the LLM tool loop and return ``(spoken_text, tools_called,
-        finish_reason, raw_response, speak_text_count)``.
+        finish_reason, raw_response, speak_text_count, tool_iterations)``.
 
         ``messages`` is the live message list — tool-result messages
         are appended in-place so the LLM sees a coherent conversation
@@ -609,11 +616,20 @@ class DialogCore:
         tools_called: list[str] = []
         seen: set[str] = set()
         speak_text_count: int = 0
+        #: TASK-038 — agent-loop iteration statistics. Counts the number of
+        #: LLM round-trips this turn took (1 = answered immediately, 2 = one
+        #: tool batch then a final answer, ...). Exposed on DialogResult so
+        #: dialogue_node can log «средний iteration count ≤ 3» from real
+        #: traffic instead of guessing.
+        tool_iterations: int = 0
         # Issue #1253 — any tool that returned ``is_error=True`` this turn.
         # When a tool failed and the LLM answers with ONLY words (no retry
         # tool-call, no speak_text) that is babble, not an answer — the
         # robot would voice «дан» / «бит не получился» instead of acting.
         tool_error_occurred: bool = False
+        # TASK-038 — first LLM round-trip counts as iteration 1; each
+        # re-issue after a tool batch increments (see loop below).
+        tool_iterations += 1
         response: LLMResponse = await self._stream_response(
             messages, tools=openai_tools
         )
@@ -657,6 +673,7 @@ class DialogCore:
                             ),
                         )
                     )
+                    tool_iterations += 1
                     response = await self._stream_response(messages, tools=openai_tools)
                     continue
                 break
@@ -744,6 +761,23 @@ class DialogCore:
                     )
                 )
 
+            # TASK-038 — stopping condition: after ``listen_for_response()``
+            # the agent must stop IMMEDIATELY (acceptance criterion «после
+            # listen_for_response агент останавливается немедленно, не
+            # вызывает больше tools»). The legacy dialogue_node loop had a
+            # short-circuit for this (``_continue_after_tool_calls``); the
+            # production DialogCore loop must honour it too — otherwise the
+            # LLM is re-issued after the user was already asked to speak,
+            # and may call more tools instead of waiting for the reply.
+            if any(call.name == "listen_for_response" for call in response.tool_calls):
+                logging.getLogger(__name__).info(
+                    "DialogCore: listen_for_response executed — "
+                    "stopping tool loop immediately (iteration %d).",
+                    tool_iterations,
+                )
+                break
+
+            tool_iterations += 1
             response = await self._stream_response(messages, tools=openai_tools)
 
         else:  # for-else: loop exhausted without breaking
@@ -778,6 +812,7 @@ class DialogCore:
                 response.finish_reason,
                 response.raw,
                 speak_text_count,
+                tool_iterations,
             )
 
         return (
@@ -786,6 +821,7 @@ class DialogCore:
             response.finish_reason,
             response.raw,
             speak_text_count,
+            tool_iterations,
         )
 
     async def _stream_response(
