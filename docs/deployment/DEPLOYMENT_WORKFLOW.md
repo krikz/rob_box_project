@@ -182,35 +182,51 @@ Solutions:
 ### 3. Vision Pi Deployment
 
 ```
+🔖 Fetch .image-versions
+   └─> git show ci/image-versions-vision:docker/vision/.image-versions.<tag>
+
+🔍 Verify Images Available
+   └─> docker compose config --images → docker image inspect / docker manifest inspect
+   └─> ❌ Missing images → fail BEFORE stopping containers (робот продолжает работать)
+
 🛑 Stop Containers
    └─> docker compose down --remove-orphans
 
 📥 Update Code
    └─> git checkout <branch>
-   └─> git pull origin <branch>
+   └─> git reset --hard origin/<branch>
 
 📦 Pull Docker Images
-   └─> docker compose pull
+   └─> docker compose pull --ignore-pull-failures
+   └─> после pull: docker image inspect по всем образам compose (fail на missing)
 
 🚀 Start Containers
-   └─> docker compose up -d
+   └─> docker compose up -d --pull never
 ```
 
 ### 3. Main Pi Deployment
 
 ```
+🔖 Fetch .image-versions
+   └─> git show ci/image-versions-main:docker/main/.image-versions.<tag>
+
+🔍 Verify Images Available
+   └─> docker compose config --images → docker image inspect / docker manifest inspect
+   └─> ❌ Missing images → fail BEFORE stopping containers (робот продолжает работать)
+
 🛑 Stop Containers
    └─> docker compose down --remove-orphans
 
 📥 Update Code
    └─> git checkout <branch>
-   └─> git pull origin <branch>
+   └─> git reset --hard origin/<branch>
 
 📦 Pull Docker Images
-   └─> docker compose pull
+   └─> docker compose pull --ignore-pull-failures
+   └─> после pull: docker image inspect по всем образам compose (fail на missing)
 
 🚀 Start Containers
-   └─> docker compose up -d
+   └─> docker compose up -d --pull never
 ```
 
 ### 4. Initialization Wait

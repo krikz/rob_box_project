@@ -245,6 +245,83 @@ jobs:
           echo ""
 
       # ==================== VISION PI DEPLOYMENT ====================
+      # Ретро 15.08 t_d1263bef (#1315): deploy 09:35Z падал на Start Containers —
+      # в локальном реестре не было 5 образов (voice-resources, oak-d, led-matrix,
+      # ceiling-camera, telegram-bot), pull c --ignore-pull-failures молча глотал
+      # отсутствие, и контейнеры к тому моменту УЖЕ были остановлены. Робот простоял
+      # без сервисов ~37 мин до ручного передеплоя. Теперь:
+      #   1) Verify Images Available — проверяем образы ДО остановки контейнеров,
+      #      при нехватке падаем с понятным сообщением, старый стек продолжает жить;
+      #   2) Pull Docker Images — после pull дополнительно проверяем, что все
+      #      образы compose реально присутствуют локально (--ignore-pull-failures
+      #      больше не маскирует «not found» для обязательных образов).
+
+      - name: "[Vision Pi] Fetch .image-versions from ci/image-versions-vision"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔖 Fetching .image-versions from ci/image-versions-vision branch..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # ✅ РЕТРО #1139 v2 (13.08, t_bd9b7713): SHA-теги НЕ коммитятся
+          # в develop/main/round — .image-versions живут в per-service ветке
+          # ci/image-versions-vision (пишется только Vision-билдами, гонка
+          # с main исключена). Подтягиваем актуальный файл на Pi перед pull/up.
+          # Если ветки/файла ещё нет (первый деплой после перехода) — остаётся
+          # файл из origin/<branch> (stale fallback, compose возьмёт его).
+          for attempt in 1 2 3; do
+            if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+              "cd ~/rob_box_project && git fetch origin ci/image-versions-vision 2>/dev/null; \
+               if git cat-file -e origin/ci/image-versions-vision:docker/vision/.image-versions.${{ env.IMAGE_TAG }} 2>/dev/null; then \
+                 git show origin/ci/image-versions-vision:docker/vision/.image-versions.${{ env.IMAGE_TAG }} > docker/vision/.image-versions.${{ env.IMAGE_TAG }} && \
+                 echo '✅ .image-versions.${{ env.IMAGE_TAG }} overlayed from ci/image-versions-vision'; \
+               else \
+                 echo '⚠️ ci/image-versions-vision: нет .image-versions.${{ env.IMAGE_TAG }} — используем файл из origin/${{ github.ref_name }}'; \
+               fi"; then
+              break
+            fi
+            echo "⚠️  Attempt $attempt failed, retrying in 5s..."
+            sleep 5
+          done
+
+      - name: "[Vision Pi] Verify Images Available"
+        if: '!inputs.dry_run && inputs.registry_source != ''skip'''
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔍 Verifying Vision Pi images available BEFORE stopping containers..."
+          echo "   Registry: ${{ env.registry_display }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Ретро 15.08 t_d1263bef (#1315): образы могли пропасть из реестра
+          # (в 09:35Z не было 5 образов). Проверяем ДО остановки работающего
+          # стека: каждый образ из compose должен быть либо локально, либо в реестре.
+          # Если нет — падаем, старые контейнеры продолжают работать.
+          # (registry_source=skip пропускается: оператор явно сказал «используй
+          # что уже есть локально», образы там могут быть под другим префиксом.)
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            "cd ~/rob_box_project/docker/vision && \
+             export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+             export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
+             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             IMAGES=\$(docker compose config --images) || { echo '❌ docker compose config failed'; exit 1; }; \
+             MISSING=''; \
+             for img in \$IMAGES; do \
+               if docker image inspect \"\$img\" >/dev/null 2>&1; then \
+                 echo \"✅ local: \$img\"; \
+               elif docker manifest inspect \"\$img\" >/dev/null 2>&1; then \
+                 echo \"✅ registry: \$img\"; \
+               else \
+                 echo \"❌ MISSING: \$img\"; \
+                 MISSING=\"\$MISSING \$img\"; \
+               fi; \
+             done; \
+             if [ -n \"\$MISSING\" ]; then \
+               echo ''; \
+               echo \"❌ Required images not available:\$MISSING\"; \
+               echo '   → Запусти «L: Build All Services» (или «L: Build Vision Pi Services») для ветки ${{ github.ref_name }}, затем повтори деплой.'; \
+               exit 1; \
+             fi; \
+             echo '✅ All images available'" \
+            || { echo "❌ Failed to verify images on Vision Pi"; exit 1; }
 
       - name: "[Vision Pi] Stop Containers"
         if: '!inputs.dry_run'
@@ -279,33 +356,6 @@ jobs:
             sleep 5
           done
 
-      - name: "[Vision Pi] Fetch .image-versions from ci/image-versions-vision"
-        if: '!inputs.dry_run'
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🔖 Fetching .image-versions from ci/image-versions-vision branch..."
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          # ✅ РЕТРО #1139 v2 (13.08, t_bd9b7713): SHA-теги НЕ коммитятся
-          # в develop/main/round — .image-versions живут в per-service ветке
-          # ci/image-versions-vision (пишется только Vision-билдами, гонка
-          # с main исключена). Подтягиваем актуальный файл на Pi перед pull/up.
-          # Если ветки/файла ещё нет (первый деплой после перехода) — остаётся
-          # файл из origin/<branch> (stale fallback, compose возьмёт его).
-          for attempt in 1 2 3; do
-            if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
-              "cd ~/rob_box_project && git fetch origin ci/image-versions-vision 2>/dev/null; \
-               if git cat-file -e origin/ci/image-versions-vision:docker/vision/.image-versions.${{ env.IMAGE_TAG }} 2>/dev/null; then \
-                 git show origin/ci/image-versions-vision:docker/vision/.image-versions.${{ env.IMAGE_TAG }} > docker/vision/.image-versions.${{ env.IMAGE_TAG }} && \
-                 echo '✅ .image-versions.${{ env.IMAGE_TAG }} overlayed from ci/image-versions-vision'; \
-               else \
-                 echo '⚠️ ci/image-versions-vision: нет .image-versions.${{ env.IMAGE_TAG }} — используем файл из origin/${{ github.ref_name }}'; \
-               fi"; then
-              break
-            fi
-            echo "⚠️  Attempt $attempt failed, retrying in 5s..."
-            sleep 5
-          done
-
       - name: "[Vision Pi] Pull Docker Images"
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
         run: |
@@ -314,13 +364,28 @@ jobs:
           echo "   Registry: ${{ env.registry_display }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+          # --ignore-pull-failures остаётся (внешние образы типа eclipse/zenoh
+          # могут быть недоступны при сетевых сбоях, но уже лежать локально).
+          # Однако после pull мы ПРОВЕРЯЕМ, что каждый образ из compose реально
+          # есть локально — иначе Start упадёт с «No such image» уже после остановки.
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
-             docker compose pull --ignore-pull-failures" \
-            || echo "⚠️  Warning: Some images may not be available"
+             docker compose pull --ignore-pull-failures; \
+             IMAGES=\$(docker compose config --images) || { echo '❌ docker compose config failed'; exit 1; }; \
+             MISSING=''; \
+             for img in \$IMAGES; do \
+               if ! docker image inspect \"\$img\" >/dev/null 2>&1; then MISSING=\"\$MISSING \$img\"; fi; \
+             done; \
+             if [ -n \"\$MISSING\" ]; then \
+               echo \"❌ Required images missing after pull:\$MISSING\"; \
+               echo '   → Запусти «L: Build All Services» (или «L: Build Vision Pi Services») для ветки ${{ github.ref_name }}, затем повтори деплой.'; \
+               exit 1; \
+             fi; \
+             echo '✅ All images present'" \
+            || { echo "❌ Pull/verify failed on Vision Pi"; exit 1; }
 
       # ==================== TIME SYNC ====================
 
@@ -369,6 +434,75 @@ jobs:
              docker compose up -d --pull never"
 
       # ==================== MAIN PI DEPLOYMENT ====================
+      # Ретро 15.08 t_d1263bef (#1315): та же защита, что и на Vision Pi —
+      # проверяем наличие образов ДО остановки контейнеров и после pull.
+
+      - name: "[Main Pi] Fetch .image-versions from ci/image-versions-main"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔖 Fetching .image-versions from ci/image-versions-main branch..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # ✅ РЕТРО #1139 v2 (13.08, t_bd9b7713): SHA-теги НЕ коммитятся
+          # в develop/main/round — .image-versions живут в per-service ветке
+          # ci/image-versions-main (пишется только Main-билдами, гонка
+          # с vision исключена). Подтягиваем актуальный файл на Pi перед pull/up.
+          # Если ветки/файла ещё нет (первый деплой после перехода) — остаётся
+          # файл из origin/<branch> (stale fallback, compose возьмёт его).
+          for attempt in 1 2 3; do
+            if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+              "cd ~/rob_box_project && git fetch origin ci/image-versions-main 2>/dev/null; \
+               if git cat-file -e origin/ci/image-versions-main:docker/main/.image-versions.${{ env.IMAGE_TAG }} 2>/dev/null; then \
+                 git show origin/ci/image-versions-main:docker/main/.image-versions.${{ env.IMAGE_TAG }} > docker/main/.image-versions.${{ env.IMAGE_TAG }} && \
+                 echo '✅ .image-versions.${{ env.IMAGE_TAG }} overlayed from ci/image-versions-main'; \
+               else \
+                 echo '⚠️ ci/image-versions-main: нет .image-versions.${{ env.IMAGE_TAG }} — используем файл из origin/${{ github.ref_name }}'; \
+               fi"; then
+              break
+            fi
+            echo "⚠️  Attempt $attempt failed, retrying in 5s..."
+            sleep 5
+          done
+
+      - name: "[Main Pi] Verify Images Available"
+        if: '!inputs.dry_run && inputs.registry_source != ''skip'''
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔍 Verifying Main Pi images available BEFORE stopping containers..."
+          echo "   Registry: ${{ env.registry_display }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Ретро 15.08 t_d1263bef (#1315): образы могли пропасть из реестра.
+          # Проверяем ДО остановки работающего стека: каждый образ из compose
+          # должен быть либо локально, либо в реестре. Если нет — падаем,
+          # старые контейнеры продолжают работать.
+          # (registry_source=skip пропускается: оператор явно сказал «используй
+          # что уже есть локально», образы там могут быть под другим префиксом.)
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+            "cd ~/rob_box_project/docker/main && \
+             export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+             export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
+             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             IMAGES=\$(docker compose config --images) || { echo '❌ docker compose config failed'; exit 1; }; \
+             MISSING=''; \
+             for img in \$IMAGES; do \
+               if docker image inspect \"\$img\" >/dev/null 2>&1; then \
+                 echo \"✅ local: \$img\"; \
+               elif docker manifest inspect \"\$img\" >/dev/null 2>&1; then \
+                 echo \"✅ registry: \$img\"; \
+               else \
+                 echo \"❌ MISSING: \$img\"; \
+                 MISSING=\"\$MISSING \$img\"; \
+               fi; \
+             done; \
+             if [ -n \"\$MISSING\" ]; then \
+               echo ''; \
+               echo \"❌ Required images not available:\$MISSING\"; \
+               echo '   → Запусти «L: Build All Services» (или «L: Build Main Pi Services») для ветки ${{ github.ref_name }}, затем повтори деплой.'; \
+               exit 1; \
+             fi; \
+             echo '✅ All images available'" \
+            || { echo "❌ Failed to verify images on Main Pi"; exit 1; }
 
       - name: "[Main Pi] Stop Containers"
         if: '!inputs.dry_run'
@@ -403,33 +537,6 @@ jobs:
             sleep 5
           done
 
-      - name: "[Main Pi] Fetch .image-versions from ci/image-versions-main"
-        if: '!inputs.dry_run'
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🔖 Fetching .image-versions from ci/image-versions-main branch..."
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          # ✅ РЕТРО #1139 v2 (13.08, t_bd9b7713): SHA-теги НЕ коммитятся
-          # в develop/main/round — .image-versions живут в per-service ветке
-          # ci/image-versions-main (пишется только Main-билдами, гонка
-          # с vision исключена). Подтягиваем актуальный файл на Pi перед pull/up.
-          # Если ветки/файла ещё нет (первый деплой после перехода) — остаётся
-          # файл из origin/<branch> (stale fallback, compose возьмёт его).
-          for attempt in 1 2 3; do
-            if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
-              "cd ~/rob_box_project && git fetch origin ci/image-versions-main 2>/dev/null; \
-               if git cat-file -e origin/ci/image-versions-main:docker/main/.image-versions.${{ env.IMAGE_TAG }} 2>/dev/null; then \
-                 git show origin/ci/image-versions-main:docker/main/.image-versions.${{ env.IMAGE_TAG }} > docker/main/.image-versions.${{ env.IMAGE_TAG }} && \
-                 echo '✅ .image-versions.${{ env.IMAGE_TAG }} overlayed from ci/image-versions-main'; \
-               else \
-                 echo '⚠️ ci/image-versions-main: нет .image-versions.${{ env.IMAGE_TAG }} — используем файл из origin/${{ github.ref_name }}'; \
-               fi"; then
-              break
-            fi
-            echo "⚠️  Attempt $attempt failed, retrying in 5s..."
-            sleep 5
-          done
-
       - name: "[Main Pi] Pull Docker Images"
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
         run: |
@@ -438,13 +545,28 @@ jobs:
           echo "   Registry: ${{ env.registry_display }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+          # --ignore-pull-failures остаётся (внешние образы типа eclipse/zenoh
+          # могут быть недоступны при сетевых сбоях, но уже лежать локально).
+          # Однако после pull мы ПРОВЕРЯЕМ, что каждый образ из compose реально
+          # есть локально — иначе Start упадёт с «No such image» уже после остановки.
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
-             docker compose pull --ignore-pull-failures" \
-            || echo "⚠️  Warning: Some images may not be available"
+             docker compose pull --ignore-pull-failures; \
+             IMAGES=\$(docker compose config --images) || { echo '❌ docker compose config failed'; exit 1; }; \
+             MISSING=''; \
+             for img in \$IMAGES; do \
+               if ! docker image inspect \"\$img\" >/dev/null 2>&1; then MISSING=\"\$MISSING \$img\"; fi; \
+             done; \
+             if [ -n \"\$MISSING\" ]; then \
+               echo \"❌ Required images missing after pull:\$MISSING\"; \
+               echo '   → Запусти «L: Build All Services» (или «L: Build Main Pi Services») для ветки ${{ github.ref_name }}, затем повтори деплой.'; \
+               exit 1; \
+             fi; \
+             echo '✅ All images present'" \
+            || { echo "❌ Pull/verify failed on Main Pi"; exit 1; }
 
       # ==================== TIME SYNC ====================
 
