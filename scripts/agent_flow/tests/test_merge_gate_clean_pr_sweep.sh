@@ -131,13 +131,20 @@ test_C4_labeled_pr_skipped() {
     new_test
     fixture_clean_pr 3306 'z-{agent}/3306-voice-demo' \
         'fix(voice #3306): demo' CLEAN 'dialogue_node.py' 'needs-e2e'
+    # PR с needs-e2e и ЖИВОЙ связанной issue (OPEN + needs-e2e) — не сирота:
+    # clean-pr-sweep пропускает (PROCESS & labels), pr-orphan-reconcile тоже
+    # (live issue → skip). Идемпотентность обоих путей.
+    set_state "ISSUE_3306_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_3306_LABELS_JSON" '{"labels":[{"name":"needs-e2e"}]}'
 
     run_merge_gate
 
     local journal
     journal="$(cat "$GH_JOURNAL")"
     assert_eq "0" "$(printf '%s\n' "$journal" | grep -c 'gh pr edit 3306 .*--add-label' || true)" \
-        "PR с needs-e2e → sweep не трогает" || return 1
+        "PR с needs-e2e + живая issue → ни clean-pr-sweep, ни pr-orphan не трогают" || return 1
+    assert_eq "0" "$(printf '%s\n' "$journal" | grep -c 'gh pr edit 3306 .*--remove-label' || true)" \
+        "PR с needs-e2e + живая issue → needs-e2e НЕ снимается" || return 1
 }
 
 # ===========================================================================
