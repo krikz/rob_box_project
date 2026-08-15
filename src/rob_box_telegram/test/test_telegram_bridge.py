@@ -8,15 +8,16 @@ keeps camera frames available to Telegram handlers:
     Telegram user --text/voice--> /voice/stt/result         (dialogue in)
     CompressedImage topics      -> in-memory CameraCache     (camera frames)
 
-The node deliberately does not subscribe to ``/voice/dialogue/response``:
-that topic is the dialogue-to-TTS output and consuming it here creates an
-output echo path back into Telegram.
+The node subscribes to ``/voice/dialogue/response`` and duplicates every
+dialogue/TTS output into the active Telegram chat (issue #1195, echo path
+restored queue-based after 88cecc91 removed it because of the
+asyncio-loop bug t_aad8e224).
 
 These tests cover the W9 acceptance criteria from
 ``.planning/phases/06-harness-p0-finalization/06-03-PLAN.md``:
 
-    1. Telegram message -> published to /voice/stt/result
-    2. Telegram node does not subscribe to the dialogue/TTS response topic
+    1. Telegram message -> published to /voice/stt/result (with [TG:chat_id] source marker)
+    2. Telegram node subscribes to the dialogue/TTS response topic and echoes to the chat
     3. Camera image -> forwarded to appropriate topic (CameraCache update)
     4. Telegram bot starts (mock Application builder)
     5. VPN connectivity (skipped — no container in CI; see skipVPN)
@@ -457,12 +458,110 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(published, _STD_STRING_CLS)
         self.assertEqual(published.data, "Привет, робот!")
 
-    def test_node_does_not_subscribe_to_dialogue_response(self) -> None:
-        """Telegram is input-only and must not consume dialogue/TTS output."""
+    def test_forward_to_stt_with_chat_id_adds_source_marker(self) -> None:
+        """``forward_to_stt(text, chat_id=...)`` must add the [TG:chat_id]
+        source marker (issue #1195) and record the active chat."""
 
-        topics = {sub.topic for sub in self.node._created_subscriptions}
+        pub = self._publisher_for("/voice/stt/result")
+        self.assertIsNone(self.node._active_chat_id)
 
-        self.assertNotIn("/voice/dialogue/response", topics)
+        self.node.forward_to_stt("продолжай", chat_id=-5269346516)
+
+        self.assertEqual(self.node._active_chat_id, -5269346516)
+        published = pub.publish.call_args.args[0]
+        self.assertEqual(published.data, "[TG:-5269346516] продолжай")
+
+    def test_set_active_chat_records_chat(self) -> None:
+        """``set_active_chat`` must store the chat for echo routing."""
+
+        self.assertIsNone(self.node._active_chat_id)
+        self.node.set_active_chat(12345)
+        self.assertEqual(self.node._active_chat_id, 12345)
+
+    def test_node_subscribes_to_dialogue_response(self) -> None:
+        """Telegram must consume dialogue/TTS output to echo it to the chat
+        (issue #1195 — echo path restored)."""
+
+        sub = self._subscription_for("/voice/dialogue/response")
+        self.assertIsNotNone(sub.callback)
+
+    async def test_response_echo_pushes_to_queue(self) -> None:
+        """``_on_response`` must parse the SSML payload and push
+        ``(chat_id, text)`` into the telegram loop's queue.
+
+        The send itself happens on the telegram asyncio loop
+        (``_chat_echo_worker``), never via ``run_coroutine_threadsafe``
+        from the ROS thread (t_aad8e224).
+        """
+
+        self.node._telegram_loop = asyncio.get_running_loop()
+        self.node._response_queue = asyncio.Queue()
+        self.node._active_chat_id = 12345
+
+        msg = types.SimpleNamespace(
+            data=json.dumps(
+                {"ssml": "<speak>Привет!</speak>", "speech_id": "s1"},
+                ensure_ascii=False,
+            )
+        )
+        self.node._on_response(msg)
+
+        # Give the loop a chance to run the scheduled put_nowait.
+        await asyncio.sleep(0)
+        item = self.node._response_queue.get_nowait()
+        self.assertEqual(item, (12345, "Привет!"))
+
+    async def test_response_echo_uses_payload_tg_chat_id(self) -> None:
+        """When dialogue_node routes the reply explicitly (tg_chat_id in the
+        payload), that chat wins over the fallback active chat."""
+
+        self.node._telegram_loop = asyncio.get_running_loop()
+        self.node._response_queue = asyncio.Queue()
+        self.node._active_chat_id = 999
+
+        msg = types.SimpleNamespace(
+            data=json.dumps(
+                {"ssml": "<speak>Привет!</speak>", "tg_chat_id": 777},
+                ensure_ascii=False,
+            )
+        )
+        self.node._on_response(msg)
+
+        await asyncio.sleep(0)
+        item = self.node._response_queue.get_nowait()
+        self.assertEqual(item, (777, "Привет!"))
+
+    async def test_response_echo_worker_sends_message(self) -> None:
+        """``_chat_echo_worker`` must consume the queue and call
+        ``bot.send_message`` with the routed chat_id."""
+
+        self.node._telegram_loop = asyncio.get_running_loop()
+        queue = asyncio.Queue()
+        self.node._response_queue = queue
+        self.node._telegram_app = self.node._telegram_app or MagicMock(
+            name="Application"
+        )
+        self.node._telegram_app.bot = MagicMock(name="Application.bot")
+
+        sent = asyncio.Event()
+
+        async def _fake_send(**kwargs) -> None:
+            sent.set()
+
+        self.node._telegram_app.bot.send_message = AsyncMock(side_effect=_fake_send)
+
+        worker = asyncio.create_task(self.node._chat_echo_worker())
+        queue.put_nowait((42, "Привет!"))
+        await asyncio.wait_for(sent.wait(), timeout=2.0)
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+
+        self.node._telegram_app.bot.send_message.assert_awaited_once_with(
+            chat_id=42, text="Привет!"
+        )
 
     # ── Test 2: Camera image → forwarded to appropriate topic ─────────
 
@@ -520,6 +619,75 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         # ``patched`` is bound to ``self.node`` (descriptor protocol),
         # so passing the token alone is the production-shaped call.
         self.assertIsNone(patched(self._TOKEN))
+
+
+class TestMessageDebounce(unittest.IsolatedAsyncioTestCase):
+    """Issue #1195 — debounce must not crash on 2+ rapid messages.
+
+    The old implementation stored the timer as ``loop.call_later(...)``
+    (an ``asyncio.TimerHandle``) in ``buf["task"]`` and called
+    ``buf["task"].done()`` on the second message — TimerHandle has no
+    ``.done()`` → AttributeError (visible in telegram-bot logs as "No
+    error handlers are registered"). The fix uses ``asyncio.create_task``.
+    """
+
+    def setUp(self) -> None:
+        self._node_mod = _load_telegram_node_module()
+        import rob_box_telegram.auth as auth_module
+        import rob_box_telegram.handlers.messages as messages_module
+
+        auth_module._allowed_users = {42}
+        # Speed up the debounce window so the test doesn't wait 2s.
+        messages_module._DEBOUNCE_DELAY = 0.05
+        self.messages = messages_module
+
+    def _make_update_and_context(self, text: str):
+        node = MagicMock()
+        node.forward_to_stt = MagicMock()
+
+        update = MagicMock()
+        update.effective_chat.id = 42
+        update.message.text = text
+        update.message.set_reaction = AsyncMock()
+        update.message.reply_text = AsyncMock()
+
+        context = MagicMock()
+        context.bot_data = {"node": node}
+        context.user_data = {}
+        return update, context, node
+
+    async def test_two_messages_in_a_row_do_not_crash(self) -> None:
+        """Two rapid messages must not raise AttributeError and must be
+        merged into a single forward after the debounce window."""
+        update, context, node = self._make_update_and_context("продолжай")
+
+        await self.messages.text_message_handler(update, context)
+        # Second message arrives inside the debounce window — this is the
+        # exact line that crashed before (TimerHandle.done()).
+        await self.messages.text_message_handler(update, context)
+
+        # The buffer task is a real asyncio.Task now (has .done()/.cancel()).
+        buf = context.user_data["msg_buffer"]
+        self.assertIsInstance(buf["task"], asyncio.Task)
+
+        await asyncio.sleep(0.15)  # wait past the debounce window
+
+        node.forward_to_stt.assert_called_once()
+        args, kwargs = node.forward_to_stt.call_args
+        self.assertEqual(args[0], "продолжай\nпродолжай")
+        self.assertEqual(kwargs.get("chat_id"), 42)
+
+    async def test_single_message_forwarded_with_chat_id(self) -> None:
+        """A single message is forwarded with the [TG:] source chat_id."""
+        update, context, node = self._make_update_and_context("робот привет")
+
+        await self.messages.text_message_handler(update, context)
+        await asyncio.sleep(0.15)
+
+        node.forward_to_stt.assert_called_once()
+        args, kwargs = node.forward_to_stt.call_args
+        self.assertEqual(args[0], "робот привет")
+        self.assertEqual(kwargs.get("chat_id"), 42)
 
 
 class TestTelegramBotStartup(unittest.IsolatedAsyncioTestCase):

@@ -20,7 +20,7 @@ var startupSynths = [
     "pads", "bass", "bell", "blip", "fuzz", "gong", "karp",
     "dub", "pluck", "space", "epiano", "saw", "varsaw", "square",
     "ambi", "faim", "marimba", "sitar", "viola", "noise",
-    "scatter", "orient", "creep", "shaker"
+    "scatter", "orient", "creep"
 ];
 var customSynthDir = "/ws/custom_synthdefs";
 var customSynths = ["warmpad", "retrobass", "supersawlead", "imperialbrass", "marchstrings", "strangerpulsepad", "strangerarp", "strangerbrass"];

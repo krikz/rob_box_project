@@ -155,6 +155,7 @@ def build_ssml_payload(
     batch_id: Optional[str] = None,
     batch_index: Optional[int] = None,
     batch_total: Optional[int] = None,
+    tg_chat_id: Optional[int] = None,
 ) -> str:
     """Build the JSON string consumed by ``tts_node`` on ``/voice/dialogue/response``.
 
@@ -166,6 +167,10 @@ def build_ssml_payload(
     and publishes a dedicated ``/voice/tts/batch_complete`` once the last
     chunk lands. Single-chunk turns simply reuse the chunk as both speech
     and batch identifiers — back-compat behaviour.
+
+    Issue #1195 — ``tg_chat_id`` (Telegram chat the reply should be echoed
+    into) is an extra routing hint for telegram_node; tts_node ignores
+    unknown fields.
     """
     payload: Dict[str, Any] = {
         "ssml": f"<speak>{text}</speak>",
@@ -178,6 +183,8 @@ def build_ssml_payload(
         payload["batch_index"] = int(batch_index)
     if batch_total is not None:
         payload["batch_total"] = int(batch_total)
+    if tg_chat_id is not None:
+        payload["tg_chat_id"] = int(tg_chat_id)
     return json.dumps(payload, ensure_ascii=False)
 
 

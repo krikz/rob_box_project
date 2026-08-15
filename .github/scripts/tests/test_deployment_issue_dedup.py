@@ -287,3 +287,37 @@ def test_extract_relevant_log_line_ignores_stt_short_rejection_vision() -> None:
     line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
 
     assert line is None
+
+
+def test_extract_relevant_log_line_ignores_missing_critical_synthdefs_none() -> None:
+    """Retro 15.08 t_a14ac65d: voice-assistant readiness line.
+
+    'Missing critical SynthDefs: none' means ALL critical SynthDefs are
+    present — the word 'critical' alone must not file a deployment issue.
+    """
+    log_text = "Missing critical SynthDefs: none"
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_nav2_broken_pipe_from_topic_list_head() -> None:
+    """Retro 15.08 t_a14ac65d: BrokenPipeError from `ros2 topic list | head`.
+
+    start_nav2_direct.sh greps for /odom via a pipe; head closes the pipe
+    after the first line and ros2cli prints a traceback. Benign — the topic
+    was found right after (✓ /odom topic found).
+    """
+    log_text = "\n".join(
+        [
+            "Traceback (most recent call last):",
+            '  File "/opt/ros/humble/lib/python3.10/site-packages/ros2topic/verb/list.py", line 79, in main',
+            "    print(msg.format_map(locals()))",
+            "BrokenPipeError: [Errno 32] Broken pipe",
+        ]
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None

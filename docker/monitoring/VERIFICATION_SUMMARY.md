@@ -309,6 +309,7 @@ For quick visual identification on 4-monitor setup:
 2. **Container Names:** Logs are filtered by container name, not individual node names (ROS topic filtering would require custom log parsing)
 3. **Historical Data:** Limited to Loki retention period (default 7 days)
 4. **No Metrics from ROS Topics:** Dashboards show logs and cAdvisor metrics, not ROS topic data (would require custom exporters)
+5. **Traces — per-process only (issue #1234):** OpenTelemetry spans живут в рамках процесса (dialogue_node / tts_node / stt_node), БЕЗ rclpy propagation — между ROS-нодами трейсы не связываются (ограничение из #1160, ros2_tracing #15). В Tempo видны корневые spans каждой ноды: `dialogue.llm_call`, `tts.synthesize`, `stt.recognize` + child-spans httpx.
 
 ---
 
@@ -326,6 +327,29 @@ docker restart grafana
 
 # Check Grafana logs
 docker logs grafana | tail -50
+```
+
+---
+
+### Problem: No traces in Tempo (issue #1234)
+
+**Solution:**
+```bash
+# 1. Оба сервиса должны быть healthy
+docker ps | grep -E "otel-collector|tempo"
+
+# 2. Collector принимает OTLP? (health extension на :13133)
+curl http://10.1.1.249:13133/
+
+# 3. Tempo отвечает?
+curl http://10.1.1.249:3200/ready
+
+# 4. Voice-нода шлёт трейсы? Endpoint должен быть виден из контейнера робота:
+#    OTEL_EXPORTER_OTLP_ENDPOINT (default http://10.1.1.249:4317)
+#    В логах ноды ищите "OpenTelemetry tracing initialized"
+#    Если лога нет — opentelemetry-пакеты не установлены (no-op) или collector недоступен.
+
+# 5. В Grafana: Explore → Tempo → Search → сервис dialogue_node / tts_node / stt_node
 ```
 
 ---

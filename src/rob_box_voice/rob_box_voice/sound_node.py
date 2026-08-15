@@ -91,6 +91,11 @@ class SoundNode(Node):
         # Хранилище звуков
         self.sounds: Dict[str, AudioSegment] = {}  # filename (без .mp3) → AudioSegment
         self.trigger_map: Dict[str, str] = {}  # trigger → filename mapping из catalog.json
+        # Issue #1251 — ранний «бульк» (сигнал «услышал, wake word есть»).
+        # stt_node публикует триггер "boop" на /voice/sound/trigger, как
+        # только partial/final STT содержит wake word. Маппим его на короткий
+        # клик button_click (~0.23s) — не мешает речи и не перебивает TTS.
+        self.trigger_aliases: Dict[str, str] = {"boop": "button_click"}
         self.sound_groups: Dict[str, List[str]] = {
             # Random groups for variety
             "talk": ["talk_1", "talk_2", "talk_3", "talk_4"],
@@ -235,6 +240,12 @@ class SoundNode(Node):
             available = [name for name in self.sound_groups[trigger] if name in self.sounds]
             if available:
                 return random.choice(available)
+
+        # 3.5. Issue #1251 — алиасы триггеров: "boop" → button_click (ранний «бульк»)
+        if trigger in self.trigger_aliases:
+            alias = self.trigger_aliases[trigger]
+            if alias in self.sounds:
+                return alias
 
         # 4. Попробовать найти похожий
         for sound_name in self.sounds.keys():
@@ -386,6 +397,9 @@ class SoundNode(Node):
             "ui_radio_start": None,
             "ui_random": None,
             "ui_roger": None,
+
+            # Issue #1251 — ранний «бульк» (короткий клик) — без анимации
+            "boop": None,
 
             # Robot special effects
             "robot_glitch": "error",

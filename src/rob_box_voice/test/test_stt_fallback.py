@@ -249,7 +249,10 @@ class TestRetryBehaviour:
 
 class TestFallbackDecisions:
     def test_vosk_garbage_rejected_as_short(self):
-        # Yandex timeout, Vosk вернул мусор → text=None, low_confidence
+        # Yandex timeout, Vosk вернул мусор → text=VOSK_GARBAGE (не None!),
+        # reason=low_confidence. caller (speech_audio_callback) по непустому
+        # тексту отличает rejected(short) от rejected(empty) и говорит
+        # «не расслышал» вместо молчания (issue #979 acceptance).
         primary = FakeProvider("yandex", [None])
         fallback = FakeProvider("vosk", [VOSK_GARBAGE])
 
@@ -258,7 +261,7 @@ class TestFallbackDecisions:
             b"\x00\x00" * 800,
         )
 
-        assert text is None
+        assert text == VOSK_GARBAGE
         assert attempts[-1].reason == "low_confidence"
         assert attempts[-1].text == VOSK_GARBAGE
         assert attempts[-1].provider == "vosk"
@@ -279,7 +282,8 @@ class TestFallbackDecisions:
         assert attempts[1].reason == "empty"
         assert attempts[2].reason == "empty"  # Vosk вернул "" → empty
 
-        # Короткий не-пустой → low_confidence
+        # Короткий не-пустой → low_confidence, но текст возвращается
+        # (rejected(short), не rejected(empty)) — caller переспросит.
         primary2 = FakeProvider("yandex", [None, None])
         fallback2 = FakeProvider("vosk", [VOSK_GARBAGE])
         text2, attempts2 = select_recognition(
@@ -287,7 +291,7 @@ class TestFallbackDecisions:
             b"\x00\x00" * 800,
             retry_backoff_s=0.0,
         )
-        assert text2 is None
+        assert text2 == VOSK_GARBAGE
         assert attempts2[2].reason == "low_confidence"
         assert attempts2[2].text == VOSK_GARBAGE
 
@@ -341,7 +345,8 @@ class TestFallbackDecisions:
             select_recognition([], b"\x00\x00" * 800)
 
     def test_custom_min_chars_filters_shorter_phrases(self):
-        # Увеличим min_chars до 4 — тогда "abc" (3) станет "low_confidence"
+        # Увеличим min_chars до 4 — тогда "abc" (3) станет "low_confidence",
+        # но текст вернётся (rejected(short)) — caller переспросит.
         primary = FakeProvider("yandex", [None])
         fallback = FakeProvider("vosk", ["abc"])
 
@@ -351,7 +356,7 @@ class TestFallbackDecisions:
             min_text_chars=4,
         )
 
-        assert text is None
+        assert text == "abc"
         assert attempts[-1].reason == "low_confidence"
 
 

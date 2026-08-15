@@ -326,6 +326,18 @@ errored=0
 while IFS=$'\t' read -r number title labels body; do
     [ -z "$number" ] && continue
 
+    # Ретро-фикс (13.08, #968): переоткрытые issue (closed → reopened) —
+    # это доработка, карточку создавать ЗАНОВО. Для них оба idempotency-гарда
+    # (мёртвый kanban-маркер от archived-карточки, merged PR guard) — ложные:
+    # работа была сделана, но юзер вернул задачу на доработку.
+    is_reopened=false
+    if _reopen_ts="$(gh api "repos/${GH_REPO}/issues/${number}/events" \
+        --jq '[.[] | select(.event=="reopened")] | last | .created_at' 2>/dev/null || true)" \
+        && [ -n "$_reopen_ts" ]; then
+        is_reopened=true
+        log "issue #${number} was REOPENED at ${_reopen_ts} — доработка, создаю свежую карточку"
+    fi
+
     # Ретро-фикс (11.08 t_ce3ca0d9): НЕ создаём карточку для issue, где работа
     # уже завершена — метка $DONE_LABEL (e2e-done) ставится merge-gate после
     # мержа PR + успешного e2e. Раньше триаж плодил дубликаты для таких issue
@@ -339,7 +351,8 @@ while IFS=$'\t' read -r number title labels body; do
     # Ретро-фикс (11.08 t_ce3ca0d9): раньше использовался `gh issue view
     # --comments` (GraphQL), который может не вернуть старые комментарии при
     # пагинации. Теперь — REST API с --paginate, гарантированно все комментарии.
-    if gh api "repos/${GH_REPO}/issues/${number}/comments" --paginate \
+    if [ "$is_reopened" = "false" ] && \
+        gh api "repos/${GH_REPO}/issues/${number}/comments" --paginate \
         --jq '.[].body' 2>/dev/null \
         | grep -Eq '^kanban: t_[a-f0-9]+'; then
         log "issue #${number} already has kanban marker — skip"
@@ -347,10 +360,28 @@ while IFS=$'\t' read -r number title labels body; do
     fi
 
     # Idempotency v2 (ретро 09.08 #14): карточка для этого issue уже есть.
-    if existing_id="$(printf '%s\n' "$existing_by_issue" | awk -F'\t' -v n="$number" '$1==n {print $2; exit}')" \
-        && [ -n "$existing_id" ]; then
-        log "issue #${number} already has card ${existing_id} (issue: #${number} in body) — skip"
-        skipped=$((skipped+1)); continue
+    # Ретро-фикс (13.08, #968): для REOPENED issue проверяем статус существующей
+    # карточки: если она ЖИВАЯ (running/ready/todo/blocked) — воркер уже работает,
+    # дубль НЕ создаём; если мертва (done/archived) — создаём свежую.
+    existing_id="$(printf '%s\n' "$existing_by_issue" | awk -F'\t' -v n="$number" '$1==n {print $2; exit}')"
+    if [ -n "$existing_id" ]; then
+        if [ "$is_reopened" = "false" ]; then
+            log "issue #${number} already has card ${existing_id} (issue: #${number} in body) — skip"
+            skipped=$((skipped+1)); continue
+        fi
+        _existing_status="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" show "$existing_id" --json 2>/dev/null \
+            | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("task",{}).get("status",""))
+except Exception: print("")')"
+        case "$_existing_status" in
+            running|ready|todo|blocked)
+                log "issue #${number}: карточка ${existing_id} ЖИВАЯ (status=${_existing_status}) — воркер уже работает, дубль не создаём"
+                skipped=$((skipped+1)); continue
+                ;;
+            done|archived|"")
+                log "issue #${number}: старая карточка ${existing_id} мертва (status=${_existing_status:-unknown}) — создаю свежую на доработку"
+                ;;
+        esac
     fi
 
     role="$(role_for "$labels")"
@@ -361,10 +392,79 @@ while IFS=$'\t' read -r number title labels body; do
     # этого issue, уже есть MERGED PR — работа ушла в develop, карточка не нужна.
     # Это второй рубеж после DONE_LABEL (страховка, если e2e-done не успели
     # проставить, а PR уже смержен).
-    if merged_pr="$(gh pr list --repo "$GH_REPO" --head "$branch" --state merged \
+    # Ретро-фикс (13.08, #968): для REOPENED issue этот гард ложный — юзер
+    # вернул задачу на доработку, карточку создаём заново.
+    if [ "$is_reopened" = "false" ] && \
+        merged_pr="$(gh pr list --repo "$GH_REPO" --head "$branch" --state merged \
         --json number --jq '.[0].number' 2>/dev/null || true)" \
         && [ -n "$merged_pr" ]; then
         log "issue #${number}: branch ${branch} already has MERGED PR #${merged_pr} — skip"
+        skipped=$((skipped+1)); continue
+    fi
+
+    # Ретро-фикс (13.08, #968): REOPENED issue, но на ветке уже есть OPEN PR —
+    # работа в PR (ждёт merge-gate/юзера), карточку НЕ создаём. Без этого гарда
+    # триаж плодил бесконечный цикл карточек на один issue: прошлая карточка
+    # done → «старая мертва → создаю свежую» → воркер делает ту же работу →
+    # done → ... (5+ карточек architect за 20 мин, t_6a4d501b → t_e25720e3).
+    if open_pr="$(gh pr list --repo "$GH_REPO" --head "$branch" --state open \
+        --json number --jq '.[0].number' 2>/dev/null || true)" \
+        && [ -n "$open_pr" ]; then
+        log "issue #${number}: branch ${branch} already has OPEN PR #${open_pr} — работа в PR, карточку не создаём (reopened-loop guard)"
+        skipped=$((skipped+1)); continue
+    fi
+
+    # Ретро-фикс (14.08 t_0a765152): REOPENED issue — карточку создаём ЗАНОВО,
+    # но branch_name НЕ переиспользуем, если на нём уже влит PR. Триаж брал
+    # branch_name из прошлой карточки того же issue (#1217: PR #1220 merged на
+    # z-{agent}/1217-e2e-40-deepseek, триаж создал t_7cc96c7d с ТОЙ ЖЕ веткой
+    # → merge-gate по exact-match ветки ложно заархивировал ЖИВУЮ карточку,
+    # чья работа ещё в OPEN PR #1231). Если на кандидате уже есть MERGED PR —
+    # добавляем суффикс -v2/-r2 (цикл: -v3, -v4... пока ветка не свободна).
+    if [ "$is_reopened" = "true" ]; then
+        _branch_base="$branch"
+        _branch_v=2
+        while _merged_on_branch="$(gh pr list --repo "$GH_REPO" --head "$branch" \
+            --state merged --json number --jq '.[0].number' 2>/dev/null || true)" \
+            && [ -n "$_merged_on_branch" ]; do
+            branch="${_branch_base}-v${_branch_v}"
+            _branch_v=$((_branch_v+1))
+        done
+        if [ "$branch" != "$_branch_base" ]; then
+            log "issue #${number}: REOPENED — ветка ${_branch_base} уже влита через PR #${_merged_on_branch}, беру ${branch} (ретро t_0a765152)"
+        fi
+    fi
+
+    # Ретро-фикс (13.08, #968 v3): THROTTLE — если по issue в БД уже есть
+    # карточка (ЛЮБОЙ статус, включая archived) за последние 4 часа — не
+    # создаём новую. Без этого тик каждые 2 мин плодил карточку (13:00,
+    # 13:02, 13:05...): воркер падал на spawn (worktree занят живой веткой),
+    # карточка уходила в archived, следующий тик видел «нет живой» и создавал
+    # снова. OPEN-PR guard не ловит, т.к. PR #1197 уже CLOSED.
+    # Ретро-фикс (13.08, #968 v3.1): list БЕЗ --archived НЕ возвращает archived-
+    # карточки, поэтому throttle не видел предыдущие карточки цикла (все они
+    # уходили в archived) и тик создавал новую каждые ~2-5 мин (13:13, 13:18 —
+    # даже после деплоя v3 в 13:07). Добавляем --archived: throttle видит ВСЕ
+    # карточки за 4ч, включая archived, и цикл останавливается.
+    _recent_cards="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" list --json --archived 2>/dev/null | python3 -c '
+import json, sys, re, time
+try:
+    d = json.load(sys.stdin)
+    tasks = d if isinstance(d, list) else d.get("tasks", [])
+except Exception:
+    tasks = []
+now = time.time()
+cutoff = now - 4 * 3600
+for t in tasks:
+    if (t.get("created_at") or 0) < cutoff:
+        continue
+    body = t.get("body") or ""
+    if re.search(r"issue:\s*#%s" % re.escape("'"$number"'"), body):
+        print(t.get("id", ""))
+        break
+' 2>/dev/null || true)"
+    if [ -n "$_recent_cards" ]; then
+        log "issue #${number}: свежая карточка ${_recent_cards} за последние 4ч — throttle, не создаём (reopened-loop v3)"
         skipped=$((skipped+1)); continue
     fi
 

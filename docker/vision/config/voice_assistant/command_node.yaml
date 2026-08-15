@@ -1,0 +1,13 @@
+# command_node.yaml — per-node ROS2 config (issue #1004 fix, ADR-0004)
+#
+# ЖИВОЙ конфиг для docker-деплоя (см. audio_node.yaml).
+# Все ключи соответствуют declare_parameter() в command_node.py 1:1.
+# (waypoints удалены: динамические waypoints теперь в SQLite через MCP tools
+# save_waypoint/list_waypoints — см. command_node.py:81-85.)
+
+command_node:
+  ros__parameters:
+    confidence_threshold: 0.7
+    enable_navigation: true
+    enable_follow: false
+    enable_vision: false

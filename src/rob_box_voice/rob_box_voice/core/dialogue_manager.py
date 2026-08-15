@@ -95,7 +95,12 @@ class DialogueManager:
             query_accumulation_timeout: Seconds to accumulate queries (default: 2.5)
         """
         # Wake words
-        self.wake_words = wake_words if wake_words is not None else ['робок', 'робот', 'роббокс']
+        # 🔴 fix(voice #1252): синхронизировано с dialogue_node.yaml — 12 вариантов
+        # + исторический «робик» (потерян при 9ca7fb29, 21.02).
+        self.wake_words = wake_words if wake_words is not None else [
+            'робок', 'робот', 'роббокс', 'робокос', 'роббос', 'робокс',
+            'роберт', 'рыбок', 'рома', 'бот', 'робо', 'роб', 'робик',
+        ]
         self.silence_commands = silence_commands or ['помолч', 'замолч', 'хватит']
         self.unsilence_commands = unsilence_commands or ['говори', 'включ', 'работ', 'отвеч', 'разговар']
 

@@ -76,7 +76,8 @@ def main():
     print("=" * 60)
     print()
     
-    project_root = Path(__file__).parent.parent
+    # Скрипт лежит в scripts/testing/ → корень репозитория на 3 уровня выше.
+    project_root = Path(__file__).parent.parent.parent
     results = []
     
     # Test Main Pi configurations
@@ -102,7 +103,20 @@ def main():
         project_root / "docker/main/config/monitoring/grafana-datasources.yaml",
         required_keys=["apiVersion", "datasources"]
     ))
-    
+
+    # Актуальный стек мониторинга (docker/monitoring/) — Prometheus с alert rules
+    # (ADR-0017, SL-2): prometheus.yml подключает rule_files, rules-файл содержит
+    # алерты на падение zenoh-router (Main/Vision Pi).
+    results.append(test_yaml_file(
+        project_root / "docker/monitoring/config/prometheus.yml",
+        required_keys=["global", "rule_files", "scrape_configs"]
+    ))
+
+    results.append(test_yaml_file(
+        project_root / "docker/monitoring/config/prometheus_rules.yml",
+        required_keys=["groups"]
+    ))
+
     print()
     
     # Test Vision Pi configurations

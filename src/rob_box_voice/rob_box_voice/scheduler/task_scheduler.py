@@ -248,18 +248,41 @@ class _Channel:
       at the queue (which would race with ``_pump``).
     """
 
-    def __init__(self, kind: ChannelKind, *, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(
+        self,
+        kind: ChannelKind,
+        *,
+        loop: asyncio.AbstractEventLoop,
+        on_event: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    ) -> None:
         self.kind = kind
         self._queue: "asyncio.Queue[SchedulerTask]" = asyncio.Queue()
         self._lock = asyncio.Lock()
         self._current_task_id: Optional[str] = None
         self._current_tool: Optional[str] = None
         self._pump_task: Optional[asyncio.Task[None]] = None
+        # W7c observer — forwarded from :class:`TaskScheduler`.
+        self._on_event = on_event
         # Loop is bound so the lock/queue are constructed on the
         # right event loop. ``loop`` is unused at runtime but kept
         # to fail fast when the scheduler is mis-initialised from
         # inside a non-asyncio thread.
         self._loop = loop
+
+    def _emit(self, event: str, task: SchedulerTask, **extra: Any) -> None:
+        if self._on_event is None:
+            return
+        payload: Dict[str, Any] = {
+            "task_id": task.task_id,
+            "tool": task.tool,
+            "channel": self.kind.value,
+            "status": task.status.value,
+        }
+        payload.update(extra)
+        try:
+            self._on_event(event, payload)
+        except Exception:  # noqa: BLE001 — observer must not break the pump
+            _LOG.exception("scheduler: channel on_event(%s) failed", event)
 
     def submit(self, task: SchedulerTask) -> None:
         """Enqueue *task* on this channel (sync, called from :meth:`TaskScheduler.submit`)."""
@@ -308,16 +331,20 @@ class _Channel:
                     task.status = TaskStatus.SCHEDULED
                     task.status = TaskStatus.RUNNING
                     task.started_at = time.monotonic()
+                    self._emit("task.started", task)
                     try:
                         task.result = await task.executor(task)
                         task.status = TaskStatus.COMPLETED
+                        self._emit("task.completed", task)
                     except asyncio.CancelledError:
                         task.status = TaskStatus.CANCELLED
                         task.error = "cancelled"
+                        self._emit("task.cancelled", task, reason="cancelled")
                         raise
                     except Exception as exc:  # noqa: BLE001 — MVP guards the boundary
                         task.status = TaskStatus.FAILED
                         task.error = f"{type(exc).__name__}: {exc}"
+                        self._emit("task.failed", task, error=task.error)
                         _LOG.exception(
                             "scheduler: task %s (%s) failed",
                             task.task_id, task.tool,
@@ -348,6 +375,9 @@ class _Channel:
                 t.status = TaskStatus.CANCELLED
                 t.error = "cancelled before start"
                 t.finished_at = time.monotonic()
+                self._emit(
+                    "task.cancelled", t, reason="cancelled before start"
+                )
                 # We swallowed one ``put``; mark it done so
                 # ``join`` accounting stays sane.
                 self._queue.task_done()
@@ -431,6 +461,7 @@ class TaskScheduler:
         *,
         channels: tuple[ChannelKind, ...] = DEFAULT_CHANNELS,
         loop: Optional[asyncio.AbstractEventLoop] = None,
+        on_event: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ) -> None:
         if not channels:
             raise TaskSubmitError("TaskScheduler requires at least one channel")
@@ -446,14 +477,30 @@ class TaskScheduler:
             )
         self._lock = threading.Lock()
         self._tasks: Dict[str, SchedulerTask] = {}
+        # W7c (issue #968): optional lifecycle callback — receives
+        # ``(event, payload)`` for task.created / task.started /
+        # task.completed / task.failed / task.cancelled. The dialogue
+        # node uses it to publish on /harness/task_events and to feed
+        # the [ACTIVE TASKS] LLM-context block.
+        self._on_event = on_event
         self._channels: Dict[ChannelKind, _Channel] = {
-            kind: _Channel(kind, loop=self._loop) for kind in channels
+            kind: _Channel(kind, loop=self._loop, on_event=on_event)
+            for kind in channels
         }
         self._started: bool = False
         self._shutdown: bool = False
         # Optional Phase 3 hook — left ``None`` for the MVP. When
         # set, :meth:`channel_status` reads ETA from the provider.
         self._eta_provider: Optional[Callable[[SchedulerTask], Optional[float]]] = None
+
+    def _emit(self, event: str, payload: Dict[str, Any]) -> None:
+        """Dispatch a lifecycle event to the optional ``on_event`` callback."""
+        if self._on_event is None:
+            return
+        try:
+            self._on_event(event, payload)
+        except Exception:  # noqa: BLE001 — observer must not break the scheduler
+            _LOG.exception("scheduler: on_event(%s) callback failed", event)
 
     # ----- lifecycle -----------------------------------------------------
 
@@ -516,6 +563,16 @@ class TaskScheduler:
         # ``submit`` runs on the loop that owns the channel's
         # queue; it is a sync helper (``put_nowait``).
         channel.submit(task)
+        self._emit(
+            "task.created",
+            {
+                "task_id": task.task_id,
+                "tool": task.tool,
+                "channel": task.channel.value,
+                "status": task.status.value,
+                "args_keys": sorted(task.args.keys()),
+            },
+        )
         _LOG.debug(
             "scheduler: enqueued task %s (%s) on %s",
             task.task_id, task.tool, task.channel.value,
@@ -631,6 +688,28 @@ class TaskScheduler:
     def all_statuses(self) -> Mapping[ChannelKind, ChannelStatus]:
         """Return a snapshot of every channel's status."""
         return {kind: ch.status() for kind, ch in self._channels.items()}
+
+    async def wait_until_idle(self, kind: ChannelKind) -> None:
+        """Wait until channel *kind* drains (empty queue, no current task).
+
+        W7b (issue #968): destructive tools such as ``stop_music`` that
+        arrive while the voice channel still has queued/current TTS wait
+        here, so the side effect fires only after the speech finishes —
+        ``stop_music`` can no longer outrun the TTS chunk it was meant
+        to follow (e2e v36).
+
+        Polls at 20 ms — human-scale TTS is seconds long, so the
+        polling overhead is negligible at MVP scale (Phase 3 will swap
+        in proper events).
+        """
+        channel = self._channels.get(kind)
+        if channel is None:
+            raise TaskSubmitError(f"unknown channel {kind!r}")
+        while True:
+            status = channel.status()
+            if status.queue_depth == 0 and status.current_task_id is None:
+                return
+            await asyncio.sleep(0.02)
 
     # ----- Phase 3 hooks (no-op in MVP) ---------------------------------
 

@@ -71,6 +71,64 @@ from rob_box_llm.provider import (
 
 _log = logging.getLogger(__name__)
 
+
+class _CompatLogger:
+    """Adapter: std-logging ``%``-style calls → any 1-message logger.
+
+    ``dialogue_node`` passes its rclpy ``RcutilsLogger`` into
+    :class:`HealthAwareFallbackLLM` (``logger=self.get_logger()``).
+    rclpy loggers accept exactly one message positional arg, so the
+    std-logging pattern ``log.info("... %s ...", arg1, arg2)`` raised
+    ``TypeError: RcutilsLogger.info() takes 2 positional arguments but
+    N were given`` — which killed the LLM stream and produced a silent
+    "Empty assistant response" on the robot (live 13.08.2026).
+
+    This wrapper renders ``%``-style args into a single message before
+    forwarding, so both logger flavours keep working.
+    """
+
+    __slots__ = ("_inner",)
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def _render(self, message: str, args: tuple[Any, ...]) -> str:
+        if not args:
+            return message
+        try:
+            return message % args
+        except (TypeError, ValueError):
+            # Malformed %-template or mismatched args — never crash the
+            # fallback chain because of a log line.
+            return f"{message} :: {args!r}"
+
+    def info(self, message: str, *args: Any, **kwargs: Any) -> None:
+        self._inner.info(self._render(message, args))
+
+    def warning(self, message: str, *args: Any, **kwargs: Any) -> None:
+        self._inner.warning(self._render(message, args))
+
+    def error(self, message: str, *args: Any, **kwargs: Any) -> None:
+        self._inner.error(self._render(message, args))
+
+    def debug(self, message: str, *args: Any, **kwargs: Any) -> None:
+        self._inner.debug(self._render(message, args))
+
+
+def _coerce_logger(logger: Any) -> Any:
+    """Return a logger safe for ``%``-style calls.
+
+    * ``None`` → module std-logging logger (native ``%`` support);
+    * :class:`logging.Logger` → used as-is;
+    * anything else (rclpy RcutilsLogger, test doubles) → wrapped in
+      :class:`_CompatLogger`.
+    """
+    if logger is None:
+        return _log
+    if isinstance(logger, logging.Logger):
+        return logger
+    return _CompatLogger(logger)
+
 #: Default TTL for a provider marked ``unavailable`` (seconds). Matches
 #: the "~5 min" requirement in issue #1082 — long enough to avoid
 #: re-hammering a dead provider, short enough that a topped-up quota is
@@ -418,7 +476,7 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
             raise ValueError("HealthAwareFallbackLLM requires at least one provider")
         self._cache: HealthCache = cache or HealthCache()
         self._checkers: dict[str, Any] = dict(balance_checkers or {})
-        self._log = logger if logger is not None else _log
+        self._log = _coerce_logger(logger)
 
     # ---- capability introspection --------------------------------------
 

@@ -1,0 +1,31 @@
+# stt_node.yaml — per-node ROS2 config (issue #1004 fix, ADR-0004)
+#
+# ЖИВОЙ конфиг для docker-деплоя (см. audio_node.yaml).
+# Все ключи соответствуют declare_parameter() в stt_node.py 1:1.
+
+stt_node:
+  ros__parameters:
+    model_path: /models/vosk-model-small-ru-0.22
+    sample_rate: 16000
+    # AEC mode: 'hardware' = доверяем XVF-3000 (можно перебивать робота!)
+    #           'software' = выкидываем фразы пока TTS играет
+    aec_mode: hardware
+    # Wake words для мгновенного STOP TTS (barge-in). Должны совпадать
+    # с dialogue_node.wake_words.
+    # 🔴 fix(voice #1252): синхронизировано с dialogue_node.yaml — 12 вариантов
+    # + исторический «робик». STT реально выдаёт кривые варианты («робок»,
+    # «роберт», «рыбок») — все покрываем для надёжного barge-in.
+    wake_words: [робок, робот, роббокс, робокос, роббос, робокс, роберт, рыбок, рома, бот, робо, роб, робик]
+    yandex_timeout_s: 5.0
+    yandex_max_retries: 1
+    retry_backoff_s: 1.0
+    min_text_chars: 3
+    unclear_phrase: Не расслышал, скажи ещё раз
+    unclear_cooldown_s: 5.0
+    tts_grace_s: 2.5
+    # Issue #1251 — ранний «бульк» (сигнал «услышал, wake word есть»):
+    # как только partial/final STT содержит wake word, публикуем триггер
+    # на /voice/sound/trigger → sound_node играет короткий «бульк» через
+    # ~2-3с после конца фразы (а не ~8с, когда закончатся LLM+TTS).
+    early_boop_enabled: true
+    early_boop_trigger: boop

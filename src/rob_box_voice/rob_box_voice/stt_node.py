@@ -46,11 +46,27 @@ except ImportError:  # pragma: no cover — модуль всегда есть �
 # Issue #1160 — Prometheus metrics (этап 1 observability).
 # ``prometheus_client`` — optional dep; если её нет, всё превращается в
 # no-op и старт сервера тихо возвращает ``False``.
+# Issue #1234 — OpenTelemetry traces (этап 2): init_tracing в __init__,
+# ``start_span`` — span ``stt.recognize`` вокруг распознавания.
 from rob_box_voice.observability import (
+    init_tracing,
     is_metrics_enabled,
     record_stt_recognize,
     start_metrics_server,
+    start_span,
 )
+
+try:
+    from rob_box_voice.core.dialogue_text import has_wake_word
+
+    _HAS_WAKE_WORD_AVAILABLE = True
+except ImportError:  # pragma: no cover — защита для standalone-запуска
+    _HAS_WAKE_WORD_AVAILABLE = False
+
+    def has_wake_word(text_lower: str, wake_words: list) -> bool:  # type: ignore[no-redef]
+        if not wake_words:
+            return True
+        return any(w in text_lower for w in wake_words)
 
 try:
     from rob_box_voice.core.speak_helpers import build_ssml_payload
@@ -81,6 +97,12 @@ class STTNode(Node):
     def __init__(self):
         super().__init__("stt_node")
 
+        # Issue #1234 — OpenTelemetry traces (этап 2). STT-нода не создаёт
+        # httpx-клиентов (Yandex gRPC + Vosk offline), но нам нужен
+        # корневой span ``stt.recognize``. Если opentelemetry-пакетов нет —
+        # no-op (см. observability.tracing).
+        init_tracing("stt_node")
+
         # Параметры Vosk (fallback)
         self.declare_parameter("model_path", "/models/vosk-model-small-ru-0.22")
         self.declare_parameter("sample_rate", 16000)
@@ -101,8 +123,28 @@ class STTNode(Node):
         # With 'hardware' mode the robot can be interrupted mid-speech.
         self.declare_parameter("aec_mode", "hardware")
 
-        # Wake words для немедленного STOP TTS (должны совпадать с dialogue_node!)
-        self.declare_parameter("wake_words", ["робок", "робот", "роббокс"])
+        # Wake words для немедленного STOP TTS (barge-in). Должны совпадать с dialogue_node!
+        # 🔴 fix(voice #1252): синхронизировано с dialogue_node.yaml (12 вариантов) +
+        # исторический «робик» (потерян при 9ca7fb29, 21.02). STT реально выдаёт
+        # кривые варианты («робок», «роберт», «рыбок», «роботс») — все покрываем.
+        self.declare_parameter(
+            "wake_words",
+            [
+                "робок",
+                "робот",
+                "роббокс",
+                "робокос",
+                "роббос",
+                "робокс",
+                "роберт",
+                "рыбок",
+                "рома",
+                "бот",
+                "робо",
+                "роб",
+                "робик",
+            ],
+        )
 
         # Параметры fallback/retry (issue #979): единое место для таймаутов,
         # retry и правила коротких фраз. См. rob_box_voice/stt_fallback.py.
@@ -132,6 +174,15 @@ class STTNode(Node):
         # >0.8s снова попадало в STT и замыкало петлю «не расслышал».
         self.declare_parameter("tts_grace_s", 2.5)
 
+        # Issue #1251 — ранний «бульк» (сигнал «услышал, wake word есть»).
+        # Как только Yandex partial/final содержит wake word — публикуем
+        # звуковой триггер на /voice/sound/trigger, чтобы sound_node сыграл
+        # короткий «бульк» ЧЕРЕЗ ~2-3с после конца фразы (а не через ~8с,
+        # когда LLM+TTS закончат). Полный акцепт/ответ — как раньше.
+        # wake word gate: тот же список wake_words, что у dialogue_node.
+        self.declare_parameter("early_boop_enabled", True)
+        self.declare_parameter("early_boop_trigger", "boop")
+
         self.yandex_api_key = self.get_parameter("yandex_api_key").value or os.environ.get("YANDEX_API_KEY", "")
         self.yandex_language = self.get_parameter("yandex_language").value
         self.yandex_model = self.get_parameter("yandex_model").value
@@ -149,6 +200,14 @@ class STTNode(Node):
         self.unclear_cooldown_s: float = float(self.get_parameter("unclear_cooldown_s").value)
         self.tts_grace_s: float = float(self.get_parameter("tts_grace_s").value)
         self._last_unclear_at: float = 0.0  # монотонное время последней фразы «не расслышал»
+        # Issue #1251 — ранний «бульк».
+        self.early_boop_enabled: bool = bool(self.get_parameter("early_boop_enabled").value)
+        self.early_boop_trigger: str = str(self.get_parameter("early_boop_trigger").value)
+        # «Бульк» играем ОДИН раз за фразу: Yandex шлёт несколько partials,
+        # каждый с тем же wake word — без флага продублировали бы звук N раз.
+        self._boop_fired: bool = False
+        # Момент начала обработки фразы (для телеметрии boop_latency_ms).
+        self._phrase_started_at: float = 0.0
 
         # EOU profiles configuration
         self.eou_profiles = {
@@ -210,6 +269,9 @@ class STTNode(Node):
         # слушает /voice/tts/request тем же JSON-SSML контрактом, что и
         # /voice/dialogue/response — build_ssml_payload даёт ровно это.
         self.tts_request_pub = self.create_publisher(String, "/voice/tts/request", 10)
+        # Issue #1251 — ранний «бульк»: публикуем триггер на /voice/sound/trigger
+        # (sound_node воспроизведёт короткий звук «услышал, wake word есть»).
+        self.boop_pub = self.create_publisher(String, "/voice/sound/trigger", 10)
 
         # Vosk модель и распознаватель
         self.model: Optional[Model] = None
@@ -403,13 +465,36 @@ class STTNode(Node):
         # _recognize_yandex заполнит его из speaker_analysis; Vosk fallback
         # (без speaker-анализа) оставит None — профиль не создаётся.
         self._last_speaker_tag = None
+        # Issue #1251 — сбрасываем флаг «булька» и фиксируем старт фразы
+        # для телеметрии задержки (boop_latency_ms).
+        self._boop_fired = False
+        self._phrase_started_at = time.monotonic()
 
         # Идём через единый select_recognition: primary=Yandex, fallback=Vosk,
         # 1 retry на primary, soft-timeout yandex_timeout_s. Возвращает
         # (text, attempts) — text может быть None при итоговом отклонении.
+        # Issue #1234 — OpenTelemetry span ``stt.recognize`` (этап 2):
+        # обёртка всего распознавания (включая retry/fallback). Атрибуты
+        # provider/success/duration проставляем после. no-op без OTel.
+        _stt_trace_start = time.monotonic()
         if _STT_FALLBACK_AVAILABLE:
-            text, attempts = self._recognize_with_fallback(audio_bytes)
-            log_attempts(self.get_logger(), attempts, final_text=text)
+            with start_span("stt.recognize") as _stt_span:
+                text, attempts = self._recognize_with_fallback(audio_bytes)
+                # Issue #979 — final_text передаём только если фраза реально
+                # ПРИНЯТА: иначе rejected(short) («не» от Vosk) залогируется как
+                # «accepted» — ложь, вводит в заблуждение при отладке.
+                _accepted = bool(text) and not is_short_phrase(text, min_chars=self.min_text_chars)
+                log_attempts(self.get_logger(), attempts, final_text=text if _accepted else None)
+                # Финальный провайдер — последняя попытка (или "yandex" по
+                # умолчанию; при пустом списке попыток — "unknown").
+                _stt_provider = (
+                    attempts[-1].provider if attempts else "unknown"
+                )
+                _stt_span.set_attribute("provider", _stt_provider)
+                _stt_span.set_attribute("success", _accepted)
+                _stt_span.set_attribute(
+                    "duration_s", time.monotonic() - _stt_trace_start
+                )
             # Issue #1160 — Prometheus metrics: учитываем каждую попытку
             # (включая retry и fallback на Vosk). ``result``:
             # success = финальный непустой текст; empty = итоговый отказ.
@@ -553,6 +638,41 @@ class STTNode(Node):
                 self.get_logger().info(f'✅ Vosk (fallback): "{text}"')
         return text
 
+    def _maybe_fire_early_boop(self, text: str) -> None:
+        """Issue #1251 — ранний «бульк»: сигнал «услышал, wake word есть».
+
+        Вызывается из _recognize_yandex (на partial И final) и из
+        _recognize_vosk (на final). Как только в распознанном тексте появился
+        wake word — публикуем триггер на /voice/sound/trigger, sound_node
+        сыграет короткий «бульк» ЧЕРЕЗ ~2-3с после конца фразы (а не через
+        ~8с, когда закончатся LLM+TTS). Один раз за фразу: Yandex шлёт
+        несколько partials с тем же wake word — _boop_fired глушит повторы.
+
+        Булек НЕ блокирует barge-in: sound_node сам решает, когда играть
+        (у него свой is_playing guard и AudioPlaybackManager); если юзер
+        начал говорить — звук просто пропустится или прервётся.
+        """
+        if not self.early_boop_enabled or self._boop_fired:
+            return
+        if not text or not text.strip():
+            return
+        text_lower = text.lower()
+        if not has_wake_word(text_lower, self.wake_words):
+            return
+        self._boop_fired = True
+        try:
+            msg = String()
+            msg.data = self.early_boop_trigger
+            self.boop_pub.publish(msg)
+        except Exception as e:  # noqa: BLE001 — звук не критичен для STT
+            self.get_logger().warning(f"⚠️ [boop] Ошибка публикации триггера: {e}")
+            return
+        _boop_ms = int((time.monotonic() - self._phrase_started_at) * 1000)
+        self.get_logger().info(
+            f"🔔 [boop] Ранний сигнал: wake word в тексте {text[:40]!r} "
+            f"(boop_latency_ms={_boop_ms})"
+        )
+
     def _recognize_yandex(self, audio_bytes: bytes) -> Optional[str]:
         """
         Распознавание через Yandex Cloud STT gRPC v3 (Streaming API)
@@ -646,6 +766,11 @@ class STTNode(Node):
                     _pt = response.partial.alternatives[0].text
                     if _pt and _pt.strip():
                         last_partial = _pt
+                        # Issue #1251 — ранний «бульк»: Yandex шлёт partial
+                        # как только распознал начало фразы (включая wake
+                        # word «робот»), это и есть сигнал «услышал» через
+                        # ~2-3с после конца речи.
+                        self._maybe_fire_early_boop(_pt)
                 continue
 
             # speaker_analysis - статистика говорящего (issue #1077).
@@ -705,6 +830,9 @@ class STTNode(Node):
             result_text = last_partial.strip()
         if result_text:
             self._last_speaker_tag = speaker_tag
+            # Issue #1251 — страховка: если Yandex прислал только final
+            # (без partial), бульк всё равно должен прозвучать.
+            self._maybe_fire_early_boop(result_text)
             return result_text
         # Не распознано — сбрасываем tag, fallback на Vosk без tag.
         self._last_speaker_tag = None
@@ -726,6 +854,10 @@ class STTNode(Node):
         # После всех чанков получаем финальный результат
         result = json.loads(self.recognizer.FinalResult())
         text = result.get("text", "").strip()
+
+        # Issue #1251 — Vosk fallback тоже даёт ранний «бульк» (Vosk локальный,
+        # распознаёт за ~0.5-1с, поэтому сигнал всё равно успевает в 2-3с).
+        self._maybe_fire_early_boop(text)
 
         # Сбросить распознаватель для следующей фразы
         self.recognizer = KaldiRecognizer(self.model, self.sample_rate)

@@ -114,8 +114,8 @@ RUN --mount=type=cache,target=/root/.cache,sharing=locked \
     SILERO_MODEL_URL="https://models.silero.ai/models/tts/ru/v5_ru.pt" && \
     # Vosk model is bundled in the image (Architect decision G-VOSK, option A —
     # offline-capable robot). Path MUST match model_path in
-    # src/rob_box_voice/config/voice_assistant.yaml and the default in
-    # stt_node.py: /models/vosk-model-small-ru-0.22
+    # src/rob_box_voice/config/stt_node.yaml (per-node, issue #1004) and the
+    # default in stt_node.py: /models/vosk-model-small-ru-0.22
     # Earlier mishap: this Dockerfile unzipped into /models/vosk-model-small-ru-0.22
     # and then mv'd it to /models/vosk-model-ru, while every consumer (stt_node,
     # voice_assistant.yaml, scripts, README) still pointed at the original

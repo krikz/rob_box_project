@@ -40,7 +40,7 @@ ROBOT_USER="${ROBOT_USER:-ros2}"
 # (rc=127 command not found), весь ROBOT_SSH возвращает пусто, check_cycle
 # видит пустые логи и выдаёт no_accept при живом роботе. Locale префикс
 # работает только как литерал перед командой, не через переменную.
-ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -o StrictHostKeyChecking=no ${ROBOT_USER}@${ROBOT_HOST}"
+ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -n -o StrictHostKeyChecking=no ${ROBOT_USER}@${ROBOT_HOST}"
 YANDEX_TTS_VOICE="${YANDEX_TTS_VOICE:-anton}"       # голос по умолчанию
 YANDEX_SPEED="${YANDEX_SPEED:-1.0}"
 
@@ -65,6 +65,7 @@ TEXT=""
 SCENARIO_FILE=""
 VOICE=""
 PATTERNS=""
+CHECK_TG_ECHO=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --text)     TEXT="$2"; shift 2 ;;
@@ -73,6 +74,7 @@ while [ $# -gt 0 ]; do
         --patterns) PATTERNS="$2"; shift 2 ;;
         --retries)  E2E_MAX_ATTEMPTS="$2"; shift 2 ;;
         --react-window) E2E_REACTION_WINDOW="$2"; shift 2 ;;
+        --check-tg-echo) CHECK_TG_ECHO=1; shift 1 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -206,6 +208,69 @@ check_patterns() {
     # ``rc=0`` означала success — возвращаем как есть, callers через
     # ``if check_patterns; then`` получат SUCCESS при rc=0 и FAIL при rc=1.
     return $rc
+}
+
+# Проверка эха диалога в Telegram (issue #1196, L2).
+#
+# После голосового e2e проверяем, что telegram_node получил ответ
+# dialogue_node. Без внешнего Telegram — дёшево, ловит разрыв
+# диалог↔бот. Признак: счётчик ``telegram_message_total{out,...}`` на
+# :9101/metrics вырос (бот отправил сообщение) ИЛИ в логах telegram-bot
+# есть вызов send_message. Если метрики недоступны (prometheus_client
+# не установлен / старый образ) — fallback на логи, SKIP если нет
+# вообще никаких признаков эха (это ок: голосовой e2e не обязан
+# отправлять сообщения в чат; проверка — полуавтомат для RUN_NOW).
+#
+# Usage: check_telegram_echo <before_rfc3339>
+# Возвращает: 0 = эхо подтверждено (метрика out>0 или send_message в логах),
+#             1 = эха нет (не баг — просто не было отправки)
+#             2 = telegram_node недоступен (SSH/метрики) — SKIP
+check_telegram_echo() {
+    local before="$1"
+    local tg_logs tg_metrics out_count
+
+    # 1. Метрики telegram-bot (:9101) — самый надёжный признак.
+    tg_metrics="$(${ROBOT_SSH} "docker exec telegram-bot python3 -c \"
+import urllib.request
+try:
+    data = urllib.request.urlopen('http://localhost:9101/metrics', timeout=5).read().decode()
+except Exception as e:
+    print('METRICS_UNAVAILABLE', e)
+    raise SystemExit(0)
+for line in data.splitlines():
+    if line.startswith('telegram_message_total') and 'direction=\"out\"' in line:
+        print(line)
+\" 2>/dev/null" 2>/dev/null || echo '')"
+    if [ -z "$tg_metrics" ]; then
+        log "TG_ECHO: метрики недоступны (нет prometheus_client / старый образ) — fallback на логи"
+    else
+        out_count="$(printf '%s\n' "$tg_metrics" | grep 'direction="out"' | grep -oE '[0-9]+$' | head -1)"
+        if [ -n "$out_count" ] && [ "${out_count:-0}" -gt 0 ]; then
+            log "TG_ECHO: ✅ telegram_message_total{out,...} = ${out_count} (бот отправлял сообщения)"
+            return 0
+        fi
+        log "TG_ECHO: метрика out=0 (голосовой e2e обычно не шлёт сообщения в чат) — смотрим логи"
+    fi
+
+    # 2. Логи telegram-bot: наличие send_message / dialogue response echo.
+    #    Для голосового e2e без активного чата эхо не уходит, но
+    #    telegram_node ПРИНИМАЕТ /voice/dialogue/response и логирует
+    #    "Dropping dialogue echo" — это и есть доказательство связи
+    #    диалог↔бот (L2 ловит именно разрыв на этом участке).
+    tg_logs="$(${ROBOT_SSH} "docker logs telegram-bot --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    if printf '%s' "$tg_logs" | grep -qiE "send_message|response_echo|dialogue.*echo|Echo.*chat|Dropping dialogue echo|Failed to echo"; then
+        log "TG_ECHO: ✅ telegram_node получил ответ dialogue_node (send_message / echo evidence)"
+        printf '%s\n' "$tg_logs" | grep -iE "send_message|response_echo|dialogue.*echo|Echo.*chat|Dropping dialogue echo|Failed to echo" | tail -3 > "$OUT_DIR/tg_echo_evidence.txt" 2>/dev/null || true
+        return 0
+    fi
+
+    # 3. Ни метрик, ни логов — сервис может быть не готов/не в этом контейнере.
+    if ! ${ROBOT_SSH} "docker ps --filter name=telegram-bot --format '{{.Status}}'" 2>/dev/null | grep -q Up; then
+        log "TG_ECHO: ⚠️ контейнер telegram-bot не запущен — SKIP"
+        return 2
+    fi
+    log "TG_ECHO: эха нет (метрика out=0, send_message в логах нет) — голосовой e2e это допускает"
+    return 1
 }
 
 # --- один атомарный шаг -----------------------------------------------------
@@ -357,6 +422,23 @@ if [ "$PASS" = "1" ]; then
     echo "E2E_REACTION_OK"    # маркер для пост-валидатора (в stdout → e2e_atomic_out.log)
     ensure_outdir
     echo "PASS" > "$OUT_DIR/verdict.txt"
+    # Issue #1196 L2: после голосового e2e проверяем эхо в Telegram
+    # (telegram_node получил ответ dialogue_node). Полуавтомат: включается
+    # флагом --check-tg-echo (RUN_NOW / ручной прогон). Не фейлит вердикт —
+    # голосовой e2e не обязан слать сообщения в чат; эхо-проверка ловит
+    # разрыв диалог↔бот как диагностика.
+    if [ "$CHECK_TG_ECHO" = "1" ]; then
+        TG_ECHO_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+        check_telegram_echo "$TG_ECHO_BEFORE"
+        TG_ECHO_RC=$?
+        if [ "$TG_ECHO_RC" = "0" ]; then
+            echo "E2E_TG_ECHO OK"
+        elif [ "$TG_ECHO_RC" = "2" ]; then
+            echo "E2E_TG_ECHO SKIP"
+        else
+            echo "E2E_TG_ECHO NO_ECHO"
+        fi
+    fi
     # Issue #1135/#1138: маркер для пост-валидатора в L-E2E Voice Test.yml.
     # ВАЖНО (ретро 12.08 t_4e592534): ``docker exec bash -c 'echo ...'`` БЕЗ
     # перенаправления НЕ попадает в ``docker logs`` (json-file драйвер пишет
