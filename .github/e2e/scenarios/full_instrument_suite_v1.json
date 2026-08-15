@@ -1,0 +1,52 @@
+{
+  "name": "full_instrument_suite_v1",
+  "steps": [
+    {"label": "s01_intro_sasha", "voice": "anton", "text": "Робот, привет! Меня зовут Саша, я твой хозяин", "patterns": ["speaker_id", "Саша"]},
+    {"label": "s02_mem_coffee", "voice": "anton", "text": "Робот, запомни что я люблю кофе и не люблю лук", "patterns": ["memory_save"]},
+    {"label": "s03_mem_repair", "voice": "anton", "text": "Робот, запомни что мы говорили про ремонт робота", "patterns": ["memory_save"]},
+    {"label": "s04_intro_boris", "voice": "ermil", "text": "Робот, привет! А меня зовут Борис, я твой друг", "patterns": ["speaker_id", "Борис"]},
+    {"label": "s05_mem_boris", "voice": "ermil", "text": "Робот, запомни что Борис любит футбол", "patterns": ["memory_save"]},
+
+    {"label": "s06_tongue", "voice": "anton", "text": "Робот, скажи скороговорку про карла", "patterns": ["speak_text"]},
+    {"label": "s07_vol_up", "voice": "anton", "text": "Робот, говори громче", "patterns": ["set_volume"]},
+    {"label": "s08_vol_dn", "voice": "anton", "text": "Робот, говори тише", "patterns": ["set_volume"]},
+    {"label": "s09_speed_dn", "voice": "anton", "text": "Робот, говори медленнее", "patterns": ["set_speed"]},
+    {"label": "s10_speed_up", "voice": "anton", "text": "Робот, говори быстрее", "patterns": ["set_speed"]},
+    {"label": "s11_pitch_up", "voice": "anton", "text": "Робот, говори выше голосом", "patterns": ["set_pitch"]},
+    {"label": "s12_pitch_dn", "voice": "anton", "text": "Робот, говори басом как диктор", "patterns": ["set_pitch"]},
+
+    {"label": "s13_anim_sad", "voice": "anton", "text": "Робот, покажи грустную анимацию", "patterns": ["play_animation"]},
+    {"label": "s14_anim_surp", "voice": "anton", "text": "Робот, покажи удивлённую анимацию", "patterns": ["play_animation"]},
+    {"label": "s15_snd_door", "voice": "anton", "text": "Робот, включи звук дверного звонка", "patterns": ["play_sound"]},
+    {"label": "s16_snd_police", "voice": "anton", "text": "Робот, включи звук полицейской сирены", "patterns": ["play_sound", "police_lights"]},
+    {"label": "s17_snd_happy", "voice": "anton", "text": "Робот, издай звук радости", "patterns": ["play_sound"]},
+
+    {"label": "s18_playlist", "voice": "anton", "text": "Робот, сыграй что-нибудь из своего плейлиста", "patterns": ["list_tracks", "load_track"]},
+    {"label": "s19_piano", "voice": "anton", "text": "Робот, сыграй красивую мелодию на пианино", "patterns": ["execute_music_code"]},
+    {"label": "s20_dj_on", "voice": "anton", "text": "Робот, включи диджей режим", "patterns": ["set_dj_mode"]},
+    {"label": "s21_dj_rock", "voice": "anton", "text": "Робот, смени тему на рок", "patterns": ["set_dj_mode"]},
+    {"label": "s22_stop_music", "voice": "anton", "text": "Робот, выключи музыку", "patterns": ["stop_music"]},
+    {"label": "s23_vibe", "voice": "anton", "text": "Робот, поставь спокойную атмосферу", "patterns": ["set_vibe_preset"]},
+    {"label": "s24_music_happy", "voice": "anton", "text": "Робот, сыграй что-нибудь весёлое", "patterns": ["execute_music_code"]},
+
+    {"label": "s25_time", "voice": "anton", "text": "Робот, который час", "patterns": ["get_current_time"]},
+    {"label": "s26_battery", "voice": "anton", "text": "Робот, какой уровень батареи", "patterns": ["get_battery_level"]},
+    {"label": "s27_status", "voice": "anton", "text": "Робот, как у тебя дела, всё ли работает", "patterns": ["get_robot_status"]},
+    {"label": "s28_cosmos", "voice": "anton", "text": "Робот, найди в интернете новости про космос", "patterns": ["search_web"]},
+    {"label": "s29_borsh", "voice": "anton", "text": "Робот, найди в интернете рецепт борща", "patterns": ["search_web"]},
+    {"label": "s30_date", "voice": "anton", "text": "Робот, какая сегодня дата", "patterns": ["get_current_time"]},
+
+    {"label": "s31_who_am_i", "voice": "anton", "text": "Робот, кто я такой", "patterns": ["Саша"]},
+    {"label": "s32_my_name", "voice": "anton", "text": "Робот, как меня зовут", "patterns": ["Саша"]},
+    {"label": "s33_food_pref", "voice": "anton", "text": "Робот, что я люблю из еды", "patterns": ["кофе"]},
+    {"label": "s34_talk_about", "voice": "anton", "text": "Робот, о чём мы говорили", "patterns": ["ремонт"]},
+    {"label": "s35_boris", "voice": "ermil", "text": "Робот, кто такой Борис", "patterns": ["Борис", "футбол"]},
+    {"label": "s36_about_me", "voice": "anton", "text": "Робот, что ты обо мне знаешь", "patterns": ["Саша", "кофе"]},
+
+    {"label": "s37_waypoint", "voice": "anton", "text": "Робот, запомни эту точку как домашняя", "patterns": ["save_waypoint"]},
+    {"label": "s38_stop", "voice": "anton", "text": "Робот, остановись", "patterns": ["stop_navigation"]},
+
+    {"label": "s39_anekdot_anim", "voice": "anton", "text": "Робот, расскажи анекдот и покажи весёлую анимацию", "patterns": ["play_animation", "speak_text"]},
+    {"label": "s40_intro_skills", "voice": "anton", "text": "Робот, представься и назови свои возможности", "patterns": ["speak_text"]}
+  ]
+}
