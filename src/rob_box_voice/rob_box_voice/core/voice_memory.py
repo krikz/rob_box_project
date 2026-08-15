@@ -553,7 +553,12 @@ class VoiceMemory:
         vec: List[Dict],
         limit: int,
     ) -> List[Dict]:
-        """Merge FTS + vector results, deduplicate by id, sort by score."""
+        """Merge FTS + vector results, deduplicate by id, sort by score.
+
+        When the same row id appears in both result sets, the higher score
+        wins (a strong vector hit should not be downgraded by a weak FTS
+        BM25 score for the same turn).
+        """
         seen: set = set()
         merged: List[Dict] = []
         for item in fts:
@@ -562,11 +567,17 @@ class VoiceMemory:
             seen.add(item["id"])
             merged.append(item)
         for item in vec:
-            if item["id"] not in seen:
-                item = dict(item)
-                item["source"] = "hybrid"
-                seen.add(item["id"])
-                merged.append(item)
+            if item["id"] in seen:
+                # Upgrade the score of the existing entry if the vector hit
+                # is stronger (dedup keeps the row, score reflects best match).
+                for existing in merged:
+                    if existing["id"] == item["id"] and item.get("score", 0) > existing.get("score", 0):
+                        existing["score"] = item["score"]
+                continue
+            item = dict(item)
+            item["source"] = "hybrid"
+            seen.add(item["id"])
+            merged.append(item)
         merged.sort(key=lambda x: x.get("score", 0), reverse=True)
         return merged[:limit]
 
