@@ -65,6 +65,20 @@ from rob_box_harness.tools import FakeToolProvider, ToolProvider
 from rob_box_voice.core.dialogue_text import (
     has_wake_word, is_silence_command, is_unsilence_command, strip_wake_word,
 )
+from rob_box_voice.core.dialogue_guards import (
+    BABBLE_BANNED_OPENERS as BABBLE_BANNED_OPENERS,
+    BABBLE_PERFORMANCE_KEYWORDS as BABBLE_PERFORMANCE_KEYWORDS,
+    MUSIC_GUARD_KEYWORDS,
+    MUSIC_GUARD_VOCAL_KEYWORDS,
+    MUSIC_STOP_OVERRIDES,
+    build_babble_retry_prompt,
+    build_music_retry_prompt,
+    is_metalanguage_babble,
+    is_music_stop_command,
+    is_vocal_request,
+    user_wants_music,
+    user_wants_performance,
+)
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload, split_into_chunks,
@@ -150,58 +164,11 @@ try:
 except Exception:
     StatusSkill = None  # type: ignore[assignment,misc] 
 
-# Issue #992 Bug D — banned metalanguage openers. When the LLM returns
-# plain text (no ``speak_text`` call) that begins with one of these
-# phrases — e.g. "Зачитаю рэп про космос!", "Могу бит добавить,
-# хочешь?", "Слушай, сейчас расскажу..." — the user hears a meta-
-# promise instead of the actual performance. We catch that pattern at
-# the dialogue_node boundary and force a single retry with a CRITICAL
-# prompt-level reminder.
-#
-# The list is lowercase, comma/space separated, and checked via a
-# substring match on the first ~80 chars of the LLM output (after
-# strip_markdown). Add new phrases when the LLM invents a new opener;
-# keep the list tight to avoid false positives on legitimate answers.
-BABBLE_BANNED_OPENERS: tuple = (
-    "зачит",   # зачитаю / зачитаем / зачитываю
-    "погнали",  # погнали! / ну что, погнали?
-    "могу ",    # могу бит добавить, могу спеть
-    "хочешь",  # хочешь ещё? / хочешь послушать?
-    "сейчас ",  # сейчас устроим / сейчас расскажу
-    "устроим",  # устроим концерт / устроим вечеринку
-    "давай-ка",  # давай-ка я спою
-    "давай ",  # давай я / давай попробуем
-    "слушай,",  # слушай, сейчас ...
-    "слушай ",
-    "окей, ",
-    "окей ",
-    "так, ",
-    "так ",
-    "ну что ж",
-    "переключаюсь",
-    "переключ",
-)
-
-# Issue #992 Bug D — keywords that mark the user request as a
-# performance command. When the LLM babbles on a performance request
-# we *must* retry, because the alternative is the user hearing nothing
-# (the LLM promised but never spoke). When the user just asked a
-# normal question and the LLM babbled, we still retry but the
-# consequence is less severe — the user hears ONE meta-phrase instead
-# of an answer. Keeping the heuristic narrow prevents false positives
-# on ordinary chit-chat that happens to start with «слушай».
-BABBLE_PERFORMANCE_KEYWORDS: tuple = (
-    "рэп", "реп", "rap",
-    "песн", "song", "песню", "песня",
-    "стих", "стишок", "poem", "стихотворен",
-    "зачитай", "прочитай", "прочти",
-    "спой", "пой", "спела",
-    "сыграй", "играй",
-    "музык", "мелоди", "бит", "трек",
-    "диджей", "dj ",
-    "концерт",
-    "джаз", "рок", "блюз", "частушки", "частушк",
-)
+# Issue #992 Bug D — banned metalanguage openers + performance keywords
+# live in :mod:`rob_box_voice.core.dialogue_guards` (TD-1 decomposition);
+# they are imported at the top of this module so
+# ``dialogue_node.BABBLE_BANNED_OPENERS`` / ``BABBLE_PERFORMANCE_KEYWORDS``
+# keep working for external importers and tests.
 
 
 class _FallbackLLM:
@@ -1457,9 +1424,7 @@ class DialogueNode(Node):
             # silence, а запрос остановки музыки/DJ. Подстрока «хватит»
             # матчила «хватит диджеить» → робот «молчал», а музыка
             # продолжала играть. Такие команды идут в LLM (stop_music).
-            if not any(
-                kw in text_lower for kw in self._MUSIC_STOP_OVERRIDES
-            ):
+            if not is_music_stop_command(text_lower):
                 self._llm_skipped_counter["silence_command"] += 1
                 self._handle_silence()
                 return
@@ -2421,24 +2386,11 @@ class DialogueNode(Node):
     # regression). Keep the list focused on unambiguous "play something
     # NOW" commands so the spoken nudge only fires when the user clearly
     # asked for generated music.
-    _MUSIC_GUARD_KEYWORDS = (
-        "спой",
-        "пой ",
-        "рэп",
-        "рап",
-        "диджей",
-        "dj ",
-        "dj-",
-        "песня",
-        "песню",
-        "зачитай",
-        "зачита",
-        "зачитывай",
-        "сыграй",
-        "играй",
-        "включи музык",
-        "запусти музык",
-    )
+    # Issue #992 Bug C/D — keyword sets live in
+    # :mod:`rob_box_voice.core.dialogue_guards` (TD-1 decomposition);
+    # class-level aliases keep ``node._MUSIC_GUARD_KEYWORDS`` etc.
+    # working for existing call sites and tests.
+    _MUSIC_GUARD_KEYWORDS = MUSIC_GUARD_KEYWORDS
 
     # Issue #1016 — empty-response music fallback. Более широкая эвристика
     # чем _MUSIC_GUARD_KEYWORDS: используется ТОЛЬКО в ветке «LLM вернула
@@ -2480,17 +2432,7 @@ class DialogueNode(Node):
     # в silence_commands перехватывала такие команды до LLM. Эти фразы
     # пробивают silence-гейт и идут в LLM (который вызовет stop_music +
     # set_dj_mode(enabled=false)).
-    _MUSIC_STOP_OVERRIDES = (
-        "диджеить",
-        "диджея",
-        "диджей режим",
-        "выключи музыку",
-        "выключ музыку",
-        "музыку выключ",
-        "стоп музык",
-        "останови музык",
-        "убери музык",
-    )
+    _MUSIC_STOP_OVERRIDES = MUSIC_STOP_OVERRIDES
 
     # 🔴 FIX (live 10:00): для ГОЛОСОВЫХ запросов («спой/пой/песня»)
     # speak_text достаточно — бит не обязателен (юзер мог попросить
@@ -2499,12 +2441,7 @@ class DialogueNode(Node):
     # Bug C нудит только если LLM вообще НИЧЕГО не сделала (tools
     # пуст). Для БИТО-обязательных («рэп/зачитай/диджей») — как было:
     # нуднуть если нет execute_music_code.
-    _MUSIC_GUARD_VOCAL_KEYWORDS = (
-        "спой",
-        "пой ",
-        "песня",
-        "песню",
-    )
+    _MUSIC_GUARD_VOCAL_KEYWORDS = MUSIC_GUARD_VOCAL_KEYWORDS
 
     def _user_wants_music(self, user_input: str) -> bool:
         """Heuristic: does the user request music / a track?
@@ -2513,31 +2450,11 @@ class DialogueNode(Node):
         code-side fallback should fire. The check is intentionally
         narrow so we don't retry on ordinary chit-chat that happens
         to mention "track" in passing.
+
+        Delegates to :func:`rob_box_voice.core.dialogue_guards.user_wants_music`
+        (TD-1 decomposition).
         """
-        if not user_input:
-            return False
-        low = user_input.lower()
-        matched = [kw for kw in self._MUSIC_GUARD_KEYWORDS if kw in low]
-        if matched:
-            self.get_logger().debug(
-                f"🎵 [music_guard] user_input={user_input!r} matched "
-                f"keywords={matched!r} → wants_music=True"
-            )
-            return True
-        # 💡 Diagnostic: log when input LOOKS music-related but no
-        # keyword matched — helps spot missing keywords in production.
-        # Check against the broader BABBLE_PERFORMANCE_KEYWORDS set
-        # (which includes "сыграй", "играй", "музык", etc.) to catch
-        # false-negatives without spamming on ordinary chit-chat.
-        broad_match = [kw for kw in BABBLE_PERFORMANCE_KEYWORDS if kw in low]
-        if broad_match:
-            self.get_logger().info(
-                f"🎵 [music_guard] user_input={user_input!r} matched "
-                f"broad_performance={broad_match!r} but NOT in "
-                f"MUSIC_GUARD_KEYWORDS → wants_music=False "
-                f"(возможно, нужно добавить keyword в _MUSIC_GUARD_KEYWORDS)"
-            )
-        return False
+        return user_wants_music(user_input, logger=self.get_logger())
 
     def _user_wants_music_fallback(self, user_input: str) -> bool:
         """Issue #1016 — broader heuristic for the empty-response fallback.
@@ -2578,20 +2495,12 @@ class DialogueNode(Node):
         safe — only the first 80 chars are inspected. When in doubt,
         return ``False``; :meth:`_check_babble_and_retry` will fall
         through to the standard TTS publish path.
+
+        Delegates to
+        :func:`rob_box_voice.core.dialogue_guards.is_metalanguage_babble`
+        (TD-1 decomposition).
         """
-        if not spoken_text:
-            return False
-        head = spoken_text[:80].lower().lstrip(" \t*#>-")
-        # Match the opener only at the START of the head or inside the
-        # first 30 chars (after stripping). 30 chars is enough to cover
-        # «Слушай, сейчас расскажу...» but short enough to skip
-        # legitimate mid-sentence uses like «Если хочешь, могу
-        # остановиться» or «А сейчас продолжу маршрут».
-        opener_zone = head[:30]
-        return any(
-            opener_zone.startswith(opener) or f" {opener}" in opener_zone
-            for opener in BABBLE_BANNED_OPENERS
-        )
+        return is_metalanguage_babble(spoken_text)
 
     def _user_wants_performance(self, user_input: str) -> bool:
         """Issue #992 Bug D — does the user request a *performance*?
@@ -2600,11 +2509,12 @@ class DialogueNode(Node):
         (user asked for a rap, robot returned "Зачитаю рэп про X!") or
         just a stylistic miss (user asked "что нового?", robot replied
         "Слушай, у меня тут..." — still answer-shaped, just informal).
+
+        Delegates to
+        :func:`rob_box_voice.core.dialogue_guards.user_wants_performance`
+        (TD-1 decomposition).
         """
-        if not user_input:
-            return False
-        low = user_input.lower()
-        return any(kw in low for kw in BABBLE_PERFORMANCE_KEYWORDS)
+        return user_wants_performance(user_input)
 
     def _check_babble_and_retry(
         self,
@@ -2703,24 +2613,12 @@ class DialogueNode(Node):
         in context, then appends a CRITICAL instruction that names the
         babble pattern and demands a tool-call reply (no plain text
         promises).
+
+        Delegates to
+        :func:`rob_box_voice.core.dialogue_guards.build_babble_retry_prompt`
+        (TD-1 decomposition).
         """
-        return (
-            f"{user_input}\n\n"
-            "[CRITICAL] Твой предыдущий ответ был метатекст "
-            "(начинался с «зачит», «могу», «хочешь», «сейчас», "
-            "«устроим», «погнали», «слушай», «давай», «так» или "
-            "«переключ») — пользователь слышит пустую болтовню "
-            "вместо результата.\n"
-            "❌ ЗАПРЕЩЕНО отвечать текстом-обещанием. "
-            "✅ ОБЯЗАТЕЛЬНО: вызови нужный tool в ЭТОМ же turn:\n"
-            "  • rap/песня → execute_music_code + speak_text(lyrics),\n"
-            "  • поэзия → speak_text(...) × N строк,\n"
-            "  • мелодия → execute_music_code(...),\n"
-            "  • анекдот → speak_text(...) × N.\n"
-            "После последнего speak_text верни 'done'. Никаких "
-            "мета-фраз, никаких 'Слушай, сейчас...', 'Зачитаю...', "
-            "'Могу бит добавить, хочешь?' — это BUG."
-        )
+        return build_babble_retry_prompt(user_input)
 
     def _reopen_dialogue_for_retry(self) -> None:
         """Re-drive the DSM to DIALOGUE before a synchronous retry dispatch.
@@ -2809,7 +2707,7 @@ class DialogueNode(Node):
             # Bug C видел «диджеить» → думал «юзер просит музыку» →
             # ретраил с промптом «вызови execute_music_code» (включал
             # музыку заново). Стоп-команды пропускаем полностью.
-            if any(kw in user_input.lower() for kw in self._MUSIC_STOP_OVERRIDES):
+            if is_music_stop_command(user_input):
                 self.get_logger().debug(
                     "🎵 [issue 992 Bug C] stop-command — skipping music "
                     "guard entirely"
@@ -2819,7 +2717,7 @@ class DialogueNode(Node):
             # — speak_text уже есть (песня озвучена), бит не обязателен:
             # не нудить. Только если LLM вообще ничего не сделала
             # (tools пуст) — это настоящий пропуск.
-            if any(kw in user_input.lower() for kw in self._MUSIC_GUARD_VOCAL_KEYWORDS):
+            if is_vocal_request(user_input):
                 if tools_now:
                     self.get_logger().debug(
                         "🎵 [issue 992 Bug C] vocal request, LLM replied "
@@ -2875,17 +2773,12 @@ class DialogueNode(Node):
         history (previous runs/songs) and returns ``done`` without calling
         ``execute_music_code``. This prompt explicitly resets that assumption
         and demands the tool call.
+
+        Delegates to
+        :func:`rob_box_voice.core.dialogue_guards.build_music_retry_prompt`
+        (TD-1 decomposition).
         """
-        return (
-            "[CRITICAL] В прошлом цикле ты НЕ вызвал execute_music_code, "
-            "хотя пользователь ЯВНО попросил музыку/диджея. "
-            "Музыка сейчас НЕ играет — предыдущие треки уже остановлены. "
-            "Вызови execute_music_code (Renardo code) ДО любого speak_text. "
-            "Запрос пользователя: "
-            + (user_input or "")
-            + " Если ты снова не вызовешь execute_music_code, "
-            "цикл будет считаться пустым."
-        )
+        return build_music_retry_prompt(user_input)
 
     def _build_dj_retry_prompt(self) -> str:
         """Synthetic auto-prompt for the Bug-B synchronous retry.
@@ -3426,10 +3319,7 @@ class DialogueNode(Node):
                     # 🔴 FIX (issue #1204): проверяем _source (оригинальная
                     # команда юзера), а не user_input — на ретрай-турах это
                     # синтетический CRITICAL-промпт с «диджея» внутри.
-                    if _source and any(
-                        kw in _source.lower()
-                        for kw in self._MUSIC_STOP_OVERRIDES
-                    ):
+                    if _source and is_music_stop_command(_source):
                         self.get_logger().warning(
                             "🎵 [issue 992 Bug C] stop-command + empty LLM "
                             "response — forcing music_cleanup + DJ off"
