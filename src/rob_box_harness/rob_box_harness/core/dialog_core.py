@@ -519,7 +519,16 @@ class DialogCore:
                         )
             except Exception as exc:  # noqa: BLE001 — wrap into result
                 import traceback as _tb
-                result.error = Exception(f"{exc}\n{_tb.format_exc()}")
+                # Preserve the ORIGINAL exception type (tests and callers
+                # isinstance-check it: ProviderError, ToolExecutionError,
+                # etc.) while keeping the traceback for diagnostics — it
+                # is attached as a note/attribute instead of being fused
+                # into a generic Exception.
+                try:
+                    exc.add_note(_tb.format_exc())  # Python 3.11+
+                except AttributeError:
+                    setattr(exc, "_dialog_traceback", _tb.format_exc())
+                result.error = exc
                 # The user turn was already appended BEFORE the LLM call
                 # (line above). On error, do NOT append again — that
                 # would produce a duplicate row in the conversation

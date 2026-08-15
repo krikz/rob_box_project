@@ -585,3 +585,285 @@ class TestAgentLoopFinally:
         # После listen_for_response: ждём STT
         assert node.dialogue_in_progress is True
         assert node.llm_processing is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Load / stress tests (TASK-035 acceptance criteria)
+#  ─────────────────────────────────────────────────────────────────────────────
+#  These exercise the REAL ThreadPoolExecutor path (no FakeExecutor) so they
+#  verify the agent loop's production behaviour under load:
+#    * 50+ tool-call requests complete without timeout / FuturesTimeoutError
+#    * mid-loop VAD interrupt stops the cycle without orphaned worker threads
+#    * 100+ iterations do not leak threads (memory-leak proxy)
+
+def _real_streaming_factory(node, *, hang_chunks: int = 0, tool_turns: int = 0):
+    """Build a fake LLM client whose stream returns text (and optionally N
+    tool-call turns) without requiring FakeExecutor. Returns a callable that
+    installs the client on ``node``."""
+    import threading as _threading
+
+    def _install() -> None:
+        calls = {"n": 0}
+
+        def _stream(**kwargs):
+            calls["n"] += 1
+            # Tool-call turns first, then a plain-text final answer.
+            if calls["n"] <= tool_turns:
+                tc = MagicMock()
+                tc.index = 0
+                tc.id = f"tc_load_{calls['n']}"
+                tc.function.name = "play_sound"
+                tc.function.arguments = "{}"
+                chunk = MagicMock()
+                chunk.choices[0].delta.content = None
+                chunk.choices[0].delta.tool_calls = [tc]
+                chunk.choices[0].finish_reason = None
+                done = MagicMock()
+                done.choices[0].delta.content = None
+                done.choices[0].delta.tool_calls = None
+                done.choices[0].finish_reason = "tool_calls"
+                return iter([chunk, done])
+            chunk = MagicMock()
+            chunk.choices[0].delta.content = "Привет!"
+            chunk.choices[0].delta.tool_calls = None
+            chunk.choices[0].finish_reason = None
+            done = MagicMock()
+            done.choices[0].delta.content = None
+            done.choices[0].delta.tool_calls = None
+            done.choices[0].finish_reason = "stop"
+            return iter([chunk, done])
+
+        client = MagicMock()
+        client.chat.completions.create.side_effect = _stream
+        node.client = client
+        node._llm_timeout_sec = 60.0  # acceptance: 60s limit
+
+    return _install
+
+
+class TestAgentLoopLoad:
+    """Load / stress contract from TASK-035 acceptance criteria."""
+
+    def test_50_tool_call_requests_without_timeout(self, node):
+        """50+ tool-call requests complete without timeout / FuturesTimeoutError.
+
+        Uses the real ThreadPoolExecutor path; every request has at least one
+        tool call followed by the final text turn. The 60s per-call timeout
+        must never fire (each request is sub-second here).
+        """
+        import concurrent.futures
+
+        install = _real_streaming_factory(node, tool_turns=1)
+        install()
+
+        node._execute_tool_calls = lambda tc, msgs: [
+            {'tool_call_id': tc[0]['id'], 'tool_name': 'play_sound',
+             'success': True, 'message': 'ok'}
+        ]
+
+        tool_calls = [{'id': 'tc0', 'type': 'function',
+                       'function': {'name': 'play_sound', 'arguments': '{}'}}]
+        tool_results = [{'tool_call_id': 'tc0', 'tool_name': 'play_sound',
+                         'success': True, 'message': 'ok'}]
+
+        started = time.monotonic()
+        for i in range(50):
+            node.interrupt_agent_loop = False
+            node.llm_processing = True
+            node.dialogue_in_progress = True
+            node._continue_after_tool_calls(
+                messages=[{"role": "system", "content": f"sys-{i}"}],
+                tool_calls=tool_calls,
+                tool_results=tool_results,
+            )
+            assert node.llm_processing is False, f"request {i} left llm_processing=True"
+        elapsed = time.monotonic() - started
+
+        # Each request ran one tool turn + one final turn; the whole batch
+        # must be far below the 60s per-call limit.
+        assert elapsed < 60.0, f"50 requests took {elapsed:.1f}s (>= 60s limit)"
+        assert node._speak_simple.call_count == 0  # no error fallback fired
+
+    def test_mid_loop_interrupt_stops_without_orphan_threads(self, node):
+        """VAD interrupt mid-loop stops the cycle; no worker threads leak.
+
+        The fake LLM keeps producing tool_calls forever; on the 2nd iteration
+        the interrupt flag flips (simulating barge-in). The loop must exit
+        promptly, and the thread count must return to baseline.
+        """
+        import threading
+
+        baseline = threading.active_count()
+
+        def _stream(**kwargs):
+            tc = MagicMock()
+            tc.index = 0
+            tc.id = "tc_int"
+            tc.function.name = "play_sound"
+            tc.function.arguments = "{}"
+            chunk = MagicMock()
+            chunk.choices[0].delta.content = None
+            chunk.choices[0].delta.tool_calls = [tc]
+            chunk.choices[0].finish_reason = None
+            done = MagicMock()
+            done.choices[0].delta.content = None
+            done.choices[0].delta.tool_calls = None
+            done.choices[0].finish_reason = "tool_calls"
+            return iter([chunk, done])
+
+        client = MagicMock()
+        client.chat.completions.create.side_effect = _stream
+        node.client = client
+        node._llm_timeout_sec = 10.0
+
+        executed = {"n": 0}
+
+        def _execute(tc, msgs):
+            executed["n"] += 1
+            # Flip the interrupt flag mid-loop (VAD barge-in on iteration 2).
+            if executed["n"] >= 2:
+                node.interrupt_agent_loop = True
+            return [{'tool_call_id': tc[0]['id'], 'tool_name': 'play_sound',
+                     'success': True, 'message': 'ok'}]
+
+        node._execute_tool_calls = _execute
+
+        tool_calls = [{'id': 'tc0', 'type': 'function',
+                       'function': {'name': 'play_sound', 'arguments': '{}'}}]
+        tool_results = [{'tool_call_id': 'tc0', 'tool_name': 'play_sound',
+                         'success': True, 'message': 'ok'}]
+
+        started = time.monotonic()
+        node._continue_after_tool_calls(
+            messages=[{"role": "system", "content": "sys"}],
+            tool_calls=tool_calls,
+            tool_results=tool_results,
+        )
+        elapsed = time.monotonic() - started
+
+        # Interrupt honoured: loop did not run to MAX_ITERATIONS.
+        assert executed["n"] <= 4, f"loop kept going after interrupt: {executed['n']}"
+        assert node.interrupt_agent_loop is False
+        assert node.llm_processing is False
+        assert elapsed < 5.0, f"interrupt took {elapsed:.1f}s to stop the loop"
+
+        # No orphan worker threads: give the executor a moment, then compare.
+        time.sleep(0.2)
+        after = threading.active_count()
+        assert after <= baseline + 2, (
+            f"threads leaked: baseline={baseline} after={after}"
+        )
+
+    def test_100_iterations_no_thread_leak(self, node):
+        """100+ sequential iterations do not grow the thread count.
+
+        Each iteration creates a fresh ThreadPoolExecutor (max_workers=1);
+        after completion no worker thread may remain (memory-leak proxy).
+        """
+        import threading
+
+        baseline = threading.active_count()
+        install = _real_streaming_factory(node, tool_turns=0)
+        install()
+        node._execute_tool_calls = lambda tc, msgs: [
+            {'tool_call_id': tc[0]['id'], 'tool_name': 'play_sound',
+             'success': True, 'message': 'ok'}
+        ]
+
+        tool_calls = [{'id': 'tc0', 'type': 'function',
+                       'function': {'name': 'play_sound', 'arguments': '{}'}}]
+        tool_results = [{'tool_call_id': 'tc0', 'tool_name': 'play_sound',
+                         'success': True, 'message': 'ok'}]
+
+        for i in range(100):
+            node.interrupt_agent_loop = False
+            node.llm_processing = True
+            node.dialogue_in_progress = True
+            node._continue_after_tool_calls(
+                messages=[{"role": "system", "content": f"sys-{i}"}],
+                tool_calls=tool_calls,
+                tool_results=tool_results,
+            )
+            assert node.llm_processing is False
+
+        time.sleep(0.5)  # let any executor threads wind down
+        after = threading.active_count()
+        assert after <= baseline + 2, (
+            f"thread leak after 100 iterations: baseline={baseline} after={after}"
+        )
+
+    def test_timeout_does_not_escape_as_futures_timeout_error(self, node):
+        """A per-call timeout surfaces as the apology fallback, not as an
+        unhandled FuturesTimeoutError / ThreadPoolExecutor deadlock."""
+        import concurrent.futures
+
+        def _hanging_stream(**kwargs):
+            # Producer blocks for longer than the 60ms timeout → TimeoutError.
+            time.sleep(5.0)
+            chunk = MagicMock()
+            chunk.choices[0].delta.content = "late"
+            chunk.choices[0].delta.tool_calls = None
+            chunk.choices[0].finish_reason = "stop"
+            return iter([chunk])
+
+        client = MagicMock()
+        client.chat.completions.create.side_effect = _hanging_stream
+        node.client = client
+        node._llm_timeout_sec = 0.06  # 60ms — well under acceptance 60s
+
+        node._execute_tool_calls = lambda tc, msgs: [
+            {'tool_call_id': tc[0]['id'], 'tool_name': 'play_sound',
+             'success': True, 'message': 'ok'}
+        ]
+
+        tool_calls = [{'id': 'tc0', 'type': 'function',
+                       'function': {'name': 'play_sound', 'arguments': '{}'}}]
+        tool_results = [{'tool_call_id': 'tc0', 'tool_name': 'play_sound',
+                         'success': True, 'message': 'ok'}]
+
+        try:
+            node._continue_after_tool_calls(
+                messages=[{"role": "system", "content": "sys"}],
+                tool_calls=tool_calls,
+                tool_results=tool_results,
+            )
+        except concurrent.futures.TimeoutError:
+            pytest.fail("FuturesTimeoutError escaped the agent loop")
+        except Exception as exc:  # noqa: BLE001
+            pytest.fail(f"unexpected exception escaped: {exc!r}")
+
+        # Both attempts timed out → apology fallback, flags reset.
+        assert node._speak_simple.call_count >= 1
+        msg = node._speak_simple.call_args[0][0].lower()
+        assert 'извините' in msg
+        assert node.llm_processing is False
+        assert node.dialogue_in_progress is False
+
+    def test_max_iterations_not_reached_in_normal_use(self, node):
+        """Normal single-tool-call requests finish long before MAX_ITERATIONS=30.
+
+        Guards the acceptance criterion: MAX_ITERATIONS must never be reached
+        during normal (non-runaway) use.
+        """
+        install = _real_streaming_factory(node, tool_turns=3)  # 3 tool turns
+        install()
+        node._execute_tool_calls = lambda tc, msgs: [
+            {'tool_call_id': tc[0]['id'], 'tool_name': 'play_sound',
+             'success': True, 'message': 'ok'}
+        ]
+
+        tool_calls = [{'id': 'tc0', 'type': 'function',
+                       'function': {'name': 'play_sound', 'arguments': '{}'}}]
+        tool_results = [{'tool_call_id': 'tc0', 'tool_name': 'play_sound',
+                         'success': True, 'message': 'ok'}]
+
+        node._continue_after_tool_calls(
+            messages=[{"role": "system", "content": "sys"}],
+            tool_calls=tool_calls,
+            tool_results=tool_results,
+        )
+
+        assert node._speak_simple.call_count == 0  # no "проблема" fallback
+        assert node.llm_processing is False
+        assert node.dialogue_in_progress is False
+

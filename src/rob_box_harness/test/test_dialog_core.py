@@ -1585,3 +1585,106 @@ def test_run_with_tools_executes_in_safe_order_but_returns_original_order() -> N
     assert [c.name for c in ordered] == ["speak_text", "stop_music"]
     # And the original tuple is untouched (frozen dataclass semantics).
     assert [c.name for c in calls] == ["stop_music", "speak_text"]
+
+
+# TASK-035 — agent-cycle load / stability contract (production async loop)
+# ---------------------------------------------------------------------------
+
+
+def test_50_tool_loop_requests_complete_without_timeout(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """50+ sequential user requests with tool calls complete without timeout.
+
+    Each request runs the production ``_run_with_tools`` loop (tool call →
+    LLM follow-up). Every turn must finish well inside the 60s acceptance
+    limit, and no ``asyncio.TimeoutError`` / deadlock may occur.
+    """
+    import time as _time
+
+    async def echo(args: dict[str, object]) -> str:
+        return f"e:{args.get('text')}"
+
+    # Script: first turn returns a tool call, every later turn returns text.
+    # The fake pops from the front, so seed enough tool-call responses.
+    tools_provider._handler_map = {"echo": echo}
+
+    core_obj = DialogCore(
+        llm=llm,  # type: ignore[arg-type]
+        tools=tools_provider,  # type: ignore[arg-type]
+        memory=memory,  # type: ignore[arg-type]
+        dsm=dsm,
+    )
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    started = _time.monotonic()
+    for i in range(50):
+        # Re-drive the DSM into LISTENING — DIALOGUE_END returns it to
+        # IDLE after every turn, so each request needs a fresh wake.
+        asyncio.run(core_obj.handle_wake_word(""))
+        # 2 responses per request: tool-call turn + final text turn.
+        llm.responses = [
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(id=f"c{i}", name="echo", arguments={"text": str(i)}),
+                ),
+            ),
+            LLMResponse(content=f"ответ {i}", tool_calls=()),
+        ]
+        result = asyncio.run(core_obj.process_input(f"вопрос {i}", history=[]))
+        assert result.error is None, f"request {i} failed: {result.error}"
+        assert result.spoken_text == f"ответ {i}", (
+            f"request {i} spoken={result.spoken_text!r}"
+        )
+        assert "echo" in result.tools_called
+    elapsed = _time.monotonic() - started
+
+    assert elapsed < 60.0, f"50 tool-loop requests took {elapsed:.1f}s (>= 60s limit)"
+    assert len(llm.calls) == 100  # 50 requests × 2 turns each
+
+
+def test_tool_loop_never_hits_cap_in_normal_use(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Normal multi-tool turns finish far below _MAX_TOOL_ITERATIONS."""
+    from rob_box_harness.core import dialog_core as dc
+
+    async def echo(args: dict[str, object]) -> str:
+        return f"e:{args.get('text')}"
+
+    tools_provider._handler_map = {"echo": echo}
+
+    core_obj = DialogCore(
+        llm=llm,  # type: ignore[arg-type]
+        tools=tools_provider,  # type: ignore[arg-type]
+        memory=memory,  # type: ignore[arg-type]
+        dsm=dsm,
+    )
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    # 5 tool turns, then a final text answer — realistic multi-step request.
+    llm.responses = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id=f"c{i}", name="echo", arguments={"text": str(i)}),
+            ),
+        )
+        for i in range(5)
+    ] + [LLMResponse(content="готово", tool_calls=())]
+
+    result = asyncio.run(core_obj.process_input("сделай всё", history=[]))
+
+    assert result.error is None
+    assert result.spoken_text == "готово"
+    # 1 initial + 5 tool turns + 1 final = 7 calls, far below cap+1.
+    assert len(llm.calls) < dc._MAX_TOOL_ITERATIONS + 1
+    # No "loop exhausted" warning path — the for-else never ran.
+    assert result.tools_called == ["echo"]

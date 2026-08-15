@@ -179,9 +179,9 @@ def test_require_tool_call_enters_awaiting_without_blocking_llm() -> None:
 
     async def _run() -> None:
         await _drive_to_dialogue(core)
-        await core.process_input("Едь на кухню")
+        return await core.process_input("Едь на кухню")
 
-    asyncio.run(_run())
+    result = asyncio.run(_run())
 
     # 1) The executor must NOT have been called for the require segment.
     assert tools.executed == []
@@ -218,12 +218,10 @@ def test_require_tool_call_surfaces_sentinel_result_to_llm() -> None:
     asyncio.run(_run())
 
     # The second LLM call must have seen the sentinel tool result.
-    assert len(llm.complete_calls) == 2
-    # Inspect the second call's message list.
-    second_call_messages = llm._FakeLLM__calls_dummy  # type: ignore[attr-defined]  # noqa: SLF001
-    # We can't rely on private attrs; the canonical check is the
-    # second complete() call recorded the previous tool result.
-    # Look up the messages from the LLM via a recorded attribute:
+    assert llm.complete_calls == 2
+    # The canonical check is the second complete() call recorded the
+    # previous tool result. Look up the messages from the LLM via a
+    # recorded attribute:
     if hasattr(llm, "calls"):
         msgs = llm.calls[-1]  # type: ignore[attr-defined]
     else:

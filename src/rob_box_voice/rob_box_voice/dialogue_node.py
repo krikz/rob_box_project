@@ -2960,6 +2960,14 @@ class DialogueNode(Node):
         while iteration < max_iter:
             iteration += 1
 
+            # Re-check the interrupt flag on every iteration. VAD speech
+            # detected while the LLM is mid-loop (barge-in) must stop the
+            # cycle promptly instead of waiting for MAX_ITERATIONS or the
+            # next top-level call.
+            if getattr(self, "interrupt_agent_loop", False):
+                self.interrupt_agent_loop = False
+                break
+
             # Execute any pending tool calls.
             if current_tool_calls:
                 # Pass both ``tool_calls`` and ``messages`` positionally.
@@ -3028,6 +3036,12 @@ class DialogueNode(Node):
                     future = executor.submit(_streaming_wrapper)
                     future.result(timeout=timeout_s)
                 except concurrent.futures.TimeoutError:
+                    # Best-effort cancel: prevents a queued (not yet
+                    # started) task from later mutating ``result_dict``
+                    # after we've taken the timeout path. A task that is
+                    # already streaming keeps running but its writes are
+                    # bounded by the provider's own transport timeout.
+                    future.cancel()
                     result_dict["error"] = "timeout"
                 except Exception as exc:  # noqa: BLE001
                     result_dict["error"] = str(exc)
