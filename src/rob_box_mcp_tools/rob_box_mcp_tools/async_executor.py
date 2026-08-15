@@ -166,6 +166,16 @@ class AsyncToolExecutor:
         # Кэш результатов: request_id -> result
         self.results_cache: Dict[str, Dict[str, Any]] = {}
 
+        # Event'ы для пробуждения _wait_for_result вместо busy-wait polling.
+        # request_id -> asyncio.Event. Заполняется в _wait_for_result, очищается
+        # по завершении ожидания (в т.ч. при timeout/cancel).
+        self._result_events: Dict[str, asyncio.Event] = {}
+
+        # Event loop, в котором работают _wait_for_result. Нужен, чтобы
+        # on_result_received (вызывается из ROS callback thread) мог безопасно
+        # разбудить ждущую корутину через call_soon_threadsafe.
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
         # Timeouts по типам (seconds)
         self.timeouts = {
             ToolExecutionType.INSTANT: 0.1,   # Fire-and-forget, не ждём
@@ -218,6 +228,19 @@ class AsyncToolExecutor:
         # Удаляем из long_tasks если там был
         if request_id in self.long_tasks:
             del self.long_tasks[request_id]
+
+        # Будим ждущий _wait_for_result (если есть) через asyncio.Event.
+        # on_result_received вызывается из ROS callback thread (не из event loop),
+        # поэтому используем call_soon_threadsafe для потокобезопасности.
+        # try/except — защита от RuntimeError, если loop уже закрыт
+        # (callback прилетел после shutdown).
+        event = self._result_events.get(request_id)
+        if event is not None and self._loop is not None:
+            try:
+                self._loop.call_soon_threadsafe(event.set)
+            except RuntimeError:
+                # Loop закрыт — никто уже не ждёт; результат остаётся в кэше.
+                pass
 
         # Вызываем внешний callback
         if self.result_callback:
@@ -338,20 +361,46 @@ class AsyncToolExecutor:
         """
         Ожидание результата с timeout
 
+        Вместо busy-wait polling (старый вариант: цикл с sleep(0.05))
+        используется asyncio.Event: on_result_received будит ожидающую
+        корутину через call_soon_threadsafe. Это убирает постоянный
+        polling и даёт мгновенную реакцию на результат.
+
         Args:
             request_id: ID запроса
             timeout: Timeout в секундах
 
         Returns:
             Результат выполнения
+
+        Raises:
+            asyncio.TimeoutError: если результат не пришёл за timeout
         """
-        start_time = asyncio.get_event_loop().time()
+        # Быстрый путь: результат уже в кэше (пришёл до регистрации waiter'а)
+        if request_id in self.results_cache:
+            result_data = self.results_cache.pop(request_id)
+            return result_data.get("result", {"success": False, "error": "Пустой результат"})
 
-        while request_id not in self.results_cache:
-            if asyncio.get_event_loop().time() - start_time > timeout:
-                raise asyncio.TimeoutError()
+        # Запоминаем event loop для call_soon_threadsafe в on_result_received
+        if self._loop is None:
+            self._loop = asyncio.get_running_loop()
 
-            await asyncio.sleep(0.05)  # Poll interval
+        # Регистрируем event ДО ожидания
+        event = asyncio.Event()
+        self._result_events[request_id] = event
+
+        # Race: результат мог прийти между первой проверкой кэша и регистрацией
+        # event'а — on_result_received уже прошёл мимо event'а. Повторная проверка.
+        if request_id in self.results_cache:
+            self._result_events.pop(request_id, None)
+            result_data = self.results_cache.pop(request_id)
+            return result_data.get("result", {"success": False, "error": "Пустой результат"})
+
+        try:
+            await asyncio.wait_for(event.wait(), timeout)
+        finally:
+            # Очищаем event в любом случае (результат, timeout или cancel)
+            self._result_events.pop(request_id, None)
 
         # Получаем результат из кэша
         result_data = self.results_cache.pop(request_id)
