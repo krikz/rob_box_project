@@ -80,6 +80,23 @@ def _install_ros_mocks():
     mock_std_srvs_srv = MagicMock()
     mock_std_srvs_srv.Empty = MagicMock
 
+    # ── rclpy.action, geometry_msgs, nav_msgs, nav2_msgs (command_node) ────
+    mock_rclpy_action = MagicMock()
+    mock_rclpy_action.ActionClient = MagicMock
+
+    mock_geometry_msgs = MagicMock()
+    mock_geometry_msgs_msg = MagicMock()
+    mock_geometry_msgs_msg.PoseStamped = MagicMock
+    mock_geometry_msgs_msg.Twist = MagicMock
+
+    mock_nav_msgs = MagicMock()
+    mock_nav_msgs_msg = MagicMock()
+    mock_nav_msgs_msg.Odometry = MagicMock
+
+    mock_nav2_msgs = MagicMock()
+    mock_nav2_msgs_action = MagicMock()
+    mock_nav2_msgs_action.NavigateToPose = MagicMock
+
     # ── rob_box_mcp_tools (опциональный) ───────────────────────────────────
     mock_mcp = MagicMock()
     mock_mcp_adapter = MagicMock()
@@ -123,12 +140,19 @@ def _install_ros_mocks():
     mocks = {
         "rclpy": mock_rclpy,
         "rclpy.node": mock_rclpy_node,
+        "rclpy.action": mock_rclpy_action,
         "rclpy.callback_groups": mock_callback_groups,
         "rclpy.qos": mock_qos,
         "std_msgs": mock_std_msgs,
         "std_msgs.msg": mock_std_msgs_msg,
         "std_srvs": mock_std_srvs,
         "std_srvs.srv": mock_std_srvs_srv,
+        "geometry_msgs": mock_geometry_msgs,
+        "geometry_msgs.msg": mock_geometry_msgs_msg,
+        "nav_msgs": mock_nav_msgs,
+        "nav_msgs.msg": mock_nav_msgs_msg,
+        "nav2_msgs": mock_nav2_msgs,
+        "nav2_msgs.action": mock_nav2_msgs_action,
         "rob_box_mcp_tools": mock_mcp,
         "rob_box_mcp_tools.llm_adapter": mock_mcp_adapter,
         "agents": fake_agents,

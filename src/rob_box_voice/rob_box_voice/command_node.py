@@ -1,25 +1,31 @@
 #!/usr/bin/env python3
 """
 CommandNode - распознавание голосовых команд для управления роботом
-Подписывается: /voice/stt/result (String)
-Публикует: /voice/command/intent (String), /voice/command/feedback (String)
+Подписывается: /voice/stt/result (String), /odom (Odometry),
+               /perception/vision_context (String)
+Публикует: /voice/command/intent (String), /voice/command/feedback (String),
+           /perception/vision/request (String), /command/follow (String)
 Action Clients: NavigateToPose, FollowPath
 
 REFACTORED: Now uses CommandParser from core module for intent classification
+TASK-052 (#819): real handlers — position via TF/odom, OAK-D vision trigger,
+                 person-following via Nav2 follow command.
 """
 
+import json
+import math
+from typing import Dict, Optional
+
 import rclpy
-from rclpy.node import Node
 from rclpy.action import ActionClient
+from rclpy.node import Node
 from std_msgs.msg import String
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 from nav2_msgs.action import NavigateToPose
 
-from typing import Optional, Dict, List
-from geometry_msgs.msg import Twist
-
 # Import from core module
-from rob_box_voice.core.command_parser import CommandParser, Command, IntentType
+from rob_box_voice.core.command_parser import Command, CommandParser, IntentType
 
 
 class CommandNode(Node):
@@ -31,8 +37,9 @@ class CommandNode(Node):
         # Параметры
         self.declare_parameter('confidence_threshold', 0.7)
         self.declare_parameter('enable_navigation', True)
-        self.declare_parameter('enable_follow', False)  # TODO: Phase 6
-        self.declare_parameter('enable_vision', False)  # TODO: Phase 6
+        # TASK-052: follow/vision реализованы (ранее TODO Phase 6)
+        self.declare_parameter('enable_follow', True)
+        self.declare_parameter('enable_vision', True)
 
         self.confidence_threshold = self.get_parameter('confidence_threshold').value
         self.enable_navigation = self.get_parameter('enable_navigation').value
@@ -64,8 +71,42 @@ class CommandNode(Node):
         # Приоритет ниже чем у оператора (joy:100, web:50) но выше Nav2 (10)
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel_voice', 10)
 
+        # TASK-052: Publisher для запроса детекции в OAK-D pipeline
+        self.vision_request_pub = self.create_publisher(String, '/perception/vision/request', 10)
+
+        # TASK-052: Publisher для управления режимом следования (follow controller)
+        self.follow_pub = self.create_publisher(String, '/command/follow', 10)
+
+        # TASK-052: Odometry cache — источник реальной позиции (fallback для TF)
+        self.odom_sub = self.create_subscription(
+            Odometry,
+            '/odom',
+            self.odom_callback,
+            10
+        )
+        self._last_odom: Optional[Dict[str, float]] = None  # {x, y, theta}
+
+        # TASK-052: Vision context — последний ответ OAK-D pipeline
+        self.vision_context_sub = self.create_subscription(
+            String,
+            '/perception/vision_context',
+            self.vision_context_callback,
+            10
+        )
+        self._last_vision_context: Optional[Dict] = None
+
+        # TASK-052: TF2 buffer для lookup map→base_link (реальная позиция)
+        self._tf_buffer = None
+        try:
+            import tf2_ros
+            self._tf_buffer = tf2_ros.Buffer()
+            self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+        except Exception as exc:  # pragma: no cover — hardware/ROS-dependent
+            self.get_logger().warn(f'⚠️ TF2 недоступен: {exc}')
+
         # State tracking
         self.dialogue_state = 'IDLE'  # IDLE | LISTENING | DIALOGUE | SILENCED
+        self.follow_active = False  # TASK-052: текущее состояние режима следования
 
         # Action clients
         if self.enable_navigation:
@@ -92,6 +133,34 @@ class CommandNode(Node):
         """Callback для состояния dialogue_node."""
         self.dialogue_state = msg.data
         self.get_logger().debug(f'📊 Dialogue state: {self.dialogue_state}')
+
+    def odom_callback(self, msg: Odometry):
+        """Кэшировать последнюю одометрию для ответа на статус.
+
+        TASK-052: fallback-источник реальной позиции, если TF map→base_link
+        ещё не доступен (например при старте локализации).
+        """
+        pose = msg.pose.pose
+        qz = pose.orientation.z
+        qw = pose.orientation.w
+        self._last_odom = {
+            'x': pose.position.x,
+            'y': pose.position.y,
+            'theta': 2.0 * math.atan2(qz, qw),
+        }
+
+    def vision_context_callback(self, msg: String):
+        """Кэшировать последний vision context (JSON) от OAK-D pipeline.
+
+        TASK-052: реальные результаты детекции публикуются на
+        /perception/vision_context; handle_vision отвечает по этому кэшу.
+        """
+        try:
+            data = json.loads(msg.data)
+            if isinstance(data, dict):
+                self._last_vision_context = data
+        except (ValueError, TypeError):
+            self.get_logger().warn(f'⚠️ Некорректный vision context: {msg.data[:100]}')
 
     def stt_callback(self, msg: String):
         """Обработка распознанной речи."""
@@ -260,6 +329,14 @@ class CommandNode(Node):
         self.get_logger().info('🛑 Остановка')
         self.publish_feedback('Останавливаюсь')
 
+        # TASK-052: отключить режим следования, если он активен
+        if self.follow_active:
+            self.follow_active = False
+            stop_follow = String()
+            stop_follow.data = 'stop'
+            self.follow_pub.publish(stop_follow)
+            self.get_logger().info('🛑 Режим следования выключен')
+
         # Отменить ВСЕ Nav2 goals через cancel service
         if self.enable_navigation:
             try:
@@ -337,14 +414,65 @@ class CommandNode(Node):
         # Отправить Nav2 goal относительно текущей позиции
         self.send_relative_nav2_goal(x, y, theta)
 
+    def _lookup_map_pose(self) -> Optional[Dict[str, float]]:
+        """Получить реальную позицию робота (map→base_link) через TF2.
+
+        TASK-052: вместо хардкода «стартовая позиция» возвращает
+        актуальный transform из TF-дерева. Если TF недоступен — None,
+        и вызывающий может использовать кэш /odom как fallback.
+        """
+        try:
+            import tf2_ros  # noqa: F401
+            from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
+        except ImportError:
+            self.get_logger().warn('⚠️ tf2_ros не установлен')
+            return None
+
+        if self._tf_buffer is None:
+            return None
+
+        try:
+            t = self._tf_buffer.lookup_transform(
+                'map', 'base_link', tf2_ros.Time(), timeout=tf2_ros.Duration(seconds=1.0)
+            )
+            qz = t.transform.rotation.z
+            qw = t.transform.rotation.w
+            return {
+                'x': t.transform.translation.x,
+                'y': t.transform.translation.y,
+                'theta': 2.0 * math.atan2(qz, qw),
+            }
+        except (LookupException, ConnectivityException, ExtrapolationException) as exc:
+            self.get_logger().debug(f'⚠️ TF lookup map→base_link не удался: {exc}')
+            return None
+        except Exception as exc:  # pragma: no cover — defensive
+            self.get_logger().warn(f'⚠️ Ошибка TF lookup: {exc}')
+            return None
+
     def handle_status(self, command: Command):
-        """Обработка запроса статуса"""
+        """Обработка запроса статуса — реальная позиция из /tf или /odom."""
         self.get_logger().info('📊 Запрос статуса')
-        # STUB: get_current_position не реализован — позиция hardcoded.
-        # Реальные данные придут из /odom или /tf после Nav2 интеграции (Milestone 2).
-        # Отслеживается: TECH_DEBT.md TD-2, GitHub #819 (STUB-navigation-commands)
-        # TODO: Получить текущую позицию из /odom или /tf
-        self.publish_feedback('Я нахожусь в стартовой позиции')
+
+        pose = self._lookup_map_pose()
+        source = 'TF'
+        if pose is None:
+            pose = self._last_odom
+            source = 'одометрия'
+
+        if pose is None:
+            self.get_logger().warn('⚠️ Позиция неизвестна (нет TF и /odom)')
+            self.publish_feedback('Не могу определить своё положение: локализация недоступна')
+            return
+
+        theta_deg = math.degrees(pose['theta'])
+        self.get_logger().info(
+            f'📍 Позиция ({source}): x={pose["x"]:.2f}, y={pose["y"]:.2f}, '
+            f'угол={theta_deg:.0f}°'
+        )
+        self.publish_feedback(
+            f'Я нахожусь в точке x={pose["x"]:.2f}, y={pose["y"]:.2f}, '
+            f'угол {theta_deg:.0f} градусов'
+        )
 
     def handle_map(self, command: Command):
         """Обработка команд с картой"""
@@ -352,31 +480,53 @@ class CommandNode(Node):
         self.publish_feedback('Функция карты в разработке')
 
     def handle_vision(self, command: Command):
-        """Обработка команд зрения"""
+        """Обработка команд зрения — запрос детекции в OAK-D pipeline.
+
+        TASK-052: публикует запрос на /perception/vision/request (его слушает
+        OAK-D pipeline) и отвечает по последнему полученному vision context
+        с /perception/vision_context — реальные данные, не заглушка.
+        """
         if not self.enable_vision:
             self.get_logger().warn('⚠️ Зрение отключено')
             self.publish_feedback('Функция зрения недоступна')
             return
 
-        self.get_logger().info('👁️ Команда зрения')
-        # STUB: detect_objects не реализован — команда зрения молча ничего не делает.
-        # Реальный object detection через OAK-D (rob_box_perception) после Vision интеграции (Milestone 2).
-        # Отслеживается: TECH_DEBT.md TD-2, GitHub #819 (STUB-navigation-commands)
-        # TODO: Object detection
-        self.publish_feedback('Сканирую окружение')
+        self.get_logger().info('👁️ Запрос детекции объектов (OAK-D pipeline)')
+
+        # Триггер для OAK-D pipeline: запросить свежую детекцию
+        req = String()
+        req.data = json.dumps({'action': 'detect_objects', 'source': 'voice'})
+        self.vision_request_pub.publish(req)
+
+        ctx = self._last_vision_context or {}
+        objects = ctx.get('objects')
+        if objects:
+            names = ', '.join(str(o) for o in objects[:5])
+            self.get_logger().info(f'👁️ Обнаружено: {names}')
+            self.publish_feedback(f'Я вижу: {names}')
+        else:
+            self.get_logger().warn('⚠️ Детекция не вернула объектов')
+            self.publish_feedback('Запросил детекцию, но пока не вижу объектов')
 
     def handle_follow(self, command: Command):
-        """Обработка команды следования"""
+        """Обработка команды следования — активация режима через Nav2.
+
+        TASK-052: публикует команду на /command/follow (её слушает
+        follow-контроллер на базе Nav2) и переводит робота в режим
+        следования. При остановке (handle_stop) режим отключается.
+        """
         if not self.enable_follow:
             self.get_logger().warn('⚠️ Следование отключено')
             self.publish_feedback('Функция следования недоступна')
             return
 
-        self.get_logger().info('🚶 Режим следования')
-        # STUB: follow_person не реализован — команда следования молча ничего не делает.
-        # Реальное следование через OAK-D + Nav2 после Vision интеграции (Milestone 2).
-        # Отслеживается: TECH_DEBT.md TD-2, GitHub #819 (STUB-navigation-commands)
-        # TODO: Person following
+        self.get_logger().info('🚶 Активация режима следования (Nav2)')
+
+        msg = String()
+        msg.data = 'start'
+        self.follow_pub.publish(msg)
+        self.follow_active = True
+
         self.publish_feedback('Включаю режим следования')
 
     def publish_intent(self, command: Command):

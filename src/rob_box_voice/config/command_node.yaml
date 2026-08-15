@@ -13,8 +13,9 @@ command_node:
   ros__parameters:
     confidence_threshold: 0.7
     enable_navigation: true
-    enable_follow: false
-    enable_vision: false
+    # TASK-052 (#819): follow/vision реализованы (ранее заглушки)
+    enable_follow: true
+    enable_vision: true
     nav2_enabled: true
     nav2_timeout: 300.0
     waypoints:
