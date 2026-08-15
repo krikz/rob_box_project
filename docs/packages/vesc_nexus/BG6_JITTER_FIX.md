@@ -42,7 +42,7 @@ diff_drive_controller) мапится в duty ≥ `min_duty`. При `min_duty=0
 Runtime-цепочка: `/cmd_vel` → twist_mux → `diff_drive_controller` →
 `VescSystemHardwareInterface` (конфиг из `rob_box_ros2_control.xacro`) → CAN.
 
-## Изменения (PR #TBD)
+## Изменения (PR #1289)
 
 1. **`src/rob_box_description/urdf/rob_box_ros2_control.xacro`** — `min_duty`
    `0.05 → 0.04`: шаг duty при старте и размах реверса 10% → 8% (на 20%
