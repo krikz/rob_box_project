@@ -168,6 +168,12 @@ class _FakeToolProvider:
         result = handler(dict(call.arguments))
         if hasattr(result, "__await__"):
             result = await result
+        # A handler may return a full ToolResult (e.g. is_error=True) —
+        # respect it verbatim instead of stringifying it into a
+        # non-error result (issue #1253 babble filter depends on
+        # is_error reaching DialogCore).
+        if isinstance(result, ToolResult):
+            return result
         return ToolResult(
             tool_call_id=call.id,
             content=str(result),
@@ -1110,6 +1116,162 @@ def test_empty_finish_reason_none_triggers_corrective_retry(
     retry_messages = llm.calls[1][0]
     assert retry_messages[-1].role == "user"
     assert "[SYSTEM CORRECTION]" in retry_messages[-1].content
+
+
+def test_finish_reason_insufficient_system_resource_triggers_retry(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1253 — DeepSeek insufficient_system_resource retries.
+
+    DeepSeek documents ``finish_reason="insufficient_system_resource"``
+    (HTTP 200, generation interrupted by provider resource pressure).
+    Even when the aggregator carried a partial content fragment, the
+    answer is truncated — the corrective retry must fire so the user
+    gets a complete reply instead of a cut-off fragment.
+    """
+    llm.responses = [
+        LLMResponse(
+            content="Сейчас пять",
+            tool_calls=(),
+            finish_reason="insufficient_system_resource",
+        ),
+        LLMResponse(content="Сейчас пять часов", tool_calls=()),
+    ]
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("который час", history=[]))
+
+    assert result.error is None
+    assert result.spoken_text == "Сейчас пять часов"
+    assert len(llm.calls) == 2
+    retry_messages = llm.calls[1][0]
+    assert retry_messages[-1].role == "user"
+    assert "[SYSTEM CORRECTION]" in retry_messages[-1].content
+
+
+def test_finish_reason_content_filter_triggers_retry(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1253 — content_filter with partial content retries.
+
+    ``finish_reason="content_filter"`` means output was omitted by a
+    content filter — a partial fragment is not a usable answer.
+    """
+    llm.responses = [
+        LLMResponse(
+            content="извини, я не",
+            tool_calls=(),
+            finish_reason="content_filter",
+        ),
+        LLMResponse(content="Извини, я не могу это сделать", tool_calls=()),
+    ]
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("расскажи анекдот", history=[]))
+
+    assert result.error is None
+    assert result.spoken_text == "Извини, я не могу это сделать"
+    assert len(llm.calls) == 2
+
+
+def test_tool_error_babble_is_suppressed_system_transition(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1253 — tool error + babble-only answer is NOT voiced.
+
+    A tool returned ``is_error=True`` and the LLM answered with ONLY a
+    bare completion marker ('done') — no retry tool-call, no speak_text.
+    Voicing that would make the robot say «дан» while nothing happened.
+    DialogCore returns empty spoken (system transition) so dialogue_node
+    moves to the next round instead of parroting the babble.
+    """
+    from rob_box_llm.provider import ToolResult
+
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="memory_context", arguments={"limit": 5}),
+            ),
+        ),
+        # LLM saw the error string but answered with a bare marker.
+        LLMResponse(content="done", tool_calls=()),
+    ]
+    llm.responses = scripted
+
+    async def broken_handler(args: dict[str, object]) -> ToolResult:
+        return ToolResult(
+            tool_call_id="c1",
+            content="backend unavailable",
+            is_error=True,
+        )
+    tools_provider._handler_map = {"memory_context": broken_handler}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("о чём?", history=[]))
+
+    assert result.error is None
+    # Babble suppressed — empty spoken (system transition), no «дан».
+    assert result.spoken_text == ""
+    # The tool WAS attempted this turn.
+    assert result.tools_called == ["memory_context"]
+    assert len(llm.calls) == 2
+
+
+def test_tool_error_substantive_answer_not_suppressed(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1253 — substantive text after tool error is still voiced.
+
+    A tool returned ``is_error=True`` and the LLM answered with a real
+    plain-text reply ("no memory found"). That is NOT babble — the user
+    gets an explanation, not silence.
+    """
+    from rob_box_llm.provider import ToolResult
+
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="memory_context", arguments={"limit": 5}),
+            ),
+        ),
+        LLMResponse(content="no memory found", tool_calls=()),
+    ]
+    llm.responses = scripted
+
+    async def broken_handler(args: dict[str, object]) -> ToolResult:
+        return ToolResult(
+            tool_call_id="c1",
+            content="backend unavailable",
+            is_error=True,
+        )
+    tools_provider._handler_map = {"memory_context": broken_handler}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("о чём?", history=[]))
+
+    assert result.error is None
+    assert result.spoken_text == "no memory found"
+    assert result.tools_called == ["memory_context"]
 
 
 def test_dj_auto_with_preclassified_event_reaches_llm_from_idle(
