@@ -384,7 +384,15 @@ case "$subcmd" in
         case "$action" in
             list)
                 journal "gh issue list"
-                _data="$(get_state ISSUE_LIST_JSON)"
+                # Ретро 15.08 t_238ff3f7: deploy-issue reconcile запрашивает
+                # `--label deployment` (отдельный список). Если флаг есть —
+                # берём ISSUE_LIST_DEPLOYMENT_JSON (fallback ISSUE_LIST_JSON).
+                if printf '%s' "$*" | grep -q -- '--label deployment'; then
+                    _data="$(get_state ISSUE_LIST_DEPLOYMENT_JSON)"
+                    [ -n "$_data" ] || _data="$(get_state ISSUE_LIST_JSON)"
+                else
+                    _data="$(get_state ISSUE_LIST_JSON)"
+                fi
                 apply_jq "$_data" "$_jq_filter"
                 ;;
             view)
