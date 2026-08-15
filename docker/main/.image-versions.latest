@@ -1,11 +1,11 @@
 # Main Pi image versions — production (main branch)
 # Managed automatically by CI (L-Build Single Service workflow)
 
-TWIST_MUX_TAG=latest-98e5f76c
-MICRO_ROS_AGENT_TAG=latest-98e5f76c
-ROBOT_STATE_PUBLISHER_TAG=latest-98e5f76c
-RTABMAP_TAG=latest-98e5f76c
-ROS2_CONTROL_TAG=latest-98e5f76c
-LSLIDAR_TAG=latest-98e5f76c
-PERCEPTION_TAG=latest-98e5f76c
-NAV2_TAG=latest-98e5f76c
+TWIST_MUX_TAG=latest-e67487b4
+MICRO_ROS_AGENT_TAG=latest-e67487b4
+ROBOT_STATE_PUBLISHER_TAG=latest-e67487b4
+RTABMAP_TAG=latest-e67487b4
+ROS2_CONTROL_TAG=latest-e67487b4
+LSLIDAR_TAG=latest-e67487b4
+PERCEPTION_TAG=latest-e67487b4
+NAV2_TAG=latest-e67487b4
