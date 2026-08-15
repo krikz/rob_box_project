@@ -42,9 +42,10 @@
     ///
     /// Vision Pi setting: Подключаемся к локальному роутеру через IP eth0 (НЕ localhost!)
     /// Это гарантирует что весь трафик идёт через Gigabit Ethernet интерфейс
-    // so_sndbuf/so_rcvbuf=16MB: защита от Zenoh transport closure при получении
-    // больших сообщений (rtabmap cloud_map после loop closure ~50-200MB).
-    endpoints: ["tcp/10.1.1.11:7447#so_sndbuf=16777216;so_rcvbuf=16777216"],
+    /// so_sndbuf/so_rcvbuf=16MB: защита от Zenoh transport closure при получении
+    /// больших сообщений (rtabmap cloud_map после loop closure ~50-200MB).
+    /// IP параметризован через ZENOH_VISION_PI_IP (default: 10.1.1.11, задаётся в .env).
+    endpoints: ["tcp/${ZENOH_VISION_PI_IP}:7447#so_sndbuf=16777216;so_rcvbuf=16777216"],
 
     /// Global connect configuration,
     /// Accepts a single value or different values for router, peer and client.

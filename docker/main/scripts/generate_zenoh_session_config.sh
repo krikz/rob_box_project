@@ -22,5 +22,8 @@ cp /config/shared/zenoh_session_config.json5 /tmp/zenoh_session_config.json5
 # Раскомментируем и заменяем namespace
 sed -i "s|// namespace: \"my/namespace\"|namespace: \"robots/$ROBOT_ID\"|g" /tmp/zenoh_session_config.json5
 
+# Параметризация: подставляем IP локального Zenoh router (default: 10.1.1.10)
+sed -i "s|\${ZENOH_MAIN_PI_IP}|${ZENOH_MAIN_PI_IP:-10.1.1.10}|g" /tmp/zenoh_session_config.json5
+
 echo "✅ Session config сгенерирован с namespace: robots/$ROBOT_ID"
 echo "📁 Конфиг сохранён в /tmp/zenoh_session_config.json5"

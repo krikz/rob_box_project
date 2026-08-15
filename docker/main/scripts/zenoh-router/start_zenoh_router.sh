@@ -20,7 +20,12 @@ echo "⚠️  Namespace применяется в session config, НЕ в router
 CONFIG_FILE="/tmp/zenoh_router_config.json5"
 cp /config/zenoh_router_config.json5 "$CONFIG_FILE"
 
+# Параметризация: подставляем IP из переменных окружения (defaults сохраняют текущую конфигурацию)
+sed -i "s|\${ZENOH_MAIN_PI_IP}|${ZENOH_MAIN_PI_IP:-10.1.1.10}|g; s|\${ZENOH_CLOUD_ROUTER}|${ZENOH_CLOUD_ROUTER:-tcp/zenoh.robbox.online:7447}|g" "$CONFIG_FILE"
+
 echo "✅ Router конфиг скопирован БЕЗ namespace (правильно!)"
+echo "   ZENOH_MAIN_PI_IP=${ZENOH_MAIN_PI_IP:-10.1.1.10}"
+echo "   ZENOH_CLOUD_ROUTER=${ZENOH_CLOUD_ROUTER:-tcp/zenoh.robbox.online:7447}"
 echo ""
 echo "Запуск Zenoh Router..."
 echo "=========================================="

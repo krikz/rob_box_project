@@ -40,8 +40,10 @@
     ///
     /// See https://docs.rs/zenoh/latest/zenoh/config/struct.EndPoint.html
     /// ЯВНОЕ подключение к облачному Zenoh router (рекомендация из Articulated Robotics видео)
+    /// Адрес облачного роутера параметризован через ZENOH_CLOUD_ROUTER
+    /// (значение по умолчанию: tcp/zenoh.robbox.online:7447, задаётся в .env).
     endpoints: [
-      "tcp/zenoh.robbox.online:7447"  // Cloud Zenoh router
+      "${ZENOH_CLOUD_ROUTER}"  // Cloud Zenoh router (env: ZENOH_CLOUD_ROUTER)
     ],
 
     /// Global connect configuration,
@@ -90,14 +92,15 @@
     ///
     /// See https://docs.rs/zenoh/latest/zenoh/config/struct.EndPoint.html
     /// РЕШЕНИЕ: Используем ТОЛЬКО IP eth0 (без localhost)
-    /// - Локальные ROS ноды подключаются к 10.1.1.10:7447 (через session config)
-    /// - Vision Pi подключается к 10.1.1.10:7447 через eth0
+    /// - Локальные ROS ноды подключаются к Main Pi:7447 (через session config)
+    /// - Vision Pi подключается к Main Pi:7447 через eth0
+    /// IP параметризован через ZENOH_MAIN_PI_IP (default: 10.1.1.10, задаётся в .env)
     /// ПРЕИМУЩЕСТВА:
     /// - Весь трафик гарантированно через Gigabit Ethernet (eth0)
     /// - Нет конфликта портов (один endpoint)
     /// - Простая и понятная конфигурация
     endpoints: [
-      "tcp/10.1.1.10:7447"            // Все подключения к Main Pi через eth0 IP
+      "tcp/${ZENOH_MAIN_PI_IP}:7447"            // Все подключения к Main Pi через eth0 IP (env: ZENOH_MAIN_PI_IP)
     ],
 
     /// Global listen configuration,

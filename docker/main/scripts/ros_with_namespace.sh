@@ -46,6 +46,9 @@ fi
 # Раскомментируем и заменяем namespace
 sed -i "s|// namespace: \"my/namespace\"|namespace: \"robots/$ROBOT_ID\"|g" "$GENERATED_CONFIG"
 
+# Параметризация: подставляем IP локального Zenoh router (default: 10.1.1.10)
+sed -i "s|\${ZENOH_MAIN_PI_IP}|${ZENOH_MAIN_PI_IP:-10.1.1.10}|g" "$GENERATED_CONFIG"
+
 echo "✅ Session config сгенерирован: $GENERATED_CONFIG"
 
 # Обновляем ZENOH_SESSION_CONFIG_URI на сгенерированный файл

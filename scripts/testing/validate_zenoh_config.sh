@@ -12,6 +12,21 @@ echo ""
 VISION_CONFIG="docker/vision/config/zenoh_router_config.json5"
 MAIN_CONFIG="docker/main/config/zenoh_router_config.json5"
 
+# FA-4: конфиги параметризованы через ${ZENOH_*}. Для проверки подставляем
+# значения по умолчанию (как это делают start_zenoh_router.sh на рантайме),
+# чтобы проверки ниже оставались осмысленными.
+VISION_CONFIG_TMP=$(mktemp)
+MAIN_CONFIG_TMP=$(mktemp)
+trap 'rm -f "$VISION_CONFIG_TMP" "$MAIN_CONFIG_TMP"' EXIT
+sed -e 's|\${ZENOH_MAIN_PI_IP}|10.1.1.10|g' \
+    -e 's|\${ZENOH_VISION_PI_IP}|10.1.1.11|g' \
+    "$VISION_CONFIG" > "$VISION_CONFIG_TMP"
+sed -e 's|\${ZENOH_MAIN_PI_IP}|10.1.1.10|g' \
+    -e 's|\${ZENOH_CLOUD_ROUTER}|tcp/zenoh.robbox.online:7447|g' \
+    "$MAIN_CONFIG" > "$MAIN_CONFIG_TMP"
+VISION_CONFIG="$VISION_CONFIG_TMP"
+MAIN_CONFIG="$MAIN_CONFIG_TMP"
+
 # Цвета для вывода
 RED='\033[0;31m'
 GREEN='\033[0;32m'

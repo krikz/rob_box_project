@@ -41,8 +41,9 @@
     /// See https://docs.rs/zenoh/latest/zenoh/config/struct.EndPoint.html
     /// ЯВНОЕ подключение к Main Pi router по Gigabit Ethernet (рекомендация из Articulated Robotics видео)
     /// КРИТИЧНО: #iface=eth0 принудительно направляет трафик через Gigabit Ethernet вместо WiFi
+    /// IP Main Pi параметризован через ZENOH_MAIN_PI_IP (default: 10.1.1.10, задаётся в .env)
     endpoints: [
-      "tcp/10.1.1.10:7447#iface=eth0"  // Main Pi Ethernet IP + принудительная привязка к eth0
+      "tcp/${ZENOH_MAIN_PI_IP}:7447#iface=eth0"  // Main Pi Ethernet IP + принудительная привязка к eth0 (env: ZENOH_MAIN_PI_IP)
     ],
 
     /// Global connect configuration,
@@ -91,11 +92,12 @@
     ///
     /// See https://docs.rs/zenoh/latest/zenoh/config/struct.EndPoint.html
     /// РЕШЕНИЕ: Используем ТОЛЬКО IP eth0 (без localhost)
-    /// - Локальные ROS ноды подключаются к 10.1.1.11:7447 (через session config)
+    /// - Локальные ROS ноды подключаются к Vision Pi:7447 (через session config)
     /// - Весь трафик гарантированно через Gigabit Ethernet (eth0)
     /// - Нет конфликта портов
+    /// IP параметризован через ZENOH_VISION_PI_IP (default: 10.1.1.11, задаётся в .env)
     endpoints: [
-      "tcp/10.1.1.11:7447"            // Все подключения к Vision Pi через eth0 IP
+      "tcp/${ZENOH_VISION_PI_IP}:7447"            // Все подключения к Vision Pi через eth0 IP (env: ZENOH_VISION_PI_IP)
     ],
 
     /// Global listen configuration,

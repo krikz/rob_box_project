@@ -7,6 +7,8 @@ services:
     network_mode: host
     environment:
       - RUST_LOG=zenoh=info
+      - ZENOH_MAIN_PI_IP=${ZENOH_MAIN_PI_IP:-10.1.1.10}  # IP eth0 Main Pi (для connect.endpoints router config)
+      - ZENOH_VISION_PI_IP=${ZENOH_VISION_PI_IP:-10.1.1.11}  # IP eth0 Vision Pi (для listen.endpoints router config)
     volumes:
       - ./config:/config:ro
       - ./scripts/zenoh-router:/scripts:ro
@@ -32,6 +34,7 @@ services:
       - DISPLAY=:0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ZENOH_VISION_PI_IP=${ZENOH_VISION_PI_IP:-10.1.1.11}  # IP eth0 Vision Pi (для session config router endpoint)
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10  # Пытаемся подключиться к router 10 раз
       - RUST_LOG=zenoh=info  # Логирование Zenoh для отладки
       # Zenoh configuration через JSON - подключение к ЛОКАЛЬНОМУ роутеру Vision Pi
@@ -68,6 +71,7 @@ services:
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ZENOH_VISION_PI_IP=${ZENOH_VISION_PI_IP:-10.1.1.11}  # IP eth0 Vision Pi (для session config router endpoint)
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
@@ -101,6 +105,7 @@ services:
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ZENOH_VISION_PI_IP=${ZENOH_VISION_PI_IP:-10.1.1.11}  # IP eth0 Vision Pi (для session config router endpoint)
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
@@ -186,6 +191,7 @@ services:
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ZENOH_VISION_PI_IP=${ZENOH_VISION_PI_IP:-10.1.1.11}  # IP eth0 Vision Pi (для session config router endpoint)
       - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
       # Audio settings
       - ALSA_CARD=ReSpeaker
@@ -304,6 +310,7 @@ services:
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_VISION_PI_IP=${ZENOH_VISION_PI_IP:-10.1.1.11}  # IP eth0 Vision Pi (для session config router endpoint)
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
