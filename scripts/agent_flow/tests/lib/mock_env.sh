@@ -614,6 +614,18 @@ case "$subcmd" in
                 _data="$(get_state PR_${pr_num}_COMMITS_JSON)"
                 apply_jq "$_data" "$_jq_filter"
                 ;;
+            repos/*/pulls/*/files*)
+                # Ретро 15.08 t_20383d32: duplicate-file scan тянет
+                # pulls/N/files (REST, filename+sha) для детекта двух open PR с
+                # идентичным blob. Fixture: PR_<n>_FILES_JSON = JSON-массив
+                # [{"filename":"...","sha":"..."}]. Реальный gh api вызывается
+                # БЕЗ --jq (merge-gate парсит JSON в python) → apply_jq
+                # passthrough вернёт данные как есть.
+                pr_num="$(printf '%s' "$path" | sed -nE 's#.*/pulls/([0-9]+)/files.*#\1#p')"
+                journal "gh api $path (files)"
+                _data="$(get_state PR_${pr_num}_FILES_JSON)"
+                apply_jq "$_data" "$_jq_filter"
+                ;;
             repos/*/pulls/[0-9]*)
                 # Ретро-путь guard PR/issue (ретро 13.08 t_2d78fbdd, #942):
                 # скрипт проверяет существование PR через REST gh api pulls/N
