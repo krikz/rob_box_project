@@ -2264,14 +2264,17 @@ class DialogueNode(Node):
             import traceback as _tb
             _tb_str = _tb.format_exc()
             try:
-                if self._is_llm_unavailable_error(exc):
+                if self._is_llm_unavailable_error(exc) and not was_dj_auto:
                     # 🔴 FIX (issue #1278): все LLM-провайдеры недоступны —
                     # честная degraded-фраза вместо «Что-то я задумался».
                     # Проверяем ДО generic fallback, чтобы ProviderError
                     # (health-aware-fallback) не маскировался под обычную
-                    # ошибку.
+                    # ошибку. DJ-auto: не озвучиваем (юзер ничего не
+                    # говорил, каждые ~45с это шум — см. 13.08).
                     self._speak_direct(
-                        self._generate_fallback_response(user_input or "")
+                        self._generate_fallback_response(
+                            raw_user_command or user_input or ""
+                        )
                     )
                 else:
                     self._speak_direct("Что-то я задумался, повтори пожалуйста")
@@ -3322,10 +3325,13 @@ class DialogueNode(Node):
             # базовые команды работают»), а НЕ «Принял.»/«задумался».
             # Раньше ProviderError тонул в empty-response fallback ниже и
             # юзер слышал «Принял.» вместо объяснения.
-            if self._is_llm_unavailable_error(result.error):
+            # 🔴 FIX (13.08, DJ): на DJ auto-transition degraded-фразу НЕ
+            # озвучиваем — юзер ничего не говорил, каждые ~45с это шум
+            # в тишине (тот же принцип, что подавление «Принял.» ниже).
+            if self._is_llm_unavailable_error(result.error) and not is_dj_auto:
                 try:
                     fallback_text = self._generate_fallback_response(
-                        user_input or ""
+                        raw_user_command or user_input or ""
                     )
                     self.get_logger().warning(
                         f"🔧 [issue 1278] все LLM-провайдеры недоступны — "
