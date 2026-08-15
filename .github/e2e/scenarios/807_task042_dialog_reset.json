@@ -1,0 +1,17 @@
+{
+  "description": "TASK-042 / issue #807 — per-dialog LLM reset: шаг 1 пишет историю (песенка про енотика), шаг 2 (новый wake word, другая тема) ДОЛЖЕН очистить conversation history и ответить на новую тему без кросс-загрязнения. Паттерн 'TASK-042' на шаге 2 подтверждает лог '🧹 [TASK-042] conversation history cleared at new wake word'.",
+  "steps": [
+    {
+      "text": "Робот, спой песенку про енотика",
+      "voice": "anton",
+      "label": "s1_first_dialog",
+      "patterns": []
+    },
+    {
+      "text": "Робот, расскажи анекдот",
+      "voice": "anton",
+      "label": "s2_second_dialog",
+      "patterns": ["TASK-042"]
+    }
+  ]
+}

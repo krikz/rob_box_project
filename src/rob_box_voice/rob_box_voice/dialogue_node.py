@@ -2505,11 +2505,10 @@ class DialogueNode(Node):
             clear_turns: Any = getattr(memory, "clear_turns", None)
             if callable(clear_turns):
                 removed = await clear_turns(self._DIALOG_SCOPE)
-                if removed:
-                    self.get_logger().info(
-                        f"🧹 [TASK-042] conversation history cleared at new "
-                        f"wake word ({removed} turns removed)"
-                    )
+                self.get_logger().info(
+                    f"🧹 [TASK-042] conversation history cleared at new "
+                    f"wake word ({removed} turns removed)"
+                )
         except Exception as exc:  # noqa: BLE001 — memory must not break dialogue
             self.get_logger().warning(
                 f"⚠️ [TASK-042] clear_turns failed: {exc!r}"
