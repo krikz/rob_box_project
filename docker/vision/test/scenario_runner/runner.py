@@ -232,6 +232,12 @@ class ScenarioRunner(Node):
         # Персистентный таймстамп последнего response — НЕ сбрасывается при clear_received().
         # Используется в wait_for_quiet() чтобы дождаться тишины (LLM закончил отвечать).
         self._last_any_response_ts: float = time.time() - 10.0
+        # Монотонный счётчик response-сообщений (никогда не сбрасывается).
+        # Используется в assert_quiet_after_ms: фиксируем счётчик до паузы,
+        # после паузы убеждаемся что НЕ пришло ни одного нового response.
+        # Это ключевой инвариант barge-in: после нового dialogue_id — speak_text
+        # от старого диалога НЕ должны воспроизводиться (регрессия 37527df).
+        self._response_seq: int = 0
         # Текущее состояние dialogue_node ("idle" / "listening" / "dialogue").
         # Обновляется из /voice/dialogue/state. Используется в wait_for_idle().
         self._dialogue_state: str = "idle"
@@ -251,6 +257,7 @@ class ScenarioRunner(Node):
         self._last_any_response_ts = time.time()  # Персистентный — не сбрасывается clear_received()
         self._last_response = msg.data
         self._response_ts = time.time()
+        self._response_seq += 1  # Монотонный счётчик — не сбрасывается clear_received()
         self._response_event.set()  # Будим wait_for_response
         self.get_logger().info(f"[response] {msg.data[:80]}")
 
@@ -632,6 +639,41 @@ def run_step(node: ScenarioRunner, step: dict) -> tuple[bool, str]:
             # VAD interrupt всё равно пробуем (нода может быть в LLM call).
             return True, f"Speaking timeout {timeout_s}s (injecting VAD anyway)"
 
+    # assert_quiet_after_ms — КЛЮЧЕВОЙ ИНВАРИАНТ barge-in (регрессия 37527df):
+    # после нового dialogue_id speak_text от старого диалога НЕ должен воспроизводиться.
+    # Фиксируем счётчик response-сообщений, ждём N мс, убеждаемся что НИ ОДНОГО
+    # нового response не пришло. Если старый диалог продолжает говорить —
+    # _response_seq вырастет → шаг падает (баг вернулся).
+    elif "assert_quiet_after_ms" in step:
+        quiet_ms = int(step["assert_quiet_after_ms"])
+        seq_before = node._response_seq
+        deadline = time.time() + quiet_ms / 1000.0
+        while time.time() < deadline:
+            if node._response_seq > seq_before:
+                return False, (
+                    f"Stale response from old dialogue within {quiet_ms}ms "
+                    f"(seq {seq_before} → {node._response_seq}): "
+                    f"{(node._last_response or '')[:80]!r}"
+                )
+            time.sleep(0.1)
+        return True, f"No stale responses for {quiet_ms}ms (old dialogue stopped)"
+
+    # assert_idle — ВЕРИФИКАЦИЯ: после сценария dialogue_node должен вернуться
+    # в state=idle без зависания (AC TASK-047). Жёсткая проверка состояния
+    # state-machine (не таймаут тишины).
+    elif "assert_idle" in step:
+        idle_timeout_s = float(step.get("timeout_s", 30.0))
+        ok = node.wait_for_idle(
+            first_non_idle_timeout_s=min(5.0, idle_timeout_s),
+            idle_timeout_s=idle_timeout_s,
+        )
+        if not ok:
+            return False, (
+                f"dialogue_node NOT idle after {idle_timeout_s}s "
+                f"(state={node._dialogue_state!r}) — hang detected"
+            )
+        return True, f"dialogue_node returned to idle (state={node._dialogue_state!r})"
+
     # set_llm_responses — устарело (было для mock-llm), пропускаем
     elif "set_llm_responses" in step:
         node.get_logger().warning("set_llm_responses step is deprecated (mock-llm removed), skipping")
@@ -767,12 +809,25 @@ def main():
 
             result = run_scenario(node, scenario, scenario_deadline)
 
-            # wait_for_idle — в оставшееся время сценария
+            # wait_for_idle — в оставшееся время сценария.
+            # ВАЖНО (TASK-047 AC): «после каждого сценария dialogue_node
+            # возвращается в state=idle без зависания» — если нода НЕ вернулась
+            # в idle за отведённое время, сценарий считается проваленным
+            # (зависание = регрессия barge-in).
             remaining = scenario_deadline - time.time()
             if remaining > 2.0 and not result.get("timeout"):
                 # Динамически подгоняем idle_timeout под оставшееся время
                 idle_to = min(55.0, max(5.0, remaining - 1.0))
-                node.wait_for_idle(first_non_idle_timeout_s=min(5.0, remaining), idle_timeout_s=idle_to)
+                idle_ok = node.wait_for_idle(
+                    first_non_idle_timeout_s=min(5.0, remaining),
+                    idle_timeout_s=idle_to,
+                )
+                if not idle_ok:
+                    result["passed"] = False
+                    print(
+                        f"  → Scenario FAIL: dialogue_node not idle "
+                        f"(state={node._dialogue_state!r}) — hang after barge-in"
+                    )
                 # Проверяем не вышли ли за deadline после wait_for_idle
                 if time.time() > scenario_deadline:
                     result["passed"] = False
