@@ -83,8 +83,10 @@ from rob_box_voice.core.dialogue_helpers import (
     EMOTION_TO_ANIMATION as EMOTION_TO_ANIMATION,
     detect_pitch_intent,
     detect_volume_intent,
+    format_llm_skipped_summary,
     generate_fallback_response,
     map_emotion_to_animation,
+    sanitize_speaker_name,
 )
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.speak_helpers import (
@@ -1838,8 +1840,7 @@ class DialogueNode(Node):
                 # 🔴 FIX (live 12.08): защита от мусорных имён в БД
                 # (resemblyzer может хранить "Null", "null", "None").
                 # Такие имена — не имена, игнорируем.
-                _invalid_names = {"null", "none", "undefined", "unknown", ""}
-                if name.lower().strip() in _invalid_names:
+                if not sanitize_speaker_name(name):
                     self.get_logger().warning(
                         f"👤 [issue 1077] Ignoring invalid speaker name: {name!r} "
                         f"(treating as unknown)"
@@ -1885,9 +1886,7 @@ class DialogueNode(Node):
         sp_conf = float(sp.get("confidence") or 0.0)
         sp_id = sp.get("speaker_id") or ""
         # 🔴 FIX (live 12.08): защита от мусорных имён ("Null", "null", etc.)
-        _invalid_names = {"null", "none", "undefined", "unknown", ""}
-        if sp_name.lower().strip() in _invalid_names:
-            sp_name = ""
+        sp_name = sanitize_speaker_name(sp_name)
 
         # tts provider (читаем из yaml параметра)
         try:
@@ -3788,18 +3787,12 @@ class DialogueNode(Node):
         now = time.monotonic()
         if now - self._last_skip_summary_ts < window_s:
             return
-        total = sum(self._llm_skipped_counter.values())
-        if total == 0:
+        summary = format_llm_skipped_summary(
+            self._llm_skipped_counter, window_s=window_s
+        )
+        if summary is None:
             return
-        breakdown = ", ".join(
-            f"{k}={v}"
-            for k, v in self._llm_skipped_counter.items()
-            if v > 0
-        )
-        self.get_logger().info(
-            f"📊 [diagnostics] llm_skipped_total={total} (since startup, "
-            f"last {window_s:.0f}s): {breakdown}"
-        )
+        self.get_logger().info(summary)
         self._last_skip_summary_ts = now
     def _cancel_run(self, reason: str) -> None:
         self._run_cancelled = True

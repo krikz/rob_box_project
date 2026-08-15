@@ -4,16 +4,28 @@ Extracted from :class:`rob_box_voice.dialogue_node.DialogueNode` so the
 stateless string/dict helpers can be unit-tested without a ROS2 node.
 Pure Python: no rclpy, no I/O.
 
-Owns four families of helpers:
+Owns several families of helpers:
 
 * :func:`map_emotion_to_animation` — emotion label → LED animation key.
 * :func:`generate_fallback_response` — static offline replies when the
   LLM is unavailable.
 * :func:`detect_volume_intent` / :func:`detect_pitch_intent` — keyword
   intent detection for volume/pitch adjustment commands.
+* :func:`sanitize_speaker_name` — guard against junk speaker names
+  (issue #1077 / #1101: resemblyzer may store "Null"/"null"/"None").
+* :func:`format_llm_skipped_summary` — one-line diagnostics summary of
+  LLM-skip counters (issue #1101).
 """
 
 from __future__ import annotations
+
+from typing import Mapping, Optional
+
+#: Speaker names that are not real names — resemblyzer may store junk
+#: values like "Null", "null", "None" in the DB (live 12.08 fix).
+INVALID_SPEAKER_NAMES: frozenset = frozenset(
+    {"null", "none", "undefined", "unknown", ""}
+)
 
 EMOTION_TO_ANIMATION: dict = {
     "happy": "happy",
@@ -95,3 +107,55 @@ def detect_pitch_intent(text: str):
     if any(w in low for w in ("ниже",)):
         return "lower"
     return None
+
+
+def sanitize_speaker_name(name: Optional[str]) -> str:
+    """Return the cleaned speaker name, or ``""`` for junk values.
+
+    resemblyzer may store garbage like ``"Null"``/``"null"``/``"None"``
+    in the speaker DB (live 12.08 fix, issues #1077/#1101). Such values
+    are not names — callers should treat them as "unknown speaker".
+
+    Args:
+        name: Raw speaker name from the speaker DB (may be None).
+
+    Returns:
+        Trimmed name with junk values normalized to ``""``.
+    """
+    if name is None:
+        return ""
+    cleaned = str(name).strip()
+    if cleaned.lower() in INVALID_SPEAKER_NAMES:
+        return ""
+    return cleaned
+
+
+def format_llm_skipped_summary(
+    counter: Mapping[str, int],
+    window_s: float = 300.0,
+) -> Optional[str]:
+    """Build the one-line diagnostics summary for LLM-skip counters.
+
+    Issue #1101 — periodically log why the robot is silent. Returns
+    ``None`` when there is nothing to report (no skips), so callers can
+    skip logging entirely without spamming empty windows.
+
+    Args:
+        counter: Mapping of skip reason -> occurrence count.
+        window_s: Reporting window in seconds (used only in the message).
+
+    Returns:
+        Formatted summary string, or ``None`` when ``total == 0``.
+    """
+    total = sum(counter.values())
+    if total == 0:
+        return None
+    breakdown = ", ".join(
+        f"{k}={v}"
+        for k, v in counter.items()
+        if v > 0
+    )
+    return (
+        f"📊 [diagnostics] llm_skipped_total={total} (since startup, "
+        f"last {window_s:.0f}s): {breakdown}"
+    )

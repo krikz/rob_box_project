@@ -17,8 +17,10 @@ from rob_box_voice.core.dialogue_helpers import (
     EMOTION_TO_ANIMATION,
     detect_pitch_intent,
     detect_volume_intent,
+    format_llm_skipped_summary,
     generate_fallback_response,
     map_emotion_to_animation,
+    sanitize_speaker_name,
 )
 
 
@@ -144,3 +146,63 @@ class TestDetectPitchIntent:
 
     def test_case_insensitive(self) -> None:
         assert detect_pitch_intent("ВЫШЕ") == "higher"
+
+
+# ---------------------------------------------------------------------------
+# sanitize_speaker_name (issue #1077 / #1101 — junk speaker names)
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeSpeakerName:
+    def test_clean_name_passthrough(self) -> None:
+        assert sanitize_speaker_name("Антон") == "Антон"
+        assert sanitize_speaker_name("  Антон  ") == "Антон"
+
+    def test_junk_names_normalized_to_empty(self) -> None:
+        for junk in ("null", "None", "UNDEFINED", "Unknown", "", "  null  "):
+            assert sanitize_speaker_name(junk) == "", junk
+
+    def test_none_normalized_to_empty(self) -> None:
+        assert sanitize_speaker_name(None) == ""
+
+    def test_real_names_not_mangled(self) -> None:
+        # "NullPointer" contains "null" as prefix but is a real name.
+        assert sanitize_speaker_name("NullPointer") == "NullPointer"
+        assert sanitize_speaker_name("Никто") == "Никто"
+
+
+# ---------------------------------------------------------------------------
+# format_llm_skipped_summary (issue #1101 — diagnostics)
+# ---------------------------------------------------------------------------
+
+
+class TestFormatLlmSkippedSummary:
+    def test_empty_counter_returns_none(self) -> None:
+        assert format_llm_skipped_summary({}) is None
+
+    def test_all_zero_returns_none(self) -> None:
+        counter = {"no_wake_word": 0, "silenced": 0}
+        assert format_llm_skipped_summary(counter) is None
+
+    def test_nonzero_counter_returns_summary(self) -> None:
+        summary = format_llm_skipped_summary(
+            {"no_wake_word": 3, "silenced": 0, "stt_rejected": 2},
+            window_s=300.0,
+        )
+        assert summary is not None
+        assert "llm_skipped_total=5" in summary
+        assert "no_wake_word=3" in summary
+        assert "stt_rejected=2" in summary
+        assert "silenced" not in summary  # zero-count reasons omitted
+        assert "last 300s" in summary
+
+    def test_window_seconds_rendered(self) -> None:
+        summary = format_llm_skipped_summary({"silenced": 1}, window_s=60.0)
+        assert summary is not None
+        assert "last 60s" in summary
+
+    def test_unicode_prefix_present(self) -> None:
+        summary = format_llm_skipped_summary({"silenced": 1})
+        assert summary is not None
+        assert summary.startswith("📊 [diagnostics]")
+
