@@ -100,7 +100,7 @@ LOG_PREFIX="${LOG_PREFIX:-[agent-flow-e2e-process]}"
 # ретро 11.08 (t_c26b73e7): пауза ротации при известном блокере.
 # Сигнатуры блокеров (space-separated) — ищем в открытых issues (title/body) и в
 # робот-логах voice-assistant. Пока блокер открыт, новый round НЕ создаётся.
-KNOWN_BLOCKER_SIGNATURES="${KNOWN_BLOCKER_SIGNATURES:-no_wake_word}"
+KNOWN_BLOCKER_SIGNATURES="${KNOWN_BLOCKER_SIGNATURES:-no_wake_word verdict_missing}"
 # Окно робот-логов для grep сигнатуры (best-effort, только если SSH доступен).
 BLOCKER_ROBOT_LOG_SINCE="${BLOCKER_ROBOT_LOG_SINCE:-6h}"
 # Окно «свежести» блокера в логах (ретро 12.08 t_4e592534): если сигнатура
@@ -153,13 +153,19 @@ fi
 : "${E2E_RUN_TIMEOUT:=1800}"
 : "${E2E_POLL_INTERVAL:=15}"
 : "${ISSUE_LIMIT:=20}"
-: "${KNOWN_BLOCKER_SIGNATURES:=no_wake_word}"
+: "${KNOWN_BLOCKER_SIGNATURES:=no_wake_word verdict_missing}"
 : "${BLOCKER_ROBOT_LOG_SINCE:=6h}"
 : "${BLOCKER_CONSECUTIVE_FAILS:=2}"
 # робот для pre-flight (ретро #R2: no-reaction rounds 29/31 — жечь e2e-раунд на мёртвом роботе бессмысленно)
 : "${E2E_ROBOT_HOST:=10.1.1.21}"
 : "${E2E_ROBOT_USER:=ros2}"
 : "${E2E_ROBOT_PASS:=}"   # пароль из окружения, в скрипт не пишем; пусто → pre-flight SKIP с warn
+# harness host (build machine 10.1.1.249): e2e_voice_test.sh живёт там (scp из
+# L-E2E), registry :5000 тоже. Если он мёртв — раунд гарантированно горит
+# (deploy FAIL 'Target hosts unreachable' + e2e не стартует). Ретро 15.08
+# t_d743d900: Katana слетела с ROS2 wifi на KRIKZ_WiFi — 10.1.1.249 dead,
+# runner'ы (docker на Katana) при этом online, раунды горели впустую.
+: "${E2E_HARNESS_HOST:=10.1.1.249}"
 
 # --- helpers -----------------------------------------------------------------
 log() { printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*" >&2; }
@@ -227,6 +233,20 @@ detect_known_blocker() {
             return 0
         fi
     done
+    # 3) harness host (build machine) недоступен → блокер. Ретро 15.08
+    #    t_d743d900: Katana слетела с ROS2 wifi (10.1.1.249 dead, ARP FAILED),
+    #    но runner'ы (docker на Katana, network_mode host) остались online —
+    #    e2e-process продолжал жечь раунды (build+deploy+e2e на мёртвом
+    #    harness: deploy 'Target hosts unreachable', e2e не стартует).
+    #    Проверяем SSH до harness host (тот же пароль, что и робот).
+    if [ -n "${E2E_ROBOT_PASS:-}" ] && [ -n "${E2E_HARNESS_HOST:-}" ]; then
+        if ! sshpass -p "$E2E_ROBOT_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
+            "${E2E_ROBOT_USER:-ros2}@${E2E_HARNESS_HOST}" \
+            'true' 2>/dev/null; then
+            printf 'harness:%s' "$E2E_HARNESS_HOST"
+            return 0
+        fi
+    fi
     return 0
 }
 
