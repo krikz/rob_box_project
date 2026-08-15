@@ -140,6 +140,15 @@ _SILENT_FINISH_REASONS: frozenset[str] = frozenset(
     {"insufficient_system_resource", "content_filter", "length"}
 )
 
+#: Sliding-window size for the local ``messages`` list inside the tool loop
+#: (BUG-12 / TASK-043). Each iteration appends 1 assistant tool_calls
+#: message + N tool-result messages; without a window the list grows
+#: without bound within a single dialog → context rot after 15+ iterations.
+#: We keep the system/user prefix plus the last K tool exchanges and drop
+#: older tool results. ``5`` matches the old ``conversation_history``
+#: max_messages=20 / history_max_turns=20 budget for a single turn.
+_TOOL_WINDOW_EXCHANGES: int = 5
+
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------
@@ -587,6 +596,15 @@ class DialogCore:
         an ordered list and rebuilding from scratch would lose the
         interleaved tool/assistant ordering the wire format requires.
 
+        **BUG-12 (TASK-043) — bounded local messages:** every iteration
+        appends 1 assistant tool_calls message + N tool-result messages.
+        Without a sliding window this local list grows without bound
+        inside one dialog → context rot after 15+ iterations. Before
+        each follow-up LLM call we compact the list via
+        :meth:`_apply_tool_window`, keeping the system/user prefix and
+        the last ``_TOOL_WINDOW_EXCHANGES`` tool exchanges and dropping
+        older tool results.
+
         The loop terminates when:
 
         * The model returns an empty ``tool_calls`` tuple (i.e. a
@@ -617,6 +635,7 @@ class DialogCore:
         response: LLMResponse = await self._stream_response(
             messages, tools=openai_tools
         )
+        self._log_token_usage(messages, response)
 
         # Issue #1217 — deepseek-v4-flash intermittently answers with a bare
         # completion marker ("done") or an EMPTY payload as its FIRST reply,
@@ -744,7 +763,13 @@ class DialogCore:
                     )
                 )
 
+            # BUG-12 (TASK-043): sliding window on the local list — keep
+            # the system/user prefix and the last K tool exchanges, drop
+            # older tool results so token count stays bounded.
+            self._apply_tool_window(messages)
+
             response = await self._stream_response(messages, tools=openai_tools)
+            self._log_token_usage(messages, response)
 
         else:  # for-else: loop exhausted without breaking
             logging.getLogger(__name__).warning(
@@ -786,6 +811,86 @@ class DialogCore:
             response.finish_reason,
             response.raw,
             speak_text_count,
+        )
+
+    def _apply_tool_window(self, messages: list[LLMMessage]) -> None:
+        """Compact ``messages`` in-place to a sliding window (BUG-12).
+
+        Preserves:
+        * the system prompt and any user turns (prefix),
+        * the last ``_TOOL_WINDOW_EXCHANGES`` tool exchanges, where one
+          exchange = assistant tool_calls message + the ``tool`` result
+          messages that follow it.
+
+        Drops older tool exchanges entirely (assistant tool_calls message
+        AND its tool results) so the list cannot grow without bound inside
+        a single dialog. The operation is safe for OpenAI Chat-Completions
+        ordering: we never leave a ``tool`` message orphaned — an exchange
+        is removed as a whole.
+        """
+        if _TOOL_WINDOW_EXCHANGES <= 0:
+            return
+        # Locate assistant tool_calls messages that start an exchange.
+        exchange_starts = [
+            i
+            for i, m in enumerate(messages)
+            if m.role == "assistant" and m.tool_calls
+        ]
+        if len(exchange_starts) <= _TOOL_WINDOW_EXCHANGES:
+            return
+        # Keep the last K exchanges; drop everything before the K-th from
+        # the end — but only tool-exchange material (assistant tool_calls +
+        # tool results). Non-tool prefix (system/user) survives.
+        keep_from = exchange_starts[-_TOOL_WINDOW_EXCHANGES]
+        prefix: list[LLMMessage] = []
+        i = 0
+        while i < keep_from:
+            m = messages[i]
+            if m.role == "assistant" and m.tool_calls:
+                # Skip this whole exchange: assistant tool_calls + its
+                # tool results.
+                i += 1
+                while i < keep_from and messages[i].role == "tool":
+                    i += 1
+                continue
+            if m.role == "tool":
+                # Orphaned tool result (shouldn't happen) — drop it too.
+                i += 1
+                continue
+            prefix.append(m)
+            i += 1
+        del messages[:keep_from]
+        messages[:0] = prefix
+        logging.getLogger(__name__).debug(
+            "DialogCore: tool window compacted to %d messages "
+            "(keep_last=%d exchanges)",
+            len(messages),
+            _TOOL_WINDOW_EXCHANGES,
+        )
+
+    def _log_token_usage(
+        self,
+        messages: Iterable[LLMMessage],
+        response: LLMResponse,
+    ) -> None:
+        """Log per-call input/output token usage (TASK-043 acceptance).
+
+        Emits ``Token usage: input=X`` so operators can verify the
+        sliding window keeps input tokens bounded (≤20k even at 30
+        iterations). Falls back to a rough estimate when the provider
+        does not return usage (e.g. streaming paths).
+        """
+        usage = getattr(response, "usage", None) or {}
+        prompt = usage.get("prompt_tokens")
+        if prompt is None:
+            prompt = _estimate_input_tokens(messages)
+        completion = usage.get("completion_tokens", 0)
+        total = usage.get("total_tokens") or (prompt + completion)
+        logging.getLogger(__name__).info(
+            "Token usage: input=%s, output=%s, total=%s",
+            prompt,
+            completion,
+            total,
         )
 
     async def _stream_response(
@@ -944,6 +1049,36 @@ def _tool_spec_to_openai(spec: ToolSpec) -> dict[str, Any]:
             "parameters": dict(spec.parameters),
         },
     }
+
+
+def _estimate_input_tokens(messages: Iterable[LLMMessage]) -> int:
+    """Rough input-token estimate for :meth:`DialogCore._log_token_usage`.
+
+    Used only when the provider does not return ``usage`` (streaming
+    paths, fake providers in tests). Heuristic: ~4 chars per token plus
+    per-message overhead; good enough to prove the sliding window keeps
+    the context bounded (TASK-043 acceptance: input ≤ 20k at 30
+    iterations). Content can be a plain ``str`` or a tuple of
+    ``TextPart``/``ImagePart`` (multimodal).
+    """
+    total = 0
+    for m in messages:
+        content = m.content
+        if isinstance(content, str):
+            total += max(len(content) // 4, 1)
+        elif isinstance(content, (list, tuple)):
+            for part in content:
+                text = getattr(part, "text", None)
+                if text:
+                    total += max(len(str(text)) // 4, 1)
+                else:
+                    total += 8  # image/unknown part
+        else:
+            total += 8
+        total += 8  # role / metadata overhead
+        if m.tool_calls:
+            total += 24 * len(m.tool_calls)
+    return total
 
 
 __all__ = ["DialogCore", "DialogResult"]
