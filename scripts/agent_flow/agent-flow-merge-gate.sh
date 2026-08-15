@@ -1805,6 +1805,171 @@ for pr in data:
 ' 2>/dev/null)
 
 # ============================================================================
+# PR-side needs-e2e orphan reconcile (ретро 15.08 t_5cf0162b, надзор PR #1263)
+# ----------------------------------------------------------------------------
+# ПРОБЛЕМА: merge-gate (осн. цикл + clean-pr-sweep) ставит needs-e2e на PR
+# best-effort propagation, НО обратного хода нет:
+#   - e2e-process строит ротацию ТОЛЬКО по issues с needs-e2e (gh issue list
+#     --label needs-e2e): если связанная issue уже обработана (e2e-done) и
+#     CLOSED (#1246: needs-e2e 23:01 → e2e-done 23:21 → CLOSED 00:52), а на
+#     PR осталась needs-e2e (23:01, propagation) — PR НИКОГДА не попадёт в
+#     round, фикс застревает, Шифу не видит PR в очереди ревью;
+#   - clean-pr-sweep сканирует ТОЛЬКО PR БЕЗ process-меток → PR с needs-e2e
+#     пропущен (C4-идемпотентность);
+#   - post-round sweep (e2e-process) лейблит только ISSUES, не PR.
+# РЕШЕНИЕ: для OPEN PR с needs-e2e, у которых НЕТ связанного OPEN issue
+# с needs-e2e (по body/title #N и ветке z-{agent}/<n>-<slug>):
+#   - CI-only (все файлы .github/, scripts/agent_flow/, docs/) → needs-review
+#     на PR + снять needs-e2e (e2e не нужен, как clean-pr-sweep _ci_only);
+#   - functional + есть OPEN issue (без needs-e2e) → вернуть needs-e2e на
+#     issue (e2e-process возьмёт её в ротацию) + коммент на PR;
+#   - functional + issue CLOSED/нет → needs-review на PR + снять needs-e2e
+#     (e2e невозможен; Шифу решает; НЕ close автоматически, урок 13.08
+#     t_42741511).
+# Идемпотентно: PR с needs-e2e + живая OPEN issue с needs-e2e пропускаем;
+# add/remove-label — no-op при повторе.
+# ============================================================================
+orphan_labeled=0
+log "pr-orphan-reconcile: scanning OPEN PRs with ${NEEDS_E2E_LABEL} for orphan (no live issue)"
+_orphan_prs_json="$(gh pr list --repo "$GH_REPO" --state open --base "$DEVELOP_BRANCH" \
+    --json number,title,headRefName,body,files,mergeStateStatus,isDraft,labels 2>/dev/null || echo '[]')"
+if [ -z "$_orphan_prs_json" ]; then
+    _orphan_prs_json='[]'
+fi
+while IFS=$'\t' read -r o_pr o_head o_title o_body o_files o_issues_csv o_merge_state; do
+    [ -z "$o_pr" ] && continue
+    [ "$o_issues_csv" = "-" ] && o_issues_csv=""
+    [ "$o_body" = "-" ] && o_body=""
+    [ "$o_files" = "-" ] && o_files=""
+    log "pr-orphan-reconcile: PR #${o_pr} (${o_head}) needs-e2e, state=${o_merge_state:-?}, issues=[${o_issues_csv:-none}]"
+
+    # Пропускаем НЕ-clean PR (UNSTABLE/DIRTY/CONFLICTING обрабатывает
+    # scan-all-prs: карточка + reminder; needs-review туда ставить рано).
+    if [ "$o_merge_state" != "CLEAN" ] && [ "$o_merge_state" != "MERGEABLE" ]; then
+        log "pr-orphan-reconcile: PR #${o_pr} state=${o_merge_state:-?} — skip (scan-all-prs зона)"
+        skipped=$((skipped+1)); continue
+    fi
+    # Stale-branch guard (ретро 14.08 t_28afb585): head уже влита через
+    # ДРУГОЙ merged PR — переиспользование ветки, обрабатывает
+    # stale_branch_scan_all (блок-коммент), не мы.
+    _o_prev_merged="$(gh pr list --repo "$GH_REPO" --state merged --head "$o_head" \
+        --json number --jq '.[0].number // ""' 2>/dev/null || true)"
+    if [ -n "$_o_prev_merged" ] && [ "$_o_prev_merged" != "$o_pr" ]; then
+        log "pr-orphan-reconcile: PR #${o_pr} head ${o_head} уже влит через PR #${_o_prev_merged} — skip (stale_branch_scan_all)"
+        skipped=$((skipped+1)); continue
+    fi
+
+    # Живая связанная issue? Если хоть одна OPEN + needs-e2e → не сирота.
+    _o_live=0
+    if [ -n "$o_issues_csv" ]; then
+        for _oi in $(printf '%s' "$o_issues_csv" | tr ',' ' '); do
+            _oi_state="$(gh issue view "$_oi" --repo "$GH_REPO" --json state --jq '.state' 2>/dev/null || echo '')"
+            _oi_labels="$(gh issue view "$_oi" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')"
+            if [ "$_oi_state" = "OPEN" ] && has_label "$(printf '%s' "$_oi_labels" | tr '[:upper:]' '[:lower:]')" "$NEEDS_E2E_LABEL"; then
+                _o_live=1
+                log "pr-orphan-reconcile: PR #${o_pr} связан с OPEN issue #${_oi} (needs-e2e) — живой цикл, skip"
+                break
+            fi
+        done
+    fi
+    if [ "$_o_live" = "1" ]; then
+        skipped=$((skipped+1)); continue
+    fi
+
+    # Сирота. Классификация как clean-pr-sweep: CI-only vs functional.
+    _o_ci_only="$(printf '%s' "$o_files" | python3 -c '
+import sys
+files = [f for f in sys.stdin.read().split(",") if f]
+ok = bool(files) and all(
+    f.startswith(".github/") or f.startswith("scripts/agent_flow/") or f.startswith("docs/")
+    for f in files
+)
+print("1" if ok else "0")
+' 2>/dev/null || echo 0)"
+    if [ "$_o_ci_only" = "1" ]; then
+        log "pr-orphan-reconcile: PR #${o_pr} CI-only (${o_files}) — ${NEEDS_REVIEW_LABEL}, e2e не нужен"
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would: gh pr edit ${o_pr} --remove-label ${NEEDS_E2E_LABEL} --add-label ${NEEDS_REVIEW_LABEL}"
+            orphan_labeled=$((orphan_labeled+1)); continue
+        fi
+        gh pr edit "$o_pr" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+        gh pr edit "$o_pr" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
+        orphan_labeled=$((orphan_labeled+1))
+        continue
+    fi
+
+    # functional: ищем OPEN issue среди связанных (без needs-e2e — живой бы
+    # уже поймали выше). Если есть — возвращаем needs-e2e на issue.
+    _o_open_issue=""
+    if [ -n "$o_issues_csv" ]; then
+        for _oi in $(printf '%s' "$o_issues_csv" | tr ',' ' '); do
+            _oi_state="$(gh issue view "$_oi" --repo "$GH_REPO" --json state --jq '.state' 2>/dev/null || echo '')"
+            if [ "$_oi_state" = "OPEN" ]; then
+                _o_open_issue="$_oi"; break
+            fi
+        done
+    fi
+    if [ -n "$_o_open_issue" ]; then
+        log "pr-orphan-reconcile: PR #${o_pr} functional, issue #${_o_open_issue} OPEN — возвращаем ${NEEDS_E2E_LABEL} на issue"
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would: gh issue edit ${_o_open_issue} --add-label ${NEEDS_E2E_LABEL} + comment"
+            orphan_labeled=$((orphan_labeled+1)); continue
+        fi
+        gh issue edit "$_o_open_issue" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+        gh pr comment "$o_pr" --repo "$GH_REPO" --body \
+            "agent-flow: 🔄 PR-side ${NEEDS_E2E_LABEL} потерял живую issue (сирота, ретро 15.08 t_5cf0162b). Связанная issue #${_o_open_issue} OPEN — ${NEEDS_E2E_LABEL} возвращён на неё, e2e-process возьмёт в ротацию." >/dev/null 2>&1 || true
+        orphan_labeled=$((orphan_labeled+1))
+        continue
+    fi
+
+    # functional + issue CLOSED/нет → e2e невозможен → needs-review на PR.
+    log "pr-orphan-reconcile: PR #${o_pr} functional, связанные issues закрыты/нет — ${NEEDS_REVIEW_LABEL} (e2e невозможен)"
+    if [ "$DRY_RUN" = "true" ]; then
+        log "DRY-RUN would: gh pr edit ${o_pr} --remove-label ${NEEDS_E2E_LABEL} --add-label ${NEEDS_REVIEW_LABEL} + comment"
+        orphan_labeled=$((orphan_labeled+1)); continue
+    fi
+    gh pr edit "$o_pr" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+    gh pr edit "$o_pr" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
+    gh pr comment "$o_pr" --repo "$GH_REPO" --body \
+        "agent-flow: 🔄 PR-side ${NEEDS_E2E_LABEL} потерял живую issue (сирота, ретро 15.08 t_5cf0162b): связанные issues закрыты/не найдены → e2e невозможен. Снят ${NEEDS_E2E_LABEL}, поставлен ${NEEDS_REVIEW_LABEL} — товарищ Шифу ревьюит напрямую." >/dev/null 2>&1 || true
+    orphan_labeled=$((orphan_labeled+1))
+done < <(printf '%s' "$_orphan_prs_json" | python3 -c '
+import json, sys, re
+data = json.load(sys.stdin)
+PROCESS = {"needs-review", "e2e-done", "e2e:rejected", "no-e2e-required"}
+for pr in data:
+    if pr.get("isDraft"):
+        continue
+    labels = {l.get("name", "") for l in (pr.get("labels") or [])}
+    if "needs-e2e" not in labels:
+        continue
+    if PROCESS & labels:
+        continue
+    pr_num = str(pr.get("number", ""))
+    head = pr.get("headRefName") or ""
+    title = pr.get("title") or ""
+    body = pr.get("body") or ""
+    files = ",".join(f.get("path", "") for f in (pr.get("files") or []))
+    merge_state = pr.get("mergeStateStatus") or ""
+    # Все issue-референсы: title #N, body #N, ветка z-{agent}/<n>-<slug>.
+    issues = set()
+    for m in re.finditer(r"#(\d+)", title + "\n" + body):
+        n = m.group(1)
+        if n != pr_num and not n.startswith("t_") and len(n) <= 7:
+            issues.add(n)
+    m2 = re.search(r"z-\{agent\}/(\d+)-", head)
+    if m2:
+        issues.add(m2.group(1))
+    issues_csv = ",".join(sorted(issues, key=int)) if issues else "-"
+    # Заполнители для пустых полей: bash `read` с IFS=$'\t' схлопывает
+    # последовательные разделители → пустое поле (body/files) теряется и
+    # следующие поля сдвигаются (ретро 15.08 t_5cf0162b, кейс O3).
+    body_out = body if body else "-"
+    files_out = files if files else "-"
+    print(f"{pr_num}\t{head}\t{title}\t{body_out}\t{files_out}\t{issues_csv}\t{merge_state}")
+' 2>/dev/null)
+
+# ============================================================================
 # Ретро-путь (12.08 t_68607832 + t_061d466e): merged PR → issue без меток /
 # с e2e:rejected
 # ----------------------------------------------------------------------------
@@ -2195,7 +2360,7 @@ while IFS=$'\t' read -r c_id c_status c_branch c_title; do
 done < <(printf '%s\n' "$_arch_cards")
 
 # --- summary -----------------------------------------------------------------
-log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled} retro_archived=${retro_archived}"
+log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled} orphan_labeled=${orphan_labeled} retro_archived=${retro_archived}"
 
 # Exit non-zero only on hard errors so cron can alert.
 if [ "$errored" -gt 0 ]; then exit 1; fi
