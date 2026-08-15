@@ -140,6 +140,17 @@ _SILENT_FINISH_REASONS: frozenset[str] = frozenset(
     {"insufficient_system_resource", "content_filter", "length"}
 )
 
+#: BUG-13 (TASK-044) — tool-result compaction. Old raw JSON tool results
+#: (``play_animation``, ``play_sound``, ``set_volume``, …) accumulate in
+#: ``messages`` and pollute the LLM context in long sessions. Per Anthropic
+#: context engineering, "tool result clearing is one of the safest forms of
+#: compaction" — a tool result from 5 iterations ago is useless at iteration
+#: 25. We keep the last ``_KEEP_LAST_TOOL_RESULTS`` tool exchanges intact and
+#: replace anything older with a short placeholder, preserving the wire
+#: format (role/tool_call_id) so provider serialisation stays valid.
+_KEEP_LAST_TOOL_RESULTS: int = 5
+_TOOL_RESULT_CLEARED_PLACEHOLDER: str = "[tool result cleared]"
+
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------
@@ -225,6 +236,7 @@ class DialogCore:
         acceptance_gate: "AcceptanceGate | None" = None,
         system_prompt: str | None = None,
         use_streaming: bool = False,
+        keep_last_tool_results: int = _KEEP_LAST_TOOL_RESULTS,
     ) -> None:
         """Compose the four dialogue ports into a single facade.
 
@@ -262,6 +274,12 @@ class DialogCore:
                 are executed as before. When ``None`` the core runs
                 the legacy un-gated path — backward-compatible with
                 every existing test that doesn't construct a gate.
+            keep_last_tool_results: BUG-13 (TASK-044) — how many most
+                recent tool-result messages stay intact in the prompt.
+                Older tool results are collapsed to a short placeholder
+                (``[tool result cleared]``) so raw JSON from early
+                iterations cannot pollute the context of a long session.
+                Default ``5``; ``0`` collapses everything.
         """
         if llm is None:
             raise TypeError("DialogCore: llm is required")
@@ -283,6 +301,7 @@ class DialogCore:
         self._use_streaming = use_streaming
         self._inactivity_timeout = inactivity_timeout
         self._acceptance_gate = acceptance_gate
+        self._keep_last_tool_results = keep_last_tool_results
 
     # ---- main entry point -----------------------------------------------
 
@@ -606,6 +625,11 @@ class DialogCore:
         tool_schemas = await self._tools.discover()
         openai_tools = [_tool_spec_to_openai(spec) for spec in tool_schemas]
 
+        # BUG-13 (TASK-044) — collapse any stale tool results that came
+        # in with an explicitly-passed ``history`` (or were left by a
+        # previous turn) before the first LLM call.
+        self._compact_tool_results(messages)
+
         tools_called: list[str] = []
         seen: set[str] = set()
         speak_text_count: int = 0
@@ -744,6 +768,12 @@ class DialogCore:
                     )
                 )
 
+            # BUG-13 (TASK-044) — keep the prompt bounded: collapse tool
+            # results older than ``keep_last`` to a short placeholder
+            # BEFORE the next LLM call, so the raw JSON from early
+            # iterations of a long tool-heavy session can't pile up.
+            self._compact_tool_results(messages)
+
             response = await self._stream_response(messages, tools=openai_tools)
 
         else:  # for-else: loop exhausted without breaking
@@ -787,6 +817,44 @@ class DialogCore:
             response.raw,
             speak_text_count,
         )
+
+    def _compact_tool_results(self, messages: list[LLMMessage]) -> None:
+        """BUG-13 (TASK-044) — collapse old tool results to a placeholder.
+
+        Mutates ``messages`` in place: keeps the last
+        ``keep_last_tool_results`` ``role="tool"`` messages intact and
+        rewrites anything older to ``"[tool result cleared]"``. The
+        ``role``/``tool_call_id`` are preserved (the OpenAI wire format
+        requires a ``tool`` message after every ``assistant`` message
+        that carried ``tool_calls``), so provider serialisation stays
+        valid while the raw JSON payload no longer consumes context
+        tokens. ``keep_last=0`` collapses every tool result.
+
+        ``assistant`` messages that carried the original ``tool_calls``
+        are left untouched — the model still sees that the tool was
+        invoked, just not the (stale) payload.
+        """
+        keep = max(self._keep_last_tool_results, 0)
+        tool_indices = [i for i, m in enumerate(messages) if m.role == "tool"]
+        if keep == 0:
+            stale = tool_indices
+        else:
+            stale = tool_indices[:-keep]
+        for idx in stale:
+            old = messages[idx]
+            messages[idx] = LLMMessage(
+                role="tool",
+                content=_TOOL_RESULT_CLEARED_PLACEHOLDER,
+                tool_call_id=old.tool_call_id,
+                tool_result=(
+                    ToolResult(
+                        tool_call_id=old.tool_call_id,
+                        content=_TOOL_RESULT_CLEARED_PLACEHOLDER,
+                    )
+                    if old.tool_result is not None
+                    else None
+                ),
+            )
 
     async def _stream_response(
         self,

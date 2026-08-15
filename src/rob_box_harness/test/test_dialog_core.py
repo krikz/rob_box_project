@@ -26,6 +26,7 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -1585,3 +1586,242 @@ def test_run_with_tools_executes_in_safe_order_but_returns_original_order() -> N
     assert [c.name for c in ordered] == ["speak_text", "stop_music"]
     # And the original tuple is untouched (frozen dataclass semantics).
     assert [c.name for c in calls] == ["stop_music", "speak_text"]
+
+
+# ---------------------------------------------------------------------------
+# BUG-13 (TASK-044): tool-result compaction
+# ---------------------------------------------------------------------------
+
+
+def _tool_loop_script(
+    count: int,
+    tool_name: str = "echo",
+    final: str = "final",
+) -> list[LLMResponse]:
+    """Build a scripted LLM response list: ``count`` tool calls + a final text.
+
+    Every tool call uses a fresh ``call_<i>`` id so the fake provider's
+    ``_handler_map`` can serve them all through one echo handler.
+    """
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(
+                    id=f"call_{i}",
+                    name=tool_name,
+                    arguments={"text": str(i)},
+                ),
+            ),
+        )
+        for i in range(count)
+    ]
+    scripted.append(LLMResponse(content=final, tool_calls=()))
+    return scripted
+
+
+def _last_messages(llm: _FakeLLMProvider) -> list[Any]:
+    """Messages list from the final LLM call (the one that returned text)."""
+    return llm.calls[-1][0]
+
+
+def test_tool_results_beyond_keep_last_are_cleared(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """BUG-13 — with 8 tool calls, results older than keep_last=5 are placeholders.
+
+    The final LLM request must still contain every tool message (the wire
+    format requires a tool response after each assistant tool_calls), but
+    the first ``8 - 5 = 3`` results are collapsed to ``[tool result cleared]``
+    while the last 5 keep their raw payloads.
+    """
+    from rob_box_harness.core import dialog_core as dc
+
+    count = dc._MAX_TOOL_ITERATIONS  # 8 — enough to overflow keep_last=5
+    llm.responses = _tool_loop_script(count)
+
+    async def echo(args: dict[str, object]) -> str:
+        return f"echo:{args.get('text')}"
+    tools_provider._handler_map = {"echo": echo}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("q", history=[]))
+    assert result.error is None
+    assert result.spoken_text == "final"
+
+    final_msgs = _last_messages(llm)
+    tool_msgs = [m for m in final_msgs if m.role == "tool"]
+    assert len(tool_msgs) == count, "all tool results must still be present"
+
+    # The 3 oldest results are collapsed to the placeholder.
+    assert all(
+        m.content == dc._TOOL_RESULT_CLEARED_PLACEHOLDER for m in tool_msgs[:3]
+    )
+    # The last 5 keep their raw payloads.
+    assert all(m.content == "echo:%d" % i for m, i in zip(tool_msgs[3:], range(3, count)))
+
+
+def test_tool_results_within_keep_last_are_untouched(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """BUG-13 — fewer tool calls than keep_last leaves every result intact."""
+    from rob_box_harness.core import dialog_core as dc
+
+    count = dc._KEEP_LAST_TOOL_RESULTS  # 5 — not more than keep_last
+    llm.responses = _tool_loop_script(count)
+
+    async def echo(args: dict[str, object]) -> str:
+        return f"echo:{args.get('text')}"
+    tools_provider._handler_map = {"echo": echo}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("q", history=[]))
+    assert result.error is None
+
+    final_msgs = _last_messages(llm)
+    tool_msgs = [m for m in final_msgs if m.role == "tool"]
+    assert len(tool_msgs) == count
+    assert all(
+        m.content == f"echo:{i}" for m, i in zip(tool_msgs, range(count))
+    ), "all results must survive when count <= keep_last"
+
+
+def test_compact_tool_results_keeps_wire_format(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """BUG-13 — cleared tool messages keep role/tool_call_id for the wire format.
+
+    Providers serialise ``tool`` messages by their ``tool_call_id``; if we
+    dropped the id the OpenAI-style API would reject the request. The
+    assistant messages carrying the original tool_calls must be untouched so
+    the model still knows the tools ran.
+    """
+    from rob_box_harness.core import dialog_core as dc
+
+    count = dc._MAX_TOOL_ITERATIONS
+    llm.responses = _tool_loop_script(count)
+
+    async def echo(args: dict[str, object]) -> str:
+        return f"echo:{args.get('text')}"
+    tools_provider._handler_map = {"echo": echo}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    asyncio.run(core_obj.process_input("q", history=[]))
+    final_msgs = _last_messages(llm)
+
+    # Every cleared tool message keeps its tool_call_id.
+    cleared = [m for m in final_msgs if m.role == "tool"
+               and m.content == dc._TOOL_RESULT_CLEARED_PLACEHOLDER]
+    assert cleared
+    assert all(m.tool_call_id for m in cleared)
+
+    # Assistant messages that carried tool_calls are never rewritten.
+    assistant_tool_msgs = [
+        m for m in final_msgs if m.role == "assistant" and m.tool_calls
+    ]
+    assert len(assistant_tool_msgs) == count
+    assert all(
+        m.tool_calls[0].name == "echo" for m in assistant_tool_msgs
+    )
+
+
+def test_keep_last_zero_collapses_every_tool_result(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """BUG-13 — keep_last_tool_results=0 clears every tool result."""
+    from rob_box_harness.core import dialog_core as dc
+
+    count = 3
+    llm.responses = _tool_loop_script(count)
+
+    async def echo(args: dict[str, object]) -> str:
+        return f"echo:{args.get('text')}"
+    tools_provider._handler_map = {"echo": echo}
+
+    core_obj = DialogCore(
+        llm=llm,
+        tools=tools_provider,
+        memory=memory,
+        dsm=dsm,
+        keep_last_tool_results=0,
+    )
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("q", history=[]))
+    assert result.error is None
+
+    final_msgs = _last_messages(llm)
+    tool_msgs = [m for m in final_msgs if m.role == "tool"]
+    assert len(tool_msgs) == count
+    assert all(
+        m.content == dc._TOOL_RESULT_CLEARED_PLACEHOLDER for m in tool_msgs
+    )
+
+
+def test_tool_result_compaction_saves_tokens(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """BUG-13 — compaction reduces the prompt size measurably (>500 chars).
+
+    A proxy for the token-savings acceptance: with verbose JSON tool results
+    and 8 tool calls, the final prompt carries 3 collapsed placeholders
+    instead of 3 full JSON blobs. Each blob is a long JSON document, so the
+    saving exceeds 500 characters (roughly >500 tokens for a real provider).
+    """
+    from rob_box_harness.core import dialog_core as dc
+
+    count = dc._MAX_TOOL_ITERATIONS
+    llm.responses = _tool_loop_script(count)
+
+    # A verbose JSON blob similar to real play_animation/play_sound results.
+    verbose_payload = json.dumps(
+        {
+            "success": True,
+            "animation_id": "bounce_15",
+            "duration_ms": 1200,
+            "debug": "x" * 200,
+        },
+        ensure_ascii=False,
+    )
+
+    async def verbose(args: dict[str, object]) -> str:
+        return verbose_payload
+    tools_provider._handler_map = {"echo": verbose}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    asyncio.run(core_obj.process_input("q", history=[]))
+    final_msgs = _last_messages(llm)
+
+    cleared_count = sum(
+        1 for m in final_msgs if m.role == "tool"
+        and m.content == dc._TOOL_RESULT_CLEARED_PLACEHOLDER
+    )
+    assert cleared_count == count - dc._KEEP_LAST_TOOL_RESULTS
+
+    # Saving = (cleared results) * (full payload length - placeholder length).
+    placeholder_len = len(dc._TOOL_RESULT_CLEARED_PLACEHOLDER)
+    saving = cleared_count * (len(verbose_payload) - placeholder_len)
+    assert saving > 500, f"expected >500 chars saved, got {saving}"
