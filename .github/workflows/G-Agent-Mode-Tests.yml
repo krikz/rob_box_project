@@ -1,0 +1,104 @@
+name: "G: Agent Mode Tests"
+
+# Headless CI for the agent mode (TASK-041 / issue #808).
+#
+# Runs the agent-cycle test battery WITHOUT ROS2 and WITHOUT Ollama:
+#
+#   1. VoiceMemory unit tests (FTS5 + vector search + save/load) with a
+#      mock embedder and a hard coverage gate >= 80%.
+#   2. MCP tools integration tests — every tool is driven against the
+#      MockNode from ``rob_box_mcp_tools/test/conftest.py`` (mock ROS
+#      topics), so no real robot / rclpy is required.
+#   3. Agent-cycle smoke test — 1 user request -> LLM emits 3 tool_calls
+#      -> tools execute -> LLM replies with plain text (headless).
+#
+# Why a separate workflow from ``G-Run Tests.yml``:
+#   * ``G-Run Tests`` boots the full ROS 2 Humble container via colcon
+#     (3-5 min just of build). Agent mode is pure Python on top of mock
+#     ROS topics — the whole battery below finishes in under a minute.
+#   * Keeps the agent-mode acceptance (<5 min wall-clock) measurable.
+#
+# Local equivalent (from the repo root):
+#
+#     PYTHONPATH=src/rob_box_voice:src/rob_box_llm python3 -m pytest \
+#         src/rob_box_voice/test/unit/core/test_voice_memory.py \
+#         --cov=rob_box_voice.core.voice_memory --cov-fail-under=80
+#     PYTHONPATH=src/rob_box_mcp_tools:src/rob_box_voice:src/rob_box_llm \
+#         python3 -m pytest src/rob_box_mcp_tools/test/
+#     PYTHONPATH=src/rob_box_harness:src/rob_box_llm python3 -m pytest \
+#         src/rob_box_harness/test/test_agent_cycle_smoke.py
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+      - 'feature/**'
+    paths:
+      - 'src/rob_box_voice/rob_box_voice/core/voice_memory.py'
+      - 'src/rob_box_voice/test/unit/core/test_voice_memory.py'
+      - 'src/rob_box_mcp_tools/**'
+      - 'src/rob_box_harness/rob_box_harness/core/dialog_core.py'
+      - 'src/rob_box_harness/test/test_agent_cycle_smoke.py'
+      - 'src/rob_box_llm/rob_box_llm/provider.py'
+      - '.github/workflows/G-Agent-Mode-Tests.yml'
+  pull_request:
+    branches:
+      - develop
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  agent-mode-tests:
+    name: Agent Mode (VoiceMemory + MCP tools + smoke)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Install test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov
+
+      # ── 1. VoiceMemory unit tests + coverage gate ───────────────────────
+      - name: VoiceMemory unit tests (FTS5 + vector search, mock embedder)
+        env:
+          # Ensure no real Ollama is reachable even if the runner has one.
+          OLLAMA_HOST: "http://127.0.0.1:1"
+        run: |
+          PYTHONPATH=src/rob_box_voice:src/rob_box_llm python3 -m pytest \
+            src/rob_box_voice/test/unit/core/test_voice_memory.py \
+            --cov=rob_box_voice.core.voice_memory \
+            --cov-report=term-missing \
+            --cov-fail-under=80 \
+            -q
+
+      # ── 2. MCP tools integration tests (mock ROS topics) ────────────────
+      - name: MCP tools tests (mock ROS topics, headless)
+        run: |
+          PYTHONPATH=src/rob_box_mcp_tools:src/rob_box_voice:src/rob_box_llm \
+            python3 -m pytest \
+            src/rob_box_mcp_tools/test/ \
+            --ignore=src/rob_box_mcp_tools/test/test_llm_integration.py \
+            -q
+
+      # ── 3. Agent-cycle smoke test (1 request, 3 tool_calls) ─────────────
+      - name: Agent cycle smoke test (1 request with 3 tool_calls)
+        run: |
+          PYTHONPATH=src/rob_box_harness:src/rob_box_llm:src/rob_box_mcp_tools:src/rob_box_voice \
+            python3 -m pytest \
+            src/rob_box_harness/test/test_agent_cycle_smoke.py \
+            -q

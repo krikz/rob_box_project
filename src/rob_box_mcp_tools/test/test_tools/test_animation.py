@@ -26,7 +26,9 @@ class TestPlayAnimationTool:
 
         assert tool.name == "play_animation"
         assert "LED" in tool.description
-        assert len(tool.parameters) == 1
+        assert len(tool.parameters) == 2
+        assert tool.parameters[0].name == "animation"
+        assert tool.parameters[1].name == "duration"
 
     def test_available_animations(self, mock_node):
         """Тест списка доступных анимаций."""

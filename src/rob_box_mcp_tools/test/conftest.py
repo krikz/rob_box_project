@@ -9,10 +9,84 @@ conftest.py - Общие фикстуры и конфигурация для т�
 
 import json
 import os
+import sys
+import types
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock, Mock
 
 import pytest
+
+
+# ============================================================
+# Headless ROS stubs (installed only when real rclpy is absent)
+# ============================================================
+#
+# ``rob_box_mcp_tools.tools.__init__`` re-exports ``navigation``, which
+# imports ROS2 message/action modules at module level. In CI (no ROS2
+# installed) that import fails and pytest cannot even collect the test
+# modules. These stubs give the tools package just enough of a ROS2
+# surface to import and run unit tests headless; when a real ``rclpy``
+# is present (Humble container), nothing is replaced.
+
+
+def _stub_module(name: str, **attrs: Any) -> types.ModuleType:
+    """Create (or reuse) a lightweight module in ``sys.modules``."""
+    mod = types.ModuleType(name)
+    for attr, value in attrs.items():
+        setattr(mod, attr, value)
+    sys.modules[name] = mod
+    return mod
+
+
+def _install_headless_ros_stubs() -> None:
+    """Install minimal ROS2 stubs if real rclpy is unavailable."""
+    try:
+        import rclpy  # noqa: F401
+
+        return  # Real ROS2 present — do not stub.
+    except ImportError:
+        pass
+
+    # Simple placeholder classes for the ROS2 symbols the tools import.
+    class _Placeholder:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+    class _ActionClient(_Placeholder):
+        pass
+
+    class _PoseStamped(_Placeholder):
+        pass
+
+    class _NavigateToPose(_Placeholder):
+        Goal = _Placeholder
+
+    class _CancelGoal(_Placeholder):
+        Request = _Placeholder
+        Response = _Placeholder
+
+    class _GoalInfo(_Placeholder):
+        pass
+
+    # rclpy / rclpy.action
+    rclpy = _stub_module("rclpy")
+    rclpy_action = _stub_module("rclpy.action", ActionClient=_ActionClient)
+
+    # geometry_msgs.msg
+    geometry_msgs = _stub_module("geometry_msgs")
+    _stub_module("geometry_msgs.msg", PoseStamped=_PoseStamped)
+
+    # nav2_msgs.action
+    nav2_msgs = _stub_module("nav2_msgs")
+    _stub_module("nav2_msgs.action", NavigateToPose=_NavigateToPose)
+
+    # action_msgs.srv / action_msgs.msg
+    action_msgs = _stub_module("action_msgs")
+    _stub_module("action_msgs.srv", CancelGoal=_CancelGoal)
+    _stub_module("action_msgs.msg", GoalInfo=_GoalInfo)
+
+
+_install_headless_ros_stubs()
 
 
 # ============================================================

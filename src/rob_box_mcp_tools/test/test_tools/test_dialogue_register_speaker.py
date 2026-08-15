@@ -107,37 +107,60 @@ def _load_dialogue_isolated():
     ``rclpy`` через ``navigation.py``. Подменяем его на пустой модуль,
     чтобы ``from .dialogue import *`` (наследие __init__) не выполнялся.
     Затем грузим ``dialogue.py`` напрямую через importlib.
+
+    Важно: все подмены ``sys.modules`` здесь временные — после загрузки
+    ``dialogue.py`` возвращаем оригинальные модули, иначе фейковый
+    ``rob_box_mcp_tools.base`` (без ``ToolExecutionType``) останется в
+    ``sys.modules`` на ВСЮ сессию pytest и сломает test_mapping.py
+    (``from ..base import ... ToolExecutionType`` → ImportError).
     """
-    sys.modules.setdefault("rob_box_mcp_tools", types.ModuleType("rob_box_mcp_tools"))
-    pkg_tools = types.ModuleType("rob_box_mcp_tools.tools")
-    pkg_tools.__path__ = [str(_REPO_ROOT / "rob_box_mcp_tools" / "tools")]
-    sys.modules["rob_box_mcp_tools.tools"] = pkg_tools
-    sys.modules["rob_box_mcp_tools.base"] = _install_mcp_base_stub()
-    # std_msgs.msg.String импортируется внутри RegisterSpeakerTool.execute();
-    # мок ниже подменяет его в момент вызова.
-    std_msgs = types.ModuleType("std_msgs")
-    std_msgs_msg = types.ModuleType("std_msgs.msg")
+    saved_modules = {
+        name: sys.modules.get(name)
+        for name in (
+            "rob_box_mcp_tools",
+            "rob_box_mcp_tools.tools",
+            "rob_box_mcp_tools.base",
+            "std_msgs",
+            "std_msgs.msg",
+        )
+    }
+    try:
+        sys.modules.setdefault("rob_box_mcp_tools", types.ModuleType("rob_box_mcp_tools"))
+        pkg_tools = types.ModuleType("rob_box_mcp_tools.tools")
+        pkg_tools.__path__ = [str(_REPO_ROOT / "rob_box_mcp_tools" / "tools")]
+        sys.modules["rob_box_mcp_tools.tools"] = pkg_tools
+        sys.modules["rob_box_mcp_tools.base"] = _install_mcp_base_stub()
+        # std_msgs.msg.String импортируется внутри RegisterSpeakerTool.execute();
+        # мок ниже подменяет его в момент вызова.
+        std_msgs = types.ModuleType("std_msgs")
+        std_msgs_msg = types.ModuleType("std_msgs.msg")
 
-    class _String:
-        def __init__(self):
-            self.data = ""
+        class _String:
+            def __init__(self):
+                self.data = ""
 
-    std_msgs_msg.String = _String
-    # Force-override (НЕ setdefault): test_dialogue_speak_text_batch.py
-    # подменяет sys.modules['std_msgs'] на Mock() на уровне модуля. Если
-    # он импортируется РАНЬШЕ нас, setdefault не перезапишет Mock —
-    # String() внутри execute() вернёт общий MagicMock, rename/register
-    # payload'ы затрут друг друга в одном объекте и тесты упадут
-    # (observed: rename_pub получил {name: ...} вместо {old_name,new_name}).
-    sys.modules["std_msgs"] = std_msgs
-    sys.modules["std_msgs.msg"] = std_msgs_msg
+        std_msgs_msg.String = _String
+        # Force-override (НЕ setdefault): test_dialogue_speak_text_batch.py
+        # подменяет sys.modules['std_msgs'] на Mock() на уровне модуля. Если
+        # он импортируется РАНЬШЕ нас, setdefault не перезапишет Mock —
+        # String() внутри execute() вернёт общий MagicMock, rename/register
+        # payload'ы затрут друг друга в одном объекте и тесты упадут
+        # (observed: rename_pub получил {name: ...} вместо {old_name,new_name}).
+        sys.modules["std_msgs"] = std_msgs
+        sys.modules["std_msgs.msg"] = std_msgs_msg
 
-    spec = importlib.util.spec_from_file_location(
-        "rob_box_mcp_tools.tools.dialogue", _DIALOGUE_PATH
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+        spec = importlib.util.spec_from_file_location(
+            "rob_box_mcp_tools.tools.dialogue", _DIALOGUE_PATH
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        for name, original in saved_modules.items():
+            if original is not None:
+                sys.modules[name] = original
+            else:
+                sys.modules.pop(name, None)
 
 
 _dialogue = _load_dialogue_isolated()
