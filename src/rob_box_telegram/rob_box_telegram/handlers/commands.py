@@ -35,9 +35,14 @@ def _node(context: ContextTypes.DEFAULT_TYPE):
     return context.bot_data["node"]
 
 
-def _forward(node, text: str) -> None:
-    """Forward a command intent to the unified dialogue pipeline."""
-    node.forward_to_stt(text)
+def _forward(node, text: str, chat_id=None) -> None:
+    """Forward a command intent to the unified dialogue pipeline.
+
+    ``chat_id`` is passed through to ``forward_to_stt`` which adds the
+    ``[TG:chat_id]`` source marker (issue #1195) — commands are explicit
+    intents, so the dialogue_node wake-word gate must not drop them.
+    """
+    node.forward_to_stt(text, chat_id=chat_id)
 
 
 # ─── /start ──────────────────────────────────────────────────────────────
@@ -325,6 +330,9 @@ async def say_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     node = _node(context)
+    # Issue #1195 — echo path: remember the chat so the TTS output of
+    # /say is also echoed into the right chat.
+    node.set_active_chat(update.effective_chat.id)
     node.publish_tts(text)
     await update.message.reply_text(f"🗣 Озвучиваю: _{text}_", parse_mode="Markdown")
 
@@ -335,6 +343,10 @@ async def say_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 @authorized
 async def playvoice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /playvoice — next voice message will be transcribed and spoken by the robot."""
+    # Issue #1195 — echo path: remember the chat so the played voice
+    # text is echoed into the right chat.
+    node = _node(context)
+    node.set_active_chat(update.effective_chat.id)
     context.user_data["playvoice_mode"] = True
     await update.message.reply_text(
         "🎤 Режим озвучки активирован.\n"
@@ -357,7 +369,7 @@ async def _forward_and_ack(update: Update, node, intent: str, ack: str) -> None:
     The ACK keeps the operator informed while the harness reacts on the
     other side of ``/voice/stt/result``.
     """
-    _forward(node, intent)
+    _forward(node, intent, chat_id=update.effective_chat.id)
     await update.message.reply_text(ack)
 
 
@@ -576,5 +588,7 @@ async def clear_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     dialogue manager can drop the session.
     """
     node = _node(context)
-    _forward(node, "/clear")
+    # Issue #1195 — pass chat_id so /clear carries the [TG:] source marker
+    # (command intents must not be dropped by the wake-word gate).
+    _forward(node, "/clear", chat_id=update.effective_chat.id)
     await update.message.reply_text("🧹 Запрос на очистку истории отправлен.")

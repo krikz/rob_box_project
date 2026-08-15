@@ -338,7 +338,7 @@ class _TestableDialogueNode(DialogueNode):
                 "🎧 [issue 992 test] DJ auto-transition — skipping "
                 "new_dialogue music_cleanup"
             )
-        elif self._pending_music_cleanup:
+        elif self._pending_music_cleanup and was_idle:
             self._pending_music_cleanup = False
             self._publish_music_cleanup(reason="new_dialogue")
         self._run_task = self._test_loop.create_task(
@@ -346,6 +346,7 @@ class _TestableDialogueNode(DialogueNode):
                 user_input,
                 is_dj_auto=is_dj_auto,
                 is_babble_retry=is_babble_retry,
+                raw_user_command=raw_user_command,
                 speaker_tag=speaker_tag,
                 speaker_duration_s=speaker_duration_s,
             ),
@@ -529,11 +530,12 @@ class TestDialogueShell(unittest.TestCase):
         The first part of the wake-word sequence (IDLE → LISTENING) is
         covered by ``test_wake_word_detection_routes_to_listening``.
         Here we focus on the second half: once we're in LISTENING, a
-        follow-up STT message (no wake word needed) must drive
+        follow-up STT message (wake word still required by the
+        universal wake-word gate, issue #1101) must drive
         DIALOGUE and the LLM reply is published to the response topic.
         """
         # Pre-seed LISTENING via a synthetic WAKE_WORD transition so
-        # the next STT message skips the wake-word gate cleanly.
+        # the next STT message skips the IDLE wake-word transition.
         from rob_box_harness.core.dialogue_state_machine import (
             DialogueEvent as _DE,
         )
@@ -542,7 +544,7 @@ class TestDialogueShell(unittest.TestCase):
 
         # Script a deterministic LLM reply.
         self.llm.push("Готов к работе!")
-        self.node._on_stt(_make_string("как дела?"))
+        self.node._on_stt(_make_string("робок как дела?"))
         self._drive_turn()
         # Final state: DIALOGUE → DIALOGUE_END → IDLE
         self.assertEqual(_state_name(self.node), "IDLE")
@@ -575,7 +577,7 @@ class TestDialogueShell(unittest.TestCase):
         self.node._dsm.on_event(_DE.WAKE_WORD)
         self.llm.push("Готово")
 
-        self.node._on_stt(_make_string("как дела?"))
+        self.node._on_stt(_make_string("робок как дела?"))
         self._drive_turn()
 
         published_states = [p.data for p in self.node._state_pub.published]
@@ -607,7 +609,7 @@ class TestDialogueShell(unittest.TestCase):
         node = _TestableDialogueNode(llm=llm)
         try:
             node._dsm.on_event(_DE.WAKE_WORD)
-            node._on_stt(_make_string("как дела?"))
+            node._on_stt(_make_string("робок как дела?"))
             node.drive_one_turn()
 
             self.assertEqual(llm.call_count, 2)
@@ -617,21 +619,82 @@ class TestDialogueShell(unittest.TestCase):
         finally:
             node.close()
 
+    # ── Regression (issue #918): interrupted turn must still finalize ──
+    # A turn cancelled by barge-in / VAD interrupt / silence (or one
+    # that raised before the LLM) used to crash the finally block at
+    # ``result.tools_called`` (result=None) BEFORE the DIALOGUE_END
+    # transition and the state publish. The DSM stayed DIALOGUE, the
+    # /voice/dialogue/state topic stayed 'dialogue', and
+    # scenario_runner's wait_for_idle timed out (vad_interrupt_no_hang,
+    # rapid_messages_no_crash, response_is_valid_json).
+
+    def test_cancelled_turn_returns_to_idle_and_publishes(self):
+        """A barge-in-cancelled turn still returns the DSM to IDLE.
+
+        Also publishes the final state (issue #918).
+        """
+        import asyncio as _asyncio
+
+        class _NeverResolves:
+            def __await__(self):
+                fut = _asyncio.get_event_loop().create_future()
+                return fut.__await__()
+
+        async def _hanging_complete(*_a, **_kw):
+            self.llm.call_count += 1
+            return _NeverResolves()  # type: ignore[return-value]
+
+        original_complete = self.llm.complete
+        self.llm.complete = _hanging_complete  # type: ignore[assignment]
+        try:
+            self.node._on_stt(_make_string("робок первый запрос"))
+            # Simulate barge-in / VAD interrupt — cancel the in-flight
+            # turn without dispatching a replacement.
+            self.node._cancel_run("test barge-in")
+            self._drive_turn()
+            # No crash: the DSM must finalize to IDLE and publish it.
+            self.assertEqual(_state_name(self.node), "IDLE")
+            published_states = [p.data for p in self.node._state_pub.published]
+            self.assertEqual(published_states[-1], "IDLE")
+        finally:
+            self.llm.complete = original_complete  # type: ignore[assignment]
+
+    def test_errored_turn_returns_to_idle_and_publishes(self):
+        """A turn that raises before the LLM still returns the DSM to IDLE.
+
+        Also publishes the final state (issue #918).
+        """
+        original = self.node._build_dynamic_system_context
+
+        def _boom() -> str:
+            raise RuntimeError("test failure before LLM")
+
+        self.node._build_dynamic_system_context = _boom  # type: ignore[assignment]
+        try:
+            self.node._on_stt(_make_string("робок привет"))
+            self._drive_turn()
+            self.assertEqual(_state_name(self.node), "IDLE")
+            published_states = [p.data for p in self.node._state_pub.published]
+            self.assertEqual(published_states[-1], "IDLE")
+        finally:
+            self.node._build_dynamic_system_context = original  # type: ignore[assignment]
+
     # ── 3. Silence command → state SILENCED ──────────────────────────
 
     def test_silence_command_silences(self):
         """A silence command from STT transitions active state → SILENCED."""
-        # Drive LISTENING explicitly — the shell's wake-word-only STT
-        # is filtered by the empty-clean-text guard, so the DSM
-        # transition has to come via a direct WAKE_WORD event.
+        # Drive LISTENING explicitly — the shell's universal wake-word
+        # gate (issue #1101) requires the wake word in the STT text, so
+        # we seed the IDLE → LISTENING transition directly and inject a
+        # wake-word-prefixed silence command below.
         from rob_box_harness.core.dialogue_state_machine import (
             DialogueEvent as _DE,
         )
         self.node._dsm.on_event(_DE.WAKE_WORD)
         self.assertEqual(_state_name(self.node), "LISTENING")
-        # Now issue a silence command ("помолчи") — strip_wake_word
+        # Now issue a silence command ("робок помолчи") — strip_wake_word
         # leaves "помолчи" so is_silence_command() matches.
-        self.node._on_stt(_make_string("помолчи"))
+        self.node._on_stt(_make_string("робок помолчи"))
         self.assertEqual(_state_name(self.node), "SILENCED")
         # State publish path was driven
         published_states = [p.data for p in self.node._state_pub.published]
@@ -1063,11 +1126,12 @@ class TestLLMProviderWiring(unittest.TestCase):
         """Source and Docker configs expose the same dialogue_node params.
 
         Issue #1004 fix (ADR-0004): после разделения на per-node YAML,
-        dialogue_node параметры лежат в ``dialogue_node.yaml`` (src) или
-        ``docker/vision/config/voice_assistant/voice_assistant.yaml``
-        (docker — ещё не мигрирован, оставлен для оператора). Тест проверяет,
-        что оба файла выставляют одинаковые значения для ключевых LLM-параметров,
-        которые DialogueNode читает через ``get_parameter(...)`` без префикса.
+        dialogue_node параметры лежат в ``dialogue_node.yaml`` (src) и
+        ``docker/vision/config/voice_assistant/dialogue_node.yaml``
+        (docker — операторский конфиг, монтируется в /config/voice_assistant
+        и читается launch через config_dir). Тест проверяет, что оба файла
+        выставляют одинаковые значения для ключевых LLM-параметров, которые
+        DialogueNode читает через ``get_parameter(...)`` без префикса.
 
         С 2026-08-05 llm_provider переключён на MiniMax primary (issue #1004):
         https://github.com/krikz/rob_box_project/issues/1004
@@ -1078,11 +1142,11 @@ class TestLLMProviderWiring(unittest.TestCase):
 
         repo_root = Path(__file__).resolve().parents[3]
         # После фикса #1004 dialogue_node параметры лежат в
-        # src/rob_box_voice/config/dialogue_node.yaml (новый формат —
-        # верхний ключ = имя ноды, НЕ /**/ros__parameters/dialogue_node/).
+        # <node>.yaml (новый формат — верхний ключ = имя ноды,
+        # НЕ /**/ros__parameters/dialogue_node/).
         paths = (
             repo_root / "src/rob_box_voice/config/dialogue_node.yaml",
-            repo_root / "docker/vision/config/voice_assistant/voice_assistant.yaml",
+            repo_root / "docker/vision/config/voice_assistant/dialogue_node.yaml",
         )
         expected = {
             "llm_providers": "minimax,deepseek",
@@ -1091,17 +1155,15 @@ class TestLLMProviderWiring(unittest.TestCase):
         for path in paths:
             with self.subTest(path=str(path)):
                 if not path.exists():
-                    # docker-конфиг пока не мигрирован — issue #1004 не покрывает
-                    # docker-версию YAML; skip чтобы CI оставался зелёным.
-                    self.skipTest(f"{path} not yet migrated (issue #1004 — src only)")
+                    self.skipTest(f"{path} not found")
                     continue
                 config = yaml.safe_load(path.read_text(encoding="utf-8"))
-                # Новый формат (src): top-level = "<node_name>" → ros__parameters.
-                # Старый формат (docker): /** / ros__parameters / dialogue_node.
-                if "/**" in config:
-                    dialogue = config["/**"]["ros__parameters"]["dialogue_node"]
-                else:
-                    dialogue = config["dialogue_node"]["ros__parameters"]
+                # Единый формат: top-level = "<node_name>" → ros__parameters.
+                self.assertNotIn(
+                    "/**", config,
+                    f"{path.name} всё ещё в старом формате /** (issue #1004)",
+                )
+                dialogue = config["dialogue_node"]["ros__parameters"]
                 for key, value in expected.items():
                     self.assertEqual(
                         dialogue.get(key), value,

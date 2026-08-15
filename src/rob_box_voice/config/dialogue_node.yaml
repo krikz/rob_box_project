@@ -1,13 +1,12 @@
 # dialogue_node.yaml — per-node ROS2 config (issue #1004 fix)
 #
-# Сгенерировано из voice_assistant.yaml при разделении на per-node файлы.
-# Меняйте именно этот файл (или src/rob_box_voice/config/<node>.yaml для
-# других нод), НЕ voice_assistant.yaml — он остаётся как легаси/источник
-# правды для совместимости с тестами test_dialogue_shell.
-#
 # Формат — стандартный ROS2: верхний ключ = имя ноды (должно совпадать с
 # Node(name=...) в launch), под ним ros__parameters: с плоскими параметрами.
 # get_parameter("foo") в ноде находит foo БЕЗ префикса.
+#
+# Все ключи соответствуют declare_parameter() в dialogue_node.py 1:1.
+# (Ключи silence_timeout/silence_commands/max_question_time/sentence_split/
+# streaming удалены — код их НЕ читает; YAML молча игнорировался, issue #1004.)
 
 dialogue_node:
   ros__parameters:
@@ -25,23 +24,16 @@ dialogue_node:
     - бот
     - робо
     - роб
-    silence_commands:
-    - помолч
-    - замолч
-    - хватит
-    - закрой
-    - заткн
-    - не меша
-    silence_timeout: 3.5
-    max_question_time: 20.0
+    - робик
+    dialogue_timeout: 300.0
     llm_providers: "minimax,deepseek"   # issue #1089: первый = primary, остальные = fallbacks
+    # Issue #1219 — активный TTS-провайдер для LLM-контекста [TTS].
+    # Должен совпадать с tts_node.yaml provider (minimax).
+    tts_provider: minimax
     system_prompt_file: master_prompt_compact.txt
     history_max_turns: 20
-    dialogue_timeout: 300.0
     faq_mode_enabled: false
     faq_event_config_file: ''
-    streaming: false
-    sentence_split: true
     tool_provider: ros_mcp
     # Дополнительные ключи для переопределения оператором:
     # (все имеют default в коде — здесь выставляем «безопасные» значения)
@@ -62,8 +54,10 @@ dialogue_node:
     # Startup greeting (issue #1003, редизайн 06.08): dialogue_node сам
     # говорит приветствие через N секунд после старта (отдельная нода
     # убрана — теряла фразу из-за гонки с инициализацией tts_node).
+    # Пустой startup_greeting_text → случайная прикольная фраза из
+    # startup_greeting.GREETINGS (9 вариантов, «Мяу! Я на связи!» и т.д.).
     startup_greeting_sec: 12.0
-    startup_greeting_text: "Я на связи, все системы в норме!"
+    startup_greeting_text: ''
     # api_key — пусто → fallback на ENV (DEEPSEEK_API_KEY / MINIMAX_API_KEY / YANDEX_API_KEY).
     # Секреты не хранятся в YAML.
     api_key: ''

@@ -51,25 +51,19 @@ Vision Pi (Raspberry Pi 5)
 
 ### Конфигурация
 
-**Основной конфиг:** `config/voice_assistant/voice_assistant.yaml`
+**Основной конфиг (docker-деплой):** `config/voice_assistant/<node>.yaml`
+(per-node файлы, issue #1004 / ADR-0004). Монтируются в
+`/config/voice_assistant` и читаются launch через `config_dir:=`.
+Монолитного `voice_assistant.yaml` больше нет — вложенные секции создавали
+dotted-имена, которые ноды не читали.
 
 ```yaml
+# config/voice_assistant/audio_node.yaml
 audio_node:
-  device_name: "ReSpeaker"
-  sample_rate: 16000
-  vad_threshold: 500
-
-stt_node:
-  provider: "yandex"
-  yandex:
-    folder_id: "YOUR_FOLDER_ID"
-    api_key: "YOUR_API_KEY"
-
-tts_node:
-  provider: "yandex"
-  yandex:
-    voice: "anton"
-    speed: 0.4
+  ros__parameters:
+    device_name: "ReSpeaker"
+    sample_rate: 16000
+    vad_threshold: 3.5
 ```
 
 **Секреты:** Скопировать `config/voice_assistant/secrets.yaml.example` → `secrets.yaml` и заполнить API ключи.

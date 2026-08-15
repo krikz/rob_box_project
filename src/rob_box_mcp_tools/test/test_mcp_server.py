@@ -5,6 +5,7 @@ import os
 import sys
 import types
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -130,6 +131,9 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
         "GetSoundInfoTool": "get_sound_info",
         "SpeakTextTool": "speak_text",
         "ListenForResponseTool": "listen_for_response",
+        "EstimateTtsDurationTool": "estimate_tts_duration",
+        "RegisterSpeakerTool": "register_speaker",
+        "SetVoiceTool": "set_voice",
         "MemorySaveTool": "memory_save",
         "MemorySearchTool": "memory_search",
         "MemoryContextTool": "memory_context",
@@ -142,6 +146,9 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
         "LoadTrackTool": "load_track",
         "DeleteTrackTool": "delete_track",
         "SetDjModeTool": "set_dj_mode",
+        "SearchSamplesTool": "search_samples",
+        "FaqSearchTool": "faq_search",
+        "SearchWebTool": "search_web",
     }
 
     for class_name, tool_name in tool_names.items():
@@ -211,7 +218,7 @@ def test_register_tools_skips_track_library_failures_without_crashing(monkeypatc
 def test_recommended_executor_threads_never_returns_less_than_two(monkeypatch):
     module = _load_mcp_server_module(monkeypatch)
 
-    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0})
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0}, raising=False)
 
     assert module._recommended_executor_threads() == 2
 
@@ -220,6 +227,149 @@ def test_recommended_executor_threads_never_returns_less_than_two(monkeypatch):
 def test_recommended_executor_threads_uses_affinity_when_available(monkeypatch):
     module = _load_mcp_server_module(monkeypatch)
 
-    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0, 1, 2, 3})
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0, 1, 2, 3}, raising=False)
 
     assert module._recommended_executor_threads() == 4
+
+
+# ---------------------------------------------------------------------------
+# Issue #1016 — empty-response music fallback (/mcp/music_fallback)
+# ---------------------------------------------------------------------------
+
+
+class _FakeLibrary:
+    def __init__(self, tracks):
+        self._tracks = tracks
+
+    def list_tracks(self, min_rating=0):
+        return {"success": True, "tracks": self._tracks, "total": len(self._tracks)}
+
+    def load_track(self, name):
+        for t in self._tracks:
+            if t["name"] == name:
+                return {"success": True, "code": f"# {name} code", "track": t}
+        return {"success": False, "error": f"Трек '{name}' не найден"}
+
+
+@pytest.mark.unit
+def test_music_fallback_plays_top_rated_track(monkeypatch):
+    """LLM пустой ответ → /mcp/music_fallback → играет топ-трек (rating DESC)."""
+    module = _load_mcp_server_module(monkeypatch)
+    manager = MagicMock()
+    manager.execute_code.return_value = {"success": True, "message": "ok"}
+    library = _FakeLibrary([
+        {"name": "top_track", "rating": 5, "title": "Top"},
+        {"name": "ok_track", "rating": 3, "title": "Ok"},
+    ])
+    server = _FakeServer()
+    server._music_manager = manager
+    server._track_library = library
+
+    msg = module.String()
+    msg.data = '{"reason": "empty_response"}'
+    module.MCPServer._on_music_fallback(server, msg)
+
+    manager.execute_code.assert_called_once()
+    # Первый в списке = с самым высоким rating (ORDER BY rating DESC).
+    args = manager.execute_code.call_args
+    assert args.kwargs["pattern_name"] == "top_track"
+    assert "# top_track code" in args.args[0]
+
+
+@pytest.mark.unit
+def test_music_fallback_skips_when_manager_missing(monkeypatch):
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server._music_manager = None
+    server._track_library = _FakeLibrary([])
+    msg = module.String()
+    msg.data = ""
+    # Не падает и не играет.
+    module.MCPServer._on_music_fallback(server, msg)
+    assert any(
+        "unavailable" in m for m in server.get_logger().warning_messages
+    )
+
+
+@pytest.mark.unit
+def test_music_fallback_skips_when_library_empty(monkeypatch):
+    module = _load_mcp_server_module(monkeypatch)
+    manager = MagicMock()
+    server = _FakeServer()
+    server._music_manager = manager
+    server._track_library = _FakeLibrary([])
+    msg = module.String()
+    msg.data = ""
+    module.MCPServer._on_music_fallback(server, msg)
+    manager.execute_code.assert_not_called()
+    assert any("пуста" in m for m in server.get_logger().warning_messages)
+
+
+@pytest.mark.unit
+def test_music_fallback_subscription_survives_missing_qos_profile(monkeypatch):
+    """Regression 13.08.2026: ``_register_music_tools()`` runs BEFORE
+    ``__init__`` assigns ``self._qos_profile`` → the subscription died
+    with AttributeError (swallowed by try/except) and the empty-response
+    music fallback never got wired on the robot."""
+    module = _load_mcp_server_module(monkeypatch)
+
+    class _OkLibrary:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def list_tracks(self, *args, **kwargs):
+            return {"total": 0, "tracks": []}
+
+    monkeypatch.setattr(module, "TrackLibrary", _OkLibrary)
+    server = _FakeServer()
+    server._on_music_fallback = lambda msg: None
+    assert not hasattr(server, "_qos_profile"), "precondition: init order reproduces the bug"
+    subscriptions: list[tuple[str, object]] = []
+    server.create_subscription = (
+        lambda msg_type, topic, callback, qos: subscriptions.append((topic, qos))
+    )
+
+    module.MCPServer._register_music_tools(server)
+
+    assert any(topic == "/mcp/music_fallback" for topic, _ in subscriptions)
+    assert not any(
+        "Не удалось подписаться" in message
+        for message in server.get_logger().warning_messages
+    )
+
+
+# ---------------------------------------------------------------------------
+# Issue #1229 — /voice/tts/provider_state (фактический провайдер TTS)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_tts_provider_state_updates_actual_provider(monkeypatch):
+    """tts_node публикует фактического провайдера после фолбека → mcp_server
+    запоминает его для валидации голосов в speak_text/set_voice."""
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server.actual_tts_provider = None
+
+    msg = module.String()
+    msg.data = '{"provider": "yandex", "voice": "anton", "reason": "provider_dead"}'
+    module.MCPServer._on_tts_provider_state(server, msg)
+
+    assert server.actual_tts_provider == "yandex"
+
+
+@pytest.mark.unit
+def test_tts_provider_state_ignores_empty_payload(monkeypatch):
+    module = _load_mcp_server_module(monkeypatch)
+    server = _FakeServer()
+    server.actual_tts_provider = None
+
+    msg = module.String()
+    msg.data = "not-json"
+    module.MCPServer._on_tts_provider_state(server, msg)
+    assert server.actual_tts_provider is None
+
+    msg2 = module.String()
+    msg2.data = ""
+    module.MCPServer._on_tts_provider_state(server, msg2)
+    assert server.actual_tts_provider is None

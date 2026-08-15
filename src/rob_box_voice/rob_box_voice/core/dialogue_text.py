@@ -23,14 +23,28 @@ from typing import Sequence
 # so behaviour is preserved when the legacy node switches to these
 # helpers. Includes spelling variants that the dialog harness originally
 # supported inline (роббокс, роб бокс, робокс).
+# 🔴 fix(voice #1252): синхронизировано с dialogue_node.yaml — 12 вариантов
+# + исторический «робик» (потерян при 9ca7fb29, 21.02). STT реально выдаёт
+# кривые варианты («робок», «роберт», «рыбок», «роботс») — все покрываем.
+# NB: порядок ВАЖЕН для strip_wake_word (regex-альтернация leftmost-first) —
+# более длинные/специфичные варианты идут ПЕРВЫМИ, иначе «роб» съест «роб бокс».
 DEFAULT_WAKE_WORDS: tuple[str, ...] = (
-    "робок",
-    "робот",
-    "роббокс",
     "роб бокс",
-    "робокс",
-    "robbox",
+    "роббокс",
+    "робокос",
     "rob box",
+    "робокс",
+    "роберт",
+    "роббос",
+    "robbox",
+    "робот",
+    "робок",
+    "рыбок",
+    "робик",
+    "робо",
+    "рома",
+    "бот",
+    "роб",
 )
 DEFAULT_SILENCE_COMMANDS: tuple[str, ...] = ("помолч", "замолч", "хватит")
 DEFAULT_UNSILENCE_COMMANDS: tuple[str, ...] = (

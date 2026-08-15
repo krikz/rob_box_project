@@ -122,10 +122,15 @@ except ImportError:  # pragma: no cover — only triggered if rob_box_llm not bu
 # Issue #1160 — Prometheus metrics (этап 1 observability).
 # ``prometheus_client`` — optional dep; если её нет, всё превращается в
 # no-op и старт сервера тихо возвращает ``False``.
+# Issue #1234 — OpenTelemetry traces (этап 2): init_tracing вызывается в
+# __init__ ДО создания MiniMax-провайдера (его httpx-клиент должен попасть
+# под авто-инструментацию); ``start_span_handle`` — для span ``tts.synthesize``.
 from rob_box_voice.observability import (
+    init_tracing,
     is_metrics_enabled,
     record_tts_synthesize,
     start_metrics_server,
+    start_span_handle,
 )
 
 
@@ -369,6 +374,12 @@ class TTSNode(Node):
     def __init__(self):
         super().__init__("tts_node")
 
+        # Issue #1234 — OpenTelemetry traces (этап 2). Вызываем ДО создания
+        # провайдеров (MiniMax provider открывает httpx-клиент при первом
+        # синтезе) — авто-инструментация httpx должна быть включена раньше.
+        # Если opentelemetry-пакетов нет — no-op (см. observability.tracing).
+        init_tracing("tts_node")
+
         # Параметры
         # yandex (primary) | silero (fallback) | minimax (HTTP, opt-in)
         self.declare_parameter("provider", "minimax")
@@ -382,6 +393,14 @@ class TTSNode(Node):
         # в кэше — не долбим его на каждый ход (см. _mark_provider_dead).
         self.declare_parameter("provider_dead_ttl_s", 300.0)
         self.declare_parameter("provider_dead_ttl_transient_s", 30.0)
+        # Issue #1229 — файл персистентного состояния фактического
+        # провайдера TTS (переживает рестарт контейнера; пустая строка =
+        # отключено). tts_node пишет {provider, dead_until_ts, ...} при
+        # смене «эффективного» провайдера (фолбек после квоты/сети);
+        # mcp_server/dialogue_node читают его через /voice/tts/provider_state,
+        # чтобы LLM-контекст и валидация голосов отражали РЕАЛЬНОГО
+        # провайдера, а не номинального из параметра provider.
+        self.declare_parameter("provider_state_file", "/data/tts_provider_state.json")
 
         # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос!)
         self.declare_parameter("yandex_api_key", "")
@@ -481,6 +500,19 @@ class TTSNode(Node):
         self.declare_parameter("normalize_text", True)
         self.declare_parameter("volume_db", -3.0)  # Громкость в dB (-3dB = 70%)
 
+        # Issue #929 (OOM kill tts_node): фоновый warm-load Silero держит
+        # ~700 MB-1 GB RSS постоянно (PyTorch + модель), даже когда Silero —
+        # только fallback и Yandex/MiniMax работают. На конфигурациях с
+        # жёстким mem_limit (2-4 GB на контейнер из 9 нод) этот постоянный
+        # RSS складывается с остальными нодами (speaker_id + torch, sclang,
+        # Vosk) и доводит контейнер до OOM при первой же попытке догрузить
+        # модель. Параметр ``silero_warm_load`` (default True — сохраняет
+        # контракт G-933-B) позволяет ОТЛОЖИТЬ загрузку Silero до первого
+        # реального fallback (lazy): при False warm-load при старте не
+        # запускается, модель грузится синхронно в hot-path (первый
+        # fallback платит 2-3 с — приемлемо для аварийного пути).
+        self.declare_parameter("silero_warm_load", True)
+
         # Читаем параметры
         self.provider = self.get_parameter("provider").value
         if self.provider not in {"yandex", "silero", "minimax"}:
@@ -509,10 +541,19 @@ class TTSNode(Node):
         self.provider_dead_ttl_transient_s = max(
             1.0, float(self.get_parameter("provider_dead_ttl_transient_s").value)
         )
+        # Issue #1229 — файл персистентного состояния эффективного провайдера.
+        self.provider_state_file = str(
+            self.get_parameter("provider_state_file").value or ""
+        )
         # Провайдеры, помеченные мёртвыми (quota/сеть/ошибка) до определённого
         # момента времени (time.monotonic). Ключ — имя провайдера.
         self._provider_dead_until: Dict[str, float] = {}
         self._provider_dead_reason: Dict[str, str] = {}
+        # Восстанавливаем кэш «мёртвых» из персистентного файла (issue #1229):
+        # после рестарта робот сразу знает фактического провайдера (квота
+        # MiniMax не заканчивается за время рестарта) — LLM-контекст не врёт
+        # с первого хода.
+        self._load_persisted_provider_state()
 
         # Yandex Cloud TTS gRPC v3
         self.yandex_api_key = self.get_parameter("yandex_api_key").value or os.getenv("YANDEX_API_KEY", "")
@@ -522,6 +563,14 @@ class TTSNode(Node):
         # Silero
         self.silero_speaker = self.get_parameter("silero_speaker").value
         self.silero_sample_rate = self.get_parameter("silero_sample_rate").value
+
+        # Issue #929: warm-load Silero при старте отключаем через параметр.
+        # True (default) — прежнее поведение (G-933-B); False — Silero
+        # грузится лениво при первом реальном fallback (экономия ~1 GB RSS,
+        # спасает от OOM kill в контейнере с жёстким mem_limit).
+        self.silero_warm_load_enabled = bool(
+            self.get_parameter("silero_warm_load").value
+        )
 
         # Silero v5: новые флаги
         self.silero_put_accent = self.get_parameter("silero_put_accent").value
@@ -689,8 +738,18 @@ class TTSNode(Node):
         else:
             # provider=yandex (or minimax) — Silero is a *fallback*.
             # Kick off the background warm-load so the first fallback
-            # doesn't pay the 2-3 s cold-load cost.
-            self._start_silero_warm_load()
+            # doesn't pay the 2-3 s cold-load cost.  Issue #929: skip the
+            # warm-load entirely when ``silero_warm_load=false`` — the
+            # constant ~1 GB RSS (PyTorch + model) contributes to OOM kill
+            # in the 2-4 GB container.  The hot-path lazy-load covers the
+            # first fallback (2-3 s, acceptable for the emergency path).
+            if self.silero_warm_load_enabled:
+                self._start_silero_warm_load()
+            else:
+                self.get_logger().info(
+                    "🌡️ Silero warm-load disabled (silero_warm_load=false) — "
+                    "lazy-load on first fallback (issue #929)"
+                )
 
         # Yandex Cloud TTS gRPC v3 (оригинальный ROBBOX голос anton!)
         self.yandex_channel = None
@@ -750,6 +809,14 @@ class TTSNode(Node):
         self.finished_pub = self.create_publisher(
             String, "/voice/tts/finished", 10
         )  # Публикация завершения произношения
+        # Issue #1229 — фактический провайдер TTS (после фолбека). mcp_server
+        # и dialogue_node подписываются на этот топик, чтобы валидация голосов
+        # и LLM-контекст [TTS] отражали РЕАЛЬНОГО провайдера, а не номинального
+        # из параметра provider. Публикуется при старте (из персистентного
+        # файла), при пометке провайдера мёртвым и после успешного синтеза.
+        self.provider_state_pub = self.create_publisher(
+            String, "/voice/tts/provider_state", 10
+        )
         # Issue #980 — single event per multi-chunk TTS batch (rap, poetry).
         # tts_node publishes one ``/voice/tts/batch_complete`` after the last
         # chunk lands so dialogue_node can fire ``music_cleanup`` exactly once.
@@ -810,6 +877,10 @@ class TTSNode(Node):
 
         # Публикуем начальное состояние
         self.publish_state("ready")
+        # Issue #1229 — публикуем фактического провайдера сразу при старте
+        # (значение из персистентного файла, если он есть). dialogue_node /
+        # mcp_server получают корректный контекст ДО первого диалога.
+        self._publish_provider_state("startup")
 
         self.get_logger().info("✅ TTSNode инициализирован")
         self.get_logger().info(
@@ -1146,12 +1217,17 @@ class TTSNode(Node):
             batch_id = chunk_data.get("batch_id")
             batch_index = chunk_data.get("batch_index")
             batch_total = chunk_data.get("batch_total")
+            # Issue #1219 — LLM voice selection: голос из speak_text(voice=).
+            # Пробрасывается через kwargs (не позиционно — канонический
+            # positional arity защищён test_speech_id_arg_chain).
+            voice = chunk_data.get("voice")
 
             self.get_logger().info(
                 f'🔊 TTS: {text[:50]}... '
                 f'(speech_id: {speech_id[:8]}, '
                 f'dialogue_id: {dialogue_id[:8] if dialogue_id else "None"}..., '
-                f'batch: {(batch_id or "None")[:8]} {batch_index}/{batch_total})'
+                f'batch: {(batch_id or "None")[:8]} {batch_index}/{batch_total}, '
+                f'voice: {voice or "default"})'
             )
             if ssml_attributes:
                 self.get_logger().info(f"🎵 SSML атрибуты: {ssml_attributes}")
@@ -1186,6 +1262,7 @@ class TTSNode(Node):
                 batch_id,
                 batch_index,
                 batch_total,
+                voice=voice,
             )
 
         except json.JSONDecodeError as e:
@@ -1280,6 +1357,7 @@ class TTSNode(Node):
         fn,
         speech_id: str,
         *args,
+        **kwargs,
     ):
         """Submit a synth worker through the bounded executor (BLK-9).
 
@@ -1291,6 +1369,11 @@ class TTSNode(Node):
 
         The slot is released automatically when the future completes
         (success or failure) via the `_release_synthesis_slot` callback.
+
+        ``**kwargs`` (issue #1219) — дополнительные данные для воркера,
+        не входящие в канонический positional arity (например ``voice``).
+        Пробрасываются в ``executor.submit`` как keyword-аргументы —
+        ``_run_synthesis_worker(**kwargs)`` достаёт их из ``**kwargs``.
         """
         if self._synthesis_executor_shutdown:
             self.get_logger().warning(
@@ -1317,7 +1400,9 @@ class TTSNode(Node):
             # а submit(fn, *args, play_seq) передавал его 10-м позиционным →
             # TypeError: takes from 3 to 9 positional args but 10 given →
             # TTS молчал (только пилик). Теперь kwarg — попадает в **kwargs.
-            future = self._synthesis_executor.submit(fn, *args, play_seq=play_seq)
+            future = self._synthesis_executor.submit(
+                fn, *args, play_seq=play_seq, **kwargs
+            )
         except RuntimeError as exc:
             # Executor was shut down between our check and submit() — rare
             # but possible during node teardown.
@@ -1388,6 +1473,10 @@ class TTSNode(Node):
         # Forward FIFO-gate slot through kwargs (it's not in the
         # canonical positional arity so we extract it from **kwargs).
         play_seq = kwargs.get("play_seq", None)
+        # Issue #1219 — LLM voice selection: голос из запроса speak_text
+        # (передан через kwargs, чтобы не ломать канонический positional
+        # arity, см. test_speech_id_arg_chain).
+        voice = kwargs.get("voice", None)
         self._synthesize_and_play(
             ssml,
             text,
@@ -1398,6 +1487,7 @@ class TTSNode(Node):
             batch_index,
             batch_total,
             play_seq=play_seq,
+            voice=voice,
         )
 
     def _release_play_seq(self, play_seq: int | None) -> None:
@@ -1534,16 +1624,160 @@ class TTSNode(Node):
             f"💀 {provider_name} помечен мёртвым на {ttl_s:.0f}s "
             f"({type(error).__name__}: {error})"
         )
+        # Issue #1229 — провайдер упал → публикуем фактического провайдера
+        # (первый «живой» в цепочке после падения).
+        publish = getattr(self, "_publish_provider_state", None)
+        if publish is not None:
+            try:
+                publish("provider_dead")
+            except Exception:  # noqa: BLE001 — диагностика не должна падать
+                pass
 
     def _provider_dead_until_s(self, provider_name: str) -> float:
         """Сколько секунд осталось провайдеру в кэше «мёртвых» (для логов)."""
         until = getattr(self, "_provider_dead_until", {}).get(provider_name, 0.0)
         return max(0.0, until - time.monotonic())
 
+    # ── Issue #1229 — фактический провайдер TTS ─────────────────────────────
+    # tts_node — единственный, кто ЗНАЕТ фактического провайдера (после
+    # фолбека из-за квоты/сети). Публикуем его состояние в /voice/tts/
+    # provider_state: mcp_server (валидация голосов в speak_text/set_voice)
+    # и dialogue_node (LLM-контекст [TTS]) используют РЕАЛЬНОГО провайдера,
+    # а не номинального из параметра provider.
+
+    def _load_persisted_provider_state(self) -> None:
+        """Восстановить кэш «мёртвых» провайдеров из файла (issue #1229).
+
+        Файл пишется :meth:`_persist_provider_state` при смене эффективного
+        провайдера. При старте загружаем только записи, срок действия
+        которых ещё не истёк (dead_until_ts в будущем) — просроченные
+        игнорируем, чтобы дать провайдеру шанс «ожить».
+        """
+        path = getattr(self, "provider_state_file", "") or ""
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError, TypeError):
+            return  # нет файла / битый JSON — не мешаем старту
+        if not isinstance(data, dict):
+            return
+        dead = data.get("dead_providers") or {}
+        now = time.time()
+        for provider, until_ts in dead.items():
+            try:
+                until_ts = float(until_ts)
+            except (TypeError, ValueError):
+                continue
+            if until_ts > now:
+                # Кэш «мёртвых» хранится в time.monotonic; файл — в wall-clock.
+                # Конвертируем: монопольный сдвиг ≈ (time.monotonic - time.time).
+                # Надёжнее пересчитать TTL от текущего момента: провайдер
+                # остаётся мёртвым до истечения исходного TTL.
+                ttl_left_s = until_ts - now
+                self._provider_dead_until[provider] = time.monotonic() + ttl_left_s
+        if dead:
+            self.get_logger().info(
+                f"💾 [issue 1229] Восстановлен кэш мёртвых провайдеров из "
+                f"{path}: {dead}"
+            )
+
+    def _effective_provider(self) -> str | None:
+        """Фактический провайдер TTS: первый «живой» в цепочке (issue #1229).
+
+        Цепочка minimax → yandex → silero; провайдеры в кэше «мёртвых»
+        (квота/сеть) пропускаются. Если все мёртвы — последний (silero).
+        """
+        chain = getattr(self, "provider_chain", None)
+        if not chain:
+            chain = TTSNode._chain_from_provider(
+                getattr(self, "provider", "minimax")
+            )
+        try:
+            from .tts_voice_registry import effective_provider as _effective
+        except Exception:  # noqa: BLE001 — registry недоступен
+            return chain[0] if chain else None
+        return _effective(chain, self._provider_is_dead)
+
+    def _persist_provider_state(self, payload: dict) -> None:
+        """Записать состояние эффективного провайдера в файл (best-effort)."""
+        path = getattr(self, "provider_state_file", "") or ""
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False)
+        except OSError as exc:  # noqa: BLE001 — файл не критичен для TTS
+            self.get_logger().debug(
+                f"⚠️ [issue 1229] Не удалось записать provider_state "
+                f"{path}: {exc}"
+            )
+
+    def _publish_provider_state(
+        self,
+        reason: str,
+        provider: str | None = None,
+        voice: str | None = None,
+    ) -> None:
+        """Опубликовать фактического провайдера TTS (issue #1229).
+
+        Args:
+            reason: "startup" | "provider_dead" | "synthesis_ok" — для логов.
+            provider: фактический провайдер; None → вычислить самим.
+            voice: фактически использованный голос (для synthesis_ok).
+
+        Публикует JSON ``{"provider": str, "voice": str, "default_voice": str,
+        "reason": str, "ts": float}`` в /voice/tts/provider_state и пишет
+        персистентный файл (dead_providers для восстановления кэша).
+        """
+        pub = getattr(self, "provider_state_pub", None)
+        if pub is None:
+            return  # тестовый stub без топика
+        eff = provider or self._effective_provider()
+        if not eff:
+            return
+        from .tts_voice_registry import default_voice_for as _default_voice
+
+        default_voice = _default_voice(eff)
+        used_voice = voice or default_voice
+        payload = {
+            "provider": eff,
+            "voice": used_voice,
+            "default_voice": default_voice,
+            "reason": reason,
+            "ts": time.time(),
+        }
+        try:
+            msg = String()
+            msg.data = json.dumps(payload, ensure_ascii=False)
+            pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001 — best-effort диагностика
+            self.get_logger().warn(
+                f"⚠️ [issue 1229] Не удалось опубликовать provider_state: {exc}"
+            )
+        self.get_logger().info(
+            f"🎙️ [issue 1229] TTS provider_state → '{eff}' "
+            f"(voice: {used_voice}, reason: {reason})"
+        )
+        # Персистим кэш «мёртвых» (wall-clock), чтобы рестарт не сбрасывал
+        # знание о недоступном провайдере.
+        dead_payload = {}
+        dead_until = getattr(self, "_provider_dead_until", {})
+        now_wall = time.time()
+        for prov, until_mono in dead_until.items():
+            remaining = until_mono - time.monotonic()
+            if remaining > 0:
+                dead_payload[prov] = now_wall + remaining
+        self._persist_provider_state(
+            {"provider": eff, "dead_providers": dead_payload}
+        )
+
     def _synthesize_and_play(
         self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None, speech_id: str = None,
         batch_id: str = None, batch_index: int = None, batch_total: int = None,
         play_seq: int = None,  # FIFO-gate slot, keyword-only at the call site
+        voice: str = None,  # Issue #1219 — запрошенный LLM голос (Q6)
     ):
         """Синтез речи и воспроизведение.
 
@@ -1552,6 +1786,11 @@ class TTSNode(Node):
         contract in ``test_speech_id_arg_chain`` (which asserts the
         canonical 8-positional form).  The producer
         (``_run_synthesis_worker``) passes it as ``play_seq=`` kwarg.
+
+        ``voice`` — запрошенный LLM голос (issue #1219). Резолвится
+        отдельно для КАЖДОГО фактического провайдера в цепочке: если
+        голос недоступен у провайдера (фолбек), используется дефолт
+        этого провайдера, а voice_used логируется (Q6/Q11).
         """
         # Issue #980 — ``batch_started_at`` measures the wall-clock span between
         # the first and last chunk of a single TTS batch. We start a fresh
@@ -1584,6 +1823,19 @@ class TTSNode(Node):
         if self.normalize_text:
             text = normalize_for_tts(text)
 
+        # Issue #1234 — OpenTelemetry span ``tts.synthesize`` (этап 2).
+        # Открываем ДО try и закрываем в finally: покрывает всю цепочку
+        # синтеза (minimax → yandex → silero) + fallback. Атрибуты provider/
+        # fallback/duration проставляем в finally (provider известен только
+        # после цепочки). ``start_span_handle`` — no-op без OTel.
+        _tts_trace_start = time.monotonic()
+        _tts_trace = start_span_handle(
+            "tts.synthesize",
+            {
+                "model": getattr(self, "minimax_model", ""),
+                "voice": getattr(self, "minimax_voice", ""),
+            },
+        )
         try:
             # Issue #1083: цепочка приоритетов TTS — minimax → yandex → silero.
             # Раньше при provider=minimax ошибка MiniMax (в т.ч. 2056 Token
@@ -1595,6 +1847,7 @@ class TTSNode(Node):
             sample_rate = 16000  # Yandex возвращает 16kHz
             result = {}
             used_provider = None
+            used_voice = None  # issue #1229 — фактический голос (для provider_state)
             # getattr-fallback: тестовые стабы (bare ``_Stub``) не несут
             # ``provider_chain``/``_effective_provider_chain`` — выводим
             # цепочку из ``provider`` (см. ``_chain_from_provider``).
@@ -1622,19 +1875,34 @@ class TTSNode(Node):
                     # ``time.monotonic`` — wall-clock может прыгать на NTP.
                     _minimax_metric_start = time.monotonic()
                     _minimax_succeeded = False
+                    # Issue #1219 — голос LLM резолвим для РЕАЛЬНОГО провайдера:
+                    # если запрошенный голос недоступен у MiniMax — дефолт
+                    # MiniMax (voice_used фиксируется для лога/метрик).
+                    try:
+                        from .tts_voice_registry import resolve_voice as _resolve_voice
+
+                        _mm_voice, _mm_fell = _resolve_voice("minimax", voice)
+                    except Exception:  # noqa: BLE001 — registry недоступен
+                        _mm_voice, _mm_fell = voice or self.minimax_voice, False
+                    if _mm_fell:
+                        self.get_logger().warn(
+                            f"⚠️ [issue 1219] Голос '{voice}' недоступен у MiniMax — "
+                            f"использую дефолтный '{_mm_voice}'"
+                        )
                     try:
                         if self.minimax_streaming:
                             self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (streaming mode)...")
-                            result = self._synthesize_minimax_streaming_publish(text, ssml_attributes)
+                            result = self._synthesize_minimax_streaming_publish(text, ssml_attributes, voice=_mm_voice)
                         else:
                             self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (HTTP)...")
-                            result = self._synthesize_minimax(text, ssml_attributes)
+                            result = self._synthesize_minimax(text, ssml_attributes, voice=_mm_voice)
                         audio_np = result["audio_np"]
                         sample_rate = result["sample_rate"]
                         used_provider = "minimax"
+                        used_voice = _mm_voice
                         self.get_logger().info(
                             f"✅ MiniMax T2A v2 OK: {len(audio_np)} samples @ {sample_rate} Hz "
-                            f"(model={self.minimax_model}, voice={self.minimax_voice})"
+                            f"(model={self.minimax_model}, voice={_mm_voice}, voice_used={_mm_voice})"
                         )
                         _minimax_succeeded = True
                     except Exception as e:
@@ -1674,12 +1942,26 @@ class TTSNode(Node):
                     # ``time.monotonic`` — wall-clock может прыгать на NTP.
                     _yandex_metric_start = time.monotonic()
                     _yandex_succeeded = False
+                    # Issue #1219 — голос LLM резолвим для Yandex; если
+                    # запрошенный голос недоступен — дефолт yandex (anton).
+                    try:
+                        from .tts_voice_registry import resolve_voice as _resolve_voice
+
+                        _yandex_voice, _yandex_fell = _resolve_voice("yandex", voice)
+                    except Exception:  # noqa: BLE001 — registry недоступен
+                        _yandex_voice, _yandex_fell = voice or self.yandex_voice, False
+                    if _yandex_fell:
+                        self.get_logger().warn(
+                            f"⚠️ [issue 1219] Голос '{voice}' недоступен у Yandex — "
+                            f"использую дефолтный '{_yandex_voice}'"
+                        )
                     try:
                         self.publish_state("synthesizing")
-                        self.get_logger().info("🔊 Синтез через Yandex Cloud TTS gRPC v3 (anton)...")
-                        audio_np = self._synthesize_yandex(text, ssml_attributes)
+                        self.get_logger().info(f"🔊 Синтез через Yandex Cloud TTS gRPC v3 ({_yandex_voice})...")
+                        audio_np = self._synthesize_yandex(text, ssml_attributes, voice=_yandex_voice)
                         sample_rate = 22050  # Yandex обычно возвращает 22050 Hz или 48000 Hz
                         used_provider = "yandex"
+                        used_voice = _yandex_voice
                         _yandex_succeeded = True
                     except Exception as e:
                         mark_dead = getattr(self, "_mark_provider_dead", None)
@@ -1722,7 +2004,19 @@ class TTSNode(Node):
                 # * warm-load ещё не запущен (тест / нестандартный init)
                 #   → событие не set → timeout → skip chunk
                 _warm_wait_s = 1.5
-                _warmed_in_time = self._silero_loaded.wait(timeout=_warm_wait_s)
+                # getattr-fallback: стабы (bare ``_Stub`` / ``_playback_node``)
+                # не проходят через __init__ и не несут атрибут — считаем
+                # warm-load включённым (историческое поведение G-933-B).
+                if getattr(self, "silero_warm_load_enabled", True):
+                    _warmed_in_time = self._silero_loaded.wait(timeout=_warm_wait_s)
+                else:
+                    # Issue #929: warm-load отключён (silero_warm_load=false).
+                    # Событие никогда не будет set фоновым потоком — не ждём
+                    # таймаут впустую. Считаем «прогретым» (пропускаем
+                    # skip-блок) и идём в синхронный lazy-load ниже: первый
+                    # fallback платит 2-3 с cold-load — приемлемо для
+                    # аварийного пути.
+                    _warmed_in_time = True
                 if not _warmed_in_time:
                     self.get_logger().warn(
                         f"⏳ Silero still warming up after {_warm_wait_s}s — "
@@ -1772,9 +2066,24 @@ class TTSNode(Node):
                 # ``time.monotonic`` — wall-clock может прыгать на NTP.
                 _silero_metric_start = time.monotonic()
                 _silero_succeeded = False
+                # Issue #1219 — голос LLM резолвим для Silero; если
+                # запрошенный голос недоступен — дефолт silero (aidar).
                 try:
-                    audio_np = self._synthesize_silero(text, ssml_attributes)
+                    from .tts_voice_registry import resolve_voice as _resolve_voice
+
+                    _silero_voice, _silero_fell = _resolve_voice("silero", voice)
+                except Exception:  # noqa: BLE001 — registry недоступен
+                    _silero_voice, _silero_fell = voice or self.silero_speaker, False
+                if _silero_fell:
+                    self.get_logger().warn(
+                        f"⚠️ [issue 1219] Голос '{voice}' недоступен у Silero — "
+                        f"использую дефолтный '{_silero_voice}'"
+                    )
+                try:
+                    audio_np = self._synthesize_silero(text, ssml_attributes, voice=_silero_voice)
                     _silero_succeeded = True
+                    used_provider = "silero"
+                    used_voice = _silero_voice
                 finally:
                     if is_metrics_enabled():
                         record_tts_synthesize(
@@ -1801,6 +2110,17 @@ class TTSNode(Node):
             if not (used_provider == "minimax" and result.get("already_published", False)):
                 topic_audio = self._prepare_audio_for_topic(audio_np, sample_rate)
                 self._publish_audio(topic_audio)
+
+            # Issue #1229 — после успешного синтеза публикуем фактического
+            # провайдера и голос: dialogue_node/mcp_server обновят контекст
+            # [TTS] и валидацию (LLM увидит голоса РЕАЛЬНОГО провайдера).
+            if used_provider:
+                publish = getattr(self, "_publish_provider_state", None)
+                if publish is not None:
+                    try:
+                        publish("synthesis_ok", provider=used_provider, voice=used_voice)
+                    except Exception:  # noqa: BLE001 — диагностика не должна падать
+                        pass
 
             # Capture raw duration BEFORE resample/chipmunk for #949.
             # This is the actual synthesis duration (pre-effects) so
@@ -2028,10 +2348,31 @@ class TTSNode(Node):
             if dialogue_id and self.processing_dialogue_id == dialogue_id:
                 self.processing_dialogue_id = None
 
+        finally:
+            # Issue #1234 — закрываем span ``tts.synthesize``: проставляем
+            # фактического провайдера, fallback-флаг и длительность. Переменные
+            # ``used_provider``/``provider_chain`` живут в try — читаем через
+            # locals(), т.к. при раннем raise их может не быть.
+            _used_provider = locals().get("used_provider") or "none"
+            _chain = locals().get("provider_chain") or []
+            _primary = _chain[0] if _chain else getattr(self, "provider", "minimax")
+            _tts_trace.set_attribute("provider", _used_provider)
+            _tts_trace.set_attribute("fallback", _used_provider != _primary)
+            _tts_trace.set_attribute(
+                "duration_s", time.monotonic() - _tts_trace_start
+            )
+            _tts_trace.close()
+
     def _synthesize_silero(
-        self, text: str, ssml_attributes: dict | None = None
+        self, text: str, ssml_attributes: dict | None = None, voice: str | None = None
     ) -> np.ndarray:
-        """Synthesize Silero chunks with provider-specific retry-halving."""
+        """Synthesize Silero chunks with provider-specific retry-halving.
+
+        Args:
+            text: текст для синтеза.
+            ssml_attributes: словарь с SSML-атрибутами (rate/pitch).
+            voice: голос (issue #1219); None → self.silero_speaker.
+        """
         if self.silero_model is None:
             raise Exception("Silero TTS model не инициализирована")
 
@@ -2095,7 +2436,7 @@ class TTSNode(Node):
             )
             audio = self.silero_model.apply_tts(
                 ssml_text=ssml_text,
-                speaker=self.silero_speaker,
+                speaker=voice or self.silero_speaker,
                 sample_rate=self.silero_sample_rate,
                 put_accent=self.silero_put_accent,
                 put_yo=self.silero_put_yo,
@@ -2231,7 +2572,7 @@ class TTSNode(Node):
             return [text] if text else []
         return chunks
 
-    def _synthesize_yandex(self, text: str, ssml_attributes: dict = None) -> np.ndarray:
+    def _synthesize_yandex(self, text: str, ssml_attributes: dict = None, voice: str = None) -> np.ndarray:
         """Синтез через Yandex Cloud TTS gRPC API v3 (anton voice!).
 
         Если текст длиннее :data:`YANDEX_MAX_CHUNK_CHARS`, разбивает его
@@ -2244,6 +2585,7 @@ class TTSNode(Node):
         Args:
             text: Текст для синтеза.
             ssml_attributes: Словарь с атрибутами SSML (pitch, rate).
+            voice: Голос (issue #1219); None → self.yandex_voice (anton).
 
         Returns:
             np.ndarray: float32 mono samples в диапазоне -1..1,
@@ -2281,9 +2623,16 @@ class TTSNode(Node):
             chunks = self._chunk_text(text, max_chars=self.chunk_max_chars_yandex)
             audio_segments: list = []
             per_chunk_rates: list = []
-            for chunk_text in chunks:
+            n_chunks = len(chunks)
+            for idx, chunk_text in enumerate(chunks, start=1):
+                _chunk_t0 = time.monotonic()
                 segment, sample_rate = self._synthesize_yandex_single(
-                    chunk_text, speech_rate
+                    chunk_text, speech_rate, voice=voice
+                )
+                _chunk_ms = (time.monotonic() - _chunk_t0) * 1000.0
+                self.get_logger().info(
+                    f"⏱️ Yandex chunk {idx}/{n_chunks}: {len(chunk_text)} chars → "
+                    f"{_chunk_ms:.0f} ms ({len(segment)} samples)"
                 )
                 audio_segments.append(segment)
                 per_chunk_rates.append(sample_rate)
@@ -2293,8 +2642,8 @@ class TTSNode(Node):
                 audio_results = synthesize_with_retry(
                     text,
                     "yandex_grpc_v3",
-                    lambda chunk_text: self._synthesize_yandex_single(
-                        chunk_text, speech_rate
+                    lambda chunk_text: self._synthesize_yandex_single_with_latency(
+                        chunk_text, speech_rate, voice=voice
                     ),
                     max_chars=self.chunk_max_chars_yandex,
                     max_retries=self.chunk_max_retries,
@@ -2329,7 +2678,7 @@ class TTSNode(Node):
         return audio_np
 
     def _synthesize_yandex_single(
-        self, text: str, speech_rate: float
+        self, text: str, speech_rate: float, voice: str = None
     ) -> tuple[np.ndarray, int]:
         """Один gRPC ``UtteranceSynthesis`` → ``(audio_np, sample_rate)``.
 
@@ -2343,7 +2692,7 @@ class TTSNode(Node):
                 container_audio=tts_pb2.ContainerAudio(container_audio_type=tts_pb2.ContainerAudio.WAV)
             ),
             hints=[
-                tts_pb2.Hints(voice=self.yandex_voice),  # anton!
+                tts_pb2.Hints(voice=voice or self.yandex_voice),  # anton! (issue #1219 — voice override)
                 tts_pb2.Hints(speed=speech_rate),
             ],
             loudness_normalization_type=tts_pb2.UtteranceSynthesisRequest.LUFS,
@@ -2378,6 +2727,25 @@ class TTSNode(Node):
             raise Exception(f"Yandex gRPC error: {e.code()} - {e.details()}")
         except Exception as e:
             raise Exception(f"Yandex synthesis error: {e}")
+
+    def _synthesize_yandex_single_with_latency(
+        self, text: str, speech_rate: float, voice: str = None
+    ) -> tuple[np.ndarray, int]:
+        """``_synthesize_yandex_single`` + лог латентности (issue #931 acceptance).
+
+        Обёртка для retry-halve пути в :meth:`_synthesize_yandex`: замеряет
+        время одного gRPC ``UtteranceSynthesis`` и пишет его в лог, чтобы
+        latency каждого чанка была видна (требование #931:
+        «Latency добавлена в логи (время синтеза каждого чанка)»).
+        """
+        _t0 = time.monotonic()
+        segment, sample_rate = self._synthesize_yandex_single(text, speech_rate, voice=voice)
+        _elapsed_ms = (time.monotonic() - _t0) * 1000.0
+        self.get_logger().info(
+            f"⏱️ Yandex synth: {len(text)} chars → {_elapsed_ms:.0f} ms "
+            f"({len(segment)} samples)"
+        )
+        return segment, sample_rate
 
     @staticmethod
     def _decoded_audio_to_float32(decoded: DecodedAudio) -> np.ndarray:
@@ -2435,7 +2803,7 @@ class TTSNode(Node):
             valid = ", ".join(fmt.value for fmt in TTSFormat)
             raise ValueError(f"minimax_format={value!r} недопустим; разрешено: {valid}")
 
-    async def _synthesize_minimax_async(self, text: str, ssml_attributes: dict = None) -> dict:
+    async def _synthesize_minimax_async(self, text: str, ssml_attributes: dict = None, voice: str = None) -> dict:
         """Асинхронный синтез через MiniMax T2A v2 HTTP API.
 
         Поддерживает все 4 контейнера (``PCM``/``WAV``/``MP3``/``OGG``) —
@@ -2475,7 +2843,7 @@ class TTSNode(Node):
         # но WAV/MP3 тоже поддерживаются через transcode.
         fmt = self.minimax_format if MINIMAX_AVAILABLE else TTSFormat.PCM
         settings = TTSSettings(
-            voice=self.minimax_voice,
+            voice=voice or self.minimax_voice,
             model=self.minimax_model,
             language=self.minimax_language,
             speed=speed,
@@ -2512,7 +2880,7 @@ class TTSNode(Node):
 
         return {"audio_np": audio_np, "sample_rate": decoded_sample_rate}
 
-    async def _synthesize_minimax_with_retry(self, text: str, ssml_attributes: dict = None) -> dict:
+    async def _synthesize_minimax_with_retry(self, text: str, ssml_attributes: dict = None, voice: str = None) -> dict:
         """Обёртка с retry-loop над :meth:`_synthesize_minimax_async`.
 
         Реализует политику retry из ADR-0003 §2.6:
@@ -2539,7 +2907,7 @@ class TTSNode(Node):
 
         for attempt in range(max_attempts):
             try:
-                return await self._synthesize_minimax_async(text, ssml_attributes)
+                return await self._synthesize_minimax_async(text, ssml_attributes, voice=voice)
             except Exception as exc:
                 # Классифицируем — некоторые ошибки ретраить нельзя.
                 if isinstance(exc, MiniMaxTTSAuthError):
@@ -2571,7 +2939,7 @@ class TTSNode(Node):
         assert last_exc is not None
         raise last_exc
 
-    def _synthesize_minimax_streaming_publish(self, text: str, ssml_attributes: dict = None) -> dict:
+    def _synthesize_minimax_streaming_publish(self, text: str, ssml_attributes: dict = None, voice: str = None) -> dict:
         """Sync-обёртка над :meth:`_stream_minimax_chunks` для streaming-режима MiniMax.
 
         Публикует каждый :class:`TTSChunk` как отдельный ``AudioData`` msg
@@ -2590,7 +2958,7 @@ class TTSNode(Node):
 
         async def _consume_and_publish():
             nonlocal sample_rate
-            async for chunk in self._stream_minimax_chunks(text, ssml_attributes):
+            async for chunk in self._stream_minimax_chunks(text, ssml_attributes, voice=voice):
                 if chunk.finish_reason == "error":
                     raise Exception("MiniMax stream reported error: finish_reason=error")
 
@@ -2632,7 +3000,7 @@ class TTSNode(Node):
             "already_published": True,
         }
 
-    def _synthesize_minimax(self, text: str, ssml_attributes: dict = None) -> dict:
+    def _synthesize_minimax(self, text: str, ssml_attributes: dict = None, voice: str = None) -> dict:
         """Sync-обёртка над :meth:`_synthesize_minimax_with_retry`.
 
         🔴 FIX (live 16:xx «Event loop is closed»): раньше оборачивали
@@ -2642,10 +3010,10 @@ class TTSNode(Node):
         (``_run_in_tts_loop``) — retry внутри одного синтеза и
         последующие синтезы переиспользуют тот же loop.
         """
-        coro = self._synthesize_minimax_with_retry(text, ssml_attributes)
+        coro = self._synthesize_minimax_with_retry(text, ssml_attributes, voice=voice)
         return _run_in_tts_loop(coro)
 
-    async def _stream_minimax_chunks(self, text: str, ssml_attributes: dict = None):
+    async def _stream_minimax_chunks(self, text: str, ssml_attributes: dict = None, voice: str = None):
         """Стриминг MiniMax через ``provider.stream()`` для chunk-per-frame.
 
         Провайдер сейчас возвращает один ``TTSChunk(finish_reason="stop")``
@@ -2663,7 +3031,7 @@ class TTSNode(Node):
 
         speed = float(ssml_attributes.get("rate", self.minimax_speed)) if ssml_attributes else self.minimax_speed
         settings = TTSSettings(
-            voice=self.minimax_voice,
+            voice=voice or self.minimax_voice,
             model=self.minimax_model,
             language=self.minimax_language,
             speed=speed,

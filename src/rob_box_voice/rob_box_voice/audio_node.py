@@ -728,20 +728,26 @@ class AudioNode(Node):
             if self.stream:
                 self.stream.stop_stream()
                 self.stream.close()
-        except:
-            pass
+        except Exception as exc:  # noqa: BLE001 — shutdown не должен падать
+            self.get_logger().warning(
+                f'⚠️ Не удалось остановить аудио-поток: {exc!r}'
+            )
 
         try:
             if self.pyaudio_instance:
                 self.pyaudio_instance.terminate()
-        except:
-            pass
+        except Exception as exc:  # noqa: BLE001 — shutdown не должен падать
+            self.get_logger().warning(
+                f'⚠️ Не удалось завершить PyAudio: {exc!r}'
+            )
 
         try:
             if self.respeaker and self.respeaker.is_connected():
                 self.respeaker.disconnect()
-        except:
-            pass
+        except Exception as exc:  # noqa: BLE001 — shutdown не должен падать
+            self.get_logger().warning(
+                f'⚠️ Не удалось отключить ReSpeaker: {exc!r}'
+            )
 
         self.publish_state('stopped')
         self.get_logger().info('✓ AudioNode остановлен')

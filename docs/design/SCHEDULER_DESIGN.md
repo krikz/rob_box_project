@@ -4,9 +4,9 @@
 |------|----------|
 | Документ | `docs/design/SCHEDULER_DESIGN.md` |
 | Связанное | Issue [#968](https://github.com/krikz/rob_box_project/issues/968) (комментарии [5167924152](https://github.com/krikz/rob_box_project/issues/968#issuecomment-5167924152), [5168761313](https://github.com/krikz/rob_box_project/issues/968#issuecomment-5168761313)), PR #907, #935, ADR-0001 §5 |
-| Статус | **Architecture proposal v5** — закрытие open Q1 (fade-out) и Q2 (лёгкая LLM); одна LLM без уровня 2 |
-| Автор документа | Architect profile (kanban t_8f5bb012 v1, t_9fca744c v2, t_99da3520 v3, t_85ab3ee1 v4, **t_2026-08-04-cfd4 v5**) |
-| Дата | 2026-08-03 (v1) / 2026-08-03 (v2: §3.3, §4.5, §4.6, §5.5) / 2026-08-03 (v3: §2 расширен AWAITING_CONFIRMATION, §8 Acceptance tool-calling, §11.2 фаза 1.5) / 2026-08-03 (v4: §8.10 Reflex-слой по комментарию 5168761313, две фазы интеграции 1.5 + 2, e2e-сценарии 1–5, Q5–Q7) / **2026-08-04 (v5: §13 G1 ✅ ЗАКРЫТ — fade-out не нужен; §14 Q1+Q2 ✅ ЗАКРЫТЫ — одна LLM без уровня 2; Q5 ✅ ЗАКРЫТ owner'ом — reflex «направо» во время песни ПАРАЛЛЕЛЬНО (человеческое поведение); НОВЫЙ Q5.1 открыт архитектору — как именно отрендерить AWAITING-вопрос во время активной песни (3 подварианта A'1/A'2/A'3); §4.7 «Одна LLM, без уровня 2»)** |
+| Статус | **Architecture proposal v6** — закрытие open Q3 (владелец `/harness/task_events`) и Q5.1 (рендер AWAITING-вопроса во время активной песни); синхронизация с фактической реализацией фаз 1–4 на develop |
+| Автор документа | Architect profile (kanban t_8f5bb012 v1, t_9fca744c v2, t_99da3520 v3, t_85ab3ee1 v4, t_2026-08-04-cfd4 v5, **t_47258be9 v6**) |
+| Дата | 2026-08-03 (v1) / 2026-08-03 (v2: §3.3, §4.5, §4.6, §5.5) / 2026-08-03 (v3: §2 расширен AWAITING_CONFIRMATION, §8 Acceptance tool-calling, §11.2 фаза 1.5) / 2026-08-03 (v4: §8.10 Reflex-слой по комментарию 5168761313, две фазы интеграции 1.5 + 2, e2e-сценарии 1–5, Q5–Q7) / 2026-08-04 (v5: §13 G1 ✅ ЗАКРЫТ — fade-out не нужен; §14 Q1+Q2 ✅ ЗАКРЫТЫ — одна LLM без уровня 2; Q5 ✅ ЗАКРЫТ owner'ом — reflex «направо» во время песни ПАРАЛЛЕЛЬНО; §4.7 «Одна LLM, без уровня 2»; Q5.1 открыт архитектору) / **2026-08-12 (v6: §14 Q3 ✅ ЗАКРЫТ — publisher в dialogue_node, §14.1; §14 Q5.1 ✅ ЗАКРЫТ — вариант A'2 (врезка вопроса на границе), §8.11; §12/§13 G2 — batch_complete как фактический сигнал «весь TTS готов» (issues #980/#992); статус реализации фаз 1–4 на develop; исправлены код-ссылки)** |
 | Основание | Анализ issue #968 целиком + все 17 комментариев (включая 5167924152 и **5168761313** — reflex-путь в develop-ветке) + аудит текущего кода + пересечение с ADR-0001 §5 |
 
 ---
@@ -19,7 +19,14 @@
 
 **Ключевой принцип (из итоговой модели, согласовано в #13):** тулы от LLM идут в scheduler мгновенно (LLM не блокируется). Scheduler **не задерживает конструктивные** операции (`speak_text`, `play_animation` — встают в очередь канала), а **задерживает деструктивные** (`stop_music`, REPLACE, cancel) — до естественной границы voice-канала.
 
-**Что УЖЕ есть в коде** (см. §11): вызовы `speak_text` уже блокируются через `EffectAwaiterRegistry._tts_lock` + `await tts/finished` (`speak_helpers.py:110–148` — `_tts_events` dict, `register_tts`, `handle_tts_finished`). То есть половина исходной проблемы #968 уже решена. Осталось: (1) классификация ввода MERGE/REPLACE/QUEUE/IGNORE/CLARIFY до barge-in (блокер П1), (2) сегментная модель + PENDING-правки, (3) speculative pre-generation, (4) единый EventBus для системных событий.
+**Что УЖЕ есть в коде** (см. §11): вызовы `speak_text` блокируются через `EffectAwaiterRegistry._tts_lock` + `await tts/finished` (`speak_helpers.py` — `_tts_events` dict, `register_tts`, `handle_tts_finished`). С 2026-08-04 по факту решена и проблема «cleanup на первом чанке»: появился сигнал `/voice/tts/batch_complete` — `tts_node` публикует его один раз после **последнего** чанка batch'а (`batch_index == batch_total`), а `dialogue_node` считает активные batch'ы через `_active_batches` (issues #980/#992). То есть половина исходной проблемы #968 уже решена. Осталось: (1) классификация ввода MERGE/REPLACE/QUEUE/IGNORE/CLARIFY до barge-in (блокер П1), (2) сегментная модель + PENDING-правки, (3) speculative pre-generation, (4) единый EventBus для системных событий.
+
+**Что добавлено в v6 (эта ревизия, task t_47258be9):**
+- **§14 Q3 ✅ ЗАКРЫТ** — владелец ROS-топика `/harness/task_events`: publisher внутри `dialogue_node` (отдельный node НЕ нужен). Решение и контекст — новый §14.1.
+- **§14 Q5.1 ✅ ЗАКРЫТ** — рендер AWAITING-вопроса во время активной песни: выбран **вариант A'2** (врезка короткого вопроса на ближайшей границе voice-сегмента, потом песня продолжается с того же места). Решение и контракт — новый §8.11.
+- **§12/§13 G2 обновлены** — фактическим сигналом «весь TTS готов» теперь является `/voice/tts/batch_complete` (issues #980/#992), а не «один finished на speech_id».
+- **§11.6 «Статус реализации на develop»** — зафиксировано, что фазы 1–4 (TaskScheduler, AcceptanceGate, EventBus, ReflexLayer, эстиматоры, speculative, action server) уже приземлились в develop; открытым остаётся W7 (интеграция scheduler в `dialogue_node`).
+- **Код-ссылки исправлены** на актуальные строки develop (см. §15).
 
 **Что добавлено в v3 (эта ревизия, task t_99da3520, по комментарию 5167924152):**
 **Что добавлено в v4 (эта ревизия, task t_85ab3ee1, по комментарию 5168761313):**
@@ -182,9 +189,9 @@ Scheduler владеет набором каналов. **Каждый кана�
 
 ### 3.3 Переход от блокирующего `speak_text` к scheduler
 
-Текущая реализация `speak_text` (блокирующая часть — `speak_helpers.py:110–148`: `_tts_events` dict + `register_tts` + `handle_tts_finished`) делает три вещи в одном `await`:
+Текущая реализация `speak_text` (блокирующая часть — `speak_helpers.py:184–248`: `_tts_events` dict + `register_tts` + `handle_tts_finished`) делает три вещи в одном `await`:
 
-1. Захватывает `EffectAwaiterRegistry._tts_lock` (`speak_helpers.py:111`, threading.Lock) — взаимное исключение на регистрацию/освобождение TTS-событий.
+1. Захватывает `EffectAwaiterRegistry._tts_lock` (`speak_helpers.py:208`, threading.Lock) — взаимное исключение на регистрацию/освобождение TTS-событий.
 2. Публикует TTS-заказ в ROS-топик.
 3. **Ждёт `tts/finished` для `speech_id`** через `await self._effects._tts_events[speech_id].wait()` — до звучания последнего чанка.
 
@@ -199,7 +206,7 @@ Scheduler владеет набором каналов. **Каждый кана�
 Сейчас (voice-канал не существует как объект):
   LLM-цикл → speak_text() → effects._tts_lock + _tts_events[sp_id]=Event → ROS topic → await tts/finished → release
                                   ↑ блокирует LLM на 2–5с
-                                  (см. speak_helpers.py:110–148)
+                                  (см. speak_helpers.py:184–248)
 ```
 Станет (есть voice FIFO + state-машина):
   LLM-цикл → speak_text() → scheduler.enqueue(voice, seg)          [НЕ блокирует LLM]
@@ -217,7 +224,7 @@ Scheduler владеет набором каналов. **Каждый кана�
 | Компонент | Было | Станет |
 |-----------|------|--------|
 | `speak_text` function_tool | `await self._speak_and_wait(text)` | `await self._scheduler.enqueue(channel="voice", seg=Segment(payload=text))` |
-| `EffectAwaiterRegistry._tts_lock` | threading.Lock на регистрацию `_tts_events` (`speak_helpers.py:111`) | threading.Lock **только** на исполнителе voice-канала |
+| `EffectAwaiterRegistry._tts_lock` | threading.Lock на регистрацию `_tts_events` (`speak_helpers.py:208`) | threading.Lock **только** на исполнителе voice-канала |
 | `_tts_events[speech_id]` wait | внутри `speak_text` (блокирует LLM) | внутри voice-канала (блокирует только следующий сегмент своего канала) |
 | Backpressure | «speak_text ждёт tts/finished» | «voice-канал возвращает ack сразу, сегменты FIFO-встают, исполнитель разруливает» |
 
@@ -241,22 +248,24 @@ Scheduler владеет набором каналов. **Каждый кана�
 
 ### 3.4 Уже реализовано
 
-В текущем `speak_helpers.py:110–148` (механизм `EffectAwaiterRegistry._tts_events`):
+В текущем коде (develop, 2026-08-12) механизм `EffectAwaiterRegistry` в `speak_helpers.py` (класс на строке 184, `_tts_events` dict на 207, `register_tts` на 217, `handle_tts_finished` на 241):
 
 ```python
 # speak_text вызывает (через self._effects):
 def _wait_for_tts_finished(self, speech_id: str, timeout: float = 30.0) -> None:
     event = asyncio.Event()
-    self._effects.register_tts(speech_id, event)         # speak_helpers.py:120
+    self._effects.register_tts(speech_id, event)         # speak_helpers.py:217
     try:
         await asyncio.wait_for(event.wait(), timeout=timeout)
     finally:
-        self._effects.pop_tts(speech_id)                  # speak_helpers.py:134
-# _on_tts_finished (dialogue_node.py:397) → self._effects.handle_tts_finished(...)
-# handle_tts_finished (speak_helpers.py:144) → pop_tts + _release_tts(event.set())
+        self._effects.pop_tts(speech_id)                  # speak_helpers.py:231
+# _on_tts_finished (dialogue_node.py:1291) → self._effects.handle_tts_finished(...)
+# handle_tts_finished (speak_helpers.py:241) → pop_tts + _release_tts(event.set())
 ```
 
 Это значит: **основной race «stop_music vs speak» уже частично решён** — потому что пока `speak_text` ждёт `tts/finished`, LLM-цикл не двигается дальше. Проблема остаётся в `execute_music_code` + параллельных вызовах (см. §11.1 acceptance, регресс v36).
+
+**Важно (2026-08-12, issue #980/#992):** «один finished на speech_id» уже НЕ единственный сигнал. `tts_node` публикует `/voice/tts/batch_complete` после последнего чанка batch'а (`batch_index == batch_total`, `_publish_tts_finished` на `tts_node.py:2783`), а `dialogue_node._on_tts_batch_complete` (`dialogue_node.py:1379`) считает `_active_batches` и чистит музыку только когда **все** batch'ы завершены. Это и есть фактический «весь TTS готов» сигнал для планировщика (см. §12, §13 G2).
 
 ---
 
@@ -853,7 +862,7 @@ AgentSession + SideEffectBus    TaskScheduler + SchedulerEventBus
 | Канал | Метод | Точность |
 |-------|-------|----------|
 | `voice` | символы → секунды (есть тул `estimate_tts_duration`, см. v38 в логе) | ±15% |
-| `music` | `duration_sec` из `execute_music_code` (уже есть в payload) | ±10% |
+| `music` | `segments` из `execute_music_code` (бары × 4 бита @ BPM; issue #990) | ±10% |
 | `anim` | из preset-манифеста | ±5% |
 
 **Реализация:** планировщик использует тот же механизм, что и существующий тул `estimate_tts_duration`. LLM НЕ обязана вызывать его руками — планировщик сам считает при создании сегмента (см. G5 из аудита #15).
@@ -1412,6 +1421,57 @@ async def on_reflex_event(event: ReflexEvent):
 
 ---
 
+## 8.11 Рендер AWAITING-вопроса во время активной песни (решение Q5.1)
+
+> **Закрыто в v6 (2026-08-12, task t_47258be9).** Вопрос Q5.1 из §14 #7: во время ACTIVE голосовой задачи (sing/rap/narrate) пользователь говорит «едь на кухню» → рождается `AWAITING_CONFIRMATION`. **Как именно робот задаёт вопрос-подтверждение, не убивая песню?**
+
+### 8.11.1 Решение: вариант A'2 — врезка вопроса на границе
+
+Из трёх подвариантов §14 #7 выбран **A'2 (прервать на границе voice-сегмента)**:
+
+> На ближайшей естественной границе voice-сегмента (конец предложения / конец такта / конец TTS-batch'а) в очередь voice-канала **врезается короткий вопрос-план** («План: еду на кухню через гостиную, 15 секунд. Подтверждаешь?»), после ответа пользователя песня **продолжается с того же места** — без рестарта и без паузы.
+
+**Почему не A'1 (inline-merge в TTS):** требует streaming TTS с маркерами — фичи нет в текущем `tts_node` (≈400 LOC новой фичи TTS-движка). Даёт идеальный UX («вопрос — часть куплета»), но это отдельная дорогая работа с неясным ROI для текущих сценариев.
+
+**Почему не A'3 (пост-amble на фоне):** требует второй voice-output ИЛИ ducking в `tts_node`/`audio_node` (≈300 LOC, риск для качества звука, нужен микшер — а микшер мы сознательно не строим, §1 «Чего НЕ хотим»).
+
+**Почему A'2 работает с текущим стеком:**
+- Естественная граница voice-сегмента **уже есть** — это `tts/finished` + `tts/batch_complete` (issue #980/#992): voice-канал знает, когда текущий TTS-чанк договорён.
+- Врезка = постановка сегмента `kind=voice, priority=awaiting_question` в **голову** FIFO voice-канала (после ACTIVE), не в хвост. Существующий механизм «сегмент в очередь» не меняется — меняется только позиция постановки.
+- Песня после вопроса продолжается с того же места: все PENDING-сегменты остаются в очереди, вопрос уходит первым.
+
+### 8.11.2 Контракт врезки
+
+```
+voice_channel (ACTIVE: seg_k «куплет 1»)
+        │
+        ▼  пользователь: «едь на кухню» → quick_decide → CONFIRM-путь
+scheduler ставит seg_q (kind=voice, priority=awaiting_question) в голову очереди
+        │
+        ▼  seg_k доигрывает (естественная граница: batch_complete)
+voice_channel исполняет seg_q («План: ... Подтверждаешь?»)
+        │
+        ├─ «да» → seg_q COMPLETED → очередь продолжается: seg_{k+1} «куплет 2» (без паузы)
+        ├─ «нет» → seg_q REJECTED → feedback в LLM → LLM перегенерирует план → новый seg_q
+        └─ timeout 20с → seg_q REJECTED → автоозвучка «Отменяю, жду указаний»
+```
+
+**Требования к voice-каналу (фаза 1.5):**
+- Поддержка приоритетной постановки: `enqueue(channel="voice", seg, at_head=True)` для `priority=awaiting_question`.
+- Не более одного `awaiting_question` в очереди одновременно (если уже ждёт — новый ввод уходит в обычный MERGE без confirm, §14 #7 fallback).
+- Время врезки ≤ 300мс после границы (метрика на e2e: «куплет 1 → вопрос → куплет 2» без паузы > 300мс не допускается).
+
+**Что НЕ меняется:** ACTIVE-сегмент не прерывается; `update()` по-прежнему трогает только PENDING/AWAITING; музыкальный канал не затрагивается (вопрос — voice-only).
+
+### 8.11.3 Acceptance (дополнение к §11.2)
+
+- [ ] **e2e «кухня во время песни» (сценарий §8.7 #3):** робот поёт куплет 1 → «и потом зал» → куплет 1 доигрывает → вопрос-план («кухня → зал, подтверждаешь?») → «да» → куплет 2 продолжается без рестарта (пауза между куплетом и вопросом ≤ 300мс, метрика на e2e)
+- [ ] **unit: voice-канал поддерживает `enqueue(at_head=True)`** для `priority=awaiting_question`
+- [ ] **unit: два `awaiting_question` подряд** — второй не врезается, уходит в обычный MERGE без confirm
+- [ ] **e2e: timeout 20с** во время песни → вопрос доигран, AWAITING → REJECTED, песня продолжается (без отмены voice-задачи)
+
+---
+
 ## 9. Точка интеграции с текущим кодом
 
 ### 9.1 Где встаёт scheduler
@@ -1439,10 +1499,10 @@ async def on_reflex_event(event: ReflexEvent):
 |-----------|------|--------|
 | `AsyncToolExecutor` с INSTANT/FAST/MEDIUM/LONG | `async_executor.py:136` | ✅ есть |
 | `InterruptibleTask.cancel()` | `async_executor.py:23` | ✅ есть |
-| Блокирующий `speak_text` через `_tts_events[speech_id]` + `tts/finished` await | `speak_helpers.py:110–148` (`register_tts`/`handle_tts_finished`) | ✅ есть |
-| `_tts_events` dict (speech_id → Event) | `speak_helpers.py:110` (внутри `EffectAwaiterRegistry`) | ✅ есть |
-| `_cancel_run` (отмена LLM-цикла при barge-in) | `dialogue_node.py:517` | ✅ есть, но см. §4.4 |
-| `_run_cancelled` flag (проверка в speak_text) | `dialogue_node.py:81` | ✅ есть |
+| Блокирующий `speak_text` через `_tts_events[speech_id]` + `tts/finished` await | `speak_helpers.py:207–248` (`register_tts`/`handle_tts_finished`) | ✅ есть |
+| `_tts_events` dict (speech_id → Event) | `speak_helpers.py:207` (внутри `EffectAwaiterRegistry`) | ✅ есть |
+| `_cancel_run` (отмена LLM-цикла при barge-in) | `dialogue_node.py:3309` | ✅ есть, но см. §4.4 |
+| `_run_cancelled` flag (проверка в speak_text) | `dialogue_node.py:281` | ✅ есть |
 
 ### 9.3 Что нужно построить
 
@@ -1582,6 +1642,22 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 2. Speculative execution с shadow queue (Microsoft PASTE, arxiv 2603.18897) — для prefetch результатов тулов.
 3. Полная замена debounce/таймеров на state-машины каналов.
 
+### 11.6 Статус реализации на develop (2026-08-12)
+
+> Добавлено в v6: фазы 1–4 уже приземлились в develop отдельными PR (см. §15), открыт только W7 — интеграция scheduler'а в `dialogue_node`.
+
+| Фаза | Компонент | Файл в develop | Статус |
+|------|-----------|----------------|--------|
+| 1 (MVP) | `TaskScheduler` + FIFO-каналы voice/music/anim | `src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py` | ✅ приземлено (29 тестов) |
+| 1.5 (Acceptance) | `AcceptanceGate`, `PendingSegment`, `AWAITING_CONFIRMATION`, `[AWAITING]` formatter | `src/rob_box_harness/rob_box_harness/core/acceptance.py`, `confirmation_policy.py` | ✅ приземлено, встроено в `dialog_core.py` (tool loop) |
+| 2 (EventBus + decision) | `EventBus`, `DecisionCoordinator`, two-tier decision | `src/rob_box_voice/rob_box_voice/scheduler/event_bus.py`, `decision.py` | ✅ приземлено |
+| 2.5 (Reflex) | `ReflexLayer` (STOP/direction/debounce/metrics) | `src/rob_box_voice/rob_box_voice/scheduler/reflex.py` | ✅ приземлено |
+| 3 (Estimators + speculative) | `SegmentEstimator`, `EstimatorQualityTracker`, `SpeculativePreGenerator` | `scheduler/estimator.py`, `quality.py`, `pre_gen.py`, `speculative_executor.py` | ✅ приземлено |
+| 4 (Action server + PASTE) | HTTP+JSON action server, PASTE shadow queue, docker sidecar | `src/rob_box_voice/rob_box_voice/action_server/`, `docker/vision/docker-compose.yaml` | ✅ приземлено (ADR-0011 accepted) |
+| W7 (интеграция) | Подключение `TaskScheduler` к `speak_text`/`execute_music_code`/`stop_music` в `dialogue_node` | `dialogue_node.py` | ⏳ **открыто** — следующий PR. **Код-точный план: `docs/design/W7_INTEGRATION_PLAN.md` v1.0 (2026-08-13)** — W7a ре-ордеринг батча в `dialog_core.py` (INSIGHT #1: гонка внутри одного ответа LLM), W7b SchedulerToolExecutor, W7c task_events + [ACTIVE TASKS] в LLM-контекст, W7d снятие костылей (_pending_music_cleanup, deferred cleanup, debounce). |
+
+**Вывод для исполнителя:** архитектурные блоки готовы и покрыты unit-тестами; осталась интеграционная работа — «обернуть» function_tool'ы `dialogue_node` в `SchedulerTask` и провести e2e «комар + енот». Решение по AWAITING-рендеру — §8.11 (A'2), по `task_events` — §14.1 (publisher в dialogue_node).
+
 ---
 
 ## 12. Что уже решено в текущем коде (без scheduler)
@@ -1590,10 +1666,10 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 
 | Проблема из #968 | Где решена | Как |
 |------------------|------------|-----|
-| `stop_music` обгоняет `speak_text` (race) | `speak_helpers.py:144` (`handle_tts_finished`) | `speak_text` блокируется до `tts/finished` |
-| Несколько `speak_text` в одном батче | `speak_helpers.py:110–148` (`_tts_lock` + `_tts_events`) | Сериализуются через регистрацию/освобождение события |
-| Cleanup срабатывал на первом чанке (v38) | `tts_node.py:741–744` (один finished на speech_id) | Теперь один speech_id = один finished event |
-| LLM вызывает `speak_text` + `stop_music` подряд | `speak_helpers.py:120,134` (wait_for finished) | LLM-цикл не двигается, пока TTS не договорит |
+| `stop_music` обгоняет `speak_text` (race) | `speak_helpers.py` (`handle_tts_finished`, строка 241) | `speak_text` блокируется до `tts/finished` |
+| Несколько `speak_text` в одном батче | `speak_helpers.py` (`_tts_lock` + `_tts_events`, строки 207–233) | Сериализуются через регистрацию/освобождение события |
+| Cleanup срабатывал на первом чанке (v38) | `tts_node.py` (`_publish_tts_finished`, строка 2783) + `dialogue_node.py` (`_on_tts_batch_complete`, строка 1379) | **`/voice/tts/batch_complete` — один сигнал после ПОСЛЕДНЕГО чанка batch'а** (`batch_index == batch_total`); `_active_batches` считает все незавершённые batch'ы (issue #980/#992) |
+| LLM вызывает `speak_text` + `stop_music` подряд | `speak_helpers.py` (wait_for finished) | LLM-цикл не двигается, пока TTS не договорит |
 
 **Что осталось как OPEN issue:**
 - LLM не видит состояние каналов → пост-амбл, не знает что TTS играет
@@ -1611,7 +1687,7 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 | **П1** | 🔴 блокер | barge-in убивает LLM-цикл, MERGE требует его жизни | **§4.4** — классификация ДО barge-in. MERGE/QUEUE/CLARIFY не отменяют цикл. REPLACE — отменяет. |
 | **П2** | 🔴 | «прервать ACTIVE на естественной границе» — оксюморон | **§4.3** — critical **сокращает** ACTIVE до ближайшей границы (1–4с от момента события), а не «прерывает». Одна формулировка. |
 | G1 | 🟡 ✅ закрыт (rev. v5, 2026-08-04) | Кто исполняет fade-out? | **Решение: fade-out НЕ нужен.** Гильотина (`MusicManager.stop_all()` → `Clock.clear()` + OSC `/g_freeAll` на `scsynth`) устраивает. Scheduler отвечает только за **надёжность** — гарантия, что `stop_music` доезжает до синтезатора и срубает **всю** музыку (запланированные ноты в `Clock` и призраки в Group 1). Промежуточный fade вносит сложность без пользы для текущих сценариев. Задача сводится к тому, чтобы `stop_music()` гарантированно доходил до железа и вырубал всё — это уже зона `MusicManager.stop_all()` (`src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py:621`). См. запись в §14 #1. |
-| G2 | 🟡 | Два механизма «TTS готов» | **§3.4** — выбран счётчик по `speech_id` (один finished на один заказ), уже реализован в `tts_node.py:741–744`. |
+| G2 | 🟡 ✅ закрыт (rev. v6, 2026-08-12) | Два механизма «TTS готов» | **Фактический сигнал — `/voice/tts/batch_complete`** (issues #980/#992): `tts_node._publish_tts_finished` (`tts_node.py:2783`) публикует `finished` по каждому чанку **с метаданными batch'а** (`batch_id`, `batch_index`, `batch_total`), а `batch_complete` — один раз после последнего чанка. `dialogue_node._on_tts_batch_complete` (`dialogue_node.py:1379`) считает `_active_batches` и чистит музыку только когда все batch'ы завершены. Планировщик использует этот сигнал (см. §3.4, §12). |
 | G3 | 🟡 | MERGE во время пред-генерации | **§6.5** — `InterruptibleTask.cancel()` при правке. Покрыть unit-тестом (фаза 3). |
 | G4 | 🟡 ✅ закрыт (rev. v5, 2026-08-04) | Prefetch жжёт токены | **§6.5 (v5)** — prefetch-budget не фиксированное число, а runtime-расчёт через `LLMEstimator.estimate_ms`: где в потоке приземлится ответ LLM → какие сегменты к тому моменту PENDING → их LLM может переписать. Prefetch включается только для `task.type ∈ {sing, rap, narrate}` и после ≥1 completed сегмента. FROZEN/LIVE-маркировка сегментов отражается в `[SEGMENT PLAN]` feedback (см. §7.1). См. §14 #5. |
 | G5 | 🟡 | `estimate_tts_duration` vs SegmentEstimator | **§6.2** — `SegmentEstimator` = обёртка над существующим механизмом, LLM не вызывает руками. |
@@ -1635,7 +1711,7 @@ Scheduler **не дублирует** `async_executor`. Использует е�
    - Параметр `light_llm: LightLLMClient | None` удаляется из сигнатуры.
    - Acceptance-критерий «`level 2 решает за < 800мс`» заменяется на «правила решают мусор за < 50мс (≥ 50% случаев)», остальное — в основном LLM-цикле.
    - Авто-триггер внеочередного LLM-после-MERGE (§4.5) переписывается на основную LLM, а не на лёгкую.
-3. **ROS-топик `/harness/task_events`** — нужен ли владелец (отдельный node) или достаточно publisher'а из `dialogue_node`? **Вопрос адресован архитектору (kanban t_8f5bb012 / t_f0ddd678 и др.) — требуется архитектурное решение. Описание вариантов и контекст см. в §14.1 ниже.**
+3. ~~**ROS-топик `/harness/task_events`** — нужен ли владелец (отдельный node) или достаточно publisher'а из `dialogue_node`?~~ **✅ ЗАКРЫТ (rev. v6, 2026-08-12, architect).** Решение: **publisher внутри `dialogue_node`, отдельный node НЕ нужен.** Обоснование и контракт — §14.1.
 4. **Совместимость с Phase 5 / ADR-0001 §5** (`AgentSession` + `SideEffectBus`) — ~~был открытый~~ **закрыт §5.5**: `SchedulerEventBus` (фаза 2) и `SideEffectBus` (фаза 5) — разные домены, разные фазы. Требуется follow-up запись в ADR-0001 §5 (см. §11.3 acceptance #7).
 5. ~~**Prefetch budget (G4)** — какой лимит «активной задачи» для prefetch? 30с? 60с? Пока задача длиннее N — prefetch крутится, иначе спит.~~ **✅ ЗАКРЫТ (rev. v5, 2026-08-04, owner).** Решение owner'а: **нет фиксированного N секунд**. Prefetch budget — это **runtime-вычисление** на основе `LLMEstimator.estimate_ms` и сегмент-плана.
    - **Мотивация (owner):** «мы эстиматором считаем время и прикидываем, на каком сегменте к нам прилетит ответ от LLM, и тогда мы сможем уже накидывать новые сегменты. Сегментов, которые мы заменим, может быть больше одного».
@@ -1667,7 +1743,7 @@ Scheduler **не дублирует** `async_executor`. Использует е�
    - **Анти-паттерны (отвергнуто):**
      - ❌ B (IGNORE во время voice-таска) — ломает существующее поведение, заставляет пользователя ждать конца песни или говорить «стоп» (= cancel = противоречие).
      - ❌ C (REPLACE на «двигайся») — уничтожает песню без явного запроса.
-7. **Q5.1 (НОВЫЙ, rev. v5)** — **вопрос архитектору**: во время ACTIVE голосовой задачи (sing/rap/narrate) пользовательский ввод «едь на кухню» может инициировать `AWAITING_CONFIRMATION`. **Как именно отрендерить вопрос-подтверждение?** Owner предложил: «робот может вплести вопрос в песню, продолжить петь, а если пользователь скажет „робот подтверждаю" — продолжит петь и поедет». Это шире текущего §8.3 и требует архитектурного выбора. Подварианты для архитектора:
+7. ~~**Q5.1 (НОВЫЙ, rev. v5)** — вопрос архитектору: во время ACTIVE голосовой задачи (sing/rap/narrate) пользовательский ввод «едь на кухню» может инициировать `AWAITING_CONFIRMATION`. Как именно отрендерить вопрос-подтверждение?~~ **✅ ЗАКРЫТ (rev. v6, 2026-08-12, architect).** Решение: **вариант A'2 — врезка вопроса на ближайшей границе voice-сегмента** (песня доигрывает текущий сегмент → вопрос-план → ответ → песня продолжается с того же места). Полный контракт, acceptance и «почему не A'1/A'3» — новый §8.11.
 
    | Подвариант | Описание | Реализуемо сейчас? | Сложность |
    |------------|----------|---------------------|-----------|
@@ -1731,6 +1807,29 @@ Scheduler **не дублирует** `async_executor`. Использует е�
    - Если разница < 10мс и не превышает 5% бюджета 500мс → A.
    - Если разница > 10мс ИЛИ не укладывается в бюджет → B (с оговоркой: гарантия общего процесса + observability через локальный `print` или `self.get_logger()`).
 
+### 14.1 Владелец ROS-топика `/harness/task_events` (решение Q3)
+
+> **Закрыто в v6 (2026-08-12, task t_47258be9).** Вопрос из §14 #3: нужен ли отдельный ROS-node для публикации `task_events` или достаточно publisher'а из `dialogue_node`?
+
+**Решение: publisher внутри `dialogue_node` (или `dialog_harness_node` — там, где живёт scheduler). Отдельный node НЕ создаём.**
+
+**Обоснование:**
+1. **Топик — fire-and-forget observability.** `task_events` потребляется только мониторингом (`ros2 topic echo`, foxglove) — это не командный канал с QoS-требованиями. Отдельный node добавил бы lifecycle (spawn/health/restart) без единого потребителя, которому это нужно.
+2. **Scheduler уже живёт в диалоговом процессе.** §5.4: EventBus — singleton в `dialogue_node`, «не плодим ROS-нод без нужды». Publisher — просто тонкий адаптер поверх scheduler'а в том же процессе: scheduler вызывает колбэк `on_task_event(evt)` → publisher шлёт `String` в `/harness/task_events`.
+3. **Синхронность с источником событий.** События (`task.created`, `task.segment_started`, …) рождаются в scheduler'е. Публикация из того же процесса исключает гонку «событие уже случилось, а publisher ещё не поднялся» и не требует сериализации через DDS для внутренних переходов.
+4. **Паттерн уже есть в коде.** `dialogue_node` уже публикует односторонние событийные топики (`/voice/sound/state`, `/voice/dj_mode`, `_publish_music_cleanup` на `dialogue_node.py:3093`). `task_events` publisher — тот же класс (String, QoS 10).
+
+**Контракт (фаза 2, §11.3):**
+- Топик: `/harness/task_events`, тип `std_msgs/String`, JSON-payload `{"event": "task.created", "task_id": ..., "ts": ...}`.
+- Publisher создаётся в `dialogue_node.__init__` рядом с существующими event-publisher'ами (одна строка), колбэк от scheduler'а регистрируется при старте.
+- Никакой новой ROS-ноды, никаких доп. зависимостей в launch-файлах.
+- **Исключение:** если в будущем появится второй процесс-потребитель (например, отдельный dashboard-сервис с требованием replay), выносим publisher в отдельный `task_events_bridge` node — но это решение принимается при появлении потребителя, не превентивно (YAGNI).
+
+**Acceptance (дополнение к §11.3):**
+- [ ] `ros2 topic echo /harness/task_events` показывает `task.created` после старта задачи (e2e/ручная проверка)
+- [ ] grep по launch-файлам: новый node `task_events` НЕ добавлен (нет лишнего процесса)
+- [ ] unit: scheduler → колбэк → publisher (mock publisher) — событие доезжает за < 5мс (in-process)
+
 ---
 
 ## 15. Ссылки
@@ -1740,9 +1839,9 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 - PR #935 — watchdog для музыки (временные фиксы в `dialogue_node`)
 - ADR-0001 §5 — `AgentSession[StateT]` + `SideEffectBus` (Phase 5, см. t_c8396602)
 - `src/rob_box_mcp_tools/rob_box_mcp_tools/async_executor.py` — `AsyncToolExecutor`, `InterruptibleTask`
-- `src/rob_box_voice/rob_box_voice/dialogue_node.py` — `speak_text`, `_cancel_run` (`dialogue_node.py:517`), `_on_tts_finished` (`dialogue_node.py:397`)
-- `src/rob_box_voice/rob_box_voice/core/speak_helpers.py` — `EffectAwaiterRegistry._tts_events` dict (`speak_helpers.py:110`), `register_tts` (`speak_helpers.py:120`), `handle_tts_finished` (`speak_helpers.py:144`)
-- `src/rob_box_voice/rob_box_voice/tts_node.py` — публикация `tts/finished` (по одному на speech_id)
+- `src/rob_box_voice/rob_box_voice/dialogue_node.py` — `speak_text`, `_cancel_run` (`dialogue_node.py:3309`), `_on_tts_finished` (`dialogue_node.py:1291`), `_on_tts_batch_complete` (`dialogue_node.py:1379`), `_publish_music_cleanup` (`dialogue_node.py:3093`)
+- `src/rob_box_voice/rob_box_voice/core/speak_helpers.py` — `EffectAwaiterRegistry` (класс на `speak_helpers.py:184`), `_tts_events` dict (`speak_helpers.py:207`), `register_tts` (`speak_helpers.py:217`), `handle_tts_finished` (`speak_helpers.py:241`)
+- `src/rob_box_voice/rob_box_voice/tts_node.py` — публикация `tts/finished` по каждому чанку + `tts/batch_complete` после последнего (`_publish_tts_finished`, `tts_node.py:2783`; issue #980/#992)
 - `src/rob_box_voice/rob_box_voice/core/command_parser.py:110–123` — regex-паттерны `IntentType.NAVIGATE` и `IntentType.STOP` (§8.10.1)
 - `src/rob_box_voice/rob_box_voice/command_node.py:258` — `handle_stop()` отмена Nav2 goals через CancelGoal service (§8.10.1)
 - `src/rob_box_voice/rob_box_voice/command_node.py:302–324` — `handle_direction()` маппинг направлений в NavigateToPose (§8.10.1)

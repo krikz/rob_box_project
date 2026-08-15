@@ -1,0 +1,30 @@
+# audio_node.yaml — per-node ROS2 config (issue #1004 fix, ADR-0004)
+#
+# ЖИВОЙ конфиг для docker-деплоя: монтируется в /config/voice_assistant и
+# подхватывается voice_assistant_headless.launch.py через config_dir:=
+# (см. start_voice_assistant.sh). Формат — стандартный ROS2:
+# верхний ключ = имя ноды, под ним ros__parameters: с плоскими параметрами.
+# get_parameter("foo") в ноде находит foo БЕЗ префикса.
+#
+# Все ключи соответствуют declare_parameter() в audio_node.py 1:1.
+# Значения синхронизированы с src/rob_box_voice/config/audio_node.yaml.
+
+audio_node:
+  ros__parameters:
+    sample_rate: 16000
+    channels: 6
+    mix_channels: [0]
+    chunk_size: 4096
+    vad_threshold: 3.5
+    publish_rate: 10
+    device_index: -1
+    device_name: ReSpeaker 4 Mic Array
+    speech_continuation: 3.0
+    speech_prefetch: 1.5
+    speech_min_duration: 0.3
+    speech_max_duration: 15.0
+    tts_grace_s: 2.5
+    music_vad_threshold: 6.0
+    music_vad_min_db: -35.0
+    dsp_apply_on_start: true
+    hpf_on: 1

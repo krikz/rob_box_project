@@ -45,7 +45,7 @@ _PACKAGE_ROOT = Path(__file__).resolve().parents[3]  # rob_box_voice/
 _TTS_NODE = _PACKAGE_ROOT / "rob_box_voice" / "tts_node.py"
 
 
-def _parse_module(path: Path) -> ast.Module:
+def _parse_module(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
@@ -106,6 +106,31 @@ def test_synthesize_yandex_uses_retry_helper() -> None:
     single_src = ast.unparse(single)
     assert "synthesize_with_retry" not in single_src
     assert "UtteranceSynthesis(" in single_src
+
+
+def test_synthesize_yandex_logs_per_chunk_latency() -> None:
+    """Issue #931 acceptance: latency per chunk must be logged.
+
+    ``_synthesize_yandex`` (multi-chunk path) and
+    ``_synthesize_yandex_single_with_latency`` (retry-halve path) both
+    measure synthesis time and log it, so operators can see per-chunk
+    latency without instrumenting gRPC.
+    """
+    src = _parse_module(_TTS_NODE)
+    yandex = _find_class_member(src, "TTSNode", "_synthesize_yandex")
+    yandex_src = ast.unparse(yandex)
+    assert "time.monotonic()" in yandex_src
+    assert "Yandex chunk" in yandex_src
+    assert "ms" in yandex_src
+
+    latency_wrapper = _find_class_member(
+        src, "TTSNode", "_synthesize_yandex_single_with_latency"
+    )
+    latency_src = ast.unparse(latency_wrapper)
+    assert "time.monotonic()" in latency_src
+    assert "Yandex synth" in latency_src
+    assert "_synthesize_yandex_single(" in latency_src
+    assert "ms" in latency_src
 
 
 def test_fallback_to_silero_preserved() -> None:

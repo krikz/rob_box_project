@@ -500,6 +500,198 @@ class TestIssue992BugC(unittest.TestCase):
             node.close()
 
 
+class TestIssue1016MusicFallback(unittest.TestCase):
+    """Issue #1016 — empty-response music fallback.
+
+    When the LLM returns an empty reply (no text, no tool calls) for a
+    music request («поставь что-нибудь», «сыграй классику»), the
+    dialogue node must publish ``/mcp/music_fallback`` so mcp_server
+    plays the top-rated human track instead of leaving the user in
+    silence.
+    """
+
+    def _fallback_payloads(self, node: _TestableDialogueNode) -> List[dict]:
+        pub = node._publishers.get("/mcp/music_fallback")
+        if pub is None:
+            return []
+        out: List[dict] = []
+        for msg in getattr(pub, "published", []):
+            data = getattr(msg, "data", None)
+            if not data:
+                continue
+            try:
+                out.append(json.loads(data))
+            except (TypeError, ValueError):
+                out.append({"raw": data})
+        return out
+
+    def test_empty_response_on_music_request_publishes_fallback(self):
+        """LLM пустой ответ + музыкальный запрос → /mcp/music_fallback."""
+        llm = _ScriptedLLMProvider([
+            LLMResponse(content="", finish_reason="stop"),
+        ])
+        node = _TestableDialogueNode(llm=llm)
+        try:
+            node._dsm.on_event(DialogueEvent.WAKE_WORD)
+            node._on_stt(_make_string("роббокс поставь что-нибудь"))
+            node.drive_one_turn()
+
+            payloads = self._fallback_payloads(node)
+            self.assertTrue(
+                payloads,
+                "empty response on a music request must publish "
+                "/mcp/music_fallback; "
+                f"publishers={list(node._publishers)!r}",
+            )
+            self.assertEqual(payloads[0].get("reason"), "empty_response")
+        finally:
+            node.close()
+
+    def test_empty_response_on_plain_chat_no_fallback(self):
+        """Обычный вопрос + пустой ответ LLM → НЕ публикуем fallback."""
+        llm = _ScriptedLLMProvider([
+            LLMResponse(content="", finish_reason="stop"),
+        ])
+        node = _TestableDialogueNode(llm=llm)
+        try:
+            node._dsm.on_event(DialogueEvent.WAKE_WORD)
+            node._on_stt(_make_string("роббокс расскажи анекдот"))
+            node.drive_one_turn()
+
+            payloads = self._fallback_payloads(node)
+            self.assertEqual(
+                payloads, [],
+                "plain chat must NOT trigger the music fallback; "
+                f"payloads={payloads!r}",
+            )
+        finally:
+            node.close()
+
+
+# ── Issue #1204: 13.08 DJ incident regressions ───────────────────────
+
+
+class TestIssue1204DjRetryIncident(unittest.TestCase):
+    """Regression for issue #1204 — 13.08 DJ incident.
+
+    Инцидент: юзер сказал «робокс ты диджей варенец...», MiniMax был в
+    квоте (429), fallback (DeepSeek) ответил голым ``done``. Дальше:
+
+    1. Bug C ретрай диспатчился из finally родительского ``_run_turn``,
+       но DSM уже был в IDLE (``process_input`` закрыл DIALOGUE) →
+       ретрай возвращался за ~1 мс без вызова LLM.
+    2. На пустом результате ретрая ``_handle_result`` сканировал стоп-
+       слова по ``user_input`` — синтетическому CRITICAL-промпту с
+       «диджея» внутри → ложный «stop-command» → music_cleanup + DJ off
+       + «Вечеринка подошла к концу».
+    """
+
+    def _dj_off_payloads(self, node: _TestableDialogueNode) -> List[dict]:
+        """Decode every message published on /voice/dj_mode by the node."""
+        pub = node._publishers.get("/voice/dj_mode")
+        if pub is None:
+            return []
+        out: List[dict] = []
+        for msg in getattr(pub, "published", []):
+            data = getattr(msg, "data", None)
+            if not data:
+                continue
+            try:
+                out.append(json.loads(data))
+            except (TypeError, ValueError):
+                out.append({"raw": data})
+        return out
+
+    def test_music_guard_retry_reaches_llm(self):
+        """Bug C retry must actually call the LLM (DSM must stay DIALOGUE).
+
+        Before the fix the retry turn short-circuited in IDLE and the
+        scripted second reply was never consumed (call_count == 1).
+        """
+        llm = _ScriptedLLMProvider([
+            LLMResponse(content="", finish_reason="stop"),
+            LLMResponse(content="Готово", finish_reason="stop"),
+        ])
+        node = _TestableDialogueNode(llm=llm)
+        try:
+            node._dsm.on_event(DialogueEvent.WAKE_WORD)
+            node._on_stt(_make_string("робокс ты диджей погнали"))
+            node.drive_one_turn()
+
+            self.assertEqual(
+                llm.call_count, 2,
+                "Bug C retry must reach the LLM after an empty first "
+                f"answer; got {llm.call_count} LLM calls (expected 2)",
+            )
+        finally:
+            node.close()
+
+    def test_dj_phrase_does_not_trigger_stop_fallback(self):
+        """The synthetic CRITICAL prompt must NOT be scanned for stop-words.
+
+        13.08: фраза «ты диджей варенец...» привела к ложному
+        «stop-command + empty LLM response» → user_stop_command cleanup +
+        DJ off + farewell, хотя юзер НИЧЕГО не останавливал.
+        """
+        llm = _ScriptedLLMProvider([
+            LLMResponse(content="", finish_reason="stop"),
+            LLMResponse(content="", finish_reason="stop"),
+        ])
+        node = _TestableDialogueNode(llm=llm)
+        try:
+            node._dsm.on_event(DialogueEvent.WAKE_WORD)
+            node._on_stt(_make_string(
+                "робокс ты диджей варенец у нас сегодня "
+                "кисломолочная вечеринка погнали"
+            ))
+            node.drive_one_turn()
+
+            reasons = [
+                c.get("reason")
+                for c in _music_cleanup_payloads(node)
+            ]
+            self.assertNotIn(
+                "user_stop_command", reasons,
+                "DJ request must NOT be treated as a stop-command "
+                f"(self-match on synthetic CRITICAL prompt); reasons={reasons!r}",
+            )
+            self.assertEqual(
+                self._dj_off_payloads(node), [],
+                "DJ request must NOT publish set_dj_mode(enabled=false); "
+                f"payloads={self._dj_off_payloads(node)!r}",
+            )
+        finally:
+            node.close()
+
+    def test_real_stop_command_still_forces_cleanup(self):
+        """«выключи музыку» + пустой ответ LLM → cleanup обязателен.
+
+        Sanity: фикс не должен сломать легитимный стоп-путь (issue 992
+        Bug C live 06.08) — оригинальная команда юзера всё ещё
+        сканируется, когда это НЕ синтетический ретрай.
+        """
+        llm = _ScriptedLLMProvider([
+            LLMResponse(content="", finish_reason="stop"),
+        ])
+        node = _TestableDialogueNode(llm=llm)
+        try:
+            node._dsm.on_event(DialogueEvent.WAKE_WORD)
+            node._on_stt(_make_string("робокс выключи музыку"))
+            node.drive_one_turn()
+
+            reasons = [
+                c.get("reason")
+                for c in _music_cleanup_payloads(node)
+            ]
+            self.assertIn(
+                "user_stop_command", reasons,
+                "real stop command + empty LLM reply must force "
+                f"music_cleanup; reasons={reasons!r}",
+            )
+        finally:
+            node.close()
+
+
 # ── module-level helpers ──────────────────────────────────────────────
 
 

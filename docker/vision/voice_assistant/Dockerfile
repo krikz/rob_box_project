@@ -106,6 +106,53 @@ COPY src/rob_box_llm/rob_box_llm /ws/src/rob_box_llm/rob_box_llm
 COPY docker/vision/voice_assistant/fix_brass_scd.py /tmp/fix_brass_scd.py
 RUN python3 /tmp/fix_brass_scd.py && rm /tmp/fix_brass_scd.py
 
+# Live 13.08 — тихие ворнинги renardo при каждом старте контейнера:
+#   "Could not read conf.json file..." (Settings/conf.py ищет свой conf.json
+#   ВНУТРИ pip-пакета и создаёт его в writable-слое при первом импорте) и
+#   ".../FoxDotEditor/themes/default.json color config file not found!"
+#   (headless-образ не содержит GUI-редактор FoxDotEditor, renardo падает в
+#   fallback-путь). Оба косметические, но замусоривают логи робота.
+#   Создаём оба файла заранее — импорт перестаёт ворнить.
+RUN python3 - <<'PY'
+import json, os
+conf = "/usr/local/lib/python3.10/dist-packages/renardo_lib/Settings/conf.json"
+if not os.path.exists(conf):
+    json.dump({
+        "ADDRESS": "localhost", "PORT": 57110, "PORT2": 57120,
+        "FONT": "Consolas", "SUPERCOLLIDER": "", "BOOT_ON_STARTUP": False,
+        "CHECK_FOR_UPDATE": True, "SC3_PLUGINS": False, "MAX_CHANNELS": 2,
+        "SAMPLES_DIR": "", "SAMPLES_PACK_NUMBER": 0, "GET_SC_INFO": True,
+        "USE_ALPHA": True, "ALPHA_VALUE": 0.8, "MENU_ON_STARTUP": True,
+        "CONSOLE_ON_STARTUP": True, "LINENUMBERS_ON_STARTUP": True,
+        "TREEVIEW_ON_STARTUP": False, "TRANSPARENT_ON_STARTUP": False,
+        "RECOVER_WORK": True, "LINE_NUMBER_MARKER_OFFSET": 0,
+        "AUTO_COMPLETE_BRACKETS": True, "CPU_USAGE": 2, "CLOCK_LATENCY": 0,
+        "FORWARD_ADDRESS": "", "FORWARD_PORT": 0, "COLOR_THEME": "cyborg",
+        "TEXT_COLORS": "default",
+    }, open(conf, "w"))
+themes = "/usr/local/lib/python3.10/FoxDotEditor/FoxDotEditor/themes"
+os.makedirs(themes, exist_ok=True)
+theme = os.path.join(themes, "default.json")
+if not os.path.exists(theme):
+    # ВАЖНО: conf.py делает json_object[TEXT_COLORS]['plaintext'] и т.д.
+    # Т.е. файл ДОЛЖЕН быть вложенным словарём {"default": {...}}.
+    # Плоская схема ломает импорт renardo_lib.runtime:
+    # KeyError: 'default' (live 13.08, round-2 hotfix).
+    json.dump({
+        "default": {
+            "plaintext": "#ffffff", "background": "#1a1a1a",
+            "functions": "#bf4acc", "key_types": "#29abe2",
+            "user_defn": "#29abe2", "other_kws": "#49db8b",
+            "comments": "#666666", "numbers": "#e89c18",
+            "strings": "#eae02a", "dollar": "#ec4e20",
+            "arrow": "#eae02a", "players": "#ec4e20",
+            "prompt_fg": "#ffffff", "prompt_bg": "#1a1a1a",
+            "console_text": "#ffffff", "console_bg": "#1a1a1a",
+        },
+    }, open(theme, "w"))
+print("renardo conf.json + FoxDotEditor theme stub created")
+PY
+
 # --- voice-action-server deps -----------------------------------------------
 # voice-action-server (rob_box_voice/action_server/http_server.py) imports
 # `aiohttp` at runtime. voice_base owns the heavy pip install layer (pytorch,

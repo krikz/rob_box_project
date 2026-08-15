@@ -33,9 +33,11 @@ TEST_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   - PR_MERGED_HEAD_<branch>_JSON (по умолчанию пусто = нет влитого PR)
 #   - PR_LIST_ALL_OPEN_JSON (по умолчанию [])
 # ---------------------------------------------------------------------------
-fixture_stale_pr() {  # $1=issue $2=pr $3=branch $4=merged_pr_number $5=title (default "fix #N demo")
+fixture_stale_pr() {  # $1=issue $2=pr $3=branch $4=merged_pr_number $5=title (default "fix #N demo") $6=deletions (default 500 = регрессия) $7=pr_files_json (default "" = files неизвестны)
     local issue="$1" pr="$2" branch="$3" merged_pr="$4"
     local title="${5:-fix #${issue} demo}"
+    local deletions="${6:-500}"
+    local pr_files="${7:-}"
     # ВАЖНО: merge-gate генерирует имя ветки из title через slugify():
     #   z-{agent}/<issue>-<slugify(title)>
     # Поэтому ISSUE_LIST title должен давать ровно ту ветку, для которой
@@ -44,11 +46,14 @@ fixture_stale_pr() {  # $1=issue $2=pr $3=branch $4=merged_pr_number $5=title (d
     set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"${title}\",\"labels\":[{\"name\":\"hermes\"}],\"body\":\"kanban: t_dead${issue}\"}]"
     set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"}]}'
     set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
-    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\\n\"}]}"
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\\\\n\"}]}"
     set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
     set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
-    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":${pr},\"state\":\"OPEN\",\"baseRefName\":\"develop\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"title\":\"fix #${issue} demo\",\"labels\":[{\"name\":\"agent:devops\"}],\"additions\":50,\"commits\":[{},{}]}]"
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":${pr},\"state\":\"OPEN\",\"baseRefName\":\"develop\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"title\":\"fix #${issue} demo\",\"labels\":[{\"name\":\"agent:devops\"}],\"additions\":50,\"deletions\":${deletions},\"commits\":[{},{}]}]"
     set_state "PR_${pr}_COMMITS_JSON" '[]'
+    if [ -n "$pr_files" ]; then
+        set_state "PR_${pr}_FILES_JSON" "$pr_files"
+    fi
     if [ -n "$merged_pr" ]; then
         set_state "PR_MERGED_HEAD_${branch}_JSON" "[{\"number\":${merged_pr},\"state\":\"MERGED\"}]"
     else
@@ -128,9 +133,9 @@ test_C_scan_all_prs_stale_retro_branch() {
     new_test
     local head="z-devops/t_5af222ea-telegram-watchdog"
     # Нет ISSUE_LIST — merge-gate основной цикл ничего не найдёт; проверяем
-    # scan-all-prs (PR_LIST_ALL_OPEN_JSON).
+    # scan-all-prs (PR_LIST_ALL_OPEN_JSON). deletions=500 → регрессия.
     set_state ISSUE_LIST_JSON '[]'
-    set_state PR_LIST_ALL_OPEN_JSON "[{\"number\":3212,\"headRefName\":\"${head}\",\"title\":\"fix: regression\"}]"
+    set_state PR_LIST_ALL_OPEN_JSON "[{\"number\":3212,\"headRefName\":\"${head}\",\"title\":\"fix: regression\",\"additions\":10,\"deletions\":500}]"
     set_state "PR_MERGED_HEAD_${head}_JSON" '[{"number":1145,"state":"MERGED"}]'
     set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
     set_state "BRANCH_PRESENT_${head}" 1
@@ -143,7 +148,34 @@ test_C_scan_all_prs_stale_retro_branch() {
     # gh pr comment 3212 с stale-branch текстом.
     local pr_comments
     pr_comments="$(printf '%s\n' "$journal" | grep -c 'gh pr comment 3212 .*stale-branch re-commit detected' || true)"
-    assert_eq "1" "$pr_comments" "scan-all-prs: stale retro branch → PR comment posted"
+    assert_eq "1" "$pr_comments" "scan-all-prs: stale retro branch (регрессия) → PR comment posted"
+}
+
+# ===========================================================================
+# E. Аддитивный PR на влитой ветке (deletions≈0) → НЕ блокируется: ветка
+#    влита, но воркер до-пушил НОВЫЙ контент (#1197 docs W7: +308/-1).
+#    Регрессия = удаление влитых фиксов → deletions значимы. Блокируем
+#    только её (ретро 13.08 t_a3f170fe).
+# ===========================================================================
+test_E_additive_pr_on_merged_branch_not_blocked() {
+    new_test
+    local branch
+    branch="$(slugify_branch 3207 'fix #3207 additive demo')"
+    # deletions=1 (аддитивный docs/ci-стиль) → НЕ регрессия → needs-e2e ставится
+    fixture_stale_pr 3207 3208 "$branch" 3197 'fix #3207 additive demo' 1
+
+    run_merge_gate
+
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    local block_comments
+    block_comments="$(printf '%s\n' "$journal" | grep -c 'stale-branch re-commit detected' || true)"
+    assert_eq "0" "$block_comments" "additive PR на влитой ветке → НЕ блокируем"
+
+    local needs_e2e_calls
+    needs_e2e_calls="$(printf '%s\n' "$journal" | grep -c 'gh issue edit 3207 --add-label needs-e2e' || true)"
+    assert_eq "1" "$needs_e2e_calls" "additive PR → needs-e2e ставится (обычный флоу)"
 }
 
 # ===========================================================================
@@ -174,11 +206,73 @@ test_D_stale_branch_comment_dedup() {
 }
 
 # ===========================================================================
+# F. Аддитивный PR на влитой ветке, НО с функциональными файлами (docker/src)
+#    → блокируется + снимается needs-review. (Сценарий ретро 14.08 t_28afb585:
+#    PR #1238 — e2e+teleop фиксы на ветке docs-PR #1218, needs-review без e2e.)
+# ===========================================================================
+test_F_additive_functional_pr_on_merged_branch_blocked() {
+    new_test
+    local branch
+    branch="$(slugify_branch 3209 'fix #3209 functional demo')"
+    fixture_stale_pr 3209 3210 "$branch" 3199 'fix #3209 functional demo' 1 \
+        '{"files":[{"path":"docker/main/teleop/Dockerfile"},{"path":".github/workflows/scripts/e2e_voice_test.sh"}]}'
+
+    run_merge_gate
+
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # needs-e2e НЕ ставится.
+    local needs_e2e_calls
+    needs_e2e_calls="$(printf '%s\n' "$journal" | grep -c -- '--add-label needs-e2e' || true)"
+    assert_eq "0" "$needs_e2e_calls" "additive functional PR на влитой ветке → needs-e2e NOT set" || return 1
+
+    # Блокирующий коммент (reuse with new functional fix) постится.
+    local block_comments
+    block_comments="$(printf '%s\n' "$journal" | grep -c 'stale-branch reuse with new functional fix' || true)"
+    assert_eq "1" "$block_comments" "additive functional PR → reuse-block comment posted" || return 1
+
+    # needs-review снимается (поставлен без e2e).
+    local review_removed
+    review_removed="$(printf '%s\n' "$journal" | grep -c 'gh pr edit 3210 .*--remove-label needs-review' || true)"
+    assert_eq "1" "$review_removed" "additive functional PR → needs-review removed" || return 1
+}
+
+# ===========================================================================
+# G. Аддитивный docs/ci PR на влитой ветке → НЕ блокируется (прежнее
+#    поведение t_a3f170fe сохранено: #1197 docs W7). Функциональная
+#    проверка видит только docs/ci файлы → не блокируем.
+# ===========================================================================
+test_G_additive_docs_pr_on_merged_branch_not_blocked() {
+    new_test
+    local branch
+    branch="$(slugify_branch 3211 'fix #3211 docs demo')"
+    fixture_stale_pr 3211 3212 "$branch" 3199 'fix #3211 docs demo' 1 \
+        '{"files":[{"path":"docs/design/W7_INTEGRATION_PLAN.md"},{"path":".github/workflows/L-Build.yml"}]}'
+
+    run_merge_gate
+
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    local block_comments
+    block_comments="$(printf '%s\n' "$journal" | grep -c 'stale-branch re-commit detected\|stale-branch reuse with new functional fix' || true)"
+    assert_eq "0" "$block_comments" "additive docs/ci PR на влитой ветке → НЕ блокируем" || return 1
+
+    local needs_e2e_calls
+    needs_e2e_calls="$(printf '%s\n' "$journal" | grep -c 'gh issue edit 3211 --add-label needs-e2e' || true)"
+    assert_eq "1" "$needs_e2e_calls" "additive docs/ci PR → needs-e2e ставится (обычный флоу)" || return 1
+}
+
+# ===========================================================================
 # Run all tests.
 # ===========================================================================
 run_test "A. stale branch → needs-e2e blocked" test_A_stale_branch_blocks_needs_e2e
 run_test "B. fresh branch → needs-e2e set" test_B_fresh_branch_sets_needs_e2e
 run_test "C. scan-all-prs stale retro branch" test_C_scan_all_prs_stale_retro_branch
 run_test "D. stale-branch comment dedup" test_D_stale_branch_comment_dedup
+run_test "E. additive PR on merged branch not blocked" test_E_additive_pr_on_merged_branch_not_blocked
+run_test "F. additive functional PR on merged branch blocked" test_F_additive_functional_pr_on_merged_branch_blocked
+run_test "G. additive docs/ci PR on merged branch not blocked" test_G_additive_docs_pr_on_merged_branch_not_blocked
 
 summary

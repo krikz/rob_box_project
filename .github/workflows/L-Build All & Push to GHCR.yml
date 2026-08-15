@@ -177,19 +177,31 @@ jobs:
           git config user.email "ci@rob-box.local"
           git config user.name "Rob Box CI"
           if ! git diff --cached --quiet; then
-            # Issue #1139: SHA-теги пишем в отдельную ветку ci/image-versions,
-            # а не коммитим в develop/main/vision — не засоряем историю
-            VERSIONS_BRANCH="ci/image-versions"
-            git checkout -B "$VERSIONS_BRANCH"
-            git commit -m "ci: SHA tags → ${NEW_TAG} [skip ci]"
-            for i in 1 2 3 4 5; do
-              git pull --rebase origin "$VERSIONS_BRANCH" >/dev/null 2>&1 || true
-              if git push origin "HEAD:${VERSIONS_BRANCH}" >/dev/null 2>&1; then
-                break
-              fi
-              sleep 5
-            done
-            echo "✅ Committed and pushed .image-versions (branch ${VERSIONS_BRANCH})"
+            # ✅ РЕТРО #1139 v2 (13.08, t_bd9b7713): .image-versions коммитим
+            # в ОТДЕЛЬНЫЕ per-service ветки ci/image-versions-main/-vision —
+            # develop/main не засоряются 'ci: SHA tags' коммитами. Ветки
+            # базируются на origin-типе и НЕ сбрасываются → теги накапливаются.
+            # Сохраняем новое содержимое ДО переключения веток (checkout -f
+            # сбросит рабочее дерево).
+            BASE_REF="$(git rev-parse HEAD)"
+            TMP_IV="$(mktemp -d)"
+            [ -f "$MAIN_VERSIONS" ] && cp "$MAIN_VERSIONS" "$TMP_IV/main"
+            [ -f "$VISION_VERSIONS" ] && cp "$VISION_VERSIONS" "$TMP_IV/vision"
+            if [ -f "$MAIN_VERSIONS" ]; then
+              cp "$TMP_IV/main" "$MAIN_VERSIONS"
+              IV_BASE_REF="$BASE_REF" bash scripts/ci/commit-image-versions.sh \
+                "ci/image-versions-main" \
+                "ci: SHA tags → ${NEW_TAG} [skip ci]" \
+                "$MAIN_VERSIONS"
+            fi
+            if [ -f "$VISION_VERSIONS" ]; then
+              cp "$TMP_IV/vision" "$VISION_VERSIONS"
+              IV_BASE_REF="$BASE_REF" bash scripts/ci/commit-image-versions.sh \
+                "ci/image-versions-vision" \
+                "ci: SHA tags → ${NEW_TAG} [skip ci]" \
+                "$VISION_VERSIONS"
+            fi
+            rm -rf "$TMP_IV"
           else
             echo "ℹ️  No changes to .image-versions"
           fi

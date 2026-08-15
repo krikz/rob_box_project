@@ -40,6 +40,35 @@
 # Идемпотентен — повторный запуск обновляет ссылки, ничего не ломает.
 
 set -e
+
+# Единый список процессных скриптов. Владелец списка — ЭТОТ файл:
+#   - install.sh раскладывает EXPECTED по хостам;
+#   - agent-flow-drift-detect.sh читает список через `install.sh --list-files`
+#     (ретро 13.08 t_2cae75c0: раньше список дублировался в drift-detect.sh,
+#     из-за чего kanban-retro-create.sh и ещё 2 скрипта не контролировались
+#     drift-детектором; теперь источник один).
+EXPECTED=(
+    agent-flow-triage.sh
+    agent-flow-merge-gate.sh
+    agent-flow-e2e-process.sh
+    agent-flow-handoff.sh
+    round_ensure.sh
+    agent-flow-cleanup-249.sh
+    agent-flow-deploy-sweep.sh
+    agent-flow-unlabeled-sweep.sh
+    cron-loop.sh
+    watchdog.sh
+    agent-flow-drift-detect.sh
+    kanban-retro-create.sh
+)
+
+# Режим --list-files: печатает EXPECTED по одному имени на строку и выходит.
+# Используется agent-flow-drift-detect.sh как единый источник списка.
+if [ "${1:-}" = "--list-files" ]; then
+    printf '%s\n' "${EXPECTED[@]}"
+    exit 0
+fi
+
 DRY_RUN=false
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=true
 
@@ -56,19 +85,26 @@ else
 fi
 SCRIPT_DIR="$REPO_DIR/scripts/agent_flow"
 
-# Канонические пути (все должны стать hardlink-ами на одну и ту же inode)
-TARGET_DIRS=(
-    "/home/builder/.hermes/profiles/agent-flow/scripts"
-    "/home/builder/.hermes/profiles/architect/scripts"
-    "/home/builder/.hermes/profiles/devops/scripts"
-    "/home/builder/.hermes/scripts"
-)
+# Канонические пути (все должны стать hardlink-ами на одну и ту же inode).
+# Переопределяются INSTALL_TARGET_DIRS (colon-separated) для тестов и
+# нестандартных хостов (см. tests/test_drift_detect_branch_active.sh).
+if [ -n "${INSTALL_TARGET_DIRS:-}" ]; then
+    IFS=':' read -r -a TARGET_DIRS <<< "$INSTALL_TARGET_DIRS"
+else
+    TARGET_DIRS=(
+        "/home/builder/.hermes/profiles/agent-flow/scripts"
+        "/home/builder/.hermes/profiles/architect/scripts"
+        "/home/builder/.hermes/profiles/devops/scripts"
+        "/home/builder/.hermes/scripts"
+    )
+fi
 
 # ~/.hermes/scripts/ проходит через guard в
 # hermes-agent/cron/scheduler.py::_validate_script_path.
 # Любой symlink наружу этой директории будет отклонён, поэтому
 # для HERMES_SCRIPTS_DIR симлинки ЗАПРЕЩЕНЫ (см. ретро 11.08 t_a6a236e0d9f0470e).
-HERMES_SCRIPTS_DIR="/home/builder/.hermes/scripts"
+# Переопределяется для тестов (fixture-директория вместо реального ~/.hermes).
+HERMES_SCRIPTS_DIR="${HERMES_SCRIPTS_DIR:-/home/builder/.hermes/scripts}"
 
 run() {
     if $DRY_RUN; then
@@ -148,20 +184,8 @@ if [ ! -d "$SCRIPT_DIR" ]; then
     exit 1
 fi
 
-# sanity check — файлы на месте
-EXPECTED=(
-    agent-flow-triage.sh
-    agent-flow-merge-gate.sh
-    agent-flow-e2e-process.sh
-    agent-flow-handoff.sh
-    round_ensure.sh
-    agent-flow-cleanup-249.sh
-    agent-flow-deploy-sweep.sh
-    agent-flow-unlabeled-sweep.sh
-    cron-loop.sh
-    watchdog.sh
-    agent-flow-drift-detect.sh
-)
+# sanity check — файлы на месте (EXPECTED объявлен в начале файла — единый
+# список для раскладки и для agent-flow-drift-detect.sh --list-files)
 for f in "${EXPECTED[@]}"; do
     if [ ! -f "$SCRIPT_DIR/$f" ]; then
         echo "ERROR: missing canonical file $SCRIPT_DIR/$f"
@@ -184,6 +208,55 @@ for target_dir in "${TARGET_DIRS[@]}"; do
         _install_one "$src" "$dst"
     done
 done
+
+# ---------------------------------------------------------------------------
+# Применение vendor-патчей к hermes-agent (ретро t_f00676f8).
+#
+# Проблема: локальные фиксы hermes-agent (валидация скиллов по профилю
+# t_1ab37fa8: _profile_skill_names/_validate_skills_for_assignee в
+# hermes_cli/kanban_db.py, symlink-following подсчёт скиллов в
+# hermes_cli/profiles.py) накладывались на хост руками БЕЗ сохранения в репо.
+# При `git pull`/`pip install -U hermes-agent` патчи теряются, и регресс
+# t_1ab37fa8 возвращается (карточки со скилами не из профиля падают).
+#
+# Решение: дифф хранится в репо как scripts/agent_flow/vendor/
+# hermes-agent-skill-validation.patch; этот скрипт применяет его идемпотентно
+# (git apply --reverse --check => уже применён; git apply --check => можно
+# применить). Вызывать ПОСЛЕ обновления hermes-agent.
+HERMES_AGENT_DIR="${HERMES_AGENT_DIR:-/home/builder/.hermes/hermes-agent}"
+HERMES_AGENT_PATCH="$SCRIPT_DIR/vendor/hermes-agent-skill-validation.patch"
+
+apply_hermes_agent_patch() {
+    if ! git -C "$HERMES_AGENT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "  SKIP hermes-agent patch ($HERMES_AGENT_DIR not a git checkout)"
+        return 0
+    fi
+    if [ ! -f "$HERMES_AGENT_PATCH" ]; then
+        echo "  SKIP hermes-agent patch ($HERMES_AGENT_PATCH not found)"
+        return 0
+    fi
+    echo "==> hermes-agent patch: $HERMES_AGENT_PATCH"
+    # Уже применён?
+    if ( cd "$HERMES_AGENT_DIR" && git apply --reverse --check "$HERMES_AGENT_PATCH" >/dev/null 2>&1 ); then
+        echo "  OK   patch already applied (reverse-check clean)"
+        return 0
+    fi
+    # Применится чисто?
+    if ( cd "$HERMES_AGENT_DIR" && git apply --check "$HERMES_AGENT_PATCH" >/dev/null 2>&1 ); then
+        if $DRY_RUN; then
+            echo "  [DRY] would apply patch in $HERMES_AGENT_DIR"
+            return 0
+        fi
+        if ( cd "$HERMES_AGENT_DIR" && git apply "$HERMES_AGENT_PATCH" ); then
+            echo "  APPLIED hermes-agent patch (re-run install.sh after every hermes-agent update)"
+            return 0
+        fi
+        echo "  ERROR applying hermes-agent patch" >&2
+        return 1
+    fi
+    echo "  ERROR patch does not apply cleanly to $HERMES_AGENT_DIR — upstream moved; regenerate vendor patch from current diff (ретро t_f00676f8)" >&2
+    return 1
+}
 
 echo
 echo "==> Anti-escape guard: проверяю, что ни один файл в $HERMES_SCRIPTS_DIR не указывает наружу"
@@ -252,6 +325,52 @@ else
 fi
 
 echo
+echo "==> Ensure cron job registration: agent-flow-cleanup-249.sh (ретро 13.08 t_04d73108)"
+# Проблема: cleanup-249 раскладывался install.sh, но cron-job НЕ создавался —
+# stale round-ветки (61-76/100-103) копились на origin. Регистрируем джоб
+# идемпотентно в devops-профиле: every 6h, no_agent (скрипт = джоб).
+# Регистрация переживает install.sh: каждый запуск (в т.ч. auto-fix из
+# drift-detect) проверяет jobs.json и создаёт недостающий джоб.
+ensure_cleanup_cron() {
+    local profile_dir="/home/builder/.hermes/profiles/devops"
+    local jobs_file="$profile_dir/cron/jobs.json"
+    local job_name="Agent Flow Cleanup 249"
+    local job_script="agent-flow-cleanup-249.sh"
+
+    if ! command -v hermes >/dev/null 2>&1; then
+        echo "  SKIP ensure-cron: hermes CLI not on PATH (nothing to register)"
+        return 0
+    fi
+    if [ ! -f "$jobs_file" ]; then
+        echo "  SKIP ensure-cron: $jobs_file not present (devops profile not set up here)"
+        return 0
+    fi
+
+    if grep -q "\"script\": \"$job_script\"" "$jobs_file"; then
+        echo "  OK   cron job '$job_name' already registered ($job_script)"
+        return 0
+    fi
+
+    echo "  ADD  registering cron job '$job_name' (devops, every 6h, no_agent)"
+    if $DRY_RUN; then
+        echo "  [DRY] hermes --profile devops cron create 'every 6h' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir '$REPO_DIR'"
+        return 0
+    fi
+    if hermes --profile devops cron create "every 6h" \
+        --name "$job_name" \
+        --script "$job_script" \
+        --no-agent \
+        --deliver local \
+        --workdir "$REPO_DIR" >/dev/null 2>&1; then
+        echo "  ADD  cron job created: $job_name ($job_script)"
+    else
+        echo "  WARN cron job creation failed (non-fatal): $job_name — register manually:"
+        echo "       hermes --profile devops cron create 'every 6h' --name '$job_name' --script '$job_script' --no-agent --deliver local"
+    fi
+}
+ensure_cleanup_cron
+
+echo
 echo "==> Telegram token sanity (retro 12.08 t_5af222ea): >1 active TELEGRAM_BOT_TOKEN = reconnect loop"
 TOKEN_HOLDERS=()
 for envf in /home/builder/.hermes/.env /home/builder/.hermes/profiles/*/.env; do
@@ -276,6 +395,11 @@ if [ "${#TOKEN_HOLDERS[@]}" -gt 1 ]; then
 else
     echo "  OK  telegram token holders: ${TOKEN_HOLDERS[*]:-none}"
 fi
+
+echo
+echo "==> hermes-agent vendor patch"
+apply_hermes_agent_patch
+
 
 echo
 echo "==> Done. Verify:"

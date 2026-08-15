@@ -34,6 +34,7 @@ import pytest
 from rob_box_harness.core.dialog_core import DialogCore, DialogResult
 from rob_box_harness.core.dialogue_state_machine import (
     DialogState,
+    DialogueEvent,
     DialogueStateKind,
     DialogueStateMachine,
 )
@@ -167,6 +168,12 @@ class _FakeToolProvider:
         result = handler(dict(call.arguments))
         if hasattr(result, "__await__"):
             result = await result
+        # A handler may return a full ToolResult (e.g. is_error=True) —
+        # respect it verbatim instead of stringifying it into a
+        # non-error result (issue #1253 babble filter depends on
+        # is_error reaching DialogCore).
+        if isinstance(result, ToolResult):
+            return result
         return ToolResult(
             tool_call_id=call.id,
             content=str(result),
@@ -1011,6 +1018,430 @@ def test_process_input_tool_loop_survives_tool_level_error(
     assert result.tools_called == ["memory_context"]
 
 
+def test_silent_done_first_response_triggers_corrective_retry(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1217 — bare 'done' with no tools must be retried once.
+
+    deepseek-v4-flash intermittently answers with the completion marker
+    'done' as its FIRST response and no tool calls — the user hears
+    nothing and nothing happens. DialogCore must inject a corrective
+    user message and ask the LLM once more; the retry's real answer
+    then reaches the user instead of the silent 'done'.
+    """
+    llm.responses = [
+        LLMResponse(content="done", tool_calls=()),
+        LLMResponse(content="Привет, Саша!", tool_calls=()),
+    ]
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("привет", history=[]))
+
+    assert result.error is None
+    assert result.spoken_text == "Привет, Саша!"
+    assert result.tools_called == []
+    # Two LLM calls: the silent 'done' + the corrective retry.
+    assert len(llm.calls) == 2
+    # The retry's message list carries the correction after the 'done' echo.
+    retry_messages = llm.calls[1][0]
+    assert retry_messages[-1].role == "user"
+    assert "[SYSTEM CORRECTION]" in retry_messages[-1].content
+    assert retry_messages[-2].role == "assistant"
+    assert retry_messages[-2].content == "done"
+
+
+def test_empty_first_response_triggers_corrective_retry(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1217 — an EMPTY first payload is retried once too.
+
+    The empty-content variant (stream ended with no deltas) must get
+    the same corrective retry; no assistant echo is appended because
+    there is no content to echo (OpenAI-compatible shape stays valid).
+    """
+    llm.responses = [
+        LLMResponse(content="", tool_calls=()),
+        LLMResponse(content="ok", tool_calls=()),
+    ]
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("привет", history=[]))
+
+    assert result.error is None
+    assert result.spoken_text == "ok"
+    assert len(llm.calls) == 2
+    retry_messages = llm.calls[1][0]
+    # No assistant echo for the empty content — the correction is the
+    # last message and follows the user turn directly.
+    assert retry_messages[-1].role == "user"
+    assert "[SYSTEM CORRECTION]" in retry_messages[-1].content
+
+
+def test_empty_finish_reason_none_triggers_corrective_retry(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1217 follow-up — finish_reason=None with empty content retries.
+
+    e2e run on develop 79a284f showed ``Empty assistant response
+    (LLM вернул пустоту): finish_reason=None tools=[] raw=''`` — the
+    deepseek stream finished without a terminal finish_reason chunk, so
+    the aggregator returned ``finish_reason=None`` instead of 'stop'.
+    The corrective retry must treat that shape exactly like the bare
+    'done' / empty-'stop' variants (it keys on empty content + no tool
+    calls, NOT on finish_reason).
+    """
+    llm.responses = [
+        LLMResponse(content="", tool_calls=(), finish_reason=None),
+        LLMResponse(content="Сейчас пять часов", tool_calls=()),
+    ]
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("который час", history=[]))
+
+    assert result.error is None
+    assert result.spoken_text == "Сейчас пять часов"
+    assert len(llm.calls) == 2
+    retry_messages = llm.calls[1][0]
+    assert retry_messages[-1].role == "user"
+    assert "[SYSTEM CORRECTION]" in retry_messages[-1].content
+
+
+def test_finish_reason_insufficient_system_resource_triggers_retry(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1253 — DeepSeek insufficient_system_resource retries.
+
+    DeepSeek documents ``finish_reason="insufficient_system_resource"``
+    (HTTP 200, generation interrupted by provider resource pressure).
+    Even when the aggregator carried a partial content fragment, the
+    answer is truncated — the corrective retry must fire so the user
+    gets a complete reply instead of a cut-off fragment.
+    """
+    llm.responses = [
+        LLMResponse(
+            content="Сейчас пять",
+            tool_calls=(),
+            finish_reason="insufficient_system_resource",
+        ),
+        LLMResponse(content="Сейчас пять часов", tool_calls=()),
+    ]
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("который час", history=[]))
+
+    assert result.error is None
+    assert result.spoken_text == "Сейчас пять часов"
+    assert len(llm.calls) == 2
+    retry_messages = llm.calls[1][0]
+    assert retry_messages[-1].role == "user"
+    assert "[SYSTEM CORRECTION]" in retry_messages[-1].content
+
+
+def test_finish_reason_content_filter_triggers_retry(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1253 — content_filter with partial content retries.
+
+    ``finish_reason="content_filter"`` means output was omitted by a
+    content filter — a partial fragment is not a usable answer.
+    """
+    llm.responses = [
+        LLMResponse(
+            content="извини, я не",
+            tool_calls=(),
+            finish_reason="content_filter",
+        ),
+        LLMResponse(content="Извини, я не могу это сделать", tool_calls=()),
+    ]
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("расскажи анекдот", history=[]))
+
+    assert result.error is None
+    assert result.spoken_text == "Извини, я не могу это сделать"
+    assert len(llm.calls) == 2
+
+
+def test_tool_error_babble_is_suppressed_system_transition(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1253 — tool error + babble-only answer is NOT voiced.
+
+    A tool returned ``is_error=True`` and the LLM answered with ONLY a
+    bare completion marker ('done') — no retry tool-call, no speak_text.
+    Voicing that would make the robot say «дан» while nothing happened.
+    DialogCore returns empty spoken (system transition) so dialogue_node
+    moves to the next round instead of parroting the babble.
+    """
+    from rob_box_llm.provider import ToolResult
+
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="memory_context", arguments={"limit": 5}),
+            ),
+        ),
+        # LLM saw the error string but answered with a bare marker.
+        LLMResponse(content="done", tool_calls=()),
+    ]
+    llm.responses = scripted
+
+    async def broken_handler(args: dict[str, object]) -> ToolResult:
+        return ToolResult(
+            tool_call_id="c1",
+            content="backend unavailable",
+            is_error=True,
+        )
+    tools_provider._handler_map = {"memory_context": broken_handler}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("о чём?", history=[]))
+
+    assert result.error is None
+    # Babble suppressed — empty spoken (system transition), no «дан».
+    assert result.spoken_text == ""
+    # The tool WAS attempted this turn.
+    assert result.tools_called == ["memory_context"]
+    assert len(llm.calls) == 2
+
+
+def test_tool_error_substantive_answer_not_suppressed(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1253 — substantive text after tool error is still voiced.
+
+    A tool returned ``is_error=True`` and the LLM answered with a real
+    plain-text reply ("no memory found"). That is NOT babble — the user
+    gets an explanation, not silence.
+    """
+    from rob_box_llm.provider import ToolResult
+
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="memory_context", arguments={"limit": 5}),
+            ),
+        ),
+        LLMResponse(content="no memory found", tool_calls=()),
+    ]
+    llm.responses = scripted
+
+    async def broken_handler(args: dict[str, object]) -> ToolResult:
+        return ToolResult(
+            tool_call_id="c1",
+            content="backend unavailable",
+            is_error=True,
+        )
+    tools_provider._handler_map = {"memory_context": broken_handler}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("о чём?", history=[]))
+
+    assert result.error is None
+    assert result.spoken_text == "no memory found"
+    assert result.tools_called == ["memory_context"]
+
+
+def test_dj_auto_with_preclassified_event_reaches_llm_from_idle(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1217 — DJ-auto turn with preclassified_event must reach the LLM.
+
+    Regression from #1101: ``_run_turn`` passes
+    ``preclassified_event=STT_RESULT`` for every turn, so ``process_input``
+    skipped its own DSM transition (the ``pass`` in the preclassified
+    branch). DJ auto-turns do NOT come through ``_on_stt`` (which drives
+    IDLE→LISTENING→DIALOGUE) — they are dispatched straight from the
+    DJ tick. After a previous turn left the DSM in IDLE (DIALOGUE_END),
+    the LLM gate ``current_state == DIALOGUE`` silently dropped the turn:
+    the LLM was never called and the robot answered nothing in ~2 ms
+    (e2e run4: 4/4 DJ-auto turns ``spoken='' tools=[] finish_reason=None``
+    with zero ``[health] stream`` log lines).
+    """
+    llm.responses = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="echo", arguments={"text": "dj"}),
+            ),
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+    async def echo(args: dict[str, object]) -> str:
+        return f"e:{args.get('text')}"
+    tools_provider._handler_map = {"echo": echo}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    # DSM starts in IDLE (default) — no wake word fired for a DJ tick.
+    assert dsm.current_state == DialogueStateKind.IDLE
+
+    result = asyncio.run(core_obj.process_input(
+        "[DJ_AUTO — СТАРТ ВЕЧЕРИНКИ] ...",
+        history=[],
+        is_dj_auto=True,
+        preclassified_event=DialogueEvent.STT_RESULT,
+    ))
+
+    # The turn must have reached the LLM and driven DSM into DIALOGUE.
+    assert result.error is None
+    assert len(llm.calls) == 2  # tool turn + final 'done'
+    assert result.tools_called == ["echo"]
+    assert result.spoken_text == "done"
+    assert dsm.current_state == DialogueStateKind.IDLE  # DIALOGUE_END ran
+
+
+def test_silent_done_retry_does_not_loop(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1217 — a second silent 'done' is accepted, not retried again.
+
+    The corrective retry is one-shot: if the model STILL returns a bare
+    marker, DialogCore returns it as-is so the shell's existing
+    empty-response fallback (e.g. «Принял.») can handle it. No infinite
+    LLM ping-pong.
+    """
+    llm.responses = [
+        LLMResponse(content="done", tool_calls=()),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("привет", history=[]))
+
+    assert len(llm.calls) == 2
+    assert result.spoken_text == "done"
+    assert result.error is None
+
+
+def test_tool_then_done_does_not_retry(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """A legitimate 'done' AFTER a tool call must NOT be retried.
+
+    The master-prompt contract: the model calls speak_text (etc.), then
+    answers 'done'. Because a tool ran in this turn, the final marker is
+    valid — the corrective retry must not fire (it would confuse the model
+    with a false «твой ответ был пустым» and burn an extra LLM call).
+    """
+    llm.responses = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="echo", arguments={"text": "hi"}),
+            ),
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+    async def echo(args: dict[str, object]) -> str:
+        return f"e:{args.get('text')}"
+    tools_provider._handler_map = {"echo": echo}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("привет", history=[]))
+
+    # Tool + final marker = exactly 2 LLM calls, no corrective retry.
+    assert len(llm.calls) == 2
+    assert result.spoken_text == "done"
+    assert result.tools_called == ["echo"]
+    # The final call's messages must NOT contain the correction.
+    final_messages = llm.calls[1][0]
+    assert not any("[SYSTEM CORRECTION]" in str(m.content) for m in final_messages)
+
+
+def test_normal_plain_reply_does_not_retry(
+    core: DialogCore,
+    llm: _FakeLLMProvider,
+) -> None:
+    """A substantive plain-text reply must NOT trigger the silent-retry."""
+    # Default fake returns "hello back" — a real answer.
+    result = asyncio.run(core.process_input("hello", history=[]))
+    assert result.spoken_text == "hello back"
+    assert len(llm.calls) == 1
+
+
+def test_silent_failure_turn_not_persisted_to_memory(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Issue #1217 — a silent-failure assistant turn stays OUT of memory.
+
+    When the corrective retry also fails (second bare 'done'), the turn
+    produced no real assistant reply. Persisting it would teach the model
+    that 'done' is a normal reply and the next history would mimic it.
+    The user turn IS stored (real input), the failed assistant reply is not.
+    """
+    llm.responses = [
+        LLMResponse(content="done", tool_calls=()),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("привет", history=[]))
+    assert result.spoken_text == "done"
+
+    roles = [t.role for t in memory.turns]
+    # Only the user turn was persisted — no synthetic 'done' assistant turn.
+    assert roles == ["user"]
+
+
+def test_normal_turn_still_persisted_to_memory(
+    core: DialogCore,
+    memory: _FakeMemoryStore,
+) -> None:
+    """A healthy turn (real reply) is still persisted as user+assistant."""
+    asyncio.run(core.process_input("hello", history=[]))
+    roles = [t.role for t in memory.turns]
+    assert roles == ["user", "assistant"]
+    assert memory.turns[-1].content == "hello back"
+
+
 def test_process_input_tool_loop_aborts_on_transport_error(
     llm: _FakeLLMProvider,
     tools_provider: _FakeToolProvider,
@@ -1061,3 +1492,96 @@ def test_process_input_tool_loop_keeps_user_turn_once_on_error(
     assert len(memory.turns) == 1
     assert memory.turns[0].role == "user"
     assert memory.turns[0].content == "hello"
+
+
+# ---------------------------------------------------------------------------
+# W7a — batch re-ordering (_order_tool_calls)
+# ---------------------------------------------------------------------------
+
+
+def _call(cid: str, name: str) -> ToolCall:
+    return ToolCall(id=cid, name=name, arguments={})
+
+
+def test_order_tool_calls_puts_stop_music_after_speak_text() -> None:
+    """[speak_text, stop_music] keeps order but flags stop as deferred."""
+    from rob_box_harness.core.dialog_core import _order_tool_calls
+
+    ordered, deferred = _order_tool_calls(
+        [_call("c1", "speak_text"), _call("c2", "stop_music")]
+    )
+    assert [c.name for c in ordered] == ["speak_text", "stop_music"]
+    # stop_music must wait for the voice channel to drain.
+    assert deferred == {"c2"}
+
+
+def test_order_tool_calls_music_prelude_before_speak_text() -> None:
+    """Music tools run before voice; destructive tools run last."""
+    from rob_box_harness.core.dialog_core import _order_tool_calls
+
+    ordered, deferred = _order_tool_calls(
+        [
+            _call("c1", "stop_music"),
+            _call("c2", "speak_text"),
+            _call("c3", "execute_music_code"),
+        ]
+    )
+    assert [c.name for c in ordered] == [
+        "execute_music_code",
+        "speak_text",
+        "stop_music",
+    ]
+    assert deferred == {"c1"}
+
+
+def test_order_tool_calls_stop_music_alone_not_deferred() -> None:
+    """A lone stop_music has no voice to wait for — not deferred."""
+    from rob_box_harness.core.dialog_core import _order_tool_calls
+
+    ordered, deferred = _order_tool_calls([_call("c1", "stop_music")])
+    assert [c.name for c in ordered] == ["stop_music"]
+    assert deferred == set()
+
+
+def test_order_tool_calls_independent_tools_keep_relative_order() -> None:
+    """Bypass tools (memory_save etc.) keep their original relative order."""
+    from rob_box_harness.core.dialog_core import _order_tool_calls
+
+    ordered, deferred = _order_tool_calls(
+        [
+            _call("c1", "memory_save"),
+            _call("c2", "speak_text"),
+            _call("c3", "search_web"),
+        ]
+    )
+    assert [c.name for c in ordered] == [
+        "memory_save",
+        "speak_text",
+        "search_web",
+    ]
+    assert deferred == set()
+
+
+def test_order_tool_calls_stop_navigation_is_destructive_too() -> None:
+    """stop_navigation is treated like stop_music (defer to end)."""
+    from rob_box_harness.core.dialog_core import _order_tool_calls
+
+    ordered, deferred = _order_tool_calls(
+        [_call("c1", "stop_navigation"), _call("c2", "speak_text")]
+    )
+    assert [c.name for c in ordered] == ["speak_text", "stop_navigation"]
+    assert deferred == {"c1"}
+
+
+def test_run_with_tools_executes_in_safe_order_but_returns_original_order() -> None:
+    """Execution re-orders, but tool-result messages keep the LLM's order."""
+    from rob_box_harness.core.dialog_core import _order_tool_calls
+
+    calls = [
+        _call("c1", "stop_music"),
+        _call("c2", "speak_text"),
+    ]
+    ordered, deferred = _order_tool_calls(calls)
+    assert [c.name for c in ordered] == ["speak_text", "stop_music"]
+    # And the original tuple is untouched (frozen dataclass semantics).
+    assert [c.name for c in calls] == ["stop_music", "speak_text"]

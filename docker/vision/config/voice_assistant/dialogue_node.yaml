@@ -1,0 +1,93 @@
+# dialogue_node.yaml — per-node ROS2 config (issue #1004 fix, ADR-0004)
+#
+# ЖИВОЙ конфиг для docker-деплоя (см. audio_node.yaml).
+# Все ключи соответствуют declare_parameter() в dialogue_node.py 1:1
+# (включая per-provider секции <name>.base_url/model/... — объявляются
+# динамически для minimax/deepseek/mimo/qwen).
+#
+# LLM: приоритетная цепочка провайдеров (issue #1089). Первый = primary,
+# остальные = fallbacks. Смена провайдера = одна строка llm_providers.
+
+dialogue_node:
+  ros__parameters:
+    wake_words:
+    - робок
+    - робот
+    - роббокс
+    - робокос
+    - роббос
+    - робокс
+    - роберт
+    - рыбок
+    - рома
+    - бот
+    - робо
+    - роб
+    - робик
+    dialogue_timeout: 300.0
+    llm_providers: "minimax,deepseek"  # первый = primary, остальные = fallbacks
+    enable_mcp_tools: true
+
+    # ═══════════════════════════════════════════════════════════════
+    #  LLM Provider sections — one per provider (опционально; пусто →
+    #  well-known defaults из _LLM_PROVIDER_REGISTRY в dialogue_node.py)
+    # ═══════════════════════════════════════════════════════════════
+
+    # MiniMax (primary — M3, vision-capable, tools, streaming)
+    minimax:
+      api_key: ""                  # MINIMAX_API_KEY env (или явно)
+      base_url: "https://api.minimax.io/v1"
+      model: "MiniMax-M3"
+      temperature: 0.7
+      max_tokens: 500
+      timeout_s: 90.0
+
+    # DeepSeek (fallback — дешёвый, быстрый, надёжный)
+    deepseek:
+      api_key: ""                  # DEEPSEEK_API_KEY env (или явно)
+      base_url: "https://api.deepseek.com"
+      model: "deepseek-chat"
+      temperature: 0.7
+      max_tokens: 500
+      timeout_s: 90.0
+
+    # MiMo (Xiaomi — fallback #2). Раскомментируй и добавь "mimo" в
+    # llm_providers когда API ключ готов.
+    # mimo:
+    #   api_key: ""
+    #   base_url: "https://api.xiaomimimo.com/v1"
+    #   model: "mimo-v2.5"
+    #   temperature: 0.7
+    #   max_tokens: 500
+    #   timeout_s: 90.0
+
+    # Qwen (Alibaba — запасной, OpenAI-совместимый).
+    # qwen:
+    #   api_key: ""
+    #   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    #   model: "qwen-turbo"
+    #   temperature: 0.7
+    #   max_tokens: 500
+    #   timeout_s: 90.0
+
+    # Промпт система
+    system_prompt_file: master_prompt_compact.txt
+    history_max_turns: 20
+    agent_max_turns: 20
+    llm_timeout_sec: 90.0
+    verbose_llm: true
+    llm_streaming: true
+    faq_mode_enabled: true
+    faq_event_config_file: ""   # Например: /config/voice_assistant/event_mode.yaml
+    # Инструменты, чьи тёрны исключаются из истории диалога (issue DeepSeek
+    # pattern-completion: handle_navigation + handle_music).
+    history_excluded_tools:
+    - handle_navigation
+    - handle_music
+    sqlite_db_path: ~/.rob_box/voice.db
+    speaker_id_enabled: true
+    speaker_db_path: /data/speakers.db
+    startup_greeting_sec: 12.0
+    startup_greeting_text: "Я на связи, все системы в норме!"
+    tool_provider: ros_mcp
+    api_key: ''

@@ -1,0 +1,15 @@
+# led_node.yaml — per-node ROS2 config (issue #1004 fix, ADR-0004)
+#
+# ЖИВОЙ конфиг для docker-деплоя (см. audio_node.yaml).
+# Все ключи соответствуют declare_parameter() в led_node.py 1:1.
+
+led_node:
+  ros__parameters:
+    brightness: 16
+    auto_mode: true
+    colors:
+      idle: [0, 0, 0]
+      listening: [0, 255, 0]
+      thinking: [0, 0, 255]
+      speaking: [0, 255, 255]
+      error: [255, 0, 0]

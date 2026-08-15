@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
-test_tts_chunking.py — Unit-тесты для tts_chunking.py (issue #933).
+test_chunking_module.py — Unit-тесты для tts_chunking.py (issue #933).
 
 Pure-Python, без pytest plugins, без unittest от rclpy. Можно запускать
-``python3 -m pytest test_tts_chunking.py`` ИЛИ
-``python3 -m unittest test.test_tts_chunking``.
+``python3 -m pytest test/unit/tts/test_chunking_module.py`` ИЛИ
+``python3 -m unittest test.unit.tts.test_chunking_module``.
 
 Связанные issue:
 - #931 — chunking для Yandex (initial fix, недостаточный лимит)
 - #933 — Silero падает на 1005 chars, per-provider max + retry-halve
+- #937 — Yandex API v3 hard limit уточнён до ≤250 chars
 
 Тесты не требуют rclpy/grpc/torch — модуль tts_chunking pure Python.
+Файл живёт в test/unit/ (CI-коллекция), а не в корне test/ — чтобы
+per-provider chunking реально гонялся в G-Run Tests.yml.
 
 NB: cyrillic 'А' = 1 char, 'А. ' = 3 chars. Используем для предсказуемой длины.
 """
@@ -38,9 +41,9 @@ SENT = "А. " * 5  # 15 chars
 class TestChunkLimits(unittest.TestCase):
     """Что :data:`CHUNK_LIMITS` содержит правильные дефолты."""
 
-    def test_yandex_default_is_700(self):
-        """Issue #933 spec: yandex_grpc_v3=700 chars max chunk."""
-        self.assertEqual(CHUNK_LIMITS["yandex_grpc_v3"], 700)
+    def test_yandex_default_is_250(self):
+        """Issue #933/#937: yandex_grpc_v3=250 chars max chunk (API v3 hard limit)."""
+        self.assertEqual(CHUNK_LIMITS["yandex_grpc_v3"], 250)
 
     def test_silero_default_is_800(self):
         """Issue #933 spec: silero_v5=800 chars max chunk."""
@@ -61,7 +64,7 @@ class TestGetChunkLimit(unittest.TestCase):
     """Per-provider limit lookup (с override)."""
 
     def test_default_provider(self):
-        self.assertEqual(get_chunk_limit("yandex_grpc_v3"), 700)
+        self.assertEqual(get_chunk_limit("yandex_grpc_v3"), 250)
         self.assertEqual(get_chunk_limit("silero_v5"), 800)
         self.assertEqual(get_chunk_limit("minimax"), 5000)
 
@@ -336,31 +339,31 @@ class TestIntegrationObservations(unittest.TestCase):
             self.assertLessEqual(length, 800)
 
     def test_291_chars_with_yandex_limit(self):
-        """291 chars при yandex limit=700 → один chunk, OK."""
+        """291 chars при yandex limit=250 → split на ≥2 chunks (issue #933 table).
+
+        Наблюдение из issue #933: 291 chars валит Yandex gRPC v3
+        ("Too long text") — значит при реальном лимите 250 текст должен
+        дробиться ДО отправки, а не уходить одним chunk'ом.
+        """
         def synth(text):
-            if len(text) > 700:
+            if len(text) > 250:
                 raise RuntimeError("Too long text")
             return (f"audio@{len(text)}", len(text))
 
-        # 291 chars: текст < 700, не split
-        # 15 (SENT) * 19 = 285 chars; + 'А. ' = 288; + '.' = 289; добавим
-        text = SENT * 19 + "А."  # 15*19 + 2 = 287 chars
-        # Re-count: 15*19 = 285, + 2 = 287
-        # Нужно 291: добавим ещё 4 символа
-        text = SENT * 19 + "А.   "  # 285 + 5 = 290 chars -- close enough
-        # Переcчитаем: 15*19 = 285, + 'А.   ' = 5 → 290 chars
-        # 291: SENT * 19 + 'А.    ' = 285 + 6 = 291
+        # 291: SENT * 19 (285) + 'А.    ' (6)
         text = SENT * 19 + "А.    "  # 291 chars
         self.assertEqual(len(text), 291)
         out = synthesize_with_retry(
             text,
             "yandex_grpc_v3",
             synth,
-            max_chars=700,
+            max_chars=250,
             is_too_long=lambda e: "Too long" in str(e),
         )
-        # 1 chunk без retry
-        self.assertEqual(len(out), 1)
+        # Дробится на ≥2 chunks, каждый ≤ 250 — Yandex не видит "Too long text"
+        self.assertGreater(len(out), 1)
+        for label, length in out:
+            self.assertLessEqual(length, 250)
 
 
 class TestConstants(unittest.TestCase):

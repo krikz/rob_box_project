@@ -30,15 +30,31 @@ agent-PR → e2e → close цикла (см. `docs/design/AGENT_FLOW_PROPOSAL.md
 2. `/home/builder/.hermes/profiles/agent-flow/scripts/` — gateway agent-flow
 3. `/home/builder/.hermes/profiles/architect/scripts/` — gateway architect
 
-Чтобы избежать drift, **используй `install.sh` для раскладки symlinks**:
+Чтобы избежать drift, **используй `install.sh` для раскладки hardlink-копий**:
 
 ```bash
 bash <repo>/scripts/agent_flow/install.sh --dry-run   # только посмотреть
 bash <repo>/scripts/agent_flow/install.sh             # реальная раскладка
 ```
 
-После этого все три пути — симлинки на файлы в репо. Правка в репо
-видима везде.
+После этого все пути (agent-flow / architect / devops profiles +
+`~/.hermes/scripts`) — hardlink-копии (inode) или одинаковое содержимое.
+Правка в репо видима везде после следующего `install.sh`.
+
+**Контроль дрейфа: `agent-flow-drift-detect.sh`** (cron, every 30m).
+Эталон — `origin/develop` (после `git fetch origin develop`), НЕ локальное
+дерево: при local!=origin локальное дерево больше НЕ используется как
+эталон (ретро 13.08 t_9a3f2e0c — слепота дрейфа host↔origin при
+устаревшем local). Автофикс через `install.sh`; если не помог — сразу
+создаётся kanban-карточка (create_drift_card), не ждём следующего тика.
+
+**BRANCH_ACTIVE (главный worktree на фича-ветке воркера):** при дрейфе
+host↔origin автофикс выполняется из ВРЕМЕННОГО worktree на `origin/develop`
+(ретро 14.08 t_ea771b06), а НЕ из текущего дерева (оно на z-ветке и
+содержит незамерженный код — install.sh из него разнёс бы веточные скрипты):
+`git worktree add --detach <wt> origin/develop` → `REPO_DIR=<wt> bash
+<wt>/scripts/agent_flow/install.sh` → `git worktree remove --force <wt>`.
+Карточка создаётся только если и этот путь не помог (md5-сверка после).
 
 ## Скрипты
 
@@ -61,6 +77,15 @@ bash <repo>/scripts/agent_flow/install.sh             # реальная рас�
 триггерит билд→деплой→e2e через `gh workflow run`, ждёт verdict
 (`E2E_VERDICT PASS|FAIL` из атомарного харнесса), выставляет лейблы
 `e2e-done` / `e2e:rejected` / `e2e:infra-fail`, комментит карточку.
+
+**Deploy-fail → recovery-карточка (ретро 14.08 t_d01fe536):** при
+падении деплоя (compose-конфликт, робот недоступен и т.п.) процесс
+НЕ просто комментит `errored++` — он создаёт kanban-карточку
+`🔧 re-deploy <round> — deploy failed` (assignee=devops, priority 90).
+Идемпотентно по round-ветке в title: активная карточка → skip, done/
+archived → свежая ready-карточка. Урок: round-109 упал на
+`voice-resources-init` compose-конфликте, issue #1229 закрылся БЕЗ e2e
+(40 кейсов не гонялись), recovery не создавался.
 
 **Содержит контракт `## e2e` блока в issue** — что воркеры должны
 написать в body issue, чтобы процесс нашёл параметры теста (voice_text,
@@ -85,6 +110,31 @@ voice, scenario_file, patterns, volume и т.д.). Подробности —
 Хелпер для хэндоффа между worker-профилями (например, devops →
 architect, или backend → pr-reviewer). Используется редко, в основном
 вручную.
+
+### `kanban-retro-create.sh` — dedup-guard для ретро-карточек LLM-кронов (ретро 13.08 t_35ff29f1)
+
+Единственная разрешённая точка создания «ретро: ...» карточек для
+LLM-кронов (архитектор-надзор 5c96a6eedf93 и т.п.). Защищает от дублей:
+
+1. **PRE-CHECK**: перед `create` читает `kanban list --json` и ищет
+   НЕ-archived карточку с маркером `ретро-key: <key>` в body или точным
+   нормализованным title → `SKIP <id>`, create не вызывается.
+2. **IDEMPOTENCY-KEY**: create всегда идёт с
+   `--idempotency-key "retro:<key>"` — повторный вызов в одном тике
+   вернёт существующий id (атомарный гард от гонки).
+3. **МАРКЕР**: скрипт дописывает `ретро-key: <key>` в конец body —
+   следующий тик с тем же `--key` находит карточку на шаге 1.
+
+`--key` — стабильный slug аномалии БЕЗ дат/времён (например
+`e2e-stop-build-runners`); для одной аномалии — один ключ во всех тиках.
+Вывод: `CREATED <id>` / `SKIP <id>` / `WOULD_CREATE` (--dry-run).
+
+```bash
+~/.hermes/scripts/kanban-retro-create.sh \
+  --title "ретро: <аномалия>" --body "<факты+гипотеза+решение>" \
+  --assignee <профиль> --skill <скил-из-профиля> --max-runtime 1800 \
+  --key <стабильный-slug>
+```
 
 ### `round_ensure.sh` — ручной валидационный e2e-раунд (ретро 11.08 t_26a6d362)
 
@@ -115,9 +165,33 @@ bash <repo>/scripts/agent_flow/round_ensure.sh --wait 300 # ждать до 5 м
    `/tmp/agent-flow-e2e-process.lock` занят);
 3. никогда не удаляет `e2e_voice_test.sh` (актуальный харнесс).
 
+Дополнительно (ретро 12.08 t_d3aeaa9b): удаляет **stale round-ветки** на
+remote (`z-{e2e}/test-round-N` без e2e-активности > `ROUND_STALE_HOURS`,
+default **24ч**; e2e-активность = свежий коммит в ветке, e2e-process пушит
+перед каждым прогоном). Guard: тот же flock e2e-process — активный round
+не тронем.
+
+Дополнительно (ретро 14.08 t_3cfb3b5b): удаляет **stale PR-ветки** на remote —
+ветки, чей PR **MERGED** > `MERGED_STALE_HOURS` (default **2ч**) или **CLOSED**
+без merge > `CLOSED_STALE_HOURS` (default **24ч**). Без этого per-card/прочие
+ветки копятся вечно (в репо `auto-delete-head-branches` выключен) и мусорят
+реконсилейшн PR-сканы. Guard'ы: (a) ветки **OPEN PR** не трогаются никогда;
+(b) защищённые ветки (default + `develop`); (c) round-ветки `z-{e2e}/test-round-*`
+(их чистит round-sweep); (d) fork-PR (ветка живёт в fork'е); (e) **переиспользование**
+— если HEAD-коммит ветки новее момента merge/close её PR (в ветку пушили после
+закрытия PR), ветка не удаляется. Проверяется `gh pr list --state merged/closed`
++ `gh api branches`; удаление — `DELETE /git/refs/heads/{branch}`.
+
+**Cron (ретро 13.08 t_04d73108):** зарегистрирован в devops-профиле,
+`every 6h`, no_agent=true. Регистрация идемпотентно пересоздаётся
+`install.sh` (секция "Ensure cron job registration") — не потеряется при
+переустановке.
+
 ```bash
 bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh --dry-run  # показать, что удалит
 bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh            # удалить (с guard'ами)
+ROUND_STALE_HOURS=48 bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh  # консервативный порог round
+MERGED_STALE_HOURS=6 CLOSED_STALE_HOURS=72 bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh --dry-run  # консервативный порог PR-веток
 ```
 
 ### `agent-flow-deploy-sweep.sh` — авто-sweep stale deployment issues (ретро 12.08 t_d3e44336)
@@ -187,6 +261,32 @@ Hermes-cron недоступен). Маленький, 854 байт.
 
 Сторожевой таймер для долгоиграющих процессов (e2e-build, deploy).
 Запускается параллельно, проверяет живость по pid-файлу и heartbeat.
+
+## Vendor-патчи hermes-agent (ретро t_f00676f8)
+
+Локальные фиксы `hermes-agent` (валидация скиллов по профилю — t_1ab37fa8:
+`_profile_skill_names`/`_validate_skills_for_assignee` в `hermes_cli/kanban_db.py`,
+symlink-following подсчёт скиллов в `hermes_cli/profiles.py`) накладывались на
+хост руками **без сохранения в репо** → при `git pull`/`pip install -U
+hermes-agent` патчи терялись, регресс t_1ab37fa8 возвращался (карточки со
+скилами не из профиля падали — главная ошибка ретро t_6c6c98fb).
+
+Как устроено теперь:
+- Дифф хранится в репо: `vendor/hermes-agent-skill-validation.patch`.
+- `install.sh` применяет его идемпотентно (`git apply --reverse --check` →
+  уже применён; `git apply --check` → применяет). Вызывать **после** каждого
+  обновления hermes-agent.
+- Если upstream сдвинулся и патч не ложится — `install.sh` честно падает с
+  ошибкой «regenerate vendor patch»; перегенерировать: `git -C
+  ~/.hermes/hermes-agent diff hermes_cli/kanban_db.py hermes_cli/profiles.py
+  tests/hermes_cli/test_kanban_db.py > vendor/hermes-agent-skill-validation.patch`
+  и обновить тесты.
+
+Проверка после обновления:
+```bash
+bash scripts/agent_flow/tests/test_vendor_patch_apply.sh   # патч ложится на origin/main
+python3 scripts/agent_flow/tests/e2e_skill_validation.py devops  # валидация работает
+```
 
 ## Связь с cron-jobs
 

@@ -116,6 +116,15 @@
   # После merge, также merge в develop
   ```
 
+#### `z-architect/*` - Proposal-ветки архитектора (ретро 15.08 t_6024f414)
+- **Создаётся из:** `develop`
+- **Мержится в:** `develop`
+- **Сборка Docker:** ❌ Нет
+- **Именование:** `z-architect/<proposal-slug>` (БЕЗ номера issue и БЕЗ `t_<card>`), например `z-architect/voice-selection-proposal`
+- **Жизненный цикл:** proposal-ветка — долгоживущая и может пережить несколько merge (#1247 → #1254 → #1255). Новые коммиты в неё ПОСЛЕ merge — легальны (это продолжение proposal), merge-gate НЕ блокирует такие PR и ставит `needs-review` автоматически.
+- **⚠️ После финального merge proposal-ветка закрывается/архивируется** (remote-ветка удаляется, как и обычная feature). Если proposal нужно продолжить — создаётся НОВАЯ ветка от свежего `origin/develop` (например `z-architect/voice-selection-proposal-v2`). Не держим «вечные» proposal-ветки: раз PR не открыт неделями, ветка — кандидат на удаление.
+- **НЕ путать с:** ретро-ветками `z-architect/t_<card>-<slug>` (одноразовые, под карточку) и issue-ветками `z-architect/<issue>-<slug>`. Обе живут ровно до merge своего PR и удаляются.
+
 ## 🔄 Workflow разработки
 
 ### 1. Начало работы над новой фичей
@@ -288,6 +297,29 @@ docker-compose up -d
 - [ ] Обновлена документация (если нужно)
 - [ ] Коммит-сообщение описывает изменения
 - [ ] Нет конфликтов с целевой веткой
+
+### 🔁 ROS-параметры нод: без дублей `declare_parameter` (issue #976)
+
+**Правило (ретро 04.08, issue #976):** перед коммитом изменений в любой
+ROS-ноде (`*_node.py`) убедись, что каждый параметр объявлен **ровно один
+раз**. Дубликат `declare_parameter` для одного и того же имени валит ноду на
+старте:
+
+```
+rclpy.exceptions.ParameterAlreadyDeclaredException:
+    ('Parameter(s) already declared', ['chunk_max_chars_yandex'])
+```
+
+Проверка перед `git push`:
+
+```bash
+grep -n 'declare_parameter' src/rob_box_voice/rob_box_voice/tts_node.py \
+  | sort | uniq -c | sort -rn
+```
+
+Каждое имя параметра должно встречаться с счётчиком `1`. Если видишь `2` —
+удали дубль (в `__init__` ноды может остаться старый блок после merge
+параллельных веток, см. `test_no_duplicate_declare_parameter.py`).
 
 ## 📝 Стиль коммит-сообщений
 

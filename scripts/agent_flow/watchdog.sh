@@ -46,18 +46,42 @@ RUN_NOW_FILE="${RUN_NOW_FILE:-RUN_NOW}"
 RUN_NOW_LOCK="${RUN_NOW_LOCK:-/tmp/agent-flow-run-now.lock}"
 E2E_PROCESS_SCRIPT="${E2E_PROCESS_SCRIPT:-/home/builder/.hermes/scripts/agent-flow-e2e-process.sh}"
 REPO_DIR="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}"
+E2E_LOCK_FILE="${E2E_LOCK_FILE:-/tmp/agent-flow-e2e-process.lock}"
 
 if gh api "repos/${GH_REPO}/contents/${RUN_NOW_FILE}?ref=develop" --jq '.name' >/dev/null 2>&1; then
     # Есть RUN_NOW → запускаем e2e-process (если он не запущен и не в процессе).
-    if [ ! -f "$RUN_NOW_LOCK" ] || ! kill -0 "$(cat "$RUN_NOW_LOCK" 2>/dev/null)" 2>/dev/null; then
+    # Проверяем по flock e2e-process (а не по lock-файлу watchdog) — flock
+    # надёжнее: если e2e-process уже держит lock, второй инстанс не нужен.
+    if [ -f "$E2E_LOCK_FILE" ] && exec 9>"$E2E_LOCK_FILE" && ! flock -n 9 2>/dev/null; then
+        log "⏳ RUN_NOW detected but e2e-process already holds flock ($E2E_LOCK_FILE) — skip"
+        exec 9>&-
+    else
+        exec 9>&-
         log "🚀 RUN_NOW detected — triggering e2e-process (${E2E_PROCESS_SCRIPT})"
         nohup bash "$E2E_PROCESS_SCRIPT" \
             >> "$HERMES_HOME/logs/agent-flow-e2e-process-run-now.log" 2>&1 &
         echo $! > "$RUN_NOW_LOCK"
         log "🚀 e2e-process triggered (pid=$!)"
-    else
-        log "⏳ RUN_NOW detected but e2e-process already running (pid=$(cat "$RUN_NOW_LOCK" 2>/dev/null)) — skip"
     fi
+fi
+
+# --- e2e-process liveness (надзор 13.08): авто-рестарт при краше ------------
+# Падаван-вахта (LLM-крон) перезапускает e2e-process вручную по правилу
+# «не тикал >90 мин», но её тик может быть убит квотой LLM (429/2056) — как
+# 12.08 23:16 UTC, когда e2e-process упал (BrokenPipeError в python-пайпе
+# round-69) и очередь needs-e2e (19 PR) встала на ~1ч. Watchdog (no-agent,
+# без LLM) должен быть самодостаточен: если e2e-process мёртв (flock
+# свободен), а needs-e2e PR-ы есть — поднимаем заново. Второй инстанс
+# невозможен: e2e-process держит flock весь тик (G6).
+_e2e_needs_e2e="$(gh api "repos/${GH_REPO}/pulls?state=open&per_page=100" \
+    --jq '[.[] | select(.labels[]?.name == "needs-e2e")] | length' 2>/dev/null || echo 0)"
+if [ "${_e2e_needs_e2e:-0}" -gt 0 ] \
+    && flock -n "$E2E_LOCK_FILE" -c true 2>/dev/null; then
+    log "🚑 e2e-process не держит flock (краш/завис), needs-e2e PR-ов: ${_e2e_needs_e2e} — перезапуск"
+    nohup bash "$E2E_PROCESS_SCRIPT" \
+        >> "$HERMES_HOME/logs/agent-flow-e2e-process-run-now.log" 2>&1 &
+    echo $! > "$RUN_NOW_LOCK"
+    log "🚀 e2e-process restarted (pid=$!)"
 fi
 
 # Delegate all detection to a Python helper so we can use the bundled
@@ -126,6 +150,17 @@ for db in sorted(glob.glob(f"{boards_dir}/*/kanban.db")):
         issues.append(f"[{board}] db error: {exc}")
 
 # 2. dispatcher status
+# Реальный диспетчер — внутренний loop gateway'а профиля agent-flow
+# (hermes-gateway-agent-flow.service), а НЕ одноразовый процесс
+# 'hermes kanban dispatch' (спавн → exit). Живость определяем по
+# процессу 'gateway run --profile agent-flow' и свежести heartbeat.
+def _dispatcher_heartbeat() -> str:
+    """Путь к heartbeat gateway'а agent-flow (реальный диспетчер)."""
+    base = os.path.basename(hermes_home.rstrip("/"))
+    if base == "agent-flow":  # HERMES_HOME уже профильный
+        return os.path.join(hermes_home, "state", "gateway.heartbeat")
+    return os.path.join(hermes_home, "profiles", "agent-flow", "state", "gateway.heartbeat")
+
 dispatcher_alive = False
 try:
     # Use ps + grep instead of pgrep -f to avoid self-match on the
@@ -141,43 +176,94 @@ try:
             continue
         if "watchdog.sh" in line:
             continue
-        if "hermes" in line and "kanban" in line and "dispatch" in line:
+        if "hermes_cli.main" in line and "gateway run" in line and "--profile agent-flow" in line:
             dispatcher_alive = True
             break
 except Exception:
     dispatcher_alive = False
 
+# fallback: свежий heartbeat gateway'а = диспетчер жив (даже если ps-матч
+# не сработал — например, изменилась cmdline). Heartbeat пишется gateway'ом
+# каждые ~2 мин, поэтому свежесть < stale_sec означает живой внутренний loop.
 if not dispatcher_alive:
-    issues.append("[dispatcher] no dispatcher process running")
+    try:
+        hb_path = _dispatcher_heartbeat()
+        if os.path.isfile(hb_path) and time.time() - os.path.getmtime(hb_path) < stale_sec:
+            dispatcher_alive = True
+    except Exception:
+        pass
 
-# 3. restart dispatcher if dead (with cooldown)
+if not dispatcher_alive:
+    issues.append("[dispatcher] gateway agent-flow (реальный диспетчер) не запущен")
+
+# 3. restart dispatcher if dead AND ready tasks exist (with cooldown)
+# uvx-рестарт УБРАН (ретро 13.08 t_901c790b): 'uvx --from hermes-agent hermes
+# kanban dispatch' тянул hermes-agent из PyPI (32× установки, 4438 прогонов,
+# Spawned: 0 — gateway-диспетчер делает всё сам; 1× 'Read-only file system'
+# в uv-кэше). Вместо этого: если gateway agent-flow мёртв и есть ready-задачи —
+# рестарт systemd-юнита (локально, без PyPI). Комментарий в шапке: рестарт
+# только при ready-задачах.
 restarted = False
 cooldown_file = f"{hermes_home}/state/watchdog.last_restart"
 if not dispatcher_alive:
-    cooldown_ok = True
-    if os.path.exists(cooldown_file):
+    ready_count = 0
+    for db in sorted(glob.glob(f"{boards_dir}/*/kanban.db")):
         try:
-            last = int(open(cooldown_file).read().strip())
-            if int(time.time()) - last < 300:
-                cooldown_ok = False
+            con = sqlite3.connect(db)
+            ready_count += con.execute("SELECT COUNT(*) FROM tasks WHERE status='ready'").fetchone()[0]
+            con.close()
         except Exception:
             pass
-    if cooldown_ok:
-        boards = sorted(glob.glob(f"{boards_dir}/*/kanban.db"))
-        if boards:
-            first_board = os.path.basename(os.path.dirname(boards[0]))
-            with open(cooldown_file, "w") as f:
-                f.write(str(int(time.time())))
-            log_path = f"{hermes_home}/logs/dispatcher.log"
-            os.makedirs(os.path.dirname(log_path), exist_ok=True)
-            uvx = f"{hermes_home}/bin/uvx"
-            subprocess.Popen(
-                [uvx, "--from", "hermes-agent", "hermes", "kanban",
-                 "--board", first_board, "dispatch"],
-                stdout=open(log_path, "ab"), stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-            restarted = True
+    unit = "hermes-gateway-agent-flow.service"
+    if ready_count > 0 and unit not in workers_by_unit:
+        cooldown_ok = True
+        if os.path.exists(cooldown_file):
+            try:
+                last = int(open(cooldown_file).read().strip())
+                if int(time.time()) - last < 300:
+                    cooldown_ok = False
+            except Exception:
+                pass
+        if cooldown_ok:
+            env = dict(os.environ)
+            uid = os.getuid()
+            env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+            env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{uid}/bus")
+            # Страховка: рестартим только если юнит НЕ active (реально мёртв).
+            # Активный юнит при устаревшем heartbeat = завис, но systemd
+            # Restart=always сам поднимет при краше; ручной рестарт активного
+            # юнита рискован при ложном детекте.
+            try:
+                ia = subprocess.run(
+                    ["systemctl", "--user", "is-active", unit],
+                    capture_output=True, text=True, timeout=30, env=env,
+                )
+                unit_active = ia.stdout.strip() == "active"
+            except Exception:
+                unit_active = False
+            if unit_active:
+                issues.append(f"[dispatcher] gateway {unit} active, но диспетчер не найден (heartbeat устарел?) — ручная проверка")
+            else:
+                with open(cooldown_file, "w") as f:
+                    f.write(str(int(time.time())))
+                log_path = f"{hermes_home}/logs/dispatcher.log"
+                os.makedirs(os.path.dirname(log_path), exist_ok=True)
+                try:
+                    r = subprocess.run(
+                        ["systemctl", "--user", "restart", unit],
+                        capture_output=True, text=True, timeout=60, env=env,
+                    )
+                    restarted = r.returncode == 0
+                    msg = f"[watchdog] dispatcher dead (ready={ready_count}) — restart {unit}: " + \
+                          ("OK" if restarted else (r.stderr or r.stdout).strip()[:300])
+                    with open(log_path, "ab") as lf:
+                        lf.write((msg + "\n").encode())
+                except Exception as exc:
+                    restarted = False
+                    with open(log_path, "ab") as lf:
+                        lf.write(f"[watchdog] dispatcher dead (ready={ready_count}) — restart {unit} EXC: {exc}\n".encode())
+    elif ready_count > 0:
+        issues.append(f"[dispatcher] gateway {unit} hosts in-flight workers — restart deferred")
 
 # 3.5 telegram: duplicate token holders + reconnect loops (retro 12.08 t_5af222ea)
 # Root cause of the 22h reconnect loop: several profiles shared ONE
@@ -329,3 +415,301 @@ if recovery:
 print()
 print(f"Dispatcher: {'alive' if dispatcher_alive else 'dead'} (restarted: {restarted})")
 PYEOF
+
+# ============================================================================
+# Local worktree sweep (ретро 14.08 t_ee70ffc2)
+# Проблема: /tmp/wt-* и /home/builder/wt-* worktree от завершённых карточек
+# не чистятся: cleanup-249 чистит /tmp только на build-хосте 10.1.1.249,
+# merge-gate free_stale_worktrees_for чистит только worktree своей карточки.
+# Каждая завершённая карточка оставляет worktree-мусор (~2-3 ГБ).
+# Решение: раз в WT_SWEEP_COOLDOWN_SEC (default 3600с) перебираем каталоги
+# /tmp/wt-* и /home/builder/wt-*; если каталог старше WT_SWEEP_AGE_HOURS
+# (default 48ч) и его ветки НЕТ в origin (git ls-remote) → git worktree
+# remove --force + prune. Осиротевшие (gitdir отсутствует) → rm -rf.
+# Guard: ветка есть в origin → не трогаем; develop/main/master → не трогаем;
+# flock e2e/merge-gate/triage занят → тик пропускаем целиком.
+# ============================================================================
+WT_SWEEP_AGE_HOURS="${WT_SWEEP_AGE_HOURS:-48}"
+WT_SWEEP_COOLDOWN_SEC="${WT_SWEEP_COOLDOWN_SEC:-3600}"
+WT_SWEEP_STATE="${WT_SWEEP_STATE:-$HERMES_HOME/state/agent-flow-wt-sweep.last}"
+WT_SWEEP_LOG="${WT_SWEEP_LOG:-$HERMES_HOME/logs/agent-flow-wt-sweep.log}"
+WT_SWEEP_PATTERNS="${WT_SWEEP_PATTERNS:-/tmp/wt-* /home/builder/wt-*}"
+WT_SWEEP_LOCKS="${WT_SWEEP_LOCKS:-/tmp/agent-flow-e2e-process.lock /tmp/agent-flow-merge-gate.lock /tmp/agent-flow-triage.lock}"
+# Проектные worktree (.worktrees/<task_id>) от archived/done карточек (ретро 14.08 t_d007c365).
+# kanban archive НЕ удаляет workspace/worktree, а `kanban gc` чистит только
+# scratch-workspaces (workspace_kind != 'scratch' → skip). Поэтому .worktrees/t_*
+# копятся (14.08: 42 шт, ~6.3 GB). Чистим по статусу карточки в kanban DB:
+# archived/done → git worktree remove --force; running/ready/прочие и карточки,
+# которых нет в DB → keep. Свой state-файл, чтобы оба sweep могли работать в
+# одном тике (у локального sweep свой cooldown).
+WT_PROJECT_WT_DIR="${WT_PROJECT_WT_DIR:-/home/builder/rob_box_project/.worktrees}"
+WT_PROJECT_SWEEP_KANBAN_DB="${WT_PROJECT_SWEEP_KANBAN_DB:-$KANBAN_BOARDS_DIR/robbox/kanban.db}"
+WT_PROJECT_SWEEP_STATE="${WT_PROJECT_SWEEP_STATE:-$HERMES_HOME/state/agent-flow-project-wt-sweep.last}"
+WT_PROJECT_SWEEP_LOG="${WT_PROJECT_SWEEP_LOG:-$HERMES_HOME/logs/agent-flow-project-wt-sweep.log}"
+WT_PROJECT_SWEEP_REMOVE_STATUSES="${WT_PROJECT_SWEEP_REMOVE_STATUSES:-archived done}"
+
+sweep_stale_local_worktrees() {
+    local now last_run age_cutoff pat d gitdir_file gitdir branch repo_root removed=0
+    local lock
+    # 1. cooldown: не чаще раза в WT_SWEEP_COOLDOWN_SEC
+    if [ -f "$WT_SWEEP_STATE" ]; then
+        last_run="$(cat "$WT_SWEEP_STATE" 2>/dev/null || echo 0)"
+        now="$(date +%s)"
+        [ $(( now - last_run )) -lt "$WT_SWEEP_COOLDOWN_SEC" ] && return 0
+    fi
+    # 2. flock-guard: активные процессы agent-flow → пропуск тика
+    for lock in $WT_SWEEP_LOCKS; do
+        if [ -f "$lock" ] && ! flock -n "$lock" -c true 2>/dev/null; then
+            log "🛑 wt-sweep: $lock занят активным процессом — тик пропущен"
+            return 0
+        fi
+    done
+    # 3. кандидаты: каталоги по паттернам, старше AGE_HOURS (локально, без сети)
+    age_cutoff=$(( $(date +%s) - WT_SWEEP_AGE_HOURS * 3600 ))
+    local -a candidates=()
+    local mtime
+    for pat in $WT_SWEEP_PATTERNS; do
+        for d in $pat; do
+            [ -d "$d" ] || continue
+            mtime="$(stat -c %Y "$d" 2>/dev/null || echo "")"
+            [ -n "$mtime" ] || continue
+            [ "$mtime" -lt "$age_cutoff" ] || continue
+            candidates+=("$d")
+        done
+    done
+    [ "${#candidates[@]}" -eq 0 ] && return 0
+    # 4. рефы origin (один ls-remote на тик; сеть недоступна → пропуск)
+    local remote_refs
+    remote_refs="$(git -C "$REPO_DIR" ls-remote origin 2>/dev/null | awk '{print $2}' || true)"
+    [ -n "$remote_refs" ] || { log "🛑 wt-sweep: ls-remote origin пуст/ошибка — тик пропущен"; return 0; }
+    # 5. разбор кандидатов
+    for d in "${candidates[@]}"; do
+        gitdir_file="$d/.git"
+        # не наш worktree (нет .git-файла) → не трогаем
+        [ -f "$gitdir_file" ] || { log "wt-sweep: skip $d (нет .git-файла)"; continue; }
+        gitdir="$(sed -n 's/^gitdir: //p' "$gitdir_file" | head -1)"
+        # осиротевший каталог (.git-файл есть, gitdir отсутствует) → rm -rf
+        if [ -z "$gitdir" ] || [ ! -d "$gitdir" ]; then
+            rm -rf -- "$d" && {
+                log "wt-sweep: removed orphan $d"
+                echo "$(date -Is) REMOVED_ORPHAN $d" >> "$WT_SWEEP_LOG"
+                removed=$((removed+1))
+            }
+            continue
+        fi
+        branch="$(git -C "$d" branch --show-current 2>/dev/null || true)"
+        case "$branch" in
+            develop|main|master) continue ;;
+        esac
+        # ветка в origin → активная, не трогаем
+        if [ -n "$branch" ] && printf '%s\n' "$remote_refs" | grep -Fxq "refs/heads/$branch"; then
+            continue
+        fi
+        repo_root="${gitdir%/.git/worktrees/*}"
+        if [ -n "$repo_root" ] && [ -d "$repo_root/.git" ] \
+            && git -C "$repo_root" worktree remove --force "$d" 2>/dev/null; then
+            git -C "$repo_root" worktree prune 2>/dev/null || true
+            log "wt-sweep: removed $d (branch '${branch:-detached}' не в origin)"
+            echo "$(date -Is) REMOVED $d branch=${branch:-detached} repo=$repo_root" >> "$WT_SWEEP_LOG"
+            removed=$((removed+1))
+        else
+            log "wt-sweep: FAILED remove $d (branch '${branch:-detached}')"
+        fi
+    done
+    mkdir -p "$(dirname "$WT_SWEEP_STATE")"
+    echo "$(date +%s)" > "$WT_SWEEP_STATE"
+    [ "$removed" -gt 0 ] && log "wt-sweep: removed $removed stale worktree(s)"
+    return 0
+}
+
+# ============================================================================
+# sweep_stale_project_worktrees — проектные worktree .worktrees/<task_id>
+# (ретро 14.08 t_d007c365: 41 archived/done карточка, ~6.3 GB не чистится —
+# kanban archive не удаляет workspace, `kanban gc` чистит только scratch).
+#
+# Отличие от sweep_stale_local_worktrees: критерий удаления НЕ «ветки нет в
+# origin» (у done-карточек t_9af45692/t_cc9cc56d/t_e0b221ff ветки ещё живут в
+# origin), а статус карточки в kanban DB: archived|done → remove; running,
+# ready и прочие, а также карточки, отсутствующие в DB → keep.
+#
+# Безопасность:
+#   - смотрим только $WT_PROJECT_WT_DIR/t_* (не трогаем главный worktree
+#     репозитория и чужие каталоги в .worktrees/);
+#   - статус читаем из kanban DB (python3+sqlite3, как основной watchdog);
+#   - DB недоступна/пуста → тик пропускается целиком (fail-closed);
+#   - каталог без валидного .git-файла → не наш worktree, не трогаем;
+#   - gitdir отсутствует → осиротевший каталог, rm -rf;
+#   - удаление через git worktree remove --force + prune (не rm -rf руками),
+#     чтобы не оставлять мусор в .git/worktrees/.
+# ============================================================================
+sweep_stale_project_worktrees() {
+    local now last_run d tid status gitdir_file gitdir repo_root removed=0
+    local lock db
+    # 1. cooldown: не чаще раза в WT_SWEEP_COOLDOWN_SEC (свой state-файл)
+    if [ -f "$WT_PROJECT_SWEEP_STATE" ]; then
+        last_run="$(cat "$WT_PROJECT_SWEEP_STATE" 2>/dev/null || echo 0)"
+        now="$(date +%s)"
+        [ $(( now - last_run )) -lt "$WT_SWEEP_COOLDOWN_SEC" ] && return 0
+    fi
+    # 2. flock-guard: активные процессы agent-flow → пропуск тика
+    for lock in $WT_SWEEP_LOCKS; do
+        if [ -f "$lock" ] && ! flock -n "$lock" -c true 2>/dev/null; then
+            log "🛑 project-wt-sweep: $lock занят активным процессом — тик пропущен"
+            return 0
+        fi
+    done
+    # 3. каталог проектных worktree и kanban DB должны существовать
+    [ -d "$WT_PROJECT_WT_DIR" ] || return 0
+    db="$WT_PROJECT_SWEEP_KANBAN_DB"
+    [ -f "$db" ] || { log "🛑 project-wt-sweep: kanban DB $db не найден — тик пропущен"; return 0; }
+    # 4. кандидаты: только t_* (карточки kanban), без age-фильтра — статус
+    #    в DB является авторитетным (карточка может быть archived вчера).
+    local -a candidates=()
+    for d in "$WT_PROJECT_WT_DIR"/t_*; do
+        [ -d "$d" ] || continue
+        candidates+=("$d")
+    done
+    [ "${#candidates[@]}" -eq 0 ] && return 0
+    # 5. статусы всех кандидатов одним python-вызовом (fail-closed: ошибка → пусто)
+    local status_map
+    status_map="$(python3 - "$db" "${candidates[@]}" <<'PYEOF' 2>/dev/null || true
+import sqlite3, sys
+db = sys.argv[1]
+paths = sys.argv[2:]
+ids = [p.rsplit("/", 1)[-1] for p in paths]
+try:
+    con = sqlite3.connect(db)
+    try:
+        rows = con.execute(
+            "SELECT id, status FROM tasks WHERE id IN (%s)"
+            % ",".join("?" * len(ids)),
+            ids,
+        ).fetchall()
+    finally:
+        con.close()
+except Exception:
+    sys.exit(0)
+for tid, status in rows:
+    print(f"{tid}\t{status}")
+PYEOF
+)"
+    [ -n "$status_map" ] || { log "🛑 project-wt-sweep: kanban DB недоступен/пуст — тик пропущен"; return 0; }
+    # 6. разбор кандидатов
+    for d in "${candidates[@]}"; do
+        tid="${d##*/}"
+        gitdir_file="$d/.git"
+        # не наш worktree (нет .git-файла) → не трогаем
+        [ -f "$gitdir_file" ] || { log "project-wt-sweep: skip $d (нет .git-файла)"; continue; }
+        gitdir="$(sed -n 's/^gitdir: //p' "$gitdir_file" | head -1)"
+        # осиротевший каталог (.git-файл есть, gitdir отсутствует) → rm -rf
+        # (это мусор независимо от статуса карточки — worktree не зарегистрирован)
+        if [ -z "$gitdir" ] || [ ! -d "$gitdir" ]; then
+            rm -rf -- "$d" && {
+                log "project-wt-sweep: removed orphan $d (card $tid)"
+                echo "$(date -Is) REMOVED_ORPHAN $d card=$tid" >> "$WT_PROJECT_SWEEP_LOG"
+                removed=$((removed+1))
+            }
+            continue
+        fi
+        # статус карточки из status_map (tab-разделитель)
+        status="$(printf '%s\n' "$status_map" | awk -F'\t' -v t="$tid" '$1==t {print $2; exit}')"
+        # карточки нет в DB или статус не в списке на удаление → keep
+        case " $WT_PROJECT_SWEEP_REMOVE_STATUSES " in
+            *" $status "*) ;;
+            *)
+                log "project-wt-sweep: keep $d (card $tid status='${status:-<not-in-db>}')"
+                continue ;;
+        esac
+        repo_root="${gitdir%/.git/worktrees/*}"
+        if [ -n "$repo_root" ] && [ -d "$repo_root/.git" ] \
+            && git -C "$repo_root" worktree remove --force "$d" 2>/dev/null; then
+            git -C "$repo_root" worktree prune 2>/dev/null || true
+            log "project-wt-sweep: removed $d (card $tid $status)"
+            echo "$(date -Is) REMOVED $d card=$tid status=$status repo=$repo_root" >> "$WT_PROJECT_SWEEP_LOG"
+            removed=$((removed+1))
+        else
+            log "project-wt-sweep: FAILED remove $d (card $tid $status)"
+        fi
+    done
+    mkdir -p "$(dirname "$WT_PROJECT_SWEEP_STATE")"
+    echo "$(date +%s)" > "$WT_PROJECT_SWEEP_STATE"
+    [ "$removed" -gt 0 ] && log "project-wt-sweep: removed $removed stale project worktree(s)"
+    return 0
+}
+sweep_stale_local_worktrees || true
+sweep_stale_project_worktrees || true
+
+# ============================================================================
+# SOT→host auto-sync (ретро 13.08 t_767ab9b8)
+# Проблема: фиксы agent-flow-*.sh в develop неактивны на хосте, пока кто-то
+# вручную не запустит install.sh (лаг 13.07→13.14 UTC 13.08; при 429-квоте
+# LLM-тики падаван-вахты не помогут — лаг неограничен).
+# Решение: watchdog (no-agent, без LLM) сам сверяет SHA локальных
+# agent-flow-*.sh с origin/develop SOT и при расхождении запускает install.sh
+# (он сам делает .bak-бэкап перед заменой). Убирает зависимость от LLM-тиков.
+# ============================================================================
+SOT_SYNC_STATE="${SOT_SYNC_STATE:-$HERMES_HOME/state/agent-flow-sot-sync.last_sha}"
+SOT_SYNC_LOG="${SOT_SYNC_LOG:-$HERMES_HOME/logs/agent-flow-sot-sync.log}"
+SOT_SYNC_REPO="${SOT_SYNC_REPO:-$REPO_DIR}"
+SOT_SYNC_SCRIPTS=(
+    agent-flow-triage.sh
+    agent-flow-merge-gate.sh
+    agent-flow-e2e-process.sh
+    agent-flow-handoff.sh
+    round_ensure.sh
+    agent-flow-cleanup-249.sh
+    agent-flow-deploy-sweep.sh
+    agent-flow-unlabeled-sweep.sh
+    cron-loop.sh
+    watchdog.sh
+    agent-flow-drift-detect.sh
+    install.sh
+)
+
+_sot_sync() {
+    [ -d "$SOT_SYNC_REPO/.git" ] || { log "SOT-sync: repo $SOT_SYNC_REPO missing — skip"; return 0; }
+
+    local remote_sha last_sha f sot_md5 loc_md5 drift=0
+    remote_sha="$(git -C "$SOT_SYNC_REPO" ls-remote origin refs/heads/develop 2>/dev/null | awk '{print $1}')"
+    [ -n "$remote_sha" ] || { log "SOT-sync: ls-remote failed (network/auth?) — skip"; return 0; }
+    last_sha="$(cat "$SOT_SYNC_STATE" 2>/dev/null || true)"
+    [ "$remote_sha" = "$last_sha" ] && return 0   # develop не двигался — ничего не делаем
+
+    # fetch, чтобы origin/develop был свежим
+    git -C "$SOT_SYNC_REPO" fetch --quiet origin develop 2>/dev/null \
+        || { log "SOT-sync: fetch failed — skip"; return 0; }
+
+    for f in "${SOT_SYNC_SCRIPTS[@]}"; do
+        sot_md5="$(git -C "$SOT_SYNC_REPO" show "origin/develop:scripts/agent_flow/$f" 2>/dev/null | md5sum | awk '{print $1}')"
+        loc_md5="$(md5sum "$HERMES_HOME/scripts/$f" 2>/dev/null | awk '{print $1}')"
+        [ -n "$sot_md5" ] || continue
+        if [ "$sot_md5" != "$loc_md5" ]; then
+            drift=1
+            log "SOT-sync: drift $f (local=$loc_md5 sot=$sot_md5)"
+        fi
+    done
+
+    if [ "$drift" = "1" ]; then
+        log "SOT-sync: drift detected — running install.sh (bak-копии делает сам install.sh)"
+        local tmpdir
+        tmpdir="$(mktemp -d /tmp/agent-flow-sot.XXXXXX)" || { log "SOT-sync: mktemp failed"; return 0; }
+        # Раскладываем из origin/develop (git archive), а НЕ из рабочего дерева
+        # репо: основной клон может сидеть на чужой worker-ветке.
+        if git -C "$SOT_SYNC_REPO" archive origin/develop scripts/agent_flow 2>/dev/null \
+            | tar -x -C "$tmpdir" 2>/dev/null; then
+            if REPO_DIR="$tmpdir" bash "$tmpdir/scripts/agent_flow/install.sh" >>"$SOT_SYNC_LOG" 2>&1; then
+                log "SOT-sync: install.sh OK — scripts synced to origin/develop"
+                echo "$remote_sha" > "$SOT_SYNC_STATE"
+            else
+                log "SOT-sync: install.sh FAILED (see $SOT_SYNC_LOG) — state NOT updated, retry next tick"
+            fi
+        else
+            log "SOT-sync: git archive failed — skip install"
+        fi
+        rm -rf "$tmpdir"
+    else
+        log "SOT-sync: develop moved ($last_sha→$remote_sha) but no script drift"
+        echo "$remote_sha" > "$SOT_SYNC_STATE"
+    fi
+}
+_sot_sync

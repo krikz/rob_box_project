@@ -398,6 +398,225 @@ class TestMusicManagerSCCheck:
 
 
 # ---------------------------------------------------------------------------
+# MusicManager — Renardo initialization (regression 795d5447)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicManagerRenardoInitialize:
+    """Regression: commit 795d5447 broke `_initialize_renardo`.
+
+    The commit added `_time.sleep(0.1)` between `sdef.add()` calls but the
+    `import time as _time` lived only in `_verify_and_retry_synthdefs()`,
+    so any run with >=5 SynthDefs died with ``NameError: name '_time' is
+    not defined`` → ``_renardo_available = False`` → every musical e2e red.
+
+    Fixing only `_time` would unmask a second NameError: the verification
+    call passed bare ``_send_osc_raw`` which is never defined in this
+    method (only ``self._send_osc_raw`` exists). Both must be covered.
+    """
+
+    @staticmethod
+    def _make_rt() -> SimpleNamespace:
+        """Fake renardo_lib.runtime with >5 SynthDefs (hits ``idx % 5 == 4``)."""
+        return SimpleNamespace(
+            Server=SimpleNamespace(booted=True),
+            effect_manager=SimpleNamespace(reload=lambda: None),
+            SynthDefs={
+                f"s{i}": SimpleNamespace(add=lambda: None)
+                for i in range(12)
+            },
+            # Factory used by register_sc_only_custom_synthdefs
+            SynthDef=lambda name: SimpleNamespace(name=name),
+        )
+
+    def test_initialize_renardo_completes_without_nameerror(self, tmp_path, monkeypatch):
+        import socket
+        import types
+
+        from rob_box_mcp_tools.tools import music as music_mod
+
+        mgr = _make_manager()
+        mgr._logger = None
+        mgr._renardo_last_error = "sentinel"
+        mgr._renardo_available = False
+
+        rt = self._make_rt()
+        renardo_lib = types.ModuleType("renardo_lib")
+        renardo_lib.runtime = rt
+        monkeypatch.setitem(sys.modules, "renardo_lib", renardo_lib)
+        monkeypatch.setitem(sys.modules, "renardo_lib.runtime", rt)
+        # Sample-dir bootstrap writes under $HOME — keep it out of the real home.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        # Don't actually sleep; the NameError would still fire on _time before sleep.
+        monkeypatch.setattr(music_mod.time, "sleep", lambda _seconds: None)
+        # Probe socket: recvfrom timeout == "SynthDef exists" → nothing missing.
+        fake_sock = MagicMock()
+        fake_sock.recvfrom.side_effect = socket.timeout
+        monkeypatch.setattr(music_mod.socket, "socket", lambda *a, **k: fake_sock)
+
+        mgr._initialize_renardo()
+
+        assert mgr._renardo_available is True
+        assert mgr._renardo_last_error is None
+
+
+# ---------------------------------------------------------------------------
+# MusicManager — SynthDef verification probe (regression 13.08.2026)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestVerifyAndRetrySynthdefsProbe:
+    """Regression: probe sent ``/s_new`` without 4-byte OSC alignment.
+
+    ``b"/s_new\x00"`` is 7 bytes — the address pattern must be padded to
+    a multiple of 4 (8). scsynth answered ``FAILURE IN SERVER: /s_new
+    Command not found`` and the old check ``b"not found" in data``
+    counted every one of the 31 critical SynthDefs as missing → 3 full
+    re-send rounds per init → repeated ``sdef.add()`` mutations
+    compounded the generated SynthDef graphs into 3+ MB ``.scd`` files.
+    """
+
+    @staticmethod
+    def _fake_rt():
+        return SimpleNamespace(
+            SynthDefs={
+                name: SimpleNamespace(add=Mock())
+                for name in ("pads", "noise")
+            }
+        )
+
+    def test_probe_padding_and_command_not_found_not_missing(
+        self, monkeypatch, capsys
+    ):
+        from rob_box_mcp_tools.tools import music as music_mod
+
+        sent: list[bytes] = []
+
+        class _FakeSock:
+            def __init__(self, *a, **k):
+                pass
+
+            def settimeout(self, t):
+                pass
+
+            def sendto(self, data, addr):
+                sent.append(bytes(data))
+
+            def recvfrom(self, n):
+                # scsynth's exact reply for a malformed command —
+                # must NOT be treated as "SynthDef missing".
+                return (
+                    b"/fail\x00\x00\x00,ss\x00/s_new\x00\x00Command not found\x00",
+                    ("127.0.0.1", 57110),
+                )
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            music_mod.socket, "socket", lambda *a, **k: _FakeSock(*a, **k)
+        )
+        mgr = _make_manager()
+        rt = self._fake_rt()
+
+        mgr._verify_and_retry_synthdefs(rt, mgr._send_osc_raw)
+
+        # Every /s_new must be 4-byte aligned (address + type string).
+        assert sent, "probe должен отправлять OSC-сообщения"
+        for data in sent:
+            assert len(data) % 4 == 0, f"OSC not aligned: {len(data)}"
+            assert data.startswith(b"/s_new\x00\x00"), f"bad address pad: {data[:16]!r}"
+        # No re-send round may be triggered by "Command not found".
+        assert rt.SynthDefs["pads"].add.call_count == 0
+        assert rt.SynthDefs["noise"].add.call_count == 0
+        assert "round 1" not in capsys.readouterr().err
+
+    def test_probe_resends_when_synthdef_really_missing(self, monkeypatch):
+        from rob_box_mcp_tools.tools import music as music_mod
+
+        class _FakeSock:
+            def __init__(self, *a, **k):
+                pass
+
+            def settimeout(self, t):
+                pass
+
+            def sendto(self, data, addr):
+                pass
+
+            def recvfrom(self, n):
+                return (
+                    b"/fail\x00\x00\x00,ss\x00/s_new\x00\x00SynthDef pads not found\x00",
+                    ("127.0.0.1", 57110),
+                )
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            music_mod.socket, "socket", lambda *a, **k: _FakeSock(*a, **k)
+        )
+        mgr = _make_manager()
+        rt = self._fake_rt()
+
+        mgr._verify_and_retry_synthdefs(rt, mgr._send_osc_raw)
+
+        # "SynthDef pads not found" IS a real miss → re-send per round.
+        assert rt.SynthDefs["pads"].add.call_count >= 1
+
+
+# ---------------------------------------------------------------------------
+# MusicManager — sample buffer prewarm (regression 13.08.2026)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestSampleBufferPrewarm:
+    """Regression: play("x-o-") стартовал раньше, чем scsynth дочитал
+    сэмпл в буфер → "Buffer UGen: no buffer data" + резкий свист на
+    старте музыки. Предзагрузка должна дёргать Samples.getBufferFromSymbol
+    для каждого символа (кроме пробелов/пауз) ДО exec."""
+
+    def test_prewarm_loads_symbols_and_skips_rests(self):
+        from rob_box_mcp_tools.tools import music as music_mod
+
+        calls: list[str] = []
+
+        class _FakeSamples:
+            def getBufferFromSymbol(self, symbol, spack, index=0):
+                calls.append((symbol, spack))
+                return f"buf-{symbol}"
+
+        mgr = _make_manager()
+        mgr._renardo_context = {"Samples": _FakeSamples()}
+
+        mgr._prewarm_sample_buffers('d1 >> play("x-o-", dur=0.5, sample=1)')
+
+        assert [c[0] for c in calls] == ["x", "o"], (
+            f"должны грузиться только символы x и o, получено: {calls!r}"
+        )
+        assert all(spack == 0 for _, spack in calls)
+
+    def test_prewarm_ignores_missing_samples_manager(self):
+        mgr = _make_manager()
+        mgr._renardo_context = {}
+        # Не должно падать при отсутствии Samples в контексте.
+        mgr._prewarm_sample_buffers('d1 >> play("x-o-")')
+
+    def test_prewarm_survives_broken_samples_manager(self):
+        class _Broken:
+            def getBufferFromSymbol(self, symbol, spack, index=0):
+                raise RuntimeError("no such sample")
+
+        mgr = _make_manager()
+        mgr._renardo_context = {"Samples": _Broken()}
+        # Ошибки менеджера не должны ронять предзагрузку.
+        mgr._prewarm_sample_buffers('d1 >> play("x-o-")')
+
+
+# ---------------------------------------------------------------------------
 # MusicManager — execute_code
 # ---------------------------------------------------------------------------
 
@@ -962,6 +1181,37 @@ class TestExecuteMusicCodeTool:
         param_names = [p.name for p in tool.parameters]
         assert "pattern_name" in param_names
 
+    def test_tool_has_segments_parameter(self, mock_node):
+        """Issue #990: execute_music_code schema exposes ``segments``."""
+        tool, _ = self._make_tool(mock_node)
+        param_names = [p.name for p in tool.parameters]
+        assert "segments" in param_names
+        seg_param = next(p for p in tool.parameters if p.name == "segments")
+        assert seg_param.type == "integer"
+        assert seg_param.required is False
+
+    def test_tool_has_duration_sec_parameter_deprecated(self, mock_node):
+        """Issue #990: duration_sec stays in schema for backward compat only."""
+        tool, _ = self._make_tool(mock_node)
+        param_names = [p.name for p in tool.parameters]
+        assert "duration_sec" in param_names
+        dur_param = next(p for p in tool.parameters if p.name == "duration_sec")
+        assert "DEPRECATED" in dur_param.description
+
+    def test_execute_forwards_segments_to_manager(self, mock_node):
+        """Issue #990: tool passes ``segments`` through to MusicManager."""
+        tool, mgr = self._make_tool(mock_node, sc_running=True, renardo_available=True)
+        mgr._renardo_context["Clock"] = SimpleNamespace(bpm=110)
+        with patch("builtins.exec"), patch.object(mgr, "execute_code", wraps=mgr.execute_code) as spy:
+            result = tool.execute(code="p1 >> pluck([0])", segments=16)
+        assert result.success is True
+        spy.assert_called_once()
+        kwargs = spy.call_args
+        # execute_code(code, pattern_name, *, segments, duration_sec)
+        assert kwargs.args[0] == "p1 >> pluck([0])"
+        assert kwargs.kwargs.get("segments") == 16
+        assert mgr._renardo_context["__total_segments"] == 16
+
     def test_execute_success(self, mock_node):
         tool, mgr = self._make_tool(mock_node, sc_running=True, renardo_available=True)
         with patch("builtins.exec"):
@@ -1414,3 +1664,157 @@ class TestMusicSessionLifecycle:
         assert second["was_active"] is False
         assert second["stopped_patterns"] == []
         assert "профилактически" in second["message"]
+
+
+# ---------------------------------------------------------------------------
+# Issue #1016 — music-quality guardrail (dramaturgy validator)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicQualityValidator:
+    """Валидатор музыкального качества (issue #1016).
+
+    Отделен от ``_filter_code`` (безопасность): этот валидатор ловит
+    *музыкальные* ошибки LLM — абсолютные частоты, отсутствие ``dur=``
+    и статичные лупы без развития. errors блокируют выполнение,
+    warnings только добавляются в message.
+    """
+
+    def setup_method(self):
+        self.mgr = _make_manager()
+
+    # ----- absolute frequencies (hard errors) ------------------------------
+
+    def test_freq_kwarg_is_rejected(self):
+        errors, warnings = self.mgr._validate_music_code(
+            "p1 >> pluck(freq=440, dur=1)"
+        )
+        assert errors, "freq=440 must be a hard error"
+        assert "частот" in errors[0]
+
+    def test_hz_kwarg_is_rejected(self):
+        errors, warnings = self.mgr._validate_music_code(
+            "p1 >> pluck(hz=220, dur=1)"
+        )
+        assert errors
+
+    def test_midinote_kwarg_is_rejected(self):
+        errors, warnings = self.mgr._validate_music_code(
+            "p1 >> pluck(midinote=69, dur=1)"
+        )
+        assert errors
+
+    def test_scale_degrees_pass(self):
+        errors, warnings = self.mgr._validate_music_code(
+            "p1 >> pluck([0,4,7], dur=0.5)"
+        )
+        assert errors == []
+
+    def test_execute_code_blocks_absolute_frequency(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec") as exec_mock:
+            result = mgr.execute_code("p1 >> pluck(freq=440, dur=1)")
+        assert result["success"] is False
+        assert "валидатор" in result["error"]
+        exec_mock.assert_not_called()  # код не ушёл в Renardo
+
+    # ----- dur= warnings ---------------------------------------------------
+
+    def test_missing_dur_warns_but_passes(self):
+        errors, warnings = self.mgr._validate_music_code(
+            "p1 >> pluck([0,2,4])"
+        )
+        assert errors == []
+        assert any("dur" in w for w in warnings)
+
+    def test_play_without_dur_is_ok(self):
+        # play() имеет собственный dur из строки паттерна — не нудим.
+        errors, warnings = self.mgr._validate_music_code(
+            'd1 >> play("x-o-", sample=1, amp=0.2)'
+        )
+        assert errors == []
+        assert warnings == []
+
+    def test_missing_dur_warning_surfaces_in_execute_result(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            result = mgr.execute_code("p1 >> pluck([0,2,4])")
+        assert result["success"] is True
+        assert "dur" in result["message"]
+
+    # ----- static-loop warning (developing patterns) -----------------------
+
+    def test_static_loop_without_dev_pattern_warns(self):
+        errors, warnings = self.mgr._validate_music_code(
+            "p1 >> pluck([0,2,4], dur=0.5)\n"
+            "p2 >> bass([0,-2], dur=1)"
+        )
+        assert errors == []
+        assert any("статичн" in w for w in warnings)
+
+    def test_dev_pattern_suppresses_static_loop_warning(self):
+        errors, warnings = self.mgr._validate_music_code(
+            "p1 >> pluck([0,2,4], dur=0.5).every(4, 'stutter')\n"
+            "p2 >> bass([0,-2], dur=1)"
+        )
+        assert errors == []
+        assert not any("статичн" in w for w in warnings)
+
+    def test_pvar_suppresses_static_loop_warning(self):
+        errors, warnings = self.mgr._validate_music_code(
+            "current_chord = Pvar([[0,2,4],[3,5,7]], 8)\n"
+            "p1 >> pad(current_chord, dur=4)\n"
+            "p2 >> dub([0,-2], dur=2)"
+        )
+        assert errors == []
+        assert not any("статичн" in w for w in warnings)
+
+    # ----- Clock.future structures from the library ------------------------
+
+    def test_bootstrap_track_passes_validator(self):
+        """csm_132_full_track (Intro→Verse→Chorus→Outro через Clock.future)
+        не должен блокироваться валидатором и не должен нудить про
+        статичный луп — это эталон драматургии (issue #1016)."""
+        code = (
+            "Clock.bpm = 132\n"
+            "Scale.default = 'minor'\n"
+            "Root.default = 'C#'\n"
+            "def intro():\n"
+            "    d1 >> play('X...', sample=1, amp=0.2)\n"
+            "    p1 >> pads([0,4,5,3], dur=8, amp=0.15)\n"
+            "    Clock.future(16, verse)\n"
+            "def verse():\n"
+            "    p2 >> dub([0,-2,0,-3], dur=2, oct=3, amp=0.3)\n"
+            "    p3 >> blip([0,2,4,7,4,2,0,-2], dur=0.5, amp=0.5)\n"
+            "    Clock.future(32, chorus)\n"
+            "def chorus():\n"
+            "    d2 >> play('--.-', sample=3, amp=0.15)\n"
+            "    p1 >> pads([0,4,7,4], dur=2, amp=0.25)\n"
+            "    Clock.future(32, bridge)\n"
+            "def bridge():\n"
+            "    d2.stop()\n"
+            "    p3.stop()\n"
+            "    Clock.future(16, outro)\n"
+            "def outro():\n"
+            "    p2.stop()\n"
+            "    Clock.future(16, lambda: Clock.clear())\n"
+            "intro()"
+        )
+        errors, warnings = self.mgr._validate_music_code(code)
+        assert errors == []
+        # Play-плееры (d1/d2) без dur= — это ок; synth-плееры с dur=.
+        assert not any("статичн" in w for w in warnings)
+
+    def test_filter_code_does_not_block_clock_future(self):
+        """_filter_code (безопасность) не должен ломать Clock.future —
+        это требование acceptance (bootstrap-трек использует
+        Clock.future(16, verse) для смены секций)."""
+        ok, err = self.mgr._filter_code(
+            "def verse():\n"
+            "    p1 >> pads([0,4,5,3], dur=8)\n"
+            "    Clock.future(16, verse)"
+        )
+        assert ok is True
+        assert err == ""
+

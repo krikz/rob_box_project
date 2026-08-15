@@ -1,16 +1,17 @@
-"""Observability — Prometheus metrics for the voice assistant stack.
+"""Observability — Prometheus metrics + OpenTelemetry traces for the voice stack.
 
 Issue #1160 — этап 1: минимальный набор метрик для диалоговой цепочки
-(STT → dialogue/LLM → TTS) + telegram. Этап 2 (OpenTelemetry traces)
-будет добавлен позже отдельной задачей.
+(STT → dialogue/LLM → TTS) + telegram.
+Issue #1234 — этап 2: OpenTelemetry-трейсы (otel-collector → Tempo).
 
 Архитектурные принципы
 -----------------------
-* **Опциональная зависимость.** ``prometheus_client`` — optional. Если
-  пакета нет в окружении (минимальный CI, юнит-тесты без метрик), все
-  метрик-функции превращаются в no-op и ``start_metrics_server()``
-  возвращает ``False``. Это позволяет тестам и продакшн-коду делить
-  один и тот же импорт без ``try/except`` в каждом вызове.
+* **Опциональная зависимость.** ``prometheus_client`` и ``opentelemetry`` —
+  optional. Если пакетов нет в окружении (минимальный CI, юнит-тесты без
+  метрик), все метрик-функции превращаются в no-op и
+  ``start_metrics_server()`` возвращает ``False``. Это позволяет тестам и
+  продакшн-коду делить один и тот же импорт без ``try/except`` в каждом
+  вызове.
 * **Idempotent registration.** Все метрики живут в singleton-реестре
   модуля :mod:`rob_box_voice.observability.metrics`. Повторный импорт
   (например, из юнит-тестов с перезагрузкой) не падает с
@@ -38,6 +39,19 @@ Endpoints (per issue #1160)
 отдельной задачей, когда ``rob_box_music`` появится в репо.
 Prometheus scrape config (см. ``docker/monitoring/config/prometheus.yml``)
 должен включать каждый из этих endpoint'ов.
+
+OpenTelemetry-трейсы (issue #1234, этап 2)
+------------------------------------------
+См. :mod:`rob_box_voice.observability.tracing`. Каждая нода вызывает
+``init_tracing(service_name)`` в ``__init__`` (до создания httpx-клиентов
+провайдеров), затем оборачивает ключевые операции в ``start_span``:
+
+* ``dialogue.llm_call`` — dialogue_node (обёртка process_input → LLM)
+* ``tts.synthesize`` — tts_node (обёртка цепочки синтеза)
+* ``stt.recognize`` — stt_node (обёртка распознавания)
+
+Ограничение из #1160: БЕЗ rclpy propagation — трейсы в рамках процесса,
+не связываются между ROS-нодами.
 """
 
 from .metrics import (
@@ -56,13 +70,27 @@ from .metrics import (
     record_voice_llm_request,
     start_metrics_server,
 )
+from .tracing import (
+    DEFAULT_OTLP_ENDPOINT,
+    get_otlp_endpoint,
+    get_tracer,
+    init_tracing,
+    is_tracing_enabled,
+    start_span,
+    start_span_handle,
+)
 
 __all__ = [
     "DEFAULT_BUCKETS",
+    "DEFAULT_OTLP_ENDPOINT",
     "HistogramValue",
     "MetricsDisabled",
     "get_metric",
+    "get_otlp_endpoint",
+    "get_tracer",
+    "init_tracing",
     "is_metrics_enabled",
+    "is_tracing_enabled",
     "record_barge_in",
     "record_fallback",
     "record_session_duration",
@@ -72,4 +100,6 @@ __all__ = [
     "record_tts_synthesize",
     "record_voice_llm_request",
     "start_metrics_server",
+    "start_span",
+    "start_span_handle",
 ]

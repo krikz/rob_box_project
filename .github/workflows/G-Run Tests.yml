@@ -134,6 +134,38 @@ jobs:
             echo "✅ rob_box_voice passed"
           fi
 
+          # rob_box_telegram: юниты (issue #1196, L1). Пакет не собирается
+          # colcon'ом в этом workflow (отдельный контейнер), но тесты — чистый
+          # Python с фейками rclpy/telegram, гоняются через pytest.
+          #
+          # ВАЖНО (ретро 13.08): полный прогон `pytest test/` в пакете падает
+          # из-за pre-existing cross-file pollution — test_commands ставит
+          # НЕПОЛНЫЙ fake telegram.ext (без Application), а test_telegram_bridge
+          # поп-ает общие модули auth/voice_processor из sys.modules при
+          # re-import. Пофайлово всё зелёное. Поэтому гоняем КАЖДЫЙ файл в
+          # отдельном pytest-процессе (для цикле) — изоляция от pollution.
+          echo "=== pytest: rob_box_telegram (per-file, issue #1196 L1) ==="
+          python3 -m pip install --quiet --no-cache-dir aiohttp 'python-telegram-bot[job-queue]==21.*' 2>/dev/null || true
+          TG_DIR="${{ github.workspace }}/test_ws/src/rob_box_telegram"
+          TG_FAILED=0
+          for TG_TEST in "$TG_DIR"/test/test_*.py; do
+            [ -f "$TG_TEST" ] || continue
+            TG_NAME="$(basename "$TG_TEST")"
+            echo "--- rob_box_telegram: $TG_NAME ---"
+            ( cd "$TG_DIR" && PYTHONPATH=. timeout 120 python3 -m pytest \
+                -p no:launch_testing \
+                -p no:ament_flake8 -p no:ament_pep257 \
+                -p no:ament_copyright -p no:ament_xmllint \
+                -p no:ament_lint -p no:colcon_core \
+                --tb=short --no-header \
+                "$TG_TEST" ) || { echo "❌ rob_box_telegram FAILED: $TG_NAME"; TG_FAILED=1; }
+          done
+          if [ "$TG_FAILED" != "0" ]; then
+            echo "❌ rob_box_telegram tests FAILED"
+            exit 1
+          fi
+          echo "✅ rob_box_telegram passed"
+
           # rob_box_animations + rob_box_perception: pytest only, split so a
           # hang in one package doesn't block the other.  Each wrapped in
           # `timeout 300` so a stuck test fails fast instead of hanging the

@@ -244,6 +244,18 @@ if m:
         if isinstance(v, str) and v.startswith(prefix): count += 1
     print(count); sys.exit(0)
 
+# Pattern: [.[] | select(.field | contains("SUBSTR"))] | length
+# (orphan-comment dedup, ретро 13.08 t_0b76514f: contains-подстрока тела,
+#  не startswith — иначе префикс не совпадает с реальным телом коммена.)
+m = re.match(r"^\[\.\[\]\s*\|\s*select\(\.([\w]+)\s*\|\s*contains\(\"([^\"]+)\"\)\)\]\s*\|\s*length$", filt)
+if m:
+    field, substr = m.group(1), m.group(2)
+    count = 0
+    for el in data:
+        v = el.get(field) if isinstance(el, dict) else None
+        if isinstance(v, str) and substr in v: count += 1
+    print(count); sys.exit(0)
+
 # Pattern: .field(.subfield)*
 if filt.startswith("."):
     # Special: .[0].field // "default" — used by stale-branch guard
@@ -516,6 +528,17 @@ case "$subcmd" in
                     journal "gh pr view $pr_num --json statusCheckRollup"
                     _data="$(get_state PR_${pr_num}_ROLLUP_JSON)"
                     apply_jq "$_data" "$_jq_filter"
+                elif printf '%s' "$*" | grep -q -- '--json number'; then
+                    # Ретро-путь guard PR/issue (13.08, надзор): gh pr view N
+                    # на не-PR-номере падает с exit 1 — так ведёт себя настоящий
+                    # gh. Fixture-флаг PR_EXISTS_<n>=1 означает «это PR».
+                    journal "gh pr view $pr_num --json number"
+                    if [ "$(get_state PR_EXISTS_${pr_num})" = "1" ]; then
+                        printf '{"number":%s}' "$pr_num"
+                        exit 0
+                    fi
+                    echo "simulated: no pull request #$pr_num" >&2
+                    exit 1
                 else
                     journal "gh pr view $pr_num (other)"
                     _data="$(get_state PR_${pr_num}_VIEW_JSON)"
@@ -590,6 +613,34 @@ case "$subcmd" in
                 journal "gh api $path"
                 _data="$(get_state PR_${pr_num}_COMMITS_JSON)"
                 apply_jq "$_data" "$_jq_filter"
+                ;;
+            repos/*/pulls/*/files*)
+                # Ретро 15.08 t_20383d32: duplicate-file scan тянет
+                # pulls/N/files (REST, filename+sha) для детекта двух open PR с
+                # идентичным blob. Fixture: PR_<n>_FILES_JSON = JSON-массив
+                # [{"filename":"...","sha":"..."}]. Реальный gh api вызывается
+                # БЕЗ --jq (merge-gate парсит JSON в python) → apply_jq
+                # passthrough вернёт данные как есть.
+                pr_num="$(printf '%s' "$path" | sed -nE 's#.*/pulls/([0-9]+)/files.*#\1#p')"
+                journal "gh api $path (files)"
+                _data="$(get_state PR_${pr_num}_FILES_JSON)"
+                apply_jq "$_data" "$_jq_filter"
+                ;;
+            repos/*/pulls/[0-9]*)
+                # Ретро-путь guard PR/issue (ретро 13.08 t_2d78fbdd, #942):
+                # скрипт проверяет существование PR через REST gh api pulls/N
+                # (НЕ gh pr view --json number — тот для одного поля number не
+                # ходит в API и возвращает success для любого числа, из-за
+                # чего guard скипал ВСЕ ретро-issues). Здесь эмулируем REST:
+                # 200 + {"number":N} если PR_EXISTS_<n>=1 (это PR), иначе 404.
+                pr_num="$(printf '%s' "$path" | sed -nE 's#.*/pulls/([0-9]+).*#\1#p')"
+                journal "gh api $path (pulls guard)"
+                if [ "$(get_state PR_EXISTS_${pr_num})" = "1" ]; then
+                    printf '{"number":%s}' "$pr_num"
+                    exit 0
+                fi
+                echo "simulated: no pull request #$pr_num (HTTP 404)" >&2
+                exit 1
                 ;;
             repos/*/git/refs/heads/*)
                 branch="$(printf '%s' "$path" | sed -nE 's#.*/git/refs/heads/(.+)$#\1#p')"
@@ -687,6 +738,12 @@ if printf '%s' "$*" | grep -q -- ' create '; then
     printf 'Created %s  (ready, assignee=default)\n' "$_create_id"
     exit 0
 fi
+# `kanban --board <b> archive <id>...` → record and succeed (ретро 14.08
+# t_36c9ac4e: retro-card-archive pass archives done cards). Journal line
+# already written above ("hermes ... archive ..."), assertions grep it.
+if printf '%s' "$*" | grep -q -- ' archive '; then
+    exit 0
+fi
 # Simulate success; specific subcommands are recorded for assertions.
 HERMES_MOCK_EOF
     chmod +x "$bin_dir/hermes"
@@ -718,15 +775,19 @@ run_merge_gate() {
         HERMES_HOME=/tmp/_unused
         HERMES_BIN=hermes  # mocked
         # Ретро 12.08 t_8af6bf29: merge-gate читает kanban-статус напрямую из
-        # sqlite (KANBAN_DB_PATH), а не через `hermes kanban show` (падает после
+        # sqlite (KANBAN_DB), а не через `hermes kanban show` (падает после
         # v0.20.0). В тестах БД недоступна → хелпер фолбэчится на мок hermes
         # show --json (см. bin/hermes ниже). Указываем несуществующий путь,
         # чтобы тесты НЕ читали реальную /home/builder/.hermes/.../kanban.db.
-        KANBAN_DB_PATH="$TEST_TMP/nonexistent-kanban.db"
+        # ВАЖНО: merge-gate форсит HOME=/home/builder (стр. 46), поэтому
+        # переменная ДОЛЖНА называться KANBAN_DB (не KANBAN_DB_PATH — её
+        # скрипт не читает, и тест G падал, читая реальную БД: ретро 14.08
+        # t_0bd15be9).
+        KANBAN_DB="$TEST_TMP/nonexistent-kanban.db"
         # Isolate the flock sentinel: the production merge-gate cron holds
         # /tmp/agent-flow-merge-gate.lock and would make tests flaky.
         LOCK_FILE="$TEST_TMP/merge-gate.lock"
-        export GH_REPO KANBAN_BOARD DRY_RUN ISSUE_LIMIT HERMES_HOME HERMES_BIN KANBAN_DB_PATH LOCK_FILE
+        export GH_REPO KANBAN_BOARD DRY_RUN ISSUE_LIMIT HERMES_HOME HERMES_BIN KANBAN_DB LOCK_FILE
         # The script sources a profile .env if present — override HOME
         # and PROFILE_ENV paths so it can't load real config.
         export HOME=/tmp

@@ -236,6 +236,9 @@ def _make_stt_node_stub(**param_overrides):
         unclear_phrase="Не расслышал, скажи ещё раз",
         unclear_cooldown_s=5.0,
         tts_grace_s=2.5,
+        # Issue #1251 — ранний «бульк»
+        early_boop_enabled=True,
+        early_boop_trigger="boop",
     )
     defaults.update(param_overrides)
 
@@ -483,20 +486,26 @@ class TestRecognizeWithFallback:
         assert attempts[2].reason == "ok"
 
     def test_vosk_short_garbage_rejected(self, stt_node):
-        """Короткий Vosk-мусор (1 char) → None."""
+        """Короткий Vosk-мусор (1 char) → text=«а» (rejected(short), не None).
+
+        Возврат непустого текста критичен: speech_audio_callback по нему
+        отличает rejected(short) (был речевой ввод → переспросить) от
+        rejected(empty) (эхо → молчать), issue #979 acceptance.
+        """
         stt_node.yandex_stub = MagicMock()
         stt_node.recognizer = MagicMock()
         stt_node._recognize_yandex = MagicMock(return_value=None)
         stt_node._recognize_vosk = MagicMock(return_value="а")  # 1 char мусор
 
         text, attempts = stt_node._recognize_with_fallback(b"\x00" * 1000)
-        assert text is None
+        assert text == "а"
         # Последняя попытка — Vosk с low_confidence
         assert attempts[-1].reason == "low_confidence"
         assert attempts[-1].provider == "vosk"
 
     def test_respects_custom_min_text_chars(self, stt_node):
-        """min_text_chars=5 → фраза из 4 chars отклоняется."""
+        """min_text_chars=5 → фраза из 4 chars отклоняется, но текст
+        возвращается (rejected(short)) — caller переспросит."""
         stt_node.min_text_chars = 5
         stt_node.yandex_stub = MagicMock()
         stt_node.recognizer = MagicMock()
@@ -504,7 +513,7 @@ class TestRecognizeWithFallback:
         stt_node._recognize_vosk = MagicMock(return_value="стоп")  # 4 chars
 
         text, attempts = stt_node._recognize_with_fallback(b"\x00" * 1000)
-        assert text is None  # отклонено как low_confidence
+        assert text == "стоп"  # не None: rejected(short), не rejected(empty)
         assert attempts[-1].reason == "low_confidence"
 
 
@@ -586,6 +595,35 @@ class TestSpeakUnclear:
         assert stt_node.result_pub.publish.call_count == 0
         assert stt_node.tts_request_pub.publish.call_count == 1
 
+    def test_speech_audio_callback_vosk_garbage_speaks_unclear_real_path(self, stt_node):
+        """Issue #979 acceptance: реальный путь Yandex empty → Vosk «не»
+        (мусор) должен привести к «не расслышал», а НЕ к молчанию.
+
+        До фикса select_recognition возвращал None при low_confidence, и
+        speech_audio_callback классифицировал это как rejected(empty) →
+        робот молчал (именно баг из issue #979). После фикса возвращается
+        последний непустой текст («не») → rejected(short) → «не расслышал».
+        """
+        stt_node.yandex_stub = MagicMock()
+        stt_node.recognizer = MagicMock()
+        stt_node._recognize_yandex = MagicMock(return_value=None)  # empty x2
+        stt_node._recognize_vosk = MagicMock(return_value="не")  # 2 chars мусор
+        stt_node.tts_request_pub = MagicMock()
+        stt_node.result_pub = MagicMock()
+        stt_node.state_pub = MagicMock()
+        stt_node._last_unclear_at = 0.0
+
+        msg = MagicMock()
+        msg.data = [0] * (16000 * 2)  # 1с PCM
+        stt_node.speech_audio_callback(msg)
+
+        # Результат НЕ опубликован (слишком короткое), но робот просит
+        # повторить: «Не расслышал, скажи ещё раз» — вместо молчания.
+        assert stt_node.result_pub.publish.call_count == 0
+        assert stt_node.tts_request_pub.publish.call_count == 1
+        payload = stt_node.tts_request_pub.publish.call_args[0][0].data
+        assert "Не расслышал" in payload
+
 
 class TestTTSGracePeriod:
     """Issue 989 Fix B: grace period после TTS — игнорируем ВСЕ фразы."""
@@ -638,6 +676,132 @@ class TestTTSGracePeriod:
         # "робок привет" принят — publish_result дёрнут (внутри него
         # происходит публикация в /voice/stt/result)
         assert stt_node.publish_result.call_count == 1
+
+
+class TestBargeInWakeWordStopTTS:
+    """Issue 993: STT-уровень barge-in — wake word во время TTS → STOP TTS.
+
+    Цепочка barge-in (после снятия VAD-гейта в audio_node, фикс 2ad5ea58):
+    1. VAD пропускает речь во время TTS (audio_node._vad_gated: tts_active → pass)
+    2. STT обрабатывает фразу ≥0.8s во время TTS (hardware AEC)
+    3. publish_result: фраза начинается с wake word → немедленный STOP TTS
+
+    Раньше (Fix B из #989) VAD гейтился на всё время TTS, поэтому даже
+    «робот, добавь бит» не доходило до STT. Теперь гейт снят, и STT обязан
+    прервать TTS при wake word — это и есть barge-in.
+    """
+
+    @staticmethod
+    def _patch_string_factory(monkeypatch, stt_node_module):
+        """std_msgs.msg.String в моках — один MagicMock: String() возвращает
+        ОДИН и тот же instance, поэтому stop_msg.data перезаписывается
+        msg.data (оба — один объект). Для проверки payload'а нужны РАЗНЫЕ
+        instance'ы — патчим фабрикой.
+        """
+
+        class _String:
+            _n = 0
+
+            def __init__(self):
+                _String._n += 1
+                self.data = ""
+
+        monkeypatch.setattr(stt_node_module, "String", _String)
+
+    def test_publish_result_wake_word_stops_tts(self, stt_node, monkeypatch):
+        """Фраза с wake word → tts_control_pub получает 'STOP' (barge-in)."""
+        from rob_box_voice import stt_node as stt_node_module
+
+        self._patch_string_factory(monkeypatch, stt_node_module)
+        stt_node.tts_control_pub = MagicMock()
+        stt_node.result_pub = MagicMock()
+        # В фикстуре publish_result замокан (чтобы другие тесты не публиковали),
+        # для этого теста нужен РЕАЛЬНЫЙ метод — bind через __get__.
+        stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
+            stt_node, stt_node_module.STTNode
+        )
+
+        stt_node.publish_result("робот, добавь бит")
+
+        # Немедленный STOP TTS (barge-in)
+        stop_call = stt_node.tts_control_pub.publish.call_args[0][0]
+        assert stop_call.data == "STOP"
+        # Результат всё равно публикуется (dialogue_node обработает)
+        assert stt_node.result_pub.publish.call_count == 1
+
+    def test_publish_result_without_wake_word_no_stop(self, stt_node, monkeypatch):
+        """Фраза без wake word (эхо собственного голоса) → БЕЗ STOP TTS."""
+        from rob_box_voice import stt_node as stt_node_module
+
+        self._patch_string_factory(monkeypatch, stt_node_module)
+        stt_node.tts_control_pub = MagicMock()
+        stt_node.result_pub = MagicMock()
+        stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
+            stt_node, stt_node_module.STTNode
+        )
+
+        stt_node.publish_result("не расслышал скажи")
+
+        stt_node.tts_control_pub.publish.assert_not_called()
+        assert stt_node.result_pub.publish.call_count == 1
+
+    def test_full_chain_barge_in_stop_tts(self, stt_node, monkeypatch):
+        """Полная цепочка: фраза с wake word во время TTS → STOP TTS.
+
+        Симулируем: TTS активен (is_robot_speaking=True), hardware AEC,
+        фраза 2с (≥0.8s) распознана как «робот добавь бит» →
+        speech_audio_callback → publish_result (реальный) → STOP TTS.
+        Это ровно acceptance #993: «робот, добавь бит» во время пения.
+        """
+        from rob_box_voice import stt_node as stt_node_module
+
+        self._patch_string_factory(monkeypatch, stt_node_module)
+        stt_node.aec_mode = "hardware"
+        stt_node.tts_grace_s = 2.5
+        stt_node.is_robot_speaking = True  # TTS активен
+        stt_node._tts_ended_at = 0.0  # «давно» — не в grace (это НЕ хвост TTS)
+        stt_node._recognize_with_fallback = MagicMock(
+            return_value=("робот добавь бит", [])
+        )
+        stt_node.tts_control_pub = MagicMock()
+        stt_node.result_pub = MagicMock()
+        stt_node.state_pub = MagicMock()
+        stt_node.tts_request_pub = MagicMock()
+        stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
+            stt_node, stt_node_module.STTNode
+        )
+
+        msg = MagicMock()
+        msg.data = [0] * (16000 * 2 * 2)  # 2с PCM (≥0.8s — «возможно прерывание»)
+        stt_node.speech_audio_callback(msg)
+
+        stt_node._recognize_with_fallback.assert_called_once()
+        stop_call = stt_node.tts_control_pub.publish.call_args[0][0]
+        assert stop_call.data == "STOP"
+        assert stt_node.result_pub.publish.call_count == 1
+
+    def test_short_phrase_during_tts_ignored(self, stt_node):
+        """Hardware AEC: короткая фраза <0.8s во время TTS → игнор (эхо).
+
+        Не путать с barge-in: короткие всплески собственного голоса
+        (эхо) режутся, длинная команда пользователя (≥0.8s) проходит.
+        """
+        stt_node.aec_mode = "hardware"
+        stt_node.tts_grace_s = 2.5
+        stt_node.is_robot_speaking = True
+        stt_node._tts_ended_at = 0.0
+        stt_node._recognize_with_fallback = MagicMock(return_value=("робот", []))
+        stt_node.result_pub = MagicMock()
+        stt_node.state_pub = MagicMock()
+        stt_node.tts_request_pub = MagicMock()
+        stt_node.publish_result = MagicMock()
+
+        msg = MagicMock()
+        msg.data = [0] * (16000 * 2 // 2)  # 0.5с PCM (<0.8s)
+        stt_node.speech_audio_callback(msg)
+
+        stt_node._recognize_with_fallback.assert_not_called()
+        assert stt_node.publish_result.call_count == 0
 
 
 # ---------------------------------------------------------------------------

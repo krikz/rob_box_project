@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-import asyncio, json, logging, os, threading, time, uuid
+import asyncio, json, logging, os, re, threading, time, uuid
+from typing import Optional
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -38,12 +39,29 @@ class TelegramNode(Node):
         self.camera_topic, self.camera_depth_topic, self.camera_up_topic = p("camera_topic").value, p("camera_depth_topic").value, p("camera_up_topic").value
         self.camera_cache = CameraCache(ttl=p("camera_cache_ttl").value)
         self.latest_map_grid = self._active_chat_id = self._telegram_app = None
+        # Issue #1195 — echo path (LLM replies back into the chat).
+        # ``_telegram_loop`` is the asyncio loop owned by the telegram
+        # thread; ``_response_queue`` is consumed by ``_chat_echo_worker``
+        # inside that loop. The ROS executor thread only does
+        # ``call_soon_threadsafe`` — no ``run_coroutine_threadsafe``
+        # (t_aad8e224: loop closed/None → swallowed AttributeError).
+        self._telegram_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._response_queue: Optional[asyncio.Queue] = None
+        self._echo_task: Optional[asyncio.Task] = None
         g = ReentrantCallbackGroup()
         for topic, cb in ((self.camera_topic, self._on_camera_front), (self.camera_depth_topic, self._on_camera_depth), (self.camera_up_topic, self._on_camera_up)):
             self.create_subscription(CompressedImage, topic, cb, _BE, callback_group=g)
         self.create_subscription(OccupancyGrid, "/rtabmap/grid_prob_map", self._on_map, _TL, callback_group=g)
         self._stt_pub = self.create_publisher(String, "/voice/stt/result", _RE)
         self._response_pub = self.create_publisher(String, "/voice/dialogue/response", _RE)
+        # Issue #1195 — restore the echo path: dialogue/TTS output is
+        # duplicated into the active Telegram chat so the operator sees
+        # what the robot says (removed in 88cecc91 because of the
+        # asyncio-loop bug; reimplemented queue-based, see _on_response).
+        self._response_sub = self.create_subscription(
+            String, "/voice/dialogue/response", self._on_response, _RE,
+            callback_group=g,
+        )
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel_web", _RE)
         self.tts_pub = self.create_publisher(String, "/voice/tts/request", _RE)
         # Issue #1160 — Prometheus metrics server (этап 1).
@@ -68,8 +86,16 @@ class TelegramNode(Node):
     def _on_camera_up(self, m): self.camera_cache.update(self.camera_up_topic, bytes(m.data))
     def _on_map(self, m): self.latest_map_grid = m
     def set_active_chat(self, chat_id: int) -> None: self._active_chat_id = chat_id
-    def forward_to_stt(self, text: str) -> None:
+    def forward_to_stt(self, text: str, chat_id: Optional[int] = None) -> None:
         if not text: return
+        # Issue #1195 — source marker: [TG:chat_id] text. dialogue_node
+        # parses it to skip the wake-word gate (chat messages are explicit
+        # address), remembers the chat for echo routing and does NOT attach
+        # the voice-biometry speaker tag. chat_id also becomes the "active
+        # chat" so voice-initiated replies echo into the same chat.
+        if chat_id is not None:
+            self.set_active_chat(chat_id)
+            text = f"[TG:{chat_id}] {text}"
         # Issue #1160 — Prometheus metrics: входящее сообщение (текст/команда).
         if is_metrics_enabled():
             record_telegram_message("in", message_type="text")
@@ -81,6 +107,72 @@ class TelegramNode(Node):
         m = String(); m.data = json.dumps(
             {"ssml": f"<speak>{text}</speak>", "speech_id": str(uuid.uuid4()), "emotion": "neutral"},
             ensure_ascii=False); self._response_pub.publish(m)
+    def _on_response(self, msg: String) -> None:
+        """Echo dialogue/TTS output back into the active Telegram chat.
+
+        Issue #1195 — runs on the ROS 2 executor thread, so the actual
+        ``bot.send_message`` must happen on the telegram asyncio loop.
+        We push ``(chat_id, text)`` into ``_response_queue``; the telegram
+        loop's ``_chat_echo_worker`` consumes it and sends. No
+        ``run_coroutine_threadsafe`` from this thread — that was the
+        t_aad8e224 bug (loop captured wrong / closed → AttributeError
+        silently swallowed every TG reply).
+        """
+        try:
+            payload = json.loads(msg.data or "")
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        ssml = payload.get("ssml")
+        if ssml:
+            text = re.sub(r"<[^>]+>", "", ssml).strip()
+        else:
+            text = (msg.data or "").strip()
+        if not text:
+            return
+        # Prefer the chat_id dialogue_node routed for this turn; fall back
+        # to the active chat (last chat that wrote to the robot).
+        chat_id = payload.get("tg_chat_id") or self._active_chat_id
+        loop, queue = self._telegram_loop, self._response_queue
+        if not (loop and queue and chat_id):
+            self.get_logger().warning(
+                "Dropping dialogue echo, bot not ready / no active chat "
+                f"(app={bool(self._telegram_app)}, loop={bool(loop)}, "
+                f"chat_id={chat_id!r}, text_len={len(text)})"
+            )
+            return
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, (int(chat_id), text))
+        except RuntimeError as exc:
+            # Loop closed underneath us (bot crashed, outer loop is between
+            # attempts). Drop rather than crash the ROS executor — the next
+            # valid response will be picked up after the loop is restored.
+            self.get_logger().error(
+                f"Failed to schedule TG echo (loop closed?): {exc!r}"
+            )
+    async def _chat_echo_worker(self) -> None:
+        """Consume dialogue responses and send them into the chat.
+
+        Runs inside the telegram asyncio loop (started by
+        ``_run_telegram``); the queue is only fed from the ROS thread via
+        ``call_soon_threadsafe``.
+        """
+        queue = self._response_queue
+        if queue is None:
+            return
+        try:
+            while True:
+                chat_id, text = await queue.get()
+                app = self._telegram_app
+                if app is None:
+                    continue
+                try:
+                    await app.bot.send_message(chat_id=chat_id, text=text)
+                except Exception as exc:  # noqa: BLE001
+                    self.get_logger().warning(
+                        f"Failed to echo LLM reply to chat {chat_id}: {exc!r}"
+                    )
+        except asyncio.CancelledError:
+            pass
     def _start_telegram_bot(self, token: str) -> None:
         threading.Thread(target=self._run_telegram_loop, args=(token,), daemon=True,
                          name="telegram-bot").start()
@@ -96,6 +188,13 @@ class TelegramNode(Node):
     async def _run_telegram(self, token: str) -> None:
         app = Application.builder().token(token).build()
         app.bot_data["node"] = self; self._telegram_app = app
+        # Issue #1195 — echo path: capture the loop we run on and create
+        # the queue the ROS thread feeds via call_soon_threadsafe. The
+        # worker task lives inside this loop, so no cross-loop coroutine
+        # scheduling (t_aad8e224).
+        self._telegram_loop = asyncio.get_running_loop()
+        self._response_queue = asyncio.Queue()
+        self._echo_task = asyncio.create_task(self._chat_echo_worker())
         for name in dir(_cmds):
             if name.endswith("_handler"):
                 app.add_handler(CommandHandler(name[:-8], getattr(_cmds, name)))
@@ -113,6 +212,9 @@ class TelegramNode(Node):
         try:
             while rclpy.ok(): await asyncio.sleep(1.0)
         finally:
+            if self._echo_task is not None:
+                self._echo_task.cancel()
+                self._echo_task = None
             await app.updater.stop(); await app.stop(); await app.shutdown()
 
 

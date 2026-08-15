@@ -42,8 +42,8 @@ jobs:
           # что не матчит ни одну ветку — попадает в else → DOCKER_TAG=local,
           # а файла docker/main/.image-versions.local не существует.
           # Релизные теги v* мапим в latest (production), это согласовано с
-          # L-Deploy and Verify.yml (production → IMAGE_TAG=latest) и с тем, что
-          # build кладёт SHA-теги в отдельную ветку ci/image-versions (c873f479).
+          # L-Deploy and Verify.yml (production → IMAGE_TAG=latest).
+          # РЕВЕРТ #1139 (13.08): SHA-теги снова коммитятся прямо в текущую ветку.
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]] && [[ "${GITHUB_REF_NAME}" == v* ]]; then
             DOCKER_TAG="latest"
           else
@@ -444,21 +444,17 @@ jobs:
             git config user.name "Rob Box CI"
             git add "$VERSIONS_FILE"
             if ! git diff --cached --quiet; then
-              # Issue #1139: SHA-теги пишем в отдельную ветку ci/image-versions,
-              # а не коммитим в develop/main/vision — не засоряем историю
-              VERSIONS_BRANCH="ci/image-versions"
-              # Создаём локальную ветку от текущего HEAD (staged изменения сохраняются)
-              git checkout -B "$VERSIONS_BRANCH"
-              git commit -m "ci: main SHA tags → ${NEW_TAG} [skip ci]"
-              # Retry push (гонка: Main и Vision параллельно пушат в одну ветку)
-              for i in 1 2 3 4 5; do
-                git pull --rebase origin "$VERSIONS_BRANCH" >/dev/null 2>&1 || true
-                if git push origin "HEAD:${VERSIONS_BRANCH}" >/dev/null 2>&1; then
-                  break
-                fi
-                sleep 5
-              done
-              echo "✅ Committed .image-versions: all main tags → ${NEW_TAG} (branch ${VERSIONS_BRANCH})"
+              # ✅ РЕТРО #1139 v2 (13.08, t_bd9b7713): .image-versions коммитим
+              # в ОТДЕЛЬНУЮ per-service ветку ci/image-versions-main — develop
+              # не засоряется 'ci: main SHA tags' коммитами, гонка main/vision
+              # исключена (у каждого сервиса своя ветка). Ветка базируется на
+              # origin-типе и НЕ сбрасывается от develop → теги накапливаются
+              # и не теряются (в отличие от v1 #1139, где checkout -B от
+              # develop сбрасывал ветку и deploy тянул старые образы).
+              bash scripts/ci/commit-image-versions.sh \
+                "ci/image-versions-main" \
+                "ci: main SHA tags → ${NEW_TAG} [skip ci]" \
+                "$VERSIONS_FILE"
             fi
           else
             echo "⚠️  $VERSIONS_FILE not found"
