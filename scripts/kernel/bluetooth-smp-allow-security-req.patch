@@ -1,0 +1,34 @@
+# =============================================================================
+# Bluetooth SMP: allow SMP_CMD_SECURITY_REQ (0x0b) when SMP context is active
+#
+# Fixes: BG-5 (issue #816) — BLE joystick (ExpressLRS) connects at L2CAP level
+# but HID over GATT is killed by the kernel: "unexpected SMP command 0x0b" /
+# "HID Information read failed". Root cause is strict SMP state handling in
+# net/bluetooth/smp.c, smp_sig_channel():
+#
+#   if (smp && !test_and_clear_bit(code, &smp->allow_cmd))
+#       goto drop;
+#
+# When a peripheral initiates a Security Request (0x0b) after the connection
+# is already established, the kernel rejects it if an SMP context exists,
+# unless that command is already flagged as allowed. This behaviour differs
+# from other Bluetooth stacks (e.g. Android Fluoride) and breaks HID-over-GATT
+# for devices that send SECURITY_REQ late.
+#
+# Patch (one line, aligns with Android/Fluoride behaviour):
+#   allow SMP_CMD_SECURITY_REQ even when an SMP context is active.
+#
+# Status: regression still present in mainline as of v6.19-r (codebrowser.dev),
+# and in Ubuntu kernel 6.14.0-1019-raspi (installed on robot, 15.08.2026).
+# Community-proven fix: https://community.victronenergy.com/t/.../51883
+#
+# Apply during kernel/module build:
+#   cd <linux-source>
+#   patch -p1 < bluetooth-smp-allow-security-req.patch
+# =============================================================================
+--- a/net/bluetooth/smp.c
++++ b/net/bluetooth/smp.c
+@@ -smp_sig_channel, allow_cmd drop
+-	if (smp && !test_and_clear_bit(code, &smp->allow_cmd))
++	if (smp && code != SMP_CMD_SECURITY_REQ && !test_and_clear_bit(code, &smp->allow_cmd))
+ 		goto drop;
