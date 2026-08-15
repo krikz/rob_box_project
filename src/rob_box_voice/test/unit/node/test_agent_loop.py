@@ -585,3 +585,83 @@ class TestAgentLoopFinally:
         # После listen_for_response: ждём STT
         assert node.dialogue_in_progress is True
         assert node.llm_processing is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  BUG-16 (TASK-046): system reminders в длинных tool-циклах
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSystemReminders:
+
+    def test_get_tool_result_with_reminder_every_5(self, node):
+        """Reminder добавляется каждые 5 итераций, в остальных — нет."""
+        assert node.SYSTEM_REMINDER_EVERY_N_ITERATIONS == 5
+
+        # Нет reminder на 1-4, 6-9 итерациях.
+        for iteration in (1, 2, 3, 4, 6, 7, 8, 9):
+            assert node._get_tool_result_with_reminder(
+                '{"success": true}', iteration
+            ) == '{"success": true}'
+
+        # Reminder на 5, 10, 15 итерациях.
+        for iteration in (5, 10, 15, 20):
+            out = node._get_tool_result_with_reminder('{"ok": 1}', iteration)
+            assert out.startswith('{"ok": 1}')
+            assert '<system-reminder>' in out
+            assert 'memory_context' in out
+            assert 'кратко' in out
+
+    def test_reminder_is_static_not_llm_generated(self, node):
+        """Reminder — статичный текст, не генерируется LLM."""
+        text = node._SYSTEM_REMINDER_TEXT
+        assert '<system-reminder>' in text
+        assert 'memory_context' in text
+        assert 'кратко' in text
+        # Не содержит пользовательских фраз — это инструкция для LLM.
+        assert 'пользователь' in text
+
+    def test_do_recursive_streaming_injects_reminder_on_iteration_5(self, node):
+        """Tool results на 5-й итерации получают reminder в content."""
+        node.client.chat.completions.create.return_value = iter([
+            _make_chunk(content='ответ'),
+            _make_chunk(finish_reason='stop'),
+        ])
+
+        result = {}
+        tool_results = [{'tool_call_id': 'tc1', 'tool_name': 'play_sound',
+                         'success': True, 'message': 'ok'}]
+        node._do_recursive_streaming(
+            result,
+            [{'role': 'system', 'content': 'sys'}],
+            tool_results,
+            _iteration=5,
+        )
+
+        # Проверяем, что в запросе к LLM tool-result content содержит reminder.
+        sent_messages = node.client.chat.completions.create.call_args.kwargs['messages']
+        tool_msgs = [m for m in sent_messages if m['role'] == 'tool']
+        assert len(tool_msgs) == 1
+        assert '<system-reminder>' in tool_msgs[0]['content']
+        assert 'memory_context' in tool_msgs[0]['content']
+
+    def test_do_recursive_streaming_no_reminder_below_5(self, node):
+        """Tool results на итерации < 5 не содержат reminder."""
+        node.client.chat.completions.create.return_value = iter([
+            _make_chunk(content='ответ'),
+            _make_chunk(finish_reason='stop'),
+        ])
+
+        result = {}
+        tool_results = [{'tool_call_id': 'tc1', 'tool_name': 'play_sound',
+                         'success': True, 'message': 'ok'}]
+        node._do_recursive_streaming(
+            result,
+            [{'role': 'system', 'content': 'sys'}],
+            tool_results,
+            _iteration=3,
+        )
+
+        sent_messages = node.client.chat.completions.create.call_args.kwargs['messages']
+        tool_msgs = [m for m in sent_messages if m['role'] == 'tool']
+        assert len(tool_msgs) == 1
+        assert '<system-reminder>' not in tool_msgs[0]['content']

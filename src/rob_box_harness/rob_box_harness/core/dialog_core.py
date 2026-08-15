@@ -56,6 +56,36 @@ if TYPE_CHECKING:
 #: fails loudly rather than running away.
 _MAX_TOOL_ITERATIONS: int = 8
 
+#: BUG-16 (TASK-046): static system reminders re-injected into tool
+#: results every N iterations. Long tool loops dilute the model's
+#: attention on the system prompt (Anthropic "context rot"); repeating
+#: the key rules as a static (never LLM-generated) reminder in the tool
+#: result keeps adherence high — the Claude Code pattern.
+SYSTEM_REMINDER_EVERY_N_ITERATIONS: int = 5
+
+#: The exact reminder payload appended to tool-result content. Static
+#: text only — the LLM never generates it, and it is NOT shown to the
+#: user (it rides inside the tool message the model sees).
+_SYSTEM_REMINDER_TEXT: str = (
+    "\n\n<system-reminder>"
+    "Напоминание: НЕ вызывай memory_context если пользователь "
+    "не спрашивал о прошлом. Отвечай кратко (1-3 предложения)."
+    "</system-reminder>"
+)
+
+
+def _tool_result_with_reminder(content: str, iteration: int) -> str:
+    """Append the static system reminder to a tool result on reminder ticks.
+
+    ``iteration`` is 1-based tool-loop round. On every multiple of
+    ``SYSTEM_REMINDER_EVERY_N_ITERATIONS`` the reminder text is appended
+    to the tool-result content so the model re-reads the key rules.
+    """
+    if iteration > 0 and iteration % SYSTEM_REMINDER_EVERY_N_ITERATIONS == 0:
+        return content + _SYSTEM_REMINDER_TEXT
+    return content
+
+
 # W7a (issue #968, INSIGHT #1): a single LLM response may carry several
 # tool_calls in one batch (e.g. ``speak_text`` + ``stop_music``). Executing
 # them in the model's raw order fires destructive tools before the voice
@@ -139,6 +169,7 @@ _SILENT_DONE_MARKERS: frozenset[str] = frozenset(
 _SILENT_FINISH_REASONS: frozenset[str] = frozenset(
     {"insufficient_system_resource", "content_filter", "length"}
 )
+
 
 # ---------------------------------------------------------------------------
 # Result type
@@ -632,7 +663,10 @@ class DialogCore:
         # legitimate per the master-prompt contract and must not be retried.
         _silent_retried = False
 
-        for _ in range(_MAX_TOOL_ITERATIONS):
+        # BUG-16 (TASK-046): 1-based tool-loop round — used by
+        # ``_tool_result_with_reminder`` to re-inject the static system
+        # reminder every ``SYSTEM_REMINDER_EVERY_N_ITERATIONS`` rounds.
+        for iteration in range(1, _MAX_TOOL_ITERATIONS + 1):
             if not response.tool_calls:
                 if (
                     not _silent_retried
@@ -738,7 +772,9 @@ class DialogCore:
                 messages.append(
                     LLMMessage(
                         role="tool",
-                        content=tool_result.content,
+                        content=_tool_result_with_reminder(
+                            tool_result.content, iteration
+                        ),
                         tool_call_id=tool_result.tool_call_id,
                         tool_result=tool_result,
                     )

@@ -2916,6 +2916,35 @@ class DialogueNode(Node):
     #: Maximum tool-call iterations before forced stop (agent loop guard).
     MAX_ITERATIONS: int = 30
 
+    #: BUG-16 (TASK-046): static system reminders re-injected into tool
+    #: results every N iterations (Claude Code pattern) so a long agent
+    #: loop doesn't drift from the system prompt rules.
+    SYSTEM_REMINDER_EVERY_N_ITERATIONS: int = 5
+
+    #: The exact reminder payload. Static text only — the LLM never
+    #: generates it, and it is NOT shown to the user (it rides inside
+    #: the tool message the model sees).
+    _SYSTEM_REMINDER_TEXT: str = (
+        "\n\n<system-reminder>"
+        "Напоминание: НЕ вызывай memory_context если пользователь "
+        "не спрашивал о прошлом. Отвечай кратко (1-3 предложения)."
+        "</system-reminder>"
+    )
+
+    def _get_tool_result_with_reminder(
+        self, tool_result: str, iteration: int
+    ) -> str:
+        """Append the static system reminder to a tool result on reminder ticks.
+
+        BUG-16 (TASK-046): every ``SYSTEM_REMINDER_EVERY_N_ITERATIONS``
+        rounds the key rules (no autonomous ``memory_context``, brevity)
+        are re-injected into the tool-result content so the LLM keeps
+        adhering to the system prompt in long sessions (20+ iterations).
+        """
+        if iteration > 0 and iteration % self.SYSTEM_REMINDER_EVERY_N_ITERATIONS == 0:
+            return tool_result + self._SYSTEM_REMINDER_TEXT
+        return tool_result
+
     def _continue_after_tool_calls(
         self,
         messages: list,
@@ -3012,8 +3041,11 @@ class DialogueNode(Node):
                 _result=result_dict,
                 _messages=current_messages,
                 _tool_results=current_tool_results,
+                _iteration=iteration,
             ):
-                self._do_recursive_streaming(_result, _messages, _tool_results)
+                self._do_recursive_streaming(
+                    _result, _messages, _tool_results, _iteration
+                )
             max_attempts = 2
             for _attempt in range(max_attempts):
                 # NOTE: we deliberately do NOT use ``with ThreadPoolExecutor(...)``
@@ -3090,6 +3122,7 @@ class DialogueNode(Node):
         _result: dict = None,
         _messages: list = None,
         _tool_results: list = None,
+        _iteration: int = 0,
     ) -> None:
         """Streaming call to the LLM, mutating ``_result`` in-place.
 
@@ -3105,6 +3138,11 @@ class DialogueNode(Node):
         We therefore declare ``_result=None`` as a default so the mock
         route is reachable; production code always passes ``_result``
         as a kwarg explicitly.
+
+        ``_iteration`` (BUG-16, TASK-046) is the 1-based tool-loop
+        round; on every 5th round the tool-result content gets the
+        static system reminder appended (Claude Code pattern) so a
+        long agent loop doesn't drift from the system prompt.
         """
         if _result is None:
             _result = {}
@@ -3118,7 +3156,9 @@ class DialogueNode(Node):
             msgs.append({
                 "role": "tool",
                 "tool_call_id": tr.get("tool_call_id", ""),
-                "content": json.dumps(tr, ensure_ascii=False),
+                "content": self._get_tool_result_with_reminder(
+                    json.dumps(tr, ensure_ascii=False), _iteration or 0
+                ),
             })
 
         try:

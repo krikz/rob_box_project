@@ -1585,3 +1585,82 @@ def test_run_with_tools_executes_in_safe_order_but_returns_original_order() -> N
     assert [c.name for c in ordered] == ["speak_text", "stop_music"]
     # And the original tuple is untouched (frozen dataclass semantics).
     assert [c.name for c in calls] == ["stop_music", "speak_text"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  BUG-16 (TASK-046): system reminders in long tool loops
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_tool_result_with_reminder_injects_on_fifth_iteration() -> None:
+    """_tool_result_with_reminder appends the static reminder every 5 rounds."""
+    from rob_box_harness.core import dialog_core as dc
+
+    # Non-reminder rounds: content untouched.
+    for iteration in (0, 1, 2, 3, 4, 6, 7):
+        assert dc._tool_result_with_reminder("result", iteration) == "result"
+
+    # Reminder rounds: the static block is appended.
+    reminder = dc._tool_result_with_reminder("result", 5)
+    assert reminder.startswith("result")
+    assert "<system-reminder>" in reminder
+    assert "memory_context" in reminder
+    assert "кратко" in reminder
+    assert dc._tool_result_with_reminder("result", 10).endswith("</system-reminder>")
+
+    # The reminder must be static text, never LLM-generated.
+    assert "<system-reminder>" in dc._SYSTEM_REMINDER_TEXT
+
+
+def test_process_input_tool_loop_injects_system_reminder_at_iteration_5(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """A tool loop of 5+ rounds re-injects the system reminder on round 5.
+
+    The final LLM call's tool messages must contain exactly one reminder
+    block (appended to the round-5 tool result), and earlier rounds must
+    NOT carry it.
+    """
+    from rob_box_harness.core import dialog_core as dc
+
+    # 5 tool-call rounds + 1 final plain-text answer.
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(ToolCall(id=f"c{i}", name="echo",
+                                 arguments={"text": str(i)}),),
+        )
+        for i in range(1, 6)
+    ] + [LLMResponse(content="final", tool_calls=())]
+    llm.responses = scripted
+
+    async def echo(args: dict[str, object]) -> str:
+        return f"e:{args.get('text')}"
+    tools_provider._handler_map = {"echo": echo}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("q", history=[]))
+    assert result.error is None
+    assert result.spoken_text == "final"
+    assert result.tools_called == ["echo"]
+
+    # messages list is mutated in place — the last recorded call holds the
+    # final conversation (user + 5 assistant(tool_calls) + 5 tool results).
+    final_messages = llm.calls[-1][0]
+    tool_msgs = [m for m in final_messages if m.role == "tool"]
+    assert len(tool_msgs) == 5
+
+    # Round 1-4 tool results: no reminder.
+    for i in range(4):
+        assert "<system-reminder>" not in tool_msgs[i].content
+        assert "e:" in tool_msgs[i].content
+
+    # Round 5 tool result: the static reminder is appended.
+    assert "<system-reminder>" in tool_msgs[4].content
+    assert "memory_context" in tool_msgs[4].content
+    assert "кратко" in tool_msgs[4].content
+    assert tool_msgs[4].content.startswith("e:5")
