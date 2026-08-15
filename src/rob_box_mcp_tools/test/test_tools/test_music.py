@@ -9,6 +9,7 @@ test_music.py - Unit тесты для инструментов управлен
 
 import sys
 import time
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
@@ -38,6 +39,12 @@ from rob_box_mcp_tools.tools.music import (  # noqa: E402
     StopMusicTool,
     SetVibePresetTool,
     GetMusicStateTool,
+    SaveTrackTool,
+    ListTracksTool,
+    LoadTrackTool,
+    DeleteTrackTool,
+    SearchSamplesTool,
+    SetDjModeTool,
 )
 
 
@@ -1818,3 +1825,344 @@ class TestMusicQualityValidator:
         assert ok is True
         assert err == ""
 
+
+# ---------------------------------------------------------------------------
+# SaveTrackTool / ListTracksTool / LoadTrackTool / DeleteTrackTool
+# ---------------------------------------------------------------------------
+
+
+class _FakeLibrary:
+    """Минимальный фейк TrackLibrary для tool-тестов (без SQLite)."""
+
+    def __init__(self, tracks=None):
+        self.tracks = tracks or {}
+        self.save_calls = []
+        self.delete_calls = []
+
+    def save_track(self, name, code, title="", description="", tags=None, rating=0, notes=""):
+        self.save_calls.append((name, code))
+        if name == "dup":
+            return {"success": False, "error": "Трек с таким именем уже существует"}
+        self.tracks[name] = {
+            "name": name, "code": code, "title": title, "description": description,
+            "tags": tags or [], "rating": rating, "notes": notes, "play_count": 0,
+        }
+        return {"success": True, "message": f"Трек '{name}' сохранён", "track": self.tracks[name]}
+
+    def list_tracks(self, tag=None, min_rating=0):
+        tracks = list(self.tracks.values())
+        if tag:
+            tracks = [t for t in tracks if tag in t["tags"]]
+        if min_rating:
+            tracks = [t for t in tracks if t["rating"] >= min_rating]
+        return {"tracks": tracks, "total": len(tracks)}
+
+    def load_track(self, name):
+        if name not in self.tracks:
+            return {"success": False, "error": f"Трек '{name}' не найден"}
+        track = dict(self.tracks[name])
+        track["play_count"] = track.get("play_count", 0) + 1
+        self.tracks[name] = track
+        return {"success": True, "code": track["code"], "track": track}
+
+    def delete_track(self, name):
+        self.delete_calls.append(name)
+        if name not in self.tracks:
+            return {"success": False, "error": f"Трек '{name}' не найден"}
+        del self.tracks[name]
+        return {"success": True, "message": f"Трек '{name}' удалён"}
+
+
+@pytest.mark.unit
+class TestSaveTrackTool:
+    def _make_tool(self, mock_node, library=None, mgr=None):
+        from rob_box_mcp_tools.tools.music import SaveTrackTool as _SaveTrackTool
+        lib = library or _FakeLibrary()
+        manager = mgr or _make_manager()
+        return _SaveTrackTool(mock_node, lib, manager), lib, manager
+
+    def test_tool_name(self, mock_node):
+        tool, _, _ = self._make_tool(mock_node)
+        assert tool.name == "save_track"
+        assert tool.execution_type.value == "fast"
+        assert tool.destructive is False
+
+    def test_execute_with_code(self, mock_node):
+        tool, lib, _ = self._make_tool(mock_node)
+        result = tool.execute(name="my_track", code="p1 >> pluck([0])")
+        assert result.success is True
+        assert lib.save_calls == [("my_track", "p1 >> pluck([0])")]
+
+    def test_execute_without_code_uses_history(self, mock_node):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._pattern_history["full_track"] = "p1 >> pluck([0, 2])"
+        tool, lib, _ = self._make_tool(mock_node, mgr=mgr)
+        result = tool.execute(name="my_track")
+        assert result.success is True
+        assert lib.save_calls == [("my_track", "p1 >> pluck([0, 2])")]
+
+    def test_execute_without_code_and_empty_history(self, mock_node):
+        tool, _, _ = self._make_tool(mock_node)
+        result = tool.execute(name="my_track")
+        assert result.success is False
+        assert "история паттернов пуста" in result.error
+
+    def test_execute_library_error(self, mock_node):
+        lib = _FakeLibrary()
+        tool, _, _ = self._make_tool(mock_node, library=lib)
+        result = tool.execute(name="dup", code="p1 >> pluck([0])")
+        assert result.success is False
+        assert "уже существует" in result.error
+
+
+@pytest.mark.unit
+class TestListTracksTool:
+    def _make_tool(self, mock_node, library=None):
+        from rob_box_mcp_tools.tools.music import ListTracksTool as _ListTracksTool
+        return _ListTracksTool(mock_node, library or _FakeLibrary())
+
+    def test_tool_name(self, mock_node):
+        tool = self._make_tool(mock_node)
+        assert tool.name == "list_tracks"
+        assert tool.read_only is True
+
+    def test_execute_empty(self, mock_node):
+        tool = self._make_tool(mock_node)
+        result = tool.execute()
+        assert result.success is True
+        assert "Медиатека пуста" in result.message
+
+    def test_execute_with_tracks(self, mock_node):
+        lib = _FakeLibrary()
+        lib.save_track("a1", "code1", title="Alpha", tags=["chill"], rating=4)
+        lib.save_track("b2", "code2", title="Beta", tags=["rock"], rating=2)
+        tool = self._make_tool(mock_node, library=lib)
+
+        result = tool.execute()
+
+        assert result.success is True
+        assert result.data["total"] == 2
+        assert "Alpha" in result.message
+        assert "Beta" in result.message
+
+    def test_execute_filter_by_tag(self, mock_node):
+        lib = _FakeLibrary()
+        lib.save_track("a1", "code1", title="Alpha", tags=["chill"], rating=4)
+        lib.save_track("b2", "code2", title="Beta", tags=["rock"], rating=2)
+        tool = self._make_tool(mock_node, library=lib)
+
+        result = tool.execute(tag="chill")
+
+        assert result.data["total"] == 1
+        assert "Alpha" in result.message
+        assert "Beta" not in result.message
+
+    def test_execute_filter_by_rating(self, mock_node):
+        lib = _FakeLibrary()
+        lib.save_track("a1", "code1", title="Alpha", rating=4)
+        lib.save_track("b2", "code2", title="Beta", rating=2)
+        tool = self._make_tool(mock_node, library=lib)
+
+        result = tool.execute(min_rating=3)
+
+        assert result.data["total"] == 1
+        assert "Alpha" in result.message
+
+
+@pytest.mark.unit
+class TestLoadTrackTool:
+    def _make_tool(self, mock_node, library=None, mgr=None):
+        from rob_box_mcp_tools.tools.music import LoadTrackTool as _LoadTrackTool
+        return _LoadTrackTool(mock_node, library or _FakeLibrary(), mgr or _make_manager())
+
+    def test_tool_name(self, mock_node):
+        tool = self._make_tool(mock_node)
+        assert tool.name == "load_track"
+
+    def test_execute_track_not_found(self, mock_node):
+        tool = self._make_tool(mock_node)
+        result = tool.execute(name="missing")
+        assert result.success is False
+        assert "не найден" in result.error
+
+    def test_execute_success(self, mock_node):
+        lib = _FakeLibrary()
+        lib.save_track("a1", "p1 >> pluck([0])", title="Alpha")
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        tool = self._make_tool(mock_node, library=lib, mgr=mgr)
+
+        with patch("builtins.exec"):
+            result = tool.execute(name="a1")
+
+        assert result.success is True
+        assert "Alpha" in result.message
+        assert "сыграно" in result.message
+
+    def test_execute_play_failure(self, mock_node):
+        lib = _FakeLibrary()
+        lib.save_track("a1", "p1 >> pluck([0])", title="Alpha")
+        mgr = _make_manager(sc_running=False, renardo_available=False)  # SC не запущен
+        tool = self._make_tool(mock_node, library=lib, mgr=mgr)
+
+        result = tool.execute(name="a1")
+
+        assert result.success is False
+        assert "не запущен" in result.error
+
+
+@pytest.mark.unit
+class TestDeleteTrackTool:
+    def _make_tool(self, mock_node, library=None):
+        from rob_box_mcp_tools.tools.music import DeleteTrackTool as _DeleteTrackTool
+        return _DeleteTrackTool(mock_node, library or _FakeLibrary())
+
+    def test_tool_name(self, mock_node):
+        tool = self._make_tool(mock_node)
+        assert tool.name == "delete_track"
+        assert tool.destructive is True
+
+    def test_execute_success(self, mock_node):
+        lib = _FakeLibrary()
+        lib.save_track("a1", "code1")
+        tool = self._make_tool(mock_node, library=lib)
+
+        result = tool.execute(name="a1")
+
+        assert result.success is True
+        assert lib.delete_calls == ["a1"]
+        assert "удалён" in result.message
+
+    def test_execute_missing(self, mock_node):
+        tool = self._make_tool(mock_node)
+        result = tool.execute(name="nope")
+        assert result.success is False
+        assert "не найден" in result.error
+
+
+# ---------------------------------------------------------------------------
+# SearchSamplesTool
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestSearchSamplesTool:
+    def test_tool_name(self, mock_node):
+        tool = SearchSamplesTool(mock_node)
+        assert tool.name == "search_samples"
+        assert tool.read_only is True
+        assert tool.destructive is False
+
+    @patch("rob_box_voice.core.sample_search.search_renardo_samples")
+    def test_execute_error(self, mock_search, mock_node):
+        mock_search.return_value = {"error": "pack not found", "hint": "hint", "available_packs": ["0_foxdot_default"]}
+        tool = SearchSamplesTool(mock_node)
+
+        result = tool.execute(query="kick")
+
+        assert result.success is False
+        assert "pack not found" in result.error
+        assert "0_foxdot_default" in result.error
+
+    @patch("rob_box_voice.core.sample_search.search_renardo_samples")
+    def test_execute_letters_overview(self, mock_search, mock_node):
+        mock_search.return_value = {"letters": {"a": 10, "b": 5}, "total_samples": 15}
+        tool = SearchSamplesTool(mock_node)
+
+        result = tool.execute(query="*")
+
+        assert result.success is True
+        assert result.data["letters"]["a"] == 10
+        assert "2 букв" in result.message
+
+    @patch("rob_box_voice.core.sample_search.search_renardo_samples")
+    def test_execute_no_results(self, mock_search, mock_node):
+        mock_search.return_value = {"found": 0, "results": []}
+        tool = SearchSamplesTool(mock_node)
+
+        result = tool.execute(query="xyz")
+
+        assert result.success is True
+        assert "ничего не найдено" in result.message
+
+    @patch("rob_box_voice.core.sample_search.search_renardo_samples")
+    def test_execute_with_results(self, mock_search, mock_node):
+        mock_search.return_value = {
+            "found": 2,
+            "results": [
+                {"play_code": "d1 >> play('k', sample=1)"},
+                {"play_code": "d1 >> play('k', sample=2)"},
+            ],
+        }
+        tool = SearchSamplesTool(mock_node)
+
+        result = tool.execute(query="kick")
+
+        assert result.success is True
+        assert "Найдено 2" in result.message
+        assert "sample=1" in result.message
+
+
+# ---------------------------------------------------------------------------
+# SetDjModeTool
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestSetDjModeTool:
+    def test_tool_name(self, mock_node):
+        tool = SetDjModeTool(mock_node)
+        assert tool.name == "set_dj_mode"
+        assert tool.execution_type.value == "instant"
+        assert tool.destructive is False
+
+    def test_execute_enable(self, mock_node):
+        tool = SetDjModeTool(mock_node)
+        result = tool.execute(enabled=True, next_transition_sec=45, theme="8 марта", persona="диджей Пёс")
+        assert result.success is True
+        assert "включён" in result.message
+        assert "45" in result.message
+        pub = mock_node.get_publisher("/voice/dj_mode")
+        assert pub is not None
+        assert pub.published_messages
+        payload = json.loads(pub.published_messages[-1].data)
+        assert payload["enabled"] is True
+        assert payload["next_transition_sec"] == 45
+        assert payload["theme"] == "8 марта"
+        assert payload["persona"] == "диджей Пёс"
+
+    def test_execute_disable(self, mock_node):
+        tool = SetDjModeTool(mock_node)
+        result = tool.execute(enabled=False)
+        assert result.success is True
+        assert "выключен" in result.message
+        pub = mock_node.get_publisher("/voice/dj_mode")
+        payload = json.loads(pub.published_messages[-1].data)
+        assert payload["enabled"] is False
+
+    def test_execute_transition_seconds_alias(self, mock_node):
+        """LLM иногда шлёт transition_seconds вместо next_transition_sec."""
+        tool = SetDjModeTool(mock_node)
+        result = tool.execute(enabled=True, transition_seconds=60)
+        assert result.success is True
+        assert "60" in result.message
+        pub = mock_node.get_publisher("/voice/dj_mode")
+        payload = json.loads(pub.published_messages[-1].data)
+        assert payload["next_transition_sec"] == 60
+
+    def test_execute_clamps_transition(self, mock_node):
+        tool = SetDjModeTool(mock_node)
+        tool.execute(enabled=True, next_transition_sec=5)
+        pub = mock_node.get_publisher("/voice/dj_mode")
+        payload = json.loads(pub.published_messages[-1].data)
+        assert payload["next_transition_sec"] == 15  # max(15, ...)
+
+        tool.execute(enabled=True, next_transition_sec=500)
+        pub = mock_node.get_publisher("/voice/dj_mode")
+        payload = json.loads(pub.published_messages[-1].data)
+        assert payload["next_transition_sec"] == 300  # min(300, ...)
+
+    def test_execute_with_plan(self, mock_node):
+        tool = SetDjModeTool(mock_node)
+        result = tool.execute(enabled=True, plan="Трек 1: старт\nТрек 2: диско")
+        assert result.success is True
+        assert "2 треков" in result.message
