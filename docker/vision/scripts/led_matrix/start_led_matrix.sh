@@ -96,19 +96,23 @@ echo ""
 echo "============================================"
 echo "   LED Configuration"
 echo "============================================"
-echo "Total LEDs: 253"
+echo "Total LEDs: 381"
 echo "  - 5× 5×5 panels (main display): 125 LEDs"
-echo "  - 2× 8×8 panels (front panels): 128 LEDs"
+echo "  - 4× 8×8 panels (wheels front/rear): 256 LEDs"
 echo ""
 echo "Physical Order (SPI chain):"
-echo "  [0-4]: Main Display (5×25)"
+echo "  [0-4]: Main Display (5×5 ×5 = 125 LEDs)"
 echo "  [5]:   Front Left Panel (8×8)"
 echo "  [6]:   Front Right Panel (8×8)"
+echo "  [7]:   Rear Left Panel (8×8)"
+echo "  [8]:   Rear Right Panel (8×8)"
 echo ""
 echo "Logical Groups:"
 echo "  - main_display (5×25)"
-echo "  - panel_front_left (8×8)"
-echo "  - panel_front_right (8×8)"
+echo "  - wheel_front_left (8×8)"
+echo "  - wheel_front_right (8×8)"
+echo "  - wheel_rear_left (8×8)"
+echo "  - wheel_rear_right (8×8)"
 echo ""
 echo "Topics:"
 echo "  IN:  /panel_image (sensor_msgs/Image)"
@@ -120,7 +124,7 @@ echo ""
 echo -e "${GREEN}🚀 Starting LED Matrix System...${NC}"
 echo ""
 
-# Note: Compositor does not use YAML config - it has hardcoded configuration
-# If you need to change compositor config, edit the source code:
-# src/ros2leds/led_matrix_compositor/led_matrix_compositor/led_matrix_compositor.py
+# Note: Compositor читает конфигурацию из YAML (config_file), приоритет
+# volume > install. Если нужно изменить конфигурацию, редактируйте:
+#   /config/led_matrix/led_matrix_compositor.yaml (volume, docker/vision/config/)
 exec ros2 launch led_matrix_compositor led_matrix_compositor_launch.py
