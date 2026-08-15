@@ -209,10 +209,9 @@ class SpeakTextTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Произнести текст голосом через TTS. "
-            "ИСПОЛЬЗУЙ ЭТО вместо возврата JSON с SSML. "
-            "ОБЯЗАТЕЛЬНО указывай animation - это покажет соответствующую анимацию на LED матрице робота (happy, sad, police_lights, и т.д.). "
-            "Можешь вызвать несколько раз для разных фраз, делать паузы между ними через play_sound или play_animation."
+            "Произнести текст голосом через TTS. Используй для ответа пользователю. "
+            "Указывай animation — анимация на LED матрице во время речи. "
+            "Для пауз используй play_sound или play_animation."
         )
 
     @property
@@ -221,7 +220,7 @@ class SpeakTextTool(MCPTool):
             MCPToolParameter(
                 name="text",
                 type="string",
-                description="Текст для произнесения. Можно использовать русские ударения (+ после гласной).",
+                description="Текст для произнесения (до 150 символов; длиннее — разбей на части)",
                 required=True,
             ),
             MCPToolParameter(
@@ -241,11 +240,8 @@ class SpeakTextTool(MCPTool):
                 name="animation",
                 type="string",
                 description=(
-                    "Анимация для отображения на LED матрице во время речи. "
-                    "Выбирай подходящую анимацию для контекста (эмоциональные: happy, sad, angry, surprised; "
-                    "специальные: police_lights, fire_truck, thinking, и т.д.). "
-                    "Псевдонимы нормализуются: neutral→idle, excited→happy, confused→thinking, talk→talking. "
-                    "Если указано неизвестное значение — будет warning в лог и анимация останется без изменений."
+                    "Анимация на LED матрице во время речи: happy, sad, angry, surprised, thinking, "
+                    "police_lights и др. Псевдонимы: neutral→idle, excited→happy, confused→thinking."
                 ),
                 required=False,
             ),
@@ -582,9 +578,8 @@ class ListenForResponseTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Ждать ответ пользователя через речь. "
-            "Робот активирует микрофон и будет ждать ответа (таймаут 30 секунд). "
-            "ИСПОЛЬЗУЙ когда задал вопрос пользователю или ждёшь продолжения диалога."
+            "Ждать ответ пользователя (активирует микрофон, таймаут 30 сек). "
+            "Используй после вопроса пользователю."
         )
 
     @property
@@ -599,7 +594,7 @@ class ListenForResponseTool(MCPTool):
             MCPToolParameter(
                 name="prompt_text",
                 type="string",
-                description="Текст-подсказка что ждёшь от пользователя (для логирования)",
+                description="Текст-подсказка, что ждёшь от пользователя (для логов)",
                 required=False,
             ),
         ]
@@ -649,9 +644,8 @@ class EstimateTtsDurationTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Оценить длительность TTS-озвучки для заданного текста в секундах. "
-            "Используется для планирования аранжировки музыки под длительность рэпа/стиха. "
-            "Возвращает estimate_sec (float) — примерное время звучания с учётом chipmunk-ускорения."
+            "Оценить длительность TTS-озвучки текста в секундах "
+            "(для планирования музыки под рэп/стих)."
         )
 
     @property
@@ -660,16 +654,13 @@ class EstimateTtsDurationTool(MCPTool):
             MCPToolParameter(
                 name="text",
                 type="string",
-                description="Текст для оценки длительности озвучки.",
+                description="Текст для оценки",
                 required=True,
             ),
             MCPToolParameter(
                 name="chars_per_second",
                 type="number",
-                description=(
-                    "Скорость озвучки (символов/сек). По умолчанию 30 — "
-                    "калиброванное значение для русского TTS с chipmunk 2x."
-                ),
+                description="Скорость озвучки, симв/сек (по умолчанию 30, калибровка для TTS)",
                 required=False,
             ),
         ]
@@ -737,12 +728,9 @@ class RegisterSpeakerTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Зарегистрировать голос текущего спикера в voice biometric DB. "
-            "Вызывай когда: (1) пользователь представился («меня зовут X») — "
-            "передай name=X, (2) хочешь узнать имя незнакомца — передай name=null "
-            "и спроси «Как вас зовут?» через speak_text. "
-            "Имя сохранится в БД вместе с эмбеддингом голоса (resemblyzer d-vector), "
-            "после этого пользователя можно будет узнавать по голосу."
+            "Зарегистрировать голос текущего собеседника (voice biometrics). "
+            "Вызывай когда пользователь представился («меня зовут X») — передай name=X; "
+            "или чтобы узнать имя незнакомца — name=null и спроси «Как вас зовут?»."
         )
 
     @property
@@ -752,22 +740,16 @@ class RegisterSpeakerTool(MCPTool):
                 name="name",
                 type="string",
                 description=(
-                    "Имя спикера для регистрации (Cyrillic). "
-                    "Передай null/None если хочешь спросить имя незнакомца — "
-                    "робот спросит «Как вас зовут?» и ждёт ответа. "
-                    "Если пользователь ИСПРАВЛЯЕТ имя («я не X, я Y») — "
-                    "передай name=Y и old_name=X."
+                    "Имя собеседника (кириллица, с заглавной, ≥2 буквы). "
+                    "null — если хочешь спросить имя. "
+                    "Исправление: «я не X, я Y» → name=Y, old_name=X."
                 ),
                 required=False,
             ),
             MCPToolParameter(
                 name="old_name",
                 type="string",
-                description=(
-                    "Предыдущее имя (если пользователь исправляет: "
-                    "«я не Эйджик, я Денчик» → old_name='Эйджик', name='Денчик'). "
-                    "Опусти, если пользователь представляется впервые."
-                ),
+                description="Предыдущее имя при исправлении («я не X, я Y»); опусти при первом представлении",
                 required=False,
             ),
         ]

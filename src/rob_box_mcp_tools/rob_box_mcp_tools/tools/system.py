@@ -57,7 +57,9 @@ class SetVolumeTool(MCPTool):
 
     @property
     def description(self) -> str:
-        return "Установить громкость голоса робота. Используй для команд 'громче', 'тише', 'максимальная громкость'."
+        return (
+            "Изменить громкость голоса ('громче', 'тише', 'максимальная')."
+        )
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
@@ -162,7 +164,9 @@ class SetPitchTool(MCPTool):
 
     @property
     def description(self) -> str:
-        return "Установить высоту голоса робота. Используй для команд 'говори выше', 'говори ниже'."
+        return (
+            "Изменить высоту голоса ('говори выше', 'говори ниже')."
+        )
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
@@ -262,7 +266,9 @@ class SetSpeedTool(MCPTool):
 
     @property
     def description(self) -> str:
-        return "Установить скорость речи робота. Используй для команд 'говори быстрее', 'говори медленнее'."
+        return (
+            "Изменить скорость речи ('говори быстрее', 'говори медленнее')."
+        )
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
@@ -361,8 +367,7 @@ class GetCurrentTimeTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Получить текущее время и дату. Используй когда пользователь спрашивает "
-            "который час, какая дата, какой день недели, какое время суток, сколько сейчас времени."
+            "Текущее время и дата ('который час', 'какая дата', 'день недели')."
         )
 
     @property
@@ -422,7 +427,9 @@ class GetRobotStatusTool(MCPTool):
 
     @property
     def description(self) -> str:
-        return "Получить текущий статус робота (позиция, батарея, состояние систем)."
+        return (
+            "Текущий статус робота (позиция, батарея, состояние систем)."
+        )
 
     @property
     def parameters(self) -> List[MCPToolParameter]:

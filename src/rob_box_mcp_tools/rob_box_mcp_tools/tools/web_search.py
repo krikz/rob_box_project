@@ -42,11 +42,8 @@ class SearchWebTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Поиск в интернете через DuckDuckGo. Возвращает до N сниппетов "
-            "(title, text, url) по запросу. Используй для: погоды, новостей, "
-            "курсов валют, спортивных результатов, фактов, локальной "
-            "информации — всего, что требует свежих данных. НЕ используй "
-            "для музыкального ресёрча (genre/BPM — есть search_artist_style)."
+            "Поиск в интернете через DuckDuckGo: погода, новости, курсы валют, "
+            "спорт, факты, локальная информация. Возвращает до N сниппетов (title, text, url)."
         )
 
     @property
@@ -55,16 +52,13 @@ class SearchWebTool(MCPTool):
             MCPToolParameter(
                 name="query",
                 type="string",
-                description=(
-                    "Поисковый запрос на русском или английском. "
-                    "Будь конкретным: укажи город, дату, тему."
-                ),
+                description="Поисковый запрос; будь конкретным: город, дата, тема",
                 required=True,
             ),
             MCPToolParameter(
                 name="max_results",
                 type="integer",
-                description="Сколько результатов вернуть (1-10, по умолчанию 5).",
+                description="Сколько результатов вернуть (1-10, по умолчанию 5)",
                 required=False,
             ),
         ]

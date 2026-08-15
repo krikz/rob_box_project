@@ -87,19 +87,14 @@ class PlaySoundTool(MCPTool):
 
     @property
     def description(self) -> str:
-        return """Воспроизвести звуковой эффект. ИСПОЛЬЗУЙ АВТОМАТИЧЕСКИ для звукового сопровождения эмоций во время разговора.
-
-Категории звуков:
-- BASE (robot_*): Эмоции и реакции робота - affirm, angry, concerned, confirm, confused, cute, happy, sigh, surprise, thinking, talk_1-4, error, drip_*
-- UI (ui_*): Звуки интерфейса - activate, button, bell, chime, confirm, notification, roger, menu_click
-- ROBOT (robot_*): Спецэффекты - alert, glitch, impact, power_up, flyby, whoosh, bubbles, stinger, work_1-3
-
-Примеры использования:
-- Подтверждение команды: robot_confirm, ui_roger, robot_affirm
-- Ошибка: robot_error, robot_glitch, robot_alert
-- Обработка/размышление: robot_thinking, robot_loop, robot_work_1
-- Успех: robot_happy, ui_confirm, ui_chime
-- Удивление: robot_surprise, robot_concerned"""
+        return (
+            "Воспроизвести звуковой эффект (короткий, <5 сек). "
+            "Используй для эмоционального сопровождения речи. "
+            "Для музыки/мелодий используй execute_music_code. "
+            "Полный список звуков: get_sound_info(). "
+            "Основные: robot_happy, robot_thinking, robot_confirm, robot_error, "
+            "robot_surprise, ui_notification, ui_confirm, ui_roger."
+        )
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
@@ -200,10 +195,8 @@ class GetSoundInfoTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Получить информацию о доступных звуковых эффектах. "
-            "Используй этот инструмент чтобы узнать какие звуки доступны, "
-            "их описание, длительность, категорию и рекомендуемое использование. "
-            "Можно запросить информацию о конкретном звуке или получить список всех звуков определенной категории."
+            "Информация о доступных звуковых эффектах: список, описание, "
+            "длительность, категория. Запрос по конкретному звуку или категории."
         )
 
     @property

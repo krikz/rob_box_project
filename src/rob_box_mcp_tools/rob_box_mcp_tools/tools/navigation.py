@@ -125,9 +125,8 @@ class NavigateToWaypointTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Навигация робота к именованной точке (waypoint) из базы. "
-            "Используй для команд типа 'иди к кухне', 'поезжай в зал'. "
-            "Сначала проверь доступные точки через list_waypoints."
+            "Навигация к именованной точке из базы. "
+            "Для 'иди к кухне', 'поезжай в зал'. Сначала — list_waypoints."
         )
 
     @property
@@ -188,8 +187,8 @@ class NavigateToCoordinatesTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Навигация робота к произвольным координатам (x, y, theta) в системе координат карты. "
-            "Используй для возвращения на сохранённую позицию (после get_current_pose)."
+            "Навигация к произвольным координатам (x, y, theta) в карте. "
+            "Для возврата на сохранённую позицию (после get_current_pose)."
         )
 
     @property
@@ -246,7 +245,10 @@ class MoveDirectionTool(MCPTool):
 
     @property
     def description(self) -> str:
-        return "Движение робота в указанном направлении. Используй для команд 'вперёд', 'назад', 'поверни налево'."
+        return (
+            "Движение в направлении ('вперёд', 'назад', 'налево', 'направо') "
+            "с дистанцией в метрах."
+        )
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
@@ -310,7 +312,9 @@ class StopNavigationTool(MCPTool):
 
     @property
     def description(self) -> str:
-        return "Остановить текущую навигацию робота. Используй для команд 'стоп', 'остановись', 'отмени движение'."
+        return (
+            "Остановить текущую навигацию ('стоп', 'остановись')."
+        )
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
@@ -352,7 +356,9 @@ class ListWaypointsTool(MCPTool):
 
     @property
     def description(self) -> str:
-        return "Получить список всех сохранённых точек (waypoints) для навигации на текущей карте."
+        return (
+            "Список сохранённых точек (waypoints) на текущей карте."
+        )
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
@@ -402,10 +408,8 @@ class SaveWaypointTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Сохранить текущую позицию робота как именованную точку. "
-            "Используй когда пользователь говорит 'запомни это место как кухня', "
-            "'это зал', 'сохрани точку спальня'. "
-            "Если точка с таким именем уже есть — координаты обновятся."
+            "Сохранить текущую позицию как именованную точку "
+            "('запомни это место как кухня'). Если точка есть — координаты обновятся."
         )
 
     @property
@@ -470,8 +474,7 @@ class DeleteWaypointTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Удалить сохранённую точку по имени. "
-            "Используй когда пользователь говорит 'удали зал', 'забудь кухню'."
+            "Удалить сохранённую точку по имени ('удали зал', 'забудь кухню')."
         )
 
     @property
@@ -521,8 +524,8 @@ class ClearWaypointsTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Удалить ВСЕ сохранённые точки на текущей карте. "
-            "Используй когда пользователь говорит 'очисти все точки', 'удали все точки'."
+            "Удалить ВСЕ сохранённые точки на текущей карте "
+            "('очисти все точки')."
         )
 
     @property
@@ -562,9 +565,8 @@ class GetCurrentPoseTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Получить текущую позицию робота (x, y, theta) в системе координат карты. "
-            "Используй перед 'миссиями' чтобы запомнить точку возврата, "
-            "или когда пользователь спрашивает 'где ты?'."
+            "Текущая позиция робота (x, y, theta) в карте. "
+            "Перед 'миссиями' (запомнить точку возврата) или 'где ты?'."
         )
 
     @property

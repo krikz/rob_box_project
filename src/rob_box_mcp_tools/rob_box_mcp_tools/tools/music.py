@@ -1416,12 +1416,9 @@ class ExecuteMusicCodeTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Выполнить Renardo-код для создания или изменения музыкального паттерна в реальном времени. "
-            "Код выполняется в контексте Renardo (FoxDot-совместимый синтаксис). "
-            "Пример: 'p1 >> pluck([0, 2, 4], dur=0.5, amp=0.8)'. "
-            "Перед выполнением проверяется доступность SuperCollider. "
-            "Опасные системные команды автоматически блокируются. "
-            "Укажи pattern_name чтобы паттерн можно было остановить или изменить позже."
+            "Выполнить Renardo/FoxDot-код для создания музыки в реальном времени. "
+            "Пример: 'p1 >> pluck([0,2,4], dur=0.5)'. "
+            "Опасные системные команды блокируются. Укажи pattern_name для остановки/изменения позже."
         )
 
     @property
@@ -1430,39 +1427,25 @@ class ExecuteMusicCodeTool(MCPTool):
             MCPToolParameter(
                 name="code",
                 type="string",
-                description="Строка Python/Renardo-кода для выполнения. Например: 'p1 >> pluck([0, 2, 4])'",
+                description="Python/Renardo-код, например: 'p1 >> pluck([0, 2, 4])'",
                 required=True,
             ),
             MCPToolParameter(
                 name="pattern_name",
                 type="string",
-                description=(
-                    "Имя паттерна для хранения в истории (например: 'p1', 'bass', 'drums'). "
-                    "Используется для последующей мутации или остановки паттерна."
-                ),
+                description="Имя паттерна (p1, bass, drums) для последующей мутации/остановки",
                 required=False,
             ),
             MCPToolParameter(
                 name="segments",
                 type="integer",
-                description=(
-                    "Сколько тактов (баров) должна играть фоновая музыка "
-                    "(1 бар = 4 бита). Это ТОЛЬКО предохранитель: система "
-                    "сама останавливает музыку после tts_batch_complete, "
-                    "segments лишь ограничивает время игры, если TTS завис. "
-                    "Для песни обычно 8-16 тактов. Если не знаешь — НЕ "
-                    "указывай (дефолт: музыка играет до конца озвучки). #990"
-                ),
+                description="Сколько тактов играть как предохранитель (1 бар = 4 бита), обычно 8-16",
                 required=False,
             ),
             MCPToolParameter(
                 name="duration_sec",
                 type="number",
-                description=(
-                    "DEPRECATED (#990) — игнорируется для остановки музыки, "
-                    "оставлен для обратной совместимости. НЕ используй. "
-                    "Вместо него передавай segments."
-                ),
+                description="DEPRECATED (#990) — игнорируется, используй segments",
                 required=False,
             ),
         ]
@@ -1521,9 +1504,7 @@ class StopMusicTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Остановить музыкальный паттерн по имени или всю музыку. "
-            "Если указан pattern_name — остановится только этот паттерн. "
-            "Если pattern_name не указан или равен 'all' — остановится вся музыка (Clock.clear())."
+            "Остановить музыку: один паттерн (pattern_name) или всю (пусто/'all')."
         )
 
     @property
@@ -1532,10 +1513,7 @@ class StopMusicTool(MCPTool):
             MCPToolParameter(
                 name="pattern_name",
                 type="string",
-                description=(
-                    "Имя паттерна для остановки (например: 'p1', 'bass'). "
-                    "Передай 'all' или оставь пустым для остановки всей музыки."
-                ),
+                description="Имя паттерна ('p1', 'bass') или 'all'/пусто — вся музыка",
                 required=False,
             ),
         ]
@@ -1592,14 +1570,9 @@ class SetVibePresetTool(MCPTool):
 
     @property
     def description(self) -> str:
-        presets_desc = ", ".join(
-            f"{name} (scale={p['scale']}, bpm={p['bpm']})" for name, p in MusicManager.VIBE_PRESETS.items()
-        )
         return (
-            "Применить вайб-пресет для быстрой настройки музыкального контекста. "
-            "Устанавливает скейл, BPM и тонику в Renardo одной командой. "
-            f"Доступные пресеты: {presets_desc}. "
-            "Устанавливает: Clock.bpm, Scale.default, Root.default (целое число полутонов от C)."
+            "Применить вайб-пресет: быстро настраивает скейл, BPM и тонику в Renardo "
+            "одной командой. Доступные пресеты — в enum параметра preset_name."
         )
 
     @property
@@ -1645,9 +1618,7 @@ class GetMusicStateTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Получить текущее состояние музыкального менеджера: "
-            "доступность Renardo и SuperCollider, список активных паттернов, "
-            "историю кода паттернов и применённый пресет."
+            "Получить текущее состояние музыки: доступность Renardo/SC, активные паттерны, пресет."
         )
 
     @property
@@ -1923,10 +1894,8 @@ class SaveTrackTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Сохранить Renardo-трек в медиатеку робота для повторного воспроизведения. "
-            "Если code не передан — сохраняется код последнего выполненного паттерна из истории. "
-            "Медиатека хранится в /config/music_library.json (персистентно между перезапусками). "
-            "Используй для сохранения понравившихся треков, заготовок или процедурных шедевров."
+            "Сохранить Renardo-трек в медиатеку робота. "
+            "Если code не передан — берётся код последнего паттерна из истории."
         )
 
     @property
@@ -1935,40 +1904,37 @@ class SaveTrackTool(MCPTool):
             MCPToolParameter(
                 name="name",
                 type="string",
-                description="Уникальное имя-идентификатор трека (slug, например: 'csm_chill_v2')",
+                description="Уникальное имя-идентификатор (slug, например: 'csm_chill_v2')",
                 required=True,
             ),
             MCPToolParameter(
                 name="code",
                 type="string",
-                description=(
-                    "Renardo-код трека. Если не передан — берётся из истории паттернов "
-                    "по ключу pattern_name или последний выполненный код."
-                ),
+                description="Renardo-код; если пусто — из истории паттернов",
                 required=False,
             ),
             MCPToolParameter(
                 name="title",
                 type="string",
-                description="Читаемое название трека (например: 'Night Drive в C minor')",
+                description="Читаемое название трека",
                 required=False,
             ),
             MCPToolParameter(
                 name="description",
                 type="string",
-                description="Описание трека: настроение, структура, особенности",
+                description="Описание трека (настроение, структура)",
                 required=False,
             ),
             MCPToolParameter(
                 name="tags",
                 type="array",
-                description="Список тегов (например: ['chill', 'minor', '90bpm', 'full_track'])",
+                description="Теги, например: ['chill', 'minor', '90bpm']",
                 required=False,
             ),
             MCPToolParameter(
                 name="rating",
                 type="integer",
-                description="Оценка трека от 0 до 5",
+                description="Оценка от 0 до 5",
                 required=False,
             ),
             MCPToolParameter(
@@ -2035,9 +2001,7 @@ class ListTracksTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Просмотреть все треки в медиатеке робота. "
-            "Можно фильтровать по тегу или минимальному рейтингу. "
-            "Показывает: название, теги, рейтинг, количество воспроизведений, заметки."
+            "Просмотреть все треки в медиатеке. Можно фильтровать по тегу или рейтингу."
         )
 
     @property
@@ -2046,13 +2010,13 @@ class ListTracksTool(MCPTool):
             MCPToolParameter(
                 name="tag",
                 type="string",
-                description="Фильтр по тегу (например: 'full_track', 'chill', 'robot_authored')",
+                description="Фильтр по тегу (например: 'chill')",
                 required=False,
             ),
             MCPToolParameter(
                 name="min_rating",
                 type="integer",
-                description="Показать только треки с рейтингом не ниже указанного (0-5)",
+                description="Только треки с рейтингом ≥ указанного (0-5)",
                 required=False,
             ),
         ]
@@ -2105,10 +2069,8 @@ class LoadTrackTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Загрузить трек из медиатеки и воспроизвести его через Renardo. "
-            "Трек идентифицируется по имени (slug). "
-            "Используй list_tracks чтобы узнать доступные имена. "
-            "Счётчик воспроизведений обновляется автоматически."
+            "Загрузить трек из медиатеки и воспроизвести через Renardo. "
+            "Имена — через list_tracks."
         )
 
     @property
@@ -2117,7 +2079,7 @@ class LoadTrackTool(MCPTool):
             MCPToolParameter(
                 name="name",
                 type="string",
-                description="Имя трека для загрузки (slug, например: 'csm_132_full_track')",
+                description="Имя трека (slug, например: 'csm_132_full_track')",
                 required=True,
             ),
         ]
@@ -2229,10 +2191,8 @@ class SearchSamplesTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Поиск Renardo-сэмплов по ключевому слову в имени файла. "
-            "Возвращает букву, sample_index и готовый play_code. "
-            "Используй когда нужно найти неизвестную букву/индекс сэмпла. "
-            "query='*' — обзор всех доступных букв и количества сэмплов в паке."
+            "Поиск Renardo-сэмплов по ключевому слову: возвращает букву, "
+            "sample_index и готовый play_code. query='*' — обзор всех букв."
         )
 
     @property
@@ -2351,11 +2311,9 @@ class SetDjModeTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Включить или выключить режим DJ. "
-            "В режиме DJ робот автономно делает плавные переходы между музыкальными треками "
-            "каждые 30–60 секунд, создавая атмосферу живой вечеринки. "
-            "Используй enabled=true чтобы включить, enabled=false чтобы выключить. "
-            "Перед включением убедись что музыка уже играет (запусти трек через execute_music_code)."
+            "Включить/выключить режим DJ: автономные плавные переходы между треками "
+            "каждые 30-60 сек. Включай только когда музыка уже играет "
+            "(execute_music_code) и пользователь просит «диджей»/«вечеринку»."
         )
 
     @property
@@ -2364,54 +2322,31 @@ class SetDjModeTool(MCPTool):
             MCPToolParameter(
                 name="enabled",
                 type="boolean",
-                description="true — включить DJ-режим (автопереходы), false — выключить",
+                description="true — включить DJ, false — выключить",
                 required=True,
             ),
             MCPToolParameter(
                 name="next_transition_sec",
                 type="integer",
-                description=(
-                    "Через сколько секунд сделать следующий автоматический переход (30–120). "
-                    "ЛЛМ выбирает сам исходя из темпа сета: "
-                    "быстрый энергичный сет → 30–40 сек, "
-                    "медленный амбиент → 60–90 сек. "
-                    "Обязательно передавай при enabled=true, в том числе при каждом DJ-переходе."
-                ),
+                description="Через сколько секунд следующий автопереход (30-120)",
                 required=False,
             ),
             MCPToolParameter(
                 name="theme",
                 type="string",
-                description=(
-                    "Тема вечеринки / контекст для DJ (например: '8 марта, женский день', "
-                    "'день рождения Антона', 'хэллоуин', 'корпоратив в стиле 90-х'). "
-                    "Передавай при первом включении DJ-режима — робот будет подстраивать музыку "
-                    "и иногда тематически обращаться к публике. При повторных вызовах set_dj_mode "
-                    "внутри DJ-переходов тему передавать не нужно — она запомнена."
-                ),
+                description="Тема вечеринки (например: '8 марта', 'хэллоуин')",
                 required=False,
             ),
             MCPToolParameter(
                 name="persona",
                 type="string",
-                description=(
-                    "DJ-образ / персона, которую юзер задал словами "
-                    "(например 'диджей Пёс', 'диджей Кот'). Передавай когда "
-                    "юзер назначил роль — робот будет представляться этим "
-                    "образом. По умолчанию 'ДиДжей РОббокс'."
-                ),
+                description="DJ-образ (например 'диджей Пёс')",
                 required=False,
             ),
             MCPToolParameter(
                 name="plan",
                 type="string",
-                description=(
-                    "План DJ-сета: список треков/блоков через новую строку, "
-                    "каждый начинается с 'Трек N:', например: "
-                    "'Трек 1: энергичный старт 128bpm\\nТрек 2: диско-хит 90-х\\nТрек 3: финальный вальс'. "
-                    "Передавай при ПЕРВОМ включении DJ — робот пройдёт по плану "
-                    "и на последнем треке объявит 'вечеринка заканчивается' и сам выключит DJ."
-                ),
+                description="План DJ-сета: строки 'Трек N: описание'",
                 required=False,
             ),
         ]
