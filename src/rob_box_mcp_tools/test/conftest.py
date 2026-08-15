@@ -129,6 +129,14 @@ class MockNode:
         self._timers.append(timer)
         return timer
 
+    def get_clock(self) -> Mock:
+        """Мок rclpy Clock (нужен инструментам, которые ставят header.stamp)."""
+        clock = Mock()
+        now = Mock()
+        now.to_msg.return_value = None
+        clock.now.return_value = now
+        return clock
+
     def destroy_publisher(self, publisher):
         for topic, pub in list(self._publishers.items()):
             if pub == publisher:

@@ -21,6 +21,16 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 class PlaySoundTool(MCPTool):
     """Инструмент для воспроизведения звуковых эффектов."""
 
+    #: Fallback-список базовых звуков, когда sound_catalog.json недоступен.
+    #: Используется и в ``_load_sounds_from_catalog``, и в
+    #: ``GetSoundInfoTool._load_catalog`` (раньше последний падал с
+    #: AttributeError — AVAILABLE_SOUNDS не существовал на классе).
+    AVAILABLE_SOUNDS = [
+        "robot_affirm", "robot_angry", "robot_confused", "robot_cute",
+        "robot_error", "robot_happy", "robot_thinking", "robot_surprise",
+        "ui_button", "ui_confirm", "ui_notification",
+    ]
+
     def __init__(self, node):
         super().__init__(node)
         # Динамический импорт во время выполнения
@@ -75,11 +85,7 @@ class PlaySoundTool(MCPTool):
 
         # Fallback - минимальный список базовых звуков
         self.log_warning("sound_catalog.json не найден, используем fallback список")
-        return [
-            "robot_affirm", "robot_angry", "robot_confused", "robot_cute",
-            "robot_error", "robot_happy", "robot_thinking", "robot_surprise",
-            "ui_button", "ui_confirm", "ui_notification",
-        ], {}
+        return list(self.AVAILABLE_SOUNDS), {}
 
     @property
     def name(self) -> str:
