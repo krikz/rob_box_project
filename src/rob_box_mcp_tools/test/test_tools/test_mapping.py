@@ -243,3 +243,385 @@ def test_mapping_service_clients_use_reentrant_callback_group(monkeypatch):
     assert finish_tool.set_mode_localization_client.kwargs.get("callback_group") is not None
     assert finish_tool.publish_map_client.kwargs.get("callback_group") is not None
     assert optimize_tool.publish_map_client.kwargs.get("callback_group") is not None
+
+
+class _NeverFuture:
+    """Future, который никогда не вызывает done_callback (для timeout-тестов)."""
+
+    def __init__(self, result=None):
+        self._result = result
+
+    def add_done_callback(self, callback):
+        pass
+
+    def result(self):
+        return self._result
+
+
+class _FakeState:
+    def __init__(self):
+        self.mapping_calls = []
+        self.localization_calls = []
+
+    def is_mapping(self):
+        return False
+
+    def set_mapping(self, map_name=None, map_id=None):
+        self.mapping_calls.append((map_name, map_id))
+
+    def set_localization(self, map_name=None, map_id=None):
+        self.localization_calls.append((map_name, map_id))
+
+
+class _RenameStore:
+    """WaypointStore с rename_map / get_active_map_id / set_active_map_by_name."""
+
+    def __init__(self, map_id="map-1", found=True):
+        self.map_id = map_id
+        self.found = found
+        self.renamed = []
+        self.created = []
+
+    def create_map(self, name=None):
+        self.created.append(name)
+        return "map-new"
+
+    def get_active_map_id(self):
+        return self.map_id
+
+    def rename_map(self, map_id, name):
+        self.renamed.append((map_id, name))
+
+    def set_active_map_by_name(self, name):
+        return self.found
+
+
+@pytest.mark.unit
+def test_start_mapping_success_new_location_creates_map(monkeypatch):
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    StartMappingTool = module.StartMappingTool
+
+    node = _FakeNode()
+    store = _RenameStore()
+    state = _FakeState()
+    tool = StartMappingTool(node, waypoint_store=store, mapping_state=state)
+
+    result = tool.execute(map_name="квартира")
+
+    assert result.success is True
+    assert result.data == {"map_id": "map-new"}
+    assert "квартира" in result.message
+    assert store.created == ["квартира"]
+    assert state.mapping_calls == [("квартира", "map-new")]
+    # backup и set_mode_mapping и load_database вызваны
+    assert node.clients["/rtabmap/rtabmap/backup"].call_count == 1
+    assert node.clients["/rtabmap/rtabmap/set_mode_mapping"].call_count == 1
+    assert node.clients["/rtabmap/rtabmap/load_database"].call_count == 1
+
+
+@pytest.mark.unit
+def test_start_mapping_continue_existing_map(monkeypatch):
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    StartMappingTool = module.StartMappingTool
+
+    node = _FakeNode()
+    store = _RenameStore()
+    tool = StartMappingTool(node, waypoint_store=store)
+
+    result = tool.execute(new_location=False)
+
+    assert result.success is True
+    assert result.data is None  # no new map created
+    assert "существующей карте" in result.message
+    assert store.created == []
+
+
+@pytest.mark.unit
+def test_start_mapping_set_mode_not_ready(monkeypatch):
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    StartMappingTool = module.StartMappingTool
+
+    node = _FakeNode()
+    tool = StartMappingTool(node)
+    node.clients["/rtabmap/rtabmap/set_mode_mapping"].ready = False
+
+    result = tool.execute()
+
+    assert result.success is False
+    assert "set_mode_mapping service не готов" in result.error
+
+
+@pytest.mark.unit
+def test_start_mapping_load_database_not_ready(monkeypatch):
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    StartMappingTool = module.StartMappingTool
+
+    node = _FakeNode()
+    tool = StartMappingTool(node)
+    node.clients["/rtabmap/rtabmap/load_database"].ready = False
+
+    result = tool.execute()
+
+    assert result.success is False
+    assert "load_database service не готов" in result.error
+
+
+@pytest.mark.unit
+def test_start_mapping_backup_failure_continues(monkeypatch):
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    StartMappingTool = module.StartMappingTool
+
+    node = _FakeNode()
+    tool = StartMappingTool(node)
+    node.clients["/rtabmap/rtabmap/backup"].ready = False  # backup пропускается
+
+    result = tool.execute(new_location=False)
+
+    assert result.success is True  # работаем без backup
+    assert "резервной копии" in result.message
+
+
+@pytest.mark.unit
+def test_start_mapping_set_mode_timeout(monkeypatch):
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    StartMappingTool = module.StartMappingTool
+
+    node = _FakeNode()
+    tool = StartMappingTool(node)
+    node.clients["/rtabmap/rtabmap/set_mode_mapping"].result_value = None
+    # call_async возвращает future, который никогда не завершится
+    tool.set_mode_mapping_client.call_async = lambda req: _NeverFuture()
+
+    result = tool.execute()
+
+    assert result.success is False
+    assert "Таймаут ожидания set_mode_mapping" in result.error
+
+
+@pytest.mark.unit
+def test_continue_mapping_success(monkeypatch):
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    ContinueMappingTool = module.ContinueMappingTool
+
+    node = _FakeNode()
+    tool = ContinueMappingTool(node)
+
+    result = tool.execute()
+
+    assert result.success is True
+    assert "Продолжаю исследование" in result.message
+    assert node.clients["/rtabmap/rtabmap/set_mode_mapping"].call_count == 1
+
+
+@pytest.mark.unit
+def test_continue_mapping_service_not_ready(monkeypatch):
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    ContinueMappingTool = module.ContinueMappingTool
+
+    node = _FakeNode()
+    tool = ContinueMappingTool(node)
+    node.clients["/rtabmap/rtabmap/set_mode_mapping"].ready = False
+
+    result = tool.execute()
+
+    assert result.success is False
+    assert "set_mode service не готов" in result.error
+
+
+@pytest.mark.unit
+def test_finish_mapping_renames_map(monkeypatch):
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    FinishMappingTool = module.FinishMappingTool
+
+    node = _FakeNode()
+    store = _RenameStore()
+    state = _FakeState()
+    tool = FinishMappingTool(node, waypoint_store=store, mapping_state=state)
+
+    result = tool.execute(map_name="квартира")
+
+    assert result.success is True
+    assert store.renamed == [("map-1", "квартира")]
+    assert state.localization_calls == [("квартира", "map-1")]
+    assert node.clients["/rtabmap/rtabmap/set_mode_localization"].call_count == 1
+    assert node.clients["/rtabmap/rtabmap/publish_map"].call_count == 1
+
+
+@pytest.mark.unit
+def test_finish_mapping_services_not_ready_warns_but_succeeds(monkeypatch):
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    FinishMappingTool = module.FinishMappingTool
+
+    node = _FakeNode()
+    tool = FinishMappingTool(node)
+    node.clients["/rtabmap/rtabmap/set_mode_localization"].ready = False
+    node.clients["/rtabmap/rtabmap/publish_map"].ready = False
+
+    result = tool.execute()
+
+    assert result.success is True  # graceful — предупреждения, не краш
+    assert "Заканчиваю исследование" in result.message
+
+
+@pytest.mark.unit
+def test_finish_mapping_localization_timeout(monkeypatch):
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    FinishMappingTool = module.FinishMappingTool
+
+    node = _FakeNode()
+    tool = FinishMappingTool(node)
+    tool.set_mode_localization_client.call_async = lambda req: _NeverFuture()
+
+    result = tool.execute()
+
+    assert result.success is True  # timeout → warning, но не краш
+    assert "Заканчиваю исследование" in result.message
+
+
+@pytest.mark.unit
+def test_optimize_map_partial_failure(monkeypatch):
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    OptimizeMapTool = module.OptimizeMapTool
+
+    node = _FakeNode()
+    tool = OptimizeMapTool(node)
+    # loop closures не готов → попадёт в failed, остальные — completed
+    node.clients["/rtabmap/rtabmap/detect_more_loop_closures"].ready = False
+
+    result = tool.execute()
+
+    assert result.success is True
+    assert "loop closures" not in result.message
+    assert "bundle adjustment" in result.message
+    assert "Не удалось: detect_more_loop_closures" in result.message
+
+
+@pytest.mark.unit
+def test_optimize_map_all_fail(monkeypatch):
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    OptimizeMapTool = module.OptimizeMapTool
+
+    node = _FakeNode()
+    tool = OptimizeMapTool(node)
+    for srv in [
+        "detect_more_loop_closures",
+        "global_bundle_adjustment",
+        "cleanup_local_grids",
+        "publish_map",
+        "backup",
+    ]:
+        node.clients[f"/rtabmap/rtabmap/{srv}"].ready = False
+
+    result = tool.execute()
+
+    assert result.success is False
+    assert "RTABMap оптимизация не выполнена" in result.error
+
+
+@pytest.mark.unit
+def test_optimize_map_service_timeout_falls_to_failed(monkeypatch):
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    OptimizeMapTool = module.OptimizeMapTool
+
+    node = _FakeNode()
+    tool = OptimizeMapTool(node)
+    tool.loop_closures_client.call_async = lambda req: _NeverFuture()
+
+    result = tool.execute()
+
+    assert result.success is True
+    assert "Не удалось: detect_more_loop_closures" in result.message
+
+
+@pytest.mark.unit
+def test_load_map_success(monkeypatch):
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    LoadMapTool = module.LoadMapTool
+
+    node = _FakeNode()
+    store = _RenameStore(found=True)
+    state = _FakeState()
+    tool = LoadMapTool(node, waypoint_store=store, mapping_state=state)
+
+    result = tool.execute(map_name="квартира")
+
+    assert result.success is True
+    assert "Карта: 'квартира'" in result.message
+    assert node.clients["/rtabmap/rtabmap/load_database"].call_count == 1
+    assert node.clients["/rtabmap/rtabmap/set_mode_localization"].call_count == 1
+    assert state.localization_calls == [("квартира", "map-1")]
+
+
+@pytest.mark.unit
+def test_load_map_waypoint_not_found_warns(monkeypatch):
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    LoadMapTool = module.LoadMapTool
+
+    node = _FakeNode()
+    store = _RenameStore(found=False)
+    tool = LoadMapTool(node, waypoint_store=store)
+
+    result = tool.execute(map_name="несуществующая")
+
+    assert result.success is True  # предупреждение, но продолжаем
+    assert "Карта: 'несуществующая'" in result.message
+
+
+@pytest.mark.unit
+def test_load_map_services_not_ready_warns(monkeypatch):
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    LoadMapTool = module.LoadMapTool
+
+    node = _FakeNode()
+    tool = LoadMapTool(node)
+    node.clients["/rtabmap/rtabmap/load_database"].ready = False
+    node.clients["/rtabmap/rtabmap/set_mode_localization"].ready = False
+
+    result = tool.execute()
+
+    assert result.success is True
+    assert "Карта загружена" in result.message
+
+
+@pytest.mark.unit
+def test_load_map_waypoint_store_missing_method(monkeypatch):
+    _install_fake_service_modules(monkeypatch)
+    module = _load_mapping_module(monkeypatch)
+    LoadMapTool = module.LoadMapTool
+
+    class _OldStore:
+        def __init__(self):
+            self.raised = False
+
+        def get_active_map_id(self):
+            return None
+
+        def set_active_map_by_name(self, name):
+            self.raised = True
+            raise AttributeError("no method")
+
+    node = _FakeNode()
+    store = _OldStore()
+    tool = LoadMapTool(node, waypoint_store=store)
+
+    result = tool.execute(map_name="квартира")
+
+    assert result.success is True
+    assert store.raised is True  # AttributeError перехвачен
