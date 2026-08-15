@@ -2,6 +2,10 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Alert rules (ADR-0017, SL-2): zenoh-router SPOF-мониторинг
+rule_files:
+  - /etc/prometheus/prometheus_rules.yml
+
 scrape_configs:
   # Scrape cAdvisor metrics from Main Pi
   - job_name: 'cadvisor-main'
