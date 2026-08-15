@@ -15,9 +15,25 @@ jobs:
   diagnose:
     runs-on: [self-hosted, rob-box]
     steps:
+      - name: "Подготовка инструментов (ip, nmcli)"
+        shell: bash
+        run: |
+          echo "--- ensure iproute2 + network-manager ---"
+          # ip/nmcli часто отсутствуют/не в PATH у runner-пользователя (exit 127,
+          # ретро 15.08 t_e1bf9a80: L-Diagnose падал, авто-коннект не работал).
+          export PATH="$PATH:/usr/sbin:/sbin"
+          if ! command -v ip >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y iproute2 || echo "WARN: iproute2 install failed"
+          fi
+          if ! command -v nmcli >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y network-manager || echo "WARN: network-manager install failed"
+          fi
+          command -v ip && command -v nmcli || echo "NOTE: ip/nmcli всё ещё недоступны"
+
       - name: "Сетевая диагностика"
         shell: bash
         run: |
+          export PATH="$PATH:/usr/sbin:/sbin"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "🔍 RUNNER NETWORK DIAGNOSTIC"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -35,6 +51,7 @@ jobs:
       - name: "Список wifi сетей"
         shell: bash
         run: |
+          export PATH="$PATH:/usr/sbin:/sbin"
           echo "--- wifi list (nmcli) ---"
           nmcli -f SSID,SIGNAL device wifi list --rescan yes 2>/dev/null | head -15 || echo "(nmcli недоступен)"
           echo ""
@@ -56,10 +73,12 @@ jobs:
         if: ${{ inputs.auto_connect == 'true' }}
         shell: bash
         run: |
+          export PATH="$PATH:/usr/sbin:/sbin"
           echo "--- пробую ROS2 / ROS2HIVE коннекшены ---"
           for CONN in ROS2 ROS2HIVE; do
             echo ">>> nmcli connection up $CONN"
-            OUT=$(nmcli connection up "$CONN" 2>&1)
+            # nmcli connection up требует root на большинстве настроек NetworkManager
+            OUT=$(sudo nmcli connection up "$CONN" 2>&1)
             RC=$?
             echo "$OUT" | tail -2
             echo "RC=$RC"
@@ -73,11 +92,12 @@ jobs:
         if: ${{ inputs.auto_connect == 'true' }}
         shell: bash
         run: |
+          export PATH="$PATH:/usr/sbin:/sbin"
           sleep 5
           echo "--- ip после ---"
           ip -4 addr show 2>/dev/null | grep 'inet ' | head -5
           echo "--- пинг ---"
-          for ip in 10.1.1.1 10.1.1.21 10.1.1.249; do
+          for ip in 10.1.1.1 10.1.1.21 10.1.1.10 10.1.1.11 10.1.1.249; do
             if ping -c 1 -W 2 $ip >/dev/null 2>&1; then
               echo "✅ $ip ALIVE"
             else

@@ -119,6 +119,56 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y sshpass
 
+      - name: Recover runner ROS2 connectivity (if hosts unreachable)
+        if: '!inputs.dry_run'
+        shell: bash
+        run: |
+          # Ретро 15.08 (t_e1bf9a80): деплой падал "Target hosts unreachable",
+          # когда runner слетал с ROS2 wifi (10.1.1.x) на ROS2HIVE/без wifi —
+          # роботы при этом живы (см. L-Diagnose Runner Network, коммит 38e36414).
+          # Пытаемся восстановить коннект до проверки connectivity, чтобы
+          # транзиентный обрыв wifi раннера не превращался в failed deploy.
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔌 Checking runner ROS2 connectivity (self-heal)..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          export PATH="$PATH:/usr/sbin:/sbin"
+          NEED_RECOVER=false
+          for ip in ${{ env.vision_pi_ip }} ${{ env.main_pi_ip }}; do
+            if ! ping -c 1 -W 2 "$ip" >/dev/null 2>&1; then
+              echo "⚠️  $ip unreachable — attempting wifi reconnect"
+              NEED_RECOVER=true
+            fi
+          done
+          if [ "$NEED_RECOVER" = false ]; then
+            echo "✅ Both target hosts already reachable — no reconnect needed"
+            exit 0
+          fi
+          # nmcli может отсутствовать на runner (exit 127 в L-Diagnose) — ставим.
+          if ! command -v nmcli >/dev/null 2>&1; then
+            echo "⚠️  nmcli not found — installing network-manager"
+            sudo apt-get update -qq && sudo apt-get install -y network-manager || echo "WARN: network-manager install failed"
+          fi
+          if command -v nmcli >/dev/null 2>&1; then
+            for CONN in ROS2 ROS2HIVE; do
+              echo ">>> sudo nmcli connection up $CONN"
+              if sudo nmcli connection up "$CONN" >/dev/null 2>&1; then
+                echo "✅ Reconnected to $CONN"
+                break
+              fi
+            done
+            sleep 5
+            echo "--- re-check after reconnect ---"
+            for ip in ${{ env.vision_pi_ip }} ${{ env.main_pi_ip }}; do
+              if ping -c 1 -W 2 "$ip" >/dev/null 2>&1; then
+                echo "✅ $ip reachable after reconnect"
+              else
+                echo "❌ $ip still unreachable"
+              fi
+            done
+          else
+            echo "WARN: nmcli still unavailable — connectivity check will fail with details"
+          fi
+
       - name: Verify SSH Tools and Connectivity
         if: '!inputs.dry_run'
         run: |
