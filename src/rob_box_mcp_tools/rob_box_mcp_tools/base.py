@@ -7,6 +7,7 @@ MCPTool - базовый класс для всех инструментов, к
 Совместимо с DeepSeek, Qwen, OpenAI и другими LLM провайдерами.
 """
 
+import asyncio
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
@@ -225,6 +226,18 @@ class MCPTool(ABC):
             MCPToolResult: Результат выполнения
         """
         pass
+
+    async def aexecute(self, **kwargs) -> MCPToolResult:
+        """
+        Async variant of :meth:`execute` -- never blocks the event loop.
+
+        Default implementation offloads the synchronous :meth:`execute`
+        to a worker thread so a blocking tool body (e.g. an HTTP call)
+        does not stall the ROS executor thread. Tools that can run fully
+        async (e.g. memory/FAQ with ``aembed``) override this to await
+        their async store methods directly.
+        """
+        return await asyncio.to_thread(self.execute, **kwargs)
 
     def to_openai_tool_format(self) -> Dict[str, Any]:
         """

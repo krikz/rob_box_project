@@ -11,6 +11,7 @@ MCPToolRegistry управляет коллекцией инструментов
 
 from typing import Dict, List, Optional, Any
 from .base import MCPTool, MCPToolResult
+import asyncio
 import json
 
 
@@ -164,6 +165,36 @@ class MCPToolRegistry:
         # Выполнение инструмента
         try:
             return tool.execute(**normalized_kwargs)
+        except Exception as e:
+            error_msg = f"Ошибка выполнения инструмента '{tool_name}': {str(e)}"
+            if tool.node:
+                tool.node.get_logger().error(error_msg)
+            return MCPToolResult(success=False, error=error_msg)
+
+    async def aexecute(self, tool_name: str, **kwargs) -> MCPToolResult:
+        """
+        Async variant of :meth:`execute` -- never blocks the event loop.
+
+        Prefers the tool's async ``aexecute`` (memory/FAQ tools await
+        their async stores); falls back to the sync ``execute`` via
+        ``asyncio.to_thread`` so blocking tool bodies do not stall the
+        ROS executor thread.
+        """
+        tool = self.get_tool(tool_name)
+        if tool is None:
+            return MCPToolResult(success=False, error=f"Инструмент '{tool_name}' не найден")
+
+        normalized_kwargs = self.normalize_params(tool_name, **kwargs)
+
+        valid, error_msg = tool.validate_parameters(**normalized_kwargs)
+        if not valid:
+            return MCPToolResult(success=False, error=f"Ошибка валидации параметров: {error_msg}")
+
+        try:
+            aexecute = getattr(tool, "aexecute", None)
+            if aexecute is not None:
+                return await aexecute(**normalized_kwargs)
+            return await asyncio.to_thread(tool.execute, **normalized_kwargs)
         except Exception as e:
             error_msg = f"Ошибка выполнения инструмента '{tool_name}': {str(e)}"
             if tool.node:

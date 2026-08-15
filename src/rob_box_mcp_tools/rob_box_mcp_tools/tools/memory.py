@@ -14,6 +14,7 @@ instead of crashing.
 
 from __future__ import annotations
 
+import asyncio
 from typing import List
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult
@@ -177,6 +178,61 @@ class MemorySearchTool(MCPTool):
             self.log_error(f"[memory_search] Error: {e}")
             return MCPToolResult(success=False, data=None, message=f"Ошибка поиска: {e}")
 
+    async def aexecute(self, **kwargs) -> MCPToolResult:
+        """Async variant — awaits the async search so the ROS event loop is not blocked."""
+        memory = getattr(self.node, "voice_memory", None)
+        if memory is None:
+            return MCPToolResult(
+                success=False,
+                data=None,
+                message="VoiceMemory не инициализирована.",
+            )
+
+        query = kwargs.get("query", "").strip()
+        limit = min(int(kwargs.get("limit", 5)), 20)
+
+        if not query:
+            return MCPToolResult(success=False, data=None, message="Параметр query не может быть пустым.")
+
+        try:
+            search = getattr(memory, "asearch", None)
+            if search is not None:
+                results = await search(query, limit=limit)
+            else:
+                results = await asyncio.to_thread(memory.search, query, limit=limit)
+            self.log_info(
+                f"[memory_search] query={query[:40]!r} → {len(results)} results "
+                f"(vec={'yes' if memory.embedder.is_available() else 'no'})"
+            )
+
+            formatted = []
+            for r in results:
+                formatted.append(
+                    {
+                        "role": r["role"],
+                        "content": r["content"],
+                        "session": r["session_id"],
+                        "score": round(r.get("score", 0), 4),
+                        "source": r.get("source", "fts"),
+                    }
+                )
+
+            return MCPToolResult(
+                success=True,
+                data={
+                    "results": formatted,
+                    "total": len(formatted),
+                    "query": query,
+                    "limit": limit,
+                    "has_more": len(formatted) == limit,
+                    "next_offset": limit if len(formatted) == limit else None,
+                },
+                message=f"Найдено {len(formatted)} результатов.",
+            )
+        except Exception as e:
+            self.log_error(f"[memory_search] Error: {e}")
+            return MCPToolResult(success=False, data=None, message=f"Ошибка поиска: {e}")
+
 
 class MemoryContextTool(MCPTool):
     """
@@ -233,6 +289,59 @@ class MemoryContextTool(MCPTool):
 
         try:
             ctx = memory.get_context(limit=limit, query=query)
+            facts_block = memory.format_facts_for_prompt()
+            stats = memory.get_stats()
+
+            self.log_info(
+                f"[memory_context] turns={len(ctx['recent_turns'])} facts={len(ctx['facts'])} "
+                f"total_sessions={ctx['sessions']} vec={ctx['vec_enabled']}"
+            )
+
+            return MCPToolResult(
+                success=True,
+                data={
+                    "recent_turns": [
+                        {"role": t["role"], "content": t["content"], "session": t["session_id"]}
+                        for t in ctx["recent_turns"]
+                    ],
+                    "facts_block": facts_block,
+                    "facts": ctx["facts"],
+                    "stats": {
+                        "total_turns": ctx["total_turns"],
+                        "total_sessions": ctx["sessions"],
+                        "vec_enabled": ctx["vec_enabled"],
+                        "db_size_kb": stats["db_size_kb"],
+                    },
+                    "current_session": ctx["current_session"],
+                },
+                message=(
+                    f"Контекст: {len(ctx['recent_turns'])} реплик из прошлых сессий, "
+                    f"{len(ctx['facts'])} фактов о пользователе."
+                ),
+            )
+        except Exception as e:
+            self.log_error(f"[memory_context] Error: {e}")
+            return MCPToolResult(success=False, data=None, message=f"Ошибка получения контекста: {e}")
+
+    async def aexecute(self, **kwargs) -> MCPToolResult:
+        """Async variant — awaits the async context so the ROS event loop is not blocked."""
+        memory = getattr(self.node, "voice_memory", None)
+        if memory is None:
+            return MCPToolResult(
+                success=False,
+                data=None,
+                message="VoiceMemory не инициализирована.",
+            )
+
+        limit = min(int(kwargs.get("limit", 10)), 30)
+        query = kwargs.get("query", "").strip() or None
+
+        try:
+            get_ctx = getattr(memory, "aget_context", None)
+            if get_ctx is not None:
+                ctx = await get_ctx(limit=limit, query=query)
+            else:
+                ctx = await asyncio.to_thread(memory.get_context, limit=limit, query=query)
             facts_block = memory.format_facts_for_prompt()
             stats = memory.get_stats()
 
@@ -347,6 +456,70 @@ class FaqSearchTool(MCPTool):
         limit = max(1, min(int(limit), 10))
         try:
             results = faq_store.search(query=query.strip(), event_id=event_id, limit=limit)
+        except Exception as exc:
+            self.log_error(f"[faq_search] search failed: {exc}")
+            return MCPToolResult(
+                success=False,
+                error=f"Ошибка поиска по FAQ: {exc}",
+            )
+
+        if not results:
+            return MCPToolResult(
+                success=True,
+                data={"query": query, "event_id": event_id, "found": 0},
+                message=f"По запросу '{query}' в FAQ мероприятия ничего не найдено.",
+            )
+
+        self.log_info(f"[faq_search] query={query!r} event={event_id} → {len(results)} matches")
+        formatted = []
+        for r in results:
+            formatted.append({
+                "question": r.get("question", ""),
+                "answer": r.get("answer", ""),
+                "category": r.get("category", ""),
+            })
+
+        return MCPToolResult(
+            success=True,
+            data={
+                "query": query,
+                "event_id": event_id,
+                "found": len(results),
+                "results": formatted,
+            },
+            message=f"Найдено {len(results)} совпадений в FAQ мероприятия.",
+        )
+
+    async def aexecute(self, **kwargs) -> MCPToolResult:
+        """Async variant — awaits the async FAQ search so the ROS event loop is not blocked."""
+        faq_store = getattr(self.node, "faq_store", None)
+        if faq_store is None:
+            return MCPToolResult(
+                success=False,
+                error="FAQ-хранилище не инициализировано. Режим мероприятия не активен или FAQ-файл не загружен.",
+            )
+
+        event_profile = getattr(self.node, "event_profile", None)
+        event_id = None
+        if event_profile is not None:
+            event_id = getattr(event_profile, "event_id", None)
+
+        if not event_id:
+            return MCPToolResult(
+                success=False,
+                error="Не задан event_id — профиль мероприятия не загружен.",
+            )
+
+        query = str(kwargs.get("query", "")).strip()
+        limit = max(1, min(int(kwargs.get("limit", 3)), 10))
+        try:
+            search = getattr(faq_store, "asearch", None)
+            if search is not None:
+                results = await search(query=query, event_id=event_id, limit=limit)
+            else:
+                results = await asyncio.to_thread(
+                    faq_store.search, query=query, event_id=event_id, limit=limit
+                )
         except Exception as exc:
             self.log_error(f"[faq_search] search failed: {exc}")
             return MCPToolResult(

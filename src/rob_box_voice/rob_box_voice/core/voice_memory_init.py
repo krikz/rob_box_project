@@ -29,6 +29,9 @@ class _VoiceMemoryLike(Protocol):
     def save_turn(self, role: str, text: str, *args: Any, **kwargs: Any) -> Any:
         ...
 
+    async def asave_turn(self, role: str, text: str, *args: Any, **kwargs: Any) -> Any:
+        ...
+
     def get_stats(self) -> dict[str, Any]:
         ...
 
@@ -95,4 +98,31 @@ def safe_save_turn(
         return True  # attempted, just failed
 
 
-__all__ = ["init_voice_memory", "safe_save_turn"]
+async def asafe_save_turn(
+    memory: Optional[_VoiceMemoryLike],
+    role: str,
+    text: str,
+    *,
+    logger: logging.Logger | None = None,
+) -> bool:
+    """Async variant of :meth:`safe_save_turn` -- never blocks the loop.
+
+    Prefer this from the ROS event loop: the Ollama embedding inside
+    ``asave_turn`` is awaited instead of blocking the callback thread.
+    """
+    if memory is None:
+        return False
+    log = logger or logging.getLogger(__name__)
+    try:
+        save = getattr(memory, "asave_turn", None)
+        if save is not None:
+            await save(role, text)
+        else:
+            memory.save_turn(role, text)
+        return True
+    except Exception as exc:
+        log.warning(f"⚠️ memory asave_turn({role}) failed: {exc}")
+        return True  # attempted, just failed
+
+
+__all__ = ["init_voice_memory", "safe_save_turn", "asafe_save_turn"]

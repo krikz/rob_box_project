@@ -110,6 +110,11 @@ class OllamaEmbedder:
         Return embedding vector for text, or None if Ollama unavailable.
 
         Never raises -- callers should treat None as "vector search disabled".
+
+        NOTE: this is the synchronous variant. It performs a blocking HTTP
+        request and MUST NOT be called from the ROS event loop / asyncio
+        loop (it would stall every other callback for up to ``timeout``
+        seconds). Async callers should use :meth:`aembed`.
         """
         if self._in_backoff():
             return None
@@ -122,6 +127,39 @@ class OllamaEmbedder:
                 json={"model": self.model, "prompt": text},
                 timeout=self.timeout,
             )
+            resp.raise_for_status()
+            vec = resp.json()["embedding"]
+            if self._dim is None:
+                self._dim = len(vec)
+            self._available = True
+            return vec
+        except Exception:
+            self._available = False
+            self._last_failure = time.time()
+            return None
+
+    async def aembed(self, text: str) -> Optional[List[float]]:
+        """
+        Async variant of :meth:`embed` -- never blocks the event loop.
+
+        Uses ``httpx.AsyncClient`` with the same backoff/availability
+        semantics as the sync path. A short-lived client is created per
+        call so the embedder stays safe across multiple event loops
+        (e.g. one asyncio.run() per worker thread in the MCP server).
+
+        Returns None when Ollama is unavailable or in backoff.
+        """
+        if self._in_backoff():
+            return None
+
+        try:
+            import httpx  # already in requirements.txt (via openai)
+
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(
+                    f"{self.base_url}/api/embeddings",
+                    json={"model": self.model, "prompt": text},
+                )
             resp.raise_for_status()
             vec = resp.json()["embedding"]
             if self._dim is None:
@@ -404,6 +442,58 @@ class VoiceMemory:
         self._embed_and_store(rowid, content)
         return rowid
 
+    async def asave_turn(
+        self,
+        role: str,
+        content: str,
+        session_id: Optional[str] = None,
+    ) -> int:
+        """
+        Async variant of :meth:`save_turn` -- never blocks the event loop.
+
+        The SQLite INSERT is fast; the Ollama embedding (if any) is
+        awaited so the ROS event loop is not stalled by the HTTP call.
+        """
+        if not content or not content.strip():
+            return -1
+
+        sid = session_id or self.session_id
+        with self.lock, self.conn:
+            cur = self.conn.execute(
+                "INSERT INTO voice_turns (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                (sid, role, content.strip(), time.time()),
+            )
+            rowid = cur.lastrowid
+
+        await self._aembed_and_store(rowid, content)
+        return rowid
+
+    async def _aembed_and_store(self, rowid: int, text: str) -> None:
+        """Async variant of :meth:`_embed_and_store` (awaits Ollama)."""
+        vec = await self.embedder.aembed(text)
+        if vec is None:
+            return  # Ollama not available yet
+
+        # Ensure vec table exists with correct dim
+        if not self._has_vec_table():
+            ok = self._ensure_vec_table(len(vec))
+            if not ok:
+                return
+
+        stored_dim = self._get_meta_int("embedding_dim")
+        if stored_dim and len(vec) != stored_dim:
+            return  # Dimension mismatch -- skip silently
+
+        try:
+            vec_bytes = struct.pack(f"{len(vec)}f", *vec)
+            with self.lock, self.conn:
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO voice_turns_vec (rowid, embedding) VALUES (?, ?)",
+                    (rowid, vec_bytes),
+                )
+        except Exception:
+            pass
+
     def _embed_and_store(self, rowid: int, text: str) -> None:
         """Generate embedding for text and store in vec table (best-effort)."""
         vec = self.embedder.embed(text)
@@ -495,6 +585,53 @@ class VoiceMemory:
             return merged
 
         return fts_results
+
+    async def asearch(self, query: str, limit: int = 5) -> List[Dict]:
+        """
+        Async variant of :meth:`search` -- never blocks the event loop.
+
+        FTS5 keyword search is fast and runs inline; the Ollama embedding
+        (if any) is awaited so the ROS event loop is not stalled.
+        """
+        if not query or not query.strip():
+            return []
+
+        fts_results = self._fts_search(query, limit)
+
+        # Supplement with vector search if results are sparse
+        if len(fts_results) < self.FTS_MIN_RESULTS and self.embedder.is_available():
+            vec_results = await self._avector_search(query, limit)
+            merged = self._merge_results(fts_results, vec_results, limit)
+            return merged
+
+        return fts_results
+
+    async def _avector_search(self, query: str, limit: int) -> List[Dict]:
+        """Async variant of :meth:`_vector_search` (awaits Ollama)."""
+        if not self._has_vec_table():
+            return []
+
+        vec = await self.embedder.aembed(query)
+        if vec is None:
+            return []
+
+        vec_bytes = struct.pack(f"{len(vec)}f", *vec)
+        try:
+            with self.lock:
+                rows = self.conn.execute(
+                    """
+                    SELECT vt.id, vt.session_id, vt.role, vt.content, vt.timestamp,
+                           (1.0 - v.distance) AS score
+                    FROM voice_turns_vec v
+                    JOIN voice_turns vt ON vt.id = v.rowid
+                    WHERE v.embedding MATCH ? AND k = ?
+                    ORDER BY v.distance
+                    """,
+                    (vec_bytes, limit),
+                ).fetchall()
+            return [{**dict(r), "source": "vec"} for r in rows]
+        except sqlite3.OperationalError:
+            return []
 
     def _fts_search(self, query: str, limit: int) -> List[Dict]:
         """FTS5 BM25 search using prefix-OR query."""
@@ -680,6 +817,30 @@ class VoiceMemory:
             "current_session": self.session_id,
         }
 
+    async def aget_context(
+        self, limit: int = 10, query: Optional[str] = None
+    ) -> Dict:
+        """
+        Async variant of :meth:`get_context` -- never blocks the event loop.
+
+        Uses :meth:`asearch` when ``query`` is given so the optional
+        Ollama embedding is awaited instead of blocking the caller.
+        """
+        if query:
+            turns = await self.asearch(query, limit=limit)
+        else:
+            turns = self.load_recent_turns(limit=limit, exclude_current_session=True)
+
+        stats = self.get_stats()
+        return {
+            "recent_turns": turns,
+            "facts": self.get_facts(),
+            "total_turns": stats["turn_count"],
+            "sessions": stats["session_count"],
+            "vec_enabled": self._has_vec_table() and self.embedder.is_available(),
+            "current_session": self.session_id,
+        }
+
     # ------------------------------------------------------------------
     # Stats & maintenance
     # ------------------------------------------------------------------
@@ -759,6 +920,52 @@ class VoiceMemory:
 
         for i, row in enumerate(turns):
             vec = self.embedder.embed(row["content"])
+            if vec is None:
+                skipped += 1
+                continue
+            vec_bytes = struct.pack(f"{len(vec)}f", *vec)
+            try:
+                with self.lock, self.conn:
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO voice_turns_vec (rowid, embedding) VALUES (?, ?)",
+                        (row["id"], vec_bytes),
+                    )
+                indexed += 1
+            except Exception:
+                skipped += 1
+
+            if progress_callback:
+                progress_callback(i + 1, total)
+
+        return {"indexed": indexed, "skipped": skipped, "total": total, "dim": dim}
+
+    async def areindex_embeddings(self, progress_callback=None) -> Dict:
+        """
+        Async variant of :meth:`reindex_embeddings` -- never blocks the loop.
+
+        Re-embeds every stored turn with ``aembed`` so the ROS event loop
+        is not stalled for the whole reindex (which can be many HTTP calls).
+        """
+        if not self.embedder.is_available():
+            return {"indexed": 0, "skipped": 0, "total": 0, "dim": None, "error": "Ollama not available"}
+
+        # Probe dimension
+        probe = await self.embedder.aembed("probe")
+        if probe is None:
+            return {"indexed": 0, "skipped": 0, "total": 0, "dim": None, "error": "Failed to get embedding"}
+
+        dim = len(probe)
+        self._ensure_vec_table(dim)
+
+        with self.lock:
+            turns = self.conn.execute("SELECT id, content FROM voice_turns ORDER BY id").fetchall()
+
+        total = len(turns)
+        indexed = 0
+        skipped = 0
+
+        for i, row in enumerate(turns):
+            vec = await self.embedder.aembed(row["content"])
             if vec is None:
                 skipped += 1
                 continue

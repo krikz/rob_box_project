@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from rob_box_voice.core.voice_memory_init import init_voice_memory, safe_save_turn
+from rob_box_voice.core.voice_memory_init import (
+    asafe_save_turn,
+    init_voice_memory,
+    safe_save_turn,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -124,3 +129,41 @@ class TestSafeSaveTurn:
         # We still report "attempted" — caller doesn't need to retry.
         assert result is True
         assert any("save_turn(assistant) failed" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# asafe_save_turn (PF-3 async path)
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncSafeSaveTurn:
+    def test_skips_when_memory_is_none(self) -> None:
+        assert asyncio.run(asafe_save_turn(None, "user", "hello")) is False
+
+    def test_uses_asave_turn_when_available(self) -> None:
+        memory = MagicMock()
+        memory.asave_turn = AsyncMock()
+
+        result = asyncio.run(asafe_save_turn(memory, "user", "hello"))
+
+        assert result is True
+        memory.asave_turn.assert_awaited_once_with("user", "hello")
+
+    def test_falls_back_to_save_turn_without_async(self) -> None:
+        memory = MagicMock()
+        del memory.asave_turn  # legacy object without async variant
+
+        result = asyncio.run(asafe_save_turn(memory, "user", "hello"))
+
+        assert result is True
+        memory.save_turn.assert_called_once_with("user", "hello")
+
+    def test_swallows_save_errors(self, caplog: pytest.LogCaptureFixture) -> None:
+        memory = MagicMock()
+        memory.asave_turn = AsyncMock(side_effect=RuntimeError("disk full"))
+
+        with caplog.at_level(logging.WARNING):
+            result = asyncio.run(asafe_save_turn(memory, "assistant", "hi"))
+
+        assert result is True
+        assert any("asave_turn(assistant) failed" in r.message for r in caplog.records)

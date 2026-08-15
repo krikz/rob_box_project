@@ -19,10 +19,13 @@ from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import String
+import asyncio
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any
 
+from .base import MCPTool
 from .registry import MCPToolRegistry
 from .tools import (
     NavigateToWaypointTool,
@@ -103,6 +106,14 @@ class MCPServer(Node):
         # speak_text/set_voice. Должен совпадать с tts_node.yaml provider
         # (minimax). Используется для выбора списка голосов (Q4).
         self.declare_parameter("tts_provider", "minimax")
+
+        # PF-3: инструменты выполняются в фоновом пуле потоков, чтобы
+        # блокирующие тела (HTTP-вызовы к Ollama, ожидание action-результатов)
+        # не блокировали поток ROS executor'а.
+        self._tool_executor = ThreadPoolExecutor(
+            max_workers=_recommended_executor_threads(),
+            thread_name_prefix="mcp-tool",
+        )
 
         # Реестр инструментов
         self.registry = MCPToolRegistry()
@@ -743,8 +754,40 @@ class MCPServer(Node):
                 return
             # ────────────────────────────────────────────────────────────
 
-            # Выполнить инструмент
-            result = self.registry.execute(tool_name, **parameters)
+            # Выполнить инструмент в фоновом пуле потоков (PF-3) — ROS
+            # callback возвращается сразу, тело инструмента (возможно
+            # блокирующее: HTTP к Ollama, ожидание action-результата)
+            # работает вне потока ROS executor'а.
+            self._tool_executor.submit(
+                self._execute_and_publish, tool_name, parameters, request_id
+            )
+
+        except json.JSONDecodeError as e:
+            self.get_logger().error(f"❌ Ошибка парсинга JSON запроса: {e}")
+            self._publish_error(f"Ошибка парсинга JSON: {str(e)}", "")
+        except Exception as e:
+            self.get_logger().error(f"❌ Ошибка выполнения запроса: {e}")
+            self._publish_error(f"Внутренняя ошибка: {str(e)}", "")
+
+    def _execute_and_publish(
+        self, tool_name: str, parameters: Dict[str, Any], request_id: str
+    ) -> None:
+        """Run one tool in a worker thread and publish its result.
+
+        Runs outside the ROS executor thread so a blocking tool body
+        (e.g. a synchronous Ollama embedding HTTP call) cannot stall
+        the event loop (PF-3). Tools that implement ``aexecute``
+        (memory/FAQ) run through the async path; the rest run their
+        plain sync ``execute`` in this worker thread.
+        """
+        try:
+            tool = self.registry.get_tool(tool_name)
+            if tool is not None and tool.__class__.aexecute is not MCPTool.aexecute:
+                result = asyncio.run(
+                    self.registry.aexecute(tool_name, **parameters)
+                )
+            else:
+                result = self.registry.execute(tool_name, **parameters)
 
             # Опубликовать результат
             response = {"tool_name": tool_name, "request_id": request_id, "result": result.to_dict()}
@@ -761,13 +804,9 @@ class MCPServer(Node):
                 self.get_logger().info(f"✅ Инструмент {tool_name} выполнен успешно")
             else:
                 self.get_logger().warning(f"❌ Инструмент {tool_name} завершился с ошибкой: {result.error}")
-
-        except json.JSONDecodeError as e:
-            self.get_logger().error(f"❌ Ошибка парсинга JSON запроса: {e}")
-            self._publish_error(f"Ошибка парсинга JSON: {str(e)}", "")
         except Exception as e:
-            self.get_logger().error(f"❌ Ошибка выполнения запроса: {e}")
-            self._publish_error(f"Внутренняя ошибка: {str(e)}", "")
+            self.get_logger().error(f"❌ Ошибка выполнения инструмента {tool_name}: {e}")
+            self._publish_error(f"Внутренняя ошибка: {str(e)}", request_id)
 
     def on_perception_update(self, msg):
         """Обработка обновления контекста восприятия."""
@@ -796,6 +835,12 @@ class MCPServer(Node):
         msg = String()
         msg.data = json.dumps(response, ensure_ascii=False)
         self.result_pub.publish(msg)
+
+    def shutdown_tool_executor(self) -> None:
+        """Gracefully stop the tool worker pool (called on node shutdown)."""
+        executor = getattr(self, "_tool_executor", None)
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _recommended_executor_threads() -> int:
@@ -828,6 +873,7 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
+        node.shutdown_tool_executor()
         rclpy.shutdown()
 
 

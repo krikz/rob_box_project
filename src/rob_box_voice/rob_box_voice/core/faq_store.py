@@ -297,6 +297,83 @@ class FAQStore:
 
         return inserted
 
+    async def areplace_items(
+        self, event_id: str, items: List[Dict[str, str]]
+    ) -> int:
+        """
+        Async variant of :meth:`replace_items` -- never blocks the loop.
+
+        Item rows are inserted synchronously (fast SQLite); the optional
+        Ollama embedding for each item is awaited via ``aembed``.
+        """
+        if not event_id:
+            raise ValueError("event_id is required")
+
+        existing_ids: List[int] = []
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT id FROM faq_items WHERE event_id = ?",
+                (event_id,),
+            ).fetchall()
+            existing_ids = [int(row["id"]) for row in rows]
+
+        if existing_ids and self._has_vec_table():
+            placeholders = ",".join("?" for _ in existing_ids)
+            with self.lock, self.conn:
+                self.conn.execute(
+                    f"DELETE FROM faq_items_vec WHERE rowid IN ({placeholders})",
+                    existing_ids,
+                )
+
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM faq_items WHERE event_id = ?", (event_id,))
+
+        inserted = 0
+        indexed_at = datetime.utcnow().isoformat()
+        for item in items:
+            with self.lock, self.conn:
+                cursor = self.conn.execute(
+                    """
+                    INSERT INTO faq_items (event_id, question, answer, category, source, indexed_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event_id,
+                        item["question"],
+                        item["answer"],
+                        item.get("category", "general") or "general",
+                        item.get("source", "") or "",
+                        indexed_at,
+                    ),
+                )
+                row_id = int(cursor.lastrowid)
+            await self._aembed_and_store(row_id, item["question"], item["answer"])
+            inserted += 1
+
+        return inserted
+
+    async def _aembed_and_store(
+        self, row_id: int, question: str, answer: str
+    ) -> None:
+        """Async variant of :meth:`_embed_and_store` (awaits Ollama)."""
+        vector = await self.embedder.aembed(f"{question}\n{answer}")
+        if vector is None:
+            return
+        if not self._has_vec_table() and not self._ensure_vec_table(len(vector)):
+            return
+        stored_dim = self._get_meta_int("faq_embedding_dim")
+        if stored_dim and len(vector) != stored_dim:
+            return
+        vector_blob = struct.pack(f"{len(vector)}f", *vector)
+        try:
+            with self.lock, self.conn:
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO faq_items_vec (rowid, embedding) VALUES (?, ?)",
+                    (row_id, vector_blob),
+                )
+        except Exception:
+            return
+
     def _embed_and_store(self, row_id: int, question: str, answer: str) -> None:
         vector = self.embedder.embed(f"{question}\n{answer}")
         if vector is None:
@@ -330,6 +407,67 @@ class FAQStore:
             )
             return self._merge_results(fts_results, vec_results, limit)
         return fts_results
+
+    async def asearch(
+        self, query: str, event_id: Optional[str] = None, limit: int = 3
+    ) -> List[Dict]:
+        """
+        Async variant of :meth:`search` -- never blocks the event loop.
+
+        FTS5 keyword search is fast and runs inline; the Ollama embedding
+        (if any) is awaited so the ROS event loop is not stalled.
+        """
+        if not query or not query.strip():
+            return []
+
+        fts_results = self._fts_search(query=query, event_id=event_id, limit=limit)
+        if len(fts_results) < self.FTS_MIN_RESULTS and self.embedder.is_available():
+            vec_results = await self._avector_search(
+                query=query, event_id=event_id, limit=limit
+            )
+            return self._merge_results(fts_results, vec_results, limit)
+        return fts_results
+
+    async def _avector_search(
+        self, query: str, event_id: Optional[str], limit: int
+    ) -> List[Dict]:
+        """Async variant of :meth:`_vector_search` (awaits Ollama)."""
+        if not self._has_vec_table():
+            return []
+        vector = await self.embedder.aembed(query)
+        if vector is None:
+            return []
+
+        vector_blob = struct.pack(f"{len(vector)}f", *vector)
+        try:
+            with self.lock:
+                if event_id:
+                    rows = self.conn.execute(
+                        """
+                        SELECT fi.id, fi.event_id, fi.question, fi.answer, fi.category, fi.source,
+                               (1.0 - fv.distance) AS score
+                        FROM faq_items_vec fv
+                        JOIN faq_items fi ON fi.id = fv.rowid
+                        WHERE fv.embedding MATCH ? AND k = ? AND fi.event_id = ?
+                        ORDER BY fv.distance
+                        """,
+                        (vector_blob, limit, event_id),
+                    ).fetchall()
+                else:
+                    rows = self.conn.execute(
+                        """
+                        SELECT fi.id, fi.event_id, fi.question, fi.answer, fi.category, fi.source,
+                               (1.0 - fv.distance) AS score
+                        FROM faq_items_vec fv
+                        JOIN faq_items fi ON fi.id = fv.rowid
+                        WHERE fv.embedding MATCH ? AND k = ?
+                        ORDER BY fv.distance
+                        """,
+                        (vector_blob, limit),
+                    ).fetchall()
+            return [{**dict(row), "source_type": "vec"} for row in rows]
+        except sqlite3.OperationalError:
+            return []
 
     def _fts_search(
         self, query: str, event_id: Optional[str], limit: int
