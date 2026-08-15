@@ -107,8 +107,10 @@ diff_drive_controller:
     linear.x.max_velocity: 1.5        # m/s (TODO: настроить после тестов)
     linear.x.min_velocity: -1.5       # m/s
     linear.x.has_acceleration_limits: true
-    linear.x.max_acceleration: 1.0    # m/s²
-    linear.x.min_acceleration: -1.0   # m/s²
+    # BG-6 (15.08): 1.0→0.5 м/с² — плавный старт/торможение без рывков,
+    # меньше inrush-ток при старте (acceleration limit в ПО, аналог VESC Tool).
+    linear.x.max_acceleration: 0.5    # m/s²
+    linear.x.min_acceleration: -0.5   # m/s²
     linear.x.has_jerk_limits: false
 
     # Угловая скорость (повороты)
@@ -116,8 +118,8 @@ diff_drive_controller:
     angular.z.max_velocity: 3.0       # rad/s (~172°/с) — реалистичный предел для 62 кг скид-стира
     angular.z.min_velocity: -3.0      # rad/s
     angular.z.has_acceleration_limits: true
-    angular.z.max_acceleration: 3.0   # rad/s² — плавнее для скид-стира
-    angular.z.min_acceleration: -3.0  # rad/s²
+    angular.z.max_acceleration: 2.0   # rad/s² — плавнее для скид-стира (BG-6: 3.0→2.0)
+    angular.z.min_acceleration: -2.0  # rad/s²
     angular.z.has_jerk_limits: false
 
     # ───────────────────────────────────────────────────────────────

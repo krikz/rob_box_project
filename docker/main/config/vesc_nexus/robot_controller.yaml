@@ -2,6 +2,12 @@
 #
 # Конфигурация diff_drive_controller для Rob Box
 # Управление 4-колесным роботом через VESC Nexus hardware interface
+#
+# ⚠️ BG-6 (15.08): РАБОЧИЙ файл runtime — docker/main/config/controllers/
+# controller_manager.yaml (env CONTROLLER_CONFIG в docker-compose).
+# Этот файл — зеркало-справка (используется calibrate_odometry.py и docs);
+# держать значения синхронными с рабочим файлом (см. тест
+# tests/unit/test_control_config_consistency.py).
 
 controller_manager:
   ros__parameters:
@@ -46,8 +52,8 @@ diff_drive_controller:
     # ───────────────────────────────────────────────────────────────
 
     # Расстояние между левыми и правыми колесами (м)
-    # Измерение: от центра левого колеса до центра правого
-    wheel_separation: 0.380
+    # Калибровка 2026-02-28 (4WD skid-steer): 1.11 (см. controller_manager.yaml)
+    wheel_separation: 1.11
 
     # Радиус колеса (9" колёса с редукторами: диаметр 9" = 0.2286м → радиус 0.1143м)
     wheel_radius: 0.1143  # замер 2026-02-23
@@ -65,9 +71,9 @@ diff_drive_controller:
 
     # Публикация одометрии в /odom
     odom_frame_id: odom
-    base_frame_id: base_link
+    base_frame_id: base_footprint
 
-    # Публикация TF трансформации odom → base_link
+    # Публикация TF трансформации odom → base_footprint
     enable_odom_tf: true
 
     # Ковариация одометрии (неопределенность)
@@ -86,7 +92,8 @@ diff_drive_controller:
     use_stamped_vel: false
 
     # Открытый/закрытый цикл управления
-    open_loop: false
+    # duty-режим без position feedback → open_loop: true (как в runtime-конфиге)
+    open_loop: true
 
     # ───────────────────────────────────────────────────────────────
     # Velocity Limits
@@ -98,10 +105,10 @@ diff_drive_controller:
         has_velocity_limits: true
         has_acceleration_limits: true
         has_jerk_limits: false
-        max_velocity: 2.0           # м/с (~7.2 км/ч максимум)
-        min_velocity: -2.0          # Назад
-        max_acceleration: 1.0       # м/с²
-        min_acceleration: -1.0
+        max_velocity: 1.5           # м/с (BG-6: 2.0→1.5, синхрон с runtime)
+        min_velocity: -1.5          # Назад
+        max_acceleration: 0.5       # м/с² (BG-6: 1.0→0.5 — плавный старт/стоп)
+        min_acceleration: -0.5
         max_jerk: 0.0
         min_jerk: 0.0
 
@@ -113,7 +120,7 @@ diff_drive_controller:
         has_jerk_limits: false
         max_velocity: 3.0           # рад/с (~172°/с)
         min_velocity: -3.0
-        max_acceleration: 2.0       # рад/с²
+        max_acceleration: 2.0       # рад/с² (BG-6: синхрон с runtime 2.0)
         min_acceleration: -2.0
         max_jerk: 0.0
         min_jerk: 0.0
