@@ -435,3 +435,73 @@ def test_extract_relevant_log_line_ignores_nav2_broken_pipe_from_topic_list_head
     line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
 
     assert line is None
+
+
+def test_round119_all_findings_are_excluded() -> None:
+    """Regression: round-119 deploy (run 31883435418) filed 3 criticals + 4
+    warnings that are ALL known non-failures (same set as round-117, PR #1295).
+
+    The e2e branch z-{e2e}/test-round-119 was built from develop BEFORE
+    PR #1295 merged, so the deploy-verify step used the OLD dedup script and
+    re-filed the same false positives. These tests pin the EXACT evidence
+    lines from that run so the exclusion rules cannot regress.
+    """
+    cases = [
+        # supercollider (vision, critical): Renardo/FoxDot startup race
+        (
+            "FAILURE IN SERVER /g_new negative node IDs are reserved",
+            "vision",
+            "critical",
+        ),
+        # voice-assistant (vision, critical): external MiniMax billing quota
+        (
+            "[tts_node-5] [ERROR] [1786795326.912398382] [tts_node]: "
+            "MiniMax auth error, NO retry: minimax API error 2056: "
+            "Token Plan usage limit reached: Upgrade your Token Plan or "
+            "purchase Credits for more usage.",
+            "vision",
+            "critical",
+        ),
+        # nav2 (main, critical): Python shutdown noise from `ros2 topic list | head`
+        (
+            "Exception ignored in: <_io.TextIOWrapper name='<stdout>' "
+            "mode='w' encoding='utf-8'>",
+            "main",
+            "critical",
+        ),
+        # ceiling-camera (vision, warning): zenoh stale reply
+        (
+            "2026-08-15T12:01:27.760308Z  WARN rx-1 ThreadId(09) "
+            "zenoh::api::session: Received ResponseFinal for unknown Request: 0",
+            "vision",
+            "warning",
+        ),
+        # telegram-bot (vision, warning): bot up, no chat bound yet
+        (
+            "[WARN] [1786795325.936975769] [telegram_node]: "
+            "Dropping dialogue echo, bot not ready / no active chat "
+            "(app=True, loop=True, chat_id=None, text_len=32)",
+            "vision",
+            "warning",
+        ),
+        # voice-assistant (vision, warning): TTS voice fallback (issue #1219)
+        (
+            "[tts_node-5] [WARN] [1786795325.959573294] [tts_node]: "
+            "⚠️ [issue 1219] Голос 'None' недоступен у MiniMax — "
+            "использую дефолтный 'male-qn-qingse'",
+            "vision",
+            "warning",
+        ),
+        # perception (main, warning): optional UART hardware absent
+        (
+            "[perception_bridge-1] [WARN] [1786795388.862663900] "
+            "[perception_bridge]: Sensor UART /dev/ttyAMA0 not available; "
+            "reads will no-op until hardware is attached.",
+            "main",
+            "warning",
+        ),
+    ]
+
+    for log_text, scope, severity in cases:
+        line = MODULE.extract_relevant_log_line(log_text, scope=scope, severity=severity)
+        assert line is None, f"{scope}/{severity} should be excluded: {log_text!r}"
