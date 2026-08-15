@@ -1585,3 +1585,164 @@ def test_run_with_tools_executes_in_safe_order_but_returns_original_order() -> N
     assert [c.name for c in ordered] == ["speak_text", "stop_music"]
     # And the original tuple is untouched (frozen dataclass semantics).
     assert [c.name for c in calls] == ["stop_music", "speak_text"]
+
+
+# ---------------------------------------------------------------------------
+# TASK-038 — stopping conditions & iteration statistics
+# ---------------------------------------------------------------------------
+
+
+def test_process_input_listen_for_response_stops_loop_immediately(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """After listen_for_response() the tool loop stops IMMEDIATELY.
+
+    The LLM asked the user a question and is waiting for the reply — the
+    production DialogCore loop must NOT re-issue complete() (the legacy
+    ``_continue_after_tool_calls`` already had this short-circuit). The
+    acceptance criterion: «после listen_for_response агент останавливается
+    немедленно, не вызывает больше tools».
+    """
+    async def lfr_handler(args: dict[str, object]) -> str:
+        return "Жду ответ пользователя"
+    tools_provider._handler_map = {"listen_for_response": lfr_handler}
+
+    # The scripted responses would keep producing tool calls — but the loop
+    # must stop after the FIRST batch that contained listen_for_response.
+    llm.responses = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="listen_for_response",
+                         arguments={"timeout_seconds": 30}),
+            ),
+        ),
+        # This should NEVER be consumed — the loop stops before re-issuing.
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c2", name="echo", arguments={"text": "late"}),
+            ),
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("как тебя зовут?", history=[]))
+
+    assert result.error is None
+    # Only the initial call — no re-issue after listen_for_response.
+    assert len(llm.calls) == 1
+    assert result.tools_called == ["listen_for_response"]
+    # One LLM round-trip happened this turn.
+    assert result.tool_iterations == 1
+
+
+def test_process_input_tool_iterations_counts_round_trips(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """DialogResult.tool_iterations counts LLM round-trips (TASK-038 stats).
+
+    A plain-text answer = 1 iteration. One tool batch + final answer = 2.
+    dialogue_node logs this so the «средний iteration count ≤ 3» acceptance
+    criterion is verifiable from real traffic.
+    """
+    async def echo(args: dict[str, object]) -> str:
+        return f"echo:{args.get('text')}"
+    tools_provider._handler_map = {"echo": echo}
+
+    llm.responses = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="echo", arguments={"text": "a"}),
+            ),
+        ),
+        LLMResponse(content="готово", tool_calls=()),
+    ]
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("сделай", history=[]))
+
+    assert result.error is None
+    assert result.spoken_text == "готово"
+    assert result.tools_called == ["echo"]
+    # Initial call (iteration 1) + re-issue after the echo batch (iteration 2).
+    assert result.tool_iterations == 2
+    assert len(llm.calls) == 2
+
+
+def test_process_input_tool_iterations_one_for_plain_answer(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """A plain-text answer is a single iteration (no tools)."""
+    llm.responses = [
+        LLMResponse(content="Привет!", tool_calls=()),
+    ]
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("привет", history=[]))
+
+    assert result.error is None
+    assert result.tool_iterations == 1
+    assert result.tools_called == []
+
+
+def test_process_input_batch_executes_all_tools_one_iteration(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """A batch of 2-4 tools in ONE response runs in a single iteration.
+
+    TASK-038 acceptance: «LLM вызывает 2-4 tool одновременно (batching),
+    а не по одному». The loop must execute every tool of the batch before
+    re-issuing the LLM — not one tool per iteration.
+    """
+    async def handler(args: dict[str, object]) -> str:
+        return "ok"
+    tools_provider._handler_map = {
+        "play_sound": handler,
+        "play_animation": handler,
+        "speak_text": handler,
+    }
+
+    llm.responses = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="play_sound", arguments={"sound_name": "robot_cute"}),
+                ToolCall(id="c2", name="play_animation", arguments={"animation": "happy", "duration": 3}),
+                ToolCall(id="c3", name="speak_text", arguments={"text": "Привет!"}),
+            ),
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("привет", history=[]))
+
+    assert result.error is None
+    # All three tools ran in one batch (single re-issue after the batch).
+    assert result.tools_called == ["play_sound", "play_animation", "speak_text"]
+    assert result.tool_iterations == 2
+    assert len(tools_provider.executed) == 3
+    assert len(llm.calls) == 2
