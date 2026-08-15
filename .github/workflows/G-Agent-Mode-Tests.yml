@@ -71,7 +71,7 @@ jobs:
       - name: Install test deps
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-cov
+          pip install pytest pytest-cov httpx sqlite-vec openai
 
       # ── 1. VoiceMemory unit tests + coverage gate ───────────────────────
       - name: VoiceMemory unit tests (FTS5 + vector search, mock embedder)
