@@ -433,17 +433,15 @@ jobs:
             git config user.name "Rob Box CI"
             git add "$VERSIONS_FILE"
             if ! git diff --cached --quiet; then
-              # ✅ РЕТРО #1139 v2 (13.08, t_bd9b7713): .image-versions коммитим
-              # в ОТДЕЛЬНУЮ per-service ветку ci/image-versions-vision — develop
-              # не засоряется 'ci: vision SHA tags' коммитами, гонка main/vision
-              # исключена (у каждого сервиса своя ветка). Ветка базируется на
-              # origin-типе и НЕ сбрасывается от develop → теги накапливаются
-              # и не теряются (в отличие от v1 #1139, где checkout -B от
-              # develop сбрасывал ветку и deploy тянул старые образы).
-              bash scripts/ci/commit-image-versions.sh \
-                "ci/image-versions-vision" \
-                "ci: vision SHA tags → ${NEW_TAG} [skip ci]" \
-                "$VERSIONS_FILE"
+              # 🔴 РЕВЕРТ #1244 (15.08, decision #1316): SHA-теги коммитим
+              # ПРЯМО в текущую ветку (develop) — ci/image-versions-* ветки
+              # НЕ работают (деплой при local не грузит .image-versions,
+              # тянет голые dev-теги → роботы получают старые образы).
+              CURRENT_BRANCH="$(git branch --show-current)"
+              git commit -m "ci: vision SHA tags → ${NEW_TAG} [skip ci]"
+              git push origin "HEAD:${CURRENT_BRANCH}" >/dev/null 2>&1 \
+                && echo "✅ Committed .image-versions: all vision tags → ${NEW_TAG} (branch ${CURRENT_BRANCH})" \
+                || echo "⚠️  push в ${CURRENT_BRANCH} не удался — таги только локально"
             fi
           else
             echo "⚠️  $VERSIONS_FILE not found"
