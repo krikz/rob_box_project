@@ -17,14 +17,13 @@ navigation.py - Инструменты навигации и движения р
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import math
 import threading
-from rclpy.action import ActionClient
-from geometry_msgs.msg import PoseStamped
-from nav2_msgs.action import NavigateToPose
-from action_msgs.srv import CancelGoal
-from action_msgs.msg import GoalInfo
 
 if TYPE_CHECKING:
     import tf2_ros
+    from rclpy.action import ActionClient
+    from nav2_msgs.action import NavigateToPose
+    from action_msgs.srv import CancelGoal
+    from action_msgs.msg import GoalInfo
     from ..waypoint_store import WaypointStore
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
@@ -54,6 +53,9 @@ def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id:
 
     Returns ``MCPToolResult``.
     """
+    # Динамический импорт во время выполнения (unit tests работают без ROS 2)
+    from nav2_msgs.action import NavigateToPose
+
     if not nav_client.wait_for_server(timeout_sec=1.0):
         return MCPToolResult(success=False, error="Nav2 action server недоступен", message="Навигация недоступна")
 
@@ -114,6 +116,9 @@ class NavigateToWaypointTool(MCPTool):
 
     def __init__(self, node, waypoint_store: "WaypointStore"):
         super().__init__(node)
+        from rclpy.action import ActionClient
+        from nav2_msgs.action import NavigateToPose
+
         self.nav_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
         self.waypoint_store = waypoint_store
         self.current_goal_handle = None
@@ -179,6 +184,9 @@ class NavigateToCoordinatesTool(MCPTool):
 
     def __init__(self, node):
         super().__init__(node)
+        from rclpy.action import ActionClient
+        from nav2_msgs.action import NavigateToPose
+
         self.nav_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
 
     @property
@@ -238,6 +246,9 @@ class MoveDirectionTool(MCPTool):
 
     def __init__(self, node):
         super().__init__(node)
+        from rclpy.action import ActionClient
+        from nav2_msgs.action import NavigateToPose
+
         self.nav_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
 
     @property
@@ -302,6 +313,8 @@ class StopNavigationTool(MCPTool):
 
     def __init__(self, node):
         super().__init__(node)
+        from action_msgs.srv import CancelGoal
+
         self.cancel_client = node.create_client(CancelGoal, "/navigate_to_pose/_action/cancel_goal")
 
     @property
@@ -322,6 +335,8 @@ class StopNavigationTool(MCPTool):
 
     def execute(self) -> MCPToolResult:
         self.log_info("Остановка навигации")
+        from action_msgs.srv import CancelGoal
+        from action_msgs.msg import GoalInfo
 
         if not self.cancel_client.wait_for_service(timeout_sec=0.5):
             return MCPToolResult(success=False, error="Cancel service недоступен")

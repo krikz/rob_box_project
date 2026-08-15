@@ -15,6 +15,8 @@ music.py - Инструменты для управления музыкой в 
 - DeleteTrackTool: Удалить трек из медиатеки
 """
 
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -27,18 +29,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from rob_box_voice.core.music_stack_validation import (
-    MusicStackStatus,
-    load_sclang_health,
-)
-from rob_box_voice.core.sc_only_custom_synthdefs import register_sc_only_custom_synthdefs
-
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 
 # ---------------------------------------------------------------------------
 # Safety filter — compiled once at import time
 # ---------------------------------------------------------------------------
-
 _BLOCKED_TOKENS = re.compile(
     r"\b("
     r"import|os|sys|subprocess|shutil|socket|requests|urllib|http|ftplib|"
@@ -186,6 +181,8 @@ class MusicManager:
         #: ``is_healthy is False``, ``execute_music_code`` / ``set_vibe_preset``
         #: short-circuit with a clear "music unavailable" error so the LLM
         #: doesn't keep retrying against a broken Renardo/FoxDot upstream.
+        from rob_box_voice.core.music_stack_validation import MusicStackStatus
+
         self._music_stack_status: MusicStackStatus = MusicStackStatus(
             is_healthy=True,
             oscdef_registered=True,
@@ -367,6 +364,8 @@ class MusicManager:
             self._verify_and_retry_synthdefs(_rt, self._send_osc_raw)
 
             self._renardo_context = vars(_rt).copy()
+            from rob_box_voice.core.sc_only_custom_synthdefs import register_sc_only_custom_synthdefs
+
             register_sc_only_custom_synthdefs(_rt, self._renardo_context)
             self._renardo_available = True
             self._renardo_last_error = None
@@ -515,6 +514,7 @@ class MusicManager:
         Returns:
             The :class:`MusicStackStatus` that was applied.
         """
+        from rob_box_voice.core.music_stack_validation import load_sclang_health
 
         status = load_sclang_health(
             sclang_log_path,

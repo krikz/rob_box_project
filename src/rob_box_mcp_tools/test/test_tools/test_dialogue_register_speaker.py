@@ -52,10 +52,11 @@ def _install_mcp_base_stub() -> types.ModuleType:
 
     @dataclass_like
     class MCPToolResult:
-        def __init__(self, success, data=None, message=None):
+        def __init__(self, success, data=None, message=None, error=None):
             self.success = bool(success)
             self.data = data if data is not None else {}
             self.message = message
+            self.error = error
 
     class MCPTool:
         def __init__(self, node):
@@ -85,9 +86,18 @@ def _install_mcp_base_stub() -> types.ModuleType:
             self.required = required
             self.enum = enum
 
+    from enum import Enum
+
+    class ToolExecutionType(Enum):
+        INSTANT = "instant"
+        FAST = "fast"
+        MEDIUM = "medium"
+        LONG = "long"
+
     base_module.MCPToolResult = MCPToolResult
     base_module.MCPTool = MCPTool
     base_module.MCPToolParameter = MCPToolParameter
+    base_module.ToolExecutionType = ToolExecutionType
     return base_module
 
 
