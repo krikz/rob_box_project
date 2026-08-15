@@ -124,6 +124,31 @@ def test_extract_relevant_log_line_ignores_without_error_message() -> None:
     assert line is None
 
 
+def test_extract_relevant_log_line_ignores_dialogue_error_none_success_echo() -> None:
+    """Retro 15.08 t_29230e6f / issue #1335: dialogue_node's normal turn
+    completion line is `process_input returned: ... error=None` — error=None
+    means NO error. The bare \\berror\\b matcher would otherwise flag this
+    INFO line as deploy-critical on a fully green round (deploy run
+    31886490619 SUCCESS + E2E SUCCESS, yet issue was created).
+    """
+    log_text = (
+        "[dialogue_node-4] [INFO] [1786799629.267822239] [dialogue_node]: "
+        "✅ [turn] process_input returned: spoken=''[:60] tools=['speak_text'] error=None"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_error_colon_none_success_echo() -> None:
+    log_text = "[dialogue_node-1] [INFO] [1786799629.267822239] [dialogue_node]: result: error: None"
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
 def test_extract_relevant_log_line_ignores_total_errors_summary() -> None:
     log_text = "[health_monitor-1] Total Errors: 1 (последние 0 за минуту)"
 

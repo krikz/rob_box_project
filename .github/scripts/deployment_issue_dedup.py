@@ -76,6 +76,13 @@ CRITICAL_EXCLUDE_COMMON = [
     # (e.g. `ros2 topic list | head`) already hung up. Benign — the follow-up
     # BrokenPipeError line is already excluded above (retro 15.08 t_a14ac65d).
     r"exception ignored in:",
+    # dialogue_node INFO success echo: "process_input returned: ... error=None"
+    # is the normal turn-completion line — error=None means NO error. The bare
+    # \berror\b matcher hits "error=None" and would file a false deploy-critical
+    # issue on a fully green round (retro 15.08 t_29230e6f, issue #1335: deploy
+    # run 31886490619 SUCCESS + E2E SUCCESS, yet issue created).
+    r"error\s*=\s*none",
+    r"error\s*:\s*none",
 ]
 CRITICAL_EXCLUDE_BY_SCOPE = {
     "main": [
