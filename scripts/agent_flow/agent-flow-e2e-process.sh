@@ -1535,6 +1535,12 @@ git push --force-with-lease origin ${branch}
             errored=$((errored+1)); continue
         fi
         # Создаём (или переоткрываем существующую) карточку воркеру.
+        # Ретро 15.08 t_16325ddd: PR мог быть закрыт Шифу («Не делаем это») —
+        # конфликт-карточка мёртвая (rebase невозможен). CLOSED → SKIP.
+        if [ -n "$pr_number" ] && [ "$(gh pr view "$pr_number" --repo "$GH_REPO" --json state --jq '.state' 2>/dev/null || echo '')" = "CLOSED" ]; then
+            log "issue #${number}: PR #${pr_number} CLOSED (товарищ Шифу «Не делаем это») — conflict card НЕ создаю (ретро t_16325ddd)"
+            errored=$((errored+1)); continue
+        fi
         # Ретро 12.08 (t_bff6eccf): ищем по branch в title в ЛЮБОМ статусе
         # (включая done/archived) — повторный конфликт переоткрывает карточку,
         # а НЕ плодит дубликаты (было: карточка done → создавалась новая).
@@ -2136,6 +2142,8 @@ sshpass -p open ssh ros2@10.1.1.21 'docker logs voice-assistant --since <ts> | g
 
 **ЕСЛИ ДОКАЗАТЕЛЬСТВ НЕТ** в логе прогона → иди на 10.1.1.21 (\`sshpass -p open ssh ros2@10.1.1.21 'docker logs voice-assistant --since <ts>'\`), проиграй команду сам, добывай raw-лог. Чини **в той же ветке** \`${branch}\` (тот же PR, никаких новых веток — Шифу прямо: «не плодить ветки»), push, жди следующего прогона. Карточка остаётся до прогона с доказательствами.
 
+**ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → карточка мёртвая: сделай `kanban complete` с пометкой `PR closed, карточка не нужна` (ретро 15.08 t_16325ddd).
+
 **ЗАПРЕЩЕНО:** ставить needs-review самостоятельно, мержить, плодить ветки/PRы."
             _gate_title="🟢 e2e-ran #${number}: проверь worker-evidence для PR \`${branch}\`"
             _gate_priority=70
@@ -2154,6 +2162,8 @@ ${_blk_line}**ОБЯЗАН** (по процессу Шифу 10.08): сходи 
 **ЕСЛИ ПО ТВОЕЙ ВИНЕ** (баг в твоём коде, exception в логах, неправильная команда в ## e2e блоке) → чини **в той же ветке** \`${branch}\` (никаких новых веток/PRов — Шифу прямо), push, жди следующего прогона. Карточка остаётся.
 
 **ЕСЛИ НЕ ПО ТВОЕЙ ВИНЕ** (квота MiniMax 2056, сеть, race, бот робота недоступен) → сиди, жди следующего прогона. Карточка остаётся.
+
+**ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → карточка мёртвая: сделай `kanban complete` с пометкой `PR closed, карточка не нужна` (ретро 15.08 t_16325ddd).
 
 **ЗАПРЕЩЕНО:** плодить ветки/PRы, ставить needs-review, мержить."
             _gate_title="🔴 e2e-fail #${number}: проверь лог и определи вину (PR \`${branch}\`)"
@@ -2175,14 +2185,23 @@ for t in data:
             hermes kanban --board "$KANBAN_BOARD" comment "$_existing_gate" "$(echo "$_gate_body" | sed 's/^/  /' | sed '0,/${run_id}/{s/${run_id}/'"$run_id"'/}')" >/dev/null 2>&1 || true
             log "issue #${number}: gate card ${_existing_gate} already exists — appended progress"
         else
-            # Создаём карточку (goal_mode=0, без --skill, чтобы воркер сам закрыл)
-            hermes kanban --board "$KANBAN_BOARD" create \
-                --assignee "$_worker_assignee" \
-                --priority "$_gate_priority" \
-                --max-runtime 1800 \
-                --body "$_gate_body" \
-                "$_gate_title" >/dev/null 2>&1 || log "issue #${number}: WARNING gate card create failed (${_worker_assignee})"
-            log "issue #${number}: gate card created for ${_worker_assignee} (${verdict^^})"
+            # Ретро 15.08 t_16325ddd (гонка PR-state): e2e-прогон шёл минуты,
+            # за это время товарищ Шифу мог закрыть PR («Не делаем это») →
+            # gate-карточка мёртвая (assignee=default, ветки нет, «жди
+            # следующего прогона» никогда не сработает). Пере-проверяем state
+            # ПЕРЕД create — CLOSED → SKIP.
+            if [ -n "$pr_number" ] && [ "$(gh pr view "$pr_number" --repo "$GH_REPO" --json state --jq '.state' 2>/dev/null || echo '')" = "CLOSED" ]; then
+                log "issue #${number}: PR #${pr_number} CLOSED (товарищ Шифу «Не делаем это») — gate card НЕ создаю (ретро t_16325ddd)"
+            else
+                # Создаём карточку (goal_mode=0, без --skill, чтобы воркер сам закрыл)
+                hermes kanban --board "$KANBAN_BOARD" create \
+                    --assignee "$_worker_assignee" \
+                    --priority "$_gate_priority" \
+                    --max-runtime 1800 \
+                    --body "$_gate_body" \
+                    "$_gate_title" >/dev/null 2>&1 || log "issue #${number}: WARNING gate card create failed (${_worker_assignee})"
+                log "issue #${number}: gate card created for ${_worker_assignee} (${verdict^^})"
+            fi
         fi
     fi
 
