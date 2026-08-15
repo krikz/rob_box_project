@@ -21,3 +21,9 @@ stt_node:
     unclear_phrase: Не расслышал, скажи ещё раз
     unclear_cooldown_s: 5.0
     tts_grace_s: 2.5
+    # Issue #1251 — ранний «бульк» (сигнал «услышал, wake word есть»):
+    # как только partial/final STT содержит wake word, публикуем триггер
+    # на /voice/sound/trigger → sound_node играет короткий «бульк» через
+    # ~2-3с после конца фразы (а не ~8с, когда закончатся LLM+TTS).
+    early_boop_enabled: true
+    early_boop_trigger: boop
