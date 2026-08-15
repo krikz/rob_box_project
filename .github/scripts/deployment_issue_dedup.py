@@ -234,7 +234,9 @@ def _build_issue_body(
 ### Quick Commands
 
 ```bash
-sshpass -p 'open' ssh ros2@{diagnostic_ip} 'docker logs {candidate['container']} --tail 50'
+# SEC-1: пароль SSH через env SSHPASS (GitHub secret SSH_PASSWORD), не хардкодим.
+export SSHPASS="$SSH_PASSWORD"   # или из CI secrets
+sshpass -e ssh ros2@{diagnostic_ip} 'docker logs {candidate['container']} --tail 50'
 ```
 
 ---

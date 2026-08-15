@@ -89,11 +89,14 @@ jobs:
       # CHANGE 4: Notify Raspberry Pis to update (optional)
       - name: Trigger update on Raspberry Pis
         if: github.ref == 'refs/heads/main'
+        env:
+          # SEC-1: пароль SSH из GitHub secret, не хардкодим
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
         run: |
           # Main Pi
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.20 \
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.20 \
             'cd ~/rob_box_project/docker/main && ./update_and_restart.sh' || true
 
           # Vision Pi
-          sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 \
             'cd ~/rob_box_project/docker/vision && ./update_and_restart.sh' || true

@@ -47,6 +47,10 @@ jobs:
     permissions:
       contents: read
       issues: write
+    env:
+      # SEC-1: пароль SSH больше не хардкодится в workflow — берётся из GitHub secret
+      # (docs/deployment/DEPLOYMENT_WORKFLOW.md → "SSH Credentials").
+      SSHPASS: ${{ secrets.SSH_PASSWORD }}
 
     steps:
       - name: Checkout repository
@@ -253,7 +257,7 @@ jobs:
           echo "🛑 Stopping Vision Pi containers..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+          sshpass -e ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             'cd ~/rob_box_project/docker/vision && docker compose down --remove-orphans --timeout 20' \
             || echo "⚠️  Warning: Failed to stop containers (may not be running)"
 
@@ -269,7 +273,7 @@ jobs:
           # The branch may have been force-pushed (e.g. e2e test rounds reuse branches),
           # so git pull would fail on divergent histories.
           for attempt in 1 2 3; do
-            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            sshpass -e ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
               "cd ~/rob_box_project && \
                git fetch origin && \
                git checkout ${{ github.ref_name }} && \
@@ -292,7 +296,7 @@ jobs:
           # Если ветки/файла ещё нет (первый деплой после перехода) — остаётся
           # файл из origin/<branch> (stale fallback, compose возьмёт его).
           for attempt in 1 2 3; do
-            if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            if sshpass -e ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
               "cd ~/rob_box_project && git fetch origin ci/image-versions-vision 2>/dev/null; \
                if git cat-file -e origin/ci/image-versions-vision:docker/vision/.image-versions.${{ env.IMAGE_TAG }} 2>/dev/null; then \
                  git show origin/ci/image-versions-vision:docker/vision/.image-versions.${{ env.IMAGE_TAG }} > docker/vision/.image-versions.${{ env.IMAGE_TAG }} && \
@@ -314,7 +318,7 @@ jobs:
           echo "   Registry: ${{ env.registry_display }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+          sshpass -e ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
@@ -338,9 +342,9 @@ jobs:
           echo "     sync_time.sh script switches to ru.pool.ntp.org."
           echo ""
 
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+          sshpass -e ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "if [ -f ~/rob_box_project/scripts/maintenance/sync_time.sh ]; then \
-               echo 'open' | sudo -S bash ~/rob_box_project/scripts/maintenance/sync_time.sh || true; \
+               echo "$SSHPASS" | sudo -S bash ~/rob_box_project/scripts/maintenance/sync_time.sh || true; \
              else \
                echo '⚠️  sync_time.sh not found (old code) — skipping'; \
              fi" \
@@ -358,7 +362,7 @@ jobs:
           # name /voice-resources-init is already in use» + «network vision_default already
           # exists» (deploy round-109 06:03Z упал на этом). Принудительно удаляем его и
           # stale-сеть перед up; если сеть ещё используется — rm молча не сработает (|| true).
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+          sshpass -e ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
@@ -377,7 +381,7 @@ jobs:
           echo "🛑 Stopping Main Pi containers..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+          sshpass -e ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             'cd ~/rob_box_project/docker/main && docker compose down --remove-orphans --timeout 20' \
             || echo "⚠️  Warning: Failed to stop containers (may not be running)"
 
@@ -393,7 +397,7 @@ jobs:
           # The branch may have been force-pushed (e.g. e2e test rounds reuse branches),
           # so git pull would fail on divergent histories.
           for attempt in 1 2 3; do
-            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+            sshpass -e ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
               "cd ~/rob_box_project && \
                git fetch origin && \
                git checkout ${{ github.ref_name }} && \
@@ -416,7 +420,7 @@ jobs:
           # Если ветки/файла ещё нет (первый деплой после перехода) — остаётся
           # файл из origin/<branch> (stale fallback, compose возьмёт его).
           for attempt in 1 2 3; do
-            if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+            if sshpass -e ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
               "cd ~/rob_box_project && git fetch origin ci/image-versions-main 2>/dev/null; \
                if git cat-file -e origin/ci/image-versions-main:docker/main/.image-versions.${{ env.IMAGE_TAG }} 2>/dev/null; then \
                  git show origin/ci/image-versions-main:docker/main/.image-versions.${{ env.IMAGE_TAG }} > docker/main/.image-versions.${{ env.IMAGE_TAG }} && \
@@ -438,7 +442,7 @@ jobs:
           echo "   Registry: ${{ env.registry_display }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+          sshpass -e ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
@@ -462,9 +466,9 @@ jobs:
           echo "     sync_time.sh script switches to ru.pool.ntp.org."
           echo ""
 
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+          sshpass -e ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             "if [ -f ~/rob_box_project/scripts/maintenance/sync_time.sh ]; then \
-               echo 'open' | sudo -S bash ~/rob_box_project/scripts/maintenance/sync_time.sh || true; \
+               echo "$SSHPASS" | sudo -S bash ~/rob_box_project/scripts/maintenance/sync_time.sh || true; \
              else \
                echo '⚠️  sync_time.sh not found (old code) — skipping'; \
              fi" \
@@ -477,7 +481,7 @@ jobs:
           echo "🚀 Starting Main Pi containers..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+          sshpass -e ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
@@ -504,7 +508,7 @@ jobs:
           echo "🧹 Cleaning up unused Docker artifacts on Vision Pi..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+          sshpass -e ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "docker system df && \
              docker image prune -af && \
              docker builder prune -af && \
@@ -518,7 +522,7 @@ jobs:
           echo "🧹 Cleaning up unused Docker artifacts on Main Pi..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+          sshpass -e ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             "docker system df && \
              docker image prune -af && \
              docker builder prune -af && \
@@ -535,7 +539,7 @@ jobs:
           echo "🔍 Checking Vision Pi container status..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          STATUS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+          STATUS=$(sshpass -e ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             'cd ~/rob_box_project/docker/vision && docker compose ps --format json')
 
           echo "$STATUS" | jq -r '"  \(.Name): \(.State)"'
@@ -574,7 +578,7 @@ jobs:
           echo "🔍 Checking Main Pi container status..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          STATUS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+          STATUS=$(sshpass -e ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             'cd ~/rob_box_project/docker/main && docker compose ps --format json')
 
           echo "$STATUS" | jq -r '"  \(.Name): \(.State)"'
@@ -618,7 +622,7 @@ jobs:
           echo "" > $LOGS_FILE
 
           # Получаем список контейнеров
-          CONTAINERS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+          CONTAINERS=$(sshpass -e ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             'cd ~/rob_box_project/docker/vision && docker compose ps --format json' | jq -r '.Name')
 
           # Define error exclusion patterns
@@ -646,9 +650,9 @@ jobs:
             echo "Checking logs for: $container"
 
             # Получаем первые 50 строк (инициализация) и последние 150 строк логов
-            LOGS_START=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            LOGS_START=$(sshpass -e ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
               "docker logs --tail 10000 $container 2>&1 | head -50")
-            LOGS_END=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+            LOGS_END=$(sshpass -e ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
               "docker logs --tail 150 $container 2>&1")
             
             # Объединяем логи для анализа
@@ -731,7 +735,7 @@ jobs:
           echo "" > $LOGS_FILE
 
           # Получаем список контейнеров
-          CONTAINERS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+          CONTAINERS=$(sshpass -e ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             'cd ~/rob_box_project/docker/main && docker compose ps --format json' | jq -r '.Name')
 
           # Define error exclusion patterns
@@ -768,9 +772,9 @@ jobs:
             echo "Checking logs for: $container"
 
             # Получаем первые 50 строк (инициализация) и последние 150 строк логов
-            LOGS_START=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+            LOGS_START=$(sshpass -e ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
               "docker logs --tail 10000 $container 2>&1 | head -50")
-            LOGS_END=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+            LOGS_END=$(sshpass -e ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
               "docker logs --tail 150 $container 2>&1")
             
             # Объединяем логи для анализа
@@ -850,7 +854,7 @@ jobs:
 
           # Проверяем топики OAK-D камеры
           echo "Checking oak-d container topics..."
-          TOPICS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+          TOPICS=$(sshpass -e ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "docker exec oak-d bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list 2>/dev/null'" || echo "")
 
           if [ -z "$TOPICS" ]; then
@@ -912,7 +916,7 @@ jobs:
 
           # Проверяем топики в rtabmap контейнере
           echo "Checking rtabmap container topics..."
-          TOPICS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+          TOPICS=$(sshpass -e ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             "docker exec rtabmap bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list 2>/dev/null'" || echo "")
 
           if [ -z "$TOPICS" ]; then

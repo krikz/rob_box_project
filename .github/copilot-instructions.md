@@ -120,17 +120,20 @@ docker/
 
 ### SSH доступ
 ```bash
+# SEC-1: пароль не хардкодим — бери из GitHub secret SSH_PASSWORD (или env SSHPASS).
 # Vision Pi
-sshpass -p 'open' ssh ros2@10.1.1.21
+export SSHPASS='<пароль из GitHub secret SSH_PASSWORD>'
+sshpass -e ssh ros2@10.1.1.21
 
 # Main Pi  
-sshpass -p 'open' ssh ros2@10.1.1.20
+sshpass -e ssh ros2@10.1.1.20
 ```
 
 ### Обновление на Pi
 ```bash
 # Vision Pi
-sshpass -p 'open' ssh ros2@10.1.1.21 \
+export SSHPASS='<пароль из GitHub secret SSH_PASSWORD>'
+sshpass -e ssh ros2@10.1.1.21 \
   'cd ~/rob_box_project/docker/vision && ./scripts/update_and_restart.sh'
 ```
 

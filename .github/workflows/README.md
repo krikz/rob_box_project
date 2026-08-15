@@ -120,7 +120,7 @@ gh run view <run-id> --log
 
 - Ensure Raspberry Pis are powered on and connected to network
 - Verify IPs are correct (Vision: 10.1.1.21, Main: 10.1.1.20)
-- Check that SSH password is 'open'
+- Check that `SSH_PASSWORD` GitHub secret is set (SEC-1: пароль не хардкодится в workflow)
 
 ### Docker Images Not Found
 

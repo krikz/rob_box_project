@@ -106,14 +106,16 @@ jobs:
 
       - name: Pre-flight check
         env:
-          SSHPASS: open
+          # SEC-1: пароль SSH из GitHub secret, не хардкодим (L-E2E Voice Test)
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
         run: |
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "pactl info | head -3"
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 "docker ps --filter name=voice-assistant --format '{{.Status}}'"
 
       - name: Ensure YANDEX_API_KEY on build machine
         env:
-          SSHPASS: open
+          # SEC-1: пароль SSH из GitHub secret, не хардкодим (L-E2E Voice Test)
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
         run: |
           # Ключ живёт в voice-assistant контейнере на роботе (как в ensure_voice_file.sh).
           # Достаём ключ локально на runner'е — атомарный скрипт получит его
@@ -128,7 +130,8 @@ jobs:
 
       - name: Push atomic harness + scenario to build machine
         env:
-          SSHPASS: open
+          # SEC-1: пароль SSH из GitHub secret, не хардкодим (L-E2E Voice Test)
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
         run: |
           chmod +x .github/workflows/scripts/e2e_voice_test.sh
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_test.sh ros2@10.1.1.249:/tmp/e2e_voice_test.sh
@@ -142,7 +145,8 @@ jobs:
 
       - name: E2E voice test (atomic harness)
         env:
-          SSHPASS: open
+          # SEC-1: пароль SSH из GitHub secret, не хардкодим (L-E2E Voice Test)
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
         run: |
           RID="${{ github.run_id }}"
           YKEY="$(cat "$YKEY_LOCAL")"
@@ -168,7 +172,7 @@ jobs:
           echo "RUN_CMD: $CMD"
           # Запускаем через SSH: ключ передаём env-переменной (не в cmdline — чтобы не светить в ps)
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
-            "export YANDEX_API_KEY='${YKEY}'; export ROBOT_HOST=10.1.1.21; export SSHPASS='open'; \
+            "export YANDEX_API_KEY='${YKEY}'; export ROBOT_HOST=10.1.1.21; export SSHPASS='${SSHPASS}'; \
              ${CMD} 2>&1 | tee /tmp/e2e_atomic_out.log"
 
           echo "=== E2E stdout ==="
@@ -176,7 +180,8 @@ jobs:
 
       - name: Verdict from atomic harness
         env:
-          SSHPASS: open
+          # SEC-1: пароль SSH из GitHub secret, не хардкодим (L-E2E Voice Test)
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
         run: |
           OUT="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "cat /tmp/e2e_atomic_out.log 2>/dev/null")"
           echo "$OUT" | tee /tmp/e2e_verdict.log
@@ -212,7 +217,8 @@ jobs:
 
       - name: Collect robot logs
         env:
-          SSHPASS: open
+          # SEC-1: пароль SSH из GitHub secret, не хардкодим (L-E2E Voice Test)
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
         run: |
           RID="${{ github.run_id }}"
           LOG="/tmp/voice_e2e_${RID}.log"
@@ -303,7 +309,8 @@ jobs:
       - name: Verify feature acceptance (issue #1077 speaker profiles)
         if: ${{ always() && inputs.acceptance_feature == 'speaker_profile' }}
         env:
-          SSHPASS: open
+          # SEC-1: пароль SSH из GitHub secret, не хардкодим (L-E2E Voice Test)
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
         run: |
           RID="${{ github.run_id }}"
           LOG="/tmp/voice_e2e_${RID}.log"

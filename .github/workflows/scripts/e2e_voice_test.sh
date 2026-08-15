@@ -40,7 +40,13 @@ ROBOT_USER="${ROBOT_USER:-ros2}"
 # (rc=127 command not found), весь ROBOT_SSH возвращает пусто, check_cycle
 # видит пустые логи и выдаёт no_accept при живом роботе. Locale префикс
 # работает только как литерал перед командой, не через переменную.
-ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -n -o StrictHostKeyChecking=no ${ROBOT_USER}@${ROBOT_HOST}"
+# SEC-1: пароль НЕ хардкодим. sshpass -e берёт его из env SSHPASS (GitHub secret
+# SSH_PASSWORD в CI; локально — export SSHPASS=...). Без SSHPASS скрипт падает.
+if [ -z "${SSHPASS:-}" ]; then
+    echo "E2E_FATAL: SSHPASS не задан (env). SEC-1: пароль SSH только через secret/env." >&2
+    exit 2
+fi
+ROBOT_SSH="sshpass -e ssh -n -o StrictHostKeyChecking=no ${ROBOT_USER}@${ROBOT_HOST}"
 YANDEX_TTS_VOICE="${YANDEX_TTS_VOICE:-anton}"       # голос по умолчанию
 YANDEX_SPEED="${YANDEX_SPEED:-1.0}"
 

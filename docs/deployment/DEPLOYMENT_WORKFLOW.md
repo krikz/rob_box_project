@@ -532,8 +532,8 @@ Permission denied (publickey,password)
 
 **Решение:**
 - Проверить что Pi доступен в сети: `ping 10.1.1.21`
-- Проверить что sshpass работает: `sshpass -p 'open' ssh ros2@10.1.1.21 'echo OK'`
-- Убедиться что пароль 'open' правильный
+- Проверить что sshpass работает: `export SSHPASS='<пароль из GitHub secret SSH_PASSWORD>' && sshpass -e ssh ros2@10.1.1.21 'echo OK'`
+- Убедиться что GitHub secret `SSH_PASSWORD` правильный (SEC-1: пароль не хардкодится)
 
 ### Проблема: Containers failed to start
 
@@ -677,10 +677,11 @@ Feature Branch → G: Auto-merge Feature to Develop
 
 ### SSH Credentials
 
-Workflow использует пароль `'open'` через sshpass.
+Workflow использует пароль через `sshpass -e` (env `SSHPASS`), значение берётся из
+GitHub secret `SSH_PASSWORD` (SEC-1, issue #824).
 
 **⚠️  ВАЖНО:**
-- Пароль хардкоднут в workflow (не секрет)
+- Пароль НЕ хардкодится в workflow/скриптах — только в GitHub secret `SSH_PASSWORD`
 - Pi находятся в локальной сети (10.1.1.x)
 - Нет доступа из интернета
 
