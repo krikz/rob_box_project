@@ -626,6 +626,16 @@ case "$subcmd" in
                 _data="$(get_state PR_${pr_num}_FILES_JSON)"
                 apply_jq "$_data" "$_jq_filter"
                 ;;
+            repos/*/pulls?state=open*)
+                # Ретро 15.08 t_2c814334 (pr-orphan-no-labels): REST-based
+                # backfill-скан open PR (gh api pulls — core-квота, отдельная
+                # от graphql). Fixture: PR_LIST_ALL_OPEN_REST_JSON = массив
+                # REST-объектов pull (number, title, head.ref, mergeable,
+                # mergeable_state, draft, labels[].name, created_at).
+                journal "gh api $path (pulls open REST backfill)"
+                _data="$(get_state PR_LIST_ALL_OPEN_REST_JSON)"
+                apply_jq "$_data" "$_jq_filter"
+                ;;
             repos/*/pulls/[0-9]*)
                 # Ретро-путь guard PR/issue (ретро 13.08 t_2d78fbdd, #942):
                 # скрипт проверяет существование PR через REST gh api pulls/N

@@ -155,10 +155,10 @@ test_C4_labeled_pr_skipped() {
 # ===========================================================================
 test_C5_merged_branch_head_pr_skipped() {
     new_test
-    fixture_clean_pr 3307 'z-architect/voice-selection-proposal' \
+    fixture_clean_pr 3307 'z-{agent}/3307-teleop-dockerfile-base-image' \
         'fix(teleop #3307): Dockerfile BASE_IMAGE' CLEAN 'docker/main/teleop/Dockerfile'
     # head-ветка уже влита через PR #1218 (другой PR) → stale-branch.
-    set_state "PR_MERGED_HEAD_z-architect/voice-selection-proposal_JSON" '[{"number":1218,"state":"MERGED"}]'
+    set_state "PR_MERGED_HEAD_z-{agent}/3307-teleop-dockerfile-base-image_JSON" '[{"number":1218,"state":"MERGED"}]'
 
     run_merge_gate
 
