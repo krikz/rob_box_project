@@ -110,6 +110,21 @@ class SoundNode(Node):
         self.is_playing = False
         self.current_sound: Optional[str] = None
         self.play_thread: Optional[threading.Thread] = None
+        # Issue #1328 — токен поколения воспроизведения. Инкрементится на
+        # каждый новый trigger; play_sound_thread запоминает свой токен и в
+        # finally сбрасывает флаги только если он всё ещё актуален. Иначе
+        # прерванный поток (бульк) затрёт состояние нового (thinking).
+        self._play_token: int = 0
+        # Issue #1328 — приоритеты триггеров: accept-звук (thinking) должен
+        # ПРЕРЫВАТЬ ранний «бульк» (boop → button_click), чтобы бульк и
+        # accept не играли одновременно. По умолчанию 10; thinking — 20
+        # (accept, прерывает всё). boop/button_click — 10 (как дефолт:
+        # только accept имеет право прерывать, обычные звуки не трогают).
+        self.trigger_priority: Dict[str, int] = {
+            "boop": 10,
+            "button_click": 10,
+            "thinking": 20,
+        }
 
         # Инициализация
         self.get_logger().info("SoundNode инициализирован")
@@ -207,17 +222,37 @@ class SoundNode(Node):
 
         self.get_logger().info(f"🔔 Триггер: {trigger}")
 
-        # Проверить, не играет ли уже звук
-        if self.is_playing:
-            self.get_logger().warn(f"⚠️ Звук уже играет ({self.current_sound}), пропускаю {trigger}")
-            return
-
-        # Выбрать звук
+        # Выбрать звук (нужен и для приоритета, и для воспроизведения)
         sound_name = self.select_sound(trigger)
 
         if sound_name is None:
             self.get_logger().warn(f'⚠️ Звук для триггера "{trigger}" не найден')
             return
+
+        # Проверить, не играет ли уже звук
+        if self.is_playing:
+            # Issue #1328 — приоритеты триггеров: accept-звук (thinking)
+            # ПРЕРЫВАЕТ ранний «бульк» (boop/button_click), чтобы бульк и
+            # accept не играли одновременно. Раньше guard просто возвращался,
+            # и при быстром STT (boop_latency ~300ms) thinking терялся:
+            # юзер слышал бульк → сразу TTS-ответ, без отдельного акцепт-звука.
+            new_prio = self.trigger_priority.get(trigger, 10)
+            cur_prio = self.trigger_priority.get(self.current_sound or "", 10)
+            if new_prio <= cur_prio:
+                self.get_logger().warn(f"⚠️ Звук уже играет ({self.current_sound}), пропускаю {trigger}")
+                return
+            # Новый звук важнее текущего — глушим текущий и играем новый.
+            self.get_logger().info(
+                f"⏭️ {trigger} (prio {new_prio}) прерывает {self.current_sound} (prio {cur_prio})"
+            )
+            try:
+                self.playback_manager.stop_playback("sound_node")
+            except Exception as e:
+                self.get_logger().warn(f"⚠️ Не удалось остановить текущий звук: {e}")
+
+        # Токен поколения (issue #1328): если мы прервали старый поток, его
+        # finally НЕ должен сбросить состояние нового воспроизведения.
+        self._play_token += 1
 
         # Запустить воспроизведение в отдельном потоке
         self.play_thread = threading.Thread(target=self.play_sound_thread, args=(sound_name, trigger), daemon=True)
@@ -256,6 +291,7 @@ class SoundNode(Node):
 
     def play_sound_thread(self, sound_name: str, trigger: str):
         """Воспроизведение звука в отдельном потоке."""
+        token = self._play_token
         self.is_playing = True
         self.current_sound = sound_name
         self.publish_state(f"playing_{sound_name}")
@@ -310,9 +346,12 @@ class SoundNode(Node):
             self.get_logger().error(f"❌ Ошибка воспроизведения {sound_name}: {e}")
 
         finally:
-            self.is_playing = False
-            self.current_sound = None
-            self.publish_state("ready")
+            # Issue #1328 — сбрасываем флаги только если это всё ещё текущее
+            # воспроизведение (нас не прервали более приоритетным звуком).
+            if token == self._play_token:
+                self.is_playing = False
+                self.current_sound = None
+                self.publish_state("ready")
 
     def cleanup_playback_noise(self):
         """

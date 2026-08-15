@@ -512,6 +512,107 @@ class TestSoundNodeIntegration(unittest.TestCase):
         # Проверяем что play_thread не был создан
         self.assertIsNone(self.node.play_thread)
 
+    def test_trigger_callback_thinking_interrupts_boop(self):
+        """Issue #1328: thinking ПРЕРЫВАЕТ бульк (button_click), а не теряется.
+
+        Раньше guard ``if self.is_playing: return`` молча терял thinking,
+        когда button_click (~0.23с) ещё играл при быстром STT — юзер слышал
+        «бульк → сразу TTS-ответ», без отдельного акцепт-звука. Теперь
+        thinking (prio 20) > button_click (prio 10) → бульк глушится,
+        thinking стартует.
+        """
+        # Имитируем: бульк играет (boop → button_click)
+        self.node.is_playing = True
+        self.node.current_sound = 'button_click'
+        self.node.sounds['button_click'] = MagicMock()
+        self.node.sounds['thinking'] = MagicMock()
+
+        msg = String()
+        msg.data = 'thinking'
+
+        with patch.object(self.node, 'play_sound_thread') as mock_play, \
+             patch.object(self.node.playback_manager, 'stop_playback') as mock_stop:
+            self.node.trigger_callback(msg)
+
+            # Бульк остановлен, thinking запущен
+            mock_stop.assert_called_once_with("sound_node")
+            mock_play.assert_called_once()
+
+    def test_trigger_callback_boop_does_not_interrupt_thinking(self):
+        """Issue #1328: бульк НЕ прерывает thinking (prio 10 < 20)."""
+        self.node.is_playing = True
+        self.node.current_sound = 'thinking'
+        self.node.sounds['button_click'] = MagicMock()
+
+        msg = String()
+        msg.data = 'boop'
+
+        with patch.object(self.node, 'play_sound_thread') as mock_play, \
+             patch.object(self.node.playback_manager, 'stop_playback') as mock_stop:
+            self.node.trigger_callback(msg)
+
+            # Приоритет булька ниже — ничего не трогаем
+            mock_stop.assert_not_called()
+            mock_play.assert_not_called()
+            self.assertIsNone(self.node.play_thread)
+
+    def test_trigger_callback_equal_priority_skips(self):
+        """Issue #1328: равный приоритет (boop поверх boop) — пропускаем."""
+        self.node.is_playing = True
+        self.node.current_sound = 'button_click'
+        self.node.sounds['button_click'] = MagicMock()
+
+        msg = String()
+        msg.data = 'boop'
+
+        with patch.object(self.node, 'play_sound_thread') as mock_play:
+            self.node.trigger_callback(msg)
+            mock_play.assert_not_called()
+            self.assertIsNone(self.node.play_thread)
+
+    def test_trigger_callback_default_priority_skips(self):
+        """Issue #1328: обычный звук (default prio 10) не прерывает текущий."""
+        self.node.is_playing = True
+        self.node.current_sound = 'button_click'
+        self.node.sounds['cute'] = MagicMock()
+
+        msg = String()
+        msg.data = 'cute'
+
+        with patch.object(self.node, 'play_sound_thread') as mock_play:
+            self.node.trigger_callback(msg)
+            mock_play.assert_not_called()
+            self.assertIsNone(self.node.play_thread)
+
+    def test_play_sound_thread_token_guard(self):
+        """Issue #1328: прерванный поток НЕ сбрасывает флаги нового.
+
+        Имитируем: поток A захватил token=0, пока играл — пришёл более
+        приоритетный thinking (token стал 1). finally потока A видит
+        token != self._play_token и НЕ выставляет is_playing=False.
+        """
+        mock_audio = MagicMock()
+        mock_audio.frame_rate = 16000
+        mock_audio.channels = 2
+        mock_audio.get_array_of_samples.return_value = [0] * 1000
+        self.node.sounds['boop_sound'] = mock_audio
+
+        # Токен инкрементится ПО ХОДУ воспроизведения (пришёл thinking)
+        def _bump_token(*a, **kw):
+            self.node._play_token += 1
+            return np.zeros((1000, 2), dtype=np.float32)
+
+        with patch.object(self.node.playback_manager, 'play_audio', return_value=True), \
+             patch('rob_box_voice.sound_node.sd.stop'), \
+             patch('rob_box_voice.sound_node.time.sleep'), \
+             patch('rob_box_voice.sound_node.np.array', side_effect=_bump_token):
+
+            self.node.play_sound_thread('boop_sound', 'boop')
+
+        # Флаги НЕ сброшены — «старый» поток не затирает новый
+        self.assertTrue(self.node.is_playing)
+        self.assertEqual(self.node.current_sound, 'boop_sound')
+
     def test_trigger_callback_unknown_sound(self):
         """Тест: trigger_callback() игнорирует неизвестный звук."""
         msg = String()
