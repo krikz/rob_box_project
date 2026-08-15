@@ -39,14 +39,14 @@
 ### Предварительные требования
 
 - SSH доступ к обоим Raspberry Pi
-- Пароль: `open`
+- Пароль: `<ROBOT_PASSWORD>`
 - Git репозиторий на `develop` или `main` ветке
 
 ### Шаг 1: Обновление Vision Pi
 
 ```bash
 # Подключение к Vision Pi
-sshpass -p 'open' ssh ros2@10.1.1.21
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.21
 
 # Переход в директорию проекта
 cd ~/rob_box_project
@@ -81,7 +81,7 @@ exit
 
 ```bash
 # Подключение к Main Pi
-sshpass -p 'open' ssh ros2@10.1.1.20
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.20
 
 # Переход в директорию проекта
 cd ~/rob_box_project
@@ -118,7 +118,7 @@ exit
 
 ```bash
 # Vision Pi - полный процесс
-sshpass -p 'open' ssh ros2@10.1.1.21 << 'EOF'
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.21 << 'EOF'
 cd ~/rob_box_project
 git pull
 cd docker/vision
@@ -132,7 +132,7 @@ docker logs zenoh-router 2>&1 | grep -i "cannot find link" || echo "✅ No 'cann
 EOF
 
 # Main Pi - полный процесс
-sshpass -p 'open' ssh ros2@10.1.1.20 << 'EOF'
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.20 << 'EOF'
 cd ~/rob_box_project
 git pull
 cd docker/main
@@ -154,10 +154,10 @@ EOF
 
 ```bash
 # Vision Pi
-sshpass -p 'open' ssh ros2@10.1.1.21 'docker ps | grep zenoh'
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.21 'docker ps | grep zenoh'
 
 # Main Pi
-sshpass -p 'open' ssh ros2@10.1.1.20 'docker ps | grep zenoh'
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.20 'docker ps | grep zenoh'
 ```
 
 **Ожидаемый результат:** контейнеры `zenoh-router` в статусе `Up`
@@ -166,10 +166,10 @@ sshpass -p 'open' ssh ros2@10.1.1.20 'docker ps | grep zenoh'
 
 ```bash
 # Vision Pi - последние 200 строк логов
-sshpass -p 'open' ssh ros2@10.1.1.21 'docker logs zenoh-router --tail 200 2>&1 | grep -E "(ERROR|WARN)"'
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.21 'docker logs zenoh-router --tail 200 2>&1 | grep -E "(ERROR|WARN)"'
 
 # Main Pi - последние 200 строк логов
-sshpass -p 'open' ssh ros2@10.1.1.20 'docker logs zenoh-router --tail 200 2>&1 | grep -E "(ERROR|WARN)"'
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.20 'docker logs zenoh-router --tail 200 2>&1 | grep -E "(ERROR|WARN)"'
 ```
 
 **Ожидаемый результат:** отсутствие ошибок "Unable to push" и "Cannot find link"
@@ -178,7 +178,7 @@ sshpass -p 'open' ssh ros2@10.1.1.20 'docker logs zenoh-router --tail 200 2>&1 |
 
 ```bash
 # Подключиться к любому Pi
-sshpass -p 'open' ssh ros2@10.1.1.21
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.21
 
 # Проверка камеры
 ros2 topic hz /camera/rgb/image_raw
@@ -201,12 +201,12 @@ exit
 
 ```bash
 # Мониторинг логов Vision Pi в реальном времени
-sshpass -p 'open' ssh ros2@10.1.1.21 'docker logs -f zenoh-router 2>&1 | grep -E "(ERROR|transport)"'
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.21 'docker logs -f zenoh-router 2>&1 | grep -E "(ERROR|transport)"'
 ```
 
 ```bash
 # Мониторинг логов Main Pi в реальном времени
-sshpass -p 'open' ssh ros2@10.1.1.20 'docker logs -f zenoh-router 2>&1 | grep -E "(ERROR|transport)"'
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.20 'docker logs -f zenoh-router 2>&1 | grep -E "(ERROR|transport)"'
 ```
 
 **Ожидаемый результат:** отсутствие ошибок даже при высокой нагрузке
@@ -222,14 +222,14 @@ sshpass -p 'open' ssh ros2@10.1.1.20 'docker logs -f zenoh-router 2>&1 | grep -E
    # Скрипт для быстрой проверки
    for pi_ip in 10.1.1.21 10.1.1.20; do
      echo "=== Checking Pi $pi_ip ==="
-     sshpass -p 'open' ssh ros2@$pi_ip 'docker logs zenoh-router --since 1h 2>&1 | grep -c "Unable to push" || echo 0'
+     sshpass -p '<ROBOT_PASSWORD>' ssh ros2@$pi_ip 'docker logs zenoh-router --since 1h 2>&1 | grep -c "Unable to push" || echo 0'
    done
    ```
 
 2. **Проверка использования памяти:**
    ```bash
-   sshpass -p 'open' ssh ros2@10.1.1.21 'free -h'
-   sshpass -p 'open' ssh ros2@10.1.1.20 'free -h'
+   sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.21 'free -h'
+   sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.20 'free -h'
    ```
 
 ### Долгосрочный мониторинг (неделя)
@@ -241,8 +241,8 @@ sshpass -p 'open' ssh ros2@10.1.1.20 'docker logs -f zenoh-router 2>&1 | grep -E
 
 2. **Проверка uptime контейнеров:**
    ```bash
-   sshpass -p 'open' ssh ros2@10.1.1.21 'docker ps --format "table {{.Names}}\t{{.Status}}" | grep zenoh'
-   sshpass -p 'open' ssh ros2@10.1.1.20 'docker ps --format "table {{.Names}}\t{{.Status}}" | grep zenoh'
+   sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.21 'docker ps --format "table {{.Names}}\t{{.Status}}" | grep zenoh'
+   sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.20 'docker ps --format "table {{.Names}}\t{{.Status}}" | grep zenoh'
    ```
 
 ---

@@ -262,7 +262,7 @@ TF + Nav2:                 до  2 MB/s (без изменений)
 
 ```bash
 # Vision Pi - обновление и перезапуск
-sshpass -p 'open' ssh ros2@10.1.1.21 << 'EOF'
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.21 << 'EOF'
 cd ~/rob_box_project
 git pull
 cd docker/vision
@@ -273,7 +273,7 @@ docker logs zenoh-router --tail 50
 EOF
 
 # Main Pi - обновление и перезапуск
-sshpass -p 'open' ssh ros2@10.1.1.20 << 'EOF'
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.20 << 'EOF'
 cd ~/rob_box_project
 git pull
 cd docker/main
@@ -288,7 +288,7 @@ EOF
 
 ```bash
 # Шаг 1: Vision Pi
-sshpass -p 'open' ssh ros2@10.1.1.21
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.21
 cd ~/rob_box_project
 git pull
 cd docker/vision
@@ -297,7 +297,7 @@ docker logs zenoh-router --tail 50
 exit
 
 # Шаг 2: Main Pi
-sshpass -p 'open' ssh ros2@10.1.1.20
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.20
 cd ~/rob_box_project
 git pull
 cd docker/main
@@ -312,10 +312,10 @@ exit
 
 ```bash
 # Vision Pi
-sshpass -p 'open' ssh ros2@10.1.1.21 'docker logs zenoh-router --since 10m 2>&1 | grep -E "(ERROR|Unable to push)"'
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.21 'docker logs zenoh-router --since 10m 2>&1 | grep -E "(ERROR|Unable to push)"'
 
 # Main Pi
-sshpass -p 'open' ssh ros2@10.1.1.20 'docker logs zenoh-router --since 10m 2>&1 | grep -E "(ERROR|Unable to push)"'
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.20 'docker logs zenoh-router --since 10m 2>&1 | grep -E "(ERROR|Unable to push)"'
 
 # Ожидаемый результат: пустой вывод (нет ошибок)
 ```
@@ -324,14 +324,14 @@ sshpass -p 'open' ssh ros2@10.1.1.20 'docker logs zenoh-router --since 10m 2>&1 
 
 ```bash
 # Следить за логами в реальном времени
-sshpass -p 'open' ssh ros2@10.1.1.21 'docker logs -f zenoh-router 2>&1 | grep -E "(ERROR|transport)"'
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.21 'docker logs -f zenoh-router 2>&1 | grep -E "(ERROR|transport)"'
 ```
 
 **3. Проверить ROS 2 топики**
 
 ```bash
 # Подключиться к любому Pi
-sshpass -p 'open' ssh ros2@10.1.1.21
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.21
 
 # Проверить частоту топиков
 ros2 topic hz /camera/rgb/image_raw

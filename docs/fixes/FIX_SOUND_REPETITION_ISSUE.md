@@ -146,7 +146,7 @@ def _play_sound(self, sound_name: str):
 ### 1. Test Sound Debounce:
 ```bash
 # SSH to Vision Pi
-sshpass -p 'open' ssh ros2@10.1.1.21
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.21
 
 # Monitor reflection_node logs
 docker logs -f perception | grep "Sound debounce\|Триггер\|Звук:"

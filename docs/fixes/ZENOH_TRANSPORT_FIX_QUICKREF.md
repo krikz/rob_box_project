@@ -43,7 +43,7 @@
 
 ```bash
 # SSH в Vision Pi
-sshpass -p 'open' ssh ros2@10.1.1.21
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.21
 
 # Перейти в директорию проекта
 cd ~/rob_box_project/docker/vision
@@ -62,7 +62,7 @@ docker logs zenoh-router --tail 50
 
 ```bash
 # SSH в Main Pi
-sshpass -p 'open' ssh ros2@10.1.1.20
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.20
 
 # Перейти в директорию проекта
 cd ~/rob_box_project/docker/main
@@ -278,7 +278,7 @@ queue: {
 
 ```bash
 # Vision Pi - полный процесс
-sshpass -p 'open' ssh ros2@10.1.1.21 << 'EOF'
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.21 << 'EOF'
 cd ~/rob_box_project
 git pull
 cd docker/vision
@@ -288,7 +288,7 @@ docker logs zenoh-router --tail 50
 EOF
 
 # Main Pi - полный процесс
-sshpass -p 'open' ssh ros2@10.1.1.20 << 'EOF'
+sshpass -p '<ROBOT_PASSWORD>' ssh ros2@10.1.1.20 << 'EOF'
 cd ~/rob_box_project
 git pull
 cd docker/main
