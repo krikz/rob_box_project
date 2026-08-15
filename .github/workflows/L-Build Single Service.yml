@@ -459,20 +459,23 @@ jobs:
           sed -i "s|^${VERSION_VAR}=.*|${VERSION_VAR}=${NEW_TAG}|" "$VERSIONS_FILE"
           echo "✅ Updated: ${VERSION_VAR}=${NEW_TAG} in $VERSIONS_FILE"
 
-          # ✅ РЕТРО #1139 v2 (13.08, t_bd9b7713): коммитим .image-versions
-          # в ОТДЕЛЬНУЮ per-service ветку ci/image-versions-{pi_type} — текущая
-          # ветка не засоряется 'ci: ... → ...' коммитами. Ветка базируется
-          # на origin-типе и НЕ сбрасывается → теги накапливаются и не теряются.
+          # 🔴 РЕВЕРТ #1244 (15.08, decision #1316): SHA-теги коммитим ПРЯМО
+          # в текущую ветку (develop/test/round) — ci/image-versions-* ветки
+          # НЕ работают: деплой при registry_source=local не грузит
+          # .image-versions, тянет голые dev-теги → роботы получают старые
+          # образы. Коммиты 'ci: SHA tags → dev-*' в develop — НОРМАЛЬНО,
+          # не «засорение» (см. issue #1316).
           git config user.email "ci@rob-box.local"
           git config user.name "Rob Box CI"
           git add "$VERSIONS_FILE"
           if git diff --cached --quiet; then
             echo "ℹ️  No changes to commit"
           else
-            bash scripts/ci/commit-image-versions.sh \
-              "ci/image-versions-${PI_TYPE}" \
-              "ci: ${SERVICE_NAME} → ${NEW_TAG} [skip ci]" \
-              "$VERSIONS_FILE"
+            CURRENT_BRANCH="$(git branch --show-current)"
+            git commit -m "ci: ${SERVICE_NAME} → ${NEW_TAG} [skip ci]"
+            git push origin "HEAD:${CURRENT_BRANCH}" >/dev/null 2>&1 \
+              && echo "✅ Committed and pushed: ${SERVICE_NAME} = ${NEW_TAG} (branch ${CURRENT_BRANCH})" \
+              || echo "⚠️  push в ${CURRENT_BRANCH} не удался — таги только локально"
           fi
 
   # Итоговая сводка

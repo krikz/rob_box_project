@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# ⚠️ DEPRECATED (decision #1316, 15.08) — НЕ ИСПОЛЬЗОВАТЬ.
+#
+# Этот скрипт коммитил .image-versions в ОТДЕЛЬНЫЕ ветки ci/image-versions-*.
+# Механизм ЗАПРЕЩЁН: он сломал деплой дважды (#1139 13.08, #1244 13.08) —
+# при registry_source=local деплой не грузит .image-versions из ci-ветки,
+# compose тянет голые dev-теги → роботы получают старые образы.
+# С 15.08 SHA-теги коммитятся ПРЯМО в текущую ветку (develop/main/round).
+#
+# Скрипт оставлен временно: build-workflow Main/Vision ещё ссылаются на него
+# до merge PR #1318 (реверт decision #1316). После merge обоих PR (этот +
+# #1318) скрипт можно удалить — references не останется.
 # Commit .image-versions file(s) to a dedicated per-service CI branch.
 #
 # Почему отдельная ветка (ретро #1139 v2, 13.08):
