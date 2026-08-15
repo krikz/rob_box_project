@@ -49,6 +49,25 @@ from rob_box_mcp_tools.tools.dialogue import (  # noqa: E402
 )
 
 
+@pytest.fixture(autouse=True)
+def _ensure_fake_string_msg():
+    """Гарантировать _FakeStringMsg для std_msgs.msg.String.
+
+    Другие файлы test_tools/ (test_estimate_tts_duration.py,
+    test_voice_selection.py, test_animation.py) делают на уровне модуля
+    ``sys.modules['std_msgs.msg'] = Mock()``. При коллекции они
+    импортируются ПОСЛЕ нас (алфавитный порядок) и затирают наш
+    _FakeStringMsg — ``String()`` внутри dialogue.py начинает возвращать
+    ОДИН общий MagicMock, и payload'ы анимации/TTS затирают друг друга
+    в одном объекте (observed: animation_pub получил SSML вместо "happy").
+    Фикстура восстанавливает stub перед каждым тестом.
+    """
+    sys.modules.setdefault("std_msgs", MagicMock())
+    sys.modules["std_msgs.msg"] = MagicMock()
+    sys.modules["std_msgs.msg"].String = _FakeStringMsg
+    yield
+
+
 class _FakeLogger:
     def __init__(self):
         self.messages = []
@@ -113,7 +132,9 @@ class TestSpeakTextTool:
     def test_tool_metadata(self, fake_node):
         tool = SpeakTextTool(fake_node)
         assert tool.name == "speak_text"
-        assert [p.name for p in tool.parameters] == ["text", "animation"]
+        # issue #1219 добавил параметр voice (после text, до animation)
+        assert [p.name for p in tool.parameters] == ["text", "voice", "animation"]
+        assert tool.parameters[1].required is False
 
     def test_execute_empty_text_returns_error(self, fake_node):
         tool = SpeakTextTool(fake_node)

@@ -179,6 +179,55 @@ class TestMusicManagerFilter:
 
 
 # ---------------------------------------------------------------------------
+# MusicManager — constructor env branches (issue #803 coverage)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicManagerInit:
+    """Реальный __init__ с env-ветками (require_healthy, critical_synths, TTL)."""
+
+    def _construct(self, monkeypatch, **kwargs):
+        monkeypatch.setattr(MusicManager, "_initialize_renardo", Mock())
+        monkeypatch.setattr(MusicManager, "_evaluate_music_stack_health", Mock())
+        return MusicManager(**kwargs)
+
+    def test_defaults_from_env_require_healthy_false(self, monkeypatch):
+        monkeypatch.setenv("ROB_BOX_MUSIC_REQUIRE_HEALTHY", "0")
+        mgr = self._construct(monkeypatch)
+        assert mgr._require_healthy is False
+
+    def test_require_healthy_explicit_wins_over_env(self, monkeypatch):
+        monkeypatch.setenv("ROB_BOX_MUSIC_REQUIRE_HEALTHY", "0")
+        mgr = self._construct(monkeypatch, require_healthy=True)
+        assert mgr._require_healthy is True
+
+    def test_critical_synths_from_env(self, monkeypatch):
+        monkeypatch.setenv("ROB_BOX_MUSIC_CRITICAL_SYNTHS", "s1, s2 ,s3")
+        mgr = self._construct(monkeypatch)
+        assert mgr._critical_synths == ("s1", "s2", "s3")
+
+    def test_critical_synths_explicit(self, monkeypatch):
+        mgr = self._construct(monkeypatch, critical_synths=["a", "b"])
+        assert mgr._critical_synths == ("a", "b")
+
+    def test_auto_stop_ttl_from_env(self, monkeypatch):
+        monkeypatch.setenv("MUSIC_AUTO_STOP_TTL_SECONDS", "42")
+        mgr = self._construct(monkeypatch)
+        assert mgr._auto_stop_ttl_seconds == 42
+
+    def test_auto_stop_ttl_env_invalid_falls_back(self, monkeypatch):
+        monkeypatch.setenv("MUSIC_AUTO_STOP_TTL_SECONDS", "abc")
+        mgr = self._construct(monkeypatch)
+        assert mgr._auto_stop_ttl_seconds == 300
+
+    def test_auto_stop_ttl_env_negative_clamped(self, monkeypatch):
+        monkeypatch.setenv("MUSIC_AUTO_STOP_TTL_SECONDS", "-5")
+        mgr = self._construct(monkeypatch)
+        assert mgr._auto_stop_ttl_seconds == 1
+
+
+# ---------------------------------------------------------------------------
 # MusicManager — issue #1000 anti-click caps (oct, amplify, ramp-down)
 # ---------------------------------------------------------------------------
 

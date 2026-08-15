@@ -137,6 +137,16 @@ class _FakeWaypointStore:
 
 
 def _load_mapping_module(monkeypatch):
+    # test_dialogue_register_speaker.py на уровне модуля подменяет
+    # sys.modules['rob_box_mcp_tools'] и 'rob_box_mcp_tools.base' на свои
+    # стабы (MCPToolResult с data={} вместо None). Если их не восстановить,
+    # mapping.py через ``from ..base import ...`` получит стабный base и
+    # тесты с ``result.data is None`` упадут (observed: {} is None).
+    import importlib as _importlib
+    real_pkg = _importlib.import_module("rob_box_mcp_tools")
+    monkeypatch.setitem(sys.modules, "rob_box_mcp_tools", real_pkg)
+    sys.modules.pop("rob_box_mcp_tools.base", None)
+
     tools_pkg = types.ModuleType("rob_box_mcp_tools.tools")
     tools_pkg.__path__ = [str(Path(__file__).resolve().parents[2] / "rob_box_mcp_tools" / "tools")]
     monkeypatch.setitem(sys.modules, "rob_box_mcp_tools.tools", tools_pkg)
