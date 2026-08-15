@@ -652,6 +652,44 @@ class VoiceMemory:
             rows = self.conn.execute(q, params).fetchall()
         return [dict(r) for r in rows]
 
+    def search_facts(self, query: str, limit: int = 5) -> List[Dict]:
+        """
+        Keyword search over stored user facts (case-insensitive substring).
+
+        Unlike :meth:`search` (which only scans ``voice_turns``), this
+        finds long-lived user facts saved through ``memory_save``. Used by
+        the MemorySearchTool so that facts saved via the MCP tool are
+        retrievable through ``memory_search`` (TASK-036 acceptance).
+
+        Matching happens in Python because SQLite's ``lower()`` is
+        ASCII-only and would miss Cyrillic case variations (e.g. "Алексей"
+        vs "алексей"); fact tables are small so a full scan is fine.
+
+        Args:
+            query: Substring to look for (case-insensitive).
+            limit: Max results.
+
+        Returns:
+            List of {id, fact, category, created_at, updated_at}.
+        """
+        q = query.strip().lower()
+        if not q:
+            return []
+
+        def _search() -> List[Dict]:
+            rows = self.conn.execute(
+                "SELECT id, fact, category, created_at, updated_at "
+                "FROM voice_facts ORDER BY updated_at DESC"
+            ).fetchall()
+            matched = [
+                dict(r) for r in rows
+                if q in r["fact"].lower() or q in r["category"].lower()
+            ]
+            return matched[:limit]
+
+        with self.lock:
+            return _search()
+
     def format_facts_for_prompt(self) -> str:
         """
         Format stored facts as a string block for injection into system prompt.

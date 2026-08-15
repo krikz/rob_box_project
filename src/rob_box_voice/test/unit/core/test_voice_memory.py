@@ -196,6 +196,24 @@ class TestFacts:
         finally:
             mem.close()
 
+    def test_search_facts_cyrillic_case_insensitive(self, tmp_path) -> None:
+        """Facts are searchable case-insensitively (Cyrillic-aware)."""
+        mem = _make_memory(tmp_path)
+        try:
+            mem.save_fact("Пользователя зовут Алексей", category="name")
+            hits = mem.search_facts("алексей")
+            assert len(hits) == 1
+            assert hits[0]["fact"] == "Пользователя зовут Алексей"
+            # category match too
+            hits_cat = mem.search_facts("NAME")
+            assert len(hits_cat) == 1
+            # no match
+            assert mem.search_facts("никого") == []
+            # empty query
+            assert mem.search_facts("   ") == []
+        finally:
+            mem.close()
+
 
 # ---------------------------------------------------------------------------
 # Hybrid search (FTS5) + graceful degradation

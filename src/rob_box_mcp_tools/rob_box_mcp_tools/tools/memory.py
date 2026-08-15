@@ -143,8 +143,13 @@ class MemorySearchTool(MCPTool):
 
         try:
             results = memory.search(query, limit=limit)
+            # TASK-036: факты, сохранённые через memory_save, тоже должны
+            # находиться через memory_search. Добавляем их отдельным блоком
+            # с source="fact" (поиск по voice_facts, не по turns).
+            fact_results = memory.search_facts(query, limit=limit)
             self.log_info(
-                f"[memory_search] query={query[:40]!r} → {len(results)} results "
+                f"[memory_search] query={query[:40]!r} → {len(results)} turns + "
+                f"{len(fact_results)} facts "
                 f"(vec={'yes' if memory.embedder.is_available() else 'no'})"
             )
 
@@ -158,6 +163,17 @@ class MemorySearchTool(MCPTool):
                         "session": r["session_id"],
                         "score": round(r.get("score", 0), 4),
                         "source": r.get("source", "fts"),
+                    }
+                )
+            for f in fact_results:
+                formatted.append(
+                    {
+                        "role": "fact",
+                        "content": f["fact"],
+                        "session": "voice_facts",
+                        "score": 1.0,
+                        "source": "fact",
+                        "category": f.get("category", "general"),
                     }
                 )
 
