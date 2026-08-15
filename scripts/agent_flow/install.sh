@@ -85,6 +85,37 @@ else
 fi
 SCRIPT_DIR="$REPO_DIR/scripts/agent_flow"
 
+# Ретро 15.08 t_768244d6 (worktree-stale-branch-drift): главный worktree репо
+# застрял на влитой z-ветке (z-architect/t_2cae75c0, 624e18f7 от 13.08) —
+# install.sh раскладывал УСТАРЕВШИЕ скрипты (host merge-gate без b41c491d
+# pr-orphan-reconcile, ретро-PR #1282/#1284/#1286 висели без needs-review).
+# Защита: если REPO_DIR — git-репозиторий и текущая ветка != develop/main/master,
+# раскладываем ИЗ origin/develop (git archive), а не из рабочего дерева.
+# Escape hatch для сознательной раскладки из своей ветки (воркер тестирует
+# свой фикс до merge): INSTALL_FROM_BRANCH=1.
+if [ "${INSTALL_FROM_BRANCH:-0}" != "1" ] \
+    && git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    CURRENT_BRANCH="$(git -C "$REPO_DIR" branch --show-current 2>/dev/null || true)"
+    case "$CURRENT_BRANCH" in
+        develop|main|master|"")
+            # ок: develop/main/master или detached (временный worktree на origin/develop)
+            ;;
+        *)
+            echo "WARNING: REPO_DIR на ветке '$CURRENT_BRANCH' (не develop) — беру файлы из origin/develop (ретро 15.08 t_768244d6)"
+            echo "         переопределить: INSTALL_FROM_BRANCH=1"
+            SRC_TMP="$(mktemp -d "${TMPDIR:-/tmp}/install-af-origin.XXXXXX")" || exit 3
+            trap 'rm -rf "$SRC_TMP"' EXIT
+            if git -C "$REPO_DIR" archive origin/develop scripts/agent_flow 2>/dev/null \
+                | tar -x -C "$SRC_TMP" 2>/dev/null; then
+                SCRIPT_DIR="$SRC_TMP/scripts/agent_flow"
+                echo "  using origin/develop files from $SCRIPT_DIR"
+            else
+                echo "ERROR: git archive origin/develop failed — fallback to working tree (может быть stale!)" >&2
+            fi
+            ;;
+    esac
+fi
+
 # Канонические пути (все должны стать hardlink-ами на одну и ту же inode).
 # Переопределяются INSTALL_TARGET_DIRS (colon-separated) для тестов и
 # нестандартных хостов (см. tests/test_drift_detect_branch_active.sh).
