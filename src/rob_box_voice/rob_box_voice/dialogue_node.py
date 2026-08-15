@@ -79,6 +79,13 @@ from rob_box_voice.core.dialogue_guards import (
     user_wants_music,
     user_wants_performance,
 )
+from rob_box_voice.core.dialogue_helpers import (
+    EMOTION_TO_ANIMATION as EMOTION_TO_ANIMATION,
+    detect_pitch_intent,
+    detect_volume_intent,
+    generate_fallback_response,
+    map_emotion_to_animation,
+)
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload, split_into_chunks,
@@ -3640,84 +3647,49 @@ class DialogueNode(Node):
 
     # ═══════════════════════════════════════════════════════════════════════
     #  Pure helper methods (unit-test contracts for issue #968 / #980)
-    # ═══════════════════════════════════════════════════════════════════════
+    #  ═══════════════════════════════════════════════════════════════════════
+    #  TD-1 decomposition: implementations live in
+    #  :mod:`rob_box_voice.core.dialogue_helpers`; class-level aliases keep
+    #  ``node._EMOTION_TO_ANIMATION`` etc. working for existing callers/tests.
 
-    _EMOTION_TO_ANIMATION: dict = {
-        "happy": "happy",
-        "sad": "sad",
-        "angry": "angry",
-        "surprised": "surprised",
-        "thinking": "thinking",
-        "excited": "victory",
-        "confused": "thinking",
-        "worried": "sad",
-        "neutral": "idle",
-        "calm": "idle",
-    }
+    _EMOTION_TO_ANIMATION: dict = EMOTION_TO_ANIMATION
 
     def _map_emotion_to_animation(self, emotion: str) -> str:
         """Map an emotion label to its corresponding LED animation key.
 
         Lookup is case-insensitive; unknown emotions default to ``"idle"``.
+        Delegates to
+        :func:`rob_box_voice.core.dialogue_helpers.map_emotion_to_animation`
+        (TD-1 decomposition).
         """
-        if not emotion:
-            return "idle"
-        return self._EMOTION_TO_ANIMATION.get(str(emotion).lower(), "idle")
+        return map_emotion_to_animation(emotion)
 
     def _generate_fallback_response(self, text: str) -> str:
-        """Generate a static fallback reply when the LLM is unavailable."""
-        low = (text or "").lower()
-        greetings = (
-            "привет", "здравствуй", "hello", "hi ", "доброе утро",
-            "добрый день", "добрый вечер",
-        )
-        if any(g in low for g in greetings):
-            return (
-                "Привет! К сожалению, интернет сейчас недоступен, "
-                "но я могу выполнять базовые команды."
-            )
-        if any(w in low for w in ("как дела", "how are")):
-            return (
-                "У меня всё хорошо! Но интернет сейчас недоступен, "
-                "часть функций ограничена."
-            )
-        thanks = ("спасибо", "благодарю", "thanks", "thank you")
-        if any(w in low for w in thanks):
-            return "Пожалуйста!"
-        farewells = ("пока", "до свидания", "bye", "goodbye", "прощай")
-        if any(w in low for w in farewells):
-            return "До свидания!"
-        return "Интернет сейчас недоступен, я не могу ответить на этот вопрос."
+        """Generate a static fallback reply when the LLM is unavailable.
+
+        Delegates to
+        :func:`rob_box_voice.core.dialogue_helpers.generate_fallback_response`
+        (TD-1 decomposition).
+        """
+        return generate_fallback_response(text)
 
     def _detect_volume_intent(self, text: str):
-        """Detect volume adjustment intent from user text."""
-        if not text:
-            return None
-        low = text.lower()
-        if any(w in low for w in ("максимальная громкость", "максимум громк")):
-            return "max"
-        if any(w in low for w in ("нормальная громкость", "стандартная громкость", "обычная громкость")):
-            return "normal"
-        if "говори громко" in low:
-            return "max"
-        if any(w in low for w in ("громче", "громко")):
-            return "louder"
-        if any(w in low for w in ("тише", "потише")):
-            return "quieter"
-        return None
+        """Detect volume adjustment intent from user text.
+
+        Delegates to
+        :func:`rob_box_voice.core.dialogue_helpers.detect_volume_intent`
+        (TD-1 decomposition).
+        """
+        return detect_volume_intent(text)
 
     def _detect_pitch_intent(self, text: str):
-        """Detect pitch adjustment intent from user text."""
-        if not text:
-            return None
-        low = text.lower()
-        if any(w in low for w in ("нормальный голос", "говори нормально", "обычный голос")):
-            return "normal"
-        if any(w in low for w in ("выше", "повысь")):
-            return "higher"
-        if any(w in low for w in ("ниже",)):
-            return "lower"
-        return None
+        """Detect pitch adjustment intent from user text.
+
+        Delegates to
+        :func:`rob_box_voice.core.dialogue_helpers.detect_pitch_intent`
+        (TD-1 decomposition).
+        """
+        return detect_pitch_intent(text)
 
     def _speak_simple(self, text: str, show_error_animation: bool = False) -> None:
         """Publish a one-off TTS payload via SSML JSON with a unique ``dialogue_id``."""
