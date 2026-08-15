@@ -12,7 +12,10 @@ stt_node:
     aec_mode: hardware
     # Wake words для мгновенного STOP TTS (barge-in). Должны совпадать
     # с dialogue_node.wake_words.
-    wake_words: [робок, робот, роббокс]
+    # 🔴 fix(voice #1252): синхронизировано с dialogue_node.yaml — 12 вариантов
+    # + исторический «робик». STT реально выдаёт кривые варианты («робок»,
+    # «роберт», «рыбок») — все покрываем для надёжного barge-in.
+    wake_words: [робок, робот, роббокс, робокос, роббос, робокс, роберт, рыбок, рома, бот, робо, роб, робик]
     yandex_timeout_s: 5.0
     yandex_max_retries: 1
     retry_backoff_s: 1.0

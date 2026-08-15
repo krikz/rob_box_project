@@ -13,6 +13,23 @@ stt_node:
     metrics_port: 9111  # issue #1160 — Prometheus metrics endpoint
     model_path: /models/vosk-model-small-ru-0.22
     sample_rate: 16000
+    # 🔴 fix(voice #1252): wake words синхронизированы с dialogue_node.yaml —
+    # 12 вариантов + исторический «робик». STT реально выдаёт кривые варианты
+    # («робок», «роберт», «рыбок») — все покрываем для надёжного barge-in.
+    wake_words:
+    - робок
+    - робот
+    - роббокс
+    - робокос
+    - роббос
+    - робокс
+    - роберт
+    - рыбок
+    - рома
+    - бот
+    - робо
+    - роб
+    - робик
     # ===== Fallback/retry/short-phrase (issue #979) =====
     yandex_timeout_s: 5.0
     yandex_max_retries: 1
