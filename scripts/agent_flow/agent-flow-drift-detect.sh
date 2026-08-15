@@ -102,6 +102,8 @@ FILES=(
     agent-flow-handoff.sh
     round_ensure.sh
     agent-flow-cleanup-249.sh
+    agents_sleep.sh
+    agents_sleep_schedule.conf
     cron-loop.sh
     watchdog.sh
     agent-flow-drift-detect.sh
