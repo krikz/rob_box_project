@@ -1,0 +1,264 @@
+diff --git a/gateway/kanban_watchers.py b/gateway/kanban_watchers.py
+index f5018e18c..33e98c8de 100644
+--- a/gateway/kanban_watchers.py
++++ b/gateway/kanban_watchers.py
+@@ -1648,11 +1648,24 @@ class GatewayKanbanWatchersMixin:
+                                 )
+                         else:
+                             # Common no-op reasons (no aux client configured) shouldn't
+-                            # spam logs every tick. Log at debug.
+-                            logger.debug(
+-                                "kanban auto-decompose [%s]: %s skipped: %s",
+-                                slug, tid, outcome.reason,
+-                            )
++                            # spam logs every tick. Log at debug. Defer reasons
++                            # (MAINTENANCE/peak, already-decomposed root) ARE the
++                            # retro t_1d467636 signal — surface them at info so the
++                            # operator sees why cards were not created.
++                            if (
++                                "MAINTENANCE" in outcome.reason
++                                or "defer" in outcome.reason
++                                or "already decomposed" in outcome.reason
++                            ):
++                                logger.info(
++                                    "kanban auto-decompose [%s]: %s deferred: %s",
++                                    slug, tid, outcome.reason,
++                                )
++                            else:
++                                logger.debug(
++                                    "kanban auto-decompose [%s]: %s skipped: %s",
++                                    slug, tid, outcome.reason,
++                                )
+                 finally:
+                     if prev_env is None:
+                         os.environ.pop("HERMES_KANBAN_BOARD", None)
+diff --git a/hermes_cli/kanban_decompose.py b/hermes_cli/kanban_decompose.py
+index d6c248c65..d9e5a7771 100644
+--- a/hermes_cli/kanban_decompose.py
++++ b/hermes_cli/kanban_decompose.py
+@@ -40,6 +40,7 @@ import json
+ import logging
+ import os
+ import re
++import subprocess
+ from dataclasses import dataclass
+ from typing import Optional
+ 
+@@ -177,6 +178,44 @@ def _load_config() -> dict:
+         return {}
+ 
+ 
++def _maintenance_probe_reason(cfg: dict) -> Optional[str]:
++    """Return a human-readable reason when the MAINTENANCE/peak probe fires.
++
++    The probe is a shell command configured via ``kanban.maintenance_probe_command``
++    (or the env var ``HERMES_KANBAN_MAINTENANCE_PROBE``). Exit code 0 means
++    MAINTENANCE is active and the decomposer must defer (no new cards created).
++
++    Returns ``None`` when no probe is configured or the probe itself fails
++    (fail-open — a broken probe must not halt decomposition; the merge-gate G1
++    gate behaves the same way). The command runs with a bounded timeout so a
++    hung git fetch can't stall the dispatcher tick.
++    """
++    kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
++    cmd = (
++        kanban_cfg.get("maintenance_probe_command")
++        or os.environ.get("HERMES_KANBAN_MAINTENANCE_PROBE")
++        or ""
++    ).strip()
++    if not cmd:
++        return None
++    try:
++        proc = subprocess.run(
++            cmd,
++            shell=True,
++            capture_output=True,
++            text=True,
++            timeout=15,
++        )
++    except Exception as exc:
++        logger.warning(
++            "decompose: MAINTENANCE probe failed (%s) — proceeding fail-open", exc,
++        )
++        return None
++    if proc.returncode == 0:
++        return "MAINTENANCE/peak window active (probe exit 0)"
++    return None
++
++
+ def _resolve_orchestrator_profile(cfg: dict) -> str:
+     """Resolve which profile owns the root/orchestration task after fan-out.
+ 
+@@ -291,6 +330,43 @@ def decompose_task(
+         )
+ 
+     cfg = _load_config()
++
++    # Idempotency (retro t_1d467636): a root that already has children was
++    # decomposed before. Re-running the decomposer on it must NOT create a
++    # duplicate fan-out — the same root was decomposed twice on 16.08
++    # (08:07Z -> t_8aa0dd49/t_2f25fc17/t_78e4800f and 09:10Z -> duplicates
++    # t_14cd3a45/t_ac3590e8/t_a38e9b0e) because nothing checked task_links
++    # before creating children. Check BEFORE the LLM call so an already-split
++    # root costs zero aux tokens.
++    #
++    # NOTE: decompose_triage_task links the root as a CHILD of every leaf
++    # child ("root waits for the whole graph"), so an already-decomposed root
++    # appears in task_links with root_id in the child_id column. The check is
++    # therefore parent_ids(root), not child_ids(root).
++    with kb.connect_closing() as conn:
++        existing_parents = kb.parent_ids(conn, task_id)
++    if existing_parents:
++        return DecomposeOutcome(
++            task_id,
++            False,
++            f"already decomposed ({len(existing_parents)} children exist)",
++        )
++
++    # MAINTENANCE/peak gate (retro t_1d467636): when the configured probe
++    # reports the MAINTENANCE flag, do NOT decompose — log the defer and wait
++    # for resume. The 09:10Z duplicate decomposition ran inside the DeepSeek
++    # peak window (09:00-13:00 MSK) because the decomposer never checked the
++    # flag that merge-gate G1 and agents_sleep.sh both honour.
++    maintenance_reason = _maintenance_probe_reason(cfg)
++    if maintenance_reason:
++        logger.info(
++            "decompose: %s — deferring %s until resume (no children created)",
++            maintenance_reason, task_id,
++        )
++        return DecomposeOutcome(
++            task_id, False, f"defer decompose (MAINTENANCE): {maintenance_reason}",
++        )
++
+     orchestrator = _resolve_orchestrator_profile(cfg)
+     default_assignee = _resolve_default_assignee(cfg)
+     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+diff --git a/tests/hermes_cli/test_kanban_decompose.py b/tests/hermes_cli/test_kanban_decompose.py
+index 31303b8d5..0db43e065 100644
+--- a/tests/hermes_cli/test_kanban_decompose.py
++++ b/tests/hermes_cli/test_kanban_decompose.py
+@@ -161,3 +161,124 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
+     assert "not in triage" in outcome.reason
+ 
+ 
++def test_decompose_defers_when_maintenance_probe_fires(kanban_home):
++    """Retro t_1d467636: active MAINTENANCE/peak => no children, log defer.
++
++    The probe is a shell command with exit 0 == MAINTENANCE active. When it
++    fires, decompose_task must NOT call the LLM and must NOT create children.
++    """
++    with kb.connect() as conn:
++        tid = kb.create_task(conn, title="ship a feature", triage=True)
++
++    patches = _patch_list_profiles(["orchestrator", "researcher", "engineer"])
++    for p in patches:
++        p.start()
++    try:
++        with patch(
++            "hermes_cli.kanban_decompose._load_config",
++            return_value={"kanban": {"maintenance_probe_command": "exit 0"}},
++        ), patch(
++            "agent.auxiliary_client.call_llm"
++        ) as mock_llm:
++            outcome = decomp.decompose_task(tid, author="me")
++    finally:
++        for p in patches:
++            p.stop()
++
++    assert outcome.ok is False
++    assert "defer decompose (MAINTENANCE)" in outcome.reason
++    mock_llm.assert_not_called()
++
++    with kb.connect() as conn:
++        root = kb.get_task(conn, tid)
++        children = kb.child_ids(conn, tid)
++    # Root stays in triage, no children created.
++    assert root is not None
++    assert root.status == "triage"
++    assert children == []
++
++
++def test_decompose_runs_when_maintenance_probe_clean(kanban_home):
++    """Probe configured but MAINTENANCE inactive (exit 1) => normal fan-out."""
++    with kb.connect() as conn:
++        tid = kb.create_task(conn, title="ship a feature", triage=True)
++
++    llm_payload = jsonlib.dumps({
++        "fanout": True,
++        "rationale": "test split",
++        "tasks": [
++            {"title": "research", "body": "look it up", "assignee": "researcher", "parents": []},
++            {"title": "build", "body": "code it", "assignee": "engineer", "parents": [0]},
++        ],
++    })
++
++    patches = _patch_list_profiles(["orchestrator", "researcher", "engineer"])
++    for p in patches:
++        p.start()
++    try:
++        with patch(
++            "hermes_cli.kanban_decompose._load_config",
++            return_value={"kanban": {"maintenance_probe_command": "exit 1"}},
++        ), _patch_aux_client(llm_payload), _patch_extra_body():
++            outcome = decomp.decompose_task(tid, author="me")
++    finally:
++        for p in patches:
++            p.stop()
++
++    assert outcome.ok, outcome.reason
++    assert outcome.fanout is True
++    assert outcome.child_ids and len(outcome.child_ids) == 2
++
++
++def test_decompose_is_idempotent_on_existing_children(kanban_home):
++    """Retro t_1d467636: re-decomposing a root that already has children must
++    NOT create a duplicate fan-out.
++
++    Models the real incident: after the first fan-out the root was moved back
++    to triage (requeue/unblock) and the decomposer ran again. The status gate
++    alone cannot protect against that — the child_ids check must."""
++    with kb.connect() as conn:
++        tid = kb.create_task(conn, title="ship a feature", triage=True)
++
++    # Give the root one child directly (as if it had been decomposed before).
++    with kb.connect() as conn:
++        child_ids = kb.decompose_triage_task(
++            conn,
++            tid,
++            root_assignee="orchestrator",
++            children=[{"title": "research", "body": "look it up", "assignee": "researcher", "parents": []}],
++            author="me",
++        )
++        assert child_ids and len(child_ids) == 1
++        first_children = set(child_ids)
++        # Move the root BACK to triage — this is what actually happened on
++        # 16.08: the same root was decomposed at 08:07Z and again at 09:10Z.
++        conn.execute("UPDATE tasks SET status='triage' WHERE id=?", (tid,))
++
++    llm_payload = jsonlib.dumps({
++        "fanout": True,
++        "rationale": "test split",
++        "tasks": [
++            {"title": "research", "body": "look it up", "assignee": "researcher", "parents": []},
++            {"title": "build", "body": "code it", "assignee": "engineer", "parents": [0]},
++        ],
++    })
++
++    patches = _patch_list_profiles(["orchestrator", "researcher", "engineer"])
++    for p in patches:
++        p.start()
++    try:
++        with _patch_aux_client(llm_payload), _patch_extra_body() as mock_llm:
++            outcome = decomp.decompose_task(tid, author="me")
++    finally:
++        for p in patches:
++            p.stop()
++
++    assert outcome.ok is False
++    assert "already decomposed" in outcome.reason
++
++    with kb.connect() as conn:
++        children = set(kb.parent_ids(conn, tid))
++    assert children == first_children
++
++
