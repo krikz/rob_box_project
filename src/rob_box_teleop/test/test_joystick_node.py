@@ -7,6 +7,8 @@ Covers the issue #1344 fixes:
 - single stop message on armed→disarmed transition
 """
 
+import time
+
 import pytest
 
 from rob_box_teleop.joystick_control_node import JoystickControlNode
@@ -84,6 +86,10 @@ def _sbus_node(node_params):
     node = JoystickControlNode()
     node.device_connected = True
     node.max_angular = 1.0
+    # SBUS stale-link guard (PR #1346): last_valid_packet_time=0.0 means the
+    # link looks dead (monotonic - 0 > 0.2s) and channels get neutralised —
+    # armed-lock tests must simulate a recently-received valid frame.
+    node.last_valid_packet_time = time.monotonic()
     return node
 
 
