@@ -61,14 +61,33 @@ DEFAULT_UNSILENCE_COMMANDS: tuple[str, ...] = (
 # ---------------------------------------------------------------------------
 
 
+_WAKE_WORD_PATTERN_CACHE: dict[tuple[str, ...], "re.Pattern[str]"] = {}
+
+
 def has_wake_word(text_lower: str, wake_words: Sequence[str]) -> bool:
-    """Return True if any ``wake_word`` appears in ``text_lower``.
+    """Return True if any ``wake_word`` appears as a *word* in ``text_lower``.
 
     Empty ``wake_words`` means "bypass mode" — accept every input.
+
+    🔴 FIX (issue #1292): раньше использовалась подстрока
+    (``any(w in text_lower ...)``) — «бот» ∈ «работает» давал ложный wake
+    word → LLM вызывался на фоновую речь и повторял старые команды из
+    истории диалога. Теперь, как и :func:`strip_wake_word`, матчим
+    отдельные слова через ``\\b`` (word boundary). Это сохраняет кейс
+    «робот» в середине фразы («денчик ой фу робот меня зовут» — фикс
+    10.08) и не ловит «работник», «заработок», «работает».
     """
     if not wake_words:
         return True
-    return any(w in text_lower for w in wake_words)
+    key = tuple(wake_words)
+    pattern = _WAKE_WORD_PATTERN_CACHE.get(key)
+    if pattern is None:
+        pattern = re.compile(
+            r"\b(" + "|".join(re.escape(w) for w in wake_words) + r")\b",
+            re.IGNORECASE,
+        )
+        _WAKE_WORD_PATTERN_CACHE[key] = pattern
+    return bool(pattern.search(text_lower))
 
 
 def strip_wake_word(text: str, wake_words: Sequence[str] | None = None) -> str:
