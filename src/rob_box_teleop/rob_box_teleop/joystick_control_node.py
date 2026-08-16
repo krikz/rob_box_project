@@ -19,6 +19,15 @@ from sensor_msgs.msg import Joy
 from geometry_msgs.msg import Twist
 from std_msgs.msg import String
 
+from rob_box_teleop.sbus import (
+    SBUS_CHANNEL_CENTER,
+    SBUS_FLAG_REJECT,
+    SBUS_FRAME_SIZE,
+    SBUS_STALE_TIMEOUT,
+    decode_channels,
+    read_frame,
+)
+
 try:
     import serial
     SERIAL_AVAILABLE = True
@@ -74,8 +83,10 @@ class JoystickControlNode(Node):
         self.last_joy_msg: Optional[Joy] = None
         self.was_enabled = False
         self.serial_conn: Optional[serial.Serial] = None
-        self.sbus_channels = [1024] * 16  # SBUS center value (172-1811 range)
+        self.sbus_channels = [SBUS_CHANNEL_CENTER] * 16  # SBUS center value (172-1811 range)
         self.sbus_packet_count = 0
+        self.last_valid_packet_time = 0.0  # monotonic time of last valid (non-failsafe) frame
+        self.sbus_link_ok = True
 
         # Publishers
         self.cmd_vel_pub = self.create_publisher(Twist, "cmd_vel_joy", 10)
@@ -147,86 +158,76 @@ class JoystickControlNode(Node):
                 time.sleep(5)
 
     def _read_sbus_packet(self) -> Optional[bytes]:
-        """Read one SBUS packet (25 bytes)."""
+        """Read and validate one SBUS packet (25 bytes).
+
+        Delegates to :func:`rob_box_teleop.sbus.read_frame`, which validates
+        header/footer/channel range and resyncs with a sliding window, so a
+        0x0F byte inside channel data cannot permanently desync the reader
+        (issue #1345: throttle pulsing 0.999/0.0).
+        """
         if not self.serial_conn or not self.serial_conn.is_open:
             return None
 
         try:
-            # Find start byte (0x0F)
-            while True:
-                byte = self.serial_conn.read(1)
-                if not byte:
-                    return None
-                if byte[0] == 0x0F:
-                    break
-
-            # Read remaining 24 bytes
-            packet = bytearray([0x0F])
-            remaining = self.serial_conn.read(24)
-            if len(remaining) != 24:
-                return None  # Incomplete packet
-            packet.extend(remaining)
-
-            # Validate footer (byte 24 should be 0x00)
-            if packet[24] != 0x00:
-                return None  # Invalid footer
-
-            return bytes(packet)
-
+            return read_frame(self.serial_conn.read)
         except Exception as e:
             self.get_logger().debug(f"SBUS read error: {e}")
             return None
 
     def _parse_sbus_packet(self, packet: bytes):
-        """Parse 25-byte SBUS packet into 16 channels."""
-        if len(packet) != 25:
+        """Parse and store a 25-byte SBUS packet.
+
+        Frames flagged frame-lost/failsafe carry unreliable channel data: on
+        a link-loss transition channels are reset to neutral so the robot
+        stops instead of driving with stale values.
+        """
+        if len(packet) != SBUS_FRAME_SIZE:
+            return
+
+        flags = packet[23]
+        if flags & SBUS_FLAG_REJECT:
+            self.sbus_channels = [SBUS_CHANNEL_CENTER] * 16
+            if self.sbus_link_ok:
+                self.sbus_link_ok = False
+                self.get_logger().warn(
+                    f"⚠️ SBUS link loss (flags=0x{flags:02x}) — channels reset to neutral"
+                )
             return
 
         try:
-            # SBUS packet structure (little-endian):
-            # Byte 0: Header (0x0F)
-            # Bytes 1-22: 16 channels x 11 bits = 176 bits = 22 bytes
-            # Byte 23: Flags (bit 0: ch17, bit 1: ch18, bit 2: frame lost, bit 3: failsafe)
-            # Byte 24: Footer (0x00)
-
-            channels = [0] * 16
-
-            # Extract 11-bit channel values from packed bytes
-            channels[0] = ((packet[1] | packet[2] << 8) & 0x07FF)
-            channels[1] = ((packet[2] >> 3 | packet[3] << 5) & 0x07FF)
-            channels[2] = ((packet[3] >> 6 | packet[4] << 2 | packet[5] << 10) & 0x07FF)
-            channels[3] = ((packet[5] >> 1 | packet[6] << 7) & 0x07FF)
-            channels[4] = ((packet[6] >> 4 | packet[7] << 4) & 0x07FF)
-            channels[5] = ((packet[7] >> 7 | packet[8] << 1 | packet[9] << 9) & 0x07FF)
-            channels[6] = ((packet[9] >> 2 | packet[10] << 6) & 0x07FF)
-            channels[7] = ((packet[10] >> 5 | packet[11] << 3) & 0x07FF)
-            channels[8] = ((packet[12] | packet[13] << 8) & 0x07FF)
-            channels[9] = ((packet[13] >> 3 | packet[14] << 5) & 0x07FF)
-            channels[10] = ((packet[14] >> 6 | packet[15] << 2 | packet[16] << 10) & 0x07FF)
-            channels[11] = ((packet[16] >> 1 | packet[17] << 7) & 0x07FF)
-            channels[12] = ((packet[17] >> 4 | packet[18] << 4) & 0x07FF)
-            channels[13] = ((packet[18] >> 7 | packet[19] << 1 | packet[20] << 9) & 0x07FF)
-            channels[14] = ((packet[20] >> 2 | packet[21] << 6) & 0x07FF)
-            channels[15] = ((packet[21] >> 5 | packet[22] << 3) & 0x07FF)
-
-            self.sbus_channels = channels
-            self.sbus_packet_count += 1
-
-            # Log first few packets for debugging
-            if self.sbus_packet_count <= 5 or self.sbus_packet_count % 100 == 0:
-                self.get_logger().info(
-                    f"📨 SBUS packet #{self.sbus_packet_count}: "
-                    f"Ch1={channels[0]} Ch2={channels[1]} Ch3={channels[2]} Ch4={channels[3]} "
-                    f"ARM(Ch{self.ch_arm + 1})={channels[self.ch_arm]}"
-                )
-
-        except Exception as e:
+            channels = decode_channels(packet)
+        except ValueError as e:
             self.get_logger().debug(f"SBUS parse error: {e}")
+            return
+
+        self.sbus_channels = channels
+        self.sbus_packet_count += 1
+        self.last_valid_packet_time = time.monotonic()
+        if not self.sbus_link_ok:
+            self.sbus_link_ok = True
+            self.get_logger().info("✅ SBUS link recovered")
+
+        # Log first few packets for debugging
+        if self.sbus_packet_count <= 5 or self.sbus_packet_count % 100 == 0:
+            self.get_logger().info(
+                f"📨 SBUS packet #{self.sbus_packet_count}: "
+                f"Ch1={channels[0]} Ch2={channels[1]} Ch3={channels[2]} Ch4={channels[3]} "
+                f"ARM(Ch{self.ch_arm + 1})={channels[self.ch_arm]}"
+            )
 
     def publish_joy_from_sbus(self):
         """Publish Joy message from SBUS data and process it."""
         if not self.device_connected:
             return
+
+        # If no valid (non-failsafe) frame arrived recently, treat the link
+        # as dead and publish neutral instead of holding the last commanded
+        # throttle. VESC's own 0.5s timeout would eventually relax the
+        # motors, but we react faster and keep /joy honest.
+        if time.monotonic() - self.last_valid_packet_time > SBUS_STALE_TIMEOUT:
+            channels = [SBUS_CHANNEL_CENTER] * 16
+        else:
+            channels = self.sbus_channels
 
         joy_msg = Joy()
         joy_msg.header.stamp = self.get_clock().now().to_msg()
@@ -234,7 +235,7 @@ class JoystickControlNode(Node):
         # Convert SBUS channels (172-1811) to Joy axes (-1.0 to 1.0)
         # SBUS center: 992, min: 172, max: 1811
         axes = []
-        for ch in self.sbus_channels:
+        for ch in channels:
             # Normalize to [-1.0, 1.0]
             normalized = (ch - 992.0) / 819.5  # 819.5 = (1811-172)/2
             normalized = max(-1.0, min(1.0, normalized))  # Clamp
@@ -244,7 +245,7 @@ class JoystickControlNode(Node):
 
         # Convert digital channels to buttons (threshold at 1500)
         buttons = []
-        for ch in self.sbus_channels:
+        for ch in channels:
             buttons.append(1 if ch > 1500 else 0)
 
         joy_msg.buttons = buttons
