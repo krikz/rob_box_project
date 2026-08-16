@@ -9,8 +9,9 @@ system.py - Инструменты управления системой роб�
 - GetRobotStatusTool: Получить статус робота
 """
 
+import math
 import threading
-from typing import List, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 
 # Ленивый импорт ROS 2 модулей для поддержки unit тестов
 if TYPE_CHECKING:
@@ -414,7 +415,62 @@ class GetCurrentTimeTool(MCPTool):
 
 
 class GetRobotStatusTool(MCPTool):
-    """Инструмент для получения статуса робота."""
+    """Инструмент для получения статуса робота.
+
+    Реальные данные читаются из ROS-топиков:
+    - /odom          (nav_msgs/Odometry)     — позиция робота (x, y, theta)
+    - /battery_state (sensor_msgs/BatteryState) — уровень заряда батареи (%)
+
+    Подписки создаются при инициализации инструмента, execute() отдаёт
+    последние полученные значения. Если топик не публикует данные — в ответе
+    явная ошибка/пометка недоступности вместо hardcoded заглушки.
+    """
+
+    # Топики ROS для реальных данных
+    ODOM_TOPIC = "/odom"
+    BATTERY_TOPIC = "/battery_state"
+
+    def __init__(self, node, wait_timeout_sec: float = 2.0):
+        super().__init__(node)
+        self._position: Optional[dict] = None  # {"x": float, "y": float, "theta": float}
+        self._battery_level: Optional[float] = None  # проценты 0-100
+        self._data_event = threading.Event()
+        # Сколько ждать первое сообщение из топиков при «холодном» старте
+        self._wait_timeout_sec = wait_timeout_sec
+
+        if self.node is not None:
+            # Динамический импорт ROS 2 модулей для поддержки unit тестов
+            from nav_msgs.msg import Odometry
+            from sensor_msgs.msg import BatteryState
+
+            self.node.create_subscription(Odometry, self.ODOM_TOPIC, self._on_odom, 10)
+            self.node.create_subscription(BatteryState, self.BATTERY_TOPIC, self._on_battery, 10)
+
+    def _on_odom(self, msg):
+        """Сохранить последнюю позицию из /odom (nav_msgs/Odometry)."""
+        try:
+            pos = msg.pose.pose.position
+            q = msg.pose.pose.orientation
+            # yaw (theta) из кватерниона ориентации
+            siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+            cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+            theta = math.atan2(siny_cosp, cosy_cosp)
+            self._position = {"x": float(pos.x), "y": float(pos.y), "theta": theta}
+            self._data_event.set()
+        except Exception as e:
+            self.log_warning(f"Ошибка обработки /odom: {e}")
+
+    def _on_battery(self, msg):
+        """Сохранить последний уровень заряда из /battery_state (sensor_msgs/BatteryState)."""
+        try:
+            # ROS: percentage == -1.0 означает «неизвестно»
+            if msg.percentage is not None and float(msg.percentage) >= 0.0:
+                self._battery_level = float(msg.percentage)
+            else:
+                self._battery_level = None
+            self._data_event.set()
+        except Exception as e:
+            self.log_warning(f"Ошибка обработки /battery_state: {e}")
 
     @property
     def name(self) -> str:
@@ -434,18 +490,43 @@ class GetRobotStatusTool(MCPTool):
         return ToolExecutionType.MEDIUM
 
     def execute(self) -> MCPToolResult:
-        """Получить статус робота."""
+        """Получить статус робота из реальных ROS-топиков /odom и /battery_state."""
         self.log_info("Запрос статуса робота")
 
-        # STUB: get_robot_status возвращает hardcoded данные — реальная позиция и battery
-        # будут получены из /odom и /battery_state ROS topics после Nav2 интеграции (Milestone 2).
-        # Отслеживается: TECH_DEBT.md TD-2, GitHub #818 (STUB-get-robot-status)
-        # TODO: Получить реальные данные из ROS топиков
-        # Пока возвращаем заглушку
+        # Если данные ещё не приходили — ждём первое сообщение (топики обычно
+        # публикуют с частотой 10-50 Гц, так что первое сообщение приходит быстро).
+        if self._position is None or self._battery_level is None:
+            self._data_event.wait(timeout=self._wait_timeout_sec)
+
+        unavailable = []
+        if self._position is None:
+            unavailable.append(self.ODOM_TOPIC)
+        if self._battery_level is None:
+            unavailable.append(self.BATTERY_TOPIC)
+
         status = {
-            "position": {"x": 0.0, "y": 0.0, "theta": 0.0},
-            "battery_level": 85.0,
+            "position": self._position,
+            "battery_level": self._battery_level,
             "systems": {"navigation": "active", "vision": "active", "tts": "active"},
         }
+
+        if unavailable:
+            missing = ", ".join(unavailable)
+            status["unavailable_topics"] = unavailable
+            # Частичные данные: хотя бы один топик жив — отдаём реальные данные с пометкой
+            if self._position is not None or self._battery_level is not None:
+                return MCPToolResult(
+                    success=True,
+                    data=status,
+                    message=f"Статус робота получен (недоступны топики: {missing})",
+                )
+            return MCPToolResult(
+                success=False,
+                data=status,
+                error=(
+                    "Статус робота недоступен: топики /odom и /battery_state не публикуют данные "
+                    "(ROS-топики не запущены или данные ещё не получены)"
+                ),
+            )
 
         return MCPToolResult(success=True, data=status, message="Статус робота получен")
