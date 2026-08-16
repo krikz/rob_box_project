@@ -61,6 +61,14 @@ BIG_BANG_OVERRIDE_LABEL="${BIG_BANG_OVERRIDE_LABEL:-big-bang-override}"
 BIG_BANG_MAX_COMMITS="${BIG_BANG_MAX_COMMITS:-50}"
 BIG_BANG_MAX_LINES="${BIG_BANG_MAX_LINES:-3000}"
 DEVELOP_BRANCH="${DEVELOP_BRANCH:-develop}"
+# Ретро 15.08 t_238ff3f7: deploy-issue label-less orphan backstop. L-Deploy and
+# Verify создаёт deploy-issues с версией workflow-файла С ВЕТКИ e2e-раунда
+# (z-{e2e}/test-round-N). Если round-ветка ответвилась ДО фикса #1263
+# (hermes+agent:devops при создании), issue получает только метку deployment →
+# агентский триаж (фильтр по hermes) карточку не создаёт → issue висит сиротой
+# (#1276). Минимальный возраст для реконсилейшна (минуты): свежие issue
+# пропускаем — workflow раунда может ещё дописывать/метить их сам.
+DEPLOY_RECONCILE_MINUTES="${DEPLOY_RECONCILE_MINUTES:-30}"
 MAINTENANCE_BRANCH="${MAINTENANCE_BRANCH:-develop}"
 MAINTENANCE_FILE="${MAINTENANCE_FILE:-MAINTENANCE}"
 AGENT_FLOW_DEFAULT_ROLE="${AGENT_FLOW_DEFAULT_ROLE:-architect}"
@@ -326,6 +334,69 @@ for (fname, sha), prs in sorted(seen.items()):
 **Что делать (при ревью Шифу):** влейте ОДИН из PR (обычно более широкий — с доп. фиксами), второй закройте как дубль или rebase на develop после merge первого. Merge-gate **НЕ блокирует** CI/e2e — это информационное предупреждение." >/dev/null 2>&1 || true
             fi
         done
+    done
+    return 0
+}
+
+# --- deploy-issue label-less orphan backstop (ретро 15.08 t_238ff3f7) -------
+# Сценарий: L-Deploy and Verify создаёт deploy-issues с версией workflow-файла
+# С ВЕТКИ e2e-раунда (z-{e2e}/test-round-N), а не develop. Если round-ветка
+# ответвилась ДО фикса #1263 (hermes+agent:devops при создании), issue получает
+# только метку `deployment` → агентский триаж (фильтр по hermes) карточку не
+# создаёт → issue висит open навсегда без обработчика (#1276, round-116;
+# #1277 round-117 уже с метками → карточка t_dcae2e1a создана).
+# Реконсилейшн: open deployment-issue без process-меток (hermes/agent:*/...)
+# старше DEPLOY_RECONCILE_MINUTES (default 30м) → добавить hermes + agent:devops
+# → триаж на следующем тике создаст kanban-карточку (как #1277).
+# Idempotent: после добавления hermes issue больше не подпадает под правило.
+# Вызывается рядом со stale_branch_scan_all (основной путь + no-issues путь).
+deploy_issue_reconcile_all() {
+    local _dep_json
+    _dep_json="$(gh issue list --repo "$GH_REPO" --label deployment --state open \
+        --limit 100 --json number,title,labels,updatedAt 2>/dev/null || echo '[]')"
+    if [ -z "$_dep_json" ] || [ "$_dep_json" = "[]" ]; then
+        log "deploy-issue-reconcile: no open deployment issues — skip"
+        return 0
+    fi
+    printf '%s' "$_dep_json" | python3 -c '
+import json, sys, base64
+d = json.load(sys.stdin)
+for i in d:
+    labels = ",".join(sorted({lab["name"] for lab in i.get("labels", [])}))
+    print(str(i["number"]) + "\t" + base64.b64encode(str(i["title"]).encode("utf-8")).decode("ascii") + "\t" + base64.b64encode(labels.encode("utf-8")).decode("ascii") + "\t" + str(i["updatedAt"]))
+' 2>/dev/null | while IFS=$'\t' read -r _dep_num _dep_title_b64 _dep_labels_b64 _dep_upd; do
+        [ -z "$_dep_num" ] && continue
+        _dep_title="$(printf '%s' "$_dep_title_b64" | base64 -d 2>/dev/null || true)"
+        _dep_labels="$(printf '%s' "$_dep_labels_b64" | base64 -d 2>/dev/null || true)"
+        _dep_labels_norm="$(printf '%s' "$_dep_labels" | tr '[:upper:]' '[:lower:]')"
+        # Пропускаем уже размеченные (hermes/agent:*/needs-*).
+        if printf '%s' "$_dep_labels_norm" | tr ',' '\n' | grep -Eq '^(hermes|needs-e2e|e2e-done|e2e:rejected|no-e2e-required|needs-review|needs-discussion|big-bang-override)$|^agent:'; then
+            log "deploy-issue-reconcile: #${_dep_num} уже в process-цикле (${_dep_labels}) — skip"
+            continue
+        fi
+        # Пропускаем свежие (< DEPLOY_RECONCILE_MINUTES): workflow раунда может
+        # ещё дописывать/метить issue сам.
+        _dep_upd_epoch="$(date -d "$_dep_upd" +%s 2>/dev/null || echo 0)"
+        _dep_age_min=$(( ($(date +%s) - _dep_upd_epoch) / 60 ))
+        if [ "$_dep_age_min" -lt "$DEPLOY_RECONCILE_MINUTES" ]; then
+            log "deploy-issue-reconcile: #${_dep_num} возраст ${_dep_age_min}м < ${DEPLOY_RECONCILE_MINUTES}м — fresh, skip"
+            continue
+        fi
+        log "deploy-issue-reconcile: #${_dep_num} (${_dep_title:0:50}) без hermes-метки ${_dep_age_min}м — добавляю hermes+agent:devops"
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would: add hermes+agent:devops to #${_dep_num}"
+            continue
+        fi
+        gh issue edit "$_dep_num" --repo "$GH_REPO" --add-label hermes >/dev/null 2>&1 || true
+        gh issue edit "$_dep_num" --repo "$GH_REPO" --add-label agent:devops >/dev/null 2>&1 || true
+        # Коммент с дедупликацией (24h) — не спамим каждый тик.
+        _dep_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+        _dep_dup="$(gh api "repos/${GH_REPO}/issues/${_dep_num}/comments?since=${_dep_since}&per_page=100" \
+            --jq '[.[] | select(.body | startswith("🏷️ **Авто-reconcile**"))] | length' 2>/dev/null || echo 0)"
+        if [ "${_dep_dup:-0}" -eq 0 ]; then
+            gh issue comment "$_dep_num" --repo "$GH_REPO" --body \
+                "🏷️ **Авто-reconcile** (merge-gate, ретро 15.08 t_238ff3f7): deployment-issue без hermes-метки > ${DEPLOY_RECONCILE_MINUTES}м — проставлены \\\`hermes\\\` + \\\`agent:devops\\\`; триаж создаст kanban-карточку (backstop для label-less deploy-issues, #1276)." >/dev/null 2>&1 || true
+        fi
     done
     return 0
 }
@@ -1459,6 +1530,9 @@ stale_branch_scan_all
 # Дубль-файл scan (ретро 15.08 t_20383d32): тот же паттерн вызова, что у
 # stale_branch_scan_all — основной путь + no-issues путь сходятся сюда.
 duplicate_file_scan_all
+# Deploy-issue label-less orphan backstop (ретро 15.08 t_238ff3f7): тот же
+# паттерн вызова — основной путь + no-issues путь сходятся сюда.
+deploy_issue_reconcile_all
 
 # Маппинг head-branch → task_id через wt/... ветки (t_51b5ad24-respeaker-downmix-tests → t_51b5ad24)
 _prs_json="$(gh pr list --repo "$GH_REPO" --state open \

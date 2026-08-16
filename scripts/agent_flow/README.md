@@ -70,6 +70,17 @@ host↔origin автофикс выполняется из ВРЕМЕННОГО 
 мерджит подходящие в `develop`. **НЕ мерджит PR без human review** (Q22 —
 только Шифу). Используется для clean-up очереди.
 
+**Deploy-issue label-less orphan backstop (ретро 15.08 t_238ff3f7):**
+L-Deploy and Verify создаёт deploy-issues с версией workflow-файла С ВЕТКИ
+e2e-раунда (`z-{e2e}/test-round-N`). Если round-ветка ответвилась ДО фикса
+#1263 (hermes+agent:devops при создании), issue получает только метку
+`deployment` → агентский триаж (фильтр по `hermes`) карточку не создаёт →
+issue висит open навсегда без обработчика (#1276, round-116). Merge-gate
+реконсилит: open deployment-issue без process-меток старше
+`DEPLOY_RECONCILE_MINUTES` (default 30м) → добавляет `hermes` + `agent:devops`
+→ триаж на следующем тике создаст kanban-карточку. Idempotent: после
+добавления `hermes` issue больше не подпадает под правило.
+
 ### `agent-flow-e2e-process.sh` — no_agent=true, every 60m
 
 Главный e2e-процессор. Каждый час берёт issues с label `needs-e2e`,
