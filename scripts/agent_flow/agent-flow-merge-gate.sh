@@ -497,6 +497,19 @@ has_label() {  # $1=labels_csv (lowercased) $2=label_name
     printf '%s' "$1" | tr ',' '\n' | grep -Fxq "$2"
 }
 
+# Ретро 15.08 t_16325ddd (гонка PR-state): creator карточек (merge-gate
+# scan-all-prs / e2e-fail) НЕ пере-проверял state PR после скана и создавал
+# карточки для PR, закрытых товарищем Шифу («Не делаем это») → мёртвые карточки
+# (t_62851a11, t_19a87086): rebase невозможен, следующего раунда для закрытых
+# веток не будет. Правило: ПЕРЕД create карточки проверяем state PR заново —
+# CLOSED → SKIP (карточка не нужна). Проверка идемпотентная, gh pr view.
+# $1=pr_number → печатает CLOSED/OPEN/MERGED/unknown (пусто при ошибке).
+pr_state_now() {  # $1=pr_number
+    [ -n "$1" ] || { printf '%s' "unknown"; return 0; }
+    gh pr view "$1" --repo "$GH_REPO" --json state --jq '.state' 2>/dev/null \
+        || printf '%s' "unknown"
+}
+
 # Detect PR kind: "lint" (no e2e needed) vs "functional" (e2e required).
 # Signal sources (priority order):
 #   1) PR label `${NO_E2E_LABEL}` → lint (explicit worker opt-out)
@@ -1278,6 +1291,8 @@ git add -A && git rebase --continue
 git push --force-with-lease origin ${pr_head_ref}
 \`\`\`
 
+**ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → rebase НЕ нужен: сделай `kanban complete` с пометкой `PR closed, rebase не нужен` (ретро 15.08 t_16325ddd).
+
 (Этот reminder автоматически дописан merge-gate — Шифу прямо: «оно должно взять себе девелоп сейчас и позеленеть», не ждать ручного триггера.)"
             if [ -n "${task_id:-}" ]; then
                 hermes kanban --board "$KANBAN_BOARD" comment "$task_id" "$_reminder" >/dev/null 2>&1 \
@@ -1292,6 +1307,12 @@ git push --force-with-lease origin ${pr_head_ref}
                     tester)    _skill="test-driven-development" ;;
                     devops)    _skill="agent-flow-e2e-pipeline" ;;  # надзор 13.08: hermes-agent-flow не существует → карточка падала в crashed (класс t_6c6c98fb)
                 esac
+                # Ретро 15.08 t_16325ddd: PR мог закрыться после получения
+                # pr_state в основном цикле — пере-проверяем перед create.
+                if [ "$(pr_state_now "$pr_number")" = "CLOSED" ]; then
+                    log "issue #${number}: PR #${pr_number} CLOSED — UNSTABLE card НЕ создаю (ретро t_16325ddd)"
+                    skipped=$((skipped+1)); continue
+                fi
                 hermes kanban --board "$KANBAN_BOARD" create \
                     --assignee "$_assignee" --skill "$_skill" --priority 80 --max-runtime 1800 \
                     --body "$_reminder" \
@@ -1517,6 +1538,15 @@ for pr in data:
     [ "$task_id" = "-" ] && task_id=""
     log "scan-all-prs: PR #${pr_num} (${head}) mergeable=${mergeable} state=${merge_state}"
 
+    # Ретро 15.08 t_16325ddd (гонка PR-state): PR был open на момент `gh pr list`,
+    # но товарищ Шифу мог закрыть его («Не делаем это») пока merge-gate шёл к
+    # create. Карточка для закрытого PR = мёртвая (rebase невозможен, раунда не
+    # будет). Пере-проверяем state ПЕРЕД созданием карточки — CLOSED → SKIP.
+    if [ "$(pr_state_now "$pr_num")" = "CLOSED" ]; then
+        log "scan-all-prs: PR #${pr_num} CLOSED (товарищ Шифу «Не делаем это») — SKIP, карточка не нужна (ретро t_16325ddd)"
+        continue
+    fi
+
     # Определяем assignee по меткам issue (если знаем issue_num)
     _assignee="default"
     if [ -n "$issue_num" ]; then
@@ -1554,7 +1584,9 @@ git checkout ${head}
 git rebase origin/develop
 git add -A && git rebase --continue
 git push --force-with-lease origin ${head}
-\`\`\`"
+\`\`\`
+
+**ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → rebase НЕ нужен: сделай `kanban complete` с пометкой `PR closed, rebase не нужен` (ретро 15.08 t_16325ddd)."
         _title_prefix="🔀 merge conflict"
     else
         _reminder="## ⚠️ CI UNSTABLE detected (merge-gate scan-all-prs, $(date -u +%H:%M:%SZ))
@@ -1574,7 +1606,9 @@ git checkout ${head}
 git rebase origin/develop
 git add -A && git rebase --continue
 git push --force-with-lease origin ${head}
-\`\`\`"
+\`\`\`
+
+**ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → rebase НЕ нужен: сделай `kanban complete` с пометкой `PR closed, rebase не нужен` (ретро 15.08 t_16325ddd)."
         _title_prefix="⚠️ CI UNSTABLE: rebase"
     fi
 
