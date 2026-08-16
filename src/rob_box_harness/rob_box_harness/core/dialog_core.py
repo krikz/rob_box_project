@@ -22,6 +22,7 @@ the *orchestrator*, not a duplicate of the ports.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -806,13 +807,38 @@ class DialogCore:
         tool_calls: list[ToolCall] = []
         finish_reason: str | None = None
         raw: Any = None
-        async for chunk in self._llm.stream(messages, tools=tools):
-            if chunk.content_delta:
-                parts.append(chunk.content_delta)
-            if chunk.tool_call_delta is not None:
-                tool_calls.append(chunk.tool_call_delta)
-            if chunk.finish_reason:
-                finish_reason = chunk.finish_reason
+        stream = self._llm.stream(messages, tools=tools)
+        try:
+            async for chunk in stream:
+                # 🔴 FIX (issue #1280): barge-in — новый STT-инпут уже
+                # отменил текущий run (task.cancel). Бросаем
+                # CancelledError немедленно, ДО обработки чанка:
+                # буферизованные чанки старой темы не должны
+                # агрегироваться в ответ, который потом уйдёт в TTS
+                # («робот добивает старую тему после смены»).
+                # asyncio и так доставит CancelledError на ближайшем
+                # await — здесь делаем это явно и раньше.
+                task = asyncio.current_task()
+                if task is not None and task.cancelled():
+                    raise asyncio.CancelledError
+                if chunk.content_delta:
+                    parts.append(chunk.content_delta)
+                if chunk.tool_call_delta is not None:
+                    tool_calls.append(chunk.tool_call_delta)
+                if chunk.finish_reason:
+                    finish_reason = chunk.finish_reason
+        finally:
+            # 🔴 FIX (issue #1280): гарантированно закрываем stream при
+            # ЛЮБОМ выходе — включая CancelledError при barge-in. Без
+            # aclose() HTTP-запрос к провайдеру продолжает жить до конца
+            # генерации: провайдер тратит квоту на старую тему, а ответ
+            # старой темы может успеть попасть в TTS.
+            aclose = getattr(stream, "aclose", None)
+            if aclose is not None:
+                try:
+                    await aclose()
+                except Exception:
+                    pass
         return LLMResponse(
             content="".join(parts),
             tool_calls=tuple(tool_calls),

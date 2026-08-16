@@ -39,7 +39,7 @@ from rob_box_harness.core.dialogue_state_machine import (
     DialogueStateMachine,
 )
 from rob_box_llm.errors import ProviderError
-from rob_box_llm.provider import LLMMessage, LLMResponse, ToolCall
+from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse, ToolCall
 
 
 # ---------------------------------------------------------------------------
@@ -1585,3 +1585,133 @@ def test_run_with_tools_executes_in_safe_order_but_returns_original_order() -> N
     assert [c.name for c in ordered] == ["speak_text", "stop_music"]
     # And the original tuple is untouched (frozen dataclass semantics).
     assert [c.name for c in calls] == ["stop_music", "speak_text"]
+
+
+# ---------------------------------------------------------------------------
+# Issue #1280 — LLM stream must be aborted on barge-in (new STT input)
+# ---------------------------------------------------------------------------
+
+
+class _TrackedStreamIterator:
+    """AsyncIterator (NOT an async generator) with an observable ``aclose``.
+
+    The real production stream (OpenAI SDK ``AsyncStream``) is not an
+    async generator — cancelling the consuming task does NOT close it
+    automatically. ``DialogCore._stream_response`` must call
+    ``aclose()`` explicitly in its ``finally`` (issue #1280), otherwise
+    the HTTP request to the LLM provider keeps running to the end of
+    generation (wasted quota, "robot finishes the old topic").
+    """
+
+    def __init__(self) -> None:
+        self.closed = False
+        self.aclose_calls = 0
+        self._first = True
+        self._blocker = asyncio.Event()  # never set → __anext__ blocks forever
+
+    def __aiter__(self) -> "_TrackedStreamIterator":
+        return self
+
+    async def __anext__(self) -> Any:
+        # Yield one chunk, then block forever — the consuming task
+        # suspends inside the stream, which is exactly the barge-in
+        # window we want to test.
+        if self._first:
+            self._first = False
+            return LLMChunk(content_delta="partial-old-topic")
+        await self._blocker.wait()  # pragma: no cover — never returns
+        raise StopAsyncIteration  # pragma: no cover — unreachable
+
+    async def aclose(self) -> None:
+        self.closed = True
+        self.aclose_calls += 1
+
+
+class _FakeStreamingLLM:
+    """Minimal LLMProvider double that ONLY supports ``stream()``.
+
+    ``stream()`` returns a :class:`_TrackedStreamIterator` so the test
+    can observe whether the core closed the stream on cancellation.
+    ``complete()`` must never be called in streaming mode.
+    """
+
+    name = "fake_streaming_llm"
+
+    def __init__(self) -> None:
+        self.stream_obj: _TrackedStreamIterator | None = None
+
+    def stream(self, messages: Any, tools: Any = ()) -> _TrackedStreamIterator:
+        self.stream_obj = _TrackedStreamIterator()
+        return self.stream_obj
+
+    async def complete(self, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("complete() must not be called with use_streaming=True")
+
+    async def aclose(self) -> None:
+        return None
+
+
+def test_stream_response_aborts_and_closes_stream_on_barge_in() -> None:
+    """Issue #1280 — cancelling a run mid-stream must abort the LLM.
+
+    Regression: before the fix, ``_stream_response`` iterated the stream
+    without a ``finally`` — cancellation left the HTTP stream open, the
+    provider kept generating the old topic (wasted quota) and the old
+    answer could still reach TTS after the user asked a new question.
+    """
+    llm = _FakeStreamingLLM()
+
+    async def scenario() -> None:
+        core_obj = DialogCore(
+            llm=llm,
+            tools=_FakeToolProvider(),
+            memory=_FakeMemoryStore(),
+            dsm=DialogueStateMachine(),
+            use_streaming=True,
+        )
+        await core_obj.handle_wake_word("")
+        task = asyncio.create_task(core_obj.process_input("hello", history=[]))
+        # Let the task reach the stream and suspend inside __anext__.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert llm.stream_obj is not None
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The stream must be actively closed — otherwise the HTTP
+        # request to the provider keeps burning quota on the old topic.
+        assert llm.stream_obj.closed
+        assert llm.stream_obj.aclose_calls >= 1
+
+    asyncio.run(scenario())
+
+
+def test_stream_response_cancelled_task_does_not_return_partial_answer() -> None:
+    """Issue #1280 — barge-in must NOT surface a partial old-topic answer.
+
+    When the run is cancelled while the stream is still producing, the
+    turn must end with ``CancelledError`` (the shell's barge-in path),
+    never with a partial ``DialogResult`` that would be voiced.
+    """
+    llm = _FakeStreamingLLM()
+
+    async def scenario() -> None:
+        core_obj = DialogCore(
+            llm=llm,
+            tools=_FakeToolProvider(),
+            memory=_FakeMemoryStore(),
+            dsm=DialogueStateMachine(),
+            use_streaming=True,
+        )
+        await core_obj.handle_wake_word("")
+        task = asyncio.create_task(core_obj.process_input("hello", history=[]))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The stream was closed AND no partial content was aggregated.
+        assert llm.stream_obj is not None
+        assert llm.stream_obj.closed
+
+    asyncio.run(scenario())

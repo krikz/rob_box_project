@@ -23,6 +23,7 @@ upstream test suite and inherited unchanged by the wrappers.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 from unittest.mock import MagicMock
@@ -37,6 +38,7 @@ from rob_box_harness.providers.deepseek import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
     HarnessDeepSeekProvider,
+    RetryPolicy,
     build_deepseek_provider,
 )
 from rob_box_harness.providers.mimo import (
@@ -247,3 +249,77 @@ async def test_aclose_is_idempotent(deepseek_env: None) -> None:
     await provider.aclose()
     # Second call is a no-op — must not raise.
     await provider.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Issue #1280 — barge-in must abort the LLM HTTP stream
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stream_cancel_closes_inner_stream() -> None:
+    """Issue #1280 — cancelling the consumer must abort the HTTP stream.
+
+    When the user barges in (new STT input), ``dialogue_node`` cancels
+    the run task. ``DeepSeekProvider.stream`` must then cancel its
+    background drain task AND close the inner stream. Before the fix the
+    drain task was only cancelled without awaiting — if it sat between
+    chunks, the inner stream was never closed and the HTTP request kept
+    generating the old topic to the end (wasted quota, "robot finishes
+    the old topic after the user changed it").
+    """
+    provider = HarnessDeepSeekProvider(
+        api_key="sk-test", retry=RetryPolicy(max_attempts=1)
+    )
+    closed = {"n": 0}
+
+    class _TrackedCancellableStream:
+        """Inner stream that yields one chunk then blocks forever."""
+
+        def __init__(self, inner: AsyncIterator[LLMChunk]) -> None:
+            self._inner = inner
+            self.closed = False
+
+        def __aiter__(self) -> "_TrackedCancellableStream":
+            return self
+
+        async def __anext__(self) -> LLMChunk:
+            return await self._inner.__anext__()
+
+        async def aclose(self) -> None:
+            self.closed = True
+            closed["n"] += 1
+            inner_aclose = getattr(self._inner, "aclose", None)
+            if inner_aclose is not None:
+                await inner_aclose()
+
+    async def _blocking_gen() -> AsyncIterator[LLMChunk]:
+        yield LLMChunk(content_delta="old-topic-chunk")
+        await asyncio.Event().wait()  # block forever — barge-in window
+
+    def patched_stream(
+        messages: Any, *, tools: Any = (), settings: Any = None
+    ) -> Any:
+        return _TrackedCancellableStream(_blocking_gen())
+
+    provider._inner.__dict__["stream"] = patched_stream  # type: ignore[method-assign]
+
+    async def consume() -> None:
+        async for _chunk in provider.stream(
+            [LLMMessage(role="user", content="hi")]
+        ):
+            pass
+
+    task = asyncio.create_task(consume())
+    # Let the consumer reach the queue-get and the drain task block
+    # inside the inner stream's __anext__ (the barge-in window).
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # The inner stream MUST be actively closed, otherwise the HTTP
+    # request to the provider keeps burning quota on the old topic.
+    assert closed["n"] >= 1, (
+        "inner stream aclose() must be called on consumer cancellation"
+    )
