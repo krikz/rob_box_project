@@ -212,52 +212,95 @@ for target_dir in "${TARGET_DIRS[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
-# Применение vendor-патчей к hermes-agent (ретро t_f00676f8).
+# Применение vendor-патчей к hermes-agent (ретро t_f00676f8, t_1d467636).
 #
 # Проблема: локальные фиксы hermes-agent (валидация скиллов по профилю
 # t_1ab37fa8: _profile_skill_names/_validate_skills_for_assignee в
 # hermes_cli/kanban_db.py, symlink-following подсчёт скиллов в
-# hermes_cli/profiles.py) накладывались на хост руками БЕЗ сохранения в репо.
-# При `git pull`/`pip install -U hermes-agent` патчи теряются, и регресс
-# t_1ab37fa8 возвращается (карточки со скилами не из профиля падают).
+# hermes_cli/profiles.py; auto-decomposer MAINTENANCE/peak-gate +
+# идемпотентность t_1d467636 в hermes_cli/kanban_decompose.py +
+# gateway/kanban_watchers.py) накладывались на хост руками БЕЗ сохранения
+# в репо. При `git pull`/`pip install -U hermes-agent` патчи теряются, и
+# регресс возвращается.
 #
-# Решение: дифф хранится в репо как scripts/agent_flow/vendor/
-# hermes-agent-skill-validation.patch; этот скрипт применяет его идемпотентно
+# Решение: каждый дифф хранится в репо как scripts/agent_flow/vendor/
+# hermes-agent-*.patch; этот скрипт применяет ВСЕ такие патчи идемпотентно
 # (git apply --reverse --check => уже применён; git apply --check => можно
-# применить). Вызывать ПОСЛЕ обновления hermes-agent.
+# применить). Вызывать ПОСЛЕ обновления hermes-agent. Новый vendor-патч
+# подхватывается автоматически — отдельной регистрации не требуется.
 HERMES_AGENT_DIR="${HERMES_AGENT_DIR:-/home/builder/.hermes/hermes-agent}"
-HERMES_AGENT_PATCH="$SCRIPT_DIR/vendor/hermes-agent-skill-validation.patch"
 
-apply_hermes_agent_patch() {
+# kanban.maintenance_probe_command: команда, чей exit 0 означает активное
+# MAINTENANCE/peak-окно (авто-декомпозер откладывает разбор; ретро
+# t_1d467636). Прописывается в ~/.hermes/config.yaml идемпотентно.
+KANBAN_MAINTENANCE_PROBE_CMD='git -C /home/builder/.hermes/profiles/devops/agents-sleep-repo ls-tree origin/develop --name-only 2>/dev/null | grep -qx MAINTENANCE'
+
+ensure_kanban_maintenance_probe() {
+    local cfg="${HERMES_CONFIG:-/home/builder/.hermes/config.yaml}"
+    if [ ! -f "$cfg" ]; then
+        echo "  SKIP kanban.maintenance_probe_command ($cfg not found)"
+        return 0
+    fi
+    if grep -q '^kanban:' "$cfg" && grep -q 'maintenance_probe_command' "$cfg"; then
+        echo "  OK   kanban.maintenance_probe_command already in $cfg"
+        return 0
+    fi
+    if $DRY_RUN; then
+        echo "  [DRY] would add kanban.maintenance_probe_command to $cfg"
+        return 0
+    fi
+    if grep -q '^kanban:' "$cfg"; then
+        # Вставляем строку сразу после "kanban:".
+        sed -i '/^kanban:/a\  maintenance_probe_command: '"$KANBAN_MAINTENANCE_PROBE_CMD" "$cfg"
+    else
+        printf '\nkanban:\n  maintenance_probe_command: %s\n' "$KANBAN_MAINTENANCE_PROBE_CMD" >> "$cfg"
+    fi
+    echo "  ADDED kanban.maintenance_probe_command to $cfg"
+}
+
+apply_one_hermes_agent_patch() {
+    local patch="$1"
     if ! git -C "$HERMES_AGENT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "  SKIP hermes-agent patch ($HERMES_AGENT_DIR not a git checkout)"
         return 0
     fi
-    if [ ! -f "$HERMES_AGENT_PATCH" ]; then
-        echo "  SKIP hermes-agent patch ($HERMES_AGENT_PATCH not found)"
+    if [ ! -f "$patch" ]; then
+        echo "  SKIP hermes-agent patch ($patch not found)"
         return 0
     fi
-    echo "==> hermes-agent patch: $HERMES_AGENT_PATCH"
+    echo "==> hermes-agent patch: $(basename "$patch")"
     # Уже применён?
-    if ( cd "$HERMES_AGENT_DIR" && git apply --reverse --check "$HERMES_AGENT_PATCH" >/dev/null 2>&1 ); then
+    if ( cd "$HERMES_AGENT_DIR" && git apply --reverse --check "$patch" >/dev/null 2>&1 ); then
         echo "  OK   patch already applied (reverse-check clean)"
         return 0
     fi
     # Применится чисто?
-    if ( cd "$HERMES_AGENT_DIR" && git apply --check "$HERMES_AGENT_PATCH" >/dev/null 2>&1 ); then
+    if ( cd "$HERMES_AGENT_DIR" && git apply --check "$patch" >/dev/null 2>&1 ); then
         if $DRY_RUN; then
             echo "  [DRY] would apply patch in $HERMES_AGENT_DIR"
             return 0
         fi
-        if ( cd "$HERMES_AGENT_DIR" && git apply "$HERMES_AGENT_PATCH" ); then
-            echo "  APPLIED hermes-agent patch (re-run install.sh after every hermes-agent update)"
+        if ( cd "$HERMES_AGENT_DIR" && git apply "$patch" ); then
+            echo "  APPLIED $(basename "$patch") (re-run install.sh after every hermes-agent update)"
             return 0
         fi
-        echo "  ERROR applying hermes-agent patch" >&2
+        echo "  ERROR applying hermes-agent patch $(basename "$patch")" >&2
         return 1
     fi
-    echo "  ERROR patch does not apply cleanly to $HERMES_AGENT_DIR — upstream moved; regenerate vendor patch from current diff (ретро t_f00676f8)" >&2
+    echo "  ERROR patch $(basename "$patch") does not apply cleanly to $HERMES_AGENT_DIR — upstream moved; regenerate vendor patch from current diff (ретро t_f00676f8/t_1d467636)" >&2
     return 1
+}
+
+apply_hermes_agent_patch() {
+    local any=false
+    for patch in "$SCRIPT_DIR"/vendor/hermes-agent-*.patch; do
+        [ -f "$patch" ] || continue
+        any=true
+        apply_one_hermes_agent_patch "$patch" || return 1
+    done
+    if ! $any; then
+        echo "  SKIP hermes-agent patch (no vendor/hermes-agent-*.patch found)"
+    fi
 }
 
 echo
@@ -401,6 +444,10 @@ fi
 echo
 echo "==> hermes-agent vendor patch"
 apply_hermes_agent_patch
+
+echo
+echo "==> kanban MAINTENANCE probe (auto-decomposer defer gate, ретро t_1d467636)"
+ensure_kanban_maintenance_probe
 
 
 echo
