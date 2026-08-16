@@ -47,6 +47,11 @@ RUN_NOW_LOCK="${RUN_NOW_LOCK:-/tmp/agent-flow-run-now.lock}"
 E2E_PROCESS_SCRIPT="${E2E_PROCESS_SCRIPT:-/home/builder/.hermes/scripts/agent-flow-e2e-process.sh}"
 REPO_DIR="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}"
 E2E_LOCK_FILE="${E2E_LOCK_FILE:-/tmp/agent-flow-e2e-process.lock}"
+# Hermes CLI для kanban block/unblock (ретро 15.08 t_3b9fadc5): watchdog сам
+# переводит карточки в blocked «провайдер исчерпан, ждать» при 402/429 в
+# логе воркера и разблокирует их, когда провайдеры снова отвечают.
+HERMES_BIN="${HERMES_BIN:-/home/builder/.hermes/hermes-agent/venv/bin/hermes}"
+PROVIDER_ACTIONS_FILE="${PROVIDER_ACTIONS_FILE:-$HERMES_HOME/state/watchdog-provider-actions.txt}"
 
 if gh api "repos/${GH_REPO}/contents/${RUN_NOW_FILE}?ref=develop" --jq '.name' >/dev/null 2>&1; then
     # Есть RUN_NOW → запускаем e2e-process (если он не запущен и не в процессе).
@@ -86,15 +91,16 @@ fi
 
 # Delegate all detection to a Python helper so we can use the bundled
 # Python 3 (with sqlite3) without depending on the sqlite3 CLI.
-python3 - "$HERMES_HOME" "$KANBAN_BOARDS_DIR" "$HEARTBEAT_STALE_SECONDS" "$TELEGRAM_STUCK_MINUTES" \
+python3 - "$HERMES_HOME" "$KANBAN_BOARDS_DIR" "$HEARTBEAT_STALE_SECONDS" "$TELEGRAM_STUCK_MINUTES" "$PROVIDER_ACTIONS_FILE" \
     <<'PYEOF'
-import os, sys, glob, subprocess, time
+import os, sys, glob, subprocess, time, sqlite3
 from datetime import datetime
 
 hermes_home = sys.argv[1]
 boards_dir = sys.argv[2]
 stale_sec = int(sys.argv[3])
 telegram_stuck_min = int(sys.argv[4]) if len(sys.argv) > 4 else 15
+provider_actions_file = sys.argv[5] if len(sys.argv) > 5 else ""
 
 issues = []
 recovery = []
@@ -148,6 +154,127 @@ for db in sorted(glob.glob(f"{boards_dir}/*/kanban.db")):
         con.close()
     except Exception as exc:
         issues.append(f"[{board}] db error: {exc}")
+
+# 1c. provider-exhaustion (ретро 15.08 t_3b9fadc5)
+# Масс-блок: при 402/429 (MiniMax 429/2056, DeepSeek 402) воркер печатает
+# «Out of credits» и выходит rc=0 → dispatcher считает это protocol violation
+# x2 → gave_up → карточка blocked навсегда, хотя провайдер просто исчерпан.
+# Здесь: (а) карточки, чей воркер умер с 402/429 в логе, переводим в blocked
+# «провайдер исчерпан, ждать» (вместо protocol-violation цикла); (б) карточки,
+# уже заблокированные с маркерами 402/429 в логе, разблокируем, когда
+# провайдеры снова отвечают (нет свежих 402/429 в логах воркеров).
+PROVIDER_MARKERS = (
+    "HTTP 402", "Insufficient Balance", "Out of credits",
+    "Billing or credits exhausted", "HTTP 429", "rate limit",
+    "Token Plan usage limit", "2056", "health-aware-fallback",
+    "all providers unavailable",
+)
+PROVIDER_LOG_WINDOW = 900  # сек: лог считается «свежим» для проверки живости
+
+def _log_path(board_dir: str, task_id: str) -> str:
+    return os.path.join(board_dir, "logs", f"{task_id}.log")
+
+def _log_has_provider_markers(path: str) -> bool:
+    if not os.path.isfile(path):
+        return False
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            tail = f.read()[-200000:]  # последние ~200KB хватает с запасом
+    except Exception:
+        return False
+    low = tail.lower()
+    return any(m.lower() in low for m in PROVIDER_MARKERS)
+
+# 1c1. живы ли провайдеры: есть свежий воркер-лог БЕЗ маркеров 402/429
+# (значит воркер реально работает, а не умирает на старте).
+providers_alive = False
+for db in sorted(glob.glob(f"{boards_dir}/*/kanban.db")):
+    board_dir = os.path.dirname(db)
+    logs_dir = os.path.join(board_dir, "logs")
+    if not os.path.isdir(logs_dir):
+        continue
+    try:
+        for lp in glob.glob(os.path.join(logs_dir, "*.log")):
+            if now - os.path.getmtime(lp) <= PROVIDER_LOG_WINDOW \
+                    and not _log_has_provider_markers(lp):
+                providers_alive = True
+                break
+    except Exception:
+        pass
+    if providers_alive:
+        break
+
+# 1c2. детект по всем карточкам: упавшие с 402/429 → block; заблокированные
+# с 402/429 в логе → unblock (recovery-волна), когда провайдеры живы.
+provider_actions: list[str] = []   # строки "block|board|task" / "unblock|board|task"
+for db in sorted(glob.glob(f"{boards_dir}/*/kanban.db")):
+    board = os.path.basename(os.path.dirname(db))
+    board_dir = os.path.dirname(db)
+    try:
+        con = sqlite3.connect(db)
+        cur = con.execute(
+            "SELECT id, status, COALESCE(worker_pid,0) AS pid, "
+            "COALESCE(last_heartbeat_at,0) AS hb FROM tasks"
+        )
+        for task_id, status, pid, hb in cur.fetchall():
+            lp = _log_path(board_dir, task_id)
+            if not os.path.isfile(lp):
+                continue
+            if not _log_has_provider_markers(lp):
+                continue
+            if status == "blocked":
+                # Уже заблокирована (gave_up от protocol violation). Если
+                # провайдеры снова живы — recovery-волна: unblock → ready.
+                # Guard: только если блок поставил dispatcher (gave_up /
+                # protocol_violation / crashed), а НЕ человек (ручной block
+                # Шифу — event kind 'blocked' → не трогаем).
+                last_ev = con.execute(
+                    "SELECT kind, payload FROM task_events "
+                    "WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                    (task_id,),
+                ).fetchone()
+                # NOTE: row_factory не установлен → fetchone() возвращает tuple
+                # (kind, payload), индексация по имени упадёт в try/except и
+                # молча пропустит карточку. Используем позиционную.
+                if last_ev and last_ev[0] in (
+                    "gave_up", "protocol_violation", "crashed", "rate_limited",
+                ) and providers_alive:
+                    provider_actions.append(f"unblock|{board}|{task_id}")
+            elif status in ("running", "ready"):
+                # Воркер умер с 402/429 в логе (running с мёртвым pid) или
+                # карточка готова к спавну, но провайдер мёртв → сразу
+                # blocked «провайдер исчерпан, ждать» вместо protocol-violation
+                # цикла. Для ready блокируем только если провайдеры НЕ живы
+                # (иначе даём dispatcher'у обычный респавн).
+                if status == "running":
+                    pid_alive = False
+                    if pid and pid > 0:
+                        try:
+                            os.kill(int(pid), 0)
+                            pid_alive = True
+                        except (OSError, ProcessLookupError):
+                            pid_alive = False
+                    if not pid_alive:
+                        provider_actions.append(f"block|{board}|{task_id}")
+                elif not providers_alive:
+                    provider_actions.append(f"block|{board}|{task_id}")
+        con.close()
+    except Exception as exc:
+        issues.append(f"[{board}] provider-scan error: {exc}")
+
+# Пишем действия в файл для bash-части (stdout watchdog — отчёт, не команды).
+if provider_actions and provider_actions_file:
+    os.makedirs(os.path.dirname(provider_actions_file), exist_ok=True)
+    try:
+        with open(provider_actions_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(provider_actions) + "\n")
+        issues.append(
+            f"[provider-exhaustion] {len(provider_actions)} действие(й): "
+            f"providers_alive={providers_alive} → {provider_actions_file}"
+        )
+    except Exception as exc:
+        issues.append(f"[provider-exhaustion] запись действий не удалась: {exc}")
+
 
 # 2. dispatcher status
 # Реальный диспетчер — внутренний loop gateway'а профиля agent-flow
@@ -415,6 +542,46 @@ if recovery:
 print()
 print(f"Dispatcher: {'alive' if dispatcher_alive else 'dead'} (restarted: {restarted})")
 PYEOF
+
+# ============================================================================
+# Provider-exhaustion actions (ретро 15.08 t_3b9fadc5)
+# Python-часть записала в $PROVIDER_ACTIONS_FILE строки "block|board|task" /
+# "unblock|board|task". Выполняем их через hermes kanban — watchdog это
+# no-agent крон, но kanban CLI доступен, и это ровно тот терминальный вызов,
+# которого не хватало воркеру при 402/429 (worker обёртка завершает карточку
+# блоком «провайдер исчерпан, ждать» вместо тихого rc=0 → protocol violation).
+# Идемпотентно: повторные тики с теми же действиями не ломают (block на уже
+# blocked/unblock на не-blocked — no-op с ненулевым rc, ловим и не паникуем).
+if [ -s "$PROVIDER_ACTIONS_FILE" ]; then
+    log "provider-actions: $(wc -l < "$PROVIDER_ACTIONS_FILE") действие(й) из $PROVIDER_ACTIONS_FILE"
+    while IFS='|' read -r action board task_id; do
+        [ -n "$action" ] || continue
+        case "$action" in
+            block)
+                if "$HERMES_BIN" kanban --board "$board" block "$task_id" \
+                    "провайдер исчерпан, ждать (402/429 — пополнить MiniMax/DeepSeek, см. issue #1193)" \
+                    >/dev/null 2>&1; then
+                    log "✅ provider-block $board/$task_id"
+                else
+                    log "⚠️ provider-block $board/$task_id failed (уже blocked или CLI error)"
+                fi
+                ;;
+            unblock)
+                if "$HERMES_BIN" kanban --board "$board" unblock "$task_id" \
+                    --reason "провайдер восстановлен — респавн (ретро 15.08 t_3b9fadc5)" \
+                    >/dev/null 2>&1; then
+                    log "✅ provider-unblock $board/$task_id"
+                else
+                    log "⚠️ provider-unblock $board/$task_id failed (уже ready или CLI error)"
+                fi
+                ;;
+            *)
+                log "⚠️ provider-action: неизвестное действие '$action'"
+                ;;
+        esac
+    done < "$PROVIDER_ACTIONS_FILE"
+    rm -f "$PROVIDER_ACTIONS_FILE"
+fi
 
 # ============================================================================
 # Local worktree sweep (ретро 14.08 t_ee70ffc2)
