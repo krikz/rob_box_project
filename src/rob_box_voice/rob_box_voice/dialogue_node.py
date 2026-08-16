@@ -61,6 +61,7 @@ from rob_box_harness.providers import (
     build_minimax_provider,
 )
 from rob_box_harness.tools import FakeToolProvider, ToolProvider
+from rob_box_llm.errors import ProviderError
 
 from rob_box_voice.core.dialogue_text import (
     has_wake_word, is_silence_command, is_unsilence_command, strip_wake_word,
@@ -2263,7 +2264,20 @@ class DialogueNode(Node):
             import traceback as _tb
             _tb_str = _tb.format_exc()
             try:
-                self._speak_direct("Что-то я задумался, повтори пожалуйста")
+                if self._is_llm_unavailable_error(exc) and not was_dj_auto:
+                    # 🔴 FIX (issue #1278): все LLM-провайдеры недоступны —
+                    # честная degraded-фраза вместо «Что-то я задумался».
+                    # Проверяем ДО generic fallback, чтобы ProviderError
+                    # (health-aware-fallback) не маскировался под обычную
+                    # ошибку. DJ-auto: не озвучиваем (юзер ничего не
+                    # говорил, каждые ~45с это шум — см. 13.08).
+                    self._speak_direct(
+                        self._generate_fallback_response(
+                            raw_user_command or user_input or ""
+                        )
+                    )
+                else:
+                    self._speak_direct("Что-то я задумался, повтори пожалуйста")
             except Exception:
                 pass
             try:
@@ -3305,6 +3319,33 @@ class DialogueNode(Node):
                 self.get_logger().warning(f"⚠️ DialogCore error: {result.error}")
             except Exception:
                 pass
+            # 🔴 FIX (issue #1278): когда ВСЕ LLM-провайдеры недоступны
+            # (health-aware-fallback: все провайдеры unavailable) — робот
+            # должен сказать честную degraded-фразу («интернет недоступен,
+            # базовые команды работают»), а НЕ «Принял.»/«задумался».
+            # Раньше ProviderError тонул в empty-response fallback ниже и
+            # юзер слышал «Принял.» вместо объяснения.
+            # 🔴 FIX (13.08, DJ): на DJ auto-transition degraded-фразу НЕ
+            # озвучиваем — юзер ничего не говорил, каждые ~45с это шум
+            # в тишине (тот же принцип, что подавление «Принял.» ниже).
+            if self._is_llm_unavailable_error(result.error) and not is_dj_auto:
+                try:
+                    fallback_text = self._generate_fallback_response(
+                        raw_user_command or user_input or ""
+                    )
+                    self.get_logger().warning(
+                        f"🔧 [issue 1278] все LLM-провайдеры недоступны — "
+                        f"degraded-ответ: {fallback_text!r}"
+                    )
+                    self._publish_response(fallback_text, animation="neutral")
+                except Exception as exc:  # noqa: BLE001
+                    try:
+                        self.get_logger().warning(
+                            f"⚠️ degraded-fallback publish failed: {exc}"
+                        )
+                    except Exception:
+                        pass
+                return
         spoken = strip_history_marker(result.spoken_text or "")
         # 🔴 FIX (live 16:02 «английская мысль на Бахе»): MiniMax M3
         # возвращает ``<think>...</think>`` в content перед реальным
@@ -3773,6 +3814,29 @@ class DialogueNode(Node):
         if not emotion:
             return "idle"
         return self._EMOTION_TO_ANIMATION.get(str(emotion).lower(), "idle")
+
+    def _is_llm_unavailable_error(self, error: Any) -> bool:
+        """Issue #1278 — is ``error`` an all-LLM-providers-unavailable failure?
+
+        ``HealthAwareFallbackLLM`` raises ``ProviderError`` with the
+        ``health-aware-fallback: все провайдеры unavailable`` marker when
+        every provider in the chain is down (TTL not yet expired). The
+        shell must distinguish this from ordinary errors so the robot
+        says an honest degraded phrase instead of the generic
+        «Что-то я задумался» / «Принял.».
+        """
+        if error is None:
+            return False
+        if isinstance(error, ProviderError):
+            return True
+        # DialogCore wraps LLM exceptions into a plain Exception with a
+        # traceback (4ba16f23), losing the ProviderError type — fall back
+        # to the stable health-aware marker embedded in the message.
+        try:
+            msg = str(error)
+        except Exception:  # noqa: BLE001 — never crash on a broken __str__
+            return False
+        return "health-aware-fallback: все провайдеры unavailable" in msg
 
     def _generate_fallback_response(self, text: str) -> str:
         """Generate a static fallback reply when the LLM is unavailable."""
