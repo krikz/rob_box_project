@@ -113,6 +113,26 @@ ORIGIN_DIR=""
 SEED_DIR=""
 SLEEP_REPO_DIR=""
 
+# Мок merge-gate для resume-шага (ретро t_2c814334): не ходим в сеть/gh,
+# просто пишем маркер, что merge-gate был бы вызван.
+MOCK_MERGE_GATE="$TEST_TMP/mock-merge-gate.sh"
+MOCK_MERGE_GATE_MARKER="$TEST_TMP/merge-gate-called.marker"
+cat > "$MOCK_MERGE_GATE" <<EOF
+#!/bin/bash
+# mock merge-gate: фиксируем факт вызова
+echo "merge-gate called at \$(date -Iseconds)" >> "$MOCK_MERGE_GATE_MARKER"
+exit 0
+EOF
+chmod +x "$MOCK_MERGE_GATE"
+
+reset_merge_gate_marker() {
+    rm -f "$MOCK_MERGE_GATE_MARKER"
+}
+
+merge_gate_was_called() {
+    [ -f "$MOCK_MERGE_GATE_MARKER" ]
+}
+
 setup_origin() {
     ORIGIN_DIR="$TEST_TMP/origin.git"
     SEED_DIR="$TEST_TMP/seed"
@@ -145,6 +165,7 @@ run_agents_sleep() {
         AGENTS_SLEEP_CONF="$SCHEDULE_CONF" \
         NOW_MSK="$now" \
         LOCK_FILE="$TEST_TMP/agents-sleep.lock" \
+        RESUME_MERGE_GATE_CMD="$MOCK_MERGE_GATE" \
         "$@" \
         bash "$AGENTS_SLEEP" 2>&1 || return $?
 }
@@ -261,6 +282,73 @@ test_second_window_creates_again() {
     origin_has_maintenance || return 1
 }
 
+# --- resume → merge-gate backfill-скан по всем open PR (ретро t_2c814334) ----
+
+test_resume_runs_merge_gate() {
+    setup_origin
+    reset_sleep_repo
+    reset_merge_gate_marker
+    run_agents_sleep "05:30" >/dev/null   # peak → MAINTENANCE появился
+    origin_has_maintenance || return 1
+    run_agents_sleep "14:00" >/dev/null   # off-peak → resume
+    if origin_has_maintenance; then return 1; fi
+    merge_gate_was_called || return 1     # merge-gate вызван после resume
+}
+
+test_peak_does_not_run_merge_gate() {
+    setup_origin
+    reset_sleep_repo
+    reset_merge_gate_marker
+    run_agents_sleep "05:30"   # peak (создание MAINTENANCE)
+    if merge_gate_was_called; then return 1; fi     # merge-gate НЕ вызывается на peak
+}
+
+test_idle_offpeak_does_not_run_merge_gate() {
+    setup_origin
+    reset_sleep_repo
+    reset_merge_gate_marker
+    run_agents_sleep "14:00"   # off-peak, MAINTENANCE нет — идемпотентно
+    if merge_gate_was_called; then return 1; fi     # merge-gate НЕ вызывается (не resume)
+}
+
+test_resume_disabled_skips_merge_gate() {
+    setup_origin
+    reset_sleep_repo
+    reset_merge_gate_marker
+    run_agents_sleep "05:30" >/dev/null
+    origin_has_maintenance || return 1
+    run_agents_sleep "14:00" RESUME_MERGE_GATE_ENABLED=false >/dev/null
+    if origin_has_maintenance; then return 1; fi    # resume всё равно произошёл
+    if merge_gate_was_called; then return 1; fi     # но merge-gate не вызван (рубильник)
+}
+
+test_dry_run_resume_does_not_run_merge_gate() {
+    setup_origin
+    reset_sleep_repo
+    reset_merge_gate_marker
+    run_agents_sleep "05:30" >/dev/null
+    origin_has_maintenance || return 1
+    local out
+    out="$(DRY_RUN=true run_agents_sleep "14:00")"
+    if ! origin_has_maintenance; then return 1; fi    # DRY_RUN: MAINTENANCE остался
+    if merge_gate_was_called; then return 1; fi     # merge-gate НЕ вызван (DRY_RUN)
+    assert_contains "DRY-RUN: would run merge-gate" "$out" "DRY_RUN prints merge-gate decision"
+}
+
+test_manual_maintenance_resume_does_not_run_merge_gate() {
+    setup_origin
+    # ручной MAINTENANCE без авто-маркера (человеческое окно обслуживания)
+    printf 'maintenance: pause agent-flow crons — fixing voice chain (human)\n' > "$SEED_DIR/MAINTENANCE"
+    git -C "$SEED_DIR" add MAINTENANCE
+    git -C "$SEED_DIR" commit -q -m "maintenance: manual pause (human)"
+    git -C "$SEED_DIR" push -q origin develop
+    reset_sleep_repo
+    reset_merge_gate_marker
+    run_agents_sleep "14:00" >/dev/null   # off-peak
+    origin_has_maintenance || return 1    # ручной — НЕ трогаем
+    if merge_gate_was_called; then return 1; fi     # и merge-gate НЕ вызываем (resume не было)
+}
+
 # ===========================================================================
 # Run
 # ===========================================================================
@@ -274,6 +362,12 @@ run_test "integration: ручной MAINTENANCE в off-peak → НЕ трога�
 run_test "integration: peak + уже есть MAINTENANCE → без коммита" test_peak_keeps_existing_maintenance
 run_test "integration: DRY_RUN → git не тронут" test_dry_run_does_not_touch_git
 run_test "integration: цикл peak→off→peak (снова MAINTENANCE)" test_second_window_creates_again
+run_test "integration: resume → merge-gate backfill-скан вызван" test_resume_runs_merge_gate
+run_test "integration: peak → merge-gate НЕ вызывается" test_peak_does_not_run_merge_gate
+run_test "integration: off-peak без MAINTENANCE → merge-gate НЕ вызывается" test_idle_offpeak_does_not_run_merge_gate
+run_test "integration: RESUME_MERGE_GATE_ENABLED=false → resume без merge-gate" test_resume_disabled_skips_merge_gate
+run_test "integration: DRY_RUN resume → merge-gate НЕ вызывается" test_dry_run_resume_does_not_run_merge_gate
+run_test "integration: ручной MAINTENANCE → merge-gate НЕ вызывается" test_manual_maintenance_resume_does_not_run_merge_gate
 
 summary() {
     echo
