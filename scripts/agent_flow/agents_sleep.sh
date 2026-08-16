@@ -21,7 +21,9 @@
 #
 # Логика (идемпотентная, pure bash, no LLM):
 #   PEAK     + MAINTENANCE отсутствует → touch MAINTENANCE + commit + push
-#   OFF-PEAK + MAINTENANCE есть (auto)  → git rm MAINTENANCE + commit + push
+#   OFF-PEAK + MAINTENANCE есть (auto)  → git rm MAINTENANCE + commit + push,
+#                                          затем merge-gate (backfill-скан по
+#                                          всем open PR — ретро t_2c814334)
 #   состояние уже правильное            → exit 0, ничего не делает
 #
 # ВАЖНО: скрипт снимает ТОЛЬКО MAINTENANCE, созданный им самим (маркер
@@ -51,6 +53,16 @@ AGENTS_SLEEP_REPO="${AGENTS_SLEEP_REPO:-$HERMES_HOME/agents-sleep-repo}"
 AGENTS_SLEEP_REMOTE="${AGENTS_SLEEP_REMOTE:-https://github.com/${GH_REPO}.git}"
 AUTO_MAINTENANCE_MARKER="${AUTO_MAINTENANCE_MARKER:-auto-sleep:}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Ретро 15.08 t_2c814334 (pr-orphan-no-labels): PR, созданные в peak-окно
+# (MAINTENANCE стоит), после resume merge-gate не догонял (GraphQL-слепота +
+# отсутствие backfill). Теперь после снятия auto-MAINTENANCE скрипт сразу
+# запускает merge-gate: тот содержит REST-based pr-backfill-scan и размечает
+# ВСЕ open PR без process-меток старше 30 мин (needs-review/needs-e2e).
+# Вызов идемпотентен: merge-gate берёт flock; если параллельный тик уже идёт —
+# наш вызов «skip», ничего не дублируется. Ошибка merge-gate НЕ роняет resume
+# (resume уже произошёл — флаг снят; merge-gate догонит следующим тиком cron).
+RESUME_MERGE_GATE_ENABLED="${RESUME_MERGE_GATE_ENABLED:-true}"
+RESUME_MERGE_GATE_CMD="${RESUME_MERGE_GATE_CMD:-$SCRIPT_DIR/agent-flow-merge-gate.sh}"
 SCHEDULE_CONF="${AGENTS_SLEEP_CONF:-$SCRIPT_DIR/agents_sleep_schedule.conf}"
 PEAK_HOURS="${PEAK_HOURS:-04:00-07:00,09:00-13:00}"   # fallback, если conf нет
 DRY_RUN="${DRY_RUN:-false}"
@@ -144,6 +156,31 @@ apply_and_push() {
     done
 }
 
+# run_merge_gate_after_resume — после снятия auto-MAINTENANCE запускает merge-gate,
+# чтобы тот backfill-сканом разметил все open PR без process-меток (ретро 15.08
+# t_2c814334, pr-orphan-no-labels: #1282/#1284/#1286 висели без меток 5.5ч).
+# Идемпотентно (flock внутри merge-gate), не роняет resume при ошибке.
+run_merge_gate_after_resume() {
+    if [ "$RESUME_MERGE_GATE_ENABLED" != "true" ]; then
+        log "resume: RESUME_MERGE_GATE_ENABLED != true — merge-gate не запускаю"
+        return 0
+    fi
+    if [ ! -x "$RESUME_MERGE_GATE_CMD" ] && [ ! -f "$RESUME_MERGE_GATE_CMD" ]; then
+        log "resume: merge-gate скрипт не найден ($RESUME_MERGE_GATE_CMD) — пропускаю (не критично)"
+        return 0
+    fi
+    log "resume: запускаю merge-gate backfill-скан по всем open PR: $RESUME_MERGE_GATE_CMD"
+    if [ "$DRY_RUN" = "true" ]; then
+        echo "DRY-RUN: would run merge-gate ($RESUME_MERGE_GATE_CMD)"
+        return 0
+    fi
+    if bash "$RESUME_MERGE_GATE_CMD"; then
+        echo "agents_sleep: merge-gate backfill-скан завершён (resume)"
+    else
+        log "WARNING: merge-gate вернул ошибку (resume уже снят; merge-gate догонит следующим тиком cron)"
+    fi
+}
+
 # --- main ----------------------------------------------------------------------
 main() {
     # flock: параллельные тики не нужны
@@ -190,10 +227,12 @@ main() {
         log "OFF-PEAK $now_msk MSK — MAINTENANCE auto → снимаю (проснулись)"
         if [ "$DRY_RUN" = "true" ]; then
             echo "DRY-RUN: would remove MAINTENANCE (off-peak $now_msk MSK)"
+            run_merge_gate_after_resume
             return 0
         fi
         if apply_and_push remove; then
             echo "agents_sleep: MAINTENANCE снят (DeepSeek off-peak $now_msk MSK)"
+            run_merge_gate_after_resume
         else
             log "ERROR: failed to remove MAINTENANCE"; return 1
         fi
