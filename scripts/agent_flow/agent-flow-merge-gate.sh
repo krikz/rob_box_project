@@ -541,6 +541,18 @@ if [ -z "$issues_json" ] || [ "$issues_json" = "[]" ]; then
     if [ "${rate:-999}" = "0" ]; then
         log "GitHub rate-limit exhausted — skip tick"; exit 0
     fi
+    # Ретро 15.08 t_2c814334 (pr-orphan-no-labels): `gh issue list` / `gh pr
+    # list` идут через GraphQL. При graphql rate-limit=0 (а core при этом
+    # жив — квоты РАЗНЫЕ) они МОЛЧА возвращают [] → merge-gate «слепо»
+    # сканирует пустоту и не ставит метки (инцидент: #1282/#1284/#1286
+    # созданы 07:38-07:55Z, CI green, labels=[] 5.5ч). e2e-process уже
+    # проверяет min(core,graphql) (стр. 597-600) — merge-gate отставал.
+    # Здесь НЕ прерываем тик (core жив): REST-based pr-backfill-scan ниже
+    # разметит open PR без меток через core-квоту (gh api pulls).
+    rate_gql="$(gh api rate_limit --jq '.resources.graphql.remaining' 2>/dev/null || echo 999)"
+    if [ "${rate_gql:-999}" = "0" ]; then
+        log "⚠️ GraphQL rate-limit exhausted (core жив) — GraphQL-сканы (осн. цикл/clean-pr-sweep) слепы; REST pr-backfill-scan продолжит (ретро 15.08 t_2c814334)"
+    fi
     # Ретро-путь (12.08 t_68607832): hermes-issues может не быть вовсе, но
     # смерженные PR, ссылающиеся на немаркированные issues, всё равно нужно
     # обработать (сканы ниже). Раньше здесь был exit 0 → ретро-issues навсегда
@@ -2580,8 +2592,167 @@ while IFS=$'\t' read -r c_id c_status c_branch c_title; do
     fi
 done < <(printf '%s\n' "$_arch_cards")
 
+# ============================================================================
+# REST-based backfill: open PR без меток старше 30 мин (ретро 15.08 t_2c814334)
+# ----------------------------------------------------------------------------
+# ПРОБЛЕМА: clean-pr-sweep (выше) и pr-orphan-reconcile (ниже) используют
+# `gh pr list` — GraphQL. При graphql rate-limit=0 (а core жив — квоты РАЗНЫЕ)
+# они МОЛЧА возвращают [] → merge-gate НЕ размечает open PR без меток
+# (инцидент #1282/#1284/#1286: созданы 07:38-07:55Z в peak-окно, CI green,
+# labels=[] 5.5ч, невидимы для e2e и ревью Шифу). G3 (см. выше) теперь
+# ЛОГИРУЕТ graphql=0, но тик не прерывает.
+# РЕШЕНИЕ: этот скан ходит через REST (`gh api pulls` — core-квота, отдельная
+# от graphql). Для open PR (base=develop, не draft, mergeable, без process-
+# меток, старше BACKFILL_AGE_MINUTES=30 мин — свежие PR с ещё идущим CI не
+# трогаем):
+#   - process-only (все файлы .github/, scripts/agent_flow/, docs/) → needs-review;
+#   - functional + OPEN issue → needs-e2e на issue (+ PR);
+#   - functional + issue CLOSED/нет → needs-review (e2e невозможен — e2e-process
+#     ротирует ISSUES, не PR; Шифу решает, урок 13.08 t_42741511).
+# Идемпотентно: PR с process-меткой пропускаем; add-label — no-op.
+# ============================================================================
+BACKFILL_AGE_MINUTES="${BACKFILL_AGE_MINUTES:-30}"
+backfill_labeled=0
+log "pr-backfill-scan: REST open PRs without process labels, age>${BACKFILL_AGE_MINUTES}m (ретро 15.08 t_2c814334)"
+_backfill_prs_json="$(gh api "repos/${GH_REPO}/pulls?state=open&base=${DEVELOP_BRANCH}&per_page=100" 2>/dev/null || echo '[]')"
+if [ -z "$_backfill_prs_json" ] || [ "$_backfill_prs_json" = "null" ]; then
+    _backfill_prs_json='[]'
+fi
+while IFS=$'\t' read -r bf_pr bf_head bf_title bf_labels bf_issue bf_created; do
+    [ -z "$bf_pr" ] && continue
+    [ "$bf_issue" = "-" ] && bf_issue=""
+    [ "$bf_labels" = "-" ] && bf_labels=""
+    log "pr-backfill-scan: PR #${bf_pr} (${bf_head}) issue=${bf_issue:-none} created=${bf_created:-?}"
+    # Stale-branch guard (ретро 14.08 t_28afb585): head уже влита через
+    # ДРУГОЙ merged PR — переиспользование ветки, обрабатывает
+    # stale_branch_scan_all (блок-коммент), не мы.
+    _bf_prev_merged="$(gh pr list --repo "$GH_REPO" --state merged --head "$bf_head" \
+        --json number --jq '.[0].number // ""' 2>/dev/null || true)"
+    if [ -n "$_bf_prev_merged" ] && [ "$_bf_prev_merged" != "$bf_pr" ]; then
+        if is_proposal_branch "$bf_head"; then
+            log "pr-backfill-scan: PR #${bf_pr} head ${bf_head} — proposal-ветка архитектора (ретро 15.08 t_6024f414) — классифицирую normally"
+        else
+            log "pr-backfill-scan: PR #${bf_pr} head ${bf_head} уже влит через PR #${_bf_prev_merged} — skip (stale_branch_scan_all, ретро 14.08 t_28afb585)"
+            skipped=$((skipped+1)); continue
+        fi
+    fi
+    # CI-only / process-only? (все файлы в .github/, scripts/agent_flow/, docs/)
+    _bf_files="$(gh api "repos/${GH_REPO}/pulls/${bf_pr}/files?per_page=100" \
+        --jq '[.[].filename] | join(",")' 2>/dev/null || echo '')"
+    _bf_ci_only="$(printf '%s' "$_bf_files" | python3 -c '
+import sys
+files = [f for f in sys.stdin.read().split(",") if f]
+ok = bool(files) and all(
+    f.startswith(".github/") or f.startswith("scripts/agent_flow/") or f.startswith("docs/")
+    for f in files
+)
+print("1" if ok else "0")
+' 2>/dev/null || echo 0)"
+    _bf_kind="$(detect_pr_kind "$(printf '%s' "$bf_labels" | tr '[:upper:]' '[:lower:]')" "$bf_title")"
+    if [ "$_bf_ci_only" = "1" ]; then
+        _bf_kind="lint"
+        log "pr-backfill-scan: PR #${bf_pr} process-only (files: ${_bf_files}) → lint"
+    fi
+    log "pr-backfill-scan: PR #${bf_pr} kind=${_bf_kind} issue=${bf_issue:-?}"
+    if [ "$_bf_kind" = "lint" ]; then
+        log "pr-backfill-scan: PR #${bf_pr} lint/process-only → ${NEEDS_REVIEW_LABEL} (skip e2e)"
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would run: gh pr edit ${bf_pr} --repo ${GH_REPO} --add-label ${NEEDS_REVIEW_LABEL}"
+            backfill_labeled=$((backfill_labeled+1)); continue
+        fi
+        if gh pr edit "$bf_pr" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1; then
+            backfill_labeled=$((backfill_labeled+1))
+            log "pr-backfill-scan: PR #${bf_pr} → ${NEEDS_REVIEW_LABEL}"
+        else
+            log "pr-backfill-scan: WARNING add ${NEEDS_REVIEW_LABEL} to PR #${bf_pr} failed"
+        fi
+        continue
+    fi
+    # functional: нужен e2e. OPEN issue → needs-e2e; иначе (CLOSED/нет) e2e
+    # невозможен (e2e-process ротирует issues) → needs-review (Шифу решит).
+    _bf_state=""
+    if [ -n "$bf_issue" ]; then
+        _bf_state="$(gh issue view "$bf_issue" --repo "$GH_REPO" --json state --jq '.state' 2>/dev/null || echo '')"
+    fi
+    if [ "$_bf_state" = "OPEN" ]; then
+        # Взаимоисключение needs-review/needs-e2e (ретро 13.08 t_de63be1f, #942).
+        _bf_issue_labels="$(gh issue view "$bf_issue" --repo "$GH_REPO" --json labels \
+            --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')"
+        if has_label "$(printf '%s' "$_bf_issue_labels" | tr '[:upper:]' '[:lower:]')" "$NEEDS_REVIEW_LABEL"; then
+            log "pr-backfill-scan: PR #${bf_pr} functional, issue #${bf_issue} под ревью — skip (взаимоисключение)"
+            skipped=$((skipped+1)); continue
+        fi
+        log "pr-backfill-scan: PR #${bf_pr} functional, issue #${bf_issue} OPEN → ${NEEDS_E2E_LABEL}"
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would run: gh issue edit ${bf_issue} --repo ${GH_REPO} --add-label ${NEEDS_E2E_LABEL}"
+            backfill_labeled=$((backfill_labeled+1)); continue
+        fi
+        if gh issue edit "$bf_issue" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1; then
+            gh pr edit "$bf_pr" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+            backfill_labeled=$((backfill_labeled+1))
+            log "pr-backfill-scan: issue #${bf_issue} + PR #${bf_pr} → ${NEEDS_E2E_LABEL}"
+        else
+            log "pr-backfill-scan: WARNING add ${NEEDS_E2E_LABEL} to issue #${bf_issue} failed"
+        fi
+        continue
+    fi
+    log "pr-backfill-scan: PR #${bf_pr} functional, issue ${bf_issue:-?} state=${_bf_state:-?} — e2e невозможен → ${NEEDS_REVIEW_LABEL}"
+    if [ "$DRY_RUN" = "true" ]; then
+        log "DRY-RUN would run: gh pr edit ${bf_pr} --repo ${GH_REPO} --add-label ${NEEDS_REVIEW_LABEL}"
+        backfill_labeled=$((backfill_labeled+1)); continue
+    fi
+    if gh pr edit "$bf_pr" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1; then
+        backfill_labeled=$((backfill_labeled+1))
+        log "pr-backfill-scan: PR #${bf_pr} → ${NEEDS_REVIEW_LABEL} (e2e невозможен)"
+    else
+        log "pr-backfill-scan: WARNING add ${NEEDS_REVIEW_LABEL} to PR #${bf_pr} failed"
+    fi
+done < <(printf '%s' "$_backfill_prs_json" | python3 -c '
+import json, sys, re
+from datetime import datetime, timezone, timedelta
+data = json.load(sys.stdin)
+PROCESS = {"needs-e2e", "needs-review", "e2e-done", "e2e:rejected", "no-e2e-required"}
+age_min = int(sys.argv[1]) if len(sys.argv) > 1 else 30
+now = datetime.now(timezone.utc)
+for pr in data:
+    if pr.get("draft"):
+        continue
+    # REST shape: head.ref, mergeable (bool), mergeable_state (str).
+    # clean/behind — mergeable без конфликтов; dirty/unknown/blocked/unstable
+    # пропускаем (как CLEAN/MERGEABLE в GraphQL clean-pr-sweep).
+    if pr.get("mergeable") is not True:
+        continue
+    if pr.get("mergeable_state") not in ("clean", "behind"):
+        continue
+    labels = {l.get("name", "") for l in (pr.get("labels") or []) if isinstance(l, dict)}
+    if PROCESS & labels:
+        continue
+    # Возрастной порог: PR моложе 30 мин (CI может ещё идти) не размечаем.
+    created = pr.get("created_at") or ""
+    try:
+        cdt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        if now - cdt < timedelta(minutes=age_min):
+            continue
+    except Exception:
+        pass  # created_at недоступен — размечаем (fail-open)
+    pr_num = str(pr.get("number", ""))
+    head = (pr.get("head") or {}).get("ref", "") if isinstance(pr.get("head"), dict) else ""
+    title = pr.get("title") or ""
+    labels_csv = ",".join(sorted(labels))
+    m = re.search(r"#(\d+)", title)
+    issue_num = m.group(1) if m else ""
+    if not issue_num:
+        m2 = re.search(r"z-\{agent\}/(\d+)-", head)
+        issue_num = m2.group(1) if m2 else ""
+    if issue_num.startswith("t_") or len(issue_num) > 7:
+        issue_num = ""
+    issue_out = issue_num if issue_num else "-"
+    labels_out = labels_csv if labels_csv else "-"
+    print(f"{pr_num}\t{head}\t{title}\t{labels_out}\t{issue_out}\t{created}")
+' "$BACKFILL_AGE_MINUTES" 2>/dev/null)
+
 # --- summary -----------------------------------------------------------------
-log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled} orphan_labeled=${orphan_labeled} retro_archived=${retro_archived}"
+log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled} orphan_labeled=${orphan_labeled} backfill_labeled=${backfill_labeled} retro_archived=${retro_archived}"
 
 # Exit non-zero only on hard errors so cron can alert.
 if [ "$errored" -gt 0 ]; then exit 1; fi
