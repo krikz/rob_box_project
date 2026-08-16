@@ -8,8 +8,10 @@ log:
 storage:
   delete:
     enabled: true
-  cache:
-    blobdescriptor: inmemory
+  # 🔴 FIX 16.08 (3-й инцидент за 2 дня): inmemory кэш blobdescriptor
+  # теряет ссылки на blobs при рестарте/GC → manifests 404 при живых тегах,
+  # деплой падает «No such image». Убрали — registry читает blobs с диска.
+  # (см. decision #1316, инциденты 14.08/15.08/16.08)
   filesystem:
     rootdirectory: /var/lib/registry
 
