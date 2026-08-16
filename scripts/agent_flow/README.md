@@ -231,6 +231,35 @@ STALE_HOURS=72 bash <repo>/scripts/agent_flow/agent-flow-deploy-sweep.sh     # �
 
 Рекомендуемый cron: `every 6h`, no_agent=true.
 
+### `agents_sleep.sh` — авто-сон агентов по расписанию DeepSeek peak/off-peak (issue #1281)
+
+**Правило:** DeepSeek ввёл peak/off-peak биллинг (с 16.08.2026): PEAK = 01:00–04:00
+и 06:00–10:00 UTC = **04:00–07:00 и 09:00–13:00 MSK** (100% цены), остальное —
+OFF-PEAK (50%). В пиковые часы все LLM-агенты должны спать (экономия бюджета).
+
+Механизм — существующий MAINTENANCE-флаг в `origin/develop`: если файл есть,
+все agent-flow скрипты и промпты спят. Скрипт автоматически ставит/снимает его:
+
+- **PEAK** и MAINTENANCE нет → `touch MAINTENANCE` + commit + push (все спят)
+- **OFF-PEAK** и MAINTENANCE есть (с маркером `auto-sleep:`) → `git rm MAINTENANCE`
+  + commit + push (проснулись)
+- состояние уже правильное → ничего (идемпотентно, пустых коммитов нет)
+
+**Защита ручного maintenance:** скрипт снимает ТОЛЬКО MAINTENANCE, созданный им
+самим (маркер `auto-sleep:` в содержимом). MAINTENANCE, поставленный человеком
+для live-отладки, не трогается (правило «ничего руками не делай, всё по процессу»).
+
+Расписание — SOT в `agents_sleep_schedule.conf` (правится через PR).
+
+```bash
+bash <repo>/scripts/agent_flow/agents_sleep.sh              # тик (cron no_agent, 5–15 мин)
+NOW_MSK=06:30 bash <repo>/scripts/agent_flow/agents_sleep.sh  # принудительное время (тест/демо)
+DRY_RUN=true bash <repo>/scripts/agent_flow/agents_sleep.sh   # показать решение без git-ops
+```
+
+Рекомендуемый cron: `every 5m`, no_agent=true. Тесты:
+`bash scripts/agent_flow/tests/test_agents_sleep.sh`.
+
 ### `agent-flow-unlabeled-sweep.sh` — авто-sweep stale unlabeled issues (ретро 12.08 t_061d466e)
 
 **Правило:** open issue БЕЗ process-меток (hermes/agent:*/needs-e2e/e2e-done/
