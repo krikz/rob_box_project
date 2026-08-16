@@ -26,7 +26,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 from rob_box_harness.core.confirmation_policy import ConfirmationKind
 from rob_box_harness.core.dialogue_state_machine import (
@@ -182,6 +182,17 @@ class DialogResult:
     # TRACK (сыграй баха — at most one short accept phrase, music
     # lives until the user stops it).
     speak_text_count: int = 0
+    # Issue #1343 (silence after accept): how many ``speak_text`` tool
+    # calls carried a REAL (non-empty) ``text`` argument this turn.
+    # ``tools_called`` is populated from the LLM's requested tool-call
+    # names BEFORE execution, so a phantom ``speak_text({})`` /
+    # ``speak_text({"text": ""})`` from deepseek lands in
+    # ``tools_called`` but never voices anything (validation rejects
+    # empty text before the MCP request is sent). The issue-988
+    # anti-duplicate guard in dialogue_node must only skip auto-TTS
+    # when speak_text was REALLY called with content — otherwise the
+    # user hears the accept sound and then silence.
+    speak_text_real_count: int = 0
     error: BaseException | None = None
     # ── LLM diagnostics (live 16:58) ────────────────────────────────────
     # When the LLM returns empty content (MiniMax M3 Interleaved Thinking
@@ -490,12 +501,13 @@ class DialogCore:
                             metadata=user_metadata,
                         ),
                     )
-                spoken, tools_called, finish_reason, raw_response, speak_text_count = (
+                spoken, tools_called, finish_reason, raw_response, speak_text_count, speak_text_real_count = (
                     await self._run_with_tools(messages)
                 )
                 result.spoken_text = spoken
                 result.tools_called = list(tools_called)
                 result.speak_text_count = speak_text_count
+                result.speak_text_real_count = speak_text_real_count
                 result.finish_reason = finish_reason
                 result.raw_response = raw_response
                 if not is_dj_auto:
@@ -577,9 +589,10 @@ class DialogCore:
     async def _run_with_tools(
         self,
         messages: list[LLMMessage],
-    ) -> tuple[str, list[str], str | None, Any, int]:
+    ) -> tuple[str, list[str], str | None, Any, int, int]:
         """Run the LLM tool loop and return ``(spoken_text, tools_called,
-        finish_reason, raw_response, speak_text_count)``.
+        finish_reason, raw_response, speak_text_count,
+        speak_text_real_count)``.
 
         ``messages`` is the live message list — tool-result messages
         are appended in-place so the LLM sees a coherent conversation
@@ -610,6 +623,7 @@ class DialogCore:
         tools_called: list[str] = []
         seen: set[str] = set()
         speak_text_count: int = 0
+        speak_text_real_count: int = 0
         # Issue #1253 — any tool that returned ``is_error=True`` this turn.
         # When a tool failed and the LLM answers with ONLY words (no retry
         # tool-call, no speak_text) that is babble, not an answer — the
@@ -666,9 +680,25 @@ class DialogCore:
             # speak_text occurrences (issue #992 — the raw count lets
             # dialogue_node tell BACKING sing/rap turns from TRACK
             # composition turns; unique names alone cannot).
+            #
+            # Issue #1343 — count REAL speak_text calls separately:
+            # deepseek sometimes emits ``speak_text({})`` /
+            # ``speak_text({"text": ""})`` with empty text. The name
+            # still lands in ``tools_called`` (it was requested), but
+            # the call is rejected by validation and NOTHING is voiced.
+            # ``speak_text_real_count`` only counts calls that carry a
+            # non-empty ``text`` argument — i.e. calls that would
+            # actually reach the MCP tool and play audio. dialogue_node
+            # uses this to skip auto-TTS only when speech REALLY
+            # happened (issue #988 anti-duplicate), not when the LLM
+            # merely *named* speak_text.
             for call in response.tool_calls:
                 if call.name == "speak_text":
                     speak_text_count += 1
+                    args = call.arguments or {}
+                    text = args.get("text", "") if isinstance(args, Mapping) else ""
+                    if isinstance(text, str) and text.strip():
+                        speak_text_real_count += 1
                 if call.name not in seen:
                     seen.add(call.name)
                     tools_called.append(call.name)
@@ -779,6 +809,7 @@ class DialogCore:
                 response.finish_reason,
                 response.raw,
                 speak_text_count,
+                speak_text_real_count,
             )
 
         return (
@@ -787,6 +818,7 @@ class DialogCore:
             response.finish_reason,
             response.raw,
             speak_text_count,
+            speak_text_real_count,
         )
 
     async def _stream_response(

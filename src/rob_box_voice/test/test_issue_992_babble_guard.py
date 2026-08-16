@@ -364,15 +364,21 @@ class TestBabbleRetryE2E(unittest.TestCase):
             result = DialogResult(
                 spoken_text="Зачитаю рэп про космос!",
                 tools_called=("speak_text",),
+                # Issue #1343 — a REAL speak_text call (non-empty text).
+                # Phantom ``speak_text({})`` (real_count=0) must NOT
+                # suppress the babble retry — see the parallel test
+                # below.
+                speak_text_real_count=1,
             )
             decision = node._check_babble_and_retry(
                 spoken=result.spoken_text,
                 user_input="роббокс зачитай рэп",
                 tools_called=result.tools_called,
+                speak_text_real=result.speak_text_real_count,
             )
             self.assertFalse(
                 decision,
-                "babble retry must NOT fire when speak_text was already called",
+                "babble retry must NOT fire when speak_text was REALLY called",
             )
         finally:
             node.close()
