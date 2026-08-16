@@ -313,6 +313,7 @@ class _TestableDialogueNode(DialogueNode):
         raw_user_command: str | None = None,
         speaker_tag: str | None = None,
         speaker_duration_s: float = 0.0,
+        from_tg: bool = False,
     ) -> None:
         """Schedule the turn on the test loop directly.
 
@@ -349,6 +350,7 @@ class _TestableDialogueNode(DialogueNode):
                 raw_user_command=raw_user_command,
                 speaker_tag=speaker_tag,
                 speaker_duration_s=speaker_duration_s,
+                from_tg=from_tg,
             ),
         )
 

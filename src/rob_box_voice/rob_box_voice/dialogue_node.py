@@ -2633,6 +2633,7 @@ class DialogueNode(Node):
         spoken: str,
         user_input: Optional[str],
         tools_called: tuple,
+        speak_text_real: int = 0,
     ) -> bool:
         """Issue #992 Bug D — single-shot babble retry dispatcher.
 
@@ -2643,8 +2644,11 @@ class DialogueNode(Node):
         detector passed and the caller should proceed normally.
 
         Retry rules — all must hold for a retry to fire:
-        1. ``speak_text`` was NOT called this cycle (already handled
-           by the anti-duplicate path otherwise).
+        1. ``speak_text`` was NOT really called this cycle — i.e.
+           ``speak_text_real`` is 0. A real call is already handled by
+           the issue-988 anti-duplicate path; a *phantom* call
+           (``speak_text({})`` with empty text, issue #1343) did NOT
+           voice anything and must not suppress the babble retry.
         2. ``spoken`` is non-empty and starts with a banned opener
            (see :data:`BABBLE_BANNED_OPENERS`).
         3. The user request looks like a performance command OR the
@@ -2656,7 +2660,7 @@ class DialogueNode(Node):
         4. We have NOT already used our one-shot babble retry for
            this turn (avoids an infinite LLM ping-pong).
         """
-        if "speak_text" in (tools_called or ()):
+        if speak_text_real > 0:
             return False
         if not spoken:
             return False
@@ -3372,7 +3376,18 @@ class DialogueNode(Node):
         # final text after the LAST speak_text is expected to be "done"
         # (or empty), so we skip the TTS publish entirely and only log
         # the LLM output for debugging.
-        if "speak_text" in tools_called:
+        #
+        # Issue #1343 — the guard must test the REAL call, not the
+        # name in ``tools_called``. deepseek sometimes emits
+        # ``speak_text({})`` / ``speak_text({"text": ""})``: the name
+        # lands in ``tools_called`` but the call is rejected by
+        # validation and NOTHING is voiced (no ``/voice/tts/request``).
+        # Skipping auto-TTS in that case leaves the user with the
+        # accept sound and then silence. DialogCore now tracks
+        # ``speak_text_real_count`` (calls with non-empty ``text``) and
+        # we skip only when speech REALLY happened.
+        speak_text_real = int(getattr(result, "speak_text_real_count", 0) or 0)
+        if speak_text_real > 0:
             if self._verbose_llm:
                 self.get_logger().info(
                     f"🔇 [issue 988] speak_text called in cycle — "
@@ -3396,6 +3411,7 @@ class DialogueNode(Node):
             # смотрим по оригинальной команде, а не по CRITICAL-промпту.
             user_input=raw_user_command or user_input,
             tools_called=tools_called,
+            speak_text_real=speak_text_real,
         ):
             return
         # 💡 Diagnostic: log the actual state before deciding what to do.

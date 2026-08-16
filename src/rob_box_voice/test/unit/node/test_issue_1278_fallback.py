@@ -64,6 +64,10 @@ def _make_result(error=None, spoken: str = "", tools=None):
         error=error,
         spoken_text=spoken,
         tools_called=tools or [],
+        # Issue #1343 — реальный DialogResult имеет это поле (default 0).
+        # Без явной установки MagicMock авто-создаёт truthy-атрибут и
+        # issue-988 guard считает, что speak_text реально вызывался.
+        speak_text_real_count=0,
         finish_reason="stop",
         raw_response=None,
     )

@@ -1495,6 +1495,93 @@ def test_process_input_tool_loop_keeps_user_turn_once_on_error(
 
 
 # ---------------------------------------------------------------------------
+# Issue #1343 — speak_text_real_count (real vs phantom speak_text calls)
+# ---------------------------------------------------------------------------
+#
+# deepseek sometimes emits ``speak_text({})`` / ``speak_text({"text": ""})``
+# with EMPTY text. The tool name lands in ``tools_called``, but validation
+# rejects the call and NOTHING is voiced. dialogue_node's issue-988
+# anti-duplicate guard must skip auto-TTS only when speech REALLY happened
+# (``speak_text_real_count > 0``); a phantom call must NOT silence the final
+# text. These tests verify DialogCore computes the real count correctly.
+
+
+def test_speak_text_real_count_counts_nonempty_text_calls(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Non-empty speak_text → real_count == 1; phantom variants → not counted."""
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="speak_text", arguments={"text": "Жил да был енот"}),
+                ToolCall(id="c2", name="speak_text", arguments={"text": ""}),
+                ToolCall(id="c3", name="speak_text", arguments={}),
+            ),
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+    llm.responses = scripted
+
+    async def speak_handler(args: dict[str, object]) -> str:
+        return "TTS запрос отправлен: ok"
+
+    tools_provider._handler_map = {"speak_text": speak_handler}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    # NOTE: no wake word in the input — «робот» would classify as
+    # WAKE_WORD and skip the LLM gate (see process_input docstring).
+    result = asyncio.run(core_obj.process_input("спой песенку", history=[]))
+
+    # All three names were requested → tools_called has the name (deduped).
+    assert result.tools_called == ["speak_text"]
+    # Only the FIRST call carried a non-empty text → real count is 1.
+    assert result.speak_text_count == 3
+    assert result.speak_text_real_count == 1
+
+
+def test_speak_text_real_count_zero_for_all_phantom_calls(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """All speak_text calls empty → real_count == 0 (silence-after-accept bug)."""
+    scripted = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="speak_text", arguments={"text": ""}),
+                ToolCall(id="c2", name="speak_text", arguments={}),
+            ),
+        ),
+        LLMResponse(content="Это ошибка — пустой вызов. Выполню правильно.", tool_calls=()),
+    ]
+    llm.responses = scripted
+
+    async def speak_handler(args: dict[str, object]) -> str:
+        return "TTS запрос отправлен: ok"
+
+    tools_provider._handler_map = {"speak_text": speak_handler}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("это иван а теперь пожалуйста мне на денчика", history=[]))
+
+    assert result.tools_called == ["speak_text"]
+    assert result.speak_text_count == 2
+    assert result.speak_text_real_count == 0
+    # The final spoken text is still the real answer for dialogue_node to voice.
+    assert result.spoken_text == "Это ошибка — пустой вызов. Выполню правильно."
+
+
+# ---------------------------------------------------------------------------
 # W7a — batch re-ordering (_order_tool_calls)
 # ---------------------------------------------------------------------------
 
