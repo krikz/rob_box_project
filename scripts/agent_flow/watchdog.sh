@@ -837,7 +837,7 @@ _sot_sync() {
     [ -d "$SOT_SYNC_REPO/.git" ] || { log "SOT-sync: repo $SOT_SYNC_REPO missing — skip"; return 0; }
 
     local remote_sha last_sha f sot_md5 loc_md5 drift=0
-    remote_sha="$(git -C "$SOT_SYNC_REPO" ls-remote origin refs/heads/develop 2>/dev/null | awk '{print $1}')"
+    remote_sha="$(git -C "$SOT_SYNC_REPO" ls-remote origin refs/heads/develop 2>/dev/null | awk '{print $1}')" || { log "SOT-sync: ls-remote failed (offline?) — skip"; return 0; }
     [ -n "$remote_sha" ] || { log "SOT-sync: ls-remote failed (network/auth?) — skip"; return 0; }
     last_sha="$(cat "$SOT_SYNC_STATE" 2>/dev/null || true)"
     [ "$remote_sha" = "$last_sha" ] && return 0   # develop не двигался — ничего не делаем
