@@ -377,7 +377,7 @@ jobs:
 
       - name: Upload acceptance evidence (issue #1077)
         if: ${{ always() && inputs.acceptance_feature == 'speaker_profile' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-acceptance-${{ github.run_id }}
           path: /tmp/e2e_acceptance_${{ github.run_id }}.txt
