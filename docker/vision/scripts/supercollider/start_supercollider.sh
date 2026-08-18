@@ -14,6 +14,13 @@
 #   -S 16000   Частота дискретизации (ReSpeaker UAC1.0 поддерживает только 16000 Hz)
 #   -H jack    JACK backend
 #   -a 1024    Число аудио-шин
+#   -l 32      maxLogins = 32 (issue #1363 — sclang по умолчанию ожидает ≤32
+#              клиента; дефолт сервера 64 → client 32+ получают nodeID
+#              0x80000001+ который как signed int32 = отрицательный
+#              → "FAILURE IN SERVER /g_new negative node IDs are reserved"
+#              в логах. Свист из динамика — побочный эффект: клиентский
+#              Group 1 не создаётся, renardo Player-ы шлют /s_new в пустоту
+#              и часть нод "зависает" активной → постоянный тон через JACK.)
 
 set -euo pipefail
 
@@ -67,7 +74,8 @@ scsynth \
     -z 1024 \
     -S 16000 \
     -H jack \
-    -a 1024 &
+    -a 1024 \
+    -l 32 &
 
 SCSYNTH_PID=$!
 
