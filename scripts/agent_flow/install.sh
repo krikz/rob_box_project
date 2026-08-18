@@ -221,35 +221,35 @@ done
 # При `git pull`/`pip install -U hermes-agent` патчи теряются, и регресс
 # t_1ab37fa8 возвращается (карточки со скилами не из профиля падают).
 #
-# Решение: дифф хранится в репо как scripts/agent_flow/vendor/
-# hermes-agent-skill-validation.patch; этот скрипт применяет его идемпотентно
+# Решение: диффы хранятся в репо как scripts/agent_flow/vendor/
+# hermes-agent-*.patch; этот скрипт применяет их идемпотентно
 # (git apply --reverse --check => уже применён; git apply --check => можно
 # применить). Вызывать ПОСЛЕ обновления hermes-agent.
 HERMES_AGENT_DIR="${HERMES_AGENT_DIR:-/home/builder/.hermes/hermes-agent}"
-HERMES_AGENT_PATCH="$SCRIPT_DIR/vendor/hermes-agent-skill-validation.patch"
 
 apply_hermes_agent_patch() {
+    local patch="$1"
     if ! git -C "$HERMES_AGENT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "  SKIP hermes-agent patch ($HERMES_AGENT_DIR not a git checkout)"
         return 0
     fi
-    if [ ! -f "$HERMES_AGENT_PATCH" ]; then
-        echo "  SKIP hermes-agent patch ($HERMES_AGENT_PATCH not found)"
+    if [ ! -f "$patch" ]; then
+        echo "  SKIP hermes-agent patch ($patch not found)"
         return 0
     fi
-    echo "==> hermes-agent patch: $HERMES_AGENT_PATCH"
+    echo "==> hermes-agent patch: $patch"
     # Уже применён?
-    if ( cd "$HERMES_AGENT_DIR" && git apply --reverse --check "$HERMES_AGENT_PATCH" >/dev/null 2>&1 ); then
+    if ( cd "$HERMES_AGENT_DIR" && git apply --reverse --check "$patch" >/dev/null 2>&1 ); then
         echo "  OK   patch already applied (reverse-check clean)"
         return 0
     fi
     # Применится чисто?
-    if ( cd "$HERMES_AGENT_DIR" && git apply --check "$HERMES_AGENT_PATCH" >/dev/null 2>&1 ); then
+    if ( cd "$HERMES_AGENT_DIR" && git apply --check "$patch" >/dev/null 2>&1 ); then
         if $DRY_RUN; then
             echo "  [DRY] would apply patch in $HERMES_AGENT_DIR"
             return 0
         fi
-        if ( cd "$HERMES_AGENT_DIR" && git apply "$HERMES_AGENT_PATCH" ); then
+        if ( cd "$HERMES_AGENT_DIR" && git apply "$patch" ); then
             echo "  APPLIED hermes-agent patch (re-run install.sh after every hermes-agent update)"
             return 0
         fi
@@ -258,6 +258,48 @@ apply_hermes_agent_patch() {
     fi
     echo "  ERROR patch does not apply cleanly to $HERMES_AGENT_DIR — upstream moved; regenerate vendor patch from current diff (ретро t_f00676f8)" >&2
     return 1
+}
+
+# ---------------------------------------------------------------------------
+# MAINTENANCE/peak probe для kanban auto-decomposer (ретро t_1d467636).
+#
+# Проблема: auto-decomposer создавал карточки даже внутри MAINTENANCE-окна
+# DeepSeek peak (16.08 09:10Z = 12:10 MSK), потому что не проверял флаг,
+# который знают merge-gate G1 и agents_sleep.sh. Фикс (vendor-патч
+# hermes-agent-auto-decompose-maintenance.patch) добавляет в decompose_task
+# проверку `kanban.maintenance_probe_command`: exit 0 = MAINTENANCE активна,
+# декомпозиция откладывается («defer decompose (MAINTENANCE)»).
+#
+# Здесь мы прописываем эту команду в config.yaml (идемпотентно, один раз):
+# probe = наличие файла MAINTENANCE на origin/develop в agents-sleep-repo —
+# тот же источник истины, что у agents_sleep.sh.
+ensure_kanban_maintenance_probe() {
+    local cfg="${HERMES_CONFIG_YAML:-/home/builder/.hermes/config.yaml}"
+    local repo="${AGENTS_SLEEP_REPO:-$HERMES_HOME/profiles/devops/agents-sleep-repo}"
+    local probe_cmd="git -C $repo ls-tree origin/develop --name-only 2>/dev/null | grep -qx MAINTENANCE"
+    if [ ! -f "$cfg" ]; then
+        echo "  SKIP maintenance probe ($cfg not found)"
+        return 0
+    fi
+    if grep -q "maintenance_probe_command" "$cfg" 2>/dev/null; then
+        echo "  OK   maintenance_probe_command already present in $cfg"
+        return 0
+    fi
+    if $DRY_RUN; then
+        echo "  [DRY] would add kanban.maintenance_probe_command to $cfg"
+        return 0
+    fi
+    # Тонко: добавляем секцию kanban: с maintenance_probe_command в конец
+    # config.yaml, если kanban-секции ещё нет. Если секция есть — не
+    # трогаем (чтобы не сломать пользовательские kanban-настройки).
+    if grep -q "^kanban:" "$cfg" 2>/dev/null; then
+        echo "  WARN kanban: section exists in $cfg but no maintenance_probe_command — add manually:"
+        echo "       kanban:"
+        echo "         maintenance_probe_command: \"$probe_cmd\""
+        return 0
+    fi
+    printf '\nkanban:\n  maintenance_probe_command: "%s"\n' "$probe_cmd" >> "$cfg"
+    echo "  ADDED kanban.maintenance_probe_command to $cfg (retro t_1d467636)"
 }
 
 echo
@@ -399,8 +441,14 @@ else
 fi
 
 echo
-echo "==> hermes-agent vendor patch"
-apply_hermes_agent_patch
+echo "==> hermes-agent vendor patches"
+for _patch in "$SCRIPT_DIR"/vendor/hermes-agent-*.patch; do
+    [ -f "$_patch" ] || continue
+    apply_hermes_agent_patch "$_patch"
+done
+echo
+echo "==> kanban MAINTENANCE probe config (retro t_1d467636)"
+ensure_kanban_maintenance_probe
 
 
 echo
