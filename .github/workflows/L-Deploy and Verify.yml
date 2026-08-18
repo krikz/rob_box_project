@@ -78,8 +78,17 @@ jobs:
               echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
               echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
+            # Ретро 18.08 (t_544e4aa5 / issue #1379): environment=local —
+            # алиас для staging (IMAGE_TAG=dev). Тег "local" в registry
+            # никогда не создаётся (L-Build Vision/Main Pi Services используют
+            # только dev/test/latest), голый IMAGE_TAG=local → compose pull →
+            # "No such image: voice-resources-humble-local". Сохраняем UI-опцию
+            # для обратной совместимости (любой скрипт, выбравший "local", не
+            # сломается), но молча алиасим и логируем warning, чтобы оператор
+            # заметил и перешёл на staging/test явно.
             local)
-              echo "IMAGE_TAG=local" >> $GITHUB_ENV
+              echo "⚠️  WARNING: environment=local — алиас для staging (IMAGE_TAG=dev). Тег 'local' в registry не публикуется (L-Build Vision/Main Pi Services используют dev/test/latest). Для develop/main/z-{e2e}-веток используй environment=staging/test явно." >&2
+              echo "IMAGE_TAG=dev" >> $GITHUB_ENV
               echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
               echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
