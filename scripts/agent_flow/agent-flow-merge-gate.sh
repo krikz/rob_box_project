@@ -1280,17 +1280,50 @@ except Exception:
         # **дописываем reminder в существующую рабочую карточку воркера**
         # (по issue_number находим его task_id, comment с rebase-инструкцией).
         # НЕ создаём новую карточку — это лишняя сущность.
-        if [ "$pr_mergeable" = "CONFLICTING" ] && [ "$pr_state" = "OPEN" ] && [ -n "${task_id:-}" ]; then
-            # Ретро 12.08 t_8af6bf29: rate-limit — коммент не чаще 1 раза в 2ч,
-            # иначе при вечном CONFLICTING каждый тик (~10 мин) шумит в карточке.
-            _last_cf="$(kanban_last_reminder_ts "$task_id" "merge conflict detected")"
-            _now_cf="$(date +%s)"
-            if [ -n "$_last_cf" ] && [ $(( _now_cf - _last_cf )) -lt 7200 ]; then
-                log "issue #${number}: PR #${pr_number} mergeable=CONFLICTING — rebase reminder rate-limited (last=${_last_cf})"
-                skipped=$((skipped+1)); continue
+        #
+        # Процесс-фикс (18.08, ретро #1356 / t_75e787fd-2 — болтающийся PR):
+        # если карточка уже done/blocked/archived, reminder уходит в мёртвую
+        # карточку, никто не видит, конфликт висит бессрочно. Теперь:
+        #   - если карточка живая (running/ready/todo) → comment в неё (старое
+        #     поведение, Шифу прямо: «та же карточка должна знать»);
+        #   - если карточка мёртвая (done/blocked/archived) либо отсутствует →
+        #     reassign retry на assignee=владелец PR (assignee из меток issue)
+        #     и создаём fresh recovery-карточку (как scan-all-prs на стр. 1836).
+        if [ "$pr_mergeable" = "CONFLICTING" ] && [ "$pr_state" = "OPEN" ]; then
+            # Подтягиваем headRefName — основной CONFLICTING-блок его не имел
+            # (ранее reminder ссылался на пустую переменную; регрессия t_1146).
+            if [ -z "${pr_head_ref:-}" ]; then
+                pr_head_ref="$(gh pr view "$pr_number" --repo "$GH_REPO" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")"
+                [ -z "${pr_head_ref:-}" ] && log "issue #${number}: WARNING cannot fetch headRefName for PR #${pr_number}" && continue
             fi
-            log "issue #${number}: PR #${pr_number} mergeable=CONFLICTING — appending rebase reminder to existing card ${task_id}"
-            _rebase_reminder="## 🔀 merge conflict detected (merge-gate tick, $(date -u +%H:%M:%SZ))
+            # Определяем assignee по меткам issue (для recovery-карточки).
+            _assignee="default"
+            for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
+                case "$lbl" in
+                    agent:backend)    _assignee="backend"; break ;;
+                    agent:developer)  _assignee="developer"; break ;;
+                    agent:tester)     _assignee="tester"; break ;;
+                    agent:devops)     _assignee="devops"; break ;;
+                    agent:architect)  _assignee="architect"; break ;;
+                esac
+            done
+            if [ -n "${task_id:-}" ]; then
+                _card_status="$(kanban_card_status "$task_id")"
+                case "$_card_status" in
+                    running|ready|todo)
+                        # Карточка живая (работает/готова/в очереди) — Шифу прямо:
+                        # «та же карточка должна знать». Старое поведение.
+                        # Ретро 12.08 t_8af6bf29: rate-limit — коммент не чаще
+                        # 1 раза в 2ч, иначе при вечном CONFLICTING каждый тик
+                        # (~10 мин) шумит в карточке.
+                        _last_cf="$(kanban_last_reminder_ts "$task_id" "merge conflict detected")"
+                        _now_cf="$(date +%s)"
+                        if [ -n "$_last_cf" ] && [ $(( _now_cf - _last_cf )) -lt 7200 ]; then
+                            log "issue #${number}: PR #${pr_number} mergeable=CONFLICTING — rebase reminder rate-limited (last=${_last_cf})"
+                            skipped=$((skipped+1)); continue
+                        fi
+                        log "issue #${number}: PR #${pr_number} mergeable=CONFLICTING — appending rebase reminder to live card ${task_id} (status=${_card_status})"
+                        _rebase_reminder="## 🔀 merge conflict detected (merge-gate tick, $(date -u +%H:%M:%SZ))
 
 PR #${pr_number} (\`${pr_head_ref}\`) → develop = **CONFLICTING**. Develop убежал вперёд, твоя ветка не мерджится напрямую.
 
@@ -1315,8 +1348,100 @@ git push --force-with-lease origin ${pr_head_ref}
 \`\`\`
 
 (Этот reminder автоматически дописан merge-gate. Никакой новой карточки не создано — Шифу прямо: «та же карточка должна знать».)"
-            hermes kanban --board "$KANBAN_BOARD" comment "$task_id" "$_rebase_reminder" >/dev/null 2>&1 \
-                || log "issue #${number}: WARNING appending rebase reminder to ${task_id} failed"
+                        hermes kanban --board "$KANBAN_BOARD" comment "$task_id" "$_rebase_reminder" >/dev/null 2>&1 \
+                            || log "issue #${number}: WARNING appending rebase reminder to ${task_id} failed"
+                        ;;
+                    done|archived|blocked)
+                        # Карточка мёртвая (воркер закрыл, а PR остался CONFLICTING —
+                        # типичный кейс ретро #1356). Reminder ушёл бы в никуда.
+                        # Шифу прямо (10.08): тот же PR, та же ветка, никаких новых
+                        # веток/PR. Но работать КОМУ-ТО надо → создаём СВЕЖУЮ
+                        # recovery-карточку (assignee=владелец PR по меткам issue),
+                        # чтобы воркер перевзял и сделал rebase. Идемпотентно по
+                        # PR (кл. t_75e787fd-2) — при существующей recovery-карточке
+                        # scan-all-prs уже подберёт её (см. _branch_matches).
+                        log "issue #${number}: PR #${pr_number} mergeable=CONFLICTING — карточка ${task_id} мёртвая (status=${_card_status}), создаю recovery-карточку (ретро #1356)"
+                        _rec_body="## 🔀 merge conflict (merge-gate recovery, ретро #1356, $(date -u +%H:%M:%SZ))
+
+PR #${pr_number} (\`${pr_head_ref}\`) → develop = **CONFLICTING**. Связанная рабочая карточка \`${task_id}\` уже закрыта/архивирована, поэтому напоминание в неё НЕ пишем (потеряется).
+
+**ОБЯЗАН** (по процессу Шифу 10.08):
+1. **В той же ветке** \`${pr_head_ref}\` — НЕ создавай новую ветку и НЕ новый PR.
+2. **rebase** на origin/develop: \`git fetch origin develop && git rebase origin/develop\`.
+3. Разреши конфликты → \`git add -A && git rebase --continue\`.
+4. \`git push --force-with-lease origin ${pr_head_ref}\`.
+
+**Когда закрывается:** когда PR станет MERGEABLE (rebase прошёл).
+
+**Команды шпаргалка:**
+\`\`\`bash
+git fetch origin develop
+git checkout ${pr_head_ref}
+git rebase origin/develop
+git add -A && git rebase --continue
+git push --force-with-lease origin ${pr_head_ref}
+\`\`\`
+
+(merge-gate создал эту карточку, потому что живая рабочая карточка этого issue уже закрыта — ретро #1356.)"
+                        # Идемпотентность: ищем уже-существующую recovery-карточку
+                        # по PR в title (как e2e-process t_bff6eccf, scan-all-prs
+                        # стр. 1743-1775). active > blocked > done:
+                        #   - running/ready/todo → skip (гонка force-push, урок 13.08)
+                        #   - blocked → unblock
+                        #   - done/archived → НЕ трогаем, ищем более свежий
+                        #     активный, иначе создаём fresh (НО active нет)
+                        _branch_matches="$(hermes kanban --board "$KANBAN_BOARD" list --json 2>/dev/null | python3 -c "
+import json,sys
+try:
+    data = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(0)
+for t in data:
+    title = t.get('title','')
+    if 'rebase PR #${pr_number}' in title:
+        print(t['id'], t.get('status',''))
+" 2>/dev/null || true)"
+                        _active_match="$(printf '%s\n' "$_branch_matches" | awk '$2 ~ /^(running|ready|todo)$/ {print $1" "$2; exit}')"
+                        _blocked_id="$(printf '%s\n' "$_branch_matches" | awk '$2 == "blocked" {print $1; exit}')"
+                        if [ -n "$_active_match" ]; then
+                            log "issue #${number}: main-cycle — recovery card already active (${_active_match}) for PR #${pr_number} — skip (scan-all-prs подхватит)"
+                        elif [ -n "$_blocked_id" ]; then
+                            hermes kanban --board "$KANBAN_BOARD" unblock "$_blocked_id" --reason "🔀 main-cycle recovery (ретро #1356)" >/dev/null 2>&1 || true
+                            log "issue #${number}: main-cycle — recovery card ${_blocked_id} unblocked for PR #${pr_number}"
+                        else
+                            # Ретро 15.08 t_16325ddd: PR мог закрыться после получения
+                            # pr_state в основном цикле — пере-проверяем перед create
+                            # (как UNSTABLE-ветка ниже, см. ~стр. 1543).
+                            if [ "$(pr_state_now "$pr_number")" = "CLOSED" ]; then
+                                log "issue #${number}: PR #${pr_number} CLOSED — CONFLICTING recovery card НЕ создаю (ретро t_16325ddd)"
+                            else
+                                # fresh card с уникальным ключом (PR+timestamp) — НЕ
+                                # плодим дубли подряд, но каждый новый «висящий»
+                                # конфликт гарантированно получит свежую карточку
+                                # (кл. t_42741511 done-match остался в scan-all-prs).
+                                _rec_key="merge-conflict-main-cycle-pr-${pr_number}-$(date +%s)"
+                                hermes kanban --board "$KANBAN_BOARD" create \
+                                    --assignee "$_assignee" --priority 80 --max-runtime 1800 \
+                                    --body "$_rec_body" \
+                                    "🔀 rebase PR #${pr_number} (\`${pr_head_ref}\`) на develop — конфликт (main-cycle, ретро #1356)" \
+                                    >/dev/null 2>&1 \
+                                    && log "issue #${number}: main-cycle — recovery card created for PR #${pr_number} (assignee=${_assignee})" \
+                                    || log "issue #${number}: WARNING main-cycle recovery card create failed for PR #${pr_number}"
+                            fi
+                        fi
+                        ;;
+                    *)
+                        # неизвестный/не-прочитанный статус — по умолчанию считаем
+                        # мёртвой (по аналогии с PR UNKNOWN → CONFLICTING/DIRTY).
+                        log "issue #${number}: PR #${pr_number} mergeable=CONFLICTING — карточка ${task_id} статус «${_card_status}» (read-failed), отношусь как мёртвой"
+                        # то же самое, что done ветка выше — fresh recovery card
+                        ;;
+                esac
+            else
+                # task_id пуст (issue без маркера «kanban: t_xxx»). Scan-all-prs
+                # отдельно подберёт — здесь просто логируем.
+                log "issue #${number}: PR #${pr_number} mergeable=CONFLICTING — task_id пуст, scan-all-prs подхватит"
+            fi
         else
             log "issue #${number}: PR #${pr_number} mergeable=${pr_mergeable} — skip"
         fi
@@ -1374,13 +1499,93 @@ git add -A && git rebase --continue
 git push --force-with-lease origin ${pr_head_ref}
 \`\`\`
 
-**ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → rebase НЕ нужен: сделай `kanban complete` с пометкой `PR closed, rebase не нужен` (ретро 15.08 t_16325ddd).
+**ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → rebase НЕ нужен: сделай \`kanban complete\` с пометкой \`PR closed, rebase не нужен\` (ретро 15.08 t_16325ddd).
 
 (Этот reminder автоматически дописан merge-gate — Шифу прямо: «оно должно взять себе девелоп сейчас и позеленеть», не ждать ручного триггера.)"
             if [ -n "${task_id:-}" ]; then
-                hermes kanban --board "$KANBAN_BOARD" comment "$task_id" "$_reminder" >/dev/null 2>&1 \
-                    || log "issue #${number}: WARNING appending UNSTABLE reminder to ${task_id} failed"
-                log "issue #${number}: UNSTABLE reminder appended to existing card ${task_id}"
+                # Процесс-фикс (18.08, ретро #1356 / t_75e787fd-2 — болтающийся
+                # PR): если карточка мёртвая (done/blocked/archived), comment
+                # в неё никто не увидит. Здесь — UNSTABLE-версия того же фикса,
+                # что и в CONFLICTING-блоке выше.
+                _un_card_status="$(kanban_card_status "$task_id")"
+                case "$_un_card_status" in
+                    running|ready|todo)
+                        hermes kanban --board "$KANBAN_BOARD" comment "$task_id" "$_reminder" >/dev/null 2>&1 \
+                            || log "issue #${number}: WARNING appending UNSTABLE reminder to ${task_id} failed"
+                        log "issue #${number}: UNSTABLE reminder appended to live card ${task_id} (status=${_un_card_status})"
+                        ;;
+                    done|archived|blocked)
+                        # Карточка мёртвая (типично для ретро #1356). Старое
+                        # поведение = коммент в пустоту. Шифу прямо: «та же
+                        # карточка», но если она закрыта — нужна СВЕЖАЯ recovery.
+                        log "issue #${number}: PR #${pr_number} UNSTABLE — карточка ${task_id} мёртвая (status=${_un_card_status}), создаю recovery-карточку (ретро #1356)"
+                        _un_branch_matches="$(hermes kanban --board "$KANBAN_BOARD" list --json 2>/dev/null | python3 -c "
+import json,sys
+try:
+    data = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(0)
+for t in data:
+    title = t.get('title','')
+    if 'CI UNSTABLE' in title and ('PR #${pr_number}' in title or '${pr_head_ref}' in title):
+        print(t['id'], t.get('status',''))
+" 2>/dev/null || true)"
+                        _un_active="$(printf '%s\n' "$_un_branch_matches" | awk '$2 ~ /^(running|ready|todo)$/ {print $1" "$2; exit}')"
+                        _un_blocked="$(printf '%s\n' "$_un_branch_matches" | awk '$2 == "blocked" {print $1; exit}')"
+                        if [ -n "$_un_active" ]; then
+                            log "issue #${number}: UNSTABLE — recovery card already active (${_un_active}) for PR #${pr_number} — skip"
+                        elif [ -n "$_un_blocked" ]; then
+                            hermes kanban --board "$KANBAN_BOARD" unblock "$_un_blocked" --reason "⚠️ main-cycle UNSTABLE recovery (ретро #1356)" >/dev/null 2>&1 || true
+                            log "issue #${number}: UNSTABLE — recovery card ${_un_blocked} unblocked for PR #${pr_number}"
+                        else
+                            _skill="architecture-doc-review"  # default архитекторский
+                            case "$_assignee" in
+                                backend)   _skill="test-driven-development" ;;
+                                developer) _skill="test-driven-development" ;;
+                                tester)    _skill="test-driven-development" ;;
+                                devops)    _skill="agent-flow-e2e-pipeline" ;;  # надзор 13.08: hermes-agent-flow не существует
+                            esac
+                            # Ретро 15.08 t_16325ddd: PR мог закрыться после получения
+                            # pr_state в основном цикле — пере-проверяем перед create.
+                            if [ "$(pr_state_now "$pr_number")" = "CLOSED" ]; then
+                                log "issue #${number}: PR #${pr_number} CLOSED — UNSTABLE recovery card НЕ создаю (ретро t_16325ddd)"
+                            else
+                                _un_body="## ⚠️ CI UNSTABLE recovery (merge-gate, ретро #1356, $(date -u +%H:%M:%SZ))
+
+PR #${pr_number} (\`${pr_head_ref}\`) = **UNSTABLE** (CI красный, конфликта с develop нет — rebase + push подтянет develop-фиксы). Связанная рабочая карточка \`${task_id}\` уже закрыта/архивирована, reminder в неё НЕ пишем (потеряется).
+
+**Что делать:** rebase на origin/develop + push --force-with-lease. PR тот же, ветка та же, никаких новых.
+\`\`\`bash
+git fetch origin develop
+git checkout ${pr_head_ref}
+git rebase origin/develop
+git push --force-with-lease origin ${pr_head_ref}
+\`\`\`
+
+Карточка закрывается когда PR станет MERGEABLE+CLEAN (CI зелёный).
+
+(merge-gate создал эту карточку, потому что живая рабочая карточка этого issue уже закрыта — ретро #1356.)"
+                                _un_key="unstable-main-cycle-pr-${pr_number}-$(date +%s)"
+                                hermes kanban --board "$KANBAN_BOARD" create \
+                                    --assignee "$_assignee" --skill "$_skill" --priority 80 --max-runtime 1800 \
+                                    --body "$_un_body" \
+                                    "⚠️ CI UNSTABLE: rebase \`${pr_head_ref}\` (issue #${number}, PR #${pr_number}, ретро #1356)" \
+                                    >/dev/null 2>&1 \
+                                    && log "issue #${number}: UNSTABLE recovery card created for PR #${pr_number} (assignee=${_assignee})" \
+                                    || log "issue #${number}: WARNING UNSTABLE recovery card create failed for PR #${pr_number}"
+                            fi
+                        fi
+                        ;;
+                    *)
+                        # неизвестный/не-прочитанный статус — старая логика:
+                        # пишем в карточку (лучше чем игнорировать). Если она
+                        # реально дохлая → reminder просто не увидят, но это
+                        # тот же риск, что был до фикса #1356.
+                        hermes kanban --board "$KANBAN_BOARD" comment "$task_id" "$_reminder" >/dev/null 2>&1 \
+                            || log "issue #${number}: WARNING appending UNSTABLE reminder to ${task_id} failed (status unknown)"
+                        log "issue #${number}: UNSTABLE reminder appended to ${task_id} (status=${_un_card_status} — unknown, treated as live)"
+                        ;;
+                esac
             else
                 # Нет существующей карточки — создаём (skill из профиля assignee).
                 _skill="architecture-doc-review"  # default архитекторский, переопределим ниже
@@ -1672,7 +1877,7 @@ git add -A && git rebase --continue
 git push --force-with-lease origin ${head}
 \`\`\`
 
-**ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → rebase НЕ нужен: сделай `kanban complete` с пометкой `PR closed, rebase не нужен` (ретро 15.08 t_16325ddd)."
+**ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → rebase НЕ нужен: сделай \`kanban complete\` с пометкой \`PR closed, rebase не нужен\` (ретро 15.08 t_16325ddd)."
         _title_prefix="🔀 merge conflict"
     else
         _reminder="## ⚠️ CI UNSTABLE detected (merge-gate scan-all-prs, $(date -u +%H:%M:%SZ))
@@ -1694,7 +1899,7 @@ git add -A && git rebase --continue
 git push --force-with-lease origin ${head}
 \`\`\`
 
-**ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → rebase НЕ нужен: сделай `kanban complete` с пометкой `PR closed, rebase не нужен` (ретро 15.08 t_16325ddd)."
+**ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → rebase НЕ нужен: сделай \`kanban complete\` с пометкой \`PR closed, rebase не нужен\` (ретро 15.08 t_16325ddd)."
         _title_prefix="⚠️ CI UNSTABLE: rebase"
     fi
 
