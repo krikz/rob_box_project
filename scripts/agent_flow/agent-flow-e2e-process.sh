@@ -1297,6 +1297,7 @@ while IFS=$'\t' read -r number title labels body source branch; do
     e2e_stt=""
     e2e_acceptance_check=""
     e2e_check_tg_echo=""
+    e2e_scenario_file=""
     # Python-парсер issues_json экранирует переносы в литеральные \\n — вернём реальные.
     # (иначе grep '^voice_text' не находит поле в середине однострочного body,
     #  а grep exit 1 + pipefail + set -e убивают скрипт)
@@ -1314,7 +1315,11 @@ while IFS=$'\t' read -r number title labels body source branch; do
         e2e_stt="$(printf '%s' "$body_real" | grep -iE '^[[:space:]]*stt[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*stt[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
         e2e_acceptance_check="$(printf '%s' "$body_real" | grep -iE '^[[:space:]]*acceptance_check[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*acceptance_check[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
         e2e_check_tg_echo="$(printf '%s' "$body_real" | grep -iE '^[[:space:]]*check_tg_echo[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*check_tg_echo[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
-        log "issue #${number}: e2e params from body: volume=${e2e_volume:-default} voice_text=${e2e_voice_text:-default} llm=${e2e_llm:-default} tts=${e2e_tts:-default} stt=${e2e_stt:-default} acceptance_check=${e2e_acceptance_check:-default} check_tg_echo=${e2e_check_tg_echo:-default}"
+        # bug(e2e #1375) ретро 18.08: блок ## e2e поддерживает scenario_file —
+        # путь к .json в .github/e2e/scenarios/. Если задан явно — используем,
+        # auto-discovery из PR files нужен только при отсутствии.
+        e2e_scenario_file="$(printf '%s' "$body_real" | grep -iE '^[[:space:]]*scenario_file[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*scenario_file[[:space:]]*:[[:space:]]*//; s/^`//; s/`$//; s/^"//; s/"$//' || true)"
+        log "issue #${number}: e2e params from body: volume=${e2e_volume:-default} voice_text=${e2e_voice_text:-default} llm=${e2e_llm:-default} tts=${e2e_tts:-default} stt=${e2e_stt:-default} acceptance_check=${e2e_acceptance_check:-default} check_tg_echo=${e2e_check_tg_echo:-default} scenario_file=${e2e_scenario_file:-none}"
     else
         log "issue #${number}: no '## e2e' block in body — using defaults"
     fi
@@ -1466,9 +1471,28 @@ EOF
                 e2e_tts="$(printf '%s' "$pr_body_real" | grep -iE '^[[:space:]]*tts[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*tts[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
                 e2e_stt="$(printf '%s' "$pr_body_real" | grep -iE '^[[:space:]]*stt[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*stt[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
                 e2e_acceptance_check="$(printf '%s' "$pr_body_real" | grep -iE '^[[:space:]]*acceptance_check[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*acceptance_check[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
+                # bug(e2e #1375) ретро 18.08: парсим scenario_file из PR body.
+                e2e_scenario_file="$(printf '%s' "$pr_body_real" | grep -iE '^[[:space:]]*scenario_file[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*scenario_file[[:space:]]*:[[:space:]]*//; s/^`//; s/`$//; s/^"//; s/"$//' || true)"
                 log "issue #${number}: e2e params from PR #${pr_number} body (issue body had no ## e2e)"
                 [ -n "$e2e_volume" ] && E2E_VOLUME="$e2e_volume"
             fi
+        fi
+    fi
+
+    # bug(e2e #1375) ретро 18.08: auto-discover scenario_file из PR files.
+    # Если воркер не задал scenario_file в блоке ## e2e (ни issue body, ни PR body),
+    # но PR добавил/модифицировал .github/e2e/scenarios/*.json — берём первый.
+    # Приоритет: ADDED (новый test suite) > MODIFIED (правка существующего) — для
+    # PR #1375 это вернёт music_library_suite_v1.json, а не full_instrument_suite.
+    # Это лечит «PR #1375 прислал music_library_suite_v1.json, но прогоняется
+    # smoke-test «Робот, спой песенку про енотика» потому что scenario_file
+    # нигде не задан». Fallback: пусто → workflow возьмёт дефолт voice_text.
+    if [ -z "$e2e_scenario_file" ] && [ -n "${pr_number:-}" ]; then
+        _discovered="$(gh pr view "$pr_number" --repo "$GH_REPO" --json files \
+            --jq '[(.files // [])[] | select(.path | test("\\.github/e2e/scenarios/.*\\.json$"))] | sort_by(if .changeType == "ADDED" then 0 else 1 end) | (.[0].path // "")' 2>/dev/null || echo "")"
+        if [ -n "$_discovered" ]; then
+            log "issue #${number}: scenario_file auto-discovered from PR #${pr_number} files: ${_discovered}"
+            e2e_scenario_file="$_discovered"
         fi
     fi
 
@@ -1904,7 +1928,7 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
     fi
 
     # 3) E2E voice test
-    log "issue #${number}: triggering ${E2E_WORKFLOW} on ${ROUND_BRANCH} (volume=${E2E_VOLUME}, voice_text=${e2e_voice_text:-default})"
+    log "issue #${number}: triggering ${E2E_WORKFLOW} on ${ROUND_BRANCH} (volume=${E2E_VOLUME}, voice_text=${e2e_voice_text:-default}, scenario_file=${e2e_scenario_file:-none})"
     e_epoch="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     e2e_args=()
     [ -n "$E2E_VOLUME" ] && e2e_args+=(-f "volume=$E2E_VOLUME")
@@ -1915,6 +1939,10 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
     [ -n "$e2e_tts" ] && e2e_args+=(-f "tts=$e2e_tts")
     [ -n "$e2e_stt" ] && e2e_args+=(-f "stt=$e2e_stt")
     [ -n "$e2e_acceptance_check" ] && e2e_args+=(-f "acceptance_check=$e2e_acceptance_check")
+    # bug(e2e #1375) ретро 18.08: передаём scenario_file в workflow. Без этого
+    # L-E2E Voice Test.yml берёт дефолт voice_text='Робот, спой песенку про
+    # енотика' даже когда PR прислал music_library_suite_v1.json.
+    [ -n "$e2e_scenario_file" ] && e2e_args+=(-f "scenario_file=$e2e_scenario_file")
     # Issue #1196 L2 — полуавтомат-проверка эха telegram↔dialogue
     # (check_tg_echo: true в блоке ## e2e).
     if [ "${e2e_check_tg_echo:-false}" = "true" ] || [ "${e2e_check_tg_echo:-false}" = "1" ]; then

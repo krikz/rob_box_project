@@ -191,6 +191,23 @@ except Exception: print("")'
                 journal "gh pr view $pr_num"
                 _data="$(get_state "PR_${pr_num}_VIEW_JSON")"
                 [ -n "$_data" ] || _data='{}'
+                # bug(e2e #1375) ретро 18.08: фильтруем вывод для --json files
+                # (auto-discovery scenario_file). Реальный gh возвращает только
+                # запрошенные --json-поля, и применяет --jq. Mock не реализует
+                # ни того, ни другого, поэтому:
+                # - если есть state PR_<n>_FILES_JSON — возвращаем его (готовый
+                #   JSON для --json files);
+                # - если FILES_JSON нет и в основном VIEW_JSON нет ключа files
+                #   → возвращаем пустую строку (имитируем gh, у которого PR без
+                #   изменённых файлов при --json files — пустой jq-результат).
+                if printf '%s' "$*" | grep -q -- '--json files'; then
+                    _files_data="$(get_state "PR_${pr_num}_FILES_JSON")"
+                    if [ -n "$_files_data" ]; then
+                        _data="$_files_data"
+                    elif ! printf '%s' "$_data" | python3 -c "import sys,json;d=json.load(sys.stdin);sys.exit(0 if 'files' in d else 1)" 2>/dev/null; then
+                        _data=''
+                    fi
+                fi
                 printf '%s' "$_data"
                 exit 0
                 ;;
