@@ -124,6 +124,81 @@ def test_extract_relevant_log_line_ignores_without_error_message() -> None:
     assert line is None
 
 
+def test_extract_relevant_log_line_ignores_dialogue_error_none_success_echo() -> None:
+    """Retro 15.08 t_29230e6f / issue #1335 — also hits issue #1364 (round-129).
+
+    dialogue_node's normal turn completion line is
+    `process_input returned: ... error=None` — error=None means NO error.
+    The bare \\berror\\b matcher would otherwise flag this INFO line as
+    deploy-critical on a fully green round (deploy run 31886490619 SUCCESS +
+    E2E SUCCESS, yet issue was created; same pattern observed on round-129
+    run 32115362102, issue #1364).
+    """
+    log_text = (
+        "[dialogue_node-4] [INFO] [1787041178.922615857] [dialogue_node]: "
+        "✅ [turn] process_input returned: spoken=''[:60] "
+        "tools=['set_voice', 'speak_text'] error=None"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_error_colon_none_success_echo() -> None:
+    """Same retro as above, alternate formatting `error: None`."""
+    log_text = (
+        "[dialogue_node-1] [INFO] [1787041178.922615857] [dialogue_node]: "
+        "result: error: None"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_minimax_api_error_2054() -> None:
+    """Retro 18.08 #1364: minimax bad-request 2054 (voice) at tts_node
+    startup — tts chain falls back to next provider, robot keeps speaking.
+    Deploy gate must not file a critical_log issue for this single transient.
+
+    Run 32115362102 logs contained:
+      [health_monitor-3] [ERROR] tts_node (0s ago): MiniMax bad-request,
+      NO retry: minimax API error 2054: voice
+    E2E run 32115882100 then reported `✅ TTS: основной голос без
+    fallback` — primary voice worked throughout the round.
+    """
+    log_text = (
+        "[health_monitor-3]   [ERROR] tts_node (0s ago): MiniMax bad-request, "
+        "NO retry: minimax API error 2054: voice"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_nav2_tf_to_map_startup_race() -> None:
+    """Retro 18.08 #1364: nav2 global_costmap 'TF base_footprint→map'
+    at startup, before rtabmap publishes /map. Same startup race as the
+    already-excluded 'to odom' line; PR #1151 (commit d1abb2ae) only
+    covered 'to odom' but the round-129 run 32115362102 had 'to map'
+    as the actual costmap TF timeout, and the deploy detector still
+    flagged it on a fully green round.
+    """
+    log_text = (
+        "[INFO] [1787041170.966729633] [global_costmap.global_costmap]: "
+        "Timed out waiting for transform from base_footprint to map to "
+        "become available, tf error: Could not find a connection between "
+        "'map' and 'base_footprint' because they are not part of the same "
+        "tree.Tf has two or more unconnected trees."
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None
+
+
 def test_extract_relevant_log_line_ignores_total_errors_summary() -> None:
     log_text = "[health_monitor-1] Total Errors: 1 (последние 0 за минуту)"
 
