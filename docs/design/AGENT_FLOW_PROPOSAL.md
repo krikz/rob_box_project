@@ -366,6 +366,7 @@ cronjob.create(
 | Q22 | Карточка после complete в блоке; merge-gate: красный CI → unblock; e2e: PASS → unblock с результатами (ждёт merge юзера), FAIL → воркер итерирует; done только после merge юзером. **needs-review после e2e-done ставится автоматически**: e2e-process (основной цикл и post-round sweep — PR-side labels) + merge-gate reconcile каждые 5 мин для пропущенных (ретро 13.08 t_92ec94f3, #1188) |
 | Q23 | Воркер комментит в issue содержательно: нашёл причину/решение/препятствие; минимум старт+PR; CI/e2e-статусы пишут кроны |
 | Q24 | config.yaml ×19: default_branch develop |
+| Q25 | **user-unlabel respect (ретро 18.08 t_de6bea69, PR #1398)**: если Шифу РУКАМИ снял метку (`e2e-done` / `needs-review`) после того как auto-sweep её когда-то поставил — следующий тик sweep'а НЕ возвращает эту метку, только комментит в PR «user decision respected, awaiting your next move». Сигнал из GitHub timeline: `UnlabeledEvent{actor≠bot}` ПОЗЖЕ последнего `LabeledEvent` по той же метке. Реализовано в `scripts/agent_flow/lib_user_unlabel_check.sh` (общий хелпер для e2e-process + merge-gate: post-round sweep, reconcile, lint path, clean-pr-sweep). Актор-фильтр ослабленный (любой не-bot) — в этом репо krikz = юзер И держатель GH-токена автоматики, так что discriminator по actor-имени невозможен. Реальный discriminator — это ХРОНОЛОГИЯ: если последнее событие по метке — unlabel, значит кто-то её сознательно снял |
 
 ---
 
