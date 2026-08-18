@@ -91,3 +91,9 @@ vision-сервисов в `ci/image-versions` тоже не были заком
 - ADR-0014 — merge-gate требует e2e-доклад в issue перед `kanban complete`
 - ADR-0015 — naming convention веток (z-{agent}/*, z-{e2e}/*, copilot/*)
 - c873f479 (#1142) — SHA-теги в отдельную ветку ci/image-versions
+- 98de836a (#1244) — реверт, SHA-теги снова в текущей ветке (per-service ci/image-versions-* не работают при local-деплое)
+- d417b722 (#1139) — retry+rebase push в текущую ветку (race main↔vision на одном develop)
+- `scripts/ci/push-image-versions.sh` (issue #1388) — выделенный helper для race-safe push:
+  `pull --rebase origin <branch>` перед push, retry-loop, **exit≠0** при невосстановимой ошибке
+  (раньше job завершался `success` даже когда push терялся). Используется в
+  `L-Build Vision Pi Services.yml` и `L-Build Main Pi Services.yml`.
