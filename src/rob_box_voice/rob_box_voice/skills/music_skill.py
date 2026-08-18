@@ -382,11 +382,13 @@ class MusicSkill(BaseSkill):
                 params["theme"] = theme
             return await _call("set_dj_mode", params)
 
-        # ── MiniMax music generation + library tools (issue #1392) ──────
-        # Routes through MCP server's minimax_music tools (added in
-        # mcp_server.py:_register_minimax_music_tools). Renardo/SuperCollider
-        # tools above stay first-choice for live synthesis; MiniMax is the
-        # fallback when the user asks for a full vocal track with lyrics.
+        # ── MiniMax music generation + library tools (issue #1392 / #1358)
+        # CRITICAL ORDER: generate_music must be the FIRST tool exposed to
+        # the sub-agent so the LLM-M3 considers it before defaulting to
+        # Renardo execute_music_code. Live regression 18.08.2026 17:05: LLM
+        # always picked execute_music_code despite the user asking to
+        # "сгенерируй песню". The docstring below is intentionally
+        # explicit about WHEN to call this tool (vocal/song/lyrics requests).
         @function_tool
         async def generate_music(prompt: str, lyrics: str = "",
                                  is_instrumental: bool = False,
@@ -395,12 +397,23 @@ class MusicSkill(BaseSkill):
                                  title: str = "") -> str:
             """Generate a brand-new vocal/instrumental track via MiniMax Music API.
 
-            CALL THIS WHEN THE USER ASKS FOR A FULL SONG WITH LYRICS
-            ("спой песню про бычка", "сыграй романтичную песню") and there is no
-            matching track in the library (call gen_search_library first!).
+            ★ USE THIS TOOL WHEN ★ the user asks for:
+              - "спой/спой мне/запевай" → vocal song
+              - "сочини/сгенерируй песню/мелодию/композицию/трек" → composition
+              - "сделай музыку с вокалом/с текстом/песню" → vocal track
+              - "сгенерируй через генератор музыки/миниmax-music" → AI gen
+              - "хочу услышать свою песню" → AI gen (each = unique vocal track)
+              - DJ/party request DOES NOT count here — use Renardo for that.
 
-            Takes 40-160 seconds (avg ~88s). MUST warn the user before calling:
-            "Сейчас сгенерирую, это займёт около минуты — подожди, не уходи!"
+            ★ DO NOT USE THIS TOOL FOR ★ instrumental-only requests like
+              "сыграй бит/lo-fi/ambient/инструменталку без вокала" — use
+              execute_music_code instead (Renardo is faster & unlimited).
+
+            Performs a 40-160s cloud generation (~88s avg). ALWAYS warn the
+            user first via outer SpeakText: "Сейчас сгенерирую, это займёт
+            около минуты — подожди, не уходи!". If the user just wants to
+            SAVE/SEARCH/LIST/PLAY an existing track, use the gen_*_library
+            tools below — DO NOT regenerate.
 
             Args:
                 prompt:    Style/mood description (1-2000 chars). REQUIRED.
@@ -540,10 +553,16 @@ class MusicSkill(BaseSkill):
             return await _call("gen_get_track_info", {"track_id": track_id})
 
         return [
-            search_samples, execute_music_code, stop_music, set_vibe_preset,
-            get_music_state, search_artist_style, list_tracks, save_track,
-            load_track, delete_track, set_dj_mode,
-            generate_music, gen_list_library, gen_search_library,
-            gen_save_to_library, gen_play_from_library, gen_delete_from_library,
-            gen_get_track_info,
+            # ── AI generation FIRST (highest priority — issue #1392) ───
+            # Compositor / sub-agent MUST consider generate_music before
+            # defaulting to Renardo. Placing it at index 0 makes the model
+            # tool-prioritise it for vocal/full-song requests.
+            generate_music,
+            gen_search_library, gen_list_library, gen_play_from_library,
+            gen_save_to_library, gen_delete_from_library, gen_get_track_info,
+            # ── Renardo / live synthesis (default engine) ──────────────
+            execute_music_code, stop_music, set_vibe_preset, get_music_state,
+            set_dj_mode, search_artist_style, search_samples,
+            # ── Renardo library (track name-based, not UUID) ──────────
+            list_tracks, save_track, load_track, delete_track,
         ]
