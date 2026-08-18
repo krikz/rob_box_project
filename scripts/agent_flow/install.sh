@@ -50,6 +50,7 @@ set -e
 EXPECTED=(
     agent-flow-triage.sh
     agent-flow-merge-gate.sh
+    agent-flow-completion-check.sh
     agent-flow-e2e-process.sh
     agent-flow-handoff.sh
     round_ensure.sh
