@@ -33,6 +33,7 @@ from rob_box_voice.dialogue_node import (
     BABBLE_PERFORMANCE_KEYWORDS,
     DialogueNode,
     _FallbackLLM,
+    _LLM_SKIP_REASONS,
 )
 
 # Реальные enum'ы из rob_box_harness (conftest их не мокает — это
@@ -72,13 +73,13 @@ def _make_node(parameters: dict | None = None) -> DialogueNode:
     # State attrs
     n._wake_words = ["робок", "робот", "роббокс"]
     n._verbose_llm = False
+    # Issue #1389 — fixture использует ту же константу что и production
+    # ``__init__``. Если кто-то добавит ``+= 1`` для нового skip-reason
+    # в dialogue_node.py, но забыл ключ в ``_LLM_SKIP_REASONS`` — этот
+    # fixture всё равно пройдёт (мы вручную матчим константу), но тест
+    # ``test_counter_keys_match_constant`` поймает расхождение.
     n._llm_skipped_counter = {
-        "no_wake_word": 0,
-        "silenced": 0,
-        "silence_command": 0,
-        "empty_after_strip": 0,
-        "stt_rejected": 0,
-        "music_stop": 0,
+        k: 0 for k in _LLM_SKIP_REASONS
     }
     n._last_skip_summary_ts = time.monotonic()
     n._speaker_by_text = {}
@@ -444,6 +445,75 @@ class TestOnStt:
         n._dispatch_turn = MagicMock()
         n._on_stt(self._msg("робот, спой"))
         n._cancel_run.assert_called_once()
+
+    # --- Issue #1389 regression: counter init SSoT --------------------------
+    def test_counter_keys_match_constant(self):
+        """Регрессионный тест на #1389: dict-comprehension в ``__init__``
+        должен покрывать все ключи, которые инкрементируются в коде.
+
+        Без защиты ``{k: 0 for k in _LLM_SKIP_REASONS}`` (см. module-level
+        константу в ``dialogue_node.py``) — worker может добавить
+        ``self._llm_skipped_counter[\"<new_key>\"] += 1`` в ``_on_stt``,
+        но забыть ключ в dict-литерале ``__init__`` → production
+        voice-assistant падает с ``KeyError: '<new_key>'`` на первом
+        STT (issue #1389: «voice-assistant DEAD на 10.1.1.21»).
+
+        Тест:
+          1) Сканирует ``dialogue_node.py`` на increment-сайты
+             (``self._llm_skipped_counter["<key>"] += 1``).
+          2) Проверяет, что все эти ключи есть в ``_LLM_SKIP_REASONS``.
+          3) Проверяет, что dict-comp ``{k: 0 for k in _LLM_SKIP_REASONS}``
+             даёт корректный counter (все значения = 0, ключи == константе).
+        """
+        # 1. Сканируем increment-сайты (производственный код, не тесты).
+        import re
+        from pathlib import Path
+        dialogue_node_path = (
+            Path(__file__).resolve().parents[3]
+            / "rob_box_voice"
+            / "dialogue_node.py"
+        )
+        src = dialogue_node_path.read_text()
+        # Только строки ``+= 1`` — не комментарии, не fixture-литералы.
+        increment_keys: set[str] = set()
+        for line in src.splitlines():
+            stripped = line.lstrip()
+            if stripped.startswith("#"):
+                continue
+            m = re.search(
+                r'_llm_skipped_counter\["([^"]+)"\]\s*\+=\s*1', line
+            )
+            if m:
+                increment_keys.add(m.group(1))
+        # Sanity: должны быть все 7 production-ключей из _on_stt/etc.
+        assert "no_wake_word" in increment_keys
+        assert "stt_rejected" in increment_keys
+        assert "e2e_busy" not in increment_keys, (
+            "e2e_busy снова появился в коде, но его нет в константе. "
+            "Либо добавь ключ в _LLM_SKIP_REASONS, либо убери e2e_busy "
+            "из increment-сайта."
+        )
+
+        # 2. Все increment-ключи должны быть в ``_LLM_SKIP_REASONS``.
+        missing_in_const = increment_keys - set(_LLM_SKIP_REASONS)
+        assert not missing_in_const, (
+            f"_LLM_SKIP_REASONS missing keys: {missing_in_const}. "
+            f"Add to dialogue_node.py module constant to keep counter init "
+            f"in sync with _on_stt increment sites."
+        )
+
+        # 3. Dict-comprehension из константы — корректный counter.
+        counter_init = {k: 0 for k in _LLM_SKIP_REASONS}
+        assert set(counter_init.keys()) == set(_LLM_SKIP_REASONS)
+        assert all(v == 0 for v in counter_init.values()), (
+            f"counter init must be all zeros, got: {counter_init}"
+        )
+        # Каждый increment-ключ инициализируется нулём.
+        for k in increment_keys:
+            assert k in counter_init, (
+                f"counter init missing {k!r} (would crash at runtime)"
+            )
+            assert counter_init[k] == 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
