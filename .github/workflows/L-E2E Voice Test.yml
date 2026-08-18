@@ -607,11 +607,19 @@ jobs:
         with:
           name: e2e-voice-artifacts-${{ github.run_id }}
           # Полный архив всего что собрали: verdict.txt, scenario, step_N.log,
-          # recording.wav если есть. Удобно открыть одной папкой и не собирать
-          # по кусочкам из разных artifacts. Этот шаг — последний рубеж:
-          # если тут тоже нет файлов — значит Collect вообще ничего не нашёл
-          # (sсh не доступен / 249 мёртвая) и это уже error-сигнал.
+          # model.json, *.json артефакты (#1396) и т.п.
+          # Удобно открыть одной папкой и не собирать по кусочкам из разных
+          # artifacts. Этот шаг — последний рубеж: если тут тоже нет файлов —
+          # значит Collect вообще ничего не нашёл (sсh не доступен / 249
+          # мёртвая) и это уже error-сигнал.
+          #
+          # Issue #1429: исключаем *.wav — иначе recording.wav дублируется
+          # сюда из `Upload recording` (оба тянут из /tmp/e2e_artifacts_<RID>/).
+          # wav'ы живут отдельно в e2e-voice-recording-<RID> (retention 7d,
+          # быстрый доступ по короткому имени).
           path: /tmp/e2e_artifacts_${{ github.run_id }}/**
+          exclude: |
+            **/*.wav
           retention-days: 14
           if-no-files-found: error
 
