@@ -259,6 +259,11 @@ class GenerateMusicTool(MCPTool):
 
         try:
             track = await asyncio.to_thread(self._client.generate, **kwargs)
+        except ValueError as exc:
+            # Argument validation inside the client (empty prompt, prompt>2000,
+            # missing lyrics). Surface as a friendly tool error instead of
+            # letting asyncio turn it into an unhandled exception.
+            return MCPToolResult(success=False, error=f"invalid argument: {exc}")
         except MinimaxMusicConfigError as exc:
             return MCPToolResult(success=False, error=f"config: {exc}")
         except MinimaxMusicAPIError as exc:
