@@ -21,7 +21,7 @@
     {"label": "s16_snd_police", "voice": "anton", "text": "Робот, включи звук полицейской сирены", "patterns": ["play_sound", "police_lights"]},
     {"label": "s17_snd_happy", "voice": "anton", "text": "Робот, издай звук радости", "patterns": ["play_sound"]},
 
-    {"label": "s18_playlist", "voice": "anton", "text": "Робот, сыграй что-нибудь из своего плейлиста", "patterns": ["list_tracks", "load_track"]},
+    {"label": "s18_playlist", "voice": "anton", "text": "Робот, сыграй что-нибудь из своего плейлиста", "patterns": ["renardo_list_tracks", "renardo_load_track"]},
     {"label": "s19_piano", "voice": "anton", "text": "Робот, сыграй красивую мелодию на пианино", "patterns": ["execute_music_code"]},
     {"label": "s20_dj_on", "voice": "anton", "text": "Робот, включи диджей режим", "patterns": ["set_dj_mode"]},
     {"label": "s21_dj_rock", "voice": "anton", "text": "Робот, смени тему на рок", "patterns": ["set_dj_mode"]},
