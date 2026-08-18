@@ -174,6 +174,28 @@ git push origin feature/my-awesome-feature
 - После merge в `develop` → автоматическая сборка образов с тегом `dev`
 - После merge в `main` → автоматическая сборка образов с тегом `latest`
 
+## 🛡️ GATE-2: stale-candidate (ADR-0022 §4.2)
+
+Двушаговая автозакрывалка для OPEN issues без process-меток
+(`hermes`, `needs-e2e`, `e2e-done`, `e2e:rejected`, `no-e2e-required`).
+
+**Контракт (см. `scripts/agent_flow/agent-flow-unlabeled-sweep.sh` + `docs/adr/0022-process-e2e-done-gates.md`):**
+
+1. Tick T0 — issue без process-меток, `age >= 24h` → ставим `stale-candidate` + dedup-комментарий, **НЕ закрываем**.
+2. Tick T0 + 24h — `stale-candidate` всё ещё висит И **нет user-reopen после метки** → close (reason=`not_planned`), снимаем `stale-candidate`.
+3. **User-reopen после метки** → снимаем `stale-candidate` автоматически, возвращаем issue в OPEN без меток (только ре-триаж подхватит), **НЕ закрываем**.
+
+**Что НЕ делать воркерам:**
+- НЕ ставить `gh issue close` руками на issues с `stale-candidate` — пусть sweep решит (это race-condition R4 из ADR-0022, см. issue #1363).
+- НЕ трогать `stale-candidate` руками — скрипт снимает её через timeline-API cross-check (`reopen_at > stale_labeled_at`).
+- НЕ закрывать issues с `e2e-done` через `agent-flow-unlabeled-sweep.sh` — этот скрипт их skip'ает (process-метка), ответственность — `agent-flow-merge-gate.sh`.
+
+**Идемпотентность:** sweep использует 6h dedup-окно для комментариев и state-фильтр для issues. Повторный тик в ту же минуту не дублирует label/comment.
+
+**Acceptance contract (полностью — в ADR-0022 §7):**
+- `## e2e` блок в issue с `acceptance_json` — обязателен для `e2e-done` (GATE-1).
+- Без `acceptance_json` или сценарного файла `e2e-done` НЕ ставится, остаётся `needs-e2e`.
+
 ### 4. Подготовка релиза
 ```bash
 # Создать release branch от develop
