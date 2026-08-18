@@ -20,10 +20,17 @@
 #
 # Env (обязательные): YANDEX_API_KEY, ROBOT_HOST=10.1.1.21, SSHPASS
 # Env (опциональные): E2E_MAX_ATTEMPTS=3, E2E_REACTION_WINDOW=40,
-#                     E2E_RETRY_PAUSE=10, E2E_RECORD_EXTRA=20
+#                     E2E_RETRY_PAUSE=10, E2E_RECORD_EXTRA=20,
+#                     GITHUB_RUN_ID (для OUT_DIR и симлинка
+#                                    /tmp/dialog_e2e_<run_id>.wav —
+#                                    workflow передаёт ${{ github.run_id }})
 #
 # Output (на запускающем хосте 249):
-#   /tmp/e2e_v2_<run_id>/{model.json, scenario.json, step_N.log, verdict.txt}
+#   /tmp/e2e_v2_<run_id>/{model.json, scenario.json, step_N.log,
+#                          recording.wav, verdict.txt}
+#   Симлинк: /tmp/dialog_e2e_${RUN_ID}.wav -> recording.wav
+#            (контракт для workflow L-E2E Voice Test.yml артефакта
+#             e2e-voice-recording-<run_id>)
 #   stdout: "E2E_STEP <N> OK|FAIL|SKIP" + "E2E_VERDICT PASS|FAIL"
 # ============================================================================
 set -u
@@ -33,8 +40,13 @@ E2E_MAX_ATTEMPTS="${E2E_MAX_ATTEMPTS:-3}"
 E2E_REACTION_WINDOW="${E2E_REACTION_WINDOW:-40}"   # сек ждём полный цикл после play
 E2E_RETRY_PAUSE="${E2E_RETRY_PAUSE:-10}"
 E2E_RECORD_EXTRA="${E2E_RECORD_EXTRA:-15}"          # хвост записи после реакции
+E2E_RECORDING="${E2E_RECORDING:-1}"                 # 1 = писать микрофон (issue #1353)
 ROBOT_HOST="${ROBOT_HOST:-10.1.1.21}"
 ROBOT_USER="${ROBOT_USER:-ros2}"
+# GITHUB_RUN_ID — передаётся из workflow L-E2E Voice Test.yml (${{ github.run_id }}),
+# используется как RUN_ID (→ OUT_DIR и симлинк /tmp/dialog_e2e_<run_id>.wav).
+# Если не задан (локальный запуск) — RUN_ID будет локальный timestamp. См. issue #1353.
+GITHUB_RUN_ID="${GITHUB_RUN_ID:-}"
 # NOTE (retro t_0a5d65af, round-50): НЕЛЬЗЯ ставить "LC_ALL=C " префиксом в
 # ROBOT_SSH — при раскрытии ${ROBOT_SSH} bash выполняет "LC_ALL=C" как КОМАНДУ
 # (rc=127 command not found), весь ROBOT_SSH возвращает пусто, check_cycle
@@ -44,8 +56,15 @@ ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -n -o StrictHostKeyChecking=no ${ROBO
 YANDEX_TTS_VOICE="${YANDEX_TTS_VOICE:-anton}"       # голос по умолчанию
 YANDEX_SPEED="${YANDEX_SPEED:-1.0}"
 
-RUN_ID="$(date +%Y%m%d_%H%M%S)"
+# RUN_ID — уникальный идентификатор прогона. Используем github.run_id если
+# передан (workflow L-E2E Voice Test.yml передаёт GITHUB_RUN_ID в env), иначе
+# локальный timestamp. Это позволяет workflow'у надёжно находить OUT_DIR и
+# забирать все артефакты через конкретный путь /tmp/e2e_v2_<run_id>/...
+# (issue #1353).
+RUN_ID="${GITHUB_RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 OUT_DIR="/tmp/e2e_v2_${RUN_ID}"
+RECORDING_RAW="/tmp/e2e_raw_${RUN_ID}.pcm"
+RECORDING_WAV="${OUT_DIR}/recording.wav"
 mkdir -p "$OUT_DIR"
 
 # --- самовосстановление артефакт-дира (ретро 11.08 t_26a6d362) -------------
@@ -57,6 +76,98 @@ ensure_outdir() {
     if [ ! -d "$OUT_DIR" ]; then
         log "WARN: $OUT_DIR удалён (внешний cleanup?) — пересоздаю"
         mkdir -p "$OUT_DIR"
+    fi
+}
+
+# --- запись микрофона (issue #1353) ------------------------------------------
+# Старый e2e_remote.sh писал parec в /tmp/e2e_raw.pcm → /tmp/dialog_e2e_<id>.wav
+# (контракт артефакта e2e-voice-recording-<run_id>). Atomic v2 (10.08) запись
+# убрал → workflow L-E2E Voice Test.yml:381-387 пытается загрузить файл,
+# которого нет, и молча пропускает артефакт (if-no-files-found: ignore).
+# Фикс: пишем ВЕСЬ retry-цикл (все попытки всех шагов) в $RECORDING_RAW, в
+# конце конвертируем в $RECORDING_WAV и делаем симлинк на путь, который
+# ждёт workflow.
+#
+# Best-effort: если parec/ffmpeg отсутствуют — e2e НЕ падает (запись — это
+# артефакт для пост-анализа, не критерий приёма). Если запись короткая
+# (<1KB) — пишем warning в лог, но тест идёт дальше.
+REC_PID=""
+start_recording() {
+    if [ "$E2E_RECORDING" != "1" ]; then
+        log "RECORDING: выключен через E2E_RECORDING=0"
+        return 0
+    fi
+    if ! command -v parec >/dev/null 2>&1; then
+        log "WARN RECORDING: parec не найден (Katana без PulseAudio?) — пропускаю запись"
+        return 0
+    fi
+    # Длительность: все попытки всех шагов + хвост. С запасом — scenario с 3
+    # шагами по 3 попытки = 9 циклов; +E2E_RECORD_EXTRA секунд тишины после
+    # последней реакции. timeout корректно убивает parec (SIGTERM → EOF),
+    # дальше ffmpeg доводит raw PCM до валидного WAV.
+    # Используем дефолтный source (PulseAudio @DEFAULT_SOURCE@) — он же
+    # использовался в старом e2e_remote.sh.
+    local max_steps="${E2E_MAX_STEPS:-5}"
+    local total_secs=$(( E2E_MAX_ATTEMPTS * max_steps * (E2E_REACTION_WINDOW + E2E_RETRY_PAUSE) + E2E_RECORD_EXTRA + 30 ))
+    log "RECORDING: старт parec → ${RECORDING_RAW} (timeout ${total_secs}s)"
+    rm -f "$RECORDING_RAW"
+    # shellcheck disable=SC2086
+    timeout "$total_secs" parec --format=s16le --channels=1 --rate=16000 "$RECORDING_RAW" \
+        >/tmp/e2e_rec_$$.log 2>&1 &
+    REC_PID=$!
+    # Дать parec ~1s подняться, иначе первые 0.5с могут пропасть
+    sleep 1
+    if ! kill -0 "$REC_PID" 2>/dev/null; then
+        log "WARN RECORDING: parec не запустился ($(tail -1 /tmp/e2e_rec_$$.log))"
+        REC_PID=""
+        return 0
+    fi
+    log "RECORDING: pid=${REC_PID}"
+}
+
+# shellcheck disable=SC2329  # вызывается через trap 'stop_recording' EXIT
+stop_recording() {
+    if [ -z "$REC_PID" ]; then return 0; fi
+    if ! kill -0 "$REC_PID" 2>/dev/null; then
+        wait "$REC_PID" 2>/dev/null || true
+        REC_PID=""
+        return 0
+    fi
+    log "RECORDING: stop (SIGTERM pid=${REC_PID})"
+    kill -TERM "$REC_PID" 2>/dev/null || true
+    # Дать parec корректно закрыть pipe (graceful shutdown → корректный EOF)
+    for _ in 1 2 3 4 5; do
+        if ! kill -0 "$REC_PID" 2>/dev/null; then break; fi
+        sleep 1
+    done
+    wait "$REC_PID" 2>/dev/null || true
+    REC_PID=""
+
+    ensure_outdir
+    if [ ! -s "$RECORDING_RAW" ]; then
+        log "WARN RECORDING: ${RECORDING_RAW} пустой (parec умер?) — запись не будет загружена"
+        return 0
+    fi
+    # Конвертация raw PCM → WAV (как в e2e_remote.sh:55-89). Гарантирует
+    # корректный RIFF header даже если SIGTERM пришёл раньше EOF.
+    if ! command -v ffmpeg >/dev/null 2>&1; then
+        log "WARN RECORDING: ffmpeg не найден — запись остаётся в raw PCM"
+        return 0
+    fi
+    if ffmpeg -y -f s16le -ar 16000 -ac 1 -i "$RECORDING_RAW" "$RECORDING_WAV" 2>/dev/null; then
+        local size
+        size=$(stat -c %s "$RECORDING_WAV" 2>/dev/null || echo 0)
+        log "RECORDING_DONE: ${RECORDING_WAV} (${size} bytes)"
+        rm -f "$RECORDING_RAW"
+        # Симлинк для совместимости со старым контрактом workflow.
+        # /tmp/dialog_e2e_${RUN_ID}.wav — путь, который ждёт
+        # actions/upload-artifact (L-E2E Voice Test.yml:385). RUN_ID берётся
+        # из GITHUB_RUN_ID если передан, иначе timestamp (issue #1353).
+        local compat_path="/tmp/dialog_e2e_${RUN_ID}.wav"
+        ln -sfn "$RECORDING_WAV" "$compat_path"
+        log "RECORDING_LINK: ${compat_path} -> ${RECORDING_WAV}"
+    else
+        log "WARN RECORDING: ffmpeg-конвертация не удалась — оставляю raw PCM"
     fi
 }
 
@@ -366,6 +477,14 @@ run_step() {  # $1=text $2=voice $3=step_label
 }
 
 # --- сценарий или одиночная команда ----------------------------------------
+# Issue #1353: запись микрофона охватывает ВЕСЬ retry-цикл (все шаги, все
+# попытки). Стартуем до if/else, останавливаем в trap EXIT (см. ниже).
+start_recording
+
+# Гарантированная остановка записи при любом завершении (PASS/FAIL/ошибка).
+# stop_recording сам идемпотентен: повторный вызов с пустым REC_PID — noop.
+trap 'stop_recording' EXIT
+
 PASS=1
 if [ -n "$SCENARIO_FILE" ]; then
     # scenario.json: {"steps":[{"text":"...","voice":"anton","label":"s1","patterns":["save_speaker_profile","speaker_id"]}]}
