@@ -87,6 +87,12 @@ BABBLE_PERFORMANCE_KEYWORDS: tuple = (
 # Issue #992 Bug C — keywords that mark the user input as a request to
 # play music / a track. Narrow by design: ordinary chit-chat that
 # mentions "track" in passing must NOT trigger the music guard.
+#
+# Issue #1392 — added AI-generation triggers («сгенерируй песню/мелодию»,
+# «сочини трек», «сделай музыку», «генератор музыки»). These MUST fire
+# the music guard too: without it, the LLM bypasses handle_music and
+# answers text-only "🎤 Меняю роль!" — exactly the live regression
+# observed on Vision Pi 18.08.2026, 17:05 MSK.
 MUSIC_GUARD_KEYWORDS: tuple = (
     "спой",
     "пой ",
@@ -105,6 +111,25 @@ MUSIC_GUARD_KEYWORDS: tuple = (
     "играй",
     "включи музык",
     "запусти музык",
+    # AI-generated tracks (issue #1392) — без них CRITICAL-retry ниже
+    # не сработает, и LLM уйдёт в голосовой текст вместо generate_music.
+    "сгенерируй песн",
+    "сгенерируй мелоди",
+    "сгенерируй музык",
+    "сгенерируй трек",
+    "сгенерируй композиц",
+    "сгенерируй вокал",
+    "сочини песн",
+    "сочини музык",
+    "сочини трек",
+    "сделай песн",
+    "сделай музык",
+    "сгенерируем песн",
+    "сгенерируем музык",
+    "генератор музык",
+    "генерация музык",
+    "сгенерит музык",
+    "миниmax-music",
 )
 
 # 🔴 FIX (live 06.08): «хватит диджеить/выключи музыку» — юзер просит
@@ -287,20 +312,29 @@ def build_babble_retry_prompt(user_input: str) -> str:
 
 def build_music_retry_prompt(user_input: str) -> str:
     """Synthetic prompt for Bug C retry (user asked for music, LLM skipped
-    execute_music_code).
+    handle_music/manage_music_code tools).
 
     The LLM frequently concludes «музыка уже играет» from the dialogue
     history (previous runs/songs) and returns ``done`` without calling
     ``execute_music_code``. This prompt explicitly resets that assumption
-    and demands the tool call.
+    and demands the tool call — pointing at handle_music (which owns
+    BOTH Renardo execute_music_code AND MiniMax generate_music) and
+    at the AI-generation trigger from issue #1392.
     """
     return (
-        "[CRITICAL] В прошлом цикле ты НЕ вызвал execute_music_code, "
-        "хотя пользователь ЯВНО попросил музыку/диджея. "
+        "[CRITICAL] В прошлом цикле ты НЕ вызвал handle_music, "
+        "хотя пользователь ЯВНО попросил музыку/генерацию. "
         "Музыка сейчас НЕ играет — предыдущие треки уже остановлены. "
-        "Вызови execute_music_code (Renardo code) ДО любого speak_text. "
-        "Запрос пользователя: "
+        "ОДИН ИЗ ЭТИХ инструментов ОБЯЗАТЕЛЕН (выбери по контексту): "
+        "1) handle_music(...) — основной скилл, через него ОБА движка: "
+        "(a) execute_music_code (Renardo/SuperCollider) — бит/DJ/ambient/instrumental (быстрый, ~1с); "
+        "(b) generate_music (MiniMax Music API, 40-160с) — песня с вокалом и лирикой. "
+        "2) gen_search_library / gen_list_library / gen_play_from_library — для уже сохранённых треков. "
+        "Запрос юзера: «"
         + (user_input or "")
-        + " Если ты снова не вызовешь execute_music_code, "
-        "цикл будет считаться пустым."
+        + "». "
+        "Если это 'спой песню про X' / 'сгенерируй трек про X' / 'сочини музыку' — "
+        "вызывай handle_music(...). Sub-agent (MusicSkill) знает когда нужен generate_music, "
+        "когда execute_music_code — НЕ решай это в Compositor! "
+        "Если и сейчас не вызовешь tool — цикл останется пустым."
     )
