@@ -2166,7 +2166,12 @@ EOF
         # Определяем kind PR по issue-метке no-e2e-required (воркер ставит сам)
         # или по префиксу PR title ([lint]/[refactor]).
         _pr_kind="feature"
-        if [ -n "$number" ] && gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | index("no-e2e-required")' 2>/dev/null | grep -q -v '^null$'; then
+        # Ретро 18.08: gh --jq '[].name | index(X)' возвращает ПУСТУЮ СТРОКУ,
+        # если X не найден (gh strips JSON null), а не литерал "null" — старый
+        # grep -q -v '^null$' всегда матчил пустую строку → ВСЕ feature-PRы
+        # классифицировались как lint (ложный "e2e не требуется" в PR-комменте
+        # на FAILURE, см. PR #1375 / round-139). Используем `any()` → true/false.
+        if [ -n "$number" ] && gh issue view "$number" --repo "$GH_REPO" --json labels --jq '.labels | map(.name) | any(. == "no-e2e-required")' 2>/dev/null | grep -q '^true$'; then
             _pr_kind="lint"
         fi
         _pr_title="$(gh pr view "$pr_number" --repo "$GH_REPO" --json title --jq '.title' 2>/dev/null || echo '')"
