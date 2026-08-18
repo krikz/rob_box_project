@@ -39,6 +39,7 @@ Usage in DialogueNode:
     results = self.voice_memory.search("где находится кухня", limit=5)
 """
 
+import logging
 import os
 import sqlite3
 import struct
@@ -46,6 +47,8 @@ import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Optional: sqlite-vec extension for vector search
@@ -199,6 +202,7 @@ class VoiceMemory:
             )
 
         self._run_migrations()
+        self._repair_fts_index()
 
         # Load sqlite-vec extension if available
         self._vec_loaded = self._load_vec_extension()
@@ -291,6 +295,44 @@ class VoiceMemory:
         """
         with self.lock, self.conn:
             self.conn.executescript(schema)
+
+    def _repair_fts_index(self) -> None:
+        """Restore FTS triggers and rebuild only a stale external-content index.
+
+        ``CREATE TRIGGER IF NOT EXISTS`` in migration 002 only runs while that
+        migration is pending. Existing databases therefore never recover if
+        an import or manual maintenance bypassed/dropped the triggers, leaving
+        ``voice_turns`` populated but ``voice_turns_fts`` empty or stale.
+        FTS5's integrity check detects drift without re-tokenizing a healthy
+        index; ``rebuild`` is issued only after that check fails.
+        """
+        triggers_sql = """
+        CREATE TRIGGER IF NOT EXISTS voice_turns_ai AFTER INSERT ON voice_turns BEGIN
+            INSERT INTO voice_turns_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS voice_turns_au AFTER UPDATE OF content ON voice_turns BEGIN
+            INSERT INTO voice_turns_fts(voice_turns_fts, rowid, content) VALUES ('delete', old.id, old.content);
+            INSERT INTO voice_turns_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS voice_turns_ad AFTER DELETE ON voice_turns BEGIN
+            INSERT INTO voice_turns_fts(voice_turns_fts, rowid, content) VALUES ('delete', old.id, old.content);
+        END;
+        """
+        try:
+            with self.lock, self.conn:
+                self.conn.executescript(triggers_sql)
+                try:
+                    self.conn.execute(
+                        "INSERT INTO voice_turns_fts(voice_turns_fts, rank) "
+                        "VALUES ('integrity-check', 1)"
+                    )
+                except sqlite3.DatabaseError:
+                    self.conn.execute(
+                        "INSERT INTO voice_turns_fts(voice_turns_fts) VALUES ('rebuild')"
+                    )
+        except sqlite3.DatabaseError:
+            # A partially migrated database must not prevent voice startup.
+            logger.warning("VoiceMemory FTS5 repair failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # sqlite-vec extension
@@ -497,8 +539,9 @@ class VoiceMemory:
         return fts_results
 
     def _fts_search(self, query: str, limit: int) -> List[Dict]:
-        """FTS5 BM25 search using prefix-OR query."""
-        tokens = [f'"{w}"*' for w in query.split() if w]
+        """FTS5 BM25 search using a normalized prefix-OR query."""
+        normalized = query.casefold()
+        tokens = [f'"{w}"*' for w in normalized.split() if w]
         if not tokens:
             return []
         fts_query = " OR ".join(tokens)
