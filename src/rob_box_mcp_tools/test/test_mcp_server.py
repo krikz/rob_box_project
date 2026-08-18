@@ -322,6 +322,9 @@ def test_music_fallback_subscription_survives_missing_qos_profile(monkeypatch):
 
     monkeypatch.setattr(module, "TrackLibrary", _OkLibrary)
     server = _FakeServer()
+    # Stub out _register_minimax_music_tools — added in issue #1392, requires
+    # GeneratedMusicLibrary which isn't available in this test environment.
+    server._register_minimax_music_tools = lambda: None
     server._on_music_fallback = lambda msg: None
     assert not hasattr(server, "_qos_profile"), "precondition: init order reproduces the bug"
     subscriptions: list[tuple[str, object]] = []
