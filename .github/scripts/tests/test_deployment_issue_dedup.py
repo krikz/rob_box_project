@@ -435,3 +435,65 @@ def test_extract_relevant_log_line_ignores_nav2_broken_pipe_from_topic_list_head
     line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
 
     assert line is None
+
+
+def test_extract_relevant_log_line_ignores_jackd_process_graph_async_master() -> None:
+    """Issue #1368: jackd logs a single-line `Process error` whenever a DSP
+    cycle overruns the ALSA period (scsynth client without realtime
+    scheduling). jackd drops the cycle and recovers automatically — scsynth
+    stays up and music/TTS keep flowing. The deploy gate must not flag it.
+
+    The text is case-preserved in the log; the regex is case-insensitive.
+    """
+    log_text = "\n".join(
+        [
+            "[SuperCollider] Cleaning up stale JACK SHM files...",
+            "[SuperCollider] JACK running. Starting scsynth on UDP port 57110...",
+            "[jackd] JackAudioDriver::ProcessGraphAsyncMaster: Process error",
+        ]
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_audio_node_fell_in_main_scope() -> None:
+    """Issue #1368: context_aggregator in the Main Pi perception container
+    prints '❌ Нода упала: /audio_node' whenever the Vision Pi voice-assistant
+    restarts audio_node (cross-container /rosout leak via the Zenoh router).
+    Same shape as the telegram_node exclusion (issue #775). Real root cause
+    is on Vision Pi, not a deployment failure.
+    """
+    log_text = (
+        "[context_aggregator-2] [ERROR] [1787042891.609388690] "
+        "[context_aggregator]: ❌ Нода упала: /audio_node"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+    assert line is None
+
+
+def test_extract_relevant_log_line_still_catches_audio_node_in_vision_scope() -> None:
+    """Negative test: a real audio_node error in the vision scope MUST still
+    be reported. audio_node lives in the voice-assistant container on the
+    Vision Pi, so vision scope is the real owner.
+    """
+    log_text = (
+        "[audio_node] [ERROR] [1787042891.609388690] [audio_node]: "
+        "Failed to open pyaudio stream: Invalid sample rate"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+    assert line == log_text
+
+
+def test_extract_relevant_log_line_still_catches_jackd_unrelated_errors() -> None:
+    """Negative test: a real jackd error that is NOT the transient
+    ProcessGraphAsyncMaster message MUST still be reported.
+    """
+    log_text = (
+        "[jackd] FATAL could not connect to server: server failed to start"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+    assert line == log_text

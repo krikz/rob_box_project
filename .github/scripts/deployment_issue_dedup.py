@@ -58,6 +58,14 @@ CRITICAL_EXCLUDE_COMMON = [
     # probe failure, not an audio outage (retro 12.08 t_d3e44336).
     r"alsa lib control\.c.*invalid ctl",
     r"dmix_respeaker",
+    # JACK RT-thread transient error (issue #1368): jackd logs
+    # "JackAudioDriver::ProcessGraphAsyncMaster: Process error" whenever a
+    # single DSP cycle overruns the period (typically the scsynth client
+    # under ALSA dmix without realtime scheduling, see
+    # docker/vision/scripts/supercollider/start_supercollider.sh). jackd
+    # drops the cycle and recovers automatically — scsynth stays up and
+    # music/TTS keep flowing. Deploy gate must not flag this as critical.
+    r"jackaudiodriver::processgraphasyncmaster: process error",
     # SuperCollider startup noise (issue #778, #672, #840): Renardo/FoxDot
     # sends /g_new before scsynth finished allocating group IDs. The music
     # stack comes up healthy afterwards (voice-assistant reports
@@ -99,6 +107,17 @@ CRITICAL_EXCLUDE_BY_SCOPE = {
         # a main container log is by definition cross-container leak.
         r"telegram_node",
         r"telegram bot crashed",
+        # Scope leak (issue #1368): audio_node lives in the voice-assistant
+        # container on the Vision Pi. The Main Pi perception's
+        # context_aggregator subscribes to /rosout (shared ROS_DOMAIN_ID=0
+        # bus via Zenoh router) and prints "❌ Нода упала: /audio_node"
+        # whenever the Vision Pi voice-assistant restarts audio_node. This
+        # surfaces as a false deployment-critical against the perception
+        # container, masking the actual issue location. Same shape as the
+        # telegram_node exclusion above; the real root cause (voice-assistant
+        # restart on Vision Pi) is not a deployment failure.
+        r"нода упала: /audio_node",
+        r"/audio_node\b",
     ],
     "vision": [],
 }
