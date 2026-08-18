@@ -76,6 +76,10 @@ from rob_box_voice.core.command_parser import CommandParser, IntentType
 from rob_box_voice.core.dialogue_text import (
     has_wake_word, is_silence_command, is_unsilence_command, strip_wake_word,
 )
+from rob_box_voice.core.llm_skip_reasons import (
+    LLMSkipReason,
+    new_llm_skip_counter,
+)
 from rob_box_voice.core.dialogue_guards import (
     BABBLE_BANNED_OPENERS as BABBLE_BANNED_OPENERS,
     BABBLE_PERFORMANCE_KEYWORDS as BABBLE_PERFORMANCE_KEYWORDS,
@@ -137,31 +141,9 @@ ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
 ASYNCIO_LOOP_DRIVER_NAME_PREFIX: str = "dialogue-async-loop"
 ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S: float = 2.0
 
-# Issue #1389 — single source of truth for ``_llm_skipped_counter`` keys.
-# Production ``__init__`` строит dict из этой константы (``{k: 0 for k in
-# _LLM_SKIP_REASONS}``), тестовый fixture ``_make_node`` использует ту же
-# константу. Это исключает класс багов #1389 (commit 91bf3a8a добавил
-# ``_llm_skipped_counter["e2e_busy"] += 1``, но забыл ключ в dict-литерале
-# ``__init__`` → production voice-assistant падает с KeyError на первом
-# STT после старта). Сам баг был откатан в 4742a390 (revert #1386), но
-# защитный паттерн (SSoT + comprehension) остаётся — следующий worker,
-# который добавит новый skip-reason, не сможет «забыть» ключ в init,
-# если он есть в increment-сайте.
-#
-# При добавлении нового skip-reason:
-#   1) добавить ключ сюда
-#   2) использовать в коде как ``self._llm_skipped_counter["<key>"] += 1``
-# Шаг 2 без шага 1 → ``test_counter_keys_match_constant`` поймает
-# расхождение.
-_LLM_SKIP_REASONS: tuple[str, ...] = (
-    "no_wake_word",
-    "silenced",
-    "silence_command",
-    "empty_after_strip",
-    "stt_rejected",
-    "music_stop",
-    "command_intent",
-)
+# Issue #1389 compatibility alias. ``LLMSkipReason`` is now the canonical
+# source; this tuple remains for callers that imported the merged #1395 symbol.
+_LLM_SKIP_REASONS: tuple[str, ...] = tuple(reason.value for reason in LLMSkipReason)
 
 # Issue #992 (live 13.08): BACKING-детектор «2+ speak_text» ложно
 # срабатывал на разговорчивую LLM (приветствие + комментарий) и убивал
@@ -407,13 +389,9 @@ class DialogueNode(Node):
         # command_intent.
         # Счётчик + периодическая сводка раз в 5 минут — сразу видно, что
         # фразы теряются на gate'е ещё до LLM.
-        #
-        # Issue #1389 — dict строится из ``_LLM_SKIP_REASONS`` (single
-        # source of truth, см. module-level). Нельзя «забыть» ключ в init,
-        # если он есть в ``_on_stt`` increment site.
-        self._llm_skipped_counter: dict[str, int] = {
-            k: 0 for k in _LLM_SKIP_REASONS
-        }
+        # Issue #1389 — strict dict initialized from the enum SSoT. Unknown
+        # literal keys still raise KeyError and are rejected by the CI checker.
+        self._llm_skipped_counter: dict[str, int] = new_llm_skip_counter()
         self._last_skip_summary_ts: float = time.monotonic()
         self._tts_control_pub = self.create_publisher(
             String, "/voice/tts/control", 10)
