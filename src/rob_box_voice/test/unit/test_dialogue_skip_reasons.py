@@ -1,26 +1,14 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-_CHECKER_PATH = REPO_ROOT / "scripts" / "lint" / "dialogue_skip_reasons.py"
-_CHECKER_SPEC = importlib.util.spec_from_file_location(
-    "dialogue_skip_reasons", _CHECKER_PATH
-)
-assert _CHECKER_SPEC and _CHECKER_SPEC.loader
-_CHECKER = importlib.util.module_from_spec(_CHECKER_SPEC)
-_CHECKER_SPEC.loader.exec_module(_CHECKER)
-find_literal_skip_reasons = _CHECKER.find_literal_skip_reasons
-find_unknown_skip_reasons = _CHECKER.find_unknown_skip_reasons
-
 from rob_box_voice.core.llm_skip_reasons import LLMSkipReason, new_llm_skip_counter
+from rob_box_voice.core.skip_reason_checker import (
+    find_literal_skip_reasons,
+    find_unknown_skip_reasons,
+)
 
 
 def test_all_skip_reasons_initialize_to_zero() -> None:
@@ -37,9 +25,8 @@ def test_unknown_skip_reason_raises_key_error() -> None:
 
 
 def test_dialogue_node_uses_only_declared_skip_reasons() -> None:
-    dialogue_node = (
-        REPO_ROOT / "src" / "rob_box_voice" / "rob_box_voice" / "dialogue_node.py"
-    )
+    voice_package_root = Path(__file__).resolve().parents[2]
+    dialogue_node = voice_package_root / "rob_box_voice" / "dialogue_node.py"
 
     assert find_unknown_skip_reasons(dialogue_node) == []
 
