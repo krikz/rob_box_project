@@ -59,7 +59,12 @@ fixture_e2e_done_open_pr() {
     set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
     set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\\n\"}]}"
     set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
-    set_state "ISSUE_${issue}_TIMELINE_JSON" "[]"
+    # Timeline: e2e-done event обязателен (реальный GitHub создаёт
+    # 'labeled' event при проставлении метки; пустой timeline + e2e-done
+    # label = API failure → user-reopen guard fail-closed подавит close.
+    # М3-фикстура (post-merge close без user-reopen) поэтому требует
+    # явный labeled event, иначе это считается API-сбоем.
+    set_state "ISSUE_${issue}_TIMELINE_JSON" "[{\"event\":\"labeled\",\"label\":{\"name\":\"e2e-done\"},\"created_at\":\"2026-08-11T20:00:00Z\"}]"
     set_state "PR_HEAD_${branch}_JSON" "[{\"number\":${pr},\"state\":\"${pr_state}\",\"baseRefName\":\"develop\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"title\":\"[robot] ${title}\",\"labels\":${pr_labels_json}}]"
     set_state "PR_${pr}_COMMITS_JSON" '[]'
     set_state PR_LIST_ALL_OPEN_JSON '[]'

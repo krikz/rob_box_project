@@ -580,6 +580,29 @@ has_label() {  # $1=labels_csv (lowercased) $2=label_name
     printf '%s' "$1" | tr ',' '\n' | grep -Fxq "$2"
 }
 
+# User-reopen guard helpers (issue #1391, retro 18.08 t_c4f1d5c8).
+# Если юзер вручную переоткрыл issue ПОСЛЕ того, как e2e-process поставил
+# e2e-done — метка «протухла» и auto-close подавляет волю юзера. Эти helpers
+# достают временные метки из timeline issue (через gh api), чтобы merge-gate
+# мог сравнить «когда поставили e2e-done» vs «когда юзер сделал reopen».
+# Empty / null на любой стороне → вызывающий решает что делать (для нашего
+# guard-а это «пропускаем защиту, ведём себя как раньше» — fail-open, чтобы
+# не сломать regression-acceptance при недоступности timeline API).
+# jq-filter ниже совместим с mock_env.sh (apply_jq, паттерн
+# `[.[] | select(.field == "VAL")][-1].field`) и с реальным gh api.
+_timeline_last_labeled_at() {  # $1=issue_number $2=label_name
+    local issue="$1" label="$2"
+    gh api "repos/${GH_REPO}/issues/${issue}/timeline?per_page=100" \
+        --jq "[.[] | select(.event==\"labeled\" and .label.name==\"${label}\")][-1].created_at" \
+        2>/dev/null || printf ''
+}
+_timeline_last_reopen_at() {  # $1=issue_number
+    local issue="$1"
+    gh api "repos/${GH_REPO}/issues/${issue}/timeline?per_page=100" \
+        --jq "[.[] | select(.event==\"reopened\")][-1].created_at" \
+        2>/dev/null || printf ''
+}
+
 # Ретро 15.08 t_16325ddd (гонка PR-state): creator карточек (merge-gate
 # scan-all-prs / e2e-fail) НЕ пере-проверял state PR после скана и создавал
 # карточки для PR, закрытых товарищем Шифу («Не делаем это») → мёртвые карточки
@@ -1023,6 +1046,79 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
                 ;;
             OPEN)
                 if [ "$_has_e2e_done" = "1" ]; then
+                    # User-reopen guard (issue #1391, retro 18.08 t_c4f1d5c8):
+                    # если юзер ВРУЧНУЮ переоткрыл issue ПОСЛЕ того, как
+                    # e2e-process поставил e2e-done — метка «протухла» и
+                    # auto-close подавляет волю юзера (юзер сигналит, что
+                    # фикс не сработал, например #1363: «свист так и не
+                    # убран!!!»). Закрытие issue в этом случае — тирания
+                    # автоматики. Снимаем протухший e2e-done, возвращаем
+                    # в needs-e2e-ротацию, оставляем audit-коммент. Если
+                    # юзер смёржит новый фикс → следующий e2e-раунд
+                    # пере-проставит свежий e2e-done и закрытие пройдёт
+                    # штатно. Если фикс ложный PASS — юзер сам закроет
+                    # руками либо issue зависнет в open (как и при
+                    # Q22 user-merge, ADR-0014 §Q22).
+                    _e2e_done_at="$(_timeline_last_labeled_at "$number" "$DONE_LABEL")"
+                    _user_reopen_at="$(_timeline_last_reopen_at "$number")"
+                    # Helpers возвращают "null" если событий нет (mock и
+                    # реальный gh api). Приводим к "empty" для проверок.
+                    [ "$_e2e_done_at" = "null" ] && _e2e_done_at=""
+                    [ "$_user_reopen_at" = "null" ] && _user_reopen_at=""
+                    # ADR-0014 §4 req 4 (conservative on uncertainty).
+                    # Логика user-reopen guard (issue #1391):
+                    #   • Timeline ПОЛНОСТЬЮ пуст (нет ни одного события —
+                    #     значит API сдох или rate-limit): не можем доказать
+                    #     отсутствие reopen → fail-closed (не закрываем).
+                    #   • Timeline есть, e2e-done присутствует в timeline,
+                    #     reopen в timeline ОТСУТСТВУЕТ: штатный путь →
+                    #     close (pass-proven).
+                    #   • Timeline есть, e2e-done присутствует, reopen
+                    #     присутствует и ПОЗЖЕ e2e-done: метка протухла,
+                    #     close подавлен.
+                    #   • Timeline есть, e2e-done присутствует, reopen
+                    #     присутствует но РАНЬШЕ e2e-done (e.g. user
+                    #     смёржил новый фикс который прошёл e2e): close
+                    #     штатный (e2e-done свежее чем reopen).
+                    #   • Timeline есть, e2e-done отсутствует в timeline
+                    #     (странный edge-case — labels.csv показывает
+                    #     метку, но timeline её не видит): close штатный
+                    #     (labels.csv надёжнее timeline для current state).
+                    if [ -z "$_e2e_done_at" ] && [ -z "$_user_reopen_at" ]; then
+                        # Timeline пустой → не можем доказать отсутствие
+                        # reopen → conservative: НЕ закрываем.
+                        log "issue #${number}: USER-REOPEN GUARD (issue #1391) — timeline пуст, auto-close подавлен (conservative)"
+                        if [ "$DRY_RUN" != "true" ]; then
+                            gh issue edit "$number" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+                            _urg_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)&per_page=100" \
+                                --jq '[.[] | select(.body | contains("USER-REOPEN GUARD"))] | length' 2>/dev/null || echo 0)"
+                            if [ "${_urg_dup:-0}" -eq 0 ]; then
+                                gh issue comment "$number" --repo "$GH_REPO" --body \
+                                    "🛡 merge-gate (issue #1391, retro 18.08 t_c4f1d5c8): timeline issue недоступен → auto-close подавлен по conservative-правилу (ADR-0014 §4 req 4). Issue возвращён в \`${NEEDS_E2E_LABEL}\`, следующий тик попробует снова когда timeline будет доступен." >/dev/null 2>&1 || true
+                            fi
+                        fi
+                        labeled=$((labeled+1)); continue
+                    fi
+                    if [ -n "$_user_reopen_at" ] \
+                        && [ -n "$_e2e_done_at" ] \
+                        && [ "$_user_reopen_at" \> "$_e2e_done_at" ] 2>/dev/null; then
+                        # Юзер переоткрыл ПОСЛЕ e2e-done — не закрываем.
+                        log "issue #${number}: USER-REOPEN GUARD (issue #1391) — e2e-done ${_e2e_done_at} протух (user-reopen ${_user_reopen_at} позже), auto-close подавлен"
+                        if [ "$DRY_RUN" != "true" ]; then
+                            gh issue edit "$number" --repo "$GH_REPO" --remove-label "$DONE_LABEL" >/dev/null 2>&1 || true
+                            gh issue edit "$number" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+                            # Audit-коммент с причиной (24h dedup, чтобы
+                            # не спамить при каждом тике пока юзер держит
+                            # issue открытой).
+                            _urg_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)&per_page=100" \
+                                --jq '[.[] | select(.body | contains("USER-REOPEN GUARD"))] | length' 2>/dev/null || echo 0)"
+                            if [ "${_urg_dup:-0}" -eq 0 ]; then
+                                gh issue comment "$number" --repo "$GH_REPO" --body \
+                                    "🛡 merge-gate (issue #1391, retro 18.08 t_c4f1d5c8): user-reopen после \`${DONE_LABEL}\` (reopen at \`${_user_reopen_at}\` > e2e-done at \`${_e2e_done_at}\`) → auto-close подавлен, метка \`${DONE_LABEL}\` снята, возврат в \`${NEEDS_E2E_LABEL}\`. Если смёржен новый фикс — следующий e2e-раунд перепоставит \`${DONE_LABEL}\` и закроет issue штатно." >/dev/null 2>&1 || true
+                            fi
+                        fi
+                        labeled=$((labeled+1)); continue
+                    fi
                     if gh issue close "$number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
                         _closed_this_tick=1
                         log "issue #${number}: CLOSED (reason=completed, PASS-proven via ${DONE_LABEL})"
