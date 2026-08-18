@@ -1297,6 +1297,11 @@ while IFS=$'\t' read -r number title labels body source branch; do
     e2e_stt=""
     e2e_acceptance_check=""
     e2e_check_tg_echo=""
+    # Issue #1385 / #1384 — scenario_file: путь к JSON в репо
+    # (.github/e2e/scenarios/*.json). Если воркер указал в блоке ## e2e —
+    # используем его. Иначе автодетект: если в .github/e2e/scenarios/
+    # ровно 1 *.json — берём; >1 — warning + первый; 0 — fallback на smoke.
+    e2e_scenario_file=""
     # Python-парсер issues_json экранирует переносы в литеральные \\n — вернём реальные.
     # (иначе grep '^voice_text' не находит поле в середине однострочного body,
     #  а grep exit 1 + pipefail + set -e убивают скрипт)
@@ -1314,7 +1319,8 @@ while IFS=$'\t' read -r number title labels body source branch; do
         e2e_stt="$(printf '%s' "$body_real" | grep -iE '^[[:space:]]*stt[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*stt[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
         e2e_acceptance_check="$(printf '%s' "$body_real" | grep -iE '^[[:space:]]*acceptance_check[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*acceptance_check[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
         e2e_check_tg_echo="$(printf '%s' "$body_real" | grep -iE '^[[:space:]]*check_tg_echo[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*check_tg_echo[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
-        log "issue #${number}: e2e params from body: volume=${e2e_volume:-default} voice_text=${e2e_voice_text:-default} llm=${e2e_llm:-default} tts=${e2e_tts:-default} stt=${e2e_stt:-default} acceptance_check=${e2e_acceptance_check:-default} check_tg_echo=${e2e_check_tg_echo:-default}"
+        e2e_scenario_file="$(printf '%s' "$body_real" | grep -iE '^[[:space:]]*scenario_file[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*scenario_file[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
+        log "issue #${number}: e2e params from body: volume=${e2e_volume:-default} voice_text=${e2e_voice_text:-default} llm=${e2e_llm:-default} tts=${e2e_tts:-default} stt=${e2e_stt:-default} acceptance_check=${e2e_acceptance_check:-default} check_tg_echo=${e2e_check_tg_echo:-default} scenario_file=${e2e_scenario_file:-default}"
     else
         log "issue #${number}: no '## e2e' block in body — using defaults"
     fi
@@ -1466,6 +1472,7 @@ EOF
                 e2e_tts="$(printf '%s' "$pr_body_real" | grep -iE '^[[:space:]]*tts[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*tts[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
                 e2e_stt="$(printf '%s' "$pr_body_real" | grep -iE '^[[:space:]]*stt[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*stt[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
                 e2e_acceptance_check="$(printf '%s' "$pr_body_real" | grep -iE '^[[:space:]]*acceptance_check[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*acceptance_check[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
+                e2e_scenario_file="$(printf '%s' "$pr_body_real" | grep -iE '^[[:space:]]*scenario_file[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*scenario_file[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
                 log "issue #${number}: e2e params from PR #${pr_number} body (issue body had no ## e2e)"
                 [ -n "$e2e_volume" ] && E2E_VOLUME="$e2e_volume"
             fi
@@ -1904,7 +1911,7 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
     fi
 
     # 3) E2E voice test
-    log "issue #${number}: triggering ${E2E_WORKFLOW} on ${ROUND_BRANCH} (volume=${E2E_VOLUME}, voice_text=${e2e_voice_text:-default})"
+    log "issue #${number}: triggering ${E2E_WORKFLOW} on ${ROUND_BRANCH} (volume=${E2E_VOLUME}, voice_text=${e2e_voice_text:-default}, scenario_file=${e2e_scenario_file:-default})"
     e_epoch="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     e2e_args=()
     [ -n "$E2E_VOLUME" ] && e2e_args+=(-f "volume=$E2E_VOLUME")
@@ -1920,6 +1927,32 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
     if [ "${e2e_check_tg_echo:-false}" = "true" ] || [ "${e2e_check_tg_echo:-false}" = "1" ]; then
         e2e_args+=(-f "check_tg_echo=true")
     fi
+    # Issue #1385 / #1384 — scenario_file (issue #1375): PR #1375 не получал
+    # реальный e2e, потому что workflow всегда стартовал со smoke-test
+    # 'Робот, спой песенку про енотика'. Теперь:
+    # 1) Если воркер явно указал scenario_file в блоке ## e2e — используем.
+    # 2) Иначе автодетект: если в .github/e2e/scenarios/ ровно 1 *.json — берём.
+    #    >1 — warning + первый. 0 — fallback на smoke (как было).
+    if [ -z "$e2e_scenario_file" ]; then
+        _scen_dir="${REPO_DIR}/.github/e2e/scenarios"
+        if [ -d "$_scen_dir" ]; then
+            _scen_files="$(find "$_scen_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | sort || true)"
+            _scen_count="$(printf '%s\n' "$_scen_files" | grep -c . || true)"
+            if [ "${_scen_count:-0}" -eq 1 ]; then
+                _scen_path="$_scen_files"
+                # Относительный путь от корня репо для workflow input
+                e2e_scenario_file="${_scen_path#${REPO_DIR}/}"
+                log "issue #${number}: scenario_file auto-detected: ${e2e_scenario_file}"
+            elif [ "${_scen_count:-0}" -gt 1 ]; then
+                _scen_path="$(printf '%s\n' "$_scen_files" | head -1)"
+                e2e_scenario_file="${_scen_path#${REPO_DIR}/}"
+                log "⚠️ issue #${number}: ${_scen_count} scenario files in ${_scen_dir} — беру первый: ${e2e_scenario_file} (воркер должен явно указать scenario_file в блоке ## e2e)"
+            else
+                log "issue #${number}: no scenario files in ${_scen_dir} — fallback на smoke-test (как раньше)"
+            fi
+        fi
+    fi
+    [ -n "$e2e_scenario_file" ] && e2e_args+=(-f "scenario_file=$e2e_scenario_file")
     if ! _trigger_workflow_with_retry "$E2E_WORKFLOW" --ref "$ROUND_BRANCH" "${e2e_args[@]}"; then
         log "issue #${number}: failed to trigger ${E2E_WORKFLOW} after retries"; errored=$((errored+1)); continue
     fi

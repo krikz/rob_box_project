@@ -321,6 +321,16 @@ class DialogueNode(Node):
         # payload /voice/dialogue/response, telegram_node читает его и
         # шлёт send_message в нужный чат. None = голосовой ввод.
         self._active_tg_chat_id: Optional[int] = None
+        # Issue #1385 — gating флаг e2e_voice_test.sh. Пока идёт атомарный
+        # e2e (ros2 topic /voice/e2e/busy=True), dialogue_node НЕ реагирует
+        # на wake-word из ReSpeaker (иначе ответы чужого трафика —
+        # телеграм, фоновый шум, музыка из MCP — попадают в recording и
+        # дают ложный PASS). Снимается флаг через release_e2e_busy в trap.
+        # Атомарный доступ: ROS callback может прилететь из другого потока
+        # параллельно с _on_stt → race condition. Используем threading.Lock
+        # для синхронизации флага и счётчика.
+        self._e2e_busy: bool = False
+        self._e2e_busy_lock = threading.Lock()
         self._dsm: DialogueStateMachine = DialogueStateMachine(
             silence_timeout=float(self.get_parameter("dialogue_timeout").value),
         )
@@ -438,6 +448,15 @@ class DialogueNode(Node):
                 String, "/voice/speaker/register", 10)
         self.create_subscription(
             Bool, "/audio/vad", self._on_vad, 10, callback_group=cbg)
+        # Issue #1385 — gating: e2e_voice_test.sh публикует /voice/e2e/busy
+        # (True = идёт атомарный e2e, False = свободен). Пока True,
+        # dialogue_node игнорирует wake-word (см. _on_stt early-return),
+        # чтобы ответы чужого трафика (телеграм, музыка из MCP, шум) не
+        # попадали в e2e recording. Снимается автоматически (release_e2e_busy
+        # в trap на стороне e2e_voice_test.sh). Если топик не публикуется —
+        # default False → обычное поведение (backward compat).
+        self.create_subscription(
+            Bool, "/voice/e2e/busy", self._on_e2e_busy, 10, callback_group=cbg)
         self.create_subscription(
             String, "/voice/tts/finished", self._on_tts_finished, 10,
             callback_group=cbg)
@@ -1161,6 +1180,38 @@ class DialogueNode(Node):
             pub.publish(msg)
         except Exception as exc:  # noqa: BLE001 — observer must not break
             self.get_logger().debug(f"⚠️ task_events publish failed: {exc}")
+    def _on_e2e_busy(self, msg: Bool) -> None:
+        """Issue #1385 — gating callback для /voice/e2e/busy.
+
+        Атомарный e2e-тест публикует True в начале прогона и False в конце.
+        Пока True — dialogue_node НЕ должен реагировать на wake-word (см.
+        ``_on_stt`` early-return), иначе ответы чужого трафика (телеграм,
+        MCP-музыка, шум) попадают в e2e recording и дают ложный PASS.
+
+        Атомарный доступ к флагу: ROS callback прилетает из executor
+        потока, ``_on_stt`` зовётся из того же, но есть риск гонки если
+        executor multi-threaded → берём threading.Lock на запись/чтение.
+
+        Pure-method unit-тесты используют ``object.__new__(DialogueNode)``
+        и НЕ зовут ``__init__`` → атрибутов нет. Используем getattr/hasattr
+        с дефолтами (как в ``_on_vad``).
+        """
+        new_busy = bool(getattr(msg, "data", False))
+        # Lazy init для pure-method tests
+        if not hasattr(self, "_e2e_busy"):
+            self._e2e_busy = False
+        if not hasattr(self, "_e2e_busy_lock"):
+            import threading as _thr
+            self._e2e_busy_lock = _thr.Lock()
+        with self._e2e_busy_lock:
+            old_busy = self._e2e_busy
+            self._e2e_busy = new_busy
+        if old_busy != new_busy:
+            self.get_logger().info(
+                f"🛡️ [issue 1385] e2e_busy: {old_busy} → {new_busy} "
+                f"(gating={'ON' if new_busy else 'OFF'})"
+            )
+
     def _on_vad(self, msg: Bool) -> None:
         # Use the public attribute name (no underscore) since the pure-method
         # unit tests assert against ``vad_speech_detected``. The legacy
@@ -1465,6 +1516,30 @@ class DialogueNode(Node):
             self.get_logger().info(f"🔇 [issue 989] Игнор rejected/empty маркера: {text[:60]}")
             self._llm_skipped_counter["stt_rejected"] += 1
             return
+        # Issue #1385 — gating: пока идёт атомарный e2e, dialogue_node
+        # НЕ реагирует на wake-word из ReSpeaker. e2e_voice_test.sh
+        # публикует /voice/e2e/busy=True в начале прогона и =False в конце.
+        # Telegram-чат ([TG:...]) пропускаем безусловно — это не микрофон,
+        # gating только для физического wake-word из ReSpeaker, чтобы
+        # автотест «наполни комнату музыкой» через телеграм-бот НЕ
+        # блокировался (issue #1385 acceptance: «параллельно включи
+        # напомни комнату музыкой через Telegram — e2e НЕ должен
+        # подхватить это»).
+        if tg_chat_id is None:
+            if not hasattr(self, "_e2e_busy"):
+                self._e2e_busy = False
+            if not hasattr(self, "_e2e_busy_lock"):
+                import threading as _thr
+                self._e2e_busy_lock = _thr.Lock()
+            with self._e2e_busy_lock:
+                _e2e_busy_now = self._e2e_busy
+            if _e2e_busy_now:
+                self._llm_skipped_counter["e2e_busy"] += 1
+                self.get_logger().info(
+                    f"🛡️ [issue 1385] Игнор wake-word: e2e в прогоне: text={text[:60]!r}"
+                )
+                self._maybe_log_skip_summary()
+                return
         state = self._dsm.current_state
         was_idle = state == DialogueStateKind.IDLE  # FIX #992: для music_cleanup new_dialogue
         if state == DialogueStateKind.SILENCED:
