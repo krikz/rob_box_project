@@ -717,6 +717,21 @@ class DialogueNode(Node):
                 f"✅ Prompt loaded: {prompt_file} ({len(prompt)} bytes) "
                 f"from {os.path.join(pkg, 'prompts', prompt_file)}\n"
                 f"   first line: {prompt.split(chr(10))[0][:120]!r}")
+            # Regression guard for issue #1219 (voice-change feature): the
+            # prompt MUST contain an explicit ``RULE #VOICE`` block
+            # instructing the LLM to call ``set_voice(...)`` for voice
+            # change requests. Without it, MiniMax-M3 (live provider)
+            # silently ignores the request and answers "Ок." without any
+            # tool call — the robot stays on the default male voice.
+            # If you're refactoring the prompt, keep the rule; if you
+            # switch to a different compact prompt, copy the rule over.
+            if "RULE #VOICE" not in prompt:
+                self.get_logger().warning(
+                    "⚠️ [issue 1219] System prompt does not contain "
+                    "'RULE #VOICE' — LLM may ignore voice-change "
+                    "requests and skip the set_voice tool. See "
+                    "master_prompt_compact.txt for the canonical block."
+                )
             return prompt
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(f"⚠️ Prompt not found ({exc})")
