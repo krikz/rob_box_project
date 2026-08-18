@@ -223,7 +223,17 @@ fi
 # удалён) → triage создавал вторую карточку на тот же issue. Дополнительная
 # идемпотентность: собрать мапу issue -> task_id из СУЩЕСТВУЮЩИХ карточек
 # (по "issue: #N" в body) и не создавать дубль, если карточка уже есть.
-existing_by_issue="$(printf '%s' "$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" list --json 2>/dev/null || echo '[]')" | python3 -c '
+#
+# Ретро-фикс (18.08 t_a0fac345): регекс r"issue:\s*#(\d+)" ловил ТОЛЬКО формат
+# с двоеточием (`Source issue: #N`). Manual-карточки Шифу имеют формат
+# `**Source**: issue #N` (без двоеточия перед номером, только после Source) →
+# triage не видел ручную карточку → создавал дубль → 2 worker-а параллельно
+# работали над одним issue (race). Расширили регекс:
+#   - ловит и `issue: #N`, и `issue #N`, и `Issue #N` (case-insensitive на слово issue)
+#   - в карту попадают ВСЕ статусы (включая done/archived) — но downstream
+#     фильтрует по статусу (skip только если ACTIVE — running/ready/todo/blocked)
+# shellcheck disable=SC2016  # python heredoc — $ внутри одинарных кавычек literal
+existing_by_issue="$(printf '%s' "$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" list --json --archived 2>/dev/null || echo '[]')" | python3 -c '
 import json, sys, re
 try:
     d = json.load(sys.stdin)
@@ -231,12 +241,12 @@ try:
 except Exception:
     tasks = []
 for t in tasks:
-    if t.get("status") == "archived":
-        continue
     body = t.get("body") or ""
-    m = re.search(r"issue:\s*#(\d+)", body)
+    # Ловим и `Source**: issue #N`, и `Source: issue: #N`, и любой регистр.
+    # Слово "issue" опционально с двоеточием после — \W* съедает 0+ не-word.
+    m = re.search(r"\bissue\W*#(\d+)", body, re.IGNORECASE)
     if m:
-        print("%s\t%s" % (m.group(1), t.get("id", "")))
+        print("%s\t%s\t%s" % (m.group(1), t.get("id", ""), t.get("status", "")))
 ')"
 
 # Ретро-фикс (09.08 #1): старые done/archived карточки держат ветку через
@@ -363,23 +373,31 @@ while IFS=$'\t' read -r number title labels body; do
     # Ретро-фикс (13.08, #968): для REOPENED issue проверяем статус существующей
     # карточки: если она ЖИВАЯ (running/ready/todo/blocked) — воркер уже работает,
     # дубль НЕ создаём; если мертва (done/archived) — создаём свежую.
-    existing_id="$(printf '%s\n' "$existing_by_issue" | awk -F'\t' -v n="$number" '$1==n {print $2; exit}')"
+    # Ретро-фикс (18.08 t_a0fac345): `existing_by_issue` теперь содержит статус
+    # в 3-м поле (id\tstatus) — используем его напрямую, без лишнего
+    # `kanban show` (экономит ~1-2 сек на тик + не зависит от возможных падений show).
+    existing_line="$(printf '%s\n' "$existing_by_issue" | awk -F'\t' -v n="$number" '$1==n {print; exit}')"
+    existing_id="$(printf '%s' "$existing_line" | cut -f2)"
+    existing_status="$(printf '%s' "$existing_line" | cut -f3)"
     if [ -n "$existing_id" ]; then
         if [ "$is_reopened" = "false" ]; then
-            log "issue #${number} already has card ${existing_id} (issue: #${number} in body) — skip"
+            # НЕ reopened → любая существующая карточка (active или dead) —
+            # означает что для этого issue уже была работа. Для non-reopened
+            # случая мы не пересоздаём карточку даже если старая done/archived:
+            # если юзер хочет доработку, он сам переоткроет issue (триггернёт
+            # is_reopened=true ветку ниже). Это закрывает ретро-bug t_a0fac345
+            # (race manual+auto-triage на свежем issue).
+            log "issue #${number} already has card ${existing_id} (status=${existing_status:-unknown}) — skip"
             skipped=$((skipped+1)); continue
         fi
-        _existing_status="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" show "$existing_id" --json 2>/dev/null \
-            | python3 -c 'import json,sys
-try: print(json.load(sys.stdin).get("task",{}).get("status",""))
-except Exception: print("")')"
-        case "$_existing_status" in
+        # REOPENED → проверяем статус: живая → skip, мёртвая → создаём свежую.
+        case "${existing_status:-}" in
             running|ready|todo|blocked)
-                log "issue #${number}: карточка ${existing_id} ЖИВАЯ (status=${_existing_status}) — воркер уже работает, дубль не создаём"
+                log "issue #${number}: карточка ${existing_id} ЖИВАЯ (status=${existing_status}) — воркер уже работает, дубль не создаём"
                 skipped=$((skipped+1)); continue
                 ;;
             done|archived|"")
-                log "issue #${number}: старая карточка ${existing_id} мертва (status=${_existing_status:-unknown}) — создаю свежую на доработку"
+                log "issue #${number}: старая карточка ${existing_id} мертва (status=${existing_status:-unknown}) — создаю свежую на доработку"
                 ;;
         esac
     fi
