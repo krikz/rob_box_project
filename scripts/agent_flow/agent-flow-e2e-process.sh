@@ -1939,9 +1939,34 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
     [ -n "$e2e_tts" ] && e2e_args+=(-f "tts=$e2e_tts")
     [ -n "$e2e_stt" ] && e2e_args+=(-f "stt=$e2e_stt")
     [ -n "$e2e_acceptance_check" ] && e2e_args+=(-f "acceptance_check=$e2e_acceptance_check")
-    # bug(e2e #1375) ретро 18.08: передаём scenario_file в workflow. Без этого
-    # L-E2E Voice Test.yml берёт дефолт voice_text='Робот, спой песенку про
-    # енотика' даже когда PR прислал music_library_suite_v1.json.
+    # bug(e2e #1375/#1421) ретро 18.08: передаём scenario_file в workflow. Без
+    # этого L-E2E Voice Test.yml берёт дефолт voice_text='Робот, спой песенку про
+    # енотика' даже когда round содержит music_library_suite_v1.json.
+    #
+    # issue #1421: первая попытка (PR #1387) использовала `gh pr view --json files`
+    # — НЕ надёжно: PR #1375/#1421 фиксят скрипт, но scenario уже был влит в
+    # develop через другой PR (#1373) → `gh pr view` пустой → scenario_file=none →
+    # ложный PASS. Решение: второй pass через `git diff origin/develop...HEAD`
+    # ПОСЛЕ merge агентской ветки в round (line 1574). На этот момент WORKTREE_DIR
+    # на round-branch с применённым merge'ом — diff показывает ВСЕ сценарии в
+    # tip round'а, которых нет в develop. Если хоть один — берём его (ADDED >
+    # MODIFIED приоритет, как в первой попытке).
+    if [ -z "$e2e_scenario_file" ] && [ -n "${WORKTREE_DIR:-}" ]; then
+        _diff_scenarios="$(git -C "$WORKTREE_DIR" diff --name-only origin/develop...HEAD 2>/dev/null \
+            | grep -E '(^|/)(\.github/e2e/scenarios/.*\.json)$' || true)"
+        if [ -n "$_diff_scenarios" ]; then
+            # ADDED > MODIFIED: prefer files that only exist in HEAD (new in round)
+            _diff_added="$(git -C "$WORKTREE_DIR" diff --name-only --diff-filter=A origin/develop...HEAD 2>/dev/null \
+                | grep -E '(^|/)(\.github/e2e/scenarios/.*\.json)$' || true)"
+            if [ -n "$_diff_added" ]; then
+                _picked="$(printf '%s\n' "$_diff_added" | head -1)"
+            else
+                _picked="$(printf '%s\n' "$_diff_scenarios" | head -1)"
+            fi
+            log "issue #${number}: scenario_file auto-discovered from round diff vs origin/develop: ${_picked}"
+            e2e_scenario_file="$_picked"
+        fi
+    fi
     [ -n "$e2e_scenario_file" ] && e2e_args+=(-f "scenario_file=$e2e_scenario_file")
     # Issue #1196 L2 — полуавтомат-проверка эха telegram↔dialogue
     # (check_tg_echo: true в блоке ## e2e).
