@@ -147,6 +147,30 @@ LLM-кронов (архитектор-надзор 5c96a6eedf93 и т.п.). З�
   --key <стабильный-slug>
 ```
 
+### `validate_honesty.sh` — pre-PR check на «голословный PASS» (ADR-0018, 18.08.2026)
+
+Сканирует PR body (или файл / stdin) на claim-маркеры (`проверил`, `работает`,
+`PASS`, `✅`, `done`, `fixed`, `closes #N`) и проверяет, что рядом есть
+raw-evidence (`pytest -v`, `gh run view`, `docker logs`, `sqlite3 .dump`,
+`git log --stat`, code-fence). Если claim без evidence — печатает `WARN:`
+в stderr. **Всегда exit 0** (не блокер; ревьюер сам решит). `--strict`
+превращает в exit 1 для CI.
+
+```bash
+# Pre-PR (воркеры прогоняют локально до kanban complete):
+bash scripts/agent_flow/validate_honesty.sh --file pr-body.md
+bash scripts/agent_flow/validate_honesty.sh --pr 1397      # через gh pr view
+cat pr-body.md | bash scripts/agent_flow/validate_honesty.sh
+
+# Тест:
+bash scripts/agent_flow/tests/test_validate_honesty.sh
+```
+
+**Интеграция:** в `agent-flow-merge-gate.sh` есть helper `honesty_hint_for_pr`,
+который дёргает валидатор в e2e-done review и логирует WARN (без блокировки).
+В `EXPECTED` `install.sh` → drift-detect контролирует, что скрипт не пропал
+из репо. Регистрация: `validate_honesty.sh` в `EXPECTED` (см. PR #1397).
+
 ### `round_ensure.sh` — ручной валидационный e2e-раунд (ретро 11.08 t_26a6d362)
 
 **Процессное правило:** ручные валидационные раунды devops (проверить
