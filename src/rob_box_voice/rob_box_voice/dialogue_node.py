@@ -284,6 +284,16 @@ class DialogueNode(Node):
         # Если opentelemetry-пакетов нет — no-op (см. observability.tracing).
         init_tracing("dialogue_node")
         self._declare_params()
+        # Issue #1409 — SSoT for MCP tool names. Populated from
+        # ``ToolRegistry.list_tools()`` at startup (the canonical 32+5
+        # manifests the LLM is wired to via ``_build_tool_provider``) and
+        # kept in sync via ``_on_mcp_tools_update`` when /mcp/tools refresh
+        # messages arrive. ``_load_system_prompt`` uses this set to verify
+        # that every tool the LLM can call is mentioned in the
+        # ``music_skill_prompt.txt`` (case-insensitive) — silent drift
+        # between tool surface and prompt text otherwise makes the LLM
+        # confidently say «нет такой функции» (see issue #1403).
+        self._mcp_tool_names: set[str] = self._collect_mcp_tool_names()
         self._system_prompt: str = self._load_system_prompt()
         self._verbose_llm: bool = bool(self.get_parameter("verbose_llm").value)
         self._wake_words: List[str] = list(self.get_parameter("wake_words").value)
@@ -744,10 +754,73 @@ class DialogueNode(Node):
                     "requests and skip the set_voice tool. See "
                     "master_prompt_compact.txt for the canonical block."
                 )
+            # Issue #1409 — SSoT tools-vs-prompt validation (music-domain only).
+            # ``music_skill_prompt.txt`` is a static contract the LLM reads
+            # verbatim at startup, so any MCP tool the LLM can call MUST be
+            # mentioned by name — otherwise the LLM degrades to «нет такой
+            # функции» fallback (see issue #1403: ``generate_music`` was
+            # registered but never mentioned, so the LLM kept using Renardo).
+            # Other domain prompts (FAQ, navigation, web_search) stay
+            # unchecked for now — TODO when their contracts harden.
+            self._validate_tools_in_prompt(prompt_file, prompt)
             return prompt
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(f"⚠️ Prompt not found ({exc})")
             return "Ты ROBBOX — умный робот-ассистент. Отвечай кратко и по делу."
+
+    def _collect_mcp_tool_names(self) -> set[str]:
+        """Return the canonical set of MCP tool names (SSoT).
+
+        Source of truth is ``ToolRegistry.list_tools()`` — the same
+        manifests the LLM is wired to via ``_build_tool_provider``. We
+        don't fall back to ``self.available_tools`` here because the
+        latter is populated asynchronously by ``/mcp/tools`` messages
+        and may be stale/empty at ``_load_system_prompt`` time.
+        """
+        try:
+            return {spec.name for spec in ToolRegistry().list_tools()}
+        except Exception as exc:  # noqa: BLE001 — defensive: bad import / init
+            self.get_logger().warning(
+                f"⚠️ [issue 1409] ToolRegistry probe failed: {exc!r}; "
+                "skipping tools-vs-prompt validation"
+            )
+            return set()
+
+    def _validate_tools_in_prompt(
+        self, prompt_file: str, prompt_text: str
+    ) -> None:
+        """Warn if MCP tools are missing from ``music_skill_prompt.txt``.
+
+        Music-domain only (per ARCH-review #1405 / #1409 / issue #1403
+        scope — the music prompt is a static contract the LLM reads
+        verbatim, so drift there is user-visible. Other domain prompts
+        stay unchecked; that's a future-cycle TODO).
+        """
+        # Match by filename stem — the prompt lives under prompts/skills/.
+        if "music_skill" not in prompt_file:
+            return
+        tool_names: set[str] = getattr(self, "_mcp_tool_names", set()) or set()
+        if not tool_names:
+            # Either ToolRegistry probe failed (already warned above) or
+            # the registry is empty — no point in spamming warnings.
+            return
+        prompt_lower = prompt_text.lower()
+        missing: list[str] = []
+        for tool_name in sorted(tool_names):
+            if tool_name.lower() not in prompt_lower:
+                missing.append(tool_name)
+        if missing:
+            self.get_logger().warning(
+                f"[issue 1409] {len(missing)} MCP tool(s) not described "
+                f"in {prompt_file}: {', '.join(missing)}. "
+                f"LLM may answer «нет такой функции» and fall back to "
+                f"a different tool (regression class of #1403)."
+            )
+        else:
+            self.get_logger().debug(
+                f"[issue 1409] All {len(tool_names)} MCP tools are "
+                f"mentioned in {prompt_file} ✓"
+            )
     def _build_memory(self) -> MemoryStore:
         try:
             store: MemoryStore = SQLiteVoiceMemory(
@@ -3849,13 +3922,25 @@ class DialogueNode(Node):
             pass
 
     def _on_mcp_tools_update(self, msg) -> None:
-        """Parse MCP tools JSON and update ``available_tools``."""
+        """Parse MCP tools JSON and update ``available_tools``.
+
+        Issue #1409 — also keep ``self._mcp_tool_names`` (SSoT set used
+        by ``_load_system_prompt`` validation) in sync. If /mcp/tools
+        delivers a fresher catalogue than ``ToolRegistry.list_tools()``
+        (e.g. an external MCP server registered new tools after
+        startup), we want the next prompt reload to see them too.
+        """
         try:
             data = getattr(msg, "data", "") or "[]"
             tools = json.loads(data)
             if isinstance(tools, list):
                 self.available_tools = tools
                 self.mcp_tools_available = True
+                self._mcp_tool_names = {
+                    str(t.get("function", {}).get("name", ""))
+                    for t in tools
+                    if isinstance(t, dict) and t.get("function", {}).get("name")
+                }
             else:
                 self.available_tools = []
                 self.mcp_tools_available = False
