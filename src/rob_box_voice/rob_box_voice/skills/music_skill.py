@@ -677,6 +677,11 @@ class MusicSkill(BaseSkill):
                 genre=genre or None,
                 limit=limit,
             )
+            # Issue #1358 e2e: distinctive log line.
+            _LOG.info(
+                "🎼 [issue 1358] search_library: query=%r mood=%r genre=%r tags=%r → %d hits",
+                query, mood, genre, tag_list, len(results),
+            )
             return json.dumps(
                 {
                     "query": query,
@@ -701,10 +706,17 @@ class MusicSkill(BaseSkill):
             if _library is None:
                 return json.dumps({"error": "library unavailable"}, ensure_ascii=False)
             tracks = _library.list_all(limit=limit, sort_by=sort_by)
+            total = _library.count()
+            # Issue #1358 e2e: distinctive log line that the e2e harness
+            # can grep for to confirm the new tool was actually called.
+            _LOG.info(
+                "🎼 [issue 1358] list_library: total=%d shown=%d sort=%s",
+                total, len(tracks), sort_by,
+            )
             return json.dumps(
                 {
                     "sort_by": sort_by,
-                    "total": _library.count(),
+                    "total": total,
                     "shown": len(tracks),
                     "tracks": [t.to_dict() for t in tracks],
                 },

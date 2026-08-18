@@ -328,16 +328,22 @@ class TestLibraryTools:
         assert body["count"] >= 1
         assert any(t["track_id"] == ids[0] for t in body["tracks"])
 
-    def test_list_library_recent(self, tmp_env) -> None:
+    def test_list_library_recent(self, tmp_env, caplog) -> None:
         skill, _, _ = _new_music_skill(tmp_env)
         self._seed(skill)
         tools = skill._make_tools()
         lst = _tool_by_name(tools, "list_library")
         underlying = getattr(lst, "__wrapped__", lst)
-        result = _run(underlying(limit=10, sort_by="recent"))
+        import logging
+        with caplog.at_level(logging.INFO, logger="rob_box_voice.skills.music_skill"):
+            result = _run(underlying(limit=10, sort_by="recent"))
         body = json.loads(result)
         assert body["total"] == 3
         assert body["shown"] == 3
+        # e2e acceptance: distinctive log line
+        assert any("issue 1358" in r.message and "list_library" in r.message
+                   for r in caplog.records), \
+            "expected 'issue 1358 list_library' log line"
 
     def test_get_track_info(self, tmp_env) -> None:
         skill, _, _ = _new_music_skill(tmp_env)
