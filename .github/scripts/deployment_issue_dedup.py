@@ -71,6 +71,13 @@ CRITICAL_EXCLUDE_COMMON = [
     # stack comes up healthy afterwards (voice-assistant reports
     # "Music stack healthy" / "sclang готов" / "Missing critical SynthDefs:
     # none"), so this is a benign startup race, not an audio outage.
+    #
+    # NOTE (issue #1363): since scsynth is now started with `-l 32` (matches
+    # sclang's default of 32 max logins), the negative-node-ID mismatch no
+    # longer occurs. The exclusion below remains as a defensive measure for
+    # legacy deployments / manual scsynth invocations where the maxLogins
+    # default of 64 still leaks negative IDs into the log. Once every
+    # deployment uses `-l 32` we can drop the exclusion.
     r"failure in server /g_new negative node ids are reserved",
     # External MiniMax quota/auth (issue #1193): error 2056 "Token Plan usage
     # limit reached" is a billing limit, not a code bug. TTS chain falls back
