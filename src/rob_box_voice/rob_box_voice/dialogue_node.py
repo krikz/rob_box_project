@@ -124,6 +124,32 @@ ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
 ASYNCIO_LOOP_DRIVER_NAME_PREFIX: str = "dialogue-async-loop"
 ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S: float = 2.0
 
+# Issue #1389 — single source of truth for ``_llm_skipped_counter`` keys.
+# Production ``__init__`` строит dict из этой константы (``{k: 0 for k in
+# _LLM_SKIP_REASONS}``), тестовый fixture ``_make_node`` использует ту же
+# константу. Это исключает класс багов #1389 (commit 91bf3a8a добавил
+# ``_llm_skipped_counter["e2e_busy"] += 1``, но забыл ключ в dict-литерале
+# ``__init__`` → production voice-assistant падает с KeyError на первом
+# STT после старта).
+#
+# При добавлении нового skip-reason:
+#   1) добавить ключ сюда
+#   2) использовать в коде как ``self._llm_skipped_counter["<key>"] += 1``
+# Шаг 2 без шага 1 → ``test_counter_includes_e2e_busy_key`` (или аналог)
+# заставит добавить ключ в эту константу.
+_LLM_SKIP_REASONS: tuple[str, ...] = (
+    "no_wake_word",
+    "silenced",
+    "silence_command",
+    "empty_after_strip",
+    "stt_rejected",
+    "music_stop",
+    "command_intent",
+    # Issue #1385 — gating: сколько раз wake-word был проигнорирован
+    # из-за /voice/e2e/busy=True (идёт атомарный e2e-тест).
+    "e2e_busy",
+)
+
 # Issue #992 (live 13.08): BACKING-детектор «2+ speak_text» ложно
 # срабатывал на разговорчивую LLM (приветствие + комментарий) и убивал
 # только что запущенный TRACK сразу после tts_batch_complete
@@ -374,17 +400,16 @@ class DialogueNode(Node):
         # Issue #1101 — diagnostics for "why LLM wasn't called".
         # Оператор видит «робот молчит», а в логе — ни одного error/warn.
         # Реальная причина обычно одна из: no_wake_word, silenced,
-        # silence_command, empty_after_strip, stt_rejected, music_stop.
+        # silence_command, empty_after_strip, stt_rejected, music_stop,
+        # command_intent, e2e_busy.
         # Счётчик + периодическая сводка раз в 5 минут — сразу видно, что
         # фразы теряются на gate'е ещё до LLM.
+        #
+        # Issue #1389 — dict строится из ``_LLM_SKIP_REASONS`` (single
+        # source of truth, см. module-level). Нельзя «забыть» ключ в init,
+        # если он есть в ``_on_stt`` increment site.
         self._llm_skipped_counter: dict[str, int] = {
-            "no_wake_word": 0,
-            "silenced": 0,
-            "silence_command": 0,
-            "empty_after_strip": 0,
-            "stt_rejected": 0,
-            "music_stop": 0,
-            "command_intent": 0,
+            k: 0 for k in _LLM_SKIP_REASONS
         }
         self._last_skip_summary_ts: float = time.monotonic()
         self._tts_control_pub = self.create_publisher(

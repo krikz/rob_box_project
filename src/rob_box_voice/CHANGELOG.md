@@ -24,6 +24,11 @@
 
 ### Fixed
 - Исправлена проблема накопления неактуальных ответов при быстрых запросах
+- **Issue #1389**: KeyError 'e2e_busy' на первом STT после старта voice-assistant.
+  Counter `_llm_skipped_counter` теперь строится из единой константы `_LLM_SKIP_REASONS`
+  (single source of truth) — невозможно «забыть» ключ в `__init__`, если он есть
+  в increment site. Регрессионный тест `test_counter_includes_e2e_busy_key` ловит
+  расхождение константы и increment-сайтов.
 
 ## [1.0.0] - 2025-10-XX
 

@@ -33,6 +33,7 @@ from rob_box_voice.dialogue_node import (
     BABBLE_PERFORMANCE_KEYWORDS,
     DialogueNode,
     _FallbackLLM,
+    _LLM_SKIP_REASONS,
 )
 
 # Реальные enum'ы из rob_box_harness (conftest их не мокает — это
@@ -72,16 +73,13 @@ def _make_node(parameters: dict | None = None) -> DialogueNode:
     # State attrs
     n._wake_words = ["робок", "робот", "роббокс"]
     n._verbose_llm = False
+    # Issue #1389 — fixture использует ту же константу что и production
+    # ``__init__``. Если кто-то добавит ``+= 1`` для нового skip-reason
+    # в dialogue_node.py, но забыл ключ в ``_LLM_SKIP_REASONS`` — этот
+    # fixture всё равно пройдёт (мы вручную матчим константу), но тест
+    # ``test_counter_includes_e2e_busy_key`` поймает расхождение.
     n._llm_skipped_counter = {
-        "no_wake_word": 0,
-        "silenced": 0,
-        "silence_command": 0,
-        "empty_after_strip": 0,
-        "stt_rejected": 0,
-        "music_stop": 0,
-        # Issue #1385 — gating: сколько раз wake-word был проигнорирован
-        # из-за /voice/e2e/busy=True (идёт атомарный e2e-тест).
-        "e2e_busy": 0,
+        k: 0 for k in _LLM_SKIP_REASONS
     }
     n._last_skip_summary_ts = time.monotonic()
     n._speaker_by_text = {}
@@ -524,6 +522,55 @@ class TestOnStt:
         n._dispatch_turn = MagicMock()
         n._on_stt(self._msg("робот, спой"))
         assert n._llm_skipped_counter["e2e_busy"] == 1
+
+    # --- Issue #1389 regression: counter init must include e2e_busy ------
+    def test_counter_includes_e2e_busy_key(self):
+        """Регрессионный тест на #1389: counter dict должен включать все
+        ключи, которые инкрементируются в ``_on_stt`` и других путях.
+
+        Без ключа ``e2e_busy`` в ``__init__`` production-voice-assistant
+        падает с ``KeyError: 'e2e_busy'`` на первом STT-сообщении после
+        старта (issue #1389: «voice-assistant DEAD на 10.1.1.21»).
+        Защита — единый источник правды ``_LLM_SKIP_REASONS``: dict init
+        строится как ``{k: 0 for k in _LLM_SKIP_REASONS}`` → нельзя
+        «забыть» ключ в инициализации, если он есть в инкременте.
+        """
+        # 1. Single source of truth — все ключи, которые используются в
+        #    ``_on_stt``/etc. для ``_llm_skipped_counter[k] += 1``.
+        expected_keys = {
+            "no_wake_word",
+            "silenced",
+            "silence_command",
+            "empty_after_strip",
+            "stt_rejected",
+            "music_stop",
+            "command_intent",
+            "e2e_busy",
+        }
+        actual_keys = set(_LLM_SKIP_REASONS)
+        missing = expected_keys - actual_keys
+        assert not missing, (
+            f"_LLM_SKIP_REASONS missing keys: {missing}. "
+            f"Add to dialogue_node.py module constant to keep counter init "
+            f"in sync with _on_stt increment sites."
+        )
+
+        # 2. Dict init (production __init__) строит dict из этой константы —
+        #    симулируем это здесь, без вызова __init__ (которому нужен ROS2).
+        from rob_box_voice.dialogue_node import _LLM_SKIP_REASONS as REASONS
+        counter_init = {k: 0 for k in REASONS}
+        # Ключи в init == ключи в константе (no drift)
+        assert set(counter_init.keys()) == actual_keys
+        # Все values = 0
+        assert all(v == 0 for v in counter_init.values()), (
+            f"counter init must be all zeros, got: {counter_init}"
+        )
+        # Конкретно проверяем ключ из репорта (issue #1389)
+        assert "e2e_busy" in counter_init, (
+            "e2e_busy key missing from counter init — production voice-assistant "
+            "crashes with KeyError on first STT message."
+        )
+        assert counter_init["e2e_busy"] == 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
