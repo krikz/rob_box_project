@@ -71,6 +71,14 @@ DEVELOP_BRANCH="${DEVELOP_BRANCH:-develop}"
 DEPLOY_RECONCILE_MINUTES="${DEPLOY_RECONCILE_MINUTES:-30}"
 MAINTENANCE_BRANCH="${MAINTENANCE_BRANCH:-develop}"
 MAINTENANCE_FILE="${MAINTENANCE_FILE:-MAINTENANCE}"
+# Ретро 18.08 t_873ebef2 (#1391, дополнение к PR #1399 от e3f227e2):
+# PR #1399 покрыл только MERGED+e2e-done путь — тут мы добавляем:
+#   1) Защиту Q22-orphan-close пути (там нет e2e-done в принципе,
+#      нужен широкий recent-reopen детект).
+#   2) Whitelist label `user-reopened-this` — ручной override Шифу,
+#      который гарантированно блокирует close независимо от timeline.
+USER_REOPEN_AUDIT_LABEL="${USER_REOPEN_AUDIT_LABEL:-user-reopened-this}"
+USER_REOPEN_RECENT_DAYS="${USER_REOPEN_RECENT_DAYS:-7}"
 AGENT_FLOW_DEFAULT_ROLE="${AGENT_FLOW_DEFAULT_ROLE:-architect}"
 DRY_RUN="${DRY_RUN:-false}"
 ISSUE_LIMIT="${ISSUE_LIMIT:-50}"
@@ -603,6 +611,30 @@ _timeline_last_reopen_at() {  # $1=issue_number
         2>/dev/null || printf ''
 }
 
+# Ретро 18.08 t_873ebef2 (#1391, дополнение к PR #1399 от e3f227e2):
+# Q22-orphan-close путь (нет e2e-done в timeline — e2e был невозможен)
+# тоже должен подавляться при ручном reopen. Широкий детект «недавнего
+# reopen» без требования e2e-done. Использует _timeline_last_reopen_at
+# (тот же jq-фильтр, mock_env.sh совместим). Возвращает 0 если недавний
+# reopen есть, иначе 1. Окно: USER_REOPEN_RECENT_DAYS дней (0 = навсегда).
+_issue_reopened_recently() {  # $1=issue_number
+    local issue="$1" reopen_at
+    reopen_at="$(_timeline_last_reopen_at "$issue")"
+    [ "$reopen_at" = "null" ] && reopen_at=""
+    [ -z "$reopen_at" ] && return 1
+    if [ "${USER_REOPEN_RECENT_DAYS}" = "0" ]; then
+        return 0
+    fi
+    local window_start
+    window_start="$(date -u -d "${USER_REOPEN_RECENT_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # Lexicographic compare works for ISO-8601 Z (timestamp pattern).
+    if [ "$reopen_at" \> "$window_start" ] || [ "$reopen_at" = "$window_start" ]; then
+        return 0
+    fi
+    return 1
+}
+
 # Ретро 15.08 t_16325ddd (гонка PR-state): creator карточек (merge-gate
 # scan-all-prs / e2e-fail) НЕ пере-проверял state PR после скана и создавал
 # карточки для PR, закрытых товарищем Шифу («Не делаем это») → мёртвые карточки
@@ -1119,6 +1151,16 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
                         fi
                         labeled=$((labeled+1)); continue
                     fi
+                    # Ретро 18.08 t_873ebef2 (#1391, дополнение к PR #1399):
+                    # whitelist label `user-reopened-this` — явный manual
+                    # override Шифу. Дополняет user-reopen guard выше: даже
+                    # когда timeline говорит «reopen ДО e2e-done» (нормальный
+                    # путь), whitelist пропускает close — Шифу знает лучше.
+                    if [ -n "${USER_REOPEN_AUDIT_LABEL:-}" ] \
+                        && has_label "${_current_labels_norm:-}" "$USER_REOPEN_AUDIT_LABEL"; then
+                        log "issue #${number}: whitelist ${USER_REOPEN_AUDIT_LABEL} → skip auto-close (issue #1391 supplement)"
+                        labeled=$((labeled+1)); continue
+                    fi
                     if gh issue close "$number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
                         _closed_this_tick=1
                         log "issue #${number}: CLOSED (reason=completed, PASS-proven via ${DONE_LABEL})"
@@ -1157,6 +1199,24 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
                     # (ветки нет) → закрываем issue с reason=completed.
                     # Dedup комментария (24h окно, подстрока тела — ретро
                     # bfc18c85: startswith-префикс не совпадал с реальным телом).
+                    #
+                    # Ретро 18.08 t_873ebef2 (#1391, дополнение к PR #1399):
+                    # даже Q22-orphan-close подавляется при ручном reopen —
+                    # если Шифу переоткрыл значит «фикс не принят», блокируем
+                    # close и возвращаем в user-override. Whitelist label
+                    # `user-reopened-this` тоже триггерит skip (явный сигнал).
+                    # Audit НЕ публикуем — Q22-flow ниже сам публикует
+                    # «🛠 merge-gate (ретро 13.08)», дополнительный
+                    # user-reopen audit только шумит.
+                    if [ -n "${USER_REOPEN_AUDIT_LABEL:-}" ] \
+                        && has_label "${_current_labels_norm:-}" "$USER_REOPEN_AUDIT_LABEL"; then
+                        log "issue #${number}: Q22-orphan, whitelist ${USER_REOPEN_AUDIT_LABEL} → skip auto-close"
+                        labeled=$((labeled+1)); continue
+                    fi
+                    if _issue_reopened_recently "$number"; then
+                        log "issue #${number}: Q22-orphan, recent user-reopen → skip auto-close (issue #1391 supplement)"
+                        labeled=$((labeled+1)); continue
+                    fi
                     _orphan_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
                     _orphan_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_orphan_since}&per_page=100" \
                         --jq '[.[] | select(.body | contains("Фикс влит по Q22"))] | length' 2>/dev/null || echo 0)"
