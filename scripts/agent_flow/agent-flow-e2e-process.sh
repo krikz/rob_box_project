@@ -557,6 +557,14 @@ fi
 # бы со СТАРЫМ issues_json и повторно смержил бы уже обработанный issue в новый
 # round (дубль #1195 в round-101 при уже e2e-done; #1196 голодал — не смержен).
 collect_issues_json() {
+    # Ретро 18.08 t_854c7c67: e2e-process подхватывает needs-e2e не только с issue,
+    # но и с standalone PR (PR #1375 — issue #1373 имел метку `e2e`, а `needs-e2e`
+    # merge-gate поставил только на PR). gh CLI --label в --json GraphQL-режиме
+    # фильтрует только к issues (PR — отдельный ресурс). Теперь к issues
+    # мерджим PRы с тем же лейблом, нормализуя в записи:
+    #   {number, title, body, labels, source: "issue"|"pr", branch}
+    # Для issue source="issue", branch="" (вычисляется в main loop как раньше);
+    # для PR-only source="pr", branch=headRefName (известен сразу).
     issues_json="$(gh issue list \
         --repo "$GH_REPO" \
         --label "$NEEDS_E2E_LABEL" \
@@ -586,6 +594,71 @@ print(json.dumps(keep, ensure_ascii=False))')"
             log "filtered: ${_original_count} → ${_filtered_count} issues (skipped $((_original_count - _filtered_count)) already-labeled)"
         fi
         issues_json="$_filtered"
+    fi
+
+    # Ретро 18.08 t_854c7c67: добавляем PRы с needs-e2e, которых нет в issues
+    # (merge-gate мог поставить needs-e2e только на PR, когда issue имел метку
+    # e2e, а не needs-e2e — кейс PR #1375 / issue #1373). Для каждого PR-only
+    # нормализуем запись и мерджим в issues_json.
+    _prs_json="$(gh pr list \
+        --repo "$GH_REPO" \
+        --label "$NEEDS_E2E_LABEL" \
+        --state open \
+        --limit "$ISSUE_LIMIT" \
+        --json number,title,body,labels,headRefName,baseRefName,mergeStateStatus 2>/dev/null || true)"
+    if [ -n "$_prs_json" ] && [ "$_prs_json" != "[]" ]; then
+        _merged="$(LEDE="${issues_json:-[]}" PRLEDE="${_prs_json}" python3 -c '
+import json, os, sys
+issues = json.loads(os.environ["LEDE"] or "[]")
+prs = json.loads(os.environ["PRLEDE"] or "[]")
+
+# Строим map issue_number -> issue для дедупа (PRы с Closes #N должны
+# мержиться в issue-запись, а не плодить дубликат).
+by_num = {it["number"]: it for it in issues}
+
+# Issue номера, упоминаемые в PR body (Closes #N / Refs #N / Fixes #N),
+# чтобы привязать PR к issue-записи если issue есть.
+import re
+closes_re = re.compile(r"(?im)^(?:closes|fixes|resolves|refs|part of|see)\s+#?(\d+)\b")
+
+raw_issues = list(issues)
+for pr in prs:
+    pr_num = pr["number"]
+    pr_labels = [l["name"] for l in pr.get("labels", [])]
+    # Фильтр: skip PR с e2e-done/e2e:rejected (по аналогии с issue).
+    if "e2e-done" in pr_labels or "e2e:rejected" in pr_labels:
+        sys.stderr.write("pr #" + str(pr_num) + ": has e2e-done/e2e:rejected — skip\n")
+        continue
+    # Если PR имеет closingIssuesReference и есть issue в issues_json — пропускаем
+    # (PR привязан к issue, issue уже стоит на очереди; дублировать в PR-стороне
+    # не нужно — issue-flow уже подхватит ветку через pre-round guard).
+    body = pr.get("body") or ""
+    closes = [int(m) for m in closes_re.findall(body)]
+    # closingIssuesReferences формально надёжнее, но из-за кеша GitHub часто пустой
+    # (PR #1375: closingIssuesReferences=[] несмотря на "Closes #1373" в body).
+    # Поэтому полагаемся на regex по body как первичный сигнал.
+    if any(n in by_num for n in closes):
+        sys.stderr.write("pr #" + str(pr_num) + ": linked to existing issue(s) " +
+            ",".join("#" + str(n) for n in closes if n in by_num) +
+            " — skip (issue-flow handles it)\n")
+        continue
+    # Standalone PR: нормализуем в issue-шейп, source="pr", branch=headRefName.
+    raw_issues.append({
+        "number": pr_num,
+        "title": pr.get("title") or "",
+        "body": body,
+        "labels": pr.get("labels", []),
+        "source": "pr",
+        "branch": pr.get("headRefName") or "",
+    })
+
+print(json.dumps(raw_issues, ensure_ascii=False))')"
+        _prs_count="$(printf '%s' "$_prs_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+        _merged_count="$(printf '%s' "$_merged" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+        if [ "$_merged_count" -gt "$((${_prs_count:-0} + 0))" ] || [ "$_merged_count" -gt "$(printf '%s' "${issues_json:-[]}" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)" ]; then
+            log "queue: merged ${_prs_count} PR-side needs-e2e into issues_json (retro 18.08 t_854c7c67)"
+        fi
+        issues_json="$_merged"
     fi
 }
 
@@ -1065,9 +1138,15 @@ active_round_with_issue() {  # $1=agent_branch
 # РЕШЕНИЕ: считаем живых кандидатов ДО round_ensure; если 0 — round-ветку НЕ
 # создаём (только post-round sweep + exit). Счётчик не инкрементируется.
 live_candidates=0
-while IFS=$'\t' read -r _g_n _g_t; do
+# Ретро 18.08 t_854c7c67: source="pr" → branch известен из записи; source="issue"
+# → branch пуст, вычислим через compute_agent_branch ниже.
+while IFS=$'\t' read -r _g_n _g_t _g_br_pre; do
     if [ -z "$_g_n" ]; then continue; fi
-    _g_br="$(compute_agent_branch "$_g_n" "$_g_t")"
+    if [ -z "$_g_br_pre" ]; then
+        _g_br="$(compute_agent_branch "$_g_n" "$_g_t")"
+    else
+        _g_br="$_g_br_pre"
+    fi
     _g_st="$(gh pr list --repo "$GH_REPO" --state all --head "$_g_br" \
         --json number,state --jq 'if length>0 then .[0].state else "NONE" end' 2>/dev/null || echo NONE)"
     if [ "$_g_st" = "NONE" ]; then
@@ -1168,7 +1247,10 @@ log "queue refreshed after post-round sweep: $(printf '%s' "$issues_json" | pyth
 # We process all `needs-e2e` issues per tick; failures on one issue do not
 # stop the others. The chron rhythm (every 1h) caps the effective capacity.
 
-while IFS=$'\t' read -r number title labels body; do
+# Ретро 18.08 t_854c7c67: для PR-only источника branch уже вычислен в
+# collect_issues_json и прокинут через tsv-колонки source/branch. issue-flow
+# вычисляет branch из номера/title как раньше (значение по умолчанию).
+while IFS=$'\t' read -r number title labels body source branch; do
     [ -z "$number" ] && continue
 
     labels_norm="$(printf '%s' "$labels" | tr '[:upper:]' '[:lower:]')"
@@ -1179,7 +1261,14 @@ while IFS=$'\t' read -r number title labels body; do
         skipped=$((skipped+1)); continue
     fi
 
-    branch="$(compute_agent_branch "$number" "$title")"
+    # Ретро 18.08 t_854c7c67: для PR-only source="pr" branch=headRefName и
+    # compute_agent_branch() НЕ должен его перетирать (он заточен под
+    # issue-title → z-{agent}/<id>-<slug>, для PR-headRefName не подходит).
+    if [ "${source:-}" = "pr" ] && [ -n "${branch:-}" ]; then
+        log "issue #${number}: source=pr branch=${branch} (PR-only, headRefName из collect_issues_json)"
+    else
+        branch="$(compute_agent_branch "$number" "$title")"
+    fi
 
     # task_id из marker-коммента (нужен для fallback wt/ и unblock в конце).
     e2e_task_id="$(gh issue view "$number" --repo "$GH_REPO" --comments --json comments \
@@ -2289,10 +2378,14 @@ for issue in sorted(data, key=lambda i: i["number"]):
     t = issue["title"]
     l = ",".join(sorted({lab["name"] for lab in issue.get("labels", [])}))
     b = issue.get("body") or ""
+    # Ретро 18.08 t_854c7c67: для PR-only прокидываем source/branch в main loop,
+    # чтобы он не перезатирал branch через compute_agent_branch.
+    src = issue.get("source", "issue")
+    br = issue.get("branch", "")
     def esc(s):
         return s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
     try:
-        sys.stdout.write(f"{n}\t{esc(t)}\t{esc(l)}\t{esc(b)}\n")
+        sys.stdout.write(f"{n}\t{esc(t)}\t{esc(l)}\t{esc(b)}\t{esc(src)}\t{esc(br)}\n")
         sys.stdout.flush()
     except BrokenPipeError:
         # Ретро 13.08 (t_a741841b): читатель (while-read) закрыл пайп раньше,
