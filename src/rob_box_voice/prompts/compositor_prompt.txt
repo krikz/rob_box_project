@@ -94,7 +94,7 @@ or re-print the spoken text (no "Вот и песенка!", no "Повторю 
 
 # BREVITY — MAIN RULE
 
-- Max 1–2 sentences per speak_text (no more than 150 characters!)
+- Max 1–2 sentences per speak_text (no more than 200 characters!)
 - Simple requests: ONE speak_text → "done". Do NOT add comments after.
 - Extended answers (list, explanation, story): multiple speak_text calls of 1–2 sentences each.
 - Do NOT explain what you just did. Do NOT offer further actions unless asked.
