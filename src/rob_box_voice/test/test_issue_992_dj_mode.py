@@ -274,21 +274,21 @@ class TestIssue992BugB(unittest.TestCase):
             )
             # Retry counter was reset on the successful second turn.
             self.assertEqual(
-                node._dj_auto_retry_count, 0,
+                node._music_guard.dj_retry_count, 0,
                 "Successful retry must reset the Bug-B retry counter",
             )
         finally:
             node.close()
 
     def test_dj_auto_retry_budget_caps_loop(self):
-        """After ``MAX_DJ_AUTO_RETRIES`` failures the guard stops.
+        """After ``max_dj_retries`` failures the guard stops.
 
         Without a budget cap, a stubborn LLM that keeps ignoring the
         CRITICAL reminder would lock the dialogue node in an infinite
         coroutine chain, never letting the 5 s tick take over. The cap
         is currently 2 — once exceeded, the guard logs a warning and
         returns. The test scripts 4 text-only replies to prove the
-        cap fires and the LLM is called exactly ``1 + MAX_DJ_AUTO_RETRIES``
+        cap fires and the LLM is called exactly ``1 + max_dj_retries``
         times for the auto cycle.
         """
         llm = _ScriptedLLMProvider([
@@ -304,17 +304,17 @@ class TestIssue992BugB(unittest.TestCase):
             node._dj.state.next_transition_at = 0.0
             node._dj.tick()
             node.drive_one_turn()
-            # 1 tick + N retries (capped at MAX_DJ_AUTO_RETRIES).
-            expected = 1 + node.MAX_DJ_AUTO_RETRIES
+            # 1 tick + N retries (capped at max_dj_retries).
+            expected = 1 + node._music_guard.max_dj_retries
             self.assertEqual(
                 llm.call_count, expected,
                 f"DJ tick + retries must be capped at {expected} LLM "
-                f"calls (1 + MAX_DJ_AUTO_RETRIES={node.MAX_DJ_AUTO_RETRIES}); "
+                f"calls (1 + max_dj_retries={node._music_guard.max_dj_retries}); "
                 f"got {llm.call_count}",
             )
             # Counter is reset so the next tick has a fresh budget.
             self.assertEqual(
-                node._dj_auto_retry_count, 0,
+                node._music_guard.dj_retry_count, 0,
                 "Retry budget must be reset once exhausted, so the next "
                 "tick has a fresh allowance.",
             )
