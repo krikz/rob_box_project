@@ -200,6 +200,23 @@ fi
 # --- helpers ----------------------------------------------------------------
 log() { echo ">>> $*"; }
 
+# BUG-B (t_f0612a43): имя wav файла строится из ${label} и идёт в heredoc-Python
+# synth_yandex, а также в paplay/ffmpeg. Раньше, если label содержал кириллицу
+# и/или спец-символы (,?!«»), имя файла получалось невалидным для оболочки
+# (pathname expansion ломал '?', запятая в Python heredoc путала аргументы),
+# и synth_yandex возвращал YANDEX_EMPTY / permission denied с текстом вместо
+# voice — шаг помечался FAIL synth без реального запуска команды.
+#
+# Фикс: транслитерация + ASCII slug ДО подстановки в out_wav. Исходный label
+# сохраняется для логов и transcript.json (человекочитаемость).
+#
+# Реализация: safe_label определена в отдельном файле e2e_voice_lib.sh,
+# чтобы можно было source'ить её из unit-тестов без побочных эффектов
+# (source основного файла выполняет main flow и валится на проверке ENV).
+SCRIPT_DIR_E2E="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR_E2E/e2e_voice_lib.sh"
+
 # Синтез Yandex TTS gRPC v3: text + voice → /tmp/e2e_v2_<run>/cmd.wav
 # Тот же контракт что tts_node._synthesize_yandex (tts.api.cloud.yandex.net:443)
 synth_yandex() {  # $1=text $2=voice $3=out_wav
@@ -387,23 +404,27 @@ for line in data.splitlines():
 # --- один атомарный шаг -----------------------------------------------------
 run_step() {  # $1=text $2=voice $3=step_label
     local text="$1" voice="$2" label="$3"
-    log "=== STEP ${label}: voice=${voice} text=\"${text}\" ==="
+    # BUG-B (t_f0612a43): если label содержит кириллицу/спецсимволы — slugify
+    # для имени wav файла. Исходный label сохраняется для логов.
+    local safe
+    safe="$(safe_label "$label")"
+    log "=== STEP ${label} (safe=${safe}): voice=${voice} text=\"${text}\" ==="
 
     # 1. Синтез команды
     ensure_outdir
-    if [ ! -f "$OUT_DIR/cmd_${label}.wav" ]; then
+    if [ ! -f "$OUT_DIR/cmd_${safe}.wav" ]; then
         # Файл мог пропасть вместе с OUT_DIR (внешний cleanup на 249) —
         # пере-синтезируем, а не падаем с paplay open(): No such file.
-        log "STEP ${label}: cmd_${label}.wav отсутствует — повторный синтез (cleanup-resilience)"
+        log "STEP ${label}: cmd_${safe}.wav отсутствует — повторный синтез (cleanup-resilience)"
     fi
-    if ! synth_yandex "$text" "$voice" "$OUT_DIR/cmd_${label}.wav" > "$OUT_DIR/synth_${label}.log" 2>&1; then
-        log "STEP ${label}: FAIL — синтез Yandex упал ($(tail -1 "$OUT_DIR/synth_${label}.log"))"
+    if ! synth_yandex "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1; then
+        log "STEP ${label}: FAIL — синтез Yandex упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"
         echo "E2E_STEP ${label} FAIL synth"
         return 1
     fi
     # EQ: highpass 200 + volume 1.2 + alimiter (клиппинг-фикс 514e7e87)
     ensure_outdir
-    ffmpeg -y -i "$OUT_DIR/cmd_${label}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${label}_eq.wav" 2>/dev/null
+    ffmpeg -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
 
     # 2. Ждём тишины: робот не должен говорить перед командой (greeting/
     #    приветствие идёт через 12s после старта и может перебить команду).
@@ -440,15 +461,15 @@ run_step() {  # $1=text $2=voice $3=step_label
         # cleanup-resilience (ретро 11.08 t_26a6d362): если eq-файл пропал
         # (OUT_DIR удалён внешним cleanup на 249) — пере-синтезируем и EQ,
         # а не получаем ложный FAIL от paplay open(): No such file.
-        if [ ! -f "$OUT_DIR/cmd_${label}_eq.wav" ]; then
-            log "STEP ${label}: cmd_${label}_eq.wav отсутствует перед play — пере-синтез (cleanup-resilience)"
+        if [ ! -f "$OUT_DIR/cmd_${safe}_eq.wav" ]; then
+            log "STEP ${label}: cmd_${safe}_eq.wav отсутствует перед play — пере-синтез (cleanup-resilience)"
             ensure_outdir
-            synth_yandex "$text" "$voice" "$OUT_DIR/cmd_${label}.wav" > "$OUT_DIR/synth_${label}.log" 2>&1 \
-                || { log "STEP ${label}: FAIL — повторный синтез Yandex упал ($(tail -1 "$OUT_DIR/synth_${label}.log"))"; echo "E2E_STEP ${label} FAIL synth"; return 1; }
+            synth_yandex "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1 \
+                || { log "STEP ${label}: FAIL — повторный синтез Yandex упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; echo "E2E_STEP ${label} FAIL synth"; return 1; }
             ensure_outdir
-            ffmpeg -y -i "$OUT_DIR/cmd_${label}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${label}_eq.wav" 2>/dev/null
+            ffmpeg -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
         fi
-        paplay "$OUT_DIR/cmd_${label}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
+        paplay "$OUT_DIR/cmd_${safe}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
         sleep "$E2E_REACTION_WINDOW"
 
         check_cycle "$BEFORE"
