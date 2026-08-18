@@ -100,7 +100,25 @@ CRITICAL_EXCLUDE_BY_SCOPE = {
         r"telegram_node",
         r"telegram bot crashed",
     ],
-    "vision": [],
+    "vision": [
+        # telegram_node start_polling transient (issue #1433 / deploy run
+        # 32170854307, test round-147): on the first long-poll to
+        # api.telegram.org the Vision Pi WiFi AP (10.1.1.1, see docs/adr/)
+        # is still bringing the DNS/TLS path up, so PTB's
+        # start_polling(timeout=30) raises asyncio.TimeoutError. The retry
+        # loop in telegram_node._run_telegram_loop catches it, sleeps
+        # 5s/10s/15s/... up to 60s and re-enters polling; on the 3rd attempt
+        # the connection is warm and the bot stays up. The
+        # "[ERROR] telegram_node: Bot crashed (N): Timed out. Retry in Ns"
+        # line is the retry loop's own progress log, NOT a deployment
+        # failure — container_status / topics / metrics are all healthy.
+        # A real telegram_node failure (e.g. "Bot crashed (N): Conflict:
+        # terminated by other getUpdates request") does not match this
+        # pattern and is still reported; the negative test
+        # test_extract_relevant_log_line_still_catches_telegram_node_real_conflict_in_vision_scope
+        # covers that case.
+        r"bot crashed \(\d+\): timed out\. retry in",
+    ],
 }
 
 WARNING_EXCLUDE_COMMON = [
