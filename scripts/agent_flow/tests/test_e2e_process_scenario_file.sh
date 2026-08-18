@@ -195,6 +195,89 @@ else
     TESTS_PASSED=$((TESTS_PASSED+1))
 fi
 
+# --- Issue #1421 P0-3: _detect_scenario_in_diff() fallback -----------------
+# PR #1387 (develop) делает auto-discover через `gh pr view --json files` —
+# работает пока PR открыт. _detect_scenario_in_diff() из issue #1421 — это
+# fallback: сканирует `git diff origin/develop...HEAD` round-ветки. Работает
+# в фазе round, когда PR уже влит в test-round-N (когда `gh pr view` может
+# вернуть пустой files[]). Проверяем, что функция в скрипте действительно
+# присутствует И ведёт себя корректно в типичных случаях.
+
+# Sanity: функция определена в скрипте
+if grep -q '^_detect_scenario_in_diff()' "$E2E_PROCESS"; then
+    pass "issue #1421: _detect_scenario_in_diff() определена в e2e-process.sh"
+else
+    fail "issue #1421: _detect_scenario_in_diff()" "не найдена в e2e-process.sh"
+fi
+
+# Sanity: блок fallback перед `_trigger_workflow_with_retry` есть
+if grep -q '_detect_scenario_in_diff ""' "$E2E_PROCESS"; then
+    pass "issue #1421: fallback-вызов _detect_scenario_in_diff в args-construction"
+else
+    fail "issue #1421: fallback-вызов" "не найден — PR #1387 не покрывает round-ветку"
+fi
+
+# Извлечь функцию из скрипта и прогнать unit-тесты в изоляции.
+extract_detect_function() {
+    awk '/^_detect_scenario_in_diff\(\) \{/{f=1} f{print} f && /^}$/{exit}' "$E2E_PROCESS"
+}
+
+# Вспомогалка: создать fake git-репо на базе develop, с опциональным scenario.
+make_scenario_test_repo() {  # $1=with_scenario
+    local with_scenario="$1" dir
+    dir="$(mktemp -d /tmp/scenario-fallback-test.XXXXXX)"
+    git clone -q --branch develop "$REPO_ROOT" "$dir" 2>/dev/null || {
+        git init -q "$dir"
+        git -C "$dir" checkout -qb develop
+        printf 'init\n' > "$dir/README"
+        git -C "$dir" add README
+        git -C "$dir" -c user.email=t@t.t -c user.name=t commit -qm init
+    }
+    git -C "$dir" checkout -qb test-scenario 2>/dev/null || true
+    if [ "$with_scenario" = "true" ]; then
+        mkdir -p "$dir/.github/e2e/scenarios"
+        printf '{"name":"music_library_suite_v1","steps":[]}\n' \
+            > "$dir/.github/e2e/scenarios/music_library_suite_v1.json"
+        git -C "$dir" add . && git -C "$dir" -c user.email=t@t.t -c user.name=t commit -qm "add scenario"
+    fi
+    # ensure origin/develop reachable
+    git -C "$dir" rev-parse --verify origin/develop >/dev/null 2>&1 || \
+        git -C "$dir" update-ref refs/remotes/origin/develop "$(git -C "$dir" rev-parse develop)"
+    printf '%s\n' "$dir"
+}
+
+# 1) diff с music_library_suite_v1.json → автодетект находит путь
+if grep -q '^_detect_scenario_in_diff' "$E2E_PROCESS"; then
+    _dir="$(make_scenario_test_repo true)"
+    _out="$(export WORKTREE_DIR="$_dir"; eval "$(extract_detect_function)"; _detect_scenario_in_diff "")"
+    assert_eq "issue #1421: diff с scenario → находит" \
+        ".github/e2e/scenarios/music_library_suite_v1.json" "$_out"
+    rm -rf "$_dir" 2>/dev/null || true
+fi
+
+# 2) diff без scenario → пусто
+if grep -q '^_detect_scenario_in_diff' "$E2E_PROCESS"; then
+    _dir="$(make_scenario_test_repo false)"
+    _out="$(export WORKTREE_DIR="$_dir"; eval "$(extract_detect_function)"; _detect_scenario_in_diff "")"
+    assert_eq "issue #1421: пустой diff → пусто" "" "$_out"
+    rm -rf "$_dir" 2>/dev/null || true
+fi
+
+# 3) явный override в $1 → override побеждает, diff НЕ сканируется
+if grep -q '^_detect_scenario_in_diff' "$E2E_PROCESS"; then
+    _dir="$(make_scenario_test_repo true)"  # даже с scenario в diff
+    _out="$(export WORKTREE_DIR="$_dir"; eval "$(extract_detect_function)"; _detect_scenario_in_diff "manual/override.json")"
+    assert_eq "issue #1421: явный override побеждает" \
+        "manual/override.json" "$_out"
+    rm -rf "$_dir" 2>/dev/null || true
+fi
+
+# 4) пустой WORKTREE_DIR → fail-open (пусто)
+if grep -q '^_detect_scenario_in_diff' "$E2E_PROCESS"; then
+    _out="$(unset WORKTREE_DIR; eval "$(extract_detect_function)"; _detect_scenario_in_diff "")"
+    assert_eq "issue #1421: пустой WORKTREE_DIR → fail-open" "" "$_out"
+fi
+
 # --- Итоги ----------------------------------------------------------------
 echo ""
 echo "=== Итоги ==="

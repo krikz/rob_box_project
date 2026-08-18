@@ -1015,6 +1015,48 @@ _trigger_workflow_with_retry() {
     return 1
 }
 
+# --- scenario_file auto-detect (issue #1421, P0-3) ---------------------------
+# Если воркер НЕ указал `scenario_file:` в блоке ## e2e issue/PR body,
+# сканируем `git diff origin/develop...HEAD --name-only` в WORKTREE_DIR
+# на наличие `.github/e2e/scenarios/*.json`. Если нашли ровно один —
+# используем. Если ноль — fallback на default smoke (Робот, спой песенку
+# про енотика). Если несколько — берём первый, логируем warning (не
+# фатально: воркер не может указать два сценария одновременно, e2e
+# workflow всё равно прогонит только один).
+#
+# Принимает опциональный аргумент: явный override (уже выставленный
+# `scenario_file:` из issue/PR body). Возвращает абсолютный путь или
+# пустую строку.
+_detect_scenario_in_diff() {  # $1=explicit_override
+    local explicit="${1:-}"
+    if [ -n "$explicit" ]; then
+        printf '%s' "$explicit"
+        return 0
+    fi
+    if [ -z "${WORKTREE_DIR:-}" ] || [ ! -d "$WORKTREE_DIR" ]; then
+        return 0
+    fi
+    # origin/develop может быть недоступен локально (offline cron) — тогда
+    # тихо возвращаем пусто (fallback на smoke). В live это никогда не
+    # случится (round уже смержен в develop), но fail-open безопаснее.
+    git -C "$WORKTREE_DIR" rev-parse --verify origin/develop >/dev/null 2>&1 || return 0
+    local hits
+    hits="$(git -C "$WORKTREE_DIR" diff --name-only origin/develop...HEAD -- '.github/e2e/scenarios/*.json' 2>/dev/null || true)"
+    if [ -z "$hits" ]; then
+        return 0
+    fi
+    # Берём первый, остальные идут в лог для трассировки.
+    local first rest
+    first="$(printf '%s\n' "$hits" | head -n1)"
+    rest="$(printf '%s\n' "$hits" | tail -n +2)"
+    if [ -n "$rest" ]; then
+        log "    scenario_file auto-detect: $hits (multiple — берём первый: '$first')"
+    else
+        log "    scenario_file auto-detect: '$first'"
+    fi
+    printf '%s' "$first"
+}
+
 # Процесс-фикс (09.08): освободить ветку карточки от worktree старых
 # (done/archived) карточек — иначе респавн падает «git worktree add failed»
 # и карточка навсегда виснет в blocked. Путь worktree берём из самой карточки
@@ -1457,7 +1499,7 @@ EOF
     # --- Процесс-фикс (09.08, ретро #9): fallback на PR body ---
     # Воркер писал блок ## e2e в PR body, а контракт читает body ISSUE (#1077).
     # Если в issue body блока нет — пробуем прочитать из PR body.
-    if [ -z "$e2e_voice_text" ] && [ -z "$e2e_voice_file" ] && [ -n "$pr_number" ]; then
+    if [ -z "$e2e_voice_text" ] && [ -z "$e2e_voice_file" ] && [ -z "$e2e_scenario_file" ] && [ -n "$pr_number" ]; then
         pr_body="$(gh pr view "$pr_number" --repo "$GH_REPO" --json body --jq '.body' 2>/dev/null || echo "")"
         if [ -n "$pr_body" ]; then
             pr_body_real="$(printf '%s' "$pr_body" | sed 's/\\n/\n/g')"
@@ -1947,6 +1989,20 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
     # (check_tg_echo: true в блоке ## e2e).
     if [ "${e2e_check_tg_echo:-false}" = "true" ] || [ "${e2e_check_tg_echo:-false}" = "1" ]; then
         e2e_args+=(-f "check_tg_echo=true")
+    fi
+    # Issue #1421 P0-3: дополнительный fallback к PR #1387 (`gh pr view --json files`).
+    # Если PR #1387 не нашёл scenario_file (закрытый/перевлитый PR, нет pr_number,
+    # или race) — сканируем `git diff origin/develop...HEAD` round-ветки. Это
+    # работает в фазе round, когда PR уже влит в test-round-N и `gh pr view`
+    # может вернуть пустой files[]. Не заменяем существующий arg, только
+    # дополняем e2e_scenario_file (исходный `+=` выше уже добавил его в args).
+    if [ -z "${e2e_scenario_file:-}" ]; then
+        _diff_detected="$(_detect_scenario_in_diff "")"
+        if [ -n "$_diff_detected" ]; then
+            e2e_scenario_file="$_diff_detected"
+            e2e_args+=(-f "scenario_file=$e2e_scenario_file")
+            log "    scenario_file auto-detected from round diff: '$e2e_scenario_file'"
+        fi
     fi
     if ! _trigger_workflow_with_retry "$E2E_WORKFLOW" --ref "$ROUND_BRANCH" "${e2e_args[@]}"; then
         log "issue #${number}: failed to trigger ${E2E_WORKFLOW} after retries"; errored=$((errored+1)); continue
