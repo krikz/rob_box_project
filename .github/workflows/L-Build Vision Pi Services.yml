@@ -437,11 +437,14 @@ jobs:
               # ПРЯМО в текущую ветку (develop) — ci/image-versions-* ветки
               # НЕ работают (деплой при local не грузит .image-versions,
               # тянет голые dev-теги → роботы получают старые образы).
+              #
+              # Issue #1388: race main↔vision — оба коммитят в одну ветку.
+              # Вместо inline retry-цикла зовём scripts/ci/push-image-versions.sh:
+              # он делает pull --rebase перед push и ФЕЙЛИТ job при невосстановимой
+              # ошибке (раньше job просто молча терял коммит и завершался success).
               CURRENT_BRANCH="$(git branch --show-current)"
               git commit -m "ci: vision SHA tags → ${NEW_TAG} [skip ci]"
-              git push origin "HEAD:${CURRENT_BRANCH}" >/dev/null 2>&1 \
-                && echo "✅ Committed .image-versions: all vision tags → ${NEW_TAG} (branch ${CURRENT_BRANCH})" \
-                || echo "⚠️  push в ${CURRENT_BRANCH} не удался — таги только локально"
+              bash scripts/ci/push-image-versions.sh "$CURRENT_BRANCH" vision
             fi
           else
             echo "⚠️  $VERSIONS_FILE not found"
