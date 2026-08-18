@@ -63,6 +63,10 @@ EXPECTED=(
     agent-flow-drift-detect.sh
     kanban-retro-create.sh
     validate_honesty.sh
+    # Shared library (ретро 18.08 t_de6bea69): source'ится из e2e-process и
+    # merge-gate для «user-unlabel respect» guard'а. Должен лежать рядом со
+    # скриптами во всех профилях.
+    lib_user_unlabel_check.sh
 )
 
 # Режим --list-files: печатает EXPECTED по одному имени на строку и выходит.

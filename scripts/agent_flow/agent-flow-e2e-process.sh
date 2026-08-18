@@ -825,10 +825,52 @@ except Exception:
         _sw_pr="$(gh pr list --repo "$GH_REPO" --state all --head "$_sw_branch" \
             --json number --jq 'if length>0 then .[0].number else "" end' 2>/dev/null || echo '')"
         if [ -n "$_sw_pr" ]; then
-            gh pr edit "$_sw_pr" --repo "$GH_REPO" --add-label "$DONE_LABEL" >/dev/null 2>&1 || true
-            gh pr edit "$_sw_pr" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
+            # --- user-unlabel guard (ретро 18.08 t_de6bea69, PR #1398) -------
+            # Шифу имеет ЭКСКЛЮЗИВНОЕ право решать, когда PR готов к ревью
+            # (Q22). Если он РУКАМИ снял метку (e2e-done / needs-review)
+            # после того как auto-sweep её когда-то поставил — следующий тик
+            # НЕ должен возвращать эту метку (наблюдение 18.08: needs-review
+            # на PR #1398 возвращалась 5 раз подряд за 2.5ч после ручного
+            # unlabel — Шифу каждый раз снимал, автоматика ставила обратно).
+            # Решение: перед каждой auto-установкой проверяем timeline PR:
+            # UnlabeledEvent{actor≠bot} ПОСЛЕ последнего LabeledEvent по этой
+            # же метке → метку НЕ ставим, только комментим «user decision
+            # respected, awaiting your next move». remove needs-e2e и
+            # остальные метки — оставлены как есть (issue-side факт SUCCESS'а
+            # фиксирован и не зависит от Шифу).
+            _sw_skip_labels=""
+            if user_removed_label_recently "$_sw_pr" "$DONE_LABEL"; then
+                user_unlabel_log_skip "$_sw_pr" "$DONE_LABEL" "post-round sweep run #${_sweep_run_id}"
+                _sw_skip_labels="${_sw_skip_labels} ${DONE_LABEL}"
+            fi
+            if user_removed_label_recently "$_sw_pr" "$NEEDS_REVIEW_LABEL"; then
+                user_unlabel_log_skip "$_sw_pr" "$NEEDS_REVIEW_LABEL" "post-round sweep run #${_sweep_run_id}"
+                _sw_skip_labels="${_sw_skip_labels} ${NEEDS_REVIEW_LABEL}"
+            fi
+            if [ -n "$_sw_skip_labels" ]; then
+                # Доклад в PR: «sweep не восстановил метку по твоему unlabel».
+                gh pr comment "$_sw_pr" --repo "$GH_REPO" --body \
+                    "agent-flow: ⏸️ post-round sweep (run #${_sweep_run_id} SUCCESS) не восстановил метку${_sw_skip_labels} — ты её ранее снял руками; жду твоего решения (ретро 18.08 t_de6bea69, Q22)." >/dev/null 2>&1 || true
+            fi
+            # Ставим метки, которые НЕ заблокированы user-unlabel'ом.
+            case " ${_sw_skip_labels} " in
+                *" ${DONE_LABEL} "*)
+                    ;;
+                *)
+                    gh pr edit "$_sw_pr" --repo "$GH_REPO" --add-label "$DONE_LABEL" >/dev/null 2>&1 || true
+                    ;;
+            esac
+            case " ${_sw_skip_labels} " in
+                *" ${NEEDS_REVIEW_LABEL} "*)
+                    ;;
+                *)
+                    gh pr edit "$_sw_pr" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
+                    ;;
+            esac
+            # remove needs-e2e — идемпотентно, юзер его не трогает (он
+            # управляет только e2e-done / needs-review).
             gh pr edit "$_sw_pr" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
-            log "post-round sweep: issue #${_sn} → PR #${_sw_pr} ${DONE_LABEL}+${NEEDS_REVIEW_LABEL} (PR-side success processing)"
+            log "post-round sweep: issue #${_sn} → PR #${_sw_pr} ${DONE_LABEL}+${NEEDS_REVIEW_LABEL} (PR-side success; skipped:${_sw_skip_labels:-none})"
         fi
     done
     return 0
@@ -851,6 +893,14 @@ _exit_sweep() {
 trap _exit_sweep EXIT
 
 # --- shared helpers (kept compatible with merge-gate.sh) --------------------
+# user-unlabel guard (ретро 18.08 t_de6bea69, PR #1398) — если Шифу руками
+# снял метку (e2e-done / needs-review) после auto-установки, sweep НЕ
+# должен её возвращать. Источник — рядом со скриптом (для тестов и для
+# install-раскладки в ~/.hermes/...).
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=lib_user_unlabel_check.sh
+. "$_LIB_DIR_HERE/lib_user_unlabel_check.sh"
+
 slugify() {
     printf '%s' "$1" \
         | tr '[:upper:]' '[:lower:]' \

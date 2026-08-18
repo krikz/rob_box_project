@@ -117,7 +117,15 @@ fi
 : "${BIG_BANG_MAX_LINES:=3000}"
 : "${DEVELOP_BRANCH:=develop}"
 
-# --- helpers -----------------------------------------------------------------
+# --- shared helpers ---------------------------------------------------------
+# user-unlabel guard (ретро 18.08 t_de6bea69, PR #1398) — если Шифу руками
+# снял метку (e2e-done / needs-review) после auto-установки, merge-gate
+# НЕ должен её возвращать в reconcile / lint-путях. Источник — рядом со
+# скриптом (для тестов и для install-раскладки в ~/.hermes/...).
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=lib_user_unlabel_check.sh
+. "$_LIB_DIR_HERE/lib_user_unlabel_check.sh"
+
 log() { printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*" >&2; }
 run() { if [ "$DRY_RUN" = "true" ]; then printf '%s DRY-RUN %s\n' "$LOG_PREFIX" "$*" >&2; else eval "$@"; fi; }
 
@@ -1040,7 +1048,17 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
             labeled=$((labeled+1)); continue
         fi
         log "issue #${number}: ${DONE_LABEL} + OPEN PR #${pr_number} → reconcile ${NEEDS_REVIEW_LABEL}"
-        if [ "$DRY_RUN" != "true" ]; then
+        # --- user-unlabel guard (ретро 18.08 t_de6bea69, PR #1398) -----------
+        # Если Шифу руками снял needs-review после последнего auto-установки —
+        # reconcile НЕ должен возвращать метку. remove needs-e2e — идемпотентно
+        # оставляем (Шифу его не трогает).
+        if user_removed_label_recently "$pr_number" "$NEEDS_REVIEW_LABEL"; then
+            user_unlabel_log_skip "$pr_number" "$NEEDS_REVIEW_LABEL" "merge-gate reconcile (e2e-done+OPEN)"
+            if [ "$DRY_RUN" != "true" ]; then
+                gh pr comment "$pr_number" --repo "$GH_REPO" --body \
+                    "agent-flow: ⏸️ merge-gate reconcile не восстановил \`needs-review\` — ты её ранее снял руками; жду твоего решения (ретро 18.08 t_de6bea69, Q22)." >/dev/null 2>&1 || true
+            fi
+        elif [ "$DRY_RUN" != "true" ]; then
             gh pr edit "$pr_number" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
             gh pr edit "$pr_number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
         fi
@@ -1869,6 +1887,19 @@ Merge-gate блокирует e2e-ротацию: ${NEEDS_E2E_LABEL} не буд
     fi
 
     if [ "$pr_kind" = "lint" ]; then
+        # --- user-unlabel guard (ретро 18.08 t_de6bea69, PR #1398) -----------
+        # lint-PR: CI green → ставим needs-review напрямую (без e2e). Если
+        # Шифу руками снял needs-review после предыдущего auto-установки —
+        # НЕ возвращаем.
+        if user_removed_label_recently "$pr_number" "$NEEDS_REVIEW_LABEL"; then
+            user_unlabel_log_skip "$pr_number" "$NEEDS_REVIEW_LABEL" "lint PR path"
+            labeled=$((labeled+1))
+            if [ "$DRY_RUN" != "true" ]; then
+                gh pr comment "$pr_number" --repo "$GH_REPO" --body \
+                    "agent-flow: ⏸️ merge-gate lint path не восстановил \`needs-review\` — ты её ранее снял руками; жду твоего решения (ретро 18.08 t_de6bea69, Q22)." >/dev/null 2>&1 || true
+            fi
+            continue
+        fi
         if [ "$DRY_RUN" = "true" ]; then
             log "DRY-RUN would run: gh pr edit ${pr_number} --repo ${GH_REPO} --add-label ${NEEDS_REVIEW_LABEL}"
             labeled=$((labeled+1)); continue
@@ -2342,6 +2373,16 @@ print("1" if ok else "0")
     log "clean-pr-sweep: PR #${c_pr} (${c_head}) kind=${_c_kind} issue=${c_issue:-?}"
 
     if [ "$_c_kind" = "lint" ]; then
+        # --- user-unlabel guard (ретро 18.08 t_de6bea69, PR #1398) -----------
+        if user_removed_label_recently "$c_pr" "$NEEDS_REVIEW_LABEL"; then
+            user_unlabel_log_skip "$c_pr" "$NEEDS_REVIEW_LABEL" "clean-pr-sweep lint"
+            clean_labeled=$((clean_labeled+1))
+            if [ "$DRY_RUN" != "true" ]; then
+                gh pr comment "$c_pr" --repo "$GH_REPO" --body \
+                    "agent-flow: ⏸️ clean-pr-sweep не восстановил \`needs-review\` — ты её ранее снял руками; жду твоего решения (ретро 18.08 t_de6bea69, Q22)." >/dev/null 2>&1 || true
+            fi
+            continue
+        fi
         log "clean-pr-sweep: PR #${c_pr} lint/CI-only → ${NEEDS_REVIEW_LABEL} (skip e2e)"
         if [ "$DRY_RUN" = "true" ]; then
             log "DRY-RUN would run: gh pr edit ${c_pr} --repo ${GH_REPO} --add-label ${NEEDS_REVIEW_LABEL}"
