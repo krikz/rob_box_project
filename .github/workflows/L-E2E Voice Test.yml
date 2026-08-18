@@ -383,13 +383,110 @@ jobs:
             cat /tmp/e2e_timing.txt
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Issue #1381: артефакты должны прикладываться даже при FAIL (no-reaction).
+      # Сначала тянем всё что есть на build-machine (249) в локальный кэш на runner,
+      # затем upload читает уже локальные файлы. Все шаги с if: always().
+      # sshpass scp — нативный способ копирования (ssh cat > $ART_DIR писал бы
+      # в path runner'а изнутри ssh-shell'а на 249, что не работает).
+      - name: Collect e2e artifacts from build machine
+        if: ${{ always() }}
+        env:
+          SSHPASS: open
+        run: |
+          RID="${{ github.run_id }}"
+          ART_DIR="/tmp/e2e_artifacts_${RID}"
+          rm -rf "$ART_DIR"
+          mkdir -p "$ART_DIR"
+
+          # 1) Список найденных файлов на 249 — для диагностики
+          echo "=== files on 10.1.1.249 matching expected patterns ==="
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 '
+            set +e
+            for f in /tmp/dialog_e2e_'"${RID}"'.wav \
+                     /tmp/dialog_e2e_*.wav \
+                     /tmp/e2e_atomic_out.log; do
+              [ -f "$f" ] && echo "FOUND $f ($(stat -c %s "$f" 2>/dev/null) bytes)" || true
+            done
+            for d in /tmp/e2e_v2_*; do
+              [ -d "$d" ] && echo "DIR $d" || true
+            done
+            echo "---END-LIST---"
+          ' 2>&1 | tee /tmp/e2e_collect.log || true
+
+          # 2) Каталоги /tmp/e2e_v2_* целиком (verdict.txt, model.json,
+          #    step_*.log, scenario_parsed.txt, scenario.json и т.п.)
+          #    scp -r копирует содержимое каталога рекурсивно.
+          e2e_v2_dirs=$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
+                        'ls -1d /tmp/e2e_v2_* 2>/dev/null' 2>/dev/null || true)
+          if [ -n "$e2e_v2_dirs" ]; then
+            for d in $e2e_v2_dirs; do
+              bn=$(basename "$d")
+              mkdir -p "$ART_DIR/$bn"
+              echo "  scp -r $d/. → $ART_DIR/$bn/"
+              sshpass -e scp -o StrictHostKeyChecking=no -r \
+                "ros2@10.1.1.249:$d/." "$ART_DIR/$bn/" 2>&1 | tail -5 || true
+            done
+          else
+            echo "  no /tmp/e2e_v2_* dirs on 249"
+          fi
+
+          # 3) Полный stdout харнесса (если нет — skip)
+          if sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
+               '[ -f /tmp/e2e_atomic_out.log ]' 2>/dev/null; then
+            echo "  scp /tmp/e2e_atomic_out.log"
+            sshpass -e scp -o StrictHostKeyChecking=no \
+              ros2@10.1.1.249:/tmp/e2e_atomic_out.log "$ART_DIR/e2e_atomic_out.log" 2>&1 \
+              | tail -5 || true
+          fi
+
+          # 4) Recording wav (если есть) — варианты имён:
+          #    /tmp/dialog_e2e_<run_id>.wav (старый e2e_remote.sh, deprecated)
+          #    /tmp/dialog_e2e_*.wav (если run_id в имени не совпал — например
+          #    e2e_remote.sh генерит свою метку)
+          for src in "/tmp/dialog_e2e_${RID}.wav"; do
+            echo "  try scp $src"
+            sshpass -e scp -o StrictHostKeyChecking=no \
+              "ros2@10.1.1.249:$src" "$ART_DIR/$(basename $src)" 2>&1 | tail -3 || true
+          done
+          # Fallback — самый свежий dialog_e2e_*.wav на 249 (если RID-имя не нашлось)
+          if ! ls "$ART_DIR"/*.wav 2>/dev/null | head -1 | grep -q .; then
+            latest_wav=$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
+                         'ls -1t /tmp/dialog_e2e_*.wav 2>/dev/null | head -1' 2>/dev/null)
+            if [ -n "$latest_wav" ]; then
+              bn=$(basename "$latest_wav")
+              echo "  fallback scp $latest_wav"
+              sshpass -e scp -o StrictHostKeyChecking=no \
+                "ros2@10.1.1.249:$latest_wav" "$ART_DIR/$bn" 2>&1 | tail -3 || true
+            fi
+          fi
+
+          # 5) Recording из atomic v2 (если когда-то добавят) — recursive glob
+          v2_recordings=$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
+                          'ls -1 /tmp/e2e_v2_*/recording.wav 2>/dev/null' 2>/dev/null || true)
+          if [ -n "$v2_recordings" ]; then
+            for f in $v2_recordings; do
+              bn=$(basename "$f")
+              echo "  scp $f → $ART_DIR/$bn"
+              sshpass -e scp -o StrictHostKeyChecking=no \
+                "ros2@10.1.1.249:$f" "$ART_DIR/$bn" 2>&1 | tail -3 || true
+            done
+          fi
+
+          echo "ART_DIR=$ART_DIR" >> "$GITHUB_ENV"
+          echo "=== collected e2e_artifacts_${RID}/ contents ==="
+          find "$ART_DIR" -type f -printf "%s\t%p\n" | sort -k2 || echo "ART_DIR empty"
+
       - name: Upload recording
+        if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
           name: e2e-voice-recording-${{ github.run_id }}
-          path: /tmp/dialog_e2e_${{ github.run_id }}.wav
+          # Берём любой .wav из собранных артефактов. Если .wav файлов нет
+          # (FAIL до того как recording успел записаться) — warn, не error,
+          # чтобы артефакт-pipeline не заклинивал.
+          path: /tmp/e2e_artifacts_${{ github.run_id }}/**/*.wav
           retention-days: 7
-          if-no-files-found: ignore
+          if-no-files-found: warn
 
       - name: Upload harness artifacts (issue #1353)
         uses: actions/upload-artifact@v7
@@ -407,18 +504,49 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload logs
+        if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
           name: e2e-voice-logs-${{ github.run_id }}
-          path: /tmp/voice_e2e_${{ github.run_id }}.log
+          # Лог docker voice-assistant (runner-side) + весь каталог с логами шагов
+          path: |
+            /tmp/voice_e2e_${{ github.run_id }}.log
+            /tmp/e2e_verdict.log
+            /tmp/e2e_timing.txt
+            /tmp/e2e_collect.log
+            /tmp/e2e_artifacts_${{ github.run_id }}/**/*.log
           retention-days: 7
+          if-no-files-found: warn
 
       - name: Upload model.json
+        if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
           name: e2e-voice-model-${{ github.run_id }}
-          path: model.json
+          # model.json пишется двумя местами:
+          # 1) runner-side: $GITHUB_WORKSPACE/model.json (от шага Write model.json,
+          #    который skip'ается при FAIL).
+          # 2) build machine: /tmp/e2e_v2_*/model.json (всегда пишется atomic harness).
+          # Берём оба — найдётся хотя бы один.
+          path: |
+            model.json
+            /tmp/e2e_artifacts_${{ github.run_id }}/**/model.json
           retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload e2e artifacts archive (full debug bundle)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-voice-artifacts-${{ github.run_id }}
+          # Полный архив всего что собрали: verdict.txt, scenario, step_N.log,
+          # recording.wav если есть. Удобно открыть одной папкой и не собирать
+          # по кусочкам из разных artifacts. Этот шаг — последний рубеж:
+          # если тут тоже нет файлов — значит Collect вообще ничего не нашёл
+          # (sсh не доступен / 249 мёртвая) и это уже error-сигнал.
+          path: /tmp/e2e_artifacts_${{ github.run_id }}/**
+          retention-days: 14
+          if-no-files-found: error
 
       - name: Upload acceptance evidence (issue #1077)
         if: ${{ always() && inputs.acceptance_feature == 'speaker_profile' }}
