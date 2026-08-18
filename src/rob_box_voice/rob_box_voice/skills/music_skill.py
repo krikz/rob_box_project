@@ -103,6 +103,177 @@ class MusicSkill(BaseSkill):
         # Filesystem-based: reads renardo sample packs directly.
         # Returns JSON with letter, sample_index, and ready-to-use play_code.
 
+        # ── MiniMax music generation + library tools (issue #1392 / #1358)
+        # CRITICAL ORDER: generate_music must be the FIRST tool exposed to
+        # the sub-agent so the LLM-M3 considers it before defaulting to
+        # Renardo execute_music_code. Live regression 18.08.2026 17:05: LLM
+        # always picked execute_music_code despite the user asking to
+        # "сгенерируй песню". The docstring below is intentionally
+        # explicit about WHEN to call this tool (vocal/song/lyrics requests).
+        @function_tool
+        async def generate_music(prompt: str, lyrics: str = "",
+                                 is_instrumental: bool = False,
+                                 mood: str = "", genre: str = "",
+                                 lang: str = "", tags: str = "",
+                                 title: str = "") -> str:
+            """Generate a brand-new vocal/instrumental track via MiniMax Music API.
+
+            ★ USE THIS TOOL WHEN ★ the user asks for:
+              - "спой/спой мне/запевай" → vocal song
+              - "сочини/сгенерируй песню/мелодию/композицию/трек" → composition
+              - "сделай музыку с вокалом/с текстом/песню" → vocal track
+              - "сгенерируй через генератор музыки/миниmax-music" → AI gen
+              - "хочу услышать свою песню" → AI gen (each = unique vocal track)
+              - DJ/party request DOES NOT count here — use Renardo for that.
+
+            ★ DO NOT USE THIS TOOL FOR ★ instrumental-only requests like
+              "сыграй бит/lo-fi/ambient/инструменталку без вокала" — use
+              execute_music_code instead (Renardo is faster & unlimited).
+
+            Performs a 40-160s cloud generation (~88s avg). ALWAYS warn the
+            user first via outer SpeakText: "Сейчас сгенерирую, это займёт
+            около минуты — подожди, не уходи!". If the user just wants to
+            SAVE/SEARCH/LIST/PLAY an existing track, use the gen_*_library
+            tools below — DO NOT regenerate.
+
+            Args:
+                prompt:    Style/mood description (1-2000 chars). REQUIRED.
+                lyrics:    Song lyrics with [Verse]/[Chorus] tags. Required unless
+                           is_instrumental=True.
+                is_instrumental: True for instrumental-only (no vocals).
+                mood:      Mood tag (e.g. 'romantic', 'dark').
+                genre:     Genre tag (e.g. 'indie folk', 'synthwave').
+                lang:      Language of vocals ('ru', 'en').
+                tags:      Extra tags via comma (for library search later).
+                title:     Human-readable title for the track.
+
+            Returns:
+                JSON with track_id, path to mp3, duration_ms, model used.
+                To play it back later: gen_play_from_library(track_id=...).
+            """
+            params: dict = {"prompt": prompt, "auto_save": True}
+            if lyrics:
+                params["lyrics"] = lyrics
+            if is_instrumental:
+                params["is_instrumental"] = True
+            if mood:
+                params["mood"] = mood
+            if genre:
+                params["genre"] = genre
+            if lang:
+                params["lang"] = lang
+            if tags:
+                params["tags"] = tags
+            if title:
+                params["title"] = title
+            # LONG timeout: MiniMax avg 88s (issue #1358).
+            return await _call("generate_music", params, timeout=200.0)
+
+        @function_tool
+        async def gen_list_library(limit: int = 20, sort_by: str = "recent",
+                                   tag: str = "", mood: str = "") -> str:
+            """List tracks in the AI-generated music library (/data/music_library).
+
+            Args:
+                limit:    Max results (1-100, default 20).
+                sort_by:  'recent' (default) / 'popular' / 'rating'.
+                tag:      Filter by tag (exact match).
+                mood:     Filter by mood (exact match).
+
+            Returns:
+                JSON with tracks[] (each: id, title, prompt, tags, mood, genre,
+                duration_ms, rating, play_count, created_at) and total count.
+            """
+            params: dict = {"limit": limit, "sort_by": sort_by}
+            if tag:
+                params["tag"] = tag
+            if mood:
+                params["mood"] = mood
+            return await _call("gen_list_library", params)
+
+        @function_tool
+        async def gen_search_library(query: str, limit: int = 5) -> str:
+            """Search AI-generated music library by keyword.
+
+            Searches title/prompt/lyrics/genre/mood/notes (substring match).
+
+            Args:
+                query: Search string (1-200 chars). REQUIRED.
+                limit: Max results (1-20, default 5).
+
+            Returns:
+                JSON with tracks[] and total count. Empty total = nothing found.
+            """
+            params: dict = {"query": query, "limit": limit}
+            return await _call("gen_search_library", params)
+
+        @function_tool
+        async def gen_save_to_library(track_id: str, title: str = "",
+                                      tags: str = "", mood: str = "",
+                                      genre: str = "", rating: int = -1,
+                                      notes: str = "") -> str:
+            """Update metadata (tags/rating/notes/mood/genre/title) for a saved track.
+
+            Args:
+                track_id: UUID of the track (get from gen_list_library / generate_music).
+                title:    New title (empty = don't change).
+                tags:     New comma-separated tags (replaces existing).
+                mood:     New mood (replaces existing).
+                genre:    New genre (replaces existing).
+                rating:   New rating 0-5 (-1 = don't change).
+                notes:    New notes (replaces existing).
+            """
+            params: dict = {"track_id": track_id}
+            if title:
+                params["title"] = title
+            if tags:
+                params["tags"] = tags
+            if mood:
+                params["mood"] = mood
+            if genre:
+                params["genre"] = genre
+            if rating >= 0:
+                params["rating"] = rating
+            if notes:
+                params["notes"] = notes
+            return await _call("gen_save_to_library", params)
+
+        @function_tool
+        async def gen_play_from_library(track_id: str) -> str:
+            """Return path to a saved track for playback (path-based).
+
+            NOTE: Full mp3 playback wiring is a separate audio_node task.
+            This tool returns the path + duration so you can tell the user
+            "трек готов: /data/music_library/<id>/track.mp3 (93 секунды)".
+
+            Args:
+                track_id: UUID of the track.
+
+            Returns:
+                JSON with track_id, path, title, duration_ms, exists_on_disk.
+            """
+            return await _call("gen_play_from_library", {"track_id": track_id})
+
+        @function_tool
+        async def gen_delete_from_library(track_id: str) -> str:
+            """Delete a track from the AI-generated music library (irreversible).
+
+            Args:
+                track_id: UUID of the track.
+            """
+            return await _call("gen_delete_from_library", {"track_id": track_id})
+
+        @function_tool
+        async def gen_get_track_info(track_id: str) -> str:
+            """Get detailed metadata for a single track.
+
+            Returns: id, title, prompt, lyrics, tags, mood, genre,
+            duration_ms, sample_rate, bitrate, play_count, rating,
+            created_at, path, exists_on_disk.
+            """
+            return await _call("gen_get_track_info", {"track_id": track_id})
+
+
         @function_tool
         def search_samples(
             query: str,
@@ -382,175 +553,6 @@ class MusicSkill(BaseSkill):
                 params["theme"] = theme
             return await _call("set_dj_mode", params)
 
-        # ── MiniMax music generation + library tools (issue #1392 / #1358)
-        # CRITICAL ORDER: generate_music must be the FIRST tool exposed to
-        # the sub-agent so the LLM-M3 considers it before defaulting to
-        # Renardo execute_music_code. Live regression 18.08.2026 17:05: LLM
-        # always picked execute_music_code despite the user asking to
-        # "сгенерируй песню". The docstring below is intentionally
-        # explicit about WHEN to call this tool (vocal/song/lyrics requests).
-        @function_tool
-        async def generate_music(prompt: str, lyrics: str = "",
-                                 is_instrumental: bool = False,
-                                 mood: str = "", genre: str = "",
-                                 lang: str = "", tags: str = "",
-                                 title: str = "") -> str:
-            """Generate a brand-new vocal/instrumental track via MiniMax Music API.
-
-            ★ USE THIS TOOL WHEN ★ the user asks for:
-              - "спой/спой мне/запевай" → vocal song
-              - "сочини/сгенерируй песню/мелодию/композицию/трек" → composition
-              - "сделай музыку с вокалом/с текстом/песню" → vocal track
-              - "сгенерируй через генератор музыки/миниmax-music" → AI gen
-              - "хочу услышать свою песню" → AI gen (each = unique vocal track)
-              - DJ/party request DOES NOT count here — use Renardo for that.
-
-            ★ DO NOT USE THIS TOOL FOR ★ instrumental-only requests like
-              "сыграй бит/lo-fi/ambient/инструменталку без вокала" — use
-              execute_music_code instead (Renardo is faster & unlimited).
-
-            Performs a 40-160s cloud generation (~88s avg). ALWAYS warn the
-            user first via outer SpeakText: "Сейчас сгенерирую, это займёт
-            около минуты — подожди, не уходи!". If the user just wants to
-            SAVE/SEARCH/LIST/PLAY an existing track, use the gen_*_library
-            tools below — DO NOT regenerate.
-
-            Args:
-                prompt:    Style/mood description (1-2000 chars). REQUIRED.
-                lyrics:    Song lyrics with [Verse]/[Chorus] tags. Required unless
-                           is_instrumental=True.
-                is_instrumental: True for instrumental-only (no vocals).
-                mood:      Mood tag (e.g. 'romantic', 'dark').
-                genre:     Genre tag (e.g. 'indie folk', 'synthwave').
-                lang:      Language of vocals ('ru', 'en').
-                tags:      Extra tags via comma (for library search later).
-                title:     Human-readable title for the track.
-
-            Returns:
-                JSON with track_id, path to mp3, duration_ms, model used.
-                To play it back later: gen_play_from_library(track_id=...).
-            """
-            params: dict = {"prompt": prompt, "auto_save": True}
-            if lyrics:
-                params["lyrics"] = lyrics
-            if is_instrumental:
-                params["is_instrumental"] = True
-            if mood:
-                params["mood"] = mood
-            if genre:
-                params["genre"] = genre
-            if lang:
-                params["lang"] = lang
-            if tags:
-                params["tags"] = tags
-            if title:
-                params["title"] = title
-            # LONG timeout: MiniMax avg 88s (issue #1358).
-            return await _call("generate_music", params, timeout=200.0)
-
-        @function_tool
-        async def gen_list_library(limit: int = 20, sort_by: str = "recent",
-                                   tag: str = "", mood: str = "") -> str:
-            """List tracks in the AI-generated music library (/data/music_library).
-
-            Args:
-                limit:    Max results (1-100, default 20).
-                sort_by:  'recent' (default) / 'popular' / 'rating'.
-                tag:      Filter by tag (exact match).
-                mood:     Filter by mood (exact match).
-
-            Returns:
-                JSON with tracks[] (each: id, title, prompt, tags, mood, genre,
-                duration_ms, rating, play_count, created_at) and total count.
-            """
-            params: dict = {"limit": limit, "sort_by": sort_by}
-            if tag:
-                params["tag"] = tag
-            if mood:
-                params["mood"] = mood
-            return await _call("gen_list_library", params)
-
-        @function_tool
-        async def gen_search_library(query: str, limit: int = 5) -> str:
-            """Search AI-generated music library by keyword.
-
-            Searches title/prompt/lyrics/genre/mood/notes (substring match).
-
-            Args:
-                query: Search string (1-200 chars). REQUIRED.
-                limit: Max results (1-20, default 5).
-
-            Returns:
-                JSON with tracks[] and total count. Empty total = nothing found.
-            """
-            params: dict = {"query": query, "limit": limit}
-            return await _call("gen_search_library", params)
-
-        @function_tool
-        async def gen_save_to_library(track_id: str, title: str = "",
-                                      tags: str = "", mood: str = "",
-                                      genre: str = "", rating: int = -1,
-                                      notes: str = "") -> str:
-            """Update metadata (tags/rating/notes/mood/genre/title) for a saved track.
-
-            Args:
-                track_id: UUID of the track (get from gen_list_library / generate_music).
-                title:    New title (empty = don't change).
-                tags:     New comma-separated tags (replaces existing).
-                mood:     New mood (replaces existing).
-                genre:    New genre (replaces existing).
-                rating:   New rating 0-5 (-1 = don't change).
-                notes:    New notes (replaces existing).
-            """
-            params: dict = {"track_id": track_id}
-            if title:
-                params["title"] = title
-            if tags:
-                params["tags"] = tags
-            if mood:
-                params["mood"] = mood
-            if genre:
-                params["genre"] = genre
-            if rating >= 0:
-                params["rating"] = rating
-            if notes:
-                params["notes"] = notes
-            return await _call("gen_save_to_library", params)
-
-        @function_tool
-        async def gen_play_from_library(track_id: str) -> str:
-            """Return path to a saved track for playback (path-based).
-
-            NOTE: Full mp3 playback wiring is a separate audio_node task.
-            This tool returns the path + duration so you can tell the user
-            "трек готов: /data/music_library/<id>/track.mp3 (93 секунды)".
-
-            Args:
-                track_id: UUID of the track.
-
-            Returns:
-                JSON with track_id, path, title, duration_ms, exists_on_disk.
-            """
-            return await _call("gen_play_from_library", {"track_id": track_id})
-
-        @function_tool
-        async def gen_delete_from_library(track_id: str) -> str:
-            """Delete a track from the AI-generated music library (irreversible).
-
-            Args:
-                track_id: UUID of the track.
-            """
-            return await _call("gen_delete_from_library", {"track_id": track_id})
-
-        @function_tool
-        async def gen_get_track_info(track_id: str) -> str:
-            """Get detailed metadata for a single track.
-
-            Returns: id, title, prompt, lyrics, tags, mood, genre,
-            duration_ms, sample_rate, bitrate, play_count, rating,
-            created_at, path, exists_on_disk.
-            """
-            return await _call("gen_get_track_info", {"track_id": track_id})
 
         return [
             # ── AI generation FIRST (highest priority — issue #1392) ───
