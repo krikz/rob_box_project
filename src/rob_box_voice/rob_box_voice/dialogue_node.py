@@ -25,8 +25,11 @@ import os
 import re
 import threading
 import time
+import traceback
 import uuid
 from typing import Any, List, Optional
+
+import yaml
 
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -43,6 +46,12 @@ from rob_box_harness.core.dialogue_state_machine import (
 )
 from rob_box_harness.core.tool_registry import ToolRegistry
 from rob_box_harness.executors import ROSMCPToolProvider, adapt_tool_provider
+from rob_box_harness.health import (
+    DEFAULT_HEALTH_TTL_S,
+    HealthAwareFallbackLLM,
+    HealthCache,
+    check_deepseek_balance,
+)
 from rob_box_harness.memory import (
     Fact,
     InMemoryStore,
@@ -105,6 +114,7 @@ from rob_box_voice.speaker_profiles import (
     extract_speaker_name,
     format_speaker_context,
 )
+from rob_box_voice.tts_voice_registry import format_tts_context
 
 # Issue #1160 — Prometheus metrics (этап 1 observability).
 # ``prometheus_client`` — optional dep; если её нет, всё превращается в
@@ -811,8 +821,6 @@ class DialogueNode(Node):
         2. Env var из registry ``env_key_var`` (напр. ``MINIMAX_API_KEY``)
         3. ``None`` — провайдер сам разберётся (или кинет ConfigError)
         """
-        import os as _os
-
         name = name.strip().lower()
         entry = self._LLM_PROVIDER_REGISTRY.get(name)
         if entry is None:
@@ -847,7 +855,7 @@ class DialogueNode(Node):
         if not api_key:
             env_var = entry.get("env_key_var", "")
             if env_var:
-                api_key = _os.environ.get(env_var) or None
+                api_key = os.environ.get(env_var) or None
 
         # Timeout / temperature / max_tokens — only if YAML set non-zero
         try:
@@ -943,13 +951,6 @@ class DialogueNode(Node):
             return built[0]
 
         # ── Multi-provider: HealthAwareFallbackLLM ──────────────────────
-        from rob_box_harness.health import (
-            DEFAULT_HEALTH_TTL_S,
-            HealthAwareFallbackLLM,
-            HealthCache,
-            check_deepseek_balance,
-        )
-
         # Health cache (persistent — survives robot restart)
         cache_path = str(
             self.get_parameter("health_cache_path").value or ""
@@ -1203,14 +1204,8 @@ class DialogueNode(Node):
             return {}
         path = str(cfg_value)
         try:
-            import yaml as _yaml
-        except ImportError:
-            self.get_logger().warning("PyYAML not installed; cannot load event profile")
-            return {}
-
-        try:
             with open(path, "r", encoding="utf-8") as fh:
-                data = _yaml.safe_load(fh)
+                data = yaml.safe_load(fh)
         except FileNotFoundError:
             self.get_logger().warning(f"Event config file not found: {path}")
             return {}
@@ -1999,13 +1994,11 @@ class DialogueNode(Node):
         actual_voice = getattr(self, "_actual_tts_voice", None)
         current_voice = actual_voice or getattr(self, "_current_tts_voice", None)
         try:
-            from .tts_voice_registry import format_tts_context
-
             tts_context_line = format_tts_context(
                 tts_provider,
                 current_voice=current_voice,
             )
-        except Exception:  # noqa: BLE001 — registry недоступен, не валим диалог
+        except Exception:  # noqa: BLE001 — registry сбойнул, не валим диалог
             tts_context_line = f"[TTS] provider: {tts_provider}"
         # голос по умолчанию — Yandex anton (определяем по TTS config)
         tts_voice = "Yandex_Maxim"  # default — male
@@ -2323,8 +2316,7 @@ class DialogueNode(Node):
             # упадёт (RcutilsLogger bug), пользователь ВСЁ РАВНО услышит
             # ответ. Раньше было наоборот: логгер падал → _speak_direct
             # не выполнялся → робот молчал (баг «принял но не ответил»).
-            import traceback as _tb
-            _tb_str = _tb.format_exc()
+            _tb_str = traceback.format_exc()
             try:
                 if self._is_llm_unavailable_error(exc) and not was_dj_auto:
                     # 🔴 FIX (issue #1278): все LLM-провайдеры недоступны —
@@ -2682,14 +2674,10 @@ class DialogueNode(Node):
         # "Что-то я задумался, повтори пожалуйста" fallback. This is
         # exactly the wake-word gate logic from ``_on_stt``.
         try:
-            from rob_box_harness.core.dialogue_state_machine import (
-                DialogueEvent as _DE,
-                DialogueStateKind as _DSK,
-            )
-            if self._dsm.current_state == _DSK.IDLE:
-                self._dsm.on_event(_DE.WAKE_WORD)
+            if self._dsm.current_state == DialogueStateKind.IDLE:
+                self._dsm.on_event(DialogueEvent.WAKE_WORD)
                 self._publish_state()
-            self._dsm.on_event(_DE.STT_RESULT)
+            self._dsm.on_event(DialogueEvent.STT_RESULT)
             self._publish_state()
         except ImportError:
             # dialog_state_machine is part of rob_box_harness; if it
@@ -2934,8 +2922,6 @@ class DialogueNode(Node):
         Honours ``interrupt_agent_loop`` for early exit and ``listen_for_response``
         for waiting on the user.
         """
-        import concurrent.futures
-
         # 1. Honour explicit interrupt.
         if getattr(self, "interrupt_agent_loop", False):
             self.interrupt_agent_loop = False
@@ -3847,8 +3833,7 @@ class DialogueNode(Node):
 
     def _speak_simple(self, text: str, show_error_animation: bool = False) -> None:
         """Publish a one-off TTS payload via SSML JSON with a unique ``dialogue_id``."""
-        import uuid as _uuid
-        dialogue_id = str(_uuid.uuid4())
+        dialogue_id = str(uuid.uuid4())
         self.current_dialogue_id = dialogue_id
         payload = json.dumps({
             "ssml": f"<speak>{text}</speak>",
