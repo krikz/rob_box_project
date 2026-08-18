@@ -195,6 +195,67 @@ else
     TESTS_PASSED=$((TESTS_PASSED+1))
 fi
 
+# --- Test 9: issue #1421 — git diff origin/develop...HEAD auto-discovery ---
+echo ""
+echo "=== Test 9: issue #1421 — git diff origin/develop...HEAD в WORKTREE_DIR ==="
+# Мокируем worktree через отдельный bare-clone + git diff:
+#   - создаём bare origin
+#   - создаём worktree-clone, чекаутим ROUND-ветку
+#   - мержим сценарий из фичи-ветки → diff vs origin/develop содержит *.json
+#   - проверяем что новая логика в скрипте найдёт сценарий.
+_mock_dir="$(mktemp -d)"
+trap 'rm -rf "$_mock_dir"' EXIT
+git -C "$_mock_dir" init -q --bare mock-origin.git
+git -C "$_mock_dir" init -q mock-wt
+git -C "$_mock_dir/mock-wt" remote add origin "$_mock_dir/mock-origin.git"
+git -C "$_mock_dir/mock-wt" config user.email "t@test" && git -C "$_mock_dir/mock-wt" config user.name "t"
+# seed develop with non-scenario file
+mkdir -p "$_mock_dir/mock-wt/scripts"
+echo "x" > "$_mock_dir/mock-wt/scripts/README.md"
+git -C "$_mock_dir/mock-wt" add scripts/README.md
+git -C "$_mock_dir/mock-wt" commit -q -m "seed develop"
+git -C "$_mock_dir/mock-wt" push -q origin HEAD:develop 2>/dev/null
+git -C "$_mock_dir/mock-wt" branch -f develop origin/develop 2>/dev/null
+# create ROUND branch and FEATURE branch with scenario
+git -C "$_mock_dir/mock-wt" checkout -q -b round
+mkdir -p "$_mock_dir/mock-wt/.github/e2e/scenarios"
+echo "{}" > "$_mock_dir/mock-wt/.github/e2e/scenarios/music_library_suite_v1.json"
+echo "{}" > "$_mock_dir/mock-wt/.github/e2e/scenarios/full_instrument_suite_v1.json"
+git -C "$_mock_dir/mock-wt" add .github
+git -C "$_mock_dir/mock-wt" commit -q -m "add scenarios in round"
+git -C "$_mock_dir/mock-wt" push -q origin HEAD:round
+git -C "$_mock_dir/mock-wt" checkout -q -b feature 2>/dev/null || true
+
+# Test 9a: WORKTREE_DIR with round → diff содержит сценарии
+_diff_list="$(git -C "$_mock_dir/mock-wt" diff --name-only origin/develop...HEAD 2>/dev/null \
+    | grep -E '(^|/)(\.github/e2e/scenarios/.*\.json)$' || true)"
+assert_eq "diff vs develop находит 2 сценария" 2 "$(printf '%s\n' "$_diff_list" | grep -c .)"
+
+# Test 9b: ADDED > MODIFIED — fresh-added файл выигрывает
+_diff_added="$(git -C "$_mock_dir/mock-wt" diff --name-only --diff-filter=A origin/develop...HEAD 2>/dev/null \
+    | grep -E '(^|/)(\.github/e2e/scenarios/.*\.json)$' || true)"
+_picked="$(printf '%s\n' "$_diff_added" | head -1)"
+case "$_picked" in
+    .github/e2e/scenarios/*) pass "ADDED-filter picks первый сценарий ($_picked)" ;;
+    *) fail "ADDED-filter" "не подобрал сценарий, got: '$_picked'" ;;
+esac
+
+# Test 9c: regression — НЕ-сценарии в diff НЕ подхватываются
+echo "another" > "$_mock_dir/mock-wt/README.md"
+git -C "$_mock_dir/mock-wt" add README.md
+git -C "$_mock_dir/mock-wt" commit -q -m "non-scenario change"
+_diff_only_scenarios="$(git -C "$_mock_dir/mock-wt" diff --name-only origin/develop...HEAD 2>/dev/null \
+    | grep -E '(^|/)(\.github/e2e/scenarios/.*\.json)$' || true)"
+assert_eq "non-scenario файлы отфильтрованы" \
+    "2" "$(printf '%s\n' "$_diff_only_scenarios" | grep -c .)"
+
+# Test 9d: Sanity-check — в e2e-process.sh присутствует новый diff-блок
+if grep -q 'auto-discovered from round diff vs origin/develop' "$E2E_PROCESS"; then
+    pass "новый diff-блок присутствует в e2e-process.sh"
+else
+    fail "diff-блок" "строка 'auto-discovered from round diff vs origin/develop' не найдена в e2e-process.sh"
+fi
+
 # --- Итоги ----------------------------------------------------------------
 echo ""
 echo "=== Итоги ==="

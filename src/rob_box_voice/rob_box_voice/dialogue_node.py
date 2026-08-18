@@ -25,8 +25,11 @@ import os
 import re
 import threading
 import time
+import traceback
 import uuid
 from typing import Any, List, Optional
+
+import yaml
 
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -43,6 +46,12 @@ from rob_box_harness.core.dialogue_state_machine import (
 )
 from rob_box_harness.core.tool_registry import ToolRegistry
 from rob_box_harness.executors import ROSMCPToolProvider, adapt_tool_provider
+from rob_box_harness.health import (
+    DEFAULT_HEALTH_TTL_S,
+    HealthAwareFallbackLLM,
+    HealthCache,
+    check_deepseek_balance,
+)
 from rob_box_harness.memory import (
     Fact,
     InMemoryStore,
@@ -67,6 +76,10 @@ from rob_box_voice.core.command_parser import CommandParser, IntentType
 from rob_box_voice.core.dialogue_text import (
     has_wake_word, is_silence_command, is_unsilence_command, strip_wake_word,
 )
+from rob_box_voice.core.llm_skip_reasons import (
+    LLMSkipReason,
+    new_llm_skip_counter,
+)
 from rob_box_voice.core.dialogue_guards import (
     BABBLE_BANNED_OPENERS as BABBLE_BANNED_OPENERS,
     BABBLE_PERFORMANCE_KEYWORDS as BABBLE_PERFORMANCE_KEYWORDS,
@@ -77,7 +90,6 @@ from rob_box_voice.core.dialogue_guards import (
     build_music_retry_prompt,
     is_metalanguage_babble,
     is_music_stop_command,
-    is_vocal_request,
     user_wants_music,
     user_wants_performance,
 )
@@ -89,6 +101,10 @@ from rob_box_voice.core.dialogue_helpers import (
     generate_fallback_response,
     map_emotion_to_animation,
     sanitize_speaker_name,
+)
+from rob_box_voice.core.music_guard import (
+    MusicGuard,
+    MusicGuardVerdictKind,
 )
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.speak_helpers import (
@@ -105,6 +121,7 @@ from rob_box_voice.speaker_profiles import (
     extract_speaker_name,
     format_speaker_context,
 )
+from rob_box_voice.tts_voice_registry import format_tts_context
 
 # Issue #1160 — Prometheus metrics (этап 1 observability).
 # ``prometheus_client`` — optional dep; если её нет, всё превращается в
@@ -123,6 +140,10 @@ from rob_box_voice.observability import (
 ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
 ASYNCIO_LOOP_DRIVER_NAME_PREFIX: str = "dialogue-async-loop"
 ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S: float = 2.0
+
+# Issue #1389 compatibility alias. ``LLMSkipReason`` is now the canonical
+# source; this tuple remains for callers that imported the merged #1395 symbol.
+_LLM_SKIP_REASONS: tuple[str, ...] = tuple(reason.value for reason in LLMSkipReason)
 
 # Issue #992 (live 13.08): BACKING-детектор «2+ speak_text» ложно
 # срабатывал на разговорчивую LLM (приветствие + комментарий) и убивал
@@ -263,6 +284,16 @@ class DialogueNode(Node):
         # Если opentelemetry-пакетов нет — no-op (см. observability.tracing).
         init_tracing("dialogue_node")
         self._declare_params()
+        # Issue #1409 — SSoT for MCP tool names. Populated from
+        # ``ToolRegistry.list_tools()`` at startup (the canonical 32+5
+        # manifests the LLM is wired to via ``_build_tool_provider``) and
+        # kept in sync via ``_on_mcp_tools_update`` when /mcp/tools refresh
+        # messages arrive. ``_load_system_prompt`` uses this set to verify
+        # that every tool the LLM can call is mentioned in the
+        # ``music_skill_prompt.txt`` (case-insensitive) — silent drift
+        # between tool surface and prompt text otherwise makes the LLM
+        # confidently say «нет такой функции» (see issue #1403).
+        self._mcp_tool_names: set[str] = self._collect_mcp_tool_names()
         self._system_prompt: str = self._load_system_prompt()
         self._verbose_llm: bool = bool(self.get_parameter("verbose_llm").value)
         self._wake_words: List[str] = list(self.get_parameter("wake_words").value)
@@ -364,18 +395,13 @@ class DialogueNode(Node):
         # Issue #1101 — diagnostics for "why LLM wasn't called".
         # Оператор видит «робот молчит», а в логе — ни одного error/warn.
         # Реальная причина обычно одна из: no_wake_word, silenced,
-        # silence_command, empty_after_strip, stt_rejected, music_stop.
+        # silence_command, empty_after_strip, stt_rejected, music_stop,
+        # command_intent.
         # Счётчик + периодическая сводка раз в 5 минут — сразу видно, что
         # фразы теряются на gate'е ещё до LLM.
-        self._llm_skipped_counter: dict[str, int] = {
-            "no_wake_word": 0,
-            "silenced": 0,
-            "silence_command": 0,
-            "empty_after_strip": 0,
-            "stt_rejected": 0,
-            "music_stop": 0,
-            "command_intent": 0,
-        }
+        # Issue #1389 — strict dict initialized from the enum SSoT. Unknown
+        # literal keys still raise KeyError and are rejected by the CI checker.
+        self._llm_skipped_counter: dict[str, int] = new_llm_skip_counter()
         self._last_skip_summary_ts: float = time.monotonic()
         self._tts_control_pub = self.create_publisher(
             String, "/voice/tts/control", 10)
@@ -495,19 +521,15 @@ class DialogueNode(Node):
         # LLM actually asked to stop music.
         self._pending_music_cleanup: bool = False
         self._active_batches: Dict[str, int] = {}
-        # Issue #992 Bug B — how many synchronous DJ retries have
-        # already fired in the current transition. Caps the retry
-        # loop so a stubborn LLM that keeps ignoring
-        # ``execute_music_code`` doesn't lock the dialogue node in an
-        # infinite coroutine chain. After ``MAX_DJ_AUTO_RETRIES`` the
-        # cycle gives up and lets the normal 5 s tick take over.
-        self._dj_auto_retry_count: int = 0
-        self.MAX_DJ_AUTO_RETRIES: int = 2
-        # Bug C (юзер-запросы музыки) retry-бюджет — LLM часто решает
-        # «музыка уже играет» из истории диалога и пропускает
-        # execute_music_code; даём 1 синхронный retry с CRITICAL-промптом.
-        self._music_guard_retry_count: int = 0
-        self.MAX_MUSIC_GUARD_RETRIES: int = 1
+        # Issue #992 Bug B / Bug C — retry budgets and policy now live
+        # in :class:`MusicGuard` (TD-2 decomposition, ARCH-review #1405 /
+        # ADR-0021). ``_run_turn`` resets the user-budget via
+        # ``reset_for_new_user_request``; ``_dispatch_dj_turn`` resets the
+        # DJ budget via ``reset_for_new_dj_transition``. No more
+        # duplicated counters across the two scopes.
+        self._music_guard: MusicGuard = MusicGuard(
+            logger=self.get_logger(),
+        )
 
         # Issue #992 Bug D — metalanguage / babble detector.
         # ``True`` after a single metalanguage retry has already been
@@ -732,10 +754,73 @@ class DialogueNode(Node):
                     "requests and skip the set_voice tool. See "
                     "master_prompt_compact.txt for the canonical block."
                 )
+            # Issue #1409 — SSoT tools-vs-prompt validation (music-domain only).
+            # ``music_skill_prompt.txt`` is a static contract the LLM reads
+            # verbatim at startup, so any MCP tool the LLM can call MUST be
+            # mentioned by name — otherwise the LLM degrades to «нет такой
+            # функции» fallback (see issue #1403: ``generate_music`` was
+            # registered but never mentioned, so the LLM kept using Renardo).
+            # Other domain prompts (FAQ, navigation, web_search) stay
+            # unchecked for now — TODO when their contracts harden.
+            self._validate_tools_in_prompt(prompt_file, prompt)
             return prompt
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(f"⚠️ Prompt not found ({exc})")
             return "Ты ROBBOX — умный робот-ассистент. Отвечай кратко и по делу."
+
+    def _collect_mcp_tool_names(self) -> set[str]:
+        """Return the canonical set of MCP tool names (SSoT).
+
+        Source of truth is ``ToolRegistry.list_tools()`` — the same
+        manifests the LLM is wired to via ``_build_tool_provider``. We
+        don't fall back to ``self.available_tools`` here because the
+        latter is populated asynchronously by ``/mcp/tools`` messages
+        and may be stale/empty at ``_load_system_prompt`` time.
+        """
+        try:
+            return {spec.name for spec in ToolRegistry().list_tools()}
+        except Exception as exc:  # noqa: BLE001 — defensive: bad import / init
+            self.get_logger().warning(
+                f"⚠️ [issue 1409] ToolRegistry probe failed: {exc!r}; "
+                "skipping tools-vs-prompt validation"
+            )
+            return set()
+
+    def _validate_tools_in_prompt(
+        self, prompt_file: str, prompt_text: str
+    ) -> None:
+        """Warn if MCP tools are missing from ``music_skill_prompt.txt``.
+
+        Music-domain only (per ARCH-review #1405 / #1409 / issue #1403
+        scope — the music prompt is a static contract the LLM reads
+        verbatim, so drift there is user-visible. Other domain prompts
+        stay unchecked; that's a future-cycle TODO).
+        """
+        # Match by filename stem — the prompt lives under prompts/skills/.
+        if "music_skill" not in prompt_file:
+            return
+        tool_names: set[str] = getattr(self, "_mcp_tool_names", set()) or set()
+        if not tool_names:
+            # Either ToolRegistry probe failed (already warned above) or
+            # the registry is empty — no point in spamming warnings.
+            return
+        prompt_lower = prompt_text.lower()
+        missing: list[str] = []
+        for tool_name in sorted(tool_names):
+            if tool_name.lower() not in prompt_lower:
+                missing.append(tool_name)
+        if missing:
+            self.get_logger().warning(
+                f"[issue 1409] {len(missing)} MCP tool(s) not described "
+                f"in {prompt_file}: {', '.join(missing)}. "
+                f"LLM may answer «нет такой функции» and fall back to "
+                f"a different tool (regression class of #1403)."
+            )
+        else:
+            self.get_logger().debug(
+                f"[issue 1409] All {len(tool_names)} MCP tools are "
+                f"mentioned in {prompt_file} ✓"
+            )
     def _build_memory(self) -> MemoryStore:
         try:
             store: MemoryStore = SQLiteVoiceMemory(
@@ -826,8 +911,6 @@ class DialogueNode(Node):
         2. Env var из registry ``env_key_var`` (напр. ``MINIMAX_API_KEY``)
         3. ``None`` — провайдер сам разберётся (или кинет ConfigError)
         """
-        import os as _os
-
         name = name.strip().lower()
         entry = self._LLM_PROVIDER_REGISTRY.get(name)
         if entry is None:
@@ -862,7 +945,7 @@ class DialogueNode(Node):
         if not api_key:
             env_var = entry.get("env_key_var", "")
             if env_var:
-                api_key = _os.environ.get(env_var) or None
+                api_key = os.environ.get(env_var) or None
 
         # Timeout / temperature / max_tokens — only if YAML set non-zero
         try:
@@ -958,13 +1041,6 @@ class DialogueNode(Node):
             return built[0]
 
         # ── Multi-provider: HealthAwareFallbackLLM ──────────────────────
-        from rob_box_harness.health import (
-            DEFAULT_HEALTH_TTL_S,
-            HealthAwareFallbackLLM,
-            HealthCache,
-            check_deepseek_balance,
-        )
-
         # Health cache (persistent — survives robot restart)
         cache_path = str(
             self.get_parameter("health_cache_path").value or ""
@@ -1218,14 +1294,8 @@ class DialogueNode(Node):
             return {}
         path = str(cfg_value)
         try:
-            import yaml as _yaml
-        except ImportError:
-            self.get_logger().warning("PyYAML not installed; cannot load event profile")
-            return {}
-
-        try:
             with open(path, "r", encoding="utf-8") as fh:
-                data = _yaml.safe_load(fh)
+                data = yaml.safe_load(fh)
         except FileNotFoundError:
             self.get_logger().warning(f"Event config file not found: {path}")
             return {}
@@ -1843,7 +1913,7 @@ class DialogueNode(Node):
         music-guard in :meth:`_run_turn` (keeps the budget intact).
         """
         if from_tick:
-            self._dj_auto_retry_count = 0
+            self._music_guard.reset_for_new_dj_transition()
         self._dispatch_turn(user_input, is_dj_auto=True)
 
     def _dispatch_turn(
@@ -2014,13 +2084,11 @@ class DialogueNode(Node):
         actual_voice = getattr(self, "_actual_tts_voice", None)
         current_voice = actual_voice or getattr(self, "_current_tts_voice", None)
         try:
-            from .tts_voice_registry import format_tts_context
-
             tts_context_line = format_tts_context(
                 tts_provider,
                 current_voice=current_voice,
             )
-        except Exception:  # noqa: BLE001 — registry недоступен, не валим диалог
+        except Exception:  # noqa: BLE001 — registry сбойнул, не валим диалог
             tts_context_line = f"[TTS] provider: {tts_provider}"
         # голос по умолчанию — Yandex anton (определяем по TTS config)
         tts_voice = "Yandex_Maxim"  # default — male
@@ -2165,10 +2233,13 @@ class DialogueNode(Node):
         # Bug C (юзер-музыка) — сброс бюджета на НОВЫЙ юзер-запрос,
         # чтобы каждый запрос получал свежий retry (retry-промпт
         # не должен считаться новым запросом и сбрасывать сам себя).
+        # DJ budget оставлен как есть — DJ-retry внутри DJ-transition
+        # живёт своей жизнью и ресетится в ``_dispatch_dj_turn``
+        # (``reset_for_new_dj_transition``) только при свежем тике.
         if not is_babble_retry and not was_dj_auto and not user_input.startswith(
             "[CRITICAL] В прошлом цикле ты НЕ вызвал execute_music_code"
         ):
-            self._music_guard_retry_count = 0
+            self._music_guard.reset_for_new_user_request()
         # Issue #992 Bug D — when the babble detector schedules a retry
         # we MUST NOT end the dialogue at the bottom of this turn. The
         # retry's ``_run_turn`` will run on the same DSM session and
@@ -2338,8 +2409,7 @@ class DialogueNode(Node):
             # упадёт (RcutilsLogger bug), пользователь ВСЁ РАВНО услышит
             # ответ. Раньше было наоборот: логгер падал → _speak_direct
             # не выполнялся → робот молчал (баг «принял но не ответил»).
-            import traceback as _tb
-            _tb_str = _tb.format_exc()
+            _tb_str = traceback.format_exc()
             try:
                 if self._is_llm_unavailable_error(exc) and not was_dj_auto:
                     # 🔴 FIX (issue #1278): все LLM-провайдеры недоступны —
@@ -2701,14 +2771,10 @@ class DialogueNode(Node):
         # "Что-то я задумался, повтори пожалуйста" fallback. This is
         # exactly the wake-word gate logic from ``_on_stt``.
         try:
-            from rob_box_harness.core.dialogue_state_machine import (
-                DialogueEvent as _DE,
-                DialogueStateKind as _DSK,
-            )
-            if self._dsm.current_state == _DSK.IDLE:
-                self._dsm.on_event(_DE.WAKE_WORD)
+            if self._dsm.current_state == DialogueStateKind.IDLE:
+                self._dsm.on_event(DialogueEvent.WAKE_WORD)
                 self._publish_state()
-            self._dsm.on_event(_DE.STT_RESULT)
+            self._dsm.on_event(DialogueEvent.STT_RESULT)
             self._publish_state()
         except ImportError:
             # dialog_state_machine is part of rob_box_harness; if it
@@ -2775,7 +2841,9 @@ class DialogueNode(Node):
         user_input: str,
         tools_called: tuple,
     ) -> bool:
-        """Post-turn guard that catches LLM music-skip regressions.
+        """Adapter around :meth:`MusicGuard.evaluate` — keeps the ROS2
+        side effects (dispatch, speak_direct, dialogue-reopen) out of
+        the policy module so :class:`MusicGuard` is unit-testable.
 
         Issue #992 Bug B — DJ auto-transitions: the LLM was told
         ``Сыграй трек #N через handle_music``, but it frequently
@@ -2799,100 +2867,50 @@ class DialogueNode(Node):
             own ``DIALOGUE_END`` so the retry's LLM gate fires
             (issue #1204). ``False`` otherwise.
         """
-        tools_set = set(tools_called or ())
-        if "execute_music_code" in tools_set:
-            # Reset the retry counter on success so a future failure
-            # gets a fresh budget.
-            self._dj_auto_retry_count = 0
-            self._music_guard_retry_count = 0
+        verdict = self._music_guard.evaluate(
+            was_dj_auto=was_dj_auto,
+            user_input=user_input,
+            tools_called=tuple(tools_called or ()),
+            dj_enabled=self._dj.state.enabled,
+            build_music_retry_prompt=self._build_music_retry_prompt,
+            build_dj_retry_prompt=self._build_dj_retry_prompt,
+        )
+
+        if verdict.kind is MusicGuardVerdictKind.SKIP:
             return False
-        if was_dj_auto and self._dj.state.enabled:
-            # Bug B — DJ was supposed to play but didn't.
-            if self._dj_auto_retry_count >= self.MAX_DJ_AUTO_RETRIES:
-                self.get_logger().warning(
-                    "🎵 [issue 992 Bug B] DJ retry budget exhausted "
-                    f"({self._dj_auto_retry_count}/{self.MAX_DJ_AUTO_RETRIES}); "
-                    "letting 5 s tick take over"
-                )
-                self._dj_auto_retry_count = 0
-                return False
-            self._dj_auto_retry_count += 1
-            self.get_logger().warning(
-                "🎵 [issue 992 Bug B] DJ auto-transition completed "
-                "without execute_music_code — forcing synchronous retry "
-                f"({self._dj_auto_retry_count}/{self.MAX_DJ_AUTO_RETRIES})"
-            )
+
+        if verdict.kind is MusicGuardVerdictKind.DJ_RETRY:
+            assert verdict.prompt is not None  # build_dj_retry_prompt is wired
             self._dj.state.next_transition_at = (
                 time.time() + DJModeController.POSTPONE_INTERVAL_S
             )
             # Issue #1204: ретрай должен реально дойти до LLM —
             # переоткрываем DIALOGUE (process_input уже закрыл его).
             self._reopen_dialogue_for_retry()
-            self._dispatch_dj_turn(self._build_dj_retry_prompt())
+            self._dispatch_dj_turn(verdict.prompt)
             return True
-        if self._user_wants_music(user_input):
-            tools_now = set(tools_called or ())
-            # 🔴 FIX (live 06.08): стоп-команды («хватит диджеить»,
-            # «выключи музыку») — это НЕ запрос включения музыки!
-            # Bug C видел «диджеить» → думал «юзер просит музыку» →
-            # ретраил с промптом «вызови execute_music_code» (включал
-            # музыку заново). Стоп-команды пропускаем полностью.
-            if is_music_stop_command(user_input):
-                self.get_logger().debug(
-                    "🎵 [issue 992 Bug C] stop-command — skipping music "
-                    "guard entirely"
-                )
-                return False
-            # 🔴 FIX (live 10:00): вокальные запросы («спой/пой/песня»)
-            # — speak_text уже есть (песня озвучена), бит не обязателен:
-            # не нудить. Только если LLM вообще ничего не сделала
-            # (tools пуст) — это настоящий пропуск.
-            if is_vocal_request(user_input):
-                if tools_now:
-                    self.get_logger().debug(
-                        "🎵 [issue 992 Bug C] vocal request, LLM replied "
-                        f"(tools={sorted(tools_now)!r}) — no nudge needed"
-                    )
-                    return False
-            # Bug C — user asked for rap/song/DJ but LLM skipped music.
-            # 🔴 FIX (live 06.08): для ЯВНЫХ запросов (диджей/рэп/зачитай)
-            # — retry с CRITICAL-промптом (как Bug B), а не только нудж:
-            # LLM часто решает «музыка уже играет» из-за истории диалога
-            # (предыдущие прогоны) и пропускает execute_music_code.
-            if self._music_guard_retry_count < self.MAX_MUSIC_GUARD_RETRIES:
-                self._music_guard_retry_count += 1
-                self.get_logger().warning(
-                    f"🎵 [issue 992 Bug C] user asked for music but LLM "
-                    f"skipped execute_music_code (tools={sorted(tools_now)!r}); "
-                    f"synchronous retry {self._music_guard_retry_count}/"
-                    f"{self.MAX_MUSIC_GUARD_RETRIES}"
-                )
-                # Issue #1204: ретрай должен реально дойти до LLM —
-                # переоткрываем DIALOGUE (process_input уже закрыл его).
-                self._reopen_dialogue_for_retry()
-                self._dispatch_turn(
-                    self._build_music_retry_prompt(user_input),
-                    was_idle=False,
-                    raw_user_command=user_input,
-                )
-                return True
-            self.get_logger().warning(
-                "🎵 [issue 992 Bug C] user asked for music but LLM "
-                f"skipped execute_music_code (tools={sorted(tools_now)!r}); "
-                "publishing spoken nudge"
+
+        if verdict.kind is MusicGuardVerdictKind.USER_RETRY:
+            assert verdict.prompt is not None
+            # Issue #1204: ретрай должен реально дойти до LLM —
+            # переоткрываем DIALOGUE (process_input уже закрыл его).
+            self._reopen_dialogue_for_retry()
+            self._dispatch_turn(
+                verdict.prompt,
+                was_idle=False,
+                raw_user_command=user_input,
             )
+            return True
+
+        if verdict.kind is MusicGuardVerdictKind.NUDGE:
             self._speak_direct(
                 "Я тут растерялся — бит не запустился, попробуй ещё раз."
             )
-        else:
-            # 💡 Diagnostic: guard deliberately skipped — log why.
-            # Helps answer "why didn't Bug C fire?" without reading code.
-            tools_now = set(tools_called or ())
-            self.get_logger().info(
-                f"🎵 [music_guard] skip: was_dj_auto={was_dj_auto} "
-                f"user_input={user_input!r} tools={sorted(tools_now)!r} "
-                f"→ no action (user does NOT want music OR guard not applicable)"
-            )
+            return False
+
+        # SKIP_NOT_APPLICABLE — guard deliberately skipped (stop-command,
+        # user did not request music, DJ off, etc.). Policy module already
+        # logged the diagnostic.
         return False
 
     def _build_music_retry_prompt(self, user_input: str) -> str:
@@ -2953,8 +2971,6 @@ class DialogueNode(Node):
         Honours ``interrupt_agent_loop`` for early exit and ``listen_for_response``
         for waiting on the user.
         """
-        import concurrent.futures
-
         # 1. Honour explicit interrupt.
         if getattr(self, "interrupt_agent_loop", False):
             self.interrupt_agent_loop = False
@@ -3878,8 +3894,7 @@ class DialogueNode(Node):
 
     def _speak_simple(self, text: str, show_error_animation: bool = False) -> None:
         """Publish a one-off TTS payload via SSML JSON with a unique ``dialogue_id``."""
-        import uuid as _uuid
-        dialogue_id = str(_uuid.uuid4())
+        dialogue_id = str(uuid.uuid4())
         self.current_dialogue_id = dialogue_id
         payload = json.dumps({
             "ssml": f"<speak>{text}</speak>",
@@ -3907,13 +3922,25 @@ class DialogueNode(Node):
             pass
 
     def _on_mcp_tools_update(self, msg) -> None:
-        """Parse MCP tools JSON and update ``available_tools``."""
+        """Parse MCP tools JSON and update ``available_tools``.
+
+        Issue #1409 — also keep ``self._mcp_tool_names`` (SSoT set used
+        by ``_load_system_prompt`` validation) in sync. If /mcp/tools
+        delivers a fresher catalogue than ``ToolRegistry.list_tools()``
+        (e.g. an external MCP server registered new tools after
+        startup), we want the next prompt reload to see them too.
+        """
         try:
             data = getattr(msg, "data", "") or "[]"
             tools = json.loads(data)
             if isinstance(tools, list):
                 self.available_tools = tools
                 self.mcp_tools_available = True
+                self._mcp_tool_names = {
+                    str(t.get("function", {}).get("name", ""))
+                    for t in tools
+                    if isinstance(t, dict) and t.get("function", {}).get("name")
+                }
             else:
                 self.available_tools = []
                 self.mcp_tools_available = False

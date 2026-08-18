@@ -273,11 +273,18 @@ max_runtime: 1800 (default) | 3600 (крупная: label `priority:P0` или b
 
 ## 4. Триггеры (стыковка с Hermes cronjob)
 
-| Cron | Период | no_agent | script | deliver |
-|------|--------|----------|--------|---------|
-| `agent-flow-triage` | every 5m | true (pure bash) | `agent-flow-triage.sh` | local |
-| `agent-flow-merge-gate` | every 5m | true (pure check) | `agent-flow-merge-gate.sh` | local |
-| `e2e-process` | every 1h | false (LLM-driven, но orchestrator) | `agent-flow-e2e-process.sh` | local |
+> **Архитектурное правило (ADR-0019, 18.08):** **все три cron-job'а семейства
+> agent-flow живут в ОДНОМ профиле — `agent-flow`** (не `architect`, не
+> `devops`). Путь к jobs.json: `~/.hermes/profiles/agent-flow/cron/jobs.json`.
+> Частая ошибка — искать их в `~/.hermes/profiles/architect/cron/jobs.json`;
+> там живут только fallback-дубликаты `merge-gate` и `e2e-process`.
+> Проверять `hermes cron list --profile agent-flow`, не `hermes cron list`.
+
+| Cron | Период | no_agent | script | deliver | profile |
+|------|--------|----------|--------|---------|---------|
+| `agent-flow-triage` | every 1m (live) / 5m (proposal) | true (pure bash) | `agent-flow-triage.sh` | local | **agent-flow** |
+| `agent-flow-merge-gate` | every 5m | true (pure check) | `agent-flow-merge-gate.sh` | local | **agent-flow** |
+| `agent-flow-e2e-process` | every 60m (rolling round) | true (no-agent, pure bash) | `agent-flow-e2e-process.sh` | local | **agent-flow** |
 
 **Hermes cronjob pattern:**
 ```bash

@@ -214,6 +214,134 @@ run_test "U2_no_user_reopen_still_closes"           test_U2_no_user_reopen_still
 run_test "U3_reopen_before_e2e_done_still_closes"   test_U3_reopen_before_e2e_done_still_closes
 run_test "U4_timeline_unreadable_defer_close"       test_U4_timeline_unreadable_defer_close
 
+# ----------------------------------------------------------------------------
+# Ретро 18.08 t_873ebef2 (дополнение к issue #1391 / PR #1399):
+# U5-U8 покрывают то, что НЕ покрыто в U1-U4:
+#   * U5 — Q22-orphan-close путь + recent user-reopen → close заблокирован
+#   * U6 — Q22-orphan-close путь + whitelist label → close заблокирован
+#   * U7 — MERGED+e2e-done путь + whitelist label → close заблокирован
+#          (timeline говорит «reopen ДО e2e-done», но метка=user override)
+#   * U8 — Q22-orphan-close путь + НЕТ reopen → штатный close (regression)
+# ----------------------------------------------------------------------------
+
+# U5: Q22-orphan (MERGED, branch gone, NO e2e-done), reopened recently.
+test_U5_q22_orphan_recent_reopen_blocks_close() {
+    new_test
+    local issue=1188 branch
+    branch="$(slugify_branch "${issue}" 'q22 reopen blocks close')"
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"q22 reopen blocks close\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"needs-e2e\"}],\"body\":\"kanban: t_dead${issue}\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"needs-e2e"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\"}]}"
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" "[{\"event\":\"closed\",\"created_at\":\"2026-08-12T20:00:00Z\"},{\"event\":\"reopened\",\"created_at\":\"$(date -u -d '2 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)\"}]"
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":1190,\"state\":\"MERGED\",\"baseRefName\":\"develop\",\"mergedAt\":\"2026-08-12T19:30:00Z\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"title\":\"[robot] q22 reopen blocks close\",\"labels\":[]}]"
+    set_state PR_1190_COMMITS_JSON '[]'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+    # BRANCH_PRESENT_<branch> НЕ ставим → Q22-orphan путь.
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
+    assert_eq "0" "$close_calls" "U5: Q22-orphan + recent user-reopen → NO close"
+    # Также проверим что destructive cleanup (branch delete) НЕ запущен —
+    # это дополнительное доказательство что _q22_skip взвёлся.
+    local del_calls
+    del_calls="$(printf '%s\n' "$journal" | grep -c "gh api -X DELETE repos/.*/git/refs/heads" || true)"
+    assert_eq "0" "$del_calls" "U5: NO branch delete (destructive cleanup suppressed)"
+}
+
+# U6: Q22-orphan + whitelist label (no recent reopen in timeline).
+test_U6_q22_orphan_whitelist_blocks_close() {
+    new_test
+    local issue=1190 branch
+    branch="$(slugify_branch "${issue}" 'q22 whitelist blocks close')"
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"q22 whitelist\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"needs-e2e\"},{\"name\":\"user-reopened-this\"}],\"body\":\"kanban: t_dead${issue}\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"needs-e2e"},{"name":"user-reopened-this"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\"}]}"
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" "[]"
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":1192,\"state\":\"MERGED\",\"baseRefName\":\"develop\",\"mergedAt\":\"2026-08-13T10:00:00Z\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"title\":\"[robot] q22 whitelist\",\"labels\":[]}]"
+    set_state PR_1192_COMMITS_JSON '[]'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
+    assert_eq "0" "$close_calls" "U6: Q22-orphan + whitelist label → NO close"
+    # Whitelist срабатывает ДО timeline-детекта, audit НЕ публикуется.
+    local audit_count
+    audit_count="$(printf '%s\n' "$journal" | grep -c "gh issue comment ${issue} --body" || true)"
+    assert_eq "0" "$audit_count" "U6: whitelist тихий — audit НЕ публикуется"
+}
+
+# U7: MERGED+e2e-done path + whitelist label, timeline без user-reopen.
+test_U7_merged_e2e_done_whitelist_blocks_close() {
+    new_test
+    local issue=1195 branch
+    branch="$(slugify_branch "${issue}" 'merged whitelist blocks close')"
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"merged whitelist blocks close\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"e2e-done\"},{\"name\":\"user-reopened-this\"}],\"body\":\"kanban: t_dead${issue}\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"e2e-done"},{"name":"user-reopened-this"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\"}]}"
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" "[{\"event\":\"labeled\",\"label\":{\"name\":\"e2e-done\"},\"created_at\":\"2026-08-13T08:00:00Z\"}]"
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":1196,\"state\":\"MERGED\",\"baseRefName\":\"develop\",\"mergedAt\":\"2026-08-13T08:00:00Z\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"title\":\"[robot] merged whitelist blocks close\",\"labels\":[]}]"
+    set_state PR_1196_COMMITS_JSON '[]'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+    set_state "BRANCH_PRESENT_${branch}" 1
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
+    assert_eq "0" "$close_calls" "U7: MERGED+e2e-done + whitelist → NO close"
+}
+
+# U8: Q22-orphan, NO recent reopen in timeline → штатный close (regression).
+test_U8_q22_orphan_no_reopen_still_closes() {
+    new_test
+    local issue=1197 branch
+    branch="$(slugify_branch "${issue}" 'q22 no reopen still closes')"
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"q22 no reopen still closes\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"needs-e2e\"}],\"body\":\"kanban: t_dead${issue}\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"needs-e2e"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\"}]}"
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    # Старый closed event, но НЕТ reopened event → recent-reopen не сработает.
+    set_state "ISSUE_${issue}_TIMELINE_JSON" "[{\"event\":\"closed\",\"created_at\":\"2026-07-01T20:00:00Z\"}]"
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":1199,\"state\":\"MERGED\",\"baseRefName\":\"develop\",\"mergedAt\":\"2026-08-13T10:00:00Z\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"title\":\"[robot] q22 no reopen still closes\",\"labels\":[]}]"
+    set_state PR_1199_COMMITS_JSON '[]'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
+    # ОЖИДАЕМ close = 1 (Q22-штатное закрытие, recent-reopen не сработал).
+    assert_eq "1" "$close_calls" "U8: Q22-orphan без recent reopen → close разрешён"
+}
+
+run_test "U5_q22_orphan_recent_reopen_blocks_close"       test_U5_q22_orphan_recent_reopen_blocks_close
+run_test "U6_q22_orphan_whitelist_blocks_close"            test_U6_q22_orphan_whitelist_blocks_close
+run_test "U7_merged_e2e_done_whitelist_blocks_close"       test_U7_merged_e2e_done_whitelist_blocks_close
+run_test "U8_q22_orphan_no_reopen_still_closes"            test_U8_q22_orphan_no_reopen_still_closes
+
 echo
 echo "=================================="
 echo "Summary: $TESTS_PASSED/$TESTS_TOTAL passed${FAILED_NAMES:+; FAILED: ${FAILED_NAMES[*]}}"
