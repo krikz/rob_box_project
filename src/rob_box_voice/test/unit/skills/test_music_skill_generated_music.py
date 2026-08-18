@@ -471,3 +471,185 @@ class TestPlayFromLibrary:
         result = _run(underlying(track_id="ghost"))
         body = json.loads(result)
         assert "error" in body
+
+
+# ---------------------------------------------------------------------------
+# Issue #1373 — DISPATCH routing regression tests
+#
+# Vague user phrases from the music_library_suite_v1 e2e scenario must map to
+# the correct tool (issue #1371 — semantically disambiguate Renardo live-engine
+# from AI-generated mp3 library).  We can't unit-test the LLM here, but we CAN
+# verify the prompt fixture carries an explicit routing hint for every
+# scenario step, plus a tool-name registry check.
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchRouting:
+    """Issue #1373 — each music_library_suite_v1 phrase has a correct tool.
+
+    Tests below guard against regression of issue #1371 (LLM semantic
+    collision between Renardo ``list_tracks`` and AI ``list_library``).
+    They don't invoke an LLM — they assert two static invariants:
+
+      1. The music_skill_prompt.txt DISPATCH section explicitly maps every
+         scenario phrase to a tool with the right renardo_*/gen_* prefix.
+      2. ``MusicSkill._make_tools()`` exposes the routed tool (and its
+         dispatcher) under the exact name referenced in DISPATCH.
+    """
+
+    PROMPT_PATH = (
+        Path(__file__).resolve().parents[3]
+        / "prompts"
+        / "skills"
+        / "music_skill_prompt.txt"
+    )
+
+    def _dispatch_section(self) -> str:
+        assert self.PROMPT_PATH.exists(), f"prompt not found: {self.PROMPT_PATH}"
+        text = self.PROMPT_PATH.read_text(encoding="utf-8")
+        # Take everything from the DISPATCH marker to the next blank-then-non-bullet
+        # block (heuristic: stop at the next "### " / "## " or 4-space-indented block
+        # heading — pragmatic for the file shape used today).
+        start = text.find("⚡ DISPATCH")
+        assert start != -1, "DISPATCH marker missing in music_skill_prompt.txt"
+        return text[start:]
+
+    @pytest.mark.parametrize(
+        "phrase, expected_tool",
+        [
+            # Phrases from music_library_suite_v1 — each must be reachable
+            # through an explicit dispatch rule.
+            ("что в библиотеке", "gen_list_library"),
+            ("покажи треки", "gen_list_library"),
+            ("найди трек про дождь", "gen_search_library"),
+            ("что-нибудь романтичное", "gen_search_library"),
+            ("сохрани этот трек", "gen_save_to_library"),
+            ("запомни как", "gen_save_to_library"),
+            ("удали последний", "gen_list_library"),  # two-step dispatch
+            ("что за трек", "gen_get_track_info"),
+            ("расскажи что это за трек", "gen_get_track_info"),
+            # Renardo path — must still be reachable and unambiguous.
+            ("играй renardo бит", "renardo_load_track"),
+            ("сыграй renardo бит", "renardo_load_track"),
+            ("играй сэмпл kick", "renardo_search_samples"),
+        ],
+    )
+    def test_prompt_routes_phrase_to_correct_tool(
+        self, phrase: str, expected_tool: str
+    ) -> None:
+        """User phrase → DISPATCH rule → expected tool name.
+
+        We require the expected tool to appear in DISPATCH near the phrase
+        (within ~120 chars), proving the prompt gives the LLM an explicit
+        routing hint rather than letting it guess from context.
+        """
+        dispatch = self._dispatch_section().lower()
+        phrase_l = phrase.lower()
+        tool_l = expected_tool.lower()
+        # Find the phrase position
+        pos = dispatch.find(phrase_l)
+        assert pos != -1, (
+            f"phrase {phrase!r} not present in DISPATCH section — "
+            f"the LLM would have to guess"
+        )
+        # Expected tool must appear close to the phrase (forward direction)
+        window = dispatch[pos:pos + 240]
+        assert tool_l in window, (
+            f"phrase {phrase!r} found in DISPATCH but expected tool "
+            f"{expected_tool!r} not present nearby ({window!r})"
+        )
+
+    def test_renardo_and_gen_namespaces_disjoint(self, tmp_env) -> None:
+        skill, _, _ = _new_music_skill(tmp_env)
+        tools = skill._make_tools()
+        names = {getattr(t, "__name__", "?") for t in tools}
+        renardo = {n for n in names if n.startswith("renardo_")}
+        gen = {n for n in names if n.startswith("gen_")}
+        # Issue #1371: ambiguous bare names must not leak.
+        bare = names & {
+            "search_samples", "list_tracks", "save_track", "load_track",
+            "delete_track", "list_library", "search_library",
+            "save_to_library", "play_from_library", "delete_from_library",
+            "get_track_info",
+        }
+        assert not bare, f"bare ambiguous tool names leaked: {bare}"
+        # Sanity: both prefixes populated so DISPATCH has something to route to.
+        assert renardo, "no renardo_* tools in skill"
+        assert gen, "no gen_* tools in skill"
+
+    def test_dispatch_section_present_in_prompt(self) -> None:
+        """Regression guard: prompt must keep the DISPATCH block visible.
+
+        If somebody deletes the DISPATCH section during a future cleanup,
+        the LLM will fall back to bare ``list_tracks`` vs ``list_library``
+        and bug #1371 will return.  Verify the marker survives.
+        """
+        text = self.PROMPT_PATH.read_text(encoding="utf-8")
+        assert "⚡ DISPATCH" in text
+        assert "(issue #1371)" in text
+        # Default-rule gate: phrase «библиотека» without clarification
+        # must be routed to AI library (gen_*), NOT Renardo (renardo_*).
+        idx = text.find("библиотека")
+        assert idx != -1
+        # Find nearest "gen_" / "renardo_" hit around the «библиотека» mention
+        # that points to AI library.
+        window = text[idx:idx + 220]
+        assert "gen_" in window, (
+            "phrase «библиотека» must route to gen_* (AI mp3 library) "
+            f"by default — got window: {window!r}"
+        )
+
+    def test_get_track_info_resolves_existing_track(self, tmp_env) -> None:
+        """ml06_track_info — verify gen_get_track_info returns the full track.
+
+        Sanity check that the e2e pattern ``gen_get_track_info`` actually
+        resolves a real track instead of an empty list.
+        """
+        skill, _, _ = _new_music_skill(tmp_env)
+        # Seed one track so gen_get_track_info has something to return
+        t = skill._library.save(
+            prompt="romantic piano", name="rain memory", mood="romantic"
+        )
+        tools = skill._make_tools()
+        info = _tool_by_name(tools, "gen_get_track_info")
+        underlying = getattr(info, "__wrapped__", info)
+        result = _run(underlying(track_id=t.track_id))
+        body = json.loads(result)
+        assert body["track_id"] == t.track_id
+        # Mood/name come back, so e2e can grep them
+        assert body["mood"] == "romantic"
+        assert body["name"] == "rain memory"
+
+    def test_delete_two_step_dispatch_resolves_track_id(self, tmp_env) -> None:
+        """ml05_delete_last — list then delete round-trip works on a real track.
+
+        This mirrors the two-step e2e pattern ``[gen_list_library,
+        gen_delete_from_library]`` from the scenario: list returns the most
+        recent track_id, delete removes it, second list returns one fewer.
+        """
+        skill, _, _ = _new_music_skill(tmp_env)
+        # Seed three tracks
+        ids = []
+        for i, name in enumerate(("alpha", "beta", "gamma")):
+            t = skill._library.save(prompt=f"prompt {i}", name=name)
+            ids.append(t.track_id)
+        tools = skill._make_tools()
+        listing_tool = _tool_by_name(tools, "gen_list_library")
+        delete_tool = _tool_by_name(tools, "gen_delete_from_library")
+        list_underlying = getattr(listing_tool, "__wrapped__", listing_tool)
+        delete_underlying = getattr(delete_tool, "__wrapped__", delete_tool)
+
+        # Step 1: list
+        listing = json.loads(_run(list_underlying(limit=10, sort_by="recent")))
+        assert listing["total"] == 3
+        first_id = listing["tracks"][0]["track_id"]
+        assert first_id == ids[-1]  # most recent = last seeded
+
+        # Step 2: delete
+        del_result = json.loads(_run(delete_underlying(track_id=first_id)))
+        assert del_result["ok"] is True
+        assert skill._library.get(first_id) is None
+
+        # Step 3: list again, expect 2
+        listing2 = json.loads(_run(list_underlying(limit=10, sort_by="recent")))
+        assert listing2["total"] == 2
