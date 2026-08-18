@@ -15,8 +15,14 @@
 #
 # Usage:
 #   e2e_voice_test.sh --text "Робот, меня зовут Саша" [--voice anton]
-#   e2e_voice_test.sh --scenario /tmp/scenario.json
+#   e2e_voice_test.sh --scenario /tmp/scenario.json [--acceptance /tmp/acceptance.json]
 #   e2e_voice_test.sh --text "..." --voice ermil --retries 3 --react-window 40
+#
+# ADR-0022 GATE-1 (acceptance.json gate, issue #1428 / t_ba114e5c):
+#   Если --scenario задан, по умолчанию требуется acceptance.json (next to
+#   scenario.json либо через --acceptance <path>). Без acceptance.json →
+#   FAIL c понятным сообщением. Отключить: --acceptance-skip (НЕ
+#   рекомендуется — smoke-false-PASS, ADR-0022 §4.1 R1).
 #
 # Env (обязательные): YANDEX_API_KEY, ROBOT_HOST=10.1.1.21, SSHPASS
 # Env (опциональные): E2E_MAX_ATTEMPTS=3, E2E_REACTION_WINDOW=40,
@@ -53,6 +59,12 @@ GITHUB_RUN_ID="${GITHUB_RUN_ID:-}"
 # видит пустые логи и выдаёт no_accept при живом роботе. Locale префикс
 # работает только как литерал перед командой, не через переменную.
 ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -n -o StrictHostKeyChecking=no ${ROBOT_USER}@${ROBOT_HOST}"
+# Override для локального тестирования (юнит-тесты): если задан ROBOT_SSH_OVERRIDE,
+# используем его вместо ssh-команды. Позволяет bash-юнит-тестам подсунуть
+# stub без реального sshpass+robot.
+if [ -n "${ROBOT_SSH_OVERRIDE:-}" ]; then
+    ROBOT_SSH="$ROBOT_SSH_OVERRIDE"
+fi
 YANDEX_TTS_VOICE="${YANDEX_TTS_VOICE:-anton}"       # голос по умолчанию
 YANDEX_SPEED="${YANDEX_SPEED:-1.0}"
 
@@ -174,6 +186,8 @@ stop_recording() {
 # --- parse args -------------------------------------------------------------
 TEXT=""
 SCENARIO_FILE=""
+ACCEPTANCE_FILE=""
+ACCEPTANCE_SKIP=0
 VOICE=""
 PATTERNS=""
 CHECK_TG_ECHO=0
@@ -182,6 +196,8 @@ while [ $# -gt 0 ]; do
         --text)     TEXT="$2"; shift 2 ;;
         --voice)    VOICE="$2"; shift 2 ;;
         --scenario) SCENARIO_FILE="$2"; shift 2 ;;
+        --acceptance)        ACCEPTANCE_FILE="$2"; shift 2 ;;
+        --acceptance-skip)   ACCEPTANCE_SKIP=1; shift 1 ;;
         --patterns) PATTERNS="$2"; shift 2 ;;
         --retries)  E2E_MAX_ATTEMPTS="$2"; shift 2 ;;
         --react-window) E2E_REACTION_WINDOW="$2"; shift 2 ;;
@@ -199,6 +215,149 @@ fi
 
 # --- helpers ----------------------------------------------------------------
 log() { echo ">>> $*"; }
+
+# --- ADR-0022 GATE-1 acceptance.json (auto-discovery + gating) --------------
+# Резолвим ACCEPTANCE_FILE в порядке приоритета:
+#   1) --acceptance <path> (явный CLI)
+#   2) <dir(scenario.json)>/acceptance.json (auto-discovery)
+#   3) пустой → gating решает, что делать
+if [ -z "$ACCEPTANCE_FILE" ] && [ -n "$SCENARIO_FILE" ]; then
+    _scenario_dir="$(dirname "$SCENARIO_FILE")"
+    if [ -f "${_scenario_dir}/acceptance.json" ]; then
+        ACCEPTANCE_FILE="${_scenario_dir}/acceptance.json"
+        log "GATE-1: acceptance.json auto-discovered at $ACCEPTANCE_FILE"
+    fi
+fi
+
+# Gating: scenario.json задан И acceptance.json отсутствует И не отключён
+# через --acceptance-skip → FAIL (ADR-0022 §4.1 R1: smoke-false-PASS).
+# Single-shot --text без scenario не требует acceptance (smoke-test
+# legitimate use case — быстрая итерация на одной фразе).
+if [ -n "$SCENARIO_FILE" ] && [ -z "$ACCEPTANCE_FILE" ] && [ "$ACCEPTANCE_SKIP" != "1" ]; then
+    log "❌ GATE-1 FAIL: --scenario задан, но acceptance.json не найден"
+    log "   Ожидался: $(dirname "$SCENARIO_FILE")/acceptance.json"
+    log "   Обход (НЕ рекомендуется): --acceptance-skip"
+    log "   Подробнее: docs/adr/0022-process-e2e-done-gates.md §4.1"
+    mkdir -p "$OUT_DIR"
+    cat > "$OUT_DIR/acceptance.json" <<EOF
+{
+  "gate": "GATE-1",
+  "pass": false,
+  "reason": "scenario.json provided but acceptance.json not found",
+  "scenario_file": "$SCENARIO_FILE",
+  "expected_acceptance_path": "$(dirname "$SCENARIO_FILE")/acceptance.json",
+  "hint": "create acceptance.json with expected_tool_calls + must_not_call, or pass --acceptance-skip to disable gating"
+}
+EOF
+    echo "E2E_GATE1_MISSING_ACCEPTANCE"
+    exit 1
+fi
+
+# --- ADR-0022 GATE-1 aggregate (top-level) ----------------------------------
+# Возвращает 0 если PASS, 1 если FAIL.
+# В отличие от per-step check_acceptance(), эта функция анализирует ВСЕ
+# логи voice-assistant за весь прогон (агрегированно) и сверяет с
+# top-level expected_tool_calls + must_not_call.
+#
+# Контракт acceptance.json:
+#   expected_tool_calls: list[str]  — каждый должен встретиться хотя бы 1 раз
+#   must_not_call:        list[str]  — НИ ОДНОГО не должно встретиться
+#
+# Пишет $OUT_DIR/acceptance.json (перезаписывает per-step формат, если
+# был). Формат совместим с ADR-0022 §4.1.
+check_gate1_aggregate() {  # $1=acceptance_file_path $2=before_rfc3339
+    local acc_file="$1" before="${2:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+    if [ ! -f "$acc_file" ]; then
+        log "GATE-1: ❌ acceptance.json не найден: $acc_file"
+        return 1
+    fi
+
+    local logs
+    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+
+    # Парсим + валидируем acceptance.json в Python → пишем acceptance.json
+    # с verdict в OUT_DIR.
+    ACCEPTANCE_FILE="$acc_file" LOGS="$logs" python3 - <<'PY' > "$OUT_DIR/acceptance.json"
+import json, os, re, sys
+
+acc_path = os.environ["ACCEPTANCE_FILE"]
+logs = os.environ["LOGS"]
+
+try:
+    acc = json.load(open(acc_path))
+except Exception as e:
+    sys.stdout.write(json.dumps({
+        "gate": "GATE-1",
+        "pass": False,
+        "reason": f"acceptance.json parse error: {e}",
+        "acceptance_file": acc_path,
+    }, ensure_ascii=False, indent=2))
+    sys.exit(0)
+
+# Schema validation: обязательные поля
+expected_call = acc.get("expected_tool_calls", []) or []
+must_not = acc.get("must_not_call", []) or []
+if not isinstance(expected_call, list) or not isinstance(must_not, list):
+    sys.stdout.write(json.dumps({
+        "gate": "GATE-1",
+        "pass": False,
+        "reason": "expected_tool_calls and must_not_call must be list[str]",
+        "acceptance_file": acc_path,
+    }, ensure_ascii=False, indent=2))
+    sys.exit(0)
+
+# Substring search по всем логам прогона (case-insensitive).
+# Tool names в логах: dialogue_node печатает "Calling MCP tool: <name>" и
+# "MCP tool result: <name>"; некоторая tool_call нода — JSON-RPC формат.
+# Ищем substring — robust к формату, ловит оба.
+def has(frag):
+    return frag.lower() in logs.lower()
+
+actual_calls = []
+for c in (expected_call + must_not):
+    if has(c) and c not in actual_calls:
+        actual_calls.append(c)
+
+found_expected = [c for c in expected_call if has(c)]
+missing_expected = [c for c in expected_call if not has(c)]
+forbidden_called = [c for c in must_not if has(c)]
+
+failures = []
+if missing_expected:
+    failures.append(
+        "expected tool calls not invoked during run: "
+        + ", ".join(missing_expected)
+    )
+if forbidden_called:
+    failures.append(
+        "forbidden tool calls invoked during run: "
+        + ", ".join(forbidden_called)
+    )
+
+result = {
+    "gate": "GATE-1",
+    "name": acc.get("name", ""),
+    "acceptance_file": acc_path,
+    "expected_tool_calls": expected_call,
+    "must_not_call": must_not,
+    "actual_tool_calls": actual_calls,
+    "found_expected_calls": found_expected,
+    "missing_expected_calls": missing_expected,
+    "forbidden_calls": forbidden_called,
+    "pass": not failures,
+    "reason": "; ".join(failures) if failures else "all checks passed",
+}
+sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2))
+PY
+
+    if grep -q '"pass": *true' "$OUT_DIR/acceptance.json"; then
+        log "GATE-1: ✅ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["reason"])' "$OUT_DIR/acceptance.json")"
+        return 0
+    else
+        log "GATE-1: ❌ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["reason"])' "$OUT_DIR/acceptance.json")"
+        return 1
+    fi
+}
 
 # Синтез Yandex TTS gRPC v3: text + voice → /tmp/e2e_v2_<run>/cmd.wav
 # Тот же контракт что tts_node._synthesize_yandex (tts.api.cloud.yandex.net:443)
@@ -542,6 +701,24 @@ PY
             fi
         fi
     done < "$OUT_DIR/scenario_parsed.txt"
+
+    # --- ADR-0022 GATE-1: top-level aggregate acceptance check ---------------
+    # Если --scenario задан и acceptance.json найден, прогоняем aggregate
+    # проверку: каждый expected_tool_calls должен быть вызван хотя бы раз
+    # за весь прогон (в логах docker voice-assistant); ни один из
+    # must_not_call не должен быть вызван. Пишет $OUT_DIR/acceptance.json
+    # с verdict. Если verdict == FAIL → PASS=0.
+    if [ -n "$ACCEPTANCE_FILE" ] && [ -f "$ACCEPTANCE_FILE" ]; then
+        check_gate1_aggregate "$ACCEPTANCE_FILE" "${E2E_RUN_BEFORE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+        if [ $? != 0 ]; then
+            PASS=0
+            log "GATE-1: ❌ aggregate acceptance FAIL (см. $OUT_DIR/acceptance.json)"
+            echo "E2E_GATE1_FAIL"
+        else
+            log "GATE-1: ✅ aggregate acceptance PASS"
+            echo "E2E_GATE1_OK"
+        fi
+    fi
 else
     STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
     run_step "$TEXT" "${VOICE:-$YANDEX_TTS_VOICE}" "single"
@@ -649,6 +826,20 @@ write_artifacts_audio() {
         echo '{"error":"recording.wav not found, baseline diff skipped"}' > "$OUT_DIR/baseline_diff.json"
     fi
 }
+
+# --- ADR-0022 GATE-1 aggregate (top-level) ----------------------------------
+# Возвращает 0 если PASS, 1 если FAIL.
+# В отличие от per-step check_acceptance(), эта функция анализирует ВСЕ
+# логи voice-assistant за весь прогон (агрегированно) и сверяет с
+# top-level expected_tool_calls + must_not_call.
+#
+# Контракт acceptance.json:
+#   expected_tool_calls: list[str]  — каждый должен встретиться хотя бы 1 раз
+#   must_not_call:        list[str]  — НИ ОДНОГО не должно встретиться
+#
+# Пишет $OUT_DIR/acceptance.json (перезаписывает per-step формат, если
+# был). Формат совместим с ADR-0022 §4.1.
+# (Определение check_gate1_aggregate — выше в helpers, рядом с log().)
 
 # Возвращает 0 если acceptance-чек PASS, 1 если FAIL.
 # Acceptance-блок в scenario описывает ожидаемое поведение робота:
