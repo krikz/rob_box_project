@@ -79,9 +79,6 @@ def _make_node(parameters: dict | None = None) -> DialogueNode:
         "empty_after_strip": 0,
         "stt_rejected": 0,
         "music_stop": 0,
-        # Issue #1385 — gating: сколько раз wake-word был проигнорирован
-        # из-за /voice/e2e/busy=True (идёт атомарный e2e-тест).
-        "e2e_busy": 0,
     }
     n._last_skip_summary_ts = time.monotonic()
     n._speaker_by_text = {}
@@ -447,83 +444,6 @@ class TestOnStt:
         n._dispatch_turn = MagicMock()
         n._on_stt(self._msg("робот, спой"))
         n._cancel_run.assert_called_once()
-
-    # --- Issue #1385: gating /voice/e2e/busy -------------------------------
-    def test_e2e_busy_blocks_wake_word(self):
-        """Пока идёт e2e (busy=True), wake-word из микрофона игнорируется."""
-        n = _make_node()
-        # Симулируем что e2e запущен
-        msg_busy = MagicMock()
-        msg_busy.data = True
-        n._on_e2e_busy(msg_busy)
-        assert n._e2e_busy is True
-        # Теперь wake-word НЕ должен пройти
-        n._dispatch_turn = MagicMock()
-        n._on_stt(self._msg("робот, спой песенку про енотика"))
-        assert n._llm_skipped_counter["e2e_busy"] == 1
-        n._dispatch_turn.assert_not_called()
-
-    def test_e2e_not_busy_passes_wake_word(self):
-        """busy=False (по умолчанию) → обычное поведение, wake-word проходит."""
-        n = _make_node()
-        n._dispatch_turn = MagicMock()
-        n._on_stt(self._msg("робот, расскажи анекдот"))
-        # Без busy → идёт в LLM (а не в e2e_busy counter)
-        assert n._llm_skipped_counter.get("e2e_busy", 0) == 0
-        n._dispatch_turn.assert_called_once()
-
-    def test_e2e_busy_false_unblocks_wake_word(self):
-        """После e2e False → wake-word снова работает."""
-        n = _make_node()
-        msg_busy = MagicMock()
-        msg_busy.data = True
-        n._on_e2e_busy(msg_busy)
-        # Снимаем busy
-        msg_free = MagicMock()
-        msg_free.data = False
-        n._on_e2e_busy(msg_free)
-        assert n._e2e_busy is False
-        # Wake-word снова проходит
-        n._dispatch_turn = MagicMock()
-        n._on_stt(self._msg("робот, выключи музыку"))
-        n._dispatch_turn.assert_called_once()
-        assert n._llm_skipped_counter.get("e2e_busy", 0) == 0
-
-    def test_e2e_busy_does_not_block_telegram(self):
-        """Telegram ([TG:...]) НЕ блокируется busy — это не микрофон."""
-        n = _make_node()
-        msg_busy = MagicMock()
-        msg_busy.data = True
-        n._on_e2e_busy(msg_busy)
-        # Telegram-маркер — обходит busy
-        n._dispatch_turn = MagicMock()
-        n._on_stt(self._msg("[TG:12345] напой что-нибудь"))
-        assert n._llm_skipped_counter.get("e2e_busy", 0) == 0
-        n._dispatch_turn.assert_called_once()
-
-    def test_e2e_busy_increments_counter_per_call(self):
-        """Каждый skipped wake-word инкрементирует counter (для метрик)."""
-        n = _make_node()
-        msg_busy = MagicMock()
-        msg_busy.data = True
-        n._on_e2e_busy(msg_busy)
-        n._dispatch_turn = MagicMock()
-        for _ in range(3):
-            n._on_stt(self._msg("робот, расскажи анекдот"))
-        assert n._llm_skipped_counter["e2e_busy"] == 3
-
-    def test_e2e_busy_callback_idempotent(self):
-        """Повторный busy=True сет не ломает state."""
-        n = _make_node()
-        msg_busy = MagicMock()
-        msg_busy.data = True
-        n._on_e2e_busy(msg_busy)
-        n._on_e2e_busy(msg_busy)
-        n._on_e2e_busy(msg_busy)
-        assert n._e2e_busy is True
-        n._dispatch_turn = MagicMock()
-        n._on_stt(self._msg("робот, спой"))
-        assert n._llm_skipped_counter["e2e_busy"] == 1
 
 
 # ─────────────────────────────────────────────────────────────────────────────
