@@ -492,9 +492,26 @@ except Exception:
 # MERGED) ⇒ критерий карточки выполнен независимо от причины blocked
 # (timeout/needs_input/capability) → unblock (reason «фикс влит, критерий
 # выполнен») → complete → archive. Идемпотентно: повторный тик видит archived.
-archive_merged_card() {  # $1=card_id $2=issue/pr number (для логов)
-    local cid="$1" num="$2" cstate=""
+archive_merged_card() {  # $1=card_id $2=issue number $3=pr_number (для completion-check)
+    local cid="$1" num="$2" pr="$3" cstate=""
     [ -z "$cid" ] && return 0
+    # GATE-3 (ADR-0022 §4.3): блокируем archive если PR имеет красный CI.
+    # Типичный R5-сценарий (ретро 14.08 PR #1418): воркер завершился без
+    # зелёного CI, merge-gate всё равно смержил → карточка archive'илась
+    # как done. Теперь: completion-check ОБЯЗАН вернуть 0, иначе — return
+    # (карточка остаётся done, идемпотентный retry следующего тика, после
+    # re-run CI с зелёным — archive проходит). ADR-0018: «честный FAIL
+    # лучше красивого PASS» — это enforcement.
+    if [ -n "${pr:-}" ]; then
+        local _completion_check
+        _completion_check="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-flow-completion-check.sh"
+        if [ -f "$_completion_check" ]; then
+            if ! bash "$_completion_check" "$pr" 2>/dev/null; then
+                log "[completion-check] card ${cid} PR #${pr} has FAILURE — не архивирую (status stays ${cstate:-done})"
+                return 0
+            fi
+        fi
+    fi
     cstate="$(kanban_card_status "$cid")"
     if [ "$cstate" = "done" ]; then
         "$HERMES_BIN" kanban --board "$KANBAN_BOARD" archive "$cid" >/dev/null 2>&1 \
@@ -1281,7 +1298,7 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
                         # (unblock → complete → archive). Здесь destructive
                         # cleanup разрешён: close успешен (ADR-0014 §4 req 4).
                         if [ -n "${task_id:-}" ]; then
-                            archive_merged_card "$task_id" "$number"
+                            archive_merged_card "$task_id" "$number" "${pr_number:-}"
                         fi
                     else
                         log "issue #${number}: WARNING gh issue close failed (Q22 orphan) — retry next tick"
@@ -1342,7 +1359,7 @@ except Exception:
         # нет. Фикс влит (PR MERGED) ⇒ критерий карточки выполнен независимо
         # от причины blocked: unblock → complete → archive (см. helper).
         if [ -n "$card_id" ]; then
-            archive_merged_card "$card_id" "$number"
+            archive_merged_card "$card_id" "$number" "${pr_number:-}"
         fi
         # 5) Dedup cleanup-коммента (ретро 10.08 t_9caf5d52): раньше коммент
         #    «✅ PR #N смержен» постился КАЖДЫЙ тик (5 мин) → 6 одинаковых на
