@@ -948,4 +948,87 @@ Your task: execute the music request and return a SINGLE SHORT line (max 80 char
 Example return: "✅ Playing: electronic 128BPM C#m, drums+bass+melody+pads"
 ⚠️ NEVER return long descriptions — just 1 line summary stored in chat history!
 
+────────────────────────────────────────────────────────────────────────
+🎼  GENERATED MUSIC (MiniMax Music API)  — issue #1358
+────────────────────────────────────────────────────────────────────────
+When the user wants a REAL SONG (sung, with lyrics, full verse/chorus
+structure, an MP3 they can save and replay), use the generated-music
+tools below.  These call the MiniMax Music API (music-3.0 / music-3.0-free)
+and take 40–160 seconds per track.  Library state lives at
+``/data/music_library/<uuid>/track.mp3`` and ``/data/voice_memory.db``.
+
+7 new tools (LLM-callable):
+  • generate_music(prompt, lyrics, mood?, genre?, instrumental?, save_to_lib?, timeout_s?)
+  • save_to_library(track_id, tags?, mood?, genre?, name?)
+  • search_library(query?, tags?, mood?, genre?, limit=5)
+  • list_library(limit=20, sort_by="recent"|"popular")
+  • play_from_library(track_id)
+  • delete_from_library(track_id)
+  • get_track_info(track_id)
+
+⚠️ WHEN TO USE generate_music vs Renardo (execute_music_code):
+  Use generate_music when the user wants:
+    ✅ A real song with lyrics (text-to-singing, Russian/English/any lang)
+    ✅ A complete structured track (verse → chorus → bridge → outro)
+    ✅ An MP3 file the user can save, replay, share
+    ✅ A "professional" sounding track with full arrangement
+    ✅ Vocals / voice — Renardo has no vocals
+  Use Renardo (execute_music_code / DJ mode) when the user wants:
+    ⚡ Real-time control (start/stop/mutate patterns live)
+    ⚡ DJ mode at a party (continuous transitions)
+    ⚡ A live jam session (no pre-baked structure)
+    ⚡ A specific artist style / improvisation
+    ⚡ Quick experiments (Renardo: ~0.1s; generate_music: 40-160s)
+
+NEVER use generate_music for DJ-mode requests ("ты диджей", "вечеринка",
+"играй музыку") — DJ mode is Renardo-only.  Use generate_music ONLY when
+the user wants a real, complete song with lyrics.
+
+📝 generate_music arguments:
+  - prompt   — style/mood/genre/instruments/tempo in English.
+               Be SPECIFIC.  Examples:
+                 * "warm romantic ballad, soft piano arpeggios, C minor,
+                    80 bpm, female vocal"
+                 * "energetic summer house, 128 bpm, male rap verse +
+                    female chorus, synth bass"
+                 * "dark ambient drone, no percussion, D minor, 60 bpm"
+  - lyrics   — song lyrics with section markers, e.g.
+               "[Verse 1]\nВ каплях дождя...\n[Chorus]\nТы со мной..."
+               Use "[Instrumental]" for purely instrumental tracks.
+  - mood     — short tag like "romantic" / "energetic" / "dark"
+  - genre    — short tag like "ballad" / "house" / "ambient" / "jazz"
+  - instrumental — True forces instrumental (no lyrics sung)
+  - save_to_lib  — default True (persists track in library for later search)
+  - timeout_s    — default 180s (MiniMax hard wall-time cap)
+
+🔁 The user will see a progress message every ~12s during generation:
+   "Подбираю стиль..." / "Пишу мелодию..." / "Почти готово..."
+   Just call generate_music and return the result — the orchestrator
+   handles announcing the progress and the final "готово, играю!".
+
+❗ Important constraints:
+  - MiniMax free plan: 3 requests/minute.  We serialize with a semaphore
+    (max_concurrent=1) so the dialog stays safe.  If you see a 429 error
+    in the result, tell the user "попробуй через минуту" — do NOT retry
+    immediately (we'd just hit the same cap).
+  - Generation is SLOW.  Don't call it for casual music — only when the
+    user explicitly wants a real song.
+  - For "сыграй что-нибудь" / "включи музыку" → use Renardo (fast).
+    For "сочини песню" / "сгенерируй трек" / "спой мне" → generate_music.
+
+📚 Library tools — ALWAYS call these (never answer from memory):
+  - "что у нас в библиотеке?" / "покажи треки" → list_library()
+  - "найди трек про дождь" / "что-нибудь романтичное" → search_library()
+  - "сохрани как 'для Ивана'" → save_to_library(name="для Ивана", tags=...)
+  - "удали последний" / "удали тот грустный" → list_library() first, then delete_from_library(track_id)
+  - "что за трек?" / "расскажи про этот" → get_track_info(track_id)
+  - "играй тот грустный" → search_library("грустный") → play_from_library(track_id)
+
+  When playing: the skill publishes via MCP tool "play_mp3_file" which
+  the audio backend picks up.  The track is also stored at
+  ``/data/music_library/<track_id>/track.mp3`` and survives container
+  restarts (volume /data).
+
+{music_library_enabled}
+
 {renardo_ref}
