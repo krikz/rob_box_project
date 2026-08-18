@@ -6,7 +6,12 @@
     "  - generate_music ВЫЗВАН (expected_tool_calls)",
     "  - execute_music_code НЕ вызван (must_not_call)",
     "  - в распознанной фразе есть ключевое слово «бычок» (expected_keywords)",
-    "  - total_latency ≤ 60000мс (response_max_ms, читается из timing.json)"
+    "  - total_latency ≤ 60000мс (response_max_ms, читается из timing.json)",
+    "",
+    "Issue #1403: добавлен step ml02_sing_song — exact e2e фраза из реального bug report",
+    "«робот, спой песенку про котика». Проверяет, что LLM НЕ отвечает «у меня нет такой функции»",
+    "(старый fail — execute_music_code в Renardo) и вызывает generate_music.",
+    "Ожидаемая длительность 40-160с (MiniMax generation), поэтому response_max_ms=180000."
   ],
   "steps": [
     {
@@ -19,6 +24,20 @@
         "must_not_call": ["execute_music_code"],
         "expected_keywords": ["бычок"],
         "response_max_ms": 60000
+      }
+    },
+    {
+      "label": "ml02_sing_song_about_cat",
+      "voice": "anton",
+      "text": "Робот, спой песенку про котика",
+      "voice_file": ".github/e2e/voice_commands/rabot_spoy_pro_kotika.ogg",
+      "patterns": ["generate_music"],
+      "acceptance": {
+        "expected_tool_calls": ["generate_music"],
+        "must_not_call": ["execute_music_code"],
+        "expected_keywords": ["котик"],
+        "response_max_ms": 180000,
+        "_comment_issue": "#1403 — exact failure phrase from e2e run #32158261168. Before the fix the LLM called execute_music_code and told the user «у меня нет такой функции». With the fix the LLM calls generate_music, the song is generated via MiniMax Music API in 40-160s, and the user hears the actual song (not «бит на 110 bpm»)."
       }
     }
   ]

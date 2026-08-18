@@ -378,7 +378,14 @@ AI-GENERATED MUSIC (MiniMax Music API, mp3 files in /data/music_library):
   "сохрани этот бит" / "запомни этот Renardo" → renardo_save_track() / renardo_list_tracks()
   "удали этот renardo-бит"                   → renardo_delete_track()
   "сочини песню" / "спой мне" / "сгенерируй трек" → generate_music() (SLOW, 40-160s!)
-  "сыграй что-нибудь" / "включи музыку"     → execute_music_code() (Renardo, instant)
+  "спой песенку/песню/частушку/куплет/строчку про <X>"
+       (e.g. "спой песенку про котика", "спой частушку про лето",
+        "спой строчку про дождь")             → generate_music() (SLOW, 40-160s!)
+       Renardo has NO vocals — never pick execute_music_code for
+       "спой/спела/споёт/пропой" requests even if the user calls
+       it a "песенка". A song with lyrics = generate_music.
+  "сыграй что-нибудь" / "включи музыку" / "играй бит"
+                                            → execute_music_code() (Renardo, instant)
   When user says "библиотека" without further qualifier → DEFAULT to gen_* (NEW mp3s).
   When user explicitly says "renardo" / "бит" / "сэмпл" → use renardo_* tools.
   NEVER guess from context — pick the namespace whose prefix matches the request.
@@ -1020,6 +1027,14 @@ and take 40–160 seconds per track.  Library state lives at
 NEVER use generate_music for DJ-mode requests ("ты диджей", "вечеринка",
 "играй музыку") — DJ mode is Renardo-only.  Use generate_music ONLY when
 the user wants a real, complete song with lyrics.
+
+🚨 Issue #1403 — «спой песенку/частушку/куплет про X» IS a generate_music
+   request, NOT a Renardo request. Renardo is a SYNTHESIZER with no
+   vocals — it cannot "sing a song about a cat". The phrase «спой» (and
+   «пой», «спела», «пропой», «споёт») is a hard signal for generate_music
+   even when the user adds «песенку/частушку/строчку/куплет». Never fall
+   through to execute_music_code for «спой песенку про котика» — the user
+   wants vocals, and Renardo does not have them.
 
 📝 generate_music arguments:
   - prompt   — style/mood/genre/instruments/tempo in English.
