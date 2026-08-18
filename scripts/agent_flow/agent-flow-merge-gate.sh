@@ -1374,7 +1374,7 @@ git add -A && git rebase --continue
 git push --force-with-lease origin ${pr_head_ref}
 \`\`\`
 
-**ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → rebase НЕ нужен: сделай `kanban complete` с пометкой `PR closed, rebase не нужен` (ретро 15.08 t_16325ddd).
+**ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → rebase НЕ нужен: сделай \`kanban complete\` с пометкой \`PR closed, rebase не нужен\` (ретро 15.08 t_16325ddd).
 
 (Этот reminder автоматически дописан merge-gate — Шифу прямо: «оно должно взять себе девелоп сейчас и позеленеть», не ждать ручного триггера.)"
             if [ -n "${task_id:-}" ]; then
@@ -1672,7 +1672,7 @@ git add -A && git rebase --continue
 git push --force-with-lease origin ${head}
 \`\`\`
 
-**ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → rebase НЕ нужен: сделай `kanban complete` с пометкой `PR closed, rebase не нужен` (ретро 15.08 t_16325ddd)."
+**ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → rebase НЕ нужен: сделай \`kanban complete\` с пометкой \`PR closed, rebase не нужен\` (ретро 15.08 t_16325ddd)."
         _title_prefix="🔀 merge conflict"
     else
         _reminder="## ⚠️ CI UNSTABLE detected (merge-gate scan-all-prs, $(date -u +%H:%M:%SZ))
@@ -1694,7 +1694,7 @@ git add -A && git rebase --continue
 git push --force-with-lease origin ${head}
 \`\`\`
 
-**ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → rebase НЕ нужен: сделай `kanban complete` с пометкой `PR closed, rebase не нужен` (ретро 15.08 t_16325ddd)."
+**ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → rebase НЕ нужен: сделай \`kanban complete\` с пометкой \`PR closed, rebase не нужен\` (ретро 15.08 t_16325ddd)."
         _title_prefix="⚠️ CI UNSTABLE: rebase"
     fi
 
