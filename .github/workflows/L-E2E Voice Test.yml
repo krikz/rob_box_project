@@ -143,6 +143,11 @@ jobs:
       - name: E2E voice test (atomic harness)
         env:
           SSHPASS: open
+          # Issue #1353: передаём GITHUB_RUN_ID в харнесс, чтобы он создал
+          # симлинк /tmp/dialog_e2e_${run_id}.wav на свой $OUT_DIR/recording.wav
+          # (контракт для upload-artifact ниже — иначе артефакт
+          # e2e-voice-recording-<run_id> всегда пустой).
+          GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           RID="${{ github.run_id }}"
           YKEY="$(cat "$YKEY_LOCAL")"
@@ -383,6 +388,21 @@ jobs:
         with:
           name: e2e-voice-recording-${{ github.run_id }}
           path: /tmp/dialog_e2e_${{ github.run_id }}.wav
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload harness artifacts (issue #1353)
+        uses: actions/upload-artifact@v7
+        with:
+          # Issue #1353: подбираем ВСЕ артефакты харнесса — recording.wav,
+          # cmd_*.wav, synth_*.log, cycle_log.txt, scenario.json, verdict.txt.
+          # Извлекаем OUT_DIR из последней строки E2E_ARTIFACTS в
+          # /tmp/e2e_atomic_out.log (там харнесс печатает "E2E_ARTIFACTS
+          # /tmp/e2e_v2_<run_id>"). Это даёт доступ к полному набору
+          # для ретро/дебага: послушать что говорил робот, увидеть что
+          # синтезировалось и какие ошибки вылезли.
+          name: e2e-voice-harness-artifacts-${{ github.run_id }}
+          path: /tmp/e2e_v2_${{ github.run_id }}
           retention-days: 7
           if-no-files-found: ignore
 
