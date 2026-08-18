@@ -86,7 +86,6 @@ from rob_box_voice.core.dialogue_guards import (
     build_music_retry_prompt,
     is_metalanguage_babble,
     is_music_stop_command,
-    is_vocal_request,
     user_wants_music,
     user_wants_performance,
 )
@@ -98,6 +97,10 @@ from rob_box_voice.core.dialogue_helpers import (
     generate_fallback_response,
     map_emotion_to_animation,
     sanitize_speaker_name,
+)
+from rob_box_voice.core.music_guard import (
+    MusicGuard,
+    MusicGuardVerdictKind,
 )
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.speak_helpers import (
@@ -530,19 +533,15 @@ class DialogueNode(Node):
         # LLM actually asked to stop music.
         self._pending_music_cleanup: bool = False
         self._active_batches: Dict[str, int] = {}
-        # Issue #992 Bug B — how many synchronous DJ retries have
-        # already fired in the current transition. Caps the retry
-        # loop so a stubborn LLM that keeps ignoring
-        # ``execute_music_code`` doesn't lock the dialogue node in an
-        # infinite coroutine chain. After ``MAX_DJ_AUTO_RETRIES`` the
-        # cycle gives up and lets the normal 5 s tick take over.
-        self._dj_auto_retry_count: int = 0
-        self.MAX_DJ_AUTO_RETRIES: int = 2
-        # Bug C (юзер-запросы музыки) retry-бюджет — LLM часто решает
-        # «музыка уже играет» из истории диалога и пропускает
-        # execute_music_code; даём 1 синхронный retry с CRITICAL-промптом.
-        self._music_guard_retry_count: int = 0
-        self.MAX_MUSIC_GUARD_RETRIES: int = 1
+        # Issue #992 Bug B / Bug C — retry budgets and policy now live
+        # in :class:`MusicGuard` (TD-2 decomposition, ARCH-review #1405 /
+        # ADR-0021). ``_run_turn`` resets the user-budget via
+        # ``reset_for_new_user_request``; ``_dispatch_dj_turn`` resets the
+        # DJ budget via ``reset_for_new_dj_transition``. No more
+        # duplicated counters across the two scopes.
+        self._music_guard: MusicGuard = MusicGuard(
+            logger=self.get_logger(),
+        )
 
         # Issue #992 Bug D — metalanguage / babble detector.
         # ``True`` after a single metalanguage retry has already been
@@ -1863,7 +1862,7 @@ class DialogueNode(Node):
         music-guard in :meth:`_run_turn` (keeps the budget intact).
         """
         if from_tick:
-            self._dj_auto_retry_count = 0
+            self._music_guard.reset_for_new_dj_transition()
         self._dispatch_turn(user_input, is_dj_auto=True)
 
     def _dispatch_turn(
@@ -2183,10 +2182,13 @@ class DialogueNode(Node):
         # Bug C (юзер-музыка) — сброс бюджета на НОВЫЙ юзер-запрос,
         # чтобы каждый запрос получал свежий retry (retry-промпт
         # не должен считаться новым запросом и сбрасывать сам себя).
+        # DJ budget оставлен как есть — DJ-retry внутри DJ-transition
+        # живёт своей жизнью и ресетится в ``_dispatch_dj_turn``
+        # (``reset_for_new_dj_transition``) только при свежем тике.
         if not is_babble_retry and not was_dj_auto and not user_input.startswith(
             "[CRITICAL] В прошлом цикле ты НЕ вызвал execute_music_code"
         ):
-            self._music_guard_retry_count = 0
+            self._music_guard.reset_for_new_user_request()
         # Issue #992 Bug D — when the babble detector schedules a retry
         # we MUST NOT end the dialogue at the bottom of this turn. The
         # retry's ``_run_turn`` will run on the same DSM session and
@@ -2788,7 +2790,9 @@ class DialogueNode(Node):
         user_input: str,
         tools_called: tuple,
     ) -> bool:
-        """Post-turn guard that catches LLM music-skip regressions.
+        """Adapter around :meth:`MusicGuard.evaluate` — keeps the ROS2
+        side effects (dispatch, speak_direct, dialogue-reopen) out of
+        the policy module so :class:`MusicGuard` is unit-testable.
 
         Issue #992 Bug B — DJ auto-transitions: the LLM was told
         ``Сыграй трек #N через handle_music``, but it frequently
@@ -2812,100 +2816,50 @@ class DialogueNode(Node):
             own ``DIALOGUE_END`` so the retry's LLM gate fires
             (issue #1204). ``False`` otherwise.
         """
-        tools_set = set(tools_called or ())
-        if "execute_music_code" in tools_set:
-            # Reset the retry counter on success so a future failure
-            # gets a fresh budget.
-            self._dj_auto_retry_count = 0
-            self._music_guard_retry_count = 0
+        verdict = self._music_guard.evaluate(
+            was_dj_auto=was_dj_auto,
+            user_input=user_input,
+            tools_called=tuple(tools_called or ()),
+            dj_enabled=self._dj.state.enabled,
+            build_music_retry_prompt=self._build_music_retry_prompt,
+            build_dj_retry_prompt=self._build_dj_retry_prompt,
+        )
+
+        if verdict.kind is MusicGuardVerdictKind.SKIP:
             return False
-        if was_dj_auto and self._dj.state.enabled:
-            # Bug B — DJ was supposed to play but didn't.
-            if self._dj_auto_retry_count >= self.MAX_DJ_AUTO_RETRIES:
-                self.get_logger().warning(
-                    "🎵 [issue 992 Bug B] DJ retry budget exhausted "
-                    f"({self._dj_auto_retry_count}/{self.MAX_DJ_AUTO_RETRIES}); "
-                    "letting 5 s tick take over"
-                )
-                self._dj_auto_retry_count = 0
-                return False
-            self._dj_auto_retry_count += 1
-            self.get_logger().warning(
-                "🎵 [issue 992 Bug B] DJ auto-transition completed "
-                "without execute_music_code — forcing synchronous retry "
-                f"({self._dj_auto_retry_count}/{self.MAX_DJ_AUTO_RETRIES})"
-            )
+
+        if verdict.kind is MusicGuardVerdictKind.DJ_RETRY:
+            assert verdict.prompt is not None  # build_dj_retry_prompt is wired
             self._dj.state.next_transition_at = (
                 time.time() + DJModeController.POSTPONE_INTERVAL_S
             )
             # Issue #1204: ретрай должен реально дойти до LLM —
             # переоткрываем DIALOGUE (process_input уже закрыл его).
             self._reopen_dialogue_for_retry()
-            self._dispatch_dj_turn(self._build_dj_retry_prompt())
+            self._dispatch_dj_turn(verdict.prompt)
             return True
-        if self._user_wants_music(user_input):
-            tools_now = set(tools_called or ())
-            # 🔴 FIX (live 06.08): стоп-команды («хватит диджеить»,
-            # «выключи музыку») — это НЕ запрос включения музыки!
-            # Bug C видел «диджеить» → думал «юзер просит музыку» →
-            # ретраил с промптом «вызови execute_music_code» (включал
-            # музыку заново). Стоп-команды пропускаем полностью.
-            if is_music_stop_command(user_input):
-                self.get_logger().debug(
-                    "🎵 [issue 992 Bug C] stop-command — skipping music "
-                    "guard entirely"
-                )
-                return False
-            # 🔴 FIX (live 10:00): вокальные запросы («спой/пой/песня»)
-            # — speak_text уже есть (песня озвучена), бит не обязателен:
-            # не нудить. Только если LLM вообще ничего не сделала
-            # (tools пуст) — это настоящий пропуск.
-            if is_vocal_request(user_input):
-                if tools_now:
-                    self.get_logger().debug(
-                        "🎵 [issue 992 Bug C] vocal request, LLM replied "
-                        f"(tools={sorted(tools_now)!r}) — no nudge needed"
-                    )
-                    return False
-            # Bug C — user asked for rap/song/DJ but LLM skipped music.
-            # 🔴 FIX (live 06.08): для ЯВНЫХ запросов (диджей/рэп/зачитай)
-            # — retry с CRITICAL-промптом (как Bug B), а не только нудж:
-            # LLM часто решает «музыка уже играет» из-за истории диалога
-            # (предыдущие прогоны) и пропускает execute_music_code.
-            if self._music_guard_retry_count < self.MAX_MUSIC_GUARD_RETRIES:
-                self._music_guard_retry_count += 1
-                self.get_logger().warning(
-                    f"🎵 [issue 992 Bug C] user asked for music but LLM "
-                    f"skipped execute_music_code (tools={sorted(tools_now)!r}); "
-                    f"synchronous retry {self._music_guard_retry_count}/"
-                    f"{self.MAX_MUSIC_GUARD_RETRIES}"
-                )
-                # Issue #1204: ретрай должен реально дойти до LLM —
-                # переоткрываем DIALOGUE (process_input уже закрыл его).
-                self._reopen_dialogue_for_retry()
-                self._dispatch_turn(
-                    self._build_music_retry_prompt(user_input),
-                    was_idle=False,
-                    raw_user_command=user_input,
-                )
-                return True
-            self.get_logger().warning(
-                "🎵 [issue 992 Bug C] user asked for music but LLM "
-                f"skipped execute_music_code (tools={sorted(tools_now)!r}); "
-                "publishing spoken nudge"
+
+        if verdict.kind is MusicGuardVerdictKind.USER_RETRY:
+            assert verdict.prompt is not None
+            # Issue #1204: ретрай должен реально дойти до LLM —
+            # переоткрываем DIALOGUE (process_input уже закрыл его).
+            self._reopen_dialogue_for_retry()
+            self._dispatch_turn(
+                verdict.prompt,
+                was_idle=False,
+                raw_user_command=user_input,
             )
+            return True
+
+        if verdict.kind is MusicGuardVerdictKind.NUDGE:
             self._speak_direct(
                 "Я тут растерялся — бит не запустился, попробуй ещё раз."
             )
-        else:
-            # 💡 Diagnostic: guard deliberately skipped — log why.
-            # Helps answer "why didn't Bug C fire?" without reading code.
-            tools_now = set(tools_called or ())
-            self.get_logger().info(
-                f"🎵 [music_guard] skip: was_dj_auto={was_dj_auto} "
-                f"user_input={user_input!r} tools={sorted(tools_now)!r} "
-                f"→ no action (user does NOT want music OR guard not applicable)"
-            )
+            return False
+
+        # SKIP_NOT_APPLICABLE — guard deliberately skipped (stop-command,
+        # user did not request music, DJ off, etc.). Policy module already
+        # logged the diagnostic.
         return False
 
     def _build_music_retry_prompt(self, user_input: str) -> str:

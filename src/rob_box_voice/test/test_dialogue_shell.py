@@ -371,7 +371,7 @@ class _TestableDialogueNode(DialogueNode):
         draining until no new task appears, otherwise the retry never
         actually runs in the test.
         """
-        for cycle in range(10):  # safety cap; 1 + MAX_DJ_AUTO_RETRIES is plenty
+        for cycle in range(10):  # safety cap; 1 + max_dj_retries (= 3) is plenty
             # Wait for a task to appear (e.g. ``_dispatch_turn`` races
             # with the previous run's finally-block cleanup).
             for _ in range(20):

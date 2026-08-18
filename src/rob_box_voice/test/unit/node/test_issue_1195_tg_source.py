@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from rob_box_voice.core.music_guard import MusicGuard
 from rob_box_voice.core.speak_helpers import build_ssml_payload
 from rob_box_voice.dialogue_node import DialogueNode
 
@@ -126,7 +127,7 @@ async def test_run_turn_from_tg_skips_speaker_identity_and_prefixes():
     n._task_lock = threading.Lock()
     n._run_cancelled = False
     n._babble_retry_used = False
-    n._music_guard_retry_count = 0
+    n._music_guard = MusicGuard()
     n._pending_music_cleanup = False
     n._speaker_id_enabled = True  # даже при включённой биометрии — TG без неё
 
