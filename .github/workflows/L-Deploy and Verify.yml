@@ -342,17 +342,35 @@ jobs:
           # Ретро 14.08 t_d01fe536: одноразовый init-контейнер voice-resources-init
           # (Exited) из прошлого деплоя блокирует compose up — «Conflict. The container
           # name /voice-resources-init is already in use» + «network vision_default already
-          # exists» (deploy round-109 06:03Z упал на этом). Принудительно удаляем его и
-          # stale-сеть перед up; если сеть ещё используется — rm молча не сработает (|| true).
+          # exists» (deploy round-109 06:03Z упал на этом).
+          #
+          # Ретро 18.08 t_9d35468d (round-130): docker rm -f + network rm БЫЛО НЕДОСТАТОЧНО.
+          # Демон docker удерживает name-slot для свеже-удалённого контейнера ~5-6 секунд,
+          # и при повторном deploy (после предыдущего fail) compose up получает
+          # «Conflict. The container name /voice-resources-init is already in use by
+          # container HASH» — даже после того, как `docker rm -f` удалил контейнер
+          # по имени. Это intermittent: первый прогон после простоя — OK, повторный
+          # через <30s — fail.
+          #
+          # Фикс:
+          # 1) `docker container prune -f` — сбрасывает ВСЕ stopped-контейнеры
+          #    (защита от stale name-slot, не только voice-resources-init);
+          # 2) `docker rm -f voice-resources-init` — точечно для one-shot init;
+          # 3) `docker network rm vision_default` — stale-сеть;
+          # 4) `docker compose up -d --force-recreate --pull never` — compose
+          #    принудительно пересоздаёт контейнеры, а не переиспользует (осторожно:
+          #    он ещё и down не делает, см. step Stop Containers выше).
+          #    NB: --force-recreate тут безопасен — Stop Containers уже сделал down.
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
-             echo '🔧 retro t_d01fe536: cleanup stale one-shot init container'; \
+             echo '🔧 retro t_d01fe536+t_9d35468d: cleanup stale containers/networks'; \
              docker rm -f voice-resources-init 2>/dev/null || true; \
              docker network rm vision_default 2>/dev/null || true; \
-             docker compose up -d --pull never"
+             docker container prune -f 2>/dev/null || true; \
+             docker compose up -d --force-recreate --pull never"
 
       # ==================== MAIN PI DEPLOYMENT ====================
 
@@ -446,12 +464,17 @@ jobs:
           echo "🚀 Starting Main Pi containers..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+          # Ретро 18.08 t_9d35468d: на Vision Pi был race на name-slot после `docker rm -f`
+          # (docker daemon удерживает имя ~5-6s). Защищаем Main Pi тем же набором:
+          # `docker container prune -f` + `--force-recreate` (Stop Containers уже сделал down).
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
-             docker compose up -d --pull never"
+             echo '🔧 retro t_9d35468d: prune stale containers + force-recreate'; \
+             docker container prune -f 2>/dev/null || true; \
+             docker compose up -d --force-recreate --pull never"
 
       # ==================== INITIALIZATION WAIT ====================
 
