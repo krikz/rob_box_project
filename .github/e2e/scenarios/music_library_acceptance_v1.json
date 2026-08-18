@@ -1,24 +1,61 @@
 {
   "name": "music_library_e2e_acceptance_v1",
+  "schema_version": 1,
   "_comment": [
-    "Issue #1396: пример e2e-сценария с acceptance-блоком (новый контракт).",
-    "Используется после фикса #1358 (MiniMax music). acceptance-чекер проверит, что:",
-    "  - generate_music ВЫЗВАН (expected_tool_calls)",
-    "  - execute_music_code НЕ вызван (must_not_call)",
-    "  - в распознанной фразе есть ключевое слово «бычок» (expected_keywords)",
-    "  - total_latency ≤ 60000мс (response_max_ms, читается из timing.json)",
+    "ADR-0022 GATE-1 acceptance contract for PR #1398 (MiniMax music) + feature #1358.",
+    "Top-level 'expected_tool_calls' + 'must_not_call' are the GATE-1 schema fields;",
+    "agent-flow-e2e-process.sh validates them via jq and refuses to set e2e-done",
+    "without them. Per-step 'acceptance' blocks give the validator fine-grained checks",
+    "(tool was called for THIS specific user prompt; not just somewhere in the run).",
     "",
-    "Issue #1403: добавлен step ml02_sing_song — exact e2e фраза из реального bug report",
-    "«робот, спой песенку про котика». Проверяет, что LLM НЕ отвечает «у меня нет такой функции»",
-    "(старый fail — execute_music_code в Renardo) и вызывает generate_music.",
-    "Ожидаемая длительность 40-160с (MiniMax generation), поэтому response_max_ms=180000."
+    "Coverage rationale: one acceptance.json covers ALL 7 new gen_* tools so a single",
+    "PASS truly proves the full feature (ADR-0022 §5.3). ml02_sing_song_about_cat is",
+    "the EXACT failure phrase from run #32158261168 (issue #1403) — before the fix",
+    "LLM called execute_music_code and replied «у меня нет такой функции». With",
+    "the fix LLM routes через MusicSkill → generate_music (40-160с MiniMax gen).",
+    "",
+    "ml07_renardo_path is the NEGATIVE control — must still call execute_music_code",
+    "(Renardo live-engine); if LLM wrongly routes «сыграй renardo бит» к gen_*, the",
+    "renardo path breaks. Pattern: 'must_not_call' on per-step basis (Renardo steps).",
+    "",
+    "gen_play_from_library is NOT covered by a per-step block because e2e needs a",
+    "pre-existing track in /data/music_library (post-condition of generate_music).",
+    "GATE-1 top-level expected_tool_calls INCLUDES it; per-step coverage is partial",
+    "by design. After ml02_sing_song_about_cat PASSES the robot owns a track, so",
+    "a follow-up voice command «сыграй последний трек» exercises gen_play_from_library",
+    "",
+    "Voice file format: 48kHz opus OGG, ≤4s, VAD max=12s, volume≥150 (per",
+    "VOICE_COMMANDS_RESEARCH.md). Pre-recorded with edge-tts ru-RU-DmitryNeural"
   ],
+  "expected_tool_calls": [
+    "generate_music",
+    "gen_list_library",
+    "gen_search_library",
+    "gen_save_to_library",
+    "gen_play_from_library",
+    "gen_delete_from_library",
+    "gen_get_track_info"
+  ],
+  "must_not_call": [
+    "execute_music_code"
+  ],
+  "must_call_for_renardo_request": [
+    "execute_music_code"
+  ],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "volume": 150,
+    "record_seconds_max": 200,
+    "llm": "minimax-m3"
+  },
   "steps": [
     {
       "label": "ml01_generate_romantic",
       "voice": "anton",
       "text": "Робот, сгенерируй бычок на лугу грустную композицию в стиле эмбиент",
-      "patterns": ["synthesize"],
+      "voice_file": ".github/e2e/voice_commands/rabot_sygrai_chto_nibud_romantichnoe.ogg",
+      "patterns": ["generate_music"],
       "acceptance": {
         "expected_tool_calls": ["generate_music"],
         "must_not_call": ["execute_music_code"],
@@ -38,6 +75,79 @@
         "expected_keywords": ["котик"],
         "response_max_ms": 180000,
         "_comment_issue": "#1403 — exact failure phrase from e2e run #32158261168. Before the fix the LLM called execute_music_code and told the user «у меня нет такой функции». With the fix the LLM calls generate_music, the song is generated via MiniMax Music API in 40-160s, and the user hears the actual song (not «бит на 110 bpm»)."
+      }
+    },
+    {
+      "label": "ml03_list_library",
+      "voice": "anton",
+      "text": "Робот, что у тебя в музыкальной библиотеке?",
+      "voice_file": ".github/e2e/voice_commands/rabot_chto_v_biblioteke.ogg",
+      "patterns": ["gen_list_library"],
+      "acceptance": {
+        "expected_tool_calls": ["gen_list_library"],
+        "must_not_call": ["execute_music_code"],
+        "response_max_ms": 30000
+      }
+    },
+    {
+      "label": "ml04_search_rain",
+      "voice": "anton",
+      "text": "Робот, найди трек про дождь",
+      "voice_file": ".github/e2e/voice_commands/rabot_naiti_trek_pro_dozhd.ogg",
+      "patterns": ["gen_search_library"],
+      "acceptance": {
+        "expected_tool_calls": ["gen_search_library"],
+        "must_not_call": ["execute_music_code"],
+        "expected_keywords": ["дождь"],
+        "response_max_ms": 30000
+      }
+    },
+    {
+      "label": "ml05_save_for_ivan",
+      "voice": "anton",
+      "text": "Робот, сохрани этот трек для Ивана",
+      "voice_file": ".github/e2e/voice_commands/rabot_sohrani_etot_trek.ogg",
+      "patterns": ["gen_save_to_library"],
+      "acceptance": {
+        "expected_tool_calls": ["gen_save_to_library"],
+        "must_not_call": ["execute_music_code"],
+        "response_max_ms": 30000
+      }
+    },
+    {
+      "label": "ml06_delete_last",
+      "voice": "anton",
+      "text": "Робот, удали последний трек из библиотеки",
+      "voice_file": ".github/e2e/voice_commands/rabot_udali_poslednii_trek.ogg",
+      "patterns": ["gen_list_library", "gen_delete_from_library"],
+      "acceptance": {
+        "expected_tool_calls": ["gen_list_library", "gen_delete_from_library"],
+        "must_not_call": ["execute_music_code"],
+        "response_max_ms": 30000
+      }
+    },
+    {
+      "label": "ml07_track_info",
+      "voice": "anton",
+      "text": "Робот, расскажи, что это за трек",
+      "voice_file": ".github/e2e/voice_commands/rabot_chto_eto_za_trek.ogg",
+      "patterns": ["gen_get_track_info"],
+      "acceptance": {
+        "expected_tool_calls": ["gen_get_track_info"],
+        "must_not_call": ["execute_music_code"],
+        "response_max_ms": 30000
+      }
+    },
+    {
+      "label": "ml08_renardo_path_unchanged",
+      "voice": "anton",
+      "text": "Робот, сыграй renardo бит",
+      "voice_file": ".github/e2e/voice_commands/rabot_igrai_renardo_bemol.ogg",
+      "patterns": ["execute_music_code"],
+      "acceptance": {
+        "expected_tool_calls": ["execute_music_code"],
+        "must_not_call": ["generate_music"],
+        "_comment_negative_control": "Renardo live-engine route must STILL work. If LLM routes «renardo бит» to gen_* the existing Renardo path breaks (regression). Patterns list this step uses must_not_call=[\"generate_music\"] to catch over-routing."
       }
     }
   ]
