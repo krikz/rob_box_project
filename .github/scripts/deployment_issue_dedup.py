@@ -71,17 +71,44 @@ CRITICAL_EXCLUDE_COMMON = [
     # issue for it.
     r"minimax api error 2056",
     r"token plan usage limit",
+    # Error 2054 — MiniMax bad-request "voice" (no detailed status_msg, but the
+    # pattern matches 2042/20132 family: voice_id invalid). tts_node falls back
+    # to the next provider, robot keeps speaking. Deploy gate seen at it as a
+    # critical_log false-positive on the fully-green round-129 run 32115362102
+    # (issue #1364, retro 18.08): one transient 4xx at startup, e2e passed
+    # with the primary voice (`✅ TTS: основной голос без fallback`). Add the
+    # same exclusion pattern so the deploy detector does not open noise issues
+    # for this transient. Real voice-config bugs (wrong voice_id, missing
+    # voice in registry) WILL still be caught by the mcp_server validation
+    # chain + e2e voice check.
+    r"minimax api error 2054",
     # Python shutdown noise (nav2): "_io.TextIOWrapper ... Exception ignored
     # in:" is printed when the interpreter closes stdout while a pipe reader
     # (e.g. `ros2 topic list | head`) already hung up. Benign — the follow-up
     # BrokenPipeError line is already excluded above (retro 15.08 t_a14ac65d).
     r"exception ignored in:",
+    # dialogue_node INFO success echo: "process_input returned: ... error=None"
+    # is the normal turn-completion line — error=None means NO error. The bare
+    # \berror\b matcher hits "error=None" and would file a false deploy-critical
+    # issue on a fully green round (retro 15.08 t_29230e6f, issue #1335: deploy
+    # run 31886490619 SUCCESS + E2E SUCCESS, yet issue created; same for
+    # round-129 run 32115362102 / issue #1364).
+    r"error\s*=\s*none",
+    r"error\s*:\s*none",
 ]
 CRITICAL_EXCLUDE_BY_SCOPE = {
     "main": [
         r"robot is out of bounds",
         r"serial port /dev/ttyusb0 still not available after",
         r"timed out waiting for transform from (base_link|base_footprint) to odom",
+        # Same retro t_4acd6da0 / PR #1151 (base_footprint migration): nav2
+        # global_costmap waits for /map at startup before rtabmap publishes
+        # it. tf_static / odom→base_footprint is published first by diff_drive,
+        # so the costmap log line is identical to the "to odom" race above.
+        # Ретро 18.08 t_2bfa4793 / issue #1364 (round-129 run 32115362102):
+        # deploy detector created an issue on a GREEN run because this
+        # startup race was still flagged. Add the "to map" sibling pattern.
+        r"timed out waiting for transform from (base_link|base_footprint) to map",
         r"cannot transform tag pose",
         r"sensor origin.*out of map bounds",
         r"can controller state: error-active",
