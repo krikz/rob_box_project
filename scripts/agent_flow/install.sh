@@ -62,6 +62,7 @@ EXPECTED=(
     watchdog.sh
     agent-flow-drift-detect.sh
     kanban-retro-create.sh
+    validate_honesty.sh
 )
 
 # Режим --list-files: печатает EXPECTED по одному имени на строку и выходит.

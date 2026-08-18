@@ -137,6 +137,30 @@ print("1" if ok else "0")
 ' 2>/dev/null || echo 0
 }
 
+# --- honesty-hint (ADR-0018, 18.08.2026) ------------------------------------
+# Pre-merge проверка PR body на «голословный PASS»: если воркер не приложил
+# raw-evidence (pytest / docker logs / gh run view / sqlite / git log /
+# code-block) к claim-маркерам («проверил», «работает», «✅», «done» и т.п.) —
+# печатает WARN в лог merge-gate. НЕ блокирует, НЕ комментирует PR (по
+# дизайну — ревьюер сам решает; воркеры прогоняют локально до kanban complete).
+#
+# Использует scripts/agent_flow/validate_honesty.sh (рядовой, в EXPECTED).
+honesty_hint_for_pr() {  # $1=pr_number → печатает WARN в stderr (если есть)
+    local pr_num="$1"
+    local vh
+    vh="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/validate_honesty.sh"
+    [ -x "$vh" ] || { log "honesty-hint: validate_honesty.sh не найден, skip"; return 0; }
+    local body out rc
+    body="$(gh pr view "$pr_num" --repo "$GH_REPO" --json body --jq '.body' 2>/dev/null || true)"
+    [ -z "$body" ] && { log "honesty-hint: PR #${pr_num} body пустой, skip"; return 0; }
+    out="$(printf '%s' "$body" | bash "$vh" 2>&1)"
+    rc=$?
+    if [ "$rc" -ne 0 ] || printf '%s' "$out" | grep -q '^WARN:'; then
+        log "honesty-hint: PR #${pr_num} → голословные claim'ы без raw-evidence (ADR-0018, не блокер, ревьюер решит):"
+        printf '%s\n' "$out" | sed 's/^/    /' >&2
+    fi
+}
+
 # --- proposal-ветки архитектора (ретро 15.08 t_6024f414) --------------------
 # Долгоживущие ветки вида z-architect/<slug> БЕЗ номера issue и БЕЗ t_<card>
 # (например z-architect/voice-selection-proposal). По процессу proposal-ветка
@@ -942,6 +966,8 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
     # needs-review, возвращаем в e2e-ротацию (needs-e2e) вместо «тихого»
     # ревью непротестированного кода.
     if has_label "$labels_norm" "$DONE_LABEL" && [ "$pr_state" = "OPEN" ]; then
+        # ADR-0018: hint на голословный PASS в PR body (не блокер, только лог).
+        honesty_hint_for_pr "$pr_number" || true
         _done_at="$(gh api "repos/${GH_REPO}/issues/${number}/timeline?per_page=100" \
             --jq '[.[] | select(.event=="labeled" and .label.name=="'"$DONE_LABEL"'")][-1].created_at' 2>/dev/null || echo '')"
         _pr_created="$(gh pr view "$pr_number" --repo "$GH_REPO" --json createdAt \
