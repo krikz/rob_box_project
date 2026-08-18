@@ -5,8 +5,42 @@
 | Дата | 2026-08-18 |
 | Автор | architect (Hermes Agent) |
 | Парный документ | `docs/reports/process-review-2026-08-18.md` |
-| Назначение | Конкретные задачи для worker-карточек (постановка для воркеров) |
-| Статус | ready — Шифу может превращать пункты в issue/карточки или править |
+| Назначение | Конвертация находок ревью в worker-карточки (P0..P3) |
+| Статус | ready — Шифу превращает пункты в issue/карточки или правит |
+| Re-check (reopen #1404, 18:42 CEST) | Live-подтверждение P0-1, P0-2 (см. §0) |
+
+---
+
+## Re-check при reopen карточки #1404 (18.08 18:42 CEST)
+
+Карточка была переоткрыта (предыдущий run 1932 → completed как "дубль"; см. комментарий
+дашборда "Але!! ты же делал ревью процесса а не архитектурное ревью!!!"). На этой
+попытке я не переделываю работу: отчёт (commit `1e1fea5b`) и roadmap (commit `1840d09b`)
+уже в develop и **соответствуют body карточки** — это ревью **процесса** (issue #1404),
+а не архитектурное ревью dialogue_node (это была отдельная карточка t_b127f9b7 → PR #1405).
+
+Что я сверил live прямо сейчас (`hermes cron list` от 2026-08-18T18:42):
+
+```
+1082e70dc68f [active] agent-flow-merge-gate    every 5m   Last run 18:34:37  ok
+73dcdece0619 [active] agent-flow-e2e-process   every 60m  Last run 18:09:44  error: Script exited with code 127
+```
+
+Это **подтверждает в реальном времени два критических бага** из этого roadmap:
+
+- **P0-1 (exit 127)**: last run `error: Script exited with code 127` — тот же
+  `kanban: command not found` / `PR: command not found`, что вчера. Issue #1392
+  по-прежнему в подвешенном состоянии (round-143 сирота).
+- **P0-2 (отсутствующий triage cron)**: в списке только 2 job'а, ни одного
+  `agent-flow-triage`. Issues с label `hermes` не превращаются в kanban-карточки
+  с 12.08 — сам **этот тикет #1404** по-прежнему висит как `ready` без активной
+  dispatch-активности по triage.
+
+Новых архитектурных находок при re-check не появилось (это и не задача карточки).
+Если у товарища Шифу есть **конкретный** вопрос к отчёту — напишите в комментарии,
+я отвечу или перевыпущу нужную секцию. Если же нужно **архитектурное ревью** — это
+отдельная карточка (`agent:architect` для dialogue_node уже отработано в t_b127f9b7;
+для скриптов process — будет ADR-0019 / P1-3 из этого roadmap).
 
 ---
 
@@ -34,8 +68,10 @@
   line 2285 → SIGPIPE → exit 127 → tick роняется.
 - **Где**: `scripts/agent_flow/agent-flow-e2e-process.sh:2285` (process substitution
   `< <(python3 ...)` под `set -euo pipefail`).
-- **Live evidence**: `~/.hermes/profiles/architect/cron/output/73dcdece0619/2026-08-18_18-09-44.md`
-  последний тик; issue #1392 застрял с наполовину прогнанным e2e.
+- **Live evidence (18:42 CEST)**: `hermes cron list` → `73dcdece0619 Last run
+  2026-08-18T18:09:44 error: Script exited with code 127` (тот же тик, что был
+  зафиксирован в исходном отчёте — баг **не починен**). Issue #1392 застрял с
+  наполовину прогнанным e2e.
 - **Acceptance**:
   - [ ] bash `set -euo pipefail` не роняет тик при SIGPIPE в python3 process substitution
   - [ ] Issue #1392 перепрогнан в следующем round без ручного вмешательства
@@ -56,8 +92,12 @@
   отсутствует. Issues с `hermes` label не превращаются в kanban-карточки с 12.08.
 - **Где**: `~/.hermes/profiles/architect/cron/jobs.json` (отсутствует запись);
   репо `scripts/agent_flow/agent-flow-triage.sh` — жив.
-- **Live evidence**: `hermes cron list` показывает только `1082e70dc68f` и
-  `73dcdece0619`. Нет ни одной записи с именем `agent-flow-triage`.
+- **Live evidence (18:42 CEST)**: `hermes cron list` показывает только `1082e70dc68f`
+  (merge-gate) и `73dcdece0619` (e2e-process). **Нет ни одной записи с именем
+  `agent-flow-triage`**. Issue #1404 (эта карточка) — живой пример: висит `ready`
+  уже >12 минут после создания, карточка завелась через `kanban_create` из
+  triage-процесса 09.08 (тот работал), но с 12.08 новые issue'ы могут копиться
+  в очереди без диспатча.
 - **Acceptance**:
   - [ ] jobs.json содержит запись с `name: "agent-flow-triage"`, schedule `every 1m` или `every 5m`
   - [ ] `script: agent-flow-triage.sh`, `workdir: /home/builder/hermes-share/rob_box_project`
@@ -337,4 +377,4 @@
 **Конец roadmap.** Товарищ Шифу, готов создавать issue по любому из P0/P1 пунктов
 по шаблону выше — скажи какой приоритет, я подготовлю body-файлы (`/tmp/issue_<id>.md`)
 и дам команды `gh issue create`. Или запушить roadmap+отчёт как есть, а issue создашь
-сам (твой процесс).
+сам (по rob-box-process-rules — это юзерское право).
