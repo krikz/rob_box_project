@@ -31,6 +31,11 @@ on:
         required: false
         default: ''
         type: string
+      acceptance_file:
+        description: 'ADR-0022 GATE-1: path to acceptance.json (relative to repo root, or absolute). If scenario_file is set and acceptance_file is empty, the harness auto-discovers <scenario_dir>/acceptance.json. Set --acceptance-skip via ACCEPTANCE_SKIP=1 env to disable gating (NOT recommended, ADR-0022 R1).'
+        required: false
+        default: ''
+        type: string
       patterns:
         description: 'Extra log patterns to assert after the cycle (comma-separated grep -E). e.g. "speaker_analysis,Registering"'
         required: false
@@ -139,6 +144,15 @@ jobs:
           else
             echo "NO_SCENARIO"
           fi
+          # ADR-0022 GATE-1: acceptance.json (если задан явно) — кладём в /tmp.
+          # Если не задан, харнесс сам ищет <scenario_dir>/acceptance.json
+          # (auto-discovery) либо падает с gating error.
+          if [ -n "${{ inputs.acceptance_file }}" ]; then
+            sshpass -e scp -o StrictHostKeyChecking=no "${{ inputs.acceptance_file }}" ros2@10.1.1.249:/tmp/e2e_acceptance.json
+            sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_acceptance.json && echo ACCEPTANCE_PUSHED"
+          else
+            echo "NO_EXPLICIT_ACCEPTANCE (auto-discovery / gating will apply)"
+          fi
 
       - name: E2E voice test (atomic harness)
         env:
@@ -155,6 +169,12 @@ jobs:
           # Формируем команду: --scenario если задан, иначе --text + --voice
           if [ -n "${{ inputs.scenario_file }}" ]; then
             CMD="/tmp/e2e_voice_test.sh --scenario /tmp/e2e_scenario.json"
+            # ADR-0022 GATE-1: проброс --acceptance если задан явно.
+            # Если не задан — харнесс сам auto-discovers /tmp/e2e_scenario.json
+            # рядом acceptance.json (либо gating падает с понятным сообщением).
+            if [ -n "${{ inputs.acceptance_file }}" ]; then
+              CMD="$CMD --acceptance /tmp/e2e_acceptance.json"
+            fi
           else
             CMD="/tmp/e2e_voice_test.sh --text '${{ inputs.voice_text }}' --voice '${{ inputs.voice }}'"
           fi
@@ -206,6 +226,7 @@ jobs:
             "voice": "${{ inputs.voice }}",
             "voice_text": "${{ inputs.voice_text }}",
             "scenario_file": "${{ inputs.scenario_file }}",
+            "acceptance_file": "${{ inputs.acceptance_file }}",
             "patterns": "${{ inputs.patterns }}",
             "check_tg_echo": "${{ inputs.check_tg_echo }}",
             "harness": "e2e_voice_test.sh (atomic v2)",
@@ -694,6 +715,7 @@ jobs:
           echo "- Voice text: \`${{ inputs.voice_text }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Voice: \`${{ inputs.voice }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Scenario: \`${{ inputs.scenario_file }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Acceptance (ADR-0022 GATE-1): \`${{ inputs.acceptance_file }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Patterns: \`${{ inputs.patterns }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Volume: ${{ inputs.volume }}%" >> $GITHUB_STEP_SUMMARY
           echo "- LLM: \`${{ inputs.llm }}\`" >> $GITHUB_STEP_SUMMARY
