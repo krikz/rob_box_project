@@ -1,13 +1,33 @@
 """
 music_skill.py — MusicSkill: sub-agent for live music generation via Renardo/SuperCollider.
 
-Tools exposed to the sub-agent:
-  search_samples    — filesystem sample search (finds letter + index for play())
-  execute_music_code — execute Renardo code in the running SC instance
-  stop_music         — stop a pattern or all music
-  set_vibe_preset    — apply a named vibe preset (chill/energetic/ambient/jazz/dark)
-  get_music_state    — query current music state
-  search_artist_style — DuckDuckGo search for artist/concept style (issue #1000)
+Tools exposed to the sub-agent (issue #1371 — namespace split to avoid LLM
+semantic collisions between Renardo track-code and the new AI-generated
+mp3 library, issue #1361):
+
+  Renardo / SuperCollider live-engine (prefixed ``renardo_``):
+    renardo_search_samples — filesystem sample search (finds letter+index for play())
+    execute_music_code    — execute Renardo code in the running SC instance
+    stop_music            — stop a pattern or all music
+    set_vibe_preset       — apply a named vibe preset
+    get_music_state       — query current music state
+    search_artist_style   — DuckDuckGo search for artist/concept style (issue #1000)
+    renardo_list_tracks   — list saved Renardo track-blocks (Python code snapshots)
+    renardo_save_track    — save Renardo Python-code snapshot to library
+    renardo_load_track    — re-run a saved Renardo code block
+    renardo_delete_track  — remove a Renardo track-block
+
+  AI-generated music (MiniMax Music API, prefix ``gen_``) — issue #1358/#1361:
+    generate_music         — compose a NEW song via MiniMax (40-160s per track)
+    gen_list_library       — list saved AI mp3 tracks
+    gen_search_library     — FTS5 / tag search across AI mp3 metadata
+    gen_save_to_library    — update tags/name/mood/genre for an AI track
+    gen_play_from_library  — play an AI mp3 via the audio backend
+    gen_delete_from_library — delete an AI mp3 from the library (irreversible)
+    gen_get_track_info     — full metadata for one AI track
+
+  Mode-independent:
+    set_dj_mode            — toggle autonomous DJ mode (Renardo-only)
 
 The Renardo reference documentation is loaded at init time from a configurable
 path (RENARDO_REF_PATH env var or the renardo_ref_path constructor argument) and
@@ -169,28 +189,40 @@ class MusicSkill(BaseSkill):
         return ""
 
     def _make_tools(self) -> list:
-        # Capture samples_path for search_samples closure
+        # Capture samples_path for renardo_search_samples closure
         samples_root = Path(self._samples_path)
 
         async def _call(name, params, timeout=10.0):
             return await self._call(name, params, timeout)
 
-        # ── search_samples ─────────────────────────────────────────────────
+        # ── renardo_search_samples ────────────────────────────────────────
         # Filesystem-based: reads renardo sample packs directly.
         # Returns JSON with letter, sample_index, and ready-to-use play_code.
+        # Issue #1371: renamed from `search_samples` to disambiguate from
+        # the AI-generated ``gen_search_library`` tool. The new name
+        # explicitly tags this as a RENARDO live-engine helper.
 
         @function_tool
-        def search_samples(
+        def renardo_search_samples(
             query: str,
             pack: str = "0_foxdot_default",
             case: str = "lower",
         ) -> str:
-            """Search for renardo samples by keyword in the filename.
+            """Search Renardo sample packs by keyword (RENARDO ENGINE).
 
-            Call this when you need an UNKNOWN sample letter / index or want to
-            browse the sample library. Do NOT call it for known built-ins like
-            vocal `c` or standard kick/snare letters already covered by the prompt.
-            Filenames describe the sonic character of the sample (e.g. "Kick1.wav", "Snare_rim.wav").
+            Use this when you need an UNKNOWN sample letter / index for
+            ``play()`` or want to browse the sample library. Do NOT call
+            it for known built-ins like vocal ``c`` or standard kick/snare
+            letters already covered by the prompt.
+
+            Filenames describe the sonic character of the sample
+            (e.g. ``Kick1.wav``, ``Snare_rim.wav``).
+
+            ⚠️ DISAMBIGUATION (issue #1371):
+            This tool operates on the RENARDO live-engine sample packs
+            (filesystem under RENARDO_SAMPLES_PATH). For searching the
+            AI-generated mp3 library (MiniMax Music API) use
+            ``gen_search_library`` instead.
 
             Args:
                 query: Keyword to search for (e.g. "kick", "snare", "hat", "bass",
@@ -215,8 +247,8 @@ class MusicSkill(BaseSkill):
             elif "letters" in result:
                 # overview mode
                 result["hint"] = (
-                    'Search by word: search_samples("kick") or '
-                    'search_samples("synth", pack="1_pitchglitch_samples")'
+                    'Search by word: renardo_search_samples("kick") or '
+                    'renardo_search_samples("synth", pack="1_pitchglitch_samples")'
                 )
             elif result.get("found", 0) == 0:
                 result["hint"] = (
@@ -358,12 +390,27 @@ class MusicSkill(BaseSkill):
                 indent=2,
             )
 
-        @function_tool
-        async def list_tracks(tag: str = "", min_rating: int = 0) -> str:
-            """List saved tracks in the robot's music library.
+        # ── renardo_list_tracks / renardo_save_track / renardo_load_track / ──
+        # ── renardo_delete_track  (RENARDO ENGINE track-block library) ────
+        # Issue #1371: renamed from `list_tracks` / `save_track` /
+        # `load_track` / `delete_track` to disambiguate from the AI-generated
+        # ``gen_*_library`` family.  These tools persist and replay
+        # **Renardo Python code snapshots** (track-blocks), NOT mp3 files.
+        # The MCP-имя в ``_call()`` оставлено без изменений (это протокол
+        # между skill и MCP-сервером — на стороне MCP эти имена зашиты в
+        # music_library_backend'е Renardo).
 
-            ALWAYS call this when the user asks about saved tracks, melodies or
-            the music library — do NOT answer from memory!
+        @function_tool
+        async def renardo_list_tracks(tag: str = "", min_rating: int = 0) -> str:
+            """List saved Renardo track-blocks (RENARDO ENGINE).
+
+            ALWAYS call this when the user asks about saved Renardo
+            tracks / melodies / DJ-set blocks — do NOT answer from memory!
+
+            ⚠️ DISAMBIGUATION (issue #1371):
+            This tool lists **Renardo Python code snapshots** (live
+            patterns). For listing AI-generated mp3 tracks (MiniMax
+            Music API), use ``gen_list_library`` instead.
 
             Args:
                 tag: Filter by tag, e.g. 'full_track', 'robot_authored', 'minor'. Empty = all.
@@ -377,11 +424,18 @@ class MusicSkill(BaseSkill):
             return await _call("list_tracks", params)
 
         @function_tool
-        async def save_track(name: str, title: str = "", description: str = "",
-                             tags: str = "", rating: int = 0, notes: str = "") -> str:
-            """Save the current or last played track to the persistent music library.
+        async def renardo_save_track(name: str, title: str = "", description: str = "",
+                                     tags: str = "", rating: int = 0, notes: str = "") -> str:
+            """Save the current/last Renardo track-block to the persistent library (RENARDO ENGINE).
 
-            Use when the user says 'save this track', 'remember this melody', etc.
+            Use when the user says 'сохрани этот бит', 'remember this
+            melody', etc.  Stores the Renardo Python code snapshot for
+            later replay via ``renardo_load_track``.
+
+            ⚠️ DISAMBIGUATION (issue #1371):
+            This persists Renardo Python code, NOT an mp3 file. For
+            updating metadata of an AI-generated track use
+            ``gen_save_to_library``.
 
             Args:
                 name: Unique slug identifier (e.g. 'chill_dnb_v1').
@@ -405,11 +459,16 @@ class MusicSkill(BaseSkill):
             return await _call("save_track", params)
 
         @function_tool
-        async def load_track(name: str) -> str:
-            """Load a track from the library and play it.
+        async def renardo_load_track(name: str) -> str:
+            """Load a saved Renardo track-block and replay it (RENARDO ENGINE).
 
-            Use when the user asks to play a saved track by name.
-            Call list_tracks() first to get the exact name.
+            Use when the user asks to play a saved Renardo track by
+            name.  Call ``renardo_list_tracks()`` first to get the
+            exact slug.
+
+            ⚠️ DISAMBIGUATION (issue #1371):
+            This replays a Renardo Python code block live in SC. For
+            playing an AI-generated mp3 use ``gen_play_from_library``.
 
             Args:
                 name: Track slug (e.g. 'csm_132_full_track').
@@ -417,8 +476,12 @@ class MusicSkill(BaseSkill):
             return await _call("load_track", {"name": name})
 
         @function_tool
-        async def delete_track(name: str) -> str:
-            """Delete a track from the music library (irreversible).
+        async def renardo_delete_track(name: str) -> str:
+            """Delete a saved Renardo track-block (irreversible, RENARDO ENGINE).
+
+            Use when the user says 'удали этот renardo-бит'.  For
+            deleting AI-generated mp3 tracks use
+            ``gen_delete_from_library``.
 
             Args:
                 name: Track slug to delete.
@@ -463,6 +526,13 @@ class MusicSkill(BaseSkill):
         # (slow, 40-160s per track) and manage a persistent library of
         # AI-generated MP3s.  Use Renardo for live-loop / DJ work; use
         # these when the user wants a real, sung, structured song.
+        #
+        # Issue #1371: every AI-generated library tool was prefixed with
+        # ``gen_`` so the LLM can no longer confuse ``list_library`` /
+        # ``search_library`` with ``renardo_list_tracks`` /
+        # ``renardo_search_samples``.  When the user says «библиотека»
+        # without further qualifier, default to the NEW (gen_*) tools —
+        # that's the use-case we ship to consumers.
         _library = self._library
         _client = self._client
         _minimax_model = self._minimax_model
@@ -504,7 +574,7 @@ class MusicSkill(BaseSkill):
                 instrumental: When True, force ``[Instrumental]`` lyrics.
                 save_to_lib: When True (default), persist the track in the
                              library immediately so the user can find it
-                             again with search_library().
+                             again with gen_search_library().
                 timeout_s:  Hard wall-time cap in seconds (default 180).
 
             Returns:
@@ -598,18 +668,23 @@ class MusicSkill(BaseSkill):
             return json.dumps(track_payload, ensure_ascii=False, indent=2)
 
         @function_tool
-        def save_to_library(
+        def gen_save_to_library(
             track_id: str,
             tags: str = "",
             mood: str = "",
             genre: str = "",
             name: str = "",
         ) -> str:
-            """Update metadata for an already-generated track in the library.
+            """Update metadata for an already-generated track in the AI music library.
 
             Use this when the user says "сохрани этот трек как 'для
             Ивана'" or wants to add tags / mood / genre to the most
             recent track.
+
+            ⚠️ DISAMBIGUATION (issue #1371):
+            This tool updates metadata of an AI-generated mp3. For
+            persisting a Renardo Python track-block use
+            ``renardo_save_track``.
 
             Args:
                 track_id: UUID4 hex returned by generate_music().
@@ -647,18 +722,23 @@ class MusicSkill(BaseSkill):
             )
 
         @function_tool
-        def search_library(
+        def gen_search_library(
             query: str = "",
             tags: str = "",
             mood: str = "",
             genre: str = "",
             limit: int = 5,
         ) -> str:
-            """Search the generated-music library by keyword, mood, or genre.
+            """Search the AI-generated mp3 library by keyword, mood, or genre.
 
             ALWAYS call this when the user asks for "тот трек про
-            дождь", "найди что-то романтичное", "что у нас про лето?" —
-            do NOT answer from memory.
+            дождь", "найди что-то романтичное", "что у нас про лето?"
+            — do NOT answer from memory.
+
+            ⚠️ DISAMBIGUATION (issue #1371):
+            This tool searches the AI-generated mp3 library (MiniMax
+            Music API). For searching Renardo sample packs use
+            ``renardo_search_samples``.
 
             Args:
                 query:  Free-text query (searches prompt + lyrics + name).
@@ -679,7 +759,7 @@ class MusicSkill(BaseSkill):
             )
             # Issue #1358 e2e: distinctive log line.
             _LOG.info(
-                "🎼 [issue 1358] search_library: query=%r mood=%r genre=%r tags=%r → %d hits",
+                "🎼 [issue 1358] gen_search_library: query=%r mood=%r genre=%r tags=%r → %d hits",
                 query, mood, genre, tag_list, len(results),
             )
             return json.dumps(
@@ -693,11 +773,17 @@ class MusicSkill(BaseSkill):
             )
 
         @function_tool
-        def list_library(limit: int = 20, sort_by: str = "recent") -> str:
-            """List all tracks in the generated-music library.
+        def gen_list_library(limit: int = 20, sort_by: str = "recent") -> str:
+            """List all tracks in the AI-generated mp3 library.
 
-            Use when the user asks "что у нас в библиотеке?", "покажи все
-            треки", or before picking one to play.
+            Use when the user asks "что у нас в библиотеке?", "покажи
+            все треки", or before picking one to play.
+
+            ⚠️ DISAMBIGUATION (issue #1371):
+            This tool lists AI-generated mp3s (MiniMax Music API).
+            For listing saved Renardo track-blocks use
+            ``renardo_list_tracks``. When the user says «библиотека»
+            without further qualifier, default to THIS tool.
 
             Args:
                 limit:  Max tracks to return (default 20).
@@ -710,7 +796,7 @@ class MusicSkill(BaseSkill):
             # Issue #1358 e2e: distinctive log line that the e2e harness
             # can grep for to confirm the new tool was actually called.
             _LOG.info(
-                "🎼 [issue 1358] list_library: total=%d shown=%d sort=%s",
+                "🎼 [issue 1358] gen_list_library: total=%d shown=%d sort=%s",
                 total, len(tracks), sort_by,
             )
             return json.dumps(
@@ -725,15 +811,20 @@ class MusicSkill(BaseSkill):
             )
 
         @function_tool
-        async def play_from_library(track_id: str) -> str:
-            """Play a track from the generated-music library.
+        async def gen_play_from_library(track_id: str) -> str:
+            """Play a track from the AI-generated mp3 library.
 
             Locates the MP3 file, increments the play count, and publishes
             a play trigger so the audio node can stream it.
 
+            ⚠️ DISAMBIGUATION (issue #1371):
+            This tool plays an AI-generated mp3 (MiniMax Music API).
+            For replaying a saved Renardo track-block use
+            ``renardo_load_track``.
+
             Args:
                 track_id: UUID4 hex returned by generate_music() or
-                          visible in list_library() / search_library().
+                          visible in gen_list_library() / gen_search_library().
             """
             if _library is None:
                 return json.dumps({"error": "library unavailable"}, ensure_ascii=False)
@@ -779,13 +870,18 @@ class MusicSkill(BaseSkill):
             )
 
         @function_tool
-        def delete_from_library(track_id: str) -> str:
-            """Delete a track from the generated-music library (irreversible).
+        def gen_delete_from_library(track_id: str) -> str:
+            """Delete a track from the AI-generated mp3 library (irreversible).
 
             Use when the user says "удали тот грустный трек" or
-            "удали последний".  ALWAYS call list_library() or
-            search_library() first to confirm the track_id — do NOT
+            "удали последний".  ALWAYS call gen_list_library() or
+            gen_search_library() first to confirm the track_id — do NOT
             guess from context.
+
+            ⚠️ DISAMBIGUATION (issue #1371):
+            This tool deletes an AI-generated mp3 (MiniMax Music API).
+            For deleting a saved Renardo track-block use
+            ``renardo_delete_track``.
 
             Args:
                 track_id: UUID4 hex of the track to remove.
@@ -799,8 +895,8 @@ class MusicSkill(BaseSkill):
             )
 
         @function_tool
-        def get_track_info(track_id: str) -> str:
-            """Return full metadata for one track in the library.
+        def gen_get_track_info(track_id: str) -> str:
+            """Return full metadata for one AI-generated track in the library.
 
             Use when the user asks "что за трек?", "покажи информацию",
             or when you need prompt+lyrics+tags before deciding to play
@@ -820,10 +916,15 @@ class MusicSkill(BaseSkill):
             return json.dumps(track.to_dict(), ensure_ascii=False, indent=2)
 
         return [
-            search_samples, execute_music_code, stop_music, set_vibe_preset,
-            get_music_state, search_artist_style, list_tracks, save_track,
-            load_track, delete_track, set_dj_mode,
-            # Issue #1358 — generated-music tools
-            generate_music, save_to_library, search_library, list_library,
-            play_from_library, delete_from_library, get_track_info,
+            # Renardo live-engine tools (issue #1371 — namespaced with renardo_
+            # prefix where the name was ambiguous with the new AI library).
+            renardo_search_samples, execute_music_code, stop_music,
+            set_vibe_preset, get_music_state, search_artist_style,
+            renardo_list_tracks, renardo_save_track, renardo_load_track,
+            renardo_delete_track, set_dj_mode,
+            # AI-generated music tools (issue #1358/#1361; namespaced with
+            # gen_ prefix in issue #1371).
+            generate_music, gen_save_to_library, gen_search_library,
+            gen_list_library, gen_play_from_library, gen_delete_from_library,
+            gen_get_track_info,
         ]

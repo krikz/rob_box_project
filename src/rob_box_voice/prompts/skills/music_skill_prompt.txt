@@ -324,15 +324,10 @@ p2 >> arpy([0,2,4,2,3,1], dur=0.5, oct=5, amp=0.5, room=0.3)
 p3 >> pads(dur=4, amp=0.15, sus=6, room=0.5).follow(p1) + (0,2,4)
 ```
 
-Your music tools:
-- search_samples(query, pack, case): for drums/unknown letters (NOT for vocal 'c'!)
-  Searches samples by keyword in filename (filename = sound character).
-  query="kick" → all kick drums. query="snare" → snares. query="*" → browse letters.
-- search_artist_style(artist_name, song_names?): DuckDuckGo research — issue #1000.
-  CALL FIRST (before execute_music_code) when user mentions artist/band/concept/theme.
-  Returns genre, BPM, key, instruments, mood. Use to match Renardo code to artist style.
-  Examples: search_artist_style('Егор Летов'), search_artist_style('летняя дискотека хаус'),
-            search_artist_style('Пастырь культа') → 'ритуальная музыка хоралы культ'.
+Your music tools (issue #1371 — namespaced into two families, see DISPATCH below):
+
+RENARDO LIVE-ENGINE (live Python code → SuperCollider):
+- renardo_search_samples(query, pack, case): filesystem sample search (Renardo sample packs)
 - execute_music_code(code, segments?): run Renardo code (create/update a pattern).
   ⚠️ Issue #990: `segments` (bars, 1 бар = 4 бита) — ТОЛЬКО предохранитель.
   Система сама останавливает музыку после tts_batch_complete; segments лишь
@@ -351,41 +346,77 @@ Your music tools:
   → enabled=false: stop DJ mode (clears theme too)
 - set_vibe_preset(preset_name): quickly set a vibe (chill/energetic/ambient/jazz/dark/rock/latin/electronic/cinematic/funk/reggae/classical). IMPORTANT: parameter name is ``preset_name`` (NOT ``preset``) — see issue #935.
 - get_music_state(): get current state
+- search_artist_style(artist_name, song_names?): DuckDuckGo research — issue #1000.
+  CALL FIRST (before execute_music_code) when user mentions artist/band/concept/theme.
+  Returns genre, BPM, key, instruments, mood. Use to match Renardo code to artist style.
+  Examples: search_artist_style('Егор Летов'), search_artist_style('летняя дискотека хаус'),
+            search_artist_style('Пастырь культа') → 'ритуальная музыка хоралы культ'.
+- renardo_list_tracks(tag?, min_rating?): list saved Renardo track-blocks (Python code).
+- renardo_save_track(name, title?, description?, tags?, rating?, notes?): persist Renardo code snapshot.
+- renardo_load_track(name): re-run a saved Renardo code block.
+- renardo_delete_track(name): remove a Renardo track-block.
 - generate_tts_sample: UNAVAILABLE — do not use!
-  For vocal sounds — letter 'c', spack=1 (pitchglitch) is KNOWN, search NOT needed!
-  For screaming/fear: search_samples("scream", pack="1_pitchglitch_samples") — 1 call
+
+AI-GENERATED MUSIC (MiniMax Music API, mp3 files in /data/music_library):
+- generate_music(prompt, lyrics, mood?, genre?, instrumental?, save_to_lib?, timeout_s?): compose NEW song.
+- gen_list_library(limit=20, sort_by="recent"|"popular"): list saved AI mp3 tracks.
+- gen_search_library(query?, tags?, mood?, genre?, limit=5): FTS5 + tag/mood search across AI tracks.
+- gen_save_to_library(track_id, tags?, mood?, genre?, name?): update metadata for an AI track.
+- gen_play_from_library(track_id): play an AI mp3 (publishes via MCP play_mp3_file).
+- gen_delete_from_library(track_id): delete an AI mp3 (irreversible).
+- gen_get_track_info(track_id): full metadata for one AI track.
+
+⚡ DISPATCH (issue #1371) — how to choose between Renardo and AI library:
+  "что в библиотеке?" / "покажи треки"      → gen_list_library()  (NEW mp3s)
+  "найди трек про дождь" / "что-то романтичное" → gen_search_library()
+  "сохрани этот трек" / "запомни как 'X'"    → gen_save_to_library()
+  "играй тот грустный" / "сыграй трек X"     → gen_search_library() → gen_play_from_library()
+  "удали тот трек" / "удали последний"      → gen_list_library() → gen_delete_from_library()
+  "что за трек?" / "покажи информацию"       → gen_get_track_info()
+  "играй сэмпл kick 808" / "сыграй пэд"      → renardo_search_samples()  (Renardo samples!)
+  "играй renardo-бит" / "загрузи мой сэмпл"  → renardo_load_track() / renardo_search_samples()
+  "сохрани этот бит" / "запомни этот Renardo" → renardo_save_track() / renardo_list_tracks()
+  "удали этот renardo-бит"                   → renardo_delete_track()
+  "сочини песню" / "спой мне" / "сгенерируй трек" → generate_music() (SLOW, 40-160s!)
+  "сыграй что-нибудь" / "включи музыку"     → execute_music_code() (Renardo, instant)
+  When user says "библиотека" without further qualifier → DEFAULT to gen_* (NEW mp3s).
+  When user explicitly says "renardo" / "бит" / "сэмпл" → use renardo_* tools.
+  NEVER guess from context — pick the namespace whose prefix matches the request.
+
+For vocal sounds — letter 'c', spack=1 (pitchglitch) is KNOWN, search NOT needed!
+For screaming/fear: renardo_search_samples("scream", pack="1_pitchglitch_samples") — 1 call
 
 SAMPLE SELECTION STRATEGY:
-⚡ LIMIT: NO MORE THAN 2 search_samples calls per request! Then immediately execute_music_code!
-🥁 KNOWN LETTERS (use directly without search_samples):
+⚡ LIMIT: NO MORE THAN 2 renardo_search_samples calls per request! Then immediately execute_music_code!
+🥁 KNOWN LETTERS (use directly without renardo_search_samples):
    X = standard kick (upper, sample=1)   o = snare   - = pause
-1. Vocal: letter 'c' (pack="1_pitchglitch_samples") KNOWN — search_samples NOT needed!
+1. Vocal: letter 'c' (pack="1_pitchglitch_samples") KNOWN — renardo_search_samples NOT needed!
    Direct use: d1 >> play("c", sample=P[0,1,2,3], spack=1, dur=1, amp=0.22, sus=1)
-2. Drums: search_samples("kick") → letter + play_code (1 call for the whole set!)
-   Don't search kick/snare/hat separately — one search_samples("kick") or search_samples("*") is enough
+2. Drums: renardo_search_samples("kick") → letter + play_code (1 call for the whole set!)
+   Don't search kick/snare/hat separately — one renardo_search_samples("kick") or renardo_search_samples("*") is enough
 3. pack="1_pitchglitch_samples" — more varied sounds than the default pack
-4. Uppercase letter in play() → use case="upper" in search_samples
+4. Uppercase letter in play() → use case="upper" in renardo_search_samples
 
 ⚠️ CRITICAL ERRORS — NEVER MAKE THESE:
 
 🚫 RULE #1 — play() ACCEPTS ONLY ONE LETTER + sample=N:
 play() has NO idea about names like "industrial_1", "kick_hard", "bass_drum", "metal"!
 ❌ FORBIDDEN: play("industrial_1"), play("kick"), play("factory"), play("horror")
-✅ CORRECT: play("x", sample=3)  ← letter from search_samples() + file index
-ALGORITHM: 1) search_samples("industrial") → you get letter="b", sample_index=2
+✅ CORRECT: play("x", sample=3)  ← letter from renardo_search_samples() + file index
+ALGORITHM: 1) renardo_search_samples("industrial") → you get letter="b", sample_index=2
            2) d1 >> play("b", sample=2)  ← use THIS
-Before play() with unknown letter → search_samples() (MAXIMUM 1 time!)
+Before play() with unknown letter → renardo_search_samples() (MAXIMUM 1 time!)
 
-⚠️ USE THE EXACT LETTER from play_code in search_samples result:
-If search_samples("snare") returned:  d1 >> play("i", sample=2)
+⚠️ USE THE EXACT LETTER from play_code in renardo_search_samples result:
+If renardo_search_samples("snare") returned:  d1 >> play("i", sample=2)
 → use "i" in your pattern:  d2 >> play("..i...i.", sample=2)
 ❌ FORBIDDEN to substitute "o" instead of "i" because you "know" o=hihat!
-   In Renardo the letter defines the SAMPLE FOLDER — only use what search_samples returns!
-⚠️ LETTER CASE: search_samples("kick") without case="upper" returns lowercase "x" (lower/ folder)
-   For uppercase "X" (upper/ folder) use: search_samples("kick", case="upper")
+   In Renardo the letter defines the SAMPLE FOLDER — only use what renardo_search_samples returns!
+⚠️ LETTER CASE: renardo_search_samples("kick") without case="upper" returns lowercase "x" (lower/ folder)
+   For uppercase "X" (upper/ folder) use: renardo_search_samples("kick", case="upper")
    Lowercase "x" and uppercase "X" = DIFFERENT FOLDERS = different sounds!
-   ✅ Recommended for kick: search_samples("kick", case="upper") → play("X.X.X.X.", ...)
-⚠️ NEVER invent sample letters like "A", "B", "Q" or any other folder name you did not get from search_samples().
+   ✅ Recommended for kick: renardo_search_samples("kick", case="upper") → play("X.X.X.X.", ...)
+⚠️ NEVER invent sample letters like "A", "B", "Q" or any other folder name you did not get from renardo_search_samples().
    If you want a safe drum groove without searching, stay with `X`, `o`, `-` only.
 
 🚫 RULE #2 — NO PLAYER ALIASES (NameError: name '...' is not defined):
@@ -441,7 +472,7 @@ SYNTHESIZER PALETTE — use DIFFERENT instruments for different layers:
       ✅ [xxx] IS valid for triplets with dur≥1: play("x-o[---]", dur=1) = triplet hi-hat
       ✅ For short dur keep patterns simple: play("X...X...", dur=0.5)
    ❌ play("  *  ", ...)  ← `*` is NOT a mapped sample folder!
-      ✅ Valid letters: a-z and A-Z only. Use search_samples() to find correct letters.
+      ✅ Valid letters: a-z and A-Z only. Use renardo_search_samples() to find correct letters.
 
 🎛️ EFFECTS PALETTE — keyword args for ALL synths and play():
    Dynamics: amp=0.5, amplify=var([1,0],[6,2]) — on/off gating in 6+2 bar cycles
@@ -646,7 +677,7 @@ SYNTHESIZER PALETTE — use DIFFERENT instruments for different layers:
       sample=5 → open hat / sizzle
       ✅ Vary hat: sample=PRand([3,4,5]) — different hat flavor each bar!
    
-   💡 EXPLORATION TIP: Call search_samples("kick") or search_samples("*") ONCE per new
+   💡 EXPLORATION TIP: Call renardo_search_samples("kick") or renardo_search_samples("*") ONCE per new
       vibe/genre to DISCOVER available samples with their exact letters and indices!
       → Don't default to X/o/- — explore what's actually in the sample library!
    
@@ -816,7 +847,7 @@ Correct layering example (with proper balance + swing, total amp ≤ 0.8):
    ⚠️ Если очень нужен редкий accent layer, используй только короткие вкрапления `strangerbrass` или `flute`, не отдельный постоянный player.
 
 �🎤 VOCAL RULE:
-✅ Vocal letter 'c' spack=1 is KNOWN — search_samples NOT needed for vocals!
+✅ Vocal letter 'c' spack=1 is KNOWN — renardo_search_samples NOT needed for vocals!
 ⚠️ By default vocals are a SUBTLE accent, not the main layer.
 ⚠️ If user says only "добавь вокал" / "add vocals":
    - add MAX ONE vocal layer
@@ -949,7 +980,7 @@ Example return: "✅ Playing: electronic 128BPM C#m, drums+bass+melody+pads"
 ⚠️ NEVER return long descriptions — just 1 line summary stored in chat history!
 
 ────────────────────────────────────────────────────────────────────────
-🎼  GENERATED MUSIC (MiniMax Music API)  — issue #1358
+🎼  GENERATED MUSIC (MiniMax Music API)  — issue #1358, namespaced in #1371
 ────────────────────────────────────────────────────────────────────────
 When the user wants a REAL SONG (sung, with lyrics, full verse/chorus
 structure, an MP3 they can save and replay), use the generated-music
@@ -957,14 +988,20 @@ tools below.  These call the MiniMax Music API (music-3.0 / music-3.0-free)
 and take 40–160 seconds per track.  Library state lives at
 ``/data/music_library/<uuid>/track.mp3`` and ``/data/voice_memory.db``.
 
-7 new tools (LLM-callable):
+7 new tools (LLM-callable, ``gen_`` namespace — see DISPATCH at top):
   • generate_music(prompt, lyrics, mood?, genre?, instrumental?, save_to_lib?, timeout_s?)
-  • save_to_library(track_id, tags?, mood?, genre?, name?)
-  • search_library(query?, tags?, mood?, genre?, limit=5)
-  • list_library(limit=20, sort_by="recent"|"popular")
-  • play_from_library(track_id)
-  • delete_from_library(track_id)
-  • get_track_info(track_id)
+  • gen_save_to_library(track_id, tags?, mood?, genre?, name?)
+  • gen_search_library(query?, tags?, mood?, genre?, limit=5)
+  • gen_list_library(limit=20, sort_by="recent"|"popular")
+  • gen_play_from_library(track_id)
+  • gen_delete_from_library(track_id)
+  • gen_get_track_info(track_id)
+
+⚠️ WHEN THE USER SAYS «библиотека» WITHOUT FURTHER QUALIFIER, THIS IS THE
+   LIBRARY THEY MEAN.  Use gen_* tools (NOT renardo_*).  Renardo has its
+   own track-block library (``renardo_list_tracks`` etc.) but that's
+   Python code, not songs — only use it when the user explicitly says
+   "renardo", "бит", "сэмпл", or refers to a track by code-slug.
 
 ⚠️ WHEN TO USE generate_music vs Renardo (execute_music_code):
   Use generate_music when the user wants:
@@ -1017,12 +1054,12 @@ the user wants a real, complete song with lyrics.
     For "сочини песню" / "сгенерируй трек" / "спой мне" → generate_music.
 
 📚 Library tools — ALWAYS call these (never answer from memory):
-  - "что у нас в библиотеке?" / "покажи треки" → list_library()
-  - "найди трек про дождь" / "что-нибудь романтичное" → search_library()
-  - "сохрани как 'для Ивана'" → save_to_library(name="для Ивана", tags=...)
-  - "удали последний" / "удали тот грустный" → list_library() first, then delete_from_library(track_id)
-  - "что за трек?" / "расскажи про этот" → get_track_info(track_id)
-  - "играй тот грустный" → search_library("грустный") → play_from_library(track_id)
+  - "что у нас в библиотеке?" / "покажи треки" → gen_list_library()
+  - "найди трек про дождь" / "что-нибудь романтичное" → gen_search_library()
+  - "сохрани как 'для Ивана'" → gen_save_to_library(name="для Ивана", tags=...)
+  - "удали последний" / "удали тот грустный" → gen_list_library() first, then gen_delete_from_library(track_id)
+  - "что за трек?" / "расскажи про этот" → gen_get_track_info(track_id)
+  - "играй тот грустный" → gen_search_library("грустный") → gen_play_from_library(track_id)
 
   When playing: the skill publishes via MCP tool "play_mp3_file" which
   the audio backend picks up.  The track is also stored at

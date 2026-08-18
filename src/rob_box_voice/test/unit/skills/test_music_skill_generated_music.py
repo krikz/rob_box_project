@@ -127,10 +127,11 @@ class TestMusicSkillConstruction:
         skill, _, _ = _new_music_skill(tmp_env)
         tools = skill._make_tools()
         names = {getattr(t, "__name__", "?") for t in tools}
+        # Issue #1371 — every AI-library tool was renamed to the ``gen_`` family.
         for name in {
-            "generate_music", "save_to_library", "search_library",
-            "list_library", "play_from_library",
-            "delete_from_library", "get_track_info",
+            "generate_music", "gen_save_to_library", "gen_search_library",
+            "gen_list_library", "gen_play_from_library",
+            "gen_delete_from_library", "gen_get_track_info",
         }:
             assert name in names, f"missing tool: {name}"
 
@@ -138,14 +139,47 @@ class TestMusicSkillConstruction:
         skill, _, _ = _new_music_skill(tmp_env)
         tools = skill._make_tools()
         names = {getattr(t, "__name__", "?") for t in tools}
-        # Pre-existing tools must still be there.
+        # Pre-existing tools must still be there.  Issue #1371:
+        # `search_samples` → `renardo_search_samples`,
+        # `list_tracks`    → `renardo_list_tracks`,
+        # `save_track`     → `renardo_save_track`,
+        # `load_track`     → `renardo_load_track`,
+        # `delete_track`   → `renardo_delete_track`.
         for name in {
-            "search_samples", "execute_music_code", "stop_music",
+            "renardo_search_samples", "execute_music_code", "stop_music",
             "set_vibe_preset", "get_music_state", "search_artist_style",
-            "list_tracks", "save_track", "load_track", "delete_track",
-            "set_dj_mode",
+            "renardo_list_tracks", "renardo_save_track", "renardo_load_track",
+            "renardo_delete_track", "set_dj_mode",
         }:
             assert name in names, f"missing existing tool: {name}"
+
+    def test_make_tools_renardo_ai_namespaces_do_not_collide(
+        self, tmp_env
+    ) -> None:
+        """Issue #1371 — both namespaces must be present and disjoint.
+
+        Regression guard for the LLM semantic-collision bug: before
+        #1371 the LLM could not tell ``list_tracks`` (Renardo) from
+        ``list_library`` (AI).  After the fix every ambiguous tool
+        name has an explicit ``renardo_`` / ``gen_`` prefix.
+        """
+        skill, _, _ = _new_music_skill(tmp_env)
+        tools = skill._make_tools()
+        names = {getattr(t, "__name__", "?") for t in tools}
+        # Both prefixes must appear.
+        assert any(n.startswith("renardo_") for n in names), \
+            "no renardo_* tools found"
+        assert any(n.startswith("gen_") for n in names), \
+            "no gen_* tools found"
+        # No bare (unprefixed) library/track/track-info tools left.
+        for forbidden in (
+            "search_samples", "list_tracks", "save_track", "load_track",
+            "delete_track", "list_library", "search_library",
+            "save_to_library", "play_from_library", "delete_from_library",
+            "get_track_info",
+        ):
+            assert forbidden not in names, \
+                f"old ambiguous name still exposed: {forbidden}"
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +318,7 @@ class TestLibraryTools:
         skill, _, _ = _new_music_skill(tmp_env)
         ids = self._seed(skill)
         tools = skill._make_tools()
-        save = _tool_by_name(tools, "save_to_library")
+        save = _tool_by_name(tools, "gen_save_to_library")
         underlying = getattr(save, "__wrapped__", save)
         result = _run(underlying(
             track_id=ids[0], tags="chill,rain", name="rainy memory"
@@ -300,7 +334,7 @@ class TestLibraryTools:
     def test_save_to_library_unknown_track_id(self, tmp_env) -> None:
         skill, _, _ = _new_music_skill(tmp_env)
         tools = skill._make_tools()
-        save = _tool_by_name(tools, "save_to_library")
+        save = _tool_by_name(tools, "gen_save_to_library")
         underlying = getattr(save, "__wrapped__", save)
         result = _run(underlying(track_id="does-not-exist"))
         body = json.loads(result)
@@ -310,7 +344,7 @@ class TestLibraryTools:
         skill, _, _ = _new_music_skill(tmp_env)
         ids = self._seed(skill)
         tools = skill._make_tools()
-        search = _tool_by_name(tools, "search_library")
+        search = _tool_by_name(tools, "gen_search_library")
         underlying = getattr(search, "__wrapped__", search)
         result = _run(underlying(query="", mood="dark"))
         body = json.loads(result)
@@ -321,18 +355,18 @@ class TestLibraryTools:
         skill, _, _ = _new_music_skill(tmp_env)
         ids = self._seed(skill)
         tools = skill._make_tools()
-        search = _tool_by_name(tools, "search_library")
+        search = _tool_by_name(tools, "gen_search_library")
         underlying = getattr(search, "__wrapped__", search)
         result = _run(underlying(query="prompt 0"))
         body = json.loads(result)
         assert body["count"] >= 1
         assert any(t["track_id"] == ids[0] for t in body["tracks"])
 
-    def test_list_library_recent(self, tmp_env, caplog) -> None:
+    def test_gen_list_library_recent(self, tmp_env, caplog) -> None:
         skill, _, _ = _new_music_skill(tmp_env)
         self._seed(skill)
         tools = skill._make_tools()
-        lst = _tool_by_name(tools, "list_library")
+        lst = _tool_by_name(tools, "gen_list_library")
         underlying = getattr(lst, "__wrapped__", lst)
         import logging
         with caplog.at_level(logging.INFO, logger="rob_box_voice.skills.music_skill"):
@@ -340,16 +374,16 @@ class TestLibraryTools:
         body = json.loads(result)
         assert body["total"] == 3
         assert body["shown"] == 3
-        # e2e acceptance: distinctive log line
-        assert any("issue 1358" in r.message and "list_library" in r.message
+        # e2e acceptance: distinctive log line (issue #1358 + #1371 rename).
+        assert any("issue 1358" in r.message and "gen_list_library" in r.message
                    for r in caplog.records), \
-            "expected 'issue 1358 list_library' log line"
+            "expected 'issue 1358 gen_list_library' log line"
 
     def test_get_track_info(self, tmp_env) -> None:
         skill, _, _ = _new_music_skill(tmp_env)
         ids = self._seed(skill)
         tools = skill._make_tools()
-        info = _tool_by_name(tools, "get_track_info")
+        info = _tool_by_name(tools, "gen_get_track_info")
         underlying = getattr(info, "__wrapped__", info)
         result = _run(underlying(track_id=ids[0]))
         body = json.loads(result)
@@ -360,7 +394,7 @@ class TestLibraryTools:
     def test_get_track_info_missing(self, tmp_env) -> None:
         skill, _, _ = _new_music_skill(tmp_env)
         tools = skill._make_tools()
-        info = _tool_by_name(tools, "get_track_info")
+        info = _tool_by_name(tools, "gen_get_track_info")
         underlying = getattr(info, "__wrapped__", info)
         result = _run(underlying(track_id="ghost"))
         body = json.loads(result)
@@ -370,7 +404,7 @@ class TestLibraryTools:
         skill, _, _ = _new_music_skill(tmp_env)
         ids = self._seed(skill)
         tools = skill._make_tools()
-        delete = _tool_by_name(tools, "delete_from_library")
+        delete = _tool_by_name(tools, "gen_delete_from_library")
         underlying = getattr(delete, "__wrapped__", delete)
         result = _run(underlying(track_id=ids[0]))
         body = json.loads(result)
@@ -380,7 +414,7 @@ class TestLibraryTools:
     def test_delete_from_library_missing(self, tmp_env) -> None:
         skill, _, _ = _new_music_skill(tmp_env)
         tools = skill._make_tools()
-        delete = _tool_by_name(tools, "delete_from_library")
+        delete = _tool_by_name(tools, "gen_delete_from_library")
         underlying = getattr(delete, "__wrapped__", delete)
         result = _run(underlying(track_id="nope"))
         body = json.loads(result)
@@ -398,7 +432,7 @@ class TestPlayFromLibrary:
         # Insert a track whose file doesn't exist on disk
         t = skill._library.save(track_id="p1", prompt="x", file_path="/no/such/file.mp3")
         tools = skill._make_tools()
-        play = _tool_by_name(tools, "play_from_library")
+        play = _tool_by_name(tools, "gen_play_from_library")
         underlying = getattr(play, "__wrapped__", play)
         result = _run(underlying(track_id="p1"))
         body = json.loads(result)
@@ -416,7 +450,7 @@ class TestPlayFromLibrary:
         file_path.write_bytes(b"\x00" * 64)
         skill._library.save(track_id="p2", prompt="x", file_path=str(file_path))
         tools = skill._make_tools()
-        play = _tool_by_name(tools, "play_from_library")
+        play = _tool_by_name(tools, "gen_play_from_library")
         underlying = getattr(play, "__wrapped__", play)
         result = _run(underlying(track_id="p2"))
         body = json.loads(result)
@@ -432,7 +466,7 @@ class TestPlayFromLibrary:
     def test_unknown_track_returns_error(self, tmp_env) -> None:
         skill, _, _ = _new_music_skill(tmp_env)
         tools = skill._make_tools()
-        play = _tool_by_name(tools, "play_from_library")
+        play = _tool_by_name(tools, "gen_play_from_library")
         underlying = getattr(play, "__wrapped__", play)
         result = _run(underlying(track_id="ghost"))
         body = json.loads(result)
