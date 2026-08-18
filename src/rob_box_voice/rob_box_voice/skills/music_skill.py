@@ -17,12 +17,41 @@ Renardo samples are searched in RENARDO_SAMPLES_PATH (default /renardo_samples).
 """
 
 import json
+import logging
 import os
 from pathlib import Path
+from typing import Optional
 
 from agents import function_tool
 
 from .base_skill import BaseSkill
+
+# Module logger (used by the new function_tool closures)
+logger = logging.getLogger(__name__)
+
+# ── Issue #1358 — generated-music library (MiniMax Music API) ─────────────
+# Optional imports: if the new modules aren't present, the new tools
+# degrade to "library unavailable" and the rest of the skill still works.
+try:
+    from rob_box_voice.core.music_library import GeneratedMusicLibrary
+except Exception:  # noqa: BLE001
+    GeneratedMusicLibrary = None  # type: ignore[assignment,misc]
+
+try:
+    from rob_box_voice.core.minimax_music_client import (
+        MinimaxMusicClient,
+        MinimaxMusicError,
+    )
+except Exception:  # noqa: BLE001
+    MinimaxMusicClient = None  # type: ignore[assignment,misc]
+    # Keep MinimaxMusicError as a placeholder Exception subclass; if the
+    # real import failed, the import line above will be referenced via
+    # its local name which is bound to this fallback class.
+    class _MinimaxMusicErrorFallback(Exception):
+        status_code = None
+        retry_after_s = None
+
+    MinimaxMusicError = _MinimaxMusicErrorFallback  # type: ignore[assignment,misc]
 
 # ── DuckDuckGo search (free, no API key) — issue #1000 ──────────────────────
 # Used by search_artist_style for DJ-mode "research first" workflow.
@@ -68,10 +97,30 @@ class MusicSkill(BaseSkill):
         prompt_template: str,
         renardo_ref_path: str = _DEFAULT_RENARDO_REF_PATH,
         samples_path: str = _DEFAULT_SAMPLES_PATH,
+        # Issue #1358 — generated-music wiring (all optional, see music_skill_prompt.txt)
+        music_library=None,
+        minimax_client=None,
+        music_library_root: Optional[str] = None,
+        voice_memory_db: Optional[str] = None,
+        minimax_api_key: Optional[str] = None,
+        minimax_model: Optional[str] = None,
         **kwargs,
     ) -> None:
         renardo_ref = self._load_renardo_ref(renardo_ref_path)
+        if music_library_root is None:
+            music_library_root = os.getenv("MUSIC_LIBRARY_ROOT", "/data/music_library")
+        if voice_memory_db is None:
+            voice_memory_db = os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
+        if minimax_api_key is None:
+            minimax_api_key = os.getenv("MINIMAX_API_KEY")
+        if minimax_model is None:
+            minimax_model = os.getenv("MINIMAX_MUSIC_MODEL", "music-3.0")
         filled_prompt = prompt_template.replace("{renardo_ref}", renardo_ref)
+        # Carry any extra-placeholders through the same .replace() chain.
+        filled_prompt = filled_prompt.replace(
+            "{music_library_enabled}",
+            "enabled" if (music_library is not None or GeneratedMusicLibrary is not None) else "disabled",
+        )
         super().__init__(
             adapter=adapter,
             model=model,
@@ -80,6 +129,33 @@ class MusicSkill(BaseSkill):
             **kwargs,
         )
         self._samples_path = samples_path
+
+        # ── Issue #1358 — generated-music wiring (lazy + safe) ──────────
+        self._library = music_library
+        self._client = minimax_client
+        self._minimax_model = minimax_model
+        if self._library is None and GeneratedMusicLibrary is not None:
+            try:
+                self._library = GeneratedMusicLibrary(
+                    library_root=music_library_root,
+                    db_path=voice_memory_db,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Library is optional — keep going with the rest of the skill.
+                import logging as _log
+                _log.getLogger(__name__).warning(
+                    "⚠️ [MusicSkill] generated-music library unavailable: %s", exc
+                )
+                self._library = None
+        if self._client is None and MinimaxMusicClient is not None:
+            try:
+                self._client = MinimaxMusicClient(api_key=minimax_api_key)
+            except Exception as exc:  # noqa: BLE001
+                import logging as _log
+                _log.getLogger(__name__).warning(
+                    "⚠️ [MusicSkill] MiniMax client unavailable: %s", exc
+                )
+                self._client = None
 
     @staticmethod
     def _load_renardo_ref(path: str) -> str:
@@ -382,8 +458,360 @@ class MusicSkill(BaseSkill):
                 params["theme"] = theme
             return await _call("set_dj_mode", params)
 
+        # ── Issue #1358 — generated-music tools (MiniMax API) ────────────
+        # These tools let the LLM compose a brand-new track on demand
+        # (slow, 40-160s per track) and manage a persistent library of
+        # AI-generated MP3s.  Use Renardo for live-loop / DJ work; use
+        # these when the user wants a real, sung, structured song.
+        _library = self._library
+        _client = self._client
+        _minimax_model = self._minimax_model
+        _LOG = logging.getLogger(__name__)
+
+        @function_tool
+        async def generate_music(
+            prompt: str,
+            lyrics: str = "[Instrumental]",
+            mood: str = "",
+            genre: str = "",
+            instrumental: bool = False,
+            save_to_lib: bool = True,
+            timeout_s: int = 180,
+        ) -> str:
+            """Generate a NEW song with lyrics + melody via MiniMax Music API.
+
+            Use this when the user wants a real, complete song — a sung
+            track with lyrics, a verse/chorus structure, full arrangement
+            (NOT a live Renardo loop).  Generation takes 40–160 seconds.
+
+            Workflow (this tool handles all of it):
+              1. POST https://api.minimax.io/v1/music_generation
+                 (model "music-3.0", sample_rate 44.1kHz, 256kbps MP3).
+              2. Save MP3 to /data/music_library/<uuid>/track.mp3.
+              3. Persist metadata + tags in the generated-music library.
+              4. Return the track_id + file_path so the user can play it.
+
+            Args:
+                prompt:     Style / mood / genre / instruments / tempo
+                            description in English.  Be SPECIFIC.
+                            Example: "warm romantic ballad, soft piano
+                            arpeggios, C minor, 80 bpm, female vocal".
+                lyrics:     Lyrics with optional section markers
+                            ``[Verse] [Chorus] [Bridge]``.  Default
+                            ``[Instrumental]`` → purely instrumental track.
+                mood:       Optional tag, e.g. "romantic", "energetic".
+                genre:      Optional tag, e.g. "ballad", "rock", "jazz".
+                instrumental: When True, force ``[Instrumental]`` lyrics.
+                save_to_lib: When True (default), persist the track in the
+                             library immediately so the user can find it
+                             again with search_library().
+                timeout_s:  Hard wall-time cap in seconds (default 180).
+
+            Returns:
+                JSON with track_id, file_path, duration_s, model, library
+                stats.  If generation fails: ``{"error": "..."}``.
+            """
+            if _client is None:
+                return json.dumps(
+                    {"error": "MinimaxMusicClient unavailable (MINIMAX_API_KEY not set?)"},
+                    ensure_ascii=False,
+                )
+
+            if instrumental or not lyrics or not lyrics.strip():
+                lyrics = "[Instrumental]"
+
+            try:
+                import asyncio as _asyncio
+
+                async def _progress(payload: dict) -> None:
+                    _LOG.info(
+                        "🎼 [generate_music] %.0fs elapsed — %s",
+                        payload.get("elapsed_s", 0),
+                        payload.get("hint", ""),
+                    )
+
+                result = await _client.generate_with_progress(
+                    prompt=prompt,
+                    lyrics=lyrics,
+                    model=_minimax_model,
+                    progress_cb=_progress,
+                    timeout_s=float(timeout_s),
+                )
+            except MinimaxMusicError as exc:
+                return json.dumps(
+                    {
+                        "error": str(exc),
+                        "status_code": exc.status_code,
+                        "retry_after_s": exc.retry_after_s,
+                    },
+                    ensure_ascii=False,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return json.dumps(
+                    {"error": f"{type(exc).__name__}: {exc}"},
+                    ensure_ascii=False,
+                )
+
+            track_payload: dict = {
+                "track_id": None,
+                "file_path": None,
+                "duration_s": result.duration_s,
+                "model": result.model,
+                "wall_time_s": round(result.wall_time_s, 2),
+                "prompt": prompt,
+                "lyrics": lyrics,
+                "mood": mood,
+                "genre": genre,
+            }
+
+            if save_to_lib and _library is not None:
+                try:
+                    import uuid as _uuid
+
+                    track_id = _uuid.uuid4().hex
+                    file_path = _library.track_file_path(track_id)
+                    _library.ensure_track_dir(track_id)
+                    with open(file_path, "wb") as fh:
+                        fh.write(result.audio_bytes)
+                    track = _library.save(
+                        track_id=track_id,
+                        prompt=prompt,
+                        lyrics=lyrics,
+                        model=result.model,
+                        file_path=file_path,
+                        duration_s=result.duration_s,
+                        file_size=len(result.audio_bytes),
+                        mood=mood,
+                        genre=genre,
+                        tags=[t for t in (mood, genre) if t],
+                    )
+                    track_payload["track_id"] = track.track_id
+                    track_payload["file_path"] = track.file_path
+                    track_payload["saved"] = True
+                except Exception as exc:  # noqa: BLE001
+                    track_payload["saved"] = False
+                    track_payload["save_error"] = f"{type(exc).__name__}: {exc}"
+            else:
+                track_payload["saved"] = False
+                track_payload["save_to_lib"] = False
+
+            return json.dumps(track_payload, ensure_ascii=False, indent=2)
+
+        @function_tool
+        def save_to_library(
+            track_id: str,
+            tags: str = "",
+            mood: str = "",
+            genre: str = "",
+            name: str = "",
+        ) -> str:
+            """Update metadata for an already-generated track in the library.
+
+            Use this when the user says "сохрани этот трек как 'для
+            Ивана'" or wants to add tags / mood / genre to the most
+            recent track.
+
+            Args:
+                track_id: UUID4 hex returned by generate_music().
+                tags:     Comma-separated tags, e.g. "chill,rainy,minor".
+                mood:     Optional mood tag, e.g. "romantic".
+                genre:    Optional genre tag, e.g. "jazz".
+                name:     Optional human-readable title.
+            """
+            if _library is None:
+                return json.dumps({"error": "library unavailable"}, ensure_ascii=False)
+            existing = _library.get(track_id)
+            if existing is None:
+                return json.dumps(
+                    {"error": f"track_id {track_id!r} not found in library"},
+                    ensure_ascii=False,
+                )
+            tag_list = [t.strip() for t in (tags or "").split(",") if t.strip()]
+            merged_tags = list(dict.fromkeys(list(existing.tags) + tag_list))
+            saved = _library.save(
+                track_id=existing.track_id,
+                prompt=existing.prompt,
+                lyrics=existing.lyrics,
+                model=existing.model,
+                file_path=existing.file_path,
+                duration_s=existing.duration_s,
+                file_size=existing.file_size,
+                mood=mood or existing.mood,
+                genre=genre or existing.genre,
+                lang=existing.lang,
+                tags=merged_tags,
+                name=name or existing.name,
+            )
+            return json.dumps(
+                {"ok": True, "track": saved.to_dict()}, ensure_ascii=False, indent=2
+            )
+
+        @function_tool
+        def search_library(
+            query: str = "",
+            tags: str = "",
+            mood: str = "",
+            genre: str = "",
+            limit: int = 5,
+        ) -> str:
+            """Search the generated-music library by keyword, mood, or genre.
+
+            ALWAYS call this when the user asks for "тот трек про
+            дождь", "найди что-то романтичное", "что у нас про лето?" —
+            do NOT answer from memory.
+
+            Args:
+                query:  Free-text query (searches prompt + lyrics + name).
+                tags:   Comma-separated tags to filter by.
+                mood:   Filter by mood (substring match).
+                genre:  Filter by genre (substring match).
+                limit:  Max results to return (default 5).
+            """
+            if _library is None:
+                return json.dumps({"error": "library unavailable"}, ensure_ascii=False)
+            tag_list = [t.strip() for t in (tags or "").split(",") if t.strip()]
+            results = _library.search(
+                query=query or "",
+                tags=tag_list or None,
+                mood=mood or None,
+                genre=genre or None,
+                limit=limit,
+            )
+            return json.dumps(
+                {
+                    "query": query,
+                    "count": len(results),
+                    "tracks": [t.to_dict() for t in results],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+
+        @function_tool
+        def list_library(limit: int = 20, sort_by: str = "recent") -> str:
+            """List all tracks in the generated-music library.
+
+            Use when the user asks "что у нас в библиотеке?", "покажи все
+            треки", or before picking one to play.
+
+            Args:
+                limit:  Max tracks to return (default 20).
+                sort_by: "recent" (default) or "popular" (by play_count).
+            """
+            if _library is None:
+                return json.dumps({"error": "library unavailable"}, ensure_ascii=False)
+            tracks = _library.list_all(limit=limit, sort_by=sort_by)
+            return json.dumps(
+                {
+                    "sort_by": sort_by,
+                    "total": _library.count(),
+                    "shown": len(tracks),
+                    "tracks": [t.to_dict() for t in tracks],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+
+        @function_tool
+        async def play_from_library(track_id: str) -> str:
+            """Play a track from the generated-music library.
+
+            Locates the MP3 file, increments the play count, and publishes
+            a play trigger so the audio node can stream it.
+
+            Args:
+                track_id: UUID4 hex returned by generate_music() or
+                          visible in list_library() / search_library().
+            """
+            if _library is None:
+                return json.dumps({"error": "library unavailable"}, ensure_ascii=False)
+            track = _library.get(track_id)
+            if track is None:
+                return json.dumps(
+                    {"error": f"track_id {track_id!r} not found in library"},
+                    ensure_ascii=False,
+                )
+            if not track.file_path or not os.path.exists(track.file_path):
+                return json.dumps(
+                    {
+                        "error": f"audio file missing for {track_id} (file_path={track.file_path!r})",
+                    },
+                    ensure_ascii=False,
+                )
+            new_count = _library.increment_play_count(track_id)
+
+            # Publish to MCP for the audio node to pick up.  We use a
+            # dedicated tool name (play_mp3_file) so the MCP server can
+            # dispatch it to whatever playback backend is wired up.
+            play_result = await _call(
+                "play_mp3_file",
+                {
+                    "file_path": track.file_path,
+                    "track_id": track_id,
+                    "duration_s": track.duration_s,
+                    "name": track.name,
+                },
+                timeout=10.0,
+            )
+
+            return json.dumps(
+                {
+                    "ok": True,
+                    "track_id": track_id,
+                    "file_path": track.file_path,
+                    "play_count": new_count,
+                    "playback": play_result,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+
+        @function_tool
+        def delete_from_library(track_id: str) -> str:
+            """Delete a track from the generated-music library (irreversible).
+
+            Use when the user says "удали тот грустный трек" or
+            "удали последний".  ALWAYS call list_library() or
+            search_library() first to confirm the track_id — do NOT
+            guess from context.
+
+            Args:
+                track_id: UUID4 hex of the track to remove.
+            """
+            if _library is None:
+                return json.dumps({"error": "library unavailable"}, ensure_ascii=False)
+            deleted = _library.delete(track_id)
+            return json.dumps(
+                {"ok": deleted, "track_id": track_id},
+                ensure_ascii=False,
+            )
+
+        @function_tool
+        def get_track_info(track_id: str) -> str:
+            """Return full metadata for one track in the library.
+
+            Use when the user asks "что за трек?", "покажи информацию",
+            or when you need prompt+lyrics+tags before deciding to play
+            it.
+
+            Args:
+                track_id: UUID4 hex of the track.
+            """
+            if _library is None:
+                return json.dumps({"error": "library unavailable"}, ensure_ascii=False)
+            track = _library.get(track_id)
+            if track is None:
+                return json.dumps(
+                    {"error": f"track_id {track_id!r} not found"},
+                    ensure_ascii=False,
+                )
+            return json.dumps(track.to_dict(), ensure_ascii=False, indent=2)
+
         return [
             search_samples, execute_music_code, stop_music, set_vibe_preset,
             get_music_state, search_artist_style, list_tracks, save_track,
             load_track, delete_track, set_dj_mode,
+            # Issue #1358 — generated-music tools
+            generate_music, save_to_library, search_library, list_library,
+            play_from_library, delete_from_library, get_track_info,
         ]
