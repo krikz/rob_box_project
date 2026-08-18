@@ -1,0 +1,25 @@
+{
+  "name": "music_library_e2e_acceptance_v1",
+  "_comment": [
+    "Issue #1396: пример e2e-сценария с acceptance-блоком (новый контракт).",
+    "Используется после фикса #1358 (MiniMax music). acceptance-чекер проверит, что:",
+    "  - generate_music ВЫЗВАН (expected_tool_calls)",
+    "  - execute_music_code НЕ вызван (must_not_call)",
+    "  - в распознанной фразе есть ключевое слово «бычок» (expected_keywords)",
+    "  - total_latency ≤ 60000мс (response_max_ms, читается из timing.json)"
+  ],
+  "steps": [
+    {
+      "label": "ml01_generate_romantic",
+      "voice": "anton",
+      "text": "Робот, сгенерируй бычок на лугу грустную композицию в стиле эмбиент",
+      "patterns": ["synthesize"],
+      "acceptance": {
+        "expected_tool_calls": ["generate_music"],
+        "must_not_call": ["execute_music_code"],
+        "expected_keywords": ["бычок"],
+        "response_max_ms": 60000
+      }
+    }
+  ]
+}
