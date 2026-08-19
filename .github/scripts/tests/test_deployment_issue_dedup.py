@@ -572,3 +572,81 @@ def test_extract_relevant_log_line_still_catches_jackd_unrelated_errors() -> Non
 
     line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
     assert line == log_text
+
+
+def test_extract_relevant_log_line_ignores_supercollider_synthdef_not_found() -> None:
+    """Issue #1485, deploy round-165: FoxDot/Renardo sends `/s_new` for
+    SynthDefs (notably `rhpiano`) that ship with renardo but are not
+    pre-loaded in the headless scsynth image. The deploy gate must not
+    file a critical issue for these benign warnings — the music stack
+    stays healthy and TTS/voice flow continues.
+    """
+    log_text = "\n".join(
+        [
+            "Buffer UGen: no buffer data",
+            "*** ERROR: SynthDef rhpiano not found",
+            "FAILURE IN SERVER /s_new SynthDef not found",
+            "*** ERROR: SynthDef rhpiano not found",
+            "FAILURE IN SERVER /s_new SynthDef not found",
+            "SuperCollider 3 server ready.",
+        ]
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_rtabmap_scan_voxel_size_transfer() -> None:
+    """Issue #1485, deploy round-165: rtabmap icp_odometry prints
+    `Transferring value 0.05 of "Icp/VoxelSize" to ros parameter
+    "scan_voxel_size" for convenience` when the YAML declares
+    scan_voxel_size but Icp/VoxelSize is 0. This is a transparent
+    parameter copy, not an SLAM fault — the deploy gate must skip it.
+    """
+    log_text = (
+        "[icp_odometry-1] [WARN] [1787149892.096715766] [rtabmap.icp_odometry]: "
+        'IcpOdometry: Transferring value 0.05 of "Icp/VoxelSize" to ros parameter '
+        '"scan_voxel_size" for convenience. "Icp/VoxelSize" is set to 0.'
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_respeaker_threshold_warnings() -> None:
+    """Issue #1485, deploy round-165 (sibling of issue #989): voice-assistant
+    falls back to a software gate when the UAC1.0 ReSpeaker rejects the
+    audio_node hw-ctl threshold. The warning itself is the fallback
+    notification; real audio_node failures use different phrasing and
+    keep their severity.
+    """
+    vision_log = (
+        "[audio_node-1] [WARN] [1787149897.690666359] [audio_node]: "
+        "⚠️ [issue 989] ReSpeaker не принял threshold 6.0 dB — программный гейт остаётся"
+    )
+    main_leak_log = (
+        "[health_monitor-3]   [WARN] audio_node (2s ago): "
+        "⚠️ [issue 989] ReSpeaker не принял threshold 6.0 dB — програ"
+    )
+
+    vision_line = MODULE.extract_relevant_log_line(vision_log, scope="vision", severity="warning")
+    main_line = MODULE.extract_relevant_log_line(main_leak_log, scope="main", severity="warning")
+
+    assert vision_line is None
+    assert main_line is None
+
+
+def test_extract_relevant_log_line_still_catches_audio_node_real_fallback() -> None:
+    """Negative test for #1485 / #989: an audio_node WARN that is NOT
+    the documented ReSpeaker threshold fallback MUST still be reported.
+    """
+    log_text = (
+        "[audio_node-2] [WARN] [1787149901.000000001] [audio_node]: "
+        "pyaudio input overflow, 240 frames dropped"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line == log_text
