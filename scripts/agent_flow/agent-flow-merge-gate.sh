@@ -2744,8 +2744,7 @@ while IFS=$'\t' read -r r_issue r_pr r_head; do
     if has_label "$_r_labels_norm" "$REJECTED_LABEL"; then
         _r_was_rejected=1
         log "retro-path: issue #${r_issue} имеет ${REJECTED_LABEL} — ищем PASS-доказательство (ретро t_061d466e)"
-    elif has_label "$_r_labels_norm" "$ISSUE_LABEL" \
-        || has_label "$_r_labels_norm" "$NEEDS_E2E_LABEL" \
+    elif has_label "$_r_labels_norm" "$NEEDS_E2E_LABEL" \
         || has_label "$_r_labels_norm" "$DONE_LABEL" \
         || has_label "$_r_labels_norm" "$NO_E2E_LABEL" \
         || has_label "$_r_labels_norm" "$NEEDS_REVIEW_LABEL"; then
@@ -2757,6 +2756,16 @@ while IFS=$'\t' read -r r_issue r_pr r_head; do
         log "retro-path: issue #${r_issue} уже в process-цикле (${_r_labels_norm}) — skip"
         continue
     fi
+    # Ретро 19.08 t_498dc624 (process-fix-hermes-stuck-open): ${ISSUE_LABEL}
+    # (= hermes) БЕЗ workflow-меток (needs-e2e/e2e-done/no-e2e-required/
+    # needs-review) — process-fix issue. Основной цикл таких issues НЕ
+    # закрывает (требует e2e-done, а process-fix PR не может его получить:
+    # e2e-process скипает CI-only фикс), e2e-process тоже не ставит e2e-done
+    # → петля. Ретро-путь должен иметь шанс закрыть через PASS-доказательство
+    # (CI-only + green CI, или e2e run SUCCESS). ТОЛЬКО наличие hermes не
+    # блокирует ретро-путь — иначе issues #1421/#1419/#1404/#1412 висели OPEN
+    # при смерженных PR. Workflow-метки (выше) по-прежнему skip'ают —
+    # взаимоисключаемость с основным циклом.
     _r_state="$(gh issue view "$r_issue" --repo "$GH_REPO" --json state \
         --jq '.state' 2>/dev/null || echo '')"
     if [ "$_r_state" != "OPEN" ]; then
@@ -2774,6 +2783,10 @@ while IFS=$'\t' read -r r_issue r_pr r_head; do
         _r_evidence="e2e run SUCCESS на ветке ${r_head}"
     else
         # (b) CI-only PR (все файлы в CI-контуре) + зелёный CI → e2e не нужен
+        # Ретро 19.08 t_498dc624: расширяем CI-only на .hermes/plans/ —
+        # процессные фиксы часто касаются roadmap/планов (например, PR #1414
+        # правил .hermes/plans/process-fix-roadmap.md — раньше не считался
+        # CI-only → process-fix issue #1404 висел OPEN при зелёном CI).
         _r_files="$(gh pr view "$r_pr" --repo "$GH_REPO" --json files \
             --jq '[.files[].path]' 2>/dev/null || echo '[]')"
         _r_ci_only="$(printf '%s' "$_r_files" | python3 -c '
@@ -2781,7 +2794,10 @@ import json, sys
 try:
     files = json.load(sys.stdin)
     ok = bool(files) and all(
-        f.startswith(".github/") or f.startswith("scripts/agent_flow/") or f.startswith("docs/")
+        f.startswith(".github/")
+        or f.startswith("scripts/agent_flow/")
+        or f.startswith("docs/")
+        or f.startswith(".hermes/plans/")
         for f in files
     )
     print("1" if ok else "0")
@@ -2796,7 +2812,7 @@ except Exception:
             _r_rollup="$(gh pr view "$r_pr" --repo "$GH_REPO" --json statusCheckRollup \
                 --jq '[.statusCheckRollup[] | select(.conclusion == "FAILURE" or .conclusion == "CANCELLED" or .conclusion == "TIMED_OUT")] | length' 2>/dev/null || echo 1)"
             if [ "${_r_rollup:-1}" -eq 0 ] 2>/dev/null; then
-                _r_evidence="CI-only PR #${r_pr} (только .github/scripts/docs), CI зелёный — e2e не требуется"
+                _r_evidence="CI-only PR #${r_pr} (.github/scripts/docs/.hermes-plans), CI зелёный — e2e не требуется"
             fi
         fi
     fi
