@@ -85,6 +85,7 @@ from rob_box_voice.core.dialogue_guards import (
     BABBLE_PERFORMANCE_KEYWORDS as BABBLE_PERFORMANCE_KEYWORDS,
     MUSIC_GUARD_KEYWORDS,
     MUSIC_GUARD_VOCAL_KEYWORDS,
+    MUSIC_RETRY_PROMPT_PREFIX,
     MUSIC_STOP_OVERRIDES,
     build_babble_retry_prompt,
     build_music_retry_prompt,
@@ -2274,7 +2275,7 @@ class DialogueNode(Node):
         # живёт своей жизнью и ресетится в ``_dispatch_dj_turn``
         # (``reset_for_new_dj_transition``) только при свежем тике.
         if not is_babble_retry and not was_dj_auto and not user_input.startswith(
-            "[CRITICAL] В прошлом цикле ты НЕ вызвал execute_music_code"
+            MUSIC_RETRY_PROMPT_PREFIX
         ):
             self._music_guard.reset_for_new_user_request()
         # Issue #992 Bug D — when the babble detector schedules a retry
@@ -2555,7 +2556,7 @@ class DialogueNode(Node):
                             "🎵 [issue 992] LLM started music — no cleanup "
                             "scheduled for this turn"
                         )
-                elif not self._pending_music_cleanup:
+                elif not was_dj_auto and not self._pending_music_cleanup:
                     self._pending_music_cleanup = True
                     self.get_logger().info(
                         "🎵 music_cleanup deferred — waiting for TTS or 10s fallback"
@@ -2565,7 +2566,7 @@ class DialogueNode(Node):
                         "🎵 [issue 992] music_cleanup already pending — "
                         "ignoring redundant re-arm"
                     )
-            if self._pending_music_cleanup and not self._active_batches:
+            if not was_dj_auto and self._pending_music_cleanup and not self._active_batches:
                 self._pending_music_cleanup = False
                 self._publish_music_cleanup(reason="tts_batch_complete")
                 self.get_logger().info(

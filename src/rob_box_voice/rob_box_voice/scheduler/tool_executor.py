@@ -4,17 +4,20 @@ Routes LLM tool calls through the :class:`TaskScheduler` so channel
 ownership is enforced between the LLM and the ROS side-effect layer:
 
 * ``speak_text``            → VOICE channel (FIFO, strictly sequential)
-* music tools               → MUSIC channel
+* ``stop_music``            → MUSIC channel (deferred until VOICE drains)
 * ``play_animation``        → ANIM channel
-* everything else (memory / search / get_* / estimate_* / nav …)
-                            → executed directly, exactly as before (bypass)
+* music starters (``execute_music_code`` / ``set_vibe_preset`` /
+  ``load_track``) and everything else (memory / search / get_* /
+  estimate_* / nav …)       → executed directly, blocking (bypass)
 
 The key contract (W7_INTEGRATION_PLAN.md §W7b): :meth:`execute` does NOT
 await completion for queued tools — it returns ``{"status": "queued",
 "task_id": ...}`` immediately so the LLM stays free (fire-and-forget is
-preserved). The scheduler owns the actual timing; destructive tools
-(``stop_music``) are additionally deferred until the VOICE channel drains,
-so music cannot be killed while TTS is still speaking (e2e v36 regression).
+preserved for the VOICE / ANIM channels). Music starters BYPASS the
+scheduler on purpose (live 19.08 party regression): the LLM must see the
+real result («Код выполнен успешно») to keep a DJ set going. Destructive
+tools (``stop_music``) are additionally deferred until the VOICE channel
+drains, so music cannot be killed while TTS is still speaking (e2e v36).
 
 Safety: the executor is fail-open. Any scheduler misbehaviour
 (submit error, unknown channel, loop problems) falls back to direct
@@ -42,9 +45,16 @@ _LOG = logging.getLogger(__name__)
 _VOICE_TOOLS: frozenset[str] = frozenset({"speak_text"})
 
 #: Tools that own the MUSIC channel.
-_MUSIC_TOOLS: frozenset[str] = frozenset(
-    {"execute_music_code", "stop_music", "set_vibe_preset", "load_track"}
-)
+#
+# 🔴 FIX (party regression, live 19.08): the music *starters*
+# (``execute_music_code`` / ``set_vibe_preset`` / ``load_track``) must run
+# BLOCKING so the LLM sees the real result («Код выполнен успешно») instead
+# of a fire-and-forget «queued». The queued contract blinded the DJ LLM —
+# it never got confirmation that music actually started and kept skipping
+# ``execute_music_code`` across transitions. Only ``stop_music`` stays on the
+# scheduler, so it can still be deferred until the VOICE channel drains
+# (e2e v36: stop_music must not outrun the TTS chunk it follows).
+_MUSIC_TOOLS: frozenset[str] = frozenset({"stop_music"})
 
 #: Tools that own the ANIM channel.
 _ANIM_TOOLS: frozenset[str] = frozenset({"play_animation"})

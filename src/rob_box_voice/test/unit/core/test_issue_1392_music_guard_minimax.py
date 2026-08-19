@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from rob_box_voice.core.dialogue_guards import (
     MUSIC_GUARD_KEYWORDS,
+    MUSIC_RETRY_PROMPT_PREFIX,
     build_music_retry_prompt,
     user_wants_music,
 )
@@ -64,19 +65,41 @@ def test_user_wants_music_sgeneriruy_pesnyu() -> None:
 # ── build_music_retry_prompt must point at handle_music, not execute_music_code alone
 
 
-def test_music_retry_prompt_mentions_handle_music() -> None:
-    """Retry prompt must NOT just say 'execute_music_code' — LLM must
-    know that handle_music is the correct tool and sub-agent picks the
-    engine (Renardo OR MiniMax)."""
+def test_music_retry_prompt_mentions_both_engines() -> None:
+    """Retry prompt must name BOTH engines directly (Renardo +
+    MiniMax) — ``handle_music`` (the old Compositor skill facade) has no
+    executor anymore, so pointing the LLM at it would send it to a
+    phantom tool."""
     prompt = build_music_retry_prompt("сгенерируй песню про дождь")
-    assert "handle_music" in prompt, (
-        "build_music_retry_prompt does not mention 'handle_music' — "
-        "Bug C retry asks for 'execute_music_code' alone, which maps "
-        "to Renardo and ignores AI-generation tools. Live regression "
-        "18.08: LLM after retry was still empty-handed (tools=[])."
+    assert "execute_music_code" in prompt, (
+        "build_music_retry_prompt does not mention 'execute_music_code' — "
+        "Renardo (bit/DJ/ambient) path must be reachable on Bug C retry."
     )
     assert "generate_music" in prompt, (
         "build_music_retry_prompt does not mention 'generate_music' — "
         "LLM must be told about both engines (Renardo AND MiniMax)"
         " when retrying on AI-generation requests."
+    )
+    assert "handle_music" not in prompt, (
+        "build_music_retry_prompt still mentions 'handle_music' — that "
+        "skill facade is not registered anymore and would make the LLM "
+        "call a phantom tool ('handle_music не найден')."
+    )
+
+
+def test_music_retry_prompt_starts_with_shared_prefix() -> None:
+    """Regression 19.08.2026 — retry prompt must start with the shared
+    ``MUSIC_RETRY_PROMPT_PREFIX``.
+
+    ``dialogue_node._run_turn`` matches ``startswith(MUSIC_RETRY_PROMPT_PREFIX)``
+    to avoid resetting the Bug C retry budget on the synthetic retry. When
+    the prompt was renamed (execute_music_code → handle_music) without
+    updating the guard, every retry counted as a brand-new user request,
+    the budget reset each iteration and Bug C looped forever re-speaking
+    the refusal."""
+    prompt = build_music_retry_prompt("зачитай репчик про колонку")
+    assert prompt.startswith(MUSIC_RETRY_PROMPT_PREFIX), (
+        "build_music_retry_prompt must start with MUSIC_RETRY_PROMPT_PREFIX; "
+        "otherwise _run_turn's budget-reset guard (startswith) won't match "
+        "and Bug C retries loop forever."
     )

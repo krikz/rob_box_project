@@ -283,6 +283,15 @@ def is_vocal_request(user_input: str) -> bool:
 # Retry prompt builders
 # ---------------------------------------------------------------------------
 
+# Общий префикс Bug C retry-промпта. dialogue_node._run_turn проверяет
+# ``startswith`` этого префикса, чтобы НЕ сбрасывать retry-бюджет на
+# синтетическом ретрае (иначе каждый ретрай считается «новым запросом»,
+# бюджет сбрасывается бесконечно и Bug C зацикливается). Один источник
+# правды: переименование тула внутри текста промпта больше не может
+# молча сломать guard.
+MUSIC_RETRY_PROMPT_PREFIX: str = "[CRITICAL] В прошлом цикле ты НЕ вызвал"
+
+
 def build_babble_retry_prompt(user_input: str) -> str:
     """Issue #992 Bug D — synthetic follow-up prompt for babble retry.
 
@@ -312,29 +321,28 @@ def build_babble_retry_prompt(user_input: str) -> str:
 
 def build_music_retry_prompt(user_input: str) -> str:
     """Synthetic prompt for Bug C retry (user asked for music, LLM skipped
-    handle_music/manage_music_code tools).
+    the music tools).
 
     The LLM frequently concludes «музыка уже играет» from the dialogue
     history (previous runs/songs) and returns ``done`` without calling
-    ``execute_music_code``. This prompt explicitly resets that assumption
-    and demands the tool call — pointing at handle_music (which owns
-    BOTH Renardo execute_music_code AND MiniMax generate_music) and
-    at the AI-generation trigger from issue #1392.
+    ``execute_music_code`` / ``generate_music``. This prompt explicitly
+    resets that assumption and demands the tool call — pointing at BOTH
+    engines directly (Renardo ``execute_music_code`` AND MiniMax
+    ``generate_music``), because ``handle_music`` (the old Compositor
+    skill facade) no longer has an executor after the harness migration.
     """
     return (
-        "[CRITICAL] В прошлом цикле ты НЕ вызвал handle_music, "
+        MUSIC_RETRY_PROMPT_PREFIX + " ни один музыкальный тул, "
         "хотя пользователь ЯВНО попросил музыку/генерацию. "
         "Музыка сейчас НЕ играет — предыдущие треки уже остановлены. "
         "ОДИН ИЗ ЭТИХ инструментов ОБЯЗАТЕЛЕН (выбери по контексту): "
-        "1) handle_music(...) — основной скилл, через него ОБА движка: "
-        "(a) execute_music_code (Renardo/SuperCollider) — бит/DJ/ambient/instrumental (быстрый, ~1с); "
-        "(b) generate_music (MiniMax Music API, 40-160с) — песня с вокалом и лирикой. "
-        "2) gen_search_library / gen_list_library / gen_play_from_library — для уже сохранённых треков. "
+        "1) execute_music_code (Renardo/SuperCollider) — бит/DJ/ambient/instrumental (быстрый, ~1с); "
+        "2) generate_music (MiniMax Music API, 40-160с) — песня с вокалом и лирикой; "
+        "3) gen_search_library / gen_list_library / gen_play_from_library — для уже сохранённых треков. "
         "Запрос юзера: «"
         + (user_input or "")
         + "». "
         "Если это 'спой песню про X' / 'сгенерируй трек про X' / 'сочини музыку' — "
-        "вызывай handle_music(...). Sub-agent (MusicSkill) знает когда нужен generate_music, "
-        "когда execute_music_code — НЕ решай это в Compositor! "
+        "вызывай generate_music(...). Если 'бит/DJ/ambient' — execute_music_code(...). "
         "Если и сейчас не вызовешь tool — цикл останется пустым."
     )

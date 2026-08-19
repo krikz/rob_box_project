@@ -795,8 +795,19 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, tuple[ToolSpec, ToolHandler]] = {}
-        # Pre-register all 37 tools with the default no-op handler.
-        for spec in _build_flat_specs() + _build_skill_specs():
+        # Pre-register only the FLAT tools with the default no-op handler.
+        #
+        # 🔴 FIX (party regression, live 19.08): the 5 skill facades from
+        # ``_build_skill_specs()`` (``handle_music``, ``handle_navigation``,
+        # ``handle_memory``, ``handle_status``, ``handle_faq``) were exposed
+        # to the LLM but have NO executor — the local Compositor skill path
+        # (``dialogue_node._build_skills``) was retired during the harness
+        # migration, and ``ROSMCPToolProvider`` routes every tool to the MCP
+        # server, which never registered ``handle_*``. The LLM therefore
+        # picked the inviting ``handle_music`` spec for DJ/party requests
+        # and got ``Инструмент 'handle_music' не найден`` instead of
+        # playing music. Only register the tools that are actually wired.
+        for spec in _build_flat_specs():
             self._tools[spec.name] = (spec, _default_handler)
 
     # ---- read API -------------------------------------------------------

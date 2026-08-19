@@ -1,13 +1,13 @@
 """Tests for the harness-side ``ToolRegistry``.
 
 The registry is a **manifest-only** ToolProvider — it owns the
-``ToolSpec`` for each of the 37 tools that ``dialogue_node`` exposes
-(32 flat + 5 skill sub-agents). The actual handlers are registered
-separately by the ``ROSMCPToolProvider`` which bridges ROS2 topics,
-so the registry stays ROS2-free and unit-testable.
+``ToolSpec`` for each of the 32 flat tools that ``dialogue_node``
+exposes. The actual handlers are registered separately by the
+``ROSMCPToolProvider`` which bridges ROS2 topics, so the registry stays
+ROS2-free and unit-testable.
 
 Coverage:
-* All 37 tools pre-registered with non-empty descriptions
+* All 32 tools pre-registered with non-empty descriptions
 * list_tools() returns tuple of ToolSpec
 * ToolSpec names are unique (no duplicates)
 * get(name) / get_handler(name) work
@@ -88,13 +88,7 @@ FLAT_TOOL_NAMES: tuple[str, ...] = (
     "set_voice",
 )
 
-SKILL_TOOL_NAMES: tuple[str, ...] = (
-    "handle_music",
-    "handle_navigation",
-    "handle_memory",
-    "handle_status",
-    "handle_faq",
-)
+SKILL_TOOL_NAMES: tuple[str, ...] = ()
 
 EXPECTED_TOOL_NAMES: frozenset[str] = frozenset(FLAT_TOOL_NAMES) | frozenset(
     SKILL_TOOL_NAMES
@@ -108,6 +102,13 @@ EXPECTED_TOOL_NAMES: frozenset[str] = frozenset(FLAT_TOOL_NAMES) | frozenset(
 
 def test_default_registry_contains_all_known_tools() -> None:
     """The default ToolRegistry must pre-register every known tool.
+
+    Skill facades (``handle_music`` / ``handle_navigation`` / …) are NOT
+    registered here anymore: they have no executor (the local Compositor
+    skill path was retired during the harness migration), and exposing
+    them to the LLM made it call a phantom ``handle_music`` tool that the
+    MCP server reports as «не найден». Only flat tools (which ARE wired
+    to the MCP server) are pre-registered.
 
     Bumped to 37 over time (was 34): estimate_tts_duration added in #949,
     register_speaker added when fixing #1101 tool-catalog wiring,
