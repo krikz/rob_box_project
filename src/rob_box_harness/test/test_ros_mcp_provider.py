@@ -64,6 +64,29 @@ async def test_ros_adapter_uses_typed_unknown_tool_error() -> None:
     assert bridge.calls == []
 
 
+def test_ros_adapter_uses_long_timeout_for_generate_music() -> None:
+    # generate_music (MiniMax Music API, 40-160s) must not inherit the
+    # 10s default — otherwise the client times out and re-dispatches
+    # while the first generation is still running (live bug 19.08.2026).
+    provider, bridge = _provider()
+    provider.register_tool(
+        ToolDescriptor(
+            name="generate_music",
+            description="generate music",
+            parameters={
+                "type": "object",
+                "properties": {"prompt": {"type": "string"}},
+                "required": ["prompt"],
+                "additionalProperties": False,
+            },
+        )
+    )
+
+    asyncio.run(provider.invoke("generate_music", {"prompt": "lo-fi raccoon"}))
+
+    assert bridge.calls == [("generate_music", {"prompt": "lo-fi raccoon"}, 300.0)]
+
+
 def test_ros_adapter_catalogue_is_dynamic_and_fresh() -> None:
     provider, _ = _provider()
 
