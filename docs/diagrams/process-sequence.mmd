@@ -1,0 +1,67 @@
+%% process-sequence.mmd — happy-path ADD-процесса для issue с needs-e2e
+%% Sources of truth:
+%%   - scripts/agent_flow/agent-flow-triage.sh
+%%   - scripts/agent_flow/agent-flow-merge-gate.sh
+%%   - scripts/agent_flow/agent-flow-e2e-process.sh
+%%   - scripts/agent_flow/agent-flow-completion-check.sh (GATE-3)
+%%   - .github/workflows/L-E2E Voice Test.yml (GATE-1)
+%%   - docs/adr/0018-agent-honesty-culture.md
+%%   - docs/adr/0022-process-e2e-done-gates.md
+%% Render: mermaid в любом GitHub markdown viewer (sequenceDiagram)
+sequenceDiagram
+    autonumber
+    actor U as Шифу
+    participant GH as GitHub
+    participant T as agent-flow-triage<br/>(cron)
+    participant K as Kanban DB<br/>(SQLite)
+    participant W as worker<br/>(architect/devops/backend)
+    participant MG as merge-gate<br/>(cron 5min)
+    participant EP as e2e-process<br/>(cron 60min)
+    participant WF as L-Build/Deploy/E2E<br/>(workflow_dispatch)
+    participant R as Robot<br/>(10.1.1.21)
+    participant CC as completion-check<br/>(GATE-3)
+
+    U->>GH: gh issue create --label needs-e2e
+    GH-->>T: webhook/issues.list poll
+    T->>K: kanban create t_xxx (parents: issue#N)
+    T->>GH: comment "kanban: t_xxx (auto from triage)"
+    W->>K: claim t_xxx (status=running)
+    W->>GH: branch z-{agent}/N-<slug><br/>+ wip commits каждые ~15-20 мин
+    W->>GH: PR open (base=develop,<br/>labels: needs-e2e + agent:*)
+    GH->>MG: PR detected, checks polling
+    MG->>GH: gh pr checks --watch (CLEAN)
+    MG->>GH: reconcile PR↔issue<br/>(drift guard)
+    MG->>GH: comment "needs-e2e уже стоит,<br/>merge-gate не вмешивается"
+    MG-->>EP: leave issue in needs-e2e
+
+    Note over EP: post-round sweep<br/>+ no-live-candidates check
+    EP->>EP: round_ensure.sh<br/>merge z-{agent}/N → round-N
+    EP->>WF: gh workflow run L-Build-All-Services
+    WF-->>EP: build SUCCESS
+    EP->>WF: gh workflow run L-Deploy and Verify
+    WF-->>EP: deploy SUCCESS (249/.11/.21)
+
+    EP->>WF: gh workflow run L-E2E Voice Test<br/>(scenario_file + acceptance_file)
+    WF->>R: scp scenario + acceptance.json
+    WF->>R: ssh ./e2e_voice_test.sh<br/>--scenario ... --acceptance ...
+    R->>R: STT → LLM → TTS pipeline
+    R->>R: инструменты (generate_music,<br/>teleop, voice и т.п.)
+    R->>WF: acceptance.json (PASS/FAIL)<br/>+ wav/mp3 артефакты
+    WF-->>EP: verdict + run_id
+
+    alt GATE-1 PASS (acceptance.json есть,<br/>expected_tool_calls ⊆ actual)
+        EP->>GH: gh issue edit N --add-label e2e-done
+        EP->>GH: comment "e2e-done поставлен:<br/>verdict=PASS run=...#..."
+    else GATE-1 FAIL (нет acceptance.json<br/>или expected ⊄ actual)
+        EP->>GH: gh issue edit N --add-label e2e:rejected
+        EP->>GH: comment "e2e:rejected —<br/>E2E_GATE1_MISSING_ACCEPTANCE"
+    end
+
+    EP->>CC: kanban t_xxx → archive (DRY_RUN=false)
+    CC->>GH: gh pr checks (все required зелёные)
+    CC->>GH: gh pr view --json mergeable (MERGEABLE)
+    Note over CC: GATE-3 CI-blocking:<br/>archive только если checks ok
+    CC-->>EP: archived (или leave running)
+
+    U->>GH: gh pr merge (ручной merge Шифу)
+    GH-->>U: PR MERGED → develop
