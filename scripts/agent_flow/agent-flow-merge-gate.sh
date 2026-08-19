@@ -859,6 +859,79 @@ except Exception: print("")' 2>/dev/null || true)"
         fi
     fi
 
+    # --- PR↔issue e2e-done drift reconcile (ретро 19.08 t_5cde0bc1) --------
+    # Гипотеза PR #1398 / issue #1392: issue имеет needs-e2e (в ротации), но
+    # канонический PR (ветка z-{agent}/<id>-<slug>) висит с e2e-done от
+    # предыдущего раунда. Без reconcile e2e-process на следующем тике видит
+    # issue:needs-e2e, подбирает PR, проходит — снова вешает PR:e2e-done (тот
+    # же результат), но e2e-done «прилипает» к PR между ручным возвратом
+    # krikz и e2e-раундом → drift в PR-очереди Шифу (видит «готово к ревью»
+    # хотя по issue ничего не сделано).
+    #
+    # Reconcile: issue:needs-e2e + канонический PR:e2e-done (или :needs-review)
+    # → снимаем PR-side stale метки, оставляя issue-side неизменным. После
+    # этого e2e-process спокойно проходит, вешает обратно e2e-done + needs-review
+    # на PR уже с реальным результатом раунда.
+    #
+    # Guard от ping-pong: срабатываем ТОЛЬКО когда в issue timeline последнее
+    # событие по e2e-done — UNLABEL (т.е. кто-то руками или автоматика сняла
+    # метку и она не была возвращена — нормальное состояние issue в ротации).
+    # Если последнее событие — LABEL → e2e-done свежее, e2e-process сейчас
+    # разрулит, не трогаем PR.
+    if has_label "$labels_norm" "$NEEDS_E2E_LABEL"; then
+        _drift_branch_pattern="z-{agent}/${number}-"
+        # Ищем канонический PR по headRefName-префиксу (быстрее, чем title-scan).
+        # gh pr list --state open + grep в shell — не зависит от jq-паттернов
+        # и совместимо с mock-окружением тестов.
+        _drift_pr_json="$(gh pr list --repo "$GH_REPO" --state open \
+            --search "${number} in:title" \
+            --json number,headRefName 2>/dev/null || echo '[]')"
+        _drift_pr_number="$(printf '%s' "$_drift_pr_json" | grep -F "$_drift_branch_pattern" \
+            | grep -oE '"number":[0-9]+' | head -n1 | grep -oE '[0-9]+' || true)"
+        if [ -n "$_drift_pr_number" ]; then
+            _drift_pr_labels_csv="$(gh pr view "$_drift_pr_number" --repo "$GH_REPO" --json labels \
+                --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')"
+            _drift_pr_labels_norm="$(printf '%s' "$_drift_pr_labels_csv" | tr '[:upper:]' '[:lower:]')"
+            _drift_has_pr_done="0"; _drift_has_pr_review="0"
+            if has_label "$_drift_pr_labels_norm" "$DONE_LABEL"; then _drift_has_pr_done="1"; fi
+            if has_label "$_drift_pr_labels_norm" "$NEEDS_REVIEW_LABEL"; then _drift_has_pr_review="1"; fi
+            # Проверяем timeline issue: последнее e2e-done событие — unlabel?
+            _issue_done_last_evt="$(gh api "repos/${GH_REPO}/issues/${number}/timeline?per_page=100" \
+                --jq '[.[] | select(.event=="labeled" or .event=="unlabeled") | select(.label.name=="'"$DONE_LABEL"'")] | last | .event // "none"' 2>/dev/null || echo 'none')"
+            if [ "$_drift_has_pr_done" = "1" ] && [ "$_issue_done_last_evt" = "unlabeled" ]; then
+                _pr_last_commit_iso="$(gh api "repos/${GH_REPO}/pulls/${_drift_pr_number}/commits?per_page=1" \
+                    --jq '.[0].commit.committer.date // empty' 2>/dev/null || echo '')"
+                _drift_minutes="n/a"
+                if [ -n "$_pr_last_commit_iso" ] && [ "$_pr_last_commit_iso" != "null" ]; then
+                    _now_s="$(date -u +%s)"
+                    _commit_s="$(date -u -d "$_pr_last_commit_iso" +%s 2>/dev/null || echo 0)"
+                    if [ "$_commit_s" -gt 0 ] 2>/dev/null; then
+                        _diff_s=$(( _now_s - _commit_s ))
+                        _drift_minutes="$(( _diff_s / 60 ))m"
+                    fi
+                fi
+                # Метрика: минут с последнего коммита PR (e2e_drift_minutes) — для watchdog/логов.
+                log "issue #${number}: PR↔issue e2e-done drift — issue в ротации (${NEEDS_E2E_LABEL}), но PR #${_drift_pr_number} висит с ${DONE_LABEL} (last issue-evt=unlabeled, last PR commit=${_pr_last_commit_iso}). e2e_drift_minutes=${_drift_minutes} (ретро 19.08 t_5cde0bc1)."
+                if [ "$DRY_RUN" != "true" ]; then
+                    gh pr edit "$_drift_pr_number" --repo "$GH_REPO" --remove-label "$DONE_LABEL" >/dev/null 2>&1 || true
+                    # needs-review на PR снимаем только если есть — иначе PR остался
+                    # в «готово к ревью» состоянии с непротестированным кодом.
+                    if [ "$_drift_has_pr_review" = "1" ]; then
+                        gh pr edit "$_drift_pr_number" --repo "$GH_REPO" --remove-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
+                    fi
+                    gh pr comment "$_drift_pr_number" --repo "$GH_REPO" --body \
+                        "agent-flow: 🧹 e2e-done drift reconcile (ретро 19.08 t_5cde0bc1) — issue #${number} вернулся в ротацию (last issue:${DONE_LABEL}-evt=unlabeled), но PR #${_drift_pr_number} висел с \`${DONE_LABEL}\`. Сняты: \`${DONE_LABEL}\`${_drift_has_pr_review:+, \`${NEEDS_REVIEW_LABEL}\`}. Следующий e2e-раунд перевесит по реальному результату." >/dev/null 2>&1 || true
+                    gh issue comment "$number" --repo "$GH_REPO" --body \
+                        "agent-flow: 🧹 e2e-done drift reconcile — PR #${_drift_pr_number} снят \`${DONE_LABEL}\` (issue был в ротации, PR-side stale). e2e-process перевзвесит на следующем тике (ретро 19.08 t_5cde0bc1)." >/dev/null 2>&1 || true
+                fi
+                # НЕ continue — дальше пойдёт нормальный блок needs-e2e processing
+                # для этой issue (выставит needs-e2e на канонический PR если ещё нет).
+            elif [ "$_drift_has_pr_done" = "1" ]; then
+                log "issue #${number}: PR↔issue e2e-done check — issue в ротации, PR #${_drift_pr_number} имеет ${DONE_LABEL}, но last issue-evt=${_issue_done_last_evt} (не unlabeled) → НЕ снимаю, e2e-process разрулит (ретро 19.08 t_5cde0bc1)."
+            fi
+        fi
+    fi
+
     branch="z-{agent}/${number}-$(slugify "$title")"
 
     # Look up PR by head branch (authoritative — no extra state).
