@@ -135,8 +135,16 @@ jobs:
         env:
           SSHPASS: open
         run: |
+          # bug(t_cca7c074, ретро 19.08): копируем ОБА файла харнесса — раньше
+          # копировали только e2e_voice_test.sh, но он source'ит e2e_voice_lib.sh
+          # на line 234 (`source "$SCRIPT_DIR_E2E/e2e_voice_lib.sh"`) и падал
+          # с "No such file or directory" в каждом run. Симптом скрывался тем,
+          # что GATE-1 падал раньше и до source не доходили.
           chmod +x .github/workflows/scripts/e2e_voice_test.sh
+          chmod +x .github/workflows/scripts/e2e_voice_lib.sh
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_test.sh ros2@10.1.1.249:/tmp/e2e_voice_test.sh
+          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_lib.sh ros2@10.1.1.249:/tmp/e2e_voice_lib.sh
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh && echo HARNESS_PUSHED"
           # scenario (если задан) — кладём в /tmp на 249
           if [ -n "${{ inputs.scenario_file }}" ]; then
             sshpass -e scp -o StrictHostKeyChecking=no "${{ inputs.scenario_file }}" ros2@10.1.1.249:/tmp/e2e_scenario.json
