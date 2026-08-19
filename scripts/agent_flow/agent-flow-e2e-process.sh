@@ -804,6 +804,17 @@ except Exception:
             log "post-round sweep: issue #${_sn} уже обработан (${_sl_norm}) — skip"
             continue
         fi
+        # bug #1450 ретро 19.08 t_723a539d: если Шифу ВРУЧНУЮ вернул
+        # needs-e2e на issue после того как этот round завершился SUCCESS
+        # — sweep НЕ должен лечить (e2e-done), иначе цикл: sweep→
+        # e2e-done→Шифу unlabel→needs-e2e (re-test)→sweep→… бесконечный,
+        # round-155 НЕ создаётся (наблюдение 19.08: issue #1392 / PR #1398).
+        # Сигнал override: latest LabeledEvent{label=needs-e2e, actor≠bot}
+        # ПОЗЖЕ createdAt указанного run (#${_sweep_run_id}).
+        if issue_needs_e2e_re_added_after_run "$_sn" "$_sweep_run_id"; then
+            log "post-round sweep: issue #${_sn} имеет явный needs-e2e override ПОСЛЕ run #${_sweep_run_id} — skip (Шифу запросил re-test, ждём round-155)"
+            continue
+        fi
         gh issue edit "$_sn" --repo "$GH_REPO" --add-label "$DONE_LABEL" >/dev/null 2>&1 || true
         gh issue edit "$_sn" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
         gh issue comment "$_sn" --repo "$GH_REPO" --body \
@@ -910,6 +921,129 @@ slugify() {
 
 has_label() {
     printf '%s' "$1" | tr ',' '\n' | grep -Fxq "$2"
+}
+
+# issue_needs_e2e_re_added_after_run <issue_number> <run_id>
+#   Returns 0 (true) если на issue есть LabeledEvent{label=needs-e2e}
+#   от НЕ-bot актора, ПОЗЖЕ created_at указанного workflow run.
+#   Иначе 1 (нет override → sweep может лечить как обычно).
+#
+# Использование (bug #1450 ретро 19.08 t_723a539d): post-round sweep должен
+# skip если Шифу ВРУЧНУЮ вернул needs-e2e на issue после того как round
+# завершился SUCCESS — иначе цикл: sweep→e2e-done→unlabel→needs-e2e
+# (re-test)→sweep→e2e-done→… бесконечный, round-155 НЕ создаётся.
+#
+# Сигнал: latest LabeledEvent{label=needs-e2e, actor≠bot} timestamp >
+# workflow run createdAt. Это явный re-test request от Шифу (retро 18.08
+# t_de6bea69, та же философия что у user_removed_label_recently в
+# lib_user_unlabel_check.sh — не подавлять ручное решение).
+#
+# Гарантии (fail-OPEN как у user_removed_label_recently):
+#   - timeline API сдох → return 1 (нет сигнала → sweep лечит как раньше,
+#     лучше лишний e2e-done чем fail-CLOSE блокирующий ротацию)
+#   - событий нет / нет labeled для needs-e2e → return 1
+#   - bot-actor labeled → return 1 (это auto, не user-decisional)
+#   - latest labeled event ПОЗЖЕ run created_at → return 0
+#
+# Test mode (used by tests/test_e2e_process_post_round_sweep_override.sh):
+#   export POST_ROUND_SWEEP_TEST_MODE=1 — пропускает реальные API-вызовы;
+#   тесты инжектят мок-данные через переменные
+#   _POST_ROUND_SWEEP_TEST_TIMELINE_JSON и _POST_ROUND_SWEEP_TEST_RUN_EPOCH.
+issue_needs_e2e_re_added_after_run() {  # $1=issue_number $2=run_id
+    local _issue="$1" _run_id="$2"
+
+    # Test mode: берём мок-данные из переменных (НЕ зовём gh api).
+    local _events _run_epoch
+    if [ "${POST_ROUND_SWEEP_TEST_MODE:-0}" = "1" ]; then
+        _events="${_POST_ROUND_SWEEP_TEST_TIMELINE_JSON:-[]}"
+        _run_epoch="${_POST_ROUND_SWEEP_TEST_RUN_EPOCH:-0}"
+    else
+        # Production: тянем timeline issue + createdAt run (issue/PR
+        # шарится один endpoint — repos/${GH_REPO}/issues/${n}/timeline).
+        _events="$(gh api "repos/${GH_REPO}/issues/${_issue}/timeline?per_page=100" \
+            2>/dev/null || echo '[]')"
+        if [ -z "$_events" ] || [ "$_events" = '[]' ]; then
+            return 1
+        fi
+        _run_epoch="$(gh run view "$_run_id" --repo "$GH_REPO" \
+            --json createdAt --jq '.createdAt' 2>/dev/null \
+            | python3 -c 'import sys, datetime
+s=sys.stdin.read().strip()
+if not s: print(0); sys.exit(0)
+try:
+    dt = datetime.datetime.fromisoformat(s.replace("Z","+00:00"))
+    print(int(dt.timestamp()))
+except Exception:
+    print(0)' 2>/dev/null || echo 0)"
+    fi
+
+    if [ -z "$_events" ] || [ "$_events" = '[]' ]; then
+        return 1
+    fi
+    if [ -z "$_run_epoch" ] || [ "$_run_epoch" = "0" ]; then
+        # Не смогли получить timestamp run → fail-OPEN, не блокируем sweep.
+        return 1
+    fi
+
+    # Парсим timeline: ищем latest LabeledEvent{label=needs-e2e, actor≠bot}.
+    # Печатаем epoch этого события (или 0 если не нашли).
+    local _latest
+    _latest="$(printf '%s' "$_events" | _lbl="needs-e2e" _run_epoch="$_run_epoch" python3 -c '
+import json, sys, os
+from datetime import datetime
+
+raw = sys.stdin.read()
+try:
+    data = json.loads(raw)
+except Exception:
+    print(0); sys.exit(0)
+if not isinstance(data, list):
+    print(0); sys.exit(0)
+
+target = (os.environ.get("_lbl") or "").lower()
+run_epoch = int(os.environ.get("_run_epoch") or 0)
+
+def is_bot(login):
+    if not login:
+        return True
+    s = login.lower()
+    if s.endswith("[bot]") or "-bot" in s or s.endswith("_bot"):
+        return True
+    if s in ("github-actions", "github-actions[bot]", "web-flow",
+             "dependabot[bot]", "renovate[bot]", "codecov[bot]"):
+        return True
+    return False
+
+latest_labeled_epoch = 0
+for ev in data:
+    if not isinstance(ev, dict):
+        continue
+    if ev.get("event") != "labeled":
+        continue
+    name = ((ev.get("label") or {}).get("name") or "").lower()
+    if name != target:
+        continue
+    actor = (ev.get("actor") or {}).get("login") or ""
+    if is_bot(actor):
+        continue
+    at = ev.get("created_at") or ""
+    try:
+        dt = datetime.fromisoformat(at.replace("Z", "+00:00"))
+        epoch = int(dt.timestamp())
+    except Exception:
+        continue
+    latest_labeled_epoch = max(latest_labeled_epoch, epoch)
+
+# Печатаем 1 если есть user labeled event ПОЗЖЕ run, иначе 0.
+if latest_labeled_epoch > run_epoch:
+    print(1)
+else:
+    print(0)
+')"
+    if [ "$_latest" = "1" ]; then
+        return 0
+    fi
+    return 1
 }
 
 # Detect PR kind: "lint" (no e2e needed) vs "functional" (e2e required).
