@@ -82,13 +82,58 @@ if ! gh auth status >/dev/null 2>&1; then
   log "gh auth not configured — exit 1"; exit 1
 fi
 
+# --- gh_list_issues_by_label (ретро 19.08 #1457) ------------------------------
+# Fallback для `gh issue list --label X` (GraphQL-фильтр по label ломается на
+# некоторых версиях gh CLI). При пустом ответе gh-list — пробуем REST API
+# /issues?labels=X. Возвращает JSON-массив с полями: number,title,labels,body.
+gh_list_issues_by_label() {
+    local _label="$1" _state="${2:-open}" _limit="${3:-${LIMIT:-20}}" _fields="${4:-number,title,labels,body,updatedAt}"
+    local _json="" _api_json=""
+    _json="$(gh issue list \
+        --repo "$GH_REPO" \
+        --label "$_label" \
+        --state "$_state" \
+        --limit "$_limit" \
+        --json "$_fields" 2>/dev/null || true)"
+    if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
+        printf '%s' "$_json"
+        return 0
+    fi
+    _api_json="$(gh api "repos/${GH_REPO}/issues?labels=${_label}&state=${_state}&per_page=${_limit}" 2>/dev/null || true)"
+    if [ -z "$_api_json" ] || [ "$_api_json" = "[]" ]; then
+        printf '[]'
+        return 0
+    fi
+    log "gh_list_issues_by_label(${_label}): gh-list пустой, fallback на REST API /issues?labels=${_label}"
+    printf '%s' "$_api_json" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("[]"); sys.exit(0)
+if not isinstance(data, list):
+    print("[]"); sys.exit(0)
+keep = []
+for it in data:
+    if not isinstance(it, dict):
+        continue
+    if it.get("pull_request"):
+        continue
+    rec = {
+        "number": it.get("number"),
+        "title": it.get("title") or "",
+        "labels": [{"name": (l.get("name") if isinstance(l, dict) else l)} for l in it.get("labels", [])],
+        "body": it.get("body") or "",
+    }
+    if "updatedAt" in it:
+        rec["updatedAt"] = it.get("updatedAt")
+    keep.append(rec)
+print(json.dumps(keep, ensure_ascii=False))
+'
+}
+
 # --- list open deployment issues --------------------------------------------
-issues_json="$(gh issue list \
-    --repo "$GH_REPO" \
-    --label deployment \
-    --state open \
-    --limit "$LIMIT" \
-    --json number,title,labels,body,updatedAt 2>/dev/null || true)"
+issues_json="$(gh_list_issues_by_label deployment open "$LIMIT")"
 
 if [ -z "$issues_json" ] || [ "$issues_json" = "[]" ]; then
   log "no open issues with label 'deployment' — nothing to sweep"; exit 0

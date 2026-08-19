@@ -550,6 +550,70 @@ if [ "${ROUND_ONLY:-0}" = "1" ]; then
     exit 0
 fi
 
+# --- gh_list_issues_by_label (ретро 19.08 #1457) ------------------------------
+# Bug: `gh issue list --label X` на некоторых версиях gh CLI (2.x.x) возвращает
+# пустой массив, даже если есть открытые issues с меткой X. Параллельно
+# `gh search issues "label:X"` и `gh api repos/.../issues?labels=X` находят их.
+# Workaround: используем gh-list как primary, при пустом ответе — fallback на
+# прямой REST API, логируем fallback для observability. Возвращает JSON-массив
+# с полями: number,title,labels,body (минимальный набор для downstream).
+gh_list_issues_by_label() {
+    local _label="$1" _state="${2:-open}" _limit="${3:-${ISSUE_LIMIT}}" _fields="${4:-number,title,labels,body}"
+    local _json="" _api_json=""
+    _json="$(gh issue list \
+        --repo "$GH_REPO" \
+        --label "$_label" \
+        --state "$_state" \
+        --limit "$_limit" \
+        --json "$_fields" 2>/dev/null || true)"
+    # Если gh-list непустой — используем его (быстрее, идёт через GraphQL).
+    if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
+        printf '%s' "$_json"
+        return 0
+    fi
+    # Fallback: прямой REST API. gh issue list в --json GraphQL-режиме ломает
+    # фильтр по label (issue #1457). REST /issues?labels=X — надёжный источник.
+    _api_json="$(gh api "repos/${GH_REPO}/issues?labels=${_label}&state=${_state}&per_page=${_limit}" 2>/dev/null || true)"
+    if [ -z "$_api_json" ] || [ "$_api_json" = "[]" ]; then
+        # Действительно пусто — отдаём пустой массив downstream'у.
+        printf '[]'
+        return 0
+    fi
+    log "gh_list_issues_by_label(${_label}): gh-list пустой, fallback на REST API /issues?labels=${_label}"
+    # Нормализуем REST-ответ к GraphQL-шейпу: {number,title,labels,body,...}.
+    # В REST labels — массив {name,...}, в GraphQL — то же самое. Достаточно
+    # прокинуть number/title/labels/body; PR-ы (у REST issues включают PRs)
+    # отфильтруем ниже по отсутствию поля pull_request.
+    printf '%s' "$_api_json" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("[]"); sys.exit(0)
+if not isinstance(data, list):
+    print("[]"); sys.exit(0)
+keep = []
+for it in data:
+    if not isinstance(it, dict):
+        continue
+    # REST /issues возвращает и issues, и PRs — PRы имеют pull_request.
+    if it.get("pull_request"):
+        continue
+    rec = {
+        "number": it.get("number"),
+        "title": it.get("title") or "",
+        "labels": [{"name": (l.get("name") if isinstance(l, dict) else l)} for l in it.get("labels", [])],
+        "body": it.get("body") or "",
+    }
+    # Прокинем updatedAt (используется deploy-issue-reconcile), если есть —
+    # это не ломает существующий код, который читает только нужные поля.
+    if "updatedAt" in it:
+        rec["updatedAt"] = it.get("updatedAt")
+    keep.append(rec)
+print(json.dumps(keep, ensure_ascii=False))
+'
+}
+
 # --- get current open issue numbers with needs-e2e ---------------------------
 # collect_issues_json — свежий снимок очереди needs-e2e. Вызывается в начале
 # тика И ПОВТОРНО после post_round_sweep (ретро 13.08 t_7eab35a0): sweep может
@@ -565,12 +629,7 @@ collect_issues_json() {
     #   {number, title, body, labels, source: "issue"|"pr", branch}
     # Для issue source="issue", branch="" (вычисляется в main loop как раньше);
     # для PR-only source="pr", branch=headRefName (известен сразу).
-    issues_json="$(gh issue list \
-        --repo "$GH_REPO" \
-        --label "$NEEDS_E2E_LABEL" \
-        --state open \
-        --limit "$ISSUE_LIMIT" \
-        --json number,title,labels,body 2>/dev/null || true)"
+    issues_json="$(gh_list_issues_by_label "$NEEDS_E2E_LABEL" open "$ISSUE_LIMIT")"
 
     # Issue #1141: даже для OPEN issues — skip если уже есть метка e2e-done
     # (workflow_dispatch мог триггериться от старого e2e-блока в issue).
@@ -734,8 +793,12 @@ done < <(printf '%s\n' "$_issue_numbers")
 
 # Если все needs-e2e issues приостановлены/отклонены — round не создаём.
 if [ "$_any_rejected" -eq 1 ]; then
-    _remaining="$(gh issue list --repo "$GH_REPO" --label "$NEEDS_E2E_LABEL" --state open \
-        --limit 1 --json number --jq 'length' 2>/dev/null || echo 0)"
+    # Ретро 19.08 #1457: gh issue list --label ломает фильтр → fallback через
+    # gh_list_issues_by_label (REST API), чтобы корректно посчитать оставшиеся.
+    _remaining="$(gh_list_issues_by_label "$NEEDS_E2E_LABEL" open 1 | python3 -c '
+import json, sys
+try: print(len(json.load(sys.stdin)))
+except Exception: print(0)')"
     if [ "${_remaining:-0}" -eq 0 ] 2>/dev/null; then
         log "no remaining needs-e2e issues (all paused/rejected) — no round"
         exit 0
