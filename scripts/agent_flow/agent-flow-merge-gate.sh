@@ -1243,9 +1243,56 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
         if has_label "$_current_labels_norm" "$DONE_LABEL"; then
             _has_e2e_done="1"
         fi
+        # Retro 19.08 #79779a21 (orphans #1422 + #1456): worker may have
+        # opted out of e2e via label `no-e2e-required` (docs/lint/refactor
+        # PR per ADR-0022 §4.2). Once the PR is MERGED into develop, the
+        # issue must close just like an e2e-done one — otherwise it sits
+        # OPEN until manual triage (orphan pattern). Pre-compute so the
+        # OPEN-state branch can decide.
+        _has_no_e2e="0"
+        if has_label "$_current_labels_norm" "$NO_E2E_LABEL"; then
+            _has_no_e2e="1"
+        fi
         _issue_state="$(gh issue view "$number" --repo "$GH_REPO" --json state \
             --jq '.state' 2>/dev/null || echo '')"
-        log "issue #${number}: pre-close state=${_issue_state} e2e-done=${_has_e2e_done}"
+        log "issue #${number}: pre-close state=${_issue_state} e2e-done=${_has_e2e_done} no-e2e=${_has_no_e2e}"
+
+        # 0.1a) Early short-circuit for no-e2e-required (retro 19.08 #79779a21,
+        # ADR-0022 §4.2). Worker explicitly opted out of e2e — the PR
+        # MERGED into develop is sufficient evidence that the fix landed.
+        # We bypass the user-reopen guard below because `no-e2e-required`
+        # is itself an explicit worker signal (not a PASS-proven label),
+        # and the user-reopen guard is designed to protect e2e-done
+        # provenance (which is more fragile — a PASS verdict can be
+        # stale). If user explicitly reopens AFTER no-e2e-required close,
+        # that's a separate follow-up the user will file themselves
+        # (Q22-style).
+        #
+        # IMPORTANT: we DO NOT continue / skip the case statement below
+        # — instead we update _issue_state=CLOSED so the existing CLOSED
+        # branch fires (idempotent skip-close, proceed to destructive
+        # cleanup). This preserves the post-close flow: branch delete +
+        # cleanup comment + kanban card archive.
+        if [ "$pr_state" = "MERGED" ] && [ "$pr_base" = "$DEVELOP_BRANCH" ] \
+            && [ "$_issue_state" = "OPEN" ] \
+            && [ "$_has_e2e_done" = "0" ] \
+            && [ "$_has_no_e2e" = "1" ]; then
+            if [ "$DRY_RUN" = "true" ]; then
+                log "DRY-RUN would auto-close issue #${number} via ${NO_E2E_LABEL} (retro 19.08 #79779a21)"
+                # In DRY-RUN, fall through to the case (will hit OPEN
+                # branch but with no-op close).
+                _closed_this_tick=1
+            elif gh issue close "$number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
+                _closed_this_tick=1
+                log "issue #${number}: CLOSED (reason=completed, auto-close via ${NO_E2E_LABEL}, retro 19.08 #79779a21)"
+                # Reflect the new state for the case statement below so
+                # it walks into the CLOSED branch (skip close + cleanup).
+                _issue_state="CLOSED"
+            else
+                log "issue #${number}: WARNING gh issue close failed (${NO_E2E_LABEL} path) — retry next tick"
+                labeled=$((labeled+1)); continue
+            fi
+        fi
 
         # 0.2) Close only when invariant holds. Four branches:
         #   (a) already CLOSED → idempotent skip, proceed to cleanup

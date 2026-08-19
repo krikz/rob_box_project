@@ -70,6 +70,9 @@
 | Auto-decomposer может разбудить воркера во время MAINTENANCE | — | B14 | [#1431](https://github.com/krikz/rob_box_project/issues/1431) | 2026-08-19 | devops | 🟢 resolved | [t_1d467636](https://hermes-kanban/t_1d467636) | — | PR #1441 | maintenance check |
 | PR↔issue e2e-done drift reconcile | — | (new) | [#1448](https://github.com/krikz/rob_box_project/issues/1448), [#1450](https://github.com/krikz/rob_box_project/issues/1450), [#1452](https://github.com/krikz/rob_box_project/issues/1452), [#1456](https://github.com/krikz/rob_box_project/issues/1456) | 2026-08-19 | devops | 🟢 resolved | [t_5cde0bc1](https://hermes-kanban/t_5cde0bc1) | ADR-0022 | PR #1460 (`30b5aa00` regression), PR #1460 fix (`92fad7c7`) | GATE-2 two-stage closer |
 | Triage создаёт manual-карточки несмотря на dedup | — | (new) | [#1432](https://github.com/krikz/rob_box_project/issues/1432) | 2026-08-19 | devops | 🟢 resolved | [t_a0fac345](https://hermes-kanban/t_a0fac345) | — | PR #1439 (`cdc043a9`), PR #1440 (`d3bfdc5f`) | user-unlabel respect + dedup-guard |
+| **Orphan-issues после влитых фиксов (ретро 19.08 t_79779a21)** |||||||||||
+| Orphan `e2e-done` после merge (issue висит OPEN, не закрывается merge-gate'ом) | — | (new) | [#1422](https://github.com/krikz/rob_box_project/issues/1422) | 2026-08-18 | devops | 🟢 resolved | [t_79779a21](https://hermes-kanban/t_79779a21) | ADR-0014 §4 | branch `z-devops/79779a21-orphan-e2e-noe2e-after-merge` (tests O) | PR #1418 MERGED+CI green, но race в merge-gate: между issue-list и re-read метка «протухла» в timeline-логике (conservative close path). Bypass через no-e2e-required short-circuit |
+| Orphan `no-e2e-required` после merge (worker opt-out, issue не закрывается) | — | (new) | [#1456](https://github.com/krikz/rob_box_project/issues/1456) | 2026-08-19 | devops | 🟢 resolved | [t_79779a21](https://hermes-kanban/t_79779a21) | ADR-0022 §4.2 | branch `z-devops/79779a21-orphan-e2e-noe2e-after-merge` (tests O/P/Q) | PR #1460 MERGED, метка `no-e2e-required` НЕ учитывалась merge-gate'ом (только e2e-done). Добавлен early short-circuit (close → CLOSED → destructive cleanup) |
 | **P3 — кунсткамера (для памяти)** |||||||||||
 | kanban CLI `requeue` не существует | — | B16 | [#1452](https://github.com/krikz/rob_box_project/issues/1452) | 2026-08-15 | process | 🟢 resolved | — | — | fixed `7d567420` | WARNING каждый тик убран |
 | Worker counter init — fixed в PR #1390, но класс не закрыт | — | B17 | [#1385](https://github.com/krikz/rob_box_project/issues/1385) | 2026-08-13 | process | 🟢 resolved | (revert #1390) | ADR-0021 | PR #1410 (`9d9f3f53`) | закрыт через B7 |
@@ -132,11 +135,11 @@
 
 | Статус | Кол-во | Что осталось |
 |--------|--------|--------------|
-| 🟢 resolved | ~38 | — |
+| 🟢 resolved | ~40 | — |
 | 🟡 in-progress | ~7 | B4 (registry AD-hoc), B11 (unit-test policy), R5 (lying worker detect), R7 (watchdog semaphoring), R12 (spec ambiguity, долгосрочно), B14 (R2 context) |
 | 🔴 open | ~3 | B5 (registry topology structural fix), R10 (cost tracking), R7 (dialog lost), «Первый захват речи» |
 | 📜 archived | ~4 | B10 (school rule), R8 (security baseline — overengineering), R9 (N-version overengineering), R11 (ATLE — KISS) |
-| **Всего** | **~52** | — |
+| **Всего** | **~54** | — |
 
 ---
 

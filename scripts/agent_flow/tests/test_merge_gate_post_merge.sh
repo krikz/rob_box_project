@@ -690,4 +690,129 @@ run_test "L. merged PR + branch deleted → unlabel orphan (Q22, t_423453b1)" te
 run_test "M. orphan comment dedup by substring → no re-post, still closes (t_0b76514f)" test_M_orphan_comment_dedup_still_closes
 run_test "N. MERGED + blocked card → unblock+complete+archive (t_0bd15be9)" test_N_merged_pr_blocked_card_unblock_complete_archive
 
+# ===========================================================================
+# O. Retro 19.08 #79779a21 (orphan #1456): MERGED + base=develop +
+#    no-e2e-required + OPEN → close reason=completed (worker explicitly
+#    opted out of e2e — docs/lint/refactor PR per ADR-0022 §4.2).
+#    Once the PR is MERGED into develop, the issue must close just like
+#    an e2e-done one — otherwise it sits OPEN until manual triage.
+# ===========================================================================
+test_O_merged_no_e2e_required_closes() {
+    new_test
+    local issue=1456 branch
+    branch="$(slugify_branch "$issue" 'gate1 candidate strip underscore')"
+    # no-e2e-required label is set by e2e-process on worker-opt-out PRs
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"gate1 candidate strip underscore\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"no-e2e-required\"}],\"body\":\"kanban: t_dead${issue}\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"no-e2e-required"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\\\n\"}]}"
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" "[]"
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":1460,\"state\":\"MERGED\",\"baseRefName\":\"develop\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"title\":\"[robot] gate1 candidate strip underscore\",\"labels\":[{\"name\":\"agent:devops\"}]}]"
+    set_state PR_1460_COMMITS_JSON '[]'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+    set_state "BRANCH_PRESENT_${branch}" 1
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # Close API must be called.
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
+    assert_eq "1" "$close_calls" "exactly one close call for no-e2e-required MERGED issue"
+
+    # State actually flipped to CLOSED.
+    local state_now
+    state_now="$(grep -E "^ISSUE_${issue}_STATE_JSON=" "$GH_STATE" | sed "s/^ISSUE_${issue}_STATE_JSON=//")"
+    assert_contains '"CLOSED"' "$state_now" "issue state flipped to CLOSED"
+
+    # Branch delete attempted (destructive cleanup runs after successful close).
+    local del_calls
+    del_calls="$(printf '%s\n' "$journal" | grep -c "gh api -X DELETE repos/.*/git/refs/heads/${branch}" || true)"
+    assert_eq "1" "$del_calls" "remote branch delete attempted once"
+}
+
+# ===========================================================================
+# P. Regression: no-e2e-required + already CLOSED → no duplicate close call
+#    (idempotency, same as case F for e2e-done).
+# ===========================================================================
+test_P_no_e2e_required_already_closed_no_duplicate() {
+    new_test
+    local issue=1456 branch
+    branch="$(slugify_branch "$issue" 'gate1 candidate strip already closed')"
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"gate1 candidate strip already closed\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"no-e2e-required\"}],\"body\":\"kanban: t_dead${issue}\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"no-e2e-required"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"CLOSED"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\\\n\"},{\"body\":\"✅ PR #1460 смержен в develop. Cleanup: ветка удалена.\\n\"}]}"
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[{"body":"✅ PR #1460 смержен в develop. Cleanup: ветка удалена."}]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" "[]"
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":1460,\"state\":\"MERGED\",\"baseRefName\":\"develop\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"title\":\"[robot] gate1 candidate strip already closed\",\"labels\":[]}]"
+    set_state PR_1460_COMMITS_JSON '[]'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+    set_state "BRANCH_PRESENT_${branch}" 1
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # No close call (state already CLOSED).
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c 'gh issue close' || true)"
+    assert_eq "0" "$close_calls" "no close call on already-CLOSED no-e2e issue"
+
+    # Branch still deleted (idempotent cleanup).
+    local del_calls
+    del_calls="$(printf '%s\n' "$journal" | grep -c 'gh api -X DELETE' || true)"
+    assert_eq "1" "$del_calls" "branch still deleted on already-CLOSED"
+}
+
+# ===========================================================================
+# Q. Retro 19.08 #79779a21 (orphan #1422): MERGED + base=develop +
+#    e2e-done + OPEN + user-reopened-this whitelist label set → SKIP
+#    auto-close (whitelist wins over e2e-done, retro t_873ebef2).
+#    Regression: prior behavior must be preserved when no-e2e-required
+#    is the only signal (no e2e-done present) — issue stays OPEN.
+# ===========================================================================
+test_Q_no_e2e_required_only_no_user_reopen_stays_open() {
+    new_test
+    # Defensive: if e2e-process didn't run (e.g. worker never reported),
+    # the issue might have neither e2e-done nor no-e2e-required, but the
+    # PR is MERGED into develop → merge-gate defers destructive cleanup
+    # and waits for label. This is case B's contract; just re-asserted
+    # here so the no-e2e-required rule doesn't accidentally drop labels.
+    local issue=1456 branch
+    branch="$(slugify_branch "$issue" 'no label at all demo')"
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"no label at all demo\",\"labels\":[{\"name\":\"hermes\"}],\"body\":\"kanban: t_dead${issue}\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\\\n\"}]}"
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" "[]"
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":1460,\"state\":\"MERGED\",\"baseRefName\":\"develop\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"title\":\"[robot] no label at all demo\",\"labels\":[]}]"
+    set_state PR_1460_COMMITS_JSON '[]'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+    set_state "BRANCH_PRESENT_${branch}" 1
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # No close: without e2e-done OR no-e2e-required, merge-gate defers
+    # destructive cleanup (waits for label from e2e-process / triage).
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c 'gh issue close' || true)"
+    assert_eq "0" "$close_calls" "no close when neither e2e-done nor no-e2e-required"
+}
+
+run_test "O. retro 19.08 #79779a21: MERGED + no-e2e-required → close" test_O_merged_no_e2e_required_closes
+run_test "P. no-e2e-required + already-CLOSED → idempotent" test_P_no_e2e_required_already_closed_no_duplicate
+run_test "Q. no labels → no close (defensive: defer cleanup)" test_Q_no_e2e_required_only_no_user_reopen_stays_open
+
 summary
