@@ -54,9 +54,13 @@ FallbackReason = Literal[
 DEFAULT_MIN_TEXT_CHARS = 3
 
 # Таймаут одного вызова Yandex STT (был 1.3s в старом коде, спрятанный
-# внутри grpc-запроса). 5 секунд — эмпирика для фраз 3-4 слов при
-# audio_processing_type=REAL_TIME.
-DEFAULT_YANDEX_TIMEOUT_S = 5.0
+# внутри grpc-запроса). 5.0s → 12.0s (issue #1477) — фразы 4-6 секунд с
+# pre-roll и активным TTS/музыкой (issue 989) могут выходить за 5с gRPC
+# deadline в Yandex v3 REAL_TIME + speech_analysis. 12с — буфер для
+# длинных фраз и медленного EOU (patient=2000ms). Лимит выбран
+# эмпирически: probe на 10.1.1.21 показывает 800-1300ms на нормальных
+# фразах и ~480ms на FULL_DATA.
+DEFAULT_YANDEX_TIMEOUT_S = 12.0
 
 # Количество retry-повторов на Yandex перед падением на Vosk.
 # 1 — спецификация issue #979: "один retry перед падением на Vosk".

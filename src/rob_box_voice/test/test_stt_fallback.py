@@ -145,8 +145,9 @@ class TestPrimarySuccess:
         assert attempts[0].latency_ms >= 0
 
     def test_default_constants_hold(self):
-        # Specs: таймаут 5s, retries 1, min_chars 3
-        assert DEFAULT_YANDEX_TIMEOUT_S == 5.0
+        # Specs (issue #979): таймаут 5s, retries 1, min_chars 3
+        # Specs (issue #1477): таймаут 12s (фразы 4-6с + FULL_DATA fallback)
+        assert DEFAULT_YANDEX_TIMEOUT_S == 12.0
         assert DEFAULT_YANDEX_MAX_RETRIES == 1
         assert DEFAULT_MIN_TEXT_CHARS == 3
 

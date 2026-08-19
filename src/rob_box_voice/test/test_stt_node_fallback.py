@@ -331,6 +331,12 @@ class TestYandexSpeakerAnalysisConfig:
         StreamingOptions(...) из gen() — т.е. конфиг, который реально уходит
         в стрим (mock возвращает MagicMock, атрибуты которого не отражают
         переданные аргументы, поэтому смотрим call_args.kwargs).
+
+        Issue #1477: в новой двухфазной реализации speech_analysis
+        устанавливается через opts.speech_analysis.CopyFrom(...) ПОСЛЕ
+        конструирования StreamingOptions — kwargs его не покажут. Поэтому
+        дополнительно возвращаем объект-инстанс StreamingOptions (mock)
+        чтобы тест мог проверить атрибут .speech_analysis.
         """
         captured = {}
 
@@ -346,11 +352,14 @@ class TestYandexSpeakerAnalysisConfig:
             # call_args = последний вызов; берём call_args_list[0].
             calls = stt_pb2.StreamingOptions.call_args_list
             captured["opts_kwargs"] = calls[0].kwargs if calls else {}
+            captured["opts_instance"] = (
+                stt_pb2.StreamingOptions.return_value
+            )
             return [final]
 
         stt_node_no_vosk.yandex_stub.RecognizeStreaming.side_effect = _consume_gen
         stt_node_no_vosk._recognize_yandex(b"\x00" * 8000)
-        return captured.get("opts_kwargs", {})
+        return captured
 
     def test_streaming_options_include_speech_analysis(self, stt_node_no_vosk):
         final = MagicMock()
@@ -359,16 +368,19 @@ class TestYandexSpeakerAnalysisConfig:
         alt.text = "робот меня зовут саша"
         final.final.alternatives = [alt]
 
-        opts_kwargs = self._capture_streaming_options(stt_node_no_vosk, final)
+        captured = self._capture_streaming_options(stt_node_no_vosk, final)
+        opts_instance = captured.get("opts_instance")
+        assert opts_instance is not None, "StreamingOptions должен создаваться в gen()"
 
-        assert opts_kwargs, "StreamingOptions должен создаваться в gen()"
-        sa = opts_kwargs.get("speech_analysis")
-        assert sa is not None, (
-            "StreamingOptions должен передавать speech_analysis — иначе Yandex "
+        # Issue #1477: speech_analysis устанавливается через CopyFrom() после
+        # конструктора — проверяем, что CopyFrom был вызван с нужными опциями.
+        assert opts_instance.speech_analysis.CopyFrom.called, (
+            "Должен вызываться opts.speech_analysis.CopyFrom() — иначе Yandex "
             "не присылает speaker_analysis (issue #1077)"
         )
-        assert sa.enable_speaker_analysis is True
-        assert sa.enable_conversation_analysis is True
+        copied = opts_instance.speech_analysis.CopyFrom.call_args.args[0]
+        assert copied.enable_speaker_analysis is True
+        assert copied.enable_conversation_analysis is True
 
     def test_no_speaker_labeling_in_real_time(self, stt_node_no_vosk):
         """speaker_labeling требует FULL_DATA — в REAL_TIME его НЕ должно быть."""
@@ -378,9 +390,12 @@ class TestYandexSpeakerAnalysisConfig:
         alt.text = "привет"
         final.final.alternatives = [alt]
 
-        opts_kwargs = self._capture_streaming_options(stt_node_no_vosk, final)
-
-        assert opts_kwargs
+        captured = self._capture_streaming_options(stt_node_no_vosk, final)
+        opts_instance = captured.get("opts_instance")
+        assert opts_instance is not None
+        # speech_analysis есть, но speaker_labeling НЕ должно быть ни в
+        # kwargs конструктора, ни в speech_analysis (для REAL_TIME).
+        opts_kwargs = captured.get("opts_kwargs", {})
         assert "speaker_labeling" not in opts_kwargs, (
             "speaker_labeling несовместим с REAL_TIME (INVALID_ARGUMENT) — "
             "используем speech_analysis"
@@ -395,9 +410,11 @@ class TestYandexSpeakerAnalysisConfig:
 class TestSTTNodeFallbackParams:
     """Проверка что новые параметры читаются из voice_assistant.yaml."""
 
-    def test_default_yandex_timeout_is_5s(self, stt_node):
+    def test_default_yandex_timeout_is_12s(self, stt_node):
         # issue #979: 1.3s → 5.0s
-        assert stt_node.yandex_timeout_s == 5.0
+        # issue #1477: 5.0s → 12.0s (фразы 4-6с с pre-roll + активный TTS/музыка
+        # могут выходить за 5с gRPC deadline; FULL_DATA fallback требует больше).
+        assert stt_node.yandex_timeout_s == 12.0
 
     def test_default_yandex_max_retries_is_1(self, stt_node):
         # issue #979: "один retry перед падением на Vosk"
@@ -431,6 +448,206 @@ class TestSTTNodeFallbackOverride:
         assert node.yandex_max_retries == 2
         assert node.retry_backoff_s == 0.5
         assert node.min_text_chars == 5
+
+
+# ---------------------------------------------------------------------------
+# Тесты двухфазного Yandex (issue #1477)
+# ---------------------------------------------------------------------------
+
+
+class TestYandexTwoPhaseFallback:
+    """Issue #1477: двухфазный Yandex — REAL_TIME primary, FULL_DATA fallback.
+
+    Acceptance: если фаза REAL_TIME дала empty, фаза FULL_DATA подхватывает
+    фразу. Это лечит «yandex:empty» в music_library_suite, где REAL_TIME +
+    speech_analysis давал empty на 4-6 секундных фразах с pre-roll.
+    """
+
+    def test_phase1_ok_skips_phase2(self, stt_node_no_vosk):
+        """Если фаза 1 (REAL_TIME) дала текст, фаза 2 (FULL_DATA) не вызывается."""
+        phase1_calls = []
+        phase2_calls = []
+
+        original = stt_node_no_vosk._recognize_yandex_phase
+
+        def fake_phase(audio, *, phase, enable_speech_analysis):
+            if phase == "REAL_TIME":
+                phase1_calls.append(phase)
+                return "робот меня зовут саша"
+            phase2_calls.append(phase)
+            return "никогда не вызывается"
+
+        stt_node_no_vosk._recognize_yandex_phase = fake_phase
+        try:
+            text = stt_node_no_vosk._recognize_yandex(b"\x00" * 8000)
+            assert text == "робот меня зовут саша"
+            assert phase1_calls == ["REAL_TIME"]
+            assert phase2_calls == [], (
+                "Если фаза 1 вернула текст, фаза 2 (FULL_DATA) не должна вызываться"
+            )
+        finally:
+            stt_node_no_vosk._recognize_yandex_phase = original
+
+    def test_phase1_empty_triggers_phase2(self, stt_node_no_vosk):
+        """Если фаза 1 вернула empty/None, фаза 2 (FULL_DATA) должна вызваться."""
+        phase1_calls = []
+        phase2_calls = []
+
+        original = stt_node_no_vosk._recognize_yandex_phase
+
+        def fake_phase(audio, *, phase, enable_speech_analysis):
+            if phase == "REAL_TIME":
+                phase1_calls.append(phase)
+                return None
+            phase2_calls.append((phase, enable_speech_analysis))
+            return "робот расскажи анекдот"
+
+        stt_node_no_vosk._recognize_yandex_phase = fake_phase
+        try:
+            text = stt_node_no_vosk._recognize_yandex(b"\x00" * 8000)
+            assert text == "робот расскажи анекдот"
+            assert phase1_calls == ["REAL_TIME"]
+            assert phase2_calls == [("FULL_DATA", False)], (
+                "Фаза 2 должна вызываться с phase=FULL_DATA, "
+                "enable_speech_analysis=False"
+            )
+        finally:
+            stt_node_no_vosk._recognize_yandex_phase = original
+
+    def test_both_phases_empty_returns_none(self, stt_node_no_vosk):
+        """Если обе фазы вернули None — итог None (Vosk-fallback пойдёт)."""
+        calls = []
+
+        original = stt_node_no_vosk._recognize_yandex_phase
+
+        def fake_phase(audio, *, phase, enable_speech_analysis):
+            calls.append(phase)
+            return None
+
+        stt_node_no_vosk._recognize_yandex_phase = fake_phase
+        try:
+            text = stt_node_no_vosk._recognize_yandex(b"\x00" * 8000)
+            assert text is None
+            assert calls == ["REAL_TIME", "FULL_DATA"]
+            assert stt_node_no_vosk._last_speaker_tag is None
+        finally:
+            stt_node_no_vosk._recognize_yandex_phase = original
+
+    def test_phase2_clears_speaker_tag(self, stt_node_no_vosk):
+        """Если фаза 2 (без speech_analysis) сработала — speaker_tag сбрасывается."""
+        original = stt_node_no_vosk._recognize_yandex_phase
+
+        def fake_phase(audio, *, phase, enable_speech_analysis):
+            if phase == "REAL_TIME":
+                return None
+            return "робот спасибо"
+
+        stt_node_no_vosk._recognize_yandex_phase = fake_phase
+        try:
+            # speaker_tag должен сброситься
+            stt_node_no_vosk._last_speaker_tag = "tag_before"
+            text = stt_node_no_vosk._recognize_yandex(b"\x00" * 8000)
+            assert text == "робот спасибо"
+            assert stt_node_no_vosk._last_speaker_tag is None, (
+                "speaker_tag должен быть None после фазы 2 (нет speech_analysis)"
+            )
+        finally:
+            stt_node_no_vosk._recognize_yandex_phase = original
+
+    def test_empty_audio_short_circuit(self, stt_node_no_vosk):
+        """Пустые байты → None без обращения к Yandex."""
+        calls = []
+
+        original = stt_node_no_vosk._recognize_yandex_phase
+
+        def fake_phase(audio, *, phase, enable_speech_analysis):
+            calls.append(phase)
+            return "не должно вызваться"
+
+        stt_node_no_vosk._recognize_yandex_phase = fake_phase
+        try:
+            assert stt_node_no_vosk._recognize_yandex(b"") is None
+            assert calls == [], "Пустой audio_bytes не должен вызывать Yandex"
+        finally:
+            stt_node_no_vosk._recognize_yandex_phase = original
+
+
+class TestAudioStatsTelemetry:
+    """Issue #1477: телеметрия фразы до отправки в Yandex.
+
+    Acceptance: лог audio_rms_dbfs/peak_dbfs/duration перед стримом. Это
+    устраняет главный источник «yandex:empty» — гадание «что пришло в
+    микрофон»: речь (RMS > -30dBFS), эхо TTS (RMS > -20dBFS), тишина
+    (RMS < -40dBFS).
+    """
+
+    def test_silence_logs_negative_rms(self, stt_node_no_vosk, caplog):
+        """Для тишины RMS должен быть очень низким (dBFS < -30)."""
+        import logging
+
+        # 1 секунда тишины (int16 LE mono 16kHz).
+        silence = b"\x00\x00" * 16000
+        # stub логгера = "test_stt_node_fallback" (см. _make_stt_node_stub).
+        with caplog.at_level(logging.INFO, logger="test_stt_node_fallback"):
+            original = stt_node_no_vosk._recognize_yandex_phase
+
+            def no_op(audio, *, phase, enable_speech_analysis):
+                return "ignored"
+
+            stt_node_no_vosk._recognize_yandex_phase = no_op
+            try:
+                stt_node_no_vosk._recognize_yandex(silence)
+            finally:
+                stt_node_no_vosk._recognize_yandex_phase = original
+
+        rms_logs = [r for r in caplog.records if "audio_rms_dbfs" in r.message]
+        assert rms_logs, "Должен быть лог audio_rms_dbfs перед отправкой в Yandex"
+        msg = rms_logs[0].message
+        # Тишина → RMS очень низкий.
+        assert "audio_rms_dbfs=" in msg
+        assert "duration=" in msg
+        rms_str = msg.split("audio_rms_dbfs=")[1].split()[0]
+        rms_dbfs = float(rms_str)
+        assert rms_dbfs < -30.0, (
+            f"rms_dbfs={rms_dbfs} для тишины (должен быть < -30, это -90..-50 dBFS)"
+        )
+
+    def test_loud_signal_logs_peak(self, stt_node_no_vosk, caplog):
+        """Для громкого сигнала peak_dbfs должен быть близок к 0."""
+        import logging
+        import struct
+
+        # Громкая синусоида (амплитуда 30000 из 32768).
+        sr = 16000
+        n = sr  # 1 секунда
+        audio_bytes = b"".join(
+            struct.pack("<h", int(30000 * math.sin(2 * math.pi * 440 * i / sr)))
+            for i in range(n)
+        )
+        with caplog.at_level(logging.INFO, logger="test_stt_node_fallback"):
+            original = stt_node_no_vosk._recognize_yandex_phase
+
+            def no_op(audio, *, phase, enable_speech_analysis):
+                return "ignored"
+
+            stt_node_no_vosk._recognize_yandex_phase = no_op
+            try:
+                stt_node_no_vosk._recognize_yandex(audio_bytes)
+            finally:
+                stt_node_no_vosk._recognize_yandex_phase = original
+
+        rms_logs = [r for r in caplog.records if "audio_rms_dbfs" in r.message]
+        assert rms_logs
+        msg = rms_logs[0].message
+        assert "peak_dbfs=" in msg
+        # peak должен быть > -5dBFS для амплитуды 30000 (log10(30000/32768) ≈ -0.76)
+        peak_str = msg.split("peak_dbfs=")[1].split()[0]
+        peak_dbfs = float(peak_str)
+        assert peak_dbfs > -5.0, f"peak_dbfs={peak_dbfs} для громкого сигнала"
+
+
+# Импорт math нужен для телеметрии (используется внутри _recognize_yandex).
+import math  # noqa: E402 — ставим после определения тестов, чтобы не путать lint
 
 
 # ---------------------------------------------------------------------------
