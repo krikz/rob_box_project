@@ -481,6 +481,11 @@ class DialogueNode(Node):
         self.create_subscription(
             String, "/voice/tts/provider_state", self._on_tts_provider_state, 10,
             callback_group=cbg)
+        # Issue #1392 follow-up — состояние сгенерированной музыки
+        # (gen_play_from_library / stop_music / sound_node публикуют JSON).
+        self.create_subscription(
+            String, "/voice/generated_music/state", self._on_generated_music_state, 10,
+            callback_group=cbg)
         # Issue #980 — fire music_cleanup only after the *last* TTS chunk of a
         # batch (rap, poetry), not after the first. tts_node publishes this
         # event once ``batch_index == batch_total`` for a given ``batch_id``.
@@ -723,6 +728,11 @@ class DialogueNode(Node):
         # видела голоса фактического провайдера, а не номинального.
         self._actual_tts_provider: str | None = None
         self._actual_tts_voice: str | None = None
+        # Issue #1392 follow-up — состояние сгенерированной музыки
+        # (JSON {"status": "playing"|"idle", "track_id", "title",
+        # "duration_ms"}) из /voice/generated_music/state. Показывается LLM
+        # в <system_context>, чтобы она сама решала когда вызвать stop_music.
+        self._generated_music_state: Optional[dict] = None
         # Issue #1160 — Prometheus metrics endpoint. 9100 = voice (LLM
         # latency / fallback). 0 = отключить старт сервера (полезно для
         # юнит-тестов и CI, где рконфликтует с другими тестами).
@@ -1734,6 +1744,22 @@ class DialogueNode(Node):
             f"(voice: {actual_voice}, reason: {payload.get('reason')})"
         )
 
+    def _on_generated_music_state(self, msg: String) -> None:
+        """Issue #1392 follow-up — состояние сгенерированной музыки.
+
+        mcp_server (gen_play_from_library / stop_music) и sound_node (конец
+        воспроизведения) публикуют JSON {"status": "playing"|"idle", ...}.
+        Храним для <generated_music> в system_context, чтобы LLM сама
+        решала, когда останавливать трек через stop_music.
+        """
+        try:
+            payload = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        self._generated_music_state = payload
+
     def _on_tts_batch_registered(self, msg: String) -> None:
         """Pre-register an in-flight TTS batch (issue #992).
 
@@ -2116,6 +2142,17 @@ class DialogueNode(Node):
         lines.append("  </hardware>")
         # Issue #1219 — LLM voice selection (Q8): единая строка с голосами.
         lines.append(f"  <tts_context>{tts_context_line}</tts_context>")
+        # Issue #1392 follow-up — сгенерированная музыка сейчас играет?
+        # LLM видит это и сама решает, когда вызывать stop_music.
+        gm = getattr(self, "_generated_music_state", None) or {}
+        if gm.get("status") == "playing":
+            title = gm.get("title") or "без названия"
+            lines.append(
+                f"  <generated_music>playing: {title} "
+                f"(track_id={gm.get('track_id', '')[:8]})</generated_music>"
+            )
+        else:
+            lines.append("  <generated_music>idle</generated_music>")
         lines.append("</system_context>")
         # W7c (issue #968): активные задачи планировщика (voice/music/anim
         # каналы) — LLM видит «что сейчас исполняется» перед каждым ходом

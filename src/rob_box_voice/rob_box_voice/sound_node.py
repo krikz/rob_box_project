@@ -76,9 +76,15 @@ class SoundNode(Node):
         # Issue #1392 follow-up — воспроизведение сгенерированных MiniMax-треков
         # по абсолютному пути (gen_play_from_library публикует путь сюда).
         self.play_file_sub = self.create_subscription(String, "/voice/sound/play_file", self.play_file_callback, 10)
+        # Явный стоп mp3-трека (stop_music → /voice/sound/stop). Прерывание
+        # по wake word НЕ делаем — LLM сама решает стопить через stop_music,
+        # видя состояние «сейчас играет трек» в system_context.
+        self.sound_stop_sub = self.create_subscription(String, "/voice/sound/stop", self.sound_stop_callback, 10)
 
         # Publishers
         self.state_pub = self.create_publisher(String, "/voice/sound/state", 10)
+        # Состояние сгенерированной музыки (для dialogue_node → system_context).
+        self.generated_music_state_pub = self.create_publisher(String, "/voice/generated_music/state", 10)
 
         # Опционально: триггер анимаций
         if self.trigger_animations:
@@ -113,6 +119,7 @@ class SoundNode(Node):
         self.is_playing = False
         self.current_sound: Optional[str] = None
         self.play_thread: Optional[threading.Thread] = None
+        self._mp3_stop_requested = False
 
         # Инициализация
         self.get_logger().info("SoundNode инициализирован")
@@ -245,10 +252,36 @@ class SoundNode(Node):
                 f"⚠️ Звук уже играет ({self.current_sound}), пропускаю файл {file_path}"
             )
             return
+        self._mp3_stop_requested = False
         self.play_thread = threading.Thread(
             target=self.play_file_thread, args=(file_path,), daemon=True
         )
         self.play_thread.start()
+
+    def sound_stop_callback(self, msg: String):
+        """Явная остановка mp3-трека (stop_music → /voice/sound/stop)."""
+        if msg.data.strip().upper() == "STOP":
+            self._stop_mp3()
+
+    def _stop_mp3(self) -> None:
+        """Остановить текущее mp3-воспроизведение (если идёт)."""
+        if not self.is_playing:
+            return
+        self.get_logger().info("🛑 Остановка mp3-воспроизведения")
+        self._mp3_stop_requested = True
+        try:
+            self.playback_manager.stop_playback("sound_node")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(f"❌ Ошибка остановки mp3: {exc}")
+
+    def _publish_generated_music_idle(self) -> None:
+        """Сообщить dialogue_node, что mp3-трек больше не играет."""
+        try:
+            msg = String()
+            msg.data = json.dumps({"status": "idle"})
+            self.generated_music_state_pub.publish(msg)
+        except Exception:  # noqa: BLE001
+            pass
 
     def select_sound(self, trigger: str) -> Optional[str]:
         """Выбрать звук по триггеру."""
@@ -377,6 +410,8 @@ class SoundNode(Node):
 
             if not success:
                 self.get_logger().warn(f"⚠️ Аудио устройство занято, пропуск {file_path}")
+            elif self._mp3_stop_requested:
+                self.get_logger().info(f"🛑 Остановлено пользователем: {file_path}")
             else:
                 self.get_logger().info(f"✅ Завершено: {file_path}")
 
@@ -389,6 +424,7 @@ class SoundNode(Node):
             self.is_playing = False
             self.current_sound = None
             self.publish_state("ready")
+            self._publish_generated_music_idle()
 
     def cleanup_playback_noise(self):
         """

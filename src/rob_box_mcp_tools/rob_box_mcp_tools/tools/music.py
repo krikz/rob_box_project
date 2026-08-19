@@ -1532,6 +1532,23 @@ class StopMusicTool(MCPTool):
     def __init__(self, node, manager: MusicManager) -> None:
         super().__init__(node)
         self._manager = manager
+        # Issue #1392 follow-up: остановка сгенерированного mp3-трека в
+        # sound_node. Graceful-degrade если publisher недоступен (тесты).
+        self._sound_stop_pub = None
+        self._generated_music_state_pub = None
+        try:
+            from std_msgs.msg import String
+
+            if hasattr(node, "create_publisher"):
+                self._sound_stop_pub = node.create_publisher(
+                    String, "/voice/sound/stop", 10
+                )
+                self._generated_music_state_pub = node.create_publisher(
+                    String, "/voice/generated_music/state", 10
+                )
+        except Exception:  # noqa: BLE001 — unit tests / minimal install
+            self._sound_stop_pub = None
+            self._generated_music_state_pub = None
 
     @property
     def name(self) -> str:
@@ -1580,6 +1597,8 @@ class StopMusicTool(MCPTool):
             # Issue 989 Fix C: немедленно сообщаем audio_node, что музыка
             # остановлена — VAD threshold возвращается к обычному.
             self._notify_music_state()
+            # Issue #1392 follow-up: останавливаем и mp3-трек в sound_node.
+            self._notify_sound_stop()
             return MCPToolResult(success=True, data=result, message=result["message"])
         return MCPToolResult(success=False, error=result["error"])
 
@@ -1594,6 +1613,22 @@ class StopMusicTool(MCPTool):
             publisher()
         except Exception as exc:  # noqa: BLE001
             self.log_warning(f"Не удалось опубликовать music_state: {exc}")
+
+    def _notify_sound_stop(self) -> None:
+        """Остановить mp3-трек в sound_node + сбросить состояние (issue #1392)."""
+        try:
+            from std_msgs.msg import String
+
+            if self._sound_stop_pub is not None:
+                msg = String()
+                msg.data = "STOP"
+                self._sound_stop_pub.publish(msg)
+            if self._generated_music_state_pub is not None:
+                state = String()
+                state.data = json.dumps({"status": "idle"})
+                self._generated_music_state_pub.publish(state)
+        except Exception as exc:  # noqa: BLE001
+            self.log_warning(f"Не удалось опубликовать sound_stop: {exc}")
 
 
 class SetVibePresetTool(MCPTool):

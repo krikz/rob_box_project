@@ -679,6 +679,7 @@ class GenPlayFromLibraryTool(MCPTool):
         super().__init__(node)
         self._library = library
         self._play_file_pub = None
+        self._music_state_pub = None
         try:
             from std_msgs.msg import String
 
@@ -686,8 +687,12 @@ class GenPlayFromLibraryTool(MCPTool):
                 self._play_file_pub = node.create_publisher(
                     String, "/voice/sound/play_file", 10
                 )
+                self._music_state_pub = node.create_publisher(
+                    String, "/voice/generated_music/state", 10
+                )
         except Exception:  # noqa: BLE001 — unit tests / minimal install
             self._play_file_pub = None
+            self._music_state_pub = None
 
     @property
     def name(self) -> str:
@@ -747,6 +752,28 @@ class GenPlayFromLibraryTool(MCPTool):
                 playback = "published"
             except Exception as exc:  # noqa: BLE001
                 self.log_error(f"gen_play_from_library publish failed: {exc}")
+
+        # Сообщаем dialogue_node «сейчас играет трек» — LLM видит состояние
+        # в system_context и сама решает, когда вызывать stop_music.
+        if self._music_state_pub is not None:
+            try:
+                from std_msgs.msg import String
+
+                self._music_state_pub.publish(
+                    String(
+                        data=json.dumps(
+                            {
+                                "status": "playing",
+                                "track_id": track_id,
+                                "title": info.get("title", ""),
+                                "duration_ms": info.get("duration_ms", 0),
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.log_error(f"gen_play_from_library state publish failed: {exc}")
 
         return MCPToolResult(
             success=True,
