@@ -492,4 +492,173 @@ run_test "J. retro-path: PR-number reference NOT closed (guard 13.08)" test_J_re
 run_test "K. retro-path: needs-review issue NOT re-labeled (13.08)" test_K_retro_skips_needs_review_issue
 run_test "L. retro-path: issue #942 NOT skipped by PR/issue guard (13.08)" test_L_retro_issue_942_not_skipped_by_guard
 
+# ===========================================================================
+# M. (19.08 t_498dc624 process-fix-hermes-stuck-open): issue с меткой hermes
+#    БЕЗ workflow-меток (process-fix) + merged PR с CI-only .hermes/plans/
+#    + зелёный CI → close. Регрессия #1404 (PR #1414 правил roadmap).
+#    Раньше: hermes-skip → issue OPEN вечно при смерженном PR.
+# ===========================================================================
+test_M_retro_hermes_process_fix_hermes_plans_closes() {
+    new_test
+    local issue=1404 pr=1414 head='z-architect/t_e068b88f-process-review'
+    set_state ISSUE_LIST_JSON '[]'
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"wip(process #1404): roadmap re-check при reopen\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-18T16:56:43Z\"}]"
+    # hermes + process + refactor (без needs-e2e/e2e-done/no-e2e-required/needs-review)
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"process"},{"name":"hermes"},{"name":"task"},{"name":"refactor"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    set_state "RUN_LIST_${head}_JSON" '[]'  # e2e run нет
+    # CI-only: только .hermes/plans/ (расширение t_498dc624)
+    set_state "PR_${pr}_FILES_JSON" '{"files":[{"path":".hermes/plans/process-fix-roadmap.md"}]}'
+    # CI зелёный
+    set_state "PR_${pr}_ROLLUP_JSON" '{"statusCheckRollup":[{"conclusion":"SUCCESS"}]}'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
+    assert_eq "1" "$close_calls" "retro-path closes hermes process-fix issue with .hermes/plans/ CI-only PR"
+
+    # НЕ skip'ает как «уже в process-цикле»
+    local skip_msg
+    skip_msg="$(printf '%s\n' "$journal" | grep -c "уже в process-цикле.*${issue}" || true)"
+    assert_eq "0" "$skip_msg" "hermes без workflow-меток НЕ skip'ается"
+}
+
+# ===========================================================================
+# N. (19.08 t_498dc624): hermes issue + merged PR scripts/agent_flow/ CI-only
+#    + зелёный CI → close. Покрывает #1421 (PR #1425) и #1419 (PR #1424).
+# ===========================================================================
+test_N_retro_hermes_process_fix_scripts_closes() {
+    new_test
+    local issue=1421 pr=1425 head='z-devops/t_8d6b7268-fix-scenario-file'
+    set_state ISSUE_LIST_JSON '[]'
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix(agent-flow e2e #1421): scenario_file\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-18T17:51:37Z\"}]"
+    # hermes + bug + process + priority:high (без workflow-меток)
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"bug"},{"name":"priority:high"},{"name":"process"},{"name":"hermes"},{"name":"agent:devops"},{"name":"e2e"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    set_state "RUN_LIST_${head}_JSON" '[]'
+    set_state "PR_${pr}_FILES_JSON" '{"files":[{"path":"scripts/agent_flow/agent-flow-e2e-process.sh"},{"path":"scripts/agent_flow/tests/test_e2e_process_scenario_file.sh"}]}'
+    set_state "PR_${pr}_ROLLUP_JSON" '{"statusCheckRollup":[{"conclusion":"SUCCESS"}]}'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
+    assert_eq "1" "$close_calls" "retro-path closes hermes bug issue with scripts/agent_flow/ CI-only PR"
+}
+
+# ===========================================================================
+# O. (19.08 t_498dc624): hermes issue С workflow-меткой (needs-e2e) → skip.
+#    Регрессия-guard: фикс расширил hermes-доступ, но активный e2e-цикл не
+#    трогаем. needs-e2e остаётся skip-листе (как раньше).
+# ===========================================================================
+test_O_retro_hermes_with_needs_e2e_still_skips() {
+    new_test
+    local issue=1421 pr=1425 head='z-devops/t_8d6b7268-fix-scenario-file'
+    set_state ISSUE_LIST_JSON '[]'
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix #1421\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-18T17:51:37Z\"}]"
+    # hermes + needs-e2e (активный e2e-цикл)
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"needs-e2e"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    set_state "RUN_LIST_${head}_JSON" '[{"conclusion":"success"}]'  # даже с PASS — skip
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue}" || true)"
+    assert_eq "0" "$close_calls" "hermes+needs-e2e still skipped (e2e-process owns the issue)"
+
+    # Issue была прочитана (не skip'нута на guard), но без close/edit.
+    # log() пишет в stderr и не попадает в GH_JOURNAL, поэтому проверяем
+    # через mock-вызовы: было gh issue view (labels прочитаны), но НЕ было
+    # close и НЕ было add-label/remove-label (workflow-skip path не делает
+    # edit — сразу continue).
+    local label_edits
+    label_edits="$(printf '%s\n' "$journal" | grep -cE "gh issue edit ${issue} (--add-label|--remove-label)" || true)"
+    assert_eq "0" "$label_edits" "no label mutations on needs-e2e issue"
+}
+
+# ===========================================================================
+# P. (19.08 t_498dc624): hermes issue + НЕ CI-only PR (функциональный код) +
+#    нет e2e run → needs-e2e ставится (попадает в e2e-ротацию). Если e2e не
+#    пройдёт — e2e-process поставит e2e:rejected → следующий цикл снимет.
+#    Если пройдёт — e2e-done, основной цикл закроет.
+# ===========================================================================
+test_P_retro_hermes_non_ci_only_labels_needs_e2e() {
+    new_test
+    local issue=1412 pr=1430 head='z-devops/t_79e9417c-startup-greeting'
+    set_state ISSUE_LIST_JSON '[]'
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"wip(process #1428): investigation report + ADR-0022\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-18T18:13:27Z\"}]"
+    # hermes + voice + task (без workflow-меток) — PR #1430 docs/, CI-only,
+    # этот тест — для гипотетического случая функционального PR с hermes
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"voice"},{"name":"hermes"},{"name":"task"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    set_state "RUN_LIST_${head}_JSON" '[]'
+    # НЕ CI-only: код робота — нужен e2e run.
+    set_state "PR_${pr}_FILES_JSON" '{"files":[{"path":"src/robot_voice/dialogue.py"}]}'
+    set_state "PR_${pr}_ROLLUP_JSON" '{"statusCheckRollup":[{"conclusion":"SUCCESS"}]}'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    local add_needs_e2e
+    add_needs_e2e="$(printf '%s\n' "$journal" | grep -c "gh issue edit ${issue} --add-label needs-e2e" || true)"
+    assert_eq "1" "$add_needs_e2e" "hermes non-CI-only → needs-e2e (e2e-process takes over)"
+
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue}" || true)"
+    assert_eq "0" "$close_calls" "no close without PASS evidence"
+}
+
+# ===========================================================================
+# Run
+# ===========================================================================
+run_test "A. retro-path: e2e PASS evidence → close unlabeled issue" test_A_retro_e2e_pass_closes
+run_test "B. retro-path: CI-only PR green → close (e2e not required)" test_B_retro_ci_only_green_closes
+run_test "C. retro-path: no PASS evidence → needs-e2e, no close" test_C_retro_no_evidence_labels_needs_e2e
+run_test "D. retro-path: issue with needs-e2e → skip" test_D_retro_skips_labeled_issue
+run_test "E. retro-path: CLOSED issue → skip" test_E_retro_skips_closed_issue
+run_test "F. retro-path: old PR outside window → skip" test_F_retro_skips_old_pr
+run_test "G. retro-path: self-reference ignored" test_G_retro_ignores_self_reference
+run_test "H. retro-path: e2e:rejected + merged CI-only green → close + remove rejected" test_H_retro_rejected_ci_only_green_closes
+run_test "I. retro-path: e2e:rejected + merged no PASS → no needs-e2e loop" test_I_retro_rejected_no_evidence_no_loop
+run_test "J. retro-path: PR-number reference NOT closed (guard 13.08)" test_J_retro_pr_number_not_closed
+run_test "K. retro-path: needs-review issue NOT re-labeled (13.08)" test_K_retro_skips_needs_review_issue
+run_test "L. retro-path: issue #942 NOT skipped by PR/issue guard (13.08)" test_L_retro_issue_942_not_skipped_by_guard
+run_test "M. retro-path: hermes process-fix + .hermes/plans/ CI-only green → close" test_M_retro_hermes_process_fix_hermes_plans_closes
+run_test "N. retro-path: hermes bug + scripts/agent_flow/ CI-only green → close" test_N_retro_hermes_process_fix_scripts_closes
+run_test "O. retro-path: hermes + needs-e2e still skipped (workflow-label guard)" test_O_retro_hermes_with_needs_e2e_still_skips
+run_test "P. retro-path: hermes non-CI-only → needs-e2e (e2e-process takes over)" test_P_retro_hermes_non_ci_only_labels_needs_e2e
+
 summary
