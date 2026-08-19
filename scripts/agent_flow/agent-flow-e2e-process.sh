@@ -2200,7 +2200,11 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
             _acc_prefix="$_acc_basename"
             # _v<digits> → strip (music_library_suite_v1 → music_library_suite)
             _acc_prefix="${_acc_prefix%_v[0-9]*}"
-            # _suite → strip (music_library_suite → music_library)
+            # _suite → strip (music_library_suite → music_library).
+            # Bash pattern должен быть именно %_suite (с подчёркиванием):
+            # %suite без подчёркивания удаляет буквы suite ИЗ КОНЦА слова и
+            # оставляет висящий _ (issue #1461, retro #1456/#1452):
+            # music_library_suite → music_library_  (а не music_library).
             _acc_prefix="${_acc_prefix%_suite}"
             if [ -f "${_acc_dir}/${_acc_prefix}_acceptance.json" ]; then
                 _acc_found="${_acc_dir}/${_acc_prefix}_acceptance.json"

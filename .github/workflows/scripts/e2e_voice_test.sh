@@ -257,7 +257,10 @@ if [ -z "$ACCEPTANCE_FILE" ] && [ -n "$SCENARIO_FILE" ]; then
     _scenario_prefix="$_scenario_base"
     # _v\d+ → strip
     _scenario_prefix="${_scenario_prefix%_v[0-9]*}"
-    # _suite → strip (часто между feature и version: music_library_suite_v1)
+    # _suite → strip (часто между feature и version: music_library_suite_v1).
+    # Используем именно %_suite (с подчёркиванием): %suite без _ удаляет
+    # буквы ИЗ КОНЦА слова и оставляет висящий _ (issue #1461):
+    # music_library_suite → music_library_, а не music_library.
     _scenario_prefix="${_scenario_prefix%_suite}"
     _found=""
     for _cand in \
