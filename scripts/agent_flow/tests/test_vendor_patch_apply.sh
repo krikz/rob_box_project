@@ -46,6 +46,12 @@ pass() { echo "  ok: $*"; }
 declare -A EXPECTED_SYMBOL=(
     ["hermes-agent-skill-validation"]="_validate_skills_for_assignee"
     ["hermes-agent-auto-decompose-maintenance"]="defer decompose (MAINTENANCE)"
+    # Issue #1462 — cost attribution per issue (P10 gap). Each kanban run
+    # writes one ``cost_attribution`` event row carrying the dollar total
+    # in cents; the helper function _compute_run_cost_cents aggregates the
+    # worker session's session_model_usage rows. Both symbols anchor the
+    # patch in upstream code paths.
+    ["hermes-agent-kanban-cost-attribution"]="_compute_run_cost_cents"
 )
 
 patches=( "$REPO_ROOT"/vendor/hermes-agent-*.patch )
