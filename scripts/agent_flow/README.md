@@ -352,6 +352,22 @@ bash scripts/agent_flow/tests/test_vendor_patch_apply.sh   # патч ложит
 python3 scripts/agent_flow/tests/e2e_skill_validation.py devops  # валидация работает
 ```
 
+### Cost attribution (issue #1462, P10 gap)
+
+`hermes-agent` умеет писать `cost_attribution` event в `task_events`
+(`cost_in_cents REAL`), агрегировать через `_compute_run_cost_cents`
+по `session_model_usage` сессии воркера, и отдавать breakdown через
+`hermes kanban cost --task=<id> --group=task|day|assignee|total`.
+CLI/диск сервера: `hermes_agent/hermes_cli/kanban.py::_cmd_cost`,
+агрегация: `hermes_cli/kanban_db.py::cost_summary`,
+dashboard endpoint: `plugins/kanban/dashboard/plugin_api.py::get_cost`.
+
+Дифф в репо: `vendor/hermes-agent-kanban-cost-attribution.patch`
+(4 modified + 1 new test file, ~1360 строк).
+
+Покрытие символа для регрессии: `_compute_run_cost_cents`
+(см. `tests/test_vendor_patch_apply.sh::EXPECTED_SYMBOL`).
+
 ## Связь с cron-jobs
 
 Скрипты регистрируются как `cronjob` через `hermes cron run --script
