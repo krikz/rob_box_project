@@ -409,6 +409,17 @@ class MusicManager:
             missing: list[str] = []
             probe_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             probe_sock.settimeout(0.4)
+
+            def _free_probe_node(node_id: int) -> None:
+                """Free a probe node via /n_free (best-effort, fire-and-forget)."""
+                free_msg = bytearray(b"/n_free\x00")
+                free_msg.extend(b",i\x00\x00")
+                free_msg.extend(_struct.pack(">i", node_id))
+                try:
+                    probe_sock.sendto(bytes(free_msg), (self.SC_HOST, self.SC_PORT))
+                except OSError:
+                    pass
+
             for i, name in enumerate(names):
                 node_id = 9000 + i
                 # 🔴 FIX (live 13.08): OSC-адрес обязан быть выровнен до
@@ -417,11 +428,14 @@ class MusicManager:
                 # found", а строка "not found" матчилась как «синт
                 # отсутствует» → ложные 3 раунда досылки всех 31 синтов).
                 msg = bytearray(b"/s_new\x00\x00")
-                # type string: name + node/addAction/target + amp=0
-                # (бесшумный пробный нод — иначе после фикса padding'а
-                # 31 синт играл бы с дефолтным amp на каждый init).
-                # ",siiiif" = 7 символов + 1 null = 8 (кратно 4).
-                types = b",siiiif\x00"
+                # 🔴 FIX (19.08, свист #1444): type tag был ",siiiif" —
+                # control-имя "amp" типизировано как int (i), а не string (s).
+                # scsynth читал "amp\x00" как int32 → amp=0 НЕ применялся,
+                # пробные ноды играли с дефолтным amp=1 и sus=1 (sustained)
+                # и никогда не освобождались → постоянный свист из динамика.
+                # Правильный tag ",siiisf": name(s) + node/addAction/target
+                # (iii) + "amp"(s) + 0.0(f).
+                types = b",siiisf\x00"
                 name_b = name.encode() + b"\x00"
                 while len(name_b) % 4:
                     name_b += b"\x00"
@@ -438,8 +452,13 @@ class MusicManager:
                     # must not trigger re-sending.
                     if b"SynthDef" in data and b"not found" in data:
                         missing.append(name)
+                    else:
+                        # 🔴 FIX (19.08, свист #1444): освобождаем созданную
+                        # пробную ноду сразу (иначе она живёт вечно с sus=1).
+                        _free_probe_node(node_id)
                 except socket.timeout:
-                    pass  # синт создан — def на месте
+                    # Нет ответа = def на месте = нода создана — освобождаем.
+                    _free_probe_node(node_id)
             probe_sock.close()
             return missing
 

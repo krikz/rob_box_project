@@ -525,9 +525,22 @@ class TestVerifyAndRetrySynthdefsProbe:
 
         # Every /s_new must be 4-byte aligned (address + type string).
         assert sent, "probe должен отправлять OSC-сообщения"
-        for data in sent:
+        s_new_msgs = [d for d in sent if d.startswith(b"/s_new")]
+        n_free_msgs = [d for d in sent if d.startswith(b"/n_free")]
+        assert s_new_msgs, "probe должен отправлять /s_new"
+        for data in s_new_msgs:
             assert len(data) % 4 == 0, f"OSC not aligned: {len(data)}"
             assert data.startswith(b"/s_new\x00\x00"), f"bad address pad: {data[:16]!r}"
+            # Fix (19.08, свист #1444): type tag обязан быть ",siiisf"
+            # (control "amp" — string, а не int), иначе amp=0 не применяется
+            # и пробные ноды играют с дефолтным amp=1 / sus=1.
+            assert b",siiisf" in data, f"bad type tag: {data!r}"
+        # Fix (19.08, свист #1444): созданные пробные ноды должны
+        # освобождаться через /n_free (иначе sustained тон живёт вечно).
+        assert n_free_msgs, "пробные ноды должны освобождаться через /n_free"
+        for data in n_free_msgs:
+            assert len(data) % 4 == 0, f"/n_free not aligned: {len(data)}"
+            assert data.startswith(b"/n_free"), f"bad /n_free: {data[:16]!r}"
         # No re-send round may be triggered by "Command not found".
         assert rt.SynthDefs["pads"].add.call_count == 0
         assert rt.SynthDefs["noise"].add.call_count == 0
