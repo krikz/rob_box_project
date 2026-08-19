@@ -12,6 +12,11 @@
 # hermes-agent-auto-decompose-maintenance.patch (MAINTENANCE/peak probe +
 # идемпотентность декомпозиции). Тест покрывает ВСЕ vendor-патчи.
 #
+# Ретро t_9cc3ec08: добавлен третий патч hermes-agent-crp-schema.patch
+# (Consultation Request Pack SASE arXiv 2509.06216 на стороне hermes-
+# kanban). Символ-фикс — функция `validate_crp` в hermes_cli.crp; без
+# неё create_task(crp_schema=...) и block_task(crp=...) падают.
+#
 # Этот тест проверяет для каждого vendor-патча:
 #   1. vendor-патч существует и непустой;
 #   2. патч чисто применяется (git apply --check) к свежему origin/main
@@ -52,6 +57,7 @@ declare -A EXPECTED_SYMBOL=(
     # worker session's session_model_usage rows. Both symbols anchor the
     # patch in upstream code paths.
     ["hermes-agent-kanban-cost-attribution"]="_compute_run_cost_cents"
+    ["hermes-agent-crp-schema"]="validate_crp"
 )
 
 patches=( "$REPO_ROOT"/vendor/hermes-agent-*.patch )
