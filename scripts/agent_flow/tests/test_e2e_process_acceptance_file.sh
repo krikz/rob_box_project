@@ -136,6 +136,8 @@ ep_discover_acceptance() {  # $1=scenario_file
     else
         _acc_prefix="$_acc_basename"
         _acc_prefix="${_acc_prefix%_v[0-9]*}"
+        # %_suite (с подчёркиванием) — НЕ %suite (issue #1461, retro #1456).
+        # %suite без _ удаляет буквы ИЗ КОНЦА слова и оставляет висящий _.
         _acc_prefix="${_acc_prefix%_suite}"
         if [ -f "${_acc_dir}/${_acc_prefix}_acceptance.json" ]; then
             _acc_found="${_acc_dir}/${_acc_prefix}_acceptance.json"
@@ -350,21 +352,95 @@ echo "=== Test 15: e2e-process.sh содержит Convention 3 strip _suite/_v[
 # Конкретные строки PREFIX-стрипа:
 #   _acc_prefix="${_acc_prefix%_v[0-9]*}"   — strip _v<digits>+
 #   _acc_prefix="${_acc_prefix%_suite}"     — strip _suite
+#   ⚠️  Должно быть именно %_suite (с подчёркиванием): %suite без _ — БАГ
+#   (issue #1461), см. Test 17 ниже.
 # shellcheck disable=SC2016  # тестовые литералы — не шелл-код
 if grep -qE '_acc_prefix="\$\{_acc_prefix%_v\[0-9\]\*\}"' "$E2E_PROCESS"; then
     pass "Convention 3 (strip _v[0-9]+) присутствует в e2e-process.sh"
 else
     fail "Convention 3 strip _v[N]" "не найдена в e2e-process.sh — регресс issue #1456"
 fi
-if grep -qE '_acc_prefix="\$\{_acc_prefix%_suite\}"' "$E2E_PROCESS"; then
-    pass "Convention 3 (strip _suite) присутствует в e2e-process.sh"
+# Sanity: STRICTLY требуем %_suite (с подчёркиванием). %suite без _ оставляет
+# висящий _ (issue #1461): music_library_suite → music_library_.
+if grep -qE '_acc_prefix="\$\{_acc_prefix%_suite\}"' "$E2E_PROCESS" \
+   && ! grep -qE '_acc_prefix="\$\{_acc_prefix%suite\}"' "$E2E_PROCESS"; then
+    pass "Convention 3 (strip _suite с подчёркиванием) присутствует в e2e-process.sh"
 else
-    fail "Convention 3 strip _suite" "не найдена в e2e-process.sh"
+    fail "Convention 3 strip _suite (правильная форма %_suite)" \
+        "в e2e-process.sh — регресс issue #1461 (найден %suite без _ или нет %_suite)"
 fi
 if grep -q 'auto-discovered (convention 3' "$E2E_PROCESS"; then
     pass "Convention 3 log-message присутствует в e2e-process.sh"
 else
     fail "Convention 3 log-message" "не найдена в e2e-process.sh"
+fi
+
+# --- Test 16: bash pattern регресс issue #1461 (strip _suite, не strip suite) ----
+# Issue #1461: ${var%suite} без _ удаляет буквы suite ИЗ КОНЦА слова и
+# оставляет висящий _. Нужно именно ${var%_suite}.
+# Прямая проверка: запускает реальный bash-паттерн из e2e-process.sh на
+# строке 'music_library_suite' и убеждается, что результат 'music_library'
+# (а не 'music_library_'). Без вытаскивания bash-кода через regex.
+echo ""
+echo "=== Test 16: bash pattern %suite vs %_suite — регресс issue #1461 ==="
+# Извлекаем ОБА strip-паттерна из e2e-process.sh (строки идут подряд в
+# блоке Convention 3). Ищем строки, начинающиеся с точно такого же
+# _acc_prefix= и заканчивающиеся на ${_acc_prefix%...}".
+_strip_v_line="$(grep -nE '_acc_prefix="\$\{_acc_prefix%_v\[0-9\]\*\}"' "$E2E_PROCESS" | head -1 | cut -d: -f1)"
+_strip_suite_line="$(grep -nE '_acc_prefix="\$\{_acc_prefix%[^}]*\}"' "$E2E_PROCESS" \
+    | awk -F: -v base="$_strip_v_line" '$1 > base {print; exit}' | cut -d: -f1)"
+if [ -z "$_strip_v_line" ] || [ -z "$_strip_suite_line" ]; then
+    fail "Convention 3 bash pattern present" \
+        "не нашёл ОБА strip-строки в $E2E_PROCESS (v-line='$_strip_v_line', suite-line='$_strip_suite_line')"
+else
+    _pattern_v="$(sed -n "${_strip_v_line}p" "$E2E_PROCESS")"
+    _pattern_suite="$(sed -n "${_strip_suite_line}p" "$E2E_PROCESS")"
+    # Проверяем, что suite-pattern содержит ИМЕННО %_suite (с _).
+    if echo "$_pattern_suite" | grep -q '%_suite'; then
+        pass "Convention 3 suite-pattern содержит %_suite (правильная форма)"
+    else
+        fail "Convention 3 suite-pattern" \
+            "найден '$_pattern_suite' (нет %_suite — регресс issue #1461)"
+    fi
+    # Полный pipeline: воспроизводим ровно как в e2e-process.sh.
+    _tmp_script="$(mktemp -t ep_strip_XXXXXX.sh)"
+    cat > "$_tmp_script" <<EOF
+#!/bin/bash
+_acc_basename="music_library_suite_v1"
+_acc_prefix="\$_acc_basename"
+$_pattern_v
+$_pattern_suite
+printf '%s' "\$_acc_prefix"
+EOF
+    chmod +x "$_tmp_script"
+    _actual="$(bash "$_tmp_script")"
+    rm -f "$_tmp_script"
+    if [ "$_actual" = "music_library" ]; then
+        pass "Convention 3 strip pipeline → 'music_library' (issue #1461 fixed)"
+    else
+        fail "Convention 3 strip pipeline" \
+            "ожидался 'music_library', получено '$_actual' — регресс issue #1461"
+    fi
+fi
+
+# Также sanity: тот же паттерн должен работать на 'foo_suite' (без _v<N>).
+_tmp_script="$(mktemp -t ep_strip2_XXXXXX.sh)"
+cat > "$_tmp_script" <<EOF
+#!/bin/bash
+_acc_basename="foo_suite"
+_acc_prefix="\$_acc_basename"
+$_pattern_v
+$_pattern_suite
+printf '%s' "\$_acc_prefix"
+EOF
+chmod +x "$_tmp_script"
+_actual_foo="$(bash "$_tmp_script")"
+rm -f "$_tmp_script"
+if [ "$_actual_foo" = "foo" ]; then
+    pass "Convention 3 strip pipeline → 'foo' для 'foo_suite'"
+else
+    fail "Convention 3 strip pipeline (foo_suite)" \
+        "ожидался 'foo', получено '$_actual_foo'"
 fi
 
 # --- Итоги ----------------------------------------------------------------
