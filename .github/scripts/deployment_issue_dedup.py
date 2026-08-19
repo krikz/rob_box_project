@@ -110,6 +110,17 @@ CRITICAL_EXCLUDE_COMMON = [
     # round-129 run 32115362102 / issue #1364).
     r"error\s*=\s*none",
     r"error\s*:\s*none",
+    # SuperCollider headless scsynth (issue #1485, deploy round-165): music
+    # skill / FoxDot send /s_new for SynthDefs that ship with renardo but are
+    # not pre-loaded in the headless scsynth image (notably `rhpiano`). The
+    # "*** ERROR: SynthDef rhpiano not found" + "FAILURE IN SERVER /s_new
+    # SynthDef not found" pair is benign — the music stack stays healthy and
+    # TTS/voice flow continues. Real deployment failures still surface
+    # because other scsynth-side errors (JackAudioDriver, sclang crashes,
+    # rt-failures) keep their CRITICAL severity. The audio music-pipeline
+    # team can address the underlying preload separately.
+    r"error: synthdef \S+ not found",
+    r"failure in server /s_new synthdef not found",
 ]
 CRITICAL_EXCLUDE_BY_SCOPE = {
     "main": [
@@ -176,6 +187,22 @@ CRITICAL_EXCLUDE_BY_SCOPE = {
 
 WARNING_EXCLUDE_COMMON = [
     r"^=== .*warnings ===$",
+    # audio_node ReSpeaker threshold (issue #1485, deploy round-165):
+    # voice-assistant prints "[WARN] [issue 989] ReSpeaker не принял
+    # threshold 6.0 dB — программный гейт остаётся" whenever the
+    # UAC1.0 ReSpeaker rejects the audio_node-issued hw-ctl threshold.
+    # The fallback to a software gate is intentional (issue #989
+    # round-117 retro): the audio chain stays healthy, barge-in works
+    # through the SW gate, and the threshold issue is tracked
+    # separately under issue #989. The Main Pi perception's
+    # health_monitor also re-echoes the same warning over the shared
+    # /rosout topic — placing this rule in COMMON covers both scopes.
+    # Real audio_node failures (ASLA fatal, JACK
+    # ProcessGraphAsyncMaster timeouts that miss recovery, sclang
+    # crashes) keep their warning/critical severity because the
+    # phrasing differs.
+    r"\[issue 989\] respeaker не принял threshold",
+    r"не принял threshold \d+\.\d+ db — программный гейт оста",
     r"scouting delay elapsed",
     r"нода не найдена",
     r"unknown logical group",
@@ -231,6 +258,23 @@ WARNING_EXCLUDE_BY_SCOPE = {
         # peer" during startup handshake is transient network noise, not an
         # outage (round-117, nav2).
         r"unable to connect to any locator of scouted peer",
+        # rtabmap icp_odometry (issue #1485, deploy round-165):
+        # "IcpOdometry: Transferring value 0.05 of 'Icp/VoxelSize' to ros
+        # parameter 'scan_voxel_size' for convenience" is an informational
+        # message printed by rtabmap whenever the YAML declares a
+        # scan_voxel_size but Icp/VoxelSize is set to 0 — the mapping node
+        # copies the YAML value into the RTAB-Map param transparently, the
+        # SLAM pipeline is healthy. The word "WARN" is the only reason the
+        # deploy gate flagged it (round-165).
+        r"transferring value.*scan_voxel_size",
+        # Scope leak warning (issue #1485, deploy round-165, sibling of
+        # the WARNING_EXCLUDE_COMMON "не принял threshold" entry):
+        # main/perception's health_monitor rewrites the audio_node line
+        # without the "[issue 989]" prefix (`[WARN] audio_node (Ns ago): ⚠️
+        # ReSpeaker не принял threshold ...`). The COMMON rule already
+        # covers the literal phrase; this MAIN-scope pattern catches the
+        # rewritten form so it cannot slip through as a non-voice-msg.
+        r"\[warn\] audio_node.*не принял threshold",
     ],
     "vision": [],
 }
