@@ -1,4 +1,4 @@
-"""Regression tests for music_library_acceptance_v1.json — ADR-0022 GATE-1 schema.
+"""Regression tests for music_library_suite_v1_acceptance.json — ADR-0022 GATE-1 schema.
 
 Issue #1392/#1358/#1403 — MiniMax music generation acceptance contract.
 
@@ -16,7 +16,14 @@ from pathlib import Path
 
 import pytest
 
+# bug(t_cca7c074, ретро 19.08): файл переименован в music_library_suite_v1_acceptance.json
+# по extension of ADR-0022 §4.1 convention (convention 2: <basename>_acceptance.json
+# рядом со scenario). Это позволяет e2e_voice_test.sh auto-discover'ить его через
+# `<dir>/<scenario_basename>_acceptance.json` без явного -f acceptance_file.
+# Старый путь (music_library_acceptance_v1.json) не матчился ни convention A
+# (acceptance.json), ни convention B (suite_v1_acceptance.json) → GATE-1 падал.
 SCENARIOS_DIR = Path(__file__).resolve().parents[3] / ".github/e2e/scenarios"
+ACCEPTANCE_FILENAME = "music_library_suite_v1_acceptance.json"
 
 # All 7 new MCP tools introduced by PR #1398 (issue #1358). The acceptance.json
 # MUST list every one of them in the top-level ``expected_tool_calls`` so that
@@ -34,7 +41,7 @@ ALL_7_GEN_TOOLS = (
 
 
 def _acceptance_path() -> Path:
-    p = SCENARIOS_DIR / "music_library_acceptance_v1.json"
+    p = SCENARIOS_DIR / ACCEPTANCE_FILENAME
     if not p.exists():
         pytest.skip(f"acceptance.json not present: {p}")
     return p

@@ -236,13 +236,21 @@ source "$SCRIPT_DIR_E2E/e2e_voice_lib.sh"
 # --- ADR-0022 GATE-1 acceptance.json (auto-discovery + gating) --------------
 # Резолвим ACCEPTANCE_FILE в порядке приоритета:
 #   1) --acceptance <path> (явный CLI)
-#   2) <dir(scenario.json)>/acceptance.json (auto-discovery)
-#   3) пустой → gating решает, что делать
+#   2) <dir(scenario.json)>/acceptance.json (auto-discovery, ADR-0022 §4.1)
+#   3) <dir(scenario.json)>/<scenario_basename>_acceptance.json (расширение
+#      для случаев, когда acceptance переименован по имени feature, а не
+#      по имени scenario — например music_library_acceptance_v1.json рядом
+#      с music_library_suite_v1.json; bug t_cca7c074 ретро 19.08).
+#   4) пусто → gating решает, что делать
 if [ -z "$ACCEPTANCE_FILE" ] && [ -n "$SCENARIO_FILE" ]; then
     _scenario_dir="$(dirname "$SCENARIO_FILE")"
+    _scenario_basename="$(basename "$SCENARIO_FILE" .json)"
     if [ -f "${_scenario_dir}/acceptance.json" ]; then
         ACCEPTANCE_FILE="${_scenario_dir}/acceptance.json"
-        log "GATE-1: acceptance.json auto-discovered at $ACCEPTANCE_FILE"
+        log "GATE-1: acceptance.json auto-discovered at $ACCEPTANCE_FILE (convention 1: dir/acceptance.json)"
+    elif [ -f "${_scenario_dir}/${_scenario_basename}_acceptance.json" ]; then
+        ACCEPTANCE_FILE="${_scenario_dir}/${_scenario_basename}_acceptance.json"
+        log "GATE-1: acceptance.json auto-discovered at $ACCEPTANCE_FILE (convention 2: dir/<basename>_acceptance.json)"
     fi
 fi
 

@@ -1348,6 +1348,7 @@ while IFS=$'\t' read -r number title labels body source branch; do
     e2e_acceptance_check=""
     e2e_check_tg_echo=""
     e2e_scenario_file=""
+    e2e_acceptance_file=""
     # Python-парсер issues_json экранирует переносы в литеральные \\n — вернём реальные.
     # (иначе grep '^voice_text' не находит поле в середине однострочного body,
     #  а grep exit 1 + pipefail + set -e убивают скрипт)
@@ -1369,7 +1370,16 @@ while IFS=$'\t' read -r number title labels body source branch; do
         # путь к .json в .github/e2e/scenarios/. Если задан явно — используем,
         # auto-discovery из PR files нужен только при отсутствии.
         e2e_scenario_file="$(printf '%s' "$body_real" | grep -iE '^[[:space:]]*scenario_file[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*scenario_file[[:space:]]*:[[:space:]]*//; s/^`//; s/`$//; s/^"//; s/"$//' || true)"
-        log "issue #${number}: e2e params from body: volume=${e2e_volume:-default} voice_text=${e2e_voice_text:-default} llm=${e2e_llm:-default} tts=${e2e_tts:-default} stt=${e2e_stt:-default} acceptance_check=${e2e_acceptance_check:-default} check_tg_echo=${e2e_check_tg_echo:-default} scenario_file=${e2e_scenario_file:-none}"
+        # bug(t_cca7c074, ретро 19.08): блок ## e2e поддерживает acceptance_file —
+        # явный путь к acceptance.json. ADR-0022 GATE-1 (коммит 784360d9) добавил
+        # input в workflow, но agent-flow-e2e-process.sh не парсил поле → inputs
+        # на workflow содержали scenario_file, но acceptance_file был пустой →
+        # харнесс падал с E2E_GATE1_MISSING_ACCEPTANCE. Парсим из issue/PR body,
+        # иначе auto-discover по convention (<scenario_dir>/acceptance.json или
+        # <scenario_dir>/<basename>_acceptance.json) — иначе workflow сам упадёт
+        # на gating, что и было симптомом регрессии.
+        e2e_acceptance_file="$(printf '%s' "$body_real" | grep -iE '^[[:space:]]*acceptance_file[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*acceptance_file[[:space:]]*:[[:space:]]*//; s/^`//; s/`$//; s/^"//; s/"$//' || true)"
+        log "issue #${number}: e2e params from body: volume=${e2e_volume:-default} voice_text=${e2e_voice_text:-default} llm=${e2e_llm:-default} tts=${e2e_tts:-default} stt=${e2e_stt:-default} acceptance_check=${e2e_acceptance_check:-default} check_tg_echo=${e2e_check_tg_echo:-default} scenario_file=${e2e_scenario_file:-none} acceptance_file=${e2e_acceptance_file:-none}"
     else
         log "issue #${number}: no '## e2e' block in body — using defaults"
     fi
@@ -1523,6 +1533,9 @@ EOF
                 e2e_acceptance_check="$(printf '%s' "$pr_body_real" | grep -iE '^[[:space:]]*acceptance_check[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*acceptance_check[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
                 # bug(e2e #1375) ретро 18.08: парсим scenario_file из PR body.
                 e2e_scenario_file="$(printf '%s' "$pr_body_real" | grep -iE '^[[:space:]]*scenario_file[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*scenario_file[[:space:]]*:[[:space:]]*//; s/^`//; s/`$//; s/^"//; s/"$//' || true)"
+                # bug(t_cca7c074, ретро 19.08): парсим acceptance_file из PR body
+                # (воркер мог указать только в PR body, как и scenario_file).
+                e2e_acceptance_file="$(printf '%s' "$pr_body_real" | grep -iE '^[[:space:]]*acceptance_file[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*acceptance_file[[:space:]]*:[[:space:]]*//; s/^`//; s/`$//; s/^"//; s/"$//' || true)"
                 log "issue #${number}: e2e params from PR #${pr_number} body (issue body had no ## e2e)"
                 [ -n "$e2e_volume" ] && E2E_VOLUME="$e2e_volume"
             fi
@@ -2018,6 +2031,34 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
         fi
     fi
     [ -n "$e2e_scenario_file" ] && e2e_args+=(-f "scenario_file=$e2e_scenario_file")
+    # bug(t_cca7c074, ретро 19.08): auto-discover acceptance_file из convention
+    # если не задан явно. Иначе workflow получает пустой acceptance_file input →
+    # harness ищет <scenario_dir>/acceptance.json (его там нет для music_library_*
+    # — он лежит как music_library_acceptance_v1.json, см. ADR-0022 GATE-1 R1).
+    # Convention (выбран и зафиксирован в issue body):
+    #   1) <scenario_dir>/acceptance.json (ADR-0022 §4.1 — основной)
+    #   2) <scenario_dir>/<scenario_basename>_acceptance.json (расширение,
+    #      чтобы не переименовывать существующие music_library_acceptance_v1.json)
+    #   3) пусто → workflow сам упадёт на gating (e2e_voice_test.sh пишет
+    #      понятную ошибку и оператор/воркер увидит GATE-1 FAIL с подсказкой).
+    # Auto-discovery делаем ТОЛЬКО при наличии scenario_file: одиночный smoke-test
+    # --text (по ADR-0022 §4.1) НЕ требует acceptance.json (single-shot use case).
+    if [ -z "$e2e_acceptance_file" ] && [ -n "$e2e_scenario_file" ]; then
+        _acc_dir="$(dirname "$e2e_scenario_file")"
+        _acc_basename="$(basename "$e2e_scenario_file" .json)"
+        # Convention 1: <scenario_dir>/acceptance.json
+        if [ -f "${_acc_dir}/acceptance.json" ]; then
+            e2e_acceptance_file="${_acc_dir}/acceptance.json"
+            log "issue #${number}: acceptance_file auto-discovered (convention 1, dir/acceptance.json): ${e2e_acceptance_file}"
+        # Convention 2: <scenario_dir>/<basename>_acceptance.json
+        elif [ -f "${_acc_dir}/${_acc_basename}_acceptance.json" ]; then
+            e2e_acceptance_file="${_acc_dir}/${_acc_basename}_acceptance.json"
+            log "issue #${number}: acceptance_file auto-discovered (convention 2, dir/<basename>_acceptance.json): ${e2e_acceptance_file}"
+        else
+            log "issue #${number}: ⚠️ acceptance_file не задан и convention не сработал для ${e2e_scenario_file} — workflow сам упадёт на GATE-1 (ADR-0022 §4.1 R1)"
+        fi
+    fi
+    [ -n "$e2e_acceptance_file" ] && e2e_args+=(-f "acceptance_file=$e2e_acceptance_file")
     # Issue #1196 L2 — полуавтомат-проверка эха telegram↔dialogue
     # (check_tg_echo: true в блоке ## e2e).
     if [ "${e2e_check_tg_echo:-false}" = "true" ] || [ "${e2e_check_tg_echo:-false}" = "1" ]; then
