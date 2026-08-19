@@ -196,6 +196,31 @@ git push origin feature/my-awesome-feature
 - `## e2e` блок в issue с `acceptance_json` — обязателен для `e2e-done` (GATE-1).
 - Без `acceptance_json` или сценарного файла `e2e-done` НЕ ставится, остаётся `needs-e2e`.
 
+## 🛑 Guard: явный `needs-e2e` override при merged PR (issue #1448, ретро 19.08 t_b3691e1b)
+
+Если Шифу **вручную** возвращает issue в ротацию (ставит `needs-e2e` после
+того, как e2e-process уже повесил `e2e-done` от merged-PR — обычно потому
+что на роботе фича не работает, а формально всё «готово»), `e2e-process`
+**не должен** автоматически возвращать `e2e-done` при следующем тике,
+иначе цикл `needs-e2e → e2e-done → needs-e2e → …` бесконечный.
+
+**Контракт (`scripts/agent_flow/agent-flow-e2e-process.sh`, блок выбора `label_action`):**
+
+| `verdict` | `fail_kind` | `needs-e2e` на issue? | Результат |
+|-----------|-------------|------------------------|-----------|
+| `success` | любой       | любой                  | `add e2e-done` + `remove needs-e2e` (PASS override) |
+| ≠ success | `merged`    | нет                    | `add e2e-done` + `remove needs-e2e` (ретро 10.08 t_9caf5d52) |
+| ≠ success | `merged`    | **да**                 | `add e2e:rejected` + `remove needs-e2e` (**merged-override**, фикс #1448) |
+| ≠ success | `infra`     | любой                  | `add e2e:infra-fail`, `needs-e2e` сохраняется |
+| ≠ success | `feature`   | любой                  | `add e2e:rejected` + `remove needs-e2e` (старое поведение) |
+
+**Что НЕ делать воркерам:**
+- НЕ ставить `e2e-done` руками на `merged-override` issue (`e2e:rejected` + без `needs-e2e`).
+- НЕ игнорировать `e2e:rejected` — это значит, что override Шифу не сработал,
+  Шифу сам решит: close, follow-up PR + повторный `needs-e2e`, или игнор.
+
+**Live-проверка:** см. issue #1448 acceptance C.
+
 ### 4. Подготовка релиза
 ```bash
 # Создать release branch от develop

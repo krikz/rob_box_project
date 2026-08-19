@@ -35,6 +35,7 @@
 
 ### 📖 Справочная информация
 - **[Архитектура](docs/architecture/SYSTEM_OVERVIEW.md)** - Полная архитектура системы
+- **[Process diagrams (ADD pipeline)](docs/diagrams/process-overview.md)** - Mermaid sequence + flowchart нашего ADD-процесса: Шифу → issue → triage → worker → PR → merge-gate → e2e-process → L-E2E Voice Test → completion-check (GATE-3). Связано с [ADR-0018](docs/adr/0018-agent-honesty-culture.md) и [ADR-0022](docs/adr/0022-process-e2e-done-gates.md).
 - **[Конфигурация RTAB-Map + LiDAR](docs/guides/VISUALIZATION.md)** ⭐ - 2D SLAM с лазерным сканером
 - **[Fusion 360 Measurements](docs/architecture/HARDWARE.md)** - Геометрия робота
 - **[VESC Integration](https://github.com/krikz/vesc_nexus)** - Интеграция моторов

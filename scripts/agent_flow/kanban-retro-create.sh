@@ -87,6 +87,46 @@ done
 [ -n "$BODY" ]     || { echo "ERROR: --body required" >&2; exit 2; }
 [ -n "$ASSIGNEE" ] || { echo "ERROR: --assignee required" >&2; exit 2; }
 
+# --- skill validation (ретро 19.08 t_8c8c7c69) ------------------------------
+# Dispatcher смотрит скиллы ТОЛЬКО в плоский каталог
+# profiles/<assignee>/skills/<SKILL>/SKILL.md (НЕ в под-категории
+# skills/software-development/<SKILL>/). Исторически шаблоны LLM-кронов
+# упоминали 'spike' как пример, но spike живёт в software-development/, и
+# воркер падает 'Unknown skill(s): spike' (t_28dcdaf0, 2 crashes).
+#
+# Guard: каждый --skill должен существовать в плоском skills/<name>/SKILL.md
+# назначенного профиля. Нет → exit 2 с понятной ошибкой + списком доступных.
+if [ ${#SKILLS[@]} -gt 0 ]; then
+    # Надёжно определяем каталог профилей: HERMES_HOME для каждого профиля
+    # (=architect, devops, agent-flow, base, ...) указывает на profiles/<n>/,
+    # поэтому ищем корень через родителя. Fallback: ~/.hermes.
+    if [ -n "${HERMES_HOME:-}" ] && [ "$(basename "$(dirname "$HERMES_HOME")")" = "profiles" ]; then
+        PROFILES_ROOT="$(dirname "$(dirname "$HERMES_HOME")")/profiles"
+    elif [ -n "${HERMES_HOME:-}" ]; then
+        PROFILES_ROOT="$HERMES_HOME/profiles"
+    else
+        PROFILES_ROOT="$HOME/.hermes/profiles"
+    fi
+    SKILL_BASE="$PROFILES_ROOT/${ASSIGNEE}/skills"
+    # Список доступных скиллов = всё под profiles/<assignee>/skills/, плоский
+    # уровень (без рекурсии в под-категории — они не видны воркеру).
+    AVAILABLE_SKILLS="$(find "$PROFILES_ROOT/${ASSIGNEE}/skills" -maxdepth 2 -name SKILL.md \
+        -printf '%h\n' 2>/dev/null | xargs -n1 basename 2>/dev/null | sort -u)"
+    for s in "${SKILLS[@]}"; do
+        if [ ! -f "$SKILL_BASE/$s/SKILL.md" ]; then
+            echo "ERROR: skill '$s' не найден в $SKILL_BASE/$s/SKILL.md" >&2
+            echo "       воркер упадёт 'Unknown skill(s): $s' если создать карточку" >&2
+            if [ -n "$AVAILABLE_SKILLS" ]; then
+                echo "       доступные скиллы профиля '$ASSIGNEE':" >&2
+                printf '%s\n' "$AVAILABLE_SKILLS" | sed 's/^/         - /' >&2
+            fi
+            echo "       (профиль берёт скиллы ТОЛЬКО из плоского каталога," >&2
+            echo "        под-категории skills/<category>/<SKILL>/ НЕ видны)" >&2
+            exit 2
+        fi
+    done
+fi
+
 # --- stable key -------------------------------------------------------------
 # KEY: явный --key или slugify(title). slugify через python3 — корректно
 # работает с кириллицей (lower, regex), в отличие от tr/awk.

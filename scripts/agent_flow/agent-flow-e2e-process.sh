@@ -550,6 +550,70 @@ if [ "${ROUND_ONLY:-0}" = "1" ]; then
     exit 0
 fi
 
+# --- gh_list_issues_by_label (ретро 19.08 #1457) ------------------------------
+# Bug: `gh issue list --label X` на некоторых версиях gh CLI (2.x.x) возвращает
+# пустой массив, даже если есть открытые issues с меткой X. Параллельно
+# `gh search issues "label:X"` и `gh api repos/.../issues?labels=X` находят их.
+# Workaround: используем gh-list как primary, при пустом ответе — fallback на
+# прямой REST API, логируем fallback для observability. Возвращает JSON-массив
+# с полями: number,title,labels,body (минимальный набор для downstream).
+gh_list_issues_by_label() {
+    local _label="$1" _state="${2:-open}" _limit="${3:-${ISSUE_LIMIT}}" _fields="${4:-number,title,labels,body}"
+    local _json="" _api_json=""
+    _json="$(gh issue list \
+        --repo "$GH_REPO" \
+        --label "$_label" \
+        --state "$_state" \
+        --limit "$_limit" \
+        --json "$_fields" 2>/dev/null || true)"
+    # Если gh-list непустой — используем его (быстрее, идёт через GraphQL).
+    if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
+        printf '%s' "$_json"
+        return 0
+    fi
+    # Fallback: прямой REST API. gh issue list в --json GraphQL-режиме ломает
+    # фильтр по label (issue #1457). REST /issues?labels=X — надёжный источник.
+    _api_json="$(gh api "repos/${GH_REPO}/issues?labels=${_label}&state=${_state}&per_page=${_limit}" 2>/dev/null || true)"
+    if [ -z "$_api_json" ] || [ "$_api_json" = "[]" ]; then
+        # Действительно пусто — отдаём пустой массив downstream'у.
+        printf '[]'
+        return 0
+    fi
+    log "gh_list_issues_by_label(${_label}): gh-list пустой, fallback на REST API /issues?labels=${_label}"
+    # Нормализуем REST-ответ к GraphQL-шейпу: {number,title,labels,body,...}.
+    # В REST labels — массив {name,...}, в GraphQL — то же самое. Достаточно
+    # прокинуть number/title/labels/body; PR-ы (у REST issues включают PRs)
+    # отфильтруем ниже по отсутствию поля pull_request.
+    printf '%s' "$_api_json" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("[]"); sys.exit(0)
+if not isinstance(data, list):
+    print("[]"); sys.exit(0)
+keep = []
+for it in data:
+    if not isinstance(it, dict):
+        continue
+    # REST /issues возвращает и issues, и PRs — PRы имеют pull_request.
+    if it.get("pull_request"):
+        continue
+    rec = {
+        "number": it.get("number"),
+        "title": it.get("title") or "",
+        "labels": [{"name": (l.get("name") if isinstance(l, dict) else l)} for l in it.get("labels", [])],
+        "body": it.get("body") or "",
+    }
+    # Прокинем updatedAt (используется deploy-issue-reconcile), если есть —
+    # это не ломает существующий код, который читает только нужные поля.
+    if "updatedAt" in it:
+        rec["updatedAt"] = it.get("updatedAt")
+    keep.append(rec)
+print(json.dumps(keep, ensure_ascii=False))
+'
+}
+
 # --- get current open issue numbers with needs-e2e ---------------------------
 # collect_issues_json — свежий снимок очереди needs-e2e. Вызывается в начале
 # тика И ПОВТОРНО после post_round_sweep (ретро 13.08 t_7eab35a0): sweep может
@@ -565,12 +629,7 @@ collect_issues_json() {
     #   {number, title, body, labels, source: "issue"|"pr", branch}
     # Для issue source="issue", branch="" (вычисляется в main loop как раньше);
     # для PR-only source="pr", branch=headRefName (известен сразу).
-    issues_json="$(gh issue list \
-        --repo "$GH_REPO" \
-        --label "$NEEDS_E2E_LABEL" \
-        --state open \
-        --limit "$ISSUE_LIMIT" \
-        --json number,title,labels,body 2>/dev/null || true)"
+    issues_json="$(gh_list_issues_by_label "$NEEDS_E2E_LABEL" open "$ISSUE_LIMIT")"
 
     # Issue #1141: даже для OPEN issues — skip если уже есть метка e2e-done
     # (workflow_dispatch мог триггериться от старого e2e-блока в issue).
@@ -734,8 +793,12 @@ done < <(printf '%s\n' "$_issue_numbers")
 
 # Если все needs-e2e issues приостановлены/отклонены — round не создаём.
 if [ "$_any_rejected" -eq 1 ]; then
-    _remaining="$(gh issue list --repo "$GH_REPO" --label "$NEEDS_E2E_LABEL" --state open \
-        --limit 1 --json number --jq 'length' 2>/dev/null || echo 0)"
+    # Ретро 19.08 #1457: gh issue list --label ломает фильтр → fallback через
+    # gh_list_issues_by_label (REST API), чтобы корректно посчитать оставшиеся.
+    _remaining="$(gh_list_issues_by_label "$NEEDS_E2E_LABEL" open 1 | python3 -c '
+import json, sys
+try: print(len(json.load(sys.stdin)))
+except Exception: print(0)')"
     if [ "${_remaining:-0}" -eq 0 ] 2>/dev/null; then
         log "no remaining needs-e2e issues (all paused/rejected) — no round"
         exit 0
@@ -802,6 +865,17 @@ except Exception:
         _sl_norm="$(printf '%s' "$_sl" | tr '[:upper:]' '[:lower:]')"
         if has_label "$_sl_norm" "$DONE_LABEL" || has_label "$_sl_norm" "$REJECTED_LABEL" || ! has_label "$_sl_norm" "$NEEDS_E2E_LABEL"; then
             log "post-round sweep: issue #${_sn} уже обработан (${_sl_norm}) — skip"
+            continue
+        fi
+        # bug #1450 ретро 19.08 t_723a539d: если Шифу ВРУЧНУЮ вернул
+        # needs-e2e на issue после того как этот round завершился SUCCESS
+        # — sweep НЕ должен лечить (e2e-done), иначе цикл: sweep→
+        # e2e-done→Шифу unlabel→needs-e2e (re-test)→sweep→… бесконечный,
+        # round-155 НЕ создаётся (наблюдение 19.08: issue #1392 / PR #1398).
+        # Сигнал override: latest LabeledEvent{label=needs-e2e, actor≠bot}
+        # ПОЗЖЕ createdAt указанного run (#${_sweep_run_id}).
+        if issue_needs_e2e_re_added_after_run "$_sn" "$_sweep_run_id"; then
+            log "post-round sweep: issue #${_sn} имеет явный needs-e2e override ПОСЛЕ run #${_sweep_run_id} — skip (Шифу запросил re-test, ждём round-155)"
             continue
         fi
         gh issue edit "$_sn" --repo "$GH_REPO" --add-label "$DONE_LABEL" >/dev/null 2>&1 || true
@@ -910,6 +984,129 @@ slugify() {
 
 has_label() {
     printf '%s' "$1" | tr ',' '\n' | grep -Fxq "$2"
+}
+
+# issue_needs_e2e_re_added_after_run <issue_number> <run_id>
+#   Returns 0 (true) если на issue есть LabeledEvent{label=needs-e2e}
+#   от НЕ-bot актора, ПОЗЖЕ created_at указанного workflow run.
+#   Иначе 1 (нет override → sweep может лечить как обычно).
+#
+# Использование (bug #1450 ретро 19.08 t_723a539d): post-round sweep должен
+# skip если Шифу ВРУЧНУЮ вернул needs-e2e на issue после того как round
+# завершился SUCCESS — иначе цикл: sweep→e2e-done→unlabel→needs-e2e
+# (re-test)→sweep→e2e-done→… бесконечный, round-155 НЕ создаётся.
+#
+# Сигнал: latest LabeledEvent{label=needs-e2e, actor≠bot} timestamp >
+# workflow run createdAt. Это явный re-test request от Шифу (retро 18.08
+# t_de6bea69, та же философия что у user_removed_label_recently в
+# lib_user_unlabel_check.sh — не подавлять ручное решение).
+#
+# Гарантии (fail-OPEN как у user_removed_label_recently):
+#   - timeline API сдох → return 1 (нет сигнала → sweep лечит как раньше,
+#     лучше лишний e2e-done чем fail-CLOSE блокирующий ротацию)
+#   - событий нет / нет labeled для needs-e2e → return 1
+#   - bot-actor labeled → return 1 (это auto, не user-decisional)
+#   - latest labeled event ПОЗЖЕ run created_at → return 0
+#
+# Test mode (used by tests/test_e2e_process_post_round_sweep_override.sh):
+#   export POST_ROUND_SWEEP_TEST_MODE=1 — пропускает реальные API-вызовы;
+#   тесты инжектят мок-данные через переменные
+#   _POST_ROUND_SWEEP_TEST_TIMELINE_JSON и _POST_ROUND_SWEEP_TEST_RUN_EPOCH.
+issue_needs_e2e_re_added_after_run() {  # $1=issue_number $2=run_id
+    local _issue="$1" _run_id="$2"
+
+    # Test mode: берём мок-данные из переменных (НЕ зовём gh api).
+    local _events _run_epoch
+    if [ "${POST_ROUND_SWEEP_TEST_MODE:-0}" = "1" ]; then
+        _events="${_POST_ROUND_SWEEP_TEST_TIMELINE_JSON:-[]}"
+        _run_epoch="${_POST_ROUND_SWEEP_TEST_RUN_EPOCH:-0}"
+    else
+        # Production: тянем timeline issue + createdAt run (issue/PR
+        # шарится один endpoint — repos/${GH_REPO}/issues/${n}/timeline).
+        _events="$(gh api "repos/${GH_REPO}/issues/${_issue}/timeline?per_page=100" \
+            2>/dev/null || echo '[]')"
+        if [ -z "$_events" ] || [ "$_events" = '[]' ]; then
+            return 1
+        fi
+        _run_epoch="$(gh run view "$_run_id" --repo "$GH_REPO" \
+            --json createdAt --jq '.createdAt' 2>/dev/null \
+            | python3 -c 'import sys, datetime
+s=sys.stdin.read().strip()
+if not s: print(0); sys.exit(0)
+try:
+    dt = datetime.datetime.fromisoformat(s.replace("Z","+00:00"))
+    print(int(dt.timestamp()))
+except Exception:
+    print(0)' 2>/dev/null || echo 0)"
+    fi
+
+    if [ -z "$_events" ] || [ "$_events" = '[]' ]; then
+        return 1
+    fi
+    if [ -z "$_run_epoch" ] || [ "$_run_epoch" = "0" ]; then
+        # Не смогли получить timestamp run → fail-OPEN, не блокируем sweep.
+        return 1
+    fi
+
+    # Парсим timeline: ищем latest LabeledEvent{label=needs-e2e, actor≠bot}.
+    # Печатаем epoch этого события (или 0 если не нашли).
+    local _latest
+    _latest="$(printf '%s' "$_events" | _lbl="needs-e2e" _run_epoch="$_run_epoch" python3 -c '
+import json, sys, os
+from datetime import datetime
+
+raw = sys.stdin.read()
+try:
+    data = json.loads(raw)
+except Exception:
+    print(0); sys.exit(0)
+if not isinstance(data, list):
+    print(0); sys.exit(0)
+
+target = (os.environ.get("_lbl") or "").lower()
+run_epoch = int(os.environ.get("_run_epoch") or 0)
+
+def is_bot(login):
+    if not login:
+        return True
+    s = login.lower()
+    if s.endswith("[bot]") or "-bot" in s or s.endswith("_bot"):
+        return True
+    if s in ("github-actions", "github-actions[bot]", "web-flow",
+             "dependabot[bot]", "renovate[bot]", "codecov[bot]"):
+        return True
+    return False
+
+latest_labeled_epoch = 0
+for ev in data:
+    if not isinstance(ev, dict):
+        continue
+    if ev.get("event") != "labeled":
+        continue
+    name = ((ev.get("label") or {}).get("name") or "").lower()
+    if name != target:
+        continue
+    actor = (ev.get("actor") or {}).get("login") or ""
+    if is_bot(actor):
+        continue
+    at = ev.get("created_at") or ""
+    try:
+        dt = datetime.fromisoformat(at.replace("Z", "+00:00"))
+        epoch = int(dt.timestamp())
+    except Exception:
+        continue
+    latest_labeled_epoch = max(latest_labeled_epoch, epoch)
+
+# Печатаем 1 если есть user labeled event ПОЗЖЕ run, иначе 0.
+if latest_labeled_epoch > run_epoch:
+    print(1)
+else:
+    print(0)
+')"
+    if [ "$_latest" = "1" ]; then
+        return 0
+    fi
+    return 1
 }
 
 # Detect PR kind: "lint" (no e2e needed) vs "functional" (e2e required).
@@ -1348,6 +1545,7 @@ while IFS=$'\t' read -r number title labels body source branch; do
     e2e_acceptance_check=""
     e2e_check_tg_echo=""
     e2e_scenario_file=""
+    e2e_acceptance_file=""
     # Python-парсер issues_json экранирует переносы в литеральные \\n — вернём реальные.
     # (иначе grep '^voice_text' не находит поле в середине однострочного body,
     #  а grep exit 1 + pipefail + set -e убивают скрипт)
@@ -1369,7 +1567,16 @@ while IFS=$'\t' read -r number title labels body source branch; do
         # путь к .json в .github/e2e/scenarios/. Если задан явно — используем,
         # auto-discovery из PR files нужен только при отсутствии.
         e2e_scenario_file="$(printf '%s' "$body_real" | grep -iE '^[[:space:]]*scenario_file[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*scenario_file[[:space:]]*:[[:space:]]*//; s/^`//; s/`$//; s/^"//; s/"$//' || true)"
-        log "issue #${number}: e2e params from body: volume=${e2e_volume:-default} voice_text=${e2e_voice_text:-default} llm=${e2e_llm:-default} tts=${e2e_tts:-default} stt=${e2e_stt:-default} acceptance_check=${e2e_acceptance_check:-default} check_tg_echo=${e2e_check_tg_echo:-default} scenario_file=${e2e_scenario_file:-none}"
+        # bug(t_cca7c074, ретро 19.08): блок ## e2e поддерживает acceptance_file —
+        # явный путь к acceptance.json. ADR-0022 GATE-1 (коммит 784360d9) добавил
+        # input в workflow, но agent-flow-e2e-process.sh не парсил поле → inputs
+        # на workflow содержали scenario_file, но acceptance_file был пустой →
+        # харнесс падал с E2E_GATE1_MISSING_ACCEPTANCE. Парсим из issue/PR body,
+        # иначе auto-discover по convention (<scenario_dir>/acceptance.json или
+        # <scenario_dir>/<basename>_acceptance.json) — иначе workflow сам упадёт
+        # на gating, что и было симптомом регрессии.
+        e2e_acceptance_file="$(printf '%s' "$body_real" | grep -iE '^[[:space:]]*acceptance_file[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*acceptance_file[[:space:]]*:[[:space:]]*//; s/^`//; s/`$//; s/^"//; s/"$//' || true)"
+        log "issue #${number}: e2e params from body: volume=${e2e_volume:-default} voice_text=${e2e_voice_text:-default} llm=${e2e_llm:-default} tts=${e2e_tts:-default} stt=${e2e_stt:-default} acceptance_check=${e2e_acceptance_check:-default} check_tg_echo=${e2e_check_tg_echo:-default} scenario_file=${e2e_scenario_file:-none} acceptance_file=${e2e_acceptance_file:-none}"
     else
         log "issue #${number}: no '## e2e' block in body — using defaults"
     fi
@@ -1523,6 +1730,9 @@ EOF
                 e2e_acceptance_check="$(printf '%s' "$pr_body_real" | grep -iE '^[[:space:]]*acceptance_check[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*acceptance_check[[:space:]]*:[[:space:]]*//; s/^"//; s/"$//' || true)"
                 # bug(e2e #1375) ретро 18.08: парсим scenario_file из PR body.
                 e2e_scenario_file="$(printf '%s' "$pr_body_real" | grep -iE '^[[:space:]]*scenario_file[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*scenario_file[[:space:]]*:[[:space:]]*//; s/^`//; s/`$//; s/^"//; s/"$//' || true)"
+                # bug(t_cca7c074, ретро 19.08): парсим acceptance_file из PR body
+                # (воркер мог указать только в PR body, как и scenario_file).
+                e2e_acceptance_file="$(printf '%s' "$pr_body_real" | grep -iE '^[[:space:]]*acceptance_file[[:space:]]*:' | head -1 | sed -E 's/^[[:space:]]*acceptance_file[[:space:]]*:[[:space:]]*//; s/^`//; s/`$//; s/^"//; s/"$//' || true)"
                 log "issue #${number}: e2e params from PR #${pr_number} body (issue body had no ## e2e)"
                 [ -n "$e2e_volume" ] && E2E_VOLUME="$e2e_volume"
             fi
@@ -2018,6 +2228,94 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
         fi
     fi
     [ -n "$e2e_scenario_file" ] && e2e_args+=(-f "scenario_file=$e2e_scenario_file")
+    # bug(t_cca7c074, ретро 19.08): auto-discover acceptance_file из convention
+    # если не задан явно. Иначе workflow получает пустой acceptance_file input →
+    # harness ищет <scenario_dir>/acceptance.json (его там нет для music_library_*
+    # — он лежит как music_library_acceptance_v1.json, см. ADR-0022 GATE-1 R1).
+    # Convention (выбран и зафиксирован в issue body, расширен в issue #1456):
+    #   1) <scenario_dir>/acceptance.json (ADR-0022 §4.1 — основной)
+    #   2) <scenario_dir>/<scenario_basename>_acceptance.json (расширение,
+    #      для foo.json → foo_acceptance.json)
+    #   3) <scenario_dir>/<feature>_acceptance[_v<N>].json — strip _v[0-9]+
+    #      и _suite (issue #1452 / #1456: music_library_suite_v1.json →
+    #      music_library_acceptance_v1.json). Логика синхронна с
+    #      e2e_voice_test.sh auto-discovery (GATE-1), issue #1456 false-positive
+    #      на bash pattern, но сам кейс реальный — лечим через эту convention.
+    #   4) пусто → workflow сам упадёт на gating (e2e_voice_test.sh пишет
+    #      понятную ошибку и оператор/воркер увидит GATE-1 FAIL с подсказкой).
+    # Auto-discovery делаем ТОЛЬКО при наличии scenario_file: одиночный smoke-test
+    # --text (по ADR-0022 §4.1) НЕ требует acceptance.json (single-shot use case).
+    #
+    # ВАЖНО: e2e_scenario_file остаётся repo-relative для workflow. Но acceptance
+    # discovery обязан смотреть В round WORKTREE_DIR, а не в cwd процесса (cron
+    # запускает его из /home/builder/hermes-share/rob_box_project). Иначе файл
+    # виден в round-worktree, но считается «нет convention» → round-158/156 GATE-1
+    # false-fail, хотя .github/e2e/scenarios/music_library_acceptance_v1.json
+    # существует. Функция возвращает repo-relative candidate, поэтому workflow
+    # по-прежнему получает checkout-able path, а не абсолютный /tmp path.
+    resolve_acceptance_candidate() {  # $1=scenario_file $2=worktree_dir
+        local _scenario_file="$1" _worktree_dir="$2"
+        local _scenario_path _scenario_dir_rel _acc_dir _acc_basename _acc_prefix _found
+
+        if [[ "$_scenario_file" = /* ]]; then
+            _scenario_path="$_scenario_file"
+            # Absolute scenario paths are already runner-local; preserve that
+            # resolution for the acceptance file as well.
+            _scenario_dir_rel=""
+        else
+            # anchor relative path in this round; caller cwd is not authoritative.
+            _scenario_path="$_worktree_dir/$_scenario_file"
+            _scenario_dir_rel="$(dirname "$_scenario_file")"
+        fi
+        _acc_dir="$(dirname "$_scenario_path")"
+        _acc_basename="$(basename "$_scenario_file" .json)"
+        _acc_prefix="$_acc_basename"
+        _acc_prefix="${_acc_prefix%_v[0-9]*}"
+        _acc_prefix="${_acc_prefix%_suite}"
+
+        _found=""
+        if [ -f "${_acc_dir}/acceptance.json" ]; then
+            _found="acceptance.json"
+        elif [ -f "${_acc_dir}/${_acc_basename}_acceptance.json" ]; then
+            _found="${_acc_basename}_acceptance.json"
+        elif [ -f "${_acc_dir}/${_acc_prefix}_acceptance.json" ]; then
+            _found="${_acc_prefix}_acceptance.json"
+        elif [ -f "${_acc_dir}/${_acc_prefix}_acceptance_v1.json" ]; then
+            _found="${_acc_prefix}_acceptance_v1.json"
+        elif [ -f "${_acc_dir}/${_acc_prefix}_acceptance_v2.json" ]; then
+            _found="${_acc_prefix}_acceptance_v2.json"
+        fi
+        if [ -n "$_found" ] && [ -n "$_scenario_dir_rel" ]; then
+            _found="${_scenario_dir_rel}/${_found}"
+        elif [ -n "$_found" ] && [[ "$_scenario_file" = /* ]]; then
+            # Preserve absolute scenario paths so an explicit local fixture
+            # keeps its matching absolute acceptance path.
+            _found="${_acc_dir}/${_found}"
+        fi
+        printf '%s' "$_found"
+    }
+
+    if [ -z "$e2e_acceptance_file" ] && [ -n "$e2e_scenario_file" ]; then
+        # Keep candidate repo-relative for workflow's `scp "${{ inputs.acceptance_file }}"`.
+        _acc_candidate="$(resolve_acceptance_candidate "$e2e_scenario_file" "$WORKTREE_DIR")"
+        if [ -n "$_acc_candidate" ]; then
+            # Convention 1/2: <scenario_dir>/acceptance.json or basename
+            _acc_basename="$(basename "$e2e_scenario_file" .json)"
+            if [ "$_acc_candidate" = "acceptance.json" ]; then
+                log "issue #${number}: acceptance_file auto-discovered (convention 1, dir/acceptance.json): ${WORKTREE_DIR}/${_acc_candidate}"
+            elif [ "$_acc_candidate" = "${_acc_basename}_acceptance.json" ]; then
+                log "issue #${number}: acceptance_file auto-discovered (convention 2, dir/<basename>_acceptance.json): ${WORKTREE_DIR}/${_acc_candidate}"
+            else
+                log "issue #${number}: acceptance_file auto-discovered (convention 3, feature prefix + version): ${WORKTREE_DIR}/${_acc_candidate}"
+            fi
+        else
+            log "issue #${number}: ⚠️ acceptance_file не задан и convention не сработал для ${e2e_scenario_file} в round worktree ${WORKTREE_DIR} — workflow сам упадёт на GATE-1 (ADR-0022 §4.1 R1)"
+        fi
+        if [ -n "$_acc_candidate" ]; then
+            e2e_acceptance_file="$_acc_candidate"
+        fi
+    fi
+    [ -n "$e2e_acceptance_file" ] && e2e_args+=(-f "acceptance_file=$e2e_acceptance_file")
     # Issue #1196 L2 — полуавтомат-проверка эха telegram↔dialogue
     # (check_tg_echo: true в блоке ## e2e).
     if [ "${e2e_check_tg_echo:-false}" = "true" ] || [ "${e2e_check_tg_echo:-false}" = "1" ]; then
@@ -2125,6 +2423,25 @@ $(cat "$acc_file" 2>/dev/null || true)"
         fi
     fi
 
+    # Ретро 19.08 t_b3691e1b (issue #1448, баг #1392/#1398): Шифу явно
+    # возвращает issue в ротацию (\`${NEEDS_E2E_LABEL}\`), потому что на
+    # роботе фича не работает, хотя PR уже merged и ранее получил
+    # \`${DONE_LABEL}\`. Без guard'а каждый тик e2e-process видит merged
+    # PR → fail_kind=merged → auto-\`${DONE_LABEL}\` → reconcile
+    # merge-gate снимает PR-side stale метки → Шифу снова возвращает в
+    # \`${NEEDS_E2E_LABEL}\` → цикл бесконечный, реального e2e не
+    # происходит. Guard: если issue имеет явный \`${NEEDS_E2E_LABEL}\`
+    # override при fail_kind=merged → меняем fail_kind на
+    # merged-override, ветка выбирает \`${REJECTED_LABEL}\` вместо
+    # \`${DONE_LABEL}\` (см. ниже). Guard стоит ДО ветвления
+    # label_action, чтобы verdict_emoji/fail_note/manual_step корректно
+    # переключились на «явный override Шифу».
+    if [ "$fail_kind" = "merged" ] && [ "$verdict" != "success" ] \
+        && has_label "$labels_norm" "$NEEDS_E2E_LABEL"; then
+        log "issue #${number}: fail_kind=merged + verdict=${verdict} + explicit ${NEEDS_E2E_LABEL} override → переход в merged-override (ретро 19.08 t_b3691e1b, issue #1448)"
+        fail_kind="merged-override"
+    fi
+
     if [ "$verdict" = "success" ]; then
         label_action="add ${DONE_LABEL}"
         remove_action="remove ${NEEDS_E2E_LABEL}"
@@ -2134,6 +2451,17 @@ $(cat "$acc_file" 2>/dev/null || true)"
         label_action="add ${DONE_LABEL}"
         remove_action="remove ${NEEDS_E2E_LABEL}"
         verdict_emoji="ℹ️"
+    elif [ "$fail_kind" = "merged-override" ]; then
+        # Ретро 19.08 t_b3691e1b (issue #1448): Шифу явно вернул issue в
+        # \`${NEEDS_E2E_LABEL}\`, но PR уже merged + verdict≠success. Авто-
+        # \`${DONE_LABEL}\` подавлено (иначе цикл needs-e2e→e2e-done
+        # бесконечный). Ставим \`${REJECTED_LABEL}\` (явный сигнал «есть
+        # проблема»), \`${NEEDS_E2E_LABEL}\` снимаем → issue уходит на
+        # ручное решение Шифу (close руками или follow-up PR с новым
+        # фиксом).
+        label_action="add ${REJECTED_LABEL}"
+        remove_action="remove ${NEEDS_E2E_LABEL}"
+        verdict_emoji="⚠️"
     elif [ "$fail_kind" = "infra" ]; then
         # Инфра-сбой — issue остаётся в ротации (needs-e2e НЕ снимаем).
         label_action="add ${INFRA_FAIL_LABEL}"
@@ -2149,6 +2477,8 @@ $(cat "$acc_file" 2>/dev/null || true)"
     fail_note=""
     if [ "$fail_kind" = "merged" ]; then
         fail_note="> ⚠️ PR #${pr_number} уже смержен в ${DEVELOP_BRANCH} — метка \`e2e:rejected\` НЕ ставилась. Поставлена \`${DONE_LABEL}\` (фикс доехал до develop). Причина FAIL прогона: ${verdict} (см. run)."
+    elif [ "$fail_kind" = "merged-override" ]; then
+        fail_note="> ⚠️ Явный override Шифу: issue имел \`${NEEDS_E2E_LABEL}\` (ручной возврат в ротацию), PR #${pr_number} уже смержен. Авто-\`${DONE_LABEL}\` подавлено (предотвращение needs-e2e↔e2e-done пинг-понга). Поставлена \`${REJECTED_LABEL}\` для ручного решения — Шифу: close руками, follow-up PR с новым фиксом + повторный \`${NEEDS_E2E_LABEL}\`, или игнор (фикс уже в develop)."
     elif [ "$fail_kind" = "infra" ]; then
         fail_note="> ⚠️ FAIL по ИНФРАСТРУКТУРЕ (квота MiniMax 429 / робот недоступен / build fail) — метка \`e2e:rejected\` НЕ ставилась, issue остаётся в ротации (\`${NEEDS_E2E_LABEL}\` сохранён), следующий тик повторит прогон. Поставлена \`${INFRA_FAIL_LABEL}\`."
     fi
@@ -2169,6 +2499,12 @@ $(cat "$acc_file" 2>/dev/null || true)"
         manual_step="If PASS: \\`gh pr merge --squash ${branch} -> develop\\` (manual merge per Q5)."
     elif [ "$fail_kind" = "merged" ]; then
         manual_step="PR #${pr_number} уже смержен — фикс в develop, e2e-прогон не нужен. Issue можно закрыть (или ждёт другого релиза)."
+    elif [ "$fail_kind" = "merged-override" ]; then
+        # Ретро 19.08 t_b3691e1b (issue #1448): явный override Шифу не сработал,
+        # цикл needs-e2e↔e2e-done предотвращён через \\`${REJECTED_LABEL}\\`.
+        # Шифу решает вручную: close (фикс уже в develop), follow-up PR +
+        # повторный \\`${NEEDS_E2E_LABEL}\\`, или игнор.
+        manual_step="Явный \\`${NEEDS_E2E_LABEL}\\` override подавлен (PR уже смержен). Issue: \\`${REJECTED_LABEL}\\` поставлена, \\`${NEEDS_E2E_LABEL}\\` снята. Шифу решает вручную: (1) \\`gh issue close ${number} --reason completed\\` если фикс признан ок; (2) follow-up PR с новым фиксом + повторный \\`${NEEDS_E2E_LABEL}\\`; (3) игнор (фикс уже в develop)."
     elif [ "$fail_kind" = "infra" ]; then
         manual_step="Infra-FAIL (квота 429 / робот недоступен / build): жди следующего тика e2e-process — issue остаётся в ротации, прогон повторится автоматически."
     else
@@ -2313,7 +2649,7 @@ sshpass -p open ssh ros2@10.1.1.21 'docker logs voice-assistant --since <ts> | g
     #    доказательства работы фичи. Нашёл → worker-evidence: в PR. Нет → чини.
     #  - Никаких новых веток/PRов — тот же PR перепрогоняется пока e2e не
     #    покажет реальные доказательства работы фичи.
-    if [ -n "$e2e_task_id" ] && [ -n "$branch" ] && [ "$fail_kind" != "infra" ] && [ "$fail_kind" != "merged" ]; then
+    if [ -n "$e2e_task_id" ] && [ -n "$branch" ] && [ "$fail_kind" != "infra" ] && [ "$fail_kind" != "merged" ] && [ "$fail_kind" != "merged-override" ]; then
         # ретро 10.08 (t_9caf5d52): при infra-FAIL / merged-PR карточку воркеру
         # НЕ создаём — воркеру нечего чинить (квота/робот/build или фикс уже в develop).
         # Определяем профиль воркера по меткам issue (agent:<role>)

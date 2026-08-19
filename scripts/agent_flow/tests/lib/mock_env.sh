@@ -244,6 +244,43 @@ if m:
         if isinstance(v, str) and v.startswith(prefix): count += 1
     print(count); sys.exit(0)
 
+# Pattern: [.[] | select(.a == "X" or .b == "Y") | select(.c == "Z")] | last | .field // "default"
+# (timeline last-event lookup with 2-level filter — ретро 19.08 t_5cde0bc1
+#  drift-detection: filter labeled/unlabeled, then filter by label name,
+#  return last .event of remaining items. .c может быть .label.name для
+#  nested-field filter — обрабатываем через _resolve helper.)
+#
+# cond1 — OR-логика (например ".event==\"labeled\" or .event==\"unlabeled\""):
+# любое совпадение по парам проходит. cond2 — AND-логика (все пары должны
+# совпасть).
+m = re.match(r"^\[\.\[\]\s*\|\s*select\((.+?)\)\s*\|\s*select\((.+?)\)\]\s*\|\s*last\s*\|\s*\.([\w]+)(?:\s*//\s*\"([^\"]*)\")?$", filt)
+if m:
+    cond1, cond2, field, default = m.group(1), m.group(2), m.group(3), m.group(4) or "null"
+
+    def _resolve(el, path):
+        cur = el
+        for part in path.split("."):
+            if not part: continue  # leading "." → пустой сегмент
+            if isinstance(cur, dict): cur = cur.get(part)
+            else: return None
+        return cur
+
+    conds1 = re.findall(r"\.([\w.]+)\s*==\s*\"([^\"]+)\"", cond1)
+    conds2 = re.findall(r"\.([\w.]+)\s*==\s*\"([^\"]+)\"", cond2)
+    for el in reversed(data):
+        if not isinstance(el, dict): continue
+        # cond1: OR — пропускаем если хотя бы одна пара совпала.
+        if conds1:
+            cond1_ok = any(_resolve(el, f) == v for f, v in conds1)
+        else:
+            cond1_ok = True
+        if not cond1_ok: continue
+        # cond2: AND — все пары должны совпасть.
+        cond2_ok = all(_resolve(el, f) == v for f, v in conds2)
+        if not cond2_ok: continue
+        emit(el.get(field)); sys.exit(0)
+    print(default); sys.exit(0)
+
 # Pattern: [.[] | select(.field | contains("SUBSTR"))] | length
 # (orphan-comment dedup, ретро 13.08 t_0b76514f: contains-подстрока тела,
 #  не startswith — иначе префикс не совпадает с реальным телом коммена.)

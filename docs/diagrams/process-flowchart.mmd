@@ -1,0 +1,80 @@
+%% process-flowchart.mmd — все ветки ADD-процесса
+%% Sources of truth:
+%%   - scripts/agent_flow/agent-flow-triage.sh (Issue → kanban create)
+%%   - scripts/agent_flow/agent-flow-merge-gate.sh (PR↔issue reconcile)
+%%   - scripts/agent_flow/agent-flow-e2e-process.sh (round, fail_kind: infra/feature/merged)
+%%   - scripts/agent_flow/agent-flow-completion-check.sh (GATE-3)
+%%   - .github/workflows/L-E2E Voice Test.yml (GATE-1)
+%%   - docs/adr/0018-agent-honesty-culture.md (честный FAIL > красивый PASS)
+%%   - docs/adr/0022-process-e2e-done-gates.md (GATE-1/2/3)
+%% Render: mermaid в любом GitHub markdown viewer (flowchart TD)
+
+flowchart TD
+    Start([Шифу создаёт issue<br/>с label needs-e2e]) --> Triage{agent-flow-triage<br/>cron 5min}
+
+    Triage -->|новая needs-e2e| CreateK[kanban create t_xxx<br/>parents: issue#N]
+    Triage -->|уже has e2e-done или<br/>e2e:rejected| SkipTriage[skip — issue уже в финале]
+    Triage -->|нет label agent:*<br/>или assignee| SkipTriage
+
+    CreateK --> Claim{worker claim<br/>t_xxx → running}
+    Claim --> Branch[git worktree<br/>z-{agent}/N-slug]
+    Branch --> WIP[wip(scope) commits<br/>каждые ~15-20 мин]
+    WIP --> PR[gh pr create --base develop<br/>label: needs-e2e + agent:*]
+
+    PR --> MG{merge-gate<br/>cron 5min}
+    MG -->|gh pr checks CLEAN<br/>+ MERGEABLE| Reconcile[reconcile PR↔issue<br/>drift guard]
+    MG -->|checks red или<br/>drift>threshold| BlockMG[comment + не ставит<br/>needs-e2e повторно]
+
+    Reconcile --> LabelCheck{issue уже имеет<br/>needs-e2e?}
+    LabelCheck -->|yes| Idle[leave as-is<br/>→ ждёт e2e-process]
+    LabelCheck -->|no| AddNE[gh issue edit N<br/>--add-label needs-e2e]
+    AddNE --> Idle
+    BlockMG --> Idle
+
+    Idle --> EP{e2e-process<br/>cron 60min}
+
+    EP --> Sweep{post-round sweep}
+    Sweep -->|round-N без override,<br/>все кандидаты archived| E2EDone[gh issue edit N<br/>--add-label e2e-done]
+    Sweep -->|needs-e2e override<br/>после SUCCESS| SkipSweep[skip — issue в финале]
+    Sweep -->|нет live candidates<br/>+ есть pending needs-e2e| RoundCreate[round_ensure.sh<br/>merge z-agent/N → round-N+1]
+
+    RoundCreate --> Build[gh workflow run<br/>L-Build-All-Services]
+    Build --> Deploy[gh workflow run<br/>L-Deploy and Verify]
+    Deploy --> E2E[gh workflow run<br/>L-E2E Voice Test]
+
+    E2E --> G1{GATE-1<br/>acceptance.json есть?}
+    G1 -->|есть и valid| RunHarness[e2e_voice_test.sh<br/>--scenario --acceptance]
+    G1 -->|нет / empty<br/>expected_tool_calls| G1Fail[comment: E2E_GATE1_MISSING_ACCEPTANCE<br/>label stays needs-e2e]
+
+    RunHarness --> FKind{detect_fail_kind}
+    FKind -->|PASS verdict| PASS[e2e-done<br/>на issue + PR]
+    FKind -->|infra: 429, robot down,<br/>SSH fail| InfraFail[e2e:infra-fail<br/>retry next tick]
+    FKind -->|feature: expected ⊄ actual| Rejected[e2e:rejected<br/>+ comment blocker]
+    FKind -->|merged: PR влит,<br/>acceptance PASS на main| Merged[merged-override<br/>label stays needs-e2e → sweep]
+
+    PASS --> CC{completion-check<br/>GATE-3}
+    InfraFail --> CC
+    Rejected --> CC
+    Merged --> Sweep
+
+    CC -->|gh pr checks all green<br/>+ MERGEABLE + CLEAN| Archive[kanban t_xxx → archive<br/>DRY_RUN=false]
+    CC -->|checks red или<br/>не MERGEABLE| LeaveRun[leave running<br/>воркер чинит в той же ветке]
+
+    Archive --> Merge([Шифу: gh pr merge<br/>ручной merge в develop])
+
+    %% ADR-0018 honesty-culture anchor
+    Honesty[/"ADR-0018: честный FAIL<br/>лучше красивого PASS"/]
+    E1Fail -.-> Honesty
+    Rejected -.-> Honesty
+    InfraFail -.-> Honesty
+
+    %% Styling
+    classDef gate fill:#fff4e1,stroke:#d4791f,color:#000
+    classDef fail fill:#ffe1e1,stroke:#c0392b,color:#000
+    classDef ok fill:#e1ffe1,stroke:#27ae60,color:#000
+    classDef manual fill:#e1e8ff,stroke:#3b5cde,color:#000
+
+    class G1,CC gate
+    class E1Fail,Rejected,InfraFail fail
+    class PASS,Archive,E2EDone ok
+    class Merge manual

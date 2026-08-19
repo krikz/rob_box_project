@@ -390,10 +390,62 @@ for (fname, sha), prs in sorted(seen.items()):
 # → триаж на следующем тике создаст kanban-карточку (как #1277).
 # Idempotent: после добавления hermes issue больше не подпадает под правило.
 # Вызывается рядом со stale_branch_scan_all (основной путь + no-issues путь).
+# --- gh_list_issues_by_label (ретро 19.08 #1457) ------------------------------
+# Fallback для `gh issue list --label X` (GraphQL-фильтр по label ломается на
+# некоторых версиях gh CLI). При пустом ответе gh-list — пробуем REST API
+# /issues?labels=X. Возвращает JSON-массив с полями: number,title,labels,body
+# (и updatedAt если присутствует, для deploy-issue-reconcile).
+gh_list_issues_by_label() {
+    local _label="$1" _state="${2:-open}" _limit="${3:-${ISSUE_LIMIT}}" _fields="${4:-number,title,labels,body,updatedAt}"
+    local _json="" _api_json=""
+    _json="$(gh issue list \
+        --repo "$GH_REPO" \
+        --label "$_label" \
+        --state "$_state" \
+        --limit "$_limit" \
+        --json "$_fields" 2>/dev/null || true)"
+    if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
+        printf '%s' "$_json"
+        return 0
+    fi
+    _api_json="$(gh api "repos/${GH_REPO}/issues?labels=${_label}&state=${_state}&per_page=${_limit}" 2>/dev/null || true)"
+    if [ -z "$_api_json" ] || [ "$_api_json" = "[]" ]; then
+        printf '[]'
+        return 0
+    fi
+    log "gh_list_issues_by_label(${_label}): gh-list пустой, fallback на REST API /issues?labels=${_label}"
+    printf '%s' "$_api_json" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("[]"); sys.exit(0)
+if not isinstance(data, list):
+    print("[]"); sys.exit(0)
+keep = []
+for it in data:
+    if not isinstance(it, dict):
+        continue
+    if it.get("pull_request"):
+        continue
+    rec = {
+        "number": it.get("number"),
+        "title": it.get("title") or "",
+        "labels": [{"name": (l.get("name") if isinstance(l, dict) else l)} for l in it.get("labels", [])],
+        "body": it.get("body") or "",
+    }
+    if "updatedAt" in it:
+        rec["updatedAt"] = it.get("updatedAt")
+    keep.append(rec)
+print(json.dumps(keep, ensure_ascii=False))
+'
+}
+
 deploy_issue_reconcile_all() {
     local _dep_json
-    _dep_json="$(gh issue list --repo "$GH_REPO" --label deployment --state open \
-        --limit 100 --json number,title,labels,updatedAt 2>/dev/null || echo '[]')"
+    # Ретро 19.08 #1457: gh issue list --label ломает фильтр → fallback через
+    # gh_list_issues_by_label (REST API), если gh-list пустой.
+    _dep_json="$(gh_list_issues_by_label deployment open 100)"
     if [ -z "$_dep_json" ] || [ "$_dep_json" = "[]" ]; then
         log "deploy-issue-reconcile: no open deployment issues — skip"
         return 0
@@ -585,12 +637,9 @@ fi
 : "${GH_REPO:?GH_REPO must be set (owner/repo)}"
 
 # --- pull open issues with `hermes` label -----------------------------------
-issues_json="$(gh issue list \
-    --repo "$GH_REPO" \
-    --label "$ISSUE_LABEL" \
-    --state open \
-    --limit "$ISSUE_LIMIT" \
-    --json number,title,labels,body 2>/dev/null || true)"
+# Ретро 19.08 #1457: gh issue list --label ломает фильтр → fallback через
+# gh_list_issues_by_label (REST API), если gh-list пустой.
+issues_json="$(gh_list_issues_by_label "$ISSUE_LABEL" open "$ISSUE_LIMIT")"
 
 # G3: empty output is ambiguous — could be "no issues" OR "rate-limited".
 if [ -z "$issues_json" ] || [ "$issues_json" = "[]" ]; then
@@ -859,6 +908,79 @@ except Exception: print("")' 2>/dev/null || true)"
         fi
     fi
 
+    # --- PR↔issue e2e-done drift reconcile (ретро 19.08 t_5cde0bc1) --------
+    # Гипотеза PR #1398 / issue #1392: issue имеет needs-e2e (в ротации), но
+    # канонический PR (ветка z-{agent}/<id>-<slug>) висит с e2e-done от
+    # предыдущего раунда. Без reconcile e2e-process на следующем тике видит
+    # issue:needs-e2e, подбирает PR, проходит — снова вешает PR:e2e-done (тот
+    # же результат), но e2e-done «прилипает» к PR между ручным возвратом
+    # krikz и e2e-раундом → drift в PR-очереди Шифу (видит «готово к ревью»
+    # хотя по issue ничего не сделано).
+    #
+    # Reconcile: issue:needs-e2e + канонический PR:e2e-done (или :needs-review)
+    # → снимаем PR-side stale метки, оставляя issue-side неизменным. После
+    # этого e2e-process спокойно проходит, вешает обратно e2e-done + needs-review
+    # на PR уже с реальным результатом раунда.
+    #
+    # Guard от ping-pong: срабатываем ТОЛЬКО когда в issue timeline последнее
+    # событие по e2e-done — UNLABEL (т.е. кто-то руками или автоматика сняла
+    # метку и она не была возвращена — нормальное состояние issue в ротации).
+    # Если последнее событие — LABEL → e2e-done свежее, e2e-process сейчас
+    # разрулит, не трогаем PR.
+    if has_label "$labels_norm" "$NEEDS_E2E_LABEL"; then
+        _drift_branch_pattern="z-{agent}/${number}-"
+        # Ищем канонический PR по headRefName-префиксу (быстрее, чем title-scan).
+        # gh pr list --state open + grep в shell — не зависит от jq-паттернов
+        # и совместимо с mock-окружением тестов.
+        _drift_pr_json="$(gh pr list --repo "$GH_REPO" --state open \
+            --search "${number} in:title" \
+            --json number,headRefName 2>/dev/null || echo '[]')"
+        _drift_pr_number="$(printf '%s' "$_drift_pr_json" | grep -F "$_drift_branch_pattern" \
+            | grep -oE '"number":[0-9]+' | head -n1 | grep -oE '[0-9]+' || true)"
+        if [ -n "$_drift_pr_number" ]; then
+            _drift_pr_labels_csv="$(gh pr view "$_drift_pr_number" --repo "$GH_REPO" --json labels \
+                --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')"
+            _drift_pr_labels_norm="$(printf '%s' "$_drift_pr_labels_csv" | tr '[:upper:]' '[:lower:]')"
+            _drift_has_pr_done="0"; _drift_has_pr_review="0"
+            if has_label "$_drift_pr_labels_norm" "$DONE_LABEL"; then _drift_has_pr_done="1"; fi
+            if has_label "$_drift_pr_labels_norm" "$NEEDS_REVIEW_LABEL"; then _drift_has_pr_review="1"; fi
+            # Проверяем timeline issue: последнее e2e-done событие — unlabel?
+            _issue_done_last_evt="$(gh api "repos/${GH_REPO}/issues/${number}/timeline?per_page=100" \
+                --jq '[.[] | select(.event=="labeled" or .event=="unlabeled") | select(.label.name=="'"$DONE_LABEL"'")] | last | .event // "none"' 2>/dev/null || echo 'none')"
+            if [ "$_drift_has_pr_done" = "1" ] && [ "$_issue_done_last_evt" = "unlabeled" ]; then
+                _pr_last_commit_iso="$(gh api "repos/${GH_REPO}/pulls/${_drift_pr_number}/commits?per_page=1" \
+                    --jq '.[0].commit.committer.date // empty' 2>/dev/null || echo '')"
+                _drift_minutes="n/a"
+                if [ -n "$_pr_last_commit_iso" ] && [ "$_pr_last_commit_iso" != "null" ]; then
+                    _now_s="$(date -u +%s)"
+                    _commit_s="$(date -u -d "$_pr_last_commit_iso" +%s 2>/dev/null || echo 0)"
+                    if [ "$_commit_s" -gt 0 ] 2>/dev/null; then
+                        _diff_s=$(( _now_s - _commit_s ))
+                        _drift_minutes="$(( _diff_s / 60 ))m"
+                    fi
+                fi
+                # Метрика: минут с последнего коммита PR (e2e_drift_minutes) — для watchdog/логов.
+                log "issue #${number}: PR↔issue e2e-done drift — issue в ротации (${NEEDS_E2E_LABEL}), но PR #${_drift_pr_number} висит с ${DONE_LABEL} (last issue-evt=unlabeled, last PR commit=${_pr_last_commit_iso}). e2e_drift_minutes=${_drift_minutes} (ретро 19.08 t_5cde0bc1)."
+                if [ "$DRY_RUN" != "true" ]; then
+                    gh pr edit "$_drift_pr_number" --repo "$GH_REPO" --remove-label "$DONE_LABEL" >/dev/null 2>&1 || true
+                    # needs-review на PR снимаем только если есть — иначе PR остался
+                    # в «готово к ревью» состоянии с непротестированным кодом.
+                    if [ "$_drift_has_pr_review" = "1" ]; then
+                        gh pr edit "$_drift_pr_number" --repo "$GH_REPO" --remove-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
+                    fi
+                    gh pr comment "$_drift_pr_number" --repo "$GH_REPO" --body \
+                        "agent-flow: 🧹 e2e-done drift reconcile (ретро 19.08 t_5cde0bc1) — issue #${number} вернулся в ротацию (last issue:${DONE_LABEL}-evt=unlabeled), но PR #${_drift_pr_number} висел с \`${DONE_LABEL}\`. Сняты: \`${DONE_LABEL}\`${_drift_has_pr_review:+, \`${NEEDS_REVIEW_LABEL}\`}. Следующий e2e-раунд перевесит по реальному результату." >/dev/null 2>&1 || true
+                    gh issue comment "$number" --repo "$GH_REPO" --body \
+                        "agent-flow: 🧹 e2e-done drift reconcile — PR #${_drift_pr_number} снят \`${DONE_LABEL}\` (issue был в ротации, PR-side stale). e2e-process перевзвесит на следующем тике (ретро 19.08 t_5cde0bc1)." >/dev/null 2>&1 || true
+                fi
+                # НЕ continue — дальше пойдёт нормальный блок needs-e2e processing
+                # для этой issue (выставит needs-e2e на канонический PR если ещё нет).
+            elif [ "$_drift_has_pr_done" = "1" ]; then
+                log "issue #${number}: PR↔issue e2e-done check — issue в ротации, PR #${_drift_pr_number} имеет ${DONE_LABEL}, но last issue-evt=${_issue_done_last_evt} (не unlabeled) → НЕ снимаю, e2e-process разрулит (ретро 19.08 t_5cde0bc1)."
+            fi
+        fi
+    fi
+
     branch="z-{agent}/${number}-$(slugify "$title")"
 
     # Look up PR by head branch (authoritative — no extra state).
@@ -1099,6 +1221,17 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
             log "DRY-RUN would reconcile issue #${number} (re-read labels, maybe close, then cleanup ${branch})"
             continue
         fi
+        # GATE-4 (ADR-0022 extension, issue #1475): после merge в develop
+        # триггерим L-Build-All-Services, чтобы .image-versions.dev получил
+        # dev-<new-sha> теги. Push-trigger (.github/workflows/L-Build-On-Branch-Push.yml)
+        # — primary path; этот вызов — backup на случай race / eventual
+        # consistency. Non-fatal: build failure НЕ блокирует merge-gate
+        # (см. agent-flow-post-merge-build.sh).
+        if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ] && [ -f "${REPO_DIR}/scripts/agent_flow/agent-flow-post-merge-build.sh" ]; then
+            if ! bash "${REPO_DIR}/scripts/agent_flow/agent-flow-post-merge-build.sh" "${pr_number}" "${pr_base}" 2>/dev/null; then
+                log "issue #${number}: WARNING post-merge build trigger failed (non-fatal, push-trigger should retry)"
+            fi
+        fi
         # 0.1) Re-read current labels & state — race with e2e-process
         # (e2e-process may have set e2e-done between our initial issue-list
         # pull and now; also the issue may already be CLOSED from a previous
@@ -1110,9 +1243,56 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
         if has_label "$_current_labels_norm" "$DONE_LABEL"; then
             _has_e2e_done="1"
         fi
+        # Retro 19.08 #79779a21 (orphans #1422 + #1456): worker may have
+        # opted out of e2e via label `no-e2e-required` (docs/lint/refactor
+        # PR per ADR-0022 §4.2). Once the PR is MERGED into develop, the
+        # issue must close just like an e2e-done one — otherwise it sits
+        # OPEN until manual triage (orphan pattern). Pre-compute so the
+        # OPEN-state branch can decide.
+        _has_no_e2e="0"
+        if has_label "$_current_labels_norm" "$NO_E2E_LABEL"; then
+            _has_no_e2e="1"
+        fi
         _issue_state="$(gh issue view "$number" --repo "$GH_REPO" --json state \
             --jq '.state' 2>/dev/null || echo '')"
-        log "issue #${number}: pre-close state=${_issue_state} e2e-done=${_has_e2e_done}"
+        log "issue #${number}: pre-close state=${_issue_state} e2e-done=${_has_e2e_done} no-e2e=${_has_no_e2e}"
+
+        # 0.1a) Early short-circuit for no-e2e-required (retro 19.08 #79779a21,
+        # ADR-0022 §4.2). Worker explicitly opted out of e2e — the PR
+        # MERGED into develop is sufficient evidence that the fix landed.
+        # We bypass the user-reopen guard below because `no-e2e-required`
+        # is itself an explicit worker signal (not a PASS-proven label),
+        # and the user-reopen guard is designed to protect e2e-done
+        # provenance (which is more fragile — a PASS verdict can be
+        # stale). If user explicitly reopens AFTER no-e2e-required close,
+        # that's a separate follow-up the user will file themselves
+        # (Q22-style).
+        #
+        # IMPORTANT: we DO NOT continue / skip the case statement below
+        # — instead we update _issue_state=CLOSED so the existing CLOSED
+        # branch fires (idempotent skip-close, proceed to destructive
+        # cleanup). This preserves the post-close flow: branch delete +
+        # cleanup comment + kanban card archive.
+        if [ "$pr_state" = "MERGED" ] && [ "$pr_base" = "$DEVELOP_BRANCH" ] \
+            && [ "$_issue_state" = "OPEN" ] \
+            && [ "$_has_e2e_done" = "0" ] \
+            && [ "$_has_no_e2e" = "1" ]; then
+            if [ "$DRY_RUN" = "true" ]; then
+                log "DRY-RUN would auto-close issue #${number} via ${NO_E2E_LABEL} (retro 19.08 #79779a21)"
+                # In DRY-RUN, fall through to the case (will hit OPEN
+                # branch but with no-op close).
+                _closed_this_tick=1
+            elif gh issue close "$number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
+                _closed_this_tick=1
+                log "issue #${number}: CLOSED (reason=completed, auto-close via ${NO_E2E_LABEL}, retro 19.08 #79779a21)"
+                # Reflect the new state for the case statement below so
+                # it walks into the CLOSED branch (skip close + cleanup).
+                _issue_state="CLOSED"
+            else
+                log "issue #${number}: WARNING gh issue close failed (${NO_E2E_LABEL} path) — retry next tick"
+                labeled=$((labeled+1)); continue
+            fi
+        fi
 
         # 0.2) Close only when invariant holds. Four branches:
         #   (a) already CLOSED → idempotent skip, proceed to cleanup
@@ -2744,8 +2924,7 @@ while IFS=$'\t' read -r r_issue r_pr r_head; do
     if has_label "$_r_labels_norm" "$REJECTED_LABEL"; then
         _r_was_rejected=1
         log "retro-path: issue #${r_issue} имеет ${REJECTED_LABEL} — ищем PASS-доказательство (ретро t_061d466e)"
-    elif has_label "$_r_labels_norm" "$ISSUE_LABEL" \
-        || has_label "$_r_labels_norm" "$NEEDS_E2E_LABEL" \
+    elif has_label "$_r_labels_norm" "$NEEDS_E2E_LABEL" \
         || has_label "$_r_labels_norm" "$DONE_LABEL" \
         || has_label "$_r_labels_norm" "$NO_E2E_LABEL" \
         || has_label "$_r_labels_norm" "$NEEDS_REVIEW_LABEL"; then
@@ -2757,6 +2936,16 @@ while IFS=$'\t' read -r r_issue r_pr r_head; do
         log "retro-path: issue #${r_issue} уже в process-цикле (${_r_labels_norm}) — skip"
         continue
     fi
+    # Ретро 19.08 t_498dc624 (process-fix-hermes-stuck-open): ${ISSUE_LABEL}
+    # (= hermes) БЕЗ workflow-меток (needs-e2e/e2e-done/no-e2e-required/
+    # needs-review) — process-fix issue. Основной цикл таких issues НЕ
+    # закрывает (требует e2e-done, а process-fix PR не может его получить:
+    # e2e-process скипает CI-only фикс), e2e-process тоже не ставит e2e-done
+    # → петля. Ретро-путь должен иметь шанс закрыть через PASS-доказательство
+    # (CI-only + green CI, или e2e run SUCCESS). ТОЛЬКО наличие hermes не
+    # блокирует ретро-путь — иначе issues #1421/#1419/#1404/#1412 висели OPEN
+    # при смерженных PR. Workflow-метки (выше) по-прежнему skip'ают —
+    # взаимоисключаемость с основным циклом.
     _r_state="$(gh issue view "$r_issue" --repo "$GH_REPO" --json state \
         --jq '.state' 2>/dev/null || echo '')"
     if [ "$_r_state" != "OPEN" ]; then
@@ -2774,6 +2963,10 @@ while IFS=$'\t' read -r r_issue r_pr r_head; do
         _r_evidence="e2e run SUCCESS на ветке ${r_head}"
     else
         # (b) CI-only PR (все файлы в CI-контуре) + зелёный CI → e2e не нужен
+        # Ретро 19.08 t_498dc624: расширяем CI-only на .hermes/plans/ —
+        # процессные фиксы часто касаются roadmap/планов (например, PR #1414
+        # правил .hermes/plans/process-fix-roadmap.md — раньше не считался
+        # CI-only → process-fix issue #1404 висел OPEN при зелёном CI).
         _r_files="$(gh pr view "$r_pr" --repo "$GH_REPO" --json files \
             --jq '[.files[].path]' 2>/dev/null || echo '[]')"
         _r_ci_only="$(printf '%s' "$_r_files" | python3 -c '
@@ -2781,7 +2974,10 @@ import json, sys
 try:
     files = json.load(sys.stdin)
     ok = bool(files) and all(
-        f.startswith(".github/") or f.startswith("scripts/agent_flow/") or f.startswith("docs/")
+        f.startswith(".github/")
+        or f.startswith("scripts/agent_flow/")
+        or f.startswith("docs/")
+        or f.startswith(".hermes/plans/")
         for f in files
     )
     print("1" if ok else "0")
@@ -2796,7 +2992,7 @@ except Exception:
             _r_rollup="$(gh pr view "$r_pr" --repo "$GH_REPO" --json statusCheckRollup \
                 --jq '[.statusCheckRollup[] | select(.conclusion == "FAILURE" or .conclusion == "CANCELLED" or .conclusion == "TIMED_OUT")] | length' 2>/dev/null || echo 1)"
             if [ "${_r_rollup:-1}" -eq 0 ] 2>/dev/null; then
-                _r_evidence="CI-only PR #${r_pr} (только .github/scripts/docs), CI зелёный — e2e не требуется"
+                _r_evidence="CI-only PR #${r_pr} (.github/scripts/docs/.hermes-plans), CI зелёный — e2e не требуется"
             fi
         fi
     fi

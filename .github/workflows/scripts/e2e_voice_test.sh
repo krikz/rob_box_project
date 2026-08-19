@@ -236,13 +236,47 @@ source "$SCRIPT_DIR_E2E/e2e_voice_lib.sh"
 # --- ADR-0022 GATE-1 acceptance.json (auto-discovery + gating) --------------
 # Резолвим ACCEPTANCE_FILE в порядке приоритета:
 #   1) --acceptance <path> (явный CLI)
-#   2) <dir(scenario.json)>/acceptance.json (auto-discovery)
-#   3) пустой → gating решает, что делать
+#   2) <dir(scenario.json)>/acceptance.json (preferred — common-case)
+#   3) <dir(scenario.json)>/<SCENARIO_BASE>_acceptance.json
+#      (back-compat: scenario=foo.json → foo_acceptance.json)
+#   4) <dir(scenario.json)>/<SCENARIO_BASE>_acceptance_v<N>.json
+#   5) <dir(scenario.json)>/<SCENARIO_PREFIX>_acceptance.json
+#      где PREFIX — имя без суффиксов _suite / _v1 / _v<N>
+#      (issue #1452: music_library_suite_v1.json → music_library_acceptance_v1.json)
+#   6) <dir(scenario.json)>/<SCENARIO_PREFIX>_acceptance_v<N>.json
+#   7) пустой → gating решает, что делать
+#
+# Issue #1452 (round-155 GATE-1 FAIL): ищется ровно acceptance.json, но в
+# репо лежит music_library_acceptance_v1.json → false-FAIL без реального
+# прогона. Решается цепочкой кандидатов (без поломки обратной совместимости
+# — acceptance.json по-прежнему в приоритете).
 if [ -z "$ACCEPTANCE_FILE" ] && [ -n "$SCENARIO_FILE" ]; then
     _scenario_dir="$(dirname "$SCENARIO_FILE")"
-    if [ -f "${_scenario_dir}/acceptance.json" ]; then
-        ACCEPTANCE_FILE="${_scenario_dir}/acceptance.json"
-        log "GATE-1: acceptance.json auto-discovered at $ACCEPTANCE_FILE"
+    _scenario_base="$(basename "$SCENARIO_FILE" .json)"
+    # PREFIX: убираем типичные хвосты сценариев (_suite, _v1, _v<N>)
+    _scenario_prefix="$_scenario_base"
+    # _v\d+ → strip
+    _scenario_prefix="${_scenario_prefix%_v[0-9]*}"
+    # _suite → strip (часто между feature и version: music_library_suite_v1).
+    # Используем именно %_suite (с подчёркиванием): %suite без _ удаляет
+    # буквы ИЗ КОНЦА слова и оставляет висящий _ (issue #1461):
+    # music_library_suite → music_library_, а не music_library.
+    _scenario_prefix="${_scenario_prefix%_suite}"
+    _found=""
+    for _cand in \
+        "acceptance.json" \
+        "${_scenario_base}_acceptance.json" \
+        "${_scenario_prefix}_acceptance.json" \
+        "${_scenario_prefix}_acceptance_v1.json" \
+        "${_scenario_prefix}_acceptance_v2.json"; do
+        if [ -f "${_scenario_dir}/${_cand}" ]; then
+            _found="${_scenario_dir}/${_cand}"
+            break
+        fi
+    done
+    if [ -n "$_found" ]; then
+        ACCEPTANCE_FILE="$_found"
+        log "GATE-1: acceptance auto-discovered at $ACCEPTANCE_FILE"
     fi
 fi
 
@@ -251,8 +285,17 @@ fi
 # Single-shot --text без scenario не требует acceptance (smoke-test
 # legitimate use case — быстрая итерация на одной фразе).
 if [ -n "$SCENARIO_FILE" ] && [ -z "$ACCEPTANCE_FILE" ] && [ "$ACCEPTANCE_SKIP" != "1" ]; then
+    _scenario_dir="$(dirname "$SCENARIO_FILE")"
+    _scenario_base="$(basename "$SCENARIO_FILE" .json)"
+    _scenario_prefix="$_scenario_base"
+    _scenario_prefix="${_scenario_prefix%_v[0-9]*}"
+    _scenario_prefix="${_scenario_prefix%_suite}"
     log "❌ GATE-1 FAIL: --scenario задан, но acceptance.json не найден"
-    log "   Ожидался: $(dirname "$SCENARIO_FILE")/acceptance.json"
+    log "   Ожидался один из:"
+    log "     1) ${_scenario_dir}/acceptance.json"
+    log "     2) ${_scenario_dir}/${_scenario_base}_acceptance.json"
+    log "     3) ${_scenario_dir}/${_scenario_prefix}_acceptance.json"
+    log "     4) ${_scenario_dir}/${_scenario_prefix}_acceptance_v1.json"
     log "   Обход (НЕ рекомендуется): --acceptance-skip"
     log "   Подробнее: docs/adr/0022-process-e2e-done-gates.md §4.1"
     mkdir -p "$OUT_DIR"
@@ -262,7 +305,12 @@ if [ -n "$SCENARIO_FILE" ] && [ -z "$ACCEPTANCE_FILE" ] && [ "$ACCEPTANCE_SKIP" 
   "pass": false,
   "reason": "scenario.json provided but acceptance.json not found",
   "scenario_file": "$SCENARIO_FILE",
-  "expected_acceptance_path": "$(dirname "$SCENARIO_FILE")/acceptance.json",
+  "expected_acceptance_paths": [
+    "$(dirname "$SCENARIO_FILE")/acceptance.json",
+    "$(dirname "$SCENARIO_FILE")/${_scenario_base}_acceptance.json",
+    "$(dirname "$SCENARIO_FILE")/${_scenario_prefix}_acceptance.json",
+    "$(dirname "$SCENARIO_FILE")/${_scenario_prefix}_acceptance_v1.json"
+  ],
   "hint": "create acceptance.json with expected_tool_calls + must_not_call, or pass --acceptance-skip to disable gating"
 }
 EOF
