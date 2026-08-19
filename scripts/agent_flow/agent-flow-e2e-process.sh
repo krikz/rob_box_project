@@ -2182,45 +2182,74 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
     #      понятную ошибку и оператор/воркер увидит GATE-1 FAIL с подсказкой).
     # Auto-discovery делаем ТОЛЬКО при наличии scenario_file: одиночный smoke-test
     # --text (по ADR-0022 §4.1) НЕ требует acceptance.json (single-shot use case).
-    if [ -z "$e2e_acceptance_file" ] && [ -n "$e2e_scenario_file" ]; then
-        _acc_dir="$(dirname "$e2e_scenario_file")"
-        _acc_basename="$(basename "$e2e_scenario_file" .json)"
-        _acc_found=""
-        # Convention 1: <scenario_dir>/acceptance.json
-        if [ -f "${_acc_dir}/acceptance.json" ]; then
-            _acc_found="${_acc_dir}/acceptance.json"
-            log "issue #${number}: acceptance_file auto-discovered (convention 1, dir/acceptance.json): ${_acc_found}"
-        # Convention 2: <scenario_dir>/<basename>_acceptance.json
-        elif [ -f "${_acc_dir}/${_acc_basename}_acceptance.json" ]; then
-            _acc_found="${_acc_dir}/${_acc_basename}_acceptance.json"
-            log "issue #${number}: acceptance_file auto-discovered (convention 2, dir/<basename>_acceptance.json): ${_acc_found}"
-        # Convention 3 (issue #1456): strip _v[0-9]+ и _suite, искать
-        # <feature>_acceptance[_v<N>].json. Синхронно с e2e_voice_test.sh.
+    #
+    # ВАЖНО: e2e_scenario_file остаётся repo-relative для workflow. Но acceptance
+    # discovery обязан смотреть В round WORKTREE_DIR, а не в cwd процесса (cron
+    # запускает его из /home/builder/hermes-share/rob_box_project). Иначе файл
+    # виден в round-worktree, но считается «нет convention» → round-158/156 GATE-1
+    # false-fail, хотя .github/e2e/scenarios/music_library_acceptance_v1.json
+    # существует. Функция возвращает repo-relative candidate, поэтому workflow
+    # по-прежнему получает checkout-able path, а не абсолютный /tmp path.
+    resolve_acceptance_candidate() {  # $1=scenario_file $2=worktree_dir
+        local _scenario_file="$1" _worktree_dir="$2"
+        local _scenario_path _scenario_dir_rel _acc_dir _acc_basename _acc_prefix _found
+
+        if [[ "$_scenario_file" = /* ]]; then
+            _scenario_path="$_scenario_file"
+            # Absolute scenario paths are already runner-local; preserve that
+            # resolution for the acceptance file as well.
+            _scenario_dir_rel=""
         else
-            _acc_prefix="$_acc_basename"
-            # _v<digits> → strip (music_library_suite_v1 → music_library_suite)
-            _acc_prefix="${_acc_prefix%_v[0-9]*}"
-            # _suite → strip (music_library_suite → music_library).
-            # Bash pattern должен быть именно %_suite (с подчёркиванием):
-            # %suite без подчёркивания удаляет буквы suite ИЗ КОНЦА слова и
-            # оставляет висящий _ (issue #1461, retro #1456/#1452):
-            # music_library_suite → music_library_  (а не music_library).
-            _acc_prefix="${_acc_prefix%_suite}"
-            if [ -f "${_acc_dir}/${_acc_prefix}_acceptance.json" ]; then
-                _acc_found="${_acc_dir}/${_acc_prefix}_acceptance.json"
-                log "issue #${number}: acceptance_file auto-discovered (convention 3, feature prefix): ${_acc_found}"
-            elif [ -f "${_acc_dir}/${_acc_prefix}_acceptance_v1.json" ]; then
-                _acc_found="${_acc_dir}/${_acc_prefix}_acceptance_v1.json"
-                log "issue #${number}: acceptance_file auto-discovered (convention 3, feature prefix +v1): ${_acc_found}"
-            elif [ -f "${_acc_dir}/${_acc_prefix}_acceptance_v2.json" ]; then
-                _acc_found="${_acc_dir}/${_acc_prefix}_acceptance_v2.json"
-                log "issue #${number}: acceptance_file auto-discovered (convention 3, feature prefix +v2): ${_acc_found}"
-            fi
+            # anchor relative path in this round; caller cwd is not authoritative.
+            _scenario_path="$_worktree_dir/$_scenario_file"
+            _scenario_dir_rel="$(dirname "$_scenario_file")"
         fi
-        if [ -z "$_acc_found" ]; then
-            log "issue #${number}: ⚠️ acceptance_file не задан и convention не сработал для ${e2e_scenario_file} — workflow сам упадёт на GATE-1 (ADR-0022 §4.1 R1)"
+        _acc_dir="$(dirname "$_scenario_path")"
+        _acc_basename="$(basename "$_scenario_file" .json)"
+        _acc_prefix="$_acc_basename"
+        _acc_prefix="${_acc_prefix%_v[0-9]*}"
+        _acc_prefix="${_acc_prefix%_suite}"
+
+        _found=""
+        if [ -f "${_acc_dir}/acceptance.json" ]; then
+            _found="acceptance.json"
+        elif [ -f "${_acc_dir}/${_acc_basename}_acceptance.json" ]; then
+            _found="${_acc_basename}_acceptance.json"
+        elif [ -f "${_acc_dir}/${_acc_prefix}_acceptance.json" ]; then
+            _found="${_acc_prefix}_acceptance.json"
+        elif [ -f "${_acc_dir}/${_acc_prefix}_acceptance_v1.json" ]; then
+            _found="${_acc_prefix}_acceptance_v1.json"
+        elif [ -f "${_acc_dir}/${_acc_prefix}_acceptance_v2.json" ]; then
+            _found="${_acc_prefix}_acceptance_v2.json"
+        fi
+        if [ -n "$_found" ] && [ -n "$_scenario_dir_rel" ]; then
+            _found="${_scenario_dir_rel}/${_found}"
+        elif [ -n "$_found" ] && [[ "$_scenario_file" = /* ]]; then
+            # Preserve absolute scenario paths so an explicit local fixture
+            # keeps its matching absolute acceptance path.
+            _found="${_acc_dir}/${_found}"
+        fi
+        printf '%s' "$_found"
+    }
+
+    if [ -z "$e2e_acceptance_file" ] && [ -n "$e2e_scenario_file" ]; then
+        # Keep candidate repo-relative for workflow's `scp "${{ inputs.acceptance_file }}"`.
+        _acc_candidate="$(resolve_acceptance_candidate "$e2e_scenario_file" "$WORKTREE_DIR")"
+        if [ -n "$_acc_candidate" ]; then
+            # Convention 1/2: <scenario_dir>/acceptance.json or basename
+            _acc_basename="$(basename "$e2e_scenario_file" .json)"
+            if [ "$_acc_candidate" = "acceptance.json" ]; then
+                log "issue #${number}: acceptance_file auto-discovered (convention 1, dir/acceptance.json): ${WORKTREE_DIR}/${_acc_candidate}"
+            elif [ "$_acc_candidate" = "${_acc_basename}_acceptance.json" ]; then
+                log "issue #${number}: acceptance_file auto-discovered (convention 2, dir/<basename>_acceptance.json): ${WORKTREE_DIR}/${_acc_candidate}"
+            else
+                log "issue #${number}: acceptance_file auto-discovered (convention 3, feature prefix + version): ${WORKTREE_DIR}/${_acc_candidate}"
+            fi
         else
-            e2e_acceptance_file="$_acc_found"
+            log "issue #${number}: ⚠️ acceptance_file не задан и convention не сработал для ${e2e_scenario_file} в round worktree ${WORKTREE_DIR} — workflow сам упадёт на GATE-1 (ADR-0022 §4.1 R1)"
+        fi
+        if [ -n "$_acc_candidate" ]; then
+            e2e_acceptance_file="$_acc_candidate"
         fi
     fi
     [ -n "$e2e_acceptance_file" ] && e2e_args+=(-f "acceptance_file=$e2e_acceptance_file")
