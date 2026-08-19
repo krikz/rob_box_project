@@ -86,6 +86,21 @@ class TestEvaluateExecuteMusicCode:
         assert verdict.kind is MusicGuardVerdictKind.SKIP
         assert guard.user_retry_count == 0
 
+    def test_skip_when_generate_music_called(self) -> None:
+        """MiniMax AI-генерация (generate_music + gen_play_from_library)
+        тоже коротко замыкает guard (issue #1392 follow-up) — не-vocal
+        «сгенерируй трек» не должен ретраиться в фантомный handle_music."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="сгенерируй трек про устрицу",
+            tools_called=("speak_text", "generate_music", "gen_play_from_library"),
+            dj_enabled=False,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.SKIP
+        assert verdict.reason == "executed"
+        assert guard.user_retry_count == 0
+
     def test_tools_called_none_is_treated_like_empty(self) -> None:
         """``None`` tools_called must not blow up — fall through to the
         Bug B / Bug C decision tree."""

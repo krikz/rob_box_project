@@ -667,16 +667,27 @@ class GenSaveToLibraryTool(MCPTool):
 # ── Tool 5: gen_play_from_library ───────────────────────────────────────────
 
 class GenPlayFromLibraryTool(MCPTool):
-    """Вернуть путь к mp3 из библиотеки + инкрементировать play_count.
+    """Воспроизвести mp3 из библиотеки (публикует путь в sound_node).
 
-    Полноценное воспроизведение через ``/voice/audio/speech`` — отдельная
-    задача (audio_node расширение). Этот tool даёт LLM минимально-достаточный
-    артефакт: путь, длительность, метаданные.
+    Публикует абсолютный путь к ``track.mp3`` на ``/voice/sound/play_file`` —
+    ``sound_node`` декодирует mp3 (pydub → 16 kHz stereo) и играет через
+    ``AudioPlaybackManager`` (issue #1392 follow-up). Дополнительно
+    инкрементирует ``play_count`` и возвращает метаданные трека.
     """
 
     def __init__(self, node: Any, library: GeneratedMusicLibrary) -> None:
         super().__init__(node)
         self._library = library
+        self._play_file_pub = None
+        try:
+            from std_msgs.msg import String
+
+            if hasattr(node, "create_publisher"):
+                self._play_file_pub = node.create_publisher(
+                    String, "/voice/sound/play_file", 10
+                )
+        except Exception:  # noqa: BLE001 — unit tests / minimal install
+            self._play_file_pub = None
 
     @property
     def name(self) -> str:
@@ -685,11 +696,11 @@ class GenPlayFromLibraryTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Получить путь к mp3 из библиотеки сгенерированной музыки для "
-            "последующего воспроизведения. Возвращает track_id, path, "
-            "duration_ms, title. play_count увеличивается на 1. "
-            "Используй когда юзер говорит «сыграй тот грустный трек», "
-            "«давай послушаем ещё раз»."
+            "Воспроизвести mp3-трек из библиотеки сгенерированной музыки "
+            "(публикует путь в sound_node, который играет файл через "
+            "динамик). Возвращает track_id, path, duration_ms, title. "
+            "play_count увеличивается на 1. Используй когда юзер говорит "
+            "«сыграй тот грустный трек», «давай послушаем ещё раз»."
         )
 
     @property
@@ -724,6 +735,19 @@ class GenPlayFromLibraryTool(MCPTool):
         # Best-effort play_count++
         self._library.increment_play_count(track_id)
 
+        # Реальное воспроизведение: публикуем путь в sound_node
+        # (issue #1392 follow-up). Деградируем в path-only если publisher
+        # недоступен (юнит-тесты / minimal install).
+        playback = "publish_failed"
+        if self._play_file_pub is not None:
+            try:
+                from std_msgs.msg import String
+
+                self._play_file_pub.publish(String(data=info["path"]))
+                playback = "published"
+            except Exception as exc:  # noqa: BLE001
+                self.log_error(f"gen_play_from_library publish failed: {exc}")
+
         return MCPToolResult(
             success=True,
             data={
@@ -732,13 +756,10 @@ class GenPlayFromLibraryTool(MCPTool):
                 "title": info.get("title", ""),
                 "duration_ms": info.get("duration_ms", 0),
                 "exists_on_disk": True,
-                "hint": (
-                    "Playback через audio_node пока не автоматизирован — "
-                    "передайте path в /voice/audio/speech (future work)."
-                ),
+                "playback": playback,
             },
             message=(
-                f"Трек '{track_id}' готов к воспроизведению: {info['path']} "
+                f"Трек '{track_id}' воспроизводится: {info['path']} "
                 f"({info.get('duration_ms', 0) / 1000:.1f}с)"
             ),
         )

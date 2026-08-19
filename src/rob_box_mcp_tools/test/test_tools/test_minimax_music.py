@@ -43,7 +43,9 @@ class _FakeLogger:
 
 
 def _fake_node():
-    return SimpleNamespace(get_logger=lambda: _FakeLogger())
+    node = SimpleNamespace(get_logger=lambda: _FakeLogger())
+    node.create_publisher = MagicMock(return_value=MagicMock())
+    return node
 
 
 # ── Imports under test (load minimax_music directly, bypassing
@@ -695,6 +697,13 @@ class TestPlayFromLibraryTool:
         result = setup.tool.execute(track_id=setup.track_id)
         assert not result.success
         assert "mp3" in result.error.lower()
+
+    def test_publishes_path_to_sound_node(self, setup):
+        """gen_play_from_library must publish the mp3 path to /voice/sound/play_file."""
+        result = setup.tool.execute(track_id=setup.track_id)
+        assert result.success
+        assert result.data["playback"] == "published"
+        assert setup.tool._play_file_pub.publish.called
 
 
 class TestSaveToLibraryTool:
