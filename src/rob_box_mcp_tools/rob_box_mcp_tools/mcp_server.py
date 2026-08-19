@@ -72,6 +72,31 @@ from .tools import (
     FaqSearchTool,
     SearchWebTool,
 )
+
+# Issue #1392 — MiniMax music generation + generated-music library tools.
+# Imported explicitly (not via wildcard) so the heavy ``tools.music``
+# dependency tree stays opt-in.
+try:
+    from .core.minimax_music_client import MinimaxMusicClient
+    from .core.generated_music_library import GeneratedMusicLibrary
+    from .tools.minimax_music import (
+        GenerateMusicTool,
+        GenListLibraryTool,
+        GenSearchLibraryTool,
+        GenSaveToLibraryTool,
+        GenPlayFromLibraryTool,
+        GenDeleteFromLibraryTool,
+        GenGetTrackInfoTool,
+    )
+    _MINIMAX_MUSIC_AVAILABLE = True
+except ImportError as _exc:  # noqa: BLE001
+    MinimaxMusicClient = None  # type: ignore[assignment,misc]
+    GeneratedMusicLibrary = None  # type: ignore[assignment,misc]
+    GenerateMusicTool = GenListLibraryTool = GenSearchLibraryTool = None  # type: ignore[assignment,misc]
+    GenSaveToLibraryTool = GenPlayFromLibraryTool = None  # type: ignore[assignment,misc]
+    GenDeleteFromLibraryTool = GenGetTrackInfoTool = None  # type: ignore[assignment,misc]
+    _MINIMAX_MUSIC_AVAILABLE = False
+    _MINIMAX_MUSIC_IMPORT_ERROR = str(_exc)
 from .waypoint_store import WaypointStore
 from .mapping_state import MappingState
 from .voice_state import VoiceStateStore
@@ -595,6 +620,12 @@ class MCPServer(Node):
         self.registry.register(LoadTrackTool(self, track_library, music_manager))
         self.registry.register(DeleteTrackTool(self, track_library))
 
+        # Issue #1392 — MiniMax music generation + persistent library.
+        # Graceful degradation: any failure (no API key, no /data volume,
+        # import error) only disables the new tools — Renardo tools keep
+        # working. This mirrors the same try/except pattern used above.
+        self._register_minimax_music_tools()
+
         # Issue #1016 — empty-response music fallback. When the LLM returns
         # an empty reply to a music request ("поставь что-нибудь", "сыграй
         # классику"), dialogue_node publishes /mcp/music_fallback and we
@@ -624,6 +655,83 @@ class MCPServer(Node):
             self.get_logger().warning(
                 f"⚠️ Не удалось подписаться на /mcp/music_fallback: {exc}"
             )
+
+    # ------------------------------------------------------------------
+    # Issue #1392 — MiniMax music generation + persistent library tools.
+    # ------------------------------------------------------------------
+
+    def _register_minimax_music_tools(self) -> None:
+        """Регистрирует 7 MiniMax music tools (graceful degradation).
+
+        Tools registered on success:
+            generate_music, gen_list_library, gen_search_library,
+            gen_save_to_library, gen_play_from_library,
+            gen_delete_from_library, gen_get_track_info
+
+        Failure modes (each disables only the new tools, Renardo keeps working):
+            * Module import failed (e.g. missing package)         → log + return
+            * MINIMAX_API_KEY not set in env                      → log + skip gen tools
+            * /data volume not writable (GeneratedMusicLibrary)   → log + skip lib tools
+        """
+        if not _MINIMAX_MUSIC_AVAILABLE:
+            self.get_logger().warning(
+                f"⚠️ MiniMax music tools disabled: import failed "
+                f"({_MINIMAX_MUSIC_IMPORT_ERROR})"
+            )
+            return
+
+        # Type-narrow for Pyright: _MINIMAX_MUSIC_AVAILABLE gates the rest.
+        assert MinimaxMusicClient is not None
+        assert GeneratedMusicLibrary is not None
+        assert GenerateMusicTool is not None
+        assert GenListLibraryTool is not None
+        assert GenSearchLibraryTool is not None
+        assert GenSaveToLibraryTool is not None
+        assert GenPlayFromLibraryTool is not None
+        assert GenDeleteFromLibraryTool is not None
+        assert GenGetTrackInfoTool is not None
+
+        # Library — initialised first; required by ALL gen_* tools.
+        try:
+            music_library = GeneratedMusicLibrary()
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ MiniMax music library disabled: init failed ({exc}). "
+                "generate_music / gen_* tools will NOT be registered."
+            )
+            return
+        self._generated_music_library = music_library
+        self.get_logger().info(
+            f"🎼 Generated music library: {music_library.count} трек(ов) "
+            f"в {music_library.root_dir}"
+        )
+
+        # Register library-only tools (they don't need the API client).
+        self.registry.register(GenListLibraryTool(self, music_library))
+        self.registry.register(GenSearchLibraryTool(self, music_library))
+        self.registry.register(GenSaveToLibraryTool(self, music_library))
+        self.registry.register(GenDeleteFromLibraryTool(self, music_library))
+        self.registry.register(GenGetTrackInfoTool(self, music_library))
+        # play tool is registered even without client — uses library only
+        self.registry.register(GenPlayFromLibraryTool(self, music_library))
+
+        # Client — needed only by generate_music.
+        try:
+            music_client = MinimaxMusicClient()
+        except Exception as exc:  # noqa: BLE001 — config errors are expected
+            self.get_logger().warning(
+                f"⚠️ MinimaxMusicClient init failed ({exc}). "
+                "generate_music tool NOT registered, but gen_* tools still "
+                "work (можно читать/искать/проигрывать уже сохранённые треки)."
+            )
+            return
+
+        self._minimax_music_client = music_client
+        self.registry.register(GenerateMusicTool(self, music_client, music_library))
+        self.get_logger().info(
+            f"🎼 generate_music enabled: endpoint={music_client.endpoint}, "
+            f"model={music_client.default_model}"
+        )
 
     def _init_voice_memory(self) -> None:
         """Инициализация VoiceMemory (долгосрочная память). Не падает при ошибках."""
