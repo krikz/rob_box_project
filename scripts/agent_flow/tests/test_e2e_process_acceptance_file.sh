@@ -1,6 +1,7 @@
 #!/bin/bash
 # ============================================================================
-# test_e2e_process_acceptance_file.sh — bug t_cca7c074 (ретро 19.08)
+# test_e2e_process_acceptance_file.sh — bug t_cca7c074 (ретро 19.08),
+# расширено для issue #1456 / #1452
 #
 # Проверяет парсинг acceptance_file в agent-flow-e2e-process.sh и его
 # auto-discovery по convention в репо:
@@ -17,6 +18,11 @@
 #   7) Ничего нет + scenario НЕ задан (smoke-test --text) → НЕ ищем
 #      acceptance.json (single-shot use case, ADR-0022 §4.1)
 #   8) workflow_args содержит -f acceptance_file=<path> если что-то нашлось
+#   9) Convention 3 в e2e-process.sh (issue #1456) — strip _suite/_v<N> в
+#      deploy-слое (раньше была только в harness). Чтобы не дублировать
+#      harness PREFIX на deploy-уровне, для сценариев вида foo_suite_v1.json
+#      e2e-process сам отрезолвит foo_acceptance_v1.json и передаст явно
+#      в workflow (а не даст harness падать в GATE-1).
 #
 # Тест НЕ запускает agent-flow-e2e-process.sh целиком (слишком много
 # pre-checks), а изолирует ту же логику парсинга в локальные функции —
@@ -108,19 +114,38 @@ harness_discover_acceptance() {  # $1=scenario_file
     printf '%s' "$_found"
 }
 
-# e2e-process auto-discovery (только 2 конвенции; harness PREFIX мы не дублируем —
-# e2e-process передаёт -f acceptance_file явно, harness делает fallback.
-# Это разные слои: e2e-process — деплоймент, harness — runtime fallback.)
+# e2e-process auto-discovery (convention 1/2 + Convention 3 — issue #1456).
+# Синхронна с PREFIX-логикой в harness (issue #1452). Локальная копия
+# реализации в e2e-process.sh (Convention 3 в issue #1456 — strip _suite
+# и _v<N> для сценариев вида foo_suite_v1.json → foo_acceptance.json /
+# foo_acceptance_v1.json). Если скрипт изменится — обновите и эту копию.
 ep_discover_acceptance() {  # $1=scenario_file
     local scenario_file="$1"
-    local _acc_dir _acc_basename
+    local _acc_dir _acc_basename _acc_prefix _acc_found
     _acc_dir="$(dirname "$scenario_file")"
     _acc_basename="$(basename "$scenario_file" .json)"
+    _acc_found=""
+    # Convention 1
     if [ -f "${_acc_dir}/acceptance.json" ]; then
-        printf '%s' "${_acc_dir}/acceptance.json"
+        _acc_found="${_acc_dir}/acceptance.json"
+    # Convention 2
     elif [ -f "${_acc_dir}/${_acc_basename}_acceptance.json" ]; then
-        printf '%s' "${_acc_dir}/${_acc_basename}_acceptance.json"
+        _acc_found="${_acc_dir}/${_acc_basename}_acceptance.json"
+    # Convention 3 (issue #1456): strip _v[0-9]+ и _suite для PREFIX,
+    # затем ищем <prefix>_acceptance.json или <prefix>_acceptance_v{N}.json.
+    else
+        _acc_prefix="$_acc_basename"
+        _acc_prefix="${_acc_prefix%_v[0-9]*}"
+        _acc_prefix="${_acc_prefix%_suite}"
+        if [ -f "${_acc_dir}/${_acc_prefix}_acceptance.json" ]; then
+            _acc_found="${_acc_dir}/${_acc_prefix}_acceptance.json"
+        elif [ -f "${_acc_dir}/${_acc_prefix}_acceptance_v1.json" ]; then
+            _acc_found="${_acc_dir}/${_acc_prefix}_acceptance_v1.json"
+        elif [ -f "${_acc_dir}/${_acc_prefix}_acceptance_v2.json" ]; then
+            _acc_found="${_acc_dir}/${_acc_prefix}_acceptance_v2.json"
+        fi
     fi
+    printf '%s' "$_acc_found"
 }
 
 # --- Sanity-check: паттерн в скрипте совпадает с тестом ---------------------
@@ -272,6 +297,41 @@ else
     fail "workflow scp" "scp e2e_voice_lib.sh не найден в workflow"
 fi
 
+# --- Test 14: Convention 3 — e2e-process.sh (issue #1456) ------------------
+# e2e-process должен отрезолвить foo_suite_v1.json → foo_acceptance[_v1].json
+# через PREFIX (strip _suite/_v[0-9]+), даже если рядом НЕТ
+# foo_suite_v1_acceptance.json / acceptance.json. Это лечит round-156 GATE-1 FAIL:
+# e2e_acceptance_file оставался пустым → workflow не передавал acceptance →
+# harness падал на GATE-1, хотя реальный файл был в репо.
+echo ""
+echo "=== Test 14: Convention 3 (issue #1456) — strip _suite/_v<N> в e2e-process ==="
+_mock_dir5="$(mktemp -d)"
+trap 'rm -rf "$_mock_dir" "$_mock_dir2" "$_mock_dir3" "$_mock_dir4" "$_mock_dir5"' EXIT
+mkdir -p "$_mock_dir5/scenarios"
+# Ровно кейс issue #1456 / #1452: music_library_suite_v1.json рядом с
+# music_library_acceptance_v1.json (без music_library_suite_v1_acceptance.json
+# или acceptance.json).
+echo '{}' > "$_mock_dir5/scenarios/music_library_suite_v1.json"
+echo '{}' > "$_mock_dir5/scenarios/music_library_acceptance_v1.json"
+_discovered_ep="$(ep_discover_acceptance "$_mock_dir5/scenarios/music_library_suite_v1.json")"
+assert_eq "e2e-process Convention 3 — strip _suite_v1 → music_library_acceptance_v1" \
+    "$_mock_dir5/scenarios/music_library_acceptance_v1.json" "$_discovered_ep"
+
+# Также: PREFIX + _v2 (если бы кто-то назвал music_library_acceptance_v2.json)
+echo '{}' > "$_mock_dir5/scenarios/voice_selection_suite_v2.json"
+echo '{}' > "$_mock_dir5/scenarios/voice_selection_acceptance_v2.json"
+_discovered_ep="$(ep_discover_acceptance "$_mock_dir5/scenarios/voice_selection_suite_v2.json")"
+assert_eq "e2e-process Convention 3 — _v2 тоже резолвится" \
+    "$_mock_dir5/scenarios/voice_selection_acceptance_v2.json" "$_discovered_ep"
+
+# Если есть только PREFIX без версии — резолвится (music_library_acceptance.json
+# без _v1). Сценарий может называться music_library_suite.json (без _v<N>).
+echo '{}' > "$_mock_dir5/scenarios/music_library_suite.json"
+echo '{}' > "$_mock_dir5/scenarios/music_library_acceptance.json"
+_discovered_ep="$(ep_discover_acceptance "$_mock_dir5/scenarios/music_library_suite.json")"
+assert_eq "e2e-process Convention 3 — без _v<N> тоже резолвится" \
+    "$_mock_dir5/scenarios/music_library_acceptance.json" "$_discovered_ep"
+
 # --- Test 13: harness передаёт --acceptance вверх по --acceptance ----------
 echo ""
 echo "=== Test 13: harness CLI --acceptance flag (regression guard) ==="
@@ -279,6 +339,32 @@ if grep -q '\-\-acceptance)' "$HARNESS"; then
     pass "harness поддерживает --acceptance CLI flag"
 else
     fail "--acceptance flag" "не найден в harness"
+fi
+
+# --- Test 15: e2e-process.sh содержит Convention 3 (sanity) -----------------
+# Sanity: после фикса issue #1456 в e2e-process.sh должна быть PREFIX-логика
+# (strip _suite / _v[0-9]+). Без неё deploy-слой не отрезолвит
+# music_library_suite_v1.json → music_library_acceptance_v1.json.
+echo ""
+echo "=== Test 15: e2e-process.sh содержит Convention 3 strip _suite/_v[N] (issue #1456) ==="
+# Конкретные строки PREFIX-стрипа:
+#   _acc_prefix="${_acc_prefix%_v[0-9]*}"   — strip _v<digits>+
+#   _acc_prefix="${_acc_prefix%_suite}"     — strip _suite
+# shellcheck disable=SC2016  # тестовые литералы — не шелл-код
+if grep -qE '_acc_prefix="\$\{_acc_prefix%_v\[0-9\]\*\}"' "$E2E_PROCESS"; then
+    pass "Convention 3 (strip _v[0-9]+) присутствует в e2e-process.sh"
+else
+    fail "Convention 3 strip _v[N]" "не найдена в e2e-process.sh — регресс issue #1456"
+fi
+if grep -qE '_acc_prefix="\$\{_acc_prefix%_suite\}"' "$E2E_PROCESS"; then
+    pass "Convention 3 (strip _suite) присутствует в e2e-process.sh"
+else
+    fail "Convention 3 strip _suite" "не найдена в e2e-process.sh"
+fi
+if grep -q 'auto-discovered (convention 3' "$E2E_PROCESS"; then
+    pass "Convention 3 log-message присутствует в e2e-process.sh"
+else
+    fail "Convention 3 log-message" "не найдена в e2e-process.sh"
 fi
 
 # --- Итоги ----------------------------------------------------------------
