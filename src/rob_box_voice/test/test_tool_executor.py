@@ -7,7 +7,9 @@ Covers the SchedulerToolExecutor contract from
   no ``await`` on the side effect — «LLM свободна»);
 * ``stop_music`` is deferred until the VOICE channel drains (e2e v36
   regression: stop_music must not outrun the TTS chunk);
-* music prelude tools go to the MUSIC channel;
+* music starters (``execute_music_code`` / ``set_vibe_preset`` /
+  ``load_track``) bypass the scheduler and execute blocking (party
+  regression live 19.08 — the LLM must see the real result);
 * bypass tools (memory_* / search_* / get_*) execute directly;
 * a scheduler failure fails OPEN — the underlying provider is called
   directly and the robot is never silenced by a scheduler bug;
@@ -83,10 +85,15 @@ async def _run_until_complete(
 def test_channel_for_tool_routes_channel_tools() -> None:
     assert channel_for_tool("speak_text") is ChannelKind.VOICE
     assert channel_for_tool("stop_music") is ChannelKind.MUSIC
-    assert channel_for_tool("execute_music_code") is ChannelKind.MUSIC
-    assert channel_for_tool("set_vibe_preset") is ChannelKind.MUSIC
-    assert channel_for_tool("load_track") is ChannelKind.MUSIC
     assert channel_for_tool("play_animation") is ChannelKind.ANIM
+
+
+def test_channel_for_tool_bypasses_music_starters() -> None:
+    # Music starters run BLOCKING (bypass) so the LLM sees the real
+    # result — only stop_music stays on the scheduler (party regression).
+    assert channel_for_tool("execute_music_code") is None
+    assert channel_for_tool("set_vibe_preset") is None
+    assert channel_for_tool("load_track") is None
 
 
 def test_channel_for_tool_bypasses_unknown_and_instant_tools() -> None:
@@ -248,8 +255,8 @@ def test_scheduler_submit_failure_falls_back_to_direct_execution() -> None:
             def _bad_submit(*_args, **_kwargs):
                 raise RuntimeError("boom")
             sched.submit = _bad_submit  # type: ignore[assignment]
-            result = await executor.execute(_call("c1", "execute_music_code"))
-            assert underlying.executed == [_call("c1", "execute_music_code")]
+            result = await executor.execute(_call("c1", "speak_text"))
+            assert underlying.executed == [_call("c1", "speak_text")]
             assert json.loads(result.content)["ok"] is True
         finally:
             sched.shutdown()
