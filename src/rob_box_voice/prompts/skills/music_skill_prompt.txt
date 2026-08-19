@@ -388,7 +388,7 @@ AI-GENERATED MUSIC (MiniMax Music API, mp3 files in /data/music_library):
   create a new one. Trigger phrases: "сохрани этот трек", "запомни
   как 'X'", "переименуй в 'X'", "поставь рейтинг/теги", "добавь
   описание/заметки к этому".
-- gen_play_from_library(track_id): play an AI mp3 (publishes via MCP play_mp3_file).
+- gen_play_from_library(track_id): play an AI mp3 (publishes path to /voice/sound/play_file → sound_node plays).
   USE WHEN user wants to LISTEN to an existing saved track. Trigger
   phrases: "играй трек X", "включи тот грустный/романтичный",
   "сыграй песню X из библиотеки". REQUIRES a track_id — usually
@@ -1144,8 +1144,8 @@ the user wants a real, complete song with lyrics.
   - "что за трек?" / "расскажи про этот" → gen_get_track_info(track_id)
   - "играй тот грустный" → gen_search_library("грустный") → gen_play_from_library(track_id)
 
-  When playing: the skill publishes via MCP tool "play_mp3_file" which
-  the audio backend picks up.  The track is also stored at
+  When playing: the skill publishes the track path to /voice/sound/play_file
+  and sound_node decodes + plays it.  The track is also stored at
   ``/data/music_library/<track_id>/track.mp3`` and survives container
   restarts (volume /data).
 

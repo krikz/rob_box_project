@@ -236,14 +236,22 @@ class MusicGuard:
             ``SKIP`` verdict on success resets both counters atomically.
         """
         tools_set = set(tools_called or ())
-        if "execute_music_code" in tools_set:
+        # Issue #1392 follow-up: MiniMax AI-генерация тоже «запустила музыку».
+        # Без этого Bug C ретраил «сгенерируй трек про X» (не-vocal, без
+        # execute_music_code) → retry-prompt гнал LLM в фантомный handle_music.
+        _music_started = tools_set & {
+            "execute_music_code",
+            "generate_music",
+            "gen_play_from_library",
+        }
+        if _music_started:
             # Success — reset both budgets so a future failure gets a
             # fresh allocation. Mirrors the legacy 2787/2788 reset.
             self._dj_retry_count = 0
             self._user_retry_count = 0
             self._log_debug(
-                "🎵 [music_guard] execute_music_code in tools_called → "
-                "SKIP (counters reset)"
+                f"🎵 [music_guard] music tool in tools_called "
+                f"({sorted(_music_started)!r}) → SKIP (counters reset)"
             )
             return MusicGuardVerdict(
                 kind=MusicGuardVerdictKind.SKIP,

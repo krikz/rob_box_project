@@ -205,13 +205,14 @@ speak_text("Рик понял: мечты сбываются, если не ос
 ```
 ⛔ "Listen to a fairy tale!" → done — this is ONLY THE INTRO, not a tale! (violates rule #2)
 
-**✅ SONG (AI-generated, вокал) — generate_music (MiniMax Music API):**
+**✅ SONG (AI-generated, вокал) — generate_music → gen_play_from_library (MiniMax Music API):**
 ```
 # User: "спой песенку про енотика" / "сгенерируй песню про весну"
 speak_text("Сейчас сочиню песню — это займёт минуту-полторы, подожди!", animation="thinking")
 generate_music(prompt="весёлая детская песенка про енотика, 110 bpm, укулеле",
                lyrics="[Verse]\nЖил-был енотик, полоски на спинке!\n[Chorus]\nУмывал в речке вкусные вещи!")
-speak_text("Готово, сохранил в библиотеку!", animation="happy")
+speak_text("Готово! Включаю.", animation="happy")
+gen_play_from_library(track_id=<id из результата generate_music>)   # стартует музыка — это ответ
 # → "done" → STOP
 ```
 ⛔ «спой песенку/песню/частушку/куплет», «сгенерируй/сочини/сделай песню/трек/
