@@ -150,6 +150,32 @@ ep_discover_acceptance() {  # $1=scenario_file
     printf '%s' "$_acc_found"
 }
 
+# Regression guard for GATE-1 round-158: scenario_file stays repo-relative,
+# but acceptance discovery must resolve against the actual round worktree.
+_round_fixture="$(mktemp -d)"
+_empty_round_fixture="$(mktemp -d)"
+_resolver_tmp="$(mktemp -t ep_resolver_XXXXXX.sh)"
+trap 'rm -rf "$_mock_dir" "$_mock_dir2" "$_mock_dir3" "$_mock_dir4" "$_mock_dir5" "$_round_fixture" "$_empty_round_fixture" "$_resolver_tmp"' EXIT
+mkdir -p "$_round_fixture/.github/e2e/scenarios"
+mkdir -p "$_empty_round_fixture/.github/e2e/scenarios"
+printf '%s\n' '{}' > "$_round_fixture/.github/e2e/scenarios/music_library_suite_v1.json"
+printf '%s\n' '{"expected_tool_calls":["generate_music"]}' > "$_round_fixture/.github/e2e/scenarios/music_library_acceptance_v1.json"
+printf '%s\n' '{}' > "$_empty_round_fixture/.github/e2e/scenarios/music_library_suite_v1.json"
+
+# Extract and execute the real production resolver, not a hand-copied helper.
+sed -n '/^    resolve_acceptance_candidate() {/,/^    }$/p' "$E2E_PROCESS" > "$_resolver_tmp"
+printf '%s\n' "resolve_acceptance_candidate \".github/e2e/scenarios/music_library_suite_v1.json\" \"\$1\"" >> "$_resolver_tmp"
+chmod +x "$_resolver_tmp"
+_resolved="$(bash "$_resolver_tmp" "$_round_fixture")"
+assert_eq "round worktree resolver finds music_library_acceptance_v1.json" \
+    ".github/e2e/scenarios/music_library_acceptance_v1.json" "$_resolved"
+_resolved="$(bash "$_resolver_tmp" "$_empty_round_fixture")"
+if [ -n "$_resolved" ]; then
+    fail "empty round must not resolve acceptance" "found '$_resolved'"
+else
+    pass "empty round does not reuse caller cwd"
+fi
+
 # --- Sanity-check: паттерн в скрипте совпадает с тестом ---------------------
 echo "=== Sanity: паттерн в $E2E_PROCESS совпадает с локальным extract ==="
 if grep -q 'acceptance_file[[:space:]]*:' "$E2E_PROCESS"; then
