@@ -2169,27 +2169,54 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
     # если не задан явно. Иначе workflow получает пустой acceptance_file input →
     # harness ищет <scenario_dir>/acceptance.json (его там нет для music_library_*
     # — он лежит как music_library_acceptance_v1.json, см. ADR-0022 GATE-1 R1).
-    # Convention (выбран и зафиксирован в issue body):
+    # Convention (выбран и зафиксирован в issue body, расширен в issue #1456):
     #   1) <scenario_dir>/acceptance.json (ADR-0022 §4.1 — основной)
     #   2) <scenario_dir>/<scenario_basename>_acceptance.json (расширение,
-    #      чтобы не переименовывать существующие music_library_acceptance_v1.json)
-    #   3) пусто → workflow сам упадёт на gating (e2e_voice_test.sh пишет
+    #      для foo.json → foo_acceptance.json)
+    #   3) <scenario_dir>/<feature>_acceptance[_v<N>].json — strip _v[0-9]+
+    #      и _suite (issue #1452 / #1456: music_library_suite_v1.json →
+    #      music_library_acceptance_v1.json). Логика синхронна с
+    #      e2e_voice_test.sh auto-discovery (GATE-1), issue #1456 false-positive
+    #      на bash pattern, но сам кейс реальный — лечим через эту convention.
+    #   4) пусто → workflow сам упадёт на gating (e2e_voice_test.sh пишет
     #      понятную ошибку и оператор/воркер увидит GATE-1 FAIL с подсказкой).
     # Auto-discovery делаем ТОЛЬКО при наличии scenario_file: одиночный smoke-test
     # --text (по ADR-0022 §4.1) НЕ требует acceptance.json (single-shot use case).
     if [ -z "$e2e_acceptance_file" ] && [ -n "$e2e_scenario_file" ]; then
         _acc_dir="$(dirname "$e2e_scenario_file")"
         _acc_basename="$(basename "$e2e_scenario_file" .json)"
+        _acc_found=""
         # Convention 1: <scenario_dir>/acceptance.json
         if [ -f "${_acc_dir}/acceptance.json" ]; then
-            e2e_acceptance_file="${_acc_dir}/acceptance.json"
-            log "issue #${number}: acceptance_file auto-discovered (convention 1, dir/acceptance.json): ${e2e_acceptance_file}"
+            _acc_found="${_acc_dir}/acceptance.json"
+            log "issue #${number}: acceptance_file auto-discovered (convention 1, dir/acceptance.json): ${_acc_found}"
         # Convention 2: <scenario_dir>/<basename>_acceptance.json
         elif [ -f "${_acc_dir}/${_acc_basename}_acceptance.json" ]; then
-            e2e_acceptance_file="${_acc_dir}/${_acc_basename}_acceptance.json"
-            log "issue #${number}: acceptance_file auto-discovered (convention 2, dir/<basename>_acceptance.json): ${e2e_acceptance_file}"
+            _acc_found="${_acc_dir}/${_acc_basename}_acceptance.json"
+            log "issue #${number}: acceptance_file auto-discovered (convention 2, dir/<basename>_acceptance.json): ${_acc_found}"
+        # Convention 3 (issue #1456): strip _v[0-9]+ и _suite, искать
+        # <feature>_acceptance[_v<N>].json. Синхронно с e2e_voice_test.sh.
         else
+            _acc_prefix="$_acc_basename"
+            # _v<digits> → strip (music_library_suite_v1 → music_library_suite)
+            _acc_prefix="${_acc_prefix%_v[0-9]*}"
+            # _suite → strip (music_library_suite → music_library)
+            _acc_prefix="${_acc_prefix%_suite}"
+            if [ -f "${_acc_dir}/${_acc_prefix}_acceptance.json" ]; then
+                _acc_found="${_acc_dir}/${_acc_prefix}_acceptance.json"
+                log "issue #${number}: acceptance_file auto-discovered (convention 3, feature prefix): ${_acc_found}"
+            elif [ -f "${_acc_dir}/${_acc_prefix}_acceptance_v1.json" ]; then
+                _acc_found="${_acc_dir}/${_acc_prefix}_acceptance_v1.json"
+                log "issue #${number}: acceptance_file auto-discovered (convention 3, feature prefix +v1): ${_acc_found}"
+            elif [ -f "${_acc_dir}/${_acc_prefix}_acceptance_v2.json" ]; then
+                _acc_found="${_acc_dir}/${_acc_prefix}_acceptance_v2.json"
+                log "issue #${number}: acceptance_file auto-discovered (convention 3, feature prefix +v2): ${_acc_found}"
+            fi
+        fi
+        if [ -z "$_acc_found" ]; then
             log "issue #${number}: ⚠️ acceptance_file не задан и convention не сработал для ${e2e_scenario_file} — workflow сам упадёт на GATE-1 (ADR-0022 §4.1 R1)"
+        else
+            e2e_acceptance_file="$_acc_found"
         fi
     fi
     [ -n "$e2e_acceptance_file" ] && e2e_args+=(-f "acceptance_file=$e2e_acceptance_file")
