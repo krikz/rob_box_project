@@ -2125,6 +2125,25 @@ $(cat "$acc_file" 2>/dev/null || true)"
         fi
     fi
 
+    # Ретро 19.08 t_b3691e1b (issue #1448, баг #1392/#1398): Шифу явно
+    # возвращает issue в ротацию (\`${NEEDS_E2E_LABEL}\`), потому что на
+    # роботе фича не работает, хотя PR уже merged и ранее получил
+    # \`${DONE_LABEL}\`. Без guard'а каждый тик e2e-process видит merged
+    # PR → fail_kind=merged → auto-\`${DONE_LABEL}\` → reconcile
+    # merge-gate снимает PR-side stale метки → Шифу снова возвращает в
+    # \`${NEEDS_E2E_LABEL}\` → цикл бесконечный, реального e2e не
+    # происходит. Guard: если issue имеет явный \`${NEEDS_E2E_LABEL}\`
+    # override при fail_kind=merged → меняем fail_kind на
+    # merged-override, ветка выбирает \`${REJECTED_LABEL}\` вместо
+    # \`${DONE_LABEL}\` (см. ниже). Guard стоит ДО ветвления
+    # label_action, чтобы verdict_emoji/fail_note/manual_step корректно
+    # переключились на «явный override Шифу».
+    if [ "$fail_kind" = "merged" ] && [ "$verdict" != "success" ] \
+        && has_label "$labels_norm" "$NEEDS_E2E_LABEL"; then
+        log "issue #${number}: fail_kind=merged + verdict=${verdict} + explicit ${NEEDS_E2E_LABEL} override → переход в merged-override (ретро 19.08 t_b3691e1b, issue #1448)"
+        fail_kind="merged-override"
+    fi
+
     if [ "$verdict" = "success" ]; then
         label_action="add ${DONE_LABEL}"
         remove_action="remove ${NEEDS_E2E_LABEL}"
@@ -2134,6 +2153,17 @@ $(cat "$acc_file" 2>/dev/null || true)"
         label_action="add ${DONE_LABEL}"
         remove_action="remove ${NEEDS_E2E_LABEL}"
         verdict_emoji="ℹ️"
+    elif [ "$fail_kind" = "merged-override" ]; then
+        # Ретро 19.08 t_b3691e1b (issue #1448): Шифу явно вернул issue в
+        # \`${NEEDS_E2E_LABEL}\`, но PR уже merged + verdict≠success. Авто-
+        # \`${DONE_LABEL}\` подавлено (иначе цикл needs-e2e→e2e-done
+        # бесконечный). Ставим \`${REJECTED_LABEL}\` (явный сигнал «есть
+        # проблема»), \`${NEEDS_E2E_LABEL}\` снимаем → issue уходит на
+        # ручное решение Шифу (close руками или follow-up PR с новым
+        # фиксом).
+        label_action="add ${REJECTED_LABEL}"
+        remove_action="remove ${NEEDS_E2E_LABEL}"
+        verdict_emoji="⚠️"
     elif [ "$fail_kind" = "infra" ]; then
         # Инфра-сбой — issue остаётся в ротации (needs-e2e НЕ снимаем).
         label_action="add ${INFRA_FAIL_LABEL}"
@@ -2149,6 +2179,8 @@ $(cat "$acc_file" 2>/dev/null || true)"
     fail_note=""
     if [ "$fail_kind" = "merged" ]; then
         fail_note="> ⚠️ PR #${pr_number} уже смержен в ${DEVELOP_BRANCH} — метка \`e2e:rejected\` НЕ ставилась. Поставлена \`${DONE_LABEL}\` (фикс доехал до develop). Причина FAIL прогона: ${verdict} (см. run)."
+    elif [ "$fail_kind" = "merged-override" ]; then
+        fail_note="> ⚠️ Явный override Шифу: issue имел \`${NEEDS_E2E_LABEL}\` (ручной возврат в ротацию), PR #${pr_number} уже смержен. Авто-\`${DONE_LABEL}\` подавлено (предотвращение needs-e2e↔e2e-done пинг-понга). Поставлена \`${REJECTED_LABEL}\` для ручного решения — Шифу: close руками, follow-up PR с новым фиксом + повторный \`${NEEDS_E2E_LABEL}\`, или игнор (фикс уже в develop)."
     elif [ "$fail_kind" = "infra" ]; then
         fail_note="> ⚠️ FAIL по ИНФРАСТРУКТУРЕ (квота MiniMax 429 / робот недоступен / build fail) — метка \`e2e:rejected\` НЕ ставилась, issue остаётся в ротации (\`${NEEDS_E2E_LABEL}\` сохранён), следующий тик повторит прогон. Поставлена \`${INFRA_FAIL_LABEL}\`."
     fi
@@ -2169,6 +2201,12 @@ $(cat "$acc_file" 2>/dev/null || true)"
         manual_step="If PASS: \\`gh pr merge --squash ${branch} -> develop\\` (manual merge per Q5)."
     elif [ "$fail_kind" = "merged" ]; then
         manual_step="PR #${pr_number} уже смержен — фикс в develop, e2e-прогон не нужен. Issue можно закрыть (или ждёт другого релиза)."
+    elif [ "$fail_kind" = "merged-override" ]; then
+        # Ретро 19.08 t_b3691e1b (issue #1448): явный override Шифу не сработал,
+        # цикл needs-e2e↔e2e-done предотвращён через \\`${REJECTED_LABEL}\\`.
+        # Шифу решает вручную: close (фикс уже в develop), follow-up PR +
+        # повторный \\`${NEEDS_E2E_LABEL}\\`, или игнор.
+        manual_step="Явный \\`${NEEDS_E2E_LABEL}\\` override подавлен (PR уже смержен). Issue: \\`${REJECTED_LABEL}\\` поставлена, \\`${NEEDS_E2E_LABEL}\\` снята. Шифу решает вручную: (1) \\`gh issue close ${number} --reason completed\\` если фикс признан ок; (2) follow-up PR с новым фиксом + повторный \\`${NEEDS_E2E_LABEL}\\`; (3) игнор (фикс уже в develop)."
     elif [ "$fail_kind" = "infra" ]; then
         manual_step="Infra-FAIL (квота 429 / робот недоступен / build): жди следующего тика e2e-process — issue остаётся в ротации, прогон повторится автоматически."
     else
@@ -2313,7 +2351,7 @@ sshpass -p open ssh ros2@10.1.1.21 'docker logs voice-assistant --since <ts> | g
     #    доказательства работы фичи. Нашёл → worker-evidence: в PR. Нет → чини.
     #  - Никаких новых веток/PRов — тот же PR перепрогоняется пока e2e не
     #    покажет реальные доказательства работы фичи.
-    if [ -n "$e2e_task_id" ] && [ -n "$branch" ] && [ "$fail_kind" != "infra" ] && [ "$fail_kind" != "merged" ]; then
+    if [ -n "$e2e_task_id" ] && [ -n "$branch" ] && [ "$fail_kind" != "infra" ] && [ "$fail_kind" != "merged" ] && [ "$fail_kind" != "merged-override" ]; then
         # ретро 10.08 (t_9caf5d52): при infra-FAIL / merged-PR карточку воркеру
         # НЕ создаём — воркеру нечего чинить (квота/робот/build или фикс уже в develop).
         # Определяем профиль воркера по меткам issue (agent:<role>)
