@@ -412,8 +412,14 @@ jobs:
 
       - name: Tag with SHA and update .image-versions
         if: inputs.push_to_registry == 'true' && needs.prepare.outputs.docker_tag != 'local'
+        # Bugfix issue #1482: вместо `git rev-parse --short HEAD` используем
+        # `${GITHUB_SHA::7}` — это commit, который ТРИГГЕРНУЛ workflow run,
+        # неизменный на всём протяжении run. Прежний `git rev-parse --short HEAD`
+        # брал локальный HEAD, который мог сместиться после
+        # scripts/ci/commit-image-versions.sh `git checkout -B` →
+        # .image-versions указывал на несуществующий image.
         run: |
-          SHORT_SHA=$(git rev-parse --short HEAD)
+          SHORT_SHA="${GITHUB_SHA::7}"
           LOCAL_TAG="${{ needs.prepare.outputs.local_tag }}"
           DOCKER_TAG="${{ needs.prepare.outputs.docker_tag }}"
           SERVICE_NAME="${{ needs.prepare.outputs.service_name }}"
@@ -425,6 +431,29 @@ jobs:
           docker tag "$LOCAL_TAG" "$SHA_TAG"
           docker push "$SHA_TAG"
           echo "✅ Immutable SHA tag pushed: $SHA_TAG"
+
+          # Acceptance B (#1482): verify SHA-image is in registry BEFORE
+          # committing it into per-service .image-versions.{tag}. Иначе
+          # deploy тянет несуществующий тег, робот не обновляется.
+          verify_in_registry() {
+            local TAG="$1"
+            local REPO="krikz/rob_box"
+            local URL="http://${LOCAL_REGISTRY}/v2/${REPO}/manifests/${TAG}"
+            local HTTP_CODE
+            HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+              -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+              "$URL" || echo "000")
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "❌ Verify FAIL: ${TAG} missing in registry (HTTP ${HTTP_CODE})" >&2
+              return 1
+            fi
+            echo "✅ Verify OK: ${TAG} present in registry"
+            return 0
+          }
+          if ! verify_in_registry "${SHA_TAG}"; then
+            echo "   ⚠️  .image-versions НЕ будет обновлён этим коммитом" >&2
+            exit 1
+          fi
 
           # Map service_name to .image-versions env var name
           case "$SERVICE_NAME" in
