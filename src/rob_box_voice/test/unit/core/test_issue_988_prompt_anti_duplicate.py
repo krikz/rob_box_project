@@ -66,9 +66,9 @@ def test_master_prompt_has_few_shot_correct_and_wrong_examples() -> None:
     """Acceptance #2: few-shot examples of correct/incorrect responses."""
     content = MASTER_PROMPT_PATH.read_text(encoding="utf-8")
 
-    # ✅ Correct: speak_text(song) → done, no re-print.
-    assert "✅ SONG / RAP — lyrics via speak_text, final answer = \"done\":" in content
-    assert "Текст уже озвучен через speak_text, повторять НЕ нужно." in content
+    # ✅ Correct: generate_music(song) → done, no re-print of lyrics.
+    assert "✅ SONG (AI-generated, вокал) — generate_music (MiniMax Music API):" in content
+    assert "generate_music(prompt=" in content
     # ❌ Wrong: post-amble duplication — full example with the banned phrase.
     assert "⛔ WRONG — post-amble duplication (NEVER do this!):" in content
     assert "← ДУБЛЬ! Весь текст уже озвучен." in content

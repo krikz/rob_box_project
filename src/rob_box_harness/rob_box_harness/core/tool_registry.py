@@ -448,6 +448,135 @@ def _build_flat_specs() -> tuple[ToolSpec, ...]:
                 "required": ["name"],
             },
         ),
+        # Issue #1392 — MiniMax Music API generation + persistent library.
+        # The MCP side registers ``generate_music`` + 6 ``gen_*`` tools in
+        # ``mcp_server._register_minimax_music_tools``, but they were never
+        # added to this harness-side catalog → the LLM never saw their
+        # schemas and fell back to ``execute_music_code`` (Renardo) for
+        # «сгенерируй песню» requests (live regression 19.08.2026).
+        ToolSpec(
+            name="generate_music",
+            description=(
+                "Сгенерировать НОВЫЙ вокальный/инструментальный трек через "
+                "MiniMax Music API (music-3.0-free) и сохранить в "
+                "/data/music_library. Используй когда юзер просит «спой/"
+                "сгенерируй/сочини/сделай песню/трек/мелодию про X». "
+                "Генерация 40-160с — предупреди юзера о паузе. Для вокального "
+                "трека (is_instrumental=false) ОБЯЗАТЕЛЬНО сам напиши lyrics "
+                "с тегами [Verse]/[Chorus] и передай их."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Стиль/настроение (жанр, темп, инструменты). 1-2000 chars.",
+                    },
+                    "lyrics": {
+                        "type": "string",
+                        "description": "Текст песни с тегами [Verse]/[Chorus]. Обязателен, если is_instrumental=false.",
+                    },
+                    "is_instrumental": _BOOL_PROPERTY,
+                    "mood": _TEXT_PROPERTY,
+                    "genre": _TEXT_PROPERTY,
+                    "lang": {"type": "string", "description": "Язык вокала ('ru','en')."},
+                    "tags": _TEXT_PROPERTY,
+                    "title": _TEXT_PROPERTY,
+                },
+                "required": ["prompt"],
+            },
+        ),
+        ToolSpec(
+            name="gen_list_library",
+            description=(
+                "Показать список треков из библиотеки сгенерированной музыки "
+                "(/data/music_library). Возвращает id, title, prompt, tags, "
+                "mood, genre, rating, play_count."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "limit": _INT_PROPERTY,
+                    "sort_by": {
+                        "type": "string",
+                        "description": "recent (default) | popular | rating.",
+                    },
+                    "tag": _TEXT_PROPERTY,
+                    "mood": _TEXT_PROPERTY,
+                },
+            },
+        ),
+        ToolSpec(
+            name="gen_search_library",
+            description=(
+                "Поиск по библиотеке сгенерированной музыки по ключевому слову "
+                "(title/prompt/lyrics/genre/mood/notes)."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Поисковый запрос (1-200 chars)."},
+                    "limit": _INT_PROPERTY,
+                },
+                "required": ["query"],
+            },
+        ),
+        ToolSpec(
+            name="gen_save_to_library",
+            description=(
+                "Обновить метаданные (tags/rating/mood/genre/title) уже "
+                "сгенерированного трека."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "track_id": {"type": "string", "description": "UUID трека."},
+                    "title": _TEXT_PROPERTY,
+                    "tags": _TEXT_PROPERTY,
+                    "mood": _TEXT_PROPERTY,
+                    "genre": _TEXT_PROPERTY,
+                    "rating": _INT_PROPERTY,
+                    "notes": _TEXT_PROPERTY,
+                },
+                "required": ["track_id"],
+            },
+        ),
+        ToolSpec(
+            name="gen_play_from_library",
+            description=(
+                "Получить путь к mp3 сгенерированного трека из библиотеки для "
+                "воспроизведения."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "track_id": {"type": "string", "description": "UUID трека."},
+                },
+                "required": ["track_id"],
+            },
+        ),
+        ToolSpec(
+            name="gen_delete_from_library",
+            description="Удалить трек из библиотеки сгенерированной музыки (необратимо).",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "track_id": {"type": "string", "description": "UUID трека."},
+                },
+                "required": ["track_id"],
+            },
+        ),
+        ToolSpec(
+            name="gen_get_track_info",
+            description="Полные метаданные одного сгенерированного трека.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "track_id": {"type": "string", "description": "UUID трека."},
+                },
+                "required": ["track_id"],
+            },
+        ),
         # Issue #1101 — voice biometrics (resemblyzer d-vectors). The
         # MCP-side ``RegisterSpeakerTool`` was registered in
         # ``rob_box_mcp_tools.tools.dialogue`` (issue #1077) but NEVER

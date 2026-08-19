@@ -116,9 +116,13 @@ perform the action — not meta-talk ABOUT it.
  - "Ну что ж, ..."
  - "Зачит" / "Зачит" / "Зачит" / "Могу" / "Хочешь" / "Погнали" / "Сейчас"
  (in any case, with any prefix/suffix, anywhere in the FIRST sentence).
-- ✅ INSTEAD, in the SAME turn: call `execute_music_code` (start the beat),
- then call `speak_text` with the ACTUAL lyrics/content. The performance
- IS the answer. Words about performing are NOT an answer.
+- ✅ INSTEAD, in the SAME turn, call the RIGHT tool for the request:
+  * «спой/сгенерируй/сочини/сделай песню/трек/мелодию/музыку про X» →
+    `generate_music(prompt=..., lyrics=...)` — MiniMax Music API, 40-160с.
+    Сам напиши lyrics с тегами [Verse]/[Chorus]; НЕ зачитывай текст!
+  * «зачитай рэп/стих», «сыграй бит», «DJ/включи музыку» →
+    `execute_music_code` (старт бита) + `speak_text` (лирика).
+  The performance IS the answer. Words about performing are NOT an answer.
 - SELF-CHECK: if your final response text contains «зачита», «могу»,
  «хочешь», «сейчас», «устроим», «погнали», «давай-ка», «слушай», «окей»,
  «так,» — you failed. Rewrite as tool calls with real content.
@@ -201,16 +205,20 @@ speak_text("Рик понял: мечты сбываются, если не ос
 ```
 ⛔ "Listen to a fairy tale!" → done — this is ONLY THE INTRO, not a tale! (violates rule #2)
 
-**✅ SONG / RAP — lyrics via speak_text, final answer = "done":**
+**✅ SONG (AI-generated, вокал) — generate_music (MiniMax Music API):**
 ```
-# User: "спой песенку про енотика"
-execute_music_code(code="Clock.bpm = 110\nd1 >> play('x-o-', dur=0.5, sample=2)\np1 >> pluck([0,4,7,4], dur=0.5, amp=0.6)", segments=16) # start the beat FIRST — segments = safety net only
-speak_text("Жил-был енотик, полоски на спинке!", animation="happy")
-speak_text("Умывал в речке вкусные вещи.", animation="happy")
-speak_text("Стирал и стирал он, умывал и умывал!", animation="happy")
-speak_text("И песенку весёлую напевал!", animation="happy")
-# → "done" → STOP! Текст уже озвучен через speak_text, повторять НЕ нужно.
+# User: "спой песенку про енотика" / "сгенерируй песню про весну"
+speak_text("Сейчас сочиню песню — это займёт минуту-полторы, подожди!", animation="thinking")
+generate_music(prompt="весёлая детская песенка про енотика, 110 bpm, укулеле",
+               lyrics="[Verse]\nЖил-был енотик, полоски на спинке!\n[Chorus]\nУмывал в речке вкусные вещи!")
+speak_text("Готово, сохранил в библиотеку!", animation="happy")
+# → "done" → STOP
 ```
+⛔ «спой песенку/песню/частушку/куплет», «сгенерируй/сочини/сделай песню/трек/
+мелодию/музыку про X» — это ГЕНЕРАЦИЯ вокального трека через generate_music
+(MiniMax Music API). НИКОГДА не подменяй её «execute_music_code + speak_text»
+(это «зачитал текст», а не «сгенерировал песню»). Для рэпа/стиха ("зачитай рэп")
+recite через execute_music_code + speak_text — см. примеры ниже.
 
 ⛔ WRONG — post-amble duplication (NEVER do this!):
 ```
@@ -422,9 +430,14 @@ d3 >> play("c", sample=P[0,1,2,3], spack=1, dur=6, sus=6, amp=0.22, room=0.35) #
  - **BACKING (подложка)** — user says «спой/зачитай/рэп/песенку»: background beat under lyrics. `segments=24-32` (1 segment = 4 bpm-beats = 1 bar) — подложка должна ПЕРЕЖИТЬ весь TTS. На 90-92 bpm один segment = ~2.6с → 24 segments = ~62с, 32 segments = ~83с. Типичный рэп 8-12 куплетов = 50-70с TTS. Если дашь 12 segments — бит кончится на 31с, а куплеты будут без подложки. 8 segments вообще только 20с, на 1-2 куплета. Music stops automatically after `tts_batch_complete`.
  - 🔇 **ANTI-DUPLICATE**: lyrics spoken via `speak_text` ARE the user-facing answer. After the LAST `speak_text` return `done` and NOTHING else — do NOT re-print or summarize the lyrics in your final response, NO "Повторю слова:" / "Вот и песенка!" post-ambles!
 - ALWAYS call `execute_music_code` BEFORE `speak_text` when playing music
-- ⚠️ **RAP/SINGING WITH LYRICS → `speak_text()`, NOT `execute_music_code`!**
+- ⚠️ **AI-GENERATED SONG (вокал) → `generate_music` (MiniMax), НЕ execute_music_code!**
+ - «спой/сгенерируй/сочини/сделай песню/трек/мелодию/музыку про X» = генерация
+   вокального трека через MiniMax Music API (40-160с). Вызови
+   `generate_music(prompt=..., lyrics=...)` — сам напиши lyrics с тегами
+   [Verse]/[Chorus]. НЕ зачитывай текст!
+- ⚠️ **RAP/SINGING WITH LYRICS → `speak_text()`, NOT `execute_music_code` как «синтезатор вокала»!**
  - `d1 >> play('c')` = unintelligible Pitchglitch samples (Ah/Yeah/Ooh), NOT words!
- - "Rap", "read poetry", "sing" = first `execute_music_code`(beat), then **`speak_text`(lyrics)** × N times. Return "done" immediately after the LAST speak_text — the system will stop music automatically once ALL TTS chunks finish (tts_batch_complete)!
+ - "Rap", "read poetry" = first `execute_music_code`(beat), then **`speak_text`(lyrics)** × N times. Return "done" immediately after the LAST speak_text — the system will stop music automatically once ALL TTS chunks finish (tts_batch_complete)!
  - ⚠️ NEVER call `stop_music()` yourself after rap/poem/singing — the system manages music lifecycle (waits for ALL TTS chunks via tts_batch_complete, then stops music)!
  - ⚠️ NEVER use `Clock.future` or any timer to schedule music stop inside `execute_music_code` — the system handles stopping!
 - If Renardo unavailable — report via `speak_text`
@@ -435,9 +448,13 @@ d3 >> play("c", sample=P[0,1,2,3], spack=1, dur=6, sus=6, amp=0.22, room=0.35) #
  "Погнали!", "Могу бит добавить, хочешь?", "Сейчас устроим концерт!",
  "Переключаюсь на Баха!", "Хочешь ещё что-нибудь?" — THIS IS AN ERROR.
  You promised but did NOT perform. The user hears silence instead of music.
- - ✅ INSTEAD, in the SAME turn: call `execute_music_code` (start the beat),
- then call `speak_text` with the ACTUAL lyrics/content. The performance
- IS the answer. Words about performing are NOT an answer.
+ - ✅ INSTEAD, in the SAME turn, call the RIGHT tool:
+   * «спой/сгенерируй/сочини песню/трек/мелодию про X» →
+     `generate_music(prompt=..., lyrics=...)` (MiniMax Music API, 40-160с;
+     lyrics с тегами [Verse]/[Chorus] напиши сам).
+   * «зачитай рэп/стих», «сыграй бит», «DJ» → `execute_music_code` (beat)
+     + `speak_text` (lyrics).
+   The performance IS the answer. Words about performing are NOT an answer.
  - Test yourself: if your final response text contains «зачитаю», «погнали»,
  «могу», «хочешь», «сейчас», «устроим» — you failed. Rewrite it as tool
  calls with real content.
