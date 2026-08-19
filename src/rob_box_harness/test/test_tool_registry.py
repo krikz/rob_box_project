@@ -57,6 +57,16 @@ FLAT_TOOL_NAMES: tuple[str, ...] = (
     "save_track",
     "load_track",
     "delete_track",
+    # Issue #1392 — MiniMax Music API generation + persistent library.
+    # MCP side registers these in ``mcp_server._register_minimax_music_tools``;
+    # the harness-side catalog must mirror them so the LLM sees the schemas.
+    "generate_music",
+    "gen_list_library",
+    "gen_search_library",
+    "gen_save_to_library",
+    "gen_play_from_library",
+    "gen_delete_from_library",
+    "gen_get_track_info",
     # Issue #1101 — voice biometrics (resemblyzer d-vectors). The MCP-side
     # ``RegisterSpeakerTool`` exists in ``rob_box_mcp_tools.tools.dialogue``
     # since issue #1077, but was never added to this harness-side catalog,
