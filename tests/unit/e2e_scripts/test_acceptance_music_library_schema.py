@@ -8,6 +8,11 @@ e2e-process would auto-block ``e2e-done`` on PR #1398. We want CI to catch it
 *before* merge-gate, not after.
 
 Schema reference: docs/adr/0022-process-e2e-done-gates.md §4.1.
+
+Note (t_cca7c074 ретро 19.08): файл лежит как music_library_acceptance_v1.json
+(без «_suite»), но e2e_voice_test.sh auto-discovery (issue #1452) умеет
+резолвить его через PREFIX logic (strip _v\d+ / _suite → music_library).
+Имя файла оставлено КАК ЕСТЬ — это не баг, а legacy naming из PR #1398.
 """
 from __future__ import annotations
 
