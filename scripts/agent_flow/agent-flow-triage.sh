@@ -183,6 +183,62 @@ role_for() {  # $1=labels_json
         || printf '%s' "$AGENT_FLOW_DEFAULT_ROLE"
 }
 
+# Ретро-фикс (19.08, t_dd7a5749): assignee-existence guard.
+# Профиль `triager` НЕ существует в /home/builder/.hermes/profiles/ — карточка
+# t_1ca827a6 (issue #1444) висела в ready 2.4ч потому что dispatcher не нашёл
+# worker-pool для assignee=triager. Раньше triage без проверки радостно создавал
+# карточку с любым assignee из label `agent:<role>` или дефолтом, и она навсегда
+# зависала в ready. Теперь — проверяем против реального списка профилей через
+# `hermes profile list` (одна команда, кэшируется на тик в $VALID_PROFILES).
+#
+# Дефект был в обоих путях:
+#   - role из label `agent:triager` → профиль не существует
+#   - role из AGENT_FLOW_DEFAULT_ROLE (architect) → всегда валиден
+# Поэтому guard принимает ТОЛЬКО role, который есть в списке профилей.
+# Если профиля нет — issue пропускается с errored++ (НЕ skipped++), потому что
+# это означает ошибку конфигурации, а не нормальный skip. Также комментируем в
+# issue, чтобы юзер увидел "невалидный assignee" (это Q22, но triage не может
+# пометить issue как needs-triage-rewrite без явного сигнала — только информирует).
+VALID_PROFILES=""
+load_valid_profiles() {
+    if [ -n "$VALID_PROFILES" ]; then return 0; fi
+    if [ -z "$HERMES_BIN" ] || [ ! -x "$HERMES_BIN" ]; then
+        log "load_valid_profiles: HERMES_BIN not set/executable — guard disabled (fail-open)"
+        VALID_PROFILES="__disabled__"
+        return 0
+    fi
+    # `hermes profile list` returns human-readable table with profile names in
+    # first column. Parse with awk, skipping header/footer/blank lines.
+    _out="$("$HERMES_BIN" profile list 2>/dev/null || true)"
+    if [ -z "$_out" ]; then
+        log "load_valid_profiles: hermes profile list returned empty — guard disabled (fail-open)"
+        VALID_PROFILES="__disabled__"
+        return 0
+    fi
+    VALID_PROFILES="$(printf '%s' "$_out" | awk '
+        /^[ \t]*─/ {next}             # table separator lines
+        /^[ \t]*Profile[ \t]/ {next}  # header row (may be indented)
+        /^[ \t]*$/ {next}             # blank lines
+        /^[ \t]*default[ \t]/ {next}  # skip `default` profile (placeholder)
+        {gsub(/^[ \t]+|[ \t]+$/, ""); print $1}
+    ' | sort -u | paste -sd'|' -)"
+    log "loaded valid profiles ($(printf '%s' "$VALID_PROFILES" | tr '|' ',' | head -c 200))..."
+    return 0
+}
+
+is_valid_profile() {  # $1=role
+    local role="$1"
+    [ -z "$role" ] && return 1
+    # Fail-open: если guard disabled (hermes CLI недоступен) — пропускаем все,
+    # чтобы не сломать работающий процесс из-за временного сбоя CLI.
+    [ "$VALID_PROFILES" = "__disabled__" ] && return 0
+    # Проверяем через case (быстрее grep) — список из pipe-delimited.
+    case "|$VALID_PROFILES|" in
+        *"|$role|"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Ретро-фикс (09.08 #2): крупные задачи получают увеличенный --max-runtime.
 # Крупная = label `priority:P0` ИЛИ объёмный body (>= AGENT_FLOW_LARGE_BODY_CHARS).
 runtime_for() {  # $1=labels_csv  $2=body
@@ -405,6 +461,44 @@ while IFS=$'\t' read -r number title labels body; do
     role="$(role_for "$labels")"
     branch="$(branch_for "$labels" "$number" "$title")"
     max_runtime="$(runtime_for "$labels" "$body")"
+
+    # Ретро-фикс (19.08, t_dd7a5749): assignee-existence guard — ВАЛИДАЦИЯ role
+    # против реального списка профилей. Без этой проверки карточка создаётся с
+    # несуществующим assignee (например, `triager` в t_1ca827a6) и навсегда
+    # висит в ready — dispatcher не имеет worker-pool для такого assignee.
+    #
+    # Поведение:
+    #   - role валиден → continue (нормальный путь, карточка создастся)
+    #   - role НЕ валиден → errored++, комментарий в issue, НЕ создаём карточку
+    #   - guard disabled (fail-open) → continue (CLI был недоступен, не ломаем процесс)
+    #
+    # Это ДО branch/merge-pr guards: если role невалиден, дальнейшие проверки
+    # (merged_pr на этой ветке, recent_cards) — бессмысленны, мы всё равно не
+    # создадим карточку. Load profiles lazily — один раз за тик.
+    load_valid_profiles
+    if ! is_valid_profile "$role"; then
+        log "🚨 issue #${number}: assignee '${role}' НЕВАЛИДЕН (нет в profile list) — пропускаем (errored)"
+        if [ "$DRY_RUN" != "true" ]; then
+            _valid_csv="$(printf '%s' "$VALID_PROFILES" | tr '|' ',' | sed 's/^,//;s/,$//')"
+            gh issue comment "$number" --repo "$GH_REPO" --body \
+                "🚨 **agent-flow-triage: invalid assignee**
+
+Triage **НЕ создал** kanban-карточку для этого issue, потому что assignee=\`${role}\` (из label \`agent:${role}\` или \`AGENT_FLOW_DEFAULT_ROLE\`) **не существует** в списке профилей hermes:
+
+\`\`\`
+${_valid_csv}
+\`\`\`
+
+**Что делать (товарищ Шифу):**
+1. Поставить правильную метку \`agent:<valid-role>\` на этот issue (например, \`agent:devops\`)
+2. Либо создать новый профиль \`${role}\` через \`hermes profile create ${role}\` (если роль действительно нужна)
+3. Либо удалить эту метку — тогда triage возьмёт \`AGENT_FLOW_DEFAULT_ROLE\` (по дефолту \`architect\`)
+
+Ретро-карточка: t_dd7a5749." >/dev/null 2>&1 || true
+            gh issue edit "$number" --repo "$GH_REPO" --add-label "agent-flow-error" >/dev/null 2>&1 || true
+        fi
+        errored=$((errored+1)); continue
+    fi
 
     # Ретро-фикс (11.08 t_ce3ca0d9): если на ветке, которую мы бы создали для
     # этого issue, уже есть MERGED PR — работа ушла в develop, карточка не нужна.
