@@ -406,9 +406,16 @@ jobs:
           fetch-depth: 0
 
       - name: Tag with SHA and update .image-versions
+        # Bugfix issue #1482: вместо `git rev-parse --short HEAD` используем
+        # `${GITHUB_SHA::7}` — это commit, который ТРИГГЕРНУЛ workflow run,
+        # неизменный на всём протяжении run и равный round-ветка HEAD в момент
+        # dispatch/call. Прежний подход брал локальный HEAD, который мог
+        # сместиться после `git pull --rebase` внутри scripts/ci/push-image-versions.sh
+        # → .image-versions.test указывал на несуществующий image, робот не
+        # обновлялся (доказательства в issue #1482 round-163 → stale-83d4064f).
         run: |
           DOCKER_TAG="${{ needs.prepare.outputs.docker_tag }}"
-          SHORT_SHA=$(git rev-parse --short HEAD)
+          SHORT_SHA="${GITHUB_SHA::7}"
           NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
 
           tag_and_push() {
@@ -426,6 +433,43 @@ jobs:
           tag_and_push "${LOCAL_PREFIX}:lslidar-${ROS_DISTRO}-${DOCKER_TAG}"
           tag_and_push "${LOCAL_PREFIX}:perception-${ROS_DISTRO}-${DOCKER_TAG}"
           # teleop excluded: still uses IMAGE_TAG in docker-compose
+
+          # Acceptance B (#1482): verify SHA-image is actually present in
+          # registry BEFORE writing it to .image-versions — иначе deploy
+          # тянет несуществующий тег, робот не обновляется.
+          verify_in_registry() {
+            local TAG="$1"
+            local REPO="krikz/rob_box"
+            local URL="http://${LOCAL_REGISTRY}/v2/${REPO}/manifests/${TAG}"
+            local HTTP_CODE
+            HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+              -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+              "$URL" || echo "000")
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "❌ Verify FAIL: ${TAG} missing in registry (HTTP ${HTTP_CODE})" >&2
+              return 1
+            fi
+            echo "✅ Verify OK: ${TAG} present in registry"
+            return 0
+          }
+
+          VERIFY_FAILED=0
+          for SVC_TAG in \
+            "robot-state-publisher-${ROS_DISTRO}-${NEW_TAG}" \
+            "rtabmap-${ROS_DISTRO}-${NEW_TAG}" \
+            "twist-mux-${ROS_DISTRO}-${NEW_TAG}" \
+            "ros2-control-${ROS_DISTRO}-${NEW_TAG}" \
+            "nav2-${ROS_DISTRO}-${NEW_TAG}" \
+            "lslidar-${ROS_DISTRO}-${NEW_TAG}" \
+            "perception-${ROS_DISTRO}-${NEW_TAG}"; do
+            if ! verify_in_registry "$SVC_TAG"; then
+              VERIFY_FAILED=1
+            fi
+          done
+          if [ "$VERIFY_FAILED" -eq 1 ]; then
+            echo "❌ Registry verify failed для одного или нескольких SHA-тегов" >&2
+            exit 1
+          fi
 
           VERSIONS_FILE="docker/main/.image-versions.${DOCKER_TAG}"
           if [ -f "$VERSIONS_FILE" ]; then
