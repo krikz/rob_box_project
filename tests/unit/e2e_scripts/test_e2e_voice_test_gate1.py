@@ -322,6 +322,109 @@ class TestE2EVoiceTestScriptGating:
         assert "auto-discovered" in result.stdout
         assert "E2E_GATE1_MISSING_ACCEPTANCE" not in result.stdout
 
+    def test_auto_discovery_per_scenario_fallback(self, tmp_path):
+        """Репродукция issue #1452: scenario=music_library_suite_v1.json,
+        acceptance=music_library_acceptance_v1.json (без acceptance.json)
+        → должно найтись через fallback кандидат (issue #1452 round-155)."""
+        scenario = tmp_path / "music_library_suite_v1.json"
+        scenario.write_text(json.dumps({"steps": [
+            {"label": "ml01", "text": "test", "voice": "anton"}
+        ]}))
+        # НЕТ acceptance.json рядом — есть только per-scenario версия.
+        acc = tmp_path / "music_library_acceptance_v1.json"
+        acc.write_text(json.dumps({
+            "expected_tool_calls": ["generate_music"],
+            "must_not_call": ["execute_music_code"],
+        }))
+        result = subprocess.run(
+            [str(E2E_SCRIPT),
+             "--scenario", str(scenario),
+             "--acceptance-skip"],
+            capture_output=True, text=True, timeout=15,
+        )
+        # Главный ассерт: GATE-1 НЕ должен падать с MISSING_ACCEPTANCE —
+        # это именно то, что ломалось в issue #1452 round-155.
+        assert "E2E_GATE1_MISSING_ACCEPTANCE" not in (
+            result.stdout + result.stderr
+        ), (
+            f"per-scenario acceptance должен найтись через fallback, "
+            f"но получили FAIL:\nSTDOUT: {result.stdout}\n"
+            f"STDERR: {result.stderr}"
+        )
+        # Дополнительно: лог auto-discover должен быть в выводе
+        # (если скрипт упал раньше из-за fake Yandex key, проверяю stderr)
+        combined = result.stdout + result.stderr
+        assert "music_library_acceptance_v1.json" in combined, (
+            f"auto-discovered path должен быть в логе:\n{combined}"
+        )
+
+    def test_auto_discovery_per_scenario_without_version(self, tmp_path):
+        """Fallback без _v1 суффикса тоже работает (общий паттерн)."""
+        scenario = tmp_path / "foo_suite.json"
+        scenario.write_text(json.dumps({"steps": [
+            {"label": "s1", "text": "test", "voice": "anton"}
+        ]}))
+        acc = tmp_path / "foo_suite_acceptance.json"
+        acc.write_text(json.dumps({
+            "expected_tool_calls": [],
+            "must_not_call": [],
+        }))
+        result = subprocess.run(
+            [str(E2E_SCRIPT),
+             "--scenario", str(scenario),
+             "--acceptance-skip"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert "E2E_GATE1_MISSING_ACCEPTANCE" not in result.stdout
+        assert "foo_suite_acceptance.json" in result.stdout
+
+    def test_auto_discovery_priority_acceptance_json_wins(self, tmp_path):
+        """Если оба acceptance.json И per-scenario существуют — acceptance.json
+        в приоритете (backwards-compat)."""
+        scenario = tmp_path / "music_library_suite_v1.json"
+        scenario.write_text(json.dumps({"steps": [
+            {"label": "s1", "text": "test", "voice": "anton"}
+        ]}))
+        acc_generic = tmp_path / "acceptance.json"
+        acc_generic.write_text(json.dumps({
+            "expected_tool_calls": ["generic_tool"],
+            "must_not_call": [],
+        }))
+        acc_specific = tmp_path / "music_library_acceptance_v1.json"
+        acc_specific.write_text(json.dumps({
+            "expected_tool_calls": ["specific_tool"],
+            "must_not_call": [],
+        }))
+        result = subprocess.run(
+            [str(E2E_SCRIPT),
+             "--scenario", str(scenario),
+             "--acceptance-skip"],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert "E2E_GATE1_MISSING_ACCEPTANCE" not in result.stdout
+        # acceptance.json должен победить (per-scenario остаётся fallback)
+        assert "acceptance.json" in result.stdout
+        assert "music_library_acceptance_v1.json" not in result.stdout
+
+    def test_gating_message_lists_all_expected_paths(self, tmp_path):
+        """FAIL-сообщение должно перечислять все ожидаемые пути (issue #1452)."""
+        scenario = tmp_path / "scenario.json"
+        scenario.write_text(json.dumps({"steps": [
+            {"label": "s1", "text": "test", "voice": "anton"}
+        ]}))
+        result = subprocess.run(
+            [str(E2E_SCRIPT),
+             "--scenario", str(scenario)],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert result.returncode == 1
+        combined = result.stdout + result.stderr
+        # Все 4 ожидаемых пути должны быть в FAIL-сообщении
+        assert "acceptance.json" in combined
+        assert "scenario_acceptance.json" in combined  # SCENARIO_BASE
+        # SCENARIO_PREFIX (scenario → "scenario") — оба варианта с одним base
+        assert "scenario_acceptance_v1.json" in combined
+
     def test_text_only_does_not_require_acceptance(self, tmp_path):
         """--text (single-shot smoke) БЕЗ --scenario не требует acceptance.json
         (legitimate smoke-test use case)."""
@@ -448,6 +551,13 @@ class TestE2EScriptContract:
         text = E2E_SCRIPT.read_text()
         assert "auto-discovered" in text, (
             "auto-discovery блок не найден"
+        )
+        # Issue #1452 fix: per-scenario fallback (issue #1452 round-155)
+        assert "_acceptance_v1.json" in text, (
+            "per-scenario fallback для *_acceptance_v1.json отсутствует"
+        )
+        assert "_acceptance.json" in text, (
+            "per-scenario fallback для *_acceptance.json отсутствует"
         )
 
     def test_script_has_gating_message(self):
