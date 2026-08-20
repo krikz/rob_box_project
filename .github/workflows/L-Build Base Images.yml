@@ -24,14 +24,9 @@ permissions:
 env:
   LOCAL_REGISTRY: localhost:5000
   GHCR_REGISTRY: ghcr.io
-  # GHCR-теги base images получают суффикс -${ROS_DISTRO} чтобы humble- и
-  # lyrical-билды не перезаписывали друг друга в общем registry
-  # (issue #1497 / t_31c93faa). humble-build пушит :ros2-zenoh-humble-latest,
-  # lyrical-build — :ros2-zenoh-lyrical-latest. LOCAL_PREFIX не суффиксируем:
-  # локальный registry изолирован по self-hosted runner.
   IMAGE_PREFIX: ghcr.io/krikz/rob_box_base
   LOCAL_PREFIX: localhost:5000/krikz/rob_box_base
-  ROS_DISTRO: lyrical
+  ROS_DISTRO: humble
 
 jobs:
   # Сборка базового образа ROS 2 + Zenoh (общая база для всех)
@@ -52,16 +47,16 @@ jobs:
             --platform linux/arm64 \
             --file docker/base/Dockerfile.ros2-zenoh \
             --tag "${IMAGE_PREFIX}:ros2-zenoh-${ROS_DISTRO}-latest" \
-            --tag "${LOCAL_PREFIX}:ros2-zenoh-latest" \
-            --tag "${LOCAL_PREFIX}:ros2-zenoh" \
+            --tag "${LOCAL_PREFIX}:ros2-zenoh-${ROS_DISTRO}-latest" \
+            --tag "${LOCAL_PREFIX}:ros2-zenoh-${ROS_DISTRO}" \
             --load \
             --add-host=host.docker.internal:host-gateway \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push ${LOCAL_PREFIX}:ros2-zenoh-latest
-            docker push ${LOCAL_PREFIX}:ros2-zenoh
+            docker push ${LOCAL_PREFIX}:ros2-zenoh-${ROS_DISTRO}-latest
+            docker push ${LOCAL_PREFIX}:ros2-zenoh-${ROS_DISTRO}
           fi
           echo "✅ ros2-zenoh base image ready"
 
@@ -83,16 +78,16 @@ jobs:
             --platform linux/arm64 \
             --file docker/base/Dockerfile.rtabmap \
             --tag "${IMAGE_PREFIX}:rtabmap-${ROS_DISTRO}-latest" \
-            --tag "${LOCAL_PREFIX}:rtabmap-latest" \
-            --tag "${LOCAL_PREFIX}:rtabmap" \
+            --tag "${LOCAL_PREFIX}:rtabmap-${ROS_DISTRO}-latest" \
+            --tag "${LOCAL_PREFIX}:rtabmap-${ROS_DISTRO}" \
             --load \
             --add-host=host.docker.internal:host-gateway \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push ${LOCAL_PREFIX}:rtabmap-latest
-            docker push ${LOCAL_PREFIX}:rtabmap
+            docker push ${LOCAL_PREFIX}:rtabmap-${ROS_DISTRO}-latest
+            docker push ${LOCAL_PREFIX}:rtabmap-${ROS_DISTRO}
           fi
           echo "✅ rtabmap base image ready"
 
@@ -114,16 +109,16 @@ jobs:
             --platform linux/arm64 \
             --file docker/base/Dockerfile.depthai \
             --tag "${IMAGE_PREFIX}:depthai-${ROS_DISTRO}-latest" \
-            --tag "${LOCAL_PREFIX}:depthai-latest" \
-            --tag "${LOCAL_PREFIX}:depthai" \
+            --tag "${LOCAL_PREFIX}:depthai-${ROS_DISTRO}-latest" \
+            --tag "${LOCAL_PREFIX}:depthai-${ROS_DISTRO}" \
             --load \
             --add-host=host.docker.internal:host-gateway \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push ${LOCAL_PREFIX}:depthai-latest
-            docker push ${LOCAL_PREFIX}:depthai
+            docker push ${LOCAL_PREFIX}:depthai-${ROS_DISTRO}-latest
+            docker push ${LOCAL_PREFIX}:depthai-${ROS_DISTRO}
           fi
           echo "✅ depthai base image ready"
 
@@ -146,17 +141,17 @@ jobs:
             --platform linux/arm64 \
             --file docker/base/Dockerfile.pcl \
             --tag "${IMAGE_PREFIX}:pcl-${ROS_DISTRO}-latest" \
-            --tag "${LOCAL_PREFIX}:pcl-latest" \
-            --tag "${LOCAL_PREFIX}:pcl" \
+            --tag "${LOCAL_PREFIX}:pcl-${ROS_DISTRO}-latest" \
+            --tag "${LOCAL_PREFIX}:pcl-${ROS_DISTRO}" \
             --load \
             --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=${LOCAL_PREFIX}:ros2-zenoh-latest" \
+            --build-arg="BASE_IMAGE=${LOCAL_PREFIX}:ros2-zenoh-${ROS_DISTRO}-latest" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push ${LOCAL_PREFIX}:pcl-latest
-            docker push ${LOCAL_PREFIX}:pcl
+            docker push ${LOCAL_PREFIX}:pcl-${ROS_DISTRO}-latest
+            docker push ${LOCAL_PREFIX}:pcl-${ROS_DISTRO}
           fi
           echo "✅ pcl base image ready"
 
@@ -178,18 +173,12 @@ jobs:
           echo ""
           echo "📦 Images pushed to: ${LOCAL_REGISTRY}"
           echo ""
-          echo "🏷️ Local Tags:"
-          echo "  - ${LOCAL_PREFIX}:ros2-zenoh-latest"
-          echo "  - ${LOCAL_PREFIX}:ros2-zenoh"
-          echo "  - ${LOCAL_PREFIX}:rtabmap-latest"
-          echo "  - ${LOCAL_PREFIX}:rtabmap"
-          echo "  - ${LOCAL_PREFIX}:depthai-latest"
-          echo "  - ${LOCAL_PREFIX}:depthai"
-          echo "  - ${LOCAL_PREFIX}:pcl-latest"
-          echo "  - ${LOCAL_PREFIX}:pcl"
-          echo ""
-          echo "🌐 GHCR Tags (suffix -${ROS_DISTRO} отделяет lyrical от humble, issue #1497):"
-          echo "  - ${IMAGE_PREFIX}:ros2-zenoh-${ROS_DISTRO}-latest"
-          echo "  - ${IMAGE_PREFIX}:rtabmap-${ROS_DISTRO}-latest"
-          echo "  - ${IMAGE_PREFIX}:depthai-${ROS_DISTRO}-latest"
-          echo "  - ${IMAGE_PREFIX}:pcl-${ROS_DISTRO}-latest"
+          echo "🏷️ Tags:"
+          echo "  - ${LOCAL_PREFIX}:ros2-zenoh-${ROS_DISTRO}-latest"
+          echo "  - ${LOCAL_PREFIX}:ros2-zenoh-${ROS_DISTRO}"
+          echo "  - ${LOCAL_PREFIX}:rtabmap-${ROS_DISTRO}-latest"
+          echo "  - ${LOCAL_PREFIX}:rtabmap-${ROS_DISTRO}"
+          echo "  - ${LOCAL_PREFIX}:depthai-${ROS_DISTRO}-latest"
+          echo "  - ${LOCAL_PREFIX}:depthai-${ROS_DISTRO}"
+          echo "  - ${LOCAL_PREFIX}:pcl-${ROS_DISTRO}-latest"
+          echo "  - ${LOCAL_PREFIX}:pcl-${ROS_DISTRO}"

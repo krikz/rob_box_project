@@ -174,6 +174,10 @@ class MusicManager:
         self._pattern_history: Dict[str, str] = {}
         #: множество имён активных паттернов
         self._active_patterns: set = set()
+        #: SynthDef-ы, уже загруженные через sdef.add(). Повторный add()
+        #: мутирует UGen-граф (osc*env) → компаундинг ("too big for
+        #: sending") → scsynth не тянет → "late" и троттл (live 20.08).
+        self._synthdefs_added: set = set()
         #: имя текущего пресета
         self._current_preset: Optional[str] = None
         #: контекст выполнения для renardo
@@ -341,8 +345,11 @@ class MusicManager:
             # (drops >500 в /proc/net/udp) — часть SynthDef-ов (pads, bass, karp,
             # bell...) не доезжает до scsynth → "SynthDef not found" → ТИШИНА.
             # Пейсинг 0.1с между отправками + верификация с досылкой пропавших.
-            for idx, sdef in enumerate(_rt.SynthDefs.values()):
+            for idx, (name, sdef) in enumerate(_rt.SynthDefs.items()):
+                if name in self._synthdefs_added:
+                    continue
                 sdef.add()
+                self._synthdefs_added.add(name)
                 if idx % 5 == 4:
                     time.sleep(0.1)
 
@@ -478,7 +485,16 @@ class MusicManager:
                 if sdef is None:
                     continue
                 try:
-                    sdef.add()
+                    if name in self._synthdefs_added:
+                        # Уже добавляли — повторный add() мутирует UGen-граф
+                        # (компаундинг). Досылаем без мутации через load()
+                        # (отправка готового .scd), если метод доступен.
+                        load = getattr(sdef, "load", None)
+                        if load is not None:
+                            load()
+                    else:
+                        sdef.add()
+                        self._synthdefs_added.add(name)
                 except Exception:  # noqa: BLE001
                     continue
                 _time.sleep(0.3)

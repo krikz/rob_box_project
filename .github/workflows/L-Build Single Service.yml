@@ -67,7 +67,7 @@ env:
   GHCR_REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/krikz/rob_box
   LOCAL_PREFIX: localhost:5000/krikz/rob_box
-  ROS_DISTRO: lyrical
+  ROS_DISTRO: humble
 
 permissions:
   contents: write  # Required for git push of .image-versions files
@@ -123,49 +123,49 @@ jobs:
                   IMAGE_NAME="robot-state-publisher"
                   DOCKERFILE="docker/main/robot_state_publisher/Dockerfile"
                   BUILD_CONTEXT="."
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 "rtabmap")
                   SERVICE_NAME="rtabmap"
                   IMAGE_NAME="rtabmap"
                   DOCKERFILE="docker/main/rtabmap/Dockerfile"
                   BUILD_CONTEXT="docker/main/rtabmap"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:rtabmap"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:rtabmap-${ROS_DISTRO}"
                   ;;
                 "twist-mux"|"twist_mux")
                   SERVICE_NAME="twist_mux"
                   IMAGE_NAME="twist-mux"
                   DOCKERFILE="docker/main/twist_mux/Dockerfile"
                   BUILD_CONTEXT="docker/main/twist_mux"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 "ros2-control"|"ros2_control")
                   SERVICE_NAME="ros2_control"
                   IMAGE_NAME="ros2-control"
                   DOCKERFILE="docker/main/ros2_control/Dockerfile"
                   BUILD_CONTEXT="."
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:rtabmap"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:rtabmap-${ROS_DISTRO}"
                   ;;
                 "nav2")
                   SERVICE_NAME="nav2"
                   IMAGE_NAME="nav2"
                   DOCKERFILE="docker/main/nav2/Dockerfile"
                   BUILD_CONTEXT="docker/main/nav2"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 "lslidar")
                   SERVICE_NAME="lslidar"
                   IMAGE_NAME="lslidar"
                   DOCKERFILE="docker/main/lslidar/Dockerfile"
                   BUILD_CONTEXT="docker/main"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:pcl"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:pcl-${ROS_DISTRO}"
                   ;;
                 "perception")
                   SERVICE_NAME="perception"
                   IMAGE_NAME="perception"
                   DOCKERFILE="docker/main/perception/Dockerfile"
                   BUILD_CONTEXT="."
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 "zenoh-router")
                   SERVICE_NAME="zenoh-router"
@@ -188,21 +188,21 @@ jobs:
                   IMAGE_NAME="oak-d"
                   DOCKERFILE="docker/vision/oak-d/Dockerfile"
                   BUILD_CONTEXT="docker/vision"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:depthai"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:depthai-${ROS_DISTRO}"
                   ;;
                 "led-matrix"|"led_matrix")
                   SERVICE_NAME="led_matrix"
                   IMAGE_NAME="led-matrix"
                   DOCKERFILE="docker/vision/led_matrix/Dockerfile"
                   BUILD_CONTEXT="."
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 "ceiling-camera")
                   SERVICE_NAME="ceiling-camera"
                   IMAGE_NAME="ceiling-camera"
                   DOCKERFILE="docker/vision/ceiling-camera/Dockerfile"
                   BUILD_CONTEXT="docker/vision"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 "voice-assistant"|"voice_assistant")
                   SERVICE_NAME="voice_assistant"
@@ -216,7 +216,7 @@ jobs:
                   IMAGE_NAME="voice-base"
                   DOCKERFILE="docker/vision/voice_base/Dockerfile"
                   BUILD_CONTEXT="docker/vision/voice_base"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:rtabmap"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:rtabmap-${ROS_DISTRO}"
                   ;;
                 "voice-resources"|"voice_resources")
                   SERVICE_NAME="voice_resources"
@@ -230,14 +230,14 @@ jobs:
                   IMAGE_NAME="apriltag"
                   DOCKERFILE="docker/vision/apriltag/Dockerfile"
                   BUILD_CONTEXT="docker/vision"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 "telegram-bot"|"telegram_bot")
                   SERVICE_NAME="telegram_bot"
                   IMAGE_NAME="telegram-bot"
                   DOCKERFILE="docker/vision/telegram_bot/Dockerfile"
                   BUILD_CONTEXT="."
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 "supercollider")
                   SERVICE_NAME="supercollider"
@@ -294,7 +294,7 @@ jobs:
                   IMAGE_NAME="pcl"
                   DOCKERFILE="docker/base/Dockerfile.pcl"
                   BUILD_CONTEXT="docker/base"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-latest"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}-latest"
                   IMAGE_PREFIX="ghcr.io/krikz/rob_box_base"
                   LOCAL_PREFIX="localhost:5000/krikz/rob_box_base"
                   ;;
@@ -313,9 +313,6 @@ jobs:
 
           # Формирование тегов
           if [ "$PI_TYPE" = "base" ]; then
-            # issue #1497 / t_31c93faa: base-теги тоже получают -${ROS_DISTRO}
-            # суффикс, чтобы humble- и lyrical-build не перезаписывали друг друга
-            # в общем GHCR-пакете rob_box_base
             GHCR_TAG="${IMAGE_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${DOCKER_TAG}"
             LOCAL_TAG="${LOCAL_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${DOCKER_TAG}"
           else

@@ -158,3 +158,33 @@ def test_effective_provider_all_dead_falls_to_last() -> None:
 def test_effective_provider_empty_chain() -> None:
     assert effective_provider([], _dead([])) is None
     assert effective_provider(None, _dead([])) is None
+
+
+# ── Каталог minimax == актуальный список MiniMax (20.08.2026) ──────────────
+
+
+def test_minimax_registry_has_current_russian_system_voices() -> None:
+    """Реестр должен содержать актуальные русские системные голоса MiniMax.
+
+    Источник правды — официальный список системных голосов:
+    https://platform.minimax.io/docs/faq/system-voice-id (20.08.2026).
+    До фикса и реестр, и MiniMaxTTSProvider.list_voices() хранили
+    несуществующие ID (male-chengshu, Russian_DeepVoice, ...), из-за чего
+    LLM получала в [TTS] voices: список голосов, которых нет у провайдера.
+    """
+    documented_russian = {
+        "Russian_HandsomeChildhoodFriend",
+        "Russian_BrightHeroine",
+        "Russian_AmbitiousWoman",
+        "Russian_ReliableMan",
+        "Russian_CrazyQueen",
+        "Russian_PessimisticGirl",
+        "Russian_AttractiveGuy",
+        "Russian_Bad-temperedBoy",
+    }
+    missing = documented_russian - set(voices_for("minimax"))
+    assert not missing, (
+        "tts_voice_registry.PROVIDER_VOICES['minimax'] lost current Russian "
+        f"system voices from the MiniMax FAQ: {sorted(missing)}"
+    )
+

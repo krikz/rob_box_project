@@ -84,11 +84,11 @@ def test_voice_rule_directs_set_voice_tool() -> None:
 
 
 def test_voice_rule_documents_gender_mapping() -> None:
-    """The rule must map Russian gender words to voice id prefixes.
+    """The rule must map Russian gender words to voice ids.
 
-    Without explicit prefix hints (female-/male-) the LLM may still try
-    to invent a name like 'женский' or 'alena' (Yandex-only, not in
-    minimax catalogue) → voice_unavailable → same default voice played.
+    Without explicit hints the LLM may still try to invent a name like
+    'женский' or 'alena' (Yandex-only, not in minimax catalogue) →
+    voice_unavailable → same default voice played.
     """
     content = _read(MASTER_PROMPT)
     match = re.search(
@@ -98,13 +98,13 @@ def test_voice_rule_documents_gender_mapping() -> None:
     )
     assert match
     block = match.group(0)
-    assert "female-shaonv" in block, (
-        "RULE #VOICE must list at least one minimax female voice id so "
-        "LLM picks a valid name when the user says 'женским голосом'"
+    assert "Russian_BrightHeroine" in block, (
+        "RULE #VOICE must list at least one current minimax female voice id "
+        "so LLM picks a valid name when the user says 'женским голосом'"
     )
-    assert "male-qn-qingse" in block, (
-        "RULE #VOICE must list at least one minimax male voice id (default "
-        "for fallback when user asks for the regular voice back)"
+    assert "Russian_ReliableMan" in block, (
+        "RULE #VOICE must list at least one current minimax male voice id "
+        "(for fallback when user asks for a male voice)"
     )
 
 
@@ -148,9 +148,14 @@ def test_master_prompt_default_matches_registry() -> None:
     assert match
     block = match.group(0)
 
-    # Extract every voice id mentioned in the rule block (looks like
-    # `female-shaonv`, `male-qn-qingse` — lowercase word with hyphen).
-    mentioned = set(re.findall(r"\b(?:female|male)-(?:\w+-?)+\w+\b", block))
+    # Extract every voice id mentioned in the rule block (both legacy
+    # `female-shaonv` / `male-qn-qingse` and current `Russian_*` ids).
+    mentioned = set(
+        re.findall(
+            r"\b(?:female|male)-(?:\w+-?)+\w+\b|\bRussian_[A-Za-z]+(?:-[A-Za-z]+)*\b",
+            block,
+        )
+    )
 
     # Registry is the source of truth (issue #1219 contract).
     registry_voices = set(voices_for("minimax"))
@@ -162,3 +167,34 @@ def test_master_prompt_default_matches_registry() -> None:
         f"Either add them to the registry or remove from the prompt. "
         f"Current registry voices: {sorted(registry_voices)}."
     )
+
+
+def test_voice_rule_teaches_voice_enumeration() -> None:
+    """Промпт должен учить LLM перечислять голоса при вопросе «какие голоса?».
+
+    Live 20.08.2026: юзер спросил «какие голоса у тебя есть на минимаксе» —
+    LLM ответила «женским голосом татьяна» (галлюцинация из тренировочных
+    данных Yandex), потому что RULE #VOICE объясняла только set_voice при
+    СМЕНЕ голоса, но не перечисление доступных голосов.
+    """
+    content = _read(MASTER_PROMPT)
+    match = re.search(
+        r"RULE #VOICE.*?(?=🚨 \*\*RULE #)",
+        content,
+        re.DOTALL,
+    )
+    assert match
+    block = match.group(0)
+    assert "какие у тебя голоса" in block, (
+        "RULE #VOICE must teach the LLM to enumerate voices when the user "
+        "asks 'какие у тебя голоса?' — otherwise it hallucinates names "
+        "(live 20.08.2026: answered 'татьяна' for minimax)."
+    )
+    assert "ENUMERATING" in block, (
+        "RULE #VOICE must instruct the LLM to ENUMERATE the [TTS] voices: "
+        "list verbatim, not from memory."
+    )
+    assert "NEVER invent" in block, (
+        "RULE #VOICE must forbid inventing voice names from memory."
+    )
+

@@ -100,7 +100,7 @@ def _build_flat_specs() -> tuple[ToolSpec, ...]:
                             "TTS voice for this reply (issue #1219). Name of a "
                             "voice of the active provider (see [TTS] voices in "
                             "system context): e.g. alena/zahar (yandex), "
-                            "male-qn-qingse/female-shaonv (minimax), aidar/baya "
+                            "Russian_ReliableMan/Russian_BrightHeroine (minimax), aidar/baya "
                             "(silero). Omit to use the set_voice voice or the "
                             "provider default. Unknown voice falls back to the "
                             "default; the actual voice is returned as voice_used."
