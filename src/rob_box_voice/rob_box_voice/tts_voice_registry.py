@@ -31,7 +31,11 @@ from __future__ import annotations
 #
 # Источники:
 # * Yandex SpeechKit v3 (gRPC) — стандартные голоса API v3.
-# * MiniMax T2A v2 — voice_id из документации MiniMax (api.minimax.io).
+# * MiniMax T2A v2 — актуальные системные голоса из официального FAQ
+#   https://platform.minimax.io/docs/faq/system-voice-id (20.08.2026).
+#   Russian_* — текущий каталог русских голосов; male-qn-qingse /
+#   female-shaonv — legacy-id, всё ещё работают на speech-02-hd, но в
+#   актуальном списке отсутствуют.
 # * Silero v5 — speaker id (aidar/baya/kseniya/xenia/eugene).
 PROVIDER_VOICES: dict[str, list[str]] = {
     "yandex": [
@@ -39,9 +43,13 @@ PROVIDER_VOICES: dict[str, list[str]] = {
         "ermil", "madirus", "arina", "kostya", "rush",
     ],
     "minimax": [
-        "male-qn-qingse", "female-shaonv", "male-chengshu",
-        "female-tianmei", "male-jingxi", "female-yejian",
-        "male-qingse", "female-qingse", "male-zhiyu", "female-zhiyu",
+        # текущие русские системные голоса (FAQ, 20.08.2026):
+        "Russian_ReliableMan", "Russian_HandsomeChildhoodFriend",
+        "Russian_AttractiveGuy", "Russian_Bad-temperedBoy",      # male
+        "Russian_BrightHeroine", "Russian_AmbitiousWoman",
+        "Russian_CrazyQueen", "Russian_PessimisticGirl",         # female
+        # legacy (работают, но нет в актуальном списке):
+        "male-qn-qingse", "female-shaonv",
     ],
     "silero": [
         "aidar", "baya", "kseniya", "xenia", "eugene",

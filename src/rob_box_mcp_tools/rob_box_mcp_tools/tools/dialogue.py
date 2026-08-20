@@ -230,7 +230,7 @@ class SpeakTextTool(MCPTool):
                 description=(
                     "Голос TTS для этой реплики (опционально, issue #1219). "
                     "Имя голоса активного провайдера, напр. alena/zahar (Yandex), "
-                    "male-qn-qingse/female-shaonv (MiniMax), aidar/baya (Silero). "
+                    "Russian_ReliableMan/Russian_BrightHeroine (MiniMax), aidar/baya (Silero). "
                     "Если голос не указан — используется голос, установленный set_voice, "
                     "иначе дефолтный голос провайдера. Неизвестный/недоступный голос "
                     "заменяется на дефолтный, фактический голос придёт в voice_used результата."
@@ -944,8 +944,8 @@ class SetVoiceTool(MCPTool):
                 type="string",
                 description=(
                     "Имя голоса для установки (из списка [TTS] voices=...). "
-                    "Например: alena, zahar, jane (Yandex); male-qn-qingse, "
-                    "female-shaonv (MiniMax); aidar, baya (Silero)."
+                    "Например: alena, zahar, jane (Yandex); Russian_ReliableMan, "
+                    "Russian_BrightHeroine (MiniMax); aidar, baya (Silero)."
                 ),
                 required=True,
             ),

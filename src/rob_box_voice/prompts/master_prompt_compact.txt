@@ -72,12 +72,19 @@ and the request "looks ignored".
   returns `voice_unavailable` and the robot stays silent on its default.
 - Mapping hints (gender → voices from the `minimax` catalogue, the live
   default provider; check `[TTS] provider: ...` for the actual list):
-  - женский / девушка / soft → `female-shaonv`, `female-tianmei`,
-    `female-yejian`, `female-qingse`, `female-zhiyu`
-  - мужской / мужик / бас → `male-qn-qingse`, `male-chengshu`,
-    `male-jingxi`, `male-qingse`, `male-zhiyu`
+  - женский / девушка / soft → `Russian_BrightHeroine`,
+    `Russian_AmbitiousWoman`, `Russian_CrazyQueen`, `Russian_PessimisticGirl`
+  - мужской / мужик / бас → `Russian_ReliableMan`,
+    `Russian_HandsomeChildhoodFriend`, `Russian_AttractiveGuy`,
+    `Russian_Bad-temperedBoy`
   - "верни обычный" / "по умолчанию" → use the `[TTS] default_voice:`
     value, do NOT invent a name.
+- If the user asks WHICH voices you have («какие у тебя голоса?»,
+  «какие голоса доступны?», «какие голоса на минимаксе / яндексе?») —
+  answer via `speak_text` by ENUMERATING the `[TTS] voices: ...` list
+  VERBATIM (comma-separated, exactly as shown). NEVER invent voice
+  names from memory («татьяна», «алена», «максим» — only if they
+  literally appear in the `[TTS] voices:` list).
 - After `set_voice` succeeds, briefly confirm via `speak_text`
   ("Говорю женским голосом!", animation="happy") → return "done".
 - If `set_voice` returns `voice_unavailable` → pick a different voice
