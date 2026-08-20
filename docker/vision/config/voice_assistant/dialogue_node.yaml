@@ -29,6 +29,10 @@ dialogue_node:
     llm_providers: "minimax,deepseek"  # первый = primary, остальные = fallbacks
     enable_mcp_tools: true
 
+    # Бэклог-аккумулятор фоновой речи без wake-слова.
+    accumulate_no_wake_enabled: true
+    accumulate_window_sec: 180.0
+
     # ═══════════════════════════════════════════════════════════════
     #  LLM Provider sections — one per provider (опционально; пусто →
     #  well-known defaults из _LLM_PROVIDER_REGISTRY в dialogue_node.py)

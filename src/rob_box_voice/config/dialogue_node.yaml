@@ -59,6 +59,9 @@ dialogue_node:
     # префикс [Говорит <имя>] / [Говорит: незнакомец] + session lock.
     speaker_id_enabled: true
     speaker_db_path: /data/speakers.db
+    # Бэклог-аккумулятор фоновой речи без wake-слова.
+    accumulate_no_wake_enabled: true
+    accumulate_window_sec: 180.0
     # Startup greeting (issue #1003, редизайн 06.08): dialogue_node сам
     # говорит приветствие через N секунд после старта (отдельная нода
     # убрана — теряла фразу из-за гонки с инициализацией tts_node).
