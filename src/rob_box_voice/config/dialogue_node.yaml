@@ -49,6 +49,14 @@ dialogue_node:
     # Порог уверенности CommandParser (совпадает с command_node.yaml
     # confidence_threshold: 0.7).
     command_intent_gate_confidence: 0.7
+    # Issue #XXXX — «новая сессия» / «сбрось всё» / Telegram «/clear»:
+    # сброс контекста текущего диалога без вызова LLM. Фразы по умолчанию
+    # заданы в коде (_DEFAULT_NEW_SESSION_PHRASES); при необходимости
+    # список можно переопределить здесь.
+    new_session_enabled: true
+    # new_session_phrases:
+    # - новая сессия
+    # - сбрось всё
     llm_timeout_sec: 90.0
     verbose_llm: true
     llm_streaming: true

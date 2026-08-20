@@ -134,6 +134,14 @@ class MemoryStore(abc.ABC):
         """Append ``turn`` to ``scope``. Idempotent on (role, content)."""
 
     @abc.abstractmethod
+    async def clear_turns(self, scope: str) -> int:
+        """Remove every turn stored under ``scope``.
+
+        Returns the number of turns removed (0 if the scope was empty or
+        unknown). Used by the voice shell to reset a dialogue session.
+        """
+
+    @abc.abstractmethod
     async def save_fact(self, scope: str, fact: Fact) -> None:
         """Persist ``fact`` under ``scope``."""
 
@@ -299,6 +307,11 @@ class InMemoryStore(MemoryStore):
         """Append ``turn`` to ``scope``; oldest are dropped at the deque cap."""
         bucket = self._turns.setdefault(scope, deque(maxlen=self._max_recent))
         bucket.append(turn)
+
+    async def clear_turns(self, scope: str) -> int:
+        """Remove every turn for ``scope``; returns the count removed."""
+        bucket = self._turns.pop(scope, None)
+        return len(bucket) if bucket is not None else 0
 
     async def save_fact(self, scope: str, fact: Fact) -> None:
         """Persist ``fact`` under ``scope``, replacing any same-key fact."""

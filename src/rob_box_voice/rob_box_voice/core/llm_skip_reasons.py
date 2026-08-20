@@ -15,6 +15,7 @@ class LLMSkipReason(str, Enum):
     STT_REJECTED = "stt_rejected"
     MUSIC_STOP = "music_stop"
     COMMAND_INTENT = "command_intent"
+    NEW_SESSION = "new_session"
 
 
 def new_llm_skip_counter() -> dict[str, int]:

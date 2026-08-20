@@ -42,6 +42,22 @@ async def test_append_and_load_recent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_clear_turns_removes_scope() -> None:
+    """``clear_turns`` wipes one scope and returns the removed count."""
+    store = InMemoryStore()
+    await store.append_turn("a", Turn(role="user", content="a1"))
+    await store.append_turn("a", Turn(role="assistant", content="a2"))
+    await store.append_turn("b", Turn(role="user", content="b1"))
+    removed = await store.clear_turns("a")
+    assert removed == 2
+    assert await store.load_recent("a") == []
+    # Другой scope не тронут.
+    assert len(await store.load_recent("b")) == 1
+    # Повторная очистка пустого scope → 0.
+    assert await store.clear_turns("a") == 0
+
+
+@pytest.mark.asyncio
 async def test_load_recent_respects_limit() -> None:
     """``limit`` caps the number of returned turns."""
     store = InMemoryStore()
