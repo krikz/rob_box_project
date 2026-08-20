@@ -14,6 +14,13 @@
 #   -S 16000   Частота дискретизации (ReSpeaker UAC1.0 поддерживает только 16000 Hz)
 #   -H jack    JACK backend
 #   -a 1024    Число аудио-шин
+#   -l 32      maxLogins = 32 (issue #1363 — sclang по умолчанию ожидает ≤32
+#              клиента; дефолт сервера 64 → client 32+ получают nodeID
+#              0x80000001+ который как signed int32 = отрицательный
+#              → "FAILURE IN SERVER /g_new negative node IDs are reserved"
+#              в логах. Свист из динамика — побочный эффект: клиентский
+#              Group 1 не создаётся, renardo Player-ы шлют /s_new в пустоту
+#              и часть нод "зависает" активной → постоянный тон через JACK.)
 
 set -euo pipefail
 
@@ -27,6 +34,16 @@ rm -f /dev/shm/jack-0-0 /dev/shm/jack-0-1 /dev/shm/jack_default_0_0 2>/dev/null 
 rm -f /dev/shm/jack_sem.0_default_* 2>/dev/null || true
 rm -f /dev/shm/jack-shm-registry 2>/dev/null || true
 rm -rf /dev/shm/jack_db-* 2>/dev/null || true
+
+# ── Prometheus metrics endpoint (issue #1160) ────────────────────────────────
+# Лёгкий stdlib HTTP-сервер на 9102 (см. metrics_server.py и
+# docker/monitoring/config/prometheus.yml target 10.1.1.11:9102).
+# Не блокирует запуск JACK/scsynth: если python3 отсутствует — просто
+# логируем предупреждение и продолжаем.
+echo "[SuperCollider] Starting metrics server on :9102/metrics..."
+python3 /scripts/metrics_server.py 2>&1 | sed 's/^/[metrics] /' &
+METRICS_PID=$!
+echo "[SuperCollider] Metrics server pid=$METRICS_PID"
 
 echo "[SuperCollider] Starting JACK via dmix_respeaker (period=1024, rate=16000, nperiods=3)..."
 
@@ -57,7 +74,8 @@ scsynth \
     -z 1024 \
     -S 16000 \
     -H jack \
-    -a 1024 &
+    -a 1024 \
+    -l 32 &
 
 SCSYNTH_PID=$!
 

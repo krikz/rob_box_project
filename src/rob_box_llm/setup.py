@@ -16,7 +16,11 @@ setup(
         # recommended way to bootstrap a contributor's venv — keeps
         # runtime deps separate from the testing stack so production
         # images don't ship with pytest/respx installed.
+        # openai<3.0 pinned here because respx doesn't support httpx2 yet
+        # (https://github.com/lundberg/respx/pull/317). Production code
+        # is NOT affected — it uses openai>=1.0 without upper bound.
         "dev": [
+            "openai>=1.0,<3.0",
             "pytest>=7.4",
             "pytest-asyncio>=0.21",
             "pytest-cov>=4.0",

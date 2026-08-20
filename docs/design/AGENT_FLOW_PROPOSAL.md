@@ -181,6 +181,21 @@ max_runtime: 1800 (default) | 3600 (крупная: label `priority:P0` или b
 1. **CI красный** → пишет коммент в карточку (и issue): «⛔ CI красный: <check_name> (<run_url>) — исправь в ветке <branch>» + `kanban unblock` → воркер снова берёт карточку и чинит в ТОЙ ЖЕ (без новых карточек).
 2. **CI зелёный** → **ничего не делает** (карточка остаётся в блоке — ждёт e2e).
 3. Дочерние CI-fix карточки НЕ создаются никогда.
+4. **Reconcile e2e-done → needs-review (ретро 13.08 t_92ec94f3, #1188):** если issue имеет `e2e-done`, а её agent-PR OPEN (base=develop) — merge-gate ставит `needs-review` на PR и снимает `needs-e2e` с PR (каждые 5 мин, идемпотентно). Лечит «молчащие» issues, когда e2e-done был поставлен обходным путём (post-round sweep после прерванной wait-фазы) без PR-side обработки. MERGED PR не трогает — их закрывает post-merge reconcile (ADR-0014).
+
+**Post-merge reconciliation (ADR-0014, `docs/adr/0014-agent-flow-issue-closure.md`):**
+
+Когда PR уже **MERGED** в `develop` (ручной merge юзером, Q22):
+
+1. Merge-gate повторно читает актуальные labels и state issue **прямо перед** close
+   (race: e2e-process может поставить `e2e-done` параллельно).
+2. Если issue OPEN и имеет `e2e-done` (PASS-proven от e2e-process) → `gh issue close <n> --reason completed`.
+3. Только **после успешного close** выполняется destructive cleanup: удаление
+   `z-{agent}/<id>-<slug>`, освобождение worktrees, архив карточки, cleanup-коммент.
+4. `e2e-done` merge-gate **сам не создаёт** — PASS-label принадлежит только
+   e2e-process. MERGED без `e2e-done` → issue остаётся OPEN, cleanup отложен
+   до следующего тика (5 мин).
+5. Ошибка close → warning, destructive cleanup отложен, следующий тик повторяет.
 
 ### 3.4 `e2e-process` (cron, every 1 hour)
 
@@ -258,11 +273,18 @@ max_runtime: 1800 (default) | 3600 (крупная: label `priority:P0` или b
 
 ## 4. Триггеры (стыковка с Hermes cronjob)
 
-| Cron | Период | no_agent | script | deliver |
-|------|--------|----------|--------|---------|
-| `agent-flow-triage` | every 5m | true (pure bash) | `agent-flow-triage.sh` | local |
-| `agent-flow-merge-gate` | every 5m | true (pure check) | `agent-flow-merge-gate.sh` | local |
-| `e2e-process` | every 1h | false (LLM-driven, но orchestrator) | `agent-flow-e2e-process.sh` | local |
+> **Архитектурное правило (ADR-0019, 18.08):** **все три cron-job'а семейства
+> agent-flow живут в ОДНОМ профиле — `agent-flow`** (не `architect`, не
+> `devops`). Путь к jobs.json: `~/.hermes/profiles/agent-flow/cron/jobs.json`.
+> Частая ошибка — искать их в `~/.hermes/profiles/architect/cron/jobs.json`;
+> там живут только fallback-дубликаты `merge-gate` и `e2e-process`.
+> Проверять `hermes cron list --profile agent-flow`, не `hermes cron list`.
+
+| Cron | Период | no_agent | script | deliver | profile |
+|------|--------|----------|--------|---------|---------|
+| `agent-flow-triage` | every 1m (live) / 5m (proposal) | true (pure bash) | `agent-flow-triage.sh` | local | **agent-flow** |
+| `agent-flow-merge-gate` | every 5m | true (pure check) | `agent-flow-merge-gate.sh` | local | **agent-flow** |
+| `agent-flow-e2e-process` | every 60m (rolling round) | true (no-agent, pure bash) | `agent-flow-e2e-process.sh` | local | **agent-flow** |
 
 **Hermes cronjob pattern:**
 ```bash
@@ -341,9 +363,10 @@ cronjob.create(
 | Q9 | Номерованные проходы `z-{e2e}/test-round-N`, N из предыдущей ветки или файлика |
 | Q20 | Именование веток: агентские `z-{agent}/<id>-<slug>` (без `~`, удаляются после merge); служебные процесса — только `z-{e2e}/...`; `z-{hotfix}/`/`z-{revert}/` юзер создаёт сам вне процесса |
 | Q21 | НЕ создавать CI-fix карточки — block/unblock исходной карточки |
-| Q22 | Карточка после complete в блоке; merge-gate: красный CI → unblock; e2e: PASS → unblock с результатами (ждёт merge юзера), FAIL → воркер итерирует; done только после merge юзером |
+| Q22 | Карточка после complete в блоке; merge-gate: красный CI → unblock; e2e: PASS → unblock с результатами (ждёт merge юзера), FAIL → воркер итерирует; done только после merge юзером. **needs-review после e2e-done ставится автоматически**: e2e-process (основной цикл и post-round sweep — PR-side labels) + merge-gate reconcile каждые 5 мин для пропущенных (ретро 13.08 t_92ec94f3, #1188) |
 | Q23 | Воркер комментит в issue содержательно: нашёл причину/решение/препятствие; минимум старт+PR; CI/e2e-статусы пишут кроны |
 | Q24 | config.yaml ×19: default_branch develop |
+| Q25 | **user-unlabel respect (ретро 18.08 t_de6bea69, PR #1398)**: если Шифу РУКАМИ снял метку (`e2e-done` / `needs-review`) после того как auto-sweep её когда-то поставил — следующий тик sweep'а НЕ возвращает эту метку, только комментит в PR «user decision respected, awaiting your next move». Сигнал из GitHub timeline: `UnlabeledEvent{actor≠bot}` ПОЗЖЕ последнего `LabeledEvent` по той же метке. Реализовано в `scripts/agent_flow/lib_user_unlabel_check.sh` (общий хелпер для e2e-process + merge-gate: post-round sweep, reconcile, lint path, clean-pr-sweep). Актор-фильтр ослабленный (любой не-bot) — в этом репо krikz = юзер И держатель GH-токена автоматики, так что discriminator по actor-имени невозможен. Реальный discriminator — это ХРОНОЛОГИЯ: если последнее событие по метке — unlabel, значит кто-то её сознательно снял |
 
 ---
 

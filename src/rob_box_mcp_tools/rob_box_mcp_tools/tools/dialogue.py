@@ -15,13 +15,56 @@ if TYPE_CHECKING:
     from std_msgs.msg import String
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult
+from ..voice_state import VoiceStateStore
+
+# Issue #1219 — LLM voice selection: единый реестр голосов живёт в
+# rob_box_voice (чистый Python, без ROS). Ленивый импорт с fallback,
+# чтобы пакет оставался импортируемым без rob_box_voice (CI linter).
+try:
+    from rob_box_voice.tts_voice_registry import (
+        default_voice_for,
+        resolve_voice,
+        voices_for,
+    )
+except ImportError:  # pragma: no cover — fallback для minimal environments
+    def default_voice_for(provider: str) -> str:
+        return ""
+
+    def resolve_voice(provider: str, requested) -> tuple:
+        return (requested or ""), False
+
+    def voices_for(provider: str) -> list:
+        return []
+
+
+def _active_tts_provider(node) -> str:
+    """Активный TTS-провайдер для валидации голосов (issue #1229).
+
+    Приоритет: фактический провайдер от tts_node (``node.actual_tts_provider``,
+    после фолбека minimax→yandex это yandex) → параметр ``tts_provider``
+    (номинальный, из YAML) → дефолт ``minimax``.
+
+    Без этого speak_text/set_voice валидировали голоса по номинальному
+    провайдеру, LLM выбирала minimax-голоса (male-chengshu и т.п.),
+    которых нет у yandex после фолбека, и робот говорил тем же голосом.
+    """
+    actual = getattr(node, "actual_tts_provider", None)
+    if actual:
+        return str(actual)
+    try:
+        return str(node.get_parameter("tts_provider").value or "minimax")
+    except Exception:  # noqa: BLE001 — stub/tests без параметра
+        return "minimax"
 
 
 class SpeakTextTool(MCPTool):
     """Инструмент для произнесения текста голосом."""
 
-    def __init__(self, node):
+    def __init__(self, node, voice_store: VoiceStateStore | None = None):
         super().__init__(node)
+        # Issue #1219 — общее in-memory хранилище current_voice с
+        # SetVoiceTool (персистентный голос на диалог, Q7/Q11).
+        self._voice_store = voice_store or VoiceStateStore()
         # Динамический импорт во время выполнения
         from std_msgs.msg import String
 
@@ -104,9 +147,21 @@ class SpeakTextTool(MCPTool):
         with self.pending_speeches_lock:
             entry = self.pending_speeches.pop(speech_id, None)
             if entry is None:
-                self.log_warning(
-                    f"⚠️ Speech {speech_id[:8]}... не найден в pending_speeches "
-                    "(возможно уже удалён)"
+                # 🔴 FIX (issue #776, live 12.08): /voice/tts/finished — общий
+                # топик для ВСЕХ отправителей TTS. tts_node публикует finished
+                # для любого speech_id, включая системные реплики dialogue_node
+                # (триггеры thinking/confused, DJ-прощание и т.п.), которые НЕ
+                # регистрируются в pending_speeches mcp_server. Плюс для
+                # последнего чанка батча tts_node намеренно republish'ит
+                # finished с batch_complete=true (issue #980, контракт
+                # "subscribers are designed to be idempotent"). Оба случая —
+                # штатное поведение общего топика: это не warning, а debug.
+                # Реальная рассинхронизация (entry есть, batch None) ниже
+                # по-прежнему остаётся warning.
+                self.log_debug(
+                    f"ℹ️ Speech {speech_id[:8]}... не найден в pending_speeches "
+                    "(чужой TTS от dialogue_node или повторный finished с "
+                    "batch_complete — игнорируем)"
                 )
                 return
             batch_id = entry["batch_id"]
@@ -168,6 +223,19 @@ class SpeakTextTool(MCPTool):
                 type="string",
                 description="Текст для произнесения. Можно использовать русские ударения (+ после гласной).",
                 required=True,
+            ),
+            MCPToolParameter(
+                name="voice",
+                type="string",
+                description=(
+                    "Голос TTS для этой реплики (опционально, issue #1219). "
+                    "Имя голоса активного провайдера, напр. alena/zahar (Yandex), "
+                    "male-qn-qingse/female-shaonv (MiniMax), aidar/baya (Silero). "
+                    "Если голос не указан — используется голос, установленный set_voice, "
+                    "иначе дефолтный голос провайдера. Неизвестный/недоступный голос "
+                    "заменяется на дефолтный, фактический голос придёт в voice_used результата."
+                ),
+                required=False,
             ),
             MCPToolParameter(
                 name="animation",
@@ -238,11 +306,27 @@ class SpeakTextTool(MCPTool):
             chunks.append(buf)
         return [c for c in chunks if c.strip()]
 
-    def execute(self, text: str, animation: str = "neutral") -> MCPToolResult:
+    def execute(self, text: str, animation: str = "neutral", voice: str | None = None) -> MCPToolResult:
         """Произнести текст."""
         import json
         import re
         import uuid
+
+        # Issue #1219 — LLM voice selection: определяем активного провайдера
+        # (фактический от tts_node после фолбека, иначе ROS-параметр
+        # tts_provider; дефолт minimax — совпадает с tts_node.yaml).
+        provider = _active_tts_provider(self.node)
+        # Резолв голоса (issue #1219, Q6/Q7): разовый voice= из speak_text
+        # важнее установленного set_voice; если оба отсутствуют — дефолт
+        # провайдера. Неизвестный голос → дефолт + voice_used в результате.
+        voice_used, voice_fell_back = self._voice_store.resolve(
+            provider, requested=voice
+        )
+        if voice and voice_fell_back:
+            self.log_warning(
+                f"⚠️ Голос '{voice}' недоступен у провайдера '{provider}' — "
+                f"использую дефолтный '{voice_used}'"
+            )
 
         # 🔴 FIX (live 06.08): LLM (MiniMax-M3) иногда ВКЛЮЧАЕТ параметры
         # вызова В ТЕКСТ: text='...128 ударов!", animation="happy"'.
@@ -252,7 +336,7 @@ class SpeakTextTool(MCPTool):
         text = re.sub(r'\)\s*$', '', text) if text.endswith(')') else text
         text = text.strip()
 
-        self.log_info(f"Произношение текста: {text[:50]}... (animation: {animation})")
+        self.log_info(f"Произношение текста: {text[:50]}... (animation: {animation}, voice: {voice_used})")
 
         if not text:
             return MCPToolResult(success=False, error="Пустой текст", message="Текст не может быть пустым")
@@ -397,6 +481,10 @@ class SpeakTextTool(MCPTool):
                 # и в pending_speeches, и восстанавливается без участия
                 # tts_node. Поле оставлено для трейсинга в логах tts_node.
                 "batch_id": batch_id,
+                # Issue #1219 — LLM voice selection: фактический голос после
+                # валидации. tts_node резолвит его ещё раз по РЕАЛЬНОМУ
+                # провайдеру (фолбек-цепочка) и логирует voice_used.
+                "voice": voice_used,
             }
             if self._current_dialogue_id:
                 tts_request["dialogue_id"] = self._current_dialogue_id
@@ -422,9 +510,15 @@ class SpeakTextTool(MCPTool):
                 "speech_ids": speech_ids,
                 "batch_id": batch_id,
                 "async": True,
+                # Issue #1219 — LLM voice selection (Q6): фактический голос
+                # после валидации + провайдер, для которого он выбран.
+                "voice_used": voice_used,
+                "provider": provider,
+                "voice_fell_back": voice_fell_back,
             },
             message=(
-                f"TTS запрос отправлен ({chunks_total} чанк(ов)): {text[:50]}..."
+                f"TTS запрос отправлен ({chunks_total} чанк(ов)): {text[:50]}... "
+                f"[voice: {voice_used}, provider: {provider}]"
             ),
         )
 
@@ -607,5 +701,329 @@ class EstimateTtsDurationTool(MCPTool):
             message=(
                 f"Оценка длительности: ~{estimate_sec}с "
                 f"({len(text)} символов при {cps} симв/с)"
+            ),
+        )
+
+
+class RegisterSpeakerTool(MCPTool):
+    """Issue #1077 + #1101 — регистрация голоса спикера через LLM tool.
+
+    LLM вызывает этот tool когда:
+    - Пользователь сказал «меня зовут X» (LLM извлёк имя из контекста)
+    - LLM хочет спросить имя незнакомца (name=null → publish ask_event)
+
+    Tool публикует в /voice/speaker/register JSON {"name": "..."}
+    speaker_id_node получает d-vector текущей фразы и сохраняет embedding.
+    """
+
+    def __init__(self, node):
+        super().__init__(node)
+        from std_msgs.msg import String
+        self._speaker_register_pub = node.create_publisher(
+            String, "/voice/speaker/register", 10
+        )
+        # Issue #1101 — rename коррекции («я не X, я Y») публикуются на
+        # ОТДЕЛЬНЫЙ топик /voice/speaker/rename: speaker_id_node слушает
+        # rename на нём (_on_rename_request), а /voice/speaker/register
+        # принимает только {"name": ...} и игнорирует {old_name,new_name}.
+        self._speaker_rename_pub = node.create_publisher(
+            String, "/voice/speaker/rename", 10
+        )
+
+    @property
+    def name(self) -> str:
+        return "register_speaker"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Зарегистрировать голос текущего спикера в voice biometric DB. "
+            "Вызывай когда: (1) пользователь представился («меня зовут X») — "
+            "передай name=X, (2) хочешь узнать имя незнакомца — передай name=null "
+            "и спроси «Как вас зовут?» через speak_text. "
+            "Имя сохранится в БД вместе с эмбеддингом голоса (resemblyzer d-vector), "
+            "после этого пользователя можно будет узнавать по голосу."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="name",
+                type="string",
+                description=(
+                    "Имя спикера для регистрации (Cyrillic). "
+                    "Передай null/None если хочешь спросить имя незнакомца — "
+                    "робот спросит «Как вас зовут?» и ждёт ответа. "
+                    "Если пользователь ИСПРАВЛЯЕТ имя («я не X, я Y») — "
+                    "передай name=Y и old_name=X."
+                ),
+                required=False,
+            ),
+            MCPToolParameter(
+                name="old_name",
+                type="string",
+                description=(
+                    "Предыдущее имя (если пользователь исправляет: "
+                    "«я не Эйджик, я Денчик» → old_name='Эйджик', name='Денчик'). "
+                    "Опусти, если пользователь представляется впервые."
+                ),
+                required=False,
+            ),
+        ]
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    # Issue #1101 — noise-name guard. LLM sometimes passes the trigger
+    # word instead of the actual name ("робот меня зовут" → name="зовут"
+    # instead of name="Денис"). Without this filter every such call
+    # produced a junk row in /data/speakers.db (``name='Зовут'``). The
+    # set covers the highest-frequency false positives observed on the
+    # robot on 2026-08-10/11 (see PR-1101 cleanup migration notes).
+    _NOISE_NAMES: frozenset[str] = frozenset(
+        {
+            "зовут",
+            "имя",
+            "меня",
+            "зовут-это",
+            "зовут меня",
+            "это",
+            "называю",
+            "зовут-меня",
+            "моё",
+            "мое",
+            "моё имя",
+            "мое имя",
+            "имя мне",
+            "имя моё",
+            "имя мое",
+        }
+    )
+
+    def execute(self, name: str | None = None, old_name: str | None = None) -> MCPToolResult:
+        import json
+        from std_msgs.msg import String
+
+        # Step 1 — if old_name provided, rename the existing entry first.
+        if old_name and old_name.strip():
+            old_clean = old_name.strip()
+            if old_clean.lower() not in {"null", "none"} and len(old_clean) >= 2:
+                rename_msg = String()
+                rename_msg.data = json.dumps(
+                    {"old_name": old_clean, "new_name": (name or "").strip() or old_clean},
+                    ensure_ascii=False,
+                )
+                # Issue #1101 — rename идёт на /voice/speaker/rename
+                # (speaker_id_node._on_rename_request), НЕ на register:
+                # register-хендлер читает только {"name": ...} и
+                # игнорировал бы {old_name, new_name} как пустое имя.
+                self._speaker_rename_pub.publish(rename_msg)
+                self.log_info(
+                    f"[register_speaker] rename {old_clean!r} → "
+                    f"{(name or '').strip()!r}"
+                )
+
+        if name is None or name.strip() == "":
+            if old_name:
+                return MCPToolResult(
+                    success=True,
+                    data={"renamed": True, "old_name": old_name},
+                    message=f"Старое имя '{old_name}' исправлено. Новое имя не указано — спроси.",
+                )
+            self.log_info("[register_speaker] name=None → ask user")
+            return MCPToolResult(
+                success=True,
+                data={"ask_required": True, "name": None},
+                message="Спроси имя у пользователя через speak_text и вызови register_speaker(name=X) ещё раз",
+            )
+        name_clean = name.strip().capitalize()
+        # Issue #1101 (live 11.08) — LLM sometimes serialises a real
+        # ``null`` JSON value through OpenAI tool-call as the literal
+        # string ``"null"`` (or ``"None"``). Without this branch the
+        # speaker_id_node persists an embedding under ``name='Null'``
+        # — a fresh junk row in /data/speakers.db. Treat ``"null"``
+        # the same as ``None``: ask the user.
+        if name_clean.lower() in {"null", "none"}:
+            self.log_info(
+                "[register_speaker] name='null' literal — treat as ask_user"
+            )
+            return MCPToolResult(
+                success=True,
+                data={"ask_required": True, "name": None},
+                message=(
+                    "Передан литерал 'null'/'None' — спроси имя у пользователя "
+                    "через speak_text и вызови register_speaker(name=X) ещё раз"
+                ),
+            )
+        if len(name_clean) < 2:
+            return MCPToolResult(
+                success=False,
+                data={"error": "name_too_short"},
+                message=f"Имя '{name}' слишком короткое — минимум 2 символа",
+            )
+        # Issue #1101 — reject trigger-word leakage from the user phrase.
+        # Without this guard the LLM passes the first token after
+        # «зовут» rather than the actual name (e.g. "робот меня зовут
+        # Денис говорю" → name="Зовут"), polluting /data/speakers.db.
+        if name_clean.lower() in self._NOISE_NAMES:
+            self.log_info(
+                f"[register_speaker] rejected noise name {name_clean!r} "
+                "— LLM must extract actual name from user_input"
+            )
+            return MCPToolResult(
+                success=False,
+                data={"error": "noise_name", "received": name_clean},
+                message=(
+                    f"Имя '{name_clean}' выглядит как служебное слово из "
+                    "фразы («зовут», «имя», «меня»). Извлеки реальное имя "
+                    "из контекста (например, для «робот меня зовут Денис "
+                    'говорю» — передай name="Денис") и вызови тул ещё раз.'
+                ),
+            )
+        # publish в /voice/speaker/register — speaker_id_node привяжет d-vector
+        msg = String()
+        msg.data = json.dumps({"name": name_clean}, ensure_ascii=False)
+        self._speaker_register_pub.publish(msg)
+        self.log_info(f"[register_speaker] published name={name_clean!r}")
+        return MCPToolResult(
+            success=True,
+            data={"registered_name": name_clean, "speaker_id": "pending"},
+            message=f"Голос зарегистрирован как '{name_clean}'. Теперь этого пользователя можно узнавать по голосу.",
+        )
+
+
+class SetVoiceTool(MCPTool):
+    """Issue #1219 — персистентный выбор голоса TTS (Q7/Q11).
+
+    LLM вызывает этот tool когда пользователь просит «говори голосом X»
+    или когда хочет сменить голос на диалог (например, рассказывать
+    сказку от разных лиц). Голос хранится in-memory (VoiceStateStore) с
+    привязкой к speaker_id; следующий ``speak_text`` без voice= говорит
+    установленным голосом.
+
+    Контракт (docs/design/LLM_VOICE_SELECTION_PROPOSAL.md):
+    ``{"tool": "set_voice", "params": {"voice": "zahar"}}``
+    → ``{"status": "ok", "voice_set": "zahar", "default_voice": "anton"}``
+    """
+
+    def __init__(self, node, voice_store: VoiceStateStore | None = None):
+        super().__init__(node)
+        self._voice_store = voice_store or VoiceStateStore()
+        # Публикуем изменение, чтобы dialogue_node мог обновить LLM-контекст
+        # ([TTS] current_voice) — payload JSON {"voice": str}.
+        from std_msgs.msg import String
+
+        self._voice_state_pub = node.create_publisher(
+            String, "/voice/tts/current_voice", 10
+        )
+
+    @property
+    def name(self) -> str:
+        return "set_voice"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Установить голос TTS на диалог (персистентно, пока не сменят). "
+            "Используй когда: (1) пользователь просит «говори голосом X» — "
+            "передай voice=X; (2) хочешь рассказывать историю от разных лиц "
+            "(старик → zahar, девушка → alena и т.п.); (3) хочешь вернуться "
+            "к дефолтному голосу — передай voice=<default_voice>. "
+            "Доступные голоса перечислены в контексте: [TTS] voices=... "
+            "После set_voice следующий speak_text без voice= говорит "
+            "установленным голосом."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="voice",
+                type="string",
+                description=(
+                    "Имя голоса для установки (из списка [TTS] voices=...). "
+                    "Например: alena, zahar, jane (Yandex); male-qn-qingse, "
+                    "female-shaonv (MiniMax); aidar, baya (Silero)."
+                ),
+                required=True,
+            ),
+        ]
+
+    @property
+    def execution_type(self):
+        from ..base import ToolExecutionType
+
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, voice: str) -> MCPToolResult:
+        import json as _json
+
+        voice_clean = (voice or "").strip()
+        if not voice_clean:
+            return MCPToolResult(
+                success=False,
+                error="voice_empty",
+                message="Параметр voice не может быть пустым — передай имя голоса из [TTS] voices=...",
+            )
+        # Активный провайдер — как в speak_text (фактический от tts_node
+        # после фолбека, иначе mcp_server param tts_provider).
+        provider = _active_tts_provider(self.node)
+        # Валидация против списка провайдера (Q6): неизвестный голос не
+        # сохраняем — LLM получит ошибку и сможет поправиться. Это строже,
+        # чем speak_text (там fallback на дефолт), т.к. set_voice — явный
+        # запрос пользователя «говори голосом X»: молча подменить голос
+        # нельзя, надо сказать LLM, что голос недоступен.
+        known = voices_for(provider)
+        if known and voice_clean not in known:
+            return MCPToolResult(
+                success=False,
+                data={
+                    "error": "voice_unavailable",
+                    "requested": voice_clean,
+                    "provider": provider,
+                    "available": known,
+                    "default_voice": default_voice_for(provider),
+                },
+                message=(
+                    f"Голос '{voice_clean}' недоступен у провайдера '{provider}'. "
+                    f"Доступные: {', '.join(known)}. Дефолтный: "
+                    f"{default_voice_for(provider)}. Выбери голос из списка."
+                ),
+            )
+
+        self._voice_store.set_voice(voice_clean)
+        self.log_info(
+            f"[set_voice] voice={voice_clean!r} provider={provider} "
+            f"default={default_voice_for(provider)}"
+        )
+        # Публикуем смену голоса — dialogue_node обновит [TTS] current_voice.
+        try:
+            from std_msgs.msg import String as _String
+
+            msg = _String()
+            msg.data = _json.dumps(
+                {"voice": voice_clean, "provider": provider}, ensure_ascii=False
+            )
+            self._voice_state_pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            self.log_warning(f"⚠️ [set_voice] publish voice_state failed: {exc}")
+
+        return MCPToolResult(
+            success=True,
+            data={
+                "status": "ok",
+                "voice_set": voice_clean,
+                "default_voice": default_voice_for(provider),
+                "provider": provider,
+            },
+            message=(
+                f"Голос установлен: '{voice_clean}' "
+                f"(дефолтный: {default_voice_for(provider)})"
             ),
         )

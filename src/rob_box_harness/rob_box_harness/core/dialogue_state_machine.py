@@ -440,8 +440,13 @@ class DialogueStateMachine:
             return DialogueEvent.SILENCE_COMMAND
 
         # Wake words
+        # 🔴 fix(voice #1252): синхронизировано с dialogue_node.yaml — 12 вариантов
+        # + исторический «робик» (потерян при 9ca7fb29, 21.02). STT реально выдаёт
+        # кривые варианты («робок», «роберт», «рыбок») — все покрываем.
         wake_triggers = (
             "роббокс", "роб бокс", "робокс", "робок", "робот",
+            "робокос", "роббос", "роберт", "рыбок", "рома",
+            "бот", "робо", "роб", "робик",
             "robbox", "rob box",
         )
         if any(trigger in text_lower for trigger in wake_triggers):

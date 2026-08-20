@@ -1,0 +1,31 @@
+# Grafana Tempo — хранилище трейсов (issue #1234, этап 2).
+#
+# Retention 24h (как в плане этапа 2). Локальный backend (single-node,
+# без S3) — достаточно для мониторинг-машины.
+#
+# ВАЖНО: OTLP gRPC слушаем на :4321, а не на дефолтном :4317 — порт 4317
+# занят otel-collector'ом (оба контейнера на host-сети).
+
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4321
+        http:
+          endpoint: 0.0.0.0:4322
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/traces
+    wal:
+      path: /var/tempo/wal
+
+compactor:
+  compaction:
+    block_retention: 24h

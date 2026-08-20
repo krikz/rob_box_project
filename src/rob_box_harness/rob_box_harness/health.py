@@ -71,6 +71,64 @@ from rob_box_llm.provider import (
 
 _log = logging.getLogger(__name__)
 
+
+class _CompatLogger:
+    """Adapter: std-logging ``%``-style calls → any 1-message logger.
+
+    ``dialogue_node`` passes its rclpy ``RcutilsLogger`` into
+    :class:`HealthAwareFallbackLLM` (``logger=self.get_logger()``).
+    rclpy loggers accept exactly one message positional arg, so the
+    std-logging pattern ``log.info("... %s ...", arg1, arg2)`` raised
+    ``TypeError: RcutilsLogger.info() takes 2 positional arguments but
+    N were given`` — which killed the LLM stream and produced a silent
+    "Empty assistant response" on the robot (live 13.08.2026).
+
+    This wrapper renders ``%``-style args into a single message before
+    forwarding, so both logger flavours keep working.
+    """
+
+    __slots__ = ("_inner",)
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def _render(self, message: str, args: tuple[Any, ...]) -> str:
+        if not args:
+            return message
+        try:
+            return message % args
+        except (TypeError, ValueError):
+            # Malformed %-template or mismatched args — never crash the
+            # fallback chain because of a log line.
+            return f"{message} :: {args!r}"
+
+    def info(self, message: str, *args: Any, **kwargs: Any) -> None:
+        self._inner.info(self._render(message, args))
+
+    def warning(self, message: str, *args: Any, **kwargs: Any) -> None:
+        self._inner.warning(self._render(message, args))
+
+    def error(self, message: str, *args: Any, **kwargs: Any) -> None:
+        self._inner.error(self._render(message, args))
+
+    def debug(self, message: str, *args: Any, **kwargs: Any) -> None:
+        self._inner.debug(self._render(message, args))
+
+
+def _coerce_logger(logger: Any) -> Any:
+    """Return a logger safe for ``%``-style calls.
+
+    * ``None`` → module std-logging logger (native ``%`` support);
+    * :class:`logging.Logger` → used as-is;
+    * anything else (rclpy RcutilsLogger, test doubles) → wrapped in
+      :class:`_CompatLogger`.
+    """
+    if logger is None:
+        return _log
+    if isinstance(logger, logging.Logger):
+        return logger
+    return _CompatLogger(logger)
+
 #: Default TTL for a provider marked ``unavailable`` (seconds). Matches
 #: the "~5 min" requirement in issue #1082 — long enough to avoid
 #: re-hammering a dead provider, short enough that a topped-up quota is
@@ -418,7 +476,7 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
             raise ValueError("HealthAwareFallbackLLM requires at least one provider")
         self._cache: HealthCache = cache or HealthCache()
         self._checkers: dict[str, Any] = dict(balance_checkers or {})
-        self._log = logger if logger is not None else _log
+        self._log = _coerce_logger(logger)
 
     # ---- capability introspection --------------------------------------
 
@@ -494,6 +552,30 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
 
     def _handle_failure(self, name: str, exc: BaseException) -> None:
         """Classify a provider failure and update the health cache."""
+        exc_type = type(exc).__name__
+        exc_msg = str(exc)[:200]
+        # 🔴 FIX (live 12.08): ВЕСЬ метод обёрнут в try/except —
+        # RcutilsLogger.warning() с %s-аргументами может упасть
+        # (takes 2 positional args but N were given), и это ломает
+        # fallback-цепочку → робот молчит. Лучше потерять лог,
+        # чем потерять речевой ответ.
+        try:
+            self._handle_failure_impl(name, exc, exc_type, exc_msg)
+        except Exception:
+            # Last-resort: попробовать модульный логгер (std logging,
+            # не RcutilsLogger) — он принимает %s-формат нативно.
+            try:
+                _log.warning(
+                    "[health] _handle_failure CRASHED for provider=%s [%s: %s]",
+                    name, exc_type, exc_msg[:100],
+                )
+            except Exception:
+                pass
+
+    def _handle_failure_impl(
+        self, name: str, exc: BaseException, exc_type: str, exc_msg: str
+    ) -> None:
+        """Actual failure classification (split for try/except safety)."""
         if is_quota_exhausted(exc):
             self._cache.mark_unavailable(
                 name, reason=str(exc)[:300], ttl_s=self._cache.ttl_s
@@ -509,9 +591,10 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
                 name, reason=f"auth: {exc}"[:300], ttl_s=self._cache.ttl_s
             )
             self._log.warning(
-                "[health] provider=%s auth error (%s) → unavailable (TTL %.0fs)",
+                "[health] provider=%s AUTH failure [%s: %s] → unavailable (TTL %.0fs)",
                 name,
-                exc,
+                exc_type,
+                exc_msg,
                 self._cache.ttl_s,
             )
         elif isinstance(exc, (RateLimitError, LLMTimeoutError)):
@@ -535,7 +618,12 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
                 f"action=fallback ttl_s={TRANSIENT_TTL_S:.0f}"
             )
         else:
-            self._log.warning("🔄 LLM %s упал: %s — пробуем следующий", name, exc)
+            self._log.warning(
+                "[health] provider=%s UNCLASSIFIED failure [%s: %s] — пробуем следующий",
+                name,
+                exc_type,
+                exc_msg,
+            )
 
     # ---- LLMProvider contract -------------------------------------------
 
@@ -553,6 +641,12 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
                 "health-aware-fallback: все провайдеры unavailable "
                 "(TTL ещё не истёк); ждём повторной проверки"
             )
+        chain_names = [self._provider_name(p) for p in chain]
+        self._log.info(
+            "[health] complete: chain=%s active=%s",
+            chain_names,
+            chain_names[0] if chain_names else "<empty>",
+        )
         last_exc: BaseException | None = None
         for provider in chain:
             name = self._provider_name(provider)
@@ -560,9 +654,12 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
             if self._cache.is_unavailable(name):
                 continue  # probe just marked it dead
             try:
-                return await provider.complete(
+                self._log.info("[health] → calling provider=%s", name)
+                result = await provider.complete(
                     messages, tools=tools, settings=settings
                 )
+                self._log.info("[health] ← answered by provider=%s", name)
+                return result
             except Exception as exc:  # noqa: BLE001 — any provider error ⇒ next
                 last_exc = exc
                 self._handle_failure(name, exc)
@@ -588,6 +685,12 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
                 "health-aware-fallback: все провайдеры unavailable "
                 "(TTL ещё не истёк); ждём повторной проверки"
             )
+        chain_names = [self._provider_name(p) for p in chain]
+        self._log.info(
+            "[health] stream: chain=%s active=%s",
+            chain_names,
+            chain_names[0] if chain_names else "<empty>",
+        )
         last_exc: BaseException | None = None
         for provider in chain:
             name = self._provider_name(provider)
@@ -595,14 +698,35 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
             if self._cache.is_unavailable(name):
                 continue
             try:
+                self._log.info("[health] → streaming from provider=%s", name)
                 async for chunk in provider.stream(
                     messages, tools=tools, settings=settings
                 ):
                     yield chunk
+                self._log.info("[health] ← stream finished by provider=%s", name)
                 return
             except Exception as exc:  # noqa: BLE001 — any provider error ⇒ next
                 last_exc = exc
                 self._handle_failure(name, exc)
+                # 🔴 FIX (live 12.08): диагностический лог — видно КУДА
+                # идёт fallback после падения провайдера. Без этого лога
+                # «тишина и от робота и от лога» — непонятно, пробовал ли
+                # fallback вообще следующий провайдер.
+                try:
+                    idx = chain.index(provider)
+                    remaining = [self._provider_name(p) for p in chain[idx + 1:]]
+                except ValueError:
+                    remaining = []
+                if remaining:
+                    self._log.info(
+                        "[health] provider=%s FAILED → trying next: %s",
+                        name, remaining,
+                    )
+                else:
+                    self._log.warning(
+                        "[health] provider=%s FAILED → NO more providers in chain!",
+                        name,
+                    )
         if last_exc is not None:
             raise last_exc
         raise ProviderError("health-aware-fallback: chain exhausted without stream")

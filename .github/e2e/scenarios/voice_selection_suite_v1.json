@@ -1,0 +1,15 @@
+{
+  "name": "voice_selection_suite_v1",
+  "steps": [
+    {"label": "v01_skazka", "voice": "anton", "text": "Робот, расскажи сказку про Красную Шапочку разными голосами", "patterns": ["set_voice", "voice_used"]},
+    {"label": "v02_10_fraz", "voice": "anton", "text": "Робот, произнеси десять умных фраз разными голосами", "patterns": ["set_voice", "voice_used"]},
+    {"label": "v03_2_litsa", "voice": "anton", "text": "Робот, разыграй диалог между стариком и девушкой разными голосами", "patterns": ["set_voice", "voice_used"]},
+    {"label": "v04_set_voice", "voice": "anton", "text": "Робот, говори голосом Алены", "patterns": ["set_voice", "alena"]},
+    {"label": "v05_after_set", "voice": "anton", "text": "Робот, скажи приветствие", "patterns": ["current_voice", "alena"]},
+    {"label": "v06_menyay", "voice": "anton", "text": "Робот, теперь говори голосом Захара", "patterns": ["set_voice", "zahar"]},
+    {"label": "v07_verni_def", "voice": "anton", "text": "Робот, верни голос по умолчанию", "patterns": ["set_voice", "default"]},
+    {"label": "v08_zvuk_skazka", "voice": "anton", "text": "Робот, расскажи сказку про колобка голосами всех персонажей", "patterns": ["voice_used"]},
+    {"label": "v09_stih", "voice": "anton", "text": "Робот, прочитай стихотворение разными голосами по строфам", "patterns": ["voice_used"]},
+    {"label": "v10_itog", "voice": "anton", "text": "Робот, каким голосом ты сейчас говоришь", "patterns": ["current_voice"]}
+  ]
+}

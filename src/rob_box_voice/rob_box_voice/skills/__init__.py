@@ -10,6 +10,8 @@ Skill ↔ domain mapping:
   NavigationSkill — navigate_to_waypoint, move_direction
   MemorySkill     — memory_save, memory_search, memory_context
   StatusSkill     — get_robot_status, get_battery_level, get_current_time, set_volume, set_pitch
+  FAQSkill        — faq_search
+  WebSearchSkill  — search_web (DuckDuckGo, issue #1101)
 """
 
 from .memory_skill import MemorySkill
@@ -17,6 +19,7 @@ from .music_skill import MusicSkill
 from .navigation_skill import NavigationSkill
 from .status_skill import StatusSkill
 from .faq_skill import FAQSkill
+from .web_search_skill import WebSearchSkill
 
 __all__ = [
     "MusicSkill",
@@ -24,4 +27,5 @@ __all__ = [
     "MemorySkill",
     "StatusSkill",
     "FAQSkill",
+    "WebSearchSkill",
 ]

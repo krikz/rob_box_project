@@ -35,9 +35,15 @@ twist_mux:
         timeout: 0.5
         priority: 10
 
-    # Locks (блокировка определенных источников)
-    # locks:
-    #   manual_lock:
-    #     topic: /manual_lock
-    #     timeout: 5.0
-    #     priority: 255
+    # Locks (блокировка источников с приоритетом ниже)
+    # joystick_lock: joystick_control_node публикует True на /joystick_lock,
+    # пока оператор держит ARM (вооружён) — это блокирует web(50)/voice(25)/
+    # nav2(10), чтобы робота НЕ перехватывали автономные источники, пока
+    # оператор работает пультом (issue #1344 — «поворот приходит сам»).
+    # timeout=0.0 → lock «липкий»: последнее значение сохраняется, если нода
+    # умрёт/зависнет (вооружён → автономия заблокирована до восстановления).
+    locks:
+      joystick_lock:
+        topic: /joystick_lock
+        timeout: 0.0
+        priority: 100

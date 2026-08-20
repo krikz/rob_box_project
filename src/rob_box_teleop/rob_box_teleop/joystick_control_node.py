@@ -6,9 +6,12 @@ Provides direct joystick control with voice feedback:
 - Reads ExpressLRS SBUS receiver via serial port
 - ARM channel activates motors with voice confirmation
 - Publishes cmd_vel_joy for robot control
+- Publishes /joystick_lock (twist_mux lock): while ARMED the lock is active,
+  which blocks lower-priority velocity sources (web/voice/nav2) so the robot
+  can never be taken over by autonomous inputs while the operator holds the
+  transmitter (issue #1344 — "поворот приходит сам").
 """
 
-import struct
 import threading
 import time
 from typing import Optional
@@ -17,7 +20,24 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Joy
 from geometry_msgs.msg import Twist
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
+
+from rob_box_teleop.joystick_logic import (
+    apply_deadzone,
+    compute_axes,
+    compute_buttons,
+    compute_twist,
+    is_armed,
+)
+
+from rob_box_teleop.sbus import (
+    SBUS_CHANNEL_CENTER,
+    SBUS_FLAG_REJECT,
+    SBUS_FRAME_SIZE,
+    SBUS_STALE_TIMEOUT,
+    decode_channels,
+    read_frame,
+)
 
 try:
     import serial
@@ -74,13 +94,25 @@ class JoystickControlNode(Node):
         self.last_joy_msg: Optional[Joy] = None
         self.was_enabled = False
         self.serial_conn: Optional[serial.Serial] = None
-        self.sbus_channels = [1024] * 16  # SBUS center value (172-1811 range)
+        self.sbus_channels = [SBUS_CHANNEL_CENTER] * 16  # SBUS center value (172-1811 range)
         self.sbus_packet_count = 0
+        self.last_valid_packet_time = 0.0  # monotonic time of last valid (non-failsafe) frame
+        self.sbus_link_ok = True
+
+        # Diagnostics: last published cmd_vel (for heartbeat logging)
+        self._last_linear_x = 0.0
+        self._last_angular_z = 0.0
+        self._last_cmd_log_time = 0.0
 
         # Publishers
         self.cmd_vel_pub = self.create_publisher(Twist, "cmd_vel_joy", 10)
         self.tts_pub = self.create_publisher(String, "/tts/speak", 10)
         self.joy_pub = self.create_publisher(Joy, "joy", 10)
+        # twist_mux lock (std_msgs/Bool): True while armed blocks lower-priority
+        # sources (web/voice/nav2). twist_mux is configured with timeout=0.0
+        # (sticky), so the last value persists if this node dies — keeping
+        # autonomous sources blocked while the operator expects joystick control.
+        self.lock_pub = self.create_publisher(Bool, "/joystick_lock", 10)
 
         # Subscriber (only if not using SBUS)
         if not self.use_sbus:
@@ -147,110 +179,109 @@ class JoystickControlNode(Node):
                 time.sleep(5)
 
     def _read_sbus_packet(self) -> Optional[bytes]:
-        """Read one SBUS packet (25 bytes)."""
+        """Read and validate one SBUS packet (25 bytes).
+
+        Delegates to :func:`rob_box_teleop.sbus.read_frame`, which validates
+        header/footer/channel range and resyncs with a sliding window, so a
+        0x0F byte inside channel data cannot permanently desync the reader
+        (issue #1345: throttle pulsing 0.999/0.0).
+        """
         if not self.serial_conn or not self.serial_conn.is_open:
             return None
 
         try:
-            # Find start byte (0x0F)
-            while True:
-                byte = self.serial_conn.read(1)
-                if not byte:
-                    return None
-                if byte[0] == 0x0F:
-                    break
-
-            # Read remaining 24 bytes
-            packet = bytearray([0x0F])
-            remaining = self.serial_conn.read(24)
-            if len(remaining) != 24:
-                return None  # Incomplete packet
-            packet.extend(remaining)
-
-            # Validate footer (byte 24 should be 0x00)
-            if packet[24] != 0x00:
-                return None  # Invalid footer
-
-            return bytes(packet)
-
+            return read_frame(self.serial_conn.read)
         except Exception as e:
             self.get_logger().debug(f"SBUS read error: {e}")
             return None
 
     def _parse_sbus_packet(self, packet: bytes):
-        """Parse 25-byte SBUS packet into 16 channels."""
-        if len(packet) != 25:
+        """Parse and store a 25-byte SBUS packet.
+
+        Frames flagged frame-lost/failsafe carry unreliable channel data: on
+        a link-loss transition channels are reset to neutral so the robot
+        stops instead of driving with stale values.
+        """
+        if len(packet) != SBUS_FRAME_SIZE:
+            return
+
+        flags = packet[23]
+        if flags & SBUS_FLAG_REJECT:
+            self.sbus_channels = [SBUS_CHANNEL_CENTER] * 16
+            if self.sbus_link_ok:
+                self.sbus_link_ok = False
+                self.get_logger().warn(
+                    f"⚠️ SBUS link loss (flags=0x{flags:02x}) — channels reset to neutral"
+                )
             return
 
         try:
-            # SBUS packet structure (little-endian):
-            # Byte 0: Header (0x0F)
-            # Bytes 1-22: 16 channels x 11 bits = 176 bits = 22 bytes
-            # Byte 23: Flags (bit 0: ch17, bit 1: ch18, bit 2: frame lost, bit 3: failsafe)
-            # Byte 24: Footer (0x00)
-
-            channels = [0] * 16
-
-            # Extract 11-bit channel values from packed bytes
-            channels[0] = ((packet[1] | packet[2] << 8) & 0x07FF)
-            channels[1] = ((packet[2] >> 3 | packet[3] << 5) & 0x07FF)
-            channels[2] = ((packet[3] >> 6 | packet[4] << 2 | packet[5] << 10) & 0x07FF)
-            channels[3] = ((packet[5] >> 1 | packet[6] << 7) & 0x07FF)
-            channels[4] = ((packet[6] >> 4 | packet[7] << 4) & 0x07FF)
-            channels[5] = ((packet[7] >> 7 | packet[8] << 1 | packet[9] << 9) & 0x07FF)
-            channels[6] = ((packet[9] >> 2 | packet[10] << 6) & 0x07FF)
-            channels[7] = ((packet[10] >> 5 | packet[11] << 3) & 0x07FF)
-            channels[8] = ((packet[12] | packet[13] << 8) & 0x07FF)
-            channels[9] = ((packet[13] >> 3 | packet[14] << 5) & 0x07FF)
-            channels[10] = ((packet[14] >> 6 | packet[15] << 2 | packet[16] << 10) & 0x07FF)
-            channels[11] = ((packet[16] >> 1 | packet[17] << 7) & 0x07FF)
-            channels[12] = ((packet[17] >> 4 | packet[18] << 4) & 0x07FF)
-            channels[13] = ((packet[18] >> 7 | packet[19] << 1 | packet[20] << 9) & 0x07FF)
-            channels[14] = ((packet[20] >> 2 | packet[21] << 6) & 0x07FF)
-            channels[15] = ((packet[21] >> 5 | packet[22] << 3) & 0x07FF)
-
-            self.sbus_channels = channels
-            self.sbus_packet_count += 1
-
-            # Log first few packets for debugging
-            if self.sbus_packet_count <= 5 or self.sbus_packet_count % 100 == 0:
-                self.get_logger().info(
-                    f"📨 SBUS packet #{self.sbus_packet_count}: "
-                    f"Ch1={channels[0]} Ch2={channels[1]} Ch3={channels[2]} Ch4={channels[3]} "
-                    f"ARM(Ch{self.ch_arm + 1})={channels[self.ch_arm]}"
-                )
-
-        except Exception as e:
+            channels = decode_channels(packet)
+        except ValueError as e:
             self.get_logger().debug(f"SBUS parse error: {e}")
+            return
+
+        self.sbus_channels = channels
+        self.sbus_packet_count += 1
+        self.last_valid_packet_time = time.monotonic()
+        if not self.sbus_link_ok:
+            self.sbus_link_ok = True
+            self.get_logger().info("✅ SBUS link recovered")
+
+        # Log first few packets for debugging
+        if self.sbus_packet_count <= 5 or self.sbus_packet_count % 100 == 0:
+            self.get_logger().info(
+                f"📨 SBUS packet #{self.sbus_packet_count}: "
+                f"Ch1={channels[0]} Ch2={channels[1]} Ch3={channels[2]} Ch4={channels[3]} "
+                f"ARM(Ch{self.ch_arm + 1})={channels[self.ch_arm]}"
+            )
 
     def publish_joy_from_sbus(self):
         """Publish Joy message from SBUS data and process it."""
         if not self.device_connected:
             return
 
+        # If no valid (non-failsafe) frame arrived recently, treat the link
+        # as dead and publish neutral instead of holding the last commanded
+        # throttle. VESC's own 0.5s timeout would eventually relax the
+        # motors, but we react faster and keep /joy honest.
+        if time.monotonic() - self.last_valid_packet_time > SBUS_STALE_TIMEOUT:
+            channels = [SBUS_CHANNEL_CENTER] * 16
+        else:
+            channels = self.sbus_channels
+
         joy_msg = Joy()
         joy_msg.header.stamp = self.get_clock().now().to_msg()
 
         # Convert SBUS channels (172-1811) to Joy axes (-1.0 to 1.0)
-        # SBUS center: 992, min: 172, max: 1811
-        axes = []
-        for ch in self.sbus_channels:
-            # Normalize to [-1.0, 1.0]
-            normalized = (ch - 992.0) / 819.5  # 819.5 = (1811-172)/2
-            normalized = max(-1.0, min(1.0, normalized))  # Clamp
-            axes.append(normalized)
-
-        joy_msg.axes = axes
+        joy_msg.axes = compute_axes(channels)
 
         # Convert digital channels to buttons (threshold at 1500)
-        buttons = []
-        for ch in self.sbus_channels:
-            buttons.append(1 if ch > 1500 else 0)
-
-        joy_msg.buttons = buttons
+        joy_msg.buttons = compute_buttons(channels)
 
         # Publish to /joy topic
         self.joy_pub.publish(joy_msg)
+
+        # Publish twist_mux lock: True while armed, False while disarmed.
+        # twist_mux uses a sticky lock (timeout=0), so the last value persists
+        # if this node stalls — blocking web/voice/nav2 while the operator
+        # expects joystick control (issue #1344).
+        lock_msg = Bool()
+        lock_msg.data = is_armed(joy_msg.buttons, self.ch_arm)
+        self.lock_pub.publish(lock_msg)
+
+        # Heartbeat diagnostic: log the commanded velocity every ~2 s while
+        # armed. If the publish path stalls (transport issue), the SBUS logs
+        # keep flowing but this line stops — making the fault visible in
+        # seconds instead of after a 47-minute dead window (issue #1344).
+        if lock_msg.data:
+            now_mono = time.monotonic()
+            if now_mono - self._last_cmd_log_time >= 2.0:
+                self._last_cmd_log_time = now_mono
+                self.get_logger().info(
+                    f"🕹️ cmd_vel_joy: linear.x={self._last_linear_x:+.3f} "
+                    f"angular.z={self._last_angular_z:+.3f} (armed)"
+                )
 
         # Process for cmd_vel (use ARM channel as enable)
         self.joy_callback_sbus(joy_msg)
@@ -260,15 +291,15 @@ class JoystickControlNode(Node):
 
         When disarmed, we do NOT publish to cmd_vel_joy so that twist_mux
         times out the joystick source and falls through to lower-priority
-        inputs (web, nav2, voice). A single stop message is sent on the
-        armed→disarmed transition for immediate braking.
+        inputs (web, nav2, voice). The /joystick_lock is still published
+        (False), releasing the twist_mux lock so lower sources can operate.
+        A single stop message is sent on the armed→disarmed transition for
+        immediate braking.
         """
         self.last_joy_msg = msg
 
         # ARM channel is used as enable (>1500 = armed)
-        button_pressed = False
-        if len(msg.buttons) > self.ch_arm:
-            button_pressed = msg.buttons[self.ch_arm] == 1
+        button_pressed = is_armed(msg.buttons, self.ch_arm)
 
         # Voice feedback on state change
         if button_pressed and not self.was_enabled:
@@ -295,15 +326,18 @@ class JoystickControlNode(Node):
 
         # Use configured channels for control
         # Typical mapping: Ch1=Roll, Ch2=Pitch, Ch3=Throttle, Ch4=Yaw
-        if len(joy_msg.axes) > self.ch_pitch:
-            # Pitch (forward/backward) -> linear.x
-            linear_raw = joy_msg.axes[self.ch_pitch]
-            twist.linear.x = self.apply_deadzone(linear_raw) * self.max_linear
+        twist.linear.x, twist.angular.z = compute_twist(
+            joy_msg.axes,
+            self.ch_pitch,
+            self.ch_yaw,
+            self.max_linear,
+            self.max_angular,
+            self.deadzone,
+        )
 
-        if len(joy_msg.axes) > self.ch_yaw:
-            # Yaw (left/right) -> angular.z
-            angular_raw = joy_msg.axes[self.ch_yaw]
-            twist.angular.z = self.apply_deadzone(angular_raw) * self.max_angular
+        # Remember for the heartbeat diagnostic
+        self._last_linear_x = twist.linear.x
+        self._last_angular_z = twist.angular.z
 
         self.cmd_vel_pub.publish(twist)
 
@@ -312,14 +346,19 @@ class JoystickControlNode(Node):
         """Process joystick messages (for non-SBUS mode).
 
         Same logic as SBUS mode: only publish when enabled, let twist_mux
-        timeout handle the fallthrough when disabled.
+        timeout handle the fallthrough when disabled. The /joystick_lock
+        follows the enable button so lower-priority sources are blocked while
+        the operator holds the enable button.
         """
         self.last_joy_msg = msg
 
         # Check enable button (must be held down)
-        button_pressed = False
-        if len(msg.buttons) > self.enable_button:
-            button_pressed = msg.buttons[self.enable_button] == 1
+        button_pressed = is_armed(msg.buttons, self.enable_button)
+
+        # Publish twist_mux lock (non-SBUS mode: enable button = armed)
+        lock_msg = Bool()
+        lock_msg.data = button_pressed
+        self.lock_pub.publish(lock_msg)
 
         # Voice feedback on state change
         if button_pressed and not self.was_enabled:
@@ -345,6 +384,7 @@ class JoystickControlNode(Node):
         twist = Twist()
 
         # Get axis values with deadzone
+        # Note: HID axes are inverted for natural control
         if len(joy_msg.axes) > self.axis_linear:
             linear_raw = -joy_msg.axes[self.axis_linear]  # Invert Y axis
             twist.linear.x = self.apply_deadzone(linear_raw) * self.max_linear
@@ -352,6 +392,10 @@ class JoystickControlNode(Node):
         if len(joy_msg.axes) > self.axis_angular:
             angular_raw = -joy_msg.axes[self.axis_angular]  # Invert for natural control
             twist.angular.z = self.apply_deadzone(angular_raw) * self.max_angular
+
+        # Remember for the heartbeat diagnostic
+        self._last_linear_x = twist.linear.x
+        self._last_angular_z = twist.angular.z
 
         self.cmd_vel_pub.publish(twist)
 

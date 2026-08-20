@@ -1,0 +1,308 @@
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index 05a1873c1..552e6fa44 100644
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -3118,6 +3118,88 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
+     return normalize_profile_name(assignee)
+ 
+ 
++def _profile_skill_names(assignee: Optional[str]) -> Optional[frozenset[str]]:
++    """Return the set of skill names installed on ``assignee``'s profile.
++
++    ``None`` means "no profile to validate against" — either the task has no
++    assignee or the assignee is not a Hermes profile (plugin/CLI worker lanes
++    resolve their own capabilities and have no ``skills/`` tree). Callers
++    should treat ``None`` as "validation skipped", NOT as an empty profile.
++
++    Skill identity mirrors the on-disk layout ``skills/<category>/<skill>/
++    SKILL.md`` (and ``skills/<skill>/SKILL.md`` for uncategorized skills), so
++    the canonical name is ``SKILL.md``'s parent directory name. The profile's
++    own excluded paths (deps, support dirs) are skipped via
++    :func:`agent.skill_utils.is_excluded_skill_path`.
++    """
++    if assignee is None:
++        return None
++    from agent.skill_utils import iter_skill_index_files
++    from hermes_cli.profiles import get_profile_dir, profile_exists
++
++    # Non-profile assignees (external worker lanes) have no skills tree; the
++    # dispatcher treats them as first-class lanes, so don't reject their tasks.
++    if not profile_exists(assignee):
++        return None
++
++    skills_dir = get_profile_dir(assignee) / "skills"
++    if not skills_dir.is_dir():
++        return frozenset()
++
++    # Walk via the shared ``iter_skill_index_files`` helper — the SAME walker
++    # the prompt builder and skill loader use. ``Path.rglob`` does NOT follow
++    # symlinks by default, which silently misses every skill that lives under
++    # a symlinked category directory (e.g. ``software-development``,
++    # ``research``, ``productivity`` — those category dirs are symlinks to
++    # the shared source at ``~/.hermes/skills/<category>``). Using the shared
++    # walker keeps kanban validation in lockstep with the runtime skill
++    # discovery, so a per-task ``skills=[...]`` that resolves at spawn time
++    # cannot be rejected here for being "not installed". Regression for
++    # t_1ab37fa8 (retro: SOUL.md claimed skills the profile never reported).
++    names: set[str] = set()
++    try:
++        for md in iter_skill_index_files(skills_dir, "SKILL.md"):
++            skill_name = md.parent.name
++            if skill_name:
++                names.add(skill_name)
++    except OSError:
++        # Unreadable skills tree — be conservative and skip validation rather
++        # than bricking task creation over a permission hiccup.
++        return None
++    return frozenset(names)
++
++
++def _validate_skills_for_assignee(assignee: Optional[str], skills: list[str]) -> None:
++    """Reject per-task skills that are not installed on the assignee profile.
++
++    Guard against the classic agent mistake (t_6c6c98fb): an LLM worker picks
++    ``skills=[\"devops\"]`` for ``assignee=\"architect\"`` because the skill
++    *sounds* right for the task, even though it belongs to a different
++    profile. The task then gets created and the worker crashes on spawn
++    because ``--skills devops`` fails to resolve. Fail fast here with a
++    message that names the offending skill and the owning profile so the
++    agent can fix the assignee instead of the skill.
++
++    Non-profile assignees (external lanes) and unknown profiles skip the
++    check entirely — see :func:`_profile_skill_names`.
++    """
++    if not assignee or not skills:
++        return
++    installed = _profile_skill_names(assignee)
++    if installed is None:
++        return
++    missing = [s for s in skills if s not in installed]
++    if missing:
++        quoted = ", ".join(repr(s) for s in missing)
++        noun = "skill" if len(missing) == 1 else "skills"
++        raise ValueError(
++            f"{quoted} {noun} not installed in profile {assignee!r}; "
++            "skill names belong to the profile that owns them — fix the "
++            "assignee or drop the per-task skills. Installed skills: "
++            + (", ".join(sorted(installed)) if installed else "(none)")
++        )
++
++
+ def create_task(
+     conn: sqlite3.Connection,
+     *,
+@@ -3356,6 +3438,13 @@ def create_task(
+             )
+         skills_list = cleaned
+ 
++    # Cross-check per-task skills against the assignee profile's installed
++    # skills. An LLM worker can pick a skill that *sounds* right for the task
++    # but belongs to a different profile (t_6c6c98fb: assignee=architect with
++    # skills=[devops]); the task would be created and then the worker would
++    # crash on spawn when `--skills devops` fails to resolve. Fail fast here.
++    _validate_skills_for_assignee(assignee, skills_list or [])
++
+     # Idempotency check — return the existing task instead of creating a
+     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
+     # and to avoid holding a write lock during the lookup. Race is
+diff --git a/hermes_cli/profiles.py b/hermes_cli/profiles.py
+index fe582aca9..eaf789e30 100644
+--- a/hermes_cli/profiles.py
++++ b/hermes_cli/profiles.py
+@@ -793,11 +793,15 @@ def _count_skills(profile_dir: Path) -> int:
+     ):
+         return cached[2]
+ 
+-    count = 0
+-    for md in skills_dir.rglob("SKILL.md"):
+-        if is_excluded_skill_path(md):
+-            continue
+-        count += 1
++    # Use ``iter_skill_index_files`` (symlink-following) so category dirs
++    # that are symlinks to the shared source at ``~/.hermes/skills/<cat>``
++    # are counted. ``Path.rglob`` does NOT follow symlinks, which historically
++    # made profile skill counts look ~5x lower than what the skill loader
++    # actually resolves at runtime (regression for t_1ab37fa8). The shared
++    # walker also already filters excluded paths and active-org mirrors.
++    from agent.skill_utils import iter_skill_index_files
++
++    count = sum(1 for _ in iter_skill_index_files(skills_dir, "SKILL.md"))
+     _SKILL_COUNT_CACHE[key] = (signature, now, count)
+     return count
+ 
+diff --git a/tests/hermes_cli/test_kanban_db.py b/tests/hermes_cli/test_kanban_db.py
+index ce254bf9f..b3de21d8c 100644
+--- a/tests/hermes_cli/test_kanban_db.py
++++ b/tests/hermes_cli/test_kanban_db.py
+@@ -1591,3 +1591,171 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
+     # Still usable after with-block exit (the leak).
+     conn.execute("SELECT 1").fetchone()
+     conn.close()  # explicit close to avoid leaking THIS test
++
++
++# ---------------------------------------------------------------------------
++# create_task(): per-task skills must belong to the assignee profile
++# Regression for t_6c6c98fb / t_ba12fefc — an LLM worker passed
++# assignee=architect with skills=["devops"] (a skill owned by a different
++# profile). The task was created, then the worker crashed on spawn when
++# `--skills devops` failed to resolve. create_task must reject that
++# combination up front with a readable error.
++# ---------------------------------------------------------------------------
++
++
++def test_create_task_rejects_skill_not_in_assignee_profile(kanban_home, monkeypatch):
++    """skills=[...] containing a foreign skill is rejected at creation."""
++    monkeypatch.setattr(
++        kb,
++        "_profile_skill_names",
++        lambda assignee: frozenset(
++            {"architecture-doc-review", "plan", "spike", "simplify-code"}
++        ),
++    )
++    with kb.connect() as conn:
++        with pytest.raises(ValueError, match=r"'devops' skill not installed in profile 'architect'"):
++            kb.create_task(
++                conn,
++                title="foreign skill",
++                assignee="architect",
++                skills=["devops"],
++            )
++        # Multiple foreign skills are all named at once.
++        with pytest.raises(ValueError, match=r"'devops', 'tester' skills not installed"):
++            kb.create_task(
++                conn,
++                title="foreign skills",
++                assignee="architect",
++                skills=["devops", "tester"],
++            )
++
++
++def test_create_task_accepts_skills_from_assignee_profile(kanban_home, monkeypatch):
++    """Skills that ARE installed on the assignee profile pass through."""
++    monkeypatch.setattr(
++        kb,
++        "_profile_skill_names",
++        lambda assignee: frozenset({"architecture-doc-review", "plan", "spike"}),
++    )
++    with kb.connect() as conn:
++        tid = kb.create_task(
++            conn,
++            title="own skills",
++            assignee="architect",
++            skills=["architecture-doc-review", "plan"],
++        )
++        task = kb.get_task(conn, tid)
++        assert task.skills == ["architecture-doc-review", "plan"]
++
++
++def test_create_task_skill_validation_skips_unknown_profile(kanban_home, monkeypatch):
++    """None from _profile_skill_names means 'no profile to validate' → skip.
++
++    External/plugin worker lanes are first-class assignees with no skills
++    tree; their tasks must not be rejected for carrying arbitrary skills.
++    """
++    monkeypatch.setattr(kb, "_profile_skill_names", lambda assignee: None)
++    with kb.connect() as conn:
++        tid = kb.create_task(
++            conn,
++            title="external lane",
++            assignee="external-worker",
++            skills=["some-plugin-skill"],
++        )
++        assert kb.get_task(conn, tid).assignee == "external-worker"
++
++
++def test_create_task_skill_validation_empty_profile(kanban_home, monkeypatch):
++    """Empty frozenset means 'profile exists but has no skills'.
++
++    A bare profile (e.g. created with `--no-skills`) has zero skills, so ANY
++    per-task skill is foreign and the worker would fail at spawn trying to
++    load it. Rejecting here with the readable error is strictly better than
++    the spawn-time crash it replaces.
++    """
++    monkeypatch.setattr(kb, "_profile_skill_names", lambda assignee: frozenset())
++    with kb.connect() as conn:
++        with pytest.raises(ValueError, match=r"'anything' skill not installed in profile 'bare'.*Installed skills: \(none\)"):
++            kb.create_task(
++                conn,
++                title="empty profile",
++                assignee="bare",
++                skills=["anything"],
++            )
++
++
++def test_profile_skill_names_follows_symlinked_categories(kanban_home, monkeypatch):
++    """Skills under a symlinked category dir are part of the profile's set.
++
++    Regression for t_1ab37fa8 (retro: SOUL.md ↔ Hermes-profile drift). Hermes
++    ships the shared skill library at ``$HERMES_HOME/skills/<category>/<skill>``
++    and every profile's ``skills/<category>`` is a SYMLINK to it, so the
++    skill loader (which uses ``iter_skill_index_files`` with
++    ``followlinks=True``) sees those skills. The kanban validator used
++    ``Path.rglob`` which does NOT follow symlinks, so every skill under a
++    symlinked category (e.g. ``software-development``, ``research``,
++    ``productivity``) was reported as missing and any per-task
++    ``skills=[...]`` referencing it was rejected with
++    ``"<skill> not installed in profile"``. After the fix both real-file
++    skills and symlinked-category skills must be discoverable.
++    """
++    # Shared source-of-truth skill library.
++    shared = kanban_home / "skills"
++    (shared / "shared-cat" / "shared-skill").mkdir(parents=True)
++    (shared / "shared-cat" / "shared-skill" / "SKILL.md").write_text(
++        "---\nname: shared-skill\n---\n", encoding="utf-8"
++    )
++    # A skill that lives ONLY in the shared tree (under a symlinked
++    # category in the profile — the bug case).
++    (shared / "shared-cat" / "symlinked-skill").mkdir(parents=True)
++    (shared / "shared-cat" / "symlinked-skill" / "SKILL.md").write_text(
++        "---\nname: symlinked-skill\n---\n", encoding="utf-8"
++    )
++    # A skill that lives ONLY in the shared tree under a NON-symlinked
++    # category (control case — must still be discovered).
++    (shared / "other-cat" / "regular-skill").mkdir(parents=True)
++    (shared / "other-cat" / "regular-skill" / "SKILL.md").write_text(
++        "---\nname: regular-skill\n---\n", encoding="utf-8"
++    )
++
++    # Profile whose skills tree mixes real dirs and symlinked categories.
++    profile_dir = kanban_home / "profiles" / "symtest"
++    skills_dir = profile_dir / "skills"
++    (skills_dir / "real-cat" / "real-only-skill").mkdir(parents=True)
++    (skills_dir / "real-cat" / "real-only-skill" / "SKILL.md").write_text(
++        "---\nname: real-only-skill\n---\n", encoding="utf-8"
++    )
++    # Symlink the shared-cat into the profile tree — exactly how Hermes
++    # ships category dirs in production profiles.
++    os.symlink(shared / "shared-cat", skills_dir / "shared-cat")
++    # Copy a category the easy way (real dir with one skill already
++    # present in the shared tree).
++    (skills_dir / "other-cat").mkdir(parents=True)
++    (skills_dir / "other-cat" / "regular-skill").symlink_to(
++        shared / "other-cat" / "regular-skill"
++    )
++
++    monkeypatch.setattr(
++        "hermes_cli.profiles.profile_exists", lambda name: True
++    )
++    monkeypatch.setattr(
++        "hermes_cli.profiles.get_profile_dir", lambda name: profile_dir
++    )
++
++    found = kb._profile_skill_names("symtest")
++    # The bug: Path.rglob never descends into ``shared-cat`` because it's a
++    # symlink; ``shared-skill`` and ``symlinked-skill`` would be missing and
++    # any ``skills=[shared-skill]`` would be wrongly rejected.
++    assert "shared-skill" in found, (
++        "Skills under a symlinked category dir must be discovered "
++        "(regression t_1ab37fa8): " + repr(sorted(found))
++    )
++    assert "symlinked-skill" in found, (
++        "Skill added purely under a symlinked category must be discovered: "
++        + repr(sorted(found))
++    )
++    # Control: real-file skills still resolve.
++    assert "real-only-skill" in found
++    # Regular-skill is reachable both via the profile's own category AND the
++    # shared tree; either way it must show up exactly once in the set.
++    assert "regular-skill" in found

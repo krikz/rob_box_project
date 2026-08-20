@@ -1,13 +1,13 @@
 """Tests for the harness-side ``ToolRegistry``.
 
 The registry is a **manifest-only** ToolProvider — it owns the
-``ToolSpec`` for each of the 34 tools that ``dialogue_node`` exposes
-(29 flat + 5 skill sub-agents). The actual handlers are registered
-separately by the ``ROSMCPToolProvider`` which bridges ROS2 topics,
-so the registry stays ROS2-free and unit-testable.
+``ToolSpec`` for each of the 32 flat tools that ``dialogue_node``
+exposes. The actual handlers are registered separately by the
+``ROSMCPToolProvider`` which bridges ROS2 topics, so the registry stays
+ROS2-free and unit-testable.
 
 Coverage:
-* All 34 tools pre-registered with non-empty descriptions
+* All 32 tools pre-registered with non-empty descriptions
 * list_tools() returns tuple of ToolSpec
 * ToolSpec names are unique (no duplicates)
 * get(name) / get_handler(name) work
@@ -29,6 +29,7 @@ from rob_box_harness.tools import ToolHandler, ToolSpec
 
 FLAT_TOOL_NAMES: tuple[str, ...] = (
     "speak_text",
+    "estimate_tts_duration",
     "play_sound",
     "play_animation",
     "memory_context",
@@ -46,7 +47,6 @@ FLAT_TOOL_NAMES: tuple[str, ...] = (
     "delete_waypoint",
     "clear_waypoints",
     "get_current_pose",
-    "voice_settings",
     "search_samples",
     "execute_music_code",
     "stop_music",
@@ -57,15 +57,38 @@ FLAT_TOOL_NAMES: tuple[str, ...] = (
     "save_track",
     "load_track",
     "delete_track",
+    # Issue #1392 — MiniMax Music API generation + persistent library.
+    # MCP side registers these in ``mcp_server._register_minimax_music_tools``;
+    # the harness-side catalog must mirror them so the LLM sees the schemas.
+    "generate_music",
+    "gen_list_library",
+    "gen_search_library",
+    "gen_save_to_library",
+    "gen_play_from_library",
+    "gen_delete_from_library",
+    "gen_get_track_info",
+    # Issue #1101 — voice biometrics (resemblyzer d-vectors). The MCP-side
+    # ``RegisterSpeakerTool`` exists in ``rob_box_mcp_tools.tools.dialogue``
+    # since issue #1077, but was never added to this harness-side catalog,
+    # so LLM never saw the schema and could never call it. Adding the spec
+    # here exposes the tool to the LLM through ``provider.update_tools()``
+    # in ``dialogue_node._build_tool_provider``.
+    "register_speaker",
+    # Issue #1101 — DuckDuckGo web search. The voice-level
+    # ``WebSearchSkill`` existed before the harness migration but was never
+    # wired into the harness-side catalog; LLM responded «поиск в интернете
+    # пока недоступен». The MCP side ``SearchWebTool`` dispatches the real
+    # call.
+    "search_web",
+    # Issue #1219 — persistent TTS voice selection (LLM voice choice).
+    # The MCP-side ``SetVoiceTool`` validates the voice and stores
+    # current_voice in-memory; adding the spec here exposes the tool to
+    # the LLM through ``provider.update_tools()`` (same pattern as
+    # register_speaker).
+    "set_voice",
 )
 
-SKILL_TOOL_NAMES: tuple[str, ...] = (
-    "handle_music",
-    "handle_navigation",
-    "handle_memory",
-    "handle_status",
-    "handle_faq",
-)
+SKILL_TOOL_NAMES: tuple[str, ...] = ()
 
 EXPECTED_TOOL_NAMES: frozenset[str] = frozenset(FLAT_TOOL_NAMES) | frozenset(
     SKILL_TOOL_NAMES
@@ -77,12 +100,60 @@ EXPECTED_TOOL_NAMES: frozenset[str] = frozenset(FLAT_TOOL_NAMES) | frozenset(
 # ---------------------------------------------------------------------------
 
 
-def test_default_registry_contains_all_34_tools() -> None:
-    """The default ToolRegistry must pre-register all 34 tools."""
+def test_default_registry_contains_all_known_tools() -> None:
+    """The default ToolRegistry must pre-register every known tool.
+
+    Skill facades (``handle_music`` / ``handle_navigation`` / …) are NOT
+    registered here anymore: they have no executor (the local Compositor
+    skill path was retired during the harness migration), and exposing
+    them to the LLM made it call a phantom ``handle_music`` tool that the
+    MCP server reports as «не найден». Only flat tools (which ARE wired
+    to the MCP server) are pre-registered.
+
+    Bumped to 37 over time (was 34): estimate_tts_duration added in #949,
+    register_speaker added when fixing #1101 tool-catalog wiring,
+    voice_settings removed in #1229 (LLM must not call it — set_voice +
+    speak_text(voice=) cover the voice-selection path). The test
+    asserts membership against ``EXPECTED_TOOL_NAMES`` so missing tools
+    (the original bug) are caught with a clear diff.
+    """
     registry = ToolRegistry()
     names = {spec.name for spec in registry.list_tools()}
-    assert len(names) == 34
+    missing = EXPECTED_TOOL_NAMES - names
+    extra = names - EXPECTED_TOOL_NAMES
+    assert not missing, f"missing tools in registry: {sorted(missing)}"
+    assert not extra, f"unexpected tools in registry: {sorted(extra)}"
     assert names == EXPECTED_TOOL_NAMES
+
+
+def test_register_speaker_tool_is_exposed_to_llm() -> None:
+    """Issue #1101 — register_speaker must be visible to the LLM.
+
+    Regression guard: prior to this fix, RegisterSpeakerTool existed only
+    in the MCP server-side registry (used for runtime dispatch via
+    /mcp/execute → /mcp/result), but was NEVER added to the harness-side
+    ``ToolRegistry`` that ``dialogue_node._build_tool_provider`` feeds
+    into the chat-completion ``tools=`` argument. Result: LLM had no
+    schema, never called it, voice-bio embeddings for new users were
+    never saved.
+
+    The spec must be JSON-Schema valid and expose ``name`` as optional
+    string (LLM passes None to ask, real name to register).
+    """
+    registry = ToolRegistry()
+    spec = registry.get("register_speaker")
+    # Spec sanity
+    assert spec.description, "register_speaker description must not be empty"
+    params = spec.parameters or {}
+    props = params.get("properties") or {}
+    assert "name" in props, (
+        "register_speaker.parameters.properties must expose 'name' (string)"
+    )
+    name_schema = props["name"]
+    assert name_schema.get("type") == "string", (
+        "register_speaker.name must be typed as 'string' so JSON-Schema "
+        "validation accepts Cyrillic values from the LLM"
+    )
 
 
 def test_every_tool_has_a_non_empty_description() -> None:

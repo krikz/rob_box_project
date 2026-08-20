@@ -155,6 +155,7 @@ def _ensure_rclpy_mock(monkeypatch):
                 RecognitionModelOptions=MagicMock(REAL_TIME=MagicMock()),
                 LanguageRestrictionOptions=MagicMock(WHITELIST=MagicMock()),
                 TextNormalizationOptions=MagicMock(TEXT_NORMALIZATION_DISABLED=MagicMock()),
+                SpeechAnalysisOptions=MagicMock(enable_speaker_analysis=MagicMock()),
                 StreamingOptions=MagicMock(),
                 StreamingRequest=MagicMock(),
                 AudioChunk=MagicMock(),
@@ -175,11 +176,21 @@ def _ensure_optional_deps(monkeypatch):
     """
     # Сначала выгружаем кешированные модули (могут содержать ссылки на
     # mock-объекты от других test-файлов, например test_dialogue_shell).
+    import rob_box_voice  # noqa: F401 — пакет уже импортирован; нужен для delattr
+
     for cached in [
         "rob_box_voice.stt_node",
         "rob_box_voice.dialogue_node",
     ]:
         sys.modules.pop(cached, None)
+        # sys.modules.pop() НЕ очищает атрибут пакета (rob_box_voice.stt_node):
+        # `from rob_box_voice import stt_node` вернёт СТАРЫЙ модуль со ссылками
+        # на mock прошлого теста (межтестовое загрязнение — видно в
+        # TestYandexSpeakerAnalysisConfig: во втором тесте StreamingOptions
+        # «не вызывался», т.к. вызовы шли в старый mock). Удаляем атрибут.
+        _leaf = cached.split(".")[-1]
+        if hasattr(rob_box_voice, _leaf):
+            delattr(rob_box_voice, _leaf)
     _ensure_rclpy_mock(monkeypatch)
     yield
 
@@ -225,6 +236,9 @@ def _make_stt_node_stub(**param_overrides):
         unclear_phrase="Не расслышал, скажи ещё раз",
         unclear_cooldown_s=5.0,
         tts_grace_s=2.5,
+        # Issue #1251 — ранний «бульк»
+        early_boop_enabled=True,
+        early_boop_trigger="boop",
     )
     defaults.update(param_overrides)
 
@@ -300,6 +314,94 @@ def stt_node_no_vosk():
     return node
 
 
+class TestYandexSpeakerAnalysisConfig:
+    """Issue #1077 — конфиг Yandex должен запрашивать speaker_analysis.
+
+    Проверено на роботе (10.1.1.21, probe 2026-08-09): Yandex v3 НЕ присылает
+    speaker_analysis, пока в StreamingOptions не передан
+    SpeechAnalysisOptions(enable_speaker_analysis=True) — по умолчанию опция
+    выключена, даже при успешном yandex:ok. speaker_labeling (SpeakerLabeling
+    Options) не подходит: требует FULL_DATA и падает с INVALID_ARGUMENT в
+    REAL_TIME. Фикс — speech_analysis в стриминговом конфиге.
+    """
+
+    @staticmethod
+    def _capture_streaming_options(stt_node_no_vosk, final):
+        """Запускает _recognize_yandex и ВОЗВРАЩАЕТ kwargs первого вызова
+        StreamingOptions(...) из gen() — т.е. конфиг, который реально уходит
+        в стрим (mock возвращает MagicMock, атрибуты которого не отражают
+        переданные аргументы, поэтому смотрим call_args.kwargs).
+
+        Issue #1477: в новой двухфазной реализации speech_analysis
+        устанавливается через opts.speech_analysis.CopyFrom(...) ПОСЛЕ
+        конструирования StreamingOptions — kwargs его не покажут. Поэтому
+        дополнительно возвращаем объект-инстанс StreamingOptions (mock)
+        чтобы тест мог проверить атрибут .speech_analysis.
+        """
+        captured = {}
+
+        # SpeechAnalysisOptions — mock: без side_effect он возвращает
+        # MagicMock и теряет переданные kwargs. Подменяем на объект,
+        # отражающий реальные аргументы (enable_speaker_analysis=True...).
+        stt_pb2 = sys.modules["yandex.cloud.ai.stt.v3"].stt_pb2
+        stt_pb2.SpeechAnalysisOptions.side_effect = lambda **kw: MagicMock(**kw)
+
+        def _consume_gen(gen, metadata=None, timeout=None):
+            list(gen)
+            # StreamingOptions создаётся ОДИН раз (первый оператор gen()).
+            # call_args = последний вызов; берём call_args_list[0].
+            calls = stt_pb2.StreamingOptions.call_args_list
+            captured["opts_kwargs"] = calls[0].kwargs if calls else {}
+            captured["opts_instance"] = (
+                stt_pb2.StreamingOptions.return_value
+            )
+            return [final]
+
+        stt_node_no_vosk.yandex_stub.RecognizeStreaming.side_effect = _consume_gen
+        stt_node_no_vosk._recognize_yandex(b"\x00" * 8000)
+        return captured
+
+    def test_streaming_options_include_speech_analysis(self, stt_node_no_vosk):
+        final = MagicMock()
+        final.WhichOneof.return_value = "final"
+        alt = MagicMock()
+        alt.text = "робот меня зовут саша"
+        final.final.alternatives = [alt]
+
+        captured = self._capture_streaming_options(stt_node_no_vosk, final)
+        opts_instance = captured.get("opts_instance")
+        assert opts_instance is not None, "StreamingOptions должен создаваться в gen()"
+
+        # Issue #1477: speech_analysis устанавливается через CopyFrom() после
+        # конструктора — проверяем, что CopyFrom был вызван с нужными опциями.
+        assert opts_instance.speech_analysis.CopyFrom.called, (
+            "Должен вызываться opts.speech_analysis.CopyFrom() — иначе Yandex "
+            "не присылает speaker_analysis (issue #1077)"
+        )
+        copied = opts_instance.speech_analysis.CopyFrom.call_args.args[0]
+        assert copied.enable_speaker_analysis is True
+        assert copied.enable_conversation_analysis is True
+
+    def test_no_speaker_labeling_in_real_time(self, stt_node_no_vosk):
+        """speaker_labeling требует FULL_DATA — в REAL_TIME его НЕ должно быть."""
+        final = MagicMock()
+        final.WhichOneof.return_value = "final"
+        alt = MagicMock()
+        alt.text = "привет"
+        final.final.alternatives = [alt]
+
+        captured = self._capture_streaming_options(stt_node_no_vosk, final)
+        opts_instance = captured.get("opts_instance")
+        assert opts_instance is not None
+        # speech_analysis есть, но speaker_labeling НЕ должно быть ни в
+        # kwargs конструктора, ни в speech_analysis (для REAL_TIME).
+        opts_kwargs = captured.get("opts_kwargs", {})
+        assert "speaker_labeling" not in opts_kwargs, (
+            "speaker_labeling несовместим с REAL_TIME (INVALID_ARGUMENT) — "
+            "используем speech_analysis"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Тесты параметров
 # ---------------------------------------------------------------------------
@@ -308,9 +410,11 @@ def stt_node_no_vosk():
 class TestSTTNodeFallbackParams:
     """Проверка что новые параметры читаются из voice_assistant.yaml."""
 
-    def test_default_yandex_timeout_is_5s(self, stt_node):
+    def test_default_yandex_timeout_is_12s(self, stt_node):
         # issue #979: 1.3s → 5.0s
-        assert stt_node.yandex_timeout_s == 5.0
+        # issue #1477: 5.0s → 12.0s (фразы 4-6с с pre-roll + активный TTS/музыка
+        # могут выходить за 5с gRPC deadline; FULL_DATA fallback требует больше).
+        assert stt_node.yandex_timeout_s == 12.0
 
     def test_default_yandex_max_retries_is_1(self, stt_node):
         # issue #979: "один retry перед падением на Vosk"
@@ -344,6 +448,206 @@ class TestSTTNodeFallbackOverride:
         assert node.yandex_max_retries == 2
         assert node.retry_backoff_s == 0.5
         assert node.min_text_chars == 5
+
+
+# ---------------------------------------------------------------------------
+# Тесты двухфазного Yandex (issue #1477)
+# ---------------------------------------------------------------------------
+
+
+class TestYandexTwoPhaseFallback:
+    """Issue #1477: двухфазный Yandex — REAL_TIME primary, FULL_DATA fallback.
+
+    Acceptance: если фаза REAL_TIME дала empty, фаза FULL_DATA подхватывает
+    фразу. Это лечит «yandex:empty» в music_library_suite, где REAL_TIME +
+    speech_analysis давал empty на 4-6 секундных фразах с pre-roll.
+    """
+
+    def test_phase1_ok_skips_phase2(self, stt_node_no_vosk):
+        """Если фаза 1 (REAL_TIME) дала текст, фаза 2 (FULL_DATA) не вызывается."""
+        phase1_calls = []
+        phase2_calls = []
+
+        original = stt_node_no_vosk._recognize_yandex_phase
+
+        def fake_phase(audio, *, phase, enable_speech_analysis):
+            if phase == "REAL_TIME":
+                phase1_calls.append(phase)
+                return "робот меня зовут саша"
+            phase2_calls.append(phase)
+            return "никогда не вызывается"
+
+        stt_node_no_vosk._recognize_yandex_phase = fake_phase
+        try:
+            text = stt_node_no_vosk._recognize_yandex(b"\x00" * 8000)
+            assert text == "робот меня зовут саша"
+            assert phase1_calls == ["REAL_TIME"]
+            assert phase2_calls == [], (
+                "Если фаза 1 вернула текст, фаза 2 (FULL_DATA) не должна вызываться"
+            )
+        finally:
+            stt_node_no_vosk._recognize_yandex_phase = original
+
+    def test_phase1_empty_triggers_phase2(self, stt_node_no_vosk):
+        """Если фаза 1 вернула empty/None, фаза 2 (FULL_DATA) должна вызваться."""
+        phase1_calls = []
+        phase2_calls = []
+
+        original = stt_node_no_vosk._recognize_yandex_phase
+
+        def fake_phase(audio, *, phase, enable_speech_analysis):
+            if phase == "REAL_TIME":
+                phase1_calls.append(phase)
+                return None
+            phase2_calls.append((phase, enable_speech_analysis))
+            return "робот расскажи анекдот"
+
+        stt_node_no_vosk._recognize_yandex_phase = fake_phase
+        try:
+            text = stt_node_no_vosk._recognize_yandex(b"\x00" * 8000)
+            assert text == "робот расскажи анекдот"
+            assert phase1_calls == ["REAL_TIME"]
+            assert phase2_calls == [("FULL_DATA", False)], (
+                "Фаза 2 должна вызываться с phase=FULL_DATA, "
+                "enable_speech_analysis=False"
+            )
+        finally:
+            stt_node_no_vosk._recognize_yandex_phase = original
+
+    def test_both_phases_empty_returns_none(self, stt_node_no_vosk):
+        """Если обе фазы вернули None — итог None (Vosk-fallback пойдёт)."""
+        calls = []
+
+        original = stt_node_no_vosk._recognize_yandex_phase
+
+        def fake_phase(audio, *, phase, enable_speech_analysis):
+            calls.append(phase)
+            return None
+
+        stt_node_no_vosk._recognize_yandex_phase = fake_phase
+        try:
+            text = stt_node_no_vosk._recognize_yandex(b"\x00" * 8000)
+            assert text is None
+            assert calls == ["REAL_TIME", "FULL_DATA"]
+            assert stt_node_no_vosk._last_speaker_tag is None
+        finally:
+            stt_node_no_vosk._recognize_yandex_phase = original
+
+    def test_phase2_clears_speaker_tag(self, stt_node_no_vosk):
+        """Если фаза 2 (без speech_analysis) сработала — speaker_tag сбрасывается."""
+        original = stt_node_no_vosk._recognize_yandex_phase
+
+        def fake_phase(audio, *, phase, enable_speech_analysis):
+            if phase == "REAL_TIME":
+                return None
+            return "робот спасибо"
+
+        stt_node_no_vosk._recognize_yandex_phase = fake_phase
+        try:
+            # speaker_tag должен сброситься
+            stt_node_no_vosk._last_speaker_tag = "tag_before"
+            text = stt_node_no_vosk._recognize_yandex(b"\x00" * 8000)
+            assert text == "робот спасибо"
+            assert stt_node_no_vosk._last_speaker_tag is None, (
+                "speaker_tag должен быть None после фазы 2 (нет speech_analysis)"
+            )
+        finally:
+            stt_node_no_vosk._recognize_yandex_phase = original
+
+    def test_empty_audio_short_circuit(self, stt_node_no_vosk):
+        """Пустые байты → None без обращения к Yandex."""
+        calls = []
+
+        original = stt_node_no_vosk._recognize_yandex_phase
+
+        def fake_phase(audio, *, phase, enable_speech_analysis):
+            calls.append(phase)
+            return "не должно вызваться"
+
+        stt_node_no_vosk._recognize_yandex_phase = fake_phase
+        try:
+            assert stt_node_no_vosk._recognize_yandex(b"") is None
+            assert calls == [], "Пустой audio_bytes не должен вызывать Yandex"
+        finally:
+            stt_node_no_vosk._recognize_yandex_phase = original
+
+
+class TestAudioStatsTelemetry:
+    """Issue #1477: телеметрия фразы до отправки в Yandex.
+
+    Acceptance: лог audio_rms_dbfs/peak_dbfs/duration перед стримом. Это
+    устраняет главный источник «yandex:empty» — гадание «что пришло в
+    микрофон»: речь (RMS > -30dBFS), эхо TTS (RMS > -20dBFS), тишина
+    (RMS < -40dBFS).
+    """
+
+    def test_silence_logs_negative_rms(self, stt_node_no_vosk, caplog):
+        """Для тишины RMS должен быть очень низким (dBFS < -30)."""
+        import logging
+
+        # 1 секунда тишины (int16 LE mono 16kHz).
+        silence = b"\x00\x00" * 16000
+        # stub логгера = "test_stt_node_fallback" (см. _make_stt_node_stub).
+        with caplog.at_level(logging.INFO, logger="test_stt_node_fallback"):
+            original = stt_node_no_vosk._recognize_yandex_phase
+
+            def no_op(audio, *, phase, enable_speech_analysis):
+                return "ignored"
+
+            stt_node_no_vosk._recognize_yandex_phase = no_op
+            try:
+                stt_node_no_vosk._recognize_yandex(silence)
+            finally:
+                stt_node_no_vosk._recognize_yandex_phase = original
+
+        rms_logs = [r for r in caplog.records if "audio_rms_dbfs" in r.message]
+        assert rms_logs, "Должен быть лог audio_rms_dbfs перед отправкой в Yandex"
+        msg = rms_logs[0].message
+        # Тишина → RMS очень низкий.
+        assert "audio_rms_dbfs=" in msg
+        assert "duration=" in msg
+        rms_str = msg.split("audio_rms_dbfs=")[1].split()[0]
+        rms_dbfs = float(rms_str)
+        assert rms_dbfs < -30.0, (
+            f"rms_dbfs={rms_dbfs} для тишины (должен быть < -30, это -90..-50 dBFS)"
+        )
+
+    def test_loud_signal_logs_peak(self, stt_node_no_vosk, caplog):
+        """Для громкого сигнала peak_dbfs должен быть близок к 0."""
+        import logging
+        import struct
+
+        # Громкая синусоида (амплитуда 30000 из 32768).
+        sr = 16000
+        n = sr  # 1 секунда
+        audio_bytes = b"".join(
+            struct.pack("<h", int(30000 * math.sin(2 * math.pi * 440 * i / sr)))
+            for i in range(n)
+        )
+        with caplog.at_level(logging.INFO, logger="test_stt_node_fallback"):
+            original = stt_node_no_vosk._recognize_yandex_phase
+
+            def no_op(audio, *, phase, enable_speech_analysis):
+                return "ignored"
+
+            stt_node_no_vosk._recognize_yandex_phase = no_op
+            try:
+                stt_node_no_vosk._recognize_yandex(audio_bytes)
+            finally:
+                stt_node_no_vosk._recognize_yandex_phase = original
+
+        rms_logs = [r for r in caplog.records if "audio_rms_dbfs" in r.message]
+        assert rms_logs
+        msg = rms_logs[0].message
+        assert "peak_dbfs=" in msg
+        # peak должен быть > -5dBFS для амплитуды 30000 (log10(30000/32768) ≈ -0.76)
+        peak_str = msg.split("peak_dbfs=")[1].split()[0]
+        peak_dbfs = float(peak_str)
+        assert peak_dbfs > -5.0, f"peak_dbfs={peak_dbfs} для громкого сигнала"
+
+
+# Импорт math нужен для телеметрии (используется внутри _recognize_yandex).
+import math  # noqa: E402 — ставим после определения тестов, чтобы не путать lint
 
 
 # ---------------------------------------------------------------------------
@@ -399,20 +703,26 @@ class TestRecognizeWithFallback:
         assert attempts[2].reason == "ok"
 
     def test_vosk_short_garbage_rejected(self, stt_node):
-        """Короткий Vosk-мусор (1 char) → None."""
+        """Короткий Vosk-мусор (1 char) → text=«а» (rejected(short), не None).
+
+        Возврат непустого текста критичен: speech_audio_callback по нему
+        отличает rejected(short) (был речевой ввод → переспросить) от
+        rejected(empty) (эхо → молчать), issue #979 acceptance.
+        """
         stt_node.yandex_stub = MagicMock()
         stt_node.recognizer = MagicMock()
         stt_node._recognize_yandex = MagicMock(return_value=None)
         stt_node._recognize_vosk = MagicMock(return_value="а")  # 1 char мусор
 
         text, attempts = stt_node._recognize_with_fallback(b"\x00" * 1000)
-        assert text is None
+        assert text == "а"
         # Последняя попытка — Vosk с low_confidence
         assert attempts[-1].reason == "low_confidence"
         assert attempts[-1].provider == "vosk"
 
     def test_respects_custom_min_text_chars(self, stt_node):
-        """min_text_chars=5 → фраза из 4 chars отклоняется."""
+        """min_text_chars=5 → фраза из 4 chars отклоняется, но текст
+        возвращается (rejected(short)) — caller переспросит."""
         stt_node.min_text_chars = 5
         stt_node.yandex_stub = MagicMock()
         stt_node.recognizer = MagicMock()
@@ -420,7 +730,7 @@ class TestRecognizeWithFallback:
         stt_node._recognize_vosk = MagicMock(return_value="стоп")  # 4 chars
 
         text, attempts = stt_node._recognize_with_fallback(b"\x00" * 1000)
-        assert text is None  # отклонено как low_confidence
+        assert text == "стоп"  # не None: rejected(short), не rejected(empty)
         assert attempts[-1].reason == "low_confidence"
 
 
@@ -502,6 +812,35 @@ class TestSpeakUnclear:
         assert stt_node.result_pub.publish.call_count == 0
         assert stt_node.tts_request_pub.publish.call_count == 1
 
+    def test_speech_audio_callback_vosk_garbage_speaks_unclear_real_path(self, stt_node):
+        """Issue #979 acceptance: реальный путь Yandex empty → Vosk «не»
+        (мусор) должен привести к «не расслышал», а НЕ к молчанию.
+
+        До фикса select_recognition возвращал None при low_confidence, и
+        speech_audio_callback классифицировал это как rejected(empty) →
+        робот молчал (именно баг из issue #979). После фикса возвращается
+        последний непустой текст («не») → rejected(short) → «не расслышал».
+        """
+        stt_node.yandex_stub = MagicMock()
+        stt_node.recognizer = MagicMock()
+        stt_node._recognize_yandex = MagicMock(return_value=None)  # empty x2
+        stt_node._recognize_vosk = MagicMock(return_value="не")  # 2 chars мусор
+        stt_node.tts_request_pub = MagicMock()
+        stt_node.result_pub = MagicMock()
+        stt_node.state_pub = MagicMock()
+        stt_node._last_unclear_at = 0.0
+
+        msg = MagicMock()
+        msg.data = [0] * (16000 * 2)  # 1с PCM
+        stt_node.speech_audio_callback(msg)
+
+        # Результат НЕ опубликован (слишком короткое), но робот просит
+        # повторить: «Не расслышал, скажи ещё раз» — вместо молчания.
+        assert stt_node.result_pub.publish.call_count == 0
+        assert stt_node.tts_request_pub.publish.call_count == 1
+        payload = stt_node.tts_request_pub.publish.call_args[0][0].data
+        assert "Не расслышал" in payload
+
 
 class TestTTSGracePeriod:
     """Issue 989 Fix B: grace period после TTS — игнорируем ВСЕ фразы."""
@@ -554,6 +893,132 @@ class TestTTSGracePeriod:
         # "робок привет" принят — publish_result дёрнут (внутри него
         # происходит публикация в /voice/stt/result)
         assert stt_node.publish_result.call_count == 1
+
+
+class TestBargeInWakeWordStopTTS:
+    """Issue 993: STT-уровень barge-in — wake word во время TTS → STOP TTS.
+
+    Цепочка barge-in (после снятия VAD-гейта в audio_node, фикс 2ad5ea58):
+    1. VAD пропускает речь во время TTS (audio_node._vad_gated: tts_active → pass)
+    2. STT обрабатывает фразу ≥0.8s во время TTS (hardware AEC)
+    3. publish_result: фраза начинается с wake word → немедленный STOP TTS
+
+    Раньше (Fix B из #989) VAD гейтился на всё время TTS, поэтому даже
+    «робот, добавь бит» не доходило до STT. Теперь гейт снят, и STT обязан
+    прервать TTS при wake word — это и есть barge-in.
+    """
+
+    @staticmethod
+    def _patch_string_factory(monkeypatch, stt_node_module):
+        """std_msgs.msg.String в моках — один MagicMock: String() возвращает
+        ОДИН и тот же instance, поэтому stop_msg.data перезаписывается
+        msg.data (оба — один объект). Для проверки payload'а нужны РАЗНЫЕ
+        instance'ы — патчим фабрикой.
+        """
+
+        class _String:
+            _n = 0
+
+            def __init__(self):
+                _String._n += 1
+                self.data = ""
+
+        monkeypatch.setattr(stt_node_module, "String", _String)
+
+    def test_publish_result_wake_word_stops_tts(self, stt_node, monkeypatch):
+        """Фраза с wake word → tts_control_pub получает 'STOP' (barge-in)."""
+        from rob_box_voice import stt_node as stt_node_module
+
+        self._patch_string_factory(monkeypatch, stt_node_module)
+        stt_node.tts_control_pub = MagicMock()
+        stt_node.result_pub = MagicMock()
+        # В фикстуре publish_result замокан (чтобы другие тесты не публиковали),
+        # для этого теста нужен РЕАЛЬНЫЙ метод — bind через __get__.
+        stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
+            stt_node, stt_node_module.STTNode
+        )
+
+        stt_node.publish_result("робот, добавь бит")
+
+        # Немедленный STOP TTS (barge-in)
+        stop_call = stt_node.tts_control_pub.publish.call_args[0][0]
+        assert stop_call.data == "STOP"
+        # Результат всё равно публикуется (dialogue_node обработает)
+        assert stt_node.result_pub.publish.call_count == 1
+
+    def test_publish_result_without_wake_word_no_stop(self, stt_node, monkeypatch):
+        """Фраза без wake word (эхо собственного голоса) → БЕЗ STOP TTS."""
+        from rob_box_voice import stt_node as stt_node_module
+
+        self._patch_string_factory(monkeypatch, stt_node_module)
+        stt_node.tts_control_pub = MagicMock()
+        stt_node.result_pub = MagicMock()
+        stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
+            stt_node, stt_node_module.STTNode
+        )
+
+        stt_node.publish_result("не расслышал скажи")
+
+        stt_node.tts_control_pub.publish.assert_not_called()
+        assert stt_node.result_pub.publish.call_count == 1
+
+    def test_full_chain_barge_in_stop_tts(self, stt_node, monkeypatch):
+        """Полная цепочка: фраза с wake word во время TTS → STOP TTS.
+
+        Симулируем: TTS активен (is_robot_speaking=True), hardware AEC,
+        фраза 2с (≥0.8s) распознана как «робот добавь бит» →
+        speech_audio_callback → publish_result (реальный) → STOP TTS.
+        Это ровно acceptance #993: «робот, добавь бит» во время пения.
+        """
+        from rob_box_voice import stt_node as stt_node_module
+
+        self._patch_string_factory(monkeypatch, stt_node_module)
+        stt_node.aec_mode = "hardware"
+        stt_node.tts_grace_s = 2.5
+        stt_node.is_robot_speaking = True  # TTS активен
+        stt_node._tts_ended_at = 0.0  # «давно» — не в grace (это НЕ хвост TTS)
+        stt_node._recognize_with_fallback = MagicMock(
+            return_value=("робот добавь бит", [])
+        )
+        stt_node.tts_control_pub = MagicMock()
+        stt_node.result_pub = MagicMock()
+        stt_node.state_pub = MagicMock()
+        stt_node.tts_request_pub = MagicMock()
+        stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
+            stt_node, stt_node_module.STTNode
+        )
+
+        msg = MagicMock()
+        msg.data = [0] * (16000 * 2 * 2)  # 2с PCM (≥0.8s — «возможно прерывание»)
+        stt_node.speech_audio_callback(msg)
+
+        stt_node._recognize_with_fallback.assert_called_once()
+        stop_call = stt_node.tts_control_pub.publish.call_args[0][0]
+        assert stop_call.data == "STOP"
+        assert stt_node.result_pub.publish.call_count == 1
+
+    def test_short_phrase_during_tts_ignored(self, stt_node):
+        """Hardware AEC: короткая фраза <0.8s во время TTS → игнор (эхо).
+
+        Не путать с barge-in: короткие всплески собственного голоса
+        (эхо) режутся, длинная команда пользователя (≥0.8s) проходит.
+        """
+        stt_node.aec_mode = "hardware"
+        stt_node.tts_grace_s = 2.5
+        stt_node.is_robot_speaking = True
+        stt_node._tts_ended_at = 0.0
+        stt_node._recognize_with_fallback = MagicMock(return_value=("робот", []))
+        stt_node.result_pub = MagicMock()
+        stt_node.state_pub = MagicMock()
+        stt_node.tts_request_pub = MagicMock()
+        stt_node.publish_result = MagicMock()
+
+        msg = MagicMock()
+        msg.data = [0] * (16000 * 2 // 2)  # 0.5с PCM (<0.8s)
+        stt_node.speech_audio_callback(msg)
+
+        stt_node._recognize_with_fallback.assert_not_called()
+        assert stt_node.publish_result.call_count == 0
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,1118 @@
+diff --git a/hermes_cli/crp.py b/hermes_cli/crp.py
+new file mode 100644
+index 000000000..9c377c42b
+--- /dev/null
++++ b/hermes_cli/crp.py
+@@ -0,0 +1,252 @@
++"""Consultation Request Pack (CRP) — SASE framework decision-point schema.
++
++A CRP is a structured handoff a worker emits to a human when it needs a
++decision it cannot make on its own. SASE (Structured Agentic Software
++Engineering, arXiv 2509.06216) names this as one of the five canonical
++human↔agent artifacts; we adopt a minimal subset that fits our kanban:
++
++    {
++      "options": [
++        {"name": "fix A", "tradeoffs": "...", "cost": "low"},
++        {"name": "fix B", "tradeoffs": "...", "cost": "high"}
++      ],
++      "recommendation": "fix A",
++      "escalation_target": "user | architect | devops | reviewer | ...",
++      "decision": null  # set by the human in response
++    }
++
++Two surfaces consume this module:
++
++* ``kanban_create(crp_schema=...)`` — attaches a CRP to a task body so a
++  downstream worker / reviewer sees the options up-front. Stored on the
++  task as JSON.
++* ``kanban_block(crp=...)`` — a worker emits a CRP as the formal reason
++  for blocking. The legacy free-text ``reason`` remains supported for
++  non-CRP blocks, but when ``crp`` is set it carries the structured
++  decision point and ``reason`` becomes a short headline.
++
++Validation is deliberately strict: an empty ``options`` list, a missing
++``recommendation``, or an absent ``escalation_target`` are errors, not
++warnings. The whole point of CRP is to force the worker to enumerate the
++options before asking a human to choose — silently accepting a single-
++option "CRP" re-introduces the free-text drift the schema was added to
++fix. (See add-research-2026-08-19.md §6.2, retromania t_bf689117,
++t_cca7c074.)
++"""
++
++from __future__ import annotations
++
++from typing import Any, Optional
++
++# Minimum number of options a CRP must enumerate. SASE doesn't pin a
++# number; we pick 1 as a sane lower bound — a CRP with zero options
++# is just a complaint, not a consultation. Two or three is typical.
++CRP_MIN_OPTIONS = 1
++
++# Cap on option names / tradeoffs / cost string length. Keeps a malformed
++# tool call from filling a kanban row with a megabyte of free text.
++CRP_MAX_OPTION_NAME = 120
++CRP_MAX_OPTION_TRADEOFFS = 800
++CRP_MAX_OPTION_COST = 60
++CRP_MAX_RECOMMENDATION = 400
++CRP_MAX_ESCALATION_TARGET = 80
++CRP_MAX_DECISION = 400
++# Total cap on the rendered CRP JSON (after validation). Kanban bodies
++# are already inlined into the agent's prompt, so a runaway CRP
++# balloons every downstream tool call.
++CRP_MAX_SERIALIZED_BYTES = 8 * 1024
++
++
++class CRPSchemaError(ValueError):
++    """Raised when a candidate CRP fails validation.
++
++    The error message is safe to surface to the worker / human — it
++    points at the offending field with a one-line hint.
++    """
++
++
++def _require_str(value: Any, field: str, *, max_len: int) -> str:
++    if not isinstance(value, str):
++        raise CRPSchemaError(
++            f"crp.{field} must be a string, got {type(value).__name__}"
++        )
++    stripped = value.strip()
++    if not stripped:
++        raise CRPSchemaError(f"crp.{field} must be a non-empty string")
++    if len(stripped) > max_len:
++        raise CRPSchemaError(
++            f"crp.{field} too long: {len(stripped)} chars > {max_len} max"
++        )
++    return stripped
++
++
++def _validate_option(opt: Any, idx: int) -> dict[str, str]:
++    if not isinstance(opt, dict):
++        raise CRPSchemaError(
++            f"crp.options[{idx}] must be an object, got {type(opt).__name__}"
++        )
++    name = _require_str(opt.get("name"), f"options[{idx}].name",
++                         max_len=CRP_MAX_OPTION_NAME)
++    tradeoffs_raw = opt.get("tradeoffs", "")
++    if tradeoffs_raw is None:
++        tradeoffs_raw = ""
++    if not isinstance(tradeoffs_raw, str):
++        raise CRPSchemaError(
++            f"crp.options[{idx}].tradeoffs must be a string when present"
++        )
++    tradeoffs = tradeoffs_raw.strip()
++    if len(tradeoffs) > CRP_MAX_OPTION_TRADEOFFS:
++        raise CRPSchemaError(
++            f"crp.options[{idx}].tradeoffs too long: "
++            f"{len(tradeoffs)} > {CRP_MAX_OPTION_TRADEOFFS} max"
++        )
++    cost_raw = opt.get("cost", "")
++    if cost_raw is None:
++        cost_raw = ""
++    if not isinstance(cost_raw, str):
++        raise CRPSchemaError(
++            f"crp.options[{idx}].cost must be a string when present"
++        )
++    cost = cost_raw.strip()
++    if len(cost) > CRP_MAX_OPTION_COST:
++        raise CRPSchemaError(
++            f"crp.options[{idx}].cost too long: "
++            f"{len(cost)} > {CRP_MAX_OPTION_COST} max"
++        )
++    out: dict[str, str] = {"name": name, "tradeoffs": tradeoffs, "cost": cost}
++    # Drop empty optionals so the stored JSON is tight.
++    return {k: v for k, v in out.items() if v}
++
++
++def validate_crp(value: Any) -> dict[str, Any]:
++    """Validate and normalise a CRP dict.
++
++    Returns a new dict with only the canonical fields populated (options,
++    recommendation, escalation_target, decision). Raises
++    :class:`CRPSchemaError` for any structural problem. The returned
++    dict is JSON-serialisable by construction.
++    """
++    if value is None:
++        raise CRPSchemaError("crp is required (use reason for free-text blocks)")
++    if not isinstance(value, dict):
++        raise CRPSchemaError(
++            f"crp must be an object with options/recommendation/"
++            f"escalation_target, got {type(value).__name__}"
++        )
++    options_raw = value.get("options")
++    if not isinstance(options_raw, list):
++        raise CRPSchemaError(
++            "crp.options must be a list of {name, tradeoffs?, cost?} objects"
++        )
++    if len(options_raw) < CRP_MIN_OPTIONS:
++        raise CRPSchemaError(
++            f"crp.options must enumerate at least {CRP_MIN_OPTIONS} option(s); "
++            f"got {len(options_raw)}"
++        )
++    options = [_validate_option(o, i) for i, o in enumerate(options_raw)]
++    # Every recommendation must match a known option name. SASE
++    # recommends a "named" recommendation so the human can refer to it
++    # ("fix A"). If we accept arbitrary free text here, the human-side
++    # renderer can't tell which option was picked.
++    recommendation = _require_str(
++        value.get("recommendation"), "recommendation",
++        max_len=CRP_MAX_RECOMMENDATION,
++    )
++    if not any(o["name"] == recommendation for o in options):
++        raise CRPSchemaError(
++            f"crp.recommendation={recommendation!r} does not match any "
++            f"option.name; must be one of "
++            f"{[o['name'] for o in options]}"
++        )
++    escalation_target = _require_str(
++        value.get("escalation_target"), "escalation_target",
++        max_len=CRP_MAX_ESCALATION_TARGET,
++    )
++    decision_raw = value.get("decision")
++    decision: Optional[str] = None
++    if decision_raw is not None:
++        decision = _require_str(
++            decision_raw, "decision", max_len=CRP_MAX_DECISION,
++        )
++    out: dict[str, Any] = {
++        "options": options,
++        "recommendation": recommendation,
++        "escalation_target": escalation_target,
++    }
++    if decision is not None:
++        out["decision"] = decision
++    return out
++
++
++def serialize_crp(crp: dict[str, Any]) -> str:
++    """JSON-encode a validated CRP, enforcing the size cap.
++
++    Raises :class:`CRPSchemaError` if the encoded form exceeds
++    :data:`CRP_MAX_SERIALIZED_BYTES`. Callers should treat that as a
++    content error, not a storage error — it means the worker tried to
++    stuff the CRP with prose that should live in the task body instead.
++    """
++    import json
++
++    encoded = json.dumps(crp, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
++    if len(encoded.encode("utf-8")) > CRP_MAX_SERIALIZED_BYTES:
++        raise CRPSchemaError(
++            f"crp serialized form is {len(encoded)} bytes; "
++            f"max {CRP_MAX_SERIALIZED_BYTES}. Trim option tradeoffs."
++        )
++    return encoded
++
++
++def deserialize_crp(raw: Optional[str]) -> Optional[dict[str, Any]]:
++    """Parse a stored CRP JSON string back into a dict.
++
++    Returns ``None`` for ``None``/empty input. Raises
++    :class:`CRPSchemaError` if the stored string is malformed or fails
++    re-validation — stored data should already be valid, so a parse
++    failure is a corruption signal worth surfacing rather than
++    silently dropping.
++    """
++    if raw is None or not str(raw).strip():
++        return None
++    import json
++
++    try:
++        parsed = json.loads(raw)
++    except json.JSONDecodeError as e:
++        raise CRPSchemaError(f"crp stored value is not valid JSON: {e}") from e
++    # Re-run validation so a hand-edited DB row that lost a required
++    # field still surfaces as a hard error instead of crashing the
++    # renderer.
++    return validate_crp(parsed)
++
++
++def format_crp_for_humans(crp: dict[str, Any]) -> str:
++    """Render a validated CRP as a markdown decision block.
++
++    Used by the task renderer so a human opening the card sees the
++    options, the worker's recommendation, and the escalation target
++    up-front instead of having to scroll through a raw JSON dump.
++    """
++    lines = ["## Consultation Request Pack (CRP)"]
++    lines.append("")
++    lines.append("**Options:**")
++    for i, opt in enumerate(crp.get("options", []), 1):
++        label = opt.get("name", f"option-{i}")
++        cost = opt.get("cost", "")
++        tradeoffs = opt.get("tradeoffs", "")
++        suffix = f" _(cost: {cost})_" if cost else ""
++        lines.append(f"{i}. **{label}**{suffix}")
++        if tradeoffs:
++            lines.append(f"   - {tradeoffs}")
++    lines.append("")
++    rec = crp.get("recommendation", "")
++    if rec:
++        lines.append(f"**Recommendation:** {rec}")
++    target = crp.get("escalation_target", "")
++    if target:
++        lines.append(f"**Escalation target:** {target}")
++    decision = crp.get("decision")
++    if decision:
++        lines.append(f"**Decision (from human):** {decision}")
++    lines.append("")
++    return "\n".join(lines)
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index 4536f2e77..4f9c7ad19 100644
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -87,7 +87,7 @@ import time
+ from contextvars import ContextVar, Token
+ from dataclasses import dataclass, field
+ from pathlib import Path
+-from typing import Any, Iterable, Mapping, Optional
++from typing import Any, Iterable, Mapping, Optional, Union
+ 
+ from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
+ from toolsets import get_toolset_names
+@@ -1141,6 +1141,15 @@ class Task:
+     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
+     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
+     block_recurrences: int = 0
++    # Optional Consultation Request Pack (CRP) attached at create time
++    # via ``kanban_create(crp_schema=...)``. Stored as the JSON form
++    # returned by :func:`hermes_cli.crp.serialize_crp`; render via
++    # :func:`hermes_cli.crp.format_crp_for_humans` for human display.
++    crp_schema: Optional[str] = None
++    # CRP that a worker emitted on a ``kanban_block`` call. Distinct
++    # from ``crp_schema`` because a block can carry a CRP even when
++    # the task body did not pre-declare one.
++    crp_block: Optional[str] = None
+ 
+     @classmethod
+     def from_row(cls, row: sqlite3.Row) -> "Task":
+@@ -1235,6 +1244,14 @@ class Task:
+                 if "block_recurrences" in keys and row["block_recurrences"] is not None
+                 else 0
+             ),
++            crp_schema=(
++                row["crp_schema"] if "crp_schema" in keys and row["crp_schema"]
++                else None
++            ),
++            crp_block=(
++                row["crp_block"] if "crp_block" in keys and row["crp_block"]
++                else None
++            ),
+         )
+ 
+ 
+@@ -2679,6 +2696,25 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
+             "block_recurrences INTEGER NOT NULL DEFAULT 0",
+         )
+ 
++    if "crp_schema" not in cols:
++        # Optional Consultation Request Pack (CRP) attached to the task body
++        # at create time. JSON-encoded SASE decision-point schema (see
++        # hermes_cli.crp). NULL = no CRP. Existing rows are unaffected
++        # (their bodies still render the same way as before the column).
++        _add_column_if_missing(
++            conn, "tasks", "crp_schema", "crp_schema TEXT"
++        )
++
++    if "crp_block" not in cols:
++        # CRP that a worker emitted as the structured reason for a
++        # ``kanban_block`` call. Distinct from ``crp_schema`` (the
++        # task-creation surface) because a block can carry a CRP even
++        # when the task body did not pre-declare one. JSON-encoded;
++        # NULL = no block-level CRP (free-text ``reason`` only).
++        _add_column_if_missing(
++            conn, "tasks", "crp_block", "crp_block TEXT"
++        )
++
+     # Indexes over additive ``tasks`` columns must be created after the
+     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
+     # parses each statement in ``executescript`` against the live schema, so a
+@@ -3183,6 +3219,7 @@ def create_task(
+     board: Optional[str] = None,
+     project_id: Optional[str] = None,
+     project_source_task_id: Optional[str] = None,
++    crp_schema: Optional[Union[str, dict]] = None,
+ ) -> str:
+     """Create a new task and optionally link it under parent tasks.
+ 
+@@ -3245,6 +3282,42 @@ def create_task(
+     if branch_name and workspace_kind != "worktree":
+         raise ValueError("branch_name is only valid for worktree workspaces")
+ 
++    # Validate and normalise the optional Consultation Request Pack (CRP)
++    # attached at create time. Accepts either a JSON string (the form
++    # arriving over the agent tool boundary) or a pre-parsed dict (the
++    # form native Python callers usually have on hand). Empty string and
++    # None are both treated as "no CRP" so the create call stays
++    # backwards-compatible with every existing call site.
++    from hermes_cli import crp as _crp
++    import json as _json
++
++    crp_schema_normalized: Optional[str] = None
++    if crp_schema is not None:
++        if isinstance(crp_schema, str):
++            _crp_str = crp_schema.strip()
++            if _crp_str:
++                try:
++                    _crp_input = _json.loads(_crp_str)
++                except _json.JSONDecodeError as e:
++                    raise ValueError(
++                        f"crp_schema is not valid JSON: {e}"
++                    ) from e
++            else:
++                _crp_input = None
++        elif isinstance(crp_schema, dict):
++            _crp_input = crp_schema
++        else:
++            raise ValueError(
++                f"crp_schema must be a string or dict, got "
++                f"{type(crp_schema).__name__}"
++            )
++        if _crp_input is not None:
++            try:
++                crp_dict = _crp.validate_crp(_crp_input)
++            except _crp.CRPSchemaError as e:
++                raise ValueError(f"crp_schema: {e}") from e
++            crp_schema_normalized = _crp.serialize_crp(crp_dict)
++
+     # Inherit the board's scoped project when the caller didn't name one, so a
+     # project-scoped board anchors every new task to that project's repo
+     # (deterministic worktree + branch) without each surface repeating it.
+@@ -3497,8 +3570,9 @@ def create_task(
+                         max_runtime_seconds,
+                         skills, max_retries, model_override, provider_override,
+                         reasoning_effort,
+-                        goal_mode, goal_max_turns, session_id
+-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++                        goal_mode, goal_max_turns, session_id,
++                        crp_schema
++                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     """,
+                     (
+                         task_id,
+@@ -3524,6 +3598,7 @@ def create_task(
+                         1 if goal_mode else 0,
+                         int(goal_max_turns) if goal_max_turns is not None else None,
+                         session_id,
++                        crp_schema_normalized,
+                     ),
+                 )
+                 for pid in parents:
+@@ -6250,6 +6325,7 @@ def block_task(
+     reason: Optional[str] = None,
+     kind: Optional[str] = None,
+     expected_run_id: Optional[int] = None,
++    crp: Optional[Union[str, dict]] = None,
+ ) -> bool:
+     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
+ 
+@@ -6275,6 +6351,17 @@ def block_task(
+       can use it to signal "this might clear on its own"; it still participates
+       in the loop breaker so a forever-flaky task eventually escalates.
+ 
++    ``crp`` (optional) attaches a structured Consultation Request Pack
++    (SASE, arXiv 2509.06216) to the block. When set, it is validated
++    against the CRP schema (see :mod:`hermes_cli.crp`), serialized to
++    the task's ``crp_block`` column, and ``reason`` becomes an optional
++    short headline. A worker that supplies ``crp`` without ``reason`` is
++    allowed — the CRP itself carries the human-readable summary. A
++    worker that supplies ``reason`` without ``crp`` keeps the legacy
++    free-text behaviour. A worker that supplies neither is rejected at
++    the call site (``kanban_block`` already requires ``reason``; this
++    signature change is additive).
++
+     Returns True on any successful transition (to ``blocked``, ``todo``, or
+     ``triage``), False when the task wasn't in a blockable state.
+     """
+@@ -6282,6 +6369,34 @@ def block_task(
+         raise ValueError(
+             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
+         )
++    crp_normalized: Optional[str] = None
++    if crp is not None:
++        from hermes_cli import crp as _crp
++        import json as _json
++
++        if isinstance(crp, str):
++            _crp_str = crp.strip()
++            if _crp_str:
++                try:
++                    _crp_input = _json.loads(_crp_str)
++                except _json.JSONDecodeError as e:
++                    raise ValueError(
++                        f"crp is not valid JSON: {e}"
++                    ) from e
++            else:
++                _crp_input = None
++        elif isinstance(crp, dict):
++            _crp_input = crp
++        else:
++            raise ValueError(
++                f"crp must be a string or dict, got {type(crp).__name__}"
++            )
++        if _crp_input is not None:
++            try:
++                crp_dict = _crp.validate_crp(_crp_input)
++            except _crp.CRPSchemaError as e:
++                raise ValueError(f"crp: {e}") from e
++            crp_normalized = _crp.serialize_crp(crp_dict)
+     recurrences = 0
+     with write_txn(conn):
+         cur_row = conn.execute(
+@@ -6315,12 +6430,13 @@ def block_task(
+                        claim_lock    = NULL,
+                        claim_expires = NULL,
+                        worker_pid    = NULL,
+-                       block_kind    = ?
++                       block_kind    = ?,
++                       crp_block     = ?
+                  WHERE id = ?
+                    AND status IN ('running', 'ready')
+                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
+-                (kind, task_id) if expected_run_id is None
+-                else (kind, task_id, int(expected_run_id)),
++                (kind, crp_normalized, task_id) if expected_run_id is None
++                else (kind, crp_normalized, task_id, int(expected_run_id)),
+             )
+             if cur.rowcount != 1:
+                 return False
+@@ -6373,12 +6489,13 @@ def block_task(
+                        claim_expires = NULL,
+                        worker_pid    = NULL,
+                        block_kind    = ?,
+-                       block_recurrences = ?
++                       block_recurrences = ?,
++                       crp_block     = ?
+                  WHERE id = ?
+                    AND status IN ('running', 'ready')
+                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
+-                (kind, recurrences, task_id) if expected_run_id is None
+-                else (kind, recurrences, task_id, int(expected_run_id)),
++                (kind, recurrences, crp_normalized, task_id) if expected_run_id is None
++                else (kind, recurrences, crp_normalized, task_id, int(expected_run_id)),
+             )
+             if cur.rowcount != 1:
+                 return False
+@@ -6412,11 +6529,12 @@ def block_task(
+                            claim_expires = NULL,
+                            worker_pid    = NULL,
+                            block_kind    = ?,
+-                           block_recurrences = ?
++                           block_recurrences = ?,
++                           crp_block     = ?
+                      WHERE id = ?
+                        AND status IN ('running', 'ready')
+                     """,
+-                    (kind, recurrences, task_id),
++                    (kind, recurrences, crp_normalized, task_id),
+                 )
+             else:
+                 cur = conn.execute(
+@@ -6427,12 +6545,13 @@ def block_task(
+                            claim_expires = NULL,
+                            worker_pid    = NULL,
+                            block_kind    = ?,
+-                           block_recurrences = ?
++                           block_recurrences = ?,
++                           crp_block     = ?
+                      WHERE id = ?
+                        AND status IN ('running', 'ready')
+                        AND current_run_id = ?
+                     """,
+-                    (kind, recurrences, task_id, int(expected_run_id)),
++                    (kind, recurrences, crp_normalized, task_id, int(expected_run_id)),
+                 )
+             if cur.rowcount != 1:
+                 return False
+diff --git a/tests/hermes_cli/test_crp.py b/tests/hermes_cli/test_crp.py
+new file mode 100644
+index 000000000..7cb9760fb
+--- /dev/null
++++ b/tests/hermes_cli/test_crp.py
+@@ -0,0 +1,247 @@
++"""Tests for hermes_cli.crp — CRP (Consultation Request Pack) validator.
++
++SASE (arXiv 2509.06216) defines CRP as a 4-field decision-point artifact
++(options, recommendation, escalation_target, decision). We adopt the
++subset that fits our kanban, with strict validation: a worker that emits
++a CRP must enumerate at least one option, name a recommendation that
++matches an option, and name an escalation target. The legacy free-text
++``reason`` is preserved for blocks that don't carry a CRP.
++
++These tests pin the structural contract so a future refactor can't
++silently relax it back to "anything goes" (the exact drift the schema
++was added to fix — see add-research-2026-08-19.md §6.2).
++"""
++
++from __future__ import annotations
++
++import json
++
++import pytest
++
++from hermes_cli.crp import (
++    CRPSchemaError,
++    deserialize_crp,
++    format_crp_for_humans,
++    serialize_crp,
++    validate_crp,
++)
++
++
++def _good_crp() -> dict:
++    return {
++        "options": [
++            {"name": "fix A", "tradeoffs": "simple, touches 1 file", "cost": "low"},
++            {"name": "fix B", "tradeoffs": "robust, touches 3 files", "cost": "medium"},
++        ],
++        "recommendation": "fix A",
++        "escalation_target": "user",
++    }
++
++
++# ------------------------------------------------------------------
++# validate_crp: happy path
++# ------------------------------------------------------------------
++
++
++def test_validate_crp_accepts_canonical_form() -> None:
++    crp = validate_crp(_good_crp())
++    assert crp["recommendation"] == "fix A"
++    assert crp["escalation_target"] == "user"
++    assert len(crp["options"]) == 2
++    # decision is optional and omitted when absent
++    assert "decision" not in crp
++
++
++def test_validate_crp_preserves_decision_when_set() -> None:
++    payload = _good_crp()
++    payload["decision"] = "ship fix A; we'll revisit fix B next sprint"
++    crp = validate_crp(payload)
++    assert crp["decision"].startswith("ship fix A")
++
++
++def test_validate_crp_strips_empty_optional_fields() -> None:
++    payload = {
++        "options": [{"name": "fix A"}],
++        "recommendation": "fix A",
++        "escalation_target": "user",
++    }
++    crp = validate_crp(payload)
++    # tradeoffs/cost not present in the source — should not appear as "" in the output
++    assert "tradeoffs" not in crp["options"][0]
++    assert "cost" not in crp["options"][0]
++
++
++# ------------------------------------------------------------------
++# validate_crp: structural errors
++# ------------------------------------------------------------------
++
++
++def test_validate_crp_rejects_none() -> None:
++    with pytest.raises(CRPSchemaError, match="crp is required"):
++        validate_crp(None)
++
++
++def test_validate_crp_rejects_non_dict() -> None:
++    with pytest.raises(CRPSchemaError, match="must be an object"):
++        validate_crp("just a string")
++
++
++def test_validate_crp_rejects_missing_options() -> None:
++    payload = {"recommendation": "x", "escalation_target": "user"}
++    with pytest.raises(CRPSchemaError, match="options must be a list"):
++        validate_crp(payload)
++
++
++def test_validate_crp_rejects_empty_options() -> None:
++    payload = {"options": [], "recommendation": "x", "escalation_target": "user"}
++    with pytest.raises(CRPSchemaError, match="at least 1 option"):
++        validate_crp(payload)
++
++
++def test_validate_crp_rejects_option_without_name() -> None:
++    payload = {
++        "options": [{"tradeoffs": "no name"}],
++        "recommendation": "no name",
++        "escalation_target": "user",
++    }
++    with pytest.raises(CRPSchemaError, match="options\\[0\\]\\.name"):
++        validate_crp(payload)
++
++
++def test_validate_crp_rejects_recommendation_not_in_options() -> None:
++    payload = {
++        "options": [{"name": "fix A"}],
++        "recommendation": "fix Z",
++        "escalation_target": "user",
++    }
++    with pytest.raises(CRPSchemaError, match="does not match any option"):
++        validate_crp(payload)
++
++
++def test_validate_crp_rejects_missing_escalation_target() -> None:
++    payload = {
++        "options": [{"name": "fix A"}],
++        "recommendation": "fix A",
++    }
++    with pytest.raises(CRPSchemaError, match="escalation_target"):
++        validate_crp(payload)
++
++
++def test_validate_crp_rejects_empty_escalation_target() -> None:
++    payload = {
++        "options": [{"name": "fix A"}],
++        "recommendation": "fix A",
++        "escalation_target": "   ",
++    }
++    with pytest.raises(CRPSchemaError, match="non-empty string"):
++        validate_crp(payload)
++
++
++def test_validate_crp_rejects_option_with_non_dict_entry() -> None:
++    payload = {
++        "options": ["not a dict"],
++        "recommendation": "not a dict",
++        "escalation_target": "user",
++    }
++    # The recommendation check happens first because the option shape
++    # error masks the name match. Either error is acceptable; the key
++    # contract is that the validator does not return silently.
++    with pytest.raises(CRPSchemaError):
++        validate_crp(payload)
++
++
++# ------------------------------------------------------------------
++# validate_crp: size caps (defensive against runaway agent output)
++# ------------------------------------------------------------------
++
++
++def test_validate_crp_caps_option_name_length() -> None:
++    payload = {
++        "options": [{"name": "x" * 200}],
++        "recommendation": "x" * 200,
++        "escalation_target": "user",
++    }
++    with pytest.raises(CRPSchemaError, match="options\\[0\\]\\.name too long"):
++        validate_crp(payload)
++
++
++def test_validate_crp_caps_tradeoffs_length() -> None:
++    payload = {
++        "options": [{"name": "fix A", "tradeoffs": "y" * 1000}],
++        "recommendation": "fix A",
++        "escalation_target": "user",
++    }
++    with pytest.raises(CRPSchemaError, match="tradeoffs too long"):
++        validate_crp(payload)
++
++
++# ------------------------------------------------------------------
++# serialize / deserialize round-trip
++# ------------------------------------------------------------------
++
++
++def test_serialize_then_deserialize_round_trip() -> None:
++    crp = validate_crp(_good_crp())
++    raw = serialize_crp(crp)
++    parsed = deserialize_crp(raw)
++    assert parsed == crp
++
++
++def test_serialize_rejects_oversized_payload() -> None:
++    crp = validate_crp(_good_crp())
++    crp["options"][0]["tradeoffs"] = "z" * 9000  # over the 8KB serialized cap
++    with pytest.raises(CRPSchemaError, match="serialized form"):
++        serialize_crp(crp)
++
++
++def test_deserialize_returns_none_for_empty_input() -> None:
++    assert deserialize_crp(None) is None
++    assert deserialize_crp("") is None
++    assert deserialize_crp("   ") is None
++
++
++def test_deserialize_rejects_corrupt_json() -> None:
++    with pytest.raises(CRPSchemaError, match="not valid JSON"):
++        deserialize_crp("{not json}")
++
++
++def test_deserialize_revalidates_to_block_silent_drift() -> None:
++    # A hand-edited DB row that dropped the recommendation field should
++    # NOT deserialize successfully — that would re-introduce the
++    # very drift the schema was added to fix.
++    raw = json.dumps({"options": [{"name": "fix A"}], "escalation_target": "user"})
++    with pytest.raises(CRPSchemaError, match="recommendation"):
++        deserialize_crp(raw)
++
++
++# ------------------------------------------------------------------
++# format_crp_for_humans
++# ------------------------------------------------------------------
++
++
++def test_format_crp_for_humans_includes_all_required_sections() -> None:
++    rendered = format_crp_for_humans(_good_crp())
++    assert "Consultation Request Pack" in rendered
++    assert "**fix A**" in rendered
++    assert "**fix B**" in rendered
++    assert "**Recommendation:** fix A" in rendered
++    assert "**Escalation target:** user" in rendered
++
++
++def test_format_crp_for_humans_skips_decision_when_unset() -> None:
++    rendered = format_crp_for_humans(_good_crp())
++    assert "Decision" not in rendered
++
++
++def test_format_crp_for_humans_renders_decision_when_set() -> None:
++    payload = _good_crp()
++    payload["decision"] = "approved"
++    rendered = format_crp_for_humans(payload)
++    assert "**Decision (from human):** approved" in rendered
++
++
++def test_format_crp_for_humans_annotates_cost() -> None:
++    rendered = format_crp_for_humans(_good_crp())
++    # cost was "low" for fix A, "medium" for fix B
++    assert "cost: low" in rendered
++    assert "cost: medium" in rendered
+diff --git a/tests/hermes_cli/test_crp_integration.py b/tests/hermes_cli/test_crp_integration.py
+new file mode 100644
+index 000000000..d0f7c3c4a
+--- /dev/null
++++ b/tests/hermes_cli/test_crp_integration.py
+@@ -0,0 +1,238 @@
++"""Tests for CRP integration into create_task / block_task.
++
++The pure schema validation lives in :mod:`tests.hermes_cli.test_crp`; this
++file pins the *wiring*: that ``create_task`` actually writes a
++``crp_schema`` column from a dict or JSON string, that ``block_task``
++actually writes ``crp_block`` on every block path (dependency / loop /
++regular), and that the human-readable rendering composes with the task
++body in the way the agent-flow harness expects.
++
++Sourced from retromania t_bf689117 (free-text drift re-introduced when
++workers learned to skip the structured surface).
++"""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++
++import pytest
++
++from hermes_cli import kanban_db as kb
++
++
++@pytest.fixture
++def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
++    home = tmp_path / ".hermes"
++    home.mkdir()
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    monkeypatch.setattr(Path, "home", lambda: tmp_path)
++    kb.init_db()
++    return home
++
++
++def _good_crp() -> dict:
++    return {
++        "options": [
++            {"name": "fix A", "tradeoffs": "touches 1 file", "cost": "low"},
++            {"name": "fix B", "tradeoffs": "touches 3 files", "cost": "high"},
++        ],
++        "recommendation": "fix A",
++        "escalation_target": "user",
++    }
++
++
++def _running_task(conn, title="t", assignee="worker"):
++    tid = kb.create_task(conn, title=title, assignee=assignee)
++    with kb.write_txn(conn):
++        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
++    kb.claim_task(conn, tid, claimer=assignee)
++    return tid
++
++
++# ------------------------------------------------------------------
++# create_task: crp_schema wiring
++# ------------------------------------------------------------------
++
++
++def test_create_task_persists_crp_schema_from_dict(kanban_home: Path) -> None:
++    with kb.connect_closing() as conn:
++        tid = kb.create_task(
++            conn, title="fix", assignee="worker", crp_schema=_good_crp(),
++        )
++        row = conn.execute(
++            "SELECT crp_schema FROM tasks WHERE id=?", (tid,)
++        ).fetchone()
++        stored = json.loads(row["crp_schema"])
++        assert stored["recommendation"] == "fix A"
++        assert stored["escalation_target"] == "user"
++        # Round-trip through Task dataclass too — the renderer path
++        # reads via Task.crp_schema, not via raw SQL.
++        task = kb.get_task(conn, tid)
++        assert task is not None
++        parsed = json.loads(task.crp_schema or "{}")
++        assert parsed["recommendation"] == "fix A"
++
++
++def test_create_task_accepts_crp_schema_as_json_string(kanban_home: Path) -> None:
++    crp_json = json.dumps(_good_crp())
++    with kb.connect_closing() as conn:
++        tid = kb.create_task(
++            conn, title="fix", assignee="worker", crp_schema=crp_json,
++        )
++        task = kb.get_task(conn, tid)
++        assert task is not None and task.crp_schema
++        assert json.loads(task.crp_schema)["recommendation"] == "fix A"
++
++
++def test_create_task_rejects_invalid_crp(kanban_home: Path) -> None:
++    # Empty options list — the schema-level guard for "CRP is not a
++    # complaint" must propagate up here, not be silently coerced to NULL.
++    bad = {"options": [], "recommendation": "x", "escalation_target": "u"}
++    with kb.connect_closing() as conn:
++        with pytest.raises(ValueError, match="crp_schema"):
++            kb.create_task(
++                conn, title="fix", assignee="worker", crp_schema=bad,
++            )
++
++
++def test_create_task_rejects_malformed_json_string(kanban_home: Path) -> None:
++    with kb.connect_closing() as conn:
++        with pytest.raises(ValueError, match="crp_schema is not valid JSON"):
++            kb.create_task(
++                conn, title="fix", assignee="worker", crp_schema="{not json}",
++            )
++
++
++def test_create_task_without_crp_leaves_column_null(kanban_home: Path) -> None:
++    with kb.connect_closing() as conn:
++        tid = kb.create_task(conn, title="plain", assignee="worker")
++        task = kb.get_task(conn, tid)
++        assert task is not None
++        assert task.crp_schema is None
++        assert task.crp_block is None
++
++
++def test_create_task_rejects_unsupported_crp_type(kanban_home: Path) -> None:
++    with kb.connect_closing() as conn:
++        with pytest.raises(ValueError, match="crp_schema must be a string or dict"):
++            kb.create_task(
++                conn, title="fix", assignee="worker", crp_schema=42,
++            )
++
++
++# ------------------------------------------------------------------
++# block_task: crp wiring
++# ------------------------------------------------------------------
++
++
++def test_block_task_persists_crp_on_regular_block(kanban_home: Path) -> None:
++    with kb.connect_closing() as conn:
++        tid = _running_task(conn)
++        kb.block_task(
++            conn, tid, reason="needs human",
++            kind="needs_input", crp=_good_crp(),
++        )
++        task = kb.get_task(conn, tid)
++        assert task is not None
++        assert task.status == "blocked"
++        assert task.crp_block is not None
++        stored = json.loads(task.crp_block)
++        assert stored["recommendation"] == "fix A"
++
++
++def test_block_task_persists_crp_on_dependency_block(kanban_home: Path) -> None:
++    with kb.connect_closing() as conn:
++        tid = _running_task(conn)
++        kb.block_task(
++            conn, tid, reason="waiting on parent",
++            kind="dependency", crp=_good_crp(),
++        )
++        task = kb.get_task(conn, tid)
++        assert task is not None
++        # dependency routes to 'todo', not 'blocked' — crp_block must
++        # still be written, otherwise the human reading the queued task
++        # sees no structured options.
++        assert task.status == "todo"
++        assert task.crp_block is not None
++        assert json.loads(task.crp_block)["escalation_target"] == "user"
++
++
++def test_block_task_persists_crp_when_loop_escalates_to_triage(
++    kanban_home: Path,
++) -> None:
++    """BLOCK_RECURRENCE_LIMIT=2: first block + unblock + re-block trips."""
++    with kb.connect_closing() as conn:
++        tid = _running_task(conn)
++        kb.block_task(conn, tid, reason="x", kind="capability",
++                      crp=_good_crp())
++        kb.unblock_task(conn, tid)
++        # Re-claim so block_task can act on the running task again.
++        with kb.write_txn(conn):
++            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
++        kb.claim_task(conn, tid, claimer="worker")
++        kb.block_task(conn, tid, reason="x", kind="capability",
++                      crp=_good_crp())
++        task = kb.get_task(conn, tid)
++        assert task is not None
++        assert task.status == "triage"
++        assert task.crp_block is not None
++
++
++def test_block_task_rejects_invalid_crp(kanban_home: Path) -> None:
++    with kb.connect_closing() as conn:
++        tid = _running_task(conn)
++        bad = {"options": [{"name": "x"}]}  # no recommendation
++        with pytest.raises(ValueError, match="crp:"):
++            kb.block_task(
++                conn, tid, reason="x", kind="needs_input", crp=bad,
++            )
++        # The task must still be running — failed validation must not
++        # consume the block.
++        task = kb.get_task(conn, tid)
++        assert task is not None
++        assert task.status == "running"
++        assert task.crp_block is None
++
++
++def test_block_task_without_crp_still_works(kanban_home: Path) -> None:
++    """Legacy free-text blocks keep working — additive change only."""
++    with kb.connect_closing() as conn:
++        tid = _running_task(conn)
++        kb.block_task(conn, tid, reason="plain", kind="needs_input")
++        task = kb.get_task(conn, tid)
++        assert task is not None
++        assert task.status == "blocked"
++        assert task.crp_block is None
++
++
++# ------------------------------------------------------------------
++# Migration: legacy rows survive
++# ------------------------------------------------------------------
++
++
++def test_legacy_row_without_crp_columns_deserializes(kanban_home: Path) -> None:
++    """A row created before the migration (no crp_schema, no crp_block)
++    must still deserialise cleanly. from_row() is defensive — old rows
++    have no such column."""
++    with kb.connect_closing() as conn:
++        tid = kb.create_task(conn, title="legacy", assignee="worker")
++        # Synthesise a pre-migration row by dropping the columns and
++        # re-inserting the same id. Not a real back-compat exercise but
++        # exercises the row-key path that a missing column would hit.
++        with kb.write_txn(conn):
++            row = conn.execute(
++                "SELECT * FROM tasks WHERE id=?", (tid,)
++            ).fetchone()
++            keys = tuple(row.keys())
++            values = tuple(row[k] for k in keys)
++            conn.execute("DELETE FROM tasks WHERE id=?", (tid,))
++            placeholders = ",".join("?" for _ in keys)
++            conn.execute(
++                f"INSERT INTO tasks ({','.join(keys)}) VALUES ({placeholders})",
++                values,
++            )
++        task = kb.get_task(conn, tid)
++        assert task is not None
++        assert task.crp_schema is None
++        assert task.crp_block is None
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+index d49b53a22..cec9d7082 100644
+--- a/tools/kanban_tools.py
++++ b/tools/kanban_tools.py
+@@ -832,6 +832,11 @@ def _handle_block(args: dict, **kw) -> str:
+         return tool_error("reason is required — explain what input you need")
+     reason = redact_sensitive_text(str(reason), force=True)
+     kind = args.get("kind")
++    crp = args.get("crp")
++    if crp is not None and not isinstance(crp, (str, dict)):
++        return tool_error(
++            f"crp must be a JSON string or dict, got {type(crp).__name__}"
++        )
+     board = args.get("board")
+     try:
+         kb, conn = _connect(board=board)
+@@ -870,6 +875,7 @@ def _handle_block(args: dict, **kw) -> str:
+                 reason=reason,
+                 kind=kind,
+                 expected_run_id=_worker_run_id(tid),
++                crp=crp,
+             )
+             if not ok:
+                 return tool_error(
+@@ -1405,6 +1411,12 @@ def _handle_create(args: dict, **kw) -> str:
+         return tool_error(
+             f"skills must be a list of skill names, got {type(skills).__name__}"
+         )
++    crp_schema = args.get("crp_schema")
++    if crp_schema is not None and not isinstance(crp_schema, (str, dict)):
++        return tool_error(
++            f"crp_schema must be a JSON string or dict, got "
++            f"{type(crp_schema).__name__}"
++        )
+     goal_mode, goal_bool_error = _parse_bool_arg(args, "goal_mode")
+     if goal_bool_error:
+         return tool_error(goal_bool_error)
+@@ -1461,6 +1473,7 @@ def _handle_create(args: dict, **kw) -> str:
+                 initial_status=str(initial_status),
+                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
+                 session_id=session_id,
++                crp_schema=crp_schema,
+             )
+             new_task = kb.get_task(conn, new_tid)
+             subscribed = _maybe_auto_subscribe(conn, new_tid)
+@@ -1894,6 +1907,27 @@ KANBAN_BLOCK_SCHEMA = {
+                     "Omit only if none apply."
+                 ),
+             },
++            "crp": {
++                "type": "string",
++                "description": (
++                    "Optional Consultation Request Pack (CRP) — a "
++                    "structured decision point (SASE arXiv 2509.06216). "
++                    "JSON string with the schema "
++                    "{options: [{name, tradeoffs?, cost?}, ...], "
++                    "recommendation: <option.name>, "
++                    "escalation_target: <string>, "
++                    "decision?: <string>}. When set, ``reason`` becomes "
++                    "an optional short headline (the CRP carries the "
++                    "human-readable summary). Use this instead of free "
++                    "text whenever the block is a request for human "
++                    "expertise — it forces you to enumerate the options "
++                    "before the human is asked to choose. Schema "
++                    "validation is strict: empty options, missing "
++                    "recommendation, or a recommendation that does not "
++                    "match any option.name is an error, not a warning. "
++                    "See hermes_cli.crp."
++                ),
++            },
+             "board": _board_schema_prop(),
+         },
+         "required": ["reason"],
+@@ -2260,6 +2294,22 @@ KANBAN_CREATE_SCHEMA = {
+                     "assignee's profile."
+                 ),
+             },
++            "crp_schema": {
++                "type": "string",
++                "description": (
++                    "Optional Consultation Request Pack (CRP) attached "
++                    "to the task body at create time. Must be a JSON "
++                    "string conforming to the SASE-style schema "
++                    "{options: [{name, tradeoffs?, cost?}, ...], "
++                    "recommendation: <option.name>, "
++                    "escalation_target: <string>, "
++                    "decision?: <string>}. Task creation fails with a "
++                    "schema error if the CRP is empty / options is "
++                    "empty / recommendation does not match any option. "
++                    "Pass empty string or omit entirely for tasks that "
++                    "do not need a decision point. See hermes_cli.crp."
++                ),
++            },
+             "goal_mode": {
+                 "type": "boolean",
+                 "description": (

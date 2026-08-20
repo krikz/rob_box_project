@@ -117,6 +117,9 @@ def _install_ros_mocks():
     )
     fake_openai = types.SimpleNamespace(
         APIConnectionError=type("APIConnectionError", (Exception,), {}),
+        APIStatusError=type("APIStatusError", (Exception,), {}),
+        APITimeoutError=type("APITimeoutError", (Exception,), {}),
+        AuthenticationError=type("AuthenticationError", (Exception,), {}),
         AsyncOpenAI=MagicMock,
     )
 

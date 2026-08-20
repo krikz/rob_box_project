@@ -981,9 +981,14 @@ cat /etc/apt/apt.conf.d/02proxy
 # Обновление build machine
 ./scripts/update_and_restart.sh
 
-# Очистка старых образов
-./scripts/cleanup_registry.sh --dry-run  # Просмотр
-./scripts/cleanup_registry.sh --all      # Удаление
+# Очистка старых образов (оставить 5 последних версий каждого сервиса)
+./scripts/cleanup_registry.sh --keep 5 --dry-run  # Просмотр
+./scripts/cleanup_registry.sh --keep 5            # Удаление старых версий + GC
+./scripts/cleanup_registry.sh --all               # Полный сброс (осторожно!)
+
+# Автоочистка: cron раз в сутки в 04:00 (устанавливается в setup.sh)
+crontab -l | grep cleanup_registry
+tail -50 /tmp/cleanup_registry.log
 
 # Очистка APT cache (освобождение места)
 docker exec build-apt-cache rm -rf /var/cache/apt-cacher-ng/*

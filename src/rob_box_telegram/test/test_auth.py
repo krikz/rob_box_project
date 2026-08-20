@@ -74,6 +74,57 @@ class TestIsAuthorized(unittest.TestCase):
         self.assertFalse(is_authorized(100))
 
 
+class TestGroupAndDmAuth(unittest.IsolatedAsyncioTestCase):
+    """Auth по группе и по личке (issue #1196, L1).
+
+    Ключевая семантика telegram_node: ``update.effective_chat.id`` для
+    группы — это chat_id ГРУППЫ (обычно отрицательный), а для лички —
+    user_id собеседника. Поэтому:
+
+    * группа авторизована, если chat_id группы есть в
+      ``TELEGRAM_ALLOWED_USERS`` (любой участник группы проходит);
+    * личка авторизована, если user_id есть в whitelist;
+    * группа НЕ авторизована, даже если user_id отправителя в whitelist,
+      но chat_id самой группы отсутствует (бот проверяет effective_chat.id).
+    """
+
+    def setUp(self):
+        import rob_box_telegram.auth as auth_module
+
+        auth_module._allowed_users = None
+
+    @patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "-5269346516"})
+    def test_group_chat_id_in_whitelist_authorizes(self):
+        """Группа с chat_id в whitelist авторизует ВСЕХ участников."""
+        reload_allowed_users()
+        # Для группы effective_chat.id == chat_id группы (отрицательный).
+        self.assertTrue(is_authorized(-5269346516))
+
+    @patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "42,123"})
+    def test_dm_user_id_in_whitelist_authorizes(self):
+        """Личка авторизована, если user_id есть в whitelist."""
+        reload_allowed_users()
+        self.assertTrue(is_authorized(42))
+        self.assertTrue(is_authorized(123))
+
+    @patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "42"})
+    def test_group_not_in_whitelist_rejected_even_if_sender_whitelisted(self):
+        """Группа НЕ авторизована, если её chat_id не в whitelist.
+
+        Отправитель — пользователь 42 (в whitelist), но effective_chat.id
+        для группы — chat_id группы (-555), которого нет в whitelist.
+        """
+        reload_allowed_users()
+        self.assertTrue(is_authorized(42))       # личка этого юзера — ок
+        self.assertFalse(is_authorized(-555))    # группа — нет
+
+    @patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "-1001234567890"})
+    def test_supergroup_chat_id_authorizes(self):
+        """Супергруппа (префикс -100...) авторизуется по chat_id."""
+        reload_allowed_users()
+        self.assertTrue(is_authorized(-1001234567890))
+
+
 class TestAuthorizedDecorator(unittest.IsolatedAsyncioTestCase):
     """Tests for @authorized decorator."""
 
@@ -89,6 +140,23 @@ class TestAuthorizedDecorator(unittest.IsolatedAsyncioTestCase):
 
         update = MagicMock()
         update.effective_chat.id = 42
+        context = MagicMock()
+
+        result = await handler(update, context)
+        self.assertEqual(result, "ok")
+
+    async def test_allows_authorized_group(self):
+        """Групповой чат: effective_chat.id == chat_id группы в whitelist."""
+        import rob_box_telegram.auth as auth_module
+
+        auth_module._allowed_users = {-5269346516}
+
+        @authorized
+        async def handler(update, context):
+            return "ok"
+
+        update = MagicMock()
+        update.effective_chat.id = -5269346516
         context = MagicMock()
 
         result = await handler(update, context)

@@ -230,3 +230,18 @@ def test_music_skill_prompt_contains_imperial_march_sc_only_guidance() -> None:
     assert "marimba" in content.lower()
     assert "karp" in content.lower()
     assert "same melody contour" in content.lower() or "do not rewrite the tune" in content.lower()
+
+def test_master_prompt_mentions_estimate_tts_duration() -> None:
+    """#949 AC4 — the LLM must know estimate_tts_duration exists."""
+    content = MASTER_PROMPT_PATH.read_text(encoding="utf-8")
+
+    assert "estimate_tts_duration" in content
+    assert "segments" in content
+
+
+def test_music_skill_prompt_mentions_estimate_tts_duration() -> None:
+    """#949 AC4 — the music skill lists estimate_tts_duration as a tool."""
+    content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
+
+    assert "estimate_tts_duration(text)" in content
+    assert "30 симв/с" in content or "30 chars" in content

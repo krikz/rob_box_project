@@ -36,27 +36,173 @@ CRITICAL_EXCLUDE_COMMON = [
     r"undeclare unknown subscriber",
     r"undeclare unknown queryable",
     r"zeroconf: failed to create client: daemon not running",
+    # Voice-assistant readiness line: "Missing critical SynthDefs: none"
+    # means ALL critical SynthDefs are present — the word "critical" alone
+    # must not trigger a deployment-critical issue (retro 15.08 t_a14ac65d).
+    r"missing critical synthdefs: none",
+    # BrokenPipeError from `ros2 topic list | head` in start_nav2_direct.sh:
+    # head closes the pipe after the first line, ros2cli prints a traceback —
+    # benign, the topic was found (retro 15.08 t_a14ac65d).
+    r"brokenpipeerror: \[errno 32\] broken pipe",
+    # The bare traceback header carries no signal by itself; the exception
+    # line that follows (e.g. "BrokenPipeError:", "ModuleNotFoundError:")
+    # still matches CRITICAL_MATCH_RE via "error" and is reported unless it
+    # is explicitly excluded above. This lets us exclude pipe-noise without
+    # hiding real Python crash tracebacks.
+    r"^traceback \(most recent call last\):$",
     # Clock-skew noise: zenoh router replaces the offending timestamp and
     # forwards the message — data is not lost, so this is not an outage.
     # Root cause is NTP desync between Pis (see scripts/maintenance/sync_time.sh).
     r"error treating timestamp for received data",
+    # ALSA/jackd noise: Invalid CTL on dmix_respeaker is a benign control
+    # probe failure, not an audio outage (retro 12.08 t_d3e44336).
+    r"alsa lib control\.c.*invalid ctl",
+    r"dmix_respeaker",
+    # JACK RT-thread transient error (issue #1368): jackd logs
+    # "JackAudioDriver::ProcessGraphAsyncMaster: Process error" whenever a
+    # single DSP cycle overruns the period (typically the scsynth client
+    # under ALSA dmix without realtime scheduling, see
+    # docker/vision/scripts/supercollider/start_supercollider.sh). jackd
+    # drops the cycle and recovers automatically — scsynth stays up and
+    # music/TTS keep flowing. Deploy gate must not flag this as critical.
+    r"jackaudiodriver::processgraphasyncmaster: process error",
+    # SuperCollider startup noise (issue #778, #672, #840): Renardo/FoxDot
+    # sends /g_new before scsynth finished allocating group IDs. The music
+    # stack comes up healthy afterwards (voice-assistant reports
+    # "Music stack healthy" / "sclang готов" / "Missing critical SynthDefs:
+    # none"), so this is a benign startup race, not an audio outage.
+    #
+    # NOTE (issue #1363): since scsynth is now started with `-l 32` (matches
+    # sclang's default of 32 max logins), the negative-node-ID mismatch no
+    # longer occurs. The exclusion below remains as a defensive measure for
+    # legacy deployments / manual scsynth invocations where the maxLogins
+    # default of 64 still leaks negative IDs into the log. Once every
+    # deployment uses `-l 32` we can drop the exclusion.
+    r"failure in server /g_new negative node ids are reserved",
+    # External MiniMax quota/auth (issue #1193): error 2056 "Token Plan usage
+    # limit reached" is a billing limit, not a code bug. TTS chain falls back
+    # to Yandex/Silero, so the robot keeps speaking. e2e-process already
+    # treats 2056 as infra-fail — the deploy gate must not file a critical
+    # issue for it.
+    r"minimax api error 2056",
+    r"token plan usage limit",
+    # Error 2054 — MiniMax bad-request "voice" (no detailed status_msg, but the
+    # pattern matches 2042/20132 family: voice_id invalid). tts_node falls back
+    # to the next provider, robot keeps speaking. Deploy gate seen at it as a
+    # critical_log false-positive on the fully-green round-129 run 32115362102
+    # (issue #1364, retro 18.08): one transient 4xx at startup, e2e passed
+    # with the primary voice (`✅ TTS: основной голос без fallback`). Add the
+    # same exclusion pattern so the deploy detector does not open noise issues
+    # for this transient. Real voice-config bugs (wrong voice_id, missing
+    # voice in registry) WILL still be caught by the mcp_server validation
+    # chain + e2e voice check.
+    r"minimax api error 2054",
+    # Python shutdown noise (nav2): "_io.TextIOWrapper ... Exception ignored
+    # in:" is printed when the interpreter closes stdout while a pipe reader
+    # (e.g. `ros2 topic list | head`) already hung up. Benign — the follow-up
+    # BrokenPipeError line is already excluded above (retro 15.08 t_a14ac65d).
+    r"exception ignored in:",
+    # dialogue_node INFO success echo: "process_input returned: ... error=None"
+    # is the normal turn-completion line — error=None means NO error. The bare
+    # \berror\b matcher hits "error=None" and would file a false deploy-critical
+    # issue on a fully green round (retro 15.08 t_29230e6f, issue #1335: deploy
+    # run 31886490619 SUCCESS + E2E SUCCESS, yet issue created; same for
+    # round-129 run 32115362102 / issue #1364).
+    r"error\s*=\s*none",
+    r"error\s*:\s*none",
+    # SuperCollider headless scsynth (issue #1485, deploy round-165): music
+    # skill / FoxDot send /s_new for SynthDefs that ship with renardo but are
+    # not pre-loaded in the headless scsynth image (notably `rhpiano`). The
+    # "*** ERROR: SynthDef rhpiano not found" + "FAILURE IN SERVER /s_new
+    # SynthDef not found" pair is benign — the music stack stays healthy and
+    # TTS/voice flow continues. Real deployment failures still surface
+    # because other scsynth-side errors (JackAudioDriver, sclang crashes,
+    # rt-failures) keep their CRITICAL severity. The audio music-pipeline
+    # team can address the underlying preload separately.
+    r"error: synthdef \S+ not found",
+    r"failure in server /s_new synthdef not found",
 ]
 CRITICAL_EXCLUDE_BY_SCOPE = {
     "main": [
         r"robot is out of bounds",
         r"serial port /dev/ttyusb0 still not available after",
-        r"timed out waiting for transform from base_link to odom",
+        r"timed out waiting for transform from (base_link|base_footprint) to odom",
+        # Same retro t_4acd6da0 / PR #1151 (base_footprint migration): nav2
+        # global_costmap waits for /map at startup before rtabmap publishes
+        # it. tf_static / odom→base_footprint is published first by diff_drive,
+        # so the costmap log line is identical to the "to odom" race above.
+        # Ретро 18.08 t_2bfa4793 / issue #1364 (round-129 run 32115362102):
+        # deploy detector created an issue on a GREEN run because this
+        # startup race was still flagged. Add the "to map" sibling pattern.
+        r"timed out waiting for transform from (base_link|base_footprint) to map",
         r"cannot transform tag pose",
         r"sensor origin.*out of map bounds",
         r"can controller state: error-active",
         r"subscriberplugin::subscribeimpl with five arguments has not been overridden",
         r"total errors:",
+        # Scope leak (issue #775): telegram_node lives in the vision
+        # container (`telegram-bot` service, ROS_DOMAIN_ID=0 + network_mode:
+        # host). Its ERROR lines leak into the perception container's docker
+        # logs because health_monitor subscribes to the shared /rosout bus and
+        # prints them in its periodic report. Upstream root cause is fixed by
+        # PR #1145 (watchdog detects duplicate TELEGRAM_BOT_TOKEN holders);
+        # this exclusion prevents false deployment-critical issues from being
+        # filed against the perception container in the meantime.
+        # telegram_node never runs in the main scope — any mention of it in
+        # a main container log is by definition cross-container leak.
+        r"telegram_node",
+        r"telegram bot crashed",
+        # Scope leak (issue #1368): audio_node lives in the voice-assistant
+        # container on the Vision Pi. The Main Pi perception's
+        # context_aggregator subscribes to /rosout (shared ROS_DOMAIN_ID=0
+        # bus via Zenoh router) and prints "❌ Нода упала: /audio_node"
+        # whenever the Vision Pi voice-assistant restarts audio_node. This
+        # surfaces as a false deployment-critical against the perception
+        # container, masking the actual issue location. Same shape as the
+        # telegram_node exclusion above; the real root cause (voice-assistant
+        # restart on Vision Pi) is not a deployment failure.
+        r"нода упала: /audio_node",
+        r"/audio_node\b",
     ],
-    "vision": [],
+    "vision": [
+        # telegram_node start_polling transient (issue #1433 / deploy run
+        # 32170854307, test round-147): on the first long-poll to
+        # api.telegram.org the Vision Pi WiFi AP (10.1.1.1, see docs/adr/)
+        # is still bringing the DNS/TLS path up, so PTB's
+        # start_polling(timeout=30) raises asyncio.TimeoutError. The retry
+        # loop in telegram_node._run_telegram_loop catches it, sleeps
+        # 5s/10s/15s/... up to 60s and re-enters polling; on the 3rd attempt
+        # the connection is warm and the bot stays up. The
+        # "[ERROR] telegram_node: Bot crashed (N): Timed out. Retry in Ns"
+        # line is the retry loop's own progress log, NOT a deployment
+        # failure — container_status / topics / metrics are all healthy.
+        # A real telegram_node failure (e.g. "Bot crashed (N): Conflict:
+        # terminated by other getUpdates request") does not match this
+        # pattern and is still reported; the negative test
+        # test_extract_relevant_log_line_still_catches_telegram_node_real_conflict_in_vision_scope
+        # covers that case.
+        r"bot crashed \(\d+\): timed out\. retry in",
+    ],
 }
 
 WARNING_EXCLUDE_COMMON = [
     r"^=== .*warnings ===$",
+    # audio_node ReSpeaker threshold (issue #1485, deploy round-165):
+    # voice-assistant prints "[WARN] [issue 989] ReSpeaker не принял
+    # threshold 6.0 dB — программный гейт остаётся" whenever the
+    # UAC1.0 ReSpeaker rejects the audio_node-issued hw-ctl threshold.
+    # The fallback to a software gate is intentional (issue #989
+    # round-117 retro): the audio chain stays healthy, barge-in works
+    # through the SW gate, and the threshold issue is tracked
+    # separately under issue #989. The Main Pi perception's
+    # health_monitor also re-echoes the same warning over the shared
+    # /rosout topic — placing this rule in COMMON covers both scopes.
+    # Real audio_node failures (ASLA fatal, JACK
+    # ProcessGraphAsyncMaster timeouts that miss recovery, sclang
+    # crashes) keep their warning/critical severity because the
+    # phrasing differs.
+    r"\[issue 989\] respeaker не принял threshold",
+    r"не принял threshold \d+\.\d+ db — программный гейт оста",
     r"scouting delay elapsed",
     r"нода не найдена",
     r"unknown logical group",
@@ -71,6 +217,30 @@ WARNING_EXCLUDE_COMMON = [
     r"did not receive data since 5 seconds",
     r"unable to connect to a zenoh router",
     r"could not fetch info from synthdefmanagement server\. using defaults",
+    # STT empty-rejection noise: robot heard silence and rejected — not a
+    # deployment failure (retro 12.08 t_d3e44336, issue #989, #684).
+    r"отклонено \(пустое\)",
+    r"yandex:empty\(.*\)->.*:empty\(.*\) -> rejected",
+    r"отклонено \(короткое",
+    r"интернет недоступен",
+    # PyAudio overflow: input overrun is handled by the audio pipeline,
+    # no data loss reported (retro 12.08 t_d3e44336).
+    r"pyaudio painputoverflow",
+    # zenoh session noise: "Received ResponseFinal for unknown Request"
+    # is a stale reply to an already-timed-out query — benign (deploy
+    # run round-117, ceiling-camera).
+    r"received responsefinal for unknown request",
+    # telegram_node startup echo: "Dropping dialogue echo, bot not ready /
+    # no active chat" means the bot is up but no chat is bound yet — normal
+    # boot behaviour, not a deployment failure (round-117, telegram-bot).
+    r"dropping dialogue echo, bot not ready",
+    # tts_node voice fallback (issue #1219): voice 'None' → default voice.
+    # The chain keeps working; the warning itself is the fix notification.
+    r"голос 'none' недоступен у minimax",
+    # rtabmap ini auto-create: "Section \"Core\" ... doesn't exist" with the
+    # explicit "Ignore this warning if the ini file does not exist yet" —
+    # rtabmap creates the file on shutdown, benign (round-117).
+    r"section .* in /config/rtabmap/rtabmap.ini doesn't exist",
 ]
 WARNING_EXCLUDE_BY_SCOPE = {
     "main": [
@@ -80,6 +250,31 @@ WARNING_EXCLUDE_BY_SCOPE = {
         r"no real-time kernel",
         r"old-style arguments are deprecated; see --help for new-style arguments",
         r"total warnings:",
+        # perception_bridge: "Sensor UART /dev/ttyAMA0 not available; reads
+        # will no-op until hardware is attached" — the UART IMU is optional
+        # lab hardware, absence is expected in the test rig (round-117).
+        r"sensor uart /dev/ttyama0 not available",
+        # zenoh peer discovery: "Unable to connect to any locator of scouted
+        # peer" during startup handshake is transient network noise, not an
+        # outage (round-117, nav2).
+        r"unable to connect to any locator of scouted peer",
+        # rtabmap icp_odometry (issue #1485, deploy round-165):
+        # "IcpOdometry: Transferring value 0.05 of 'Icp/VoxelSize' to ros
+        # parameter 'scan_voxel_size' for convenience" is an informational
+        # message printed by rtabmap whenever the YAML declares a
+        # scan_voxel_size but Icp/VoxelSize is set to 0 — the mapping node
+        # copies the YAML value into the RTAB-Map param transparently, the
+        # SLAM pipeline is healthy. The word "WARN" is the only reason the
+        # deploy gate flagged it (round-165).
+        r"transferring value.*scan_voxel_size",
+        # Scope leak warning (issue #1485, deploy round-165, sibling of
+        # the WARNING_EXCLUDE_COMMON "не принял threshold" entry):
+        # main/perception's health_monitor rewrites the audio_node line
+        # without the "[issue 989]" prefix (`[WARN] audio_node (Ns ago): ⚠️
+        # ReSpeaker не принял threshold ...`). The COMMON rule already
+        # covers the literal phrase; this MAIN-scope pattern catches the
+        # rewritten form so it cannot slip through as a non-voice-msg.
+        r"\[warn\] audio_node.*не принял threshold",
     ],
     "vision": [],
 }

@@ -11,6 +11,8 @@ MCPToolRegistry управляет коллекцией инструментов
 
 from typing import Dict, List, Optional, Any
 from .base import MCPTool, MCPToolResult
+import asyncio
+import inspect
 import json
 
 
@@ -163,7 +165,15 @@ class MCPToolRegistry:
 
         # Выполнение инструмента
         try:
-            return tool.execute(**normalized_kwargs)
+            result = tool.execute(**normalized_kwargs)
+            # Асинхронные инструменты (напр. generate_music) объявляют
+            # ``async def execute`` — диспетчер синхронный, поэтому корутину
+            # нужно явно довести до результата. Иначе она утекает с
+            # "coroutine ... was never awaited", а вызов ``.to_dict()`` в
+            # mcp_server падает с "'coroutine' object has no attribute 'to_dict'".
+            if inspect.isawaitable(result):
+                result = asyncio.run(result)
+            return result
         except Exception as e:
             error_msg = f"Ошибка выполнения инструмента '{tool_name}': {str(e)}"
             if tool.node:

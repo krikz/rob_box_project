@@ -55,6 +55,7 @@ setup(
             'sound_node = rob_box_voice.sound_node:main',
             # Phase 5: Command Recognition
             'command_node = rob_box_voice.command_node:main',
+            'speaker_id_node = rob_box_voice.speaker_id_node:main',
             # Utilities
             'configure_respeaker_aec = scripts.configure_respeaker_aec:main',
         ],

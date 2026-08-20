@@ -22,10 +22,11 @@ the *orchestrator*, not a duplicate of the ports.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 from rob_box_harness.core.confirmation_policy import ConfirmationKind
 from rob_box_harness.core.dialogue_state_machine import (
@@ -56,6 +57,89 @@ if TYPE_CHECKING:
 #: fails loudly rather than running away.
 _MAX_TOOL_ITERATIONS: int = 8
 
+# W7a (issue #968, INSIGHT #1): a single LLM response may carry several
+# tool_calls in one batch (e.g. ``speak_text`` + ``stop_music``). Executing
+# them in the model's raw order fires destructive tools before the voice
+# pipeline has even started — ``stop_music`` used to land on the robot
+# milliseconds after ``speak_text`` was requested, killing the music mid-phrase
+# (e2e v36). The scheduler (W7b) owns cross-batch ordering; this module-level
+# re-ordering fixes the *intra-batch* race:
+#
+# * music tools (``execute_music_code`` / ``set_vibe_preset`` / ``load_track``)
+#   run FIRST so the prelude starts before speech,
+# * ordinary tools keep their relative order,
+# * destructive tools (``stop_music`` / ``stop_navigation``) run LAST and are
+#   flagged ``defer_until_voice_drained`` when the same batch also speaks —
+#   the flag tells the scheduler not to fire the side effect until the voice
+#   channel is empty.
+_MUSIC_PRELUDE_TOOLS: frozenset[str] = frozenset(
+    {"execute_music_code", "set_vibe_preset", "load_track"}
+)
+_VOICE_TOOLS: frozenset[str] = frozenset({"speak_text"})
+_DEFER_TO_END_TOOLS: frozenset[str] = frozenset(
+    {"stop_music", "stop_navigation"}
+)
+
+
+def _order_tool_calls(
+    calls: Iterable[ToolCall],
+) -> tuple[list[ToolCall], set[str]]:
+    """Re-order one LLM batch for safe execution.
+
+    Returns ``(ordered, deferred_call_ids)``:
+
+    * ``ordered`` — stable partition: music prelude tools first, then the
+      remaining tools in their original relative order, then destructive
+      tools last.
+    * ``deferred_call_ids`` — ids of destructive calls whose side effect
+      must wait until the voice channel drains (only set when the batch
+      also contains a voice tool such as ``speak_text``).
+
+    The re-ordering changes execution order ONLY. Tool results are still
+    returned to the LLM in the model's original order (see
+    :meth:`DialogCore._run_with_tools`), so the OpenAI-style conversation
+    history stays valid.
+    """
+    ordered = list(calls)
+
+    def _partition_key(call: ToolCall) -> int:
+        if call.name in _DEFER_TO_END_TOOLS:
+            return 2
+        if call.name in _MUSIC_PRELUDE_TOOLS:
+            return 0
+        return 1
+
+    ordered.sort(key=_partition_key)
+    has_voice = any(call.name in _VOICE_TOOLS for call in ordered)
+    deferred_call_ids = {
+        call.id
+        for call in ordered
+        if has_voice and call.name in _DEFER_TO_END_TOOLS
+    }
+    return ordered, deferred_call_ids
+
+
+#: Completion markers the master prompt teaches the LLM to return AFTER the
+#: last ``speak_text`` call. They are ONLY valid when the turn actually
+#: performed work (tool calls happened in an earlier iteration). When the
+#: model emits a bare marker as its FIRST response with zero tool calls it
+#: is a silent failure — the user hears nothing and nothing happened
+#: (issue #1217, deepseek-v4-flash intermittently does this).
+_SILENT_DONE_MARKERS: frozenset[str] = frozenset(
+    {"done", "task complete", "task_complete", "готово", "всё", "выполнено"}
+)
+
+#: ``finish_reason`` values that mean "the model produced NO usable output"
+#: even though the HTTP call succeeded. DeepSeek documents
+#: ``insufficient_system_resource`` (HTTP 200, generation interrupted by
+#: provider resource pressure) and ``content_filter`` (content omitted by
+#: filters); ``length`` with empty content means max_tokens was exhausted
+#: before any token was emitted (issue #1253). All three are retryable —
+#: the corrective retry in ``_run_with_tools`` gives the model a second
+#: chance instead of shipping silence to the user.
+_SILENT_FINISH_REASONS: frozenset[str] = frozenset(
+    {"insufficient_system_resource", "content_filter", "length"}
+)
 
 # ---------------------------------------------------------------------------
 # Result type
@@ -90,6 +174,25 @@ class DialogResult:
     spoken_text: str = ""
     new_state: DialogueStateKind = DialogueStateKind.IDLE
     tools_called: list[str] = field(default_factory=list)
+    # Issue #992 (TWO MUSIC MODES): how many times the LLM invoked
+    # ``speak_text`` during this turn. ``tools_called`` only keeps
+    # *unique* names, but the dialogue_node music-cleanup gate needs
+    # the raw count to distinguish BACKING (спой/рэп — lyrics via 2+
+    # speak_text calls, music must stop at tts_batch_complete) from
+    # TRACK (сыграй баха — at most one short accept phrase, music
+    # lives until the user stops it).
+    speak_text_count: int = 0
+    # Issue #1343 (silence after accept): how many ``speak_text`` tool
+    # calls carried a REAL (non-empty) ``text`` argument this turn.
+    # ``tools_called`` is populated from the LLM's requested tool-call
+    # names BEFORE execution, so a phantom ``speak_text({})`` /
+    # ``speak_text({"text": ""})`` from deepseek lands in
+    # ``tools_called`` but never voices anything (validation rejects
+    # empty text before the MCP request is sent). The issue-988
+    # anti-duplicate guard in dialogue_node must only skip auto-TTS
+    # when speak_text was REALLY called with content — otherwise the
+    # user hears the accept sound and then silence.
+    speak_text_real_count: int = 0
     error: BaseException | None = None
     # ── LLM diagnostics (live 16:58) ────────────────────────────────────
     # When the LLM returns empty content (MiniMax M3 Interleaved Thinking
@@ -201,8 +304,31 @@ class DialogCore:
         *,
         history: Iterable[LLMMessage] | None = None,
         is_dj_auto: bool = False,
+        speaker_tag: str | None = None,
+        speaker_context: str | None = None,
+        dynamic_system: str | None = None,
+        preclassified_event: DialogueEvent | None = None,
     ) -> DialogResult:
         """Process a single user turn.
+
+        ``dynamic_system`` (live 10.08, two-system-prompt pattern) — XML
+        ``<system_context>...</system_context>`` snapshot собирается
+        dialogue_node каждый turn (текущий спикер, TTS-voice, session lock).
+        Вставляется вторым system-message в messages[] после статичного
+        system_prompt и до user input. Если None — dynamic system не
+        добавляется (backward-compatible).
+
+        ``preclassified_event`` (live 10.08, issue #1101) — если caller
+        уже классифицировал вход (через ``dsm.on_user_input`` + DSM-переход)
+        и знает финальный event, он передаёт его сюда чтобы не повторять
+        классификацию. Иначе ``on_user_input(text)`` матчит wake-words
+        внутри user-text (напр. «робот» в середине фразы) → возвращает
+        ``WAKE_WORD`` → guard ``event == STT_RESULT`` ломается → LLM не
+        вызывается → «акцепт есть, робот не отвечает».
+
+        Без этого параметра (None) DialogCore сам вызывает
+        ``dsm.on_user_input(text)`` и ``dsm.on_event(event)`` — backward
+        compatible для тестов / DJ-auto / harness-вызовов.
 
         Returns a :class:`DialogResult` describing the assistant's
         reply, the new DSM state, and any error. Never raises — LLM
@@ -266,21 +392,50 @@ class DialogCore:
         #    "роббокс" / "диджей" (the persona), which would otherwise
         #    short-circuit into a WAKE_WORD event and skip the LLM
         #    call entirely (issue #992 root cause).
-        if is_dj_auto:
+        # 🔴 FIX (issue #1101): если caller уже классифицировал и
+        #    выполнил DSM-переход (dialogue_node делает это в _on_stt),
+        #    пропускаем двойную классификацию. Иначе wake-word внутри
+        #    текста ('робот' в середине фразы) вернёт WAKE_WORD и
+        #    guard 'event == STT_RESULT' пропустит LLM → тишина.
+        if preclassified_event is not None:
+            event = preclassified_event
+        elif is_dj_auto:
             event = DialogueEvent.STT_RESULT
         else:
             event = self._dsm.on_user_input(text)
 
-        # 2. transition
-        self._dsm.on_event(event)
-        # DJ auto-turns: if DSM is LISTENING (no wake word yet) but the
-        # shell already drove the cycle, force-transition into DIALOGUE
-        # so the LLM gate fires. ``STT_RESULT`` from LISTENING
-        # normally does this — but a previous turn may have left the
-        # DSM in IDLE (e.g. silence timeout between transitions).
-        if is_dj_auto and self._dsm.current_state == DialogueStateKind.IDLE:
-            self._dsm.on_event(DialogueEvent.WAKE_WORD)
-            self._dsm.on_event(DialogueEvent.STT_RESULT)
+        # 2. transition (skip if caller already transitioned)
+        if preclassified_event is not None:
+            # Caller already drove the DSM (dialogue_node._on_stt).
+            # Trust its current_state — typically DIALOGUE.
+            #
+            # 🔴 FIX (issue #1217, DJ-auto regression from #1101):
+            # DJ auto-turns do NOT come through ``_on_stt`` — they are
+            # dispatched straight from ``DJModeController.tick`` via
+            # ``_run_turn``, which passes ``preclassified_event=STT_RESULT``.
+            # The else-branch below (with the DJ force-transition) is
+            # therefore skipped, so when the previous turn left the DSM
+            # in IDLE (DIALOGUE_END) the LLM gate
+            # ``current_state == DIALOGUE`` silently drops the turn —
+            # the LLM is never called and the robot answers nothing
+            # (observed in e2e run4: DJ-auto turns returned in ~2 ms
+            # with ``spoken='' tools=[] finish_reason=None`` and zero
+            # ``[health] stream`` log lines). Force the same transition
+            # the else-branch would have done.
+            if is_dj_auto:
+                if self._dsm.current_state == DialogueStateKind.IDLE:
+                    self._dsm.on_event(DialogueEvent.WAKE_WORD)
+                self._dsm.on_event(DialogueEvent.STT_RESULT)
+        else:
+            self._dsm.on_event(event)
+            # DJ auto-turns: if DSM is LISTENING (no wake word yet) but the
+            # shell already drove the cycle, force-transition into DIALOGUE
+            # so the LLM gate fires. ``STT_RESULT`` from LISTENING
+            # normally does this — but a previous turn may have left the
+            # DSM in IDLE (e.g. silence timeout between transitions).
+            if is_dj_auto and self._dsm.current_state == DialogueStateKind.IDLE:
+                self._dsm.on_event(DialogueEvent.WAKE_WORD)
+                self._dsm.on_event(DialogueEvent.STT_RESULT)
         result.new_state = self._dsm.current_state
 
         # 3. if we're now in DIALOGUE state, run the LLM
@@ -294,6 +449,37 @@ class DialogCore:
                 # new turn — otherwise ``load_recent`` would echo
                 # the just-stored user message back into the prompt.
                 messages = await self._resolve_history(history)
+                # Issue #1077 — контекст о спикере (профиль + факты из
+                # scope=speaker:<tag>). Вставляем system-сообщением сразу
+                # после основного системного промпта, чтобы LLM знала,
+                # с кем разговаривает (имя, предпочтения, история).
+                if speaker_context:
+                    if messages and messages[0].role == "system":
+                        messages.insert(
+                            1,
+                            LLMMessage(role="system", content=speaker_context),
+                        )
+                    else:
+                        messages.insert(
+                            0,
+                            LLMMessage(role="system", content=speaker_context),
+                        )
+                # Two-system-prompt pattern (live 10.08) — dynamic
+                # <system_context> snapshot: текущий спикер (resemblyzer),
+                # TTS-voice (gender alignment), session lock state.
+                # Вставляется ПОСЛЕ speaker_context и ДО user input, чтобы
+                # модель получала свежий runtime каждый turn.
+                if dynamic_system:
+                    if messages and messages[0].role == "system":
+                        messages.insert(
+                            1,
+                            LLMMessage(role="system", content=dynamic_system),
+                        )
+                    else:
+                        messages.insert(
+                            0,
+                            LLMMessage(role="system", content=dynamic_system),
+                        )
                 messages.append(LLMMessage(role="user", content=text))
                 # 🔴 FIX (live 11:19 DJ): DJ-переходы (is_dj_auto=True) НЕ
                 # пишутся в долгую память — иначе каждый переход (#1..#N)
@@ -303,21 +489,47 @@ class DialogCore:
                 # → пустые ответы → «Что-то я задумался». Системный
                 # DJ-триггер — не реплика юзера, он не должен загрязнять
                 # контекст диалога.
+                user_metadata = {}
+                if speaker_tag is not None:
+                    user_metadata["speaker_tag"] = speaker_tag
                 if not is_dj_auto:
                     await self._memory.append_turn(
-                        self._user_id, Turn(role="user", content=text)
+                        self._user_id,
+                        Turn(
+                            role="user",
+                            content=text,
+                            metadata=user_metadata,
+                        ),
                     )
-                spoken, tools_called, finish_reason, raw_response = (
+                spoken, tools_called, finish_reason, raw_response, speak_text_count, speak_text_real_count = (
                     await self._run_with_tools(messages)
                 )
                 result.spoken_text = spoken
                 result.tools_called = list(tools_called)
+                result.speak_text_count = speak_text_count
+                result.speak_text_real_count = speak_text_real_count
                 result.finish_reason = finish_reason
                 result.raw_response = raw_response
                 if not is_dj_auto:
-                    await self._memory.append_turn(
-                        self._user_id, Turn(role="assistant", content=spoken)
-                    )
+                    # Issue #1217 — do NOT persist a silent-failure assistant
+                    # turn (bare 'done' / empty payload with zero tools). The
+                    # corrective retry inside _run_with_tools already gave the
+                    # model a second chance; if it STILL failed, writing
+                    # "done" / "" into the conversation memory would teach the
+                    # model that an empty marker is a normal assistant reply
+                    # and the next turn would mimic it (memory DB showed rows
+                    # of consecutive assistant 'done' turns biasing deepseek).
+                    # Control traffic and failed turns stay out of dialogue
+                    # memory — see the DJ-auto gating above (same rule).
+                    if not self._is_silent_spoken(spoken, tools_called):
+                        await self._memory.append_turn(
+                            self._user_id,
+                            Turn(
+                                role="assistant",
+                                content=spoken,
+                                metadata=dict(user_metadata),
+                            ),
+                        )
             except Exception as exc:  # noqa: BLE001 — wrap into result
                 import traceback as _tb
                 result.error = Exception(f"{exc}\n{_tb.format_exc()}")
@@ -332,11 +544,55 @@ class DialogCore:
 
         return result
 
+    @staticmethod
+    def _is_silent_response(response: LLMResponse) -> bool:
+        """Issue #1217/#1253 — did the LLM do nothing useful for the user?
+
+        ``True`` when the response carries no tool calls AND its content is
+        either empty or a bare completion marker (``done`` / ``готово`` /
+        ...). The master prompt teaches those markers as the terminal reply
+        AFTER ``speak_text``; when the model emits one as its first answer it
+        means it skipped the actual work — the user hears nothing and nothing
+        happened. Any substantive text is NOT silent even without tools
+        (a plain-text answer is a valid response).
+
+        Issue #1253 — additionally, a ``finish_reason`` that means
+        "generation was interrupted / output omitted" (DeepSeek
+        ``insufficient_system_resource``, ``content_filter``, ``length`` with
+        empty content) is silent even when the aggregator carried a partial
+        content: the user would hear a truncated fragment, so the corrective
+        retry should fire instead.
+        """
+        if response.tool_calls:
+            return False
+        content = (response.content or "").strip().lower()
+        if (not content) or content in _SILENT_DONE_MARKERS:
+            return True
+        # Issue #1253 — interrupted / filtered generation is not a valid
+        # final answer even with a partial content fragment.
+        return response.finish_reason in _SILENT_FINISH_REASONS
+
+    @staticmethod
+    def _is_silent_spoken(spoken: str, tools_called: Iterable[str]) -> bool:
+        """Issue #1217 — is this turn's OUTCOME a silent failure?
+
+        Mirrors :meth:`_is_silent_response` for the post-loop values: no
+        tool ran AND the final text is empty or a bare completion marker.
+        Such turns must not be persisted to conversation memory (they would
+        teach the model that an empty marker is a normal assistant reply).
+        """
+        if tools_called:
+            return False
+        content = (spoken or "").strip().lower()
+        return (not content) or content in _SILENT_DONE_MARKERS
+
     async def _run_with_tools(
         self,
         messages: list[LLMMessage],
-    ) -> tuple[str, list[str]]:
-        """Run the LLM tool loop and return ``(spoken_text, tools_called)``.
+    ) -> tuple[str, list[str], str | None, Any, int, int]:
+        """Run the LLM tool loop and return ``(spoken_text, tools_called,
+        finish_reason, raw_response, speak_text_count,
+        speak_text_real_count)``.
 
         ``messages`` is the live message list — tool-result messages
         are appended in-place so the LLM sees a coherent conversation
@@ -366,16 +622,83 @@ class DialogCore:
 
         tools_called: list[str] = []
         seen: set[str] = set()
+        speak_text_count: int = 0
+        speak_text_real_count: int = 0
+        # Issue #1253 — any tool that returned ``is_error=True`` this turn.
+        # When a tool failed and the LLM answers with ONLY words (no retry
+        # tool-call, no speak_text) that is babble, not an answer — the
+        # robot would voice «дан» / «бит не получился» instead of acting.
+        tool_error_occurred: bool = False
         response: LLMResponse = await self._stream_response(
             messages, tools=openai_tools
         )
 
+        # Issue #1217 — deepseek-v4-flash intermittently answers with a bare
+        # completion marker ("done") or an EMPTY payload as its FIRST reply,
+        # without any tool call. The user hears nothing and nothing happens.
+        # Allow ONE corrective retry inside the same turn before accepting the
+        # silent failure. The correction is appended to the live message list
+        # (assistant echo when non-empty + a user-role instruction) so the
+        # model sees exactly what went wrong; OpenAI-compatible providers
+        # accept all the resulting shapes (verified against DeepSeek API).
+        #
+        # The retry fires ONLY when NO tool ran in this whole turn
+        # (``not tools_called``): a final "done" AFTER speak_text is
+        # legitimate per the master-prompt contract and must not be retried.
+        _silent_retried = False
+
         for _ in range(_MAX_TOOL_ITERATIONS):
             if not response.tool_calls:
+                if (
+                    not _silent_retried
+                    and not tools_called
+                    and self._is_silent_response(response)
+                ):
+                    _silent_retried = True
+                    if response.content:
+                        messages.append(
+                            LLMMessage(role="assistant", content=response.content)
+                        )
+                    messages.append(
+                        LLMMessage(
+                            role="user",
+                            content=(
+                                "[SYSTEM CORRECTION] Твой предыдущий ответ "
+                                "был пустым: ни текста, ни tool-вызова. "
+                                "Пользователь ничего не услышал, ничего не "
+                                "произошло. ОБЯЗАТЕЛЬНО в ЭТОМ ответе вызови "
+                                "нужный tool (speak_text — для речи) или дай "
+                                "содержательный текстовый ответ."
+                            ),
+                        )
+                    )
+                    response = await self._stream_response(messages, tools=openai_tools)
+                    continue
                 break
 
-            # Record unique tool names actually invoked.
+            # Record unique tool names actually invoked, and count
+            # speak_text occurrences (issue #992 — the raw count lets
+            # dialogue_node tell BACKING sing/rap turns from TRACK
+            # composition turns; unique names alone cannot).
+            #
+            # Issue #1343 — count REAL speak_text calls separately:
+            # deepseek sometimes emits ``speak_text({})`` /
+            # ``speak_text({"text": ""})`` with empty text. The name
+            # still lands in ``tools_called`` (it was requested), but
+            # the call is rejected by validation and NOTHING is voiced.
+            # ``speak_text_real_count`` only counts calls that carry a
+            # non-empty ``text`` argument — i.e. calls that would
+            # actually reach the MCP tool and play audio. dialogue_node
+            # uses this to skip auto-TTS only when speech REALLY
+            # happened (issue #988 anti-duplicate), not when the LLM
+            # merely *named* speak_text.
             for call in response.tool_calls:
+                if call.name == "speak_text":
+                    speak_text_count += 1
+                    args = call.arguments or {}
+                    text = args.get("text", "") if isinstance(args, Mapping) else ""
+                    if isinstance(text, str) and text.strip():
+                        speak_text_real_count += 1
                 if call.name not in seen:
                     seen.add(call.name)
                     tools_called.append(call.name)
@@ -397,7 +720,19 @@ class DialogCore:
             # is NOT blocked (§4.4: MERGE/QUEUE/AWAITING don't cancel the
             # LLM cycle), and the user gets to confirm/reject before the
             # call ever reaches the executor.
-            for call in response.tool_calls:
+            #
+            # W7a (issue #968): execution order is re-ordered so music
+            # prelude tools run before voice, and destructive tools
+            # (stop_music / stop_navigation) run last — otherwise a
+            # ``[speak_text, stop_music]`` batch fires stop_music before
+            # TTS even starts (e2e v36). Results are still appended in
+            # the model's ORIGINAL order (keyed by tool_call_id) so the
+            # OpenAI-style history stays valid.
+            execution_order, _deferred = _order_tool_calls(
+                response.tool_calls
+            )
+            results_by_call_id: dict[str, ToolResult] = {}
+            for call in execution_order:
                 if self._acceptance_gate is not None:
                     segment, decision = self._acceptance_gate.submit(
                         tool=call.name,
@@ -407,7 +742,7 @@ class DialogCore:
                     if decision.kind is ConfirmationKind.REQUIRE:
                         # Don't call the executor — gate will dispatch it
                         # later via the future scheduler (Фаза 2).
-                        tool_result = ToolResult(
+                        results_by_call_id[call.id] = ToolResult(
                             tool_call_id=call.id,
                             content=json.dumps(
                                 {
@@ -423,17 +758,14 @@ class DialogCore:
                             ),
                             is_error=False,
                         )
-                        messages.append(
-                            LLMMessage(
-                                role="tool",
-                                content=tool_result.content,
-                                tool_call_id=tool_result.tool_call_id,
-                                tool_result=tool_result,
-                            )
-                        )
                         continue
 
-                tool_result = await self._tools.execute(call)
+                results_by_call_id[call.id] = await self._tools.execute(call)
+
+            for call in response.tool_calls:
+                tool_result = results_by_call_id[call.id]
+                if tool_result.is_error:
+                    tool_error_occurred = True
                 messages.append(
                     LLMMessage(
                         role="tool",
@@ -452,7 +784,42 @@ class DialogCore:
                 _MAX_TOOL_ITERATIONS,
             )
 
-        return response.content, tools_called, response.finish_reason, response.raw
+        # Issue #1253 — babble filter on tool error. A tool failed
+        # (is_error=True) and the LLM answered with ONLY words: no retry
+        # tool-call in this final response and no speak_text during the
+        # turn. Voicing that text would make the robot say «дан» / «бит не
+        # получился» while nothing actually happened. System transition:
+        # return empty spoken so dialogue_node moves to the next round
+        # instead of parroting the babble.
+        if (
+            tool_error_occurred
+            and not response.tool_calls
+            and "speak_text" not in seen
+            and response.content
+            and self._is_silent_response(response)
+        ):
+            logging.getLogger(__name__).warning(
+                "DialogCore: tool error + babble-only final answer — "
+                f"suppressing spoken text {response.content[:80]!r} "
+                "(system transition)"
+            )
+            return (
+                "",
+                tools_called,
+                response.finish_reason,
+                response.raw,
+                speak_text_count,
+                speak_text_real_count,
+            )
+
+        return (
+            response.content,
+            tools_called,
+            response.finish_reason,
+            response.raw,
+            speak_text_count,
+            speak_text_real_count,
+        )
 
     async def _stream_response(
         self,
@@ -472,13 +839,38 @@ class DialogCore:
         tool_calls: list[ToolCall] = []
         finish_reason: str | None = None
         raw: Any = None
-        async for chunk in self._llm.stream(messages, tools=tools):
-            if chunk.content_delta:
-                parts.append(chunk.content_delta)
-            if chunk.tool_call_delta is not None:
-                tool_calls.append(chunk.tool_call_delta)
-            if chunk.finish_reason:
-                finish_reason = chunk.finish_reason
+        stream = self._llm.stream(messages, tools=tools)
+        try:
+            async for chunk in stream:
+                # 🔴 FIX (issue #1280): barge-in — новый STT-инпут уже
+                # отменил текущий run (task.cancel). Бросаем
+                # CancelledError немедленно, ДО обработки чанка:
+                # буферизованные чанки старой темы не должны
+                # агрегироваться в ответ, который потом уйдёт в TTS
+                # («робот добивает старую тему после смены»).
+                # asyncio и так доставит CancelledError на ближайшем
+                # await — здесь делаем это явно и раньше.
+                task = asyncio.current_task()
+                if task is not None and task.cancelled():
+                    raise asyncio.CancelledError
+                if chunk.content_delta:
+                    parts.append(chunk.content_delta)
+                if chunk.tool_call_delta is not None:
+                    tool_calls.append(chunk.tool_call_delta)
+                if chunk.finish_reason:
+                    finish_reason = chunk.finish_reason
+        finally:
+            # 🔴 FIX (issue #1280): гарантированно закрываем stream при
+            # ЛЮБОМ выходе — включая CancelledError при barge-in. Без
+            # aclose() HTTP-запрос к провайдеру продолжает жить до конца
+            # генерации: провайдер тратит квоту на старую тему, а ответ
+            # старой темы может успеть попасть в TTS.
+            aclose = getattr(stream, "aclose", None)
+            if aclose is not None:
+                try:
+                    await aclose()
+                except Exception:
+                    pass
         return LLMResponse(
             content="".join(parts),
             tool_calls=tuple(tool_calls),

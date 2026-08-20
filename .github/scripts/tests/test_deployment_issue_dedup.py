@@ -124,6 +124,81 @@ def test_extract_relevant_log_line_ignores_without_error_message() -> None:
     assert line is None
 
 
+def test_extract_relevant_log_line_ignores_dialogue_error_none_success_echo() -> None:
+    """Retro 15.08 t_29230e6f / issue #1335 — also hits issue #1364 (round-129).
+
+    dialogue_node's normal turn completion line is
+    `process_input returned: ... error=None` — error=None means NO error.
+    The bare \\berror\\b matcher would otherwise flag this INFO line as
+    deploy-critical on a fully green round (deploy run 31886490619 SUCCESS +
+    E2E SUCCESS, yet issue was created; same pattern observed on round-129
+    run 32115362102, issue #1364).
+    """
+    log_text = (
+        "[dialogue_node-4] [INFO] [1787041178.922615857] [dialogue_node]: "
+        "✅ [turn] process_input returned: spoken=''[:60] "
+        "tools=['set_voice', 'speak_text'] error=None"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_error_colon_none_success_echo() -> None:
+    """Same retro as above, alternate formatting `error: None`."""
+    log_text = (
+        "[dialogue_node-1] [INFO] [1787041178.922615857] [dialogue_node]: "
+        "result: error: None"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_minimax_api_error_2054() -> None:
+    """Retro 18.08 #1364: minimax bad-request 2054 (voice) at tts_node
+    startup — tts chain falls back to next provider, robot keeps speaking.
+    Deploy gate must not file a critical_log issue for this single transient.
+
+    Run 32115362102 logs contained:
+      [health_monitor-3] [ERROR] tts_node (0s ago): MiniMax bad-request,
+      NO retry: minimax API error 2054: voice
+    E2E run 32115882100 then reported `✅ TTS: основной голос без
+    fallback` — primary voice worked throughout the round.
+    """
+    log_text = (
+        "[health_monitor-3]   [ERROR] tts_node (0s ago): MiniMax bad-request, "
+        "NO retry: minimax API error 2054: voice"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_nav2_tf_to_map_startup_race() -> None:
+    """Retro 18.08 #1364: nav2 global_costmap 'TF base_footprint→map'
+    at startup, before rtabmap publishes /map. Same startup race as the
+    already-excluded 'to odom' line; PR #1151 (commit d1abb2ae) only
+    covered 'to odom' but the round-129 run 32115362102 had 'to map'
+    as the actual costmap TF timeout, and the deploy detector still
+    flagged it on a fully green round.
+    """
+    log_text = (
+        "[INFO] [1787041170.966729633] [global_costmap.global_costmap]: "
+        "Timed out waiting for transform from base_footprint to map to "
+        "become available, tf error: Could not find a connection between "
+        "'map' and 'base_footprint' because they are not part of the same "
+        "tree.Tf has two or more unconnected trees."
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None
+
+
 def test_extract_relevant_log_line_ignores_total_errors_summary() -> None:
     log_text = "[health_monitor-1] Total Errors: 1 (последние 0 за минуту)"
 
@@ -160,14 +235,23 @@ def test_extract_relevant_log_line_ignores_optional_serial_critical_error() -> N
 
 
 def test_extract_relevant_log_line_ignores_nav2_startup_tf_timeout() -> None:
-    log_text = (
+    base_link_log = (
         '[INFO] [1773045972.826191868] [local_costmap.local_costmap]: Timed out waiting '
         'for transform from base_link to odom to become available, tf error: '
         'Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist'
     )
+    # robot_base_frame was changed base_link -> base_footprint (afbb8793);
+    # the benign startup TF timeout now names base_footprint (issue #774).
+    base_footprint_log = (
+        '[INFO] [1776096003.466816576] [local_costmap.local_costmap]: Timed out waiting '
+        'for transform from base_footprint to odom to become available, tf error: '
+        'Invalid frame ID "odom" passed to canTransform argument target_frame - frame does not exist'
+    )
 
-    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+    line = MODULE.extract_relevant_log_line(base_link_log, scope="main", severity="critical")
+    assert line is None
 
+    line = MODULE.extract_relevant_log_line(base_footprint_log, scope="main", severity="critical")
     assert line is None
 
 
@@ -196,7 +280,11 @@ def test_extract_relevant_log_line_ignores_known_main_warnings() -> None:
     assert deprecated_line is None
 
 
-def test_extract_relevant_log_line_prefers_real_supercollider_error() -> None:
+def test_extract_relevant_log_line_ignores_supercollider_g_new_startup_noise() -> None:
+    """Issue #778/#672/#840: Renardo sends /g_new before scsynth finished
+    allocating group IDs. Music stack comes up healthy afterwards, so the
+    deploy gate must not file a critical issue for this startup race.
+    """
     log_text = "\n".join(
         [
             "Zeroconf: failed to create client: Daemon not running",
@@ -206,7 +294,115 @@ def test_extract_relevant_log_line_prefers_real_supercollider_error() -> None:
 
     line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
 
-    assert line == "FAILURE IN SERVER /g_new negative node IDs are reserved"
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_minimax_2056_quota() -> None:
+    """Issue #1193: MiniMax Token Plan exhausted (error 2056) is an external
+    billing limit; TTS falls back to Yandex. Not a deployment failure.
+    """
+    log_text = (
+        "[tts_node-5] [ERROR] [1786776215.499241163] [tts_node]: "
+        "MiniMax auth error, NO retry: minimax API error 2056: "
+        "Token Plan usage limit reached: Upgrade your Token Plan or "
+        "purchase Credits for more usage."
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_python_exception_ignored() -> None:
+    """nav2 shutdown noise: interpreter closes stdout while a pipe reader
+    (`ros2 topic list | head`) already hung up — benign (round-117).
+    """
+    log_text = (
+        "Exception ignored in: <_io.TextIOWrapper name='<stdout>' mode='w' "
+        "encoding='utf-8'>"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_zenoh_responsefinal_warning() -> None:
+    """Stale zenoh reply to an already-timed-out query — benign (round-117)."""
+    log_text = (
+        "2026-08-15T06:42:47.152056Z  WARN rx-0 ThreadId(08) "
+        "zenoh::api::session: Received ResponseFinal for unknown Request: 0"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_telegram_echo_drop_warning() -> None:
+    """telegram_node boot: bot up but no chat bound yet — normal (round-117)."""
+    log_text = (
+        "[WARN] [1786776214.623560688] [telegram_node]: Dropping dialogue "
+        "echo, bot not ready / no active chat (app=True, loop=True, "
+        "chat_id=None, text_len=32)"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_tts_none_voice_warning() -> None:
+    """Issue #1219: voice 'None' → default voice fallback — the chain works."""
+    log_text = (
+        "[tts_node-5] [WARN] [1786776214.627448550] [tts_node]: "
+        "⚠️ [issue 1219] Голос 'None' недоступен у MiniMax — "
+        "использую дефолтный 'male-qn-qingse'"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_rtabmap_ini_autocreate_warning() -> None:
+    """rtabmap ini auto-created on shutdown — benign (round-117)."""
+    log_text = (
+        '[rtabmap-2] [ WARN] (2026-08-15 06:44:25.435) Parameters.cpp:1325::'
+        'readINIImpl() Section "Core" in /config/rtabmap/rtabmap.ini doesn\'t '
+        'exist... Ignore this warning if the ini file does not exist yet. The '
+        "ini file will be automatically created when rtabmap will close."
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_perception_uart_warning() -> None:
+    """Optional UART IMU not attached — expected in the lab rig (round-117)."""
+    log_text = (
+        "[perception_bridge-1] [WARN] [1786776266.903651194] "
+        "[perception_bridge]: Sensor UART /dev/ttyAMA0 not available; "
+        "reads will no-op until hardware is attached."
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_nav2_scouted_peer_warning() -> None:
+    """zenoh startup handshake: peer scouted but not yet connectable — noise."""
+    log_text = (
+        "2026-08-15T06:44:31.378308Z  WARN net-0 ThreadId(03) "
+        "zenoh::net::runtime::orchestrator: Unable to connect to any locator "
+        "of scouted peer b4faae00ce67d5ff3e7ae0a317e27441: [tcp/[::1]:40231]"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="warning")
+
+    assert line is None
 
 
 def test_extract_relevant_log_line_ignores_sound_sample_named_error() -> None:
@@ -228,7 +424,9 @@ def test_extract_relevant_log_line_ignores_workflow_section_headers() -> None:
     critical_line = MODULE.extract_relevant_log_line(critical_log, scope="vision", severity="critical")
     warning_line = MODULE.extract_relevant_log_line(warning_log, scope="vision", severity="warning")
 
-    assert critical_line == "FAILURE IN SERVER /g_new negative node IDs are reserved"
+    # Both are noise: /g_new startup race (issue #778) and pending_speeches
+    # race are benign — neither should surface as a deploy issue.
+    assert critical_line is None
     assert warning_line is None
 
 
@@ -245,3 +443,210 @@ def test_extract_relevant_log_line_ignores_zenoh_clock_skew_timestamp() -> None:
     line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
 
     assert line is None
+
+
+def test_extract_relevant_log_line_ignores_stt_empty_rejection_vision() -> None:
+    """Issue #989: stt_node WARN на пустое — защита от эхо-петли, не деплой-сбой.
+
+    Реальный лог из run 22857794907 (deploy-signature ...:0ef89820b166).
+    Для vision scope должен игнорироваться, для main — это всё равно не main-контейнер.
+    """
+    log_text = (
+        "[stt_node-6] [WARN] [1773066077.600410682] [stt_node]: ❌ ОТКЛОНЕНО (пустое)"
+    )
+
+    vision_line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+    main_line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="warning")
+
+    assert vision_line is None
+    assert main_line is None
+
+
+def test_extract_relevant_log_line_ignores_stt_short_rejection_vision() -> None:
+    """Issue #989: stt_node WARN на короткое (<min_text_chars) тоже ложный.
+
+    Vosk/Yandex может вернуть «не»/«ага» — это реальная речь, но не команда.
+    Деплой-скрипт не должен открывать issue только из-за этого.
+    """
+    log_text = (
+        "[stt_node-6] [WARN] [1773066077.600410682] [stt_node]: "
+        "❌ ОТКЛОНЕНО (короткое, <3 chars): \"ага\""
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_missing_critical_synthdefs_none() -> None:
+    """Retro 15.08 t_a14ac65d: voice-assistant readiness line.
+
+    'Missing critical SynthDefs: none' means ALL critical SynthDefs are
+    present — the word 'critical' alone must not file a deployment issue.
+    """
+    log_text = "Missing critical SynthDefs: none"
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_nav2_broken_pipe_from_topic_list_head() -> None:
+    """Retro 15.08 t_a14ac65d: BrokenPipeError from `ros2 topic list | head`.
+
+    start_nav2_direct.sh greps for /odom via a pipe; head closes the pipe
+    after the first line and ros2cli prints a traceback. Benign — the topic
+    was found right after (✓ /odom topic found).
+    """
+    log_text = "\n".join(
+        [
+            "Traceback (most recent call last):",
+            '  File "/opt/ros/humble/lib/python3.10/site-packages/ros2topic/verb/list.py", line 79, in main',
+            "    print(msg.format_map(locals()))",
+            "BrokenPipeError: [Errno 32] Broken pipe",
+        ]
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_jackd_process_graph_async_master() -> None:
+    """Issue #1368: jackd logs a single-line `Process error` whenever a DSP
+    cycle overruns the ALSA period (scsynth client without realtime
+    scheduling). jackd drops the cycle and recovers automatically — scsynth
+    stays up and music/TTS keep flowing. The deploy gate must not flag it.
+
+    The text is case-preserved in the log; the regex is case-insensitive.
+    """
+    log_text = "\n".join(
+        [
+            "[SuperCollider] Cleaning up stale JACK SHM files...",
+            "[SuperCollider] JACK running. Starting scsynth on UDP port 57110...",
+            "[jackd] JackAudioDriver::ProcessGraphAsyncMaster: Process error",
+        ]
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_audio_node_fell_in_main_scope() -> None:
+    """Issue #1368: context_aggregator in the Main Pi perception container
+    prints '❌ Нода упала: /audio_node' whenever the Vision Pi voice-assistant
+    restarts audio_node (cross-container /rosout leak via the Zenoh router).
+    Same shape as the telegram_node exclusion (issue #775). Real root cause
+    is on Vision Pi, not a deployment failure.
+    """
+    log_text = (
+        "[context_aggregator-2] [ERROR] [1787042891.609388690] "
+        "[context_aggregator]: ❌ Нода упала: /audio_node"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+    assert line is None
+
+
+def test_extract_relevant_log_line_still_catches_audio_node_in_vision_scope() -> None:
+    """Negative test: a real audio_node error in the vision scope MUST still
+    be reported. audio_node lives in the voice-assistant container on the
+    Vision Pi, so vision scope is the real owner.
+    """
+    log_text = (
+        "[audio_node] [ERROR] [1787042891.609388690] [audio_node]: "
+        "Failed to open pyaudio stream: Invalid sample rate"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+    assert line == log_text
+
+
+def test_extract_relevant_log_line_still_catches_jackd_unrelated_errors() -> None:
+    """Negative test: a real jackd error that is NOT the transient
+    ProcessGraphAsyncMaster message MUST still be reported.
+    """
+    log_text = (
+        "[jackd] FATAL could not connect to server: server failed to start"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+    assert line == log_text
+
+
+def test_extract_relevant_log_line_ignores_supercollider_synthdef_not_found() -> None:
+    """Issue #1485, deploy round-165: FoxDot/Renardo sends `/s_new` for
+    SynthDefs (notably `rhpiano`) that ship with renardo but are not
+    pre-loaded in the headless scsynth image. The deploy gate must not
+    file a critical issue for these benign warnings — the music stack
+    stays healthy and TTS/voice flow continues.
+    """
+    log_text = "\n".join(
+        [
+            "Buffer UGen: no buffer data",
+            "*** ERROR: SynthDef rhpiano not found",
+            "FAILURE IN SERVER /s_new SynthDef not found",
+            "*** ERROR: SynthDef rhpiano not found",
+            "FAILURE IN SERVER /s_new SynthDef not found",
+            "SuperCollider 3 server ready.",
+        ]
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_rtabmap_scan_voxel_size_transfer() -> None:
+    """Issue #1485, deploy round-165: rtabmap icp_odometry prints
+    `Transferring value 0.05 of "Icp/VoxelSize" to ros parameter
+    "scan_voxel_size" for convenience` when the YAML declares
+    scan_voxel_size but Icp/VoxelSize is 0. This is a transparent
+    parameter copy, not an SLAM fault — the deploy gate must skip it.
+    """
+    log_text = (
+        "[icp_odometry-1] [WARN] [1787149892.096715766] [rtabmap.icp_odometry]: "
+        'IcpOdometry: Transferring value 0.05 of "Icp/VoxelSize" to ros parameter '
+        '"scan_voxel_size" for convenience. "Icp/VoxelSize" is set to 0.'
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_respeaker_threshold_warnings() -> None:
+    """Issue #1485, deploy round-165 (sibling of issue #989): voice-assistant
+    falls back to a software gate when the UAC1.0 ReSpeaker rejects the
+    audio_node hw-ctl threshold. The warning itself is the fallback
+    notification; real audio_node failures use different phrasing and
+    keep their severity.
+    """
+    vision_log = (
+        "[audio_node-1] [WARN] [1787149897.690666359] [audio_node]: "
+        "⚠️ [issue 989] ReSpeaker не принял threshold 6.0 dB — программный гейт остаётся"
+    )
+    main_leak_log = (
+        "[health_monitor-3]   [WARN] audio_node (2s ago): "
+        "⚠️ [issue 989] ReSpeaker не принял threshold 6.0 dB — програ"
+    )
+
+    vision_line = MODULE.extract_relevant_log_line(vision_log, scope="vision", severity="warning")
+    main_line = MODULE.extract_relevant_log_line(main_leak_log, scope="main", severity="warning")
+
+    assert vision_line is None
+    assert main_line is None
+
+
+def test_extract_relevant_log_line_still_catches_audio_node_real_fallback() -> None:
+    """Negative test for #1485 / #989: an audio_node WARN that is NOT
+    the documented ReSpeaker threshold fallback MUST still be reported.
+    """
+    log_text = (
+        "[audio_node-2] [WARN] [1787149901.000000001] [audio_node]: "
+        "pyaudio input overflow, 240 frames dropped"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line == log_text

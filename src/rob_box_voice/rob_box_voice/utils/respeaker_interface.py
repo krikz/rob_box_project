@@ -45,6 +45,27 @@ class ReSpeakerInterface:
         'AECFREEZEONOFF': (18, 7, 'int'),  # AEC Freeze control (0=adaptive, 1=frozen)
         'ECHOONOFF': (18, 6, 'int'),       # Echo cancellation on/off
         'NLATTENONOFF': (18, 1, 'int'),    # Non-linear AEC attenuation on/off
+        # Issue #1117 round-2: high-pass filter.
+        # Параметр group=18, offset=27 (см. /tmp/issue_1117_assets/
+        # usb_4_mic_array_tuning.py PARAMETERS['HPFONOFF']).
+        # 0=OFF, 1=70Hz, 2=125Hz, 3=180Hz (firmware default). Дефолт
+        # firmware = 3 режет тихое «Р» в «Робот» (-26 dBFS), STT получает
+        # «обот» / «меня зовут саша» без wake word → dialogue отбрасывает
+        # (no_wake_word). 1 = 70 Hz сохраняет основной тон «Р» (≈60 Hz).
+        'HPFONOFF': (18, 27, 'int'),
+        # Issue #1117 round-2: переключаемся на 1-канальный processed ASR
+        # (Ch0) — Ch1..Ch4 в 6-channel firmware = сырые микрофоны, нам не
+        # нужны (DSP уже сделал AEC+beamforming+NS+AGC на XVF-3000).
+        # MIX_SELECT: 0=mic1 (raw), 1=mic2 (raw), ... 4=mic4 (raw),
+        # 5=AEC-processed beamforming reference (firmware default в
+        # 1_channel_firmware), 6-7=playback reference. См. PARAMETERS в
+        # upstream usb_4_mic_array_tuning.py. В нашем случае
+        # пишем 0 — фактически привязываем аппаратную обработку к Ch1
+        # прошивки (которая в 6-канальной раскладке становится Ch0 в
+        # PyAudio data). Это парный аппаратный сигнал для mix_channels=[0].
+        # Но фактически мы НЕ используем этот параметр (применяется
+        # автоматом в 1_channel_firmware); оставлен для полноты датакы.
+        # 'MIX_SELECT': (18, ??, 'int'),
     }
 
     def __init__(self):
@@ -257,6 +278,24 @@ class ReSpeakerInterface:
         success &= self.write_parameter('NLATTENONOFF', 1 if nlp_on else 0)
 
         return success
+
+    def configure_dsp(self, hpf_on: int = 1) -> bool:
+        """
+        Настроить параметры DSP XVF-3000 (issue #1117 round-2).
+
+        Сейчас: high-pass filter (HPFONOFF). При необходимости можно
+        добавить другие параметры (GAMMAVAD_SR и пр.) — единая точка
+        для batch-настройки на старте audio_node.
+
+        Args:
+            hpf_on: 0=OFF, 1=70Hz, 2=125Hz, 3=180Hz. Дефолт firmware
+                    = 3 (180Hz) режет тихое «Р» в «Робот». 1 — сохраняет.
+                    (group=18, offset=27, type=int)
+
+        Returns:
+            True если запись прошла успешно.
+        """
+        return self.write_parameter('HPFONOFF', int(hpf_on))
 
     def get_device_info(self) -> Optional[dict]:
         """Получить информацию об устройстве."""

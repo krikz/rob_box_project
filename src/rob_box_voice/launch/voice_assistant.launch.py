@@ -198,6 +198,22 @@ def generate_launch_description():
     # инициализацией tts_node (фраза терялась). dialogue_node сам
     # говорит приветствие через startup_greeting_sec / startup_greeting_text.
 
+    # === Speaker ID Node (issue #1077 — голосовая биометрия resemblyzer) ===
+    # Подписывается на /audio/speech_audio, вычисляет d-vector, идентифицирует
+    # говорящего, публикует /voice/speaker/result. dialogue_node использует
+    # результат для префикса [Говорит <имя>] / [Говорит: незнакомец].
+    speaker_id_node = Node(
+        package='rob_box_voice',
+        executable='speaker_id_node',
+        name='speaker_id_node',
+        namespace=namespace,
+        parameters=[PathJoinSubstitution([config_dir, 'speaker_id_node.yaml'])],
+        output='screen',
+        respawn=True,
+        respawn_delay=5.0,
+        arguments=['--ros-args', '--log-level', 'info']
+    )
+
     # === MCP Server (Agentive Tools Integration) ===
     # ⚠️ Workaround: Python entry points not recognized by ROS 2
     # Using ExecuteProcess instead of Node to run Python module directly
@@ -245,5 +261,6 @@ def generate_launch_description():
         stt_node,       # ✅ Phase 3: Vosk STT
         sound_node,     # ✅ Phase 4: Sound Effects
         command_node,   # ✅ Phase 5: Command Recognition
+        speaker_id_node,  # ✅ Phase 6: Speaker ID (issue #1077, resemblyzer)
         mcp_server,     # ✅ MCP Tools: Agentive LLM Integration
     ])

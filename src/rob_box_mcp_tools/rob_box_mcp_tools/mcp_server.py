@@ -52,6 +52,8 @@ from .tools import (
     SpeakTextTool,
     ListenForResponseTool,
     EstimateTtsDurationTool,
+    RegisterSpeakerTool,
+    SetVoiceTool,
     MemorySaveTool,
     MemorySearchTool,
     MemoryContextTool,
@@ -68,9 +70,36 @@ from .tools import (
     SetDjModeTool,
     SearchSamplesTool,
     FaqSearchTool,
+    SearchWebTool,
 )
+
+# Issue #1392 — MiniMax music generation + generated-music library tools.
+# Imported explicitly (not via wildcard) so the heavy ``tools.music``
+# dependency tree stays opt-in.
+try:
+    from .core.minimax_music_client import MinimaxMusicClient
+    from .core.generated_music_library import GeneratedMusicLibrary
+    from .tools.minimax_music import (
+        GenerateMusicTool,
+        GenListLibraryTool,
+        GenSearchLibraryTool,
+        GenSaveToLibraryTool,
+        GenPlayFromLibraryTool,
+        GenDeleteFromLibraryTool,
+        GenGetTrackInfoTool,
+    )
+    _MINIMAX_MUSIC_AVAILABLE = True
+except ImportError as _exc:  # noqa: BLE001
+    MinimaxMusicClient = None  # type: ignore[assignment,misc]
+    GeneratedMusicLibrary = None  # type: ignore[assignment,misc]
+    GenerateMusicTool = GenListLibraryTool = GenSearchLibraryTool = None  # type: ignore[assignment,misc]
+    GenSaveToLibraryTool = GenPlayFromLibraryTool = None  # type: ignore[assignment,misc]
+    GenDeleteFromLibraryTool = GenGetTrackInfoTool = None  # type: ignore[assignment,misc]
+    _MINIMAX_MUSIC_AVAILABLE = False
+    _MINIMAX_MUSIC_IMPORT_ERROR = str(_exc)
 from .waypoint_store import WaypointStore
 from .mapping_state import MappingState
+from .voice_state import VoiceStateStore
 
 try:
     from rob_box_voice.core.voice_memory import VoiceMemory as _VoiceMemory
@@ -95,6 +124,10 @@ class MCPServer(Node):
         # Параметры ноды
         # Issue 986: музыка орала, голос не был слышен — понизили max_amp с 0.7 до 0.42
         self.declare_parameter("music_max_amp", 0.42)
+        # Issue #1219 — активный TTS-провайдер для валидации голосов в
+        # speak_text/set_voice. Должен совпадать с tts_node.yaml provider
+        # (minimax). Используется для выбора списка голосов (Q4).
+        self.declare_parameter("tts_provider", "minimax")
 
         # Реестр инструментов
         self.registry = MCPToolRegistry()
@@ -131,6 +164,7 @@ class MCPServer(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=10
         )
+        self._qos_profile = qos_profile
 
         # Publisher для списка инструментов
         self.tools_pub = self.create_publisher(String, "/mcp/tools", qos_profile)
@@ -163,6 +197,23 @@ class MCPServer(Node):
             self.get_logger().info("✅ Подписан на /perception/context_update")
         except ImportError:
             self.get_logger().warning("⚠️ PerceptionEvent не найден, мониторинг контекста отключен")
+
+        # Issue #1229 — фактический провайдер TTS (после фолбека) от tts_node.
+        # tts_node публикует JSON {"provider": str, "voice": str, ...} после
+        # старта/фолбека/синтеза. SpeakTextTool/SetVoiceTool валидируют голоса
+        # по РЕАЛЬНОМУ провайдеру (а не номинальному tts_provider из YAML):
+        # иначе LLM выбирает minimax-голоса, которых нет у yandex после
+        # фолбека, и слышит один и тот же дефолтный голос.
+        self.actual_tts_provider: str | None = None
+        try:
+            self._provider_state_sub = self.create_subscription(
+                String, "/voice/tts/provider_state", self._on_tts_provider_state, 10
+            )
+            self.get_logger().info("🎙️ Подписан на /voice/tts/provider_state (issue #1229)")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ Не удалось подписаться на /voice/tts/provider_state: {exc}"
+            )
 
         # Таймер для периодической публикации списка инструментов
         self.tools_timer = self.create_timer(10.0, self.publish_tools)
@@ -249,6 +300,27 @@ class MCPServer(Node):
     # ------------------------------------------------------------------
     # Music cleanup hooks — safety-net (issue #935)
     # ------------------------------------------------------------------
+    def _on_tts_provider_state(self, msg: "String") -> None:
+        """Issue #1229 — запомнить фактического провайдера TTS от tts_node.
+
+        tts_node публикует JSON {"provider": str, "voice": str, ...} после
+        старта/фолбека/синтеза. SpeakTextTool/SetVoiceTool читают
+        ``self.actual_tts_provider`` через ``node.actual_tts_provider`` и
+        валидируют голоса по РЕАЛЬНОМУ провайдеру (Q4/Q6).
+        """
+        try:
+            payload = json.loads(msg.data) if msg.data else {}
+        except (TypeError, ValueError):
+            return
+        provider = payload.get("provider") if isinstance(payload, dict) else None
+        if not provider:
+            return
+        self.actual_tts_provider = str(provider)
+        self.get_logger().info(
+            f"🎙️ [issue 1229] actual TTS provider → '{self.actual_tts_provider}' "
+            f"(reason: {payload.get('reason')})"
+        )
+
     def _on_dj_mode(self, msg: "String") -> None:
         """Track DJ-mode state so the watchdog doesn't kill DJ sets.
 
@@ -291,6 +363,67 @@ class MCPServer(Node):
             self.get_logger().info(
                 f"🎵 [{reason}] Cleanup: активной музыки не обнаружено "
                 f"(stop_all вызван профилактически). msg={result.get('message')}"
+            )
+
+    def _on_music_fallback(self, msg: "String") -> None:
+        """Issue #1016 — play the top-rated library track when the LLM
+        returned an empty reply to a music request.
+
+        Triggered by messages on ``/mcp/music_fallback`` published by
+        :class:`dialogue_node` (empty-response branch). The library query
+        is already ordered ``rating DESC, name ASC`` (:meth:`TrackLibrary.
+        list_tracks`), so the first result is the best human track we have.
+
+        Best-effort: if the music stack is unavailable, or the library is
+        empty, this is a silent no-op (the robot already said "Принял.").
+        """
+        manager = getattr(self, "_music_manager", None)
+        library = getattr(self, "_track_library", None)
+        if manager is None or library is None:
+            self.get_logger().warning(
+                "🎵 [music_fallback] music manager/library unavailable — skip"
+            )
+            return
+        try:
+            reason = ""
+            if msg.data:
+                try:
+                    payload = json.loads(msg.data)
+                    if isinstance(payload, dict):
+                        reason = f" ({payload.get('reason', '')})"
+                except (TypeError, ValueError):
+                    pass
+            listing = library.list_tracks(min_rating=0)
+            tracks = listing.get("tracks", [])
+            if not tracks:
+                self.get_logger().warning(
+                    "🎵 [music_fallback] библиотека пуста — нечего играть"
+                )
+                return
+            top = tracks[0]
+            loaded = library.load_track(top["name"])
+            if not loaded.get("success"):
+                self.get_logger().warning(
+                    f"🎵 [music_fallback] не удалось загрузить "
+                    f"'{top['name']}': {loaded.get('error')}"
+                )
+                return
+            result = manager.execute_code(
+                loaded["code"], pattern_name=top["name"]
+            )
+            if result.get("success"):
+                self.get_logger().info(
+                    f"🎵 [music_fallback{reason}] играю топ-трек "
+                    f"'{top['name']}' (rating={top.get('rating')})"
+                )
+            else:
+                self.get_logger().warning(
+                    f"🎵 [music_fallback] топ-трек '{top['name']}' "
+                    f"не запустился: {result.get('error')}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [music_fallback] обработчик упал: {exc}"
             )
 
     def _run_music_watchdog(self) -> None:
@@ -425,9 +558,19 @@ class MCPServer(Node):
         self.registry.register(FaqSearchTool(self))
 
         # Dialogue tools (критично для агентного диалога!)
-        self.registry.register(SpeakTextTool(self))
+        # Issue #1219 — SpeakTextTool и SetVoiceTool делят VoiceStateStore:
+        # set_voice персистентно меняет голос на диалог, speak_text без
+        # voice= говорит установленным голосом (Q7).
+        voice_store = VoiceStateStore()
+        self.registry.register(SpeakTextTool(self, voice_store=voice_store))
         self.registry.register(EstimateTtsDurationTool(self))
         self.registry.register(ListenForResponseTool(self))
+        self.registry.register(SetVoiceTool(self, voice_store=voice_store))
+        # Issue #1101 — LLM-driven speaker registration (replaces regex NLU).
+        # LLM extracts name from user_input and calls register_speaker(name=X)
+        # via MCP. speaker_id_node binds d-vector to name in /data/speakers.db.
+        self.registry.register(RegisterSpeakerTool(self))
+        self.registry.register(SearchWebTool(self))
 
         # Memory tools (долгосрочная память + семантический поиск)
         self.registry.register(MemorySaveTool(self))
@@ -470,11 +613,125 @@ class MCPServer(Node):
             )
             return
 
+        self._track_library = track_library
         self.get_logger().info(f"🎵 Track library: {track_library.list_tracks()['total']} трек(ов)")
         self.registry.register(SaveTrackTool(self, track_library, music_manager))
         self.registry.register(ListTracksTool(self, track_library))
         self.registry.register(LoadTrackTool(self, track_library, music_manager))
         self.registry.register(DeleteTrackTool(self, track_library))
+
+        # Issue #1392 — MiniMax music generation + persistent library.
+        # Graceful degradation: any failure (no API key, no /data volume,
+        # import error) only disables the new tools — Renardo tools keep
+        # working. This mirrors the same try/except pattern used above.
+        self._register_minimax_music_tools()
+
+        # Issue #1016 — empty-response music fallback. When the LLM returns
+        # an empty reply to a music request ("поставь что-нибудь", "сыграй
+        # классику"), dialogue_node publishes /mcp/music_fallback and we
+        # play the top-rated human track from the library instead of
+        # leaving the user in silence.
+        # 🔴 FIX (live 13.08): _register_music_tools() выполняется в
+        # _register_tools() РАНЬШЕ, чем __init__ присваивает
+        # self._qos_profile → AttributeError глотался try/except'ом, и
+        # подписка на /mcp/music_fallback никогда не создавалась.
+        qos = getattr(self, "_qos_profile", None)
+        if qos is None:
+            qos = QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=10,
+            )
+            self._qos_profile = qos
+        try:
+            self._music_fallback_sub = self.create_subscription(
+                String,
+                "/mcp/music_fallback",
+                self._on_music_fallback,
+                qos,
+            )
+            self.get_logger().info("🎵 Подписан на /mcp/music_fallback (issue #1016)")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ Не удалось подписаться на /mcp/music_fallback: {exc}"
+            )
+
+    # ------------------------------------------------------------------
+    # Issue #1392 — MiniMax music generation + persistent library tools.
+    # ------------------------------------------------------------------
+
+    def _register_minimax_music_tools(self) -> None:
+        """Регистрирует 7 MiniMax music tools (graceful degradation).
+
+        Tools registered on success:
+            generate_music, gen_list_library, gen_search_library,
+            gen_save_to_library, gen_play_from_library,
+            gen_delete_from_library, gen_get_track_info
+
+        Failure modes (each disables only the new tools, Renardo keeps working):
+            * Module import failed (e.g. missing package)         → log + return
+            * MINIMAX_API_KEY not set in env                      → log + skip gen tools
+            * /data volume not writable (GeneratedMusicLibrary)   → log + skip lib tools
+        """
+        if not _MINIMAX_MUSIC_AVAILABLE:
+            self.get_logger().warning(
+                f"⚠️ MiniMax music tools disabled: import failed "
+                f"({_MINIMAX_MUSIC_IMPORT_ERROR})"
+            )
+            return
+
+        # Type-narrow for Pyright: _MINIMAX_MUSIC_AVAILABLE gates the rest.
+        assert MinimaxMusicClient is not None
+        assert GeneratedMusicLibrary is not None
+        assert GenerateMusicTool is not None
+        assert GenListLibraryTool is not None
+        assert GenSearchLibraryTool is not None
+        assert GenSaveToLibraryTool is not None
+        assert GenPlayFromLibraryTool is not None
+        assert GenDeleteFromLibraryTool is not None
+        assert GenGetTrackInfoTool is not None
+
+        # Library — initialised first; required by ALL gen_* tools.
+        try:
+            music_library = GeneratedMusicLibrary()
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ MiniMax music library disabled: init failed ({exc}). "
+                "generate_music / gen_* tools will NOT be registered."
+            )
+            return
+        self._generated_music_library = music_library
+        self.get_logger().info(
+            f"🎼 Generated music library: {music_library.count} трек(ов) "
+            f"в {music_library.root_dir}"
+        )
+
+        # Register library-only tools (they don't need the API client).
+        self.registry.register(GenListLibraryTool(self, music_library))
+        self.registry.register(GenSearchLibraryTool(self, music_library))
+        self.registry.register(GenSaveToLibraryTool(self, music_library))
+        self.registry.register(GenDeleteFromLibraryTool(self, music_library))
+        self.registry.register(GenGetTrackInfoTool(self, music_library))
+        # play tool is registered even without client — uses library only
+        self.registry.register(GenPlayFromLibraryTool(self, music_library))
+
+        # Client — needed only by generate_music.
+        try:
+            music_client = MinimaxMusicClient()
+        except Exception as exc:  # noqa: BLE001 — config errors are expected
+            self.get_logger().warning(
+                f"⚠️ MinimaxMusicClient init failed ({exc}). "
+                "generate_music tool NOT registered, but gen_* tools still "
+                "work (можно читать/искать/проигрывать уже сохранённые треки)."
+            )
+            return
+
+        self._minimax_music_client = music_client
+        self.registry.register(GenerateMusicTool(self, music_client, music_library))
+        self.get_logger().info(
+            f"🎼 generate_music enabled: endpoint={music_client.endpoint}, "
+            f"model={music_client.default_model}"
+        )
 
     def _init_voice_memory(self) -> None:
         """Инициализация VoiceMemory (долгосрочная память). Не падает при ошибках."""

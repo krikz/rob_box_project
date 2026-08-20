@@ -2,18 +2,20 @@
 
 | Поле           | Значение                                                                                                                     |
 |----------------|------------------------------------------------------------------------------------------------------------------------------|
-| Статус         | **Accepted** (фиксация post-factum — канонический микшер приземлился в PR #1093, коммит `9082e83d`)                         |
-| Дата           | 2026-08-10                                                                                                                   |
+| Статус         | **Superseded** (issue #1117 round-2; см. ADR-0013 ниже) — round-1 канонический микшер приземлился в PR #1093, коммит `9082e83d`, НО 11.08 показал ошибочность карты каналов |
+| Дата           | 2026-08-10 (superseded 2026-08-11)                                                                                            |
 | Автор          | techwriter (Hermes Agent)                                                                                                    |
 | Kanban         | `t_523a1e60` (документация), `t_4a87b421` (mono-даунмикс, родитель, ✅ done), `t_89eaf282` (regression/e2e, в процессе)      |
 | Контекст       | Issue [#1076](https://github.com/krikz/rob_box_project/issues/1076) — e2e-прогоны дают `yandex:empty` на грязном STT-сигнале |
-| Суперсет       | Отменяет «минимальный фикс» `mix_channels=[0,1,2,3]` (PR #1079, откачен в `826fc128`); **закрепляет `mix_channels=[0,1,2,3,4,5]`** (PR #1093, A/B-победитель) |
+| Суперсет       | См. **ADR-0013** (round-2): правильная карта каналов — Ch1 DSP-processed ASR, канонический микшер = `mix_channels=[0]` + HPFONOFF=1 |
 | Предшественники | [ADR-0001](0001-harness-architecture.md) (харнесс — context), `HARDWARE.md` §3.4 (ReSpeaker) |
 | Связанные       | `src/rob_box_voice/rob_box_voice/audio_node.py` (параметр `mix_channels`), `src/rob_box_voice/config/audio_node.yaml`, `docs/architecture/HARDWARE.md`, `docs/architecture/ros2-audio-contract-spec.md` |
-| Реализация      | PR [#1093](https://github.com/krikz/rob_box_project/pull/1093) (`9082e83d`) — `mix_channels=[0,1,2,3,4,5]`, новый файл `docs/reports/RESPEAKER_6CH_AEC_YANDEX_STT_1076.md` (60 строк, на стороне PR) |
-| Ветка           | PR-1093 → `develop` (после e2e-вердикта)                                                                                     |
+| Реализация      | PR [#1093](https://github.com/krikz/rob_box_project/pull/1093) (`9082e83d`) — `mix_channels=[0,1,2,3,4,5]`, новый файл `docs/reports/RESPEAKER_6CH_AEC_YANDEX_STT_1076.md` (60 строк, на стороне PR). **Round-2 supersede:** PR (#1123) — `mix_channels=[0]` + HPFONOFF=1 |
+| Ветка           | PR-1093 → `develop` (после e2e-вердикта). Round-2 supersede PR → `develop` |
 
-> **Замечание для ревьюера.** Этот ADR закрывает документационный пробел, оставшийся после ретроспективы 09.08: код фикса в `audio_node.py` уже написан (PR #1093), unit-тесты добавлены (57 passed в `test_audio_node_echo.py`), но **README контракта, объясняющего новому разработчику «почему ВСЕ 6 каналов, а не только микрофоны»**, не существует. Task body дочерней карточки `t_523a1e60` описывал «минимальный фикс» (исключить Ch5-6) — это было **первое, откаченное решение**. Канонический фикс — противоположный.
+> ⚠️ **Superseded (2026-08-11)**: См. ADR-0013 и issue #1117 round-2. A/B-тест round-1 был проведён на ошибочной гипотезе «Ch5-6 = AEC playback reference с чистой фразой». Round-2 (с реальным datasheet ReSpeaker Mic Array v2.0) показал: **Ch1 (1-индекс) = DSP-processed ASR** (AEC + beamforming + NS + AGC на XVF-3000), **Ch2-5 = сырые микрофоны**, **Ch6 = merged playback**. Правильный микшер = только Ch1 (= индекс 0) + аппаратная конфигурация HPFONOFF=1 (70 Hz, не 180 Hz default firmware) — иначе тихое «Р» в «Робот» режется и wake word теряется в STT.
+
+> **Замечание для ревьюера.** Этот ADR закрывает документационный пробел, оставшийся после ретроспективы 09.08: код фикса в `audio_node.py` уже написан (PR #1093), unit-тесты добавлены (57 passed в `test_audio_node_echo.py`), но **README контракта, объясняющего новому разработчику «почему ВСЕ 6 каналов, а не только микрофоны»**, не существует. Task body дочерней карточки `t_523a1e60` описывал «минимальный фикс» (исключить Ch5-6) — это было **первое, откаченное решение**. **Round-2 supersede:** правильное решение — брать только Ch1 (DSP-processed), и это именно round-2 фикс.
 
 ---
 

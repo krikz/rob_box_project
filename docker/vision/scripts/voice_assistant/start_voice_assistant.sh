@@ -121,12 +121,18 @@ echo "=========================================="
 
 # Запуск через headless launch file (без animation_player_node)
 # Animation player запускается отдельно на Main Pi
-if [ -f /config/voice_assistant/voice_assistant.yaml ]; then
-    echo "Используется конфигурация: /config/voice_assistant/voice_assistant.yaml"
+# Issue #1004 fix (ADR-0004): launch грузит per-node YAML
+# (audio_node.yaml, tts_node.yaml, ...) из config_dir. Операторские
+# конфиги лежат в /config/voice_assistant (монтируется из
+# docker/vision/config/voice_assistant/) — правки применяются при
+# рестарте контейнера. Монолитного voice_assistant.yaml больше нет:
+# вложенные <node>: секции создавали dotted-имена, которые ноды не читали.
+if [ -f /config/voice_assistant/tts_node.yaml ]; then
+    echo "Используется конфигурация: /config/voice_assistant/<node>.yaml (per-node, issue #1004)"
     echo "Используется headless launch (без animation_player_node)"
     exec ros2 launch /config/voice_assistant/voice_assistant_headless.launch.py \
-        config_file:=/config/voice_assistant/voice_assistant.yaml
+        config_dir:=/config/voice_assistant
 else
-    echo "Используется конфигурация по умолчанию"
+    echo "Используется конфигурация по умолчанию (per-node YAML из образа)"
     exec ros2 launch /config/voice_assistant/voice_assistant_headless.launch.py
 fi

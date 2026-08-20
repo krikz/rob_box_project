@@ -66,6 +66,10 @@
   # Создать PR: feature/autonomous-navigation → develop
   ```
 
+> **⚠️ Ограничения (ретро PR #876, ADR-0013):**
+> - **Feature-ветки длиннее 7 дней должны быть разбиты** (или синхронизированы rebase'ем на develop). «Мёртвая» ветка без содержательных коммитов >7 дней — кандидат на закрытие.
+> - **PR > 50 коммитов ИЛИ > 3000 строк** запрещён без явной метки `big-bang-override` (метку ставит товарищ Шифу). Большие изменения портируйте инкрементально — компонентами, каждый со своим PR и e2e-проверкой.
+
 #### `fix/*` - Исправления
 - **Создаётся из:** `develop`
 - **Мержится в:** `develop`
@@ -111,6 +115,15 @@
   # Создать PR: hotfix/vesc-communication-fix → main
   # После merge, также merge в develop
   ```
+
+#### `z-architect/*` - Proposal-ветки архитектора (ретро 15.08 t_6024f414)
+- **Создаётся из:** `develop`
+- **Мержится в:** `develop`
+- **Сборка Docker:** ❌ Нет
+- **Именование:** `z-architect/<proposal-slug>` (БЕЗ номера issue и БЕЗ `t_<card>`), например `z-architect/voice-selection-proposal`
+- **Жизненный цикл:** proposal-ветка — долгоживущая и может пережить несколько merge (#1247 → #1254 → #1255). Новые коммиты в неё ПОСЛЕ merge — легальны (это продолжение proposal), merge-gate НЕ блокирует такие PR и ставит `needs-review` автоматически.
+- **⚠️ После финального merge proposal-ветка закрывается/архивируется** (remote-ветка удаляется, как и обычная feature). Если proposal нужно продолжить — создаётся НОВАЯ ветка от свежего `origin/develop` (например `z-architect/voice-selection-proposal-v2`). Не держим «вечные» proposal-ветки: раз PR не открыт неделями, ветка — кандидат на удаление.
+- **НЕ путать с:** ретро-ветками `z-architect/t_<card>-<slug>` (одноразовые, под карточку) и issue-ветками `z-architect/<issue>-<slug>`. Обе живут ровно до merge своего PR и удаляются.
 
 ## 🔄 Workflow разработки
 
@@ -160,6 +173,53 @@ git push origin feature/my-awesome-feature
 ### 3. Merge и автоматическая сборка
 - После merge в `develop` → автоматическая сборка образов с тегом `dev`
 - После merge в `main` → автоматическая сборка образов с тегом `latest`
+
+## 🛡️ GATE-2: stale-candidate (ADR-0022 §4.2)
+
+Двушаговая автозакрывалка для OPEN issues без process-меток
+(`hermes`, `needs-e2e`, `e2e-done`, `e2e:rejected`, `no-e2e-required`).
+
+**Контракт (см. `scripts/agent_flow/agent-flow-unlabeled-sweep.sh` + `docs/adr/0022-process-e2e-done-gates.md`):**
+
+1. Tick T0 — issue без process-меток, `age >= 24h` → ставим `stale-candidate` + dedup-комментарий, **НЕ закрываем**.
+2. Tick T0 + 24h — `stale-candidate` всё ещё висит И **нет user-reopen после метки** → close (reason=`not_planned`), снимаем `stale-candidate`.
+3. **User-reopen после метки** → снимаем `stale-candidate` автоматически, возвращаем issue в OPEN без меток (только ре-триаж подхватит), **НЕ закрываем**.
+
+**Что НЕ делать воркерам:**
+- НЕ ставить `gh issue close` руками на issues с `stale-candidate` — пусть sweep решит (это race-condition R4 из ADR-0022, см. issue #1363).
+- НЕ трогать `stale-candidate` руками — скрипт снимает её через timeline-API cross-check (`reopen_at > stale_labeled_at`).
+- НЕ закрывать issues с `e2e-done` через `agent-flow-unlabeled-sweep.sh` — этот скрипт их skip'ает (process-метка), ответственность — `agent-flow-merge-gate.sh`.
+
+**Идемпотентность:** sweep использует 6h dedup-окно для комментариев и state-фильтр для issues. Повторный тик в ту же минуту не дублирует label/comment.
+
+**Acceptance contract (полностью — в ADR-0022 §7):**
+- `## e2e` блок в issue с `acceptance_json` — обязателен для `e2e-done` (GATE-1).
+- Без `acceptance_json` или сценарного файла `e2e-done` НЕ ставится, остаётся `needs-e2e`.
+
+## 🛑 Guard: явный `needs-e2e` override при merged PR (issue #1448, ретро 19.08 t_b3691e1b)
+
+Если Шифу **вручную** возвращает issue в ротацию (ставит `needs-e2e` после
+того, как e2e-process уже повесил `e2e-done` от merged-PR — обычно потому
+что на роботе фича не работает, а формально всё «готово»), `e2e-process`
+**не должен** автоматически возвращать `e2e-done` при следующем тике,
+иначе цикл `needs-e2e → e2e-done → needs-e2e → …` бесконечный.
+
+**Контракт (`scripts/agent_flow/agent-flow-e2e-process.sh`, блок выбора `label_action`):**
+
+| `verdict` | `fail_kind` | `needs-e2e` на issue? | Результат |
+|-----------|-------------|------------------------|-----------|
+| `success` | любой       | любой                  | `add e2e-done` + `remove needs-e2e` (PASS override) |
+| ≠ success | `merged`    | нет                    | `add e2e-done` + `remove needs-e2e` (ретро 10.08 t_9caf5d52) |
+| ≠ success | `merged`    | **да**                 | `add e2e:rejected` + `remove needs-e2e` (**merged-override**, фикс #1448) |
+| ≠ success | `infra`     | любой                  | `add e2e:infra-fail`, `needs-e2e` сохраняется |
+| ≠ success | `feature`   | любой                  | `add e2e:rejected` + `remove needs-e2e` (старое поведение) |
+
+**Что НЕ делать воркерам:**
+- НЕ ставить `e2e-done` руками на `merged-override` issue (`e2e:rejected` + без `needs-e2e`).
+- НЕ игнорировать `e2e:rejected` — это значит, что override Шифу не сработал,
+  Шифу сам решит: close, follow-up PR + повторный `needs-e2e`, или игнор.
+
+**Live-проверка:** см. issue #1448 acceptance C.
 
 ### 4. Подготовка релиза
 ```bash
@@ -285,6 +345,29 @@ docker-compose up -d
 - [ ] Коммит-сообщение описывает изменения
 - [ ] Нет конфликтов с целевой веткой
 
+### 🔁 ROS-параметры нод: без дублей `declare_parameter` (issue #976)
+
+**Правило (ретро 04.08, issue #976):** перед коммитом изменений в любой
+ROS-ноде (`*_node.py`) убедись, что каждый параметр объявлен **ровно один
+раз**. Дубликат `declare_parameter` для одного и того же имени валит ноду на
+старте:
+
+```
+rclpy.exceptions.ParameterAlreadyDeclaredException:
+    ('Parameter(s) already declared', ['chunk_max_chars_yandex'])
+```
+
+Проверка перед `git push`:
+
+```bash
+grep -n 'declare_parameter' src/rob_box_voice/rob_box_voice/tts_node.py \
+  | sort | uniq -c | sort -rn
+```
+
+Каждое имя параметра должно встречаться с счётчиком `1`. Если видишь `2` —
+удали дубль (в `__init__` ноды может остаться старый блок после merge
+параллельных веток, см. `test_no_duplicate_declare_parameter.py`).
+
 ## 📝 Стиль коммит-сообщений
 
 Используем [Conventional Commits](https://www.conventionalcommits.org/):
@@ -333,6 +416,64 @@ Added ESP32 sensor hub and ReSpeaker details.
 
 chore(docker): update base images to latest versions
 ```
+
+## 🐉 Культура честности (наказ товарища Шифу, 18.08.2026)
+
+> Формализация принципа «昂步挺胸大家做栋梁» (строка 14) и ADR-0018.
+> Читается в паре с `AGENTS.md` (короткий манифест) и `docs/adr/0018-agent-honesty-culture.md` (обоснование).
+
+### Принцип: «Честный FAIL лучше красивого PASS»
+
+Никогда не приукрашивай результат.
+
+- Если фикс не доказан — issue остаётся OPEN.
+- Если e2e не прогонял — НЕ ставь метку `e2e-done`. Если прогонял — приложи output.
+- Если CI красный — НЕ пиши «CI зелёный» в надежде, что «вроде должно работать».
+- Если юзер просит «сделай красиво» — не подменяй «честно» на «красиво».
+
+### «Кто соврал Шифу — тот выбыл из школы»
+
+Товарищ Шифу (владелец репо) — финальный арбитр. Враньё карается:
+
+- Закрытие issue без доказательства фикса → откат метки, переоткрытие.
+- «Прогон прошёл» без raw-вывода → откат, ручная проверка Шифу.
+- Ручная `e2e-done` без настоящего e2e → откат.
+- Любые «зелёные галочки» без evidence (логи, ссылки, дампы) → re-triag, переписать.
+
+Ошибки допустимы, враньё — нет.
+
+### Raw-вывод обязателен
+
+В карточках kanban, комментариях, PR-описаниях **ВСЕГДА** прикладывай:
+
+- `pytest -v` (тесты) — полный вывод, не «тесты прошли».
+- `gh run view <run_id>` (CI) — конкретный run_id + ссылка, не «CI зелёный».
+- `docker logs <container>` (робот) — последние 30-50 строк лога, не «робот ответил».
+- `sqlite3 ... .dump` или SQL-запрос (БД) — выборка, не «БД ок».
+- `git log --stat` (изменения) — `+N -M file:line`, не «поправил».
+
+Если ты не можешь приложить raw — ты не можешь сказать «сделано».
+
+### Обращения (формальная этика)
+
+- Владелец: **товарищ Шифу** (НЕ «юзер», НЕ «хозяин»).
+- Старший воркер: **шисюн** (师兄).
+- Младший воркер: **шиди** (师弟).
+
+### Авто-проверка (ADR-0018, 18.08.2026)
+
+`scripts/agent_flow/validate_honesty.sh` сканирует PR body и комментарии
+на голословные claim-маркеры (`проверил`, `работает`, `PASS`, `✅`, `done`,
+`fixed`, `closes #N`) и проверяет наличие raw-evidence. Warning (не блокер)
+выводится в stderr и лог merge-gate. **Воркеры прогоняют локально до
+`kanban complete`**. Тест: `bash scripts/agent_flow/tests/test_validate_honesty.sh`.
+
+### Где это уже записано
+
+- `AGENTS.md` (корень) — короткий манифест для AI-агентов.
+- `.cursorrules` (корень) — указатель для Cursor / VSCode агентов.
+- `docs/adr/0018-agent-honesty-culture.md` — обоснование, trade-offs.
+- `scripts/agent_flow/validate_honesty.sh` + `tests/test_validate_honesty.sh` — tooling.
 
 ## 🔒 Защита веток
 

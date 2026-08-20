@@ -45,6 +45,7 @@ under ``memory/sqlite_voice.py`` and is wired in via the registry.
 from __future__ import annotations
 
 import abc
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
@@ -145,6 +146,21 @@ class MemoryStore(abc.ABC):
         top_k: int = 5,
     ) -> list[Fact]:
         """Return up to ``top_k`` facts matching ``query``."""
+
+    async def list_facts(
+        self,
+        scope: str,
+        *,
+        limit: int = 50,
+    ) -> list[Fact]:
+        """Return up to ``limit`` facts stored under ``scope`` (newest first).
+
+        Default implementation falls back to :meth:`search_facts` with a
+        broad query; concrete stores override it with a direct scan so the
+        LLM context can load ALL speaker facts (issue #1077) without a
+        query.
+        """
+        return await self.search_facts(scope, query="", top_k=limit)
 
     # ── Waypoints (global navigation memory) ─────────────────────────
 
@@ -318,6 +334,18 @@ class InMemoryStore(MemoryStore):
         scored.sort(key=lambda pair: (-pair[0], pair[1].key))
         return [fact for _, fact in scored[:top_k]]
 
+    async def list_facts(
+        self,
+        scope: str,
+        *,
+        limit: int = 50,
+    ) -> list[Fact]:
+        """Return up to ``limit`` facts stored under ``scope`` (newest first)."""
+        if limit <= 0:
+            raise ValueError(f"limit must be positive, got {limit}")
+        bucket = self._facts.get(scope, [])
+        return list(reversed(bucket[-limit:]))
+
     # ── Waypoints ────────────────────────────────────────────────
 
     async def save_waypoint(
@@ -430,6 +458,89 @@ class InMemoryStore(MemoryStore):
         return list(self._turns.get(scope, ()))
 
 
+# ---------------------------------------------------------------------------
+# Speaker profile helpers (issue #1077)
+# ---------------------------------------------------------------------------
+#
+# Профиль спикера — это обычный факт с ключом ``profile`` в скоупе
+# ``speaker:<tag>``. Отдельной таблицы не нужно: ``save_fact``/``search_facts``
+# уже умеют изолировать данные по scope (ADR-0001 §2.4.3). Хелперы ниже —
+# просто удобная обёртка над существующими методами MemoryStore, чтобы
+# dialogue_node не дублировал логику «прочитать/создать/обновить профиль».
+
+SPEAKER_SCOPE_PREFIX = "speaker:"
+SPEAKER_PROFILE_KEY = "profile"
+
+
+def speaker_scope(tag: str) -> str:
+    """Scope-ключ памяти для спикера с Yandex ``speaker_tag``."""
+    return f"{SPEAKER_SCOPE_PREFIX}{tag}"
+
+
+async def get_speaker_profile(store: MemoryStore, tag: str) -> dict | None:
+    """Вернуть dict-профиль спикера (или ``None``, если профиля нет)."""
+    scope = speaker_scope(tag)
+    facts = await store.search_facts(scope, query="profile", top_k=10)
+    for fact in facts:
+        if fact.key == SPEAKER_PROFILE_KEY and isinstance(fact.value, dict):
+            return dict(fact.value)
+    return None
+
+
+async def ensure_speaker_profile(
+    store: MemoryStore,
+    tag: str,
+    *,
+    now: float | None = None,
+) -> dict:
+    """Создать профиль спикера, если его ещё нет; вернуть актуальный dict.
+
+    Профиль: ``{first_seen, last_seen, dialog_count}`` (плюс позже — имя,
+    факты через обычный ``save_fact`` в том же scope).
+    """
+    existing = await get_speaker_profile(store, tag)
+    if existing is not None:
+        return existing
+    ts = now if now is not None else time.time()
+    profile = {"first_seen": ts, "last_seen": ts, "dialog_count": 0}
+    await store.save_fact(
+        speaker_scope(tag),
+        Fact(
+            key=SPEAKER_PROFILE_KEY,
+            value=profile,
+            tags=("speaker", "profile"),
+        ),
+    )
+    return profile
+
+
+async def touch_speaker(
+    store: MemoryStore,
+    tag: str,
+    *,
+    now: float | None = None,
+) -> dict:
+    """Обновить ``last_seen``/``dialog_count`` спикера (создаёт при первом).
+
+    Вызывается на каждый подтверждённый ход спикера. Возвращает
+    обновлённый профиль.
+    """
+    profile = await ensure_speaker_profile(store, tag, now=now)
+    ts = now if now is not None else time.time()
+    profile = dict(profile)
+    profile["last_seen"] = ts
+    profile["dialog_count"] = int(profile.get("dialog_count", 0)) + 1
+    await store.save_fact(
+        speaker_scope(tag),
+        Fact(
+            key=SPEAKER_PROFILE_KEY,
+            value=profile,
+            tags=("speaker", "profile"),
+        ),
+    )
+    return profile
+
+
 __all__ = [
     "Turn",
     "Fact",
@@ -437,4 +548,10 @@ __all__ = [
     "FAQItem",
     "MemoryStore",
     "InMemoryStore",
+    "SPEAKER_SCOPE_PREFIX",
+    "SPEAKER_PROFILE_KEY",
+    "speaker_scope",
+    "get_speaker_profile",
+    "ensure_speaker_profile",
+    "touch_speaker",
 ]

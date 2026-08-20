@@ -72,9 +72,10 @@ curl http://localhost:5000/v2/krikz/rob_box/tags/list | jq
 # Загрузка образа в registry
 ./scripts/push_to_local_registry.sh ghcr.io/krikz/rob_box:oak-d-humble-latest
 
-# Очистка registry
-./scripts/cleanup_registry.sh --dry-run  # Просмотр
-./scripts/cleanup_registry.sh --all      # Удаление всех образов
+# Очистка registry (оставить 5 последних версий каждого сервиса)
+./scripts/cleanup_registry.sh --keep 5 --dry-run  # Просмотр (ничего не удаляет)
+./scripts/cleanup_registry.sh --keep 5            # Удалить старые версии + GC
+./scripts/cleanup_registry.sh --all               # Удалить ВСЕ образы (осторожно!)
 ```
 
 ### Работа с APT Cache
@@ -271,13 +272,42 @@ ssh ros2@10.1.1.21 'docker ps'
 docker system prune -a --volumes
 # Освободится: образы, контейнеры, volumes
 
-# Очистка registry (старые образы)
+# Очистка registry: оставить последние 5 версий каждого сервиса
+./scripts/cleanup_registry.sh --keep 5 --dry-run  # Просмотр (ничего не удаляет)
+./scripts/cleanup_registry.sh --keep 5            # Удалить старые версии + GC
+
+# Полный сброс registry (удаляет ВСЕ теги — используйте осторожно!)
 ./scripts/cleanup_registry.sh --all
 
 # Очистка APT cache (если нужно много места)
 docker exec build-apt-cache rm -rf /var/cache/apt-cacher-ng/*
 # Пакеты будут закэшированы заново при следующей сборке
 ```
+
+### Автоочистка registry (cron)
+
+Чтобы registry не забивал диск (bind-mount `data/registry` не чистится
+`docker prune`), на build machine установлен cron:
+
+```bash
+# Раз в сутки в 04:00 оставляет 5 последних версий каждого сервис-варианта:
+0 4 * * * /home/ros2/rob_box_project/docker/build/scripts/cleanup_registry.sh --keep 5 >> /tmp/cleanup_registry.log 2>&1
+```
+
+- **Как это работает**: теги вида `voice-assistant-humble-dev-abc1234` группируются
+  по сервис-варианту (`voice-assistant-humble-dev`), внутри группы сортируются по
+  времени создания образа, удаляются все, кроме последних N.
+- **Что НЕ удаляется**: rolling-теги без sha-суффикса — `dev`/`latest`/`local`/
+  `test` и полные имена (`voice-assistant-humble-dev`) — они нужны для деплоя.
+- **Установка cron** автоматически выполняется в `./scripts/setup.sh` (идемпотентно).
+  Вручную: `./scripts/setup.sh` или команда crontab из примера выше.
+- **Проверить**:
+  ```bash
+  crontab -l | grep cleanup_registry
+  ./scripts/cleanup_registry.sh --keep 5 --dry-run   # что удалилось бы
+  tail -50 /tmp/cleanup_registry.log                 # лог последнего прогона
+  du -sh data/registry                               # размер registry
+  ```
 
 ---
 

@@ -117,6 +117,19 @@ if [ ! -z "$UNHEALTHY" ]; then
     echo "📖 See README.md Troubleshooting section for solutions"
 fi
 
+# Install registry auto-cleanup cron (issue #1226): --keep 5 daily at 04:00
+echo ""
+echo "🧹 Installing registry auto-cleanup cron (cleanup_registry.sh --keep 5 @ 04:00)..."
+CRON_LINE="0 4 * * * $BUILD_DIR/scripts/cleanup_registry.sh --keep 5 >> /tmp/cleanup_registry.log 2>&1"
+if command -v crontab > /dev/null 2>&1; then
+    ( crontab -l 2>/dev/null | grep -v "cleanup_registry.sh" ; echo "$CRON_LINE" ) | crontab -
+    echo "   ✅ Cron installed: $CRON_LINE"
+    echo "   Current crontab:"
+    crontab -l 2>/dev/null | grep "cleanup_registry" | sed 's/^/     /'
+else
+    echo "   ⚠️  crontab not available — skip (install cronie/vixie-cron and run manually)"
+fi
+
 # Load .env for IP address
 source "$BUILD_DIR/.env"
 

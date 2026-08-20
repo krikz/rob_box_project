@@ -94,18 +94,6 @@ class Skill:
         raise NotImplementedError
 
 
-class VoiceSettingsSkill(Skill):
-    """Adjust TTS voice parameters (speed, pitch, emotion)."""
-
-    name = "voice_settings"
-    description = "Изменяет настройки голоса: скорость, высоту, эмоцию."
-
-    def execute(self, text: str, state: DialogState) -> str:
-        _ = text
-        _ = state
-        return "Настройки голоса не изменены (заглушка)."
-
-
 class DJPlaylistSkill(Skill):
     """Control music playback via the DJ subsystem."""
 
@@ -276,9 +264,10 @@ class DialogHarness(Harness[DialogState]):
             silence_timeout=getattr(self.config, "silence_timeout", 300.0),
         )
 
-        # Skill registry — the 3 skills from the plan
+        # Skill registry — the 2 remaining skills (issue #1229: voice_settings
+        # stub removed — LLM must not call it; voice selection goes through
+        # set_voice / speak_text(voice=)).
         self._skills = SkillRegistry([
-            VoiceSettingsSkill(),
             DJPlaylistSkill(),
             MappingSkill(),
         ])

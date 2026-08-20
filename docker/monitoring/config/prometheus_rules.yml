@@ -1,0 +1,49 @@
+# Prometheus alert rules для Rob Box (SL-2, ADR-0017)
+# Подключаются через rule_files в prometheus.yml
+#
+# Метрики cAdvisor (docker_only, housekeeping 30s):
+#   container_last_seen{name="<container_name>", job="cadvisor-<host>"}
+#     — unix timestamp последнего наблюдения контейнера.
+#   Если контейнер жив — метрика обновляется каждые ~30-45с.
+#   Если контейнер упал (process dead / OOM / удалён) — last_seen
+#   перестаёт обновляться (или серия пропадает полностью).
+
+groups:
+  - name: zenoh-router
+    rules:
+      # Zenoh Router Main Pi (10.1.1.10:7447) — SPOF всей ROS2-связности
+      # (ADR-0017, issue #835 SL-2). Все ноды Main Pi и Vision Pi идут
+      # через него; облако теряет робота при его падении.
+      - alert: ZenohRouterMainDown
+        expr: |
+          (time() - container_last_seen{name="zenoh-router", job="cadvisor-main"} > 90)
+          or
+          absent(container_last_seen{name="zenoh-router", job="cadvisor-main"})
+        for: 2m
+        labels:
+          severity: critical
+          host: main-pi
+        annotations:
+          summary: "Zenoh router (Main Pi) недоступен"
+          description: >-
+            container_last_seen для zenoh-router (Main Pi) не обновляется
+            более 90с или метрика отсутствует. Робот потерял ROS2-связность
+            (SPOF, ADR-0017). Runbook: docs/adr/0017-zenoh-router-spof-redundancy.md
+
+      # Zenoh Router Vision Pi (10.1.1.11:7447) — локальный роутер нод Vision
+      - alert: ZenohRouterVisionDown
+        expr: |
+          (time() - container_last_seen{name="zenoh-router-vision", job="cadvisor-vision"} > 90)
+          or
+          absent(container_last_seen{name="zenoh-router-vision", job="cadvisor-vision"})
+        for: 2m
+        labels:
+          severity: warning
+          host: vision-pi
+        annotations:
+          summary: "Zenoh router (Vision Pi) недоступен"
+          description: >-
+            container_last_seen для zenoh-router-vision (Vision Pi) не
+            обновляется более 90с или метрика отсутствует. Ноды Vision Pi
+            потеряли локальную ROS2-связность. Runbook:
+            docs/adr/0017-zenoh-router-spof-redundancy.md

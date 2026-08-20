@@ -57,6 +57,22 @@ def node():
     n.dialogue_manager = MagicMock()
     n.dialogue_manager.state.value = "idle"
 
+    # speaker (for _build_dynamic_system_context)
+    import threading
+    n._speaker_lock = threading.Lock()
+    n._current_speaker = {}
+
+    # tts params (issue #1229 — actual provider / voice)
+    n._actual_tts_provider = None
+    n._actual_tts_voice = None
+    n._current_tts_voice = None
+    n._declared_params = {"tts_provider": "minimax"}
+
+    def _get_parameter(name):
+        return type("P", (), {"value": n._declared_params.get(name, "minimax")})()
+
+    n.get_parameter = _get_parameter
+
     return n
 
 
@@ -352,3 +368,111 @@ class TestVadCallback:
         node.vad_callback(self._make_msg(True))
         # Нет rising edge (уже было True), interrupt не трогаем
         assert node.interrupt_agent_loop is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  _on_tts_provider_state (issue #1229)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestOnTtsProviderState:
+    """tts_node публикует ФАКТИЧЕСКОГО провайдера (после фолбека minimax→yandex).
+
+    DialogueNode запоминает его и голос — LLM-контекст [TTS] строится по
+    реальному провайдеру, а не по номинальному из параметра tts_provider.
+    """
+
+    def _make_msg(self, data: str):
+        msg = MagicMock()
+        msg.data = data
+        return msg
+
+    def test_valid_payload_sets_actual_provider(self, node):
+        node._actual_tts_provider = None
+        node._actual_tts_voice = None
+        node._on_tts_provider_state(
+            self._make_msg(
+                '{"provider": "yandex", "voice": "zahar", "reason": "provider_dead"}'
+            )
+        )
+        assert node._actual_tts_provider == "yandex"
+        assert node._actual_tts_voice == "zahar"
+
+    def test_payload_without_voice_keeps_provider(self, node):
+        node._actual_tts_provider = None
+        node._actual_tts_voice = None
+        node._on_tts_provider_state(
+            self._make_msg('{"provider": "silero", "reason": "startup"}')
+        )
+        assert node._actual_tts_provider == "silero"
+        assert node._actual_tts_voice is None
+
+    def test_missing_provider_ignored(self, node):
+        node._actual_tts_provider = None
+        node._on_tts_provider_state(self._make_msg('{"voice": "anton"}'))
+        assert node._actual_tts_provider is None
+
+    def test_invalid_json_no_crash(self, node):
+        node._actual_tts_provider = "minimax"
+        node._on_tts_provider_state(self._make_msg("not-json"))
+        assert node._actual_tts_provider == "minimax"
+
+    def test_empty_data_no_crash(self, node):
+        node._actual_tts_provider = "minimax"
+        node._on_tts_provider_state(self._make_msg(""))
+        assert node._actual_tts_provider == "minimax"
+
+    def test_repeated_updates_overwrite(self, node):
+        node._actual_tts_provider = None
+        node._on_tts_provider_state(
+            self._make_msg('{"provider": "minimax", "reason": "synthesis_ok"}')
+        )
+        node._on_tts_provider_state(
+            self._make_msg('{"provider": "yandex", "voice": "anton", "reason": "provider_dead"}')
+        )
+        assert node._actual_tts_provider == "yandex"
+        assert node._actual_tts_voice == "anton"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  _build_dynamic_system_context — фактический провайдер в [TTS] (issue #1229)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestBuildDynamicSystemContextTtsProvider:
+    """LLM-контекст [TTS] строится по ФАКТИЧЕСКОМУ провайдеру.
+
+    tts_node публикует реального провайдера после фолбека (minimax→yandex);
+    dialogue_node должен показывать LLM голоса РЕАЛЬНОГО провайдера, а не
+    номинального из параметра tts_provider (иначе LLM выбирает minimax-голоса,
+    которых нет у yandex, и робот говорит тем же голосом).
+    """
+
+    def test_nominal_provider_without_state(self, node):
+        """Нет provider_state → параметр tts_provider (minimax)."""
+        ctx = node._build_dynamic_system_context()
+        assert "<tts_provider>minimax</tts_provider>" in ctx
+        assert "provider: minimax" in ctx
+
+    def test_actual_provider_overrides_param(self, node):
+        """Фолбек minimax→yandex: context показывает yandex + его голоса."""
+        node._actual_tts_provider = "yandex"
+        ctx = node._build_dynamic_system_context()
+        assert "<tts_provider>yandex</tts_provider>" in ctx
+        assert "provider: yandex" in ctx
+        # голоса РЕАЛЬНОГО провайдера (yandex), а не minimax
+        assert "anton" in ctx
+        assert "male-qn-qingse" not in ctx
+
+    def test_actual_voice_shown_in_context(self, node):
+        """tts_node сообщил фактический голос (anton после фолбека) — показываем."""
+        node._actual_tts_provider = "yandex"
+        node._actual_tts_voice = "zahar"
+        ctx = node._build_dynamic_system_context()
+        assert "current_voice: zahar" in ctx
+
+    def test_actual_provider_resets_to_param(self, node):
+        """Провайдер «ожил» (minimax снова работает) — context снова minimax."""
+        node._actual_tts_provider = "yandex"
+        node._build_dynamic_system_context()
+        node._actual_tts_provider = None
+        ctx = node._build_dynamic_system_context()
+        assert "provider: minimax" in ctx

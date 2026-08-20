@@ -310,6 +310,10 @@ class _TestableDialogueNode(DialogueNode):
         is_dj_auto: bool = False,
         was_idle: bool = False,
         is_babble_retry: bool = False,
+        raw_user_command: str | None = None,
+        speaker_tag: str | None = None,
+        speaker_duration_s: float = 0.0,
+        from_tg: bool = False,
     ) -> None:
         """Schedule the turn on the test loop directly.
 
@@ -335,7 +339,7 @@ class _TestableDialogueNode(DialogueNode):
                 "🎧 [issue 992 test] DJ auto-transition — skipping "
                 "new_dialogue music_cleanup"
             )
-        elif self._pending_music_cleanup:
+        elif self._pending_music_cleanup and was_idle:
             self._pending_music_cleanup = False
             self._publish_music_cleanup(reason="new_dialogue")
         self._run_task = self._test_loop.create_task(
@@ -343,6 +347,10 @@ class _TestableDialogueNode(DialogueNode):
                 user_input,
                 is_dj_auto=is_dj_auto,
                 is_babble_retry=is_babble_retry,
+                raw_user_command=raw_user_command,
+                speaker_tag=speaker_tag,
+                speaker_duration_s=speaker_duration_s,
+                from_tg=from_tg,
             ),
         )
 
@@ -363,7 +371,7 @@ class _TestableDialogueNode(DialogueNode):
         draining until no new task appears, otherwise the retry never
         actually runs in the test.
         """
-        for cycle in range(10):  # safety cap; 1 + MAX_DJ_AUTO_RETRIES is plenty
+        for cycle in range(10):  # safety cap; 1 + max_dj_retries (= 3) is plenty
             # Wait for a task to appear (e.g. ``_dispatch_turn`` races
             # with the previous run's finally-block cleanup).
             for _ in range(20):
@@ -524,11 +532,12 @@ class TestDialogueShell(unittest.TestCase):
         The first part of the wake-word sequence (IDLE → LISTENING) is
         covered by ``test_wake_word_detection_routes_to_listening``.
         Here we focus on the second half: once we're in LISTENING, a
-        follow-up STT message (no wake word needed) must drive
+        follow-up STT message (wake word still required by the
+        universal wake-word gate, issue #1101) must drive
         DIALOGUE and the LLM reply is published to the response topic.
         """
         # Pre-seed LISTENING via a synthetic WAKE_WORD transition so
-        # the next STT message skips the wake-word gate cleanly.
+        # the next STT message skips the IDLE wake-word transition.
         from rob_box_harness.core.dialogue_state_machine import (
             DialogueEvent as _DE,
         )
@@ -537,7 +546,7 @@ class TestDialogueShell(unittest.TestCase):
 
         # Script a deterministic LLM reply.
         self.llm.push("Готов к работе!")
-        self.node._on_stt(_make_string("как дела?"))
+        self.node._on_stt(_make_string("робок как дела?"))
         self._drive_turn()
         # Final state: DIALOGUE → DIALOGUE_END → IDLE
         self.assertEqual(_state_name(self.node), "IDLE")
@@ -570,7 +579,7 @@ class TestDialogueShell(unittest.TestCase):
         self.node._dsm.on_event(_DE.WAKE_WORD)
         self.llm.push("Готово")
 
-        self.node._on_stt(_make_string("как дела?"))
+        self.node._on_stt(_make_string("робок как дела?"))
         self._drive_turn()
 
         published_states = [p.data for p in self.node._state_pub.published]
@@ -602,7 +611,7 @@ class TestDialogueShell(unittest.TestCase):
         node = _TestableDialogueNode(llm=llm)
         try:
             node._dsm.on_event(_DE.WAKE_WORD)
-            node._on_stt(_make_string("как дела?"))
+            node._on_stt(_make_string("робок как дела?"))
             node.drive_one_turn()
 
             self.assertEqual(llm.call_count, 2)
@@ -612,21 +621,82 @@ class TestDialogueShell(unittest.TestCase):
         finally:
             node.close()
 
+    # ── Regression (issue #918): interrupted turn must still finalize ──
+    # A turn cancelled by barge-in / VAD interrupt / silence (or one
+    # that raised before the LLM) used to crash the finally block at
+    # ``result.tools_called`` (result=None) BEFORE the DIALOGUE_END
+    # transition and the state publish. The DSM stayed DIALOGUE, the
+    # /voice/dialogue/state topic stayed 'dialogue', and
+    # scenario_runner's wait_for_idle timed out (vad_interrupt_no_hang,
+    # rapid_messages_no_crash, response_is_valid_json).
+
+    def test_cancelled_turn_returns_to_idle_and_publishes(self):
+        """A barge-in-cancelled turn still returns the DSM to IDLE.
+
+        Also publishes the final state (issue #918).
+        """
+        import asyncio as _asyncio
+
+        class _NeverResolves:
+            def __await__(self):
+                fut = _asyncio.get_event_loop().create_future()
+                return fut.__await__()
+
+        async def _hanging_complete(*_a, **_kw):
+            self.llm.call_count += 1
+            return _NeverResolves()  # type: ignore[return-value]
+
+        original_complete = self.llm.complete
+        self.llm.complete = _hanging_complete  # type: ignore[assignment]
+        try:
+            self.node._on_stt(_make_string("робок первый запрос"))
+            # Simulate barge-in / VAD interrupt — cancel the in-flight
+            # turn without dispatching a replacement.
+            self.node._cancel_run("test barge-in")
+            self._drive_turn()
+            # No crash: the DSM must finalize to IDLE and publish it.
+            self.assertEqual(_state_name(self.node), "IDLE")
+            published_states = [p.data for p in self.node._state_pub.published]
+            self.assertEqual(published_states[-1], "IDLE")
+        finally:
+            self.llm.complete = original_complete  # type: ignore[assignment]
+
+    def test_errored_turn_returns_to_idle_and_publishes(self):
+        """A turn that raises before the LLM still returns the DSM to IDLE.
+
+        Also publishes the final state (issue #918).
+        """
+        original = self.node._build_dynamic_system_context
+
+        def _boom() -> str:
+            raise RuntimeError("test failure before LLM")
+
+        self.node._build_dynamic_system_context = _boom  # type: ignore[assignment]
+        try:
+            self.node._on_stt(_make_string("робок привет"))
+            self._drive_turn()
+            self.assertEqual(_state_name(self.node), "IDLE")
+            published_states = [p.data for p in self.node._state_pub.published]
+            self.assertEqual(published_states[-1], "IDLE")
+        finally:
+            self.node._build_dynamic_system_context = original  # type: ignore[assignment]
+
     # ── 3. Silence command → state SILENCED ──────────────────────────
 
     def test_silence_command_silences(self):
         """A silence command from STT transitions active state → SILENCED."""
-        # Drive LISTENING explicitly — the shell's wake-word-only STT
-        # is filtered by the empty-clean-text guard, so the DSM
-        # transition has to come via a direct WAKE_WORD event.
+        # Drive LISTENING explicitly — the shell's universal wake-word
+        # gate (issue #1101) requires the wake word in the STT text, so
+        # we seed the IDLE → LISTENING transition directly and inject a
+        # wake-word-prefixed silence command below.
         from rob_box_harness.core.dialogue_state_machine import (
             DialogueEvent as _DE,
         )
         self.node._dsm.on_event(_DE.WAKE_WORD)
         self.assertEqual(_state_name(self.node), "LISTENING")
-        # Now issue a silence command ("помолчи") — strip_wake_word
+        # Now issue a silence command ("робок помолчи") — strip_wake_word
         # leaves "помолчи" so is_silence_command() matches.
-        self.node._on_stt(_make_string("помолчи"))
+        self.node._on_stt(_make_string("робок помолчи"))
         self.assertEqual(_state_name(self.node), "SILENCED")
         # State publish path was driven
         published_states = [p.data for p in self.node._state_pub.published]
@@ -885,23 +955,44 @@ class TestShellImportSanity(unittest.TestCase):
 class TestLLMProviderWiring(unittest.TestCase):
     """Regression coverage for issue #925 provider routing."""
 
-    def test_deepseek_provider_uses_deepseek_endpoint_by_default(self):
-        """The legacy ``llm_provider`` config must never fall through to OpenAI."""
-        from unittest.mock import patch
+    def setUp(self):
+        # ``object.__new__(DialogueNode)`` не вызывает ``__init__`` —
+        # у ноды нет ни ``_logger``, ни ``_parameters``. Стабы ниже
+        # обеспечивают совместимость с локальным запуском pytest
+        # (без реального rclpy): в CI оба метода приходят из
+        # ``rclpy.node.Node``, так что эта защита не мешает.
+        from unittest.mock import MagicMock as _M
 
-        node = object.__new__(DialogueNode)
+        self._logger_stub = _M()
+
+    def _stub_node(self, values):
+        """Construct a DialogueNode shim with all rclpy hooks stubbed."""
 
         class _Param:
             def __init__(self, value):
                 self.value = value
 
-        values = {
-            "llm_provider": "deepseek",
-            "api_key": "test-key",
-            "base_url": "",
-            "model": "",
-        }
+        node = object.__new__(DialogueNode)
         node.get_parameter = lambda name: _Param(values.get(name))
+        node.get_parameters_by_prefix = lambda prefix: values
+        node.get_logger = lambda: self._logger_stub
+        return node
+
+    def test_deepseek_provider_uses_deepseek_endpoint_by_default(self):
+        """DeepSeek провайдер всегда использует свой well-known base_url (НЕ из YAML).
+
+        Issue #1089: YAML ``base_url: "https://api.minimax.io/v1"`` больше
+        не протекает в deepseek-провайдер — каждый провайдер жёстко
+        привязан к своему endpoint через модульные константы.
+        """
+        from unittest.mock import patch
+
+        from rob_box_voice.dialogue_node import DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_DEFAULT_MODEL
+
+        node = self._stub_node({
+            "llm_providers": "deepseek",
+            "api_key": "test-key",
+        })
 
         with patch(
             "rob_box_voice.dialogue_node.build_deepseek_provider"
@@ -912,39 +1003,137 @@ class TestLLMProviderWiring(unittest.TestCase):
 
         self.assertIs(provider, sentinel)
         factory.assert_called_once_with(
-            api_key="test-key",
-            base_url="https://api.deepseek.com",
-            model="deepseek-chat",
+            api_key=None,
+            base_url=DEEPSEEK_DEFAULT_BASE_URL,
+            model=DEEPSEEK_DEFAULT_MODEL,
         )
 
     def test_unknown_llm_provider_fails_before_any_client_is_built(self):
         """A typo must fail loudly instead of sending credentials to OpenAI."""
-        node = object.__new__(DialogueNode)
-
-        class _Param:
-            def __init__(self, value):
-                self.value = value
-
-        values = {
-            "llm_provider": "openai",
+        node = self._stub_node({
+            "llm_providers": "openai",
             "api_key": "test-key",
-            "base_url": "",
-            "model": "",
-        }
-        node.get_parameter = lambda name: _Param(values.get(name))
+        })
 
-        with self.assertRaisesRegex(ValueError, "llm_provider.*deepseek"):
+        with self.assertRaisesRegex(RuntimeError, "No LLM providers"):
             node._build_llm()
+
+    def test_minimax_init_failure_falls_back_to_deepseek_only(self):
+        """Issue #1089: если build_minimax_provider падает (нет ключа,
+        невалидный ключ, сетевой сбой при инициализации), _build_llm
+        должен graceful-пропустить MiniMax и вернуть deepseek как
+        единственного провайдера (без health-aware обёртки).
+
+        DeepSeek получает СВОЙ well-known base_url, а не MiniMax URL
+        из YAML (issue #1089 fix).
+        """
+        from unittest.mock import patch
+
+        from rob_box_harness.errors import ConfigError
+        from rob_box_voice.dialogue_node import DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_DEFAULT_MODEL
+
+        node = self._stub_node({
+            "llm_providers": "minimax,deepseek",
+            "api_key": "missing-key",
+            "health_cache_path": "",
+            "health_ttl_s": "",
+        })
+
+        with patch(
+            "rob_box_voice.dialogue_node.build_minimax_provider"
+        ) as mm_factory, patch(
+            "rob_box_voice.dialogue_node.build_deepseek_provider"
+        ) as ds_factory:
+            mm_factory.side_effect = ConfigError(
+                "missing api key",
+                section="llm.api_key",
+            )
+            sentinel = object()
+            ds_factory.return_value = sentinel
+
+            provider = node._build_llm()
+
+        # Один провайдер → без health-aware обёртки.
+        self.assertIs(provider, sentinel)
+        mm_factory.assert_called_once()
+        # DeepSeek использует СВОЙ base_url (НЕ minimax из YAML!).
+        ds_factory.assert_called_once_with(
+            api_key=None,
+            base_url=DEEPSEEK_DEFAULT_BASE_URL,
+            model=DEEPSEEK_DEFAULT_MODEL,
+        )
+
+    def test_minimax_init_generic_exception_also_falls_back_to_deepseek(self):
+        """Та же гарантия для неожиданных ошибок (не только ConfigError):
+        build_minimax_provider может упасть с ImportError/TimeoutError/
+        любой RuntimeError — _build_llm пропускает сломавшийся провайдер
+        и продолжает цепочку.
+        """
+        from unittest.mock import patch
+
+        node = self._stub_node({
+            "llm_providers": "minimax,deepseek",
+            "api_key": "any",
+            "health_cache_path": "",
+            "health_ttl_s": "",
+        })
+
+        with patch(
+            "rob_box_voice.dialogue_node.build_minimax_provider"
+        ) as mm_factory, patch(
+            "rob_box_voice.dialogue_node.build_deepseek_provider"
+        ) as ds_factory:
+            mm_factory.side_effect = RuntimeError("upstream SDK exploded")
+            sentinel = object()
+            ds_factory.return_value = sentinel
+
+            provider = node._build_llm()
+
+        # Один провайдер → без обёртки.
+        self.assertIs(provider, sentinel)
+        ds_factory.assert_called_once()
+
+    def test_minimax_init_success_still_wraps_in_health_aware_fallback(self):
+        """Зелёный путь: оба провайдера собираются → HealthAwareFallbackLLM
+        с цепочкой [minimax, deepseek]. Каждый со своим base_url.
+        """
+        from unittest.mock import patch
+
+        node = self._stub_node({
+            "llm_providers": "minimax,deepseek",
+            "api_key": "valid-key",
+            "health_cache_path": "",
+            "health_ttl_s": "",
+        })
+
+        with patch(
+            "rob_box_voice.dialogue_node.build_minimax_provider"
+        ) as mm_factory, patch(
+            "rob_box_voice.dialogue_node.build_deepseek_provider"
+        ) as ds_factory, patch(
+            "rob_box_harness.health.HealthAwareFallbackLLM"
+        ) as fb_cls:
+            mm_factory.return_value = "primary-sentinel"
+            ds_factory.return_value = "fb-sentinel"
+            fb_cls.return_value = "wrapper-sentinel"
+
+            provider = node._build_llm()
+
+        self.assertEqual(provider, "wrapper-sentinel")
+        mm_factory.assert_called_once()
+        ds_factory.assert_called_once()
+        fb_cls.assert_called_once()
 
     def test_both_voice_configs_route_dialogue_to_minimax(self):
         """Source and Docker configs expose the same dialogue_node params.
 
         Issue #1004 fix (ADR-0004): после разделения на per-node YAML,
-        dialogue_node параметры лежат в ``dialogue_node.yaml`` (src) или
-        ``docker/vision/config/voice_assistant/voice_assistant.yaml``
-        (docker — ещё не мигрирован, оставлен для оператора). Тест проверяет,
-        что оба файла выставляют одинаковые значения для ключевых LLM-параметров,
-        которые DialogueNode читает через ``get_parameter(...)`` без префикса.
+        dialogue_node параметры лежат в ``dialogue_node.yaml`` (src) и
+        ``docker/vision/config/voice_assistant/dialogue_node.yaml``
+        (docker — операторский конфиг, монтируется в /config/voice_assistant
+        и читается launch через config_dir). Тест проверяет, что оба файла
+        выставляют одинаковые значения для ключевых LLM-параметров, которые
+        DialogueNode читает через ``get_parameter(...)`` без префикса.
 
         С 2026-08-05 llm_provider переключён на MiniMax primary (issue #1004):
         https://github.com/krikz/rob_box_project/issues/1004
@@ -955,32 +1144,28 @@ class TestLLMProviderWiring(unittest.TestCase):
 
         repo_root = Path(__file__).resolve().parents[3]
         # После фикса #1004 dialogue_node параметры лежат в
-        # src/rob_box_voice/config/dialogue_node.yaml (новый формат —
-        # верхний ключ = имя ноды, НЕ /**/ros__parameters/dialogue_node/).
+        # <node>.yaml (новый формат — верхний ключ = имя ноды,
+        # НЕ /**/ros__parameters/dialogue_node/).
         paths = (
             repo_root / "src/rob_box_voice/config/dialogue_node.yaml",
-            repo_root / "docker/vision/config/voice_assistant/voice_assistant.yaml",
+            repo_root / "docker/vision/config/voice_assistant/dialogue_node.yaml",
         )
         expected = {
-            "llm_provider": "minimax",
-            "base_url": "https://api.minimax.io/v1",
-            "model": "MiniMax-M3",
+            "llm_providers": "minimax,deepseek",
         }
 
         for path in paths:
             with self.subTest(path=str(path)):
                 if not path.exists():
-                    # docker-конфиг пока не мигрирован — issue #1004 не покрывает
-                    # docker-версию YAML; skip чтобы CI оставался зелёным.
-                    self.skipTest(f"{path} not yet migrated (issue #1004 — src only)")
+                    self.skipTest(f"{path} not found")
                     continue
                 config = yaml.safe_load(path.read_text(encoding="utf-8"))
-                # Новый формат (src): top-level = "<node_name>" → ros__parameters.
-                # Старый формат (docker): /** / ros__parameters / dialogue_node.
-                if "/**" in config:
-                    dialogue = config["/**"]["ros__parameters"]["dialogue_node"]
-                else:
-                    dialogue = config["dialogue_node"]["ros__parameters"]
+                # Единый формат: top-level = "<node_name>" → ros__parameters.
+                self.assertNotIn(
+                    "/**", config,
+                    f"{path.name} всё ещё в старом формате /** (issue #1004)",
+                )
+                dialogue = config["dialogue_node"]["ros__parameters"]
                 for key, value in expected.items():
                     self.assertEqual(
                         dialogue.get(key), value,
