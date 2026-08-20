@@ -16,9 +16,7 @@
 #   LLM_MODEL=gemma3:1b    (лучше качество, 815MB)
 
 x-ros-env: &ros-env
-  ROS_DOMAIN_ID: "0"
   RMW_IMPLEMENTATION: rmw_zenoh_cpp
-  ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
   ROBOT_ID: "test-bot"
   ZENOH_SESSION_CONFIG_URI: /test-config/zenoh_test_session.json5
   RUST_LOG: zenoh=warn

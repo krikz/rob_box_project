@@ -5,21 +5,18 @@
 # - SERVICE_IMAGE_PREFIX: ghcr.io/krikz/rob_box
 
 services:
-  # Zenoh Router - центральный роутер для связи между Pi и облаком
+  # Zenoh Router — rmw_zenohd из ROS-образа (match версии zenoh с RMW).
+  # connect/listen задаются через ZENOH_CONFIG_OVERRIDE поверх дефолтного конфига rmw_zenoh.
   zenoh-router:
-    image: eclipse/zenoh:1.6.2
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:zenoh-router-${ROS_DISTRO:-lyrical}-${IMAGE_TAG:-local}
     container_name: zenoh-router
     network_mode: host
     environment:
       - RUST_LOG=zenoh=info
-      - ROBOT_ID=${ROBOT_ID}  # ID робота для namespace при публикации в облако
-    volumes:
-      - ./config:/config:ro
-      - ./scripts/zenoh-router:/scripts:ro
-    entrypoint: ["/bin/sh", "/scripts/start_zenoh_router.sh"]
+      - ZENOH_CONFIG_OVERRIDE=connect/endpoints=["tcp/zenoh.robbox.online:7447"];listen/endpoints=["tcp/10.1.1.10:7447","tcp/127.0.0.1:7447"]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f rmw_zenohd || exit 1"]
       interval: 5s
       timeout: 10s
       retries: 20
@@ -34,18 +31,15 @@ services:
     container_name: twist-mux
     network_mode: host
     environment:
-      - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - RUST_LOG=zenoh=info
-      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_CONFIG_OVERRIDE=namespace="robots/${ROBOT_ID}"
       - LD_LIBRARY_PATH=/opt/ros/lyrical/opt/zenoh_cpp_vendor/lib:/opt/ros/lyrical/lib/aarch64-linux-gnu:/opt/ros/lyrical/lib
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
       - ./scripts/twist_mux:/scripts:ro
-    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_twist_mux.sh"]
+    command: ["/scripts/start_twist_mux.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -65,19 +59,16 @@ services:
     container_name: robot-state-publisher
     network_mode: host
     environment:
-      - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - RUST_LOG=zenoh=info
-      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_CONFIG_OVERRIDE=namespace="robots/${ROBOT_ID}"
       - LD_LIBRARY_PATH=/opt/ros/lyrical/opt/zenoh_cpp_vendor/lib:/opt/ros/lyrical/lib/aarch64-linux-gnu:/opt/ros/lyrical/lib
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
       - ./scripts/robot_state_publisher:/scripts:ro
       - ../../src/rob_box_description:/workspace/src/rob_box_description:ro
-    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_robot_state_publisher.sh"]
+    command: ["/scripts/start_robot_state_publisher.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -90,15 +81,12 @@ services:
     container_name: rtabmap
     network_mode: host
     environment:
-      - ROS_DOMAIN_ID=0
       - QT_QPA_PLATFORM=offscreen
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10  # Подключаемся к локальному router
       - RUST_LOG=zenoh=info
-      # Zenoh configuration через JSON
-      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_CONFIG_OVERRIDE=namespace="robots/${ROBOT_ID}";qos/publication=[{key_exprs:["rt/rtabmap/**"],config:{congestion_control:"drop"}},{key_exprs:["rt/global_costmap/**"],config:{congestion_control:"drop"}}];transport/link/rx/buffer_size=16777216;transport/link/tx/queue/size/data_high=16;transport/link/tx/queue/size/data=16;transport/link/tx/queue/size/data_low=16;transport/link/tx/queue/size/background=8;transport/link/tx/queue/size/interactive_high=4;transport/link/tx/queue/size/interactive_low=4
       # КРИТИЧНО: Путь к библиотекам Zenoh (vendor устанавливает в нестандартный путь)
       - LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO:-lyrical}/opt/zenoh_cpp_vendor/lib:/opt/ros/${ROS_DISTRO:-lyrical}/lib/aarch64-linux-gnu:/opt/ros/${ROS_DISTRO:-lyrical}/lib
     volumes:
@@ -128,7 +116,6 @@ services:
     #   Main Pi: rtabmap ← /scan (LiDAR)
     #   OAK-D intentionally excluded from Main Pi mapping until TF/timestamp path is stable again.
     command:
-      - /ros_scripts/ros_with_namespace.sh
       - /scripts/start_rtabmap.sh
       - ros2
       - launch
@@ -182,22 +169,19 @@ services:
     network_mode: host
     privileged: true  # Для доступа к CAN интерфейсу
     environment:
-      - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - RUST_LOG=zenoh=info
-      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_CONFIG_OVERRIDE=namespace="robots/${ROBOT_ID}"
       - LD_LIBRARY_PATH=/opt/ros/lyrical/opt/zenoh_cpp_vendor/lib:/opt/ros/lyrical/lib/aarch64-linux-gnu:/opt/ros/lyrical/lib
       # CAN интерфейс (can0 или can1)
       - CAN_INTERFACE=can0
       - CONTROLLER_CONFIG=/config/controllers/controller_manager.yaml
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
       - ./scripts/ros2_control:/scripts:ro
       - /dev:/dev  # Доступ к CAN устройствам
-    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_ros2_control.sh"]
+    command: ["/scripts/start_ros2_control.sh"]
     depends_on:
       - zenoh-router
       - robot-state-publisher
@@ -222,19 +206,16 @@ services:
     devices:
       - /dev/ttyACM0:/dev/ttyACM0  # LSLIDAR N10 USB CDC ACM device
     environment:
-      - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
-      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ROBOT_ID=${ROBOT_ID}
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
-      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - ZENOH_CONFIG_OVERRIDE=namespace="robots/${ROBOT_ID}"
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
       - ./scripts/lslidar:/scripts:ro
       - /dev/shm:/dev/shm
-    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_lslidar.sh"]
+    command: ["/scripts/start_lslidar.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -248,13 +229,11 @@ services:
     container_name: perception
     network_mode: host
     environment:
-      - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
-      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_CONFIG_OVERRIDE=namespace="robots/${ROBOT_ID}"
       # Reflection parameters (v2.0 Event-Driven)
       - DIALOGUE_TIMEOUT=10.0  # секунды - тайм-аут диалога
       - URGENT_RESPONSE_TIMEOUT=2.0  # секунды - тайм-аут срочного ответа
@@ -268,13 +247,12 @@ services:
       - .env.secrets  # API keys: MIMO_API_KEY, DEEPSEEK_API_KEY (для fallback)
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
       - ./scripts/perception:/scripts:ro
       - /dev/shm:/dev/shm
     # Memory limits отключены для Raspberry Pi (kernel не поддерживает cgroup memory limits)
     # mem_limit: 512m  # Perception - лёгкий контейнер
     # memswap_limit: 768m
-    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_perception.sh"]
+    command: ["/scripts/start_perception.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -295,19 +273,16 @@ services:
     container_name: nav2
     network_mode: host
     environment:
-      - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - RUST_LOG=zenoh=info
-      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_CONFIG_OVERRIDE=namespace="robots/${ROBOT_ID}";qos/publication=[{key_exprs:["rt/rtabmap/**"],config:{congestion_control:"drop"}},{key_exprs:["rt/global_costmap/**"],config:{congestion_control:"drop"}}];transport/link/rx/buffer_size=16777216;transport/link/tx/queue/size/data_high=16;transport/link/tx/queue/size/data=16;transport/link/tx/queue/size/data_low=16;transport/link/tx/queue/size/background=8;transport/link/tx/queue/size/interactive_high=4;transport/link/tx/queue/size/interactive_low=4
       - LD_LIBRARY_PATH=/opt/ros/lyrical/opt/zenoh_cpp_vendor/lib:/opt/ros/lyrical/lib/aarch64-linux-gnu:/opt/ros/lyrical/lib
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
       - ./scripts/nav2:/scripts:ro
       - ./maps:/maps:ro  # Карты из RTAB-Map
-    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_nav2_direct.sh"]
+    command: ["/scripts/start_nav2_direct.sh"]
     depends_on:
       - zenoh-router
       - robot-state-publisher
@@ -363,21 +338,18 @@ services:
     network_mode: host
     privileged: true  # Нужен для доступа к serial портам
     environment:
-      - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - RUST_LOG=zenoh=info
-      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROBOT_ID=${ROBOT_ID}
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - ZENOH_CONFIG_OVERRIDE=namespace="robots/${ROBOT_ID}"
       - LD_LIBRARY_PATH=/opt/ros/lyrical/opt/zenoh_cpp_vendor/lib:/opt/ros/lyrical/lib/aarch64-linux-gnu:/opt/ros/lyrical/lib
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
       - ./scripts/teleop:/scripts:ro
       - /dev/input:/dev/input  # Доступ к джойстику (для non-SBUS режима)
       - /dev:/dev  # Полный доступ к /dev для SBUS (номера ttyACM могут меняться)
     # privileged: true + /dev монтировано = автоматический доступ ко всем serial портам
-    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_teleop.sh"]
+    command: ["/scripts/start_teleop.sh"]
     depends_on:
       - zenoh-router
       - twist-mux

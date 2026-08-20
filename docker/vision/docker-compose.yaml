@@ -1,19 +1,16 @@
 services:
-  # Zenoh Router - локальный роутер для Vision Pi, подключается к Main Pi
-  # Namespace НЕ используется здесь - он добавляется только на Main Pi при отправке в облако
+  # Zenoh Router — rmw_zenohd из ROS-образа, подключается к Main Pi через eth0.
+  # connect/listen задаются через ZENOH_CONFIG_OVERRIDE поверх дефолтного конфига rmw_zenoh.
   zenoh-router:
-    image: eclipse/zenoh:1.6.2
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:zenoh-router-${ROS_DISTRO:-lyrical}-${IMAGE_TAG:-local}
     container_name: zenoh-router-vision
     network_mode: host
     environment:
       - RUST_LOG=zenoh=info
-    volumes:
-      - ./config:/config:ro
-      - ./scripts/zenoh-router:/scripts:ro
-    entrypoint: ["/bin/sh", "/scripts/start_zenoh_router.sh"]
+      - ZENOH_CONFIG_OVERRIDE=connect/endpoints=["tcp/10.1.1.10:7447#iface=eth0"];listen/endpoints=["tcp/10.1.1.11:7447","tcp/127.0.0.1:7447"]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/@/local/router || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f rmw_zenohd || exit 1"]
       interval: 5s
       timeout: 10s
       retries: 20
@@ -28,19 +25,15 @@ services:
     network_mode: host
     privileged: true
     environment:
-      - ROS_DOMAIN_ID=0
       - DISPLAY=:0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
-      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ROBOT_ID=${ROBOT_ID}
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10  # Пытаемся подключиться к router 10 раз
       - RUST_LOG=zenoh=info  # Логирование Zenoh для отладки
-      # Zenoh configuration через JSON - подключение к ЛОКАЛЬНОМУ роутеру Vision Pi
-      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - ZENOH_CONFIG_OVERRIDE=namespace="robots/${ROBOT_ID}"
       - LD_LIBRARY_PATH=/opt/ros/lyrical/opt/zenoh_cpp_vendor/lib:/opt/ros/lyrical/lib/aarch64-linux-gnu:/opt/ros/lyrical/lib
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
       - ./scripts/oak-d:/scripts:ro
       - ./config/oak-d/launch:/config/oak-d/launch:ro
       - /dev/bus/usb:/dev/bus/usb
@@ -49,7 +42,7 @@ services:
     # This eliminates the need for a separate apriltag container and reduces Vision Pi resource usage
     mem_limit: 6g  # Максимум 6GB (оставляем 2GB для системы)
     memswap_limit: 7g  # 6GB RAM + 1GB swap максимум
-    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_oak_d.sh"]
+    command: ["/scripts/start_oak_d.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -65,18 +58,15 @@ services:
     devices:
       - /dev/spidev0.0:/dev/spidev0.0  # SPI для NeoPixel LED
     environment:
-      - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
-      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ROBOT_ID=${ROBOT_ID}
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
-      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - ZENOH_CONFIG_OVERRIDE=namespace="robots/${ROBOT_ID}"
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
       - ./scripts/led_matrix:/scripts:ro
-    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_led_matrix.sh"]
+    command: ["/scripts/start_led_matrix.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -98,21 +88,18 @@ services:
     devices:
       - /dev/video0:/dev/video0  # USB UVC камера
     environment:
-      - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
-      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
+      - ROBOT_ID=${ROBOT_ID}
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
-      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - ZENOH_CONFIG_OVERRIDE=namespace="robots/${ROBOT_ID}"
       - COMPRESSED_IMAGE_TRANSPORT_JPEG_QUALITY=85  # JPEG качество для compressed transport
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
       - ./scripts/ceiling-camera:/scripts:ro
       - ./config/ceiling-camera/ceiling_camera.yaml:/root/.ros/camera_info/ceiling_camera.yaml:ro  # Калибровка камеры
       - /dev/shm:/dev/shm
-    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_ceiling_camera.sh"]
+    command: ["/scripts/start_ceiling_camera.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped
@@ -179,14 +166,12 @@ services:
       - /dev/snd:/dev/snd  # ALSA audio devices
       - /dev/bus/usb:/dev/bus/usb  # USB для ReSpeaker
     environment:
-      - ROS_DOMAIN_ID=0
       - ROS_DISTRO=lyrical  # Для source /opt/ros/$ROS_DISTRO/setup.bash
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
-      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ROBOT_ID=${ROBOT_ID}  # Для генерации namespace
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5  # Сгенерированный конфиг
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_CONFIG_OVERRIDE=namespace="robots/${ROBOT_ID}"
       # Audio settings
       - ALSA_CARD=ReSpeaker
       - TTS_CACHE_DIR=/cache/tts
@@ -206,7 +191,6 @@ services:
       - .env.secrets  # API keys: MIMO_API_KEY, DEEPSEEK_API_KEY (для fallback), YANDEX_API_KEY, YANDEX_FOLDER_ID
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
       - ./scripts/voice_assistant:/scripts:ro
       - /dev/shm:/dev/shm
       # Кэш для TTS (persistent)
@@ -250,7 +234,7 @@ services:
     # comfortably holds Yandex gRPC client (negligible) + warm Silero
     # (~200 MB) + the other 8 nodes; no further increase needed.
     memswap_limit: 4.5g
-    command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_voice_assistant.sh"]
+    command: ["/bin/bash", "/scripts/start_voice_assistant.sh"]
     depends_on:
       zenoh-router:
         condition: service_healthy
@@ -301,23 +285,20 @@ services:
     container_name: telegram-bot
     network_mode: host
     environment:
-      - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_zenoh_cpp
       - ROBOT_ID=${ROBOT_ID}
       - ZENOH_ROUTER_CHECK_ATTEMPTS=10
       - RUST_LOG=zenoh=info
-      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - ZENOH_CONFIG_OVERRIDE=namespace="robots/${ROBOT_ID}"
       - PYTHONUNBUFFERED=1
     env_file:
       - .env.secrets  # TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS, DEEPSEEK_API_KEY, YANDEX_API_KEY, etc.
     volumes:
       - ./config:/config:ro
-      - ./scripts:/ros_scripts:ro
       - ./scripts/telegram_bot:/scripts:ro
     mem_limit: 512m
     memswap_limit: 640m
-    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_telegram_bot.sh"]
+    command: ["/scripts/start_telegram_bot.sh"]
     depends_on:
       - zenoh-router
     restart: unless-stopped

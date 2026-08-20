@@ -21,8 +21,6 @@ fi
 
 echo ""
 echo "Environment:"
-echo "  ROS_DOMAIN_ID: ${ROS_DOMAIN_ID}"
-echo "  RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION}"
 echo "  REFLECTION_RATE: ${REFLECTION_RATE:-1.0} Hz"
 echo "  DIALOGUE_TIMEOUT: ${DIALOGUE_TIMEOUT:-10.0}s"
 echo "  ENABLE_SPEECH: ${ENABLE_SPEECH:-true}"

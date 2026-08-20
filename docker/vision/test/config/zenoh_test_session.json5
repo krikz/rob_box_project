@@ -7,7 +7,7 @@
     endpoints: ["tcp/localhost:17447"]
   },
   
-  // Namespace для тестового робота (будет заменён через sed в ros_with_namespace.sh)
+  // Namespace для тестового робота (изолированный тестовый роутер на порту 17447, namespace не нужен)
   // namespace: "my/namespace"
   
   scouting: {

@@ -70,7 +70,7 @@ jobs:
           echo "✅ restart: unless-stopped присутствует"
 
           # Проверка стандартных environment переменных
-          for var in ROS_DOMAIN_ID RMW_IMPLEMENTATION ZENOH_CONFIG ROS_AUTOMATIC_DISCOVERY_RANGE; do
+          for var in RMW_IMPLEMENTATION ZENOH_CONFIG_OVERRIDE; do
             if ! grep -q "$var" docker/main/docker-compose.yaml; then
               echo "⚠️  Предупреждение: переменная $var не найдена"
             fi
@@ -215,11 +215,7 @@ jobs:
             "docs/development/DOCKER_STANDARDS.md"
             "docs/development/AGENT_GUIDE.md"
             "docker/main/docker-compose.yaml"
-            "docker/main/config/zenoh_router_config.json5"
-            "docker/main/config/zenoh_session_config.json5"
             "docker/vision/docker-compose.yaml"
-            "docker/vision/config/zenoh_router_config.json5"
-            "docker/vision/config/zenoh_session_config.json5"
           )
 
           for file in "${required_files[@]}"; do

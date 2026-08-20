@@ -85,7 +85,6 @@ RUN printf '#!/bin/bash\nset -e\nsource /opt/ros/lyrical/setup.bash\nsource /dep
 
 # Переменные окружения для Zenoh
 ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp \
-    ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
     RUST_LOG=zenoh=info \
     LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO}/opt/zenoh_cpp_vendor/lib:/opt/ros/${ROS_DISTRO}/lib/aarch64-linux-gnu:/opt/ros/${ROS_DISTRO}/lib:/depthai_ws/install/lib
 

@@ -1,9 +1,6 @@
 #!/bin/bash
 set -e
 
-# Zenoh config уже настроен через ros_with_namespace.sh wrapper в docker-compose.yaml
-echo "ZENOH_SESSION_CONFIG_URI=$ZENOH_SESSION_CONFIG_URI"
-
 # Source ROS 2
 source /opt/ros/lyrical/setup.bash
 

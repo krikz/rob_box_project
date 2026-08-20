@@ -89,11 +89,8 @@ RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc && \
     echo "source /ws/install/setup.bash" >> /root/.bashrc
 
 # ROS2 и Zenoh environment variables
-ENV ROS_DOMAIN_ID=0
 ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp
 ENV RUST_LOG=zenoh=info
-ENV ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
-ENV ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
 
 # Проверка доступности SPI устройства
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
