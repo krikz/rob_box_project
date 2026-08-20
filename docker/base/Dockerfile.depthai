@@ -1,50 +1,99 @@
-# Базовый образ для DepthAI (OAK-D camera)
-# Наследуется от официального образа Luxonis и добавляет Zenoh
-# ВАЖНО: humble-latest стал amd64-only с 27.02.2026 (перешёл на v3 API)
-# Пинируем v2.12.2-lyrical — последняя v2 версия с поддержкой arm64 + amd64
-FROM luxonis/depthai-ros:v2.12.2-lyrical
+# Базовый образ DepthAI (OAK-D camera) — source-build для ROS 2 Lyrical.
+# luxonis/depthai-ros НЕ публикует lyrical-теги (только humble/kilted/jazzy),
+# поэтому собираем depthai-core + depthai-ros из исходников.
+# Источник: ветка feature/lyrical_support (Luxonis, 2026-08-14, "Fixes for ROS lyrical");
+# depthai-core подключён git-подмодулем (v3.7.1) — сборка самодостаточна.
+#
+# Сборка (в CI — под QEMU arm64):
+#   docker buildx build --platform linux/arm64 \
+#     -f docker/base/Dockerfile.depthai -t rob_box_base:depthai-lyrical docker/base
+#
+# ВНИМАНИЕ: первая сборка depthai-core под QEMU arm64 может занять несколько часов.
+# Fallback, если source-build не соберётся: FROM luxonis/depthai-ros:kilted-arm64-latest
 
+ARG ROS_DISTRO=lyrical
+FROM ros:${ROS_DISTRO}-ros-base
+
+# Повторно объявляем ARG после FROM, чтобы он был доступен в RUN/ENV ниже
+ARG ROS_DISTRO=lyrical
 # Build argument для APT кэша (опциональный)
 ARG APT_PROXY=""
+# Пиннинг коммита depthai-ros (HEAD ветки feature/lyrical_support, 2026-08-14).
+# depthai-core подтягивается подмодулем на закреплённый коммит 4fd6089d (v3.7.1).
+ARG DEPTHAI_ROS_COMMIT=1c731b4a1a89790545590a555abea4afd8d63a76
+ARG CMAKE_BUILD_TYPE=Release
 
 # Настройка APT прокси если указан и доступен
-# Проверяем доступность прокси перед настройкой
 RUN if [ -n "$APT_PROXY" ]; then \
         PROXY_HOST=$(echo "$APT_PROXY" | sed 's|.*://\([^:/]*\).*|\1|'); \
         PROXY_PORT=$(echo "$APT_PROXY" | sed 's|.*://[^:]*:\([0-9]*\).*|\1|'); \
-        echo "🔍 Checking proxy availability at $PROXY_HOST:$PROXY_PORT..."; \
+        echo "Checking APT proxy $PROXY_HOST:$PROXY_PORT..."; \
         if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$PROXY_HOST/$PROXY_PORT" 2>/dev/null; then \
             echo "Acquire::http::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/02proxy; \
             echo "Acquire::http::Timeout \"10\";" >> /etc/apt/apt.conf.d/02proxy; \
             echo "Acquire::Retries \"3\";" >> /etc/apt/apt.conf.d/02proxy; \
-            echo "✅ Using APT proxy: $APT_PROXY"; \
+            echo "Using APT proxy: $APT_PROXY"; \
         else \
-            echo "⚠️  APT proxy not accessible, will use direct connection"; \
+            echo "APT proxy not accessible, using direct connection"; \
         fi \
     fi
 
-# Обновляем ключ ROS 2 (может быть устаревшим в базовом образе)
-RUN curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | \
-    gpg --batch --yes --no-tty --dearmor -o /usr/share/keyrings/ros2-latest-archive-keyring.gpg
-
-# Устанавливаем Zenoh middleware и дополнительные плагины
-RUN apt-get update && \
-    apt-get install -y \
-        ros-lyrical-rmw-zenoh-cpp \
-        ros-lyrical-compressed-depth-image-transport \
+# Инструменты сборки (остальные зависимости rosdep доставит по package.xml)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake git wget curl ca-certificates gnupg \
+        python3-colcon-common-extensions python3-rosdep \
         && rm -rf /var/lib/apt/lists/*
 
-# Удаляем APT прокси конфигурацию после установки пакетов
-RUN rm -f /etc/apt/apt.conf.d/02proxy
+# Клонирование depthai-ros с подмодулем depthai-core + пиннинг коммита
+WORKDIR /depthai_ws/src
+RUN git clone https://github.com/luxonis/depthai-ros.git depthai-ros && \
+    cd depthai-ros && \
+    git checkout ${DEPTHAI_ROS_COMMIT} && \
+    git submodule update --init --recursive
 
-# Устанавливаем переменные окружения для Zenoh
+# Резолв зависимостей (libopencv-dev, libusb-1.0-0-dev, spdlog, fmt, ros-* и т.д.)
+WORKDIR /depthai_ws
+RUN apt-get update && \
+    if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then rosdep init; fi && \
+    rosdep update && \
+    rosdep install --from-paths src --ignore-src -r -y
+
+# Сборка depthai-core + depthai_ros_* пакетов
+RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    colcon build --merge-install \
+        --cmake-args \
+            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
+            -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+
+# Обновление ключа ROS + Zenoh middleware + compressed depth transport
+RUN curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | \
+        gpg --batch --yes --no-tty --dearmor -o /usr/share/keyrings/ros2-latest-archive-keyring.gpg && \
+    apt-get update && apt-get install -y \
+        ros-${ROS_DISTRO}-rmw-zenoh-cpp \
+        ros-${ROS_DISTRO}-compressed-depth-image-transport \
+        && rm -rf /var/lib/apt/lists/*
+
+# Уборка: убираем прокси-конфиг и промежуточные сборочные каталоги
+RUN rm -f /etc/apt/apt.conf.d/02proxy && \
+    rm -rf /depthai_ws/build /depthai_ws/log
+
+# Точка входа: source ROS + depthai workspace (аналог образа Luxonis),
+# чтобы OAK-D сервис (CMD /scripts/start_oak_d.sh) видел depthai_ros_driver.
+RUN printf '#!/bin/bash\nset -e\nsource /opt/ros/lyrical/setup.bash\nsource /depthai_ws/install/setup.bash\nexec "$@"\n' > /entrypoint.sh && \
+    chmod +x /entrypoint.sh
+
+# Переменные окружения для Zenoh
 ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp \
     ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
     RUST_LOG=zenoh=info \
-    LD_LIBRARY_PATH=/opt/ros/lyrical/opt/zenoh_cpp_vendor/lib:/opt/ros/lyrical/lib/aarch64-linux-gnu:/opt/ros/lyrical/lib
+    LD_LIBRARY_PATH=/opt/ros/${ROS_DISTRO}/opt/zenoh_cpp_vendor/lib:/opt/ros/${ROS_DISTRO}/lib/aarch64-linux-gnu:/opt/ros/${ROS_DISTRO}/lib:/depthai_ws/install/lib
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]
 
 # Метаданные образа
 LABEL maintainer="rob_box_project" \
-      description="Base DepthAI image with Zenoh for OAK-D camera" \
+      description="Base DepthAI image (depthai-ros built from source on Lyrical) with Zenoh for OAK-D camera" \
       version="1.0"
 
