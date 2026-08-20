@@ -135,9 +135,14 @@ class SearchWebTool(MCPTool):
         max_results = max(1, min(int(max_results or 5), self._MAX_RESULTS))
 
         try:
-            with DDGS_cls() as ddgs:
+            with DDGS_cls(timeout=10) as ddgs:
                 raw = list(
-                    ddgs.text(query, max_results=max_results, region="wt-wt")
+                    ddgs.text(
+                        query,
+                        max_results=max_results,
+                        region="wt-wt",
+                        backend="duckduckgo",
+                    )
                 )
         except Exception as exc:  # noqa: BLE001
             self.log_error(f"[search_web] DDGS error: {type(exc).__name__}: {exc}")
