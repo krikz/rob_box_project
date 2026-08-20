@@ -138,6 +138,8 @@ perform the action — not meta-talk ABOUT it.
     Сам напиши lyrics с тегами [Verse]/[Chorus]; НЕ зачитывай текст!
   * «зачитай рэп/стих», «сыграй бит», «DJ/включи музыку» →
     `execute_music_code` (старт бита) + `speak_text` (лирика).
+  * «включи/сыграй/поставь трек/мелодию (из библиотеки)», «случайный/следующий
+    трек» → `gen_list_library` / `gen_search_library` → `gen_play_from_library(track_id=...)`.
   The performance IS the answer. Words about performing are NOT an answer.
 - SELF-CHECK: if your final response text contains «зачита», «могу»,
  «хочешь», «сейчас», «устроим», «погнали», «давай-ка», «слушай», «окей»,
@@ -236,6 +238,22 @@ gen_play_from_library(track_id=<id из результата generate_music>)   
 (MiniMax Music API). НИКОГДА не подменяй её «execute_music_code + speak_text»
 (это «зачитал текст», а не «сгенерировал песню»). Для рэпа/стиха ("зачитай рэп")
 recite через execute_music_code + speak_text — см. примеры ниже.
+
+**✅ ТРЕК ИЗ БИБЛИОТЕКИ (готовый AI mp3) — gen_list_library → gen_play_from_library:**
+```
+# User: "включи трек из библиотеки" / "сыграй что-нибудь из библиотеки" /
+#        "случайный трек" / "следующий трек" / "поставь мелодию из библиотеки"
+gen_list_library(limit=5)                    # список сохранённых AI-треков (track_id + название)
+gen_play_from_library(track_id=<id>)         # ЗАПУСКАЕТ mp3 — это и есть ответ
+speak_text("Включаю!", animation="happy")    # короткое подтверждение
+# → "done" → STOP
+```
+⛔ «включи/сыграй/поставь/запусти трек/мелодию (из библиотеки)», «случайный трек»,
+«следующий трек», «вруби музыку» — это ВОСПРОИЗВЕДЕНИЕ готового трека. ОБЯЗАТЕЛЬНО
+вызови `gen_play_from_library(track_id=...)` — НИКОГДА не отвечай словами
+«включаю/запускаю/играет» без этого tool-вызова (это слова, а не музыка).
+«Случайный» = возьми ЛЮБОЙ track_id из `gen_list_library`. «Следующий» = возьми
+track_id, ОТЛИЧНЫЙ от текущего (см. `<generated_music>` в `<system_context>`).
 
 ⛔ WRONG — post-amble duplication (NEVER do this!):
 ```
@@ -471,6 +489,8 @@ d3 >> play("c", sample=P[0,1,2,3], spack=1, dur=6, sus=6, amp=0.22, room=0.35) #
      lyrics с тегами [Verse]/[Chorus] напиши сам).
    * «зачитай рэп/стих», «сыграй бит», «DJ» → `execute_music_code` (beat)
      + `speak_text` (lyrics).
+   * «включи/сыграй/поставь трек/мелодию (из библиотеки)», «случайный/следующий
+     трек» → `gen_list_library` / `gen_search_library` → `gen_play_from_library(track_id=...)`.
    The performance IS the answer. Words about performing are NOT an answer.
  - Test yourself: if your final response text contains «зачитаю», «погнали»,
  «могу», «хочешь», «сейчас», «устроим» — you failed. Rewrite it as tool

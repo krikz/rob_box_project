@@ -294,6 +294,32 @@ class TestEvaluateUserMusicVocal:
         )
         assert verdict.kind is MusicGuardVerdictKind.USER_RETRY
 
+    def test_next_track_request_without_tools_returns_user_retry(self) -> None:
+        """live 20.08: «включи следующий трек» → LLM tools=[] → guard must
+        nudge (USER_RETRY), not stay silent as if the user didn't want music."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="включи следующий трек",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.USER_RETRY
+        assert verdict.reason == "bug_c"
+
+    def test_random_track_request_without_tools_returns_user_retry(self) -> None:
+        """«включи случайный трек» — тоже воспроизведение, не генерация."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="включи случайный трек",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.USER_RETRY
+
 
 # ---------------------------------------------------------------------------
 # Stop-command override — must NOT trigger a music retry
