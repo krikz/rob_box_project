@@ -1,7 +1,8 @@
 """Smoke test for the dramaturgy fix in build_auto_prompt (issue #1016 follow-up).
 
 Verifies that:
-  * n=1 prompt contains the library_line (load_track) and stage_line markers
+  * n=1 prompt BANS load_track/list_tracks (library auto-play) and carries
+    the stage_line markers
   * n=2 prompt contains the "С РАЗВИТИЕМ" requirement + the listed patterns
   * Neither prompt leaks task-tracking identifiers (#NNNN, "Refs:", "issue #")
     that carry no semantic value for the LLM and may trigger hallucinated
@@ -47,9 +48,10 @@ def test_n1_contains_library_and_stage_lines() -> None:
     ctrl.state.theme = "летняя дискотека"
     prompt = ctrl.build_auto_prompt(1)
 
-    # Library line: instructs the LLM to call load_track / list_tracks.
-    assert "load_track" in prompt, "library_line missing from n=1 prompt"
-    assert "list_tracks" in prompt, "list_tracks hint missing from n=1 prompt"
+    # Library line: DJ transitions must NOT load stored tracks (load_track
+    # auto-plays them → harsh cut between tracks).
+    assert "НЕ вызывай load_track" in prompt, "load_track ban missing from n=1 prompt"
+    assert "С НУЛЯ" in prompt, "fresh-generation instruction missing from n=1 prompt"
 
     # Stage line: progress indicator for the LLM.
     assert "переход #1" in prompt, f"stage_line missing — got: {prompt[:200]!r}"
@@ -74,9 +76,9 @@ def test_n2_requires_dramaturgy() -> None:
     for pattern in (".every", "Pvar", "linvar", "Clock.future"):
         assert pattern in prompt, f"{pattern!r} missing from dramaturgy list"
 
-    # Library line still present on transitions (so the model can re-find a ref).
-    assert "load_track" in prompt
-    assert "list_tracks" in prompt
+    # Library line still present on transitions — as a BAN (no auto-play).
+    assert "НЕ вызывай load_track" in prompt
+    assert "С НУЛЯ" in prompt
 
 
 def test_no_task_ids_leak_into_prompt() -> None:

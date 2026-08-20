@@ -114,3 +114,13 @@ def test_master_prompt_has_library_playback_example() -> None:
     assert "случайный" in content
     assert "следующий" in content
     assert "из библиотеки" in content
+
+
+def test_master_prompt_dj_mode_forbids_load_track() -> None:
+    """DJ-переходы не должны грузить сохранённые треки: ``load_track`` СРАЗУ
+    запускает трек из базы → резкая вставка между треками (жалоба Шифу)."""
+    content = MASTER_PROMPT_PATH.read_text(encoding="utf-8")
+
+    assert "ГЕНЕРИРУЙ СВЕЖИЙ ТРЕК" in content
+    assert "НЕ вызывай `load_track`" in content
+    assert "резкую вставку" in content
