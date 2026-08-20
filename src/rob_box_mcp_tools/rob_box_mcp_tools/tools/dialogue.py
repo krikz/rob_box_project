@@ -330,9 +330,15 @@ class SpeakTextTool(MCPTool):
 
         # 🔴 FIX (live 06.08): LLM (MiniMax-M3) иногда ВКЛЮЧАЕТ параметры
         # вызова В ТЕКСТ: text='...128 ударов!", animation="happy"'.
-        # Вырезаем вшитый синтаксис: `", animation="..."` / `", voice="..."`
-        # и хвост `")` / `)` — иначе TTS читает «анимейшин хеппи».
-        text = re.sub(r'"\s*,\s*(?:animation|voice|rate|pitch)="[^"]*"\s*\)?\s*$', '', text)
+        # Вырезаем вшитый синтаксис `, animation="..."` / `, voice="..."` в
+        # конце строки (опционально с лишней закрывающей кавычкой перед
+        # запятой, одинарными кавычками, пробелами вокруг `=` и хвостовым
+        # `)`), иначе TTS читает «анимейшин хеппи».
+        text = re.sub(
+            r'"?\s*,\s*(?:animation|voice|rate|pitch)\s*=\s*["\'][^"\']*["\']\s*\)?\s*$',
+            '',
+            text,
+        )
         text = re.sub(r'\)\s*$', '', text) if text.endswith(')') else text
         text = text.strip()
 
