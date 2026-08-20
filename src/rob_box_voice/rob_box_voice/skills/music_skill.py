@@ -411,9 +411,9 @@ class MusicSkill(BaseSkill):
 
             snippets = []
             try:
-                with DDGS() as ddgs:
+                with DDGS(timeout=10) as ddgs:
                     for q in queries:
-                        for r in ddgs.text(q, max_results=3, region="wt-wt"):
+                        for r in ddgs.text(q, max_results=3, region="wt-wt", backend="duckduckgo"):
                             title = r.get("title", "")
                             body = r.get("body", "")
                             if body:
@@ -521,7 +521,13 @@ class MusicSkill(BaseSkill):
             return await _call("delete_track", {"name": name})
 
         @function_tool
-        async def set_dj_mode(enabled: bool, next_transition_sec: int = 0, theme: str = "") -> str:
+        async def set_dj_mode(
+            enabled: bool,
+            next_transition_sec: int = 0,
+            theme: str = "",
+            persona: str = "",
+            plan: str = "",
+        ) -> str:
             """Enable or disable autonomous DJ mode with optional party theme.
 
             In DJ mode the robot automatically makes smooth music transitions
@@ -530,7 +536,7 @@ class MusicSkill(BaseSkill):
             Workflow:
                 1. Start thematic music: execute_music_code(...)
                 2. Enable DJ mode: set_dj_mode(enabled=True, next_transition_sec=45,
-                   theme="8 марта, женский день")
+                   theme="8 марта, женский день", plan="Трек 1: ...\nТрек 2: ...")
                 3. Robot will autonomously evolve patterns AND periodically make
                    thematic announcements (e.g., congratulate women on March 8th).
                 4. At the END of every DJ transition call this again with the chosen
@@ -545,12 +551,23 @@ class MusicSkill(BaseSkill):
                 theme: Party theme / context (e.g. '8 марта', 'halloween', 'корпоратив 90-х',
                     'день рождения Антона'). Pass ONLY on first activation — remembered until
                     disabled. Robot will tailor music and occasional speech to this theme.
+                persona: DJ-образ/персона, которую юзер задал словами (например
+                    'диджей Пёс', 'диджей Кот'). Передавай когда юзер назначил роль;
+                    по умолчанию 'ДиДжей РОббокс'.
+                plan: План DJ-сета из 3–8 треков, каждый с новой строки и с префиксом
+                    'Трек N: ...'. Передавай при ПЕРВОМ включении DJ — робот пройдёт
+                    по плану и на последнем треке объявит «вечеринка заканчивается»
+                    и сам выключит DJ.
             """
             params: dict = {"enabled": enabled}
             if next_transition_sec:
                 params["next_transition_sec"] = next_transition_sec
             if theme:
                 params["theme"] = theme
+            if persona:
+                params["persona"] = persona
+            if plan:
+                params["plan"] = plan
             return await _call("set_dj_mode", params)
 
 
