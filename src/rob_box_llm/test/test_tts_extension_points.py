@@ -301,10 +301,10 @@ class TestMiniMaxTTSProviderListVoices:
     """``list_voices()`` returns a static, well-formed catalogue."""
 
     @pytest.mark.asyncio
-    async def test_returns_six_voices(self, minimax_provider):
+    async def test_returns_current_catalogue(self, minimax_provider):
         voices = await minimax_provider.list_voices()
         assert isinstance(voices, list)
-        assert len(voices) == 6
+        assert len(voices) >= 8
         for v in voices:
             assert isinstance(v, TTSVoice)
 
@@ -315,12 +315,13 @@ class TestMiniMaxTTSProviderListVoices:
         assert len(ids) == len(set(ids))
 
     @pytest.mark.asyncio
-    async def test_includes_russian_calm_woman(self, minimax_provider):
-        # The voice used by the project today. Pin it so a catalogue
-        # rewrite that drops it fails loudly.
+    async def test_includes_current_russian_voices(self, minimax_provider):
+        # Current Russian system voices (MiniMax FAQ, 20.08.2026).
+        # Pin them so a catalogue rewrite that drops them fails loudly.
         voices = await minimax_provider.list_voices()
         ids = {v.id for v in voices}
-        assert "Russian_CalmWoman" in ids
+        assert "Russian_ReliableMan" in ids
+        assert "Russian_BrightHeroine" in ids
 
     @pytest.mark.asyncio
     async def test_no_upstream_call(self, minimax_provider, mock_minimax_http):

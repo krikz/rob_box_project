@@ -664,52 +664,84 @@ class MiniMaxTTSProvider(BaseTTSProvider):
     async def list_voices(self) -> list[TTSVoice]:
         """Return the built-in voice catalogue.
 
-        The 6 voices documented as MiniMax's pre-built set (see the T2A
-        v2 reference) are returned without an upstream call — they're
-        stable catalogue entries, not per-account customisations. If
-        the product later needs account-specific voice lists, this is
-        the override point: add an HTTP call, keep the return type.
+        Current Russian system voices from MiniMax's official System
+        Voice ID List (https://platform.minimax.io/docs/faq/
+        system-voice-id, 20.08.2026) are returned without an upstream
+        call — they're stable catalogue entries, not per-account
+        customisations. ``male-qn-qingse`` / ``female-shaonv`` are
+        legacy ids that still work on ``speech-02-hd`` but are absent
+        from the current list. If the product later needs
+        account-specific voice lists, this is the override point: add
+        an HTTP call, keep the return type.
         """
         return [
             TTSVoice(
+                id="Russian_ReliableMan",
+                name="Reliable Man",
+                language="ru",
+                gender="male",
+                supports_cloning=False,
+            ),
+            TTSVoice(
+                id="Russian_HandsomeChildhoodFriend",
+                name="Handsome Childhood Friend",
+                language="ru",
+                gender="male",
+                supports_cloning=False,
+            ),
+            TTSVoice(
+                id="Russian_AttractiveGuy",
+                name="Attractive Guy",
+                language="ru",
+                gender="male",
+                supports_cloning=False,
+            ),
+            TTSVoice(
+                id="Russian_Bad-temperedBoy",
+                name="Bad-tempered Boy",
+                language="ru",
+                gender="male",
+                supports_cloning=False,
+            ),
+            TTSVoice(
+                id="Russian_BrightHeroine",
+                name="Bright Queen",
+                language="ru",
+                gender="female",
+                supports_cloning=False,
+            ),
+            TTSVoice(
+                id="Russian_AmbitiousWoman",
+                name="Ambitious Woman",
+                language="ru",
+                gender="female",
+                supports_cloning=False,
+            ),
+            TTSVoice(
+                id="Russian_CrazyQueen",
+                name="Crazy Girl",
+                language="ru",
+                gender="female",
+                supports_cloning=False,
+            ),
+            TTSVoice(
+                id="Russian_PessimisticGirl",
+                name="Pessimistic Girl",
+                language="ru",
+                gender="female",
+                supports_cloning=False,
+            ),
+            TTSVoice(
                 id="male-qn-qingse",
-                name="Qn Qingse",
+                name="Qn Qingse (legacy)",
                 language="zh",
                 gender="male",
                 supports_cloning=False,
             ),
             TTSVoice(
                 id="female-shaonv",
-                name="Shaonv",
+                name="Shaonv (legacy)",
                 language="zh",
-                gender="female",
-                supports_cloning=False,
-            ),
-            TTSVoice(
-                id="Calm_Woman",
-                name="Calm Woman",
-                language="en",
-                gender="female",
-                supports_cloning=False,
-            ),
-            TTSVoice(
-                id="English_PassionateWarrior",
-                name="English Passionate Warrior",
-                language="en",
-                gender="male",
-                supports_cloning=False,
-            ),
-            TTSVoice(
-                id="Russian_DeepVoice",
-                name="Russian Deep Voice",
-                language="ru",
-                gender="male",
-                supports_cloning=False,
-            ),
-            TTSVoice(
-                id="Russian_CalmWoman",
-                name="Russian Calm Woman",
-                language="ru",
                 gender="female",
                 supports_cloning=False,
             ),
