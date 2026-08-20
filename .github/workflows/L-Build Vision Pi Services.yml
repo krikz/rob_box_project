@@ -91,7 +91,7 @@ jobs:
             --tag "${LOCAL_TAG}" \
             --load \
             --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:depthai" \
+            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:depthai-${ROS_DISTRO}" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/vision
 
@@ -132,7 +132,7 @@ jobs:
             --tag "${LOCAL_TAG}" \
             --load \
             --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh" \
+            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             --build-arg="ROS2LEDS_SHA=${ROS2LEDS_SHA}" \
             .
@@ -171,7 +171,7 @@ jobs:
             --tag "${LOCAL_TAG}" \
             --load \
             --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh" \
+            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/vision
 
@@ -289,7 +289,7 @@ jobs:
             --tag "${LOCAL_TAG}" \
             --load \
             --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:rtabmap" \
+            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:rtabmap-${ROS_DISTRO}" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/vision/${SERVICE}
 
@@ -328,7 +328,7 @@ jobs:
             --tag "${LOCAL_TAG}" \
             --load \
             --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh" \
+            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             --build-arg="SOURCE_HASH=${SOURCE_HASH}" \
             .
