@@ -1586,12 +1586,30 @@ class DialogueNode(Node):
         # Issue #1195 — для текста из Telegram-чата ([TG:...]) wake-gate
         # пропускается: обращение в чате очевидно, нечего фильтровать.
         if tg_chat_id is None and not has_wake_word(text_lower, self._wake_words):
-            self._llm_skipped_counter["no_wake_word"] += 1
-            self.get_logger().info(
-                f"🔇 [diagnostics] ignored: no_wake_word text={text[:60]!r} "
-                f"state={state.name}"
-            )
-            self._maybe_log_skip_summary()
+            accumulator = getattr(self, "_speech_accumulator", None)
+            if getattr(self, "_accumulate_no_wake_enabled", False) and accumulator is not None:
+                # Бэклог-аккумулятор: не дропаем, а копим фоновую речь
+                # (текст + спикер + время) до следующего wake-слова.
+                with self._speaker_lock:
+                    sp = dict(getattr(self, "_current_speaker", {}) or {})
+                sp_name = sanitize_speaker_name(sp.get("name")) if sp.get("is_known") else ""
+                accumulator.add(
+                    text,
+                    speaker_tag=speaker_tag,
+                    speaker_name=sp_name or None,
+                )
+                self.get_logger().info(
+                    f"🗒️ [backlog] accumulated (no_wake_word) "
+                    f"tag={speaker_tag!r} speaker={sp_name or 'незнакомец'!r} "
+                    f"text={text[:60]!r}"
+                )
+            else:
+                self._llm_skipped_counter["no_wake_word"] += 1
+                self.get_logger().info(
+                    f"🔇 [diagnostics] ignored: no_wake_word text={text[:60]!r} "
+                    f"state={state.name}"
+                )
+                self._maybe_log_skip_summary()
             return
         clean = strip_wake_word(text, self._wake_words)
         if not clean:
