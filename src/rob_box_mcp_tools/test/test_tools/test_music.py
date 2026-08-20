@@ -1821,6 +1821,34 @@ class TestMusicQualityValidator:
         assert "валидатор" in result["error"]
         exec_mock.assert_not_called()  # код не ушёл в Renardo
 
+    # ----- chop / spack hard blocks (live 20.08) ---------------------------
+
+    def test_chop_is_rejected(self):
+        errors, _ = self.mgr._validate_music_code(
+            "p1 >> pluck([0,2,4], dur=0.5, chop=[8,16])"
+        )
+        assert errors
+        assert any("chop" in e for e in errors)
+
+    def test_chop_zero_is_allowed(self):
+        errors, _ = self.mgr._validate_music_code(
+            "p1 >> pluck([0,2,4], dur=0.5, chop=0)"
+        )
+        assert errors == []
+
+    def test_spack_nonzero_is_rejected(self):
+        errors, _ = self.mgr._validate_music_code(
+            'd1 >> play("a", sample=11, spack=1)'
+        )
+        assert errors
+        assert any("spack" in e for e in errors)
+
+    def test_spack_zero_is_allowed(self):
+        errors, _ = self.mgr._validate_music_code(
+            'd1 >> play("x-o-", sample=1, spack=0)'
+        )
+        assert errors == []
+
     # ----- dur= warnings ---------------------------------------------------
 
     def test_missing_dur_warns_but_passes(self):

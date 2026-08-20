@@ -76,6 +76,11 @@ _PLAYER_LINE_RE = re.compile(r"^\s*(\w+)\s*>>\s*(\w+)\s*\(([^)]*)\)", re.MULTILI
 _DEV_PATTERN_RE = re.compile(
     r"\.every\(|Pvar\(|pvar\(|linvar\(|var\(|Clock\.future|chop=|stutter|shuffle|reverse"
 )
+# Hard-blocked hardware constraints (live 20.08): deepseek игнорирует
+# промпт-запреты, поэтому ловим на уровне кода. chop= (не 0) → щелчки на
+# 16 kHz DAC; spack= (не 0) → сырые глитчевые сэмплы pitchglitch-пака.
+_CHOP_RE = re.compile(r"\bchop\s*=\s*(?!0\b)")
+_SPACK_NONZERO_RE = re.compile(r"\bspack\s*=\s*[1-9]")
 
 
 # ---------------------------------------------------------------------------
@@ -713,6 +718,21 @@ class MusicManager:
                 "Абсолютные частоты запрещены (Renardo ожидает ступени): "
                 f"'{freq_match.group(0)}'. Используй степени, например "
                 "p1 >> pluck([0,4,7]) или p1 >> pluck([0,4,7], oct=3)."
+            )
+
+        # 1b. chop= (не ноль) — щелчки на 16 kHz DAC вместо sidechain.
+        if _CHOP_RE.search(code):
+            errors.append(
+                "chop= запрещён — на 16 kHz DAC даёт щелчки, а не sidechain. "
+                "Для дакинга используй amplify=var([1,0.3],[0.5,0.5])."
+            )
+
+        # 1c. spack= с ненулевым паком — сырые глитчевые сэмплы.
+        if _SPACK_NONZERO_RE.search(code):
+            errors.append(
+                "spack=1 (пак 1_pitchglitch_samples) запрещён — сырые "
+                "глитчевые сэмплы звучат как «звук из базы». Используй "
+                "дефолтный пак (без spack=) или sample=P[0,1,2,3]."
             )
 
         # 2. dur= у каждого не-play плеера — soft warning.
