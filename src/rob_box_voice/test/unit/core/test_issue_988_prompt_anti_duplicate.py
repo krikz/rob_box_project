@@ -99,3 +99,18 @@ def test_master_prompt_done_marker_rule_is_adjacent_to_speak_text() -> None:
     assert "After the LAST speak_text" in window
     assert "MUST be exactly `done`" in window
     assert "post-amble" in window
+
+
+def test_master_prompt_has_library_playback_example() -> None:
+    """live 20.08: «включи/случайный/следующий трек» — LLM не знал, что
+    воспроизведение готового трека = gen_list_library → gen_play_from_library,
+    и импровизировал текстом «Запускаю следующий» без tool-вызова.
+    Промпт обязан содержать явный пример для этого интента."""
+    content = MASTER_PROMPT_PATH.read_text(encoding="utf-8")
+
+    assert "gen_list_library" in content
+    assert "gen_play_from_library" in content
+    # The library-playback rule must explicitly cover the failing phrasings.
+    assert "случайный" in content
+    assert "следующий" in content
+    assert "из библиотеки" in content

@@ -122,6 +122,21 @@ class TestUserWantsMusic:
         assert user_wants_music("зачитай рэп") is True
         assert user_wants_music("поставь диджея") is True
 
+    def test_library_track_phrases(self) -> None:
+        """live 20.08: «включи следующий трек» / «случайный трек» /
+        «ты включал мелодию ... через библиотеку» → LLM возвращал tools=[]
+        и guard молчал («user does NOT want music»). Эти фразы обязаны
+        триггерить music-гуард (Bug C retry)."""
+        assert user_wants_music("включи случайный трек") is True
+        assert user_wants_music("включи следующий трек") is True
+        assert user_wants_music("включи следующий трек из библиотеки") is True
+        assert user_wants_music("сыграй трек из библиотеки") is True
+        assert user_wants_music("поставь трек") is True
+        assert user_wants_music("поставь музыку") is True
+        assert user_wants_music("включи мелодию про весну") is True
+        assert user_wants_music("ты включал мелодию про весну через библиотеку") is True
+        assert user_wants_music("вруби музыку") is True
+
     def test_case_insensitive(self) -> None:
         assert user_wants_music("ВКЛЮЧИ МУЗЫКУ") is True
 
