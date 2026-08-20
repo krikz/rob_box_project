@@ -156,6 +156,7 @@ def build_ssml_payload(
     batch_index: Optional[int] = None,
     batch_total: Optional[int] = None,
     tg_chat_id: Optional[int] = None,
+    voice: Optional[str] = None,
 ) -> str:
     """Build the JSON string consumed by ``tts_node`` on ``/voice/dialogue/response``.
 
@@ -185,6 +186,8 @@ def build_ssml_payload(
         payload["batch_total"] = int(batch_total)
     if tg_chat_id is not None:
         payload["tg_chat_id"] = int(tg_chat_id)
+    if voice is not None:
+        payload["voice"] = voice
     return json.dumps(payload, ensure_ascii=False)
 
 
