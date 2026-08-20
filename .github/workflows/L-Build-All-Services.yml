@@ -37,9 +37,11 @@ env:
   ROS_DISTRO: humble
 
 jobs:
-  # Сборка базовых образов (если нужно)
+  # Сборка базовых образов (если нужно).
+  # NB: GitHub Actions по-разному типизирует boolean inputs в workflow_dispatch (string "true"/"false")
+  # и workflow_call (boolean true/false). Условие должно работать в обоих режимах.
   build-base-images:
-    if: inputs.build_base_images == 'true'
+    if: ${{ inputs.build_base_images == true || inputs.build_base_images == 'true' }}
     uses: ./.github/workflows/L-Build Base Images.yml
     with:
       push_to_registry: true
