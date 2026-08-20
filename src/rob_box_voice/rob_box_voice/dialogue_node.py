@@ -2239,6 +2239,9 @@ class DialogueNode(Node):
                 block = acc.format_block()
                 if block:
                     lines.append(block)
+                    self.get_logger().info(
+                        f"🗒️ [backlog] flushed to LLM: {block[:200]!r}"
+                    )
                 acc.clear()
         lines.append("</system_context>")
         # W7c (issue #968): активные задачи планировщика (voice/music/anim
