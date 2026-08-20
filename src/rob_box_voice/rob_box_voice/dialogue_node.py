@@ -3773,7 +3773,10 @@ class DialogueNode(Node):
         """
         msg = String()
         msg.data = build_ssml_payload(
-            text, animation, tg_chat_id=self._active_tg_chat_id
+            text,
+            animation,
+            tg_chat_id=self._active_tg_chat_id,
+            voice=getattr(self, "_current_tts_voice", None),
         )
         self._response_pub.publish(msg)
 
@@ -3805,6 +3808,7 @@ class DialogueNode(Node):
                 batch_index=idx,
                 batch_total=total,
                 tg_chat_id=self._active_tg_chat_id,
+                voice=getattr(self, "_current_tts_voice", None),
             )
             self._response_pub.publish(msg)
         return total
