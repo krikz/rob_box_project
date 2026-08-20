@@ -107,6 +107,7 @@ from rob_box_voice.core.music_guard import (
     MusicGuard,
     MusicGuardVerdictKind,
 )
+from rob_box_voice.core.speech_accumulator import SpeechAccumulator
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload, split_into_chunks,
@@ -348,6 +349,15 @@ class DialogueNode(Node):
             self.get_parameter("speaker_id_enabled").value)
         self._current_speaker: dict = {"is_known": False}
         self._speaker_lock = threading.Lock()
+        # Бэклог-аккумулятор фоновой речи без wake-слова (docs/plans/
+        # 2026-08-20-voice-backlog-accumulator-design.md).
+        self._speech_accumulator = SpeechAccumulator(
+            window_sec=float(self.get_parameter("accumulate_window_sec").value),
+        )
+        self._accumulate_no_wake_enabled = bool(
+            self.get_parameter("accumulate_no_wake_enabled").value
+        )
+        self._pending_backlog_flush = False
         # Issue #1195 — последний chat_id из Telegram (source-маркер
         # [TG:chat_id] в /voice/stt/result). Используется для
         # маршрутизации ответа: dialogue_node кладёт tg_chat_id в
