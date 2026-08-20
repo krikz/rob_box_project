@@ -31,7 +31,7 @@ jobs:
     # (see runs 1293/1300-1302: 6h+ hangs).
     timeout-minutes: 15
     container:
-      image: ghcr.io/krikz/rob-box-ci:humble
+      image: ghcr.io/krikz/rob-box-ci:lyrical
       options: --user root
     defaults:
       run:
@@ -48,15 +48,15 @@ jobs:
           path: |
             ${{ github.workspace }}/test_ws/build
             ${{ github.workspace }}/test_ws/install
-          key: colcon-humble-v2-${{ runner.os }}-${{ hashFiles('src/rob_box_voice/package.xml', 'src/rob_box_animations/package.xml', 'src/rob_box_perception/package.xml') }}
-                      colcon-humble-v2-
+          key: colcon-lyrical-v2-${{ runner.os }}-${{ hashFiles('src/rob_box_voice/package.xml', 'src/rob_box_animations/package.xml', 'src/rob_box_perception/package.xml') }}
+                      colcon-lyrical-v2-
           restore-keys: |
-            colcon-humble-${{ runner.os }}-
+            colcon-lyrical-${{ runner.os }}-
 
 
       - name: Build workspace
         run: |
-          source /opt/ros/humble/setup.bash
+          source /opt/ros/lyrical/setup.bash
 
           # Create workspace — exclude vendor submodules (not our code to lint).
           # Also copy sibling directories (docker/, migrations/, docs/...) so
@@ -78,7 +78,7 @@ jobs:
       - name: Run unit tests
         run: |
           set -eo pipefail
-          source /opt/ros/humble/setup.bash
+          source /opt/ros/lyrical/setup.bash
           source ${{ github.workspace }}/test_ws/install/setup.bash
 
           cd ${{ github.workspace }}/test_ws
@@ -202,7 +202,7 @@ jobs:
         if: always()
         run: |
           set -eo pipefail
-          source /opt/ros/humble/setup.bash
+          source /opt/ros/lyrical/setup.bash
           cd ${{ github.workspace }}/test_ws
           # Информационный шаг — показывает результаты. Failures от стилевых
           # тестов (copyright/flake8/pep257, pre-existing style debt) не
@@ -240,7 +240,7 @@ jobs:
     name: Integration Tests
     runs-on: ubuntu-22.04
     container:
-      image: ghcr.io/krikz/rob-box-ci:humble
+      image: ghcr.io/krikz/rob-box-ci:lyrical
       options: --user root
     defaults:
       run:
@@ -259,14 +259,14 @@ jobs:
           path: |
             ${{ github.workspace }}/test_ws/build
             ${{ github.workspace }}/test_ws/install
-          key: colcon-humble-v3-${{ runner.os }}-${{ hashFiles('src/rob_box_voice/package.xml', 'src/rob_box_animations/package.xml', 'src/rob_box_perception/package.xml') }}
+          key: colcon-lyrical-v3-${{ runner.os }}-${{ hashFiles('src/rob_box_voice/package.xml', 'src/rob_box_animations/package.xml', 'src/rob_box_perception/package.xml') }}
           restore-keys: |
-            colcon-humble-${{ runner.os }}-
+            colcon-lyrical-${{ runner.os }}-
 
       - name: Build workspace
         run: |
           set -eo pipefail
-          source /opt/ros/humble/setup.bash
+          source /opt/ros/lyrical/setup.bash
           mkdir -p ${{ github.workspace }}/test_ws/src
           rsync -av --exclude='ros2leds' --exclude='vesc_nexus' --exclude='robot_sensor_hub_msg' src/ ${{ github.workspace }}/test_ws/src/
           cd ${{ github.workspace }}/test_ws
@@ -277,7 +277,7 @@ jobs:
       - name: Run integration tests
         run: |
           set -eo pipefail
-          source /opt/ros/humble/setup.bash
+          source /opt/ros/lyrical/setup.bash
           source ${{ github.workspace }}/test_ws/install/setup.bash
 
           cd ${{ github.workspace }}/test_ws

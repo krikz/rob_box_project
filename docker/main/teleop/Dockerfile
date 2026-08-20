@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 # Локальная сборка: docker build --build-arg BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh
-ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh-humble-latest
+# issue #1497 / t_31c93faa: на lyrical-ветке base-тег суффиксируется -lyrical-latest,
+# чтобы docker pull не возвращал humble-base из общего GHCR-пакета
+ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh-lyrical-latest
 FROM ${BASE_IMAGE}
 
 # Install joy node from ROS 2 packages and Serial dependencies

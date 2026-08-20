@@ -24,6 +24,11 @@ permissions:
 env:
   LOCAL_REGISTRY: localhost:5000
   GHCR_REGISTRY: ghcr.io
+  # GHCR-теги base images получают суффикс -${ROS_DISTRO} чтобы humble- и
+  # lyrical-билды не перезаписывали друг друга в общем registry
+  # (issue #1497 / t_31c93faa). humble-build пушит :ros2-zenoh-humble-latest,
+  # lyrical-build — :ros2-zenoh-lyrical-latest. LOCAL_PREFIX не суффиксируем:
+  # локальный registry изолирован по self-hosted runner.
   IMAGE_PREFIX: ghcr.io/krikz/rob_box_base
   LOCAL_PREFIX: localhost:5000/krikz/rob_box_base
   ROS_DISTRO: lyrical
@@ -46,7 +51,7 @@ jobs:
           docker buildx build \
             --platform linux/arm64 \
             --file docker/base/Dockerfile.ros2-zenoh \
-            --tag "${IMAGE_PREFIX}:ros2-zenoh-latest" \
+            --tag "${IMAGE_PREFIX}:ros2-zenoh-${ROS_DISTRO}-latest" \
             --tag "${LOCAL_PREFIX}:ros2-zenoh-latest" \
             --tag "${LOCAL_PREFIX}:ros2-zenoh" \
             --load \
@@ -77,7 +82,7 @@ jobs:
           docker buildx build \
             --platform linux/arm64 \
             --file docker/base/Dockerfile.rtabmap \
-            --tag "${IMAGE_PREFIX}:rtabmap-latest" \
+            --tag "${IMAGE_PREFIX}:rtabmap-${ROS_DISTRO}-latest" \
             --tag "${LOCAL_PREFIX}:rtabmap-latest" \
             --tag "${LOCAL_PREFIX}:rtabmap" \
             --load \
@@ -108,7 +113,7 @@ jobs:
           docker buildx build \
             --platform linux/arm64 \
             --file docker/base/Dockerfile.depthai \
-            --tag "${IMAGE_PREFIX}:depthai-latest" \
+            --tag "${IMAGE_PREFIX}:depthai-${ROS_DISTRO}-latest" \
             --tag "${LOCAL_PREFIX}:depthai-latest" \
             --tag "${LOCAL_PREFIX}:depthai" \
             --load \
@@ -140,7 +145,7 @@ jobs:
           docker buildx build \
             --platform linux/arm64 \
             --file docker/base/Dockerfile.pcl \
-            --tag "${IMAGE_PREFIX}:pcl-latest" \
+            --tag "${IMAGE_PREFIX}:pcl-${ROS_DISTRO}-latest" \
             --tag "${LOCAL_PREFIX}:pcl-latest" \
             --tag "${LOCAL_PREFIX}:pcl" \
             --load \
@@ -173,7 +178,7 @@ jobs:
           echo ""
           echo "📦 Images pushed to: ${LOCAL_REGISTRY}"
           echo ""
-          echo "🏷️ Tags:"
+          echo "🏷️ Local Tags:"
           echo "  - ${LOCAL_PREFIX}:ros2-zenoh-latest"
           echo "  - ${LOCAL_PREFIX}:ros2-zenoh"
           echo "  - ${LOCAL_PREFIX}:rtabmap-latest"
@@ -182,3 +187,9 @@ jobs:
           echo "  - ${LOCAL_PREFIX}:depthai"
           echo "  - ${LOCAL_PREFIX}:pcl-latest"
           echo "  - ${LOCAL_PREFIX}:pcl"
+          echo ""
+          echo "🌐 GHCR Tags (suffix -${ROS_DISTRO} отделяет lyrical от humble, issue #1497):"
+          echo "  - ${IMAGE_PREFIX}:ros2-zenoh-${ROS_DISTRO}-latest"
+          echo "  - ${IMAGE_PREFIX}:rtabmap-${ROS_DISTRO}-latest"
+          echo "  - ${IMAGE_PREFIX}:depthai-${ROS_DISTRO}-latest"
+          echo "  - ${IMAGE_PREFIX}:pcl-${ROS_DISTRO}-latest"

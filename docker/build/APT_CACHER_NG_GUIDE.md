@@ -202,8 +202,8 @@ RUN if [ -n "$APT_PROXY" ]; then \
 
 # Install packages
 RUN apt-get update && apt-get install -y \
-    ros-humble-navigation2 \
-    ros-humble-nav2-msgs \
+    ros-lyrical-navigation2 \
+    ros-lyrical-nav2-msgs \
     && rm -rf /var/lib/apt/lists/*
 
 # Clean up proxy config

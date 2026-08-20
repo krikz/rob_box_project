@@ -204,7 +204,7 @@ verify_warning_log() {  # $1=ip $2=container $3=scope
 
 verify_topic_check() {  # $1=ip $2=container
   local topics
-  topics="$(ssh_cmd "$1" "docker exec $2 bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list 2>/dev/null' || true")"
+  topics="$(ssh_cmd "$1" "docker exec $2 bash -c 'source /opt/ros/lyrical/setup.bash && ros2 topic list 2>/dev/null' || true")"
   if [ -z "$topics" ]; then
     log "  verify topic_check: no topics from '$2' on $1 — actual"
     echo "actual"; return 0
