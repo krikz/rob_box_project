@@ -23,12 +23,7 @@ _INSTRUCTION = (
 
 
 def _xml_escape(value: str) -> str:
-    return (
-        value.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
 def format_ago_s(seconds: float) -> str:
@@ -82,7 +77,7 @@ class SpeechAccumulator:
 
     def _trim(self) -> None:
         if len(self._entries) > self.max_entries:
-            self._entries = self._entries[-self.max_entries:]
+            self._entries = self._entries[-self.max_entries :]
 
     def is_empty(self) -> bool:
         return not self._entries
@@ -105,9 +100,6 @@ class SpeechAccumulator:
             tag = entry["speaker_tag"] or "?"
             speaker = _xml_escape(entry["speaker_name"] or "незнакомец")
             text = _xml_escape(entry["text"])
-            lines.append(
-                f'  <entry speaker_tag="{tag}" speaker="{speaker}" '
-                f'ago_s="{ago_s}">{text}</entry>'
-            )
+            lines.append(f'  <entry speaker_tag="{tag}" speaker="{speaker}" ' f'ago_s="{ago_s}">{text}</entry>')
         lines.append("</speech_backlog>")
         return "\n".join(lines)

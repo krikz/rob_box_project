@@ -354,9 +354,7 @@ class DialogueNode(Node):
         self._speech_accumulator = SpeechAccumulator(
             window_sec=float(self.get_parameter("accumulate_window_sec").value),
         )
-        self._accumulate_no_wake_enabled = bool(
-            self.get_parameter("accumulate_no_wake_enabled").value
-        )
+        self._accumulate_no_wake_enabled = bool(self.get_parameter("accumulate_no_wake_enabled").value)
         self._pending_backlog_flush = False
         # Issue #1195 — последний chat_id из Telegram (source-маркер
         # [TG:chat_id] в /voice/stt/result). Используется для
