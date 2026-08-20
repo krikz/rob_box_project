@@ -70,7 +70,7 @@ curl http://localhost:5000/v2/_catalog | jq
 curl http://localhost:5000/v2/krikz/rob_box/tags/list | jq
 
 # Загрузка образа в registry
-./scripts/push_to_local_registry.sh ghcr.io/krikz/rob_box:oak-d-humble-latest
+./scripts/push_to_local_registry.sh ghcr.io/krikz/rob_box:oak-d-lyrical-latest
 
 # Очистка registry (оставить 5 последних версий каждого сервиса)
 ./scripts/cleanup_registry.sh --keep 5 --dry-run  # Просмотр (ничего не удаляет)
@@ -161,7 +161,7 @@ docker logs -f build-github-runner
 curl http://localhost:5000/v2/_catalog | jq
 
 # 4. На Raspberry Pi: обновите образ
-docker pull 10.1.1.5:5000/krikz/rob_box:oak-d-humble-latest
+docker pull 10.1.1.5:5000/krikz/rob_box:oak-d-lyrical-latest
 
 # Должно быть быстро (30-60 секунд вместо 10-15 минут)
 ```
@@ -238,7 +238,7 @@ git push origin feature/my-service
 #    - Загрузит в ghcr.io
 
 # 4. На Raspberry Pi: тестирование
-docker pull 10.1.1.5:5000/krikz/rob_box:my-service-humble-test
+docker pull 10.1.1.5:5000/krikz/rob_box:my-service-lyrical-test
 # Быстрая загрузка из локального registry!
 ```
 
@@ -294,11 +294,11 @@ docker exec build-apt-cache rm -rf /var/cache/apt-cacher-ng/*
 0 4 * * * /home/ros2/rob_box_project/docker/build/scripts/cleanup_registry.sh --keep 5 >> /tmp/cleanup_registry.log 2>&1
 ```
 
-- **Как это работает**: теги вида `voice-assistant-humble-dev-abc1234` группируются
-  по сервис-варианту (`voice-assistant-humble-dev`), внутри группы сортируются по
+- **Как это работает**: теги вида `voice-assistant-lyrical-dev-abc1234` группируются
+  по сервис-варианту (`voice-assistant-lyrical-dev`), внутри группы сортируются по
   времени создания образа, удаляются все, кроме последних N.
 - **Что НЕ удаляется**: rolling-теги без sha-суффикса — `dev`/`latest`/`local`/
-  `test` и полные имена (`voice-assistant-humble-dev`) — они нужны для деплоя.
+  `test` и полные имена (`voice-assistant-lyrical-dev`) — они нужны для деплоя.
 - **Установка cron** автоматически выполняется в `./scripts/setup.sh` (идемпотентно).
   Вручную: `./scripts/setup.sh` или команда crontab из примера выше.
 - **Проверить**:
@@ -324,7 +324,7 @@ RUN apt-get update && apt-get install -y my-package
 
 # ❌ ПЛОХО (долго)
 FROM ubuntu:22.04
-RUN apt-get update && apt-get install -y ros-humble-desktop
+RUN apt-get update && apt-get install -y ros-lyrical-desktop
 ```
 
 ### 2. Используйте BuildKit cache

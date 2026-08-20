@@ -25,7 +25,7 @@ env:
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box
   BASE_IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box_base
   LOCAL_PREFIX: localhost:5000/krikz/rob_box
-  ROS_DISTRO: humble
+  ROS_DISTRO: lyrical
 
 jobs:
   build-base-images:

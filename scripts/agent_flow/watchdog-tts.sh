@@ -64,7 +64,7 @@ robot_ssh() {
 #    Robust к типу publisher'а (mcp_server, dialogue_node, telegram_node).
 PUBLISH_RATE=$(robot_ssh \
     "docker exec voice-assistant bash -c \"
-        source /opt/ros/humble/setup.bash
+        source /opt/ros/lyrical/setup.bash
         source /ws/install/setup.bash
         timeout 5 ros2 topic info /voice/tts/request --verbose 2>/dev/null \
           | grep -E 'Publisher count' \

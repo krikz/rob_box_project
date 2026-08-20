@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # ── CI Runner Image for Rob Box ────────────────────────────────────────
-# Contains ROS2 Humble + all test deps + Python packages.
+# Contains ROS2 Lyrical + all test deps + Python packages.
 # Rebuilt weekly via .github/workflows/B-Build CI Image.yml.
 #
 # Usage in workflows:
@@ -8,10 +8,10 @@
 #     unit-tests:
 #       runs-on: ubuntu-22.04
 #       container:
-#         image: ghcr.io/krikz/rob-box-ci:humble
+#         image: ghcr.io/krikz/rob-box-ci:lyrical
 #       steps:
 #         - uses: actions/checkout@v7
-#         - run: source /opt/ros/humble/setup.bash && colcon build ...
+#         - run: source /opt/ros/lyrical/setup.bash && colcon build ...
 #         - run: colcon test ...
 # ────────────────────────────────────────────────────────────────────────
 
@@ -33,7 +33,7 @@ RUN apt-get update && \
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 
-# ── ROS2 Humble ────────────────────────────────────────────────────────
+# ── ROS2 Lyrical ────────────────────────────────────────────────────────
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl \
@@ -50,7 +50,7 @@ RUN apt-get update && \
         > /etc/apt/sources.list.d/ros2.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-        ros-humble-ros-base \
+        ros-lyrical-ros-base \
         python3-rosdep \
         python3-colcon-common-extensions \
         python3-vcstool \
@@ -70,7 +70,7 @@ RUN apt-get update && \
 # ── ROS2 test / linting deps ───────────────────────────────────────────
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        ros-humble-ament-cmake-pytest \
+        ros-lyrical-ament-cmake-pytest \
         python3-flake8-docstrings \
         python3-flake8-blind-except \
         python3-flake8-builtins \
@@ -98,7 +98,7 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip && \
 # ── Verify ─────────────────────────────────────────────────────────────
 RUN python3 -c "import pytest; assert pytest.__version__ >= '8', f'pytest={pytest.__version__}'" && \
     echo "=== CI image ready ===" && \
-    echo "ROS2: $(source /opt/ros/humble/setup.bash && ros2 --version 2>/dev/null || echo 'humble')" && \
+    echo "ROS2: $(source /opt/ros/lyrical/setup.bash && ros2 --version 2>/dev/null || echo 'lyrical')" && \
     echo "pytest: $(python3 -c 'import pytest; print(pytest.__version__)')" && \
     echo "openai: $(python3 -c 'import openai; print(openai.__version__)')"
 

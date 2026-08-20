@@ -1,7 +1,7 @@
 name: "B: Build CI Image"
 
 # Периодическая сборка CI-образа (weekly) + ручной запуск.
-# Образ ghcr.io/krikz/rob-box-ci:humble содержит ROS2 Humble
+# Образ ghcr.io/krikz/rob-box-ci:lyrical содержит ROS2 Lyrical
 # и все зависимости для тестов — экономит ~10 мин на каждом PR.
 
 on:
@@ -46,8 +46,8 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/rob-box-ci
           tags: |
-            type=raw,value=humble
-            type=sha,prefix=humble-,format=short
+            type=raw,value=lyrical
+            type=sha,prefix=lyrical-,format=short
             type=ref,event=branch
 
       # ── Build & push ───────────────────────────────────────────────
@@ -65,11 +65,11 @@ jobs:
       # ── Verify ────────────────────────────────────────────────────
       - name: Smoke test
         run: |
-          docker pull ghcr.io/${{ github.repository_owner }}/rob-box-ci:humble
-          docker run --rm ghcr.io/${{ github.repository_owner }}/rob-box-ci:humble \
+          docker pull ghcr.io/${{ github.repository_owner }}/rob-box-ci:lyrical
+          docker run --rm ghcr.io/${{ github.repository_owner }}/rob-box-ci:lyrical \
             bash -c "
               set -euo pipefail
-              source /opt/ros/humble/setup.bash
+              source /opt/ros/lyrical/setup.bash
               python3 -c 'import pytest; assert pytest.__version__ >= \"8\"'
               python3 -c 'import openai, httpx; print(\"OK\")'
               ros2 --version

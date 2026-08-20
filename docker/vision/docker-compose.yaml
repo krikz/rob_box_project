@@ -271,7 +271,7 @@ services:
   # Phase 4: isolated action/PASTE control plane. The current voice node can
   # migrate incrementally; this sidecar has an independent health lifecycle.
   voice-action-server:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${VOICE_ASSISTANT_TAG:-${IMAGE_TAG}}
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-lyrical}-${VOICE_ASSISTANT_TAG:-${IMAGE_TAG}}
     container_name: voice-action-server
     network_mode: host
     environment:
