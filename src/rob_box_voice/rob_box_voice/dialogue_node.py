@@ -1611,13 +1611,26 @@ class DialogueNode(Node):
                 )
                 self._maybe_log_skip_summary()
             return
+        accumulator = getattr(self, "_speech_accumulator", None)
+        backlog_pending = bool(
+            getattr(self, "_accumulate_no_wake_enabled", False)
+            and accumulator is not None
+            and not accumulator.is_empty()
+        )
         clean = strip_wake_word(text, self._wake_words)
         if not clean:
-            self._llm_skipped_counter["empty_after_strip"] += 1
-            self.get_logger().info(
-                f"🔇 [diagnostics] ignored: empty_after_strip_wake text={text[:60]!r}"
-            )
-            return
+            if backlog_pending:
+                # Голое wake-слово («робот»): user_input не должен быть
+                # пустым — оставляем исходную фразу как сигнал, бэклог
+                # уйдёт в <system_context>.
+                clean = text
+            else:
+                self._llm_skipped_counter["empty_after_strip"] += 1
+                self.get_logger().info(
+                    f"🔇 [diagnostics] ignored: empty_after_strip_wake "
+                    f"text={text[:60]!r}"
+                )
+                return
         if is_silence_command(text_lower):
             # 🔴 FIX (live 06.08): «хватит диджеить/музыку/трек» — это НЕ
             # silence, а запрос остановки музыки/DJ. Подстрока «хватит»
@@ -1659,6 +1672,8 @@ class DialogueNode(Node):
                     f"{text[:60]!r}"
                 )
                 return
+        if backlog_pending:
+            self._pending_backlog_flush = True
         self._cancel_run("new STT input")
         sfx = String()
         sfx.data = "thinking"
@@ -2187,6 +2202,17 @@ class DialogueNode(Node):
             )
         else:
             lines.append("  <generated_music>idle</generated_music>")
+        # Бэклог-аккумулятор фоновой речи без wake-слова: при сливе добавляем
+        # <speech_backlog> внутрь <system_context>. raw_user_command при этом
+        # не трогаем — гарды смотрят только на текущую фразу.
+        if getattr(self, "_pending_backlog_flush", False):
+            self._pending_backlog_flush = False
+            acc = getattr(self, "_speech_accumulator", None)
+            if acc is not None:
+                block = acc.format_block()
+                if block:
+                    lines.append(block)
+                acc.clear()
         lines.append("</system_context>")
         # W7c (issue #968): активные задачи планировщика (voice/music/anim
         # каналы) — LLM видит «что сейчас исполняется» перед каждым ходом
