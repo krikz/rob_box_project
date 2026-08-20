@@ -54,6 +54,7 @@ def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) 
     mgr._max_amp = 0.7
     mgr._pattern_history = {}
     mgr._active_patterns = set()
+    mgr._synthdefs_added = set()
     mgr._current_preset = None
     mgr._renardo_available = renardo_available
     mgr._renardo_last_error = None
@@ -460,6 +461,49 @@ class TestMusicManagerRenardoInitialize:
         assert mgr._renardo_available is True
         assert mgr._renardo_last_error is None
 
+    def test_initialize_renardo_is_idempotent(self, tmp_path, monkeypatch):
+        """Повторная инициализация НЕ должна повторно звать sdef.add() —
+        каждый add() мутирует UGen-граф (osc*env) → компаундинг
+        ("too big for sending" → scsynth "late")."""
+        import socket
+        import types
+
+        from rob_box_mcp_tools.tools import music as music_mod
+
+        mgr = _make_manager()
+        mgr._logger = None
+
+        rt = SimpleNamespace(
+            Server=SimpleNamespace(booted=True),
+            effect_manager=SimpleNamespace(reload=lambda: None),
+            SynthDefs={
+                f"s{i}": SimpleNamespace(add=Mock())
+                for i in range(12)
+            },
+            # Кастомные synthdef (warmpad и пр.) имеют add() в проде —
+            # верно отражаем это, чтобы повторная инициализация не падала.
+            SynthDef=lambda name: SimpleNamespace(name=name, add=Mock()),
+        )
+        renardo_lib = types.ModuleType("renardo_lib")
+        renardo_lib.runtime = rt
+        monkeypatch.setitem(sys.modules, "renardo_lib", renardo_lib)
+        monkeypatch.setitem(sys.modules, "renardo_lib.runtime", rt)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(music_mod.time, "sleep", lambda _seconds: None)
+        fake_sock = MagicMock()
+        fake_sock.recvfrom.side_effect = socket.timeout
+        monkeypatch.setattr(music_mod.socket, "socket", lambda *a, **k: fake_sock)
+
+        mgr._initialize_renardo()
+        mgr._initialize_renardo()
+
+        for i in range(12):
+            name = f"s{i}"
+            sdef = rt.SynthDefs[name]
+            assert sdef.add.call_count == 1, (
+                f"{name}.add() вызван {sdef.add.call_count} раз, ожидался 1"
+            )
+
 
 # ---------------------------------------------------------------------------
 # MusicManager — SynthDef verification probe (regression 13.08.2026)
@@ -578,6 +622,51 @@ class TestVerifyAndRetrySynthdefsProbe:
 
         # "SynthDef pads not found" IS a real miss → re-send per round.
         assert rt.SynthDefs["pads"].add.call_count >= 1
+
+    def test_resend_uses_load_when_already_added(self, monkeypatch):
+        """Уже добавленный SynthDef досылается через load(), а НЕ add() —
+        add() повторно мутирует UGen-граф (компаундинг)."""
+        from rob_box_mcp_tools.tools import music as music_mod
+
+        class _FakeSock:
+            def __init__(self, *a, **k):
+                pass
+
+            def settimeout(self, t):
+                pass
+
+            def sendto(self, data, addr):
+                pass
+
+            def recvfrom(self, n):
+                return (
+                    b"/fail\x00\x00\x00,ss\x00/s_new\x00\x00SynthDef pads not found\x00",
+                    ("127.0.0.1", 57110),
+                )
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            music_mod.socket, "socket", lambda *a, **k: _FakeSock(*a, **k)
+        )
+        mgr = _make_manager()
+        mgr._synthdefs_added.add("pads")
+        rt = SimpleNamespace(
+            SynthDefs={
+                "pads": SimpleNamespace(add=Mock(), load=Mock()),
+                "noise": SimpleNamespace(add=Mock(), load=Mock()),
+            }
+        )
+
+        mgr._verify_and_retry_synthdefs(rt, mgr._send_osc_raw)
+
+        assert rt.SynthDefs["pads"].load.call_count >= 1, (
+            "уже добавленный синт должен досылаться через load()"
+        )
+        assert rt.SynthDefs["pads"].add.call_count == 0, (
+            "повторный add() мутирует UGen-граф — запрещён"
+        )
 
 
 # ---------------------------------------------------------------------------
