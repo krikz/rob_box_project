@@ -1,15 +1,23 @@
-# Базовый образ DepthAI (OAK-D camera) — source-build для ROS 2 Lyrical.
-# luxonis/depthai-ros НЕ публикует lyrical-теги (только humble/kilted/jazzy),
-# поэтому собираем depthai-core + depthai-ros из исходников.
-# Источник: ветка feature/lyrical_support (Luxonis, 2026-08-14, "Fixes for ROS lyrical");
-# depthai-core подключён git-подмодулем (v3.7.1) — сборка самодостаточна.
-#
-# Сборка (в CI — НАТИВНО на arm64, без QEMU):
-#   docker buildx build --platform linux/arm64 \
-#     -f docker/base/Dockerfile.depthai -t rob_box_base:depthai-lyrical docker/base
-#
-# ВНИМАНИЕ: под QEMU (Intel-ноутбук) depthai-core не собирается — часы эмуляции
-# убивают раннер. Поэтому CI собирает этот образ на arm64-раннере (ubuntu-24.04-arm).
+# Базовый образ DepthAI (OAK-D camera) — feature/lyrical (source-build).
+# ============================================================================
+# SEE: t_1c66c1fa (WIP — Шифу решение по A/B/C на выбор):
+#   - ни osrf/ros:lyrical-desktop-arm64, ни ros-lyrical-depthai-ros в apt,
+#     ни luxonis/depthai-ros:v2.12.2-lyrical НЕ существуют на 20.08.2026.
+#   - raw-выводы в Dockerfile.body_by_red_marker ниже (см. блок FINDING).
+#   - альтернативы: A (ждать upstream), B (source build из
+#     luxonis/depthai-ros:feature/lyrical_support v3.3.0 → amd64),
+#     C (humble — Шифу запретил 2 раза).
+# ============================================================================
+# Наследуется от официального образа Luxonis и добавляет Zenoh
+# ВАЖНО: humble-latest стал amd64-only с 27.02.2026 (перешёл на v3 API)
+# ВНИМАНИЕ: v2.12.2-lyrical отсутствует — `docker manifest inspect` →
+#   "no such manifest". Это намеренный красный маркер (t_1c66c1fa v4):
+#   PR #1494 (lyrical-fully-lyrical-fix-v2) зафиксировал Dockerfile как
+#   `v2.12.2-lyrical` ПРЕДНАМЕРЕННО, чтобы CI показал failure; когда
+#   Шифу выберет A/B/C — здесь будет fix.
+# Шифу: не удалять эту строку и не откатывать на humble, пока карточка
+#       t_1c66c1fa открыта.
+# FROM luxonis/depthai-ros:v2.12.2-lyrical   # ← закомментирован: тег не существует (t_1c66c1fa)
 
 ARG ROS_DISTRO=lyrical
 FROM ros:${ROS_DISTRO}-ros-base
@@ -95,4 +103,3 @@ CMD ["bash"]
 LABEL maintainer="rob_box_project" \
       description="Base DepthAI image (depthai-ros built from source on Lyrical) with Zenoh for OAK-D camera" \
       version="1.0"
-
