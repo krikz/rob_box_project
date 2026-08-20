@@ -688,6 +688,10 @@ class DialogueNode(Node):
         # подтверждения профиля. 2 = защита от нестабильных tags Yandex;
         # 1 = мгновенное подтверждение (если tag стабилен).
         self.declare_parameter("speaker_min_phrases", 2)
+        # Бэклог-аккумулятор фоновой речи без wake-слова (docs/plans/
+        # 2026-08-20-voice-backlog-accumulator-design.md).
+        self.declare_parameter("accumulate_no_wake_enabled", True)
+        self.declare_parameter("accumulate_window_sec", 180.0)
         # 🔴 FIX (issue #1082): health-кэш LLM-провайдеров. Файл переживает
         # рестарт робота: если MiniMax мёртв (2056 Token Plan), первый же
         # запрос после ребута идёт на deepseek, а не тратит время на
