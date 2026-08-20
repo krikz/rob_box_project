@@ -35,12 +35,35 @@ _HISTORY_MARKER_RE = re.compile(
 # — which the dialogue_node correctly recognises and skips from auto-TTS.
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", flags=re.DOTALL)
 
+# Strip a leading speaker routing marker (``[Spkr:<имя>]``) that some
+# providers echo back from the voice-channel input format. Internal
+# routing marker — never meant to be voiced. Stripping it also unmasks a
+# following service marker (``[CRITICAL]`` / ``[SYSTEM ...]``) so the
+# service-text guard in dialogue_node can catch it. The ``+`` consumes
+# repeated leading tags in one match.
+_SPEAKER_TAG_RE = re.compile(r"^(?:\s*\[Spkr:[^\]]*\])+", flags=re.IGNORECASE)
+
 
 def strip_history_marker(text: str) -> str:
     """Return *text* with the leading ``[выполнено через: ...]`` marker removed."""
     if not text:
         return text
     return _HISTORY_MARKER_RE.sub("", text).strip()
+
+
+def strip_speaker_tag(text: str) -> str:
+    """Strip leading ``[Spkr:<имя>]`` routing markers copied into output.
+
+    The voice channel tags user input as ``[Spkr:<имя>] <текст>``
+    (master prompt RULE #SRC). Some providers copy that marker back into
+    their final reply; it is an internal routing marker and must never
+    reach TTS. Also exposes a following ``[CRITICAL]`` / ``[SYSTEM ...]``
+    marker so the dialogue_node service-text guard fires instead of the
+    internal instruction being spoken aloud.
+    """
+    if not isinstance(text, str):
+        return text
+    return _SPEAKER_TAG_RE.sub("", text, count=1).strip()
 
 
 def strip_thinking_blocks(text: str) -> str:

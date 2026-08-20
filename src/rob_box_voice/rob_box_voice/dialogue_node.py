@@ -110,7 +110,8 @@ from rob_box_voice.core.music_guard import (
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload, split_into_chunks,
-    strip_history_marker, strip_markdown, strip_thinking_blocks,
+    strip_history_marker, strip_markdown, strip_speaker_tag,
+    strip_thinking_blocks,
 )
 from rob_box_voice.startup_greeting import (
     THINKING_SOUND,
@@ -3410,6 +3411,12 @@ class DialogueNode(Node):
                         pass
                 return
         spoken = strip_history_marker(result.spoken_text or "")
+        # 🔴 FIX (live 20.08 DJ): LLM скопировала входной маркер
+        # ``[Spkr:<имя>]`` в свой ответ → служебный текст ``[CRITICAL]
+        # ...`` озвучивался целиком (маркер спикера сбивал
+        # startswith-проверку служебного текста ниже). Спикер-тег —
+        # внутренний маршрутный маркер, в TTS он попадать не должен.
+        spoken = strip_speaker_tag(spoken)
         # 🔴 FIX (live 16:02 «английская мысль на Бахе»): MiniMax M3
         # возвращает ``<think>...</think>`` в content перед реальным
         # ответом. Done-чекер ниже ловит «done», но если перед ним лежит
