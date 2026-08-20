@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: write  # Required for git push of .image-versions files
+  packages: write  # Required for docker push to ghcr.io (issue #1503)
 
 env:
   LOCAL_REGISTRY: localhost:5000
@@ -394,18 +395,36 @@ jobs:
           clean: true
           fetch-depth: 0
 
+      - name: Login to GitHub Container Registry
+        # Issue #1503: deploy default — registry_source=github, тянет образы из
+        # ghcr.io/krikz/rob_box. L-Build Vision Pi Services раньше пушил ТОЛЬКО
+        # в localhost:5000 → develop/test ветки никогда не публиковались в GHCR,
+        # deploy падал на 'No such image'. Теперь mirror-пушим SHA-тег и в GHCR.
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.CR_PAT }}
+
       - name: Tag with SHA and update .image-versions
         run: |
           DOCKER_TAG="${{ needs.prepare.outputs.docker_tag }}"
           SHORT_SHA=$(git rev-parse --short HEAD)
           NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
 
-          # Tag and push SHA-immutable images for each service
+          # Tag and push SHA-immutable images for each service to BOTH local
+          # registry and ghcr.io (issue #1503). deploy default is
+          # registry_source=github → без GHCR push develop-билды невидимы
+          # для деплоя, и робот получает старые образы.
           tag_and_push() {
             local LOCAL_TAG="$1"
-            local SHA_TAG="${LOCAL_TAG}-${SHORT_SHA}"
-            docker tag "$LOCAL_TAG" "$SHA_TAG" && docker push "$SHA_TAG"
-            echo "✅ $SHA_TAG"
+            local GHCR_TAG="${LOCAL_TAG/${LOCAL_PREFIX}/${IMAGE_PREFIX}}"
+            local LOCAL_SHA="${LOCAL_TAG}-${SHORT_SHA}"
+            local GHCR_SHA="${GHCR_TAG}-${SHORT_SHA}"
+            docker tag "$LOCAL_TAG" "$LOCAL_SHA" && docker push "$LOCAL_SHA"
+            echo "✅ local  $LOCAL_SHA"
+            docker tag "$LOCAL_TAG" "$GHCR_SHA" && docker push "$GHCR_SHA"
+            echo "✅ ghcr.io $GHCR_SHA"
           }
 
           tag_and_push "${LOCAL_PREFIX}:oak-d-${ROS_DISTRO}-${DOCKER_TAG}"
