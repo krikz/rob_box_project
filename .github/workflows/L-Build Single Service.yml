@@ -313,8 +313,11 @@ jobs:
 
           # Формирование тегов
           if [ "$PI_TYPE" = "base" ]; then
-            GHCR_TAG="${IMAGE_PREFIX}:${IMAGE_NAME}-${DOCKER_TAG}"
-            LOCAL_TAG="${LOCAL_PREFIX}:${IMAGE_NAME}-${DOCKER_TAG}"
+            # issue #1497 / t_31c93faa: base-теги тоже получают -${ROS_DISTRO}
+            # суффикс, чтобы humble- и lyrical-build не перезаписывали друг друга
+            # в общем GHCR-пакете rob_box_base
+            GHCR_TAG="${IMAGE_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${DOCKER_TAG}"
+            LOCAL_TAG="${LOCAL_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${DOCKER_TAG}"
           else
             GHCR_TAG="${IMAGE_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${DOCKER_TAG}"
             LOCAL_TAG="${LOCAL_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${DOCKER_TAG}"
