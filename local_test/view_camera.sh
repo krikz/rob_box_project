@@ -5,7 +5,7 @@ echo "🎥 === Подключение к камере через Zenoh ==="
 echo ""
 
 # Source ROS2
-source /opt/ros/lyrical/setup.bash
+source /opt/ros/humble/setup.bash
 
 # Настройка Zenoh middleware
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp

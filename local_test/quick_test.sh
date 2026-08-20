@@ -3,7 +3,7 @@
 # Для тестирования разных конфигураций
 
 # Настройка ROS 2
-source /opt/ros/lyrical/setup.bash
+source /opt/ros/humble/setup.bash
 
 # Выбор middleware
 echo "Выберите middleware:"

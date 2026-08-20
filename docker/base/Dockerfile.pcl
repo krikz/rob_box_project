@@ -28,10 +28,10 @@ RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
         # PCL (Point Cloud Library) для обработки облаков точек
         libpcl-dev \
-        ros-lyrical-pcl-conversions \
-        ros-lyrical-pcl-ros \
+        ros-humble-pcl-conversions \
+        ros-humble-pcl-ros \
         # Diagnostic updater для мониторинга состояния устройств
-        ros-lyrical-diagnostic-updater \
+        ros-humble-diagnostic-updater \
         # libpcap для захвата сетевых пакетов (Ethernet лидары)
         libpcap-dev \
         # Boost libraries (требуются для многих ROS пакетов и драйверов лидаров)
