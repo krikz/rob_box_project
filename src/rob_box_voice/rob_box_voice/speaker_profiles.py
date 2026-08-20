@@ -100,6 +100,11 @@ class SpeakerTracker:
         """Подтверждён ли ``tag`` (уже накопил min_phrases подряд)."""
         return bool(tag) and tag in self._confirmed
 
+    def reset(self) -> None:
+        """Сбросить все streaks и подтверждения (начало новой сессии)."""
+        self._streak.clear()
+        self._confirmed.clear()
+
 
 def extract_speaker_name(text: Optional[str]) -> Optional[str]:
     """Извлечь имя из «меня зовут X» / «моё имя X» / «зовут меня X».

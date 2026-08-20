@@ -315,6 +315,18 @@ class DialogueNode(Node):
             wake_words=["робот", "робокс", "робобокс"],
             confidence_base=0.8,
         )
+        # Issue #XXXX — «новая сессия» / «сбрось всё» / Telegram «/clear»:
+        # сброс всего контекста текущего диалога. Фразы читаем из YAML,
+        # дефолт — _DEFAULT_NEW_SESSION_PHRASES.
+        self._new_session_enabled: bool = bool(
+            self.get_parameter("new_session_enabled").value
+        )
+        raw_phrases = self.get_parameter("new_session_phrases").value
+        self._new_session_phrases: tuple[str, ...] = tuple(
+            str(p).strip().lower()
+            for p in (raw_phrases or self._DEFAULT_NEW_SESSION_PHRASES)
+            if str(p).strip()
+        )
 
         self._loop = asyncio.new_event_loop()
         self._asyncio_loop_executor = concurrent.futures.ThreadPoolExecutor(
@@ -685,6 +697,13 @@ class DialogueNode(Node):
         # «уже обработанной командой» (совпадает с command_node.yaml
         # confidence_threshold: 0.7).
         self.declare_parameter("command_intent_gate_confidence", 0.7)
+        # Issue #XXXX — «новая сессия» / «сбрось всё» / Telegram «/clear»:
+        # детерминированный сброс текущего диалога без вызова LLM.
+        self.declare_parameter("new_session_enabled", True)
+        self.declare_parameter(
+            "new_session_phrases",
+            list(self._DEFAULT_NEW_SESSION_PHRASES),
+        )
         # 🔴 FIX (live 06.08): стриминг LLM через конфиг (llm_streaming).
         # Замер без стриминга: false → complete() (полный ответ).
         self.declare_parameter("llm_streaming", False)
@@ -1670,6 +1689,16 @@ class DialogueNode(Node):
                     f"{text[:60]!r}"
                 )
                 return
+        # Issue #XXXX — «новая сессия» / «сбрось всё» / Telegram «/clear»:
+        # сбрасываем весь контекст текущего диалога, не гоняя фразу в LLM.
+        if self._is_new_session_command(clean, text_lower, tg_chat_id):
+            self._llm_skipped_counter["new_session"] += 1
+            self._reset_dialogue_session()
+            self.get_logger().info(
+                f"🧹 [new-session] session reset: text={text[:60]!r} "
+                f"tg={bool(tg_chat_id)}"
+            )
+            return
         if backlog_pending:
             self._pending_backlog_flush = True
         self._cancel_run("new STT input")
@@ -2733,6 +2762,60 @@ class DialogueNode(Node):
     # пуст). Для БИТО-обязательных («рэп/зачитай/диджей») — как было:
     # нуднуть если нет execute_music_code.
     _MUSIC_GUARD_VOCAL_KEYWORDS = MUSIC_GUARD_VOCAL_KEYWORDS
+
+    # Issue #XXXX — «новая сессия» / «сбрось всё» / Telegram «/clear»:
+    # голосовые фразы, после которых робот сбрасывает весь контекст
+    # текущего диалога (историю, DSM, speaker-состояние, бэклог) и
+    # начинает с чистого листа. Матч — по подстроке в lowercased-тексте
+    # ПОСЛЕ снятия wake-слова. Список можно переопределить через YAML
+    # параметр ``new_session_phrases``.
+    _DEFAULT_NEW_SESSION_PHRASES: tuple[str, ...] = (
+        "новая сессия",
+        "новую сессию",
+        "новый диалог",
+        "новый разговор",
+        "начать заново",
+        "начни заново",
+        "начнём заново",
+        "начнем заново",
+        "начать сначала",
+        "начни сначала",
+        "сбрось всё",
+        "сбрось все",
+        "сбросить всё",
+        "сброс сессии",
+        "сброс диалога",
+        "сбросить диалог",
+        "забудь всё",
+        "забудь все",
+        "забудь что было",
+        "очисти историю",
+        "очистить историю",
+        "сотри историю",
+        "стереть историю",
+    )
+
+    def _is_new_session_command(
+        self,
+        clean: str,
+        text_lower: str,
+        tg_chat_id: Optional[int],
+    ) -> bool:
+        """Issue #XXXX — пользователь просит начать новую сессию?
+
+        Матчит голосовые фразы (см. ``_DEFAULT_NEW_SESSION_PHRASES`` /
+        параметр ``new_session_phrases``) и Telegram-команду ``/clear``.
+        Чистая функция от входных строк — без I/O, тестируется без ROS2.
+        """
+        if not getattr(self, "_new_session_enabled", True):
+            return False
+        if tg_chat_id is not None and (clean or "").strip().lower() == "/clear":
+            return True
+        target = (clean or text_lower or "").lower()
+        phrases = getattr(self, "_new_session_phrases", None) or (
+            self._DEFAULT_NEW_SESSION_PHRASES
+        )
+        return any(phrase in target for phrase in phrases)
 
     def _user_wants_music(self, user_input: str) -> bool:
         """Heuristic: does the user request music / a track?
@@ -4093,6 +4176,71 @@ class DialogueNode(Node):
         self._dsm.on_event(DialogueEvent.SILENCE_COMMAND)
         self._publish_state()
         self._speak_direct("Хорошо, молчу.")
+
+    def _reset_dialogue_session(self) -> None:
+        """Issue #XXXX — сброс текущей диалоговой сессии.
+
+        Полный сброс состояния текущего диалога: in-flight turn, DSM → IDLE,
+        бэклог-аккумулятор, speaker-состояние, таймер сессии и история
+        (асинхронно через ``memory.clear_turns``). LLM не вызывается —
+        вместо этого говорим детерминированное подтверждение.
+        """
+        # 1. Отменяем in-flight turn (barge-in + stop TTS + release effects).
+        self._cancel_run("new session reset")
+        # 2. Бэклог-аккумулятор фоновой речи (если реализован).
+        acc = getattr(self, "_speech_accumulator", None)
+        if acc is not None:
+            try:
+                acc.clear()
+            except Exception:  # noqa: BLE001
+                pass
+        self._pending_backlog_flush = False
+        # 3. DSM → IDLE из любого состояния (rescue path).
+        try:
+            self._dsm.reset(DialogueStateKind.IDLE)
+        except Exception:  # noqa: BLE001
+            pass
+        # 4. Speaker-состояние сессии.
+        with self._speaker_lock:
+            self._current_speaker = {"is_known": False}
+        self._speaker_by_text.clear()
+        try:
+            self._speaker_tracker.reset()
+        except Exception:  # noqa: BLE001
+            pass
+        # 5. Метрика длительности сессии (и сброс таймера).
+        try:
+            self._maybe_record_session_end(result="reset")
+        except Exception:  # noqa: BLE001
+            pass
+        # 6. История диалога (scope = DialogCore user_id "default") —
+        #    асинхронно, потому что SQLiteVoiceMemory работает через loop.
+        loop = getattr(self, "_loop", None)
+        if loop is not None:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._clear_session_turns(), loop
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        # 7. Публикуем состояние и подтверждение.
+        self._publish_state()
+        self._publish_response(
+            "Начинаю новую сессию. Всё, что было до этого, забыто.",
+            animation="neutral",
+        )
+
+    async def _clear_session_turns(self) -> None:
+        """Асинхронно очистить историю диалога текущей сессии."""
+        try:
+            removed = await self._memory.clear_turns("default")
+            self.get_logger().info(
+                f"🧹 [new-session] conversation history cleared ({removed} turns)"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [new-session] clear_turns failed: {exc}"
+            )
 
     def _maybe_log_skip_summary(self, window_s: float = 300.0) -> None:
         """Issue #1101 — периодическая сводка по пропускам LLM.
