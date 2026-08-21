@@ -20,8 +20,8 @@ if [ ! -e /dev/video0 ]; then
   exit 1
 fi
 
-# Запускаем USB Camera driver
-exec ros2 run usb_cam usb_cam_node_exe \
+# Запускаем USB Camera driver (v4l2_camera вместо usb_cam — usb_cam нет в lyrical)
+exec ros2 run v4l2_camera v4l2_camera_node \
   --ros-args \
   --params-file /config/ceiling-camera/camera_params.yaml \
   -r __ns:=/ceiling_camera

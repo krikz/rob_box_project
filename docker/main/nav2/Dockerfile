@@ -12,7 +12,6 @@ LABEL org.opencontainers.image.authors="krikz"
 # Установка Nav2 пакетов
 RUN apt-get update && apt-get install -y \
     # Nav2 Core
-    ros-${ROS_DISTRO}-nav2-bringup \
     ros-${ROS_DISTRO}-nav2-bt-navigator \
     ros-${ROS_DISTRO}-nav2-lifecycle-manager \
     # Costmaps (локальная и глобальная)
@@ -20,7 +19,6 @@ RUN apt-get update && apt-get install -y \
     # Планировщик пути
     ros-${ROS_DISTRO}-nav2-planner \
     ros-${ROS_DISTRO}-nav2-navfn-planner \
-    ros-${ROS_DISTRO}-nav2-smac-planner \
     # Контроллер (следование по траектории)
     ros-${ROS_DISTRO}-nav2-controller \
     ros-${ROS_DISTRO}-nav2-dwb-controller \
@@ -38,10 +36,8 @@ RUN apt-get update && apt-get install -y \
     # Утилиты
     ros-${ROS_DISTRO}-nav2-util \
     ros-${ROS_DISTRO}-nav2-msgs \
-    # Behavior Tree плагины
-    ros-${ROS_DISTRO}-behaviortree-cpp-v3 \
-    # Дополнительные зависимости
-    ros-${ROS_DISTRO}-navigation2 \
+    # Behavior Tree плагины (в lyrical пакет переименован из behaviortree-cpp-v3)
+    ros-${ROS_DISTRO}-behaviortree-cpp \
     && rm -rf /var/lib/apt/lists/*
 
 # Создание рабочих директорий

@@ -25,6 +25,24 @@ WORKDIR /ws/src
 # Клонируем LSLIDAR N10 драйвер (ветка M10P/N10P для N10)
 RUN git clone --depth 1 -b M10P/N10P https://github.com/Lslidar/lslidar_ros2_driver.git
 
+# Lyrical удалил ament_target_dependencies(); драйвер (foxy-era) всё ещё его вызывает →
+# заменяем на namespaced target_link_libraries.
+RUN python3 - <<'PYEOF'
+import re
+from pathlib import Path
+p = Path('/ws/src/lslidar_ros2_driver/lslidar_driver/CMakeLists.txt')
+s = p.read_text()
+s = re.sub(
+    r'ament_target_dependencies\(lslidar_driver_node[^)]*\)',
+    'target_link_libraries(lslidar_driver_node rclcpp::rclcpp std_msgs::std_msgs '
+    'lslidar_msgs::lslidar_msgs sensor_msgs::sensor_msgs '
+    'diagnostic_updater::diagnostic_updater pcl_conversions::pcl_conversions)',
+    s,
+    count=1,
+)
+p.write_text(s)
+PYEOF
+
 # Собираем все пакеты из репозитория
 # ВАЖНО: конфиги и скрипты НЕ копируются в образ!
 # Они монтируются через volumes в docker-compose.yaml:

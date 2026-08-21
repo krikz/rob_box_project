@@ -36,11 +36,11 @@ RUN apt-get update && apt-get install -y \
 
 # Установка Python библиотек для LED
 # pi5neo - библиотека для управления WS2812B через SPI на Raspberry Pi 5
-# Обновляем pip перед установкой для поддержки современных флагов
-RUN pip3 install --break-system-packages --no-cache-dir --upgrade pip && \
-    pip3 install --break-system-packages --no-cache-dir \
+# spidev ставится через apt (python3-spidev) — pip-версия конфликтует с apt-пакетом
+# и падает с error: uninstall-no-record-file на Ubuntu 24.04+.
+# pip НЕ апгрейдим: на Ubuntu 24.04+ --upgrade pip ломается (uninstall-no-record-file).
+RUN pip3 install --break-system-packages --no-cache-dir \
     pi5neo \
-    spidev \
     numpy
 
 # Рабочая директория

@@ -63,6 +63,28 @@ COPY src/vesc_nexus/src/vesc_nexus /ws/src/vesc_nexus
 # Копируем rob_box_description (URDF с ros2_control блоком)
 COPY src/rob_box_description /ws/src/rob_box_description
 
+# Lyrical удалил ament_target_dependencies() (ament_cmake_target_dependencies 2.8.5+).
+# vesc_nexus (release/v1.0.0) всё ещё его вызывает → заменяем на namespaced target_link_libraries.
+RUN python3 - <<'PYEOF'
+import re
+from pathlib import Path
+p = Path('/ws/src/vesc_nexus/CMakeLists.txt')
+s = p.read_text()
+s = re.sub(
+    r'ament_target_dependencies\(vesc_hardware_interface[^)]*\)',
+    'target_link_libraries(vesc_hardware_interface\n'
+    '  rclcpp::rclcpp\n'
+    '  rclcpp_lifecycle::rclcpp_lifecycle\n'
+    '  hardware_interface::hardware_interface\n'
+    '  pluginlib::pluginlib\n'
+    '  vesc_msgs::vesc_msgs\n'
+    ')',
+    s,
+    count=1,
+)
+p.write_text(s)
+PYEOF
+
 # Установка зависимостей через rosdep и сборка пакетов
 # Явно задаём ROS_DISTRO для rosidl_generator_rs (Rust IDL)
 ENV ROS_DISTRO=lyrical

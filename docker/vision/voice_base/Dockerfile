@@ -27,6 +27,8 @@ RUN apt-get update && apt-get install -y debconf-utils \
     && echo "jackd2 jackd/tweak_rt_limits boolean false" | debconf-set-selections \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     python3-pip \
+    python3-setuptools \
+    python3-wheel \
     python3-dev \
     libasound2-dev \
     portaudio19-dev \
@@ -69,8 +71,10 @@ RUN apt-get update && apt-get install -y debconf-utils \
 
 # ============================================================================
 # Python базовые инструменты (отдельный слой, не зависит от requirements.txt)
+# pip/setuptools/wheel ставятся через apt выше.
+# НЕ апгрейдим pip через pip: на Ubuntu 24.04+ --upgrade pip падает с
+# error: uninstall-no-record-file, а setuptools<68 несовместим с Python 3.13.
 # ============================================================================
-RUN pip3 install --break-system-packages --no-cache-dir --retries 5 --timeout 120 --upgrade pip "setuptools>=59.6.0,<68" wheel
 
 # ============================================================================
 # Python зависимости

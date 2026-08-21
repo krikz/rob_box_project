@@ -4,14 +4,15 @@ ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 FROM ${BASE_IMAGE}
 
 # Установка USB Camera пакета и image transport для сжатия
+# usb_cam не выпущен для lyrical → используем v4l2_camera (V4L2 UVC драйвер)
 RUN apt-get update && apt-get install -y \
-    ros-lyrical-usb-cam \
+    ros-lyrical-v4l2-camera \
     ros-lyrical-image-transport-plugins \
     ros-lyrical-cv-bridge \
     && rm -rf /var/lib/apt/lists/*
 
 # Версия пакета для отслеживания
-RUN echo $(dpkg -s ros-lyrical-usb-cam | grep 'Version' | sed -r 's/Version:\s([0-9]+.[0-9]+.[0-9]+).*/\1/g') > /version.txt 
+RUN echo $(dpkg -s ros-lyrical-v4l2-camera | grep 'Version' | sed -r 's/Version:\s([0-9]+.[0-9]+.[0-9]+).*/\1/g') > /version.txt 
 
 # Создаем директорию для camera_info файлов (требуется для usb_cam)
 # Фактический файл калибровки будет монтирован через volume
