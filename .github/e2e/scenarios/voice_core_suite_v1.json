@@ -1,0 +1,43 @@
+{
+  "name": "voice_core_suite_v1",
+  "description": "E2E для больших голосовых фич (последние 2 недели): command-intent gate (#1279), new-session reset, альтернативный wake word (#1252), music stop (#1358 DJ guard). Маркеры сверены с кодом dialogue_node.py / command_node.py (см. docs/analysis/voice-features-e2e-validation-2026-08-22.md).",
+  "steps": [
+    {
+      "label": "cc01_status_gate",
+      "voice": "anton",
+      "text": "Робот, где ты",
+      "patterns": [
+        "LLM dispatch skipped",
+        "command intent"
+      ]
+    },
+    {
+      "label": "ns01_reset_session",
+      "voice": "anton",
+      "text": "Робот, сбрось всё",
+      "patterns": [
+        "session reset"
+      ]
+    },
+    {
+      "label": "ww01_roboks_wake",
+      "voice": "anton",
+      "text": "Робокс, как дела",
+      "patterns": []
+    },
+    {
+      "label": "dj01_stop_music",
+      "voice": "anton",
+      "text": "Робот, стоп музыку",
+      "patterns": [
+        "stop_music"
+      ],
+      "acceptance": {
+        "expected_tool_calls": [
+          "stop_music"
+        ],
+        "must_not_call": []
+      }
+    }
+  ]
+}
