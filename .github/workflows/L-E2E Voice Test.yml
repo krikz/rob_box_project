@@ -523,8 +523,18 @@ jobs:
             echo "---END-LIST---"
           ' 2>&1 | tee /tmp/e2e_collect.log || true
 
-          # 2) Каталоги /tmp/e2e_v2_* целиком (verdict.txt, model.json,
+          # 2) Каталог /tmp/e2e_v2_<RID> целиком (verdict.txt, model.json,
           #    step_*.log, scenario_parsed.txt, scenario.json и т.п.).
+          #
+          #    Харнесс e2e_voice_test.sh пишет OUT_DIR=/tmp/e2e_v2_${RUN_ID}
+          #    (line 82 e2e_voice_test.sh). Берём ТОЛЬКО этот каталог —
+          #    legacy /tmp/e2e_v2_* от старых run'ов содержат файлы с
+          #    кириллицей + '?' (до BUG-B t_f0612a43 не было safe_label),
+          #    upload-artifact@v7 отвергает их с NTFS-ограничениями
+          #    ("? < > | * : \r \n"). Тащить всю историю и фильтровать
+          #    на runner'е нет смысла — медленнее с каждым run'ом, плюс
+          #    sanitize не успевает за 80+ legacy каталогов (issue #1506,
+          #    runs 162/163/165/166/167 все FAIL на одной и той же ошибке).
           #
           #    Исторически тут стоял вариант с trailing-dot в source path —
           #    **deprecated с OpenSSH 9.0+** (changelog: «when copying
@@ -536,8 +546,20 @@ jobs:
           #    Используем `rsync -a` поверх ssh — работает на любой версии
           #    OpenSSH, копирует рекурсивно, трейлинг-слэш означает
           #    «содержимое каталога» (аналог `cp -r src/. dst/`).
-          e2e_v2_dirs=$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
-                        'ls -1d /tmp/e2e_v2_* 2>/dev/null' 2>/dev/null || true)
+          #
+          #    Fallback: если /tmp/e2e_v2_<RID> не существует (например
+          #    harness упал до mkdir), берём 2 самых свежих /tmp/e2e_v2_*
+          #    по mtime — отладочный набор всё равно нужен.
+          primary_dir="/tmp/e2e_v2_${RID}"
+          if sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
+               "[ -d '$primary_dir' ]" 2>/dev/null; then
+            e2e_v2_dirs="$primary_dir"
+            echo "  primary: $primary_dir"
+          else
+            echo "  WARN: $primary_dir отсутствует на 249 — fallback на 2 самых свежих"
+            e2e_v2_dirs=$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
+                          'ls -1dt /tmp/e2e_v2_* 2>/dev/null | head -2' 2>/dev/null || true)
+          fi
           if [ -n "$e2e_v2_dirs" ]; then
             for d in $e2e_v2_dirs; do
               bn=$(basename "$d")
@@ -549,6 +571,32 @@ jobs:
             done
           else
             echo "  no /tmp/e2e_v2_* dirs on 249"
+          fi
+
+          # 2.5) Sanitize: upload-artifact@v7 запрещает символы в именах
+          #      файлов (NTFS-ограничения: " ? < > | * : \r \n). До BUG-B
+          #      t_f0612a43 safe_label() ещё не существовало и legacy-каталоги
+          #      12-18.08 содержат файлы вроде `synth_Робот, что у тебя в
+          #      музыкальной библиотеке?.log`. Если rsync принёс такие
+          #      файлы (primary-каталог этого RID вряд ли, но fallback
+          #      по mtime может), заменяем '?' на '_' чтобы upload
+          #      не падал. `rename` доступен в Ubuntu/Debian через
+          #      пакет rename (perl-based). Если нет — fallback на
+          #      bash-цикл с mv.
+          if [ -d "$ART_DIR" ]; then
+            bad_count=$(find "$ART_DIR" -depth -name '*?*' -type f 2>/dev/null | wc -l)
+            if [ "$bad_count" -gt 0 ]; then
+              echo "  sanitize: найдено $bad_count файлов с '?' в имени — заменяю на '_'"
+              if command -v rename >/dev/null 2>&1; then
+                find "$ART_DIR" -depth -name '*?*' -type f -exec rename 's/\?/_/g' {} + || true
+              else
+                # bash fallback: экранируем '?' в шаблоне find и mv
+                find "$ART_DIR" -depth -name '*?*' -type f | while read -r f; do
+                  new_f="${f//\?/_}"
+                  [ "$f" != "$new_f" ] && mv "$f" "$new_f" 2>/dev/null || true
+                done
+              fi
+            fi
           fi
 
           # 3) Полный stdout харнесса (если нет — skip)
@@ -629,13 +677,21 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: e2e-voice-logs-${{ github.run_id }}
-          # Лог docker voice-assistant (runner-side) + весь каталог с логами шагов
+          # Лог docker voice-assistant (runner-side) + логи харнесса только
+          # из RID-каталога. Issue #1506: upload-artifact@v7 падает на
+          # файлах с '?' в имени (NTFS-ограничения). Collect теперь тащит
+          # только /tmp/e2e_v2_<RID> (или 2 самых свежих по mtime) и
+          # sanitize-ит '?' → '_', так что .log в /tmp/e2e_artifacts_<RID>/
+          # ** безопасен. Явное исключение 'e2e_atomic_out.log' нужно потому
+          # что он лежит в ART_DIR root (не в подкаталоге e2e_v2_*).
           path: |
             /tmp/voice_e2e_${{ github.run_id }}.log
             /tmp/e2e_verdict.log
             /tmp/e2e_timing.txt
             /tmp/e2e_collect.log
-            /tmp/e2e_artifacts_${{ github.run_id }}/**/*.log
+            /tmp/e2e_artifacts_${{ github.run_id }}/e2e_atomic_out.log
+            /tmp/e2e_artifacts_${{ github.run_id }}/e2e_v2_${{ github.run_id }}/*.log
+            /tmp/e2e_artifacts_${{ github.run_id }}/e2e_v2_${{ github.run_id }}/*/*.log
           retention-days: 7
           if-no-files-found: warn
 
@@ -667,13 +723,21 @@ jobs:
           # значит Collect вообще ничего не нашёл (sсh не доступен / 249
           # мёртвая) и это уже error-сигнал.
           #
-          # Issue #1429: исключаем *.wav — иначе recording.wav дублируется
-          # сюда из `Upload recording` (оба тянут из /tmp/e2e_artifacts_<RID>/).
-          # wav'ы живут отдельно в e2e-voice-recording-<RID> (retention 7d,
-          # быстрый доступ по короткому имени).
-          path: /tmp/e2e_artifacts_${{ github.run_id }}/**
-          exclude: |
-            **/*.wav
+          # Issue #1506 (ретро upload-artifact '?' в имени файла):
+          # upload-artifact@v7 НЕ поддерживает параметр `exclude` (warning
+          # "Unexpected input(s) 'exclude', valid inputs are [..., 'include-hidden-files', 'archive']"),
+          # плюс '?' в имени легаси-файлов отвергается NTFS-ограничениями
+          # (Double quote ": ? < > | * : \r \n). Перечисляем include-паттерны
+          # явно: логи, тексты, json-конфиги, verdict/scenario. WAV'ы идут
+          # отдельно в e2e-voice-recording-<RID> (issue #1429: дубликаты убраны).
+          # Покрываем все файлы харнесса + sanitized имена legacy.
+          path: |
+            /tmp/e2e_artifacts_${{ github.run_id }}/**/*.log
+            /tmp/e2e_artifacts_${{ github.run_id }}/**/*.txt
+            /tmp/e2e_artifacts_${{ github.run_id }}/**/*.json
+            /tmp/e2e_artifacts_${{ github.run_id }}/**/*.jsonl
+            /tmp/e2e_artifacts_${{ github.run_id }}/**/*.csv
+            /tmp/e2e_artifacts_${{ github.run_id }}/**/*.md
           retention-days: 14
           if-no-files-found: error
 
