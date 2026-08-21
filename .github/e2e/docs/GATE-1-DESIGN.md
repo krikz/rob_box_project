@@ -45,8 +45,10 @@ ADR-0022 §4.1 GATE-1 — обязательный acceptance.json (next to scen
 }
 ```
 
-- `expected_tool_calls` — хотя бы ОДИН из них должен быть вызван хотя бы
-  в одном шаге (OR, не AND — каждый tool — отдельная фича).
+- `expected_tool_calls` — КАЖДЫЙ из них должен быть вызван хотя бы
+  в одном шаге (AND, не OR — один acceptance.json покрывает все новые
+  tools; если хотя бы один не сработал, e2e-done не ставится,
+  ADR-0022 §5.3).
 - `must_not_call` — НИ ОДНОГО из них не должно быть вызвано ни в одном шаге.
 - Допустимые дополнительные поля (forward-compat): `expected_keywords`,
   `response_max_ms`, `must_call_for_renardo_request` (negative control).

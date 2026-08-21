@@ -340,6 +340,15 @@ jobs:
             FAIL="harness-output-missing"
           elif grep -q "E2E_REACTION_OK" "$VERDICT_LOG"; then
             echo "✅ SPEECH: робот ответил (харнесс: E2E_REACTION_OK)"
+          elif grep -q "E2E_FEATURE_FAIL" "$VERDICT_LOG"; then
+            echo "❌ FEATURE FAIL: робот ответил, но фича-ассерт (patterns/acceptance/GATE-1) не выполнен"
+            FAIL="${FAIL:+$FAIL,}feature-fail"
+          elif grep -q "E2E_LLM_ERROR" "$VERDICT_LOG"; then
+            echo "❌ LLM ERROR: LLM/TTS вернул ошибку (не квота/fallback)"
+            FAIL="${FAIL:+$FAIL,}llm-error"
+          elif grep -q "E2E_INFRA_FAIL" "$VERDICT_LOG"; then
+            echo "❌ INFRA FAIL: синтез/воспроизведение упали на билд-машине"
+            FAIL="${FAIL:+$FAIL,}infra-fail"
           elif grep -q "E2E_NO_REACTION" "$VERDICT_LOG"; then
             echo "❌ NO REACTION: харнесс 3 раза проиграл команду — робот не ответил"
             FAIL="${FAIL:+$FAIL,}no-reaction"
