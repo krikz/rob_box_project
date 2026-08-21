@@ -83,6 +83,7 @@ class TestSpeechAccumulator:
         assert "ФОНОВЫЙ ЗАПРОС" in hint
         assert "напомни позвонить маме" in hint
         assert "Антон" in hint
+        assert "Если в текущей фразе есть своя явная команда" in hint
 
     def test_format_user_hint_empty_returns_none(self):
         acc = SpeechAccumulator()
