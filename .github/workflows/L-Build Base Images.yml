@@ -92,8 +92,12 @@ jobs:
           echo "✅ rtabmap base image ready"
 
   # Сборка базового образа DepthAI (для OAK-D камеры)
+  # depthai-core — огромная C++ библиотека; под QEMU на Intel-ноутбуке её сборка
+  # убивает раннер (см. run 32422948976). Собираем НАТИВНО на arm64
+  # (GitHub-hosted ubuntu-24.04-arm) и пушим в GHCR. Локальный registry
+  # наполняет джоб sync-depthai-local, чтобы downstream oak-d нашёл базу локально.
   build-depthai:
-    runs-on: [self-hosted, rob-box]
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -101,26 +105,58 @@ jobs:
           submodules: recursive
           clean: true
 
-      - name: Build depthai base image
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.CR_PAT }}
+
+      - name: Build depthai base image (native arm64)
         run: |
-          echo "🏗️ Building depthai base image..."
+          echo "🏗️ Building depthai base image (native arm64)..."
 
           docker buildx build \
             --platform linux/arm64 \
             --file docker/base/Dockerfile.depthai \
             --tag "${IMAGE_PREFIX}:depthai-${ROS_DISTRO}-latest" \
-            --tag "${LOCAL_PREFIX}:depthai-${ROS_DISTRO}-latest" \
-            --tag "${LOCAL_PREFIX}:depthai-${ROS_DISTRO}" \
+            --tag "${IMAGE_PREFIX}:depthai-${ROS_DISTRO}" \
             --load \
-            --add-host=host.docker.internal:host-gateway \
-            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/base
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
-            docker push ${LOCAL_PREFIX}:depthai-${ROS_DISTRO}-latest
-            docker push ${LOCAL_PREFIX}:depthai-${ROS_DISTRO}
+            docker push "${IMAGE_PREFIX}:depthai-${ROS_DISTRO}-latest"
+            docker push "${IMAGE_PREFIX}:depthai-${ROS_DISTRO}"
           fi
-          echo "✅ depthai base image ready"
+          echo "✅ depthai base image pushed to GHCR"
+
+  # Перелив готового depthai-образа из GHCR в локальный registry.
+  # Downstream-сборка oak-d использует BASE_IMAGE=localhost:5000/...:depthai-*,
+  # поэтому образ должен лежать в локальном registry до сборки сервисов.
+  sync-depthai-local:
+    needs: build-depthai
+    if: ${{ inputs.push_to_registry == true || inputs.push_to_registry == 'true' }}
+    runs-on: [self-hosted, rob-box]
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.CR_PAT }}
+
+      - name: Pull from GHCR and push to local registry
+        run: |
+          echo "🏗️ Syncing depthai base image to local registry..."
+
+          docker pull --platform linux/arm64 "${IMAGE_PREFIX}:depthai-${ROS_DISTRO}-latest"
+
+          docker tag "${IMAGE_PREFIX}:depthai-${ROS_DISTRO}-latest" "${LOCAL_PREFIX}:depthai-${ROS_DISTRO}-latest"
+          docker tag "${IMAGE_PREFIX}:depthai-${ROS_DISTRO}-latest" "${LOCAL_PREFIX}:depthai-${ROS_DISTRO}"
+
+          docker push "${LOCAL_PREFIX}:depthai-${ROS_DISTRO}-latest"
+          docker push "${LOCAL_PREFIX}:depthai-${ROS_DISTRO}"
+          echo "✅ depthai base image synced to local registry"
 
   # Сборка базового образа PCL (для лидаров)
   build-pcl:
@@ -157,7 +193,7 @@ jobs:
 
   # Итоговая сводка
   summary:
-    needs: [build-ros2-zenoh, build-rtabmap, build-depthai, build-pcl]
+    needs: [build-ros2-zenoh, build-rtabmap, build-depthai, sync-depthai-local, build-pcl]
     runs-on: [self-hosted, rob-box]
     if: always()
     steps:
@@ -169,6 +205,7 @@ jobs:
           echo "  ros2-zenoh: ${{ needs.build-ros2-zenoh.result }}"
           echo "  rtabmap: ${{ needs.build-rtabmap.result }}"
           echo "  depthai: ${{ needs.build-depthai.result }}"
+          echo "  depthai→local: ${{ needs.sync-depthai-local.result }}"
           echo "  pcl: ${{ needs.build-pcl.result }}"
           echo ""
           echo "📦 Images pushed to: ${LOCAL_REGISTRY}"

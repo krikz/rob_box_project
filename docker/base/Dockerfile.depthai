@@ -4,12 +4,12 @@
 # Источник: ветка feature/lyrical_support (Luxonis, 2026-08-14, "Fixes for ROS lyrical");
 # depthai-core подключён git-подмодулем (v3.7.1) — сборка самодостаточна.
 #
-# Сборка (в CI — под QEMU arm64):
+# Сборка (в CI — НАТИВНО на arm64, без QEMU):
 #   docker buildx build --platform linux/arm64 \
 #     -f docker/base/Dockerfile.depthai -t rob_box_base:depthai-lyrical docker/base
 #
-# ВНИМАНИЕ: первая сборка depthai-core под QEMU arm64 может занять несколько часов.
-# Fallback, если source-build не соберётся: FROM luxonis/depthai-ros:kilted-arm64-latest
+# ВНИМАНИЕ: под QEMU (Intel-ноутбук) depthai-core не собирается — часы эмуляции
+# убивают раннер. Поэтому CI собирает этот образ на arm64-раннере (ubuntu-24.04-arm).
 
 ARG ROS_DISTRO=lyrical
 FROM ros:${ROS_DISTRO}-ros-base

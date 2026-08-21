@@ -45,6 +45,7 @@ jobs:
     uses: ./.github/workflows/L-Build Base Images.yml
     with:
       push_to_registry: true
+    secrets: inherit
 
   # Main Pi сервисы
   build-main-services:

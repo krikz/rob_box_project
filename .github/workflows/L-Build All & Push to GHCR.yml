@@ -32,6 +32,7 @@ jobs:
     uses: ./.github/workflows/L-Build Base Images.yml
     with:
       push_to_registry: true
+    secrets: inherit
 
   build-main-services:
     needs: build-base-images
