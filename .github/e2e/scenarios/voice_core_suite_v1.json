@@ -1,6 +1,6 @@
 {
   "name": "voice_core_suite_v1",
-  "description": "E2E для больших голосовых фич (последние 2 недели): command-intent gate (#1279), new-session reset, альтернативный wake word (#1252), music start/stop (#1358), мульти-голос #1219 (set_voice + много-голосовое поведение). MiniMax generate_music и gen_delete_from_library ИСКЛЮЧЕНЫ (Music API недоступен, удаление не валидируем). Бэклог-аккумулятор и мульти-спикер — out-of-scope для voice-e2e (требуют симуляции без-wake фразы или двух спикеров в одном физическом канале — см. docs/analysis/voice-features-e2e-validation-2026-08-22.md §6).",
+  "description": "E2E для больших голосовых фич (последние 2 недели): command-intent gate (#1279), new-session reset, альтернативный wake word (#1252), music start/stop (#1358), мульти-голос #1219, спор→арбитр (multi-voice + последовательные реплики). MiniMax generate_music и gen_delete_from_library ИСКЛЮЧЕНЫ (Music API недоступен, удаление не валидируем). Backlog-аккумулятор и speaker diarization — out-of-scope (см. анализ-док §6).",
   "steps": [
     {
       "label": "cc01_status_gate",
@@ -56,6 +56,24 @@
       "patterns": [
         "voice_used"
       ]
+    },
+    {
+      "label": "ds01_speaker_A_tea",
+      "voice": "anton",
+      "text": "Я считаю что чай лучше кофе, это самый лучший напиток во вселенной и ни кто не сможет меня преубедить",
+      "patterns": []
+    },
+    {
+      "label": "ds02_speaker_B_coffee",
+      "voice": "ermil",
+      "text": "Нет, кофе лучше чая, выкуси накуси, только неудачники пьют чай, что вообще может быть лучше ароматного кофия с молочком",
+      "patterns": []
+    },
+    {
+      "label": "ds03_arbiter_zahar",
+      "voice": "zahar",
+      "text": "Робот, а ты как думаешь, кто из них прав, а, РОБОТ?",
+      "patterns": []
     },
     {
       "label": "dj01_start_renardo",

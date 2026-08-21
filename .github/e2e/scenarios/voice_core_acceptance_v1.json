@@ -7,9 +7,11 @@
     "  set_voice          — мульти-голос #1219 (mv01/mv02/mv03)",
     "  execute_music_code — Renardo start (dj01)",
     "  stop_music         — Renardo stop (dj02, после start)",
+    "ds01..ds03 (спор→арбитр) НЕ ожидают конкретных tools: LLM сам решает вызвать",
+    "  что-то или просто ответить. Семантическая проверка — patterns в логах",
+    "  и transcripts для ретро.",
     "ИСКЛЮЧЕНО: generate_music (MiniMax Music API недоступен),",
-    "  gen_delete_from_library, gen_play_from_library, register_speaker,",
-    "  backlog-флоу и multi-speaker dispute — см. анализ-док §6."
+    "  gen_delete_from_library, gen_play_from_library, register_speaker."
   ],
   "expected_tool_calls": [
     "set_voice",
