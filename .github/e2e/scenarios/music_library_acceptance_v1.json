@@ -17,12 +17,16 @@
     "ml07_renardo_path is the NEGATIVE control — must still call execute_music_code",
     "(Renardo live-engine); if LLM wrongly routes «сыграй renardo бит» к gen_*, the",
     "renardo path breaks. Pattern: 'must_not_call' on per-step basis (Renardo steps).",
+    "Top-level 'must_not_call' is therefore EMPTY: execute_music_code is legal for",
+    "the renardo step and forbidden only per-step for gen_* steps (GATE-1 aggregate",
+    "would otherwise flag the legitimate renardo call as a false FAIL).",
     "",
-    "gen_play_from_library is NOT covered by a per-step block because e2e needs a",
-    "pre-existing track in /data/music_library (post-condition of generate_music).",
-    "GATE-1 top-level expected_tool_calls INCLUDES it; per-step coverage is partial",
-    "by design. After ml02_sing_song_about_cat PASSES the robot owns a track, so",
-    "a follow-up voice command «сыграй последний трек» exercises gen_play_from_library",
+    "gen_play_from_library is intentionally NOT in top-level expected_tool_calls:",
+    "the paired scenario music_library_suite_v1.json has no step that exercises it",
+    "(play needs a pre-existing track = post-condition of generate_music). GATE-1",
+    "aggregate is AND-semantics (every expected tool must appear at least once), so",
+    "listing an unexercised tool would guarantee a false FAIL. Cover it in a",
+    "follow-up suite once the scenario gains a «сыграй последний трек» step.",
     "",
     "Voice file format: 48kHz opus OGG, ≤4s, VAD max=12s, volume≥150 (per",
     "VOICE_COMMANDS_RESEARCH.md). Pre-recorded with edge-tts ru-RU-DmitryNeural"
@@ -32,13 +36,10 @@
     "gen_list_library",
     "gen_search_library",
     "gen_save_to_library",
-    "gen_play_from_library",
     "gen_delete_from_library",
     "gen_get_track_info"
   ],
-  "must_not_call": [
-    "execute_music_code"
-  ],
+  "must_not_call": [],
   "must_call_for_renardo_request": [
     "execute_music_code"
   ],

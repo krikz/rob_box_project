@@ -1184,7 +1184,33 @@ detect_fail_kind() {  # $1=artifact_dir $2=run_id
     local dir="$1" run_id="$2" tmpdir="" found=0
     tmpdir="$(mktemp -d 2>/dev/null || echo "${WORKTREE_DIR}/.e2e-infra-$$")"
     mkdir -p "$tmpdir" 2>/dev/null || true
-    # 1) Артефакты рана (логи робота voice_e2e_*.log, acceptance, ...).
+
+    # A) Явный feature-сигнал харнесса (робот ОТВЕТИЛ, но фича-ассерт не
+    #    выполнен: patterns/acceptance/GATE-1 → E2E_FEATURE_FAIL; либо
+    #    LLM/TTS вернул ошибку → E2E_LLM_ERROR). Это баг кода, НЕ infra.
+    #    Проверяем ПЕРВЫМ и в обоих источниках (артефакты + console-логи),
+    #    чтобы infra-маркеры ниже не перебили вердикт.
+    if [ -d "$dir" ] && grep -rhiE -e 'E2E_FEATURE_FAIL' -e 'E2E_LLM_ERROR' "$dir" 2>/dev/null | grep -q .; then
+        rm -rf "$tmpdir" 2>/dev/null || true
+        printf 'feature'
+        return 0
+    fi
+    if [ -n "$run_id" ]; then
+        if curl -sL --max-time 60 -H "Authorization: token $(gh auth token 2>/dev/null || true)" \
+            "https://api.github.com/repos/${GH_REPO}/actions/runs/${run_id}/logs" -o "${tmpdir}/run_logs.zip" 2>/dev/null \
+            && unzip -o -q "${tmpdir}/run_logs.zip" -d "${tmpdir}/logs" 2>/dev/null; then
+            if grep -rhiE -e 'E2E_FEATURE_FAIL' -e 'E2E_LLM_ERROR' "${tmpdir}/logs" 2>/dev/null | grep -q .; then
+                rm -rf "$tmpdir" 2>/dev/null || true
+                printf 'feature'
+                return 0
+            fi
+        fi
+    fi
+
+    # B) Infra-маркеры (квота/fallback/сеть/cleanup/synth). ВАЖНО: маркер
+    #    E2E_NO_REACTION («робот не ответил») сюда НЕ входит — сам по себе
+    #    он не доказывает infra (может быть и фича), см. ретро 10.08 t_9caf5d52.
+    #    1) Артефакты рана (логи робота voice_e2e_*.log, acceptance, ...).
     if [ -d "$dir" ]; then
         if grep -rhiE \
             -e '429[[:space:]]+Too Many Requests' \
@@ -1198,7 +1224,7 @@ detect_fail_kind() {  # $1=artifact_dir $2=run_id
             -e 'Connection timed out' \
             -e 'no route to host' \
             -e 'ssh:[[:space:]]+connect to host' \
-            -e 'E2E_NO_REACTION' \
+            -e 'E2E_INFRA_FAIL' \
             # ретро 11.08 t_26a6d362: артефакт-дир удалена внешним cleanup на 249
             # во время прогона → paplay open(): No such file / verdict.txt: No such
             # file / E2E_ARTIFACTS ... No such file. Это infra (гонка cleanup),
@@ -1229,7 +1255,7 @@ detect_fail_kind() {  # $1=artifact_dir $2=run_id
                 -e 'Connection timed out' \
                 -e 'no route to host' \
                 -e 'ssh:[[:space:]]+connect to host' \
-                -e 'E2E_NO_REACTION' \
+                -e 'E2E_INFRA_FAIL' \
                 "${tmpdir}/logs" 2>/dev/null | grep -q .; then
                 found=1
             fi

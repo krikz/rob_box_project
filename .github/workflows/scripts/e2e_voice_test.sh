@@ -67,6 +67,11 @@ if [ -n "${ROBOT_SSH_OVERRIDE:-}" ]; then
 fi
 YANDEX_TTS_VOICE="${YANDEX_TTS_VOICE:-anton}"       # голос по умолчанию
 YANDEX_SPEED="${YANDEX_SPEED:-1.0}"
+# Причина FAIL (для пост-валидатора и e2e-process::detect_fail_kind).
+# feature > llm_error > synth > no_reaction. feature всегда побеждает:
+# если фича-ассерт (patterns/acceptance/GATE-1) зафейлился — это баг кода,
+# а НЕ «робот не ответил» (иначе e2e-process классифицирует как infra).
+E2E_FAIL_KIND=""
 
 # RUN_ID — уникальный идентификатор прогона. Используем github.run_id если
 # передан (workflow L-E2E Voice Test.yml передаёт GITHUB_RUN_ID в env), иначе
@@ -215,6 +220,18 @@ fi
 
 # --- helpers ----------------------------------------------------------------
 log() { echo ">>> $*"; }
+
+# mark_fail_kind() — запоминает самую информативную причину FAIL.
+# Приоритет: feature > llm_error > synth > no_reaction (feature не понижается).
+mark_fail_kind() {  # $1=kind
+    local kind="$1"
+    case "$kind" in
+        feature)     E2E_FAIL_KIND="feature" ;;
+        llm_error)   [ "$E2E_FAIL_KIND" = "feature" ] || E2E_FAIL_KIND="llm_error" ;;
+        synth)       { [ "$E2E_FAIL_KIND" = "feature" ] || [ "$E2E_FAIL_KIND" = "llm_error" ]; } || E2E_FAIL_KIND="synth" ;;
+        no_reaction) [ -z "$E2E_FAIL_KIND" ] && E2E_FAIL_KIND="no_reaction" ;;
+    esac
+}
 
 # BUG-B (t_f0612a43): имя wav файла строится из ${label} и идёт в heredoc-Python
 # synth_yandex, а также в paplay/ffmpeg. Раньше, если label содержал кириллицу
@@ -626,6 +643,7 @@ run_step() {  # $1=text $2=voice $3=step_label
     if ! synth_yandex "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1; then
         log "STEP ${label}: FAIL — синтез Yandex упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"
         echo "E2E_STEP ${label} FAIL synth"
+        mark_fail_kind synth
         return 1
     fi
     # EQ: highpass 200 + volume 1.2 + alimiter (клиппинг-фикс 514e7e87)
@@ -671,7 +689,7 @@ run_step() {  # $1=text $2=voice $3=step_label
             log "STEP ${label}: cmd_${safe}_eq.wav отсутствует перед play — пере-синтез (cleanup-resilience)"
             ensure_outdir
             synth_yandex "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1 \
-                || { log "STEP ${label}: FAIL — повторный синтез Yandex упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; echo "E2E_STEP ${label} FAIL synth"; return 1; }
+                || { log "STEP ${label}: FAIL — повторный синтез Yandex упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; echo "E2E_STEP ${label} FAIL synth"; mark_fail_kind synth; return 1; }
             ensure_outdir
             ffmpeg -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
         fi
@@ -687,6 +705,7 @@ run_step() {  # $1=text $2=voice $3=step_label
         elif [ "$rc" = "2" ]; then
             log "STEP ${label}: ❌ LLM/TTS ERROR — тест красный, не чиним"
             echo "E2E_STEP ${label} FAIL llm_error (см. $OUT_DIR/llm_error.txt)"
+            mark_fail_kind llm_error
             return 2
         fi
         log "STEP ${label}: нет акцепта (attempt ${attempt}) — повтор"
@@ -696,126 +715,13 @@ run_step() {  # $1=text $2=voice $3=step_label
     if [ "$reaction" != "1" ]; then
         log "STEP ${label}: ❌ NO_ACCEPT после ${E2E_MAX_ATTEMPTS} попыток"
         echo "E2E_STEP ${label} FAIL no_accept"
+        mark_fail_kind no_reaction
         return 1
     fi
 
     # 3. Проверка паттернов (если заданы для шага) — считываются из scenario
     return 0
 }
-
-# --- сценарий или одиночная команда ----------------------------------------
-# Issue #1353: запись микрофона охватывает ВЕСЬ retry-цикл (все шаги, все
-# попытки). Стартуем до if/else, останавливаем в trap EXIT (см. ниже).
-start_recording
-
-# Гарантированная остановка записи при любом завершении (PASS/FAIL/ошибка).
-# stop_recording сам идемпотентен: повторный вызов с пустым REC_PID — noop.
-trap 'stop_recording' EXIT
-
-PASS=1
-if [ -n "$SCENARIO_FILE" ]; then
-    # scenario.json: {"steps":[{"text":"...","voice":"anton","label":"s1",
-    #           "patterns":["save_speaker_profile"],
-    #           "acceptance":{"expected_tool_calls":["generate_music"],
-    #                         "must_not_call":["execute_music_code"],
-    #                         "expected_keywords":["песня"],
-    #                         "response_max_ms":60000}}]}
-    cp "$SCENARIO_FILE" "$OUT_DIR/scenario.json"
-    # Парсим в .tsv: idx \t label \t text \t voice \t patterns_json \t acceptance_json
-    python3 - "$SCENARIO_FILE" <<'PY' > "$OUT_DIR/scenario_parsed.txt"
-import json, sys
-sc = json.load(open(sys.argv[1]))
-for i, s in enumerate(sc.get("steps", [])):
-    pats = s.get('patterns', [])
-    acc = s.get('acceptance', {})
-    print(f"{i}\t{s.get('label', f's{i+1}')}\t{s.get('text','')}\t{s.get('voice','anton')}\t{json.dumps(pats)}\t{json.dumps(acc, ensure_ascii=False)}")
-PY
-    while IFS=$'\t' read -r idx label text voice patterns_json acceptance_json; do
-        [ -z "$idx" ] && continue
-        STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-        run_step "$text" "$voice" "$label"
-        rc=$?
-        # Пишем transcript (даже при FAIL — для ретро-анализа, что STT услышал)
-        parse_transcript "$label" "$STEP_BEFORE" "$text"
-        if [ "$rc" != "0" ]; then
-            PASS=0
-            # Проверяем паттерны даже при FAIL цикла? Нет — красный есть красный.
-            continue
-        fi
-        # Паттерны шага
-        if [ -n "$patterns_json" ] && [ "$patterns_json" != "[]" ]; then
-            pats="$(printf '%s' "$patterns_json" | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin)))')"
-            log "STEP ${label}: проверка паттернов: $pats"
-            check_patterns "$(date -u -d '-6 minutes' +%Y-%m-%dT%H:%M:%SZ)" $pats
-            if [ $? != 0 ]; then
-                PASS=0; log "STEP ${label}: ❌ паттерны не найдены"; echo "E2E_STEP ${label} FAIL patterns"
-            else
-                log "STEP ${label}: ✅ паттерны найдены"; echo "E2E_STEP ${label} OK"
-            fi
-        else
-            echo "E2E_STEP ${label} OK"
-        fi
-        # Acceptance-чек (issue #1396): если в шаге задан блок acceptance,
-        # пишем acceptance.json и (если ERROR) — PASS=0 (хотя цикл прошёл).
-        if [ -n "$acceptance_json" ] && [ "$acceptance_json" != "{}" ]; then
-            OUT_DIR="$OUT_DIR" STEP_LABEL="$label" \
-                check_acceptance "$label" "$acceptance_json" "$STEP_BEFORE"
-            if [ $? != 0 ]; then
-                PASS=0
-                log "STEP ${label}: ❌ acceptance FAIL (см. $OUT_DIR/acceptance.json)"
-                echo "E2E_STEP ${label} FAIL acceptance"
-            else
-                log "STEP ${label}: ✅ acceptance PASS"
-            fi
-        fi
-    done < "$OUT_DIR/scenario_parsed.txt"
-
-    # --- ADR-0022 GATE-1: top-level aggregate acceptance check ---------------
-    # Если --scenario задан и acceptance.json найден, прогоняем aggregate
-    # проверку: каждый expected_tool_calls должен быть вызван хотя бы раз
-    # за весь прогон (в логах docker voice-assistant); ни один из
-    # must_not_call не должен быть вызван. Пишет $OUT_DIR/acceptance.json
-    # с verdict. Если verdict == FAIL → PASS=0.
-    if [ -n "$ACCEPTANCE_FILE" ] && [ -f "$ACCEPTANCE_FILE" ]; then
-        check_gate1_aggregate "$ACCEPTANCE_FILE" "${E2E_RUN_BEFORE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-        if [ $? != 0 ]; then
-            PASS=0
-            log "GATE-1: ❌ aggregate acceptance FAIL (см. $OUT_DIR/acceptance.json)"
-            echo "E2E_GATE1_FAIL"
-        else
-            log "GATE-1: ✅ aggregate acceptance PASS"
-            echo "E2E_GATE1_OK"
-        fi
-    fi
-else
-    STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-    run_step "$TEXT" "${VOICE:-$YANDEX_TTS_VOICE}" "single"
-    rc=$?
-    # Пишем transcript для single-режима
-    parse_transcript "single" "$STEP_BEFORE" "$TEXT"
-    if [ "$rc" != "0" ]; then PASS=0; echo "E2E_STEP single FAIL"; else echo "E2E_STEP single OK"; fi
-    # Дополнительные паттерны (--patterns "a,b,c") — проверяем после цикла
-    if [ "$rc" = "0" ] && [ -n "$PATTERNS" ]; then
-        log "single: проверка паттернов: $PATTERNS"
-        IFS=',' read -r -a pat_arr <<< "$PATTERNS"
-        check_patterns "$(date -u -d '-6 minutes' +%Y-%m-%dT%H:%M:%SZ)" "${pat_arr[@]}"
-        if [ $? != 0 ]; then
-            PASS=0; echo "E2E_STEP single FAIL patterns"
-        else
-            echo "E2E_STEP single OK patterns"
-        fi
-    fi
-fi
-
-# --- финальные артефакты (audio/baseline, запускаются после ВСЕХ шагов) ---
-# Берём voice_text последнего шага (или single) для baseline.
-FINAL_VOICE_TEXT=""
-if [ -n "$SCENARIO_FILE" ]; then
-    FINAL_VOICE_TEXT="$(python3 -c 'import json; print(json.load(open(sys.argv[1]))["steps"][-1].get("text",""))' "$SCENARIO_FILE" 2>/dev/null || echo '')"
-else
-    FINAL_VOICE_TEXT="$TEXT"
-fi
-write_artifacts_audio "$FINAL_VOICE_TEXT"
 
 # --- артефакты e2e (issue #1396) -------------------------------------------
 # В дополнение к verdict.txt харнесс теперь пишет:
@@ -894,20 +800,6 @@ write_artifacts_audio() {
         echo '{"error":"recording.wav not found, baseline diff skipped"}' > "$OUT_DIR/baseline_diff.json"
     fi
 }
-
-# --- ADR-0022 GATE-1 aggregate (top-level) ----------------------------------
-# Возвращает 0 если PASS, 1 если FAIL.
-# В отличие от per-step check_acceptance(), эта функция анализирует ВСЕ
-# логи voice-assistant за весь прогон (агрегированно) и сверяет с
-# top-level expected_tool_calls + must_not_call.
-#
-# Контракт acceptance.json:
-#   expected_tool_calls: list[str]  — каждый должен встретиться хотя бы 1 раз
-#   must_not_call:        list[str]  — НИ ОДНОГО не должно встретиться
-#
-# Пишет $OUT_DIR/acceptance.json (перезаписывает per-step формат, если
-# был). Формат совместим с ADR-0022 §4.1.
-# (Определение check_gate1_aggregate — выше в helpers, рядом с log().)
 
 # Возвращает 0 если acceptance-чек PASS, 1 если FAIL.
 # Acceptance-блок в scenario описывает ожидаемое поведение робота:
@@ -999,6 +891,122 @@ PY
     return $rc
 }
 
+# --- сценарий или одиночная команда ----------------------------------------
+# Issue #1353: запись микрофона охватывает ВЕСЬ retry-цикл (все шаги, все
+# попытки). Стартуем до if/else, останавливаем в trap EXIT (см. ниже).
+start_recording
+
+# Гарантированная остановка записи при любом завершении (PASS/FAIL/ошибка).
+# stop_recording сам идемпотентен: повторный вызов с пустым REC_PID — noop.
+trap 'stop_recording' EXIT
+
+PASS=1
+if [ -n "$SCENARIO_FILE" ]; then
+    # scenario.json: {"steps":[{"text":"...","voice":"anton","label":"s1",
+    #           "patterns":["save_speaker_profile"],
+    #           "acceptance":{"expected_tool_calls":["generate_music"],
+    #                         "must_not_call":["execute_music_code"],
+    #                         "expected_keywords":["песня"],
+    #                         "response_max_ms":60000}}]}
+    cp "$SCENARIO_FILE" "$OUT_DIR/scenario.json"
+    # Парсим в .tsv: idx \t label \t text \t voice \t patterns_json \t acceptance_json
+    python3 - "$SCENARIO_FILE" <<'PY' > "$OUT_DIR/scenario_parsed.txt"
+import json, sys
+sc = json.load(open(sys.argv[1]))
+for i, s in enumerate(sc.get("steps", [])):
+    pats = s.get('patterns', [])
+    acc = s.get('acceptance', {})
+    print(f"{i}\t{s.get('label', f's{i+1}')}\t{s.get('text','')}\t{s.get('voice','anton')}\t{json.dumps(pats)}\t{json.dumps(acc, ensure_ascii=False)}")
+PY
+    while IFS=$'\t' read -r idx label text voice patterns_json acceptance_json; do
+        [ -z "$idx" ] && continue
+        STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+        run_step "$text" "$voice" "$label"
+        rc=$?
+        # Пишем transcript (даже при FAIL — для ретро-анализа, что STT услышал)
+        parse_transcript "$label" "$STEP_BEFORE" "$text"
+        if [ "$rc" != "0" ]; then
+            PASS=0
+            # Проверяем паттерны даже при FAIL цикла? Нет — красный есть красный.
+            continue
+        fi
+        # Паттерны шага
+        if [ -n "$patterns_json" ] && [ "$patterns_json" != "[]" ]; then
+            pats="$(printf '%s' "$patterns_json" | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin)))')"
+            log "STEP ${label}: проверка паттернов: $pats"
+            check_patterns "$(date -u -d '-6 minutes' +%Y-%m-%dT%H:%M:%SZ)" $pats
+            if [ $? != 0 ]; then
+                PASS=0; mark_fail_kind feature; log "STEP ${label}: ❌ паттерны не найдены"; echo "E2E_STEP ${label} FAIL patterns"
+            else
+                log "STEP ${label}: ✅ паттерны найдены"; echo "E2E_STEP ${label} OK"
+            fi
+        else
+            echo "E2E_STEP ${label} OK"
+        fi
+        # Acceptance-чек (issue #1396): если в шаге задан блок acceptance,
+        # пишем acceptance.json и (если ERROR) — PASS=0 (хотя цикл прошёл).
+        if [ -n "$acceptance_json" ] && [ "$acceptance_json" != "{}" ]; then
+            OUT_DIR="$OUT_DIR" STEP_LABEL="$label" \
+                check_acceptance "$label" "$acceptance_json" "$STEP_BEFORE"
+            if [ $? != 0 ]; then
+                PASS=0
+                mark_fail_kind feature
+                log "STEP ${label}: ❌ acceptance FAIL (см. $OUT_DIR/acceptance.json)"
+                echo "E2E_STEP ${label} FAIL acceptance"
+            else
+                log "STEP ${label}: ✅ acceptance PASS"
+            fi
+        fi
+    done < "$OUT_DIR/scenario_parsed.txt"
+
+    # --- ADR-0022 GATE-1: top-level aggregate acceptance check ---------------
+    # Если --scenario задан и acceptance.json найден, прогоняем aggregate
+    # проверку: каждый expected_tool_calls должен быть вызван хотя бы раз
+    # за весь прогон (в логах docker voice-assistant); ни один из
+    # must_not_call не должен быть вызван. Пишет $OUT_DIR/acceptance.json
+    # с verdict. Если verdict == FAIL → PASS=0.
+    if [ -n "$ACCEPTANCE_FILE" ] && [ -f "$ACCEPTANCE_FILE" ]; then
+        check_gate1_aggregate "$ACCEPTANCE_FILE" "${E2E_RUN_BEFORE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+        if [ $? != 0 ]; then
+            PASS=0
+            mark_fail_kind feature
+            log "GATE-1: ❌ aggregate acceptance FAIL (см. $OUT_DIR/acceptance.json)"
+            echo "E2E_GATE1_FAIL"
+        else
+            log "GATE-1: ✅ aggregate acceptance PASS"
+            echo "E2E_GATE1_OK"
+        fi
+    fi
+else
+    STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    run_step "$TEXT" "${VOICE:-$YANDEX_TTS_VOICE}" "single"
+    rc=$?
+    # Пишем transcript для single-режима
+    parse_transcript "single" "$STEP_BEFORE" "$TEXT"
+    if [ "$rc" != "0" ]; then PASS=0; echo "E2E_STEP single FAIL"; else echo "E2E_STEP single OK"; fi
+    # Дополнительные паттерны (--patterns "a,b,c") — проверяем после цикла
+    if [ "$rc" = "0" ] && [ -n "$PATTERNS" ]; then
+        log "single: проверка паттернов: $PATTERNS"
+        IFS=',' read -r -a pat_arr <<< "$PATTERNS"
+        check_patterns "$(date -u -d '-6 minutes' +%Y-%m-%dT%H:%M:%SZ)" "${pat_arr[@]}"
+        if [ $? != 0 ]; then
+            PASS=0; mark_fail_kind feature; echo "E2E_STEP single FAIL patterns"
+        else
+            echo "E2E_STEP single OK patterns"
+        fi
+    fi
+fi
+
+# --- финальные артефакты (audio/baseline, запускаются после ВСЕХ шагов) ---
+# Берём voice_text последнего шага (или single) для baseline.
+FINAL_VOICE_TEXT=""
+if [ -n "$SCENARIO_FILE" ]; then
+    FINAL_VOICE_TEXT="$(python3 -c 'import json; print(json.load(open(sys.argv[1]))["steps"][-1].get("text",""))' "$SCENARIO_FILE" 2>/dev/null || echo '')"
+else
+    FINAL_VOICE_TEXT="$TEXT"
+fi
+write_artifacts_audio "$FINAL_VOICE_TEXT"
+
 if [ "$PASS" = "1" ]; then
     echo "E2E_VERDICT PASS"
     echo "E2E_REACTION_OK"    # маркер для пост-валидатора (в stdout → e2e_atomic_out.log)
@@ -1034,11 +1042,24 @@ if [ "$PASS" = "1" ]; then
         >/dev/null 2>&1 || true
 else
     echo "E2E_VERDICT FAIL"
-    echo "E2E_NO_REACTION"    # маркер для пост-валидатора (в stdout → e2e_atomic_out.log)
+    # Маркер ПРИЧИНЫ отказа (для пост-валидатора и detect_fail_kind):
+    #   E2E_FEATURE_FAIL — робот ответил, но фича-ассерт (patterns/
+    #                      acceptance/GATE-1) не выполнен → баг кода
+    #   E2E_LLM_ERROR    — LLM/TTS вернул ошибку (не квота/fallback)
+    #   E2E_INFRA_FAIL   — синтез/воспроизведение упали на билд-машине
+    #   E2E_NO_REACTION  — робот не ответил (дефолт, самый слабый сигнал)
+    fail_marker=""
+    case "${E2E_FAIL_KIND:-no_reaction}" in
+        feature)    fail_marker="E2E_FEATURE_FAIL" ;;
+        llm_error)  fail_marker="E2E_LLM_ERROR" ;;
+        synth)      fail_marker="E2E_INFRA_FAIL" ;;
+        *)          fail_marker="E2E_NO_REACTION" ;;
+    esac
+    echo "$fail_marker"
     ensure_outdir
     echo "FAIL" > "$OUT_DIR/verdict.txt"
     ${ROBOT_SSH} \
-        "docker exec voice-assistant bash -c 'echo E2E_NO_REACTION > /proc/1/fd/1'" \
+        "docker exec voice-assistant bash -c 'echo ${fail_marker} > /proc/1/fd/1'" \
         >/dev/null 2>&1 || true
 fi
 echo "E2E_ARTIFACTS $OUT_DIR"

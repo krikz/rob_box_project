@@ -23,10 +23,12 @@ import pytest
 
 SCENARIOS_DIR = Path(__file__).resolve().parents[3] / ".github/e2e/scenarios"
 
-# All 7 new MCP tools introduced by PR #1398 (issue #1358). The acceptance.json
-# MUST list every one of them in the top-level ``expected_tool_calls`` so that
-# the GATE-1 jq check `'.expected_tool_calls and .must_not_call'` passes and the
-# validator knows the full feature surface is covered.
+# All 7 new MCP tools introduced by PR #1398 (issue #1358). The top-level
+# ``expected_tool_calls`` covers the 6 tools EXERCISED by the paired scenario
+# music_library_suite_v1.json. ``gen_play_from_library`` is intentionally
+# excluded: the scenario has no step that plays a saved track (play needs a
+# pre-existing track = post-condition of generate_music), and GATE-1 aggregate
+# is AND-semantics — listing an unexercised tool would guarantee a false FAIL.
 ALL_7_GEN_TOOLS = (
     "generate_music",
     "gen_list_library",
@@ -36,6 +38,7 @@ ALL_7_GEN_TOOLS = (
     "gen_delete_from_library",
     "gen_get_track_info",
 )
+EXERCISED_GEN_TOOLS = tuple(t for t in ALL_7_GEN_TOOLS if t != "gen_play_from_library")
 
 
 def _acceptance_path() -> Path:
@@ -74,30 +77,50 @@ class TestGate1TopLevelSchema:
             "agent-flow-e2e-process.sh will refuse to set e2e-done."
         )
         assert isinstance(a["must_not_call"], list)
-        assert len(a["must_not_call"]) > 0
+        # Top-level must_not_call may be EMPTY: execute_music_code is legal for
+        # the renardo negative-control step and is forbidden per-step only.
 
-    def test_expected_tool_calls_covers_all_seven_gen_tools(self) -> None:
-        """All 7 new MiniMax tools MUST appear in expected_tool_calls (ADR-0022 §5.3).
+    def test_expected_tool_calls_covers_exercised_gen_tools(self) -> None:
+        """The 6 gen_* tools exercised by music_library_suite_v1.json MUST appear
+        in expected_tool_calls (ADR-0022 §5.3, AND-semantics).
 
-        Without ``gen_play_from_library`` listed, the validator cannot enforce
-        that the robot knows how to play a generated mp3.
+        gen_play_from_library is intentionally excluded — the scenario has no
+        step that plays a saved track, and listing an unexercised tool would
+        guarantee a false GATE-1 FAIL.
         """
         a = _load_acceptance()
         expected = set(a.get("expected_tool_calls", []))
-        missing = set(ALL_7_GEN_TOOLS) - expected
+        missing = set(EXERCISED_GEN_TOOLS) - expected
         assert not missing, (
             f"Top-level expected_tool_calls missing: {sorted(missing)}. "
-            "ADR-0022 §5.3 says: 'Один acceptance.json покрывает все новые tools.'"
+            "ADR-0022 §5.3 says: 'Если хотя бы один не работает — e2e-done не ставится.'"
+        )
+        assert "gen_play_from_library" not in expected, (
+            "gen_play_from_library must NOT be in top-level expected_tool_calls: "
+            "the scenario music_library_suite_v1.json does not exercise it "
+            "(GATE-1 aggregate is AND-semantics → false FAIL otherwise)."
         )
 
-    def test_execute_music_code_in_must_not_call(self) -> None:
-        """Voice vocal requests («спой песенку») MUST NOT route to Renardo."""
+    def test_gen_steps_forbid_execute_music_code_per_step(self) -> None:
+        """Voice vocal requests («спой песенку»/gen_*) MUST NOT route to Renardo.
+
+        execute_music_code is forbidden PER-STEP for every gen_* step (the #1403
+        regression: LLM replied «у меня нет такой функции»). Top-level
+        must_not_call stays EMPTY because the renardo negative-control step
+        legitimately calls execute_music_code.
+        """
         a = _load_acceptance()
-        assert "execute_music_code" in a.get("must_not_call", []), (
-            "execute_music_code must be in must_not_call — otherwise the e2e "
-            "validator cannot detect the bug #1403 regression ('LLM replied "
-            "'у меня нет такой функции')."
-        )
+        gen_steps = [
+            s for s in a.get("steps", [])
+            if s.get("acceptance", {}).get("expected_tool_calls")
+            and "execute_music_code" not in s["acceptance"]["expected_tool_calls"]
+        ]
+        assert gen_steps, "expected gen_* steps with per-step acceptance blocks"
+        for s in gen_steps:
+            assert "execute_music_code" in s["acceptance"].get("must_not_call", []), (
+                f"gen_* step '{s.get('label')}' must forbid execute_music_code "
+                "per-step (top-level must_not_call is empty by design)"
+            )
 
 
 # ───────────────────────── Per-step acceptance blocks ─────────────────────────
