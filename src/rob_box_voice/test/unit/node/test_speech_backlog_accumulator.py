@@ -88,12 +88,22 @@ class TestWakeFlushes:
         assert "расскажи про погоду" in dispatched
         node._dispatch_turn.assert_called_once()
 
-    def test_wake_with_real_command_does_not_inject_hint(self, node):
+    def test_wake_with_real_command_injects_hint(self, node):
         node._on_stt(_stt(node, "расскажи про погоду"))
         node._on_stt(_stt(node, "робот включи свет"))
         dispatched = node._dispatch_turn.call_args.args[0]
-        assert dispatched == "включи свет"
-        assert "ФОНОВЫЙ ЗАПРОС" not in dispatched
+        assert dispatched.startswith("включи свет")
+        assert "ФОНОВЫЙ ЗАПРОС" in dispatched
+        assert "расскажи про погоду" in dispatched
+        node._dispatch_turn.assert_called_once()
+
+    def test_vague_follow_up_injects_hint(self, node):
+        node._on_stt(_stt(node, "расскажи про погоду"))
+        node._on_stt(_stt(node, "робот может ты"))
+        dispatched = node._dispatch_turn.call_args.args[0]
+        assert dispatched.startswith("может ты")
+        assert "ФОНОВЫЙ ЗАПРОС" in dispatched
+        assert "расскажи про погоду" in dispatched
         node._dispatch_turn.assert_called_once()
 
     def test_empty_backlog_no_flag(self, node):
