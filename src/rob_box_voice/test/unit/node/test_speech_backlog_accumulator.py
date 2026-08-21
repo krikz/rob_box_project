@@ -83,7 +83,17 @@ class TestWakeFlushes:
         node._on_stt(_stt(node, "робот"))
         assert node._pending_backlog_flush is True
         dispatched = node._dispatch_turn.call_args.args[0]
-        assert dispatched == "робот"
+        assert dispatched.startswith("робот")
+        assert "ФОНОВЫЙ ЗАПРОС" in dispatched
+        assert "расскажи про погоду" in dispatched
+        node._dispatch_turn.assert_called_once()
+
+    def test_wake_with_real_command_does_not_inject_hint(self, node):
+        node._on_stt(_stt(node, "расскажи про погоду"))
+        node._on_stt(_stt(node, "робот включи свет"))
+        dispatched = node._dispatch_turn.call_args.args[0]
+        assert dispatched == "включи свет"
+        assert "ФОНОВЫЙ ЗАПРОС" not in dispatched
         node._dispatch_turn.assert_called_once()
 
     def test_empty_backlog_no_flag(self, node):

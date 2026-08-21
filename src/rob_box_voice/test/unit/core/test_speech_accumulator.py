@@ -74,3 +74,16 @@ class TestSpeechAccumulator:
         acc.add('а < b & c > "d"', speaker_tag="0", speaker_name="Антон")
         block = acc.format_block()
         assert "&lt;" in block and "&gt;" in block and "&amp;" in block
+
+    def test_format_user_hint(self):
+        acc = SpeechAccumulator()
+        acc.add("напомни позвонить маме", speaker_tag="0", speaker_name="Антон")
+        hint = acc.format_user_hint()
+        assert hint is not None
+        assert "ФОНОВЫЙ ЗАПРОС" in hint
+        assert "напомни позвонить маме" in hint
+        assert "Антон" in hint
+
+    def test_format_user_hint_empty_returns_none(self):
+        acc = SpeechAccumulator()
+        assert acc.format_user_hint() is None
