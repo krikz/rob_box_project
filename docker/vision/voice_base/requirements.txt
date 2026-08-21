@@ -59,9 +59,15 @@ yandex-cloud-ml-sdk  # Yandex Cloud TTS/STT gRPC API v3 (anton voice!)
 # =============================================================================
 # Dialogue system: OpenAI Agents SDK (wraps DeepSeek/Qwen via base_url)
 # Used in: rob_box_voice/dialogue_node.py
+#
+# NOTE: openai-agents 0.21.0+ requires openai>=3.0.0, which conflicts with the
+# openai<3.0.0 pin above. The unbounded `<1.0.0` ceiling made pip backtrack for
+# hours through every openai-agents/mcp/uvicorn/click/yandexcloud version on the
+# slow ARM64 runner (build-voice-base timed out after 2h+). Pin the ceiling to
+# the last series compatible with openai 2.x.
 # =============================================================================
 openai>=2.53.0,<3.0.0
-openai-agents>=0.19.4,<1.0.0
+openai-agents>=0.19.4,<0.21.0
 
 # =============================================================================
 # Music synthesis: Renardo (Python FoxDot successor) + SuperCollider via OSC
