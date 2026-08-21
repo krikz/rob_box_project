@@ -2,14 +2,17 @@
   "name": "voice_core_e2e_acceptance_v1",
   "schema_version": 1,
   "_comment": [
-    "ADR-0022 GATE-1 acceptance contract for voice_core_suite_v1.json.",
-    "Top-level expected_tool_calls is AND-semantics: every listed tool must appear",
-    "at least once in the whole run. Music chain = execute_music_code (start Renardo)",
-    "+ stop_music (stop). generate_music is intentionally EXCLUDED (MiniMax Music API",
-    "unavailable); gen_delete_from_library is intentionally EXCLUDED (not needed now).",
-    "must_not_call stays EMPTY at top-level — per-step constraints live in the steps."
+    "ADR-0022 GATE-1 acceptance for voice_core_suite_v1.json.",
+    "AND-semantics: каждый listed tool должен встретиться хотя бы раз за весь прогон.",
+    "  set_voice          — мульти-голос #1219 (mv01/mv02/mv03)",
+    "  execute_music_code — Renardo start (dj01)",
+    "  stop_music         — Renardo stop (dj02, после start)",
+    "ИСКЛЮЧЕНО: generate_music (MiniMax Music API недоступен),",
+    "  gen_delete_from_library, gen_play_from_library, register_speaker,",
+    "  backlog-флоу и multi-speaker dispute — см. анализ-док §6."
   ],
   "expected_tool_calls": [
+    "set_voice",
     "execute_music_code",
     "stop_music"
   ],
