@@ -1,6 +1,6 @@
 {
   "name": "voice_core_suite_v1",
-  "description": "E2E для больших голосовых фич (последние 2 недели): command-intent gate (#1279), new-session reset, альтернативный wake word (#1252), music stop (#1358 DJ guard). Маркеры сверены с кодом dialogue_node.py / command_node.py (см. docs/analysis/voice-features-e2e-validation-2026-08-22.md).",
+  "description": "E2E для больших голосовых фич (последние 2 недели): command-intent gate (#1279), new-session reset, альтернативный wake word (#1252), music start/stop (#1358). Музыка стартует через Renardo (execute_music_code) — MiniMax generate_music ИСКЛЮЧЁН (недоступен), gen_delete_from_library ИСКЛЮЧЁН. Маркеры сверены с кодом dialogue_node.py / command_node.py.",
   "steps": [
     {
       "label": "cc01_status_gate",
@@ -26,7 +26,23 @@
       "patterns": []
     },
     {
-      "label": "dj01_stop_music",
+      "label": "dj01_start_renardo",
+      "voice": "anton",
+      "text": "Робот, сыграй renardo бит",
+      "patterns": [
+        "execute_music_code"
+      ],
+      "acceptance": {
+        "expected_tool_calls": [
+          "execute_music_code"
+        ],
+        "must_not_call": [
+          "generate_music"
+        ]
+      }
+    },
+    {
+      "label": "dj02_stop_music",
       "voice": "anton",
       "text": "Робот, стоп музыку",
       "patterns": [
