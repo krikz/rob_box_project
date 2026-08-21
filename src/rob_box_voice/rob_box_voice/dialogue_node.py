@@ -1635,12 +1635,15 @@ class DialogueNode(Node):
             and not accumulator.is_empty()
         )
         clean = strip_wake_word(text, self._wake_words)
+        bare_wake_with_backlog = False
         if not clean:
             if backlog_pending:
                 # Голое wake-слово («робот»): user_input не должен быть
-                # пустым — оставляем исходную фразу как сигнал, бэклог
-                # уйдёт в <system_context>.
+                # пустым — оставляем исходную фразу как сигнал, а бэклог
+                # подмешиваем в user-turn ниже (иначе модель читает его
+                # как телеметрию из <system_context> и игнорирует).
                 clean = text
+                bare_wake_with_backlog = True
             else:
                 self._llm_skipped_counter["empty_after_strip"] += 1
                 self.get_logger().info(
@@ -1717,6 +1720,10 @@ class DialogueNode(Node):
         self._dsm.on_event(DialogueEvent.STT_RESULT)
         self._publish_state()
         raw_user_command = clean
+        if bare_wake_with_backlog:
+            hint = accumulator.format_user_hint()
+            if hint:
+                clean = f"{clean}\n{hint}"
         if self._dj.state.enabled:
             clean = self._dj.preamble() + clean
         if self._verbose_llm:

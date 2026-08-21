@@ -105,3 +105,25 @@ class SpeechAccumulator:
             lines.append(f'  <entry speaker_tag="{tag}" speaker="{speaker}" ' f'ago_s="{ago_s}">{text}</entry>')
         lines.append("</speech_backlog>")
         return "\n".join(lines)
+
+    def format_user_hint(self, now: Optional[float] = None) -> Optional[str]:
+        """Plain-text подсказка для user-сообщения (не телеметрия).
+
+        В отличие от :meth:`format_block`, который уходит в
+        ``<system_context>`` как телеметрия, этот текст подставляется в
+        user-turn, чтобы модель восприняла фоновую речь как отложенный
+        запрос пользователя, а не метаданные.
+        """
+        self.prune(now)
+        if self.is_empty():
+            return None
+        lines = [
+            "[ФОНОВЫЙ ЗАПРОС] До обращения (без wake-слова) прозвучало:",
+        ]
+        for entry in self._entries:
+            speaker = entry["speaker_name"] or "незнакомец"
+            lines.append(f'- {speaker}: «{entry["text"]}»')
+        lines.append(
+            "Выполни последний явный запрос из списка или ответь по сути. " "НЕ здоровайся и НЕ переспрашивай."
+        )
+        return "\n".join(lines)
