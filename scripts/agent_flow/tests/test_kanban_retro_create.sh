@@ -257,6 +257,21 @@ test_I_list_failure_degradation() {
     unset KANBAN_LIST_FAIL
 }
 
+# J. --skill с категорийным (не плоским) именем больше не режется guard'ом
+#    (ADR-0023: guard с плоской моделью удалён; fail-fast при unknown skill
+#    делает vendor-патч на `kanban create`). Карточка создаётся, скилл
+#    pass-through.
+test_J_category_skill_not_rejected() {
+    reset_fixture
+    local out
+    out="$(run_retro_create --title "ретро: sdlc категория" \
+        --body "b" --assignee devops --skill sdlc-review 2>&1)"
+    assert_contains "CREATED t_testNEW" "$out" "category-nested skill does not block create" || return 1
+    local journal
+    journal="$(cat "$KANBAN_JOURNAL")"
+    assert_contains "--skill sdlc-review" "$journal" "skill passed through" || return 1
+}
+
 # ============================================================================
 # Run
 # ============================================================================
@@ -269,6 +284,7 @@ run_test "F. dry-run + existing → SKIP" test_F_dry_run_skip
 run_test "G. key fallback from title (slugify)" test_G_key_fallback_from_title
 run_test "H. usage error without --assignee" test_H_usage_error
 run_test "I. list failure degradation" test_I_list_failure_degradation
+run_test "J. category-nested skill → create (guard removed)" test_J_category_skill_not_rejected
 
 echo
 echo "TOTAL: $TESTS_TOTAL  PASS: $TESTS_PASSED  FAIL: $TESTS_FAILED"
