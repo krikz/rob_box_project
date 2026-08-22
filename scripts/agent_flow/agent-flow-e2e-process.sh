@@ -2342,6 +2342,28 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
         fi
     fi
     [ -n "$e2e_acceptance_file" ] && e2e_args+=(-f "acceptance_file=$e2e_acceptance_file")
+    # --- type:testing gate (ретро 22.08 t_944df2c5, issue #1506) --------------
+    # Для type:testing задач smoke-default («Робот, спой песенку про енотика»)
+    # НЕ валидирует acceptance исходной задачи. Требуем явный scenario_file +
+    # acceptance_file; иначе — silent skip валидации → «красивый PASS вместо
+    # честного FAIL» (ADR-0018). Если воркер не задал артефакты — skip с
+    # warning, не жечь e2e-раунд вхолостую.
+    if has_label "$labels_norm" "type:testing"; then
+        if [ -z "$e2e_scenario_file" ] || [ -z "$e2e_acceptance_file" ]; then
+            log "issue #${number}: type:testing, но scenario_file=${e2e_scenario_file:-empty} acceptance_file=${e2e_acceptance_file:-empty} — skip (нужен явный e2e-артефакт)"
+            if [ "$DRY_RUN" != "true" ]; then
+                # 24h dedup — issue остаётся needs-e2e, тик повторяется (~1ч).
+                _tt_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+                _tt_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_tt_since}&per_page=100" \
+                    --jq '[.[] | select(.body | contains("type:testing") and contains("smoke-default не валидирует"))] | length' 2>/dev/null || echo 0)"
+                if [ "${_tt_dup:-0}" -eq 0 ]; then
+                    gh issue comment "$number" --repo "$GH_REPO" --body \
+                        "agent-flow: ⚠️ e2e skipped — issue #${number} имеет \`type:testing\`, но \`scenario_file\`/\\\`acceptance_file\\\` не заданы в блоке \`## e2e\`. Для type:testing smoke-default не валидирует acceptance (ADR-0018). Задай явно \`scenario_file\` + \`acceptance_file\` и пере-триггерни." >/dev/null 2>&1 || true
+                fi
+            fi
+            skipped=$((skipped+1)); continue
+        fi
+    fi
     # Issue #1196 L2 — полуавтомат-проверка эха telegram↔dialogue
     # (check_tg_echo: true в блоке ## e2e).
     if [ "${e2e_check_tg_echo:-false}" = "true" ] || [ "${e2e_check_tg_echo:-false}" = "1" ]; then
