@@ -250,8 +250,13 @@ def _read_scenario() -> dict:
 
 
 def _mv03_step(scenario: dict) -> dict | None:
+    # Лейбл в voice_core_suite_v1.json переименован (mv03_skazka_raznymi_golosami),
+    # исторически был mv03_two_voices_skazka. Поддерживаем оба + fallback по тексту.
     for step in scenario.get("steps", []):
-        if step.get("label") == "mv03_two_voices_skazka":
+        if step.get("label") in ("mv03_two_voices_skazka", "mv03_skazka_raznymi_golosami"):
+            return step
+    for step in scenario.get("steps", []):
+        if "разными голосами" in step.get("text", ""):
             return step
     return None
 
