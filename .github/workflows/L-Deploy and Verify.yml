@@ -489,6 +489,7 @@ jobs:
 
       - name: "Wait for Container Initialization"
         if: '!inputs.dry_run'
+        id: wait_init
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "⏳ Waiting for containers to initialize..."
@@ -1064,10 +1065,25 @@ jobs:
           echo ""
 
           # Определяем общий статус
-          if [ "${{ steps.vision_status.outputs.vision_healthy }}" == "true" ] && \
-             [ "${{ steps.main_status.outputs.main_healthy }}" == "true" ] && \
-             [ "${{ steps.vision_logs.outputs.critical_count || 0 }}" -eq 0 ] && \
-             [ "${{ steps.main_logs.outputs.critical_count || 0 }}" -eq 0 ]; then
+          # Ретро 22.08 #1522 (round-179 false-positive): если run был отменён
+          # пользователем или job прервался до Check Container Status —
+          # outputs vision_healthy/main_healthy пустые, и старое условие
+          # ложно срабатывало на "❌ DEPLOYMENT COMPLETED WITH ISSUES" +
+          # создавался deploy-issue. Теперь распознаём отменённый/прерванный run
+          # явно: ни success, ни issues → отдельный статус "cancelled".
+          if [ "${{ steps.wait_init.conclusion }}" = "cancelled" ] || \
+             [ "${{ steps.wait_init.conclusion }}" = "skipped" ]; then
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "⚠️  DEPLOYMENT RUN CANCELLED OR SKIPPED"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "Run was cancelled by user or interrupted before health checks completed."
+            echo "Container Status: ${{ steps.vision_status.outputs.vision_healthy || 'unknown' }} / ${{ steps.main_status.outputs.main_healthy || 'unknown' }}"
+            echo "No deploy-issue will be created — this is not a deployment failure."
+            echo "deploy_status=cancelled" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.vision_status.outputs.vision_healthy }}" == "true" ] && \
+               [ "${{ steps.main_status.outputs.main_healthy }}" == "true" ] && \
+               [ "${{ steps.vision_logs.outputs.critical_count || 0 }}" -eq 0 ] && \
+               [ "${{ steps.main_logs.outputs.critical_count || 0 }}" -eq 0 ]; then
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "✅ DEPLOYMENT SUCCESSFUL"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
