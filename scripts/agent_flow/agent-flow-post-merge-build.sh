@@ -33,7 +33,7 @@
 #
 # Поведение:
 #   1. Проверяет, что ветка — develop или main (не feature/copilot/test).
-#   2. Запускает L-Build-All-Services через `gh workflow run` с retry.
+#   2. Запускает L-Build-All-Services через `gh workflow run` с retry+dedup.
 #   3. НЕ блокирует merge-gate: ошибка триггера = warning + continue.
 #   4. Идемпотентен: запуск с тем же (pr_number, branch) подряд — окей,
 #      GitHub сериализует одинаковые workflow по workflow_name+head_branch.
@@ -98,23 +98,89 @@ if ! gh workflow view "$BUILD_WORKFLOW" --repo "$GH_REPO" >/dev/null 2>&1; then
     exit 0
 fi
 
-# --- trigger with retry ------------------------------------------------------
-# Ретро 10.08 #1: gh workflow run может вернуть non-zero exit сразу после
-# свежего push (GitHub API rate-limit / eventual consistency). Retry 3 раза
-# с backoff.
-# Issue #1527: пробрасываем трейсинг-поля triggered_by_*, чтобы в CI job
-# logs было видно кто реально стартанул этот build (пост-merge из merge-gate).
-# Значения:
+# --- trigger with dedup + retry ---------------------------------------------
+# Issue #1535 / ретро 10.08 #1: gh workflow run может вернуть non-zero exit
+# СРАЗУ после старта (GitHub API rate-limit / eventual consistency / network
+# race после push). Старый retry 3 раза спамил дубликаты workflow runs
+# даже когда ПЕРВЫЙ уже стартанул — issue #1535: 2 одинаковых build на
+# develop за 57 секунд.
+#
+# Новый подход (дедупликация через `gh run list`):
+#   1. `gh workflow run` → если OK → success.
+#   2. Если FAILED → проверяем `gh run list --workflow=... --limit=1`:
+#      если самый свежий run — наш workflow на $PR_BASE и создан недавно
+#      (≤ 60 сек назад) → это race: build на самом деле стартанул, а API
+#      вернул ошибку. Считаем SUCCESS — retry НЕ нужен.
+#   3. Только если run не найден → реальная ошибка API → 1 retry (было 3).
+#   4. Если retry тоже failed — exit 0 (non-fatal), merge-gate продолжает.
+#
+# Это сокращает спам дублей с 3 до 1 и обрабатывает корневую причину:
+# API ошибку после успешного старта workflow.
+#
+# Issue #1527 (df6131c9 в develop): пробрасываем трейсинг-поля
+# triggered_by_*, чтобы в CI job logs было видно кто реально стартанул
+# этот build (пост-merge из merge-gate). Значения:
 #   - triggered_by_script = "agent-flow-post-merge-build"
-#   - triggered_by_agent  = "merge-gate" (по умолчанию; можно override через env)
-#   - triggered_by_card   = пусто (merge-gate не знает про конкретную карточку,
-#     но может быть подсказан через env TRIGGERED_BY_CARD из upstream-сценариев)
+#   - triggered_by_agent  = "merge-gate" (можно override через TRIGGERED_BY_AGENT)
+#   - triggered_by_card   = пусто (merge-gate не знает про конкретную
+#     карточку, но может быть подсказан через TRIGGERED_BY_CARD)
 #   - triggered_by_reason = "post-merge PR #${PR_NUMBER} → ${PR_BASE}"
 _TBS="${AGENT_FLOW_SCRIPT:-agent-flow-post-merge-build}"
 _TBA="${TRIGGERED_BY_AGENT:-merge-gate}"
 _TBC="${TRIGGERED_BY_CARD:-}"
 _TBR="post-merge PR #${PR_NUMBER} → ${PR_BASE}"
-for attempt in 1 2 3; do
+verify_recent_run() {
+    # $1 = window_seconds (default 60). Echo: 'ok' если свежий run найден,
+    # иначе 'miss'. Использует $BUILD_WORKFLOW, $GH_REPO, $PR_BASE из env.
+    #
+    # Возвращает:
+    #   ok   — созданный за последние $window сек run для $BUILD_WORKFLOW
+    #          на $PR_BASE найден в `gh run list` (race condition detected)
+    #   miss — иначе (нет run, run старый, или API ошибка)
+    #
+    # НЕ использует jq (его может не быть в PATH на роботе) — парсит JSON
+    # через python3 (всегда есть в hermes-agent venv).
+    local window="${1:-60}"
+    local now
+    now="$(date -u +%s)"
+    # gh run list → JSON массив runs. createdAt в ISO 8601 (UTC).
+    # Парсим через python3 (на роботе python3 — стандарт).
+    local runs_json
+    runs_json="$(gh run list --workflow "$BUILD_WORKFLOW" --repo "$GH_REPO" \
+        --branch "$PR_BASE" --limit 1 --json databaseId,createdAt 2>/dev/null || true)"
+    if [ -z "$runs_json" ]; then
+        echo "miss"; return 0
+    fi
+    local created_at
+    created_at="$(printf '%s' "$runs_json" | python3 -c '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    if not data:
+        sys.exit(0)
+    print(data[0].get("createdAt", ""))
+except Exception:
+    sys.exit(0)
+')"
+    if [ -z "$created_at" ]; then
+        echo "miss"; return 0
+    fi
+    local created_epoch
+    created_epoch="$(date -d "$created_at" +%s 2>/dev/null || echo 0)"
+    if [ "$created_epoch" -eq 0 ]; then
+        echo "miss"; return 0
+    fi
+    local age=$((now - created_epoch))
+    if [ "$age" -ge 0 ] && [ "$age" -le "$window" ]; then
+        echo "ok"
+    else
+        echo "miss"
+    fi
+}
+
+MAX_ATTEMPTS="${POST_MERGE_BUILD_MAX_ATTEMPTS:-2}"  # 2 = 1 попытка + 1 retry
+DEDUP_WINDOW="${POST_MERGE_BUILD_DEDUP_WINDOW:-60}"  # секунд
+for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
     # ВАЖНО: НЕ глушим stderr — `run()` пишет DRY-RUN маркер в stderr,
     # который тесты ловят. `gh workflow run` пишет прогресс в stderr сам —
     # он НЕ критичный для нас (мы не parse'им), но и не должен
@@ -134,10 +200,23 @@ for attempt in 1 2 3; do
         fi
         exit 0
     fi
-    log "⚠️ gh workflow run attempt ${attempt}/3 failed — retry in $((attempt*5))s"
-    sleep $((attempt*5))
+    log "⚠️ gh workflow run attempt ${attempt}/${MAX_ATTEMPTS} failed — checking for race-condition run"
+    if [ "$DRY_RUN" = "true" ]; then
+        # DRY-RUN mode: skip dedup (gh run list would also hit real API).
+        log "   (DRY-RUN: skipping gh run list dedup check)"
+    else
+        race_check="$(verify_recent_run "$DEDUP_WINDOW")"
+        if [ "$race_check" = "ok" ]; then
+            log "✅ recent run detected via gh run list — race condition; treating as success (attempt ${attempt})"
+            exit 0
+        fi
+        log "   no recent run → real API failure"
+    fi
+    if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+        sleep $((attempt*5))
+    fi
 done
 
-log "❌ ${BUILD_WORKFLOW} trigger failed after 3 attempts (PR #${PR_NUMBER} → ${PR_BASE})"
+log "❌ ${BUILD_WORKFLOW} trigger failed after ${MAX_ATTEMPTS} attempts (PR #${PR_NUMBER} → ${PR_BASE})"
 log "   merge-gate continues; manual retry: gh workflow run ${BUILD_WORKFLOW} --repo ${GH_REPO} --ref ${PR_BASE} -f triggered_by_script=manual -f triggered_by_agent=human -f triggered_by_reason=\"manual retry\""
 exit 0  # non-fatal: merge-gate не должен падать из-за build trigger
