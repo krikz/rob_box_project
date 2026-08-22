@@ -230,34 +230,32 @@ def test_gh_workflow_run_failure_retries_but_exits_zero(
     )
 
 
-def test_race_condition_dedup_skips_retry(
+def test_recent_run_skips_dispatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Issue #1535: gh workflow run fails but a run was already started.
+    """Pre-dispatch dedup (issue #1535 follow-up): a recent build on the
+    same workflow+branch means the push-trigger (or a previous merge-gate
+    tick / a manual run) already covered this merge — skip WITHOUT calling
+    ``gh workflow run`` at all.
 
-    This is the root-cause scenario: GitHub API returns an error after the
-    workflow is actually accepted. With the OLD code, the script would
-    retry and create duplicate workflow runs. With the NEW code, after the
-    failure the script calls ``gh run list`` and sees a recent run on the
-    same workflow+branch → treats it as success and exits 0 WITHOUT retry.
+    merge-gate fires this backup on every tick while a merged issue stays
+    open; GitHub does NOT dedupe workflow_dispatch by workflow_name+branch.
+    The pre-dispatch guard makes the script idempotent per branch.
 
-    Total calls to ``gh workflow run``: exactly 1 (no duplicate).
+    Total calls to ``gh workflow run``: exactly 0.
     """
     bin_dir = tmp_path / "bin"
     log_file = tmp_path / "workflow_run.log"
     run_list_log = tmp_path / "run_list.json"
-    # createdAt must be within the 60s dedup window from script's `date -u`.
-    # We compute "now - 5s" via python3 to be robust against clock skew
-    # between test runner and script-internal `date -u`.
+    # createdAt within the 900s pre-dispatch window, but older than the 60s
+    # race window — models a build started by the push-trigger ~5 min ago.
     now_iso = subprocess.run(
         ["python3", "-c",
          "import datetime; "
          "print((datetime.datetime.now(datetime.timezone.utc) - "
-         "datetime.timedelta(seconds=5)).strftime('%Y-%m-%dT%H:%M:%SZ'))"],
+         "datetime.timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ'))"],
         capture_output=True, text=True, check=True,
     ).stdout.strip()
-    # Fake recent run from the (failed) workflow run that the shim will
-    # return when the script asks "did anything start?".
     run_list_log.write_text(
         f'[{{"databaseId":32587539885,"createdAt":"{now_iso}"}}]'
     )
@@ -269,7 +267,7 @@ def test_race_condition_dedup_skips_retry(
     env["DEVELOP_BRANCH"] = "develop"
     env["MAIN_BRANCH"] = "main"
     env["DRY_RUN"] = "false"
-    env["GH_SHIM_WORKFLOW_RUN_RC"] = "1"  # gh workflow run always fails
+    env["GH_SHIM_WORKFLOW_RUN_RC"] = "1"  # irrelevant: must skip before dispatch
 
     proc = subprocess.run(
         [str(SCRIPT), "1434", "develop"],
@@ -277,17 +275,13 @@ def test_race_condition_dedup_skips_retry(
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     log = log_file.read_text()
-    # CRITICAL: exactly 1 invocation → no duplicate workflow runs.
-    assert log.count("\n") == 1, (
-        f"issue #1535: race-condition dedup must prevent duplicate runs; "
-        f"expected 1 call to gh workflow run, got: {log!r}"
-    )
-    # The race-condition success marker must be present.
-    assert "race condition" in proc.stderr, (
-        f"expected race-condition log; got: {proc.stderr!r}"
+    # CRITICAL: exactly 0 invocations → the pre-dispatch guard skipped.
+    assert log == "", f"expected 0 calls to gh workflow run; got: {log!r}"
+    assert "skip" in proc.stderr, (
+        f"expected pre-dispatch skip log; got: {proc.stderr!r}"
     )
     assert "❌" not in proc.stderr, (
-        f"race-condition dedup should treat as success (no ❌); got: {proc.stderr!r}"
+        f"pre-dispatch skip should not be an error; got: {proc.stderr!r}"
     )
 
 
@@ -303,8 +297,15 @@ def test_old_run_outside_dedup_window_triggers_retry(
     bin_dir = tmp_path / "bin"
     log_file = tmp_path / "workflow_run.log"
     run_list_log = tmp_path / "run_list.json"
-    # createdAt 10 minutes ago — way outside the 60s dedup window.
-    stale_iso = "2026-08-22T17:00:00Z"
+    # createdAt 1 hour ago — way outside both the 900s pre-dispatch window
+    # and the 60s dedup window.
+    stale_iso = subprocess.run(
+        ["python3", "-c",
+         "import datetime; "
+         "print((datetime.datetime.now(datetime.timezone.utc) - "
+         "datetime.timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ'))"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
     run_list_log.write_text(
         f'[{{"databaseId":32500000000,"createdAt":"{stale_iso}"}}]'
     )
