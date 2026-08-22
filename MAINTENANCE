@@ -1,0 +1,3 @@
+maintenance: manual pause of agent-flow (human) — diagnosing mcp_server CPU busy-loop + voice-assistant endless-monologue loop on Vision Pi (10.1.1.21).
+
+Do not auto-remove (no auto-sleep: marker). Remove manually when diagnosis is done.
