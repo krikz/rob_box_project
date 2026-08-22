@@ -892,6 +892,7 @@ considered=0
 labeled=0
 skipped=0
 errored=0
+human_close_propagated=0
 
 while IFS=$'\t' read -r number title labels body; do
     [ -z "$number" ] && continue
@@ -1230,6 +1231,48 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
             skipped=$((skipped+1)); continue
             fi
         fi
+    fi
+
+    # --- human-close propagation (ретро 22.08, PR #1516) --------------------
+    # Шифу закрыл PR вручную (комментарий + close) — раньше это ни на что не
+    # влияло: issue оставалась OPEN с hermes/needs-e2e, воркер открывал новый
+    # PR (#1507→#1516), задача возвращалась бесконечно. Теперь: читаем причину
+    # из последнего комментария PR и выводим задачу из автоматического цикла
+    # (снимаем hermes + needs-e2e — триггеры triage/e2e-process).
+    if [ "$pr_state" = "CLOSED" ]; then
+        if has_label "$labels_norm" "$ISSUE_LABEL" || has_label "$labels_norm" "$NEEDS_E2E_LABEL"; then
+            _reason="$(gh pr view "$pr_number" --repo "$GH_REPO" --comments --json comments 2>/dev/null \
+                | python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin); cs=d.get("comments") or []
+    print(cs[-1].get("body","") if cs else "")
+except Exception:
+    print("")' 2>/dev/null || true)"
+            # Guard от ложных срабатываний: если PR закрыт ПРОЦЕССОМ (orphan-dead,
+            # dead-content, e2e-доклад и т.п.) — причина в последнем комментарии
+            # содержит process-маркер → не трогаем (процесс сам разберётся).
+            case "$_reason" in
+                *orphan-dead*|*dead-content*|*e2e-доклад*|*rebase*|agent-flow:*|🪦*)
+                    log "issue #${number}: PR #${pr_number} CLOSED процессом (маркер) — human-close propagation skip"
+                    ;;
+                *)
+                    log "issue #${number}: PR #${pr_number} CLOSED вручную — вывод задачи из цикла (снимаю ${ISSUE_LABEL}/${NEEDS_E2E_LABEL})"
+                    if [ "$DRY_RUN" != "true" ]; then
+                        gh issue edit "$number" --repo "$GH_REPO" --remove-label "$ISSUE_LABEL" >/dev/null 2>&1 || true
+                        gh issue edit "$number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+                        gh issue comment "$number" --repo "$GH_REPO" --body \
+"🛑 **PR #${pr_number} закрыт вручную** (merge-gate human-close propagation, ретро 22.08).
+
+Задача выведена из автоматического цикла: сняты \`${ISSUE_LABEL}\` / \`${NEEDS_E2E_LABEL}\`. Воркер не откроет новый PR по этой issue.
+
+Причина (из комментария Шифу на PR):
+> ${_reason:-не указана — см. PR #${pr_number}}" >/dev/null 2>&1 || true
+                    fi
+                    human_close_propagated=$((human_close_propagated+1))
+                    ;;
+            esac
+        fi
+        continue
     fi
 
     # --- e2e-done + OPEN PR → needs-review (ретро 13.08 t_92ec94f3, Q22) ---
@@ -3763,7 +3806,7 @@ for pr in data:
 ' "$BACKFILL_AGE_MINUTES" 2>/dev/null)
 
 # --- summary -----------------------------------------------------------------
-log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled} orphan_labeled=${orphan_labeled} backfill_labeled=${backfill_labeled} retro_archived=${retro_archived}"
+log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled} orphan_labeled=${orphan_labeled} backfill_labeled=${backfill_labeled} retro_archived=${retro_archived} human_close_propagated=${human_close_propagated}"
 
 # Exit non-zero only on hard errors so cron can alert.
 if [ "$errored" -gt 0 ]; then exit 1; fi
