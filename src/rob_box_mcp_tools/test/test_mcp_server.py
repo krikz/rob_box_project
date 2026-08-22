@@ -43,7 +43,6 @@ class _FakeServer:
     def __init__(self):
         self.registry = _FakeRegistry()
         self.waypoint_store = object()
-        self.tf_buffer = object()
         self.mapping_state = object()
         self._logger = _FakeLogger()
 
@@ -53,6 +52,9 @@ class _FakeServer:
 
     def get_logger(self):
         return self._logger
+
+    def get_current_pose_snapshot(self):
+        return None
 
 
 def _make_tool_class(tool_name):
