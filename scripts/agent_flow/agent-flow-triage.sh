@@ -448,8 +448,22 @@ while IFS=$'\t' read -r number title labels body; do
     if _reopen_ts="$(gh api "repos/${GH_REPO}/issues/${number}/events" \
         --jq '[.[] | select(.event=="reopened")] | last | .created_at' 2>/dev/null || true)" \
         && [ -n "$_reopen_ts" ]; then
-        is_reopened=true
-        log "issue #${number} was REOPENED at ${_reopen_ts} — доработка, создаю свежую карточку"
+        # Ретро-фикс (22.08, #1506 reopened-loop): is_reopened должен быть
+        # ОДНОРАЗОВЫМ. Раньше он оставался true на КАЖДОМ тике, пока в timeline
+        # есть reopen-событие → гард по маркеру `kanban: t_` (ниже) пропускался,
+        # а если свежая карточка умирала быстро (блокер воркера), следующий тик
+        # создавал новую → бесконечный цикл (9 карточек за 16 мин, #1506).
+        # Теперь: если после последнего reopen уже есть маркер `kanban: t_`
+        # (карточка доработки создана) — reopen считается «потреблённым»,
+        # is_reopened=false, и дальше работает обычная идемпотентность по маркеру.
+        _last_marker_ts="$(gh api "repos/${GH_REPO}/issues/${number}/comments" --paginate \
+            --jq '([.[] | select((.body // "") | test("^kanban: t_[a-f0-9]+"))] | last | .created_at) // empty' 2>/dev/null || true)"
+        if [ -z "$_last_marker_ts" ] || [[ "$_last_marker_ts" < "$_reopen_ts" ]]; then
+            is_reopened=true
+            log "issue #${number} was REOPENED at ${_reopen_ts} (маркер: ${_last_marker_ts:-нет}) — доработка, создаю свежую карточку"
+        else
+            log "issue #${number}: reopen ${_reopen_ts} уже потреблён маркером ${_last_marker_ts} — обычная идемпотентность"
+        fi
     fi
 
     # Ретро-фикс (11.08 t_ce3ca0d9): НЕ создаём карточку для issue, где работа
