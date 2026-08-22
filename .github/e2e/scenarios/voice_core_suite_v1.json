@@ -1,6 +1,6 @@
 {
   "name": "voice_core_suite_v1",
-  "description": "E2E для больших голосовых фич (последние 2 недели): command-intent gate (#1279), new-session reset, альтернативный wake word (#1252), music start/stop (#1358), мульти-голос #1219, спор→арбитр (multi-voice + последовательные реплики). MiniMax generate_music и gen_delete_from_library ИСКЛЮЧЕНЫ (Music API недоступен, удаление не валидируем). Backlog-аккумулятор и speaker diarization — out-of-scope (см. анализ-док §6).",
+  "description": "E2E для больших голосовых фич (последние 2 недели): command-intent gate (#1279), new-session reset, альтернативный wake word (#1252), music start/stop (#1358), мульти-голос #1219, спор→арбитр через backlog-аккумулятор (ds01/ds02 копятся без wake-слова, ds03 активирует контекст). MiniMax generate_music и gen_delete_from_library ИСКЛЮЧЕНЫ (Music API недоступен, удаление не валидируем). Speaker diarization (#1077, 2 физических голоса) — out-of-scope (unit-тесты).",
   "steps": [
     {
       "label": "cc01_status_gate",
@@ -61,19 +61,23 @@
       "label": "ds01_speaker_A_tea",
       "voice": "anton",
       "text": "Я считаю что чай лучше кофе, это самый лучший напиток во вселенной и ни кто не сможет меня преубедить",
-      "patterns": []
+      "patterns": [],
+      "expect": "backlog"
     },
     {
       "label": "ds02_speaker_B_coffee",
       "voice": "ermil",
       "text": "Нет, кофе лучше чая, выкуси накуси, только неудачники пьют чай, что вообще может быть лучше ароматного кофия с молочком",
-      "patterns": []
+      "patterns": [],
+      "expect": "backlog"
     },
     {
       "label": "ds03_arbiter_zahar",
       "voice": "zahar",
       "text": "Робот, а ты как думаешь, кто из них прав, а, РОБОТ?",
-      "patterns": []
+      "patterns": [
+        "flushed to LLM"
+      ]
     },
     {
       "label": "dj01_start_renardo",
