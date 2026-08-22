@@ -134,6 +134,17 @@ start_recording() {
     # Используем дефолтный source (PulseAudio @DEFAULT_SOURCE@) — он же
     # использовался в старом e2e_remote.sh.
     local max_steps="${E2E_MAX_STEPS:-5}"
+    # e2e run 32595628905: хардкод max_steps=5 обрезал запись — voice_core_suite
+    # содержит 11 шагов, и parec умирал до конца теста (в артефакт попадал
+    # только кусок прогона). Считаем число шагов из scenario.json, если задан.
+    if [ -n "$SCENARIO_FILE" ] && [ -f "$SCENARIO_FILE" ]; then
+        local _n
+        _n="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8")).get("steps", [])))' "$SCENARIO_FILE" 2>/dev/null || echo 0)"
+        case "$_n" in
+            ''|*[!0-9]*) : ;;
+            *) [ "$_n" -gt "$max_steps" ] && max_steps="$_n" ;;
+        esac
+    fi
     local total_secs=$(( E2E_MAX_ATTEMPTS * max_steps * (E2E_REACTION_WINDOW + E2E_RETRY_PAUSE) + E2E_RECORD_EXTRA + 30 ))
     log "RECORDING: старт parec → ${RECORDING_RAW} (timeout ${total_secs}s)"
     rm -f "$RECORDING_RAW"
@@ -154,18 +165,24 @@ start_recording() {
 # shellcheck disable=SC2329  # вызывается через trap 'stop_recording' EXIT
 stop_recording() {
     if [ -z "$REC_PID" ]; then return 0; fi
-    if ! kill -0 "$REC_PID" 2>/dev/null; then
-        wait "$REC_PID" 2>/dev/null || true
-        REC_PID=""
-        return 0
+    # 🔴 e2e run 32595628905: старый `if ! kill -0; then ... return 0; fi`
+    # делал РАННИЙ ВЫХОД, когда parec уже умер от timeout (всегда так для
+    # длинного scenario — max_steps был хардкодом 5 < 11 шагов). В итоге
+    # сырой /tmp/e2e_raw_<RID>.pcm (25MB) НИКОГДА не конвертировался в
+    # recording.wav, симлинк не создавался, а workflow collect падал на
+    # stale-аудио другого прогона. Теперь: если parec ещё жив — гасим его,
+    # если уже умер — просто конвертируем записанный RAW (он валиден).
+    if kill -0 "$REC_PID" 2>/dev/null; then
+        log "RECORDING: stop (SIGTERM pid=${REC_PID})"
+        kill -TERM "$REC_PID" 2>/dev/null || true
+        # Дать parec корректно закрыть pipe (graceful shutdown → корректный EOF)
+        for _ in 1 2 3 4 5; do
+            if ! kill -0 "$REC_PID" 2>/dev/null; then break; fi
+            sleep 1
+        done
+    else
+        log "RECORDING: parec уже завершился (timeout) — конвертирую записанный RAW"
     fi
-    log "RECORDING: stop (SIGTERM pid=${REC_PID})"
-    kill -TERM "$REC_PID" 2>/dev/null || true
-    # Дать parec корректно закрыть pipe (graceful shutdown → корректный EOF)
-    for _ in 1 2 3 4 5; do
-        if ! kill -0 "$REC_PID" 2>/dev/null; then break; fi
-        sleep 1
-    done
     wait "$REC_PID" 2>/dev/null || true
     REC_PID=""
 
@@ -363,16 +380,23 @@ check_gate1_aggregate() {  # $1=acceptance_file_path $2=before_rfc3339
         return 1
     fi
 
-    local logs
+    local logs logs_file
     logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    # Логи всего прогона могут превысить ARG_MAX (~2MB): передача через
+    # env-переменную `LOGS="$logs" python3` падала с «Argument list too long»
+    # (e2e run 32595628905, line 371 → пустой acceptance.json → GATE-1 ❌).
+    # Пишем логи в файл и читаем их в Python из файла.
+    logs_file="$OUT_DIR/.gate1_logs.txt"
+    printf '%s' "$logs" > "$logs_file"
 
     # Парсим + валидируем acceptance.json в Python → пишем acceptance.json
     # с verdict в OUT_DIR.
-    ACCEPTANCE_FILE="$acc_file" LOGS="$logs" python3 - <<'PY' > "$OUT_DIR/acceptance.json"
+    ACCEPTANCE_FILE="$acc_file" LOGS_FILE="$logs_file" python3 - <<'PY' > "$OUT_DIR/acceptance.json"
 import json, os, re, sys
 
 acc_path = os.environ["ACCEPTANCE_FILE"]
-logs = os.environ["LOGS"]
+with open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace") as _f:
+    logs = _f.read()
 
 try:
     acc = json.load(open(acc_path))
@@ -955,33 +979,43 @@ write_artifacts_audio() {
 # Acceptance-блок в scenario описывает ожидаемое поведение робота:
 #   expected_tool_calls: list[str]  — должны быть вызваны (ищется в логах)
 #   must_not_call:        list[str]  — НЕ должны быть вызваны
-#   expected_keywords:    list[str]  — должны быть в распознанной фразе
+#   expected_keywords:    list[str]  — должны быть в логах шага (признанная
+#                                     фраза ИЛИ LLM OUTPUT / spoken=)
+#   voice_changed:        bool       — set_voice сменил голос с дефолта
 #   response_max_ms:      int        — T_total не должен превышать (если
 #                                     найден e2e_timing.json)
 # Пишет acceptance.json в OUT_DIR.
 check_acceptance() {  # $1=label $2=acceptance_json_string $3=before_rfc3339
     local label="$1" acc_json="$2" before="$3"
     local rc=0
-    local logs
+    local logs logs_file
     logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    # Логи шага тоже пишем в файл (ARG_MAX защита, как в check_gate1_aggregate).
+    logs_file="$OUT_DIR/.acceptance_${label}.txt"
+    printf '%s' "$logs" > "$logs_file"
 
     # Прогон acceptance-чекера в Python (читает acc_json + logs → pass/fail + reason).
-    ACC_JSON="$acc_json" LOGS="$logs" python3 - <<'PY' > "$OUT_DIR/acceptance.json"
+    ACC_JSON="$acc_json" LOGS_FILE="$logs_file" python3 - <<'PY' > "$OUT_DIR/acceptance.json"
 import json, os, re, sys
 acc = json.loads(os.environ["ACC_JSON"])
-logs = os.environ["LOGS"]
+with open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace") as _f:
+    logs = _f.read()
 def has(s, frag):
     return frag.lower() in logs.lower()
 expected_call = acc.get("expected_tool_calls", []) or []
 must_not = acc.get("must_not_call", []) or []
 expected_kw = acc.get("expected_keywords", []) or []
+voice_changed_req = bool(acc.get("voice_changed", False))
 response_max_ms = acc.get("response_max_ms", 0) or 0
 
 recognized = ""
 m = re.search(r"✅ ПРИНЯТО:\s*(.+)", logs)
 if m:
     recognized = m.group(1).strip()
-text_low = recognized.lower()
+# Ключевые слова ищем по ВСЕМ логам шага (признанная фраза + LLM OUTPUT /
+# spoken=). Раньше искали только в recognised — «Красная» vs STT «красную»
+# давал false-negative при корректно рассказанной сказке (mv03, run 32595628905).
+logs_low = logs.lower()
 
 actual_calls = []
 for c in (expected_call + must_not):
@@ -991,8 +1025,30 @@ for c in (expected_call + must_not):
 found_expected = [c for c in expected_call if has(logs, c)]
 missing_expected = [c for c in expected_call if not has(logs, c)]
 forbidden_called = [c for c in must_not if has(logs, c)]
-found_keywords = [k for k in expected_kw if k.lower() in text_low]
-missing_keywords = [k for k in expected_kw if not k.lower() in text_low]
+found_keywords = [k for k in expected_kw if k.lower() in logs_low]
+missing_keywords = [k for k in expected_kw if not k.lower() in logs_low]
+
+# voice_changed: set_voice был вызван с голосом, отличным от дефолта.
+# Лог: `[set_voice] voice='X' provider=... default=Y`. Если set_voice вернул
+# voice_unavailable — лога не будет, и это честный FAIL (голос не сменился).
+voice_change_ok = True
+voice_change_detail = ""
+if voice_changed_req:
+    set_voice_matches = re.findall(
+        r"\[set_voice\] voice='([^']*)'\s+provider=(\S+)\s+default=(\S+)", logs
+    )
+    if not set_voice_matches:
+        voice_change_ok = False
+        voice_change_detail = (
+            "voice did not change: no successful [set_voice] log "
+            "(set_voice not called or returned voice_unavailable)"
+        )
+    elif not any(v.strip().lower() != d.strip().lower() for v, _p, d in set_voice_matches):
+        voice_change_ok = False
+        voice_change_detail = (
+            "voice did not change from default: "
+            + ", ".join(f"{v}->{d}" for v, _p, d in set_voice_matches)
+        )
 
 # response_max_ms — берём из ранее записанного timing.json если есть
 timing_path = os.environ.get("OUT_DIR", "") + "/timing.json"
@@ -1010,7 +1066,9 @@ if missing_expected:
 if forbidden_called:
     failures.append(f"forbidden tool calls invoked: {forbidden_called}")
 if expected_kw and missing_keywords:
-    failures.append(f"expected keywords missing in recognized phrase: {missing_keywords}")
+    failures.append(f"expected keywords missing in logs: {missing_keywords}")
+if not voice_change_ok:
+    failures.append(voice_change_detail)
 if response_max_ms and measured_ms and measured_ms > response_max_ms:
     failures.append(f"response time {measured_ms}ms > max {response_max_ms}ms")
 result = {
@@ -1023,6 +1081,9 @@ result = {
     "recognized": recognized,
     "found_keywords": found_keywords,
     "missing_keywords": missing_keywords,
+    "voice_changed": voice_changed_req,
+    "voice_change_ok": voice_change_ok,
+    "voice_change_detail": voice_change_detail,
     "response_max_ms": response_max_ms,
     "measured_total_ms": measured_ms,
     "pass": not failures,
@@ -1059,54 +1120,88 @@ if [ -n "$SCENARIO_FILE" ]; then
     #                         "expected_keywords":["песня"],
     #                         "response_max_ms":60000}}]}
     cp "$SCENARIO_FILE" "$OUT_DIR/scenario.json"
-    # Парсим в .tsv: idx \t label \t text \t voice \t patterns_json \t acceptance_json
+    # Парсим в .tsv: idx \t label \t text \t voice \t patterns_json \t acceptance_json \t expect \t retry_acceptance
     python3 - "$SCENARIO_FILE" <<'PY' > "$OUT_DIR/scenario_parsed.txt"
 import json, sys
-sc = json.load(open(sys.argv[1]))
+sc = json.load(open(sys.argv[1], encoding="utf-8"))
 for i, s in enumerate(sc.get("steps", [])):
     pats = s.get('patterns', [])
     acc = s.get('acceptance', {})
     exp = s.get('expect', 'cycle')
-    print(f"{i}\t{s.get('label', f's{i+1}')}\t{s.get('text','')}\t{s.get('voice','anton')}\t{json.dumps(pats)}\t{json.dumps(acc, ensure_ascii=False)}\t{exp}")
+    retry = s.get('retry_acceptance', 0)
+    try:
+        retry = int(retry or 0)
+    except (TypeError, ValueError):
+        retry = 0
+    print(f"{i}\t{s.get('label', f's{i+1}')}\t{s.get('text','')}\t{s.get('voice','anton')}\t{json.dumps(pats)}\t{json.dumps(acc, ensure_ascii=False)}\t{exp}\t{retry}")
 PY
-    while IFS=$'\t' read -r idx label text voice patterns_json acceptance_json expect; do
+    while IFS=$'\t' read -r idx label text voice patterns_json acceptance_json expect retry_acceptance; do
         [ -z "$idx" ] && continue
-        STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-        run_step "$text" "$voice" "$label" "$expect"
-        rc=$?
-        # Пишем transcript (даже при FAIL — для ретро-анализа, что STT услышал)
-        parse_transcript "$label" "$STEP_BEFORE" "$text"
-        if [ "$rc" != "0" ]; then
-            PASS=0
-            # Проверяем паттерны даже при FAIL цикла? Нет — красный есть красный.
+        case "$retry_acceptance" in
+            ''|*[!0-9]*) retry_acceptance=0 ;;
+        esac
+        # retry_acceptance = доп. попытки при FAIL patterns/acceptance.
+        # Нужно для dj01: LLM недетерминирован — если renardo не запустился
+        # (execute_music_code не вызван), повторяем команду (e2e run 32595628905).
+        attempt_n=0
+        step_ok=0
+        cycle_failed=0
+        while :; do
+            STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            run_step "$text" "$voice" "$label" "$expect"
+            rc=$?
+            # Пишем transcript (даже при FAIL — для ретро-анализа, что STT услышал)
+            parse_transcript "$label" "$STEP_BEFORE" "$text"
+            if [ "$rc" != "0" ]; then
+                PASS=0
+                cycle_failed=1
+                # Проверяем паттерны даже при FAIL цикла? Нет — красный есть красный.
+                break
+            fi
+            step_ok=1
+            # Паттерны шага
+            if [ -n "$patterns_json" ] && [ "$patterns_json" != "[]" ]; then
+                pats="$(printf '%s' "$patterns_json" | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin)))')"
+                log "STEP ${label}: проверка паттернов: $pats"
+                check_patterns "$(date -u -d '-6 minutes' +%Y-%m-%dT%H:%M:%SZ)" $pats
+                if [ $? != 0 ]; then
+                    step_ok=0
+                else
+                    log "STEP ${label}: ✅ паттерны найдены"
+                fi
+            fi
+            # Acceptance-чек (issue #1396): если в шаге задан блок acceptance,
+            # пишем acceptance.json и (если ERROR) — FAIL (хотя цикл прошёл).
+            if [ -n "$acceptance_json" ] && [ "$acceptance_json" != "{}" ]; then
+                OUT_DIR="$OUT_DIR" STEP_LABEL="$label" \
+                    check_acceptance "$label" "$acceptance_json" "$STEP_BEFORE"
+                if [ $? != 0 ]; then
+                    step_ok=0
+                else
+                    log "STEP ${label}: ✅ acceptance PASS"
+                fi
+            fi
+            # Retry при FAIL patterns/acceptance (если разрешён сценарием)
+            if [ "$step_ok" = "1" ]; then
+                break
+            fi
+            if [ "$attempt_n" -ge "$retry_acceptance" ]; then
+                break
+            fi
+            attempt_n=$((attempt_n + 1))
+            log "STEP ${label}: ❌ проверка не прошла — retry ${attempt_n}/${retry_acceptance}"
+            sleep "$E2E_RETRY_PAUSE"
+        done
+        if [ "$cycle_failed" = "1" ]; then
             continue
         fi
-        # Паттерны шага
-        if [ -n "$patterns_json" ] && [ "$patterns_json" != "[]" ]; then
-            pats="$(printf '%s' "$patterns_json" | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin)))')"
-            log "STEP ${label}: проверка паттернов: $pats"
-            check_patterns "$(date -u -d '-6 minutes' +%Y-%m-%dT%H:%M:%SZ)" $pats
-            if [ $? != 0 ]; then
-                PASS=0; mark_fail_kind feature; log "STEP ${label}: ❌ паттерны не найдены"; echo "E2E_STEP ${label} FAIL patterns"
-            else
-                log "STEP ${label}: ✅ паттерны найдены"; echo "E2E_STEP ${label} OK"
-            fi
-        else
+        if [ "$step_ok" = "1" ]; then
             echo "E2E_STEP ${label} OK"
-        fi
-        # Acceptance-чек (issue #1396): если в шаге задан блок acceptance,
-        # пишем acceptance.json и (если ERROR) — PASS=0 (хотя цикл прошёл).
-        if [ -n "$acceptance_json" ] && [ "$acceptance_json" != "{}" ]; then
-            OUT_DIR="$OUT_DIR" STEP_LABEL="$label" \
-                check_acceptance "$label" "$acceptance_json" "$STEP_BEFORE"
-            if [ $? != 0 ]; then
-                PASS=0
-                mark_fail_kind feature
-                log "STEP ${label}: ❌ acceptance FAIL (см. $OUT_DIR/acceptance.json)"
-                echo "E2E_STEP ${label} FAIL acceptance"
-            else
-                log "STEP ${label}: ✅ acceptance PASS"
-            fi
+        else
+            PASS=0
+            mark_fail_kind feature
+            log "STEP ${label}: ❌ проверка не прошла после retry (см. $OUT_DIR/acceptance.json)"
+            echo "E2E_STEP ${label} FAIL"
         fi
     done < "$OUT_DIR/scenario_parsed.txt"
 

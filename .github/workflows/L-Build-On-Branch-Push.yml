@@ -32,6 +32,7 @@ on:
 # Не блокируем PR — это build для develop/main после merge.
 permissions:
   contents: write  # Required for git push of .image-versions files
+  packages: write  # Required by called workflows (docker push to ghcr.io)
 
 env:
   LOCAL_REGISTRY: localhost:5000
@@ -40,19 +41,13 @@ env:
 
 jobs:
   build-all:
-    # Self-hosted runner (rob-box) — содержит docker registry и доступ к .21.
-    runs-on: [self-hosted, rob-box]
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Trigger L-Build-All-Services
-        # Reusable workflow call вместо копирования jobs: единая точка правды.
-        # Race с e2e-process workflow_dispatch → scripts/ci/push-image-versions.sh
-        # делает pull --rebase + retry на push в .image-versions.
-        uses: ./.github/workflows/L-Build-All-Services.yml
-        with:
-          push_to_registry: 'true'
-          build_base_images: 'false'
+    # Reusable workflow call (на уровне job, НЕ step): единая точка правды.
+    # Ранее `uses:` стоял внутри steps — GitHub трактовал это как local action
+    # и падал с "Can't find 'action.yml'" (ретро 22.08, дубль-билды issue #1535).
+    # Race с e2e-process workflow_dispatch → scripts/ci/push-image-versions.sh
+    # делает pull --rebase + retry на push в .image-versions.
+    uses: ./.github/workflows/L-Build-All-Services.yml
+    secrets: inherit  # CR_PAT нужен в update-image-versions для ghcr.io login
+    with:
+      push_to_registry: true
+      build_base_images: false

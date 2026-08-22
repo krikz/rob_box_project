@@ -17,14 +17,21 @@ dialogue_node:
     - робокос
     - роббос
     - робокс
+    - робэкс
+    - робекс
+    - робакс
+    - рабокс
+    - рубокс
+    - роблокс
     - роберт
     - рыбок
+    - рабок
+    - робак
     - рома
     - бот
     - робо
     - роб
     - робик
-    - роблокс
     dialogue_timeout: 300.0
     llm_providers: "minimax,deepseek"  # первый = primary, остальные = fallbacks
     enable_mcp_tools: true

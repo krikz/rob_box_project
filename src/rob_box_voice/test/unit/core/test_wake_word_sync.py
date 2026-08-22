@@ -28,8 +28,16 @@ CANONICAL_WAKE_WORDS = [
     "робокос",
     "роббос",
     "робокс",
+    "робэкс",
+    "робекс",
+    "робакс",
+    "рабокс",
+    "рубокс",
+    "роблокс",
     "роберт",
     "рыбок",
+    "рабок",
+    "робак",
     "рома",
     "бот",
     "робо",
@@ -47,7 +55,7 @@ def _yaml_wake_words(path: str) -> list[str]:
     full = REPO_ROOT / path
     if not full.exists():
         return []
-    data = yaml.safe_load(full.read_text())
+    data = yaml.safe_load(full.read_text(encoding="utf-8"))
     node = next(iter(data))  # stt_node / dialogue_node
     return list(data[node]["ros__parameters"].get("wake_words", []))
 

@@ -68,6 +68,14 @@ PYEOF
 fi
 GH_REPO="${GH_REPO:-krikz/rob_box_project}"
 
+# self-id / whoami helper (issue #1534): перед declaring PR red (gate-block)
+# этот скрипт пишет «🤖 [agent:<role>] script=… action=closing reason=…» на
+# PR, чтобы в истории GitHub было видно КТО его gate-заблокировал (и, по
+# цепочке, потенциально force-close'нул). helper идемпотентный (2h окно).
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=hermes_github.sh
+. "$_LIB_DIR_HERE/hermes_github.sh"
+
 # --- 1) CI-only exemption (ADR-0022 §7.1 #12, ADR-0014 lint-bypass) ---------
 # PR, затрагивающий ТОЛЬКО эти пути, exempt даже при красных чек'ах:
 #   - .github/ (CI workflow правки)
@@ -108,6 +116,10 @@ if [ "$_red_count" -gt 0 ] 2>/dev/null; then
     if [ "$_exempt_ci_only" = "1" ]; then
         echo "[completion-check] PR #${pr} has ${_red_count} red check(s) but PR is CI-only (lint/docs) — exempt (ADR-0022 §7.1 #12)" >&2
     else
+        # issue #1534: self-id whoami BEFORE reporting PR red — этот gate
+        # блокирует archive; следующий tick merge-gate может force-close
+        # этот PR. helper идемпотентный (2h окно).
+        whoami_close_pr "$pr" "completion-check: PR has ${_red_count} red check(s), NOT archiving card" "card=t_?"
         # Ровно тот лог-формат, который просит acceptance:
         #   [completion-check] card t_xxx PR #N has FAILURE check <name> — не архивирую
         printf '[completion-check] card ? PR #%s has FAILURE check — не архивирую\n' \

@@ -140,19 +140,20 @@ _LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
 MAX_ATTEMPTS="${POST_MERGE_BUILD_MAX_ATTEMPTS:-2}"  # 2 = 1 попытка + 1 retry
 DEDUP_WINDOW="${POST_MERGE_BUILD_DEDUP_WINDOW:-60}"  # секунд
-# Issue #1540: pre-dispatch dedup. Если за последние $DEDUP_WINDOW сек
-# уже был trigger на этой ветке (например, второй параллельный тик
-# merge-gate'а стартанул раньше), НЕ дёргаем `gh workflow run` повторно.
-# Раньше dedup срабатывал ТОЛЬКО после FAILED `gh workflow run` (race-detection
-# fallback) — между двумя успешными вызовами API успевал пропустить дубль.
-PRE_DISPATCH_DEDUP_WINDOW="${POST_MERGE_BUILD_PRE_DISPATCH_WINDOW:-${DEDUP_WINDOW}}"
-if [ "$DRY_RUN" != "true" ]; then
-    if [ "$(verify_recent_run "$BUILD_WORKFLOW" "$PR_BASE" "$GH_REPO" "$PRE_DISPATCH_DEDUP_WINDOW")" = "ok" ]; then
-        log "⏭️ recent ${BUILD_WORKFLOW} run on ${PR_BASE} (≤${PRE_DISPATCH_DEDUP_WINDOW}s) — pre-dispatch dedup (issue #1540), skip"
-        exit 0
-    fi
-else
-    log "   (DRY-RUN: skipping pre-dispatch dedup check)"
+# --- pre-dispatch dedup (issue #1535 follow-up, 22.08) ----------------------
+# merge-gate вызывает этот backup на КАЖДОМ тике (раз в ~5 мин), пока
+# merged-issue не закрыта (нет e2e-done / no-e2e-required). GitHub НЕ
+# дедуплицирует workflow_dispatch по workflow_name+branch — каждый вызов
+# `gh workflow run` создаёт новый run. Поэтому: если на $PR_BASE уже есть
+# свежий build-ран (запущен за последние $RECENT_WINDOW сек, любой статус) —
+# push-триггер (или прошлый тик / ручной запуск) уже покрыл этот merge.
+# Issue #1540: используем verify_recent_run из shared lib_workflow_dedup.sh
+# (4-аргументный контракт) — общий SOT, чтобы e2e-process и post-merge-build
+# дедуплицировали одинаково.
+RECENT_WINDOW="${POST_MERGE_BUILD_RECENT_WINDOW:-900}"  # 15 мин
+if [ "$DRY_RUN" != "true" ] && [ "$(verify_recent_run "$BUILD_WORKFLOW" "$PR_BASE" "$GH_REPO" "$RECENT_WINDOW")" = "ok" ]; then
+    log "⏭️ recent build (≤${RECENT_WINDOW}s) already on ${PR_BASE} — skip (pre-dispatch dedup, PR #${PR_NUMBER}, issue #1540 shared lib)"
+    exit 0
 fi
 for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
     # ВАЖНО: НЕ глушим stderr — `run()` пишет DRY-RUN маркер в stderr,

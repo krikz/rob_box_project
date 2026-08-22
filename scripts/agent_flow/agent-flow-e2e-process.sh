@@ -790,6 +790,9 @@ while IFS= read -r _bn; do
         _blk="$(blocker_issue_for_sig "$_sig")"
         _blk_ref="${_blk:-сигнатура ${_sig}}"
         log "issue #${_bn}: >=${BLOCKER_CONSECUTIVE_FAILS} подряд FAIL с сигнатурой '${_sig}' — e2e:rejected (блокер ${_blk_ref}), round не тратим"
+        # issue #1534: self-id whoami BEFORE setting blocker e2e:rejected.
+        whoami_add_label "$_bn" "${REJECTED_LABEL}" "блокер ${_blk_ref} (${BLOCKER_CONSECUTIVE_FAILS}+ подряд однотипных FAIL: ${_sig}), round пропущен"
+        whoami_remove_label "$_bn" "${NEEDS_E2E_LABEL}" "блокер ${_blk_ref}: unblock from e2e queue (round skipped)"
         gh issue edit "$_bn" --repo "$GH_REPO" --add-label "$REJECTED_LABEL" >/dev/null 2>&1 || true
         gh issue edit "$_bn" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
         gh issue comment "$_bn" --repo "$GH_REPO" --body \
@@ -885,6 +888,9 @@ except Exception:
             log "post-round sweep: issue #${_sn} имеет явный needs-e2e override ПОСЛЕ run #${_sweep_run_id} — skip (Шифу запросил re-test, ждём round-155)"
             continue
         fi
+        # issue #1534: self-id whoami BEFORE post-round sweep e2e-done.
+        whoami_add_label "$_sn" "${DONE_LABEL}" "post-round sweep: run #${_sweep_run_id} SUCCESS on ${_sweep_round} (label applied by next tick)"
+        whoami_remove_label "$_sn" "${NEEDS_E2E_LABEL}" "post-round sweep: run #${_sweep_run_id} SUCCESS — unblock from e2e queue"
         gh issue edit "$_sn" --repo "$GH_REPO" --add-label "$DONE_LABEL" >/dev/null 2>&1 || true
         gh issue edit "$_sn" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
         gh issue comment "$_sn" --repo "$GH_REPO" --body \
@@ -986,6 +992,13 @@ _LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # чтобы дедупликация была симметричной между двумя cron-скриптами.
 # shellcheck source=lib_workflow_dedup.sh
 . "$_LIB_DIR_HERE/lib_workflow_dedup.sh"
+# self-id / whoami helper (issue #1534): перед label-changes (`e2e-done` /
+# `e2e:rejected` / `no-e2e-required`) этот скрипт пишет «🤖 [agent:<role>]
+# script=… action=… reason=…» чтобы в истории GitHub было видно КТО это
+# сделал, а не только krikz (actor = holder of GH token). Идемпотентность:
+# helper скипает дубль в окне 2ч (защита от reconcile-loop).
+# shellcheck source=hermes_github.sh
+. "$_LIB_DIR_HERE/hermes_github.sh"
 
 slugify() {
     printf '%s' "$1" \
@@ -1864,6 +1877,9 @@ except Exception: print(0)' 2>/dev/null || echo 0)"
         gh pr edit "$pr_number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
         gh pr edit "$pr_number" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
         # 2) PR: короткий комментарий «только форматирование, e2e не нужен».
+        # issue #1534: self-id whoami BEFORE lint-PR needs-review + no-e2e-required.
+        whoami_remove_label "$number" "${NEEDS_E2E_LABEL}" "lint-PR #${pr_number}: skip e2e, hand to Шифу for review"
+        whoami_add_label "$number" "${NO_E2E_LABEL}" "lint-PR #${pr_number}: skip e2e (CI green sufficient)"
         gh pr comment "$pr_number" --repo "$GH_REPO" --body \
             "$(cat <<EOF
 agent-flow: ℹ️ lint/refactor PR — e2e на роботе не требуется (CI green достаточно).
@@ -2889,10 +2905,17 @@ sshpass -p open ssh ros2@10.1.1.21 'docker logs voice-assistant --since <ts> | g
         fi
     fi
 
+    # issue #1534: self-id whoami BEFORE verdict label flip — главный
+    # e2e-process label-change (${label_action#add } = e2e-done /
+    # e2e:rejected / infra-failed / no-e2e-required). В истории GitHub часто
+    # непонятно «кто поставил e2e-done» (actor = krikz = holder GH token).
+    # helper идемпотентный (2h окно).
+    whoami_add_label "$number" "${label_action#add }" "e2e verdict=${verdict} (run #${run_id}, branch ${branch})" "pr=${pr_number:-?}"
     gh issue edit "$number" --repo "$GH_REPO" --add-label "${label_action#add }" >/dev/null 2>&1 || true
     # ретро 10.08 (t_9caf5d52): при infra-FAIL needs-e2e НЕ снимаем — issue
     # остаётся в ротации, следующий тик повторит прогон.
     if [ -n "$remove_action" ]; then
+        whoami_remove_label "$number" "${NEEDS_E2E_LABEL}" "e2e verdict=${verdict} (run #${run_id}): unblock from e2e queue"
         gh issue edit "$number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
     fi
 
