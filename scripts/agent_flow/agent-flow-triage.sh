@@ -593,8 +593,8 @@ ${_valid_csv}
     fi
 
     # Ретро-фикс (13.08, #968 v3): THROTTLE — если по issue в БД уже есть
-    # карточка (ЛЮБОЙ статус, включая archived) за последние 4 часа — не
-    # создаём новую. Без этого тик каждые 2 мин плодил карточку (13:00,
+    # карточка (status=running/ready/todo/blocked — "ЖИВАЯ") за последние 4 часа
+    # — не создаём новую. Без этого тик каждые 2 мин плодил карточку (13:00,
     # 13:02, 13:05...): воркер падал на spawn (worktree занят живой веткой),
     # карточка уходила в archived, следующий тик видел «нет живой» и создавал
     # снова. OPEN-PR guard не ловит, т.к. PR #1197 уже CLOSED.
@@ -602,8 +602,16 @@ ${_valid_csv}
     # карточки, поэтому throttle не видел предыдущие карточки цикла (все они
     # уходили в archived) и тик создавал новую каждые ~2-5 мин (13:13, 13:18 —
     # даже после деплоя v3 в 13:07). Добавляем --archived: throttle видит ВСЕ
-    # карточки за 4ч, включая archived, и цикл останавливается.
-    _recent_cards="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" list --json --archived 2>/dev/null | python3 -c '
+    # карточки за 4ч, включая archived.
+    # Ретро-фикс (22.08, t_a24ffe39, #1513): throttle v3 учитывал created_at,
+    # но НЕ статус — archived карточка считалась "свежей" и блокировала
+    # создание. После ручной архивации (Шифу вычистил цикл) триаж не мог
+    # создать новую карточку для #1506 ~4ч, пока старая карточка не
+    # "состарится" (cutoff). Теперь: archived/done карточка — игнорируется
+    # (throttle её пропускает), throttle блокирует только по-настоящему
+    # живым (running/ready/todo/blocked).
+    # shellcheck disable=SC2016  # python heredoc — $number внутри literal
+    _recent_line="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" list --json --archived 2>/dev/null | python3 -c '
 import json, sys, re, time
 try:
     d = json.load(sys.stdin)
@@ -616,13 +624,30 @@ for t in tasks:
     if (t.get("created_at") or 0) < cutoff:
         continue
     body = t.get("body") or ""
-    if re.search(r"issue:\s*#%s" % re.escape("'"$number"'"), body):
-        print(t.get("id", ""))
+    # Тот же регекс, что в existing_by_issue выше (ретро t_a0fac345):
+    # \bissue\W*#(\d+) — ловит и "issue: #N", и "issue #N", и "Issue #N".
+    if re.search(r"\bissue\W*#%s\b" % "'"$number"'", body, re.IGNORECASE):
+        print("%s\t%s" % (t.get("id", ""), t.get("status", "")))
         break
 ' 2>/dev/null || true)"
-    if [ -n "$_recent_cards" ]; then
-        log "issue #${number}: свежая карточка ${_recent_cards} за последние 4ч — throttle, не создаём (reopened-loop v3)"
-        skipped=$((skipped+1)); continue
+    _recent_id="$(printf '%s' "$_recent_line" | cut -f1)"
+    _recent_status="$(printf '%s' "$_recent_line" | cut -f2)"
+    if [ -n "$_recent_id" ]; then
+        case "${_recent_status:-}" in
+            done|archived)
+                # Мёртвая карточка — throttle НЕ блокирует. Пускаем дальше,
+                # и блок idempotency (473-503) сам решит: для REOPENED —
+                # создать свежую, для non-reopened — skip (там это уже
+                # обработано выше, до throttle).
+                log "issue #${number}: найдена мёртвая карточка ${_recent_id} (status=${_recent_status}) за последние 4ч — throttle игнорирует, идём дальше (ретро 22.08 t_a24ffe39)"
+                ;;
+            *)
+                # Живая карточка — throttle блокирует создание, чтобы
+                # воркеры не дублировались.
+                log "issue #${number}: живая карточка ${_recent_id} (status=${_recent_status}) за последние 4ч — throttle, не создаём (reopened-loop v3)"
+                skipped=$((skipped+1)); continue
+                ;;
+        esac
     fi
 
     # Ретро-фикс (09.08 #1): освободить stale worktree'ы на этой ветке от
