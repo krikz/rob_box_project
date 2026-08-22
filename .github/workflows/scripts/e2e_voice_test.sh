@@ -425,6 +425,36 @@ if forbidden_called:
         + ", ".join(forbidden_called)
     )
 
+# Ретро 22.08 t_c7761956 (A3): voice-cycle-but-no-tool-call hint.
+# Если TTS finished есть (LLM ответил голосом), но expected_tool_calls
+# missing — LLM сделал verbal-only answer, проигнорировав side-effect.
+# Это типовой root cause для dj02_stop_music (RULE #MUSIC не enforced):
+# юзер сказал «стоп музыку», робот ответил голосом, но stop_music не вызван.
+# Маркируем как soft-fail с явной подсказкой в reason — ретро / worker
+# сразу видят где искать.
+soft_hints = []
+tts_finished_count = logs.lower().count("tts finished")
+speak_text_count = logs.lower().count("speak_text")
+if missing_expected and tts_finished_count >= 1:
+    # Какие tools ожидались, но не были вызваны при наличии voice cycle
+    likely_voice_skipped = [c for c in missing_expected if c.lower() not in ("set_voice",)]
+    if likely_voice_skipped:
+        soft_hints.append(
+            f"voice cycle completed (TTS finished x{tts_finished_count}, "
+            f"speak_text x{speak_text_count}) but expected tool call(s) "
+            f"skipped: {', '.join(likely_voice_skipped)}. "
+            f"LLM сделал verbal-only answer (RULE #MUSIC для stop_music / "
+            f"RULE #VOICE-MULTI для multi-voice могут не enforce). "
+            f"Проверь master_prompt_compact.txt и/или добавь explicit "
+            f"tool-call enforcement в LLM-system reminder."
+        )
+        # Не добавляем к failures (это hint, не блокер GATE-1), но логируем
+        # через stderr чтобы в verdict было видно.
+        sys.stderr.write(
+            f"[hint] GATE-1 soft-fail: voice-cycle OK but tool skipped — "
+            f"{', '.join(likely_voice_skipped)}\n"
+        )
+
 result = {
     "gate": "GATE-1",
     "name": acc.get("name", ""),
@@ -435,8 +465,11 @@ result = {
     "found_expected_calls": found_expected,
     "missing_expected_calls": missing_expected,
     "forbidden_calls": forbidden_called,
+    "voice_cycle_count": tts_finished_count,
+    "speak_text_count": speak_text_count,
+    "soft_hints": soft_hints,
     "pass": not failures,
-    "reason": "; ".join(failures) if failures else "all checks passed",
+    "reason": "; ".join(failures + soft_hints) if (failures or soft_hints) else "all checks passed",
 }
 sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2))
 PY
@@ -451,33 +484,102 @@ PY
 }
 # Синтез Yandex TTS gRPC v3: text + voice → /tmp/e2e_v2_<run>/cmd.wav
 # Тот же контракт что tts_node._synthesize_yandex (tts.api.cloud.yandex.net:443)
+# Ретро 22.08 t_c7761956 (A2): synth failure теперь печатает JSON-строку с
+# diagnostic (provider, error_class, http_code, latency_ms). Это позволяет
+# сразу отличать network/quota/auth ошибки без grep stacktrace.
 synth_yandex() {  # $1=text $2=voice $3=out_wav
     local text="$1" voice="$2" out="$3"
+    local _start_ms _end_ms _latency_ms
+    _start_ms="$(date +%s%3N 2>/dev/null || date +%s)000"
     python3 - "$text" "$voice" "$out" <<'PY'
-import sys, grpc, wave, io
+import sys, grpc, wave, io, json, time, traceback
 from yandex.cloud.ai.tts.v3 import tts_pb2, tts_service_pb2_grpc
 text, voice, out = sys.argv[1], sys.argv[2], sys.argv[3]
 import os
 key = os.environ["YANDEX_API_KEY"]
-ch = grpc.secure_channel("tts.api.cloud.yandex.net:443", grpc.ssl_channel_credentials())
-stub = tts_service_pb2_grpc.SynthesizerStub(ch)
-req = tts_pb2.UtteranceSynthesisRequest(
-    text=text,
-    output_audio_spec=tts_pb2.AudioFormatOptions(
-        container_audio=tts_pb2.ContainerAudio(container_audio_type=tts_pb2.ContainerAudio.WAV)
-    ),
-    hints=[tts_pb2.Hints(voice=voice), tts_pb2.Hints(speed=float(os.environ.get("YANDEX_SPEED","1.0")))],
-    loudness_normalization_type=tts_pb2.UtteranceSynthesisRequest.LUFS,
-)
-resp = stub.UtteranceSynthesis(req, metadata=(("authorization", f"Api-Key {key}"),))
-data = b""
-for r in resp:
-    data += r.audio_chunk.data
-if not data:
-    sys.exit("YANDEX_EMPTY")
-with open(out, "wb") as f:
-    f.write(data)
-print(f"YANDEX_SYNTH_OK {len(data)} bytes voice={voice}")
+start = time.monotonic()
+err_class = "Unknown"
+err_detail = ""
+try:
+    ch = grpc.secure_channel("tts.api.cloud.yandex.net:443", grpc.ssl_channel_credentials())
+    stub = tts_service_pb2_grpc.SynthesizerStub(ch)
+    req = tts_pb2.UtteranceSynthesisRequest(
+        text=text,
+        output_audio_spec=tts_pb2.AudioFormatOptions(
+            container_audio=tts_pb2.ContainerAudio(container_audio_type=tts_pb2.ContainerAudio.WAV)
+        ),
+        hints=[tts_pb2.Hints(voice=voice), tts_pb2.Hints(speed=float(os.environ.get("YANDEX_SPEED","1.0")))],
+        loudness_normalization_type=tts_pb2.UtteranceSynthesisRequest.LUFS,
+    )
+    resp = stub.UtteranceSynthesis(req, metadata=(("authorization", f"Api-Key {key}"),))
+    data = b""
+    for r in resp:
+        data += r.audio_chunk.data
+    if not data:
+        err_class = "EmptyResponse"
+        err_detail = "Yandex TTS returned empty audio stream"
+        latency_ms = int((time.monotonic() - start) * 1000)
+        sys.stderr.write(json.dumps({
+            "provider": "yandex",
+            "voice": voice,
+            "result": "fail",
+            "error_class": err_class,
+            "detail": err_detail,
+            "latency_ms": latency_ms,
+        }) + "\n")
+        sys.exit("YANDEX_EMPTY")
+    with open(out, "wb") as f:
+        f.write(data)
+    latency_ms = int((time.monotonic() - start) * 1000)
+    print(f"YANDEX_SYNTH_OK {len(data)} bytes voice={voice}")
+    sys.stderr.write(json.dumps({
+        "provider": "yandex",
+        "voice": voice,
+        "result": "ok",
+        "bytes": len(data),
+        "latency_ms": latency_ms,
+    }) + "\n")
+except grpc.RpcError as e:
+    latency_ms = int((time.monotonic() - start) * 1000)
+    code = e.code() if hasattr(e, "code") else None
+    code_name = code.name if code and hasattr(code, "name") else "Unknown"
+    details = e.details() if hasattr(e, "details") else str(e)
+    # Классификация: Unavailable/Timeout/Deadline → NetworkError,
+    # Unauthenticated/PermissionDenied → AuthError, ResourceExhausted → QuotaError
+    if code_name in ("UNAVAILABLE", "DEADLINE_EXCEEDED", "CANCELLED"):
+        err_class = "NetworkError"
+    elif code_name in ("UNAUTHENTICATED", "PERMISSION_DENIED"):
+        err_class = "AuthError"
+    elif code_name in ("RESOURCE_EXHAUSTED", "OUT_OF_RANGE"):
+        err_class = "QuotaError"
+    elif code_name in ("INVALID_ARGUMENT",):
+        err_class = "BadRequest"
+    else:
+        err_class = f"GrpcError_{code_name}"
+    sys.stderr.write(json.dumps({
+        "provider": "yandex",
+        "voice": voice,
+        "result": "fail",
+        "error_class": err_class,
+        "http_code": code_name,
+        "detail": details[:500],
+        "latency_ms": latency_ms,
+    }) + "\n")
+    sys.exit(f"YANDEX_{err_class.upper()}")
+except Exception as e:
+    latency_ms = int((time.monotonic() - start) * 1000)
+    err_class = "PythonError"
+    detail = f"{type(e).__name__}: {e}"
+    sys.stderr.write(json.dumps({
+        "provider": "yandex",
+        "voice": voice,
+        "result": "fail",
+        "error_class": err_class,
+        "detail": detail[:500],
+        "trace": traceback.format_exc()[:500],
+        "latency_ms": latency_ms,
+    }) + "\n")
+    sys.exit(f"YANDEX_{err_class.upper()}")
 PY
 }
 
