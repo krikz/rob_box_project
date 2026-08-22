@@ -436,8 +436,10 @@ def test_yaml_workflow_is_valid() -> None:
     parses as YAML and declares the expected on.push branches.
 
     PyYAML normalises ``on:`` to the boolean ``True`` (YAML 1.1 quirk) — we
-    accept either form. ``uses`` for reusable workflows lives inside ``steps``,
-    not on the job — the test checks the step-level key.
+    accept either form. ``uses`` for a reusable workflow must live at JOB level
+    (not step level) — the test checks the job-level key (regression for the
+    broken step-level ``uses`` that failed with "Can't find 'action.yml'",
+    issue #1535).
     """
     yml_path = REPO_ROOT / ".github" / "workflows" / "L-Build-On-Branch-Push.yml"
     assert yml_path.exists(), f"missing workflow file: {yml_path}"
@@ -447,18 +449,25 @@ def test_yaml_workflow_is_valid() -> None:
     branches = push["branches"]
     assert "develop" in branches
     assert "main" in branches
-    # jobs.build-all uses reusable workflow via a step.uses.
+    # jobs.build-all calls the reusable workflow at JOB level.
     jobs = doc["jobs"]
     assert "build-all" in jobs
     build_all = jobs["build-all"]
-    # runner
-    runs_on = build_all["runs-on"]
-    assert "self-hosted" in runs_on
-    # step-level `uses` references the reusable workflow.
-    step_uses = [s.get("uses") for s in build_all["steps"]]
-    assert any("L-Build-All-Services.yml" in (u or "") for u in step_uses), (
-        f"expected a step.uses pointing at L-Build-All-Services.yml; got: {step_uses}"
+    # job-level `uses` references the reusable workflow.
+    assert "L-Build-All-Services.yml" in build_all["uses"], (
+        f"expected job-level uses pointing at L-Build-All-Services.yml; got: {build_all.get('uses')!r}"
     )
+    # a reusable-workflow call must NOT declare runs-on / steps.
+    assert "runs-on" not in build_all
+    assert "steps" not in build_all
+    # secrets inherit needed for CR_PAT (ghcr login in update-image-versions).
+    assert build_all["secrets"] == "inherit"
+    # inputs forwarded to the reusable workflow.
+    assert build_all["with"]["push_to_registry"] == "true"
+    assert build_all["with"]["build_base_images"] == "false"
+    # caller permissions: contents:write (image-versions push) + packages:write (ghcr).
+    assert doc["permissions"]["contents"] == "write"
+    assert doc["permissions"]["packages"] == "write"
 
 
 # --------------------------------------------------------------------------- #
