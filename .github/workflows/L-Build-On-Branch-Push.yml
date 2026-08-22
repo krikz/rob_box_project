@@ -49,5 +49,5 @@ jobs:
     uses: ./.github/workflows/L-Build-All-Services.yml
     secrets: inherit  # CR_PAT нужен в update-image-versions для ghcr.io login
     with:
-      push_to_registry: 'true'
-      build_base_images: 'false'
+      push_to_registry: true
+      build_base_images: false

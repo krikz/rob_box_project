@@ -462,9 +462,9 @@ def test_yaml_workflow_is_valid() -> None:
     assert "steps" not in build_all
     # secrets inherit needed for CR_PAT (ghcr login in update-image-versions).
     assert build_all["secrets"] == "inherit"
-    # inputs forwarded to the reusable workflow.
-    assert build_all["with"]["push_to_registry"] == "true"
-    assert build_all["with"]["build_base_images"] == "false"
+    # inputs forwarded to the reusable workflow (YAML booleans).
+    assert build_all["with"]["push_to_registry"] is True
+    assert build_all["with"]["build_base_images"] is False
     # caller permissions: contents:write (image-versions push) + packages:write (ghcr).
     assert doc["permissions"]["contents"] == "write"
     assert doc["permissions"]["packages"] == "write"
