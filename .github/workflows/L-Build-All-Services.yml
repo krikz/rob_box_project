@@ -52,6 +52,7 @@ jobs:
     needs: build-base-images
     if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
     uses: ./.github/workflows/L-Build Main Pi Services.yml
+    secrets: inherit  # CR_PAT нужен в update-image-versions для ghcr.io login
     with:
       push_to_registry: true
 
@@ -60,6 +61,7 @@ jobs:
     needs: build-base-images
     if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
     uses: ./.github/workflows/L-Build Vision Pi Services.yml
+    secrets: inherit  # CR_PAT нужен в update-image-versions для ghcr.io login
     with:
       push_to_registry: true
 
