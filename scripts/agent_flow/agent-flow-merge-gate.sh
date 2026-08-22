@@ -1715,6 +1715,33 @@ sys.exit(0)' 2>/dev/null || echo "")"
                 _return_reason="PR #${_sibling_done_pr} на этой issue имеет e2e-done (инфра-фикс прошёл раунд); data-only PR #${pr_number} больше не блокирует"
             fi
         fi
+        # --- type:testing gate в signal 3 (ретро 22.08 t_944df2c5, issue #1506) --
+        # Для type:testing задач sibling e2e-done PR НЕ валидирует acceptance
+        # исходной задачи: sibling может быть инфра-фиксом (upload-artifact '?',
+        # CR/LF и т.п.), который сам по себе SUCCESS, но acceptance-пункты
+        # (сценарий voice_core_suite) не выполнил. Возврат issue в needs-e2e
+        # здесь подменил бы acceptance инфра-прогоном → «красивый PASS вместо
+        # честного FAIL» (ADR-0018). Вместо этого ставим needs-review на
+        # data-only PR + warning, issue остаётся e2e:rejected до ручной
+        # верификации Шифу (или явного re-run с scenario_file+acceptance_file).
+        if [ -n "${_sibling_done_pr:-}" ] && [ "${_sibling_done_pr:-}" != "null" ] \
+            && [ "${_sibling_done_pr:-}" != "$pr_number" ] \
+            && has_label "$labels_norm" "type:testing"; then
+            log "issue #${number}: type:testing + sibling e2e-done PR #${_sibling_done_pr} — signal 3 НЕ валидирует acceptance; needs-review на data-only PR #${pr_number} + manual check"
+            if [ "$DRY_RUN" != "true" ]; then
+                gh pr edit "$pr_number" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
+                gh pr edit "$pr_number" --repo "$GH_REPO" --remove-label "$REJECTED_LABEL" >/dev/null 2>&1 || true
+                # 24h dedup — issue остаётся e2e:rejected, тик повторяется ~5м.
+                _tt_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+                _tt_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_tt_since}&per_page=100" \
+                    --jq '[.[] | select(.body | contains("type:testing") and contains("НЕ валидирует acceptance"))] | length' 2>/dev/null || echo 0)"
+                if [ "${_tt_dup:-0}" -eq 0 ]; then
+                    gh issue comment "$number" --repo "$GH_REPO" --body \
+                        "agent-flow: ⚠️ issue #${number} имеет \`type:testing\` — сигнал 3 (sibling PR #${_sibling_done_pr} с \`${DONE_LABEL}\`) НЕ валидирует acceptance исходной задачи. Data-only PR #${pr_number} поставлен на \`${NEEDS_REVIEW_LABEL}\`; требуется ручная проверка Шифу, что acceptance-пункты #${number} выполнены, либо явный re-run сценария с \`scenario_file\` + \`acceptance_file\` (ретро 22.08 t_944df2c5)." >/dev/null 2>&1 || true
+                fi
+            fi
+            labeled=$((labeled+1)); continue
+        fi
         if [ -n "$_return_reason" ]; then
             log "issue #${number}: ${REJECTED_LABEL} → ${_return_reason} — returning to rotation"
             if [ "$DRY_RUN" != "true" ]; then
