@@ -61,6 +61,17 @@ BIG_BANG_OVERRIDE_LABEL="${BIG_BANG_OVERRIDE_LABEL:-big-bang-override}"
 BIG_BANG_MAX_COMMITS="${BIG_BANG_MAX_COMMITS:-50}"
 BIG_BANG_MAX_LINES="${BIG_BANG_MAX_LINES:-3000}"
 DEVELOP_BRANCH="${DEVELOP_BRANCH:-develop}"
+# Ретро 22.08 t_562a8682: open PR с needs-review может «отстать» от develop
+# на десятки/сотни коммитов (CI на собственной ветке зелёный → CLEAN),
+# но фактическая merge-base = ДРЕВНИЙ develop. Юзер жмёт merge → github
+# делает merge-commit с 180 коммитами впереди develop (или огромный merge
+# commit с потенциальными конфликтами) → CONFLICTING. Решение: для PR
+# с needs-review проверяем ahead-of-develop через REST compare API; если
+# выше порога — alert в карточку воркера (rate-limited 2ч) + comment
+# на issue (24h dedup). Сам PR НЕ блокируем — это watchdog, не gate.
+STALE_REBASE_AHEAD_THRESHOLD="${STALE_REBASE_AHEAD_THRESHOLD:-30}"
+STALE_REBASE_COMMENT_DEDUP_HOURS="${STALE_REBASE_COMMENT_DEDUP_HOURS:-24}"
+STALE_REBASE_REMINDER_COOLDOWN_SECONDS="${STALE_REBASE_REMINDER_COOLDOWN_SECONDS:-7200}"
 # Ретро 15.08 t_238ff3f7: deploy-issue label-less orphan backstop. L-Deploy and
 # Verify создаёт deploy-issues с версией workflow-файла С ВЕТКИ e2e-раунда
 # (z-{e2e}/test-round-N). Если round-ветка ответвилась ДО фикса #1263
@@ -116,6 +127,9 @@ fi
 : "${BIG_BANG_MAX_COMMITS:=50}"
 : "${BIG_BANG_MAX_LINES:=3000}"
 : "${DEVELOP_BRANCH:=develop}"
+: "${STALE_REBASE_AHEAD_THRESHOLD:=30}"
+: "${STALE_REBASE_COMMENT_DEDUP_HOURS:=24}"
+: "${STALE_REBASE_REMINDER_COOLDOWN_SECONDS:=7200}"
 
 # --- shared helpers ---------------------------------------------------------
 # user-unlabel guard (ретро 18.08 t_de6bea69, PR #1398) — если Шифу руками
@@ -731,6 +745,37 @@ _issue_reopened_recently() {  # $1=issue_number
         return 0
     fi
     return 1
+}
+
+# Ретро 22.08 t_562a8682: ahead-of-develop для PR через REST compare API.
+# Возвращает ahead_by (сколько коммитов в head нет в base). Если PR
+# закрыт/недоступен или compare API вернул non-JSON — печатает "0" (fail-
+# open: главное — не зашуметь ложным watchdog-алертом).
+#
+# Зачем REST compare, а не `git fetch + rev-list`: merge-gate может
+# крутиться в cron на хосте без полного clone репо (или с устаревшим
+# origin/develop). REST compare идёт напрямую в GitHub API — нужен только
+# gh auth. Также быстрее на больших PR.
+#
+# Использование: в stale-rebase watchdog для PR с needs-review (см. блок
+# в process-each-issue). ahead > STALE_REBASE_AHEAD_THRESHOLD → alert.
+#
+# Аргументы:
+#   $1=head_branch (имя ветки, e.g. "wt/fix-deploy-namespace")
+#   $2=base_branch (default develop)
+# jq-фильтр совместим с mock_env.sh (.field без дополнительных wrappers).
+pr_compare_ahead() {  # $1=head_branch $2=base_branch (default develop)
+    local head="$1" base="${2:-${DEVELOP_BRANCH}}"
+    [ -n "$head" ] || { printf '%s' "0"; return 0; }
+    gh api "repos/${GH_REPO}/compare/${base}...${head}" 2>/dev/null \
+        | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(int(d.get("ahead_by", 0) or 0))
+except Exception:
+    print(0)
+' 2>/dev/null || printf '%s' "0"
 }
 
 # Ретро 15.08 t_16325ddd (гонка PR-state): creator карточек (merge-gate
@@ -2009,6 +2054,143 @@ git push --force-with-lease origin ${pr_head_ref}
             log "issue #${number}: PR #${pr_number} mergeStateStatus=${pr_merge_state} — skip"
         fi
         skipped=$((skipped+1)); continue
+    fi
+
+    # --- stale-rebase watchdog (ретро 22.08 t_562a8682) ---------------------
+    # Сценарий: PR с needs-review, CI green & clean (mergeStateStatus=CLEAN),
+    # но ahead-of-develop > STALE_REBASE_AHEAD_THRESHOLD. GitHub merge-ui
+    # покажет такой PR как MERGEABLE (rebase возможен), НО фактический
+    # merge-base = ДРЕВНИЙ develop → merge-commit протащит десятки/сотни
+    # коммитов в develop (или огромный merge commit с потенциальными
+    # конфликтами). Юзер жмёт merge → CONFLICTING merge → потеря времени →
+    # ручной rebase воркером.
+    #
+    # Решение: ДЛЯ PR с меткой needs-review проверяем ahead через REST
+    # compare API. Если выше порога — alert в карточку воркера (rate-
+    # limited 2ч, как в UNSTABLE-блоке) + comment-on-issue с инструкцией
+    # rebase (24h dedup, как в post-merge cleanup). Сам PR НЕ блокируем —
+    # это watchdog, не gate: lint-PR, big-bang-override, e2e-done НЕ
+    # задеваем.
+    if has_label "${pr_labels_csv,,}" "$NEEDS_REVIEW_LABEL" \
+        && [ "$pr_state" = "OPEN" ]; then
+        _sr_ahead="$(pr_compare_ahead "$branch" "$DEVELOP_BRANCH")"
+        # Fail-open: пустой/non-numeric → 0 (нет alert, не зашумить).
+        [ -z "$_sr_ahead" ] && _sr_ahead=0
+        case "$_sr_ahead" in
+            ''|*[!0-9]*) _sr_ahead=0 ;;
+        esac
+        if [ "${_sr_ahead:-0}" -gt "${STALE_REBASE_AHEAD_THRESHOLD}" ] 2>/dev/null; then
+            # Rate-limit: коммент не чаще 1 раза в STALE_REBASE_REMINDER_COOLDOWN_SECONDS.
+            # Если карточка есть — пишем reminder в неё (аналог UNSTABLE-блока).
+            _sr_skip="0"
+            if [ -n "${task_id:-}" ]; then
+                _last_sr="$(kanban_last_reminder_ts "$task_id" "STALE REBASE detected")"
+                _now_sr="$(date +%s)"
+                if [ -n "$_last_sr" ] \
+                    && [ $(( _now_sr - _last_sr )) -lt "${STALE_REBASE_REMINDER_COOLDOWN_SECONDS}" ]; then
+                    log "issue #${number}: PR #${pr_number} ahead=${_sr_ahead} > ${STALE_REBASE_AHEAD_THRESHOLD} — rebase reminder rate-limited (last=${_last_sr})"
+                    _sr_skip="1"
+                fi
+            fi
+            if [ "$_sr_skip" = "0" ]; then
+                log "issue #${number}: 🟡 PR #${pr_number} (${branch}) ahead=${_sr_ahead} > ${STALE_REBASE_AHEAD_THRESHOLD} (CLEAN) — stale rebase detected"
+                _sr_reminder="## 🟡 STALE REBASE detected (merge-gate, $(date -u +%H:%M:%SZ))
+
+PR #${pr_number} (\\\`${branch}\\\`) → \\\\${DEVELOP_BRANCH}\\\` = **mergeable=MERGEABLE + mergeStateStatus=CLEAN**, но **ahead=${_sr_ahead} коммитов** (порог: ${STALE_REBASE_AHEAD_THRESHOLD}).
+
+CI зелёный, конфликтов в GitHub нет — но merge-base уехал далеко назад. Если Шифу нажмёт merge-ui сейчас → github сделает merge-commit с ${_sr_ahead} коммитами впереди develop (или огромный merge commit с потенциальными конфликтами). Потеря времени + ручной rebase.
+
+**Что делать** (тот же PR, та же ветка, никаких новых):
+1. **rebase на origin/${DEVELOP_BRANCH}**: \\\`git fetch origin ${DEVELOP_BRANCH} && git rebase origin/${DEVELOP_BRANCH}\\\`.
+2. Push --force-with-lease: \\\`git push --force-with-lease origin ${branch}\\\`.
+3. После push ahead должен стать ≤ ${STALE_REBASE_AHEAD_THRESHOLD} → watchdog снимет alert.
+
+\\\`\\\`\\\`bash
+git fetch origin ${DEVELOP_BRANCH}
+git checkout ${branch}
+git rebase origin/${DEVELOP_BRANCH}
+git add -A && git rebase --continue
+git push --force-with-lease origin ${branch}
+\\\`\\\`\\\`
+
+**Шпаргалка по диагностике** (для будущих проверок):
+\\\`\\\`\\\`bash
+# ahead/behind в числовом виде:
+gh api repos/${GH_REPO}/compare/${DEVELOP_BRANCH}...${branch} \\
+    --jq '.ahead_by,.behind_by,.status'
+
+# Или через git (если есть локальный clone):
+git fetch origin ${DEVELOP_BRANCH}
+git rev-list --left-right --count origin/${DEVELOP_BRANCH}...${branch}
+\\\`\\\`\\\`
+
+(Этот alert автоматически дописан merge-gate, ретро 22.08 t_562a8682 — open PR с needs-review отстал от develop. Шифу прямо: «оно должно взять себе девелоп сейчас и позеленеть».)"
+                if [ -n "${task_id:-}" ]; then
+                    _sr_card_status="$(kanban_card_status "$task_id")"
+                    case "$_sr_card_status" in
+                        running|ready|todo)
+                            if [ "$DRY_RUN" = "true" ]; then
+                                log "DRY-RUN would: append STALE REBASE reminder to live card ${task_id} (status=${_sr_card_status})"
+                            else
+                                hermes kanban --board "$KANBAN_BOARD" comment "$task_id" "$_sr_reminder" >/dev/null 2>&1 \
+                                    || log "issue #${number}: WARNING appending STALE REBASE reminder to ${task_id} failed"
+                                log "issue #${number}: STALE REBASE reminder appended to live card ${task_id} (status=${_sr_card_status}, ahead=${_sr_ahead})"
+                            fi
+                            ;;
+                        done|archived|blocked)
+                            # Карточка мёртвая — пишем comment-on-issue (24h dedup),
+                            # чтобы Шифу увидел в issue timeline. Не создаём
+                            # новую recovery-карточку: rebase — задача исходного
+                            # автора ветки, не отдельный recovery-run (в отличие
+                            # от UNSTABLE / CONFLICTING, где нужен e2e на новой
+                            # фикс-ветке).
+                            log "issue #${number}: STALE REBASE — карточка ${task_id} мёртвая (status=${_sr_card_status}), пишу только в issue"
+                            _sr_dedup_since="$(date -u -d "${STALE_REBASE_COMMENT_DEDUP_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+                                || date -u +%Y-%m-%dT%H:%M:%SZ)"
+                            _sr_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_sr_dedup_since}&per_page=100" \
+                                --jq '[.[] | select(.body | contains("STALE REBASE detected"))] | length' 2>/dev/null || echo 0)"
+                            if [ "${_sr_dup:-0}" -eq 0 ]; then
+                                gh issue comment "$number" --repo "$GH_REPO" --body "$_sr_reminder" >/dev/null 2>&1 || true
+                                log "issue #${number}: STALE REBASE comment posted on issue #${number} (dedup=${_sr_dup:-0}, ahead=${_sr_ahead})"
+                            else
+                                log "issue #${number}: STALE REBASE comment already posted on issue #${number} (×${_sr_dup} за ${STALE_REBASE_COMMENT_DEDUP_HOURS}h) — dedup skip"
+                            fi
+                            ;;
+                        *)
+                            # неизвестный/не-прочитанный статус — пишем в карточку
+                            # (лучше чем игнорировать; если карточка реально мёртвая,
+                            # reminder просто не увидят, как до фикса #1356).
+                            if [ "$DRY_RUN" = "true" ]; then
+                                log "DRY-RUN would: append STALE REBASE reminder to ${task_id} (status=${_sr_card_status} — unknown)"
+                            else
+                                hermes kanban --board "$KANBAN_BOARD" comment "$task_id" "$_sr_reminder" >/dev/null 2>&1 \
+                                    || log "issue #${number}: WARNING appending STALE REBASE reminder to ${task_id} failed (status unknown)"
+                                log "issue #${number}: STALE REBASE reminder appended to ${task_id} (status=${_sr_card_status} — unknown, ahead=${_sr_ahead})"
+                            fi
+                            ;;
+                    esac
+                else
+                    # task_id пуст (issue без маркера «kanban: t_xxx»).
+                    # Пишем comment-on-issue (24h dedup). Scan-all-prs подберёт
+                    # для создания recovery-карточки, если понадобится.
+                    log "issue #${number}: STALE REBASE — task_id пуст, пишу comment-on-issue"
+                    _sr_dedup_since="$(date -u -d "${STALE_REBASE_COMMENT_DEDUP_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+                        || date -u +%Y-%m-%dT%H:%M:%SZ)"
+                    _sr_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_sr_dedup_since}&per_page=100" \
+                        --jq '[.[] | select(.body | contains("STALE REBASE detected"))] | length' 2>/dev/null || echo 0)"
+                    if [ "${_sr_dup:-0}" -eq 0 ]; then
+                        gh issue comment "$number" --repo "$GH_REPO" --body "$_sr_reminder" >/dev/null 2>&1 || true
+                        log "issue #${number}: STALE REBASE comment posted on issue #${number} (task_id пуст, ahead=${_sr_ahead})"
+                    else
+                        log "issue #${number}: STALE REBASE comment already posted on issue #${number} (×${_sr_dup}) — dedup skip"
+                    fi
+                fi
+            fi
+            # Watchdog: НЕ continue — пусть процесс пойдёт дальше (lint-PR
+            # path / big-bang gate / needs-e2e / needs-review), но в логах
+            # остаётся инфа что ahead завышен. Если Шифу руками нажмёт
+            # merge-ui после alert — это его решение, merge-gate не блокирует.
+        fi
     fi
 
     # All green — classify PR by kind (lint vs functional, ретро 10.08 #2).
