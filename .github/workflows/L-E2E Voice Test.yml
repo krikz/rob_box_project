@@ -134,6 +134,21 @@ jobs:
       - name: Push atomic harness + scenario to build machine
         env:
           SSHPASS: open
+          # Ретро t_4cf2811e (round-166 fail): bash подставляет ${{ inputs.x }}
+          # дословно — если upstream workflow_call передал input с trailing
+          # \r (JSON body с CRLF / jq без -r / multi-line workflow_call edge case),
+          # scp получает путь "file.json\r" и падает с "No such file or directory".
+          # Защита: sanitized переменные (single-line) используются везде ниже.
+          # voice_text / patterns — multi-line, для них убираем ТОЛЬКО \r.
+          SCENARIO_FILE: ${{ inputs.scenario_file }}
+          ACCEPTANCE_FILE: ${{ inputs.acceptance_file }}
+          VOICE_TEXT: ${{ inputs.voice_text }}
+          VOICE: ${{ inputs.voice }}
+          PATTERNS: ${{ inputs.patterns }}
+          ACCEPTANCE_CHECK: ${{ inputs.acceptance_check }}
+          RETRIES: ${{ inputs.retries }}
+          REACT_WINDOW: ${{ inputs.react_window }}
+          CHECK_TG_ECHO: ${{ inputs.check_tg_echo }}
         run: |
           # bug(t_cca7c074, ретро 19.08): копируем ОБА файла харнесса — раньше
           # копировали только e2e_voice_test.sh, но он source'ит e2e_voice_lib.sh
@@ -145,9 +160,13 @@ jobs:
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_test.sh ros2@10.1.1.249:/tmp/e2e_voice_test.sh
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_lib.sh ros2@10.1.1.249:/tmp/e2e_voice_lib.sh
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh && echo HARNESS_PUSHED"
+          # CRLF sanitization (single-line): отрезаем \r и \n от начала/конца.
+          # Внутри значения CR/LF недопустимы для имён файлов/путей.
+          SCENARIO_FILE_CLEAN=$(printf '%s' "$SCENARIO_FILE" | tr -d '\r\n')
+          ACCEPTANCE_FILE_CLEAN=$(printf '%s' "$ACCEPTANCE_FILE" | tr -d '\r\n')
           # scenario (если задан) — кладём в /tmp на 249
-          if [ -n "${{ inputs.scenario_file }}" ]; then
-            sshpass -e scp -o StrictHostKeyChecking=no "${{ inputs.scenario_file }}" ros2@10.1.1.249:/tmp/e2e_scenario.json
+          if [ -n "$SCENARIO_FILE_CLEAN" ]; then
+            sshpass -e scp -o StrictHostKeyChecking=no "$SCENARIO_FILE_CLEAN" ros2@10.1.1.249:/tmp/e2e_scenario.json
             sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_scenario.json && echo SCENARIO_PUSHED"
           else
             echo "NO_SCENARIO"
@@ -155,8 +174,8 @@ jobs:
           # ADR-0022 GATE-1: acceptance.json (если задан явно) — кладём в /tmp.
           # Если не задан, харнесс сам ищет <scenario_dir>/acceptance.json
           # (auto-discovery) либо падает с gating error.
-          if [ -n "${{ inputs.acceptance_file }}" ]; then
-            sshpass -e scp -o StrictHostKeyChecking=no "${{ inputs.acceptance_file }}" ros2@10.1.1.249:/tmp/e2e_acceptance.json
+          if [ -n "$ACCEPTANCE_FILE_CLEAN" ]; then
+            sshpass -e scp -o StrictHostKeyChecking=no "$ACCEPTANCE_FILE_CLEAN" ros2@10.1.1.249:/tmp/e2e_acceptance.json
             sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_acceptance.json && echo ACCEPTANCE_PUSHED"
           else
             echo "NO_EXPLICIT_ACCEPTANCE (auto-discovery / gating will apply)"
@@ -170,31 +189,56 @@ jobs:
           # (контракт для upload-artifact ниже — иначе артефакт
           # e2e-voice-recording-<run_id> всегда пустой).
           GITHUB_RUN_ID: ${{ github.run_id }}
+          # Ретро t_4cf2811e (round-166): sanitized inputs (см. шаг выше).
+          SCENARIO_FILE: ${{ inputs.scenario_file }}
+          ACCEPTANCE_FILE: ${{ inputs.acceptance_file }}
+          VOICE_TEXT: ${{ inputs.voice_text }}
+          VOICE: ${{ inputs.voice }}
+          PATTERNS: ${{ inputs.patterns }}
+          ACCEPTANCE_CHECK: ${{ inputs.acceptance_check }}
+          RETRIES: ${{ inputs.retries }}
+          REACT_WINDOW: ${{ inputs.react_window }}
+          CHECK_TG_ECHO: ${{ inputs.check_tg_echo }}
         run: |
           RID="${{ github.run_id }}"
           YKEY="$(cat "$YKEY_LOCAL")"
 
+          # CRLF sanitization (single-line).
+          SCENARIO_FILE_CLEAN=$(printf '%s' "$SCENARIO_FILE" | tr -d '\r\n')
+          ACCEPTANCE_FILE_CLEAN=$(printf '%s' "$ACCEPTANCE_FILE" | tr -d '\r\n')
+          VOICE_CLEAN=$(printf '%s' "$VOICE" | tr -d '\r\n')
+          RETRIES_CLEAN=$(printf '%s' "$RETRIES" | tr -d '\r\n')
+          REACT_WINDOW_CLEAN=$(printf '%s' "$REACT_WINDOW" | tr -d '\r\n')
+          # voice_text / patterns — multi-line, режем ТОЛЬКО \r (LF — легитимный
+          # контент, ретро t_4cf2811e).
+          VOICE_TEXT_CLEAN=$(printf '%s' "$VOICE_TEXT" | tr -d '\r')
+          # patterns / acceptance_check — comma-separated; обрезка \r обязательна,
+          # \n — допустим (на случай, если upstream переслал multi-line).
+          PATTERNS_CLEAN=$(printf '%s' "$PATTERNS" | tr -d '\r')
+          ACCEPTANCE_CHECK_CLEAN=$(printf '%s' "$ACCEPTANCE_CHECK" | tr -d '\r')
+          CHECK_TG_ECHO_CLEAN=$(printf '%s' "$CHECK_TG_ECHO" | tr -d '\r\n')
+
           # Формируем команду: --scenario если задан, иначе --text + --voice
-          if [ -n "${{ inputs.scenario_file }}" ]; then
+          if [ -n "$SCENARIO_FILE_CLEAN" ]; then
             CMD="/tmp/e2e_voice_test.sh --scenario /tmp/e2e_scenario.json"
             # ADR-0022 GATE-1: проброс --acceptance если задан явно.
             # Если не задан — харнесс сам auto-discovers /tmp/e2e_scenario.json
             # рядом acceptance.json (либо gating падает с понятным сообщением).
-            if [ -n "${{ inputs.acceptance_file }}" ]; then
+            if [ -n "$ACCEPTANCE_FILE_CLEAN" ]; then
               CMD="$CMD --acceptance /tmp/e2e_acceptance.json"
             fi
           else
-            CMD="/tmp/e2e_voice_test.sh --text '${{ inputs.voice_text }}' --voice '${{ inputs.voice }}'"
+            CMD="/tmp/e2e_voice_test.sh --text '$VOICE_TEXT_CLEAN' --voice '$VOICE_CLEAN'"
           fi
           # patterns: если acceptance_check (legacy) задан, а patterns нет — используем его
-          PATTERNS_VAL="${{ inputs.patterns }}"
+          PATTERNS_VAL="$PATTERNS_CLEAN"
           if [ -z "$PATTERNS_VAL" ]; then
-            PATTERNS_VAL="${{ inputs.acceptance_check }}"
+            PATTERNS_VAL="$ACCEPTANCE_CHECK_CLEAN"
           fi
           [ -n "$PATTERNS_VAL" ] && CMD="$CMD --patterns '$PATTERNS_VAL'"
-          CMD="$CMD --retries ${{ inputs.retries }} --react-window ${{ inputs.react_window }}"
+          CMD="$CMD --retries $RETRIES_CLEAN --react-window $REACT_WINDOW_CLEAN"
           # Issue #1196 L2 — полуавтомат-проверка эха telegram↔dialogue.
-          if [ "${{ inputs.check_tg_echo }}" = "true" ]; then
+          if [ "$CHECK_TG_ECHO_CLEAN" = "true" ]; then
             CMD="$CMD --check-tg-echo"
           fi
 
@@ -224,24 +268,44 @@ jobs:
           fi
 
       - name: Write model.json (multi-model provenance)
+        env:
+          # Ретро t_4cf2811e: JSON-сериализация в heredoc небезопасна, если
+          # input содержит сырые CR/LF/кавычки — сломанный JSON. Прогоняем
+          # через jq, который сам эскейпит control-символы.
+          LLM: ${{ inputs.llm }}
+          TTS: ${{ inputs.tts }}
+          STT: ${{ inputs.stt }}
+          VOICE: ${{ inputs.voice }}
+          VOICE_TEXT: ${{ inputs.voice_text }}
+          SCENARIO_FILE: ${{ inputs.scenario_file }}
+          ACCEPTANCE_FILE: ${{ inputs.acceptance_file }}
+          PATTERNS: ${{ inputs.patterns }}
+          CHECK_TG_ECHO: ${{ inputs.check_tg_echo }}
         run: |
           RID="${{ github.run_id }}"
-          cat > "model.json" <<EOF
-          {
-            "llm":  "${{ inputs.llm }}",
-            "tts":  "${{ inputs.tts }}",
-            "stt":  "${{ inputs.stt }}",
-            "voice": "${{ inputs.voice }}",
-            "voice_text": "${{ inputs.voice_text }}",
-            "scenario_file": "${{ inputs.scenario_file }}",
-            "acceptance_file": "${{ inputs.acceptance_file }}",
-            "patterns": "${{ inputs.patterns }}",
-            "check_tg_echo": "${{ inputs.check_tg_echo }}",
-            "harness": "e2e_voice_test.sh (atomic v2)",
-            "ts":   "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "run_id": "${RID}"
-          }
-          EOF
+          # JSON-safe сериализация через jq (CR/LF/кавычки эскейпятся автоматически).
+          # Ретро t_4cf2811e: heredoc-сборка ломалась на input с CRLF/переводами строк.
+          jq -n \
+            --arg llm      "$LLM" \
+            --arg tts      "$TTS" \
+            --arg stt      "$STT" \
+            --arg voice    "$VOICE" \
+            --arg voice_text    "$VOICE_TEXT" \
+            --arg scenario_file "$SCENARIO_FILE" \
+            --arg acceptance_file "$ACCEPTANCE_FILE" \
+            --arg patterns  "$PATTERNS" \
+            --arg check_tg_echo "$CHECK_TG_ECHO" \
+            --arg harness   "e2e_voice_test.sh (atomic v2)" \
+            --arg ts        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg run_id    "$RID" \
+            '{llm:$llm, tts:$tts, stt:$stt, voice:$voice,
+              voice_text:$voice_text,
+              scenario_file:$scenario_file,
+              acceptance_file:$acceptance_file,
+              patterns:$patterns,
+              check_tg_echo:$check_tg_echo,
+              harness:$harness, ts:$ts, run_id:$run_id}' \
+            > model.json
           cat model.json
 
       - name: Collect robot logs
@@ -290,22 +354,31 @@ jobs:
       - name: Upload PR diff (issue #1396)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Ретро t_4cf2811e: pr_number / ref могут содержать CR (upstream JSON
+          # body с CRLF). Sanitize перед использованием в [ -n ... ] / gh pr diff.
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REF: ${{ github.event.inputs.ref }}
+          PR_NUM_AUTO: ${{ github.event.pull_request.number }}
         run: |
           RID="${{ github.run_id }}"
           DIFF_FILE="/tmp/e2e_pr_diff_${RID}.patch"
           PR_NUM=""
+          # CRLF sanitization (single-line).
+          PR_NUMBER_CLEAN=$(printf '%s' "$PR_NUMBER" | tr -d '\r\n')
+          REF_CLEAN=$(printf '%s' "$REF" | tr -d '\r\n')
+          PR_NUM_AUTO_CLEAN=$(printf '%s' "$PR_NUM_AUTO" | tr -d '\r\n')
           # 1) Если в inputs pr_number (или event payload) — используем
-          if [ -n "${{ inputs.pr_number }}" ]; then
-            PR_NUM="${{ inputs.pr_number }}"
-          elif [ -n "${{ github.event.pull_request.number }}" ]; then
-            PR_NUM="${{ github.event.pull_request.number }}"
+          if [ -n "$PR_NUMBER_CLEAN" ]; then
+            PR_NUM="$PR_NUMBER_CLEAN"
+          elif [ -n "$PR_NUM_AUTO_CLEAN" ]; then
+            PR_NUM="$PR_NUM_AUTO_CLEAN"
           fi
           if [ -n "$PR_NUM" ]; then
             echo "PR diff source: #$PR_NUM"
             gh pr diff "$PR_NUM" > "$DIFF_FILE" 2>/dev/null || echo "" > "$DIFF_FILE"
-          elif [ -n "${{ github.event.inputs.ref }}" ]; then
+          elif [ -n "$REF_CLEAN" ]; then
             # 2) Fallback: diff текущей ветки против develop (если trigger=ref)
-            REF="${{ github.event.inputs.ref }}"
+            REF="$REF_CLEAN"
             git fetch origin develop:refs/remotes/origin/develop 2>/dev/null || true
             git diff "refs/remotes/origin/develop...${REF}" > "$DIFF_FILE" 2>/dev/null \
               || echo "" > "$DIFF_FILE"
@@ -474,9 +547,14 @@ jobs:
           echo "✅ ACCEPTANCE ПРОШЁЛ: speaker_tag → профиль scope=speaker:<tag> в SQLite"
 
       - name: E2E timing metrics (response speed)
+        env:
+          # Ретро t_4cf2811e: voice_text может нести trailing \r. Sanitize.
+          VOICE_TEXT: ${{ inputs.voice_text }}
         run: |
           RID="${{ github.run_id }}"
-          VTXT="${{ inputs.voice_text }}"
+          VTXT_RAW="$VOICE_TEXT"
+          # voice_text — multi-line, режем ТОЛЬКО \r (LF — легитимный контент).
+          VTXT=$(printf '%s' "$VTXT_RAW" | tr -d '\r')
           # Текст — для step summary, JSON — отдельный артефакт (issue #1396)
           python3 .github/workflows/scripts/e2e_timing.py "/tmp/voice_e2e_${RID}.log" "${VTXT}" \
             | tee /tmp/e2e_timing.txt
@@ -742,15 +820,41 @@ jobs:
           if-no-files-found: ignore
 
       - name: Summary
+        env:
+          # Ретро t_4cf2811e: $GITHUB_STEP_SUMMARY — markdown; сырой \r ломает
+          # layout таблиц. Прогоняем input через env (shell сам уберёт \r для
+          # single-line) + дополнительная защита через tr.
+          ENVIRONMENT: ${{ inputs.environment }}
+          VOICE_TEXT: ${{ inputs.voice_text }}
+          VOICE: ${{ inputs.voice }}
+          SCENARIO_FILE: ${{ inputs.scenario_file }}
+          ACCEPTANCE_FILE: ${{ inputs.acceptance_file }}
+          PATTERNS: ${{ inputs.patterns }}
+          VOLUME: ${{ inputs.volume }}
+          LLM: ${{ inputs.llm }}
+          TTS: ${{ inputs.tts }}
+          STT: ${{ inputs.stt }}
         run: |
+          # Single-line inputs — отрезаем \r и \n (для environment/voice/etc).
+          # voice_text — multi-line, режем ТОЛЬКО \r.
+          ENVIRONMENT_CLEAN=$(printf '%s' "$ENVIRONMENT" | tr -d '\r\n')
+          VOICE_TEXT_CLEAN=$(printf '%s' "$VOICE_TEXT" | tr -d '\r')
+          VOICE_CLEAN=$(printf '%s' "$VOICE" | tr -d '\r\n')
+          SCENARIO_FILE_CLEAN=$(printf '%s' "$SCENARIO_FILE" | tr -d '\r\n')
+          ACCEPTANCE_FILE_CLEAN=$(printf '%s' "$ACCEPTANCE_FILE" | tr -d '\r\n')
+          PATTERNS_CLEAN=$(printf '%s' "$PATTERNS" | tr -d '\r')
+          VOLUME_CLEAN=$(printf '%s' "$VOLUME" | tr -d '\r\n')
+          LLM_CLEAN=$(printf '%s' "$LLM" | tr -d '\r\n')
+          TTS_CLEAN=$(printf '%s' "$TTS" | tr -d '\r\n')
+          STT_CLEAN=$(printf '%s' "$STT" | tr -d '\r\n')
           echo "## E2E Voice Test Complete" >> $GITHUB_STEP_SUMMARY
-          echo "- Environment: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Voice text: \`${{ inputs.voice_text }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Voice: \`${{ inputs.voice }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Scenario: \`${{ inputs.scenario_file }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Acceptance (ADR-0022 GATE-1): \`${{ inputs.acceptance_file }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Patterns: \`${{ inputs.patterns }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Volume: ${{ inputs.volume }}%" >> $GITHUB_STEP_SUMMARY
-          echo "- LLM: \`${{ inputs.llm }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- TTS: \`${{ inputs.tts }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- STT: \`${{ inputs.stt }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Environment: \`$ENVIRONMENT_CLEAN\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Voice text: \`$VOICE_TEXT_CLEAN\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Voice: \`$VOICE_CLEAN\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Scenario: \`$SCENARIO_FILE_CLEAN\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Acceptance (ADR-0022 GATE-1): \`$ACCEPTANCE_FILE_CLEAN\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Patterns: \`$PATTERNS_CLEAN\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Volume: $VOLUME_CLEAN%" >> $GITHUB_STEP_SUMMARY
+          echo "- LLM: \`$LLM_CLEAN\`" >> $GITHUB_STEP_SUMMARY
+          echo "- TTS: \`$TTS_CLEAN\`" >> $GITHUB_STEP_SUMMARY
+          echo "- STT: \`$STT_CLEAN\`" >> $GITHUB_STEP_SUMMARY
