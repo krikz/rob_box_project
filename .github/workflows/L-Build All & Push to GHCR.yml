@@ -18,6 +18,7 @@ on:
 
 permissions:
   contents: write
+  packages: write  # Required by called workflows (docker push to ghcr.io)
 
 env:
   LOCAL_REGISTRY: localhost:5000

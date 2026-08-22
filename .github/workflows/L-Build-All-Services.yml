@@ -30,6 +30,7 @@ on:
 
 permissions:
   contents: write  # Required for git push of .image-versions files
+  packages: write  # Required by called workflows (docker push to ghcr.io)
 
 env:
   LOCAL_REGISTRY: localhost:5000
