@@ -1271,11 +1271,30 @@ detect_fail_kind() {  # $1=artifact_dir $2=run_id
 # реально стартует — e2e_workflow потом появляется в gh run list. Решение:
 # ретрай с backoff 5/10/15s, до 3 попыток. Скрипт останавливается раньше,
 # только если ВСЕ попытки провалились.
+# Issue #1527: пробрасываем трейсинг-поля triggered_by_*, чтобы в CI job
+# logs было видно кто реально стартанул этот прогон. Значения вычисляются
+# ОДИН РАЗ на старте тика и прибавляются ко всем вызовам этой функции:
+#   - triggered_by_script = "agent-flow-e2e-process"
+#   - triggered_by_agent  = "agent-flow" (cron профиль; можно override env)
+#   - triggered_by_card   = "${E2E_RUN_CARD:-}" (текущая карточка в тике,
+#     выставляется в начале process_issue через export — чтобы один тик мог
+#     пробежать несколько issues, и каждый run ссылался на свой t_xxx)
+#   - triggered_by_reason = "${E2E_RUN_REASON:-scheduled-tick}" или
+#     "RUN_NOW signal" (если сработал G0), или "manual" (если запущен руками)
+_TBS="${AGENT_FLOW_SCRIPT:-agent-flow-e2e-process}"
+_TBA="${TRIGGERED_BY_AGENT:-agent-flow}"
+_TBC="${E2E_RUN_CARD:-${TRIGGERED_BY_CARD:-}}"
+_TBR="${E2E_RUN_REASON:-${TRIGGERED_BY_REASON:-scheduled-tick}}"
 _trigger_workflow_with_retry() {
     local _wf_name="$1"; shift
     local _attempts=0 _max=3 _sleep
     while [ "$_attempts" -lt "$_max" ]; do
-        if gh workflow run "$_wf_name" --repo "$GH_REPO" "$@" >/dev/null 2>&1; then
+        if gh workflow run "$_wf_name" --repo "$GH_REPO" \
+                --field triggered_by_script="$_TBS" \
+                --field triggered_by_agent="$_TBA" \
+                --field triggered_by_card="$_TBC" \
+                --field triggered_by_reason="$_TBR" \
+                "$@" >/dev/null 2>&1; then
             return 0
         fi
         _attempts=$((_attempts + 1))
