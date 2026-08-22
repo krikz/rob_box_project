@@ -712,6 +712,25 @@ case "$subcmd" in
                     mv "$tmpf" "$state"
                 fi
                 ;;
+            repos/*/compare/*)
+                # Ретро 22.08 t_562a8682: stale-rebase watchdog использует
+                # `gh api repos/.../compare/<base>...<head>` для ahead-by.
+                # Fixture: COMPARE_<base>_<head>_JSON = {"ahead_by":N,"behind_by":N,"status":"..."}.
+                # Если не задан — fallback COMPARE_DEFAULT_JSON. Если и тот
+                # пустой — возвращаем "0" (fail-open watchdog).
+                cmp_key="$(printf '%s' "$path" | sed -nE 's#.*/compare/(.+)$#\1#p' | tr '/. ' '___')"
+                journal "gh api $path (compare)"
+                _data="$(get_state "COMPARE_${cmp_key}_JSON")"
+                [ -z "$_data" ] && _data="$(get_state COMPARE_DEFAULT_JSON)"
+                if [ -z "$_data" ]; then
+                    printf '{"ahead_by":0,"behind_by":0,"status":"identical"}'
+                    exit 0
+                fi
+                # Реальный gh api без --jq → pass-through JSON. С --jq
+                # (нет в merge-gate, но для unit-тестов возможно) —
+                # apply_jq сам разберётся.
+                apply_jq "$_data" "$_jq_filter"
+                ;;
             *)
                 journal "gh api $path (other)"
                 ;;
