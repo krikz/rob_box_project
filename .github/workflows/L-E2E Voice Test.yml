@@ -94,7 +94,12 @@ jobs:
     # билд (5+ docker-runner контейнеров) ломал e2e и e2e ломал билды.
     # Лейбл ТОЛЬКО e2e (без self-hosted) — чтобы раннер не участвовал в билдах.
     runs-on: e2e
-    timeout-minutes: 15
+    # Ретро t_d5c9d012 (round-170 cancel): voice_core_suite_v1.json (11 шагов:
+    # cc01/ns01/ww01/mv01/mv02/mv03/ds01/ds02/ds03/dj01/dj02) с retries=3 +
+    # react_window=40s + TTS synthesis per step реально занимает 25-35 мин.
+    # Старый 15 мин таймаут резал прогон в середине ds01/ds02 (backlog-фаза).
+    # 45 мин — запас на 3x retry, backlog-фразу (анекдот), и 2 музыкальных шага.
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
@@ -886,11 +891,17 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload PR diff (issue #1396)
+        # Ретро t_d5c9d012: без `if: always()` — оригинал, и в нём DIFF_FILE
+        # определяется в $GITHUB_ENV. Step 28 (ниже) — fallback с `if: always()`
+        # но всё равно зависит от env.DIFF_FILE, который мог не быть выставлен
+        # если step 12 (Upload PR diff) был skipped. Делаем явный fallback:
+        #   - если DIFF_FILE пустой — пусть upload-artifact получит явный
+        #     несуществующий путь с if-no-files-found=ignore (не валим job).
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
           name: e2e-voice-diff-${{ github.run_id }}
-          path: ${{ env.DIFF_FILE }}
+          path: ${{ env.DIFF_FILE || format('/tmp/e2e_pr_diff_{0}.patch', github.run_id) }}
           retention-days: 7
           if-no-files-found: ignore
 
