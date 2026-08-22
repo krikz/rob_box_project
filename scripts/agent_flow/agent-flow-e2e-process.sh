@@ -1308,6 +1308,36 @@ _TBR="${E2E_RUN_REASON:-${TRIGGERED_BY_REASON:-scheduled-tick}}"
 _trigger_workflow_with_retry() {
     local _wf_name="$1"; shift
     local _attempts=0 _max=3 _sleep
+    # PR #1536 (issue #1535): race-condition dedup через gh run list.
+    # Если gh workflow run вернул non-zero exit, но в gh run list уже есть
+    # свежий run (≤60s) для того же workflow+branch — это API eventual-
+    # consistency race, build на самом деле стартанул. Считаем SUCCESS,
+    # retry НЕ нужен (иначе 2-3 дубля как в issue #1535).
+    _race_dedup_check() {
+        local _wf="$1" _br="$2"
+        local _runs_json _created_at _now _age
+        _runs_json="$(gh run list --workflow "$_wf" --repo "$GH_REPO" \
+            --branch "$_br" --limit 1 --json databaseId,createdAt 2>/dev/null || echo "")"
+        [ -z "$_runs_json" ] && return 1
+        _created_at="$(printf '%s' "$_runs_json" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if not d: sys.exit(0)
+    print(d[0].get("createdAt",""))
+except Exception: sys.exit(0)')"
+        [ -z "$_created_at" ] && return 1
+        _now="$(date -u +%s)"
+        # Парсим ISO 8601 created_at в epoch
+        _created_at="$(date -d "$_created_at" +%s 2>/dev/null || echo 0)"
+        [ "$_created_at" -eq 0 ] && return 1
+        _age=$((_now - _created_at))
+        # 0..60s — race condition detected
+        if [ "$_age" -ge 0 ] && [ "$_age" -le 60 ]; then
+            return 0
+        fi
+        return 1
+    }
     while [ "$_attempts" -lt "$_max" ]; do
         if gh workflow run "$_wf_name" --repo "$GH_REPO" \
                 --field triggered_by_script="$_TBS" \
@@ -1315,6 +1345,23 @@ _trigger_workflow_with_retry() {
                 --field triggered_by_card="$_TBC" \
                 --field triggered_by_reason="$_TBR" \
                 "$@" >/dev/null 2>&1; then
+            return 0
+        fi
+        # PR #1536 dedup: extract --ref from args (если есть) для race check
+        local _dedup_branch=""
+        local _arg _next_is_ref=0
+        for _arg in "$@"; do
+            if [ "$_next_is_ref" = "1" ]; then
+                _dedup_branch="$_arg"
+                _next_is_ref=0
+                continue
+            fi
+            case "$_arg" in
+                --ref) _next_is_ref=1 ;;
+            esac
+        done
+        if [ -n "$_dedup_branch" ] && _race_dedup_check "$_wf_name" "$_dedup_branch"; then
+            log "    trigger ${_wf_name}: race-condition detected (recent run on ${_dedup_branch} ≤60s) — accept as success (dedup, PR #1536)"
             return 0
         fi
         _attempts=$((_attempts + 1))
@@ -2240,6 +2287,58 @@ for t in data:
     # ПРОДОЛЖИТЬ, а не пересобирать: если для текущего HEAD round уже есть
     # успешный build-ран — пропускаем build (идём сразу в deploy/e2e).
     _round_head="$(git -C "$WORKTREE_DIR" rev-parse HEAD 2>/dev/null || echo '')"
+    # Ретро 22.08 t_c7761956 (A1): pre-dispatch consecutive-build-failed guard.
+    # Если 2 последних build-run'а на ${ROUND_BRANCH} завершились failure → не
+    # запускаем третий (race в update-image-versions / GHCR push реальный, retry
+    # не поможет). Ставим карточку devops для ручного rebase/fix, e2e не
+    # продолжается (round-174..177 повторяли одну и ту же ошибку 4 раза подряд).
+    _consec_fail_count="$(gh run list --repo "$GH_REPO" --workflow "$BUILD_WORKFLOW" --branch "$ROUND_BRANCH" \
+        --limit 5 --json databaseId,conclusion \
+        --jq '[.[] | select(.conclusion == "failure")] | length' 2>/dev/null || echo 0)"
+    _consec_fail_count="$(printf '%s' "$_consec_fail_count" | grep -oE '[0-9]+' | head -n1 || echo 0)"
+    if [ "${_consec_fail_count:-0}" -ge 2 ] 2>/dev/null; then
+        log "issue #${number}: ${_consec_fail_count} CONSECUTIVE build-failed runs on ${ROUND_BRANCH} — pre-dispatch guard (PR #1536+t_c7761956). Pausing e2e, devops card."
+        # Создать recovery-карточку для devops (идемпотентно)
+        _rec_title="🔧 build-failed streak ${ROUND_BRANCH} — issue #${number}"
+        _rec_id="$(hermes kanban --board "$KANBAN_BOARD" list --json 2>/dev/null | python3 -c "
+import json,sys
+try: data = json.loads(sys.stdin.read())
+except Exception: sys.exit(0)
+for t in data:
+    if t.get('title','').startswith('${_rec_title}'):
+        print(t['id'], t.get('status',''))
+        break
+" 2>/dev/null | head -1)"
+        _rec_status="${_rec_id#* }"
+        _rec_id="${_rec_id%% *}"
+        if [ -n "$_rec_id" ] && [ "$_rec_status" != "done" ] && [ "$_rec_status" != "archived" ]; then
+            log "issue #${number}: build recovery card ${_rec_id} already active (${_rec_status}) — skip"
+        else
+            _rec_body="## 🔧 build-failed streak ${ROUND_BRANCH} — issue #${number}
+
+Build workflow ${BUILD_WORKFLOW} упал ${_consec_fail_count} раз подряд на round-ветке ${ROUND_BRANCH}.
+E2E не запущен. КОРЕНЬ обычно один из:
+- Race в update-image-visions (build-main vs build-vision оба git push в одну ветку,
+  actions/checkout@v7 + clean=true теряет credentials → 'Password required').
+  Симптом: \`##[error]Password required\` в \`update-image-versions\` job.
+- GHCR push permission/token (\`secrets.CR_PAT\` expired или scope изменился).
+- Real build error (docker build упал).
+
+Типовая диагностика:
+\`\`\`
+gh run list --repo krikz/rob_box_project --workflow \"$BUILD_WORKFLOW\" --branch \"$ROUND_BRANCH\" --limit 3
+gh run view <run_id> --log-failed | grep -E 'Password required|ERROR|denied|403|401'
+\`\`\`
+
+После фикса — rebase/develop merge + close этой карточки; e2e-process следующим тиком продолжит round."
+            hermes kanban --board "$KANBAN_BOARD" create --title "$_rec_title" \
+                --assignee devops --body "$_rec_body" >/dev/null 2>&1 || \
+                log "issue #${number}: WARNING failed to create build-recovery kanban card (kanban board=${KANBAN_BOARD})"
+        fi
+        gh issue comment "$number" --repo "$GH_REPO" --body \
+            "agent-flow: ⏸️ e2e paused: ${_consec_fail_count} consecutive build-failed on ${ROUND_BRANCH} (PR #1536 dedup не помог — реальная ошибка). См. recovery-карточку devops." >/dev/null 2>&1 || true
+        errored=$((errored+1)); continue
+    fi
     _existing_build="$(gh run list --repo "$GH_REPO" --workflow "$BUILD_WORKFLOW" --branch "$ROUND_BRANCH" \
         --limit 10 --json databaseId,conclusion,headSha \
         --jq "[.[] | select(.conclusion == \"success\" and .headSha == \"${_round_head}\")][0].databaseId" 2>/dev/null || echo '')"
