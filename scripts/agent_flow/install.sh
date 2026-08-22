@@ -71,6 +71,12 @@ EXPECTED=(
     # merge-gate для «user-unlabel respect» guard'а. Должен лежать рядом со
     # скриптами во всех профилях.
     lib_user_unlabel_check.sh
+    # Self-id / whoami helper (issue #1534): source'ится из 4 процессных
+    # скриптов (merge-gate / triage / e2e-process / completion-check) чтобы
+    # перед каждым side-effect на PR/issue писать «🤖 [agent:<role>]
+    # script=… action=… reason=…» — чтобы в истории GitHub было видно КТО
+    # это сделал (actor = krikz по GH-токену, иначе неразличимо).
+    hermes_github.sh
 )
 
 # Режим --list-files: печатает EXPECTED по одному имени на строку и выходит.
