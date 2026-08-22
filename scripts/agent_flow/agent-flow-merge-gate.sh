@@ -167,6 +167,44 @@ print("1" if ok else "0")
 ' 2>/dev/null || echo 0
 }
 
+# --- dead-content detector (ретро 22.08 t_e8d52cb7 / t_944df2c5, PR #1507) ---
+# Ситуация: после rebase develop ушёл вперёд, в PR остались только binary
+# артефакты (.ogg / .png / .bin / .wav / .mp3 / .jpg / ...), а вся
+# meaningful-часть (код/тесты/конфиги) уже в develop. PR висит OPEN +
+# MERGEABLE + CLEAN, но merge-ui предложит «влить» пустоту поверх develop.
+# Acceptance из задачи: если PR не содержит НИ ОДНОГО meaningful-файла
+# (.py|.json|.yaml|.yml|.toml|.md|.sh|.ts|.cpp|.h|.hpp|.launch.xml|.txt)
+# И при этом в diff есть хотя бы один файл (т.е. не пустой PR — это
+# отдельный кейс, регрессия-guard для случая «0 файлов») → помечаем PR
+# меткой `dead-content` и комментим issue с предложением закрыть PR без
+# merge.
+#
+# Возвращает 1 если PR является dead-content (только binary/asset), иначе 0.
+# L3 acceptance: пустой PR (0 файлов) → 0 (не dead-content).
+pr_is_dead_content() {  # $1=pr_number → 1/0
+    local pr_num="$1" files_json
+    files_json="$(gh pr view "$pr_num" --repo "$GH_REPO" --json files \
+        --jq '[.files[].path]' 2>/dev/null || echo '[]')"
+    printf '%s' "$files_json" | python3 -c '
+import json, sys, re
+try:
+    files = json.load(sys.stdin)
+except Exception:
+    files = []
+# Регрессия-guard: пустой PR (0 файлов) — не dead-content (L3 acceptance).
+# Это может быть merge commit без изменений или PR с метаданными — отдельный
+# путь, не помечаем автоматически.
+if not files:
+    print("0"); sys.exit(0)
+# Meaningful-расширения по acceptance (.py|.json|.yaml|.yml|.toml|.md|.sh|
+# .ts|.cpp|.h|.hpp|.launch.xml|.txt). Регистр не важен.
+meaningful = re.compile(r"\.(py|json|ya?ml|toml|md|sh|ts|cpp|hpp?|launch\.xml|txt)$", re.IGNORECASE)
+has_meaningful = any(meaningful.search(f) for f in files)
+# Dead-content: есть файлы в diff, но НЕТ meaningful. Метим и идём дальше.
+print("0" if has_meaningful else "1")
+' 2>/dev/null || echo 0
+}
+
 # --- honesty-hint (ADR-0018, 18.08.2026) ------------------------------------
 # Pre-merge проверка PR body на «голословный PASS»: если воркер не приложил
 # raw-evidence (pytest / docker logs / gh run view / sqlite / git log /
@@ -2097,6 +2135,86 @@ git push --force-with-lease origin ${pr_head_ref}
             log "issue #${number}: PR #${pr_number} mergeStateStatus=${pr_merge_state} — skip"
         fi
         skipped=$((skipped+1)); continue
+    fi
+
+    # --- dead-content guard (ретро 22.08 t_e8d52cb7 / t_944df2c5, PR #1507) ---
+    # Сценарий: после rebase develop ушёл вперёд, в PR остались ТОЛЬКО
+    # binary/asset файлы (.ogg/.png/.bin/.wav/.jpg/...) — все meaningful
+    # изменения (код/тесты/конфиги) уже в develop. PR висит OPEN +
+    # MERGEABLE + CLEAN, но merge-ui показывает его как нормальный — на
+    # самом деле merge протащит только asset-мусор (или пустой merge
+    # commit). Кейс PR #1507: 6 voice .ogg vs develop = 0 meaningful файлов,
+    # acceptance issue #1506 уже выполнен в develop, но PR висел без
+    # маркеров → issue закрылся «лишним» sibling-signal.
+    #
+    # Guard: если в PR diff НЕТ meaningful файлов (.py|.json|.yaml|.yml|
+    # .toml|.md|.sh|.ts|.cpp|.h|.hpp|.launch.xml|.txt) И файлы вообще есть
+    # (не пустой merge-commit — это отдельный случай, не трогаем) →
+    # помечаем PR меткой `dead-content` и комментим issue: «PR #N после
+    # rebase содержит только binary (X файлов), 0 meaningful. Suite уже в
+    # develop. Рекомендация: закрыть PR без merge». Сам PR НЕ закрываем —
+    # архитектор/Шифу принимает финальное решение. Если в PR появится
+    # meaningful-файл (новый коммит), следующий тик снимет метку (но пока
+    # этого нет — метка прилипает, как `needs-review`/`needs-e2e`).
+    #
+    # Позиция: ПОСЛЕ всех guards (state=OPEN, mergeable=MERGEABLE,
+    # merge_state=CLEAN), ДО classify (lint / big-bang / needs-e2e).
+    # Цель — не дать dead-content PR «проскочить» в rotation e2e-process.
+    _dead_flag=0
+    if [ "$pr_state" = "OPEN" ] && [ "$pr_mergeable" = "MERGEABLE" ] \
+        && [ "$pr_merge_state" = "CLEAN" ]; then
+        if [ "$(pr_is_dead_content "$pr_number")" = "1" ]; then
+            _dead_flag=1
+            log "issue #${number}: ⚠️ PR #${pr_number} DEAD-CONTENT detected (after rebase: only binary, 0 meaningful files) — flagging"
+        fi
+    fi
+    if [ "$_dead_flag" = "1" ]; then
+        # Идемпотентность: если метка уже есть — только пишем comment (если
+        # ещё не было), иначе skip. Иначе на каждом тике merge-gate будет
+        # спамить PR и issue повторным label/comment (10 минут × N циклов).
+        _dead_has_label=0
+        if printf '%s' "$pr_labels_csv" | grep -Eq '(^|,)dead-content(,|$)'; then
+            _dead_has_label=1
+        fi
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would: dead-content guard on PR #${pr_number} (label_present=${_dead_has_label})"
+        else
+            if [ "$_dead_has_label" = "0" ]; then
+                gh pr edit "$pr_number" --repo "$GH_REPO" --add-label "dead-content" >/dev/null 2>&1 \
+                    && log "issue #${number}: PR #${pr_number} помечен dead-content (после rebase — 0 meaningful файлов)" \
+                    || log "WARNING: failed to add dead-content label to PR #${pr_number}"
+            else
+                log "issue #${number}: PR #${pr_number} уже имеет dead-content — skip label add"
+            fi
+            # Comment-on-issue: 24h dedup (как в big-bang / stale-rebase блоках),
+            # чтобы не спамить при каждом тике merge-gate (~10 мин).
+            _dead_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+                || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            _dead_dup_count="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_dead_dedup_since}&per_page=100" \
+                --jq '[.[] | select(.body | contains("DEAD-CONTENT detected"))] | length' 2>/dev/null || echo 0)"
+            _dead_files_count="$(gh pr view "$pr_number" --repo "$GH_REPO" --json files \
+                --jq '[.files[].path] | length' 2>/dev/null || echo 0)"
+            if [ "${_dead_dup_count:-0}" -eq 0 ] 2>/dev/null; then
+                gh issue comment "$number" --repo "$GH_REPO" --body \
+                    "🪦 **PR #${pr_number} DEAD-CONTENT detected** (merge-gate, ретро 22.08 t_e8d52cb7, $(date -u +%H:%M:%SZ))
+
+После rebase develop ушёл вперёд: PR #${pr_number} → develop содержит **только binary (${_dead_files_count} файлов), 0 meaningful файлов** (код/тесты/конфиги).
+
+Suite/acceptance уже в develop — orphan-PR остался висеть OPEN MERGEABLE CLEAN без маркеров. PR помечен \`dead-content\`.
+
+**Рекомендация:** закрыть PR #${pr_number} без merge (комментарий или squash в develop уже не нужен — всё, что было ценного, в develop).
+
+Guard будет повторять alert, пока PR не закрыт или пока в нём не появится meaningful-файл (новый коммит)." >/dev/null 2>&1 \
+                    && log "issue #${number}: dead-content comment posted (24h dedup, files=${_dead_files_count})" \
+                    || log "WARNING: dead-content comment post failed for issue #${number}"
+            else
+                log "issue #${number}: dead-content comment already posted (×${_dead_dup_count} за 24ч) — dedup skip"
+            fi
+        fi
+        # Skip дальнейшей классификации (lint/big-bang/needs-e2e) — dead-content
+        # PR не должен попадать в e2e rotation или merge-ui без явного override.
+        # continue в main-cycle, scan-all-prs ниже подхватит только нужное.
+        labeled=$((labeled+1)); continue
     fi
 
     # --- stale-rebase watchdog (ретро 22.08 t_562a8682) ---------------------
