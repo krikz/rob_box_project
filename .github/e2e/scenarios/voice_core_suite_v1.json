@@ -53,7 +53,18 @@
       "text": "Робот, расскажи сказку про Красную Шапочку разными голосами",
       "patterns": [
         "voice_used"
-      ]
+      ],
+      "acceptance": {
+        "expected_tool_calls": [
+          "set_voice"
+        ],
+        "must_not_call": [],
+        "expected_keywords": [
+          "Красная"
+        ],
+        "_comment": "Issue #1532 mv03: сказка должна быть ПОЛНОЙ (5-7 speak_text) и обязательно использовать минимум один set_voice для смены голоса между персонажами. expected_keywords='Красная' гарантирует, что LLM не уходит в generic 'жила-была' — должен упоминать Красную Шапочку. Проверка 'set_voice ×≥2' сделана в dialogue_node метриках, здесь достаточно ≥1, чтобы заgate'ить основной баг (tools=[]).",
+        "expected_artifacts": []
+      }
     },
     {
       "label": "ds01_speaker_A_tea",
