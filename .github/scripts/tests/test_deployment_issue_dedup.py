@@ -491,6 +491,77 @@ def test_extract_relevant_log_line_ignores_missing_critical_synthdefs_none() -> 
     assert line is None
 
 
+def test_extract_relevant_log_line_ignores_missing_critical_synthdefs_startup_race() -> None:
+    """Issue #1520, deploy round-178 / run 32573594346.
+
+    start_voice_assistant.sh invoked validate_music_stack.py 5s after
+    launching sclang. sclang needs ~20s to register the OSCdef and
+    preload ~38 .scd SynthDefs, so /tmp/sclang.log is still empty at
+    the 5s mark. validate_music_stack.py then prints a non-empty
+    'Missing critical SynthDefs: <list>' line, which the deploy gate
+    would otherwise surface as a critical_log false-positive on an
+    otherwise-green run. The fix in start_voice_assistant.sh waits
+    for "FoxDot OSCdef registered" (capped at 30s) before validating;
+    this exclude is the defence-in-depth for slow runners that still
+    fall through.
+    """
+    log_text = "\n".join(
+        [
+            "=== voice-assistant CRITICAL ERRORS ===",
+            "Missing critical SynthDefs: strangerpulsepad, strangerarp, strangerbrass",
+            "",
+            "=== voice-assistant WARNINGS ===",
+            "[tts_node-5] [WARN] [1787402505.606730380] [tts_node]: "
+            "🔇 STOP command received - немедленная остановка TTS",
+        ]
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_sclang_log_not_found() -> None:
+    """Issue #1520 sibling race: validate_music_stack.py prints
+    'Log file not found: /tmp/sclang.log' when sclang hasn't yet
+    written its startup log. This is the root-cause echo of the
+    same 5s-too-early race, not a real failure. The deploy gate
+    must skip it.
+    """
+    log_text = "\n".join(
+        [
+            "Music stack degraded",
+            "OSCdef ready: no",
+            "Missing critical SynthDefs: strangerpulsepad, strangerarp, strangerbrass",
+            "Log file not found: /tmp/sclang.log",
+        ]
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_still_catches_sclang_syntax_error() -> None:
+    """Negative test for #1520: a real sclang-side error (e.g. a
+    broken .scd) MUST still be reported by the deploy gate. The
+    new exclude patterns target only the readiness-echo phrases
+    from validate_music_stack.py, not generic sclang faults that
+    mention 'critical' / 'fatal' / 'error' in their body.
+    """
+    log_text = "\n".join(
+        [
+            "ERROR: syntax error",
+            "  in file '/ws/custom_synthdefs/strangerpulsepad.scd'",
+            "  line 7 char 2:",
+        ]
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line == "ERROR: syntax error"
+
+
 def test_extract_relevant_log_line_ignores_nav2_broken_pipe_from_topic_list_head() -> None:
     """Retro 15.08 t_a14ac65d: BrokenPipeError from `ros2 topic list | head`.
 

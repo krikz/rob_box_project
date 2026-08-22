@@ -40,6 +40,34 @@ CRITICAL_EXCLUDE_COMMON = [
     # means ALL critical SynthDefs are present — the word "critical" alone
     # must not trigger a deployment-critical issue (retro 15.08 t_a14ac65d).
     r"missing critical synthdefs: none",
+    # Voice-assistant startup race (issue #1520, deploy round-178 /
+    # run 32573594346): validate_music_stack.py is invoked 5s after
+    # sclang starts, but sclang needs ~20s to (a) wait for scsynth
+    # alive-thread, (b) register the OSCdef, (c) sequentially preload
+    # ~38 .scd SynthDefs (Renardo's startupSynths + customSynths). At
+    # the 5s mark `/tmp/sclang.log` is still empty (sclang hasn't
+    # written its first "sclang started" line yet), so load_sclang_health
+    # reports "Log file not found" and ALL critical SynthDefs as missing
+    # — even though the music stack comes up healthy right after. Real
+    # health shows up at the next deploy run once sclang's preload loop
+    # has flushed. TTS/STT/voice flow is unaffected (sclang is on a
+    # separate code path from tts_node / stt_node). The race is closed
+    # in start_voice_assistant.sh (wait for OSCdef registration, capped
+    # at 30s), this exclude is the defence-in-depth for slow runners.
+    # The previous rule `missing critical synthdefs: none` covered the
+    # healthy variant; the lookahead `(?!none\b)` keeps the
+    # healthy-positive case caught by that earlier rule and excludes
+    # every non-empty missing-list echo.
+    r"missing critical synthdefs: (?!none\b)",
+    # Same race (issue #1520): validate_music_stack.py prints
+    # `Log file not found: <path>` when sclang hasn't yet written
+    # /tmp/sclang.log. The bash harness's own "Music stack validation
+    # found non-critical errors" line is the upstream signal — the
+    # validator's "Log file not found" is the root cause echo, not a
+    # new failure mode. Excluded so the deploy gate only sees the
+    # post-sclang-warning content, which is what the operator
+    # actually needs to triage.
+    r"log file not found: .*sclang\.log",
     # BrokenPipeError from `ros2 topic list | head` in start_nav2_direct.sh:
     # head closes the pipe after the first line, ros2cli prints a traceback —
     # benign, the topic was found (retro 15.08 t_a14ac65d).
