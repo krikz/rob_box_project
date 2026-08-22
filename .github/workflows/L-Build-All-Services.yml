@@ -44,12 +44,12 @@ on:
       build_base_images:
         description: 'Build base images first'
         required: false
-        default: 'false'
+        default: false
         type: boolean
       push_to_registry:
         description: 'Push to local registry (localhost:5000)'
         required: false
-        default: 'true'
+        default: true
         type: boolean
 
 permissions:
