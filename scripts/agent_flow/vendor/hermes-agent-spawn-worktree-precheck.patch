@@ -1,0 +1,173 @@
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -7920,6 +7920,61 @@
+     return result.returncode == 0
+ 
+ 
++def _find_worktree_for_branch(repo_root: Path, branch_name: str) -> Optional[Path]:
++    """Return the worktree path that currently checks out ``branch_name``, or None.
++
++    Parses ``git worktree list --porcelain`` which emits one worktree as::
++
++        worktree /abs/path
++        HEAD <sha>
++        branch refs/heads/<branch>
++        ...
++
++    We match by ``branch refs/heads/<branch_name>`` and return the absolute
++    worktree path. Detached worktrees (no ``branch`` line) and any other
++    format mismatch are skipped silently — the only authoritative source
++    for "is this branch already checked out?" is that line, and we want
++    ``None`` (caller creates new) on every non-match.
++
++    Used by ``_ensure_git_worktree`` to detect the worktree-collision case
++    before issuing ``git worktree add`` (which fails with a fatal error
++    instead of a clean reuse path). Bounded timeout and stderr discarded
++    — this is a fast read-only check and any failure should fall through
++    to the existing ``worktree add`` path, which will surface its own
++    error if the branch truly is busy.
++
++    Ретро t_695f5138 (t_bc3ac7fb).
++    """
++    try:
++        result = subprocess.run(
++            ["git", "-C", str(repo_root), "worktree", "list", "--porcelain"],
++            capture_output=True,
++            text=True, encoding='utf-8', errors='replace',
++            timeout=30,
++            check=False,
++        )
++    except Exception:
++        return None
++    if result.returncode != 0:
++        return None
++    target_branch = f"refs/heads/{branch_name}"
++    current_path: Optional[Path] = None
++    for line in (result.stdout or "").splitlines():
++        if line.startswith("worktree "):
++            current_path = Path(line[len("worktree "):].strip()).expanduser()
++            continue
++        if line.startswith("branch "):
++            # ``line`` here still has the ``branch `` prefix; strip it
++            # before comparing to ``refs/heads/<branch>``. Reset on every
++            # branch line so a detached worktree (no ``branch`` line) is
++            # treated as "this slot didn't match" without poisoning the
++            # next worktree's state.
++            if current_path is not None and line[len("branch "):].strip() == target_branch:
++                return current_path
++            current_path = None
++    return None
++
++
+ def _git_common_dir(path: Path) -> Optional[Path]:
+     try:
+         result = subprocess.run(
+@@ -8001,6 +8056,22 @@
+         current = current.parent
+ 
+ 
++class WorktreeBranchBusyError(RuntimeError):
++    """Raised when the requested worktree branch is already checked out.
++
++    Distinct from a generic ``RuntimeError`` so the dispatch loop can
++    route this specific failure mode through the dependency-blocked
++    path (``force_trip=True``) without consuming one of the
++    ``consecutive_failures`` retries. Retries are pointless here: the
++    holding worktree won't disappear between attempts, so a normal
++    retry-then-block cycle would burn two spawn_failed counters and
++    end in the same ``blocked`` state — except with two distinct
++    error events to triage, instead of one.
++
++    Ретро t_695f5138 (t_bc3ac7fb).
++    """
++
++
+ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
+     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
+     target = target.expanduser()
+@@ -8009,6 +8080,44 @@
+         target_common = _git_common_dir(target)
+         if target_common == repo_common:
+             return
++    # Pre-spawn worktree-collision guard (ретро t_695f5138 / t_bc3ac7fb).
++    #
++    # ``git worktree add`` fatally rejects creating a new worktree for a
++    # branch that is already checked out somewhere else. When this fires
++    # mid-dispatch the failure surfaces as ``spawn_failed`` and the
++    # dispatcher retries — but the busy worktree never becomes free
++    # between attempts (an active worker holds it), so every retry
++    # immediately fails again until the breaker trips. The card then
++    # sits in ``blocked`` while triage keeps producing duplicate cards
++    # for the same branch.
++    #
++    # Detect the collision BEFORE invoking ``worktree add``. If the
++    # branch is already checked out at our own ``target``, the existing
++    # path-equals-target early return above handles it. Otherwise:
++    #
++    # * If the existing checkout lives at a path that is NOT ``target``,
++    #   raise ``WorktreeBranchBusyError`` with the occupied path so the
++    #   dispatch loop can route it through the dependency-blocked
++    #   path (force_trip=True, no spawn_failed retry storm).
++    #
++    # The check is best-effort: when ``git worktree list`` itself fails
++    # we fall through to ``worktree add`` and let it surface the
++    # canonical error — false negatives are observable, false positives
++    # are not.
++    existing = _find_worktree_for_branch(repo_root, branch_name)
++    if existing is not None:
++        existing_resolved = existing.resolve(strict=False)
++        target_resolved = target.resolve(strict=False)
++        if existing_resolved != target_resolved:
++            raise WorktreeBranchBusyError(
++                f"WORKTREE_BRANCH_BUSY: branch {branch_name!r} is already "
++                f"checked out at {existing_resolved} (requested target "
++                f"{target_resolved}). Reuse requires the worktree's path to "
++                f"match the task target; otherwise the task cannot dispatch "
++                f"without colliding with the active checkout. Wait for the "
++                f"holding worker to release the branch or rerun with a "
++                f"distinct branch_name."
++            )
+     target.parent.mkdir(parents=True, exist_ok=True)
+     if _git_branch_exists(repo_root, branch_name):
+         cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
+@@ -10808,6 +10917,23 @@
+                 workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
+             else:
+                 workspace = resolve_workspace(claimed, board=board)
++        except WorktreeBranchBusyError as exc:
++            # Branch already checked out in a different worktree (typically
++            # while another worker's spawn is still alive on it). Retrying
++            # would just hit the same fatal "already checked out" path, so
++            # trip the breaker immediately via force_trip=True. The card
++            # transits to ``blocked`` with a single ``gave_up`` event whose
++            # payload carries the occupied path — much cleaner signal than
++            # the spawn_failed x2 cascade that the pre-fix code produced.
++            # Ретро t_695f5138 (t_bc3ac7fb).
++            auto = _record_spawn_failure(
++                conn, claimed.id, str(exc),
++                failure_limit=failure_limit,
++                force_trip=True,
++            )
++            if auto:
++                result.auto_blocked.append(claimed.id)
++            continue
+         except Exception as exc:
+             auto = _record_spawn_failure(
+                 conn, claimed.id, f"workspace: {exc}",
+@@ -10935,6 +11061,15 @@
+                 workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
+             else:
+                 workspace = resolve_workspace(claimed, board=board)
++        except WorktreeBranchBusyError as exc:
++            auto = _record_spawn_failure(
++                conn, claimed.id, str(exc),
++                failure_limit=failure_limit,
++                force_trip=True,
++            )
++            if auto:
++                result.auto_blocked.append(claimed.id)
++            continue
+         except Exception as exc:
+             auto = _record_spawn_failure(
+                 conn, claimed.id, f"workspace: {exc}",
