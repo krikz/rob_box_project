@@ -129,57 +129,31 @@ _TBS="${AGENT_FLOW_SCRIPT:-agent-flow-post-merge-build}"
 _TBA="${TRIGGERED_BY_AGENT:-merge-gate}"
 _TBC="${TRIGGERED_BY_CARD:-}"
 _TBR="post-merge PR #${PR_NUMBER} → ${PR_BASE}"
-verify_recent_run() {
-    # $1 = window_seconds (default 60). Echo: 'ok' если свежий run найден,
-    # иначе 'miss'. Использует $BUILD_WORKFLOW, $GH_REPO, $PR_BASE из env.
-    #
-    # Возвращает:
-    #   ok   — созданный за последние $window сек run для $BUILD_WORKFLOW
-    #          на $PR_BASE найден в `gh run list` (race condition detected)
-    #   miss — иначе (нет run, run старый, или API ошибка)
-    #
-    # НЕ использует jq (его может не быть в PATH на роботе) — парсит JSON
-    # через python3 (всегда есть в hermes-agent venv).
-    local window="${1:-60}"
-    local now
-    now="$(date -u +%s)"
-    # gh run list → JSON массив runs. createdAt в ISO 8601 (UTC).
-    # Парсим через python3 (на роботе python3 — стандарт).
-    local runs_json
-    runs_json="$(gh run list --workflow "$BUILD_WORKFLOW" --repo "$GH_REPO" \
-        --branch "$PR_BASE" --limit 1 --json databaseId,createdAt 2>/dev/null || true)"
-    if [ -z "$runs_json" ]; then
-        echo "miss"; return 0
-    fi
-    local created_at
-    created_at="$(printf '%s' "$runs_json" | python3 -c '
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    if not data:
-        sys.exit(0)
-    print(data[0].get("createdAt", ""))
-except Exception:
-    sys.exit(0)
-')"
-    if [ -z "$created_at" ]; then
-        echo "miss"; return 0
-    fi
-    local created_epoch
-    created_epoch="$(date -d "$created_at" +%s 2>/dev/null || echo 0)"
-    if [ "$created_epoch" -eq 0 ]; then
-        echo "miss"; return 0
-    fi
-    local age=$((now - created_epoch))
-    if [ "$age" -ge 0 ] && [ "$age" -le "$window" ]; then
-        echo "ok"
-    else
-        echo "miss"
-    fi
-}
+
+# Issue #1540: shared dedup-библиотека. verify_recent_run() теперь
+# живёт в lib_workflow_dedup.sh и используется обоими скриптами
+# (post-merge-build + e2e-process), чтобы дедупликация была общим
+# контрактом, а не копи-пастой.
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=lib_workflow_dedup.sh
+. "$_LIB_DIR_HERE/lib_workflow_dedup.sh"
 
 MAX_ATTEMPTS="${POST_MERGE_BUILD_MAX_ATTEMPTS:-2}"  # 2 = 1 попытка + 1 retry
 DEDUP_WINDOW="${POST_MERGE_BUILD_DEDUP_WINDOW:-60}"  # секунд
+# Issue #1540: pre-dispatch dedup. Если за последние $DEDUP_WINDOW сек
+# уже был trigger на этой ветке (например, второй параллельный тик
+# merge-gate'а стартанул раньше), НЕ дёргаем `gh workflow run` повторно.
+# Раньше dedup срабатывал ТОЛЬКО после FAILED `gh workflow run` (race-detection
+# fallback) — между двумя успешными вызовами API успевал пропустить дубль.
+PRE_DISPATCH_DEDUP_WINDOW="${POST_MERGE_BUILD_PRE_DISPATCH_WINDOW:-${DEDUP_WINDOW}}"
+if [ "$DRY_RUN" != "true" ]; then
+    if [ "$(verify_recent_run "$BUILD_WORKFLOW" "$PR_BASE" "$GH_REPO" "$PRE_DISPATCH_DEDUP_WINDOW")" = "ok" ]; then
+        log "⏭️ recent ${BUILD_WORKFLOW} run on ${PR_BASE} (≤${PRE_DISPATCH_DEDUP_WINDOW}s) — pre-dispatch dedup (issue #1540), skip"
+        exit 0
+    fi
+else
+    log "   (DRY-RUN: skipping pre-dispatch dedup check)"
+fi
 for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
     # ВАЖНО: НЕ глушим stderr — `run()` пишет DRY-RUN маркер в stderr,
     # который тесты ловят. `gh workflow run` пишет прогресс в stderr сам —
@@ -205,7 +179,9 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
         # DRY-RUN mode: skip dedup (gh run list would also hit real API).
         log "   (DRY-RUN: skipping gh run list dedup check)"
     else
-        race_check="$(verify_recent_run "$DEDUP_WINDOW")"
+        # Issue #1540: явный передача workflow/branch/repo вместо env-implicit,
+        # чтобы контракт был одинаковый с e2e-process (shared lib).
+        race_check="$(verify_recent_run "$BUILD_WORKFLOW" "$PR_BASE" "$GH_REPO" "$DEDUP_WINDOW")"
         if [ "$race_check" = "ok" ]; then
             log "✅ recent run detected via gh run list — race condition; treating as success (attempt ${attempt})"
             exit 0
