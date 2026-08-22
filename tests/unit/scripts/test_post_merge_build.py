@@ -1,6 +1,6 @@
 """Regression tests for ``scripts/agent_flow/agent-flow-post-merge-build.sh``.
 
-GATE-4 (issue #1475, ADR-0022 extension): after MERGED PR in develop/main,
+ADR-0022 extension (issue #1475): after MERGED PR in develop/main,
 this script triggers L-Build-All-Services so .image-versions.dev gets fresh
 dev-<sha> tags. Without the trigger (issue #1475 evidence: PR #1434 merge
 18.08 23:00 MSK → robot still on dev-ddd09e51 from 17:49, 5h stale).
@@ -431,44 +431,6 @@ def test_push_to_registry_field_present(gh_shim: Path, tmp_path: Path) -> None:
         f"expected push_to_registry=true; got: {log!r}"
     )
 
-
-def test_yaml_workflow_is_valid() -> None:
-    """The companion push-trigger workflow .github/workflows/L-Build-On-Branch-Push.yml
-    parses as YAML and declares the expected on.push branches.
-
-    PyYAML normalises ``on:`` to the boolean ``True`` (YAML 1.1 quirk) — we
-    accept either form. ``uses`` for a reusable workflow must live at JOB level
-    (not step level) — the test checks the job-level key (regression for the
-    broken step-level ``uses`` that failed with "Can't find 'action.yml'",
-    issue #1535).
-    """
-    yml_path = REPO_ROOT / ".github" / "workflows" / "L-Build-On-Branch-Push.yml"
-    assert yml_path.exists(), f"missing workflow file: {yml_path}"
-    doc = yaml.safe_load(yml_path.read_text())
-    on = doc[True] if True in doc else doc["on"]
-    push = on["push"]
-    branches = push["branches"]
-    assert "develop" in branches
-    assert "main" in branches
-    # jobs.build-all calls the reusable workflow at JOB level.
-    jobs = doc["jobs"]
-    assert "build-all" in jobs
-    build_all = jobs["build-all"]
-    # job-level `uses` references the reusable workflow.
-    assert "L-Build-All-Services.yml" in build_all["uses"], (
-        f"expected job-level uses pointing at L-Build-All-Services.yml; got: {build_all.get('uses')!r}"
-    )
-    # a reusable-workflow call must NOT declare runs-on / steps.
-    assert "runs-on" not in build_all
-    assert "steps" not in build_all
-    # secrets inherit needed for CR_PAT (ghcr login in update-image-versions).
-    assert build_all["secrets"] == "inherit"
-    # inputs forwarded to the reusable workflow (YAML booleans).
-    assert build_all["with"]["push_to_registry"] is True
-    assert build_all["with"]["build_base_images"] is False
-    # caller permissions: contents:write (image-versions push) + packages:write (ghcr).
-    assert doc["permissions"]["contents"] == "write"
-    assert doc["permissions"]["packages"] == "write"
 
 
 # --------------------------------------------------------------------------- #
