@@ -243,9 +243,14 @@ jobs:
           fi
 
           echo "RUN_CMD: $CMD"
-          # Запускаем через SSH: ключ передаём env-переменной (не в cmdline — чтобы не светить в ps)
+          # Запускаем через SSH: ключ передаём env-переменной (не в cmdline — чтобы не светить в ps).
+          # GITHUB_RUN_ID обязателен: харнесс строит OUT_DIR=/tmp/e2e_v2_${RUN_ID}.
+          # Без него RUN_ID=локальный timestamp (e2e_v2_<YYYYMMDD_HHMMSS>) и collect-шаг
+          # ниже не находит primary_dir=/tmp/e2e_v2_${RID} → fallback тянул STALE legacy
+          # каталоги (e2e_v2_20260813_031333 и т.п.) → в звуковой артефакт попадало
+          # «что-то левое» (ретро 22.08 t_944df2c5, issue #1506).
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
-            "export YANDEX_API_KEY='${YKEY}'; export ROBOT_HOST=10.1.1.21; export SSHPASS='open'; \
+            "export YANDEX_API_KEY='${YKEY}'; export ROBOT_HOST=10.1.1.21; export SSHPASS='open'; export GITHUB_RUN_ID='${RID}'; \
              ${CMD} 2>&1 | tee /tmp/e2e_atomic_out.log"
 
           echo "=== E2E stdout ==="
@@ -634,9 +639,8 @@ jobs:
             e2e_v2_dirs="$primary_dir"
             echo "  primary: $primary_dir"
           else
-            echo "  WARN: $primary_dir отсутствует на 249 — fallback на 2 самых свежих"
-            e2e_v2_dirs=$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
-                          'ls -1dt /tmp/e2e_v2_* 2>/dev/null | head -2' 2>/dev/null || true)
+            echo "  WARN: $primary_dir отсутствует на 249 — harness не создал OUT_DIR (crash до mkdir?). НЕ тяну stale legacy e2e_v2_* (ретро 22.08 t_944df2c5 — они полили звуковые артефакты файлами 08-13/08-15)"
+            e2e_v2_dirs=""
           fi
           if [ -n "$e2e_v2_dirs" ]; then
             for d in $e2e_v2_dirs; do
@@ -746,7 +750,11 @@ jobs:
           # для ретро/дебага: послушать что говорил робот, увидеть что
           # синтезировалось и какие ошибки вылезли.
           name: e2e-voice-harness-artifacts-${{ github.run_id }}
-          path: /tmp/e2e_v2_${{ github.run_id }}
+          # Ретро 22.08 t_944df2c5: раньше путь указывал на /tmp/e2e_v2_<RID>
+          # на RUNNER-е — но харнесс выполняется на билд-машине (249), и
+          # collect-шаг кладёт OUT_DIR в /tmp/e2e_artifacts_<RID>/e2e_v2_<RID>/.
+          # Поэтому артефакт всегда был пустым (if-no-files-found: ignore).
+          path: /tmp/e2e_artifacts_${{ github.run_id }}/e2e_v2_${{ github.run_id }}
           retention-days: 7
           if-no-files-found: ignore
 
@@ -834,7 +842,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: e2e-voice-transcripts-${{ github.run_id }}
-          path: ${{ env.LOCAL_ART_DIR }}/transcript.json
+          # Ретро 22.08 t_944df2c5: файлы харнесса лежат в /tmp/e2e_artifacts_<RID>/e2e_v2_<RID>/
+          # (collect-шаг rsync'ит OUT_DIR билд-машины в подкаталог). Раньше путь был
+          # плоским ($LOCAL_ART_DIR/transcript.json) — файла там нет → пустой артефакт.
+          path: ${{ env.LOCAL_ART_DIR }}/e2e_v2_${{ github.run_id }}/transcript.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -843,7 +854,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: e2e-voice-audio-metrics-${{ github.run_id }}
-          path: ${{ env.LOCAL_ART_DIR }}/audio_metrics.json
+          path: ${{ env.LOCAL_ART_DIR }}/e2e_v2_${{ github.run_id }}/audio_metrics.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -852,7 +863,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: e2e-voice-baseline-diff-${{ github.run_id }}
-          path: ${{ env.LOCAL_ART_DIR }}/baseline_diff.json
+          path: ${{ env.LOCAL_ART_DIR }}/e2e_v2_${{ github.run_id }}/baseline_diff.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -861,7 +872,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: e2e-voice-acceptance-${{ github.run_id }}
-          path: ${{ env.LOCAL_ART_DIR }}/acceptance.json
+          path: ${{ env.LOCAL_ART_DIR }}/e2e_v2_${{ github.run_id }}/acceptance.json
           retention-days: 7
           if-no-files-found: ignore
 
