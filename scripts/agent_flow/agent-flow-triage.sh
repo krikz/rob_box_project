@@ -220,6 +220,37 @@ branch_for() {  # $1=labels_json  $2=issue_number  $3=title
     fi
 }
 
+# branch_label_override — извлечь имя ветки из явной метки `branch:NAME`
+# (ретро 22.08 t_8cde8449, issue #1506). Если метка есть — это ground truth
+# от товарища Шифу: «работай на этой ветке, не выдумывай свою». Используется
+# pre-create guard'ом ниже: если на этой ветке уже есть OPEN PR — карточка
+# не нужна (работа и так в PR).
+#
+# Формат метки: `branch:<name>` где <name> = [a-z0-9_/{}-]+ (как git ref-name,
+# включая формат agent-flow `z-{agent}/...`). Регистронезависимо. Возвращает
+# пустую строку, если метки нет — backward-compat (текущее поведение branch_for
+# сохраняется).
+branch_label_override() {  # $1=labels_json
+    # Строгий парсинг: метка должна быть самостоятельным label (отделена
+    # запятой или быть единственной). Это защищает от случайных совпадений
+    # вроде "mybranch:foo" или "abranch:bar".
+    #
+    # Алгоритм: нормализуем в lowercase, разбиваем по запятой, ищем точное
+    # совпадение префикса "branch:" в начале элемента. Если нашли — печатаем
+    # остаток, обрезав "branch:".
+    printf '%s' "$1" \
+        | tr '[:upper:]' '[:lower:]' \
+        | tr ',' '\n' \
+        | awk -F: '
+            /^branch:/ {
+                sub(/^branch:/, "")
+                print
+                exit
+            }
+        ' \
+        || true
+}
+
 role_for() {  # $1=labels_json
     printf '%s' "$1" \
         | grep -oE 'agent:[a-z0-9_-]+' \
@@ -523,6 +554,34 @@ while IFS=$'\t' read -r number title labels body; do
     role="$(role_for "$labels")"
     branch="$(branch_for "$labels" "$number" "$title")"
     max_runtime="$(runtime_for "$labels" "$body")"
+
+    # Ретро-фикс (22.08 t_8cde8449, issue #1506 reopened-loop): если на issue
+    # есть явная метка `branch:NAME` (Шифу указал целевую ветку руками — например,
+    # потому что slugify на кириллице неустойчив или ветка должна совпадать с
+    # уже открытым PR), и на этой ветке уже есть OPEN PR — карточку НЕ создаём.
+    # Это закрывает класс багов «triage плодит 4 карточки на одну ветку за 1ч»:
+    # PR #1517 на ветке `z-{agent}/1506-task-...` уже в работе (ждёт merge-gate/
+    # e2e), а triage продолжал спавнить kanban-карточки t_2e148de9 → t_21d3bded
+    # → t_50018d92 → t_37134371 на ту же branch_name. Каждая умирала на
+    # worktree-collision, новая порождалась заново.
+    #
+    # Backward-compat (acceptance #2): если метки `branch:` нет — guard
+    # полностью пропускается, поведение = ровно то же, что было до фикса.
+    # Существующий OPEN-PR guard (584-589) для вычисленного $branch остаётся
+    # — он ловит случай, когда PR-head совпадает с branch_for().
+    _branch_explicit="$(branch_label_override "$labels")"
+    if [ -n "$_branch_explicit" ]; then
+        # Явная ветка от Шифу. Используем её и для guard'а, и для финального
+        # `--branch` в kanban create (Шифу сказал — так и делаем).
+        branch="${_branch_explicit}"
+        if open_pr_explicit="$(gh pr list --repo "$GH_REPO" --head "$branch" \
+            --state open --json number --jq '.[0].number' 2>/dev/null || true)" \
+            && [ -n "$open_pr_explicit" ]; then
+            log "issue #${number}: label branch:${branch} → OPEN PR #${open_pr_explicit} уже ведёт эту ветку — карточку не создаём (pre-create guard, ретро t_8cde8449)"
+            skipped=$((skipped+1)); continue
+        fi
+        log "issue #${number}: label branch:${branch} → используем как ground truth (явная метка override'ит slugify)"
+    fi
 
     # Ретро-фикс (19.08, t_dd7a5749): assignee-existence guard — ВАЛИДАЦИЯ role
     # против реального списка профилей. Без этой проверки карточка создаётся с
