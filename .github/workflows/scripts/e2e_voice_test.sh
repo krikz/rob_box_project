@@ -165,18 +165,24 @@ start_recording() {
 # shellcheck disable=SC2329  # вызывается через trap 'stop_recording' EXIT
 stop_recording() {
     if [ -z "$REC_PID" ]; then return 0; fi
-    if ! kill -0 "$REC_PID" 2>/dev/null; then
-        wait "$REC_PID" 2>/dev/null || true
-        REC_PID=""
-        return 0
+    # 🔴 e2e run 32595628905: старый `if ! kill -0; then ... return 0; fi`
+    # делал РАННИЙ ВЫХОД, когда parec уже умер от timeout (всегда так для
+    # длинного scenario — max_steps был хардкодом 5 < 11 шагов). В итоге
+    # сырой /tmp/e2e_raw_<RID>.pcm (25MB) НИКОГДА не конвертировался в
+    # recording.wav, симлинк не создавался, а workflow collect падал на
+    # stale-аудио другого прогона. Теперь: если parec ещё жив — гасим его,
+    # если уже умер — просто конвертируем записанный RAW (он валиден).
+    if kill -0 "$REC_PID" 2>/dev/null; then
+        log "RECORDING: stop (SIGTERM pid=${REC_PID})"
+        kill -TERM "$REC_PID" 2>/dev/null || true
+        # Дать parec корректно закрыть pipe (graceful shutdown → корректный EOF)
+        for _ in 1 2 3 4 5; do
+            if ! kill -0 "$REC_PID" 2>/dev/null; then break; fi
+            sleep 1
+        done
+    else
+        log "RECORDING: parec уже завершился (timeout) — конвертирую записанный RAW"
     fi
-    log "RECORDING: stop (SIGTERM pid=${REC_PID})"
-    kill -TERM "$REC_PID" 2>/dev/null || true
-    # Дать parec корректно закрыть pipe (graceful shutdown → корректный EOF)
-    for _ in 1 2 3 4 5; do
-        if ! kill -0 "$REC_PID" 2>/dev/null; then break; fi
-        sleep 1
-    done
     wait "$REC_PID" 2>/dev/null || true
     REC_PID=""
 
