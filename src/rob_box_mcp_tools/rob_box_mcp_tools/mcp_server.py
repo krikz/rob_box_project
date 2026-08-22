@@ -661,16 +661,17 @@ class MCPServer(Node):
     # ------------------------------------------------------------------
 
     def _register_minimax_music_tools(self) -> None:
-        """Регистрирует 7 MiniMax music tools (graceful degradation).
+        """Регистрирует 6 gen_* библиотечных тулзов (graceful degradation).
 
         Tools registered on success:
-            generate_music, gen_list_library, gen_search_library,
-            gen_save_to_library, gen_play_from_library,
-            gen_delete_from_library, gen_get_track_info
+            gen_list_library, gen_search_library, gen_save_to_library,
+            gen_play_from_library, gen_delete_from_library, gen_get_track_info
+
+        ``generate_music`` НЕ регистрируется с 20.08.2026: MiniMax Music API
+        отключён для новых юзеров (410 Gone, status_code 2153).
 
         Failure modes (each disables only the new tools, Renardo keeps working):
             * Module import failed (e.g. missing package)         → log + return
-            * MINIMAX_API_KEY not set in env                      → log + skip gen tools
             * /data volume not writable (GeneratedMusicLibrary)   → log + skip lib tools
         """
         if not _MINIMAX_MUSIC_AVAILABLE:
@@ -697,7 +698,7 @@ class MCPServer(Node):
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
                 f"⚠️ MiniMax music library disabled: init failed ({exc}). "
-                "generate_music / gen_* tools will NOT be registered."
+                "gen_* tools will NOT be registered."
             )
             return
         self._generated_music_library = music_library
@@ -715,22 +716,15 @@ class MCPServer(Node):
         # play tool is registered even without client — uses library only
         self.registry.register(GenPlayFromLibraryTool(self, music_library))
 
-        # Client — needed only by generate_music.
-        try:
-            music_client = MinimaxMusicClient()
-        except Exception as exc:  # noqa: BLE001 — config errors are expected
-            self.get_logger().warning(
-                f"⚠️ MinimaxMusicClient init failed ({exc}). "
-                "generate_music tool NOT registered, but gen_* tools still "
-                "work (можно читать/искать/проигрывать уже сохранённые треки)."
-            )
-            return
-
-        self._minimax_music_client = music_client
-        self.registry.register(GenerateMusicTool(self, music_client, music_library))
+        # 20.08.2026 — MiniMax Music API отключён для новых юзеров (410 Gone,
+        # status_code 2153, проверено вживую). ``generate_music`` больше НЕ
+        # регистрируется: LLM не должен видеть/вызывать мёртвый инструмент
+        # (e2e regression: dj01 «сыграй renardo бит» → forbidden tool call).
+        # gen_* библиотечные тулзы (list/search/save/play/delete/get_info)
+        # остаются — они работают с локальной /data/music_library без API.
         self.get_logger().info(
-            f"🎼 generate_music enabled: endpoint={music_client.endpoint}, "
-            f"model={music_client.default_model}"
+            "🎼 MiniMax music generation disabled (API discontinued 410 Gone). "
+            "gen_* library tools only."
         )
 
     def _init_voice_memory(self) -> None:

@@ -19,14 +19,10 @@ from rob_box_core.ports import (
 
 
 #: Per-tool timeout overrides for tools whose natural execution time
-#: exceeds the default 10s window. ``generate_music`` calls the MiniMax
-#: Music API (40-160s) and the dialogue loop waits for its result
-#: (blocking tool) — a 10s MEDIUM timeout makes the client give up and
-#: re-dispatch while the first generation is still running (live bug
-#: 19.08.2026: "⏱️ Timeout ожидания результата для generate_music").
-_LONG_TOOL_TIMEOUTS: dict[str, float] = {
-    "generate_music": 300.0,
-}
+#: exceeds the default 10s window. ``generate_music`` was removed
+#: 20.08.2026 (MiniMax Music API discontinued, 410 Gone); the map is
+#: kept empty as the extension point for future long-running tools.
+_LONG_TOOL_TIMEOUTS: dict[str, float] = {}
 
 
 class ROSMCPBridge(Protocol):

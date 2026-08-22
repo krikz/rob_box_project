@@ -448,44 +448,13 @@ def _build_flat_specs() -> tuple[ToolSpec, ...]:
                 "required": ["name"],
             },
         ),
-        # Issue #1392 — MiniMax Music API generation + persistent library.
-        # The MCP side registers ``generate_music`` + 6 ``gen_*`` tools in
-        # ``mcp_server._register_minimax_music_tools``, but they were never
-        # added to this harness-side catalog → the LLM never saw their
-        # schemas and fell back to ``execute_music_code`` (Renardo) for
-        # «сгенерируй песню» requests (live regression 19.08.2026).
-        ToolSpec(
-            name="generate_music",
-            description=(
-                "Сгенерировать НОВЫЙ вокальный/инструментальный трек через "
-                "MiniMax Music API (music-3.0-free) и сохранить в "
-                "/data/music_library. Используй когда юзер просит «спой/"
-                "сгенерируй/сочини/сделай песню/трек/мелодию про X». "
-                "Генерация 40-160с — предупреди юзера о паузе. Для вокального "
-                "трека (is_instrumental=false) ОБЯЗАТЕЛЬНО сам напиши lyrics "
-                "с тегами [Verse]/[Chorus] и передай их."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "Стиль/настроение (жанр, темп, инструменты). 1-2000 chars.",
-                    },
-                    "lyrics": {
-                        "type": "string",
-                        "description": "Текст песни с тегами [Verse]/[Chorus]. Обязателен, если is_instrumental=false.",
-                    },
-                    "is_instrumental": _BOOL_PROPERTY,
-                    "mood": _TEXT_PROPERTY,
-                    "genre": _TEXT_PROPERTY,
-                    "lang": {"type": "string", "description": "Язык вокала ('ru','en')."},
-                    "tags": _TEXT_PROPERTY,
-                    "title": _TEXT_PROPERTY,
-                },
-                "required": ["prompt"],
-            },
-        ),
+        # 20.08.2026 — MiniMax Music API отключён для новых юзеров (410 Gone,
+        # status_code 2153). ``generate_music`` удалён из LLM-каталога: LLM
+        # не должен видеть/вызывать мёртвый инструмент (e2e regression: dj01
+        # «сыграй renardo бит» → LLM вызывал generate_music как forbidden
+        # tool). gen_* библиотечные тулзы (list/search/save/play/delete/
+        # get_info) остаются — они работают с локальной /data/music_library
+        # без API.
         ToolSpec(
             name="gen_list_library",
             description=(
