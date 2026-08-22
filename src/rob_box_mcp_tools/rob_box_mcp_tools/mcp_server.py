@@ -914,14 +914,84 @@ def _recommended_executor_threads() -> int:
     return max(2, affinity_count or 0)
 
 
+def _make_executor(node: "MCPServer"):
+    """Build the executor for the MCP server.
+
+    Uses ``MultiThreadedExecutor`` so subscription callbacks (e.g.
+    ``/voice/tts/finished``) can run while a tool call blocks in ``registry.execute``.
+
+    When ``MCP_SPIN_DIAG=1`` is set, wraps it with a diagnostic that logs — every ~10s —
+    how many times the executor woke up and which entity kinds were ready. This is used
+    to pinpoint the idle CPU spin (see ``/memories/repo/mcp-server-cpu-loop-2026-08-22.md``):
+    the ready-entity distribution shows whether action-client waitables keep the WaitSet
+    perpetually ready over ``rmw_zenoh_cpp``.
+    """
+    from rclpy.executors import MultiThreadedExecutor
+
+    if os.environ.get("MCP_SPIN_DIAG", "0").lower() not in ("1", "true", "yes"):
+        return MultiThreadedExecutor(num_threads=_recommended_executor_threads())
+
+    import time
+    from collections import Counter
+
+    class _SpinDiagExecutor(MultiThreadedExecutor):
+        _DIAG_WINDOW_S = 10.0
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._diag_logger = node.get_logger()
+            self._diag_wakeups = 0
+            self._diag_ready = Counter()
+            self._diag_last = time.monotonic()
+            self._diag_cpu = time.process_time()
+
+        def wait_for_ready_callbacks(self, *args, **kwargs):
+            handler, entity, _node = super().wait_for_ready_callbacks(*args, **kwargs)
+            self._diag_wakeups += 1
+            self._diag_ready[self._diag_entity_name(entity)] += 1
+            now = time.monotonic()
+            if now - self._diag_last >= self._DIAG_WINDOW_S:
+                cpu_s = time.process_time() - self._diag_cpu
+                top = ", ".join(
+                    f"{name}={count}" for name, count in self._diag_ready.most_common(10)
+                )
+                self._diag_logger.info(
+                    f"🔬 [spin-diag] {self._DIAG_WINDOW_S:.0f}s: wakeups={self._diag_wakeups} "
+                    f"cpu_s={cpu_s:.1f} ready=[{top}]"
+                )
+                self._diag_wakeups = 0
+                self._diag_ready.clear()
+                self._diag_last = now
+                self._diag_cpu = time.process_time()
+            return handler, entity, _node
+
+        @staticmethod
+        def _diag_entity_name(entity) -> str:
+            if hasattr(entity, "topic_name"):
+                return f"sub:{entity.topic_name}"
+            if hasattr(entity, "srv_name"):
+                return f"srv:{entity.srv_name}"
+            if hasattr(entity, "timer_period_ns"):
+                return "timer"
+            try:
+                from rclpy.guard_condition import GuardCondition
+
+                if isinstance(entity, GuardCondition):
+                    return "guard"
+            except Exception:  # noqa: BLE001
+                pass
+            return f"waitable:{type(entity).__name__}"
+
+    return _SpinDiagExecutor(num_threads=_recommended_executor_threads())
+
+
 def main(args=None):
     rclpy.init(args=args)
     node = MCPServer()
 
     # Используем MultiThreadedExecutor для параллельной обработки callbacks
     # Это позволяет получать /voice/tts/finished пока execute() блокируется
-    from rclpy.executors import MultiThreadedExecutor
-    executor = MultiThreadedExecutor(num_threads=_recommended_executor_threads())
+    executor = _make_executor(node)
     executor.add_node(node)
 
     try:
