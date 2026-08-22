@@ -71,6 +71,10 @@ EXPECTED=(
     # merge-gate для «user-unlabel respect» guard'а. Должен лежать рядом со
     # скриптами во всех профилях.
     lib_user_unlabel_check.sh
+    # Shared library (issue #1540): source'ится из e2e-process и
+    # post-merge-build для verify_recent_run() — общий контракт dedup'а
+    # вместо копи-пасты. Должен лежать рядом со скриптами во всех профилях.
+    lib_workflow_dedup.sh
     # Self-id / whoami helper (issue #1534): source'ится из 4 процессных
     # скриптов (merge-gate / triage / e2e-process / completion-check) чтобы
     # перед каждым side-effect на PR/issue писать «🤖 [agent:<role>]

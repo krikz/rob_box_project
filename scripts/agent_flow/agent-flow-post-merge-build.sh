@@ -129,54 +129,14 @@ _TBS="${AGENT_FLOW_SCRIPT:-agent-flow-post-merge-build}"
 _TBA="${TRIGGERED_BY_AGENT:-merge-gate}"
 _TBC="${TRIGGERED_BY_CARD:-}"
 _TBR="post-merge PR #${PR_NUMBER} → ${PR_BASE}"
-verify_recent_run() {
-    # $1 = window_seconds (default 60). Echo: 'ok' если свежий run найден,
-    # иначе 'miss'. Использует $BUILD_WORKFLOW, $GH_REPO, $PR_BASE из env.
-    #
-    # Возвращает:
-    #   ok   — созданный за последние $window сек run для $BUILD_WORKFLOW
-    #          на $PR_BASE найден в `gh run list` (race condition detected)
-    #   miss — иначе (нет run, run старый, или API ошибка)
-    #
-    # НЕ использует jq (его может не быть в PATH на роботе) — парсит JSON
-    # через python3 (всегда есть в hermes-agent venv).
-    local window="${1:-60}"
-    local now
-    now="$(date -u +%s)"
-    # gh run list → JSON массив runs. createdAt в ISO 8601 (UTC).
-    # Парсим через python3 (на роботе python3 — стандарт).
-    local runs_json
-    runs_json="$(gh run list --workflow "$BUILD_WORKFLOW" --repo "$GH_REPO" \
-        --branch "$PR_BASE" --limit 1 --json databaseId,createdAt 2>/dev/null || true)"
-    if [ -z "$runs_json" ]; then
-        echo "miss"; return 0
-    fi
-    local created_at
-    created_at="$(printf '%s' "$runs_json" | python3 -c '
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    if not data:
-        sys.exit(0)
-    print(data[0].get("createdAt", ""))
-except Exception:
-    sys.exit(0)
-')"
-    if [ -z "$created_at" ]; then
-        echo "miss"; return 0
-    fi
-    local created_epoch
-    created_epoch="$(date -d "$created_at" +%s 2>/dev/null || echo 0)"
-    if [ "$created_epoch" -eq 0 ]; then
-        echo "miss"; return 0
-    fi
-    local age=$((now - created_epoch))
-    if [ "$age" -ge 0 ] && [ "$age" -le "$window" ]; then
-        echo "ok"
-    else
-        echo "miss"
-    fi
-}
+
+# Issue #1540: shared dedup-библиотека. verify_recent_run() теперь
+# живёт в lib_workflow_dedup.sh и используется обоими скриптами
+# (post-merge-build + e2e-process), чтобы дедупликация была общим
+# контрактом, а не копи-пастой.
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=lib_workflow_dedup.sh
+. "$_LIB_DIR_HERE/lib_workflow_dedup.sh"
 
 MAX_ATTEMPTS="${POST_MERGE_BUILD_MAX_ATTEMPTS:-2}"  # 2 = 1 попытка + 1 retry
 DEDUP_WINDOW="${POST_MERGE_BUILD_DEDUP_WINDOW:-60}"  # секунд
@@ -187,9 +147,12 @@ DEDUP_WINDOW="${POST_MERGE_BUILD_DEDUP_WINDOW:-60}"  # секунд
 # `gh workflow run` создаёт новый run. Поэтому: если на $PR_BASE уже есть
 # свежий build-ран (запущен за последние $RECENT_WINDOW сек, любой статус) —
 # push-триггер (или прошлый тик / ручной запуск) уже покрыл этот merge.
+# Issue #1540: используем verify_recent_run из shared lib_workflow_dedup.sh
+# (4-аргументный контракт) — общий SOT, чтобы e2e-process и post-merge-build
+# дедуплицировали одинаково.
 RECENT_WINDOW="${POST_MERGE_BUILD_RECENT_WINDOW:-900}"  # 15 мин
-if [ "$DRY_RUN" != "true" ] && [ "$(verify_recent_run "$RECENT_WINDOW")" = "ok" ]; then
-    log "⏭️ recent build (≤${RECENT_WINDOW}s) already on ${PR_BASE} — skip (pre-dispatch dedup, PR #${PR_NUMBER})"
+if [ "$DRY_RUN" != "true" ] && [ "$(verify_recent_run "$BUILD_WORKFLOW" "$PR_BASE" "$GH_REPO" "$RECENT_WINDOW")" = "ok" ]; then
+    log "⏭️ recent build (≤${RECENT_WINDOW}s) already on ${PR_BASE} — skip (pre-dispatch dedup, PR #${PR_NUMBER}, issue #1540 shared lib)"
     exit 0
 fi
 for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
@@ -217,7 +180,9 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
         # DRY-RUN mode: skip dedup (gh run list would also hit real API).
         log "   (DRY-RUN: skipping gh run list dedup check)"
     else
-        race_check="$(verify_recent_run "$DEDUP_WINDOW")"
+        # Issue #1540: явный передача workflow/branch/repo вместо env-implicit,
+        # чтобы контракт был одинаковый с e2e-process (shared lib).
+        race_check="$(verify_recent_run "$BUILD_WORKFLOW" "$PR_BASE" "$GH_REPO" "$DEDUP_WINDOW")"
         if [ "$race_check" = "ok" ]; then
             log "✅ recent run detected via gh run list — race condition; treating as success (attempt ${attempt})"
             exit 0
