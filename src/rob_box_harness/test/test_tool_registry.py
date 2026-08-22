@@ -58,9 +58,8 @@ FLAT_TOOL_NAMES: tuple[str, ...] = (
     "load_track",
     "delete_track",
     # Issue #1392 — MiniMax Music API generation + persistent library.
-    # MCP side registers these in ``mcp_server._register_minimax_music_tools``;
-    # the harness-side catalog must mirror them so the LLM sees the schemas.
-    "generate_music",
+    # ``generate_music`` removed 20.08.2026 (MiniMax Music API discontinued,
+    # 410 Gone) — LLM must not see the dead tool. gen_* library tools stay.
     "gen_list_library",
     "gen_search_library",
     "gen_save_to_library",

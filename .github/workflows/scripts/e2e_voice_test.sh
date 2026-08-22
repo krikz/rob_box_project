@@ -84,6 +84,15 @@ RECORDING_RAW="/tmp/e2e_raw_${RUN_ID}.pcm"
 RECORDING_WAV="${OUT_DIR}/recording.wav"
 mkdir -p "$OUT_DIR"
 
+# Агрегатный GATE-1 (check_gate1_aggregate) сканирует docker logs с
+# ``--since <before>``. Раньше E2E_RUN_BEFORE нигде не задавался → fallback
+# ``date -u +%Y-%m-%dT%H:%M:%SZ`` вычислялся В КОНЦЕ прогона (== "now") →
+# docker logs возвращал пустоту → GATE-1 всегда FAIL («expected tool calls
+# not invoked»), хотя tool calls в логах были. Фикс: фиксируем момент старта
+# прогона ПО ЧАСАМ РОБОТА (docker logs --since сравнивает с timestamp
+# контейнера робота) до первого шага.
+E2E_RUN_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+
 # --- самовосстановление артефакт-дира (ретро 11.08 t_26a6d362) -------------
 # Параллельный infra-cleanup на 249 (t_0a5d65af) удалял /tmp/e2e_v2_* ВО ВРЕМЯ
 # прогона → paplay open(): No such file → ложный FAIL (round-49, run 31544057593).
