@@ -790,9 +790,6 @@ while IFS= read -r _bn; do
         _blk="$(blocker_issue_for_sig "$_sig")"
         _blk_ref="${_blk:-сигнатура ${_sig}}"
         log "issue #${_bn}: >=${BLOCKER_CONSECUTIVE_FAILS} подряд FAIL с сигнатурой '${_sig}' — e2e:rejected (блокер ${_blk_ref}), round не тратим"
-        # issue #1534: self-id whoami BEFORE setting blocker e2e:rejected.
-        whoami_add_label "$_bn" "${REJECTED_LABEL}" "блокер ${_blk_ref} (${BLOCKER_CONSECUTIVE_FAILS}+ подряд однотипных FAIL: ${_sig}), round пропущен"
-        whoami_remove_label "$_bn" "${NEEDS_E2E_LABEL}" "блокер ${_blk_ref}: unblock from e2e queue (round skipped)"
         gh issue edit "$_bn" --repo "$GH_REPO" --add-label "$REJECTED_LABEL" >/dev/null 2>&1 || true
         gh issue edit "$_bn" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
         gh issue comment "$_bn" --repo "$GH_REPO" --body \
@@ -888,9 +885,6 @@ except Exception:
             log "post-round sweep: issue #${_sn} имеет явный needs-e2e override ПОСЛЕ run #${_sweep_run_id} — skip (Шифу запросил re-test, ждём round-155)"
             continue
         fi
-        # issue #1534: self-id whoami BEFORE post-round sweep e2e-done.
-        whoami_add_label "$_sn" "${DONE_LABEL}" "post-round sweep: run #${_sweep_run_id} SUCCESS on ${_sweep_round} (label applied by next tick)"
-        whoami_remove_label "$_sn" "${NEEDS_E2E_LABEL}" "post-round sweep: run #${_sweep_run_id} SUCCESS — unblock from e2e queue"
         gh issue edit "$_sn" --repo "$GH_REPO" --add-label "$DONE_LABEL" >/dev/null 2>&1 || true
         gh issue edit "$_sn" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
         gh issue comment "$_sn" --repo "$GH_REPO" --body \
@@ -987,13 +981,11 @@ trap _exit_sweep EXIT
 _LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=lib_user_unlabel_check.sh
 . "$_LIB_DIR_HERE/lib_user_unlabel_check.sh"
-# self-id / whoami helper (issue #1534): перед label-changes (`e2e-done` /
-# `e2e:rejected` / `no-e2e-required`) этот скрипт пишет «🤖 [agent:<role>]
-# script=… action=… reason=…» чтобы в истории GitHub было видно КТО это
-# сделал, а не только krikz (actor = holder of GH token). Идемпотентность:
-# helper скипает дубль в окне 2ч (защита от reconcile-loop).
-# shellcheck source=hermes_github.sh
-. "$_LIB_DIR_HERE/hermes_github.sh"
+# Issue #1540: shared workflow-dispatch dedup (verify_recent_run).
+# Используется и в agent-flow-post-merge-build.sh — общий контракт,
+# чтобы дедупликация была симметричной между двумя cron-скриптами.
+# shellcheck source=lib_workflow_dedup.sh
+. "$_LIB_DIR_HERE/lib_workflow_dedup.sh"
 
 slugify() {
     printf '%s' "$1" \
@@ -1308,6 +1300,31 @@ _TBR="${E2E_RUN_REASON:-${TRIGGERED_BY_REASON:-scheduled-tick}}"
 _trigger_workflow_with_retry() {
     local _wf_name="$1"; shift
     local _attempts=0 _max=3 _sleep
+    # Issue #1540: pre-dispatch dedup через verify_recent_run (shared lib).
+    # Если за последние $E2E_PRE_DISPATCH_WINDOW сек (default 60) для того же
+    # workflow на этой ветке УЖЕ есть свежий run — НЕ дёргаем `gh workflow run`
+    # вообще (был дубль 9-23 секунды между двумя тиками merge-gate → e2e-process).
+    #
+    # --ref может быть не первым аргументом, поэтому извлекаем его из $@.
+    local _dedup_branch=""
+    local _arg _next_is_ref=0
+    for _arg in "$@"; do
+        if [ "$_next_is_ref" = "1" ]; then
+            _dedup_branch="$_arg"
+            _next_is_ref=0
+            continue
+        fi
+        case "$_arg" in
+            --ref) _next_is_ref=1 ;;
+        esac
+    done
+    local _pre_window="${E2E_PRE_DISPATCH_WINDOW:-60}"
+    if [ -n "$_dedup_branch" ]; then
+        if [ "$(verify_recent_run "$_wf_name" "$_dedup_branch" "$GH_REPO" "$_pre_window")" = "ok" ]; then
+            log "    trigger ${_wf_name}: pre-dispatch dedup (recent run on ${_dedup_branch} ≤${_pre_window}s, issue #1540) — skip"
+            return 0
+        fi
+    fi
     # PR #1536 (issue #1535): race-condition dedup через gh run list.
     # Если gh workflow run вернул non-zero exit, но в gh run list уже есть
     # свежий run (≤60s) для того же workflow+branch — это API eventual-
@@ -1315,28 +1332,8 @@ _trigger_workflow_with_retry() {
     # retry НЕ нужен (иначе 2-3 дубля как в issue #1535).
     _race_dedup_check() {
         local _wf="$1" _br="$2"
-        local _runs_json _created_at _now _age
-        _runs_json="$(gh run list --workflow "$_wf" --repo "$GH_REPO" \
-            --branch "$_br" --limit 1 --json databaseId,createdAt 2>/dev/null || echo "")"
-        [ -z "$_runs_json" ] && return 1
-        _created_at="$(printf '%s' "$_runs_json" | python3 -c '
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    if not d: sys.exit(0)
-    print(d[0].get("createdAt",""))
-except Exception: sys.exit(0)')"
-        [ -z "$_created_at" ] && return 1
-        _now="$(date -u +%s)"
-        # Парсим ISO 8601 created_at в epoch
-        _created_at="$(date -d "$_created_at" +%s 2>/dev/null || echo 0)"
-        [ "$_created_at" -eq 0 ] && return 1
-        _age=$((_now - _created_at))
-        # 0..60s — race condition detected
-        if [ "$_age" -ge 0 ] && [ "$_age" -le 60 ]; then
-            return 0
-        fi
-        return 1
+        # Issue #1540: используем общий verify_recent_run из lib_workflow_dedup.sh.
+        [ "$(verify_recent_run "$_wf" "$_br" "$GH_REPO" 60)" = "ok" ]
     }
     while [ "$_attempts" -lt "$_max" ]; do
         if gh workflow run "$_wf_name" --repo "$GH_REPO" \
@@ -1347,19 +1344,6 @@ except Exception: sys.exit(0)')"
                 "$@" >/dev/null 2>&1; then
             return 0
         fi
-        # PR #1536 dedup: extract --ref from args (если есть) для race check
-        local _dedup_branch=""
-        local _arg _next_is_ref=0
-        for _arg in "$@"; do
-            if [ "$_next_is_ref" = "1" ]; then
-                _dedup_branch="$_arg"
-                _next_is_ref=0
-                continue
-            fi
-            case "$_arg" in
-                --ref) _next_is_ref=1 ;;
-            esac
-        done
         if [ -n "$_dedup_branch" ] && _race_dedup_check "$_wf_name" "$_dedup_branch"; then
             log "    trigger ${_wf_name}: race-condition detected (recent run on ${_dedup_branch} ≤60s) — accept as success (dedup, PR #1536)"
             return 0
@@ -1880,9 +1864,6 @@ except Exception: print(0)' 2>/dev/null || echo 0)"
         gh pr edit "$pr_number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
         gh pr edit "$pr_number" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
         # 2) PR: короткий комментарий «только форматирование, e2e не нужен».
-        # issue #1534: self-id whoami BEFORE lint-PR needs-review + no-e2e-required.
-        whoami_remove_label "$number" "${NEEDS_E2E_LABEL}" "lint-PR #${pr_number}: skip e2e, hand to Шифу for review"
-        whoami_add_label "$number" "${NO_E2E_LABEL}" "lint-PR #${pr_number}: skip e2e (CI green sufficient)"
         gh pr comment "$pr_number" --repo "$GH_REPO" --body \
             "$(cat <<EOF
 agent-flow: ℹ️ lint/refactor PR — e2e на роботе не требуется (CI green достаточно).
@@ -2908,17 +2889,10 @@ sshpass -p open ssh ros2@10.1.1.21 'docker logs voice-assistant --since <ts> | g
         fi
     fi
 
-    # issue #1534: self-id whoami BEFORE verdict label flip — главный
-    # e2e-process label-change (${label_action#add } = e2e-done /
-    # e2e:rejected / infra-failed / no-e2e-required). В истории GitHub часто
-    # непонятно «кто поставил e2e-done» (actor = krikz = holder GH token).
-    # helper идемпотентный (2h окно).
-    whoami_add_label "$number" "${label_action#add }" "e2e verdict=${verdict} (run #${run_id}, branch ${branch})" "pr=${pr_number:-?}"
     gh issue edit "$number" --repo "$GH_REPO" --add-label "${label_action#add }" >/dev/null 2>&1 || true
     # ретро 10.08 (t_9caf5d52): при infra-FAIL needs-e2e НЕ снимаем — issue
     # остаётся в ротации, следующий тик повторит прогон.
     if [ -n "$remove_action" ]; then
-        whoami_remove_label "$number" "${NEEDS_E2E_LABEL}" "e2e verdict=${verdict} (run #${run_id}): unblock from e2e queue"
         gh issue edit "$number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
     fi
 
