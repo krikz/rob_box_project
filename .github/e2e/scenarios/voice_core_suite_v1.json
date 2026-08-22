@@ -48,7 +48,7 @@
       ]
     },
     {
-      "label": "mv03_two_voices_skazka",
+      "label": "mv03_skazka_raznymi_golosami",
       "voice": "anton",
       "text": "Робот, расскажи сказку про Красную Шапочку разными голосами",
       "patterns": [
