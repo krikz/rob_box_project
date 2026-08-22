@@ -139,6 +139,14 @@ fi
 _LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=lib_user_unlabel_check.sh
 . "$_LIB_DIR_HERE/lib_user_unlabel_check.sh"
+# self-id / whoami helper (issue #1534): before any destructive
+# side-effect on PR/issue (close / reopen / label / assignee) этот скрипт
+# пишет «🤖 [agent:devops] script=… action=… reason=…» чтобы в истории
+# GitHub было видно КТО это сделал, а не только krikz (actor = holder of
+# GH token). Идемпотентность: helper сам скипает дубль в окне
+# HERMES_WHOAMI_WINDOW_SECONDS (default 2h).
+# shellcheck source=hermes_github.sh
+. "$_LIB_DIR_HERE/hermes_github.sh"
 
 log() { printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*" >&2; }
 run() { if [ "$DRY_RUN" = "true" ]; then printf '%s DRY-RUN %s\n' "$LOG_PREFIX" "$*" >&2; else eval "$@"; fi; }
@@ -1403,6 +1411,10 @@ except Exception:
             && [ "$_issue_state" = "OPEN" ] \
             && [ "$_has_e2e_done" = "0" ] \
             && [ "$_has_no_e2e" = "1" ]; then
+            # issue #1534: self-id whoami BEFORE close — чтобы в истории
+            # GitHub было видно, что close сделал merge-gate, а не krikz
+            # (actor = GH token holder). Skip-safe (helper идемпотентный).
+            whoami_close_issue "$number" "no-e2e-required path: PR merged into ${DEVELOP_BRANCH}, close per retro 19.08 #79779a21"
             if [ "$DRY_RUN" = "true" ]; then
                 log "DRY-RUN would auto-close issue #${number} via ${NO_E2E_LABEL} (retro 19.08 #79779a21)"
                 # In DRY-RUN, fall through to the case (will hit OPEN
@@ -1528,6 +1540,10 @@ except Exception:
                         log "issue #${number}: whitelist ${USER_REOPEN_AUDIT_LABEL} → skip auto-close (issue #1391 supplement)"
                         labeled=$((labeled+1)); continue
                     fi
+                    # issue #1534: self-id whoami BEFORE close — helper
+                    # идемпотентный (skip если за последние 2h уже
+                    # публиковал такой же marker для этого issue).
+                    whoami_close_issue "$number" "post-merge cleanup: PASS-proven via ${DONE_LABEL}, PR MERGED into ${DEVELOP_BRANCH} (ADR-0014)"
                     if gh issue close "$number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
                         _closed_this_tick=1
                         log "issue #${number}: CLOSED (reason=completed, PASS-proven via ${DONE_LABEL})"
@@ -1593,6 +1609,8 @@ except Exception:
                         gh issue comment "$number" --repo "$GH_REPO" --body \
                             "🛠 merge-gate (ретро 13.08 t_0b76514f): PR #${pr_number} смержен вручную (Q22) без e2e-прогона, ветка \`${branch}\` удалена → e2e невозможен. Фикс влит по Q22 — issue закрыта." >/dev/null 2>&1 || true
                     fi
+                    # issue #1534: self-id whoami BEFORE close (Q22 orphan path).
+                    whoami_close_issue "$number" "Q22 user-merge orphan: PR merged without e2e (retro 13.08 t_0b76514f), ветка ${branch} удалена" "branch=${branch}"
                     if gh issue close "$number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
                         _closed_this_tick=1
                         log "issue #${number}: CLOSED (Q22 user-merge, e2e невозможен)"
@@ -2528,6 +2546,13 @@ Merge-gate блокирует e2e-ротацию: ${NEEDS_E2E_LABEL} не буд
         labeled=$((labeled+1)); continue
     fi
 
+    # issue #1534: self-id whoami BEFORE adding ${NEEDS_E2E_LABEL} — это
+    # ключевой «PR вошёл в e2e-очередь» transition; в истории GitHub часто
+    # непонятно кто поставил метку (krikz = holder of GH token). helper
+    # идемпотентный: если за последние 2h уже публиковал такой же marker —
+    # skip (защита от reconcile-loop дублей).
+    whoami_add_label "$number" "${NEEDS_E2E_LABEL}" "PR #${pr_number} green & clean → e2e queue" "pr=${pr_number}"
+
     if ! gh issue edit "$number" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1; then
         log "WARNING: failed to add label to issue #${number} — will retry next tick"
         errored=$((errored+1)); continue
@@ -3027,6 +3052,8 @@ print("1" if ok else "0")
             log "DRY-RUN would run: gh issue edit ${c_issue} --repo ${GH_REPO} --add-label ${NEEDS_E2E_LABEL}"
             clean_labeled=$((clean_labeled+1)); continue
         fi
+        # issue #1534: self-id whoami BEFORE clean-pr-sweep label flip.
+        whoami_add_label "$c_issue" "${NEEDS_E2E_LABEL}" "clean-pr-sweep: PR #${c_pr} functional + issue #${c_issue} OPEN, returning to e2e queue" "pr=${c_pr}"
         if gh issue edit "$c_issue" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1; then
             gh pr edit "$c_pr" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
             clean_labeled=$((clean_labeled+1))
@@ -3186,6 +3213,8 @@ print("1" if ok else "0")
             log "DRY-RUN would: gh issue edit ${_o_open_issue} --add-label ${NEEDS_E2E_LABEL} + comment"
             orphan_labeled=$((orphan_labeled+1)); continue
         fi
+        # issue #1534: self-id whoami BEFORE pr-orphan-reconcile label flip.
+        whoami_add_label "$_o_open_issue" "${NEEDS_E2E_LABEL}" "pr-orphan-reconcile: PR #${o_pr} lost live issue, returning ${NEEDS_E2E_LABEL} to #${_o_open_issue} (retro 15.08 t_5cf0162b)" "pr=${o_pr}"
         gh issue edit "$_o_open_issue" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
         gh pr comment "$o_pr" --repo "$GH_REPO" --body \
             "agent-flow: 🔄 PR-side ${NEEDS_E2E_LABEL} потерял живую issue (сирота, ретро 15.08 t_5cf0162b). Связанная issue #${_o_open_issue} OPEN — ${NEEDS_E2E_LABEL} возвращён на неё, e2e-process возьмёт в ротацию." >/dev/null 2>&1 || true
@@ -3437,6 +3466,8 @@ except Exception:
             gh issue comment "$r_issue" --repo "$GH_REPO" --body \
                 "✅ ретро-путь (ADR-0014 gap, t_68607832/t_061d466e): PR #${r_pr} смержен в ${DEVELOP_BRANCH}. PASS-доказательство: ${_r_evidence}.${_r_rejected_note} Issue закрыта." >/dev/null 2>&1 || true
         fi
+        # issue #1534: self-id whoami BEFORE close (retro-path).
+        whoami_close_issue "$r_issue" "retro-path close: PR #${r_pr} merged into ${DEVELOP_BRANCH} (ADR-0014 gap t_68607832/t_061d466e)"
         if gh issue close "$r_issue" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
             retro_closed=$((retro_closed+1))
             log "retro-path: issue #${r_issue} CLOSED (reason=completed, ретро-путь)"
@@ -3741,6 +3772,8 @@ print("1" if ok else "0")
             log "DRY-RUN would run: gh issue edit ${bf_issue} --repo ${GH_REPO} --add-label ${NEEDS_E2E_LABEL}"
             backfill_labeled=$((backfill_labeled+1)); continue
         fi
+        # issue #1534: self-id whoami BEFORE pr-backfill-scan label flip.
+        whoami_add_label "$bf_issue" "${NEEDS_E2E_LABEL}" "pr-backfill-scan: PR #${bf_pr} functional, returning ${NEEDS_E2E_LABEL} to #${bf_issue}" "pr=${bf_pr}"
         if gh issue edit "$bf_issue" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1; then
             gh pr edit "$bf_pr" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
             backfill_labeled=$((backfill_labeled+1))
