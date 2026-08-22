@@ -77,6 +77,16 @@ EXPECTED=(
     # script=… action=… reason=…» — чтобы в истории GitHub было видно КТО
     # это сделал (actor = krikz по GH-токену, иначе неразличимо).
     hermes_github.sh
+    # Cross-task archive sweeper (ADR-0024 / ретро 22.08 t_d9b4c600): watchdog,
+    # архивирующий blocked-карточки devops после успешного PR/issue.
+    # Зависит от python3 helper'ов _cross_task_archive_sweeper_{scan,archive}.py
+    # (должны лежать рядом — install.sh раскладывает только .sh, поэтому
+    # python-файлы мы кладём соседним шагом `.bak` или тестовый
+    # `cross-task-archive-sweeper.sh` запускается с явным `_LIB_DIR_HERE`
+    # указывающим на repo). В dry-run install.sh их не трогает.
+    cross-task-archive-sweeper.sh
+    _cross_task_archive_sweeper_scan.py
+    _cross_task_archive_sweeper_archive.py
 )
 
 # Режим --list-files: печатает EXPECTED по одному имени на строку и выходит.
