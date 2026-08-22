@@ -102,6 +102,18 @@ fi
 # Ретро 10.08 #1: gh workflow run может вернуть non-zero exit сразу после
 # свежего push (GitHub API rate-limit / eventual consistency). Retry 3 раза
 # с backoff.
+# Issue #1527: пробрасываем трейсинг-поля triggered_by_*, чтобы в CI job
+# logs было видно кто реально стартанул этот build (пост-merge из merge-gate).
+# Значения:
+#   - triggered_by_script = "agent-flow-post-merge-build"
+#   - triggered_by_agent  = "merge-gate" (по умолчанию; можно override через env)
+#   - triggered_by_card   = пусто (merge-gate не знает про конкретную карточку,
+#     но может быть подсказан через env TRIGGERED_BY_CARD из upstream-сценариев)
+#   - triggered_by_reason = "post-merge PR #${PR_NUMBER} → ${PR_BASE}"
+_TBS="${AGENT_FLOW_SCRIPT:-agent-flow-post-merge-build}"
+_TBA="${TRIGGERED_BY_AGENT:-merge-gate}"
+_TBC="${TRIGGERED_BY_CARD:-}"
+_TBR="post-merge PR #${PR_NUMBER} → ${PR_BASE}"
 for attempt in 1 2 3; do
     # ВАЖНО: НЕ глушим stderr — `run()` пишет DRY-RUN маркер в stderr,
     # который тесты ловят. `gh workflow run` пишет прогресс в stderr сам —
@@ -110,7 +122,11 @@ for attempt in 1 2 3; do
     if run gh workflow run "$BUILD_WORKFLOW" --repo "$GH_REPO" \
             --ref "$PR_BASE" \
             --field push_to_registry=true \
-            --field build_base_images=false >/dev/null; then
+            --field build_base_images=false \
+            --field triggered_by_script="$_TBS" \
+            --field triggered_by_agent="$_TBA" \
+            --field triggered_by_card="$_TBC" \
+            --field triggered_by_reason="$_TBR" >/dev/null; then
         if [ "$DRY_RUN" = "true" ]; then
             log "would-trigger ${BUILD_WORKFLOW} for ${PR_BASE} (PR #${PR_NUMBER}, attempt ${attempt})"
         else
@@ -123,5 +139,5 @@ for attempt in 1 2 3; do
 done
 
 log "❌ ${BUILD_WORKFLOW} trigger failed after 3 attempts (PR #${PR_NUMBER} → ${PR_BASE})"
-log "   merge-gate continues; manual retry: gh workflow run ${BUILD_WORKFLOW} --repo ${GH_REPO} --ref ${PR_BASE}"
+log "   merge-gate continues; manual retry: gh workflow run ${BUILD_WORKFLOW} --repo ${GH_REPO} --ref ${PR_BASE} -f triggered_by_script=manual -f triggered_by_agent=human -f triggered_by_reason=\"manual retry\""
 exit 0  # non-fatal: merge-gate не должен падать из-за build trigger
