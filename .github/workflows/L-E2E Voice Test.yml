@@ -377,14 +377,27 @@ jobs:
           RID="${{ github.run_id }}"
           LOCAL_ART_DIR="/tmp/e2e_artifacts_${RID}"
           mkdir -p "$LOCAL_ART_DIR"
-          # Берём последний OUT_DIR с билд-машины (e2e_v2_<YYYYMMDD_HHMMSS>).
-          # Если их несколько (повторный прогон) — только самый свежий.
-          REMOTE_OUT_DIR="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
-            "ls -1dt /tmp/e2e_v2_* 2>/dev/null | head -1" 2>/dev/null || echo '')"
+          # ADR-0024 (harness-verdict-sot): сначала ищем канонический каталог
+          # текущего run'а /tmp/e2e_v2_<RID>. Харнесс пишет OUT_DIR по GITHUB_RUN_ID
+          # (issue #1353), и этот путь — single source of truth для verdict.txt.
+          # Только если его нет (harness упал до ensure_outdir), берём самый свежий
+          # /tmp/e2e_v2_* по mtime — отладочный набор всё равно нужен.
+          PRIMARY_DIR="/tmp/e2e_v2_${RID}"
+          if sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
+               "[ -d '$PRIMARY_DIR' ]" 2>/dev/null; then
+            REMOTE_OUT_DIR="$PRIMARY_DIR"
+            echo "Remote OUT_DIR (primary, by RID) = $REMOTE_OUT_DIR"
+          else
+            echo "WARN: $PRIMARY_DIR не существует на 249 — harness упал до ensure_outdir?"
+            REMOTE_OUT_DIR="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
+              "ls -1dt /tmp/e2e_v2_* 2>/dev/null | head -1" 2>/dev/null || echo '')"
+            if [ -n "$REMOTE_OUT_DIR" ]; then
+              echo "Remote OUT_DIR (fallback, by mtime) = $REMOTE_OUT_DIR — может быть stale (не наш RID)"
+            fi
+          fi
           if [ -z "$REMOTE_OUT_DIR" ]; then
             echo "No /tmp/e2e_v2_*/ on build machine — e2e harness didn't run"
           else
-            echo "Remote OUT_DIR = $REMOTE_OUT_DIR"
             # Исторически тут был `scp -r` с trailing-dot в source path —
             # deprecated с OpenSSH 9.0+ (changelog: «path with /<dot>
             # suffix for source was rejected as "unexpected filename"»).
@@ -442,20 +455,49 @@ jobs:
           wc -l "$DIFF_FILE"
           echo "DIFF_FILE=$DIFF_FILE" >> "$GITHUB_ENV"
       - name: Validate e2e result (real robot response)
+        env:
+          SSHPASS: open
         run: |
           RID="${{ github.run_id }}"
           LOG="/tmp/voice_e2e_${RID}.log"
-          # Источник истины (ретро 12.08 t_4e592534 / ADR-0015): ВЫВОД ХАРНЕССА.
-          # Шаг "Verdict from atomic harness" уже сохранил stdout харнесса
+          # ADR-0024 (harness-verdict-sot): источник истины — ВЫВОД ХАРНЕССА.
+          # Шаг "Verdict from atomic harness" сохранил stdout харнесса
           # (e2e_atomic_out.log с 249) в /tmp/e2e_verdict.log. Харнесс сам
-          # проверяет полный цикл (STT ПРИНЯТО → LLM → TTS finished после
-          # команды) и пишет маркеры E2E_REACTION_OK / E2E_NO_REACTION.
-          # Docker-логи робота для этой проверки НЕ нужны: маркер, который
-          # харнесс писал через `docker exec echo`, в docker logs НЕ попадает
-          # (json-file пишет только stdout PID 1; docker exec — отдельная
-          # сессия). Раньше валидатор искал E2E_REACTION_OK в docker logs,
-          # не находил и падал в fallback "ONLY GREETING" → ложный FAIL.
+          # пишет verdict-маркеры в stdout (E2E_REACTION_OK / E2E_NO_REACTION
+          # / E2E_FEATURE_FAIL и т.п.) И в OUT_DIR/verdict.txt на 249. Один
+          # из двух каналов может пострадать от tee-race / ssh-флапа; используем
+          # ОБА и приоритизируем verdict.txt (single source of truth, см. ADR-0024).
           VERDICT_LOG="/tmp/e2e_verdict.log"
+          # verdict.txt лежит в /tmp/e2e_v2_<RID>/verdict.txt на 249 — там же,
+          # где его положил ensure_outdir в harness (e2e_voice_test.sh:1054 / :1100).
+          # Содержимое: "PASS" или "FAIL" (плюс маркер E2E_* в строке stdout-фоллбэка).
+          VERDICT_TXT_LOCAL="/tmp/e2e_verdict_${RID}.txt"
+          echo "--- VERDICT_PULL: тяну /tmp/e2e_v2_${RID}/verdict.txt с 249 ---"
+          if sshpass -e scp -o StrictHostKeyChecking=no \
+              "ros2@10.1.1.249:/tmp/e2e_v2_${RID}/verdict.txt" \
+              "$VERDICT_TXT_LOCAL" 2>&1 | tail -3; then
+            if [ -s "$VERDICT_TXT_LOCAL" ]; then
+              V_BYTES=$(stat -c %s "$VERDICT_TXT_LOCAL" 2>/dev/null || echo 0)
+              echo "VERDICT_PULL: $VERDICT_TXT_LOCAL ($V_BYTES bytes) → harness SoT verdict"
+              # Подмешиваем содержимое verdict.txt в VERDICT_LOG, чтобы дальнейшая
+              # цепочка grep'ов не падала в harness-output-missing, если stdout-tee
+              # в /tmp/e2e_verdict.log потерялся. Так получаем 1-канал для всей
+              # валидации (а не два параллельных).
+              if [ -s "$VERDICT_LOG" ]; then
+                # Tee-race: stdout-tee записался, но неполный (обрезан/буферизован).
+                # Конкатим harness verdict.txt в конец, чтобы маркеры E2E_* нашлись.
+                printf '\n--- VERDICT_PULL (ADR-0024 fallback, %s bytes) ---\n' "$V_BYTES" >> "$VERDICT_LOG"
+                cat "$VERDICT_TXT_LOCAL" >> "$VERDICT_LOG"
+              else
+                echo "WARN: $VERDICT_LOG пустой/потерян → используем verdict.txt напрямую"
+                cp "$VERDICT_TXT_LOCAL" "$VERDICT_LOG"
+              fi
+            else
+              echo "VERDICT_PULL: $VERDICT_TXT_LOCAL пустой (harness не дописал verdict.txt)"
+            fi
+          else
+            echo "VERDICT_PULL: scp /tmp/e2e_v2_${RID}/verdict.txt не удался — фоллбэк на /tmp/e2e_verdict.log"
+          fi
           FAIL=""
           WARN=""
           echo "--- e2e validation markers ---"
