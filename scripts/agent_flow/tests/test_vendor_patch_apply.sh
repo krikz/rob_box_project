@@ -58,6 +58,16 @@ declare -A EXPECTED_SYMBOL=(
     # patch in upstream code paths.
     ["hermes-agent-kanban-cost-attribution"]="_compute_run_cost_cents"
     ["hermes-agent-crp-schema"]="validate_crp"
+    # Ретро t_695f5138 / task t_bc3ac7fb: pre-spawn worktree-collision
+    # guard. ``git worktree add`` fatally rejects creating a worktree
+    # for a branch already checked out elsewhere; before the fix this
+    # surfaced as spawn_failed × 2 → blocked, while triage spawned
+    # duplicates on the same branch. The patch adds
+    # ``_find_worktree_for_branch`` (the porcelain parser that detects
+    # the collision before the shell-out) and ``WorktreeBranchBusyError``
+    # (the dedicated exception the dispatch loop catches with
+    # force_trip=True to skip the retry storm).
+    ["hermes-agent-spawn-worktree-precheck"]="WorktreeBranchBusyError"
 )
 
 patches=( "$REPO_ROOT"/vendor/hermes-agent-*.patch )
