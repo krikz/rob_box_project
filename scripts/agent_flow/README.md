@@ -217,6 +217,26 @@ default **24ч**; e2e-активность = свежий коммит в вет
 закрытия PR), ветка не удаляется. Проверяется `gh pr list --state merged/closed`
 + `gh api branches`; удаление — `DELETE /git/refs/heads/{branch}`.
 
+**Дополнительно (ретро 22.08 t_deba66ef): auto-retry **blocked-карточек** с
+worktree-collision. Раз в cron-tick проходит `hermes kanban list --status blocked`,
+для каждой карточки с `branch_name` + `workspace_kind=worktree` делает dry-run
+`git worktree add <branch>` (сразу сносит probe). Если ветка свободна
+(e2e-process снёс `.worktrees/<id>` после round-cleanup, но dispatcher уже
+поставил карточку в `blocked` и больше не пытается) → `hermes kanban unblock <id>`.
+Dispatcher подхватит retry на следующем тике.
+
+Закрывает паттерн «autonomous-blocked-loop» (t_50018d92 + t_37134371
+застряли 22.08 13:38–15:12, пока надзор не сделал ручной `hermes kanban unblock`).
+PR #1518/#1519 закрывают только upstream причину новых дублей — уже-зависшие
+карточки остаются stuck.
+
+Guard'ы:
+- `branch_name` не пуст + `workspace_kind=worktree` (retro/PR-orphan с
+  `null`-branch — другая аномалия, см. t_5e50675b);
+- `BLOCKED_MIN_BLOCKED_HOURS` (default **0**) — не unblock'ать совсем свежие;
+- `.worktrees/<workspace_basename>` ещё не существует (другая карточка владеет);
+- dry-run `git worktree add` (если ветка свободна → unblock).
+
 **Cron (ретро 13.08 t_04d73108):** зарегистрирован в devops-профиле,
 `every 6h`, no_agent=true. Регистрация идемпотентно пересоздаётся
 `install.sh` (секция "Ensure cron job registration") — не потеряется при
@@ -227,6 +247,7 @@ bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh --dry-run  # показ
 bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh            # удалить (с guard'ами)
 ROUND_STALE_HOURS=48 bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh  # консервативный порог round
 MERGED_STALE_HOURS=6 CLOSED_STALE_HOURS=72 bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh --dry-run  # консервативный порог PR-веток
+BLOCKED_MIN_BLOCKED_HOURS=1 bash <repo>/scripts/agent_flow/agent-flow-cleanup-249.sh --dry-run  # не unblock'ать карточки младше 1ч
 ```
 
 ### `agent-flow-deploy-sweep.sh` — авто-sweep stale deployment issues (ретро 12.08 t_d3e44336)
