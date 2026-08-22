@@ -171,7 +171,7 @@ stop_recording() {
         log "WARN RECORDING: ffmpeg не найден — запись остаётся в raw PCM"
         return 0
     fi
-    if ffmpeg -y -f s16le -ar 16000 -ac 1 -i "$RECORDING_RAW" "$RECORDING_WAV" 2>/dev/null; then
+    if ffmpeg -nostdin -y -f s16le -ar 16000 -ac 1 -i "$RECORDING_RAW" "$RECORDING_WAV" 2>/dev/null; then
         local size
         size=$(stat -c %s "$RECORDING_WAV" 2>/dev/null || echo 0)
         log "RECORDING_DONE: ${RECORDING_WAV} (${size} bytes)"
@@ -661,7 +661,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect(cycle|backlog)
     fi
     # EQ: highpass 200 + volume 1.2 + alimiter (клиппинг-фикс 514e7e87)
     ensure_outdir
-    ffmpeg -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
+    ffmpeg -nostdin -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
 
     # 2. Ждём тишины: робот не должен говорить перед командой (greeting/
     #    приветствие идёт через 12s после старта и может перебить команду).
@@ -730,7 +730,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect(cycle|backlog)
             synth_yandex "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1 \
                 || { log "STEP ${label}: FAIL — повторный синтез Yandex упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; echo "E2E_STEP ${label} FAIL synth"; mark_fail_kind synth; return 1; }
             ensure_outdir
-            ffmpeg -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
+            ffmpeg -nostdin -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
         fi
         paplay "$OUT_DIR/cmd_${safe}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
         sleep "$E2E_REACTION_WINDOW"
