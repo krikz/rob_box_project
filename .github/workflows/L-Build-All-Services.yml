@@ -15,6 +15,30 @@ on:
         required: false
         default: 'true'
         type: boolean
+      # Issue #1527: трейсинг «кто дёрнул workflow». Все скрипты/воркеры
+      # используют твой GH_TOKEN, поэтому triggering_actor.login всегда = krikz.
+      # Эти опциональные поля заполняются самими скриптами (agent-flow-*),
+      # чтобы в CI job logs было видно кто реально стартанул build.
+      triggered_by_script:
+        description: 'Какой скрипт вызвал gh workflow run'
+        required: false
+        type: string
+        default: 'manual'
+      triggered_by_agent:
+        description: 'Какой worker профиль (devops/architect/backend/merge-gate/agent-flow)'
+        required: false
+        type: string
+        default: 'unknown'
+      triggered_by_card:
+        description: 'Kanban card id (t_xxx) если запуск из карточки'
+        required: false
+        type: string
+        default: ''
+      triggered_by_reason:
+        description: 'Краткая причина запуска (free-form)'
+        required: false
+        type: string
+        default: ''
   workflow_call:  # Reusable — вызывается из G-Auto-merge to Main
     inputs:
       build_base_images:
@@ -71,6 +95,11 @@ jobs:
     runs-on: [self-hosted, rob-box]
     if: always()
     steps:
+      - name: Trigger source (issue #1527)
+        # Трейсинг: видно в CI job log кто реально стартанул этот build
+        # (при ручном gh workflow run без -f triggered_by_* — defaults).
+        run: |
+          echo "🔧 Triggered by: ${{ inputs.triggered_by_script }} / agent=${{ inputs.triggered_by_agent }} / card=${{ inputs.triggered_by_card }} / reason=${{ inputs.triggered_by_reason }}"
       - name: Build Summary
         run: |
           echo "🎉 Local Build Complete!"
