@@ -196,6 +196,14 @@ git push origin feature/my-awesome-feature
 - `## e2e` блок в issue с `acceptance_json` — обязателен для `e2e-done` (GATE-1).
 - Без `acceptance_json` или сценарного файла `e2e-done` НЕ ставится, остаётся `needs-e2e`.
 
+**Window semantics (полностью — в ADR-0022 §4.6, addendum 2026-08-22):**
+- Три разных окна `--since` для трёх разных проверок; **НЕ путать**:
+  - `step.patterns[i]` → `check_patterns` → окно `-6 minutes` от старта PLAY, **case-sensitive** (`grep -qE`).
+  - `step.acceptance.{expected_tool_calls, must_not_call, expected_keywords, response_max_ms}` → `check_acceptance` → окно `STEP_BEFORE` (до PLAY этого шага), **case-insensitive**.
+  - Suite-level `expected_tool_calls` / `must_not_call` → `check_gate1_aggregate` → окно `E2E_RUN_BEFORE` (до первого шага, **обязательно** экспортируется из `L-E2E Voice Test.yml:env`), **case-insensitive**.
+- Field-mapping таблица suite field → where it is checked — в ADR-0022 §4.6.2.
+- Канонический snippet для `E2E_RUN_BEFORE` — в ADR-0022 §4.6.3.
+
 ## 🛑 Guard: явный `needs-e2e` override при merged PR (issue #1448, ретро 19.08 t_b3691e1b)
 
 Если Шифу **вручную** возвращает issue в ротацию (ставит `needs-e2e` после
