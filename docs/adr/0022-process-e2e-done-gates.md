@@ -163,6 +163,170 @@ fi
 4. **EXCLUDED PRs** — lint/ci-only (только `.github/`, `scripts/agent_flow/`, `docs/`) — не требуют acceptance.json (ADR-0014 + retro 10.08 #2).
 5. **CI visibility** — результат `agent-flow-completion-check.sh` должен логироваться в `cron/output/agent-flow-merge-gate/<timestamp>.md`, чтобы timeline была reconstructable.
 
+### 4.6 Window semantics & per-step vs aggregate (addendum, 2026-08-22)
+
+**Мотивация.** Без явного pinning'а `--since` windows три параллельные
+проверки (`check_patterns`, per-step `check_acceptance`, aggregate
+`check_gate1_aggregate`) исторически расходились: per-step мог дать PASS
+(маленькое окно «до этого шага»), aggregate — FAIL (пустое окно «now»),
+либо наоборот. Корень эпизода round-178 (run 32573773556, fail-streak
+5/7) — переменная `E2E_RUN_BEFORE` была неинициализирована, и
+`check_gate1_aggregate` фоллбэчился на `$(date -u +%Y-%m-%dT%H:%M:%SZ)`
+(«сейчас»), отчего `docker logs voice-assistant --since '<now>'`
+возвращал пустоту и GATE-1 ложно фейлил. Фикс-коммит
+`db84ff590c18c2649b700efe2ef88755108628e0` (2026-08-22T13:30:47Z,
+Шифу) — добавил capture robot-clock'а до первого шага в harness
+(`.github/workflows/scripts/e2e_voice_test.sh:87` в коммите-фиксе),
+trim'нул `alena` из suite и убрал `generate_music`. **Архитектурный
+долг** — отсутствие в этом ADR явного описания, **какое** окно
+использует какая проверка; без этого следующий воркер может сломать
+фикс снова. Архитектурный вердикт t_fb037ed1 §W2 + §S4 зафиксировал
+эту дыру; настоящий addendum её закрывает.
+
+#### 4.6.1 Sequence: три windows per-step vs aggregate
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as L-E2E Voice Test.yml<br/>(env)
+    participant H as e2e_voice_test.sh<br/>(harness)
+    participant R as voice-assistant<br/>(docker на 249)
+
+    W->>H: export E2E_RUN_BEFORE=$(date -u +%Y-%m-%dT%H:%M:%SZ)<br/>(до любого step)
+    Note over W,H: WINDOW 0 = run-start<br/>используется aggregate
+
+    loop для каждого step [s1, s2, ..., sN]
+        H->>H: STEP_BEFORE = $(date -u -d 'now')<br/>(L963, до PLAY этого шага)
+        Note over H: WINDOW 1 = step-start<br/>используется per-step acceptance
+        H->>R: docker logs --since '$STEP_BEFORE'
+        R-->>H: logs этого шага
+        opt если step.acceptance непустой
+            H->>H: check_acceptance(label, acc, $STEP_BEFORE)
+            Note over H: L851, L990<br/>WINDOW 1, case-insensitive
+        end
+        opt если step.patterns непустой
+            H->>R: docker logs --since '-6 minutes'
+            Note over H: WINDOW 2 = fixed 6-min<br/>L977 — НЕ step-relative!
+        end
+    end
+
+    H->>R: docker logs --since '$E2E_RUN_BEFORE'
+    Note over H: WINDOW 0, aggregate<br/>L1009, case-insensitive
+    H->>H: check_gate1_aggregate($ACCEPTANCE_FILE, $E2E_RUN_BEFORE)
+```
+
+**Наблюдения из диаграммы:**
+
+1. **Aggregate (WINDOW 0) = весь прогон** — должен ловить cross-step
+   инварианты (например, `set_voice` вызывается хотя бы раз за весь suite,
+   даже если в шаге mv01 LLM ответил нестандартно и не зафиксировался в
+   маленьком окне).
+2. **Per-step acceptance (WINDOW 1) = только этот шаг** — должен ловить
+   step-local инварианты (например, dj02 `stop_music` вызывается
+   именно в ответ на команду «стоп музыку», а не из предыдущего шага).
+3. **Patterns (WINDOW 2) = фиксированные 6 минут от старта PLAY этого
+   шага** — НЕ step-relative; специально для команд, у которых
+   ожидаемый side-effect (TTS-запись, диалоговая реплика) появляется
+   чуть позже моментальной отметки.
+4. **Triple-check на одну сущность — намеренный**, но требует, чтобы
+   **все три окна давали PASS**, иначе прогон считается FAILed. Это
+   объясняет эпизод round-178, где `mv01` PASSed per-step acceptance
+   (WINDOW 1 содержал set_voice), но GATE-1 aggregate FAILed (WINDOW 0
+   был пустым из-за неинициализированного `E2E_RUN_BEFORE`).
+
+#### 4.6.2 Field-mapping: suite step field → where it is checked
+
+| Suite step field              | Проверяется в                       | Окно (`--since`)                  | Case-sensitivity | Файл:строка                  |
+|-------------------------------|-------------------------------------|-----------------------------------|------------------|-------------------------------|
+| `step.patterns[i]`            | `check_patterns`                     | `-6 minutes` от старта PLAY       | **case-sensitive** (`grep -qE`) | `e2e_voice_test.sh:546-562`, вызов `:977` |
+| `step.acceptance.expected_tool_calls` | `check_acceptance` (per-step) | `STEP_BEFORE` (до PLAY этого шага)| case-insensitive (`lower() in lower()`) | `e2e_voice_test.sh:851-907`, вызов `:990` |
+| `step.acceptance.must_not_call` | `check_acceptance` (per-step)      | `STEP_BEFORE`                     | case-insensitive | `e2e_voice_test.sh:862-863`  |
+| `step.acceptance.expected_keywords` | `check_acceptance` (per-step)  | `STEP_BEFORE`                     | case-insensitive (через `recognized.lower()`) | `e2e_voice_test.sh:870-873, 883` |
+| `step.acceptance.response_max_ms` | `check_acceptance` (per-step)    | n/a (читает `timing.json`)        | n/a              | `e2e_voice_test.sh:886-894, 903` |
+| Suite-level (НЕ step, в файле `.github/e2e/scenarios/<name>_acceptance_v1.json`): `expected_tool_calls` | `check_gate1_aggregate` | `E2E_RUN_BEFORE` (до первого шага) | case-insensitive | `e2e_voice_test.sh:350-407`, вызов `:1009` |
+| Suite-level: `must_not_call`  | `check_gate1_aggregate`             | `E2E_RUN_BEFORE`                  | case-insensitive | `e2e_voice_test.sh:380-406`  |
+
+**Из таблицы следуют три неочевидных свойства** (раньше были implicit,
+теперь pinned):
+
+- **Patterns ≠ acceptance.** Suite может содержать pattern `set_voice`
+  (case-sensitive) и одновременно `acceptance.expected_tool_calls:
+  ["set_voice"]` (case-insensitive). Для токенов, состоящих из латиницы
+  в одном регистре (например, `set_voice`), это эквивалентно. Для
+  смешанных или кириллических токенов (`Алёна` vs `alena`,
+  `setVoice` vs `set_voice`) проверки расходятся — фикс `db84ff59`
+  trim'нул `alena` именно из-за этого.
+- **Step `acceptance` И suite-level `expected_tool_calls` проверяют
+  одну и ту же вещь на разных окнах.** Когда шаг имеет оба блока
+  (как `mv01_set_voice_alena`: step.patterns=`["set_voice","alena"]` +
+  step.acceptance.expected=`["set_voice"]`), плюс suite-level
+  `expected_tool_calls=["set_voice", "execute_music_code", "stop_music"]`,
+  токен `set_voice` теоретически проверяется **три раза** (per-step
+  patterns, per-step acceptance, aggregate). Это намеренно: aggregate
+  ловит cross-step кросс-инварианты, которые per-step может пропустить,
+  если шаг провалился по patterns, но acceptance считался через другой
+  канал. Дедупликация НЕ требуется — это defense-in-depth.
+- **Patterns используют фиксированное окно `-6 minutes`**, а не
+  `STEP_BEFORE`. Это сознательное решение: для команд вроде
+  `set_voice` ожидаемый side-effect (TTS-лог) появляется через ~1-3с
+  после PLAY, и фиксированное окно надёжнее, чем «относительно
+  step-start», потому что step-start захватывается ДО PLAY, а
+  реальный voice-assistant reaction log появляется ПОСЛЕ wake-gate
+  accept (потенциально 2-5с в худшем случае).
+
+#### 4.6.3 Pin: `E2E_RUN_BEFORE` semantics (canonical)
+
+```bash
+# В .github/workflows/L-E2E Voice Test.yml, env блок для шага "Run e2e voice test"
+env:
+  E2E_RUN_BEFORE: ${{ steps.robot_clock.outputs.run_started_at }}
+```
+
+где `robot_clock` — отдельный step **до** checkout тестовой ветки,
+который заходит на 249 по SSH и снимает `date -u +%Y-%m-%dT%H:%M:%SZ`
+**ровно перед** тем, как workflow начнёт setup тестовой ветки. Это
+гарантирует, что `E2E_RUN_BEFORE` охватывает все логи voice-assistant
+за весь прогон, включая pre-suite sanity-checks.
+
+**Fallback (anti-pattern, pinned here so reviewers reject it):**
+
+```bash
+# ❌ НЕ делать: aggregate fallback на 'now' — это баг db84ff59-фиксa
+check_gate1_aggregate() {  # до фикса
+    local before="${2:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"   # ← BUG
+    docker logs voice-assistant --since "$before"          # ← всегда пусто
+}
+```
+
+**Test-side contract:** `e2e-process.sh` должен проверять, что env
+`E2E_RUN_BEFORE` непустой перед запуском harness (assertion), иначе —
+fail-fast с понятным сообщением: «E2E_RUN_BEFORE не задан — GATE-1
+логически обречён; настрой L-E2E Voice Test.yml:env». Этот assert —
+**новый requirement**, отдельный devops follow-up, не часть настоящего
+ADR (потому что это код, а не архитектурный документ).
+
+#### 4.6.4 Pin: case-sensitivity
+
+- **`check_patterns` — case-sensitive (`grep -qE "$pat"`)**. Это
+  исторический default; suite authors должны писать patterns с тем
+  регистром, в котором их печатает voice-assistant (snake_case для
+  tool names, lowercase для wake-word variants, mixed case только
+  для русских терминов в нижнем регистре).
+- **`check_acceptance` и `check_gate1_aggregate` — case-insensitive
+  (`frag.lower() in logs.lower()`)**. Это сознательное решение:
+  tool names в логах иногда появляются в разном регистре (например,
+  `Set_Voice` vs `set_voice` в зависимости от того, какой layer их
+  печатает — dialogue_node vs harness-printable). Case-insensitivity
+  ловит оба варианта.
+
+**Implication:** если suite author хочет «точное» соответствие
+(например, для токена, который может случайно совпасть с шумовым
+substring'ом в логах), ему нужно использовать `step.acceptance` (с явным
+`expected_keywords` блоком на уровне фразы) или — лучше — добавить
+prefix в pattern (например, `Calling MCP tool: set_voice` вместо
+`set_voice`). ADR-0022 не вводит нового синтаксиса для case-sensitive
+acceptance; это сознательное самоограничение (KISS).
+
 ## 5. Порядок событий и race conditions
 
 ### 5.1 Happy path: PR → e2e PASS → merge
@@ -273,6 +437,7 @@ GATE-3 (CI-blocking):
 - ADR-0015 (e2e verdict SOT) — GATE-1 усиливает.
 - ADR-0018 (честный FAIL лучше красивого PASS) — GATE-3 + GATE-1 = enforcement.
 - ADR-0021 (dialogue_node decomposition) — GATE-1 влияет на `dialogue_node` diagrams (отдельный follow-up).
+- **§4.6 Window semantics & per-step vs aggregate (addendum, 2026-08-22)** — pin трёх окон (`-6 minutes` для patterns, `STEP_BEFORE` для per-step acceptance, `E2E_RUN_BEFORE` для aggregate GATE-1), case-sensitivity (patterns case-sensitive, acceptance case-insensitive), field-mapping таблица suite field → where it is checked. Мотивация: архитектурный вердикт kanban t_fb037ed1 (round-178 fail-streak 5/7, run 32573773556) — без addendum'а будущие воркеры могут сломать fix коммита `db84ff590c18c2649b700efe2ef88755108628e0` (robot-clock capture в harness), как сломали pre-db84ff59.
 - Issue #1420 (P0-2 triage-cron) — GATE-D (issue decompose) отложен до этого.
 - Issue #1422 (PR #1418 CI red) — этот ADR GATE-3 его бы поймал.
 - PR #1398 (MiniMax music, OPEN) — пример проблемы R1/R6.
