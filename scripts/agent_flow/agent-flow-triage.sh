@@ -113,6 +113,16 @@ fi
 log()  { printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*" >&2; }
 run()  { if [ "$DRY_RUN" = "true" ]; then printf '%s DRY-RUN %s\n' "$LOG_PREFIX" "$*"; else eval "$@"; fi; }
 
+# self-id / whoami helper (issue #1534): перед side-effect'ами на issue
+# (label-changes, добавляет `agent-flow-error` при провале kanban create)
+# этот скрипт пишет «🤖 [agent:<role>] script=… action=…» чтобы в истории
+# GitHub было видно КТО это сделал, а не только krikz (actor = holder of
+# GH token). HERMES_AGENT_ROLE дефолтится в «agent:devops», переопределяется
+# env из profile .env. Идемпотентность: helper скипает дубль в окне 2ч.
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=hermes_github.sh
+. "$_LIB_DIR_HERE/hermes_github.sh"
+
 # flock: skip tick if another instance holds the lock.
 exec 9>"$LOCK_FILE" || { log "cannot open lock $LOCK_FILE"; exit 1; }
 if ! flock -n 9; then
@@ -557,6 +567,8 @@ ${_valid_csv}
 3. Либо удалить эту метку — тогда triage возьмёт \`AGENT_FLOW_DEFAULT_ROLE\` (по дефолту \`architect\`)
 
 Ретро-карточка: t_dd7a5749." >/dev/null 2>&1 || true
+            # issue #1534: self-id whoami BEFORE adding agent-flow-error label.
+            whoami_add_label "$number" "agent-flow-error" "invalid assignee=${role} (label agent:${role} or default), valid profiles: ${_valid_csv} (retro t_dd7a5749)"
             gh issue edit "$number" --repo "$GH_REPO" --add-label "agent-flow-error" >/dev/null 2>&1 || true
         fi
         errored=$((errored+1)); continue
@@ -794,6 +806,8 @@ Triage **НЕ создал** kanban-карточку для этого issue, ч
 \`\`\`
 ${create_out}
 \`\`\`" >/dev/null 2>&1 || true
+        # issue #1534: self-id whoami BEFORE adding agent-flow-error label.
+        whoami_add_label "$number" "agent-flow-error" "kanban create failed: ${create_out:0:120}" "branch=${branch}"
         gh issue edit "$number" --repo "$GH_REPO" --add-label "agent-flow-error" >/dev/null 2>&1 || true
         errored=$((errored+1)); continue
     fi
