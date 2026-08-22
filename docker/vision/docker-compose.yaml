@@ -199,6 +199,9 @@ services:
       - USE_SKILLS=true
       # OpenAI SDK logging (set to debug for HTTP traffic dump, info for request-level, off for silent)
       - OPENAI_LOG=info
+      # Executor spin diagnostics (mcp_server): logs wakeups + ready-entity distribution every ~10s.
+      # 1 = on (diagnosing idle CPU spin, action-client waitables over rmw_zenoh_cpp); 0 = off.
+      - MCP_SPIN_DIAG=${MCP_SPIN_DIAG:-1}
       # Renardo paths (MusicSkill uses these to load reference docs and search samples)
       - RENARDO_REF_PATH=/renardo_ref/RENARDO_REFERENCE.md
       - RENARDO_SAMPLES_PATH=/root/.config/renardo/samples
