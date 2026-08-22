@@ -93,6 +93,13 @@ MAINTENANCE_FILE="${MAINTENANCE_FILE:-MAINTENANCE}"
 E2E_CI_TIMEOUT="${E2E_CI_TIMEOUT:-900}"        # 15 min — CI on PR
 E2E_RUN_TIMEOUT="${E2E_RUN_TIMEOUT:-1800}"      # 30 min — e2e workflow
 E2E_POLL_INTERVAL="${E2E_POLL_INTERVAL:-15}"
+# Ретро 22.08 (t_a2cd5753): pre-dispatch check — если PR tip отстаёт от develop
+# HEAD более чем на E2E_STALE_BRANCH_THRESHOLD коммитов, отказываемся создавать
+# test-branch (fail-streak round-166/167/168/170/178 был вызван stale-PR: PR
+# открыт ДО того как develop обновился, test-branch унаследовал устаревший
+# voice_core_suite_v1.json + e2e_voice_test.sh без E2E_RUN_BEFORE). По умолчанию
+# 10 коммитов — перебазирование форсируется не слишком часто.
+E2E_STALE_BRANCH_THRESHOLD="${E2E_STALE_BRANCH_THRESHOLD:-10}"
 DRY_RUN="${DRY_RUN:-false}"
 ISSUE_LIMIT="${ISSUE_LIMIT:-20}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-e2e-process.lock}"
@@ -1344,6 +1351,77 @@ find_open_pr_by_issue() {  # $1=issue_number
         --jq '[.[] | select(.mergeStateStatus == "CLEAN" or .mergeStateStatus == "MERGEABLE")][0] | "\(.number)\t\(.headRefName)"' 2>/dev/null || echo ""
 }
 
+# --- stale-PR detection (ретро 22.08 t_a2cd5753) ----------------------------
+# Fail-streak round-166/167/168/170/178: e2e-process создавал test-branch от
+# develop, потом мержил PR tip, но PR tip отставал от develop на N коммитов —
+# test-branch унаследовал устаревший .github/e2e/scenarios/voice_core_suite_v1.json
+# + устаревший .github/workflows/scripts/e2e_voice_test.sh (без E2E_RUN_BEFORE).
+# Без этой проверки один и тот же баг проявляется 5 раундов подряд.
+#
+# Стратегия: считаем `git rev-list --count origin/${branch}..origin/${FOUNDATION_BRANCH}`
+# — коммиты в develop, которых НЕТ в PR tip. Если порог превышен → BLOCKED:
+#   - не создавать test-round-N (PR сначала rebase/merge develop)
+#   - один идемпотентный issue-коммент (24h окно, чтобы не спамить каждый тик)
+# Аргументы: $1=agent_branch $2=pr_number $3=issue_number
+# Возврат: 0 если fresh (OK), 1 если stale (BLOCKED).
+stale_branch_check() {  # $1=agent_branch $2=pr_number $3=issue_number
+    local agent_branch="$1" pr_number="$2" issue_number="$3"
+    local threshold="${E2E_STALE_BRANCH_THRESHOLD:-10}"
+    local foundation="${FOUNDATION_BRANCH:-develop}"
+    local _tip_sha _dev_sha _behind _since_ts _existing
+
+    # Мержимся с origin/foundation, чтобы rev-list был корректен.
+    if ! git -C "$REPO_DIR" fetch origin "$foundation" "$agent_branch" --quiet 2>/dev/null; then
+        log "stale-branch: fetch ${foundation}/${agent_branch} failed — пропускаю check (fail-safe, льём в round как обычно)"
+        return 0
+    fi
+    _tip_sha="$(git -C "$REPO_DIR" rev-parse "origin/${agent_branch}" 2>/dev/null || echo "")"
+    _dev_sha="$(git -C "$REPO_DIR" rev-parse "origin/${foundation}" 2>/dev/null || echo "")"
+    if [ -z "$_tip_sha" ] || [ -z "$_dev_sha" ]; then
+        log "stale-branch: cannot resolve refs (tip='${_tip_sha}' dev='${_dev_sha}') — пропускаю check"
+        return 0
+    fi
+    # Если PR tip УЖЕ содержит develop HEAD (форвард/equal) → rev-list = 0, OK.
+    _behind="$(git -C "$REPO_DIR" rev-list --count "${_tip_sha}..${_dev_sha}" 2>/dev/null || echo "")"
+    if [ -z "$_behind" ]; then
+        log "stale-branch: rev-list для ${agent_branch} вернул пусто — пропускаю check"
+        return 0
+    fi
+    if [ "${_behind}" -le "${threshold}" ] 2>/dev/null; then
+        log "stale-branch: PR tip ${agent_branch} отстаёт от origin/${foundation} на ${_behind} коммитов (<= threshold=${threshold}) — OK"
+        return 0
+    fi
+
+    # STALE: превышен порог. Пишем идемпотентный коммент (24h окно, чтобы
+    # не спамить каждый тик), issue остаётся в очереди — следующий rebase/merge
+    # develop → следующий тик возьмёт нормально.
+    log "🛑 stale-branch: PR tip ${agent_branch} отстаёт от origin/${foundation} на ${_behind} коммитов (>threshold=${threshold}) — BLOCKED, требую rebase/merge develop"
+    if [ "${DRY_RUN:-false}" = "true" ]; then
+        log "DRY-RUN would: comment stale-branch block on issue #${issue_number} (PR #${pr_number:-?}, ${agent_branch}, behind=${_behind})"
+        return 1
+    fi
+    _since_ts="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    _existing="$(gh api "repos/${GH_REPO}/issues/${issue_number}/comments?since=${_since_ts}&per_page=100" \
+        --jq '[.[] | select(.body | startswith("🛑 **stale-PR detection"))] | length' 2>/dev/null || echo 0)"
+    if [ "${_existing:-0}" -eq 0 ] 2>/dev/null; then
+        gh issue comment "${issue_number}" --repo "${GH_REPO}" --body \
+"🛑 **stale-PR detection** (e2e-process, ретро 22.08 t_a2cd5753)
+
+PR tip \`${agent_branch}\` отстаёт от \`origin/${foundation}\` на **${_behind} коммитов** (threshold=${threshold}). test-branch унаследует устаревший \`.github/e2e/scenarios/voice_core_suite_v1.json\` и/или \`.github/workflows/scripts/e2e_voice_test.sh\` — наблюдалось в fail-streak round-166/167/168/170/178.
+
+**Что делать:**
+1. \`git fetch origin ${foundation}\`
+2. \`git checkout ${agent_branch}\`
+3. \`git rebase origin/${foundation}\` (или \`git merge origin/${foundation}\`, если rebase неудобен)
+4. \`git push --force-with-lease origin ${agent_branch}\`
+5. Следующий тик e2e-process (every 1h) переподхватит — needs-e2e НЕ снят, метки НЕ трогать." >/dev/null 2>&1 || true
+        log "stale-branch: 🛑 BLOCKED: PR#${pr_number:-?} ${agent_branch} stale-by-${_behind} — issue #${issue_number} помечен"
+    else
+        log "stale-branch: dedup — issue #${issue_number} уже имеет stale-PR comment за последние 24h"
+    fi
+    return 1
+}
+
 # --- post-round sweep ДО guard и round_ensure (ретро 13.08 t_fe266643) -------
 # Гонка guard/sweep: pre-round guard видел кандидата живым (ПЕРВЫЙ снимок
 # issues_json), round_ensure создавал round-ветку, а post_round_sweep ТОГО ЖЕ
@@ -1478,6 +1556,16 @@ except Exception: pass' 2>/dev/null || true)"
     _g_dedup="$(active_round_with_issue "$_g_br")"
     if [ -n "$_g_dedup" ]; then
         log "pre-round guard: issue #${_g_n} уже в активном ${_g_dedup} — НЕ создаю новый round (dedup t_da3e0bd5)"
+        continue
+    fi
+    # Ретро 22.08 t_a2cd5753: stale-PR guard (fail-streak round-166..178).
+    # Если PR tip отстаёт от develop HEAD более чем на E2E_STALE_BRANCH_THRESHOLD
+    # коммитов → НЕ считаем кандидатом (round не создастся если все stale) +
+    # идемпотентный issue-коммент с инструкцией rebase/merge develop.
+    _g_pr_num="$(gh pr list --repo "$GH_REPO" --state all --head "$_g_br" \
+        --json number --jq 'if length>0 then .[0].number else "" end' 2>/dev/null || echo "")"
+    if ! stale_branch_check "$_g_br" "${_g_pr_num:-}" "$_g_n"; then
+        log "pre-round guard: issue #${_g_n} PR ${_g_br} stale (behind develop) — НЕ считаю live candidate (ретро 22.08 t_a2cd5753)"
         continue
     fi
     live_candidates=$((live_candidates+1))
@@ -1814,6 +1902,15 @@ EOF
             skipped=$((skipped+1)); continue
             fi
         fi
+    fi
+    # Ретро 22.08 t_a2cd5753: pre-merge stale-PR re-check (round уже создан
+    # pre-round guard'ом — этот PR был свежим на тот момент, но мог устареть
+    # между guard и merge. Типичный случай: PR был fresh при issue-list snapshot,
+    # но пока основной цикл дошёл до этого issue, develop убежал ещё на N
+    # коммитов). Защита от re-stale сценария в том же тике.
+    if ! stale_branch_check "$branch" "${pr_number:-}" "$number"; then
+        log "issue #${number}: 🛑 PR tip ${branch} stale при pre-merge re-check — skip merge в ${ROUND_BRANCH} (ретро 22.08 t_a2cd5753)"
+        skipped=$((skipped+1)); continue
     fi
     log "issue #${number}: merging ${branch} directly into ${ROUND_BRANCH}"
     if [ "$DRY_RUN" = "true" ]; then
