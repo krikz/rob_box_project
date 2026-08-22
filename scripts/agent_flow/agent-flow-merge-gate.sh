@@ -1383,11 +1383,54 @@ except Exception:
                 _return_reason="воркер прокомментировал issue #${number} после ${_rejected_at}"
             fi
         fi
+        # Сигнал 3 (ретро 22.08 t_9e61d788, issue #1506): на этой issue есть
+        # ДРУГОЙ OPEN PR с меткой e2e-done (= инфра-фикс прошёл e2e-раунд на
+        # feature-ветке). Канонический PR (на котором висит e2e:rejected) —
+        # data-only артефакт (голосовые .ogg / сценарии .json), который НЕ
+        # блокирует мёрж инфра-фикса и НЕ должен блокировать закрытие issue.
+        # Раньше e2e:rejected + e2e-done на одной issue = лимб: e2e-process
+        # скипал (e2e:rejected filter, line 586 e2e-process.sh), merge-gate
+        # тоже скипал (return path требовал новый коммит/коммент, data-only
+        # PR их не даёт), issue висела с needs-e2e+e2e:rejected до merge PR
+        # Шифом по Q22. Теперь: снимаем e2e:rejected с issue и с data-only PR,
+        # ставим needs-review на e2e-done PR (= очередь на ревью Шифу).
+        # Идемпотентно: повторный тик найдёт issue уже без e2e:rejected и
+        # пойдёт в основной e2e-done+OPEN PR → needs-review путь (1005).
+        if [ -z "$_return_reason" ]; then
+            _sibling_done_json="$(gh pr list --repo "$GH_REPO" --state open \
+                --search "${number} in:title" \
+                --json number,labels 2>/dev/null || true)"
+            _sibling_done_pr="$(printf '%s' "$_sibling_done_json" | python3 -c '
+import json, sys, os
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = []
+sib = [d for d in data
+       if str(d.get("number", "")) != str("'"$pr_number"'")
+       and any(l.get("name", "") == "e2e-done" for l in (d.get("labels") or []))]
+if sib:
+    print(str(sib[0].get("number", ""))); sys.exit(0)
+sys.exit(0)' 2>/dev/null || echo "")"
+            if [ -n "$_sibling_done_pr" ] && [ "$_sibling_done_pr" != "null" ] \
+                && [ "$_sibling_done_pr" != "$pr_number" ]; then
+                _return_reason="PR #${_sibling_done_pr} на этой issue имеет e2e-done (инфра-фикс прошёл раунд); data-only PR #${pr_number} больше не блокирует"
+            fi
+        fi
         if [ -n "$_return_reason" ]; then
             log "issue #${number}: ${REJECTED_LABEL} → ${_return_reason} — returning to rotation"
             if [ "$DRY_RUN" != "true" ]; then
                 gh issue edit "$number" --repo "$GH_REPO" --remove-label "$REJECTED_LABEL" >/dev/null 2>&1 || true
                 gh issue edit "$number" --repo "$GH_REPO" --add-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+                gh pr edit "$pr_number" --repo "$GH_REPO" --remove-label "$REJECTED_LABEL" >/dev/null 2>&1 || true
+                # Если сработал сигнал 3 — заодно ставим needs-review на
+                # e2e-done PR (= инфра-фикс). Иначе сигнал 1/2 — пусть
+                # основной цикл ниже обработает, как раньше.
+                if [ -n "${_sibling_done_pr:-}" ] && [ "${_sibling_done_pr:-}" != "null" ] \
+                    && [ "${_sibling_done_pr:-}" != "$pr_number" ]; then
+                    gh pr edit "$_sibling_done_pr" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
+                    gh pr edit "$_sibling_done_pr" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+                fi
                 gh issue comment "$number" --repo "$GH_REPO" --body \
                     "agent-flow: 🔄 ${REJECTED_LABEL} снят — ${_return_reason}. Поставлен ${NEEDS_E2E_LABEL}; e2e-process снова возьмёт issue в ротацию." >/dev/null 2>&1 || true
             fi
