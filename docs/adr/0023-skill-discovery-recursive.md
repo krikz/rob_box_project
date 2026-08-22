@@ -1,14 +1,14 @@
 # ADR-0023: skill-discovery recursive — guard в `kanban-retro-create.sh` ошибочен, dispatcher уже recursive
 
-|| Поле | Значение |
-||---|---|
-|| Статус | Proposed |
-|| Дата | 2026-08-22 |
-|| Автор | architect (Hermes Agent) |
-|| Контекст | Ретро-карточка [товарищ Шифу#t_83cb72d4](https://github.com/krikz/rob_box_project) — «skill-flattening: воркеры падают 'Unknown skill(s)' хотя skills/ содержат скилл в подкатегории» |
-|| Затрагивает | `scripts/agent_flow/kanban-retro-create.sh` (guard на lines 90-128), `hermes-agent/tools/skill_usage.py` (sot для `_find_skill_dir`), SOUL.md архитектора/девопса |
-|| Родители | ADR-0014 (issue-closure on merge), ADR-0022 (e2e-done gates), архитектурный SOT для hermes-agent skill discovery |
-|| Связанные | issue t_83cb72d4 (это), t_8c8c7c69 (оригинал "spike" — теперь под сомнением), t_28dcdaf0 (cobra crash) |
+| Поле | Значение |
+|---|---|
+| Статус | Accepted |
+| Дата | 2026-08-22 |
+| Автор | architect (Hermes Agent); доработки — товарищ Шифу (Copilot, 22.08) |
+| Контекст | Ретро-карточка [товарищ Шифу#t_83cb72d4](https://github.com/krikz/rob_box_project) — «skill-flattening: воркеры падают 'Unknown skill(s)' хотя skills/ содержат скилл в подкатегории» |
+| Затрагивает | `scripts/agent_flow/kanban-retro-create.sh` (guard удалён), `scripts/agent_flow/vendor/hermes-agent-skill-validation.patch` (recursive валидация), `hermes-agent/tools/skill_usage.py` (sot для `_find_skill_dir`) |
+| Родители | ADR-0014 (issue-closure on merge), ADR-0022 (e2e-done gates), архитектурный SOT для hermes-agent skill discovery |
+| Связанные | issue t_83cb72d4 (это), t_8c8c7c69 (оригинал "spike" — теперь под сомнением), t_28dcdaf0 (cobra crash), t_6c6c98fb (скилл чужого профиля), t_1ab37fa8 (vendor-патч) |
 
 ## 1. Контекст и бизнес-проблема
 
@@ -77,6 +77,8 @@ skills/
 
 Это **runtime-проверка после создания карточки и старта воркера**. То есть guard в `kanban-retro-create.sh` — это pre-emptive защита, которая **дублирует** логику dispatcher, но с неверной моделью рекурсии.
 
+> Слоёв валидации на самом деле три: (1) плоский bash-guard (неверный, удаляется), (2) `_validate_skills_for_assignee` на `kanban create` (recursive, vendor-патч — см. §2.5), (3) runtime `finalize_preloaded_skills` (graceful-degrade). Первая версия ADR считала «реальным валидатором» только (3).
+
 ### 2.3. Реальная ошибка в t_8c8c7c69 / t_28dcdaf0 — другая
 
 Скорее всего, воркеры в t_8c8c7c69 и t_28dcdaf0 упали НЕ из-за того, что dispatcher не видит подкатегории, а из-за:
@@ -84,12 +86,22 @@ skills/
 1. **Краша tool-loop** воркера до того, как skill-preload завершился — `cli.py:8187` ждёт thread с timeout 120 сек, и если воркер по любой причине упал раньше (например, syntax error в skill content) → "Unknown skill(s)" не из-за отсутствия, а из-за недогрузки.
 2. **Опечатки в имени** скилла (например, "spike" vs "Spike" — `_find_skill_dir` сравнивает case-sensitively).
 3. **Skills dir исключения** через `is_excluded_skill_path()` — некоторые skill dirs могут быть явно исключены.
+4. **Скилл чужого профиля** — воркер просит скилл, который принадлежит другому профилю (`t_6c6c98fb`: `assignee=architect` + `skills=[devops]`). Именно этот класс закрывает vendor-патч через `_validate_skills_for_assignee` (§2.5), а не «dispatcher не видит подкатегории».
 
 Нужно ретроспективно достать stderr из тех сессий, чтобы понять root cause. Но **точно не "dispatcher не видит подкатегории"** — этот класс ошибок не воспроизводится.
 
 ### 2.4. SOUL.md архитектора — не упоминает скиллы
 
 Проверено: `~/.hermes/profiles/architect/SOUL.md` (112 строк) НЕ содержит перечень skills. Утверждение ретро "SOUL.md говорит архитектору использовать 7 skill" — не подтверждается. SOUL.md описывает только роль + процесс. H2 в ретро — отвергнут.
+
+### 2.5. Recursive-валидация уже реализована vendor-патчем — guard устарел
+
+В репо уже есть `scripts/agent_flow/vendor/hermes-agent-skill-validation.patch`, который добавляет в `hermes kanban create` (`hermes_cli/kanban_db.py::create_task`) функцию `_validate_skills_for_assignee`, идущую через `iter_skill_index_files` — тот же recursive (и symlink-following) вокер, что и runtime. Патч:
+
+- применяется идемпотентно `scripts/agent_flow/install.sh` (`git apply --reverse --check` → уже применён; `git apply --check` → применяет);
+- покрыт тестами `scripts/agent_flow/tests/e2e_skill_validation.py` (accept/reject на реальном профиле) и `scripts/agent_flow/tests/test_vendor_patch_apply.sh` (apply/reverse/idempotency).
+
+**Следствие:** fail-fast при unknown skill остаётся на уровне `kanban create` даже после удаления bash-guard — и с лучшим сообщением (перечисляет installed skills и подсказывает чинить assignee, а не скилл). Это делает «Вариант A» безопасным: pre-check не теряется, неверный плоский guard заменяется на корректный recursive, который уже существует.
 
 ## 3. Инвариант
 
@@ -107,8 +119,9 @@ skills/
 
 **Trade-offs варианта A:**
 - ✅ Убирает ложные отказы (которые воспроизводятся на каждой ретро-карточке с категорийным скиллом)
-- ✅ Меньше кода в процессе
-- ❌ Убирает pre-check; реальный фейл будет уже на старте воркера (потенциально позднее в lifecycle)
+- ✅ Меньше кода в процессе, нет дублирования логики dispatcher
+- ✅ Pre-check НЕ теряется: fail-fast остаётся на `kanban create` через vendor-патч `_validate_skills_for_assignee` (§2.5) — с лучшим сообщением об ошибке
+- ⚠️ Зависимость: безопасность варианта A держится на том, что vendor-патч применён. Контролируется `install.sh` + `test_vendor_patch_apply.sh` + `e2e_skill_validation.py`.
 
 **Вариант B — починить guard на recursive.**
 
@@ -123,26 +136,33 @@ skills/
 
 Теряется организация по категориям, ломаются skill-hub привязки. Худший вариант.
 
-## 5. Что нужно от воркера backend/devops
+## 5. Реализация в этом PR
 
-- [ ] Удалить guard (вариант A): стереть lines 90-128 в `scripts/agent_flow/kanban-retro-create.sh`, оставить только dedup-блок.
-- [ ] Smoke-test: создать ретро-карточку с `skill=sdlc-review` для assignee=devops через обёртку → должен пройти успешно (раньше exit 2).
-- [ ] Регресс: убедиться, что dedup-блок (lines 144-182) не сломан.
-- [ ] По возможности — добавить 1 unit-test на `_find_skill_dir` recursive-поведение (он уже есть в hermes-agent codebase, но проверить что не сломан).
-- [ ] PR в develop, `Closes #t_83cb72d4` в description.
+- [x] Удалён guard (вариант A): блок «skill validation» в `scripts/agent_flow/kanban-retro-create.sh`, оставлен только dedup-блок.
+- [x] Добавлен регресс-тест J: `--skill` с категорийным (не плоским) именем больше не режется exit 2 — карточка создаётся, скилл pass-through.
+- [x] Подтверждено, что fail-fast при unknown skill сохраняется на `kanban create` (vendor-патч `_validate_skills_for_assignee`), поэтому pre-check не потерян.
+
+**Верификация (raw-вывод в PR):**
+- `bash scripts/agent_flow/tests/test_kanban_retro_create.sh` → все A–J PASS.
+- На билдер-машине: `python3 scripts/agent_flow/tests/e2e_skill_validation.py devops` → accept/reject корректны (подтверждает, что патч применён).
 
 ## 6. Открытые вопросы
 
 - Реальная причина t_8c8c7c69 (spike-fail) — нужно достать stderr/log той сессии. Если подтвердится что НЕ dispatcher-не-видит, можно отозвать guard-фикс как ошибочный. Доп. карточка для devops.
-- Аналогичный guard в других обёртках? `find /home/builder/.hermes/scripts` — проверить, есть ли другие места с тем же cargo-cult pattern.
+- Аналогичный guard в других обёртках? `find /home/builder/.hermes/scripts` — проверить, есть ли другие места с тем же cargo-cult pattern (дублирование логики между bash и hermes-agent).
+- Проверяемость citations: ссылки на `/home/builder/.hermes/hermes-agent/*:NNN` в §2.1–2.3 не проверяемы из git-репо (исходник hermes-agent лежит на билдер-машине, не в репо). Тезис «recursive» подтверждён независимо через vendor-патч (§2.5) и его e2e-тесты. Номера строк проверить на билдер-машине при следующей возможности.
 
 ## 7. Связанные
 
 - t_83cb72d4 (это)
 - t_8c8c7c69 (done, 19.08 — spike fail, теперь под сомнением)
 - t_28dcdaf0 (cobra crash по тому же скиллу)
-- `~/.hermes/scripts/kanban-retro-create.sh:90-128` — guard под удаление
+- `scripts/agent_flow/vendor/hermes-agent-skill-validation.patch` — recursive валидация на `kanban create` (`_validate_skills_for_assignee`)
+- `scripts/agent_flow/tests/e2e_skill_validation.py` — e2e accept/reject на реальном профиле
+- `scripts/agent_flow/tests/test_vendor_patch_apply.sh` — apply/reverse/idempotency патча
+- `scripts/agent_flow/tests/test_kanban_retro_create.sh` — регресс A–J обёртки
+- `~/.hermes/scripts/kanban-retro-create.sh` — guard удалён (вариант A)
 - `~/.hermes/hermes-agent/tools/skill_usage.py:1243-1261` — `_find_skill_dir` (recursive)
-- `~/.hermes/hermes-agent/cli.py:8172-8212` — реальный валидатор dispatcher
+- `~/.hermes/hermes-agent/cli.py:8172-8212` — runtime-валидатор dispatcher
 - `~/.hermes/hermes-agent/tools/skills_tool.py:14-26` — документация формата с категориями
 - commit `6ceb43eb` — cargo-cult фикс в develop
