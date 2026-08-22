@@ -21,6 +21,7 @@ import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -529,6 +530,16 @@ class DialogueNode(Node):
         self.create_subscription(
             String, "/voice/sound/state", self._on_sound_state, 10,
             callback_group=cbg)
+        # Робот-позиция из /odom — лёгкий снимок {x, y, theta} для LLM-контекста
+        # <system_context> <position>. Без tf2_ros.Buffer (подписка на /tf ~110 Гц
+        # жгла ~45% CPU через wait-set rebuild на rmw_zenoh, mcp-server-cpu-loop).
+        self._pose_snapshot = None
+        try:
+            from nav_msgs.msg import Odometry
+
+            self.create_subscription(Odometry, "/odom", self._on_odom_snapshot, 10, callback_group=cbg)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(f"⚠️ [dialogue_node] /odom подписка не удалась: {exc}")
         self.create_subscription(
             String, "/voice/dj_mode",
             lambda m: self._dj.handle_message(m.data), 10, callback_group=cbg)
@@ -1958,6 +1969,20 @@ class DialogueNode(Node):
         )
     def _on_sound_state(self, msg: String) -> None:
         self._effects.handle_sound_state(msg.data or "")
+    def _on_odom_snapshot(self, msg) -> None:
+        """Сохранить снимок позиции {x, y, theta} из nav_msgs/Odometry для LLM-контекста."""
+        try:
+            pos = msg.pose.pose.position
+            q = msg.pose.pose.orientation
+            siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+            cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+            self._pose_snapshot = {
+                "x": float(pos.x),
+                "y": float(pos.y),
+                "theta": math.atan2(siny_cosp, cosy_cosp),
+            }
+        except Exception:  # noqa: BLE001
+            pass
     def _on_dj_stop_farewell(self, persona: str) -> None:
         """Speak a short goodbye when DJ mode turns off.
 
@@ -2219,6 +2244,15 @@ class DialogueNode(Node):
         lines.append(f"    <tts_voice>{tts_voice}</tts_voice>")
         lines.append(f"    <tts_provider>{tts_provider}</tts_provider>")
         lines.append("  </hardware>")
+        # Позиция робота из /odom — LLM знает, где робот (ответы «где ты?»).
+        pose = getattr(self, "_pose_snapshot", None)
+        if pose:
+            lines.append(
+                f"  <position>x={pose['x']:.2f}, y={pose['y']:.2f}, "
+                f"theta={pose['theta']:.3f} (odom frame)</position>"
+            )
+        else:
+            lines.append("  <position>unknown</position>")
         # Issue #1219 — LLM voice selection (Q8): единая строка с голосами.
         lines.append(f"  <tts_context>{tts_context_line}</tts_context>")
         # Issue #1392 follow-up — сгенерированная музыка сейчас играет?

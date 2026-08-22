@@ -20,6 +20,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import String
 import json
+import math
 import os
 from typing import Dict, Any
 
@@ -151,8 +152,9 @@ class MCPServer(Node):
             f"🗺️  MappingState: mode={_ms['mode']}, map='{_ms.get('map_name') or 'none'}'"
         )
 
-        # TF Buffer для определения текущей позиции робота
-        self.tf_buffer = self._init_tf_buffer()
+        # Лёгкий снимок позиции из /odom (вместо тяжёлого TF2 Listener на /tf 110 Гц)
+        self._pose_snapshot: "Dict[str, float] | None" = None
+        self._init_pose_subscription()
 
         # Регистрация инструментов
         self._register_tools()
@@ -501,31 +503,56 @@ class MCPServer(Node):
             # Fallback — create in-memory so tools don't crash
             return WaypointStore(db_path=":memory:")
 
-    def _init_tf_buffer(self):
-        """Инициализация TF2 Buffer + Listener для определения позиции робота."""
-        try:
-            import tf2_ros
+    def _init_pose_subscription(self) -> None:
+        """Подписка на /odom для лёгкого снимка позиции (без tf2_ros.Buffer).
 
-            tf_buffer = tf2_ros.Buffer()
-            tf2_ros.TransformListener(tf_buffer, self)
-            self.get_logger().info("🗺️  TF2 Buffer + Listener инициализированы")
-            return tf_buffer
-        except Exception as exc:
-            self.get_logger().error(f"❌ TF2 init failed: {exc}")
-            return None
+        Раньше здесь был ``tf2_ros.TransformListener`` → подписка на /tf (~110 Гц
+        с камеры), которая частыми wake-up'ами экзекутора и дорогой пересборкой
+        WaitSet на rmw_zenoh жгла ~45% CPU (см. mcp-server-cpu-loop-2026-08-22).
+        /odom (~10 Гц) даёт позицию робота напрямую; инструменты читают снимок,
+        а не делают blocking TF lookup.
+        """
+        try:
+            from nav_msgs.msg import Odometry
+
+            self.create_subscription(Odometry, "/odom", self._on_odom_snapshot, 10)
+            self.get_logger().info("📍 Подписан на /odom (лёгкий снимок позиции)")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(f"⚠️ Не удалось подписаться на /odom: {exc}")
+
+    def _on_odom_snapshot(self, msg) -> None:
+        """Обновить снимок позиции {x, y, theta} из nav_msgs/Odometry."""
+        try:
+            pos = msg.pose.pose.position
+            q = msg.pose.pose.orientation
+            siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+            cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+            self._pose_snapshot = {
+                "x": float(pos.x),
+                "y": float(pos.y),
+                "theta": math.atan2(siny_cosp, cosy_cosp),
+            }
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(f"⚠️ Ошибка обработки /odom: {exc}")
+
+    def get_current_pose_snapshot(self) -> "Dict[str, float] | None":
+        """Последний снимок позиции робота ({x, y, theta}) или None, если данных нет."""
+        return self._pose_snapshot
 
     def _register_tools(self):
         """Регистрация всех доступных инструментов."""
-        # Navigation tools (require waypoint_store and/or tf_buffer)
+        # Navigation tools (require waypoint_store and/or pose snapshot)
         self.registry.register(NavigateToWaypointTool(self, self.waypoint_store))
         self.registry.register(NavigateToCoordinatesTool(self))
         self.registry.register(MoveDirectionTool(self))
         self.registry.register(StopNavigationTool(self))
         self.registry.register(ListWaypointsTool(self, self.waypoint_store))
-        self.registry.register(SaveWaypointTool(self, self.waypoint_store, self.tf_buffer, self.mapping_state))
+        self.registry.register(
+            SaveWaypointTool(self, self.waypoint_store, self.get_current_pose_snapshot, self.mapping_state)
+        )
         self.registry.register(DeleteWaypointTool(self, self.waypoint_store))
         self.registry.register(ClearWaypointsTool(self, self.waypoint_store))
-        self.registry.register(GetCurrentPoseTool(self, self.tf_buffer))
+        self.registry.register(GetCurrentPoseTool(self, self.get_current_pose_snapshot))
 
         # System tools
         self.registry.register(SetVolumeTool(self))
