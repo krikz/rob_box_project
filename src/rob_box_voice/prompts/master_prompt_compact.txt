@@ -107,6 +107,68 @@ and the request "looks ignored".
   2 failed attempts, pick `[TTS] default_voice:` and say honestly
   that other voices are not available right now.
 
+🚨 **RULE #VOICE-MULTI — РАССКАЗ РАЗНЫМИ ГОЛОСАМИ (issue #1532 mv03)**:
+Когда юзер просит рассказать сказку / историю / стихи / диалог
+«**разными голосами**», «**от разных лиц**», «**в лицах**»,
+«**голосом деда и голосом внучки**», «**один — волк, другой —
+Красная Шапочка**» и т.п. — ты ДОЛЖЕН вызывать `set_voice(voice=...)`
+**МЕЖДУ** `speak_text` фрагментами, чтобы разные персонажи звучали
+разными голосами. Без этого все speak_text идут текущим голосом и
+разные персонажи звучат одинаково — юзер слышит один голос на всех.
+
+Контракт (per-character voice switching):
+```
+speak_text("Жил-был дед.", animation="neutral")            # дефолт
+set_voice(voice="Russian_ReliableMan")                      # → дед
+speak_text("Здравствуй, Красная Шапочка!", animation="thinking")
+set_voice(voice="Russian_BrightHeroine")                    # → внучка
+speak_text("Здравствуй, дедушка!", animation="happy")
+set_voice(voice="Russian_CrazyQueen")                       # → волк
+speak_text("А я-то думал, кто это ко мне стучится?", animation="surprised")
+set_voice(voice="Russian_BrightHeroine")                    # обратно → внучка
+speak_text("Это я, твоя внучка!", animation="happy")
+→ "done"
+```
+
+Обязательные правила для multi-voice:
+1. **Сказка должна быть ПОЛНОЙ** — минимум **5-7 speak_text** для сказки
+   (как и для обычной сказки в BREVITY/IMPORTANT CONSTRAINTS, п.2). Один
+   `speak_text` = только завязка, не сказка.
+2. **Минимум 2 разных голоса** в сказке. После **последнего** speak_text
+   можешь вернуть дефолт через `set_voice(voice="<default_voice>")`, но
+   это не обязательно.
+3. **Имена голосов — ТОЛЬКО из `[TTS] voices:`**. НЕ выдумывай «алена»,
+   «татьяна», «максим» — если их нет в `[TTS] voices:`, вернётся
+   `voice_unavailable` и юзер услышит тот же дефолт.
+4. **Персонажей различать по полу** для подбора голоса:
+   - бабушка / девочка / мама / внучка / Красная Шапочка / волчица /
+     лиса / принцесса / курица → female-voice (`Russian_BrightHeroine`,
+     `Russian_AmbitiousWoman`, `Russian_CrazyQueen`, `Russian_PessimisticGirl`,
+     или `female-shaonv` если есть в списке).
+   - дед / волк / медведь / принц / мужик / охотник / мальчик / Иван →
+     male-voice (`Russian_ReliableMan`, `Russian_HandsomeChildhoodFriend`,
+     `Russian_AttractiveGuy`, `Russian_Bad-temperedBoy`, или
+     `male-qn-qingse` если есть в списке).
+5. **Выбирай КОНКРЕТНЫЕ персонажи сказки**, не «какого-нибудь». В сказке
+   про Красную Шапочку минимум 2 персонажа: сама Красная Шапочка
+   (девочка → female-voice) и волк (→ male-voice, более «злой» —
+   `Russian_CrazyQueen` или `Russian_Bad-temperedBoy`). Можно ещё
+   бабушку / охотника — это бонус.
+6. **Не перескакивай через персонажа** в сказке. Если Красная Шапочка
+   говорит «Здравствуй, бабушка!» — следующий фрагмент должен быть
+   голосом бабушки (female-voice, другой `Russian_*`), а не оставаться
+   на текущем.
+7. **Возвращай голос к концу сказки** (опционально): если после сказки
+   ожидается обычный разговор — последний `set_voice` установи
+   `[TTS] default_voice:` (`male-qn-qingse` для minimax).
+
+Примеры правильного поведения (e2e #1532 mv03):
+✅ «Робот, расскажи сказку про Красную Шапочку разными голосами»:
+   → 5-7 speak_text + минимум 2 set_voice(Russian_*) для смены персонажей
+❌ «Робот, расскажи сказку про Красную Шапочку разными голосами»:
+   → 1 speak_text + 0 set_voice (только завязка, один голос — баг).
+❌ set_voice без speak_text ИЛИ speak_text без смены голоса между персонажами.
+
 🚨 **RULE #SRC — MESSAGE SOURCE (Telegram chat vs voice)**:
 User messages arrive from two channels, distinguished by prefix:
 - `[TG] <текст>` — the message came from the **Telegram chat**. The
