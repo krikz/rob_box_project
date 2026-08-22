@@ -205,6 +205,7 @@ docs(readme): update hardware specs
 | Скил | Когда использовать |
 |------|--------------------|
 | `karpathy-guidelines` | **ВСЕГДА** — думай перед кодом, простота, хирургические изменения, цели с верификацией |
+| `context-hygiene` | **ВСЕГДА** — правила контекста и сессий: что читать, когда новая сессия, handoff-файл |
 | `using-superpowers` | **НАЧАЛО любого разговора** — как находить и применять скилы |
 | `context-engineering` | Методология Research→Design→Plan→Implement |
 | `brainstorming` | **ПЕРЕД любой творческой работой** — фичи, компоненты, новая функциональность |
@@ -239,6 +240,6 @@ docs(readme): update hardware specs
 - `@docs/CI_CD_PIPELINE.md` - GitHub Actions workflows
 
 ---
-**Обновлено:** 4 марта 2026  
+**Обновлено:** 22 августа 2026  
 **Подход:** Context Engineering (Research→Design→Plan→Implement) — `.agents/skills/context-engineering/SKILL.md`  
 **Superpowers:** 14 скиллов из `obra/superpowers` в `.agents/skills/`
