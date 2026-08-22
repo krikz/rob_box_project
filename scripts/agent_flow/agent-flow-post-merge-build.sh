@@ -180,6 +180,18 @@ except Exception:
 
 MAX_ATTEMPTS="${POST_MERGE_BUILD_MAX_ATTEMPTS:-2}"  # 2 = 1 попытка + 1 retry
 DEDUP_WINDOW="${POST_MERGE_BUILD_DEDUP_WINDOW:-60}"  # секунд
+# --- pre-dispatch dedup (issue #1535 follow-up, 22.08) ----------------------
+# merge-gate вызывает этот backup на КАЖДОМ тике (раз в ~5 мин), пока
+# merged-issue не закрыта (нет e2e-done / no-e2e-required). GitHub НЕ
+# дедуплицирует workflow_dispatch по workflow_name+branch — каждый вызов
+# `gh workflow run` создаёт новый run. Поэтому: если на $PR_BASE уже есть
+# свежий build-ран (запущен за последние $RECENT_WINDOW сек, любой статус) —
+# push-триггер (или прошлый тик / ручной запуск) уже покрыл этот merge.
+RECENT_WINDOW="${POST_MERGE_BUILD_RECENT_WINDOW:-900}"  # 15 мин
+if [ "$DRY_RUN" != "true" ] && [ "$(verify_recent_run "$RECENT_WINDOW")" = "ok" ]; then
+    log "⏭️ recent build (≤${RECENT_WINDOW}s) already on ${PR_BASE} — skip (pre-dispatch dedup, PR #${PR_NUMBER})"
+    exit 0
+fi
 for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
     # ВАЖНО: НЕ глушим stderr — `run()` пишет DRY-RUN маркер в stderr,
     # который тесты ловят. `gh workflow run` пишет прогресс в stderr сам —
