@@ -624,9 +624,22 @@ for line in data.splitlines():
     return 1
 }
 
+# Проверка накопления фоновой речи в SpeechAccumulator (backlog-аккумулятор,
+# 2026-08-20-voice-backlog-accumulator-design.md). Фраза БЕЗ wake-слова НЕ
+# дропается, а копится; маркер — 🗒️ [backlog] accumulated (no_wake_word).
+# Используется для шагов с expect=backlog (ds01/ds02 voice_core_suite_v1.json),
+# где полного TTS-цикла не будет (wake-gate молча аккумулирует).
+# Возвращает 0 если маркер найден, 1 если нет.
+check_backlog_accumulated() {  # $1=before_rfc3339
+    local before="$1"
+    local logs
+    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    printf '%s' "$logs" | grep -qE '\[backlog\] accumulated \(no_wake_word\)'
+}
+
 # --- один атомарный шаг -----------------------------------------------------
-run_step() {  # $1=text $2=voice $3=step_label
-    local text="$1" voice="$2" label="$3"
+run_step() {  # $1=text $2=voice $3=step_label $4=expect(cycle|backlog)
+    local text="$1" voice="$2" label="$3" expect="${4:-cycle}"
     # BUG-B (t_f0612a43): если label содержит кириллицу/спецсимволы — slugify
     # для имени wav файла. Исходный label сохраняется для логов.
     local safe
@@ -672,6 +685,32 @@ run_step() {  # $1=text $2=voice $3=step_label
         sleep 5
     done
     log "STEP ${label}: робот молчит ${E2E_SILENCE_WAIT}s — команду можно играть"
+
+    # 3a. Backlog-аккумулятор (ds01/ds02 voice_core_suite_v1.json): фраза
+    #     БЕЗ wake-слова копится в SpeechAccumulator, полного TTS-цикла НЕ
+    #     будет (wake-gate молча аккумулирует). check_cycle тут неприменим —
+    #     ждём маркер 🗒️ [backlog] accumulated (no_wake_word), а не реакцию.
+    if [ "$expect" = "backlog" ]; then
+        local battempt
+        for battempt in $(seq 1 "$E2E_MAX_ATTEMPTS"); do
+            BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            log "STEP ${label}: PLAY backlog attempt ${battempt}/${E2E_MAX_ATTEMPTS}"
+            pactl set-sink-volume @DEFAULT_SINK@ 150% 2>/dev/null || true
+            paplay "$OUT_DIR/cmd_${safe}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
+            sleep "$E2E_REACTION_WINDOW"
+            if check_backlog_accumulated "$BEFORE"; then
+                log "STEP ${label}: ✅ backlog accumulated (no_wake_word)"
+                echo "E2E_STEP ${label} OK backlog"
+                return 0
+            fi
+            log "STEP ${label}: backlog-маркер не найден (attempt ${battempt}) — повтор"
+            sleep "$E2E_RETRY_PAUSE"
+        done
+        log "STEP ${label}: ❌ backlog accumulation не подтверждён после ${E2E_MAX_ATTEMPTS} попыток"
+        echo "E2E_STEP ${label} FAIL backlog_miss"
+        mark_fail_kind feature
+        return 1
+    fi
 
     # 3. Retry-цикл акцепта
     local attempt reaction rc
@@ -916,12 +955,13 @@ sc = json.load(open(sys.argv[1]))
 for i, s in enumerate(sc.get("steps", [])):
     pats = s.get('patterns', [])
     acc = s.get('acceptance', {})
-    print(f"{i}\t{s.get('label', f's{i+1}')}\t{s.get('text','')}\t{s.get('voice','anton')}\t{json.dumps(pats)}\t{json.dumps(acc, ensure_ascii=False)}")
+    exp = s.get('expect', 'cycle')
+    print(f"{i}\t{s.get('label', f's{i+1}')}\t{s.get('text','')}\t{s.get('voice','anton')}\t{json.dumps(pats)}\t{json.dumps(acc, ensure_ascii=False)}\t{exp}")
 PY
-    while IFS=$'\t' read -r idx label text voice patterns_json acceptance_json; do
+    while IFS=$'\t' read -r idx label text voice patterns_json acceptance_json expect; do
         [ -z "$idx" ] && continue
         STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-        run_step "$text" "$voice" "$label"
+        run_step "$text" "$voice" "$label" "$expect"
         rc=$?
         # Пишем transcript (даже при FAIL — для ретро-анализа, что STT услышал)
         parse_transcript "$label" "$STEP_BEFORE" "$text"
