@@ -837,6 +837,9 @@ class TTSNode(Node):
         # Поэтому: 1) в окне IMMUNE STOP игнорируется (например после reset
         # сессии); 2) STOP между успешным синтезом и play_audio буферизуется
         # для СЛЕДУЮЩЕГО запроса, не отменяя текущий.
+        # Issue #1562 (PR #1572 wip) был более слабой версией того же
+        # фикса; на rebase берём реализацию #1563 (она полнее — плюс
+        # IMMUNE-окно и dialogue_node шлёт IGNORE_STOP_MS payload).
         self._immune_until_ts = 0.0   # monotonic — до этого момента STOP игнор
         self._post_synth_stop_pending = False  # STOP пришёл между synth/play
 
@@ -1213,7 +1216,12 @@ class TTSNode(Node):
         )
 
     def _interrupt_playback(self):
-        """Прервать текущее воспроизведение (helper метод)."""
+        """Прервать текущее воспроизведение (helper метод).
+
+        Issue #1562 acceptance («late STOP буферизуется») покрыт #1563
+        через ``_handle_stop_command`` → ``_is_post_synth_phase`` →
+        ``_post_synth_stop_pending``: см. PR #1568.
+        """
         self.stop_requested = True
         # Сбрасываем current_dialogue_id: последующие TTS-запросы без dialogue_id
         # или с устаревшим dialogue_id будут отброшены.
@@ -1917,6 +1925,10 @@ class TTSNode(Node):
         # в окне «synth_done → play_audio» прошлого chunk'а. Если
         # поздний STOP был отложен для текущего запроса — применяем
         # его ДО старта синтеза (новый запрос не нужен).
+        # Issue #1562 (PR #1572 wip) делал то же самое через
+        # ``_pending_stop`` + ``_synth_state_lock`` — но #1563 покрывает
+        # это более полно (плюс IGNORE_STOP_MS окно), поэтому при rebase
+        # берём реализацию #1563.
         if getattr(self, "_post_synth_stop_pending", False):
             self._post_synth_stop_pending = False
             self.get_logger().info(
@@ -2241,6 +2253,9 @@ class TTSNode(Node):
             # downstream tools can estimate total TTS playback time.
             raw_duration_sec: float = round(len(audio_np) / sample_rate, 2) if sample_rate > 0 else 0.0
 
+            # Issue #1562 (PR #1572 wip) держал здесь ``_synth_completed=True``
+            # под ``_synth_state_lock``; #1563 (#1568) убрал надобность —
+            # см. ``_is_post_synth_phase``.
             # 🔴 FIX (live 12:28 «робот замолчал после barge-in»): FIFO-gate
             # ДОЛЖЕН быть ДО dialogue/STOP checks. Раньше он стоял перед
             # play_audio, а checks — выше: фраза с play_seq=1, отменённая
@@ -2338,6 +2353,9 @@ class TTSNode(Node):
                 return
 
             try:
+                # Issue #1562 (PR #1572 wip) сбрасывал ``_synth_completed`` здесь;
+                # #1563 (#1568) убрал надобность (``current_stream = True``
+                # ниже автоматически выводит из post-synth фазы).
                 # Блокирующее воспроизведение через менеджер (защита от ALSA конфликтов)
                 with ignore_stderr(enable=True):
                     self.current_stream = True  # Маркер что воспроизведение идёт
@@ -2463,6 +2481,8 @@ class TTSNode(Node):
                 self.processing_dialogue_id = None
 
         finally:
+            # Issue #1562 (PR #1572 wip) defensive-сбрасывал ``_synth_completed``
+            # здесь; #1563 (#1568) убрал надобность — см. ``_is_post_synth_phase``.
             # Issue #1234 — закрываем span ``tts.synthesize``: проставляем
             # фактического провайдера, fallback-флаг и длительность. Переменные
             # ``used_provider``/``provider_chain`` живут в try — читаем через
