@@ -52,6 +52,10 @@ EXPECTED=(
     agent-flow-merge-gate.sh
     agent-flow-completion-check.sh
     agent-flow-e2e-process.sh
+    # Cron launcher для e2e-process (ретро 23.08 t_98bb3a1d): no-agent job
+    # каждые 20 мин, подгружает env из .env и запускает e2e-process.sh.
+    # SOT живёт в <repo>/scripts/agent_flow/, раскладывается install.sh.
+    agent-flow-e2e-process-launcher.sh
     agent-flow-handoff.sh
     round_ensure.sh
     agent-flow-cleanup-249.sh
