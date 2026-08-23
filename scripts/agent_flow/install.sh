@@ -460,6 +460,78 @@ else
     echo "  OK  telegram token holders: ${TOKEN_HOLDERS[*]:-none}"
 fi
 
+# ---------------------------------------------------------------------------
+# Sweep stale .bak skill directories (retro 23.08 t_ab1cc381).
+#
+# Проблема: hermes-agent/tools/skills_sync.py при обновлении skill-а
+# использует shutil.move(dest, dest.with_suffix('.bak')) как rollback-механизм
+# (tools/skills_sync.py:907). Если процесс прерывается между move и
+# последующим rmtree('.bak') (строка 916), .bak-директория остаётся
+# ВНУТРИ ~/.hermes/skills/<category>/ рядом с живым dest. После этого
+# hermes-agent/tools/skills_tool.py::skill_view(name) считает оба
+# (dest и dest.bak) как кандидатов и отказывается резолвить:
+#   "Ambiguous skill name spike: 2 skills match"
+# → воркеры падают с "Unknown skill(s): spike".
+#
+# Решение: install.sh при каждом запуске (в т.ч. drift-detect / deploy)
+# подметает .bak-директории в skills/, оставляя живой dest как есть.
+# Идемпотентно: если .bak нет — no-op.
+#
+# Scope:
+#   - ~/.hermes/skills/<category>/<name>.bak/
+#   - ~/.hermes/profiles/<profile>/skills/<category>/<name>.bak/
+# НЕ трогаем обычные файлы *.bak.* (это метки времени от _remove_existing)
+# и НЕ удаляем ничего внутри уже-установленных скиллов.
+#
+# Это НЕ лечит upstream-баг (он живёт в hermes-agent), но убирает
+# симптомы на хосте при следующем install-цикле. Upstream-фикс в
+# EXCLUDED_SKILL_DIRS / skill_utils.py отслеживается отдельно.
+#
+# Размещён ПЕРЕД vendor patches / MAINTENANCE probe — гарантирует выполнение
+# даже если apply_hermes_agent_patch падает (pre-existing баг с
+# устаревшими upstream-патчами, см. ретро t_f00676f8).
+sweep_stale_skill_baks() {
+    local roots=(
+        "/home/builder/.hermes/skills"
+        /home/builder/.hermes/profiles/*/skills
+    )
+    local removed=0
+    local inspected=0
+    local root bak
+    for root in "${roots[@]}"; do
+        # glob может не раскрыться, если нет profiles; тогда пропускаем.
+        [ -d "$root" ] || continue
+        # find depth-3: <root>/<category>/<name>.bak — ровно такая форма
+        # генерируется dest.with_suffix('.bak') в skills_sync.py.
+        while IFS= read -r bak; do
+            inspected=$((inspected + 1))
+            if $DRY_RUN; then
+                echo "  [DRY] would sweep stale skill backup: ${bak#$root/}"
+            else
+                # Используем 'mv' в /tmp под именем с timestamp — если что-то
+                # пойдёт не так, восстановимо вручную из той же папки.
+                local trash="/tmp/hermes-skill-bak-sweep-$(date -u +%Y%m%dT%H%M%SZ)"
+                mkdir -p "$trash"
+                mv "$bak" "$trash/"
+                echo "  SWEEP ${bak#$root/} -> $trash/ (recovery: $trash/${bak##*/})"
+                removed=$((removed + 1))
+            fi
+        done < <(find "$root" -mindepth 2 -maxdepth 2 -type d -name '*.bak' 2>/dev/null)
+    done
+    if [ "$removed" -eq 0 ] && [ "$inspected" -eq 0 ]; then
+        echo "  OK   no stale skill .bak dirs (clean)"
+    elif [ "$removed" -eq 0 ]; then
+        echo "  OK   inspected $inspected .bak dirs in dry-run (no actual removal)"
+    else
+        echo "  OK   swept $removed stale skill .bak dirs (inspected $inspected)"
+    fi
+}
+
+echo
+echo "==> Sweep stale skill .bak dirs (retro 23.08 t_ab1cc381)"
+sweep_stale_skill_baks
+
+
 echo
 echo "==> hermes-agent vendor patches"
 for _patch in "$SCRIPT_DIR"/vendor/hermes-agent-*.patch; do
