@@ -1332,6 +1332,10 @@ except Exception:
                     "agent-flow: ⏸️ merge-gate reconcile не восстановил \`needs-review\` — ты её ранее снял руками; жду твоего решения (ретро 18.08 t_de6bea69, Q22)." >/dev/null 2>&1 || true
             fi
         elif [ "$DRY_RUN" != "true" ]; then
+            # issue #1553: self-id whoami BEFORE add-label needs-review на PR
+            # (reconcile-путь e2e-done+OPEN → needs-review).
+            post_whoami_comment pr "$pr_number" "adding-label:${NEEDS_REVIEW_LABEL}" \
+                "merge-gate reconcile: e2e-done+OPEN → needs-review" "issue=${number}"
             gh pr edit "$pr_number" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
             gh pr edit "$pr_number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
         fi
@@ -2268,6 +2272,9 @@ git push --force-with-lease origin ${pr_head_ref}
             log "DRY-RUN would: dead-content guard on PR #${pr_number} (label_present=${_dead_has_label})"
         else
             if [ "$_dead_has_label" = "0" ]; then
+                # issue #1553: self-id whoami BEFORE dead-content (label-of-doom).
+                post_whoami_comment pr "$pr_number" "adding-label:dead-content" \
+                    "0 meaningful files after rebase — PR dead" "issue=${number}"
                 gh pr edit "$pr_number" --repo "$GH_REPO" --add-label "dead-content" >/dev/null 2>&1 \
                     && log "issue #${number}: PR #${pr_number} помечен dead-content (после rebase — 0 meaningful файлов)" \
                     || log "WARNING: failed to add dead-content label to PR #${pr_number}"
@@ -2509,6 +2516,9 @@ Merge-gate блокирует e2e-ротацию: ${NEEDS_E2E_LABEL} не буд
             # Помечаем issue меткой agent-flow:big-bang-blocked (best-effort) — чтобы
             # triage/воркер/дашборд видели, что issue ждёт решения. Не критично
             # если метка уже есть или label API упадёт.
+            # issue #1553: self-id whoami BEFORE big-bang-blocked (terminal блокер).
+            whoami_add_label "$number" "agent-flow:big-bang-blocked" \
+                "big-bang threshold violation: PR #${pr_number} превышает лимит (merge-gate ждёт ${BIG_BANG_OVERRIDE_LABEL} от Шифу)"
             gh issue edit "$number" --repo "$GH_REPO" --add-label "agent-flow:big-bang-blocked" >/dev/null 2>&1 || true
             labeled=$((labeled+1)); continue
         fi
@@ -2536,6 +2546,11 @@ Merge-gate блокирует e2e-ротацию: ${NEEDS_E2E_LABEL} не буд
             log "WARNING: failed to add ${NEEDS_REVIEW_LABEL} to PR #${pr_number} — will retry next tick"
             errored=$((errored+1)); continue
         fi
+        # issue #1553: self-id whoami AFTER успешного add-label (если label API
+        # упал — whoami не публикуем, чтобы не врать что лимит поставили).
+        # helper идемпотентный — при reconcile в следующем тике skip.
+        post_whoami_comment pr "$pr_number" "adding-label:${NEEDS_REVIEW_LABEL}" \
+            "lint PR #${pr_number} → needs-review (CI green, e2e не нужен)" "issue=${number}"
         log "issue #${number}: lint PR #${pr_number} → ${NEEDS_REVIEW_LABEL} (skip e2e)"
         labeled=$((labeled+1)); continue
     fi
@@ -3069,6 +3084,10 @@ print("1" if ok else "0")
         clean_labeled=$((clean_labeled+1)); continue
     fi
     if gh pr edit "$c_pr" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1; then
+        # issue #1553: self-id whoami AFTER успешного add-label needs-review
+        # (clean-pr-sweep путь: e2e невозможен, Шифу ревьюит).
+        post_whoami_comment pr "$c_pr" "adding-label:${NEEDS_REVIEW_LABEL}" \
+            "clean-pr-sweep: PR #${c_pr} functional, e2e невозможен → needs-review"
         clean_labeled=$((clean_labeled+1))
         log "clean-pr-sweep: PR #${c_pr} → ${NEEDS_REVIEW_LABEL} (e2e невозможен)"
     else
@@ -3230,6 +3249,10 @@ print("1" if ok else "0")
     fi
     gh pr edit "$o_pr" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
     gh pr edit "$o_pr" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
+    # issue #1553: self-id whoami AFTER успешного add-label (orphan-reconcile,
+    # functional + issue CLOSED → e2e невозможен).
+    post_whoami_comment pr "$o_pr" "adding-label:${NEEDS_REVIEW_LABEL}" \
+        "pr-orphan-reconcile: PR #${o_pr} functional + связанные issues закрыты → needs-review (e2e невозможен, retro 15.08 t_5cf0162b)"
     gh pr comment "$o_pr" --repo "$GH_REPO" --body \
         "agent-flow: 🔄 PR-side ${NEEDS_E2E_LABEL} потерял живую issue (сирота, ретро 15.08 t_5cf0162b): связанные issues закрыты/не найдены → e2e невозможен. Снят ${NEEDS_E2E_LABEL}, поставлен ${NEEDS_REVIEW_LABEL} — товарищ Шифу ревьюит напрямую." >/dev/null 2>&1 || true
     orphan_labeled=$((orphan_labeled+1))
@@ -3746,8 +3769,12 @@ print("1" if ok else "0")
             backfill_labeled=$((backfill_labeled+1)); continue
         fi
         if gh pr edit "$bf_pr" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1; then
+            # issue #1553: self-id whoami AFTER успешного add-label (backfill
+            # lint path: CI-only/process → needs-review, e2e не нужен).
+            post_whoami_comment pr "$bf_pr" "adding-label:${NEEDS_REVIEW_LABEL}" \
+                "pr-backfill-scan: PR #${bf_pr} lint/process-only → needs-review (skip e2e)"
             backfill_labeled=$((backfill_labeled+1))
-            log "pr-backfill-scan: PR #${bf_pr} → ${NEEDS_REVIEW_LABEL}"
+            log "pr-backfill-scan: PR #${bf_pr} → ${NEEDS_REVIEW_LABEL} (skip e2e)"
         else
             log "pr-backfill-scan: WARNING add ${NEEDS_REVIEW_LABEL} to PR #${bf_pr} failed"
         fi
@@ -3789,6 +3816,10 @@ print("1" if ok else "0")
         backfill_labeled=$((backfill_labeled+1)); continue
     fi
     if gh pr edit "$bf_pr" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1; then
+        # issue #1553: self-id whoami AFTER успешного add-label (backfill
+        # functional path: e2e невозможен → needs-review).
+        post_whoami_comment pr "$bf_pr" "adding-label:${NEEDS_REVIEW_LABEL}" \
+            "pr-backfill-scan: PR #${bf_pr} functional, e2e невозможен → needs-review"
         backfill_labeled=$((backfill_labeled+1))
         log "pr-backfill-scan: PR #${bf_pr} → ${NEEDS_REVIEW_LABEL} (e2e невозможен)"
     else
