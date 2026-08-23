@@ -12,7 +12,7 @@
 # (или вручную cp + ln -sf). Если правишь этот файл НА ХОСТЕ — синхронизируй
 # обратно в репо.
 # ============================================================================
-# agent-flow-post-merge-build.sh — GATE-4 (ADR-0022 extension, issue #1475)
+# agent-flow-post-merge-build.sh — ADR-0022 extension (issue #1475)
 #
 # Цель: после merge PR в develop (или main) — запустить L-Build-All-Services
 # чтобы .image-versions.dev получил свежие SHA-теги (dev-<sha>) для
@@ -26,7 +26,7 @@
 #     (issue #1475, evidence: PR #1434 merge 18.08 23:00 MSK →
 #     на роботе до сих пор dev-ddd09e51 от 18.08 17:49 MSK, 5 часов stale).
 #
-# Этот скрипт — GATE-4 ADR-0022 extension. Вызывается из
+# Этот скрипт — ADR-0022 extension. Вызывается из
 # agent-flow-merge-gate.sh после успешного MERGED detection:
 #   log "issue #${number}: PR #${pr_number} MERGED into ${pr_base}"
 #   bash scripts/agent_flow/agent-flow-post-merge-build.sh "$pr_number" "$pr_base"

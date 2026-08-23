@@ -1359,11 +1359,9 @@ except Exception:
             log "DRY-RUN would reconcile issue #${number} (re-read labels, maybe close, then cleanup ${branch})"
             continue
         fi
-        # GATE-4 (ADR-0022 extension, issue #1475): после merge в develop
+        # ADR-0022 extension (issue #1475): после merge в develop/main
         # триггерим L-Build-All-Services, чтобы .image-versions.dev получил
-        # dev-<new-sha> теги. Push-trigger (.github/workflows/L-Build-On-Branch-Push.yml)
-        # — primary path; этот вызов — backup на случай race / eventual
-        # consistency. Non-fatal: build failure НЕ блокирует merge-gate
+        # dev-<new-sha> теги. Non-fatal: build failure НЕ блокирует merge-gate
         # (см. agent-flow-post-merge-build.sh).
         if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ] && [ -f "${REPO_DIR}/scripts/agent_flow/agent-flow-post-merge-build.sh" ]; then
             if ! bash "${REPO_DIR}/scripts/agent_flow/agent-flow-post-merge-build.sh" "${pr_number}" "${pr_base}" 2>/dev/null; then
