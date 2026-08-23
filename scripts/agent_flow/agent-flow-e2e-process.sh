@@ -80,6 +80,10 @@ if [ -z "$WORK_BRANCH_PREFIX" ]; then WORK_BRANCH_PREFIX='z-{e2e}/wip-'; fi
 # remote сбрасывается на 1, нумерация повторяется, старые PR/артефакты
 # путаются. Файл состояния переживает cleanup.
 ROUND_COUNTER_FILE="${ROUND_COUNTER_FILE:-${HERMES_HOME}/state/agent-flow-e2e-round-counter}"
+# Ретро 23.08 (t_fdb19f7b, Phase 2): cumulative счётчик ghost-rounds для мониторинга.
+# Файл переживает cleanup (как round-counter). Монитор парсит GHOST_ROUND маркер
+# в логах и/или инкремент этого файла.
+GHOST_ROUNDS_TOTAL_FILE="${GHOST_ROUNDS_TOTAL_FILE:-${HERMES_HOME}/state/agent-flow-e2e-ghost-rounds-total}"
 E2E_WORKFLOW="${E2E_WORKFLOW:-L-E2E Voice Test.yml}"
 BUILD_WORKFLOW="${BUILD_WORKFLOW:-L-Build-All-Services.yml}"
 DEPLOY_WORKFLOW="${DEPLOY_WORKFLOW:-L-Deploy and Verify.yml}"
@@ -446,8 +450,14 @@ ROUND_BRANCH=""
 # пустых round-веток (см. ниже): если ветка создана, но за тик на ней не
 # появилось ни одного run — кандидат был снят до запуска, ветку удаляем.
 ROUND_CREATED=0
+# n / max_n / counter_n — НЕ local: нужны в post-tick cleanup (после return
+# из round_ensure) для решения «counter rollback vs persist». Ретро 23.08
+# (t_fdb19f7b, Phase 1+2).
+n=0
+max_n=0
+counter_n=0
 round_ensure() {
-    local list max_n n counter_n
+    local list
     list="$(git -C "$REPO_DIR" ls-remote --heads origin "${TEST_ROUND_PREFIX}*" 2>/dev/null \
         | awk '{print $2}' | sed "s#refs/heads/${TEST_ROUND_PREFIX}##" || true)"
     if [ -z "$list" ]; then
@@ -518,12 +528,13 @@ round_ensure() {
         fi
     fi
 
-    # Сохраняем счётчик (только после успешного создания/reuse).
-    if [ "$n" -gt "$counter_n" ]; then
-        printf '%s\n' "$n" > "$ROUND_COUNTER_FILE" 2>/dev/null \
-            && log "round counter saved: ${n} -> ${ROUND_COUNTER_FILE}" \
-            || log "WARNING: cannot write round counter ${ROUND_COUNTER_FILE}"
-    fi
+    # Ретро 23.08 (t_fdb19f7b, Phase 1+2): counter НЕ персистится здесь.
+    # Раньше счётчик записывался сразу после создания round-ветки, и если за
+    # тик кандидат снимался (sweep/merge-gate/ручной merge) ДО запуска build,
+    # cleanup удалял ветку — а counter оставался на +1 (ghost). За час накапли-
+    # валось 4 ghost'а → counter расходился с remote (наблюдение: counter=209
+    # vs remote=193, drift=16). Теперь counter персистится ТОЛЬКО после успеш-
+    # ного round (≥1 run) — см. post-tick cleanup ниже.
 
     # Make sure worktree has it.
     git -C "$WORKTREE_DIR" fetch origin "$ROUND_BRANCH" --quiet 2>/dev/null || true
@@ -3120,12 +3131,38 @@ for issue in sorted(data, key=lambda i: i["number"]):
 # снят ДО создания round_ensure); здесь чистим ветку, СОЗДАННУЮ этим тиком,
 # но не получившую НИ ОДНОГО run. Удаление через gh api (git push --delete
 # требовал бы локального ref, которого может не быть после cleanup worktree).
+#
+# Ретро 23.08 (t_fdb19f7b, Phase 1+2):
+#   - На 0 run'ов (ghost): counter НЕ инкрементируется (round_ensure не
+#     персистит — см. комментарий там), плюс эмитим явный маркер
+#     `GHOST_ROUND counter_rollback` + cumulative metric GHOST_ROUNDS_TOTAL_FILE
+#     для мониторинга. До фикса счётчик убегал на +1 за каждый ghost, расхож-
+#     дение с remote росло на 4/час (наблюдение: counter=209 vs remote=193).
+#   - На ≥1 run: counter персистится (n = max(remote)+1) — happy path.
 if [ "${ROUND_CREATED:-0}" = "1" ] && [ -n "$ROUND_BRANCH" ]; then
     _round_runs="$(gh run list --repo "$GH_REPO" --branch "$ROUND_BRANCH" --limit 5 \
         --json databaseId --jq 'length' 2>/dev/null || echo 0)"
     _round_runs="$(printf '%s' "$_round_runs" | grep -oE '[0-9]+' | head -n1 || echo 0)"
     if [ "${_round_runs:-0}" -eq 0 ] 2>/dev/null; then
         log "🛑 ${ROUND_BRANCH}: создана этим тиком, 0 run'ов — кандидат снят до запуска (ретро 14.08 t_4268f2bf)"
+        # Ретро 23.08 (t_fdb19f7b, Phase 2): явный маркер GHOST_ROUND counter_rollback
+        # для парсера монитора (grep -c GHOST_ROUND). Counter НЕ инкрементируется —
+        # round_ensure не персистит (Phase 1).
+        log "GHOST_ROUND counter_rollback branch=${ROUND_BRANCH} n=${n:-?} remote_max=${max_n:-?} prev_counter=${counter_n:-0}"
+        # Cumulative metric для мониторинга. Переживает cleanup (как round-counter).
+        if [ "$DRY_RUN" != "true" ]; then
+            _ghost_prev=0
+            if [ -f "$GHOST_ROUNDS_TOTAL_FILE" ]; then
+                _ghost_prev="$(tr -dc '0-9' < "$GHOST_ROUNDS_TOTAL_FILE" 2>/dev/null || echo 0)"
+                _ghost_prev="${_ghost_prev:-0}"
+            fi
+            _ghost_next=$((_ghost_prev + 1))
+            printf '%s\n' "$_ghost_next" > "$GHOST_ROUNDS_TOTAL_FILE" 2>/dev/null \
+                && log "ghost-rounds-total: ${_ghost_prev} -> ${_ghost_next} -> ${GHOST_ROUNDS_TOTAL_FILE}" \
+                || log "WARNING: cannot write ghost-rounds-total ${GHOST_ROUNDS_TOTAL_FILE}"
+        else
+            log "DRY-RUN would increment ghost-rounds-total ${GHOST_ROUNDS_TOTAL_FILE}"
+        fi
         if [ "$DRY_RUN" = "true" ]; then
             log "DRY-RUN would: gh api -X DELETE repos/${GH_REPO}/git/refs/heads/${ROUND_BRANCH}"
         elif gh api -X DELETE "repos/${GH_REPO}/git/refs/heads/${ROUND_BRANCH}" >/dev/null 2>&1; then
@@ -3135,6 +3172,18 @@ if [ "${ROUND_CREATED:-0}" = "1" ] && [ -n "$ROUND_BRANCH" ]; then
         fi
     else
         log "${ROUND_BRANCH}: ${_round_runs} run(s) — ветка оставлена"
+        # Ретро 23.08 (t_fdb19f7b, Phase 1): counter персистится ТОЛЬКО после
+        # успешного round (≥1 run). До фикса counter записывался в round_ensure
+        # до прогона — на ghost'ах убегал в +1.
+        if [ "${n:-0}" -gt "${counter_n:-0}" ]; then
+            if [ "$DRY_RUN" != "true" ]; then
+                printf '%s\n' "$n" > "$ROUND_COUNTER_FILE" 2>/dev/null \
+                    && log "round counter saved: ${n} -> ${ROUND_COUNTER_FILE}" \
+                    || log "WARNING: cannot write round counter ${ROUND_COUNTER_FILE}"
+            else
+                log "DRY-RUN would: round counter saved ${n} -> ${ROUND_COUNTER_FILE}"
+            fi
+        fi
     fi
 fi
 

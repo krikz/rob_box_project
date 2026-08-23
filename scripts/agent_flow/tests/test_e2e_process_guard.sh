@@ -800,7 +800,15 @@ test_H_branch_created_candidate_removed_deleted() {
     assert_contains "deleted (empty round branch" "$errlog" "H: лог подтверждает удаление"
     local counter
     counter="$(cat "$TEST_TMP/round-counter" 2>/dev/null || echo '')"
-    assert_eq "1" "$counter" "H: round-ветка была создана (счётчик инкрементирован), затем удалена"
+    # Ретро 23.08 (t_fdb19f7b, Phase 1): counter rollback на ghost — НЕ +1.
+    # До фикса: counter == 1 (ветка создана, потом удалена → счётчик остался).
+    # После фикса: counter откатывается к 0 (round_ensure не персистит, post-tick
+    # cleanup удаляет ветку без записи counter).
+    assert_eq "" "$counter" "H: counter откатился (НЕ остался на 1) — был ghost, стал чисто"
+    local ghost_total
+    ghost_total="$(cat "$TEST_TMP/ghost-rounds-total" 2>/dev/null || echo '')"
+    assert_eq "1" "$ghost_total" "H: ghost-rounds-total инкрементирован на 1"
+    assert_contains "GHOST_ROUND counter_rollback" "$errlog" "H: маркер GHOST_ROUND в логе"
 }
 
 # ===========================================================================
