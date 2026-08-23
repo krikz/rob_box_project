@@ -80,6 +80,26 @@ _DEFER_TO_END_TOOLS: frozenset[str] = frozenset(
     {"stop_music", "stop_navigation"}
 )
 
+# Issue #992 / #1561 — per-batch music mutex. The LLM sometimes returns a
+# batch like ``[gen_play_from_library(track_id=42),
+# execute_music_code(Clock.clear() + pluck)]`` because both tools share
+# the "music" mental category and the prompt only said "play music from
+# library". Without this guard the robot plays the library mp3 AND
+# immediately fires a Renardo pattern on top — the user hears a 2-track
+# cacophony.
+#
+# Policy: when ANY of the higher-priority music tools (``generate_music`` /
+# ``gen_play_from_library``) is present in the same batch, the lower-priority
+# ``execute_music_code`` is REPLACED with a no-op tool_result so the LLM
+# loop sees a clean response (no error, no extra iteration) but Renardo's
+# ``Clock.clear()`` never fires. The replacement is keyed by ``call.id``
+# so the assistant message's tool-call IDs stay aligned with the tool
+# results — otherwise the next iteration's history would be malformed.
+_LIBRARY_MUSIC_TOOLS: frozenset[str] = frozenset(
+    {"generate_music", "gen_play_from_library", "gen_search_library",
+     "gen_list_library", "gen_delete_from_library"}
+)
+
 
 def _order_tool_calls(
     calls: Iterable[ToolCall],
@@ -117,6 +137,77 @@ def _order_tool_calls(
         if has_voice and call.name in _DEFER_TO_END_TOOLS
     }
     return ordered, deferred_call_ids
+
+
+def _filter_conflicting_music_calls(
+    ordered: list,
+) -> tuple[list, dict[str, str]]:
+    """Drop ``execute_music_code`` calls when a higher-priority music tool
+    is in the same batch (issue #992 / #1561).
+
+    The LLM frequently pairs ``gen_play_from_library(track_id=N)`` with
+    ``execute_music_code(Clock.clear() + p1 >> pluck(...))`` because both
+    tools fall under the LLM's "music" mental category. Firing both in the
+    same turn makes the robot play the library mp3 AND a Renardo pattern
+    at the same time — the user hears a 2-track cacophony.
+
+    This guard enforces the per-batch music mutex declared in
+    ``RULE #MUSIC-CHOICE`` of ``master_prompt_compact.txt``: ONE music
+    tool per turn, library/AI-mp3 wins over Renardo when both are
+    present. The dropped ``execute_music_code`` call is replaced by a
+    synthetic JSON status (``"skipped_due_to_library_track"``) so the
+    LLM gets a clean tool_result for the call's id — without it the
+    assistant message would carry a tool_call_id that has no matching
+    tool result, breaking the next iteration's history validation.
+
+    Args:
+        ordered: The execution-ordered batch from :func:`_order_tool_calls`.
+
+    Returns:
+        ``(filtered_calls, skipped_reasons)`` — ``filtered_calls`` is the
+        batch with conflicting ``execute_music_code`` removed, and
+        ``skipped_reasons`` maps dropped call ids to a human-readable
+        reason string for logging.
+    """
+    if not ordered:
+        return ordered, {}
+
+    has_library_music = any(
+        call.name in _LIBRARY_MUSIC_TOOLS for call in ordered
+    )
+    if not has_library_music:
+        return ordered, {}
+
+    skipped_reasons: dict[str, str] = {}
+    filtered: list = []
+    for call in ordered:
+        if call.name == "execute_music_code":
+            # Higher-priority music tool already in this batch — drop
+            # this Renardo call instead of firing Clock.clear() on top
+            # of a library track. Mark the call's id so the caller can
+            # emit a synthetic tool_result.
+            skipped_reasons[call.id] = (
+                "skipped_due_to_library_track: gen_play_from_library/"
+                "generate_music already in batch (issue #992 #1561)"
+            )
+            continue
+        filtered.append(call)
+    return filtered, skipped_reasons
+
+
+#: Synthetic JSON payload returned to the LLM for an ``execute_music_code``
+#: call that was dropped by :func:`_filter_conflicting_music_calls`.
+#: Kept as a module-level constant so unit tests can assert on the exact
+#: payload without re-typing the Russian phrase.
+_EXECUTE_MUSIC_CODE_SKIP_PAYLOAD: dict[str, str] = {
+    "status": "skipped_due_to_library_track",
+    "reason": (
+        "issue #992 #1561: gen_play_from_library or generate_music is "
+        "already in this turn's batch. Renardo would race the library "
+        "track and produce a 2-source cacophony. Call ONE music tool "
+        "per turn — see RULE #MUSIC-CHOICE in master_prompt_compact.txt."
+    ),
+}
 
 
 #: Completion markers the master prompt teaches the LLM to return AFTER the
@@ -700,6 +791,34 @@ class DialogCore:
                     continue
                 break
 
+            # W7a (issue #968): execution order is re-ordered so music
+            # prelude tools run before voice, and destructive tools
+            # (stop_music / stop_navigation) run last — otherwise a
+            # ``[speak_text, stop_music]`` batch fires stop_music before
+            # TTS even starts (e2e v36). Results are still appended in
+            # the model's ORIGINAL order (keyed by tool_call_id) so the
+            # OpenAI-style history stays valid.
+            execution_order, _deferred = _order_tool_calls(
+                response.tool_calls
+            )
+            # Issue #992 / #1561 — per-batch music mutex (RULE
+            # #MUSIC-CHOICE). When the LLM pairs gen_play_from_library
+            # with execute_music_code we DROP the Renardo call instead
+            # of letting it race the library mp3. Skipped call ids
+            # receive a synthetic tool_result below so the history
+            # stays valid for the next iteration.
+            execution_order, _skipped_music_ids = _filter_conflicting_music_calls(
+                execution_order
+            )
+            if _skipped_music_ids:
+                logging.getLogger(__name__).warning(
+                    "🎵 [issue 992 #1561] dropped %d execute_music_code "
+                    "call(s) — library/AI music tool already in batch "
+                    "(rule: ONE music tool per turn): %s",
+                    len(_skipped_music_ids),
+                    _skipped_music_ids,
+                )
+
             # Record unique tool names actually invoked, and count
             # speak_text occurrences (issue #992 — the raw count lets
             # dialogue_node tell BACKING sing/rap turns from TRACK
@@ -716,7 +835,24 @@ class DialogCore:
             # uses this to skip auto-TTS only when speech REALLY
             # happened (issue #988 anti-duplicate), not when the LLM
             # merely *named* speak_text.
+            #
+            # Issue #992 / #1561 — skip calls that the music mutex
+            # dropped (``_skipped_music_ids``). Without this guard the
+            # filtered ``execute_music_code`` would still land in
+            # ``tools_called``, misleading downstream
+            # ``MusicGuard.evaluate`` (which inspects ``tools_called``
+            # for "music ran" signal). The LLM sees the synthetic
+            # skip tool_result — it knows the call didn't fire —
+            # and so must the rest of the harness.
             for call in response.tool_calls:
+                if call.id in _skipped_music_ids:
+                    # Music mutex dropped this call (e.g. ``execute_music_code``
+                    # filtered out because ``gen_play_from_library`` was in the
+                    # same batch). Don't count it as "actually invoked" — it
+                    # never reached the executor. The synthetic skip
+                    # tool_result is what the LLM sees, but the rest of the
+                    # harness should treat it as a no-op.
+                    continue
                 if call.name == "speak_text":
                     speak_text_count += 1
                     args = call.arguments or {}
@@ -746,16 +882,12 @@ class DialogCore:
             # LLM cycle), and the user gets to confirm/reject before the
             # call ever reaches the executor.
             #
-            # W7a (issue #968): execution order is re-ordered so music
-            # prelude tools run before voice, and destructive tools
-            # (stop_music / stop_navigation) run last — otherwise a
-            # ``[speak_text, stop_music]`` batch fires stop_music before
-            # TTS even starts (e2e v36). Results are still appended in
-            # the model's ORIGINAL order (keyed by tool_call_id) so the
-            # OpenAI-style history stays valid.
-            execution_order, _deferred = _order_tool_calls(
-                response.tool_calls
-            )
+            # NB: W7a ordering + Issue #992 / #1561 music mutex are
+            # computed above (before the tools_called counting loop) so
+            # that ``_skipped_music_ids`` is in scope when we record
+            # which tools actually ran. The synthetic skip tool_result
+            # for the dropped call ids is appended to the messages
+            # further below, immediately before the next LLM call.
             results_by_call_id: dict[str, ToolResult] = {}
             for call in execution_order:
                 if self._acceptance_gate is not None:
@@ -788,6 +920,23 @@ class DialogCore:
                 results_by_call_id[call.id] = await self._tools.execute(call)
 
             for call in response.tool_calls:
+                # Issue #992 / #1561 — synthetic tool_result for calls
+                # dropped by _filter_conflicting_music_calls. The LLM
+                # batch referenced tool_call_ids that we never executed
+                # (we filtered out the Renardo call to keep the music
+                # mutex). Without this synthetic result the next
+                # iteration's history would be missing a tool message
+                # for the dropped id, breaking OpenAI's
+                # tool_call_id ↔ tool_result invariant.
+                if call.id in _skipped_music_ids:
+                    results_by_call_id[call.id] = ToolResult(
+                        tool_call_id=call.id,
+                        content=json.dumps(
+                            _EXECUTE_MUSIC_CODE_SKIP_PAYLOAD,
+                            ensure_ascii=False,
+                        ),
+                        is_error=False,
+                    )
                 tool_result = results_by_call_id[call.id]
                 if tool_result.is_error:
                     tool_error_occurred = True
