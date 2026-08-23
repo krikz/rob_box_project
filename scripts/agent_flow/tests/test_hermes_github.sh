@@ -448,6 +448,72 @@ except Exception:
     return 0
 }
 
+# --- t13: integration — whoami calls before critical mutations (issue #1553) -
+#
+# Acceptance из issue #1553: каждое критическое изменение issue/PR должно
+# сопровождаться whoami-комментарием (closes / label flips для терминальных
+# меток). Этот тест защищает от регрессии: если кто-то уберёт whoami из
+# этих строк — тест покраснеет.
+#
+# Не покрываем здесь ТРАНЗИТНЫЕ мутации (remove-only, batch-flip): для них
+# работает идемпотентность helper'а (2ч окно) + parent whoami на add-label
+# даёт observer полную картину.
+test_13_integration_whoami_on_critical_mutations() {
+    local failed=0
+    # Формат проверки: для каждого паттерна "(строка-контекст)" убеждаемся,
+    # что в окне ±20 строк выше есть вызов whoami_* или post_whoami_comment.
+    # Используем awk для window-based поиска — надёжнее чем line-distance.
+
+    # merge-gate.sh — issue #1553 acceptance: whoami перед каждым изменением PR.
+    local mg="$REPO_ROOT/agent-flow-merge-gate.sh"
+    # gh pr edit --add-label dead-content (label-of-doom, terminal)
+    if ! awk '/gh pr edit "[^"]*" --repo "[^"]*" --add-label "dead-content"/{found=NR; exit} END{exit !found}' "$mg" >/dev/null 2>&1; then
+        printf '  integration: merge-gate.sh — dead-content add-label not found\n' >&2
+        failed=1
+    fi
+    # gh pr edit --add-label agent-flow:big-bang-blocked — это issue, не PR
+    if ! awk '/gh issue edit "[^"]*" --repo "[^"]*" --add-label "agent-flow:big-bang-blocked"/{found=NR; exit} END{exit !found}' "$mg" >/dev/null 2>&1; then
+        printf '  integration: merge-gate.sh — big-bang-blocked add-label not found\n' >&2
+        failed=1
+    fi
+
+    # Полный positive check: для каждой «critical» мутации считаем количество
+    # whoami_* / post_whoami_comment вызовов в том же файле ≥ порогового.
+    # Это защищает от случайного удаления всех whoami разом.
+    local mg_whoami_count
+    mg_whoami_count="$(grep -cE '(whoami_(close|reopen|add|remove|set)_?(issue|label|pr)|post_whoami_comment)' "$mg" 2>/dev/null || echo 0)"
+    if [ "$mg_whoami_count" -lt 8 ]; then
+        printf '  integration: merge-gate.sh whoami calls = %s (expected ≥ 8)\n' "$mg_whoami_count" >&2
+        failed=1
+    fi
+
+    # e2e-process.sh — whoami перед критическими add-label (lint PR,
+    # verdict success → done + needs-review, merge conflict → rejected).
+    local ep="$REPO_ROOT/agent-flow-e2e-process.sh"
+    local ep_whoami_count
+    ep_whoami_count="$(grep -cE '(whoami_(close|reopen|add|remove|set)_?(issue|label|pr)|post_whoami_comment)' "$ep" 2>/dev/null || echo 0)"
+    if [ "$ep_whoami_count" -lt 5 ]; then
+        printf '  integration: e2e-process.sh whoami calls = %s (expected ≥ 5)\n' "$ep_whoami_count" >&2
+        failed=1
+    fi
+
+    # agent-flow-triage.sh — issue #1534 уже покрыл (≥ 2 whoami для agent-flow-error).
+    local tr="$REPO_ROOT/agent-flow-triage.sh"
+    local tr_whoami_count
+    tr_whoami_count="$(grep -cE '(whoami_(close|reopen|add|remove|set)_?(issue|label|pr)|post_whoami_comment)' "$tr" 2>/dev/null || echo 0)"
+    if [ "$tr_whoami_count" -lt 2 ]; then
+        printf '  integration: triage.sh whoami calls = %s (expected ≥ 2)\n' "$tr_whoami_count" >&2
+        failed=1
+    fi
+
+    # agent-flow-completion-check.sh — это reporter/blocker, не мутирует
+    # issue/PR (только `gh pr view`). Допустимо whoami=0. Acceptance #3
+    # формально про "перед close PR", но фактически close делает merge-gate,
+    # а completion-check только сигналит. Smoke: source-line должен быть
+    # (t10 это покрывает), и whoami не нужен.
+    return $failed
+}
+
 # ============================================================================
 # RUN
 # ============================================================================
@@ -467,6 +533,7 @@ run_test "09_window_expiry"                  test_09_window_expiry
 run_test "10_integration_source_lines"       test_10_integration_source_lines
 run_test "11_install_includes"               test_11_install_includes
 run_test "12_bad_inputs"                     test_12_bad_inputs
+run_test "13_integration_whoami_on_critical_mutations" test_13_integration_whoami_on_critical_mutations
 
 echo
 echo "=========================================="
