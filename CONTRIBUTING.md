@@ -483,6 +483,52 @@ chore(docker): update base images to latest versions
 - `docs/adr/0018-agent-honesty-culture.md` — обоснование, trade-offs.
 - `scripts/agent_flow/validate_honesty.sh` + `tests/test_validate_honesty.sh` — tooling.
 
+## 🩹 Recovery cards (ADR-0026, 23.08.2026)
+
+Recovery-карточка (создаётся orchestrator'ом или nadzor'ом, когда
+исходная карточка stuck'нулась — crash-loop, blocked-on-outside,
+deadlock, force-push race) наследует **ответственность за разрешение
+parent'а**. Worker **не может** считать recovery-карточку завершённой,
+пока parent не вышел из `blocked`:
+
+- `kanban archive <parent>` — если findings parent'а obsolete (фикс
+  сделан иначе, или вопрос снят);
+- `kanban complete <parent>` — если суть работы выполнена recovery'ом
+  (PR merged, e2e зелёный);
+- `kanban block <parent>` с новой конкретной формулировкой — если
+  parent остаётся в `blocked`, но причина сменилась (новая зависимость).
+
+**Механизм — CLI, не worker-tool.** Причина:
+
+- Worker-tools `kanban_complete` / `kanban_block` / `kanban_archive`
+  ограничены scope'ом текущего worker'а («worker is scoped to task X;
+  refusing to mutate Y»). Команды `kanban_archive` как Hermes-tool не
+  существует вовсе.
+- CLI-команды `hermes kanban {complete,block,archive}` — операторские,
+  worker-lock не наследуется, scope-guard не применяется (raw-SQL
+  bypass через `hermes_cli/kanban.py`). Recovery-worker выполняет их
+  через `terminal` tool.
+
+`sdlc-review` (когда review'ит recovery-карточку) ОБЯЗАН проверить,
+что evidence parent-state change присутствует в recovery-handoff:
+
+- raw `kanban_show <parent>` output или `hermes kanban list --id <parent>`
+  после action;
+- ссылка на archival / completion / новый комментарий parent'а с reason.
+
+Если parent остаётся в `blocked` без нового reason → `request_changes`.
+
+**Safety net:** `cross-task-archive-sweeper.sh` (ADR-0024) раз в час
+архивирует stale blocked-карточки по критериям PR MERGED + remote-ветка
+удалена. Это fallback, **не замена** worker-обязательству.
+
+### Где это уже записано
+
+- `docs/adr/0026-recovery-card-contract.md` — полное обоснование,
+  trade-offs, альтернативы.
+- `docs/adr/0024-worker-scope-cross-task-archive.md` — sweeper (fallback).
+- `docs/design/AGENT_FLOW_PROPOSAL.md` — общий процесс agent-flow.
+
 ## 🔒 Защита веток
 
 ### Рекомендуемые настройки GitHub (Settings → Branches):
