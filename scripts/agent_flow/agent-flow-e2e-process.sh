@@ -48,6 +48,23 @@
 
 set -euo pipefail
 
+# --- Ретро 23.08 (t_b977cb4b): git push credential regression -------------
+# В cron-окружении `git push` периодически падает с "could not read Password
+# for 'https://***@github.com'" — известный баг git 2.34.1 (Ubuntu 22.04) при
+# связке helper "store" + "gh auth git-credential" + pushurl с `***`. Fetch
+# работает, push — нет. Workaround: явно прокинуть GH_TOKEN из `gh auth token`
+# в env ДО любых git-операций — это перебивает credentials-helper и форсит
+# прямую basic-auth. Не fatal: если gh недоступен (offline) — продолжаем,
+# поведение остаётся прежним (используется helper chain).
+# GH_CONFIG_DIR выставлен явно (devops-профиль хранит токен в
+# /home/builder/.config/gh/hosts.yml, ретро 18.08).
+if [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
+    GH_TOKEN="$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-/home/builder/.config/gh}" gh auth token 2>/dev/null || true)"
+    if [ -n "${GH_TOKEN}" ]; then
+        export GH_TOKEN
+    fi
+fi
+
 # --- defaults (overridden by env / .env) -------------------------------------
 # NOTE: hardcode /home/builder/.hermes — cron from per-profile gateway sets
 # HERMES_HOME to the profile dir; PROFILE_ENV would then point at a
@@ -55,6 +72,38 @@ set -euo pipefail
 HERMES_HOME=/home/builder/.hermes
 HERMES_BIN="${HERMES_BIN:-/home/builder/.hermes/hermes-agent/venv/bin/hermes}"
 export HOME=/home/builder
+
+# --- Ретро 23.08 (t_b977cb4b): defensive push with credential fallback ----
+# Если git push падает с "Password required" (или "could not read Password"),
+# повторяем с inline credentials в URL. Это страховка для случая, когда
+# GH_TOKEN не прокинулся (offline / gh не авторизован / token revoke).
+# Использует токен из gh auth token; fallback на credential store.
+git_push_with_cred_fallback() {
+    local target="$1"  # refspec, e.g. origin/develop:refs/heads/z-{e2e}/test-round-213
+    local push_err=""
+    push_err="$(git -C "$REPO_DIR" push origin "$target" 2>&1)" && return 0
+    # Detect the credential regression pattern; в остальных случаях — падаем.
+    if echo "$push_err" | grep -qE 'could not read Password|Password for .https://.*github.com'; then
+        local tok=""
+        tok="${GH_TOKEN:-$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-/home/builder/.config/gh}" gh auth token 2>/dev/null || true)}"
+        if [ -z "$tok" ]; then
+            printf '%s\n' "$push_err" >&2
+            return 1
+        fi
+        local remote_url=""
+        remote_url="$(git -C "$REPO_DIR" remote get-url origin)"
+        # В URL вида https://github.com/owner/repo.git — вставляем credentials.
+        local auth_url="${remote_url/https:\/\//https://x-access-token:${tok}@}"
+        if git -C "$REPO_DIR" push "$auth_url" "$target" 2>&1; then
+            log "git_push_with_cred_fallback: fallback to inline credentials succeeded"
+            return 0
+        fi
+        printf '%s\n' "$push_err" >&2
+        return 1
+    fi
+    printf '%s\n' "$push_err" >&2
+    return 1
+}
 
 ISSUE_LABEL="${ISSUE_LABEL:-hermes}"
 NEEDS_E2E_LABEL="${NEEDS_E2E_LABEL:-needs-e2e}"
