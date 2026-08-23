@@ -4,8 +4,9 @@
 |------|----------|
 | Автор | architect |
 | Цель | Дать архитектурный verdict по сценарию `.github/e2e/scenarios/voice_core_suite_v1.json` + `voice_core_acceptance_v1.json` (issue #1506), после их мержа в develop через PR #1517 |
-| Связано | issue #1506, PR #1517 (merged 22.08 19:52 UTC), ADR-0022 §4.6 (window semantics), ADR-0024 (music-aware intent priority gate, issue #1525), анализ-док `voice-features-e2e-validation-2026-08-22.md` |
-| Вердикт | **APPROVE** (с замечаниями для e2e-process) |
+| Связано | issue #1506, PR #1517 (merged 22.08 19:52 UTC), PR #1526 (merged 22.08 18:31 — ADR-0024 design), PR #1555 (verdict, MERGEABLE), PR #1556 (OPEN, pre-flight sanity-check), ADR-0022 §4.6 (window semantics), ADR-0024 (music-aware intent priority gate, issue #1525), анализ-док `voice-features-e2e-validation-2026-08-22.md` |
+| Вердикт | **APPROVE** (с замечаниями для e2e-process; см. §9 re-validation 23.08 12:30) |
+| Re-validation | **APPROVE** подтверждён 23.08 12:30 после retry-карточки t_00752a4d; см. §9 |
 
 ## 1. Резюме
 
@@ -225,7 +226,143 @@ accepted) до прогона e2e или параллельно (если хоч
 
 ---
 
+## 9. Re-validation 2026-08-23 12:30 (retry-карточка t_00752a4d)
+
+### 9.1 Почему retry
+
+`t_00752a4d` — повторная диспетчеризация архитектурной карточки
+после того, как `agent-flow-merge-gate` повторно добавил метку
+`needs-e2e` в issue #1506. Триггер: devops-воркер `t_9867ee34`
+открыл **PR #1556** (pre-flight sanity-check для
+`voice_core_suite_v1.json`, CI зелёный 8/8, MERGEABLE), и
+clean-pr-sweep увидел **два** функциональных open PR (#1555
+verdict + #1556 pre-flight) при open issue #1506 → вернул метку
+`needs-e2e` → agent-flow-triage пересоздал карточку для повторного
+architect-прохода.
+
+**Важно:** PR #1556 на момент verdict 23.08 12:30 остаётся **OPEN,
+не merged** (`mergedAt: null`, `state: OPEN`, файл
+`scripts/agent_flow/tests/test_voice_core_suite_vad_max.sh`
+**отсутствует** в `origin/develop`). Merge-gate видит его как
+functional (CI green + MERGEABLE) и валидирует сценарий как
+готовый к e2e, но фактического merge ещё не было.
+
+### 9.2 Что реально изменилось в develop с момента verdict
+
+| PR / commit | Что | Состояние | Влияние на verdict |
+|-------------|-----|-----------|--------------------|
+| #1556 (OPEN) | `scripts/agent_flow/tests/test_voice_core_suite_vad_max.sh` — pre-flight sanity-check (75/75 checks локально у автора) | **OPEN**, не merged | ⚠️ Pre-flight есть как PR, но в develop ещё не попал. После merge — укрепит контракт (VAD-max, wake-word presence, label format) |
+| ADR-0024 (status=proposed) | DOC-only merge через PR #1526 | merged 22.08 18:31 | ⚠️ **Design есть, implementation отсутствует** |
+| Развитие #1248/#1252/#1219/#1358 фиксы (commits в develop) | speech backlog, session reset, set_voice | merged | ✅ Целевые шаги cc01/ns01/ww01/mv01-mv03 защищены unit-тестами в `test/unit/node/`, `test/unit/core/` |
+
+### 9.3 Ревизия ADR-0024 — критический gap
+
+`git grep` по develop показывает:
+
+- ✅ `MUSIC_STOP_OVERRIDES` и `is_music_stop_command()` уже есть в
+  `src/rob_box_voice/rob_box_voice/core/dialogue_guards.py:161,275`
+  (issue #992 fix от 06.08, не зависит от ADR-0024).
+- ❌ `entities={'music_stop': True}` в `command_parser.py:186
+  (classify_intent)` — **отсутствует** (теста `test_command_parser.py`
+  в develop **нет вообще**).
+- ❌ Music-aware wake-bypass в `dialogue_node._on_stt_result`
+  (строки 1543+) — **отсутствует** (нет ветки, которая синтетически
+  инжектит wake-word при активном DJ-сете + фразе music-stop).
+- ❌ `MusicStopOverride`-флаг в `command_node.execute_command`
+  (строка 126) — **отсутствует** (текущая логика уходит в
+  Nav2 cancel при `IntentType.STOP`).
+
+**Вывод: ADR-0024 (proposed) описывает дизайн, но два маленьких
+implementation-PR-а из его плана §"План реализации" не выполнены.**
+
+Это **архитектурно не меняет verdict** — дизайн валиден, контракт
+dj02_stop_music остаётся правильным. Но **план А (прогнать e2e
+после merge ADR-0024-fix) не достижим прямо сейчас** — потому что
+merge-кандидата нет.
+
+### 9.4 Обновлённый verdict
+
+**APPROVE подтверждён.** Архитектурные инварианты выполнены:
+
+- Сценарий + acceptance контракт не изменились с момента первого
+  verdict (12:00 23.08) → предыдущие 11/11 acceptance и per-step /
+  aggregate анализ остаются в силе.
+- PR #1556 (pre-flight) **готов к merge** (CI зелёный, MERGEABLE) —
+  укрепит контракт после merge: structural sanity-check ловит
+  VAD-max, wake-word presence, label format ДО реального прогона →
+  меньше false-positive раундов. До merge — scenario защищён
+  review прошлого PR #1517 и юнит-тестами в develop (см. §9.2).
+- ADR-0024 **не является архитектурным блокером** для verdict;
+  это **execution gap** (нужны 2 implementation-PR-а, не ADR-правки).
+
+### 9.5 Обновлённый план для e2e-process
+
+С учётом §9.3 (ADR-0024 implementation не готова), рекомендация
+меняется:
+
+1. **Прогнать e2e прямо сейчас (Plan Б из §8).** dj01 (start)
+   пройдёт → подтверждает Renardo integration #1358 и
+   `execute_music_code` тул. dj02 (stop) **ожидаемо упадёт** с
+   теми же симптомами, что и run 32573773556 (22.08) — это
+   **expected FAIL**, не bug в сценарии.
+2. **Не блокировать** cc01/ns01/ww01/mv01/mv02/mv03/ds01-03 на
+   ожидании ADR-0024-fix.
+3. **Завести issue-bug** на dj02 с явной ссылкой на ADR-0024
+   (proposed) и blocker-тегом «blocked by implementation gap».
+   Это **новая задача** для backend-воркера, не architect — добавить
+   в карточку явный scope: 2 implementation-PR-а по плану из
+   ADR-0024 §"План реализации".
+4. После merge реализации ADR-0024-fix → перепрогон dj02
+   standalone (`e2e_voice_test.sh --scenario ...` с фильтром
+   только на dj01+dj02) → e2e-done.
+
+### 9.6 Что архитектор НЕ делает в этой карточке
+
+Соблазн «по-быстрому запилить реализацию ADR-0024» — **out of role**.
+Это:
+
+- cc-budget > 15 (ADR-0021 R1) — риск для `dialogue_node._on_stt`
+- требует unit-тестов в `test/unit/core/test_command_parser.py`,
+  которого нет в develop (создание нового test-file — отдельный
+  PR)
+- требует интеграционного теста для command_node на флаг
+  entities['music_stop'] (mock Nav2 cancel_client)
+- требует интеграционного теста для backlog-flush при DJ-сете
+  без wake-word (мутные race-conditions, нужно проверять вживую)
+
+Это всё — работа **backend-воркера** на 2-4 часа в отдельной
+карточке, не работа архитектора.
+
+### 9.7 Рекомендуемое следующее действие для Шифу
+
+| # | Действие | Ответственный |
+|---|---------|--------------|
+| 1 | Мердж PR #1556 (pre-flight) — OPEN, CI зелёный 8/8, MERGEABLE | Шифу (только он, политика агента) |
+| 2 | Мердж PR #1555 (verdict) — MERGEABLE, +231/-0, CI зелёный | Шифу (только он, политика агента) |
+| 3 | Открыть **новую карточку**: «реализация ADR-0024 (2 implementation-PR-а по плану)» — assignee=backend | agent-flow-triage (через issue-bug на dj02) |
+| 4 | Запустить e2e на текущем develop через Plan Б из §9.5 (dj02 ожидаемо FAIL — это норма) | e2e-process |
+| 5 | После п.3 (merge реализации ADR-0024-fix) → standalone-перепрогон dj02 → e2e-done | e2e-process |
+
+### 9.8 Итог re-validation
+
+**APPROVE остаётся в силе.** Никаких новых архитектурных рисков
+в compare с verdict 12:00 23.08. Дополнительно подтверждено:
+
+- pre-flight sanity-check (PR #1556) сужает пространство ложных FAIL;
+- ADR-0024 design валиден, но execution-gap явно зафиксирован и
+  передан в план §9.5 как scope для backend-воркера;
+- Plan Б (прогнать сейчас, не ждать) — архитектурно корректен:
+  dj02_stop_music исключается из acceptance как blocked, остальные
+  10 шагов идут в полный прогон.
+
+---
+
 *Создан как архитектурный долг по карточке t_8e8d342a (первая попытка
 истекла 23.08 на 50 итерациях, ничего не закоммитив). Этот verdict
 восполняет долг и оставляет фактический прогон за e2e-process —
 как и положено по процессу из анализ-дока §5.*
+
+*Re-validation 23.08 12:30 (карточка t_00752a4d): подтверждён APPROVE,
+добавлен §9 с новым состоянием develop (PR #1556 OPEN, ADR-0024
+implementation-gap зафиксирован), план для e2e-process обновлён
+до Plan Б из §9.5 (dj02 ожидаемо FAIL, не блок).*
