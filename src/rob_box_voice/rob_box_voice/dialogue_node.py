@@ -4338,9 +4338,28 @@ class DialogueNode(Node):
         бэклог-аккумулятор, speaker-состояние, таймер сессии и история
         (асинхронно через ``memory.clear_turns``). LLM не вызывается —
         вместо этого говорим детерминированное подтверждение.
+
+        Issue #1563 — после ``_publish_response`` TTS должен успеть синтези-
+        ровать и доиграть «Начинаю новую сессию…», даже если barge-in от
+        wake-word в той же фразе успел прислать STOP в ``/voice/tts/control``
+        ДО того, как этот код увидел STT-результат. Поэтому ДО отправки
+        подтверждения публикуем ``IGNORE_STOP_MS:700`` — TTS игнорирует
+        STOP-команды в этом окне и спокойно синтезирует/воспроизводит.
         """
         # 1. Отменяем in-flight turn (barge-in + stop TTS + release effects).
         self._cancel_run("new session reset")
+        # 1a. Issue #1563 — открыть IMMUNE-окно для TTS, чтобы barge-in
+        # STOP (пришедший в той же STT-фразе) не отменил подтверждение
+        # «Начинаю новую сессию…». 700 мс — с запасом на синтез Yandex
+        # (~300-500 мс) + ALSA-буфер + grace перед AEC-эхо.
+        try:
+            ignore_msg = String()
+            ignore_msg.data = "IGNORE_STOP_MS:700"
+            self._tts_control_pub.publish(ignore_msg)
+        except Exception as exc:  # noqa: BLE001 — best-effort, не роняем reset
+            self.get_logger().warn(
+                f"⚠️ [issue 1563] IGNORE_STOP_MS publish failed: {exc}"
+            )
         # 2. Бэклог-аккумулятор фоновой речи (если реализован).
         acc = getattr(self, "_speech_accumulator", None)
         if acc is not None:
