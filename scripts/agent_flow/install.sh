@@ -68,8 +68,9 @@ EXPECTED=(
     agent-flow-drift-detect.sh
     kanban-retro-create.sh
     validate_honesty.sh
-    # GATE-4 (issue #1475, ADR-0022 extension): post-merge build trigger
-    # после MERGED в develop/main. Backup для .github/workflows/L-Build-On-Branch-Push.yml.
+    # Post-merge build trigger (issue #1475, ADR-0022 extension): после
+    # MERGED PR в develop/main — запускает L-Build-All-Services чтобы
+    # .image-versions.dev получил свежие dev-<sha> теги.
     agent-flow-post-merge-build.sh
     # Shared library (ретро 18.08 t_de6bea69): source'ится из e2e-process и
     # merge-gate для «user-unlabel respect» guard'а. Должен лежать рядом со
