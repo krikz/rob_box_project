@@ -48,6 +48,28 @@
 
 set -euo pipefail
 
+# --- credentials bootstrap (ретро 23.08 t_b977cb4b, реконструкция t_98bb3a1d) ---
+# git 2.34.1 (Ubuntu 22.04) has a known bug where 'git push' fails with
+# 'could not read Password for https://***@github.com' when both
+# 'gh auth git-credential' and 'git credential-store' are configured as
+# credential helpers AND remote.pushurl contains '***@github.com' (set
+# implicitly by old git versions). Fetch works fine; only push fails.
+#
+# Fix layer 1: export GH_TOKEN from 'gh auth token' at script start. This
+# overrides the credential-helper chain with direct basic-auth. Non-fatal:
+# if gh is unavailable, behavior is unchanged.
+#
+# Fix layer 2: git_push_with_cred_fallback() (below) retries any push that
+# fails with the regression pattern using inline URL credentials. Safety
+# net for token revocation / gh auth drift / cron-race where GH_TOKEN env
+# isn't propagated to the push subprocess.
+if [ -z "${GH_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
+    GH_TOKEN="$(gh auth token 2>/dev/null || true)"
+    if [ -n "$GH_TOKEN" ]; then
+        export GH_TOKEN
+    fi
+fi
+
 # --- defaults (overridden by env / .env) -------------------------------------
 # NOTE: hardcode /home/builder/.hermes — cron from per-profile gateway sets
 # HERMES_HOME to the profile dir; PROFILE_ENV would then point at a
@@ -491,7 +513,7 @@ round_ensure() {
             if ! git -C "$REPO_DIR" fetch origin "$FOUNDATION_BRANCH" 2>&1 | sed 's/^/  /'; then
                 log "failed to fetch origin/${FOUNDATION_BRANCH}"; return 1
             fi
-            if ! git -C "$REPO_DIR" push origin "origin/${FOUNDATION_BRANCH}:refs/heads/${ROUND_BRANCH}" 2>&1 | sed 's/^/  /'; then
+            if ! git_push_with_cred_fallback "$REPO_DIR" origin "origin/${FOUNDATION_BRANCH}:refs/heads/${ROUND_BRANCH}" 2>&1 | sed 's/^/  /'; then
                 log "failed to create ${ROUND_BRANCH}"; return 1
             fi
             # Ретро 14.08 (t_4268f2bf): ветка создана ЭТИМ тиком — post-tick
@@ -515,8 +537,10 @@ round_ensure() {
                 log "reusing ${ROUND_BRANCH} (база актуальна: содержит origin/${FOUNDATION_BRANCH})"
             else
                 log "🛑 ${ROUND_BRANCH} база УСТАРЕЛА (не содержит origin/${FOUNDATION_BRANCH}) — удаляю и создам заново (ретро 12.08 t_d3aeaa9b)"
-                git -C "$REPO_DIR" push origin --delete "$ROUND_BRANCH" 2>&1 | sed 's/^/  /' || true
-                if ! git -C "$REPO_DIR" push origin "origin/${FOUNDATION_BRANCH}:refs/heads/${ROUND_BRANCH}" 2>&1 | sed 's/^/  /'; then
+                if ! git_push_with_cred_fallback "$REPO_DIR" origin --delete "$ROUND_BRANCH" 2>&1 | sed 's/^/  /'; then
+                    log "failed to delete stale ${ROUND_BRANCH} (non-fatal)"; true
+                fi
+                if ! git_push_with_cred_fallback "$REPO_DIR" origin "origin/${FOUNDATION_BRANCH}:refs/heads/${ROUND_BRANCH}" 2>&1 | sed 's/^/  /'; then
                     log "failed to recreate ${ROUND_BRANCH}"; return 1
                 fi
                 # Ретро 14.08 (t_4268f2bf): ветка ПЕРЕСОЗДАНА этим тиком — если на
@@ -538,6 +562,85 @@ round_ensure() {
 
     # Make sure worktree has it.
     git -C "$WORKTREE_DIR" fetch origin "$ROUND_BRANCH" --quiet 2>/dev/null || true
+}
+
+# --- git_push_with_cred_fallback (ретро 23.08 t_b977cb4b, реконструкция t_98bb3a1d) ---
+# Обёртка вокруг `git push` с двухуровневой защитой от credential regression:
+#
+#   1. Первый push пробует стандартный путь (GH_TOKEN env + credential helpers).
+#   2. Если push упал с паттерном "could not read Password for https://***@github.com"
+#      (см. описание выше в credentials bootstrap), retry с inline URL credentials.
+#      При наличии GH_TOKEN — используем его (basic-auth в URL); иначе читаем из
+#      `gh auth token` прямо в момент retry (на случай если env не прокинулся).
+#   3. Если retry тоже упал — возвращаем исходную ошибку (тik помечается failed).
+#
+# Использование: вместо `git push origin X:Y` пишем
+#   git_push_with_cred_fallback "$REPO_DIR" origin X:Y
+# Для --force-with-lease:
+#   git_push_with_cred_fallback "$WORKTREE_DIR" origin BRANCH -- --force-with-lease
+# Для delete:
+#   git_push_with_cred_fallback "$REPO_DIR" origin --delete BRANCH
+#
+# Возвращает 0 при успехе, 1 при любом исходе ошибки (с логированием причины).
+git_push_with_cred_fallback() {
+    local dir="$1"; shift
+    local remote="$1"; shift
+    # Оставшиеся аргументы — это refspec / опции git push.
+    local -a push_args=("$@")
+
+    # Первый заход — обычный путь.
+    local out
+    if out="$(git -C "$dir" push "$remote" "${push_args[@]}" 2>&1)"; then
+        printf '%s\n' "$out"
+        return 0
+    fi
+
+    # Распознаём regression pattern: "could not read Password for https://..."
+    if ! printf '%s\n' "$out" | grep -q "could not read Password"; then
+        # Не наш случай — отдаём как есть.
+        printf '%s\n' "$out"
+        return 1
+    fi
+
+    log "git_push_with_cred_fallback: detected credential regression, retry with inline URL"
+
+    # Подтягиваем token прямо в момент retry (страховка если GH_TOKEN env
+    # не прокинут в subprocess push).
+    local token="${GH_TOKEN:-}"
+    if [ -z "$token" ] && command -v gh >/dev/null 2>&1; then
+        token="$(gh auth token 2>/dev/null || true)"
+    fi
+    if [ -z "$token" ]; then
+        log "git_push_with_cred_fallback: no token available for retry (GH_TOKEN empty, gh auth failed) — giving up"
+        printf '%s\n' "$out"
+        return 1
+    fi
+
+    # Retry с inline URL credentials. Меняем только remote URL на время push:
+    # используем `git -c url.<token>@<remote>.insteadOf=...` чтобы не трогать
+    # конфиг пользователя.
+    local remote_url
+    remote_url="$(git -C "$dir" remote get-url "$remote" 2>/dev/null || true)"
+    if [ -z "$remote_url" ]; then
+        log "git_push_with_cred_fallback: failed to resolve remote URL for '$remote'"
+        printf '%s\n' "$out"
+        return 1
+    fi
+
+    # remote_url вида https://github.com/owner/repo.git → https://x-access-token:TOKEN@github.com/owner/repo.git
+    local auth_url="${remote_url/https:\/\//https:\/\/x-access-token:${token}@}"
+    local retry_out
+    if retry_out="$(git -C "$dir" -c "url.${auth_url}.insteadOf=${remote_url}" push "$remote" "${push_args[@]}" 2>&1)"; then
+        log "git_push_with_cred_fallback: retry succeeded"
+        printf '%s\n' "$retry_out"
+        return 0
+    fi
+
+    log "git_push_with_cred_fallback: retry also failed — original + retry output below"
+    printf '%s\n' "$out"
+    printf '%s\n' "--- retry ---"
+    printf '%s\n' "$retry_out"
+    return 1
 }
 
 # --- ROUND_ONLY mode (ретро 11.08 t_26a6d362) ------------------------------
@@ -2203,7 +2306,7 @@ for t in data:
     # commits between our refresh-fetch and this push, reject safely instead
     # of clobbering them (or failing a blind force). A rejected push just
     # means the issue stays needs-e2e and the next tick retries on a new round.
-    if ! git -C "$WORKTREE_DIR" push --force-with-lease origin "$ROUND_BRANCH" 2>&1 | sed 's/^/  /'; then
+    if ! git_push_with_cred_fallback "$WORKTREE_DIR" origin --force-with-lease "$ROUND_BRANCH" 2>&1 | sed 's/^/  /'; then
         log "issue #${number}: push of ${ROUND_BRANCH} failed"; errored=$((errored+1)); continue
     fi
     log "issue #${number}: ${branch} merged & pushed into ${ROUND_BRANCH}"
