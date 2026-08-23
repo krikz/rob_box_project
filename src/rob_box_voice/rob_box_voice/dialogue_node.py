@@ -112,8 +112,8 @@ from rob_box_voice.core.speech_accumulator import SpeechAccumulator
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload, split_into_chunks,
-    strip_history_marker, strip_markdown, strip_speaker_tag,
-    strip_thinking_blocks,
+    strip_done_marker, strip_history_marker, strip_markdown,
+    strip_speaker_tag, strip_thinking_blocks,
 )
 from rob_box_voice.startup_greeting import (
     THINKING_SOUND,
@@ -3615,6 +3615,17 @@ class DialogueNode(Node):
         # НЕ должен озвучиваться буквально («дан»). Это происходит когда
         # LLM завершила цикл без speak_text (например повтор «сыграй баха»
         # после уже запущенной музыки → ответил просто done).
+        # 🔴 FIX (issue #1564): LLM обучена завершать turn текстом
+        # ``done`` (RULE «after LAST speak_text → plain text "done"» в
+        # master_prompt_compact.txt), но иногда льёт его В ``spoken``
+        # через ``\n\n`` после реального ответа:
+        #   spoken="Говорю голосом надёжного мужчины.\n\ndone"
+        # → TTS озвучивает «...дан» после каждой фразы. ``_done_marker``
+        # ниже ловит только точное равенство, не убирает хвост. Делаем
+        # strip хвостового done-marker'а ПЕРВЫМ — после этого equality
+        # чек ниже остаётся единственным местом, где решается «пропустить
+        # auto-TTS».
+        spoken = strip_done_marker(spoken)
         _done_marker = spoken.strip().lower()
         if _done_marker in ("done", "task complete", "task_complete", "готово", "всё", "выполнено"):
             self.get_logger().info(
