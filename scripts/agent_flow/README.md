@@ -389,6 +389,56 @@ dashboard endpoint: `plugins/kanban/dashboard/plugin_api.py::get_cost`.
 Покрытие символа для регрессии: `_compute_run_cost_cents`
 (см. `tests/test_vendor_patch_apply.sh::EXPECTED_SYMBOL`).
 
+### Spawn worktree base — origin/develop (issue #1571)
+
+`hermes-agent::_ensure_git_worktree` создавал новые worktree-ветки от
+**локального `HEAD`** главного worktree. Если главный worktree давно
+не делал `git fetch`/`pull`, его `HEAD` отставал от `origin/develop`
+на десятки коммитов — каждый новый воркер стартовал с устаревшего
+base (наблюдалось 48-50 коммитов дрифта на нескольких карточках).
+Симптом: каждый PR открывался с «фантомным» нет-диффом, CI часто
+падал с устаревшими шагами, а ретро приходилось чистить stale worktree.
+
+Два фикса:
+
+1. **`vendor/hermes-agent-spawn-worktree-precheck.patch`** — pre-spawn
+   worktree-collision guard. Добавляет `_find_worktree_for_branch`
+   (парсер `git worktree list --porcelain`, ищет
+   `branch refs/heads/<name>`) и `WorktreeBranchBusyError` — чтобы
+   диспетчер не уходил в retry-storm при коллизии. Plain-патч
+   (применяется в фазе 1).
+
+2. **`vendor/hermes-agent-z-spawn-base-origin-develop.patch`** —
+   перед созданием НОВОЙ ветки делает `git fetch origin develop`
+   (best-effort, timeout 30s, fallback на `HEAD` +
+   `WORKTREE_BASE_FETCH_FAILED` warning в stderr). Использует
+   `origin/develop` как base вместо `HEAD`. Дополнительно эмитит
+   `WORKTREE_BASE_DRIFT: HEAD..origin/develop = N commits` warning
+   при `N > 10`. Z-prefixed (применяется в фазе 2 поверх precheck).
+   Символы-фиксы: `_resolve_worktree_base_ref`,
+   `_warn_worktree_base_drift`.
+
+Покрытие для регрессии:
+```bash
+bash scripts/agent_flow/tests/test_vendor_patch_apply.sh           # патч ложится + идемпотентен
+bash scripts/agent_flow/tests/test_spawn_worktree_origin_develop_base.sh  # 5 функциональных сценариев
+```
+
+Сценарии в `test_spawn_worktree_origin_develop_base.sh`:
+- **uses_origin_develop_when_fresh**: новая ветка указывает на
+  `origin/develop`, а не на stale HEAD.
+- **warns_on_drift_above_threshold**: при HEAD >10 коммитов за
+  `origin/develop` в stderr уходит `WORKTREE_BASE_DRIFT: ... 15 commits`.
+- **fetch_fail_falls_back_to_head**: без upstream `fetch` падает →
+  фикс деградирует на `HEAD` с `WORKTREE_BASE_FETCH_FAILED` warning.
+- **existing_branch_no_fetch**: если ветка уже есть, fetch не делается.
+- **warning_format_is_grep_friendly**: формат warning — стабильный
+  prefix `WORKTREE_BASE_DRIFT:` / `WORKTREE_BASE_FETCH_FAILED:` для
+  парсинга в dispatcher log.
+
+Тест написан на чистом origin/main без сетевых зависимостей (создаёт
+bare `origin.git` локально).
+
 ## Связь с cron-jobs
 
 Скрипты регистрируются как `cronjob` через `hermes cron run --script
