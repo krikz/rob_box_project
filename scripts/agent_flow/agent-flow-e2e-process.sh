@@ -1908,6 +1908,9 @@ except Exception: print(0)' 2>/dev/null || echo 0)"
             processed=$((processed+1)); continue
         fi
         # 1) PR: снять needs-e2e, поставить needs-review.
+        # issue #1553: self-id whoami BEFORE add-label needs-review (lint-PR путь).
+        post_whoami_comment pr "$pr_number" "adding-label:${NEEDS_REVIEW_LABEL}" \
+            "lint-PR #${pr_number}: skip e2e, hand to Шифу for review" "issue=${number}"
         gh pr edit "$pr_number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
         gh pr edit "$pr_number" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
         # 2) PR: короткий комментарий «только форматирование, e2e не нужен».
@@ -2200,6 +2203,11 @@ for t in data:
 
         gh issue edit "$number" --repo "$GH_REPO" --add-label "$REJECTED_LABEL" >/dev/null 2>&1 \
             --remove-label "$NEEDS_E2E_LABEL" 2>/dev/null || true
+        # issue #1553: self-id whoami BEFORE add-label REJECTED_LABEL (merge
+        # conflict путь — терминальное состояние для ротации, воркер получит
+        # отдельную карточку).
+        whoami_add_label "$number" "${REJECTED_LABEL}" \
+            "merge conflict rolling ${branch} into ${ROUND_BRANCH}: rejection + reroute worker card" "branch=${branch}"
         gh issue comment "$number" --repo "$GH_REPO" --body \
             "agent-flow: 🔀 merge conflict rolling \`${branch}\` into \`${ROUND_BRANCH}\`. Карточка воркеру создана — **тот же PR, та же ветка, разреши конфликт rebase на origin/develop**, push --force-with-lease. Следующий тик попробует снова." >/dev/null 2>&1 || true
         git -C "$WORKTREE_DIR" merge --abort 2>/dev/null || true
@@ -2951,6 +2959,9 @@ sshpass -p open ssh ros2@10.1.1.21 'docker logs voice-assistant --since <ts> | g
         # Для feature-PR — НЕ ставим автоматически (воркер должен сам добавить
         # needs-review ПОСЛЕ ручной верификации по логам робота).
         if [ "$_pr_kind" = "lint" ] && [ "$verdict" = "success" ]; then
+            # issue #1553: self-id whoami BEFORE add-label needs-review на PR.
+            post_whoami_comment pr "$pr_number" "adding-label:needs-review" \
+                "lint verdict=success → needs-review (PR #${pr_number}, run #${run_id})" "issue=${number}"
             gh pr edit "$pr_number" --repo "$GH_REPO" --add-label "needs-review" >/dev/null 2>&1 || true
         fi
     fi
@@ -3087,10 +3098,19 @@ for t in data:
         # (issue остаётся в ротации — следующий тик повторит прогон).
         if [ -n "$remove_action" ]; then
             gh pr edit "$pr_number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+            # issue #1553: self-id whoami BEFORE remove-label needs-e2e на PR
+            # (транзитное удаление, но в паре с verdict comment ниже).
+            post_whoami_comment pr "$pr_number" "removing-label:${NEEDS_E2E_LABEL}" \
+                "e2e verdict=${verdict} (run #${run_id}): unblock from e2e queue" "issue=${number}"
         fi
         if [ "$verdict" = "success" ]; then
+            # issue #1553: self-id whoami BEFORE add-label done + needs-review.
+            post_whoami_comment pr "$pr_number" "adding-label:${DONE_LABEL}" \
+                "e2e verdict=success → done (PR #${pr_number}, run #${run_id})" "issue=${number}"
             gh pr edit "$pr_number" --repo "$GH_REPO" --add-label "$DONE_LABEL" >/dev/null 2>&1 || true
             # needs-review — окно ревью товарища Шифу (auto, не ручной падаван).
+            post_whoami_comment pr "$pr_number" "adding-label:${NEEDS_REVIEW_LABEL}" \
+                "e2e verdict=success → needs-review for Шифу (PR #${pr_number})" "issue=${number}"
             gh pr edit "$pr_number" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
         fi
 
