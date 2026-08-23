@@ -24,6 +24,11 @@
 #   T7: integration — helper вызывается из T7 mock сценария (True/False корректно)
 #   T8: regression — без user-unlabel оба False (baseline)
 #   T9: shellcheck-clean + syntax-OK + required helpers exist + scripts source lib
+#   T10..T14: cooldown (ретро 24.08 t_bf7cd662, PR #1547) — после user-unlabel
+#              в окне MAX_AGE_HOURS возвращаем True даже если latest event — labeled.
+#   T15..T17: state-file (idem) — user_unlabel_should_notify/mark_notified.
+#             Первый раз notify → True, второй в cooldown → False,
+#             после TTL — снова True.
 # ============================================================================
 set -uo pipefail
 
@@ -258,6 +263,211 @@ else
     FAILED_CASES+=("merge-gate.sh doesn't source helper")
     echo "  ✗ merge-gate.sh DOESN'T source helper"
 fi
+
+# ============================================================================
+# T10..T14: cooldown (ретро 24.08 t_bf7cd662, PR #1547).
+#
+# Тикет: на PR #1547 Шифу снял needs-review 23.08 07:35, auto восстановил
+# в 14:03, и с тех пор каждые 5 мин merge-gate снова add-label (потому что
+# last_label 14:03 > last_unlabel 07:35 → guard вернул False → можно
+# ставить). Без cooldown guard теряет сигнал user-decision.
+#
+# Cooldown: если last_unlabel в пределах USER_UNLABEL_MAX_AGE_HOURS от
+# сейчас → True (skip), даже если latest event — labeled.
+# ============================================================================
+echo
+echo "--- T10: cooldown — labeled позже unlabel, но unlabel свежий (<4ч) → True ---"
+# Шифу снял метку 1ч назад, auto восстановил 30 мин назад.
+T0_BACK="$(date -u -d '5 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '2026-08-23T17:00:00Z')"
+T1_FRESH="$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '2026-08-23T20:00:00Z')"
+T_LATER_30M="$(date -u -d '30 minutes ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '2026-08-23T20:30:00Z')"
+export _USER_UNLABEL_TEST_JSON='[
+  {"event":"labeled","label":{"name":"needs-review"},"actor":{"login":"krikz"},"created_at":"'"$T0_BACK"'"},
+  {"event":"unlabeled","label":{"name":"needs-review"},"actor":{"login":"krikz"},"created_at":"'"$T1_FRESH"'"},
+  {"event":"labeled","label":{"name":"needs-review"},"actor":{"login":"krikz"},"created_at":"'"$T_LATER_30M"'"}
+]'
+export _USER_UNLABEL_TEST_PR=1547
+T10_RESULT="$(run_helper "needs-review")"
+assert_eq_bool "$T10_RESULT" "true" "T10: fresh unlabel + later auto labeled → True (cooldown blocks)"
+
+echo
+echo "--- T11: cooldown — labeled позже unlabel, unlabel старый (>4ч) → False ---"
+T0_VERY_BACK="$(date -u -d '10 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '2026-08-23T11:00:00Z')"
+T_OLD_UNLABEL="$(date -u -d '5 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '2026-08-23T16:00:00Z')"
+T_NEW_LABEL="$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '2026-08-23T20:00:00Z')"
+export _USER_UNLABEL_TEST_JSON='[
+  {"event":"labeled","label":{"name":"needs-review"},"actor":{"login":"krikz"},"created_at":"'"$T0_VERY_BACK"'"},
+  {"event":"unlabeled","label":{"name":"needs-review"},"actor":{"login":"krikz"},"created_at":"'"$T_OLD_UNLABEL"'"},
+  {"event":"labeled","label":{"name":"needs-review"},"actor":{"login":"krikz"},"created_at":"'"$T_NEW_LABEL"'"}
+]'
+export _USER_UNLABEL_TEST_PR=1547
+T11_RESULT="$(run_helper "needs-review")"
+assert_eq_bool "$T11_RESULT" "false" "T11: stale unlabel (>4ч) + later auto labeled → False (cooldown expired)"
+
+echo
+echo "--- T12: cooldown override USER_UNLABEL_MAX_AGE_HOURS=1 ---"
+# unlabel 2ч назад — вне default 4ч, но в пределах 1ч? нет, значит False.
+# А вот unlabel 30 мин назад при MAX_AGE_HOURS=1 → True.
+T_30M="$(date -u -d '30 minutes ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '2026-08-23T20:30:00Z')"
+T_5H_AGO="$(date -u -d '5 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '2026-08-23T16:00:00Z')"
+export _USER_UNLABEL_TEST_JSON='[
+  {"event":"labeled","label":{"name":"needs-review"},"actor":{"login":"krikz"},"created_at":"'"$T_5H_AGO"'"},
+  {"event":"unlabeled","label":{"name":"needs-review"},"actor":{"login":"krikz"},"created_at":"'"$T_30M"'"}
+]'
+export _USER_UNLABEL_TEST_PR=1547
+# Default 4ч: 30 мин < 4ч → True
+T12A="$(run_helper "needs-review")"
+assert_eq_bool "$T12A" "true" "T12a: default 4ч cooldown, 30min old unlabel → True"
+# Override 1h: 30 min < 1ч → True
+USER_UNLABEL_MAX_AGE_HOURS=1
+export USER_UNLABEL_MAX_AGE_HOURS
+T12B="$(run_helper "needs-review")"
+assert_eq_bool "$T12B" "true" "T12b: MAX_AGE_HOURS=1, 30min old unlabel → True"
+unset USER_UNLABEL_MAX_AGE_HOURS
+
+echo
+echo "--- T13: cooldown — bot-actor unlabel НЕ считается (is_bot) → False ---"
+T_BOT_UNLABEL="$(date -u -d '30 minutes ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '2026-08-23T20:30:00Z')"
+T_AUTO_LABEL="$(date -u -d '20 minutes ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '2026-08-23T20:40:00Z')"
+export _USER_UNLABEL_TEST_JSON='[
+  {"event":"labeled","label":{"name":"needs-review"},"actor":{"login":"krikz"},"created_at":"'"$T_5H_AGO"'"},
+  {"event":"unlabeled","label":{"name":"needs-review"},"actor":{"login":"github-actions[bot]"},"created_at":"'"$T_BOT_UNLABEL"'"},
+  {"event":"labeled","label":{"name":"needs-review"},"actor":{"login":"krikz"},"created_at":"'"$T_AUTO_LABEL"'"}
+]'
+export _USER_UNLABEL_TEST_PR=1547
+T13_RESULT="$(run_helper "needs-review")"
+assert_eq_bool "$T13_RESULT" "false" "T13: bot unlabel (auto-cleanup) + later labeled → False"
+
+echo
+echo "--- T14: cooldown — empty / no unlabel events → False (no signal) ---"
+export _USER_UNLABEL_TEST_JSON='[
+  {"event":"labeled","label":{"name":"needs-review"},"actor":{"login":"krikz"},"created_at":"'"$T_30M"'"}
+]'
+export _USER_UNLABEL_TEST_PR=1547
+T14_RESULT="$(run_helper "needs-review")"
+assert_eq_bool "$T14_RESULT" "false" "T14: only labeled event (no unlabel ever) → False"
+
+# ============================================================================
+# T15..T17: state-file helpers (ретро 24.08 t_bf7cd662, PR #1547).
+#
+# Чтобы merge-gate НЕ публиковал один и тот же ⏸️-комментарий на каждом
+# 5-мин тике в течение cooldown-окна, мы помним факт "уже сказали skip
+# для этой пары PR/LABEL" в state-файле ~/.hermes/state/merge-gate-said/<pr>/<label>.
+#
+# Override: USER_UNLABEL_STATE_DIR (по умолчанию ~/.hermes/state/...).
+# Тесты используют tmp-каталог чтобы не мусорить в реальный state.
+# ============================================================================
+echo
+echo "--- T15: state-file — first call → notify, after mark → no notify, after TTL → notify ---"
+TEST_STATE_DIR="$(mktemp -d -t user_unlabel_state_XXXXXX)"
+trap 'rm -rf "$TEST_STATE_DIR"' EXIT
+USER_UNLABEL_STATE_DIR="$TEST_STATE_DIR"
+export USER_UNLABEL_STATE_DIR
+
+# Чистый state → should_notify=True
+if user_unlabel_should_notify 1547 "needs-review"; then
+    T15A="true"
+else
+    T15A="false"
+fi
+assert_eq_bool "$T15A" "true" "T15a: no state file → should_notify=True"
+
+# После mark_notified — должен появиться state-файл, should_notify=False
+if user_unlabel_mark_notified 1547 "needs-review" "test context"; then
+    T15B_MARK="ok"
+else
+    T15B_MARK="fail"
+fi
+assert_eq "$T15B_MARK" "ok" "T15b: mark_notified returns 0 (file written)"
+if [ -f "$TEST_STATE_DIR/1547/needs-review" ]; then
+    T15B_FILE="exists"
+else
+    T15B_FILE="missing"
+fi
+assert_eq "$T15B_FILE" "exists" "T15c: state file created at <state>/1547/needs-review"
+
+# Сразу после mark — should_notify=False (cooldown active)
+if user_unlabel_should_notify 1547 "needs-review"; then
+    T15C="true"
+else
+    T15C="false"
+fi
+T15C="${T15C:-true}"  # safety net от set -u
+assert_eq_bool "$T15C" "false" "T15d: same PR/LABEL in cooldown → should_notify=False"
+
+# Подделываем старый timestamp (TTL истёк)
+_OLD_TS="$(date -u -d '5 hours ago' +%s 2>/dev/null || echo 1000)"
+printf '%s\tstale_ctx\n' "$_OLD_TS" > "$TEST_STATE_DIR/1547/needs-review"
+if user_unlabel_should_notify 1547 "needs-review"; then
+    T15D="true"
+else
+    T15D="false"
+fi
+assert_eq_bool "$T15D" "true" "T15e: state TTL expired → should_notify=True (auto-cleanup)"
+# После should_notify с expired TTL файл должен быть удалён
+if [ -f "$TEST_STATE_DIR/1547/needs-review" ]; then
+    T15E="still_exists"
+else
+    T15E="cleaned"
+fi
+assert_eq "$T15E" "cleaned" "T15f: expired state file auto-cleaned"
+
+echo
+echo "--- T16: state-file — разные PR/LABEL — independent state ---"
+USER_UNLABEL_MAX_AGE_HOURS=4
+export USER_UNLABEL_MAX_AGE_HOURS
+# mark PR1 needs-review
+user_unlabel_mark_notified 1547 "needs-review" "ctx1" || true
+# mark PR1 e2e-done (другой label)
+user_unlabel_mark_notified 1547 "e2e-done" "ctx2" || true
+# mark PR2 needs-review (другой PR)
+user_unlabel_mark_notified 9999 "needs-review" "ctx3" || true
+
+# Все 3 должны быть notifiable=No
+PR1_NR="true"; user_unlabel_should_notify 1547 "needs-review" || PR1_NR="false"
+PR1_DONE="true"; user_unlabel_should_notify 1547 "e2e-done" || PR1_DONE="false"
+PR2_NR="true"; user_unlabel_should_notify 9999 "needs-review" || PR2_NR="false"
+assert_eq_bool "$PR1_NR" "false" "T16a: PR1 needs-review state → not notify"
+assert_eq_bool "$PR1_DONE" "false" "T16b: PR1 e2e-done state → not notify (independent)"
+assert_eq_bool "$PR2_NR" "false" "T16c: PR2 needs-review state → not notify (independent)"
+
+# А вот PR1 needs-e2e — НЕ помечен → True
+PR1_NEEDS_E2E="true"; user_unlabel_should_notify 1547 "needs-e2e" || PR1_NEEDS_E2E="false"
+assert_eq_bool "$PR1_NEEDS_E2E" "true" "T16d: PR1 needs-e2e state missing → should notify"
+
+echo
+echo "--- T17: state-file — special chars в label нормализуются ---"
+user_unlabel_mark_notified 1547 "agent-flow:big-bang-blocked" "ctx" || true
+if user_unlabel_should_notify 1547 "agent-flow:big-bang-blocked"; then
+    T17A="true"
+else
+    T17A="false"
+fi
+assert_eq_bool "$T17A" "false" "T17a: label with : and - normalizes correctly"
+if [ -f "$TEST_STATE_DIR/1547/agent-flow_big-bang-blocked" ]; then
+    T17B="exists"
+else
+    T17B="missing"
+fi
+assert_eq "$T17B" "exists" "T17b: state file uses normalized name (:/space → _)"
+unset USER_UNLABEL_MAX_AGE_HOURS USER_UNLABEL_STATE_DIR
+
+# ============================================================================
+# T18: helper API surface — все новые функции определены
+# ============================================================================
+echo
+echo "--- T18: API surface — state-file helpers определены ---"
+for fn in user_unlabel_state_dir user_unlabel_state_path \
+           user_unlabel_should_notify user_unlabel_mark_notified; do
+    if grep -q "^${fn}()" "$LIB_UNDER_TEST"; then
+        PASS=$((PASS+1))
+        echo "  ✓ ${fn}() defined"
+    else
+        FAIL=$((FAIL+1))
+        FAILED_CASES+=("${fn} not defined")
+        echo "  ✗ ${fn} NOT defined"
+    fi
+done
 
 # ----------------------------------------------------------------------------
 # Summary

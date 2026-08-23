@@ -1327,9 +1327,10 @@ except Exception:
         # оставляем (Шифу его не трогает).
         if user_removed_label_recently "$pr_number" "$NEEDS_REVIEW_LABEL"; then
             user_unlabel_log_skip "$pr_number" "$NEEDS_REVIEW_LABEL" "merge-gate reconcile (e2e-done+OPEN)"
-            if [ "$DRY_RUN" != "true" ]; then
+            if [ "$DRY_RUN" != "true" ] && user_unlabel_should_notify "$pr_number" "$NEEDS_REVIEW_LABEL"; then
                 gh pr comment "$pr_number" --repo "$GH_REPO" --body \
                     "agent-flow: ⏸️ merge-gate reconcile не восстановил \`needs-review\` — ты её ранее снял руками; жду твоего решения (ретро 18.08 t_de6bea69, Q22)." >/dev/null 2>&1 || true
+                user_unlabel_mark_notified "$pr_number" "$NEEDS_REVIEW_LABEL" "merge-gate reconcile (e2e-done+OPEN)" || true
             fi
         elif [ "$DRY_RUN" != "true" ]; then
             # issue #1553: self-id whoami BEFORE add-label needs-review на PR
@@ -2530,9 +2531,10 @@ Merge-gate блокирует e2e-ротацию: ${NEEDS_E2E_LABEL} не буд
         if user_removed_label_recently "$pr_number" "$NEEDS_REVIEW_LABEL"; then
             user_unlabel_log_skip "$pr_number" "$NEEDS_REVIEW_LABEL" "lint PR path"
             labeled=$((labeled+1))
-            if [ "$DRY_RUN" != "true" ]; then
+            if [ "$DRY_RUN" != "true" ] && user_unlabel_should_notify "$pr_number" "$NEEDS_REVIEW_LABEL"; then
                 gh pr comment "$pr_number" --repo "$GH_REPO" --body \
                     "agent-flow: ⏸️ merge-gate lint path не восстановил \`needs-review\` — ты её ранее снял руками; жду твоего решения (ретро 18.08 t_de6bea69, Q22)." >/dev/null 2>&1 || true
+                user_unlabel_mark_notified "$pr_number" "$NEEDS_REVIEW_LABEL" "lint PR path" || true
             fi
             continue
         fi
@@ -3025,9 +3027,10 @@ print("1" if ok else "0")
         if user_removed_label_recently "$c_pr" "$NEEDS_REVIEW_LABEL"; then
             user_unlabel_log_skip "$c_pr" "$NEEDS_REVIEW_LABEL" "clean-pr-sweep lint"
             clean_labeled=$((clean_labeled+1))
-            if [ "$DRY_RUN" != "true" ]; then
+            if [ "$DRY_RUN" != "true" ] && user_unlabel_should_notify "$c_pr" "$NEEDS_REVIEW_LABEL"; then
                 gh pr comment "$c_pr" --repo "$GH_REPO" --body \
                     "agent-flow: ⏸️ clean-pr-sweep не восстановил \`needs-review\` — ты её ранее снял руками; жду твоего решения (ретро 18.08 t_de6bea69, Q22)." >/dev/null 2>&1 || true
+                user_unlabel_mark_notified "$c_pr" "$NEEDS_REVIEW_LABEL" "clean-pr-sweep lint" || true
             fi
             continue
         fi

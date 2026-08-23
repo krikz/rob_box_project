@@ -40,10 +40,22 @@
 #   - последнее событие labeled (auto) → return 1 (не было user intervention)
 #   - последнее событие unlabeled (любой не-bot actor) → return 0
 #
+# Cooldown (ретро 24.08 t_bf7cd662, PR #1547): после user-unlabel мы НЕ
+# должны снова возвращать метку в течение USER_UNLABEL_MAX_AGE_HOURS, даже
+# если auto успел её один раз восстановить и timeline теперь показывает
+# «последнее событие — labeled». Иначе merge-gate зацикливается: Шифу снял
+# → auto через 5 мин вернул → Шифу снял → ... 39 events за 8ч на PR #1547.
+#
+# Тонко: cooldown применяется ТОЛЬКО если last_unlabel был НЕДАВНО
+# (within MAX_AGE_HOURS). Старый unlabel (>MAX_AGE_HOURS назад) НЕ
+# блокирует — Шифу явно не вмешивался недавно, пора снова ставить.
+# Default: 4 часа (переопределяется через env).
+#
 # Test mode (used by tests/test_user_unlabel_check.sh):
 #   export USER_UNLABEL_TEST_MODE=1 — пропускает реальные API-вызовы;
 #   тесты инжектят мок-данные через переменные _USER_UNLABEL_TEST_JSON
 #   и _USER_UNLABEL_TEST_PR.
+#   export USER_UNLABEL_MAX_AGE_HOURS=N — override cooldown (default 4).
 # ============================================================================
 
 # Защита от двойного source
@@ -143,6 +155,18 @@ print(last_label)
     if [ "${_unlabel:-0}" -gt "${_label:-0}" ] 2>/dev/null; then
         return 0
     fi
+    # Cooldown (ретро 24.08 t_bf7cd662, PR #1547): даже если последнее
+    # событие — labeled (auto восстановил), НО свежий user-unlabel был
+    # в пределах USER_UNLABEL_MAX_AGE_HOURS → respect, не возвращать метку.
+    # Защита от цикла: Шифу руками снял → auto восстановил → Шифу заметил
+    # и больше не вмешивался, а auto продолжает спамить каждые 5 мин.
+    local _cooldown_secs _now _age
+    _cooldown_secs="${USER_UNLABEL_MAX_AGE_SECONDS:-$(( ${USER_UNLABEL_MAX_AGE_HOURS:-4} * 3600 ))}"
+    _now="$(date -u +%s 2>/dev/null || echo 0)"
+    _age=$(( _now - _unlabel ))
+    if [ "$_age" -ge 0 ] 2>/dev/null && [ "$_age" -lt "$_cooldown_secs" ] 2>/dev/null; then
+        return 0
+    fi
     return 1
 }
 
@@ -151,6 +175,69 @@ print(last_label)
 user_unlabel_log_skip() {  # $1=pr $2=label $3=context
     local _pr="$1" _lbl="$2" _ctx="$3"
     log "[user-unlabel-guard] PR #${_pr}: user previously removed '${_lbl}' — НЕ восстанавливаю (${_ctx})"
+}
+
+# Idempotency / spam-loop guard (ретро 24.08 t_bf7cd662, PR #1547):
+# чтобы merge-gate НЕ публиковал один и тот же ⏸️-комментарий на каждом
+# 5-мин тике в течение cooldown-окна, мы помним факт "уже сказали skip
+# для этой пары PR/LABEL" в state-файле с timestamp.
+#
+# State-каталог: ~/.hermes/state/merge-gate-said/<pr>/<label>
+# Содержимое:    <epoch секунды> <context>
+#
+# user_unlabel_should_notify pr label context
+#   → return 0 если ещё НЕ уведомляли (нужно писать comment)
+#   → return 1 если уже уведомляли в течение cooldown (no-op)
+#
+# user_unlabel_mark_notified pr label context
+#   → записывает state-файл с текущим timestamp
+#
+# State-TTL: живёт столько же, сколько cooldown (USER_UNLABEL_MAX_AGE_HOURS,
+# default 4ч). После — забывается (auto-cleanup при чтении).
+#
+# Override пути: env USER_UNLABEL_STATE_DIR.
+user_unlabel_state_dir() {  # вычисляет каталог для state-файла
+    echo "${USER_UNLABEL_STATE_DIR:-$HOME/.hermes/state/merge-gate-said}"
+}
+
+user_unlabel_state_path() {  # $1=pr $2=label
+    local _pr="$1" _lbl="$2"
+    # Нормализуем имя файла (label может содержать ":", "/", etc.)
+    local _safe_lbl
+    _safe_lbl="$(printf '%s' "$_lbl" | tr '/: ' '___')"
+    printf '%s/%s/%s\n' "$(user_unlabel_state_dir)" "$_pr" "$_safe_lbl"
+}
+
+user_unlabel_should_notify() {  # $1=pr $2=label
+    local _path
+    _path="$(user_unlabel_state_path "$1" "$2")"
+    if [ ! -f "$_path" ]; then
+        return 0  # нет state → ещё не уведомляли
+    fi
+    local _ts _cooldown_secs _now _age
+    _ts="$(head -1 "$_path" 2>/dev/null | awk '{print $1}' || echo 0)"
+    if [ -z "$_ts" ] || [ "$_ts" = "0" ]; then
+        return 0  # мусор в файле → считаем как отсутствие
+    fi
+    _cooldown_secs="${USER_UNLABEL_MAX_AGE_SECONDS:-$(( ${USER_UNLABEL_MAX_AGE_HOURS:-4} * 3600 ))}"
+    _now="$(date -u +%s 2>/dev/null || echo 0)"
+    _age=$(( _now - _ts ))
+    if [ "$_age" -lt 0 ] 2>/dev/null || [ "$_age" -ge "$_cooldown_secs" ] 2>/dev/null; then
+        # TTL истёк — забываем state (auto-cleanup), идём как в первый раз.
+        rm -f "$_path" 2>/dev/null || true
+        return 0
+    fi
+    return 1  # ещё в cooldown → не уведомляем повторно
+}
+
+user_unlabel_mark_notified() {  # $1=pr $2=label $3=context
+    local _pr="$1" _lbl="$2" _ctx="$3"
+    local _dir _path _now
+    _dir="$(user_unlabel_state_dir)/$_pr"
+    _path="$(user_unlabel_state_path "$_pr" "$_lbl")"
+    _now="$(date -u +%s 2>/dev/null || echo 0)"
+    mkdir -p "$_dir" 2>/dev/null || return 1
+    printf '%s\t%s\n' "$_now" "$_ctx" > "$_path" 2>/dev/null || return 1
 }
 
 # Optional standalone runner — для отладки или ad-hoc проверки.
