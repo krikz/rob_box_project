@@ -2515,6 +2515,22 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
             e2e_scenario_file="$_picked"
         fi
     fi
+    # bug(#1551, ретро 23.08): hard-default fallback. Если scenario_file всё
+    # ещё пуст ПОСЛЕ всех 4 auto-discovery (issue body → PR body → PR files →
+    # diff vs origin/develop), берём voice_core_suite_v1.json. Иначе workflow
+    # получает пустой scenario_file input → single-shot smoke-test
+    # "Робот, спой песенку про енотика" → ложный PASS (см. run #32607268334
+    # round-212). Acceptance тоже default-ится на voice_core_acceptance_v1.json
+    # (convention 1 резолвится через resolve_acceptance_candidate ниже).
+    #
+    # НЕ перезаписываем явные значения: guard под `[ -z "$e2e_scenario_file" ]`.
+    # Acceptance default — только если scenario_file реально стал default-ом
+    # (мы НЕ хотим затирать явный acceptance_file для нестандартного scenario).
+    if [ -z "$e2e_scenario_file" ]; then
+        e2e_scenario_file=".github/e2e/scenarios/voice_core_suite_v1.json"
+        e2e_acceptance_file=".github/e2e/scenarios/voice_core_acceptance_v1.json"
+        log "issue #${number}: scenario_file empty after all auto-discovery — defaulting to ${e2e_scenario_file} (bug #1551 round-212 fallback)"
+    fi
     [ -n "$e2e_scenario_file" ] && e2e_args+=(-f "scenario_file=$e2e_scenario_file")
     # bug(t_cca7c074, ретро 19.08): auto-discover acceptance_file из convention
     # если не задан явно. Иначе workflow получает пустой acceptance_file input →
