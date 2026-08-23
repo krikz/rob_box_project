@@ -62,6 +62,14 @@ if [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
     GH_TOKEN="$(GH_CONFIG_DIR="${GH_CONFIG_DIR:-/home/builder/.config/gh}" gh auth token 2>/dev/null || true)"
     if [ -n "${GH_TOKEN}" ]; then
         export GH_TOKEN
+        # Diagnostic log (только при DEBUG_CRED=1, иначе silent).
+        if [ "${DEBUG_CRED:-0}" = "1" ]; then
+            echo "[cred-fix] GH_TOKEN exported, len=${#GH_TOKEN}, head=${GH_TOKEN:0:8}" >&2
+        fi
+    else
+        if [ "${DEBUG_CRED:-0}" = "1" ]; then
+            echo "[cred-fix] gh auth token EMPTY — push may regress" >&2
+        fi
     fi
 fi
 
@@ -539,6 +547,12 @@ round_ensure() {
             # локальный develop может отстать (чужие коммиты). Всегда свежий.
             if ! git -C "$REPO_DIR" fetch origin "$FOUNDATION_BRANCH" 2>&1 | sed 's/^/  /'; then
                 log "failed to fetch origin/${FOUNDATION_BRANCH}"; return 1
+            fi
+            # DEBUG_CRED diagnostic (тро 23.08 t_b977cb4b): видно, дошёл ли GH_TOKEN
+            # до push subprocess. Если скрипт имеет токен, а push всё равно падает
+            # — проблема в helper chain (как раз наш случай).
+            if [ "${DEBUG_CRED:-0}" = "1" ]; then
+                echo "[cred-fix] round_ensure pre-push: GH_TOKEN=${GH_TOKEN:+SET (len=${#GH_TOKEN})} HELPER=$(git -C "$REPO_DIR" config --get-all credential.https://github.com.helper | head -1)" >&2
             fi
             if ! git -C "$REPO_DIR" push origin "origin/${FOUNDATION_BRANCH}:refs/heads/${ROUND_BRANCH}" 2>&1 | sed 's/^/  /'; then
                 log "failed to create ${ROUND_BRANCH}"; return 1
