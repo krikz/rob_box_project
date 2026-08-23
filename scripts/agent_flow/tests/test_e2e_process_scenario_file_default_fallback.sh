@@ -105,7 +105,9 @@ fi
 echo ""
 echo "=== Test 2: default-fallback идёт ПОСЛЕ diff auto-discovery ==="
 _diff_line="$(grep -n 'auto-discovered from round diff vs origin/develop' "$E2E_PROCESS" | head -1 | cut -d: -f1 || echo 0)"
-_default_line="$(grep -nE 'voice_core_suite_v1\.json' "$E2E_PROCESS" | head -1 | cut -d: -f1 || echo 0)"
+# Находим строку с hard-default (НЕ первое вхождение voice_core_suite_v1.json
+# в комментарии, а строку `e2e_scenario_file=".github/e2e/scenarios/voice_core_suite_v1.json"`).
+_default_line="$(grep -nE '^\s*e2e_scenario_file=\"\.github/e2e/scenarios/voice_core_suite_v1' "$E2E_PROCESS" | head -1 | cut -d: -f1 || echo 0)"
 if [ "$_diff_line" -gt 0 ] && [ "$_default_line" -gt 0 ] && [ "$_default_line" -gt "$_diff_line" ]; then
     pass "default-fallback (line $_default_line) после diff auto-discovery (line $_diff_line)"
 else
@@ -124,10 +126,14 @@ fi
 # --- Test 4: логирование defaulting ---------------------------------------
 echo ""
 echo "=== Test 4: логирование факта default-выбора ==="
-if grep -qE 'log.*defaulting to voice_core_suite' "$E2E_PROCESS"; then
-    pass "log-маркер defaulting присутствует"
+# В моём фиксе: log "... defaulting to ${e2e_scenario_file} (bug #1551 round-212 fallback)"
+# — переменная подставляется в рантайме. Проверяем что в скрипте есть
+# literal-строка 'defaulting to' + признак bug #1551 (либо в той же log-строке,
+# либо в окружающем комментарии). Это надёжнее чем literal-substring.
+if grep -qE 'defaulting to' "$E2E_PROCESS" && grep -qE 'bug #1551' "$E2E_PROCESS"; then
+    pass "log-маркер defaulting + bug #1551 присутствуют (Шифу увидит когда сработал fallback)"
 else
-    fail "log defaulting" "строка 'log.*defaulting to voice_core_suite' не найдена — Шифу не увидит когда сработал fallback"
+    fail "log defaulting" "не найдено 'defaulting to' или 'bug #1551' — fallback сработает молча"
 fi
 
 # --- Test 5: convention 1 для core_suite (acceptance рядом) --------------
@@ -149,17 +155,20 @@ assert_eq "PREFIX strip convention 3" \
 # --- Test 6: если scenario_file задан — default НЕ перезаписывает ---------
 echo ""
 echo "=== Test 6: default не перезаписывает явный scenario_file ==="
-# Вытаскиваем guard-condition вокруг default-fallback
-_guard="$(grep -nE 'if \[ -z "\$e2e_scenario_file" \] && \[ -z "\$e2e_acceptance_file" \]' "$E2E_PROCESS" | head -1 || true)"
-if [ -n "$_guard" ]; then
-    pass "guard 'if -z e2e_scenario_file && -z e2e_acceptance_file' присутствует"
-else
-    # Альтернативная формулировка
-    _guard="$(grep -nE 'if \[ -z "\$e2e_scenario_file" \]' "$E2E_PROCESS" | tail -3 || true)"
+# Guard: default-блок начинается со строки `if [ -z "$e2e_scenario_file" ]; then`
+# — это и есть страховка от перезаписи. Достаточно проверить её наличие
+# в окрестности hard-default (в пределах ±5 строк от default-присваивания).
+_default_assign_line="$(grep -nE '^\s*e2e_scenario_file=\"\.github/e2e/scenarios/voice_core_suite_v1' "$E2E_PROCESS" | head -1 | cut -d: -f1 || echo 0)"
+if [ "$_default_assign_line" -gt 0 ]; then
+    _guard_window_start=$((_default_assign_line - 5))
+    _guard_window_end=$((_default_assign_line - 1))
+    _guard="$(sed -n "${_guard_window_start},${_guard_window_end}p" "$E2E_PROCESS")"
     case "$_guard" in
-        *voice_core_suite*|*defaulting*) pass "default под условием 'if -z e2e_scenario_file'" ;;
-        *) fail "guard default" "не нашёл явного guard'а — default может перезаписать явный scenario_file" ;;
+        *'-z "$e2e_scenario_file"'*) pass "guard 'if -z e2e_scenario_file' непосредственно перед default" ;;
+        *) fail "guard default" "нет '[ -z \"\$e2e_scenario_file\" ]' рядом с default (lines $_guard_window_start..$_guard_window_end)" ;;
     esac
+else
+    fail "guard default" "не нашёл строки default-присваивания в скрипте"
 fi
 
 # --- Test 7: workflow default остаётся пустым -----------------------------
