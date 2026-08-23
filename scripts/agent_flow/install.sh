@@ -285,7 +285,9 @@ apply_hermes_agent_patch() {
         echo "  ERROR applying hermes-agent patch" >&2
         return 1
     fi
-    echo "  ERROR patch does not apply cleanly to $HERMES_AGENT_DIR — upstream moved; regenerate vendor patch from current diff (ретро t_f00676f8)" >&2
+    echo "  ERROR patch does not apply cleanly to $HERMES_AGENT_DIR — upstream moved" >&2
+    echo "         Regenerate with: bash scripts/agent_flow/agent-flow-regen-vendor-patch.sh $patch" >&2
+    echo "         See also: ретро t_f00676f8 (original) / t_49c2b63f (regen helper)" >&2
     return 1
 }
 
