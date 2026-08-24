@@ -166,6 +166,21 @@ jobs:
           fi
           echo "✅ rob_box_telegram passed"
 
+          # rob_box_teleop: unit tests for joystick_control_node + pure
+          # joystick_logic (issue #1344). rclpy is mocked in conftest.py —
+          # no ROS2 runtime needed. Run as one pytest invocation: the tests
+          # are self-contained (no cross-file pollution like telegram).
+          echo "=== pytest: rob_box_teleop (issue #1344) ==="
+          TELEOP_DIR="${{ github.workspace }}/test_ws/src/rob_box_teleop"
+          ( cd "$TELEOP_DIR" && PYTHONPATH=. timeout 120 python3 -m pytest \
+              -p no:launch_testing \
+              -p no:ament_flake8 -p no:ament_pep257 \
+              -p no:ament_copyright -p no:ament_xmllint \
+              -p no:ament_lint -p no:colcon_core \
+              --tb=short --no-header \
+              "$TELEOP_DIR/test/" ) || { echo "❌ rob_box_teleop tests FAILED"; exit 1; }
+          echo "✅ rob_box_teleop passed"
+
           # rob_box_animations + rob_box_perception: pytest only, split so a
           # hang in one package doesn't block the other.  Each wrapped in
           # `timeout 300` so a stuck test fails fast instead of hanging the
