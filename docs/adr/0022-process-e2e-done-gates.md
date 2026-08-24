@@ -327,6 +327,101 @@ prefix в pattern (например, `Calling MCP tool: set_voice` вместо
 `set_voice`). ADR-0022 не вводит нового синтаксиса для case-sensitive
 acceptance; это сознательное самоограничение (KISS).
 
+#### 4.7 Retro-card completion protocol (addendum, 2026-08-24)
+
+**Мотивация.** Ретро-карточка — это канбан-таск архитектора, который
+диагностировал failure-mode и **передал рекомендации** правильному
+профилю (devops / backend), а сам **ждёт** внешнего события: merge PR от
+юзера, fix от Шифу, прогон следующего e2e-раунда. До t_d9e70587
+(23.08.2026) и t_4ab74fb7 (24.08.2026) ретро-карточки имели два
+ошибочных финиша:
+
+1. **`kanban_complete` с невыполненными accept-criteria** — карточка
+   формально закрывается через секунды после создания, accept-criteria
+   вроде «merge PR #1547 + 3 dj02 round PASS» остаются неисполненными,
+   `t_d9e70587` закрылась за **4 секунды** (23.08 23:14→23:18, разница
+   видна в `completed_at - started_at` в events timeline).
+2. **`running` без `kanban_block`** — карточка висит вечно в
+   `running`, heartbeat гоняется, профиль считает её «in progress», а
+   по факту это ожидание внешнего действия. Это «маскирующий» статус:
+   архитектор сделал свою часть, но карточка не даёт сигнал, что ждёт
+   юзера.
+
+**Наблюдение.** Каждый раз, когда архитектор сам себе блокирует
+ретро-карточку через `kanban_block(kind=transient, reason="…")`, это
+**правильный** сигнал: «своя часть сделана, жду внешнего». На
+24.08.2026 это уже применено в `t_73b0b4b8` (e2e-fail #1576, blocked by
+`(no_wake_word)` — ждёт merge fix от Шифу). Этот addendum фиксирует
+протокол как норму, а не как workaround.
+
+**Протокол (норма).** При создании ретро-карточки архитектор **обязан**
+указать в `Accept criteria` блоке **какие события** переведут её в
+archive/complete. Если хотя бы одно из этих событий — **внешнее**
+(merge от юзера, fix от Шифу, прохождение следующего e2e-раунда по
+крону), карточка **обязана** использовать один из двух финишей:
+
+```text
+A) kanban_block(kind=dependency, reason="<какое событие ждём>")
+   — карточка переходит в todo и auto-resume когда parent done
+   — применимо, если parent-card чётко определён
+   — пример: «жду archive t_9d229634 от devops после merge #1547»
+
+B) kanban_block(kind=transient, reason="<какое событие ждём>")
+   — карточка в blocked, dispatcher НЕ реклеймит
+   — применимо, если ожидание не привязано к конкретной карточке
+   — пример: «жду merge PR #1547 от Шифу» (PR не = карточка)
+   — пример: «жду следующий e2e-round с dj02_stop_music PASS»
+```
+
+**Запрещено** (для ретро-карточек с внешним acceptance):
+
+```text
+- kanban_complete с «Acceptance deferred to merge #1547»
+  → ЗАПРЕЩЕНО: знание теряется, parent-card t_7dbd1bd1 не имеет
+    upstream-связи, и dispatcher считает ретро «сделанным».
+
+- running без явного блока > 1 час
+  → НЕ желательно: dispatcher видит heartbeat, считает живой, но
+    карточка по факту не делает прогресса. Если > 1 час — явно
+    kanban_block.
+```
+
+**Pin для воркера-architect.** Перед `kanban_complete` ретро-карточки
+прогонять self-check:
+
+```bash
+# Self-check: есть ли в Accept criteria внешние события?
+grep -iE '(merge|wait|external|next round|Шифу|user)' body.md
+# Если найдено и НЕ kanban_block(kind=*) → DO NOT complete, use kanban_block
+```
+
+Этот self-check — **не enforcement** (не скрипт в merge-gate), а
+**нормы**, которые архитектор-воркер проверяет на self-review перед
+`kanban_complete`. Документ-норма достаточно для текущего масштаба
+(архитектор — один профиль, воркеры читают протокол перед каждым
+ретро).
+
+**Trade-off analysis:**
+
+| Альтернатива | Benefit | Cost | Вердикт |
+|---|---|---|---|
+| **A. Просто норма в ADR** (этот addendum) | Минимальный diff, читается при следующем ретро | Без enforcement — следующий архитектор может нарушить | **Выбрано** |
+| B. Скрипт `agent-flow-architect-self-check.sh` в merge-gate | Автоматический enforcement | +1 скрипт, отдельный профиль, over-engineering для одного профиля | Отклонено |
+| C. Изменить `kanban_complete` API принимать флаг `deferred=true` | API-уровневое enforcement | Ломает существующих воркеров | Отклонено |
+| D. Отдельный label `retro-deferred` + cron, который ищет такие карточки | Cron-based enforcement | +1 cron tick, новый label namespace | Отложено до M3 |
+
+**Если НЕ делать сейчас.** Следующая ретро-карточка (с вероятностью
+~100% в ближайшую неделю) повторит паттерн t_d9e70587: закроется в
+`done` за секунды, знание о fail-streak потеряется, dispatcher
+посчитает «обработано», а wake-gate cold-start blocker никуда не денется.
+
+**Связанные:**
+
+- Kanban t_d9e70587 (done 23.08 23:18) — родительский пример нарушения.
+- Kanban t_4ab74fb7 (running 24.08) — текущая ретро, источник этого addendum.
+- Kanban t_73b0b4b8 (blocked 24.08 01:46, `kind=transient`) — пример правильного применения протокола.
+- ADR-0029 (proposed) — wake-gate cold-start known-state (продолжение по wake-gate конкретике).
+
 ## 5. Порядок событий и race conditions
 
 ### 5.1 Happy path: PR → e2e PASS → merge
@@ -438,11 +533,14 @@ GATE-3 (CI-blocking):
 - ADR-0018 (честный FAIL лучше красивого PASS) — GATE-3 + GATE-1 = enforcement.
 - ADR-0021 (dialogue_node decomposition) — GATE-1 влияет на `dialogue_node` diagrams (отдельный follow-up).
 - **§4.6 Window semantics & per-step vs aggregate (addendum, 2026-08-22)** — pin трёх окон (`-6 minutes` для patterns, `STEP_BEFORE` для per-step acceptance, `E2E_RUN_BEFORE` для aggregate GATE-1), case-sensitivity (patterns case-sensitive, acceptance case-insensitive), field-mapping таблица suite field → where it is checked. Мотивация: архитектурный вердикт kanban t_fb037ed1 (round-178 fail-streak 5/7, run 32573773556) — без addendum'а будущие воркеры могут сломать fix коммита `db84ff590c18c2649b700efe2ef88755108628e0` (robot-clock capture в harness), как сломали pre-db84ff59.
+- **§4.7 Retro-card completion protocol (addendum, 2026-08-24)** — ретро-карточка, у которой accept-criteria отложены (ждёт merge от юзера / внешний фикс / следующий e2e-round), **обязана** уйти в `kanban_block(kind=transient)` или `kanban_block(kind=dependency)`, а **не** в `kanban_complete`. Без этого протокола ретро формально закрывается, и знание теряется до следующего инцидента. Мотивация: kanban t_4ab74fb7 (fail-streak rounds 215–221) — родительская ретро-карточка t_d9e70587 закрылась в `done` через 4 сек после создания с невыполненными accept-criteria; протокол уже применён в t_73b0b4b8 (заблокирован по `kind=transient`, ждёт фикса wake-gate блокера).
 - Issue #1420 (P0-2 triage-cron) — GATE-D (issue decompose) отложен до этого.
 - Issue #1422 (PR #1418 CI red) — этот ADR GATE-3 его бы поймал.
 - PR #1398 (MiniMax music, OPEN) — пример проблемы R1/R6.
 - PR #1406 (music prompt, merged по Q22) — пример R6 (partial fix).
 - PR #1399 (user-reopen guard) — этот ADR GATE-2 его усиливает.
+- **Kanban t_4ab74fb7 (running 2026-08-24)** — источник §4.7, см. ADR-0029.
+- **ADR-0029 (proposed)** — wake-gate cold-start known-state (2–3 cold rounds после merge voice-pipeline фиксов — **известное** поведение, не flaky acceptance).
 
 ## 10. Не блокер, но критично
 
