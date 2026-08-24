@@ -501,7 +501,7 @@ class DialogCore:
                             metadata=user_metadata,
                         ),
                     )
-                spoken, tools_called, finish_reason, raw_response, speak_text_count, speak_text_real_count = (
+                spoken, tools_called, finish_reason, raw_response, speak_text_count, speak_text_real_count, spoken_via_tool = (
                     await self._run_with_tools(messages)
                 )
                 result.spoken_text = spoken
@@ -511,22 +511,19 @@ class DialogCore:
                 result.finish_reason = finish_reason
                 result.raw_response = raw_response
                 if not is_dj_auto:
-                    # Issue #1217 — do NOT persist a silent-failure assistant
-                    # turn (bare 'done' / empty payload with zero tools). The
-                    # corrective retry inside _run_with_tools already gave the
-                    # model a second chance; if it STILL failed, writing
-                    # "done" / "" into the conversation memory would teach the
-                    # model that an empty marker is a normal assistant reply
-                    # and the next turn would mimic it (memory DB showed rows
-                    # of consecutive assistant 'done' turns biasing deepseek).
-                    # Control traffic and failed turns stay out of dialogue
-                    # memory — see the DJ-auto gating above (same rule).
-                    if not self._is_silent_spoken(spoken, tools_called):
+                    # Persist an HONEST assistant turn: the text actually
+                    # spoken via speak_text (or a real plain-text reply), NOT
+                    # the bare "done"/"" completion marker. A history full of
+                    # "done" misleads the model into (a) echoing old topics
+                    # and (b) replying "done" itself (silent failures). Silent
+                    # turns are dropped entirely — they add no useful context.
+                    assistant_content = spoken_via_tool or spoken
+                    if not self._is_silent_spoken(assistant_content, ()):
                         await self._memory.append_turn(
                             self._user_id,
                             Turn(
                                 role="assistant",
-                                content=spoken,
+                                content=assistant_content,
                                 metadata=dict(user_metadata),
                             ),
                         )
@@ -586,6 +583,29 @@ class DialogCore:
         content = (spoken or "").strip().lower()
         return (not content) or content in _SILENT_DONE_MARKERS
 
+    @staticmethod
+    def _clean_history_turns(
+        turns: Iterable[LLMMessage],
+    ) -> list[LLMMessage]:
+        """Collapse consecutive user turns and drop a trailing orphaned one.
+
+        A barge-in (or a silent-failure turn whose assistant reply was not
+        persisted) leaves an orphaned ``user`` turn with no answer in the
+        stored history. Two consecutive user messages make the LLM answer the
+        OLDER one instead of the current question. The current turn's user
+        message is appended separately by ``process_input``, so a trailing
+        user turn here is always an orphan and must be dropped.
+        """
+        out: list[LLMMessage] = []
+        for turn in turns:
+            if out and out[-1].role == "user" and turn.role == "user":
+                out[-1] = turn
+            else:
+                out.append(turn)
+        if out and out[-1].role == "user":
+            out.pop()
+        return out
+
     async def _run_with_tools(
         self,
         messages: list[LLMMessage],
@@ -624,6 +644,10 @@ class DialogCore:
         seen: set[str] = set()
         speak_text_count: int = 0
         speak_text_real_count: int = 0
+        # Actual text spoken via speak_text this turn — used for an honest
+        # conversation history (persisting "done" instead of what was really
+        # said made the LLM echo old topics; see process_input).
+        spoken_texts: list[str] = []
         # Issue #1253 — any tool that returned ``is_error=True`` this turn.
         # When a tool failed and the LLM answers with ONLY words (no retry
         # tool-call, no speak_text) that is babble, not an answer — the
@@ -699,6 +723,7 @@ class DialogCore:
                     text = args.get("text", "") if isinstance(args, Mapping) else ""
                     if isinstance(text, str) and text.strip():
                         speak_text_real_count += 1
+                        spoken_texts.append(text.strip())
                 if call.name not in seen:
                     seen.add(call.name)
                     tools_called.append(call.name)
@@ -810,6 +835,7 @@ class DialogCore:
                 response.raw,
                 speak_text_count,
                 speak_text_real_count,
+                "\n".join(spoken_texts),
             )
 
         return (
@@ -819,6 +845,7 @@ class DialogCore:
             response.raw,
             speak_text_count,
             speak_text_real_count,
+            "\n".join(spoken_texts),
         )
 
     async def _stream_response(
@@ -913,8 +940,11 @@ class DialogCore:
         # в messages не было [0] system.
         if self._system_prompt:
             out.append(LLMMessage(role="system", content=self._system_prompt))
-        for turn in recent_turns:
-            out.append(LLMMessage(role=turn.role, content=turn.content))
+        history_messages = [
+            LLMMessage(role=turn.role, content=turn.content)
+            for turn in recent_turns
+        ]
+        out.extend(self._clean_history_turns(history_messages))
         return out
 
     # ---- handle_* shortcuts used by the shell --------------------------

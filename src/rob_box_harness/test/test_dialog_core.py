@@ -1582,6 +1582,97 @@ def test_speak_text_real_count_zero_for_all_phantom_calls(
 
 
 # ---------------------------------------------------------------------------
+# Honest conversation history + orphaned-user collapse
+# ---------------------------------------------------------------------------
+
+
+def test_assistant_turn_persists_actual_spoken_text(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """A speak_text turn persists the REAL spoken text, not the 'done' marker."""
+    llm.responses = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="speak_text", arguments={"text": "Жила-была девочка."}),
+            ),
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+
+    async def speak_handler(args: dict[str, object]) -> str:
+        return "TTS ok"
+
+    tools_provider._handler_map = {"speak_text": speak_handler}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+    asyncio.run(core_obj.process_input("расскажи сказку", history=[]))
+
+    assert len(memory.turns) == 2
+    assert memory.turns[0].role == "user"
+    assert memory.turns[1].role == "assistant"
+    assert memory.turns[1].content == "Жила-была девочка."
+    assert memory.turns[1].content != "done"
+
+
+def test_silent_done_turn_is_not_persisted(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """A silent 'done' reply must not be persisted as an assistant turn."""
+    llm.responses = [
+        LLMResponse(content="done", tool_calls=()),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+    asyncio.run(core_obj.process_input("расскажи анекдот", history=[]))
+
+    # Only the user turn is stored — no "done" assistant turn.
+    assert len(memory.turns) == 1
+    assert memory.turns[0].role == "user"
+
+
+def test_orphaned_user_turn_collapsed_before_llm(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """A barge-in orphaned user turn must not make the LLM answer it.
+
+    Seed a user turn with no assistant reply, then send a new question:
+    the model must see exactly one user message — the latest one.
+    """
+    from rob_box_harness.memory import Turn
+
+    memory.turns.append(Turn(role="user", content="старый вопрос без ответа"))
+    llm.responses = [LLMResponse(content="новый ответ", tool_calls=())]
+
+    core_obj = DialogCore(
+        llm=llm,
+        tools=tools_provider,
+        memory=memory,
+        dsm=dsm,
+        history_trim_limit=20,
+    )
+    asyncio.run(core_obj.handle_wake_word(""))
+    asyncio.run(core_obj.process_input("новый вопрос"))
+
+    sent = llm.calls[-1][0]
+    user_messages = [m for m in sent if m.role == "user"]
+    assert len(user_messages) == 1
+    assert user_messages[0].content == "новый вопрос"
+
+
+# ---------------------------------------------------------------------------
 # W7a — batch re-ordering (_order_tool_calls)
 # ---------------------------------------------------------------------------
 
