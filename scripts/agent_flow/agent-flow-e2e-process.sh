@@ -232,15 +232,21 @@ IFS=' ' read -r -a _blocker_sigs <<< "$KNOWN_BLOCKER_SIGNATURES" || true
 
 # blocker_issue_for_sig <sig> — открытый issue, в title/body которого есть
 # сигнатура (например `no_wake_word` → #1117). Печатает номер issue (или пусто).
-# Ретро-фикс (13.08): issue с меткой needs-e2e/e2e-done НЕ считаем блокером —
+# Ретро-фикс (13.08 #1195): issue с меткой needs-e2e/e2e-done НЕ считаем блокером —
 # они сами кандидаты на e2e-ротацию (кейс #1195: no_wake_word в body → сам
 # себя блокировал, e2e rotation PAUSED вечно).
+# Ретро-фикс (24.08 t_d935096b): issue с метками no-e2e-required / agent-flow ТОЖЕ
+# не считаются блокерами — они явно OUT-of-scope для e2e (процессные / lint / docs
+# изменения). Кейс #1586: issue про краш e2e-process (whoami_add_label) имел
+# метки bug + agent:devops + agent-flow + no-e2e-required, НО в body упоминался
+# исторический #1117 no_wake_word как контекст → фильтр ловил его как блокер,
+# rotation встал на ~12ч. С `no-e2e-required` мы говорим процессу: "это не e2e".
 blocker_issue_for_sig() {  # $1=sig
     local sig="$1"
     gh issue list --repo "$GH_REPO" --state open \
         --search "${sig} in:title,body" \
         --limit 5 --json number,labels --jq \
-        '[.[] | select([.labels[].name] | index("needs-e2e") | not) | select([.labels[].name] | index("e2e-done") | not) | .number] | max // ""' 2>/dev/null || true
+        '[.[] | select([.labels[].name] | index("needs-e2e") | not) | select([.labels[].name] | index("e2e-done") | not) | select([.labels[].name] | index("no-e2e-required") | not) | select([.labels[].name] | index("agent-flow") | not) | .number] | max // ""' 2>/dev/null || true
 }
 
 # detect_known_blocker — известный блокер открыт? Источники:
