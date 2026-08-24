@@ -323,7 +323,13 @@ async def photo_map_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 @authorized
 async def say_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /say <text> — make the robot speak."""
+    """Handle /say <text> — make the robot speak.
+
+    AV-10 (ADR-0028 §4.4): TTS публикуется только после успешного
+    AcquireFloor(voice). Если супервизор отказывает (другой клиент
+    держит voice) — пользователь видит уведомление, а не молчаливый
+    «произношу».
+    """
     text = " ".join(context.args) if context.args else ""
     if not text:
         await update.message.reply_text("Использование: /say <текст для озвучки>")
@@ -333,7 +339,14 @@ async def say_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # Issue #1195 — echo path: remember the chat so the TTS output of
     # /say is also echoed into the right chat.
     node.set_active_chat(update.effective_chat.id)
-    node.publish_tts(text)
+    result = node.publish_tts_with_floor(text)
+    if not result.granted:
+        held = result.held_by or "другим оператором"
+        await update.message.reply_text(
+            f"🚫 Голос удерживает {held}. "
+            "Дождитесь окончания текущего ответа или используйте текст."
+        )
+        return
     await update.message.reply_text(f"🗣 Озвучиваю: _{text}_", parse_mode="Markdown")
 
 

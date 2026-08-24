@@ -51,7 +51,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def _handle_move(query, context, direction: str) -> None:
-    """Publish velocity command for movement button press."""
+    """Publish velocity command for movement button press.
+
+    AV-10 (ADR-0028 §4.4): телеграм больше не публикует ``cmd_vel``
+    напрямую. Перед каждой командой движения бот просит у
+    ``avatar_supervisor`` floor ``teleop``. Если супервизор
+    отказывает (например, Quest уже держит ``teleop_floor``) —
+    кнопки гасятся и оператор видит «удерживается другим
+    оператором» (UX из ADR-0028 §6 Q3).
+    """
     node = _node(context)
     vel = MOVE_VELOCITIES.get(direction, (0.0, 0.0))
 
@@ -60,19 +68,31 @@ async def _handle_move(query, context, direction: str) -> None:
     twist.angular.z = float(vel[1])
 
     # Clamp to safety limits
-    max_lin = node.max_linear_speed
-    max_ang = node.max_angular_speed
+    max_lin = getattr(node, "max_linear_speed", 0.5)
+    max_ang = getattr(node, "max_angular_speed", 1.0)
     twist.linear.x = max(-max_lin, min(max_lin, twist.linear.x))
     twist.angular.z = max(-max_ang, min(max_ang, twist.angular.z))
 
-    node.cmd_vel_pub.publish(twist)
+    # AV-10 — acquire teleop_floor через супервизор.
+    result = node.publish_move_with_floor(twist)
+    if not result.granted:
+        held = result.held_by or "другим оператором"
+        await query.edit_message_text(
+            f"🚫 Управление удерживает {held}. "
+            "Дождитесь, пока оператор в очках отпустит руль, "
+            "или используйте текстовые команды.",
+            reply_markup=MOVEMENT_KEYBOARD,
+        )
+        return
 
     if direction == "stop":
         await query.edit_message_text("⏹ Остановлен", reply_markup=MOVEMENT_KEYBOARD)
     else:
-        # Schedule stop after move_duration
+        # Schedule stop after move_duration (только если floor всё ещё
+        # у нас — иначе _publish_stop тоже пройдёт через супервизор).
+        move_duration = getattr(node, "move_duration", 0.5)
         asyncio.get_event_loop().call_later(
-            node.move_duration,
+            move_duration,
             lambda: _publish_stop(node),
         )
         symbol = {"forward": "⬆️", "backward": "⬇️", "left": "⬅️", "right": "➡️"}.get(direction, "🔄")
@@ -83,9 +103,13 @@ async def _handle_move(query, context, direction: str) -> None:
 
 
 def _publish_stop(node) -> None:
-    """Publish zero velocity (called after move_duration timeout)."""
+    """Publish zero velocity (called after move_duration timeout).
+
+    AV-10: через ``publish_move_with_floor`` — если floor уже не у
+    нас, останавливаться не нужно (другой клиент рулит).
+    """
     twist = Twist()
-    node.cmd_vel_pub.publish(twist)
+    node.publish_move_with_floor(twist)
 
 
 async def _handle_quick(query, context, action: str) -> None:
