@@ -664,7 +664,7 @@ EOF
 # ---------------------------------------------------------------------------
 create_issue \
   "[AV-11] e2e: Avatar mixed-mode (Quest teleop + Telegram voice одновременно)" \
-  "agent:e2e-runner" \
+  "agent:backend" \
   "type:testing" \
   "priority:high" \
   "needs-e2e" \
