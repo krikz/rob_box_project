@@ -26,7 +26,7 @@ x-ros-env: &ros-env
 services:
   # ─── Zenoh router ───────────────────────────────────────────────────────────
   zenoh-router-test:
-    image: eclipse/zenoh:1.6.2
+    image: eclipse/zenoh:1.8.0
     container_name: zenoh-router-test
     network_mode: host
     environment:
