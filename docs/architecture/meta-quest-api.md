@@ -16,8 +16,9 @@
   `quest.rob_box.local`, SAN = `10.1.1.11`. Импортируется в Meta Quest
   через Settings → Privacy → Security → Trusted Sources (один раз).
 - **Auth:** 6-значный PIN, передаётся в `HELLO`-фрейме.
-- **Subprotocol:** `robbox-quest-v1` (обязателен; иначе сервер отвергает
-  рукопожатие).
+- **Subprotocol:** `robbox-quest-v1` обязателен для Phase 1 (Quest →
+  `rob_box_quest`). Phase 2 (Quest → `avatar_supervisor`) требует
+  `robbox-quest-v2` (см. §11); mismatch → `ERROR{PROTOCOL_VERSION}` (§8).
 
 ## 2. Frame format (binary)
 
@@ -58,7 +59,11 @@
 | `0x11` | `JSON_CMD` | client → server | см. §5 |
 | `0x12` | `JSON_EVENT` | server → client | см. §6 |
 | `0x20` | `GOODBYE` | обе стороны | `{reason: "user_logout"\|"shutdown"\|"timeout"\|"auth_fail"}` |
-| `0xFF` | `ERROR` | обе стороны | `{code: "AUTH_FAIL"\|"BAD_PAYLOAD"\|"RATE_LIMIT"\|"TOPIC_UNKNOWN"\|"INTERNAL", message: "..."}` |
+| `0xFF` | `ERROR` | обе стороны | `{code: "AUTH_FAIL"\|"BAD_PAYLOAD"\|"RATE_LIMIT"\|"TOPIC_UNKNOWN"\|"FLOOR_HELD"\|"MODE_CONFLICT"\|"INTERNAL", message: "..."}` |
+| `0x30` | `SET_MODE` | client → supervisor | msgpack `{client_id, mode: "off"\|"telegram_active"\|"avatar_present"\|"mixed"\|"teleop_only"\|"voice_only"}` |
+| `0x31` | `ACQUIRE_FLOOR` | client → supervisor | msgpack `{client_id, floor: "teleop"\|"voice"}` |
+| `0x32` | `RELEASE_FLOOR` | client → supervisor | msgpack `{client_id, floor: "teleop"\|"voice"}` |
+| `0x33` | `STATE_UPDATE` | supervisor → client | msgpack `{state: <packed AvatarState>}` — публикуется на каждое изменение FSM/floor-ов + 1 Hz keep-alive |
 
 **Handshake:**
 
@@ -74,6 +79,27 @@ client → JSON_CMD(teleop_twist)           (loop, 30 Hz max)
 ...
 client → GOODBYE(reason="user_logout")
 ```
+
+**FSM режимов супервизора** (источник истины —
+[ADR-0028 §4.1](../adr/0028-avatar-supervisor.md#41-режимы-аватара-fsm)):
+
+```mermaid
+stateDiagram-v2
+    [*] --> off
+    off --> telegram_active : telegram_acquire_floor
+    off --> avatar_present  : quest_acquire_floor
+    telegram_active --> mixed : quest_acquire_floor (teleop only)
+    telegram_active --> avatar_present : quest_acquire_full_floor
+    avatar_present --> mixed : telegram_acquire_voice_floor
+    avatar_present --> telegram_active : quest_release + telegram_holds
+    mixed --> telegram_active : quest_release_teleop
+    mixed --> avatar_present : telegram_release_voice
+    telegram_active --> off : telegram_release (timeout 30s no activity)
+    avatar_present --> off : quest_release (timeout 30s no activity)
+    mixed --> off : both_release
+```
+
+`SET_MODE` (`0x30`) без согласования с FSM даёт `ERROR{MODE_CONFLICT}` (§8).
 
 ## 4. `BINARY_FRAME` — server → client data streams
 
@@ -211,6 +237,30 @@ Phase 2 (R14). Сервер читает `docker logs <service>` (или journal
 
 Останавливает `follow`-стриминг логов.
 
+### 5.1. Supervisor-команды (Phase 2, subprotocol `robbox-quest-v2`)
+
+Те же 4 supervisor-команды из §3 (`0x30`–`0x33`) доступны как `JSON_CMD`
+для HTTP/REST-клиентов и для v1-инфраструктуры (`JSON_CMD` уже работает
+в `rob_box_quest`). Бинарные frame-типы — preferred для Quest-клиента;
+JSON-обёртка нужна для admin-панели и тестовых клиентов. Caddy/daemon
+маршрутизирует их в `avatar_supervisor` (ROS 2 service proxy, ADR-0028 §4.4).
+
+| `cmd` (JSON) | Эквивалент frame | Поля | Ошибки |
+|---|---|---|---|
+| `supervisor_set_mode` | `0x30 SET_MODE` | `client_id`, `mode` | `MODE_CONFLICT` (FSM отклонила) |
+| `supervisor_acquire_floor` | `0x31 ACQUIRE_FLOOR` | `client_id`, `floor` | `FLOOR_HELD` (другой клиент) |
+| `supervisor_release_floor` | `0x32 RELEASE_FLOOR` | `client_id`, `floor` | `FLOOR_HELD` (not_held_by_caller); идемпотентно для своего floor |
+| `supervisor_get_state` | `0x33 STATE_UPDATE` | — | — (poll-эквивалент) |
+
+Пример `supervisor_acquire_floor`:
+
+```json
+{"cmd": "supervisor_acquire_floor", "ts_ms": 1234567890, "seq": 12346, "client_id": "<uuid>", "floor": "teleop"}
+```
+
+Успех — клиент видит свой `client_id` в `state.floors.<floor>`
+очередного `STATE_UPDATE` / `JSON_EVENT{type: "supervisor_state"}`.
+
 ## 6. `JSON_EVENT` — server → client (control/notification)
 
 ```json
@@ -255,7 +305,9 @@ Phase 2 (R14). Сервер читает `docker logs <service>` (или journal
 | `TOPIC_UNKNOWN` | subscribe на topic, которого нет в registry | показать «Topic not available» |
 | `TOPIC_NOT_AVAILABLE_YET` | source-данные ещё не пришли (lidar не запущен) | автоматический retry через 1 с |
 | `INTERNAL` | неожиданная ошибка сервера | UI показывает «Server error, reconnect» |
-| `PROTOCOL_VERSION` | subprotocol не `robbox-quest-v1` | close socket, UI «Update client» |
+| `PROTOCOL_VERSION` | subprotocol не совпадает с поддерживаемой версией (см. §11) | close socket, UI «Update client» |
+| `FLOOR_HELD` | `0x31 ACQUIRE_FLOOR` / `supervisor_acquire_floor` — запрошенный floor уже держит другой `client_id`; или `0x32 RELEASE_FLOOR` для floor-а, который клиент не держит | показать «Floor held by another operator» (см. ADR-0028 §4.2 transfer-протокол) |
+| `MODE_CONFLICT` | `0x30 SET_MODE` / `supervisor_set_mode` — FSМ супервизора отклонила переход | показать «Mode not allowed now» |
 
 ## 9. Rate limits (Phase 1)
 
@@ -301,13 +353,41 @@ Server-side enforcement — token bucket per client; reset при reconnect.
   close с `ERROR{PROTOCOL_VERSION}`.
 - Если `client_version < server_version` (minor mismatch) → `WELCOME`
   с предупреждением; несовместимые поля просто игнорируются клиентом.
-- Любое изменение **формата payload** = major bump → новый subprotocol
-  (`robbox-quest-v2`), Caddy маршрутизирует на другой endpoint.
+- Любое изменение **формата payload** = major bump → новый subprotocol,
+  Caddy маршрутизирует на другой endpoint.
+
+### 11.1. Subprotocol-уровни
+
+| Subprotocol | Поколение клиента | Обязательные frame-типы | Эндпоинт |
+|---|---|---|---|
+| `robbox-quest-v1` | Phase 1 (Quest → `rob_box_quest`) | `0x01`..`0x20`, `0xFF`, `0x10`–`0x12` | `wss://<vision-pi>:8443/quest` |
+| `robbox-quest-v2` | Phase 2 (Quest → `avatar_supervisor`) | `0x01`..`0x20`, `0xFF`, `0x30`–`0x33` | тот же endpoint, маршрутизация по `subprotocol` |
+
+**Backward-compat:** при `subprotocol = "robbox-quest-v1"` сервер
+(Phase 2 build) отвечает `ERROR{PROTOCOL_VERSION}` и закрывает сокет —
+v1 клиент не понимает `0x30`–`0x33` и `STATE_UPDATE`, а v2-сессия
+требует supervisor-aware flow. Клиент обязан быть перекомпилирован с
+флагом `--subprotocol=v2` перед подключением к Phase 2 серверу.
+
+**Forward-compat:** v2 сервер также принимает `subprotocol =
+"robbox-quest-v1"` *только* в режиме `monitor` (ADR-0028 §4.5) —
+read-only наблюдение за камерами/лидаром/роботом; supervisor-команды
+(`0x30`–`0x33`, §5.1) молча игнорируются с лог-записью
+`client_id=... subprotocol=v1 ignored supervisor frame 0x3X`. Это нужно
+для поэтапного rollout: сначала деплоим supervisor в `monitor`, потом
+обновляем Quest-клиент. **Решение фиксируется здесь:** в режиме
+`monitor` v1-клиенты принимаются; в режиме `active` v1-клиенты
+получают `ERROR{PROTOCOL_VERSION}` сразу. Реализация гранулярного
+режима — карточка **AV-10**.
+
+Изменение семантики существующего frame-типа = bump subprotocol (v3+).
+Новое поле в payload — без bump-а (клиент игнорирует неизвестные поля).
 
 ## 12. Что НЕ в Phase 1 (out of scope для дизайна, отложено)
 
 - mTLS / OAuth / TOTP (Phase 3, см. ADR-0027 §6 Q3).
-- Multi-user arbitration (Phase 3, ADR-0027 §6 Q2).
+- Multi-user arbitration (Phase 3, ADR-0027 §6 Q2). Phase 2 закрывает
+  Quest vs Telegram через supervisor (ADR-0028).
 - 3D-pointcloud streaming на 30 Hz (Phase 3, лень клиента + bandwidth).
 - Hand-tracking pinch-grab для AR-объектов (Phase 2 опц., ADR-0027 §6 Q5).
 - Spatial audio с HRTF (Phase 3, ADR-0027 §6 Q6).
