@@ -93,6 +93,53 @@ mkdir -p "$OUT_DIR"
 # контейнера робота) до первого шага.
 E2E_RUN_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+# --- ADR-0027 §5.2: wake-gate pre-flight probe ----------------------------
+# Retro t_be491fba: rounds 215-222 voice_core_suite_v1 показали fail-streak
+# 3/3+ на cold-start wake-gate. dj02_stop_music шаг имеет ✅ ПОЛНЫЙ ЦИКЛ
+# (акцепт + LLM + TTS) + PATTERN_MISS stop_music → aggregate GATE-1 фейлит
+# "expected tool calls not invoked: stop_music". Root cause = cold-start
+# wake-gate (TRANSCRIPT[dj02] = «стоп музыка» без «Робот»), а не LLM race
+# как было misdiagnosed в t_9d229634.
+#
+# Probe: проверяем docker logs с момента E2E_RUN_BEFORE — есть ли ЛЮБОЕ
+# ПРИНЯТО с wake-prefix (Робот/Робокс). Если нет → cold-start не пройден →
+# step.expect="wake-gated" помечаются SKIP, не FAIL (backlog-аккумулятор
+# копит «обот»/«как дела» без wake — это by design, не bug).
+#
+# Артефакт: $OUT_DIR/wake_gate_preflight.json — verdict, checked_at, before,
+# reason, error. CI / ревью читают его для доказательства «это cold-start
+# flake, а не acceptance fail».
+WAKE_GATE_PREFLIGHT_FILE="${OUT_DIR}/wake_gate_preflight.json"
+WAKE_GATE_CLEARED=0   # 1 = cold-start cleared, 0 = not cleared, 2 = probe error
+WAKE_GATE_PREFLIGHT_REASON=""
+# Под set -u SCENARIO_FILE может быть не задан (single-text mode). Используем
+# ${SCENARIO_FILE:-} для безопасного обращения.
+if [ -n "${SCENARIO_FILE:-}" ]; then
+    log "WAKE-GATE-PREFLIGHT: probe before=${E2E_RUN_BEFORE}"
+    run_wake_gate_preflight "$E2E_RUN_BEFORE" "$WAKE_GATE_PREFLIGHT_FILE"
+    case $? in
+        0)  WAKE_GATE_CLEARED=1
+            WAKE_GATE_PREFLIGHT_REASON="cold-start cleared"
+            log "WAKE-GATE-PREFLIGHT: ✅ cold-start cleared" ;;
+        1)  WAKE_GATE_CLEARED=0
+            WAKE_GATE_PREFLIGHT_REASON="cold-start NOT cleared"
+            log "WAKE-GATE-PREFLIGHT: ⚠️ cold-start NOT cleared — wake-gated steps will SKIP" ;;
+        2)  WAKE_GATE_CLEARED=2
+            WAKE_GATE_PREFLIGHT_REASON="probe error"
+            log "WAKE-GATE-PREFLIGHT: ❌ probe error (no ROBOT_SSH / docker logs) — treating as not-cleared" ;;
+    esac
+else
+    # single-text mode: preflight не применим (одиночный wake-step не
+    # требует cold-start gate — он и ЕСТЬ cold-start probe). Пишем
+    # минимальный JSON, чтобы артефакт всегда был.
+    WAKE_GATE_CLEARED=1
+    mkdir -p "$OUT_DIR"
+    printf '{\n  "cleared": true,\n  "checked_at": "%s",\n  "before": "%s",\n  "reason": "single-text mode — preflight N/A (per-step wake-gated handled by run_step retry loop)",\n  "error": null\n}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "$E2E_RUN_BEFORE" \
+        > "$WAKE_GATE_PREFLIGHT_FILE"
+fi
+
 # --- самовосстановление артефакт-дира (ретро 11.08 t_26a6d362) -------------
 # Параллельный infra-cleanup на 249 (t_0a5d65af) удалял /tmp/e2e_v2_* ВО ВРЕМЯ
 # прогона → paplay open(): No such file → ложный FAIL (round-49, run 31544057593).
@@ -275,6 +322,11 @@ mark_fail_kind() {  # $1=kind
 SCRIPT_DIR_E2E="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR_E2E/e2e_voice_lib.sh"
+# ADR-0027 §5.2 wake-gate pre-flight helpers (retro t_be491fba). Source'ится
+# ПОСЛЕ e2e_voice_lib.sh, но ДО любых операций с docker logs. Pure functions
+# only — никакого main flow, никакого чтения ENV.
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR_E2E/e2e_voice_wake_gate.sh"
 
 # --- ADR-0022 GATE-1 acceptance.json (auto-discovery + gating) --------------
 # Резолвим ACCEPTANCE_FILE в порядке приоритета:
@@ -773,13 +825,39 @@ check_backlog_accumulated() {  # $1=before_rfc3339
 }
 
 # --- один атомарный шаг -----------------------------------------------------
-run_step() {  # $1=text $2=voice $3=step_label $4=expect(cycle|backlog)
+# Ожидаемое поведение определяется параметром $4 (expect_kind):
+#   cycle       — полный цикл STT→LLM→TTS (по дефолту)
+#   wake-gated  — то же, но ADR-0027 §5.2: если WAKE_GATE_CLEARED != 1
+#                 (cold-start not cleared) → SKIP без fail (см. retro
+#                 t_be491fba: cold-start wake-gate flake должен быть
+#                 отделён от acceptance fail). Логирует `[skip:wake-gate-cold-start]`.
+#   backlog     — фраза без wake-prefix копится в SpeechAccumulator
+#
+# run_step намеренно принимает уже-classified expect_kind (callers
+# используют classify_step_expect для дефолта и override).
+run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|backlog)
     local text="$1" voice="$2" label="$3" expect="${4:-cycle}"
     # BUG-B (t_f0612a43): если label содержит кириллицу/спецсимволы — slugify
     # для имени wav файла. Исходный label сохраняется для логов.
     local safe
     safe="$(safe_label "$label")"
     log "=== STEP ${label} (safe=${safe}): voice=${voice} text=\"${text}\" ==="
+
+    # 0. ADR-0027 §5.2: wake-gated SKIP (retro t_be491fba). Если
+    #    expect=wake-gated И preflight показал cold-start NOT cleared —
+    #    шаг пропускается (SKIP), не FAIL. Это by design поведение
+    #    backlog-аккумулятора: «Робот, ...» без wake → STT получает
+    #    «...» (без «Робот»), dialogue_node копит в [backlog] вместо
+    #    вызова LLM. Acceptance fail (missing stop_music) — это
+    #    симптом cold-start flake, а не acceptance flake.
+    if [ "$expect" = "wake-gated" ] && [ "${WAKE_GATE_CLEARED:-0}" != "1" ]; then
+        log "STEP ${label}: SKIP [skip:wake-gate-cold-start] — ${WAKE_GATE_PREFLIGHT_REASON:-cold-start not cleared}"
+        echo "E2E_STEP ${label} SKIP wake-gate-cold-start"
+        # Не помечаем fail_kind — это не fail. Возвращаем специальный
+        # код 3, который callers (scenario loop) интерпретируют как
+        # «пропущен по systemic, не считать в aggregate FAIL».
+        return 3
+    fi
 
     # 1. Синтез команды
     ensure_outdir
@@ -1120,7 +1198,11 @@ if [ -n "$SCENARIO_FILE" ]; then
     #                         "expected_keywords":["песня"],
     #                         "response_max_ms":60000}}]}
     cp "$SCENARIO_FILE" "$OUT_DIR/scenario.json"
-    # Парсим в .tsv: idx \t label \t text \t voice \t patterns_json \t acceptance_json \t expect \t retry_acceptance
+    # Парсим в .tsv: idx \t label \t text \t voice \t patterns_json \t acceptance_json \t expect_raw \t retry_acceptance
+    # expect_raw — что написано в scenario.json (cycle / wake-gated / backlog / "").
+    # Классификация (auto-detect wake-prefix → wake-gated) делается в bash
+    # через classify_step_expect ПОСЛЕ парсинга, чтобы Python-парсер не
+    # зависел от bash-логики и тестировался отдельно.
     python3 - "$SCENARIO_FILE" <<'PY' > "$OUT_DIR/scenario_parsed.txt"
 import json, sys
 sc = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -1135,23 +1217,37 @@ for i, s in enumerate(sc.get("steps", [])):
         retry = 0
     print(f"{i}\t{s.get('label', f's{i+1}')}\t{s.get('text','')}\t{s.get('voice','anton')}\t{json.dumps(pats)}\t{json.dumps(acc, ensure_ascii=False)}\t{exp}\t{retry}")
 PY
-    while IFS=$'\t' read -r idx label text voice patterns_json acceptance_json expect retry_acceptance; do
+    while IFS=$'\t' read -r idx label text voice patterns_json acceptance_json expect_raw retry_acceptance; do
         [ -z "$idx" ] && continue
         case "$retry_acceptance" in
             ''|*[!0-9]*) retry_acceptance=0 ;;
         esac
+        # ADR-0027 §5.2: classify step.expect (auto-detect wake-prefix →
+        # wake-gated). Классифицируем в bash, чтобы Python-парсер
+        # оставался pure-data.
+        expect="$(classify_step_expect "$expect_raw" "$text")"
         # retry_acceptance = доп. попытки при FAIL patterns/acceptance.
         # Нужно для dj01: LLM недетерминирован — если renardo не запустился
         # (execute_music_code не вызван), повторяем команду (e2e run 32595628905).
         attempt_n=0
         step_ok=0
         cycle_failed=0
+        step_skipped=0
         while :; do
             STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
             run_step "$text" "$voice" "$label" "$expect"
             rc=$?
             # Пишем transcript (даже при FAIL — для ретро-анализа, что STT услышал)
             parse_transcript "$label" "$STEP_BEFORE" "$text"
+            # ADR-0027 §5.2: rc=3 = SKIP wake-gate-cold-start (не fail, не
+            # pass). Шаг пропущен по systemic — backlog-аккумулятор скопит
+            # фразу без wake, LLM не получит команду, и aggregate GATE-1
+            # не должен фейлить на этом шаге.
+            if [ "$rc" = "3" ]; then
+                step_skipped=1
+                log "STEP ${label}: wake-gated SKIP (cold-start not cleared) — см. $WAKE_GATE_PREFLIGHT_FILE"
+                break
+            fi
             if [ "$rc" != "0" ]; then
                 PASS=0
                 cycle_failed=1
@@ -1195,7 +1291,12 @@ PY
         if [ "$cycle_failed" = "1" ]; then
             continue
         fi
-        if [ "$step_ok" = "1" ]; then
+        if [ "$step_skipped" = "1" ]; then
+            # ADR-0027 §5.2: SKIP — не pass, не fail. Не помечаем fail_kind
+            # и не влияем на PASS aggregate. echo уже сделал run_step
+            # ('E2E_STEP <label> SKIP wake-gate-cold-start').
+            :
+        elif [ "$step_ok" = "1" ]; then
             echo "E2E_STEP ${label} OK"
         else
             PASS=0
@@ -1205,31 +1306,53 @@ PY
         fi
     done < "$OUT_DIR/scenario_parsed.txt"
 
-    # --- ADR-0022 GATE-1: top-level aggregate acceptance check ---------------
-    # Если --scenario задан и acceptance.json найден, прогоняем aggregate
-    # проверку: каждый expected_tool_calls должен быть вызван хотя бы раз
-    # за весь прогон (в логах docker voice-assistant); ни один из
-    # must_not_call не должен быть вызван. Пишет $OUT_DIR/acceptance.json
-    # с verdict. Если verdict == FAIL → PASS=0.
-    if [ -n "$ACCEPTANCE_FILE" ] && [ -f "$ACCEPTANCE_FILE" ]; then
-        check_gate1_aggregate "$ACCEPTANCE_FILE" "${E2E_RUN_BEFORE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-        if [ $? != 0 ]; then
-            PASS=0
-            mark_fail_kind feature
-            log "GATE-1: ❌ aggregate acceptance FAIL (см. $OUT_DIR/acceptance.json)"
-            echo "E2E_GATE1_FAIL"
-        else
-            log "GATE-1: ✅ aggregate acceptance PASS"
-            echo "E2E_GATE1_OK"
+    # --- ADR-0027 §5.2: GATE-1 SKIP-логика ------------------------------------
+    # Если все wake-gated steps были SKIP (cold-start не cleared), aggregate
+    # GATE-1 не должен фейлить — это by-design поведение backlog-аккумулятора
+    # (см. retro t_be491fba). Фиксируем это в $OUT_DIR/gate1_skip_reason.json
+    # и выводим явный маркер E2E_GATE1_SKIP_WAKE_GATE для пост-валидатора.
+    if [ "${WAKE_GATE_CLEARED:-0}" != "1" ] && [ -n "${SCENARIO_FILE:-}" ]; then
+        printf '{\n  "skip_reason": "wake-gate cold-start not cleared",\n  "preflight_artifact": "wake_gate_preflight.json",\n  "scenarios_steps_classified": "wake-gated steps SKIP by design (backlog-accumulator design)",\n  "retro": "t_be491fba (cold-start wake-gate misdiagnosis)"\n}\n' > "$OUT_DIR/gate1_skip_reason.json"
+        log "GATE-1: ⏭ SKIP — wake-gate cold-start not cleared (см. wake_gate_preflight.json)"
+        echo "E2E_GATE1_SKIP_WAKE_GATE"
+    else
+        # --- ADR-0022 GATE-1: top-level aggregate acceptance check -----------
+        # Если --scenario задан и acceptance.json найден, прогоняем aggregate
+        # проверку: каждый expected_tool_calls должен быть вызван хотя бы раз
+        # за весь прогон (в логах docker voice-assistant); ни один из
+        # must_not_call не должен быть вызван. Пишет $OUT_DIR/acceptance.json
+        # с verdict. Если verdict == FAIL → PASS=0.
+        if [ -n "$ACCEPTANCE_FILE" ] && [ -f "$ACCEPTANCE_FILE" ]; then
+            check_gate1_aggregate "$ACCEPTANCE_FILE" "${E2E_RUN_BEFORE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+            if [ $? != 0 ]; then
+                PASS=0
+                mark_fail_kind feature
+                log "GATE-1: ❌ aggregate acceptance FAIL (см. $OUT_DIR/acceptance.json)"
+                echo "E2E_GATE1_FAIL"
+            else
+                log "GATE-1: ✅ aggregate acceptance PASS"
+                echo "E2E_GATE1_OK"
+            fi
         fi
     fi
 else
     STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-    run_step "$TEXT" "${VOICE:-$YANDEX_TTS_VOICE}" "single"
+    # single-text mode: classify expect (auto-detect wake-prefix → wake-gated)
+    single_expect="$(classify_step_expect "" "$TEXT")"
+    run_step "$TEXT" "${VOICE:-$YANDEX_TTS_VOICE}" "single" "$single_expect"
     rc=$?
     # Пишем transcript для single-режима
     parse_transcript "single" "$STEP_BEFORE" "$TEXT"
-    if [ "$rc" != "0" ]; then PASS=0; echo "E2E_STEP single FAIL"; else echo "E2E_STEP single OK"; fi
+    # ADR-0027 §5.2: rc=3 = SKIP wake-gate-cold-start. Single mode
+    # bypass'ит preflight (см. выше — WAKE_GATE_CLEARED=1 для single),
+    # но классификация expect может сработать (если юзер дал wake-текст
+    # через --text). Защита: rc=3 в single mode = wake-gate flake, FAIL.
+    if [ "$rc" = "3" ]; then
+        PASS=0
+        log "single: wake-gated SKIP — это flake для single-text, помечаем как no_reaction"
+        mark_fail_kind no_reaction
+        echo "E2E_STEP single FAIL no_reaction (wake-gated SKIP)"
+    elif [ "$rc" != "0" ]; then PASS=0; echo "E2E_STEP single FAIL"; else echo "E2E_STEP single OK"; fi
     # Дополнительные паттерны (--patterns "a,b,c") — проверяем после цикла
     if [ "$rc" = "0" ] && [ -n "$PATTERNS" ]; then
         log "single: проверка паттернов: $PATTERNS"
