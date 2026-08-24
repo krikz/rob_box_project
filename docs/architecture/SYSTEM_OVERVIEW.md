@@ -6,12 +6,13 @@
   <sub>Версия: 1.2.0 | Дата: 2026-05-15</sub>
 </div>
 
-> **📝 Последние обновления (24 октября 2025):**
-> - Perception и LSLIDAR перемещены с Vision Pi на Main Pi
-> - Добавлена система мониторинга (Grafana, Prometheus, Loki)
-> - Исправлены TF трансформации (robot-state-publisher с Zenoh wrapper)
-> - Голосовой ассистент получил time awareness и синхронизацию TTS
-> - Полная документация Zenoh namespace и облачного подключения
+> **📝 Последние обновления:**
+> - **24 августа 2026** — добавлена секция §5.4 Avatar Supervisor (см. [ADR-0028](adr/0028-avatar-supervisor.md)); Quest-аватар и Telegram-бот становятся клиентами единого координатора режимов (Phase 2, дизайн)
+> - 24 октября 2025 — Perception и LSLIDAR перемещены с Vision Pi на Main Pi
+> - 24 октября 2025 — Добавлена система мониторинга (Grafana, Prometheus, Loki)
+> - 24 октября 2025 — Исправлены TF трансформации (robot-state-publisher с Zenoh wrapper)
+> - 24 октября 2025 — Голосовой ассистент получил time awareness и синтенизацию TTS
+> - 24 октября 2025 — Полная документация Zenoh namespace и облачного подключения
 
 ---
 
@@ -22,6 +23,7 @@
 3. [Сетевая топология](#3-сетевая-топология)
 4. [Программная архитектура](#4-программная-архитектура)
 5. [ROS 2 граф](#5-ros-2-граф)
+   - 5.4. [Avatar Supervisor](#54-avatar-supervisor--координатор-режимов-аватара)
 6. [Docker инфраструктура](#6-docker-инфраструктура)
 7. [Потоки данных](#7-потоки-данных)
 8. [Принятые решения](#8-принятые-решения)
@@ -291,6 +293,7 @@ graph TD
 - **Nav2 Stack**: Глобальное и локальное планирование траектории
 - **Animation Manager**: Управление LED анимациями и эмоциями
 - **Behavior Trees** (future): Высокоуровневое управление поведением
+- **Avatar Supervisor** (Phase 2, [ADR-0028](adr/0028-avatar-supervisor.md)): координатор режимов аватара и единственная точка, через которую внешние клиенты (Quest WebXR, Telegram-бот) получают `teleop_floor` и `voice_floor`
 
 #### Middleware Layer
 - **Zenoh Router**: Маршрутизация сообщений между узлами
@@ -346,6 +349,10 @@ Main Pi (10.1.1.10)
 ```
 Vision Pi (10.1.1.11)
 ├─ /zenoh_router              # Zenoh bridge (client mode)
+├─ /avatar_supervisor         # Avatar mode coordinator (Phase 2, ADR-0028)
+│  ├─ Published: /avatar/state
+│  ├─ Services: AcquireFloor, ReleaseFloor, SetAvatarMode, SetVoiceMode
+│  └─ Subscribes: client heartbeats, /odom, /device/snapshot
 ├─ /oak_d_node                # Camera driver (with integrated AprilTag detection)
 │  ├─ Published: /camera/color/image_raw
 │  │             /camera/depth/image_rect_raw
@@ -355,10 +362,15 @@ Vision Pi (10.1.1.11)
 │     │              /camera/color/camera_info
 │     └─ Published: /apriltag/detections
 │                   /tf (tag transforms)
-└─ /voice_assistant           # Voice assistant (ReSpeaker)
-   ├─ Subscribed: /perception/events
-   └─ Published: /dialogue/text
-                 /audio/tts
+├─ /voice_assistant           # Voice assistant (ReSpeaker)
+│  ├─ Subscribed: /perception/events
+│  └─ Published: /dialogue/text
+│                /audio/tts
+│                /voice/dialogue/state
+└─ /rob_box_quest             # Meta Quest / WebXR telepresence (Phase 1+, ADR-0027)
+   ├─ WSS: wss://10.1.1.11:8443/quest (Caddy + self-signed TLS)
+   ├─ Publishes: cmd_vel_quest, cmd_vel_emergency
+   └─ Subscribes: /camera/color/image_raw, /scan, /voice/dialogue/state
 ```
 
 **Примечание:** LSLIDAR и Perception были перемещены на Main Pi (24 октября 2025) для оптимизации ресурсов Vision Pi.
@@ -375,6 +387,74 @@ Vision Pi (10.1.1.11)
 | `/map` | nav_msgs/OccupancyGrid | rtabmap | nav2, rviz | 1 Hz | 2D карта |
 | `/apriltag/detections` | apriltag_msgs/AprilTagDetectionArray | apriltag_node | nav2 | 5 Hz | Детекции маркеров |
 | `/device/snapshot` | robot_sensor_hub_msg/DeviceSnapshot | micro_ros_agent | monitoring | 1 Hz | Сенсоры ESP32 |
+| `/avatar/state` | std_msgs/String (msgpack) | avatar_supervisor | rob_box_quest, rob_box_telegram, admin UI | 1 Hz (latched, transient_local) | FSM режимов аватара: `mode`, `teleop_floor`, `voice_floor`, `last_event`, `since_ms` (см. [ADR-0028 §4.3](adr/0028-avatar-supervisor.md#43-ros-2-api-супервизора)) |
+| `/voice/dialogue/state` | std_msgs/String | dialogue_node | rob_box_quest, avatar_supervisor | event | FSM голосового пайплайна (idle/listening/speaking) |
+
+---
+
+### 5.4. Avatar Supervisor — координатор режимов аватара
+
+> **Статус:** Proposed (дизайн-фаза, реализация отложена на Phase 2 #1576).
+> Полное решение — [ADR-0028](adr/0028-avatar-supervisor.md).
+
+Vision Pi обслуживает **внешних клиентов** аватара — Quest WebXR-оператор
+(см. [ADR-0027](adr/0027-meta-quest-ar-control.md)) и Telegram-бот
+(`rob_box_telegram`). Без общей state-машины эти клиенты публикуют
+`cmd_vel_*` и TTS-команды параллельно, что приводит к race conditions
+(см. ADR-0028 §1.2).
+
+Нода `/avatar_supervisor` (отдельный ROS 2 node, планируется в
+`src/rob_box_supervisor/`) решает это — становится единственным
+координатором режимов и владельцем прав (`floors`) между клиентами:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│            avatar_supervisor  (Vision Pi, Phase 2, ADR-0028)          │
+│                                                                      │
+│  Telegram ──►  ┌─────────────┐    ┌─────────────┐                    │
+│   (клиент)     │ ModeManager │    │ LockManager │  ──► /avatar/state │
+│                │ (FSM)       │    │ (floors)    │                    │
+│  Quest ─────►  └──────┬──────┘    └──────┬──────┘                    │
+│   (клиент)           │                  │                            │
+│                      ▼                  ▼                            │
+│              twist_mux input     dialogue_node                        │
+│              (quest/telegram)    voice_input_mode                    │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**Что делает супервизор (см. ADR-0028 §3):**
+
+| Зона ответственности | Конкретно |
+|---|---|
+| FSM режимов | `off` / `telegram_active` / `avatar_present` / `teleop_only` / `voice_only` / `mixed` ([§4.1](adr/0028-avatar-supervisor.md#41-режимы-аватара-fsm)) |
+| Lock-менеджер | `teleop_floor` и `voice_floor` — только один клиент держит «право руля» и «право голоса» ([§4.2](adr/0028-avatar-supervisor.md#42-lock-менеджер-floors)) |
+| Голосовые режимы | Единственная точка, которая меняет параметр `voice_input_mode` на `dialogue_node` ([ADR-0027 §3.4](adr/0027-meta-quest-ar-control.md#34-voice-modes-phase-2)) |
+| Переживание рестарта клиента | Если Quest упал, `avatar_present` снимается, Telegram (если был активен) продолжает без ручного переключения (S8) |
+| Dead-man | Клиент без heartbeat > 500 мс → `teleop_floor` снимается (S10) |
+
+**Что НЕ делает супервизор** (см. [ADR-0021 R1](adr/0021-dialogue-node-discipline.md)):
+
+- ❌ Не обрабатывает голос (STT/LLM/TTS) — это `dialogue_node`
+- ❌ Не публикует `cmd_vel_*` напрямую — это делает `twist_mux` (через inputs `quest` и `telegram`)
+- ❌ Не рендерит UI — это клиент
+
+**Phase 1 — только monitor-режим.** Супервизор задеплоен, наблюдает и
+публикует `/avatar/state`, но **не** меняет `twist_mux` inputs и
+`dialogue_node` параметры. Это позволяет задеплоить ноду до рефакторинга
+клиентов и без blast radius. Phase 2 — `mode:=active`, полная маршрутизация.
+
+**ROS-контракт** (полный — [ADR-0028 §4.3](adr/0028-avatar-supervisor.md#43-ros-2-api-супервизора)):
+
+- Публикует: `/avatar/state` (latched, transient_local, msgpack в `std_msgs/String`)
+- Подписывается на heartbeat-топики клиентов, `/odom`, `/device/snapshot`
+- Сервисы: `AcquireFloor` / `ReleaseFloor` / `SetAvatarMode` / `SetVoiceMode`
+
+**Связанные документы:**
+
+- [ADR-0028](adr/0028-avatar-supervisor.md) — основное решение
+- [ADR-0027](adr/0027-meta-quest-ar-control.md) — Quest / WebXR, voice modes
+- [ADR-0021](adr/0021-dialogue-node-discipline.md) — граница владения голосом
+- [meta-quest-api.md](meta-quest-api.md) — wire-протокол Quest, расширяется frame-типами `0x30–0x33` для клиентского API супервизора
 
 ---
 
