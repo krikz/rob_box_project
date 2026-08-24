@@ -1,9 +1,11 @@
-# AV-11 Blocker Analysis — t_307bae4a run #2373
+# AV-11 Blocker Analysis — t_307bae4a, attempt 6 (run #2392)
 
-**Дата:** 2026-08-24 (CEST)
+**Дата:** 2026-08-24 ~23:11 (CEST)
 **Воркер:** backend
 **Ветка:** z-{agent}/1605-av-11-e2e-avatar-mixed-mode-quest-teleop
-**HEAD:** 0f71ca1d (НЕ feature/avatar — коммит e2e harness, см. сессию t_c7761956)
+**HEAD:** de121244 (поверх 0f71ca1d, который поверх feature/avatar@955cbf58)
+**Предыдущие попытки на этой карточке:** 1 (blocked 23:00), 2 (blocked 23:06), 3 (crashed 23:07), 4 (blocked 23:08), 5 (blocked 23:09) — все констатировали одно и то же.
+**Изменение мира с попытки 1:** `feature/avatar` HEAD остался `955cbf58`. Единственное движение — PR #1606 (AV-1 plan script) MERGED в 21:11:57Z. Никакого кода AV-2..AV-10 в src/ не появилось, #1586 OPEN.
 
 ## TL;DR
 
@@ -13,7 +15,7 @@ AV-11 не выполнима в текущем состоянии репо. В�
 
 | ID | title | state | merged to feature/avatar? | evidence |
 |----|-------|-------|---------------------------|----------|
-| AV-1 (#1595) | epic decomposition plan + script | PR #1606 OPEN | NO | `gh pr view 1606` |
+| AV-1 (#1595) | epic decomposition plan + script | PR #1606 MERGED 2026-08-24T21:11:57Z | YES (docs only) | `gh pr view 1606 --json state,mergedAt` |
 | AV-2 (#1596) | rob_box_supervisor package skeleton | OPEN | NO | `gh issue view 1596` |
 | AV-3 (#1597) | FSM ModeManager | OPEN | NO | `gh issue view 1597` |
 | AV-4 (#1598) | LockManager teleop_floor/voice_floor + 500ms dead-man | OPEN | NO | `gh issue view 1598` |
@@ -107,15 +109,24 @@ Acceptance criteria #1605 (issue body) требуют:
 
 ## Возможные действия
 
-A. Заблокировать task (kanban_block kind=dependency) — ждать AV-2..AV-10 + #1586 fix.
-B. Начать AV-2..AV-6 самому — это НЕ моя задача (assignee у этих issue свой,
-   scope-creep помимо собственной карточки запрещён процессом).
-C. Запустить dry-run на существующем rob_box_telegram — частичное покрытие
-   pytest из raw-evidence, не выполняет 7 acceptance steps.
+A. Заблокировать task (kanban_block kind=dependency) — то, что делали попытки 1/2/4/5. Риск: диспетчер может auto-escalate до triage, потому что 4 одинаковых dependency-блока подряд.
+B. Начать AV-2..AV-6 самому — НЕ моя задача (assignee у этих issue свой, scope-creep помимо собственной карточки запрещён процессом).
+C. Запустить dry-run на существующем rob_box_telegram — частичное покрытие pytest из raw-evidence, не выполняет 7 acceptance steps. Плюс нельзя поднять контейнер `rob_box_supervisor` — пакета нет.
+D. Сменить kind на `capability` — «у backend-воркера нет SSH к Vision Pi + Main Pi, поэтому даже после merge AV-2..AV-10 живой e2e-прогон невозможен из этой среды». Это перенаправит карточку в human-triage, а не в бесконечный dependency-цикл.
 
-## Рекомендация
+## Рекомендация (для попытки 6)
 
-A. kanban_block kind=dependency — task не выполнима. Я фиксирую raw-evidence в
-worktree (`blocker-state.md` + этот коммит), комментирую issue #1605 с явным
-указанием блокера, выхожу через `kanban_block`. Когда AV-2..AV-10 смерджат в
-feature/avatar и #1586 закроют, диспетчер выдернет карточку обратно в ready.
+D. `kanban_block(kind='capability')` с CRP. Аргументы:
+- 4 dependency-блока подряд (попытки 1, 2, 4, 5) дают одинаковый вывод, который
+  диспетчер по правилам unblock-loop-detection может сам перевести в triage.
+  Сменить kind — это и есть тот сигнал, что воркер осознал, что dependency-loop
+  бесперспективен.
+- Карточка требует live-прогона на Vision Pi (10.1.1.21) + Main Pi. У воркера
+  есть только локальный worktree; docker exec / ssh в этой сессии не работают
+  (проверено в ранних попытках — `kanban_comment` t_3a2fcb55 / t_325dd611 из
+  предыдущих сессий).
+- Acceptance «500ms safe-stop» + «mixed-state /avatar/state» физически нельзя
+  проверить без работающего supervisor-пакета, который не в src/.
+
+Артефакт в WIP `de121244`: эта таблица + raw-evidence по 6 пунктам + история 5
+попыток + рекомендация D. Push выполнен.
