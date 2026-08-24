@@ -213,6 +213,13 @@ fi
 : "${E2E_ROBOT_HOST:=10.1.1.21}"
 : "${E2E_ROBOT_USER:=ros2}"
 : "${E2E_ROBOT_PASS:=}"   # пароль из окружения, в скрипт не пишем; пусто → pre-flight SKIP с warn
+# Manual override: если true — detect_known_blocker возвращает пусто (ротация
+# не блокируется известными сигнатурами). Используется только для экстренной
+# разблокировки (например, когда фильтр ложно-положительный из-за старого
+# issue с signature в body + needs-e2e/e2e-done, который ещё не закрыт).
+# Ретро 24.08 t_8a8d9403 — страховка на случай кейса #1195.
+# Пример: E2E_FORCE_UNPAUSE=true bash agent-flow-e2e-process.sh
+: "${E2E_FORCE_UNPAUSE:=false}"
 
 # --- helpers -----------------------------------------------------------------
 log() { printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*" >&2; }
@@ -247,6 +254,15 @@ blocker_issue_for_sig() {  # $1=sig
 # Печатает "#<issue>" или "robot-log:<sig>"; пусто — блокера нет.
 detect_known_blocker() {
     local sig hit _sig_logs _priyato_logs
+    # Ретро 24.08 t_8a8d9403: manual override для экстренной разблокировки.
+    # Если E2E_FORCE_UNPAUSE=true — пропускаем ВСЕ блокер-чеки (ротация
+    # не блокируется известными сигнатурами). Используется только если фильтр
+    # даёт false-positive (например, старый issue с signature в body ещё не
+    # закрыт, и фильтр его пропускает по какой-то причине).
+    if [ "${E2E_FORCE_UNPAUSE:-false}" = "true" ]; then
+        log "⚠️ E2E_FORCE_UNPAUSE=true — detect_known_blocker возвращает пусто"
+        return 0
+    fi
     for sig in "${_blocker_sigs[@]}"; do
         [ -z "$sig" ] && continue
         hit="$(blocker_issue_for_sig "$sig")"
