@@ -1834,6 +1834,19 @@ except Exception: pass' 2>/dev/null || true)"
         log "pre-round guard: issue #${_g_n} PR ${_g_br} stale (behind develop) — НЕ считаю live candidate (ретро 22.08 t_a2cd5753)"
         continue
     fi
+    # Ретро 24.08 t_cd32788f: stale-conflicting guard. Если PR имеет метку
+    # `stale-conflicting` (поставлена merge-gate'ом когда CONFLICTING > 24ч) →
+    # НЕ пытаемся merge (rebase требует ручного решения воркера/Шифу).
+    # round не создастся если все candidates stale-conflicting (no-op tick).
+    # Без этого guard'а e2e-rotation делает silent noise каждые 5 мин.
+    if [ -n "${_g_pr_num:-}" ]; then
+        _g_sc_labels="$(gh pr view "$_g_pr_num" --repo "$GH_REPO" --json labels \
+            --jq '[.labels[].name] | join(",")' 2>/dev/null || echo '')"
+        if printf '%s' "$_g_sc_labels" | tr ',' '\n' | grep -qx 'stale-conflicting'; then
+            log "pre-round guard: issue #${_g_n} PR #${_g_pr_num} has stale-conflicting label — skip CONFLICTING PR #${_g_pr_num} (ретро 24.08 t_cd32788f)"
+            continue
+        fi
+    fi
     live_candidates=$((live_candidates+1))
     log "pre-round guard: issue #${_g_n} PR ${_g_st} (${_g_br}) — live candidate"
 done < <(printf '%s' "$issues_json" | python3 -c '
