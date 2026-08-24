@@ -48,6 +48,26 @@
 
 set -euo pipefail
 
+# --- library bootstrap -------------------------------------------------------
+# hermes_github.sh (whoami_*, gh helpers) MUST be sourced BEFORE any code that
+# calls those functions. Bash resolves function names at call time, but those
+# calls happen top-level inside this script (line ~920 — pre-round blocker
+# gate — was the earliest crash site before this fix). Keep this block ABOVE
+# all top-level call sites.
+#
+# Ретро t_df4fff46, issue #1586: whoami_add_label on line 908 crashed with
+# "command not found" while . hermes_github.sh sat at line 1115.
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=hermes_github.sh
+. "$_LIB_DIR_HERE/hermes_github.sh"
+# shellcheck source=lib_user_unlabel_check.sh
+. "$_LIB_DIR_HERE/lib_user_unlabel_check.sh"
+# Issue #1540: shared workflow-dispatch dedup (verify_recent_run).
+# Используется и в agent-flow-post-merge-build.sh — общий контракт,
+# чтобы дедупликация была симметричной между двумя cron-скриптами.
+# shellcheck source=lib_workflow_dedup.sh
+. "$_LIB_DIR_HERE/lib_workflow_dedup.sh"
+
 # --- credentials bootstrap (ретро 23.08 t_b977cb4b, реконструкция t_98bb3a1d) ---
 # git 2.34.1 (Ubuntu 22.04) has a known bug where 'git push' fails with
 # 'could not read Password for https://***@github.com' when both
@@ -1097,22 +1117,11 @@ trap _exit_sweep EXIT
 # user-unlabel guard (ретро 18.08 t_de6bea69, PR #1398) — если Шифу руками
 # снял метку (e2e-done / needs-review) после auto-установки, sweep НЕ
 # должен её возвращать. Источник — рядом со скриптом (для тестов и для
-# install-раскладки в ~/.hermes/...).
-_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-# shellcheck source=lib_user_unlabel_check.sh
-. "$_LIB_DIR_HERE/lib_user_unlabel_check.sh"
-# Issue #1540: shared workflow-dispatch dedup (verify_recent_run).
-# Используется и в agent-flow-post-merge-build.sh — общий контракт,
-# чтобы дедупликация была симметричной между двумя cron-скриптами.
-# shellcheck source=lib_workflow_dedup.sh
-. "$_LIB_DIR_HERE/lib_workflow_dedup.sh"
-# self-id / whoami helper (issue #1534): перед label-changes (`e2e-done` /
-# `e2e:rejected` / `no-e2e-required`) этот скрипт пишет «🤖 [agent:<role>]
-# script=… action=… reason=…» чтобы в истории GitHub было видно КТО это
-# сделал, а не только krikz (actor = holder of GH token). Идемпотентность:
-# helper скипает дубль в окне 2ч (защита от reconcile-loop).
-# shellcheck source=hermes_github.sh
-. "$_LIB_DIR_HERE/hermes_github.sh"
+# install-раскладки в ~/.hermes/...). Source-блок hermes_github.sh +
+# lib_user_unlabel_check.sh + lib_workflow_dedup.sh теперь живёт в самом
+# верху файла (после `set -euo pipefail`), чтобы whoami_* функции были
+# определены ДО первого top-level вызова на line ~920.
+# (ретро t_df4fff46, issue #1586)
 
 slugify() {
     printf '%s' "$1" \
