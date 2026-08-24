@@ -76,9 +76,14 @@ def validate_packet(packet: bytes) -> bool:
     Checks, in order:
       * length is exactly :data:`SBUS_FRAME_SIZE` bytes;
       * header byte is 0x0F and footer byte is 0x00;
-      * every decoded channel lies within the SBUS range
-        [172, 1811] (values outside it mean the frame is mis-synced
-        garbage, not a valid receiver output).
+      * no decoded channel exceeds :data:`SBUS_CHANNEL_MAX` (a value above
+        1811 cannot come from a real receiver and means the reader is
+        mis-synced on a false 0x0F header inside channel data).
+
+    Channels are allowed to be 0: ELRS receivers report unused channels
+    (typically 12-15 on a 5-channel transmitter) as 0, not as SBUS center,
+    so rejecting 0 would drop every valid frame (regression: wheels never
+    move despite ARM + gas).
 
     frame-lost/failsafe flags are intentionally NOT rejected here: such
     frames are structurally valid, and dropping them entirely would hide
@@ -88,10 +93,7 @@ def validate_packet(packet: bytes) -> bool:
         return False
     if packet[0] != SBUS_HEADER or packet[SBUS_FRAME_SIZE - 1] != SBUS_FOOTER:
         return False
-    return all(
-        SBUS_CHANNEL_MIN <= ch <= SBUS_CHANNEL_MAX
-        for ch in decode_channels(packet)
-    )
+    return all(ch <= SBUS_CHANNEL_MAX for ch in decode_channels(packet))
 
 
 def read_frame(read: Callable[[int], bytes]) -> Optional[bytes]:
