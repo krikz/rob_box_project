@@ -1,9 +1,10 @@
 # rob_box_quest — WebSocket / REST API контракт
 
 > Companion-документ к [ADR-0027](../adr/0027-meta-quest-ar-control.md).
-> Описывает **точный** wire-протокол между Meta Quest WebXR-клиентом и
-> сервисом `rob_box_quest` (Vision Pi). Это reference для реализации
-> Phase 1; до Phase 1 — заморожен, любые изменения через ADR-0027 amendment.
+> Описывает **точный** wire-протокол между веб-клиентом (браузер desktop/планшет
+> или Meta Quest WebXR) и сервисом `rob_box_quest` (Vision Pi). Это reference
+> для реализации Phase 1; до Phase 1 — заморожен, любые изменения через
+> ADR-0027 amendment.
 
 ## 1. Транспорт
 
@@ -51,7 +52,7 @@
 |---|---|---|---|
 | `0x01` | `HELLO` | client → server | `{client_version: "0.1.0", capabilities: ["webxr","hand_tracking"], session_pin: "123456"}` |
 | `0x02` | `WELCOME` | server → client | `{server_version: "0.1.0", session_id: "<uuid4>", server_time_ms: 1234567890, robot_status: {...}}` |
-| `0x03` | `SUBSCRIBE` | client → server | `{topic: "camera_rear"\|"lidar_2d"\|"lidar_3d"\|"voice_state"\|"robot_status", quality: "low"\|"med"\|"high"}` |
+| `0x03` | `SUBSCRIBE` | client → server | `{topic: "camera_rear"\|"camera_front"\|"lidar_2d"\|"lidar_3d"\|"voice_state"\|"robot_status"\|"person_detections", quality: "low"\|"med"\|"high"}` |
 | `0x04` | `UNSUBSCRIBE` | client → server | `{topic: "..."}` |
 | `0x10` | `BINARY_FRAME` | server → client | binary blob (raw bytes; topic указан в subscribe-confirm или заголовке см. §4) |
 | `0x11` | `JSON_CMD` | client → server | см. §5 |
@@ -97,6 +98,7 @@ client → GOODBYE(reason="user_logout")
 | `lidar_3d` | `0x1102` | zstd-compressed MessagePack: подвыборка PointCloud2 до 10k точек, `{n_points, frame_id, fields: ["x","y","z","intensity"], points: [[x,y,z,i], ...]}` |
 | `robot_status` | `0x1201` | MessagePack `{battery_pct, wifi_rssi, mode, vel_linear, vel_angular, ts_ms}` — 1 Hz |
 | `voice_state` | `0x1202` | MessagePack `{state: "idle"\|"listening"\|"thinking"\|"speaking", ts_ms, utterance_id?}` — event-driven |
+| `person_detections` | `0x1301` | MessagePack `{ts_ms, detections: [{id, cls, x, y, z, w, h, conf}]}` — Phase 2 (R11) |
 
 **Frequency policy:**
 
@@ -146,7 +148,7 @@ phase-2 — registry из `rob_box_voice/command_node.py`.
 {
   "cmd": "voice_mode",
   "ts_ms": 1234567890,
-  "mode": "off" | "passthrough" | "ttts_proxy" | "stt_llm"
+  "mode": "off" | "passthrough" | "ttts_proxy" | "stt_llm" | "llm_formalize"
 }
 ```
 
@@ -175,6 +177,40 @@ Edge-triggered. Сервер публикует в `/audio/quest_in` тольк�
 Публикует в `/safety/emergency_stop`. `source=client_lost` отправляется
 сервером автоматически через Wi-Fi watchdog (§3.3 ADR-0027).
 
+```json
+{
+  "cmd": "stream_list",
+  "ts_ms": 1234567890
+}
+```
+
+Phase 2 (R10). Сервер отвечает `JSON_EVENT{type: "stream_list", topics: [...]}`
+— список доступных стримов для стрим-селектора.
+
+```json
+{
+  "cmd": "admin_logs",
+  "ts_ms": 1234567890,
+  "service": "dialogue_node" | "rob_box_quest" | "all",
+  "tail": 100,
+  "follow": false
+}
+```
+
+Phase 2 (R14). Сервер читает `docker logs <service>` (или journald) и отвечает
+`JSON_EVENT{type: "admin_logs_chunk", ...}`. `follow=true` — стриминг до
+`admin_logs_stop`. Для PoC — read-only; restart/диагностика — отдельная
+карточка (Q11).
+
+```json
+{
+  "cmd": "admin_logs_stop",
+  "ts_ms": 1234567890
+}
+```
+
+Останавливает `follow`-стриминг логов.
+
 ## 6. `JSON_EVENT` — server → client (control/notification)
 
 ```json
@@ -185,6 +221,9 @@ Edge-triggered. Сервер публикует в `/audio/quest_in` тольк�
 { "type": "subscribe_nack", "topic": "lidar_3d", "reason": "topic_not_available_yet" }
 { "type": "heartbeat",      "ts_ms": 1234567890 }   // каждые 200 мс, см. §7
 { "type": "voice_state",    "state": "speaking", "ts_ms": 1234567890, "utterance_id": "..." }
+{ "type": "stream_list",    "topics": ["camera_rear", "camera_front", "lidar_2d"], "ts_ms": 1234567890 }
+{ "type": "admin_logs_chunk", "service": "dialogue_node", "lines": ["..."], "ts_ms": 1234567890 }
+{ "type": "admin_logs_end",   "service": "dialogue_node", "ts_ms": 1234567890 }
 { "type": "ping",           "ts_ms": 1234567890, "nonce": "..." }   // см. §7
 { "type": "pong",           "ts_ms": 1234567890, "nonce": "..." }
 ```
