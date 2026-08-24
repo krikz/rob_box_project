@@ -367,6 +367,254 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
     return 0
 }
 
+# --- stale-CONFLICTING watcher (ретро 24.08 t_cd32788f) ---------------------
+# Сценарий: PR с needs-e2e висит в CONFLICTING >24ч (PR #1567, #1565 на
+# 24.08). Merge-gate уже пишет rebase reminder с rate-limit 2ч (стр. ~1947),
+# но Шифу не получает ЭСКАЛАЦИИ когда PR залипает дольше суток — карточка
+# воркера блокируется PR-ом который никто не перебазил, а e2e-rotation
+# каждый тик пытается merge и падает на CONFLICTING (silent noise).
+#
+# Решение: каждый тик merge-gate сканирует needs-e2e PR, для CONFLICTING:
+#   - updatedAt > 24h  → label `stale-conflicting` + comment с rebase-инструкцией
+#     (rate-limit 24ч на коммент, чтобы не спамить);
+#   - updatedAt > 48h  → дополнительно упомянуть @krikz в карточке воркера
+#     (если карточка живая) или в новом recovery-комменте issue.
+#
+# Эскалация к @krikz — это сигнал «карточка stale, нужен ручной rebase или
+# close». Не пытаемся делать auto-rebase в чужую ветку намеренно (Шифу
+# прямо: «не плодить коммиты в чужие ветки»). Auto-rebase для hotfix был
+# PR #1248 — escape-hatch, но для stale-CONFLICTING mass-scenario это
+# overkill и опасно.
+#
+# Метка `stale-conflicting` сигнализирует e2e-process'у: skip round с
+# log-причиной «skip CONFLICTING PR #NNNN» (см. agent-flow-e2e-process.sh,
+# pre-round guard). Это разрывает цикл «merge → CONFLICTING → recovery
+# card → никто не ребейзит → repeat через 5 мин».
+#
+# Идемпотентность: если label уже стоит и 24ч не прошло — skip. Если
+# PR перестал быть CONFLICTING (rebase прошёл, push дошёл) — label
+# снимается здесь же (cleanup-блок ниже), и e2e-process берёт его в
+# ротацию.
+#
+# Вызывается рядом со stale_branch_scan_all (основной путь + no-issues путь).
+STALE_CONFLICTING_LABEL="${STALE_CONFLICTING_LABEL:-stale-conflicting}"
+STALE_CONFLICTING_HOURS="${STALE_CONFLICTING_HOURS:-24}"
+STALE_CONFLICTING_ESCALATE_HOURS="${STALE_CONFLICTING_ESCALATE_HOURS:-48}"
+stale_conflicting_scan_all() {
+    local now_epoch
+    now_epoch="$(date +%s)"
+    local cutoff_epoch_24h
+    cutoff_epoch_24h="$((now_epoch - STALE_CONFLICTING_HOURS * 3600))"
+    local cutoff_epoch_48h
+    cutoff_epoch_48h="$((now_epoch - STALE_CONFLICTING_ESCALATE_HOURS * 3600))"
+    local cutoff_iso_24h
+    cutoff_iso_24h="$(date -u -d "@${cutoff_epoch_24h}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    local cutoff_iso_48h
+    cutoff_iso_48h="$(date -u -d "@${cutoff_epoch_48h}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+    # Берём open PR с needs-e2e + mergeable + updatedAt + headRefName + issue body
+    # для поиска связанной kanban-карточки (для @krikz-escalation).
+    local _sc_prs
+    _sc_prs="$(gh pr list --repo "$GH_REPO" --state open --label "$NEEDS_E2E_LABEL" \
+        --json number,headRefName,mergeable,updatedAt,title,labels 2>/dev/null || echo '[]')"
+    if [ -z "$_sc_prs" ] || [ "$_sc_prs" = "[]" ]; then
+        log "stale-conflicting-scan: no needs-e2e PRs — nothing to do"
+        return 0
+    fi
+
+    # Идемпотентный комментарий (24ч window, как в stale-branch-scan).
+    local _sc_dedup_since
+    _sc_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+    # Разбор JSON в tsv (PR_num, headRef, mergeable, updatedAtISO, has_label_already).
+    printf '%s' "$_sc_prs" | python3 -c '
+import json, sys, subprocess
+GH = sys.argv[1]
+LABEL = sys.argv[2]
+data = json.load(sys.stdin)
+for pr in data:
+    pr_num = pr["number"]
+    head = pr.get("headRefName","")
+    mergeable = pr.get("mergeable","") or ""
+    upd = pr.get("updatedAt","") or ""
+    labels = [l["name"] for l in pr.get("labels", [])]
+    has_sc = "yes" if LABEL in labels else "no"
+    print("{}\t{}\t{}\t{}\t{}".format(pr_num, head, mergeable, upd, has_sc))
+' "$GH_REPO" "$STALE_CONFLICTING_LABEL" 2>/dev/null \
+    | while IFS=$'\t' read -r _sc_pr_num _sc_head _sc_mergeable _sc_updated_at _sc_has_label; do
+        [ -z "$_sc_pr_num" ] && continue
+
+        # CLEAN-блок: PR стал MERGEABLE, но label stale-conflicting ещё висит
+        # → cleanup (e2e-process берёт PR в ротацию). Cleanup важен, чтобы
+        # метка не залипала после успешного rebase.
+        if [ "$_sc_mergeable" != "CONFLICTING" ]; then
+            if [ "$_sc_has_label" = "yes" ]; then
+                if [ "$DRY_RUN" = "true" ]; then
+                    log "stale-conflicting-scan: PR #${_sc_pr_num} mergeable=${_sc_mergeable}, has ${STALE_CONFLICTING_LABEL} — DRY-RUN would remove label"
+                else
+                    gh pr edit "$_sc_pr_num" --repo "$GH_REPO" \
+                        --remove-label "$STALE_CONFLICTING_LABEL" >/dev/null 2>&1 \
+                        && log "stale-conflicting-scan: PR #${_sc_pr_num} mergeable=${_sc_mergeable} — removed ${STALE_CONFLICTING_LABEL} (cleanup, rebase прошёл)" \
+                        || log "stale-conflicting-scan: WARNING remove ${STALE_CONFLICTING_LABEL} on PR #${_sc_pr_num} failed (non-fatal)"
+                fi
+            else
+                log "stale-conflicting-scan: PR #${_sc_pr_num} mergeable=${_sc_mergeable} — ok, не CONFLICTING"
+            fi
+            continue
+        fi
+
+        # CONFLICTING. Проверяем updatedAt: если < 24ч — рано эскалировать,
+        # rebase reminder ещё не отработал. Skip (merge-gate основной цикл
+        # и так пишет ему reminder каждые 2ч).
+        if [ -z "$_sc_updated_at" ]; then
+            log "stale-conflicting-scan: PR #${_sc_pr_num} updatedAt пуст — skip (fresh)"
+            continue
+        fi
+        local _sc_updated_epoch
+        _sc_updated_epoch="$(date -u -d "$_sc_updated_at" +%s 2>/dev/null || echo 0)"
+        if [ "$_sc_updated_epoch" -le 0 ] || [ "$_sc_updated_epoch" -gt "$now_epoch" ]; then
+            log "stale-conflicting-scan: PR #${_sc_pr_num} updatedAt='${_sc_updated_at}' — не парсится или из будущего, skip"
+            continue
+        fi
+        local _sc_age_hours
+        _sc_age_hours="$(( (now_epoch - _sc_updated_epoch) / 3600 ))"
+
+        # < 24ч — рано. Merge-gate rebase reminder (стр. ~1947) ещё активен.
+        if [ "$_sc_updated_epoch" -gt "$cutoff_epoch_24h" ]; then
+            log "stale-conflicting-scan: PR #${_sc_pr_num} CONFLICTING ${_sc_age_hours}ч (< ${STALE_CONFLICTING_HOURS}ч) — рано, rebase reminder активен"
+            continue
+        fi
+
+        # >= 24ч. Если label ещё нет — ставим + пишем comment (24ч dedup).
+        if [ "$_sc_has_label" = "no" ]; then
+            if [ "$DRY_RUN" = "true" ]; then
+                log "DRY-RUN would: add ${STALE_CONFLICTING_LABEL} on PR #${_sc_pr_num} + comment stale > ${STALE_CONFLICTING_HOURS}ч"
+                continue
+            fi
+            local _sc_dup
+            _sc_dup="$(gh api "repos/${GH_REPO}/issues/${_sc_pr_num}/comments?since=${_sc_dedup_since}&per_page=100" \
+                --jq '[.[] | select(.body | startswith("🟠 **stale-CONFLICTING"))] | length' 2>/dev/null \
+                || echo 0)"
+            if [ "${_sc_dup:-0}" -eq 0 ]; then
+                gh pr comment "$_sc_pr_num" --repo "$GH_REPO" --body \
+"🟠 **stale-CONFLICTING: rebase на develop > ${STALE_CONFLICTING_HOURS}ч (merge-gate, ретро 24.08 t_cd32788f)**
+
+PR #${_sc_pr_num} (\\\`${_sc_head}\\\`) → develop = **CONFLICTING** уже ${_sc_age_hours}ч. Develop убежал вперёд (last updatedAt = ${_sc_updated_at}), стандартный rebase-reminder (стр. ~1947) не помог.
+
+**Что делать** (по процессу Шифу 10.08):
+1. **В той же ветке** \\\`${_sc_head}\\\` — НЕ создавай новую ветку и НЕ новый PR.
+2. **rebase** на origin/develop:
+   \\\`\\\`\\\`bash
+   git fetch origin develop
+   git checkout ${_sc_head}
+   git rebase origin/develop
+   # ... resolve conflicts ...
+   git add -A && git rebase --continue
+   git push --force-with-lease origin ${_sc_head}
+   \\\`\\\`\\\`
+3. Метку \\\`${STALE_CONFLICTING_LABEL}\\\` снимать НЕ надо — merge-gate снимет её автоматически когда PR станет MERGEABLE.
+
+**Если rebase не помогает** (конфликт в коде, который ты не можешь разрешить) → оставь PR как есть, явно закрой и открой новый PR с новой ветки \\\`z-{agent}/<new-id>-<slug>\\\` от свежего develop. Иначе PR висит вечно.
+
+Если карточка старше ${STALE_CONFLICTING_ESCALATE_HOURS}ч — merge-gate пингом упомянет \\\`@krikz\\\`.
+" >/dev/null 2>&1 || true
+                log "stale-conflicting-scan: PR #${_sc_pr_num} CONFLICTING ${_sc_age_hours}ч — comment «stale-CONFLICTING» добавлен"
+            else
+                log "stale-conflicting-scan: PR #${_sc_pr_num} CONFLICTING ${_sc_age_hours}ч — comment dedup (есть < 24ч), skip comment"
+            fi
+            whoami_add_label "$_sc_pr_num" "$STALE_CONFLICTING_LABEL" \
+                "stale-CONFLICTING (merge-gate, ретро 24.08 t_cd32788f): CONFLICTING > ${STALE_CONFLICTING_HOURS}ч (age=${_sc_age_hours}ч)" \
+                "pr=${_sc_pr_num}" || log "stale-conflicting-scan: WARNING add ${STALE_CONFLICTING_LABEL} on PR #${_sc_pr_num} failed"
+        fi
+
+        # >= 48ч — эскалация к @krikz (Шифу). Ищем задачу в карточках через
+        # wt/<branch> → t_<id>. Не блокируем CI/процесс, только пинг.
+        if [ "$_sc_updated_epoch" -gt "$cutoff_epoch_48h" ]; then
+            log "stale-conflicting-scan: PR #${_sc_pr_num} CONFLICTING ${_sc_age_hours}ч (< ${STALE_CONFLICTING_ESCALATE_HOURS}ч) — без escalation"
+            continue
+        fi
+        # >= 48ч: escalation.
+        local _sc_task_id
+        _sc_task_id=""
+        if [[ "$_sc_head" =~ ^wt/(t_[a-f0-9]+)- ]]; then
+            _sc_task_id="${BASH_REMATCH[1]}"
+        fi
+        # Ищем issue-number в PR body (Closes #N / Refs #N) → достаём kanban task.
+        local _sc_issue_num
+        _sc_issue_num="$(gh pr view "$_sc_pr_num" --repo "$GH_REPO" --json body \
+            --jq '[scan("(?im)^(?:closes|fixes|resolves|refs|part of)\\s+#?(\\d+)\\b"; .body)] | .[0] // empty' 2>/dev/null \
+            || true)"
+        if [ -z "$_sc_task_id" ] && [ -n "$_sc_issue_num" ]; then
+            # Ретро 14.08 t_de6bea69: task_id из kanban-marker на issue body.
+            _sc_task_id="$(gh issue view "$_sc_issue_num" --repo "$GH_REPO" --comments --json comments \
+                --jq '.comments[].body' 2>/dev/null \
+                | grep -Eo '^kanban: t_[a-f0-9]+' | tail -n1 | sed 's/^kanban: //' || true)"
+        fi
+        # Rate-limit escalation-comment (24ч).
+        local _sc_escalate_dedup
+        _sc_escalate_dedup="$(gh api "repos/${GH_REPO}/issues/${_sc_pr_num}/comments?since=${_sc_dedup_since}&per_page=100" \
+            --jq '[.[] | select(.body | startswith("🟠 **stale-CONFLICTING ESCALATION"))] | length' 2>/dev/null \
+            || echo 0)"
+        if [ "${_sc_escalate_dedup:-0}" -gt 0 ]; then
+            log "stale-conflicting-scan: PR #${_sc_pr_num} CONFLICTING ${_sc_age_hours}ч — escalation dedup (<24ч), skip"
+            continue
+        fi
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would: comment «ESCALATION @krikz» on PR #${_sc_pr_num} (task=${_sc_task_id:-none})"
+            continue
+        fi
+        # Эскалация: пишем в PR (комментарий dedup-ится через prefix).
+        gh pr comment "$_sc_pr_num" --repo "$GH_REPO" --body \
+"🟠 **stale-CONFLICTING ESCALATION: @krikz пинг, PR CONFLICTING > ${STALE_CONFLICTING_ESCALATE_HOURS}ч (merge-gate, ретро 24.08 t_cd32788f)**
+
+PR #${_sc_pr_num} (\\\`${_sc_head}\\\`) → develop = **CONFLICTING** уже ${_sc_age_hours}ч (last updatedAt = ${_sc_updated_at}). Label \\\`${STALE_CONFLICTING_LABEL}\\\` стоит, rebase reminder не помог, e2e-rotation skip-ает round каждый тик.
+
+Это последний авто-сигнал перед ручным вмешательством. Дальше либо:
+- **Шифу сам** делает rebase (force-with-lease) в \\\`${_sc_head}\\\`;
+- или **закрывает** этот PR и просит воркера пересоздать PR с новой ветки \\\`z-{agent}/<new-id>-<slug>\\\` от свежего develop (НО не делает новую ветку внутри существующей, Шифу прямо: «не плодить»);
+- или явно ставит \\\`needs-handoff\\\` если хочет передать задачу другому профилю.
+
+Карточка воркера: \\\`${_sc_task_id:-none-detected}\\\`. Связанный issue: #${_sc_issue_num:-?}.
+" >/dev/null 2>&1 || log "stale-conflicting-scan: WARNING escalation comment on PR #${_sc_pr_num} failed (non-fatal)"
+        # Если нашли живую карточку воркера — допишем reminder с @krikz
+        # (та же карточка должна знать, Шифу прямо).
+        if [ -n "$_sc_task_id" ]; then
+            local _sc_card_status
+            _sc_card_status="$(kanban_card_status "$_sc_task_id" 2>/dev/null || echo "")"
+            case "$_sc_card_status" in
+                running|ready|todo)
+                    local _sc_escalate_marker_ts
+                    _sc_escalate_marker_ts="$(kanban_last_reminder_ts "$_sc_task_id" "STALE CONFLICTING > ${STALE_CONFLICTING_ESCALATE_HOURS}h" 2>/dev/null || echo "")"
+                    local _sc_now_ts="${now_epoch:-$(date +%s)}"
+                    if [ -n "$_sc_escalate_marker_ts" ] && [ $(( _sc_now_ts - _sc_escalate_marker_ts )) -lt 86400 ]; then
+                        log "stale-conflicting-scan: PR #${_sc_pr_num} — escalation reminder dedup (< 24ч), skip card comment"
+                    else
+                        "$HERMES_BIN" kanban --board "$KANBAN_BOARD" comment "$_sc_task_id" \
+"## 🟠 stale-CONFLICTING escalation @krikz (merge-gate, ретро 24.08 t_cd32788f, $(date -u +%H:%M:%SZ))
+
+PR #${_sc_pr_num} (\\\`${_sc_head}\\\`) → develop = **CONFLICTING** уже ${_sc_age_hours}ч (last updatedAt = ${_sc_updated_at}). Label \\\`${STALE_CONFLICTING_LABEL}\\\` стоит, rebase reminder не помог.
+
+**Рекомендация** (Шифу прямо: «та же карточка должна знать»):
+- Если ребейзишь в той же ветке: \\\`git fetch origin develop && git rebase origin/develop && git push --force-with-lease origin ${_sc_head}\\\`.
+- Если конфликт неразрешим: попроси закрыть PR и пересоздать с новой ветки (retро 13.08 t_a3f170fe — только не на той же влитой ветке).
+
+e2e-rotation каждый тик skip-ает round с reason «stale-conflicting PR #${_sc_pr_num}». Метка \\\`${STALE_CONFLICTING_LABEL}\\\` снимется автоматически когда PR станет MERGEABLE.
+" >/dev/null 2>&1 || log "stale-conflicting-scan: WARNING append escalation to card ${_sc_task_id} failed"
+                        log "stale-conflicting-scan: PR #${_sc_pr_num} — escalation reminder written to card ${_sc_task_id} (status=${_sc_card_status})"
+                    fi
+                    ;;
+                *)
+                    log "stale-conflicting-scan: PR #${_sc_pr_num} — task ${_sc_task_id} status=${_sc_card_status:-?}, escalation только в PR-коммент"
+                    ;;
+            esac
+        fi
+    done
+    return 0
+}
+
 # --- duplicate-file scan для ВСЕХ open PR (ретро 15.08 t_20383d32) ----------
 # Сценарий: две ПАРАЛЛЕЛЬНЫЕ карточки пришли к одному корневому фиксу и каждая
 # добавила ОДИН И ТОТ ЖЕ файл с ИДЕНТИЧНЫМ содержимым (одинаковый blob sha):
@@ -2621,6 +2869,11 @@ log "scan-all-prs: scanning ALL open PRs for UNSTABLE/CONFLICTING (not just need
 # Функция stale_branch_scan_all() вызывается здесь (основной путь с issues)
 # и в блоке no-issues (до раннего exit).
 stale_branch_scan_all
+# Stale-CONFLICTING watcher (ретро 24.08 t_cd32788f): один вызов рядом
+# со stale_branch_scan_all. Без условий на issues_json — сканирует ВСЕ
+# open needs-e2e PR независимо от issue-cycle (stale branch мог остаться
+# от archived-issue). Skip если HELM_HOOK_DRY_RUN.
+stale_conflicting_scan_all
 # Дубль-файл scan (ретро 15.08 t_20383d32): тот же паттерн вызова, что у
 # stale_branch_scan_all — основной путь + no-issues путь сходятся сюда.
 duplicate_file_scan_all
