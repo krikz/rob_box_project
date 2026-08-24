@@ -68,29 +68,42 @@ if ! printf '%s' "$JQ_PIPELINE" | grep -q 'index("e2e-done") | not'; then
     printf '%sFAIL: jq-pipeline НЕ содержит `index("e2e-done") | not` — регрессия #1195!%s\n' "$RED" "$NC"
     exit 1
 fi
+# Ретро 24.08 t_d935096b: false-positive #1586 — фильтр должен отбрасывать
+# issue с меткой no-e2e-required (lint/refactor/docs — CI green достаточно).
+if ! printf '%s' "$JQ_PIPELINE" | grep -q 'index("no-e2e-required") | not'; then
+    printf '%sFAIL: jq-pipeline НЕ содержит `index("no-e2e-required") | not` — регрессия t_d935096b!%s\n' "$RED" "$NC"
+    exit 1
+fi
+# Ретро 24.08 t_d935096b: процессные issue с меткой agent-flow — out-of-scope для e2e.
+if ! printf '%s' "$JQ_PIPELINE" | grep -q 'index("agent-flow") | not'; then
+    printf '%sFAIL: jq-pipeline НЕ содержит `index("agent-flow") | not` — регрессия t_d935096b!%s\n' "$RED" "$NC"
+    exit 1
+fi
 
-printf '%sOK jq-pipeline содержит оба `| not` (needs-e2e + e2e-done)%s\n' "$GRN" "$NC"
+printf '%sOK jq-pipeline содержит все 4 `| not` (needs-e2e + e2e-done + no-e2e-required + agent-flow)%s\n' "$GRN" "$NC"
 printf '   pipeline: %s\n' "$JQ_PIPELINE"
 
 PASS=0
 FAIL=0
 
 # Helper: применить pipeline к JSON через python3 (эквивалент jq).
-# Pipeline: '[.[] | select([.labels[].name] | index("needs-e2e") | not) |
-#                     select([.labels[].name] | index("e2e-done") | not) |
-#                     .number] | max // ""'
+# Pipeline (после ретро 24.08 t_d935096b):
+#   '[.[] | select([.labels[].name] | index("needs-e2e") | not)
+#         | select([.labels[].name] | index("e2e-done") | not)
+#         | select([.labels[].name] | index("no-e2e-required") | not)
+#         | select([.labels[].name] | index("agent-flow") | not)
+#         | .number] | max // ""'
 # Python-эквивалент — повторяет ту же логику, что и gh --jq.
 filter_issues() {
     local json="$1"
     python3 -c '
 import json, sys
 data = json.loads(sys.argv[1])
+exclude_labels = {"needs-e2e", "e2e-done", "no-e2e-required", "agent-flow"}
 candidates = []
 for issue in data:
     labels = [l["name"] for l in issue.get("labels", []) or []]
-    if "needs-e2e" in labels:
-        continue
-    if "e2e-done" in labels:
+    if any(lbl in exclude_labels for lbl in labels):
         continue
     if "number" in issue:
         candidates.append(issue["number"])
@@ -130,6 +143,17 @@ assert_filter "issue с меткой e2e-done → ОТБРОШЕН" "$JSON_E2E_D
 # 4. Issue С обеими метками → ОТБРОШЕН
 JSON_BOTH='[{"number":1400,"labels":[{"name":"needs-e2e"},{"name":"e2e-done"}]}]'
 assert_filter "issue с обеими метками → ОТБРОШЕН" "$JSON_BOTH" ""
+
+# 4a. Ретро 24.08 t_d935096b: issue с меткой no-e2e-required → ОТБРОШЕН.
+#     Кейс #1586: bug(process) про whoami_add_label, метка no-e2e-required
+#     (CI green достаточно), но в body есть историческая сигнатура no_wake_word.
+#     Старый фильтр ловил #1586 как блокер, rotation стояла 12ч.
+JSON_NO_E2E_REQ='[{"number":1586,"labels":[{"name":"no-e2e-required"},{"name":"bug"},{"name":"agent-flow"}]}]'
+assert_filter "issue с no-e2e-required → ОТБРОШЕН (ретро t_d935096b)" "$JSON_NO_E2E_REQ" ""
+
+# 4b. Ретро 24.08 t_d935096b: только agent-flow метка → ОТБРОШЕН (процессный issue).
+JSON_AGENT_FLOW='[{"number":1587,"labels":[{"name":"agent-flow"}]}]'
+assert_filter "issue только с agent-flow → ОТБРОШЕН (ретро t_d935096b)" "$JSON_AGENT_FLOW" ""
 
 # 5. Mixed: один blocker + два filtered → max() должен вернуть blocker
 JSON_MIXED='[
