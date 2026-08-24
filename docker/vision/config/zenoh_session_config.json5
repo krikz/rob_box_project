@@ -841,6 +841,20 @@
           congestion_control: "drop",
         },
       },
+      {
+        /// OAK-D / ceiling cameras publish raw image streams (image_raw).
+        /// These are the heaviest Vision-Pi topics and, without drop, flood
+        /// the Zenoh router, stall RELIABLE cmd_vel delivery on Main Pi and
+        /// kill the transport (symptom: wheels stop, any new subscriber
+        /// re-syncs and they spin again — rmw_zenoh#1031 class).
+        key_exprs: [
+          "rt/camera/**",
+          "rt/ceiling_camera/**",
+        ],
+        config: {
+          congestion_control: "drop",
+        },
+      },
     ],
   },
 }
