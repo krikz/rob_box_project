@@ -22,6 +22,11 @@ RUN if [ -n "$APT_PROXY" ]; then \
     fi
 
 # Установка Zenoh middleware и минимальных зависимостей
+# Пин rmw_zenoh_cpp на 0.1.8 (zenoh 1.6.2): 0.1.9 (июль 2026) поднимает zenoh-клиент
+# до 1.8.0, что ломает транспорт (rmw_zenoh#1031 "early eof" → cmd_vel виснет).
+# В основном ROS-репозитории теперь только 0.1.9, поэтому берём 0.1.8 из snapshot.
+RUN echo "deb [trusted=yes] http://snapshots.ros.org/humble/2026-03-29/ubuntu jammy main" > /etc/apt/sources.list.d/ros2-snapshot.list && \
+    printf 'Package: ros-humble-rmw-zenoh-cpp ros-humble-zenoh-cpp-vendor\nPin: version 0.1.8*\nPin-Priority: 1001\n' > /etc/apt/preferences.d/rmw-zenoh-pin
 RUN apt-get update && \
     apt-get install -y \
         # Zenoh middleware для ROS 2
