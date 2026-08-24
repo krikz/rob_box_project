@@ -48,6 +48,26 @@
 
 set -euo pipefail
 
+# --- library bootstrap -------------------------------------------------------
+# hermes_github.sh (whoami_*, gh helpers) MUST be sourced BEFORE any code that
+# calls those functions. Bash resolves function names at call time, but those
+# calls happen top-level inside this script (line ~920 — pre-round blocker
+# gate — was the earliest crash site before this fix). Keep this block ABOVE
+# all top-level call sites.
+#
+# Ретро t_df4fff46, issue #1586: whoami_add_label on line 908 crashed with
+# "command not found" while . hermes_github.sh sat at line 1115.
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=hermes_github.sh
+. "$_LIB_DIR_HERE/hermes_github.sh"
+# shellcheck source=lib_user_unlabel_check.sh
+. "$_LIB_DIR_HERE/lib_user_unlabel_check.sh"
+# Issue #1540: shared workflow-dispatch dedup (verify_recent_run).
+# Используется и в agent-flow-post-merge-build.sh — общий контракт,
+# чтобы дедупликация была симметричной между двумя cron-скриптами.
+# shellcheck source=lib_workflow_dedup.sh
+. "$_LIB_DIR_HERE/lib_workflow_dedup.sh"
+
 # --- credentials bootstrap (ретро 23.08 t_b977cb4b, реконструкция t_98bb3a1d) ---
 # git 2.34.1 (Ubuntu 22.04) has a known bug where 'git push' fails with
 # 'could not read Password for https://***@github.com' when both
@@ -904,6 +924,9 @@ while IFS= read -r _bn; do
         _blk="$(blocker_issue_for_sig "$_sig")"
         _blk_ref="${_blk:-сигнатура ${_sig}}"
         log "issue #${_bn}: >=${BLOCKER_CONSECUTIVE_FAILS} подряд FAIL с сигнатурой '${_sig}' — e2e:rejected (блокер ${_blk_ref}), round не тратим"
+        # issue #1534: self-id whoami BEFORE setting blocker e2e:rejected.
+        whoami_add_label "$_bn" "${REJECTED_LABEL}" "блокер ${_blk_ref} (${BLOCKER_CONSECUTIVE_FAILS}+ подряд однотипных FAIL: ${_sig}), round пропущен"
+        whoami_remove_label "$_bn" "${NEEDS_E2E_LABEL}" "блокер ${_blk_ref}: unblock from e2e queue (round skipped)"
         gh issue edit "$_bn" --repo "$GH_REPO" --add-label "$REJECTED_LABEL" >/dev/null 2>&1 || true
         gh issue edit "$_bn" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
         gh issue comment "$_bn" --repo "$GH_REPO" --body \
@@ -999,6 +1022,9 @@ except Exception:
             log "post-round sweep: issue #${_sn} имеет явный needs-e2e override ПОСЛЕ run #${_sweep_run_id} — skip (Шифу запросил re-test, ждём round-155)"
             continue
         fi
+        # issue #1534: self-id whoami BEFORE post-round sweep e2e-done.
+        whoami_add_label "$_sn" "${DONE_LABEL}" "post-round sweep: run #${_sweep_run_id} SUCCESS on ${_sweep_round} (label applied by next tick)"
+        whoami_remove_label "$_sn" "${NEEDS_E2E_LABEL}" "post-round sweep: run #${_sweep_run_id} SUCCESS — unblock from e2e queue"
         gh issue edit "$_sn" --repo "$GH_REPO" --add-label "$DONE_LABEL" >/dev/null 2>&1 || true
         gh issue edit "$_sn" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
         gh issue comment "$_sn" --repo "$GH_REPO" --body \
@@ -1091,15 +1117,11 @@ trap _exit_sweep EXIT
 # user-unlabel guard (ретро 18.08 t_de6bea69, PR #1398) — если Шифу руками
 # снял метку (e2e-done / needs-review) после auto-установки, sweep НЕ
 # должен её возвращать. Источник — рядом со скриптом (для тестов и для
-# install-раскладки в ~/.hermes/...).
-_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-# shellcheck source=lib_user_unlabel_check.sh
-. "$_LIB_DIR_HERE/lib_user_unlabel_check.sh"
-# Issue #1540: shared workflow-dispatch dedup (verify_recent_run).
-# Используется и в agent-flow-post-merge-build.sh — общий контракт,
-# чтобы дедупликация была симметричной между двумя cron-скриптами.
-# shellcheck source=lib_workflow_dedup.sh
-. "$_LIB_DIR_HERE/lib_workflow_dedup.sh"
+# install-раскладки в ~/.hermes/...). Source-блок hermes_github.sh +
+# lib_user_unlabel_check.sh + lib_workflow_dedup.sh теперь живёт в самом
+# верху файла (после `set -euo pipefail`), чтобы whoami_* функции были
+# определены ДО первого top-level вызова на line ~920.
+# (ретро t_df4fff46, issue #1586)
 
 slugify() {
     printf '%s' "$1" \
@@ -2026,6 +2048,9 @@ except Exception: print(0)' 2>/dev/null || echo 0)"
         gh pr edit "$pr_number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
         gh pr edit "$pr_number" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 || true
         # 2) PR: короткий комментарий «только форматирование, e2e не нужен».
+        # issue #1534: self-id whoami BEFORE lint-PR needs-review + no-e2e-required.
+        whoami_remove_label "$number" "${NEEDS_E2E_LABEL}" "lint-PR #${pr_number}: skip e2e, hand to Шифу for review"
+        whoami_add_label "$number" "${NO_E2E_LABEL}" "lint-PR #${pr_number}: skip e2e (CI green sufficient)"
         gh pr comment "$pr_number" --repo "$GH_REPO" --body \
             "$(cat <<EOF
 agent-flow: ℹ️ lint/refactor PR — e2e на роботе не требуется (CI green достаточно).
@@ -3075,10 +3100,17 @@ sshpass -p open ssh ros2@10.1.1.21 'docker logs voice-assistant --since <ts> | g
         fi
     fi
 
+    # issue #1534: self-id whoami BEFORE verdict label flip — главный
+    # e2e-process label-change (${label_action#add } = e2e-done /
+    # e2e:rejected / infra-failed / no-e2e-required). В истории GitHub часто
+    # непонятно «кто поставил e2e-done» (actor = krikz = holder GH token).
+    # helper идемпотентный (2h окно).
+    whoami_add_label "$number" "${label_action#add }" "e2e verdict=${verdict} (run #${run_id}, branch ${branch})" "pr=${pr_number:-?}"
     gh issue edit "$number" --repo "$GH_REPO" --add-label "${label_action#add }" >/dev/null 2>&1 || true
     # ретро 10.08 (t_9caf5d52): при infra-FAIL needs-e2e НЕ снимаем — issue
     # остаётся в ротации, следующий тик повторит прогон.
     if [ -n "$remove_action" ]; then
+        whoami_remove_label "$number" "${NEEDS_E2E_LABEL}" "e2e verdict=${verdict} (run #${run_id}): unblock from e2e queue"
         gh issue edit "$number" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
     fi
 
