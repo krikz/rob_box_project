@@ -100,10 +100,8 @@ fi
 
 echo "🚀 Starting joystick_control_node..."
 
-# Start joystick_control_node.
-# Package build_type is ament_python — setup.py console_scripts generate
-# `joystick_control_node` (no .py) in lib/rob_box_teleop/ and register it in
-# the ament index, so `ros2 run` resolves the name without extension.
+# Start joystick_control_node
+# Note: due to --symlink-install, the executable is named .py
 if [ -n "$PARAMS_FILE" ]; then
     # Add serial port override if port was auto-detected
     EXTRA_ARGS=""
@@ -111,12 +109,12 @@ if [ -n "$PARAMS_FILE" ]; then
         EXTRA_ARGS="-p serial_port:=$SERIAL_PORT_OVERRIDE"
         echo "   Overriding serial_port to: $SERIAL_PORT_OVERRIDE"
     fi
-    ros2 run rob_box_teleop joystick_control_node --ros-args \
+    ros2 run rob_box_teleop joystick_control_node.py --ros-args \
         --params-file "$PARAMS_FILE" \
         $EXTRA_ARGS \
         --log-level info &
 else
-    ros2 run rob_box_teleop joystick_control_node --ros-args \
+    ros2 run rob_box_teleop joystick_control_node.py --ros-args \
         --log-level info &
 fi
 
