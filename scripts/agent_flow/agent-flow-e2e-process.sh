@@ -1245,7 +1245,19 @@ else:
 #      достаточно. Раньше такие PR (#1189/#1190) уходили в e2e-очередь как
 #      functional и застревали (ротация жжёт build+deploy на заведомо
 #      непрофильный сценарий).
-#   4) otherwise → functional (e2e mandatory)
+#   4) PR title prefix `docs(adr` / `docs(architecture` → lint (ретро 24.08
+#      t_388bb652): ADR-черновики архитектора (docs-only) НЕ меняют runtime,
+#      e2e на железе не нужен. Раньше такие PR (#1577/#1580/#1581/#1578)
+#      уходили в e2e-очередь как functional и залипали с e2e:rejected
+#      (cold-start wake-gate no_wake_word, см. ретро t_d9e70587).
+#   5) PR title prefix `wip(arch` / `wip(infra` → lint (ретро 24.08
+#      t_388bb652): WIP-черновики архитектора (verdict-сохранения, infra-обсуждения)
+#      НЕ являются runtime-фичами. Раньше PR #1559 (`wip(arch #1506 t_228de99c):
+#      verdict v3`) висел e2e:rejected 11ч49м без прогресса.
+#   6) PR title prefix `wip(voice-core` → lint (ретро 24.08 t_388bb652):
+#      verification-suite wip-черновик (e2e_routes/voice-core проверки),
+#      не runtime.
+#   7) otherwise → functional (e2e mandatory)
 # Inputs: $1=pr_labels_csv (lowercased), $2=pr_title
 # Output: prints "lint" or "functional"; rc=0 always.
 detect_pr_kind() {  # $1=labels_csv $2=title
@@ -1255,10 +1267,20 @@ detect_pr_kind() {  # $1=labels_csv $2=title
     if has_label "$labels_csv" "$NO_E2E_LABEL"; then
         printf '%s' "lint"; return 0
     fi
-    # Title prefix detection (case-insensitive): первый токен до первого пробела.
+    # Title prefix detection (case-insensitive): сматчить ПЕРВЫЙ токен (по пробелу)
+    # через glob `*` в конце — иначе `(` и `)` в conventional-commit prefix
+    # (docs(adr-0027), wip(arch #1506)) ломают extglob grouping pattern.
+    # Два независимых case'а:
+    #   - по первому токену `prefix` для тегов без скобок: [lint], [refactor]
+    #   - по всей строке с glob для conventional-commit префиксов (включая docs/wip)
     prefix="${title_lc%% *}"
     case "$prefix" in
-        '[lint]'|'[refactor]'|'fix(agent-flow'|'fix(agent_flow') printf '%s' "lint"; return 0 ;;
+        '[lint]'|'[refactor]') printf '%s' "lint"; return 0 ;;
+    esac
+    case "$title_lc" in
+        'fix(agent-flow'*|'fix(agent_flow'*|\
+        'docs(adr'*|'docs(architecture'*|\
+        'wip(arch'*|'wip(infra'*|'wip(voice-core'*) printf '%s' "lint"; return 0 ;;
     esac
     printf '%s' "functional"; return 0
 }
