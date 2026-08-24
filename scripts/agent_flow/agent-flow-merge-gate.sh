@@ -846,7 +846,19 @@ pr_state_now() {  # $1=pr_number
 #      не меняют поведение робота — e2e на железе не нужен, CI green
 #      достаточно. Раньше такие PR (#1189/#1190) уходили в e2e-очередь как
 #      functional и застревали.
-#   4) otherwise → functional (e2e mandatory)
+#   4) PR title prefix `docs(adr` / `docs(architecture` → lint (ретро 24.08
+#      t_388bb652): ADR-черновики архитектора (docs-only) НЕ меняют runtime,
+#      e2e на железе не нужен. Раньше такие PR (#1577/#1580/#1581/#1578)
+#      уходили в e2e-очередь как functional и залипали с e2e:rejected
+#      (cold-start wake-gate no_wake_word, см. ретро t_d9e70587).
+#   5) PR title prefix `wip(arch` / `wip(infra` → lint (ретро 24.08
+#      t_388bb652): WIP-черновики архитектора (verdict-сохранения, infra-обсуждения)
+#      НЕ являются runtime-фичами. Раньше PR #1559 (`wip(arch #1506 t_228de99c):
+#      verdict v3`) висел e2e:rejected 11ч49м без прогресса.
+#   6) PR title prefix `wip(voice-core` → lint (ретро 24.08 t_388bb652):
+#      verification-suite wip-черновик (e2e_routes/voice-core проверки),
+#      не runtime.
+#   7) otherwise → functional (e2e mandatory)
 # Inputs: $1=pr_labels_csv (lowercased), $2=pr_title
 # Output: prints "lint" or "functional"; rc=0 always.
 detect_pr_kind() {  # $1=labels_csv $2=title
@@ -855,7 +867,9 @@ detect_pr_kind() {  # $1=labels_csv $2=title
         printf '%s' "lint"; return 0
     fi
     case "$title" in
-        '[lint]'*|'[refactor]'*|'fix(agent-flow'*|'fix(agent_flow'*) printf '%s' "lint"; return 0 ;;
+        '[lint]'*|'[refactor]'*|'fix(agent-flow'*|'fix(agent_flow'*|\
+        'docs(adr'*|'docs(architecture'*|\
+        'wip(arch'*|'wip(infra'*|'wip(voice-core'*) printf '%s' "lint"; return 0 ;;
     esac
     printf '%s' "functional"; return 0
 }
