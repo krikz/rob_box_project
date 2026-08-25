@@ -393,11 +393,6 @@ services:
     labels:
       logging: "promtail"
 
-  # Self-signed TLS-сертификат для rob_box_quest (Phase 1.6, ADR-0027 §4.1).
-  # Без named-volume cert пересоздавался бы при каждом redeploy → пришлось
-  # бы заново импортировать его в Meta Quest.
-  quest-certs:
-
   # ============ Telegram Bot ============
   # Операторский интерфейс через Telegram
   # Управление роботом с телефона: фото, голос, движение, LLM чат
