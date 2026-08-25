@@ -65,6 +65,10 @@ FROM ${CADDY_BUILDER} AS caddy-builder
 # ============================================================
 FROM ${RUNTIME_IMAGE}
 
+# ARG обязательно переобъявить в новом FROM — иначе ${ROS_DISTRO} пустой
+# и '/opt/ros//setup.sh' не находится (raw-evidence #32899426873 step:25).
+ARG ROS_DISTRO=humble
+
 # Базовые пакеты, которых нет в voice-assistant: openssl (для
 # self-signed серта) + bash уже есть (Ubuntu base). curl — на всякий.
 # aiohttp/msgpack уже стоят (install_requires voice-assistant), но pip3
