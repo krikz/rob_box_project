@@ -19,7 +19,7 @@ import json
 import logging
 import secrets
 import time
-from typing import Any, Awaitable, Callable, Optional, Protocol
+from typing import Any, Optional, Protocol
 
 from ..protocol.frame import FrameType, decode_frame, encode_frame
 from ..protocol.topics import TOPIC_IDS
@@ -36,29 +36,41 @@ log = logging.getLogger(__name__)
 
 
 class Bridge(Protocol):
-    """Минимальный контракт для Phase 1.3 Zenoh-моста.
+    """Минимальный контракт для Phase 1.3 ROS-моста.
 
-    Phase 1.2: not implemented, подменяется NoOpBridge в тестах.
-    Phase 1.3: реальная реализация через rclpy.
+    Phase 1.2: NoOpBridge в тестах.
+    Phase 1.3: реальная реализация через rclpy в quest_node.py.
+
+    Все методы sync — rclpy publishers thread-safe, можно вызывать
+    прямо из aiohttp event-loop без await.
     """
 
-    async def publish_quest(self, linear: float, angular: float) -> None: ...
+    def publish_quest(self, linear: float, angular: float) -> None: ...
 
-    async def publish_emergency(self) -> None: ...
+    def publish_emergency(self) -> None: ...
 
-    def subscribe_topic(self, topic_name: str, callback: Callable[[bytes], Awaitable[None]]) -> None: ...
+    def feed_client_alive(self) -> None:
+        """Клиент активен (HELLO/SUBSCRIBE/ping) — сбросить watchdog."""
+        ...
+
+    def emergency_stop(self) -> None:
+        """Зафиксировать emergency lock (safe stop + close session)."""
+        ...
 
 
 class NoOpBridge:
-    """Заглушка для тестов Phase 1.2. Phase 1.3 заменит на Zenoh-мост."""
+    """Заглушка для тестов. Реальная реализация в quest_node.py."""
 
-    async def publish_quest(self, linear: float, angular: float) -> None:
+    def publish_quest(self, linear: float, angular: float) -> None:
         return None
 
-    async def publish_emergency(self) -> None:
+    def publish_emergency(self) -> None:
         return None
 
-    def subscribe_topic(self, topic_name: str, callback: Callable[[bytes], Awaitable[None]]) -> None:
+    def feed_client_alive(self) -> None:
+        return None
+
+    def emergency_stop(self) -> None:
         return None
 
 
@@ -231,10 +243,40 @@ class WSSServer:
         session: ClientSession,
         payload_obj: dict[str, Any],
     ) -> None:
-        # Phase 1.2: минимальный роутинг — реальная логика в Phase 1.3.
+        """JSON_CMD → Bridge (Phase 1.3: rclpy publishers).
+
+        Контракт meta-quest-api.md §5/§6:
+        - teleop_twist → Bridge.publish_quest(linear, angular)
+        - stop_emergency → Bridge.publish_emergency() (edge)
+        - ui_button → Phase 2
+        - voice_mode / voice_ptt → Phase 2
+        """
         cmd = payload_obj.get("cmd")
-        if cmd == "stop_emergency":
-            await self.bridge.publish_emergency()
+        if cmd == "teleop_twist":
+            try:
+                linear = float(payload_obj.get("linear", {}).get("x", 0.0))
+                angular = float(payload_obj.get("angular", {}).get("z", 0.0))
+            except (TypeError, ValueError):
+                await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "teleop_twist: bad linear/angular")
+                return
+            deadman = bool(payload_obj.get("deadman", False))
+            # Phase 1.3: Bridge хранит TeleopController, consume() + publish.
+            self.bridge.publish_quest(linear, angular)
+            self.bridge.feed_client_alive()
+            # Dead-man: если grip отпущен, Bridge должен остановить.
+            # Это делает QuestBridge (см. quest_node.py): consume(deadman=False)
+            # → safe stop.
+            _ = deadman  # ACK семантика для будущего (Phase 1.5: telemetry)
+        elif cmd == "stop_emergency":
+            self.bridge.publish_emergency()
+            self.bridge.emergency_stop()
+        else:
+            await self._send_error(
+                ws,
+                0,
+                ErrorCode.BAD_PAYLOAD,
+                f"cmd '{cmd}' not supported in Phase 1.3",
+            )
 
     async def _ws_handler(self, request) -> Any:
         """aiohttp WebSocket handler."""
