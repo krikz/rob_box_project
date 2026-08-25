@@ -85,22 +85,25 @@ COPY --from=webxr-builder /build/dist /srv/quest_static
 # ============================================================
 # Сборка rob_box_quest (ament_python) — образец supervisor/Dockerfile
 # ============================================================
-# Шаг 1: package.xml + setup.py + setup.cfg + resource (структура, кешируется)
+# Шаг 1: package.xml + setup.py + setup.cfg (структура, кешируется)
 COPY src/rob_box_quest/package.xml /ws/src/rob_box_quest/
 COPY src/rob_box_quest/setup.py   /ws/src/rob_box_quest/
 COPY src/rob_box_quest/setup.cfg  /ws/src/rob_box_quest/
-COPY src/rob_box_quest/resource   /ws/src/rob_box_quest/resource
 
-# Шаг 2: rosdep — если добавлены новые apt-зависимости в package.xml
-RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    . /ws/install/setup.sh && \
-    rosdep update >/dev/null 2>&1 || true && \
-    rosdep install --from-paths src/rob_box_quest --ignore-src -r -y || true
+# Шаг 2: пустая resource/ — ament_index marker. Используем run вместо
+# COPY, потому что пустой source-каталог в новых docker (buildkit) не
+# создаёт target directory (raw-evidence: /ws/src/rob_box_quest/
+# отсутствовал после первого deploy — COPY пропустил).
+RUN mkdir -p /ws/src/rob_box_quest/resource
 
 # Шаг 3: исходный код Python (самый горячий слой, последний)
 COPY src/rob_box_quest/rob_box_quest /ws/src/rob_box_quest/rob_box_quest
 
-# Шаг 4: пересборка ТОЛЬКО rob_box_quest (pytorch/renardo из base не трогаем)
+# Шаг 4: пересборка ТОЛЬКО rob_box_quest (pytorch/renardo из base не трогаем).
+# WORKDIR=/ws обязателен — colcon ищет пакеты в $PWD/src, а после
+# 'source /opt/ros/.../setup.sh' WORKDIR не меняется, но нам нужно
+# явно стартануть из /ws.
+WORKDIR /ws
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     . /ws/install/setup.sh && \
     colcon build \
