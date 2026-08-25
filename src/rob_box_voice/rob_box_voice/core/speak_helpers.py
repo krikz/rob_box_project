@@ -38,10 +38,27 @@ _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", flags=re.DOTALL)
 # Strip a leading speaker routing marker (``[Spkr:<имя>]``) that some
 # providers echo back from the voice-channel input format. Internal
 # routing marker — never meant to be voiced. Stripping it also unmasks a
-# following service marker (``[CRITICAL]`` / ``[SYSTEM ...]``) so the
+# following ``[CRITICAL]`` / ``[SYSTEM ...]`` marker so the
 # service-text guard in dialogue_node can catch it. The ``+`` consumes
 # repeated leading tags in one match.
 _SPEAKER_TAG_RE = re.compile(r"^(?:\s*\[Spkr:[^\]]*\])+", flags=re.IGNORECASE)
+
+# Strip a trailing ``done`` / ``task complete`` / Russian equivalents
+# that the LLM adds AFTER the final ``speak_text`` per the master-prompt
+# cycle-end contract. The marker is **internal** (signals turn end) and
+# MUST NOT reach TTS — the user would hear «...дан» (literal Russian
+# pronunciation of "done") at the end of every reply.
+#
+# Anchored at end-of-string with optional whitespace/newlines BEFORE the
+# marker (LLM commonly writes ``\n\ndone``) and trailing punctuation
+# (``.``, no other chars). Case-insensitive. The marker set is identical
+# to the equality check in ``dialogue_node._handle_result`` so the
+# downstream "skip auto-TTS" path stays a single source of truth.
+_DONE_MARKER_RE = re.compile(
+    r"\s*[\r\n]+\s*"
+    r"(?:done|task[ _]?complete|готов[оа]?|всё|выполнено|завершен[оа]?)\s*\.?\s*$",
+    flags=re.IGNORECASE,
+)
 
 
 def strip_history_marker(text: str) -> str:
@@ -79,6 +96,41 @@ def strip_thinking_blocks(text: str) -> str:
     if not text:
         return text
     return _THINK_BLOCK_RE.sub("", text).strip()
+
+
+def strip_done_marker(text: str) -> str:
+    """Remove a trailing ``done`` / ``task complete`` / Russian-equivalent
+    marker (issue #1564).
+
+    The master prompt tells the LLM that, after the LAST ``speak_text``
+    in a turn, its next response MUST be plain text ``"done"`` (no
+    tool calls) — that text is the agentic-cycle terminator and is
+    **internal**, not user-facing. But the model sometimes writes the
+    marker AFTER the actual answer (``\\n\\ndone`` appended to ``spoken``)
+    instead of replacing the answer with it. Without this strip the TTS
+    engine reads the trailing word aloud as Russian «дан» («...дон»),
+    so every reply ends with a robotic artifact.
+
+    The marker set here mirrors the equality check in
+    ``dialogue_node._handle_result`` (post-strip) so the downstream
+    "skip auto-TTS" path stays the single source of truth for deciding
+    whether the LLM actually spoke anything user-facing.
+
+    Rules (anchored at end-of-string):
+
+    * optional whitespace + one-or-more newlines BEFORE the marker
+      (covers ``\\ndone``, ``\\n\\ndone``, ``\\r\\ndone``);
+    * the marker itself — ``done``, ``task complete``, ``task_complete``,
+      ``готово``/``готова``, ``всё``, ``выполнено``, ``завершено``/``завершена``;
+    * trailing punctuation (``.``) and whitespace allowed;
+    * case-insensitive (``Done`` / ``DONE`` / ``Done.`` all match).
+
+    Pure Python — no ROS, no heavy deps. Non-string input is returned
+    as-is (matches ``strip_markdown`` contract).
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    return _DONE_MARKER_RE.sub("", text).rstrip()
 
 
 #: Regexes applied by :func:`strip_markdown` in order. Each tuple is
@@ -310,6 +362,7 @@ class EffectAwaiterRegistry:
 __all__ = [
     "strip_history_marker",
     "strip_markdown",
+    "strip_done_marker",
     "split_into_chunks",
     "build_ssml_payload",
     "EffectAwaiterRegistry",
