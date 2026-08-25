@@ -100,6 +100,7 @@ jobs:
             "voice-resources|false"
             "voice-assistant|false"
             "telegram-bot|false"
+            "supervisor|false"
           )
 
           push_image() {
