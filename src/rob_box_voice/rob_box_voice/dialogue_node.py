@@ -36,6 +36,7 @@ import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Bool, String
 
 from rob_box_harness.config import LLMConfig
@@ -288,6 +289,9 @@ class DialogueNode(Node):
         # Если opentelemetry-пакетов нет — no-op (см. observability.tracing).
         init_tracing("dialogue_node")
         self._declare_params()
+        # Issue #1601 / ADR-0027 §3.4 — supervisor (ADR-0028) переключает
+        # ``voice_input_mode`` без рестарта ноды; callback логирует изменение.
+        self.add_on_set_parameters_callback(self.parameters_callback)
         # Issue #1409 — SSoT for MCP tool names. Populated from
         # ``ToolRegistry.list_tools()`` at startup (the canonical 32+5
         # manifests the LLM is wired to via ``_build_tool_provider``) and
@@ -781,6 +785,29 @@ class DialogueNode(Node):
         # latency / fallback). 0 = отключить старт сервера (полезно для
         # юнит-тестов и CI, где рконфликтует с другими тестами).
         self.declare_parameter("metrics_port", 9100)
+        # Issue #1601 / ADR-0027 §3.4 — режим захвата голоса. Используется
+        # supervisor'ом (ADR-0028) для переключения источника входа
+        # (respeaker | quest_passthrough | quest_ttts | quest_stt |
+        # quest_llm_formalize). Реальная логика обработки режимов — в
+        # отдельных worker-issue (Phase 2). Здесь только объявление +
+        # stub-колбэк, пишущий изменение в лог.
+        self.declare_parameter("voice_input_mode", "respeaker")
+
+    def parameters_callback(self, params):
+        """Stub-обработчик изменений ROS-параметров (Issue #1601 / ADR-0027 §3.4).
+
+        Полноценная маршрутизация по ``voice_input_mode`` — в Phase 2
+        (отдельный worker-issue). Сейчас только логируем изменение, чтобы
+        supervisor мог переключать режим без падения ноды и в логах было
+        видно, что новый режим пришёл.
+        """
+        for param in params:
+            if param.name == "voice_input_mode":
+                self.get_logger().info(
+                    f"🎙 voice_input_mode changed to {param.value!r}"
+                )
+        return SetParametersResult(successful=True)
+
     def _load_system_prompt(self) -> str:
         prompt_file = self.get_parameter("system_prompt_file").value
         try:
