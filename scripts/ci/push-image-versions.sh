@@ -13,7 +13,14 @@
 #   IMAGE_VERSIONS_PUSH_ATTEMPTS      Maximum pull/rebase + push attempts (5)
 #   IMAGE_VERSIONS_PUSH_RETRY_DELAY   Delay between attempts in seconds (5)
 #   IMAGE_VERSIONS_GIT_REMOTE         Git remote name (origin)
+#   IMAGE_VERSIONS_GIT_TERMINAL_TIMEOUT  Seconds for git network ops (60) — issue #t_dd49849b
 set -euo pipefail
+
+# Hard cap on git network operations. Without this, 'git pull --rebase' and
+# 'git push' can hang indefinitely under ref contention (observed: 2.7h+
+# stuck-in_progress with 3 concurrent runners racing on the same remote ref,
+# 25.08.2026). GIT_TERMINAL_TIMEOUT aborts the git call after N seconds.
+export GIT_TERMINAL_TIMEOUT="${IMAGE_VERSIONS_GIT_TERMINAL_TIMEOUT:-60}"
 
 BRANCH="${1:?usage: push-image-versions.sh <branch> [component]}"
 COMPONENT="${2:-image-versions}"
