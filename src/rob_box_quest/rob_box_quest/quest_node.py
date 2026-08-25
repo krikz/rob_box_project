@@ -28,7 +28,7 @@ import asyncio
 import logging
 import threading
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
@@ -39,11 +39,16 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
+from sensor_msgs.msg import LaserScan
 
 from .core.safety import Watchdog
 from .core.teleop import TeleopController
 from .server.session import WATCHDOG_TIMEOUT_S as SESSION_WATCHDOG_TIMEOUT_S
-from .server.ws_server import WSSServer, build_app
+from .server.ws_server import NoOpBridge, WSSServer, build_app
+from .streams.lidar import scan_to_payload
+from .streams.provider import CameraFrame, CameraProvider
+from .streams.registry import STREAM_CATALOG
+from .streams.status import StatusAggregator
 
 log = logging.getLogger(__name__)
 
@@ -67,12 +72,16 @@ class QuestBridge:
         node: "QuestNode",
         cmd_vel_quest_pub,
         cmd_vel_emergency_pub,
+        ws_server: WSSServer,
     ) -> None:
         self._node = node
         self._pub_quest = cmd_vel_quest_pub
         self._pub_emergency = cmd_vel_emergency_pub
+        self._ws_server = ws_server
         self._teleop = TeleopController()
         self._watchdog = Watchdog(timeout_s=SESSION_WATCHDOG_TIMEOUT_S)
+        # Маппинг camera ui_name → device_id (для on_frame callback из CameraProvider).
+        self._camera_id_to_ui: dict[str, str] = {}
 
     # --- Bridge Protocol -------------------------------------------------
 
@@ -122,6 +131,50 @@ class QuestBridge:
         """Зафиксировать emergency lock (клиент прислал stop_emergency)."""
         self._teleop.emergency_stop()
         self._publish_zero()
+
+    def publish_frame(self, ui_name: str, payload: bytes) -> None:
+        """Bridge.publish_frame — пересылает payload в WS-подписчикам."""
+        # Передаём в WSSServer, тот сам знает про сессии и стримы.
+        self._ws_server.broadcast_frame(ui_name, payload)
+
+    def available_streams(self) -> list[dict[str, Any]]:
+        """Список стримов для JSON_CMD{cmd:stream_list}."""
+        items: list[dict[str, Any]] = []
+        for name, spec in STREAM_CATALOG.items():
+            items.append(
+                {
+                    "topic": name,
+                    "topic_id": spec.topic_id,
+                    "kind": spec.kind.value,
+                    "source": spec.source,
+                    "default_quality": spec.default_quality,
+                    "description": spec.description,
+                }
+            )
+        return items
+
+    def on_camera_frame(self, frame: CameraFrame) -> None:
+        """Hook из CameraProvider.capture-loop (capture-thread)."""
+        # device_id → ui_name reverse-lookup.
+        ui_name = self._camera_id_to_ui.get(frame.device_id)
+        if ui_name is None:
+            return
+        self.publish_frame(ui_name, frame.data)
+
+    def on_lidar_scan(self, msg: LaserScan) -> None:
+        """Hook из ROS subscription /scan → encode → broadcast."""
+        payload = scan_to_payload(
+            angle_min=msg.angle_min,
+            angle_max=msg.angle_max,
+            angle_increment=msg.angle_increment,
+            range_min=msg.range_min,
+            range_max=msg.range_max,
+            time_increment=msg.time_increment,
+            scan_time=msg.scan_time,
+            ranges=list(msg.ranges),
+            intensities=list(msg.intensities),
+        )
+        self.publish_frame("lidar_2d", payload)
 
     # --- Periodic helpers (вызываются из QuestNode loop) -----------------
 
@@ -184,23 +237,40 @@ class QuestNode(Node):
         )
         self._pub_quest = self.create_publisher(Twist, "cmd_vel_quest", _RE)
         self._pub_emergency = self.create_publisher(Twist, "cmd_vel_emergency", _RE)
-        # Odometry для robot_status (Phase 1.3: только для healthcheck).
+        # Подписки для стримов (Phase 1.4 v2: lidar через ROS, камеры мимо ROS).
         self._odom_sub = self.create_subscription(Odometry, "/odom", self._on_odom, _RE)
+        self._scan_sub = self.create_subscription(LaserScan, "/scan", self._on_scan, _RE)
         self._latest_odom: Optional[Odometry] = None
+        self._status = StatusAggregator()
 
-        # Bridge + WS server.
+        # WS server (инициализируем первым чтобы передать в Bridge).
         from .server.ws_server import ACTIVE_PIN
 
+        self.ws_server = WSSServer(bridge=NoOpBridge(), pin=ACTIVE_PIN)
         self.bridge = QuestBridge(
             node=self,
             cmd_vel_quest_pub=self._pub_quest,
             cmd_vel_emergency_pub=self._pub_emergency,
+            ws_server=self.ws_server,
         )
-        self.ws_server = WSSServer(bridge=self.bridge, pin=ACTIVE_PIN)
+        # Replace NoOpBridge на реальный (после создания обоих).
+        self.ws_server.bridge = self.bridge
         if log_pin:
             self.get_logger().warning(
                 f"🔑 Quest PIN: {ACTIVE_PIN} " "(show this to operator — required to start a session)"
             )
+
+        # CameraProvider — capture-loop в отдельных потоках (depthai/OpenCV).
+        # Пока не доступны в dev-env, на роботе (Phase 1.6) добавятся.
+        cameras = [
+            ("camera_oak_color", "oak:color", 15.0),
+            ("camera_oak_depth", "oak:depth", 5.0),
+            ("camera_ceiling", "/dev/video0", 15.0),
+        ]
+        self._camera_provider = CameraProvider(cameras=cameras)
+        for ui_name, source_id, _fps in cameras:
+            self.bridge._camera_id_to_ui[source_id] = ui_name
+        self._camera_provider.set_callback(self.bridge.on_camera_frame)
 
         # Запускаем aiohttp в отдельном thread (rclpy и aiohttp —
         # оба event-loop; запускать aiohttp в rclpy callback'е нельзя).
@@ -212,20 +282,41 @@ class QuestNode(Node):
         self._tick_timer = self.create_timer(PUBLISH_PERIOD_S, self._on_tick_timer)
         # Watchdog check (раз в 100 мс).
         self._watchdog_timer = self.create_timer(0.1, self._on_watchdog_timer)
+        # robot_status (1 Hz).
+        self._status_timer = self.create_timer(1.0, self._on_status_timer)
 
         # Запуск aiohttp отложен до first timer callback (rclpy init
         # уже произошёл к этому моменту).
         self._aio_started = False
+        self._camera_started = False
 
     # --- ROS callbacks ----------------------------------------------------
 
     def _on_odom(self, msg: Odometry) -> None:
         self._latest_odom = msg
+        # Phase 1.4: подпитка StatusAggregator для robot_status payload.
+        try:
+            self._status.update_velocity(
+                float(msg.twist.twist.linear.x),
+                float(msg.twist.twist.angular.z),
+            )
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().debug(f"status update failed: {e}")
+
+    def _on_scan(self, msg: LaserScan) -> None:
+        """ROS subscription /scan → WS-подписчикам (Phase 1.4 v2)."""
+        self.bridge.on_lidar_scan(msg)
 
     def _on_tick_timer(self) -> None:
         if not self._aio_started:
             self._start_aiohttp()
             self._aio_started = True
+        if not self._camera_started:
+            try:
+                self._camera_provider.start()
+                self._camera_started = True
+            except Exception as e:  # noqa: BLE001
+                self.get_logger().warning(f"camera provider start failed: {e}")
         self.bridge.tick_publish(time.monotonic())
 
     def _on_watchdog_timer(self) -> None:
@@ -233,6 +324,14 @@ class QuestNode(Node):
             self.get_logger().warning("🛑 Watchdog tripped — emergency stop (Quest client silent)")
             self.bridge.publish_emergency()
             self.bridge.emergency_stop()
+
+    def _on_status_timer(self) -> None:
+        """1 Hz robot_status broadcast."""
+        try:
+            payload = self._status.payload()
+            self.bridge.publish_frame("robot_status", payload)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().debug(f"status publish failed: {e}")
 
     # --- aiohttp lifecycle ------------------------------------------------
 
@@ -270,6 +369,10 @@ class QuestNode(Node):
 
     def shutdown(self) -> None:
         self._stop_event.set()
+        try:
+            self._camera_provider.stop()
+        except Exception as e:  # noqa: BLE001
+            log.debug("camera provider stop: %s", e)
         if self._aio_loop is not None and self._aio_loop.is_running():
             self._aio_loop.call_soon_threadsafe(self._aio_loop.stop)
         if self._aio_thread is not None:

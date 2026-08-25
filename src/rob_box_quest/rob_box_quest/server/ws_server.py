@@ -22,7 +22,7 @@ import time
 from typing import Any, Optional, Protocol
 
 from ..protocol.frame import FrameType, decode_frame, encode_frame
-from ..protocol.topics import TOPIC_IDS
+from ..streams.registry import STREAM_CATALOG, get_stream
 from .session import (
     ErrorCode,
     HEARTBEAT_INTERVAL_S,
@@ -36,13 +36,16 @@ log = logging.getLogger(__name__)
 
 
 class Bridge(Protocol):
-    """Минимальный контракт для Phase 1.3 ROS-моста.
+    """Контракт между WS-сервером и capture/ROS-источниками (Phase 1.4 v2).
 
-    Phase 1.2: NoOpBridge в тестах.
-    Phase 1.3: реальная реализация через rclpy в quest_node.py.
+    Реализация:
+    - NoOpBridge — для тестов.
+    - QuestBridge (quest_node.py) — реальная, держит TeleopController +
+      Watchdog, подписывается на ROS-топики (lidar/status) и получает
+      кадры от CameraProvider (camera_oak_color/depth, camera_ceiling).
 
-    Все методы sync — rclpy publishers thread-safe, можно вызывать
-    прямо из aiohttp event-loop без await.
+    Все методы sync (rclpy thread-safe + capture-loop thread). Можно
+    вызывать прямо из aiohttp event-loop без await.
     """
 
     def publish_quest(self, linear: float, angular: float) -> None: ...
@@ -55,6 +58,22 @@ class Bridge(Protocol):
 
     def emergency_stop(self) -> None:
         """Зафиксировать emergency lock (safe stop + close session)."""
+        ...
+
+    def publish_frame(self, ui_name: str, payload: bytes) -> None:
+        """Bridge публикует payload (JPEG/H.264/msgpack) для всех
+        подписанных клиентов на стрим ui_name. Если никто не подписан — no-op.
+
+        Вызывается из:
+        - ROS-подписок (lidar_2d, robot_status, voice_state) — payload из
+          protocol/topics.py.
+        - capture-loop'ов CameraProvider (camera_oak_*, camera_ceiling) —
+          payload это JPEG/H.264 bytes с камеры.
+        """
+        ...
+
+    def available_streams(self) -> list[dict[str, Any]]:
+        """JSON-payload для stream_select list cmd (Phase 2 R10)."""
         ...
 
 
@@ -72,6 +91,25 @@ class NoOpBridge:
 
     def emergency_stop(self) -> None:
         return None
+
+    def publish_frame(self, ui_name: str, payload: bytes) -> None:
+        return None
+
+    def available_streams(self) -> list[dict[str, Any]]:
+        # NoOpBridge: возвращаем весь каталог (тестам нужны имена для проверки).
+        items: list[dict[str, Any]] = []
+        for name, spec in STREAM_CATALOG.items():
+            items.append(
+                {
+                    "topic": name,
+                    "topic_id": spec.topic_id,
+                    "kind": spec.kind.value,
+                    "source": spec.source,
+                    "default_quality": spec.default_quality,
+                    "description": spec.description,
+                }
+            )
+        return items
 
 
 # Текущий PIN — генерится один раз на старте контейнера, логируется.
@@ -92,9 +130,53 @@ class WSSServer:
         self.pin = pin or ACTIVE_PIN
         # Текущие сессии (session_id → ClientSession) для отладки/healthcheck.
         self._sessions: dict[str, ClientSession] = {}
+        # session_id → активный ws (для broadcast_frame из capture-loops).
+        # Хранится ОТДЕЛЬНО от ClientSession чтобы можно было отвязать
+        # (без race на is_open() во время unregister).
+        self._ws_by_session: dict[str, Any] = {}
 
     def get_active_sessions(self) -> int:
         return sum(1 for s in self._sessions.values() if s.is_open())
+
+    def broadcast_frame(self, ui_name: str, payload: bytes) -> int:
+        """Слать BINARY_FRAME всем сессиям, подписанным на ui_name.
+
+        Вызывается из Bridge.publish_frame (ROS-callback'и + capture-loops).
+        Sync: encode + send_bytes из aiohttp event-loop thread. Если вызов
+        из capture-thread — schedule через loop.call_soon_threadsafe.
+
+        Returns: количество клиентов которым доставлено.
+        """
+        if not self._sessions:
+            return 0
+        count = 0
+        for sid, session in list(self._sessions.items()):
+            if not session.is_open():
+                continue
+            stream_id = session.subscribed.get(ui_name)
+            if stream_id is None:
+                continue
+            ws = self._ws_by_session.get(sid)
+            if ws is None:
+                continue
+            frame = encode_frame(FrameType.BINARY_FRAME, stream_id, payload)
+            # ws.send_bytes — coroutine. Из aiohttp-loop — await напрямую;
+            # из другого потока — call_soon_threadsafe (Phase 1.5).
+            self._schedule_send(ws, frame)
+            count += 1
+        return count
+
+    def _schedule_send(self, ws, frame: bytes) -> None:
+        """Отправить frame в ws. По умолчанию asyncio.create_task если
+        event-loop активен. Override в quest_node если нужен thread-safe.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            return
+        loop.create_task(ws.send_bytes(frame))
 
     async def _send(
         self,
@@ -128,8 +210,9 @@ class WSSServer:
     ) -> None:
         await ws.send_bytes(encode_frame(FrameType.BINARY_FRAME, stream_id, payload))
 
-    def _register_session(self, session: ClientSession) -> None:
+    def _register_session(self, session: ClientSession, ws) -> None:
         self._sessions[session.session_id] = session
+        self._ws_by_session[session.session_id] = ws
 
     def _unregister_session(self, session: ClientSession) -> None:
         # Освободить stream_id'ы этой сессии.
@@ -137,6 +220,7 @@ class WSSServer:
             _stream_ids_in_use.discard(sid)
         session.close()
         self._sessions.pop(session.session_id, None)
+        self._ws_by_session.pop(session.session_id, None)
 
     async def _on_hello(
         self,
@@ -189,7 +273,8 @@ class WSSServer:
             await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "subscribe before HELLO")
             return
         topic = payload_obj.get("topic")
-        if not isinstance(topic, str) or topic not in TOPIC_IDS:
+        spec = get_stream(topic) if isinstance(topic, str) else None
+        if spec is None:
             await self._send_error(
                 ws,
                 0,
@@ -197,9 +282,9 @@ class WSSServer:
                 f"topic '{topic}' not in registry",
             )
             return
-        quality = payload_obj.get("quality", "med")
+        quality = payload_obj.get("quality", spec.default_quality)
         if quality not in ("low", "med", "high"):
-            quality = "med"
+            quality = spec.default_quality
         if topic in session.subscribed:
             # идемпотентно: повторный SUBSCRIBE → ack с тем же stream_id.
             sid = session.subscribed[topic]
@@ -211,8 +296,86 @@ class WSSServer:
             ws,
             FrameType.JSON_EVENT,
             0,
-            {"type": "subscribe_ack", "topic": topic, "stream_id": sid, "quality": quality},
+            {
+                "type": "subscribe_ack",
+                "topic": topic,
+                "stream_id": sid,
+                "quality": quality,
+                "kind": spec.kind.value,
+            },
         )
+
+    async def _on_json_cmd(
+        self,
+        ws,
+        session: ClientSession,
+        payload_obj: dict[str, Any],
+    ) -> None:
+        """JSON_CMD → Bridge + meta-commands.
+
+        Контракт:
+        - teleop_twist → Bridge.publish_quest + feed_client_alive
+        - stop_emergency → Bridge.publish_emergency + emergency_stop
+        - stream_select → переключение активного camera-стрима
+        - stream_list → JSON_EVENT{type: stream_list, items: [...]}
+        - voice_mode / voice_ptt / ui_button → Phase 2
+        """
+        cmd = payload_obj.get("cmd")
+        if cmd == "stream_list":
+            items = []
+            for s in self.bridge.available_streams():
+                items.append(s)
+            await self._send(
+                ws,
+                FrameType.JSON_EVENT,
+                0,
+                {"type": "stream_list", "items": items},
+            )
+            return
+        if cmd == "teleop_twist":
+            try:
+                linear = float(payload_obj.get("linear", {}).get("x", 0.0))
+                angular = float(payload_obj.get("angular", {}).get("z", 0.0))
+            except (TypeError, ValueError):
+                await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "teleop_twist: bad linear/angular")
+                return
+            deadman = bool(payload_obj.get("deadman", False))
+            self.bridge.publish_quest(linear, angular)
+            self.bridge.feed_client_alive()
+            _ = deadman  # Phase 1.5: telemetry через deadman-события
+            return
+        if cmd == "stop_emergency":
+            self.bridge.publish_emergency()
+            self.bridge.emergency_stop()
+            return
+        if cmd == "stream_select":
+            # Meta-command: UI запросил смену активного стрима.
+            # Сервер подтверждает что стрим есть в registry, и возвращает
+            # текущий stream_id (если уже подписан) или подсказывает
+            # SUBSCRIBE. Клиент сам решает — UNSUBSCRIBE+SUBSCRIBE.
+            topic = payload_obj.get("topic")
+            spec = get_stream(topic) if isinstance(topic, str) else None
+            if spec is None:
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.TOPIC_UNKNOWN,
+                    f"topic '{topic}' not in registry",
+                )
+                return
+            sid = session.subscribed.get(topic)
+            await self._send(
+                ws,
+                FrameType.JSON_EVENT,
+                0,
+                {
+                    "type": "stream_select_ack",
+                    "topic": topic,
+                    "stream_id": sid,  # может быть None → клиент делает SUBSCRIBE
+                    "kind": spec.kind.value,
+                },
+            )
+            return
 
     async def _on_unsubscribe(
         self,
@@ -237,46 +400,8 @@ class WSSServer:
         if event_type == "ping":
             session.feed_ping()
 
-    async def _on_json_cmd(
-        self,
-        ws,
-        session: ClientSession,
-        payload_obj: dict[str, Any],
-    ) -> None:
-        """JSON_CMD → Bridge (Phase 1.3: rclpy publishers).
-
-        Контракт meta-quest-api.md §5/§6:
-        - teleop_twist → Bridge.publish_quest(linear, angular)
-        - stop_emergency → Bridge.publish_emergency() (edge)
-        - ui_button → Phase 2
-        - voice_mode / voice_ptt → Phase 2
-        """
-        cmd = payload_obj.get("cmd")
-        if cmd == "teleop_twist":
-            try:
-                linear = float(payload_obj.get("linear", {}).get("x", 0.0))
-                angular = float(payload_obj.get("angular", {}).get("z", 0.0))
-            except (TypeError, ValueError):
-                await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "teleop_twist: bad linear/angular")
-                return
-            deadman = bool(payload_obj.get("deadman", False))
-            # Phase 1.3: Bridge хранит TeleopController, consume() + publish.
-            self.bridge.publish_quest(linear, angular)
-            self.bridge.feed_client_alive()
-            # Dead-man: если grip отпущен, Bridge должен остановить.
-            # Это делает QuestBridge (см. quest_node.py): consume(deadman=False)
-            # → safe stop.
-            _ = deadman  # ACK семантика для будущего (Phase 1.5: telemetry)
-        elif cmd == "stop_emergency":
-            self.bridge.publish_emergency()
-            self.bridge.emergency_stop()
-        else:
-            await self._send_error(
-                ws,
-                0,
-                ErrorCode.BAD_PAYLOAD,
-                f"cmd '{cmd}' not supported in Phase 1.3",
-            )
+    # Управление _on_json_cmd перенесено в новый метод выше (см. Phase 1.4):
+    # stream_select / stream_list + teleop_twist / stop_emergency.
 
     async def _ws_handler(self, request) -> Any:
         """aiohttp WebSocket handler."""
@@ -285,7 +410,7 @@ class WSSServer:
         ws = _aiohttp_web.WebSocketResponse()
         await ws.prepare(request)
         session = ClientSession()
-        self._register_session(session)
+        self._register_session(session, ws)
         # Отправить heartbeat сразу для clock baseline.
         session.feed_heartbeat()
 
