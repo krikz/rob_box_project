@@ -52,6 +52,15 @@ The agentic cycle ends ONLY when you return **plain text without tool_calls**.
   return "done".
 - After the LAST speak_text → your next response = plain text "done".
   NO tool_calls!
+- 🔇 **NO DONE-MARKER IN SPOKEN (issue #1564)**: NEVER append "\ndone" / "\n\ndone" /
+  "готово" / "выполнено" / "task complete" AFTER a `speak_text` call as part of
+  the assistant text content. The marker MUST be the ENTIRE next response
+  (no other text around it). If you write
+  `speak_text("Говорю мужским голосом!")` and then write
+  `Говорю мужским голосом!\n\ndone` as final text → TTS will literally
+  read «...дан» at the end of every reply. The terminator is the WHOLE
+  response, not a suffix on the spoken answer.
+
 - 🚫 NEVER call play_sound/play_animation AFTER speak_text (system
   auto-terminates after 2 extra calls); play_sound/play_animation only in the
   SAME iteration together with speak_text.

@@ -113,8 +113,8 @@ from rob_box_voice.core.speech_accumulator import SpeechAccumulator
 from rob_box_voice.core.dj_mode import DJHook, DJModeController
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload, split_into_chunks,
-    strip_history_marker, strip_markdown, strip_speaker_tag,
-    strip_thinking_blocks,
+    strip_done_marker, strip_history_marker, strip_markdown,
+    strip_speaker_tag, strip_thinking_blocks,
 )
 from rob_box_voice.startup_greeting import (
     THINKING_SOUND,
@@ -3756,6 +3756,17 @@ class DialogueNode(Node):
         # НЕ должен озвучиваться буквально («дан»). Это происходит когда
         # LLM завершила цикл без speak_text (например повтор «сыграй баха»
         # после уже запущенной музыки → ответил просто done).
+        # 🔴 FIX (issue #1564): LLM обучена завершать turn текстом
+        # ``done`` (RULE «after LAST speak_text → plain text "done"» в
+        # master_prompt_compact.txt), но иногда льёт его В ``spoken``
+        # через ``\n\n`` после реального ответа:
+        #   spoken="Говорю голосом надёжного мужчины.\n\ndone"
+        # → TTS озвучивает «...дан» после каждой фразы. ``_done_marker``
+        # ниже ловит только точное равенство, не убирает хвост. Делаем
+        # strip хвостового done-marker'а ПЕРВЫМ — после этого equality
+        # чек ниже остаётся единственным местом, где решается «пропустить
+        # auto-TTS».
+        spoken = strip_done_marker(spoken)
         _done_marker = spoken.strip().lower()
         if _done_marker in ("done", "task complete", "task_complete", "готово", "всё", "выполнено"):
             self.get_logger().info(
@@ -4365,9 +4376,28 @@ class DialogueNode(Node):
         бэклог-аккумулятор, speaker-состояние, таймер сессии и история
         (асинхронно через ``memory.clear_turns``). LLM не вызывается —
         вместо этого говорим детерминированное подтверждение.
+
+        Issue #1563 — после ``_publish_response`` TTS должен успеть синтези-
+        ровать и доиграть «Начинаю новую сессию…», даже если barge-in от
+        wake-word в той же фразе успел прислать STOP в ``/voice/tts/control``
+        ДО того, как этот код увидел STT-результат. Поэтому ДО отправки
+        подтверждения публикуем ``IGNORE_STOP_MS:700`` — TTS игнорирует
+        STOP-команды в этом окне и спокойно синтезирует/воспроизводит.
         """
         # 1. Отменяем in-flight turn (barge-in + stop TTS + release effects).
         self._cancel_run("new session reset")
+        # 1a. Issue #1563 — открыть IMMUNE-окно для TTS, чтобы barge-in
+        # STOP (пришедший в той же STT-фразе) не отменил подтверждение
+        # «Начинаю новую сессию…». 700 мс — с запасом на синтез Yandex
+        # (~300-500 мс) + ALSA-буфер + grace перед AEC-эхо.
+        try:
+            ignore_msg = String()
+            ignore_msg.data = "IGNORE_STOP_MS:700"
+            self._tts_control_pub.publish(ignore_msg)
+        except Exception as exc:  # noqa: BLE001 — best-effort, не роняем reset
+            self.get_logger().warn(
+                f"⚠️ [issue 1563] IGNORE_STOP_MS publish failed: {exc}"
+            )
         # 2. Бэклог-аккумулятор фоновой речи (если реализован).
         acc = getattr(self, "_speech_accumulator", None)
         if acc is not None:

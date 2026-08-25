@@ -830,6 +830,15 @@ class TTSNode(Node):
         # Serialize synth/play workers; callbacks stay non-blocking while queued
         # requests are dropped by dialogue-id checks after barge-in.
         self._synthesis_lock = threading.Lock()
+        # Issue #1563 — защита от «STOP после синтеза, но до воспроизведения».
+        # Когда barge-in (wake-word) приходит во время синтеза, а фраза
+        # «робот новая сессия» уже зарезолвлена как session-reset — поздний
+        # STOP не должен отменять УЖЕ готовый к воспроизведению синтез.
+        # Поэтому: 1) в окне IMMUNE STOP игнорируется (например после reset
+        # сессии); 2) STOP между успешным синтезом и play_audio буферизуется
+        # для СЛЕДУЮЩЕГО запроса, не отменяя текущий.
+        self._immune_until_ts = 0.0   # monotonic — до этого момента STOP игнор
+        self._post_synth_stop_pending = False  # STOP пришёл между synth/play
 
         # 🔴 FIX (live 12:02 «анекдот перепутан»): FIFO-порядок воспроизведения.
         # LLM вызвала 5 speak_text подряд (анекдот) — 5 задач ушли в пул
@@ -1100,13 +1109,108 @@ class TTSNode(Node):
             )
 
     def control_callback(self, msg: String):
-        """Обработка control commands (STOP)."""
-        command = msg.data.strip().upper()
+        """Обработка control commands (STOP, IMMUNE)."""
+        raw = (msg.data or "").strip()
+        command = raw.upper()
 
         if command == "STOP":
-            self.get_logger().warn("🔇 STOP command received - немедленная остановка TTS")
-            self._interrupt_playback()
+            self._handle_stop_command(raw)
+            return
+
+        # Issue #1563 — dialogue_node шлёт «IGNORE_STOP_MS:<n>» после
+        # _reset_dialogue_session(), чтобы barge-in от wake-word в той же
+        # фразе не отменил свежезапущенный синтез «Начинаю новую сессию…».
+        # В окне IMMUNE STOP-команды логируются, но не прерывают текущий
+        # синтез/воспроизведение. Следующий STOP ПОСЛЕ окна работает штатно.
+        if command.startswith("IGNORE_STOP_MS:"):
+            try:
+                ms = int(command.split(":", 1)[1].strip())
+            except (ValueError, IndexError):
+                self.get_logger().warn(
+                    f"⚠️ [issue 1563] Bad IGNORE_STOP_MS payload: {raw!r}"
+                )
+                return
+            import time as _time
+            self._immune_until_ts = _time.monotonic() + (ms / 1000.0)
+            self.get_logger().info(
+                f"🛡️ [issue 1563] STOPs ignored for next {ms} ms "
+                f"(until t={self._immune_until_ts:.3f})"
+            )
+            return
+
+        # Неизвестная команда — логируем и игнорируем (не падаем).
+        self.get_logger().debug(
+            f"ℹ️ [tts control] unknown command: {raw!r}"
+        )
+
+    def _handle_stop_command(self, raw: str) -> None:
+        """Issue #1563 — обработка STOP с учётом IMMUNE-окна и POST_SYNTH буфера.
+
+        Логика:
+        * В окне IMMUNE (между ``_immune_until_ts``) STOP игнорируется
+          полностью — текущий синтез/воспроизведение НЕ прерывается.
+          Это нужно для «робот новая сессия»: barge-in STOP приходит
+          в той же фразе, но dialogue_node уже решил что это session-reset
+          и шлёт IMMUNE-маркер ДО _publish_response.
+        * Если STOP пришёл во время синтеза (state=synthesizing) и
+          синтез УЖЕ завершён (audio_np готов, ждём play_audio) —
+          вместо немедленной отмены буферизуем STOP для СЛЕДУЮЩЕГО
+          запроса: ``_post_synth_stop_pending = True``. Текущий chunk
+          доигрывается полностью.
+        * В остальных случаях — старое поведение (немедленная остановка).
+        """
+        import time as _time
+        now = _time.monotonic()
+
+        # 1. IMMUNE-окно: STOP игнорируется.
+        if now < self._immune_until_ts:
+            self.get_logger().info(
+                f"🛡️ [issue 1563] STOP ignored (immune window, "
+                f"{max(0.0, self._immune_until_ts - now) * 1000:.0f} ms left)"
+            )
+            # Публикуем stopped для UI, но не прерываем фактический TTS.
             self.publish_state("stopped")
+            return
+
+        # 2. Если мы в фазе «синтез готов, воспроизведение не начато»
+        #    (state == «synthesized») — буферизуем STOP для следующего
+        #    запроса, а текущий chunk доигрываем полностью. Сигнал
+        #    «между synth и play» прост: current_stream ещё None, но
+        #    идёт активный FIFO-gate (next_play_seq == play_seq).
+        if self._is_post_synth_phase():
+            self._post_synth_stop_pending = True
+            self.get_logger().info(
+                "⏭️ [issue 1563] STOP buffered for NEXT request "
+                "(current chunk will play to completion)"
+            )
+            return
+
+        # 3. Обычный путь: немедленная остановка.
+        self.get_logger().warn("🔇 STOP command received - немедленная остановка TTS")
+        self._interrupt_playback()
+        self.publish_state("stopped")
+
+    def _is_post_synth_phase(self) -> bool:
+        """Issue #1563 — между synth_done и play_audio?
+
+        Эвристика: synthesis идёт в worker-thread, между завершением
+        синтеза и стартом ``play_audio`` окно ~миллисекунды (FIFO-gate
+        ожидание + resample). В этом окне STOP должен буферизоваться,
+        а не отменять готовый к воспроизведению chunk.
+
+        Признаки «между synth и play»:
+        * ``processing_dialogue_id`` задан (синтез завершился, объект жив)
+        * ``stop_requested`` ещё False (никто не прерывал)
+        * FIFO-gate активен или ещё не освобождён — проще всего
+          проверить, что state == "synthesized" (мы его публикуем
+          неявно через publish_state("playing") перед play_audio;
+          если ещё "playing" не был вызван — мы в post-synth окне).
+        """
+        return (
+            self.processing_dialogue_id is not None
+            and not self.stop_requested
+            and not self.current_stream
+        )
 
     def _interrupt_playback(self):
         """Прервать текущее воспроизведение (helper метод)."""
@@ -1809,6 +1913,16 @@ class TTSNode(Node):
             batch_started_at = _time.monotonic()
         # Сбрасываем флаг stop при новом запросе
         self.stop_requested = False
+        # Issue #1563 — потребляем буферизованный STOP, пришедший
+        # в окне «synth_done → play_audio» прошлого chunk'а. Если
+        # поздний STOP был отложен для текущего запроса — применяем
+        # его ДО старта синтеза (новый запрос не нужен).
+        if getattr(self, "_post_synth_stop_pending", False):
+            self._post_synth_stop_pending = False
+            self.get_logger().info(
+                "⏭️ [issue 1563] consuming buffered STOP at start of new request"
+            )
+            self._interrupt_playback()
 
         # Устанавливаем processing_dialogue_id для этого синтеза
         if dialogue_id:

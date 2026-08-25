@@ -20,11 +20,9 @@ on:
 
 permissions:
   contents: write  # Required for git push of .image-versions files
-  packages: write  # Required for docker push to ghcr.io (issue #1503)
 
 env:
   LOCAL_REGISTRY: localhost:5000
-  GHCR_REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/krikz/rob_box
   LOCAL_PREFIX: localhost:5000/krikz/rob_box
   ROS_DISTRO: humble
@@ -392,6 +390,10 @@ jobs:
       - build-perception
     runs-on: [self-hosted, rob-box]
     if: success() && inputs.push_to_registry != false
+    # Issue #t_dd49849b: 2.7h+ hang observed on concurrent runs (round-224+225+develop)
+    # when git pull --rebase / git push blocked indefinitely under ref contention.
+    # Hard 10-min cap surfaces the failure visibly (instead of stuck-in_progress).
+    timeout-minutes: 10
     steps:
       - name: Clean stale submodules
         run: |
@@ -406,17 +408,6 @@ jobs:
           clean: true
           fetch-depth: 0
 
-      - name: Login to GitHub Container Registry
-        # Issue #1503: deploy default — registry_source=github, тянет образы из
-        # ghcr.io/krikz/rob_box. L-Build Main Pi Services раньше пушил ТОЛЬКО
-        # в localhost:5000 → develop/test ветки никогда не публиковались в GHCR,
-        # deploy падал на 'No such image'. Теперь mirror-пушим SHA-тег и в GHCR.
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.GHCR_REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.CR_PAT }}
-
       - name: Tag with SHA and update .image-versions
         # Bugfix issue #1482: вместо `git rev-parse --short HEAD` используем
         # `${GITHUB_SHA::7}` — это commit, который ТРИГГЕРНУЛ workflow run,
@@ -430,19 +421,15 @@ jobs:
           SHORT_SHA="${GITHUB_SHA::7}"
           NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
 
-          # Tag and push SHA-immutable images to BOTH local registry and
-          # ghcr.io (issue #1503). deploy default is registry_source=github →
-          # без GHCR push develop-билды невидимы для деплоя, робот получает
-          # старые образы.
+          # Tag and push SHA-immutable images to LOCAL registry only.
+          # GHCR push убран — локальные develop/test сборки больше не публикуются
+          # в ghcr.io (issue #1503 решён иначе: deploy читает из local registry
+          # для develop/test, prod-push в GHCR — отдельный workflow на main).
           tag_and_push() {
             local LOCAL_TAG="$1"
-            local GHCR_TAG="${LOCAL_TAG/${LOCAL_PREFIX}/${IMAGE_PREFIX}}"
             local LOCAL_SHA="${LOCAL_TAG}-${SHORT_SHA}"
-            local GHCR_SHA="${GHCR_TAG}-${SHORT_SHA}"
             docker tag "$LOCAL_TAG" "$LOCAL_SHA" && docker push "$LOCAL_SHA"
             echo "✅ local  $LOCAL_SHA"
-            docker tag "$LOCAL_TAG" "$GHCR_SHA" && docker push "$GHCR_SHA"
-            echo "✅ ghcr.io $GHCR_SHA"
           }
 
           tag_and_push "${LOCAL_PREFIX}:robot-state-publisher-${ROS_DISTRO}-${DOCKER_TAG}"

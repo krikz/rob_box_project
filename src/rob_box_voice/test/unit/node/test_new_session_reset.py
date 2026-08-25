@@ -51,6 +51,9 @@ def _make_node(new_session_enabled: bool = True) -> DialogueNode:
     n._maybe_record_session_end = MagicMock()
     n._session_started_at = None
     n._pending_backlog_flush = False
+    # Issue #1563 — _tts_control_pub публикует STOP / IGNORE_STOP_MS.
+    # По умолчанию MagicMock (тесты _on_stt его не трогают).
+    n._tts_control_pub = MagicMock()
     # _loop не задаём — асинхронная очистка истории в тесте не дёргается.
     return n
 
@@ -171,3 +174,71 @@ class TestClearSessionTurns:
             assert await n._memory.load_recent("default", limit=10) == []
 
         asyncio.run(_seed_and_clear())
+
+
+class TestResetPublishesTtsImmune:
+    """Issue #1563 — _reset_dialogue_session публикует IGNORE_STOP_MS в tts_control.
+
+    Без этого barge-in STOP от wake-word в той же STT-фразе (например,
+    «робот новая сессия…») успевает отменить синтез «Начинаю новую
+    сессию…» ДО воспроизведения.
+    """
+
+    def _captured_publishes(self, n) -> list:
+        """Список ``.data`` аргументов всех вызовов _tts_control_pub.publish."""
+        return [
+            call.args[0].data
+            for call in n._tts_control_pub.publish.call_args_list
+            if call.args and hasattr(call.args[0], "data")
+        ]
+
+    def test_reset_publishes_ignore_stop_ms_before_response(self):
+        """После «робот новая сессия» dialogue_node публикует
+        ``IGNORE_STOP_MS:700`` В ``/voice/tts/control`` ДО ``_publish_response``."""
+        n = _make_node()
+        _stt(n, "робот начни новую сессию")
+
+        publishes = self._captured_publishes(n)
+        # Должна быть хотя бы одна публикация с payload IGNORE_STOP_MS:700.
+        assert any("IGNORE_STOP_MS" in p for p in publishes), (
+            f"Expected IGNORE_STOP_MS publish, got: {publishes}"
+        )
+        assert any(p.startswith("IGNORE_STOP_MS:") and p.endswith("700") for p in publishes), (
+            f"Expected 700 ms window, got: {publishes}"
+        )
+        # _publish_response должен быть вызван ровно один раз.
+        n._publish_response.assert_called_once()
+        # Порядок вызовов: IGNORE_STOP_MS публикуется ДО _publish_response.
+        # Сравниваем по call_count: первый вызов должен быть IGNORE_STOP_MS,
+        # потому что мы публикуем его в шаге 1a (ДО шага 7 _publish_response).
+        first_publish_data = (
+            n._tts_control_pub.publish.call_args_list[0]
+            .args[0].data
+        )
+        assert "IGNORE_STOP_MS" in first_publish_data, (
+            f"First tts_control publish must be IGNORE_STOP_MS, got: "
+            f"{first_publish_data!r}"
+        )
+
+    def test_reset_publishes_for_telegram_clear(self):
+        """Telegram «/clear» тоже должен открыть IMMUNE-окно TTS."""
+        n = _make_node()
+        _stt(n, "[TG:42] /clear")
+        publishes = self._captured_publishes(n)
+        assert any("IGNORE_STOP_MS" in p for p in publishes), (
+            f"Expected IGNORE_STOP_MS publish for /clear, got: {publishes}"
+        )
+
+    def test_publish_failure_does_not_break_reset(self):
+        """Если _tts_control_pub.publish падает — reset сессии всё равно
+        должен отработать (best-effort, не роняем новый сеанс)."""
+        n = _make_node()
+        n._tts_control_pub.publish.side_effect = RuntimeError("publisher dead")
+        # Не должно быть необработанного исключения.
+        _stt(n, "робот сбрось всё")
+        # _publish_response всё равно вызван.
+        n._publish_response.assert_called_once()
+        # _cancel_run отработал.
+        n._cancel_run.assert_called()
+        # DSM сброшен в IDLE.
+        n._dsm.reset.assert_called()
