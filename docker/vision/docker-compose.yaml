@@ -306,10 +306,27 @@ services:
   # Зависимость: webxr_client/ (Phase 1.5) должен быть merged в текущую
   # ветку ДО сборки образа. Если его нет — COPY в Dockerfile упадёт
   # (явная ошибка зависимости, не silent degradation).
+  # NOTE t_4d530162 (Deploy issues test-round-232):
+  #   Meta Quest WebXR scaffold (PR #1642, Phase 1.6 / ADR-0027) поднят
+  #   на Vision Pi, но в текущем раскате develop НЕ имеет Python-пакета
+  #   rob_box_quest в src/ (он жил в feature/avatar и не смёржен полностью
+  #   вместе со scaffold'ом). В результате на test-env контейнер quest_node
+  #   падает с EADDRINUSE на 0.0.0.0:8765 (порт занят stale-процессом) →
+  #   restart-loop → deploy-detector фиксирует "❌ Deployment completed
+  #   with issues" на test-env.
+  #
+  #   Чтобы не блокировать e2e-раунды на test-env, по умолчанию quest
+  #   выключен через compose profile "quest". Для активации —
+  #   COMPOSE_PROFILES=quest (opt-in). Когда пакет src/rob_box_quest/
+  #   попадёт в develop — убрать profile здесь и снять этот NOTE.
+  #
+  # TODO: после полного merge Phase 1.6 (rob_box_quest pkg) — убрать
+  #       profiles: [quest] и восстановить автостарт на Vision Pi.
   quest:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:quest-${ROS_DISTRO:-humble}-${QUEST_TAG:-${IMAGE_TAG}}
     container_name: rob-box-quest
+    profiles: ["quest"]
     network_mode: host
     build:
       context: .
