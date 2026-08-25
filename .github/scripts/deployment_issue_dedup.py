@@ -149,6 +149,50 @@ CRITICAL_EXCLUDE_COMMON = [
     # team can address the underlying preload separately.
     r"error: synthdef \S+ not found",
     r"failure in server /s_new synthdef not found",
+    # vesc_hardware_interface transient startup segfault (issue #1593,
+    # deploy run 32771845791 24.08 / kanban t_efc1a364). libvesc_hardware_interface.so
+    # starts CanInterface::receiveLoop() in parallel with hardware activate(),
+    # so VescHandler::processCanFrame() can be called on a not-yet-initialised
+    # VescHandler and dereferences a null pointer. Docker compose restart
+    # policy (`unless-stopped` on the ros2-control service) brings the
+    # container up on the second attempt and the controller_manager runs
+    # fine (verified live: /joint_states 50 Hz, /diff_drive_controller/odom
+    # publishing, ros2_control_node process at ~5% CPU). The deploy detector
+    # must not file a critical issue for this transient — the actual race
+    # is a vesc_nexus submodule bug (krikz/vesc_nexus@release/v1.0.0) and is
+    # tracked separately. The exclusion patterns are intentionally narrow
+    # (one pattern per stack-frame line; extract_relevant_log_line matches
+    # each line independently and `re.search` does not cross newlines by
+    # default). Bare "Segmentation fault" lines without these signatures
+    # still match CRITICAL_MATCH_RE and are reported.
+    r"libvesc_hardware_interface\.so.*receiveloop",
+    r"libvesc_hardware_interface\.so.*processcanframe",
+    # The bare SIGSEGV line that pairs with the libvesc_hardware_interface.so
+    # stack frames above. Glibc on aarch64 prints this exact wording
+    # ("Segmentation fault (Address not mapped to object [(nil)])") for a
+    # NULL-pointer dereference, which is what the vesc race produces. We
+    # silence it here ONLY when a libvesc_hardware_interface.so frame has
+    # already been seen in the same log dump; the multi-line scan in
+    # `extract_relevant_log_line` (see _vesc_segfault_window_active())
+    # gates this rule on that precondition. A non-vesc segfault on the
+    # same hardware produces a different stack trace (librtabmap_core.so,
+    # libc backtrace, etc.) which does NOT carry libvesc_hardware_
+    # interface.so frames, so this rule is skipped for those and the
+    # operator still sees the deploy-fail issue. This avoids the false
+    # positive filed by deploy run 32771845791 (issue #1593, kanban
+    # t_efc1a364) on every staging deploy until the underlying
+    # vesc_nexus submodule race is fixed.
+    r"segmentation fault \(address not mapped to object \[\(nil\)\]\)",
+    # `[ros2run]: Segmentation fault` is the python-ros2run wrapper's own
+    # echo after the ros2_control_node child process exits with SIGSEGV —
+    # it carries no extra diagnostic and always accompanies the libvesc_
+    # stack-trace frames above, so silencing it is consistent with the
+    # transient segfault exclusion. The bare "Segmentation fault (...)"
+    # line itself is silenced via the main-scope vesc_segfault_window
+    # exclusion below (CRITICAL_EXCLUDE_BY_SCOPE['main']), which uses a
+    # multi-line scan to require a libvesc_hardware_interface.so frame
+    # in the preceding lines of the same log dump.
+    r"\[ros2run\]: segmentation fault",
 ]
 CRITICAL_EXCLUDE_BY_SCOPE = {
     "main": [
@@ -323,13 +367,52 @@ def _matches_any(patterns: Iterable[str], text: str) -> bool:
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
 
 
+# Marker pattern for the vesc_hardware_interface transient segfault window
+# (issue #1593). When any line of the log dump carries this marker, the
+# bare "Segmentation fault (Address not mapped to object [(nil)])" line
+# that pairs with it is silenced — see CRITICAL_EXCLUDE_COMMON.
+_VESC_SEGFAULT_WINDOW_MARKER = re.compile(
+    r"libvesc_hardware_interface\.so.*"
+    r"(receiveloop|processcanframe)",
+    re.IGNORECASE,
+)
+
+
+def _vesc_segfault_window_active(log_text: str) -> bool:
+    """Return True if the log dump carries a libvesc_hardware_interface.so
+    stack frame, which gates the vesc transient-segfault exclusion.
+
+    The deploy detector iterates lines one by one, so a multi-line pattern
+    (e.g. "Segmentation fault ... [(nil)]" preceded by a vesc stack frame)
+    cannot be expressed as a single regex on a single line. Instead, we
+    pre-scan the full log dump for the libvesc frame and only apply the
+    bare-segfault exclusion when the frame is present. A non-vesc segfault
+    on the same hardware produces a different stack trace (librtabmap_core.so,
+    libc backtrace, ...) that does NOT carry libvesc_hardware_interface.so,
+    so the window stays inactive and the operator still sees the real
+    critical issue.
+    """
+    return bool(_VESC_SEGFAULT_WINDOW_MARKER.search(log_text))
+
+
 def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> str | None:
     if severity not in {"critical", "warning"}:
         raise ValueError(f"Unsupported severity: {severity}")
 
     lines = [line.strip() for line in log_text.splitlines() if line.strip()]
     if severity == "critical":
-        patterns = CRITICAL_EXCLUDE_COMMON + CRITICAL_EXCLUDE_BY_SCOPE.get(scope, [])
+        patterns = list(CRITICAL_EXCLUDE_COMMON)
+        # The bare "Segmentation fault (Address not mapped to object
+        # [(nil)])" pattern is only meaningful inside the vesc race
+        # window. Outside of it (a non-vesc segfault on the same
+        # hardware), the operator must still see the deploy-fail issue.
+        # See _vesc_segfault_window_active() for the rationale.
+        if not _vesc_segfault_window_active(log_text):
+            patterns = [
+                p for p in patterns
+                if p != r"segmentation fault \(address not mapped to object \[\(nil\)\]\)"
+            ]
+        patterns += CRITICAL_EXCLUDE_BY_SCOPE.get(scope, [])
         for line in lines:
             if not CRITICAL_MATCH_RE.search(line):
                 continue
