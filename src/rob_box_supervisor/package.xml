@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>rob_box_supervisor</name>
+  <version>0.1.0</version>
+  <description>
+    Avatar Supervisor — единый координатор режимов аватара (Quest, Telegram).
+    Phase 1 (AV-9): monitor-режим — только публикует /avatar/state, не вмешивается.
+    Полная FSM/lock-manager — Phase 2 (AV-6). См. ADR-0028.
+  </description>
+  <maintainer email="kukoreken@rob-box.local">krikz</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <!-- Core ROS2 dependencies (per AV-2 acceptance, ADR-0028 §4.6) -->
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <exec_depend>python3-msgpack</exec_depend>
+  <exec_depend>rob_box_core</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
