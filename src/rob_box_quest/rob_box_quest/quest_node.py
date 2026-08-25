@@ -348,10 +348,17 @@ class QuestNode(Node):
             asyncio.set_event_loop(self._aio_loop)
             runner = _aiohttp_web.AppRunner(app)
             self._aio_loop.run_until_complete(runner.setup())
+            # reuse_port=True — устойчивость к stale-процессам в host-network
+            # (Vision Pi: при не-чистом redeploy предыдущий процесс может
+            # удерживать сокет в TIME_WAIT; SO_REUSEPORT позволяет новому
+            # bind'у пройти и сразу же отвечать на healthcheck. Без этого
+            # рискуем повторить OSError [Errno 98] EADDRINUSE из
+            # test-round-232 (см. issue #1650, t_4d530162).
             site = _aiohttp_web.TCPSite(
                 runner,
                 str(self.get_parameter("ws_host").value),
                 int(self.get_parameter("ws_port").value),
+                reuse_port=True,
             )
             self._aio_loop.run_until_complete(site.start())
             self.get_logger().info(
