@@ -1,0 +1,175 @@
+// Captain Bridge scene: пол, освещение, сетка, рендерер, анимация loop.
+
+import * as THREE from "three";
+import { LidarOverlay } from "./lidar_overlay";
+import { VideoPanel } from "./video_panel";
+import { PanelManager } from "./panel_manager";
+
+export interface CaptainBridgeOptions {
+  canvas: HTMLCanvasElement;
+  enableXr?: boolean;
+}
+
+export interface CaptainBridgeHandle {
+  scene: THREE.Scene;
+  renderer: THREE.WebGLRenderer;
+  camera: THREE.PerspectiveCamera;
+  lidar: LidarOverlay;
+  panels: PanelManager;
+  videoPanels: Map<string, VideoPanel>;
+  initLayout(): void;
+  attachXrSession(session: XRSession): Promise<void>;
+  start(): () => void;
+  resize(): void;
+  dispose(): void;
+}
+
+export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHandle {
+  const renderer = new THREE.WebGLRenderer({
+    canvas: opts.canvas,
+    antialias: true,
+    alpha: false,
+    powerPreference: "high-performance"
+  });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x0a0d11, 1);
+
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.Fog(0x0a0d11, 6, 16);
+
+  const camera = new THREE.PerspectiveCamera(
+    70,
+    window.innerWidth / window.innerHeight,
+    0.05,
+    50
+  );
+  camera.position.set(0, 1.6, 0); // высота глаз ~1.6м
+
+  // Освещение (видео-панели MeshBasicMaterial — освещение не нужно,
+  // но LiDAR/ground лучше читаются с лёгким светом).
+  const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+  scene.add(ambient);
+  const dir = new THREE.DirectionalLight(0xffffff, 0.4);
+  dir.position.set(2, 4, 1);
+  scene.add(dir);
+
+  // Пол: grid + solid plane.
+  const grid = new THREE.GridHelper(20, 20, 0x444a52, 0x2a2f36);
+  grid.position.y = 0;
+  scene.add(grid);
+  const floorGeom = new THREE.PlaneGeometry(20, 20);
+  const floorMat = new THREE.MeshStandardMaterial({
+    color: 0x14181f,
+    roughness: 0.95,
+    metalness: 0.0
+  });
+  const floor = new THREE.Mesh(floorGeom, floorMat);
+  floor.rotation.x = -Math.PI / 2;
+  scene.add(floor);
+
+  // Маркер позиции пользователя.
+  const origin = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.1, 0.1, 0.01, 24),
+    new THREE.MeshBasicMaterial({ color: 0x2ec27e })
+  );
+  origin.position.set(0, 0.005, 0);
+  scene.add(origin);
+
+  // LiDAR overlay.
+  const lidar = new LidarOverlay();
+  scene.add(lidar.object);
+
+  // Panel manager + video panels.
+  const panelMgr = new PanelManager();
+  const videoPanels = new Map<string, VideoPanel>();
+
+  function syncPanels(): void {
+    const states = panelMgr.list();
+    const seen = new Set<string>();
+    for (const s of states) {
+      seen.add(s.id);
+      let vp = videoPanels.get(s.id);
+      if (!vp) {
+        vp = new VideoPanel(s);
+        scene.add(vp.mesh);
+        videoPanels.set(s.id, vp);
+      } else {
+        vp.setState(s);
+      }
+      vp.setLabel(s.topic);
+    }
+    for (const [id, vp] of videoPanels.entries()) {
+      if (!seen.has(id)) {
+        scene.remove(vp.mesh);
+        vp.dispose();
+        videoPanels.delete(id);
+      }
+    }
+  }
+
+  function initLayout(): void {
+    panelMgr.resetLayout();
+    syncPanels();
+  }
+
+  // ---------- render loop ----------
+
+  let running = false;
+  let raf = 0;
+  function loop(): void {
+    if (!running) return;
+    raf = requestAnimationFrame(loop);
+    renderer.render(scene, camera);
+  }
+
+  function start(): () => void {
+    if (running) return () => undefined;
+    running = true;
+    loop();
+    return () => {
+      running = false;
+      cancelAnimationFrame(raf);
+    };
+  }
+
+  function resize(): void {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+  }
+  window.addEventListener("resize", resize);
+
+  // ---------- XR (опционально) ----------
+
+  async function attachXrSession(session: XRSession): Promise<void> {
+    if (opts.enableXr === false) return;
+    await renderer.xr.setSession(session);
+    renderer.setAnimationLoop(() => {
+      renderer.render(scene, camera);
+    });
+  }
+
+  function dispose(): void {
+    window.removeEventListener("resize", resize);
+    for (const vp of videoPanels.values()) vp.dispose();
+    lidar.dispose();
+    renderer.dispose();
+  }
+
+  return {
+    scene,
+    renderer,
+    camera,
+    lidar,
+    panels: panelMgr,
+    videoPanels,
+    initLayout,
+    attachXrSession,
+    start,
+    resize,
+    dispose
+  };
+}
