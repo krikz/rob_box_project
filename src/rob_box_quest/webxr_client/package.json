@@ -1,0 +1,30 @@
+{
+  "name": "@rob_box/quest-webxr-client",
+  "version": "0.1.0",
+  "description": "Meta Quest / WebXR Captain Bridge client for rob_box_quest (Phase 1.5).",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "three": "^0.170.0",
+    "lil-gui": "^0.19.2"
+  },
+  "devDependencies": {
+    "@types/three": "^0.170.0",
+    "@types/node": "^20.12.7",
+    "jsdom": "^24.1.0",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.8",
+    "vitest": "^2.1.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

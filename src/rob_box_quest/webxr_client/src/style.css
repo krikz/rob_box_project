@@ -1,0 +1,182 @@
+:root {
+  --bg: #0a0d11;
+  --fg: #e7eaef;
+  --accent: #2ec27e;
+  --danger: #e01b24;
+  --warn: #f6d32d;
+  --muted: #6b7280;
+  --panel-bg: rgba(20, 22, 28, 0.7);
+  --panel-border: rgba(255, 255, 255, 0.15);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  overflow: hidden;
+}
+
+#scene {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+}
+
+#hud {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.status {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+.status--connected {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.status--connecting {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.status--lost {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.panel-info {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  font-size: 11px;
+  color: var(--muted);
+  pointer-events: none;
+  max-width: 60vw;
+}
+
+.pin-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.85);
+  z-index: 10;
+}
+
+.pin-overlay--hidden {
+  display: none;
+}
+
+.pin-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(360px, 90vw);
+  padding: 32px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  text-align: center;
+}
+
+.pin-form h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.pin-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.pin-hint code {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+#pin-input {
+  font-size: 24px;
+  letter-spacing: 0.4em;
+  padding: 12px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+#pin-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.pin-form button {
+  padding: 12px;
+  background: var(--accent);
+  color: #0a0d11;
+  border: none;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+}
+
+.pin-form button:hover {
+  filter: brightness(1.1);
+}
+
+.pin-error {
+  color: var(--danger);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* lil-gui position tweak (right-top, not corner). */
+.lil-gui.root {
+  --background-color: var(--panel-bg);
+  --text-color: var(--fg);
+  --title-background-color: rgba(0, 0, 0, 0.4);
+  --widget-color: rgba(255, 255, 255, 0.08);
+  --hover-color: rgba(255, 255, 255, 0.16);
+  --focus-color: rgba(46, 194, 126, 0.3);
+  --number-color: var(--accent);
+  --string-color: var(--warn);
+  top: 16px;
+  right: 16px;
+}
