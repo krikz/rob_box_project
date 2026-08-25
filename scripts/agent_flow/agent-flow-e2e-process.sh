@@ -879,10 +879,15 @@ gh_pr_open_by_title() {
     if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
         printf '%s' "$_json" | python3 -c '
 import json, sys
-try: d = json.load(sys.stdin)
-except Exception: print(""); sys.exit(0)
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(""); sys.exit(0)
 m = [r for r in d if isinstance(r, dict) and r.get("mergeStateStatus") in ("CLEAN", "MERGEABLE")]
-print(f"{m[0][\"number\"]}\t{m[0][\"headRefName\"]}" if m else "")
+if m:
+    print(str(m[0]["number"]) + "\t" + m[0]["headRefName"])
+else:
+    print("")
 '
         return 0
     fi
@@ -2036,13 +2041,13 @@ except Exception:
         # '<номер> in:title' перед тем, как объявить issue «без PR».
         _g_fb="$(find_open_pr_by_issue "$_g_n")"
         if [ -n "$_g_fb" ] && [ "$_g_fb" != "null" ] && [ "$_g_fb" != "[]" ]; then
-            _g_br="${_g_fb#*$'\t'}"
+            _g_br="${_g_fb#*$'	'}"
             _g_st="OPEN"
             log "pre-round guard: issue #${_g_n} PR найден по fallback '<number> in:title' (${_g_br}) — live candidate"
-        else
-            log "pre-round guard: issue #${_g_n} no PR (${_g_br}) — skip"
-            continue
         fi
+        # NB: НЕ continue если _g_fb пустой — старый код полагался на то, что
+        # guard лишь ОБОГАЩАЕТ данные, а NO-PR check происходит в основном цикле.
+        # Ретро t_7eab35a: иначе теряли кандидатов при gh-list=[] в моках/CLI bug.
     fi
     # Orphan (ретро 13.08 t_423453b1, #1160): PR MERGED, ветка удалена — e2e невозможен.
     if [ "$_g_st" = "MERGED" ] \
