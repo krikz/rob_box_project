@@ -21,8 +21,7 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            # Phase 1.3 — populated in Phase 1.3 PR.
-            # 'quest_node = rob_box_quest.quest_node:main',
+            "quest_node = rob_box_quest.quest_node:main",
         ],
     },
 )

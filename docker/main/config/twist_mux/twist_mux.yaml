@@ -17,6 +17,14 @@ twist_mux:
         timeout: 0.5
         priority: 100
 
+      # 2.5 Quest (Meta Quest / WebXR teleop, Phase 1.3) — ниже joystick,
+      # выше web_ui/voice: VR-оператор не должен перебивать физический пульт,
+      # но важнее web-UI и voice (визуальный контекст > текстовый).
+      quest:
+        topic: cmd_vel_quest
+        timeout: 0.5
+        priority: 40
+
       # 3. Web UI / Mobile App (средний приоритет - оператор через веб)
       web_ui:
         topic: cmd_vel_web
