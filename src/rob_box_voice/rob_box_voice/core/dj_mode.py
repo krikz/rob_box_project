@@ -197,7 +197,14 @@ class DJModeController:
 
         self.state.transition_count = next_n
         self.state.next_transition_at = now + self.FALLBACK_INTERVAL_S
-        self._logger.info(f"🎧 DJ auto-transition #{next_n}")
+        # Issue #1629 acceptance #4: timestamped log so the operator
+        # can see WHEN DJ-mode fired without grepping timestamps
+        # separately. Wall-clock HH:MM:SS (UTC) is enough — the
+        # robot's logs already carry full ISO at the docker level.
+        fired_at = time.strftime("%H:%M:%S", time.gmtime(now))
+        self._logger.info(
+            f"🎧 DJ_AUTO transition #{next_n} fired at {fired_at}"
+        )
         # Issue #992 Bug B — ``from_tick=True`` lets the dispatcher
         # reset its synchronous-retry budget for this fresh transition.
         self._hook.dispatch(self.build_auto_prompt(next_n), True)
