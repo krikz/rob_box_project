@@ -199,7 +199,6 @@ class TelegramNode(Node):
             пользователю (например, погасить кнопки если
             ``granted=False``).
         """
-        from .supervisor_client import AcquireResult
 
         def _do_publish() -> None:
             m = String(); m.data = json.dumps(
@@ -230,7 +229,6 @@ class TelegramNode(Node):
             ``AcquireResult`` — handler решает, показать ли ошибку
             «floor удерживает другой клиент» (например, Quest).
         """
-        from .supervisor_client import AcquireResult
 
         def _do_publish() -> None:
             self.cmd_vel_pub.publish(twist)
@@ -351,7 +349,15 @@ def main(args=None):
     rclpy.init(args=args); node = TelegramNode()
     try: rclpy.spin(node)
     except KeyboardInterrupt: pass
-    finally: node.destroy_node(); rclpy.try_shutdown()
+    finally:
+        # AV-10: остановить heartbeat / освободить floors перед destroy.
+        sup = getattr(node, "supervisor", None)
+        if sup is not None:
+            try:
+                sup.shutdown()
+            except Exception as exc:  # noqa: BLE001
+                node.get_logger().warning(f"supervisor shutdown failed: {exc!r}")
+        node.destroy_node(); rclpy.try_shutdown()
 
 
 if __name__ == "__main__": main()
