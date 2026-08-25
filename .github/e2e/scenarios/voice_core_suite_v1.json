@@ -1,5 +1,7 @@
 {
   "name": "voice_core_suite_v1",
+  "stability": "flaky-known",
+  "_stability_comment": "mv01/mv02/mv03 labels rely on set_voice tool registration + LLM tool-choice, breaks often across provider/Harness changes. Treated as 'flaky-known' for merge-gate (see CONTRIBUTING.md §E2E stability markers). Do NOT silently autofail merge-gate on these — выставлять e2e:flaky-detection метку и оставлять needs-e2e для ручного разбора.",
   "description": "E2E для больших голосовых фич (последние 2 недели): command-intent gate (#1279), new-session reset, альтернативный wake word (#1252), music start/stop (#1358), мульти-голос #1219, спор→арбитр через backlog-аккумулятор (ds01/ds02 копятся без wake-слова, ds03 активирует контекст). MiniMax generate_music и gen_delete_from_library ИСКЛЮЧЕНЫ (Music API недоступен, удаление не валидируем). Speaker diarization (#1077, 2 физических голоса) — out-of-scope (unit-тесты).",
   "steps": [
     {
