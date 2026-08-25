@@ -65,6 +65,12 @@ EXPECTED=(
     agents_sleep_schedule.conf
     cron-loop.sh
     watchdog.sh
+    # Provider-exhaustion fast-tick guard (ретро 24.08 t_4c73490f):
+    # 1-мин hot-path НЕОБХОДИМ, потому что watchdog.sh (2-мин scan) не
+    # успевает среагировать до consecutive_failures=2 → gave_up.
+    # Делит PROVIDER_MARKERS + ту же логику recovery-волны, плюс расширен
+    # маркерами HTTP 401 / Authentication Fails (DeepSeek invalid api key).
+    watchdog-provider-quick.sh
     agent-flow-drift-detect.sh
     kanban-retro-create.sh
     validate_honesty.sh

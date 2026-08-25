@@ -168,6 +168,15 @@ PROVIDER_MARKERS = (
     "Billing or credits exhausted", "HTTP 429", "rate limit",
     "Token Plan usage limit", "2056", "health-aware-fallback",
     "all providers unavailable",
+    # Ретро 24.08 t_4c73490f: DeepSeek 401 invalid api key — раньше
+    # НЕ ловился (только 402/429). Расширение маркеров закрывает тот же
+    # кейс, что и watchdog-provider-quick.sh (1-мин fast-tick), но
+    # здесь для watchdog.sh (2-мин full tick) — дубликат осознанный,
+    # ловится с обоих сторон.
+    "HTTP 401", "Authentication Fails",
+    "is invalid", "invalid_request_error", "api key",
+    "authentication_error",
+    "Token Plan rate limit reached",
 )
 PROVIDER_LOG_WINDOW = 900  # сек: лог считается «свежим» для проверки живости
 
@@ -558,7 +567,12 @@ if [ -s "$PROVIDER_ACTIONS_FILE" ]; then
         [ -n "$action" ] || continue
         case "$action" in
             block)
-                if "$HERMES_BIN" kanban --board "$board" block "$task_id" \
+                # kind=capability (НЕ dependency): провайдер-исчерпание — это
+                # ждать юзера, а не wait на parent task. Ретро 24.08 t_4c73490f
+                # показал, что без --kind capability карточка уходила в blocked
+                # без kind и recovery-волна не отличала её от обычного краша.
+                if "$HERMES_BIN" kanban --board "$board" block \
+                    --kind capability "$task_id" \
                     "провайдер исчерпан, ждать (402/429 — пополнить MiniMax/DeepSeek, см. issue #1193)" \
                     >/dev/null 2>&1; then
                     log "✅ provider-block $board/$task_id"
