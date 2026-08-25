@@ -122,8 +122,59 @@
 - **Сборка Docker:** ❌ Нет
 - **Именование:** `z-architect/<proposal-slug>` (БЕЗ номера issue и БЕЗ `t_<card>`), например `z-architect/voice-selection-proposal`
 - **Жизненный цикл:** proposal-ветка — долгоживущая и может пережить несколько merge (#1247 → #1254 → #1255). Новые коммиты в неё ПОСЛЕ merge — легальны (это продолжение proposal), merge-gate НЕ блокирует такие PR и ставит `needs-review` автоматически.
-- **⚠️ После финального merge proposal-ветка закрывается/архивируется** (remote-ветка удаляется, как и обычная feature). Если proposal нужно продолжить — создаётся НОВАЯ ветка от свежего `origin/develop` (например `z-architect/voice-selection-proposal-v2`). Не держим «вечные» proposal-ветки: раз PR не открыт неделями, ветка — кандидат на удаление.
+- **�️ После финального merge proposal-ветка закрывается/архивируется** (remote-ветка удаляется, как и обычная feature). Если proposal нужно продолжить — создаётся НОВАЯ ветка от свежего `origin/develop` (например `z-architect/voice-selection-proposal-v2`). Не держим «вечные» proposal-ветки: раз PR не открыт неделями, ветка — кандидат на удаление.
 - **НЕ путать с:** ретро-ветками `z-architect/t_<card>-<slug>` (одноразовые, под карточку) и issue-ветками `z-architect/<issue>-<slug>`. Обе живут ровно до merge своего PR и удаляются.
+
+## 📐 ADR-процесс (Architecture Decision Records, ретро 25.08 t_00ba0224)
+
+ADR хранятся в `docs/adr/NNNN-<slug>.md` и нумеруются **глобальным
+монотонным счётчиком** (4 hex-цифры, без префикса `00xx` для архивных —
+просто `NNNN`). Каждый номер — уникальный ключ, на который ссылаются
+из кода/комментариев/docs.
+
+### Правила именования
+
+1. Файл строго `docs/adr/0[0-9]{3}-<kebab-case-slug>.md` (regex ниже).
+2. Номер (`NNNN`) выбирается как **следующий свободный после максимального
+   в `origin/develop`**:
+   ```bash
+   # Проверка перед созданием нового ADR — обязательна.
+   used="$(git ls-tree origin/develop --name-only | grep -E '^docs/adr/0[0-9]{3}-.*\.md$' | sed 's@.*/@@' | sed 's@-.*@@' | sort -u)"
+   next_free="$(printf '%s\n0000\n' "$used" | sort -u | awk 'BEGIN{n=0} {if ($0+0 == n+1) n=$0+0} END{printf "%04d\n", n+1}')"
+   echo "$next_free"
+   ```
+3. **Переименование** старого ADR (re-numbering) — допустимо ТОЛЬКО по
+   согласованию с товарищем Шифу (override-метка `adr-collision-override`
+   на issue). Merge-gate ADR-collision guard заблокирует PR при попытке
+   «догнать» руками.
+
+### Pre-merge guard
+
+`scripts/agent_flow/agent-flow-merge-gate.sh :: check_adr_number_collision()`
+(вызывается после `detect_pr_kind()`, ДО big-bang-override и lint-веток)
+проверяет каждый PR:
+
+| Условие | Результат |
+|---------|-----------|
+| PR добавляет/переименовывает `docs/adr/NNNN-*.md`, в develop уже занят `NNNN` другим файлом → | **REJECT**: comment (24h dedup) + label `agent-flow:adr-collision`. Needs-e2e НЕ ставится. |
+| PR добавляет `docs/adr/NNNN-*.md`, `NNNN` свободен → | PASS, дальше по обычному пути. |
+| PR правит существующий файл, в develop под `NNNN` нет других файлов → | PASS (правка не «новый номер»). |
+| PR переименовывает (delete+add) и сам освобождает `NNNN` в develop → | PASS (collision self-handled). |
+| На issue стоит `adr-collision-override` → | PASS (Шифу одобрил re-numbering). |
+
+### Глобальная коллизия — почему это баг
+
+На `origin/develop` обнаружено 5 файлов под 3 номерами (0027×3, 0028×2) —
+глобальная коллизия ломает обратные ссылки на ADR:
+
+- Документы и комментарии ссылаются на «0027-foo», а в develop живёт
+  «0027-bar» → битая ссылка (читатель не знает, какой из 3 файлов
+  актуален).
+- После merge в develop окажутся оба файла под одним номером → CI
+  (если проверяет уникальность) и поиск по `NNNN-*` сломаются.
+
+Решение — pre-merge guard + правило «один номер = один файл» в этом
+документе.
 
 ## 🔄 Workflow разработки
 
@@ -169,6 +220,55 @@ git push origin feature/my-awesome-feature
 ### 2d. ЗАПРЕТ: merge PR — только юзер (Q22, нарушено 09.08)
 **Никогда, ни при каких условиях не выполнять `gh pr merge` самому.** Даже если CI зелёный, фича очевидно нужная, e2e прошёл, юзер «наверное согласен». Merge — точка принятия решения юзера. Нарушение 09.08: PR #1079 смёржен без ОК → юзер: «как пёс смёрзлил непроверенное, пошёл мимо процесса».
 Правильно: выложить доказательства → needs-review → ждать решения юзера. Не «угадывать» его решение.
+
+### 2e. ADR-нумерация: глобальный счётчик + запрет ручного коммита в develop (ADR-0030, 25.08.2026)
+
+> Ретро `t_45db74ad`: в `origin/develop` обнаружены 5 файлов под 3 номерами (`0027×3`, `0028×2`). Cross-reference вроде «см. ADR-0027 §3.4» потерял однозначность — невозможно понять, какой из трёх 0027 имеется в виду. Полное обоснование и cleanup-план — в `docs/adr/0030-adr-numbering-sot.md`.
+
+#### Правило именования
+
+ADR-файл имеет вид:
+
+```
+docs/adr/NNNN-<kebab-case-slug>.md
+```
+
+Где `NNNN` — 4-значный zero-padded номер, **уникальный** в пределах `origin/develop` на момент merge. Внутри файла первый H1 и frontmatter-таблица используют **тот же** `NNNN`.
+
+#### Как выбрать NNNN перед созданием
+
+Обязательно перед `git add`:
+
+```bash
+git fetch origin develop
+
+# Какие номера заняты
+git ls-tree -r origin/develop --name-only \
+  | grep -oE 'docs/adr/[0-9]{4}' \
+  | sort -u
+
+# Следующий свободный
+NEXT=$(( $(git ls-tree -r origin/develop --name-only \
+            | grep -oE 'docs/adr/[0-9]{4}' \
+            | sort -u | tail -1 | grep -oE '[0-9]{4}') + 1 ))
+printf '%04d\n' "$NEXT"
+```
+
+**Запрещено:**
+
+- Использовать номер, не сверившись с `origin/develop` (даже «по аналогии» с соседним ADR).
+- Сокращать (`27` вместо `0027`) — ломает grep-инвариант.
+- Ссылаться в cross-ref на ADR, указывая только `ADR-NNNN` без slug — пишите `[ADR-NNNN](../NNNN-slug.md)`.
+
+#### Ручной коммит в develop запрещён
+
+Любой коммит в `develop` (включая ручной от Шифу, **даже если коммит единственный**) идёт через `feature/<name>` (или `hotfix/<name>`) → PR. Никаких прямых push'ей в `develop`. Причина: pre-merge guard (§2.5 ADR-0030) срабатывает только на PR; ручной коммит проходит мимо всех gate'ов — это и привело к коллизии `0028-avatar-supervisor.md` 24.08 23:40.
+
+Срочные правки — через `hotfix/*` → PR в `develop`. Audit-trail и откат в один клик сохраняются.
+
+#### Pre-merge guard (механизм)
+
+В `scripts/agent_flow/agent-flow-merge-gate.sh` есть проверка: если PR создаёт файл `docs/adr/NNNN-*.md`, то `NNNN` сверяется с `origin/develop`. При коллизии — reject с инструкцией «выберите следующий свободный номер». Реализация — child-задача devops (`t_45db74ad-d`).
 
 ### 3. Merge и автоматическая сборка
 - После merge в `develop` → автоматическая сборка образов с тегом `dev`

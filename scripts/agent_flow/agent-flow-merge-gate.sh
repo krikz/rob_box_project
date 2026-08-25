@@ -52,6 +52,16 @@ DONE_LABEL="${DONE_LABEL:-e2e-done}"
 REJECTED_LABEL="${REJECTED_LABEL:-e2e:rejected}"
 NO_E2E_LABEL="${NO_E2E_LABEL:-no-e2e-required}"
 BIG_BANG_OVERRIDE_LABEL="${BIG_BANG_OVERRIDE_LABEL:-big-bang-override}"
+# Ретро 25.08 t_00ba0224: на origin/develop обнаружена нумерационная коллизия
+# ADR — 5 файлов под 3 номерами (0027×3, 0028×2). merge-gate должен проверять,
+# что NNNN в новом docs/adr/NNNN-*.md не занят существующим файлом в develop
+# (иначе rename/перенос ломают историю ссылок на ADR). Шифу/воркер может
+# пометить issue меткой ADR_COLLISION_OVERRIDE_LABEL, чтобы продолжить merge
+# при полной уверенности (например, согласованный re-numbering). Без override
+# PR блокируется: comment (24h dedup) + метка на issue.
+ADR_COLLISION_OVERRIDE_LABEL="${ADR_COLLISION_OVERRIDE_LABEL:-adr-collision-override}"
+ADR_COLLISION_BLOCKED_LABEL="${ADR_COLLISION_BLOCKED_LABEL:-agent-flow:adr-collision}"
+ADR_COLLISION_COMMENT_DEDUP_HOURS="${ADR_COLLISION_COMMENT_DEDUP_HOURS:-24}"
 # ADR-0013 (docs/adr/0013-incremental-delivery-over-big-bang.md): PR > 50
 # commits OR > 3000 lines is forbidden without an explicit `big-bang-override`
 # label on the issue. Шифу (товарищ) is the only one allowed to set it. We
@@ -362,6 +372,254 @@ Merge-gate **не поставит needs-e2e** на PR с уже влитой в
             fi
             fi
             fi
+        fi
+    done
+    return 0
+}
+
+# --- stale-CONFLICTING watcher (ретро 24.08 t_cd32788f) ---------------------
+# Сценарий: PR с needs-e2e висит в CONFLICTING >24ч (PR #1567, #1565 на
+# 24.08). Merge-gate уже пишет rebase reminder с rate-limit 2ч (стр. ~1947),
+# но Шифу не получает ЭСКАЛАЦИИ когда PR залипает дольше суток — карточка
+# воркера блокируется PR-ом который никто не перебазил, а e2e-rotation
+# каждый тик пытается merge и падает на CONFLICTING (silent noise).
+#
+# Решение: каждый тик merge-gate сканирует needs-e2e PR, для CONFLICTING:
+#   - updatedAt > 24h  → label `stale-conflicting` + comment с rebase-инструкцией
+#     (rate-limit 24ч на коммент, чтобы не спамить);
+#   - updatedAt > 48h  → дополнительно упомянуть @krikz в карточке воркера
+#     (если карточка живая) или в новом recovery-комменте issue.
+#
+# Эскалация к @krikz — это сигнал «карточка stale, нужен ручной rebase или
+# close». Не пытаемся делать auto-rebase в чужую ветку намеренно (Шифу
+# прямо: «не плодить коммиты в чужие ветки»). Auto-rebase для hotfix был
+# PR #1248 — escape-hatch, но для stale-CONFLICTING mass-scenario это
+# overkill и опасно.
+#
+# Метка `stale-conflicting` сигнализирует e2e-process'у: skip round с
+# log-причиной «skip CONFLICTING PR #NNNN» (см. agent-flow-e2e-process.sh,
+# pre-round guard). Это разрывает цикл «merge → CONFLICTING → recovery
+# card → никто не ребейзит → repeat через 5 мин».
+#
+# Идемпотентность: если label уже стоит и 24ч не прошло — skip. Если
+# PR перестал быть CONFLICTING (rebase прошёл, push дошёл) — label
+# снимается здесь же (cleanup-блок ниже), и e2e-process берёт его в
+# ротацию.
+#
+# Вызывается рядом со stale_branch_scan_all (основной путь + no-issues путь).
+STALE_CONFLICTING_LABEL="${STALE_CONFLICTING_LABEL:-stale-conflicting}"
+STALE_CONFLICTING_HOURS="${STALE_CONFLICTING_HOURS:-24}"
+STALE_CONFLICTING_ESCALATE_HOURS="${STALE_CONFLICTING_ESCALATE_HOURS:-48}"
+stale_conflicting_scan_all() {
+    local now_epoch
+    now_epoch="$(date +%s)"
+    local cutoff_epoch_24h
+    cutoff_epoch_24h="$((now_epoch - STALE_CONFLICTING_HOURS * 3600))"
+    local cutoff_epoch_48h
+    cutoff_epoch_48h="$((now_epoch - STALE_CONFLICTING_ESCALATE_HOURS * 3600))"
+    local cutoff_iso_24h
+    cutoff_iso_24h="$(date -u -d "@${cutoff_epoch_24h}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    local cutoff_iso_48h
+    cutoff_iso_48h="$(date -u -d "@${cutoff_epoch_48h}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+    # Берём open PR с needs-e2e + mergeable + updatedAt + headRefName + issue body
+    # для поиска связанной kanban-карточки (для @krikz-escalation).
+    local _sc_prs
+    _sc_prs="$(gh pr list --repo "$GH_REPO" --state open --label "$NEEDS_E2E_LABEL" \
+        --json number,headRefName,mergeable,updatedAt,title,labels 2>/dev/null || echo '[]')"
+    if [ -z "$_sc_prs" ] || [ "$_sc_prs" = "[]" ]; then
+        log "stale-conflicting-scan: no needs-e2e PRs — nothing to do"
+        return 0
+    fi
+
+    # Идемпотентный комментарий (24ч window, как в stale-branch-scan).
+    local _sc_dedup_since
+    _sc_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+    # Разбор JSON в tsv (PR_num, headRef, mergeable, updatedAtISO, has_label_already).
+    printf '%s' "$_sc_prs" | python3 -c '
+import json, sys, subprocess
+GH = sys.argv[1]
+LABEL = sys.argv[2]
+data = json.load(sys.stdin)
+for pr in data:
+    pr_num = pr["number"]
+    head = pr.get("headRefName","")
+    mergeable = pr.get("mergeable","") or ""
+    upd = pr.get("updatedAt","") or ""
+    labels = [l["name"] for l in pr.get("labels", [])]
+    has_sc = "yes" if LABEL in labels else "no"
+    print("{}\t{}\t{}\t{}\t{}".format(pr_num, head, mergeable, upd, has_sc))
+' "$GH_REPO" "$STALE_CONFLICTING_LABEL" 2>/dev/null \
+    | while IFS=$'\t' read -r _sc_pr_num _sc_head _sc_mergeable _sc_updated_at _sc_has_label; do
+        [ -z "$_sc_pr_num" ] && continue
+
+        # CLEAN-блок: PR стал MERGEABLE, но label stale-conflicting ещё висит
+        # → cleanup (e2e-process берёт PR в ротацию). Cleanup важен, чтобы
+        # метка не залипала после успешного rebase.
+        if [ "$_sc_mergeable" != "CONFLICTING" ]; then
+            if [ "$_sc_has_label" = "yes" ]; then
+                if [ "$DRY_RUN" = "true" ]; then
+                    log "stale-conflicting-scan: PR #${_sc_pr_num} mergeable=${_sc_mergeable}, has ${STALE_CONFLICTING_LABEL} — DRY-RUN would remove label"
+                else
+                    gh pr edit "$_sc_pr_num" --repo "$GH_REPO" \
+                        --remove-label "$STALE_CONFLICTING_LABEL" >/dev/null 2>&1 \
+                        && log "stale-conflicting-scan: PR #${_sc_pr_num} mergeable=${_sc_mergeable} — removed ${STALE_CONFLICTING_LABEL} (cleanup, rebase прошёл)" \
+                        || log "stale-conflicting-scan: WARNING remove ${STALE_CONFLICTING_LABEL} on PR #${_sc_pr_num} failed (non-fatal)"
+                fi
+            else
+                log "stale-conflicting-scan: PR #${_sc_pr_num} mergeable=${_sc_mergeable} — ok, не CONFLICTING"
+            fi
+            continue
+        fi
+
+        # CONFLICTING. Проверяем updatedAt: если < 24ч — рано эскалировать,
+        # rebase reminder ещё не отработал. Skip (merge-gate основной цикл
+        # и так пишет ему reminder каждые 2ч).
+        if [ -z "$_sc_updated_at" ]; then
+            log "stale-conflicting-scan: PR #${_sc_pr_num} updatedAt пуст — skip (fresh)"
+            continue
+        fi
+        local _sc_updated_epoch
+        _sc_updated_epoch="$(date -u -d "$_sc_updated_at" +%s 2>/dev/null || echo 0)"
+        if [ "$_sc_updated_epoch" -le 0 ] || [ "$_sc_updated_epoch" -gt "$now_epoch" ]; then
+            log "stale-conflicting-scan: PR #${_sc_pr_num} updatedAt='${_sc_updated_at}' — не парсится или из будущего, skip"
+            continue
+        fi
+        local _sc_age_hours
+        _sc_age_hours="$(( (now_epoch - _sc_updated_epoch) / 3600 ))"
+
+        # < 24ч — рано. Merge-gate rebase reminder (стр. ~1947) ещё активен.
+        if [ "$_sc_updated_epoch" -gt "$cutoff_epoch_24h" ]; then
+            log "stale-conflicting-scan: PR #${_sc_pr_num} CONFLICTING ${_sc_age_hours}ч (< ${STALE_CONFLICTING_HOURS}ч) — рано, rebase reminder активен"
+            continue
+        fi
+
+        # >= 24ч. Если label ещё нет — ставим + пишем comment (24ч dedup).
+        if [ "$_sc_has_label" = "no" ]; then
+            if [ "$DRY_RUN" = "true" ]; then
+                log "DRY-RUN would: add ${STALE_CONFLICTING_LABEL} on PR #${_sc_pr_num} + comment stale > ${STALE_CONFLICTING_HOURS}ч"
+                continue
+            fi
+            local _sc_dup
+            _sc_dup="$(gh api "repos/${GH_REPO}/issues/${_sc_pr_num}/comments?since=${_sc_dedup_since}&per_page=100" \
+                --jq '[.[] | select(.body | startswith("🟠 **stale-CONFLICTING"))] | length' 2>/dev/null \
+                || echo 0)"
+            if [ "${_sc_dup:-0}" -eq 0 ]; then
+                gh pr comment "$_sc_pr_num" --repo "$GH_REPO" --body \
+"🟠 **stale-CONFLICTING: rebase на develop > ${STALE_CONFLICTING_HOURS}ч (merge-gate, ретро 24.08 t_cd32788f)**
+
+PR #${_sc_pr_num} (\\\`${_sc_head}\\\`) → develop = **CONFLICTING** уже ${_sc_age_hours}ч. Develop убежал вперёд (last updatedAt = ${_sc_updated_at}), стандартный rebase-reminder (стр. ~1947) не помог.
+
+**Что делать** (по процессу Шифу 10.08):
+1. **В той же ветке** \\\`${_sc_head}\\\` — НЕ создавай новую ветку и НЕ новый PR.
+2. **rebase** на origin/develop:
+   \\\`\\\`\\\`bash
+   git fetch origin develop
+   git checkout ${_sc_head}
+   git rebase origin/develop
+   # ... resolve conflicts ...
+   git add -A && git rebase --continue
+   git push --force-with-lease origin ${_sc_head}
+   \\\`\\\`\\\`
+3. Метку \\\`${STALE_CONFLICTING_LABEL}\\\` снимать НЕ надо — merge-gate снимет её автоматически когда PR станет MERGEABLE.
+
+**Если rebase не помогает** (конфликт в коде, который ты не можешь разрешить) → оставь PR как есть, явно закрой и открой новый PR с новой ветки \\\`z-{agent}/<new-id>-<slug>\\\` от свежего develop. Иначе PR висит вечно.
+
+Если карточка старше ${STALE_CONFLICTING_ESCALATE_HOURS}ч — merge-gate пингом упомянет \\\`@krikz\\\`.
+" >/dev/null 2>&1 || true
+                log "stale-conflicting-scan: PR #${_sc_pr_num} CONFLICTING ${_sc_age_hours}ч — comment «stale-CONFLICTING» добавлен"
+            else
+                log "stale-conflicting-scan: PR #${_sc_pr_num} CONFLICTING ${_sc_age_hours}ч — comment dedup (есть < 24ч), skip comment"
+            fi
+            whoami_add_label "$_sc_pr_num" "$STALE_CONFLICTING_LABEL" \
+                "stale-CONFLICTING (merge-gate, ретро 24.08 t_cd32788f): CONFLICTING > ${STALE_CONFLICTING_HOURS}ч (age=${_sc_age_hours}ч)" \
+                "pr=${_sc_pr_num}" || log "stale-conflicting-scan: WARNING add ${STALE_CONFLICTING_LABEL} on PR #${_sc_pr_num} failed"
+        fi
+
+        # >= 48ч — эскалация к @krikz (Шифу). Ищем задачу в карточках через
+        # wt/<branch> → t_<id>. Не блокируем CI/процесс, только пинг.
+        if [ "$_sc_updated_epoch" -gt "$cutoff_epoch_48h" ]; then
+            log "stale-conflicting-scan: PR #${_sc_pr_num} CONFLICTING ${_sc_age_hours}ч (< ${STALE_CONFLICTING_ESCALATE_HOURS}ч) — без escalation"
+            continue
+        fi
+        # >= 48ч: escalation.
+        local _sc_task_id
+        _sc_task_id=""
+        if [[ "$_sc_head" =~ ^wt/(t_[a-f0-9]+)- ]]; then
+            _sc_task_id="${BASH_REMATCH[1]}"
+        fi
+        # Ищем issue-number в PR body (Closes #N / Refs #N) → достаём kanban task.
+        local _sc_issue_num
+        _sc_issue_num="$(gh pr view "$_sc_pr_num" --repo "$GH_REPO" --json body \
+            --jq '[scan("(?im)^(?:closes|fixes|resolves|refs|part of)\\s+#?(\\d+)\\b"; .body)] | .[0] // empty' 2>/dev/null \
+            || true)"
+        if [ -z "$_sc_task_id" ] && [ -n "$_sc_issue_num" ]; then
+            # Ретро 14.08 t_de6bea69: task_id из kanban-marker на issue body.
+            _sc_task_id="$(gh issue view "$_sc_issue_num" --repo "$GH_REPO" --comments --json comments \
+                --jq '.comments[].body' 2>/dev/null \
+                | grep -Eo '^kanban: t_[a-f0-9]+' | tail -n1 | sed 's/^kanban: //' || true)"
+        fi
+        # Rate-limit escalation-comment (24ч).
+        local _sc_escalate_dedup
+        _sc_escalate_dedup="$(gh api "repos/${GH_REPO}/issues/${_sc_pr_num}/comments?since=${_sc_dedup_since}&per_page=100" \
+            --jq '[.[] | select(.body | startswith("🟠 **stale-CONFLICTING ESCALATION"))] | length' 2>/dev/null \
+            || echo 0)"
+        if [ "${_sc_escalate_dedup:-0}" -gt 0 ]; then
+            log "stale-conflicting-scan: PR #${_sc_pr_num} CONFLICTING ${_sc_age_hours}ч — escalation dedup (<24ч), skip"
+            continue
+        fi
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would: comment «ESCALATION @krikz» on PR #${_sc_pr_num} (task=${_sc_task_id:-none})"
+            continue
+        fi
+        # Эскалация: пишем в PR (комментарий dedup-ится через prefix).
+        gh pr comment "$_sc_pr_num" --repo "$GH_REPO" --body \
+"🟠 **stale-CONFLICTING ESCALATION: @krikz пинг, PR CONFLICTING > ${STALE_CONFLICTING_ESCALATE_HOURS}ч (merge-gate, ретро 24.08 t_cd32788f)**
+
+PR #${_sc_pr_num} (\\\`${_sc_head}\\\`) → develop = **CONFLICTING** уже ${_sc_age_hours}ч (last updatedAt = ${_sc_updated_at}). Label \\\`${STALE_CONFLICTING_LABEL}\\\` стоит, rebase reminder не помог, e2e-rotation skip-ает round каждый тик.
+
+Это последний авто-сигнал перед ручным вмешательством. Дальше либо:
+- **Шифу сам** делает rebase (force-with-lease) в \\\`${_sc_head}\\\`;
+- или **закрывает** этот PR и просит воркера пересоздать PR с новой ветки \\\`z-{agent}/<new-id>-<slug>\\\` от свежего develop (НО не делает новую ветку внутри существующей, Шифу прямо: «не плодить»);
+- или явно ставит \\\`needs-handoff\\\` если хочет передать задачу другому профилю.
+
+Карточка воркера: \\\`${_sc_task_id:-none-detected}\\\`. Связанный issue: #${_sc_issue_num:-?}.
+" >/dev/null 2>&1 || log "stale-conflicting-scan: WARNING escalation comment on PR #${_sc_pr_num} failed (non-fatal)"
+        # Если нашли живую карточку воркера — допишем reminder с @krikz
+        # (та же карточка должна знать, Шифу прямо).
+        if [ -n "$_sc_task_id" ]; then
+            local _sc_card_status
+            _sc_card_status="$(kanban_card_status "$_sc_task_id" 2>/dev/null || echo "")"
+            case "$_sc_card_status" in
+                running|ready|todo)
+                    local _sc_escalate_marker_ts
+                    _sc_escalate_marker_ts="$(kanban_last_reminder_ts "$_sc_task_id" "STALE CONFLICTING > ${STALE_CONFLICTING_ESCALATE_HOURS}h" 2>/dev/null || echo "")"
+                    local _sc_now_ts="${now_epoch:-$(date +%s)}"
+                    if [ -n "$_sc_escalate_marker_ts" ] && [ $(( _sc_now_ts - _sc_escalate_marker_ts )) -lt 86400 ]; then
+                        log "stale-conflicting-scan: PR #${_sc_pr_num} — escalation reminder dedup (< 24ч), skip card comment"
+                    else
+                        "$HERMES_BIN" kanban --board "$KANBAN_BOARD" comment "$_sc_task_id" \
+"## 🟠 stale-CONFLICTING escalation @krikz (merge-gate, ретро 24.08 t_cd32788f, $(date -u +%H:%M:%SZ))
+
+PR #${_sc_pr_num} (\\\`${_sc_head}\\\`) → develop = **CONFLICTING** уже ${_sc_age_hours}ч (last updatedAt = ${_sc_updated_at}). Label \\\`${STALE_CONFLICTING_LABEL}\\\` стоит, rebase reminder не помог.
+
+**Рекомендация** (Шифу прямо: «та же карточка должна знать»):
+- Если ребейзишь в той же ветке: \\\`git fetch origin develop && git rebase origin/develop && git push --force-with-lease origin ${_sc_head}\\\`.
+- Если конфликт неразрешим: попроси закрыть PR и пересоздать с новой ветки (retро 13.08 t_a3f170fe — только не на той же влитой ветке).
+
+e2e-rotation каждый тик skip-ает round с reason «stale-conflicting PR #${_sc_pr_num}». Метка \\\`${STALE_CONFLICTING_LABEL}\\\` снимется автоматически когда PR станет MERGEABLE.
+" >/dev/null 2>&1 || log "stale-conflicting-scan: WARNING append escalation to card ${_sc_task_id} failed"
+                        log "stale-conflicting-scan: PR #${_sc_pr_num} — escalation reminder written to card ${_sc_task_id} (status=${_sc_card_status})"
+                    fi
+                    ;;
+                *)
+                    log "stale-conflicting-scan: PR #${_sc_pr_num} — task ${_sc_task_id} status=${_sc_card_status:-?}, escalation только в PR-коммент"
+                    ;;
+            esac
         fi
     done
     return 0
@@ -872,6 +1130,185 @@ detect_pr_kind() {  # $1=labels_csv $2=title
         'wip(arch'*|'wip(infra'*|'wip(voice-core'*) printf '%s' "lint"; return 0 ;;
     esac
     printf '%s' "functional"; return 0
+}
+
+# Ретро 25.08 t_00ba0224 (ADR-номер collision guard). merge-gate должен
+# убедиться, что новый docs/adr/NNNN-*.md в PR не пересекается по номеру с
+# уже существующим в origin/develop. Глобальная коллизия ломает обратные
+# ссылки на ADR (документы/комментарии ссылаются на «0027-foo», а в develop
+# теперь живёт «0027-bar» → битая ссылка).
+#
+# Алгоритм:
+#   1. Получить список файлов PR (`gh pr view --json files --jq ...`).
+#   2. Оставить только новые/переименованные docs/adr/NNNN-*.md. ПРАВКА
+#      существующего 0027-foo.md не считается коллизией (NNNN уже в PR).
+#   3. Для каждого NNNN из (2) — найти в develop ВСЕ файлы docs/adr/NNNN-*.
+#      Если хотя бы один из них НЕ входит в изменённые файлы этого PR →
+#      коллизия (другой файл уже занимает этот номер в develop).
+#   4. Если override-метка ADR_COLLISION_OVERRIDE_LABEL стоит на issue →
+#      пропускаем (Шифу явно одобрил re-numbering).
+#
+# Возвращает:
+#   0 — OK (нет коллизии или override)
+#   1 — КОЛЛИЗИЯ (PR заблокирован этой функцией; caller должен continue)
+#
+# Side effects при коллизии (не fatal):
+#   - comment на issue (24h dedup, иначе спам на каждом тике)
+#   - label ${ADR_COLLISION_BLOCKED_LABEL} на issue
+#   - НИКОГДА не ставит needs-e2e / needs-review для этого PR
+#
+# Args:
+#   $1 = pr_number
+#   $2 = issue_number
+#   $3 = labels_csv (lower-cased, comma-separated) — для has_label
+check_adr_number_collision() {  # $1=pr_number $2=issue_number $3=labels_csv_lc
+    local pr_number="$1" number="$2" labels_lc="$3"
+
+    # Override Шифу — пропускаем. has_label уже работает по lower-cased.
+    if has_label "$labels_lc" "$ADR_COLLISION_OVERRIDE_LABEL"; then
+        log "issue #${number}: PR #${pr_number} ADR-collision override (${ADR_COLLISION_OVERRIDE_LABEL}) — пропускаем guard"
+        return 0
+    fi
+
+    # Список файлов PR (только path'ы, без diff-метаданных — компактно и
+    # стабильно). Если API упал — fail-open (return 0): лучше пустить PR,
+    # чем ломать весь gate из-за flake. Коллизия никуда не денется — её
+    # поймает следующий тик или сам ревьюер.
+    local pr_files_json
+    pr_files_json="$(gh pr view "$pr_number" --repo "$GH_REPO" --json files \
+        --jq '[.files[].path]' 2>/dev/null || echo '[]')"
+    if [ -z "$pr_files_json" ] || [ "$pr_files_json" = "null" ]; then
+        log "issue #${number}: PR #${pr_number} ADR-collision: gh pr view --json files empty — fail-open (retry next tick)"
+        return 0
+    fi
+
+    # Извлечь новые/переименованные ADR из PR. ПРАВКА существующего файла
+    # (например 0027-foo.md → 0027-foo.md без rename) → в PR `path` будет
+    # вида docs/adr/0027-foo.md; мы его НЕ считаем «новым» и НЕ валидируем
+    # против develop (там уже 0027-foo.md, и он совпадает с PR). А вот
+    # добавление/rename на docs/adr/0027-bar.md — это и есть «новый номер»,
+    # который мы проверяем.
+    #
+    # Ключевое: NNNN извлекается ТОЛЬКО из файлов, присутствующих в этом PR.
+    # Шаблон docs/adr/NNNN-*.md → NNNN = 4 hex-цифры.
+    local pr_new_adrs
+    # Извлекаем уникальные NNNN через newline-separated вывод (НЕ JSON-массив:
+    # `read` в bash не парсит JSON-литералы, разделитель — перенос строки).
+    # Сортируем для детерминированного порядка (полезно для логов).
+    pr_new_adrs="$(printf '%s' "$pr_files_json" | python3 -c '
+import json, re, sys
+try:
+    files = json.load(sys.stdin)
+except Exception:
+    files = []
+adr_re = re.compile(r"^docs/adr/0[0-9]{3}-.*\.md$")
+nums = set()
+for f in files:
+    if not isinstance(f, str): continue
+    if adr_re.match(f):
+        m = re.match(r"^docs/adr/(0[0-9]{3})-.*\.md$", f)
+        if m: nums.add(m.group(1))
+for n in sorted(nums):
+    print(n)
+' 2>/dev/null)"
+    if [ -z "$pr_new_adrs" ]; then
+        return 0  # нет новых ADR — guard не срабатывает
+    fi
+
+    # Список ВСЕХ ADR в origin/develop. Формат каждой строки: NNNN-name.md
+    # (БЕЗ префикса docs/adr/ — чтобы внутренний grep "^NNNN-" корректно
+    # находил файлы по номеру). Используем git ls-tree — это ЛОКАЛЬНЫЙ кэш
+    # (origin/develop уже подтянут до merge-gate тика в любом нормальном
+    # run-е). Если fetch ещё не прошёл и refs нет — fallback на
+    # `gh api .../git/trees/develop` (медленнее, но quota-friendly). Если
+    # и это упало — fail-open.
+    local develop_adrs
+    develop_adrs="$(git ls-tree "origin/${DEVELOP_BRANCH}" --name-only 2>/dev/null \
+        | grep -E '^docs/adr/0[0-9]{3}-.*\.md$' \
+        | sed 's@^docs/adr/@@' || true)"
+    if [ -z "$develop_adrs" ]; then
+        # Fallback: REST tree API (gh). Возвращает полный tree develop
+        # одним запросом; quota = 1, медленнее, но работает на CI без
+        # подтянутого origin/develop. Рекурсивный — recursive=1 обязателен.
+        develop_adrs="$(gh api "repos/${GH_REPO}/git/trees/${DEVELOP_BRANCH}?recursive=1" \
+            --jq '[.tree[].path | select(. | test("^docs/adr/0[0-9]{3}-.*\\\\.md$"))] | .[]' \
+            2>/dev/null | sed 's@^docs/adr/@@' || true)"
+    fi
+    if [ -z "$develop_adrs" ]; then
+        log "issue #${number}: PR #${pr_number} ADR-collision: develop tree empty (fetch + API оба упали) — fail-open (retry next tick)"
+        return 0
+    fi
+
+    # Ищем коллизию: для каждого NNNN из pr_new_adrs проверяем, есть ли в
+    # develop другой файл с тем же NNNN. «Другой» = basename не входит в
+    # список изменённых файлов этого PR.
+    local collision_detail=""
+    while IFS= read -r nnnn; do
+        [ -z "$nnnn" ] && continue
+        # Файлы develop с этим номером.
+        local dev_files clashing=""
+        dev_files="$(printf '%s\n' "$develop_adrs" | grep -E "^${nnnn}-" || true)"
+        # Убрать файлы, которые ЭТОТ ЖЕ PR тоже трогает (rename 0028 → 0030:
+        # удаление 0028 в develop не коллизия, если 0028-х в PR changes).
+        while IFS= read -r df; do
+            [ -z "$df" ] && continue
+            # Файл в develop: "NNNN-name.md". В PR: "docs/adr/NNNN-name.md".
+            if ! printf '%s' "$pr_files_json" | grep -qF "docs/adr/${df}"; then
+                clashing="${clashing}${df}, "
+            fi
+        done <<< "$dev_files"
+        if [ -n "$clashing" ]; then
+            collision_detail="${collision_detail}${nnnn} (clashes: ${clashing%, }), "
+        fi
+    done <<< "$pr_new_adrs"
+
+    if [ -z "$collision_detail" ]; then
+        return 0  # нет коллизии — guard не срабатывает
+    fi
+
+    # Коллизия → блок. Логируем в merge-gate журнал.
+    log "🚨 issue #${number} PR #${pr_number} ADR-COLLISION: ${collision_detail% ,} — block needs-e2e"
+
+    if [ "$DRY_RUN" = "true" ]; then
+        log "DRY-RUN would: post ADR-collision comment + label ${ADR_COLLISION_BLOCKED_LABEL} on issue #${number}"
+        return 1
+    fi
+
+    # 24h dedup (как big-bang блок) — merge-gate тикает каждые ~5-10 мин,
+    # без dedup было бы ~144 одинаковых спам-коммента в день.
+    local _ac_dedup_since
+    _ac_dedup_since="$(date -u -d "${ADR_COLLISION_COMMENT_DEDUP_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    local _ac_dup_count
+    _ac_dup_count="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_ac_dedup_since}&per_page=100" \
+        --jq '[.[] | select(.body | contains("ADR-COLLISION detected"))] | length' 2>/dev/null || echo 0)"
+    if [ "${_ac_dup_count:-0}" -eq 0 ] 2>/dev/null; then
+        gh issue comment "$number" --repo "$GH_REPO" --body \
+            "🚨 **PR #${pr_number} ADR-COLLISION detected** (merge-gate, ретро 25.08 t_00ba0224, $(date -u +%H:%M:%SZ))
+
+PR добавляет/переименовывает ADR с номерами, которые **уже заняты** другими файлами в \`origin/develop\`:
+
+${collision_detail% ,}
+
+**Что делать:**
+1. **Переименовать** свой файл на следующий свободный номер (проверка: \`git ls-tree origin/develop --name-only | grep -E '^docs/adr/NNNN-'\`).
+2. **Либо** Шифу ставит override: \`${ADR_COLLISION_OVERRIDE_LABEL}\` на этот issue (явный re-numbering).
+
+Merge-gate **НЕ поставит ${NEEDS_E2E_LABEL}** пока коллизия не разрешена. Линтер/доки коммитятся отдельным PR'ом — глобальная коллизия номеров ломает обратные ссылки на ADR.
+
+Ссылка: CONTRIBUTING.md (раздел ADR-процесс), ADR-0001." >/dev/null 2>&1 \
+            && log "issue #${number}: ADR-collision comment posted (${ADR_COLLISION_COMMENT_DEDUP_HOURS}h dedup)" \
+            || log "WARNING: ADR-collision comment post failed for issue #${number}"
+    else
+        log "issue #${number}: ADR-collision comment уже проставлен (×${_ac_dup_count} за ${ADR_COLLISION_COMMENT_DEDUP_HOURS}ч) — dedup skip"
+    fi
+
+    # Метка на issue (best-effort). Аналог agent-flow:big-bang-blocked.
+    gh issue edit "$number" --repo "$GH_REPO" --add-label "$ADR_COLLISION_BLOCKED_LABEL" >/dev/null 2>&1 \
+        && log "issue #${number}: ${ADR_COLLISION_BLOCKED_LABEL} added" \
+        || log "WARNING: failed to add ${ADR_COLLISION_BLOCKED_LABEL} to issue #${number}"
+
+    return 1  # КОЛЛИЗИЯ → caller продолжает main-cycle без needs-e2e
 }
 
 # --- process each issue ------------------------------------------------------
@@ -2469,6 +2906,21 @@ git rev-list --left-right --count origin/${DEVELOP_BRANCH}...${branch}
     pr_kind="$(detect_pr_kind "$pr_labels_csv" "$pr_title")"
     log "issue #${number} PR #${pr_number} kind=${pr_kind} (CI green & clean)"
 
+    # --- ADR-номер collision guard (ретро 25.08 t_00ba0224) -----------------
+    # Если PR добавляет/переименовывает docs/adr/NNNN-*.md и в develop уже
+    # занят тот же NNNN другим файлом → блокируем needs-e2e (Шифу либо
+    # правит имя, либо ставит override). По дизайну ставим ДО big-bang-override
+    # и lint-веток, потому что collision — это структурная ошибка ADR-процесса,
+    # которую lint-режим тоже не должен пропускать (линтер/доки коммитятся
+    # отдельным PR'ом — отдельные файлы с уникальными номерами).
+    labels_norm="$(printf '%s' "$pr_labels_csv" | tr '[:upper:]' '[:lower:]')"
+    if ! check_adr_number_collision "$pr_number" "$number" "$labels_norm"; then
+        # КОЛЛИЗИЯ: needs-e2e НЕ ставим, в scan-all-prs PR не попадёт
+        # (там фильтр по OPEN+mergeable, не по label). PR остаётся висеть
+        # OPEN — Шифу увидит alert в issue и либо fix rename, либо override.
+        labeled=$((labeled+1)); continue
+    fi
+
     # --- big-bang-override gate (ADR-0013, ретро t_9726053d) ---------------
     # PR > ${BIG_BANG_MAX_COMMITS} коммитов ИЛИ > ${BIG_BANG_MAX_LINES} строк
     # ЗАПРЕЩЁН без явной метки ${BIG_BANG_OVERRIDE_LABEL} на issue. Метку
@@ -2621,6 +3073,11 @@ log "scan-all-prs: scanning ALL open PRs for UNSTABLE/CONFLICTING (not just need
 # Функция stale_branch_scan_all() вызывается здесь (основной путь с issues)
 # и в блоке no-issues (до раннего exit).
 stale_branch_scan_all
+# Stale-CONFLICTING watcher (ретро 24.08 t_cd32788f): один вызов рядом
+# со stale_branch_scan_all. Без условий на issues_json — сканирует ВСЕ
+# open needs-e2e PR независимо от issue-cycle (stale branch мог остаться
+# от archived-issue). Skip если HELM_HOOK_DRY_RUN.
+stale_conflicting_scan_all
 # Дубль-файл scan (ретро 15.08 t_20383d32): тот же паттерн вызова, что у
 # stale_branch_scan_all — основной путь + no-issues путь сходятся сюда.
 duplicate_file_scan_all

@@ -746,11 +746,19 @@ GH_MOCK_EOF
     # Mock `git` (only ls-remote used by merge-gate for branch presence) ---
     cat > "$bin_dir/git" <<'GIT_MOCK_EOF'
 #!/bin/bash
-# Only intercept `git ls-remote --heads <url> <branch>`; the state file
-# key BRANCH_PRESENT_<branch> controls whether the branch exists.
+# Mock git for merge-gate tests:
+#   - ls-remote --heads <url> <branch> → BRANCH_PRESENT_<branch>=1 in state.
+#   - ls-tree <ref> --name-only       → DEV_ADR_FILES (newline-separated,
+#     В ФОРМАТЕ РЕАЛЬНОГО GIT LS-TREE: пути с префиксом docs/adr/, например
+#     "docs/adr/0027-baz.md". merge-gate ADR-collision guard делает
+#     `grep '^docs/adr/...' | sed 's@^docs/adr/@@'`, и DEV_ADR_FILES должен
+#     это пройти. Ретро 25.08 t_00ba0224.)
+#   - everything else → fail loudly (tests should NOT need it).
 state="${GH_STATE:-}"
 journal="${GH_JOURNAL:-/dev/null}"
 ts="$(date -Iseconds 2>/dev/null || date)"
+
+journal() { printf '%s\t%s\n' "$ts" "$*" >>"$journal"; }
 
 case "$1" in
     ls-remote)
@@ -760,6 +768,39 @@ case "$1" in
             exit 0
         fi
         exit 1
+        ;;
+    ls-tree)
+        journal "git ls-tree $*"
+        # Ищем первый --name-only ref, вынимаем данные по нему.
+        # Convention: state key = "DEV_ADR_FILES_<ref>" or default "DEV_ADR_FILES".
+        ref=""
+        for a in "$@"; do
+            case "$a" in
+                origin/*|develop|main) [ -z "$ref" ] && ref="$a" ;;
+            esac
+        done
+        # Если в DEV_ADR_FILES значения УЖЕ начинаются с docs/adr/ — отдаём
+        # as-is (production-формат). Если БЕЗ префикса — оборачиваем в
+        # docs/adr/ для совместимости с production grep в guard'е.
+        if [ -f "$state" ]; then
+            _v=""
+            if [ -n "$ref" ]; then
+                _v="$(grep -E "^DEV_ADR_FILES_${ref}=" "$state" | head -n1 | sed "s@^DEV_ADR_FILES_${ref}=@@")"
+            fi
+            if [ -z "$_v" ]; then
+                _v="$(grep -E "^DEV_ADR_FILES=" "$state" | head -n1 | sed 's/^DEV_ADR_FILES=//')"
+            fi
+            if [ -n "$_v" ]; then
+                # Нормализация: если первая строка без docs/adr/, добавляем.
+                if printf '%s' "$_v" | grep -q '^docs/adr/'; then
+                    printf '%s\n' "$_v"
+                else
+                    printf '%s\n' "$_v" | sed 's@^@docs/adr/@'
+                fi
+                exit 0
+            fi
+        fi
+        exit 0  # пустой результат → develop_adrs="" → fail-open в guard
         ;;
     *)
         # For anything else, delegate to the real git — but tests should

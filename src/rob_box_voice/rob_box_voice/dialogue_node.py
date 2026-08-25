@@ -142,6 +142,29 @@ from rob_box_voice.observability import (
     start_span,
 )
 
+
+def _xml_attr(value: str) -> str:
+    """Escape ``value`` for safe inclusion in an XML attribute (issue #1544).
+
+    Replaces the four characters that would break the ``<music_state …/>``
+    attribute syntax: ``"``, ``&``, ``<``, ``>``. Used by
+    :meth:`DialogueNode._build_music_state_snapshot` to safely embed user-
+    controlled theme names (``DJ-тема может содержать кавычки и амперсанды
+    из free-form ввода юзера)``) into the LLM-bound ``<system_context>``.
+
+    Cheap enough to call per-turn (~4 regex subs). Not a full XML escape —
+    we only render to LLM, not to a browser.
+    """
+    # ``str.replace`` chain is fine here — values are short (<200 chars).
+    return (
+        value
+        .replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
 ASYNCIO_LOOP_DRIVER_NAME_PREFIX: str = "dialogue-async-loop"
 ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S: float = 2.0
@@ -2200,6 +2223,89 @@ class DialogueNode(Node):
                 user_input = f"[Speaker:unknown] {user_input}"
         return user_input
 
+    # ── Music state snapshot ───────────────────────────────────────────
+    #
+    # Issue #1544 — LLM нужен честный обзор того, ЧТО играет прямо сейчас,
+    # чтобы решать «стоп музыку» / «давай трек» / «хватит диджеить».
+    # До фикса был только <generated_music> для AI-генерации (issue #1392
+    # follow-up), и DJ-бит/Renardo оставались невидимыми → LLM говорил
+    # verbal «уже выключено» на стоп-команду, пока DJ-бит реально играл.
+    #
+    # Четыре независимых источника истины:
+    #   * DJ-режим (``self._dj.state.enabled``) — autonomous DJ-сессия.
+    #   * AI-сгенерированная музыка (``self._generated_music_state`` dict)
+    #     — приходит из /voice/generated_music/state топика.
+    #   * Активный Renardo-бит — эвристика: либо cleanup-флаг
+    #     (``_pending_music_cleanup`` True → LLM запустил execute_music_code
+    #     и музыка ещё живёт), либо есть активные TTS-батчи в
+    #     ``_active_batches`` (музыка под backing-вокал).
+    #   * cleanup_in_progress — отложенный cleanup (cleanup=True означает
+    #     «бит был, сейчас будет остановлен после TTS batch_complete»).
+    #
+    # XML формат — компактный, один блок в <system_context>:
+    #
+    #   <music_state dj="playing: <theme>" ai="playing: <title>" beat="active" />
+    #   <music_state dj="off" ai="idle" beat="silent" />  ← idle
+    #
+    # Чтобы не путать LLM лишними атрибутами, всегда рендерим ВСЕ три
+    # (``dj``, ``ai``, ``beat``) — LLM видит «что есть» и «чего нет» одним
+    # взглядом, без чтения нескольких тегов.
+    DJ_THEME_UNKNOWN = "unknown theme"
+
+    def _build_music_state_snapshot(self) -> str:
+        """Единый <music_state> snapshot для LLM (issue #1544).
+
+        Возвращает строку вида::
+
+            <music_state dj="playing: <theme>" ai="playing: <title>"
+                         beat="active" cleanup="pending"/>
+
+        Все четыре атрибута рендерятся всегда (даже если ``off`` /
+        ``idle`` / ``silent``) — LLM не должен угадывать по отсутствию
+        тега.
+
+        Side effects: только чтение атрибутов; ничего не публикуется и
+        не модифицируется. Pure function of ``self.*`` state.
+        """
+        # ── DJ-режим ──
+        dj_state = getattr(self, "_dj", None)
+        dj_inner = getattr(dj_state, "state", None) if dj_state else None
+        dj_enabled = bool(getattr(dj_inner, "enabled", False))
+        if dj_enabled:
+            dj_theme = (
+                getattr(dj_inner, "theme", None)
+                or self.DJ_THEME_UNKNOWN
+            )
+            dj_attr = f"playing: {dj_theme}"
+        else:
+            dj_attr = "off"
+
+        # ── AI-сгенерированная музыка (топик /voice/generated_music/state) ──
+        gm = getattr(self, "_generated_music_state", None) or {}
+        if gm.get("status") == "playing":
+            title = gm.get("title") or "без названия"
+            ai_attr = f"playing: {title}"
+        else:
+            ai_attr = "idle"
+
+        # ── Активный Renardo-бит (не-DJ, не-AI) ──
+        # Эвристика: cleanup-флаг (LLM только что вызвал execute_music_code,
+        # бит ещё жив до tts_batch_complete) ИЛИ есть активные батчи
+        # TTS (музыка держится под вокал).
+        # Если _music_guard_budget или _pending_music_cleanup=False и
+        # _active_batches пуст — значит музыка уже не звучит.
+        pending_cleanup = bool(getattr(self, "_pending_music_cleanup", False))
+        active_batches = getattr(self, "_active_batches", None) or {}
+        beat_attr = "active" if (pending_cleanup or active_batches) else "silent"
+        cleanup_attr = "pending" if pending_cleanup else "none"
+
+        return (
+            f'  <music_state dj="{_xml_attr(dj_attr)}" '
+            f'ai="{_xml_attr(ai_attr)}" '
+            f'beat="{beat_attr}" '
+            f'cleanup="{cleanup_attr}" />'
+        )
+
     def _build_dynamic_system_context(self) -> str:
         """Two-system-prompt pattern: собрать <system_context> snapshot.
 
@@ -2282,17 +2388,25 @@ class DialogueNode(Node):
             lines.append("  <position>unknown</position>")
         # Issue #1219 — LLM voice selection (Q8): единая строка с голосами.
         lines.append(f"  <tts_context>{tts_context_line}</tts_context>")
-        # Issue #1392 follow-up — сгенерированная музыка сейчас играет?
-        # LLM видит это и сама решает, когда вызывать stop_music.
-        gm = getattr(self, "_generated_music_state", None) or {}
-        if gm.get("status") == "playing":
-            title = gm.get("title") or "без названия"
-            lines.append(
-                f"  <generated_music>playing: {title} "
-                f"(track_id={gm.get('track_id', '')[:8]})</generated_music>"
-            )
-        else:
-            lines.append("  <generated_music>idle</generated_music>")
+        # Issue #1544 — единый <music_state> снимок: объединяет все
+        # источники истины (DJ-режим + AI-генерация + активный Renardo бит +
+        # cleanup-флаг). Без этого LLM не знал, играет музыка или нет, и
+        # на «стоп музыку» отвечал verbal-only (без вызова stop_music tool),
+        # когда DJ-бит ещё играл.
+        # Issue #1392 follow-up (legacy): раньше был только <generated_music>
+        # для AI-генерации; DJ/Renardo бит туда не попадал → баг #1544.
+        lines.append(self._build_music_state_snapshot())
+        # Issue #1544 — SYSTEM REMINDER: «стоп музыку» ведёт себя по-разному
+        # в зависимости от того, ИГРАЕТ ли сейчас что-то. Без этого LLM
+        # решает «нечего останавливать» → verbal «уже выключено» вместо
+        # вызова stop_music tool. Один блок на весь turn — short enough.
+        lines.append(
+            "  <reminder>Если юзер говорит «стоп музыку / выключи / хватит "
+            "диджеить»: посмотри <music_state> выше — если НЕЧТО играет "
+            "(dj_active или ai_active или beat_active), ОБЯЗАТЕЛЬНО вызови "
+            "stop_music tool, а потом коротко подтверди; если ВСЁ stopped — "
+            "verbal «уже выключено» без tool call.</reminder>"
+        )
         # Бэклог-аккумулятор фоновой речи без wake-слова: при сливе добавляем
         # <speech_backlog> внутрь <system_context>. raw_user_command при этом
         # не трогаем — гарды смотрят только на текущую фразу.

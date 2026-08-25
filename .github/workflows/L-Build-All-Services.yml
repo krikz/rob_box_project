@@ -2,6 +2,22 @@ name: "L: Build All Services"
 
 # Полная сборка всех образов на self-hosted runner с локальным registry
 # Собирает базовые образы, Main Pi и Vision Pi сервисы параллельно
+#
+# === Issue #1560: spam-runs protection (23.08.2026) ===
+# До этого фикса workflow запускался 30+ раз в день на develop с пустыми inputs.
+# Два механизма защиты:
+#   1. concurrency: group на github.ref — GitHub-уровневая защита от любого
+#      источника дублей (manual UI, leaked script, future orphan loop). Новый
+#      workflow_dispatch в течение окна будет в очереди; cancel-in-progress=false
+#      чтобы не отменять легитимный build, который уже стартанул.
+#   2. job `validate-trigger` — для workflow_dispatch на protected branches
+#      (develop/main) проверяет что triggered_by_script != "manual" ИЛИ
+#      triggered_by_card != "". Manual UI вызовы (например кем-то кликнувший
+#      "Run workflow" в GitHub UI) будут иметь triggered_by_script="manual" и
+#      triggered_by_card="" → job warning'ит с понятным логом. Это **источник
+#      диагностики**: следующий спам-build оставит fingerprint в CI logs.
+# === Issue #1560 END ===
+
 on:
   workflow_dispatch:  # Ручной запуск
     inputs:
@@ -52,6 +68,17 @@ on:
         default: true
         type: boolean
 
+# Issue #1560: server-side dedup against spam-runs. GitHub Actions groups all
+# runs of this workflow for the same ref under one concurrency key; a second
+# workflow_dispatch within the group's lifetime (default = no timeout = forever)
+# is QUEUED (not cancelled) so a legitimate in-flight build is not killed.
+# Combined with the new job `validate-trigger` (only fires for workflow_dispatch
+# with triggered_by_script=manual + triggered_by_card='') this stops the
+# 30+ runs/day spam from manual UI clicks without breaking automation.
+concurrency:
+  group: l-build-all-services-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write  # Required for git push of .image-versions files
   packages: write  # Required by called workflows (docker push to ghcr.io)
@@ -62,6 +89,59 @@ env:
   ROS_DISTRO: humble
 
 jobs:
+  # Issue #1560: диагностический gate для workflow_dispatch на protected branches
+  # (develop/main) с пустыми/дефолтными triggered_by_*. Не блокирует build (==continue-on-error),
+  # но оставляет чёткий fingerprint в CI logs — следующий спам-build будет виден
+  # как ⚠️ spam-trigger warning, а не как обычный build. Не действует на workflow_call
+  # (G-Auto-merge to Main → L-Build-All-Services через uses:): там event_name !=
+  # workflow_dispatch. Не действует на round-ветки z-{e2e}/test-round-N.
+  validate-trigger:
+    name: "🛡 Trigger source validation (issue #1560)"
+    runs-on: [self-hosted, rob-box]
+    if: ${{ github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main') }}
+    continue-on-error: true  # Не блокируем build — это диагностика
+    steps:
+      - name: Detect spam-trigger (workflow_dispatch with empty triggered_by_* fields)
+        env:
+          TRIGGERED_BY_SCRIPT: ${{ inputs.triggered_by_script }}
+          TRIGGERED_BY_AGENT: ${{ inputs.triggered_by_agent }}
+          TRIGGERED_BY_CARD: ${{ inputs.triggered_by_card }}
+          TRIGGERED_BY_REASON: ${{ inputs.triggered_by_reason }}
+          GH_REF: ${{ github.ref }}
+          GH_ACTOR: ${{ github.actor }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          echo "🔍 Issue #1560 spam-trigger detection (issue #1560)"
+          echo "  ref:            ${GH_REF}"
+          echo "  actor:          ${GH_ACTOR}"
+          echo "  run_id:         ${RUN_ID}"
+          echo "  triggered_by_script: '${TRIGGERED_BY_SCRIPT}'"
+          echo "  triggered_by_agent:  '${TRIGGERED_BY_AGENT}'"
+          echo "  triggered_by_card:   '${TRIGGERED_BY_CARD}'"
+          echo "  triggered_by_reason: '${TRIGGERED_BY_REASON}'"
+          # Manual UI click pattern: triggered_by_script = default "manual" И
+          # triggered_by_card пустое. Легитимные скрипты (agent-flow-post-merge-build,
+          # agent-flow-e2e-process) всегда передают triggered_by_script != "manual"
+          # и/или triggered_by_card с реальным t_<id>.
+          if [ "${TRIGGERED_BY_SCRIPT}" = "manual" ] && [ -z "${TRIGGERED_BY_CARD}" ]; then
+            echo ""
+            echo "�️  SPAM-TRIGGER WARNING (issue #1560)"
+            echo "=================================================="
+            echo "Этот build запущен с пустыми/дефолтными triggered_by_* полями."
+            echo "Возможные источники (по убыванию вероятности):"
+            echo "  A) Manual 'Run workflow' через GitHub UI"
+            echo "  B) Orphan loop leaked из чужого скрипта / tmux session"
+            echo "  C) Другой collaborator с push-правами"
+            echo ""
+            echo "До этого фикса такие runs шли 30+ раз в день на develop (issue #1560)."
+            echo "Теперь этот job оставляет fingerprint для диагностики."
+            echo "Если это легитимный ручной запуск — укажи -f triggered_by_card=t_<id>"
+            echo "или -f triggered_by_script=<имя_скрипта> при следующем запуске."
+            echo "=================================================="
+          else
+            echo "✅ Trigger OK (script=${TRIGGERED_BY_SCRIPT}, card=${TRIGGERED_BY_CARD})"
+          fi
+
   # Сборка базовых образов (если нужно).
   # NB: GitHub Actions по-разному типизирует boolean inputs в workflow_dispatch (string "true"/"false")
   # и workflow_call (boolean true/false). Условие должно работать в обоих режимах.
