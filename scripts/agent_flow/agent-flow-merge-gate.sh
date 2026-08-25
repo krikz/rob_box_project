@@ -696,6 +696,131 @@ for (fname, sha), prs in sorted(seen.items()):
     return 0
 }
 
+# --- PR-without-kanban-marker scan (ретро 25.08 t_1a4f3275 / issue #1624) ----
+# Сценарий: воркер открыл PR с process-метками (agent-flow-error / needs-e2e /
+# needs-review) в обход процесса — через `gh api` напрямую, без kanban-marker
+# в issue body и без kanban-карточки. Основной цикл merge-gate (выше) ходит
+# по issue с меткой `hermes` → ищет kanban-marker → строит каноническую
+# ветку `z-{agent}/<issue>-<slug>` → не находит PR (ветка отличается) → skip.
+# Итог: PR висит в CONFLICTING 5-8ч без внимания процесса, Шифу видит
+# «зомби-PR» без kanban-card.
+#
+# Кейсы:
+#   - PR #1623 / #1611 (25.08.2026): architect-worker открыл напрямую,
+#     base=feature/avatar, нет kanban-marker в issue #1600/#1597. CONFLICTING
+#     висит 5-8ч.
+#   - PR с label `agent-flow` / `agent-flow-error` / `needs-e2e` /
+#     `needs-review` но без marker'а — должен попасть под этот guard.
+#
+# Guard: для ВСЕХ open PR с хотя бы одной process-меткой
+# (`agent-flow-error`, `needs-e2e`, `needs-review`) определяем связанный issue
+# (по #NNNN в title или z-{agent}/NNNN-* в head), проверяем kanban-marker в
+# issue comments (тот же regex, что основной цикл). Если маркера нет —
+# комментарий-предупреждение (dedup 24h) на PR + на issue, чтобы процесс
+# увидел orphan'а. НЕ блокируем CI/e2e (alert, не gate) — решение за
+# шисюном (architect-worker) и Шифу.
+#
+# Идемпотентность: проверка 24h dedup на substring тела комментария, как у
+# duplicate-file-scan.
+#
+# Этот guard НЕ ловит PR без process-меток (они вне процесса — вне scope).
+# Для них возможен future-work: alert если PR из z-{agent}/* ветки без
+# issue-marker'а вообще.
+pr_without_marker_scan_all() {
+    _wm_prs="$(gh pr list --repo "$GH_REPO" --state open \
+        --json number,title,headRefName,labels 2>/dev/null || echo '[]')"
+    printf '%s' "$_wm_prs" | python3 -c '
+import json, sys, subprocess, re
+GH_REPO = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+for pr in data:
+    labels = {l.get("name","") for l in pr.get("labels", [])}
+    # Только PR с process-метками — иначе шумим на каждый black-label PR.
+    if not ({"agent-flow","agent-flow-error","needs-e2e","needs-review"} & labels):
+        continue
+    num = pr["number"]
+    title = pr.get("title","") or ""
+    head = pr.get("headRefName","") or ""
+    # Определяем issue_number: сначала из title (#NNNN), иначе из branch
+    # z-{agent}/NNNN-... (НЕ t_<id>-..., это task_id).
+    m = re.search(r"#(\d+)", title)
+    issue_num = m.group(1) if m else ""
+    if not issue_num:
+        m2 = re.search(r"z-\{agent\}/(\d+)-", head)
+        issue_num = m2.group(1) if m2 else ""
+    if not issue_num:
+        # Не можем сопоставить PR ↔ issue → пропускаем (нет точки приложения).
+        continue
+    # Достаём комментарии issue и ищем kanban-marker (любой t_xxxxxxxxxxxxx).
+    r = subprocess.run(
+        ["gh","api",f"repos/{GH_REPO}/issues/{issue_num}/comments?per_page=100"],
+        capture_output=True, text=True)
+    try:
+        comments = json.loads(r.stdout or "[]")
+    except Exception:
+        comments = []
+    has_marker = any(
+        re.search(r"^kanban: t_[a-f0-9]+", c.get("body","") or "", re.M)
+        for c in comments
+    )
+    if has_marker:
+        continue
+    # Без marker (кандидат на alert). Печатаем: pr_num<TAB>issue_num для bash.
+    print(f"{num}\t{issue_num}")
+' "$GH_REPO" 2>/dev/null | while IFS=$'\t' read -r _wm_pr _wm_issue; do
+        [ -z "$_wm_pr" ] && continue
+        log "pr-without-marker-scan: PR #${_wm_pr} имеет process-метку, но kanban-marker в issue #${_wm_issue} ОТСУТСТВУЕТ (ретро 25.08 t_1a4f3275 / issue #1624)"
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would: process-marker-missing comment on PR #${_wm_pr} и issue #${_wm_issue}"
+            continue
+        fi
+        _wm_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+        _wm_head="$(gh pr view "$_wm_pr" --repo "$GH_REPO" --json headRefName --jq '.headRefName' 2>/dev/null || echo "?")"
+        _wm_base="$(gh pr view "$_wm_pr" --repo "$GH_REPO" --json baseRefName --jq '.baseRefName' 2>/dev/null || echo "?")"
+        _wm_state="$(gh pr view "$_wm_pr" --repo "$GH_REPO" --json mergeStateStatus --jq '.mergeStateStatus' 2>/dev/null || echo "?")"
+        # 24h dedup на substring тела (как у duplicate-file-scan).
+        _wm_dup_pr="$(gh api "repos/${GH_REPO}/issues/${_wm_pr}/comments?since=${_wm_since}&per_page=100" \
+            --jq '[.[] | select(.body | contains("process marker missing"))] | length' 2>/dev/null || echo 0)"
+        if [ "${_wm_dup_pr:-0}" -eq 0 ]; then
+            gh pr comment "$_wm_pr" --repo "$GH_REPO" --body \
+                "⚠️ **process marker missing** (merge-gate, ретро 25.08 t_1a4f3275 / issue #1624)
+
+PR имеет process-метку (agent-flow* / needs-e2e / needs-review), но в issue #${_wm_issue} НЕТ kanban-marker (\`kanban: t_xxxxxxxxxxxxx\`). Без маркера merge-gate основного цикла не может сопоставить PR ↔ kanban-карточку и пропускает обработку — PR висит вне процесса.
+
+**Текущее состояние:**
+- PR: #${_wm_pr}
+- head: \`${_wm_head}\`
+- base: \`${_wm_base}\`
+- mergeStateStatus: \`${_wm_state}\`
+- issue: #${_wm_issue}
+
+**Что делать (приоритет для шисюна/Шифу):**
+1. Связать PR ↔ kanban-карточку: добавить kanban-marker в issue #${_wm_issue} (комментарий \`kanban: t_xxxxxxxxxxxxx branch: ${_wm_head} role: <role>\`), затем \`hermes kanban --board robbox complete t_xxxxxxxxxxxxx\` с raw-evidence и тестами.
+2. Либо закрыть этот PR (если архитектура не предполагает его merge) и переоткрыть из новой kanban-карточки.
+3. Если PR нужен (например AV-6 / AV-3 в feature/avatar) — добавить kanban-card через \`hermes kanban create --assignee <agent>\` и привязать.
+
+Merge-gate **НЕ блокирует** CI/e2e (alert, не gate). Решение за человеком (Шифу / шисюн)." >/dev/null 2>&1 || true
+        fi
+        # Параллельно комментим issue (если issue существует и не duplicate).
+        if [ -n "$_wm_issue" ] && [ "$_wm_issue" != "?" ]; then
+            _wm_dup_iss="$(gh api "repos/${GH_REPO}/issues/${_wm_issue}/comments?since=${_wm_since}&per_page=100" \
+                --jq '[.[] | select(.body | contains("process marker missing on PR"))] | length' 2>/dev/null || echo 0)"
+            if [ "${_wm_dup_iss:-0}" -eq 0 ]; then
+                gh issue comment "$_wm_issue" --repo "$GH_REPO" --body \
+                    "⚠️ **process marker missing on PR** (merge-gate, ретро 25.08 t_1a4f3275 / issue #1624)
+
+PR #${_wm_pr} (\`${_wm_head}\` → \`${_wm_base}\`, state=${_wm_state}) имеет process-метку, но в этом issue НЕТ kanban-marker. PR вне процесса — merge-gate основного цикла пропустит.
+
+См. подробности в комменте PR: https://github.com/${GH_REPO}/pull/${_wm_pr}" >/dev/null 2>&1 || true
+            fi
+        fi
+    done
+    return 0
+}
+
 # --- deploy-issue label-less orphan backstop (ретро 15.08 t_238ff3f7) -------
 # Сценарий: L-Deploy and Verify создаёт deploy-issues с версией workflow-файла
 # С ВЕТКИ e2e-раунда (z-{e2e}/test-round-N), а не develop. Если round-ветка
@@ -3081,6 +3206,9 @@ stale_conflicting_scan_all
 # Дубль-файл scan (ретро 15.08 t_20383d32): тот же паттерн вызова, что у
 # stale_branch_scan_all — основной путь + no-issues путь сходятся сюда.
 duplicate_file_scan_all
+# PR-without-kanban-marker scan (ретро 25.08 t_1a4f3275 / issue #1624):
+# тот же паттерн вызова — основной путь + no-issues путь сходятся сюда.
+pr_without_marker_scan_all
 # Deploy-issue label-less orphan backstop (ретро 15.08 t_238ff3f7): тот же
 # паттерн вызова — основной путь + no-issues путь сходятся сюда.
 deploy_issue_reconcile_all
