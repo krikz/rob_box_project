@@ -833,6 +833,37 @@ check_backlog_accumulated() {  # $1=before_rfc3339
 #                 отделён от acceptance fail). Логирует `[skip:wake-gate-cold-start]`.
 #   backlog     — фраза без wake-prefix копится в SpeechAccumulator
 #
+# Issue #1629 acceptance #2 — на старте каждого e2e-раунда гасим
+# DJ-mode, чтобы sticky-состояние из предыдущего раунда не утекло
+# в текущий. Без этого DJ-тикер продолжит авто-переходы и
+# наводнит e2e лишним TTS-трафиком (issue #1506 acceptance FAIL).
+# Канал — /voice/dj_mode (dialogue_node подписан на String, см.
+# src/rob_box_voice/rob_box_voice/dialogue_node.py:571). Прецедент
+# — scripts/diagnostics/voice_e2e_dialog.sh (ros2 topic pub
+# через docker exec voice-assistant).
+disable_dj_mode_round_start() {
+    if [ -z "${ROBOT_SSH:-}" ]; then
+        # Локальный single-text mode без SSH (юзер запустил
+        # скрипт руками без робота) — disable некуда слать,
+        # пропускаем. Тесты по-прежнему пройдут: ROS-ноды нет,
+        # DJ-тикер не запущен.
+        log "disable_dj_mode_round_start: ROBOT_SSH пуст — пропуск (single-text mode)"
+        return 0
+    fi
+    local dj_payload='{"enabled": false}'
+    # bash -lc внутри docker exec — нужно подхватить ROS2 env
+    # (аналогично scripts/diagnostics/voice_e2e_dialog.sh:76).
+    local dj_cmd="bash -lc 'source /opt/ros/humble/setup.bash && source /ws/install/setup.bash 2>/dev/null; ros2 topic pub --once /voice/dj_mode std_msgs/msg/String \"data: ${dj_payload}\" 2>&1'"
+    if ${ROBOT_SSH} "docker exec voice-assistant ${dj_cmd}" >/tmp/e2e_disable_dj.log 2>&1; then
+        log "disable_dj_mode_round_start: ✅ /voice/dj_mode enabled=false отправлено"
+    else
+        # Не фатально — если docker или ROS2 недоступны, помечаем
+        # warn и идём дальше. Цель disable — снизить flake rate,
+        # а не сломать e2e на нерезолве SSH.
+        log "WARN: disable_dj_mode_round_start: ros2 topic pub failed ($(tail -1 /tmp/e2e_disable_dj.log))"
+    fi
+}
+
 # run_step намеренно принимает уже-classified expect_kind (callers
 # используют classify_step_expect для дефолта и override).
 run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|backlog)
@@ -1217,6 +1248,13 @@ for i, s in enumerate(sc.get("steps", [])):
         retry = 0
     print(f"{i}\t{s.get('label', f's{i+1}')}\t{s.get('text','')}\t{s.get('voice','anton')}\t{json.dumps(pats)}\t{json.dumps(acc, ensure_ascii=False)}\t{exp}\t{retry}")
 PY
+    # Issue #1629 acceptance #2 — disable DJ-mode once per round,
+    # BEFORE any step runs. Sticky state from a previous e2e round
+    # (DJ_AUTO transition fires every 45s) would otherwise bleed
+    # into the new round's `E2E_SILENCE_WAIT` window and add
+    # spurious TTS traffic. Idempotent — safe to call when DJ is
+    # already off.
+    disable_dj_mode_round_start
     while IFS=$'\t' read -r idx label text voice patterns_json acceptance_json expect_raw retry_acceptance; do
         [ -z "$idx" ] && continue
         case "$retry_acceptance" in
