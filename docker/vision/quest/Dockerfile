@@ -82,6 +82,31 @@ COPY --from=caddy-builder /usr/bin/caddy /usr/local/bin/caddy
 # Статика WebXR-клиента из node-builder
 COPY --from=webxr-builder /build/dist /srv/quest_static
 
+# ============================================================
+# Сборка rob_box_quest (ament_python) — образец supervisor/Dockerfile
+# ============================================================
+# Шаг 1: package.xml + setup.py + setup.cfg + resource (структура, кешируется)
+COPY src/rob_box_quest/package.xml /ws/src/rob_box_quest/
+COPY src/rob_box_quest/setup.py   /ws/src/rob_box_quest/
+COPY src/rob_box_quest/setup.cfg  /ws/src/rob_box_quest/
+COPY src/rob_box_quest/resource   /ws/src/rob_box_quest/resource
+
+# Шаг 2: rosdep — если добавлены новые apt-зависимости в package.xml
+RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    . /ws/install/setup.sh && \
+    rosdep update >/dev/null 2>&1 || true && \
+    rosdep install --from-paths src/rob_box_quest --ignore-src -r -y || true
+
+# Шаг 3: исходный код Python (самый горячий слой, последний)
+COPY src/rob_box_quest/rob_box_quest /ws/src/rob_box_quest/rob_box_quest
+
+# Шаг 4: пересборка ТОЛЬКО rob_box_quest (pytorch/renardo из base не трогаем)
+RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    . /ws/install/setup.sh && \
+    colcon build \
+        --packages-select rob_box_quest \
+        --cmake-args -DCMAKE_BUILD_TYPE=Release
+
 # Caddyfile + entry-script
 COPY docker/vision/quest/Caddyfile       /etc/caddy/Caddyfile
 COPY docker/vision/scripts/quest/start_quest.sh /scripts/start_quest.sh
