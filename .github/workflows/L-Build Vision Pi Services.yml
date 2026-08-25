@@ -374,9 +374,55 @@ jobs:
           fi
           echo "✅ Built ${SERVICE}"
 
+  # AV-9 (issue #1603): Avatar Supervisor (Phase 1 monitor).
+  # Dockerfile наследует voice-assistant image и пересобирает только
+  # rob_box_supervisor через `colcon build --packages-select` (минуты,
+  # не часы — pytorch/renardo не трогаем).
+  build-supervisor:
+    needs: prepare
+    runs-on: [self-hosted, rob-box]
+    steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
+      - name: Build supervisor
+        run: |
+          SERVICE="supervisor"
+          GHCR_TAG="${IMAGE_PREFIX}:supervisor-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:supervisor-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+
+          # Хеш Python исходников для инвалидации кеша supervisor-слоя.
+          SOURCE_HASH=$(find src/rob_box_supervisor/rob_box_supervisor -type f -name "*.py" | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/vision/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="BASE_IMAGE=${LOCAL_PREFIX}:voice-assistant-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            --build-arg="SOURCE_HASH=${SOURCE_HASH}" \
+            docker/vision
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
   # Обновление .image-versions — SHA-тег после успешной сборки
   update-image-versions:
-    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider]
+    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider, build-supervisor]
     runs-on: [self-hosted, rob-box]
     if: success() && inputs.push_to_registry != false
     # Issue #t_dd49849b: 2.7h+ hang observed on concurrent runs (round-224+225+develop)
@@ -507,7 +553,7 @@ jobs:
 
   # Итоговая сводка
   summary:
-    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider]
+    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider, build-supervisor]
     runs-on: [self-hosted, rob-box]
     if: always()
     steps:
@@ -528,3 +574,4 @@ jobs:
           echo "  ✅ voice-assistant"
           echo "  ✅ telegram-bot"
           echo "  ✅ supercollider"
+          echo "  ✅ supervisor"
