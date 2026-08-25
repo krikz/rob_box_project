@@ -746,11 +746,16 @@ GH_MOCK_EOF
     # Mock `git` (only ls-remote used by merge-gate for branch presence) ---
     cat > "$bin_dir/git" <<'GIT_MOCK_EOF'
 #!/bin/bash
-# Only intercept `git ls-remote --heads <url> <branch>`; the state file
-# key BRANCH_PRESENT_<branch> controls whether the branch exists.
+# Mock git for merge-gate tests:
+#   - ls-remote --heads <url> <branch> → BRANCH_PRESENT_<branch>=1 in state.
+#   - ls-tree <ref> --name-only       → DEV_ADR_FILES (newline-separated)
+#     (used by ADR-collision guard, ретро 25.08 t_00ba0224). Default = "".
+#   - everything else → fail loudly (tests should NOT need it).
 state="${GH_STATE:-}"
 journal="${GH_JOURNAL:-/dev/null}"
 ts="$(date -Iseconds 2>/dev/null || date)"
+
+journal() { printf '%s\t%s\n' "$ts" "$*" >>"$journal"; }
 
 case "$1" in
     ls-remote)
@@ -760,6 +765,26 @@ case "$1" in
             exit 0
         fi
         exit 1
+        ;;
+    ls-tree)
+        journal "git ls-tree $*"
+        # Ищем первый --name-only ref, вынимаем данные по нему.
+        # Convention: state key = "DEV_ADR_FILES_<ref>" or default "DEV_ADR_FILES".
+        ref=""
+        for a in "$@"; do
+            case "$a" in
+                origin/*|develop|main) [ -z "$ref" ] && ref="$a" ;;
+            esac
+        done
+        if [ -f "$state" ]; then
+            if [ -n "$ref" ]; then
+                _v="$(grep -E "^DEV_ADR_FILES_${ref}=" "$state" | head -n1 | sed "s@^DEV_ADR_FILES_${ref}=@@")"
+                if [ -n "$_v" ]; then printf '%s\n' "$_v"; exit 0; fi
+            fi
+            _v="$(grep -E "^DEV_ADR_FILES=" "$state" | head -n1 | sed "s@^DEV_ADR_FILES=@@")"
+            if [ -n "$_v" ]; then printf '%s\n' "$_v"; exit 0; fi
+        fi
+        exit 0  # пустой результат → develop_adrs="" → fail-open в guard
         ;;
     *)
         # For anything else, delegate to the real git — but tests should
