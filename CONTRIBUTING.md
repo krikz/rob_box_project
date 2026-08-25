@@ -304,6 +304,32 @@ printf '%04d\n' "$NEXT"
 - Field-mapping таблица suite field → where it is checked — в ADR-0022 §4.6.2.
 - Канонический snippet для `E2E_RUN_BEFORE` — в ADR-0022 §4.6.3.
 
+## 🩹 E2E stability markers (ретро 25.08 t_2d8cc9c4)
+
+Сценарии в `.github/e2e/scenarios/*.json` могут опционально объявлять
+верхне-уровневый ключ `"stability"`:
+
+| Значение              | Семантика                                                                                                          |
+|-----------------------|--------------------------------------------------------------------------------------------------------------------|
+| `"stable"` (default)  | Обычный: `e2e-done` ставится на SUCCESS, `e2e:rejected` на feature-fail.                                         |
+| `"flaky-known"`       | Merge-gate НЕ должен автоматически ставить `e2e-done` на первый SUCCESS — флаки уходят и приходят. Только `e2e:flaky-detection` + ручной разбор Шифу. |
+| `"experimental"`      | Только-для-внутреннего QA; PR-merge гейт не смотрит на этот сценарий вообще.                                      |
+
+**Текущее состояние (август 2026):**
+- `voice_core_suite_v1.json` — `"flaky-known"` (mv01/mv02/mv03 слом set_voice после #1547; регрессия стабильная с 21.08).
+- `voice_selection_suite_v1.json` — `"flaky-known"` (multi-voice narrative).
+
+**Контракт для merge-gate** (`scripts/agent_flow/agent-flow-merge-gate.sh`):
+применяется при `verdict=success` и `stability="flaky-known"`:
+1. Поставить `e2e:flaky-detection` на issue (а не `e2e-done`).
+2. Оставить `needs-e2e` (не снимать).
+3. Написать dedup-комментарий (24h) с указанием suite и шага, который прошёл.
+4. Шифу вручную решает: закрыть issue, открыть follow-up на root-cause, или снять `flaky-known` после фикса.
+
+**Что НЕ делать воркерам:**
+- Не снимать `stability` без явного OK Шифу.
+- Не добавлять `stability: "stable"` сценариям, которые хоть раз за последние 7 дней флакали.
+
 ## 🛑 Guard: явный `needs-e2e` override при merged PR (issue #1448, ретро 19.08 t_b3691e1b)
 
 Если Шифу **вручную** возвращает issue в ротацию (ставит `needs-e2e` после
