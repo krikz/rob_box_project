@@ -203,6 +203,119 @@ async def test_subscribe_unknown_topic_returns_error(client, fixed_pin):
             pass
 
 
+async def test_stream_list_returns_catalog(client, fixed_pin):
+    """JSON_CMD{cmd:stream_list} → JSON_EVENT{type:stream_list, items:[...]}."""
+    http_client, _server = client
+    ws = await _open_ws(http_client)
+    try:
+        await _send_hello(ws, fixed_pin)
+        welcomed = False
+        deadline = time.monotonic() + 1.0
+        while not welcomed and time.monotonic() < deadline:
+            msg = await ws.receive()
+            if msg.type == WSMsgType.BINARY:
+                ftype, _sid, payload = decode_frame(msg.data)
+                if ftype == FrameType.WELCOME:
+                    welcomed = True
+        assert welcomed
+
+        payload = json.dumps({"cmd": "stream_list"}).encode()
+        await ws.send_bytes(encode_frame(FrameType.JSON_CMD, 0, payload))
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            msg = await ws.receive()
+            if msg.type == WSMsgType.BINARY:
+                ftype, _sid, body_bytes = decode_frame(msg.data)
+                if ftype == FrameType.JSON_EVENT:
+                    body = json.loads(body_bytes.decode("utf-8"))
+                    if body.get("type") == "stream_list":
+                        items = body["items"]
+                        assert isinstance(items, list)
+                        topics = {it["topic"] for it in items}
+                        assert "lidar_2d" in topics
+                        assert "camera_oak_color" in topics
+                        assert "camera_ceiling" in topics
+                        return
+        pytest.fail("stream_list not received")
+    finally:
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def test_stream_select_unknown_topic_returns_error(client, fixed_pin):
+    http_client, _server = client
+    ws = await _open_ws(http_client)
+    try:
+        await _send_hello(ws, fixed_pin)
+        welcomed = False
+        deadline = time.monotonic() + 1.0
+        while not welcomed and time.monotonic() < deadline:
+            msg = await ws.receive()
+            if msg.type == WSMsgType.BINARY:
+                ftype, _sid, payload = decode_frame(msg.data)
+                if ftype == FrameType.WELCOME:
+                    welcomed = True
+        assert welcomed
+
+        payload = json.dumps({"cmd": "stream_select", "topic": "bogus_camera"}).encode()
+        await ws.send_bytes(encode_frame(FrameType.JSON_CMD, 0, payload))
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            msg = await ws.receive()
+            if msg.type == WSMsgType.BINARY:
+                ftype, _sid, body_bytes = decode_frame(msg.data)
+                if ftype == FrameType.ERROR:
+                    body = json.loads(body_bytes.decode("utf-8"))
+                    assert body["code"] == "TOPIC_UNKNOWN"
+                    return
+        pytest.fail("ERROR not received")
+    finally:
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def test_stream_select_known_topic_returns_ack(client, fixed_pin):
+    http_client, _server = client
+    ws = await _open_ws(http_client)
+    try:
+        await _send_hello(ws, fixed_pin)
+        welcomed = False
+        deadline = time.monotonic() + 1.0
+        while not welcomed and time.monotonic() < deadline:
+            msg = await ws.receive()
+            if msg.type == WSMsgType.BINARY:
+                ftype, _sid, payload = decode_frame(msg.data)
+                if ftype == FrameType.WELCOME:
+                    welcomed = True
+        assert welcomed
+
+        payload = json.dumps({"cmd": "stream_select", "topic": "camera_oak_color"}).encode()
+        await ws.send_bytes(encode_frame(FrameType.JSON_CMD, 0, payload))
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            msg = await ws.receive()
+            if msg.type == WSMsgType.BINARY:
+                ftype, _sid, body_bytes = decode_frame(msg.data)
+                if ftype == FrameType.JSON_EVENT:
+                    body = json.loads(body_bytes.decode("utf-8"))
+                    if body.get("type") == "stream_select_ack":
+                        assert body["topic"] == "camera_oak_color"
+                        assert body["kind"] == "camera_direct"
+                        # Не подписан → stream_id=None → клиент делает SUBSCRIBE
+                        assert body["stream_id"] is None
+                        return
+        pytest.fail("stream_select_ack not received")
+    finally:
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 async def test_heartbeat_is_sent_periodically(client, fixed_pin):
     http_client, _server = client
     ws = await _open_ws(http_client)
