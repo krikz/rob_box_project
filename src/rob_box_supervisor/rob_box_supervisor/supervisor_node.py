@@ -140,14 +140,20 @@ class AvatarSupervisor(Node):
 
     # ── helpers ──────────────────────────────────────────────────────
     def _log_startup_diagnostics(self) -> None:
-        """Залогировать env и mode на старте — помогает e2e/postmortem."""
+        """Залогировать env и mode на старте — помогает e2e/postmortem.
+
+        Используем f-string + одиночный ``msg`` вместо ``info(fmt, *args)``:
+        rclpy ``RcutilsLogger.info`` принимает ``(msg, *args)``, где *args — это
+        позиционные параметры для ``%``-форматирования msg, а не самостоятельные
+        поля. Вызов с 3+ args (например, ``info(fmt, a, b, c)``) ломает рантайм
+        ``TypeError: RcutilsLogger.info() takes 2 positional arguments but N were given``
+        (issue #1644, run #32892615440). Тестировано в карточке t_369751b4.
+        """
         zenoh = os.environ.get("ZENOH_SESSION_CONFIG_URI", "<unset>")
         msgpack_state = "ok" if _HAS_MSGPACK else "MISSING"
         self._log.info(
-            "avatar_supervisor started: mode=%s, zenoh=%s, msgpack=%s",
-            self._mode,
-            zenoh,
-            msgpack_state,
+            f"avatar_supervisor started: mode={self._mode}, "
+            f"zenoh={zenoh}, msgpack={msgpack_state}"
         )
 
     def _monitor_response(self) -> dict:
