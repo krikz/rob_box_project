@@ -1192,6 +1192,9 @@ check_adr_number_collision() {  # $1=pr_number $2=issue_number $3=labels_csv_lc
     # Ключевое: NNNN извлекается ТОЛЬКО из файлов, присутствующих в этом PR.
     # Шаблон docs/adr/NNNN-*.md → NNNN = 4 hex-цифры.
     local pr_new_adrs
+    # Извлекаем уникальные NNNN через newline-separated вывод (НЕ JSON-массив:
+    # `read` в bash не парсит JSON-литералы, разделитель — перенос строки).
+    # Сортируем для детерминированного порядка (полезно для логов).
     pr_new_adrs="$(printf '%s' "$pr_files_json" | python3 -c '
 import json, re, sys
 try:
@@ -1205,20 +1208,24 @@ for f in files:
     if adr_re.match(f):
         m = re.match(r"^docs/adr/(0[0-9]{3})-.*\.md$", f)
         if m: nums.add(m.group(1))
-print(json.dumps(sorted(nums)))
+for n in sorted(nums):
+    print(n)
 ' 2>/dev/null)"
-    if [ -z "$pr_new_adrs" ] || [ "$pr_new_adrs" = "[]" ]; then
+    if [ -z "$pr_new_adrs" ]; then
         return 0  # нет новых ADR — guard не срабатывает
     fi
 
-    # Список ВСЕХ ADR в origin/develop (имя файла, без blob/sha префикса).
-    # Используем git ls-tree — это ЛОКАЛЬНЫЙ кэш (origin/develop уже
-    # подтянут до merge-gate тика в любом нормальном run-е). Если fetch ещё
-    # не прошёл и refs нет — fallback на `gh api .../git/trees/develop`
-    # (медленнее, но quota-friendly). Если и это упало — fail-open.
+    # Список ВСЕХ ADR в origin/develop. Формат каждой строки: NNNN-name.md
+    # (БЕЗ префикса docs/adr/ — чтобы внутренний grep "^NNNN-" корректно
+    # находил файлы по номеру). Используем git ls-tree — это ЛОКАЛЬНЫЙ кэш
+    # (origin/develop уже подтянут до merge-gate тика в любом нормальном
+    # run-е). Если fetch ещё не прошёл и refs нет — fallback на
+    # `gh api .../git/trees/develop` (медленнее, но quota-friendly). Если
+    # и это упало — fail-open.
     local develop_adrs
     develop_adrs="$(git ls-tree "origin/${DEVELOP_BRANCH}" --name-only 2>/dev/null \
-        | grep -E '^docs/adr/0[0-9]{3}-.*\.md$' || true)"
+        | grep -E '^docs/adr/0[0-9]{3}-.*\.md$' \
+        | sed 's@^docs/adr/@@' || true)"
     if [ -z "$develop_adrs" ]; then
         # Fallback: REST tree API (gh). Возвращает полный tree develop
         # одним запросом; quota = 1, медленнее, но работает на CI без
