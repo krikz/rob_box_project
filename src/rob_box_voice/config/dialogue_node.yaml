@@ -35,6 +35,12 @@ dialogue_node:
     faq_mode_enabled: false
     faq_event_config_file: ''
     tool_provider: ros_mcp
+    # Issue #1601 / ADR-0027 §3.4 — режим захвата голоса. supervisor
+    # (ADR-0028) переключает во время работы, без рестарта ноды. Допустимые
+    # значения: respeaker | quest_passthrough | quest_ttts | quest_stt |
+    # quest_llm_formalize. Реальная маршрутизация — Phase 2 (отдельный
+    # worker-issue); здесь только объявление параметра.
+    voice_input_mode: respeaker
     # Дополнительные ключи для переопределения оператором:
     # (все имеют default в коде — здесь выставляем «безопасные» значения)
     temperature: 0.7
