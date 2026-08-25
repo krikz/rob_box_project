@@ -392,6 +392,10 @@ jobs:
       - build-perception
     runs-on: [self-hosted, rob-box]
     if: success() && inputs.push_to_registry != false
+    # Issue #t_dd49849b: 2.7h+ hang observed on concurrent runs (round-224+225+develop)
+    # when git pull --rebase / git push blocked indefinitely under ref contention.
+    # Hard 10-min cap surfaces the failure visibly (instead of stuck-in_progress).
+    timeout-minutes: 10
     steps:
       - name: Clean stale submodules
         run: |
