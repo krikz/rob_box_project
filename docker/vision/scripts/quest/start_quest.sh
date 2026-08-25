@@ -18,7 +18,7 @@
 #   - docker/vision/scripts/supervisor/start_supervisor.sh (паттерн Zenoh-wait)
 #   - docker/vision/scripts/voice_assistant/start_voice_assistant.sh (env)
 
-set -euo pipefail
+set -eo pipefail
 
 echo "=========================================="
 echo "  rob_box_quest Starting (Phase 1.6, ADR-0027)"
