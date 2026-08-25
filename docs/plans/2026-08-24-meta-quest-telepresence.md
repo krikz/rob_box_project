@@ -59,6 +59,8 @@ graph LR
 
 Definition of Done Phase 1: с dev-машины в браузере открывается `https://quest.rob_box.local` (DNS на роутере), виден стрим камеры и лидар-оверлей, стик двигает робота, отпускание grip останавливает робота, при обрыве Wi-Fi робот safe-stop.
 
+**DNS статус (✅ готово, 25.08.2026):** `quest.rob_box.local → 10.1.1.11` резолвится в LAN `192.168.2.0/24` через FriendlyWrt-коробку (`192.168.2.1`, OpenWrt 24.10.1) — `address=/quest.rob_box.local/10.1.1.11` в `/etc/dnsmasq.conf`. Запись для `vision.rob_box.local` тоже есть. Подтверждение: `dig @127.0.0.1 quest.rob_box.local` на коробке возвращает `ANSWER SECTION: quest.rob_box.local. 0 IN A 10.1.1.11`. В сети `10.1.1.0/24` (Main/Vision Pi) резолв работает по подтверждению `nslookup quest.rob_box.local` с dev-машины (`Address: 10.1.1.11`).
+
 ---
 
 ## Phase 1.1 — Пакет + wire-протокол (чистая логика, TDD)
@@ -466,7 +468,7 @@ git commit -m "feat(quest): Caddy self-signed TLS + docker service on Vision Pi"
 ## Phase 1.7 — e2e smoke по локальной сети (ручная верификация)
 
 **Что проверяем (на роботе, dev-машине и роутере):**
-1. DNS на роутере: `quest.rob_box.local → 10.1.1.11`; с dev-машины `ping quest.rob_box.local`.
+1. ✅ DNS на роутере: `quest.rob_box.local → 10.1.1.11`; с dev-машины `ping quest.rob_box.local` — **готово 25.08.2026** (см. блок выше).
 2. Импорт сертификата в Quest (Settings → Privacy → Security → Trusted Sources) — однократно.
 3. С браузера dev-машины: открыть `https://quest.rob_box.local`, ввести PIN (из `docker logs quest`).
 4. Виден стрим камеры (замерить latency: фото таймера → экран), лидар-оверлей.
