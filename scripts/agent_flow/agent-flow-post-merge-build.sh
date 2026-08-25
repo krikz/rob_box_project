@@ -12,11 +12,11 @@
 # (или вручную cp + ln -sf). Если правишь этот файл НА ХОСТЕ — синхронизируй
 # обратно в репо.
 # ============================================================================
-# agent-flow-post-merge-build.sh — ADR-0022 extension (issue #1475)
+# agent-flow-post-merge-build.sh — ADR-0022 extension (issue #1475),
+# updated 25.08.2026 (issue #1625, Шифу)
 #
-# Цель: после merge PR в develop (или main) — запустить L-Build-All-Services
-# чтобы .image-versions.dev получил свежие SHA-теги (dev-<sha>) для
-# deploy-цепочки. До этого фикса:
+# Цель: после merge PR в main — запустить L-Build-All-Services чтобы
+# .image-versions.prod получил свежие SHA-теги. До этого фикса:
 #   - L-Build-All-Services.yml триггерился ТОЛЬКО от workflow_dispatch
 #     (e2e-process на round-ветке) И от workflow_call (G-Auto-merge to Main);
 #   - push в develop триггерил G-Auto-merge to Main, который создавал
@@ -31,11 +31,15 @@
 #   log "issue #${number}: PR #${pr_number} MERGED into ${pr_base}"
 #   bash scripts/agent_flow/agent-flow-post-merge-build.sh "$pr_number" "$pr_base"
 #
-# Поведение:
-#   1. Проверяет, что ветка — develop или main (не feature/copilot/test).
-#   2. Запускает L-Build-All-Services через `gh workflow run` с retry+dedup.
-#   3. НЕ блокирует merge-gate: ошибка триггера = warning + continue.
-#   4. Идемпотентен: запуск с тем же (pr_number, branch) подряд — окей,
+# Поведение (после фикса issue #1625, 25.08):
+#   1. ENV kill-switch: DISABLE_POST_MERGE_BUILD=1 → exit 0 (hard skip,
+#      не дёргает gh ни на какой ветке).
+#   2. PR_BASE == develop → exit 0 (Шифу 25.08: develop build — ручной).
+#   3. PR_BASE == main → запускает L-Build-All-Services через `gh workflow run`
+#      с retry+dedup (production safety: первый push в main — там может быть
+#      первая публикация, тег, deploy).
+#   4. НЕ блокирует merge-gate: ошибка триггера = warning + continue.
+#   5. Идемпотентен: запуск с тем же (pr_number, branch) подряд — окей,
 #      GitHub сериализует одинаковые workflow по workflow_name+head_branch.
 #
 # Pure bash. No LLM. Idempotent.
@@ -75,10 +79,28 @@ run() {
     fi
 }
 
+# --- pre-condition: ENV override (issue #1625, Шифу 25.08) ------------------
+# Hard kill-switch: если DISABLE_POST_MERGE_BUILD=1 — НЕ дёргаем build ни для
+# какой ветки (используется, чтобы вручную приглушить post-merge-build на
+# время расследования, без правки merge-gate).
+if [ "${DISABLE_POST_MERGE_BUILD:-0}" = "1" ]; then
+    log "⏭️ post-merge build DISABLED by env (DISABLE_POST_MERGE_BUILD=1, PR #${PR_NUMBER} → ${PR_BASE})"
+    exit 0
+fi
+
 # --- pre-condition: только develop/main --------------------------------------
+# Issue #1625 (Шифу 25.08): develop build больше не триггерим автоматически —
+# develop-HEAD собирается по push-триггеру L-Build-All-Services.yml (если он
+# настроен) или вручную когда нужно. Авто-trigger после каждого merge в
+# develop дёргал build без надобности (issue #1560). main — production safety,
+# build обязателен (там может быть первая публикация/тег).
 case "$PR_BASE" in
-    "$DEVELOP_BRANCH"|"$MAIN_BRANCH")
-        log "PR #${PR_NUMBER} → ${PR_BASE}: eligible for post-merge build"
+    "$DEVELOP_BRANCH")
+        log "⏭️ skipped post-merge build for ${PR_BASE} (Шифу 25.08: develop builds only by hand)"
+        exit 0
+        ;;
+    "$MAIN_BRANCH")
+        log "PR #${PR_NUMBER} → ${PR_BASE}: eligible for post-merge build (production safety)"
         ;;
     *)
         log "PR #${PR_NUMBER} → ${PR_BASE}: SKIP (only ${DEVELOP_BRANCH}/${MAIN_BRANCH} trigger build)"
