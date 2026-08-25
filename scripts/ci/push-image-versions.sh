@@ -14,6 +14,8 @@
 #   IMAGE_VERSIONS_PUSH_RETRY_DELAY   Delay between attempts in seconds (5)
 #   IMAGE_VERSIONS_GIT_REMOTE         Git remote name (origin)
 #   IMAGE_VERSIONS_GIT_TERMINAL_TIMEOUT  Seconds for git network ops (60) — issue #t_dd49849b
+#   IMAGE_VERSIONS_DEDUP_REMOTE_QUERY  Set 0 to disable dedup (default 1)
+#   IMAGE_VERSIONS_DEDUP_PAGE_SIZE     Commits inspected for dedup (default 20)
 set -euo pipefail
 
 # Hard cap on git network operations. Without this, 'git pull --rebase' and
@@ -27,6 +29,8 @@ COMPONENT="${2:-image-versions}"
 MAX_ATTEMPTS="${IMAGE_VERSIONS_PUSH_ATTEMPTS:-5}"
 RETRY_DELAY="${IMAGE_VERSIONS_PUSH_RETRY_DELAY:-5}"
 REMOTE="${IMAGE_VERSIONS_GIT_REMOTE:-origin}"
+DEDUP_ENABLED="${IMAGE_VERSIONS_DEDUP_REMOTE_QUERY:-1}"
+DEDUP_PAGE_SIZE="${IMAGE_VERSIONS_DEDUP_PAGE_SIZE:-20}"
 
 if ! [[ "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
   echo "❌ image-versions: IMAGE_VERSIONS_PUSH_ATTEMPTS must be a positive integer" >&2
@@ -62,10 +66,67 @@ pull_and_rebase() {
   return 1
 }
 
+# Issue #1630 / ADR-0031: race-condition dedup. Two parallel builds (e.g. develop
+# + z-{e2e}/test-round-N) can both produce a commit with the same SHA-tag subject
+# ("ci: main SHA tags → dev-abc1234"). Without dedup, both runners race through
+# retry+rebase and BOTH eventually push — duplicating commits in develop history
+# (observed 2-3 ci:* SHA tags commits per build cycle, see issue #1075).
+#
+# Algorithm: BEFORE pushing, query GitHub for the last N commit subjects on
+# origin/${BRANCH}. If our pending subject is already there, exit 0 (idempotent
+# skip). This is cheap (1 API call, ≤20 commits) and works even if our local
+# branch is behind — we ask the source of truth (origin), not our local reflog.
+#
+# Caveats:
+#   - Requires gh CLI authenticated against the same org as $REMOTE. In CI this
+#     is automatic (GITHUB_TOKEN); for local dev the user must `gh auth login`.
+#   - gh failure is non-fatal: log a warning and continue with normal push.
+#     Better to risk a duplicate than to skip a real push because gh was down.
+remote_has_pending_subject() {
+  if [ "$DEDUP_ENABLED" != "1" ]; then
+    return 1  # dedup disabled → never skip
+  fi
+
+  local PENDING_SUBJECT GH_REPO API_URL API_RESPONSE
+  PENDING_SUBJECT="$(git log -1 --pretty=%s)"
+
+  # Detect GitHub repo from remote URL. We only dedup on github.com remotes;
+  # for gitlab/bitbucket this function silently returns 1 (no skip).
+  GH_REPO="$(git remote get-url "$REMOTE" 2>/dev/null \
+    | sed -E 's#^https://github.com/##; s#^git@github.com:##; s#\.git$##')"
+  if [ -z "$GH_REPO" ] || [[ "$GH_REPO" != *"/"* ]]; then
+    echo "ℹ️  ${COMPONENT}: dedup skipped (remote is not github.com)"
+    return 1
+  fi
+
+  # Use gh api (inherits GH_TOKEN/GITHUB_TOKEN). List commits on ${BRANCH}.
+  API_RESPONSE="$(gh api \
+    --method GET \
+    -H "Accept: application/vnd.github+json" \
+    -f per_page="$DEDUP_PAGE_SIZE" \
+    "/repos/${GH_REPO}/commits?sha=${BRANCH}" 2>/dev/null)" || {
+    echo "⚠️  ${COMPONENT}: gh api dedup query failed — proceeding with push" >&2
+    return 1
+  }
+
+  # Grep for our subject in the returned JSON (commit messages live under
+  # .commit.message). grep -F = literal match; -q = quiet.
+  if printf '%s' "$API_RESPONSE" | grep -F -q "$PENDING_SUBJECT"; then
+    echo "ℹ️  ${COMPONENT}: dedup — '${PENDING_SUBJECT}' already on ${BRANCH} (skip push)"
+    return 0  # 0 = "subject found" → caller skips push
+  fi
+  return 1  # 1 = "not found" → caller proceeds with push
+}
+
 for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
   echo "🔄 ${COMPONENT}: synchronising with ${REMOTE}/${BRANCH} (attempt ${attempt}/${MAX_ATTEMPTS})"
   if ! pull_and_rebase; then
     exit 1
+  fi
+
+  # Issue #1630: dedup BEFORE git push — if SHA-tag already on remote, skip.
+  if remote_has_pending_subject; then
+    exit 0
   fi
 
   if git push "$REMOTE" "HEAD:${BRANCH}"; then
