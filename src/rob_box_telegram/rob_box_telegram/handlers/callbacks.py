@@ -59,6 +59,10 @@ async def _handle_move(query, context, direction: str) -> None:
     отказывает (например, Quest уже держит ``teleop_floor``) —
     кнопки гасятся и оператор видит «удерживается другим
     оператором» (UX из ADR-0028 §6 Q3).
+
+    Дополнительно (UX ADR-0028 §6 Q3): если ``/avatar/state``
+    сообщает, что ``teleop_floor != "telegram"``, кнопки блокируются
+    сразу, без попытки acquire.
     """
     node = _node(context)
     vel = MOVE_VELOCITIES.get(direction, (0.0, 0.0))
@@ -72,6 +76,20 @@ async def _handle_move(query, context, direction: str) -> None:
     max_ang = getattr(node, "max_angular_speed", 1.0)
     twist.linear.x = max(-max_lin, min(max_lin, twist.linear.x))
     twist.angular.z = max(-max_ang, min(max_ang, twist.angular.z))
+
+    # AV-10 — UI gate: если по данным супервизора floor сейчас не у
+    # нас, даже не пытаемся acquire (экономим service-call и даём
+    # мгновенный UX-фидбек).
+    current_state = node.supervisor.state
+    teleop_floor = current_state.teleop_floor
+    if teleop_floor is not None and teleop_floor != "telegram":
+        await query.edit_message_text(
+            f"🚫 Управление удерживает {teleop_floor}. "
+            "Дождитесь, пока оператор в очках отпустит руль, "
+            "или используйте текстовые команды.",
+            reply_markup=MOVEMENT_KEYBOARD,
+        )
+        return
 
     # AV-10 — acquire teleop_floor через супервизор.
     result = node.publish_move_with_floor(twist)

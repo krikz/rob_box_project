@@ -105,6 +105,15 @@ class TelegramNode(Node):
         # Heartbeat для teleop_floor — стартуем сразу, если active.
         if supervisor_mode == "active":
             self.supervisor.start_heartbeat()
+            # AV-10 — подписка на /avatar/state для UI-gate.
+            # handlers читают ``node.supervisor.state`` на каждый
+            # callback — состояние latched и обновляется из
+            # supervisor-ноды. _on_avatar_state сейчас только
+            # логирует (когда supervisor-нода появится, тут будет
+            # edit_message_text по сохранённым query_id).
+            self._avatar_state_unsubscribe = self.supervisor.subscribe_state(
+                self._on_avatar_state
+            )
         # Issue #1160 — Prometheus metrics server (этап 1).
         # Порт 9101 — стандартный для telegram-bot (см. observability).
         metrics_port = int(p("metrics_port").value or 0)
@@ -129,6 +138,27 @@ class TelegramNode(Node):
     def _on_camera_depth(self, m): self.camera_cache.update(self.camera_depth_topic, bytes(m.data))
     def _on_camera_up(self, m): self.camera_cache.update(self.camera_up_topic, bytes(m.data))
     def _on_map(self, m): self.latest_map_grid = m
+    def _on_avatar_state(self, state) -> None:
+        """AV-10: обработчик обновлений /avatar/state.
+
+        Пока супервизор-нода не задеплоен (Phase 1) — этот метод
+        вызывается один раз при init (subscribe_state даёт initial
+        dispatch) и больше не вызывается. В Phase 2 — это место для
+        ``bot.edit_message_text`` по запомненным query_id
+        движения-кнопок, чтобы при потере floor UI сразу
+        переключился на «read-only». UI gate в ``_handle_move`` уже
+        работает синхронно — здесь остаётся лог для observability.
+        """
+        if state.teleop_floor and state.teleop_floor != "telegram":
+            self.get_logger().info(
+                f"AV-10: teleop_floor у {state.teleop_floor}, "
+                "movement buttons дизейблятся (UI gate в _handle_move)"
+            )
+        else:
+            self.get_logger().debug(
+                f"AV-10: /avatar/state teleop_floor={state.teleop_floor} "
+                f"voice_floor={state.voice_floor} mode={state.mode}"
+            )
     def set_active_chat(self, chat_id: int) -> None: self._active_chat_id = chat_id
     def forward_to_stt(self, text: str, chat_id: Optional[int] = None) -> None:
         if not text: return
