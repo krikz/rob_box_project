@@ -378,8 +378,24 @@ jobs:
           fi
           echo "✅ Built ${SERVICE}"
 
-  # Обновление .image-versions — SHA-тег после успешной сборки
-  update-image-versions:
+  # 🔴 Issue #1630 / ADR-0031: SHA-tag push в develop ВЫНЕСЕН в отдельный
+  # workflow `L-Update Image Versions.yml`. Этот build больше НЕ делает
+  # git push — он чисто registry-only (build + push SHA-immutable images
+  # в localhost:5000 + ghcr.io). Если update-image-versions.yml упадёт,
+  # build всё равно success (registry push уже состоялся), а hourly cron
+  # в update-image-versions.yml повторит push.
+  #
+  # Историческая справка:
+  #   - #1139 v2: per-service ci/image-versions-* ветки — ревёртнут в #1244
+  #     (deploy не подтягивал .image-versions оттуда)
+  #   - #1316/#1388: push в develop с retry+rebase — каждый retry = новый
+  #     коммит, develop засорялся SHA-tag коммитами
+  #   - #1482: GITHUB_SHA + verify_in_registry — SHA-tag не плавал
+  #   - #1503: mirror в GHCR
+  #   - #1560/#1566: concurrency gate на уровне workflow
+  #   - #1628: hard-cap + GIT_TERMINAL_TIMEOUT — fail-fast вместо hang
+  #   - #1630: вынос push в отдельный workflow (ЭТОТ PR)
+  trigger-update-image-versions:
     needs:
       - prepare
       - build-robot-state-publisher
@@ -390,143 +406,15 @@ jobs:
       - build-nav2
       - build-lslidar
       - build-perception
-    runs-on: [self-hosted, rob-box]
     if: success() && inputs.push_to_registry != false
-    # Issue #t_dd49849b: 2.7h+ hang observed on concurrent runs (round-224+225+develop)
-    # when git pull --rebase / git push blocked indefinitely under ref contention.
-    # Hard 10-min cap surfaces the failure visibly (instead of stuck-in_progress).
-    timeout-minutes: 10
-    steps:
-      - name: Clean stale submodules
-        run: |
-          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
-          git sparse-checkout disable 2>/dev/null || true
-          git checkout --force HEAD 2>/dev/null || true
-
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          submodules: false
-          clean: true
-          fetch-depth: 0
-
-      - name: Login to GitHub Container Registry
-        # Issue #1503: deploy default — registry_source=github, тянет образы из
-        # ghcr.io/krikz/rob_box. L-Build Main Pi Services раньше пушил ТОЛЬКО
-        # в localhost:5000 → develop/test ветки никогда не публиковались в GHCR,
-        # deploy падал на 'No such image'. Теперь mirror-пушим SHA-тег и в GHCR.
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.GHCR_REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.CR_PAT }}
-
-      - name: Tag with SHA and update .image-versions
-        # Bugfix issue #1482: вместо `git rev-parse --short HEAD` используем
-        # `${GITHUB_SHA::7}` — это commit, который ТРИГГЕРНУЛ workflow run,
-        # неизменный на всём протяжении run и равный round-ветка HEAD в момент
-        # dispatch/call. Прежний подход брал локальный HEAD, который мог
-        # сместиться после `git pull --rebase` внутри scripts/ci/push-image-versions.sh
-        # → .image-versions.test указывал на несуществующий image, робот не
-        # обновлялся (доказательства в issue #1482 round-163 → stale-83d4064f).
-        run: |
-          DOCKER_TAG="${{ needs.prepare.outputs.docker_tag }}"
-          SHORT_SHA="${GITHUB_SHA::7}"
-          NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
-
-          # Tag and push SHA-immutable images to BOTH local registry and
-          # ghcr.io (issue #1503). deploy default is registry_source=github →
-          # без GHCR push develop-билды невидимы для деплоя, робот получает
-          # старые образы.
-          tag_and_push() {
-            local LOCAL_TAG="$1"
-            local GHCR_TAG="${LOCAL_TAG/${LOCAL_PREFIX}/${IMAGE_PREFIX}}"
-            local LOCAL_SHA="${LOCAL_TAG}-${SHORT_SHA}"
-            local GHCR_SHA="${GHCR_TAG}-${SHORT_SHA}"
-            docker tag "$LOCAL_TAG" "$LOCAL_SHA" && docker push "$LOCAL_SHA"
-            echo "✅ local  $LOCAL_SHA"
-            docker tag "$LOCAL_TAG" "$GHCR_SHA" && docker push "$GHCR_SHA"
-            echo "✅ ghcr.io $GHCR_SHA"
-          }
-
-          tag_and_push "${LOCAL_PREFIX}:robot-state-publisher-${ROS_DISTRO}-${DOCKER_TAG}"
-          tag_and_push "${LOCAL_PREFIX}:rtabmap-${ROS_DISTRO}-${DOCKER_TAG}"
-          tag_and_push "${LOCAL_PREFIX}:twist-mux-${ROS_DISTRO}-${DOCKER_TAG}"
-          tag_and_push "${LOCAL_PREFIX}:ros2-control-${ROS_DISTRO}-${DOCKER_TAG}"
-          tag_and_push "${LOCAL_PREFIX}:nav2-${ROS_DISTRO}-${DOCKER_TAG}"
-          tag_and_push "${LOCAL_PREFIX}:lslidar-${ROS_DISTRO}-${DOCKER_TAG}"
-          tag_and_push "${LOCAL_PREFIX}:perception-${ROS_DISTRO}-${DOCKER_TAG}"
-          # teleop excluded: still uses IMAGE_TAG in docker-compose
-
-          # Acceptance B (#1482): verify SHA-image is actually present in
-          # registry BEFORE writing it to .image-versions — иначе deploy
-          # тянет несуществующий тег, робот не обновляется.
-          verify_in_registry() {
-            local TAG="$1"
-            local REPO="krikz/rob_box"
-            local URL="http://${LOCAL_REGISTRY}/v2/${REPO}/manifests/${TAG}"
-            local HTTP_CODE
-            HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
-              -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
-              "$URL" || echo "000")
-            if [ "$HTTP_CODE" != "200" ]; then
-              echo "❌ Verify FAIL: ${TAG} missing in registry (HTTP ${HTTP_CODE})" >&2
-              return 1
-            fi
-            echo "✅ Verify OK: ${TAG} present in registry"
-            return 0
-          }
-
-          VERIFY_FAILED=0
-          for SVC_TAG in \
-            "robot-state-publisher-${ROS_DISTRO}-${NEW_TAG}" \
-            "rtabmap-${ROS_DISTRO}-${NEW_TAG}" \
-            "twist-mux-${ROS_DISTRO}-${NEW_TAG}" \
-            "ros2-control-${ROS_DISTRO}-${NEW_TAG}" \
-            "nav2-${ROS_DISTRO}-${NEW_TAG}" \
-            "lslidar-${ROS_DISTRO}-${NEW_TAG}" \
-            "perception-${ROS_DISTRO}-${NEW_TAG}"; do
-            if ! verify_in_registry "$SVC_TAG"; then
-              VERIFY_FAILED=1
-            fi
-          done
-          if [ "$VERIFY_FAILED" -eq 1 ]; then
-            echo "❌ Registry verify failed для одного или нескольких SHA-тегов" >&2
-            exit 1
-          fi
-
-          VERSIONS_FILE="docker/main/.image-versions.${DOCKER_TAG}"
-          if [ -f "$VERSIONS_FILE" ]; then
-            sed -i \
-              -e "s|^TWIST_MUX_TAG=.*|TWIST_MUX_TAG=${NEW_TAG}|" \
-              -e "s|^MICRO_ROS_AGENT_TAG=.*|MICRO_ROS_AGENT_TAG=${NEW_TAG}|" \
-              -e "s|^ROBOT_STATE_PUBLISHER_TAG=.*|ROBOT_STATE_PUBLISHER_TAG=${NEW_TAG}|" \
-              -e "s|^RTABMAP_TAG=.*|RTABMAP_TAG=${NEW_TAG}|" \
-              -e "s|^ROS2_CONTROL_TAG=.*|ROS2_CONTROL_TAG=${NEW_TAG}|" \
-              -e "s|^LSLIDAR_TAG=.*|LSLIDAR_TAG=${NEW_TAG}|" \
-              -e "s|^PERCEPTION_TAG=.*|PERCEPTION_TAG=${NEW_TAG}|" \
-              -e "s|^NAV2_TAG=.*|NAV2_TAG=${NEW_TAG}|" \
-              "$VERSIONS_FILE"
-
-            git config user.email "ci@rob-box.local"
-            git config user.name "Rob Box CI"
-            git add "$VERSIONS_FILE"
-            if ! git diff --cached --quiet; then
-              # 🔴 РЕВЕРТ #1244 (15.08, decision #1316): SHA-теги коммитим
-              # ПРЯМО в текущую ветку (develop) — ci/image-versions-* ветки
-              # НЕ работают (деплой при local не грузит .image-versions,
-              # тянет голые dev-теги → роботы получают старые образы).
-              #
-              # Issue #1388: race main↔vision — оба коммитят в одну ветку.
-              # Зовём scripts/ci/push-image-versions.sh: pull --rebase + push с retry
-              # и ФЕЙЛ при невосстановимой ошибке (раньше job просто молча терял коммит).
-              CURRENT_BRANCH="$(git branch --show-current)"
-              git commit -m "ci: main SHA tags → ${NEW_TAG} [skip ci]"
-              bash scripts/ci/push-image-versions.sh "$CURRENT_BRANCH" main
-            fi
-          else
-            echo "⚠️  $VERSIONS_FILE not found"
-          fi
+    # НЕ блокирует build summary — это best-effort триггер.
+    uses: ./.github/workflows/L-Update Image Versions.yml
+    with:
+      service: main
+      docker_tag: ${{ needs.prepare.outputs.docker_tag }}
+      source_sha: ${{ github.sha }}
+    secrets:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # Итоговая сводка
   summary:
