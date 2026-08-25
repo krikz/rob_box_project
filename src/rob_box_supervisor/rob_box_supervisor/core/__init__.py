@@ -1,6 +1,12 @@
-"""Avatar Supervisor core helpers (Phase 1 monitor, AV-6).
+"""Avatar Supervisor core helpers.
 
 Pure-Python building blocks that do NOT import rclpy:
+
+AV-3 (issue #1597) — state-machine of avatar modes
+(:class:`ModeManager`, :class:`Mode`, :class:`FSMConflictError`).
+
+AV-6 (issue #1600) — Phase 1 monitor helpers used by
+``supervisor_node.py``:
 
 - :class:`StateAggregator` — assembles ``/avatar/state`` from inputs
   (``/odom``, ``/device/snapshot``, ``/voice/dialogue/state``).
@@ -12,7 +18,18 @@ Living them in a dedicated sub-package keeps the ROS-dependent
 and the dead-man counter without spinning up ``rclpy``.
 """
 
+from rob_box_supervisor.core.fsm import (
+    ConflictError as FSMConflictError,
+    Mode,
+    ModeManager,
+)
 from .aggregator import StateAggregator
 from .dead_man import DeadManCounter
 
-__all__ = ["StateAggregator", "DeadManCounter"]
+__all__ = (
+    "FSMConflictError",
+    "Mode",
+    "ModeManager",
+    "StateAggregator",
+    "DeadManCounter",
+)
