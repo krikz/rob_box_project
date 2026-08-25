@@ -460,6 +460,7 @@ jobs:
             --load \
             --add-host=host.docker.internal:host-gateway \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            --build-arg="IMAGE_TAG=${{ needs.prepare.outputs.docker_tag }}" \
             --build-arg="SOURCE_HASH=${SOURCE_HASH}" \
             .
 
