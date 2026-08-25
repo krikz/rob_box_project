@@ -1937,10 +1937,17 @@ except Exception:
             continue
         fi
         # ADR-0022 extension (issue #1475): после merge в develop/main
-        # триггерим L-Build-All-Services, чтобы .image-versions.dev получил
-        # dev-<new-sha> теги. Non-fatal: build failure НЕ блокирует merge-gate
+        # триггерим L-Build-All-Services, чтобы .image-versions.prod получил
+        # prod-<new-sha> теги. Non-fatal: build failure НЕ блокирует merge-gate
         # (см. agent-flow-post-merge-build.sh).
-        if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ] && [ -f "${REPO_DIR}/scripts/agent_flow/agent-flow-post-merge-build.sh" ]; then
+        #
+        # Issue #1625 (Шифу 25.08): develop build больше не триггерим
+        # автоматически — develop-HEAD собирается вручную или push-триггером
+        # L-Build-All-Services.yml. main build ОБЯЗАТЕЛЕН (production safety).
+        # Двойная защита: merge-gate guard И post-merge-build.sh skip-блок.
+        if [ "$pr_base" = "$DEVELOP_BRANCH" ]; then
+            log "issue #${number}: skipping post-merge build for ${pr_base} (Шифу 25.08, issue #1625)"
+        elif [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ] && [ -f "${REPO_DIR}/scripts/agent_flow/agent-flow-post-merge-build.sh" ]; then
             if ! bash "${REPO_DIR}/scripts/agent_flow/agent-flow-post-merge-build.sh" "${pr_number}" "${pr_base}" 2>/dev/null; then
                 log "issue #${number}: WARNING post-merge build trigger failed (non-fatal, push-trigger should retry)"
             fi

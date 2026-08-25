@@ -172,8 +172,17 @@ async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     playvoice_mode = context.user_data.pop("playvoice_mode", False)
 
     if playvoice_mode:
-        # Mode B: Robot speaks the transcribed text
-        node.publish_tts(text)
+        # Mode B: Robot speaks the transcribed text.
+        # AV-10 (ADR-0028 §4.4): TTS идёт через supervisor voice_floor.
+        node.set_active_chat(chat_id)
+        result = node.publish_tts_with_floor(text)
+        if not result.granted:
+            held = result.held_by or "другим оператором"
+            await update.message.reply_text(
+                f"🚫 Голос удерживает {held}. "
+                "Дождитесь окончания текущего ответа."
+            )
+            return
         await update.message.reply_text(
             f"🎤 Распознано: _{text}_\n\n🗣 Робот произносит текст.",
             parse_mode="Markdown",
