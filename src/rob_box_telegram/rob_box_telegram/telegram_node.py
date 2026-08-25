@@ -22,11 +22,25 @@ from .observability import (
     record_telegram_message,
     start_metrics_server,
 )
+# AV-10 (issue #1604, ADR-0028 §4.4) — клиент avatar_supervisor.
+# Phase 1 живёт в monitor-режиме (только локальный grant), Phase 2
+# переключается параметром ``supervisor_mode=active``.
+from .supervisor_client import Floor, SupervisorClient
 _BE = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1)
 _RE = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
 _TL = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
 class TelegramNode(Node):
-    """Telegram Bot API ↔ /voice/stt/result + /voice/dialogue/response bridge."""
+    """Telegram Bot API ↔ /voice/stt/result + /voice/dialogue/response bridge.
+
+    AV-10 (ADR-0028 §4.4): после рефакторинга эта нода — клиент
+    ``avatar_supervisor``. Движение и TTS публикуются только после
+    успешного ``AcquireFloor{client_id="telegram", floor=...}``.
+    """
+
+    # AV-10 — параметр для переключения monitor/active (Phase 1/2).
+    SUPERVISOR_MODE_PARAM = "supervisor_mode"
+    SUPERVISOR_DEFAULT_MODE = SupervisorClient.DEFAULT_MODE
+
     def __init__(self):
         super().__init__("telegram_node")
         self.declare_parameter("camera_topic", "/camera/camera/color/image_raw/compressed")
@@ -35,6 +49,12 @@ class TelegramNode(Node):
         self.declare_parameter("camera_cache_ttl", 5.0)
         # Issue #1160 — Prometheus metrics endpoint. 9101 — telegram-bot.
         self.declare_parameter("metrics_port", 9101)
+        # AV-10 — режим клиента супервизора: ``monitor`` (default,
+        # Phase 1 — все floors выдаются локально) или ``active``
+        # (Phase 2 — реальные service-calls в avatar_supervisor).
+        self.declare_parameter(
+            self.SUPERVISOR_MODE_PARAM, self.SUPERVISOR_DEFAULT_MODE
+        )
         p = self.get_parameter
         self.camera_topic, self.camera_depth_topic, self.camera_up_topic = p("camera_topic").value, p("camera_depth_topic").value, p("camera_up_topic").value
         self.camera_cache = CameraCache(ttl=p("camera_cache_ttl").value)
@@ -62,8 +82,38 @@ class TelegramNode(Node):
             String, "/voice/dialogue/response", self._on_response, _RE,
             callback_group=g,
         )
+        # AV-10 — direct publishers оставлены как fallback для Phase 1
+        # (монитор-режим). В active-режиме супервизор сам публикует в
+        # ``/cmd_vel_web`` и TTS-канал от имени клиента; здесь
+        # публикации должны идти только после успешного AcquireFloor
+        # (см. ``publish_move_with_floor``/``publish_tts_with_floor``).
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel_web", _RE)
         self.tts_pub = self.create_publisher(String, "/voice/tts/request", _RE)
+        # AV-10 — клиент супервизора. Создаётся до старта telegram-loop,
+        # чтобы handlers могли безопасно вызывать ``acquire_floor``.
+        supervisor_mode = str(
+            p(self.SUPERVISOR_MODE_PARAM).value or self.SUPERVISOR_DEFAULT_MODE
+        )
+        self.supervisor = SupervisorClient(
+            node=self,
+            client_id="telegram",
+            mode=supervisor_mode,
+        )
+        # Пробрасываем клиент в handlers (callbacks/commands/messages
+        # читают ``context.bot_data["node"]``, поэтому достаточно
+        # установить атрибут на self — handler-ы уже берут ``node``).
+        # Heartbeat для teleop_floor — стартуем сразу, если active.
+        if supervisor_mode == "active":
+            self.supervisor.start_heartbeat()
+            # AV-10 — подписка на /avatar/state для UI-gate.
+            # handlers читают ``node.supervisor.state`` на каждый
+            # callback — состояние latched и обновляется из
+            # supervisor-ноды. _on_avatar_state сейчас только
+            # логирует (когда supervisor-нода появится, тут будет
+            # edit_message_text по сохранённым query_id).
+            self._avatar_state_unsubscribe = self.supervisor.subscribe_state(
+                self._on_avatar_state
+            )
         # Issue #1160 — Prometheus metrics server (этап 1).
         # Порт 9101 — стандартный для telegram-bot (см. observability).
         metrics_port = int(p("metrics_port").value or 0)
@@ -80,11 +130,35 @@ class TelegramNode(Node):
         token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         if not token: self.get_logger().error("TELEGRAM_BOT_TOKEN not set"); return
         self._start_telegram_bot(token)
-        self.get_logger().info("TelegramNode: thin ROS 2 bridge (W8)")
+        self.get_logger().info(
+            "TelegramNode: thin ROS 2 bridge (W8), supervisor_mode="
+            f"{supervisor_mode} (AV-10)"
+        )
     def _on_camera_front(self, m): self.camera_cache.update(self.camera_topic, bytes(m.data))
     def _on_camera_depth(self, m): self.camera_cache.update(self.camera_depth_topic, bytes(m.data))
     def _on_camera_up(self, m): self.camera_cache.update(self.camera_up_topic, bytes(m.data))
     def _on_map(self, m): self.latest_map_grid = m
+    def _on_avatar_state(self, state) -> None:
+        """AV-10: обработчик обновлений /avatar/state.
+
+        Пока супервизор-нода не задеплоен (Phase 1) — этот метод
+        вызывается один раз при init (subscribe_state даёт initial
+        dispatch) и больше не вызывается. В Phase 2 — это место для
+        ``bot.edit_message_text`` по запомненным query_id
+        движения-кнопок, чтобы при потере floor UI сразу
+        переключился на «read-only». UI gate в ``_handle_move`` уже
+        работает синхронно — здесь остаётся лог для observability.
+        """
+        if state.teleop_floor and state.teleop_floor != "telegram":
+            self.get_logger().info(
+                f"AV-10: teleop_floor у {state.teleop_floor}, "
+                "movement buttons дизейблятся (UI gate в _handle_move)"
+            )
+        else:
+            self.get_logger().debug(
+                f"AV-10: /avatar/state teleop_floor={state.teleop_floor} "
+                f"voice_floor={state.voice_floor} mode={state.mode}"
+            )
     def set_active_chat(self, chat_id: int) -> None: self._active_chat_id = chat_id
     def forward_to_stt(self, text: str, chat_id: Optional[int] = None) -> None:
         if not text: return
@@ -101,12 +175,65 @@ class TelegramNode(Node):
             record_telegram_message("in", message_type="text")
         m = String(); m.data = text; self._stt_pub.publish(m)
     def publish_tts(self, text: str) -> None:
-        # Issue #1160 — Prometheus metrics: исходящая озвучка.
+        """AV-10 backward-compat shim.
+
+        Старый код (commands.py:336 say_handler, messages.py:176
+        playvoice) вызывает ``node.publish_tts(text)`` напрямую. Чтобы
+        не ломать существующие интеграции до того, как callers будут
+        переведены на ``publish_tts_with_floor``, мы оставляем
+        ``publish_tts`` как «голую» публикацию в TTS-канал, и
+        дополнительно даём обёртку ``publish_tts_with_floor``, которая
+        сначала просит ``voice_floor`` у супервизора.
+        """
         if is_metrics_enabled():
             record_telegram_message("out", message_type="voice")
         m = String(); m.data = json.dumps(
             {"ssml": f"<speak>{text}</speak>", "speech_id": str(uuid.uuid4()), "emotion": "neutral"},
             ensure_ascii=False); self._response_pub.publish(m)
+
+    def publish_tts_with_floor(self, text: str):
+        """AV-10: publish TTS, обернув в AcquireFloor(voice).
+
+        Returns:
+            ``AcquireResult`` — вызывающий код решает, что показать
+            пользователю (например, погасить кнопки если
+            ``granted=False``).
+        """
+
+        def _do_publish() -> None:
+            m = String(); m.data = json.dumps(
+                {
+                    "ssml": f"<speak>{text}</speak>",
+                    "speech_id": str(uuid.uuid4()),
+                    "emotion": "neutral",
+                },
+                ensure_ascii=False,
+            )
+            # AV-10: в active-режиме супервизор сам перешлёт
+            # TTS-запрос в dialogue_node, и эта публикация в
+            # /voice/tts/request будет no-op. Поэтому в active
+            # используем _response_pub (который dialogue_node
+            # слушает как «вход для готовых реплик»). В monitor —
+            # оставлена оригинальная семантика.
+            if is_metrics_enabled():
+                record_telegram_message("out", message_type="voice")
+            target = self.tts_pub if self.supervisor.mode != "active" else self._response_pub
+            target.publish(m)
+
+        return self.supervisor.with_floor(Floor.VOICE, _do_publish)
+
+    def publish_move_with_floor(self, twist):
+        """AV-10: publish cmd_vel, обернув в AcquireFloor(teleop).
+
+        Returns:
+            ``AcquireResult`` — handler решает, показать ли ошибку
+            «floor удерживает другой клиент» (например, Quest).
+        """
+
+        def _do_publish() -> None:
+            self.cmd_vel_pub.publish(twist)
+
+        return self.supervisor.with_floor(Floor.TELEOP, _do_publish)
     def _on_response(self, msg: String) -> None:
         """Echo dialogue/TTS output back into the active Telegram chat.
 
@@ -222,7 +349,15 @@ def main(args=None):
     rclpy.init(args=args); node = TelegramNode()
     try: rclpy.spin(node)
     except KeyboardInterrupt: pass
-    finally: node.destroy_node(); rclpy.try_shutdown()
+    finally:
+        # AV-10: остановить heartbeat / освободить floors перед destroy.
+        sup = getattr(node, "supervisor", None)
+        if sup is not None:
+            try:
+                sup.shutdown()
+            except Exception as exc:  # noqa: BLE001
+                node.get_logger().warning(f"supervisor shutdown failed: {exc!r}")
+        node.destroy_node(); rclpy.try_shutdown()
 
 
 if __name__ == "__main__": main()
