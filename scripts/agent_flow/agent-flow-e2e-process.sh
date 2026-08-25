@@ -464,6 +464,23 @@ if [ "$_gh_auth_ok" -ne 1 ]; then
     log "gh auth not configured (или сеть недоступна после 3 попыток) — exit 1"; exit 1
 fi
 
+# --- G2.5: pre-flight rate-limit check (ретро 25.08 t_7766fe44) ---------------
+# Skip tick early если GraphQL-квота исчерпана (< 100 remaining). Иначе
+# collect_issues_json / gh_pr_state_by_head ходят в GraphQL → возвращают [] →
+# e2e-process делает silent 5-30 сек + логирует «no PR for <branch> — skip»
+# для 12+ голодных issues (наблюдение: tick 06:12 25.08, 12 issues скипнуты).
+# REST fallback уже добавлен в helpers, но лучше skip'нуть tick сразу и не
+# тратить CPU на пустые round'ы, чем оставить watchdog гонять по кругу.
+# Порог 100 подобран: triage(1m) + merge-gate(5m) + e2e(60m) ≈ 20 GraphQL/min,
+# tick каждые 60 сек съедает ~20 GraphQL → при remaining=200 можем рисковать,
+# при remaining<100 — лучше skip и подождать reset (≤60 мин).
+_rate="$(gh api rate_limit --jq '[.resources.graphql.remaining // 0, .resources.core.remaining // 0] | min' 2>/dev/null || echo 999)"
+if [ "${_rate:-999}" -lt 100 ] 2>/dev/null; then
+    _reset_iso="$(gh api rate_limit --jq '.resources.graphql.reset // ""' 2>/dev/null || echo '')"
+    log "GitHub rate-limit low (graphql/core remaining=${_rate}) — skip tick (GraphQL fallback exhausted, REST у helpers уже работает, но collect_issues_json/gh_pr_state_by_head ещё могут ходить в GraphQL). Reset: ${_reset_iso}"
+    exit 0
+fi
+
 # --- required env ------------------------------------------------------------
 : "${GH_REPO:?GH_REPO must be set (owner/repo)}"
 if [ -z "${REPO_DIR}" ] || [ ! -d "$REPO_DIR" ]; then
@@ -777,6 +794,187 @@ print(json.dumps(keep, ensure_ascii=False))
 '
 }
 
+# --- gh_pr_state_by_head (ретро 25.08 t_7766fe44) ----------------------------
+# Bug: `gh pr list --head X --json` идёт через GraphQL. При исчерпании
+# GraphQL-квоты (5000/h, расход из-за `gh issue list --label`, triage,
+# merge-gate и т.п.) — gh-list возвращает [] или error, e2e-process
+# интерпретирует это как «PR нет», пропускает issues с needs-e2e как
+# «no PR for <branch> — merge-gate likely stale — skip» → 12+ issues
+# голодают, PR (включая #1561/#1565) фактически найти невозможно.
+# Workaround: при пустом ответе gh-list — REST fallback через
+# /repos/$GH_REPO/pulls?head=<branch>&state=all (REST, идёт в core quota,
+# НЕ в graphql). Возвращает JSON-шейп GraphQL: [{number,state,headRefName}, ...].
+# Симметрично gh_list_issues_by_label (ретро 19.08 #1457).
+#
+# Использование:
+#   _json="$(gh_pr_state_by_head "$branch" "all")"          # OPEN/MERGED/CLOSED
+#   _state="$(printf '%s' "$_json" | jq -r 'if length>0 then .[0].state else "NONE" end' 2>/dev/null || echo NONE)"
+gh_pr_state_by_head() {
+    local _branch="$1" _state="${2:-all}"
+    local _json="" _api_json="" _owner="" _head_param=""
+    _json="$(gh pr list \
+        --repo "$GH_REPO" \
+        --state "$_state" \
+        --head "$_branch" \
+        --json number,state,headRefName 2>/dev/null || true)"
+    if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
+        printf '%s' "$_json"
+        return 0
+    fi
+    # Fallback: REST API. gh pr list --json GraphQL-режиме ломает фильтр (или
+    # падает с rate-limit error) на исчерпанной квоте. REST /pulls?head=X — надёжный.
+    # ВАЖНО: GitHub REST API для параметра `head` требует формат `OWNER:BRANCH`
+    # (не просто BRANCH). Без owner фильтр игнорируется → возвращаются ВСЕ PR'ы.
+    # _owner берём из GH_REPO (krikz/rob_box_project → krikz).
+    _owner="${GH_REPO%%/*}"
+    _head_param="${_owner}:${_branch}"
+    _api_json="$(gh api "repos/${GH_REPO}/pulls?head=${_head_param}&state=${_state}&per_page=10" 2>/dev/null || true)"
+    if [ -z "$_api_json" ] || [ "$_api_json" = "[]" ]; then
+        printf '[]'
+        return 0
+    fi
+    log "gh_pr_state_by_head(${_branch}): gh-list пустой, fallback на REST API /pulls?head=${_head_param}"
+    # Нормализуем REST-ответ к GraphQL-шейпу: {number,state,headRefName}.
+    # REST: state="open"|"closed"; head.ref="branch-name"; number=int.
+    # GraphQL: state="OPEN"|"MERGED"|"CLOSED"; headRefName=string; number=int.
+    # Если REST показывает state=open → нормализуем к OPEN, closed → CLOSED.
+    # MERGED через /pulls?head=...&state=all не различается от CLOSED; для
+    # вызывающих (e2e-process) MERGED vs CLOSED не критично — оба ≠ OPEN.
+    printf '%s' "$_api_json" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("[]"); sys.exit(0)
+if not isinstance(data, list):
+    print("[]"); sys.exit(0)
+out = []
+for it in data:
+    if not isinstance(it, dict):
+        continue
+    state = (it.get("state") or "").upper()
+    head = it.get("head") or {}
+    out.append({
+        "number": it.get("number"),
+        "state": state,
+        "headRefName": head.get("ref") or "",
+    })
+print(json.dumps(out, ensure_ascii=False))
+'
+}
+
+# --- gh_pr_open_by_title (ретро 25.08 t_7766fe44) ----------------------------
+# Bug: `gh pr list --search "N in:title"` тоже GraphQL. Тот же rate-limit
+# ломает follow-up PR search в основном цикле и pre-round guard'е.
+# Workaround: REST /search/issues?q=<N>+repo:<GH_REPO>+type:pr+is:open+in:title
+# (search resource, не graphql). При пустом ответе — fallback на /issues?...
+# (REST /issues возвращает и PRы, фильтруем по pull_request).
+# Возвращает headRefName первого CLEAN/MERGEABLE OPEN PR или пусто.
+gh_pr_open_by_title() {
+    local _n="$1"
+    local _json="" _api_json=""
+    _json="$(gh pr list --repo "$GH_REPO" --state open \
+        --search "${_n} in:title" \
+        --json number,headRefName,mergeStateStatus 2>/dev/null || true)"
+    if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
+        printf '%s' "$_json" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(""); sys.exit(0)
+m = [r for r in d if isinstance(r, dict) and r.get("mergeStateStatus") in ("CLEAN", "MERGEABLE")]
+if m:
+    print(str(m[0]["number"]) + "\t" + m[0]["headRefName"])
+else:
+    print("")
+'
+        return 0
+    fi
+    # Fallback 1: REST search (search quota, не graphql).
+    _api_json="$(gh api "search/issues?q=${_n}+repo:${GH_REPO}+type:pr+is:open+in:title&per_page=10" --jq '.items // []' 2>/dev/null || true)"
+    if [ -n "$_api_json" ] && [ "$_api_json" != "[]" ]; then
+        log "gh_pr_open_by_title(${_n}): gh-list пустой, fallback на REST /search/issues (search quota)"
+        # Нужно достать headRefName — search/issues возвращает PR'ы, но не
+        # head ref. Нужен второй запрос: для каждого номера gh api pulls/N.
+        # Делаем ОДИН запрос с per_page=10 — обычно хватает.
+        GH_REPO="$GH_REPO" printf '%s' "$_api_json" | GH_REPO="$GH_REPO" python3 -c '
+import json, sys, subprocess, os
+try:
+    items = json.load(sys.stdin)
+except Exception:
+    print(""); sys.exit(0)
+gh_repo = os.environ.get("GH_REPO", "")
+repo_url = "repos/" + gh_repo + "/pulls"
+for it in items[:5]:
+    n = it.get("number")
+    if not isinstance(n, int):
+        continue
+    try:
+        out = subprocess.check_output(
+            ["gh", "api", repo_url + "/" + str(n), "--jq", ".head.ref"],
+            stderr=subprocess.DEVNULL,
+            env=os.environ,
+            timeout=10,
+        )
+        ref = out.decode("utf-8", errors="replace").strip()
+        if ref:
+            print(str(n) + "\t" + ref)
+            sys.exit(0)
+    except Exception:
+        continue
+print("")
+'
+        return 0
+    fi
+    # Fallback 2: REST /issues с фильтром на pull_request (issues API
+    # возвращает и PRы, не тратит search quota). Затем по каждому — pulls/N.
+    _api_json="$(gh api "repos/${GH_REPO}/issues?state=open&per_page=50" 2>/dev/null || true)"
+    if [ -n "$_api_json" ] && [ "$_api_json" != "[]" ]; then
+        log "gh_pr_open_by_title(${_n}): REST search пустой, fallback на REST /issues?state=open (broad scan)"
+        GH_REPO="$GH_REPO" _n="$_n" printf '%s' "$_api_json" | GH_REPO="$GH_REPO" _n="$_n" python3 -c '
+import json, sys, subprocess, os
+try:
+    items = json.load(sys.stdin)
+except Exception:
+    print(""); sys.exit(0)
+n_target = os.environ.get("_n", "")
+gh_repo = os.environ.get("GH_REPO", "")
+repo_url = "repos/" + gh_repo + "/pulls"
+if not n_target or not gh_repo:
+    print(""); sys.exit(0)
+for it in items:
+    if not isinstance(it, dict):
+        continue
+    if not it.get("pull_request"):
+        continue
+    title = it.get("title") or ""
+    if n_target not in title:
+        continue
+    num = it.get("number")
+    if not isinstance(num, int):
+        continue
+    try:
+        out = subprocess.check_output(
+            ["gh", "api", repo_url + "/" + str(num), "--jq", ".head.ref"],
+            stderr=subprocess.DEVNULL,
+            env=os.environ,
+            timeout=10,
+        )
+        ref = out.decode("utf-8", errors="replace").strip()
+        if ref:
+            print(str(num) + "\t" + ref)
+            sys.exit(0)
+    except Exception:
+        continue
+print("")
+'
+        return 0
+    fi
+    log "gh_pr_open_by_title(${_n}): все REST fallback пустые — PR действительно нет"
+    printf ''
+}
+
 # --- get current open issue numbers with needs-e2e ---------------------------
 # collect_issues_json — свежий снимок очереди needs-e2e. Вызывается в начале
 # тика И ПОВТОРНО после post_round_sweep (ретро 13.08 t_7eab35a0): sweep может
@@ -822,12 +1020,69 @@ print(json.dumps(keep, ensure_ascii=False))')"
     # (merge-gate мог поставить needs-e2e только на PR, когда issue имел метку
     # e2e, а не needs-e2e — кейс PR #1375 / issue #1373). Для каждого PR-only
     # нормализуем запись и мерджим в issues_json.
+    # Ретро 25.08 t_7766fe44: REST fallback на /issues?labels=... (GraphQL
+    # rate-limit). REST /issues возвращает и PRы с меткой — фильтруем ниже.
     _prs_json="$(gh pr list \
         --repo "$GH_REPO" \
         --label "$NEEDS_E2E_LABEL" \
         --state open \
         --limit "$ISSUE_LIMIT" \
         --json number,title,body,labels,headRefName,baseRefName,mergeStateStatus 2>/dev/null || true)"
+    if [ -z "$_prs_json" ] || [ "$_prs_json" = "[]" ]; then
+        # Fallback: REST /issues?labels=X (core quota, не graphql). Возвращает
+        # {number,title,body,labels,pull_request:{url}}, фильтруем PR-only и
+        # нормализуем к {number,title,body,labels,headRefName,baseRefName,
+        # mergeStateStatus}. headRefName/baseRefName требуют ещё одного запроса
+        # /pulls/<n> для каждого — обходимо одной батч-выдачей per_page=20.
+        log "collect_issues_json: gh pr list --label ${NEEDS_E2E_LABEL} пустой, fallback на REST /issues?labels=${NEEDS_E2E_LABEL} (ретро t_7766fe44)"
+        _prs_json="$(gh api "repos/${GH_REPO}/issues?labels=${NEEDS_E2E_LABEL}&state=open&per_page=${ISSUE_LIMIT}" 2>/dev/null | python3 -c '
+import json, sys, subprocess, os
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("[]"); sys.exit(0)
+if not isinstance(data, list):
+    print("[]"); sys.exit(0)
+prs = []
+for it in data:
+    if not isinstance(it, dict):
+        continue
+    if not it.get("pull_request"):
+        continue  # только PRы
+    prs.append(it)
+if not prs:
+    print("[]"); sys.exit(0)
+# Теперь для каждого PR — headRefName/baseRefName/mergeStateStatus через /pulls/N
+gh_repo = os.environ.get("GH_REPO", "")
+repo_url = "repos/" + gh_repo + "/pulls"
+out = []
+for it in prs:
+    n = it.get("number")
+    if not isinstance(n, int):
+        continue
+    try:
+        resp = subprocess.check_output(
+            ["gh", "api", repo_url + "/" + str(n), "--jq", ".head.ref + \"|\" + .base.ref + \"|\" + (.mergeable // true | tostring)"],
+            stderr=subprocess.DEVNULL,
+            env=os.environ,
+            timeout=10,
+        )
+        parts = resp.decode("utf-8", errors="replace").strip().split("|", 2)
+        if len(parts) >= 2 and parts[0]:
+            out.append({
+                "number": n,
+                "title": it.get("title") or "",
+                "body": it.get("body") or "",
+                "labels": [{"name": (l.get("name") if isinstance(l, dict) else l)} for l in it.get("labels", [])],
+                "headRefName": parts[0],
+                "baseRefName": parts[1],
+                "mergeStateStatus": "MERGEABLE" if (len(parts) < 3 or parts[2] == "true") else "CONFLICTING",
+            })
+    except Exception:
+        continue
+print(json.dumps(out, ensure_ascii=False))
+' 2>/dev/null || echo '[]')"
+    fi
     if [ -n "$_prs_json" ] && [ "$_prs_json" != "[]" ]; then
         _merged="$(LEDE="${issues_json:-[]}" PRLEDE="${_prs_json}" python3 -c '
 import json, os, sys
@@ -1065,8 +1320,15 @@ except Exception:
         # добивает любые пропущенные случаи каждые 5 мин).
         _sw_title="$(gh issue view "$_sn" --repo "$GH_REPO" --json title --jq '.title' 2>/dev/null || echo '')"
         _sw_branch="$(compute_agent_branch "$_sn" "$_sw_title")"
-        _sw_pr="$(gh pr list --repo "$GH_REPO" --state all --head "$_sw_branch" \
-            --json number --jq 'if length>0 then .[0].number else "" end' 2>/dev/null || echo '')"
+        # Ретро 25.08 t_7766fe44: REST fallback через gh_pr_state_by_head.
+        _sw_pr="$(gh_pr_state_by_head "$_sw_branch" "all" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d[0].get("number", "") if d else "")
+except Exception:
+    print("")
+' 2>/dev/null || echo '')"
         if [ -n "$_sw_pr" ]; then
             # --- user-unlabel guard (ретро 18.08 t_de6bea69, PR #1398) -------
             # Шифу имеет ЭКСКЛЮЗИВНОЕ право решать, когда PR готов к ревью
@@ -1586,12 +1848,11 @@ compute_agent_branch() {  # $1=issue_number $2=title
 # compute_agent_branch/--head lookup даёт NONE и issue «невидим» для e2e.
 # Используем тот же поиск '<number> in:title', что и follow-up логика для
 # MERGED (ретро 10.08). Вывод: headRefName найденного PR или пусто.
+#
+# Ретро 25.08 t_7766fe44: реализация делегирована gh_pr_open_by_title (REST
+# fallback на исчерпании GraphQL-квоты).
 find_open_pr_by_issue() {  # $1=issue_number
-    local n="$1"
-    gh pr list --repo "$GH_REPO" --state open \
-        --search "${n} in:title" \
-        --json number,headRefName,mergeStateStatus \
-        --jq '[.[] | select(.mergeStateStatus == "CLEAN" or .mergeStateStatus == "MERGEABLE")][0] | "\(.number)\t\(.headRefName)"' 2>/dev/null || echo ""
+    gh_pr_open_by_title "$1"
 }
 
 # --- stale-PR detection (ретро 22.08 t_a2cd5753) ----------------------------
@@ -1764,21 +2025,29 @@ while IFS=$'\t' read -r _g_n _g_t _g_br_pre; do
     else
         _g_br="$_g_br_pre"
     fi
-    _g_st="$(gh pr list --repo "$GH_REPO" --state all --head "$_g_br" \
-        --json number,state --jq 'if length>0 then .[0].state else "NONE" end' 2>/dev/null || echo NONE)"
+    # Ретро 25.08 t_7766fe44: REST fallback через gh_pr_state_by_head (GraphQL
+    # rate-limit exhausted → 12 issues голодали, merge-gate пропускал PR).
+    _g_st="$(gh_pr_state_by_head "$_g_br" "all" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d[0].get("state", "NONE") if d else "NONE")
+except Exception:
+    print("NONE")
+' 2>/dev/null || echo NONE)"
     if [ "$_g_st" = "NONE" ]; then
         # Ретро 13.08 t_7eab35a0: ветка PR вне конвенции z-{agent}/<id>-<slug>
         # (напр. #1204 → PR #1206 на '1204-fixvoice-...') — ищем OPEN PR по
         # '<номер> in:title' перед тем, как объявить issue «без PR».
         _g_fb="$(find_open_pr_by_issue "$_g_n")"
         if [ -n "$_g_fb" ] && [ "$_g_fb" != "null" ] && [ "$_g_fb" != "[]" ]; then
-            _g_br="${_g_fb#*$'\t'}"
+            _g_br="${_g_fb#*$'	'}"
             _g_st="OPEN"
             log "pre-round guard: issue #${_g_n} PR найден по fallback '<number> in:title' (${_g_br}) — live candidate"
-        else
-            log "pre-round guard: issue #${_g_n} no PR (${_g_br}) — skip"
-            continue
         fi
+        # NB: НЕ continue если _g_fb пустой — старый код полагался на то, что
+        # guard лишь ОБОГАЩАЕТ данные, а NO-PR check происходит в основном цикле.
+        # Ретро t_7eab35a: иначе теряли кандидатов при gh-list=[] в моках/CLI bug.
     fi
     # Orphan (ретро 13.08 t_423453b1, #1160): PR MERGED, ветка удалена — e2e невозможен.
     if [ "$_g_st" = "MERGED" ] \
@@ -1787,20 +2056,26 @@ while IFS=$'\t' read -r _g_n _g_t _g_br_pre; do
         continue
     fi
     # Follow-up OPEN PR поверх MERGED (как в основном цикле, ретро 10.08).
+    # Ретро 25.08 t_7766fe44: gh_pr_open_by_title() с REST fallback.
     if [ "$_g_st" = "MERGED" ]; then
-        _g_fu="$(gh pr list --repo "$GH_REPO" --state open --search "${_g_n} in:title" \
-            --json number,mergeStateStatus \
-            --jq '[.[] | select(.mergeStateStatus == "CLEAN" or .mergeStateStatus == "MERGEABLE")][0] | "\(.number)\t\(.headRefName)"' 2>/dev/null || echo "")"
+        _g_fu="$(gh_pr_open_by_title "${_g_n}")"
         if [ -n "$_g_fu" ] && [ "$_g_fu" != "null" ]; then
-            _g_br="${_g_fu#*$'\t'}"
+            _g_br="${_g_fu#*$'	'}"
             _g_st="OPEN"
             log "pre-round guard: issue #${_g_n} follow-up OPEN PR (${_g_br}) — live"
         fi
     fi
     # Lint-кандидат не требует round (основной цикл обработает без merge).
     if [ "$_g_st" = "OPEN" ]; then
-        _g_pn="$(gh pr list --repo "$GH_REPO" --state all --head "$_g_br" \
-            --json number --jq 'if length>0 then .[0].number else "" end' 2>/dev/null || echo "")"
+        # Ретро 25.08 t_7766fe44: REST fallback через gh_pr_state_by_head.
+        _g_pn="$(gh_pr_state_by_head "$_g_br" "all" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d[0].get("number", "") if d else "")
+except Exception:
+    print("")
+' 2>/dev/null || echo "")"
         if [ -n "$_g_pn" ]; then
             _g_meta="$(gh pr view "$_g_pn" --repo "$GH_REPO" --json title,labels \
                 --jq '{title: .title, labels: ([.labels[].name] | join(","))}' 2>/dev/null || echo '{}')"
@@ -1828,8 +2103,15 @@ except Exception: pass' 2>/dev/null || true)"
     # Если PR tip отстаёт от develop HEAD более чем на E2E_STALE_BRANCH_THRESHOLD
     # коммитов → НЕ считаем кандидатом (round не создастся если все stale) +
     # идемпотентный issue-коммент с инструкцией rebase/merge develop.
-    _g_pr_num="$(gh pr list --repo "$GH_REPO" --state all --head "$_g_br" \
-        --json number --jq 'if length>0 then .[0].number else "" end' 2>/dev/null || echo "")"
+    # Ретро 25.08 t_7766fe44: REST fallback через gh_pr_state_by_head.
+    _g_pr_num="$(gh_pr_state_by_head "$_g_br" "all" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d[0].get("number", "") if d else "")
+except Exception:
+    print("")
+' 2>/dev/null || echo "")"
     if ! stale_branch_check "$_g_br" "${_g_pr_num:-}" "$_g_n"; then
         log "pre-round guard: issue #${_g_n} PR ${_g_br} stale (behind develop) — НЕ считаю live candidate (ретро 22.08 t_a2cd5753)"
         continue
@@ -1977,14 +2259,28 @@ while IFS=$'\t' read -r number title labels body source branch; do
     [ -n "$e2e_volume" ] && E2E_VOLUME="$e2e_volume"
 
     # Look up agent PR. Allow either OPEN (CI green per merge-gate) or MERGED.
-    pr_state="$(gh pr list --repo "$GH_REPO" --state all --head "$branch" \
-        --json number,state,headRefName --jq 'if length>0 then .[0].state else "NONE" end' 2>/dev/null || echo NONE)"
+    # Ретро 25.08 t_7766fe44: gh_pr_state_by_head() с REST fallback (GraphQL rate-limit
+    # exhausted → 12 issues голодали).
+    pr_state="$(gh_pr_state_by_head "$branch" "all" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d[0].get("state", "NONE") if d else "NONE")
+except Exception:
+    print("NONE")
+' 2>/dev/null || echo NONE)"
     # Процесс-фикс (09.08): fallback на ветку wt/<task_id> (ретро-карточки
     # без issue создают PR с веткой wt/, а не z-{agent}/<id>-<slug>).
     if [ "$pr_state" = "NONE" ] && [ -n "${e2e_task_id:-}" ]; then
         wt_branch="wt/${e2e_task_id}"
-        pr_state="$(gh pr list --repo "$GH_REPO" --state all --head "$wt_branch" \
-            --json number,state,headRefName --jq 'if length>0 then .[0].state else "NONE" end' 2>/dev/null || echo NONE)"
+        pr_state="$(gh_pr_state_by_head "$wt_branch" "all" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d[0].get("state", "NONE") if d else "NONE")
+except Exception:
+    print("NONE")
+' 2>/dev/null || echo NONE)"
         if [ "$pr_state" != "NONE" ]; then
             branch="$wt_branch"
             log "issue #${number}: PR найден по fallback-ветке ${wt_branch}"
@@ -1996,15 +2292,13 @@ while IFS=$'\t' read -r number title labels body source branch; do
     # #1082 на ветке z-backend/t_d431ca0b-*; #1098 поверх #1052). Раньше такой
     # follow-up навсегда выпадал из e2e-ротации. Теперь: если канонический PR
     # MERGED, ищем OPEN follow-up по "${number} in:title" (CLEAN/MERGEABLE)
-    # и тестируем ЕГО ветку.
+    # и тестируем ЕГО ветку. Ретро 25.08 t_7766fe44: REST fallback через
+    # gh_pr_open_by_title (GraphQL rate-limit).
     if [ "$pr_state" = "MERGED" ]; then
-        _followup="$(gh pr list --repo "$GH_REPO" --state open \
-            --search "${number} in:title" \
-            --json number,headRefName,mergeStateStatus \
-            --jq '[.[] | select(.mergeStateStatus == "CLEAN" or .mergeStateStatus == "MERGEABLE")][0] | "\(.number)\t\(.headRefName)"' 2>/dev/null || echo "")"
+        _followup="$(gh_pr_open_by_title "${number}")"
         if [ -n "$_followup" ] && [ "$_followup" != "null" ]; then
-            _followup_num="${_followup%%$'\t'*}"
-            _followup_head="${_followup#*$'\t'}"
+            _followup_num="${_followup%%$'	'*}"
+            _followup_head="${_followup#*$'	'}"
             if [ -n "$_followup_num" ] && [ "$_followup_num" != "null" ]; then
                 log "issue #${number}: follow-up OPEN PR #${_followup_num} (${_followup_head}) — тестируем вместо MERGED ${branch}"
                 branch="$_followup_head"
@@ -2043,8 +2337,15 @@ while IFS=$'\t' read -r number title labels body source branch; do
         log "issue #${number}: PR MERGED, ветка ${branch} удалена — e2e невозможен (orphan, Q22 user-merge) — skip (merge-gate снимет needs-e2e)"
         skipped=$((skipped+1)); continue
     fi
-    pr_number="$(gh pr list --repo "$GH_REPO" --state all --head "$branch" \
-        --json number --jq 'if length>0 then .[0].number else "" end' 2>/dev/null || echo "")"
+    # Ретро 25.08 t_7766fe44: REST fallback через gh_pr_state_by_head.
+    pr_number="$(gh_pr_state_by_head "$branch" "all" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d[0].get("number", "") if d else "")
+except Exception:
+    print("")
+' 2>/dev/null || echo "")"
 
     # Получаем labels/title PR для detect_pr_kind (lint vs functional).
     pr_meta="$(gh pr view "$pr_number" --repo "$GH_REPO" --json title,labels,deletions \
@@ -2168,8 +2469,20 @@ EOF
     # воркеру (merge-gate stale_branch_scan_all уже постит блок-коммент с
     # инструкцией «новая ветка z-{agent}/t_<card>-<slug>»).
     if [ -n "${pr_number:-}" ]; then
-        _ep_prev_merged="$(gh pr list --repo "$GH_REPO" --state merged --head "$branch" \
-            --json number --jq '.[0].number // ""' 2>/dev/null || true)"
+        # Ретро 25.08 t_7766fe44: REST fallback через gh_pr_state_by_head.
+        # NB: GitHub REST /pulls НЕ поддерживает state=merged (только open/closed/all).
+        # Для escape-hatch (поиск предыдущего MERGED PR) используем state=closed —
+        # MERGED PR'ы появляются там же, где и CLOSED. main loop проверяет
+        # pr_state=MERGED vs CLOSED через API /pulls/N/state или игнорирует.
+        # Реальное различение не нужно: важно что _ep_prev_merged != pr_number.
+        _ep_prev_merged="$(gh_pr_state_by_head "$branch" "closed" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d[0].get("number", "") if d else "")
+except Exception:
+    print("")
+' 2>/dev/null || true)"
         if [ -n "$_ep_prev_merged" ] && [ "$_ep_prev_merged" != "$pr_number" ]; then
             # Ретро 14.08 t_7d6b4b65 (escape-hatch): аддитивные функциональные
             # фиксы на влитой ветке (PR #1247: del=8, ветка уже в #1218) —
