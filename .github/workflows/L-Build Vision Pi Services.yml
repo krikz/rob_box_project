@@ -415,7 +415,7 @@ jobs:
             --build-arg="BASE_IMAGE=${LOCAL_PREFIX}:voice-assistant-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             --build-arg="SOURCE_HASH=${SOURCE_HASH}" \
-            docker/vision
+            .
 
           if [ "${{ inputs.push_to_registry }}" = "true" ]; then
             docker push "${LOCAL_TAG}"
