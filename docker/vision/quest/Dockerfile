@@ -94,11 +94,11 @@ COPY src/rob_box_quest/package.xml /ws/src/rob_box_quest/
 COPY src/rob_box_quest/setup.py   /ws/src/rob_box_quest/
 COPY src/rob_box_quest/setup.cfg  /ws/src/rob_box_quest/
 
-# Шаг 2: пустая resource/ — ament_index marker. Используем run вместо
-# COPY, потому что пустой source-каталог в новых docker (buildkit) не
-# создаёт target directory (raw-evidence: /ws/src/rob_box_quest/
-# отсутствовал после первого deploy — COPY пропустил).
-RUN mkdir -p /ws/src/rob_box_quest/resource
+# Шаг 2: ament_index marker. setup.py ищет ФАЙЛ 'resource/<package_name>'
+# (data_files copy), не директорию (raw-evidence #32900725289 step:25:
+# error: can't copy 'resource/rob_box_quest': doesn't exist or not a regular file).
+# Образец — src/rob_box_supervisor/resource/rob_box_supervisor (0 байт).
+COPY src/rob_box_quest/resource/rob_box_quest /ws/src/rob_box_quest/resource/rob_box_quest
 
 # Шаг 3: исходный код Python (самый горячий слой, последний)
 COPY src/rob_box_quest/rob_box_quest /ws/src/rob_box_quest/rob_box_quest
