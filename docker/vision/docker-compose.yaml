@@ -295,6 +295,61 @@ services:
     labels:
       logging: "promtail"
 
+  # ============ Meta Quest WebXR-консоль (Phase 1.6, ADR-0027) ============
+  # Лёгкий лёгкий сервис (caddy:2-alpine + aiohttp): статика WebXR-клиента +
+  # reverse_proxy на rob_box_quest. Self-signed TLS, без certbot.
+  #
+  # Build context: docker/vision/quest/Dockerfile — multi-stage:
+  #   node:20-alpine (Vite build) → caddy:2-alpine (runtime + pip aiohttp).
+  # Не использует voice-assistant image (нет тяги pytorch/Renardo, ~10GB).
+  #
+  # Зависимость: webxr_client/ (Phase 1.5) должен быть merged в текущую
+  # ветку ДО сборки образа. Если его нет — COPY в Dockerfile упадёт
+  # (явная ошибка зависимости, не silent degradation).
+  quest:
+    # Tag tracked in docker/vision/.image-versions.{env} — updated by CI
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:quest-${ROS_DISTRO:-humble}-${QUEST_TAG:-${IMAGE_TAG}}
+    container_name: rob-box-quest
+    network_mode: host
+    build:
+      context: .
+      dockerfile: docker/vision/quest/Dockerfile
+    environment:
+      - ROS_DOMAIN_ID=0
+      - ROS_DISTRO=humble
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
+      - PYTHONUNBUFFERED=1
+      - QUEST_HOST=${QUEST_HOST:-quest.rob_box.local}
+      - QUEST_IP=${QUEST_IP:-10.1.1.11}
+      - CERT_DAYS=${QUEST_CERT_DAYS:-365}
+    volumes:
+      # certs persist between restarts; монтируем именованный путь,
+      # чтобы self-signed не пересоздавался на каждом redeploy
+      - quest-certs:/certs
+      # Конфиги Zenoh + scripts (DOCKER_STANDARDS: нет COPY config/scripts)
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
+      - ./scripts/quest:/scripts:ro
+    command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_quest.sh"]
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      # pgrep проверяет оба ключевых процесса — Caddy + quest_node.
+      # Если один упал, healthcheck fail → compose restart.
+      test: ["CMD-SHELL", "pgrep -f 'caddy run' >/dev/null && pgrep -f 'ros2 run rob_box_quest' >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    labels:
+      logging: "promtail"
+
   # ============ Telegram Bot ============
   # Операторский интерфейс через Telegram
   # Управление роботом с телефона: фото, голос, движение, LLM чат
@@ -412,3 +467,7 @@ volumes:
   # and supercollider (scsynth reads them). Without this, scsynth can't find SynthDefs by name
   # → "bassguitar.scsyndef could not be opened" + negative node IDs (issue 986).
   sc_synthdefs:
+  # Self-signed TLS-сертификат для rob_box_quest (Phase 1.6, ADR-0027 §4.1).
+  # Без named-volume cert пересоздавался бы при каждом redeploy → пришлось
+  # бы заново импортировать его в Meta Quest.
+  quest-certs:
