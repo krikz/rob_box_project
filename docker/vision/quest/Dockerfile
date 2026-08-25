@@ -130,4 +130,11 @@ RUN mkdir -p /certs
 
 EXPOSE 8443
 
-ENTRYPOINT ["/scripts/start_quest.sh"]
+# ENTRYPOINT намеренно НЕ устанавливаем. compose.yaml даёт:
+#   command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash",
+#             "/scripts/start_quest.sh"]
+# Docker правила: exec-form ENTRYPOINT делает его аргументами к command
+# (т.е. start_quest.sh /ros_scripts/... — args игнорятся). Без ENTRYPOINT
+# command работает напрямую: ros_with_namespace.sh → bash → start_quest.sh.
+# Raw-evidence: Vision Pi #32900725289+ logs показали только start_quest.sh
+# echo без единого "Robot ID:" от ros_with_namespace.sh.
