@@ -215,6 +215,45 @@ class TestAvatarSupervisorDoesNotMutateExternalState(unittest.TestCase):
                 f"Phase 1 monitor must NOT publish to /dialogue/* (got {topic})",
             )
 
+    def test_log_startup_diagnostics_uses_single_msg_arg(self) -> None:
+        """Регресс #1644: ``_log.info`` должен получать ОДИН строковый msg.
+
+        rclpy ``RcutilsLogger.info(msg, *args)`` принимает ``*args`` для
+        ``%``-форматирования msg, а не как самостоятельные поля. Старый
+        вызов ``info(fmt, mode, zenoh, msgpack)`` (3 args) ломал рантайм
+        в проде: ``TypeError: RcutilsLogger.info() takes 2 positional
+        arguments but 5 were given`` (run #32892615440 на Vision Pi).
+
+        Тест проверяет инвариант: при вызове diagnostics info() получает
+        ровно одну позиционную строку-msg, без format-args.
+        """
+        # Сбрасываем историю вызовов MagicMock-логгера, чтобы тест не зависел
+        # от того, что conftest уже мог что-то залогировать при инициализации.
+        self.node._log.reset_mock()
+        self.node._log_startup_diagnostics()
+        self.assertTrue(self.node._log.info.called, "info() должен быть вызван")
+        call = self.node._log.info.call_args
+        # Ровно один позиционный аргумент — итоговая f-string.
+        self.assertEqual(
+            len(call.args),
+            1,
+            f"info() должен получить 1 positional arg (msg), got {call.args!r}",
+        )
+        msg = call.args[0]
+        self.assertIsInstance(msg, str)
+        # Сообщение содержит ключевые поля (mode/zenoh/msgpack), которые
+        # раньше передавались как отдельные format-args.
+        self.assertIn("avatar_supervisor started", msg)
+        self.assertIn(f"mode={self.node._mode}", msg)
+        self.assertIn("msgpack=", msg)
+        # Никаких kwargs %-форматирования быть не должно (kwargs в rclpy
+        # info() не поддерживаются и упадут так же, как и >1 args).
+        self.assertEqual(
+            call.kwargs,
+            {},
+            f"info() не должен получать kwargs, got {call.kwargs!r}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
