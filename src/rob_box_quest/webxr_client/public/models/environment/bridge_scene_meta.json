@@ -278,25 +278,25 @@
     },
     {
       "name": "bridge_walls.glb",
-      "size": 24576,
+      "size": 24608,
       "budget": 184320,
       "ok": true
     },
     {
       "name": "bridge_props.glb",
-      "size": 53900,
+      "size": 53744,
       "budget": 256000,
       "ok": true
     },
     {
       "name": "bridge_nav.glb",
-      "size": 12288,
+      "size": 12212,
       "budget": 30720,
       "ok": true
     },
     {
       "name": "bridge_occluders.glb",
-      "size": 6004,
+      "size": 6000,
       "budget": 20480,
       "ok": true
     }

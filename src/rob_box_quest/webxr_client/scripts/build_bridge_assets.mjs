@@ -559,6 +559,14 @@ async function exportGroupToGLB(group, outputPath) {
   const meshList = [];
   group.traverse((o) => { if (o.isMesh) meshList.push(o); });
 
+  // КРИТИЧНО: перед запеканием world-трансформа надо явно обновить
+  // matrixWorld всей иерархии. Без этого mesh.matrixWorld — identity
+  // (нода не рендерилась), и `geom.applyMatrix4(mesh.matrixWorld)` теряет
+  // позиции wall/props (они коллапсируют в origin — «стена сквозь
+  // спавн-точку»). Floor не страдал, т.к. его позиции запечены в
+  // геометрию через geometry.translate().
+  group.updateMatrixWorld(true);
+
   // Уникальные материалы
   const matMap = new Map();
   for (const m of meshList) {
