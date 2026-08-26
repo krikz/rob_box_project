@@ -15,6 +15,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const pinInput = findEl<HTMLInputElement>("pin-input");
   const pinError = findEl<HTMLParagraphElement>("pin-error");
   const statusEl = findEl<HTMLDivElement>("status");
+  const voiceIndicatorEl = findEl<HTMLDivElement>("voice-indicator");
 
   bootstrap({
     canvas,
@@ -23,6 +24,7 @@ window.addEventListener("DOMContentLoaded", () => {
     pinInput,
     pinError,
     statusEl,
+    voiceIndicatorEl,
     pin: ""
   });
 });

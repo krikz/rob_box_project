@@ -68,6 +68,27 @@ body {
   border-color: var(--danger);
 }
 
+.voice-indicator {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.voice-indicator--offline {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
 .panel-info {
   position: absolute;
   bottom: 16px;
