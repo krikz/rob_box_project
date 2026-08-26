@@ -13,7 +13,22 @@
 // новой точкой, оттуда берём x/z.
 
 import * as THREE from "three";
-import type { PanelManager, PanelId, SnapZone } from "./panel_manager";
+import {
+  type PanelManager,
+  type PanelId,
+  type SnapZone,
+  PANEL_USERDATA_KEY,
+  PANEL_USERDATA_IS_HANDLE_KEY,
+  PANEL_USERDATA_HANDLE_CORNER_KEY
+} from "./panel_manager";
+
+// Re-export для удобства тестов и потребителей: ключи userData, по которым
+// controller ищет panels и resize-handles, объявлены в panel_manager.
+export {
+  PANEL_USERDATA_KEY,
+  PANEL_USERDATA_IS_HANDLE_KEY,
+  PANEL_USERDATA_HANDLE_CORNER_KEY
+};
 
 export interface DragStartEvent {
   id: PanelId;
@@ -46,11 +61,6 @@ export interface DragControllerOptions {
   onMove?: (e: DragMoveEvent) => void;
   onEnd?: (e: DragEndEvent) => void;
 }
-
-/** Минимальный userData, который должны выставлять panels. */
-export const PANEL_USERDATA = "panelId";
-export const HANDLE_USERDATA_IS_HANDLE = "isHandle";
-export const HANDLE_USERDATA_CORNER = "handleCorner";
 
 /** Получить точку на плоскости пола из raycaster + NDC. */
 export function raycastToFloor(
@@ -99,7 +109,7 @@ export class PanelDragController {
     const hits = this.opts.raycaster.intersectObjects(this.intersectTargets, false);
     const hit = hits[0];
     if (!hit) return;
-    const panelId = (hit.object.userData?.[PANEL_USERDATA] as string | undefined) ?? null;
+    const panelId = (hit.object.userData?.[PANEL_USERDATA_KEY] as string | undefined) ?? null;
     if (!panelId) return;
     // Защита: только существующие panels.
     if (!this.opts.manager.get(panelId)) return;
@@ -197,10 +207,10 @@ export class PanelResizeHandles {
     const hit = hits[0];
     if (!hit) return;
     const ud = hit.object.userData ?? {};
-    if (!ud[HANDLE_USERDATA_IS_HANDLE]) return;
-    const panelId = ud[PANEL_USERDATA] as string | undefined;
+    if (!ud[PANEL_USERDATA_IS_HANDLE_KEY]) return;
+    const panelId = ud[PANEL_USERDATA_KEY] as string | undefined;
     if (!panelId) return;
-    const corner = (ud[HANDLE_USERDATA_CORNER] as "tl" | "tr" | "bl" | "br" | undefined) ?? "br";
+    const corner = (ud[PANEL_USERDATA_HANDLE_CORNER_KEY] as "tl" | "tr" | "bl" | "br" | undefined) ?? "br";
     const panel = this.opts.manager.get(panelId);
     if (!panel) return;
     this.active = {

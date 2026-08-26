@@ -11,9 +11,9 @@ import * as THREE from "three";
 import {
   PanelDragController,
   PanelResizeHandles,
-  PANEL_USERDATA,
-  HANDLE_USERDATA_IS_HANDLE,
-  HANDLE_USERDATA_CORNER,
+  PANEL_USERDATA_KEY,
+  PANEL_USERDATA_IS_HANDLE_KEY,
+  PANEL_USERDATA_HANDLE_CORNER_KEY,
   type DragStartEvent,
   type DragEndEvent
 } from "../src/scene/panel_drag_controller";
@@ -54,7 +54,7 @@ function makeRaycaster(): FakeRay {
 /** Fake panel-mesh с userData.panelId. */
 function makePanelMesh(id: string): THREE.Object3D {
   const obj = new THREE.Object3D();
-  obj.userData = { [PANEL_USERDATA]: id };
+  obj.userData = { [PANEL_USERDATA_KEY]: id };
   return obj;
 }
 
@@ -62,9 +62,9 @@ function makePanelMesh(id: string): THREE.Object3D {
 function makeHandleMesh(id: string, corner: "tl" | "tr" | "bl" | "br"): THREE.Object3D {
   const obj = new THREE.Object3D();
   obj.userData = {
-    [PANEL_USERDATA]: id,
-    [HANDLE_USERDATA_IS_HANDLE]: true,
-    [HANDLE_USERDATA_CORNER]: corner
+    [PANEL_USERDATA_KEY]: id,
+    [PANEL_USERDATA_IS_HANDLE_KEY]: true,
+    [PANEL_USERDATA_HANDLE_CORNER_KEY]: corner
   };
   return obj;
 }
@@ -243,7 +243,11 @@ describe("PanelResizeHandles", () => {
     resizeController.setIntersectTargets(meshes);
 
     // hit на правый-нижний handle (последний добавлен в meshes)
-    const handleMesh = meshes.find((m) => m.userData[HANDLE_USERDATA_CORNER] === "br" && m.userData[PANEL_USERDATA] === id);
+    const handleMesh = meshes.find(
+      (m) =>
+        m.userData[PANEL_USERDATA_HANDLE_CORNER_KEY] === "br" &&
+        m.userData[PANEL_USERDATA_KEY] === id
+    );
     expect(handleMesh).toBeDefined();
     ray.currentHit = {
       object: handleMesh!,
@@ -267,7 +271,7 @@ describe("PanelResizeHandles", () => {
     });
     resizeController.setIntersectTargets(meshes);
 
-    const panelMesh = meshes.find((m) => !m.userData[HANDLE_USERDATA_IS_HANDLE] && m.userData[PANEL_USERDATA] === id);
+    const panelMesh = meshes.find((m) => !m.userData[PANEL_USERDATA_IS_HANDLE_KEY] && m.userData[PANEL_USERDATA_KEY] === id);
     ray.currentHit = {
       object: panelMesh!,
       point: new THREE.Vector3(0, 0, -2)
@@ -287,7 +291,11 @@ describe("PanelResizeHandles", () => {
     });
     resizeController.setIntersectTargets(meshes);
 
-    const handleMesh = meshes.find((m) => m.userData[HANDLE_USERDATA_CORNER] === "br" && m.userData[PANEL_USERDATA] === id)!;
+    const handleMesh = meshes.find(
+      (m) =>
+        m.userData[PANEL_USERDATA_HANDLE_CORNER_KEY] === "br" &&
+        m.userData[PANEL_USERDATA_KEY] === id
+    )!;
     ray.currentHit = { object: handleMesh, point: new THREE.Vector3(0.6, 0, -2) };
     domEl.dispatchEvent(makePointerEvent(100, 100));
     expect(resizeController.isActive()).toBe(true);
@@ -314,7 +322,11 @@ describe("PanelResizeHandles", () => {
     });
     resizeController.setIntersectTargets(meshes);
 
-    const handleMesh = meshes.find((m) => m.userData[HANDLE_USERDATA_CORNER] === "br" && m.userData[PANEL_USERDATA] === id)!;
+    const handleMesh = meshes.find(
+      (m) =>
+        m.userData[PANEL_USERDATA_HANDLE_CORNER_KEY] === "br" &&
+        m.userData[PANEL_USERDATA_KEY] === id
+    )!;
     ray.currentHit = { object: handleMesh, point: new THREE.Vector3(0.6, 0, -2) };
     domEl.dispatchEvent(makePointerEvent(100, 100));
     domEl.dispatchEvent(pe("pointerup", 0, 0, 0));
