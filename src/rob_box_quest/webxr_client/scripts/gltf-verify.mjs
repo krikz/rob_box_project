@@ -12,11 +12,10 @@
 //        - KHR_texture_basisu                (textures, Basis / KTX2)
 //   2. Per-asset size budget (matches ADR-0032 §3.2):
 //        - environment .glb ≤ 2 MB
-//        - avatar      .glb ≤ 500 KB
 //        - panel       .glb ≤ 150 KB
 //        - texture     .ktx2 ≤ 5 MB
 //        - hdr env     .ktx2 ≤ 600 KB
-//      (category inferred from path: "environment/", "avatar/", "panel/",
+//      (category inferred from path: "environment/", "panel/",
 //       "texture/", "hdr/". Anything else falls under "environment" budget
 //       as the loosest limit — be explicit if you need tighter control.)
 //
@@ -56,7 +55,6 @@ const WARN_EXTENSIONS = ["KHR_texture_basisu"];
 // Categories not listed default to the strictest "panel" budget to fail loud.
 const SIZE_BUDGETS_BYTES = {
   environment: 2 * 1024 * 1024,    // ≤ 2 MB
-  avatar: 500 * 1024,               // ≤ 500 KB
   panel: 150 * 1024,                // ≤ 150 KB
   texture: 5 * 1024 * 1024,         // ≤ 5 MB
   hdr: 600 * 1024,                  // ≤ 600 KB
@@ -113,7 +111,7 @@ async function verifyFile(io, absPath, inputDir) {
     );
   } else if (category === null) {
     warnings.push(
-      `path "${relative(inputDir, absPath)}" has no recognised category (environment/avatar/panel/texture/hdr); applied default ${fmtBytes(DEFAULT_BUDGET)}`
+      `path "${relative(inputDir, absPath)}" has no recognised category (environment/panel/texture/hdr); applied default ${fmtBytes(DEFAULT_BUDGET)}`
     );
   }
 

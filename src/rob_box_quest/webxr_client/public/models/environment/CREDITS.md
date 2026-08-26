@@ -19,8 +19,8 @@ Raw glTF source files MUST NOT be committed — see `../README.md` and
 
 ## Captain Bridge environment (Phase 2.1, kanban t_0bd54b80, issue #1677)
 
-The Captain Bridge is the immersive "space bridge" room that hosts the
-avatar (Phase 2.x) + hand-tracking + UI panels. Five committed `.glb`
+The Captain Bridge is the immersive "space bridge" room that hosts
+hand-tracking + UI panels. Five committed `.glb`
 assets live under `public/models/environment/` and a single HDR for IBL
 under `public/models/environment/hdr/`. All assets are CC0.
 
@@ -97,14 +97,7 @@ safe to walk in room-scale VR. Run-time: read `nav_points` from the
 JSON, walk their AABBs; treat points tagged `kind: "entry"` as
 explicit teleport anchors (back / front of the room).
 
-## Avatar / panel assets
-
-See `public/models/avatar/CREDITS.md` (Phase 2.1, t_1fa6e505) when that
-card lands. CC0 sources planned:
-
-- Quaternius Ultimate Animated Character Pack (CC0) — avatar base.
-- Poly Haven HDRIs (CC0) — IBL environment maps (already used by
-  the Bridge scene as `bridge_env_1k.hdr`).
+## Adding non-CC0 assets
 
 When a non-CC0 source is added (e.g. CC-BY), append a row with author,
 license, and source URL — never silently include a third-party asset.

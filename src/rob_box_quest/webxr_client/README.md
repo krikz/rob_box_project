@@ -18,7 +18,7 @@ are forbidden in the tree — the CI guard `npm run gltf:verify` rejects any
 `.glb` that lacks `KHR_draco_mesh_compression` + `EXT_meshopt_compression`.
 
 Why: per ADR-0032 §3.2 we have hard size budgets (environment ≤ 2 MB,
-avatar ≤ 500 KB, panel ≤ 150 KB). Uncompressed glTF bloats past these
+panel ≤ 150 KB). Uncompressed glTF bloats past these
 budgets and forces 3G/Meta-Quest bandwidth choices we'd rather not make.
 
 ### Tooling
@@ -49,7 +49,6 @@ Driven by the first path segment under `public/models/`:
 | Category       | Budget  | Example                         |
 | -------------- | ------- | ------------------------------- |
 | `environment/` | ≤ 2 MB  | `public/models/environment/...` |
-| `avatar/`      | ≤ 500 KB| `public/models/avatar/...`      |
 | `panel/`       | ≤ 150 KB| `public/models/panel/...`       |
 | `texture/`     | ≤ 5 MB  | `public/models/texture/...`     |
 | `hdr/`         | ≤ 600 KB| `public/models/hdr/...`         |
@@ -79,8 +78,8 @@ the exception.
 ## Captain Bridge environment (Phase 2.1, kanban t_0bd54b80)
 
 Five `.glb` files + one HDR live under `public/models/environment/`,
-representing the Captain Bridge scene that hosts the avatar (Phase 2.x) +
-hand-tracking + UI panels.
+representing the Captain Bridge scene that hosts hand-tracking + UI
+panels.
 
 | File                          | Optimized size | Purpose                                                                |
 | ----------------------------- | -------------- | ---------------------------------------------------------------------- |
