@@ -93,7 +93,7 @@ fi
 # Python 3 (with sqlite3) without depending on the sqlite3 CLI.
 python3 - "$HERMES_HOME" "$KANBAN_BOARDS_DIR" "$HEARTBEAT_STALE_SECONDS" "$TELEGRAM_STUCK_MINUTES" "$PROVIDER_ACTIONS_FILE" \
     <<'PYEOF'
-import os, sys, glob, subprocess, time, sqlite3
+import os, sys, glob, subprocess, time, sqlite3, json
 from datetime import datetime
 
 hermes_home = sys.argv[1]
@@ -249,6 +249,26 @@ for db in sorted(glob.glob(f"{boards_dir}/*/kanban.db")):
                     "gave_up", "protocol_violation", "crashed", "rate_limited",
                 ) and providers_alive:
                     provider_actions.append(f"unblock|{board}|{task_id}")
+                elif last_ev and last_ev[0] == "blocked" and providers_alive:
+                    # Edge case (t_e4bef56b): карточка заблокирована самим
+                    # watchdog-provider-quick.sh с kind=capability (provider
+                    # exhausted, 402/429/401). После восстановления провайдеров
+                    # recovery-волна dispatcher-блоков не покрывает (см. выше —
+                    # те блоки ставятся dispatcher'ом, а не watchdog'ом).
+                    # Парсим payload: hermes_cli/kanban_db.py:block_task пишет
+                    # {"reason": ..., "kind": <kind>, "recurrences": N}.
+                    # Гард: трогаем ТОЛЬКО auto-block от watchdog (kind=capability
+                    # в payload). Ручной блок юзера (needs_input/dependency/
+                    # transient) НЕ трогаем — там решение за Шифой.
+                    payload_kind = None
+                    raw_payload = last_ev[1]
+                    if raw_payload:
+                        try:
+                            payload_kind = json.loads(raw_payload).get("kind")
+                        except (ValueError, TypeError):
+                            payload_kind = None
+                    if payload_kind == "capability":
+                        provider_actions.append(f"unblock|{board}|{task_id}")
             elif status in ("running", "ready"):
                 # Воркер умер с 402/429 в логе (running с мёртвым pid) или
                 # карточка готова к спавну, но провайдер мёртв → сразу
