@@ -64,6 +64,7 @@
 | `0x31` | `ACQUIRE_FLOOR` | client → supervisor | msgpack `{client_id, floor: "teleop"\|"voice"}` |
 | `0x32` | `RELEASE_FLOOR` | client → supervisor | msgpack `{client_id, floor: "teleop"\|"voice"}` |
 | `0x33` | `STATE_UPDATE` | supervisor → client | msgpack `{state: <packed AvatarState>}` — публикуется на каждое изменение FSM/floor-ов + 1 Hz keep-alive |
+| `0x40` | `TELEMETRY_PERF` (binary) | client → server | msgpack `{fps_mean, fps_p99, gpu_ms, vram_mb, wss_latency_ms, resolution_scale, stale_frames, thermal_level, battery_pct, source, session_id, ts_ms, seq}` — слайд-window 1 Hz агрегаты от Quest-клиента (Phase 2.2, ADR-0032 §3.5). Сервер логирует в `/quest/perf` и опционально в sqlite. |
 
 **Handshake:**
 
@@ -276,11 +277,56 @@ JSON-обёртка нужна для admin-панели и тестовых к�
 { "type": "admin_logs_end",   "service": "dialogue_node", "ts_ms": 1234567890 }
 { "type": "ping",           "ts_ms": 1234567890, "nonce": "..." }   // см. §7
 { "type": "pong",           "ts_ms": 1234567890, "nonce": "..." }
+{ "type": "telemetry_perf", "ts_ms": 1234567890, "seq": 12345, "source": "webxr", "session_id": "...",
+   "fps_mean": 89.2, "fps_p99": 73.1, "frame_time_p99_ms": 13.7,
+   "gpu_ms": 6.8, "vram_mb": 84.2, "wss_latency_ms": 23,
+   "resolution_scale": 1.0, "stale_frames": 0,
+   "thermal_level": 1, "battery_pct": 78 }   // см. §6.1, ADR-0032 §3.5
 ```
 
 `robot_alert` codes (Phase 1): `BATTERY_LOW (<20%)`, `WIFI_WEAK (<-75 dBm)`,
 `ROBOT_STUCK (3 с нет cmd_vel)`, `OVER_TEMP`. Phase 3 — `KIDNAPPED` (twist_mux
 рапорт о внезапном отсутствии contact с роботом), `LIDAR_TIMEOUT`.
+
+### 6.1. `telemetry_perf` event (Phase 2.2, ADR-0032 §3.5)
+
+Quest-клиент собирает метрики производительности WebXR-сессии и шлёт
+их серверу с фиксированной частотой **1 Hz** через `JSON_EVENT{type:
+"telemetry_perf", ...}`. Сервер (`rob_box_quest`) републишит payload
+в ROS2 топик `/quest/perf` (msgpack → JSON bridge) и пишет в
+`/var/log/quest_perf/$(date +%Y-%m-%d).jsonl` для последующего
+визуализирования через Grafana (Phase 3+).
+
+| Поле | Тип | Источник | Комментарий |
+|---|---|---|---|
+| `ts_ms` | int | client clock | wall time отправки (с момента epoch) |
+| `seq` | int | monotonic | монотонная последовательность для дедупа |
+| `source` | `"desktop"` \| `"webxr"` | client | помогает фильтровать на сервере |
+| `session_id` | string | WELCOME | для cross-reference с auth-логами |
+| `fps_mean` | float | sliding window 1 с | среднее FPS; **отсутствует** если < 5 кадров в окне |
+| `fps_p99` | float | sliding window 1 с | 99-й перцентиль FPS (= 1000 / frame_time_p99_ms) |
+| `frame_time_p99_ms` | float | sliding window 1 с | 99-й перцентиль frame time (мс) |
+| `gpu_ms` | float | `EXT_disjoint_timer_query_webgl2` | среднее GPU time за последние 16 sample'ов; **отсутствует** если расширение недоступно (desktop в некоторых браузерах) |
+| `vram_mb` | float | `renderer.info.memory` (three.js) | оценка VRAM (геометрии + текстуры); сэмплируется раз в 5 с |
+| `wss_latency_ms` | int | ping/pong EMA | текущая RTT (мс); EMA smoothing α=0.5 |
+| `resolution_scale` | float | `XRWebGLLayer.getNativeFramebuffer()` / requested | отношение native / requested framebuffer; **отсутствует** в desktop |
+| `stale_frames` | int | rAF monitor | количество пропущенных кадров за последнюю секунду |
+| `thermal_level` | 0..4 | QuestMetrics / WebXR `XRDevice.thermalState` | 0=nominal, 1=fair, 2=serious, 3=critical, 4=shutdown |
+| `battery_pct` | 0..100 | `navigator.getBattery()` / QuestMetrics | процент заряда |
+
+**Throttle:** клиент агрегирует данные в sliding window 1 с и шлёт
+payload не чаще 1 Гц (по умолчанию). Параметр `emitIntervalMs`
+(Phase 3+) позволит настроить частоту для A/B тестов perf.
+
+**Opt-out:** клиент НЕ шлёт telemetry если URL содержит `?telemetry=off`
+(или `?telemetry=false`, `?telemetry=0`). Это для dev-сессий и
+bench-тестов, чтобы не засорять лог. `?telemetry=on` — explicit opt-in
+(default поведение).
+
+**Server-side forward:** payload парсится, валидируется `seq` (drop
+duplicates), и публикуется в ROS2 как `quest_msgs/QuestPerf` (Phase 2.3+
+тип). До публикации типа payload сериализуется в `std_msgs/String`
+(JSON) на топик `/quest/perf` для обратной совместимости.
 
 ## 7. Heartbeat, latency, reconnect
 
