@@ -70,6 +70,24 @@ AGENT_FLOW_MAX_RETRIES="${AGENT_FLOW_MAX_RETRIES:-2}"
 BIG_BANG_OVERRIDE_LABEL="${BIG_BANG_OVERRIDE_LABEL:-big-bang-override}"
 BIG_BANG_MAX_COMMITS="${BIG_BANG_MAX_COMMITS:-50}"
 BIG_BANG_MAX_LINES="${BIG_BANG_MAX_LINES:-3000}"
+# Ретро-фикс (26.08 t_b0fe4398, issues #1650/#1653/#1655/#1658): 4 devops-воркера
+# за 5ч открыли 4 PR на одну и ту же проблему (opt-in quest svc через compose
+# profile) на РАЗНЫХ ветках. OPEN-PR guard (per-branch) и throttle (per-issue)
+# не ловили — у каждого issue свой PR. Throttle v3 (4h-window) не видит
+# `kanban: t_*` от archived-карточек и тоже не помог.
+#
+# Решение (G8 — fingerprint dedup gate): перед `hermes kanban create` ищем
+# в OPEN PR-ах такой же fix-fingerprint (sha256 от added-lines в whitelist
+# файлах). Если ≥1 OPEN PR уже делает тот же fix → issue = дубль → skip +
+# comment + label `agent-flow-error: duplicate-fix`.
+#
+# Whitelist — файлы, где devops-воркер обычно делает одно-строчный фикс
+# (compose, .env.example, package.xml, setup.py, Dockerfile, install/setup).
+# Список glob'ов через `|`, проверяется case-функцией `file_in_fp_whitelist`.
+FINGERPRINT_FILE_GLOBS="${FINGERPRINT_FILE_GLOBS:-docker/*/docker-compose.yaml|docker/*/.env.example|docker/*/Dockerfile|docker/*/setup.sh|docker/*/install.sh|src/*/package.xml|src/*/setup.py|install/setup*.sh}"
+# Сколько существующих OPEN PR с ТЕМ ЖЕ fix-fingerprint достаточно, чтобы
+# считать это дубликатом (1 = любой существующий PR с тем же фиксом → дубль).
+FINGERPRINT_DUPLICATE_THRESHOLD="${FINGERPRINT_DUPLICATE_THRESHOLD:-1}"
 DRY_RUN="${DRY_RUN:-false}"
 ISSUE_LIMIT="${ISSUE_LIMIT:-50}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-triage.lock}"
@@ -106,6 +124,8 @@ fi
 : "${BIG_BANG_OVERRIDE_LABEL:=big-bang-override}"
 : "${BIG_BANG_MAX_COMMITS:=50}"
 : "${BIG_BANG_MAX_LINES:=3000}"
+: "${FINGERPRINT_FILE_GLOBS:=docker/*/docker-compose.yaml|docker/*/.env.example|docker/*/Dockerfile|docker/*/setup.sh|docker/*/install.sh|src/*/package.xml|src/*/setup.py|install/setup*.sh}"
+: "${FINGERPRINT_DUPLICATE_THRESHOLD:=1}"
 : "${DRY_RUN:=false}"
 : "${ISSUE_LABEL:=hermes}"
 : "${DONE_LABEL:=e2e-done}"
@@ -359,6 +379,176 @@ worker_contract_block() {  # $1=max_runtime
 - **В issue — релевантные куски, не полные логи.** Raw-вывод обязателен (ADR-0018), но прикладывай нужный фрагмент, не весь дамп.
 
 EOF
+}
+
+# ============================================================================
+# G8: fingerprint dedup helpers (ретро t_b0fe4398, 26.08, issues
+# #1650/#1653/#1655/#1658). 4 devops-воркера за 5ч открыли 4 PR на одну и ту же
+# проблему (opt-in quest svc через compose profile) на РАЗНЫХ ветках.
+# OPEN-PR guard (per-branch) и throttle (per-issue) не ловили — каждый issue
+# имел свой PR, у каждого PR своя ветка. Fix: перед `hermes kanban create`
+# проверить, нет ли в OPEN PR-ах уже ТАКОГО ЖЕ фикса (по fingerprint от
+# added-lines в whitelist-файлах).
+# ============================================================================
+
+# file_in_fp_whitelist <path>: проверяет, входит ли path в whitelist из
+# $FINGERPRINT_FILE_GLOBS (список glob'ов через `|`). Использует bash case с
+# extglob, чтобы поддерживать `*` без подоболочки. Возвращает exit 0 если
+# файл подходит, 1 — если нет. Нечувствителен к ведущему `./`.
+#
+# CRITICAL: disable globbing перед `local patterns=($FINGERPRINT_FILE_GLOBS)`,
+# иначе bash РАЗВЁРНЕТ `docker/*/docker-compose.yaml` по реальным файлам
+# CWD и паттерн потеряется. set -f блокирует glob'инг, set +f восстанавливает.
+file_in_fp_whitelist() {
+    local path="${1#./}"
+    case "$path" in
+        /*) path="${path#/}" ;;
+    esac
+    local IFS='|'
+    set -f
+    # shellcheck disable=SC2206
+    local patterns=($FINGERPRINT_FILE_GLOBS)
+    set +f
+    local pat
+    # SC2254 unquoted $pat is INTENTIONAL — нам нужна именно glob-магия
+    # (`*` в паттерне должна матчиться как wildcard, а не literal).
+    # shellcheck disable=SC2254
+    for pat in "${patterns[@]}"; do
+        case "$path" in
+            $pat) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# fp_for_pr_file <pr_number> <file_path>:
+# Возвращает fingerprint (16 hex-символов sha256) от canonical-added-lines
+# указанного файла в PR. Учитываются ТОЛЬКО "semantic" added lines — не
+# комментарии (строки, начинающиеся с `#` ПОСЛЕ trim), не пустые. Это
+# критично для ретро t_b0fe4398: 4 devops-PR (#1651/#1654/#1656/#1659)
+# добавили ОДНУ И ТУ ЖЕ строку `profiles: ["quest"]`, но РАЗНЫЕ NOTE-блоки
+# с обоснованиями (t_4d530162 vs #1653 vs t_6ccdfa10 vs deploy-fail
+# test-round-{232,233,234,235}). Без фильтра комментариев fingerprint'ы
+# разные → G8 не сматчит → багат не починен.
+#
+# Нормализация: trim пробелов, удаление пустых и `#`-prefixed строк, sort -u,
+# обрезка до 1024 байт (защита от огромных blob'ов). Stable для одной и той
+# же сути фикса, не зависит от порядка строк в файле.
+#
+# NOTE: `gh pr diff` (в отличие от `git diff`) НЕ принимает path-positional
+# фильтр — выдаёт ПОЛНЫЙ diff. Поэтому мы берём весь diff и post-filter'уем
+# по `diff --git a/<path> b/<path>` (header) → собираем только hunk'и для
+# нужного файла. Делает это awk, чтобы не тащить regex-библиотеки.
+fp_for_pr_file() {  # $1=pr $2=file
+    local pr="$1" file="$2"
+    gh pr diff "$pr" 2>/dev/null \
+        | awk -v target="$file" '
+            # diff --git a/<path> b/<path>
+            /^diff --git / {
+                p = $0
+                sub(/^diff --git a\//, "", p)
+                sub(/ b\/.*$/, "", p)
+                current = p
+                in_hunk = 0
+                next
+            }
+            current != target { next }
+            /^@@/ { in_hunk = 1; next }
+            in_hunk && /^---/ { next }      # skip --- separator
+            in_hunk && /^\+\+\+/ { next }   # skip +++ header
+            in_hunk && /^\+/ {
+                sub(/^\+/, "")
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+                # Skip blank lines and comment lines (после trim начинаются с "#").
+                # YAML/docker compose комментарии = "# ..." (с пробелом или без).
+                # Это даёт fingerprint ТОЛЬКО по функциональным изменениям —
+                # критично для дедупа 4 PR с одним фиксом но разными NOTE-блоками.
+                if (length($0) == 0) next
+                if (substr($0, 1, 1) == "#") next
+                print
+            }
+        ' \
+        | sort -u \
+        | head -c 1024 \
+        | (if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi) \
+        | awk '{print substr($1, 1, 16)}'
+}
+
+# find_duplicate_fix_prs <issue_number> <issue_body>:
+# Возвращает строки "<pr_number>\t<file>\t<fingerprint>" для каждого OPEN PR,
+# который модифицирует whitelist-файл с ТАКИМ ЖЕ fingerprint, что и хотя бы
+# один whitelist-файл, упомянутый в issue_body. Если тело issue не
+# содержит явных путей к whitelist-файлам — пустой результат (gate
+# пропускается, поведение = ровно то же, что было до фикса — backward compat).
+#
+# Алгоритм:
+#   1. Извлечь whitelist-файлы из issue_body (grep по glob'ам).
+#   2. Для каждого такого файла получить список OPEN PR, которые его
+#      модифицировали (через gh pr list --json files и фильтр на клиенте).
+#   3. Для каждого PR вычислить fp_for_pr_file.
+#   4. Emit "<pr>\t<file>\t<fp>" — кол-во unique fingerprint'ов сверяет caller.
+find_duplicate_fix_prs() {  # $1=issue_number $2=body
+    local body="$2"
+    local IFS='|'
+    set -f
+    # shellcheck disable=SC2206
+    local patterns=($FINGERPRINT_FILE_GLOBS)
+    set +f
+    local candidate_files="" pat rx extracted
+    for pat in "${patterns[@]}"; do
+        # Конвертируем glob-pattern в regex для grep -E:
+        #   . -> [.]   (literal dot, не "любой символ")
+        #   * -> [a-zA-Z0-9._/-]*   (basename/dirname chars в нашем whitelist)
+        rx="$(printf '%s' "$pat" | sed 's/\./[.]/g; s/\*/[a-zA-Z0-9._\/-]*/g')"
+        # ищем как самостоятельное слово (не внутри более длинного пути).
+        # `(^|[^A-Za-z0-9_/-])` + `([^A-Za-z0-9_/-]|$)` — word-boundary через
+        # "не файловые символы".
+        extracted="$(printf '%s' "$body" | grep -oE "(^|[^A-Za-z0-9_/-])(${rx})([^A-Za-z0-9_/-]|$)" 2>/dev/null \
+            | sed -E 's@^[^A-Za-z0-9_/-]+@@; s@[^A-Za-z0-9_/-]+$@@' \
+            | sort -u)"
+        if [ -n "$extracted" ]; then
+            candidate_files="${candidate_files}${candidate_files:+$'\n'}${extracted}"
+        fi
+    done
+    candidate_files="$(printf '%s\n' "$candidate_files" | awk 'NF && !seen[$0]++')"
+    if [ -z "$candidate_files" ]; then
+        return 0  # нет whitelist-файлов в body → gate пропускается
+    fi
+
+    # Собрать все OPEN PR в JSON за один запрос (до 100, обычно их 5-30).
+    local prs_json
+    prs_json="$(gh pr list --repo "$GH_REPO" --state open --limit 100 \
+        --json number,files 2>/dev/null || echo '[]')"
+
+    # Для каждого кандидат-файла пройтись по PR-ам и сравнить fingerprint.
+    local file pr_numbers pr_num
+    while IFS= read -r file; do
+        [ -z "$file" ] && continue
+        # Найти PR, которые модифицировали этот файл (python парсит JSON).
+        # python выводит по одному PR-number на строку.
+        pr_numbers="$(printf '%s' "$prs_json" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = []
+target = sys.argv[1]
+for pr in d:
+    files = pr.get('files') or []
+    for f in files:
+        if f.get('path') == target:
+            print(pr.get('number', ''))
+            break
+" "$file" 2>/dev/null || true)"
+        # Итерируем построчно (IFS= на время чтения), а не через `for pr_num in
+        # $pr_numbers` — иначе bash склеит многострочный вывод в одну переменную.
+        while IFS= read -r pr_num; do
+            [ -z "$pr_num" ] && continue
+            fp="$(fp_for_pr_file "$pr_num" "$file" 2>/dev/null || true)"
+            [ -z "$fp" ] && continue
+            printf '%s\t%s\t%s\n' "$pr_num" "$file" "$fp"
+        done <<< "$pr_numbers"
+    done <<< "$candidate_files"
 }
 
 # --- process each issue ------------------------------------------------------
@@ -686,6 +876,65 @@ ${_valid_csv}
         && [ -n "$open_pr" ]; then
         log "issue #${number}: branch ${branch} already has OPEN PR #${open_pr} — работа в PR, карточку не создаём (reopened-loop guard)"
         skipped=$((skipped+1)); continue
+    fi
+
+    # --- G8: fingerprint dedup gate (ретро 26.08 t_b0fe4398, #1650/#1653/#1655/#1658) ---
+    # Per-branch OPEN-PR guard выше ловит ТОЛЬКО тот случай, когда issue
+    # уже имеет свой PR на ЭТОЙ ветке. Но что если 4 разных issue (разные
+    # ветки) — все про одну и ту же проблему (#1650/#1653/#1655/#1658: opt-in
+    # quest svc через compose profile)? Per-branch guard не видит, throttle
+    # не видит (throttle per-issue). Здесь проверяем: если в OPEN PR-ах
+    # репы уже есть ≥FINGERPRINT_DUPLICATE_THRESHOLD фиксов с тем же
+    # fingerprint (added-lines в whitelist-файлах docker-compose / package.xml
+    # / setup.py / Dockerfile / install/setup), что мог бы сделать и этот
+    # issue — это дубль.
+    #
+    # Backward-compat: если в body issue нет явного пути к whitelist-файлу,
+    # `find_duplicate_fix_prs` возвращает пусто → gate полностью пропускается,
+    # поведение = ровно то же, что было до фикса. Это защищает от ложных
+    # срабатываний на issue, где речь про Python/voice/ROS код (не наш кейс).
+    _fp_dups="$(find_duplicate_fix_prs "$number" "$body" 2>/dev/null || true)"
+    if [ -n "$_fp_dups" ]; then
+        _fp_dup_count="$(printf '%s\n' "$_fp_dups" | awk -F'\t' '{print $3}' | sort -u | wc -l | tr -d ' ')"
+        if [ "${_fp_dup_count:-0}" -ge "${FINGERPRINT_DUPLICATE_THRESHOLD:-1}" ] 2>/dev/null; then
+            _fp_first_pr="$(printf '%s\n' "$_fp_dups" | head -n1 | cut -f1)"
+            _fp_first_file="$(printf '%s\n' "$_fp_dups" | head -n1 | cut -f2)"
+            _fp_first_fp="$(printf '%s\n' "$_fp_dups" | head -n1 | cut -f3)"
+            log "🚨 issue #${number}: G8 fingerprint dedup — найдено ${_fp_dup_count} OPEN PR с тем же фиксом (file=${_fp_first_file}, fp=${_fp_first_fp}, первый PR=#${_fp_first_pr}) — карточку НЕ создаём (ретро t_b0fe4398)"
+            if [ "$DRY_RUN" != "true" ]; then
+                # Comment + label. Comment показывает список ВСЕХ найденных
+                # дубликатов, чтобы Шифу мог сразу выбрать canonical-PR.
+                _fp_dup_list="$(printf '%s\n' "$_fp_dups" | awk -F'\t' '{print "- PR #" $1 " (file=" $2 ", fp=" $3 ")"}' | sort -u | head -20)"
+                gh issue comment "$number" --repo "$GH_REPO" --body \
+                    "🚨 **agent-flow-triage: G8 fingerprint dedup (ретро t_b0fe4398)**
+
+Triage **НЕ создал** kanban-карточку для этого issue — обнаружен duplicate-fix: ≥\${FINGERPRINT_DUPLICATE_THRESHOLD:-1} OPEN PR уже делает ТОТ ЖЕ fix в whitelist-файле (fingerprint=\`${_fp_first_fp}\`, file=\`${_fp_first_file}\`).
+
+Найденные дубликаты (PR + файл + fingerprint):
+${_fp_dup_list}
+
+**Почему так:** OPEN-PR guard (per-branch) и throttle (per-issue) не ловили
+4 разных issue на одну и ту же проблему (разные ветки → guard не видит).
+Новый G8-guard (fingerprint of added-lines в docker-compose/package.xml/setup.py)
+ловит cross-branch дубликаты.
+
+**Что делать (товарищ Шифу):**
+1. Закрыть этот issue как дубликат одного из найденных PR, ИЛИ
+2. Смержить один из найденных PR (предпочтительно PR #${_fp_first_pr}) — он
+   сделает фикс для всех связанных issue, ИЛИ
+3. Если этот issue про ДРУГОЙ fix — переформулировать body так, чтобы был
+   упомянут конкретный whitelist-файл, который отличается от уже идущих в
+   PR (тогда G8 не сматчит и triage создаст карточку).
+
+**Override:** поставьте метку \`big-bang-override\` на этот issue — gate
+пропустит fingerprint-проверку (явное разрешение от Шифу).
+
+После того как Шифу закроет/смержит дубликаты, повторный тик triage создаст
+карточку (если body всё ещё указывает на whitelist-файл)." >/dev/null 2>&1 || true
+                gh issue edit "$number" --repo "$GH_REPO" --add-label "agent-flow-error" >/dev/null 2>&1 || true
+            fi
+            skipped=$((skipped+1)); continue
+        fi
     fi
 
     # Ретро-фикс (14.08 t_0a765152): REOPENED issue — карточку создаём ЗАНОВО,
