@@ -17,6 +17,7 @@ import { createVoicePicker } from "./ui/voice_picker_panel";
 import { PreviewPlayer } from "./audio/preview_player";
 import { cycleLayout, type LayoutMode } from "./scene/panel_layout_modes";
 import type { JsonCmd, StreamMeta, VoiceInfo, VoicePreset } from "./wire/messages";
+import * as THREE from "three";
 
 const CLIENT_VERSION = "0.1.0";
 const SUBPROTOCOL = "robbox-quest-v1";
@@ -413,14 +414,9 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   });
 
   // ---- Drop-on-panel raycast (3D) -------------------------------------------
-  // Минимальная реализация Phase 2 §6.2: HTML5 drag-and-drop на canvas →
-  // raycast по videoPanel meshes → определяем panel id → onDropTopic.
-  //
-  // Это stub — для реального pick'а нужен three.Raycaster (см. ADR-0027 §3).
-  // На текущий момент raycast — no-op (возвращает null), drop игнорируется.
-  // Реальный raycast-механизм — отдельная карточка (panel-drop-raycast).
-  // Acceptance §6.2: stream drag/drop работает → проверяется e2e (через
-  // lil-gui switch как fallback; drop-on-canvas — после raycast-карточки).
+  // Phase 2 §6.2: HTML5 drag-and-drop на canvas → THREE.Raycaster →
+  // определяем panel id → applyDropTopic.
+  // Работает в desktop (mouse coords) и в VR (controller ray — отдельная карточка).
 
   function attachPanelDropHandlers(): void {
     const canvas = opts.canvas;
@@ -465,11 +461,28 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     streamSelect?.refresh();
   }
 
-  function pickPanelFromPointer(_clientX: number, _clientY: number): string | null {
-    // Raycast stub — реальная логика в отдельной карточке (panel-drop-raycast).
-    void _clientX;
-    void _clientY;
-    return null;
+  function pickPanelFromPointer(clientX: number, clientY: number): string | null {
+    // Raycast через THREE.Raycaster по meshes из bridge.videoPanels.
+    const rect = opts.canvas.getBoundingClientRect();
+    const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1;
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera({ x: ndcX, y: ndcY } as THREE.Vector2, bridge.camera);
+    // Соберём список mesh'ей с id-маркером.
+    const meshes: Array<{ mesh: THREE.Object3D; panelId: string }> = [];
+    for (const [panelId, vp] of bridge.videoPanels) {
+      vp.mesh.userData["panelId"] = panelId;
+      meshes.push({ mesh: vp.mesh, panelId });
+    }
+    if (meshes.length === 0) return null;
+    const intersects = raycaster.intersectObjects(
+      meshes.map((m) => m.mesh),
+      false
+    );
+    if (intersects.length === 0) return null;
+    const hit = intersects[0];
+    const panelId = (hit.object.userData["panelId"] as string | undefined) ?? null;
+    return panelId;
   }
 
   attachPanelDropHandlers();
