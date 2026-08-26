@@ -33,6 +33,15 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   const url = opts.url ?? deriveWsUrl();
   const bridge = createCaptainBridge({ canvas: opts.canvas, enableXr: true });
   bridge.initLayout();
+  // Phase 2.1: запускаем async loader bridge-ассетов параллельно со
+  // start() — render loop крутится пока грузится, и когда initEnvironment
+  // resolve'нется, scene получит GLB-walls/props + scene.environment.
+  // На failure loader переходит в state="fallback" (BoxGeometry walls),
+  // сцена не ломается — дизайн §1.1 graceful degradation.
+  const envReady = bridge.initEnvironment().catch((e: unknown) => {
+    const err = e instanceof Error ? e : new Error(String(e));
+    console.warn("[bridge] initEnvironment failed, continuing with fallback:", err.message);
+  });
   const stopRender = bridge.start();
 
   const fsm = new TeleopFSM();
@@ -228,6 +237,9 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   return {
     dispose(): void {
       stopRender();
+      // envReady может быть in-flight; не ждём — dispose bridge ниже
+      // вызовет envAssets?.dispose(), что покроет и resolved-state.
+      void envReady;
       desktopTeleop.destroy();
       xrTeleopHandle?.destroy();
       streamSelect?.destroy();

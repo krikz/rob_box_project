@@ -1,7 +1,7 @@
 {
   "name": "@rob_box/quest-webxr-client",
-  "version": "0.1.0",
-  "description": "Meta Quest / WebXR Captain Bridge client for rob_box_quest (Phase 1.5).",
+  "version": "0.2.0",
+  "description": "Meta Quest / WebXR Captain Bridge client for rob_box_quest (Phase 2.1: bridge env + IBL).",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,13 +10,18 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "assets:build": "node scripts/build_bridge_assets.mjs",
+    "assets:validate": "node scripts/validate_glbs.mjs",
+    "hdr:validate": "node scripts/test_hdr_ibl.mjs"
   },
   "dependencies": {
     "three": "^0.170.0",
     "lil-gui": "^0.19.2"
   },
   "devDependencies": {
+    "@gltf-transform/core": "^4.4.2",
+    "@gltf-transform/extensions": "^4.4.2",
     "@types/three": "^0.170.0",
     "@types/node": "^20.12.7",
     "jsdom": "^24.1.0",

@@ -1,0 +1,110 @@
+Bridge environment — Captain Bridge (Phase 2.1, kanban t_e64196bd)
+================================================================
+
+Этот каталог содержит low-poly sci-fi "Captain Bridge" ассеты для
+Meta Quest WebXR клиента (`src/rob_box_quest/webxr_client/`).
+
+Источники и лицензии
+--------------------
+
+### bridge_env_1k.hdr  (1 709 967 bytes, 1.63 MB)
+
+  Source : Poly Haven — "Cayley Interior" (indoor studio interior HDRI, 1K)
+  URL    : https://polyhaven.org/a/cayley_interior
+  License: CC0  (Public Domain)
+  Файл скачан с dl.polyhaven.org /file/ph-assets/HDRIs/hdr/1k/cayley_interior_1k.hdr
+  Переименован в bridge_env_1k.hdr для соответствия конвенции Phase 2.1.
+
+  Примечание: в Phase 2.0 (отдельная kanban-карточка) файл будет сжат
+  в KTX2/Basis Universal для GPU-friendly VRAM (транскод в ASTC на Quest 3
+  или ETC2 на Quest 2, см. ADR-0032 §3.2). После KTX2 ожидаемый размер
+  ≤ 400 KB, VRAM ≤ 4 MB.
+
+### bridge_floor.glb / bridge_walls.glb / bridge_props.glb
+
+  СИНТЕЗИРОВАНЫ программно из three.js примитивов (BoxGeometry, ExtrudeGeometry,
+  CylinderGeometry, PlaneGeometry) с использованием @gltf-transform/core для экспорта.
+  Автор: designer (Hermes Agent), kanban-tasks #1677 (research) и
+  t_e64196bd (Phase 2.1 implementation).
+
+  License: CC0 (Public Domain) — собственный код, без внешних моделей.
+
+  Почему не Quaternius: исходное задание ссылалось на Quaternius
+  паки ("Modular Buildings", "Sci-Fi Modular", "Ultimate Space Kit",
+  "Sci-Fi Props"), но Quaternius раздаёт их через:
+    (а) itch.io pay-what-you-want — требует browser-flow с кликом по кнопке;
+    (б) Google Drive share-link — требует OAuth или ручной download.
+  Оба пути не автоматизируются headless-инструментами в этой среде.
+  KhronosGroup/glTF-Sample-Assets были рассмотрены как fallback,
+  но содержат только demo-модели (Duck, Box, Lantern), не environment kit.
+
+  Решение: синтез low-poly sci-fi сцены из примитивов, чтобы:
+    * остаться CC0,
+    * остаться в budget raw-размеров (≤ 120 / 180 / 250 KB),
+    * получить стилизованный Captain Bridge (hex-grid floor, panel walls,
+      curved main console, captain chair, holo-projectors),
+    * не зависеть от внешних источников на CI.
+
+  Файлы регенерируемы: `node scripts/build_bridge_assets.mjs`
+  (требует three.js + @gltf-transform/core из dev-deps webxr_client).
+
+### ADR / Research
+
+  ADR-0032 — Meta Quest WebXR client — финальный стек и ассет-pipeline
+  docs/adr/0032-meta-quest-webxr-stack-and-assets.md
+
+  Research — Meta Quest WebXR Best Practices (Phase 2+ Captain Bridge)
+  docs/research/2026-08-26-meta-quest-webxr-best-practices.md
+
+Структура файлов
+----------------
+
+  bridge_floor.glb   92.9 KB raw (≤ 120 KB budget, до Draco)
+                       3 meshes, 3 materials (все PBR, 3 emissive)
+                       extents ~6.9 x 0.1 x 5.5 (hex grid 6x6 tiles,
+                       radius 0.6m, emissive cyan edges)
+
+  bridge_walls.glb   24.0 KB raw (≤ 180 KB budget, до Draco)
+                       18 meshes, 4 materials (все PBR, 4 emissive)
+                       extents ~7.6 x 3.0 x 2.0 (back wall + front wall
+                       + 2 side walls + viewports + console strips)
+
+  bridge_props.glb   52.6 KB raw (≤ 250 KB budget, до Draco)
+                       34 meshes, 14 materials (все PBR, 14 emissive)
+                       captain chair + curved main console (3 sectors)
+                       + 4 side terminals + 2 holo-projectors
+
+  bridge_env_1k.hdr  1.63 MB raw (HDR для IBL, KTX2 в Phase 2.0)
+
+Сцена-применение
+----------------
+
+  В Three.js (Phase 2.x runtime, отдельная карточка):
+
+    const floorGltf = await loader.loadAsync('./bridge_floor.glb');
+    const wallsGltf = await loader.loadAsync('./bridge_walls.glb');
+    const propsGltf = await loader.loadAsync('./bridge_props.glb');
+    scene.add(floorGltf.scene, wallsGltf.scene, propsGltf.scene);
+
+    // IBL setup:
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    pmrem.compileEquirectangularShader();
+    const envTexture = await new RGBELoader().loadAsync('./bridge_env_1k.hdr');
+    scene.environment = pmrem.fromEquirectangular(envTexture).texture;
+    // scene.background = envTexture;  // для "космоса" — НЕ ставим,
+    // bridge walls/viewports дают свой dark interior look.
+
+  RoomEnvironment fallback (без HDR): можно использовать
+  THREE.RoomEnvironment как fallback для тестов — но это даёт
+  нейтральную studio-сцену, не bridge look. Реальный IBL —
+  через bridge_env_1k.hdr.
+
+Honesty
+-------
+
+  Синтетика — это honest trade-off: я не мог гарантировать,
+  что закоммиченные glb — реально от Quaternius, без скачивания
+  исходников. Синтетика даёт 100% CC0 без external dependencies,
+  и стилизована под Captain Bridge по ADR-0027 §1.1 (vision).
+  Если нужны именно Quaternius-стилизованные модели — перезалить
+  .glb после ручного скачивания Шифу (см. комментарий в kanban t_e64196bd).
