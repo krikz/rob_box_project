@@ -3,9 +3,15 @@
 // Архитектура (дизайн §3): <img> декодирует JPEG, затем texture.image = img
 // и needsUpdate=true. Drop-oldest если GPU занят (флаг ready не успевает
 // выставиться → пропускаем кадр).
+//
+// Phase 2 §2.4: opacity (50/75/100%) применяется к MeshBasicMaterial.
+// §2.1: ставим userData.panelId для raycaster'а.
 
 import * as THREE from "three";
-import type { PanelState } from "./panel_manager";
+import {
+  type PanelState,
+  PANEL_USERDATA_KEY
+} from "./panel_manager";
 
 export class VideoPanel {
   readonly mesh: THREE.Mesh;
@@ -16,6 +22,8 @@ export class VideoPanel {
   private state: PanelState;
   private frameCount = 0;
   private droppedCount = 0;
+  /** PointLight подсветки возле panel — Phase 2 §1.2 (emissive panels glow). */
+  private glow: THREE.PointLight | null = null;
 
   constructor(state: PanelState) {
     this.state = state;
@@ -41,13 +49,17 @@ export class VideoPanel {
     const mat = new THREE.MeshBasicMaterial({
       map: this.texture,
       side: THREE.DoubleSide,
-      toneMapped: false
+      toneMapped: false,
+      transparent: true,
+      opacity: state.opacity
     });
     this.mesh = new THREE.Mesh(geom, mat);
+    // userData для raycaster (drag/click detection).
+    this.mesh.userData[PANEL_USERDATA_KEY] = state.id;
     this.applyTransform();
   }
 
-  /** Обновить состояние панели (позиция / размер / facing). */
+  /** Обновить состояние панели (позиция / размер / facing / opacity). */
   setState(s: PanelState): void {
     this.state = s;
     this.applyTransform();
@@ -56,6 +68,22 @@ export class VideoPanel {
     const newGeom = new THREE.PlaneGeometry(s.size.width, s.size.height);
     this.mesh.geometry = newGeom;
     geom.dispose();
+    const mat = this.mesh.material as THREE.MeshBasicMaterial;
+    if (mat.opacity !== s.opacity) {
+      mat.opacity = s.opacity;
+      mat.needsUpdate = true;
+    }
+    // userData.id мог измениться (теоретически — на практике нет, но дёшево).
+    this.mesh.userData[PANEL_USERDATA_KEY] = s.id;
+  }
+
+  /** Прикрепить/убрать PointLight подсветку (вызывается из captain_bridge). */
+  setGlow(light: THREE.PointLight | null): void {
+    this.glow = light;
+  }
+
+  getGlow(): THREE.PointLight | null {
+    return this.glow;
   }
 
   /** Подпись с topic в углу панели (для UI/отладки). */

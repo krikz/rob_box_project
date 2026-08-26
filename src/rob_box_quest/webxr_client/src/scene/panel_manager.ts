@@ -18,7 +18,9 @@
 export type PanelId = string;
 
 export type OpacityLevel = 0.5 | 0.75 | 1.0;
-export const OPACITY_LEVELS: OpacityLevel[] = [0.5, 0.75, 1.0];
+// Упорядочены так, чтобы cycleOpacity шёл 1.0 → 0.75 → 0.5 → 1.0
+// (от полной непрозрачности к самой прозрачной и обратно).
+export const OPACITY_LEVELS: OpacityLevel[] = [1.0, 0.75, 0.5];
 
 export type SnapZone = "left" | "center" | "right" | "free";
 
@@ -58,6 +60,11 @@ export const DEFAULT_VIDEO_TOPICS = [
   "camera_oak_depth",
   "camera_ceiling"
 ] as const;
+
+/** Минимальный userData, который должны выставлять panels. */
+export const PANEL_USERDATA_KEY = "panelId";
+export const PANEL_USERDATA_IS_HANDLE_KEY = "isHandle";
+export const PANEL_USERDATA_HANDLE_CORNER_KEY = "handleCorner";
 
 /** Snap-zone anchors (X, фиксированный Z=-radius). */
 export interface SnapAnchor {
@@ -413,18 +420,21 @@ export class PanelManager {
   }
 
   /**
-   * Загрузить layout из JSON. Если version неизвестен — false (без изменений).
-   * При успехе заменяет текущие panels на загруженные. side-effect НЕ вызывает
-   * emit-ы "created/closed" (только финальный "layout_reset"), чтобы
-   * persistence-слой не закольцевался.
+   * Загрузить layout из JSON. Если version неизвестен или хотя бы один panel
+   * невалиден — false (без изменений). При успехе заменяет текущие panels
+   * на загруженные. side-effect НЕ вызывает emit-ы "created/closed"
+   * (только финальный "layout_reset"), чтобы persistence-слой не закольцевался.
    */
   fromJSON(json: PanelLayoutJson): boolean {
     if (!json || json.version !== PANEL_LAYOUT_VERSION) return false;
     if (!Array.isArray(json.panels)) return false;
+    // Сначала валидируем ВСЕ panels. Если хоть один невалиден — отказываем.
+    for (const p of json.panels) {
+      if (!isValidPanel(p)) return false;
+    }
     this.panels.clear();
     let maxN = 0;
     for (const p of json.panels) {
-      if (!isValidPanel(p)) continue;
       this.panels.set(p.id, clonePanel(p));
       const n = parseInt(String(p.id).replace(/^p/, ""), 10);
       if (!Number.isNaN(n) && n > maxN) maxN = n;
