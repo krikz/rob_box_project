@@ -20,6 +20,8 @@ export interface StreamSelectOptions {
   onSubscribe(topic: string): void;
   onUnsubscribe(topic: string): void;
   onResetLayout(): void;
+  /** Полный сброс (storage + reset). Опционально — иначе работает как onResetLayout. */
+  onResetToDefault?: () => void;
   getActiveTopics(): string[];
   xr: XrBootstrap;
   onEnterVr(): void;
@@ -81,6 +83,22 @@ export function createStreamSelect(opts: StreamSelectOptions): StreamSelectHandl
   const addCtrl = folderPanels.add(state, "addStream", availableTopicsOrEmpty()).name("Add Stream");
   folderPanels.add(state, "addPanel").name("Add Panel");
   folderPanels.add(state, "resetLayout").name("Reset Layout");
+  // Кнопка полного сброса: если есть onResetToDefault — используем её,
+  // иначе fallback на onResetLayout (на случай если потребитель не подключил
+  // persistence).
+  void folderPanels.add(
+    {
+      reset: () => {
+        if (opts.onResetToDefault) {
+          opts.onResetToDefault();
+        } else {
+          opts.onResetLayout();
+        }
+        refresh();
+      }
+    },
+    "reset"
+  ).name("Reset to Default");
   folderPanels.open();
 
   // Контролы для каждой panel: switch stream + close.
