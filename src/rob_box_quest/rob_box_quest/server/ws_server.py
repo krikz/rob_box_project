@@ -411,7 +411,13 @@ class WSSServer:
         """aiohttp WebSocket handler."""
         from aiohttp import web as _aiohttp_web
 
-        ws = _aiohttp_web.WebSocketResponse()
+        # Echo negotiated subprotocol (Sec-WebSocket-Protocol). Without this,
+        # Chrome refuses the handshake with:
+        #   "Sent non-empty 'Sec-WebSocket-Protocol' header but no response
+        #    was received"
+        # Per docs/architecture/meta-quest-api.md §3, only "robbox-quest-v1"
+        # is supported; aiohttp will pick the first match from `protocols`.
+        ws = _aiohttp_web.WebSocketResponse(protocols=("robbox-quest-v1",))
         await ws.prepare(request)
         session = ClientSession()
         self._register_session(session, ws)
