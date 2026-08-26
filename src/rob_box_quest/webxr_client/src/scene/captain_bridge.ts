@@ -54,6 +54,11 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   renderer.setClearColor(0x0a0d11, 1);
 
   const scene = new THREE.Scene();
+  // Background — глубокий sci-fi black-blue (§1.3 дизайна). Альтернативно
+  // используется renderer.setClearColor(0x0a0d11, 1), но явный scene.background
+  // гарантирует видимый dark interior для vr/3D и предсказуемый fallback,
+  // если envMap/envMap выключен в VR.
+  scene.background = new THREE.Color(0x0a0d11);
   // Fog (8, 24) — расширили с (6, 16), чтобы дальние стены (≈6-8м) не
   // обрезались резко. Цвет — глубокий sci-fi black-blue, как и clearColor.
   scene.fog = new THREE.Fog(0x0a0d11, 8, 24);
