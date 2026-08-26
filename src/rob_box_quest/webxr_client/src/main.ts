@@ -5,6 +5,9 @@ import { createCaptainBridge } from "./scene/captain_bridge";
 import { TeleopFSM } from "./input/teleop_fsm";
 import { createDesktopTeleop } from "./input/desktop_teleop";
 import { createStreamSelect } from "./ui/stream_select";
+import { ModeManager, CAPTAIN_MODES } from "./modes/mode_manager";
+import { createModeHud } from "./modes/mode_hud";
+import GUI from "lil-gui";
 import type { StreamMeta } from "./wire/messages";
 
 const CLIENT_VERSION = "0.1.0";
@@ -28,7 +31,32 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   const stopRender = bridge.start();
 
   const fsm = new TeleopFSM();
-  const desktopTeleop = createDesktopTeleop({ fsm });
+  const modeManager = new ModeManager();
+  const modeHud = createModeHud();
+  modeHud.attachModeManager(modeManager);
+
+  // Boost multiplier разрешён только когда teleop/mixed режим (не explore/voice).
+  const desktopTeleop = createDesktopTeleop({
+    fsm,
+    modeManager,
+    boostEnabled: () => modeManager.getMode() === "teleop" || modeManager.getMode() === "mixed"
+  });
+  // При teleop-вводе → авто-upgrade voice→mixed.
+  modeManager.subscribe(() => {
+    // no-op; ModeManager уже обновил HUD через attachModeManager.
+  });
+
+  // Telop keyboard/WASD → сигнал в ModeManager (auto-upgrade).
+  // Это отдельный wiring — desktop_teleop тоже зовёт fsm, но мы хотим
+  // знать, был ли вообще teleop-intent.
+  const onTeleopIntent = (): void => {
+    modeManager.reportTeleopIntent();
+  };
+  window.addEventListener("keydown", (ev) => {
+    if (["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(ev.code)) {
+      onTeleopIntent();
+    }
+  });
 
   let conn: Connection | null = null;
   let streamSelect: ReturnType<typeof createStreamSelect> | null = null;
@@ -132,6 +160,29 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     },
     getActiveTopics: () => bridge.panels.list().map((p) => p.topic)
   });
+
+  // Phase 2: отдельный lil-gui dropdown для Captain Mode.
+  // Располагаем рядом со stream_select через shared parent — оба создают
+  // свой GUI; пользователь увидит два stack-окна. Это OK для Phase 2; в
+  // Phase 3 можно объединить.
+  const modeGui = new GUI({ title: "rob_box_quest / captain_mode", width: 280 });
+  const modeProxy = { mode: modeManager.getMode() as string };
+  const modeCtrl = modeGui
+    .add(modeProxy, "mode", [...CAPTAIN_MODES])
+    .name("Mode")
+    .onChange((v: string) => {
+      if (typeof v === "string") {
+        modeManager.requestMode(v as Parameters<typeof modeManager.requestMode>[0], "ui_select");
+        modeProxy.mode = modeManager.getMode();
+        modeCtrl.updateDisplay();
+      }
+    });
+  modeGui.add({ cycle: () => modeManager.cycleNext("hotkey") }, "cycle").name("Cycle (M / A)");
+  modeManager.subscribe(() => {
+    modeProxy.mode = modeManager.getMode();
+    modeCtrl.updateDisplay();
+  });
+
   setStatus("CONNECTING…", "connecting");
 
   // PIN form.
@@ -173,6 +224,8 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       stopRender();
       desktopTeleop.destroy();
       streamSelect?.destroy();
+      modeGui.destroy();
+      modeHud.destroy();
       conn?.close();
       bridge.dispose();
     }
