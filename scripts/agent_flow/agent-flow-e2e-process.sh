@@ -388,6 +388,99 @@ except BrokenPipeError:
     return 0
 }
 
+# --- detect_noisy_streak ---------------------------------------------------
+# ADR-0032 (issue #1668, fix t_67394082): cron watchdog для noisy-room
+# preflight. Если последние NOISY_STREAK_THRESHOLD раундов подряд на любых
+# issue провалились с маркером E2E_NOISY_PREFLIGHT — это значит в комнате
+# робота стоит фоновый голос/музыка, и продолжать крутить раунды бессмысленно
+# (каждый раунд упадёт за <30s на preflight, жжёт CI-минуты).
+#
+# Решение: ПАУЗА cron на NOISY_STREAK_PAUSE_MIN минут (default 30). За это
+# время либо фоновый голос прекратится (recheck на следующем тике → unpause),
+# либо пользователь выключит радио и сделает push коммита-«починки»
+# (clear_state_file). Если через NOISY_STREAK_MAX_PAUSE_MIN (default 240)
+# всё ещё шумно — auto-resume с явным e2e-warning (continue, чтобы не
+# зависнуть в бесконечной паузе).
+#
+# State file: /tmp/agent-flow-noisy-streak.state — JSON со счётчиком и
+# timestamp последней записи. Идемпотентен через flock.
+#
+# Печатает: "paused" / "active" / "expired" — состояние, в теку.
+detect_noisy_streak() {  # $1=threshold (default 3), $2=pause_min (default 30)
+    local threshold="${1:-${NOISY_STREAK_THRESHOLD:-3}}"
+    local pause_min="${2:-${NOISY_STREAK_PAUSE_MIN:-30}}"
+    local max_pause_min="${NOISY_STREAK_MAX_PAUSE_MIN:-240}"
+    local state_file="${NOISY_STREAK_STATE_FILE:-/tmp/agent-flow-noisy-streak.state}"
+    # Читаем state. Если файла нет — active (streak=0).
+    local now_epoch
+    now_epoch="$(date -u +%s)"
+    local cur_count=0 cur_paused_at=0
+    if [ -f "$state_file" ]; then
+        # Без jq — парсим руками (state простой: {count, paused_at}).
+        cur_count="$(grep -oE '"count":[[:space:]]*[0-9]+' "$state_file" 2>/dev/null | grep -oE '[0-9]+' | head -n1)"
+        cur_count="${cur_count:-0}"
+        cur_paused_at="$(grep -oE '"paused_at":[[:space:]]*[0-9]+' "$state_file" 2>/dev/null | grep -oE '[0-9]+' | head -n1)"
+        cur_paused_at="${cur_paused_at:-0}"
+    fi
+    # Если уже на паузе — проверяем истёк ли pause_min или max_pause_min.
+    if [ "$cur_count" -ge "$threshold" ] && [ "$cur_paused_at" -gt 0 ]; then
+        local since_paused=$(( now_epoch - cur_paused_at ))
+        local since_paused_min=$(( since_paused / 60 ))
+        # Hard cap: даже если pause_min не истёк, через max_pause_min — resume.
+        if [ "$since_paused_min" -ge "$max_pause_min" ]; then
+            log "⚠️ noisy-streak: пауза ${since_paused_min}мин превысила MAX (${max_pause_min}мин) — auto-resume (continue, чтобы cron не завис)"
+            rm -f "$state_file"
+            printf 'expired'
+            return 0
+        fi
+        if [ "$since_paused_min" -lt "$pause_min" ]; then
+            # Всё ещё в окне паузы — return paused.
+            log "⏸️ noisy-streak: на паузе ${since_paused_min}/${pause_min}мин (count=${cur_count})"
+            printf 'paused'
+            return 0
+        fi
+        # Pause истекло — обнуляем state, продолжаем.
+        log "✅ noisy-streak: пауза ${since_paused_min}мин истекла, обнуляем"
+        rm -f "$state_file"
+        cur_count=0
+    fi
+    # Иначе — active.
+    printf 'active'
+    return 0
+}
+
+# --- record_noisy_fail -----------------------------------------------------
+# Инкрементирует счётчик streak в state file. Вызывается из post-run
+# labeling path когда detect_fail_kind вернул 'infra' и в артефактах
+# есть E2E_NOISY_PREFLIGHT.
+record_noisy_fail() {  # $1=threshold (default 3)
+    local threshold="${1:-${NOISY_STREAK_THRESHOLD:-3}}"
+    local state_file="${NOISY_STREAK_STATE_FILE:-/tmp/agent-flow-noisy-streak.state}"
+    local now_epoch
+    now_epoch="$(date -u +%s)"
+    local cur_count=0 cur_paused_at=0
+    if [ -f "$state_file" ]; then
+        cur_count="$(grep -oE '"count":[[:space:]]*[0-9]+' "$state_file" 2>/dev/null | grep -oE '[0-9]+' | head -n1)"
+        cur_count="${cur_count:-0}"
+        cur_paused_at="$(grep -oE '"paused_at":[[:space:]]*[0-9]+' "$state_file" 2>/dev/null | grep -oE '[0-9]+' | head -n1)"
+        cur_paused_at="${cur_paused_at:-0}"
+    fi
+    # Если мы на паузе — не инкрементируем (state и так отражает max).
+    if [ "$cur_count" -ge "$threshold" ] && [ "$cur_paused_at" -gt 0 ]; then
+        return 0
+    fi
+    cur_count=$(( cur_count + 1 ))
+    # При первом достижении threshold — ставим paused_at.
+    local new_paused_at=0
+    if [ "$cur_count" -ge "$threshold" ]; then
+        new_paused_at="$now_epoch"
+        log "🛑 noisy-streak: достигнут threshold ${threshold} — cron PAUSED на ${NOISY_STREAK_PAUSE_MIN:-30}мин"
+    fi
+    printf '{"count":%s,"paused_at":%s,"updated_at":%s}\n' \
+        "$cur_count" "$new_paused_at" "$now_epoch" > "$state_file"
+    return 0
+}
+
 # --- G0: RUN_NOW сигнальный файл (ретро 12.08: запуск прогона по требованию) --
 # Товарищ Шифу кладёт пустой файл RUN_NOW в develop (git commit + push) —
 # ближайший тик e2e-process увидит его и выполнит ПОЛНЫЙ прогон немедленно
@@ -1160,6 +1253,37 @@ if ! gh label list --repo "$GH_REPO" --limit 200 2>/dev/null | grep -q "^${INFRA
         >/dev/null 2>&1 || log "WARNING: failed to create label ${INFRA_FAIL_LABEL}"
 fi
 
+# --- pre-round: noisy-streak watchdog (ADR-0032 / issue #1668) ------------
+# Если в комнате робота постоянно шумят (фоновый голос/радио) — каждый
+# раунд упадёт на preflight за <30s, жжёт CI-минуты впустую. Если
+# предыдущие NOISY_STREAK_THRESHOLD раундов подряд провалились с маркером
+# E2E_NOISY_PREFLIGHT — cron паузится на NOISY_STREAK_PAUSE_MIN минут.
+# Это НЕ блокировка issue (как detect_known_blocker) — следующий тик
+# recheck, и если робот уже тихий, ротация возобновится.
+_noisy_state="$(detect_noisy_streak)"
+case "$_noisy_state" in
+    paused|expired)
+        log "🛑 noisy-streak watchdog: state=${_noisy_state} — e2e rotation PAUSED (issue #1668, ADR-0032)"
+        # Comment на каждый needs-e2e issue (идемпотентно — не дублируем).
+        while IFS= read -r _bn; do
+            [ -z "$_bn" ] && continue
+            _pcomment="noisy-preflight: cron paused"
+            _already_paused="$(gh issue view "$_bn" --repo "$GH_REPO" --comments --json comments \
+                --jq "[.comments[].body | select(contains(\"${_pcomment}\"))] | length" 2>/dev/null || echo 0)"
+            if [ "${_already_paused:-0}" -eq 0 ] 2>/dev/null; then
+                gh issue comment "$_bn" --repo "$GH_REPO" --body \
+                    "agent-flow: ⏸️ e2e приостановлен: noisy-room watchdog (issue #1668). Предыдущие ${NOISY_STREAK_THRESHOLD:-3} раундов подряд провалились с E2E_NOISY_PREFLIGHT — в комнате робота постоянно шумят. Пауза ${NOISY_STREAK_PAUSE_MIN:-30} мин. Через ${NOISY_STREAK_MAX_PAUSE_MIN:-240} мин auto-resume (continue). Чтобы снять паузу вручную: \`rm /tmp/agent-flow-noisy-streak.state\`." >/dev/null 2>&1 \
+                    && log "issue #${_bn}: noisy-pause comment posted" \
+                    || log "issue #${_bn}: WARNING noisy-pause comment failed"
+            fi
+        done < <(printf '%s\n' "$_issue_numbers")
+        exit 0
+        ;;
+    active)
+        # Нормальный путь — ротация продолжается.
+        ;;
+esac
+
 # --- pre-round: known-blocker gate (ретро 11.08 t_c26b73e7) -----------------
 # Пока открыт issue-блокер с известной сигнатурой (например #1117 no_wake_word),
 # новый round НЕ создаём: каждый тик иначе жжёт build+deploy+e2e на заведомо
@@ -1634,6 +1758,29 @@ worker_evidence_recent() {  # $1=pr_number $2=since_iso
 # квота» и «E2E_NO_REACTION», так что одних артефактов недостаточно.
 # Inputs: $1=artifact_dir (скачанные артефакты e2e-рана) $2=run_id
 # Output: prints "infra" / "feature"; rc=0 always.
+# detect_fail_kind() — артефактный и console-анализ вердикта e2e-рана.
+# Возвращает 'infra' или 'feature' в stdout (rc=0 always).
+#
+# ADR-0032 (issue #1668): E2E_NOISY_PREFLIGHT добавлен в infra-список —
+# робот зашумлён/активен (фоновый голос в комнате) → это инфра-условие
+# окружения, не баг кода. Классификация как infra → e2e:infra-fail, не
+# e2e:rejected (карточка не уходит в ступор блокера, репорт-коммент
+# содержит конкретную причину и ссылку на issue).
+#
+# Логика:
+#   1. В логе e2e-рана / артефактах есть маркеры квоты/сети/робота:
+#      - MiniMax 429 / Too Many Requests / RateLimitError / Token Plan / 2056
+#      - TTS fallback: "Silero v5 fallback" / "MiniMax auth error" / "переключаюсь на Silero"
+#      - робот недоступен: "Connection refused" / "timed out" / "no route to host" / "ssh: connect"
+#      - E2E_NOISY_PREFLIGHT (issue #1668 — фоновый голос/активность робота)
+#      - E2E_NO_REACTION (retry-скрипт не увидел ответа робота) — сам по себе НЕ
+#        доказывает infra (может быть и фича), но в сочетании с 429/fallback — да.
+#   2. Workflow-ран не создан/завис (это обрабатывается ДО verdict — здесь не нужно).
+# Источники: артефакты (voice_e2e_*.log) + console-логи рана (actions/runs/{id}/logs)
+# — на #1077 артефакт-лог отсутствовал, но консоль содержала «TTS FALLBACK: MiniMax
+# квота» и «E2E_NO_REACTION», так что одних артефактов недостаточно.
+# Inputs: $1=artifact_dir (скачанные артефакты e2e-рана) $2=run_id
+# Output: prints "infra" / "feature"; rc=0 always.
 detect_fail_kind() {  # $1=artifact_dir $2=run_id
     local dir="$1" run_id="$2" tmpdir="" found=0
     tmpdir="$(mktemp -d 2>/dev/null || echo "${WORKTREE_DIR}/.e2e-infra-$$")"
@@ -1650,7 +1797,7 @@ detect_fail_kind() {  # $1=artifact_dir $2=run_id
         return 0
     fi
     if [ -n "$run_id" ]; then
-        if curl -sL --max-time 60 -H "Authorization: token $(gh auth token 2>/dev/null || true)" \
+        if curl -sL --max-time 60 -H "Authorization: token *** auth token 2>/dev/null || true)" \
             "https://api.github.com/repos/${GH_REPO}/actions/runs/${run_id}/logs" -o "${tmpdir}/run_logs.zip" 2>/dev/null \
             && unzip -o -q "${tmpdir}/run_logs.zip" -d "${tmpdir}/logs" 2>/dev/null; then
             if grep -rhiE -e 'E2E_FEATURE_FAIL' -e 'E2E_LLM_ERROR' "${tmpdir}/logs" 2>/dev/null | grep -q .; then
@@ -1661,9 +1808,11 @@ detect_fail_kind() {  # $1=artifact_dir $2=run_id
         fi
     fi
 
-    # B) Infra-маркеры (квота/fallback/сеть/cleanup/synth). ВАЖНО: маркер
+    # B) Infra-маркеры (квота/fallback/сеть/cleanup/synth/noisy). ВАЖНО: маркер
     #    E2E_NO_REACTION («робот не ответил») сюда НЕ входит — сам по себе
     #    он не доказывает infra (может быть и фича), см. ретро 10.08 t_9caf5d52.
+    #    ADR-0032: E2E_NOISY_PREFLIGHT добавлен — фоновый голос/активность
+    #    робота (issue #1668) классифицируется как infra.
     #    1) Артефакты рана (логи робота voice_e2e_*.log, acceptance, ...).
     if [ -d "$dir" ]; then
         if grep -rhiE \
@@ -1679,6 +1828,9 @@ detect_fail_kind() {  # $1=artifact_dir $2=run_id
             -e 'no route to host' \
             -e 'ssh:[[:space:]]+connect to host' \
             -e 'E2E_INFRA_FAIL' \
+            -e 'E2E_NOISY_PREFLIGHT' \
+            -e 'robot too noisy' \
+            -e 'noisy-preflight fail-fast' \
             # ретро 11.08 t_26a6d362: артефакт-дир удалена внешним cleanup на 249
             # во время прогона → paplay open(): No such file / verdict.txt: No such
             # file / E2E_ARTIFACTS ... No such file. Это infra (гонка cleanup),
@@ -1694,7 +1846,7 @@ detect_fail_kind() {  # $1=artifact_dir $2=run_id
     fi
     # 2) Console-логи рана (фолбэк если артефакт-лог не загрузился).
     if [ "$found" -eq 0 ] && [ -n "$run_id" ]; then
-        if curl -sL --max-time 60 -H "Authorization: token $(gh auth token 2>/dev/null || true)" \
+        if curl -sL --max-time 60 -H "Authorization: token *** auth token 2>/dev/null || true)" \
             "https://api.github.com/repos/${GH_REPO}/actions/runs/${run_id}/logs" -o "${tmpdir}/run_logs.zip" 2>/dev/null \
             && unzip -o -q "${tmpdir}/run_logs.zip" -d "${tmpdir}/logs" 2>/dev/null; then
             if grep -rhiE \
@@ -1710,6 +1862,9 @@ detect_fail_kind() {  # $1=artifact_dir $2=run_id
                 -e 'no route to host' \
                 -e 'ssh:[[:space:]]+connect to host' \
                 -e 'E2E_INFRA_FAIL' \
+                -e 'E2E_NOISY_PREFLIGHT' \
+                -e 'robot too noisy' \
+                -e 'noisy-preflight fail-fast' \
                 "${tmpdir}/logs" 2>/dev/null | grep -q .; then
                 found=1
             fi
@@ -3249,6 +3404,17 @@ $(cat "$acc_file" 2>/dev/null || true)"
         fi
         if [ "$fail_kind" = "feature" ]; then
             fail_kind="$(detect_fail_kind "$artifact_dir" "$run_id")"
+        fi
+        # ADR-0032 (issue #1668): если FAIL — это noisy-preflight (robot
+        # busy/noisy в комнате) → record_noisy_fail инкрементирует streak.
+        # При 3+ подряд — пауза cron на NOISY_STREAK_PAUSE_MIN минут.
+        # detect_fail_kind уже знает маркер E2E_NOISY_PREFLIGHT, но
+        # check через артефакт-файл точнее (нет false-positive от логов).
+        if [ "$fail_kind" = "infra" ] && [ -d "$artifact_dir" ]; then
+            if grep -rhiE 'E2E_NOISY_PREFLIGHT|noisy-preflight fail-fast' "$artifact_dir" 2>/dev/null | grep -q .; then
+                record_noisy_fail
+                log "issue #${number}: noisy-preflight зафиксирован, streak increment"
+            fi
         fi
         # --- known-signature detection (ретро 11.08 t_c26b73e7) ---
         # Если FAIL — фича (не infra/merged) и в артефактах/console-логах есть

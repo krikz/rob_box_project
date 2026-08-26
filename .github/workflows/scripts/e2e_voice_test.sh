@@ -47,6 +47,15 @@ E2E_REACTION_WINDOW="${E2E_REACTION_WINDOW:-40}"   # сек ждём полны�
 E2E_RETRY_PAUSE="${E2E_RETRY_PAUSE:-10}"
 E2E_RECORD_EXTRA="${E2E_RECORD_EXTRA:-15}"          # хвост записи после реакции
 E2E_RECORDING="${E2E_RECORDING:-1}"                 # 1 = писать микрофон (issue #1353)
+# ADR-0032 (issue #1668): noisy-room preflight defaults.
+# - IGNORE_NOISY_PREFLIGHT: 0 = включён (fail-fast при busy/noisy), 1 = bypass.
+# - NOISY_RMS_THRESHOLD_DBFS: порог «too noisy». Эмпирический default -45
+#   из t_6e587508 (тихий кабинет -55..-65, busy-комната -38..-42).
+# - NOISY_WINDOW_S: окно наблюдения (default 30s — между RMS-пробой и
+#   устареванием данных о состоянии комнаты баланс).
+IGNORE_NOISY_PREFLIGHT="${IGNORE_NOISY_PREFLIGHT:-0}"
+NOISY_RMS_THRESHOLD_DBFS="${NOISY_RMS_THRESHOLD_DBFS:--45}"
+NOISY_WINDOW_S="${NOISY_WINDOW_S:-30}"
 ROBOT_HOST="${ROBOT_HOST:-10.1.1.21}"
 ROBOT_USER="${ROBOT_USER:-ros2}"
 # GITHUB_RUN_ID — передаётся из workflow L-E2E Voice Test.yml (${{ github.run_id }}),
@@ -139,6 +148,12 @@ else
         "$E2E_RUN_BEFORE" \
         > "$WAKE_GATE_PREFLIGHT_FILE"
 fi
+
+# --- ADR-0032: noisy-room pre-flight probe (issue #1668) -------------------
+# Stub: реальный preflight определён ниже, ПОСЛЕ ensure_outdir/log/mark_fail_kind
+# (эти helper'ы используются в preflight fail-fast path). Здесь оставлен
+# только комментарий-маркер для grep'а (чтобы было видно где будет preflight).
+# См. секцию "NOISY-PREFLIGHT (ADR-0032)" после ensure_outdir ниже.
 
 # --- самовосстановление артефакт-дира (ретро 11.08 t_26a6d362) -------------
 # Параллельный infra-cleanup на 249 (t_0a5d65af) удалял /tmp/e2e_v2_* ВО ВРЕМЯ
@@ -280,6 +295,15 @@ while [ $# -gt 0 ]; do
         --retries)  E2E_MAX_ATTEMPTS="$2"; shift 2 ;;
         --react-window) E2E_REACTION_WINDOW="$2"; shift 2 ;;
         --check-tg-echo) CHECK_TG_ECHO=1; shift 1 ;;
+        # ADR-0032 (issue #1668): bypass noisy-room preflight. Для дебага
+        # — если уверены, что робот НЕ шумит, но RMS-проба ложно
+        # срабатывает (например, открыли дверь и стали громко говорить
+        # во время самого теста). Default — preflight ENABLED (fail-fast).
+        --ignore-noisy-preflight) IGNORE_NOISY_PREFLIGHT=1; shift 1 ;;
+        # Тонкая настройка порога dBFS (по умолчанию -45). Используется
+        # для отладки порога или для тестирования preflight на реальных
+        # данных.
+        --noisy-threshold-dbfs) NOISY_RMS_THRESHOLD_DBFS="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -295,16 +319,25 @@ fi
 log() { echo ">>> $*"; }
 
 # mark_fail_kind() — запоминает самую информативную причину FAIL.
-# Приоритет: feature > llm_error > synth > no_reaction (feature не понижается).
+# Приоритет: feature > noisy_preflight > llm_error > synth > no_reaction
+# (feature не понижается; noisy_preflight ранжируется ВЫШЕ llm_error, потому
+# что это инфра-условие окружения, не баг кода — agent-flow-e2e-process
+# должен классифицировать как infra, не как feature).
 mark_fail_kind() {  # $1=kind
     local kind="$1"
     case "$kind" in
-        feature)     E2E_FAIL_KIND="feature" ;;
-        llm_error)   [ "$E2E_FAIL_KIND" = "feature" ] || E2E_FAIL_KIND="llm_error" ;;
-        synth)       { [ "$E2E_FAIL_KIND" = "feature" ] || [ "$E2E_FAIL_KIND" = "llm_error" ]; } || E2E_FAIL_KIND="synth" ;;
-        no_reaction) [ -z "$E2E_FAIL_KIND" ] && E2E_FAIL_KIND="no_reaction" ;;
+        feature)         E2E_FAIL_KIND="feature" ;;
+        noisy_preflight) { [ "$E2E_FAIL_KIND" = "feature" ]; } || E2E_FAIL_KIND="noisy_preflight" ;;
+        llm_error)       { [ "$E2E_FAIL_KIND" = "feature" ] || [ "$E2E_FAIL_KIND" = "noisy_preflight" ]; } || E2E_FAIL_KIND="llm_error" ;;
+        synth)           { [ "$E2E_FAIL_KIND" = "feature" ] || [ "$E2E_FAIL_KIND" = "noisy_preflight" ] || [ "$E2E_FAIL_KIND" = "llm_error" ]; } || E2E_FAIL_KIND="synth" ;;
+        no_reaction)     [ -z "$E2E_FAIL_KIND" ] && E2E_FAIL_KIND="no_reaction" ;;
     esac
 }
+
+# --- NOISY-PREFLIGHT (ADR-0032 / issue #1668) -----------------------------
+# Stub — реальный блок размещён НИЖЕ, после source e2e_voice_noisy_gate.sh
+# (потому что fail-fast path вызывает noisy_preflight и его функции).
+# Этот комментарий оставлен для grep'а и видимости в git blame.
 
 # BUG-B (t_f0612a43): имя wav файла строится из ${label} и идёт в heredoc-Python
 # synth_yandex, а также в paplay/ffmpeg. Раньше, если label содержал кириллицу
@@ -327,6 +360,82 @@ source "$SCRIPT_DIR_E2E/e2e_voice_lib.sh"
 # only — никакого main flow, никакого чтения ENV.
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR_E2E/e2e_voice_wake_gate.sh"
+# ADR-0032 noisy-room pre-flight (issue #1668, fix t_67394082).
+# Фоновый голос в комнате робота (видео/радио) непрерывно заполняет
+# backlog no_wake_word (~16/мин) → harness жжёт ~5-7 мин на раунд без
+# полезной информации. Preflight проверяет RMS-dBFS и STT-activity за
+# окно и fail-fast'ит, если комната слишком шумная / робот активен.
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR_E2E/e2e_voice_noisy_gate.sh"
+
+# --- NOISY-PREFLIGHT (ADR-0032 / issue #1668) -----------------------------
+# Реальный preflight блок. Размещён ЗДЕСЬ, после source noisy lib
+# (потому что fail-fast path вызывает noisy_preflight, busy_recent,
+# read_audio_rms_logs, compute_avg_rms_dbfs) и ПОСЛЕ ensure_outdir/
+# log/mark_fail_kind (они определены выше, fail-fast использует их).
+#
+# Retro t_6e587508: STT-регрессия (16 раундов подряд FAIL) вызвана
+# фоновым голосом в комнате робота 10.1.1.21. Harness жжёт ~5-7 мин
+# на раунд (11 шагов × 30s = 5.5 мин) и НЕ даёт новой информации, если
+# робот зашумлён/активен. Preflight проверяет:
+#   1) busy_recent() — STT-активность >=10/мин или TTS прямо сейчас
+#   2) RMS-dBFS avg за NOISY_WINDOW_S > NOISY_RMS_THRESHOLD_DBFS
+# Если ЛЮБОЕ срабатывает — fail-fast с exit 7 (отдельный код для
+# detect_fail_kind в agent-flow-e2e-process.sh → классифицирует как
+# infra → e2e:infra-fail, не e2e:rejected).
+#
+# Артефакт: $OUT_DIR/noisy_preflight.json (verdict, rms_avg_dbfs, reason).
+# Bypass: --ignore-noisy-preflight (для дебага, НЕ для прода).
+NOISY_PREFLIGHT_FILE="${OUT_DIR}/noisy_preflight.json"
+NOISY_PREFLIGHT_CLEARED=0   # 1 = cleared (тихо), 0 = not cleared, 2 = probe error
+NOISY_PREFLIGHT_REASON=""
+if [ "${IGNORE_NOISY_PREFLIGHT:-0}" = "1" ]; then
+    log "NOISY-PREFLIGHT: ⏭ SKIP (--ignore-noisy-preflight)"
+    mkdir -p "$OUT_DIR"
+    printf '{\n  "cleared": true,\n  "checked_at": "%s",\n  "window_s": %s,\n  "rms_avg_dbfs": "n/a",\n  "rms_threshold_dbfs": %s,\n  "reason": "bypass — --ignore-noisy-preflight",\n  "error": null,\n  "issue_ref": "#1668"\n}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "$NOISY_WINDOW_S" \
+        "$NOISY_RMS_THRESHOLD_DBFS" \
+        > "$NOISY_PREFLIGHT_FILE"
+    NOISY_PREFLIGHT_CLEARED=1
+else
+    log "NOISY-PREFLIGHT: probe window=${NOISY_WINDOW_S}s threshold=${NOISY_RMS_THRESHOLD_DBFS}dBFS"
+    noisy_preflight "$NOISY_WINDOW_S" "$NOISY_PREFLIGHT_FILE" "$NOISY_RMS_THRESHOLD_DBFS"
+    case $? in
+        0)  NOISY_PREFLIGHT_CLEARED=1
+            NOISY_PREFLIGHT_REASON="quiet"
+            log "NOISY-PREFLIGHT: ✅ robot quiet (proceeding)" ;;
+        1)  NOISY_PREFLIGHT_CLEARED=0
+            NOISY_PREFLIGHT_REASON="$(grep -oE '"reason":[[:space:]]*"[^"]+"' "$NOISY_PREFLIGHT_FILE" | head -1 | sed -E 's/"reason":[[:space:]]*"([^"]+)"/\1/')"
+            log "NOISY-PREFLIGHT: ⚠️ robot busy/noisy: $NOISY_PREFLIGHT_REASON" ;;
+        2)  NOISY_PREFLIGHT_CLEARED=2
+            NOISY_PREFLIGHT_REASON="probe error"
+            log "NOISY-PREFLIGHT: ❌ probe error (no docker logs access) — treating as not-cleared" ;;
+    esac
+fi
+
+# Fail-fast на noisy/busy (ADR-0032). Если preflight не cleared — выходим
+# ДО синтеза/воспроизведения, чтобы НЕ тратить 5+ минут на раунд, который
+# заранее обречён (issue #1668).
+if [ "${NOISY_PREFLIGHT_CLEARED:-0}" = "0" ]; then
+    log "E2E_FATAL: noisy-preflight fail-fast — $NOISY_PREFLIGHT_REASON"
+    log "E2E_FATAL: см. $NOISY_PREFLIGHT_FILE (artifact)"
+    log "E2E_FATAL: bypass: --ignore-noisy-preflight (только для дебага)"
+    log "E2E_FATAL: подробнее: issue #1668 (https://github.com/krikz/rob_box_project/issues/1668) ADR-0032"
+    log "E2E_VERDICT FAIL"
+    log "E2E_NOISY_PREFLIGHT: $NOISY_PREFLIGHT_REASON"
+    mark_fail_kind noisy_preflight
+    # Пишем verdict.txt + маркер в docker logs робота, чтобы
+    # detect_fail_kind в agent-flow-e2e-process нашёл его и в
+    # артефактах, и в console-логах workflow run.
+    ensure_outdir
+    echo "FAIL" > "$OUT_DIR/verdict.txt"
+    ${ROBOT_SSH} \
+        "docker exec voice-assistant bash -c 'echo E2E_NOISY_PREFLIGHT > /proc/1/fd/1'" \
+        >/dev/null 2>&1 || true
+    echo "E2E_ARTIFACTS $OUT_DIR"
+    exit 7
+fi
 
 # --- ADR-0022 GATE-1 acceptance.json (auto-discovery + gating) --------------
 # Резолвим ACCEPTANCE_FILE в порядке приоритета:
@@ -1412,17 +1521,20 @@ if [ "$PASS" = "1" ]; then
 else
     echo "E2E_VERDICT FAIL"
     # Маркер ПРИЧИНЫ отказа (для пост-валидатора и detect_fail_kind):
-    #   E2E_FEATURE_FAIL — робот ответил, но фича-ассерт (patterns/
-    #                      acceptance/GATE-1) не выполнен → баг кода
-    #   E2E_LLM_ERROR    — LLM/TTS вернул ошибку (не квота/fallback)
-    #   E2E_INFRA_FAIL   — синтез/воспроизведение упали на билд-машине
-    #   E2E_NO_REACTION  — робот не ответил (дефолт, самый слабый сигнал)
+    #   E2E_FEATURE_FAIL       — робот ответил, но фича-ассерт (patterns/
+    #                            acceptance/GATE-1) не выполнен → баг кода
+    #   E2E_LLM_ERROR          — LLM/TTS вернул ошибку (не квота/fallback)
+    #   E2E_INFRA_FAIL         — синтез/воспроизведение упали на билд-машине
+    #   E2E_NOISY_PREFLIGHT    — робот зашумлён/активен (issue #1668),
+    #                            preflight fail-fast → infra (НЕ баг кода)
+    #   E2E_NO_REACTION        — робот не ответил (дефолт, самый слабый сигнал)
     fail_marker=""
     case "${E2E_FAIL_KIND:-no_reaction}" in
-        feature)    fail_marker="E2E_FEATURE_FAIL" ;;
-        llm_error)  fail_marker="E2E_LLM_ERROR" ;;
-        synth)      fail_marker="E2E_INFRA_FAIL" ;;
-        *)          fail_marker="E2E_NO_REACTION" ;;
+        feature)         fail_marker="E2E_FEATURE_FAIL" ;;
+        noisy_preflight) fail_marker="E2E_NOISY_PREFLIGHT" ;;
+        llm_error)       fail_marker="E2E_LLM_ERROR" ;;
+        synth)           fail_marker="E2E_INFRA_FAIL" ;;
+        *)               fail_marker="E2E_NO_REACTION" ;;
     esac
     echo "$fail_marker"
     ensure_outdir
