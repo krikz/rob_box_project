@@ -1,0 +1,346 @@
+name: "L: Update Image Versions (SHA tags)"
+
+# Issue #1630 / ADR-0031: SHA-tag push в develop ВЫНЕСЕН из build workflow.
+#
+# Build workflow'ы (L-Build Main/Vision Pi Services) теперь:
+#   - делают только docker build + docker push в LOCAL registry (localhost:5000)
+#   - НЕ делают git pull/commit/push
+#   - НЕ делают docker push в GHCR (тоже registry-only, но в новом workflow)
+#   - вызывают этот workflow через `uses:` после успешного build
+#
+# Этот workflow:
+#   job 1. `mirror-to-ghcr` — login в GHCR, tag + push SHA-immutable images,
+#                           verify_in_registry() (#1503/#1482)
+#   job 2. `commit-versions` — sed .image-versions.{tag}, dedup через gh api,
+#                             commit + push в develop (#1630 dedup)
+#
+# v2 (Шифу-фидбэк 25.08: «если что-то падает — пуш не должен происходить
+# вообще»): CRITICAL — cron НЕ создаёт новых коммитов.
+#   - mirror-to-ghcr при cron: idempotent (если SHA-image уже в GHCR — skip)
+#   - commit-versions при cron: SKIP (только workflow_call/w dispatch с
+#     валидным source_sha инициирует commit). Иначе cron каждый час создавал бы
+#     мусорный `ci: main SHA tags → dev-<random-SHA>` коммит (текущий develop HEAD
+#     не равен реальному SHA-tag'у, который build хотел зафиксировать).
+#
+# Триггеры:
+#   - workflow_call: build workflow зовёт после build (full pipeline)
+#   - workflow_dispatch: ручной retry (с source_sha — full pipeline, без — mirror only)
+#   - schedule: каждый час для retry ТОЛЬКО mirror-to-ghcr (idempotent)
+#
+# Защита от каскадных fail: timeout-minutes: 10 + GIT_TERMINAL_TIMEOUT=60
+# (#1628). Если push всё равно падает — build не страдает (он registry-only),
+# cron попробует снова через час.
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service (main | vision)'
+        required: true
+        type: choice
+        default: 'main'
+        options:
+          - main
+          - vision
+      docker_tag:
+        description: 'Docker tag (dev | test | latest | local)'
+        required: true
+        type: choice
+        default: 'dev'
+        options:
+          - dev
+          - test
+          - latest
+          - local
+      source_sha:
+        description: 'GitHub SHA билда (опционально — для traceability в commit message)'
+        required: false
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      service:
+        description: 'Service (main | vision)'
+        required: true
+        type: string
+      docker_tag:
+        description: 'Docker tag (dev | test | latest | local)'
+        required: true
+        type: string
+      source_sha:
+        description: 'GitHub SHA билда'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      GH_TOKEN:
+        description: 'GitHub token (по умолчанию GITHUB_TOKEN наследуется)'
+        required: false
+  schedule:
+    # Hourly retry для пропущенных push'ей.
+    # 17 минут — избегаем :00 (там конкуренция за self-hosted runner).
+    - cron: '17 * * * *'
+
+permissions:
+  contents: write  # git push в develop
+  packages: write  # docker push в ghcr.io
+
+env:
+  # Hard-cap на git network ops (issue #t_dd49849b / PR #1628).
+  GIT_TERMINAL_TIMEOUT: '60'
+  LOCAL_REGISTRY: localhost:5000
+  GHCR_REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/rob_box
+  LOCAL_PREFIX: localhost:5000/krikz/rob_box
+  ROS_DISTRO: humble
+
+jobs:
+  # ===========================================================================
+  # Job 1: Mirror SHA-immutable images to ghcr.io + verify
+  # ===========================================================================
+  # Раньше это было в build workflow'е (update-image-versions job, #1503).
+  # Теперь — здесь. Build делает только local push, mirror — отдельный job.
+  mirror-to-ghcr:
+    name: "Mirror SHA images to ghcr.io"
+    runs-on: [self-hosted, rob-box]
+    timeout-minutes: 10
+    steps:
+      - name: Validate inputs
+        if: inputs.service != 'main' && inputs.service != 'vision'
+        run: |
+          echo "ERROR: service must be 'main' or 'vision', got '${{ inputs.service }}'" >&2
+          exit 2
+
+      - name: Validate inputs (docker_tag)
+        if: inputs.docker_tag != 'dev' && inputs.docker_tag != 'test' && inputs.docker_tag != 'latest' && inputs.docker_tag != 'local'
+        run: |
+          echo "ERROR: docker_tag must be dev|test|latest|local, got '${{ inputs.docker_tag }}'" >&2
+          exit 2
+
+      - name: Login to GitHub Container Registry
+        # Issue #1503: deploy default — registry_source=github, тянет образы из
+        # ghcr.io/krikz/rob_box. Без GHCR push develop-билды невидимы для
+        # деплоя, робот получает старые образы.
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.CR_PAT }}
+
+      - name: Mirror SHA images to GHCR + verify
+        env:
+          SERVICE: ${{ inputs.service }}
+          DOCKER_TAG: ${{ inputs.docker_tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+
+          # source_sha приходит из build workflow (GITHUB_SHA в том run).
+          # Если пусто — fallback на текущий GITHUB_SHA (для cron/manual retry).
+          if [ -z "$SOURCE_SHA" ]; then
+            SOURCE_SHA="${GITHUB_SHA}"
+          fi
+          SHORT_SHA="${SOURCE_SHA::7}"
+          NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
+
+          # tag_and_push — копирует image из local registry в GHCR с
+          # SHA-immutable тегом. После #1630 — единственное место, где
+          # делается GHCR push (build workflow'ы больше не пушат в GHCR).
+          tag_and_push() {
+            local LOCAL_TAG="$1"
+            local GHCR_TAG="${LOCAL_TAG/${LOCAL_PREFIX}/${IMAGE_PREFIX}}"
+            local LOCAL_SHA="${LOCAL_TAG}-${SHORT_SHA}"
+            local GHCR_SHA="${GHCR_TAG}-${SHORT_SHA}"
+            docker tag "$LOCAL_TAG" "$LOCAL_SHA" && docker push "$LOCAL_SHA"
+            echo "OK local  $LOCAL_SHA"
+            docker tag "$LOCAL_TAG" "$GHCR_SHA" && docker push "$GHCR_SHA"
+            echo "OK ghcr.io $GHCR_SHA"
+          }
+
+          case "$SERVICE" in
+            main)
+              tag_and_push "${LOCAL_PREFIX}:robot-state-publisher-${ROS_DISTRO}-${DOCKER_TAG}"
+              tag_and_push "${LOCAL_PREFIX}:rtabmap-${ROS_DISTRO}-${DOCKER_TAG}"
+              tag_and_push "${LOCAL_PREFIX}:twist-mux-${ROS_DISTRO}-${DOCKER_TAG}"
+              tag_and_push "${LOCAL_PREFIX}:ros2-control-${ROS_DISTRO}-${DOCKER_TAG}"
+              tag_and_push "${LOCAL_PREFIX}:nav2-${ROS_DISTRO}-${DOCKER_TAG}"
+              tag_and_push "${LOCAL_PREFIX}:lslidar-${ROS_DISTRO}-${DOCKER_TAG}"
+              tag_and_push "${LOCAL_PREFIX}:perception-${ROS_DISTRO}-${DOCKER_TAG}"
+              # teleop excluded: still uses IMAGE_TAG in docker-compose
+              ;;
+            vision)
+              tag_and_push "${LOCAL_PREFIX}:oak-d-${ROS_DISTRO}-${DOCKER_TAG}"
+              tag_and_push "${LOCAL_PREFIX}:led-matrix-${ROS_DISTRO}-${DOCKER_TAG}"
+              tag_and_push "${LOCAL_PREFIX}:ceiling-camera-${ROS_DISTRO}-${DOCKER_TAG}"
+              tag_and_push "${LOCAL_PREFIX}:voice-resources-${ROS_DISTRO}-${DOCKER_TAG}"
+              tag_and_push "${LOCAL_PREFIX}:voice-assistant-${ROS_DISTRO}-${DOCKER_TAG}"
+              tag_and_push "${LOCAL_PREFIX}:telegram-bot-${ROS_DISTRO}-${DOCKER_TAG}"
+              # supercollider excluded: tag naming is inconsistent (no ROS_DISTRO prefix)
+              ;;
+          esac
+
+          # verify_in_registry — Acceptance B (#1482): SHA-image должен быть
+          # в GHCR ДО того, как .image-versions на него сошлётся. Иначе deploy
+          # тянет несуществующий тег, робот не обновляется.
+          verify_in_registry() {
+            local TAG="$1"
+            local REPO="krikz/rob_box"
+            local URL="http://${LOCAL_REGISTRY}/v2/${REPO}/manifests/${TAG}"
+            local HTTP_CODE
+            HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+              -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+              "$URL" || echo "000")
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "ERROR Verify FAIL: ${TAG} missing in registry (HTTP ${HTTP_CODE})" >&2
+              return 1
+            fi
+            echo "OK Verify OK: ${TAG} present in registry"
+            return 0
+          }
+
+          VERIFY_FAILED=0
+          case "$SERVICE" in
+            main)
+              for SVC_TAG in \
+                "robot-state-publisher-${ROS_DISTRO}-${NEW_TAG}" \
+                "rtabmap-${ROS_DISTRO}-${NEW_TAG}" \
+                "twist-mux-${ROS_DISTRO}-${NEW_TAG}" \
+                "ros2-control-${ROS_DISTRO}-${NEW_TAG}" \
+                "nav2-${ROS_DISTRO}-${NEW_TAG}" \
+                "lslidar-${ROS_DISTRO}-${NEW_TAG}" \
+                "perception-${ROS_DISTRO}-${NEW_TAG}"; do
+                if ! verify_in_registry "$SVC_TAG"; then
+                  VERIFY_FAILED=1
+                fi
+              done
+              ;;
+            vision)
+              for SVC_TAG in \
+                "voice-assistant-${ROS_DISTRO}-${NEW_TAG}" \
+                "voice-resources-${ROS_DISTRO}-${NEW_TAG}" \
+                "telegram-bot-${ROS_DISTRO}-${NEW_TAG}" \
+                "oak-d-${ROS_DISTRO}-${NEW_TAG}" \
+                "led-matrix-${ROS_DISTRO}-${NEW_TAG}" \
+                "ceiling-camera-${ROS_DISTRO}-${NEW_TAG}"; do
+                if ! verify_in_registry "$SVC_TAG"; then
+                  VERIFY_FAILED=1
+                fi
+              done
+              ;;
+          esac
+
+          if [ "$VERIFY_FAILED" -eq 1 ]; then
+            echo "ERROR Registry verify failed для одного или нескольких SHA-тегов" >&2
+            echo " .image-versions НЕ будет обновлён" >&2
+            exit 1
+          fi
+
+          echo "All SHA images mirrored to GHCR and verified"
+
+  # ===========================================================================
+  # Job 2: Commit + push .image-versions (с dedup #1630)
+  # ===========================================================================
+  commit-versions:
+    name: "Update .image-versions.${docker_tag} for ${service}"
+    needs: mirror-to-ghcr
+    # Два условия (AND):
+    #   - mirror-to-ghcr успешен (если упал — не делать commit на несуществующие теги)
+    #   - это не «голый» cron/dispatch без source_sha: cron каждый час создавал бы
+    #     мусорный `ci: main SHA tags → dev-<random-sha>` коммит (Шифу-фидбэк #1630).
+    #     Только workflow_call от build или dispatch С явным source_sha инициируют commit.
+    if: success() && (github.event_name == 'workflow_call' || (github.event_name == 'workflow_dispatch' && inputs.source_sha != ''))
+    runs-on: [self-hosted, rob-box]
+    # Issue #1630: 2 параллельных билда могут одновременно позвать
+    # update-versions. Concurrency по (service, docker_tag) сериализует.
+    concurrency:
+      group: update-image-versions-${{ inputs.service }}-${{ inputs.docker_tag }}
+      cancel-in-progress: false
+    timeout-minutes: 10
+    steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+          clean: true
+          fetch-depth: 0
+
+      - name: Update .image-versions.${inputs.docker_tag}
+        env:
+          SERVICE: ${{ inputs.service }}
+          DOCKER_TAG: ${{ inputs.docker_tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$SOURCE_SHA" ]; then
+            SOURCE_SHA="${GITHUB_SHA}"
+          fi
+          SHORT_SHA="${SOURCE_SHA::7}"
+          NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
+
+          case "$SERVICE" in
+            main)
+              VERSIONS_FILE="docker/main/.image-versions.${DOCKER_TAG}"
+              if [ ! -f "$VERSIONS_FILE" ]; then
+                echo "ERROR $VERSIONS_FILE not found" >&2
+                exit 1
+              fi
+              sed -i \
+                -e "s|^TWIST_MUX_TAG=.*|TWIST_MUX_TAG=${NEW_TAG}|" \
+                -e "s|^MICRO_ROS_AGENT_TAG=.*|MICRO_ROS_AGENT_TAG=${NEW_TAG}|" \
+                -e "s|^ROBOT_STATE_PUBLISHER_TAG=.*|ROBOT_STATE_PUBLISHER_TAG=${NEW_TAG}|" \
+                -e "s|^RTABMAP_TAG=.*|RTABMAP_TAG=${NEW_TAG}|" \
+                -e "s|^ROS2_CONTROL_TAG=.*|ROS2_CONTROL_TAG=${NEW_TAG}|" \
+                -e "s|^LSLIDAR_TAG=.*|LSLIDAR_TAG=${NEW_TAG}|" \
+                -e "s|^PERCEPTION_TAG=.*|PERCEPTION_TAG=${NEW_TAG}|" \
+                -e "s|^NAV2_TAG=.*|NAV2_TAG=${NEW_TAG}|" \
+                "$VERSIONS_FILE"
+              ;;
+            vision)
+              VERSIONS_FILE="docker/vision/.image-versions.${DOCKER_TAG}"
+              if [ ! -f "$VERSIONS_FILE" ]; then
+                echo "ERROR $VERSIONS_FILE not found" >&2
+                exit 1
+              fi
+              sed -i \
+                -e "s|^OAK_D_TAG=.*|OAK_D_TAG=${NEW_TAG}|" \
+                -e "s|^RTABMAP_SYNC_TAG=.*|RTABMAP_SYNC_TAG=${NEW_TAG}|" \
+                -e "s|^LED_MATRIX_TAG=.*|LED_MATRIX_TAG=${NEW_TAG}|" \
+                -e "s|^CEILING_CAMERA_TAG=.*|CEILING_CAMERA_TAG=${NEW_TAG}|" \
+                -e "s|^VOICE_RESOURCES_TAG=.*|VOICE_RESOURCES_TAG=${NEW_TAG}|" \
+                -e "s|^VOICE_ASSISTANT_TAG=.*|VOICE_ASSISTANT_TAG=${NEW_TAG}|" \
+                -e "s|^TELEGRAM_BOT_TAG=.*|TELEGRAM_BOT_TAG=${NEW_TAG}|" \
+                "$VERSIONS_FILE"
+              ;;
+          esac
+
+          echo "OK $VERSIONS_FILE updated with ${NEW_TAG}"
+          cat "$VERSIONS_FILE"
+
+          git config user.email "ci@rob-box.local"
+          git config user.name "Rob Box CI"
+          git add "$VERSIONS_FILE"
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit (file already had ${NEW_TAG})"
+            exit 0
+          fi
+
+          git commit -m "ci: ${SERVICE} SHA tags → ${NEW_TAG} [skip ci]"
+
+      - name: Push to develop (with retry + dedup)
+        env:
+          SERVICE: ${{ inputs.service }}
+          DOCKER_TAG: ${{ inputs.docker_tag }}
+        run: |
+          # scripts/ci/push-image-versions.sh:
+          #   - дедуплицирует через gh api (#1630 acceptance)
+          #   - retry+rebase (PR #1388)
+          #   - hard 10-min cap + GIT_TERMINAL_TIMEOUT=60 (PR #1628)
+          CURRENT_BRANCH="$(git branch --show-current)"
+          bash scripts/ci/push-image-versions.sh "$CURRENT_BRANCH" "$SERVICE"
