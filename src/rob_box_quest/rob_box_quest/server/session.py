@@ -31,6 +31,8 @@ class ErrorCode:
     TOPIC_UNKNOWN = "TOPIC_UNKNOWN"
     RATE_LIMIT = "RATE_LIMIT"
     INTERNAL = "INTERNAL"
+    # Phase 2 (TTS picker): voice_id не найден в каталоге.
+    VOICE_UNKNOWN = "VOICE_UNKNOWN"
 
 
 # Heartbeat/watchdog тайминги (meta-quest-api.md §7 + ADR-0027 §3.3).

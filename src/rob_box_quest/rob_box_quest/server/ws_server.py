@@ -23,7 +23,18 @@ import time
 from typing import Any, Optional, Protocol
 
 from ..protocol.frame import FrameType, decode_frame, encode_frame
+from ..protocol.topics import TOPIC_IDS, encode_voice_state
 from ..streams.registry import STREAM_CATALOG, get_stream
+from ..voice import (
+    PREVIEW_RATE_LIMIT,
+    PREVIEW_WINDOW_S,
+    SessionVoiceState,
+    VoiceCatalog,
+    VoiceProvider,
+    VoiceStateRegistry,
+    build_default_provider,
+    default_catalog,
+)
 from .session import (
     ErrorCode,
     HEARTBEAT_INTERVAL_S,
@@ -129,7 +140,14 @@ _stream_ids_in_use: set[int] = set()
 class WSSServer:
     """Серверная логика — собирает app + принимает aiohttp WS-коннекты."""
 
-    def __init__(self, bridge: Bridge, pin: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        bridge: Bridge,
+        pin: Optional[str] = None,
+        *,
+        voice_catalog: Optional[VoiceCatalog] = None,
+        voice_provider: Optional[VoiceProvider] = None,
+    ) -> None:
         self.bridge = bridge
         self.pin = pin or ACTIVE_PIN
         # Текущие сессии (session_id → ClientSession) для отладки/healthcheck.
@@ -138,6 +156,12 @@ class WSSServer:
         # Хранится ОТДЕЛЬНО от ClientSession чтобы можно было отвязать
         # (без race на is_open() во время unregister).
         self._ws_by_session: dict[str, Any] = {}
+        # Phase 2: per-session voice state (active_voice_id/preset, last_error).
+        self._voice_state = VoiceStateRegistry()
+        self._voice_catalog = voice_catalog or default_catalog()
+        self._voice_provider = voice_provider or build_default_provider()
+        # session_id → voice_state_loop task (1 Hz keep-alive per session).
+        self._voice_state_tasks: dict[str, asyncio.Task] = {}
 
     def get_active_sessions(self) -> int:
         return sum(1 for s in self._sessions.values() if s.is_open())
@@ -225,6 +249,11 @@ class WSSServer:
         session.close()
         self._sessions.pop(session.session_id, None)
         self._ws_by_session.pop(session.session_id, None)
+        # Stop voice_state keep-alive task.
+        task = self._voice_state_tasks.pop(session.session_id, None)
+        if task is not None:
+            task.cancel()
+        self._voice_state.remove(session.session_id)
 
     async def _on_hello(
         self,
@@ -362,6 +391,136 @@ class WSSServer:
             self.bridge.publish_emergency()
             self.bridge.emergency_stop()
             return
+        if cmd == "list_voices":
+            # Phase 2 R13 (TTS picker): сервер шлёт JSON_EVENT{type:voices_list}.
+            await self._send(
+                ws,
+                FrameType.JSON_EVENT,
+                0,
+                {"type": "voices_list", **self._voice_catalog.to_list_payload()},
+            )
+            return
+        if cmd == "set_voice":
+            voice_id = payload_obj.get("voice_id")
+            preset_id = payload_obj.get("preset", "standard")
+            if not isinstance(voice_id, str) or not voice_id:
+                await self._send_error(
+                    ws, 0, ErrorCode.BAD_PAYLOAD, "set_voice: voice_id required"
+                )
+                return
+            voice = self._voice_catalog.get_voice(voice_id)
+            if voice is None:
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.VOICE_UNKNOWN,
+                    f"voice_id '{voice_id}' not in catalog",
+                )
+                return
+            if not isinstance(preset_id, str):
+                preset_id = "standard"
+            if self._voice_catalog.get_preset(preset_id) is None:
+                # Неизвестный preset → bad payload (НЕ VOICE_UNKNOWN —
+                # пресеты дефолтные, расширяем в Phase 3).
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.BAD_PAYLOAD,
+                    f"set_voice: preset '{preset_id}' unknown",
+                )
+                return
+            vstate = self._voice_state.get_or_create(session.session_id)
+            vstate.apply_voice(voice_id, preset_id)
+            # ACK (per-client, не broadcast — каждый Quest видит свой голос).
+            await self._send(
+                ws,
+                FrameType.JSON_EVENT,
+                0,
+                {
+                    "type": "voice_changed",
+                    "voice_id": voice_id,
+                    "preset": preset_id,
+                    "ts_ms": int(time.time() * 1000),
+                },
+            )
+            return
+        if cmd == "preview_voice":
+            voice_id = payload_obj.get("voice_id")
+            text = payload_obj.get("text", "")
+            preset_id = payload_obj.get("preset", "standard")
+            if not isinstance(voice_id, str) or not voice_id:
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.BAD_PAYLOAD,
+                    "preview_voice: voice_id required",
+                )
+                return
+            if not isinstance(text, str) or not text:
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.BAD_PAYLOAD,
+                    "preview_voice: text required",
+                )
+                return
+            voice = self._voice_catalog.get_voice(voice_id)
+            if voice is None:
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.VOICE_UNKNOWN,
+                    f"voice_id '{voice_id}' not in catalog",
+                )
+                return
+            vstate = self._voice_state.get_or_create(session.session_id)
+            if not vstate.check_preview_quota():
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.RATE_LIMIT,
+                    f"preview_voice: {PREVIEW_RATE_LIMIT}/{PREVIEW_WINDOW_S:.0f}s limit",
+                )
+                return
+            # Синтез через провайдер; синхронная urllib — ok в event-loop
+            # с явным thread-pool run (синтез ≤5 сек, см. provider.py).
+            import asyncio
+            from functools import partial
+
+            preset = (
+                self._voice_catalog.get_preset(preset_id)
+                or self._voice_catalog.get_preset("standard")
+            )
+            # preset всегда не None: get_preset("standard") существует
+            # в VoiceCatalog по построению (см. PRESETS).
+            assert preset is not None
+            opus_payload = await asyncio.get_running_loop().run_in_executor(
+                None,
+                partial(
+                    self._voice_provider.synthesize,
+                    voice_id=voice_id,
+                    text=text,
+                    preset=preset,
+                ),
+            )
+            if opus_payload is None:
+                vstate.set_error("voice-pipeline synthesize returned no audio")
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.INTERNAL,
+                    "preview_voice: synthesis failed (provider returned no audio)",
+                )
+                return
+            # Шлём BINARY_FRAME c topic_id=voice_audio_preview (0x1401).
+            # payload per meta-quest-api.md §4: [4 bytes: topic_id LE][opus bytes]
+            topic_id_bytes = TOPIC_IDS["voice_audio_preview"].to_bytes(4, "little")
+            await self._send_binary(
+                ws,
+                0,
+                topic_id_bytes + opus_payload,
+            )
+            return
         if cmd == "stream_select":
             # Meta-command: UI запросил смену активного стрима.
             # Сервер подтверждает что стрим есть в registry, и возвращает
@@ -438,6 +597,11 @@ class WSSServer:
         heartbeat_task = asyncio.create_task(self._heartbeat_loop(ws, session))
         # Watchdog loop.
         watchdog_task = asyncio.create_task(self._watchdog_loop(ws, session))
+        # Voice-state 1 Hz keep-alive loop (Phase 2 R13).
+        voice_state_task = asyncio.create_task(
+            self._voice_state_loop(ws, session)
+        )
+        self._voice_state_tasks[session.session_id] = voice_state_task
 
         try:
             async for msg in ws:
@@ -506,7 +670,8 @@ class WSSServer:
         finally:
             heartbeat_task.cancel()
             watchdog_task.cancel()
-            for task in (heartbeat_task, watchdog_task):
+            voice_state_task.cancel()
+            for task in (heartbeat_task, watchdog_task, voice_state_task):
                 try:
                     await task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
@@ -549,6 +714,47 @@ class WSSServer:
                     return
         except asyncio.CancelledError:
             return
+
+    async def _voice_state_loop(self, ws, session: ClientSession) -> None:
+        """1 Hz per-client voice_state keep-alive (Phase 2 R13).
+
+        Шлёт JSON_EVENT{type:"voice_state", active_voice_id, active_preset,
+        listening, last_error, ts_ms} каждую секунду — даже если клиент
+        не подписан на стрим `voice_state` через SUBSCRIBE (UI должен
+        видеть текущий голос независимо от топика).
+
+        До аутентификации — спим, чтобы не падать до HELLO.
+        """
+        try:
+            # Ждём аутентификации (с маленькой задержкой чтобы не крутить busy-loop).
+            while session.state.value != "authenticated" and session.is_open():
+                await asyncio.sleep(0.05)
+            while session.is_open():
+                vstate = self._voice_state.get_or_create(session.session_id)
+                payload_obj = vstate.to_state_payload(ts_ms=int(time.time() * 1000))
+                # Encode msgpack через encode_voice_state (single source of truth).
+                msgpack_bytes = encode_voice_state(**payload_obj)
+                # voice_state event — JSON_CMD-style поверх msgpack? Спека говорит
+                # JSON_EVENT в api.md §6, payload dict. Отправляем dict напрямую.
+                await self._send(
+                    ws,
+                    FrameType.JSON_EVENT,
+                    0,
+                    {
+                        "type": "voice_state",
+                        "active_voice_id": payload_obj["active_voice_id"],
+                        "active_preset": payload_obj["active_preset"],
+                        "listening": payload_obj["listening"],
+                        "last_error": payload_obj["last_error"],
+                        "ts_ms": payload_obj["ts_ms"],
+                    },
+                )
+                _ = msgpack_bytes  # msgpack формат — Phase 3 (для ROS-stream)
+                await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:  # noqa: BLE001
+            log.debug("voice_state loop ended: %s", e)
 
 
 # Проверяем наличие aiohttp лениво, чтобы тесты могли мокать.
