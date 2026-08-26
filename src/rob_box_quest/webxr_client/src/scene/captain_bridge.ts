@@ -19,6 +19,18 @@ export interface CaptainBridgeHandle {
   videoPanels: Map<string, VideoPanel>;
   initLayout(): void;
   attachXrSession(session: XRSession): Promise<void>;
+  /**
+   * Установить callback, который вызывается в XR animation loop с текущим
+   * XRFrame. Callback должен быть идемпотентным и быстрым (никаких тяжёлых
+   * raycast через Object3D.traverse на каждом кадре). Используется для
+   * §3.7 panel hover/click + §3.5 hand-tracking.
+   */
+  setOnXrFrame(cb: ((frame: XRFrame, session: XRSession) => void) | null): void;
+  /**
+   * Список объектов панелей для raycast (panelId → Object3D mesh).
+   * Можно дёргать из main.ts / xr_panel_raycast.
+   */
+  getPanelRaycastTargets(): { panelId: string; mesh: THREE.Object3D }[];
   start(): () => void;
   resize(): void;
   dispose(): void;
@@ -144,12 +156,34 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
 
   // ---------- XR (опционально) ----------
 
+  let onXrFrameCb: ((frame: XRFrame, session: XRSession) => void) | null = null;
+
   async function attachXrSession(session: XRSession): Promise<void> {
     if (opts.enableXr === false) return;
     await renderer.xr.setSession(session);
-    renderer.setAnimationLoop(() => {
+    renderer.setAnimationLoop((_time, frame) => {
       renderer.render(scene, camera);
+      if (frame && onXrFrameCb) {
+        try {
+          onXrFrameCb(frame, session);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn("[captain_bridge] onXrFrame threw:", err);
+        }
+      }
     });
+  }
+
+  function setOnXrFrame(cb: ((frame: XRFrame, session: XRSession) => void) | null): void {
+    onXrFrameCb = cb;
+  }
+
+  function getPanelRaycastTargets(): { panelId: string; mesh: THREE.Object3D }[] {
+    const out: { panelId: string; mesh: THREE.Object3D }[] = [];
+    for (const [id, vp] of videoPanels.entries()) {
+      out.push({ panelId: id, mesh: vp.mesh });
+    }
+    return out;
   }
 
   function dispose(): void {
@@ -168,6 +202,8 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     videoPanels,
     initLayout,
     attachXrSession,
+    setOnXrFrame,
+    getPanelRaycastTargets,
     start,
     resize,
     dispose
