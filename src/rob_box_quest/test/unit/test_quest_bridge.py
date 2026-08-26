@@ -95,17 +95,67 @@ def test_publish_emergency_publishes_to_emergency_topic_and_logs():
 
 
 def test_feed_client_alive_resets_watchdog():
+    """DISARMED по умолчанию → нет trip без feed().
+    После feed() → ARMED, в окне timeout — не tripped, после — tripped."""
     bridge, _, _, _ = _make_bridge()
-    # Свежий watchdog → не tripped.
     import time as _t
 
     t0 = _t.monotonic()
+    # Без feed() — DISARMED, не триггерится (анти-спам на старте ноды).
     assert bridge.watchdog_check(t0) is False
-    # Перематываем на час вперёд → tripped.
-    assert bridge.watchdog_check(t0 + 3600.0) is True
-    # Feed → снова не tripped.
+    assert bridge.watchdog_check(t0 + 3600.0) is False
+    # Feed → ARMED.
     bridge.feed_client_alive()
+    assert bridge._watchdog.armed is True
+    # Свежий — не tripped.
     assert bridge.watchdog_check(_t.monotonic() + 1.0) is False
+    # После timeout — tripped.
+    assert bridge.watchdog_check(_t.monotonic() + 3600.0) is True
+
+
+def test_publish_emergency_is_edge_triggered():
+    """publish_emergency() публикует ОДИН раз, повторные вызовы — no-op."""
+    bridge, pub_quest, pub_emergency, node = _make_bridge()
+    bridge.publish_emergency()
+    assert len(pub_emergency.published) == 1
+    first_warning_count = sum(1 for w in node.warnings if "EMERGENCY" in w)
+    # 10 повторных вызовов — должно остаться ровно 1 warning и 1 publish.
+    for _ in range(10):
+        bridge.publish_emergency()
+    assert len(pub_emergency.published) == 1, "спам в cmd_vel_emergency!"
+    final_warning_count = sum(1 for w in node.warnings if "EMERGENCY" in w)
+    assert final_warning_count == first_warning_count, "спам WARNING в логах!"
+
+
+def test_feed_client_alive_clears_emergency_edge():
+    """feed_client_alive() снимает _emergency_published → можно снова
+    публиковать emergency если клиент опять пропал."""
+    bridge, _, pub_emergency, _ = _make_bridge()
+    bridge.publish_emergency()
+    assert len(pub_emergency.published) == 1
+    bridge.publish_emergency()
+    assert len(pub_emergency.published) == 1, "не должно быть второго publish до feed"
+    # Клиент вернулся → feed → edge снят.
+    bridge.feed_client_alive()
+    # Снова публикуем — должно быть уже 2.
+    bridge.publish_emergency()
+    assert len(pub_emergency.published) == 2
+
+
+def test_watchdog_consume_trip_does_not_spam():
+    """watchdog_consume_trip() возвращает True ОДИН раз, потом False —
+    это и есть анти-спам для timer 10 Гц."""
+    bridge, _, _, _ = _make_bridge()
+    import time as _t
+
+    bridge.feed_client_alive()  # ARMED
+    later = _t.monotonic() + 3600.0  # гарантированно tripped
+    trips = 0
+    for _ in range(100):  # 100 тиков timer'а
+        if bridge.watchdog_consume_trip(later):
+            trips += 1
+        later += 0.1
+    assert trips == 1, f"должен быть ровно 1 trip, получили {trips}"
 
 
 def test_watchdog_check_uses_session_timeout():

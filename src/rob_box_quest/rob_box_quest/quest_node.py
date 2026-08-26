@@ -60,6 +60,15 @@ PUBLISH_RATE_HZ: float = 30.0
 PUBLISH_PERIOD_S: float = 1.0 / PUBLISH_RATE_HZ
 
 
+class _AlwaysActiveWSServer:
+    """Заглушка для юнит-тестов: при отсутствии реального WSSServer считаем
+    что «есть активная сессия» (1) — _publish_zero() будет лить нули как
+    раньше, чтобы старая логика тестов осталась валидной."""
+
+    def get_active_sessions(self) -> int:
+        return 1
+
+
 class QuestBridge:
     """Реализация Bridge Protocol из ws_server.py через rclpy publishers.
 
@@ -72,14 +81,19 @@ class QuestBridge:
         node: "QuestNode",
         cmd_vel_quest_pub,
         cmd_vel_emergency_pub,
-        ws_server: WSSServer,
+        ws_server: Optional[WSSServer] = None,
     ) -> None:
         self._node = node
         self._pub_quest = cmd_vel_quest_pub
         self._pub_emergency = cmd_vel_emergency_pub
-        self._ws_server = ws_server
+        # ws_server может быть None в юнит-тестах. В проде QuestNode всегда
+        # передаёт реальный WSSServer — иначе _publish_zero() вернёт True
+        # через заглушку и поведение будет как «есть активная сессия».
+        self._ws_server = ws_server or _AlwaysActiveWSServer()
         self._teleop = TeleopController()
         self._watchdog = Watchdog(timeout_s=SESSION_WATCHDOG_TIMEOUT_S)
+        # Edge-флаг: один emergency per link-loss до reset() (анти-спам).
+        self._emergency_published: bool = False
         # Маппинг camera ui_name → device_id (для on_frame callback из CameraProvider).
         self._camera_id_to_ui: dict[str, str] = {}
 
@@ -108,24 +122,24 @@ class QuestBridge:
         self._pub_quest.publish(msg)
 
     def publish_emergency(self) -> None:
-        """Edge-triggered: однократно публикуем ненулевой emergency-marker.
+        """Edge-triggered: ОДИН Twist в cmd_vel_emergency + ОДИН WARNING.
 
         twist_mux видит timeout 0.1 с на cmd_vel_emergency (priority 255)
-        → effective cmd_vel = 0. После этого сокет закроется по watchdog
-        и bridge не сможет публиковать — safe stop сохраняется до ack.
+        → effective cmd_vel = 0, держится до нового feed() или reset().
+        Повторные вызовы до reset() — no-op (анти-спам в логах и по сети).
         """
-        # Публикуем Twist с наносекундным timestamp (twist_mux считает
-        # timeout от stamp). marker = True на стороне ноды-флага не нужен
-        # потому что сам twist_mux реагирует на отсутствие сообщений.
-        msg = Twist()
-        # Специальный sentinel: угловая скорость = nan запрещена ROS;
-        # используем соглашение "emergency" в логах.
-        self._node.get_logger().warning("🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency")
-        self._pub_emergency.publish(msg)
+        if self._emergency_published:
+            return
+        self._emergency_published = True
+        self._node.get_logger().warning(
+            "🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency"
+        )
+        self._pub_emergency.publish(Twist())
 
     def feed_client_alive(self) -> None:
-        """Клиент прислал валидный фрейм → сброс watchdog."""
+        """Клиент прислал валидный фрейм → сброс watchdog + снять edge."""
         self._watchdog.feed(time.monotonic())
+        self._emergency_published = False
 
     def emergency_stop(self) -> None:
         """Зафиксировать emergency lock (клиент прислал stop_emergency)."""
@@ -196,14 +210,28 @@ class QuestBridge:
         """True если watchdog trip → safe stop нужен."""
         return self._watchdog.tripped(now_monotonic)
 
+    def watchdog_consume_trip(self, now_monotonic: float) -> bool:
+        """Edge-triggered watchdog для timer 10 Гц — True только ОДИН раз
+        на trip (не спамит emergency при каждом тике)."""
+        return self._watchdog.consume_trip(now_monotonic)
+
     def reset(self) -> None:
-        """Operator ack после emergency — снимаем lock и сбрасываем watchdog."""
+        """Operator ack или новый HELLO — снимаем lock и edge-флаги."""
         self._teleop.reset()
         self._watchdog.reset()
+        self._emergency_published = False
 
     # --- internal --------------------------------------------------------
 
     def _publish_zero(self) -> None:
+        """Шлёт Twist(0,0) в cmd_vel_quest ТОЛЬКО пока есть активная WS-сессия.
+
+        Если клиента нет — не публикуем ничего, чтобы:
+        1) не блокировать twist_mux для других источников (joystick/nav2/teleop).
+        2) не лить мусор в cmd_vel_quest когда Quest оффлайн.
+        """
+        if self._ws_server.get_active_sessions() == 0:
+            return
         msg = Twist()
         # zero linear/angular — twist_mux timeout'нет и emergency_stop (255)
         # остаётся приоритетом; cmd_vel_quest публикует нули.
@@ -320,8 +348,12 @@ class QuestNode(Node):
         self.bridge.tick_publish(time.monotonic())
 
     def _on_watchdog_timer(self) -> None:
-        if self.bridge.watchdog_check(time.monotonic()):
-            self.get_logger().warning("🛑 Watchdog tripped — emergency stop (Quest client silent)")
+        # Edge-triggered: один раз на trip → один WARNING + один emergency.
+        # Повторные тики до feed()/reset() — no-op (анти-спам).
+        if self.bridge.watchdog_consume_trip(time.monotonic()):
+            self.get_logger().warning(
+                "🛑 Watchdog tripped — emergency stop (Quest client silent)"
+            )
             self.bridge.publish_emergency()
             self.bridge.emergency_stop()
 
