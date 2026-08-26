@@ -369,6 +369,12 @@ services:
       - QUEST_HOST=${QUEST_HOST:-quest.rob_box.local}
       - QUEST_IP=${QUEST_IP:-10.1.1.11}
       - CERT_DAYS=${QUEST_CERT_DAYS:-365}
+      # WS_PORT=8766 чтобы не конфликтовать с voice-action-server,
+      # который по дефолту биндит 127.0.0.1:8765. В host-network оба
+      # порта = 8765 → второй стартующий получает OSError EADDRINUSE
+      # и aiohttp-сабтред падает → Caddy получает 404 на /quest (Phase 1.6).
+      # Меняем только rob-box-quest на 8766, voice-action-server остаётся на 8765.
+      - WS_PORT=${QUEST_WS_PORT:-8766}
       # Фиксированный PIN для dev-сессий. Если задан — используется вместо
       # случайного из generate_pin(). Чтобы перебить: export QUEST_PIN=XXXXXX
       # до docker compose up, либо через .env (QUEST_PIN=XXXXXX).
