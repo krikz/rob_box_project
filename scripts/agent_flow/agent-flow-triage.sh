@@ -1024,6 +1024,7 @@ else
     # Filter: оставить ТОЛЬКО issues с source:gsd + НЕ hermes + НЕ в Phase 1.
     # Дедуп: вычитаем phase1_issue_numbers. Если hermes-метка выставлена —
     # этот issue попал в Phase 1 и обработан там, не трогаем.
+    # shellcheck disable=SC2016  # python source in single quotes — no shell vars expected
     phase2_filtered="$(HERMES_LABEL="$ISSUE_LABEL" PHASE1_NUMS="$phase1_issue_numbers" \
         printf '%s' "$phase2_json" | HERMES_LABEL="$ISSUE_LABEL" PHASE1_NUMS="$phase1_issue_numbers" python3 -c '
 import os, sys, json
@@ -1038,6 +1039,10 @@ if p1:
 try:
     data = json.load(sys.stdin)
 except Exception:
+    print("[]")
+    sys.exit(0)
+if not isinstance(data, list):
+    print("[]")
     sys.exit(0)
 keep = []
 for it in data:
@@ -1055,8 +1060,11 @@ for it in data:
     if hermes_label in label_names:
         continue
     # Skip PRs (defensive — gh issue list с --label source:gsd не должен
-    # вернуть PRs, но на всякий случай)
-    if it.get("pull_request"):
+    # вернуть PRs, но на всякий случай). Используем `is not None` а не truthy-
+    # check, потому что пустой dict {} в Python — falsy, и реальный PR из gh
+    # приходит с непустым dict ({"url": ...}); но defensive-guard должен
+    # работать и для синтетических пустых PR-объектов.
+    if it.get("pull_request") is not None:
         continue
     keep.append(it)
 print(json.dumps(keep, ensure_ascii=False))
