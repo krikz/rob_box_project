@@ -365,8 +365,11 @@ export class Connection {
     if (this.pingTimer) clearInterval(this.pingTimer);
     this.pingTimer = setInterval(() => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-      const bytes = encodeJsonFrame(FrameType.JSON_CMD, 0, {
-        cmd: "ping",
+      // Per docs/architecture/meta-quest-api.md §7 — клиент шлёт
+      // JSON_EVENT{type:"ping"} (раньше ошибочно было JSON_CMD{cmd:"ping"},
+      // сервер его игнорировал и рвал сессию по watchdog через 600 мс).
+      const bytes = encodeJsonFrame(FrameType.JSON_EVENT, 0, {
+        type: "ping",
         ts_ms: Date.now()
       });
       try {
