@@ -130,6 +130,7 @@ ros2 run rob_box_quest quest_node \
     --ros-args \
     -p quest_host:="${QUEST_HOST}" \
     -p cert_file:="${CERT_FILE}" \
+    -p ws_port:="${WS_PORT:-8766}" \
     &
 QUEST_PID=$!
 

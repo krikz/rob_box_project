@@ -51,7 +51,7 @@
     # отдавая 502 на каждый handshake. С чистым HTTP/1.1 upgrade проходит
     # штатно (aiohttp aiohttp WS-роутер принимает соединение).
     handle /quest {
-        reverse_proxy localhost:8765 {
+        reverse_proxy localhost:8766 {
             flush_interval -1
             transport http {
                 versions 1.1
