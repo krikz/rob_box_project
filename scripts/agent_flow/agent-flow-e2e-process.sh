@@ -1912,6 +1912,20 @@ stale_branch_check() {  # $1=agent_branch $2=pr_number $3=issue_number
         fi
         # real всё ещё выше порога: используем real для логов, raw для issue-comment.
         log "stale-branch: PR tip ${agent_branch} raw=${_behind}, real=${_real_behind} после whitelist (>threshold=${threshold}) — STALE"
+        # Ретро 26.08 t_77782e4e: top-5 stale коммитов в лог (subject + SHA) —
+        # Шифу сразу видит, какие реальные изменения требуют rebase, вместо
+        # голого «raw=53, real=32». Экономим 30-минутный detective-work.
+        if [ "${DEBUG_E2E_PICKUP:-0}" = "1" ] || [ "${E2E_DIAG_STALE_COMMITS:-1}" = "1" ]; then
+            _stale_top="$(git -C "$REPO_DIR" log --oneline "${_tip_sha}..${_dev_sha}" 2>/dev/null \
+                | { grep -vE '^[0-9a-f]+ ci: (vision|main) SHA tags ' || true; } \
+                | head -5)"
+            if [ -n "$_stale_top" ]; then
+                log "stale-branch: top-$(( $(printf '%s\n' "$_stale_top" | wc -l) )) реальных коммитов (после whitelist SHA-tag noise):"
+                while IFS= read -r _sl; do
+                    [ -n "$_sl" ] && log "  stale: ${_sl}"
+                done <<< "$_stale_top"
+            fi
+        fi
     else
         log "stale-branch: PR tip ${agent_branch} отстаёт от origin/${foundation} на ${_behind} коммитов (<= threshold=${threshold}) — OK"
         return 0
@@ -2177,6 +2191,14 @@ while IFS=$'\t' read -r number title labels body source branch; do
 
     labels_norm="$(printf '%s' "$labels" | tr '[:upper:]' '[:lower:]')"
 
+    # Ретро 26.08 t_77782e4e: pickup-debug — для каждого issue печатать
+    # один лог с labels/source/branch, чтобы сразу видеть «почему этот issue
+    # в очереди». В verbose (DEBUG_E2E_PICKUP=1) печатать даже при SUCCESS;
+    # в обычном режиме — только если есть нестандартные метки (для краткости).
+    if [ "${DEBUG_E2E_PICKUP:-0}" = "1" ]; then
+        log "pickup-debug: issue #${number} source=${source:-issue} branch=${branch:-<compute_agent_branch>} labels=[$(printf '%s' "$labels" | tr ',' ' ')] title=$(printf '%s' "$title" | head -c 80)"
+    fi
+
     # Idempotency: skip if already past e2e.
     if has_label "$labels_norm" "$DONE_LABEL" || has_label "$labels_norm" "$REJECTED_LABEL"; then
         log "issue #${number} already has ${DONE_LABEL}/${REJECTED_LABEL} — skip"
@@ -2323,6 +2345,9 @@ except Exception:
     fi
     if [ "$pr_state" = "NONE" ]; then
         log "issue #${number}: no PR for ${branch} — merge-gate likely stale — skip"
+        if [ "${DEBUG_E2E_PICKUP:-0}" = "1" ]; then
+            log "pickup-debug: issue #${number} reason=no_pr head_ref=${branch:-<empty>} expected=z-{agent}/<id>-<slug>"
+        fi
         skipped=$((skipped+1)); continue
     fi
     # Orphan guard (ретро 13.08 t_423453b1, #1160): PR MERGED, но ветка
