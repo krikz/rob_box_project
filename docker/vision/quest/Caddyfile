@@ -54,15 +54,9 @@
     }
 
     # Статика Three.js (Vite build из /srv/quest_static).
-    # index.html ссылается на /quest/assets/* — handle_path отрезает префикс
-    # /quest/assets/ и отдаёт файл из /srv/quest_static/<rest>.
-    # (Vite оставляет base='/quest/' — фикс правильный, без пересборки образа.)
-    handle_path /quest/assets/* {
-        root * /srv/quest_static
-        file_server
-    }
-
-    # Корень SPA: GET / → /srv/quest_static/index.html.
+    # index.html (после Phase 1.5b — base='/') ссылается на /assets/* —
+    # отдаём из /srv/quest_static. file_server на корне SPA уже покрывает
+    # и index.html, и ассеты единым правилом.
     handle {
         root * /srv/quest_static
         file_server
