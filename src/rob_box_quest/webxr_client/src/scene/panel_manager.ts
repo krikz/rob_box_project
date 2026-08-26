@@ -25,7 +25,7 @@ export interface PanelManagerOptions {
   radius?: number;       // радиус полукруга, дефолт 2.0 м
   panelWidth?: number;   // 1.2 м
   panelHeight?: number;  // 0.7 м
-  panelYOffset?: number; // 0.0 (высота глаз ±0.2 — см. дизайн)
+  panelYOffset?: number; // 1.6 (высота глаз — см. дизайн §3)
   defaultTopics?: string[]; // порядок по умолчанию
 }
 
@@ -46,7 +46,7 @@ export class PanelManager {
       radius: opts.radius ?? 2.0,
       panelWidth: opts.panelWidth ?? 1.2,
       panelHeight: opts.panelHeight ?? 0.7,
-      panelYOffset: opts.panelYOffset ?? 0.0,
+      panelYOffset: opts.panelYOffset ?? 1.6,
       defaultTopics: opts.defaultTopics ?? [...DEFAULT_VIDEO_TOPICS]
     };
   }

@@ -277,6 +277,10 @@ export async function loadBridgeAssets(
     hdrData.dispose();
     pmrem.dispose();
     scene.environment = envMap;
+    // Ослабляем IBL: металлические стены/консоль с metalness 0.4–0.7 на
+    // ярком HDR выглядели бы белёсыми («белая стена»). 0.25 оставляет
+    // лёгкие отражения, но база цвета доминирует.
+    scene.environmentIntensity = 0.25;
     // scene.background is intentionally NOT set: bridge walls/viewports
     // give the dark interior look; HDR is for reflection only.
   }
