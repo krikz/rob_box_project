@@ -1,0 +1,304 @@
+{
+  "design": {
+    "style": "low-poly sci-fi Captain Bridge",
+    "palette": {
+      "floorBase": "0x14181f",
+      "floorEdge": "0x2ec27e",
+      "floorPanel": "0x1a2230",
+      "wallBase": "0x181c25",
+      "wallPanel": "0x222831",
+      "wallViewport": "0x0a0d11",
+      "wallEdge": "0x2ec27e",
+      "console": "0x1f242e",
+      "consoleStrip": "0x2ec27e",
+      "consoleScreen": "0x0a4d4d",
+      "chair": "0x0e1116",
+      "chairCush": "0x1a2230",
+      "chairEdge": "0x2ec27e",
+      "holo": "0x44ddff",
+      "navOrigin": "0x44ddff",
+      "navConsole": "0xffd24a",
+      "navTerminal": "0xff7e6b",
+      "navEntry": "0xb388ff",
+      "occluder": "0x44ddff"
+    },
+    "lighting_plan": {
+      "ambient": {
+        "color": "0xffffff",
+        "intensity": 0.6
+      },
+      "directional": {
+        "color": "0xffffff",
+        "intensity": 0.4,
+        "position": [
+          2,
+          4,
+          1
+        ]
+      },
+      "ibl": {
+        "source": "bridge_env_1k.hdr",
+        "format": "Radiance HDR (Poly Haven CC0)",
+        "target_ktx2_after_phase_2_0": "≤ 400 KB"
+      }
+    },
+    "dimensions_m": {
+      "width": 7,
+      "depth": 8,
+      "height": 3
+    },
+    "ceiling": "open (room-scale VR)"
+  },
+  "safe_walk_area": {
+    "min": [
+      -3.2,
+      0,
+      -3.7
+    ],
+    "max": [
+      3.2,
+      2.5,
+      3.7
+    ],
+    "note": "polygon AABB внутри стен; не включает зону main console (z >= 1.5) и side terminals (|x| >= 3.0). Размер: ~6.4×2.5×7.4м — комфортно для room-scale VR с центром в (0, 0, 0)."
+  },
+  "nav_points": [
+    {
+      "id": "origin",
+      "position": [
+        0,
+        0.05,
+        0
+      ],
+      "size": [
+        0.2,
+        0.1,
+        0.2
+      ],
+      "kind": "origin",
+      "label": "user spawn (0,0,0)"
+    },
+    {
+      "id": "console-c",
+      "position": [
+        0,
+        0.5,
+        1.8
+      ],
+      "size": [
+        3.6,
+        1,
+        0.6
+      ],
+      "kind": "console",
+      "label": "main console area"
+    },
+    {
+      "id": "terminal-l",
+      "position": [
+        -3.2,
+        0.5,
+        0.5
+      ],
+      "size": [
+        0.7,
+        1,
+        0.5
+      ],
+      "kind": "terminal",
+      "label": "left side terminal"
+    },
+    {
+      "id": "terminal-r",
+      "position": [
+        3.2,
+        0.5,
+        0.5
+      ],
+      "size": [
+        0.7,
+        1,
+        0.5
+      ],
+      "kind": "terminal",
+      "label": "right side terminal"
+    },
+    {
+      "id": "entry-back",
+      "position": [
+        0,
+        0.05,
+        -3.5
+      ],
+      "size": [
+        1.4,
+        0.1,
+        0.6
+      ],
+      "kind": "entry",
+      "label": "back entry (teleport anchor)"
+    },
+    {
+      "id": "entry-front",
+      "position": [
+        0,
+        0.05,
+        3.5
+      ],
+      "size": [
+        1.4,
+        0.1,
+        0.6
+      ],
+      "kind": "entry",
+      "label": "front entry (teleport anchor)"
+    },
+    {
+      "id": "holo-left",
+      "position": [
+        -1,
+        0.5,
+        -1.8
+      ],
+      "size": [
+        0.6,
+        1.2,
+        0.6
+      ],
+      "kind": "holo",
+      "label": "left holo-projector zone"
+    },
+    {
+      "id": "holo-right",
+      "position": [
+        1,
+        0.5,
+        -1.8
+      ],
+      "size": [
+        0.6,
+        1.2,
+        0.6
+      ],
+      "kind": "holo",
+      "label": "right holo-projector zone"
+    }
+  ],
+  "occluders": [
+    {
+      "id": "occ-back",
+      "position": [
+        0,
+        1.5,
+        -3.96
+      ],
+      "size": [
+        7.4,
+        3.2,
+        0.01
+      ],
+      "normal": [
+        0,
+        0,
+        -1
+      ],
+      "label": "back wall occluder"
+    },
+    {
+      "id": "occ-front",
+      "position": [
+        0,
+        1.5,
+        3.96
+      ],
+      "size": [
+        7.4,
+        3.2,
+        0.01
+      ],
+      "normal": [
+        0,
+        0,
+        1
+      ],
+      "label": "front wall occluder"
+    },
+    {
+      "id": "occ-left",
+      "position": [
+        -3.46,
+        1.5,
+        0
+      ],
+      "size": [
+        8.4,
+        3.2,
+        0.01
+      ],
+      "normal": [
+        0,
+        0,
+        0
+      ],
+      "label": "left wall occluder"
+    },
+    {
+      "id": "occ-right",
+      "position": [
+        3.46,
+        1.5,
+        0
+      ],
+      "size": [
+        8.4,
+        3.2,
+        0.01
+      ],
+      "normal": [
+        0,
+        0,
+        0
+      ],
+      "label": "right wall occluder"
+    }
+  ],
+  "budgets_raw_bytes": {
+    "floor": 122880,
+    "walls": 184320,
+    "props": 256000,
+    "nav": 30720,
+    "occluders": 20480
+  },
+  "files": [
+    {
+      "name": "bridge_floor.glb",
+      "size": 95080,
+      "budget": 122880,
+      "ok": true
+    },
+    {
+      "name": "bridge_walls.glb",
+      "size": 24576,
+      "budget": 184320,
+      "ok": true
+    },
+    {
+      "name": "bridge_props.glb",
+      "size": 53900,
+      "budget": 256000,
+      "ok": true
+    },
+    {
+      "name": "bridge_nav.glb",
+      "size": 12288,
+      "budget": 30720,
+      "ok": true
+    },
+    {
+      "name": "bridge_occluders.glb",
+      "size": 6004,
+      "budget": 20480,
+      "ok": true
+    }
+  ]
+}

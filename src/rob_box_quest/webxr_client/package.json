@@ -1,7 +1,7 @@
 {
   "name": "@rob_box/quest-webxr-client",
   "version": "0.1.0",
-  "description": "Meta Quest / WebXR Captain Bridge client for rob_box_quest (Phase 1.5).",
+  "description": "Meta Quest / WebXR Captain Bridge client for rob_box_quest (Phase 2.0: glTF asset pipeline + Three.js + WebXR).",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "gltf:optimize": "node scripts/gltf-optimize.mjs",
+    "gltf:verify": "node scripts/gltf-verify.mjs"
   },
   "dependencies": {
     "three": "^0.170.0",
@@ -19,6 +21,12 @@
   "devDependencies": {
     "@types/three": "^0.170.0",
     "@types/node": "^20.12.7",
+    "@gltf-transform/core": "^4.4.2",
+    "@gltf-transform/functions": "^4.4.2",
+    "@gltf-transform/extensions": "^4.4.2",
+    "draco3dgltf": "^1.5.7",
+    "meshoptimizer": "^1.2.0",
+    "sharp": "^0.33.5",
     "jsdom": "^24.1.0",
     "typescript": "^5.5.4",
     "vite": "^5.4.8",
