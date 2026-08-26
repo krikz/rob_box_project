@@ -13,6 +13,7 @@ from rob_box_quest.protocol.topics import (
     encode_lidar_2d,
     encode_person_detections,
     encode_robot_status,
+    encode_voice_state,
 )
 
 
@@ -30,6 +31,9 @@ class TestTopicRegistry:
 
     def test_voice_state_topic_id(self):
         assert TOPIC_IDS["voice_state"] == 0x1202
+
+    def test_voice_audio_preview_topic_id(self):
+        assert TOPIC_IDS["voice_audio_preview"] == 0x1401
 
     def test_person_detections_topic_id(self):
         assert TOPIC_IDS["person_detections"] == 0x1301
@@ -107,3 +111,36 @@ class TestPersonDetectionsPayload:
         assert isinstance(decoded["detections"], list)
         assert len(decoded["detections"]) == 1
         assert decoded["detections"][0]["cls"] == "person"
+
+
+class TestVoiceStatePayload:
+    """Phase 2: voice_state payload расширен полями для TTS picker."""
+
+    def test_required_keys(self):
+        payload = encode_voice_state(
+            active_voice_id="anton",
+            active_preset="standard",
+            listening=False,
+            last_error=None,
+            ts_ms=1234567890,
+        )
+        decoded = msgpack.unpackb(payload, raw=False)
+        assert decoded["active_voice_id"] == "anton"
+        assert decoded["active_preset"] == "standard"
+        assert decoded["listening"] is False
+        assert decoded["last_error"] is None
+        assert decoded["ts_ms"] == 1234567890
+        # legacy-поле для v1 клиентов сохранено.
+        assert decoded["state"] == "speaking"
+
+    def test_with_error_string(self):
+        payload = encode_voice_state(
+            active_voice_id="alena",
+            active_preset="friendly",
+            listening=True,
+            last_error="voice-pipeline offline",
+            ts_ms=1,
+        )
+        decoded = msgpack.unpackb(payload, raw=False)
+        assert decoded["last_error"] == "voice-pipeline offline"
+        assert decoded["listening"] is True

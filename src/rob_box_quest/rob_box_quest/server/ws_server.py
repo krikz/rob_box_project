@@ -443,6 +443,21 @@ class WSSServer:
                     "ts_ms": int(time.time() * 1000),
                 },
             )
+            # Немедленный voice_state event (UI обновится сразу, не дожидаясь
+            # следующего 1 Hz tick'а). legacy-поле state для v1 клиентов.
+            await self._send(
+                ws,
+                FrameType.JSON_EVENT,
+                0,
+                {
+                    "type": "voice_state",
+                    "active_voice_id": voice_id,
+                    "active_preset": preset_id,
+                    "listening": vstate.listening,
+                    "last_error": vstate.last_error,
+                    "ts_ms": int(time.time() * 1000),
+                },
+            )
             return
         if cmd == "preview_voice":
             voice_id = payload_obj.get("voice_id")
@@ -510,6 +525,21 @@ class WSSServer:
                     0,
                     ErrorCode.INTERNAL,
                     "preview_voice: synthesis failed (provider returned no audio)",
+                )
+                # Немедленный voice_state event с last_error (UI знает что
+                # что-то сломалось, не дожидаясь 1 Hz tick).
+                await self._send(
+                    ws,
+                    FrameType.JSON_EVENT,
+                    0,
+                    {
+                        "type": "voice_state",
+                        "active_voice_id": vstate.active_voice_id or "",
+                        "active_preset": vstate.active_preset,
+                        "listening": vstate.listening,
+                        "last_error": vstate.last_error,
+                        "ts_ms": int(time.time() * 1000),
+                    },
                 )
                 return
             # Шлём BINARY_FRAME c topic_id=voice_audio_preview (0x1401).
