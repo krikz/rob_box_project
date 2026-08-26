@@ -34,6 +34,13 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   const bridge = createCaptainBridge({ canvas: opts.canvas, enableXr: true });
   bridge.initLayout();
   const stopRender = bridge.start();
+  // Phase 2.1: load Captain Bridge CC0 environment (5 GLB + HDR).
+  // Fail-soft — see captain_bridge.ts → loadEnvironment(). The procedural
+  // fallback floor + grid stays in place if the GLB fetch fails.
+  bridge.loadEnvironment().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.warn("[bootstrap] bridge environment load rejected:", err);
+  });
 
   const fsm = new TeleopFSM();
   const desktopTeleop = createDesktopTeleop({ fsm });

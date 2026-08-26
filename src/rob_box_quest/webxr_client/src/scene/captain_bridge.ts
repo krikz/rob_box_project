@@ -4,10 +4,20 @@ import * as THREE from "three";
 import { LidarOverlay } from "./lidar_overlay";
 import { VideoPanel } from "./video_panel";
 import { PanelManager } from "./panel_manager";
+import {
+  loadBridgeAssets,
+  type BridgeAssetHandle,
+} from "./bridge_assets";
 
 export interface CaptainBridgeOptions {
   canvas: HTMLCanvasElement;
   enableXr?: boolean;
+  /**
+   * Optional override for the environment base URL. Defaults to
+   * `/models/environment/`. Pass `null` to disable environment loading
+   * (e.g. unit tests that only exercise panels/LiDAR).
+   */
+  environmentBaseUrl?: string | null;
 }
 
 export interface CaptainBridgeHandle {
@@ -17,6 +27,13 @@ export interface CaptainBridgeHandle {
   lidar: LidarOverlay;
   panels: PanelManager;
   videoPanels: Map<string, VideoPanel>;
+  /**
+   * Loaded environment handle once `loadEnvironment()` resolves. `null`
+   * until then, or if `environmentBaseUrl === null` was passed.
+   */
+  environment: BridgeAssetHandle | null;
+  /** Async-load the Phase 2.1 Captain Bridge environment (GLB + HDR). */
+  loadEnvironment(): Promise<BridgeAssetHandle | null>;
   initLayout(): void;
   attachXrSession(session: XRSession): Promise<void>;
   start(): () => void;
@@ -83,6 +100,28 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // Panel manager + video panels.
   const panelMgr = new PanelManager();
   const videoPanels = new Map<string, VideoPanel>();
+
+  // Phase 2.1 environment (loaded lazily via loadEnvironment()).
+  let environment: BridgeAssetHandle | null = null;
+  const environmentBaseUrl = opts.environmentBaseUrl === null ? null : (opts.environmentBaseUrl ?? "/models/environment/");
+  async function loadEnvironment(): Promise<BridgeAssetHandle | null> {
+    if (environment) return environment;
+    if (environmentBaseUrl === null) return null;
+    try {
+      environment = await loadBridgeAssets(scene, renderer, {
+        baseUrl: environmentBaseUrl,
+        loadHdr: true,
+      });
+    } catch (err) {
+      // Fail soft: keep the procedural fallback floor + grid so the scene
+      // remains usable in environments where the GLB cannot be served
+      // (offline dev, missing static server, CDN failure). Log once.
+      // eslint-disable-next-line no-console
+      console.warn("[captain_bridge] bridge environment failed to load, falling back to procedural scene:", err);
+      environment = null;
+    }
+    return environment;
+  }
 
   function syncPanels(): void {
     const states = panelMgr.list();
@@ -156,6 +195,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     window.removeEventListener("resize", resize);
     for (const vp of videoPanels.values()) vp.dispose();
     lidar.dispose();
+    environment?.dispose();
     renderer.dispose();
   }
 
@@ -166,6 +206,8 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     lidar,
     panels: panelMgr,
     videoPanels,
+    environment,
+    loadEnvironment,
     initLayout,
     attachXrSession,
     start,
