@@ -306,8 +306,19 @@ services:
   # Зависимость: webxr_client/ (Phase 1.5) должен быть merged в текущую
   # ветку ДО сборки образа. Если его нет — COPY в Dockerfile упадёт
   # (явная ошибка зависимости, не silent degradation).
+  #
+  # Opt-in через compose profile "quest" (ADR-0018 принцип «no silent degradation»):
+  # по умолчанию `docker compose up` на test-env пропускает этот сервис, чтобы
+  # не запускать restart-loop до merge полного Phase 1.6/1.7 (#1652 / #1643) —
+  # src/rob_box_quest/ живёт в feature/avatar, ещё не в develop. На Phase 1.6
+  # EADDRINUSE на :8765 ловит voice-action-server (тот же порт, host network)
+  # при отсутствии reuse_port=True в quest_node — будет повторяться.
+  # Активация: COMPOSE_PROFILES=quest docker compose up (тот же приём применён
+  # к cadvisor/promtail/ollama). Fix #1671 (round-243 deploy-fail), см. PR #1659
+  # (round-235), #1651 (round-232), #1654 (round-233), #1656 (round-234).
   quest:
     # Tag tracked in docker/vision/.image-versions.{env} — updated by CI
+    profiles: ["quest"]
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:quest-${ROS_DISTRO:-humble}-${QUEST_TAG:-${IMAGE_TAG}}
     container_name: rob-box-quest
     network_mode: host
