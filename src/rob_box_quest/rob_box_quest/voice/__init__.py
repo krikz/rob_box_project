@@ -31,6 +31,12 @@ from .provider import (
     build_default_provider,
     synthesize_preview,
 )
+from .voice_state import (
+    PREVIEW_RATE_LIMIT,
+    PREVIEW_WINDOW_S,
+    SessionVoiceState,
+    VoiceStateRegistry,
+)
 
 __all__ = [
     "PRESETS",
@@ -43,4 +49,8 @@ __all__ = [
     "default_catalog",
     "build_default_provider",
     "synthesize_preview",
+    "PREVIEW_RATE_LIMIT",
+    "PREVIEW_WINDOW_S",
+    "SessionVoiceState",
+    "VoiceStateRegistry",
 ]
