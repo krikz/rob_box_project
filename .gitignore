@@ -100,3 +100,8 @@ tests/e2e/_artifacts/
 
 # frontend
 node_modules/
+
+# Vite root cache — artefact of `npx vite` when invoked from a directory
+# without local vite/node_modules (e.g. wrong cwd in PowerShell). Normal
+# vite cache for webxr_client is in src/rob_box_quest/webxr_client/.gitignore.
+/.vite/
