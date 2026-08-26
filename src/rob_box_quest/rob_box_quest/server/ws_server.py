@@ -318,6 +318,8 @@ class WSSServer:
         """JSON_CMD → Bridge + meta-commands.
 
         Контракт:
+        - ping → session.feed_ping() (клиент шлёт JSON_CMD{cmd:"ping"})
+                 или JSON_EVENT{type:"ping"} — обрабатывается в _on_json_event
         - teleop_twist → Bridge.publish_quest + feed_client_alive
         - stop_emergency → Bridge.publish_emergency + emergency_stop
         - stream_select → переключение активного camera-стрима
@@ -325,6 +327,14 @@ class WSSServer:
         - voice_mode / voice_ptt / ui_button → Phase 2
         """
         cmd = payload_obj.get("cmd")
+        if cmd == "ping":
+            # Клиентский webxr_client/src/wire/connection.ts шлёт ping как
+            # JSON_CMD{cmd:"ping"} (отступление от контракта meta-quest-api.md
+            # §7, который говорит JSON_EVENT{type:"ping"}). Сбрасываем watchdog
+            # в обоих случаях чтобы не терять сессию.
+            session.feed_ping()
+            self.bridge.feed_client_alive()
+            return
         if cmd == "stream_list":
             items = []
             for s in self.bridge.available_streams():
