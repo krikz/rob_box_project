@@ -58,7 +58,7 @@ export interface ConnectionOptions {
   // Heartbeat: клиент шлёт ping каждые intervalMs (api.md §7 рекомендует 5с;
   // сервер ждёт 3 пропуска по 200мс heartbeat → trip). Здесь мы шлём ping
   // каждые 1 с для надёжности (4 подряд пропуска точно триггернут watchdog).
-  pingIntervalMs?: number;
+  pingIntervalMs?: number; // дефолт 250 — быстрее серверного WATCHDOG_TIMEOUT_S (600 мс) с большим запасом.
   // Reconnect exponential backoff.
   reconnectInitialMs?: number; // 1000
   reconnectMaxMs?: number; // 30000
@@ -104,7 +104,7 @@ export class Connection {
       capabilities: opts.capabilities ?? ["webxr"],
       pin: opts.pin,
       watchdogTimeoutMs: opts.watchdogTimeoutMs ?? 600,
-      pingIntervalMs: opts.pingIntervalMs ?? 1000,
+      pingIntervalMs: opts.pingIntervalMs ?? 250,
       reconnectInitialMs: opts.reconnectInitialMs ?? 1000,
       reconnectMaxMs: opts.reconnectMaxMs ?? 30_000,
       autoReconnect: opts.autoReconnect ?? true
@@ -177,6 +177,7 @@ export class Connection {
     this.ws = ws;
 
     ws.addEventListener("open", () => {
+      console.log("[quest] WS open: sending HELLO", { url: this.opts.url });
       this.setState("authenticating");
       const hello: HelloMsg = {
         client_version: this.opts.clientVersion,
@@ -225,6 +226,7 @@ export class Connection {
   }
 
   private dispatchFrame(frame: DecodedFrame): void {
+    console.log("[quest] RX frame type=0x" + frame.type.toString(16) + " streamId=" + frame.streamId);
     if (frame.type === FrameType.WELCOME) {
       this.handleWelcome(frame);
       return;
@@ -252,11 +254,13 @@ export class Connection {
   private handleWelcome(frame: DecodedFrame): void {
     try {
       const obj = JSON.parse(new TextDecoder().decode(frame.payload));
+      console.log("[quest] WELCOME received", obj);
       this.setState("connected");
       this.reconnectAttempt = 0;
       this.listeners.onWelcome?.(obj.session_id, obj.server_time_ms);
       this.startPing();
     } catch (err) {
+      console.log("[quest] WELCOME parse error", err);
       this.listeners.onError?.("BAD_PAYLOAD", `welcome parse: ${(err as Error).message}`);
     }
   }
@@ -363,6 +367,7 @@ export class Connection {
 
   private startPing(): void {
     if (this.pingTimer) clearInterval(this.pingTimer);
+    console.log("[quest] startPing: interval=", this.opts.pingIntervalMs, "ms");
     this.pingTimer = setInterval(() => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
       // Per docs/architecture/meta-quest-api.md §7 — клиент шлёт
@@ -418,6 +423,7 @@ export class Connection {
 
   private setState(s: ConnectionState, info?: string): void {
     if (this.state === s) return;
+    console.log("[quest] state:", this.state, "->", s, info ? `(${info})` : "");
     this.state = s;
     this.listeners.onStateChange?.(s, info);
   }
