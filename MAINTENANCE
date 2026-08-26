@@ -1,0 +1,29 @@
+# MAINTENANCE MODE
+
+Товарищ Шифу тестирует систему вручную. **ВСЕ автоматические процессы приостановлены**.
+
+## Что приостановлено
+
+- agent-flow-triage (НЕ триажить новые issues)
+- agent-flow-merge-gate (НЕ мёрджить PR)
+- agent-flow-e2e-process (НЕ запускать e2e)
+- agent-flow-post-merge-build (НЕ собирать develop)
+- agent-flow-deploy-sweep (НЕ деплоить)
+- agent-flow-drift-detect (НЕ блокировать)
+- agent-flow-unlabeled-sweep (НЕ архивировать)
+- agent-flow-cleanup-249 (НЕ чистить Katana)
+- agent-flow-e2e-drift-watchdog (НЕ мониторить e2e drift)
+- agent-flow-completion-check (НЕ валидировать honestки)
+- agent-flow-handoff (НЕ хэндофить)
+
+## Что разрешено
+
+- Локальные команды Шифу вручную (`git pull`, тесты, разработка)
+- PR-ы можно открывать но НЕ мёрджить
+- Воркеры (devops/backend/architect) могут работать по карточкам
+
+## Когда снять
+
+Удалите этот файл или переименуйте в MAINTENANCE.done когда тестирование завершено.
+
+Создан: 2026-08-25 (товарищ Шифу тестирует)
