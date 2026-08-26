@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import struct
-from typing import Sequence
+from typing import Optional, Sequence
 
 import msgpack
 
@@ -25,6 +25,9 @@ TOPIC_IDS: dict[str, int] = {
     "robot_status": 0x1201,
     "voice_state": 0x1202,
     "person_detections": 0x1301,
+    # Phase 2: server → client audio preview в ответ на preview_voice cmd.
+    # payload = raw opus bytes (тот же формат, что и rob_box_voice/tts_node).
+    "voice_audio_preview": 0x1401,
 }
 
 
@@ -88,6 +91,35 @@ def encode_robot_status(
             "mode": str(mode),
             "vel_linear": float(vel_linear),
             "vel_angular": float(vel_angular),
+            "ts_ms": int(ts_ms),
+        },
+        use_bin_type=True,
+    )
+
+
+# --- voice_state payload (Phase 2 TTS picker) -----------------------------
+def encode_voice_state(
+    *,
+    active_voice_id: str,
+    active_preset: str,
+    listening: bool,
+    last_error: Optional[str],
+    ts_ms: int,
+) -> bytes:
+    """Encode voice_state → MessagePack.
+
+    Phase 2 расширяет payload: добавляет active_voice_id / active_preset /
+    listening / last_error для TTS picker UI. Контракт см. ADR-0032 / phase2
+    карточка t_ed55518e. backward-compat: клиенты, которые не знают новых
+    полей, просто игнорируют (meta-quest-api.md §11).
+    """
+    return msgpack.packb(
+        {
+            "state": "speaking",  # legacy-поле для v1 клиентов
+            "active_voice_id": str(active_voice_id),
+            "active_preset": str(active_preset),
+            "listening": bool(listening),
+            "last_error": (str(last_error) if last_error is not None else None),
             "ts_ms": int(ts_ms),
         },
         use_bin_type=True,
