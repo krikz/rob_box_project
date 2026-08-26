@@ -21,6 +21,6 @@
     "jsx": "preserve",
     "outDir": "./dist-types"
   },
-  "include": ["src", "tests"],
+  "include": ["src", "tests", "declarations.d.ts", "*.d.ts"],
   "exclude": ["node_modules", "dist"]
 }
