@@ -1,14 +1,17 @@
 // stream_select UI: lil-gui справа-сверху. Add Panel / Close / Layout reset /
-// Connection status / Switch stream.
+// Connection status / Switch stream. Phase 1.5: +XR Mode (Enter/Exit VR).
 
 import GUI from "lil-gui";
 import type { PanelManager } from "../scene/panel_manager";
 import type { StreamMeta } from "../wire/messages";
+import type { XrBootstrap } from "../xr_bootstrap";
 
 export interface StreamSelectHandle {
   destroy(): void;
   setConnectionStatus(text: string, cls: "connected" | "connecting" | "lost"): void;
   setAvailableStreams(streams: StreamMeta[]): void;
+  /** Обновить статус XR-сессии в UI. */
+  setXrSessionState(state: "not-in-vr" | "in-vr" | string): void;
   refresh(): void;
 }
 
@@ -18,6 +21,9 @@ export interface StreamSelectOptions {
   onUnsubscribe(topic: string): void;
   onResetLayout(): void;
   getActiveTopics(): string[];
+  xr: XrBootstrap;
+  onEnterVr(): void;
+  onExitVr(): void;
 }
 
 export function createStreamSelect(opts: StreamSelectOptions): StreamSelectHandle {
@@ -32,6 +38,38 @@ export function createStreamSelect(opts: StreamSelectOptions): StreamSelectHandl
       refresh();
     }
   };
+
+  // XR-Mode состояние (Phase 1.5, design §4).
+  // xrStatus: "unsupported" | "supported-not-in-vr" | "in-vr" | "failed:<msg>"
+  const xrState = {
+    status: "checking…",
+    enter: () => opts.onEnterVr(),
+    exit: () => opts.onExitVr()
+  };
+  let xrEnterCtrl: ReturnType<GUI["add"]> | null = null;
+  let xrExitCtrl: ReturnType<GUI["add"]> | null = null;
+
+  // Создаём папку заранее; visibility/кнопки зависят от поддержки.
+  const folderXr = gui.addFolder("XR Mode (Quest)");
+  const xrStatusCtrl = folderXr.add(xrState, "status").name("Status").disable();
+  folderXr.close();
+
+  // Асинхронная проверка поддержки XR (некоторые браузеры зависают).
+  void opts.xr.isSupported("immersive-vr").then((ok) => {
+    if (ok) {
+      xrState.status = "supported, not in VR";
+      xrStatusCtrl.updateDisplay();
+      folderXr.open();
+      // Кнопка входа: lil-gui хранит controller; добавляем один раз.
+      if (!xrEnterCtrl) {
+        xrEnterCtrl = folderXr.add(xrState, "enter").name("▶ Enter VR");
+      }
+    } else {
+      xrState.status = "unsupported";
+      xrStatusCtrl.updateDisplay();
+      folderXr.close();
+    }
+  });
 
   let availableStreams: StreamMeta[] = [];
 
@@ -117,6 +155,40 @@ export function createStreamSelect(opts: StreamSelectOptions): StreamSelectHandl
       availableStreams = streams;
       addCtrl.options(availableTopicsOrEmpty());
       addCtrl.updateDisplay();
+    },
+    setXrSessionState(s): void {
+      // Перерисуем XR-блок: если в VR — кнопка Exit, иначе Enter (или unsupported).
+      xrState.status = s;
+      xrStatusCtrl.updateDisplay();
+      if (s === "in-vr") {
+        if (xrEnterCtrl) {
+          xrEnterCtrl.destroy();
+          xrEnterCtrl = null;
+        }
+        if (!xrExitCtrl) {
+          xrExitCtrl = folderXr.add(xrState, "exit").name("■ Exit VR");
+        }
+        folderXr.open();
+      } else if (s === "not-in-vr") {
+        if (xrExitCtrl) {
+          xrExitCtrl.destroy();
+          xrExitCtrl = null;
+        }
+        // Кнопка Enter уже могла быть добавлена на старте.
+        if (!xrEnterCtrl) {
+          xrEnterCtrl = folderXr.add(xrState, "enter").name("▶ Enter VR");
+        }
+      } else {
+        // failed:<msg> — просто показываем статус, кнопки оставляем как есть.
+        if (xrEnterCtrl) {
+          xrEnterCtrl.destroy();
+          xrEnterCtrl = null;
+        }
+        if (xrExitCtrl) {
+          xrExitCtrl.destroy();
+          xrExitCtrl = null;
+        }
+      }
     },
     refresh
   };

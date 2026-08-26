@@ -1,9 +1,17 @@
 // Bootstrap: подключение к WSS, инициализация сцены, teleop, UI.
+//
+// Phase 1.5: WebXR-вход (immersive-vr). Если navigator.xr есть и устройство
+// поддерживает режим — в stream_select появляется блок "XR Mode" с кнопками
+// Enter/Exit VR. По клику (user-activation обязателен!) → requestSession →
+// attachXrSession → Three.js XR-рендер + XR-контроллеры читаются в frame loop
+// и кормят TeleopFSM.
 
 import { Connection } from "./wire/connection";
 import { createCaptainBridge } from "./scene/captain_bridge";
 import { TeleopFSM } from "./input/teleop_fsm";
 import { createDesktopTeleop } from "./input/desktop_teleop";
+import { createXrTeleop, pollXrInput } from "./input/xr_teleop";
+import { createXrBootstrap, type XrBootstrap } from "./xr_bootstrap";
 import { createStreamSelect } from "./ui/stream_select";
 import type { StreamMeta } from "./wire/messages";
 
@@ -23,16 +31,20 @@ interface BootstrapOptions {
 
 export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   const url = opts.url ?? deriveWsUrl();
-  const bridge = createCaptainBridge({ canvas: opts.canvas });
+  const bridge = createCaptainBridge({ canvas: opts.canvas, enableXr: true });
   bridge.initLayout();
   const stopRender = bridge.start();
 
   const fsm = new TeleopFSM();
   const desktopTeleop = createDesktopTeleop({ fsm });
+  const xr: XrBootstrap = createXrBootstrap();
 
   let conn: Connection | null = null;
   let streamSelect: ReturnType<typeof createStreamSelect> | null = null;
   let disconnected = true;
+  let xrTeleopHandle: ReturnType<typeof createXrTeleop> | null = null;
+  // Последний кэшированный inputSources; обновляется через inputsourceschange.
+  let xrInputSources: XRInputSource[] = [];
 
   function setStatus(text: string, cls: "connected" | "connecting" | "lost"): void {
     opts.statusEl.textContent = text;
@@ -130,7 +142,10 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       for (const t of topics) conn?.subscribe(t);
       streamSelect!.refresh();
     },
-    getActiveTopics: () => bridge.panels.list().map((p) => p.topic)
+    getActiveTopics: () => bridge.panels.list().map((p) => p.topic),
+    xr,
+    onEnterVr: () => enterVr(),
+    onExitVr: () => exitVr()
   });
   setStatus("CONNECTING…", "connecting");
 
@@ -163,15 +178,58 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
         const out = fsm.tick(Date.now());
         if (out) conn.send(out.cmd);
       }
+      // XR-контроллеры (Quest): если есть активная XR-сессия и inputSources,
+      // каждый кадр кормим FSM. pollXrInput идемпотентен (только если есть grip).
+      if (xr.isActive() && xrInputSources.length > 0) {
+        const dummyState = { linear: 0, angular: 0, deadman: false, emergencyEdge: false };
+        for (const src of xrInputSources) {
+          if (src && (src as { gamepad?: { axes?: number[] } }).gamepad) {
+            pollXrInput(dummyState, src, fsm);
+          }
+        }
+      }
     }
     requestAnimationFrame(teleopLoop);
   }
   requestAnimationFrame(teleopLoop);
 
+  // ---------- WebXR entry / exit ----------
+
+  async function enterVr(): Promise<void> {
+    try {
+      const session = await xr.requestSession("immersive-vr");
+      xr.bindSession(session);
+      // refetch input sources каждый раз при добавлении/удалении контроллеров.
+      session.addEventListener("inputsourceschange", () => {
+        xrInputSources = Array.from(session.inputSources);
+      });
+      xrInputSources = Array.from(session.inputSources);
+      await bridge.attachXrSession(session);
+      xrTeleopHandle = createXrTeleop({ fsm, session });
+      streamSelect?.setXrSessionState("in-vr");
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[quest] requestSession failed:", err);
+      streamSelect?.setXrSessionState(`failed: ${(err as Error).message}`);
+    }
+  }
+
+  async function exitVr(): Promise<void> {
+    try {
+      await xr.endSession();
+    } finally {
+      xrTeleopHandle?.destroy();
+      xrTeleopHandle = null;
+      xrInputSources = [];
+      streamSelect?.setXrSessionState("not-in-vr");
+    }
+  }
+
   return {
     dispose(): void {
       stopRender();
       desktopTeleop.destroy();
+      xrTeleopHandle?.destroy();
       streamSelect?.destroy();
       conn?.close();
       bridge.dispose();
