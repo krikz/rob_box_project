@@ -97,3 +97,8 @@ docker/vision/config/voice_assistant/event_mode.yaml
 
 # e2e live test artefacts (regenerated each run)
 tests/e2e/_artifacts/
+
+# Vite root cache — artefact of `npx vite` when invoked from a directory
+# without local vite/node_modules (e.g. wrong cwd in PowerShell). Normal
+# vite cache for webxr_client is in src/rob_box_quest/webxr_client/.gitignore.
+/.vite/

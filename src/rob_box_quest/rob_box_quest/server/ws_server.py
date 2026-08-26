@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import secrets
 import time
 from typing import Any, Optional, Protocol
@@ -114,7 +115,10 @@ class NoOpBridge:
 
 # Текущий PIN — генерится один раз на старте контейнера, логируется.
 # Phase 1.6 в start_quest.sh выводит его в docker logs.
-ACTIVE_PIN: str = generate_pin()
+# Если задан ENV QUEST_PIN (например, в docker-compose.yaml) — используется
+# фиксированный PIN (удобно для дев-сессий, когда не хочется каждый раз
+# лезть в docker logs). Иначе — генерируется 6-значный случайный.
+ACTIVE_PIN: str = os.environ.get("QUEST_PIN") or generate_pin()
 
 
 # Текущий набор занятых server stream_id'ов — шарён между всеми сессиями.
@@ -314,6 +318,8 @@ class WSSServer:
         """JSON_CMD → Bridge + meta-commands.
 
         Контракт:
+        - ping → session.feed_ping() (клиент шлёт JSON_CMD{cmd:"ping"})
+                 или JSON_EVENT{type:"ping"} — обрабатывается в _on_json_event
         - teleop_twist → Bridge.publish_quest + feed_client_alive
         - stop_emergency → Bridge.publish_emergency + emergency_stop
         - stream_select → переключение активного camera-стрима
@@ -321,6 +327,14 @@ class WSSServer:
         - voice_mode / voice_ptt / ui_button → Phase 2
         """
         cmd = payload_obj.get("cmd")
+        if cmd == "ping":
+            # Клиентский webxr_client/src/wire/connection.ts шлёт ping как
+            # JSON_CMD{cmd:"ping"} (отступление от контракта meta-quest-api.md
+            # §7, который говорит JSON_EVENT{type:"ping"}). Сбрасываем watchdog
+            # в обоих случаях чтобы не терять сессию.
+            session.feed_ping()
+            self.bridge.feed_client_alive()
+            return
         if cmd == "stream_list":
             items = []
             for s in self.bridge.available_streams():
@@ -407,7 +421,13 @@ class WSSServer:
         """aiohttp WebSocket handler."""
         from aiohttp import web as _aiohttp_web
 
-        ws = _aiohttp_web.WebSocketResponse()
+        # Echo negotiated subprotocol (Sec-WebSocket-Protocol). Without this,
+        # Chrome refuses the handshake with:
+        #   "Sent non-empty 'Sec-WebSocket-Protocol' header but no response
+        #    was received"
+        # Per docs/architecture/meta-quest-api.md §3, only "robbox-quest-v1"
+        # is supported; aiohttp will pick the first match from `protocols`.
+        ws = _aiohttp_web.WebSocketResponse(protocols=("robbox-quest-v1",))
         await ws.prepare(request)
         session = ClientSession()
         self._register_session(session, ws)

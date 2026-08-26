@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { createStreamSelect, readDropTopic } from "../src/ui/stream_select";
 import { PanelManager } from "../src/scene/panel_manager";
 import type { LayoutMode } from "../src/scene/panel_layout_modes";
+import { createXrBootstrap } from "../src/xr_bootstrap";
 
 function makeOpts(): {
   panels: PanelManager;
@@ -14,7 +15,10 @@ function makeOpts(): {
     reset: number;
     drops: Array<{ panelId: string; topic: string }>;
     cycles: Array<{ panelId: string; current: LayoutMode }>;
+    enterVr: number;
+    exitVr: number;
   };
+  xr: ReturnType<typeof createXrBootstrap>;
 } {
   const panels = new PanelManager();
   panels.resetLayout();
@@ -23,9 +27,11 @@ function makeOpts(): {
     unsubscribe: [] as string[],
     reset: 0,
     drops: [] as Array<{ panelId: string; topic: string }>,
-    cycles: [] as Array<{ panelId: string; current: LayoutMode }>
+    cycles: [] as Array<{ panelId: string; current: LayoutMode }>,
+    enterVr: 0,
+    exitVr: 0
   };
-  return { panels, log };
+  return { panels, log, xr: createXrBootstrap() };
 }
 
 describe("stream_select: createStreamSelect", () => {
@@ -34,7 +40,7 @@ describe("stream_select: createStreamSelect", () => {
   });
 
   it("creates panel without errors", () => {
-    const { panels, log } = makeOpts();
+    const { panels, log, xr } = makeOpts();
     const handle = createStreamSelect({
       panels,
       onSubscribe: (t) => log.subscribe.push(t),
@@ -43,7 +49,10 @@ describe("stream_select: createStreamSelect", () => {
       onDropTopic: (panelId, topic) => log.drops.push({ panelId, topic }),
       onCyclePanelLayout: (panelId, current) =>
         log.cycles.push({ panelId, current }),
-      getActiveTopics: () => panels.list().map((p) => p.topic)
+      getActiveTopics: () => panels.list().map((p) => p.topic),
+      xr,
+      onEnterVr: () => (log.enterVr += 1),
+      onExitVr: () => (log.exitVr += 1)
     });
     expect(handle).toBeDefined();
     expect(typeof handle.destroy).toBe("function");
@@ -51,7 +60,7 @@ describe("stream_select: createStreamSelect", () => {
   });
 
   it("setAvailableStreams updates the dropdown", () => {
-    const { panels, log } = makeOpts();
+    const { panels, log, xr } = makeOpts();
     const handle = createStreamSelect({
       panels,
       onSubscribe: (t) => log.subscribe.push(t),
@@ -59,7 +68,10 @@ describe("stream_select: createStreamSelect", () => {
       onResetLayout: () => (log.reset += 1),
       onDropTopic: () => undefined,
       onCyclePanelLayout: () => undefined,
-      getActiveTopics: () => []
+      getActiveTopics: () => [],
+      xr,
+      onEnterVr: () => (log.enterVr += 1),
+      onExitVr: () => (log.exitVr += 1)
     });
     handle.setAvailableStreams([
       {
@@ -81,7 +93,7 @@ describe("stream_select: createStreamSelect", () => {
   });
 
   it("setPanelLayoutMode updates cycle button label", () => {
-    const { panels, log } = makeOpts();
+    const { panels, log, xr } = makeOpts();
     const layoutModes = new Map<string, LayoutMode>([["p1", "single"]]);
     const handle = createStreamSelect({
       panels,
@@ -91,14 +103,17 @@ describe("stream_select: createStreamSelect", () => {
       onDropTopic: () => undefined,
       onCyclePanelLayout: () => undefined,
       getActiveTopics: () => panels.list().map((p) => p.topic),
-      getPanelLayoutModes: () => layoutModes
+      getPanelLayoutModes: () => layoutModes,
+      xr,
+      onEnterVr: () => (log.enterVr += 1),
+      onExitVr: () => (log.exitVr += 1)
     });
     handle.setPanelLayoutMode("p1", "2x2");
     handle.destroy();
   });
 
   it("regression: destroy() removes DOM", () => {
-    const { panels, log } = makeOpts();
+    const { panels, log, xr } = makeOpts();
     const handle = createStreamSelect({
       panels,
       onSubscribe: (t) => log.subscribe.push(t),
@@ -106,14 +121,17 @@ describe("stream_select: createStreamSelect", () => {
       onResetLayout: () => (log.reset += 1),
       onDropTopic: () => undefined,
       onCyclePanelLayout: () => undefined,
-      getActiveTopics: () => []
+      getActiveTopics: () => [],
+      xr,
+      onEnterVr: () => (log.enterVr += 1),
+      onExitVr: () => (log.exitVr += 1)
     });
     handle.destroy();
     expect(document.body.querySelectorAll(".lil-gui").length).toBe(0);
   });
 
   it("regression: refresh() doesn't throw when layout modes missing", () => {
-    const { panels, log } = makeOpts();
+    const { panels, log, xr } = makeOpts();
     const handle = createStreamSelect({
       panels,
       onSubscribe: (t) => log.subscribe.push(t),
@@ -121,7 +139,10 @@ describe("stream_select: createStreamSelect", () => {
       onResetLayout: () => (log.reset += 1),
       onDropTopic: () => undefined,
       onCyclePanelLayout: () => undefined,
-      getActiveTopics: () => []
+      getActiveTopics: () => [],
+      xr,
+      onEnterVr: () => (log.enterVr += 1),
+      onExitVr: () => (log.exitVr += 1)
     });
     expect(() => handle.refresh()).not.toThrow();
     handle.destroy();
