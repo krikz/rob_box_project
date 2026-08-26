@@ -31,6 +31,14 @@ import { PreviewPlayer } from "./audio/preview_player";
 import { cycleLayout, type LayoutMode } from "./scene/panel_layout_modes";
 import { ModeManager, CAPTAIN_MODES } from "./modes/mode_manager";
 import { createModeHud } from "./modes/mode_hud";
+import { createPanelHover } from "./scene/panel_hover";
+import {
+  getControllerWorldPose,
+  pickPanelByRay,
+  isControllerInputSource,
+  type PanelRaycastTarget
+} from "./input/xr_panel_raycast";
+import { createXrHandController, type XrHandLike } from "./input/xr_hand_controller";
 import type { JsonCmd, StreamMeta, VoiceInfo, VoicePreset } from "./wire/messages";
 import * as THREE from "three";
 import GUI from "lil-gui";
@@ -93,6 +101,9 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   const camera = createCameraController();
   // Deadman таймер для XR-источника — warning 300ms, release 500ms.
   const xrDeadman = new DeadmanTimer({ releaseMs: DEADMAN_RELEASE_MS });
+  // Phase 2 §3.7: panel hover FSM + Raycaster (используется в XR frame loop).
+  const panelHover = createPanelHover();
+  const raycaster = new THREE.Raycaster();
   // При переключении режима в mixed/teleop — ramp к нулю (старый cmd затухает),
   // потом новый cmd ramp'ится от нуля к target.
   let lastRampedMode: string = modeManager.getMode();
@@ -707,6 +718,63 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       });
       xrInputSources = Array.from(session.inputSources);
       await bridge.attachXrSession(session);
+      // Phase 2 §3.7: подсветка панели при наведении (raycast от controller).
+      // Подписчик применяет hover через VideoPanel.setHover().
+      panelHover.subscribe({
+        onHoverEnter(panelId) {
+          bridge.videoPanels.get(panelId)?.setHover(true);
+        },
+        onHoverExit(panelId) {
+          bridge.videoPanels.get(panelId)?.setHover(false);
+        }
+      });
+      // Phase 2 §3.5: hand controller — pinch/grip ловим на каждом XR frame.
+      const handCtl = createXrHandController({
+        onPinchStart(hand) {
+          // eslint-disable-next-line no-console
+          console.info(`[quest] hand ${hand} pinch start`);
+        },
+        onPinchEnd(hand) {
+          // eslint-disable-next-line no-console
+          console.info(`[quest] hand ${hand} pinch end`);
+        }
+      });
+      // Phase 2 §3.7/§3.5: единый XR-frame callback.
+      bridge.setOnXrFrame((frame, s) => {
+        const sources = Array.from(s.inputSources);
+        // 1) Hand tracking.
+        for (const src of sources) {
+          const hand = (src as unknown as { hand?: XrHandLike }).hand;
+          if (hand) {
+            try {
+              handCtl.update(hand, frame);
+            } catch (err) {
+              // eslint-disable-next-line no-console
+              console.warn("[quest] hand update threw:", err);
+            }
+          }
+        }
+        // 2) Controller raycast → panel hover (ближайшая попавшая панель = hovered).
+        // Несколько контроллеров: используем тот, что ближе к панели.
+        const targets: PanelRaycastTarget[] = bridge.getPanelRaycastTargets();
+        let bestHover: { panelId: string; distance: number } | null = null;
+        for (const src of sources) {
+          if (!isControllerInputSource(src)) continue;
+          const pose = getControllerWorldPose(
+            src as unknown as Parameters<typeof getControllerWorldPose>[0],
+            frame as unknown as Parameters<typeof getControllerWorldPose>[1]
+          );
+          if (!pose) continue;
+          const hit = pickPanelByRay(raycaster, pose.position, pose.direction, targets, 6);
+          if (hit && (bestHover == null || hit.distance < bestHover.distance)) {
+            bestHover = hit;
+          }
+        }
+        const nextHoverId = bestHover ? bestHover.panelId : null;
+        if (nextHoverId !== panelHover.getHovered()) {
+          panelHover.setHovered(nextHoverId);
+        }
+      });
       const xrOpts: Parameters<typeof createXrTeleop>[0] = {
         fsm,
         session,
@@ -744,6 +812,8 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       xrInputSources = [];
       xrDeadman.reset();
       modeHud.setWarning(null);
+      panelHover.reset();
+      bridge.setOnXrFrame(null);
       streamSelect?.setXrSessionState("not-in-vr");
     }
   }

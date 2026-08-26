@@ -64,6 +64,17 @@ export class VideoPanel {
     this.texture.needsUpdate = true;
   }
 
+  /**
+   * Подсветить / снять подсветку панели (Phase 2 §3.7 hover).
+   * Использует material.color tint (видео-панели — MeshBasicMaterial,
+   * emissive для них не применим).
+   */
+  setHover(on: boolean): void {
+    const mat = this.mesh.material as THREE.MeshBasicMaterial;
+    if (!mat || !("color" in mat)) return;
+    mat.color.setHex(on ? 0x4d9aff : 0xffffff);
+  }
+
   /** Подставить JPEG-байты. Возвращает false, если кадр дропнут (GPU занят). */
   ingestJpeg(jpeg: Uint8Array): boolean {
     this.frameCount += 1;

@@ -25,10 +25,12 @@ export interface FakeNavigatorXr {
 export interface XrBootstrap {
   /** true, если navigator.xr есть и устройство поддерживает этот режим. */
   isSupported(mode: XrMode): Promise<boolean>;
-  /** Запрашивает сессию; пробрасывает requiredFeatures: ['local-floor']. */
+  /** Запрашивает сессию; пробрасывает requiredFeatures: ['local-floor'] + optionalFeatures ['hand-tracking']. */
   requestSession(mode: XrMode): Promise<XRSession>;
-  /** Помечает сессию как активную; вызывающий код получит session в XR-сцене. */
+  /** Помечает сессию как активной; вызывающий код получит session в XR-сцене. */
   bindSession(session: XRSession): void;
+  /** Текущая привязанная сессия (или null). */
+  getSession(): XRSession | null;
   /** Корректно завершает сессию (вызывает session.end). */
   endSession(): Promise<void>;
   /** true после bindSession, false после session.end / endSession. */
@@ -61,8 +63,11 @@ export function createXrBootstrap(): XrBootstrap {
       throw new Error("WebXR not available");
     }
     // local-floor нужен для физического пола (Quest standalone — всегда есть).
+    // hand-tracking — optional, если браузер/устройство не поддерживает,
+    // XR controller fallback всё равно работает (дизайн §3.5).
     const session = await xr.requestSession(mode, {
-      requiredFeatures: ["local-floor"]
+      requiredFeatures: ["local-floor"],
+      optionalFeatures: ["hand-tracking"]
     });
     return session;
   }
@@ -72,6 +77,10 @@ export function createXrBootstrap(): XrBootstrap {
     session.addEventListener("end", () => {
       if (activeSession === session) activeSession = null;
     });
+  }
+
+  function getSession(): XRSession | null {
+    return activeSession;
   }
 
   async function endSession(): Promise<void> {
@@ -89,5 +98,5 @@ export function createXrBootstrap(): XrBootstrap {
     return activeSession !== null;
   }
 
-  return { isSupported, requestSession, bindSession, endSession, isActive };
+  return { isSupported, requestSession, bindSession, getSession, endSession, isActive };
 }
