@@ -44,11 +44,17 @@
     # WebSocket-канал: flush_interval -1 — без буферизации, иначе JPEG/LiDAR
     # будут копиться в очереди Caddy и на Quest появится лаг. Явный handle —
     # чтобы file_server корня SPA не съел этот путь.
+    #
+    # transport http { versions 1.1 } — только HTTP/1.1 на апстрим.
+    # Если оставить h2c 1.1, Caddy пытается WebSocket-апгрейд по h2c и
+    # ломается ("http2: invalid Upgrade request header: [websocket]"),
+    # отдавая 502 на каждый handshake. С чистым HTTP/1.1 upgrade проходит
+    # штатно (aiohttp aiohttp WS-роутер принимает соединение).
     handle /quest {
         reverse_proxy localhost:8765 {
             flush_interval -1
             transport http {
-                versions h2c 1.1
+                versions 1.1
             }
         }
     }
