@@ -13,12 +13,17 @@
 //   - Drag-from-gui → drop-on-panel переназначение топика
 //   - HUD voice indicator (top-right)
 //   - Voice preview audio (WebAudio)
+//   - ModeManager + HUD + boost-gated desktop teleop + deadman warning
+//   wiring + XR right-stick camera + ramp handoff при переключении режима.
 
 import { Connection } from "./wire/connection";
 import { createCaptainBridge } from "./scene/captain_bridge";
 import { TeleopFSM } from "./input/teleop_fsm";
 import { createDesktopTeleop } from "./input/desktop_teleop";
-import { createXrTeleop, pollXrInput } from "./input/xr_teleop";
+import { createXrTeleop, pollXrInput, tickXrTeleop } from "./input/xr_teleop";
+import { DeadmanTimer, DEADMAN_RELEASE_MS } from "./input/deadman_timer";
+import { TeleopCmdRamp } from "./input/teleop_cmd_ramp";
+import { createCameraController } from "./scene/camera_controller";
 import { createXrBootstrap, type XrBootstrap } from "./xr_bootstrap";
 import { createStreamSelect, readDropTopic } from "./ui/stream_select";
 import { createVoicePicker } from "./ui/voice_picker_panel";
@@ -82,6 +87,33 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   const modeManager = new ModeManager();
   const modeHud = createModeHud();
   modeHud.attachModeManager(modeManager);
+  // 50ms ramp handoff — плавный переход teleop cmd при смене режима.
+  const cmdRamp = new TeleopCmdRamp();
+  // Камера (yaw/pitch + damping + reset).
+  const camera = createCameraController();
+  // Deadman таймер для XR-источника — warning 300ms, release 500ms.
+  const xrDeadman = new DeadmanTimer({ releaseMs: DEADMAN_RELEASE_MS });
+  // При переключении режима в mixed/teleop — ramp к нулю (старый cmd затухает),
+  // потом новый cmd ramp'ится от нуля к target.
+  let lastRampedMode: string = modeManager.getMode();
+  modeManager.subscribe(() => {
+    const cur = modeManager.getMode();
+    // Если уходим из teleop/mixed в explore/voice — ramp к нулю.
+    const wasDriving = lastRampedMode === "teleop" || lastRampedMode === "mixed";
+    const isDriving = cur === "teleop" || cur === "mixed";
+    if (wasDriving && !isDriving) {
+      cmdRamp.setTarget({ linear: 0, angular: 0 });
+    } else if (!wasDriving && isDriving) {
+      // Въезжаем в driving mode — пусть ramp подхватит текущий teleop.
+      // (Caller запишет target через setLinear/setAngular в tick.)
+    }
+    // Reset deadman warning при смене режима (чтобы не висел stale warning).
+    if (cur !== lastRampedMode) {
+      modeHud.setWarning(null);
+      xrDeadman.reset();
+    }
+    lastRampedMode = cur;
+  });
   const desktopTeleop = createDesktopTeleop({
     fsm,
     modeManager,
@@ -89,9 +121,12 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   });
   const xr: XrBootstrap = createXrBootstrap();
 
-  // WASD intent → auto-upgrade voice → mixed.
+  // WASD intent → auto-upgrade voice → mixed (только в voice-режиме).
   window.addEventListener("keydown", (ev) => {
-    if (["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(ev.code)) {
+    if (
+      ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(ev.code) &&
+      modeManager.getMode() === "voice"
+    ) {
       modeManager.reportTeleopIntent();
     }
   });
@@ -101,6 +136,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   let voicePicker: ReturnType<typeof createVoicePicker> | null = null;
   let disconnected = true;
   let xrTeleopHandle: ReturnType<typeof createXrTeleop> | null = null;
+  let xrTeleopTick: ReturnType<typeof tickXrTeleop> | null = null;
   // Последний кэшированный inputSources; обновляется через inputsourceschange.
   let xrInputSources: XRInputSource[] = [];
 
@@ -562,23 +598,95 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     const now = performance.now();
     if (now - lastTickTs >= 33) {
       lastTickTs = now;
+      // Получить intent (linear/angular + deadman) — приоритет: XR > desktop.
+      const desktopHandle = (window as unknown as {
+        __questDesktopTeleop?: {
+          getIntent(): { linear: number; angular: number };
+          isDeadmanHeld(): boolean;
+        };
+      }).__questDesktopTeleop;
+      const xrActive = xr.isActive() && xrInputSources.length > 0;
+      let intent: { linear: number; angular: number; deadman: boolean } | null = null;
+      let xrDummyState: {
+        linear: number;
+        angular: number;
+        cameraYaw: number;
+        cameraPitch: number;
+        deadman: boolean;
+        emergencyEdge: boolean;
+        modeCycleEdge: boolean;
+        resetCameraEdge: boolean;
+      } | null = null;
+      if (xrActive) {
+        xrDummyState = {
+          linear: 0,
+          angular: 0,
+          cameraYaw: 0,
+          cameraPitch: 0,
+          deadman: false,
+          emergencyEdge: false,
+          modeCycleEdge: false,
+          resetCameraEdge: false
+        };
+        intent = { linear: 0, angular: 0, deadman: false };
+        for (const src of xrInputSources) {
+          if (src && (src as { gamepad?: { axes?: number[] } }).gamepad) {
+            pollXrInput(xrDummyState, src, fsm, intent);
+          }
+        }
+      } else if (desktopHandle) {
+        const i = desktopHandle.getIntent();
+        intent = { linear: i.linear, angular: i.angular, deadman: desktopHandle.isDeadmanHeld() };
+      }
+      const isDriving = modeManager.getMode() === "teleop" || modeManager.getMode() === "mixed";
+      if (isDriving && intent) {
+        // §3.3: ramp cmd через TeleopCmdRamp (50ms handoff).
+        cmdRamp.setTarget(intent);
+      } else if (!isDriving) {
+        cmdRamp.setTarget({ linear: 0, angular: 0 });
+      }
+      const ramped = cmdRamp.tick();
+      if (isDriving) {
+        fsm.setLinear(ramped.linear);
+        fsm.setAngular(ramped.angular);
+        fsm.setDeadman(intent?.deadman ?? false);
+      } else {
+        fsm.setLinear(0);
+        fsm.setAngular(0);
+        fsm.setDeadman(false);
+      }
       if (conn && !disconnected) {
-        const teleopHandle = (
-          window as unknown as { __questDesktopTeleop?: { consumeEmergency(): boolean } }
-        ).__questDesktopTeleop;
+        const teleopHandle = (window as unknown as { __questDesktopTeleop?: { consumeEmergency(): { source: string } | null } }).__questDesktopTeleop;
         if (teleopHandle?.consumeEmergency()) {
           conn.send(fsm.triggerEmergency("ui_button"));
         }
         const out = fsm.tick(Date.now());
         if (out) conn.send(out.cmd);
       }
-      // XR-контроллеры (Quest): если есть активная XR-сессия и inputSources,
-      // каждый кадр кормим FSM. pollXrInput идемпотентен (только если есть grip).
-      if (xr.isActive() && xrInputSources.length > 0) {
-        const dummyState = { linear: 0, angular: 0, deadman: false, emergencyEdge: false, modeCycleEdge: false };
-        for (const src of xrInputSources) {
-          if (src && (src as { gamepad?: { axes?: number[] } }).gamepad) {
-            pollXrInput(dummyState, src, fsm);
+      // XR-side edge actions (mode cycle, camera, deadman).
+      if (xrActive && xrDummyState) {
+        xrTeleopTick?.consumeModeCycleEdge();
+        if (xrTeleopTick?.consumeResetCameraEdge()) {
+          camera.reset();
+        }
+        const cam = xrTeleopTick?.getCameraAxes();
+        if (cam) {
+          const dtMs = 33;
+          camera.applyStickAxes(cam.yaw, cam.pitch, dtMs);
+          camera.tickDamping(dtMs);
+        }
+        // Deadman: проверим grip (используем состояние, проставленное pollXrInput).
+        if (xrDummyState.deadman) {
+          xrDeadman.gripPressed();
+        } else {
+          const ev = xrDeadman.check();
+          if (ev && ev.kind === "triggered") {
+            modeHud.setWarning(null);
+            if (conn && !disconnected) conn.send(fsm.triggerEmergency("ui_button"));
+            // §3.3: deadman release + no voice → downgrade mixed → teleop.
+            modeManager.reportDeadmanReleased();
+          } else if (ev && ev.kind === "warning") {
+            modeHud.setWarning(`Release B in ${Math.round(ev.remainingMs)}ms`);
           }
         }
       }
@@ -599,7 +707,25 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       });
       xrInputSources = Array.from(session.inputSources);
       await bridge.attachXrSession(session);
-      xrTeleopHandle = createXrTeleop({ fsm, session });
+      const xrOpts: Parameters<typeof createXrTeleop>[0] = {
+        fsm,
+        session,
+        modeManager,
+        onEmergency: (source) => {
+          // Emergency от B-button ИЛИ deadman triggered → отправляем stop_emergency.
+          if (conn && !disconnected) conn.send(fsm.triggerEmergency(source));
+          modeHud.setWarning(null);
+        },
+        onDeadmanWarning: (remainingMs) => {
+          modeHud.setWarning(`Release B in ${Math.round(remainingMs)}ms`);
+        },
+        onDeadmanTriggered: (_elapsedMs) => {
+          modeHud.setWarning(null);
+        }
+      };
+      xrTeleopHandle = createXrTeleop(xrOpts);
+      // tickXrTeleop читает __xrDeadmanTimer/__xrTeleopState из opts (createXrTeleop их сохранил).
+      xrTeleopTick = tickXrTeleop(xrOpts);
       streamSelect?.setXrSessionState("in-vr");
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -614,7 +740,10 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     } finally {
       xrTeleopHandle?.destroy();
       xrTeleopHandle = null;
+      xrTeleopTick = null;
       xrInputSources = [];
+      xrDeadman.reset();
+      modeHud.setWarning(null);
       streamSelect?.setXrSessionState("not-in-vr");
     }
   }
