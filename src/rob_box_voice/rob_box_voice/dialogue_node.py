@@ -89,8 +89,10 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_GUARD_VOCAL_KEYWORDS,
     MUSIC_RETRY_PROMPT_PREFIX,
     MUSIC_STOP_OVERRIDES,
+    STOP_MUSIC_RETRY_PROMPT_PREFIX,
     build_babble_retry_prompt,
     build_music_retry_prompt,
+    build_stop_music_retry_prompt,
     is_metalanguage_babble,
     is_music_stop_command,
     user_wants_music,
@@ -2541,9 +2543,14 @@ class DialogueNode(Node):
         # DJ budget оставлен как есть — DJ-retry внутри DJ-transition
         # живёт своей жизнью и ресетится в ``_dispatch_dj_turn``
         # (``reset_for_new_dj_transition``) только при свежем тике.
+        # Issue #1544 / #1561 — Bug D (stop-music) shares the same
+        # reset rule: a stop-music retry MUST NOT reset the budget
+        # (otherwise the retry resets itself and loops forever), but
+        # the stop budget resets on success via the SKIP verdict in
+        # :meth:`MusicGuard.evaluate`.
         if not is_babble_retry and not was_dj_auto and not user_input.startswith(
             MUSIC_RETRY_PROMPT_PREFIX
-        ):
+        ) and not user_input.startswith(STOP_MUSIC_RETRY_PROMPT_PREFIX):
             self._music_guard.reset_for_new_user_request()
         # Issue #992 Bug D — when the babble detector schedules a retry
         # we MUST NOT end the dialogue at the bottom of this turn. The
@@ -3233,6 +3240,7 @@ class DialogueNode(Node):
             dj_enabled=self._dj.state.enabled,
             build_music_retry_prompt=self._build_music_retry_prompt,
             build_dj_retry_prompt=self._build_dj_retry_prompt,
+            build_stop_music_retry_prompt=self._build_stop_music_retry_prompt,
         )
 
         if verdict.kind is MusicGuardVerdictKind.SKIP:
@@ -3261,15 +3269,46 @@ class DialogueNode(Node):
             )
             return True
 
-        if verdict.kind is MusicGuardVerdictKind.NUDGE:
-            self._speak_direct(
-                "Я тут растерялся — бит не запустился, попробуй ещё раз."
+        # Issue #1544 / #1561 — Bug D (stop-music enforcement). User
+        # asked to stop the music but LLM answered verbal-only without
+        # calling ``stop_music`` — Renardo/AI-mp3 keeps playing until
+        # the next DJ tick, e2e GATE-1 fails on ``missing stop_music``.
+        # Dispatch a synchronous CRITICAL retry (same code path as
+        # USER_RETRY) that forces the LLM to invoke ``stop_music``.
+        if verdict.kind is MusicGuardVerdictKind.STOP_RETRY:
+            assert verdict.prompt is not None
+            # Issue #1204: ретрай должен реально дойти до LLM —
+            # переоткрываем DIALOGUE (process_input уже закрыл его).
+            self._reopen_dialogue_for_retry()
+            self._dispatch_turn(
+                verdict.prompt,
+                was_idle=False,
+                raw_user_command=user_input,
             )
+            return True
+
+        if verdict.kind is MusicGuardVerdictKind.NUDGE:
+            # Bug C + Bug D share the NUDGE kind — the policy module
+            # sets ``reason`` so we can branch on it for a more
+            # informative spoken line. Bug D exhaustion is the new
+            # case from issue #1544 / #1561.
+            if verdict.reason == "stop_music_budget_exhausted":
+                self._speak_direct(
+                    "Я тут растерялся — музыка не остановилась, попробуй ещё раз."
+                )
+            else:
+                self._speak_direct(
+                    "Я тут растерялся — бит не запустился, попробуй ещё раз."
+                )
             return False
 
-        # SKIP_NOT_APPLICABLE — guard deliberately skipped (stop-command,
-        # user did not request music, DJ off, etc.). Policy module already
-        # logged the diagnostic.
+        # SKIP_NOT_APPLICABLE — guard deliberately skipped (user did
+        # not request music, DJ off, etc.). Policy module already logged
+        # the diagnostic. This branch is now rare: every stop-command
+        # path either honours the stop tool (SKIP), retries until the
+        # budget is exhausted (STOP_RETRY → NUDGE), or the budget
+        # itself resets on success. We keep the branch for safety in
+        # case a future verdict kind slips through unhandled.
         return False
 
     def _build_music_retry_prompt(self, user_input: str) -> str:
@@ -3286,6 +3325,24 @@ class DialogueNode(Node):
         (TD-1 decomposition).
         """
         return build_music_retry_prompt(user_input)
+
+    def _build_stop_music_retry_prompt(self, user_input: str) -> str:
+        """Synthetic prompt for Bug D retry (issue #1544 #1561).
+
+        User asked to stop the music («Робот, стоп музыку» / «выключи
+        диджея») but LLM answered verbally without calling
+        ``stop_music``. Renardo/AI-mp3 keeps playing until the next DJ
+        tick — e2e GATE-1 fails on ``missing stop_music`` for dj02.
+        This prompt is appended to the original user input so the LLM
+        has the request in context, and explicitly names ``stop_music``
+        + ``set_dj_mode(enabled=false)`` + the short spoken
+        confirmation.
+
+        Delegates to
+        :func:`rob_box_voice.core.dialogue_guards.build_stop_music_retry_prompt`
+        (new in this PR — TD-1 decomposition mirror).
+        """
+        return build_stop_music_retry_prompt(user_input)
 
     def _build_dj_retry_prompt(self) -> str:
         """Synthetic auto-prompt for the Bug-B synchronous retry.

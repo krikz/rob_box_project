@@ -39,6 +39,16 @@ def _music_prompt(user_input: str) -> str:
     return f"[CRITICAL] user_input={user_input}"
 
 
+def _stop_prompt(user_input: str) -> str:
+    """Stub for ``DialogueNode._build_stop_music_retry_prompt`` (issue #1544 #1561).
+
+    Mirrors :func:`_music_prompt` shape so the new :class:`MusicGuard`
+    Bug D branch (stop-music enforcement) has a deterministic string
+    the unit tests can match against.
+    """
+    return f"[CRITICAL] stop user_input={user_input}"
+
+
 def _dj_prompt() -> str:
     """Stub for ``DialogueNode._build_dj_retry_prompt``."""
     return "[CRITICAL] DJ retry — call execute_music_code"
@@ -327,66 +337,140 @@ class TestEvaluateUserMusicVocal:
 
 
 class TestEvaluateStopCommand:
-    def test_stop_command_skips_entirely(self) -> None:
-        """🔴 FIX (live 06.08): «хватит диджеить» — guard returns
-        SKIP_NOT_APPLICABLE and does NOT touch the user-budget (a stop
-        request is not a music request and shouldn't burn retries).
+    def test_stop_command_without_stop_music_tool_dispatches_retry(self) -> None:
+        """🔴 FIX (issue #1544 #1561 — Bug D): «Робот, стоп музыку» —
+        раньше guard возвращал SKIP_NOT_APPLICABLE и LLM оставалась
+        без enforcement (verbal-only «Выключаю!» не вызывал
+        ``stop_music`` tool — Renardo/AI-mp3 продолжал играть, e2e
+        GATE-1 падал на dj02). Новое поведение: stop-command без
+        ``stop_music`` в ``tools_called`` диспатчит синхронный
+        ``STOP_RETRY`` с synthetic CRITICAL-промптом, который
+        форсирует вызов ``stop_music()`` в следующем turn.
 
-        For phrases where stop AND music keywords do NOT overlap,
-        ``user_wants_music`` short-circuits to False and the guard
-        returns ``not_music_request``. The next test covers the
-        ``stop_command`` reason itself (phrases where both overlap)."""
+        Budget стартует с 0 и инкрементируется на 1 — следующий
+        stop-command (если и этот не сработает) получит NUDGE.
+        ``stop_retry_count`` НЕ зависит от DJ/user budget (отдельный
+        счётчик)."""
         guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="Робот, стоп музыку",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+            build_stop_music_retry_prompt=_stop_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.STOP_RETRY
+        assert verdict.reason == "stop_music_skipped"
+        assert verdict.prompt is not None
+        assert verdict.prompt == _stop_prompt("Робот, стоп музыку"), (
+            "MusicGuard MUST pass user_input through to the prompt "
+            "builder verbatim — otherwise the retry lands on a "
+            "context-less LLM call"
+        )
+        assert guard.stop_retry_count == 1
+        assert guard.user_retry_count == 0
+        assert guard.dj_retry_count == 0
+
+    def test_stop_command_with_stop_music_tool_returns_skip(self) -> None:
+        """Happy path: «Робот, стоп музыку» + LLM действительно вызвал
+        ``stop_music`` → guard SKIP, stop budget reset."""
+        guard = MusicGuard()
+        guard._stop_retry_count = 1  # prime
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="Робот, стоп музыку",
+            tools_called=("stop_music", "speak_text"),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+            build_stop_music_retry_prompt=_stop_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.SKIP
+        assert verdict.reason == "stop_music_executed"
+        assert guard.stop_retry_count == 0
+
+    def test_stop_command_overlapping_music_keyword_uses_stop_branch(self) -> None:
+        """Если stop фраза пересекается с music keyword (например
+        «выключи диджея»), guard идёт по Bug D branch (а НЕ Bug C —
+        Bug C ретраил бы «запустить музыку», регресс 06.08)."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="выключи диджея",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+            build_stop_music_retry_prompt=_stop_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.STOP_RETRY
+        assert guard.stop_retry_count == 1
+        assert guard.user_retry_count == 0, (
+            "Stop-command must NOT consume the user-retry budget — "
+            "Bug C would re-enable music"
+        )
+
+    def test_stop_command_budget_exhausted_returns_nudge(self) -> None:
+        """Если stop_retry_count уже на максимуме (default=1) и LLM
+        опять не вызвал ``stop_music`` → guard NUDGE с reason
+        ``stop_music_budget_exhausted`` — dialogue_node проиграет
+        spoken nudge «музыка не остановилась», budget reset."""
+        guard = MusicGuard()
+        guard._stop_retry_count = 1  # = max_stop_retries по умолчанию
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="Робот, стоп музыку",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+            build_stop_music_retry_prompt=_stop_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.NUDGE
+        assert verdict.reason == "stop_music_budget_exhausted"
+        assert guard.stop_retry_count == 0, (
+            "Budget MUST reset on NUDGE so the next genuine stop "
+            "request gets a fresh allocation"
+        )
+
+    def test_stop_command_with_was_dj_auto_falls_through(self) -> None:
+        """Если ``was_dj_auto=True`` AND ``dj_enabled=False``, guard
+        идёт по Bug D branch (а НЕ Bug B — DJ off, нет смысла в
+        DJ-retry). Это симметрично test_stop_command_overlapping_
+        music_keyword_uses_stop_branch но с флагом ``was_dj_auto``."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=True,
+            user_input="выключи диджея",
+            tools_called=(),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+            build_stop_music_retry_prompt=_stop_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.STOP_RETRY
+        assert guard.dj_retry_count == 0
+        assert guard.user_retry_count == 0
+        assert guard.stop_retry_count == 1
+
+    def test_stop_command_never_resets_user_budget_on_retry(self) -> None:
+        """Defensive: Bug D retry MUST NOT consume the user_retry budget
+        (Bug C). Это защита от regress'ии 06.08: Bug C раньше
+        триггерился на «хватит диджеить» и ретраил с CRITICAL «вызови
+        execute_music_code» — т.е. запускал DJ обратно после остановки."""
+        guard = MusicGuard()
+        # Симулируем предыдущий Bug C retry (1 штука)
+        guard._user_retry_count = 1
         verdict = guard.evaluate(
             was_dj_auto=False,
             user_input="хватит диджеить",
             tools_called=(),
             dj_enabled=False,
             build_music_retry_prompt=_music_prompt,
+            build_stop_music_retry_prompt=_stop_prompt,
         )
-        assert verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
-        assert guard.user_retry_count == 0
-
-    def test_stop_command_overlapping_music_keyword_uses_stop_branch(self) -> None:
-        """If a stop phrase ALSO matches a music keyword (e.g. «диджея»,
-        «диджей режим»), ``user_wants_music`` returns True but the
-        stop-command check MUST win — Bug C previously mis-classified
-        these as music requests and re-enabled music via the retry
-        (live 06.08 incident)."""
-        guard = MusicGuard()
-        verdict = guard.evaluate(
-            was_dj_auto=False,
-            user_input="выключи диджея",
-            tools_called=(),
-            dj_enabled=False,
-            build_music_retry_prompt=_music_prompt,
+        assert verdict.kind is MusicGuardVerdictKind.STOP_RETRY
+        assert guard.user_retry_count == 1, (
+            "Bug D retry must NOT touch user_retry_count — Bug C budget "
+            "lives independently"
         )
-        assert verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
-        assert verdict.reason == "stop_command"
-        assert guard.user_retry_count == 0, (
-            "Stop-command must NOT consume the user-retry budget — "
-            "it is not a music request"
-        )
-
-    def test_stop_command_with_was_dj_auto_falls_through(self) -> None:
-        """If ``was_dj_auto=True`` AND ``dj_enabled=False``, the guard
-        falls through to the user-music branch — a stop-command with
-        a music-keyword overlap is caught there and returned as
-        ``stop_command`` (NOT as ``bug_b_budget_exhausted``)."""
-        guard = MusicGuard()
-        # Use a phrase that BOTH matches a music keyword AND a stop
-        # override, so we exercise the stop-check (not the
-        # not-music-request early return).
-        verdict = guard.evaluate(
-            was_dj_auto=True,
-            user_input="выключи диджея",
-            tools_called=(),
-            dj_enabled=False,
-        )
-        assert verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
-        assert verdict.reason == "stop_command"
-        assert guard.dj_retry_count == 0
-        assert guard.user_retry_count == 0
 
 
 # ---------------------------------------------------------------------------

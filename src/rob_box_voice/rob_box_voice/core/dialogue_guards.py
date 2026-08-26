@@ -370,3 +370,57 @@ def build_music_retry_prompt(user_input: str) -> str:
         "затем gen_play_from_library(track_id=...). "
         "Если и сейчас не вызовешь tool — цикл останется пустым."
     )
+
+
+# Issue #1544 / #1561 — synthetic prompt for Bug D (user asked to stop
+# music, LLM answered verbal-only without calling ``stop_music``).
+# Mirrors the ``MUSIC_RETRY_PROMPT_PREFIX`` naming so the dialogue_node
+# retry-budget guard treats stop-music retries the same as Bug-C music
+# retries (one shared retry budget, one shared reset site).
+STOP_MUSIC_RETRY_PROMPT_PREFIX: str = "[CRITICAL] В прошлом цикле ты НЕ вызвал"
+
+
+def build_stop_music_retry_prompt(user_input: str) -> str:
+    """Synthetic prompt for the stop-music guard (issue #1544 #1561).
+
+    When the user asks for «стоп музыку / выключи музыку / хватит» the
+    LLM frequently answers verbally («Выключаю!») without actually
+    invoking the ``stop_music`` tool — Renardo keeps playing until the
+    next DJ tick, e2e GATE-1 fails on ``missing stop_music``, and the
+    operator has no way to silence the robot mid-track. This prompt is
+    appended to the original user input so the LLM has the request in
+    context, and explicitly names ``stop_music`` + the DJ-mode off
+    switch so the next turn fires the actual tool call.
+
+    The ``STOP_MUSIC_RETRY_PROMPT_PREFIX`` (same shape as
+    :data:`MUSIC_RETRY_PROMPT_PREFIX`) lets ``dialogue_node._run_turn``
+    detect stop-music retries the same way it detects Bug-C retries —
+    without the prefix the retry budget would reset on every synthetic
+    re-dispatch and the guard would loop forever.
+
+    Args:
+        user_input: The original user command («Робот, стоп музыку»,
+            «выключи диджея», …). Echoed verbatim in the prompt so the
+            LLM has the request in context.
+
+    Returns:
+        The synthetic follow-up prompt passed to ``process_input`` via
+        the same synchronous-retry path that ``build_music_retry_prompt``
+        uses for Bug C.
+    """
+    return (
+        STOP_MUSIC_RETRY_PROMPT_PREFIX + " stop_music tool, "
+        "хотя пользователь ЯВНО попросил остановить музыку. "
+        "Музыка сейчас ИГРАЕТ — предыдущие треки НЕ остановлены, "
+        "verbal-only ответ («Выключаю!») НЕ останавливает Renardo/AI-mp3. "
+        "ОБЯЗАТЕЛЬНО вызови в ЭТОМ же turn: "
+        "1) stop_music() — остановить текущий трек; "
+        "2) set_dj_mode(enabled=false) — если до этого играл DJ; "
+        "3) speak_text('Готово, музыка выключена') — короткое подтверждение; "
+        "4) верни 'done'. "
+        "Запрос юзера: «"
+        + (user_input or "")
+        + "». "
+        "Если в ЭТОМ цикле снова не вызовешь stop_music — музыка продолжит играть, "
+        "e2e GATE-1 fail-streak продолжится, юзер не сможет остановить робота голосом."
+    )

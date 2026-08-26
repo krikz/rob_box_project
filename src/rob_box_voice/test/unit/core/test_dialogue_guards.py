@@ -21,8 +21,10 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_GUARD_KEYWORDS,
     MUSIC_GUARD_VOCAL_KEYWORDS,
     MUSIC_STOP_OVERRIDES,
+    STOP_MUSIC_RETRY_PROMPT_PREFIX,
     build_babble_retry_prompt,
     build_music_retry_prompt,
+    build_stop_music_retry_prompt,
     is_metalanguage_babble,
     is_music_stop_command,
     is_vocal_request,
@@ -233,6 +235,63 @@ class TestBuildMusicRetryPrompt:
     def test_empty_user_input(self) -> None:
         prompt = build_music_retry_prompt("")
         assert "[CRITICAL]" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Issue #1544 / #1561 — Bug D (stop-music) retry prompt builder
+# ---------------------------------------------------------------------------
+
+
+class TestStopMusicRetryPromptPrefix:
+    def test_prefix_matches_music_retry_shape(self) -> None:
+        """``STOP_MUSIC_RETRY_PROMPT_PREFIX`` must mirror the Bug-C
+        ``MUSIC_RETRY_PROMPT_PREFIX`` shape (both start with the same
+        ``[CRITICAL] В прошлом цикле ты НЕ вызвал`` marker). The
+        dialogue_node ``_run_turn`` uses ``startswith(prefix)`` on
+        both — if the shape diverges the retry-budget guard would
+        treat the stop-music retry as a fresh user request and reset
+        the budget every iteration (infinite loop)."""
+        from rob_box_voice.core.dialogue_guards import (
+            MUSIC_RETRY_PROMPT_PREFIX,
+        )
+        assert STOP_MUSIC_RETRY_PROMPT_PREFIX == MUSIC_RETRY_PROMPT_PREFIX
+
+
+class TestBuildStopMusicRetryPrompt:
+    def test_echoes_user_input(self) -> None:
+        """Стоп-ретрай-промпт ОБЯЗАН содержать оригинальный
+        user_input — иначе LLM не знает, что юзер просил остановить,
+        и retry превращается в context-less LLM call."""
+        prompt = build_stop_music_retry_prompt("Робот, стоп музыку")
+        assert "Робот, стоп музыку" in prompt
+
+    def test_demands_stop_music_tool(self) -> None:
+        """Issue #1544 #1561 dj02 — главная цель: LLM должен вызвать
+        именно ``stop_music`` tool, а не говорить verbal-only
+        «Выключаю!»."""
+        prompt = build_stop_music_retry_prompt("x")
+        assert "stop_music" in prompt
+        assert "[CRITICAL]" in prompt
+
+    def test_includes_dj_mode_off(self) -> None:
+        """Если до этого был DJ-mode, нужно выключить — иначе DJ
+        автоматически стартанёт следующий трек через 5 секунд."""
+        prompt = build_stop_music_retry_prompt("x")
+        assert "set_dj_mode" in prompt
+        assert "enabled=false" in prompt
+
+    def test_empty_user_input(self) -> None:
+        """Defensive: пустой ввод не должен крашить."""
+        prompt = build_stop_music_retry_prompt("")
+        assert "[CRITICAL]" in prompt
+        assert "stop_music" in prompt
+
+    def test_prefix_is_recognisable_by_startswith(self) -> None:
+        """``dialogue_node._run_turn`` отличает stop-retry от обычного
+        запроса через ``startswith(STOP_MUSIC_RETRY_PROMPT_PREFIX)`` —
+        проверяем что префикс стоит в начале."""
+        prompt = build_stop_music_retry_prompt("Робот, стоп музыку")
+        assert prompt.startswith(STOP_MUSIC_RETRY_PROMPT_PREFIX)
 
 
 # ---------------------------------------------------------------------------

@@ -170,11 +170,37 @@ ignored".
   set_voice(voice="Russian_BrightHeroine") → speak_text("Здравствуй,
   дедушка!") → "done".
 
-🚨 **RULE #MUSIC — ОСТАНОВКА СГЕНЕРИРОВАННОГО ТРЕКА**:
-`<system_context>` содержит `<generated_music>`: `playing` или `idle`. Читай
-это состояние ТОЛЬКО из тега. Если `playing` и юзер просит «стоп/хватит/
-выключи/другую» — вызови `stop_music()`, затем подтверди через `speak_text`.
-НЕ выдумывай «музыка уже закончилась» — если тег `playing`, трек играет.
+🚨 **RULE #MUSIC — ОСТАНОВКА МУЗЫКИ (issue #1544 #1561 dj02)**:
+Когда юзер просит «стоп музыку / выключи музыку / хватит / другую / убери» —
+ВСЕГДА вызывай **`stop_music()` tool**, затем подтверди через `speak_text` и
+верни `done`. ❌ ЗАПРЕЩЕНО отвечать verbal-only «Выключаю!» / «Готово!» без
+вызова `stop_music()` — трек продолжит играть, оператор не сможет остановить
+робота голосом, e2e GATE-1 fail-streak на dj02.
+
+Покрывает ОБА сценария (issue #1544):
+1. **AI-сгенерированный mp3** — `<generated_music>: playing` в
+   `<system_context>`. Вызов `stop_music()` + `set_dj_mode(enabled=false)`
+   если DJ активен.
+2. **Renardo-бит / DJ-режим** (после `execute_music_code`, `dj01_start_renardo`)
+   — `<generated_music>: idle` (AI-mp3 не играет, НО Renardo-паттерн живёт).
+   Тег `idle` НЕ означает «музыки нет» для Renardo — в этом случае тоже
+   ОБЯЗАТЕЛЬНО вызови `stop_music()` + `set_dj_mode(enabled=false)`.
+3. **Если не уверен** — вызови `stop_music()` всё равно. Это идемпотентный
+   tool: на пустом плеере он no-op, на играющем — остановит трек.
+
+✅ ПРАВИЛЬНО (после dj01_start_renardo + «Робот, стоп музыку»):
+```
+stop_music()
+set_dj_mode(enabled=false)  # если был DJ
+speak_text("Готово, музыка выключена")
+→ "done"
+```
+
+❌ BUG (тот же запрос):
+```
+speak_text("Выключаю музыку!")    # ← verbal-only, stop_music НЕ вызван
+→ "done"                          # ← Renardo продолжает играть
+```
 
 🚨 **RULE #SEARCH — NO FAKE SEARCH / NO HALLUCINATED RESULTS**:
 When the user asks to search/find/look up («поищи», «найди», «загугли») — you

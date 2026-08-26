@@ -56,6 +56,15 @@ class MusicGuardVerdictKind(str, Enum):
     #: synchronous user-music retry (Bug C path).
     USER_RETRY = "user_retry"
 
+    #: User asked to STOP music (issue #1544 #1561 dj02) AND budget not
+    #: exhausted — dispatch a synchronous stop-music retry. The
+    #: ``stop_music`` tool was missing from ``tools_called``, so the
+    #: Renardo/AI-mp3 track keeps playing — ``MusicGuard`` does NOT
+    #: reset its budget on success (the only path that resets it is a
+    #: user input that doesn't look like a stop command, or an explicit
+    #: ``reset_for_new_user_request`` call).
+    STOP_RETRY = "stop_retry"
+
     #: User asked for music but **budget exhausted** — publish the
     #: spoken nudge fallback («Я тут растерялся — бит не запустился,
     #: попробуй ещё раз»). After a nudge the budget is reset so the
@@ -127,18 +136,26 @@ class MusicGuard:
     #: ``DialogueNode`` constants so behaviour does not regress.
     DEFAULT_MAX_DJ_RETRIES: int = 2
     DEFAULT_MAX_USER_RETRIES: int = 1
+    #: Issue #1544 / #1561 — Bug D retry budget. DJ mode off → only one
+    #: retry needed (LLM only needs one CRITICAL nudge to call
+    #: ``stop_music``); further retries are noise. Mirrors the legacy
+    #: ``MAX_MUSIC_GUARD_RETRIES`` shape.
+    DEFAULT_MAX_STOP_RETRIES: int = 1
 
     def __init__(
         self,
         *,
         max_dj_retries: int = DEFAULT_MAX_DJ_RETRIES,
         max_user_retries: int = DEFAULT_MAX_USER_RETRIES,
+        max_stop_retries: int = DEFAULT_MAX_STOP_RETRIES,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         self._max_dj_retries = max_dj_retries
         self._max_user_retries = max_user_retries
+        self._max_stop_retries = max_stop_retries
         self._dj_retry_count: int = 0
         self._user_retry_count: int = 0
+        self._stop_retry_count: int = 0
         self._logger = logger
 
     # ------------------------------------------------------------------
@@ -155,12 +172,20 @@ class MusicGuard:
         return self._user_retry_count
 
     @property
+    def stop_retry_count(self) -> int:
+        return self._stop_retry_count
+
+    @property
     def max_dj_retries(self) -> int:
         return self._max_dj_retries
 
     @property
     def max_user_retries(self) -> int:
         return self._max_user_retries
+
+    @property
+    def max_stop_retries(self) -> int:
+        return self._max_stop_retries
 
     # ------------------------------------------------------------------
     # Budget control — only the DialogueNode adapter calls these.
@@ -200,6 +225,7 @@ class MusicGuard:
         dj_enabled: bool = False,
         build_music_retry_prompt=None,
         build_dj_retry_prompt=None,
+        build_stop_music_retry_prompt=None,
     ) -> MusicGuardVerdict:
         """Decide what the post-turn music guard should do.
 
@@ -224,6 +250,13 @@ class MusicGuard:
             build_dj_retry_prompt: Callable ``() -> str`` for the
                 Bug B synthetic retry prompt. The adapter passes
                 ``self._build_dj_retry_prompt``.
+            build_stop_music_retry_prompt: Callable ``(user_input) -> str``
+                for the Bug D (issue #1544 #1561) synthetic stop-music
+                retry prompt. The adapter passes
+                ``self._build_stop_music_retry_prompt``. Kept as a
+                parameter (instead of imported) so the guard stays
+                pure-Python testable. When ``None`` a generic fallback
+                string is used (handy for unit tests).
 
         Returns:
             :class:`MusicGuardVerdict` whose ``kind`` tells the adapter
@@ -290,6 +323,79 @@ class MusicGuard:
                 prompt=prompt,
             )
 
+        # 🔴 FIX (issue #1544 #1561 — Bug D): «стоп музыку» /
+        # «выключи диджея» / «хватит диджеить» — юзер просит
+        # остановить музыку. Bug D enforcement идёт ПЕРЕД Bug C,
+        # потому что ``user_wants_music("стоп музыку")`` → False
+        # (нет music keyword), и без Bug D guard завершился бы
+        # ``not_music_request`` раньше времени — LLM получила бы
+        # нулевой enforcement (verbal-only «Выключаю!», без вызова
+        # stop_music tool). Renardo/AI-mp3 продолжит играть, e2e
+        # GATE-1 падает на dj02.
+        #
+        # Семантика (issue #1544 #1561):
+        # - Если LLM реально вызвал ``stop_music`` (или любой
+        #   music-stop tool) → guard SKIP, всё ок, stop budget reset.
+        # - Если не вызвал → Bug D STOP_RETRY (synthetic prompt
+        #   форсирует вызов в следующем turn). Budget — отдельный
+        #   ``_stop_retry_count``, не делится с DJ/user.
+        # - Если budget Bug D исчерпан → NUDGE (как Bug C nudge).
+        if is_music_stop_command(user_input):
+            if "stop_music" in tools_set:
+                self._log_debug(
+                    "🎵 [issue 1544 #1561] stop-command honoured "
+                    f"(stop_music in tools={sorted(tools_set)!r}) "
+                    "→ SKIP"
+                )
+                # Stop tool was actually invoked — guard did its job.
+                # Reset the stop budget so the next genuine stop
+                # request gets a fresh allocation. DJ/user budgets are
+                # untouched — they are independent counters.
+                self._stop_retry_count = 0
+                return MusicGuardVerdict(
+                    kind=MusicGuardVerdictKind.SKIP,
+                    reason="stop_music_executed",
+                )
+
+            # Stop requested but LLM skipped the tool → Bug D retry
+            # (issue #1544 #1561 dj02 GATE-1 fail-streak).
+            if self._stop_retry_count < self._max_stop_retries:
+                self._stop_retry_count += 1
+                prompt = (
+                    build_stop_music_retry_prompt(user_input)
+                    if build_stop_music_retry_prompt is not None
+                    else (
+                        "[CRITICAL] В прошлом цикле ты НЕ вызвал "
+                        "stop_music tool — вызови его СЕЙЧАС"
+                    )
+                )
+                self._log_warning(
+                    f"🎵 [issue 1544 #1561] stop-command without "
+                    f"stop_music tool (tools={sorted(tools_set)!r}); "
+                    f"synchronous stop retry "
+                    f"{self._stop_retry_count}/{self._max_stop_retries}"
+                )
+                return MusicGuardVerdict(
+                    kind=MusicGuardVerdictKind.STOP_RETRY,
+                    reason="stop_music_skipped",
+                    prompt=prompt,
+                )
+
+            # Bug D budget exhausted — publish the spoken nudge and
+            # reset so the *next* genuine stop request gets a fresh
+            # allocation. Mirrors the Bug-C NUDGE branch shape.
+            self._log_warning(
+                f"🎵 [issue 1544 #1561] stop-command but stop_music "
+                f"tool skipped AND budget exhausted "
+                f"({self._stop_retry_count}/{self._max_stop_retries}); "
+                "publishing spoken nudge"
+            )
+            self._stop_retry_count = 0
+            return MusicGuardVerdict(
+                kind=MusicGuardVerdictKind.NUDGE,
+                reason="stop_music_budget_exhausted",
+            )
+
         # Bug C — user asked for music but LLM skipped execute_music_code.
         if not user_wants_music(user_input):
             self._log_info(
@@ -300,20 +406,6 @@ class MusicGuard:
             return MusicGuardVerdict(
                 kind=MusicGuardVerdictKind.SKIP_NOT_APPLICABLE,
                 reason="not_music_request",
-            )
-
-        # 🔴 FIX (live 06.08): stop-commands («хватит диджеить»,
-        # «выключи музыку») must NOT trigger a music retry — they ask
-        # to STOP music, not START it. Bug C previously mis-classified
-        # them as music requests and re-enabled music via the retry.
-        if is_music_stop_command(user_input):
-            self._log_debug(
-                "🎵 [issue 992 Bug C] stop-command — skipping music "
-                "guard entirely"
-            )
-            return MusicGuardVerdict(
-                kind=MusicGuardVerdictKind.SKIP_NOT_APPLICABLE,
-                reason="stop_command",
             )
 
         # 🔴 FIX (live 10:00): vocal requests («спой/пой/песня») — when
