@@ -1,0 +1,99 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "robot.blend.json — Source-of-truth manifest for Rob Box avatar glTF asset",
+  "description": "Детерминированное описание сцены для генерации robot_body.glb и robot_animations.glb. Не используется как input для Blender, но служит контрактом: Blender-проект (когда появится) должен воспроизводить эту сцену 1:1. Генератор Python — scripts/generate_robot_body.py + scripts/generate_robot_animations.py.",
+  "type": "object",
+  "required": ["scene", "nodes", "meshes", "materials", "animations"],
+  "properties": {
+    "scene": {
+      "type": "object",
+      "required": ["name", "units", "up_axis"],
+      "properties": {
+        "name": {"type": "string"},
+        "units": {"type": "string", "enum": ["meters"]},
+        "up_axis": {"type": "string", "enum": ["Y", "Z"]},
+        "forward_axis": {"type": "string"},
+        "background": {"type": ["null", "string"]},
+        "ambient_color": {"type": "array", "items": {"type": "number"}},
+        "root_frame": {"type": "string"}
+      }
+    },
+    "framerate": {"type": "integer", "minimum": 1},
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "type"],
+        "properties": {
+          "name": {"type": "string"},
+          "type": {"type": "string", "enum": ["EMPTY", "MESH"]},
+          "mesh": {"type": "string"},
+          "material": {"type": "string"},
+          "location": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+          "rotation_euler": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+          "scale": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+          "children": {"type": "array", "items": {"type": "string"}},
+          "_note": {"type": "string"}
+        }
+      }
+    },
+    "meshes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "stl_source", "target_faces"],
+        "properties": {
+          "name": {"type": "string"},
+          "stl_source": {"type": "string"},
+          "target_faces": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    "materials": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "baseColor"],
+        "properties": {
+          "name": {"type": "string"},
+          "baseColor": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4},
+          "metallic": {"type": "number", "minimum": 0, "maximum": 1},
+          "roughness": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    },
+    "lights": {"type": "array"},
+    "animations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "duration_seconds", "tracks"],
+        "properties": {
+          "name": {"type": "string"},
+          "duration_seconds": {"type": "number"},
+          "tracks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["target_node", "path"],
+              "properties": {
+                "target_node": {"type": "string"},
+                "path": {"type": "string", "enum": ["translation", "rotation", "scale"]},
+                "axis": {"oneOf": [
+                  {"type": "string", "enum": ["x", "y", "z"]},
+                  {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
+                ]},
+                "amplitude_m": {"type": "number"},
+                "period_seconds": {"type": "number"},
+                "angular_velocity_rad_per_sec": {"type": "number"},
+                "keyframe_interval_seconds": {"type": "number"},
+                "interpolation": {"type": "string", "enum": ["LINEAR", "STEP", "CUBICSPLINE"]}
+              }
+            }
+          }
+        }
+      }
+    },
+    "export_settings": {"type": "object"}
+  }
+}

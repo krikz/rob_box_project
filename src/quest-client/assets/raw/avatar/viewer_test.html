@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Avatar Robot Smoke Test (Three.js)</title>
+  <style>
+    body { margin: 0; overflow: hidden; font-family: sans-serif; background: #1a1a1a; color: #e0e0e0; }
+    canvas { display: block; }
+    #info {
+      position: absolute; top: 10px; left: 10px;
+      padding: 12px; background: rgba(0,0,0,0.7); border-radius: 6px;
+      font-size: 13px; max-width: 360px; line-height: 1.4;
+    }
+    #info code { background: rgba(255,255,255,0.1); padding: 1px 4px; border-radius: 3px; }
+    #error { color: #ff8888; margin-top: 8px; }
+    #controls { position: absolute; bottom: 10px; left: 10px; display: flex; gap: 8px; }
+    button {
+      padding: 8px 14px; background: #2a2a4a; color: #fff;
+      border: 1px solid #4a4a6a; border-radius: 4px; cursor: pointer;
+      font-family: inherit; font-size: 12px;
+    }
+    button:hover { background: #3a3a5a; }
+    button.active { background: #4a7aaa; }
+  </style>
+</head>
+<body>
+<div id="info">
+  <strong>Avatar Robot — smoke test</strong><br/>
+  Three.js r160+ / glTF 2.0 / WebXR-ready scene (desktop browser preview).<br/>
+  <span id="stats">Loading…</span>
+  <div id="error"></div>
+</div>
+<div id="controls">
+  <button data-anim="idle">idle</button>
+  <button data-anim="forward">forward</button>
+  <button data-anim="turn_left">turn_left</button>
+  <button data-anim="turn_right">turn_right</button>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const errorEl = document.getElementById('error');
+function reportError(msg) {
+  console.error(msg);
+  errorEl.textContent = msg;
+}
+
+async function main() {
+  const statsEl = document.getElementById('stats');
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  document.body.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x1a1a1a);
+  // Ground (10x10 м, как рекомендовано в ADR-0032 §3 для отладки).
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(10, 10),
+    new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.9, metalness: 0.1 })
+  );
+  ground.rotation.x = -Math.PI / 2;
+  scene.add(ground);
+
+  const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 100);
+  camera.position.set(2, 1.5, 2);
+  camera.lookAt(0, 0.5, 0);
+
+  // Lights: hemisphere (как небо в VR) + directional (солнце).
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 0.8));
+  const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+  dirLight.position.set(3, 5, 2);
+  scene.add(dirLight);
+
+  // OrbitControls для desktop-просмотра.
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.set(0, 0.3, 0);
+  controls.update();
+
+  const clock = new THREE.Clock();
+  const mixer = new THREE.AnimationMixer();
+  const actions = {};
+  let activeAction = null;
+
+  const loader = new GLTFLoader();
+  try {
+    // Загружаем body (геометрия).
+    const bodyGltf = await loader.loadAsync('./robot_body.glb');
+    const robot = bodyGltf.scene;
+    scene.add(robot);
+
+    // Загружаем animations (отдельный файл — согласно ADR-0032 §3.2).
+    const animGltf = await loader.loadAsync('./robot_animations.glb');
+    const root = robot;
+    mixer = new THREE.AnimationMixer(root);
+    for (const clip of animGltf.animations) {
+      actions[clip.name] = mixer.clipAction(clip);
+    }
+    // idle — loop, остальные — loop тоже (для теста).
+    for (const name in actions) actions[name].setLoop(THREE.LoopRepeat);
+    // Запускаем idle по умолчанию.
+    actions.idle?.play();
+    activeAction = 'idle';
+
+    document.querySelectorAll('button[data-anim]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const name = btn.dataset.anim;
+        if (!actions[name]) return;
+        // Fade transition 200 ms.
+        if (activeAction && actions[activeAction]) {
+          actions[activeAction].fadeOut(0.2);
+        }
+        actions[name].reset().fadeIn(0.2).play();
+        activeAction = name;
+        document.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+      });
+    });
+    document.querySelector('button[data-anim="idle"]').classList.add('active');
+
+    const triCount = countTriangles(robot);
+    statsEl.textContent =
+      `✓ Loaded: robot_body.glb + robot_animations.glb\n` +
+      `Triangles: ${triCount}\n` +
+      `Animations: ${Object.keys(actions).join(', ')}`;
+  } catch (e) {
+    reportError(`Ошибка загрузки: ${e.message}`);
+    return;
+  }
+
+  function countTriangles(obj) {
+    let n = 0;
+    obj.traverse(o => {
+      if (o.isMesh && o.geometry?.index) n += o.geometry.index.count / 3;
+      else if (o.isMesh && o.geometry?.attributes?.position) {
+        n += o.geometry.attributes.position.count / 3;
+      }
+    });
+    return n;
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    const dt = clock.getDelta();
+    mixer.update(dt);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+}
+
+main().catch(e => reportError(`Init failed: ${e.message}`));
+</script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# glTF binaries — артефакты (committed для воспроизводимости).
+# Если glb станет большим (>1 MB) и потребуется git-lfs, добавить:
+# *.glb filter=lfs diff=lfs merge=lfs -text
+# Пока glb маленькие (~100 KB), храним напрямую.
+
+# Python build artifacts
+__pycache__/
+*.pyc
+*.pyo
+
+# Не коммитим промежуточные артефакты генерации
+/tmp_*/
+_build/

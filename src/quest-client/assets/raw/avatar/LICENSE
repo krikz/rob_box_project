@@ -1,0 +1,41 @@
+# Avatar Robot Asset — CC0-1.0 License
+
+This asset (`robot_body.glb`, `robot_animations.glb`, исходные STL-меши, генераторы и манифесты) выпущен под **Creative Commons Zero v1.0 Universal (CC0-1.0)**.
+
+## Что это означает
+
+Вы можете свободно:
+
+- ✅ Использовать в коммерческих и некоммерческих проектах
+- ✅ Изменять, микшировать, перерабатывать
+- ✅ Распространять без указания авторства
+- ✅ Использовать без каких-либо ограничений
+
+Без каких-либо условий, без royalty, без attribution.
+
+## Авторство
+
+- **Модель**: разработана в рамках проекта [rob_box_project](https://github.com/krikz/rob_box_project) (Vision Pi / 4-wheel platform для образовательного робота). STL-меши экспортированы из Fusion 360 CAD-модели реального робота.
+- **Source-of-truth pipeline**: разработан Hermes Agent (kanban t_1af884b2), 2026-08-26.
+- **Анимации**: оригинальная разработка для Meta Quest WebXR-клиента (idle breathing sway + differential drive wheel rotations).
+
+## Полный текст лицензии
+
+```
+Creative Commons CC0 1.0 Universal — Public Domain Dedication
+
+The person who associated a work with this deed has dedicated the work to
+the public domain by waiving all rights worldwide under copyright law,
+including all related and neighboring rights, to the extent allowed by law.
+
+You can copy, modify, distribute and perform the work, even for commercial
+purposes, all without asking permission.
+
+For more information, see <https://creativecommons.org/publicdomain/zero/1.0/>
+```
+
+## Третьи стороны
+
+Этот asset не использует сторонние модели или текстуры. Всё — собственная разработка проекта rob_box_project.
+
+Для **environment** (комната-мост в Phase 2.1+) планируется использовать **Quaternius** low-poly environment kit (CC0) с явным указанием источника в README этого каталога.

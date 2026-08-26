@@ -1,0 +1,180 @@
+{
+  "$schema": "./robot.blend.schema.json",
+  "_meta": {
+    "purpose": "Source-of-truth manifest для avatar-ассета robot_body.glb / robot_animations.glb. .blend (Blender binary) не генерируется автоматически (Blender недоступен в headless CI). Этот JSON описывает всю сцену, которую Blender-проект должен воспроизводить. Генератор scripts/generate_robot_body.py + scripts/generate_robot_animations.py — это детерминированный pipeline из STL + этого манифеста в glTF.",
+    "created_by": "designer (Hermes Agent), kanban t_1af884b2, Phase 2.1",
+    "license": "CC0-1.0",
+    "sources": [
+      "STL-меши: src/rob_box_description/meshes/*.stl (CAD-export реального робота, проект rob_box_project)",
+      "URDF: src/rob_box_description/urdf/rob_box.xacro",
+      "Materials: src/rob_box_description/urdf/materials/rob_box_materials.xacro"
+    ]
+  },
+  "scene": {
+    "name": "RobBox_Avatar",
+    "units": "meters",
+    "up_axis": "Y",
+    "forward_axis": "-Z (glTF convention)",
+    "background": null,
+    "ambient_color": [0.5, 0.5, 0.5],
+    "root_frame": "base_footprint (REP-120 reference frame, sphere r=0.001, не визуализируется)"
+  },
+  "framerate": 24,
+  "nodes": [
+    {
+      "name": "base_footprint",
+      "type": "EMPTY",
+      "location": [0.0, 0.0, 0.0],
+      "children": ["base_link"]
+    },
+    {
+      "name": "base_link",
+      "type": "MESH",
+      "mesh": "base_link",
+      "material": "rob_box_white",
+      "location": [0.0, 0.0, 0.1143],
+      "rotation_euler": [0.0, 0.0, 0.0],
+      "scale": [1.0, 1.0, 1.0],
+      "_note": "STL в мм, scale 0.001 в URDF; в Blender scale=1.0 уже после импорта в м. Z = wheel_radius (0.1143 м), поднят над base_footprint по REP-120.",
+      "children": ["left_front_wheel", "right_front_wheel", "left_rear_wheel", "right_rear_wheel", "body_cover", "lidar", "camera_oak", "camera_rpi"]
+    },
+    {
+      "name": "left_front_wheel",
+      "type": "MESH",
+      "mesh": "left_front_wheel",
+      "material": "wheel_black",
+      "location": [0.150, 0.140, 0.0],
+      "rotation_euler": [0.0, 0.0, 0.0],
+      "_note": "continuous joint (URDF wheel macro), axis=(0,1,0). Pivot смещён на -Y для корректного вращения вокруг оси."
+    },
+    {
+      "name": "right_front_wheel",
+      "type": "MESH",
+      "mesh": "right_front_wheel",
+      "material": "wheel_black",
+      "location": [0.150, -0.140, 0.0],
+      "rotation_euler": [0.0, 0.0, 0.0]
+    },
+    {
+      "name": "left_rear_wheel",
+      "type": "MESH",
+      "mesh": "left_rear_wheel",
+      "material": "wheel_black",
+      "location": [-0.150, 0.140, 0.0],
+      "rotation_euler": [0.0, 0.0, 0.0]
+    },
+    {
+      "name": "right_rear_wheel",
+      "type": "MESH",
+      "mesh": "right_rear_wheel",
+      "material": "wheel_black",
+      "location": [-0.150, -0.140, 0.0],
+      "rotation_euler": [0.0, 0.0, 0.0]
+    },
+    {
+      "name": "body_cover",
+      "type": "MESH",
+      "mesh": "body_cover",
+      "material": "rob_box_white",
+      "location": [0.0, 0.0, 0.10],
+      "_note": "Верхняя крышка корпуса. Z подобран из анализа base_link.stl extents."
+    },
+    {
+      "name": "lidar",
+      "type": "MESH",
+      "mesh": "lidar",
+      "material": "cyber_blue",
+      "location": [0.0, 0.0, 0.30],
+      "_note": "LiDAR сверху по центру (xacro: lidar_macro)."
+    },
+    {
+      "name": "camera_oak",
+      "type": "MESH",
+      "mesh": "camera_oak",
+      "material": "sensor_black",
+      "location": [0.115, 0.0, 0.16],
+      "rotation_euler": [0.0, 0.0, 0.0],
+      "_note": "OAK-D камера спереди-сверху. URDF visual_origin компенсирует экспорт из Fusion 360."
+    },
+    {
+      "name": "camera_rpi",
+      "type": "MESH",
+      "mesh": "camera_rpi",
+      "material": "sensor_black",
+      "location": [0.170, -0.065, 0.10],
+      "_note": "RPi USB-камера снизу-спереди."
+    }
+  ],
+  "meshes": [
+    {"name": "base_link", "stl_source": "meshes/base_link.stl", "target_faces": 3000},
+    {"name": "body_cover", "stl_source": "meshes/body_cover.stl", "target_faces": 500},
+    {"name": "camera_oak", "stl_source": "meshes/camera_oak.stl", "target_faces": 20},
+    {"name": "camera_rpi", "stl_source": "meshes/camera_rpi.stl", "target_faces": 100},
+    {"name": "lidar", "stl_source": "meshes/lidar.stl", "target_faces": 200},
+    {"name": "left_front_wheel", "stl_source": "meshes/left_front_wheel.stl", "target_faces": 250},
+    {"name": "right_front_wheel", "stl_source": "meshes/right_front_wheel.stl", "target_faces": 250},
+    {"name": "left_rear_wheel", "stl_source": "meshes/left_rear_wheel.stl", "target_faces": 250},
+    {"name": "right_rear_wheel", "stl_source": "meshes/right_rear_wheel.stl", "target_faces": 250}
+  ],
+  "materials": [
+    {"name": "rob_box_white", "baseColor": [0.95, 0.95, 0.98, 1.0], "metallic": 0.1, "roughness": 0.3},
+    {"name": "wheel_black", "baseColor": [0.10, 0.10, 0.10, 1.0], "metallic": 0.05, "roughness": 0.85},
+    {"name": "sensor_black", "baseColor": [0.15, 0.15, 0.15, 1.0], "metallic": 0.2, "roughness": 0.6},
+    {"name": "cyber_blue", "baseColor": [0.00, 0.70, 1.00, 1.0], "metallic": 0.4, "roughness": 0.3},
+    {"name": "neon_purple", "baseColor": [0.58, 0.00, 0.83, 1.0], "metallic": 0.4, "roughness": 0.3}
+  ],
+  "lights": [
+    {"type": "HEMI", "color": [1.0, 1.0, 1.0], "groundColor": [0.4, 0.4, 0.4], "intensity": 0.8},
+    {"type": "SUN", "color": [1.0, 0.95, 0.85], "intensity": 1.0, "location": [3.0, 5.0, 2.0]}
+  ],
+  "animations": [
+    {
+      "name": "idle",
+      "duration_seconds": 3.0,
+      "tracks": [
+        {"target_node": "base_link", "path": "translation", "axis": "z",
+         "amplitude_m": 0.02, "period_seconds": 3.0,
+         "keyframe_interval_seconds": 0.1, "interpolation": "LINEAR"}
+      ]
+    },
+    {
+      "name": "forward",
+      "duration_seconds": 1.0,
+      "tracks": [
+        {"target_node": "left_front_wheel",  "path": "rotation", "axis": [0, 1, 0], "angular_velocity_rad_per_sec": -3.14159},
+        {"target_node": "right_front_wheel", "path": "rotation", "axis": [0, 1, 0], "angular_velocity_rad_per_sec": -3.14159},
+        {"target_node": "left_rear_wheel",   "path": "rotation", "axis": [0, 1, 0], "angular_velocity_rad_per_sec": -3.14159},
+        {"target_node": "right_rear_wheel",  "path": "rotation", "axis": [0, 1, 0], "angular_velocity_rad_per_sec": -3.14159}
+      ],
+      "_note": "30 RPM = π рад/с; знак «−» — колесо крутится в направлении «вперёд» (ROS REP-103)."
+    },
+    {
+      "name": "turn_left",
+      "duration_seconds": 1.0,
+      "tracks": [
+        {"target_node": "left_front_wheel",  "path": "rotation", "axis": [0, 1, 0], "angular_velocity_rad_per_sec": -1.5708},
+        {"target_node": "left_rear_wheel",   "path": "rotation", "axis": [0, 1, 0], "angular_velocity_rad_per_sec": -1.5708},
+        {"target_node": "right_front_wheel", "path": "rotation", "axis": [0, 1, 0], "angular_velocity_rad_per_sec":  1.5708},
+        {"target_node": "right_rear_wheel",  "path": "rotation", "axis": [0, 1, 0], "angular_velocity_rad_per_sec":  1.5708}
+      ],
+      "_note": "Differential: левые колёса назад, правые вперёд; скорость ×0.5 от forward."
+    },
+    {
+      "name": "turn_right",
+      "duration_seconds": 1.0,
+      "tracks": [
+        {"target_node": "left_front_wheel",  "path": "rotation", "axis": [0, 1, 0], "angular_velocity_rad_per_sec":  1.5708},
+        {"target_node": "left_rear_wheel",   "path": "rotation", "axis": [0, 1, 0], "angular_velocity_rad_per_sec":  1.5708},
+        {"target_node": "right_front_wheel", "path": "rotation", "axis": [0, 1, 0], "angular_velocity_rad_per_sec": -1.5708},
+        {"target_node": "right_rear_wheel",  "path": "rotation", "axis": [0, 1, 0], "angular_velocity_rad_per_sec": -1.5708}
+      ]
+    }
+  ],
+  "export_settings": {
+    "format": "glTF 2.0 binary (.glb)",
+    "target_size_body_kb": 300,
+    "target_size_animations_kb": 100,
+    "compression": "none (Phase 2.0 добавит Draco + Meshopt)",
+    "axis_conversion": "Z-up → Y-up (glTF convention), Forward: -Z"
+  }
+}
