@@ -185,6 +185,10 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
 
   async function attachXrSession(session: XRSession): Promise<void> {
     if (opts.enableXr === false) return;
+    // Включаем XR-режим рендерера ДО setSession: без этого three.js
+    // не подменяет камеру на XR-камеру (голова не отслеживается, взор
+    // зафиксирован) и не биндит XR framebuffer.
+    renderer.xr.enabled = true;
     await renderer.xr.setSession(session);
     renderer.setAnimationLoop(() => {
       renderer.render(scene, camera);

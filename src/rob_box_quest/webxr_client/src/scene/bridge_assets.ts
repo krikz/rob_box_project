@@ -206,10 +206,9 @@ export async function loadBridgeAssets(
 
   // GLTFLoader with Draco + Meshopt.
   const draco = new DRACOLoader();
-  // Use the local decoder bundled by `three/examples/jsm/libs/draco/`.
-  // The Vite import resolves to a CDN URL by default; we override with
-  // a static path that mirrors `node_modules/three/examples/jsm/libs/draco/`.
-  draco.setDecoderPath("/models/environment/draco/");
+  // Local decoder served from public/draco/ (copied from
+  // node_modules/three/examples/jsm/libs/draco/ — no CDN, per vite.config.ts).
+  draco.setDecoderPath("/draco/");
   const gltfLoader = new GLTFLoader();
   gltfLoader.setDRACOLoader(draco);
   gltfLoader.setMeshoptDecoder(MeshoptDecoder);
