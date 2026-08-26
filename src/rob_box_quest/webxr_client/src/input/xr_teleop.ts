@@ -1,10 +1,14 @@
-// Quest XR controllers teleop (дизайн §6 + Phase 2 §3):
-//   Left thumbstick Y → linear.x (boost если grip зажат)
-//   Left thumbstick X → angular.z
-//   Grip (любой)       → deadman=true (дополнительно — boost)
-//   B (любой)          → emergency stop (deadman timer → если grip
-//                        отпущен >500ms — также emergency)
-//   A (left controller) → cycle next Captain Mode
+// Quest XR controllers teleop (дизайн §6 + Phase 2 §3).
+//
+// §3.4 bindings (стандартный XR gamepad mapping):
+//   Left thumbstick X/Y (axes[0]/[1]) → movement (linear + angular)
+//   Right thumbstick X/Y (axes[2]/[3]) → camera rotate (yaw/pitch)
+//   Left grip  → boost (1.5x linear) + deadman=true
+//   Right B    → emergency edge
+//   Left A     → cycle next Captain Mode (modeCycleEdge)
+//
+// §3.6: right stick rotation применяется через camera controller (lerp damping).
+// Reset camera — отдельный one-shot edge (`consumeResetCameraEdge`).
 //
 // Реализация через WebXR `input_sources` API. Вызывающий код подписывается
 // на onChange и передаёт в FSM через tick(). Boost multiplier применяется
@@ -17,9 +21,12 @@ import { DeadmanTimer } from "./deadman_timer";
 export const BOOST_MULT = 1.5;
 const MODE_BUTTON_INDEX = 4; // Meta Quest A-button (left controller standard mapping)
 const GRIP_BUTTON_INDEX = 1;
-const EMERGENCY_BUTTON_INDEX = 5; // Meta B
-const THUMBSTICK_AXIS_X = 2;
-const THUMBSTICK_AXIS_Y = 3;
+const EMERGENCY_BUTTON_INDEX = 5; // Meta B (right controller)
+// §3.4: Left thumbstick = axes[0]/[1] (movement), Right thumbstick = axes[2]/[3] (camera).
+const LEFT_STICK_X = 0;
+const LEFT_STICK_Y = 1;
+const RIGHT_STICK_X = 2;
+const RIGHT_STICK_Y = 3;
 const DEADZONE = 0.12;
 
 export interface XrTeleopHandle {
@@ -30,10 +37,17 @@ export interface XrTeleopHandle {
 export interface XrInputState {
   linear: number;
   angular: number;
+  /** Правая ручка — yaw (поворот камеры вокруг Y). -1..1 */
+  cameraYaw: number;
+  /** Правая ручка — pitch (наклон камеры). -1..1 */
+  cameraPitch: number;
   deadman: boolean;
   emergencyEdge: boolean;
   /** Событие mode-cycle от A-кнопки (one-shot, consume). */
   modeCycleEdge: boolean;
+  /** Rising-edge reset-camera (one-shot, consume). Alias для modeCycle, чтобы
+   * UI мог различать "cycle" и "reset" если понадобится. */
+  resetCameraEdge: boolean;
 }
 
 export interface XrTeleopOptions {
@@ -63,37 +77,67 @@ interface GamepadLike {
   buttons: ArrayLike<{ value?: number; pressed?: boolean }>;
 }
 
+/** True, если источник — left controller (по .handedness). */
+function isLeftHand(source: XRInputSource): boolean {
+  return source.handedness === "left";
+}
+
 /**
  * Полль одного XRInputSource: обновляет fsm (linear/angular/deadman +
  * boost) и фиксирует emergency/mode-cycle edges.
+ *
+ * Left controller: left thumbstick + grip + A-button.
+ * Right controller: right thumbstick (camera) + B-button (emergency).
+ *
+ * Параметр `intentSink` (если передан) — сюда пишется computed intent
+ * (linear/angular/deadman после boost). Используется caller'ом для ramp'а.
+ * Если intentSink не передан, intent пишется в fsm напрямую (старая логика).
  */
 export function pollXrInput(
   state: XrInputState,
   source: XRInputSource,
   fsm: TeleopFSM,
+  intentSink?: { linear: number; angular: number; deadman: boolean } | null,
   _opts?: XrTeleopOptions
 ): void {
-  if (source.gamepad) {
-    const gp = source.gamepad as unknown as GamepadLike;
+  if (!source.gamepad) return;
+  const gp = source.gamepad as unknown as GamepadLike;
+
+  if (isLeftHand(source)) {
+    // Movement — left thumbstick, boost если гrip зажат.
     const gripVal = gp.buttons[GRIP_BUTTON_INDEX]?.value ?? 0;
     const grip = gripVal > 0.5;
+    const lx = applyDeadzone(gp.axes[LEFT_STICK_X] ?? 0);
+    const ly = applyDeadzone(gp.axes[LEFT_STICK_Y] ?? 0);
+    const linear = ly * (grip ? BOOST_MULT : 1.0);
+    const angular = -lx;
+    if (intentSink) {
+      intentSink.linear = linear;
+      intentSink.angular = angular;
+      intentSink.deadman = grip;
+    } else {
+      fsm.setLinear(linear);
+      fsm.setAngular(angular);
+      fsm.setDeadman(grip);
+    }
 
-    // linear с boost если grip зажат (только для X — strafe тоже boosted).
-    const tx = applyDeadzone(gp.axes[THUMBSTICK_AXIS_X] ?? 0);
-    const ty = applyDeadzone(gp.axes[THUMBSTICK_AXIS_Y] ?? 0);
-    fsm.setLinear(ty * (grip ? BOOST_MULT : 1.0));
-    fsm.setAngular(-tx);
-    fsm.setDeadman(grip);
-
-    state.linear = fsm.getState() === "idle" ? 0 : ty;
-    state.angular = fsm.getState() === "idle" ? 0 : tx;
+    state.linear = fsm.getState() === "idle" ? 0 : ly;
+    state.angular = fsm.getState() === "idle" ? 0 : lx;
     state.deadman = grip;
+
+    if (gp.buttons[MODE_BUTTON_INDEX]?.pressed) {
+      state.modeCycleEdge = true;
+      state.resetCameraEdge = true; // A-button = mode cycle AND camera reset (по §3.6)
+    }
+  } else {
+    // Right controller — camera rotate + B emergency.
+    const rx = applyDeadzone(gp.axes[RIGHT_STICK_X] ?? 0);
+    const ry = applyDeadzone(gp.axes[RIGHT_STICK_Y] ?? 0);
+    state.cameraYaw = rx;
+    state.cameraPitch = ry;
 
     if (gp.buttons[EMERGENCY_BUTTON_INDEX]?.pressed) {
       state.emergencyEdge = true;
-    }
-    if (gp.buttons[MODE_BUTTON_INDEX]?.pressed) {
-      state.modeCycleEdge = true;
     }
   }
 }
@@ -102,14 +146,15 @@ export function createXrTeleop(opts: XrTeleopOptions): XrTeleopHandle {
   const state: XrInputState = {
     linear: 0,
     angular: 0,
+    cameraYaw: 0,
+    cameraPitch: 0,
     deadman: false,
     emergencyEdge: false,
-    modeCycleEdge: false
+    modeCycleEdge: false,
+    resetCameraEdge: false
   };
   const deadmanTimer = new DeadmanTimer();
 
-  // Каждый кадр xr-loop может звать pollXrInput. Этот же callback
-  // обновляет deadman timer (через caller).
   const handler = (_ev: XRInputSourcesChangeEvent) => {
     void _ev;
   };
@@ -134,6 +179,8 @@ export function createXrTeleop(opts: XrTeleopOptions): XrTeleopHandle {
 export function tickXrTeleop(opts: XrTeleopOptions): {
   consumeEmergency(): boolean;
   consumeModeCycleEdge(): boolean;
+  consumeResetCameraEdge(): boolean;
+  getCameraAxes(): { yaw: number; pitch: number };
   tickDeadman(gripHeld: boolean): { warning?: number; triggered?: number };
 } {
   const x = opts as unknown as {
@@ -159,6 +206,16 @@ export function tickXrTeleop(opts: XrTeleopOptions): {
       }
       if (state) state.modeCycleEdge = false;
       return false;
+    },
+    consumeResetCameraEdge(): boolean {
+      if (state?.resetCameraEdge) {
+        state.resetCameraEdge = false;
+        return true;
+      }
+      return false;
+    },
+    getCameraAxes(): { yaw: number; pitch: number } {
+      return { yaw: state?.cameraYaw ?? 0, pitch: state?.cameraPitch ?? 0 };
     },
     tickDeadman(gripHeld: boolean): { warning?: number; triggered?: number } {
       if (gripHeld) {
