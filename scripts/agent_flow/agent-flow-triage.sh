@@ -18,8 +18,10 @@
 # Pipeline per tick:
 #   1. MAINTENANCE gate (remote + local)  -> exit 0 if paused
 #   2. gh auth check                       -> exit 1 if not authed
-#   3. List open issues with label $ISSUE_LABEL on $GH_REPO
-#   4. For each issue:
+#   3. List open issues with label $ISSUE_LABEL on $GH_REPO   (Phase 1)
+#   4. List open issues with label $GSD_SOURCE_LABEL on $GH_REPO (Phase 2, retro t_360dc1a4)
+#      — оставляем только те, у которых нет метки $ISSUE_LABEL (GSD-orphans)
+#   5. For each issue (оба этапа используют один pipeline process_issues_json):
 #        a. Skip if it already has $DONE_LABEL (e2e-done — work complete)
 #        b. Skip if comment marker `kanban: t_<id>` already present (idempotency)
 #        c. Skip if a card with `issue: #N` in body already exists (idempotency v2)
@@ -28,7 +30,7 @@
 #        f. Compute branch name (agent/<issue>-<slug> or ~<slug> for service/infra)
 #        g. `hermes kanban create` with --workspace worktree --branch $branch
 #        h. Comment the new t_<id> into the issue (3x retry, exp-backoff)
-#   5. flock lock prevents parallel ticks.
+#   6. flock lock prevents parallel ticks.
 #
 # Gates G2..G7 follow the table in ~/.hermes/profiles/agent-flow/skills/.../SKILL.md.
 
@@ -200,17 +202,21 @@ print(json.dumps(keep, ensure_ascii=False))
 '
 }
 
-# --- pull open issues -------------------------------------------------------
-issues_json="$(gh_list_issues_by_label "$ISSUE_LABEL" open "$ISSUE_LIMIT")"
-
-# G3: empty output could mean rate-limit. Detect via direct API status if possible.
-if [ -z "$issues_json" ] || [ "$issues_json" = "[]" ]; then
-    rate="$(gh api rate_limit --jq '.resources.core.remaining' 2>/dev/null || echo 999)"
-    if [ "${rate:-999}" = "0" ]; then
-        log "GitHub rate-limit exhausted — skip tick"; exit 0
-    fi
-    log "no issues with label '${ISSUE_LABEL}' on ${GH_REPO}"; exit 0
-fi
+# --- Phase 1: primary filter (label=$ISSUE_LABEL, defaults to "hermes") ------
+# Ретро t_360dc1a4: до этого фикса triage фильтровал ТОЛЬКО по label 'hermes'.
+# Issue #1643 (Phase 1.7 e2e smoke) был создан БЕЗ метки 'hermes' (только
+# source:gsd + needs-e2e + area:rob_box_quest + phase:1.7) → провалился через
+# фильтр → 10ч+ orphan без kanban-карточки и PR.
+#
+# Основной цикл: Phase 1 обрабатывает hermes-flagged issues. Phase 2 (ниже)
+# ловит GSD-orphans: issues с source:gsd БЕЗ метки hermes (специфика GSD-
+# workflow: он выставляет source:gsd, но не всегда hermes — только для issues,
+# прошедших первичный triage-фильтр бота).
+#
+# NOTE: Phase 1/2 invocations and the G3 rate-limit guard живут НИЖЕ,
+# после определения process_issues_json (~L608). bash требует, чтобы
+# функция была определена ДО первого вызова.
+phase1_json=""
 
 # --- branch-naming helpers --------------------------------------------------
 slugify() {
@@ -357,10 +363,15 @@ EOF
 
 # --- process each issue ------------------------------------------------------
 # Use python3 to safely parse JSON (jq may not be installed everywhere).
+# NOTE: этот блок — мёртвый код (parse() нигде не вызывается после рефакторинга
+# t_360dc1a4), сохранён на случай ре-интродукции парсинга JSON в shell-стиле.
+# Раньше fallback ссылался на $issues_json (старое имя) — после фикса
+# переменная переименована в $phase1_json, обновили ссылку чтобы избежать
+# ложноположительного срабатывания shellcheck (issues_json → unassigned var).
 if command -v jq >/dev/null 2>&1; then
     parse() { jq -r "$@"; }
 else
-    parse() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)" <<<"${issues_json}"; }
+    parse() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)" <<<"${phase1_json}"; }
 fi
 
 # Ретро-фикс (09.08 #14): дубликаты карточек от triage при переключении меток.
@@ -474,12 +485,30 @@ except Exception: print("")' 2>/dev/null || true)"
     return 0
 }
 
-created=0
-skipped=0
-errored=0
-
-while IFS=$'\t' read -r number title labels body; do
-    [ -z "$number" ] && continue
+# process_issues_json — единый pipeline обработки issues (ретро-фикс t_360dc1a4
+# для Phase 2 GSD-orphans: чтобы не дублировать ~430 строк кода и чтобы оба
+# этапа имели ИДЕНТИЧНЫЕ guards (idempotency, throttle, big-bang, runtime,
+# role validation, MERGED-PR skip, etc.) — выносим основной цикл в функцию.
+#
+# Аргументы:
+#   $1 — phase_label ("phase1" или "phase2"), используется только в логах
+#   $2 — issues_json (newline-separated records: "number\ttitle\tlabels\tbody")
+#
+# Зависит от outer-scope (снапшот берётся на момент вызова):
+#   existing_by_issue, WORKTREE_CLONES, REPO_DIR, KANBAN_BOARD,
+#   MAINTENANCE_BRANCH, DONE_LABEL, BIG_BANG_OVERRIDE_LABEL, BIG_BANG_MAX_COMMITS,
+#   BIG_BANG_MAX_LINES, VALID_PROFILES, AGENT_FLOW_DEFAULT_ROLE, AGENT_FLOW_MAX_RUNTIME,
+#   AGENT_FLOW_MAX_RETRIES, AGENT_FLOW_LARGE_BODY_CHARS, AGENT_FLOW_MAX_RUNTIME_LARGE,
+#   GH_REPO, HERMES_BIN, DRY_RUN, LOG_PREFIX, role_for, branch_for, branch_label_override,
+#   is_valid_profile, load_valid_profiles, free_stale_worktrees_for_branch, runtime_for,
+#   worker_contract_block, gh (auth).
+#
+# Обновляет outer-scope counters (created, skipped, errored) — bash scoping
+# без `local` позволяет писать в родительские переменные.
+process_issues_json() {
+    local phase_label="$1" issues_stream="$2"
+    while IFS=$'\t' read -r number title labels body; do
+        [ -z "$number" ] && continue
 
     # Ретро-фикс (13.08, #968): переоткрытые issue (closed → reopened) —
     # это доработка, карточку создавать ЗАНОВО. Для них оба idempotency-гарда
@@ -897,9 +926,9 @@ role: ${role}"
         errored=$((errored+1)); continue
     fi
 
-    log "ok: issue #${number} -> ${task_id} (branch=${branch}, role=${role})"
+    log "ok: issue #${number} -> ${task_id} (branch=${branch}, role=${role}) [${phase_label}]"
     created=$((created+1))
-done < <(printf '%s' "$issues_json" | python3 -c '
+    done < <(printf '%s' "$issues_stream" | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
 for issue in data:
@@ -912,6 +941,145 @@ for issue in data:
         return s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
     sys.stdout.write(f"{n}\t{esc(t)}\t{esc(l)}\t{esc(b)}\n")
 ')
+}
+
+created=0
+skipped=0
+errored=0
+
+# --- Phase 1: primary filter (label=$ISSUE_LABEL, defaults to "hermes") ------
+# Ретро t_360dc1a4: до этого фикса triage фильтровал ТОЛЬКО по label 'hermes'.
+# Issue #1643 (Phase 1.7 e2e smoke) был создан БЕЗ метки 'hermes' (только
+# source:gsd + needs-e2e + area:rob_box_quest + phase:1.7) → провалился через
+# фильтр → 10ч+ orphan без kanban-карточки и PR.
+#
+# Основной цикл: Phase 1 обрабатывает hermes-flagged issues. Phase 2 (ниже)
+# ловит GSD-orphans: issues с source:gsd БЕЗ метки hermes (специфика GSD-
+# workflow: он выставляет source:gsd, но не всегда hermes — только для issues,
+# прошедших первичный triage-фильтр бота).
+#
+# G3: empty output could mean rate-limit. Detect via direct API status if possible.
+phase1_json="$(gh_list_issues_by_label "$ISSUE_LABEL" open "$ISSUE_LIMIT")"
+if [ -z "$phase1_json" ] || [ "$phase1_json" = "[]" ]; then
+    rate="$(gh api rate_limit --jq '.resources.core.remaining' 2>/dev/null || echo 999)"
+    if [ "${rate:-999}" = "0" ]; then
+        log "GitHub rate-limit exhausted — skip tick"; exit 0
+    fi
+    log "Phase 1: no issues with label '${ISSUE_LABEL}' on ${GH_REPO} (will still try Phase 2 GSD-orphans)"
+    phase1_json=""
+fi
+
+# Track Phase 1 issue numbers so Phase 2 doesn't double-process them.
+phase1_issue_numbers=""
+if [ -n "$phase1_json" ]; then
+    phase1_issue_numbers="$(printf '%s' "$phase1_json" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for it in data:
+    if isinstance(it, dict) and it.get("number"):
+        print(it["number"])
+' 2>/dev/null | sort -u | paste -sd'|' -)"
+fi
+
+# Run Phase 1 — primary filter
+log "Phase 1: ${ISSUE_LABEL}-flagged issues (count=$(printf '%s' "$phase1_json" | python3 -c '
+import json, sys
+try: print(len(json.load(sys.stdin)))
+except Exception: print(0)
+' 2>/dev/null))"
+process_issues_json "phase1" "$phase1_json"
+
+# --- Phase 2: GSD-orphans (ретро t_360dc1a4, issue #1643) -----------------
+# Issue #1643: создан с source:gsd + needs-e2e + area:rob_box_quest + phase:1.7,
+# но БЕЗ метки hermes (специфика GSD workflow). Phase 1 его не видел → orphan
+# 10ч+. Эта фаза: берём все open issues с source:gsd, фильтруем:
+#   1) убрать те, что уже попали в Phase 1 (есть метка hermes) → дедуп по
+#      phase1_issue_numbers
+#   2) оставить только те, у которых НЕТ метки hermes (они и есть orphans)
+#
+# Всю остальную обработку (idempotency по existing_by_issue, throttle, big-bang,
+# assignee-guard, MERGED-PR skip, role resolution, comment-marker) выполняет
+# ТА ЖЕ process_issues_json — никакого дублирования guards. Это даёт
+# идемпотентность «из коробки»: для #1643 уже есть карточка t_9b0786a7 →
+# existing_by_issue ловит → skip, никаких дублей.
+#
+# Долгосрочное решение (вне scope этого PR): GSD workflow hook в
+# github/workflows/gsd-*.yml, который добавляет label hermes автоматически.
+# ADR-0028 фиксирует двухфазный фильтр как промежуточное решение.
+GSD_SOURCE_LABEL="${GSD_SOURCE_LABEL:-source:gsd}"
+phase2_json="$(gh issue list \
+    --repo "$GH_REPO" \
+    --label "$GSD_SOURCE_LABEL" \
+    --state open \
+    --json number,title,labels,body \
+    --limit "$ISSUE_LIMIT" 2>/dev/null || true)"
+
+if [ -z "$phase2_json" ] || [ "$phase2_json" = "[]" ]; then
+    log "Phase 2: GSD-orphans (0 issues, source:gsd returned empty)"
+    phase2_json=""
+else
+    # Filter: оставить ТОЛЬКО issues с source:gsd + НЕ hermes + НЕ в Phase 1.
+    # Дедуп: вычитаем phase1_issue_numbers. Если hermes-метка выставлена —
+    # этот issue попал в Phase 1 и обработан там, не трогаем.
+    # shellcheck disable=SC2016  # python source in single quotes — no shell vars expected
+    phase2_filtered="$(HERMES_LABEL="$ISSUE_LABEL" PHASE1_NUMS="$phase1_issue_numbers" \
+        printf '%s' "$phase2_json" | HERMES_LABEL="$ISSUE_LABEL" PHASE1_NUMS="$phase1_issue_numbers" python3 -c '
+import os, sys, json
+hermes_label = os.environ.get("HERMES_LABEL", "hermes")
+phase1_nums = set()
+p1 = os.environ.get("PHASE1_NUMS", "")
+if p1:
+    for x in p1.split("|"):
+        x = x.strip()
+        if x.isdigit():
+            phase1_nums.add(int(x))
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("[]")
+    sys.exit(0)
+if not isinstance(data, list):
+    print("[]")
+    sys.exit(0)
+keep = []
+for it in data:
+    if not isinstance(it, dict):
+        continue
+    n = it.get("number")
+    if not isinstance(n, int):
+        continue
+    # Skip if already in Phase 1 (есть hermes → попал в phase1_json)
+    if n in phase1_nums:
+        continue
+    # Skip if labels include hermes (defensive — phase1_nums мог не сматчить
+    # если Phase 1 упал по rate-limit, но hermes-метка всё равно есть).
+    label_names = {l.get("name") for l in it.get("labels", []) if isinstance(l, dict)}
+    if hermes_label in label_names:
+        continue
+    # Skip PRs (defensive — gh issue list с --label source:gsd не должен
+    # вернуть PRs, но на всякий случай). Используем `is not None` а не truthy-
+    # check, потому что пустой dict {} в Python — falsy, и реальный PR из gh
+    # приходит с непустым dict ({"url": ...}); но defensive-guard должен
+    # работать и для синтетических пустых PR-объектов.
+    if it.get("pull_request") is not None:
+        continue
+    keep.append(it)
+print(json.dumps(keep, ensure_ascii=False))
+')"
+
+    orphan_count="$(printf '%s' "$phase2_filtered" | python3 -c '
+import json, sys
+try: print(len(json.load(sys.stdin)))
+except Exception: print(0)
+')"
+    log "Phase 2: GSD-orphans (${orphan_count} issues, source:gsd without hermes)"
+    if [ "${orphan_count:-0}" -gt 0 ] 2>/dev/null; then
+        process_issues_json "phase2" "$phase2_filtered"
+    fi
+fi
 
 # --- summary -----------------------------------------------------------------
 log "tick done: created=${created} skipped=${skipped} errored=${errored}"
