@@ -182,6 +182,86 @@ class TestFairnessUnderSaturatedBacklog:
         assert "ФОНОВЫЙ ЗАПРОС" in dispatched
 
 
+class TestWakeRegressionUnderSaturation:
+    """Regression-тест: 20 wake-фраз подряд при фоновом шуме — все accepted.
+
+    Acceptance criterion карточки t_09297e5a (issue #1668):
+    «10-20 wake-фраз с шумом, все accepted».
+    Источник регрессии — e2e fail-streak 16 раундов: фоновый голос забивал
+    wake-gate и синтезированные команды не доходили до LLM.
+    """
+
+    def test_20_wake_phrases_under_saturation_all_accepted(self) -> None:
+        """20 синтез-команд с wake-word подряд при HIGH backlog pressure:
+        каждая должна попасть в ``_dispatch_turn`` (т.е. wake-gate не
+        блокирует их при насыщении no_wake_word фразами)."""
+        node = _make_node()
+        # Насыщаем backlog до HIGH (>=10 events/min).
+        for i in range(16):
+            node._on_stt(_stt(node, f"фоновый шум номер {i}"))
+        assert node._backlog_pressure.level() is BacklogPressureLevel.HIGH
+        # 20 wake-фраз подряд: каждая сбрасывает _dispatch_turn.call_count.
+        accepted = 0
+        for i in range(20):
+            node._dispatch_turn.reset_mock()
+            node._on_stt(_stt(node, f"робот команда номер {i}"))
+            if node._dispatch_turn.called:
+                accepted += 1
+        assert accepted == 20, (
+            f"Регрессия #1668: при HIGH pressure пропущено "
+            f"{20 - accepted} из 20 wake-фраз"
+        )
+
+    def test_20_wake_phrases_under_saturation_no_backlog_growth(self) -> None:
+        """Под насыщением backlog no_wake_word фразы подавляются, и backlog
+        НЕ растёт бесконтрольно (watchdog держит размер управляемым)."""
+        node = _make_node()
+        # Фаза 1: установить HIGH pressure (>=10 events/min).
+        for i in range(12):
+            node._on_stt(_stt(node, f"шум {i}"))
+        baseline = node._llm_skipped_counter["no_wake_word"]
+        # Фаза 2: подаём ещё 20 фоновых фраз — все должны быть подавлены.
+        for i in range(20):
+            node._on_stt(_stt(node, f"фон {i}"))
+        snap = node._backlog_pressure.snapshot()
+        # Backlog заполнен <= первыми 9 фразами (LOW/ELEVATED).
+        # Под давлением 20 фраз все -> suppressed.
+        # Counter вырос ровно на 20.
+        assert snap.suppressed_events >= 20
+        # _llm_skipped_counter.no_wake_word вырос минимум на baseline+20.
+        assert (
+            node._llm_skipped_counter["no_wake_word"] - baseline
+        ) >= 20
+
+    def test_mixed_background_and_wake_under_saturation(self) -> None:
+        """Чередующаяся нагрузка: фон-фон-wake-фон-фон-wake...
+        Под давлением каждая wake-фраза должна проходить, фоновые
+        фразы подавляться."""
+        node = _make_node()
+        accepted = 0
+        suppressed = 0
+        # Чередуем: 2 фоновых + 1 wake, повторяем 10 раз.
+        for cycle in range(10):
+            # 2 фоновых фразы
+            for j in range(2):
+                before = node._llm_skipped_counter["no_wake_word"]
+                node._on_stt(_stt(node, f"шум цикл {cycle} фраза {j}"))
+                after = node._llm_skipped_counter["no_wake_word"]
+                if after > before:
+                    suppressed += 1
+            # 1 wake-фраза
+            node._dispatch_turn.reset_mock()
+            node._on_stt(_stt(node, f"робот команда цикл {cycle}"))
+            if node._dispatch_turn.called:
+                accepted += 1
+        # Должны пройти все 10 wake-фраз.
+        assert accepted == 10, f"Wake-gate пропустил {10 - accepted} из 10"
+        # Большая часть фоновых фраз подавлена (после порога HIGH).
+        assert suppressed >= 10, (
+            f"Watchdog не подавил фоновые фразы: {suppressed}/20"
+        )
+
+
 class TestFairnessDisabled:
     """Когда watchdog выключен — поведение прежнее (всё в backlog)."""
 
