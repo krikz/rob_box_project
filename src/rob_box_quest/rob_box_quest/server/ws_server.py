@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import secrets
 import time
 from typing import Any, Optional, Protocol
@@ -114,7 +115,10 @@ class NoOpBridge:
 
 # Текущий PIN — генерится один раз на старте контейнера, логируется.
 # Phase 1.6 в start_quest.sh выводит его в docker logs.
-ACTIVE_PIN: str = generate_pin()
+# Если задан ENV QUEST_PIN (например, в docker-compose.yaml) — используется
+# фиксированный PIN (удобно для дев-сессий, когда не хочется каждый раз
+# лезть в docker logs). Иначе — генерируется 6-значный случайный.
+ACTIVE_PIN: str = os.environ.get("QUEST_PIN") or generate_pin()
 
 
 # Текущий набор занятых server stream_id'ов — шарён между всеми сессиями.

@@ -369,6 +369,10 @@ services:
       - QUEST_HOST=${QUEST_HOST:-quest.rob_box.local}
       - QUEST_IP=${QUEST_IP:-10.1.1.11}
       - CERT_DAYS=${QUEST_CERT_DAYS:-365}
+      # Фиксированный PIN для dev-сессий. Если задан — используется вместо
+      # случайного из generate_pin(). Чтобы перебить: export QUEST_PIN=XXXXXX
+      # до docker compose up, либо через .env (QUEST_PIN=XXXXXX).
+      - QUEST_PIN=${QUEST_PIN:-103856}
     volumes:
       # certs persist between restarts; монтируем именованный путь,
       # чтобы self-signed не пересоздавался на каждом redeploy
