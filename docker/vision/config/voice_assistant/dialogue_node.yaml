@@ -40,6 +40,15 @@ dialogue_node:
     accumulate_no_wake_enabled: true
     accumulate_window_sec: 180.0
 
+    # Issue #1668 — wake-gate fairness + backlog watchdog.
+    # Подавляет публикацию no_wake_word в backlog при events/min > 10,
+    # чтобы синтез-команды e2e не терялись при фоновом голосе в комнате.
+    backlog_pressure_enabled: true
+    backlog_pressure_window_sec: 60.0
+    backlog_pressure_low_above: 5.0
+    backlog_pressure_high_above: 10.0
+    backlog_pressure_publish_interval_sec: 1.0
+
     # Issue #XXXX — «новая сессия» / «сбрось всё» / Telegram «/clear»:
     # сброс контекста текущего диалога без вызова LLM. Фразы по умолчанию
     # заданы в коде (_DEFAULT_NEW_SESSION_PHRASES); при необходимости

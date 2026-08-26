@@ -84,6 +84,17 @@ dialogue_node:
     # Бэклог-аккумулятор фоновой речи без wake-слова.
     accumulate_no_wake_enabled: true
     accumulate_window_sec: 180.0
+    # Issue #1668 — wake-gate fairness + backlog watchdog.
+    # Когда в комнате робота 10.1.1.21 непрерывно играет фоновый голос
+    # (~16 фраз/мин), backlog no_wake_word забивает wake-gate настолько,
+    # что синтез-команды e2e теряются. BacklogPressure считает events/min
+    # и при HIGH уровне подавляет публикацию в backlog, не отключая STT.
+    # См. docs/plans/2026-08-26-voice-wake-gate-fairness-design.md.
+    backlog_pressure_enabled: true
+    backlog_pressure_window_sec: 60.0
+    backlog_pressure_low_above: 5.0
+    backlog_pressure_high_above: 10.0
+    backlog_pressure_publish_interval_sec: 1.0
     # Startup greeting (issue #1003, редизайн 06.08): dialogue_node сам
     # говорит приветствие через N секунд после старта (отдельная нода
     # убрана — теряла фразу из-за гонки с инициализацией tts_node).
