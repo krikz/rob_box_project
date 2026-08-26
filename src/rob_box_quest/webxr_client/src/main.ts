@@ -13,6 +13,7 @@ import { createDesktopTeleop } from "./input/desktop_teleop";
 import { createXrTeleop, pollXrInput } from "./input/xr_teleop";
 import { createXrBootstrap, type XrBootstrap } from "./xr_bootstrap";
 import { createStreamSelect } from "./ui/stream_select";
+import { createPanelPersistence, type PanelPersistence } from "./scene/panel_persistence";
 import type { StreamMeta } from "./wire/messages";
 
 const CLIENT_VERSION = "0.1.0";
@@ -34,6 +35,20 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   const bridge = createCaptainBridge({ canvas: opts.canvas, enableXr: true });
   bridge.initLayout();
   const stopRender = bridge.start();
+
+  // Persistence (Phase 2 §2.6): load ранее сохранённый layout, если есть.
+  // Создаём ДО подписки на onChange, чтобы первая load() не запустила save().
+  const persistence: PanelPersistence = createPanelPersistence(bridge.panels);
+  const hadSaved = persistence.load();
+  if (!hadSaved) {
+    // Нет сохранённого layout — оставляем дефолтную полукруговую раскладку.
+    bridge.initLayout();
+  } else {
+    // Подгрузили layout — обновим Three.js meshes.
+    bridge.initLayout();
+  }
+  // После init — подключаем auto-save (debounced 300ms).
+  persistence.attach();
 
   const fsm = new TeleopFSM();
   const desktopTeleop = createDesktopTeleop({ fsm });
@@ -142,6 +157,15 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       for (const t of topics) conn?.subscribe(t);
       streamSelect!.refresh();
     },
+    onResetToDefault: () => {
+      // Полный сброс: чистим storage + reset.
+      persistence.clear();
+      const topics = bridge.panels.list().map((p) => p.topic);
+      for (const t of topics) conn?.unsubscribe(t);
+      bridge.initLayout();
+      for (const t of topics) conn?.subscribe(t);
+      streamSelect!.refresh();
+    },
     getActiveTopics: () => bridge.panels.list().map((p) => p.topic),
     xr,
     onEnterVr: () => enterVr(),
@@ -227,6 +251,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
 
   return {
     dispose(): void {
+      persistence.dispose();
       stopRender();
       desktopTeleop.destroy();
       xrTeleopHandle?.destroy();
