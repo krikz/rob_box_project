@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "gltf:optimize": "node scripts/gltf-optimize.mjs",
-    "gltf:verify": "node scripts/gltf-verify.mjs"
+    "gltf:verify": "node scripts/gltf-verify.mjs",
+    "build:avatar": "node scripts/build-avatar.mjs"
   },
   "dependencies": {
     "three": "^0.170.0",

@@ -27,6 +27,7 @@ budgets and forces 3G/Meta-Quest bandwidth choices we'd rather not make.
 | ------------------------ | -------------------------------------------------------------------------------------- |
 | `npm run gltf:optimize`  | Walks `public/models/` and emits `<name>.optimized.glb` (Draco + Meshopt, optional WebP)|
 | `npm run gltf:verify`    | CI guard — fails on any `.glb` missing required extensions or over budget               |
+| `npm run build:avatar`   | Programmatically synthesises the 4-wheeled robot avatar (CC0) — Phase 2.1. See [§Avatar](#avatar-phase-21) below. |
 
 ### Pipeline transforms (in order)
 
@@ -103,6 +104,66 @@ The Three.js browser loader path (`GLTFLoader + DRACOLoader + MeshoptDecoder`)
 is exercised at runtime in the WebXR client on the Quest device — the unit
 test validates the artifact, not the browser path (jsdom has no
 `new Worker(...)`).
+
+---
+
+## Avatar (Phase 2.1)
+
+The avatar is a low-poly 4-wheeled robot synthesised programmatically by
+[`scripts/build-avatar.mjs`](scripts/build-avatar.mjs). All geometry is
+original code (Three.js `BoxGeometry` + `CylinderGeometry` + `SphereGeometry`)
+authored as part of `rob_box_quest`, released under **CC0** — no external
+mesh data or textures are referenced. See [`public/models/avatar/CREDITS.md`](public/models/avatar/CREDITS.md)
+for the full attribution.
+
+Output artefact: [`public/models/avatar/avatar.optimized.glb`](public/models/avatar/avatar.optimized.glb)
+— ~19 KB after Draco + Meshopt (3.8 % of the 500 KB budget per
+[ADR-0032 §3.2](../../../docs/adr/0032-meta-quest-webxr-stack-and-assets.md)).
+
+### Geometry
+
+- Chassis: `BoxGeometry 0.6 × 0.18 × 0.8` (light-grey-blue PBR, metallic 0.6 / roughness 0.45)
+- 4 wheels: `CylinderGeometry R=0.16, w=0.12, 16 seg` (dark rubber)
+- Head: `BoxGeometry 0.28 × 0.18 × 0.18` (teal sensor head, emissive cyan trim)
+- Mast + tip: thin cylinder + emissive red sphere LED
+- Total: 9 meshes, 6 PBR materials, 9 nodes, ≈700 triangles before optimisation
+
+### Animations (5 clips, all LOOP, LINEAR interpolation)
+
+| Name             | Duration | Channels | Notes                                                  |
+| ---------------- | -------- | -------- | ------------------------------------------------------ |
+| `idle`           | 3.0 s    | 2        | chassis bob ±1 cm (sin) + head yaw scan ±10° (cos)     |
+| `drive_forward`  | 1.0 s    | 4        | all wheels at +π rad/s around the X axis               |
+| `drive_backward` | 1.0 s    | 4        | all wheels at −π rad/s                                  |
+| `turn_left`      | 1.0 s    | 4        | front ×1.5 speed, rear ×0.5 speed                      |
+| `turn_right`     | 1.0 s    | 4        | mirror of `turn_left`                                   |
+
+### Rebuild
+
+```
+npm run build:avatar         # raw → public/models/avatar/_raw/avatar.glb (~39 KB)
+npm run gltf:optimize        # Draco + Meshopt → _raw/avatar.optimized.glb (~19 KB)
+node scripts/build-avatar.mjs --publish   # move optimized → public/models/avatar/, drop raw
+npm run gltf:verify          # extension + budget guard
+npm test                     # 58 tests (4 gltf-pipeline + 6 avatar-pipeline + 48 other)
+```
+
+### Runtime loading
+
+```
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { MeshoptDecoder } from 'meshoptimizer';
+
+const loader = new GLTFLoader();
+loader.setDRACOLoader(new DRACOLoader().setDecoderPath('/draco/'));
+loader.setMeshoptDecoder(MeshoptDecoder);
+
+const gltf = await loader.loadAsync('/models/avatar/avatar.optimized.glb');
+const mixer = new THREE.AnimationMixer(gltf.scene);
+const idle = mixer.clipAction(gltf.animations.find(a => a.name === 'idle'));
+idle.play();
+```
 
 ---
 

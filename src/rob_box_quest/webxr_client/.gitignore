@@ -13,3 +13,8 @@ coverage/
 public/models/**/*.glb
 public/models/**/*.gltf
 !public/models/**/*.optimized.glb
+
+# Build scratch dirs for programmatic assets (Phase 2.1 build-avatar,
+# build_bridge_assets). Raw .glb + sidecar .json are written here during
+# the build; only the optimised output (above allowlist) is committed.
+public/models/**/_raw/
