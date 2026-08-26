@@ -457,6 +457,121 @@ ensure_cleanup_cron() {
 ensure_cleanup_cron
 
 echo
+echo "==> Ensure cron job registration: e2e-process auto-rotation (ретро 23.08+25.08 t_98bb3a1d/t_24e645e7)"
+# Проблема: agent-flow-e2e-process-launcher.sh раскладывался install.sh (commit
+# bd7e509d), но cron-job НЕ создавался — он создавался вручную в тикете 23.08
+# через `hermes cron create 'once in 20m'`. После первого тика джоб
+# переходил в state=completed и больше НЕ запускался (в отличие от
+# interval-расписания, once без повторов не self-reschedules). Результат:
+# e2e-rotation простаивал 60+ часов, PR с label needs-e2e копился без
+# подхвата (PR #1565 провисел 3.5ч+ на момент ретро).
+#
+# Решение: ensure_e2e_process_cron() — идемпотентная функция, регистрирующая
+# interval-job (every 20m) в devops-профиле, no_agent (скрипт = launcher).
+# Дубль-guard по двум критериям: (1) script-имя в jobs.json, (2) job с
+# правильным расписанием. Это покрывает и кейс «старый once-job завис в
+# jobs.json» — он enabled=false, новый interval-job будет зарегистрирован
+# отдельно, и оба не конфликтуют.
+#
+# Регистрация переживает install.sh: каждый запуск (в т.ч. auto-fix из
+# drift-detect) проверяет jobs.json и создаёт недостающий джоб.
+ensure_e2e_process_cron() {
+    local profile_dir="/home/builder/.hermes/profiles/devops"
+    local jobs_file="$profile_dir/cron/jobs.json"
+    local job_name="e2e-process auto-rotation"
+    local job_script="agent-flow-e2e-process-launcher.sh"
+    local job_schedule="every 20m"
+
+    if ! command -v hermes >/dev/null 2>&1; then
+        echo "  SKIP ensure-e2e-cron: hermes CLI not on PATH (nothing to register)"
+        return 0
+    fi
+    if [ ! -f "$jobs_file" ]; then
+        echo "  SKIP ensure-e2e-cron: $jobs_file not present (devops profile not set up here)"
+        return 0
+    fi
+
+    # Guard 1: уже есть interval-job на этот script. Skip — идемпотентность.
+    if python3 -c "
+import json, sys
+try:
+    with open('$jobs_file') as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(0)
+for j in d.get('jobs', []):
+    if j.get('script') == '$job_script' and j.get('schedule', {}).get('kind') == 'interval' and j.get('enabled'):
+        sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then
+        echo "  OK   cron job '$job_name' already registered (interval, enabled)"
+        return 0
+    fi
+
+    # Guard 2: в jobs.json может лежать STALE once-job (state=completed,
+    # enabled=false) от первоначальной ручной регистрации. Не трогаем его —
+    # он не вредит, и его история (last_run_at) ценна. Регистрируем interval-job.
+
+    echo "  ADD  registering cron job '$job_name' (devops, $job_schedule, no_agent)"
+    if $DRY_RUN; then
+        echo "  [DRY] hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir '$REPO_DIR'"
+        return 0
+    fi
+    if hermes --profile devops cron create "$job_schedule" \
+        --name "$job_name" \
+        --script "$job_script" \
+        --no-agent \
+        --deliver local \
+        --workdir "$REPO_DIR" >/dev/null 2>&1; then
+        echo "  ADD  cron job created: $job_name ($job_script, $job_schedule)"
+    else
+        echo "  WARN cron job creation failed (non-fatal): $job_name — register manually:"
+        echo "       hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir $REPO_DIR"
+    fi
+}
+ensure_e2e_process_cron
+
+echo
+echo "==> md5sum verify: 3 copies of agent-flow scripts are byte-identical (retro 25.08 t_24e645e7)"
+# Проблема: launcher agent-flow-e2e-process-launcher.sh раскладывается в 3
+# копии (agent-flow/, devops/, architect/) + .hermes/scripts/. Если хотя бы
+# одна копия отстала (drift между hardlink и copy), cron может выполнять
+# версию, не соответствующую SOT в репо. Verify-блок в самом низу
+# install.sh показывает md5sum каждой копии, но только при !DRY_RUN — здесь
+# мы делаем явный hard-fail verify с читаемым выводом.
+verify_three_copies_md5sum() {
+    local label="$1"
+    shift
+    local sums=()
+    local path
+    for path in "$@"; do
+        if [ ! -f "$path" ]; then
+            echo "  WARN $label: missing $path (skipping md5sum check)"
+            return 0
+        fi
+        sums+=("$(md5sum "$path" 2>/dev/null | awk '{print $1}')")
+    done
+    local first="${sums[0]}"
+    local s
+    for s in "${sums[@]}"; do
+        if [ "$s" != "$first" ]; then
+            echo "  ERROR $label: md5sum drift detected across copies:"
+            for path in "$@"; do
+                echo "         $(md5sum "$path" 2>/dev/null) $path"
+            done
+            echo "         Run: $REPO_DIR/scripts/agent_flow/install.sh (without --dry-run) to re-link"
+            return 1
+        fi
+    done
+    echo "  OK   $label: $first across ${#sums[@]} copies"
+}
+verify_three_copies_md5sum "agent-flow-e2e-process-launcher.sh" \
+    "/home/builder/.hermes/profiles/agent-flow/scripts/agent-flow-e2e-process-launcher.sh" \
+    "/home/builder/.hermes/profiles/architect/scripts/agent-flow-e2e-process-launcher.sh" \
+    "/home/builder/.hermes/profiles/devops/scripts/agent-flow-e2e-process-launcher.sh" \
+    "/home/builder/.hermes/scripts/agent-flow-e2e-process-launcher.sh"
+
+echo
 echo "==> Telegram token sanity (retro 12.08 t_5af222ea): >1 active TELEGRAM_BOT_TOKEN = reconnect loop"
 TOKEN_HOLDERS=()
 for envf in /home/builder/.hermes/.env /home/builder/.hermes/profiles/*/.env; do
