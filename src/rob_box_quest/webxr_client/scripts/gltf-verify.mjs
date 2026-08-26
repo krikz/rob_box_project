@@ -90,7 +90,13 @@ async function listAssets(root) {
       if (entry.isDirectory()) {
         await walk(full);
       } else if ([".glb", ".gltf"].includes(extname(entry.name).toLowerCase())) {
-        out.push(full);
+        // Skip the *raw* source files the pipeline would have produced
+        // (those are the ones gltf:optimize writes from). The committed
+        // artifacts end in `.optimized.glb` (Draco+Meshopt) or
+        // `.ktx2.glb` (Draco+Meshopt+Basis/KTX2) and must be verified.
+        if (full.endsWith(".optimized.glb") || full.endsWith(".ktx2.glb")) {
+          out.push(full);
+        }
       }
     }
   }
