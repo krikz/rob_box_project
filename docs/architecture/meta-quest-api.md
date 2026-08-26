@@ -59,7 +59,7 @@
 | `0x11` | `JSON_CMD` | client → server | см. §5 |
 | `0x12` | `JSON_EVENT` | server → client | см. §6 |
 | `0x20` | `GOODBYE` | обе стороны | `{reason: "user_logout"\|"shutdown"\|"timeout"\|"auth_fail"}` |
-| `0xFF` | `ERROR` | обе стороны | `{code: "AUTH_FAIL"\|"BAD_PAYLOAD"\|"RATE_LIMIT"\|"TOPIC_UNKNOWN"\|"FLOOR_HELD"\|"MODE_CONFLICT"\|"INTERNAL", message: "..."}` |
+| `0xFF` | `ERROR` | обе стороны | `{code: "AUTH_FAIL"\|"BAD_PAYLOAD"\|"RATE_LIMIT"\|"TOPIC_UNKNOWN"\|"FLOOR_HELD"\|"MODE_CONFLICT"\|"VOICE_UNKNOWN"\|"INTERNAL", message: "..."}` |
 | `0x30` | `SET_MODE` | client → supervisor | msgpack `{client_id, mode: "off"\|"telegram_active"\|"avatar_present"\|"mixed"\|"teleop_only"\|"voice_only"}` |
 | `0x31` | `ACQUIRE_FLOOR` | client → supervisor | msgpack `{client_id, floor: "teleop"\|"voice"}` |
 | `0x32` | `RELEASE_FLOOR` | client → supervisor | msgpack `{client_id, floor: "teleop"\|"voice"}` |
@@ -122,9 +122,10 @@ stateDiagram-v2
 | `camera_front` | `0x1002` | (Phase 2) — панорамная передняя камера |
 | `lidar_2d` | `0x1101` | little-endian float32: `[angle_min, angle_max, angle_inc, range_min, range_max, time_increment, scan_time, n_points]` + `n_points × float32 ranges` + `n_points × float32 intensities` (соответствует `sensor_msgs/LaserScan` ROS2 msg) |
 | `lidar_3d` | `0x1102` | zstd-compressed MessagePack: подвыборка PointCloud2 до 10k точек, `{n_points, frame_id, fields: ["x","y","z","intensity"], points: [[x,y,z,i], ...]}` |
-| `robot_status` | `0x1201` | MessagePack `{battery_pct, wifi_rssi, mode, vel_linear, vel_angular, ts_ms}` — 1 Hz |
-| `voice_state` | `0x1202` | MessagePack `{state: "idle"\|"listening"\|"thinking"\|"speaking", ts_ms, utterance_id?}` — event-driven |
-| `person_detections` | `0x1301` | MessagePack `{ts_ms, detections: [{id, cls, x, y, z, w, h, conf}]}` — Phase 2 (R11) |
+|| `robot_status` | `0x1201` | MessagePack `{battery_pct, wifi_rssi, mode, vel_linear, vel_angular, ts_ms}` — 1 Hz |
+|| `voice_state` | `0x1202` | MessagePack `{state, active_voice_id, active_preset, listening, last_error, ts_ms}` — event-driven + 1 Hz keep-alive (Phase 2 R13). legacy поле `state` сохранено для v1 клиентов. |
+|| `person_detections` | `0x1301` | MessagePack `{ts_ms, detections: [{id, cls, x, y, z, w, h, conf}]}` — Phase 2 (R11) |
+|| `voice_audio_preview` | `0x1401` | raw opus bytes (без msgpack-обёртки) — в ответ на `preview_voice` JSON_CMD (Phase 2 R13) |
 
 **Frequency policy:**
 
@@ -237,6 +238,44 @@ Phase 2 (R14). Сервер читает `docker logs <service>` (или journal
 
 Останавливает `follow`-стриминг логов.
 
+```json
+{ "cmd": "list_voices", "ts_ms": 1234567890 }
+```
+
+Phase 2 (R13). Сервер отвечает
+`JSON_EVENT{type: "voices_list", voices: [{id, name, gender, language, description}], presets: [{id, name, description}]}`.
+Каталог голосов берётся из ENV `YANDEX_VOICES_JSON` (JSON list) или
+из hardcoded fallback (4 голоса Yandex SpeechKit: `anton`, `alena`,
+`russian_reliable_man`, `zahar`). Пресеты — фиксированный набор
+4 шт: `standard`, `friendly`, `authoritative`, `whisper`. Endpoint —
+read-only, идемпотентный.
+
+```json
+{ "cmd": "set_voice", "ts_ms": 1234567890,
+  "voice_id": "anton", "preset": "standard" }
+```
+
+Phase 2 (R13). Сервер валидирует `voice_id` в каталоге и `preset` в
+списке пресетов. Применяет к per-session `SessionVoiceState` и отвечает
+`JSON_EVENT{type: "voice_changed", voice_id, preset, ts_ms}`.
+При неизвестном `voice_id` — `ERROR{VOICE_UNKNOWN}`. При неизвестном
+`preset` — `ERROR{BAD_PAYLOAD}`. `preset` опционален, default
+`"standard"`. Сохранение — per-client (другие Quest-сессии видят свой
+голос, не broadcast).
+
+```json
+{ "cmd": "preview_voice", "ts_ms": 1234567890,
+  "voice_id": "anton", "text": "Привет, как дела?", "preset": "friendly" }
+```
+
+Phase 2 (R13). Сервер синтезирует фразу через voice-pipeline (Yandex
+SpeechKit) и шлёт **`BINARY_FRAME` payload = `[topic_id LE 0x1401][opus bytes]`**
+(stream_id = 0, топик в payload). Rate limit: **3 запроса в 10 секунд**
+per session (sliding window); на превышении — `ERROR{RATE_LIMIT}`.
+При неизвестном `voice_id` — `ERROR{VOICE_UNKNOWN}`. Если voice-pipeline
+offline / Yandex вернул ошибку — `ERROR{INTERNAL}`, сессия НЕ закрывается.
+`preset` опционален.
+
 ### 5.1. Supervisor-команды (Phase 2, subprotocol `robbox-quest-v2`)
 
 Те же 4 supervisor-команды из §3 (`0x30`–`0x33`) доступны как `JSON_CMD`
@@ -271,6 +310,9 @@ JSON-обёртка нужна для admin-панели и тестовых к�
 { "type": "subscribe_nack", "topic": "lidar_3d", "reason": "topic_not_available_yet" }
 { "type": "heartbeat",      "ts_ms": 1234567890 }   // каждые 200 мс, см. §7
 { "type": "voice_state",    "state": "speaking", "ts_ms": 1234567890, "utterance_id": "..." }
+{ "type": "voice_state",    "active_voice_id": "anton", "active_preset": "standard", "listening": false, "last_error": null, "ts_ms": 1234567890 }   // Phase 2 R13: расширенный payload для TTS picker UI (legacy поле `state` сохранено)
+{ "type": "voices_list",    "voices": [...], "presets": [...], "ts_ms": 1234567890 }   // Phase 2 R13: ответ на JSON_CMD{list_voices}
+{ "type": "voice_changed",  "voice_id": "anton", "preset": "standard", "ts_ms": 1234567890 }   // Phase 2 R13: ACK на JSON_CMD{set_voice}
 { "type": "stream_list",    "topics": ["camera_rear", "camera_front", "lidar_2d"], "ts_ms": 1234567890 }
 { "type": "admin_logs_chunk", "service": "dialogue_node", "lines": ["..."], "ts_ms": 1234567890 }
 { "type": "admin_logs_end",   "service": "dialogue_node", "ts_ms": 1234567890 }
@@ -306,6 +348,7 @@ JSON-обёртка нужна для admin-панели и тестовых к�
 | `TOPIC_NOT_AVAILABLE_YET` | source-данные ещё не пришли (lidar не запущен) | автоматический retry через 1 с |
 | `INTERNAL` | неожиданная ошибка сервера | UI показывает «Server error, reconnect» |
 | `PROTOCOL_VERSION` | subprotocol не совпадает с поддерживаемой версией (см. §11) | close socket, UI «Update client» |
+| `VOICE_UNKNOWN` | `set_voice` / `preview_voice` с `voice_id` которого нет в каталоге (`list_voices` → `voices`) | показать «Voice not available, refresh picker» |
 | `FLOOR_HELD` | `0x31 ACQUIRE_FLOOR` / `supervisor_acquire_floor` — запрошенный floor уже держит другой `client_id`; или `0x32 RELEASE_FLOOR` для floor-а, который клиент не держит | показать «Floor held by another operator» (см. ADR-0028 §4.2 transfer-протокол) |
 | `MODE_CONFLICT` | `0x30 SET_MODE` / `supervisor_set_mode` — FSМ супервизора отклонила переход | показать «Mode not allowed now» |
 
@@ -317,6 +360,8 @@ JSON-обёртка нужна для admin-панели и тестовых к�
 | `ui_button` | 5 Hz | drop |
 | `voice_ptt` | edge-triggered, max 2 start/s | drop |
 | `voice_mode` | 1 per 5 s | drop |
+| `set_voice` | 1 per 1 s | drop |
+| `preview_voice` | 3 per 10 s (sliding window, per session) | `ERROR{RATE_LIMIT}` |
 | `stop_emergency` | 1 per 100 ms | drop |
 | `ping` | 1 per 5 s | drop |
 
