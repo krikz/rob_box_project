@@ -168,6 +168,12 @@ ACTIVE_PIN: str = os.environ.get("QUEST_PIN") or generate_pin()
 _stream_ids_in_use: set[int] = set()
 
 
+def _consume_future_exception(fut: "asyncio.Future[Any]") -> None:
+    """Глушим исключение из Future (иначе asyncio пишет "never retrieved")."""
+    if not fut.cancelled():
+        fut.exception()
+
+
 class WSSServer:
     """Серверная логика — собирает app + принимает aiohttp WS-коннекты."""
 
@@ -180,9 +186,18 @@ class WSSServer:
         # Хранится ОТДЕЛЬНО от ClientSession чтобы можно было отвязать
         # (без race на is_open() во время unregister).
         self._ws_by_session: dict[str, Any] = {}
+        # aiohttp event-loop для потокобезопасной отправки BINARY_FRAME.
+        # broadcast_frame вызывается из ROS/capture-потоков, где нет running
+        # loop — раньше кадр молча терялся (чёрный экран). Устанавливается
+        # quest_node через set_send_loop().
+        self._send_loop: Optional[asyncio.AbstractEventLoop] = None
 
     def get_active_sessions(self) -> int:
         return sum(1 for s in self._sessions.values() if s.is_open())
+
+    def set_send_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Установить aiohttp-loop для потокобезопасной отправки кадров."""
+        self._send_loop = loop
 
     def broadcast_frame(self, ui_name: str, payload: bytes) -> int:
         """Слать BINARY_FRAME всем сессиям, подписанным на ui_name.
@@ -213,16 +228,25 @@ class WSSServer:
         return count
 
     def _schedule_send(self, ws, frame: bytes) -> None:
-        """Отправить frame в ws. По умолчанию asyncio.create_task если
-        event-loop активен. Override в quest_node если нужен thread-safe.
+        """Отправить frame в ws из любого потока.
+
+        broadcast_frame вызывается из ROS-потока (rclpy executor) и
+        capture-потоков, где `asyncio.get_running_loop()` кидает RuntimeError —
+        раньше кадр молча терялся (чёрный экран). Теперь шлём через
+        run_coroutine_threadsafe на сохранённом aiohttp-loop.
         """
+        loop = self._send_loop
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            loop = None
+            pass
         if loop is None:
             return
-        loop.create_task(ws.send_bytes(frame))
+        try:
+            fut = asyncio.run_coroutine_threadsafe(ws.send_bytes(frame), loop)
+        except RuntimeError:
+            return  # loop закрыт/не запущен — кадр теряем, не роняем ноду
+        fut.add_done_callback(_consume_future_exception)
 
     async def _send(
         self,

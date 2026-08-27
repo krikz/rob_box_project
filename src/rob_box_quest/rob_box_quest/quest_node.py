@@ -573,6 +573,9 @@ class QuestNode(Node):
         def _runner() -> None:
             self._aio_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._aio_loop)
+            # Потокобезопасная отправка BINARY_FRAME: ROS-поток шлёт кадры
+            # через этот loop (иначе _schedule_send молча теряет их).
+            self.ws_server.set_send_loop(self._aio_loop)
             runner = _aiohttp_web.AppRunner(app)
             self._aio_loop.run_until_complete(runner.setup())
             # reuse_port=True — устойчивость к stale-процессам в host-network
