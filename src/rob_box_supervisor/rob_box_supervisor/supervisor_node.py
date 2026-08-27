@@ -181,7 +181,7 @@ class AvatarSupervisor(Node):
             try:
                 payload = msgpack.packb(snapshot.to_msgpack_dict(), use_bin_type=True)
             except Exception as exc:  # noqa: BLE001
-                self._log.warning("avatar_supervisor: msgpack encode failed: %s", exc)
+                self._log.warning(f"avatar_supervisor: msgpack encode failed: {exc}")
                 payload = json.dumps(snapshot.to_msgpack_dict()).encode("utf-8")
         else:  # pragma: no cover — defensive
             payload = json.dumps(snapshot.to_msgpack_dict()).encode("utf-8")
@@ -236,7 +236,8 @@ class AvatarSupervisor(Node):
         """
         mode = (msg.data or "").strip()
         applied, reason = self._apply_voice_mode(mode)
-        self._log.info("SetVoiceMode: mode=%s applied=%s reason=%s", mode, applied, reason)
+        # f-string: RcutilsLogger принимает ОДИН msg (issue #1644).
+        self._log.info(f"SetVoiceMode: mode={mode} applied={applied} reason={reason}")
 
     def _apply_voice_mode(self, mode: str) -> tuple[bool, str]:
         """Чистая логика применения ``voice_input_mode`` (тестируется без rclpy).
@@ -250,7 +251,7 @@ class AvatarSupervisor(Node):
         try:
             self._set_dialogue_param("voice_input_mode", mode)
         except Exception as exc:  # noqa: BLE001 — отказ не должен валить ноду
-            self._log.warning("SetVoiceMode: failed to set dialogue param: %s", exc)
+            self._log.warning(f"SetVoiceMode: failed to set dialogue param: {exc}")
             return False, f"param_set_failed: {exc}"
         return True, "applied"
 
@@ -289,19 +290,19 @@ class AvatarSupervisor(Node):
                 if not ok:
                     self._log.warning("SetVoiceMode: dialogue_node rejected parameter set")
             except Exception as exc:  # noqa: BLE001
-                self._log.warning("SetVoiceMode: parameter set failed: %s", exc)
+                self._log.warning(f"SetVoiceMode: parameter set failed: {exc}")
 
         future.add_done_callback(_done)
 
     # ── service callbacks (Phase 1: monitor → log + answer) ──────────
     def _on_acquire_floor(self, _request: Any, response: Any) -> Any:
         """``AcquireFloor`` — Phase 1 monitor: лог + monitor response."""
-        self._log.info("AcquireFloor received (mode=%s) — phase 1 monitor", self._mode)
+        self._log.info(f"AcquireFloor received (mode={self._mode}) — phase 1 monitor")
         return self._fill_monitor_response(response)
 
     def _on_release_floor(self, _request: Any, response: Any) -> Any:
         """``ReleaseFloor`` — Phase 1 monitor."""
-        self._log.info("ReleaseFloor received (mode=%s) — phase 1 monitor", self._mode)
+        self._log.info(f"ReleaseFloor received (mode={self._mode}) — phase 1 monitor")
         return self._fill_monitor_response(response)
 
     def _on_set_avatar_mode(self, _request: Any, response: Any) -> Any:
@@ -309,13 +310,11 @@ class AvatarSupervisor(Node):
         if self._mode != "monitor":
             # Phase 2: реальный FSM. Пока — refuse и остаёмся в monitor.
             self._log.warning(
-                "SetAvatarMode: mode=%s запрошен, но Phase 2 не реализован (AV-6 = monitor-only). "
-                "Отвечаю success=true/applied=false/reason=%s",
-                self._mode,
-                MONITOR_MODE_REASON,
+                f"SetAvatarMode: mode={self._mode} запрошен, но Phase 2 не реализован "
+                f"(AV-6 = monitor-only). Отвечаю success=true/applied=false/reason={MONITOR_MODE_REASON}"
             )
         else:
-            self._log.info("SetAvatarMode received (mode=%s) — phase 1 monitor", self._mode)
+            self._log.info(f"SetAvatarMode received (mode={self._mode}) — phase 1 monitor")
         return self._fill_monitor_response(response)
 
     def _fill_monitor_response(self, response: Any) -> Any:
