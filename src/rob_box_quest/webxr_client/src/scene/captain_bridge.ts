@@ -46,6 +46,8 @@ export interface CaptainBridgeHandle {
   attachXrSession(session: XRSession): Promise<void>;
   /** Visual feedback: подсветить grip контроллеров (deadman зажат). */
   setControllerActive(active: boolean): void;
+  /** Arm-state HUD на стене (справа вверху): true=ARM, false=DISARM. */
+  setArmState(armed: boolean): void;
   start(): () => void;
   resize(): void;
   dispose(): void;
@@ -127,6 +129,48 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     { showLabel: false, canvasWidth: 1280, canvasHeight: 720 }
   );
   scene.add(mainScreen.mesh);
+
+  // Arm-state HUD: справа вверху на стене, рядом с экраном камеры.
+  // Sprite всегда повёрнут к камере — читается из любой позы оператора.
+  const armCanvas = document.createElement("canvas");
+  armCanvas.width = 512;
+  armCanvas.height = 128;
+  const armCtx = armCanvas.getContext("2d");
+  if (!armCtx) {
+    throw new Error("captain_bridge: failed to acquire arm HUD 2D context");
+  }
+  const armTexture = new THREE.CanvasTexture(armCanvas);
+  armTexture.minFilter = THREE.LinearFilter;
+  armTexture.magFilter = THREE.LinearFilter;
+  const armSprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: armTexture, depthTest: false, transparent: true })
+  );
+  // Правый верхний угол стены-экрана (mainScreen 4.8×2.7, центр y=1.5, z=-3.9).
+  armSprite.position.set(2.35, 2.95, -3.85);
+  armSprite.scale.set(1.1, 0.275, 1);
+  scene.add(armSprite);
+
+  function drawArmHud(armed: boolean): void {
+    const ctx = armCtx!;
+    ctx.clearRect(0, 0, armCanvas.width, armCanvas.height);
+    // Тёмная подложка.
+    ctx.fillStyle = "rgba(10, 13, 17, 0.72)";
+    ctx.fillRect(0, 0, armCanvas.width, armCanvas.height);
+    // Цветной индикатор слева.
+    ctx.fillStyle = armed ? "#2ec27e" : "#8b98a5";
+    ctx.fillRect(0, 0, 16, armCanvas.height);
+    // Текст.
+    ctx.fillStyle = armed ? "#2ec27e" : "#8b98a5";
+    ctx.font = "bold 56px monospace";
+    ctx.textBaseline = "middle";
+    ctx.fillText(armed ? "ARM" : "DISARM", 44, armCanvas.height / 2);
+    armTexture.needsUpdate = true;
+  }
+  drawArmHud(false);
+
+  function setArmState(armed: boolean): void {
+    drawArmHud(armed);
+  }
 
   // Phase 2.1 environment (loaded lazily via loadEnvironment()).
   let environment: BridgeAssetHandle | null = null;
@@ -265,6 +309,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     for (const vp of videoPanels.values()) vp.dispose();
     lidar.dispose();
     environment?.dispose();
+    armTexture.dispose();
     renderer.dispose();
   }
 
@@ -281,6 +326,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     initLayout,
     attachXrSession,
     setControllerActive,
+    setArmState,
     start,
     resize,
     dispose

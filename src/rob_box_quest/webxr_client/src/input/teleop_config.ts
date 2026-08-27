@@ -27,8 +27,11 @@ export const GAMEPAD_AXES = {
 } as const;
 
 export interface TeleopBindings {
-  /** Кнопка deadman: пока зажата — движение разрешено (grip). */
-  deadmanButton: number;
+  /** Кнопка arm/disarm: клик стика тогглит активацию телеопа
+   *  (нажал — ARM, нажал ещё раз — DISARM). */
+  armButton: number;
+  /** Рука, на которой живёт arm-кнопка (правая — thumbstick press). */
+  armHandedness: "left" | "right" | "none";
   /** Кнопка emergency-stop (edge-triggered, шлётся один раз). */
   emergencyButton: number;
   /** Ось линейного хода (стик вперёд/назад). */
@@ -52,7 +55,8 @@ export interface TeleopBindings {
 }
 
 export const DEFAULT_BINDINGS: TeleopBindings = {
-  deadmanButton: GAMEPAD_BUTTONS.squeeze, // grip
+  armButton: GAMEPAD_BUTTONS.thumbstickPress, // клик правого стика
+  armHandedness: "right",
   emergencyButton: GAMEPAD_BUTTONS.bY, // B/Y
   linearAxis: GAMEPAD_AXES.thumbstickY, // стик вперёд/назад
   angularAxis: GAMEPAD_AXES.thumbstickX, // стик влево/вправо

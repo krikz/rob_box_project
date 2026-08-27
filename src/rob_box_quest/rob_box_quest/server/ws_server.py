@@ -57,6 +57,10 @@ class Bridge(Protocol):
         """Клиент активен (HELLO/SUBSCRIBE/ping) — сбросить watchdog."""
         ...
 
+    def reset(self) -> None:
+        """Новый HELLO / operator ack — снять emergency lock и edge-флаги."""
+        ...
+
     def emergency_stop(self) -> None:
         """Зафиксировать emergency lock (safe stop + close session)."""
         ...
@@ -112,6 +116,9 @@ class NoOpBridge:
         return None
 
     def feed_client_alive(self) -> None:
+        return None
+
+    def reset(self) -> None:
         return None
 
     def emergency_stop(self) -> None:
@@ -315,6 +322,11 @@ class WSSServer:
             capabilities = []
         session.mark_authenticated(client_version, capabilities)
 
+        # Новый HELLO: снять emergency lock от прошлой сессии / stop_emergency
+        # и взвести bridge-watchdog (дальше его кормит клиентский ping).
+        self.bridge.reset()
+        self.bridge.feed_client_alive()
+
         await self._send(
             ws,
             FrameType.WELCOME,
@@ -509,6 +521,10 @@ class WSSServer:
         event_type = payload_obj.get("type")
         if event_type == "ping":
             session.feed_ping()
+            # Клиентский ping (JSON_EVENT) — он же keepalive bridge-watchdog'а:
+            # иначе при простое (без teleop_twist) watchdog ложно триггерит
+            # emergency_stop и блокирует телеоп навсегда.
+            self.bridge.feed_client_alive()
 
     # Управление _on_json_cmd перенесено в новый метод выше (см. Phase 1.4):
     # stream_select / stream_list + teleop_twist / stop_emergency.

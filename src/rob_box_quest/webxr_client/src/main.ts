@@ -196,16 +196,22 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
 
   let lastTickTs = 0;
 
-  // Полинг XR-контроллеров: агрегируем по всем inputSources — grip = любой
-  // зажат, стик = контроллер с наибольшим отклонением, B/Y = любой нажат.
+  // Полинг XR-контроллеров: агрегируем по всем inputSources — arm-клик =
+  // любой правый стик, стик-оси = контроллер с наибольшим отклонением,
+  // B/Y = любой нажат. Arm/disarm: клик правого стика тогглит активацию
+  // телеопа. DISARM по умолчанию.
+  let armed = false;
+  let xrArmWasPressed = false;
+
   function pollXrControllers(): void {
     if (!xr.isActive() || xrInputSources.length === 0) {
       xrEmergencyWasPressed = false;
+      xrArmWasPressed = false;
       applyVoicePtt(false, false);
       bridge.setControllerActive(false);
       return;
     }
-    let deadman = false;
+    let armPress = false;
     let emergency = false;
     let ptt = false;
     let robotPtt = false;
@@ -214,7 +220,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     let bestMag = -1;
     for (const src of xrInputSources) {
       const r = pollXrInput(src);
-      deadman = deadman || r.deadman;
+      armPress = armPress || r.armPress;
       emergency = emergency || r.emergency;
       ptt = ptt || r.ptt;
       robotPtt = robotPtt || r.robotPtt;
@@ -225,12 +231,21 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
         angular = r.angular;
       }
     }
-    fsm.setDeadman(deadman);
+    // Edge-triggered toggle: нажал стик → ARM, нажал ещё раз → DISARM.
+    if (armPress && !xrArmWasPressed) {
+      armed = !armed;
+      bridge.setArmState(armed);
+    }
+    xrArmWasPressed = armPress;
+    fsm.setDeadman(armed);
     fsm.setLinear(linear);
     fsm.setAngular(angular);
-    bridge.setControllerActive(deadman);
+    bridge.setControllerActive(armed);
     if (emergency && !xrEmergencyWasPressed && conn && !disconnected) {
       conn.send(fsm.triggerEmergency("controller_b"));
+      // B/Y — жёсткий стоп: локально дизармимся, HUD отражает реальность.
+      armed = false;
+      bridge.setArmState(false);
     }
     xrEmergencyWasPressed = emergency;
     applyVoicePtt(ptt, robotPtt);
@@ -300,6 +315,9 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       xrRafSession = null;
       xrRafId = 0;
       xrEmergencyWasPressed = false;
+      armed = false;
+      xrArmWasPressed = false;
+      bridge.setArmState(false);
       applyVoicePtt(false, false);
       xrTeleopHandle?.destroy();
       xrTeleopHandle = null;

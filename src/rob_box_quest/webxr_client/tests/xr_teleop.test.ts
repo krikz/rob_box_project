@@ -33,17 +33,23 @@ describe("pollXrInput", () => {
     expect(pollXrInput(makeSource(null))).toEqual({
       linear: 0,
       angular: 0,
-      deadman: false,
+      armPress: false,
       emergency: false,
       ptt: false,
       robotPtt: false
     });
   });
 
-  it("squeeze (button 1) → deadman=true", () => {
+  it("right thumbstick press (button 2) → armPress=true", () => {
     const gp = makeGamepad();
-    gp.buttons[1].value = 1;
-    expect(pollXrInput(makeSource(gp)).deadman).toBe(true);
+    gp.buttons[2].pressed = true;
+    expect(pollXrInput(makeSource(gp, "right")).armPress).toBe(true);
+  });
+
+  it("left thumbstick press → armPress=false (arm только на правой)", () => {
+    const gp = makeGamepad();
+    gp.buttons[2].pressed = true;
+    expect(pollXrInput(makeSource(gp, "left")).armPress).toBe(false);
   });
 
   it("B/Y (button 4) → emergency=true; thumbrest (button 5) does not", () => {
@@ -75,12 +81,13 @@ describe("pollXrInput", () => {
     expect(r.angular).toBe(0);
   });
 
-  it("respects custom bindings (deadman=trigger, emergency=A/X)", () => {
+  it("respects custom bindings (arm=trigger on left, emergency=A/X)", () => {
     const gp = makeGamepad();
-    gp.buttons[0].value = 1; // trigger → deadman (custom)
+    gp.buttons[0].pressed = true; // trigger → arm (custom)
     gp.buttons[3].pressed = true; // A/X → emergency (custom)
-    const r = pollXrInput(makeSource(gp), {
-      deadmanButton: 0,
+    const r = pollXrInput(makeSource(gp, "left"), {
+      armButton: 0,
+      armHandedness: "left",
       emergencyButton: 3,
       linearAxis: 3,
       angularAxis: 2,
@@ -92,23 +99,23 @@ describe("pollXrInput", () => {
       robotPttButton: 1,
       robotPttHandedness: "left"
     });
-    expect(r.deadman).toBe(true);
+    expect(r.armPress).toBe(true);
     expect(r.emergency).toBe(true);
   });
 
-  it("right grip (squeeze) → ptt=true and deadman=true", () => {
+  it("right grip (squeeze) → ptt=true, armPress=false", () => {
     const gp = makeGamepad();
     gp.buttons[1].value = 1;
     const r = pollXrInput(makeSource(gp, "right"));
     expect(r.ptt).toBe(true);
-    expect(r.deadman).toBe(true);
+    expect(r.armPress).toBe(false);
   });
 
-  it("left grip (squeeze) → deadman=true but ptt=false", () => {
+  it("left grip (squeeze) → armPress=false, ptt=false", () => {
     const gp = makeGamepad();
     gp.buttons[1].value = 1;
     const r = pollXrInput(makeSource(gp, "left"));
-    expect(r.deadman).toBe(true);
+    expect(r.armPress).toBe(false);
     expect(r.ptt).toBe(false);
   });
 
@@ -117,7 +124,7 @@ describe("pollXrInput", () => {
     gp.buttons[1].value = 1;
     const r = pollXrInput(makeSource(gp, "left"));
     expect(r.robotPtt).toBe(true);
-    expect(r.deadman).toBe(true);
+    expect(r.armPress).toBe(false);
   });
 
   it("right grip (squeeze) → robotPtt=false", () => {

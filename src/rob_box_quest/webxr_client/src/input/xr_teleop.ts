@@ -1,6 +1,7 @@
-// Quest XR controllers teleop (дизайн §6): thumbstick → движение, grip →
-// deadman, B/Y → emergency stop. Маппинг «какая кнопка за что отвечает»
-// живёт в teleop_config.ts (DEFAULT_BINDINGS) — тут только чтение gamepad.
+// Quest XR controllers teleop (дизайн §6): thumbstick → движение, клик
+// правого стика → arm/disarm (toggle), B/Y → emergency stop. Маппинг
+// «какая кнопка за что отвечает» живёт в teleop_config.ts (DEFAULT_BINDINGS)
+// — тут только чтение gamepad.
 //
 // pollXrInput() читает состояние одного XRInputSource; агрегацию по
 // контроллерам и edge-trigger emergency делает main.ts. ВАЖНО: в immersive-vr
@@ -19,7 +20,7 @@ export interface XrTeleopHandle {
 export interface XrPollResult {
   linear: number; // -1..1 (уже с deadzone)
   angular: number; // -1..1 (уже с deadzone)
-  deadman: boolean; // grip зажат
+  armPress: boolean; // клик правого стика (level; toggle делает caller)
   emergency: boolean; // B/Y нажата (level; edge-trigger делает caller)
   ptt: boolean; // правый grip (рация): push-to-talk
   robotPtt: boolean; // левый grip (робот-голос): STT → LLM → TTS
@@ -28,9 +29,11 @@ export interface XrPollResult {
 export function pollXrInput(source: XRInputSource, bindings: TeleopBindings = DEFAULT_BINDINGS): XrPollResult {
   const gp = source.gamepad;
   if (!gp) {
-    return { linear: 0, angular: 0, deadman: false, emergency: false, ptt: false, robotPtt: false };
+    return { linear: 0, angular: 0, armPress: false, emergency: false, ptt: false, robotPtt: false };
   }
-  const deadman = (gp.buttons[bindings.deadmanButton]?.value ?? 0) > 0.5;
+  const armPress =
+    source.handedness === bindings.armHandedness &&
+    (gp.buttons[bindings.armButton]?.pressed ?? false);
   const ptt =
     source.handedness === bindings.pttHandedness &&
     (gp.buttons[bindings.pttButton]?.value ?? 0) > 0.5;
@@ -42,7 +45,7 @@ export function pollXrInput(source: XRInputSource, bindings: TeleopBindings = DE
   return {
     linear: applySign(applyDeadzone(ty, bindings.deadzone), bindings.invertLinear),
     angular: applySign(applyDeadzone(tx, bindings.deadzone), bindings.invertAngular),
-    deadman,
+    armPress,
     emergency: gp.buttons[bindings.emergencyButton]?.pressed ?? false,
     ptt,
     robotPtt
