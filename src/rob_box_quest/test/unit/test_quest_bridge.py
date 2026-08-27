@@ -232,33 +232,67 @@ def _make_voice_bridge():
     return bridge, voice_in, tts_control, sound_stop, stt_in, set_voice_mode
 
 
+def _pcm_chunk(*samples: int) -> bytes:
+    """int16 LE PCM-чанк из заданных сэмплов."""
+    out = bytearray()
+    for s in samples:
+        s &= 0xFFFF
+        out.append(s & 0xFF)
+        out.append((s >> 8) & 0xFF)
+    return bytes(out)
+
+
+def _pcm20ms(value: int) -> bytes:
+    """20 мс @ 16 kHz = 320 int16-сэмплов одного значения (реальный чанк webxr_client)."""
+    return _pcm_chunk(*([value] * 320))
+
+
 def test_voice_radio_mode_streams_to_voice_in():
     bridge, voice_in, _tts, _sound, stt_in, _svm = _make_voice_bridge()
-    bridge.publish_voice_audio(b"\x00\x00")
+    bridge.publish_voice_audio(_pcm_chunk(4000, 4000))
     assert len(voice_in.published) == 1
-    assert voice_in.published[0].data == [0, 0]
+    assert voice_in.published[0].data == [0xA0, 0x0F, 0xA0, 0x0F]
     assert len(stt_in.published) == 0
 
 
-def test_voice_robot_mode_buffers_and_flushes_to_stt():
+def test_voice_robot_mode_flushes_on_silence():
+    """EOU: фраза уходит в STT по тишине, пока грип ещё зажат (не ждём release)."""
     bridge, voice_in, tts_control, sound_stop, stt_in, _svm = _make_voice_bridge()
-    # PTT start (robot) → barge-in (STOP TTS + sound) + buffer reset.
     bridge.publish_voice_robot_start()
-    assert len(tts_control.published) == 1
-    assert len(sound_stop.published) == 1
-    # PCM буферизуется, НЕ идёт в /avatar/voice_in.
-    bridge.publish_voice_audio(b"\x01\x00")
-    bridge.publish_voice_audio(b"\x02\x00")
+    assert len(tts_control.published) == 1  # barge-in STOP TTS
+    assert len(sound_stop.published) == 1  # barge-in STOP sound
+    # Речь буферизуется, НЕ идёт в /avatar/voice_in и НЕ в STT.
+    bridge.publish_voice_audio(_pcm20ms(4000))
+    bridge.publish_voice_audio(_pcm20ms(4000))
     assert len(voice_in.published) == 0
     assert len(stt_in.published) == 0
-    # PTT stop (robot) → конкатенация в /audio/quest_in + возврат в radio.
+    # 15 × 20 мс = 300 мс тишины → конец фразы → флаш в /audio/quest_in.
+    for _ in range(15):
+        bridge.publish_voice_audio(_pcm20ms(0))
+    assert len(stt_in.published) == 1
+    assert len(stt_in.published[0].data) > 0
+    assert len(voice_in.published) == 0
+
+
+def test_voice_robot_leading_silence_ignored():
+    """Ведущая тишина (до речи) не публикует пустой буфер."""
+    bridge, _voice_in, _tts, _sound, stt_in, _svm = _make_voice_bridge()
+    bridge.publish_voice_robot_start()
+    for _ in range(20):
+        bridge.publish_voice_audio(_pcm20ms(0))
+    assert len(stt_in.published) == 0
+
+
+def test_voice_robot_stop_flushes_remainder():
+    """Release без завершающей тишины → остаток фразы уходит в STT."""
+    bridge, _voice_in, _tts, _sound, stt_in, _svm = _make_voice_bridge()
+    bridge.publish_voice_robot_start()
+    bridge.publish_voice_audio(_pcm20ms(4000))
+    bridge.publish_voice_audio(_pcm20ms(-32000))
+    assert len(stt_in.published) == 0
     bridge.publish_voice_robot_stop()
     assert len(stt_in.published) == 1
-    assert stt_in.published[0].data == [1, 0, 2, 0]
-    # После stop — снова radio: следующий чанк стримится в /avatar/voice_in.
-    bridge.publish_voice_audio(b"\x03\x00")
-    assert len(voice_in.published) == 1
-    assert len(stt_in.published) == 1
+    assert len(stt_in.published[0].data) == 640 * 2
 
 
 def test_voice_robot_stop_with_empty_buffer_publishes_nothing():
@@ -267,6 +301,18 @@ def test_voice_robot_stop_with_empty_buffer_publishes_nothing():
     bridge.publish_voice_robot_stop()  # пусто → no-op в STT
     assert len(stt_in.published) == 0
     assert len(voice_in.published) == 0
+
+
+def test_chunk_is_silent_threshold():
+    pytest.importorskip("geometry_msgs", reason="QuestBridge требует rclpy/geometry_msgs (только в Docker image)")
+    from rob_box_quest.quest_node import _chunk_is_silent
+
+    assert _chunk_is_silent(_pcm_chunk(0, 0, 0)) is True
+    assert _chunk_is_silent(_pcm_chunk(499, -499)) is True
+    assert _chunk_is_silent(_pcm_chunk(500, 0)) is False
+    assert _chunk_is_silent(_pcm_chunk(-500)) is False
+    assert _chunk_is_silent(b"") is True
+    assert _chunk_is_silent(b"\x01") is True  # нечётная длина → тишина
 
 
 def test_set_voice_mode_maps_wire_to_param_and_publishes():

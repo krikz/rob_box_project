@@ -72,6 +72,27 @@ WIRE_TO_VOICE_INPUT_MODE: dict[str, str] = {
     "llm_formalize": "quest_llm_formalize",
 }
 
+# Робот-голос (P7): EOU-детекция на лету. Пока оператор держит грип, PCM
+# буферизуется, а по тишине (конец фразы) буфер уходит в STT — распознавание
+# успевает ДО отпускания грипа (иначе гонка с voice_input_mode=respeaker).
+VOICE_SAMPLE_RATE_HZ: int = 16000  # int16 PCM 16 kHz mono (webxr_client)
+VOICE_BYTES_PER_MS: float = VOICE_SAMPLE_RATE_HZ * 2 / 1000.0  # 32 байта/мс
+VOICE_SILENCE_THRESHOLD: int = 500  # пик int16 ниже → считаем тишиной
+VOICE_SILENCE_TIMEOUT_MS: float = 300.0  # тишина дольше → конец фразы
+
+
+def _chunk_is_silent(payload: bytes, threshold: int = VOICE_SILENCE_THRESHOLD) -> bool:
+    """True если int16 LE PCM-чанк — тишина (пик |сэмпла| < threshold)."""
+    if len(payload) < 2:
+        return True
+    for i in range(0, len(payload) - 1, 2):
+        s = payload[i] | (payload[i + 1] << 8)  # int16 little-endian
+        if s >= 0x8000:
+            s -= 0x10000  # знаковый разряд
+        if abs(s) >= threshold:
+            return False
+    return True
+
 
 class _AlwaysActiveWSServer:
     """Заглушка для юнит-тестов: при отсутствии реального WSSServer считаем
@@ -129,6 +150,7 @@ class QuestBridge:
         # Текущий голосовой режим: "radio" (рация, default) | "robot_voice".
         self._voice_mode: str = "radio"
         self._voice_buffer: list[bytes] = []
+        self._voice_silence_ms: float = 0.0
         # ws_server может быть None в юнит-тестах. В проде QuestNode всегда
         # передаёт реальный WSSServer — иначе _publish_zero() вернёт True
         # через заглушку и поведение будет как «есть активная сессия».
@@ -218,19 +240,42 @@ class QuestBridge:
         self._sound_stop_pub.publish(_stop_msg())
 
     def publish_voice_audio(self, payload: bytes) -> None:
-        """VOICE_AUDIO: publish AudioData в /avatar/voice_in (int16 PCM 16 kHz mono).
+        """VOICE_AUDIO: radio → /avatar/voice_in; robot_voice → EOU-детекция.
 
-        В режиме "robot_voice" не стримим в динамик, а буферизуем PCM —
-        на voice_ptt_stop буфер уйдёт одним AudioData в /audio/quest_in (STT).
+        В robot_voice PCM НЕ стримим в динамик, а буферизуем. По тишине
+        (конец фразы, пока грип ещё зажат) буфер уходит одним AudioData в
+        /audio/quest_in (STT) — распознавание успевает до отпускания грипа.
         """
         if self._voice_mode == "robot_voice":
-            self._voice_buffer.append(payload)
+            if _chunk_is_silent(payload):
+                if self._voice_buffer:
+                    chunk_ms = len(payload) / VOICE_BYTES_PER_MS
+                    self._voice_silence_ms += chunk_ms
+                    if self._voice_silence_ms >= VOICE_SILENCE_TIMEOUT_MS:
+                        self._flush_voice_buffer()
+                # ведущая тишина — игнор
+            else:
+                self._voice_buffer.append(payload)
+                self._voice_silence_ms = 0.0
             return
         if self._voice_in_pub is None:
             return
         msg = AudioData()
         msg.data = list(payload)
         self._voice_in_pub.publish(msg)
+
+    def _flush_voice_buffer(self) -> None:
+        """Накопленный PCM → один AudioData в /audio/quest_in (STT)."""
+        if self._stt_in_pub is None or not self._voice_buffer:
+            self._voice_buffer = []
+            self._voice_silence_ms = 0.0
+            return
+        data = b"".join(self._voice_buffer)
+        self._voice_buffer = []
+        self._voice_silence_ms = 0.0
+        msg = AudioData()
+        msg.data = list(data)
+        self._stt_in_pub.publish(msg)
 
     def publish_voice_stop(self) -> None:
         """PTT stop: STOP в /voice/sound/stop → sound_node закрывает стрим."""
@@ -242,21 +287,15 @@ class QuestBridge:
         """PTT start (робот-голос): barge-in + перейти в режим буферизации."""
         self._voice_mode = "robot_voice"
         self._voice_buffer = []
+        self._voice_silence_ms = 0.0
         self.publish_voice_barge_in()
 
     def publish_voice_robot_stop(self) -> None:
-        """PTT stop (робот-голос): буфер PCM → AudioData в /audio/quest_in."""
+        """PTT stop (робот-голос): слить остаток фразы без завершающей тишины."""
         if self._voice_mode != "robot_voice":
             return
         self._voice_mode = "radio"
-        if self._stt_in_pub is None or not self._voice_buffer:
-            self._voice_buffer = []
-            return
-        data = b"".join(self._voice_buffer)
-        self._voice_buffer = []
-        msg = AudioData()
-        msg.data = list(data)
-        self._stt_in_pub.publish(msg)
+        self._flush_voice_buffer()
 
     def set_voice_mode(self, mode: str) -> None:
         """voice_mode cmd → запрос супервизору сменить режим голоса.
