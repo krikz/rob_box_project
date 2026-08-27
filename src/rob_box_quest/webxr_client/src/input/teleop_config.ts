@@ -60,7 +60,8 @@ export const DEFAULT_BINDINGS: TeleopBindings = {
   emergencyButton: GAMEPAD_BUTTONS.bY, // B/Y
   linearAxis: GAMEPAD_AXES.thumbstickY, // стик вперёд/назад
   angularAxis: GAMEPAD_AXES.thumbstickX, // стик влево/вправо
-  invertLinear: false,
+  // WebXR: стик вверх = ty<0 → инвертируем, чтобы «вперёд» = +linear.
+  invertLinear: true,
   // Стик вправо (tx>0) → angular<0 → поворот направо.
   invertAngular: true,
   deadzone: 0.12,

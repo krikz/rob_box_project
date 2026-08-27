@@ -74,10 +74,10 @@ describe("pollXrInput", () => {
     expect(pollXrInput(makeSource(gp)).emergency).toBe(true);
   });
 
-  it("thumbstick axes 2/3 → linear (y) and angular (-x), re-scaled past deadzone", () => {
+  it("thumbstick up (y=-1) → linear=+1 (вперёд); right (x=+1) → angular<0 (направо)", () => {
     const gp = makeGamepad();
-    gp.axes[GAMEPAD_AXES.thumbstickX] = 0.5; // thumbstick x → angular = -0.5 (после deadzone)
-    gp.axes[GAMEPAD_AXES.thumbstickY] = 1.0; // thumbstick y → linear = 1.0
+    gp.axes[GAMEPAD_AXES.thumbstickX] = 0.5; // вправо
+    gp.axes[GAMEPAD_AXES.thumbstickY] = -1.0; // вверх/вперёд
     const r = pollXrInput(makeSource(gp));
     expect(r.linear).toBeCloseTo(1.0);
     // applyDeadzone(0.5) = (0.5 - 0.12) / (1 - 0.12)
