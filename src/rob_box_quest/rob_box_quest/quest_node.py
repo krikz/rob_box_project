@@ -420,10 +420,11 @@ class QuestNode(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
         )
-        # Камера: OAK-D (depthai_ros_driver v2) публикует sensor_msgs/Image
-        # как BEST_EFFORT (SENSOR_DATA QoS) — RELIABLE-подписка не матчится.
+        # Камера: OAK-D (depthai_ros_driver v2) публикует sensor_msgs/Image как
+        # RELIABLE KEEP_LAST(10) — проверено `ros2 topic info -v` на Vision Pi
+        # (27.08.2026). BEST_EFFORT-подписка НЕ матчится → кадры не приходят.
         _CAMERA_QOS = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+            reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
