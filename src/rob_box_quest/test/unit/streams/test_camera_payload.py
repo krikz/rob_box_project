@@ -1,13 +1,12 @@
 """Unit-тест streams.camera.image_to_payload (sensor_msgs/Image → JPEG).
 
-Требует cv2 + cv_bridge + numpy + sensor_msgs — только в Docker image.
+Требует cv2 + numpy + sensor_msgs — только в Docker image.
 На dev-env без ROS — skip через importorskip (как test_quest_bridge.py).
 """
 
 import pytest
 
 pytest.importorskip("cv2", reason="image_to_payload требует cv2 (только в Docker image)")
-pytest.importorskip("cv_bridge", reason="image_to_payload требует cv_bridge (только в Docker image)")
 pytest.importorskip("sensor_msgs", reason="sensor_msgs/Image требует ROS (только в Docker image)")
 import numpy as np  # noqa: E402
 

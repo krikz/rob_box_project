@@ -77,7 +77,7 @@ ARG ROS_DISTRO=humble
 # opencv-python-headless: apt python3-opencv (cv2 4.5.4) в base ломается на
 # pip-numpy 2.x (`ImportError: numpy.core.multiarray failed to import`) —
 # ставим pip-cv2, собранный под numpy 2.x. Нужен для camera_rear JPEG
-# (cv_bridge → cv2.imencode) в quest_node.
+# (numpy → cv2.imencode) в quest_node.
 RUN apt-get update -qq \
  && apt-get install -y --no-install-recommends openssl curl ca-certificates \
  && rm -rf /var/lib/apt/lists/* \

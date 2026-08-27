@@ -499,6 +499,8 @@ class QuestNode(Node):
         # уже произошёл к этому моменту).
         self._aio_started = False
         self._camera_started = False
+        # Анти-спам: первую ошибку кодирования camera_rear логируем warning.
+        self._camera_encode_warned = False
 
     # --- ROS callbacks ----------------------------------------------------
 
@@ -520,16 +522,20 @@ class QuestNode(Node):
     def _on_camera_image(self, msg: Image) -> None:
         """ROS /camera/camera/color/image_raw → JPEG → WS (camera_rear).
 
-        Phase 1.4 baseline: cv_bridge → cv2.imencode('.jpg') → BINARY_FRAME.
-        Ошибку кодирования (нет cv_bridge/cv2, неподдерживаемый encoding)
-        логируем на debug и пропускаем кадр — нода не падает. Кадры шлются
-        только сессиям, подписанным на camera_rear (broadcast_frame no-op
-        если подписчиков нет).
+        Phase 1 baseline: numpy → cv2.imencode('.jpg') → BINARY_FRAME.
+        Ошибку кодирования (нет numpy/cv2, неподдерживаемый encoding) логируем
+        warning один раз и debug дальше — нода не падает. Кадры шлются только
+        сессиям, подписанным на camera_rear (broadcast_frame no-op если
+        подписчиков нет).
         """
         try:
             payload = image_to_payload(msg)
         except Exception as e:  # noqa: BLE001
-            self.get_logger().debug(f"camera_rear encode failed: {e}")
+            if not self._camera_encode_warned:
+                self.get_logger().warning(f"camera_rear encode failed: {e}")
+                self._camera_encode_warned = True
+            else:
+                self.get_logger().debug(f"camera_rear encode failed: {e}")
             return
         self.bridge.publish_frame("camera_rear", payload)
 
