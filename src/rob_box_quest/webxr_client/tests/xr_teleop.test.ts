@@ -72,4 +72,21 @@ describe("pollXrInput", () => {
     expect(r.linear).toBe(0);
     expect(r.angular).toBe(0);
   });
+
+  it("respects custom bindings (deadman=trigger, emergency=A/X)", () => {
+    const gp = makeGamepad();
+    gp.buttons[0].value = 1; // trigger → deadman (custom)
+    gp.buttons[3].pressed = true; // A/X → emergency (custom)
+    const r = pollXrInput(makeSource(gp), {
+      deadmanButton: 0,
+      emergencyButton: 3,
+      linearAxis: 3,
+      angularAxis: 2,
+      invertLinear: false,
+      invertAngular: true,
+      deadzone: 0.12
+    });
+    expect(r.deadman).toBe(true);
+    expect(r.emergency).toBe(true);
+  });
 });
