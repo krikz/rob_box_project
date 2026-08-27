@@ -169,12 +169,6 @@ ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
 ASYNCIO_LOOP_DRIVER_NAME_PREFIX: str = "dialogue-async-loop"
 ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S: float = 2.0
 
-# ADR-0027 §3.4 — режимы ``voice_input_mode``, при которых STT-результат
-# с микрофона Quest идёт в LLM → TTS без wake-word (робот отвечает своим
-# голосом). ``quest_passthrough`` сюда не попадает — звук играет sound_node
-# напрямую; ``quest_llm_formalize`` — Phase 3 (перефразирование).
-QUEST_STT_MODES: tuple[str, ...] = ("quest_ttts", "quest_stt")
-
 # Issue #1389 compatibility alias. ``LLMSkipReason`` is now the canonical
 # source; this tuple remains for callers that imported the merged #1395 symbol.
 _LLM_SKIP_REASONS: tuple[str, ...] = tuple(reason.value for reason in LLMSkipReason)
@@ -1610,7 +1604,9 @@ class DialogueNode(Node):
         ``voice_input_mode`` (единственная точка переключения; его выставляет
         супервизор — ADR-0028 S5):
 
-        - ``quest_ttts`` / ``quest_stt`` → LLM → TTS без wake-word (``from_quest``);
+        - ``quest_ttts`` → **повторить голосом робота дословно** (STT → TTS,
+          без LLM — это не диалог, а «озвучка моих слов»);
+        - ``quest_stt`` → LLM-диалог без wake-word (Phase 2, follow-up);
         - ``quest_passthrough`` → не сюда (звук играет sound_node напрямую);
         - ``respeaker`` (default) → игнор: Quest-режим не активен.
         """
@@ -1618,12 +1614,18 @@ class DialogueNode(Node):
             mode = str(self.get_parameter("voice_input_mode").value or "respeaker")
         except Exception:  # noqa: BLE001 — голый объект в тестах без параметра
             mode = "respeaker"
-        if mode not in QUEST_STT_MODES:
-            self.get_logger().info(
-                f"🔇 [quest] voice_input_mode={mode!r} — quest STT ignored"
-            )
+        if mode == "quest_ttts":
+            text = (msg.data or "").strip()
+            if text:
+                self.get_logger().info(f"🗣️ [quest] robot-voice repeat: {text[:80]!r}")
+                self._speak_direct(text)
             return
-        self._on_stt(msg, from_quest=True)
+        if mode == "quest_stt":
+            self._on_stt(msg, from_quest=True)
+            return
+        self.get_logger().info(
+            f"🔇 [quest] voice_input_mode={mode!r} — quest STT ignored"
+        )
 
     def _on_stt(self, msg: String, from_quest: bool = False) -> None:
         text = (msg.data or "").strip()
