@@ -73,10 +73,15 @@ ARG ROS_DISTRO=humble
 # self-signed серта) + bash уже есть (Ubuntu base). curl — на всякий.
 # aiohttp/msgpack уже стоят (install_requires voice-assistant), но pip3
 # install здесь идёмпотентен.
+#
+# opencv-python-headless: apt python3-opencv (cv2 4.5.4) в base ломается на
+# pip-numpy 2.x (`ImportError: numpy.core.multiarray failed to import`) —
+# ставим pip-cv2, собранный под numpy 2.x. Нужен для camera_rear JPEG
+# (cv_bridge → cv2.imencode) в quest_node.
 RUN apt-get update -qq \
  && apt-get install -y --no-install-recommends openssl curl ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
- && pip3 install --no-cache-dir --break-system-packages aiohttp msgpack \
+ && pip3 install --no-cache-dir --break-system-packages aiohttp msgpack opencv-python-headless \
  || true
 
 # Копируем caddy binary из caddy:2-alpine (45 MB, оффлайн-safe).

@@ -41,13 +41,14 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import String
 
 from .core.safety import Watchdog
 from .core.teleop import TeleopController
 from .server.session import WATCHDOG_TIMEOUT_S as SESSION_WATCHDOG_TIMEOUT_S
 from .server.ws_server import NoOpBridge, WSSServer, build_app
+from .streams.camera import image_to_payload
 from .streams.lidar import scan_to_payload
 from .streams.provider import CameraFrame, CameraProvider
 from .streams.registry import STREAM_CATALOG
@@ -419,6 +420,14 @@ class QuestNode(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
         )
+        # Камера: OAK-D (depthai_ros_driver v2) публикует sensor_msgs/Image
+        # как BEST_EFFORT (SENSOR_DATA QoS) — RELIABLE-подписка не матчится.
+        _CAMERA_QOS = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
         self._voice_in_pub = self.create_publisher(AudioData, "/avatar/voice_in", _VOICE_QOS)
         self._tts_control_pub = self.create_publisher(String, "/voice/tts/control", _RE)
         self._sound_stop_pub = self.create_publisher(String, "/voice/sound/stop", _RE)
@@ -426,9 +435,16 @@ class QuestNode(Node):
         self._stt_in_pub = self.create_publisher(AudioData, "/audio/quest_in", _VOICE_QOS)
         # voice_mode → супервизор (ADR-0028 S5): /avatar/set_voice_mode.
         self._set_voice_mode_pub = self.create_publisher(String, "/avatar/set_voice_mode", _RE)
-        # Подписки для стримов (Phase 1.4 v2: lidar через ROS, камеры мимо ROS).
+        # Подписки для стримов (Phase 1.4 v2: lidar + camera_rear-фолбэк через
+        # ROS; остальные камеры — мимо ROS через CameraProvider).
         self._odom_sub = self.create_subscription(Odometry, "/odom", self._on_odom, _RE)
         self._scan_sub = self.create_subscription(LaserScan, "/scan", self._on_scan, _RE)
+        # camera_rear (0x1001): OAK-D color /camera/camera/color/image_raw → JPEG.
+        # ROS-фолбэк к bypass-ROS CameraProvider (прямой depthai в quest-контейнер
+        # невозможен: USB-устройство занято контейнером oak-d).
+        self._camera_rear_sub = self.create_subscription(
+            Image, "/camera/camera/color/image_raw", self._on_camera_image, _CAMERA_QOS
+        )
         self._latest_odom: Optional[Odometry] = None
         self._status = StatusAggregator()
 
@@ -500,6 +516,22 @@ class QuestNode(Node):
     def _on_scan(self, msg: LaserScan) -> None:
         """ROS subscription /scan → WS-подписчикам (Phase 1.4 v2)."""
         self.bridge.on_lidar_scan(msg)
+
+    def _on_camera_image(self, msg: Image) -> None:
+        """ROS /camera/camera/color/image_raw → JPEG → WS (camera_rear).
+
+        Phase 1.4 baseline: cv_bridge → cv2.imencode('.jpg') → BINARY_FRAME.
+        Ошибку кодирования (нет cv_bridge/cv2, неподдерживаемый encoding)
+        логируем на debug и пропускаем кадр — нода не падает. Кадры шлются
+        только сессиям, подписанным на camera_rear (broadcast_frame no-op
+        если подписчиков нет).
+        """
+        try:
+            payload = image_to_payload(msg)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().debug(f"camera_rear encode failed: {e}")
+            return
+        self.bridge.publish_frame("camera_rear", payload)
 
     def _on_tick_timer(self) -> None:
         if not self._aio_started:
