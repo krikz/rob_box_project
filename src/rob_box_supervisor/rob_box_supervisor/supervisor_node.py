@@ -51,6 +51,21 @@ except ImportError:  # pragma: no cover — defensive: нода не падае�
 # литералов по всему коду (ADR-0028 §4.5).
 MONITOR_MODE_REASON = "supervisor_in_monitor_mode"
 
+# ADR-0027 §3.4 — валидные значения ``voice_input_mode`` на dialogue_node.
+# Супервизор — единственная точка, которая имеет право их менять (ADR-0028 S5).
+VOICE_INPUT_MODES: tuple[str, ...] = (
+    "respeaker",
+    "quest_passthrough",
+    "quest_ttts",
+    "quest_stt",
+    "quest_llm_formalize",
+)
+
+# Phase 1 транспорт запроса смены режима голоса. Phase 2 заменит на
+# ``SetVoiceMode``-сервис с кастомным IDL (ADR-0028 §4.3) — здесь топик
+# достаточен, чтобы не плодить rosidl-интерфейсы ради monitor-фазы.
+SET_VOICE_MODE_TOPIC: str = "/avatar/set_voice_mode"
+
 
 class AvatarSupervisor(Node):
     """ROS 2 нода ``avatar_supervisor`` (Vision Pi, Phase 1 monitor)."""
@@ -60,9 +75,7 @@ class AvatarSupervisor(Node):
 
     ODOM_TOPIC = "/odom"
     DEVICE_SNAPSHOT_TOPIC = "/device/snapshot"
-    VOICE_DIALOGUE_STATE_TOPIC = (
-        "/voice/dialogue/state"  # НЕ /voice/state (ADR-0027 #2)
-    )
+    VOICE_DIALOGUE_STATE_TOPIC = "/voice/dialogue/state"  # НЕ /voice/state (ADR-0027 #2)
 
     ACQUIRE_FLOOR_SERVICE = "acquire_floor"
     RELEASE_FLOOR_SERVICE = "release_floor"
@@ -96,19 +109,19 @@ class AvatarSupervisor(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             reliability=rclpy.qos.ReliabilityPolicy.RELIABLE,
         )
-        self._state_pub = self.create_publisher(
-            RosString, self.AVATAR_STATE_TOPIC, state_qos
-        )
+        self._state_pub = self.create_publisher(RosString, self.AVATAR_STATE_TOPIC, state_qos)
 
         # Subscriptions — на Phase 1 только регистрируем callback-и и
         # обновляем aggregator. Полный IDL / парсинг msg — Phase 2.
         self.create_subscription(RosString, self.ODOM_TOPIC, self._on_odom_msg, 10)
-        self.create_subscription(
-            RosString, self.DEVICE_SNAPSHOT_TOPIC, self._on_device_snapshot_msg, 10
-        )
-        self.create_subscription(
-            RosString, self.VOICE_DIALOGUE_STATE_TOPIC, self._on_voice_state_msg, 10
-        )
+        self.create_subscription(RosString, self.DEVICE_SNAPSHOT_TOPIC, self._on_device_snapshot_msg, 10)
+        self.create_subscription(RosString, self.VOICE_DIALOGUE_STATE_TOPIC, self._on_voice_state_msg, 10)
+        # ADR-0028 S5 — супервизор единственный, кто меняет voice_input_mode
+        # на dialogue_node. Phase 1 транспорт — топик (см. SET_VOICE_MODE_TOPIC).
+        self.create_subscription(RosString, SET_VOICE_MODE_TOPIC, self._on_set_voice_mode, 10)
+        # Параметр-клиент к dialogue_node создаётся лениво в active-режиме
+        # (в monitor супервизор НЕ трогает чужие параметры — S12).
+        self._dialogue_param_client = None
 
         # Services (Phase 1 — monitor: принимаем, логируем, отвечаем
         # success=true/applied=false/reason=monitor). Используем
@@ -151,10 +164,7 @@ class AvatarSupervisor(Node):
         """
         zenoh = os.environ.get("ZENOH_SESSION_CONFIG_URI", "<unset>")
         msgpack_state = "ok" if _HAS_MSGPACK else "MISSING"
-        self._log.info(
-            f"avatar_supervisor started: mode={self._mode}, "
-            f"zenoh={zenoh}, msgpack={msgpack_state}"
-        )
+        self._log.info(f"avatar_supervisor started: mode={self._mode}, " f"zenoh={zenoh}, msgpack={msgpack_state}")
 
     def _monitor_response(self) -> dict:
         """Стандартный ответ для всех сервисов в monitor-режиме."""
@@ -176,9 +186,7 @@ class AvatarSupervisor(Node):
         else:  # pragma: no cover — defensive
             payload = json.dumps(snapshot.to_msgpack_dict()).encode("utf-8")
         msg = RosString()
-        msg.data = payload.decode(
-            "latin-1"
-        )  # ROS String — UTF-8 safe для bytes-as-text
+        msg.data = payload.decode("latin-1")  # ROS String — UTF-8 safe для bytes-as-text
         self._state_pub.publish(msg)
 
     # ── subscription callbacks (Phase 1: best-effort parse) ──────────
@@ -218,6 +226,73 @@ class AvatarSupervisor(Node):
         except (ValueError, TypeError):
             return None
 
+    # ── voice mode (ADR-0028 S5) ─────────────────────────────────────
+    def _on_set_voice_mode(self, msg: RosString) -> None:
+        """Обработка ``/avatar/set_voice_mode`` — запрос сменить режим голоса.
+
+        Единственная точка, которая имеет право менять ``voice_input_mode``
+        на ``dialogue_node`` (ADR-0028 S5). В monitor-режиме принимаем и
+        логируем, но НЕ применяем (S12); в active — выставляем параметр.
+        """
+        mode = (msg.data or "").strip()
+        applied, reason = self._apply_voice_mode(mode)
+        self._log.info("SetVoiceMode: mode=%s applied=%s reason=%s", mode, applied, reason)
+
+    def _apply_voice_mode(self, mode: str) -> tuple[bool, str]:
+        """Чистая логика применения ``voice_input_mode`` (тестируется без rclpy).
+
+        Возвращает ``(applied, reason)``. Не валит ноду на битом входе.
+        """
+        if mode not in VOICE_INPUT_MODES:
+            return False, f"invalid_voice_mode: {mode!r}"
+        if self._mode != "active":
+            return False, MONITOR_MODE_REASON
+        try:
+            self._set_dialogue_param("voice_input_mode", mode)
+        except Exception as exc:  # noqa: BLE001 — отказ не должен валить ноду
+            self._log.warning("SetVoiceMode: failed to set dialogue param: %s", exc)
+            return False, f"param_set_failed: {exc}"
+        return True, "applied"
+
+    def _set_dialogue_param(self, name: str, value: str) -> None:
+        """Выставить string-параметр на ``dialogue_node`` через SetParameters.
+
+        Клиент создаётся лениво (первый вызов в active-режиме). Вызов
+        асинхронный (rclpy client), результат логируем в done-callback —
+        в monitor-режиме метод не вызывается вовсе (S12).
+        """
+        if self._dialogue_param_client is None:
+            from rcl_interfaces.srv import SetParameters  # noqa: PLC0415
+
+            self._dialogue_param_client = self.create_client(SetParameters, "/dialogue_node/set_parameters")
+        from rcl_interfaces.msg import (  # noqa: PLC0415
+            Parameter,
+            ParameterType,
+            ParameterValue,
+        )
+        from rcl_interfaces.srv import SetParameters  # noqa: PLC0415
+
+        req = SetParameters.Request()
+        param = Parameter()
+        param.name = name
+        param.value = ParameterValue()
+        param.value.type = ParameterType.PARAMETER_STRING
+        param.value.string_value = value
+        req.parameters = [param]
+
+        future = self._dialogue_param_client.call_async(req)
+
+        def _done(fut) -> None:
+            try:
+                res = fut.result()
+                ok = bool(res and res.results and res.results[0].successful)
+                if not ok:
+                    self._log.warning("SetVoiceMode: dialogue_node rejected parameter set")
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning("SetVoiceMode: parameter set failed: %s", exc)
+
+        future.add_done_callback(_done)
+
     # ── service callbacks (Phase 1: monitor → log + answer) ──────────
     def _on_acquire_floor(self, _request: Any, response: Any) -> Any:
         """``AcquireFloor`` — Phase 1 monitor: лог + monitor response."""
@@ -240,9 +315,7 @@ class AvatarSupervisor(Node):
                 MONITOR_MODE_REASON,
             )
         else:
-            self._log.info(
-                "SetAvatarMode received (mode=%s) — phase 1 monitor", self._mode
-            )
+            self._log.info("SetAvatarMode received (mode=%s) — phase 1 monitor", self._mode)
         return self._fill_monitor_response(response)
 
     def _fill_monitor_response(self, response: Any) -> Any:
@@ -254,9 +327,7 @@ class AvatarSupervisor(Node):
         """
         body = self._monitor_response()
         response.success = bool(body["success"])
-        response.message = json.dumps(
-            {"applied": body["applied"], "reason": body["reason"]}
-        )
+        response.message = json.dumps({"applied": body["applied"], "reason": body["reason"]})
         return response
 
 

@@ -99,16 +99,12 @@ def _install_ros_mocks() -> None:
             return name in self._parameters
 
         # ── pubs / subs / timers / services ─────────────────────────────
-        def create_publisher(
-            self, msg_type: Any, topic: str, qos: Any = 10
-        ) -> FakePublisher:
+        def create_publisher(self, msg_type: Any, topic: str, qos: Any = 10) -> FakePublisher:
             pub = FakePublisher(topic, msg_type)
             self._publishers[topic] = pub
             return pub
 
-        def create_subscription(
-            self, msg_type: Any, topic: str, callback: Any, qos: int = 10
-        ) -> FakeSubscription:
+        def create_subscription(self, msg_type: Any, topic: str, callback: Any, qos: int = 10) -> FakeSubscription:
             sub = FakeSubscription(topic, callback)
             self._subscriptions.append(sub)
             return sub
@@ -118,12 +114,17 @@ def _install_ros_mocks() -> None:
             self._timers.append(t)
             return t
 
-        def create_service(
-            self, srv_type: Any, name: str, callback: Any
-        ) -> FakeService:
+        def create_service(self, srv_type: Any, name: str, callback: Any) -> FakeService:
             svc = FakeService(name, srv_type, callback)
             self._services.append(svc)
             return svc
+
+        def create_client(self, srv_type: Any, name: str) -> MagicMock:
+            """Подмена create_client (SetParameters → dialogue_node)."""
+            client = MagicMock()
+            client.srv_type = srv_type
+            client.srv_name = name
+            return client
 
         def destroy_node(self) -> None:
             for t in self._timers:
