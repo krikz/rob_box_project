@@ -304,7 +304,9 @@ class SoundNode(Node):
         кликов/лага от повторного открытия (план P1, Task 1.2, D7).
         """
         try:
-            chunk = np.frombuffer(msg.data, dtype=np.int16)
+            # AudioData.data приходит как list[int] (tts_node/audio_node публикуют
+            # `list(bytes)`) — нормализуем через bytes() перед frombuffer.
+            chunk = np.frombuffer(bytes(msg.data), dtype=np.int16)
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f"❌ voice_in: невалидный AudioData: {e}")
             return
