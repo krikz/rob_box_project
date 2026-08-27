@@ -62,3 +62,11 @@ class TestFrame:
         raw = encode_frame(FrameType.BINARY_FRAME, stream_id=0x1001, payload=b"abcdef")
         with pytest.raises(ValueError):
             decode_frame(raw[:-2])
+
+    def test_roundtrip_voice_audio(self):
+        pcm = b"\x00\x00\xff\x7f\x00\x80"  # int16 LE: 0, 32767, -32768
+        raw = encode_frame(FrameType.VOICE_AUDIO, stream_id=0, payload=pcm)
+        ftype, sid, got = decode_frame(raw)
+        assert ftype == FrameType.VOICE_AUDIO
+        assert sid == 0
+        assert got == pcm

@@ -77,6 +77,18 @@ class Bridge(Protocol):
         """JSON-payload для stream_select list cmd (Phase 2 R10)."""
         ...
 
+    def publish_voice_barge_in(self) -> None:
+        """PTT start: STOP в /voice/tts/control + /voice/sound/stop (barge-in)."""
+        ...
+
+    def publish_voice_audio(self, payload: bytes) -> None:
+        """VOICE_AUDIO: publish AudioData в /avatar/voice_in (int16 PCM 16 kHz)."""
+        ...
+
+    def publish_voice_stop(self) -> None:
+        """PTT stop: STOP в /voice/sound/stop → sound_node закрывает стрим."""
+        ...
+
 
 class NoOpBridge:
     """Заглушка для тестов. Реальная реализация в quest_node.py."""
@@ -111,6 +123,15 @@ class NoOpBridge:
                 }
             )
         return items
+
+    def publish_voice_barge_in(self) -> None:
+        return None
+
+    def publish_voice_audio(self, payload: bytes) -> None:
+        return None
+
+    def publish_voice_stop(self) -> None:
+        return None
 
 
 # Текущий PIN — генерится один раз на старте контейнера, логируется.
@@ -324,7 +345,8 @@ class WSSServer:
         - stop_emergency → Bridge.publish_emergency + emergency_stop
         - stream_select → переключение активного camera-стрима
         - stream_list → JSON_EVENT{type: stream_list, items: [...]}
-        - voice_mode / voice_ptt / ui_button → Phase 2
+        - voice_ptt_start/stop → Bridge barge-in / voice stop (рация, P3)
+        - voice_mode / ui_button → Phase 2
         """
         cmd = payload_obj.get("cmd")
         if cmd == "ping":
@@ -361,6 +383,14 @@ class WSSServer:
         if cmd == "stop_emergency":
             self.bridge.publish_emergency()
             self.bridge.emergency_stop()
+            return
+        if cmd == "voice_ptt_start":
+            # Рация: оператор зажал правый grip — barge-in (прервать TTS + музыку).
+            self.bridge.publish_voice_barge_in()
+            return
+        if cmd == "voice_ptt_stop":
+            # Оператор отпустил grip — закрыть голосовой стрим в sound_node.
+            self.bridge.publish_voice_stop()
             return
         if cmd == "stream_select":
             # Meta-command: UI запросил смену активного стрима.
@@ -491,6 +521,9 @@ class WSSServer:
                 elif ftype == FrameType.GOODBYE:
                     await ws.close(code=1000, message=b"goodbye")
                     return ws
+                elif ftype == FrameType.VOICE_AUDIO:
+                    # Рация: голос оператора → /avatar/voice_in (int16 PCM 16 kHz).
+                    self.bridge.publish_voice_audio(payload)
                 else:
                     await self._send_error(
                         ws,

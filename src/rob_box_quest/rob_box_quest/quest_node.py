@@ -30,16 +30,19 @@ import threading
 import time
 from typing import Any, Optional
 
+from audio_common_msgs.msg import AudioData
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (
+    DurabilityPolicy,
     HistoryPolicy,
     QoSProfile,
     ReliabilityPolicy,
 )
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import String
 
 from .core.safety import Watchdog
 from .core.teleop import TeleopController
@@ -69,6 +72,13 @@ class _AlwaysActiveWSServer:
         return 1
 
 
+def _stop_msg() -> String:
+    """String("STOP") — команда остановки воспроизведения/стрима."""
+    m = String()
+    m.data = "STOP"
+    return m
+
+
 class QuestBridge:
     """Реализация Bridge Protocol из ws_server.py через rclpy publishers.
 
@@ -82,10 +92,17 @@ class QuestBridge:
         cmd_vel_quest_pub,
         cmd_vel_emergency_pub,
         ws_server: Optional[WSSServer] = None,
+        voice_in_pub=None,
+        tts_control_pub=None,
+        sound_stop_pub=None,
     ) -> None:
         self._node = node
         self._pub_quest = cmd_vel_quest_pub
         self._pub_emergency = cmd_vel_emergency_pub
+        # Рация (P3): голос оператора + STOP-каналы. None в unit-тестах моста.
+        self._voice_in_pub = voice_in_pub
+        self._tts_control_pub = tts_control_pub
+        self._sound_stop_pub = sound_stop_pub
         # ws_server может быть None в юнит-тестах. В проде QuestNode всегда
         # передаёт реальный WSSServer — иначе _publish_zero() вернёт True
         # через заглушку и поведение будет как «есть активная сессия».
@@ -166,6 +183,29 @@ class QuestBridge:
                 }
             )
         return items
+
+    # --- Voice passthrough (рация, P3) ---------------------------------
+
+    def publish_voice_barge_in(self) -> None:
+        """PTT start: STOP в /voice/tts/control + /voice/sound/stop (barge-in)."""
+        if self._tts_control_pub is None or self._sound_stop_pub is None:
+            return
+        self._tts_control_pub.publish(_stop_msg())
+        self._sound_stop_pub.publish(_stop_msg())
+
+    def publish_voice_audio(self, payload: bytes) -> None:
+        """VOICE_AUDIO: publish AudioData в /avatar/voice_in (int16 PCM 16 kHz mono)."""
+        if self._voice_in_pub is None:
+            return
+        msg = AudioData()
+        msg.data = list(payload)
+        self._voice_in_pub.publish(msg)
+
+    def publish_voice_stop(self) -> None:
+        """PTT stop: STOP в /voice/sound/stop → sound_node закрывает стрим."""
+        if self._sound_stop_pub is None:
+            return
+        self._sound_stop_pub.publish(_stop_msg())
 
     def on_camera_frame(self, frame: CameraFrame) -> None:
         """Hook из CameraProvider.capture-loop (capture-thread)."""
@@ -265,6 +305,17 @@ class QuestNode(Node):
         )
         self._pub_quest = self.create_publisher(Twist, "cmd_vel_quest", _RE)
         self._pub_emergency = self.create_publisher(Twist, "cmd_vel_emergency", _RE)
+        # Рация (voice passthrough): голос оператора → /avatar/voice_in (best-effort)
+        # + STOP-каналы для barge-in (TTS) и закрытия стрима (sound).
+        _VOICE_QOS = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+        self._voice_in_pub = self.create_publisher(AudioData, "/avatar/voice_in", _VOICE_QOS)
+        self._tts_control_pub = self.create_publisher(String, "/voice/tts/control", _RE)
+        self._sound_stop_pub = self.create_publisher(String, "/voice/sound/stop", _RE)
         # Подписки для стримов (Phase 1.4 v2: lidar через ROS, камеры мимо ROS).
         self._odom_sub = self.create_subscription(Odometry, "/odom", self._on_odom, _RE)
         self._scan_sub = self.create_subscription(LaserScan, "/scan", self._on_scan, _RE)
@@ -280,6 +331,9 @@ class QuestNode(Node):
             cmd_vel_quest_pub=self._pub_quest,
             cmd_vel_emergency_pub=self._pub_emergency,
             ws_server=self.ws_server,
+            voice_in_pub=self._voice_in_pub,
+            tts_control_pub=self._tts_control_pub,
+            sound_stop_pub=self._sound_stop_pub,
         )
         # Replace NoOpBridge на реальный (после создания обоих).
         self.ws_server.bridge = self.bridge
