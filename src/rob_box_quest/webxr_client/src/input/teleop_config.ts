@@ -5,18 +5,18 @@
 // отвечает». Чтобы поменять биндинг — правим DEFAULT_BINDINGS и гоняем
 // `npm test` (tests/xr_teleop.test.ts).
 //
-// Справочник индексов (Meta docs, Quest Touch):
-//   buttons: 0=trigger, 1=squeeze(grip), 2=thumbstick press,
-//            3=A/X, 4=B/Y, 5=thumbrest
-//   axes:    0/1=touchpad, 2/3=thumbstick (x, y)
+// Справочник индексов (webxr-input-profiles: oculus-touch-v2, Quest 2):
+//   buttons: 0=trigger, 1=squeeze(grip), 2=(нет на Touch), 3=thumbstick press,
+//            4=A/X, 5=B/Y, 6=thumbrest
+//   axes:    0/1=touchpad (нет на Touch), 2/3=thumbstick (x, y)
 
 export const GAMEPAD_BUTTONS = {
   trigger: 0,
   squeeze: 1, // grip (боковая кнопка-хват)
-  thumbstickPress: 2,
-  aX: 3,
-  bY: 4,
-  thumbrest: 5
+  thumbstickPress: 3,
+  aX: 4,
+  bY: 5,
+  thumbrest: 6
 } as const;
 
 export const GAMEPAD_AXES = {

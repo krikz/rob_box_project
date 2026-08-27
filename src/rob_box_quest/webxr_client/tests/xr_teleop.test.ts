@@ -1,9 +1,11 @@
-// xr_teleop: маппинг WebXR Gamepad ("xr-standard") → TeleopFSM-входы.
-// Проверяем по докам Meta (Quest Touch): buttons 0=trigger, 1=squeeze,
-// 2=thumbstick press, 3=A/X, 4=B/Y, 5=thumbrest; axes 2/3 = thumbstick.
+// xr_teleop: маппинг WebXR Gamepad ("xr-standard" / oculus-touch-v2) →
+// TeleopFSM-входы. Проверяем по webxr-input-profiles (oculus-touch-v2, Quest 2):
+// buttons 0=trigger, 1=squeeze, 3=thumbstick press, 4=A/X, 5=B/Y, 6=thumbrest;
+// axes 2/3 = thumbstick.
 
 import { describe, it, expect } from "vitest";
 import { pollXrInput } from "../src/input/xr_teleop";
+import { GAMEPAD_AXES, GAMEPAD_BUTTONS } from "../src/input/teleop_config";
 
 interface FakeGamepadButton {
   value: number;
@@ -29,6 +31,16 @@ function makeSource(gamepad: FakeGamepad | null, handedness: XRHandedness = "rig
 }
 
 describe("pollXrInput", () => {
+  it("pins GAMEPAD_BUTTONS to oculus-touch-v2 hardware mapping", () => {
+    // Источник: webxr-input-profiles (oculus-touch-v2, Quest 2).
+    expect(GAMEPAD_BUTTONS.trigger).toBe(0);
+    expect(GAMEPAD_BUTTONS.squeeze).toBe(1);
+    expect(GAMEPAD_BUTTONS.thumbstickPress).toBe(3);
+    expect(GAMEPAD_BUTTONS.aX).toBe(4);
+    expect(GAMEPAD_BUTTONS.bY).toBe(5);
+    expect(GAMEPAD_BUTTONS.thumbrest).toBe(6);
+  });
+
   it("returns zeroes when the source has no gamepad", () => {
     expect(pollXrInput(makeSource(null))).toEqual({
       linear: 0,
@@ -40,32 +52,32 @@ describe("pollXrInput", () => {
     });
   });
 
-  it("right thumbstick press (button 2) → armPress=true", () => {
+  it("right thumbstick press → armPress=true", () => {
     const gp = makeGamepad();
-    gp.buttons[2].pressed = true;
+    gp.buttons[GAMEPAD_BUTTONS.thumbstickPress].pressed = true;
     expect(pollXrInput(makeSource(gp, "right")).armPress).toBe(true);
   });
 
   it("left thumbstick press → armPress=false (arm только на правой)", () => {
     const gp = makeGamepad();
-    gp.buttons[2].pressed = true;
+    gp.buttons[GAMEPAD_BUTTONS.thumbstickPress].pressed = true;
     expect(pollXrInput(makeSource(gp, "left")).armPress).toBe(false);
   });
 
-  it("B/Y (button 4) → emergency=true; thumbrest (button 5) does not", () => {
+  it("B/Y → emergency=true; thumbrest does not", () => {
     const gp = makeGamepad();
-    gp.buttons[5].pressed = true; // thumbrest — НЕ emergency
+    gp.buttons[GAMEPAD_BUTTONS.thumbrest].pressed = true; // НЕ emergency
     expect(pollXrInput(makeSource(gp)).emergency).toBe(false);
 
-    gp.buttons[5].pressed = false;
-    gp.buttons[4].pressed = true; // B/Y
+    gp.buttons[GAMEPAD_BUTTONS.thumbrest].pressed = false;
+    gp.buttons[GAMEPAD_BUTTONS.bY].pressed = true;
     expect(pollXrInput(makeSource(gp)).emergency).toBe(true);
   });
 
   it("thumbstick axes 2/3 → linear (y) and angular (-x), re-scaled past deadzone", () => {
     const gp = makeGamepad();
-    gp.axes[2] = 0.5; // thumbstick x → angular = -0.5 (после deadzone)
-    gp.axes[3] = 1.0; // thumbstick y → linear = 1.0
+    gp.axes[GAMEPAD_AXES.thumbstickX] = 0.5; // thumbstick x → angular = -0.5 (после deadzone)
+    gp.axes[GAMEPAD_AXES.thumbstickY] = 1.0; // thumbstick y → linear = 1.0
     const r = pollXrInput(makeSource(gp));
     expect(r.linear).toBeCloseTo(1.0);
     // applyDeadzone(0.5) = (0.5 - 0.12) / (1 - 0.12)
@@ -74,17 +86,17 @@ describe("pollXrInput", () => {
 
   it("applies deadzone: values below 0.12 map to 0", () => {
     const gp = makeGamepad();
-    gp.axes[2] = 0.1;
-    gp.axes[3] = -0.05;
+    gp.axes[GAMEPAD_AXES.thumbstickX] = 0.1;
+    gp.axes[GAMEPAD_AXES.thumbstickY] = -0.05;
     const r = pollXrInput(makeSource(gp));
     expect(r.linear).toBe(0);
     expect(r.angular).toBe(0);
   });
 
-  it("respects custom bindings (arm=trigger on left, emergency=A/X)", () => {
+  it("respects custom bindings (arm=trigger on left, emergency=button 3)", () => {
     const gp = makeGamepad();
     gp.buttons[0].pressed = true; // trigger → arm (custom)
-    gp.buttons[3].pressed = true; // A/X → emergency (custom)
+    gp.buttons[3].pressed = true; // button 3 → emergency (custom)
     const r = pollXrInput(makeSource(gp, "left"), {
       armButton: 0,
       armHandedness: "left",
@@ -105,7 +117,7 @@ describe("pollXrInput", () => {
 
   it("right grip (squeeze) → ptt=true, armPress=false", () => {
     const gp = makeGamepad();
-    gp.buttons[1].value = 1;
+    gp.buttons[GAMEPAD_BUTTONS.squeeze].value = 1;
     const r = pollXrInput(makeSource(gp, "right"));
     expect(r.ptt).toBe(true);
     expect(r.armPress).toBe(false);
@@ -113,7 +125,7 @@ describe("pollXrInput", () => {
 
   it("left grip (squeeze) → armPress=false, ptt=false", () => {
     const gp = makeGamepad();
-    gp.buttons[1].value = 1;
+    gp.buttons[GAMEPAD_BUTTONS.squeeze].value = 1;
     const r = pollXrInput(makeSource(gp, "left"));
     expect(r.armPress).toBe(false);
     expect(r.ptt).toBe(false);
@@ -121,7 +133,7 @@ describe("pollXrInput", () => {
 
   it("left grip (squeeze) → robotPtt=true (робот-голос)", () => {
     const gp = makeGamepad();
-    gp.buttons[1].value = 1;
+    gp.buttons[GAMEPAD_BUTTONS.squeeze].value = 1;
     const r = pollXrInput(makeSource(gp, "left"));
     expect(r.robotPtt).toBe(true);
     expect(r.armPress).toBe(false);
@@ -129,14 +141,14 @@ describe("pollXrInput", () => {
 
   it("right grip (squeeze) → robotPtt=false", () => {
     const gp = makeGamepad();
-    gp.buttons[1].value = 1;
+    gp.buttons[GAMEPAD_BUTTONS.squeeze].value = 1;
     const r = pollXrInput(makeSource(gp, "right"));
     expect(r.robotPtt).toBe(false);
   });
 
-  it("right trigger (button 0) → ptt=false", () => {
+  it("right trigger → ptt=false", () => {
     const gp = makeGamepad();
-    gp.buttons[0].value = 1;
+    gp.buttons[GAMEPAD_BUTTONS.trigger].value = 1;
     const r = pollXrInput(makeSource(gp, "right"));
     expect(r.ptt).toBe(false);
   });
