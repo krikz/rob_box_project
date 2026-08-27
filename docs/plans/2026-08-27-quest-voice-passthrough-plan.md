@@ -53,33 +53,47 @@ git commit -m "feat(supervisor): publish voice_floor in /avatar/state"
 
 ---
 
-## Фаза P2 — Нода avatar_voice_player
+## Фаза P2 — sound_node: подписка /avatar/voice_in + стрим
 
-### Task 2.1: Скелет ноды + подписка
+### Task 2.1: Подписка на /avatar/voice_in (AudioData)
 
 **Files:**
-- Create: `src/rob_box_voice/rob_box_voice/avatar_voice_player.py`
-- Modify: `src/rob_box_voice/setup.py` (entry_points)
-- Test: `src/rob_box_voice/test/unit/player/test_avatar_voice_player.py` (NEW)
+- Modify: `src/rob_box_voice/rob_box_voice/sound_node.py`
+- Test: `src/rob_box_voice/test/unit/sound/test_sound_voice_passthrough.py` (NEW)
 
-**Step 1: Тест** — нода создаётся, подписка `/avatar/voice_in` (AudioData), качество QoS best-effort/volatile (как tts). Fake AudioPlaybackManager (sd=None — уже штатно падает в no-op).
+**Step 1: Тест** — в `SoundNode.__init__` есть `create_subscription(AudioData, "/avatar/voice_in", ...)`; QoS best-effort/volatile (чтобы не доигрывать stale-чанки). Импорт `AudioData` из `audio_common_msgs.msg`.
 
-**Step 2: Реализовать** — ROS-нода `AvatarVoicePlayer`: `create_subscription(AudioData, "/avatar/voice_in", cb, qos)`. В callback: `AudioPlaybackManager.get_instance().play_audio(np.frombuffer(msg.data, np.int16), 16000)`.
+**Step 2: Реализовать** — подписка + заглушка callback (пока логирует длину чанка).
 
-**Step 3: Покрыть, commit:**
+**Step 3: `python -m pytest src/rob_box_voice/test/unit/sound -v` → PASS. Commit:**
 ```bash
-git commit -m "feat(voice): add avatar_voice_player node (raw PCM playback)"
+git commit -m "feat(voice): subscribe sound_node to /avatar/voice_in"
 ```
 
-### Task 2.2: Защита от перекрытия + silence
+### Task 2.2: Стриминговое воспроизведение PCM
 
-**Step 1:** Тест — короткие паузы между чанками не рвут поток (буфер ~100 мс), пустой PCM не падает.
+**Files:**
+- Modify: `src/rob_box_voice/rob_box_voice/sound_node.py`
+- Test: `src/rob_box_voice/test/unit/sound/test_sound_voice_passthrough.py`
 
-**Step 2:** Реализовать — накопление чанков в буфер, проигрывание с минимальной задержкой; guard на пустой буфер.
+**Step 1: Тест** — fake `sd.OutputStream`: первый чанк открывает stream (16k int16 mono), последующие пишутся в него; тишина > 300 мс закрывает stream. Пустой чанк не падает.
 
-**Step 3:** Commit:
+**Step 2: Реализовать** — в callback: `np.frombuffer(msg.data, np.int16)` → stream.write; открытие/закрытие по таймеру тишины. НЕ использовать `play_audio` на каждый чанк (клики/лаг).
+
+**Step 3: Commit:**
 ```bash
-git commit -m "fix(voice): buffer incoming PCM chunks in avatar_voice_player"
+git commit -m "feat(voice): stream operator voice PCM in sound_node"
+```
+
+### Task 2.3: Координация с эффектами
+
+**Step 1:** Тест — во время голосового стрима эффект-триггер не рвёт поток; `stop_playback` останавливает стрим.
+
+**Step 2:** Реализовать — при активном голосовом стриме триггеры эффектов не перебивают поток (dmix-микс ALSA default, как сейчас у TTS+effects).
+
+**Step 3: Commit:**
+```bash
+git commit -m "fix(voice): coordinate passthrough stream with sound effects"
 ```
 
 ---

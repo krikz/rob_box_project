@@ -26,8 +26,8 @@ Telegram-голосовыми сообщениями, поэтому аудио-
   `voice_ptt_start`, `voice_ptt_stop` уже зарезервированы в JSON_CMD.
   Реального обработчика в `ws_server.py` нет.
 - **Воспроизведение**: `AudioPlaybackManager` (синглтон + лок на
-  `sounddevice`), используется `sound_node`/`tts_node`. Отдельной ноды
-  «сыграть сырой PCM из топика» нет.
+  `sounddevice`), используется `sound_node`/`tts_node`. Для голоса
+  оператора расширяем `sound_node` подпиской на `/avatar/voice_in`.
 - **`audio_common_msgs/AudioData`** — контейнер int16 LE PCM; в
   `tts_node` речь идёт как int16 PCM (16 kHz).
 
@@ -49,9 +49,9 @@ quest-сервер (Vision Pi, aiohttp WSS, порт 8765 / Caddy 8443)
 avatar_supervisor (Vision Pi) — active mode (P1)
   └─ раздаёт voice_floor / teleop_floor, публикует /avatar/state
 
-avatar_voice_player (Vision Pi, NEW, P2)
-  ├─ подписка /avatar/voice_in (AudioData)
-  └─ AudioPlaybackManager.play_audio(...) → ReSpeaker
+sound_node (Vision Pi, РАСШИРЕНИЕ, P2)
+  ├─ подписка /avatar/voice_in (AudioData, int16 PCM 16k)
+  └─ стриминговый вывод PCM → ReSpeaker (через AudioPlaybackManager/dmix)
 ```
 
 Ключевой принцип: **супервизор не трогает звук** (ADR-0028 S7), он только
@@ -70,9 +70,10 @@ Telegram-голосовое (P5, позже): скачал OGG → транск�
 | D1 | Формат: **int16 PCM, 16 kHz, mono** | совпадает с `AudioData`; «без обработки»; на LAN 32 KB/s — дёшево; нет транскода на сервере |
 | D2 | Новый фрейм **`VOICE_AUDIO = 0x13`** (client→server), payload = сырой int16 PCM | существующий BINARY_FRAME (0x10) — только server→client; нужен обратный канал |
 | D3 | PTT: JSON_CMD `voice_ptt_start`/`voice_ptt_stop` (уже в ADR-0027) | не вводим новый cmd-тип |
-| D4 | Воспроизведение: **новая нода `avatar_voice_player`** (Option A) | не смешиваем «эффекты» sound_node и «голос оператора»; проще гейтить и тестировать |
+| D4 | Воспроизведение: **расширяем `sound_node`** (Option B) подпиской на `/avatar/voice_in` | без новой ноды; голос оператора и эффекты в одном месте (осознанно смешиваем) |
 | D5 | Супервизор — **active mode для voice_floor** (P1) | FSM/locks уже написаны и покрыты тестами; осталось связать с сервисами |
 | D6 | Левый grip = STT→TTS — **не в этой фиче** | отдельная фича (голос робота), свой цикл |
+| D7 | Голос — **поток**, не one-shot: держим `sd.OutputStream` открытым пока идёт PTT, чанки пишем в него | `play_audio` на каждый 20мс чанк = клики + лаг; поток даёт низкую задержку |
 
 ## 5. Безопасность / edge-cases
 
@@ -97,7 +98,7 @@ Telegram-голосовое (P5, позже): скачал OGG → транск�
 ## 7. Тестирование
 
 - P1: unit — LockManager/FSM уже покрыты; добавить тест сервисов active-mode.
-- P2: unit — fake `AudioPlaybackManager` (sd=None уже поддерживается в CI).
+- P2: unit — fake `AudioPlaybackManager` (sd=None уже поддерживается в CI) + тест стрима/буфера тишины.
 - P3: unit — codec VOICE_AUDIO + fake mic-буфер; правый-grip edge в FSM.
 - P4: unit — voice_ptt handler: granted → publish, denied → drop + event.
 - P6: ручной e2e, raw-evidence (`docker logs quest`, `ros2 topic echo /avatar/voice_in`).
@@ -105,7 +106,7 @@ Telegram-голосовое (P5, позже): скачал OGG → транск�
 ## 8. Файлы (ориентир)
 
 - `src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py` (P1)
-- `src/rob_box_voice/rob_box_voice/avatar_voice_player.py` (P2, NEW) + package export
+- `src/rob_box_voice/rob_box_voice/sound_node.py` (P2, подписка /avatar/voice_in + стрим)
 - `src/rob_box_quest/webxr_client/src/input/voice_ptt.ts` (P3, NEW)
 - `src/rob_box_quest/webxr_client/src/wire/protocol.ts` (P3, VOICE_AUDIO)
 - `src/rob_box_quest/rob_box_quest/protocol/frame.py` (P4, VOICE_AUDIO)
