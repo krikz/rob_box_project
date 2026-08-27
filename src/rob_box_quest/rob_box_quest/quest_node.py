@@ -62,6 +62,16 @@ log = logging.getLogger(__name__)
 PUBLISH_RATE_HZ: float = 30.0
 PUBLISH_PERIOD_S: float = 1.0 / PUBLISH_RATE_HZ
 
+# Wire-режим голоса (meta-quest-api.md §5) → voice_input_mode (ADR-0027 §3.4).
+# Маппинг живёт здесь, потому что quest-сервер — точка перевода wire→ROS.
+WIRE_TO_VOICE_INPUT_MODE: dict[str, str] = {
+    "off": "respeaker",
+    "passthrough": "quest_passthrough",
+    "ttts_proxy": "quest_ttts",
+    "stt_llm": "quest_stt",
+    "llm_formalize": "quest_llm_formalize",
+}
+
 
 class _AlwaysActiveWSServer:
     """Заглушка для юнит-тестов: при отсутствии реального WSSServer считаем
@@ -76,6 +86,13 @@ def _stop_msg() -> String:
     """String("STOP") — команда остановки воспроизведения/стрима."""
     m = String()
     m.data = "STOP"
+    return m
+
+
+def _string_msg(value: str) -> String:
+    """std_msgs/String с заданным значением."""
+    m = String()
+    m.data = value
     return m
 
 
@@ -95,6 +112,8 @@ class QuestBridge:
         voice_in_pub=None,
         tts_control_pub=None,
         sound_stop_pub=None,
+        stt_in_pub=None,
+        set_voice_mode_pub=None,
     ) -> None:
         self._node = node
         self._pub_quest = cmd_vel_quest_pub
@@ -103,6 +122,13 @@ class QuestBridge:
         self._voice_in_pub = voice_in_pub
         self._tts_control_pub = tts_control_pub
         self._sound_stop_pub = sound_stop_pub
+        # Робот-голос (P7): буфер PCM → /audio/quest_in (STT).
+        self._stt_in_pub = stt_in_pub
+        # voice_mode → супервизор (ADR-0028 S5): /avatar/set_voice_mode.
+        self._set_voice_mode_pub = set_voice_mode_pub
+        # Текущий голосовой режим: "radio" (рация, default) | "robot_voice".
+        self._voice_mode: str = "radio"
+        self._voice_buffer: list[bytes] = []
         # ws_server может быть None в юнит-тестах. В проде QuestNode всегда
         # передаёт реальный WSSServer — иначе _publish_zero() вернёт True
         # через заглушку и поведение будет как «есть активная сессия».
@@ -148,9 +174,7 @@ class QuestBridge:
         if self._emergency_published:
             return
         self._emergency_published = True
-        self._node.get_logger().warning(
-            "🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency"
-        )
+        self._node.get_logger().warning("🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency")
         self._pub_emergency.publish(Twist())
 
     def feed_client_alive(self) -> None:
@@ -194,7 +218,14 @@ class QuestBridge:
         self._sound_stop_pub.publish(_stop_msg())
 
     def publish_voice_audio(self, payload: bytes) -> None:
-        """VOICE_AUDIO: publish AudioData в /avatar/voice_in (int16 PCM 16 kHz mono)."""
+        """VOICE_AUDIO: publish AudioData в /avatar/voice_in (int16 PCM 16 kHz mono).
+
+        В режиме "robot_voice" не стримим в динамик, а буферизуем PCM —
+        на voice_ptt_stop буфер уйдёт одним AudioData в /audio/quest_in (STT).
+        """
+        if self._voice_mode == "robot_voice":
+            self._voice_buffer.append(payload)
+            return
         if self._voice_in_pub is None:
             return
         msg = AudioData()
@@ -206,6 +237,42 @@ class QuestBridge:
         if self._sound_stop_pub is None:
             return
         self._sound_stop_pub.publish(_stop_msg())
+
+    def publish_voice_robot_start(self) -> None:
+        """PTT start (робот-голос): barge-in + перейти в режим буферизации."""
+        self._voice_mode = "robot_voice"
+        self._voice_buffer = []
+        self.publish_voice_barge_in()
+
+    def publish_voice_robot_stop(self) -> None:
+        """PTT stop (робот-голос): буфер PCM → AudioData в /audio/quest_in."""
+        if self._voice_mode != "robot_voice":
+            return
+        self._voice_mode = "radio"
+        if self._stt_in_pub is None or not self._voice_buffer:
+            self._voice_buffer = []
+            return
+        data = b"".join(self._voice_buffer)
+        self._voice_buffer = []
+        msg = AudioData()
+        msg.data = list(data)
+        self._stt_in_pub.publish(msg)
+
+    def set_voice_mode(self, mode: str) -> None:
+        """voice_mode cmd → запрос супервизору сменить режим голоса.
+
+        Wire-режим (meta-quest-api.md §5) маппится в ``voice_input_mode``
+        (ADR-0027 §3.4) и публикуется в /avatar/set_voice_mode. Собственно
+        применяет параметр супервизор (ADR-0028 S5) — quest-сервер только
+        ретранслирует запрос и НЕ трогает dialogue_node напрямую.
+        """
+        if self._set_voice_mode_pub is None:
+            return
+        param_mode = WIRE_TO_VOICE_INPUT_MODE.get(mode)
+        if param_mode is None:
+            self._node.get_logger().warning(f"quest: unknown voice_mode {mode!r}")
+            return
+        self._set_voice_mode_pub.publish(_string_msg(param_mode))
 
     def on_camera_frame(self, frame: CameraFrame) -> None:
         """Hook из CameraProvider.capture-loop (capture-thread)."""
@@ -316,6 +383,10 @@ class QuestNode(Node):
         self._voice_in_pub = self.create_publisher(AudioData, "/avatar/voice_in", _VOICE_QOS)
         self._tts_control_pub = self.create_publisher(String, "/voice/tts/control", _RE)
         self._sound_stop_pub = self.create_publisher(String, "/voice/sound/stop", _RE)
+        # Робот-голос (P7): буфер операторского PCM → STT через /audio/quest_in.
+        self._stt_in_pub = self.create_publisher(AudioData, "/audio/quest_in", _VOICE_QOS)
+        # voice_mode → супервизор (ADR-0028 S5): /avatar/set_voice_mode.
+        self._set_voice_mode_pub = self.create_publisher(String, "/avatar/set_voice_mode", _RE)
         # Подписки для стримов (Phase 1.4 v2: lidar через ROS, камеры мимо ROS).
         self._odom_sub = self.create_subscription(Odometry, "/odom", self._on_odom, _RE)
         self._scan_sub = self.create_subscription(LaserScan, "/scan", self._on_scan, _RE)
@@ -334,6 +405,8 @@ class QuestNode(Node):
             voice_in_pub=self._voice_in_pub,
             tts_control_pub=self._tts_control_pub,
             sound_stop_pub=self._sound_stop_pub,
+            stt_in_pub=self._stt_in_pub,
+            set_voice_mode_pub=self._set_voice_mode_pub,
         )
         # Replace NoOpBridge на реальный (после создания обоих).
         self.ws_server.bridge = self.bridge
@@ -405,9 +478,7 @@ class QuestNode(Node):
         # Edge-triggered: один раз на trip → один WARNING + один emergency.
         # Повторные тики до feed()/reset() — no-op (анти-спам).
         if self.bridge.watchdog_consume_trip(time.monotonic()):
-            self.get_logger().warning(
-                "🛑 Watchdog tripped — emergency stop (Quest client silent)"
-            )
+            self.get_logger().warning("🛑 Watchdog tripped — emergency stop (Quest client silent)")
             self.bridge.publish_emergency()
             self.bridge.emergency_stop()
 

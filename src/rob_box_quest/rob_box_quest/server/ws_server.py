@@ -89,6 +89,18 @@ class Bridge(Protocol):
         """PTT stop: STOP в /voice/sound/stop → sound_node закрывает стрим."""
         ...
 
+    def publish_voice_robot_start(self) -> None:
+        """PTT start (robot-voice): barge-in + начать буферизацию PCM для STT."""
+        ...
+
+    def publish_voice_robot_stop(self) -> None:
+        """PTT stop (robot-voice): буфер → AudioData в /audio/quest_in (STT)."""
+        ...
+
+    def set_voice_mode(self, mode: str) -> None:
+        """voice_mode cmd → сменить режим голоса (через супервизор, ADR-0028 S5)."""
+        ...
+
 
 class NoOpBridge:
     """Заглушка для тестов. Реальная реализация в quest_node.py."""
@@ -131,6 +143,15 @@ class NoOpBridge:
         return None
 
     def publish_voice_stop(self) -> None:
+        return None
+
+    def publish_voice_robot_start(self) -> None:
+        return None
+
+    def publish_voice_robot_stop(self) -> None:
+        return None
+
+    def set_voice_mode(self, mode: str) -> None:
         return None
 
 
@@ -385,12 +406,33 @@ class WSSServer:
             self.bridge.emergency_stop()
             return
         if cmd == "voice_ptt_start":
-            # Рация: оператор зажал правый grip — barge-in (прервать TTS + музыку).
-            self.bridge.publish_voice_barge_in()
+            # PTT start: mode "robot_voice" (левый grip) → STT → LLM → TTS;
+            # иначе "radio" (правый grip) → barge-in (прервать TTS + музыку).
+            if payload_obj.get("mode") == "robot_voice":
+                self.bridge.publish_voice_robot_start()
+            else:
+                self.bridge.publish_voice_barge_in()
             return
         if cmd == "voice_ptt_stop":
-            # Оператор отпустил grip — закрыть голосовой стрим в sound_node.
-            self.bridge.publish_voice_stop()
+            # Правый grip (рация) → закрыть голосовой стрим; левый grip
+            # (робот-голос) → вытолкнуть буфер PCM в STT.
+            if payload_obj.get("mode") == "robot_voice":
+                self.bridge.publish_voice_robot_stop()
+            else:
+                self.bridge.publish_voice_stop()
+            return
+        if cmd == "voice_mode":
+            # Смена режима голоса (off/passthrough/ttts_proxy/stt_llm/...).
+            # Маршрутизация — через супервизор (ADR-0028 S5): bridge переводит
+            # wire-режим в voice_input_mode и публикует запрос супервизору.
+            mode = payload_obj.get("mode")
+            self.bridge.set_voice_mode(mode)
+            await self._send(
+                ws,
+                FrameType.JSON_EVENT,
+                0,
+                {"type": "voice_mode_ack", "mode": mode, "ts_ms": int(time.time() * 1000)},
+            )
             return
         if cmd == "stream_select":
             # Meta-command: UI запросил смену активного стрима.

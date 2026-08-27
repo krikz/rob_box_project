@@ -30,6 +30,9 @@ class RecordingBridge(NoOpBridge):
         self.barge_in_calls = 0
         self.voice_audio_payloads: list[bytes] = []
         self.voice_stop_calls = 0
+        self.robot_start_calls = 0
+        self.robot_stop_calls = 0
+        self.voice_modes: list[str] = []
 
     def publish_voice_barge_in(self) -> None:
         self.barge_in_calls += 1
@@ -39,6 +42,15 @@ class RecordingBridge(NoOpBridge):
 
     def publish_voice_stop(self) -> None:
         self.voice_stop_calls += 1
+
+    def publish_voice_robot_start(self) -> None:
+        self.robot_start_calls += 1
+
+    def publish_voice_robot_stop(self) -> None:
+        self.robot_stop_calls += 1
+
+    def set_voice_mode(self, mode: str) -> None:
+        self.voice_modes.append(mode)
 
 
 @pytest.fixture
@@ -64,9 +76,7 @@ async def client(fixed_pin, bridge):
 async def _open_and_hello(client, pin):
     """Открыть WS, HELLO, дождаться WELCOME."""
     ws = await client.ws_connect("/quest")
-    payload = json.dumps(
-        {"client_version": "0.1.0", "capabilities": ["webxr"], "session_pin": pin}
-    ).encode("utf-8")
+    payload = json.dumps({"client_version": "0.1.0", "capabilities": ["webxr"], "session_pin": pin}).encode("utf-8")
     await ws.send_bytes(encode_frame(FrameType.HELLO, 0, payload))
     deadline = time.monotonic() + 1.0
     while time.monotonic() < deadline:
@@ -115,5 +125,43 @@ async def test_voice_ptt_stop_calls_stop(client, fixed_pin):
         await _send_json_cmd(ws, {"cmd": "voice_ptt_stop", "ts_ms": 0})
         await asyncio.sleep(0.05)
         assert bridge.voice_stop_calls == 1
+    finally:
+        await ws.close()
+
+
+async def test_voice_ptt_start_robot_mode(client, fixed_pin):
+    """voice_ptt_start {mode: robot_voice} → publish_voice_robot_start (не radio)."""
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(ws, {"cmd": "voice_ptt_start", "mode": "robot_voice", "ts_ms": 0})
+        await asyncio.sleep(0.05)
+        assert bridge.robot_start_calls == 1
+        assert bridge.barge_in_calls == 0
+    finally:
+        await ws.close()
+
+
+async def test_voice_ptt_stop_robot_mode(client, fixed_pin):
+    """voice_ptt_stop {mode: robot_voice} → publish_voice_robot_stop (не radio)."""
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(ws, {"cmd": "voice_ptt_stop", "mode": "robot_voice", "ts_ms": 0})
+        await asyncio.sleep(0.05)
+        assert bridge.robot_stop_calls == 1
+        assert bridge.voice_stop_calls == 0
+    finally:
+        await ws.close()
+
+
+async def test_voice_mode_routes_to_bridge(client, fixed_pin):
+    """voice_mode {mode: ttts_proxy} → bridge.set_voice_mode + ack."""
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(ws, {"cmd": "voice_mode", "mode": "ttts_proxy", "ts_ms": 0})
+        await asyncio.sleep(0.05)
+        assert bridge.voice_modes == ["ttts_proxy"]
     finally:
         await ws.close()

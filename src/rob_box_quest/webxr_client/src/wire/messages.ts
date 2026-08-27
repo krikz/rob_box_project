@@ -37,6 +37,32 @@ export interface StopEmergencyCmd {
   source: "controller_b" | "ui_button" | "client_lost";
 }
 
+// Голос: режим PTT. "radio" = голос оператора → динамик робота (рация);
+// "robot_voice" = голос оператора → STT → LLM → TTS голосом робота.
+export type VoicePttMode = "radio" | "robot_voice";
+
+export interface VoicePttStartCmd {
+  cmd: "voice_ptt_start";
+  ts_ms: number;
+  mode?: VoicePttMode;
+}
+
+export interface VoicePttStopCmd {
+  cmd: "voice_ptt_stop";
+  ts_ms: number;
+  mode?: VoicePttMode;
+}
+
+// Смена режима голоса (meta-quest-api §5). Супервизор применяет его как
+// voice_input_mode на dialogue_node (ADR-0028 S5).
+export type VoiceWireMode = "off" | "passthrough" | "ttts_proxy" | "stt_llm" | "llm_formalize";
+
+export interface VoiceModeCmd {
+  cmd: "voice_mode";
+  ts_ms: number;
+  mode: VoiceWireMode;
+}
+
 export interface StreamSelectCmd {
   cmd: "stream_select";
   ts_ms: number;
@@ -84,6 +110,9 @@ export interface SetPanelTopicCmd {
 export type JsonCmd =
   | TeleopTwistCmd
   | StopEmergencyCmd
+  | VoicePttStartCmd
+  | VoicePttStopCmd
+  | VoiceModeCmd
   | StreamSelectCmd
   | StreamListCmd
   | ListVoicesCmd

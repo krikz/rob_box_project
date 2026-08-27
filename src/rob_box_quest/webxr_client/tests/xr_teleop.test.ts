@@ -35,7 +35,8 @@ describe("pollXrInput", () => {
       angular: 0,
       deadman: false,
       emergency: false,
-      ptt: false
+      ptt: false,
+      robotPtt: false
     });
   });
 
@@ -87,7 +88,9 @@ describe("pollXrInput", () => {
       invertAngular: true,
       deadzone: 0.12,
       pttButton: 1,
-      pttHandedness: "right"
+      pttHandedness: "right",
+      robotPttButton: 1,
+      robotPttHandedness: "left"
     });
     expect(r.deadman).toBe(true);
     expect(r.emergency).toBe(true);
@@ -107,6 +110,21 @@ describe("pollXrInput", () => {
     const r = pollXrInput(makeSource(gp, "left"));
     expect(r.deadman).toBe(true);
     expect(r.ptt).toBe(false);
+  });
+
+  it("left grip (squeeze) → robotPtt=true (робот-голос)", () => {
+    const gp = makeGamepad();
+    gp.buttons[1].value = 1;
+    const r = pollXrInput(makeSource(gp, "left"));
+    expect(r.robotPtt).toBe(true);
+    expect(r.deadman).toBe(true);
+  });
+
+  it("right grip (squeeze) → robotPtt=false", () => {
+    const gp = makeGamepad();
+    gp.buttons[1].value = 1;
+    const r = pollXrInput(makeSource(gp, "right"));
+    expect(r.robotPtt).toBe(false);
   });
 
   it("right trigger (button 0) → ptt=false", () => {

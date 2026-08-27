@@ -203,3 +203,86 @@ def test_reset_clears_emergency_and_watchdog():
     bridge.publish_quest(0.3, 0.1)
     # Watchdog тоже сброшен (свежий tick).
     assert bridge.watchdog_check(_t.monotonic()) is False
+
+
+# --- Робот-голос (P7): буфер PCM → /audio/quest_in -----------------------
+
+
+def _make_voice_bridge():
+    """QuestBridge с mock-паблишерами голосового пути (radio + robot voice)."""
+    pytest.importorskip("geometry_msgs", reason="QuestBridge требует rclpy/geometry_msgs (только в Docker image)")
+    from rob_box_quest.quest_node import QuestBridge
+
+    node = _MockNode()
+    voice_in = _MockPublisher()
+    tts_control = _MockPublisher()
+    sound_stop = _MockPublisher()
+    stt_in = _MockPublisher()
+    set_voice_mode = _MockPublisher()
+    bridge = QuestBridge(
+        node=node,
+        cmd_vel_quest_pub=_MockPublisher(),
+        cmd_vel_emergency_pub=_MockPublisher(),
+        voice_in_pub=voice_in,
+        tts_control_pub=tts_control,
+        sound_stop_pub=sound_stop,
+        stt_in_pub=stt_in,
+        set_voice_mode_pub=set_voice_mode,
+    )
+    return bridge, voice_in, tts_control, sound_stop, stt_in, set_voice_mode
+
+
+def test_voice_radio_mode_streams_to_voice_in():
+    bridge, voice_in, _tts, _sound, stt_in, _svm = _make_voice_bridge()
+    bridge.publish_voice_audio(b"\x00\x00")
+    assert len(voice_in.published) == 1
+    assert voice_in.published[0].data == [0, 0]
+    assert len(stt_in.published) == 0
+
+
+def test_voice_robot_mode_buffers_and_flushes_to_stt():
+    bridge, voice_in, tts_control, sound_stop, stt_in, _svm = _make_voice_bridge()
+    # PTT start (robot) → barge-in (STOP TTS + sound) + buffer reset.
+    bridge.publish_voice_robot_start()
+    assert len(tts_control.published) == 1
+    assert len(sound_stop.published) == 1
+    # PCM буферизуется, НЕ идёт в /avatar/voice_in.
+    bridge.publish_voice_audio(b"\x01\x00")
+    bridge.publish_voice_audio(b"\x02\x00")
+    assert len(voice_in.published) == 0
+    assert len(stt_in.published) == 0
+    # PTT stop (robot) → конкатенация в /audio/quest_in + возврат в radio.
+    bridge.publish_voice_robot_stop()
+    assert len(stt_in.published) == 1
+    assert stt_in.published[0].data == [1, 0, 2, 0]
+    # После stop — снова radio: следующий чанк стримится в /avatar/voice_in.
+    bridge.publish_voice_audio(b"\x03\x00")
+    assert len(voice_in.published) == 1
+    assert len(stt_in.published) == 1
+
+
+def test_voice_robot_stop_with_empty_buffer_publishes_nothing():
+    bridge, voice_in, _tts, _sound, stt_in, _svm = _make_voice_bridge()
+    bridge.publish_voice_robot_start()
+    bridge.publish_voice_robot_stop()  # пусто → no-op в STT
+    assert len(stt_in.published) == 0
+    assert len(voice_in.published) == 0
+
+
+def test_set_voice_mode_maps_wire_to_param_and_publishes():
+    bridge, _voice_in, _tts, _sound, _stt_in, set_voice_mode = _make_voice_bridge()
+    bridge.set_voice_mode("ttts_proxy")
+    assert len(set_voice_mode.published) == 1
+    assert set_voice_mode.published[0].data == "quest_ttts"
+
+
+def test_set_voice_mode_off_maps_to_respeaker():
+    bridge, _voice_in, _tts, _sound, _stt_in, set_voice_mode = _make_voice_bridge()
+    bridge.set_voice_mode("off")
+    assert set_voice_mode.published[0].data == "respeaker"
+
+
+def test_set_voice_mode_unknown_ignored():
+    bridge, _voice_in, _tts, _sound, _stt_in, set_voice_mode = _make_voice_bridge()
+    bridge.set_voice_mode("bogus_mode")
+    assert len(set_voice_mode.published) == 0

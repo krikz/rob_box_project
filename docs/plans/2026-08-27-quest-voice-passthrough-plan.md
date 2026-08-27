@@ -142,8 +142,35 @@ git commit -m "fix(voice): coordinate passthrough stream with sound effects"
 - Голос Quest и текст Telegram → один вход → супервизор-агент → действия («мотивируй народ» ≈ одинаково из обоих).
 - Перед командой оператор выключает диалог на панели (личность не отвечает параллельно).
 
-## Фаза P7 — (follow-up) Робот-голос (STT → LLM пресет → TTS)
+## Фаза P7 — (follow-up) Робот-голос (STT → LLM → TTS)
 - Левый grip; пресеты стиля (технический/по понятиям/пещерный/деловой/философ/Ленин) + язык вывода; `voice_input_mode=quest_llm_formalize` (ADR-0027 §3.4).
+
+### P7-simple (реализовано, 2026-08-27) — «робот говорит своим голосом»
+Простой режим без пресетов: левый grip (PTT) → STT → LLM (личность робота) → TTS.
+Маршрутизация — **через супервизор** (ADR-0028 S5), голосовой пайплайн остаётся
+в `dialogue_node` (ADR-0028 S7):
+
+```
+Quest левый grip
+  ├─ voice_mode {mode: ttts_proxy}      → ws_server → bridge → /avatar/set_voice_mode → supervisor (SetVoiceMode)
+  ├─ voice_ptt_start {mode: robot_voice} → barge-in + буферизация PCM
+  ├─ VOICE_AUDIO (int16 PCM 16k)        → /audio/quest_in (буфер)
+  └─ voice_ptt_stop  {mode: robot_voice} → AudioData → /audio/quest_in → stt_node
+stt_node: /audio/quest_in → /voice/stt/quest (отдельный топик, без маркеров)
+dialogue_node: _on_quest_stt → voice_input_mode ∈ {quest_ttts, quest_stt} → _on_stt(from_quest=True) → LLM → TTS
+```
+
+Ключевые файлы:
+- `dialogue_node.py`: `_on_quest_stt` + подписка `/voice/stt/quest` + `QUEST_STT_MODES`;
+  `_on_stt(from_quest=…)` — источник задаёт флаг, а не текстовый маркер.
+- `stt_node.py`: `/audio/quest_in` → `quest_result_pub` (`/voice/stt/quest`).
+- `supervisor_node.py`: `_apply_voice_mode` + подписка `/avatar/set_voice_mode`
+  (monitor → `applied=false`; active → `SetParameters` на `/dialogue_node/set_parameters`).
+- `quest_node.py`/`ws_server.py`: `voice_mode` cmd + `WIRE_TO_VOICE_INPUT_MODE`.
+- `webxr_client`: левый grip = `voice_mode(ttts_proxy)` + `voice_ptt_start/stop(robot_voice)`.
+
+Осталось на P7-full: пресеты стиля + `quest_llm_formalize`; voice_floor-гейтинг
+(сейчас один источник голоса — floor всегда свободен, design D5).
 
 ## Фаза P8 — (follow-up) Telegram voice message
 - Скачать OGG → транскод int16 PCM 16k → publish `/avatar/voice_in`.

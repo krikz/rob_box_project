@@ -67,7 +67,9 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   let xrEmergencyWasPressed = false;
   // Guard: авто-вход в VR — не более одной сессии на submit PIN.
   let vrRequested = false;
-  // Рация: правый grip (PTT) → голос оператора (int16 PCM 16 kHz) → VOICE_AUDIO.
+  // Голос: рация (правый grip) и робот-голос (левый grip → STT → LLM → TTS)
+  // делят один mic-захват (int16 PCM 16 kHz) → VOICE_AUDIO. Режим кодируется
+  // в voice_ptt_start/stop как `mode` ("radio" | "robot_voice").
   const voiceCapture = createVoiceCapture({
     onChunk: (pcm) => {
       if (!conn || disconnected) return;
@@ -75,24 +77,37 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       conn.sendVoiceAudio(bytes);
     }
   });
-  // Edge-состояние PTT.
-  let voicePttActive = false;
+  // Edge-состояние PTT. Робот-голос приоритетнее рации, если зажаты оба.
+  let voicePttMode: "none" | "radio" | "robot_voice" = "none";
 
-  function setVoicePtt(active: boolean): void {
-    if (active === voicePttActive) return;
-    voicePttActive = active;
-    if (conn && !disconnected) {
-      conn.send(
-        active
-          ? { cmd: "voice_ptt_start", ts_ms: Date.now() }
-          : { cmd: "voice_ptt_stop", ts_ms: Date.now() }
-      );
+  function applyVoicePtt(radio: boolean, robot: boolean): void {
+    const next: "none" | "radio" | "robot_voice" = robot ? "robot_voice" : radio ? "radio" : "none";
+    if (next === voicePttMode) return;
+    const c = conn;
+    const send = c !== null && !disconnected;
+
+    // Закрыть предыдущий PTT-режим.
+    if (voicePttMode !== "none" && send) {
+      c!.send({ cmd: "voice_ptt_stop", mode: voicePttMode, ts_ms: Date.now() });
     }
-    if (active) {
-      void voiceCapture.start();
-    } else {
+    // Режим голоса: робот-голос ⇄ ttts_proxy (применяет супервизор, ADR-0028 S5);
+    // при выходе из робот-голоса возвращаем respeaker (off).
+    if (voicePttMode === "robot_voice" && next !== "robot_voice" && send) {
+      c!.send({ cmd: "voice_mode", mode: "off", ts_ms: Date.now() });
+    }
+
+    voicePttMode = next;
+    if (next === "none") {
       voiceCapture.stop();
+      return;
     }
+    if (next === "robot_voice" && send) {
+      c!.send({ cmd: "voice_mode", mode: "ttts_proxy", ts_ms: Date.now() });
+    }
+    if (send) {
+      c!.send({ cmd: "voice_ptt_start", mode: next, ts_ms: Date.now() });
+    }
+    void voiceCapture.start();
   }
 
   // ---- HUD helpers ----------------------------------------------------------
@@ -202,13 +217,14 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   function pollXrControllers(): void {
     if (!xr.isActive() || xrInputSources.length === 0) {
       xrEmergencyWasPressed = false;
-      setVoicePtt(false);
+      applyVoicePtt(false, false);
       bridge.setControllerActive(false);
       return;
     }
     let deadman = false;
     let emergency = false;
     let ptt = false;
+    let robotPtt = false;
     let linear = 0;
     let angular = 0;
     let bestMag = -1;
@@ -217,6 +233,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       deadman = deadman || r.deadman;
       emergency = emergency || r.emergency;
       ptt = ptt || r.ptt;
+      robotPtt = robotPtt || r.robotPtt;
       const mag = r.linear * r.linear + r.angular * r.angular;
       if (mag > bestMag) {
         bestMag = mag;
@@ -232,7 +249,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       conn.send(fsm.triggerEmergency("controller_b"));
     }
     xrEmergencyWasPressed = emergency;
-    setVoicePtt(ptt);
+    applyVoicePtt(ptt, robotPtt);
   }
 
   // Один тик teleop: desktop-emergency + FSM-tick + XR-контроллеры.
@@ -299,7 +316,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       xrRafSession = null;
       xrRafId = 0;
       xrEmergencyWasPressed = false;
-      setVoicePtt(false);
+      applyVoicePtt(false, false);
       xrTeleopHandle?.destroy();
       xrTeleopHandle = null;
       xrInputSources = [];
