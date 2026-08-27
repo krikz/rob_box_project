@@ -51,6 +51,21 @@ git commit -m "feat(supervisor): wire acquire/release floor in active mode"
 git commit -m "feat(supervisor): publish voice_floor in /avatar/state"
 ```
 
+### Task 1.3: voice_floor grant → прерывание TTS/музыки
+
+**Files:**
+- Modify: `src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py`
+- Test: `src/rob_box_supervisor/test/unit/test_supervisor_node.py`
+
+**Step 1: Тест** — при выдаче `voice_floor` публикуется `STOP` на `/voice/tts/control` и `/voice/sound/stop` (dispatcher role, ADR-0028 §2 п.2).
+
+**Step 2: Реализовать** — при успешном `acquire(voice_floor)` — `String("STOP")` в оба топика. Это и есть barge-in оператора.
+
+**Step 3: Commit:**
+```bash
+git commit -m "feat(supervisor): interrupt TTS/music on voice_floor grant"
+```
+
 ---
 
 ## Фаза P2 — sound_node: подписка /avatar/voice_in + стрим

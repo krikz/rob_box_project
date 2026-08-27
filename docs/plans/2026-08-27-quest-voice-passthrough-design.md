@@ -30,6 +30,11 @@ Telegram-голосовыми сообщениями, поэтому аудио-
   оператора расширяем `sound_node` подпиской на `/avatar/voice_in`.
 - **`audio_common_msgs/AudioData`** — контейнер int16 LE PCM; в
   `tts_node` речь идёт как int16 PCM (16 kHz).
+- **Прерывание (barge-in) уже есть**: wake-word → `stt_node` → `STOP` на
+  `/voice/tts/control` → `tts_node` останавливает (`_interrupt_playback`,
+  с immune-window / post-synth буфером, issue #1563). Музыка/эффекты —
+  `STOP` на `/voice/sound/stop`. `audio_node` держит grace-период после
+  TTS (анти-эхо, issue #989).
 
 ## 3. Архитектура / поток данных
 
@@ -83,6 +88,21 @@ Telegram-голосовое (P5, позже): скачал OGG → транск�
   клиенту `voice_state(denied)` (event, для индикации в UI).
 - Два голоса одновременно невозможны: публикует только держатель floor.
 - Latency target: < 300 мс в обе стороны (LAN, PCM без сжатия).
+
+### 5.1 Конфликт с диалогом (робот говорит, оператор вклинивается)
+
+Что уже воспроизводит: `tts_node` (речь) и `sound_node` (эффекты/музыка),
+оба через `AudioPlaybackManager`. Готовый barge-in: `STOP` на
+`/voice/tts/control` прерывает TTS. На выдаче `voice_floor` супервизор
+(dispatcher) публикует:
+
+- `STOP` → `/voice/tts/control` — прервать речь робота;
+- `STOP` → `/voice/sound/stop` — прервать музыку/эффекты.
+
+После release `voice_floor` `dialogue_node` возвращается к обычной работе.
+ReSpeaker может услышать голос оператора как wake-word/речь — эхо гасится
+grace-периодом `audio_node` (`tts_grace_s`) + подавлением VAD на время
+passthrough (уточняется в P1/P4).
 
 ## 6. Фазы (ADR-0013 — инкрементально)
 
