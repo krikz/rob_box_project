@@ -90,12 +90,10 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     if (voicePttMode !== "none" && send) {
       c!.send({ cmd: "voice_ptt_stop", mode: voicePttMode, ts_ms: Date.now() });
     }
-    // Режим голоса: робот-голос ⇄ ttts_proxy (применяет супервизор, ADR-0028 S5);
-    // при выходе из робот-голоса возвращаем respeaker (off).
-    if (voicePttMode === "robot_voice" && next !== "robot_voice" && send) {
-      c!.send({ cmd: "voice_mode", mode: "off", ts_ms: Date.now() });
-    }
-
+    // Режим голоса ПЕРСИСТЕНТНЫЙ: при входе в робот-голос ставим ttts_proxy
+    // (применяет супервизор, ADR-0028 S5) и НЕ сбрасываем на отпускание —
+    // иначе STT, дораспознающий уже после release, приходит при
+    // voice_input_mode=respeaker и dialogue_node его игнорирует (гонка).
     voicePttMode = next;
     if (next === "none") {
       voiceCapture.stop();
