@@ -58,6 +58,12 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   let xrTeleopHandle: ReturnType<typeof createXrTeleop> | null = null;
   // Последний кэшированный inputSources; обновляется через inputsourceschange.
   let xrInputSources: XRInputSource[] = [];
+  // XR-кадровый цикл teleop (session.requestAnimationFrame) — window.rAF
+  // в immersive-vr заморожен. xrRafSession нужен для cancelAnimationFrame.
+  let xrRafSession: XRSession | null = null;
+  let xrRafId = 0;
+  // Edge-trigger для B/Y: шлём emergency один раз на нажатие.
+  let xrEmergencyWasPressed = false;
   // Guard: авто-вход в VR — не более одной сессии на submit PIN.
   let vrRequested = false;
 
@@ -162,30 +168,62 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   // ---- Teleop loop -----------------------------------------------------------
 
   let lastTickTs = 0;
+
+  // Полинг XR-контроллеров: агрегируем по всем inputSources — grip = любой
+  // зажат, стик = контроллер с наибольшим отклонением, B/Y = любой нажат.
+  function pollXrControllers(): void {
+    if (!xr.isActive() || xrInputSources.length === 0) {
+      xrEmergencyWasPressed = false;
+      bridge.setControllerActive(false);
+      return;
+    }
+    let deadman = false;
+    let emergency = false;
+    let linear = 0;
+    let angular = 0;
+    let bestMag = -1;
+    for (const src of xrInputSources) {
+      const r = pollXrInput(src);
+      deadman = deadman || r.deadman;
+      emergency = emergency || r.emergency;
+      const mag = r.linear * r.linear + r.angular * r.angular;
+      if (mag > bestMag) {
+        bestMag = mag;
+        linear = r.linear;
+        angular = r.angular;
+      }
+    }
+    fsm.setDeadman(deadman);
+    fsm.setLinear(linear);
+    fsm.setAngular(angular);
+    bridge.setControllerActive(deadman);
+    if (emergency && !xrEmergencyWasPressed && conn && !disconnected) {
+      conn.send(fsm.triggerEmergency("controller_b"));
+    }
+    xrEmergencyWasPressed = emergency;
+  }
+
+  // Один тик teleop: desktop-emergency + FSM-tick + XR-контроллеры.
+  // Вызывается из двух циклов: window.rAF (desktop) и session.rAF (VR).
+  function tickTeleop(): void {
+    if (conn && !disconnected) {
+      const teleopHandle = (
+        window as unknown as { __questDesktopTeleop?: { consumeEmergency(): boolean } }
+      ).__questDesktopTeleop;
+      if (teleopHandle?.consumeEmergency()) {
+        conn.send(fsm.triggerEmergency("ui_button"));
+      }
+      const out = fsm.tick(Date.now());
+      if (out) conn.send(out.cmd);
+    }
+    pollXrControllers();
+  }
+
   function teleopLoop(): void {
     const now = performance.now();
     if (now - lastTickTs >= 33) {
       lastTickTs = now;
-      if (conn && !disconnected) {
-        const teleopHandle = (
-          window as unknown as { __questDesktopTeleop?: { consumeEmergency(): boolean } }
-        ).__questDesktopTeleop;
-        if (teleopHandle?.consumeEmergency()) {
-          conn.send(fsm.triggerEmergency("ui_button"));
-        }
-        const out = fsm.tick(Date.now());
-        if (out) conn.send(out.cmd);
-      }
-      // XR-контроллеры (Quest): если есть активная XR-сессия и inputSources,
-      // каждый кадр кормим FSM. pollXrInput идемпотентен (только если есть grip).
-      if (xr.isActive() && xrInputSources.length > 0) {
-        const dummyState = { linear: 0, angular: 0, deadman: false, emergencyEdge: false };
-        for (const src of xrInputSources) {
-          if (src && (src as { gamepad?: { axes?: number[] } }).gamepad) {
-            pollXrInput(dummyState, src, fsm);
-          }
-        }
-      }
+      tickTeleop();
     }
     requestAnimationFrame(teleopLoop);
   }
@@ -204,6 +242,15 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       xrInputSources = Array.from(session.inputSources);
       await bridge.attachXrSession(session);
       xrTeleopHandle = createXrTeleop({ fsm, session });
+      // window.requestAnimationFrame в immersive-vr заморожен браузером,
+      // поэтому teleop тикаем в XR-кадровом цикле (session.requestAnimationFrame).
+      xrRafSession = session;
+      const xrFrame = (_time: DOMHighResTimeStamp, _frame: XRFrame): void => {
+        if (!xr.isActive()) return;
+        tickTeleop();
+        xrRafId = session.requestAnimationFrame(xrFrame);
+      };
+      xrRafId = session.requestAnimationFrame(xrFrame);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn("[quest] requestSession failed:", err);
@@ -214,6 +261,12 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     try {
       await xr.endSession();
     } finally {
+      if (xrRafSession && xrRafId) {
+        xrRafSession.cancelAnimationFrame(xrRafId);
+      }
+      xrRafSession = null;
+      xrRafId = 0;
+      xrEmergencyWasPressed = false;
       xrTeleopHandle?.destroy();
       xrTeleopHandle = null;
       xrInputSources = [];
@@ -241,6 +294,9 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     dispose(): void {
       stopRender();
       desktopTeleop.destroy();
+      if (xrRafSession && xrRafId) {
+        xrRafSession.cancelAnimationFrame(xrRafId);
+      }
       xrTeleopHandle?.destroy();
       conn?.close();
       bridge.dispose();

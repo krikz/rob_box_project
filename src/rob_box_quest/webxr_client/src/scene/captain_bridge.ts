@@ -36,6 +36,8 @@ export interface CaptainBridgeHandle {
   loadEnvironment(): Promise<BridgeAssetHandle | null>;
   initLayout(): void;
   attachXrSession(session: XRSession): Promise<void>;
+  /** Visual feedback: подсветить grip контроллеров (deadman зажат). */
+  setControllerActive(active: boolean): void;
   start(): () => void;
   resize(): void;
   dispose(): void;
@@ -183,6 +185,19 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
 
   // ---------- XR (опционально) ----------
 
+  // Визуализация XR-контроллеров: ray из targetRaySpace + маркер grip.
+  // Позиции/ориентацию подставляет three.js из XR-кадров автоматически.
+  const controllerGrips: THREE.Mesh[] = [];
+  const CONTROLLER_RAY_LENGTH = 1.5;
+  const GRIP_IDLE_COLOR = 0x556677;
+  const GRIP_ACTIVE_COLOR = 0x2ec27e;
+
+  function setControllerActive(active: boolean): void {
+    for (const grip of controllerGrips) {
+      (grip.material as THREE.MeshBasicMaterial).color.set(active ? GRIP_ACTIVE_COLOR : GRIP_IDLE_COLOR);
+    }
+  }
+
   async function attachXrSession(session: XRSession): Promise<void> {
     if (opts.enableXr === false) return;
     // Включаем XR-режим рендерера ДО setSession: без этого three.js
@@ -190,6 +205,30 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     // зафиксирован) и не биндит XR framebuffer.
     renderer.xr.enabled = true;
     await renderer.xr.setSession(session);
+
+    // Контроллеры: добавляем по одному разу (повторный вход в VR не дублирует).
+    for (let i = 0; i < 2; i++) {
+      if (controllerGrips[i]) continue;
+      const root = renderer.xr.getController(i);
+      const ray = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(0, 0, 0),
+          new THREE.Vector3(0, 0, -CONTROLLER_RAY_LENGTH)
+        ]),
+        new THREE.LineBasicMaterial({ color: 0x2ec27e, transparent: true, opacity: 0.75 })
+      );
+      root.add(ray);
+      const grip = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.02, 0.02, 0.14, 12),
+        new THREE.MeshBasicMaterial({ color: GRIP_IDLE_COLOR })
+      );
+      grip.rotation.x = Math.PI / 2; // цилиндр вдоль -Z (направление ray)
+      grip.position.set(0, 0, -0.07);
+      root.add(grip);
+      scene.add(root);
+      controllerGrips[i] = grip;
+    }
+
     renderer.setAnimationLoop(() => {
       renderer.render(scene, camera);
     });
@@ -214,6 +253,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     loadEnvironment,
     initLayout,
     attachXrSession,
+    setControllerActive,
     start,
     resize,
     dispose
