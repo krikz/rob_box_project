@@ -5,16 +5,33 @@
 | Статус | Design (одобрено, 2026-08-27) |
 | Дата | 2026-08-27 |
 | Родители | ADR-0027 (Meta Quest/WebXR), ADR-0028 (Avatar Supervisor), ADR-0013 (incremental delivery) |
-| Затрагивает | `rob_box_quest` (клиент + сервер), `rob_box_supervisor` (voice_floor active), новый плейер, (позже) `rob_box_telegram` |
-| Out of scope | левый grip = STT→TTS голосом робота — ОТДЕЛЬНАЯ фича |
+| Затрагивает | `rob_box_quest` (клиент + сервер), `rob_box_voice` (sound_node), (позже) `rob_box_supervisor`, `rob_box_telegram` |
+| Out of scope (сейчас) | нашёптывание, робот-голос (STT→LLM→TTS), панель режимов — отдельные фичи, но архитектура их учитывает |
 
-## 1. Цель
+## 1. Цель и скоуп
 
 Оператор в Quest зажимает **правый grip** и говорит — робот сразу, **без
 обработки** (без STT/LLM/TTS), воспроизводит голос оператора через динамик
-(ReSpeaker). Это «рация». Та же способность должна быть переиспользована
-Telegram-голосовыми сообщениями, поэтому аудио-путь гейтится супервизором
-(`voice_floor`), а не является частной логикой Quest-клиента.
+(ReSpeaker). Это «рация».
+
+**Строим сейчас: только рацию.** Остальное — требования к архитектуре,
+чтобы не переделывать рацию, когда добавим другие голосовые режимы.
+
+### 1.1. Все голосовые режимы (архитектурная картина)
+
+| Режим | Кнопка | Что делает | Статус |
+|---|---|---|---|
+| **рация** | правый grip | мой голос → динамик робота, без обработки | **сейчас** |
+| **нашёптывание** | (позже) | мой голос → STT → `/voice/stt/result` как «обычный юзер»; dialogue НЕ знает, что вмешивается оператор | позже |
+| **робот-голос** | левый grip | мой голос → STT → LLM(пресет+язык) → TTS | позже |
+| **панель режимов** (супервизор) | UI | присутствие / только-я-рулю / мьют диалога | позже |
+
+Ключевой принцип: весь голос Quest идёт в один PCM-хаб **`/avatar/voice_in`**,
+а маршрутизация (куда дальше) — переключаемый `voice_mode`. Рация =
+`voice_mode=passthrough` → `sound_node`. Нашёптывание = тот же PCM → STT →
+`/voice/stt/result` (путь уже есть: `scenario_runner` инжектит туда же,
+`dialogue_node._on_stt` не знает источник). Робот-голос = PCM → STT → LLM →
+TTS. Ни один из них не ломает рацию.
 
 ## 2. Что уже есть (точки опоры)
 
@@ -46,13 +63,12 @@ Quest Browser (webxr_client)
   └─ правый grip ↑ → JSON_CMD voice_ptt_stop
 
 quest-сервер (Vision Pi, aiohttp WSS, порт 8765 / Caddy 8443)
-  ├─ voice_ptt_start → supervisor.acquire_floor(voice_floor)
-  │     denied → НЕ публикуем, шлём клиенту voice_state(denied)
+  ├─ voice_ptt_start → STOP в /voice/tts/control + /voice/sound/stop (barge-in)
   ├─ VOICE_AUDIO → publish AudioData → /avatar/voice_in
-  └─ voice_ptt_stop → supervisor.release_floor(voice_floor)
+  └─ voice_ptt_stop → конец потока
 
-avatar_supervisor (Vision Pi) — active mode (P1)
-  └─ раздаёт voice_floor / teleop_floor, публикует /avatar/state
+avatar_supervisor (Vision Pi) — позже (follow-up P5)
+  └─ раздаёт voice_floor / teleop_floor + панель режимов
 
 sound_node (Vision Pi, РАСШИРЕНИЕ, P2)
   ├─ подписка /avatar/voice_in (AudioData, int16 PCM 16k)
@@ -60,13 +76,12 @@ sound_node (Vision Pi, РАСШИРЕНИЕ, P2)
 ```
 
 Ключевой принцип: **супервизор не трогает звук** (ADR-0028 S7), он только
-раздаёт `voice_floor`. Гейтинг — на стороне издателя: публиковать PCM в
-`/avatar/voice_in` может только клиент, удерживающий `voice_floor`. Плейер
+раздаёт `voice_floor` (follow-up). Пока второго источника голоса нет —
+quest-сервер публикует PCM в `/avatar/voice_in` напрямую. Плейер (sound_node)
 тупой — играет всё, что приходит.
 
-Telegram-голосовое (P5, позже): скачал OGG → транскод в int16 PCM 16k →
-`acquire_floor(voice)` → публикация в тот же `/avatar/voice_in`. Та же
-способность, тот же контракт.
+Telegram-голосовое (P8, позже): скачал OGG → транскод в int16 PCM 16k →
+публикация в тот же `/avatar/voice_in`. Та же способность, тот же контракт.
 
 ## 4. Ключевые решения
 
@@ -76,7 +91,7 @@ Telegram-голосовое (P5, позже): скачал OGG → транск�
 | D2 | Новый фрейм **`VOICE_AUDIO = 0x13`** (client→server), payload = сырой int16 PCM | существующий BINARY_FRAME (0x10) — только server→client; нужен обратный канал |
 | D3 | PTT: JSON_CMD `voice_ptt_start`/`voice_ptt_stop` (уже в ADR-0027) | не вводим новый cmd-тип |
 | D4 | Воспроизведение: **расширяем `sound_node`** (Option B) подпиской на `/avatar/voice_in` | без новой ноды; голос оператора и эффекты в одном месте (осознанно смешиваем) |
-| D5 | Супервизор — **active mode для voice_floor** (P1) | FSM/locks уже написаны и покрыты тестами; осталось связать с сервисами |
+| D5 | Супервизор + панель режимов — **follow-up (P5)**, не блокирует рацию | пока один источник голоса — floor всегда свободен; вводим когда появится Telegram-голос |
 | D6 | Левый grip = STT→TTS — **не в этой фиче** | отдельная фича (голос робота), свой цикл |
 | D7 | Голос — **поток**, не one-shot: держим `sd.OutputStream` открытым пока идёт PTT, чанки пишем в него | `play_audio` на каждый 20мс чанк = клики + лаг; поток даёт низкую задержку |
 
@@ -106,29 +121,32 @@ passthrough (уточняется в P1/P4).
 
 ## 6. Фазы (ADR-0013 — инкрементально)
 
+**Сначала рация:** P1 → P2 → P3 → P4. Остальное — follow-up после рации.
+
 | Фаза | Что | Ценность |
 |---|---|---|
-| **P1** | Supervisor: wire `acquire_floor`/`release_floor` (voice_floor) в active mode | фундамент гейтинга |
-| **P2** | Нода `avatar_voice_player`: `/avatar/voice_in` → AudioPlaybackManager | слышно PCM |
-| **P3** | Клиент: getUserMedia+AudioWorklet PCM, правый grip PTT, фрейм VOICE_AUDIO | захват голоса |
-| **P4** | quest-сервер: voice_ptt_start/stop + VOICE_AUDIO → `/avatar/voice_in` | сквозной путь Quest |
-| **P5** | Telegram voice message → тот же `/avatar/voice_in` | переиспользование |
-| **P6** | e2e на железе (grip → слышно голос) | proof |
+| **P1** | `sound_node`: подписка `/avatar/voice_in` + стриминговый вывод PCM | слышно PCM |
+| **P2** | Клиент: getUserMedia+AudioWorklet PCM, правый grip PTT, фрейм VOICE_AUDIO | захват голоса |
+| **P3** | quest-сервер: voice_ptt_start/stop + VOICE_AUDIO → `/avatar/voice_in` + STOP barge-in | сквозной путь Quest |
+| **P4** | e2e на железе (grip → слышно голос) | proof |
+| **P5** | (follow-up) Supervisor active + панель режимов (присутствие/рулю/мьют) | гейтинг + UI |
+| **P6** | (follow-up) Нашёптывание: PCM → STT → `/voice/stt/result` | команды «как юзер» |
+| **P7** | (follow-up) Робот-голос: STT → LLM(пресет+язык) → TTS | стилизация |
+| **P8** | (follow-up) Telegram voice message → `/avatar/voice_in` | переиспользование |
 
 ## 7. Тестирование
 
-- P1: unit — LockManager/FSM уже покрыты; добавить тест сервисов active-mode.
-- P2: unit — fake `AudioPlaybackManager` (sd=None уже поддерживается в CI) + тест стрима/буфера тишины.
-- P3: unit — codec VOICE_AUDIO + fake mic-буфер; правый-grip edge в FSM.
-- P4: unit — voice_ptt handler: granted → publish, denied → drop + event.
-- P6: ручной e2e, raw-evidence (`docker logs quest`, `ros2 topic echo /avatar/voice_in`).
+- P1: unit — fake `AudioPlaybackManager` (sd=None уже в CI) + тест стрима/буфера тишины.
+- P2: unit — codec VOICE_AUDIO + fake mic-буфер; правый-grip edge.
+- P3: unit — voice_ptt handler: STOP barge-in + publish PCM.
+- P4: ручной e2e, raw-evidence (`docker logs quest`, `ros2 topic echo /avatar/voice_in`).
 
 ## 8. Файлы (ориентир)
 
-- `src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py` (P1)
-- `src/rob_box_voice/rob_box_voice/sound_node.py` (P2, подписка /avatar/voice_in + стрим)
-- `src/rob_box_quest/webxr_client/src/input/voice_ptt.ts` (P3, NEW)
-- `src/rob_box_quest/webxr_client/src/wire/protocol.ts` (P3, VOICE_AUDIO)
-- `src/rob_box_quest/rob_box_quest/protocol/frame.py` (P4, VOICE_AUDIO)
-- `src/rob_box_quest/rob_box_quest/server/ws_server.py` (P4)
-- `src/rob_box_telegram/rob_box_telegram/...` (P5, позже)
+- `src/rob_box_voice/rob_box_voice/sound_node.py` (P1, подписка /avatar/voice_in + стрим)
+- `src/rob_box_quest/webxr_client/src/input/voice_ptt.ts` (P2, NEW)
+- `src/rob_box_quest/webxr_client/src/wire/protocol.ts` (P2, VOICE_AUDIO)
+- `src/rob_box_quest/rob_box_quest/protocol/frame.py` (P3, VOICE_AUDIO)
+- `src/rob_box_quest/rob_box_quest/server/ws_server.py` (P3)
+- `src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py` (P5, follow-up)
+- `src/rob_box_telegram/rob_box_telegram/...` (P8, позже)

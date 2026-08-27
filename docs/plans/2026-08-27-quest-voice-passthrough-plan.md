@@ -2,75 +2,21 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Правый grip в Quest → голос оператора играет на роботе без обработки (raw PCM), гейтится `voice_floor` супервизора.
+**Goal:** Правый grip в Quest → голос оператора играет на роботе без обработки (raw PCM). Сейчас — только рация, без супервизора.
 
-**Architecture:** Quest mic (PCM 16k) → WS `VOICE_AUDIO` → quest-сервер → (voice_floor) → `/avatar/voice_in` → нода `avatar_voice_player` → ReSpeaker. Супервизор только раздаёт floor.
+**Architecture:** Quest mic (PCM 16k) → WS `VOICE_AUDIO` → quest-сервер → `/avatar/voice_in` → `sound_node` (стрим) → ReSpeaker. PTT start шлёт `STOP` (barge-in) в TTS/музыку. Супервизор/панель режимов — follow-up (P5).
 
-**Tech Stack:** TypeScript/Three.js (клиент), Python/aiohttp (quest-сервер), ROS 2 Humble rclpy (supervisor + player), `AudioPlaybackManager` (sounddevice), `audio_common_msgs/AudioData`.
+**Tech Stack:** TypeScript/Three.js (клиент), Python/aiohttp (quest-сервер), ROS 2 Humble rclpy (sound_node), `AudioPlaybackManager` (sounddevice), `audio_common_msgs/AudioData`.
 
 **Design doc:** `docs/plans/2026-08-27-quest-voice-passthrough-design.md`
 
----
-
-## Фаза P1 — Supervisor voice_floor в active mode
-
-### Task 1.1: Сервисы acquire/release floor в active mode
-
-**Files:**
-- Modify: `src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py`
-- Test: `src/rob_box_supervisor/test/unit/test_supervisor_node.py`
-
-**Step 1: Прочитать текущий контракт сервисов** — сейчас `std_srvs/Trigger`, mode=`monitor` → `applied=false`. Определить: в `active` mode `acquire_floor`/`release_floor` должны реально вызывать `LockManager.acquire/release` с `client_id` (из body сервиса) и `floor` (из имени/тела).
-
-**Step 2: Написать падающий тест** — в `test_supervisor_node.py` добавить кейс: нода с `mode=active` + мок `LockManager`; вызов `acquire_floor(voice_floor)` возвращает `success=true, applied=true`; повторный от другого клиента → `ConflictError` → `applied=false` с причиной.
-
-**Step 3: Прогнать тест** — `python -m pytest src/rob_box_supervisor/test/unit/test_supervisor_node.py -v` → FAIL.
-
-**Step 4: Реализовать** — wire `LockManager` (уже в `core/locks.py`) в сервисы: при `mode=active` — `acquire(client_id, floor)`; в monitor — текущее поведение. Не менять сигнатуры IDL (пока Trigger-совместимо), `client_id`/`floor` передавать в request-строке или добавить минимальный кастомный IDL по ADR-0028 AV-5.
-
-**Step 5: Прогнать** — `python -m pytest src/rob_box_supervisor/test/unit -v` → PASS (все существующие + новый).
-
-**Step 6: Commit**
-```bash
-git add src/rob_box_supervisor/
-git commit -m "feat(supervisor): wire acquire/release floor in active mode"
-```
-
-### Task 1.2: Публикация voice_floor в /avatar/state
-
-**Files:**
-- Modify: `src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py`
-- Test: `src/rob_box_supervisor/test/unit/test_supervisor_node.py`
-
-**Step 1:** Тест — после `acquire_floor(voice_floor)` published `/avatar/state` содержит `voice_floor=<client_id>`.
-
-**Step 2:** Реализовать — `LockManager.holder(floor)` → pack в `AvatarState` (core/state.py уже есть) → publish.
-
-**Step 3:** Покрыть, commit:
-```bash
-git commit -m "feat(supervisor): publish voice_floor in /avatar/state"
-```
-
-### Task 1.3: voice_floor grant → прерывание TTS/музыки
-
-**Files:**
-- Modify: `src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py`
-- Test: `src/rob_box_supervisor/test/unit/test_supervisor_node.py`
-
-**Step 1: Тест** — при выдаче `voice_floor` публикуется `STOP` на `/voice/tts/control` и `/voice/sound/stop` (dispatcher role, ADR-0028 §2 п.2).
-
-**Step 2: Реализовать** — при успешном `acquire(voice_floor)` — `String("STOP")` в оба топика. Это и есть barge-in оператора.
-
-**Step 3: Commit:**
-```bash
-git commit -m "feat(supervisor): interrupt TTS/music on voice_floor grant"
-```
+**Порядок:** P1 → P2 → P3 → P4 = рация. P5–P8 = follow-up (после рации).
 
 ---
 
-## Фаза P2 — sound_node: подписка /avatar/voice_in + стрим
+## Фаза P1 — sound_node: подписка /avatar/voice_in + стрим
 
-### Task 2.1: Подписка на /avatar/voice_in (AudioData)
+### Task 1.1: Подписка на /avatar/voice_in (AudioData)
 
 **Files:**
 - Modify: `src/rob_box_voice/rob_box_voice/sound_node.py`
@@ -85,7 +31,7 @@ git commit -m "feat(supervisor): interrupt TTS/music on voice_floor grant"
 git commit -m "feat(voice): subscribe sound_node to /avatar/voice_in"
 ```
 
-### Task 2.2: Стриминговое воспроизведение PCM
+### Task 1.2: Стриминговое воспроизведение PCM
 
 **Files:**
 - Modify: `src/rob_box_voice/rob_box_voice/sound_node.py`
@@ -93,14 +39,14 @@ git commit -m "feat(voice): subscribe sound_node to /avatar/voice_in"
 
 **Step 1: Тест** — fake `sd.OutputStream`: первый чанк открывает stream (16k int16 mono), последующие пишутся в него; тишина > 300 мс закрывает stream. Пустой чанк не падает.
 
-**Step 2: Реализовать** — в callback: `np.frombuffer(msg.data, np.int16)` → stream.write; открытие/закрытие по таймеру тишины. НЕ использовать `play_audio` на каждый чанк (клики/лаг).
+**Step 2: Реализовать** — в callback: `np.frombuffer(msg.data, np.int16)` → дублировать mono→stereo (`np.column_stack`, ReSpeaker требует 2 канала, как в tts_node) → stream.write; открытие/закрытие по таймеру тишины. НЕ использовать `play_audio` на каждый чанк (клики/лаг).
 
 **Step 3: Commit:**
 ```bash
 git commit -m "feat(voice): stream operator voice PCM in sound_node"
 ```
 
-### Task 2.3: Координация с эффектами
+### Task 1.3: Координация с эффектами
 
 **Step 1:** Тест — во время голосового стрима эффект-триггер не рвёт поток; `stop_playback` останавливает стрим.
 
@@ -113,9 +59,9 @@ git commit -m "fix(voice): coordinate passthrough stream with sound effects"
 
 ---
 
-## Фаза P3 — Клиент: mic + PTT + VOICE_AUDIO
+## Фаза P2 — Клиент: mic + PTT + VOICE_AUDIO
 
-### Task 3.1: Фрейм VOICE_AUDIO в codec
+### Task 2.1: Фрейм VOICE_AUDIO в codec
 
 **Files:**
 - Modify: `src/rob_box_quest/webxr_client/src/wire/protocol.ts`
@@ -127,7 +73,7 @@ git commit -m "fix(voice): coordinate passthrough stream with sound effects"
 
 **Step 3:** `npm --prefix src/rob_box_quest/webxr_client test` → PASS. Commit.
 
-### Task 3.2: Захват микрофона в PCM
+### Task 2.2: Захват микрофона в PCM
 
 **Files:**
 - Create: `src/rob_box_quest/webxr_client/src/input/voice_capture.ts`
@@ -139,7 +85,7 @@ git commit -m "fix(voice): coordinate passthrough stream with sound effects"
 
 **Step 3:** Commit.
 
-### Task 3.3: PTT на правом grip + отправка PCM
+### Task 2.3: PTT на правом grip + отправка PCM
 
 **Files:**
 - Modify: `src/rob_box_quest/webxr_client/src/input/teleop_config.ts` (добавить поле `pttButton`/handedness или отдельный биндинг)
@@ -155,9 +101,9 @@ git commit -m "fix(voice): coordinate passthrough stream with sound effects"
 
 ---
 
-## Фаза P4 — quest-сервер: голосовой путь
+## Фаза P3 — quest-сервер: голосовой путь
 
-### Task 4.1: VOICE_AUDIO в серверном frame.py
+### Task 3.1: VOICE_AUDIO в серверном frame.py
 
 **Files:**
 - Modify: `src/rob_box_quest/rob_box_quest/protocol/frame.py`
@@ -167,25 +113,38 @@ git commit -m "fix(voice): coordinate passthrough stream with sound effects"
 
 **Step 2:** Тест round-trip. Commit.
 
-### Task 4.2: voice_ptt_start/stop → supervisor + publish PCM
+### Task 3.2: voice_ptt_start/stop + VOICE_AUDIO → /avatar/voice_in + STOP
 
 **Files:**
 - Modify: `src/rob_box_quest/rob_box_quest/server/ws_server.py`
 - Test: `src/rob_box_quest/test/unit/test_ws_server_voice.py` (NEW)
 
-**Step 1:** Тест — `voice_ptt_start`: acquire voice_floor granted → start; denied → drop + `voice_state(denied)` event. `VOICE_AUDIO` → publish AudioData на `/avatar/voice_in`. `voice_ptt_stop` → release.
+**Step 1:** Тест — `voice_ptt_start`: публикует `STOP` в `/voice/tts/control` + `/voice/sound/stop`; `VOICE_AUDIO` → publish AudioData на `/avatar/voice_in`; `voice_ptt_stop` — поток закрывается.
 
-**Step 2:** Реализовать — handler в `_on_json_cmd` + frame loop для 0x13; supervisor client (reuse паттерн `rob_box_telegram/supervisor_client.py`).
+**Step 2:** Реализовать — handler в `_on_json_cmd` + frame loop для 0x13; publish AudioData (int16 PCM 16k) в `/avatar/voice_in` (QoS best-effort). Без супервизора — прямой barge-in.
 
 **Step 3:** `python -m pytest src/rob_box_quest/test/unit -q` → PASS. Commit.
 
 ---
 
-## Фаза P5 — Telegram voice message (позже)
-- Скачать OGG → транскод в int16 PCM 16k → `acquire_floor(voice)` → publish `/avatar/voice_in`. Отдельная карточка.
-
-## Фаза P6 — e2e на железе
+## Фаза P4 — e2e на железе
 - Deploy via GitHub Actions, ручной прогон: правый grip → голос слышен; raw-evidence (`docker logs quest`, `ros2 topic echo /avatar/voice_in`).
+
+---
+
+## Фаза P5 — (follow-up) Supervisor active + панель режимов
+- Wire `acquire_floor`/`release_floor` (voice_floor) в active mode; STOP dispatch переезжает в супервизор.
+- UI-панель на мостике: «я оператор» / «только я рулю» / «заглушить диалог» / «голос-рация».
+- См. `docs/adr/0028-avatar-supervisor.md`.
+
+## Фаза P6 — (follow-up) Нашёптывание
+- PCM → STT → публикация в `/voice/stt/result` (как «обычный юзер», dialogue не знает источник).
+
+## Фаза P7 — (follow-up) Робот-голос (STT → LLM пресет → TTS)
+- Левый grip; пресеты стиля (технический/по понятиям/пещерный/деловой/философ/Ленин) + язык вывода; `voice_input_mode=quest_llm_formalize` (ADR-0027 §3.4).
+
+## Фаза P8 — (follow-up) Telegram voice message
+- Скачать OGG → транскод int16 PCM 16k → publish `/avatar/voice_in`.
 
 ---
 
