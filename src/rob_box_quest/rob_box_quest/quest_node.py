@@ -41,14 +41,13 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
-from sensor_msgs.msg import Image, LaserScan
+from sensor_msgs.msg import CompressedImage, LaserScan
 from std_msgs.msg import String
 
 from .core.safety import Watchdog
 from .core.teleop import TeleopController
 from .server.session import WATCHDOG_TIMEOUT_S as SESSION_WATCHDOG_TIMEOUT_S
 from .server.ws_server import NoOpBridge, WSSServer, build_app
-from .streams.camera import image_to_payload
 from .streams.lidar import scan_to_payload
 from .streams.provider import CameraFrame, CameraProvider
 from .streams.registry import STREAM_CATALOG
@@ -420,9 +419,10 @@ class QuestNode(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
         )
-        # Камера: OAK-D (depthai_ros_driver v2) публикует sensor_msgs/Image как
-        # RELIABLE KEEP_LAST(10) — проверено `ros2 topic info -v` на Vision Pi
-        # (27.08.2026). BEST_EFFORT-подписка НЕ матчится → кадры не приходят.
+        # Камера: подписываемся на JPEG-compressed image_transport-топик
+        # (лёгкий поток ~300 KB/s вместо raw ~13.5 MB/s). OAK-D публикует его
+        # RELIABLE KEEP_LAST(10) — RELIABLE-подписка обязательна (проверено
+        # `ros2 topic info -v` на Vision Pi 27.08.2026).
         _CAMERA_QOS = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
@@ -440,11 +440,14 @@ class QuestNode(Node):
         # ROS; остальные камеры — мимо ROS через CameraProvider).
         self._odom_sub = self.create_subscription(Odometry, "/odom", self._on_odom, _RE)
         self._scan_sub = self.create_subscription(LaserScan, "/scan", self._on_scan, _RE)
-        # camera_rear (0x1001): OAK-D color /camera/camera/color/image_raw → JPEG.
-        # ROS-фолбэк к bypass-ROS CameraProvider (прямой depthai в quest-контейнер
-        # невозможен: USB-устройство занято контейнером oak-d).
+        # camera_rear (0x1001): OAK-D color JPEG (image_transport compressed) →
+        # форвардим bytes as-is в WS. Лёгкий путь: без cv2/numpy/перекодирования,
+        # сеть грузится ~300 KB/s вместо raw ~13.5 MB/s.
         self._camera_rear_sub = self.create_subscription(
-            Image, "/camera/camera/color/image_raw", self._on_camera_image, _CAMERA_QOS
+            CompressedImage,
+            "/camera/camera/color/image_raw/compressed",
+            self._on_camera_image,
+            _CAMERA_QOS,
         )
         self._latest_odom: Optional[Odometry] = None
         self._status = StatusAggregator()
@@ -500,8 +503,6 @@ class QuestNode(Node):
         # уже произошёл к этому моменту).
         self._aio_started = False
         self._camera_started = False
-        # Анти-спам: первую ошибку кодирования camera_rear логируем warning.
-        self._camera_encode_warned = False
 
     # --- ROS callbacks ----------------------------------------------------
 
@@ -520,25 +521,16 @@ class QuestNode(Node):
         """ROS subscription /scan → WS-подписчикам (Phase 1.4 v2)."""
         self.bridge.on_lidar_scan(msg)
 
-    def _on_camera_image(self, msg: Image) -> None:
-        """ROS /camera/camera/color/image_raw → JPEG → WS (camera_rear).
+    def _on_camera_image(self, msg: CompressedImage) -> None:
+        """ROS /camera/camera/color/image_raw/compressed → WS (camera_rear).
 
-        Phase 1 baseline: numpy → cv2.imencode('.jpg') → BINARY_FRAME.
-        Ошибку кодирования (нет numpy/cv2, неподдерживаемый encoding) логируем
-        warning один раз и debug дальше — нода не падает. Кадры шлются только
-        сессиям, подписанным на camera_rear (broadcast_frame no-op если
-        подписчиков нет).
+        image_transport уже отдаёт JPEG-байты (format="bgr8; jpeg compressed"),
+        поэтому перекодирование не нужно — форвардим msg.data как есть. Кадры
+        шлются только сессиям, подписанным на camera_rear.
         """
-        try:
-            payload = image_to_payload(msg)
-        except Exception as e:  # noqa: BLE001
-            if not self._camera_encode_warned:
-                self.get_logger().warning(f"camera_rear encode failed: {e}")
-                self._camera_encode_warned = True
-            else:
-                self.get_logger().debug(f"camera_rear encode failed: {e}")
+        if not msg.data:
             return
-        self.bridge.publish_frame("camera_rear", payload)
+        self.bridge.publish_frame("camera_rear", bytes(msg.data))
 
     def _on_tick_timer(self) -> None:
         if not self._aio_started:
