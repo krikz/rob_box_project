@@ -24,8 +24,8 @@ function makeGamepad(overrides: Partial<FakeGamepad> = {}): FakeGamepad {
   return { buttons, axes, ...overrides };
 }
 
-function makeSource(gamepad: FakeGamepad | null): XRInputSource {
-  return { gamepad } as unknown as XRInputSource;
+function makeSource(gamepad: FakeGamepad | null, handedness: XRHandedness = "right"): XRInputSource {
+  return { gamepad, handedness } as unknown as XRInputSource;
 }
 
 describe("pollXrInput", () => {
@@ -34,7 +34,8 @@ describe("pollXrInput", () => {
       linear: 0,
       angular: 0,
       deadman: false,
-      emergency: false
+      emergency: false,
+      ptt: false
     });
   });
 
@@ -84,9 +85,34 @@ describe("pollXrInput", () => {
       angularAxis: 2,
       invertLinear: false,
       invertAngular: true,
-      deadzone: 0.12
+      deadzone: 0.12,
+      pttButton: 1,
+      pttHandedness: "right"
     });
     expect(r.deadman).toBe(true);
     expect(r.emergency).toBe(true);
+  });
+
+  it("right grip (squeeze) → ptt=true and deadman=true", () => {
+    const gp = makeGamepad();
+    gp.buttons[1].value = 1;
+    const r = pollXrInput(makeSource(gp, "right"));
+    expect(r.ptt).toBe(true);
+    expect(r.deadman).toBe(true);
+  });
+
+  it("left grip (squeeze) → deadman=true but ptt=false", () => {
+    const gp = makeGamepad();
+    gp.buttons[1].value = 1;
+    const r = pollXrInput(makeSource(gp, "left"));
+    expect(r.deadman).toBe(true);
+    expect(r.ptt).toBe(false);
+  });
+
+  it("right trigger (button 0) → ptt=false", () => {
+    const gp = makeGamepad();
+    gp.buttons[0].value = 1;
+    const r = pollXrInput(makeSource(gp, "right"));
+    expect(r.ptt).toBe(false);
   });
 });

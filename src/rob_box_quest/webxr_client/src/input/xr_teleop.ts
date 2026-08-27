@@ -21,21 +21,26 @@ export interface XrPollResult {
   angular: number; // -1..1 (уже с deadzone)
   deadman: boolean; // grip зажат
   emergency: boolean; // B/Y нажата (level; edge-trigger делает caller)
+  ptt: boolean; // правый grip (рация): push-to-talk
 }
 
 export function pollXrInput(source: XRInputSource, bindings: TeleopBindings = DEFAULT_BINDINGS): XrPollResult {
   const gp = source.gamepad;
   if (!gp) {
-    return { linear: 0, angular: 0, deadman: false, emergency: false };
+    return { linear: 0, angular: 0, deadman: false, emergency: false, ptt: false };
   }
   const deadman = (gp.buttons[bindings.deadmanButton]?.value ?? 0) > 0.5;
+  const ptt =
+    source.handedness === bindings.pttHandedness &&
+    (gp.buttons[bindings.pttButton]?.value ?? 0) > 0.5;
   const tx = gp.axes[bindings.angularAxis] ?? 0;
   const ty = gp.axes[bindings.linearAxis] ?? 0;
   return {
     linear: applySign(applyDeadzone(ty, bindings.deadzone), bindings.invertLinear),
     angular: applySign(applyDeadzone(tx, bindings.deadzone), bindings.invertAngular),
     deadman,
-    emergency: gp.buttons[bindings.emergencyButton]?.pressed ?? false
+    emergency: gp.buttons[bindings.emergencyButton]?.pressed ?? false,
+    ptt
   };
 }
 

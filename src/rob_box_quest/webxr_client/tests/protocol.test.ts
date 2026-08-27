@@ -98,3 +98,19 @@ describe("JSON helper", () => {
     expect(obj).toEqual({ type: "heartbeat", ts_ms: 12345 });
   });
 });
+
+describe("VOICE_AUDIO frame", () => {
+  it("defines VOICE_AUDIO = 0x13 (client→server)", () => {
+    expect(FrameType.VOICE_AUDIO).toBe(0x13);
+  });
+
+  it("round-trips VOICE_AUDIO with raw int16 PCM payload", () => {
+    // int16 LE samples: 0, 32767, -32768
+    const pcm = new Uint8Array([0x00, 0x00, 0xff, 0x7f, 0x00, 0x80]);
+    const bytes = encodeFrame(FrameType.VOICE_AUDIO, 0, pcm);
+    const decoded = decodeFrame(bytes);
+    expect(decoded.type).toBe(FrameType.VOICE_AUDIO);
+    expect(decoded.streamId).toBe(0);
+    expect(Array.from(decoded.payload)).toEqual(Array.from(pcm));
+  });
+});

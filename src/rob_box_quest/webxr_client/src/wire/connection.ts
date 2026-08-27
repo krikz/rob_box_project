@@ -162,6 +162,13 @@ export class Connection {
     this.ws.send(bytes as unknown as ArrayBuffer);
   }
 
+  sendVoiceAudio(payload: Uint8Array, streamId = 0): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    // VOICE_AUDIO (0x13, client→server): сырой int16 PCM 16 kHz mono (рация).
+    const bytes = encodeFrame(FrameType.VOICE_AUDIO, streamId, payload);
+    this.ws.send(bytes as unknown as ArrayBuffer);
+  }
+
   private openSocket(): void {
     this.clearTimers();
     this.setState(this.reconnectAttempt > 0 ? "reconnecting" : "connecting");

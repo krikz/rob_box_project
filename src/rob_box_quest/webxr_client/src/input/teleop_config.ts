@@ -41,6 +41,10 @@ export interface TeleopBindings {
   invertAngular: boolean;
   /** Deadzone: |v| < deadzone → 0 (допустимо 0 < deadzone < 1). */
   deadzone: number;
+  /** Кнопка PTT (рация): нажатие → voice_ptt_start (edge-triggered). */
+  pttButton: number;
+  /** Рука PTT: правая = рация, левая = робот-голос (follow-up). */
+  pttHandedness: "left" | "right" | "none";
 }
 
 export const DEFAULT_BINDINGS: TeleopBindings = {
@@ -51,5 +55,7 @@ export const DEFAULT_BINDINGS: TeleopBindings = {
   invertLinear: false,
   // Стик вправо (tx>0) → angular<0 → поворот направо.
   invertAngular: true,
-  deadzone: 0.12
+  deadzone: 0.12,
+  pttButton: GAMEPAD_BUTTONS.squeeze, // grip (рация)
+  pttHandedness: "right"
 };
