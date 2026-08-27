@@ -171,6 +171,13 @@ export class Connection {
 
   private openSocket(): void {
     this.clearTimers();
+    // Сброс подписок на новый сокет: после reconnect сервер создаёт НОВУЮ
+    // сессию с пустым `subscribed`, старые stream_id/topic недействительны.
+    // Иначе subscribe() увидит topicToStreamId и не отправит SUBSCRIBE,
+    // и сессия останется без стримов (чёрный экран после реконнекта).
+    this.streamIdToTopic.clear();
+    this.topicToStreamId.clear();
+    this.topicToQuality.clear();
     this.setState(this.reconnectAttempt > 0 ? "reconnecting" : "connecting");
 
     let ws: WebSocket;
