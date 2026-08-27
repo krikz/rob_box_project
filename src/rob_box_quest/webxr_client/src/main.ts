@@ -5,7 +5,7 @@
 //     (requestSession вызывается в user-activation submit handler);
 //   - иначе остаёмся в desktop-режиме (WASD fallback + 2D-рендер).
 //
-// Debug-панели lil-gui (stream_select / voice_picker) в продакшене не создаются.
+// Debug-панелей (lil-gui) больше нет — вход только через PIN-форму.
 
 import { Connection } from "./wire/connection";
 import { createCaptainBridge } from "./scene/captain_bridge";

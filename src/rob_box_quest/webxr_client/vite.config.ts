@@ -16,8 +16,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          three: ["three"],
-          gui: ["lil-gui"]
+          three: ["three"]
         }
       }
     }
