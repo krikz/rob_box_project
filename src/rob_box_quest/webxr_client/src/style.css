@@ -68,41 +68,6 @@ body {
   border-color: var(--danger);
 }
 
-.voice-indicator {
-  position: absolute;
-  top: 16px;
-  right: 16px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  pointer-events: none;
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
-.voice-indicator--offline {
-  color: var(--danger);
-  border-color: var(--danger);
-}
-
-.panel-info {
-  position: absolute;
-  bottom: 16px;
-  left: 16px;
-  padding: 6px 12px;
-  border-radius: 8px;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  font-size: 11px;
-  color: var(--muted);
-  pointer-events: none;
-  max-width: 60vw;
-}
-
 .pin-overlay {
   position: fixed;
   inset: 0;
@@ -188,16 +153,3 @@ body {
   margin: 0;
 }
 
-/* lil-gui position tweak (right-top, not corner). */
-.lil-gui.root {
-  --background-color: var(--panel-bg);
-  --text-color: var(--fg);
-  --title-background-color: rgba(0, 0, 0, 0.4);
-  --widget-color: rgba(255, 255, 255, 0.08);
-  --hover-color: rgba(255, 255, 255, 0.16);
-  --focus-color: rgba(46, 194, 126, 0.3);
-  --number-color: var(--accent);
-  --string-color: var(--warn);
-  top: 16px;
-  right: 16px;
-}
