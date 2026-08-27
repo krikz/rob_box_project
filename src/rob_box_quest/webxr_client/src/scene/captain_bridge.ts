@@ -9,6 +9,12 @@ import {
   type BridgeAssetHandle,
 } from "./bridge_assets";
 
+// Фронтальная камера робота — выводится на большой экран-стену перед
+// оператором. Это OAK-D color (0x1001), которая в protocol/topics.py
+// исторически названа "camera_rear", хотя это и есть передняя камера
+// (та же, что в Telegram: /camera/camera/color/image_raw).
+export const MAIN_SCREEN_TOPIC = "camera_rear";
+
 export interface CaptainBridgeOptions {
   canvas: HTMLCanvasElement;
   enableXr?: boolean;
@@ -27,6 +33,8 @@ export interface CaptainBridgeHandle {
   lidar: LidarOverlay;
   panels: PanelManager;
   videoPanels: Map<string, VideoPanel>;
+  /** Большой экран-стена с фронтальной камерой (MAIN_SCREEN_TOPIC). */
+  mainScreen: VideoPanel;
   /**
    * Loaded environment handle once `loadEnvironment()` resolves. `null`
    * until then, or if `environmentBaseUrl === null` was passed.
@@ -99,9 +107,26 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   const lidar = new LidarOverlay();
   scene.add(lidar.object);
 
-  // Panel manager + video panels.
-  const panelMgr = new PanelManager();
+  // Panel manager + video panels. Дефолтных floating-панелей больше нет —
+  // вместо них один большой экран-стена (см. mainScreen ниже).
+  const panelMgr = new PanelManager({ defaultTopics: [] });
   const videoPanels = new Map<string, VideoPanel>();
+
+  // Большой экран-стена перед оператором: на него выводим фронтальную
+  // камеру. Стена мостика стоит на z = -4 (ROOM_D/2); экран висит чуть
+  // ближе (z = -3.9), лицом к пользователю (facing +Z).
+  const mainScreen = new VideoPanel(
+    {
+      id: "main_screen",
+      topic: MAIN_SCREEN_TOPIC,
+      position: { x: 0, y: 1.5, z: -3.9 },
+      facing: { x: 0, z: 1 },
+      size: { width: 4.8, height: 2.7 },
+      selected: false
+    },
+    { showLabel: false, canvasWidth: 1280, canvasHeight: 720 }
+  );
+  scene.add(mainScreen.mesh);
 
   // Phase 2.1 environment (loaded lazily via loadEnvironment()).
   let environment: BridgeAssetHandle | null = null;
@@ -236,6 +261,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
 
   function dispose(): void {
     window.removeEventListener("resize", resize);
+    mainScreen.dispose();
     for (const vp of videoPanels.values()) vp.dispose();
     lidar.dispose();
     environment?.dispose();
@@ -249,6 +275,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     lidar,
     panels: panelMgr,
     videoPanels,
+    mainScreen,
     environment,
     loadEnvironment,
     initLayout,

@@ -8,7 +8,7 @@
 // Debug-панелей (lil-gui) больше нет — вход только через PIN-форму.
 
 import { Connection } from "./wire/connection";
-import { createCaptainBridge } from "./scene/captain_bridge";
+import { createCaptainBridge, MAIN_SCREEN_TOPIC } from "./scene/captain_bridge";
 import { TeleopFSM } from "./input/teleop_fsm";
 import { createDesktopTeleop } from "./input/desktop_teleop";
 import { createXrTeleop, pollXrInput } from "./input/xr_teleop";
@@ -19,10 +19,7 @@ const CLIENT_VERSION = "0.1.0";
 const SUBPROTOCOL = "robbox-quest-v1";
 
 const DEFAULT_SUBSCRIBED_TOPICS = [
-  "camera_rear",
-  "camera_oak_color",
-  "camera_oak_depth",
-  "camera_ceiling",
+  MAIN_SCREEN_TOPIC,
   "lidar_2d"
 ];
 
@@ -157,19 +154,8 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             bridge.lidar.ingestPayload(payload);
             return;
           }
-          if (
-            topic === "camera_rear" ||
-            topic === "camera_oak_color" ||
-            topic === "camera_oak_depth" ||
-            topic === "camera_ceiling" ||
-            topic === "camera_front"
-          ) {
-            for (const [panelId, vp] of bridge.videoPanels.entries()) {
-              const panelState = bridge.panels.get(panelId);
-              if (panelState && panelState.topic === topic) {
-                vp.ingestJpeg(payload);
-              }
-            }
+          if (topic === MAIN_SCREEN_TOPIC) {
+            bridge.mainScreen.ingestJpeg(payload);
             return;
           }
         },
