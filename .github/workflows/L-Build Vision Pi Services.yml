@@ -23,7 +23,6 @@ permissions:
 
 env:
   LOCAL_REGISTRY: localhost:5000
-  GHCR_REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/krikz/rob_box
   LOCAL_PREFIX: localhost:5000/krikz/rob_box
   ROS_DISTRO: humble
@@ -38,15 +37,25 @@ jobs:
       - name: Set build configuration
         id: set-config
         run: |
-          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
-          if [ "$BRANCH_NAME" = "main" ]; then
+          # Issue #1041: на refs/tags/vX.Y.Z... strip refs/heads/ даёт refs/tags/v...,
+          # что не матчит ни одну ветку — попадает в else → DOCKER_TAG=local,
+          # а файла docker/vision/.image-versions.local не существует.
+          # Релизные теги v* мапим в latest (production), это согласовано с
+          # L-Deploy and Verify.yml (production → IMAGE_TAG=latest).
+          # РЕВЕРТ #1139 (13.08): SHA-теги снова коммитятся прямо в текущую ветку.
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]] && [[ "${GITHUB_REF_NAME}" == v* ]]; then
             DOCKER_TAG="latest"
-          elif [ "$BRANCH_NAME" = "develop" ]; then
-            DOCKER_TAG="dev"
-          elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == feat/* ]] || [[ "$BRANCH_NAME" == copilot/* ]] || [[ "$BRANCH_NAME" == z-{e2e}/* ]] || [[ "$BRANCH_NAME" == z-{agent}/* ]]; then
-            DOCKER_TAG="test"
           else
-            DOCKER_TAG="local"
+            BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+            if [ "$BRANCH_NAME" = "main" ]; then
+              DOCKER_TAG="latest"
+            elif [ "$BRANCH_NAME" = "develop" ]; then
+              DOCKER_TAG="dev"
+            elif [[ "$BRANCH_NAME" == feature/* ]] || [[ "$BRANCH_NAME" == feat/* ]] || [[ "$BRANCH_NAME" == copilot/* ]] || [[ "$BRANCH_NAME" == z-{e2e}/* ]] || [[ "$BRANCH_NAME" == z-{agent}/* ]]; then
+              DOCKER_TAG="test"
+            else
+              DOCKER_TAG="local"
+            fi
           fi
           echo "docker_tag=${DOCKER_TAG}" >> $GITHUB_OUTPUT
           echo "Docker Tag: $DOCKER_TAG"
@@ -81,7 +90,7 @@ jobs:
             --tag "${LOCAL_TAG}" \
             --load \
             --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:depthai" \
+            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:depthai-${ROS_DISTRO}" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/vision
 
@@ -122,7 +131,7 @@ jobs:
             --tag "${LOCAL_TAG}" \
             --load \
             --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh" \
+            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             --build-arg="ROS2LEDS_SHA=${ROS2LEDS_SHA}" \
             .
@@ -161,7 +170,7 @@ jobs:
             --tag "${LOCAL_TAG}" \
             --load \
             --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh" \
+            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/vision
 
@@ -279,7 +288,7 @@ jobs:
             --tag "${LOCAL_TAG}" \
             --load \
             --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:rtabmap" \
+            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:rtabmap-${ROS_DISTRO}" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             docker/vision/${SERVICE}
 
@@ -318,7 +327,7 @@ jobs:
             --tag "${LOCAL_TAG}" \
             --load \
             --add-host=host.docker.internal:host-gateway \
-            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh" \
+            --build-arg="BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}" \
             --build-arg="APT_PROXY=http://host.docker.internal:3142" \
             --build-arg="SOURCE_HASH=${SOURCE_HASH}" \
             .
@@ -370,6 +379,10 @@ jobs:
     needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider]
     runs-on: [self-hosted, rob-box]
     if: success() && inputs.push_to_registry != false
+    # Issue #t_dd49849b: 2.7h+ hang observed on concurrent runs (round-224+225+develop)
+    # when git pull --rebase / git push blocked indefinitely under ref contention.
+    # Hard 10-min cap surfaces the failure visibly (instead of stuck-in_progress).
+    timeout-minutes: 10
     steps:
       - name: Clean stale submodules
         run: |
@@ -382,20 +395,30 @@ jobs:
         with:
           submodules: false
           clean: true
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Tag with SHA and update .image-versions
+        # Bugfix issue #1482: вместо `git rev-parse --short HEAD` используем
+        # `${GITHUB_SHA::7}` — это commit, который ТРИГГЕРНУЛ workflow run,
+        # неизменный на всём протяжении run и равный round-ветке HEAD в момент
+        # dispatch/call. Прежний подход брал локальный HEAD, который мог
+        # сместиться после `git pull --rebase` внутри scripts/ci/push-image-versions.sh
+        # → .image-versions.test указывал на несуществующий image (`docker compose pull`
+        # failed → fallback на stale-83d4064f), робот не обновлялся (round-163).
         run: |
           DOCKER_TAG="${{ needs.prepare.outputs.docker_tag }}"
-          SHORT_SHA=$(git rev-parse --short HEAD)
+          SHORT_SHA="${GITHUB_SHA::7}"
           NEW_TAG="${DOCKER_TAG}-${SHORT_SHA}"
 
-          # Tag and push SHA-immutable images for each service
+          # Tag and push SHA-immutable images to LOCAL registry only.
+          # GHCR push убран — локальные develop/test сборки больше не публикуются
+          # в ghcr.io (issue #1503 решён иначе: deploy читает из local registry
+          # для develop/test, prod-push в GHCR — отдельный workflow на main).
           tag_and_push() {
             local LOCAL_TAG="$1"
-            local SHA_TAG="${LOCAL_TAG}-${SHORT_SHA}"
-            docker tag "$LOCAL_TAG" "$SHA_TAG" && docker push "$SHA_TAG"
-            echo "✅ $SHA_TAG"
+            local LOCAL_SHA="${LOCAL_TAG}-${SHORT_SHA}"
+            docker tag "$LOCAL_TAG" "$LOCAL_SHA" && docker push "$LOCAL_SHA"
+            echo "✅ local  $LOCAL_SHA"
           }
 
           tag_and_push "${LOCAL_PREFIX}:oak-d-${ROS_DISTRO}-${DOCKER_TAG}"
@@ -405,6 +428,48 @@ jobs:
           tag_and_push "${LOCAL_PREFIX}:voice-assistant-${ROS_DISTRO}-${DOCKER_TAG}"
           tag_and_push "${LOCAL_PREFIX}:telegram-bot-${ROS_DISTRO}-${DOCKER_TAG}"
           # supercollider excluded: tag naming is inconsistent (no ROS_DISTRO prefix)
+
+          # Acceptance B (#1482): verify voice-assistant SHA-image is actually
+          # present in the local registry BEFORE writing it to .image-versions.
+          # Если .image-versions указывает на несуществующий tag → docker compose
+          # pull падает → робот не обновляется (см. доказательства в issue #1482).
+          verify_in_registry() {
+            local TAG="$1"
+            local REPO="krikz/rob_box"
+            local URL="http://${LOCAL_REGISTRY}/v2/${REPO}/manifests/${TAG}"
+            local HTTP_CODE
+            HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+              -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+              "$URL" || echo "000")
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "❌ Verify FAIL: ${TAG} missing in registry (HTTP ${HTTP_CODE})" >&2
+              echo "   ⚠️  Не коммитим .image-versions с несуществующим SHA-tag" >&2
+              return 1
+            fi
+            echo "✅ Verify OK: ${TAG} present in registry"
+            return 0
+          }
+
+          # Проверяем КАЖДЫЙ service-tag, который пишем в .image-versions. Если
+          # хотя бы один отсутствует → fail job, чтобы мерж-гейт поймал проблему
+          # ДО того, как deploy потянет stale-тег.
+          VERIFY_FAILED=0
+          for SVC_TAG in \
+            "voice-assistant-${ROS_DISTRO}-${NEW_TAG}" \
+            "voice-resources-${ROS_DISTRO}-${NEW_TAG}" \
+            "telegram-bot-${ROS_DISTRO}-${NEW_TAG}" \
+            "oak-d-${ROS_DISTRO}-${NEW_TAG}" \
+            "led-matrix-${ROS_DISTRO}-${NEW_TAG}" \
+            "ceiling-camera-${ROS_DISTRO}-${NEW_TAG}"; do
+            if ! verify_in_registry "$SVC_TAG"; then
+              VERIFY_FAILED=1
+            fi
+          done
+          if [ "$VERIFY_FAILED" -eq 1 ]; then
+            echo "❌ Registry verify failed для одного или нескольких SHA-тегов" >&2
+            echo "   .image-versions.test НЕ будет обновлён (round останется на прежнем SHA)" >&2
+            exit 1
+          fi
 
           # Update .image-versions file
           VERSIONS_FILE="docker/vision/.image-versions.${DOCKER_TAG}"
@@ -423,17 +488,18 @@ jobs:
             git config user.name "Rob Box CI"
             git add "$VERSIONS_FILE"
             if ! git diff --cached --quiet; then
-              BRANCH="${GITHUB_REF#refs/heads/}"
+              # 🔴 РЕВЕРТ #1244 (15.08, decision #1316): SHA-теги коммитим
+              # ПРЯМО в текущую ветку (develop) — ci/image-versions-* ветки
+              # НЕ работают (деплой при local не грузит .image-versions,
+              # тянет голые dev-теги → роботы получают старые образы).
+              #
+              # Issue #1388: race main↔vision — оба коммитят в одну ветку.
+              # Вместо inline retry-цикла зовём scripts/ci/push-image-versions.sh:
+              # он делает pull --rebase перед push и ФЕЙЛИТ job при невосстановимой
+              # ошибке (раньше job просто молча терял коммит и завершался success).
+              CURRENT_BRANCH="$(git branch --show-current)"
               git commit -m "ci: vision SHA tags → ${NEW_TAG} [skip ci]"
-              # Retry push (гонка: Main и Vision параллельно пушат в одну round-ветку)
-              for i in 1 2 3 4 5; do
-                git pull --rebase origin "$BRANCH" >/dev/null 2>&1 || true
-                if git push origin "$BRANCH" >/dev/null 2>&1; then
-                  break
-                fi
-                sleep 5
-              done
-              echo "✅ Committed .image-versions: all vision tags → ${NEW_TAG}"
+              bash scripts/ci/push-image-versions.sh "$CURRENT_BRANCH" vision
             fi
           else
             echo "⚠️  $VERSIONS_FILE not found"

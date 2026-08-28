@@ -15,15 +15,28 @@
 #
 # Usage:
 #   e2e_voice_test.sh --text "Робот, меня зовут Саша" [--voice anton]
-#   e2e_voice_test.sh --scenario /tmp/scenario.json
+#   e2e_voice_test.sh --scenario /tmp/scenario.json [--acceptance /tmp/acceptance.json]
 #   e2e_voice_test.sh --text "..." --voice ermil --retries 3 --react-window 40
+#
+# ADR-0022 GATE-1 (acceptance.json gate, issue #1428 / t_ba114e5c):
+#   Если --scenario задан, по умолчанию требуется acceptance.json (next to
+#   scenario.json либо через --acceptance <path>). Без acceptance.json →
+#   FAIL c понятным сообщением. Отключить: --acceptance-skip (НЕ
+#   рекомендуется — smoke-false-PASS, ADR-0022 §4.1 R1).
 #
 # Env (обязательные): YANDEX_API_KEY, ROBOT_HOST=10.1.1.21, SSHPASS
 # Env (опциональные): E2E_MAX_ATTEMPTS=3, E2E_REACTION_WINDOW=40,
-#                     E2E_RETRY_PAUSE=10, E2E_RECORD_EXTRA=20
+#                     E2E_RETRY_PAUSE=10, E2E_RECORD_EXTRA=20,
+#                     GITHUB_RUN_ID (для OUT_DIR и симлинка
+#                                    /tmp/dialog_e2e_<run_id>.wav —
+#                                    workflow передаёт ${{ github.run_id }})
 #
 # Output (на запускающем хосте 249):
-#   /tmp/e2e_v2_<run_id>/{model.json, scenario.json, step_N.log, verdict.txt}
+#   /tmp/e2e_v2_<run_id>/{model.json, scenario.json, step_N.log,
+#                          recording.wav, verdict.txt}
+#   Симлинк: /tmp/dialog_e2e_${RUN_ID}.wav -> recording.wav
+#            (контракт для workflow L-E2E Voice Test.yml артефакта
+#             e2e-voice-recording-<run_id>)
 #   stdout: "E2E_STEP <N> OK|FAIL|SKIP" + "E2E_VERDICT PASS|FAIL"
 # ============================================================================
 set -u
@@ -33,20 +46,99 @@ E2E_MAX_ATTEMPTS="${E2E_MAX_ATTEMPTS:-3}"
 E2E_REACTION_WINDOW="${E2E_REACTION_WINDOW:-40}"   # сек ждём полный цикл после play
 E2E_RETRY_PAUSE="${E2E_RETRY_PAUSE:-10}"
 E2E_RECORD_EXTRA="${E2E_RECORD_EXTRA:-15}"          # хвост записи после реакции
+E2E_RECORDING="${E2E_RECORDING:-1}"                 # 1 = писать микрофон (issue #1353)
 ROBOT_HOST="${ROBOT_HOST:-10.1.1.21}"
 ROBOT_USER="${ROBOT_USER:-ros2}"
+# GITHUB_RUN_ID — передаётся из workflow L-E2E Voice Test.yml (${{ github.run_id }}),
+# используется как RUN_ID (→ OUT_DIR и симлинк /tmp/dialog_e2e_<run_id>.wav).
+# Если не задан (локальный запуск) — RUN_ID будет локальный timestamp. См. issue #1353.
+GITHUB_RUN_ID="${GITHUB_RUN_ID:-}"
 # NOTE (retro t_0a5d65af, round-50): НЕЛЬЗЯ ставить "LC_ALL=C " префиксом в
 # ROBOT_SSH — при раскрытии ${ROBOT_SSH} bash выполняет "LC_ALL=C" как КОМАНДУ
 # (rc=127 command not found), весь ROBOT_SSH возвращает пусто, check_cycle
 # видит пустые логи и выдаёт no_accept при живом роботе. Locale префикс
 # работает только как литерал перед командой, не через переменную.
-ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -o StrictHostKeyChecking=no ${ROBOT_USER}@${ROBOT_HOST}"
+ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -n -o StrictHostKeyChecking=no ${ROBOT_USER}@${ROBOT_HOST}"
+# Override для локального тестирования (юнит-тесты): если задан ROBOT_SSH_OVERRIDE,
+# используем его вместо ssh-команды. Позволяет bash-юнит-тестам подсунуть
+# stub без реального sshpass+robot.
+if [ -n "${ROBOT_SSH_OVERRIDE:-}" ]; then
+    ROBOT_SSH="$ROBOT_SSH_OVERRIDE"
+fi
 YANDEX_TTS_VOICE="${YANDEX_TTS_VOICE:-anton}"       # голос по умолчанию
 YANDEX_SPEED="${YANDEX_SPEED:-1.0}"
+# Причина FAIL (для пост-валидатора и e2e-process::detect_fail_kind).
+# feature > llm_error > synth > no_reaction. feature всегда побеждает:
+# если фича-ассерт (patterns/acceptance/GATE-1) зафейлился — это баг кода,
+# а НЕ «робот не ответил» (иначе e2e-process классифицирует как infra).
+E2E_FAIL_KIND=""
 
-RUN_ID="$(date +%Y%m%d_%H%M%S)"
+# RUN_ID — уникальный идентификатор прогона. Используем github.run_id если
+# передан (workflow L-E2E Voice Test.yml передаёт GITHUB_RUN_ID в env), иначе
+# локальный timestamp. Это позволяет workflow'у надёжно находить OUT_DIR и
+# забирать все артефакты через конкретный путь /tmp/e2e_v2_<run_id>/...
+# (issue #1353).
+RUN_ID="${GITHUB_RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 OUT_DIR="/tmp/e2e_v2_${RUN_ID}"
+RECORDING_RAW="/tmp/e2e_raw_${RUN_ID}.pcm"
+RECORDING_WAV="${OUT_DIR}/recording.wav"
 mkdir -p "$OUT_DIR"
+
+# Агрегатный GATE-1 (check_gate1_aggregate) сканирует docker logs с
+# ``--since <before>``. Раньше E2E_RUN_BEFORE нигде не задавался → fallback
+# ``date -u +%Y-%m-%dT%H:%M:%SZ`` вычислялся В КОНЦЕ прогона (== "now") →
+# docker logs возвращал пустоту → GATE-1 всегда FAIL («expected tool calls
+# not invoked»), хотя tool calls в логах были. Фикс: фиксируем момент старта
+# прогона ПО ЧАСАМ РОБОТА (docker logs --since сравнивает с timestamp
+# контейнера робота) до первого шага.
+E2E_RUN_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# --- ADR-0027 §5.2: wake-gate pre-flight probe ----------------------------
+# Retro t_be491fba: rounds 215-222 voice_core_suite_v1 показали fail-streak
+# 3/3+ на cold-start wake-gate. dj02_stop_music шаг имеет ✅ ПОЛНЫЙ ЦИКЛ
+# (акцепт + LLM + TTS) + PATTERN_MISS stop_music → aggregate GATE-1 фейлит
+# "expected tool calls not invoked: stop_music". Root cause = cold-start
+# wake-gate (TRANSCRIPT[dj02] = «стоп музыка» без «Робот»), а не LLM race
+# как было misdiagnosed в t_9d229634.
+#
+# Probe: проверяем docker logs с момента E2E_RUN_BEFORE — есть ли ЛЮБОЕ
+# ПРИНЯТО с wake-prefix (Робот/Робокс). Если нет → cold-start не пройден →
+# step.expect="wake-gated" помечаются SKIP, не FAIL (backlog-аккумулятор
+# копит «обот»/«как дела» без wake — это by design, не bug).
+#
+# Артефакт: $OUT_DIR/wake_gate_preflight.json — verdict, checked_at, before,
+# reason, error. CI / ревью читают его для доказательства «это cold-start
+# flake, а не acceptance fail».
+WAKE_GATE_PREFLIGHT_FILE="${OUT_DIR}/wake_gate_preflight.json"
+WAKE_GATE_CLEARED=0   # 1 = cold-start cleared, 0 = not cleared, 2 = probe error
+WAKE_GATE_PREFLIGHT_REASON=""
+# Под set -u SCENARIO_FILE может быть не задан (single-text mode). Используем
+# ${SCENARIO_FILE:-} для безопасного обращения.
+if [ -n "${SCENARIO_FILE:-}" ]; then
+    log "WAKE-GATE-PREFLIGHT: probe before=${E2E_RUN_BEFORE}"
+    run_wake_gate_preflight "$E2E_RUN_BEFORE" "$WAKE_GATE_PREFLIGHT_FILE"
+    case $? in
+        0)  WAKE_GATE_CLEARED=1
+            WAKE_GATE_PREFLIGHT_REASON="cold-start cleared"
+            log "WAKE-GATE-PREFLIGHT: ✅ cold-start cleared" ;;
+        1)  WAKE_GATE_CLEARED=0
+            WAKE_GATE_PREFLIGHT_REASON="cold-start NOT cleared"
+            log "WAKE-GATE-PREFLIGHT: ⚠️ cold-start NOT cleared — wake-gated steps will SKIP" ;;
+        2)  WAKE_GATE_CLEARED=2
+            WAKE_GATE_PREFLIGHT_REASON="probe error"
+            log "WAKE-GATE-PREFLIGHT: ❌ probe error (no ROBOT_SSH / docker logs) — treating as not-cleared" ;;
+    esac
+else
+    # single-text mode: preflight не применим (одиночный wake-step не
+    # требует cold-start gate — он и ЕСТЬ cold-start probe). Пишем
+    # минимальный JSON, чтобы артефакт всегда был.
+    WAKE_GATE_CLEARED=1
+    mkdir -p "$OUT_DIR"
+    printf '{\n  "cleared": true,\n  "checked_at": "%s",\n  "before": "%s",\n  "reason": "single-text mode — preflight N/A (per-step wake-gated handled by run_step retry loop)",\n  "error": null\n}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "$E2E_RUN_BEFORE" \
+        > "$WAKE_GATE_PREFLIGHT_FILE"
+fi
 
 # --- самовосстановление артефакт-дира (ретро 11.08 t_26a6d362) -------------
 # Параллельный infra-cleanup на 249 (t_0a5d65af) удалял /tmp/e2e_v2_* ВО ВРЕМЯ
@@ -60,19 +152,134 @@ ensure_outdir() {
     fi
 }
 
+# --- запись микрофона (issue #1353) ------------------------------------------
+# Старый e2e_remote.sh писал parec в /tmp/e2e_raw.pcm → /tmp/dialog_e2e_<id>.wav
+# (контракт артефакта e2e-voice-recording-<run_id>). Atomic v2 (10.08) запись
+# убрал → workflow L-E2E Voice Test.yml:381-387 пытается загрузить файл,
+# которого нет, и молча пропускает артефакт (if-no-files-found: ignore).
+# Фикс: пишем ВЕСЬ retry-цикл (все попытки всех шагов) в $RECORDING_RAW, в
+# конце конвертируем в $RECORDING_WAV и делаем симлинк на путь, который
+# ждёт workflow.
+#
+# Best-effort: если parec/ffmpeg отсутствуют — e2e НЕ падает (запись — это
+# артефакт для пост-анализа, не критерий приёма). Если запись короткая
+# (<1KB) — пишем warning в лог, но тест идёт дальше.
+REC_PID=""
+start_recording() {
+    if [ "$E2E_RECORDING" != "1" ]; then
+        log "RECORDING: выключен через E2E_RECORDING=0"
+        return 0
+    fi
+    if ! command -v parec >/dev/null 2>&1; then
+        log "WARN RECORDING: parec не найден (Katana без PulseAudio?) — пропускаю запись"
+        return 0
+    fi
+    # Длительность: все попытки всех шагов + хвост. С запасом — scenario с 3
+    # шагами по 3 попытки = 9 циклов; +E2E_RECORD_EXTRA секунд тишины после
+    # последней реакции. timeout корректно убивает parec (SIGTERM → EOF),
+    # дальше ffmpeg доводит raw PCM до валидного WAV.
+    # Используем дефолтный source (PulseAudio @DEFAULT_SOURCE@) — он же
+    # использовался в старом e2e_remote.sh.
+    local max_steps="${E2E_MAX_STEPS:-5}"
+    # e2e run 32595628905: хардкод max_steps=5 обрезал запись — voice_core_suite
+    # содержит 11 шагов, и parec умирал до конца теста (в артефакт попадал
+    # только кусок прогона). Считаем число шагов из scenario.json, если задан.
+    if [ -n "$SCENARIO_FILE" ] && [ -f "$SCENARIO_FILE" ]; then
+        local _n
+        _n="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8")).get("steps", [])))' "$SCENARIO_FILE" 2>/dev/null || echo 0)"
+        case "$_n" in
+            ''|*[!0-9]*) : ;;
+            *) [ "$_n" -gt "$max_steps" ] && max_steps="$_n" ;;
+        esac
+    fi
+    local total_secs=$(( E2E_MAX_ATTEMPTS * max_steps * (E2E_REACTION_WINDOW + E2E_RETRY_PAUSE) + E2E_RECORD_EXTRA + 30 ))
+    log "RECORDING: старт parec → ${RECORDING_RAW} (timeout ${total_secs}s)"
+    rm -f "$RECORDING_RAW"
+    # shellcheck disable=SC2086
+    timeout "$total_secs" parec --format=s16le --channels=1 --rate=16000 "$RECORDING_RAW" \
+        >/tmp/e2e_rec_$$.log 2>&1 &
+    REC_PID=$!
+    # Дать parec ~1s подняться, иначе первые 0.5с могут пропасть
+    sleep 1
+    if ! kill -0 "$REC_PID" 2>/dev/null; then
+        log "WARN RECORDING: parec не запустился ($(tail -1 /tmp/e2e_rec_$$.log))"
+        REC_PID=""
+        return 0
+    fi
+    log "RECORDING: pid=${REC_PID}"
+}
+
+# shellcheck disable=SC2329  # вызывается через trap 'stop_recording' EXIT
+stop_recording() {
+    if [ -z "$REC_PID" ]; then return 0; fi
+    # 🔴 e2e run 32595628905: старый `if ! kill -0; then ... return 0; fi`
+    # делал РАННИЙ ВЫХОД, когда parec уже умер от timeout (всегда так для
+    # длинного scenario — max_steps был хардкодом 5 < 11 шагов). В итоге
+    # сырой /tmp/e2e_raw_<RID>.pcm (25MB) НИКОГДА не конвертировался в
+    # recording.wav, симлинк не создавался, а workflow collect падал на
+    # stale-аудио другого прогона. Теперь: если parec ещё жив — гасим его,
+    # если уже умер — просто конвертируем записанный RAW (он валиден).
+    if kill -0 "$REC_PID" 2>/dev/null; then
+        log "RECORDING: stop (SIGTERM pid=${REC_PID})"
+        kill -TERM "$REC_PID" 2>/dev/null || true
+        # Дать parec корректно закрыть pipe (graceful shutdown → корректный EOF)
+        for _ in 1 2 3 4 5; do
+            if ! kill -0 "$REC_PID" 2>/dev/null; then break; fi
+            sleep 1
+        done
+    else
+        log "RECORDING: parec уже завершился (timeout) — конвертирую записанный RAW"
+    fi
+    wait "$REC_PID" 2>/dev/null || true
+    REC_PID=""
+
+    ensure_outdir
+    if [ ! -s "$RECORDING_RAW" ]; then
+        log "WARN RECORDING: ${RECORDING_RAW} пустой (parec умер?) — запись не будет загружена"
+        return 0
+    fi
+    # Конвертация raw PCM → WAV (как в e2e_remote.sh:55-89). Гарантирует
+    # корректный RIFF header даже если SIGTERM пришёл раньше EOF.
+    if ! command -v ffmpeg >/dev/null 2>&1; then
+        log "WARN RECORDING: ffmpeg не найден — запись остаётся в raw PCM"
+        return 0
+    fi
+    if ffmpeg -nostdin -y -f s16le -ar 16000 -ac 1 -i "$RECORDING_RAW" "$RECORDING_WAV" 2>/dev/null; then
+        local size
+        size=$(stat -c %s "$RECORDING_WAV" 2>/dev/null || echo 0)
+        log "RECORDING_DONE: ${RECORDING_WAV} (${size} bytes)"
+        rm -f "$RECORDING_RAW"
+        # Симлинк для совместимости со старым контрактом workflow.
+        # /tmp/dialog_e2e_${RUN_ID}.wav — путь, который ждёт
+        # actions/upload-artifact (L-E2E Voice Test.yml:385). RUN_ID берётся
+        # из GITHUB_RUN_ID если передан, иначе timestamp (issue #1353).
+        local compat_path="/tmp/dialog_e2e_${RUN_ID}.wav"
+        ln -sfn "$RECORDING_WAV" "$compat_path"
+        log "RECORDING_LINK: ${compat_path} -> ${RECORDING_WAV}"
+    else
+        log "WARN RECORDING: ffmpeg-конвертация не удалась — оставляю raw PCM"
+    fi
+}
+
 # --- parse args -------------------------------------------------------------
 TEXT=""
 SCENARIO_FILE=""
+ACCEPTANCE_FILE=""
+ACCEPTANCE_SKIP=0
 VOICE=""
 PATTERNS=""
+CHECK_TG_ECHO=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --text)     TEXT="$2"; shift 2 ;;
         --voice)    VOICE="$2"; shift 2 ;;
         --scenario) SCENARIO_FILE="$2"; shift 2 ;;
+        --acceptance)        ACCEPTANCE_FILE="$2"; shift 2 ;;
+        --acceptance-skip)   ACCEPTANCE_SKIP=1; shift 1 ;;
         --patterns) PATTERNS="$2"; shift 2 ;;
         --retries)  E2E_MAX_ATTEMPTS="$2"; shift 2 ;;
         --react-window) E2E_REACTION_WINDOW="$2"; shift 2 ;;
+        --check-tg-echo) CHECK_TG_ECHO=1; shift 1 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -87,35 +294,368 @@ fi
 # --- helpers ----------------------------------------------------------------
 log() { echo ">>> $*"; }
 
+# mark_fail_kind() — запоминает самую информативную причину FAIL.
+# Приоритет: feature > llm_error > synth > no_reaction (feature не понижается).
+mark_fail_kind() {  # $1=kind
+    local kind="$1"
+    case "$kind" in
+        feature)     E2E_FAIL_KIND="feature" ;;
+        llm_error)   [ "$E2E_FAIL_KIND" = "feature" ] || E2E_FAIL_KIND="llm_error" ;;
+        synth)       { [ "$E2E_FAIL_KIND" = "feature" ] || [ "$E2E_FAIL_KIND" = "llm_error" ]; } || E2E_FAIL_KIND="synth" ;;
+        no_reaction) [ -z "$E2E_FAIL_KIND" ] && E2E_FAIL_KIND="no_reaction" ;;
+    esac
+}
+
+# BUG-B (t_f0612a43): имя wav файла строится из ${label} и идёт в heredoc-Python
+# synth_yandex, а также в paplay/ffmpeg. Раньше, если label содержал кириллицу
+# и/или спец-символы (,?!«»), имя файла получалось невалидным для оболочки
+# (pathname expansion ломал '?', запятая в Python heredoc путала аргументы),
+# и synth_yandex возвращал YANDEX_EMPTY / permission denied с текстом вместо
+# voice — шаг помечался FAIL synth без реального запуска команды.
+#
+# Фикс: транслитерация + ASCII slug ДО подстановки в out_wav. Исходный label
+# сохраняется для логов и transcript.json (человекочитаемость).
+#
+# Реализация: safe_label определена в отдельном файле e2e_voice_lib.sh,
+# чтобы можно было source'ить её из unit-тестов без побочных эффектов
+# (source основного файла выполняет main flow и валится на проверке ENV).
+SCRIPT_DIR_E2E="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR_E2E/e2e_voice_lib.sh"
+# ADR-0027 §5.2 wake-gate pre-flight helpers (retro t_be491fba). Source'ится
+# ПОСЛЕ e2e_voice_lib.sh, но ДО любых операций с docker logs. Pure functions
+# only — никакого main flow, никакого чтения ENV.
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR_E2E/e2e_voice_wake_gate.sh"
+
+# --- ADR-0022 GATE-1 acceptance.json (auto-discovery + gating) --------------
+# Резолвим ACCEPTANCE_FILE в порядке приоритета:
+#   1) --acceptance <path> (явный CLI)
+#   2) <dir(scenario.json)>/acceptance.json (preferred — common-case)
+#   3) <dir(scenario.json)>/<SCENARIO_BASE>_acceptance.json
+#      (back-compat: scenario=foo.json → foo_acceptance.json)
+#   4) <dir(scenario.json)>/<SCENARIO_BASE>_acceptance_v<N>.json
+#   5) <dir(scenario.json)>/<SCENARIO_PREFIX>_acceptance.json
+#      где PREFIX — имя без суффиксов _suite / _v1 / _v<N>
+#      (issue #1452: music_library_suite_v1.json → music_library_acceptance_v1.json)
+#   6) <dir(scenario.json)>/<SCENARIO_PREFIX>_acceptance_v<N>.json
+#   7) пустой → gating решает, что делать
+#
+# Issue #1452 (round-155 GATE-1 FAIL): ищется ровно acceptance.json, но в
+# репо лежит music_library_acceptance_v1.json → false-FAIL без реального
+# прогона. Решается цепочкой кандидатов (без поломки обратной совместимости
+# — acceptance.json по-прежнему в приоритете).
+if [ -z "$ACCEPTANCE_FILE" ] && [ -n "$SCENARIO_FILE" ]; then
+    _scenario_dir="$(dirname "$SCENARIO_FILE")"
+    _scenario_base="$(basename "$SCENARIO_FILE" .json)"
+    # PREFIX: убираем типичные хвосты сценариев (_suite, _v1, _v<N>)
+    _scenario_prefix="$_scenario_base"
+    # _v\d+ → strip
+    _scenario_prefix="${_scenario_prefix%_v[0-9]*}"
+    # _suite → strip (часто между feature и version: music_library_suite_v1).
+    # Используем именно %_suite (с подчёркиванием): %suite без _ удаляет
+    # буквы ИЗ КОНЦА слова и оставляет висящий _ (issue #1461):
+    # music_library_suite → music_library_, а не music_library.
+    _scenario_prefix="${_scenario_prefix%_suite}"
+    _found=""
+    for _cand in \
+        "acceptance.json" \
+        "${_scenario_base}_acceptance.json" \
+        "${_scenario_prefix}_acceptance.json" \
+        "${_scenario_prefix}_acceptance_v1.json" \
+        "${_scenario_prefix}_acceptance_v2.json"; do
+        if [ -f "${_scenario_dir}/${_cand}" ]; then
+            _found="${_scenario_dir}/${_cand}"
+            break
+        fi
+    done
+    if [ -n "$_found" ]; then
+        ACCEPTANCE_FILE="$_found"
+        log "GATE-1: acceptance auto-discovered at $ACCEPTANCE_FILE"
+    fi
+fi
+
+# Gating: scenario.json задан И acceptance.json отсутствует И не отключён
+# через --acceptance-skip → FAIL (ADR-0022 §4.1 R1: smoke-false-PASS).
+# Single-shot --text без scenario не требует acceptance (smoke-test
+# legitimate use case — быстрая итерация на одной фразе).
+if [ -n "$SCENARIO_FILE" ] && [ -z "$ACCEPTANCE_FILE" ] && [ "$ACCEPTANCE_SKIP" != "1" ]; then
+    _scenario_dir="$(dirname "$SCENARIO_FILE")"
+    _scenario_base="$(basename "$SCENARIO_FILE" .json)"
+    _scenario_prefix="$_scenario_base"
+    _scenario_prefix="${_scenario_prefix%_v[0-9]*}"
+    _scenario_prefix="${_scenario_prefix%_suite}"
+    log "❌ GATE-1 FAIL: --scenario задан, но acceptance.json не найден"
+    log "   Ожидался один из:"
+    log "     1) ${_scenario_dir}/acceptance.json"
+    log "     2) ${_scenario_dir}/${_scenario_base}_acceptance.json"
+    log "     3) ${_scenario_dir}/${_scenario_prefix}_acceptance.json"
+    log "     4) ${_scenario_dir}/${_scenario_prefix}_acceptance_v1.json"
+    log "   Обход (НЕ рекомендуется): --acceptance-skip"
+    log "   Подробнее: docs/adr/0022-process-e2e-done-gates.md §4.1"
+    mkdir -p "$OUT_DIR"
+    cat > "$OUT_DIR/acceptance.json" <<EOF
+{
+  "gate": "GATE-1",
+  "pass": false,
+  "reason": "scenario.json provided but acceptance.json not found",
+  "scenario_file": "$SCENARIO_FILE",
+  "expected_acceptance_paths": [
+    "$(dirname "$SCENARIO_FILE")/acceptance.json",
+    "$(dirname "$SCENARIO_FILE")/${_scenario_base}_acceptance.json",
+    "$(dirname "$SCENARIO_FILE")/${_scenario_prefix}_acceptance.json",
+    "$(dirname "$SCENARIO_FILE")/${_scenario_prefix}_acceptance_v1.json"
+  ],
+  "hint": "create acceptance.json with expected_tool_calls + must_not_call, or pass --acceptance-skip to disable gating"
+}
+EOF
+    echo "E2E_GATE1_MISSING_ACCEPTANCE"
+    exit 1
+fi
+
+# --- ADR-0022 GATE-1 aggregate (top-level) ----------------------------------
+# Возвращает 0 если PASS, 1 если FAIL.
+# В отличие от per-step check_acceptance(), эта функция анализирует ВСЕ
+# логи voice-assistant за весь прогон (агрегированно) и сверяет с
+# top-level expected_tool_calls + must_not_call.
+#
+# Контракт acceptance.json:
+#   expected_tool_calls: list[str]  — каждый должен встретиться хотя бы 1 раз
+#   must_not_call:        list[str]  — НИ ОДНОГО не должно встретиться
+#
+# Пишет $OUT_DIR/acceptance.json (перезаписывает per-step формат, если
+# был). Формат совместим с ADR-0022 §4.1.
+check_gate1_aggregate() {  # $1=acceptance_file_path $2=before_rfc3339
+    local acc_file="$1" before="${2:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+    if [ ! -f "$acc_file" ]; then
+        log "GATE-1: ❌ acceptance.json не найден: $acc_file"
+        return 1
+    fi
+
+    local logs logs_file
+    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    # Логи всего прогона могут превысить ARG_MAX (~2MB): передача через
+    # env-переменную `LOGS="$logs" python3` падала с «Argument list too long»
+    # (e2e run 32595628905, line 371 → пустой acceptance.json → GATE-1 ❌).
+    # Пишем логи в файл и читаем их в Python из файла.
+    logs_file="$OUT_DIR/.gate1_logs.txt"
+    printf '%s' "$logs" > "$logs_file"
+
+    # Парсим + валидируем acceptance.json в Python → пишем acceptance.json
+    # с verdict в OUT_DIR.
+    ACCEPTANCE_FILE="$acc_file" LOGS_FILE="$logs_file" python3 - <<'PY' > "$OUT_DIR/acceptance.json"
+import json, os, re, sys
+
+acc_path = os.environ["ACCEPTANCE_FILE"]
+with open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace") as _f:
+    logs = _f.read()
+
+try:
+    acc = json.load(open(acc_path))
+except Exception as e:
+    sys.stdout.write(json.dumps({
+        "gate": "GATE-1",
+        "pass": False,
+        "reason": f"acceptance.json parse error: {e}",
+        "acceptance_file": acc_path,
+    }, ensure_ascii=False, indent=2))
+    sys.exit(0)
+
+# Schema validation: обязательные поля
+expected_call = acc.get("expected_tool_calls", []) or []
+must_not = acc.get("must_not_call", []) or []
+if not isinstance(expected_call, list) or not isinstance(must_not, list):
+    sys.stdout.write(json.dumps({
+        "gate": "GATE-1",
+        "pass": False,
+        "reason": "expected_tool_calls and must_not_call must be list[str]",
+        "acceptance_file": acc_path,
+    }, ensure_ascii=False, indent=2))
+    sys.exit(0)
+
+# Substring search по всем логам прогона (case-insensitive).
+# Tool names в логах: dialogue_node печатает "Calling MCP tool: <name>" и
+# "MCP tool result: <name>"; некоторая tool_call нода — JSON-RPC формат.
+# Ищем substring — robust к формату, ловит оба.
+def has(frag):
+    return frag.lower() in logs.lower()
+
+actual_calls = []
+for c in (expected_call + must_not):
+    if has(c) and c not in actual_calls:
+        actual_calls.append(c)
+
+found_expected = [c for c in expected_call if has(c)]
+missing_expected = [c for c in expected_call if not has(c)]
+forbidden_called = [c for c in must_not if has(c)]
+
+failures = []
+if missing_expected:
+    failures.append(
+        "expected tool calls not invoked during run: "
+        + ", ".join(missing_expected)
+    )
+if forbidden_called:
+    failures.append(
+        "forbidden tool calls invoked during run: "
+        + ", ".join(forbidden_called)
+    )
+
+# Ретро 22.08 t_c7761956 (A3): voice-cycle-but-no-tool-call hint.
+# Если TTS finished есть (LLM ответил голосом), но expected_tool_calls
+# missing — LLM сделал verbal-only answer, проигнорировав side-effect.
+# Это типовой root cause для dj02_stop_music (RULE #MUSIC не enforced):
+# юзер сказал «стоп музыку», робот ответил голосом, но stop_music не вызван.
+# Маркируем как soft-fail с явной подсказкой в reason — ретро / worker
+# сразу видят где искать.
+soft_hints = []
+tts_finished_count = logs.lower().count("tts finished")
+speak_text_count = logs.lower().count("speak_text")
+if missing_expected and tts_finished_count >= 1:
+    # Какие tools ожидались, но не были вызваны при наличии voice cycle
+    likely_voice_skipped = [c for c in missing_expected if c.lower() not in ("set_voice",)]
+    if likely_voice_skipped:
+        soft_hints.append(
+            f"voice cycle completed (TTS finished x{tts_finished_count}, "
+            f"speak_text x{speak_text_count}) but expected tool call(s) "
+            f"skipped: {', '.join(likely_voice_skipped)}. "
+            f"LLM сделал verbal-only answer (RULE #MUSIC для stop_music / "
+            f"RULE #VOICE-MULTI для multi-voice могут не enforce). "
+            f"Проверь master_prompt_compact.txt и/или добавь explicit "
+            f"tool-call enforcement в LLM-system reminder."
+        )
+        # Не добавляем к failures (это hint, не блокер GATE-1), но логируем
+        # через stderr чтобы в verdict было видно.
+        sys.stderr.write(
+            f"[hint] GATE-1 soft-fail: voice-cycle OK but tool skipped — "
+            f"{', '.join(likely_voice_skipped)}\n"
+        )
+
+result = {
+    "gate": "GATE-1",
+    "name": acc.get("name", ""),
+    "acceptance_file": acc_path,
+    "expected_tool_calls": expected_call,
+    "must_not_call": must_not,
+    "actual_tool_calls": actual_calls,
+    "found_expected_calls": found_expected,
+    "missing_expected_calls": missing_expected,
+    "forbidden_calls": forbidden_called,
+    "voice_cycle_count": tts_finished_count,
+    "speak_text_count": speak_text_count,
+    "soft_hints": soft_hints,
+    "pass": not failures,
+    "reason": "; ".join(failures + soft_hints) if (failures or soft_hints) else "all checks passed",
+}
+sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2))
+PY
+
+    if grep -q '"pass": *true' "$OUT_DIR/acceptance.json"; then
+        log "GATE-1: ✅ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["reason"])' "$OUT_DIR/acceptance.json")"
+        return 0
+    else
+        log "GATE-1: ❌ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["reason"])' "$OUT_DIR/acceptance.json")"
+        return 1
+    fi
+}
 # Синтез Yandex TTS gRPC v3: text + voice → /tmp/e2e_v2_<run>/cmd.wav
 # Тот же контракт что tts_node._synthesize_yandex (tts.api.cloud.yandex.net:443)
+# Ретро 22.08 t_c7761956 (A2): synth failure теперь печатает JSON-строку с
+# diagnostic (provider, error_class, http_code, latency_ms). Это позволяет
+# сразу отличать network/quota/auth ошибки без grep stacktrace.
 synth_yandex() {  # $1=text $2=voice $3=out_wav
     local text="$1" voice="$2" out="$3"
+    local _start_ms _end_ms _latency_ms
+    _start_ms="$(date +%s%3N 2>/dev/null || date +%s)000"
     python3 - "$text" "$voice" "$out" <<'PY'
-import sys, grpc, wave, io
+import sys, grpc, wave, io, json, time, traceback
 from yandex.cloud.ai.tts.v3 import tts_pb2, tts_service_pb2_grpc
 text, voice, out = sys.argv[1], sys.argv[2], sys.argv[3]
 import os
 key = os.environ["YANDEX_API_KEY"]
-ch = grpc.secure_channel("tts.api.cloud.yandex.net:443", grpc.ssl_channel_credentials())
-stub = tts_service_pb2_grpc.SynthesizerStub(ch)
-req = tts_pb2.UtteranceSynthesisRequest(
-    text=text,
-    output_audio_spec=tts_pb2.AudioFormatOptions(
-        container_audio=tts_pb2.ContainerAudio(container_audio_type=tts_pb2.ContainerAudio.WAV)
-    ),
-    hints=[tts_pb2.Hints(voice=voice), tts_pb2.Hints(speed=float(os.environ.get("YANDEX_SPEED","1.0")))],
-    loudness_normalization_type=tts_pb2.UtteranceSynthesisRequest.LUFS,
-)
-resp = stub.UtteranceSynthesis(req, metadata=(("authorization", f"Api-Key {key}"),))
-data = b""
-for r in resp:
-    data += r.audio_chunk.data
-if not data:
-    sys.exit("YANDEX_EMPTY")
-with open(out, "wb") as f:
-    f.write(data)
-print(f"YANDEX_SYNTH_OK {len(data)} bytes voice={voice}")
+start = time.monotonic()
+err_class = "Unknown"
+err_detail = ""
+try:
+    ch = grpc.secure_channel("tts.api.cloud.yandex.net:443", grpc.ssl_channel_credentials())
+    stub = tts_service_pb2_grpc.SynthesizerStub(ch)
+    req = tts_pb2.UtteranceSynthesisRequest(
+        text=text,
+        output_audio_spec=tts_pb2.AudioFormatOptions(
+            container_audio=tts_pb2.ContainerAudio(container_audio_type=tts_pb2.ContainerAudio.WAV)
+        ),
+        hints=[tts_pb2.Hints(voice=voice), tts_pb2.Hints(speed=float(os.environ.get("YANDEX_SPEED","1.0")))],
+        loudness_normalization_type=tts_pb2.UtteranceSynthesisRequest.LUFS,
+    )
+    resp = stub.UtteranceSynthesis(req, metadata=(("authorization", f"Api-Key {key}"),))
+    data = b""
+    for r in resp:
+        data += r.audio_chunk.data
+    if not data:
+        err_class = "EmptyResponse"
+        err_detail = "Yandex TTS returned empty audio stream"
+        latency_ms = int((time.monotonic() - start) * 1000)
+        sys.stderr.write(json.dumps({
+            "provider": "yandex",
+            "voice": voice,
+            "result": "fail",
+            "error_class": err_class,
+            "detail": err_detail,
+            "latency_ms": latency_ms,
+        }) + "\n")
+        sys.exit("YANDEX_EMPTY")
+    with open(out, "wb") as f:
+        f.write(data)
+    latency_ms = int((time.monotonic() - start) * 1000)
+    print(f"YANDEX_SYNTH_OK {len(data)} bytes voice={voice}")
+    sys.stderr.write(json.dumps({
+        "provider": "yandex",
+        "voice": voice,
+        "result": "ok",
+        "bytes": len(data),
+        "latency_ms": latency_ms,
+    }) + "\n")
+except grpc.RpcError as e:
+    latency_ms = int((time.monotonic() - start) * 1000)
+    code = e.code() if hasattr(e, "code") else None
+    code_name = code.name if code and hasattr(code, "name") else "Unknown"
+    details = e.details() if hasattr(e, "details") else str(e)
+    # Классификация: Unavailable/Timeout/Deadline → NetworkError,
+    # Unauthenticated/PermissionDenied → AuthError, ResourceExhausted → QuotaError
+    if code_name in ("UNAVAILABLE", "DEADLINE_EXCEEDED", "CANCELLED"):
+        err_class = "NetworkError"
+    elif code_name in ("UNAUTHENTICATED", "PERMISSION_DENIED"):
+        err_class = "AuthError"
+    elif code_name in ("RESOURCE_EXHAUSTED", "OUT_OF_RANGE"):
+        err_class = "QuotaError"
+    elif code_name in ("INVALID_ARGUMENT",):
+        err_class = "BadRequest"
+    else:
+        err_class = f"GrpcError_{code_name}"
+    sys.stderr.write(json.dumps({
+        "provider": "yandex",
+        "voice": voice,
+        "result": "fail",
+        "error_class": err_class,
+        "http_code": code_name,
+        "detail": details[:500],
+        "latency_ms": latency_ms,
+    }) + "\n")
+    sys.exit(f"YANDEX_{err_class.upper()}")
+except Exception as e:
+    latency_ms = int((time.monotonic() - start) * 1000)
+    err_class = "PythonError"
+    detail = f"{type(e).__name__}: {e}"
+    sys.stderr.write(json.dumps({
+        "provider": "yandex",
+        "voice": voice,
+        "result": "fail",
+        "error_class": err_class,
+        "detail": detail[:500],
+        "trace": traceback.format_exc()[:500],
+        "latency_ms": latency_ms,
+    }) + "\n")
+    sys.exit(f"YANDEX_{err_class.upper()}")
 PY
 }
 
@@ -208,26 +748,133 @@ check_patterns() {
     return $rc
 }
 
+# Проверка эха диалога в Telegram (issue #1196, L2).
+#
+# После голосового e2e проверяем, что telegram_node получил ответ
+# dialogue_node. Без внешнего Telegram — дёшево, ловит разрыв
+# диалог↔бот. Признак: счётчик ``telegram_message_total{out,...}`` на
+# :9101/metrics вырос (бот отправил сообщение) ИЛИ в логах telegram-bot
+# есть вызов send_message. Если метрики недоступны (prometheus_client
+# не установлен / старый образ) — fallback на логи, SKIP если нет
+# вообще никаких признаков эха (это ок: голосовой e2e не обязан
+# отправлять сообщения в чат; проверка — полуавтомат для RUN_NOW).
+#
+# Usage: check_telegram_echo <before_rfc3339>
+# Возвращает: 0 = эхо подтверждено (метрика out>0 или send_message в логах),
+#             1 = эха нет (не баг — просто не было отправки)
+#             2 = telegram_node недоступен (SSH/метрики) — SKIP
+check_telegram_echo() {
+    local before="$1"
+    local tg_logs tg_metrics out_count
+
+    # 1. Метрики telegram-bot (:9101) — самый надёжный признак.
+    tg_metrics="$(${ROBOT_SSH} "docker exec telegram-bot python3 -c \"
+import urllib.request
+try:
+    data = urllib.request.urlopen('http://localhost:9101/metrics', timeout=5).read().decode()
+except Exception as e:
+    print('METRICS_UNAVAILABLE', e)
+    raise SystemExit(0)
+for line in data.splitlines():
+    if line.startswith('telegram_message_total') and 'direction=\"out\"' in line:
+        print(line)
+\" 2>/dev/null" 2>/dev/null || echo '')"
+    if [ -z "$tg_metrics" ]; then
+        log "TG_ECHO: метрики недоступны (нет prometheus_client / старый образ) — fallback на логи"
+    else
+        out_count="$(printf '%s\n' "$tg_metrics" | grep 'direction="out"' | grep -oE '[0-9]+$' | head -1)"
+        if [ -n "$out_count" ] && [ "${out_count:-0}" -gt 0 ]; then
+            log "TG_ECHO: ✅ telegram_message_total{out,...} = ${out_count} (бот отправлял сообщения)"
+            return 0
+        fi
+        log "TG_ECHO: метрика out=0 (голосовой e2e обычно не шлёт сообщения в чат) — смотрим логи"
+    fi
+
+    # 2. Логи telegram-bot: наличие send_message / dialogue response echo.
+    #    Для голосового e2e без активного чата эхо не уходит, но
+    #    telegram_node ПРИНИМАЕТ /voice/dialogue/response и логирует
+    #    "Dropping dialogue echo" — это и есть доказательство связи
+    #    диалог↔бот (L2 ловит именно разрыв на этом участке).
+    tg_logs="$(${ROBOT_SSH} "docker logs telegram-bot --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    if printf '%s' "$tg_logs" | grep -qiE "send_message|response_echo|dialogue.*echo|Echo.*chat|Dropping dialogue echo|Failed to echo"; then
+        log "TG_ECHO: ✅ telegram_node получил ответ dialogue_node (send_message / echo evidence)"
+        printf '%s\n' "$tg_logs" | grep -iE "send_message|response_echo|dialogue.*echo|Echo.*chat|Dropping dialogue echo|Failed to echo" | tail -3 > "$OUT_DIR/tg_echo_evidence.txt" 2>/dev/null || true
+        return 0
+    fi
+
+    # 3. Ни метрик, ни логов — сервис может быть не готов/не в этом контейнере.
+    if ! ${ROBOT_SSH} "docker ps --filter name=telegram-bot --format '{{.Status}}'" 2>/dev/null | grep -q Up; then
+        log "TG_ECHO: ⚠️ контейнер telegram-bot не запущен — SKIP"
+        return 2
+    fi
+    log "TG_ECHO: эха нет (метрика out=0, send_message в логах нет) — голосовой e2e это допускает"
+    return 1
+}
+
+# Проверка накопления фоновой речи в SpeechAccumulator (backlog-аккумулятор,
+# 2026-08-20-voice-backlog-accumulator-design.md). Фраза БЕЗ wake-слова НЕ
+# дропается, а копится; маркер — 🗒️ [backlog] accumulated (no_wake_word).
+# Используется для шагов с expect=backlog (ds01/ds02 voice_core_suite_v1.json),
+# где полного TTS-цикла не будет (wake-gate молча аккумулирует).
+# Возвращает 0 если маркер найден, 1 если нет.
+check_backlog_accumulated() {  # $1=before_rfc3339
+    local before="$1"
+    local logs
+    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    printf '%s' "$logs" | grep -qE '\[backlog\] accumulated \(no_wake_word\)'
+}
+
 # --- один атомарный шаг -----------------------------------------------------
-run_step() {  # $1=text $2=voice $3=step_label
-    local text="$1" voice="$2" label="$3"
-    log "=== STEP ${label}: voice=${voice} text=\"${text}\" ==="
+# Ожидаемое поведение определяется параметром $4 (expect_kind):
+#   cycle       — полный цикл STT→LLM→TTS (по дефолту)
+#   wake-gated  — то же, но ADR-0027 §5.2: если WAKE_GATE_CLEARED != 1
+#                 (cold-start not cleared) → SKIP без fail (см. retro
+#                 t_be491fba: cold-start wake-gate flake должен быть
+#                 отделён от acceptance fail). Логирует `[skip:wake-gate-cold-start]`.
+#   backlog     — фраза без wake-prefix копится в SpeechAccumulator
+#
+# run_step намеренно принимает уже-classified expect_kind (callers
+# используют classify_step_expect для дефолта и override).
+run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|backlog)
+    local text="$1" voice="$2" label="$3" expect="${4:-cycle}"
+    # BUG-B (t_f0612a43): если label содержит кириллицу/спецсимволы — slugify
+    # для имени wav файла. Исходный label сохраняется для логов.
+    local safe
+    safe="$(safe_label "$label")"
+    log "=== STEP ${label} (safe=${safe}): voice=${voice} text=\"${text}\" ==="
+
+    # 0. ADR-0027 §5.2: wake-gated SKIP (retro t_be491fba). Если
+    #    expect=wake-gated И preflight показал cold-start NOT cleared —
+    #    шаг пропускается (SKIP), не FAIL. Это by design поведение
+    #    backlog-аккумулятора: «Робот, ...» без wake → STT получает
+    #    «...» (без «Робот»), dialogue_node копит в [backlog] вместо
+    #    вызова LLM. Acceptance fail (missing stop_music) — это
+    #    симптом cold-start flake, а не acceptance flake.
+    if [ "$expect" = "wake-gated" ] && [ "${WAKE_GATE_CLEARED:-0}" != "1" ]; then
+        log "STEP ${label}: SKIP [skip:wake-gate-cold-start] — ${WAKE_GATE_PREFLIGHT_REASON:-cold-start not cleared}"
+        echo "E2E_STEP ${label} SKIP wake-gate-cold-start"
+        # Не помечаем fail_kind — это не fail. Возвращаем специальный
+        # код 3, который callers (scenario loop) интерпретируют как
+        # «пропущен по systemic, не считать в aggregate FAIL».
+        return 3
+    fi
 
     # 1. Синтез команды
     ensure_outdir
-    if [ ! -f "$OUT_DIR/cmd_${label}.wav" ]; then
+    if [ ! -f "$OUT_DIR/cmd_${safe}.wav" ]; then
         # Файл мог пропасть вместе с OUT_DIR (внешний cleanup на 249) —
         # пере-синтезируем, а не падаем с paplay open(): No such file.
-        log "STEP ${label}: cmd_${label}.wav отсутствует — повторный синтез (cleanup-resilience)"
+        log "STEP ${label}: cmd_${safe}.wav отсутствует — повторный синтез (cleanup-resilience)"
     fi
-    if ! synth_yandex "$text" "$voice" "$OUT_DIR/cmd_${label}.wav" > "$OUT_DIR/synth_${label}.log" 2>&1; then
-        log "STEP ${label}: FAIL — синтез Yandex упал ($(tail -1 "$OUT_DIR/synth_${label}.log"))"
+    if ! synth_yandex "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1; then
+        log "STEP ${label}: FAIL — синтез Yandex упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"
         echo "E2E_STEP ${label} FAIL synth"
+        mark_fail_kind synth
         return 1
     fi
     # EQ: highpass 200 + volume 1.2 + alimiter (клиппинг-фикс 514e7e87)
     ensure_outdir
-    ffmpeg -y -i "$OUT_DIR/cmd_${label}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${label}_eq.wav" 2>/dev/null
+    ffmpeg -nostdin -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
 
     # 2. Ждём тишины: робот не должен говорить перед командой (greeting/
     #    приветствие идёт через 12s после старта и может перебить команду).
@@ -252,6 +899,32 @@ run_step() {  # $1=text $2=voice $3=step_label
     done
     log "STEP ${label}: робот молчит ${E2E_SILENCE_WAIT}s — команду можно играть"
 
+    # 3a. Backlog-аккумулятор (ds01/ds02 voice_core_suite_v1.json): фраза
+    #     БЕЗ wake-слова копится в SpeechAccumulator, полного TTS-цикла НЕ
+    #     будет (wake-gate молча аккумулирует). check_cycle тут неприменим —
+    #     ждём маркер 🗒️ [backlog] accumulated (no_wake_word), а не реакцию.
+    if [ "$expect" = "backlog" ]; then
+        local battempt
+        for battempt in $(seq 1 "$E2E_MAX_ATTEMPTS"); do
+            BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            log "STEP ${label}: PLAY backlog attempt ${battempt}/${E2E_MAX_ATTEMPTS}"
+            pactl set-sink-volume @DEFAULT_SINK@ 150% 2>/dev/null || true
+            paplay "$OUT_DIR/cmd_${safe}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
+            sleep "$E2E_REACTION_WINDOW"
+            if check_backlog_accumulated "$BEFORE"; then
+                log "STEP ${label}: ✅ backlog accumulated (no_wake_word)"
+                echo "E2E_STEP ${label} OK backlog"
+                return 0
+            fi
+            log "STEP ${label}: backlog-маркер не найден (attempt ${battempt}) — повтор"
+            sleep "$E2E_RETRY_PAUSE"
+        done
+        log "STEP ${label}: ❌ backlog accumulation не подтверждён после ${E2E_MAX_ATTEMPTS} попыток"
+        echo "E2E_STEP ${label} FAIL backlog_miss"
+        mark_fail_kind feature
+        return 1
+    fi
+
     # 3. Retry-цикл акцепта
     local attempt reaction rc
     reaction=0
@@ -264,15 +937,15 @@ run_step() {  # $1=text $2=voice $3=step_label
         # cleanup-resilience (ретро 11.08 t_26a6d362): если eq-файл пропал
         # (OUT_DIR удалён внешним cleanup на 249) — пере-синтезируем и EQ,
         # а не получаем ложный FAIL от paplay open(): No such file.
-        if [ ! -f "$OUT_DIR/cmd_${label}_eq.wav" ]; then
-            log "STEP ${label}: cmd_${label}_eq.wav отсутствует перед play — пере-синтез (cleanup-resilience)"
+        if [ ! -f "$OUT_DIR/cmd_${safe}_eq.wav" ]; then
+            log "STEP ${label}: cmd_${safe}_eq.wav отсутствует перед play — пере-синтез (cleanup-resilience)"
             ensure_outdir
-            synth_yandex "$text" "$voice" "$OUT_DIR/cmd_${label}.wav" > "$OUT_DIR/synth_${label}.log" 2>&1 \
-                || { log "STEP ${label}: FAIL — повторный синтез Yandex упал ($(tail -1 "$OUT_DIR/synth_${label}.log"))"; echo "E2E_STEP ${label} FAIL synth"; return 1; }
+            synth_yandex "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1 \
+                || { log "STEP ${label}: FAIL — повторный синтез Yandex упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; echo "E2E_STEP ${label} FAIL synth"; mark_fail_kind synth; return 1; }
             ensure_outdir
-            ffmpeg -y -i "$OUT_DIR/cmd_${label}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${label}_eq.wav" 2>/dev/null
+            ffmpeg -nostdin -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
         fi
-        paplay "$OUT_DIR/cmd_${label}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
+        paplay "$OUT_DIR/cmd_${safe}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
         sleep "$E2E_REACTION_WINDOW"
 
         check_cycle "$BEFORE"
@@ -284,6 +957,7 @@ run_step() {  # $1=text $2=voice $3=step_label
         elif [ "$rc" = "2" ]; then
             log "STEP ${label}: ❌ LLM/TTS ERROR — тест красный, не чиним"
             echo "E2E_STEP ${label} FAIL llm_error (см. $OUT_DIR/llm_error.txt)"
+            mark_fail_kind llm_error
             return 2
         fi
         log "STEP ${label}: нет акцепта (attempt ${attempt}) — повтор"
@@ -293,6 +967,7 @@ run_step() {  # $1=text $2=voice $3=step_label
     if [ "$reaction" != "1" ]; then
         log "STEP ${label}: ❌ NO_ACCEPT после ${E2E_MAX_ATTEMPTS} попыток"
         echo "E2E_STEP ${label} FAIL no_accept"
+        mark_fail_kind no_reaction
         return 1
     fi
 
@@ -300,76 +975,460 @@ run_step() {  # $1=text $2=voice $3=step_label
     return 0
 }
 
+# --- артефакты e2e (issue #1396) -------------------------------------------
+# В дополнение к verdict.txt харнесс теперь пишет:
+#   transcript.json   — что РЕАЛЬНО распознал STT (text + duration_ms + lang)
+#   audio_metrics.json — RMS/peak/silence_ratio по recording.wav
+#   baseline_diff.json — diff с golden (если задан) или synthetic baseline
+#   acceptance.json   — результат проверки acceptance-блока сценария
+# Все файлы кладутся в OUT_DIR (рядом с verdict.txt); workflow upload'ит их
+# отдельными actions/upload-artifact шагами.
+parse_transcript() {  # $1=label $2=before_rfc3339
+    local label="$1" before="$2"
+    local logs
+    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    local text duration_s expected
+    expected="$3"
+    # «✅ ПРИНЯТО: <текст>» — основной маркер распознанной фразы (stt_node.py:534)
+    text="$(printf '%s' "$logs" | grep -oE '✅ ПРИНЯТО:\s*[^[:space:]].*' | head -1 | sed -E 's/^✅ ПРИНЯТО:\s*//' | tr -d '\r')"
+    # Длительность STT-сегмента: «Получена фраза: X.XXс» (stt_node.py:456)
+    local phrase_line
+    phrase_line="$(printf '%s' "$logs" | grep 'Получена фраза' | tail -1 || true)"
+    duration_s="$(printf '%s' "$phrase_line" | grep -oE '[0-9]+\.[0-9]+с' | head -1 | tr -d 'с' || true)"
+    # Latency STT: «Получена фраза» (wake) → «✅ ПРИНЯТО» (accept)
+    local stt_latency_ms
+    if [ -n "$duration_s" ] && [ -n "$expected" ]; then
+        stt_latency_ms="null"
+    else
+        stt_latency_ms="null"
+    fi
+    # lang: ищем строку с явным указанием языка; если не нашли — ru-RU default
+    local lang
+    lang="$(printf '%s' "$logs" | grep -oE 'language=ru-RU|язык: [a-zA-Z-]+|lang=ru-RU' | head -1 | tr -d '\n' || true)"
+    if [ -z "$lang" ]; then lang="ru-RU"; fi
+    cat > "$OUT_DIR/transcript.json" <<EOF
+{
+  "label": "${label:-single}",
+  "expected": ${expected:-null},
+  "recognized": "${text:-}",
+  "lang": "${lang:-ru-RU}",
+  "duration_s": ${duration_s:-null},
+  "stt_latency_ms": ${stt_latency_ms:-null},
+  "raw_phrase_line": "$(printf '%s' "$phrase_line" | head -c 200 | sed 's/"/\\"/g')"
+}
+EOF
+    if [ -n "$text" ]; then
+        log "TRANSCRIPT[${label}]: ожидалось «${expected:-?}», распознано «${text}»"
+    else
+        log "TRANSCRIPT[${label}]: STT не вернул фразу (нет '✅ ПРИНЯТО')"
+    fi
+}
+
+# Пишет audio_metrics.json (RMS/peak/silence) и baseline_diff.json.
+# Использует stdlib python3 (soundfile на билд-машине 249 не обязателен) +
+# ffmpeg ebur128 если ffmpeg есть (для LUFS-метрик).
+write_artifacts_audio() {
+    local voice_text="${1:-}"
+    local wav="$OUT_DIR/recording.wav"
+    if [ -f "$wav" ]; then
+        python3 .github/workflows/scripts/e2e_audio_metrics.py "$wav" \
+            > "$OUT_DIR/audio_metrics.json" 2>/dev/null \
+            || echo '{"error":"audio_metrics.py failed"}' > "$OUT_DIR/audio_metrics.json"
+        log "ARTIFACTS: audio_metrics.json written ($(stat -c%s "$OUT_DIR/audio_metrics.json") bytes)"
+    else
+        log "WARN: $wav не найден — audio_metrics.json не пишется (recorder не запустился?)"
+        echo '{"error":"recording.wav not found","wav_path":"'"$wav"'"}' > "$OUT_DIR/audio_metrics.json"
+    fi
+
+    # baseline_diff — нужен transcript (чтобы извлечь expected_keywords если есть)
+    local td="$OUT_DIR/transcript.json"
+    [ ! -f "$td" ] && echo '{}' > "$td"
+    if [ -f "$wav" ]; then
+        python3 .github/workflows/scripts/e2e_baseline_diff.py "$wav" "" "$voice_text" "$td" \
+            > "$OUT_DIR/baseline_diff.json" 2>/dev/null \
+            || echo '{"error":"baseline_diff.py failed"}' > "$OUT_DIR/baseline_diff.json"
+        log "ARTIFACTS: baseline_diff.json written"
+    else
+        echo '{"error":"recording.wav not found, baseline diff skipped"}' > "$OUT_DIR/baseline_diff.json"
+    fi
+}
+
+# Возвращает 0 если acceptance-чек PASS, 1 если FAIL.
+# Acceptance-блок в scenario описывает ожидаемое поведение робота:
+#   expected_tool_calls: list[str]  — должны быть вызваны (ищется в логах)
+#   must_not_call:        list[str]  — НЕ должны быть вызваны
+#   expected_keywords:    list[str]  — должны быть в логах шага (признанная
+#                                     фраза ИЛИ LLM OUTPUT / spoken=)
+#   voice_changed:        bool       — set_voice сменил голос с дефолта
+#   response_max_ms:      int        — T_total не должен превышать (если
+#                                     найден e2e_timing.json)
+# Пишет acceptance.json в OUT_DIR.
+check_acceptance() {  # $1=label $2=acceptance_json_string $3=before_rfc3339
+    local label="$1" acc_json="$2" before="$3"
+    local rc=0
+    local logs logs_file
+    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    # Логи шага тоже пишем в файл (ARG_MAX защита, как в check_gate1_aggregate).
+    logs_file="$OUT_DIR/.acceptance_${label}.txt"
+    printf '%s' "$logs" > "$logs_file"
+
+    # Прогон acceptance-чекера в Python (читает acc_json + logs → pass/fail + reason).
+    ACC_JSON="$acc_json" LOGS_FILE="$logs_file" python3 - <<'PY' > "$OUT_DIR/acceptance.json"
+import json, os, re, sys
+acc = json.loads(os.environ["ACC_JSON"])
+with open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace") as _f:
+    logs = _f.read()
+def has(s, frag):
+    return frag.lower() in logs.lower()
+expected_call = acc.get("expected_tool_calls", []) or []
+must_not = acc.get("must_not_call", []) or []
+expected_kw = acc.get("expected_keywords", []) or []
+voice_changed_req = bool(acc.get("voice_changed", False))
+response_max_ms = acc.get("response_max_ms", 0) or 0
+
+recognized = ""
+m = re.search(r"✅ ПРИНЯТО:\s*(.+)", logs)
+if m:
+    recognized = m.group(1).strip()
+# Ключевые слова ищем по ВСЕМ логам шага (признанная фраза + LLM OUTPUT /
+# spoken=). Раньше искали только в recognised — «Красная» vs STT «красную»
+# давал false-negative при корректно рассказанной сказке (mv03, run 32595628905).
+logs_low = logs.lower()
+
+actual_calls = []
+for c in (expected_call + must_not):
+    if has(logs, c) and c not in actual_calls:
+        actual_calls.append(c)
+
+found_expected = [c for c in expected_call if has(logs, c)]
+missing_expected = [c for c in expected_call if not has(logs, c)]
+forbidden_called = [c for c in must_not if has(logs, c)]
+found_keywords = [k for k in expected_kw if k.lower() in logs_low]
+missing_keywords = [k for k in expected_kw if not k.lower() in logs_low]
+
+# voice_changed: set_voice был вызван с голосом, отличным от дефолта.
+# Лог: `[set_voice] voice='X' provider=... default=Y`. Если set_voice вернул
+# voice_unavailable — лога не будет, и это честный FAIL (голос не сменился).
+voice_change_ok = True
+voice_change_detail = ""
+if voice_changed_req:
+    set_voice_matches = re.findall(
+        r"\[set_voice\] voice='([^']*)'\s+provider=(\S+)\s+default=(\S+)", logs
+    )
+    if not set_voice_matches:
+        voice_change_ok = False
+        voice_change_detail = (
+            "voice did not change: no successful [set_voice] log "
+            "(set_voice not called or returned voice_unavailable)"
+        )
+    elif not any(v.strip().lower() != d.strip().lower() for v, _p, d in set_voice_matches):
+        voice_change_ok = False
+        voice_change_detail = (
+            "voice did not change from default: "
+            + ", ".join(f"{v}->{d}" for v, _p, d in set_voice_matches)
+        )
+
+# response_max_ms — берём из ранее записанного timing.json если есть
+timing_path = os.environ.get("OUT_DIR", "") + "/timing.json"
+measured_ms = None
+if os.path.exists(timing_path):
+    try:
+        t = json.load(open(timing_path))
+        measured_ms = t.get("metrics_ms", {}).get("total_latency_ms")
+    except Exception:
+        pass
+
+failures = []
+if missing_expected:
+    failures.append(f"expected tool calls not invoked: {missing_expected}")
+if forbidden_called:
+    failures.append(f"forbidden tool calls invoked: {forbidden_called}")
+if expected_kw and missing_keywords:
+    failures.append(f"expected keywords missing in logs: {missing_keywords}")
+if not voice_change_ok:
+    failures.append(voice_change_detail)
+if response_max_ms and measured_ms and measured_ms > response_max_ms:
+    failures.append(f"response time {measured_ms}ms > max {response_max_ms}ms")
+result = {
+    "label": os.environ.get("STEP_LABEL", ""),
+    "expected_tool_calls": expected_call,
+    "actual_tool_calls": actual_calls,
+    "missing_expected_calls": missing_expected,
+    "forbidden_calls": forbidden_called,
+    "expected_keywords": expected_kw,
+    "recognized": recognized,
+    "found_keywords": found_keywords,
+    "missing_keywords": missing_keywords,
+    "voice_changed": voice_changed_req,
+    "voice_change_ok": voice_change_ok,
+    "voice_change_detail": voice_change_detail,
+    "response_max_ms": response_max_ms,
+    "measured_total_ms": measured_ms,
+    "pass": not failures,
+    "reason": "; ".join(failures) if failures else "all checks passed",
+}
+print(json.dumps(result, ensure_ascii=False, indent=2))
+PY
+    # Итоговый rc — из acceptance.json (pass → 0)
+    if grep -q '"pass": *true' "$OUT_DIR/acceptance.json"; then
+        rc=0
+        log "ACCEPTANCE[${label}]: ✅ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["reason"])' "$OUT_DIR/acceptance.json")"
+    else
+        rc=1
+        log "ACCEPTANCE[${label}]: ❌ $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["reason"])' "$OUT_DIR/acceptance.json")"
+    fi
+    return $rc
+}
+
 # --- сценарий или одиночная команда ----------------------------------------
+# Issue #1353: запись микрофона охватывает ВЕСЬ retry-цикл (все шаги, все
+# попытки). Стартуем до if/else, останавливаем в trap EXIT (см. ниже).
+start_recording
+
+# Гарантированная остановка записи при любом завершении (PASS/FAIL/ошибка).
+# stop_recording сам идемпотентен: повторный вызов с пустым REC_PID — noop.
+trap 'stop_recording' EXIT
+
 PASS=1
 if [ -n "$SCENARIO_FILE" ]; then
-    # scenario.json: {"steps":[{"text":"...","voice":"anton","label":"s1","patterns":["save_speaker_profile","speaker_id"]}]}
+    # scenario.json: {"steps":[{"text":"...","voice":"anton","label":"s1",
+    #           "patterns":["save_speaker_profile"],
+    #           "acceptance":{"expected_tool_calls":["generate_music"],
+    #                         "must_not_call":["execute_music_code"],
+    #                         "expected_keywords":["песня"],
+    #                         "response_max_ms":60000}}]}
     cp "$SCENARIO_FILE" "$OUT_DIR/scenario.json"
+    # Парсим в .tsv: idx \t label \t text \t voice \t patterns_json \t acceptance_json \t expect_raw \t retry_acceptance
+    # expect_raw — что написано в scenario.json (cycle / wake-gated / backlog / "").
+    # Классификация (auto-detect wake-prefix → wake-gated) делается в bash
+    # через classify_step_expect ПОСЛЕ парсинга, чтобы Python-парсер не
+    # зависел от bash-логики и тестировался отдельно.
     python3 - "$SCENARIO_FILE" <<'PY' > "$OUT_DIR/scenario_parsed.txt"
 import json, sys
-sc = json.load(open(sys.argv[1]))
+sc = json.load(open(sys.argv[1], encoding="utf-8"))
 for i, s in enumerate(sc.get("steps", [])):
-    print(f"{i}\t{s.get('label', f's{i+1}')}\t{s.get('text','')}\t{s.get('voice','anton')}\t{json.dumps(s.get('patterns',[]))}")
+    pats = s.get('patterns', [])
+    acc = s.get('acceptance', {})
+    exp = s.get('expect', 'cycle')
+    retry = s.get('retry_acceptance', 0)
+    try:
+        retry = int(retry or 0)
+    except (TypeError, ValueError):
+        retry = 0
+    print(f"{i}\t{s.get('label', f's{i+1}')}\t{s.get('text','')}\t{s.get('voice','anton')}\t{json.dumps(pats)}\t{json.dumps(acc, ensure_ascii=False)}\t{exp}\t{retry}")
 PY
-    while IFS=$'\t' read -r idx label text voice patterns_json; do
+    while IFS=$'\t' read -r idx label text voice patterns_json acceptance_json expect_raw retry_acceptance; do
         [ -z "$idx" ] && continue
-        run_step "$text" "$voice" "$label"
-        rc=$?
-        if [ "$rc" != "0" ]; then
-            PASS=0
-            # Проверяем паттерны даже при FAIL цикла? Нет — красный есть красный.
+        case "$retry_acceptance" in
+            ''|*[!0-9]*) retry_acceptance=0 ;;
+        esac
+        # ADR-0027 §5.2: classify step.expect (auto-detect wake-prefix →
+        # wake-gated). Классифицируем в bash, чтобы Python-парсер
+        # оставался pure-data.
+        expect="$(classify_step_expect "$expect_raw" "$text")"
+        # retry_acceptance = доп. попытки при FAIL patterns/acceptance.
+        # Нужно для dj01: LLM недетерминирован — если renardo не запустился
+        # (execute_music_code не вызван), повторяем команду (e2e run 32595628905).
+        attempt_n=0
+        step_ok=0
+        cycle_failed=0
+        step_skipped=0
+        while :; do
+            STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            run_step "$text" "$voice" "$label" "$expect"
+            rc=$?
+            # Пишем transcript (даже при FAIL — для ретро-анализа, что STT услышал)
+            parse_transcript "$label" "$STEP_BEFORE" "$text"
+            # ADR-0027 §5.2: rc=3 = SKIP wake-gate-cold-start (не fail, не
+            # pass). Шаг пропущен по systemic — backlog-аккумулятор скопит
+            # фразу без wake, LLM не получит команду, и aggregate GATE-1
+            # не должен фейлить на этом шаге.
+            if [ "$rc" = "3" ]; then
+                step_skipped=1
+                log "STEP ${label}: wake-gated SKIP (cold-start not cleared) — см. $WAKE_GATE_PREFLIGHT_FILE"
+                break
+            fi
+            if [ "$rc" != "0" ]; then
+                PASS=0
+                cycle_failed=1
+                # Проверяем паттерны даже при FAIL цикла? Нет — красный есть красный.
+                break
+            fi
+            step_ok=1
+            # Паттерны шага
+            if [ -n "$patterns_json" ] && [ "$patterns_json" != "[]" ]; then
+                pats="$(printf '%s' "$patterns_json" | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin)))')"
+                log "STEP ${label}: проверка паттернов: $pats"
+                check_patterns "$(date -u -d '-6 minutes' +%Y-%m-%dT%H:%M:%SZ)" $pats
+                if [ $? != 0 ]; then
+                    step_ok=0
+                else
+                    log "STEP ${label}: ✅ паттерны найдены"
+                fi
+            fi
+            # Acceptance-чек (issue #1396): если в шаге задан блок acceptance,
+            # пишем acceptance.json и (если ERROR) — FAIL (хотя цикл прошёл).
+            if [ -n "$acceptance_json" ] && [ "$acceptance_json" != "{}" ]; then
+                OUT_DIR="$OUT_DIR" STEP_LABEL="$label" \
+                    check_acceptance "$label" "$acceptance_json" "$STEP_BEFORE"
+                if [ $? != 0 ]; then
+                    step_ok=0
+                else
+                    log "STEP ${label}: ✅ acceptance PASS"
+                fi
+            fi
+            # Retry при FAIL patterns/acceptance (если разрешён сценарием)
+            if [ "$step_ok" = "1" ]; then
+                break
+            fi
+            if [ "$attempt_n" -ge "$retry_acceptance" ]; then
+                break
+            fi
+            attempt_n=$((attempt_n + 1))
+            log "STEP ${label}: ❌ проверка не прошла — retry ${attempt_n}/${retry_acceptance}"
+            sleep "$E2E_RETRY_PAUSE"
+        done
+        if [ "$cycle_failed" = "1" ]; then
             continue
         fi
-        # Паттерны шага
-        if [ -n "$patterns_json" ] && [ "$patterns_json" != "[]" ]; then
-            pats="$(printf '%s' "$patterns_json" | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin)))')"
-            log "STEP ${label}: проверка паттернов: $pats"
-            # окно — весь шаг (последние 6 минут покрывают синтез+play+цикл)
-            check_patterns "$(date -u -d '-6 minutes' +%Y-%m-%dT%H:%M:%SZ)" $pats
-            if [ $? != 0 ]; then
-                PASS=0; log "STEP ${label}: ❌ паттерны не найдены"; echo "E2E_STEP ${label} FAIL patterns"
-            else
-                log "STEP ${label}: ✅ паттерны найдены"; echo "E2E_STEP ${label} OK"
-            fi
-        else
+        if [ "$step_skipped" = "1" ]; then
+            # ADR-0027 §5.2: SKIP — не pass, не fail. Не помечаем fail_kind
+            # и не влияем на PASS aggregate. echo уже сделал run_step
+            # ('E2E_STEP <label> SKIP wake-gate-cold-start').
+            :
+        elif [ "$step_ok" = "1" ]; then
             echo "E2E_STEP ${label} OK"
+        else
+            PASS=0
+            mark_fail_kind feature
+            log "STEP ${label}: ❌ проверка не прошла после retry (см. $OUT_DIR/acceptance.json)"
+            echo "E2E_STEP ${label} FAIL"
         fi
     done < "$OUT_DIR/scenario_parsed.txt"
+
+    # --- ADR-0027 §5.2: GATE-1 SKIP-логика ------------------------------------
+    # Если все wake-gated steps были SKIP (cold-start не cleared), aggregate
+    # GATE-1 не должен фейлить — это by-design поведение backlog-аккумулятора
+    # (см. retro t_be491fba). Фиксируем это в $OUT_DIR/gate1_skip_reason.json
+    # и выводим явный маркер E2E_GATE1_SKIP_WAKE_GATE для пост-валидатора.
+    if [ "${WAKE_GATE_CLEARED:-0}" != "1" ] && [ -n "${SCENARIO_FILE:-}" ]; then
+        printf '{\n  "skip_reason": "wake-gate cold-start not cleared",\n  "preflight_artifact": "wake_gate_preflight.json",\n  "scenarios_steps_classified": "wake-gated steps SKIP by design (backlog-accumulator design)",\n  "retro": "t_be491fba (cold-start wake-gate misdiagnosis)"\n}\n' > "$OUT_DIR/gate1_skip_reason.json"
+        log "GATE-1: ⏭ SKIP — wake-gate cold-start not cleared (см. wake_gate_preflight.json)"
+        echo "E2E_GATE1_SKIP_WAKE_GATE"
+    else
+        # --- ADR-0022 GATE-1: top-level aggregate acceptance check -----------
+        # Если --scenario задан и acceptance.json найден, прогоняем aggregate
+        # проверку: каждый expected_tool_calls должен быть вызван хотя бы раз
+        # за весь прогон (в логах docker voice-assistant); ни один из
+        # must_not_call не должен быть вызван. Пишет $OUT_DIR/acceptance.json
+        # с verdict. Если verdict == FAIL → PASS=0.
+        if [ -n "$ACCEPTANCE_FILE" ] && [ -f "$ACCEPTANCE_FILE" ]; then
+            check_gate1_aggregate "$ACCEPTANCE_FILE" "${E2E_RUN_BEFORE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+            if [ $? != 0 ]; then
+                PASS=0
+                mark_fail_kind feature
+                log "GATE-1: ❌ aggregate acceptance FAIL (см. $OUT_DIR/acceptance.json)"
+                echo "E2E_GATE1_FAIL"
+            else
+                log "GATE-1: ✅ aggregate acceptance PASS"
+                echo "E2E_GATE1_OK"
+            fi
+        fi
+    fi
 else
-    run_step "$TEXT" "${VOICE:-$YANDEX_TTS_VOICE}" "single"
+    STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # single-text mode: classify expect (auto-detect wake-prefix → wake-gated)
+    single_expect="$(classify_step_expect "" "$TEXT")"
+    run_step "$TEXT" "${VOICE:-$YANDEX_TTS_VOICE}" "single" "$single_expect"
     rc=$?
-    if [ "$rc" != "0" ]; then PASS=0; echo "E2E_STEP single FAIL"; else echo "E2E_STEP single OK"; fi
+    # Пишем transcript для single-режима
+    parse_transcript "single" "$STEP_BEFORE" "$TEXT"
+    # ADR-0027 §5.2: rc=3 = SKIP wake-gate-cold-start. Single mode
+    # bypass'ит preflight (см. выше — WAKE_GATE_CLEARED=1 для single),
+    # но классификация expect может сработать (если юзер дал wake-текст
+    # через --text). Защита: rc=3 в single mode = wake-gate flake, FAIL.
+    if [ "$rc" = "3" ]; then
+        PASS=0
+        log "single: wake-gated SKIP — это flake для single-text, помечаем как no_reaction"
+        mark_fail_kind no_reaction
+        echo "E2E_STEP single FAIL no_reaction (wake-gated SKIP)"
+    elif [ "$rc" != "0" ]; then PASS=0; echo "E2E_STEP single FAIL"; else echo "E2E_STEP single OK"; fi
     # Дополнительные паттерны (--patterns "a,b,c") — проверяем после цикла
     if [ "$rc" = "0" ] && [ -n "$PATTERNS" ]; then
         log "single: проверка паттернов: $PATTERNS"
         IFS=',' read -r -a pat_arr <<< "$PATTERNS"
         check_patterns "$(date -u -d '-6 minutes' +%Y-%m-%dT%H:%M:%SZ)" "${pat_arr[@]}"
         if [ $? != 0 ]; then
-            PASS=0; echo "E2E_STEP single FAIL patterns"
+            PASS=0; mark_fail_kind feature; echo "E2E_STEP single FAIL patterns"
         else
             echo "E2E_STEP single OK patterns"
         fi
     fi
 fi
 
+# --- финальные артефакты (audio/baseline, запускаются после ВСЕХ шагов) ---
+# Берём voice_text последнего шага (или single) для baseline.
+FINAL_VOICE_TEXT=""
+if [ -n "$SCENARIO_FILE" ]; then
+    FINAL_VOICE_TEXT="$(python3 -c 'import json; print(json.load(open(sys.argv[1]))["steps"][-1].get("text",""))' "$SCENARIO_FILE" 2>/dev/null || echo '')"
+else
+    FINAL_VOICE_TEXT="$TEXT"
+fi
+write_artifacts_audio "$FINAL_VOICE_TEXT"
+
 if [ "$PASS" = "1" ]; then
     echo "E2E_VERDICT PASS"
+    echo "E2E_REACTION_OK"    # маркер для пост-валидатора (в stdout → e2e_atomic_out.log)
     ensure_outdir
     echo "PASS" > "$OUT_DIR/verdict.txt"
-    # Issue #1135: маркер для пост-валидатора в L-E2E Voice Test.yml.
-    # Валидатор читает ``docker logs voice-assistant --since 15m`` и ищет
-    # ``E2E_REACTION_OK``. Docker с log driver ``json-file`` не подхватывает
-    # syslog (logger) — пишем маркер напрямую в stdout контейнера через
-    # ``docker exec bash -c 'echo ... >&1'``.
+    # Issue #1196 L2: после голосового e2e проверяем эхо в Telegram
+    # (telegram_node получил ответ dialogue_node). Полуавтомат: включается
+    # флагом --check-tg-echo (RUN_NOW / ручной прогон). Не фейлит вердикт —
+    # голосовой e2e не обязан слать сообщения в чат; эхо-проверка ловит
+    # разрыв диалог↔бот как диагностика.
+    if [ "$CHECK_TG_ECHO" = "1" ]; then
+        TG_ECHO_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+        check_telegram_echo "$TG_ECHO_BEFORE"
+        TG_ECHO_RC=$?
+        if [ "$TG_ECHO_RC" = "0" ]; then
+            echo "E2E_TG_ECHO OK"
+        elif [ "$TG_ECHO_RC" = "2" ]; then
+            echo "E2E_TG_ECHO SKIP"
+        else
+            echo "E2E_TG_ECHO NO_ECHO"
+        fi
+    fi
+    # Issue #1135/#1138: маркер для пост-валидатора в L-E2E Voice Test.yml.
+    # ВАЖНО (ретро 12.08 t_4e592534): ``docker exec bash -c 'echo ...'`` БЕЗ
+    # перенаправления НЕ попадает в ``docker logs`` (json-file драйвер пишет
+    # только stdout PID 1 контейнера; вывод docker exec идёт в exec-сессию,
+    # не в лог). Эмпирически: 0 вхождений. Рабочий способ — писать в
+    # ``/proc/1/fd/1`` (stdout PID 1): ``docker logs`` его видит (проверено).
+    # Сам маркер дублируется в stdout харнесса (E2E_REACTION_OK выше) — это
+    # основной канал для валидатора (e2e_atomic_out.log).
     ${ROBOT_SSH} \
-        "docker exec voice-assistant bash -c 'echo E2E_REACTION_OK'" \
+        "docker exec voice-assistant bash -c 'echo E2E_REACTION_OK > /proc/1/fd/1'" \
         >/dev/null 2>&1 || true
 else
     echo "E2E_VERDICT FAIL"
+    # Маркер ПРИЧИНЫ отказа (для пост-валидатора и detect_fail_kind):
+    #   E2E_FEATURE_FAIL — робот ответил, но фича-ассерт (patterns/
+    #                      acceptance/GATE-1) не выполнен → баг кода
+    #   E2E_LLM_ERROR    — LLM/TTS вернул ошибку (не квота/fallback)
+    #   E2E_INFRA_FAIL   — синтез/воспроизведение упали на билд-машине
+    #   E2E_NO_REACTION  — робот не ответил (дефолт, самый слабый сигнал)
+    fail_marker=""
+    case "${E2E_FAIL_KIND:-no_reaction}" in
+        feature)    fail_marker="E2E_FEATURE_FAIL" ;;
+        llm_error)  fail_marker="E2E_LLM_ERROR" ;;
+        synth)      fail_marker="E2E_INFRA_FAIL" ;;
+        *)          fail_marker="E2E_NO_REACTION" ;;
+    esac
+    echo "$fail_marker"
     ensure_outdir
     echo "FAIL" > "$OUT_DIR/verdict.txt"
     ${ROBOT_SSH} \
-        "docker exec voice-assistant bash -c 'echo E2E_NO_REACTION'" \
+        "docker exec voice-assistant bash -c 'echo ${fail_marker} > /proc/1/fd/1'" \
         >/dev/null 2>&1 || true
 fi
 echo "E2E_ARTIFACTS $OUT_DIR"

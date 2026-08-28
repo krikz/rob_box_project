@@ -77,14 +77,27 @@ if ! flock -n 9; then
     fi
 fi
 
-# --- round number: max(N) на remote + 1 --------------------------------------
+# --- round number: max(N) на remote + 1 (персистентный счётчик) -------------
+# Ретро 12.08 (t_bff6eccf): cleanup удаляет stale round-ветки → max по remote
+# сбрасывается на 1. Счётчик храним в файле состояния — нумерация переживает
+# cleanup (тот же файл, что у agent-flow-e2e-process.sh).
 TEST_ROUND_PREFIX='z-{e2e}/test-round-'
+ROUND_COUNTER_FILE="${ROUND_COUNTER_FILE:-${HERMES_HOME}/state/agent-flow-e2e-round-counter}"
 list="$(git -C "$REPO_DIR" ls-remote --heads origin "${TEST_ROUND_PREFIX}*" 2>/dev/null \
     | awk '{print $2}' | sed "s#refs/heads/${TEST_ROUND_PREFIX}##" || true)"
 if [ -z "$list" ]; then
     max_n=0
 else
     max_n="$(printf '%s\n' "$list" | sort -n | tail -n1)"
+fi
+counter_n=0
+if [ -f "$ROUND_COUNTER_FILE" ]; then
+    counter_n="$(tr -dc '0-9' < "$ROUND_COUNTER_FILE" 2>/dev/null || echo 0)"
+    counter_n="${counter_n:-0}"
+fi
+if [ "$counter_n" -gt "$max_n" ]; then
+    log "round counter: file=${counter_n} > remote-max=${max_n} (cleanup сбросил ветки?) — берём max из файла"
+    max_n="$counter_n"
 fi
 n=$((max_n + 1))
 ROUND_BRANCH="${TEST_ROUND_PREFIX}${n}"
@@ -101,7 +114,34 @@ if ! git -C "$REPO_DIR" ls-remote --heads origin "$ROUND_BRANCH" 2>/dev/null | g
         fi
     fi
 else
-    log "reusing ${ROUND_BRANCH} (max N=${max_n})"
+    # Ретро 12.08 t_d3aeaa9b: НЕ переиспользуем stale round (база устарела).
+    # round-59 был создан из develop ДО фиксов валидатора #1143 и ротации
+    # #1141 — reuse вернул бы e2e на регрессе. Проверка: round-ветка должна
+    # содержать актуальный origin/develop; если нет — удаляем и создаём заново.
+    log "checking ${ROUND_BRANCH} base freshness (must contain origin/develop)"
+    if [ "$DRY_RUN" = "true" ]; then
+        log "DRY-RUN would: check ancestry origin/develop..${ROUND_BRANCH}"
+    else
+        git -C "$REPO_DIR" fetch origin develop 2>&1 | sed 's/^/  /' || true
+        if git -C "$REPO_DIR" merge-base --is-ancestor "origin/develop" "origin/${ROUND_BRANCH}" 2>/dev/null; then
+            log "reusing ${ROUND_BRANCH} (база актуальна: содержит origin/develop)"
+        else
+            log "🛑 ${ROUND_BRANCH} база УСТАРЕЛА (не содержит origin/develop) — удаляю и создам заново (ретро 12.08 t_d3aeaa9b)"
+            git -C "$REPO_DIR" push origin --delete "$ROUND_BRANCH" 2>&1 | sed 's/^/  /' || true
+            git -C "$REPO_DIR" fetch origin develop 2>&1 | sed 's/^/  /' || true
+            if ! git -C "$REPO_DIR" push origin "origin/develop:refs/heads/${ROUND_BRANCH}" 2>&1 | sed 's/^/  /'; then
+                log "failed to recreate ${ROUND_BRANCH}"; exit 1
+            fi
+            log "recreated ${ROUND_BRANCH} from fresh origin/develop"
+        fi
+    fi
+fi
+
+# Сохраняем счётчик (только после успешного создания/reuse).
+if [ "$n" -gt "$counter_n" ]; then
+    printf '%s\n' "$n" > "$ROUND_COUNTER_FILE" 2>/dev/null \
+        && log "round counter saved: ${n} -> ${ROUND_COUNTER_FILE}" \
+        || log "WARNING: cannot write round counter ${ROUND_COUNTER_FILE}"
 fi
 
 printf '%s\n' "$ROUND_BRANCH"

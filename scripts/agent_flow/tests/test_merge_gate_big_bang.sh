@@ -263,6 +263,145 @@ test_F_small_lint_pr_sets_needs_review() {
 }
 
 # ===========================================================================
+# G. CONFLICTING PR → recovery-карточка (ретро 12.08 t_8af6bf29).
+# Respawn-guard дедлок: раньше merge-gate requeue'ил существующую карточку
+# (done/archived → ready), но hermes-agent dispatcher блокирует респавн на 24ч
+# (active_pr: URL PR в комментах воркера). Теперь scan-all-prs при CONFLICTING
+# создаёт СВЕЖУЮ recovery-карточку с idempotency-key merge-conflict-recovery-
+# pr-<N> — requeue/unblock НЕ делаются (фикс в develop, PR #1182).
+# ===========================================================================
+test_G_conflicting_pr_creates_recovery_card() {
+    new_test
+    local issue=3020 pr=3021
+    local branch="z-{agent}/${issue}-fix-3020-conflict-demo"
+    # Пустой основной цикл — сканируем через scan-all-prs (все open PR).
+    set_state ISSUE_LIST_JSON '[]'
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"agent:devops"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    # Коммент в issue с маркером карточки воркера (для поиска task_id).
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\\\n\"}]}"
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    # scan-all-prs: PR OPEN + mergeable=CONFLICTING (develop убежал вперёд).
+    set_state PR_LIST_ALL_OPEN_JSON "[{\"number\":${pr},\"state\":\"OPEN\",\"baseRefName\":\"develop\",\"headRefName\":\"${branch}\",\"mergeable\":\"CONFLICTING\",\"mergeStateStatus\":\"DIRTY\",\"title\":\"fix #${issue} conflict demo\",\"labels\":[]}]"
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+    set_state "BRANCH_PRESENT_${branch}" 1
+    # Воркер-карточка уже done — если бы merge-gate requeue'ил, это был бы дедлок.
+    set_state KANBAN_LIST_JSON "[{\"id\":\"t_dead${issue}\",\"status\":\"done\"}]"
+    # Recovery-карточка создаётся с известным id (hex, как реальный t_<hex>).
+    set_state KANBAN_CREATE_ID "t_a1b2c3d4"
+
+    run_merge_gate
+
+    local journal
+    journal="$(cat "$GH_JOURNAL")\n"
+
+    # 1) Recovery-карточка создана в scan-all-prs (idempotency-key по PR-номеру).
+    local create_calls
+    create_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox create .*--idempotency-key merge-conflict-recovery-pr-${pr}" || true)"
+    assert_eq "1" "$create_calls" "CONFLICTING PR → recovery card created with idempotency-key"
+
+    # 2) НЕ requeue существующей карточки (главный фикс respawn-guard дедлока).
+    local requeue_calls
+    requeue_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox requeue" || true)"
+    assert_eq "0" "$requeue_calls" "CONFLICTING PR → existing card NOT requeued"
+
+    # 3) НЕ unblock существующей карточки (тоже триггер респавна).
+    local unblock_calls
+    unblock_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox unblock" || true)"
+    assert_eq "0" "$unblock_calls" "CONFLICTING PR → existing card NOT unblocked"
+
+    # 4) Воркер-карточка остаётся done (не тронута).
+    local archive_calls
+    archive_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox archive" || true)"
+    assert_eq "0" "$archive_calls" "done-карточка воркера не архивируется (не merged-PR путь)"
+}
+
+# ===========================================================================
+# H. Ретро 13.08 t_42741511 (кейс B #1172/#1173): recovery-карточка УЖЕ done с
+# idempotency-key merge-conflict-recovery-pr-<N> → create вернул бы её id и
+# свежая НЕ создалась бы (PR вечно CONFLICTING). Теперь: ищем по PR/branch в
+# ЛЮБОМ статусе и requeue'им done-карточку; create НЕ вызывается.
+# ===========================================================================
+test_H_done_recovery_card_requeued_not_recreated() {
+    new_test
+    local issue=3030 pr=3031
+    local branch="z-{agent}/${issue}-fix-3030-conflict-recur"
+    set_state ISSUE_LIST_JSON '[]'
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"agent:backend"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_beef${issue}\\\\\\n\"}]}"
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    set_state PR_LIST_ALL_OPEN_JSON "[{\"number\":${pr},\"state\":\"OPEN\",\"baseRefName\":\"develop\",\"headRefName\":\"${branch}\",\"mergeable\":\"CONFLICTING\",\"mergeStateStatus\":\"DIRTY\",\"title\":\"fix #${issue} conflict recur\",\"labels\":[]}]"
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+    set_state "BRANCH_PRESENT_${branch}" 1
+    # Воркер-карточка done + recovery-карточка УЖЕ done (ключ занят).
+    set_state KANBAN_LIST_JSON "[{\"id\":\"t_beef${issue}\",\"status\":\"done\"},{\"id\":\"t_rec${pr}\",\"title\":\"🔀 rebase PR #${pr} (${branch}) на develop — конфликт/CI\",\"status\":\"done\"}]"
+
+    run_merge_gate
+
+    local journal
+    journal="$(cat "$GH_JOURNAL")\n"
+
+    # 1) recovery-карточка requeue'ится (а не пересоздаётся).
+    local requeue_calls
+    requeue_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox requeue t_rec${pr}" || true)"
+    assert_eq "1" "$requeue_calls" "done recovery-карточка requeue'ится (кейс B)"
+    # 2) create НЕ вызывается (иначе idempotency вернул бы done-карточку).
+    local create_calls
+    create_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox create .*merge-conflict-recovery-pr-${pr}" || true)"
+    assert_eq "0" "$create_calls" "recovery-карточка НЕ пересоздаётся (done + ключ занят)"
+    # 3) воркер-карточка не requeue'ится (respawn-guard дедлок, тест G).
+    local worker_requeue
+    worker_requeue="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox requeue t_beef${issue}" || true)"
+    assert_eq "0" "$worker_requeue" "воркер-карточка не requeue'ится (respawn-guard)"
+}
+
+# ===========================================================================
+# I. Ретро 13.08 t_42741511 (урок t_ede84713/t_fb3796e2): на ветке УЖЕ есть
+# АКТИВНАЯ (running) recovery-карточка → НЕ requeue'им done-дубль и НЕ создаём
+# новую (гонка force-push: два воркера на одной ветке). Только reminder.
+# ===========================================================================
+test_I_active_recovery_card_skips_requeue() {
+    new_test
+    local issue=3040 pr=3041
+    local branch="z-{agent}/${issue}-fix-3040-conflict-race"
+    set_state ISSUE_LIST_JSON '[]'
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"agent:devops"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_beef${issue}\\\\\\n\"}]}"
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    set_state PR_LIST_ALL_OPEN_JSON "[{\"number\":${pr},\"state\":\"OPEN\",\"baseRefName\":\"develop\",\"headRefName\":\"${branch}\",\"mergeable\":\"CONFLICTING\",\"mergeStateStatus\":\"DIRTY\",\"title\":\"fix #${issue} conflict race\",\"labels\":[]}]"
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+    set_state "BRANCH_PRESENT_${branch}" 1
+    # Воркер-карточка done + активная running recovery-карточка + done-дубль.
+    set_state KANBAN_LIST_JSON "[{\"id\":\"t_beef${issue}\",\"status\":\"done\"},{\"id\":\"t_active${pr}\",\"title\":\"🔀 rebase PR #${pr} (${branch}) на develop — конфликт/CI\",\"status\":\"running\"},{\"id\":\"t_done${pr}\",\"title\":\"🔀 rebase PR #${pr} (${branch}) на develop — конфликт/CI\",\"status\":\"done\"}]"
+
+    run_merge_gate
+
+    local journal
+    journal="$(cat "$GH_JOURNAL")\n"
+
+    # 1) НИ одного requeue (активная карточка уже работает).
+    local requeue_calls
+    requeue_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox requeue" || true)"
+    assert_eq "0" "$requeue_calls" "активная recovery-карточка → requeue НЕ вызывается"
+    # 2) create НЕ вызывается.
+    local create_calls
+    create_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox create .*merge-conflict-recovery-pr-${pr}" || true)"
+    assert_eq "0" "$create_calls" "активная recovery-карточка → create НЕ вызывается"
+    # 3) reminder пишется в существующую воркер-карточку.
+    local comment_calls
+    comment_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox comment t_beef${issue}" || true)"
+    assert_eq "1" "$comment_calls" "reminder комментится в воркер-карточку"
+}
+
+# ===========================================================================
 # Run all tests.
 # ===========================================================================
 run_test "A. small PR → needs-e2e" test_A_small_pr_sets_needs_e2e
@@ -271,5 +410,8 @@ run_test "C. too many lines → block" test_C_too_many_lines_blocks
 run_test "D. override label → allow" test_D_override_label_allows
 run_test "E. big-bang comment dedup" test_E_big_bang_comment_dedup
 run_test "F. small lint PR → needs-review" test_F_small_lint_pr_sets_needs_review
+run_test "G. CONFLICTING → recovery card (no requeue)" test_G_conflicting_pr_creates_recovery_card
+run_test "H. done recovery-card → requeue (кейс B #1172)" test_H_done_recovery_card_requeued_not_recreated
+run_test "I. active recovery-card → skip (гонка force-push)" test_I_active_recovery_card_skips_requeue
 
 summary

@@ -58,6 +58,7 @@ __all__ = [
     # Dialogue tools
     "SpeakTextTool",
     "ListenForResponseTool",
+    "SetVoiceTool",
     # Memory tools
     "MemorySaveTool",
     "MemorySearchTool",

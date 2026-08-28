@@ -311,6 +311,13 @@ class MCPTool(ABC):
         else:
             print(f"[{self.name}] INFO: {message}")
 
+    def log_debug(self, message: str):
+        """Логирование debug сообщения."""
+        if self.node:
+            self.node.get_logger().debug(f"[{self.name}] {message}")
+        else:
+            print(f"[{self.name}] DEBUG: {message}")
+
     def log_warning(self, message: str):
         """Логирование warning сообщения."""
         if self.node:

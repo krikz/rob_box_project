@@ -32,6 +32,15 @@ from std_msgs.msg import String
 
 from .utils.speaker_embeddings import SpeakerDatabase, SpeakerMatch
 
+# Issue #1160 — Prometheus metrics (этап 1 observability).
+# ``prometheus_client`` — optional dep; если её нет, всё превращается в
+# no-op и старт сервера тихо возвращает ``False``.
+from rob_box_voice.observability import (
+    is_metrics_enabled,
+    record_speaker_recognize,
+    start_metrics_server,
+)
+
 
 class SpeakerIdNode(Node):
     """Voice-based speaker identification node."""
@@ -44,6 +53,8 @@ class SpeakerIdNode(Node):
         self.declare_parameter("identify_threshold", 0.75)
         self.declare_parameter("sample_rate", 16000)
         self.declare_parameter("enabled", True)
+        # Issue #1160 — Prometheus metrics endpoint. 9112 — speaker_id_node.
+        self.declare_parameter("metrics_port", 9112)
 
         self._enabled: bool = self.get_parameter("enabled").value
         self._sample_rate: int = self.get_parameter("sample_rate").value
@@ -94,7 +105,22 @@ class SpeakerIdNode(Node):
         # ── Publishers ────────────────────────────────────────────────────────
         self._result_pub = self.create_publisher(String, "/voice/speaker/result", reliable_qos)
 
-        # ── Subscribers ───────────────────────────────────────────────────────
+        # Issue #1160 — Prometheus metrics endpoint. 9112 — speaker_id_node.
+        # Запускаем сервер ТОЛЬКО если есть резёмблизер (иначе нода не даёт
+        # идентификации, и метрики бесполезны). Порт читаем из параметра.
+        metrics_port: int = int(self.get_parameter("metrics_port").value or 0)
+        if metrics_port > 0 and is_metrics_enabled():
+            if start_metrics_server(metrics_port):
+                self.get_logger().info(
+                    f"📊 Speaker-ID metrics server listening on :{metrics_port}/metrics"
+                )
+            else:
+                self.get_logger().warning(
+                    f"📊 Speaker-ID metrics port {metrics_port} not bound "
+                    "(busy or prometheus_client missing)"
+                )
+
+        # ── Subscribers ────────────────────────────────────────────────────────
         self.create_subscription(
             AudioData,
             "/audio/speech_audio",
@@ -202,6 +228,9 @@ class SpeakerIdNode(Node):
                 f"⚠️ embed_audio returned None for {len(pcm_bytes)} bytes "
                 f"({len(pcm_bytes)/self._sample_rate/2:.1f}s) — publishing unknown"
             )
+            # Issue #1160 — Prometheus metrics: не удалось извлечь эмбеддинг —
+            # считаем это unknown.
+            record_speaker_recognize(known=False, confidence=None)
             self._publish_result(None)
             return
 
@@ -222,6 +251,12 @@ class SpeakerIdNode(Node):
                 f"✅ Registered & identified '{pending_name}' "
                 f"(inference {elapsed:.0f} ms)"
             )
+            # Issue #1160 — Prometheus metrics: только что зарегистрированный
+            # спикер считается known.
+            record_speaker_recognize(
+                known=True,
+                confidence=match.confidence if match else None,
+            )
             return
 
         match = self._db.identify(embedding)
@@ -233,6 +268,11 @@ class SpeakerIdNode(Node):
         else:
             self.get_logger().info(f"👤 Speaker: unknown ({elapsed:.0f} ms)")
 
+        # Issue #1160 — Prometheus metrics: known/unknown.
+        record_speaker_recognize(
+            known=bool(match),
+            confidence=match.confidence if match else None,
+        )
         self._publish_result(match)
 
     def _on_rename_request(self, msg: String) -> None:

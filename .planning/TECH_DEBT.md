@@ -95,7 +95,7 @@
 | ID | Проблема | Файл | Severity | Disposition | Обоснование |
 |----|----------|------|----------|-------------|-------------|
 | SL-1 | docker/build/ — 8 полных копий репозитория для раннеров | docker/build/ | low | accept | CI/CD overhead; accept как компромисс простоты vs скорость |
-| SL-2 | Один Zenoh router = SPOF | docker/main/zenoh-router/ | medium | defer:M2 | Redundancy возможна; low priority для lab env |
+| SL-2 | Один Zenoh router = SPOF | docker/main/zenoh-router/ | medium | addressed:M2 | Redundancy отложена (lab); добавлены Prometheus alert rules (ADR-0017, PR #1274): ZenohRouterMainDown/VisionDown |
 | SL-3 | LLM providers — только облако, offline fallback отключён | rob_box_voice/dialogue_node.py | medium | defer:M3 | Offline LLM (Ollama local) в планах для M3 |
 
 ---

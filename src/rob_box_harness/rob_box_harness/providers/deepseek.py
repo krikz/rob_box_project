@@ -281,8 +281,28 @@ class HarnessDeepSeekProvider(LLMProvider):  # type: ignore[misc]
                     async for chunk in _replay():
                         yield chunk
                 finally:
+                    # 🔴 FIX (issue #1280): barge-in — consumer отменён
+                    # (CancelledError) или генератор закрыт (aclose).
+                    # Раньше drain_task только cancel()'ился без await:
+                    # если он в этот момент был между чанками
+                    # (await queue.put), CancelledError не доходил до
+                    # inner_stream — HTTP-запрос к провайдеру жил до
+                    # конца генерации (трата квоты на старую тему,
+                    # «робот добивает старую тему после смены»).
+                    # Теперь дожидаемся drain_task и принудительно
+                    # закрываем inner_stream — соединение рвётся сразу.
                     if not drain_task.done():
                         drain_task.cancel()
+                    try:
+                        await drain_task
+                    except BaseException:
+                        pass
+                    aclose = getattr(inner_stream, "aclose", None)
+                    if aclose is not None:
+                        try:
+                            await aclose()
+                        except Exception:
+                            pass
                 return
             except (RateLimitError, TimeoutError) as exc:
                 last_exc = exc

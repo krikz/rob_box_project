@@ -91,9 +91,14 @@ class WebSearchSkill(BaseSkill):
             max_results = max(1, min(int(max_results or 5), 10))
 
             try:
-                with DDGS() as ddgs:
+                with DDGS(timeout=10) as ddgs:
                     results = list(
-                        ddgs.text(query.strip(), max_results=max_results, region="wt-wt")
+                        ddgs.text(
+                            query.strip(),
+                            max_results=max_results,
+                            region="wt-wt",
+                            backend="duckduckgo",
+                        )
                     )
             except Exception as exc:  # noqa: BLE001
                 return json.dumps(

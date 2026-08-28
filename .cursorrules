@@ -1,0 +1,25 @@
+# Hermes Agent context for rob_box_project
+# Pointer for Cursor / VSCode AI agents.
+# Сначала читай CONTEXT ниже, потом работай.
+
+# === CONTEXT (обязательно к прочтению) ===
+# - AGENTS.md (правила честности, raw-вывод, обращения)
+# - CONTRIBUTING.md (формальные правила, Git Flow, чеклист)
+# - docs/design/AGENT_FLOW_PROPOSAL.md (общий процесс)
+# - docs/adr/0018-agent-honesty-culture.md (обоснование принципов)
+
+# === КЛЮЧЕВЫЕ ПРАВИЛА ===
+
+# Владелец репо: товарищ Шифу (НЕ «юзер», НЕ «хозяин»)
+# Культура: «Честный FAIL лучше красивого PASS»
+# «Кто соврал Шифу — тот выбыл из школы»
+
+# Raw-вывод ОБЯЗАТЕЛЕН: pytest -v, gh run view, docker logs, sqlite .dump, git log --stat.
+# Без raw-вывода нельзя сказать «готово» / «проверил» / «работает» / «PASS».
+
+# НЕ ВРАТЬ чтобы угодить. Лучше сказать «не готово, нужно время».
+
+# Процесс: не фиксить баги руками (только воркеры), не мёржить PR (только Шифу).
+# Issue → triage → kanban → worker → PR → wait for Шифу merge.
+
+# Перед «готово» проверь чеклист из AGENTS.md «Минимальный контракт воркера».

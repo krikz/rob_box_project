@@ -15,7 +15,7 @@
 ## Место в процессе (Context Engineering)
 
 Этот файл — **domain context** для фаз Design и Implement.  
-Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: `tasks.json`
+Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: GitHub Issues (устаревшая ссылка на `tasks.json`, файл больше не существует — см. `docs/development/agents/README.md`)
 
 - **Research** → читай стек и структуру файлов из этого файла
 - **Design** → передай как контекст в `/design-feature` или `/design-bugfix`

@@ -285,6 +285,19 @@ class TestSoundNodeIntegration(unittest.TestCase):
         result = self.node.select_sound('nonexistent_sound')
         self.assertIsNone(result)
 
+    def test_select_sound_boop_alias(self):
+        """Issue #1251: триггер "boop" → button_click (ранний «бульк»)."""
+        # button_click загружен из sound pack
+        self.node.sounds['button_click'] = MagicMock()
+        result = self.node.select_sound('boop')
+        self.assertEqual(result, 'button_click')
+
+    def test_select_sound_boop_alias_missing_sound(self):
+        """Issue #1251: если button_click не загружен — "boop" не резолвится."""
+        # sound pack без button_click (например, не все файлы загрузились)
+        result = self.node.select_sound('boop')
+        self.assertIsNone(result)
+
     def test_play_sound_thread_sets_flags(self):
         """Тест: play_sound_thread() устанавливает флаги."""
         # Добавляем тестовый звук

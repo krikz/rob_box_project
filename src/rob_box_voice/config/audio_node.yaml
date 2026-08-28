@@ -11,6 +11,7 @@
 
 audio_node:
   ros__parameters:
+    metrics_port: 9113  # issue #1160 — Prometheus metrics endpoint
     sample_rate: 16000
     # Issue 1117 round-2: ReSpeaker в 6-канальном RAW-режиме (прошивка по
     # умолчанию). Карта каналов per datasheet ReSpeaker Mic Array v2.0:

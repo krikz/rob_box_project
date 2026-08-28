@@ -31,6 +31,11 @@ on:
         required: false
         default: ''
         type: string
+      acceptance_file:
+        description: 'ADR-0022 GATE-1: path to acceptance.json (relative to repo root, or absolute). If scenario_file is set and acceptance_file is empty, the harness auto-discovers <scenario_dir>/acceptance.json. Set --acceptance-skip via ACCEPTANCE_SKIP=1 env to disable gating (NOT recommended, ADR-0022 R1).'
+        required: false
+        default: ''
+        type: string
       patterns:
         description: 'Extra log patterns to assert after the cycle (comma-separated grep -E). e.g. "speaker_analysis,Registering"'
         required: false
@@ -77,6 +82,35 @@ on:
         required: false
         default: ''
         type: string
+      check_tg_echo:
+        description: 'Issue #1196 L2 — after the voice round, verify telegram_node got the dialogue response (metrics :9101 / send_message evidence). Diagnostic only, does not fail the verdict.'
+        required: false
+        default: 'false'
+        type: boolean
+      # Issue #1527: трейсинг «кто дёрнул workflow». Все скрипты/воркеры
+      # используют твой GH_TOKEN, поэтому triggering_actor.login всегда = krikz.
+      # Эти опциональные поля заполняются самими скриптами (agent-flow-*),
+      # чтобы в CI job logs было видно кто реально стартанул e2e.
+      triggered_by_script:
+        description: 'Какой скрипт вызвал gh workflow run'
+        required: false
+        type: string
+        default: 'manual'
+      triggered_by_agent:
+        description: 'Какой worker профиль (devops/architect/backend/merge-gate/agent-flow)'
+        required: false
+        type: string
+        default: 'unknown'
+      triggered_by_card:
+        description: 'Kanban card id (t_xxx) если запуск из карточки'
+        required: false
+        type: string
+        default: ''
+      triggered_by_reason:
+        description: 'Краткая причина запуска (free-form)'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   e2e-voice:
@@ -84,9 +118,31 @@ jobs:
     # билд (5+ docker-runner контейнеров) ломал e2e и e2e ломал билды.
     # Лейбл ТОЛЬКО e2e (без self-hosted) — чтобы раннер не участвовал в билдах.
     runs-on: e2e
-    timeout-minutes: 15
+    # Ретро t_d5c9d012 (round-170 cancel): voice_core_suite_v1.json (11 шагов:
+    # cc01/ns01/ww01/mv01/mv02/mv03/ds01/ds02/ds03/dj01/dj02) с retries=3 +
+    # react_window=40s + TTS synthesis per step реально занимает 25-35 мин.
+    # Старый 15 мин таймаут резал прогон в середине ds01/ds02 (backlog-фаза).
+    # 45 мин — запас на 3x retry, backlog-фразу (анекдот), и 2 музыкальных шага.
+    timeout-minutes: 45
 
     steps:
+      - name: Trigger source (issue #1527)
+        # Трейсинг: видно в CI job log кто реально стартанул этот e2e прогон
+        # (при ручном gh workflow run без -f triggered_by_* — defaults).
+        # Issue #1527 / ретро t_4cf2811e: ${{ inputs.* }} в bash-контексте
+        # запрещены (CRLF injection через upstream JSON), пробрасываем через
+        # env-переменные и режем \r\n (single-line inputs).
+        env:
+          TRIGGERED_BY_SCRIPT: ${{ inputs.triggered_by_script }}
+          TRIGGERED_BY_AGENT: ${{ inputs.triggered_by_agent }}
+          TRIGGERED_BY_CARD: ${{ inputs.triggered_by_card }}
+          TRIGGERED_BY_REASON: ${{ inputs.triggered_by_reason }}
+        run: |
+          TBS_CLEAN=$(printf '%s' "$TRIGGERED_BY_SCRIPT" | tr -d '\r\n')
+          TBA_CLEAN=$(printf '%s' "$TRIGGERED_BY_AGENT" | tr -d '\r\n')
+          TBC_CLEAN=$(printf '%s' "$TRIGGERED_BY_CARD" | tr -d '\r\n')
+          TBR_CLEAN=$(printf '%s' "$TRIGGERED_BY_REASON" | tr -d '\r\n')
+          echo "🔧 Triggered by: ${TBS_CLEAN} / agent=${TBA_CLEAN} / card=${TBC_CLEAN} / reason=${TBR_CLEAN}"
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -124,42 +180,123 @@ jobs:
       - name: Push atomic harness + scenario to build machine
         env:
           SSHPASS: open
+          # Ретро t_4cf2811e (round-166 fail): bash подставляет ${{ inputs.x }}
+          # дословно — если upstream workflow_call передал input с trailing
+          # \r (JSON body с CRLF / jq без -r / multi-line workflow_call edge case),
+          # scp получает путь "file.json\r" и падает с "No such file or directory".
+          # Защита: sanitized переменные (single-line) используются везде ниже.
+          # voice_text / patterns — multi-line, для них убираем ТОЛЬКО \r.
+          SCENARIO_FILE: ${{ inputs.scenario_file }}
+          ACCEPTANCE_FILE: ${{ inputs.acceptance_file }}
+          VOICE_TEXT: ${{ inputs.voice_text }}
+          VOICE: ${{ inputs.voice }}
+          PATTERNS: ${{ inputs.patterns }}
+          ACCEPTANCE_CHECK: ${{ inputs.acceptance_check }}
+          RETRIES: ${{ inputs.retries }}
+          REACT_WINDOW: ${{ inputs.react_window }}
+          CHECK_TG_ECHO: ${{ inputs.check_tg_echo }}
         run: |
+          # bug(t_cca7c074, ретро 19.08): копируем ОБА файла харнесса — раньше
+          # копировали только e2e_voice_test.sh, но он source'ит e2e_voice_lib.sh
+          # на line 234 (`source "$SCRIPT_DIR_E2E/e2e_voice_lib.sh"`) и падал
+          # с "No such file or directory" в каждом run. Симптом скрывался тем,
+          # что GATE-1 падал раньше и до source не доходили.
           chmod +x .github/workflows/scripts/e2e_voice_test.sh
+          chmod +x .github/workflows/scripts/e2e_voice_lib.sh
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_test.sh ros2@10.1.1.249:/tmp/e2e_voice_test.sh
+          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_lib.sh ros2@10.1.1.249:/tmp/e2e_voice_lib.sh
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh && echo HARNESS_PUSHED"
+          # CRLF sanitization (single-line): отрезаем \r и \n от начала/конца.
+          # Внутри значения CR/LF недопустимы для имён файлов/путей.
+          SCENARIO_FILE_CLEAN=$(printf '%s' "$SCENARIO_FILE" | tr -d '\r\n')
+          ACCEPTANCE_FILE_CLEAN=$(printf '%s' "$ACCEPTANCE_FILE" | tr -d '\r\n')
           # scenario (если задан) — кладём в /tmp на 249
-          if [ -n "${{ inputs.scenario_file }}" ]; then
-            sshpass -e scp -o StrictHostKeyChecking=no "${{ inputs.scenario_file }}" ros2@10.1.1.249:/tmp/e2e_scenario.json
+          if [ -n "$SCENARIO_FILE_CLEAN" ]; then
+            sshpass -e scp -o StrictHostKeyChecking=no "$SCENARIO_FILE_CLEAN" ros2@10.1.1.249:/tmp/e2e_scenario.json
             sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_scenario.json && echo SCENARIO_PUSHED"
           else
             echo "NO_SCENARIO"
+          fi
+          # ADR-0022 GATE-1: acceptance.json (если задан явно) — кладём в /tmp.
+          # Если не задан, харнесс сам ищет <scenario_dir>/acceptance.json
+          # (auto-discovery) либо падает с gating error.
+          if [ -n "$ACCEPTANCE_FILE_CLEAN" ]; then
+            sshpass -e scp -o StrictHostKeyChecking=no "$ACCEPTANCE_FILE_CLEAN" ros2@10.1.1.249:/tmp/e2e_acceptance.json
+            sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_acceptance.json && echo ACCEPTANCE_PUSHED"
+          else
+            echo "NO_EXPLICIT_ACCEPTANCE (auto-discovery / gating will apply)"
           fi
 
       - name: E2E voice test (atomic harness)
         env:
           SSHPASS: open
+          # Issue #1353: передаём GITHUB_RUN_ID в харнесс, чтобы он создал
+          # симлинк /tmp/dialog_e2e_${run_id}.wav на свой $OUT_DIR/recording.wav
+          # (контракт для upload-artifact ниже — иначе артефакт
+          # e2e-voice-recording-<run_id> всегда пустой).
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          # Ретро t_4cf2811e (round-166): sanitized inputs (см. шаг выше).
+          SCENARIO_FILE: ${{ inputs.scenario_file }}
+          ACCEPTANCE_FILE: ${{ inputs.acceptance_file }}
+          VOICE_TEXT: ${{ inputs.voice_text }}
+          VOICE: ${{ inputs.voice }}
+          PATTERNS: ${{ inputs.patterns }}
+          ACCEPTANCE_CHECK: ${{ inputs.acceptance_check }}
+          RETRIES: ${{ inputs.retries }}
+          REACT_WINDOW: ${{ inputs.react_window }}
+          CHECK_TG_ECHO: ${{ inputs.check_tg_echo }}
         run: |
           RID="${{ github.run_id }}"
           YKEY="$(cat "$YKEY_LOCAL")"
 
+          # CRLF sanitization (single-line).
+          SCENARIO_FILE_CLEAN=$(printf '%s' "$SCENARIO_FILE" | tr -d '\r\n')
+          ACCEPTANCE_FILE_CLEAN=$(printf '%s' "$ACCEPTANCE_FILE" | tr -d '\r\n')
+          VOICE_CLEAN=$(printf '%s' "$VOICE" | tr -d '\r\n')
+          RETRIES_CLEAN=$(printf '%s' "$RETRIES" | tr -d '\r\n')
+          REACT_WINDOW_CLEAN=$(printf '%s' "$REACT_WINDOW" | tr -d '\r\n')
+          # voice_text / patterns — multi-line, режем ТОЛЬКО \r (LF — легитимный
+          # контент, ретро t_4cf2811e).
+          VOICE_TEXT_CLEAN=$(printf '%s' "$VOICE_TEXT" | tr -d '\r')
+          # patterns / acceptance_check — comma-separated; обрезка \r обязательна,
+          # \n — допустим (на случай, если upstream переслал multi-line).
+          PATTERNS_CLEAN=$(printf '%s' "$PATTERNS" | tr -d '\r')
+          ACCEPTANCE_CHECK_CLEAN=$(printf '%s' "$ACCEPTANCE_CHECK" | tr -d '\r')
+          CHECK_TG_ECHO_CLEAN=$(printf '%s' "$CHECK_TG_ECHO" | tr -d '\r\n')
+
           # Формируем команду: --scenario если задан, иначе --text + --voice
-          if [ -n "${{ inputs.scenario_file }}" ]; then
+          if [ -n "$SCENARIO_FILE_CLEAN" ]; then
             CMD="/tmp/e2e_voice_test.sh --scenario /tmp/e2e_scenario.json"
+            # ADR-0022 GATE-1: проброс --acceptance если задан явно.
+            # Если не задан — харнесс сам auto-discovers /tmp/e2e_scenario.json
+            # рядом acceptance.json (либо gating падает с понятным сообщением).
+            if [ -n "$ACCEPTANCE_FILE_CLEAN" ]; then
+              CMD="$CMD --acceptance /tmp/e2e_acceptance.json"
+            fi
           else
-            CMD="/tmp/e2e_voice_test.sh --text '${{ inputs.voice_text }}' --voice '${{ inputs.voice }}'"
+            CMD="/tmp/e2e_voice_test.sh --text '$VOICE_TEXT_CLEAN' --voice '$VOICE_CLEAN'"
           fi
           # patterns: если acceptance_check (legacy) задан, а patterns нет — используем его
-          PATTERNS_VAL="${{ inputs.patterns }}"
+          PATTERNS_VAL="$PATTERNS_CLEAN"
           if [ -z "$PATTERNS_VAL" ]; then
-            PATTERNS_VAL="${{ inputs.acceptance_check }}"
+            PATTERNS_VAL="$ACCEPTANCE_CHECK_CLEAN"
           fi
           [ -n "$PATTERNS_VAL" ] && CMD="$CMD --patterns '$PATTERNS_VAL'"
-          CMD="$CMD --retries ${{ inputs.retries }} --react-window ${{ inputs.react_window }}"
+          CMD="$CMD --retries $RETRIES_CLEAN --react-window $REACT_WINDOW_CLEAN"
+          # Issue #1196 L2 — полуавтомат-проверка эха telegram↔dialogue.
+          if [ "$CHECK_TG_ECHO_CLEAN" = "true" ]; then
+            CMD="$CMD --check-tg-echo"
+          fi
 
           echo "RUN_CMD: $CMD"
-          # Запускаем через SSH: ключ передаём env-переменной (не в cmdline — чтобы не светить в ps)
+          # Запускаем через SSH: ключ передаём env-переменной (не в cmdline — чтобы не светить в ps).
+          # GITHUB_RUN_ID обязателен: харнесс строит OUT_DIR=/tmp/e2e_v2_${RUN_ID}.
+          # Без него RUN_ID=локальный timestamp (e2e_v2_<YYYYMMDD_HHMMSS>) и collect-шаг
+          # ниже не находит primary_dir=/tmp/e2e_v2_${RID} → fallback тянул STALE legacy
+          # каталоги (e2e_v2_20260813_031333 и т.п.) → в звуковой артефакт попадало
+          # «что-то левое» (ретро 22.08 t_944df2c5, issue #1506).
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
-            "export YANDEX_API_KEY='${YKEY}'; export ROBOT_HOST=10.1.1.21; export SSHPASS='open'; \
+            "export YANDEX_API_KEY='${YKEY}'; export ROBOT_HOST=10.1.1.21; export SSHPASS='open'; export GITHUB_RUN_ID='${RID}'; \
              ${CMD} 2>&1 | tee /tmp/e2e_atomic_out.log"
 
           echo "=== E2E stdout ==="
@@ -182,22 +319,44 @@ jobs:
           fi
 
       - name: Write model.json (multi-model provenance)
+        env:
+          # Ретро t_4cf2811e: JSON-сериализация в heredoc небезопасна, если
+          # input содержит сырые CR/LF/кавычки — сломанный JSON. Прогоняем
+          # через jq, который сам эскейпит control-символы.
+          LLM: ${{ inputs.llm }}
+          TTS: ${{ inputs.tts }}
+          STT: ${{ inputs.stt }}
+          VOICE: ${{ inputs.voice }}
+          VOICE_TEXT: ${{ inputs.voice_text }}
+          SCENARIO_FILE: ${{ inputs.scenario_file }}
+          ACCEPTANCE_FILE: ${{ inputs.acceptance_file }}
+          PATTERNS: ${{ inputs.patterns }}
+          CHECK_TG_ECHO: ${{ inputs.check_tg_echo }}
         run: |
           RID="${{ github.run_id }}"
-          cat > "model.json" <<EOF
-          {
-            "llm":  "${{ inputs.llm }}",
-            "tts":  "${{ inputs.tts }}",
-            "stt":  "${{ inputs.stt }}",
-            "voice": "${{ inputs.voice }}",
-            "voice_text": "${{ inputs.voice_text }}",
-            "scenario_file": "${{ inputs.scenario_file }}",
-            "patterns": "${{ inputs.patterns }}",
-            "harness": "e2e_voice_test.sh (atomic v2)",
-            "ts":   "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "run_id": "${RID}"
-          }
-          EOF
+          # JSON-safe сериализация через jq (CR/LF/кавычки эскейпятся автоматически).
+          # Ретро t_4cf2811e: heredoc-сборка ломалась на input с CRLF/переводами строк.
+          jq -n \
+            --arg llm      "$LLM" \
+            --arg tts      "$TTS" \
+            --arg stt      "$STT" \
+            --arg voice    "$VOICE" \
+            --arg voice_text    "$VOICE_TEXT" \
+            --arg scenario_file "$SCENARIO_FILE" \
+            --arg acceptance_file "$ACCEPTANCE_FILE" \
+            --arg patterns  "$PATTERNS" \
+            --arg check_tg_echo "$CHECK_TG_ECHO" \
+            --arg harness   "e2e_voice_test.sh (atomic v2)" \
+            --arg ts        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg run_id    "$RID" \
+            '{llm:$llm, tts:$tts, stt:$stt, voice:$voice,
+              voice_text:$voice_text,
+              scenario_file:$scenario_file,
+              acceptance_file:$acceptance_file,
+              patterns:$patterns,
+              check_tg_echo:$check_tg_echo,
+              harness:$harness, ts:$ts, run_id:$run_id}' \
+            > model.json
           cat model.json
 
       - name: Collect robot logs
@@ -210,49 +369,187 @@ jobs:
             "docker logs voice-assistant --since 15m 2>&1" > "$LOG" || \
             echo "Failed" > "$LOG"
           echo "Log lines: $(wc -l < "$LOG")"
+
+      - name: Collect e2e artifacts from build machine
+        env:
+          SSHPASS: open
+        run: |
+          RID="${{ github.run_id }}"
+          LOCAL_ART_DIR="/tmp/e2e_artifacts_${RID}"
+          mkdir -p "$LOCAL_ART_DIR"
+          # ADR-0024 (harness-verdict-sot): сначала ищем канонический каталог
+          # текущего run'а /tmp/e2e_v2_<RID>. Харнесс пишет OUT_DIR по GITHUB_RUN_ID
+          # (issue #1353), и этот путь — single source of truth для verdict.txt.
+          # Только если его нет (harness упал до ensure_outdir), берём самый свежий
+          # /tmp/e2e_v2_* по mtime — отладочный набор всё равно нужен.
+          PRIMARY_DIR="/tmp/e2e_v2_${RID}"
+          if sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
+               "[ -d '$PRIMARY_DIR' ]" 2>/dev/null; then
+            REMOTE_OUT_DIR="$PRIMARY_DIR"
+            echo "Remote OUT_DIR (primary, by RID) = $REMOTE_OUT_DIR"
+          else
+            echo "WARN: $PRIMARY_DIR не существует на 249 — harness упал до ensure_outdir?"
+            REMOTE_OUT_DIR="$(sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
+              "ls -1dt /tmp/e2e_v2_* 2>/dev/null | head -1" 2>/dev/null || echo '')"
+            if [ -n "$REMOTE_OUT_DIR" ]; then
+              echo "Remote OUT_DIR (fallback, by mtime) = $REMOTE_OUT_DIR — может быть stale (не наш RID)"
+            fi
+          fi
+          if [ -z "$REMOTE_OUT_DIR" ]; then
+            echo "No /tmp/e2e_v2_*/ on build machine — e2e harness didn't run"
+          else
+            # Исторически тут был `scp -r` с trailing-dot в source path —
+            # deprecated с OpenSSH 9.0+ (changelog: «path with /<dot>
+            # suffix for source was rejected as "unexpected filename"»).
+            # Используем rsync -a через ssh — см. issue #1478, run #32255219770.
+            sshpass -e rsync -a \
+              -e 'ssh -o StrictHostKeyChecking=no' \
+              "${REMOTE_OUT_DIR}/" "$LOCAL_ART_DIR/" 2>/dev/null || true
+            ls -la "$LOCAL_ART_DIR" 2>&1 | head -25
+          fi
+          # Сохраняем абсолютный путь к артефакт-диру для последующих шагов.
+          echo "LOCAL_ART_DIR=$LOCAL_ART_DIR" >> "$GITHUB_ENV"
+          # Артефакт-каталог локально доступен workflow'у через $LOCAL_ART_DIR.
+          echo "ARTIFACTS_COLLECTED $(ls "$LOCAL_ART_DIR" 2>/dev/null | wc -l) files"
+
+      # Issue #1396: PR diff — «что нового в этом PR» для ретро-инженера.
+      # Если задан вход pr_number — скачиваем его; иначе берём текущий PR
+      # ветки (если HEAD запушено из PR — workflow refs фигурирует).
+      - name: Upload PR diff (issue #1396)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Ретро t_4cf2811e: pr_number / ref могут содержать CR (upstream JSON
+          # body с CRLF). Sanitize перед использованием в [ -n ... ] / gh pr diff.
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REF: ${{ github.event.inputs.ref }}
+          PR_NUM_AUTO: ${{ github.event.pull_request.number }}
+        run: |
+          RID="${{ github.run_id }}"
+          DIFF_FILE="/tmp/e2e_pr_diff_${RID}.patch"
+          PR_NUM=""
+          # CRLF sanitization (single-line).
+          PR_NUMBER_CLEAN=$(printf '%s' "$PR_NUMBER" | tr -d '\r\n')
+          REF_CLEAN=$(printf '%s' "$REF" | tr -d '\r\n')
+          PR_NUM_AUTO_CLEAN=$(printf '%s' "$PR_NUM_AUTO" | tr -d '\r\n')
+          # 1) Если в inputs pr_number (или event payload) — используем
+          if [ -n "$PR_NUMBER_CLEAN" ]; then
+            PR_NUM="$PR_NUMBER_CLEAN"
+          elif [ -n "$PR_NUM_AUTO_CLEAN" ]; then
+            PR_NUM="$PR_NUM_AUTO_CLEAN"
+          fi
+          if [ -n "$PR_NUM" ]; then
+            echo "PR diff source: #$PR_NUM"
+            gh pr diff "$PR_NUM" > "$DIFF_FILE" 2>/dev/null || echo "" > "$DIFF_FILE"
+          elif [ -n "$REF_CLEAN" ]; then
+            # 2) Fallback: diff текущей ветки против develop (если trigger=ref)
+            REF="$REF_CLEAN"
+            git fetch origin develop:refs/remotes/origin/develop 2>/dev/null || true
+            git diff "refs/remotes/origin/develop...${REF}" > "$DIFF_FILE" 2>/dev/null \
+              || echo "" > "$DIFF_FILE"
+            echo "PR diff source: git diff origin/develop...${REF}"
+          else
+            echo "⚠️ No PR number / ref — пустой diff (workflow без PR-контекста)"
+            echo "(empty diff — workflow_dispatch без PR)" > "$DIFF_FILE"
+          fi
+          ls -la "$DIFF_FILE"
+          wc -l "$DIFF_FILE"
+          echo "DIFF_FILE=$DIFF_FILE" >> "$GITHUB_ENV"
       - name: Validate e2e result (real robot response)
+        env:
+          SSHPASS: open
         run: |
           RID="${{ github.run_id }}"
           LOG="/tmp/voice_e2e_${RID}.log"
+          # ADR-0024 (harness-verdict-sot): источник истины — ВЫВОД ХАРНЕССА.
+          # Шаг "Verdict from atomic harness" сохранил stdout харнесса
+          # (e2e_atomic_out.log с 249) в /tmp/e2e_verdict.log. Харнесс сам
+          # пишет verdict-маркеры в stdout (E2E_REACTION_OK / E2E_NO_REACTION
+          # / E2E_FEATURE_FAIL и т.п.) И в OUT_DIR/verdict.txt на 249. Один
+          # из двух каналов может пострадать от tee-race / ssh-флапа; используем
+          # ОБА и приоритизируем verdict.txt (single source of truth, см. ADR-0024).
+          VERDICT_LOG="/tmp/e2e_verdict.log"
+          # verdict.txt лежит в /tmp/e2e_v2_<RID>/verdict.txt на 249 — там же,
+          # где его положил ensure_outdir в harness (e2e_voice_test.sh:1054 / :1100).
+          # Содержимое: "PASS" или "FAIL" (плюс маркер E2E_* в строке stdout-фоллбэка).
+          VERDICT_TXT_LOCAL="/tmp/e2e_verdict_${RID}.txt"
+          echo "--- VERDICT_PULL: тяну /tmp/e2e_v2_${RID}/verdict.txt с 249 ---"
+          if sshpass -e scp -o StrictHostKeyChecking=no \
+              "ros2@10.1.1.249:/tmp/e2e_v2_${RID}/verdict.txt" \
+              "$VERDICT_TXT_LOCAL" 2>&1 | tail -3; then
+            if [ -s "$VERDICT_TXT_LOCAL" ]; then
+              V_BYTES=$(stat -c %s "$VERDICT_TXT_LOCAL" 2>/dev/null || echo 0)
+              echo "VERDICT_PULL: $VERDICT_TXT_LOCAL ($V_BYTES bytes) → harness SoT verdict"
+              # Подмешиваем содержимое verdict.txt в VERDICT_LOG, чтобы дальнейшая
+              # цепочка grep'ов не падала в harness-output-missing, если stdout-tee
+              # в /tmp/e2e_verdict.log потерялся. Так получаем 1-канал для всей
+              # валидации (а не два параллельных).
+              if [ -s "$VERDICT_LOG" ]; then
+                # Tee-race: stdout-tee записался, но неполный (обрезан/буферизован).
+                # Конкатим harness verdict.txt в конец, чтобы маркеры E2E_* нашлись.
+                printf '\n--- VERDICT_PULL (ADR-0024 fallback, %s bytes) ---\n' "$V_BYTES" >> "$VERDICT_LOG"
+                cat "$VERDICT_TXT_LOCAL" >> "$VERDICT_LOG"
+              else
+                echo "WARN: $VERDICT_LOG пустой/потерян → используем verdict.txt напрямую"
+                cp "$VERDICT_TXT_LOCAL" "$VERDICT_LOG"
+              fi
+            else
+              echo "VERDICT_PULL: $VERDICT_TXT_LOCAL пустой (harness не дописал verdict.txt)"
+            fi
+          else
+            echo "VERDICT_PULL: scp /tmp/e2e_v2_${RID}/verdict.txt не удался — фоллбэк на /tmp/e2e_verdict.log"
+          fi
           FAIL=""
           WARN=""
           echo "--- e2e validation markers ---"
-          # 1) STT: команда должна быть РАСПОЗНАНА (не empty/rejected).
-          #    При retry-цикле (3 попытки) в логе могут быть пустые попытки
-          #    («ОТКЛОНЕНО (пустое)») при успешной — фейлим ТОЛЬКО если
-          #    фраза ни разу не была принята (иначе ложный FAIL: 09.08 live).
-          if grep -q "✅ ПРИНЯТО" "$LOG"; then
-            echo "✅ STT: фраза распознана (ПРИНЯТО)"
-          elif grep -qE "ОТКЛОНЕНО \(пустое\)|Пустой STT" "$LOG"; then
-            echo "❌ STT EMPTY: ни одна фраза не распознана (все попытки пустые)"
-            FAIL="stt-empty"
-          elif grep -q "Получена фраза" "$LOG"; then
-            echo "✅ STT: фраза получена (VAD сработал, текст не распознан)"
-          else
-            echo "❌ STT NO PHRASE: лог не содержит распознанной фразы"
-            FAIL="stt-no-phrase"
-          fi
-          # 2) ОТВЕТ: робот должен РЕАГИРОВАТЬ на команду.
-          #    Приоритет — маркер retry-скрипта (E2E_REACTION_OK в e2e_out.log):
-          #    скрипт сам проверял docker logs робота ПОСЛЕ команды и повторял
-          #    команду, пока не увидел TTS finished. Это самая честная проверка.
-          if grep -q "E2E_REACTION_OK" "$LOG"; then
-            echo "✅ SPEECH: робот ответил (retry-скрипт видел TTS finished после команды)"
-          elif grep -q "E2E_NO_REACTION" "$LOG"; then
-            echo "❌ NO REACTION: retry-скрипт 3 раза проиграл команду — робот не ответил"
+          if [ ! -s "$VERDICT_LOG" ]; then
+            echo "❌ Harness output missing ($VERDICT_LOG) — cannot validate"
+            FAIL="harness-output-missing"
+          elif grep -q "E2E_REACTION_OK" "$VERDICT_LOG"; then
+            echo "✅ SPEECH: робот ответил (харнесс: E2E_REACTION_OK)"
+          elif grep -q "E2E_FEATURE_FAIL" "$VERDICT_LOG"; then
+            echo "❌ FEATURE FAIL: робот ответил, но фича-ассерт (patterns/acceptance/GATE-1) не выполнен"
+            FAIL="${FAIL:+$FAIL,}feature-fail"
+          elif grep -q "E2E_LLM_ERROR" "$VERDICT_LOG"; then
+            echo "❌ LLM ERROR: LLM/TTS вернул ошибку (не квота/fallback)"
+            FAIL="${FAIL:+$FAIL,}llm-error"
+          elif grep -q "E2E_INFRA_FAIL" "$VERDICT_LOG"; then
+            echo "❌ INFRA FAIL: синтез/воспроизведение упали на билд-машине"
+            FAIL="${FAIL:+$FAIL,}infra-fail"
+          elif grep -q "E2E_NO_REACTION" "$VERDICT_LOG"; then
+            echo "❌ NO REACTION: харнесс 3 раза проиграл команду — робот не ответил"
             FAIL="${FAIL:+$FAIL,}no-reaction"
-          else
-            # Fallback (старая логика): TTS должен быть ПОСЛЕ STT-фразы.
-            stt_line="$(grep -n "Получена фраза" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
-            tts_line="$(grep -n "TTS finished" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
-            if [ -n "$stt_line" ] && [ -n "$tts_line" ] && [ "$tts_line" -gt "$stt_line" ] 2>/dev/null; then
-              echo "✅ SPEECH: робот ответил ПОСЛЕ команды (TTS finished после STT-фразы)"
-            elif grep -q "TTS finished" "$LOG"; then
-              echo "❌ ONLY GREETING: TTS был ДО команды (приветствие) — ответа на команду НЕТ"
-              FAIL="${FAIL:+$FAIL,}no-speech-after-command"
+          elif grep -q "E2E_VERDICT PASS" "$VERDICT_LOG"; then
+            # Stale-ветка со старым харнессом (без E2E_REACTION_OK), но PASS:
+            # доверяем вердикту харнесса — он сам проверял цикл (ADR-0015).
+            if grep -q "✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)" "$VERDICT_LOG"; then
+              echo "✅ SPEECH: робот ответил (харнесс PASS + ПОЛНЫЙ ЦИКЛ; старый харнесс без маркера)"
             else
-              echo "❌ NO SPEECH: робот не произнёс ответ"
-              FAIL="${FAIL:+$FAIL,}no-speech"
+              echo "✅ SPEECH: робот ответил (харнесс E2E_VERDICT PASS — доверяем, ADR-0015)"
+            fi
+          elif grep -q "E2E_VERDICT FAIL" "$VERDICT_LOG"; then
+            echo "❌ Harness FAIL: харнесс сам зафейлил цикл"
+            FAIL="harness-fail"
+          else
+            # Совсем старый харнесс: нет ни маркеров, ни вердикта — fallback
+            # на docker-логи (позиция TTS относительно STT).
+            echo "⚠️ Harness output without verdict markers — fallback to docker logs"
+            if grep -q "E2E_REACTION_OK" "$LOG"; then
+              echo "✅ SPEECH: робот ответил (docker log marker)"
+            elif grep -q "E2E_NO_REACTION" "$LOG"; then
+              echo "❌ NO REACTION (docker log marker)"
+              FAIL="${FAIL:+$FAIL,}no-reaction"
+            else
+              stt_line="$(grep -n "Получена фраза" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
+              tts_line="$(grep -n "TTS finished" "$LOG" | head -1 | cut -d: -f1 || echo 0)"
+              if [ -n "$stt_line" ] && [ -n "$tts_line" ] && [ "$tts_line" -gt "$stt_line" ] 2>/dev/null; then
+                echo "✅ SPEECH: робот ответил ПОСЛЕ команды (TTS finished после STT-фразы)"
+              elif grep -q "TTS finished" "$LOG"; then
+                echo "❌ ONLY GREETING: TTS был ДО команды (приветствие) — ответа на команду НЕТ"
+                FAIL="${FAIL:+$FAIL,}no-speech-after-command"
+              else
+                echo "❌ NO SPEECH: робот не произнёс ответ"
+                FAIL="${FAIL:+$FAIL,}no-speech"
+              fi
             fi
           fi
           # 3) TTS fallback — WARNING, не FAIL (робот мог ответить Silero)
@@ -343,37 +640,263 @@ jobs:
           echo "✅ ACCEPTANCE ПРОШЁЛ: speaker_tag → профиль scope=speaker:<tag> в SQLite"
 
       - name: E2E timing metrics (response speed)
+        env:
+          # Ретро t_4cf2811e: voice_text может нести trailing \r. Sanitize.
+          VOICE_TEXT: ${{ inputs.voice_text }}
         run: |
           RID="${{ github.run_id }}"
-          VTXT="${{ inputs.voice_text }}"
-          python3 .github/workflows/scripts/e2e_timing.py "/tmp/voice_e2e_${RID}.log" "${VTXT}" | tee /tmp/e2e_timing.txt
+          VTXT_RAW="$VOICE_TEXT"
+          # voice_text — multi-line, режем ТОЛЬКО \r (LF — легитимный контент).
+          VTXT=$(printf '%s' "$VTXT_RAW" | tr -d '\r')
+          # Текст — для step summary, JSON — отдельный артефакт (issue #1396)
+          python3 .github/workflows/scripts/e2e_timing.py "/tmp/voice_e2e_${RID}.log" "${VTXT}" \
+            | tee /tmp/e2e_timing.txt
+          python3 .github/workflows/scripts/e2e_timing.py "/tmp/voice_e2e_${RID}.log" "${VTXT}" --json \
+            > /tmp/e2e_timing.json 2>/dev/null || echo '{"error":"timing json failed","partial_data":true}' > /tmp/e2e_timing.json
+          # Также кладём JSON в локальный артефакт-дир (для единого скачивания)
+          if [ -d "$LOCAL_ART_DIR" ]; then
+            cp /tmp/e2e_timing.json "$LOCAL_ART_DIR/timing.json" 2>/dev/null || true
+          fi
           # Дублируем в step summary (видно в сводке run, не только в логе)
           {
             echo "### ⏱ Response timing (команда → ответ)"
             cat /tmp/e2e_timing.txt
           } >> "$GITHUB_STEP_SUMMARY"
+          echo "TIMING_JSON_FILE=/tmp/e2e_timing.json" >> "$GITHUB_ENV"
+
+      # Issue #1381: артефакты должны прикладываться даже при FAIL (no-reaction).
+      # Сначала тянем всё что есть на build-machine (249) в локальный кэш на runner,
+      # затем upload читает уже локальные файлы. Все шаги с if: always().
+      # sshpass scp — нативный способ копирования (ssh cat > $ART_DIR писал бы
+      # в path runner'а изнутри ssh-shell'а на 249, что не работает).
+      - name: Collect e2e artifacts from build machine
+        if: ${{ always() }}
+        env:
+          SSHPASS: open
+        run: |
+          RID="${{ github.run_id }}"
+          ART_DIR="/tmp/e2e_artifacts_${RID}"
+          rm -rf "$ART_DIR"
+          mkdir -p "$ART_DIR"
+
+          # 1) Список найденных файлов на 249 — для диагностики
+          echo "=== files on 10.1.1.249 matching expected patterns ==="
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 '
+            set +e
+            for f in /tmp/dialog_e2e_'"${RID}"'.wav \
+                     /tmp/dialog_e2e_*.wav \
+                     /tmp/e2e_atomic_out.log; do
+              [ -f "$f" ] && echo "FOUND $f ($(stat -c %s "$f" 2>/dev/null) bytes)" || true
+            done
+            for d in /tmp/e2e_v2_*; do
+              [ -d "$d" ] && echo "DIR $d" || true
+            done
+            echo "---END-LIST---"
+          ' 2>&1 | tee /tmp/e2e_collect.log || true
+
+          # 2) Каталог /tmp/e2e_v2_<RID> целиком (verdict.txt, model.json,
+          #    step_*.log, scenario_parsed.txt, scenario.json и т.п.).
+          #
+          #    Харнесс e2e_voice_test.sh пишет OUT_DIR=/tmp/e2e_v2_${RUN_ID}
+          #    (line 82 e2e_voice_test.sh). Берём ТОЛЬКО этот каталог —
+          #    legacy /tmp/e2e_v2_* от старых run'ов содержат файлы с
+          #    кириллицей + '?' (до BUG-B t_f0612a43 не было safe_label),
+          #    upload-artifact@v7 отвергает их с NTFS-ограничениями
+          #    ("? < > | * : \r \n"). Тащить всю историю и фильтровать
+          #    на runner'е нет смысла — медленнее с каждым run'ом, плюс
+          #    sanitize не успевает за 80+ legacy каталогов (issue #1506,
+          #    runs 162/163/165/166/167 все FAIL на одной и той же ошибке).
+          #
+          #    Исторически тут стоял вариант с trailing-dot в source path —
+          #    **deprecated с OpenSSH 9.0+** (changelog: «when copying
+          #    local files to a remote host, the path with /<dot> suffix
+          #    for source was rejected as "unexpected filename"»). На
+          #    runner'ах ubuntu-24.04 каждая итерация сыпала 80+ ошибок и
+          #    никакие файлы не копировались (см. issue #1478, run #32255219770).
+          #
+          #    Используем `rsync -a` поверх ssh — работает на любой версии
+          #    OpenSSH, копирует рекурсивно, трейлинг-слэш означает
+          #    «содержимое каталога» (аналог `cp -r src/. dst/`).
+          #
+          #    Fallback: если /tmp/e2e_v2_<RID> не существует (например
+          #    harness упал до mkdir), берём 2 самых свежих /tmp/e2e_v2_*
+          #    по mtime — отладочный набор всё равно нужен.
+          primary_dir="/tmp/e2e_v2_${RID}"
+          if sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
+               "[ -d '$primary_dir' ]" 2>/dev/null; then
+            e2e_v2_dirs="$primary_dir"
+            echo "  primary: $primary_dir"
+          else
+            echo "  WARN: $primary_dir отсутствует на 249 — harness не создал OUT_DIR (crash до mkdir?). НЕ тяну stale legacy e2e_v2_* (ретро 22.08 t_944df2c5 — они полили звуковые артефакты файлами 08-13/08-15)"
+            e2e_v2_dirs=""
+          fi
+          if [ -n "$e2e_v2_dirs" ]; then
+            for d in $e2e_v2_dirs; do
+              bn=$(basename "$d")
+              mkdir -p "$ART_DIR/$bn"
+              echo "  rsync -a $d/ → $ART_DIR/$bn/"
+              sshpass -e rsync -a \
+                -e 'ssh -o StrictHostKeyChecking=no' \
+                "ros2@10.1.1.249:$d/" "$ART_DIR/$bn/" 2>&1 | tail -5 || true
+            done
+          else
+            echo "  no /tmp/e2e_v2_* dirs on 249"
+          fi
+
+          # 2.5) Sanitize: upload-artifact@v7 запрещает символы в именах
+          #      файлов (NTFS-ограничения: " ? < > | * : \r \n). До BUG-B
+          #      t_f0612a43 safe_label() ещё не существовало и legacy-каталоги
+          #      12-18.08 содержат файлы вроде `synth_Робот, что у тебя в
+          #      музыкальной библиотеке?.log`. Если rsync принёс такие
+          #      файлы (primary-каталог этого RID вряд ли, но fallback
+          #      по mtime может), заменяем '?' на '_' чтобы upload
+          #      не падал. `rename` доступен в Ubuntu/Debian через
+          #      пакет rename (perl-based). Если нет — fallback на
+          #      bash-цикл с mv.
+          if [ -d "$ART_DIR" ]; then
+            bad_count=$(find "$ART_DIR" -depth -name '*?*' -type f 2>/dev/null | wc -l)
+            if [ "$bad_count" -gt 0 ]; then
+              echo "  sanitize: найдено $bad_count файлов с '?' в имени — заменяю на '_'"
+              if command -v rename >/dev/null 2>&1; then
+                find "$ART_DIR" -depth -name '*?*' -type f -exec rename 's/\?/_/g' {} + || true
+              else
+                # bash fallback: экранируем '?' в шаблоне find и mv
+                find "$ART_DIR" -depth -name '*?*' -type f | while read -r f; do
+                  new_f="${f//\?/_}"
+                  [ "$f" != "$new_f" ] && mv "$f" "$new_f" 2>/dev/null || true
+                done
+              fi
+            fi
+          fi
+
+          # 3) Полный stdout харнесса (если нет — skip)
+          if sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
+               '[ -f /tmp/e2e_atomic_out.log ]' 2>/dev/null; then
+            echo "  scp /tmp/e2e_atomic_out.log"
+            sshpass -e scp -o StrictHostKeyChecking=no \
+              ros2@10.1.1.249:/tmp/e2e_atomic_out.log "$ART_DIR/e2e_atomic_out.log" 2>&1 \
+              | tail -5 || true
+          fi
+
+          # 4) Recording wav — ТОЛЬКО текущий прогон (RID).
+          #    Симлинк /tmp/dialog_e2e_${RID}.wav создаёт харнесс (stop_recording,
+          #    e2e_voice_test.sh → RECORDING_LINK). Раньше здесь был fallback на
+          #    «самый свежий /tmp/dialog_e2e_*.wav» и glob ВСЕХ
+          #    /tmp/e2e_v2_*/recording.wav — в звуковой артефакт попадали записи
+          #    ДРУГИХ прогонов («робот спой песенку про енотика», ретро 22.08
+          #    issue #1506). Теперь берём только RID-каталог этого run'а.
+          for src in "/tmp/dialog_e2e_${RID}.wav"; do
+            echo "  try scp $src"
+            sshpass -e scp -o StrictHostKeyChecking=no \
+              "ros2@10.1.1.249:$src" "$ART_DIR/$(basename $src)" 2>&1 | tail -3 || true
+          done
+          # Запись этого прогона уже rsync'нута в $ART_DIR/e2e_v2_${RID}/recording.wav
+          # (шаг 2). НЕ тянем /tmp/dialog_e2e_*.wav и НЕ глобим
+          # /tmp/e2e_v2_*/recording.wav — это записи других прогонов.
+
+          echo "ART_DIR=$ART_DIR" >> "$GITHUB_ENV"
+          echo "=== collected e2e_artifacts_${RID}/ contents ==="
+          find "$ART_DIR" -type f -printf "%s\t%p\n" | sort -k2 || echo "ART_DIR empty"
 
       - name: Upload recording
+        if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
           name: e2e-voice-recording-${{ github.run_id }}
-          path: /tmp/dialog_e2e_${{ github.run_id }}.wav
+          # Берём любой .wav из собранных артефактов. Если .wav файлов нет
+          # (FAIL до того как recording успел записаться) — warn, не error,
+          # чтобы артефакт-pipeline не заклинивал.
+          path: /tmp/e2e_artifacts_${{ github.run_id }}/**/*.wav
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload harness artifacts (issue #1353)
+        uses: actions/upload-artifact@v7
+        with:
+          # Issue #1353: подбираем ВСЕ артефакты харнесса — recording.wav,
+          # cmd_*.wav, synth_*.log, cycle_log.txt, scenario.json, verdict.txt.
+          # Извлекаем OUT_DIR из последней строки E2E_ARTIFACTS в
+          # /tmp/e2e_atomic_out.log (там харнесс печатает "E2E_ARTIFACTS
+          # /tmp/e2e_v2_<run_id>"). Это даёт доступ к полному набору
+          # для ретро/дебага: послушать что говорил робот, увидеть что
+          # синтезировалось и какие ошибки вылезли.
+          name: e2e-voice-harness-artifacts-${{ github.run_id }}
+          # Ретро 22.08 t_944df2c5: раньше путь указывал на /tmp/e2e_v2_<RID>
+          # на RUNNER-е — но харнесс выполняется на билд-машине (249), и
+          # collect-шаг кладёт OUT_DIR в /tmp/e2e_artifacts_<RID>/e2e_v2_<RID>/.
+          # Поэтому артефакт всегда был пустым (if-no-files-found: ignore).
+          path: /tmp/e2e_artifacts_${{ github.run_id }}/e2e_v2_${{ github.run_id }}
           retention-days: 7
           if-no-files-found: ignore
 
       - name: Upload logs
+        if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
           name: e2e-voice-logs-${{ github.run_id }}
-          path: /tmp/voice_e2e_${{ github.run_id }}.log
+          # Лог docker voice-assistant (runner-side) + логи харнесса только
+          # из RID-каталога. Issue #1506: upload-artifact@v7 падает на
+          # файлах с '?' в имени (NTFS-ограничения). Collect теперь тащит
+          # только /tmp/e2e_v2_<RID> (или 2 самых свежих по mtime) и
+          # sanitize-ит '?' → '_', так что .log в /tmp/e2e_artifacts_<RID>/
+          # ** безопасен. Явное исключение 'e2e_atomic_out.log' нужно потому
+          # что он лежит в ART_DIR root (не в подкаталоге e2e_v2_*).
+          path: |
+            /tmp/voice_e2e_${{ github.run_id }}.log
+            /tmp/e2e_verdict.log
+            /tmp/e2e_timing.txt
+            /tmp/e2e_collect.log
+            /tmp/e2e_artifacts_${{ github.run_id }}/e2e_atomic_out.log
+            /tmp/e2e_artifacts_${{ github.run_id }}/e2e_v2_${{ github.run_id }}/*.log
+            /tmp/e2e_artifacts_${{ github.run_id }}/e2e_v2_${{ github.run_id }}/*/*.log
           retention-days: 7
+          if-no-files-found: warn
 
       - name: Upload model.json
+        if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
           name: e2e-voice-model-${{ github.run_id }}
-          path: model.json
+          # model.json пишется двумя местами:
+          # 1) runner-side: $GITHUB_WORKSPACE/model.json (от шага Write model.json,
+          #    который skip'ается при FAIL).
+          # 2) build machine: /tmp/e2e_v2_*/model.json (всегда пишется atomic harness).
+          # Берём оба — найдётся хотя бы один.
+          path: |
+            model.json
+            /tmp/e2e_artifacts_${{ github.run_id }}/**/model.json
           retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload e2e artifacts archive (full debug bundle)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-voice-artifacts-${{ github.run_id }}
+          # Полный архив всего что собрали: verdict.txt, scenario, step_N.log,
+          # model.json, *.json артефакты (#1396) и т.п.
+          # Удобно открыть одной папкой и не собирать по кусочкам из разных
+          # artifacts. Этот шаг — последний рубеж: если тут тоже нет файлов —
+          # значит Collect вообще ничего не нашёл (sсh не доступен / 249
+          # мёртвая) и это уже error-сигнал.
+          #
+          # Issue #1506 (ретро upload-artifact '?' в имени файла):
+          # upload-artifact@v7 НЕ поддерживает параметр `exclude` (warning
+          # "Unexpected input(s) 'exclude', valid inputs are [..., 'include-hidden-files', 'archive']"),
+          # плюс '?' в имени легаси-файлов отвергается NTFS-ограничениями
+          # (Double quote ": ? < > | * : \r \n). Перечисляем include-паттерны
+          # явно: логи, тексты, json-конфиги, verdict/scenario. WAV'ы идут
+          # отдельно в e2e-voice-recording-<RID> (issue #1429: дубликаты убраны).
+          # Покрываем все файлы харнесса + sanitized имена legacy.
+          path: |
+            /tmp/e2e_artifacts_${{ github.run_id }}/**/*.log
+            /tmp/e2e_artifacts_${{ github.run_id }}/**/*.txt
+            /tmp/e2e_artifacts_${{ github.run_id }}/**/*.json
+            /tmp/e2e_artifacts_${{ github.run_id }}/**/*.jsonl
+            /tmp/e2e_artifacts_${{ github.run_id }}/**/*.csv
+            /tmp/e2e_artifacts_${{ github.run_id }}/**/*.md
+          retention-days: 14
+          if-no-files-found: error
 
       - name: Upload acceptance evidence (issue #1077)
         if: ${{ always() && inputs.acceptance_feature == 'speaker_profile' }}
@@ -383,15 +906,107 @@ jobs:
           path: /tmp/e2e_acceptance_${{ github.run_id }}.txt
           retention-days: 7
 
+      # Issue #1396: расширенный набор артефактов e2e.
+      # Каждый — ОТДЕЛЬНЫЙ artifact (по условию приёмки issue).
+      - name: Upload transcript (ASR — issue #1396)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-voice-transcripts-${{ github.run_id }}
+          # Ретро 22.08 t_944df2c5: файлы харнесса лежат в /tmp/e2e_artifacts_<RID>/e2e_v2_<RID>/
+          # (collect-шаг rsync'ит OUT_DIR билд-машины в подкаталог). Раньше путь был
+          # плоским ($LOCAL_ART_DIR/transcript.json) — файла там нет → пустой артефакт.
+          path: ${{ env.LOCAL_ART_DIR }}/e2e_v2_${{ github.run_id }}/transcript.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload audio metrics (RMS — issue #1396)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-voice-audio-metrics-${{ github.run_id }}
+          path: ${{ env.LOCAL_ART_DIR }}/e2e_v2_${{ github.run_id }}/audio_metrics.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload baseline diff (golden vs recording — issue #1396)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-voice-baseline-diff-${{ github.run_id }}
+          path: ${{ env.LOCAL_ART_DIR }}/e2e_v2_${{ github.run_id }}/baseline_diff.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload acceptance file (tool calls/keywords — issue #1396)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-voice-acceptance-${{ github.run_id }}
+          path: ${{ env.LOCAL_ART_DIR }}/e2e_v2_${{ github.run_id }}/acceptance.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload timing breakdown (JSON — issue #1396)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-voice-timing-${{ github.run_id }}
+          path: /tmp/e2e_timing.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload PR diff (issue #1396)
+        # Ретро t_d5c9d012: без `if: always()` — оригинал, и в нём DIFF_FILE
+        # определяется в $GITHUB_ENV. Step 28 (ниже) — fallback с `if: always()`
+        # но всё равно зависит от env.DIFF_FILE, который мог не быть выставлен
+        # если step 12 (Upload PR diff) был skipped. Делаем явный fallback:
+        #   - если DIFF_FILE пустой — пусть upload-artifact получит явный
+        #     несуществующий путь с if-no-files-found=ignore (не валим job).
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-voice-diff-${{ github.run_id }}
+          path: ${{ env.DIFF_FILE || format('/tmp/e2e_pr_diff_{0}.patch', github.run_id) }}
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: Summary
+        env:
+          # Ретро t_4cf2811e: $GITHUB_STEP_SUMMARY — markdown; сырой \r ломает
+          # layout таблиц. Прогоняем input через env (shell сам уберёт \r для
+          # single-line) + дополнительная защита через tr.
+          ENVIRONMENT: ${{ inputs.environment }}
+          VOICE_TEXT: ${{ inputs.voice_text }}
+          VOICE: ${{ inputs.voice }}
+          SCENARIO_FILE: ${{ inputs.scenario_file }}
+          ACCEPTANCE_FILE: ${{ inputs.acceptance_file }}
+          PATTERNS: ${{ inputs.patterns }}
+          VOLUME: ${{ inputs.volume }}
+          LLM: ${{ inputs.llm }}
+          TTS: ${{ inputs.tts }}
+          STT: ${{ inputs.stt }}
         run: |
+          # Single-line inputs — отрезаем \r и \n (для environment/voice/etc).
+          # voice_text — multi-line, режем ТОЛЬКО \r.
+          ENVIRONMENT_CLEAN=$(printf '%s' "$ENVIRONMENT" | tr -d '\r\n')
+          VOICE_TEXT_CLEAN=$(printf '%s' "$VOICE_TEXT" | tr -d '\r')
+          VOICE_CLEAN=$(printf '%s' "$VOICE" | tr -d '\r\n')
+          SCENARIO_FILE_CLEAN=$(printf '%s' "$SCENARIO_FILE" | tr -d '\r\n')
+          ACCEPTANCE_FILE_CLEAN=$(printf '%s' "$ACCEPTANCE_FILE" | tr -d '\r\n')
+          PATTERNS_CLEAN=$(printf '%s' "$PATTERNS" | tr -d '\r')
+          VOLUME_CLEAN=$(printf '%s' "$VOLUME" | tr -d '\r\n')
+          LLM_CLEAN=$(printf '%s' "$LLM" | tr -d '\r\n')
+          TTS_CLEAN=$(printf '%s' "$TTS" | tr -d '\r\n')
+          STT_CLEAN=$(printf '%s' "$STT" | tr -d '\r\n')
           echo "## E2E Voice Test Complete" >> $GITHUB_STEP_SUMMARY
-          echo "- Environment: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Voice text: \`${{ inputs.voice_text }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Voice: \`${{ inputs.voice }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Scenario: \`${{ inputs.scenario_file }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Patterns: \`${{ inputs.patterns }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Volume: ${{ inputs.volume }}%" >> $GITHUB_STEP_SUMMARY
-          echo "- LLM: \`${{ inputs.llm }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- TTS: \`${{ inputs.tts }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- STT: \`${{ inputs.stt }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Environment: \`$ENVIRONMENT_CLEAN\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Voice text: \`$VOICE_TEXT_CLEAN\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Voice: \`$VOICE_CLEAN\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Scenario: \`$SCENARIO_FILE_CLEAN\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Acceptance (ADR-0022 GATE-1): \`$ACCEPTANCE_FILE_CLEAN\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Patterns: \`$PATTERNS_CLEAN\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Volume: $VOLUME_CLEAN%" >> $GITHUB_STEP_SUMMARY
+          echo "- LLM: \`$LLM_CLEAN\`" >> $GITHUB_STEP_SUMMARY
+          echo "- TTS: \`$TTS_CLEAN\`" >> $GITHUB_STEP_SUMMARY
+          echo "- STT: \`$STT_CLEAN\`" >> $GITHUB_STEP_SUMMARY

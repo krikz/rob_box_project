@@ -10,6 +10,7 @@ AI голосовой ассистент с DeepSeek, Vosk STT, Silero TTS.
 
 ### Основные документы:
 - [**README.md**](../../src/rob_box_voice/README.md) - Обзор пакета
+- [**AGENT_MODE.md**](rob_box_voice/AGENT_MODE.md) - Агентский режим: agent cycle, Mermaid-диаграмма, все 43 MCP-инструмента, troubleshooting
 - [**ARCHITECTURE_OVERVIEW.md**](../../src/rob_box_voice/docs/ARCHITECTURE_OVERVIEW.md) - Архитектура системы
 - [**PHASE3_STT_IMPLEMENTATION.md**](../../src/rob_box_voice/docs/PHASE3_STT_IMPLEMENTATION.md) - STT нода
 - [**PHASE4_SOUND_IMPLEMENTATION.md**](../../src/rob_box_voice/docs/PHASE4_SOUND_IMPLEMENTATION.md) - Sound нода

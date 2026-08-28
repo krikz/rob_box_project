@@ -574,6 +574,86 @@ async def test_stream_skips_premarked_unavailable_primary() -> None:
 
 
 # ---------------------------------------------------------------------------
+# RcutilsLogger compatibility (regression 13.08.2026)
+# ---------------------------------------------------------------------------
+# dialogue_node passes ``logger=self.get_logger()`` (rclpy RcutilsLogger),
+# whose info/warning/error/debug accept exactly ONE message positional arg.
+# health.py used std-logging ``%s``-style calls like
+# ``self._log.info("[health] stream: chain=%s active=%s", a, b)`` and the
+# whole LLM stream crashed with:
+#   TypeError: RcutilsLogger.info() takes 2 positional arguments but 4 were given
+# → silent Empty assistant response → robot stayed mute.
+# ---------------------------------------------------------------------------
+
+
+class _TwoArgOnlyLogger:
+    """Minimal RcutilsLogger double: methods accept exactly one message."""
+
+    def __init__(self) -> None:
+        self.records: list[tuple[str, str]] = []
+
+    def info(self, message: str) -> None:
+        self.records.append(("info", message))
+
+    def warning(self, message: str) -> None:
+        self.records.append(("warning", message))
+
+    def error(self, message: str) -> None:
+        self.records.append(("error", message))
+
+    def debug(self, message: str) -> None:
+        self.records.append(("debug", message))
+
+
+@pytest.mark.asyncio
+async def test_stream_with_two_arg_logger_does_not_crash() -> None:
+    """Regression: %-style logging through an rclpy-like logger must not
+    kill the LLM stream (previously TypeError → empty assistant answer)."""
+    primary = _FakeProvider("deepseek")
+    logger = _TwoArgOnlyLogger()
+    wrapper = HealthAwareFallbackLLM([primary], logger=logger)  # type: ignore[arg-type]
+
+    chunks = [chunk async for chunk in wrapper.stream(_msg())]
+
+    assert [c.content_delta for c in chunks] == ["from-deepseek"]
+    assert logger.records, "wrapper должен логировать через переданный логгер"
+
+
+@pytest.mark.asyncio
+async def test_complete_with_two_arg_logger_interpolates_args() -> None:
+    """%-style args must be interpolated into a single message (no TypeError,
+    no raw %s left for the consumer logger)."""
+    primary = _FakeProvider("deepseek")
+    logger = _TwoArgOnlyLogger()
+    wrapper = HealthAwareFallbackLLM([primary], logger=logger)  # type: ignore[arg-type]
+
+    response = await wrapper.complete(_msg())
+
+    assert response.content == "from-deepseek"
+    messages = [message for _, message in logger.records]
+    assert any("answered by provider=deepseek" in message for message in messages)
+    assert not any("%s" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_two_arg_logger_handles_failure_path_without_crash() -> None:
+    """Quota-failure classification logs several %-style warnings — none
+    may crash the wrapper when the consumer is an rclpy-like logger."""
+    primary = _FakeProvider("minimax", fail=RateLimitError(_QUOTA_MSG, provider="minimax"))
+    fallback = _FakeProvider("deepseek")
+    logger = _TwoArgOnlyLogger()
+    wrapper = HealthAwareFallbackLLM([primary, fallback], logger=logger)  # type: ignore[arg-type]
+
+    response = await wrapper.complete(_msg())
+
+    assert response.content == "from-deepseek"
+    warning_messages = [
+        message for level, message in logger.records if level == "warning"
+    ]
+    assert any("quota exhausted" in message for message in warning_messages)
+
+
+# ---------------------------------------------------------------------------
 # misc
 # ---------------------------------------------------------------------------
 

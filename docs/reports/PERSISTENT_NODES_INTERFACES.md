@@ -77,7 +77,7 @@ LEDNode              CommandNode     Animations
 | `yandex_model` | str | `general` | Yandex STT model |
 | `eou_profile` | str | `balanced` | End-of-utterance: `fast` / `balanced` / `patient` |
 | `aec_mode` | str | `hardware` | Echo cancellation: `software` / `hardware` |
-| `wake_words` | list | `[робок, робот, роббокс]` | Wake words for TTS interruption |
+| `wake_words` | list | `[робок, робот, роббокс, робокос, роббос, робокс, роберт, рыбок, рома, бот, робо, роб, робик]` | Wake words for TTS interruption (fix #1252 — синхронизировано с dialogue_node) |
 
 ### EOU Profiles (End of Utterance)
 - `fast` — HIGH classifier, 700ms max pause
@@ -126,7 +126,7 @@ LEDNode              CommandNode     Animations
 | `history_max_turns` | int | 20 | Max conversation turns kept |
 | `agent_max_turns` | int | 20 | Max agent tool-call loop turns |
 | `dialogue_timeout` | float | 300.0 | Inactivity timeout (s) |
-| `wake_words` | list | `[робок, робот, роббокс]` | Wake words |
+| `wake_words` | list | `[робок, робот, роббокс, робокос, роббос, робокс, роберт, рыбок, рома, бот, робо, роб, робик]` | Wake words (fix #1252 — синхронизировано со stt_node) |
 | `enable_mcp_tools` | bool | True | Enable MCP tool adapter |
 | `enable_fallback` | bool | False | Enable fallback model on errors |
 | `fallback_model` | str | "" | Fallback model name |

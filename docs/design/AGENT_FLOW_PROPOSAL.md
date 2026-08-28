@@ -17,7 +17,7 @@
 
 ```
 human → Issue[hermes+agent:role]
-   ↓ cron `agent-flow-triage` (every 5m)
+   ↓ cron `agent-flow-triage` (every 1m, было every 5m в исходном proposal — см. §4)
 kanban-карточка (assignee, инструкция, branch-naming)
    ↓ sub-agent по карточке
 worktree → рабочая ветка `z-{agent}/<id>-<slug>` → push + **комменты в issue о ходе** (Q23) → `kanban complete` → карточка в блок (ждёт CI)
@@ -46,7 +46,7 @@ issue-коммент: verdict + run + log + audio + ASR + diff + acceptance + ti
 |-----------|-----|--------|
 | Kanban Hermes | `~/.hermes/kanban/boards/robbox/` | ✅ карточки `t_*` |
 | Sub-agents | `hermes` (19 профилей с контрактом в SOUL) | ✅ |
-| triage cron | `agent-flow-triage.sh` (every 5m) | ✅ live-тест #1048/#1049 |
+| triage cron | `agent-flow-triage.sh` (every 1m, было 5m в proposal — см. §4) | ✅ live-тест #1048/#1049 |
 | merge-gate cron | `agent-flow-merge-gate.sh` (every 5m) | ✅ live-тест #1050 → PR #1051; Q21 block/unblock — в работе |
 | e2e-process | `agent-flow-e2e-process.sh` (every 1h) | ⏳ Q22 (block до e2e, done после merge) — в работе |
 | G: Run Tests | `.github/workflows/G-Run Tests.yml` | ✅ зелёный на develop (run 31251726974, 2m9s) |
@@ -79,7 +79,9 @@ issue-коммент: verdict + run + log + audio + ASR + diff + acceptance + ti
 
 ### Именование веток (Q20, обязательное)
 
-Тильда `~` (ASCII 0x7E) в **начале** имени → служебные ветки сортируются **внизу** списка (после `z`), рабочие — сверху.
+Все ветки автоматизированного процесса начинаются с префикса `z-{`
+(`z` — последняя буква ASCII 0x7A, поэтому `z-...` сортируется **внизу**
+списка веток после `feature/...` и `develop`). Тильды `~` в именах НЕТ.
 
 | Тип | Формат | Пример |
 |-----|--------|--------|
@@ -87,11 +89,11 @@ issue-коммент: verdict + run + log + audio + ASR + diff + acceptance + ti
 | Служебные e2e | `z-{e2e}/test-round-N`, `z-{e2e}/wip-<id>-<slug>` | `z-{e2e}/wip-1050-audio-buffer` |
 
 **Правила:**
-- **ВСЕ ветки автоматизированного процесса начинаются с `z-{`** (ASCII 0x7E) — в начале имени, чтобы сортировались внизу списка: `z-{agent}/...`, `z-{e2e}/...`.
-- Тильда строго в начале имени (`z-{agent}/...`, не `agent/~...`).
+- **ВСЕ ветки автоматизированного процесса начинаются с `z-{`** — так они сортируются внизу списка: `z-{agent}/...`, `z-{e2e}/...`.
+- Префикс строго в начале имени (`z-{agent}/...`).
 - `z-{hotfix}/`, `z-{revert}/` — юзер создаёт САМ, вручную, вне процесса.
-- Без тильды — только не-процессные ветки (feature/... и т.п.).
-- `branch_for()` в triage.sh, префиксы в e2e-process.sh, поиск PR в merge-gate.sh — ВСЕ создают ветки с `~`.
+- Без префикса `z-{` — только не-процессные ветки (feature/... и т.п.).
+- `branch_for()` в triage.sh, префиксы в e2e-process.sh, поиск PR в merge-gate.sh — ВСЕ создают ветки с префиксом `z-{`.
 
 ---
 
@@ -113,8 +115,8 @@ body:
   ## Agent instruction (короткое, ≤3 строк)
   <TL;DR инструкция что делать>
   ## Branch + PR convention
-  • branch: z-{agent}/<id>-<short-slug>  (процессная, с ~)
-  • merge: PR `z-{e2e}/wip-<id>-<slug>` → `z-{e2e}/test-round-N` (служебные, с ~)
+  • branch: z-{agent}/<id>-<short-slug>  (процессная, префикс z-{)
+  • merge: PR `z-{e2e}/wip-<id>-<slug>` → `z-{e2e}/test-round-N` (служебные, префикс z-{)
   ## Контракт воркера (создаётся автоматически, triage.sh — ретро 09.08 #2)
   • Коммить WIP каждые ~15-20 мин (или при половине max_runtime) — `wip(scope): ...` в свою ветку, push сразу
   • PR один на задачу (WIP-коммиты в той же ветке; merge-gate/e2e работают по ветке/PR)
@@ -133,7 +135,7 @@ max_runtime: 1800 (default) | 3600 (крупная: label `priority:P0` или b
 
 **Идемпотентность:** при создании карточки пишет **коммент в issue** с маркером `kanban: t_<task_id>`. На следующем тике cron смотрит на наличие такого комментария — пропускает.
 
-**Именование ветки (Q20):** `branch_for()` в triage.sh — ВСЕ процессные с `~`: `z-{agent}/<id>-<slug>`, `z-{e2e}/`, `z-{revert}/`, `z-{hotfix}/` (`z-{e2e}/`, `z-{revert}/`, `z-{hotfix}/`) — с тильдой в начале.
+**Именование ветки (Q20):** `branch_for()` в triage.sh — ВСЕ процессные с префиксом `z-{`: `z-{agent}/<id>-<slug>`, `z-{e2e}/`, `z-{revert}/`, `z-{hotfix}/`.
 
 ### 3.2 Agent-исполнитель (sub-agent)
 
@@ -149,10 +151,23 @@ max_runtime: 1800 (default) | 3600 (крупная: label `priority:P0` или b
    ```
 3. Делает код по инструкции из карточки. Если нужно — читает родительский issue.
 4. **Commit style:** `feat/fix/docs(scope): ...`. **WIP-коммиты (ретро 09.08 #2):** для крупных задач (max_runtime=3600) коммить промежуточно каждые ~15-20 мин (или при половине max_runtime) — `wip(scope): ...` в свою ветку, push сразу. Незакоммиченная работа пропадает при исчерпании бюджета (t_9435a3c5, t_0c0a98ac). WIP-коммиты идут в ту же ветку, PR остаётся один — merge-gate/e2e работают по ветке/PR, не по числу коммитов.
-5. Push в `origin/z-{agent}/<id>-<slug>`. Открывает PR (base = develop). **Коммент в issue** (Q23): «PR #N открыт».
+5. Push в `origin/z-{agent}/<id>-<slug>`. Открывает PR (base = develop).
+   **ОБЯЗАТЕЛЬНО (ретро 25.08 t_1a4f3275 / issue #1624):** kanban-marker
+   `kanban: t_<task_id>` уже в issue body (пишется автоматически при создании
+   карточки в §3.1, triage.sh). Если воркер открыл PR через `gh api` мимо
+   процесса (без kanban-карточки, без marker'а) — merge-gate считает PR
+   orphan'ом, ставит `⚠️ process marker missing` в PR и issue, но НЕ
+   блокирует. Шисюн/Шифу решают. Повторное нарушение → skill-validation или
+   retro-card.
 6. **Ждёт** merge-gate (см. §3.3).
 
 **Комменты в issue (Q23):** воркер пишет, **когда есть что сказать о ходе** — нашёл причину, выбрал решение, возникло препятствие. Не штампы по каждому шагу. Минимум: старт + PR. Плюс содержательные: «причина бага в X, чиню так», «нашёл решение Y». CI/e2e-статусы комментят кроны (merge-gate/e2e-process) — воркер не дублирует.
+
+**Контекст-гигиена воркера** (`.agents/skills/context-hygiene/SKILL.md`, действует ВСЕГДА):
+
+- **Одна карточка = одна сессия.** Неудачная итерация → следующая начинается новой сессией с handoff-коммента в issue, не продолжением «отравленного» контекста.
+- **Читай точечно.** Начинай с `sources_of_truth` из блока Context карточки; исходники и документы открывай только нужными секциями. Разведку («где обрабатывается X») отдавай сабагенту.
+- **В issue — релевантные куски, не полные логи.** Raw-вывод обязателен (ADR-0018), но прикладывай нужный фрагмент, не весь дамп.
 
 **После merge-gate:**
 7. Если merge-gate заblock'ил/unblock'ил с причиной (CI красный) — **коммент в issue** (Q23): «CI красный: <check> <лог>», чинит в ТОЙ ЖЕ карточке (коммит → push → ждёт зелёного), **НЕ создаёт новую карточку** (Q21).
@@ -181,6 +196,7 @@ max_runtime: 1800 (default) | 3600 (крупная: label `priority:P0` или b
 1. **CI красный** → пишет коммент в карточку (и issue): «⛔ CI красный: <check_name> (<run_url>) — исправь в ветке <branch>» + `kanban unblock` → воркер снова берёт карточку и чинит в ТОЙ ЖЕ (без новых карточек).
 2. **CI зелёный** → **ничего не делает** (карточка остаётся в блоке — ждёт e2e).
 3. Дочерние CI-fix карточки НЕ создаются никогда.
+4. **Reconcile e2e-done → needs-review (ретро 13.08 t_92ec94f3, #1188):** если issue имеет `e2e-done`, а её agent-PR OPEN (base=develop) — merge-gate ставит `needs-review` на PR и снимает `needs-e2e` с PR (каждые 5 мин, идемпотентно). Лечит «молчащие» issues, когда e2e-done был поставлен обходным путём (post-round sweep после прерванной wait-фазы) без PR-side обработки. MERGED PR не трогает — их закрывает post-merge reconcile (ADR-0014).
 
 **Post-merge reconciliation (ADR-0014, `docs/adr/0014-agent-flow-issue-closure.md`):**
 
@@ -272,11 +288,18 @@ max_runtime: 1800 (default) | 3600 (крупная: label `priority:P0` или b
 
 ## 4. Триггеры (стыковка с Hermes cronjob)
 
-| Cron | Период | no_agent | script | deliver |
-|------|--------|----------|--------|---------|
-| `agent-flow-triage` | every 5m | true (pure bash) | `agent-flow-triage.sh` | local |
-| `agent-flow-merge-gate` | every 5m | true (pure check) | `agent-flow-merge-gate.sh` | local |
-| `e2e-process` | every 1h | false (LLM-driven, но orchestrator) | `agent-flow-e2e-process.sh` | local |
+> **Архитектурное правило (ADR-0019, 18.08):** **все три cron-job'а семейства
+> agent-flow живут в ОДНОМ профиле — `agent-flow`** (не `architect`, не
+> `devops`). Путь к jobs.json: `~/.hermes/profiles/agent-flow/cron/jobs.json`.
+> Частая ошибка — искать их в `~/.hermes/profiles/architect/cron/jobs.json`;
+> там живут только fallback-дубликаты `merge-gate` и `e2e-process`.
+> Проверять `hermes cron list --profile agent-flow`, не `hermes cron list`.
+
+| Cron | Период | no_agent | script | deliver | profile |
+|------|--------|----------|--------|---------|---------|
+| `agent-flow-triage` | every 1m (live) / 5m (proposal) | true (pure bash) | `agent-flow-triage.sh` | local | **agent-flow** |
+| `agent-flow-merge-gate` | every 5m | true (pure check) | `agent-flow-merge-gate.sh` | local | **agent-flow** |
+| `agent-flow-e2e-process` | every 60m (rolling round) | true (no-agent, pure bash) | `agent-flow-e2e-process.sh` | local | **agent-flow** |
 
 **Hermes cronjob pattern:**
 ```bash
@@ -355,9 +378,10 @@ cronjob.create(
 | Q9 | Номерованные проходы `z-{e2e}/test-round-N`, N из предыдущей ветки или файлика |
 | Q20 | Именование веток: агентские `z-{agent}/<id>-<slug>` (без `~`, удаляются после merge); служебные процесса — только `z-{e2e}/...`; `z-{hotfix}/`/`z-{revert}/` юзер создаёт сам вне процесса |
 | Q21 | НЕ создавать CI-fix карточки — block/unblock исходной карточки |
-| Q22 | Карточка после complete в блоке; merge-gate: красный CI → unblock; e2e: PASS → unblock с результатами (ждёт merge юзера), FAIL → воркер итерирует; done только после merge юзером |
+| Q22 | Карточка после complete в блоке; merge-gate: красный CI → unblock; e2e: PASS → unblock с результатами (ждёт merge юзера), FAIL → воркер итерирует; done только после merge юзером. **needs-review после e2e-done ставится автоматически**: e2e-process (основной цикл и post-round sweep — PR-side labels) + merge-gate reconcile каждые 5 мин для пропущенных (ретро 13.08 t_92ec94f3, #1188) |
 | Q23 | Воркер комментит в issue содержательно: нашёл причину/решение/препятствие; минимум старт+PR; CI/e2e-статусы пишут кроны |
 | Q24 | config.yaml ×19: default_branch develop |
+| Q25 | **user-unlabel respect (ретро 18.08 t_de6bea69, PR #1398)**: если Шифу РУКАМИ снял метку (`e2e-done` / `needs-review`) после того как auto-sweep её когда-то поставил — следующий тик sweep'а НЕ возвращает эту метку, только комментит в PR «user decision respected, awaiting your next move». Сигнал из GitHub timeline: `UnlabeledEvent{actor≠bot}` ПОЗЖЕ последнего `LabeledEvent` по той же метке. Реализовано в `scripts/agent_flow/lib_user_unlabel_check.sh` (общий хелпер для e2e-process + merge-gate: post-round sweep, reconcile, lint path, clean-pr-sweep). Актор-фильтр ослабленный (любой не-bot) — в этом репо krikz = юзер И держатель GH-токена автоматики, так что discriminator по actor-имени невозможен. Реальный discriminator — это ХРОНОЛОГИЯ: если последнее событие по метке — unlabel, значит кто-то её сознательно снял |
 
 ---
 

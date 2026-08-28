@@ -147,6 +147,80 @@ class TestIssue988AntiDuplicate:
         finally:
             node.close()
 
+    def test_empty_speak_text_still_auto_voices(self):
+        """Issue #1343 — LLM returned speak_text with EMPTY text.
+
+        deepseek sometimes emits ``speak_text({})`` or
+        ``speak_text({"text": ""})``: the tool name lands in
+        ``tools_called`` but nothing is actually voiced (validation
+        rejects empty text before the MCP request is sent). The
+        issue-988 anti-duplicate guard must NOT skip auto-TTS in that
+        case — the user heard only the accept sound and would otherwise
+        get silence.
+        """
+        llm = _ScriptedLLMProvider([
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(id="call-1", name="speak_text", arguments={"text": ""}),
+                ),
+                finish_reason="tool_calls",
+            ),
+            # The final text carries the real answer; auto-TTS must voice it.
+            LLMResponse(
+                content="Это ошибка — пустой вызов. Выполню правильно.",
+                finish_reason="stop",
+            ),
+        ])
+        node = _TestableDialogueNode(llm=llm, tools=_speak_text_tools())
+        try:
+            self._drive(node)
+            responses = [p.data for p in node._response_pub.published]
+            assert responses, (
+                "empty speak_text must NOT suppress auto-TTS of the final "
+                "text (issue #1343); got 0 publishes"
+            )
+            text = _response_text(responses[-1])
+            assert "Выполню правильно" in text, (
+                f"final text must be voiced, got {text!r}"
+            )
+        finally:
+            node.close()
+
+    def test_empty_json_speak_text_still_auto_voices(self):
+        """Issue #1343 — speak_text({}) with NO arguments at all.
+
+        Same as above but the LLM emitted an empty JSON object (no
+        ``text`` key) — the most common deepseek phantom variant.
+        """
+        llm = _ScriptedLLMProvider([
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(id="call-1", name="speak_text", arguments={}),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(
+                content="Повторю про денчик: уже запланировано.",
+                finish_reason="stop",
+            ),
+        ])
+        node = _TestableDialogueNode(llm=llm, tools=_speak_text_tools())
+        try:
+            self._drive(node)
+            responses = [p.data for p in node._response_pub.published]
+            assert responses, (
+                "speak_text({}) must NOT suppress auto-TTS of the final "
+                "text (issue #1343); got 0 publishes"
+            )
+            text = _response_text(responses[-1])
+            assert "денчик" in text, (
+                f"final text must be voiced, got {text!r}"
+            )
+        finally:
+            node.close()
+
 
 if __name__ == "__main__":  # pragma: no cover
     import sys

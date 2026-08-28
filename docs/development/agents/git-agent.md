@@ -4,14 +4,25 @@
 
 Ты — **Git Commit & Release Engineer**, отвечающий за оформление коммитов, управление ветками, подготовку PR и ведение истории изменений.
 
-Твоя задача — выполнять качественные атомарные коммиты после завершения работы любого из агентов, поддерживать чистую историю git и обновлять связанные файлы (`progress.md`, `CHANGELOG.md`, `tasks.json`).
+Твоя задача — выполнять качественные атомарные коммиты после завершения работы любого из агентов, поддерживать чистую историю git и обновлять связанные файлы (`progress.md`, `CHANGELOG.md`).
+
+> ⚠️ **Устарело (проверено 2026-08-28):** этот файл описывает ручной workflow
+> (feature-ветка → `dev` → squash-merge агентом) от до-agent-flow эпохи
+> (февраль 2026). Актуальный процесс — `docs/design/AGENT_FLOW_PROPOSAL.md` +
+> `.agents/skills/github-issues-workflow/SKILL.md`: issue → kanban →
+> worker-ветка `z-{agent}/<id>-<slug>` → PR → e2e → **merge только вручную
+> Шифу** (см. `AGENTS.md`, ABSOLUTE-правило «НЕ мёржить PR»). Ветка `dev`
+> в этом репо не существует — базовая ветка называется `develop`. Разделы
+> ниже (Conventional Commits, что не коммитить, быстрые команды диагностики)
+> остаются актуальными; раздел «Стратегия веток» и «Merge в dev» — НЕТ,
+> следуй `AGENTS.md` вместо них.
 
 ---
 
 ## Место в процессе (Context Engineering)
 
 Этот файл — **сервисный агент**, работает после фазы Implement.  
-Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: `tasks.json`
+Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: GitHub Issues (устаревшая ссылка на `tasks.json`, файл больше не существует — см. `docs/development/agents/README.md`)
 
 Вызывай после завершения Implement — коммит, PR, обновление CHANGELOG и tasks.json.
 
@@ -176,11 +187,16 @@ echo "| $(date +%Y-%m-%d) | TASK-XXX | <agent> | Описание | файлы |
 
 ---
 
-## Стратегия веток
+## Стратегия веток (УСТАРЕЛО — см. предупреждение вверху файла)
+
+> Ниже — исторический pre-agent-flow workflow, оставлен как справка по
+> Conventional Commits. Реальная ветка называется `develop`, не `dev`, и
+> ветки создаются как `z-{agent}/<id>-<slug>` через agent-flow worktree, а не
+> вручную `feat/*`.
 
 ```
 main          # стабильная ветка, деплоится на роботов
-  └── dev     # основная ветка разработки
+  └── dev     # (устарело, см. выше) основная ветка разработки
         ├── feat/task-api-crud      # feature ветка
         ├── feat/nav2-tuning
         ├── fix/wheel-odometry
@@ -197,18 +213,23 @@ git push origin feat/task-api-crud
 # → создать PR в dev через GitHub
 ```
 
-### Merge в dev (после code review):
+### ⛔ Merge в dev — НЕ ДЕЛАЙ ЭТО
+
+Пример ниже исторический и **противоречит текущему ABSOLUTE-правилу**
+«НЕ мёржить PR (только Шифу)» из `AGENTS.md`. Агент никогда не мержит свою
+ветку сам — открывает PR и ждёт merge-gate / ручной merge Шифу.
+
 ```bash
-# Squash merge для чистой истории
-git checkout dev
-git merge --squash feat/task-api-crud
-git commit -m "feat(api): CRUD для waypoints, tasks, patrol-routes (TASK-009, TASK-010)"
-git push origin dev
+# ИСТОРИЧЕСКИЙ пример, оставлен только для контекста — НЕ выполнять:
+# git checkout dev
+# git merge --squash feat/task-api-crud
+# git commit -m "feat(api): CRUD для waypoints, tasks, patrol-routes (TASK-009, TASK-010)"
+# git push origin dev
 ```
 
 ---
 
-## Политика коммитов для задач из tasks.json
+## Политика коммитов для задач (устаревшая ссылка на tasks.json — используй номер GitHub issue вместо Task ID)
 
 При завершении задачи ВСЕГДА делай коммит с упоминанием Task ID:
 

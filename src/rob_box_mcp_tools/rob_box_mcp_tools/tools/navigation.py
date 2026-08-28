@@ -24,7 +24,6 @@ from action_msgs.srv import CancelGoal
 from action_msgs.msg import GoalInfo
 
 if TYPE_CHECKING:
-    import tf2_ros
     from ..waypoint_store import WaypointStore
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
@@ -81,27 +80,19 @@ def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id:
     return MCPToolResult(success=True)
 
 
-def _lookup_pose(tf_buffer, logger) -> Optional[Dict[str, float]]:
-    """Look up ``map → base_link`` transform and return ``{x, y, theta}`` or *None*."""
-    try:
-        import tf2_ros  # noqa: F811
-        from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
-    except ImportError:
-        logger.error("tf2_ros не установлен")
-        return None
+def _lookup_pose(pose_getter, logger) -> Optional[Dict[str, float]]:
+    """Return the latest robot pose ``{x, y, theta}`` from the /odom snapshot, or *None*.
 
-    try:
-        t = tf_buffer.lookup_transform("map", "base_link", tf2_ros.Time(), timeout=tf2_ros.Duration(seconds=2.0))
-        x = t.transform.translation.x
-        y = t.transform.translation.y
-        # Extract yaw from quaternion
-        qz = t.transform.rotation.z
-        qw = t.transform.rotation.w
-        theta = 2.0 * math.atan2(qz, qw)
-        return {"x": x, "y": y, "theta": theta}
-    except (LookupException, ConnectivityException, ExtrapolationException) as exc:
-        logger.warning(f"TF lookup map→base_link не удался: {exc}")
+    ``pose_getter`` is a callable returning ``{"x": ..., "y": ..., "theta": ...}``
+    or ``None`` (no data yet). Replaces the blocking ``tf_buffer.lookup_transform``
+    which kept a ~110 Hz /tf subscription alive and burned ~45% CPU via wait-set
+    rebuilds over rmw_zenoh (see mcp-server-cpu-loop-2026-08-22).
+    """
+    pose = pose_getter()
+    if not pose:
+        logger.warning("Позиция робота недоступна (нет данных /odom)")
         return None
+    return {"x": float(pose["x"]), "y": float(pose["y"]), "theta": float(pose["theta"])}
 
 
 # ============================================================
@@ -389,10 +380,10 @@ class ListWaypointsTool(MCPTool):
 class SaveWaypointTool(MCPTool):
     """Сохранить текущую позицию робота как именованную точку."""
 
-    def __init__(self, node, waypoint_store: "WaypointStore", tf_buffer: "tf2_ros.Buffer", mapping_state=None):
+    def __init__(self, node, waypoint_store: "WaypointStore", pose_getter, mapping_state=None):
         super().__init__(node)
         self.waypoint_store = waypoint_store
-        self.tf_buffer = tf_buffer
+        self._pose_getter = pose_getter
         self.mapping_state = mapping_state
 
     @property
@@ -433,12 +424,12 @@ class SaveWaypointTool(MCPTool):
                 error="Сейчас идёт картографирование. Завершите картографирование командой 'завершить картографирование', потом сохраняйте точки.",
             )
 
-        pose = _lookup_pose(self.tf_buffer, self.node.get_logger())
+        pose = _lookup_pose(self._pose_getter, self.node.get_logger())
         if pose is None:
             return MCPToolResult(
                 success=False,
-                error="Не могу определить позицию робота (TF map→base_link недоступен)",
-                message="Позиция неизвестна. Убедись что локализация работает.",
+                error="Не могу определить позицию робота (нет данных /odom)",
+                message="Позиция неизвестна. Убедись что одометрия публикует данные.",
             )
 
         self.waypoint_store.save_waypoint(name, pose["x"], pose["y"], pose["theta"])
@@ -551,9 +542,9 @@ class ClearWaypointsTool(MCPTool):
 class GetCurrentPoseTool(MCPTool):
     """Получить текущую позицию робота на карте."""
 
-    def __init__(self, node, tf_buffer: "tf2_ros.Buffer"):
+    def __init__(self, node, pose_getter):
         super().__init__(node)
-        self.tf_buffer = tf_buffer
+        self._pose_getter = pose_getter
 
     @property
     def name(self) -> str:
@@ -578,11 +569,11 @@ class GetCurrentPoseTool(MCPTool):
     def execute(self) -> MCPToolResult:
         self.log_info("Запрос текущей позиции")
 
-        pose = _lookup_pose(self.tf_buffer, self.node.get_logger())
+        pose = _lookup_pose(self._pose_getter, self.node.get_logger())
         if pose is None:
             return MCPToolResult(
                 success=False,
-                error="Не могу определить позицию (TF map→base_link недоступен)",
+                error="Не могу определить позицию (нет данных /odom)",
                 message="Позиция неизвестна",
             )
 

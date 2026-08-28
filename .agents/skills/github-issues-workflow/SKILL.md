@@ -60,8 +60,30 @@ Original ID: {TASK-ID or TD-ID}
 
 1. Убедиться что тесты проходят (colcon build + pytest)
 2. Создать PR: `gh pr create --title "feat: [description]" --body "Closes #{N}" --repo krikz/rob_box_project`
-3. После merge: `gh issue close {N} --repo krikz/rob_box_project`
-4. Удалить ветку: `git branch -d {N}-{slug}`
+3. **Merge делает только товарищ Шифу** (`AGENTS.md`, ABSOLUTE-правило «НЕ мёржить PR») — агент ждёт, не мержит сам. Автономный agent-flow pipeline (`docs/design/AGENT_FLOW_PROPOSAL.md`) закрывает issue автоматически после merge (ADR-0014); в этом случае шаг 4 ниже выполнять не нужно вручную.
+4. Ручной запуск (не через agent-flow): после merge — `gh issue close {N} --repo krikz/rob_box_project`
+5. Удалить ветку: `git branch -d {N}-{slug}`
+
+> Примечание про имена веток: `gh issue develop {N} --checkout` (выше) даёт ветку
+> `{N}-{slug}` для ручной/интерактивной работы. Автономные worker'ы agent-flow
+> используют другой формат — `z-{agent}/<id>-<slug>` (см.
+> `docs/design/AGENT_FLOW_PROPOSAL.md` §2) — это не опечатка, а два разных
+> режима работы.
+
+## Отклонение PR (ручное закрытие)
+
+Если Шифу отклонил PR — он оставляет **комментарий с причиной** и **закрывает PR** (не мержит).
+
+Процесс (merge-gate, human-close propagation, ретро 22.08) реагирует автоматически:
+
+1. Видит, что PR закрыт вручную (state=CLOSED, не MERGED), а issue всё ещё `hermes`/`needs-e2e`.
+2. Читает причину из последнего комментария PR.
+3. Снимает с issue `hermes` + `needs-e2e` → triage и e2e-process перестают её брать.
+4. Пишет в issue комментарий «PR закрыт вручную» с причиной.
+
+**Воркеру запрещено** открывать новый PR по той же issue после ручного закрытия — причина отказа уже в issue. Если задача всё же нужна — Шифу сам вернёт `hermes`.
+
+> Исключение: если PR закрыт **процессом** (маркеры `orphan-dead`, `dead-content`, `e2e-доклад`, `agent-flow:`) — propagation не срабатывает, разбирается сам процесс.
 
 ## Быстрые команды (cheatsheet)
 
@@ -125,4 +147,5 @@ gh issue list --search "voice" --repo krikz/rob_box_project
 ❌ НИКОГДА не создавать tasks.json
 ❌ НИКОГДА не читать tasks.json
 ❌ НИКОГДА не создавать issue без label source:gsd
+❌ НИКОГДА не открывать новый PR по issue, чей PR был закрыт вручную Шифу (причина — в комментарии issue)
 ```

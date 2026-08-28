@@ -4,11 +4,14 @@ Headless Voice Assistant Launch для Vision Pi
 Включает animation_player_node для LED анимаций
 
 Issue #1004 fix (ADR-0004): каждый Node грузит СВОЙ per-node YAML
-(audio_node.yaml / tts_node.yaml / ...) из src/rob_box_voice/config/,
-а не общий docker/vision/config/voice_assistant/voice_assistant.yaml.
+(audio_node.yaml / tts_node.yaml / ...) из config_dir (по умолчанию —
+src/rob_box_voice/config/ из образа; в docker-деплое оператор передаёт
+config_dir:=/config/voice_assistant, см. start_voice_assistant.sh).
 Докер-сборка копирует src/config/<node>.yaml в
 install/rob_box_voice/share/rob_box_voice/config/<node>.yaml, поэтому
 FindPackageShare('rob_box_voice').config отдаёт правильный путь.
+Монолитного voice_assistant.yaml нет: вложенные <node>: секции создавали
+dotted-имена, которые ноды не читали (issue #1004).
 """
 
 from launch import LaunchDescription

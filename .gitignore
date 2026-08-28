@@ -84,6 +84,9 @@ tts_audio_bench/**/__pycache__/
 .continue/
 .qwen/
 
+# Local-only agent notes (NOT committed — machine-specific access docs)
+docs/guides/BUILD_MACHINE_ACCESS.md
+
 # System files
 .Trash-*/
 Thumbs.db
@@ -94,3 +97,6 @@ docker/vision/config/voice_assistant/event_mode.yaml
 
 # e2e live test artefacts (regenerated each run)
 tests/e2e/_artifacts/
+
+# frontend
+node_modules/

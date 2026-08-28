@@ -23,14 +23,40 @@ from typing import Sequence
 # so behaviour is preserved when the legacy node switches to these
 # helpers. Includes spelling variants that the dialog harness originally
 # supported inline (роббокс, роб бокс, робокс).
+# 🔴 fix(voice #1252): синхронизировано с dialogue_node.yaml — 12 вариантов
+# + исторический «робик» (потерян при 9ca7fb29, 21.02). STT реально выдаёт
+# кривые варианты («робок», «роберт», «рыбок», «роботс») — все покрываем.
+# NB: порядок ВАЖЕН для strip_wake_word (regex-альтернация leftmost-first) —
+# более длинные/специфичные варианты идут ПЕРВЫМИ, иначе «роб» съест «роб бокс».
 DEFAULT_WAKE_WORDS: tuple[str, ...] = (
-    "робок",
-    "робот",
-    "роббокс",
     "роб бокс",
-    "робокс",
-    "robbox",
+    "роббокс",
+    "робокос",
     "rob box",
+    "робокс",
+    # STT-искажения «робокс» (e2e ww01, run 32595628905): vosk/yandex
+    # слышат «робэкс», «робекс», «робакс», «рабокс», «рубокс» — покрываем
+    # замены гласной. «роблокс» уже был в docker-конфиге — синхронизируем.
+    "робэкс",
+    "робекс",
+    "робакс",
+    "рабокс",
+    "рубокс",
+    "роблокс",
+    "роберт",
+    "роббос",
+    "robbox",
+    "робот",
+    "робок",
+    # STT-искажения «робок»: гласная первого/второго слога.
+    "рабок",
+    "робак",
+    "рыбок",
+    "робик",
+    "робо",
+    "рома",
+    "бот",
+    "роб",
 )
 DEFAULT_SILENCE_COMMANDS: tuple[str, ...] = ("помолч", "замолч", "хватит")
 DEFAULT_UNSILENCE_COMMANDS: tuple[str, ...] = (
@@ -47,14 +73,33 @@ DEFAULT_UNSILENCE_COMMANDS: tuple[str, ...] = (
 # ---------------------------------------------------------------------------
 
 
+_WAKE_WORD_PATTERN_CACHE: dict[tuple[str, ...], "re.Pattern[str]"] = {}
+
+
 def has_wake_word(text_lower: str, wake_words: Sequence[str]) -> bool:
-    """Return True if any ``wake_word`` appears in ``text_lower``.
+    """Return True if any ``wake_word`` appears as a *word* in ``text_lower``.
 
     Empty ``wake_words`` means "bypass mode" — accept every input.
+
+    🔴 FIX (issue #1292): раньше использовалась подстрока
+    (``any(w in text_lower ...)``) — «бот» ∈ «работает» давал ложный wake
+    word → LLM вызывался на фоновую речь и повторял старые команды из
+    истории диалога. Теперь, как и :func:`strip_wake_word`, матчим
+    отдельные слова через ``\\b`` (word boundary). Это сохраняет кейс
+    «робот» в середине фразы («денчик ой фу робот меня зовут» — фикс
+    10.08) и не ловит «работник», «заработок», «работает».
     """
     if not wake_words:
         return True
-    return any(w in text_lower for w in wake_words)
+    key = tuple(wake_words)
+    pattern = _WAKE_WORD_PATTERN_CACHE.get(key)
+    if pattern is None:
+        pattern = re.compile(
+            r"\b(" + "|".join(re.escape(w) for w in wake_words) + r")\b",
+            re.IGNORECASE,
+        )
+        _WAKE_WORD_PATTERN_CACHE[key] = pattern
+    return bool(pattern.search(text_lower))
 
 
 def strip_wake_word(text: str, wake_words: Sequence[str] | None = None) -> str:

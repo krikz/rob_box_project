@@ -1,0 +1,53 @@
+# tts_node.yaml — per-node ROS2 config (issue #1004 fix, ADR-0004)
+#
+# ЖИВОЙ конфиг для docker-деплоя (см. audio_node.yaml).
+# Все ключи соответствуют declare_parameter() в tts_node.py 1:1.
+# Секреты (minimax_api_key/minimax_group_id/yandex_api_key) — пусто →
+# fallback на ENV; в YAML секреты не хранятся.
+
+tts_node:
+  ros__parameters:
+    provider: minimax
+    silero_speaker: aidar
+    silero_sample_rate: 48000
+    synthesis_max_workers: 2
+    synthesis_max_queue: 16
+    minimax_api_key: ''
+    minimax_group_id: ''
+    normalize_text: true
+    chipmunk_mode: false
+    pitch_shift: 1.0
+    volume_db: -3.0
+    silero_put_accent: true
+    silero_put_yo: true
+    silero_put_stress_homo: true
+    silero_put_yo_homo: true
+    yandex_api_key: ''
+    yandex_voice: anton
+    yandex_speed: 1.0
+    chunk_max_chars_yandex: 250
+    chunk_max_chars_silero: 800
+    chunk_max_chars_minimax: 5000
+    chunk_max_retries: 3
+    chunk_min_chars: 50
+    minimax_voice: male-qn-qingse
+    minimax_model: speech-02-hd
+    minimax_language: ru
+    minimax_speed: 1.0
+    minimax_sample_rate: 32000
+    minimax_format: pcm
+    minimax_timeout: 30.0
+    minimax_max_retries: 2
+    minimax_retry_backoff_ms: 500
+    minimax_streaming: false
+    # Issue #1229 — файл персистентного состояния фактического провайдера
+    # TTS (после фолбека minimax→yandex). tts_node пишет сюда {provider,
+    # dead_providers} при смене провайдера; при рестарте контейнера кэш
+    # «мёртвых» восстанавливается, и LLM-контекст [TTS] сразу показывает
+    # реального провайдера (не номинального minimax). Пустая строка —
+    # отключить персистентность.
+    provider_state_file: /data/tts_provider_state.json
+    audio_topic: /voice/audio/speech
+    audio_output_sample_rate: 16000
+    audio_qos_reliability: best_effort
+    audio_qos_depth: 10

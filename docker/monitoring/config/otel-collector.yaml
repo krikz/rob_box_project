@@ -1,0 +1,38 @@
+# OpenTelemetry Collector — приём OTLP трейсов от voice-нод и экспорт в Tempo.
+#
+# Issue #1234, этап 2 — OpenTelemetry traces.
+#
+# Топология (все сервисы мониторинг-стека на host-сети, как в docker-compose):
+#   voice-ноды (10.1.1.11) --OTLP gRPC/HTTP--> otel-collector (10.1.1.249:4317/4318)
+#       --> Tempo (localhost:4321 OTLP gRPC)
+#
+# НЕ включаем contrib-компоненты (spanmetrics и т.п.) — минимальный набор
+# для этапа 2: otlp receiver + batch + otlp exporter.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    # Небольшая пачка — трейсы должны появляться в Tempo почти сразу.
+    timeout: 2s
+    send_batch_size: 100
+
+exporters:
+  # OTLP в Tempo. Tempo слушает на 4321 (не 4317 — порт занят receiver'ом).
+  otlp:
+    endpoint: localhost:4321
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp]

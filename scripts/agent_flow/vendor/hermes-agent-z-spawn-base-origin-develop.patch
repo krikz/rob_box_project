@@ -1,0 +1,149 @@
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -7781,8 +7781,127 @@
+     """
+ 
+ 
++# Drift threshold (commits) above which _ensure_git_worktree emits a
++# warning to stderr when a NEW branch is being created. The base is
++# ``HEAD`` when ``origin/develop`` cannot be reached (network down,
++# no upstream configured, etc.), so workers that dispatch during a
++# network blip get a clear signal — not a silent drift. Issue #1571.
++_WORKTREE_BASE_DRIFT_WARN_THRESHOLD = 10
++
++
++def _resolve_worktree_base_ref(repo_root: Path, base_branch: str = "develop") -> str:
++    """Return the ref to use as the base for a new worktree branch.
++
++    Best-effort ``git fetch origin <base_branch>`` (timeout 30s); on
++    success returns ``"origin/<base_branch>"`` so the worktree branch
++    is created from fresh upstream rather than the (possibly stale)
++    local ``HEAD`` of the main worktree. On any failure — non-zero
++    exit, timeout, missing remote — falls back to ``"HEAD"`` and emits
++    a ``WORKTREE_BASE_FETCH_FAILED: ...`` warning to stderr so the
++    dispatcher log carries an observable signal (vs. silent drift).
++
++    Ретро issue #1571 (workers observed starting from 48-50 commits
++    behind origin/develop because the main worktree hadn't refreshed
++    its HEAD).
++    """
++    fetch_cmd = ["git", "-C", str(repo_root), "fetch", "origin", base_branch]
++    try:
++        result = subprocess.run(
++            fetch_cmd,
++            capture_output=True,
++            text=True, encoding='utf-8', errors='replace',
++            timeout=30,
++            check=False,
++        )
++    except subprocess.TimeoutExpired:
++        print(
++            f"WORKTREE_BASE_FETCH_FAILED: timeout (>30s) on "
++            f"{' '.join(fetch_cmd)}; falling back to HEAD. "
++            f"Branch {base_branch!r} may be stale — see issue #1571.",
++            file=sys.stderr,
++            flush=True,
++        )
++        return "HEAD"
++    except Exception as exc:
++        print(
++            f"WORKTREE_BASE_FETCH_FAILED: {type(exc).__name__}: {exc} on "
++            f"{' '.join(fetch_cmd)}; falling back to HEAD. "
++            f"Branch {base_branch!r} may be stale — see issue #1571.",
++            file=sys.stderr,
++            flush=True,
++        )
++        return "HEAD"
++    if result.returncode != 0:
++        stderr = (result.stderr or result.stdout or "").strip()
++        print(
++            f"WORKTREE_BASE_FETCH_FAILED: rc={result.returncode} on "
++            f"{' '.join(fetch_cmd)}: {stderr}; falling back to HEAD. "
++            f"Branch {base_branch!r} may be stale — see issue #1571.",
++            file=sys.stderr,
++            flush=True,
++        )
++        return "HEAD"
++    return f"origin/{base_branch}"
++
++
++def _warn_worktree_base_drift(
++    repo_root: Path, base_ref: str, base_branch: str = "develop",
++    threshold: int = _WORKTREE_BASE_DRIFT_WARN_THRESHOLD,
++) -> None:
++    """Emit a ``WORKTREE_BASE_DRIFT`` warning to stderr when ``HEAD`` lags
++    ``base_ref`` by more than ``threshold`` commits.
++
++    Called from ``_ensure_git_worktree`` BEFORE creating a fresh branch
++    so dispatch logs carry an observable signal when the dispatcher
++    is about to spawn a worker from a stale base. Network failures
++    during the upstream fetch degrade gracefully: ``base_ref`` falls
++    back to ``HEAD`` and no drift count is computable (no warning),
++    so this helper is intentionally a no-op when ``base_ref`` does
++    not resolve to a remote tracking branch.
++
++    Ретро issue #1571.
++    """
++    try:
++        result = subprocess.run(
++            ["git", "-C", str(repo_root), "rev-list", "--count", f"HEAD..{base_ref}"],
++            capture_output=True,
++            text=True, encoding='utf-8', errors='replace',
++            timeout=10,
++            check=False,
++        )
++    except (subprocess.TimeoutExpired, Exception):
++        return
++    if result.returncode != 0:
++        return
++    try:
++        behind = int((result.stdout or "").strip())
++    except ValueError:
++        return
++    if behind > threshold:
++        print(
++            f"WORKTREE_BASE_DRIFT: HEAD..{base_ref} = {behind} commits "
++            f"(threshold {threshold}; base_branch={base_branch!r}). "
++            f"Worker spawned from potentially stale HEAD. See issue #1571.",
++            file=sys.stderr,
++            flush=True,
++        )
++
++
+ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
+-    """Materialize ``target`` as a linked git worktree under ``repo_root``."""
++    """Materialize ``target`` as a linked git worktree under ``repo_root``.
++
++    When ``branch_name`` does NOT yet exist, the base ref is fetched
++    fresh from ``origin/<default>`` (``develop``) and used instead of
++    the local ``HEAD`` of the main worktree — see issue #1571 for the
++    drift symptom this avoids. The fetch is best-effort: any failure
++    (timeout, no upstream, non-zero exit) falls back to ``HEAD`` with
++    a ``WORKTREE_BASE_FETCH_FAILED:`` warning emitted to stderr so the
++    dispatcher log captures the degradation rather than masking it.
++
++    When ``branch_name`` already exists, the existing branch is checked
++    out as-is — no base-ref change is made, since the base was fixed
++    when the branch was first created.
++    """
+     target = target.expanduser()
+     repo_common = _git_common_dir(repo_root)
+     if target.exists() and repo_common is not None:
+@@ -7831,9 +7950,15 @@
+     if _git_branch_exists(repo_root, branch_name):
+         cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
+     else:
++        # Issue #1571: use origin/develop (or ``base_branch``) instead of
++        # local HEAD so new worktree branches don't start from a stale
++        # base. ``_resolve_worktree_base_ref`` does best-effort fetch
++        # with HEAD fallback + stderr warning on failure.
++        base_ref = _resolve_worktree_base_ref(repo_root)
++        _warn_worktree_base_drift(repo_root, base_ref)
+         cmd = [
+             "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
+-            str(target), "HEAD",
++            str(target), base_ref,
+         ]
+     result = subprocess.run(
+         cmd,

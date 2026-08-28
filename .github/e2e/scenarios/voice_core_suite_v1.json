@@ -1,0 +1,128 @@
+{
+  "name": "voice_core_suite_v1",
+  "stability": "flaky-known",
+  "_stability_comment": "mv01/mv02/mv03 labels rely on set_voice tool registration + LLM tool-choice, breaks often across provider/Harness changes. Treated as 'flaky-known' for merge-gate (see CONTRIBUTING.md §E2E stability markers). Do NOT silently autofail merge-gate on these — выставлять e2e:flaky-detection метку и оставлять needs-e2e для ручного разбора.",
+  "description": "E2E для больших голосовых фич (последние 2 недели): command-intent gate (#1279), new-session reset, альтернативный wake word (#1252), music start/stop (#1358), мульти-голос #1219, спор→арбитр через backlog-аккумулятор (ds01/ds02 копятся без wake-слова, ds03 активирует контекст). MiniMax generate_music и gen_delete_from_library ИСКЛЮЧЕНЫ (Music API недоступен, удаление не валидируем). Speaker diarization (#1077, 2 физических голоса) — out-of-scope (unit-тесты).",
+  "steps": [
+    {
+      "label": "cc01_status_gate",
+      "voice": "anton",
+      "text": "Робот, где ты",
+      "patterns": [
+        "LLM dispatch skipped",
+        "command intent"
+      ]
+    },
+    {
+      "label": "ns01_reset_session",
+      "voice": "anton",
+      "text": "Робот, сбрось всё",
+      "patterns": [
+        "session reset"
+      ]
+    },
+    {
+      "label": "ww01_roboks_wake",
+      "voice": "anton",
+      "text": "Робокс, как дела",
+      "patterns": []
+    },
+    {
+      "label": "mv01_set_voice_alena",
+      "voice": "anton",
+      "text": "Робот, говори голосом Алены",
+      "patterns": [
+        "set_voice"
+      ],
+      "acceptance": {
+        "expected_tool_calls": [
+          "set_voice"
+        ],
+        "must_not_call": [],
+        "voice_changed": true,
+        "_comment": "Issue #1219: LLM часто путается какой голос выбрать (\"Алены\" → alena — yandex-голос, а робот на minimax). Не валидируем КОНКРЕТНЫЙ голос — проверяем что set_voice РЕАЛЬНО сменил голос с дефолта (voice != default)."
+      }
+    },
+    {
+      "label": "mv02_speak_alena",
+      "voice": "anton",
+      "text": "Робот, скажи привет",
+      "patterns": [
+        "current_voice"
+      ]
+    },
+    {
+      "label": "mv03_skazka_raznymi_golosami",
+      "voice": "anton",
+      "text": "Робот, расскажи сказку про Красную Шапочку разными голосами",
+      "patterns": [
+        "voice_used"
+      ],
+      "acceptance": {
+        "expected_tool_calls": [
+          "set_voice"
+        ],
+        "must_not_call": [],
+        "expected_keywords": [
+          "красн"
+        ],
+        "_comment": "Issue #1532 mv03: сказка должна быть ПОЛНОЙ (5-7 speak_text) и обязательно использовать минимум один set_voice для смены голоса между персонажами. expected_keywords='красн' (стем) ищется по ВСЕМ логам шага (признанная фраза + LLM OUTPUT / spoken=) — гарантирует, что LLM не уходит в generic 'жила-была', а упоминает Красную Шапочку (стем 'красн' ловит 'красную'/'красная'). Проверка 'set_voice ×≥2' сделана в dialogue_node метриках, здесь достаточно ≥1, чтобы заgate'ить основной баг (tools=[]).",
+        "expected_artifacts": []
+      }
+    },
+    {
+      "label": "ds01_speaker_A_tea",
+      "voice": "anton",
+      "text": "Я считаю что чай лучше кофе, это самый лучший напиток во вселенной и ни кто не сможет меня преубедить",
+      "patterns": [],
+      "expect": "backlog"
+    },
+    {
+      "label": "ds02_speaker_B_coffee",
+      "voice": "ermil",
+      "text": "Нет, кофе лучше чая, выкуси накуси, только неудачники пьют чай, что вообще может быть лучше ароматного кофия с молочком",
+      "patterns": [],
+      "expect": "backlog"
+    },
+    {
+      "label": "ds03_arbiter_zahar",
+      "voice": "zahar",
+      "text": "Робот, а ты как думаешь, кто из них прав, а, РОБОТ?",
+      "patterns": [
+        "flushed to LLM"
+      ]
+    },
+    {
+      "label": "dj01_start_renardo",
+      "voice": "anton",
+      "text": "Робот, сыграй renardo бит",
+      "patterns": [
+        "execute_music_code"
+      ],
+      "acceptance": {
+        "expected_tool_calls": [
+          "execute_music_code"
+        ],
+        "must_not_call": [
+          "generate_music"
+        ]
+      },
+      "retry_acceptance": 2,
+      "_comment": "dj01: LLM недетерминирован — если renardo не запустился (execute_music_code не вызван / generate_music вызван как forbidden), повторяем команду до retry_acceptance раз."
+    },
+    {
+      "label": "dj02_stop_music",
+      "voice": "anton",
+      "text": "Робот, стоп музыку",
+      "patterns": [
+        "stop_music"
+      ],
+      "acceptance": {
+        "expected_tool_calls": [
+          "stop_music"
+        ],
+        "must_not_call": []
+      }
+    }
+  ]
+}

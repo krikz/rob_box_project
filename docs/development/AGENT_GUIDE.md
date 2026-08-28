@@ -325,13 +325,11 @@ Feature Branch (feature/*)
 
 ### Workflow файлы
 
-| Workflow | Файл | Назначение |
-|----------|------|------------|
-| **Feature → Develop** | `.github/workflows/auto-merge-feature-to-develop.yml` | Собирает изменённые сервисы, автомерджит в develop |
-| **Develop → Main** | `.github/workflows/auto-merge-to-main.yml` | Собирает ВСЕ сервисы, автомерджит в main |
-| **Vision Services** | `.github/workflows/build-vision-services.yml` | Сборка oak-d, apriltag, led-matrix, voice-assistant |
-| **Main Services** | `.github/workflows/build-main-services.yml` | Сборка rtabmap, nav2, ros2-control, lslidar, perception |
-| **Base Images** | `.github/workflows/build-base-images.yml` | Сборка базовых образов (ros2-zenoh) |
+> ⚠️ Актуальный список workflow-файлов и naming convention (`G-`/`L-` префиксы)
+> см. **`docs/CI_CD_PIPELINE.md`** — это SOT. Здесь раньше был дублирующий
+> список со старыми именами файлов (`auto-merge-feature-to-develop.yml` и
+> т.п.), которые были переименованы; таблицу убрали, чтобы не расходилась
+> с реальностью повторно.
 
 ### Docker Image Tagging
 
@@ -363,7 +361,7 @@ git push origin feature/fix-voice-assistant
 
 # 4. GitHub Actions автоматически:
 #    - Определяет что изменился Vision Pi
-#    - Запускает build-vision-services.yml
+#    - Запускает "L-Build Vision Pi Services.yml" (см. docs/CI_CD_PIPELINE.md)
 #    - Собирает voice-assistant-humble-test
 #    - Пушит образ в ghcr.io
 #    - Мерджит в develop (если сборка успешна)
@@ -623,7 +621,19 @@ sshpass -p 'open' ssh ros2@10.1.1.21 \
 
 ## Инструментарий мониторинга и диагностики
 
-### 📊 Скрипты мониторинга
+> ⚠️ **Устарело (проверено 2026-08-28):** почти все скрипты, перечисленные
+> ниже (`docker/monitor_system.sh`, `docker/vision/realtime_monitor.sh`,
+> `docker/diagnose_data_flow.sh`, `docker/vision/diagnose.sh`,
+> `docker/vision/force_publish.sh`, `docker/tune.sh`,
+> `docker/vision/config/start_*.sh`) в репозитории больше **не существуют**.
+> Актуальные утилитарные скрипты лежат в `docker/scripts/` (`start_oak_d.sh`,
+> `start_apriltag.sh`, `start_lslidar.sh`, `check_power_status.sh`,
+> `check_usb_devices.sh`, `monitor_power_live.sh` и др.) — эта секция описывает
+> снапшот на 2025-10-09 и оставлена как историческая справка, не как текущий
+> инвентарь. Из перечисленного ниже актуальны только
+> `docker/vision/update_and_restart.sh` и `docker/main/update_and_restart.sh`.
+
+### 📊 Скрипты мониторинга (исторический снапшот, см. предупреждение выше)
 
 #### 1. `docker/monitor_system.sh` - Общий системный мониторинг
 **Местоположение**: `docker/monitor_system.sh`  

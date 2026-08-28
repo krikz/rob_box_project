@@ -123,49 +123,49 @@ jobs:
                   IMAGE_NAME="robot-state-publisher"
                   DOCKERFILE="docker/main/robot_state_publisher/Dockerfile"
                   BUILD_CONTEXT="."
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 "rtabmap")
                   SERVICE_NAME="rtabmap"
                   IMAGE_NAME="rtabmap"
                   DOCKERFILE="docker/main/rtabmap/Dockerfile"
                   BUILD_CONTEXT="docker/main/rtabmap"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:rtabmap"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:rtabmap-${ROS_DISTRO}"
                   ;;
                 "twist-mux"|"twist_mux")
                   SERVICE_NAME="twist_mux"
                   IMAGE_NAME="twist-mux"
                   DOCKERFILE="docker/main/twist_mux/Dockerfile"
                   BUILD_CONTEXT="docker/main/twist_mux"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 "ros2-control"|"ros2_control")
                   SERVICE_NAME="ros2_control"
                   IMAGE_NAME="ros2-control"
                   DOCKERFILE="docker/main/ros2_control/Dockerfile"
                   BUILD_CONTEXT="."
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:rtabmap"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:rtabmap-${ROS_DISTRO}"
                   ;;
                 "nav2")
                   SERVICE_NAME="nav2"
                   IMAGE_NAME="nav2"
                   DOCKERFILE="docker/main/nav2/Dockerfile"
                   BUILD_CONTEXT="docker/main/nav2"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 "lslidar")
                   SERVICE_NAME="lslidar"
                   IMAGE_NAME="lslidar"
                   DOCKERFILE="docker/main/lslidar/Dockerfile"
                   BUILD_CONTEXT="docker/main"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:pcl"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:pcl-${ROS_DISTRO}"
                   ;;
                 "perception")
                   SERVICE_NAME="perception"
                   IMAGE_NAME="perception"
                   DOCKERFILE="docker/main/perception/Dockerfile"
                   BUILD_CONTEXT="."
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 "zenoh-router")
                   SERVICE_NAME="zenoh-router"
@@ -188,21 +188,21 @@ jobs:
                   IMAGE_NAME="oak-d"
                   DOCKERFILE="docker/vision/oak-d/Dockerfile"
                   BUILD_CONTEXT="docker/vision"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:depthai"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:depthai-${ROS_DISTRO}"
                   ;;
                 "led-matrix"|"led_matrix")
                   SERVICE_NAME="led_matrix"
                   IMAGE_NAME="led-matrix"
                   DOCKERFILE="docker/vision/led_matrix/Dockerfile"
                   BUILD_CONTEXT="."
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 "ceiling-camera")
                   SERVICE_NAME="ceiling-camera"
                   IMAGE_NAME="ceiling-camera"
                   DOCKERFILE="docker/vision/ceiling-camera/Dockerfile"
                   BUILD_CONTEXT="docker/vision"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 "voice-assistant"|"voice_assistant")
                   SERVICE_NAME="voice_assistant"
@@ -216,7 +216,7 @@ jobs:
                   IMAGE_NAME="voice-base"
                   DOCKERFILE="docker/vision/voice_base/Dockerfile"
                   BUILD_CONTEXT="docker/vision/voice_base"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:rtabmap"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:rtabmap-${ROS_DISTRO}"
                   ;;
                 "voice-resources"|"voice_resources")
                   SERVICE_NAME="voice_resources"
@@ -230,14 +230,14 @@ jobs:
                   IMAGE_NAME="apriltag"
                   DOCKERFILE="docker/vision/apriltag/Dockerfile"
                   BUILD_CONTEXT="docker/vision"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 "telegram-bot"|"telegram_bot")
                   SERVICE_NAME="telegram_bot"
                   IMAGE_NAME="telegram-bot"
                   DOCKERFILE="docker/vision/telegram_bot/Dockerfile"
                   BUILD_CONTEXT="."
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 "supercollider")
                   SERVICE_NAME="supercollider"
@@ -294,7 +294,7 @@ jobs:
                   IMAGE_NAME="pcl"
                   DOCKERFILE="docker/base/Dockerfile.pcl"
                   BUILD_CONTEXT="docker/base"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-latest"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}-latest"
                   IMAGE_PREFIX="ghcr.io/krikz/rob_box_base"
                   LOCAL_PREFIX="localhost:5000/krikz/rob_box_base"
                   ;;
@@ -313,8 +313,8 @@ jobs:
 
           # Формирование тегов
           if [ "$PI_TYPE" = "base" ]; then
-            GHCR_TAG="${IMAGE_PREFIX}:${IMAGE_NAME}-${DOCKER_TAG}"
-            LOCAL_TAG="${LOCAL_PREFIX}:${IMAGE_NAME}-${DOCKER_TAG}"
+            GHCR_TAG="${IMAGE_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${DOCKER_TAG}"
+            LOCAL_TAG="${LOCAL_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${DOCKER_TAG}"
           else
             GHCR_TAG="${IMAGE_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${DOCKER_TAG}"
             LOCAL_TAG="${LOCAL_PREFIX}:${IMAGE_NAME}-${ROS_DISTRO}-${DOCKER_TAG}"
@@ -349,6 +349,7 @@ jobs:
           ref: ${{ inputs.branch }}
           submodules: recursive
           clean: true
+          fetch-depth: 0
 
       - name: Build ${{ needs.prepare.outputs.service_name }}
         run: |
@@ -411,8 +412,14 @@ jobs:
 
       - name: Tag with SHA and update .image-versions
         if: inputs.push_to_registry == 'true' && needs.prepare.outputs.docker_tag != 'local'
+        # Bugfix issue #1482: вместо `git rev-parse --short HEAD` используем
+        # `${GITHUB_SHA::7}` — это commit, который ТРИГГЕРНУЛ workflow run,
+        # неизменный на всём протяжении run. Прежний `git rev-parse --short HEAD`
+        # брал локальный HEAD, который мог сместиться после
+        # scripts/ci/commit-image-versions.sh `git checkout -B` →
+        # .image-versions указывал на несуществующий image.
         run: |
-          SHORT_SHA=$(git rev-parse --short HEAD)
+          SHORT_SHA="${GITHUB_SHA::7}"
           LOCAL_TAG="${{ needs.prepare.outputs.local_tag }}"
           DOCKER_TAG="${{ needs.prepare.outputs.docker_tag }}"
           SERVICE_NAME="${{ needs.prepare.outputs.service_name }}"
@@ -424,6 +431,29 @@ jobs:
           docker tag "$LOCAL_TAG" "$SHA_TAG"
           docker push "$SHA_TAG"
           echo "✅ Immutable SHA tag pushed: $SHA_TAG"
+
+          # Acceptance B (#1482): verify SHA-image is in registry BEFORE
+          # committing it into per-service .image-versions.{tag}. Иначе
+          # deploy тянет несуществующий тег, робот не обновляется.
+          verify_in_registry() {
+            local TAG="$1"
+            local REPO="krikz/rob_box"
+            local URL="http://${LOCAL_REGISTRY}/v2/${REPO}/manifests/${TAG}"
+            local HTTP_CODE
+            HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+              -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+              "$URL" || echo "000")
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "❌ Verify FAIL: ${TAG} missing in registry (HTTP ${HTTP_CODE})" >&2
+              return 1
+            fi
+            echo "✅ Verify OK: ${TAG} present in registry"
+            return 0
+          }
+          if ! verify_in_registry "${SHA_TAG}"; then
+            echo "   ⚠️  .image-versions НЕ будет обновлён этим коммитом" >&2
+            exit 1
+          fi
 
           # Map service_name to .image-versions env var name
           case "$SERVICE_NAME" in
@@ -458,15 +488,20 @@ jobs:
           sed -i "s|^${VERSION_VAR}=.*|${VERSION_VAR}=${NEW_TAG}|" "$VERSIONS_FILE"
           echo "✅ Updated: ${VERSION_VAR}=${NEW_TAG} in $VERSIONS_FILE"
 
-          # Commit and push the updated versions file back to the repo
+          # ✅ РЕТРО #1139 v2 (13.08, t_bd9b7713): коммитим .image-versions
+          # в ОТДЕЛЬНУЮ per-service ветку ci/image-versions-{pi_type} — текущая
+          # ветка не засоряется 'ci: ... → ...' коммитами. Ветка базируется
+          # на origin-типе и НЕ сбрасывается → теги накапливаются и не теряются.
           git config user.email "ci@rob-box.local"
           git config user.name "Rob Box CI"
           git add "$VERSIONS_FILE"
           if git diff --cached --quiet; then
             echo "ℹ️  No changes to commit"
           else
-            git commit -m "ci: ${SERVICE_NAME} → ${NEW_TAG} [skip ci]"              git pull --rebase origin ${{ inputs.branch }}            git push origin ${{ inputs.branch }}
-            echo "✅ Committed and pushed: ${SERVICE_NAME} = ${NEW_TAG}"
+            bash scripts/ci/commit-image-versions.sh \
+              "ci/image-versions-${PI_TYPE}" \
+              "ci: ${SERVICE_NAME} → ${NEW_TAG} [skip ci]" \
+              "$VERSIONS_FILE"
           fi
 
   # Итоговая сводка

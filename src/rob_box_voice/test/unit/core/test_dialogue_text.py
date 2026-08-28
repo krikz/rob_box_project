@@ -40,6 +40,61 @@ class TestHasWakeWord:
         assert has_wake_word("джарвис выключи свет", ["джарвис"]) is True
         assert has_wake_word("выключи свет", ["джарвис"]) is False
 
+    def test_substring_does_not_trigger_bot(self) -> None:
+        """Issue #1292: «бот» ∈ «работает» — ложный wake word на фоновую речь."""
+        assert has_wake_word("он потом работает", ["бот"]) is False
+        assert has_wake_word("работает", ["бот"]) is False
+        assert has_wake_word("он потом работает", DEFAULT_WAKE_WORDS) is False
+
+    def test_substring_words_do_not_trigger(self) -> None:
+        """«работник», «заработок», «работа» содержат «бот», но не как слово."""
+        assert has_wake_word("работник", ["бот"]) is False
+        assert has_wake_word("заработок", ["бот"]) is False
+        assert has_wake_word("работа", ["бот"]) is False
+        assert has_wake_word("собака", ["бот"]) is False
+
+    def test_word_boundary_still_matches_real_bot(self) -> None:
+        """Отдельное слово «бот» — валидный wake word."""
+        assert has_wake_word("бот привет", ["бот"]) is True
+        assert has_wake_word("привет бот", ["бот"]) is True
+
+    def test_deployed_config_wake_words(self) -> None:
+        """Реальный список из dialogue_node.yaml (включая «бот», «робо», «роб»)."""
+        deployed = [
+            "робок", "робот", "роббокс", "робокос", "роббос", "робокс",
+            "роберт", "рыбок", "рома", "бот", "робо", "роб",
+        ]
+        # Фоновая речь с «работает»/«работник» — НЕ wake word (баг #1292)
+        assert has_wake_word("он потом работает", deployed) is False
+        assert has_wake_word("работник пришёл", deployed) is False
+        assert has_wake_word("заработок", deployed) is False
+        # Прямое обращение — wake word
+        assert has_wake_word("робот расскажи анекдот", deployed) is True
+        assert has_wake_word("бот привет", deployed) is True
+        assert has_wake_word("робо вруби музыку", deployed) is True
+        assert has_wake_word("роб", deployed) is True
+
+    def test_wake_word_in_middle_of_phrase(self) -> None:
+        """Регресс-тест фикса 10.08: «робот» в середине фразы — wake word."""
+        text = "денчик ой фу робот меня зовут саша".lower()
+        assert has_wake_word(text, DEFAULT_WAKE_WORDS) is True
+
+    def test_issue_1292_reported_phrase(self) -> None:
+        """Точная фраза из docker logs 15.08 — фоновый шум без обращения."""
+        deployed = [
+            "робок", "робот", "роббокс", "робокос", "роббос", "робокс",
+            "роберт", "рыбок", "рома", "бот", "робо", "роб",
+        ]
+        phrase = (
+            "в кустах каких нибудь полегало ну так и что что он потом работает"
+        )
+        assert has_wake_word(phrase, deployed) is False
+
+    def test_case_insensitive_pattern(self) -> None:
+        """Паттерн с re.IGNORECASE — переживает не-нижний регистр."""
+        assert has_wake_word("РОБОТ расскажи", DEFAULT_WAKE_WORDS) is True
+        assert has_wake_word("Он потом РАБОТАЕТ", ["бот"]) is False
+
 
 # ---------------------------------------------------------------------------
 # strip_wake_word

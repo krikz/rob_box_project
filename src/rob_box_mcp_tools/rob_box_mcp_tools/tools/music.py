@@ -15,11 +15,13 @@ music.py - Инструменты для управления музыкой в 
 - DeleteTrackTool: Удалить трек из медиатеки
 """
 
+import ast
 import json
 import os
 import re
 import socket
 import sqlite3
+import struct
 import threading
 import time
 from datetime import datetime, timezone
@@ -46,10 +48,74 @@ _BLOCKED_TOKENS = re.compile(
     r")\b"
 )
 
+# Live 13.08 — символы сэмплов в play("x-o-") для предзагрузки буферов.
+_PLAY_SYMBOLS_RE = re.compile(r'play\(\s*"([^"]*)"')
+
+# ---------------------------------------------------------------------------
+# Pattern-name whitelist (security) — see stop_pattern()
+# ---------------------------------------------------------------------------
+# ``stop_pattern`` used to build ``f"{pattern_name}.stop()"`` and hand it to
+# exec(), so an LLM-supplied (or prompt-injected) name like
+# ``__import__('os').system('id') #`` was arbitrary code execution with the
+# MCP server's privileges. The name is now (a) shape-checked against a plain
+# identifier, (b) checked against the whitelist of patterns that actually
+# exist, and (c) resolved via attribute lookup instead of exec.
+
+#: Renardo's built-in player namespace: d1-d9, p1-p9, s1-s9, l1-l9.
+_RENARDO_PLAYER_NAMES: frozenset = frozenset(
+    f"{prefix}{i}" for prefix in ("d", "p", "s", "l") for i in range(1, 10)
+)
+
+#: A pattern name must be a bare Python identifier — no dots, calls, quotes,
+#: comments or whitespace can survive this.
+_PATTERN_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,31}$")
+
+#: Reflection builtins that stay allowed (legitimate Renardo use — e.g.
+#: ``Clock.future(8, lambda: setattr(Clock, "bpm", 170))``) but only when the
+#: attribute name is a plain string literal, never a computed one.
+_LITERAL_ATTR_BUILTINS: frozenset = frozenset({"getattr", "setattr", "hasattr"})
+
+# ---------------------------------------------------------------------------
+# Issue #1016 — music-quality guardrail (dramaturgy validator)
+# ---------------------------------------------------------------------------
+# The safety filter above blocks *dangerous system tokens*. This separate
+# guardrail validates *musical quality* before the code reaches Renardo so
+# the LLM cannot regenerate a static 4-8 note loop:
+#
+#   1. Absolute frequencies (freq=440 / hz=220 / midinote=69) are rejected
+#      — Renardo wants scale *degrees* (p1 >> pluck([0,4,7])), not Hz.
+#   2. Every non-play player must carry an explicit ``dur=`` — otherwise
+#      the pattern defaults to a staccato click-train.
+#   3. (soft) A multi-part track without any developing pattern
+#      (``.every`` / ``Pvar`` / ``linvar`` / ``Clock.future``) is a static
+#      loop — warn so the LLM can fix it before the user hears it.
+#
+# Errors block execution; warnings are appended to the result message.
+
+_ABSOLUTE_FREQ_RE = re.compile(
+    r"\b(?:freq|frequency|hz|midinote|note)\s*=\s*(\d+(?:\.\d+)?)"
+)
+# Player creation lines: `p1 >> pluck([0,2,4], dur=0.5)` / `d1 >> play("x-o-")`
+_PLAYER_LINE_RE = re.compile(r"^\s*(\w+)\s*>>\s*(\w+)\s*\(([^)]*)\)", re.MULTILINE)
+# Developing patterns that break a static loop (issue #1016).
+_DEV_PATTERN_RE = re.compile(
+    r"\.every\(|Pvar\(|pvar\(|linvar\(|var\(|Clock\.future|chop=|stutter|shuffle|reverse"
+)
+# Hard-blocked hardware constraints (live 20.08): deepseek игнорирует
+# промпт-запреты, поэтому ловим на уровне кода. chop= (не 0) → щелчки на
+# 16 kHz DAC; spack= (не 0) → сырые глитчевые сэмплы pitchglitch-пака.
+_CHOP_RE = re.compile(r"\bchop\s*=\s*(?!0\b)")
+_SPACK_NONZERO_RE = re.compile(r"\bspack\s*=\s*[1-9]")
+
 
 # ---------------------------------------------------------------------------
 # MusicManager
 # ---------------------------------------------------------------------------
+
+
+def _is_dunder(name: str) -> bool:
+    """``True`` для ``__name__``-подобных имён (см. :meth:`MusicManager._filter_code_ast`)."""
+    return name.startswith("__") and name.endswith("__")
 
 
 class MusicManager:
@@ -143,6 +209,10 @@ class MusicManager:
         self._pattern_history: Dict[str, str] = {}
         #: множество имён активных паттернов
         self._active_patterns: set = set()
+        #: SynthDef-ы, уже загруженные через sdef.add(). Повторный add()
+        #: мутирует UGen-граф (osc*env) → компаундинг ("too big for
+        #: sending") → scsynth не тянет → "late" и троттл (live 20.08).
+        self._synthdefs_added: set = set()
         #: имя текущего пресета
         self._current_preset: Optional[str] = None
         #: контекст выполнения для renardo
@@ -261,28 +331,6 @@ class MusicManager:
         NOTE: SynthDefs — это plain dict, НЕ объект с методом .reload()!
         Правильный способ: for sdef in SynthDefs.values(): sdef.add()
         """
-        import struct as _struct
-        import time as _time
-
-        def _send_osc_raw(address: str, *args) -> None:
-            """Отправить raw OSC сообщение на scsynth (UDP 57110)."""
-            msg = bytearray()
-            addr_bytes = address.encode() + b"\x00"
-            while len(addr_bytes) % 4:
-                addr_bytes += b"\x00"
-            types = b"," + b"".join(b"i" if isinstance(a, int) else b"f" for a in args) + b"\x00"
-            while len(types) % 4:
-                types += b"\x00"
-            msg.extend(addr_bytes)
-            msg.extend(types)
-            for a in args:
-                if isinstance(a, int):
-                    msg.extend(_struct.pack(">i", a))
-                elif isinstance(a, float):
-                    msg.extend(_struct.pack(">f", a))
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
-                _s.sendto(bytes(msg), (self.SC_HOST, self.SC_PORT))
-
         try:
             # renardo_lib.runtime при импорте пытается листить директории сэмплов.
             # Если 0_foxdot_default не установлен — падает FileNotFoundError.
@@ -322,14 +370,23 @@ class MusicManager:
 
             # Создаём Group 1 в scsynth — renardo отправляет все ноты в эту группу.
             # Без неё scsynth возвращает "Group 1 not found" на каждый /s_new.
-            _send_osc_raw("/g_new", 1, 0, 0)
+            self._send_osc_raw("/g_new", 1, 0, 0)
 
             # Загружаем все SynthDef-ы через sclang.
             # SynthDefs — это plain Python dict, НЕ объект с .reload()!
             # sdef.add() = write(.scd файл на диск) + load() (отправляет путь
             # через OSC /foxdot → sclang → компилирует → /d_recv → scsynth)
-            for sdef in _rt.SynthDefs.values():
+            # 🔴 FIX (live 12.08): 188 sdef.add() залпом роняют UDP-буфер sclang
+            # (drops >500 в /proc/net/udp) — часть SynthDef-ов (pads, bass, karp,
+            # bell...) не доезжает до scsynth → "SynthDef not found" → ТИШИНА.
+            # Пейсинг 0.1с между отправками + верификация с досылкой пропавших.
+            for idx, (name, sdef) in enumerate(_rt.SynthDefs.items()):
+                if name in self._synthdefs_added:
+                    continue
                 sdef.add()
+                self._synthdefs_added.add(name)
+                if idx % 5 == 4:
+                    time.sleep(0.1)
 
             # Загружаем эффекты (reverb/volume) — иначе scsynth отвечает
             # "SynthDef reverb not found" / "SynthDef volume not found" на каждый
@@ -344,7 +401,12 @@ class MusicManager:
 
             # Ждём компиляции всех 188 SynthDef-ов через sclang.
             # Без паузы renardo сразу пытается играть, scsynth отвечает "not found".
-            _time.sleep(5)
+            time.sleep(5)
+
+            # 🔴 FIX (live 12.08): верификация — пробуем /s_new на критичные
+            # синты и досылаем пропавшие через sdef.add() (до 3 раундов).
+            # Без этого музыка тихо молчит при "SynthDef not found".
+            self._verify_and_retry_synthdefs(_rt, self._send_osc_raw)
 
             self._renardo_context = vars(_rt).copy()
             register_sc_only_custom_synthdefs(_rt, self._renardo_context)
@@ -354,6 +416,140 @@ class MusicManager:
             self._renardo_available = False
             self._renardo_context = {}
             self._renardo_last_error = str(exc)
+
+    def _verify_and_retry_synthdefs(
+        self,
+        _rt: Any,
+        _send_osc_raw: Any,
+        max_rounds: int = 3,
+    ) -> None:
+        """Verify critical SynthDefs exist in scsynth; re-send missing ones.
+
+        live 12.08: после бурста sdef.add() часть SynthDef-ов пропадает
+        (UDP drops на 57120). Пробуем /s_new для каждого критичного синта,
+        пропавшие досылаем через sdef.add() → /foxdot → sclang → /d_recv.
+
+        Args:
+            _rt: renardo_lib.runtime module.
+            _send_osc_raw: callable для отправки OSC на scsynth.
+            max_rounds: сколько раундов досылки пробовать.
+        """
+        import struct as _struct
+        import time as _time
+
+        _CRITICAL_SYNTHS = (
+            "pads", "bass", "bell", "blip", "fuzz", "gong", "karp",
+            "dub", "pluck", "space", "epiano", "saw", "varsaw", "square",
+            "ambi", "faim", "marimba", "sitar", "viola", "noise",
+            "scatter", "orient", "creep",
+            "strings", "wobblebass", "brass", "organ", "tb303",
+            "play1", "play2",
+        )
+
+        def _probe_missing(names):
+            """Return subset of names whose SynthDef is absent in scsynth."""
+            missing: list[str] = []
+            probe_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            probe_sock.settimeout(0.4)
+
+            def _free_probe_node(node_id: int) -> None:
+                """Free a probe node via /n_free (best-effort, fire-and-forget)."""
+                free_msg = bytearray(b"/n_free\x00")
+                free_msg.extend(b",i\x00\x00")
+                free_msg.extend(_struct.pack(">i", node_id))
+                try:
+                    probe_sock.sendto(bytes(free_msg), (self.SC_HOST, self.SC_PORT))
+                except OSError:
+                    pass
+
+            for i, name in enumerate(names):
+                node_id = 9000 + i
+                # 🔴 FIX (live 13.08): OSC-адрес обязан быть выровнен до
+                # кратного 4. "/s_new" = 6 байт + 2 нуля = 8 (было 7 —
+                # scsynth отвечал "FAILURE IN SERVER: /s_new Command not
+                # found", а строка "not found" матчилась как «синт
+                # отсутствует» → ложные 3 раунда досылки всех 31 синтов).
+                msg = bytearray(b"/s_new\x00\x00")
+                # 🔴 FIX (19.08, свист #1444): type tag был ",siiiif" —
+                # control-имя "amp" типизировано как int (i), а не string (s).
+                # scsynth читал "amp\x00" как int32 → amp=0 НЕ применялся,
+                # пробные ноды играли с дефолтным amp=1 и sus=1 (sustained)
+                # и никогда не освобождались → постоянный свист из динамика.
+                # Правильный tag ",siiisf": name(s) + node/addAction/target
+                # (iii) + "amp"(s) + 0.0(f).
+                types = b",siiisf\x00"
+                name_b = name.encode() + b"\x00"
+                while len(name_b) % 4:
+                    name_b += b"\x00"
+                msg.extend(types)
+                msg.extend(name_b)
+                msg.extend(_struct.pack(">iii", node_id, 0, 1))
+                msg.extend(b"amp\x00")
+                msg.extend(_struct.pack(">f", 0.0))
+                try:
+                    probe_sock.sendto(bytes(msg), (self.SC_HOST, self.SC_PORT))
+                    data, _ = probe_sock.recvfrom(512)
+                    # Only a REAL "SynthDef X not found" counts as missing.
+                    # "Command not found" (malformed) and "Group N not found"
+                    # must not trigger re-sending.
+                    if b"SynthDef" in data and b"not found" in data:
+                        missing.append(name)
+                    else:
+                        # 🔴 FIX (19.08, свист #1444): освобождаем созданную
+                        # пробную ноду сразу (иначе она живёт вечно с sus=1).
+                        _free_probe_node(node_id)
+                except socket.timeout:
+                    # Нет ответа = def на месте = нода создана — освобождаем.
+                    _free_probe_node(node_id)
+            probe_sock.close()
+            return missing
+
+        missing = list(_CRITICAL_SYNTHS)
+        for round_no in range(max_rounds):
+            missing = _probe_missing(missing)
+            if not missing:
+                return
+            self._log_warning(
+                f"[music] round {round_no + 1}: missing SynthDefs: {missing} — re-sending"
+            )
+            for name in missing:
+                try:
+                    sdef = _rt.SynthDefs.get(name)
+                except Exception:  # noqa: BLE001
+                    continue
+                if sdef is None:
+                    continue
+                try:
+                    if name in self._synthdefs_added:
+                        # Уже добавляли — повторный add() мутирует UGen-граф
+                        # (компаундинг). Досылаем без мутации через load()
+                        # (отправка готового .scd), если метод доступен.
+                        load = getattr(sdef, "load", None)
+                        if load is not None:
+                            load()
+                    else:
+                        sdef.add()
+                        self._synthdefs_added.add(name)
+                except Exception:  # noqa: BLE001
+                    continue
+                _time.sleep(0.3)
+            _time.sleep(5)  # время на компиляцию
+        self._log_warning(
+            f"[music] SynthDefs still missing after {max_rounds} rounds: {missing}"
+        )
+
+    def _log_warning(self, message: str) -> None:
+        """Log via the manager's logger when available (fallback to print)."""
+        logger = getattr(self, "_logger", None)
+        if logger is not None:
+            try:
+                logger.warning(message)
+                return
+            except Exception:  # noqa: BLE001
+                pass
+        import sys as _sys
+        _sys.stderr.write(f"{message}\n")
+        _sys.stderr.flush()
 
     def _ensure_renardo_available(self) -> bool:
         """Retry Renardo initialization when a previous startup attempt failed.
@@ -460,12 +656,61 @@ class MusicManager:
         except OSError:
             return False
 
+    def _send_osc_raw(self, address: str, *args: Any) -> None:
+        """Отправить raw OSC сообщение на scsynth (UDP 57110).
+
+        OSC-packet собирается вручную: 4-byte aligned address + type-tag +
+        big-endian args. Поддерживает int (``i``) и float (``f``) аргументы.
+
+        Выделено как self-метод вместо замыкания, чтобы можно было
+        переиспользовать из ``execute_music_code`` / ``stop_all`` без
+        дублирования byte-packing логики. Раньше ``execute_music_code``
+        собирал ``/g_new`` руками bytearray-ом, что (а) дублировало код
+        и (б) легко ломалось при изменении формата.
+
+        Issue #778 (deployment critical_log ``FAILURE IN SERVER /g_new
+        negative node IDs are reserved``): между ``/g_freeAll`` и
+        ``/g_new`` нужна пауза ≥50ms — UDP fire-and-forget, scsynth не
+        успевает освободить ID Group 1, и Renardo Player-ы присылают
+        ``/s_new`` с target_id=1, которого ещё нет. Пауза лечит race
+        condition без изменения семантики (свободные ноды умирают
+        сами, мы просто даём scsynth обработать free до пересоздания
+        Group).
+        """
+        msg = bytearray()
+        addr_bytes = address.encode() + b"\x00"
+        while len(addr_bytes) % 4:
+            addr_bytes += b"\x00"
+        types = b"," + b"".join(b"i" if isinstance(a, int) else b"f" for a in args) + b"\x00"
+        while len(types) % 4:
+            types += b"\x00"
+        msg.extend(addr_bytes)
+        msg.extend(types)
+        for a in args:
+            if isinstance(a, int):
+                msg.extend(struct.pack(">i", a))
+            elif isinstance(a, float):
+                msg.extend(struct.pack(">f", a))
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.sendto(bytes(msg), (self.SC_HOST, self.SC_PORT))
+
     # ------------------------------------------------------------------
     # Code safety filter
     # ------------------------------------------------------------------
 
     def _filter_code(self, code: str) -> Tuple[bool, str]:
         """Проверить код на наличие опасных конструкций.
+
+        Двухслойная проверка:
+
+        1. Текстовый blocklist (``_BLOCKED_TOKENS``) — быстрый отсев
+           очевидных ``import`` / ``os`` / ``eval``.
+        2. AST-проход (:meth:`_filter_code_ast`) — закрывает классические
+           обходы текстового фильтра: доступ к dunder-атрибутам
+           (``__class__`` / ``__globals__`` / ``__subclasses__``) и
+           ``getattr``/``setattr`` с вычисляемым (собранным из строк)
+           именем атрибута. Литеральные ``setattr(Clock, "bpm", 170)``
+           остаются разрешены — они нужны для ``Clock.future()``.
 
         Args:
             code: Строка кода для проверки.
@@ -476,7 +721,131 @@ class MusicManager:
         match = _BLOCKED_TOKENS.search(code)
         if match:
             return False, f"Запрещённый токен в коде: '{match.group()}'"
+        return self._filter_code_ast(code)
+
+    @staticmethod
+    def _filter_code_ast(code: str) -> Tuple[bool, str]:
+        """AST-слой фильтра безопасности (см. :meth:`_filter_code`).
+
+        Текстовый blocklist сравнивает слова с исходником, поэтому его
+        обходит любое имя, собранное во время выполнения
+        (``getattr(x, "__cla" + "ss__")``) или добытое через dunder-цепочку
+        (``().__class__.__subclasses__()``). Здесь мы смотрим на реальную
+        структуру кода, а не на текст.
+
+        Args:
+            code: Строка кода для проверки.
+
+        Returns:
+            (is_safe, error_message) — (True, "") если код безопасен.
+        """
+        try:
+            tree = ast.parse(code)
+        except SyntaxError as exc:
+            return False, f"Синтаксическая ошибка в коде: {exc.msg}"
+
+        for node in ast.walk(tree):
+            # ``().__class__`` / ``p1.__globals__`` — цепочка побега из
+            # песочницы всегда проходит через dunder-атрибут.
+            if isinstance(node, ast.Attribute) and _is_dunder(node.attr):
+                return False, f"Запрещённый доступ к dunder-атрибуту: '{node.attr}'"
+            if isinstance(node, ast.Name) and _is_dunder(node.id):
+                return False, f"Запрещённое dunder-имя: '{node.id}'"
+            # ``getattr(x, name)`` с невычислимым именем — это обход
+            # текстового фильтра. Литеральное имя разрешаем (но не dunder).
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id in _LITERAL_ATTR_BUILTINS and len(node.args) >= 2:
+                    attr_arg = node.args[1]
+                    if not isinstance(attr_arg, ast.Constant) or not isinstance(
+                        attr_arg.value, str
+                    ):
+                        return False, (
+                            f"'{node.func.id}' допустим только со строковым "
+                            "литералом в качестве имени атрибута"
+                        )
+                    if _is_dunder(attr_arg.value):
+                        return False, (
+                            f"Запрещённый доступ к dunder-атрибуту: "
+                            f"'{attr_arg.value}'"
+                        )
         return True, ""
+
+    # ------------------------------------------------------------------
+    # Issue #1016 — music-quality guardrail (dramaturgy validator)
+    # ------------------------------------------------------------------
+
+    def _validate_music_code(self, code: str) -> Tuple[List[str], List[str]]:
+        """Проверить музыкальное качество кода перед отправкой в Renardo.
+
+        Отличается от :meth:`_filter_code` (безопасность): этот валидатор
+        ловит *музыкальные* ошибки LLM, из-за которых трек звучит как
+        статичный луп (issue #1016):
+
+        1. Абсолютные частоты (``freq=440`` / ``hz=220`` / ``midinote=69``)
+           — Renardo ожидает ступени (``p1 >> pluck([0,4,7])``), а не Hz.
+           → HARD error, выполнение блокируется.
+        2. ``dur=`` у каждого не-play плеера — без него паттерн играет
+           staccato-щелчками (дефолтный dur=1 с sus=0).
+           → WARNING (play() имеет собственный dur из паттерна).
+        3. (soft) Многоголосный трек без развивающих паттернов
+           (``.every`` / ``Pvar`` / ``linvar`` / ``Clock.future``)
+           — статичный повтор 4-8 нот.
+           → WARNING, чтобы LLM исправила до того, как юзер услышит.
+
+        Returns:
+            (errors, warnings) — списки строк. errors блокируют выполнение,
+            warnings добавляются в result message (LLM их увидит).
+        """
+        errors: List[str] = []
+        warnings: List[str] = []
+
+        # 1. Абсолютные частоты — жёсткий запрет (только ступени).
+        freq_match = _ABSOLUTE_FREQ_RE.search(code)
+        if freq_match:
+            errors.append(
+                "Абсолютные частоты запрещены (Renardo ожидает ступени): "
+                f"'{freq_match.group(0)}'. Используй степени, например "
+                "p1 >> pluck([0,4,7]) или p1 >> pluck([0,4,7], oct=3)."
+            )
+
+        # 1b. chop= (не ноль) — щелчки на 16 kHz DAC вместо sidechain.
+        if _CHOP_RE.search(code):
+            errors.append(
+                "chop= запрещён — на 16 kHz DAC даёт щелчки, а не sidechain. "
+                "Для дакинга используй amplify=var([1,0.3],[0.5,0.5])."
+            )
+
+        # 1c. spack= с ненулевым паком — сырые глитчевые сэмплы.
+        if _SPACK_NONZERO_RE.search(code):
+            errors.append(
+                "spack=1 (пак 1_pitchglitch_samples) запрещён — сырые "
+                "глитчевые сэмплы звучат как «звук из базы». Используй "
+                "дефолтный пак (без spack=) или sample=P[0,1,2,3]."
+            )
+
+        # 2. dur= у каждого не-play плеера — soft warning.
+        players = list(_PLAYER_LINE_RE.finditer(code))
+        for m in players:
+            player_name, synth, args = m.group(1), m.group(2), m.group(3)
+            if synth == "play":
+                continue  # play() имеет dur из строки паттерна
+            if "dur" not in args:
+                warnings.append(
+                    f"У '{player_name} >> {synth}(...)' нет dur= — паттерн "
+                    "будет звучать как staccato-щелчки. Добавь dur (например "
+                    "dur=0.5 или dur=[0.5,0.25])."
+                )
+
+        # 3. Многоголосный трек без развития — soft warning.
+        if len(players) >= 2 and not _DEV_PATTERN_RE.search(code):
+            warnings.append(
+                "В коде нет развивающих паттернов (.every/Pvar/linvar/"
+                "Clock.future) — трек будет звучать как статичный луп из "
+                "4-8 нот. Добавь хотя бы один: .every(4, 'stutter'), "
+                "lpf=linvar([500,4000], 16) или Pvar-гармонию."
+            )
+
+        return errors, warnings
 
     def _cap_amp(self, code: str) -> str:
         """Ограничить громкость/октаву в коде до безопасных пределов.
@@ -603,6 +972,19 @@ class MusicManager:
         if not is_safe:
             return {"success": False, "error": filter_error}
 
+        # Issue #1016 — music-quality guardrail: блокируем абсолютные
+        # частоты (только ступени), предупреждаем про dur= и статичные
+        # лупы. errors → код НЕ уходит в Renardo; warnings → LLM увидит
+        # их в result message и исправит следующим вызовом.
+        quality_errors, quality_warnings = self._validate_music_code(code)
+        if quality_errors:
+            return {
+                "success": False,
+                "error": "⛔ Код отклонён музыкальным валидатором: "
+                + " ".join(quality_errors),
+                "code": code,
+            }
+
         # 🔴 FIX (live 11:41 «цоканье»): автозамена pianovel/piano → rhpiano
         # (обе используют MdaPiano физмодель — цокает/щёлкает; rhpiano —
         # компилируемый и чистый). LLM продолжает писать pianovel несмотря
@@ -699,6 +1081,12 @@ class MusicManager:
             self._renardo_context["__duration_sec"] = clamped
             self._renardo_context["__bpm"] = current_bpm
 
+        # 🔴 FIX (live 13.08): предзагружаем сэмпл-буферы для play("...")
+        # ДО exec — иначе первая запланированная нота бьёт в PlayBuf, пока
+        # scsynth ещё читает файл в буфер (Buffer UGen: no buffer data),
+        # и на старте музыки слышен резкий свист/хруст (xrun-бурст).
+        self._prewarm_sample_buffers(code)
+
         try:
             exec(code, self._renardo_context)  # noqa: S102
         except Exception as exc:
@@ -706,22 +1094,27 @@ class MusicManager:
 
         if has_clock_clear:
             # Убиваем старые SC-ноды ПОСЛЕ того как новые паттерны зарегистрированы
-            osc_freeall = b"/g_freeAll\x00\x00,i\x00\x00\x00\x00\x00\x01"
             try:
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
-                    _s.sendto(osc_freeall, (self.SC_HOST, self.SC_PORT))
+                self._send_osc_raw("/g_freeAll", 1)
             except Exception:
                 pass  # если SC недоступен — не критично, старые ноды умрут сами
-            # Пересоздаём Group 1 — renardo всегда отправляет ноты в эту группу
-            import struct as _struct
-            msg_gnew = bytearray()
-            for part in [b"/g_new\x00\x00", b",iii\x00\x00\x00\x00"]:
-                msg_gnew.extend(part)
-            for v in [1, 0, 0]:
-                msg_gnew.extend(_struct.pack(">i", v))
+            # Пауза между /g_freeAll и /g_new обязательна (issue #778):
+            # UDP — fire-and-forget, scsynth обрабатывает /g_freeAll
+            # асинхронно и не освобождает ID Group 1 мгновенно. Без паузы
+            # наш /g_new (или любой /s_new от Renardo Player-а, который
+            # попытается вставить ноту в Group 1) приходит в scsynth, когда
+            # ID ещё занят → "FAILURE IN SERVER /g_new negative node IDs are
+            # reserved" в логах supercollider (старый баг, был
+            # замаскирован тем, что renardo при инициализации сначала
+            # пересоздаёт Group, и в среднем прокатывало). 50ms достаточно
+            # для scsynth обработать free и освободить ID.
             try:
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
-                    _s.sendto(bytes(msg_gnew), (self.SC_HOST, self.SC_PORT))
+                time.sleep(0.05)
+            except Exception:
+                pass
+            # Пересоздаём Group 1 — renardo всегда отправляет ноты в эту группу
+            try:
+                self._send_osc_raw("/g_new", 1, 0, 0)
             except Exception:
                 pass
 
@@ -738,7 +1131,100 @@ class MusicManager:
         if self._music_session_active_since is None:
             self._music_session_active_since = now
 
+        # Issue #1016 — quality warnings surfaced to the LLM so it can fix
+        # them on the next call (e.g. add dur=, add a developing pattern).
+        if quality_warnings:
+            return {
+                "success": True,
+                "message": "Код выполнен успешно. ⚠️ " + " ".join(quality_warnings),
+                "code": code,
+            }
+
         return {"success": True, "message": "Код выполнен успешно", "code": code}
+
+    def _prewarm_sample_buffers(self, code: str) -> None:
+        """Pre-allocate sample buffers for ``play("...")`` symbols.
+
+        Live 13.08: ``play("x-o-")`` стартовал в тот же тик, что и
+        ``/b_allocRead`` — scsynth логировал ``Buffer UGen: no buffer
+        data`` и на старте музыки слышался резкий свист/xrun-бурст.
+        Renardo кэширует буферы в ``Samples`` (BufferManager), поэтому
+        предзагрузка до ``exec`` — это cache-hit и для самого renardo.
+
+        Args:
+            code: FoxDot-код, который сейчас выполнится.
+        """
+        try:
+            samples = self._renardo_context.get("Samples")
+            if samples is None:
+                return
+            for match in _PLAY_SYMBOLS_RE.finditer(code):
+                for symbol in match.group(1):
+                    # "-" — пауза (rest), пробел — разделитель; сэмплов нет.
+                    if symbol.isspace() or symbol == "-":
+                        continue
+                    try:
+                        samples.getBufferFromSymbol(symbol, 0)
+                    except Exception:  # noqa: BLE001 — символ может не иметь сэмпла
+                        continue
+        except Exception:  # noqa: BLE001 — предзагрузка не должна ломать exec
+            return
+
+    def _resolve_pattern_name(self, pattern_name: str) -> Tuple[bool, str]:
+        """Проверить имя паттерна по whitelist перед остановкой.
+
+        Разрешены только: (а) встроенные плееры Renardo (d1-d9, p1-p9,
+        s1-s9, l1-l9) и (б) имена, которые мы сами зарегистрировали через
+        :meth:`execute_code`. Всё остальное — включая попытки протащить
+        код (``p1.stop(); __import__('os')...``) — отклоняется.
+
+        Args:
+            pattern_name: Имя из tool-call-а LLM.
+
+        Returns:
+            (is_valid, error_message) — (True, "") если имя допустимо.
+        """
+        if not isinstance(pattern_name, str) or not _PATTERN_NAME_RE.match(
+            pattern_name
+        ):
+            return False, (
+                "Недопустимое имя паттерна — ожидается идентификатор "
+                "вида 'p1' или 'bass'."
+            )
+        known = (
+            _RENARDO_PLAYER_NAMES
+            | set(self._active_patterns)
+            | set(self._pattern_history)
+        )
+        if pattern_name not in known:
+            if self._active_patterns:
+                available = ", ".join(sorted(self._active_patterns))
+                return False, (
+                    f"Неизвестный паттерн '{pattern_name}'. "
+                    f"Активны: {available}."
+                )
+            return False, (
+                f"Неизвестный паттерн '{pattern_name}' — "
+                "активных паттернов нет."
+            )
+        return True, ""
+
+    def _call_player_stop(self, pattern_name: str) -> None:
+        """Вызвать ``.stop()`` у плеера Renardo без ``exec()``.
+
+        Имя уже прошло :meth:`_resolve_pattern_name`, но мы всё равно
+        достаём объект через ``dict.get`` и вызываем метод напрямую —
+        так строка от LLM никогда не становится кодом.
+
+        Args:
+            pattern_name: Проверенное имя плеера.
+        """
+        player = self._renardo_context.get(pattern_name)
+        if player is None:
+            return
+        stop = getattr(player, "stop", None)
+        if callable(stop):
+            stop()
 
     def stop_pattern(self, pattern_name: str) -> Dict[str, Any]:
         """Остановить именованный паттерн.
@@ -751,19 +1237,29 @@ class MusicManager:
         about), but we tell the caller that music is unavailable so the LLM
         can short-circuit further tool calls.
 
+        Security: ``pattern_name`` приходит от LLM (и, через отравленный
+        результат ``search_web``, потенциально от третьей стороны). Раньше
+        оно подставлялось в ``f"{pattern_name}.stop()"`` и уходило в
+        ``exec()`` — то есть было прямым RCE. Теперь имя проверяется по
+        whitelist (:meth:`_resolve_pattern_name`), а сам плеер достаётся
+        поиском по namespace-у Renardo, без сборки и выполнения кода.
+
         Args:
             pattern_name: Имя паттерна/плеера (d1, p1, bass и т.д.).
 
         Returns:
             dict с ключами ``success`` и ``message`` (или ``error``).
         """
-        stop_code = f"{pattern_name}.stop()"
+        name_ok, name_error = self._resolve_pattern_name(pattern_name)
+        if not name_ok:
+            return {"success": False, "error": name_error}
+
         stop_error: Optional[str] = None
         degraded = self._require_healthy and not self.is_music_stack_healthy()
 
         if not degraded and self._renardo_available and self._check_supercollider():
             try:
-                exec(stop_code, self._renardo_context)  # noqa: S102
+                self._call_player_stop(pattern_name)
             except Exception as exc:  # noqa: BLE001
                 # Renardo may not know this player (e.g. we never started it),
                 # or SC is degraded. Log and continue: we still want to drop
@@ -861,10 +1357,8 @@ class MusicManager:
                 pass
 
             # Шаг 4: убить все синтезаторы в SuperCollider (/g_freeAll на Group 1)
-            osc_freeall = b"/g_freeAll\x00\x00,i\x00\x00\x00\x00\x00\x01"
             try:
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
-                    _s.sendto(osc_freeall, (self.SC_HOST, self.SC_PORT))
+                self._send_osc_raw("/g_freeAll", 1)
             except Exception:
                 pass  # если SC недоступен — не страшно, Clock уже очищен
 
@@ -1228,6 +1722,23 @@ class StopMusicTool(MCPTool):
     def __init__(self, node, manager: MusicManager) -> None:
         super().__init__(node)
         self._manager = manager
+        # Issue #1392 follow-up: остановка сгенерированного mp3-трека в
+        # sound_node. Graceful-degrade если publisher недоступен (тесты).
+        self._sound_stop_pub = None
+        self._generated_music_state_pub = None
+        try:
+            from std_msgs.msg import String
+
+            if hasattr(node, "create_publisher"):
+                self._sound_stop_pub = node.create_publisher(
+                    String, "/voice/sound/stop", 10
+                )
+                self._generated_music_state_pub = node.create_publisher(
+                    String, "/voice/generated_music/state", 10
+                )
+        except Exception:  # noqa: BLE001 — unit tests / minimal install
+            self._sound_stop_pub = None
+            self._generated_music_state_pub = None
 
     @property
     def name(self) -> str:
@@ -1276,6 +1787,8 @@ class StopMusicTool(MCPTool):
             # Issue 989 Fix C: немедленно сообщаем audio_node, что музыка
             # остановлена — VAD threshold возвращается к обычному.
             self._notify_music_state()
+            # Issue #1392 follow-up: останавливаем и mp3-трек в sound_node.
+            self._notify_sound_stop()
             return MCPToolResult(success=True, data=result, message=result["message"])
         return MCPToolResult(success=False, error=result["error"])
 
@@ -1290,6 +1803,22 @@ class StopMusicTool(MCPTool):
             publisher()
         except Exception as exc:  # noqa: BLE001
             self.log_warning(f"Не удалось опубликовать music_state: {exc}")
+
+    def _notify_sound_stop(self) -> None:
+        """Остановить mp3-трек в sound_node + сбросить состояние (issue #1392)."""
+        try:
+            from std_msgs.msg import String
+
+            if self._sound_stop_pub is not None:
+                msg = String()
+                msg.data = "STOP"
+                self._sound_stop_pub.publish(msg)
+            if self._generated_music_state_pub is not None:
+                state = String()
+                state.data = json.dumps({"status": "idle"})
+                self._generated_music_state_pub.publish(state)
+        except Exception as exc:  # noqa: BLE001
+            self.log_warning(f"Не удалось опубликовать sound_stop: {exc}")
 
 
 class SetVibePresetTool(MCPTool):

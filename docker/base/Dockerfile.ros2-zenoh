@@ -21,18 +21,25 @@ RUN if [ -n "$APT_PROXY" ]; then \
         fi \
     fi
 
-# Установка Zenoh middleware и минимальных зависимостей
-RUN apt-get update && \
-    apt-get install -y \
-        # Zenoh middleware для ROS 2
-        ros-humble-rmw-zenoh-cpp \
-        # Базовые утилиты
-        git \
-        wget \
-        curl \
-        python3-pip \
-        # Очистка кэша для уменьшения размера образа
-        && rm -rf /var/lib/apt/lists/*
+# Установка Zenoh middleware и минимальных зависимостей.
+# Пин rmw_zenoh_cpp на 0.1.8 (zenoh 1.6.2): 0.1.9 (июль 2026) поднимает zenoh-клиент
+# до 1.8.0, что ломает транспорт (rmw_zenoh#1031 "early eof" → cmd_vel виснет).
+# В основном ROS-репозитории теперь только 0.1.9, поэтому качаем 0.1.8 .deb напрямую
+# из snapshot-репозитория (2026-03-29).
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y curl ca-certificates; \
+    arch=$(dpkg --print-architecture); \
+    case "$arch" in \
+      amd64) rmw_ts=20260304.205755; vnd_ts=20260304.075447;; \
+      arm64) rmw_ts=20260307.172628; vnd_ts=20260307.134822;; \
+      *) echo "unsupported arch: $arch"; exit 1;; \
+    esac; \
+    curl -fsSL -o /tmp/rmw-zenoh.deb "http://snapshots.ros.org/humble/2026-03-29/ubuntu/pool/main/r/ros-humble-rmw-zenoh-cpp/ros-humble-rmw-zenoh-cpp_0.1.8-1jammy.${rmw_ts}_${arch}.deb"; \
+    curl -fsSL -o /tmp/zenoh-vendor.deb "http://snapshots.ros.org/humble/2026-03-29/ubuntu/pool/main/r/ros-humble-zenoh-cpp-vendor/ros-humble-zenoh-cpp-vendor_0.1.8-1jammy.${vnd_ts}_${arch}.deb"; \
+    apt-get install -y /tmp/rmw-zenoh.deb /tmp/zenoh-vendor.deb git wget python3-pip; \
+    rm -f /tmp/rmw-zenoh.deb /tmp/zenoh-vendor.deb; \
+    rm -rf /var/lib/apt/lists/*
 
 # Удаляем APT прокси конфигурацию после установки пакетов
 RUN rm -f /etc/apt/apt.conf.d/02proxy

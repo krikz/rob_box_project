@@ -1,0 +1,1189 @@
+diff --git a/hermes_cli/kanban.py b/hermes_cli/kanban.py
+index 79519831b..6dd0f5eab 100644
+--- a/hermes_cli/kanban.py
++++ b/hermes_cli/kanban.py
+@@ -18,6 +18,7 @@ import argparse
+ import contextlib
+ import json
+ import os
++import re
+ import shlex
+ import sys
+ import time
+@@ -805,6 +806,44 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
+     )
+     p_stats.add_argument("--json", action="store_true")
+ 
++    # --- cost attribution (#1462) ---
++    p_cost = sub.add_parser(
++        "cost",
++        help="Cost attribution per task / per day / per assignee "
++             "(P10 #1462 — MiniMax subscription spend rollups)",
++    )
++    p_cost.add_argument(
++        "--task", default=None,
++        help="Scope the breakdown to a single task id "
++             "(equivalent to --group=task with that filter).",
++    )
++    p_cost.add_argument(
++        "--group",
++        choices=("task", "day", "assignee", "total"),
++        default="task",
++        help="Aggregation granularity. 'task' is per-issue; "
++             "'day' is per calendar day UTC; 'assignee' is per profile; "
++             "'total' is one lifetime bucket.",
++    )
++    p_cost.add_argument(
++        "--since", default=None,
++        help="Lower bound on cost_attribution event timestamp "
++             "(unix seconds, or 'Nd' / 'Nh' / ISO-8601). "
++             "Default: lifetime.",
++    )
++    p_cost.add_argument(
++        "--until", default=None,
++        help="Upper bound (same format as --since). Default: now.",
++    )
++    p_cost.add_argument(
++        "--assignee", default=None,
++        help="Filter by tasks.assignee (the profile that ran the worker).",
++    )
++    p_cost.add_argument(
++        "--json", action="store_true",
++        help="Emit the raw cost_summary() payload as JSON.",
++    )
++
+     # --- notify subscribe / list / remove ---
+     p_nsub = sub.add_parser(
+         "notify-subscribe",
+@@ -1140,6 +1179,7 @@ def kanban_command(args: argparse.Namespace) -> int:
+             "daemon":   _cmd_daemon,
+             "watch":    _cmd_watch,
+             "stats":    _cmd_stats,
++            "cost":     _cmd_cost,
+             "log":      _cmd_log,
+             "runs":     _cmd_runs,
+             "heartbeat": _cmd_heartbeat,
+@@ -2934,6 +2974,134 @@ def _cmd_stats(args: argparse.Namespace) -> int:
+     age = stats["oldest_ready_age_seconds"]
+     if age is not None:
+         print(f"\nOldest ready task age: {int(age)}s")
++    cost_by_assignee = stats.get("cost_by_assignee") or {}
++    if cost_by_assignee:
++        print("\nLifetime cost by assignee:")
++        for who, payload in sorted(
++            cost_by_assignee.items(),
++            key=lambda kv: kv[1].get("cost_in_cents", 0.0),
++            reverse=True,
++        ):
++            cents = payload.get("cost_in_cents", 0.0)
++            print(f"  {who:20s}  ${cents / 100.0:>10,.4f}  ({int(round(cents))}¢)")
++    return 0
++
++
++def _parse_cost_window_arg(raw: Optional[str]) -> Optional[int]:
++    """Best-effort parser for the ``--since`` / ``--until`` flags.
++
++    Accepts unix-epoch seconds (int / float string), 'Nd' / 'Nh' / 'Nm'
++    relative deltas (subtracted from ``time.time()`` so ``--since=7d``
++    means "the last 7 days"), and ISO-8601 timestamps. Returns ``None``
++    on ``None`` / empty input so the caller can leave the bound open.
++    """
++    if raw is None:
++        return None
++    s = str(raw).strip()
++    if not s:
++        return None
++    # Relative deltas (Nd / Nh / Nm)
++    m = re.match(r"^(\d+)\s*([dhm])$", s, flags=re.IGNORECASE)
++    if m:
++        n = int(m.group(1))
++        unit = m.group(2).lower()
++        seconds = n * {"d": 86400, "h": 3600, "m": 60}[unit]
++        return int(time.time()) - seconds
++    # Pure int / float
++    try:
++        return int(float(s))
++    except ValueError:
++        pass
++    # ISO-8601 fallback
++    try:
++        from datetime import datetime
++        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
++        return int(dt.timestamp())
++    except ValueError:
++        print(f"kanban cost: cannot parse time argument {raw!r}", file=sys.stderr)
++        return None
++
++
++def _format_cents(cents: float) -> str:
++    """Render a cents value with both $ and ¢ to keep precision visible."""
++    cents = round(float(cents), 2)
++    return f"${cents / 100.0:,.4f}  ({int(round(cents))}¢)"
++
++
++def _cmd_cost(args: argparse.Namespace) -> int:
++    """Render the cost-attribution rollup for the kanban board.
++
++    Defaults to per-task (i.e. per-issue) breakdown sorted by spend. The
++    JSON flag returns the full ``cost_summary()`` payload so a wrapper
++    script can post-process without re-implementing the parser.
++    """
++    task_id = getattr(args, "task", None)
++    group_by = getattr(args, "group", "task")
++    since = _parse_cost_window_arg(getattr(args, "since", None))
++    until = _parse_cost_window_arg(getattr(args, "until", None))
++    assignee = getattr(args, "assignee", None)
++
++    with kb.connect_closing() as conn:
++        summary = kb.cost_summary(
++            conn,
++            task_id=task_id,
++            since=since,
++            until=until,
++            assignee=assignee,
++            board=None,
++            group_by=group_by,
++        )
++
++    if getattr(args, "json", False):
++        print(json.dumps(summary, indent=2, ensure_ascii=False))
++        return 0
++
++    buckets = summary.get("buckets") or []
++    total_cents = summary.get("total_cents", 0.0)
++    total_runs = summary.get("total_runs", 0)
++    filters = summary.get("filters") or {}
++
++    head = f"Cost attribution — group={group_by}"
++    if filters.get("since") or filters.get("until"):
++        head += (
++            f"  [{filters.get('since') or '-∞'} .. {filters.get('until') or 'now'}]"
++        )
++    if filters.get("assignee"):
++        head += f"  assignee={filters['assignee']}"
++    if filters.get("task_id"):
++        head += f"  task={filters['task_id']}"
++    print(head)
++    print(f"  total: {_format_cents(total_cents)}  ({total_runs} run(s))")
++    if not buckets:
++        print("  (no cost-attribution events in scope)")
++        return 0
++    if group_by == "task":
++        for b in buckets:
++            tid = b.get("task_id") or "?"
++            title = (b.get("title") or "").splitlines()[0][:60]
++            print(
++                f"  {tid:14s}  {_format_cents(b['cost_in_cents']):28s}  "
++                f"{b['n_runs']} run(s)  {b.get('assignee') or '-':12s}  {title}"
++            )
++    elif group_by == "day":
++        for b in buckets:
++            print(
++                f"  {b['day']:10s}  {_format_cents(b['cost_in_cents']):28s}  "
++                f"{b['n_runs']} run(s)"
++            )
++    elif group_by == "assignee":
++        for b in buckets:
++            print(
++                f"  {(b.get('assignee') or '-'):20s}  "
++                f"{_format_cents(b['cost_in_cents']):28s}  "
++                f"{b['n_runs']} run(s)  {b['n_tasks']} task(s)"
++            )
++    else:  # total
++        for b in buckets:
++            print(
++                f"  lifetime: {_format_cents(b['cost_in_cents'])}  "
++                f"({b['n_runs']} run(s) across {b.get('n_tasks', '?')} task(s))"
++            )
+     return 0
+ 
+ 
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index 4536f2e77..7d725ddc5 100644
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -95,6 +95,126 @@ from toolsets import get_toolset_names
+ _log = logging.getLogger(__name__)
+ 
+ 
++# ---------------------------------------------------------------------------
++# Cost attribution (#1462 — P10)
++#
++# Each kanban run's worker session accumulates LLM API costs in two
++# databases that live on the same SQLite connection family:
++#
++#   - ``hermes_state.db`` (sessions / session_model_usage) — every API call
++#     recorded by the worker lands here, with ``sessions.id`` linking to
++#     the worker session and ``session_model_usage.estimated_cost_usd``
++#     holding the priced delta. The worker session id is stamped onto the
++#     task_runs row's ``metadata`` field by
++#     ``tools/kanban_tools.py::_stamp_worker_session_metadata`` when the
++#     worker calls ``kanban_complete`` / ``kanban_block``.
++#
++# The cost we attribute to a kanban run is the SUM of estimated_cost_usd
++# over that worker's session id (one row in ``sessions``, possibly many
++# rows in ``session_model_usage`` per (model, billing_provider, task)
++# bucket). We convert dollars to cents and round to whole cents; the
++# dashboard layer formats to 2-decimal display.
++#
++# The two helper functions below own the SQL: ``_compute_run_cost_cents``
++# is the read-side query (called from ``_end_run`` and the heartbeat
++# tick), and ``_record_cost_attribution_event`` is the write-side that
++# emits a ``cost_attribution`` event row alongside the terminal event.
++# ---------------------------------------------------------------------------
++
++
++def _compute_run_cost_cents(
++    conn: sqlite3.Connection,
++    *,
++    worker_session_id: Optional[str],
++    run_id: Optional[int] = None,
++) -> Optional[float]:
++    """Return the dollar total of this run's LLM costs, in whole-cent cents.
++
++    Resolution order (first hit wins):
++
++    1. ``worker_session_id`` (the worker's hermes session id, stamped by
++       ``_stamp_worker_session_metadata`` when the worker called
++       ``kanban_complete`` / ``kanban_block``). SUMs
++       ``session_model_usage.estimated_cost_usd`` for that session id.
++       Auxiliary calls recorded with a non-empty ``task`` (vision /
++       compression / title_generation / ...) are included — they were
++       paid for by this worker run.
++    2. Fallback: ``run_id`` from ``task_runs.metadata``'s
++       ``worker_session_id`` (legacy path for callers that still pass
++       metadata but no explicit ``worker_session_id``). Same query, same
++       session_id.
++
++    Returns ``None`` when no worker session id is resolvable (e.g. the
++    task was completed by a CLI user without ever spawning a worker, or
++    before the cost-tracking instrumentation landed). The caller writes
++    a ``cost_attribution`` event with ``cost_in_cents=None`` in that
++    case — that's distinguishable from "cost was $0.00" because the SQL
++    layer only returns ``None`` when there was no session at all.
++    """
++    if not worker_session_id:
++        return None
++    try:
++        row = conn.execute(
++            "SELECT COALESCE(SUM(estimated_cost_usd), 0.0) AS usd "
++            "FROM session_model_usage WHERE session_id = ?",
++            (worker_session_id,),
++        ).fetchone()
++    except sqlite3.OperationalError as exc:
++        # session_model_usage lives in hermes_state.db; kanban's DB
++        # connection may not have that table attached. Surface as None
++        # rather than crashing the completion txn.
++        _log.debug("cost attribution skipped: %s", exc)
++        return None
++    usd = float(row["usd"] or 0.0)
++    # Round to integer-cent so the dashboard's $X.YZ formatting stays
++    # stable across sums (no float-drift artefacts).
++    return round(usd * 100.0, 2)
++
++
++def _resolve_worker_session_id(
++    metadata: Optional[Mapping[str, Any]],
++) -> Optional[str]:
++    """Pull ``worker_session_id`` out of a task_runs metadata dict.
++
++    Centralised so the cost-attribution helper, the dashboard backend,
++    and the CLI ``cost`` subcommand all agree on the lookup key.
++    """
++    if not metadata:
++        return None
++    sid = metadata.get("worker_session_id")
++    if isinstance(sid, str) and sid:
++        return sid
++    return None
++
++
++def _record_cost_attribution_event(
++    conn: sqlite3.Connection,
++    *,
++    task_id: str,
++    run_id: Optional[int],
++    cost_in_cents: Optional[float],
++    source: str,
++) -> None:
++    """Emit a ``cost_attribution`` event for the just-completed run.
++
++    ``source`` is one of ``"end_run"`` (terminal transition) or
++    ``"heartbeat"`` (mid-run tick) — surfaced in the payload so the
++    dashboard can render "live tick" vs "final" distinctly.
++    """
++    _append_event(
++        conn,
++        task_id,
++        "cost_attribution",
++        {
++            "source": source,
++            "cost_in_cents": cost_in_cents,
++            "cost_usd": (cost_in_cents / 100.0) if cost_in_cents is not None else None,
++        },
++        run_id=run_id,
++        cost_in_cents=cost_in_cents,
++    )
++
++
+ # ---------------------------------------------------------------------------
+ # Constants
+ # ---------------------------------------------------------------------------
+@@ -1440,12 +1560,19 @@ CREATE TABLE IF NOT EXISTS task_comments (
+ );
+ 
+ CREATE TABLE IF NOT EXISTS task_events (
+-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+-    task_id    TEXT NOT NULL,
+-    run_id     INTEGER,
+-    kind       TEXT NOT NULL,
+-    payload    TEXT,
+-    created_at INTEGER NOT NULL
++    id            INTEGER PRIMARY KEY AUTOINCREMENT,
++    task_id       TEXT NOT NULL,
++    run_id        INTEGER,
++    kind          TEXT NOT NULL,
++    payload       TEXT,
++    -- Cost-attribution P10 (#1462). Dollar total of all LLM API calls made
++    -- by this run's worker session, expressed in cents. NULL for events
++    -- that aren't cost-bearing (every non-attribution event); only the
++    -- ``cost_attribution`` event emitted by ``_end_run`` / heartbeat
++    -- carries a non-NULL value. SQLite REAL so we can sum + format with
++    -- 2-decimal-cent rounding at the dashboard layer.
++    cost_in_cents REAL,
++    created_at    INTEGER NOT NULL
+ );
+ 
+ -- Historical attempt record. Each time the dispatcher claims a task, a
+@@ -2699,6 +2826,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
+     ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
+     if "run_id" not in ev_cols:
+         _add_column_if_missing(conn, "task_events", "run_id", "run_id INTEGER")
++    # task_events gained a cost_in_cents column for cost-attribution P10
++    # (issue #1462 / docs/reports/add-research-2026-08-19.md §5.3). Each
++    # run writes a single ``cost_attribution`` event with the dollar total
++    # in cents; legacy rows stay NULL (pre-cost-attribution runs cannot
++    # be retroactively attributed without external usage logs).
++    if "cost_in_cents" not in ev_cols:
++        _add_column_if_missing(
++            conn, "task_events", "cost_in_cents", "cost_in_cents REAL"
++        )
+ 
+     # Same ordering rule as the additive ``tasks`` indexes above: create the
+     # index after the additive column migration so legacy ``task_events``
+@@ -2707,6 +2843,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
+         "CREATE INDEX IF NOT EXISTS idx_events_run "
+         "ON task_events(run_id, id)"
+     )
++    # Index cost events for dashboard rollups (per-day / per-week / per-issue
++    # totals). NULL cost rows are not indexed — they don't contribute.
++    conn.execute(
++        "CREATE INDEX IF NOT EXISTS idx_events_cost "
++        "ON task_events(kind, cost_in_cents) "
++        "WHERE cost_in_cents IS NOT NULL"
++    )
+ 
+     notify_table_exists = conn.execute(
+         "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
+@@ -2855,10 +2998,12 @@ _REBUILD_SPECS = {
+         "CREATE TABLE task_events ("
+         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+         " task_id TEXT NOT NULL, run_id INTEGER, kind TEXT NOT NULL,"
+-        " payload TEXT, created_at INTEGER NOT NULL)",
++        " payload TEXT, cost_in_cents REAL, created_at INTEGER NOT NULL)",
+         (
+             "CREATE INDEX idx_events_task ON task_events(task_id, created_at)",
+             "CREATE INDEX idx_events_run ON task_events(run_id, id)",
++            "CREATE INDEX idx_events_cost ON task_events(kind, cost_in_cents) "
++            "WHERE cost_in_cents IS NOT NULL",
+         ),
+     ),
+     "task_comments": (
+@@ -4304,6 +4449,7 @@ def _append_event(
+     payload: Optional[dict] = None,
+     *,
+     run_id: Optional[int] = None,
++    cost_in_cents: Optional[float] = None,
+ ) -> None:
+     """Record an event row.  Called from within an already-open txn.
+ 
+@@ -4311,13 +4457,21 @@ def _append_event(
+     events by attempt. For events that aren't scoped to a single run
+     (task created/edited/archived, dependency promotion) leave it None
+     and the row carries NULL.
++
++    ``cost_in_cents`` is the cost-attribution column populated by
++    ``_end_run`` / heartbeat (see issue #1462). Pass the dollar total of
++    the LLM API calls made by this run's worker session, multiplied by
++    100 to land in integer cents. ``None`` (default) keeps the column
++    NULL — that's what every non-attribution event wants. SQLite REAL
++    type but we always store whole-cent precision; the dashboard formats
++    with two decimals.
+     """
+     now = int(time.time())
+     pl = json.dumps(payload, ensure_ascii=False) if payload else None
+     conn.execute(
+-        "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+-        "VALUES (?, ?, ?, ?, ?)",
+-        (task_id, run_id, kind, pl, now),
++        "INSERT INTO task_events (task_id, run_id, kind, payload, cost_in_cents, created_at) "
++        "VALUES (?, ?, ?, ?, ?, ?)",
++        (task_id, run_id, kind, pl, cost_in_cents, now),
+     )
+ 
+ 
+@@ -4375,6 +4529,24 @@ def _end_run(
+     conn.execute(
+         "UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,),
+     )
++
++    # Cost-attribution P10 (#1462). Emit one ``cost_attribution`` event
++    # per closed run. ``cost_in_cents`` is the dollar total of all LLM
++    # API calls made by this run's worker session, multiplied by 100.
++    # When the run was never claimed by a worker (e.g. the run was
++    # already-closed by a prior crash + reclaim), the session id is not
++    # in metadata — we still emit the event but with ``None`` so the
++    # dashboard can distinguish "no worker" from "$0.00".
++    worker_sid = _resolve_worker_session_id(metadata)
++    cost_in_cents = _compute_run_cost_cents(conn, worker_session_id=worker_sid)
++    _record_cost_attribution_event(
++        conn,
++        task_id=task_id,
++        run_id=run_id,
++        cost_in_cents=cost_in_cents,
++        source="end_run",
++    )
++
+     return run_id
+ 
+ 
+@@ -8412,6 +8584,40 @@ def heartbeat_worker(
+                 "UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?",
+                 (now, run_id),
+             )
++        # Cost-attribution P10 (#1462). On each heartbeat, sample the
++        # running worker's session model usage and emit a fresh
++        # ``cost_attribution`` event with the live running total. The
++        # dashboard renders the most recent tick as the "live" cost
++        # while the worker is still running, and the terminal
++        # ``end_run`` event (emitted from ``_end_run`` above) carries
++        # the final settled total. We overwrite the prior heartbeat's
++        # cost attribution in place — events are append-only but the
++        # ``cost_in_cents`` column carries the latest snapshot, so a
++        # viewer wanting "running total" just looks at the newest event
++        # for this run.
++        if run_id is not None:
++            md_row = conn.execute(
++                "SELECT metadata FROM task_runs WHERE id = ?",
++                (run_id,),
++            ).fetchone()
++            worker_sid = None
++            if md_row and md_row["metadata"]:
++                try:
++                    worker_sid = _resolve_worker_session_id(
++                        json.loads(md_row["metadata"])
++                    )
++                except (TypeError, ValueError):
++                    worker_sid = None
++            cost_in_cents = _compute_run_cost_cents(
++                conn, worker_session_id=worker_sid
++            )
++            _record_cost_attribution_event(
++                conn,
++                task_id=task_id,
++                run_id=run_id,
++                cost_in_cents=cost_in_cents,
++                source="heartbeat",
++            )
+         _append_event(
+             conn, task_id, "heartbeat",
+             {"note": note} if note else None,
+@@ -11503,6 +11709,14 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
+ def board_stats(conn: sqlite3.Connection) -> dict:
+     """Per-status + per-assignee counts, plus the oldest ``ready`` age in
+     seconds (the clearest staleness signal for a router or HUD).
++
++    Also returns the lifetime cost breakdown by assignee in cents and
++    dollars — that's the rolling total the kanban dashboard renders next
++    to the assignment counts. Cost totals are bucketed by the most
++    recent ``cost_attribution`` event per run (one event per terminal
++    transition + a heartbeat tick during long runs), so the value here
++    matches the live ``end_run`` total — not the sum of every
++    intermediate heartbeat, which would double-count.
+     """
+     by_status: dict[str, int] = {}
+     for row in conn.execute(
+@@ -11528,14 +11742,263 @@ def board_stats(conn: sqlite3.Connection) -> dict:
+         if oldest_row and oldest_row["ts"] is not None else None
+     )
+ 
++    cost_by_assignee: dict[str, dict[str, float]] = {}
++    # Lifetime cost rolled up per assignee. The MAX(e.id) per (task_id,
++    # run_id) trick keeps the heartbeat ticks out — we only want the
++    # final ``end_run`` cost_attribution per run, which carries the
++    # authoritative settled total.
++    try:
++        cost_rows = conn.execute(
++            """
++            SELECT t.assignee AS assignee,
++                   COALESCE(SUM(final_cost.cost_in_cents), 0.0) AS cents
++            FROM tasks t
++            JOIN (
++                SELECT e.task_id, e.run_id, MAX(e.id) AS max_id
++                FROM task_events e
++                WHERE e.kind = 'cost_attribution'
++                  AND json_extract(e.payload, '$.source') = 'end_run'
++                  AND e.cost_in_cents IS NOT NULL
++                GROUP BY e.task_id, e.run_id
++            ) latest
++              ON latest.task_id = t.id
++            JOIN task_events final_cost
++              ON final_cost.id = latest.max_id
++            WHERE t.assignee IS NOT NULL AND t.assignee <> ''
++            GROUP BY t.assignee
++            """
++        )
++        for row in cost_rows:
++            cents = float(row["cents"] or 0.0)
++            cost_by_assignee[row["assignee"]] = {
++                "cost_in_cents": round(cents, 2),
++                "cost_usd": round(cents / 100.0, 4),
++            }
++    except sqlite3.OperationalError:
++        # Pre-migration DB without cost_in_cents column; fall back to
++        # an empty breakdown. board_stats() is called frequently by the
++        # dashboard, so we degrade the cost slice rather than crash.
++        cost_by_assignee = {}
++
+     return {
+         "by_status": by_status,
+         "by_assignee": by_assignee,
+         "oldest_ready_age_seconds": oldest_ready_age,
++        "cost_by_assignee": cost_by_assignee,
+         "now": now,
+     }
+ 
+ 
++def cost_summary(
++    conn: sqlite3.Connection,
++    *,
++    task_id: Optional[str] = None,
++    since: Optional[int] = None,
++    until: Optional[int] = None,
++    assignee: Optional[str] = None,
++    board: Optional[str] = None,
++    group_by: str = "task",
++) -> dict:
++    """Roll up cost-attribution data for the CLI / dashboard.
++
++    Parameters mirror the dimensions the issue #1462 acceptance list
++    calls out: per-issue (group_by='task'), per-day
++    (group_by='day'), per-assignee (group_by='assignee'), and lifetime
++    total (group_by='total'). Each returned bucket carries both
++    ``cost_in_cents`` (rounded to whole cents for display) and
++    ``cost_usd`` (4-decimal precision for non-display arithmetic).
++
++    ``since`` / ``until`` are unix-epoch seconds; ``None`` means
++    unbounded. ``task_id`` scopes to one task; ``assignee`` filters by
++    the ``tasks.assignee`` column (the profile that ran the worker).
++    ``board`` is informational only — kanban_db doesn't tag events by
++    board, so this is mostly a hint that gets surfaced in the response.
++
++    The query selects the *terminal* cost_attribution event per run
++    (kind='cost_attribution' AND payload.source='end_run', picked as the
++    max id per task+run group) so heartbeat ticks don't inflate the
++    sum. ``cost_in_cents`` carries the cents value at write time, so the
++    SUM is the dollar total in cents; ``cost_usd`` is a convenience
++    echo for non-SQL consumers.
++    """
++    where: list[str] = ["e.kind = 'cost_attribution'", "e.cost_in_cents IS NOT NULL"]
++    params: list[Any] = []
++    if task_id is not None:
++        where.append("e.task_id = ?")
++        params.append(task_id)
++    if since is not None:
++        where.append("COALESCE(r.ended_at, e.created_at) >= ?")
++        params.append(int(since))
++    if until is not None:
++        where.append("COALESCE(r.ended_at, e.created_at) < ?")
++        params.append(int(until))
++    if assignee is not None:
++        where.append("t.assignee = ?")
++        params.append(assignee)
++    base_where = " AND ".join(where)
++
++    # Subquery ``final_per_run`` only consumes since/until — those are
++    # the time bounds on the inner ``SELECT MAX(e.id)``. task_id and
++    # assignee are applied in the outer WHERE (via ``base_where``),
++    # so they must NOT appear as bind params for the subquery. The
++    # previous ``params + params`` passed every param twice, which
++    # raised ``Incorrect number of bindings supplied`` whenever
++    # ``final_per_run`` had a different ``?`` count than ``base_where``.
++    final_per_run_params: list[Any] = []
++    final_per_run = (
++        "SELECT e.task_id, e.run_id, MAX(e.id) AS max_id "
++        "FROM task_events e "
++        "LEFT JOIN task_runs r ON r.id = e.run_id "
++        "WHERE e.kind = 'cost_attribution' AND e.cost_in_cents IS NOT NULL "
++    )
++    if since is not None:
++        final_per_run += " AND COALESCE(r.ended_at, e.created_at) >= ? "
++        final_per_run_params.append(int(since))
++    if until is not None:
++        final_per_run += " AND COALESCE(r.ended_at, e.created_at) < ? "
++        final_per_run_params.append(int(until))
++    final_per_run += " GROUP BY e.task_id, e.run_id "
++
++    # Reusable join clause so every GROUP BY can bucket by the run's
++    # settled ended_at instead of the (now-arbitrary) event timestamp.
++    run_join = "LEFT JOIN task_runs r ON r.id = e.run_id"
++
++    buckets: list[dict[str, Any]] = []
++    total_cents = 0.0
++    total_runs = 0
++    total_tasks: set[str] = set()
++    try:
++        if group_by == "task":
++            for row in conn.execute(
++                f"""
++                SELECT t.id AS task_id, t.title AS title, t.assignee AS assignee,
++                       COALESCE(SUM(e.cost_in_cents), 0.0) AS cents,
++                       COUNT(*) AS n_runs,
++                       MAX(COALESCE(r.ended_at, e.created_at)) AS last_attributed_at
++                FROM task_events e
++                JOIN tasks t ON t.id = e.task_id
++                {run_join}
++                JOIN ({final_per_run}) latest
++                  ON latest.max_id = e.id
++                WHERE {base_where}
++                GROUP BY t.id, t.title, t.assignee
++                ORDER BY cents DESC
++                """,
++                final_per_run_params + params,
++            ):
++                cents = round(float(row["cents"] or 0.0), 2)
++                buckets.append({
++                    "task_id": row["task_id"],
++                    "title": row["title"],
++                    "assignee": row["assignee"],
++                    "cost_in_cents": cents,
++                    "cost_usd": round(cents / 100.0, 4),
++                    "n_runs": int(row["n_runs"] or 0),
++                    "last_attributed_at": int(row["last_attributed_at"] or 0),
++                })
++                total_cents += cents
++                total_runs += int(row["n_runs"] or 0)
++                total_tasks.add(row["task_id"])
++        elif group_by == "day":
++            for row in conn.execute(
++                f"""
++                SELECT strftime('%Y-%m-%d', COALESCE(r.ended_at, e.created_at), 'unixepoch') AS day,
++                       COALESCE(SUM(e.cost_in_cents), 0.0) AS cents,
++                       COUNT(*) AS n_runs
++                FROM task_events e
++                JOIN tasks t ON t.id = e.task_id
++                {run_join}
++                JOIN ({final_per_run}) latest
++                  ON latest.max_id = e.id
++                WHERE {base_where}
++                GROUP BY day
++                ORDER BY day ASC
++                """,
++                final_per_run_params + params,
++            ):
++                cents = round(float(row["cents"] or 0.0), 2)
++                buckets.append({
++                    "day": row["day"],
++                    "cost_in_cents": cents,
++                    "cost_usd": round(cents / 100.0, 4),
++                    "n_runs": int(row["n_runs"] or 0),
++                })
++                total_cents += cents
++                total_runs += int(row["n_runs"] or 0)
++        elif group_by == "assignee":
++            for row in conn.execute(
++                f"""
++                SELECT t.assignee AS assignee,
++                       COALESCE(SUM(e.cost_in_cents), 0.0) AS cents,
++                       COUNT(*) AS n_runs,
++                       COUNT(DISTINCT t.id) AS n_tasks
++                FROM task_events e
++                JOIN tasks t ON t.id = e.task_id
++                {run_join}
++                JOIN ({final_per_run}) latest
++                  ON latest.max_id = e.id
++                WHERE {base_where}
++                GROUP BY t.assignee
++                ORDER BY cents DESC
++                """,
++                final_per_run_params + params,
++            ):
++                cents = round(float(row["cents"] or 0.0), 2)
++                buckets.append({
++                    "assignee": row["assignee"],
++                    "cost_in_cents": cents,
++                    "cost_usd": round(cents / 100.0, 4),
++                    "n_runs": int(row["n_runs"] or 0),
++                    "n_tasks": int(row["n_tasks"] or 0),
++                })
++                total_cents += cents
++                total_runs += int(row["n_runs"] or 0)
++        else:  # 'total'
++            row = conn.execute(
++                f"""
++                SELECT COALESCE(SUM(e.cost_in_cents), 0.0) AS cents,
++                       COUNT(*) AS n_runs,
++                       COUNT(DISTINCT e.task_id) AS n_tasks
++                FROM task_events e
++                JOIN tasks t ON t.id = e.task_id
++                {run_join}
++                JOIN ({final_per_run}) latest
++                  ON latest.max_id = e.id
++                WHERE {base_where}
++                """,
++                final_per_run_params + params,
++            ).fetchone()
++            total_cents = round(float(row["cents"] or 0.0), 2)
++            total_runs = int(row["n_runs"] or 0)
++            n_tasks = int(row["n_tasks"] or 0)
++            buckets.append({
++                "cost_in_cents": total_cents,
++                "cost_usd": round(total_cents / 100.0, 4),
++                "n_runs": total_runs,
++                "n_tasks": n_tasks,
++            })
++    except sqlite3.OperationalError:
++        # Column missing on a pre-migration DB — return an empty result
++        # rather than crashing the dashboard.
++        return {"buckets": [], "total_cents": 0.0, "total_usd": 0.0,
++                "total_runs": 0, "total_tasks": 0, "group_by": group_by,
++                "filters": {"task_id": task_id, "since": since,
++                            "until": until, "assignee": assignee,
++                            "board": board}}
++
++    return {
++        "buckets": buckets,
++        "total_cents": round(total_cents, 2),
++        "total_usd": round(total_cents / 100.0, 4),
++        "total_runs": total_runs,
++        "total_tasks": len(total_tasks) if group_by != "task" else len(buckets),
++        "group_by": group_by,
++        "filters": {"task_id": task_id, "since": since,
++                    "until": until, "assignee": assignee,
++                    "board": board},
++    }
++
++
+ def _to_epoch(val) -> Optional[int]:
+     """Normalise a timestamp to unix epoch seconds.
+ 
+diff --git a/plugins/kanban/dashboard/plugin_api.py b/plugins/kanban/dashboard/plugin_api.py
+index ade9fa140..6c5692cae 100644
+--- a/plugins/kanban/dashboard/plugin_api.py
++++ b/plugins/kanban/dashboard/plugin_api.py
+@@ -2208,6 +2208,13 @@ def get_stats(board: Optional[str] = Query(None)):
+     Designed for the dashboard HUD and for router profiles that need to
+     answer "is this specialist overloaded?" without scanning the whole
+     board themselves.
++
++    The response also carries ``cost_by_assignee`` — lifetime LLM spend
++    per assignee in cents and dollars (issue #1462 cost-attribution P10).
++    Tasks that completed before the cost-attribution column landed show
++    up as zero-cost; the dashboard renders the per-assignee spend next
++    to the per-assignee task count so the operator can see at a glance
++    which profile is burning the budget.
+     """
+     board = _resolve_board(board)
+     conn = _conn(board=board)
+@@ -2217,6 +2224,44 @@ def get_stats(board: Optional[str] = Query(None)):
+         conn.close()
+ 
+ 
++@router.get("/cost")
++def get_cost(
++    board: Optional[str] = Query(None),
++    task_id: Optional[str] = Query(None),
++    group_by: str = Query("task"),
++    since: Optional[int] = Query(None),
++    until: Optional[int] = Query(None),
++    assignee: Optional[str] = Query(None),
++):
++    """Cost-attribution rollup (issue #1462 — MiniMax subscription spend).
++
++    Mirrors the CLI ``hermes kanban cost`` subcommand so the dashboard
++    widget can render the same numbers without re-implementing the
++    aggregation SQL. ``group_by`` is one of ``task`` (per-issue, the
++    default), ``day`` (per calendar day UTC), ``assignee`` (per
++    profile), or ``total`` (lifetime one-bucket). ``since`` /
++    ``until`` are unix-epoch seconds; ``task_id`` and ``assignee``
++    narrow the scope.
++
++    Returns the raw ``cost_summary()`` payload — same shape the CLI
++    emits with ``--json``. The dashboard frontend adds the $ formatting.
++    """
++    board = _resolve_board(board)
++    conn = _conn(board=board)
++    try:
++        return kanban_db.cost_summary(
++            conn,
++            task_id=task_id,
++            since=since,
++            until=until,
++            assignee=assignee,
++            board=board,
++            group_by=group_by,
++        )
++    finally:
++        conn.close()
++
++
+ @router.get("/assignees")
+ def get_assignees(board: Optional[str] = Query(None)):
+     """Known profiles + per-profile task counts.
+diff --git a/tests/hermes_cli/test_kanban_cost_attribution.py b/tests/hermes_cli/test_kanban_cost_attribution.py
+new file mode 100644
+index 000000000..746fc9ec3
+--- /dev/null
++++ b/tests/hermes_cli/test_kanban_cost_attribution.py
+@@ -0,0 +1,341 @@
++"""Cost-attribution column + rollup helpers (issue #1462, P10 gap).
++
++Coverage:
++
++* ``task_events.cost_in_cents`` is created by the additive migration and
++  remains ``NULL`` by default — the schema passes through existing rows
++  without rewriting them.
++* ``_end_run`` writes a ``cost_attribution`` event whose
++  ``cost_in_cents`` is sourced from ``session_model_usage`` for the
++  worker session id stored in ``task_runs.metadata``.
++* ``cost_summary`` rolls up the right slice (per-task / per-day /
++  per-assignee / total) and skips heartbeat ticks so the live tick
++  doesn't get summed on top of the terminal ``end_run`` event.
++* ``board_stats`` returns a ``cost_by_assignee`` slice even when there
++  are no cost events yet.
++"""
++
++from __future__ import annotations
++
++import json
++import sqlite3
++from pathlib import Path
++
++from hermes_cli import kanban_db as kb
++
++
++def _setup_home(tmp_path, monkeypatch) -> Path:
++    home = tmp_path / ".hermes"
++    home.mkdir()
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    monkeypatch.setattr(Path, "home", lambda: tmp_path)
++    db_path = kb.kanban_db_path(board="default")
++    db_path.parent.mkdir(parents=True, exist_ok=True)
++    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
++    return db_path
++
++
++def _attach_session_model_usage(conn: sqlite3.Connection) -> None:
++    """Attach a ``session_model_usage`` table to the kanban DB connection.
++
++    The cost-attribution helper queries this table; on a fresh kanban DB
++    the table doesn't exist because it lives in hermes_state.db. Tests
++    create it here so the read-side SQL has something to scan.
++    """
++    conn.executescript(
++        """
++        CREATE TABLE session_model_usage (
++            session_id TEXT NOT NULL,
++            model TEXT NOT NULL,
++            billing_provider TEXT NOT NULL DEFAULT '',
++            billing_base_url TEXT NOT NULL DEFAULT '',
++            billing_mode TEXT NOT NULL DEFAULT '',
++            task TEXT NOT NULL DEFAULT '',
++            api_call_count INTEGER NOT NULL DEFAULT 0,
++            input_tokens INTEGER NOT NULL DEFAULT 0,
++            output_tokens INTEGER NOT NULL DEFAULT 0,
++            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
++            cache_write_tokens INTEGER NOT NULL DEFAULT 0,
++            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
++            estimated_cost_usd REAL NOT NULL DEFAULT 0,
++            actual_cost_usd REAL NOT NULL DEFAULT 0,
++            cost_status TEXT,
++            cost_source TEXT,
++            first_seen REAL,
++            last_seen REAL
++        )
++        """
++    )
++
++
++def _create_running_task(conn, task_id: str = "t-cost-1") -> int:
++    """Create a task in 'running' state with a current_run_id.
++
++    Mimics what ``claim_task`` would do at the SQL level — the kanban
++    helper functions under test rely on ``current_run_id`` being
++    non-null so ``_end_run`` actually emits an event.
++    """
++    now = 1700000000
++    conn.execute(
++        "INSERT INTO tasks (id, title, status, current_run_id, "
++        "                    assignee, created_at, started_at) "
++        "VALUES (?, 'cost test', 'running', NULL, 'devops', ?, ?)",
++        (task_id, now, now),
++    )
++    cur = conn.execute(
++        "INSERT INTO task_runs (task_id, profile, status, started_at) "
++        "VALUES (?, 'devops', 'running', ?) RETURNING id",
++        (task_id, now),
++    )
++    run_id = int(cur.fetchone()[0])
++    conn.execute(
++        "UPDATE tasks SET current_run_id = ? WHERE id = ?",
++        (run_id, task_id),
++    )
++    conn.commit()
++    return run_id
++
++
++def test_cost_in_cents_column_added_by_migration(tmp_path, monkeypatch):
++    """``task_events.cost_in_cents`` exists post-init and is nullable."""
++    db_path = _setup_home(tmp_path, monkeypatch)
++    with kb.connect(db_path) as conn:
++        cols = {
++            r["name"]: r
++            for r in conn.execute("PRAGMA table_info(task_events)")
++        }
++        assert "cost_in_cents" in cols
++        # SQLite stores REAL with notnull=0 for our additive column.
++        assert cols["cost_in_cents"]["notnull"] == 0
++        assert "REAL" in cols["cost_in_cents"]["type"].upper()
++
++
++def test_cost_in_cents_index_present(tmp_path, monkeypatch):
++    """Partial index over non-null cost rows is created for rollups."""
++    db_path = _setup_home(tmp_path, monkeypatch)
++    with kb.connect(db_path) as conn:
++        idx = {
++            r["name"]
++            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
++        }
++        assert "idx_events_cost" in idx
++
++
++def test_end_run_emits_cost_attribution_event(tmp_path, monkeypatch):
++    """``_end_run`` writes a ``cost_attribution`` event with the right cents."""
++    db_path = _setup_home(tmp_path, monkeypatch)
++    with kb.connect(db_path) as conn:
++        _attach_session_model_usage(conn)
++        run_id = _create_running_task(conn)
++        # Simulate the worker session recording 5 USD = 500 cents.
++        conn.execute(
++            "INSERT INTO session_model_usage "
++            "(session_id, model, estimated_cost_usd) VALUES (?, 'm', ?)",
++            ("sess-xyz", 5.0),
++        )
++        # Stamp metadata like _stamp_worker_session_metadata does.
++        metadata = {"worker_session_id": "sess-xyz"}
++        run_id = kb._end_run(
++            conn, "t-cost-1",
++            outcome="completed",
++            metadata=metadata,
++        )
++        assert run_id is not None
++        evs = conn.execute(
++            "SELECT kind, payload, cost_in_cents FROM task_events "
++            "WHERE task_id = 't-cost-1' ORDER BY id"
++        ).fetchall()
++    cost_evs = [e for e in evs if e["kind"] == "cost_attribution"]
++    assert len(cost_evs) == 1, cost_evs
++    ev = cost_evs[0]
++    assert ev["cost_in_cents"] == 500.0  # 5 USD * 100 = 500 cents
++    payload = json.loads(ev["payload"])
++    assert payload["source"] == "end_run"
++    assert payload["cost_usd"] == 5.0
++
++
++def test_end_run_no_session_id_writes_none_cost(tmp_path, monkeypatch):
++    """A run closed without a worker session id still emits the event."""
++    db_path = _setup_home(tmp_path, monkeypatch)
++    with kb.connect(db_path) as conn:
++        _attach_session_model_usage(conn)
++        _create_running_task(conn, "t-cost-2")
++        kb._end_run(
++            conn, "t-cost-2",
++            outcome="completed",
++            metadata=None,
++        )
++        evs = conn.execute(
++            "SELECT cost_in_cents FROM task_events "
++            "WHERE task_id='t-cost-2' AND kind='cost_attribution'"
++        ).fetchall()
++    assert len(evs) == 1
++    # Without a session id we can't attribute the cost — that's a
++    # distinct state from "$0.00", so cost_in_cents stays NULL.
++    assert evs[0]["cost_in_cents"] is None
++
++
++def test_cost_summary_per_task_rollup(tmp_path, monkeypatch):
++    """``cost_summary(group_by='task')`` sums per-issue, sorted desc."""
++    db_path = _setup_home(tmp_path, monkeypatch)
++    with kb.connect(db_path) as conn:
++        _attach_session_model_usage(conn)
++        for tid, usd in [
++            ("t-big", 50.0),
++            ("t-small", 5.0),
++            ("t-mid", 20.0),
++        ]:
++            _create_running_task(conn, tid)
++            sess = f"sess-{tid}"
++            conn.execute(
++                "INSERT INTO session_model_usage "
++                "(session_id, model, estimated_cost_usd) VALUES (?, 'm', ?)",
++                (sess, usd),
++            )
++            kb._end_run(
++                conn, tid,
++                outcome="completed",
++                metadata={"worker_session_id": sess},
++            )
++        summary = kb.cost_summary(conn, group_by="task")
++    assert summary["total_cents"] == 7500.0  # 75 USD
++    task_ids = [b["task_id"] for b in summary["buckets"]]
++    # Sorted by cents DESC.
++    assert task_ids[0] == "t-big"
++    assert task_ids[-1] == "t-small"
++
++
++def test_cost_summary_per_day_rollup(tmp_path, monkeypatch):
++    """Per-day grouping uses UTC calendar days."""
++    db_path = _setup_home(tmp_path, monkeypatch)
++    with kb.connect(db_path) as conn:
++        _attach_session_model_usage(conn)
++        for ts, usd in [(1_700_000_000, 10.0), (1_700_086_400, 20.0)]:
++            tid = f"t-{ts}"
++            _create_running_task(conn, tid)
++            sess = f"sess-{tid}"
++            conn.execute(
++                "INSERT INTO session_model_usage "
++                "(session_id, model, estimated_cost_usd) VALUES (?, 'm', ?)",
++                (sess, usd),
++            )
++            kb._end_run(
++                conn, tid,
++                outcome="completed",
++                metadata={"worker_session_id": sess},
++            )
++            # Pin ended_at to a deterministic value so the per-day
++            # bucketing test doesn't depend on ``int(time.time())``.
++            conn.execute(
++                "UPDATE task_runs SET ended_at = ? "
++                "WHERE id = (SELECT id FROM task_runs "
++                "             WHERE task_id = ? AND ended_at IS NOT NULL "
++                "             ORDER BY id DESC LIMIT 1)",
++                (ts, tid),
++            )
++            conn.commit()
++        summary = kb.cost_summary(conn, group_by="day")
++    # Two distinct days, total 30 USD = 3000 cents.
++    assert summary["total_cents"] == 3000.0
++    assert len(summary["buckets"]) == 2
++
++
++def test_cost_summary_per_assignee_rollup(tmp_path, monkeypatch):
++    """Per-assignee grouping collapses runs by the same assignee."""
++    db_path = _setup_home(tmp_path, monkeypatch)
++    with kb.connect(db_path) as conn:
++        _attach_session_model_usage(conn)
++        for tid, assignee, usd in [
++            ("t-a", "devops", 10.0),
++            ("t-b", "devops", 20.0),
++            ("t-c", "architect", 5.0),
++        ]:
++            _create_running_task(conn, tid)
++            # Override the default assignee set by _create_running_task
++            # so we can assert the per-assignee rollup collapses
++            # correctly. Commit immediately so the next _end_run sees it.
++            conn.execute(
++                "UPDATE tasks SET assignee = ? WHERE id = ?",
++                (assignee, tid),
++            )
++            conn.commit()
++            sess = f"sess-{tid}"
++            conn.execute(
++                "INSERT INTO session_model_usage "
++                "(session_id, model, estimated_cost_usd) VALUES (?, 'm', ?)",
++                (sess, usd),
++            )
++            kb._end_run(
++                conn, tid,
++                outcome="completed",
++                metadata={"worker_session_id": sess},
++            )
++        summary = kb.cost_summary(conn, group_by="assignee")
++    by_assignee = {b["assignee"]: b["cost_in_cents"] for b in summary["buckets"]}
++    assert by_assignee.get("devops") == 3000.0
++    assert by_assignee.get("architect") == 500.0
++
++
++def test_cost_summary_heartbeat_ticks_excluded(tmp_path, monkeypatch):
++    """Heartbeat ticks (source='heartbeat') don't inflate the rollup."""
++    db_path = _setup_home(tmp_path, monkeypatch)
++    with kb.connect(db_path) as conn:
++        _attach_session_model_usage(conn)
++        run_id = _create_running_task(conn, "t-tick")
++        sess = "sess-tick"
++        # First heartbeat (mid-run): worker has done $10 of LLM calls.
++        conn.execute(
++            "INSERT INTO session_model_usage "
++            "(session_id, model, estimated_cost_usd) VALUES (?, 'm', 10.0)",
++            (sess,),
++        )
++        kb.heartbeat_worker(conn, "t-tick")
++        # Now the worker pushes to $30 total before ending.
++        conn.execute(
++            "INSERT INTO session_model_usage "
++            "(session_id, model, estimated_cost_usd) VALUES (?, 'm', 20.0)",
++            (sess,),
++        )
++        kb._end_run(
++            conn, "t-tick",
++            outcome="completed",
++            metadata={"worker_session_id": sess},
++        )
++        summary = kb.cost_summary(conn, group_by="task")
++    assert summary["total_cents"] == 3000.0, (
++        "Should be the terminal total (30 USD = 3000¢), "
++        "NOT 30 + 10 from the heartbeat tick."
++    )
++
++
++def test_board_stats_cost_by_assignee(tmp_path, monkeypatch):
++    """``board_stats`` returns a cost slice next to per-assignee counts."""
++    db_path = _setup_home(tmp_path, monkeypatch)
++    with kb.connect(db_path) as conn:
++        _attach_session_model_usage(conn)
++        run_id = _create_running_task(conn, "t-bs")
++        conn.execute(
++            "INSERT INTO session_model_usage "
++            "(session_id, model, estimated_cost_usd) VALUES (?, 'm', 1234.0)",
++            ("sess-bs",),
++        )
++        kb._end_run(
++            conn, "t-bs",
++            outcome="completed",
++            metadata={"worker_session_id": "sess-bs"},
++        )
++        stats = kb.board_stats(conn)
++    assert "cost_by_assignee" in stats
++    devops = stats["cost_by_assignee"].get("devops")
++    assert devops is not None
++    # 1234 USD = 123400 cents.
++    assert devops["cost_in_cents"] == 123400.0
++    assert abs(devops["cost_usd"] - 1234.0) < 1e-6
++
++
++def test_board_stats_cost_slice_empty_when_no_events(tmp_path, monkeypatch):
++    """``board_stats`` still returns the cost slice on a fresh DB."""
++    db_path = _setup_home(tmp_path, monkeypatch)
++    with kb.connect(db_path) as conn:
++        stats = kb.board_stats(conn)
++    assert stats.get("cost_by_assignee") == {}

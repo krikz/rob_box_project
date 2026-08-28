@@ -146,7 +146,11 @@ services:
       - odom_topic:=/odom
       - imu_topic:=/camera/imu/data
       - wait_imu_to_init:=false
-      - apriltag_topic:=/detections
+      # AprilTag детекции: launch-аргумент rtabmap.launch.py называется tag_topic
+      # (apriltag_topic не существует в текущем launch — молча игнорировался).
+      # patch_rtabmap_launch.py дополнительно мигрирует внутренний remap
+      # tag_detections → apriltag/detections (убирает deprecation warning).
+      - tag_topic:=/detections
       - qos:=1
       - approx_sync:=true
       - rtabmap_viz:=false

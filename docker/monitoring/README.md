@@ -158,6 +158,8 @@ ROBOT_ID=rob_box_01
   • Grafana:    http://localhost:3000 (admin/your_secure_password)
   • Prometheus: http://localhost:9090
   • Loki:       http://localhost:3100
+  • Tempo:      http://localhost:3200 (OpenTelemetry traces, issue #1234)
+  • OTel Collector: :4317 (OTLP gRPC) / :4318 (OTLP HTTP) — приём трейсов
 ```
 
 ### 3. Настройка Raspberry Pi
@@ -245,6 +247,18 @@ container_memory_usage_bytes / 1024 / 1024
 # Network throughput
 rate(container_network_receive_bytes_total[5m]) / 1024 / 1024
 ```
+
+### Просмотр трейсов (OpenTelemetry, issue #1234)
+
+1. В Grafana перейдите в `Explore`
+2. Выберите источник данных `Tempo`
+3. Выберите `Search` → сервис `dialogue_node` / `tts_node` / `stt_node`
+4. Откройте трейс — внутри будут spans `dialogue.llm_call`, `tts.synthesize`,
+   `stt.recognize` с атрибутами `provider`/`model`/`voice`/`fallback`/`duration_s`,
+   плюс child-spans от httpx (внешние HTTP-вызовы LLM/TTS).
+
+Voice-ноды шлют трейсы на OTLP-эндпоинт из env `OTEL_EXPORTER_OTLP_ENDPOINT`
+(по умолчанию `http://10.1.1.249:4317` — otel-collector на этой машине).
 
 ## Управление
 

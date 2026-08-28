@@ -23,3 +23,6 @@ telegram_bot:
 
     # Polling
     telegram_poll_timeout: 30   # seconds
+
+    # Observability (issue #1160)
+    metrics_port: 9101          # Prometheus /metrics endpoint

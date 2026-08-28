@@ -15,13 +15,76 @@ if TYPE_CHECKING:
     from std_msgs.msg import String
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult
+from ..voice_state import VoiceStateStore
+
+# Issue #1219 — LLM voice selection: единый реестр голосов живёт в
+# rob_box_voice (чистый Python, без ROS). Ленивый импорт с fallback,
+# чтобы пакет оставался импортируемым без rob_box_voice (CI linter).
+try:
+    from rob_box_voice.tts_voice_registry import (
+        default_voice_for,
+        resolve_voice,
+        voices_for,
+    )
+except ImportError:  # pragma: no cover — fallback для minimal environments
+    def default_voice_for(provider: str) -> str:
+        return ""
+
+    def resolve_voice(provider: str, requested) -> tuple:
+        return (requested or ""), False
+
+    def voices_for(provider: str) -> list:
+        return []
+
+# Issue #1709 — Unicode-script guard: LLM иногда вставляет в speak_text
+# иероглифы/деванагари, TTS их бормочет. Общий pure-Python модуль в
+# rob_box_voice (как tts_voice_registry). Ленивый импорт с no-op
+# fallback — пакет должен оставаться импортируемым без rob_box_voice.
+try:
+    from rob_box_voice.tts_text_guard import (
+        analyze as analyze_foreign_scripts,
+        describe as describe_foreign_scripts,
+        should_skip as should_skip_foreign_scripts,
+    )
+except ImportError:  # pragma: no cover — fallback для minimal environments
+    def analyze_foreign_scripts(text: str):
+        return None
+
+    def describe_foreign_scripts(report) -> str:
+        return "guard unavailable"
+
+    def should_skip_foreign_scripts(text: str) -> bool:
+        return False
+
+
+def _active_tts_provider(node) -> str:
+    """Активный TTS-провайдер для валидации голосов (issue #1229).
+
+    Приоритет: фактический провайдер от tts_node (``node.actual_tts_provider``,
+    после фолбека minimax→yandex это yandex) → параметр ``tts_provider``
+    (номинальный, из YAML) → дефолт ``minimax``.
+
+    Без этого speak_text/set_voice валидировали голоса по номинальному
+    провайдеру, LLM выбирала minimax-голоса (male-chengshu и т.п.),
+    которых нет у yandex после фолбека, и робот говорил тем же голосом.
+    """
+    actual = getattr(node, "actual_tts_provider", None)
+    if actual:
+        return str(actual)
+    try:
+        return str(node.get_parameter("tts_provider").value or "minimax")
+    except Exception:  # noqa: BLE001 — stub/tests без параметра
+        return "minimax"
 
 
 class SpeakTextTool(MCPTool):
     """Инструмент для произнесения текста голосом."""
 
-    def __init__(self, node):
+    def __init__(self, node, voice_store: VoiceStateStore | None = None):
         super().__init__(node)
+        # Issue #1219 — общее in-memory хранилище current_voice с
+        # SetVoiceTool (персистентный голос на диалог, Q7/Q11).
+        self._voice_store = voice_store or VoiceStateStore()
         # Динамический импорт во время выполнения
         from std_msgs.msg import String
 
@@ -93,10 +156,25 @@ class SpeakTextTool(MCPTool):
             return
         speech_id = result.get("speech_id")
         finished_success = bool(result.get("success", False))
-        self.log_info(
-            f"🔔 TTS finished: speech_id="
-            f"{speech_id[:8] if speech_id else 'None'}..., "
-            f"success={finished_success}"
+        finished_error = result.get("error")
+
+        # Issue #1709 — ПОЛНЫЙ текст чанка в логе. До фикса здесь был только
+        # `speech_id`: когда TTS падал или его прерывали («🔇 Воспроизведение
+        # прервано»), восстановить, ЧТО именно бормотал робот, было
+        # невозможно — юзер слышал странный фрагмент, а в логе пусто.
+        # Текст берём из snapshot'а pending_speeches (регистрируется в
+        # execute() вместе с batch_id).
+        with self.pending_speeches_lock:
+            _known = self.pending_speeches.get(speech_id) if speech_id else None
+            chunk_text = (_known or {}).get("text", "")
+            chunk_voice = (_known or {}).get("voice", "")
+        self._log_chunk_outcome(
+            speech_id=speech_id,
+            text=chunk_text,
+            voice=chunk_voice,
+            success=finished_success,
+            error=finished_error,
+            known=_known is not None,
         )
         if not speech_id:
             return
@@ -104,9 +182,21 @@ class SpeakTextTool(MCPTool):
         with self.pending_speeches_lock:
             entry = self.pending_speeches.pop(speech_id, None)
             if entry is None:
-                self.log_warning(
-                    f"⚠️ Speech {speech_id[:8]}... не найден в pending_speeches "
-                    "(возможно уже удалён)"
+                # 🔴 FIX (issue #776, live 12.08): /voice/tts/finished — общий
+                # топик для ВСЕХ отправителей TTS. tts_node публикует finished
+                # для любого speech_id, включая системные реплики dialogue_node
+                # (триггеры thinking/confused, DJ-прощание и т.п.), которые НЕ
+                # регистрируются в pending_speeches mcp_server. Плюс для
+                # последнего чанка батча tts_node намеренно republish'ит
+                # finished с batch_complete=true (issue #980, контракт
+                # "subscribers are designed to be idempotent"). Оба случая —
+                # штатное поведение общего топика: это не warning, а debug.
+                # Реальная рассинхронизация (entry есть, batch None) ниже
+                # по-прежнему остаётся warning.
+                self.log_debug(
+                    f"ℹ️ Speech {speech_id[:8]}... не найден в pending_speeches "
+                    "(чужой TTS от dialogue_node или повторный finished с "
+                    "batch_complete — игнорируем)"
                 )
                 return
             batch_id = entry["batch_id"]
@@ -147,6 +237,50 @@ class SpeakTextTool(MCPTool):
                 f"{total - remaining}/{total} чанков завершено"
             )
 
+    def _log_chunk_outcome(
+        self,
+        *,
+        speech_id: str | None,
+        text: str,
+        voice: str,
+        success: bool,
+        error=None,
+        known: bool,
+    ) -> None:
+        """Залогировать исход чанка с ПОЛНЫМ текстом (issue #1709).
+
+        Acceptance issue #1709: «Логи TTS должны включать ``voice: <name>``
+        + ``text: <full_text>`` для КАЖДОГО чанка (включая
+        failed/interrupted)». До фикса ``_on_tts_finished`` печатал только
+        ``speech_id`` + ``success``, поэтому по логу нельзя было понять,
+        что именно бормотал робот в прерванном чанке — а именно там и
+        сидели иероглифы (юзер слышал «хинди», в логе пусто).
+
+        * успех → INFO;
+        * провал/прерывание известного чанка → **WARNING** (это то, что
+          диагностика ищет grep'ом);
+        * чужой ``speech_id`` (общий топик ``/voice/tts/finished``, issue
+          #776) → DEBUG, чтобы не засорять лог и не ломать
+          ``test_finished_for_unknown_speech_does_not_publish_batch_complete``,
+          который требует пустой ``warning_messages``.
+
+        Текст НЕ обрезается: смысл фикса — видеть его целиком.
+        """
+        sid = f"{speech_id[:8]}..." if speech_id else "None"
+        detail = (
+            f"speech_id={sid} success={success} "
+            f"voice={voice or 'default'} "
+            f"error={error!r} "
+            f"text={text!r}"
+        )
+        if not known:
+            # Чужой/повторный finished — штатное поведение общего топика.
+            self.log_debug(f"🔔 TTS finished (не наш чанк): {detail}")
+        elif success:
+            self.log_info(f"🔔 TTS finished: {detail}")
+        else:
+            self.log_warning(f"❌ TTS чанк НЕ произнесён: {detail}")
+
     @property
     def name(self) -> str:
         return "speak_text"
@@ -168,6 +302,19 @@ class SpeakTextTool(MCPTool):
                 type="string",
                 description="Текст для произнесения. Можно использовать русские ударения (+ после гласной).",
                 required=True,
+            ),
+            MCPToolParameter(
+                name="voice",
+                type="string",
+                description=(
+                    "Голос TTS для этой реплики (опционально, issue #1219). "
+                    "Имя голоса активного провайдера, напр. alena/zahar (Yandex), "
+                    "Russian_ReliableMan/Russian_BrightHeroine (MiniMax), aidar/baya (Silero). "
+                    "Если голос не указан — используется голос, установленный set_voice, "
+                    "иначе дефолтный голос провайдера. Неизвестный/недоступный голос "
+                    "заменяется на дефолтный, фактический голос придёт в voice_used результата."
+                ),
+                required=False,
             ),
             MCPToolParameter(
                 name="animation",
@@ -238,24 +385,84 @@ class SpeakTextTool(MCPTool):
             chunks.append(buf)
         return [c for c in chunks if c.strip()]
 
-    def execute(self, text: str, animation: str = "neutral") -> MCPToolResult:
+    def execute(self, text: str, animation: str = "neutral", voice: str | None = None) -> MCPToolResult:
         """Произнести текст."""
         import json
         import re
         import uuid
 
+        # Issue #1219 — LLM voice selection: определяем активного провайдера
+        # (фактический от tts_node после фолбека, иначе ROS-параметр
+        # tts_provider; дефолт minimax — совпадает с tts_node.yaml).
+        provider = _active_tts_provider(self.node)
+        # Резолв голоса (issue #1219, Q6/Q7): разовый voice= из speak_text
+        # важнее установленного set_voice; если оба отсутствуют — дефолт
+        # провайдера. Неизвестный голос → дефолт + voice_used в результате.
+        voice_used, voice_fell_back = self._voice_store.resolve(
+            provider, requested=voice
+        )
+        if voice and voice_fell_back:
+            self.log_warning(
+                f"⚠️ Голос '{voice}' недоступен у провайдера '{provider}' — "
+                f"использую дефолтный '{voice_used}'"
+            )
+
         # 🔴 FIX (live 06.08): LLM (MiniMax-M3) иногда ВКЛЮЧАЕТ параметры
         # вызова В ТЕКСТ: text='...128 ударов!", animation="happy"'.
-        # Вырезаем вшитый синтаксис: `", animation="..."` / `", voice="..."`
-        # и хвост `")` / `)` — иначе TTS читает «анимейшин хеппи».
-        text = re.sub(r'"\s*,\s*(?:animation|voice|rate|pitch)="[^"]*"\s*\)?\s*$', '', text)
+        # Вырезаем вшитый синтаксис `, animation="..."` / `, voice="..."` в
+        # конце строки (опционально с лишней закрывающей кавычкой перед
+        # запятой, одинарными кавычками, пробелами вокруг `=` и хвостовым
+        # `)`), иначе TTS читает «анимейшин хеппи».
+        text = re.sub(
+            r'"?\s*,\s*(?:animation|voice|rate|pitch)\s*=\s*["\'][^"\']*["\']\s*\)?\s*$',
+            '',
+            text,
+        )
         text = re.sub(r'\)\s*$', '', text) if text.endswith(')') else text
         text = text.strip()
 
-        self.log_info(f"Произношение текста: {text[:50]}... (animation: {animation})")
+        # Issue #1709 — ПОЛНЫЙ текст в логе (а не первые 50 символов): без
+        # него нельзя восстановить, что именно ушло в TTS, когда чанк
+        # падает или его прерывают.
+        self.log_info(
+            f"Произношение текста: animation={animation} "
+            f"voice={voice_used} text={text!r}"
+        )
 
         if not text:
             return MCPToolResult(success=False, error="Пустой текст", message="Текст не может быть пустым")
+
+        # Issue #1709 — Unicode-script guard. LLM периодически вставляет в
+        # speak_text иероглифы/деванагари/арабицу; TTS такой текст бормочет
+        # (юзер слышал «что-то на хинди»). Если текст в основном состоит из
+        # букв неподдерживаемых письменностей (>10%, см. tts_text_guard) —
+        # НЕ произносим: логируем warning с полным текстом и возвращаем
+        # честную ошибку, чтобы LLM переписала фразу транслитом.
+        _guard_report = analyze_foreign_scripts(text)
+        if _guard_report is not None and should_skip_foreign_scripts(text):
+            self.log_warning(
+                "🚫 [issue 1709] Чанк не произнесён: слишком много символов "
+                f"неподдерживаемых письменностей — "
+                f"{describe_foreign_scripts(_guard_report)}, "
+                f"voice={voice_used}, text={text!r}"
+            )
+            return MCPToolResult(
+                success=False,
+                error="unsupported_script",
+                data={
+                    "text": text,
+                    "foreign_ratio": round(_guard_report.ratio, 4),
+                    "scripts": list(_guard_report.scripts),
+                    "voice_used": voice_used,
+                    "provider": provider,
+                },
+                message=(
+                    "Текст не произнесён: содержит символы неподдерживаемых "
+                    f"письменностей ({', '.join(_guard_report.scripts)}). "
+                    "Перепиши фразу русскими буквами (транслитерацией) — "
+                    "например «идиома звучит как „вай го“»."
+                ),
+            )
 
         # Нормализация анимаций (для обратной совместимости и маппинга несуществующих)
         animation_map = {
@@ -379,6 +586,11 @@ class SpeakTextTool(MCPTool):
                 self.pending_speeches[speech_id] = {
                     "batch_id": batch_id,
                     "batch_total": chunks_total,
+                    # Issue #1709 — храним ПОЛНЫЙ текст и голос чанка,
+                    # чтобы _on_tts_finished мог их залогировать даже для
+                    # failed/interrupted чанка (раньше был только speech_id).
+                    "text": chunk,
+                    "voice": voice_used,
                 }
                 # Батч создаётся один раз — при обработке первого чанка.
                 if batch_id not in self.pending_batches:
@@ -397,6 +609,10 @@ class SpeakTextTool(MCPTool):
                 # и в pending_speeches, и восстанавливается без участия
                 # tts_node. Поле оставлено для трейсинга в логах tts_node.
                 "batch_id": batch_id,
+                # Issue #1219 — LLM voice selection: фактический голос после
+                # валидации. tts_node резолвит его ещё раз по РЕАЛЬНОМУ
+                # провайдеру (фолбек-цепочка) и логирует voice_used.
+                "voice": voice_used,
             }
             if self._current_dialogue_id:
                 tts_request["dialogue_id"] = self._current_dialogue_id
@@ -404,9 +620,10 @@ class SpeakTextTool(MCPTool):
             msg.data = json.dumps(tts_request, ensure_ascii=False)
             self.tts_pub.publish(msg)
             self.log_info(
-                f"📤 TTS чанк {i+1}/{len(chunks)}: {chunk[:40]!r}... "
-                f"(speech_id: {speech_id[:8]}, batch_id: {batch_id[:8]}, "
-                f"dialogue_id: {self._current_dialogue_id[:8] if self._current_dialogue_id else 'None'})"
+                f"📤 TTS чанк {i+1}/{len(chunks)}: "
+                f"speech_id={speech_id[:8]} batch_id={batch_id[:8]} "
+                f"dialogue_id={self._current_dialogue_id[:8] if self._current_dialogue_id else 'None'} "
+                f"voice={voice_used} text={chunk!r}"
             )
 
         self.log_info(
@@ -422,9 +639,15 @@ class SpeakTextTool(MCPTool):
                 "speech_ids": speech_ids,
                 "batch_id": batch_id,
                 "async": True,
+                # Issue #1219 — LLM voice selection (Q6): фактический голос
+                # после валидации + провайдер, для которого он выбран.
+                "voice_used": voice_used,
+                "provider": provider,
+                "voice_fell_back": voice_fell_back,
             },
             message=(
-                f"TTS запрос отправлен ({chunks_total} чанк(ов)): {text[:50]}..."
+                f"TTS запрос отправлен ({chunks_total} чанк(ов)): {text[:50]}... "
+                f"[voice: {voice_used}, provider: {provider}]"
             ),
         )
 
@@ -797,4 +1020,139 @@ class RegisterSpeakerTool(MCPTool):
             success=True,
             data={"registered_name": name_clean, "speaker_id": "pending"},
             message=f"Голос зарегистрирован как '{name_clean}'. Теперь этого пользователя можно узнавать по голосу.",
+        )
+
+
+class SetVoiceTool(MCPTool):
+    """Issue #1219 — персистентный выбор голоса TTS (Q7/Q11).
+
+    LLM вызывает этот tool когда пользователь просит «говори голосом X»
+    или когда хочет сменить голос на диалог (например, рассказывать
+    сказку от разных лиц). Голос хранится in-memory (VoiceStateStore) с
+    привязкой к speaker_id; следующий ``speak_text`` без voice= говорит
+    установленным голосом.
+
+    Контракт (docs/design/LLM_VOICE_SELECTION_PROPOSAL.md):
+    ``{"tool": "set_voice", "params": {"voice": "zahar"}}``
+    → ``{"status": "ok", "voice_set": "zahar", "default_voice": "anton"}``
+    """
+
+    def __init__(self, node, voice_store: VoiceStateStore | None = None):
+        super().__init__(node)
+        self._voice_store = voice_store or VoiceStateStore()
+        # Публикуем изменение, чтобы dialogue_node мог обновить LLM-контекст
+        # ([TTS] current_voice) — payload JSON {"voice": str}.
+        from std_msgs.msg import String
+
+        self._voice_state_pub = node.create_publisher(
+            String, "/voice/tts/current_voice", 10
+        )
+
+    @property
+    def name(self) -> str:
+        return "set_voice"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Установить голос TTS на диалог (персистентно, пока не сменят). "
+            "Используй когда: (1) пользователь просит «говори голосом X» — "
+            "передай voice=X; (2) хочешь рассказывать историю от разных лиц "
+            "(старик → zahar, девушка → alena и т.п.); (3) хочешь вернуться "
+            "к дефолтному голосу — передай voice=<default_voice>. "
+            "Доступные голоса перечислены в контексте: [TTS] voices=... "
+            "После set_voice следующий speak_text без voice= говорит "
+            "установленным голосом."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="voice",
+                type="string",
+                description=(
+                    "Имя голоса для установки (из списка [TTS] voices=...). "
+                    "Например: alena, zahar, jane (Yandex); Russian_ReliableMan, "
+                    "Russian_BrightHeroine (MiniMax); aidar, baya (Silero)."
+                ),
+                required=True,
+            ),
+        ]
+
+    @property
+    def execution_type(self):
+        from ..base import ToolExecutionType
+
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, voice: str) -> MCPToolResult:
+        import json as _json
+
+        voice_clean = (voice or "").strip()
+        if not voice_clean:
+            return MCPToolResult(
+                success=False,
+                error="voice_empty",
+                message="Параметр voice не может быть пустым — передай имя голоса из [TTS] voices=...",
+            )
+        # Активный провайдер — как в speak_text (фактический от tts_node
+        # после фолбека, иначе mcp_server param tts_provider).
+        provider = _active_tts_provider(self.node)
+        # Валидация против списка провайдера (Q6): неизвестный голос не
+        # сохраняем — LLM получит ошибку и сможет поправиться. Это строже,
+        # чем speak_text (там fallback на дефолт), т.к. set_voice — явный
+        # запрос пользователя «говори голосом X»: молча подменить голос
+        # нельзя, надо сказать LLM, что голос недоступен.
+        known = voices_for(provider)
+        if known and voice_clean not in known:
+            return MCPToolResult(
+                success=False,
+                data={
+                    "error": "voice_unavailable",
+                    "requested": voice_clean,
+                    "provider": provider,
+                    "available": known,
+                    "default_voice": default_voice_for(provider),
+                },
+                message=(
+                    f"Голос '{voice_clean}' недоступен у провайдера '{provider}'. "
+                    f"Доступные: {', '.join(known)}. Дефолтный: "
+                    f"{default_voice_for(provider)}. Выбери голос из списка."
+                ),
+            )
+
+        self._voice_store.set_voice(voice_clean)
+        self.log_info(
+            f"[set_voice] voice={voice_clean!r} provider={provider} "
+            f"default={default_voice_for(provider)}"
+        )
+        # Публикуем смену голоса — dialogue_node обновит [TTS] current_voice.
+        try:
+            from std_msgs.msg import String as _String
+
+            msg = _String()
+            msg.data = _json.dumps(
+                {"voice": voice_clean, "provider": provider}, ensure_ascii=False
+            )
+            self._voice_state_pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            self.log_warning(f"⚠️ [set_voice] publish voice_state failed: {exc}")
+
+        return MCPToolResult(
+            success=True,
+            data={
+                "status": "ok",
+                "voice_set": voice_clean,
+                "default_voice": default_voice_for(provider),
+                "provider": provider,
+            },
+            message=(
+                f"Голос установлен: '{voice_clean}' "
+                f"(дефолтный: {default_voice_for(provider)})"
+            ),
         )

@@ -1,0 +1,32 @@
+{
+  "name": "voice_core_e2e_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "ADR-0022 GATE-1 acceptance for voice_core_suite_v1.json.",
+    "AND-semantics: каждый listed tool должен встретиться хотя бы раз за весь прогон.",
+    "  set_voice          — мульти-голос #1219 (mv01/mv02/mv03)",
+    "  execute_music_code — Renardo start (dj01)",
+    "  stop_music         — Renardo stop (dj02, после start)",
+    "ds01..ds03 (спор→арбитр) НЕ ожидают конкретных tools: LLM сам решает вызвать",
+    "  что-то или просто ответить. Семантическая проверка — patterns в логах",
+    "  и transcripts для ретро. ds01/ds02 (фразы БЕЗ wake-слова) проверяются",
+    "  через harness-флаг expect=backlog: не должны уйти в LLM, а должны",
+    "  накопиться в speech-backlog. ds03 (с wake-словом 'Робот') должен",
+    "  промыть backlog в LLM (лог 'flushed to LLM'). Backlog-аккумулятор —",
+    "  unit/integration покрыт в test_speech_backlog_accumulator.py.",
+    "ИСКЛЮЧЕНО: generate_music (MiniMax Music API недоступен),",
+    "  gen_delete_from_library, gen_play_from_library, register_speaker."
+  ],
+  "expected_tool_calls": [
+    "set_voice",
+    "execute_music_code",
+    "stop_music"
+  ],
+  "must_not_call": [],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "volume": 150,
+    "llm": "minimax-m3"
+  }
+}

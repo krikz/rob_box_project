@@ -117,14 +117,27 @@ def _install_ros_mocks():
     )
     fake_openai = types.SimpleNamespace(
         APIConnectionError=type("APIConnectionError", (Exception,), {}),
+        APIStatusError=type("APIStatusError", (Exception,), {}),
+        APITimeoutError=type("APITimeoutError", (Exception,), {}),
+        AuthenticationError=type("AuthenticationError", (Exception,), {}),
         AsyncOpenAI=MagicMock,
     )
+
+    # ── rcl_interfaces (для issue #1601 / ADR-0027 §3.4 — voice_input_mode) ─
+    mock_rcl_interfaces = MagicMock()
+    mock_rcl_interfaces_msg = MagicMock()
+    # SetParametersResult должен быть callable-классом (конструктор без
+    # аргументов или с successful=True), чтобы ``return SetParametersResult(...)``
+    # в dialogue_node.parameters_callback работал.
+    mock_rcl_interfaces_msg.SetParametersResult = MagicMock
 
     mocks = {
         "rclpy": mock_rclpy,
         "rclpy.node": mock_rclpy_node,
         "rclpy.callback_groups": mock_callback_groups,
         "rclpy.qos": mock_qos,
+        "rcl_interfaces": mock_rcl_interfaces,
+        "rcl_interfaces.msg": mock_rcl_interfaces_msg,
         "std_msgs": mock_std_msgs,
         "std_msgs.msg": mock_std_msgs_msg,
         "std_srvs": mock_std_srvs,

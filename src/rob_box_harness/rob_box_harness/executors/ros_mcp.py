@@ -18,6 +18,13 @@ from rob_box_core.ports import (
 )
 
 
+#: Per-tool timeout overrides for tools whose natural execution time
+#: exceeds the default 10s window. ``generate_music`` was removed
+#: 20.08.2026 (MiniMax Music API discontinued, 410 Gone); the map is
+#: kept empty as the extension point for future long-running tools.
+_LONG_TOOL_TIMEOUTS: dict[str, float] = {}
+
+
 class ROSMCPBridge(Protocol):
     """Subset of ``LLMToolCallAdapter`` required by this adapter."""
 
@@ -39,6 +46,7 @@ class ROSMCPToolProvider(ToolProvider):
         bridge: ROSMCPBridge,
         *,
         default_timeout: float = 10.0,
+        tool_timeouts: Mapping[str, float] | None = None,
     ) -> None:
         if not callable(getattr(bridge, "execute_tool_call_sync", None)):
             raise TypeError("bridge must define execute_tool_call_sync")
@@ -46,6 +54,11 @@ class ROSMCPToolProvider(ToolProvider):
             raise ValueError("default_timeout must be > 0")
         self._bridge = bridge
         self._default_timeout = default_timeout
+        self._tool_timeouts: dict[str, float] = (
+            dict(tool_timeouts)
+            if tool_timeouts is not None
+            else dict(_LONG_TOOL_TIMEOUTS)
+        )
         self._tools: dict[str, ToolDescriptor] = {}
 
     def update_tools(self, tools: list[Mapping[str, Any]]) -> None:
@@ -111,7 +124,10 @@ class ROSMCPToolProvider(ToolProvider):
                 tool_name=name,
             )
 
-        timeout = ctx.timeout if ctx is not None and ctx.timeout is not None else self._default_timeout
+        if ctx is not None and ctx.timeout is not None:
+            timeout = ctx.timeout
+        else:
+            timeout = self._tool_timeouts.get(name, self._default_timeout)
         if timeout <= 0:
             raise ToolTimeout(
                 f"tool {name!r} has a non-positive timeout",

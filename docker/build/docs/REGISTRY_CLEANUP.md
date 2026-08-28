@@ -1,5 +1,38 @@
 # Registry Cleanup Guide
 
+## Автоочистка registry (keep N)
+
+`cleanup_registry.sh --keep N` удаляет старые версии образов, оставляя
+последние N для каждого сервис-варианта:
+
+```bash
+cd ~/rob_box_project/docker/build
+./scripts/cleanup_registry.sh --keep 5 --dry-run  # Просмотр (ничего не удаляет)
+./scripts/cleanup_registry.sh --keep 5            # Удалить старые версии + GC
+```
+
+### Как это работает
+
+1. Теги вида `voice-assistant-humble-dev-abc1234` группируются по
+   сервис-варианту (отбрасывается sha-суффикс) → `voice-assistant-humble-dev`.
+2. Внутри группы теги сортируются по времени создания образа (`created` из
+   image config), удаляются все, кроме последних N.
+3. Rolling-теги без sha-суффикса (`dev`, `latest`, `local`, `test`,
+   `voice-assistant-humble-dev`) **никогда не удаляются** — они нужны для деплоя.
+4. После удаления запускается `registry garbage-collect` для сборки blob'ов.
+
+### Автоматическая очистка (cron)
+
+Раз в сутки в 04:00 (`0 4 * * *`) cron запускает
+`cleanup_registry.sh --keep 5`. Устанавливается идемпотентно в `setup.sh`.
+
+Проверка:
+```bash
+crontab -l | grep cleanup_registry
+tail -50 /tmp/cleanup_registry.log
+du -sh data/registry
+```
+
 ## Быстрое удаление образа из локального registry
 
 ### Использование скрипта

@@ -54,9 +54,13 @@ FallbackReason = Literal[
 DEFAULT_MIN_TEXT_CHARS = 3
 
 # Таймаут одного вызова Yandex STT (был 1.3s в старом коде, спрятанный
-# внутри grpc-запроса). 5 секунд — эмпирика для фраз 3-4 слов при
-# audio_processing_type=REAL_TIME.
-DEFAULT_YANDEX_TIMEOUT_S = 5.0
+# внутри grpc-запроса). 5.0s → 12.0s (issue #1477) — фразы 4-6 секунд с
+# pre-roll и активным TTS/музыкой (issue 989) могут выходить за 5с gRPC
+# deadline в Yandex v3 REAL_TIME + speech_analysis. 12с — буфер для
+# длинных фраз и медленного EOU (patient=2000ms). Лимит выбран
+# эмпирически: probe на 10.1.1.21 показывает 800-1300ms на нормальных
+# фразах и ~480ms на FULL_DATA.
+DEFAULT_YANDEX_TIMEOUT_S = 12.0
 
 # Количество retry-повторов на Yandex перед падением на Vosk.
 # 1 — спецификация issue #979: "один retry перед падением на Vosk".
@@ -187,7 +191,12 @@ def select_recognition(
         min_text_chars: Порог ``is_short_phrase``.
 
     Returns:
-        ``(text, attempts)``. ``text`` может быть None — итоговое отклонение.
+        ``(text, attempts)``. ``text`` — первый непустой НЕ-короткий результат
+        (``reason == "ok"``). Если ни один провайдер не дал ``ok``, но хоть
+        один вернул непустой (пусть короткий/мусорный) текст — возвращаем
+        последний такой текст, чтобы caller отличил rejected(short) от
+        rejected(empty). ``text`` равен ``None`` только если ВСЕ попытки
+        вернули пусто/ошибки (rejected(empty) — эхо/музыка, молчим).
     """
     if not providers:
         raise ValueError("providers sequence must be non-empty")
@@ -252,8 +261,18 @@ def select_recognition(
                 break
 
     # Сюда дошли, если ни один провайдер не дал "ok".
-    # Последний "low_confidence" — это мягкое отклонение Vosk-мусора.
-    return None, attempts
+    # Возвращаем последний непустой текст (даже если он слишком короткий —
+    # rejected_short), чтобы caller (speech_audio_callback) мог отличить
+    # «была речь, но слишком короткая/мусор» от «пусто/эхо». Это важно для
+    # issue #979 acceptance: Vosk вернул «не» (мусор от слабой модели) —
+    # робот должен сказать «не расслышал, скажи ещё раз», а НЕ молчать.
+    # None — только если ВСЕ попытки вернули пусто/ошибки (rejected_empty,
+    # почти наверняка эхо собственного TTS/музыки — issue 989: молчим).
+    last_text: Optional[str] = None
+    for _a in attempts:
+        if _a.text:
+            last_text = _a.text
+    return last_text, attempts
 
 
 def summarize_attempts(attempts: Sequence[STTAttempt]) -> str:

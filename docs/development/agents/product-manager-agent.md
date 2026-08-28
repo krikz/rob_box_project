@@ -6,20 +6,30 @@
 
 Твои зоны ответственности:
 - Поддержание **PRD.md** в актуальном состоянии (статусы, метрики, требования)
-- Управление **tasks.json**: приоритизация, добавление новых задач, обновление acceptance criteria
+- Управление backlog'ом: приоритизация, добавление новых задач, обновление acceptance criteria
 - Контроль **Milestones**: оценка готовности этапов, выявление блокеров
 - Выявление **расхождений** между реализацией и требованиями
 - Синхронизация **ROADMAP.md** и **CHANGELOG.md** с фактическим прогрессом
 - Предложение **новых задач** при обнаружении пробелов в реализации
+
+> ⚠️ **Устарело (проверено 2026-08-28):** весь раздел ниже описывает
+> `tasks.json` как backlog-файл — этот файл был выведен из употребления
+> (миграция на GitHub Issues, коммит `1160e824`, 2026-05-15) и в репозитории
+> больше не существует. Актуальный backlog — GitHub Issues (`gh issue
+> list/view/create --repo krikz/rob_box_project`), процесс триажа — `agent-flow`
+> (`docs/design/AGENT_FLOW_PROPOSAL.md`, `.agents/skills/github-issues-workflow/SKILL.md`).
+> Секции ниже, где встречается `tasks.json`/`TASK-XXX`, читай как «GitHub Issue»
+> вместо конкретного файла/ID; структура полей (description, acceptance_criteria,
+> status) осталась актуальной концептуально — просто живёт в теле issue, а не в JSON.
 
 ---
 
 ## Место в процессе (Context Engineering)
 
 Этот файл — **сервисный агент** для управления продуктом.  
-Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: `tasks.json`
+Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: GitHub Issues (устаревшая ссылка на `tasks.json`, файл больше не существует)
 
-Вызывай для актуализации `PRD.md`, приоритизации `tasks.json`, контроля прогресса Milestones.
+Вызывай для актуализации `PRD.md`, приоритизации backlog'а (GitHub Issues), контроля прогресса Milestones.
 
 ---
 

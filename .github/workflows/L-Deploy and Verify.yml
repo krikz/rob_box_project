@@ -36,6 +36,30 @@ on:
         required: false
         default: false
         type: boolean
+      # Issue #1527: трейсинг «кто дёрнул workflow». Все скрипты/воркеры
+      # используют твой GH_TOKEN, поэтому triggering_actor.login всегда = krikz.
+      # Эти опциональные поля заполняются самими скриптами (agent-flow-*),
+      # чтобы в CI job logs было видно кто реально стартанул deploy.
+      triggered_by_script:
+        description: 'Какой скрипт вызвал gh workflow run'
+        required: false
+        type: string
+        default: 'manual'
+      triggered_by_agent:
+        description: 'Какой worker профиль (devops/architect/backend/merge-gate/agent-flow)'
+        required: false
+        type: string
+        default: 'unknown'
+      triggered_by_card:
+        description: 'Kanban card id (t_xxx) если запуск из карточки'
+        required: false
+        type: string
+        default: ''
+      triggered_by_reason:
+        description: 'Краткая причина запуска (free-form)'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   deploy-and-verify:
@@ -49,6 +73,11 @@ jobs:
       issues: write
 
     steps:
+      - name: Trigger source (issue #1527)
+        # Трейсинг: видно в CI job log кто реально стартанул этот deploy
+        # (при ручном gh workflow run без -f triggered_by_* — defaults).
+        run: |
+          echo "🔧 Triggered by: ${{ inputs.triggered_by_script }} / agent=${{ inputs.triggered_by_agent }} / card=${{ inputs.triggered_by_card }} / reason=${{ inputs.triggered_by_reason }}"
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -78,8 +107,17 @@ jobs:
               echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
               echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
+            # Ретро 18.08 (t_544e4aa5 / issue #1379): environment=local —
+            # алиас для staging (IMAGE_TAG=dev). Тег "local" в registry
+            # никогда не создаётся (L-Build Vision/Main Pi Services используют
+            # только dev/test/latest), голый IMAGE_TAG=local → compose pull →
+            # "No such image: voice-resources-humble-local". Сохраняем UI-опцию
+            # для обратной совместимости (любой скрипт, выбравший "local", не
+            # сломается), но молча алиасим и логируем warning, чтобы оператор
+            # заметил и перешёл на staging/test явно.
             local)
-              echo "IMAGE_TAG=local" >> $GITHUB_ENV
+              echo "⚠️  WARNING: environment=local — алиас для staging (IMAGE_TAG=dev). Тег 'local' в registry не публикуется (L-Build Vision/Main Pi Services используют dev/test/latest). Для develop/main/z-{e2e}-веток используй environment=staging/test явно." >&2
+              echo "IMAGE_TAG=dev" >> $GITHUB_ENV
               echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
               echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
@@ -279,6 +317,19 @@ jobs:
             sleep 5
           done
 
+      - name: "[Vision Pi] .image-versions — из текущей ветки (реверт #1139 v2, 15.08)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔖 .image-versions теперь в текущей ветке (РЕВЕРТ #1244 15.08)"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # 🔴 РЕВЕРТ #1244 (15.08, decision #1316): per-service ветки
+          # ci/image-versions-{vision,main} НЕ работают — при registry_source=local
+          # деплой не грузит .image-versions (условие 'local' != 'local' = false),
+          # тянет голые dev-теги → роботы получают старые образы. SHA-теги
+          # коммитятся ПРЯМО в develop (как было до #1244, revert 51e041a1).
+          # Если файла нет — compose возьмёт голые теги (fallback).
+
       - name: "[Vision Pi] Pull Docker Images"
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
         run: |
@@ -326,12 +377,38 @@ jobs:
           echo "🚀 Starting Vision Pi containers..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+          # Ретро 14.08 t_d01fe536: одноразовый init-контейнер voice-resources-init
+          # (Exited) из прошлого деплоя блокирует compose up — «Conflict. The container
+          # name /voice-resources-init is already in use» + «network vision_default already
+          # exists» (deploy round-109 06:03Z упал на этом).
+          #
+          # Ретро 18.08 t_9d35468d (round-130): docker rm -f + network rm БЫЛО НЕДОСТАТОЧНО.
+          # Демон docker удерживает name-slot для свеже-удалённого контейнера ~5-6 секунд,
+          # и при повторном deploy (после предыдущего fail) compose up получает
+          # «Conflict. The container name /voice-resources-init is already in use by
+          # container HASH» — даже после того, как `docker rm -f` удалил контейнер
+          # по имени. Это intermittent: первый прогон после простоя — OK, повторный
+          # через <30s — fail.
+          #
+          # Фикс:
+          # 1) `docker container prune -f` — сбрасывает ВСЕ stopped-контейнеры
+          #    (защита от stale name-slot, не только voice-resources-init);
+          # 2) `docker rm -f voice-resources-init` — точечно для one-shot init;
+          # 3) `docker network rm vision_default` — stale-сеть;
+          # 4) `docker compose up -d --force-recreate --pull never` — compose
+          #    принудительно пересоздаёт контейнеры, а не переиспользует (осторожно:
+          #    он ещё и down не делает, см. step Stop Containers выше).
+          #    NB: --force-recreate тут безопасен — Stop Containers уже сделал down.
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
-             docker compose up -d --pull never"
+             echo '🔧 retro t_d01fe536+t_9d35468d: cleanup stale containers/networks'; \
+             docker rm -f voice-resources-init 2>/dev/null || true; \
+             docker network rm vision_default 2>/dev/null || true; \
+             docker container prune -f 2>/dev/null || true; \
+             docker compose up -d --force-recreate --pull never"
 
       # ==================== MAIN PI DEPLOYMENT ====================
 
@@ -367,6 +444,16 @@ jobs:
             echo "⚠️  Attempt $attempt failed, retrying in 5s..."
             sleep 5
           done
+
+      - name: "[Main Pi] .image-versions — из текущей ветки (реверт #1139 v2, 15.08)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔖 .image-versions теперь в текущей ветке (РЕВЕРТ #1244 15.08)"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # 🔴 РЕВЕРТ #1244 (15.08, decision #1316): см. Vision-шаг выше.
+          # SHA-теги коммитятся ПРЯМО в develop; если файла нет —
+          # compose возьмёт голые теги (fallback).
 
       - name: "[Main Pi] Pull Docker Images"
         if: '!inputs.dry_run && inputs.registry_source != ''skip'''
@@ -415,17 +502,23 @@ jobs:
           echo "🚀 Starting Main Pi containers..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+          # Ретро 18.08 t_9d35468d: на Vision Pi был race на name-slot после `docker rm -f`
+          # (docker daemon удерживает имя ~5-6s). Защищаем Main Pi тем же набором:
+          # `docker container prune -f` + `--force-recreate` (Stop Containers уже сделал down).
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
              if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
-             docker compose up -d --pull never"
+             echo '🔧 retro t_9d35468d: prune stale containers + force-recreate'; \
+             docker container prune -f 2>/dev/null || true; \
+             docker compose up -d --force-recreate --pull never"
 
       # ==================== INITIALIZATION WAIT ====================
 
       - name: "Wait for Container Initialization"
         if: '!inputs.dry_run'
+        id: wait_init
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "⏳ Waiting for containers to initialize..."
@@ -809,8 +902,10 @@ jobs:
             echo "$TOPICS" | grep -E "(oak|camera|rgb|depth)" || echo "  (no camera topics)"
 
             # Проверяем наличие критически важных топиков
-            # Примечание: OAK-D теперь публикует в /camera/* вместо /oak/*
-            EXPECTED_TOPICS="/camera/rgb/image_raw/compressed"
+            # Примечание: OAK-D публикует в /camera/camera/color/* (ретро 12.08:
+            # старое имя /camera/rgb/image_raw/compressed устарело — монитор
+            # плодил ложные Warning-issues #953/#1046, камера работала).
+            EXPECTED_TOPICS="/camera/camera/color/image_raw/compressed"
             MISSING_TOPICS=""
 
             for topic in $EXPECTED_TOPICS; do
@@ -966,6 +1061,7 @@ jobs:
       # ==================== SUMMARY ====================
 
       - name: "Deployment Summary"
+        id: deploy_summary
         if: always() && !inputs.dry_run
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -998,19 +1094,107 @@ jobs:
           echo ""
 
           # Определяем общий статус
-          if [ "${{ steps.vision_status.outputs.vision_healthy }}" == "true" ] && \
-             [ "${{ steps.main_status.outputs.main_healthy }}" == "true" ] && \
-             [ "${{ steps.vision_logs.outputs.critical_count || 0 }}" -eq 0 ] && \
-             [ "${{ steps.main_logs.outputs.critical_count || 0 }}" -eq 0 ]; then
+          # Ретро 22.08 #1522 (round-179 false-positive): если run был отменён
+          # пользователем или job прервался до Check Container Status —
+          # outputs vision_healthy/main_healthy пустые, и старое условие
+          # ложно срабатывало на "❌ DEPLOYMENT COMPLETED WITH ISSUES" +
+          # создавался deploy-issue. Теперь распознаём отменённый/прерванный run
+          # явно: ни success, ни issues → отдельный статус "cancelled".
+          if [ "${{ steps.wait_init.conclusion }}" = "cancelled" ] || \
+             [ "${{ steps.wait_init.conclusion }}" = "skipped" ]; then
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "⚠️  DEPLOYMENT RUN CANCELLED OR SKIPPED"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "Run was cancelled by user or interrupted before health checks completed."
+            echo "Container Status: ${{ steps.vision_status.outputs.vision_healthy || 'unknown' }} / ${{ steps.main_status.outputs.main_healthy || 'unknown' }}"
+            echo "No deploy-issue will be created — this is not a deployment failure."
+            echo "deploy_status=cancelled" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.vision_status.outputs.vision_healthy }}" == "true" ] && \
+               [ "${{ steps.main_status.outputs.main_healthy }}" == "true" ] && \
+               [ "${{ steps.vision_logs.outputs.critical_count || 0 }}" -eq 0 ] && \
+               [ "${{ steps.main_logs.outputs.critical_count || 0 }}" -eq 0 ]; then
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "✅ DEPLOYMENT SUCCESSFUL"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "deploy_status=success" >> "$GITHUB_OUTPUT"
           else
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "❌ DEPLOYMENT COMPLETED WITH ISSUES"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "Check the logs above and created GitHub issue for details"
+            echo "deploy_status=issues" >> "$GITHUB_OUTPUT"
           fi
+
+      # ==================== ISSUE CREATION (retro 14.08 t_d01fe536 + 15.08 t_feca724c) ====================
+      # Ретро 14.08 t_d01fe536: deploy round-109 упал на compose-конфликте
+      # voice-resources-init ('DEPLOYMENT COMPLETED WITH ISSUES', Critical: 0 /
+      # Failed Containers: 0) — issue НЕ создавался, потому что старый шаг
+      # «Analyze Results and Create Issue» выше отключён (if: false, плодил
+      # дубликаты) и срабатывал только на critical-findings из логов. Теперь
+      # ЛЮБОЙ 'DEPLOYMENT COMPLETED WITH ISSUES' → один issue на (branch, env, день),
+      # дедуп по маркеру в body.
+      # Ретро 15.08 t_feca724c: issues создавались БЕЗ метки hermes → агентный
+      # триаж их не видел, карточек не было, воркеры не обрабатывали (#1246/#1260
+      # висели OPEN сутками). Теперь при создании проставляем hermes (триаж
+      # превратит в kanban-карточку) + agent:devops (роль воркера — деплой-проблемы
+      # это зона devops). deploy-sweep пропускает такие issue (нет
+      # deploy-problem-сигнатуры) — они идут в триаж, а не в auto-close.
+
+      - name: "🚨 Create Deployment Issue (any issues)"
+        if: always() && !inputs.dry_run && steps.deploy_summary.outputs.deploy_status == 'issues'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🚨 Deployment completed with issues — creating GitHub issue..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          BRANCH="${{ github.ref_name }}"
+          ENV_NAME="${{ inputs.environment }}"
+          TS="${{ steps.setup.outputs.timestamp }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MARKER="deploy-fail:${BRANCH}:${ENV_NAME}:$(date -u +%Y-%m-%d)"
+
+          # Дедуп: открытый issue с тем же маркером уже есть → не плодим дубликат,
+          # только комментируем новый run (ретро 14.08: старый шаг был отключён
+          # именно из-за дубликатов).
+          EXISTING="$(gh issue list --repo "${{ github.repository }}" --label deployment --state open --limit 200 --json number,body 2>/dev/null | jq --arg m "$MARKER" '[.[] | select(.body | contains($m))][0].number // empty' 2>/dev/null || true)"
+          if [ -n "$EXISTING" ]; then
+            echo "✅ Issue #${EXISTING} already tracks ${BRANCH}/${ENV_NAME} today — skip create, comment run"
+            # Ретро 15.08 t_feca724c: старые deploy-issues (созданные до фикса)
+            # не имеют hermes-метки → триаж их не видит. Догоняем метки здесь,
+            # чтобы существующий issue тоже стал kanban-карточкой.
+            gh issue edit "$EXISTING" --repo "${{ github.repository }}" --add-label hermes --add-label agent:devops >/dev/null 2>&1 || true
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body \
+              "Ещё один failing deploy run: $RUN_URL" >/dev/null 2>&1 || true
+            exit 0
+          fi
+
+          BODY_FILE="$(mktemp)"
+          printf '%s\n' \
+            '## 🚨 Deployment Completed With Issues' \
+            '' \
+            "<!-- deploy-signature: ${MARKER} -->" \
+            '' \
+            "**Branch:** \`${BRANCH}\`" \
+            "**Environment:** \`${ENV_NAME}\`" \
+            "**Timestamp:** ${TS}" \
+            "**Workflow Run:** ${RUN_URL}" \
+            '' \
+            'Deployment completed with issues (non-success status). See the workflow log for details.' \
+            > "$BODY_FILE"
+
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "🚨 Deploy issues on ${BRANCH} (${ENV_NAME}) — $(date -u +%Y-%m-%d)" \
+            --body-file "$BODY_FILE" \
+            --label deployment \
+            --label hermes \
+            --label agent:devops \
+            >/dev/null 2>&1 \
+            && echo "✅ Created deployment issue for ${BRANCH} (${ENV_NAME}) [labels: deployment, hermes, agent:devops]" \
+            || echo "⚠️  Failed to create deployment issue (may already exist)"
+          rm -f "$BODY_FILE"
 
       - name: "Dry Run Summary"
         if: inputs.dry_run

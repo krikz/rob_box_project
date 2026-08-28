@@ -53,6 +53,25 @@ class AnotherMockTool(MCPTool):
         return MCPToolResult(success=True, message="Another execution")
 
 
+class AsyncMockTool(MCPTool):
+    """Мок инструмент с ``async def execute`` (как GenerateMusicTool)."""
+
+    @property
+    def name(self) -> str:
+        return "async_mock_tool"
+
+    @property
+    def description(self) -> str:
+        return "Async mock tool"
+
+    @property
+    def parameters(self):
+        return []
+
+    async def execute(self, **kwargs) -> MCPToolResult:
+        return MCPToolResult(success=True, message="async execution")
+
+
 # ============================================================
 # Тесты
 # ============================================================
@@ -181,3 +200,20 @@ class TestMCPToolRegistry:
 
         assert result.success is False
         assert "не найден" in result.error or "not found" in result.error.lower()
+
+    def test_execute_async_tool_awaits_result(self, mock_node):
+        """Корутина от async-инструмента должна быть доведена до MCPToolResult.
+
+        Регрессия: 'coroutine' object has no attribute 'to_dict'
+        (GenerateMusicTool.execute — async def, диспетчер не делал await).
+        """
+        registry = MCPToolRegistry()
+        tool = AsyncMockTool(mock_node)
+
+        registry.register(tool)
+
+        result = registry.execute("async_mock_tool")
+
+        assert isinstance(result, MCPToolResult)
+        assert result.success is True
+        assert result.message == "async execution"

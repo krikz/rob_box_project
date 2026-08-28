@@ -108,6 +108,20 @@ class TestTurnsCRUD:
         assert len(_run(store.load_recent("a"))) == 1
         assert len(_run(store.load_recent("b"))) == 1
 
+    def test_clear_turns(self) -> None:
+        store = _make_store()
+        _run(store.init())
+        _run(store.append_turn("a", Turn(role="user", content="a1")))
+        _run(store.append_turn("a", Turn(role="assistant", content="a2")))
+        _run(store.append_turn("b", Turn(role="user", content="b1")))
+        removed = _run(store.clear_turns("a"))
+        assert removed == 2
+        assert _run(store.load_recent("a")) == []
+        # Другой scope не тронут.
+        assert len(_run(store.load_recent("b"))) == 1
+        # Повторная очистка → 0.
+        assert _run(store.clear_turns("a")) == 0
+
     def test_load_recent_invalid_limit(self) -> None:
         store = _make_store()
         _run(store.init())

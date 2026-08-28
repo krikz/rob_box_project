@@ -120,9 +120,17 @@ class DJModeController:
         # молча по лимиту DJ_AUTO_MAX_TRANSITIONS.
         plan = data.get("plan")
         if plan and isinstance(plan, str) and plan.strip():
-            self.state.set_plan = plan.strip()
-            self.state.transition_count = 0
-            self._logger.info(f"🎧 DJ plan: {len(plan.splitlines())} треков")
+            new_plan = plan.strip()
+            if new_plan != self.state.set_plan:
+                is_rewrite = bool(self.state.set_plan)
+                self.state.set_plan = new_plan
+                if is_rewrite:
+                    # Переписываем сет заново — счётчик с нуля.
+                    self.state.transition_count = 0
+                self._logger.info(
+                    f"🎧 DJ plan: {len(new_plan.splitlines())} треков"
+                    f"{' (rewrite)' if is_rewrite else ''}"
+                )
         self._logger.info(f"🎧 DJ Mode ON — next transition in {delay:.0f}s")
 
     def _reset_state(self) -> None:
@@ -228,59 +236,73 @@ class DJModeController:
             if self.state.theme
             else ""
         )
-        # Reminder lines below keep the model from regenerating a static loop
-        # and from improvising when a human reference is already available.
+        # Тех-ограничения (live 20.08): какофония из-за chop/драйва/
+        # выдуманных сэмплов/лишних слоёв на 16kHz DAC без лимитера.
+        tech_line = (
+            "⚙️ ТЕХНИКА МУЗЫКИ (жёстко, без исключений): "
+            "1) ПЕРВАЯ строка кода — Clock.clear() (иначе старые паттерны "
+            "копятся поверх новых → каша из 50+ голосов). "
+            "2) Максимум 6 паттернов: d1-d3 + p1-p3. НИКОГДА d4/d5/p4/p5. "
+            "3) Барабаны amp≤0.2, синты amp≤0.5, СУММА amp всех слоёв ≤0.8. "
+            "4) dur≥0.5, BPM≥60. "
+            "5) НЕ используй chop= — на 16kHz даёт щелчки. "
+            "6) НЕ выдумывай буквы сэмплов — сначала search_samples(<слово>) "
+            "и бери ТОЧНО возвращённую букву. "
+            "7) НЕ повторяй синт/гамму предыдущего трека."
+        )
         stage_line = (
-            f"Стадия сета: переход #{n} из ~{self.DJ_AUTO_MAX_TRANSITIONS}. "
-            "Трек должен РАЗВИВАТЬСЯ внутри 45 секунд (не повторять один и тот же рисунок)."
+            f"Стадия сета: переход #{n}. "
+            "Трек должен РАЗВИВАТЬСЯ внутри перехода "
+            "(не повторять один и тот же рисунок)."
         )
         library_line = (
-            "🎵 ОБЯЗАТЕЛЬНО: 1) list_tracks(tag=<жанр>, min_rating=4) — "
-            "найди референс; 2) если подходит тема — load_track(name=...) "
-            "использует готовый человеческий код с настоящей драматургией; "
-            "3) если адаптируешь — сохрани развивающие паттерны "
-            "(.every, PVar, LinExp, chop, Clock.future), не упрощай до лупа."
+            "🎵 СЭМПЛЫ: ❌ НЕ вызывай load_track / list_tracks в переходах — "
+            "load_track СРАЗУ запускает сохранённый трек из базы и даёт резкую "
+            "вставку между треками. ✅ Пиши новый трек С НУЛЯ через "
+            "execute_music_code, реальные сэмплы бери через search_samples(<стиль>). "
+            "НЕ упрощай до статичного лупа."
         )
         if n == 1:
             return (
                 "[DJ_AUTO — СТАРТ ВЕЧЕРИНКИ] "
                 f"Ты {persona} — первый в мире робот-диджей. {theme_line}"
-                f"{library_line} {stage_line} "
-                "Запусти музыку через execute_music_code (бит в духе темы, "
-                "segments 64-128 — сет непрерывный). Затем представься как "
-                f"{persona} через speak_text. Переходы делай через "
-                "set_dj_mode(enabled=true, next_transition_sec=45)."
+                "🔎 СНАЧАЛА ИССЛЕДУЙ МАТЕРИАЛ: "
+                "1) search_web(<персона> — стиль, темп, характерные приёмы) — "
+                "изучи персону и её музыку; 2) search_samples(<стиль>) — найди "
+                "реальные сэмплы (макс. 2 вызова); 3) gen_search_library(<персона>) "
+                "— посмотри, что есть в AI-библиотеке для вдохновения. "
+                "📋 ЗАТЕМ СОСТАВЬ ПЛАН СЕТА из 5-8 треков (дуга: вход → "
+                "нарастание → пик → спуск) и сохрани через "
+                "set_dj_mode(enabled=true, plan=<список треков, каждый с новой "
+                "строки 'Трек N: ...'>, next_transition_sec=45). Потом сыграй "
+                f"трек #1 через execute_music_code. {library_line} {stage_line} "
+                f"Затем представься как {persona} через speak_text."
             )
         plan_block = (
             f"План сета:\n{self.state.set_plan}\n" if self.state.set_plan else ""
         )
-        # 🔴 FIX (live 15:30 06.08): финальный трек плана — DJ объявляет
-        # конец вечеринки и выключается сам (как было до удаления ghost
-        # тулов save_dj_* — юзер слышал «вечеринка заканчивается»).
-        plan_tracks = len(self.state.set_plan.splitlines()) if self.state.set_plan else 0
+        plan_tracks = self.state.set_plan.count("Трек ") if self.state.set_plan else 0
         if plan_tracks and n >= plan_tracks:
             return (
                 f"[DJ_AUTO переход #{n} — ФИНАЛЬНЫЙ ТРЕК] "
                 f"Ты {persona}. {theme_line}{plan_block}"
-                f"{library_line} "
+                f"{library_line} {tech_line} "
                 "Это ПОСЛЕДНИЙ трек сета. Сыграй завершающий трек через "
-                "execute_music_code (спокойный финал, затухание — но не "
-                "статичный луп, держи развитие). Затем ОБЯЗАТЕЛЬНО: "
-                "1) через speak_text объяви: «Вот и всё, вечеринка "
+                "execute_music_code (спокойный финал, затухание). Затем "
+                "ОБЯЗАТЕЛЬНО: 1) speak_text: «Вот и всё, вечеринка "
                 "заканчивается! Спасибо, что были со мной!» (или в тему "
-                "своего сета); 2) вызови set_dj_mode(enabled=false) — "
-                "DJ-режим завершается."
+                "сета); 2) set_dj_mode(enabled=false) — DJ-режим завершается."
             )
         return (
             f"[DJ_AUTO переход #{n}] "
             f"Ты {persona}. {theme_line}{plan_block}"
-            f"{library_line} {stage_line} "
+            f"{library_line} {tech_line} {stage_line} "
             "Сыграй следующий трек через execute_music_code (segments 64-128, "
             "другой бит/темп в духе темы, С РАЗВИТИЕМ внутри трека — "
-            "минимум один из: .every(), Pvar, linvar, chop, Clock.future). "
+            "минимум один из: .every(), Pvar, linvar, Clock.future). "
             "После этого вызови set_dj_mode(enabled=true, next_transition_sec=45) "
-            "для следующего перехода. Изредка произноси тематическую фразу "
-            "через speak_text()."
+            "для следующего перехода. НЕ вызывай speak_text — переход только "
+            "про музыку, без случайных фраз."
         )
 
 

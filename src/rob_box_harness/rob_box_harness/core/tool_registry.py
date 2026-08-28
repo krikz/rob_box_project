@@ -16,8 +16,10 @@ implementations live in :class:`rob_box_harness.executors.ros_mcp
 
 The inventory mirrors ``dialogue_node._make_tools`` /
 ``_make_output_tools`` / ``_build_skills`` from the legacy code path,
-decomposed into 29 *flat* tools and 5 *skill* sub-agents (per
-``06-01-PLAN.md`` §W2).
+decomposed into 32 *flat* tools and 5 *skill* sub-agents (per
+``06-01-PLAN.md`` §W2). ``voice_settings`` was removed in issue #1229 —
+LLM must not call it (set_voice + speak_text(voice=) cover voice
+selection; the MCP-side ``set_volume``/``set_pitch`` still exist).
 
 Tool specs use :class:`rob_box_harness.tools.ToolSpec` so they can be
 passed straight to :class:`FakeToolProvider` for unit tests and to
@@ -72,12 +74,12 @@ async def _default_handler(args: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# The 29 flat tools (audio / memory / status / navigation / music / tracks)
+# The 32 flat tools (audio / memory / status / navigation / music / tracks)
 # ---------------------------------------------------------------------------
 
 
 def _build_flat_specs() -> tuple[ToolSpec, ...]:
-    """Build the 29 flat tool specs.
+    """Build the 32 flat tool specs.
 
     Names and descriptions follow the legacy ``dialogue_node`` so the
     LLM-facing contract is stable across the harness migration.
@@ -92,6 +94,18 @@ def _build_flat_specs() -> tuple[ToolSpec, ...]:
                 "type": "object",
                 "properties": {
                     "text": _TEXT_PROPERTY,
+                    "voice": {
+                        "type": "string",
+                        "description": (
+                            "TTS voice for this reply (issue #1219). Name of a "
+                            "voice of the active provider (see [TTS] voices in "
+                            "system context): e.g. alena/zahar (yandex), "
+                            "Russian_ReliableMan/Russian_BrightHeroine (minimax), aidar/baya "
+                            "(silero). Omit to use the set_voice voice or the "
+                            "provider default. Unknown voice falls back to the "
+                            "default; the actual voice is returned as voice_used."
+                        ),
+                    },
                     "animation": {
                         "type": "string",
                         "description": (
@@ -110,6 +124,40 @@ def _build_flat_specs() -> tuple[ToolSpec, ...]:
                     },
                 },
                 "required": ["text"],
+            },
+        ),
+        # Issue #1219 — persistent TTS voice selection. The MCP-side
+        # ``SetVoiceTool`` lives in ``rob_box_mcp_tools.tools.dialogue``;
+        # this harness-side spec is what the LLM actually sees in
+        # chat-completion ``tools=`` (same pattern as register_speaker).
+        # Wire-up: ``SetVoiceTool.execute(voice)`` validates against the
+        # active provider's voice list and stores current_voice in-memory
+        # (VoiceStateStore); the next speak_text without voice= uses it.
+        ToolSpec(
+            name="set_voice",
+            description=(
+                "Set the TTS voice for the dialogue (persistent until changed). "
+                "Use when: (1) the user asks «говори голосом X» — pass voice=X; "
+                "(2) you want to tell a story with different characters "
+                "(old man → zahar, girl → alena, etc.); (3) you want to return "
+                "to the default voice — pass voice=<default_voice>. "
+                "Available voices are listed in the system context: [TTS] voices=... "
+                "After set_voice, the next speak_text without voice= uses the "
+                "set voice."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "voice": {
+                        "type": "string",
+                        "description": (
+                            "Voice name to set (from the [TTS] voices=... list): "
+                            "e.g. alena, zahar, jane (yandex); male-qn-qingse, "
+                            "female-shaonv (minimax); aidar, baya (silero)."
+                        ),
+                    },
+                },
+                "required": ["voice"],
             },
         ),
         ToolSpec(
@@ -282,18 +330,6 @@ def _build_flat_specs() -> tuple[ToolSpec, ...]:
             parameters={"type": "object", "properties": {}},
         ),
         ToolSpec(
-            name="voice_settings",
-            description="Adjust voice / TTS settings (rate, pitch, voice id).",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "rate": _FLOAT_PROPERTY,
-                    "pitch": _FLOAT_PROPERTY,
-                    "voice_id": _TEXT_PROPERTY,
-                },
-            },
-        ),
-        ToolSpec(
             name="search_samples",
             description="Search Renardo sample packs by keyword in filename. Returns letter, sample_index, and ready-to-use play_code.",
             parameters={
@@ -410,6 +446,104 @@ def _build_flat_specs() -> tuple[ToolSpec, ...]:
                 "type": "object",
                 "properties": {"name": _TEXT_PROPERTY},
                 "required": ["name"],
+            },
+        ),
+        # 20.08.2026 — MiniMax Music API отключён для новых юзеров (410 Gone,
+        # status_code 2153). ``generate_music`` удалён из LLM-каталога: LLM
+        # не должен видеть/вызывать мёртвый инструмент (e2e regression: dj01
+        # «сыграй renardo бит» → LLM вызывал generate_music как forbidden
+        # tool). gen_* библиотечные тулзы (list/search/save/play/delete/
+        # get_info) остаются — они работают с локальной /data/music_library
+        # без API.
+        ToolSpec(
+            name="gen_list_library",
+            description=(
+                "Показать список треков из библиотеки сгенерированной музыки "
+                "(/data/music_library). Возвращает id, title, prompt, tags, "
+                "mood, genre, rating, play_count."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "limit": _INT_PROPERTY,
+                    "sort_by": {
+                        "type": "string",
+                        "description": "recent (default) | popular | rating.",
+                    },
+                    "tag": _TEXT_PROPERTY,
+                    "mood": _TEXT_PROPERTY,
+                },
+            },
+        ),
+        ToolSpec(
+            name="gen_search_library",
+            description=(
+                "Поиск по библиотеке сгенерированной музыки по ключевому слову "
+                "(title/prompt/lyrics/genre/mood/notes)."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Поисковый запрос (1-200 chars)."},
+                    "limit": _INT_PROPERTY,
+                },
+                "required": ["query"],
+            },
+        ),
+        ToolSpec(
+            name="gen_save_to_library",
+            description=(
+                "Обновить метаданные (tags/rating/mood/genre/title) уже "
+                "сгенерированного трека."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "track_id": {"type": "string", "description": "UUID трека."},
+                    "title": _TEXT_PROPERTY,
+                    "tags": _TEXT_PROPERTY,
+                    "mood": _TEXT_PROPERTY,
+                    "genre": _TEXT_PROPERTY,
+                    "rating": _INT_PROPERTY,
+                    "notes": _TEXT_PROPERTY,
+                },
+                "required": ["track_id"],
+            },
+        ),
+        ToolSpec(
+            name="gen_play_from_library",
+            description=(
+                "Получить путь к mp3 сгенерированного трека из библиотеки для "
+                "воспроизведения."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "track_id": {"type": "string", "description": "UUID трека."},
+                },
+                "required": ["track_id"],
+            },
+        ),
+        ToolSpec(
+            name="gen_delete_from_library",
+            description="Удалить трек из библиотеки сгенерированной музыки (необратимо).",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "track_id": {"type": "string", "description": "UUID трека."},
+                },
+                "required": ["track_id"],
+            },
+        ),
+        ToolSpec(
+            name="gen_get_track_info",
+            description="Полные метаданные одного сгенерированного трека.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "track_id": {"type": "string", "description": "UUID трека."},
+                },
+                "required": ["track_id"],
             },
         ),
         # Issue #1101 — voice biometrics (resemblyzer d-vectors). The
@@ -630,8 +764,19 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, tuple[ToolSpec, ToolHandler]] = {}
-        # Pre-register all 34 tools with the default no-op handler.
-        for spec in _build_flat_specs() + _build_skill_specs():
+        # Pre-register only the FLAT tools with the default no-op handler.
+        #
+        # 🔴 FIX (party regression, live 19.08): the 5 skill facades from
+        # ``_build_skill_specs()`` (``handle_music``, ``handle_navigation``,
+        # ``handle_memory``, ``handle_status``, ``handle_faq``) were exposed
+        # to the LLM but have NO executor — the local Compositor skill path
+        # (``dialogue_node._build_skills``) was retired during the harness
+        # migration, and ``ROSMCPToolProvider`` routes every tool to the MCP
+        # server, which never registered ``handle_*``. The LLM therefore
+        # picked the inviting ``handle_music`` spec for DJ/party requests
+        # and got ``Инструмент 'handle_music' не найден`` instead of
+        # playing music. Only register the tools that are actually wired.
+        for spec in _build_flat_specs():
             self._tools[spec.name] = (spec, _default_handler)
 
     # ---- read API -------------------------------------------------------

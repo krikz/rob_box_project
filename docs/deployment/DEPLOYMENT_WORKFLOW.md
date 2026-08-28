@@ -84,6 +84,13 @@ gh workflow run "L-Deploy and Verify.yml" \
 - `production` - Production окружение (IMAGE_TAG=latest)
 - `staging` - Staging окружение (IMAGE_TAG=dev)
 - `test` - Test окружение (IMAGE_TAG=test)
+- `local` - **DEPRECATED, алиас для `staging` (IMAGE_TAG=dev)**. Тег `local` в
+  registry не публикуется (`L-Build Vision/Main Pi Services` используют только
+  `dev`/`test`/`latest`), поэтому явный IMAGE_TAG=local приводил к
+  `compose pull → "No such image"` и падению деплоя (ретро 18.08,
+  issue #1379, kanban t_544e4aa5). Опция сохранена в UI для обратной
+  совместимости, но при её выборе workflow логирует WARNING и подставляет
+  `IMAGE_TAG=dev` молча. Используй `staging`/`test` явно.
 
 ### `registry_source` (required)
 

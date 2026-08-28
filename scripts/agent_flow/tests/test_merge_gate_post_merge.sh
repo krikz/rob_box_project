@@ -13,6 +13,9 @@
 #   H. regression: follow-up detection over e2e-done stays green
 #                  (regression per ADR §7 item 8: existing follow-up
 #                   detection logic remains intact).
+#   N. Ретро 14.08 t_0bd15be9: MERGED PR + blocked card → unblock +
+#      complete + archive (раньше архив-маппинг скипал status!=done и
+#      blocked-карточка висела вечно).
 #
 # Run:
 #   bash scripts/agent_flow/tests/test_merge_gate_post_merge.sh
@@ -61,6 +64,10 @@ fixture_merged_pass_proven() {  # $1=issue $2=pr $3=title
     set_state PR_LIST_ALL_OPEN_JSON '[]'
     set_state PR_FOLLOWUP_JSON '[]'
     set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+    # Ретро 12.08 t_8af6bf29: merge-gate читает статус карточки через
+    # `list --json` (kanban_card_status), а не через сломавшийся `show`.
+    # Имитируем карточку t_dead<issue> в статусе done (как раньше show default).
+    set_state "KANBAN_LIST_JSON" "[{\"id\":\"t_dead${issue}\",\"status\":\"done\"}]"
     set_state "BRANCH_PRESENT_${branch}" 1
 }
 
@@ -454,6 +461,218 @@ test_I_card_archived_after_close() {
 }
 
 # ===========================================================================
+# J. Ретро 12.08 t_8af6bf29: CONFLICTING PR → recovery-карточка (не requeue)
+#    Респавн-гард дедлок: merge-gate requeue'ил done/archived карточку с
+#    URL-PR комментами → dispatcher check_respawn_guard блокировал респавн на
+#    24ч → воркер не стартует, rebase не делается, PR вечно CONFLICTING.
+#    Фикс: вместо requeue — СВЕЖАЯ recovery-карточка с idempotency-key по
+#    PR-номеру (свежая карточка не имеет URL-комментов → guard не блокирует).
+# ===========================================================================
+test_J_conflict_creates_recovery_card_not_requeue() {
+    new_test
+    local branch
+    branch="z-{agent}/t_dead4321-rebase-demo"
+    # Сканируемый PR: CONFLICTING, head-ветка → task_id t_dead4321.
+    set_state PR_LIST_ALL_OPEN_JSON "[{\"number\":4321,\"title\":\"fix #999 demo\",\"headRefName\":\"${branch}\",\"mergeable\":\"CONFLICTING\",\"mergeStateStatus\":\"DIRTY\"}]"
+    # Существующая карточка в статусе done (как будто воркер закрыл, но PR
+    # снова CONFLICTING) — именно этот кейс раньше вызывал requeue → дедлок.
+    set_state KANBAN_LIST_JSON "[{\"id\":\"t_dead4321\",\"status\":\"done\"}]"
+    set_state ISSUE_LIST_JSON '[]'
+    set_state PR_LIST_MERGED_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # 1) Создана recovery-карточка с idempotency-key по PR-номеру.
+    local create_calls
+    create_calls="$(printf '%s\n' "$journal" | grep -c 'hermes kanban --board robbox create.*merge-conflict-recovery-pr-4321' || true)"
+    assert_eq "1" "$create_calls" "recovery card created with idempotency-key by PR number"
+
+    # 2) НЕ requeue старой карточки (именно это вызывало respawn-guard дедлок).
+    local requeue_calls
+    requeue_calls="$(printf '%s\n' "$journal" | grep -c 'hermes kanban --board robbox requeue t_dead4321' || true)"
+    assert_eq "0" "$requeue_calls" "old card NOT requeued (respawn-guard deadlock fix)"
+
+    # 3) recovery-карточка создаётся с assignee владельца PR (по метке issue).
+    assert_contains "hermes kanban --board robbox create --assignee" "$journal" "recovery card has assignee"
+}
+
+# ===========================================================================
+# K. Ретро 12.08 t_8af6bf29: rate-limit конфликт-комментариев (1 раз в 2ч)
+# ===========================================================================
+test_K_conflict_comment_rate_limited() {
+    new_test
+    local branch
+    branch="z-{agent}/t_dead4322-rebase-demo"
+    set_state PR_LIST_ALL_OPEN_JSON "[{\"number\":4322,\"title\":\"fix #999 demo\",\"headRefName\":\"${branch}\",\"mergeable\":\"CONFLICTING\",\"mergeStateStatus\":\"DIRTY\"}]"
+    # Карточка running → коммент добавляем, recovery НЕ создаём.
+    set_state KANBAN_LIST_JSON "[{\"id\":\"t_dead4322\",\"status\":\"running\"}]"
+    set_state ISSUE_LIST_JSON '[]'
+    set_state PR_LIST_MERGED_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # Reminder-коммент добавлен один раз.
+    local comment_calls
+    comment_calls="$(printf '%s\n' "$journal" | grep -c 'hermes kanban --board robbox comment t_dead4322' || true)"
+    assert_eq "1" "$comment_calls" "conflict reminder appended to running card"
+
+    # Recovery-карточка НЕ создаётся для running-карточки.
+    local create_calls
+    create_calls="$(printf '%s\n' "$journal" | grep -c 'hermes kanban --board robbox create' || true)"
+    assert_eq "0" "$create_calls" "no recovery card for running card"
+}
+
+# ===========================================================================
+# L. Ретро 13.08 t_0b76514f (#1004/#982/#988/#990/#1160/#1188): user-merge БЕЗ
+#    e2e, ветка удалена → merge-gate снимает needs-e2e, комментит юзеру (Q22),
+#    и ЗАКРЫВАЕТ issue (фикс влит по Q22, e2e невозможен). НЕ ставит
+#    needs-review, НЕ делает destructive cleanup.
+#    Раньше (t_423453b1): issue оставалась OPEN вечно — Шифу не видел очередь.
+# ===========================================================================
+test_L_merged_branch_deleted_unlabels_orphan() {
+    new_test
+    local issue=1160 branch
+    branch="$(slugify_branch "$issue" 'orphan merge demo')"
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"orphan merge demo\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"needs-e2e\"}],\"body\":\"kanban: t_dead${issue}\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"needs-e2e"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\\\\n\"}]}"
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" "[]"
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":1165,\"state\":\"MERGED\",\"baseRefName\":\"develop\",\"mergedAt\":\"2026-08-12T20:21:18Z\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"title\":\"[robot] orphan merge demo\",\"labels\":[]}]"
+    set_state PR_1165_COMMITS_JSON '[]'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+    # ВАЖНО: BRANCH_PRESENT_<branch> НЕ ставим → git ls-remote пусто →
+    # merge-gate понимает: ветка удалена, e2e невозможен.
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # 1) needs-e2e снят с issue.
+    local unlabel_calls
+    unlabel_calls="$(printf '%s\n' "$journal" | grep -c "gh issue edit ${issue} --remove-label needs-e2e" || true)"
+    assert_eq "1" "$unlabel_calls" "orphan: needs-e2e removed from issue"
+
+    # 2) Комментарий юзеру (Q22) опубликован.
+    local q22_comment
+    q22_comment="$(printf '%s\n' "$journal" | grep -c 'Фикс влит по Q22' || true)"
+    assert_eq "1" "$q22_comment" "orphan: Q22 comment posted to user"
+
+    # 3) needs-review НЕ ставится (PR уже нет — ревьюить нечего).
+    local add_review
+    add_review="$(printf '%s\n' "$journal" | grep -c 'gh issue edit '"${issue}"' --add-label needs-review' || true)"
+    assert_eq "0" "$add_review" "orphan: needs-review NOT set"
+
+    # 4) Issue ЗАКРЫВАЕТСЯ (фикс влит по Q22, e2e невозможен) — ретро 13.08
+    #    t_0b76514f. Раньше: NOT closed (решение за юзером) → вечное OPEN.
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c 'gh issue close 1160 --reason completed' || true)"
+    assert_eq "1" "$close_calls" "orphan: issue closed (Q22 user-merge)"
+
+    # 5) Destructive cleanup НЕ запускается (ветки уже нет).
+    local del_calls
+    del_calls="$(printf '%s\n' "$journal" | grep -c 'gh api -X DELETE' || true)"
+    assert_eq "0" "$del_calls" "orphan: no destructive branch delete"
+
+    # 6) Issue переведена в CLOSED (mock close флипает state).
+    local state_now
+    state_now="$(grep -E "^ISSUE_${issue}_STATE_JSON=" "$GH_STATE" | sed "s/^ISSUE_${issue}_STATE_JSON=//")"
+    assert_contains '"CLOSED"' "$state_now" "orphan: issue CLOSED (Q22 user-merge)"
+}
+
+# ===========================================================================
+# M. Ретро 13.08 t_0b76514f: orphan-comment dedup по ПОДСТРОКЕ тела
+#    (фикс bfc18c85: startswith-префикс не совпадал с реальным телом →
+#    14 дублей на #1188). Если идентичный коммент уже есть (24h окно) —
+#    повторно НЕ комментим, но issue всё равно закрываем.
+# ===========================================================================
+test_M_orphan_comment_dedup_still_closes() {
+    new_test
+    local issue=1004 branch
+    branch="$(slugify_branch "$issue" 'orphan dedup demo')"
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"orphan dedup demo\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"needs-e2e\"}],\"body\":\"kanban: t_dead${issue}\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"needs-e2e"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\\\\n\"}]}"
+    # Уже есть идентичный orphan-коммент в окне dedup.
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[{"body":"🛠 merge-gate (ретро 13.08 t_0b76514f): PR #1170 смержен вручную (Q22) без e2e-прогона, ветка `z-{agent}/1004-orphan-dedup-demo` удалена → e2e невозможен. Фикс влит по Q22 — issue закрыта."}]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" "[]"
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":1170,\"state\":\"MERGED\",\"baseRefName\":\"develop\",\"mergedAt\":\"2026-08-13T05:05:00Z\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"title\":\"[robot] orphan dedup demo\",\"labels\":[]}]"
+    set_state PR_1170_COMMITS_JSON '[]'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # 1) Повторный коммент НЕ постится (dedup по подстроке тела).
+    local comment_calls
+    comment_calls="$(printf '%s\n' "$journal" | grep -c 'gh issue comment 1004 --body' || true)"
+    assert_eq "0" "$comment_calls" "orphan dedup: identical comment NOT re-posted"
+
+    # 2) needs-e2e снят.
+    local unlabel_calls
+    unlabel_calls="$(printf '%s\n' "$journal" | grep -c 'gh issue edit 1004 --remove-label needs-e2e' || true)"
+    assert_eq "1" "$unlabel_calls" "orphan dedup: needs-e2e removed"
+
+    # 3) Issue всё равно закрывается.
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c 'gh issue close 1004 --reason completed' || true)"
+    assert_eq "1" "$close_calls" "orphan dedup: issue closed despite dedup"
+}
+
+# ===========================================================================
+# N. Ретро 14.08 t_0bd15be9: MERGED PR + карточка в status=blocked.
+#    Раньше архив-маппинг скипал status!=done → blocked-ретро-карточка с
+#    влитым фиксом висела вечно (recovery «родитель закроется процессом»,
+#    а процесса для blocked нет). Теперь: unblock (reason «фикс влит,
+#    критерий выполнен») → complete → archive.
+# ===========================================================================
+test_N_merged_pr_blocked_card_unblock_complete_archive() {
+    new_test
+    local issue=1090 branch
+    branch="$(slugify_branch "$issue" 'blocked card merged demo')"
+    fixture_merged_pass_proven "$issue" 1092 'blocked card merged demo'
+    # Карточка НЕ done, а blocked — именно этот кейс раньше терялся.
+    set_state KANBAN_LIST_JSON "[{\"id\":\"t_dead${issue}\",\"status\":\"blocked\"}]"
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # 1) Issue закрывается (PASS-proven, как обычно).
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
+    assert_eq "1" "$close_calls" "blocked card: issue closed before cleanup"
+
+    # 2) Unblock вызван с reason «фикс влит, критерий выполнен».
+    local unblock_calls
+    unblock_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox unblock --reason .* t_dead${issue}" || true)"
+    assert_eq "1" "$unblock_calls" "blocked card: unblock called with фикс влит reason"
+
+    # 3) Complete вызван с summary.
+    local complete_calls
+    complete_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox complete --summary .* t_dead${issue}" || true)"
+    assert_eq "1" "$complete_calls" "blocked card: complete called"
+
+    # 4) Archive вызван ПОСЛЕ unblock+complete.
+    local archive_calls
+    archive_calls="$(printf '%s\n' "$journal" | grep -c "hermes kanban --board robbox archive t_dead${issue}" || true)"
+    assert_eq "1" "$archive_calls" "blocked card: archived after unblock+complete"
+}
+
+# ===========================================================================
 # Run
 # ===========================================================================
 run_test "A. MERGED + e2e-done → close once, no e2e-done added" test_A_merged_pass_proven_closes_once
@@ -465,5 +684,135 @@ run_test "F. already-CLOSED → no close, dedup skip comment" test_F_already_clo
 run_test "G. no PASS provenance → merge-gate does NOT add e2e-done" test_G_no_pass_no_e2e_done_added
 run_test "H. regression: follow-up over e2e-done still works" test_H_followup_pr_over_e2e_done_still_works
 run_test "I. regression: card archived after close (card_state parse)" test_I_card_archived_after_close
+run_test "J. CONFLICTING → recovery card (not requeue) — respawn-guard fix" test_J_conflict_creates_recovery_card_not_requeue
+run_test "K. conflict comment rate-limit / no recovery for running card" test_K_conflict_comment_rate_limited
+run_test "L. merged PR + branch deleted → unlabel orphan (Q22, t_423453b1)" test_L_merged_branch_deleted_unlabels_orphan
+run_test "M. orphan comment dedup by substring → no re-post, still closes (t_0b76514f)" test_M_orphan_comment_dedup_still_closes
+run_test "N. MERGED + blocked card → unblock+complete+archive (t_0bd15be9)" test_N_merged_pr_blocked_card_unblock_complete_archive
+
+# ===========================================================================
+# O. Retro 19.08 #79779a21 (orphan #1456): MERGED + base=develop +
+#    no-e2e-required + OPEN → close reason=completed (worker explicitly
+#    opted out of e2e — docs/lint/refactor PR per ADR-0022 §4.2).
+#    Once the PR is MERGED into develop, the issue must close just like
+#    an e2e-done one — otherwise it sits OPEN until manual triage.
+# ===========================================================================
+test_O_merged_no_e2e_required_closes() {
+    new_test
+    local issue=1456 branch
+    branch="$(slugify_branch "$issue" 'gate1 candidate strip underscore')"
+    # no-e2e-required label is set by e2e-process on worker-opt-out PRs
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"gate1 candidate strip underscore\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"no-e2e-required\"}],\"body\":\"kanban: t_dead${issue}\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"no-e2e-required"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\\\n\"}]}"
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" "[]"
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":1460,\"state\":\"MERGED\",\"baseRefName\":\"develop\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"title\":\"[robot] gate1 candidate strip underscore\",\"labels\":[{\"name\":\"agent:devops\"}]}]"
+    set_state PR_1460_COMMITS_JSON '[]'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+    set_state "BRANCH_PRESENT_${branch}" 1
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # Close API must be called.
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
+    assert_eq "1" "$close_calls" "exactly one close call for no-e2e-required MERGED issue"
+
+    # State actually flipped to CLOSED.
+    local state_now
+    state_now="$(grep -E "^ISSUE_${issue}_STATE_JSON=" "$GH_STATE" | sed "s/^ISSUE_${issue}_STATE_JSON=//")"
+    assert_contains '"CLOSED"' "$state_now" "issue state flipped to CLOSED"
+
+    # Branch delete attempted (destructive cleanup runs after successful close).
+    local del_calls
+    del_calls="$(printf '%s\n' "$journal" | grep -c "gh api -X DELETE repos/.*/git/refs/heads/${branch}" || true)"
+    assert_eq "1" "$del_calls" "remote branch delete attempted once"
+}
+
+# ===========================================================================
+# P. Regression: no-e2e-required + already CLOSED → no duplicate close call
+#    (idempotency, same as case F for e2e-done).
+# ===========================================================================
+test_P_no_e2e_required_already_closed_no_duplicate() {
+    new_test
+    local issue=1456 branch
+    branch="$(slugify_branch "$issue" 'gate1 candidate strip already closed')"
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"gate1 candidate strip already closed\",\"labels\":[{\"name\":\"hermes\"},{\"name\":\"no-e2e-required\"}],\"body\":\"kanban: t_dead${issue}\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"no-e2e-required"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"CLOSED"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\\\n\"},{\"body\":\"✅ PR #1460 смержен в develop. Cleanup: ветка удалена.\\n\"}]}"
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[{"body":"✅ PR #1460 смержен в develop. Cleanup: ветка удалена."}]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" "[]"
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":1460,\"state\":\"MERGED\",\"baseRefName\":\"develop\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"title\":\"[robot] gate1 candidate strip already closed\",\"labels\":[]}]"
+    set_state PR_1460_COMMITS_JSON '[]'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+    set_state "BRANCH_PRESENT_${branch}" 1
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # No close call (state already CLOSED).
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c 'gh issue close' || true)"
+    assert_eq "0" "$close_calls" "no close call on already-CLOSED no-e2e issue"
+
+    # Branch still deleted (idempotent cleanup).
+    local del_calls
+    del_calls="$(printf '%s\n' "$journal" | grep -c 'gh api -X DELETE' || true)"
+    assert_eq "1" "$del_calls" "branch still deleted on already-CLOSED"
+}
+
+# ===========================================================================
+# Q. Retro 19.08 #79779a21 (orphan #1422): MERGED + base=develop +
+#    e2e-done + OPEN + user-reopened-this whitelist label set → SKIP
+#    auto-close (whitelist wins over e2e-done, retro t_873ebef2).
+#    Regression: prior behavior must be preserved when no-e2e-required
+#    is the only signal (no e2e-done present) — issue stays OPEN.
+# ===========================================================================
+test_Q_no_e2e_required_only_no_user_reopen_stays_open() {
+    new_test
+    # Defensive: if e2e-process didn't run (e.g. worker never reported),
+    # the issue might have neither e2e-done nor no-e2e-required, but the
+    # PR is MERGED into develop → merge-gate defers destructive cleanup
+    # and waits for label. This is case B's contract; just re-asserted
+    # here so the no-e2e-required rule doesn't accidentally drop labels.
+    local issue=1456 branch
+    branch="$(slugify_branch "$issue" 'no label at all demo')"
+    set_state ISSUE_LIST_JSON "[{\"number\":${issue},\"title\":\"no label at all demo\",\"labels\":[{\"name\":\"hermes\"}],\"body\":\"kanban: t_dead${issue}\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" "{\"comments\":[{\"body\":\"kanban: t_dead${issue}\\\n\"}]}"
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" "[]"
+    set_state "PR_HEAD_${branch}_JSON" "[{\"number\":1460,\"state\":\"MERGED\",\"baseRefName\":\"develop\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}],\"title\":\"[robot] no label at all demo\",\"labels\":[]}]"
+    set_state PR_1460_COMMITS_JSON '[]'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+    set_state "BRANCH_PRESENT_${branch}" 1
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # No close: without e2e-done OR no-e2e-required, merge-gate defers
+    # destructive cleanup (waits for label from e2e-process / triage).
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c 'gh issue close' || true)"
+    assert_eq "0" "$close_calls" "no close when neither e2e-done nor no-e2e-required"
+}
+
+run_test "O. retro 19.08 #79779a21: MERGED + no-e2e-required → close" test_O_merged_no_e2e_required_closes
+run_test "P. no-e2e-required + already-CLOSED → idempotent" test_P_no_e2e_required_already_closed_no_duplicate
+run_test "Q. no labels → no close (defensive: defer cleanup)" test_Q_no_e2e_required_only_no_user_reopen_stays_open
 
 summary
