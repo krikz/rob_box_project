@@ -13,6 +13,12 @@ coverage/
 public/models/**/*.glb
 public/models/**/*.gltf
 !public/models/**/*.optimized.glb
+# Phase 2.1 canonical avatar artifact (kanban t_90c362bd, issue #1677):
+# gltf:optimize writes *.optimized.glb; the canonical published name for
+# the avatar is avatar.glb so the runtime can drop the `.optimized.` suffix
+# without renaming. Same compression contract (Draco + Meshopt) applies —
+# see gltf:verify and avatar_pipeline.test.ts.
+!public/models/avatar/avatar.glb
 
 # Build scratch dirs for programmatic assets (Phase 2.1 build-avatar,
 # build_bridge_assets). Raw .glb + sidecar .json are written here during

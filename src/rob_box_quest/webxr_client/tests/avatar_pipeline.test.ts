@@ -7,10 +7,10 @@ import draco3d from "draco3dgltf";
 import { MeshoptDecoder } from "meshoptimizer";
 
 // avatar-pipeline smoke test (Phase 2.1, ADR-0032 §3.2, kanban t_1fa6e505,
-// issue #1677).
+// issue #1677; published as canonical `avatar.glb` per kanban t_90c362bd).
 //
-// Loads `public/models/avatar/avatar.optimized.glb` (committed artifact of
-// `npm run build:avatar` + `npm run gltf:optimize` + `npm run build:avatar --publish`)
+// Loads `public/models/avatar/avatar.glb` (committed artifact of
+// `npm run gltf:optimize` then `cp avatar/_raw/avatar.optimized.glb avatar/avatar.glb`)
 // through gltf-transform's NodeIO + Draco + Meshopt decoders, and asserts:
 //   - the asset is reachable on disk;
 //   - the file parses without throwing;
@@ -32,7 +32,7 @@ const ASSET_PATH = resolve(
   "public",
   "models",
   "avatar",
-  "avatar.optimized.glb"
+  "avatar.glb"
 );
 
 const CREDITS_PATH = resolve(

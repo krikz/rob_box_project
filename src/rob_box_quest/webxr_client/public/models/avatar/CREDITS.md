@@ -29,17 +29,27 @@ public domain under CC0.
 
 ## Optimised artefact
 
-`avatar.optimized.glb` (this directory, committed) is produced from
-`avatar.glb` by the Phase 2.0 glTF asset pipeline
-([`scripts/gltf-optimize.mjs`](../../scripts/gltf-optimize.mjs)). It
-carries:
+This directory commits the avatar under two names:
 
-  - `KHR_draco_mesh_compression`     (geometry, Draco edgebreaker)
-  - `EXT_meshopt_compression`        (geometry + animation, Meshopt)
-  - `KHR_mesh_quantization`          (16-bit vertex/index quantization)
+  - `avatar.optimized.glb` — the direct output of the Phase 2.0 glTF asset
+    pipeline ([`scripts/gltf-optimize.mjs`](../../scripts/gltf-optimize.mjs)).
+    Carries:
+      - `KHR_draco_mesh_compression`     (geometry, Draco edgebreaker)
+      - `EXT_meshopt_compression`        (geometry + animation, Meshopt)
+      - `KHR_mesh_quantization`          (16-bit vertex/index quantization)
+  - `avatar.glb` — the canonical name that the WebXR runtime loads. Same
+    bytes as `avatar.optimized.glb`; copied by the build script (step 4
+    below) so the runtime can address the asset without the `.optimized.`
+    suffix. The two files are byte-identical at commit time.
+
+Note on `KHR_texture_basisu` (KTX2/Basis): the avatar has **zero textures**
+(only PBR baseColor/metallic/roughness factors, no albedo/normal maps),
+so KTX2 would be a no-op for this asset. `gltf:verify` emits a warning
+for missing `KHR_texture_basisu` rather than failing the gate; the
+opt-in KTX-Software `ktx` CLI is documented in README §KTX2 / Basis.
 
 The raw `avatar.glb` lives in `_raw/` (gitignored) and is **not** committed
-to the repository — only the optimised artifact is.
+to the repository — only the optimised artifacts are.
 
 ## Rebuild
 
@@ -53,7 +63,10 @@ npm run gltf:optimize
 # 3. move optimised → public/models/avatar/, delete raw
 node scripts/build-avatar.mjs --publish
 
-# 4. verify (size budget + extension contract)
+# 4. publish canonical avatar.glb (same bytes as avatar.optimized.glb)
+cp public/models/avatar/avatar.optimized.glb public/models/avatar/avatar.glb
+
+# 5. verify (size budget + extension contract)
 npm run gltf:verify
 ```
 
