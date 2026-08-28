@@ -56,6 +56,11 @@ class ClientSession:
     last_ping_monotonic: Optional[float] = None
     last_heartbeat_monotonic: Optional[float] = None
     created_monotonic: float = field(default_factory=time.monotonic)
+    # Phase 2.2 telemetry (ADR-0032 §3.5): rate-limit для 0x40 TELEMETRY_PERF.
+    # Client шлёт 1 Hz; если чаще 5 Hz (анти-спам) → дроп после 10 быстрых.
+    # last_telemetry_ms — wall-clock (ms), чтобы сравнивать с int(time.time()*1000).
+    last_telemetry_ms: Optional[int] = None
+    telemetry_fast_count: int = 0
 
     def is_open(self) -> bool:
         return self.state != SessionState.CLOSED

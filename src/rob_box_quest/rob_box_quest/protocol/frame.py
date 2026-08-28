@@ -25,6 +25,10 @@ class FrameType(IntEnum):
     JSON_EVENT = 0x12
     # Рация (voice passthrough): голос оператора (client→server), payload = raw int16 PCM 16 kHz mono (D2).
     VOICE_AUDIO = 0x13
+    # Phase 2.2 telemetry (ADR-0032 §3.5): client → server, payload = CBOR
+    # encoded {fps, frame_ms, gpu_ms, stale_count, vram_mb, thermal}.
+    # Сервер републикует в ROS2 /quest/perf через QuestBridge.publish_quest_perf.
+    TELEMETRY_PERF = 0x40
     GOODBYE = 0x20
     ERROR = 0xFF
 

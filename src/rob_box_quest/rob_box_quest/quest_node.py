@@ -42,7 +42,7 @@ from rclpy.qos import (
     ReliabilityPolicy,
 )
 from sensor_msgs.msg import CompressedImage, LaserScan
-from std_msgs.msg import String
+from std_msgs.msg import String, UInt8MultiArray
 
 from .core.safety import Watchdog
 from .core.teleop import TeleopController
@@ -135,6 +135,7 @@ class QuestBridge:
         sound_stop_pub=None,
         stt_in_pub=None,
         set_voice_mode_pub=None,
+        quest_perf_pub=None,
     ) -> None:
         self._node = node
         self._pub_quest = cmd_vel_quest_pub
@@ -147,6 +148,9 @@ class QuestBridge:
         self._stt_in_pub = stt_in_pub
         # voice_mode → супервизор (ADR-0028 S5): /avatar/set_voice_mode.
         self._set_voice_mode_pub = set_voice_mode_pub
+        # Phase 2.2 telemetry (ADR-0032 §3.5): /quest/perf UInt8MultiArray.
+        # None в unit-тестах моста — Bridge contract всё равно сохраняется.
+        self._quest_perf_pub = quest_perf_pub
         # Текущий голосовой режим: "radio" (рация, default) | "robot_voice".
         self._voice_mode: str = "radio"
         self._voice_buffer: list[bytes] = []
@@ -229,6 +233,24 @@ class QuestBridge:
                 }
             )
         return items
+
+    # --- Phase 2.2 telemetry (ADR-0032 §3.5) --------------------------
+
+    def publish_quest_perf(self, payload: bytes) -> None:
+        """0x40 TELEMETRY_PERF (CBOR bytes) → ROS2 /quest/perf (UInt8MultiArray).
+
+        Контракт: server НЕ декодирует payload (KISS — thin forwarder),
+        downstream subscriber'ы (Grafana adapter, offline-анализ) парсят CBOR сами.
+
+        BEST_EFFORT QoS — потеря пакета не критична, т.к. это отладочная
+        telemetry (1 Hz), drop-oldest в ROS2 queue нам не вредит.
+        """
+        if self._quest_perf_pub is None:
+            return  # unit-test моста без ROS publisher
+        msg = UInt8MultiArray()
+        # CBOR-payload обычно ~30-50 байт (5 floats + 3 ints + ~10 chars keys).
+        msg.data = list(payload)
+        self._quest_perf_pub.publish(msg)
 
     # --- Voice passthrough (рация, P3) ---------------------------------
 
@@ -436,6 +458,19 @@ class QuestNode(Node):
         self._stt_in_pub = self.create_publisher(AudioData, "/audio/quest_in", _VOICE_QOS)
         # voice_mode → супервизор (ADR-0028 S5): /avatar/set_voice_mode.
         self._set_voice_mode_pub = self.create_publisher(String, "/avatar/set_voice_mode", _RE)
+        # Phase 2.2 telemetry (ADR-0032 §3.5): raw CBOR bytes от Quest клиента.
+        # Используем UInt8MultiArray (стандартный msg) — server не декодирует,
+        # downstream subscriber (Grafana / offline) сам парсит CBOR.
+        # BEST_EFFORT — это отладочная telemetry, потеря пакета не критична.
+        _TELEMETRY_QOS = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+        self._quest_perf_pub = self.create_publisher(
+            UInt8MultiArray, "/quest/perf", _TELEMETRY_QOS
+        )
         # Подписки для стримов (Phase 1.4 v2: lidar + camera_rear-фолбэк через
         # ROS; остальные камеры — мимо ROS через CameraProvider).
         self._odom_sub = self.create_subscription(Odometry, "/odom", self._on_odom, _RE)
@@ -466,6 +501,7 @@ class QuestNode(Node):
             sound_stop_pub=self._sound_stop_pub,
             stt_in_pub=self._stt_in_pub,
             set_voice_mode_pub=self._set_voice_mode_pub,
+            quest_perf_pub=self._quest_perf_pub,
         )
         # Replace NoOpBridge на реальный (после создания обоих).
         self.ws_server.bridge = self.bridge

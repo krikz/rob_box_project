@@ -105,6 +105,13 @@ class Bridge(Protocol):
         """voice_mode cmd → сменить режим голоса (через супервизор, ADR-0028 S5)."""
         ...
 
+    def publish_quest_perf(self, payload: bytes) -> None:
+        """Phase 2.2 telemetry (ADR-0032 §3.5): republish client perf payload
+        (raw CBOR bytes) в ROS2 /quest/perf. Server не декодирует — это
+        ответственность downstream subscriber'а (Grafana / offline-анализ).
+        """
+        ...
+
 
 class NoOpBridge:
     """Заглушка для тестов. Реальная реализация в quest_node.py."""
@@ -159,6 +166,10 @@ class NoOpBridge:
         return None
 
     def set_voice_mode(self, mode: str) -> None:
+        return None
+
+    def publish_quest_perf(self, payload: bytes) -> None:
+        # NoOpBridge: тестам нужен только контракт, не публикация.
         return None
 
 
@@ -606,6 +617,12 @@ class WSSServer:
                 elif ftype == FrameType.VOICE_AUDIO:
                     # Рация: голос оператора → /avatar/voice_in (int16 PCM 16 kHz).
                     self.bridge.publish_voice_audio(payload)
+                elif ftype == FrameType.TELEMETRY_PERF:
+                    # Phase 2.2 telemetry (ADR-0032 §3.5): client perf metrics
+                    # → ROS2 /quest/perf через Bridge.publish_quest_perf.
+                    # Payload уже CBOR-encoded на клиенте; server только
+                    # decode (для rate-limit / log) + republish как bytes.
+                    self._on_telemetry_perf(ws, session, payload)
                 else:
                     await self._send_error(
                         ws,
@@ -628,6 +645,37 @@ class WSSServer:
                     pass
             self._unregister_session(session)
         return ws
+
+    async def _on_telemetry_perf(
+        self, ws, session: "ClientSession", payload: bytes
+    ) -> None:
+        """Phase 2.2 telemetry (ADR-0032 §3.5): 0x40 TELEMETRY_PERF handler.
+
+        CBOR-payload с клиента → Bridge.publish_quest_perf() → ROS2 /quest/perf
+        (см. quest_node.QuestBridge).
+
+        Server НЕ декодирует payload — это ответственность downstream subscriber'а
+        (Grafana adapter, offline-анализ). KISS: server = thin forwarder.
+
+        Rate-limit: client шлёт 1 Hz. Если чаще 5 Hz (анти-спам / bug),
+        дропаем после первых 10 быстрых пакетов, чтобы не забить ROS2 queue.
+        """
+        # Rate-limit (anti-spam, не strict): > 5 Hz → дроп после 10 быстрых.
+        now_ms = int(time.time() * 1000)
+        if session.last_telemetry_ms is not None:
+            delta = now_ms - session.last_telemetry_ms
+            if delta < 200:  # < 5 Hz — должно быть ровно 1 Hz
+                session.telemetry_fast_count += 1
+                if session.telemetry_fast_count > 10:
+                    return
+            else:
+                session.telemetry_fast_count = 0
+        session.last_telemetry_ms = now_ms
+        # Republish через Bridge (CBOR bytes as-is → ROS2 /quest/perf).
+        try:
+            self.bridge.publish_quest_perf(payload)
+        except Exception as e:  # noqa: BLE001
+            log.warning("bridge.publish_quest_perf failed: %s", e)
 
     async def _heartbeat_loop(self, ws, session: ClientSession) -> None:
         try:

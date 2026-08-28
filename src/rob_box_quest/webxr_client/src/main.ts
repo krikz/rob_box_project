@@ -8,6 +8,7 @@
 // Debug-панелей (lil-gui) больше нет — вход только через PIN-форму.
 
 import { Connection } from "./wire/connection";
+import { TelemetryReporter } from "./wire/telemetry";
 import { createCaptainBridge, MAIN_SCREEN_TOPIC } from "./scene/captain_bridge";
 import { TeleopFSM } from "./input/teleop_fsm";
 import { createDesktopTeleop } from "./input/desktop_teleop";
@@ -54,6 +55,22 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     // eslint-disable-next-line no-console
     console.warn("[bootstrap] avatar load rejected:", err);
   });
+
+  // Phase 2.2 telemetry reporter (ADR-0032 §3.5): 1 Hz tick → WSS
+  // 0x40 TELEMETRY_PERF → server republishes в ROS2 /quest/perf.
+  // Battery-friendly: один setInterval + ~30 строк в нём, без busy-loop.
+  // GPU probe опционален (EXT_disjoint_timer_query_webgl2 нет в Quest
+  // Browser reliably) — если недоступен, gpu_ms просто null в payload.
+  const telemetry = new TelemetryReporter({ intervalMs: 1000, fpsWindow: 60 });
+  // WebGL2 context получаем из renderer.domElement; используем non-null
+  // assertion — captain_bridge всегда создаёт WebGLRenderer на этом этапе.
+  const renderer = bridge.renderer;
+  const gl = renderer.getContext();
+  telemetry.attachRenderer(gl);
+  telemetry.onTick((payload) => {
+    if (conn && !disconnected) conn.sendTelemetryPerf(payload);
+  });
+  telemetry.start();
 
   const fsm = new TeleopFSM();
   const desktopTeleop = createDesktopTeleop({ fsm });
@@ -202,7 +219,10 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
 
   // ---- Teleop loop -----------------------------------------------------------
 
-  let lastTickTs = 0;
+  let lastTickTs = performance.now();
+  // Phase 2.2: отдельный ts для telemetry sample, чтобы большой first-tick
+  // delta не загрязнял FPS window (performance.now() - 0 ≈ минуты).
+  let lastSampleTs = performance.now();
 
   // Полинг XR-контроллеров: агрегируем по всем inputSources — arm-клик =
   // любой правый стик, стик-оси = контроллер с наибольшим отклонением,
@@ -277,6 +297,14 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
 
   function teleopLoop(): void {
     const now = performance.now();
+    // Phase 2.2: sample frame deltas для telemetry (FPS rolling avg).
+    // Один раз в rAF — на VR ~72/90 Hz, на desktop ~60 Hz. XR rAF
+    // отдельный цикл (выше в enterVr), но он тикает teleop, не нас;
+    // sampleFrame внутри XR-кадрового цикла не вызываем — telemetry
+    // привязан к window.rAF (он в VR всё равно «заморожен», но
+    // если VR не активен — это и есть основной цикл).
+    telemetry.sampleFrame(now - lastSampleTs);
+    lastSampleTs = now;
     if (now - lastTickTs >= 33) {
       lastTickTs = now;
       tickTeleop();
@@ -352,6 +380,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
 
   return {
     dispose(): void {
+      telemetry.stop();
       stopRender();
       desktopTeleop.destroy();
       if (xrRafSession && xrRafId) {

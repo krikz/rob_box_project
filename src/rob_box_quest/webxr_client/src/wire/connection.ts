@@ -169,6 +169,24 @@ export class Connection {
     this.ws.send(bytes as unknown as ArrayBuffer);
   }
 
+  /**
+   * Phase 2.2 telemetry (ADR-0032 §3.5): отправить CBOR-encoded perf payload
+   * через frame type 0x40 TELEMETRY_PERF. Сервер републикует в ROS2
+   * `/quest/perf`. Подробности — src/wire/telemetry.ts.
+   *
+   * Типичная частота: 1 Hz. Payload уже encoded TelemetryReporter'ом;
+   * Connection НЕ знает про CBOR-формат (separation of concerns).
+   */
+  sendTelemetryPerf(payload: Uint8Array): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const bytes = encodeFrame(FrameType.TELEMETRY_PERF, 0, payload);
+    try {
+      this.ws.send(bytes as unknown as ArrayBuffer);
+    } catch {
+      // socket may close mid-send; stop() shouldn't crash bootstrap.
+    }
+  }
+
   private openSocket(): void {
     this.clearTimers();
     // Сброс подписок на новый сокет: после reconnect сервер создаёт НОВУЮ
