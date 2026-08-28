@@ -298,6 +298,81 @@ def test_on_event_receives_lifecycle_events() -> None:
     asyncio.run(_run())
 
 
+# ---------------------------------------------------------------------------
+# S2.3 — begin_group() / seg_idx (scheduler-segments-merge plan)
+# ---------------------------------------------------------------------------
+
+
+def test_begin_group_assigns_shared_group_id_and_increasing_seg_idx() -> None:
+    """Multiple speak_text calls in one LLM batch share a group_id and
+    get a rising seg_idx (0, 1, 2, ...)."""
+    underlying = _FakeUnderlying()
+
+    async def _run() -> None:
+        sched = TaskScheduler()
+        sched.start()
+        executor = SchedulerToolExecutor(underlying, scheduler=sched)
+        try:
+            executor.begin_group()
+            r1 = await executor.execute(_call("c1", "speak_text"))
+            r2 = await executor.execute(_call("c2", "speak_text"))
+            t1 = sched.get_task(json.loads(r1.content)["task_id"])
+            t2 = sched.get_task(json.loads(r2.content)["task_id"])
+            assert t1.group_id is not None
+            assert t1.group_id == t2.group_id
+            assert t1.seg_idx == 0
+            assert t2.seg_idx == 1
+            await asyncio.wait_for(sched.wait_all(), timeout=2.0)
+        finally:
+            sched.shutdown()
+
+    asyncio.run(_run())
+
+
+def test_begin_group_next_batch_gets_a_new_group_id() -> None:
+    underlying = _FakeUnderlying()
+
+    async def _run() -> None:
+        sched = TaskScheduler()
+        sched.start()
+        executor = SchedulerToolExecutor(underlying, scheduler=sched)
+        try:
+            executor.begin_group()
+            r1 = await executor.execute(_call("c1", "speak_text"))
+            executor.begin_group()
+            r2 = await executor.execute(_call("c2", "speak_text"))
+            t1 = sched.get_task(json.loads(r1.content)["task_id"])
+            t2 = sched.get_task(json.loads(r2.content)["task_id"])
+            assert t1.group_id != t2.group_id
+            assert t2.seg_idx == 0
+            await asyncio.wait_for(sched.wait_all(), timeout=2.0)
+        finally:
+            sched.shutdown()
+
+    asyncio.run(_run())
+
+
+def test_without_begin_group_tasks_are_ungrouped() -> None:
+    """Backward compat: calling execute() without begin_group() first
+    must keep producing group_id=None (today's behaviour)."""
+    underlying = _FakeUnderlying()
+
+    async def _run() -> None:
+        sched = TaskScheduler()
+        sched.start()
+        executor = SchedulerToolExecutor(underlying, scheduler=sched)
+        try:
+            r1 = await executor.execute(_call("c1", "speak_text"))
+            t1 = sched.get_task(json.loads(r1.content)["task_id"])
+            assert t1.group_id is None
+            assert t1.seg_idx is None
+            await asyncio.wait_for(sched.wait_all(), timeout=2.0)
+        finally:
+            sched.shutdown()
+
+    asyncio.run(_run())
+
+
 def test_active_tasks_block_reflects_busy_channels() -> None:
     underlying = _FakeUnderlying()
 

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from typing import Any, Callable, Optional
 
 from rob_box_llm.provider import ToolCall, ToolResult
@@ -105,6 +106,26 @@ class SchedulerToolExecutor:
         self._scheduler = scheduler
         self._on_event = on_event
         self._scheduler_attempted = False
+        # S2.3 (scheduler-segments-merge) — group_id/seg_idx assigned to
+        # every channel-routed task submitted while a group is open.
+        # None until the first begin_group() call (backward compat:
+        # ungrouped tasks keep group_id=None like before this feature).
+        self._current_group_id: Optional[str] = None
+        self._current_seg_idx: int = 0
+
+    def begin_group(self) -> str:
+        """Start a new segment group (issue #968, S2.3).
+
+        Called by ``dialog_core`` right before it processes one LLM
+        batch of tool_calls (the same re-ordering point W7a already
+        hooks into). Every channel-routed task :meth:`execute` submits
+        afterwards gets this call's ``group_id`` and a ``seg_idx``
+        counting up from 0, until the next ``begin_group()`` call
+        starts a fresh group.
+        """
+        self._current_group_id = uuid.uuid4().hex
+        self._current_seg_idx = 0
+        return self._current_group_id
 
     # ----- port surface --------------------------------------------------
 
@@ -132,6 +153,11 @@ class SchedulerToolExecutor:
             return await self._underlying.execute(call)
 
         deferred = call.name in _DEFERRED_DESTRUCTIVE_TOOLS
+        group_id = self._current_group_id
+        seg_idx: Optional[int] = None
+        if group_id is not None:
+            seg_idx = self._current_seg_idx
+            self._current_seg_idx += 1
         try:
             task = scheduler.submit(
                 SchedulerTask(
@@ -140,6 +166,8 @@ class SchedulerToolExecutor:
                     channel=channel,
                     executor=self._make_executor(call, deferred),
                     args=dict(call.arguments or {}),
+                    group_id=group_id,
+                    seg_idx=seg_idx,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — fail-open: never break voice
