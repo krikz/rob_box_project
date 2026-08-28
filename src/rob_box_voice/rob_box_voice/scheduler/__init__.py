@@ -40,6 +40,15 @@ See :class:`TaskScheduler` for the public entry point.
 
 from __future__ import annotations
 
+from .delta import (
+    DeltaOp,
+    DeltaOpKind,
+    TaskDelta,
+    append,
+    drop,
+    replace,
+    rewrite,
+)
 from .decision import (
     DecisionCoordinator,
     DecisionPlan,
@@ -113,6 +122,13 @@ from .task_scheduler import (
 )
 
 __all__ = [
+    "DeltaOp",
+    "DeltaOpKind",
+    "TaskDelta",
+    "append",
+    "drop",
+    "replace",
+    "rewrite",
     "DecisionCoordinator",
     "DecisionPlan",
     "HighLevelPlanner",
