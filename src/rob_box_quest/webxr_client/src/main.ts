@@ -1,10 +1,15 @@
-// Bootstrap: подключение к WSS, инициализация сцены, teleop, WebXR auto-entry.
+// Bootstrap: подключение к WSS, инициализация сцены, teleop, WebXR auto-entry, overlays.
 //
 // Вход на мостик — только PIN-форма. После ввода PIN:
 //   - если браузер поддерживает WebXR (immersive-vr) — сразу входим в VR
 //     (requestSession вызывается в user-activation submit handler);
 //   - иначе остаёмся в desktop-режиме (WASD fallback + 2D-рендер).
 //
+// Phase 2 интеграция:
+//   - loading_screen показывает пока грузятся CC0 GLB/HDR ассеты;
+//   - error_overlay сообщает о disconnect > 5s и ошибках сервера;
+//   - help_overlay (H key) — список горячих клавиш;
+//   - mode_manager — клиентский стор UI-состояния (voice mode / armed / current voice).
 // Debug-панелей (lil-gui) больше нет — вход только через PIN-форму.
 
 import { Connection } from "./wire/connection";
@@ -14,6 +19,15 @@ import { createDesktopTeleop } from "./input/desktop_teleop";
 import { createXrTeleop, pollXrInput } from "./input/xr_teleop";
 import { createVoiceCapture } from "./input/voice_capture";
 import { createXrBootstrap, type XrBootstrap } from "./xr_bootstrap";
+import { createLoadingScreen } from "./ui/loading_screen";
+import {
+  createErrorOverlay,
+  createDisconnectWatchdog,
+  type ErrorOverlay,
+  type DisconnectWatchdog
+} from "./ui/error_overlay";
+import { createHelpOverlay, type HelpOverlay } from "./ui/help_overlay";
+import { createModeManager, type ClientModeManager } from "./ui/mode_manager";
 
 const CLIENT_VERSION = "0.1.0";
 const SUBPROTOCOL = "robbox-quest-v1";
@@ -32,20 +46,44 @@ interface BootstrapOptions {
   pinForm: HTMLFormElement;
   pinError: HTMLElement;
   statusEl: HTMLElement;
+  /** Контейнер для overlay'ов (loading/error/help). Обычно document.body. */
+  body: HTMLElement;
+  /** Опциональная кнопка "?" в HUD; клик тогглит help overlay. */
+  helpToggle?: HTMLElement | null;
 }
 
 export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   const url = opts.url ?? deriveWsUrl();
+
+  // Phase 2.3 overlays — создаём ДО старта асинхронных pipeline'ов,
+  // чтобы loading-screen сразу перекрыл экран пока грузятся CC0 GLB.
+  const loading = createLoadingScreen(opts.body, "Loading environment…");
+  const errorOverlay: ErrorOverlay = createErrorOverlay(opts.body);
+  const help: HelpOverlay = createHelpOverlay(opts.body);
+  const modeManager: ClientModeManager = createModeManager();
+  const watchdog: DisconnectWatchdog = createDisconnectWatchdog(errorOverlay);
+
+  // HUD: подключаем help-toggle кнопку (если есть) к help overlay.
+  if (opts.helpToggle) {
+    opts.helpToggle.addEventListener("click", () => help.toggle());
+  }
+  // Mode-manager → voice/teleop состояние. Сейчас в HUD напрямую не
+  // показываем (Phase 2.3 не делал voice picker UI — голос управляется
+  // гриппами XR-контроллеров), но mode_manager используется ниже
+  // для синхронизации с реальным состоянием и для будущих подписчиков.
+  modeManager.on(() => {
+    // no-op placeholder: реальный HUD-индикатор добавим в Phase 3,
+    // здесь только проверяем, что стор жив и listener работает.
+  });
+
   const bridge = createCaptainBridge({ canvas: opts.canvas, enableXr: true });
   bridge.initLayout();
   const stopRender = bridge.start();
   // Phase 2.1: load Captain Bridge CC0 environment (5 GLB + HDR).
   // Fail-soft — see captain_bridge.ts → loadEnvironment(). The procedural
   // fallback floor + grid stays in place if the GLB fetch fails.
-  bridge.loadEnvironment().catch((err) => {
-    // eslint-disable-next-line no-console
-    console.warn("[bootstrap] bridge environment load rejected:", err);
-  });
+  // loading.watch прячет overlay при успехе или показывает ошибку при сбое.
+  void loading.watch(bridge.loadEnvironment(), "Loading environment…");
 
   const fsm = new TeleopFSM();
   const desktopTeleop = createDesktopTeleop({ fsm });
@@ -94,6 +132,8 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     voicePttMode = next;
     if (next === "none") {
       voiceCapture.stop();
+      // Mode-manager: клиентский UI-state — "off".
+      modeManager.setVoiceMode("off");
       return;
     }
     if (next === "robot_voice" && send) {
@@ -102,6 +142,8 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     if (send) {
       c!.send({ cmd: "voice_ptt_start", mode: next, ts_ms: Date.now() });
     }
+    // Mode-manager: клиентский UI-state — текущий voice mode.
+    modeManager.setVoiceMode(next);
     void voiceCapture.start();
   }
 
@@ -128,6 +170,8 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
           if (state === "connected") {
             disconnected = false;
             setStatus("CONNECTED", "connected");
+            // Phase 2.3: ошибка прячется при восстановлении коннекта.
+            watchdog.markConnected();
             for (const topic of DEFAULT_SUBSCRIBED_TOPICS) {
               conn!.subscribe(topic);
             }
@@ -140,11 +184,17 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             void exitVr();
           } else if (state === "reconnecting") {
             setStatus("RECONNECTING…", "connecting");
+            // Disconnect-watchdog начинает отсчёт; если > 5s без успеха —
+            // покажем error overlay (см. createDisconnectWatchdog).
+            watchdog.markDisconnected();
           } else if (state === "connecting") {
             setStatus("CONNECTING…", "connecting");
           } else if (state === "closed") {
             setStatus("CLOSED", "lost");
             disconnected = true;
+            // "closed" — окончательно (не reconnect). Прямо сейчас
+            // показываем overlay без 5-секундного порога.
+            errorOverlay.show("Disconnected", "Connection closed by server");
           }
         },
         onBinaryFrame: (streamId, payload) => {
@@ -235,6 +285,8 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     if (armPress && !xrArmWasPressed) {
       armed = !armed;
       bridge.setArmState(armed);
+      // Phase 2.3: mode-manager синхронизируется с реальным arm-стейтом.
+      modeManager.setTeleopState(armed ? "armed" : "disarmed");
     }
     xrArmWasPressed = armPress;
     fsm.setDeadman(armed);
@@ -246,6 +298,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       // B/Y — жёсткий стоп: локально дизармимся, HUD отражает реальность.
       armed = false;
       bridge.setArmState(false);
+      modeManager.setTeleopState("disarmed");
     }
     xrEmergencyWasPressed = emergency;
     applyVoicePtt(ptt, robotPtt);
@@ -318,6 +371,8 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       armed = false;
       xrArmWasPressed = false;
       bridge.setArmState(false);
+      // Phase 2.3: синхронизируем UI-state.
+      modeManager.setTeleopState("disarmed");
       applyVoicePtt(false, false);
       xrTeleopHandle?.destroy();
       xrTeleopHandle = null;
@@ -353,6 +408,11 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       voiceCapture.stop();
       conn?.close();
       bridge.dispose();
+      // Phase 2.3 overlays cleanup.
+      loading.dispose();
+      errorOverlay.dispose();
+      help.dispose();
+      watchdog.dispose();
     }
   };
 }

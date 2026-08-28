@@ -9,7 +9,16 @@
   <body>
     <canvas id="scene"></canvas>
     <div id="hud">
-      <div id="status" class="status status--connecting">CONNECTING…</div>
+      <div id="status" class="status status--connecting" title="WebSocket connection to robot">
+        CONNECTING…
+      </div>
+      <button
+        id="help-toggle"
+        class="help-toggle"
+        type="button"
+        title="Показать / скрыть горячие клавиши (H)"
+        aria-label="Help (H)"
+      >?</button>
     </div>
     <div id="pin-overlay" class="pin-overlay">
       <form id="pin-form" class="pin-form" autocomplete="off">
