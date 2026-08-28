@@ -183,14 +183,90 @@ phase-2 — registry из `rob_box_voice/command_node.py`.
 
 ```json
 {
-  "cmd": "voice_ptt",
+  "cmd": "voice_ptt_start",
   "ts_ms": 1234567890,
-  "state": "start" | "stop"
+  "mode": "radio" | "robot_voice"
 }
 ```
 
-Edge-triggered. Сервер публикует в `/audio/quest_in` только пока
-`state=start`. Phase-2.
+Phase 2.1+. Заменяет старый `voice_ptt {state: start|stop}` (см. §11.2).
+Edge-triggered: при `start` сервер публикует в `/audio/quest_in` до
+получения `voice_ptt_stop`. `mode` определяет маршрут аудио-потока:
+
+- `radio` — голос оператора → динамик робота (Passthrough/PTT);
+- `robot_voice` — голос оператора → STT → LLM → TTS голосом робота.
+
+При `mode=robot_voice` клиент ОБЯЗАН также отправить `voice_mode
+{mode: "ttts_proxy"}` перед `voice_ptt_start` (или в одном батче) —
+иначе supervisor оставит `voice_input_mode=respeaker` и STT не
+услышит клиента (ADR-0028 §5).
+
+```json
+{
+  "cmd": "voice_ptt_stop",
+  "ts_ms": 1234567890,
+  "mode": "radio" | "robot_voice"
+}
+```
+
+Edge-triggered stop. Клиент ОБЯЗАН указать тот же `mode`, что и в
+start (если рассогласование — сервер игнорирует и логирует).
+
+```json
+{
+  "cmd": "set_voice",
+  "ts_ms": 1234567890,
+  "voice_id": "alena",
+  "preset": "standard" | "friendly" | "authoritative" | "whisper"
+}
+```
+
+Phase 2 §4.3. Меняет активный голос TTS на сервере. `preset`
+опционален — если не указан, сервер использует текущий preset голоса.
+Сервер отвечает `JSON_EVENT{type: "voice_set_ack", voice_id, preset}`
+или `voice_set_nack` с reason.
+
+```json
+{
+  "cmd": "list_voices",
+  "ts_ms": 1234567890
+}
+```
+
+Phase 2 §4.1. Запрос списка доступных голосов. Сервер отвечает
+`JSON_EVENT{type: "voice_list", voices: [...]}` где `voices[]` —
+массив `VoiceInfo` (`voice_id`, `display_name`, `language`,
+`gender`, `description`, `presets?`).
+
+```json
+{
+  "cmd": "preview_voice",
+  "ts_ms": 1234567890,
+  "voice_id": "alena",
+  "text": "Привет, оператор!",
+  "request_id": "<uuid>"
+}
+```
+
+Phase 2 §4.2. Сервер синтезирует `text` голосом `voice_id` и шлёт
+аудио обратно через `JSON_EVENT{type:"preview_voice_audio", format,
+seq, total}` + `BINARY_FRAME`. Финал — `preview_voice_done` или
+`preview_voice_error`. `request_id` обязателен (клиент матчит
+несколько параллельных preview).
+
+```json
+{
+  "cmd": "set_panel_topic",
+  "ts_ms": 1234567890,
+  "panel_id": "panel_1",
+  "topic": "camera_oak_color"
+}
+```
+
+Phase 2 §6.2. Меняет топик, который рендерится в данной panel.
+Сервер переключает `subscribe_ack` на новый topic (если ещё не
+подписан — стартует подписку, старый topic — unsubscribe если
+больше никто не слушает).
 
 ```json
 {
@@ -276,6 +352,13 @@ JSON-обёртка нужна для admin-панели и тестовых к�
 { "type": "admin_logs_end",   "service": "dialogue_node", "ts_ms": 1234567890 }
 { "type": "ping",           "ts_ms": 1234567890, "nonce": "..." }   // см. §7
 { "type": "pong",           "ts_ms": 1234567890, "nonce": "..." }
+{ "type": "voice_list",     "voices": [...], "ts_ms": 1234567890 }     // §4.1
+{ "type": "voice_set_ack",  "voice_id": "alena", "preset": "friendly", "ts_ms": 1234567890 } // §4.3
+{ "type": "voice_set_nack", "voice_id": "alena", "reason": "voice_unavailable", "ts_ms": 1234567890 }
+{ "type": "preview_voice_audio", "request_id": "...", "format": "opus", "content_type": "audio/ogg", "seq": 0, "total": 1, "ts_ms": 1234567890 } // §4.2
+{ "type": "preview_voice_done",  "request_id": "...", "ts_ms": 1234567890 }
+{ "type": "preview_voice_error", "request_id": "...", "reason": "tts_timeout", "ts_ms": 1234567890 }
+{ "type": "stream_select_ack",  "topic": "camera_oak_color", "stream_id": 0x1002, "kind": "jpeg" } // §6.2
 ```
 
 `robot_alert` codes (Phase 1): `BATTERY_LOW (<20%)`, `WIFI_WEAK (<-75 dBm)`,
@@ -315,8 +398,12 @@ JSON-обёртка нужна для admin-панели и тестовых к�
 |---|---|---|
 | `teleop_twist` | 30 Hz (per client) | drop + `ERROR{RATE_LIMIT}` |
 | `ui_button` | 5 Hz | drop |
-| `voice_ptt` | edge-triggered, max 2 start/s | drop |
+| `voice_ptt_start` / `voice_ptt_stop` | edge-triggered, max 2 start/s | drop |
 | `voice_mode` | 1 per 5 s | drop |
+| `set_voice` | 1 per 2 s | drop |
+| `list_voices` | 1 per 10 s | drop |
+| `preview_voice` | 1 per 5 s, max 3 concurrent `request_id` | drop |
+| `set_panel_topic` | 5 Hz per panel | drop |
 | `stop_emergency` | 1 per 100 ms | drop |
 | `ping` | 1 per 5 s | drop |
 
@@ -382,6 +469,26 @@ read-only наблюдение за камерами/лидаром/робото
 
 Изменение семантики существующего frame-типа = bump subprotocol (v3+).
 Новое поле в payload — без bump-а (клиент игнорирует неизвестные поля).
+
+### 11.2. Эволюция полей в Phase 2.1+
+
+На subprotocol `robbox-quest-v1` поверх Phase 1.0 контракта добавились
+новые команды и события **без bump-а subprotocol** (naming evolution):
+
+| Было (Phase 1.0) | Стало (Phase 2.1+) | Когда |
+|---|---|---|
+| `voice_ptt {state: "start"\|"stop"}` | `voice_ptt_start` / `voice_ptt_stop` + `mode` (`radio`\|`robot_voice`) | Aug 2026 |
+| — | `voice_mode {mode: "ttts_proxy"\|...}` | Перед `voice_ptt_start{robot_voice}` (ADR-0028 §5) |
+| — | `set_voice {voice_id, preset?}` / `voice_set_ack` / `voice_set_nack` | Phase 2 §4.3 |
+| — | `list_voices` / `voice_list` | Phase 2 §4.1 |
+| — | `preview_voice {voice_id, text, request_id}` / `preview_voice_audio` / `preview_voice_done` / `preview_voice_error` | Phase 2 §4.2 |
+| — | `set_panel_topic {panel_id, topic}` / `stream_select_ack` | Phase 2 §6.2 |
+
+Старые клиенты (Phase 1.0), присылающие `voice_ptt {state:"start"}`,
+будут проигнорированы сервером Phase 2.1+ (warning в логе, голосовой
+канал не открывается). Совместимости со старым форматом нет — это
+**breaking change в семантике** (но не в формате subprotocol-уровня,
+поэтому v1 сохранён).
 
 ## 12. Что НЕ в Phase 1 (out of scope для дизайна, отложено)
 
