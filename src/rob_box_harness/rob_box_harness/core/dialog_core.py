@@ -141,6 +141,43 @@ _SILENT_FINISH_REASONS: frozenset[str] = frozenset(
     {"insufficient_system_resource", "content_filter", "length"}
 )
 
+
+# Issue #1708 — hallucinated-lyrics guard. After ``execute_music_code``
+# (Renardo instrumental), the LLM sometimes also calls ``speak_text`` with
+# invented lyrics («Нига-стайл, Колобок-флоу...»). The user hears a
+# robotic voice reading hallucinated text on top of (or instead of) the
+# beat. Master prompt only authorises ONE short accept phrase after
+# ``execute_music_code`` («Ок, играю Бах»), not full lyrics. We drop
+# ``speak_text`` calls that follow a music tool AND exceed the accept-
+# phrase threshold AND the user request was NOT a vocal one (rap / poem /
+# song — there backing mode legitimately calls speak_text × N).
+#
+# Mirrors :mod:`rob_box_voice.core.dialogue_guards` heuristic
+# (``is_vocal_request``) without importing it (dialog_core lives in
+# ``rob_box_harness`` and cannot import ``rob_box_voice``). The keyword
+# set is intentionally narrow — false positives would silence legitimate
+# rap backing-mode turns.
+_VOCAL_REQUEST_KEYWORDS: tuple = (
+    "спой", "пой ", "песня", "песню", "рэп", "реп", "rap",
+    "зачитай", "зачита", "зачитывай", "стих", "стишок", "стихотворен",
+    "прочитай", "прочти", "куплет", "частушк",
+)
+# Maximum length (chars) of a legitimate post-music accept phrase
+# («Ок, играю Бах.», «Играю Бах», «Поехали»). Anything longer than
+# this on a non-vocal request is a hallucination. The number matches the
+# existing TRACK-mode accept test in test_issue_992_batch_cleanup.
+_ACCEPT_PHRASE_MAX_CHARS: int = 40
+#: Broader set than ``_MUSIC_PRELUDE_TOOLS`` — adds ``generate_music``
+#: (MiniMax Music API) and ``gen_play_from_library``. The prelude set
+#: only governs execution ORDER (music tools must run first), but the
+#: hallucinated-lyrics guard must fire for ANY music tool that leaves
+#: the user hearing lyrics on top of audio (issue #1708 / #1561).
+_MUSIC_LAUNCH_TOOLS: frozenset[str] = frozenset({
+    "execute_music_code", "set_vibe_preset", "load_track",
+    "generate_music", "gen_play_from_library",
+})
+
+
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------
@@ -756,6 +793,30 @@ class DialogCore:
             execution_order, _deferred = _order_tool_calls(
                 response.tool_calls
             )
+            # Issue #1708 — hallucinated-lyrics guard. Resolve the most
+            # recent user message so the heuristic can tell a vocal
+            # request («спой куплет» — backing mode) apart from a
+            # non-vocal request («сыграй бит про колобка в нига стайле»
+            # — instrumental). Walk the message list in reverse: the
+            # LAST user-role entry is the current turn.
+            _current_user_input: str = ""
+            for _msg in reversed(messages):
+                if _msg.role == "user" and _msg.content:
+                    _current_user_input = str(_msg.content)
+                    break
+            # Music tools that appear ANYWHERE in this LLM batch (both
+            # before and after the candidate speak_text). The order
+            # inside the batch doesn't matter for the guard — the LLM
+            # sometimes calls ``speak_text(title)`` BEFORE
+            # ``execute_music_code`` (issue #1708 live shape) and
+            # sometimes AFTER. Pre-compute the set from the model's
+            # ORIGINAL tool_calls (before our re-ordering) so we cover
+            # both shapes.
+            same_batch_music_calls: set[str] = {
+                call.name
+                for call in response.tool_calls
+                if call.name in _MUSIC_LAUNCH_TOOLS
+            }
             results_by_call_id: dict[str, ToolResult] = {}
             for call in execution_order:
                 if self._acceptance_gate is not None:
@@ -784,6 +845,50 @@ class DialogCore:
                             is_error=False,
                         )
                         continue
+
+                # Issue #1708 — drop hallucinated lyrics after a music
+                # tool. The check runs AFTER acceptance-gate but BEFORE
+                # the real executor: a suppressed speak_text never
+                # reaches the MCP tool, so the user hears no TTS for
+                # it. The LLM still gets a sentinel result so it can
+                # learn from the rejection on its next iteration.
+                if _is_hallucinated_speak_text(
+                    call=call,
+                    same_batch_music_calls=frozenset(same_batch_music_calls),
+                    user_input=_current_user_input,
+                ):
+                    logging.getLogger(__name__).warning(
+                        "DialogCore [issue 1708]: suppressing "
+                        "speak_text in batch with %s — hallucinated "
+                        "lyrics would override music. text=%r user_input=%r",
+                        sorted(same_batch_music_calls),
+                        _extract_speak_text(call.arguments)[:80],
+                        _current_user_input[:80],
+                    )
+                    results_by_call_id[call.id] = _suppressed_speak_text_result(call)
+                    # Counter bookkeeping: the suppressed call must NOT
+                    # count toward speak_text_count / speak_text_real_count
+                    # (otherwise issue #988 anti-duplicate skips the
+                    # final ``done`` text — silent user experience) and
+                    # MUST NOT count toward ``spoken_texts`` (otherwise
+                    # honest history records a phrase that was never
+                    # voiced, biasing future turns).
+                    if call.name == "speak_text":
+                        speak_text_count -= 1
+                        text = _extract_speak_text(call.arguments)
+                        if text:
+                            speak_text_real_count -= 1
+                            # spoken_texts is appended above for every
+                            # real speak_text — pop the last matching
+                            # entry so the honest-history path stays
+                            # honest. The list is small (<= N where N
+                            # is the LLM batch size), linear scan is
+                            # fine.
+                            try:
+                                spoken_texts.remove(text)
+                            except ValueError:
+                                pass
+                    continue
 
                 results_by_call_id[call.id] = await self._tools.execute(call)
 
@@ -1008,9 +1113,115 @@ class DialogCore:
         return self._dsm.current_state != before
 
 
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+
+
+def _is_vocal_request(user_input: str) -> bool:
+    """Issue #1708 — does the user request contain a vocal cue?
+
+    Mirrors ``rob_box_voice.core.dialogue_guards.is_vocal_request``
+    without importing it (dialog_core lives in ``rob_box_harness`` and
+    cannot depend on ``rob_box_voice``). Kept deliberately narrow: the
+    hallucinated-lyrics guard must only fire on NON-vocal requests
+    («сыграй бит», «включи трек»), never on legitimate rap/poem
+    backing-mode turns («спой куплет»).
+
+    ``user_input`` is matched case-insensitively as a substring scan —
+    same algorithm as the upstream detector so the two stay in sync.
+    """
+    if not user_input:
+        return False
+    low = user_input.lower()
+    return any(kw in low for kw in _VOCAL_REQUEST_KEYWORDS)
+
+
+def _extract_speak_text(text: Any) -> str:
+    """Issue #1708 — defensively pull the ``text`` arg out of a tool call.
+
+    Tool arguments are nominally a ``Mapping`` per the OpenAI Chat-
+    Completions contract, but live providers occasionally deliver a
+    ``str`` / ``None`` (malformed JSON, partial stream, etc.). Anything
+    we can't read is treated as the empty string — the guard never
+    drops an empty speak_text (those are legitimate validation
+    rejections handled by issue #1343, not hallucinated lyrics).
+    """
+    if not isinstance(text, Mapping):
+        return ""
+    raw = text.get("text", "")
+    return raw.strip() if isinstance(raw, str) else ""
+
+
+def _is_hallucinated_speak_text(
+    *,
+    call: ToolCall,
+    same_batch_music_calls: frozenset[str],
+    user_input: str,
+) -> bool:
+    """Issue #1708 — should this ``speak_text`` call be suppressed?
+
+    Returns ``True`` (i.e. the call must NOT be executed — replace the
+    tool result with a sentinel that teaches the LLM not to do this)
+    when ALL of the following hold:
+
+    * The call is ``speak_text`` (other tools are passed through).
+    * A music-launch tool (``execute_music_code`` / ``set_vibe_preset``
+      / ``load_track`` / ``generate_music`` / ``gen_play_from_library``)
+      appears in the SAME LLM batch (either before OR after this
+      ``speak_text`` call) — ``same_batch_music_calls`` carries those
+      names. The order in the batch does NOT matter: the LLM
+      sometimes calls ``speak_text(title)`` BEFORE
+      ``execute_music_code`` (issue #1708 live shape) and sometimes
+      AFTER (other variants). Either way the user hears robotic text
+      on top of the beat.
+    * The user request was NOT a vocal one (no «спой/пой/песня/рэп/
+      зачитай/стих» cues) — rap / poem / song backing mode legitimately
+      calls ``speak_text`` × N after ``execute_music_code``.
+    * The ``text`` argument is longer than ``_ACCEPT_PHRASE_MAX_CHARS``
+      — a short accept («Ок, играю Бах») is allowed even on non-vocal
+      requests per the master prompt §5.
+
+    The check is intentionally conservative: any ambiguity (no music
+    tool in the same batch, vocal request, short accept) returns
+    ``False`` and the ``speak_text`` runs normally. False negatives
+    are tolerable — the audio still plays once, the user might hear
+    lyrics on top of the beat. False positives would silence
+    legitimate rap backing turns and break the master-prompt
+    contract.
+    """
+    if call.name != "speak_text":
+        return False
+    if not same_batch_music_calls:
+        return False
+    if _is_vocal_request(user_input):
+        return False
+    text = _extract_speak_text(call.arguments)
+    if not text:
+        return False  # empty speak_text — issue #1343 path, not us
+    return len(text) > _ACCEPT_PHRASE_MAX_CHARS
+
+
+def _suppressed_speak_text_result(call: ToolCall) -> ToolResult:
+    """Issue #1708 — sentinel result fed to the LLM instead of executing.
+
+    The LLM must see WHY its ``speak_text`` call was dropped so it
+    learns not to repeat the pattern. A short plain-text sentinel is
+    cheaper than an ``is_error=True`` JSON payload — the LLM treats
+    it as a tool result the same way and the next iteration will
+    read it alongside the other tool messages.
+    """
+    return ToolResult(
+        tool_call_id=call.id,
+        content=(
+            "[SYSTEM] speak_text подавлен после execute_music_code: "
+            "нельзя читать сгенерированный текст поверх музыки. "
+            "В этом режиме разрешён только КОРОТКИЙ accept "
+            "(«Ок, играю <трек>», ≤40 символов). "
+            "Верни 'done' сразу после execute_music_code."
+        ),
+        is_error=True,
+    )
 
 
 def _tool_spec_to_openai(spec: ToolSpec) -> dict[str, Any]:
