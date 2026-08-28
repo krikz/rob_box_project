@@ -36,6 +36,26 @@ except ImportError:  # pragma: no cover — fallback для minimal environments
     def voices_for(provider: str) -> list:
         return []
 
+# Issue #1709 — Unicode-script guard: LLM иногда вставляет в speak_text
+# иероглифы/деванагари, TTS их бормочет. Общий pure-Python модуль в
+# rob_box_voice (как tts_voice_registry). Ленивый импорт с no-op
+# fallback — пакет должен оставаться импортируемым без rob_box_voice.
+try:
+    from rob_box_voice.tts_text_guard import (
+        analyze as analyze_foreign_scripts,
+        describe as describe_foreign_scripts,
+        should_skip as should_skip_foreign_scripts,
+    )
+except ImportError:  # pragma: no cover — fallback для minimal environments
+    def analyze_foreign_scripts(text: str):
+        return None
+
+    def describe_foreign_scripts(report) -> str:
+        return "guard unavailable"
+
+    def should_skip_foreign_scripts(text: str) -> bool:
+        return False
+
 
 def _active_tts_provider(node) -> str:
     """Активный TTS-провайдер для валидации голосов (issue #1229).
@@ -136,10 +156,25 @@ class SpeakTextTool(MCPTool):
             return
         speech_id = result.get("speech_id")
         finished_success = bool(result.get("success", False))
-        self.log_info(
-            f"🔔 TTS finished: speech_id="
-            f"{speech_id[:8] if speech_id else 'None'}..., "
-            f"success={finished_success}"
+        finished_error = result.get("error")
+
+        # Issue #1709 — ПОЛНЫЙ текст чанка в логе. До фикса здесь был только
+        # `speech_id`: когда TTS падал или его прерывали («🔇 Воспроизведение
+        # прервано»), восстановить, ЧТО именно бормотал робот, было
+        # невозможно — юзер слышал странный фрагмент, а в логе пусто.
+        # Текст берём из snapshot'а pending_speeches (регистрируется в
+        # execute() вместе с batch_id).
+        with self.pending_speeches_lock:
+            _known = self.pending_speeches.get(speech_id) if speech_id else None
+            chunk_text = (_known or {}).get("text", "")
+            chunk_voice = (_known or {}).get("voice", "")
+        self._log_chunk_outcome(
+            speech_id=speech_id,
+            text=chunk_text,
+            voice=chunk_voice,
+            success=finished_success,
+            error=finished_error,
+            known=_known is not None,
         )
         if not speech_id:
             return
@@ -201,6 +236,50 @@ class SpeakTextTool(MCPTool):
                 f"⏳ Batch {batch_id[:8]}... "
                 f"{total - remaining}/{total} чанков завершено"
             )
+
+    def _log_chunk_outcome(
+        self,
+        *,
+        speech_id: str | None,
+        text: str,
+        voice: str,
+        success: bool,
+        error=None,
+        known: bool,
+    ) -> None:
+        """Залогировать исход чанка с ПОЛНЫМ текстом (issue #1709).
+
+        Acceptance issue #1709: «Логи TTS должны включать ``voice: <name>``
+        + ``text: <full_text>`` для КАЖДОГО чанка (включая
+        failed/interrupted)». До фикса ``_on_tts_finished`` печатал только
+        ``speech_id`` + ``success``, поэтому по логу нельзя было понять,
+        что именно бормотал робот в прерванном чанке — а именно там и
+        сидели иероглифы (юзер слышал «хинди», в логе пусто).
+
+        * успех → INFO;
+        * провал/прерывание известного чанка → **WARNING** (это то, что
+          диагностика ищет grep'ом);
+        * чужой ``speech_id`` (общий топик ``/voice/tts/finished``, issue
+          #776) → DEBUG, чтобы не засорять лог и не ломать
+          ``test_finished_for_unknown_speech_does_not_publish_batch_complete``,
+          который требует пустой ``warning_messages``.
+
+        Текст НЕ обрезается: смысл фикса — видеть его целиком.
+        """
+        sid = f"{speech_id[:8]}..." if speech_id else "None"
+        detail = (
+            f"speech_id={sid} success={success} "
+            f"voice={voice or 'default'} "
+            f"error={error!r} "
+            f"text={text!r}"
+        )
+        if not known:
+            # Чужой/повторный finished — штатное поведение общего топика.
+            self.log_debug(f"🔔 TTS finished (не наш чанк): {detail}")
+        elif success:
+            self.log_info(f"🔔 TTS finished: {detail}")
+        else:
+            self.log_warning(f"❌ TTS чанк НЕ произнесён: {detail}")
 
     @property
     def name(self) -> str:
@@ -342,10 +421,48 @@ class SpeakTextTool(MCPTool):
         text = re.sub(r'\)\s*$', '', text) if text.endswith(')') else text
         text = text.strip()
 
-        self.log_info(f"Произношение текста: {text[:50]}... (animation: {animation}, voice: {voice_used})")
+        # Issue #1709 — ПОЛНЫЙ текст в логе (а не первые 50 символов): без
+        # него нельзя восстановить, что именно ушло в TTS, когда чанк
+        # падает или его прерывают.
+        self.log_info(
+            f"Произношение текста: animation={animation} "
+            f"voice={voice_used} text={text!r}"
+        )
 
         if not text:
             return MCPToolResult(success=False, error="Пустой текст", message="Текст не может быть пустым")
+
+        # Issue #1709 — Unicode-script guard. LLM периодически вставляет в
+        # speak_text иероглифы/деванагари/арабицу; TTS такой текст бормочет
+        # (юзер слышал «что-то на хинди»). Если текст в основном состоит из
+        # букв неподдерживаемых письменностей (>10%, см. tts_text_guard) —
+        # НЕ произносим: логируем warning с полным текстом и возвращаем
+        # честную ошибку, чтобы LLM переписала фразу транслитом.
+        _guard_report = analyze_foreign_scripts(text)
+        if _guard_report is not None and should_skip_foreign_scripts(text):
+            self.log_warning(
+                "🚫 [issue 1709] Чанк не произнесён: слишком много символов "
+                f"неподдерживаемых письменностей — "
+                f"{describe_foreign_scripts(_guard_report)}, "
+                f"voice={voice_used}, text={text!r}"
+            )
+            return MCPToolResult(
+                success=False,
+                error="unsupported_script",
+                data={
+                    "text": text,
+                    "foreign_ratio": round(_guard_report.ratio, 4),
+                    "scripts": list(_guard_report.scripts),
+                    "voice_used": voice_used,
+                    "provider": provider,
+                },
+                message=(
+                    "Текст не произнесён: содержит символы неподдерживаемых "
+                    f"письменностей ({', '.join(_guard_report.scripts)}). "
+                    "Перепиши фразу русскими буквами (транслитерацией) — "
+                    "например «идиома звучит как „вай го“»."
+                ),
+            )
 
         # Нормализация анимаций (для обратной совместимости и маппинга несуществующих)
         animation_map = {
@@ -469,6 +586,11 @@ class SpeakTextTool(MCPTool):
                 self.pending_speeches[speech_id] = {
                     "batch_id": batch_id,
                     "batch_total": chunks_total,
+                    # Issue #1709 — храним ПОЛНЫЙ текст и голос чанка,
+                    # чтобы _on_tts_finished мог их залогировать даже для
+                    # failed/interrupted чанка (раньше был только speech_id).
+                    "text": chunk,
+                    "voice": voice_used,
                 }
                 # Батч создаётся один раз — при обработке первого чанка.
                 if batch_id not in self.pending_batches:
@@ -498,9 +620,10 @@ class SpeakTextTool(MCPTool):
             msg.data = json.dumps(tts_request, ensure_ascii=False)
             self.tts_pub.publish(msg)
             self.log_info(
-                f"📤 TTS чанк {i+1}/{len(chunks)}: {chunk[:40]!r}... "
-                f"(speech_id: {speech_id[:8]}, batch_id: {batch_id[:8]}, "
-                f"dialogue_id: {self._current_dialogue_id[:8] if self._current_dialogue_id else 'None'})"
+                f"📤 TTS чанк {i+1}/{len(chunks)}: "
+                f"speech_id={speech_id[:8]} batch_id={batch_id[:8]} "
+                f"dialogue_id={self._current_dialogue_id[:8] if self._current_dialogue_id else 'None'} "
+                f"voice={voice_used} text={chunk!r}"
             )
 
         self.log_info(

@@ -81,6 +81,14 @@ from .audio_playback_manager import AudioPlaybackManager
 # Markdown sanitisation for TTS (issue #988) — shared with dialogue_node.
 from .core.speak_helpers import strip_markdown
 
+# Issue #1709 — Unicode-script guard: не отправляем в TTS текст, который
+# в основном состоит из букв неподдерживаемых письменностей (CJK,
+# деванагари, арабица) — провайдеры бормочут такое нечитаемо.
+# Pure-Python модуль, общий с rob_box_mcp_tools (SpeakTextTool).
+from .tts_text_guard import analyze as _tts_guard_analyze
+from .tts_text_guard import describe as _tts_guard_describe
+from .tts_text_guard import should_skip as _tts_guard_should_skip
+
 # Transcoding helpers for converting provider audio blobs (PCM/WAV/MP3/OGG)
 # into ROS-ready int16 LE PCM. Imported independently from the optional MiniMax
 # provider so conversion utilities remain available even when rob_box_llm is not.
@@ -1308,6 +1316,37 @@ class TTSNode(Node):
             if not text.strip():
                 return
 
+            # Issue #1709 — Unicode-script guard на ЕДИНСТВЕННОМ чокпоинте,
+            # через который проходят ВСЕ TTS-запросы (и
+            # /voice/dialogue/response от dialogue_node, и /voice/tts/request
+            # от speak_text). Если текст в основном состоит из букв
+            # неподдерживаемых письменностей (иероглифы, деванагари,
+            # арабица) — не синтезируем: провайдер бормочет нечитаемое
+            # (юзер слышал «что-то на хинди», а в логе был только
+            # speech_id). Логируем WARNING с ПОЛНЫМ текстом и публикуем
+            # finished(success=False), чтобы speak_text не висел в ожидании.
+            if _tts_guard_should_skip(text):
+                _report = _tts_guard_analyze(text)
+                self.get_logger().warn(
+                    "🚫 [issue 1709] TTS пропущен — неподдерживаемая "
+                    f"письменность: {_tts_guard_describe(_report)}, "
+                    f"speech_id={speech_id[:8]}, "
+                    f"voice={chunk_data.get('voice') or 'default'}, "
+                    f"text={text!r}"
+                )
+                _publish_finished = getattr(self, "_publish_tts_finished", None)
+                if _publish_finished is not None:
+                    _publish_finished(
+                        speech_id,
+                        success=False,
+                        error="unsupported_script",
+                        batch_id=chunk_data.get("batch_id"),
+                        batch_index=chunk_data.get("batch_index"),
+                        batch_total=chunk_data.get("batch_total"),
+                        dialogue_id=dialogue_id,
+                    )
+                return
+
             # Извлекаем атрибуты SSML (pitch, rate)
             ssml_attributes = self._parse_ssml_attributes(ssml)
 
@@ -1327,11 +1366,13 @@ class TTSNode(Node):
             voice = chunk_data.get("voice")
 
             self.get_logger().info(
-                f'🔊 TTS: {text[:50]}... '
-                f'(speech_id: {speech_id[:8]}, '
-                f'dialogue_id: {dialogue_id[:8] if dialogue_id else "None"}..., '
-                f'batch: {(batch_id or "None")[:8]} {batch_index}/{batch_total}, '
-                f'voice: {voice or "default"})'
+                f'🔊 TTS: speech_id={speech_id[:8]}, '
+                f'dialogue_id={dialogue_id[:8] if dialogue_id else "None"}, '
+                f'batch={(batch_id or "None")[:8]} {batch_index}/{batch_total}, '
+                f'voice={voice or "default"}, '
+                # Issue #1709 — ПОЛНЫЙ текст (было text[:50]): лог должен
+                # позволять восстановить любую произнесённую фразу.
+                f'text={text!r}'
             )
             if ssml_attributes:
                 self.get_logger().info(f"🎵 SSML атрибуты: {ssml_attributes}")
@@ -2365,6 +2406,19 @@ class TTSNode(Node):
                 # КРИТИЧНО: публикуем события завершения даже при ошибке!
                 self.publish_state("ready")
 
+                # Issue #1709 — ПОЛНЫЙ текст failed-чанка в логе. Без него
+                # (в логе был только speech_id) невозможно понять, что
+                # именно робот пытался сказать — а именно там сидели
+                # иероглифы, которые юзер слышал как бормотание.
+                self.get_logger().warn(
+                    "❌ [issue 1709] TTS чанк НЕ произнесён "
+                    "(device unavailable): "
+                    f"speech_id={(speech_id or '')[:8]}, "
+                    f"voice={voice or 'default'}, "
+                    f"batch={batch_index}/{batch_total}, "
+                    f"text={text!r}"
+                )
+
                 # Публикуем ошибку для MCP tools и animation_player
                 _publish_finished = getattr(self, "_publish_tts_finished", None)
                 if _publish_finished is not None:
@@ -2395,6 +2449,16 @@ class TTSNode(Node):
             if self.stop_requested:
                 self.publish_state("stopped")
                 self.get_logger().warn("🔇 Воспроизведение прервано")
+                # Issue #1709 — ПОЛНЫЙ текст прерванного чанка. Именно этот
+                # путь («фикс сэвэн» в логе 28.08) оставлял юзера с
+                # услышанным хвостом фразы, которого не было в логе.
+                self.get_logger().warn(
+                    "❌ [issue 1709] TTS чанк прерван (stopped): "
+                    f"speech_id={(speech_id or '')[:8]}, "
+                    f"voice={voice or 'default'}, "
+                    f"batch={batch_index}/{batch_total}, "
+                    f"text={text!r}"
+                )
                 # Публикуем ошибку для MCP tools
                 _publish_finished = getattr(self, "_publish_tts_finished", None)
                 if _publish_finished is not None:
@@ -2437,6 +2501,15 @@ class TTSNode(Node):
 
         except Exception as e:
             self.get_logger().error(f"❌ Synthesis error: {e}")
+            # Issue #1709 — ПОЛНЫЙ текст упавшего чанка: без него в логе
+            # оставался только speech_id и текст терялся навсегда.
+            self.get_logger().error(
+                "❌ [issue 1709] TTS чанк НЕ произнесён (synthesis error): "
+                f"speech_id={(speech_id or '')[:8]}, "
+                f"voice={voice or 'default'}, "
+                f"batch={batch_index}/{batch_total}, "
+                f"text={text!r}"
+            )
             self.publish_state("ready")
             # 🔴 FIX (12:28): ошибка ПОСЛЕ gate (resample/play) тоже должна
             # освободить FIFO-очередь — иначе следующие фразы ждут вечно.
