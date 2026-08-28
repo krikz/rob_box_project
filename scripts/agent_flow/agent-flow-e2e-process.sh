@@ -2250,16 +2250,44 @@ find_open_pr_by_issue() {  # $1=issue_number
     gh_pr_open_by_title "$1"
 }
 
-# --- stale-PR detection (ретро 22.08 t_a2cd5753) ----------------------------
-# Fail-streak round-166/167/168/170/178: e2e-process создавал test-branch от
-# develop, потом мержил PR tip, но PR tip отставал от develop на N коммитов —
-# test-branch унаследовал устаревший .github/e2e/scenarios/voice_core_suite_v1.json
-# + устаревший .github/workflows/scripts/e2e_voice_test.sh (без E2E_RUN_BEFORE).
-# Без этой проверки один и тот же баг проявляется 5 раундов подряд.
+# --- stale-PR detection (ретро 22.08 t_a2cd5753, fix 28.08 t_bfb3c01a) -------
+# Оригинальная идея: считать «branch отстаёт от develop на N коммитов» через
+# `git rev-list --count origin/<branch>..origin/<foundation>` (BEHIND). Если
+# порог превышен → блокировать PR, требовать rebase/merge develop.
 #
-# Стратегия: считаем `git rev-list --count origin/${branch}..origin/${FOUNDATION_BRANCH}`
-# — коммиты в develop, которых НЕТ в PR tip. Если порог превышен → BLOCKED:
-#   - не создавать test-round-N (PR сначала rebase/merge develop)
+# Fail-streak round-166/167/168/170/178 был вызван stale-PR: PR tip отставал
+# от develop → test-branch унаследовал устаревший
+# .github/e2e/scenarios/voice_core_suite_v1.json + e2e_voice_test.sh (без
+# E2E_RUN_BEFORE). Без проверки этот баг проявлялся 5 раундов подряд.
+#
+# ПРОБЛЕМА оригинальной метрики (ретро 28.08 t_bfb3c01a, false-positive):
+# BEHIND = коммиты в develop, которых нет в PR tip. На репо с 4300+ коммитов
+# в develop ЭТО ЧИСЛО РАСТЁТ САМО ПО СЕБЕ при каждом merge в develop, даже
+# если PR MERGEABLE/CLEAN по GitHub (3-way merge подхватывает develop HEAD
+# автоматически). Live evidence (28.08 16:59Z):
+#   - issue #1707: PR tip 1 commit ahead, 4205 BEHIND, raw=4012, real=3424,
+#     GitHub mergeable=MERGEABLE/CLEAN. Detector BLOCKED → rebase-комментарий
+#     впустую, воркер тратит токены на бесполезный rebase.
+#   - PR #1726: то же самое (1 commit ahead, 192 BEHIND, GitHub MERGEABLE).
+#
+# ФИКС: переключаем метрику на AHEAD — `git rev-list --count
+# origin/${FOUNDATION_BRANCH}..origin/${agent_branch}`. AHEAD = коммиты в PR
+# tip, которых нет в develop. Семантически это «сколько НОВОГО кода несёт PR»,
+# что и нужно для e2e-staleness:
+#   - AHEAD ≤ threshold → PR компактный (≤10 новых коммитов) → OK.
+#   - AHEAD > threshold → PR огромный (большая пачка непротестированных
+#     изменений) → BLOCKED, требовать дробления на sub-PR'ы.
+#
+# BEHIND-метрика НЕ ловит нужный баг: «branch отстал от develop» ≠ «PR несёт
+# устаревшие e2e-скрипты». Устаревшие скрипты уже решены E2E_RUN_BEFORE
+# (тест-branch берётся от develop HEAD → актуальные сценарии), см. PR #1547.
+#
+# SHA-tag whitelist ОСТАВЛЯЕМ: `ci: vision/main SHA tags` коммиты — это noise
+# от auto-tagger'а; считаем их в AHEAD по той же причине, что и раньше в
+# BEHIND (они не меняют код).
+#
+# Стратегия: AHEAD > threshold → BLOCKED:
+#   - не создавать test-round-N (PR слишком большой, дробить)
 #   - один идемпотентный issue-коммент (24h окно, чтобы не спамить каждый тик)
 # Аргументы: $1=agent_branch $2=pr_number $3=issue_number
 # Возврат: 0 если fresh (OK), 1 если stale (BLOCKED).
@@ -2267,7 +2295,7 @@ stale_branch_check() {  # $1=agent_branch $2=pr_number $3=issue_number
     local agent_branch="$1" pr_number="$2" issue_number="$3"
     local threshold="${E2E_STALE_BRANCH_THRESHOLD:-10}"
     local foundation="${FOUNDATION_BRANCH:-develop}"
-    local _tip_sha _dev_sha _behind _real_behind _since_ts _existing
+    local _tip_sha _dev_sha _ahead _real_ahead _since_ts _existing
 
     # Мержимся с origin/foundation, чтобы rev-list был корректен.
     if ! git -C "$REPO_DIR" fetch origin "$foundation" "$agent_branch" --quiet 2>/dev/null; then
@@ -2280,9 +2308,10 @@ stale_branch_check() {  # $1=agent_branch $2=pr_number $3=issue_number
         log "stale-branch: cannot resolve refs (tip='${_tip_sha}' dev='${_dev_sha}') — пропускаю check"
         return 0
     fi
-    # Если PR tip УЖЕ содержит develop HEAD (форвард/equal) → rev-list = 0, OK.
-    _behind="$(git -C "$REPO_DIR" rev-list --count "${_tip_sha}..${_dev_sha}" 2>/dev/null || echo "")"
-    if [ -z "$_behind" ]; then
+    # AHEAD = коммиты в PR tip, которых нет в foundation. Если 0 → PR tip =
+    # foundation HEAD (форвард/equal) → OK.
+    _ahead="$(git -C "$REPO_DIR" rev-list --count "${_dev_sha}..${_tip_sha}" 2>/dev/null || echo "")"
+    if [ -z "$_ahead" ]; then
         log "stale-branch: rev-list для ${agent_branch} вернул пусто — пропускаю check"
         return 0
     fi
@@ -2290,28 +2319,27 @@ stale_branch_check() {  # $1=agent_branch $2=pr_number $3=issue_number
     # CI auto-tagger коммитит "ci: vision SHA tags → dev-XXX" и
     # "ci: main SHA tags → dev-XXX" на develop; они идут парой после каждого
     # Merge-PR и не меняют код, но rev-list --count их считает. Без
-    # whitelist PR #1547 был stale-by-70 (57 = noise, 13 = реальные
-    # изменения) и блокировал e2e-ротацию 24ч+. Решение: если raw
-    # `_behind` превышает порог, считаем "real" коммиты после исключения
-    # SHA-tag noise. Сравниваем с threshold уже real_behind.
-    if [ "${_behind}" -gt "${threshold}" ] 2>/dev/null; then
-        _real_behind="$(git -C "$REPO_DIR" log --oneline "${_tip_sha}..${_dev_sha}" 2>/dev/null \
+    # whitelist большие PR (например, batch-merge нескольких fix'ов) ложно
+    # срабатывали на noise. Решение: считаем "real" коммиты после исключения
+    # SHA-tag noise. Сравниваем с threshold уже real_ahead.
+    if [ "${_ahead}" -gt "${threshold}" ] 2>/dev/null; then
+        _real_ahead="$(git -C "$REPO_DIR" log --oneline "${_dev_sha}..${_tip_sha}" 2>/dev/null \
             | { grep -vE '^[0-9a-f]+ ci: (vision|main) SHA tags ' || true; } \
             | wc -l | tr -d '[:space:]')"
-        if [ -z "$_real_behind" ]; then
-            _real_behind="$_behind"  # fail-safe: если log упал, считаем raw
+        if [ -z "$_real_ahead" ]; then
+            _real_ahead="$_ahead"  # fail-safe: если log упал, считаем raw
         fi
-        if [ "${_real_behind}" -le "${threshold}" ] 2>/dev/null; then
-            log "stale-branch: PR tip ${agent_branch} отстаёт на ${_behind} коммитов, но после whitelist SHA-tag noise: real=${_real_behind} (<= threshold=${threshold}) — OK"
+        if [ "${_real_ahead}" -le "${threshold}" ] 2>/dev/null; then
+            log "stale-branch: PR tip ${agent_branch} несёт ${_ahead} новых коммитов, но после whitelist SHA-tag noise: real=${_real_ahead} (<= threshold=${threshold}) — OK"
             return 0
         fi
         # real всё ещё выше порога: используем real для логов, raw для issue-comment.
-        log "stale-branch: PR tip ${agent_branch} raw=${_behind}, real=${_real_behind} после whitelist (>threshold=${threshold}) — STALE"
+        log "stale-branch: PR tip ${agent_branch} raw=${_ahead}, real=${_real_ahead} новых коммитов после whitelist (>threshold=${threshold}) — STALE"
         # Ретро 26.08 t_77782e4e: top-5 stale коммитов в лог (subject + SHA) —
-        # Шифу сразу видит, какие реальные изменения требуют rebase, вместо
+        # Шифу сразу видит, какие реальные изменения требуют внимания, вместо
         # голого «raw=53, real=32». Экономим 30-минутный detective-work.
         if [ "${DEBUG_E2E_PICKUP:-0}" = "1" ] || [ "${E2E_DIAG_STALE_COMMITS:-1}" = "1" ]; then
-            _stale_top="$(git -C "$REPO_DIR" log --oneline "${_tip_sha}..${_dev_sha}" 2>/dev/null \
+            _stale_top="$(git -C "$REPO_DIR" log --oneline "${_dev_sha}..${_tip_sha}" 2>/dev/null \
                 | { grep -vE '^[0-9a-f]+ ci: (vision|main) SHA tags ' || true; } \
                 | head -5)"
             if [ -n "$_stale_top" ]; then
@@ -2322,18 +2350,17 @@ stale_branch_check() {  # $1=agent_branch $2=pr_number $3=issue_number
             fi
         fi
     else
-        log "stale-branch: PR tip ${agent_branch} отстаёт от origin/${foundation} на ${_behind} коммитов (<= threshold=${threshold}) — OK"
+        log "stale-branch: PR tip ${agent_branch} несёт ${_ahead} новых коммитов AHEAD от origin/${foundation} (<= threshold=${threshold}) — OK"
         return 0
     fi
 
-    # STALE: превышен порог (даже после whitelist). Пишем идемпотентный
+    # STALE: превышен порог AHEAD (даже после whitelist). Пишем идемпотентный
     # коммент (24h окно, чтобы не спамить каждый тик), issue остаётся в
-    # очереди — следующий rebase/merge develop → следующий тик возьмёт
-    # нормально. В комменте показываем real+raw, чтобы было понятно
-    # сколько из stale реально требуют rebase (а не SHA-tag noise).
-    log "🛑 stale-branch: PR tip ${agent_branch} отстаёт от origin/${foundation} на ${_real_behind} реальных коммитов (raw=${_behind}, threshold=${threshold}) — BLOCKED, требую rebase/merge develop"
+    # очереди. В комменте показываем real+raw, чтобы было понятно сколько из
+    # AHEAD реально требует внимания (а не SHA-tag noise).
+    log "🛑 stale-branch: PR tip ${agent_branch} несёт ${_real_ahead} реальных новых коммитов AHEAD от origin/${foundation} (raw=${_ahead}, threshold=${threshold}) — BLOCKED, требуется дробить PR"
     if [ "${DRY_RUN:-false}" = "true" ]; then
-        log "DRY-RUN would: comment stale-branch block on issue #${issue_number} (PR #${pr_number:-?}, ${agent_branch}, raw=${_behind}, real=${_real_behind})"
+        log "DRY-RUN would: comment stale-branch block on issue #${issue_number} (PR #${pr_number:-?}, ${agent_branch}, raw=${_ahead}, real=${_real_ahead})"
         return 1
     fi
     _since_ts="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -2341,17 +2368,17 @@ stale_branch_check() {  # $1=agent_branch $2=pr_number $3=issue_number
         --jq '[.[] | select(.body | startswith("🛑 **stale-PR detection"))] | length' 2>/dev/null || echo 0)"
     if [ "${_existing:-0}" -eq 0 ] 2>/dev/null; then
         gh issue comment "${issue_number}" --repo "${GH_REPO}" --body \
-"🛑 **stale-PR detection** (e2e-process, ретро 22.08 t_a2cd5753)
+"🛑 **stale-PR detection** (e2e-process, ретро 22.08 t_a2cd5753, fix 28.08 t_bfb3c01a)
 
-PR tip \`${agent_branch}\` отстаёт от \`origin/${foundation}\` на **${_real_behind} реальных коммитов** (raw=${_behind}, threshold=${threshold}). test-branch унаследует устаревший \`.github/e2e/scenarios/voice_core_suite_v1.json\` и/или \`.github/workflows/scripts/e2e_voice_test.sh\` — наблюдалось в fail-streak round-166/167/168/170/178.
+PR tip \`${agent_branch}\` несёт **${_real_ahead} новых коммитов AHEAD** от \`origin/${foundation}\` (raw=${_ahead}, threshold=${threshold}). PR слишком большой для единичного e2e-прогона — большие пачки часто маскируют регрессии.
 
 **Что делать:**
-1. \`git fetch origin ${foundation}\`
-2. \`git checkout ${agent_branch}\`
-3. \`git rebase origin/${foundation}\` (или \`git merge origin/${foundation}\`, если rebase неудобен)
-4. \`git push --force-with-lease origin ${agent_branch}\`
-5. Следующий тик e2e-process (every 1h) переподхватит — needs-e2e НЕ снят, метки НЕ трогать." >/dev/null 2>&1 || true
-        log "stale-branch: 🛑 BLOCKED: PR#${pr_number:-?} ${agent_branch} stale-by-${_real_behind} (raw=${_behind}) — issue #${issue_number} помечен"
+1. Раздробить PR на меньшие sub-PR'ы (по теме/файлу), каждый ≤ ${threshold} коммитов.
+2. Закрыть/заменить этот PR серией меньших, каждый проходит e2e отдельно.
+3. Если дробление невозможно (один атомарный рефактор) — явно подтвердить @krikz в issue #${issue_number}, после чего override \`E2E_STALE_BRANCH_SKIP=1\` для разового прогона.
+
+Следующий тик e2e-process (every 1h) переподхватит — needs-e2e НЕ снят, метки НЕ трогать." >/dev/null 2>&1 || true
+        log "stale-branch: 🛑 BLOCKED: PR#${pr_number:-?} ${agent_branch} ahead-by-${_real_ahead} (raw=${_ahead}) — issue #${issue_number} помечен"
     else
         log "stale-branch: dedup — issue #${issue_number} уже имеет stale-PR comment за последние 24h"
     fi
