@@ -1,0 +1,185 @@
+=== git log -3 ===
+3264f1d2 ci: vision SHA tags → test-6d9d683 [skip ci]
+ce05b3e3 ci: main SHA tags → test-6d9d683 [skip ci]
+6d9d683b fix(quest): invert linear axis mapping for WebXR stick
+=== git status ===
+?? docker/vision/config/voice_assistant/dialogue_params.yaml
+?? docker/vision/data/
+?? docker/vision/voice_assistant.yaml
+?? log.txt
+?? src/rob_box_telegram/rob_box_telegram/package.xml
+=== branch ===
+feature/avatar
+=== compose files ===
+ls: cannot access 'docker-compose*.yml': No such file or directory
+ls: cannot access 'docker-compose*.yaml': No such file or directory
+=== supervisor_node.py head ===
+head: cannot open 'src/rob_box_supervisor/supervisor_node.py' for reading: No such file or directory
+=== supervisor_node.py phase markers ===
+grep: src/rob_box_supervisor/supervisor_node.py: No such file or directory
+--- exit=0 bytes=834
+=== find supervisor_node.py ===
+./src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py
+=== ls supervisor dirs ===
+total 76
+drwxrwxr-x 19 ros2 ros2 4096 Aug 26 18:58 .
+drwxrwxr-x 26 ros2 ros2 4096 Aug 26 18:58 ..
+drwxrwxr-x  8 ros2 ros2 4096 Aug 19 18:30 rob_box_animations
+drwxrwxr-x  5 ros2 ros2 4096 Jun 12 14:29 rob_box_bringup
+drwxrwxr-x  5 ros2 ros2 4096 Aug 19 18:30 rob_box_core
+drwxrwxr-x  8 ros2 ros2 4096 Jun 12 14:29 rob_box_description
+drwxrwxr-x  6 ros2 ros2 4096 Aug 19 18:30 rob_box_harness
+drwxrwxr-x  5 ros2 ros2 4096 Aug 19 18:30 rob_box_llm
+drwxrwxr-x  6 ros2 ros2 4096 Aug 19 18:40 rob_box_mcp_tools
+drwxrwxr-x  7 ros2 ros2 4096 Aug 19 18:30 rob_box_perception
+drwxrwxr-x  3 ros2 ros2 4096 Jun 12 14:29 rob_box_perception_msgs
+drwxrwxr-x  6 ros2 ros2 4096 Aug 26 18:58 rob_box_quest
+drwxrwxr-x  5 ros2 ros2 4096 Aug 25 17:20 rob_box_supervisor
+drwxrwxr-x  6 ros2 ros2 4096 Aug 19 18:30 rob_box_telegram
+drwxrwxr-x  6 ros2 ros2 4096 Aug 24 19:02 rob_box_teleop
+drwxrwxr-x 12 ros2 ros2 4096 Aug 19 18:40 rob_box_voice
+drwxrwxr-x  3 ros2 ros2 4096 Aug 19 18:30 robot_sensor_hub_msg
+drwxrwxr-x  2 ros2 ros2 4096 Dec 20  2025 ros2leds
+drwxrwxr-x  2 ros2 ros2 4096 Dec 20  2025 vesc_nexus
+=== compose dir ===
+total 48
+drwxrwxr-x  9 ros2 ros2 4096 Aug  7 18:55 .
+drwxrwxr-x 26 ros2 ros2 4096 Aug 26 18:58 ..
+-rw-rw-r--  1 ros2 ros2  526 Dec 20  2025 .env.develop
+-rw-rw-r--  1 ros2 ros2  516 Dec 20  2025 .env.feature
+-rw-rw-r--  1 ros2 ros2  519 Dec 20  2025 .env.main
+drwxrwxr-x  2 ros2 ros2 4096 Aug 24 23:05 base
+drwxrwxr-x  6 ros2 ros2 4096 Aug 19 18:40 build
+drwxrwxr-x  2 ros2 ros2 4096 Aug 19 18:30 ci
+drwxrwxr-x 14 ros2 ros2 4096 Aug 27 19:38 main
+drwxrwxr-x  4 ros2 ros2 4096 Aug 19 18:40 monitoring
+drwxrwxr-x  2 ros2 ros2 4096 Aug  7 18:55 scripts
+drwxrwxr-x 19 ros2 ros2 4096 Aug 27 19:38 vision
+=== find compose ===
+=== find avatar files ===
+./scripts/testing/test_diff_drive_odometry_mode.py
+./tools/animation_editor/animation_editor/models.py
+./src/rob_box_supervisor/rob_box_supervisor/core/fsm.py
+./src/rob_box_supervisor/rob_box_supervisor/core/dead_man.py
+./src/rob_box_supervisor/rob_box_supervisor/core/state.py
+./src/rob_box_supervisor/rob_box_supervisor/core/locks.py
+./src/rob_box_supervisor/rob_box_supervisor/core/__init__.py
+./src/rob_box_supervisor/rob_box_supervisor/core/aggregator.py
+./src/rob_box_supervisor/rob_box_supervisor/__init__.py
+./src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py
+--- bytes=3311
+=== supervisor_node.py mode markers ===
+4:- Параметр ``mode`` (default ``"monitor"``). В ``monitor``-режиме нода
+7:  ``success=true, applied=false, reason="supervisor_in_monitor_mode"``,
+10:  наблюдает, реальное влияние — после явного ``mode:=active``
+49:# Default monitor-mode reason, который нода возвращает клиентам в Phase 1.
+52:MONITOR_MODE_REASON = "supervisor_in_monitor_mode"
+54:# ADR-0027 §3.4 — валидные значения ``voice_input_mode`` на dialogue_node.
+67:SET_VOICE_MODE_TOPIC: str = "/avatar/set_voice_mode"
+82:    SET_AVATAR_MODE_SERVICE = "set_avatar_mode"
+87:        # Параметр mode (default monitor). В monitor — наблюдаем, не
+89:        self.declare_parameter("mode", "monitor")
+90:        self._mode: str = str(self.get_parameter("mode").value or "monitor")
+119:        # ADR-0028 S5 — супервизор единственный, кто меняет voice_input_mode
+121:        self.create_subscription(RosString, SET_VOICE_MODE_TOPIC, self._on_set_voice_mode, 10)
+129:        # кастомный IDL с полями client_id/floor/mode.
+142:        self._srv_set_mode = self.create_service(
+145:            self._on_set_avatar_mode,
+156:        """Залогировать env и mode на старте — помогает e2e/postmortem.
+167:        self._log.info(f"avatar_supervisor started: mode={self._mode}, " f"zenoh={zenoh}, msgpack={msgpack_state}")
+229:    # ── voice mode (ADR-0028 S5) ─────────────────────────────────────
+230:    def _on_set_voice_mode(self, msg: RosString) -> None:
+231:        """Обработка ``/avatar/set_voice_mode`` — запрос сменить режим голоса.
+233:        Единственная точка, которая имеет право менять ``voice_input_mode``
+237:        mode = (msg.data or "").strip()
+238:        applied, reason = self._apply_voice_mode(mode)
+240:        self._log.info(f"SetVoiceMode: mode={mode} applied={applied} reason={reason}")
+242:    def _apply_voice_mode(self, mode: str) -> tuple[bool, str]:
+243:        """Чистая логика применения ``voice_input_mode`` (тестируется без rclpy).
+247:        if mode not in VOICE_INPUT_MODES:
+248:            return False, f"invalid_voice_mode: {mode!r}"
+249:        if self._mode != "active":
+=== supervisor_node.py size+md5 ===
+349 src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py
+a38dc341624e94a93fe4edba772cfb88  src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py
+=== core/__init__.py ===
+"""Avatar Supervisor core helpers.
+
+Pure-Python building blocks that do NOT import rclpy:
+
+AV-3 (issue #1597) — state-machine of avatar modes
+(:class:`ModeManager`, :class:`Mode`, :class:`FSMConflictError`).
+
+AV-6 (issue #1600) — Phase 1 monitor helpers used by
+``supervisor_node.py``:
+
+- :class:`StateAggregator` — assembles ``/avatar/state`` from inputs
+  (``/odom``, ``/device/snapshot``, ``/voice/dialogue/state``).
+- :class:`DeadManCounter` — ``dead_man_trips_total{client_id}`` counter
+  (ADR-0028 §6 Q4, Phase 1 metric).
+
+Living them in a dedicated sub-package keeps the ROS-dependent
+``supervisor_node`` module thin and lets us unit-test the aggregator
+and the dead-man counter without spinning up ``rclpy``.
+"""
+
+from rob_box_supervisor.core.fsm import (
+    ConflictError as FSMConflictError,
+    Mode,
+    ModeManager,
+)
+from .aggregator import StateAggregator
+from .dead_man import DeadManCounter
+
+__all__ = (
+    "FSMConflictError",
+    "Mode",
+    "ModeManager",
+    "StateAggregator",
+    "DeadManCounter",
+)
+=== core/fsm.py head ===
+"""ModeManager — FSM режимов аватара (AV-3, ADR-0028 §4.1).
+
+Это **чистая Python-логика** без ROS, asyncio и threading, чтобы её было
+легко покрыть TDD (см. ``test/unit/core/test_fsm.py``). FSM владеет
+своим представлением о том, кто держит ``voice_floor`` /
+``teleop_floor`` — этого достаточно, чтобы принимать решения о
+переходах. Это **не** замена AV-4 ``LockManager``: LockManager
+отвечает за heartbeat/dead-man и ownership для ``twist_mux`` /
+TTS-канала, а FSM — про режимы и переходы между ними.
+
+Таблица переходов — точная копия ADR-0028 §4.1 (mermaid-stateDiagram).
+Конфликты (``ConflictError``) возникают, когда целевой переход требует
+``floor``, который держит другой клиент. ``* → off`` всегда разрешён
+(escape hatch): никакое состояние не может заблокировать выключение.
+
+Часы — опциональный инжектируемый ``clock`` (callable → int ms).
+Используется для ``IDLE_TIMEOUT_S`` (см. ADR-0028 §4.1: «timeout 30 s
+no activity»). Если ``clock`` не передан, берётся ``time.monotonic() *
+1000``.
+"""
+
+from __future__ import annotations
+
+import time
+from enum import Enum
+from typing import Callable, Optional
+
+
+# === Константы / доменные типы =======================================
+
+=== git remote + branches ===
+origin	https://github.com/krikz/rob_box_project.git (fetch)
+origin	https://github.com/krikz/rob_box_project.git (push)
+  copilot/add-tool-calls-example
+  dependabot/pip/docker/main/perception/python-deps-c228530c8e
+  develop
+  exp/oakd-lite-apriltag-toggle
+  feat/telegram-bot
+  feature/TASK-048-multi-user-voice-wake-word-doa
+  feature/agent
+  feature/agent-skills
+* feature/avatar
+  feature/docker-build-optimization
+--- bytes=9203

@@ -1,0 +1,51 @@
+quest: watchdog trip session=4eb1f67a-3b88-4782-9047-2342ec5133a1
+[WARN] [1787921730.753214509] [quest_node]: 🛑 Watchdog tripped — emergency stop (Quest client silent)
+[WARN] [1787921730.755903617] [quest_node]: 🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency
+quest: watchdog trip session=84fde200-7e33-478c-867c-3c7d2cc31b95
+quest: watchdog trip session=7c20519e-bf06-4061-be90-4d71f7c83b65
+[WARN] [1787921732.655657477] [quest_node]: 🛑 Watchdog tripped — emergency stop (Quest client silent)
+[WARN] [1787921732.656836078] [quest_node]: 🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency
+[WARN] [1787921734.652510617] [quest_node]: 🛑 Watchdog tripped — emergency stop (Quest client silent)
+[WARN] [1787921734.653199482] [quest_node]: 🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency
+quest: watchdog trip session=7a05c051-b1f2-4ff8-b426-7efa31a2629b
+[WARN] [1787921736.754867777] [quest_node]: 🛑 Watchdog tripped — emergency stop (Quest client silent)
+[WARN] [1787921736.756192118] [quest_node]: 🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency
+quest: watchdog trip session=cd895144-ec3f-4cba-84a6-7426d20edc39
+[WARN] [1787921738.755063355] [quest_node]: 🛑 Watchdog tripped — emergency stop (Quest client silent)
+[WARN] [1787921738.756589714] [quest_node]: 🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency
+quest: watchdog trip session=83d7f01f-3acc-4221-8e83-da5668aa9b72
+[WARN] [1787921740.754620758] [quest_node]: 🛑 Watchdog tripped — emergency stop (Quest client silent)
+[WARN] [1787921740.755451196] [quest_node]: 🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency
+quest: watchdog trip session=b39759cb-1407-4e2e-a2e6-b9d8d30e929c
+[WARN] [1787921742.755460155] [quest_node]: 🛑 Watchdog tripped — emergency stop (Quest client silent)
+[WARN] [1787921742.757673138] [quest_node]: 🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency
+quest: watchdog trip session=3938b0f6-9bbb-42e5-87c0-ce9209bca6f0
+[WARN] [1787921744.758613038] [quest_node]: 🛑 Watchdog tripped — emergency stop (Quest client silent)
+[WARN] [1787921744.763267003] [quest_node]: 🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency
+quest: watchdog trip session=82583dbf-d8e1-47e5-bb1f-53e7406ae40f
+[WARN] [1787921746.752570732] [quest_node]: 🛑 Watchdog tripped — emergency stop (Quest client silent)
+[WARN] [1787921746.758069543] [quest_node]: 🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency
+quest: watchdog trip session=21cf5584-817b-4bd8-bf4a-38c614a7dd16
+[WARN] [1787921748.754047205] [quest_node]: 🛑 Watchdog tripped — emergency stop (Quest client silent)
+[WARN] [1787921748.754754811] [quest_node]: 🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency
+quest: watchdog trip session=2d1b41cc-226a-49ba-be14-b481bbbdbcba
+quest: watchdog trip session=44314a5c-7481-4e1a-b05a-a6e7eff85097
+[WARN] [1787921751.752942551] [quest_node]: 🛑 Watchdog tripped — emergency stop (Quest client silent)
+[WARN] [1787921751.754268634] [quest_node]: 🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency
+quest: watchdog trip session=530e96f9-6aab-42f1-a157-edcf2bf2edc5
+[WARN] [1787921753.754559405] [quest_node]: 🛑 Watchdog tripped — emergency stop (Quest client silent)
+[WARN] [1787921753.755671008] [quest_node]: 🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency
+[WARN] [1787921755.853441729] [quest_node]: 🛑 Watchdog tripped — emergency stop (Quest client silent)
+[WARN] [1787921755.854339222] [quest_node]: 🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency
+[WARN] [1787921756.652517648] [quest_node]: 🛑 Watchdog tripped — emergency stop (Quest client silent)
+[WARN] [1787921756.653319198] [quest_node]: 🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency
+quest: watchdog trip session=e2fa228f-ec84-40a0-b83d-888b9ac34009
+[WARN] [1787921758.852520068] [quest_node]: 🛑 Watchdog tripped — emergency stop (Quest client silent)
+[WARN] [1787921758.853295692] [quest_node]: 🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency
+[WARN] [1787921759.652679060] [quest_node]: 🛑 Watchdog tripped — emergency stop (Quest client silent)
+[WARN] [1787921759.653521350] [quest_node]: 🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency
+quest: watchdog trip session=5da08a08-e755-4772-ae70-80f67ecfcaf2
+[WARN] [1787921761.753490530] [quest_node]: 🛑 Watchdog tripped — emergency stop (Quest client silent)
+[WARN] [1787921761.754553208] [quest_node]: 🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency
+quest: watchdog trip session=7a338a78-7d7e-4281-b536-abac6d061b26
+--- exit=0 bytes=4830

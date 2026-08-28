@@ -1,0 +1,17 @@
+NAMES                  STATUS                    IMAGE
+voice-action-server    Up 20 hours (healthy)     10.1.1.249:5000/krikz/rob_box:voice-assistant-humble-test
+voice-assistant        Up 20 hours (healthy)     10.1.1.249:5000/krikz/rob_box:voice-assistant-humble-test
+rob-box-quest          Up 20 hours (healthy)     10.1.1.249:5000/krikz/rob_box:quest-humble-test
+avatar-supervisor      Up 20 hours (healthy)     10.1.1.249:5000/krikz/rob_box:supervisor-humble-test
+led-matrix             Up 20 hours (healthy)     10.1.1.249:5000/krikz/rob_box:led-matrix-humble-test
+oak-d                  Up 20 hours               10.1.1.249:5000/krikz/rob_box:oak-d-humble-test
+ceiling-camera         Up 20 hours               10.1.1.249:5000/krikz/rob_box:ceiling-camera-humble-test
+telegram-bot           Up 20 hours (healthy)     10.1.1.249:5000/krikz/rob_box:telegram-bot-humble-test
+supercollider          Up 20 hours (healthy)     10.1.1.249:5000/krikz/rob_box:supercollider-test
+zenoh-router-vision    Up 20 hours (healthy)     eclipse/zenoh:1.6.2
+voice-resources-init   Exited (0) 20 hours ago   10.1.1.249:5000/krikz/rob_box:voice-resources-humble-test
+quest-diag             Up 2 days (unhealthy)     a1bd69397ba3
+frosty_taussig         Up 3 days                 ubuntu:22.04
+crazy_banzai           Up 3 days                 ubuntu:22.04
+jovial_gagarin         Up 3 days                 ubuntu:22.04
+--- exit=0 bytes=1399

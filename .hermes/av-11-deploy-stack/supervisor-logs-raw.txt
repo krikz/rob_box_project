@@ -1,0 +1,63 @@
+==================================================
+  ROS Node с Zenoh namespace
+==================================================
+🤖 Robot ID: RBXU100001
+📡 Namespace: robots/RBXU100001
+📋 Копируем /config/zenoh_session_config.json5 -> /tmp/zenoh_session_config.json5
+✅ Session config сгенерирован: /tmp/zenoh_session_config.json5
+🚀 Запуск: /bin/bash /scripts/start_supervisor.sh
+==================================================
+==========================================
+  Avatar Supervisor Starting (Phase 1 monitor)
+  ADR-0028 §4.6
+==========================================
+Ожидание Zenoh router...
+✓ Zenoh router доступен
+
+==========================================
+  Запуск supervisor_node (mode=active)
+==========================================
+[2m2026-08-27T16:39:06.821767Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime[0m[2m:[0m Using ZID: c1cc84c8ca3c80ef14e555ba5de2b4fd
+[2m2026-08-27T16:39:06.824399Z[0m [32m INFO[0m ThreadId(02) [2mzenoh::net::runtime::orchestrator[0m[2m:[0m Zenoh can be reached at: tcp/[::1]:42699
+[INFO] [1787848747.235724743] [avatar_supervisor]: avatar_supervisor started: mode=active, zenoh=/tmp/zenoh_session_config.json5, msgpack=ok
+[INFO] [1787849027.653520465] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849028.240605910] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849031.660187685] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849033.680484048] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849039.252692888] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849045.716577780] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849048.008069329] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849048.727298446] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849049.293497281] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849049.771313282] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849050.783572290] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849058.694838651] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849064.605791876] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849069.902225740] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849077.424556972] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849143.133741931] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849148.335685424] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849231.473992818] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849235.295870142] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787849250.207312074] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787906769.361161048] [avatar_supervisor]: AcquireFloor received (mode=active) — phase 1 monitor
+[INFO] [1787909334.550526448] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787909341.811901756] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787909351.718517051] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787909357.507280101] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787909368.272278481] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787909376.443706295] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787911267.581426019] [avatar_supervisor]: AcquireFloor received (mode=active) — phase 1 monitor
+[INFO] [1787914986.087674048] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787914992.387645533] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787914997.898310653] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787915005.421841182] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787915017.903596011] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787915024.706153816] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787915081.692320389] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787915089.328494268] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787915096.904038172] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787915179.953291418] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787915192.709704550] [avatar_supervisor]: SetVoiceMode: mode=quest_ttts applied=True reason=applied
+[INFO] [1787921314.031614976] [avatar_supervisor]: AcquireFloor received (mode=active) — phase 1 monitor
+--- exit=0 bytes=5615
