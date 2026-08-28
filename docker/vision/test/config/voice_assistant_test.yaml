@@ -17,6 +17,12 @@
     enable_mcp_tools: false
     internet_available: true
 
+    # S8 Task 8.1 (scheduler-segments-merge plan, issue #968) — enables
+    # the MERGE path (quick_decide dispatch in _on_stt) for e2e. Default
+    # in production stays "replace" until Task 8.3 (only after green
+    # 8.1/8.2 with raw evidence — NOT done from this machine, no stand).
+    barge_in_policy: "classify"
+
     # Wake words: сценарии инжектят "робок <текст>" — префикс стрипается,
     # в LLM идёт только смысловая часть. Пустая/whitespace фраза фильтруется.
     wake_words: ["робок", "робот", "роббокс", "робокос", "роббос", "робокс", "роберт", "рыбок", "рома", "бот", "робо", "роб", "робик"]
