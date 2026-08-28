@@ -107,6 +107,11 @@ EXPECTED=(
     # те, для которых найден MERGED PR (PATTERN «карточки-призраки»).
     # Регистрация cron-job делается в ensure_blocked_watchdog_cron ниже.
     agent-flow-blocked-watchdog.sh
+    # Fail-streak escalation watchdog (ретро 28.08 t_faac94b0): no-agent,
+    # вызывается ИЗ launcher'а (после e2e-process.sh tick), не отдельным
+    # cron-job. При streak ≥ WARN → issue-comment, при streak ≥ PAUSE →
+    # sentinel-файл → e2e-process замораживает ротацию.
+    agent-flow-e2e-fail-streak-watchdog.sh
 )
 
 # Режим --list-files: печатает EXPECTED по одному имени на строку и выходит.
@@ -645,6 +650,11 @@ verify_three_copies_md5sum "agent-flow-blocked-watchdog.sh" \
     "/home/builder/.hermes/profiles/architect/scripts/agent-flow-blocked-watchdog.sh" \
     "/home/builder/.hermes/profiles/devops/scripts/agent-flow-blocked-watchdog.sh" \
     "/home/builder/.hermes/scripts/agent-flow-blocked-watchdog.sh"
+verify_three_copies_md5sum "agent-flow-e2e-fail-streak-watchdog.sh" \
+    "/home/builder/.hermes/profiles/agent-flow/scripts/agent-flow-e2e-fail-streak-watchdog.sh" \
+    "/home/builder/.hermes/profiles/architect/scripts/agent-flow-e2e-fail-streak-watchdog.sh" \
+    "/home/builder/.hermes/profiles/devops/scripts/agent-flow-e2e-fail-streak-watchdog.sh" \
+    "/home/builder/.hermes/scripts/agent-flow-e2e-fail-streak-watchdog.sh"
 
 echo
 echo "==> Telegram token sanity (retro 12.08 t_5af222ea): >1 active TELEGRAM_BOT_TOKEN = reconnect loop"

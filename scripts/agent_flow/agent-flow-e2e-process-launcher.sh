@@ -15,6 +15,13 @@
 # Ретро 23.08 (t_98bb3a1d, e2e-rotation-idle-no-cron): до этого скрипта
 # e2e-process запускался только вручную падаваном, и падаван упал с 401 →
 # rotation простаивал 20ч+. Этот launcher восстанавливает автозапуск.
+#
+# Ретро 28.08 (t_faac94b0, e2e-fail-streak-no-escalation): после тика
+# ротации вызываем fail-streak watchdog — если L: E2E Voice Test падает
+# 5+ раз подряд, watchdog постит issue-comment; при 20+ создаёт pause-
+# sentinel (заморозка ротации до ручного override). Без этого fail-streak
+# 24 раунда подряд (~3 дня) прошёл без алерта (issue #1668 46h+ open
+# без process-меток).
 # ============================================================================
 
 set -uo pipefail  # без -e — ошибки скрипта НЕ должны убивать cron-job
@@ -60,4 +67,21 @@ if [ ! -x "$E2E_SCRIPT" ]; then
 fi
 
 # stdout — deliver, stderr — log (deliver=local → пишется в cron output).
-bash "$E2E_SCRIPT" 2>&1
+# set +e вокруг bash — ошибка ротации НЕ должна блокировать watchdog.
+bash "$E2E_SCRIPT" 2>&1 || true
+
+# 4. Fail-streak watchdog (ретро 28.08 t_faac94b0). Каждый тик (every 20m)
+#    проверяем streak последних E2E runs. При streak ≥ WARN → issue comment
+#    в процесс-релевантные issue; при streak ≥ PAUSE → создаём sentinel
+#    (заморозка ротации, manual override). Идемпотентен: comment dedup 6h.
+WATCHDOG_SCRIPT="/home/builder/.hermes/scripts/agent-flow-e2e-fail-streak-watchdog.sh"
+if [ ! -x "$WATCHDOG_SCRIPT" ]; then
+    # Fallback: возможно SOT ещё не разложен install.sh — берём прямо из репо.
+    WATCHDOG_SCRIPT="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}/scripts/agent_flow/agent-flow-e2e-fail-streak-watchdog.sh"
+fi
+if [ -x "$WATCHDOG_SCRIPT" ]; then
+    bash "$WATCHDOG_SCRIPT" 2>&1 || \
+        echo "⚠️ launcher: fail-streak watchdog failed (exit $?) — продолжим" >&2
+else
+    echo "⚠️ launcher: fail-streak watchdog not found: $WATCHDOG_SCRIPT" >&2
+fi

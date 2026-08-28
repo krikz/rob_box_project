@@ -663,6 +663,19 @@ if [ "${_rate:-999}" -lt 100 ] 2>/dev/null; then
     exit 0
 fi
 
+# --- G3: e2e fail-streak pause-sentinel (ретро 28.08 t_faac94b0) -----------
+# Если watchdog обнаружил fail-streak ≥ E2E_FAIL_STREAK_PAUSE (default 20)
+# подряд — он создаёт sentinel файл и ротация ЗАМОРАЖИВАЕТСЯ до ручного
+# override (Шиф/юзер: удалить файл после починки регрессии + свежий SUCCESS).
+# Это намеренный kill-switch: следующие 20+ FAIL'ов только усугубят ситуацию
+# и сожгут CI minutes без продуктивного результата.
+FAIL_STREAK_PAUSE_SENTINEL="${FAIL_STREAK_PAUSE_SENTINEL:-${HERMES_HOME}/state/agent-flow-e2e-fail-streak-pause}"
+if [ -f "$FAIL_STREAK_PAUSE_SENTINEL" ]; then
+    log "🛑 fail-streak PAUSE-SENTINEL present: ${FAIL_STREAK_PAUSE_SENTINEL} — skip rotation (manual override required to resume)"
+    log "   Чтобы снять паузу: почини регрессию, дождись свежего SUCCESS-run, затем rm ${FAIL_STREAK_PAUSE_SENTINEL}"
+    exit 0
+fi
+
 # --- required env ------------------------------------------------------------
 : "${GH_REPO:?GH_REPO must be set (owner/repo)}"
 if [ -z "${REPO_DIR}" ] || [ ! -d "$REPO_DIR" ]; then
