@@ -33,6 +33,10 @@ dialogue_node:
     - роб
     - робик
     dialogue_timeout: 300.0
+    # S1 (scheduler-segments-merge) — "replace" = сегодняшнее поведение
+    # (STOP на любой новый STT-ввод). "classify" включается в S8.3 после
+    # зелёного e2e; до этого — аварийный откат одной строкой.
+    barge_in_policy: "replace"
     llm_providers: "minimax,deepseek"  # первый = primary, остальные = fallbacks
     enable_mcp_tools: true
 

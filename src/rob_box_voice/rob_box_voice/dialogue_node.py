@@ -355,6 +355,7 @@ class DialogueNode(Node):
             for p in (raw_phrases or self._DEFAULT_NEW_SESSION_PHRASES)
             if str(p).strip()
         )
+        self._barge_in_policy: str = self._resolve_barge_in_policy()
 
         self._loop = asyncio.new_event_loop()
         self._asyncio_loop_executor = concurrent.futures.ThreadPoolExecutor(
@@ -706,6 +707,11 @@ class DialogueNode(Node):
         self.declare_parameter("history_max_turns", 20)
         self.declare_parameter("agent_max_turns", 20)
         self.declare_parameter("dialogue_timeout", 300.0)
+        # Scheduler segments/MERGE plan (S1) — "replace" = today's behaviour
+        # (barge-in stops TTS unconditionally); "classify" = quick_decide
+        # routes the verdict (S4). Garbage value → warn + fall back to
+        # "replace" in _resolve_barge_in_policy().
+        self.declare_parameter("barge_in_policy", "replace")
         # 🔴 fix(voice #1252): wake words синхронизированы со stt_node.py — 12 вариантов
         # из dialogue_node.yaml + исторический «робик» (потерян при 9ca7fb29, 21.02).
         # STT реально выдаёт кривые варианты («робок», «роберт», «рыбок») — все покрываем.
@@ -987,6 +993,25 @@ class DialogueNode(Node):
             "env_key_var": "DASHSCOPE_API_KEY",
         },
     }
+
+    _BARGE_IN_POLICIES = ("replace", "classify")
+
+    def _resolve_barge_in_policy(self) -> str:
+        """Resolve ``barge_in_policy`` (S1, scheduler-segments-merge plan).
+
+        ``"replace"`` (default) — today's behaviour: new STT input always
+        stops TTS. ``"classify"`` — routes through ``quick_decide`` (S4).
+        Any other value is a config typo, not a valid opt-in — warn and
+        fall back to ``"replace"`` rather than silently misbehave.
+        """
+        raw = str(self.get_parameter("barge_in_policy").value or "replace").strip().lower()
+        if raw not in self._BARGE_IN_POLICIES:
+            self.get_logger().warning(
+                f"⚠️ barge_in_policy={raw!r} — unknown, falling back to 'replace' "
+                f"(valid: {self._BARGE_IN_POLICIES})"
+            )
+            return "replace"
+        return raw
 
     def _resolve_provider_chain(self) -> list[str]:
         """Resolve the ordered list of LLM provider names from config.

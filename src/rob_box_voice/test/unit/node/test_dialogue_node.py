@@ -218,6 +218,36 @@ class TestBuildLlm:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  barge_in_policy parameter (S1.1, scheduler-segments-merge plan)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestBargeInPolicyParam:
+    def test_declares_default_replace(self):
+        """_declare_params объявляет barge_in_policy с дефолтом 'replace'."""
+        import rob_box_voice.dialogue_node as dn
+        import inspect
+        src = inspect.getsource(dn.DialogueNode._declare_params)
+        assert 'declare_parameter("barge_in_policy", "replace")' in src
+
+    def test_resolve_default_missing_param_is_replace(self):
+        n = _make_node()
+        assert n._resolve_barge_in_policy() == "replace"
+
+    def test_resolve_accepts_replace(self):
+        n = _make_node({"barge_in_policy": "replace"})
+        assert n._resolve_barge_in_policy() == "replace"
+
+    def test_resolve_accepts_classify(self):
+        n = _make_node({"barge_in_policy": "classify"})
+        assert n._resolve_barge_in_policy() == "classify"
+
+    def test_resolve_garbage_value_warns_and_falls_back(self):
+        n = _make_node({"barge_in_policy": "yolo"})
+        assert n._resolve_barge_in_policy() == "replace"
+        n.get_logger().warning.assert_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  API error handling (legacy: test_api_error_handling) — _FallbackLLM
 # ─────────────────────────────────────────────────────────────────────────────
 
