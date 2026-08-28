@@ -8,6 +8,10 @@ import {
   loadBridgeAssets,
   type BridgeAssetHandle,
 } from "./bridge_assets";
+import {
+  loadAvatar as loadAvatarAsset,
+  type AvatarAssetHandle,
+} from "./avatar_loader";
 
 // Фронтальная камера робота — выводится на большой экран-стену перед
 // оператором. Это OAK-D color (0x1001), которая в protocol/topics.py
@@ -24,6 +28,13 @@ export interface CaptainBridgeOptions {
    * (e.g. unit tests that only exercise panels/LiDAR).
    */
   environmentBaseUrl?: string | null;
+  /**
+   * Optional override for the avatar base URL. Defaults to
+   * `/models/avatar/`. Pass `null` to skip avatar loading (e.g. unit
+   * tests that exercise the environment only, or an operator profile
+   * that wants to navigate the bridge without the avatar visible).
+   */
+  avatarBaseUrl?: string | null;
 }
 
 export interface CaptainBridgeHandle {
@@ -40,8 +51,15 @@ export interface CaptainBridgeHandle {
    * until then, or if `environmentBaseUrl === null` was passed.
    */
   environment: BridgeAssetHandle | null;
+  /**
+   * Loaded avatar handle once `loadAvatar()` resolves. `null` until
+   * then, or if `avatarBaseUrl === null` was passed.
+   */
+  avatar: AvatarAssetHandle | null;
   /** Async-load the Phase 2.1 Captain Bridge environment (GLB + HDR). */
   loadEnvironment(): Promise<BridgeAssetHandle | null>;
+  /** Async-load the Phase 2.2 avatar (Draco + Meshopt compressed GLB). */
+  loadAvatar(): Promise<AvatarAssetHandle | null>;
   initLayout(): void;
   attachXrSession(session: XRSession): Promise<void>;
   /** Visual feedback: подсветить grip контроллеров (deadman зажат). */
@@ -194,6 +212,26 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     return environment;
   }
 
+  // Phase 2.2 avatar (loaded lazily via loadAvatar()). Same fail-soft
+  // contract as the environment: if the avatar GLB can't be fetched we
+  // log once and continue with the rest of the scene (the procedural
+  // origin marker stays in place). Operator-visible only — does not
+  // gate any panel / XR / connection logic.
+  let avatar: AvatarAssetHandle | null = null;
+  const avatarBaseUrl = opts.avatarBaseUrl === null ? null : (opts.avatarBaseUrl ?? "/models/avatar/");
+  async function loadAvatarFn(): Promise<AvatarAssetHandle | null> {
+    if (avatar) return avatar;
+    if (avatarBaseUrl === null) return null;
+    try {
+      avatar = await loadAvatarAsset(scene, { baseUrl: avatarBaseUrl });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[captain_bridge] avatar failed to load:", err);
+      avatar = null;
+    }
+    return avatar;
+  }
+
   function syncPanels(): void {
     const states = panelMgr.list();
     const seen = new Set<string>();
@@ -309,6 +347,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     for (const vp of videoPanels.values()) vp.dispose();
     lidar.dispose();
     environment?.dispose();
+    avatar?.dispose();
     armTexture.dispose();
     renderer.dispose();
   }
@@ -322,7 +361,9 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     videoPanels,
     mainScreen,
     environment,
+    avatar,
     loadEnvironment,
+    loadAvatar: loadAvatarFn,
     initLayout,
     attachXrSession,
     setControllerActive,
