@@ -184,19 +184,18 @@ test_wip_unknown_functional() {
 }
 
 # ============================================================================
-# Case-sensitivity: e2e-process lowercased → lint; merge-gate исторически
-# case-sensitive (DOCS/WIP → functional). Не моя регрессия — задокументировано.
+# Case-sensitivity: обе реализации case-insensitive (title и labels
+# нормализуются в lowercase внутри detect_pr_kind). Выравнено ревью 28.08 —
+# раньше merge-gate был case-sensitive и расходился с e2e-process.
 # ============================================================================
 test_e2e_process_uppercase_lint() {
     assert_kind e2e "DOCS(ADR-0027): SOMETHING" lint
     assert_kind e2e "WIP(Arch #1506): verdict"  lint
 }
 
-test_mg_uppercase_functional_pre_existing() {
-    # merge-gate исторически case-sensitive (rt t_de63be1f). Это
-    # задокументированное поведение, НЕ регрессия от текущего фикса.
-    assert_kind mg "DOCS(ADR-0027): SOMETHING" functional
-    assert_kind mg "WIP(Arch #1506): verdict"  functional
+test_mg_uppercase_lint() {
+    assert_kind mg "DOCS(ADR-0027): SOMETHING" lint
+    assert_kind mg "WIP(Arch #1506): verdict"  lint
 }
 
 # ============================================================================
@@ -231,7 +230,7 @@ run_test "NEG: fix(voice) → functional"         test_fix_voice_functional
 run_test "NEG: doc(singular) → functional"      test_doc_no_s_functional
 run_test "NEG: wip(unknown) → functional"       test_wip_unknown_functional
 run_test "CASE: e2e-process uppercase → lint"    test_e2e_process_uppercase_lint
-run_test "CASE: merge-gate uppercase → functional (pre-existing)" test_mg_uppercase_functional_pre_existing
+run_test "CASE: merge-gate uppercase → lint"     test_mg_uppercase_lint
 run_test "REAL: PR #1577 (docs/adr-0027)"       test_real_pr_1577_lint
 run_test "REAL: PR #1559 (wip/arch verdict)"    test_real_pr_1559_lint
 

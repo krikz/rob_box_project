@@ -7,8 +7,9 @@ description: agent-flow cron scripts (merge-gate, triage, e2e-process, completio
 
 ## Назначение
 
-`scripts/agent_flow/` — набор bash-скриптов, крутящихся в cron каждые 5 мин
-(см. `watchdog.sh`, `cron-loop.sh`). Скрипты автоматически:
+`scripts/agent_flow/` — набор bash-скриптов, крутящихся в cron
+(профиль `agent-flow`: triage — every 1m, merge-gate — every 5m,
+e2e-process — every 60m; см. ADR-0019). Скрипты автоматически:
 
 - мердят PR через `gh pr merge --auto` (после Q22 / retro-path / clean-pr-sweep)
 - ставят/снимают labels (`needs-e2e`, `e2e-done`, `e2e:rejected`, `needs-review`)
@@ -142,8 +143,8 @@ Failure semantics).
 
 ## Acceptance check (issue #1534)
 
-- [x] Helper-функция `post_whoami_comment(pr|issue, action, reason)` в `scripts/agent_flow/lib/hermes_github.sh`
-      — реализовано в `scripts/agent_flow/hermes_github.sh` (раскладка install.sh)
+- [x] Helper-функция `post_whoami_comment(pr|issue, action, reason)` в `scripts/agent_flow/hermes_github.sh`
+      (раскладка install.sh)
 - [x] Используется в agent-flow-merge-gate / triage / e2e-process / completion-check
 - [x] Формат: `🤖 [agent:<role>] script=<script_name> action=<action>`
 - [x] Если comment нельзя постить — action всё равно делается, warning в лог

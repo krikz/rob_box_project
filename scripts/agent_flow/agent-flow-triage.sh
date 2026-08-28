@@ -41,7 +41,7 @@
 #             Реализован в process_issues_json — функция branch_exists_in_remote.
 #        d. Skip if the would-be branch already has a MERGED PR (work in develop)
 #        e. Resolve role from `agent:<role>` label, else $AGENT_FLOW_DEFAULT_ROLE
-#        f. Compute branch name (agent/<issue>-<slug> or ~<slug> for service/infra)
+#        f. Compute branch name (z-{agent}/<issue>-<slug> or z-{<slug>} for service/infra)
 #        g. `hermes kanban create` with --workspace worktree --branch $branch
 #        h. Comment the new t_<id> into the issue (3x retry, exp-backoff)
 #   6. flock lock prevents parallel ticks.
@@ -746,18 +746,6 @@ for pr in d:
 }
 
 # --- process each issue ------------------------------------------------------
-# Use python3 to safely parse JSON (jq may not be installed everywhere).
-# NOTE: этот блок — мёртвый код (parse() нигде не вызывается после рефакторинга
-# t_360dc1a4), сохранён на случай ре-интродукции парсинга JSON в shell-стиле.
-# Раньше fallback ссылался на $issues_json (старое имя) — после фикса
-# переменная переименована в $phase1_json, обновили ссылку чтобы избежать
-# ложноположительного срабатывания shellcheck (issues_json → unassigned var).
-if command -v jq >/dev/null 2>&1; then
-    parse() { jq -r "$@"; }
-else
-    parse() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)" <<<"${phase1_json}"; }
-fi
-
 # Ретро-фикс (09.08 #14): дубликаты карточек от triage при переключении меток.
 # Маркер `kanban: t_` в комментариях мог потеряться (коммент не записался /
 # удалён) → triage создавал вторую карточку на тот же issue. Дополнительная

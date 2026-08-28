@@ -1245,12 +1245,21 @@ pr_state_now() {  # $1=pr_number
 # Inputs: $1=pr_labels_csv (lowercased), $2=pr_title
 # Output: prints "lint" or "functional"; rc=0 always.
 detect_pr_kind() {  # $1=labels_csv $2=title
-    local labels_csv="$1" title="$2"
+    local labels_csv title_lc prefix
+    labels_csv="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    title_lc="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
     if has_label "$labels_csv" "$NO_E2E_LABEL"; then
         printf '%s' "lint"; return 0
     fi
-    case "$title" in
-        '[lint]'*|'[refactor]'*|'fix(agent-flow'*|'fix(agent_flow'*|\
+    # Title prefix detection (case-insensitive): сматчить ПЕРВЫЙ токен (по пробелу)
+    # через glob `*` в конце — иначе `(` и `)` в conventional-commit prefix
+    # (docs(adr-0027), wip(arch #1506)) ломают extglob grouping pattern.
+    prefix="${title_lc%% *}"
+    case "$prefix" in
+        '[lint]'|'[refactor]') printf '%s' "lint"; return 0 ;;
+    esac
+    case "$title_lc" in
+        'fix(agent-flow'*|'fix(agent_flow'*|\
         'docs(adr'*|'docs(architecture'*|\
         'wip(arch'*|'wip(infra'*|'wip(voice-core'*) printf '%s' "lint"; return 0 ;;
     esac

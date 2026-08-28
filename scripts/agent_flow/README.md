@@ -58,17 +58,18 @@ host↔origin автофикс выполняется из ВРЕМЕННОГО 
 
 ## Скрипты
 
-### `agent-flow-triage.sh` — no_agent=true, every 30m
+### `agent-flow-triage.sh` — no_agent=true, every 1m
 
-Тикает каждые 30 минут. Берёт issues с лейблом `hermes`, заводит для
+Тикает каждую минуту (профиль `agent-flow`, см. ADR-0019). Берёт issues с лейблом `hermes`, заводит для
 них kanban-карточки на доске `robbox`. Далее диспатчер `hermes gateway`
 подхватывает карточки на `ready` и спавнит воркеров под нужный профиль.
 
 ### `agent-flow-merge-gate.sh` — no_agent=true, every 5m
 
-Каждые 5 минут сканирует открытые PR с зелёным CI и label `needs-merge`,
-мерджит подходящие в `develop`. **НЕ мерджит PR без human review** (Q22 —
-только Шифу). Используется для clean-up очереди.
+Каждые 5 минут сканирует открытые PR с зелёным CI и label `needs-e2e`,
+проверяет mergeable-состояние и управляет block/unblock карточек (красный
+CI → unblock воркеру; зелёный → ждёт e2e). **НЕ мерджит PR без human review**
+(Q22 — только Шифу). Закрывает issue после merge в `develop` (ADR-0014).
 
 **Deploy-issue label-less orphan backstop (ретро 15.08 t_238ff3f7):**
 L-Deploy and Verify создаёт deploy-issues с версией workflow-файла С ВЕТКИ

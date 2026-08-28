@@ -160,18 +160,6 @@ _gh() {
     fi
 }
 
-# _issue_number_from_pr — для kind=pr выводим связанный issue# через issue
-# lookup (heuristic: PR title or branch matches issue#). Это best-effort;
-# если не нашли — пустая строка, не блокируем публикацию.
-#   args: <pr_number>
-_issue_number_from_pr() {
-    local pr="$1"
-    # `gh pr view --json body` — тело PR часто содержит "Issue: #N" или
-    # "kanban: t_<id>". Для нашего whoami этого достаточно — branch+role
-    # уже идут отдельными полями.
-    printf ''
-}
-
 # --- core API --------------------------------------------------------------
 
 # post_whoami_comment — main entrypoint.
