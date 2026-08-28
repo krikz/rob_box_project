@@ -1,0 +1,34 @@
+2026-08-28T14:57:26+02:00
+=== Task: t_08288c77 (devops) ===
+=== Date: 2026-08-28T14:57:26+02:00 ===
+
+=== Working tree ===
+?? .hermes/av-11-deploy-stack/
+
+=== Current branch ===
+wt/t_08288c77
+7d37ccd8d2a4b309cb4d800abc05aaa103dc1561
+
+=== Required branch (per card body) feature/av-11-avatar-mixed-e2e — exists? ===
+(empty if absent)
+
+=== feature/avatar — exists? ===
+c8e141eaca92705b983f5d8b0a865247bd0ee56c
+
+=== SSH preflight to Vision Pi 10.1.1.21 ===
+ros2@10.1.1.21: Permission denied (publickey,password).
+
+=== Local docker ps (host machine) ===
+hermes-359fcc47	Up 6 days	nikolaik/python-nodejs:python3.11-nodejs20
+build-apt-cache	Up 2 weeks (unhealthy)	sameersbn/apt-cacher-ng:3.7.4-20220421
+build-registry-ui	Up 2 weeks	joxit/docker-registry-ui:latest
+build-registry	Up 2 weeks (healthy)	registry:2.8.3
+
+=== Pre-existing AV-11 merge state (krikz/rob_box_project) ===
+PR #1700 (attempt-7): CLOSED 2026-08-28T08:14:03Z
+PR #1705 (attempt-8): MERGED 2026-08-28T08:53:37Z
+PR #1706 (rebuild): status — check
+[]
+
+=== Parent task t_42d98188 status ===
+Status: blocked on Шифу decision A/B/C (capability — Phase 2 integration missing in source)
