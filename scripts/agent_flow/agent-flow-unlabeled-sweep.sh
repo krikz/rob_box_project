@@ -94,17 +94,20 @@ STALE_LABEL="${STALE_LABEL:-${STALE_LABEL_DEFAULT}}"
 PREFIX="[agent-flow-unlabeled-sweep]"
 
 # --- MAINTENANCE gate + env (из .env если есть) -----------------------------
+# Ретро 28.08 (t_faac94b0, e2e-fail-streak-no-escalation): предыдущая
+# версия использовала `read IFS='='` парсинг key=val, который терял
+# значения при наличии `=` в URL/JSON/комментариях .env, плюс падал на
+# set -e если .env не существовал (cron sometimes имеет read-only HOME
+# и HERMES_HOME не задан). Результат: GH_REPO оставался пустым →
+# `: "${GH_REPO:?...}"` → exit 1 → 19 failures подряд. Заменили на
+# полный `set -a; source` (как в launcher) — robust для любого формата
+# .env.
 ENV_FILE="$HERMES_HOME/profiles/agent-flow/.env"
 if [ -f "$ENV_FILE" ]; then
-  while IFS='=' read -r key val; do
-    case "$key" in ''|\#*) continue ;; esac
-    val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
-    if [ -z "${!key:-}" ]; then
-      export "$key=$val"
-    fi
-  done < "$ENV_FILE"
+  # shellcheck disable=SC1090
+  set -a; . "$ENV_FILE"; set +a
 fi
-: "${GH_REPO:?GH_REPO must be set (owner/repo)}"
+: "${GH_REPO:?GH_REPO must be set (owner/repo) — check $HERMES_HOME/profiles/agent-flow/.env}"
 
 log() { printf '%s %s %s\n' "$PREFIX" "$(date -Iseconds)" "$*" >&2; }
 
