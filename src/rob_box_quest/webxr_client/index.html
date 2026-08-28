@@ -10,6 +10,15 @@
     <canvas id="scene"></canvas>
     <div id="hud">
       <div id="status" class="status status--connecting">CONNECTING…</div>
+      <div id="mode-hud" class="mode-hud" aria-label="Bridge mode">
+        <span data-mode="explore" class="mode-hud__chip">1·EXPLORE</span>
+        <span data-mode="teleop" class="mode-hud__chip">2·TELEOP</span>
+        <span data-mode="voice" class="mode-hud__chip">3·VOICE</span>
+        <span data-mode="mixed" class="mode-hud__chip">4·MIXED</span>
+      </div>
+      <button id="reset-layout-btn" class="reset-layout-btn" type="button" hidden>
+        Reset layout
+      </button>
     </div>
     <div id="pin-overlay" class="pin-overlay">
       <form id="pin-form" class="pin-form" autocomplete="off">

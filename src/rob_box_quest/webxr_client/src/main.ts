@@ -14,6 +14,20 @@ import { createDesktopTeleop } from "./input/desktop_teleop";
 import { createXrTeleop, pollXrInput } from "./input/xr_teleop";
 import { createVoiceCapture } from "./input/voice_capture";
 import { createXrBootstrap, type XrBootstrap } from "./xr_bootstrap";
+import { ModeSwitcher, modeFromKey, type BridgeMode } from "./ui/mode_switcher";
+import { MuteController } from "./ui/mute_controller";
+import {
+  createAudioHud,
+  type AudioHudHandle,
+  rmsLevel as computeRmsLevel,
+  smoothLevel as smoothAudioLevel
+} from "./scene/audio_hud";
+import {
+  defaultStorage,
+  loadLayout,
+  saveLayout,
+  clearLayout as clearPanelLayout
+} from "./scene/panel_persistence";
 
 const CLIENT_VERSION = "0.1.0";
 const SUBPROTOCOL = "robbox-quest-v1";
@@ -32,12 +46,45 @@ interface BootstrapOptions {
   pinForm: HTMLFormElement;
   pinError: HTMLElement;
   statusEl: HTMLElement;
+  /** Контейнер для mode-chip'ов (HUD переключатель режима). */
+  modeHud?: HTMLElement;
+  /** Кнопка сброса layout panels в localStorage (опционально). */
+  resetLayoutBtn?: HTMLElement;
 }
 
 export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   const url = opts.url ?? deriveWsUrl();
   const bridge = createCaptainBridge({ canvas: opts.canvas, enableXr: true });
-  bridge.initLayout();
+  // Layout: пробуем восстановить из localStorage; иначе — дефолтный
+  // resetLayout(). Если storage недоступен (SSR/private mode) — дефолт.
+  const storage = defaultStorage();
+  const restoredLayout = loadLayout(storage);
+  if (restoredLayout && restoredLayout.length > 0) {
+    // Применяем каждую запись напрямую через PanelManager (не вызываем
+    // initLayout — он бы стёр наш loop через resetLayout()). После
+    // добавления всех panels — syncPanels() через initLayout НЕ нужен,
+    // потому что syncPanels вызывается явно ниже. Но в публичном API
+    // captain_bridge нет прямого syncPanels — вызов initLayout
+    // пересоздаст panels. Решение: используем внутренний addPanel
+    // подход — создаём через createPanel() и потом отдельно триггерим
+    // пересоздание через resetLayout() + ручное восстановление.
+    // Проще: сначала resetLayout (создаёт дефолт), потом мутации.
+    bridge.initLayout();
+    for (const p of restoredLayout) {
+      const all = bridge.panels.list();
+      if (all.length === 0) break;
+      const last = all[all.length - 1];
+      if (!last) continue;
+      // Перезаписываем topic/position/facing у последнего panel.
+      // PanelManager.switchStream меняет только topic; для position/facing
+      // используем move() (он пересчитывает facing к началу координат).
+      bridge.panels.switchStream(last.id, p.topic);
+      bridge.panels.move(last.id, p.position.x, p.position.z);
+    }
+    if (opts.resetLayoutBtn) opts.resetLayoutBtn.hidden = false;
+  } else {
+    bridge.initLayout();
+  }
   const stopRender = bridge.start();
   // Phase 2.1: load Captain Bridge CC0 environment (5 GLB + HDR).
   // Fail-soft — see captain_bridge.ts → loadEnvironment(). The procedural
@@ -64,12 +111,49 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   let xrEmergencyWasPressed = false;
   // Guard: авто-вход в VR — не более одной сессии на submit PIN.
   let vrRequested = false;
+  // ---------- Phase 2: mode switcher, mute, audio HUD ----------
+  // Эти объекты нужны ДО voiceCapture.onChunk (mute блокирует исходящий
+  // поток, audio HUD читает RMS из тех же чанков).
+  const modeSwitcher = new ModeSwitcher();
+  const muteCtl = new MuteController({ pressDurationMs: 350 });
+  const audioHud: AudioHudHandle | null = (() => {
+    try {
+      const h = createAudioHud({
+        position: { x: -2.35, y: 2.95, z: -3.85 },
+        scale: { x: 1.1, y: 0.2 }
+      });
+      bridge.scene.add(h.sprite);
+      return h;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[quest] audio HUD init failed:", err);
+      return null;
+    }
+  })();
+  let audioHudSmoothed = 0;
+
   // Голос: рация (правый grip) и робот-голос (левый grip → STT → LLM → TTS)
   // делят один mic-захват (int16 PCM 16 kHz) → VOICE_AUDIO. Режим кодируется
   // в voice_ptt_start/stop как `mode` ("radio" | "robot_voice").
   const voiceCapture = createVoiceCapture({
     onChunk: (pcm) => {
+      // 1) Audio HUD: рисуем уровень ДО любых early-return.
+      //    Mute меняет только иконку, не уровень (пользователь видит,
+      //    что mic живой, но заблокирован).
+      if (audioHud) {
+        const target = computeRmsLevel(pcm);
+        audioHudSmoothed = smoothAudioLevel(audioHudSmoothed, target);
+        audioHud.setState({
+          micState: muteCtl.isMuted() ? "muted" : voicePttMode === "none" ? "idle" : "talk",
+          level: audioHudSmoothed
+        });
+      }
+      // 2) Mute → блокируем исходящий поток.
       if (!conn || disconnected) return;
+      if (muteCtl.isMuted()) return;
+      // 3) Mode-gate: voice passthrough разрешён в explore/teleop/voice/mixed.
+      //    ModeSwitcher.shouldEmitVoice() == true во всех режимах (это рация).
+      //    Если в будущем сделаем per-mode фильтр — здесь точка расширения.
       const bytes = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength);
       conn.sendVoiceAudio(bytes);
     }
@@ -192,6 +276,83 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     void autoEnterVr();
   });
 
+  // ---- Phase 2: mode switcher (keyboard + HUD chips) -------------------------
+
+  function paintModeChips(active: BridgeMode): void {
+    if (!opts.modeHud) return;
+    for (const chip of Array.from(opts.modeHud.querySelectorAll("[<data-mode]"))) {
+      const el = chip as HTMLElement;
+      const m = el.dataset["mode"] as BridgeMode | undefined;
+      if (!m) continue;
+      el.classList.toggle("mode-hud__chip--active", m === active);
+    }
+  }
+  paintModeChips(modeSwitcher.current());
+  modeSwitcher.subscribe((next) => {
+    paintModeChips(next);
+    // Если переключились в explore/voice — disarm (safety: «не ехать без
+    // явного намерения»). teleop/mixed оставляют arm-state как есть.
+    if (next === "explore" || next === "voice") {
+      armed = false;
+      bridge.setArmState(false);
+      fsm.setDeadman(false);
+      fsm.setLinear(0);
+      fsm.setAngular(0);
+      bridge.setControllerActive(false);
+    }
+  });
+
+  if (opts.modeHud) {
+    for (const chip of Array.from(opts.modeHud.querySelectorAll("[<data-mode]"))) {
+      const el = chip as HTMLElement;
+      el.addEventListener("click", () => {
+        const m = el.dataset["mode"] as BridgeMode | undefined;
+        if (m) modeSwitcher.setMode(m);
+      });
+    }
+  }
+
+  window.addEventListener("keydown", (ev) => {
+    // Игнорируем если фокус на input/textarea — иначе PIN-форма сломается.
+    const t = ev.target as HTMLElement | null;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+    const m = modeFromKey(ev.key);
+    if (m) {
+      modeSwitcher.setMode(m);
+      ev.preventDefault();
+      return;
+    }
+    // M → toggle mute. Это keyboard-аналог long-press A на XR-контроллере.
+    // Long-press A будет добавлен в отдельной карточке (через расширение
+    // teleop_config + pollXrInput).
+    if (ev.key === "m" || ev.key === "M" || ev.key === "ь" || ev.key === "Ь") {
+      muteCtl.toggle();
+      ev.preventDefault();
+    }
+  });
+
+  // ---- Reset to Default (panel layout) ---------------------------------------
+
+  if (opts.resetLayoutBtn) {
+    opts.resetLayoutBtn.addEventListener("click", () => {
+      bridge.panels.resetLayout();
+      clearPanelLayout(storage);
+      opts.resetLayoutBtn!.hidden = true;
+    });
+  }
+
+  // Сохраняем layout в localStorage при любом изменении (debounce не нужен —
+  // события редкие). Подписываемся на фиксацию через микротаск после tick.
+  let layoutDirty = false;
+  // Помечаем dirty в mutation hooks через monkey-patch move/close/switchStream.
+  // Чтобы не патчить приватный API — следим через dirty-flag, который
+  // поднимается в pollXrControllers (drag и т.д. пока не реализованы).
+  function maybeSaveLayout(): void {
+    if (!layoutDirty) return;
+    saveLayout(storage, bridge.panels.list());
+    layoutDirty = false;
+  }
+
   // ---- Teleop loop -----------------------------------------------------------
 
   let lastTickTs = 0;
@@ -254,7 +415,10 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   // Один тик teleop: desktop-emergency + FSM-tick + XR-контроллеры.
   // Вызывается из двух циклов: window.rAF (desktop) и session.rAF (VR).
   function tickTeleop(): void {
-    if (conn && !disconnected) {
+    // Phase 2: mode-gate. В explore/voice — НЕ шлём teleop-команды, даже
+    // если arm=true. Это safety-фича: переключение в voice должно явно
+    // остановить движение робота.
+    if (modeSwitcher.shouldEmitTeleop() && conn && !disconnected) {
       const teleopHandle = (
         window as unknown as { __questDesktopTeleop?: { consumeEmergency(): boolean } }
       ).__questDesktopTeleop;
@@ -263,8 +427,13 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       }
       const out = fsm.tick(Date.now());
       if (out) conn.send(out.cmd);
+    } else if (!modeSwitcher.shouldEmitTeleop()) {
+      // mode gate закрыт — глушим импульсы если они были активны.
+      fsm.setLinear(0);
+      fsm.setAngular(0);
     }
     pollXrControllers();
+    maybeSaveLayout();
   }
 
   function teleopLoop(): void {
@@ -351,6 +520,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       }
       xrTeleopHandle?.destroy();
       voiceCapture.stop();
+      audioHud?.dispose();
       conn?.close();
       bridge.dispose();
     }

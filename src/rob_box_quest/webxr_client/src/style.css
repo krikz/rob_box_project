@@ -153,3 +153,52 @@ body {
   margin: 0;
 }
 
+.mode-hud {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.mode-hud__chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.mode-hud__chip--active {
+  background: rgba(46, 194, 126, 0.18);
+  border-color: rgba(46, 194, 126, 0.5);
+  color: #2ec27e;
+  font-weight: 700;
+}
+
+.mode-hud__chip:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.reset-layout-btn {
+  margin-top: 8px;
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.reset-layout-btn:hover {
+  border-color: rgba(255, 255, 255, 0.36);
+  color: var(--fg);
+}
+

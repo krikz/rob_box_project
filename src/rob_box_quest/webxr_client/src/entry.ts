@@ -15,6 +15,8 @@ window.addEventListener("DOMContentLoaded", () => {
   const pinInput = findEl<HTMLInputElement>("pin-input");
   const pinError = findEl<HTMLParagraphElement>("pin-error");
   const statusEl = findEl<HTMLDivElement>("status");
+  const modeHud = findEl<HTMLDivElement>("mode-hud");
+  const resetLayoutBtn = findEl<HTMLButtonElement>("reset-layout-btn");
 
   bootstrap({
     canvas,
@@ -23,6 +25,8 @@ window.addEventListener("DOMContentLoaded", () => {
     pinInput,
     pinError,
     statusEl,
+    modeHud,
+    resetLayoutBtn,
     pin: ""
   });
 });
