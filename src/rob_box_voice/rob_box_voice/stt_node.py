@@ -251,12 +251,24 @@ class STTNode(Node):
         self.audio_sub = self.create_subscription(
             AudioData, "/audio/speech_audio", self.speech_audio_callback, audio_qos
         )
+        # Issue #XXXX / ADR-0027 §3.4 — голос с микрофона Quest (PTT robot-voice).
+        # quest-сервер публикует сюда готовую фразу (буфер за время PTT);
+        # результат уходит в отдельный топик /voice/stt/quest (см. result_pub
+        # ниже) — без префиксов в тексте, маршрутизацию делает dialogue_node
+        # по voice_input_mode.
+        self.quest_audio_sub = self.create_subscription(
+            AudioData, "/audio/quest_in", self.quest_audio_callback, audio_qos
+        )
 
         # Подписка на состояние TTS (чтобы не слышать себя)
         self.tts_state_sub = self.create_subscription(String, "/voice/tts/state", self.tts_state_callback, 10)
 
         # Publishers
         self.result_pub = self.create_publisher(String, "/voice/stt/result", 10)
+        # ADR-0027 §3.4 — результат STT для источника Quest (robot-voice):
+        # отдельный топик, чтобы НЕ ломать plain-text контракт /voice/stt/result
+        # (его читают telegram/perception/transport). dialogue_node подписывается.
+        self.quest_result_pub = self.create_publisher(String, "/voice/stt/quest", 10)
         self.state_pub = self.create_publisher(String, "/voice/stt/state", 10)
         self.tts_control_pub = self.create_publisher(String, "/voice/tts/control", 10)  # Для прерывания TTS
         # Issue #1077 — speaker_analysis (speaker_tag) от Yandex SpeechKit v3.
@@ -413,10 +425,16 @@ class STTNode(Node):
                     self.get_logger().debug("🎙️ [hardware AEC] Робот замолчал")
                 self.is_robot_speaking = False
 
-    def speech_audio_callback(self, msg: AudioData):
+    def speech_audio_callback(self, msg: AudioData, result_pub=None):
         """
         Обработка готовых фраз от audio_node
         Пробуем Yandex STT → если не работает, используем Vosk
+
+        ``result_pub`` — куда публиковать результат. По умолчанию None =
+        ReSpeaker-путь (``/voice/stt/result``). Для источника Quest
+        (``/audio/quest_in``) передаётся ``self.quest_result_pub``
+        (``/voice/stt/quest``) — тогда AEC/grace-фильтры ReSpeaker не
+        применяются: оператор явно зажал PTT, а микрофон — на шлеме.
         """
         import time
 
@@ -424,7 +442,10 @@ class STTNode(Node):
         audio_bytes = bytes(msg.data)
         duration = len(audio_bytes) / (self.sample_rate * 2)  # 16-bit = 2 bytes
 
-        if self.aec_mode == "software":
+        if result_pub is not None:
+            # Quest-источник: AEC/grace не нужны (см. docstring выше).
+            pass
+        elif self.aec_mode == "software":
             # Программная подавление эха: дропаем всё пока робот говорит
             if self.is_robot_speaking:
                 self.get_logger().info(f"🔇 [software AEC] Игнор фразы {duration:.2f}с: робот говорит")
@@ -535,8 +556,10 @@ class STTNode(Node):
             # Issue #1077 — speaker публикуем ПЕРЕД результатом: dialogue_node
             # хранит tag по тексту и забирает его в _on_stt. Если бы speaker
             # шёл после result, гонка топиков могла бы потерять корреляцию.
-            self._publish_speaker(text, duration)
-            self.publish_result(text)
+            # Для источника Quest speaker-профиль не нужен (это оператор).
+            if result_pub is None:
+                self._publish_speaker(text, duration)
+            self.publish_result(text, result_pub=result_pub)
             self.publish_state("ready")
         else:
             if text:
@@ -554,6 +577,15 @@ class STTNode(Node):
             else:
                 self.get_logger().info("🔇 [issue 989] Пустой STT (эхо/музыка) — молчу, без «не расслышал»")
             self.publish_state("ready")
+
+    def quest_audio_callback(self, msg: AudioData):
+        """Фраза с микрофона Quest (PTT robot-voice).
+
+        Тот же пайплайн распознавания, но результат публикуется в отдельный
+        топик ``/voice/stt/quest`` (без префиксов в тексте) — dialogue_node
+        маршрутизирует его по ``voice_input_mode`` (ADR-0027 §3.4).
+        """
+        self.speech_audio_callback(msg, result_pub=self.quest_result_pub)
 
     def _maybe_speak_unclear(self) -> None:
         """Проговорить «Не расслышал, скажи ещё раз» при неясном результате.
@@ -966,12 +998,19 @@ class STTNode(Node):
             f"text={text[:40]!r}"
         )
 
-    def publish_result(self, text: str):
-        """Публикация финального результата распознавания."""
+    def publish_result(self, text: str, result_pub=None):
+        """Публикация финального результата распознавания.
+
+        ``result_pub`` — целевой publisher. None = ReSpeaker-путь
+        (``/voice/stt/result``); иначе — Quest-путь (``/voice/stt/quest``).
+        Wake-word barge-in делаем только для ReSpeaker-пути: на Quest-пути
+        barge-in уже выполнен quest-сервером при PTT start.
+        """
+        pub = result_pub if result_pub is not None else self.result_pub
         text_lower = text.lower()
 
         # Если фраза начинается с wake word — немедленно прерываем TTS (barge-in)
-        if any(text_lower.startswith(word) for word in self.wake_words):
+        if result_pub is None and any(text_lower.startswith(word) for word in self.wake_words):
             self.get_logger().info(f'🎯 Wake word detected: "{text[:30]}" → STOP TTS')
             stop_msg = String()
             stop_msg.data = "STOP"
@@ -979,7 +1018,7 @@ class STTNode(Node):
 
         msg = String()
         msg.data = text
-        self.result_pub.publish(msg)
+        pub.publish(msg)
         self.get_logger().info(f"📤 Опубликовал результат: {text}")
 
     def publish_state(self, state: str):

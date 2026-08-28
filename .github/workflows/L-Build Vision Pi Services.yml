@@ -374,9 +374,104 @@ jobs:
           fi
           echo "✅ Built ${SERVICE}"
 
+  # AV-9 (issue #1603): Avatar Supervisor (Phase 1 monitor).
+  # Dockerfile наследует voice-assistant image и пересобирает только
+  # rob_box_supervisor через `colcon build --packages-select` (минуты,
+  # не часы — pytorch/renardo не трогаем).
+  build-supervisor:
+    needs: prepare
+    runs-on: [self-hosted, rob-box]
+    steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
+      - name: Build supervisor
+        run: |
+          SERVICE="supervisor"
+          GHCR_TAG="${IMAGE_PREFIX}:supervisor-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:supervisor-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+
+          # Хеш Python исходников для инвалидации кеша supervisor-слоя.
+          SOURCE_HASH=$(find src/rob_box_supervisor/rob_box_supervisor -type f -name "*.py" | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/vision/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="BASE_IMAGE=${LOCAL_PREFIX}:voice-assistant-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}" \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            --build-arg="SOURCE_HASH=${SOURCE_HASH}" \
+            .
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
+  # Phase 1.6 (ADR-0027): Meta Quest WebXR-консоль — caddy:2-alpine +
+  # aiohttp WSS-сервер rob_box_quest. Не зависит от voice-assistant (нет
+  # pytorch/Renardo). Зависит от webxr_client/ (Phase 1.5) — build упадёт
+  # с понятной ошибкой если путь отсутствует (явный сигнал зависимости,
+  # не silent degradation).
+  build-quest:
+    needs: prepare
+    runs-on: [self-hosted, rob-box]
+    steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          clean: true
+
+      - name: Build quest
+        run: |
+          SERVICE="quest"
+          GHCR_TAG="${IMAGE_PREFIX}:quest-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+          LOCAL_TAG="${LOCAL_PREFIX}:quest-${ROS_DISTRO}-${{ needs.prepare.outputs.docker_tag }}"
+
+          # Хеш Python + TS исходников для инвалидации build cache.
+          SOURCE_HASH=$( (find src/rob_box_quest/rob_box_quest -type f -name "*.py"; \
+                          find src/rob_box_quest/webxr_client -type f \( -name "*.ts" -o -name "*.json" -o -name "*.html" \)) \
+                        | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file docker/vision/${SERVICE}/Dockerfile \
+            --tag "${GHCR_TAG}" \
+            --tag "${LOCAL_TAG}" \
+            --load \
+            --add-host=host.docker.internal:host-gateway \
+            --build-arg="APT_PROXY=http://host.docker.internal:3142" \
+            --build-arg="IMAGE_TAG=${{ needs.prepare.outputs.docker_tag }}" \
+            --build-arg="SOURCE_HASH=${SOURCE_HASH}" \
+            .
+
+          if [ "${{ inputs.push_to_registry }}" = "true" ]; then
+            docker push "${LOCAL_TAG}"
+          fi
+          echo "✅ Built ${SERVICE}"
+
   # Обновление .image-versions — SHA-тег после успешной сборки
   update-image-versions:
-    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider]
+    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider, build-supervisor, build-quest]
     runs-on: [self-hosted, rob-box]
     if: success() && inputs.push_to_registry != false
     # Issue #t_dd49849b: 2.7h+ hang observed on concurrent runs (round-224+225+develop)
@@ -507,7 +602,7 @@ jobs:
 
   # Итоговая сводка
   summary:
-    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider]
+    needs: [prepare, build-oak-d, build-led-matrix, build-ceiling-camera, build-voice-base, build-voice-resources, build-voice-assistant, build-telegram-bot, build-supercollider, build-supervisor, build-quest]
     runs-on: [self-hosted, rob-box]
     if: always()
     steps:
@@ -528,3 +623,4 @@ jobs:
           echo "  ✅ voice-assistant"
           echo "  ✅ telegram-bot"
           echo "  ✅ supercollider"
+          echo "  ✅ supervisor"

@@ -1,0 +1,15 @@
+node_modules/
+dist/
+dist-types/
+*.log
+.DS_Store
+.vite/
+coverage/
+
+# glTF asset pipeline (Phase 2.0 — see ADR-0032):
+# raw glTF sources are produced externally (Blender export / Quaternius /
+# Khronos Sample Assets). Only the *optimized* outputs may be committed.
+# The gltf:verify CI guard will reject any *.glb that lacks Draco + Meshopt.
+public/models/**/*.glb
+public/models/**/*.gltf
+!public/models/**/*.optimized.glb
