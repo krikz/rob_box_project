@@ -4,8 +4,106 @@ Meta Quest / WebXR Captain Bridge client for `rob_box_quest`.
 Phase 2+ stack per [ADR-0032](../../../docs/adr/0032-meta-quest-webxr-stack-and-assets.md):
 Three.js r170 + native WebXR + glTF 2.0 asset pipeline (Draco + Meshopt + KTX2).
 
-This README covers the **asset pipeline** (Phase 2.0). For application code
-(rendering, teleop, XR bootstrap) see `src/` and the ADR.
+The README has two parts:
+
+1. **[Asset pipeline](#asset-pipeline-cc0-only)** (Phase 2.0) — glTF optimization + CI guard.
+2. **[Captain Bridge application](#captain-bridge-application-phase-21)** (Phase 2.1+) — render loop,
+   teleop, voice, **UX overlays** (Phase 2.3).
+
+For deep architecture see [`docs/architecture/captain-bridge.md`](../../../docs/architecture/captain-bridge.md).
+WSS protocol contract: [`docs/architecture/meta-quest-api.md`](../../../docs/architecture/meta-quest-api.md).
+
+---
+
+## Captain Bridge application (Phase 2.1+)
+
+### What's inside
+
+- **Two-mode entry**: PIN form → if browser supports `immersive-vr`, auto-enter
+  WebXR; otherwise stay in desktop fallback (WASD + 2D render).
+- **Scene graph**: Captain Bridge environment (5 CC0 GLB + HDR, ~70 KB total),
+  4 floating video panels (semi-circle), LiDAR overlay, main wall-screen for
+  front camera.
+- **Teleop**: XR controllers (oculus-touch-v2 mapping) — left stick movement,
+  right stick click arm/disarm toggle, B/Y emergency stop. Desktop fallback
+  WASD + Space + E. Arm-state visible in HUD on the front wall.
+- **Voice PTT**: left grip = robot_voice (STT→LLM→TTS via supervisor),
+  right grip = radio (passthrough to robot speaker). Microphone is shared
+  between modes; PTT is edge-triggered.
+- **WSS protocol**: `robbox-quest-v1` subprotocol. Streams (video/LiDAR),
+  teleop, voice mode, TTS picker (`list_voices` / `set_voice` /
+  `preview_voice`), and panel routing (`set_panel_topic`).
+
+### Phase 2.3 UX overlays (NEW)
+
+Three DOM-overlay modules in `src/ui/`:
+
+| Overlay | When | Trigger |
+|---|---|---|
+| `loading_screen` | пока грузятся CC0 GLB/HDR | автоматически на bootstrap, `loading.watch(promise)` |
+| `error_overlay` | WS disconnect > 5s (с watchdog), или `closed` | `errorOverlay.show(headline, detail)` / `watchdog.markDisconnected()` |
+| `help_overlay` | список горячих клавиш (Desktop / WebXR / Global) | H key или клик по `?`-кнопке в HUD |
+| `mode_manager` | клиентский observable-стор UI-state | синхронизируется с arm-stikom и voice-режимом в `main.ts` |
+
+Подробности API и поведения — в [captain-bridge.md §7](../../../docs/architecture/captain-bridge.md#7-phase-23-ux-overlays-new).
+
+### Default layout
+
+При старте клиент создаёт **4 panels** на полукруге радиуса 2.0 м:
+
+| Angle | Default topic | Назначение |
+|---|---|---|
+| -60° | `camera_rear` | rear-view камера |
+| -20° | `camera_oak_color` | OAK-D RGB |
+| +20° | `camera_oak_depth` | OAK-D depth |
+| +60° | `camera_ceiling` | ceiling (overhead) |
+
+Camera default: `pos=(0, 1.6, 0)`, `look forward` (в сторону main screen).
+
+### Hotkeys
+
+| Key | Action | Mode |
+|---|---|---|
+| WASD | Movement | Desktop |
+| Space | Boost (×1.5) | Desktop |
+| E | Emergency stop | Desktop |
+| L stick | Move (forward/back/strafe) | WebXR |
+| R stick click | Arm / disarm toggle | WebXR |
+| L grip | Voice: radio (рация) | WebXR |
+| R grip | Voice: robot_voice (STT→LLM→TTS) | WebXR |
+| B / Y | Emergency stop | WebXR |
+| H | Показать / скрыть help overlay | Global |
+| Esc | Закрыть overlay / exit VR | Global |
+
+Press H in the client to see this list interactively.
+
+### Tooltips
+
+- **Status badge** (`#status`) — `title="WebSocket connection to robot"`.
+- **Help-toggle button** (`#help-toggle`) — `title="Показать / скрыть горячие клавиши (H)"`.
+
+### Tests
+
+142 vitest unit tests across 14 files:
+
+- `panel_manager.test.ts` — pure-data panel state.
+- `video_panel.test.ts` *(если добавится в Phase 3)*.
+- `bridge_environment.test.ts` — CC0 GLB round-trip.
+- `teleop_fsm.test.ts` — arm/emergency FSM.
+- `xr_teleop.test.ts`, `xr_bootstrap.test.ts` — XR controllers + session.
+- `voice_capture.test.ts` — Mic PCM capture.
+- `connection.test.ts`, `protocol.test.ts` — WSS handshake.
+- `lidar_payload.test.ts` — LiDAR wire format.
+- `gltf_pipeline.test.ts` — Duck.optimized.glb round-trip.
+- **Phase 2.3 NEW**: `loading_screen.test.ts`, `error_overlay.test.ts`,
+  `help_overlay.test.ts`, `mode_manager.test.ts`.
+
+```bash
+npm test                 # 142 tests, ~10 s
+npm run typecheck        # tsc --noEmit
+npm run gltf:verify      # CI guard for committed GLB
+npm run build            # vite build (dist/, ~118 KB JS)
+```
 
 ---
 
