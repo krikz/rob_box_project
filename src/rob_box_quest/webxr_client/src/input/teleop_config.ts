@@ -42,8 +42,13 @@ export interface TeleopBindings {
   invertLinear: boolean;
   /** Инвертировать знак поворота. */
   invertAngular: boolean;
-  /** Deadzone: |v| < deadzone → 0 (допустимо 0 < deadzone < 1). */
+  /** Deadzone: |v| < deadzone → 0 (допустимо 0 < deadzone < 1).
+   *  Per Phase 2.2 spec: ±0.15 deadband для thumbstick teleop. */
   deadzone: number;
+  /** EMA smoothing factor для thumbstick осей (0 = без smoothing, 1 = без
+   *  отклика). α ∈ (0, 1]. Меньше α → плавнее, но больше latency.
+   *  Per Phase 2.2 spec: EMA smoothing обязателен. */
+  smoothingAlpha: number;
   /** Кнопка PTT (рация): нажатие → voice_ptt_start (edge-triggered). */
   pttButton: number;
   /** Рука PTT: правая = рация, левая = робот-голос. */
@@ -64,7 +69,10 @@ export const DEFAULT_BINDINGS: TeleopBindings = {
   invertLinear: true,
   // Стик вправо (tx>0) → angular<0 → поворот направо.
   invertAngular: true,
-  deadzone: 0.12,
+  // Per Phase 2.2 spec: ±0.15 deadband (Phase 1.5 был 0.12).
+  deadzone: 0.15,
+  // EMA α=0.4 — баланс между плавностью и отзывчивостью (0 = max smoothing).
+  smoothingAlpha: 0.4,
   pttButton: GAMEPAD_BUTTONS.squeeze, // grip (рация)
   pttHandedness: "right",
   robotPttButton: GAMEPAD_BUTTONS.squeeze, // grip (робот-голос)

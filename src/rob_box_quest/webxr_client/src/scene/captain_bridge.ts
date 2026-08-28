@@ -12,6 +12,7 @@ import {
   loadAvatar as loadAvatarAsset,
   type AvatarAssetHandle,
 } from "./avatar_loader";
+import { createHandsVisual, type HandsVisualBundle } from "./hand_visual";
 
 // Фронтальная камера робота — выводится на большой экран-стену перед
 // оператором. Это OAK-D color (0x1001), которая в protocol/topics.py
@@ -56,6 +57,12 @@ export interface CaptainBridgeHandle {
    * then, or if `avatarBaseUrl === null` was passed.
    */
   avatar: AvatarAssetHandle | null;
+  /**
+   * Phase 2.2 — hand-tracking visuals (XRHandModelFactory skeleton).
+   * Created lazily on first XR session attach with hand-tracking feature.
+   * `null` until then.
+   */
+  hands: HandsVisualBundle | null;
   /** Async-load the Phase 2.1 Captain Bridge environment (GLB + HDR). */
   loadEnvironment(): Promise<BridgeAssetHandle | null>;
   /** Async-load the Phase 2.2 avatar (Draco + Meshopt compressed GLB). */
@@ -299,6 +306,10 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   const GRIP_IDLE_COLOR = 0x556677;
   const GRIP_ACTIVE_COLOR = 0x2ec27e;
 
+  // Phase 2.2: hand-tracking visuals. Создаётся в attachXrSession при
+  // первой XR-сессии; main.ts обновляет цвета через updateFromJoints().
+  let hands: HandsVisualBundle | null = null;
+
   function setControllerActive(active: boolean): void {
     for (const grip of controllerGrips) {
       (grip.material as THREE.MeshBasicMaterial).color.set(active ? GRIP_ACTIVE_COLOR : GRIP_IDLE_COLOR);
@@ -336,6 +347,15 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
       controllerGrips[i] = grip;
     }
 
+    // Phase 2.2 — hand-tracking visuals. Создаём при первой XR-сессии;
+    // XRHandModelFactory рендерит 25 joint-spheres per hand, цвета
+    // обновляет hand_visual.updateFromJoints() каждый кадр (см. main.ts).
+    if (!hands) {
+      hands = createHandsVisual();
+      scene.add(hands.left!.group);
+      scene.add(hands.right!.group);
+    }
+
     renderer.setAnimationLoop(() => {
       renderer.render(scene, camera);
     });
@@ -348,6 +368,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     lidar.dispose();
     environment?.dispose();
     avatar?.dispose();
+    hands?.dispose();
     armTexture.dispose();
     renderer.dispose();
   }
@@ -362,6 +383,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     mainScreen,
     environment,
     avatar,
+    hands,
     loadEnvironment,
     loadAvatar: loadAvatarFn,
     initLayout,

@@ -107,6 +107,32 @@ export interface SetPanelTopicCmd {
   topic: string;
 }
 
+/** Phase 2.2: hand-tracking gesture (edge-triggered). Pinch = кончик
+ *  большого пальца + кончик указательного сблизились (< PINCH_THRESHOLD_M).
+ *  По умолчанию маппится на teleop-stop. См. §3.5 ADR-0027. */
+export interface HandPinchCmd {
+  cmd: "hand_pinch";
+  ts_ms: number;
+  /** Edge: true = pinch начался, false = pinch закончился. */
+  pressed: boolean;
+  /** Какая рука. */
+  handedness: "left" | "right";
+  /** Что вызвало жест (для отладки / rate-limit policy). */
+  source: "select" | "puppet" | "ui_button";
+}
+
+/** Phase 2.2: hand-tracking grip (edge-triggered). Fist = все 4 пальца
+ *  согнуты (tips близко к wrist). По умолчанию маппится на forward drive.
+ *  См. §3.5 ADR-0027. */
+export interface HandGripCmd {
+  cmd: "hand_grip";
+  ts_ms: number;
+  /** Edge: true = grip начался, false = grip закончился. */
+  pressed: boolean;
+  handedness: "left" | "right";
+  source: "squeeze" | "puppet" | "ui_button";
+}
+
 export type JsonCmd =
   | TeleopTwistCmd
   | StopEmergencyCmd
@@ -119,6 +145,8 @@ export type JsonCmd =
   | SetVoiceCmd
   | PreviewVoiceCmd
   | SetPanelTopicCmd
+  | HandPinchCmd
+  | HandGripCmd
   | { cmd: string; ts_ms: number; [k: string]: unknown };
 
 // Структура описания голоса из voice-pipeline.

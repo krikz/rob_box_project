@@ -4,7 +4,11 @@
 // axes 2/3 = thumbstick.
 
 import { describe, it, expect } from "vitest";
-import { pollXrInput } from "../src/input/xr_teleop";
+import {
+  pollXrInput,
+  applySmoothing,
+  createSmoothedAxes
+} from "../src/input/xr_teleop";
 import { GAMEPAD_AXES, GAMEPAD_BUTTONS } from "../src/input/teleop_config";
 
 interface FakeGamepadButton {
@@ -80,11 +84,11 @@ describe("pollXrInput", () => {
     gp.axes[GAMEPAD_AXES.thumbstickY] = -1.0; // вверх/вперёд
     const r = pollXrInput(makeSource(gp));
     expect(r.linear).toBeCloseTo(1.0);
-    // applyDeadzone(0.5) = (0.5 - 0.12) / (1 - 0.12)
-    expect(r.angular).toBeCloseTo(-(0.5 - 0.12) / (1 - 0.12), 5);
+    // applyDeadzone(0.5) = (0.5 - 0.15) / (1 - 0.15)
+    expect(r.angular).toBeCloseTo(-(0.5 - 0.15) / (1 - 0.15), 5);
   });
 
-  it("applies deadzone: values below 0.12 map to 0", () => {
+  it("applies deadzone: values below 0.15 map to 0", () => {
     const gp = makeGamepad();
     gp.axes[GAMEPAD_AXES.thumbstickX] = 0.1;
     gp.axes[GAMEPAD_AXES.thumbstickY] = -0.05;
@@ -105,7 +109,8 @@ describe("pollXrInput", () => {
       angularAxis: 2,
       invertLinear: false,
       invertAngular: true,
-      deadzone: 0.12,
+      deadzone: 0.15,
+      smoothingAlpha: 0.4,
       pttButton: 1,
       pttHandedness: "right",
       robotPttButton: 1,
@@ -151,5 +156,39 @@ describe("pollXrInput", () => {
     gp.buttons[GAMEPAD_BUTTONS.trigger].value = 1;
     const r = pollXrInput(makeSource(gp, "right"));
     expect(r.ptt).toBe(false);
+  });
+});
+
+describe("EMA smoothing (Phase 2.2)", () => {
+  it("applySmoothing(α=1) returns current unchanged (no smoothing)", () => {
+    const prev = createSmoothedAxes();
+    const next = applySmoothing(prev, { linear: 0.7, angular: -0.3 }, 1);
+    expect(next.linear).toBeCloseTo(0.7);
+    expect(next.angular).toBeCloseTo(-0.3);
+  });
+
+  it("applySmoothing(α=0) keeps previous unchanged (max smoothing)", () => {
+    const prev = { linear: 0.5, angular: 0.2 };
+    const next = applySmoothing(prev, { linear: 0.9, angular: -0.9 }, 0);
+    expect(next.linear).toBe(0.5);
+    expect(next.angular).toBe(0.2);
+  });
+
+  it("applySmoothing(α=0.4) blends prev/current ~60/40", () => {
+    const prev = { linear: 1.0, angular: 0.0 };
+    const next = applySmoothing(prev, { linear: 0.0, angular: 1.0 }, 0.4);
+    // prev.linear + α × (current.linear - prev.linear) = 1.0 + 0.4 × -1.0 = 0.6
+    expect(next.linear).toBeCloseTo(0.6);
+    // prev.angular + α × (current.angular - prev.angular) = 0.0 + 0.4 × 1.0 = 0.4
+    expect(next.angular).toBeCloseTo(0.4);
+  });
+
+  it("applySmoothing converges to steady-state over many ticks", () => {
+    let s = createSmoothedAxes();
+    for (let i = 0; i < 200; i++) {
+      s = applySmoothing(s, { linear: 1, angular: -1 }, 0.4);
+    }
+    expect(s.linear).toBeCloseTo(1, 3);
+    expect(s.angular).toBeCloseTo(-1, 3);
   });
 });

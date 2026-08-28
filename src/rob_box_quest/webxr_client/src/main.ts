@@ -11,8 +11,18 @@ import { Connection } from "./wire/connection";
 import { createCaptainBridge, MAIN_SCREEN_TOPIC } from "./scene/captain_bridge";
 import { TeleopFSM } from "./input/teleop_fsm";
 import { createDesktopTeleop } from "./input/desktop_teleop";
-import { createXrTeleop, pollXrInput } from "./input/xr_teleop";
+import {
+  createXrTeleop,
+  pollXrInput,
+  applySmoothing,
+  createSmoothedAxes
+} from "./input/xr_teleop";
 import { createVoiceCapture } from "./input/voice_capture";
+import {
+  createHandTeleop,
+  type JointFrame
+} from "./input/hand_teleop";
+import { DEFAULT_BINDINGS } from "./input/teleop_config";
 import { createXrBootstrap, type XrBootstrap } from "./xr_bootstrap";
 
 const CLIENT_VERSION = "0.1.0";
@@ -210,11 +220,16 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   // телеопа. DISARM по умолчанию.
   let armed = false;
   let xrArmWasPressed = false;
+  // Phase 2.2: EMA-сглаживание thumbstick осей (см. teleop_config.ts).
+  const smoothedAxes = createSmoothedAxes();
 
   function pollXrControllers(): void {
     if (!xr.isActive() || xrInputSources.length === 0) {
       xrEmergencyWasPressed = false;
       xrArmWasPressed = false;
+      // Phase 2.2: сброс EMA при отсутствии контроллеров (новый сеанс).
+      smoothedAxes.linear = 0;
+      smoothedAxes.angular = 0;
       applyVoicePtt(false, false);
       bridge.setControllerActive(false);
       return;
@@ -223,8 +238,8 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     let emergency = false;
     let ptt = false;
     let robotPtt = false;
-    let linear = 0;
-    let angular = 0;
+    let rawLinear = 0;
+    let rawAngular = 0;
     let bestMag = -1;
     for (const src of xrInputSources) {
       const r = pollXrInput(src);
@@ -235,10 +250,14 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       const mag = r.linear * r.linear + r.angular * r.angular;
       if (mag > bestMag) {
         bestMag = mag;
-        linear = r.linear;
-        angular = r.angular;
+        rawLinear = r.linear;
+        rawAngular = r.angular;
       }
     }
+    // Phase 2.2: EMA-сглаживание raw осей → сглаженные.
+    const next = applySmoothing(smoothedAxes, { linear: rawLinear, angular: rawAngular }, DEFAULT_BINDINGS.smoothingAlpha);
+    smoothedAxes.linear = next.linear;
+    smoothedAxes.angular = next.angular;
     // Edge-triggered toggle: нажал стик → ARM, нажал ещё раз → DISARM.
     if (armPress && !xrArmWasPressed) {
       armed = !armed;
@@ -246,8 +265,8 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     }
     xrArmWasPressed = armPress;
     fsm.setDeadman(armed);
-    fsm.setLinear(linear);
-    fsm.setAngular(angular);
+    fsm.setLinear(next.linear);
+    fsm.setAngular(next.angular);
     bridge.setControllerActive(armed);
     if (emergency && !xrEmergencyWasPressed && conn && !disconnected) {
       conn.send(fsm.triggerEmergency("controller_b"));
@@ -301,15 +320,51 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       // window.requestAnimationFrame в immersive-vr заморожен браузером,
       // поэтому teleop тикаем в XR-кадровом цикле (session.requestAnimationFrame).
       xrRafSession = session;
-      const xrFrame = (_time: DOMHighResTimeStamp, _frame: XRFrame): void => {
+      const ht = createHandTeleop();
+      const xrFrame = (_time: DOMHighResTimeStamp, frame: XRFrame): void => {
         if (!xr.isActive()) return;
         tickTeleop();
+        // Phase 2.2 — hand-tracking polling. Каждый XR-кадр проверяем
+        // каждую руку: достаём joints, считаем pinch/grip, шлём edge-cmd.
+        pollHandsInFrame(frame, ht);
         xrRafId = session.requestAnimationFrame(xrFrame);
       };
       xrRafId = session.requestAnimationFrame(xrFrame);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn("[quest] requestSession failed:", err);
+    }
+  }
+
+  /** XR-кадровый поллер хэнд-трекинга. Для каждого XRInputSource с
+   *  source.hand !== undefined достаёт joints и обрабатывает жесты. */
+  function pollHandsInFrame(
+    frame: XRFrame,
+    ht: ReturnType<typeof createHandTeleop>
+  ): void {
+    const bridgeHands = bridge.hands;
+    // Reference space (local-floor) для joint-poses — three.js хранит
+    // его в renderer.xr после setSession.
+    const baseSpace = bridge.renderer.xr.getReferenceSpace?.() ?? null;
+    for (const src of xrInputSources) {
+      if (!src.hand) continue;
+      // XRFrame.getJointPose обязателен — TypeScript-тип у XRFrame
+      // опциональный, но в Phase 2.2 мы входим только с hand-tracking feature.
+      const f = frame as unknown as JointFrame;
+      const out = ht.process(
+        f,
+        src.hand as unknown as { get(key: string): unknown },
+        src.handedness === "left" ? "left" : "right",
+        baseSpace,
+        Date.now()
+      );
+      // Обновить визуал (цвета joint-spheres).
+      const handedness = src.handedness === "left" ? "left" : "right";
+      bridgeHands?.[handedness]?.updateFromJoints(out.joints);
+      // Отправить WSS edge-cmds.
+      if (out.cmds.length > 0 && conn && !disconnected) {
+        for (const cmd of out.cmds) conn.send(cmd);
+      }
     }
   }
 

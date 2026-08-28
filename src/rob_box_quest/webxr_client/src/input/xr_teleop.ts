@@ -16,6 +16,28 @@ export interface XrTeleopHandle {
   isActive(): boolean;
 }
 
+/** EMA-smoothed состояние осей для текущей сессии. Phase 2.2: smoothing
+ *  обязателен для thumbstick (дизайн). */
+export interface SmoothedAxes {
+  linear: number;
+  angular: number;
+}
+/** Сбросить EMA-состояние (между сессиями / disconnect). */
+export function createSmoothedAxes(): SmoothedAxes {
+  return { linear: 0, angular: 0 };
+}
+/** EMA: smoothed = α × current + (1-α) × prev. α=1 → без smoothing. */
+export function applySmoothing(
+  prev: SmoothedAxes,
+  current: { linear: number; angular: number },
+  alpha: number
+): SmoothedAxes {
+  return {
+    linear: prev.linear + alpha * (current.linear - prev.linear),
+    angular: prev.angular + alpha * (current.angular - prev.angular)
+  };
+}
+
 /** Результат поллинга одного XRInputSource (FSM не мутируем — агрегация в main.ts). */
 export interface XrPollResult {
   linear: number; // -1..1 (уже с deadzone)
