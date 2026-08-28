@@ -783,6 +783,18 @@ class DialogCore:
             # LLM cycle), and the user gets to confirm/reject before the
             # call ever reaches the executor.
             #
+            # S2.3/S2.4 (scheduler-segments-merge, issue #968) — open a
+            # fresh segment group for this batch BEFORE execution starts,
+            # same wiring point as the W7a re-ordering below. Not every
+            # ToolProvider is a SchedulerToolExecutor (e.g. plain
+            # ToolProvider ports in tests), so the call is optional:
+            # begin_group() only exists on the scheduler-backed wrapper.
+            # Skipping it there is exactly today's behaviour
+            # (group_id=None for every task).
+            begin_group = getattr(self._tools, "begin_group", None)
+            if begin_group is not None:
+                begin_group()
+
             # W7a (issue #968): execution order is re-ordered so music
             # prelude tools run before voice, and destructive tools
             # (stop_music / stop_navigation) run last — otherwise a

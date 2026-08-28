@@ -1766,6 +1766,118 @@ def test_run_with_tools_executes_in_safe_order_but_returns_original_order() -> N
 
 
 # ---------------------------------------------------------------------------
+# S2.3/S2.4 (scheduler-segments-merge, issue #968) — wire
+# SchedulerToolExecutor.begin_group() into DialogCore's batch loop.
+#
+# begin_group() (rob_box_voice/scheduler/tool_executor.py, commit
+# 2585cc8e) has existed since S2.3 but nothing calls it — every
+# channel-routed task keeps group_id=None forever and [SEGMENT PLAN]
+# (S5) never appears. The docstring says it must be called "right
+# before dialog_core processes one LLM batch of tool_calls (the same
+# re-ordering point W7a already hooks into)" — i.e. once per iteration
+# of the tool loop that has tool_calls, right by _order_tool_calls().
+#
+# ToolProvider (rob_box_harness.tools) does NOT declare begin_group —
+# it's a SchedulerToolExecutor-specific extra, so the call MUST be
+# optional (getattr/hasattr-guarded): a plain ToolProvider without it
+# (e.g. _FakeToolProvider itself in most fixtures) must keep working.
+# ---------------------------------------------------------------------------
+
+
+class _GroupTrackingToolProvider(_FakeToolProvider):
+    """_FakeToolProvider + begin_group(), mirroring SchedulerToolExecutor."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.begin_group_call_count = 0
+
+    def begin_group(self) -> str:
+        self.begin_group_call_count += 1
+        return f"g{self.begin_group_call_count}"
+
+
+def test_begin_group_called_once_per_tool_batch(
+    llm: _FakeLLMProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Two LLM batches with tool_calls -> begin_group() called exactly twice.
+
+    Reproduces the "комар + енот" shape: first batch sings verse 1
+    (speak_text), a second batch (after the tool result) sings verse 2
+    — each batch must open its OWN group so [SEGMENT PLAN] can tell
+    them apart.
+    """
+    tools_provider = _GroupTrackingToolProvider()
+    llm.responses = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="speak_text", arguments={"text": "verse1"}),
+            ),
+        ),
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c2", name="speak_text", arguments={"text": "verse2"}),
+            ),
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    asyncio.run(core_obj.process_input("спой про комара", history=[]))
+
+    assert tools_provider.begin_group_call_count == 2
+
+
+def test_begin_group_not_called_when_no_tool_calls(
+    llm: _FakeLLMProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """A plain-text turn (no tool_calls at all) never opens a group."""
+    tools_provider = _GroupTrackingToolProvider()
+    llm.response_text = "hello back"  # default, no tool_calls
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    asyncio.run(core_obj.process_input("hi", history=[]))
+
+    assert tools_provider.begin_group_call_count == 0
+
+
+def test_process_input_works_without_begin_group_on_tool_provider(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Regression: a ToolProvider without begin_group() (the plain port
+    contract, e.g. _FakeToolProvider) must not break the tool loop."""
+    assert not hasattr(tools_provider, "begin_group")
+    llm.responses = [
+        LLMResponse(
+            content="",
+            tool_calls=(ToolCall(id="c1", name="echo", arguments={"text": "a"}),),
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+
+    async def echo(args: dict[str, object]) -> str:
+        return f"echo:{args.get('text')}"
+    tools_provider._handler_map = {"echo": echo}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("q", history=[]))
+    assert result.error is None
+    assert result.tools_called == ["echo"]
+
+
+# ---------------------------------------------------------------------------
 # Issue #1280 — LLM stream must be aborted on barge-in (new STT input)
 # ---------------------------------------------------------------------------
 
