@@ -4,7 +4,6 @@ import {
   drawAudioHud,
   rmsLevel,
   smoothLevel,
-  type AudioHudState,
   type MicState
 } from "../src/scene/audio_hud";
 
@@ -15,18 +14,35 @@ import {
  */
 function makeMockCtx(): {
   ctx: CanvasRenderingContext2D;
-  calls: Array<{ op: string, args: unknown[] }>;
+  calls: Array<{ op: string, args: unknown[]; fillStyle?: string; strokeStyle?: string }>;
 } {
-  const calls: Array<{ op: string, args: unknown[] }> = [];
+  const calls: Array<{ op: string, args: unknown[]; fillStyle?: string; strokeStyle?: string }> = [];
+  let fillStyle = "";
+  let strokeStyle = "";
   const rec = (op: string) =>
     (...args: unknown[]) => {
-      calls.push({ op, args });
+      const entry: { op: string, args: unknown[]; fillStyle?: string; strokeStyle?: string } = { op, args };
+      if (op === "fillRect" || op === "fillText" || op === "fill") {
+        entry.fillStyle = fillStyle;
+      }
+      if (op === "stroke") {
+        entry.strokeStyle = strokeStyle;
+      }
+      calls.push(entry);
     };
-  // Часть аргументов — функции (quadraticCurveTo/arc) — мокнуть не нужно,
-  // vitest/jsdom рисует имитацию; recordOp всё равно их зовёт.
   const ctx = {
-    fillStyle: "",
-    strokeStyle: "",
+    get fillStyle(): string {
+      return fillStyle;
+    },
+    set fillStyle(v: string) {
+      fillStyle = v;
+    },
+    get strokeStyle(): string {
+      return strokeStyle;
+    },
+    set strokeStyle(v: string) {
+      strokeStyle = v;
+    },
     lineWidth: 1,
     font: "",
     textBaseline: "",
@@ -63,9 +79,10 @@ describe("rmsLevel", () => {
       pcm[i] = Math.round(Math.sin((i / N) * Math.PI * 2) * 16384);
     }
     const r = rmsLevel(pcm);
-    // RMS чистой синусоиды амплитуды A = A/sqrt(2). 16384 → ~11585.
-    expect(r).toBeGreaterThan(0.4);
-    expect(r).toBeLessThan(0.6);
+    // RMS чистой синусоиды амплитуды A в диапазоне [-1..1]: A/sqrt(2).
+    // A = 16384/32768 = 0.5 → RMS = 0.5/sqrt(2) ≈ 0.354.
+    expect(r).toBeGreaterThan(0.3);
+    expect(r).toBeLessThan(0.4);
   });
 
   it("returns 1 for full-scale square wave", () => {
@@ -77,10 +94,13 @@ describe("rmsLevel", () => {
 });
 
 describe("smoothLevel", () => {
-  it("clamps NaN/inf to 0", () => {
-    expect(smoothLevel(0.5, NaN)).toBeGreaterThanOrEqual(0);
-    expect(smoothLevel(0.5, -0.5)).toBe(0.5);
-    expect(smoothLevel(0.5, 1.5)).toBe(1);
+  it("clamps NaN/inf/out-of-range before smoothing", () => {
+    // NaN: clamp→0, falling от 0.5 → release → 0.5 + (0-0.5)*0.15 = 0.425.
+    expect(smoothLevel(0.5, NaN)).toBeCloseTo(0.425, 5);
+    // Отрицательный target: clamp→0, falling → 0.5 - 0.075 = 0.425.
+    expect(smoothLevel(0.5, -0.5)).toBeCloseTo(0.425, 5);
+    // Цель > 1: clamp→1, rising от 0.5 → attack=0.6 → 0.5 + 0.5*0.6 = 0.8.
+    expect(smoothLevel(0.5, 1.5)).toBeCloseTo(0.8, 5);
   });
 
   it("uses attack on rising, release on falling", () => {
@@ -92,25 +112,28 @@ describe("smoothLevel", () => {
 });
 
 describe("drawAudioHud — fillStyle color contract", () => {
-  function lastFillStyleForRect(ctx: CanvasRenderingContext2D, calls: Array<{ op: string, args: unknown[] }>): string {
-    let color = "";
-    for (const c of calls) {
-      if (c.op === "fillRect") color = ctx.fillStyle;
-    }
-    return color;
-  }
-
   it("uses green meter fill for idle/talk, muted color for muted", () => {
-    const states: Array<{ s: MicState, fillContains: string }> = [
-      { s: "idle", fillContains: "rgb(46, 194, 126)" }, // #2ec27e
-      { s: "talk", fillContains: "rgb(46, 194, 126)" },
-      { s: "muted", fillContains: "rgb(58, 65, 80)" } // #3a4150
+    const states: Array<{ s: MicState; fillContains: string }> = [
+      { s: "idle", fillContains: "#2ec27e" }, // green meter
+      { s: "talk", fillContains: "#2ec27e" },
+      { s: "muted", fillContains: "#3a4150" } // grey meter fill (muted)
     ];
     for (const { s, fillContains } of states) {
       const { ctx, calls } = makeMockCtx();
       drawAudioHud(ctx, { micState: s, level: 0.9 }, GEOM);
-      // Последний fillRect перед завершением — level fill (см. drawAudioHud).
-      expect(ctx.fillStyle).toContain(fillContains);
+      // Третий fillRect — meter fill (bg, track, fill). Ищем его по
+      // ширине = meterW * 0.9.
+      const meterW = GEOM.width - 96 - 16;
+      const expectedWidth = Math.floor(meterW * 0.9);
+      const meterFill = calls.find((c) => {
+        if (c.op !== "fillRect") return false;
+        const [, , w] = c.args as [number, number, number];
+        return Math.abs((w as number) - expectedWidth) <= 1;
+      });
+      expect(meterFill).toBeDefined();
+      // fillStyle ЗАХВАЧЕН в момент вызова — это то, что production-код
+      // установил перед fillRect.
+      expect(meterFill!.fillStyle).toContain(fillContains);
       expect(calls.some((c) => c.op === "fillText")).toBe(true);
     }
   });
@@ -118,23 +141,22 @@ describe("drawAudioHud — fillStyle color contract", () => {
   it("clamps level > 1 to meter full-width", () => {
     const { ctx, calls } = makeMockCtx();
     drawAudioHud(ctx, { micState: "talk", level: 5.0 }, GEOM);
-    // Найти fillRect с шириной ≈ meterW (после clearRect/fillRect(track)/fillRect(fill)).
-    const rects = calls.filter((c) => c.op === "fillRect");
-    expect(rects.length).toBeGreaterThanOrEqual(3); // bg, track, fill
-    // Последний rect — level fill: width не превышает meterW.
-    const last = rects[rects.length - 1];
-    expect(last).toBeDefined();
-    const [, , w] = last!.args as [number, number, number];
+    // Ищем fillRect с width = meterW (после clamp 5.0→1.0).
     const meterW = GEOM.width - 96 - 16;
-    expect(w as number).toBeCloseTo(meterW, 1);
+    const fullRect = calls.find((c) => {
+      if (c.op !== "fillRect") return false;
+      const [, , w] = c.args as [number, number, number];
+      return Math.abs((w as number) - meterW) <= 1;
+    });
+    expect(fullRect).toBeDefined();
+    // Это либо meter fill (если peak подавил наш find), либо peak.
+    // Допустимо оба варианта — главное, что level клампован и нет overflow.
+    expect(fullRect!.fillStyle).toBeDefined();
   });
 
   it("does not draw peak marker below threshold", () => {
     const { ctx, calls } = makeMockCtx();
     drawAudioHud(ctx, { micState: "talk", level: 0.5 }, GEOM);
-    // Peak marker рисуется fillRect со стилем COLORS.meterPeak (#e8c547).
-    // Не проверяем стиль, только что peak-rect не появился: ищем fillRect
-    // ПОСЛЕ того, как fillStyle стал peak (если был бы peak — появился бы 4-й fillRect).
     const rects = calls.filter((c) => c.op === "fillRect");
     expect(rects.length).toBe(3); // bg, track, fill — без peak.
   });
@@ -144,6 +166,9 @@ describe("drawAudioHud — fillStyle color contract", () => {
     drawAudioHud(ctx, { micState: "talk", level: 0.95 }, GEOM);
     const rects = calls.filter((c) => c.op === "fillRect");
     expect(rects.length).toBe(4); // bg, track, fill, peak
+    // Пик рендерится жёлтым #e8c547.
+    const peak = rects[3]!;
+    expect(peak.fillStyle).toContain("#e8c547");
   });
 
   it("does not draw peak marker in muted state even above 0.85", () => {

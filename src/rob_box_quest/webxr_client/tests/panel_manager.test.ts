@@ -133,12 +133,14 @@ describe("PanelManager — snapToZone", () => {
 
   it("picks nearest zone when in overlap", () => {
     const mgr = new PanelManager({ radius: 2.0 });
-    // Расстояние до left: hypot(0.1 - (-2), 0 - 0) = 2.1
-    // Расстояние до center: hypot(0.1 - 0, 0 - (-2)) = 2.0
-    // snapRadius=2.5 → попадает в обе зоны, выбираем ближайшую (center).
+    // Точка (0.1, 0):
+    //   left  (-2, 0)  → hypot(2.1, 0)   = 2.1
+    //   center (0, -2) → hypot(0.1, 2)   = 2.005
+    //   right (2, 0)   → hypot(1.9, 0)   = 1.9
+    // snapRadius=2.5 → попадает в обе зоны, выбираем ближайшую (right).
     const r = mgr.snapToZone("x", 0.1, 0, 2.5);
     expect(r.snapped).toBe(true);
-    expect(r.zone).toBe("center");
+    expect(r.zone).toBe("right");
   });
 
   it("respects custom snapRadius", () => {
