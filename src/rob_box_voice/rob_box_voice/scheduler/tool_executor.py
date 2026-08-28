@@ -34,11 +34,14 @@ from typing import Any, Callable, Optional
 
 from rob_box_llm.provider import ToolCall, ToolResult
 
+from rob_box_voice.scheduler.delta import DeltaOp, DeltaOpKind, TaskDelta
 from rob_box_voice.scheduler.task_scheduler import (
     ChannelKind,
     SchedulerTask,
+    TaskNotFoundError,
     TaskScheduler,
     TaskStatus,
+    TaskSubmitError,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -87,6 +90,27 @@ _ANIM_TOOLS: frozenset[str] = frozenset({"play_animation"})
 #: to land on the robot milliseconds after speak_text, killing music
 #: mid-phrase.
 _DEFERRED_DESTRUCTIVE_TOOLS: frozenset[str] = frozenset({"stop_music"})
+
+
+def _parse_delta_op(raw: Any) -> DeltaOp:
+    """Parse one JSON-ish ``ops[]`` entry into a validated :class:`DeltaOp`.
+
+    Mirrors ``rob_box_mcp_tools.tools.scheduler._parse_op`` (S6.1) —
+    both sides validate the same wire shape, one in the schema-only MCP
+    process, one here where the delta is actually applied.
+
+    Raises ``ValueError``/``TypeError`` on anything malformed — the
+    caller turns that into an honest ``ToolResult(is_error=True)``.
+    """
+    if not isinstance(raw, dict):
+        raise TypeError(f"each op must be an object, got {type(raw).__name__}")
+    kind_raw = raw.get("kind")
+    try:
+        kind = DeltaOpKind(kind_raw)
+    except ValueError:
+        valid = [k.value for k in DeltaOpKind]
+        raise ValueError(f"unknown op kind {kind_raw!r}; valid: {valid}") from None
+    return DeltaOp(kind=kind, seg_idx=raw.get("seg_idx"), args=raw.get("args"))
 
 
 def channel_for_tool(tool: str) -> Optional[ChannelKind]:
@@ -166,6 +190,17 @@ class SchedulerToolExecutor:
         the real side effect runs asynchronously on the scheduler's
         channel pump. Bypass tools return the underlying result.
         """
+        # S6.2 (scheduler-segments-merge, issue #968) — task_delta is
+        # intercepted BEFORE the channel_for_tool queued/bypass split.
+        # mcp_server's TaskDeltaTool (S6.1) only advertises the schema —
+        # it has no TaskScheduler of its own (separate ROS2 process).
+        # The real execution happens here, directly against
+        # TaskScheduler.update(), same bypass philosophy as the music
+        # starters below: the LLM must see the REAL per-op result, not
+        # a fire-and-forget {"status": "queued"}.
+        if call.name == "task_delta":
+            return await self._execute_task_delta(call)
+
         channel = channel_for_tool(call.name)
         if channel is None:
             return await self._underlying.execute(call)
@@ -221,6 +256,107 @@ class SchedulerToolExecutor:
             ),
             is_error=False,
         )
+
+    async def _execute_task_delta(self, call: ToolCall) -> ToolResult:
+        """S6.2 — apply ``task_delta`` directly via ``TaskScheduler.update``.
+
+        Bypasses both the queued contract (``channel_for_tool`` is never
+        consulted for this tool) and the underlying provider/mcp_server
+        for the common case: this executor is the ONLY place with
+        access to the live in-process :class:`TaskScheduler` that
+        :meth:`SchedulerToolExecutor.begin_group`-tagged tasks live on.
+
+        Fail-open (mirrors the rest of this class): if the scheduler
+        itself is unavailable, falls back to the underlying provider —
+        which reaches mcp_server's ``TaskDeltaTool`` (S6.1), returning
+        its own honest ``scheduler_unavailable`` failure rather than a
+        fabricated one from here.
+        """
+        scheduler = self._ensure_scheduler()
+        if scheduler is None:
+            return await self._underlying.execute(call)
+
+        args = call.arguments or {}
+        group_id = str(args.get("group_id") or "").strip()
+        raw_ops = args.get("ops") or []
+        try:
+            if not group_id:
+                raise ValueError("group_id must not be empty")
+            parsed_ops = tuple(_parse_delta_op(op) for op in raw_ops)
+            delta = TaskDelta(group_id=group_id, ops=parsed_ops)
+        except (ValueError, TypeError) as exc:
+            return ToolResult(
+                tool_call_id=call.id,
+                content=json.dumps(
+                    {"success": False, "error": "invalid_delta", "message": str(exc)},
+                    ensure_ascii=False,
+                ),
+                is_error=True,
+            )
+
+        try:
+            report = scheduler.update(
+                group_id, delta, executor_factory=self._delta_append_executor_factory
+            )
+        except TaskNotFoundError:
+            return ToolResult(
+                tool_call_id=call.id,
+                content=json.dumps(
+                    {"success": False, "error": "group_not_found", "group_id": group_id},
+                    ensure_ascii=False,
+                ),
+                is_error=True,
+            )
+        except TaskSubmitError as exc:
+            return ToolResult(
+                tool_call_id=call.id,
+                content=json.dumps(
+                    {"success": False, "error": "submit_error", "message": str(exc)},
+                    ensure_ascii=False,
+                ),
+                is_error=True,
+            )
+
+        outcomes = [
+            {
+                "kind": outcome.op.kind.value,
+                "seg_idx": outcome.op.seg_idx,
+                "applied": outcome.applied,
+                "task_id": outcome.task_id,
+                "reason": outcome.reason,
+            }
+            for outcome in report.outcomes
+        ]
+        return ToolResult(
+            tool_call_id=call.id,
+            content=json.dumps(
+                {"success": True, "group_id": group_id, "outcomes": outcomes},
+                ensure_ascii=False,
+            ),
+            is_error=False,
+        )
+
+    def _delta_append_executor_factory(
+        self, op: DeltaOp
+    ) -> Callable[[SchedulerTask], Any]:
+        """Build the executor for a ``task_delta`` ``append`` op's new segment.
+
+        ``TaskScheduler.update`` constructs the new :class:`SchedulerTask`
+        itself (inheriting the group's existing ``tool``, e.g.
+        ``speak_text``) and only asks this factory for its executor —
+        mirrors :meth:`_make_executor` but keyed off the task the
+        scheduler builds rather than an LLM-issued :class:`ToolCall`.
+        """
+
+        async def _run(task: SchedulerTask) -> Any:
+            synthetic_call = ToolCall(
+                id=f"{task.task_id}:task_delta_append",
+                name=task.tool,
+                arguments=dict(task.args),
+            )
+            return await self._underlying.execute(synthetic_call)
+
+        return _run
 
     # ----- internals -----------------------------------------------------
 

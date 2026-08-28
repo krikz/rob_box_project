@@ -26,6 +26,8 @@ import pytest
 from rob_box_llm.provider import ToolCall, ToolResult
 from rob_box_voice.scheduler.task_scheduler import (
     ChannelKind,
+    SchedulerTask,
+    TaskResult,
     TaskScheduler,
 )
 from rob_box_voice.scheduler.tool_executor import (
@@ -481,5 +483,212 @@ def test_active_tasks_block_reflects_busy_channels() -> None:
             assert executor.active_tasks_block() == ""
         finally:
             sched.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# S6.2 — task_delta bypasses the queue entirely (scheduler-segments-merge)
+#
+# mcp_server (a SEPARATE ROS2 process) only advertises task_delta's schema
+# (S6.1, TaskDeltaTool) — it has no access to this in-process
+# TaskScheduler. The real execution must happen HERE, intercepted before
+# ``channel_for_tool``'s general queued/bypass split, applied directly via
+# TaskScheduler.update() (S3.2), same bypass philosophy as the music
+# starters: the LLM must see the REAL per-op result, never a
+# fire-and-forget {"status": "queued"}.
+# ---------------------------------------------------------------------------
+
+
+def _delta_call(group_id: str, ops: list) -> ToolCall:
+    return ToolCall(
+        id="d1", name="task_delta", arguments={"group_id": group_id, "ops": ops}
+    )
+
+
+def test_task_delta_rewrites_pending_segment_and_returns_real_outcome() -> None:
+    underlying = _FakeUnderlying()
+
+    async def _run() -> None:
+        sched = TaskScheduler()
+        sched.start()
+        block = asyncio.Event()
+
+        async def blocked(task: SchedulerTask) -> TaskResult:
+            await block.wait()
+            return TaskResult(payload=dict(task.args))
+
+        sched.submit(SchedulerTask(
+            task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+            executor=blocked, args={"text": "verse0"}, group_id="g1", seg_idx=0,
+        ))
+        sched.submit(SchedulerTask(
+            task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+            executor=blocked, args={"text": "verse1"}, group_id="g1", seg_idx=1,
+        ))
+        executor = SchedulerToolExecutor(underlying, scheduler=sched)
+        try:
+            result = await executor.execute(_delta_call(
+                "g1",
+                [{"kind": "rewrite", "seg_idx": 1, "args": {"text": "verse1 про енота"}}],
+            ))
+            payload = json.loads(result.content)
+            # NOT the fire-and-forget queued contract (bypass, not queue).
+            assert "status" not in payload
+            assert payload["success"] is True
+            assert payload["outcomes"] == [
+                {
+                    "kind": "rewrite",
+                    "seg_idx": 1,
+                    "applied": True,
+                    "task_id": "g1-1",
+                    "reason": "",
+                }
+            ]
+            assert result.is_error is False
+            segs = sched.segments("g1")
+            assert segs[1].args == {"text": "verse1 про енота"}
+            # The bypass never touched the underlying provider directly —
+            # it went through TaskScheduler.update().
+            assert underlying.executed == []
+        finally:
+            block.set()
+            await asyncio.wait_for(sched.wait_all(), timeout=2.0)
+            sched.shutdown()
+
+    asyncio.run(_run())
+
+
+def test_task_delta_running_segment_ignored_not_error() -> None:
+    """§2.3 invariant surfaces through the bypass too: RUNNING is never
+    touched, but the tool call itself still succeeds (applied=False)."""
+    underlying = _FakeUnderlying()
+
+    async def _run() -> None:
+        sched = TaskScheduler()
+        sched.start()
+        block = asyncio.Event()
+
+        async def blocked(task: SchedulerTask) -> TaskResult:
+            await block.wait()
+            return TaskResult(payload=dict(task.args))
+
+        sched.submit(SchedulerTask(
+            task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+            executor=blocked, args={"text": "verse0"}, group_id="g1", seg_idx=0,
+        ))
+        # Let the pump pick up seg 0 (RUNNING) before we try to touch it.
+        for _ in range(50):
+            if sched.get_task("g1-0").status.name == "RUNNING":
+                break
+            await asyncio.sleep(0.01)
+        executor = SchedulerToolExecutor(underlying, scheduler=sched)
+        try:
+            result = await executor.execute(_delta_call(
+                "g1", [{"kind": "rewrite", "seg_idx": 0, "args": {"text": "hacked"}}]
+            ))
+            payload = json.loads(result.content)
+            assert payload["success"] is True
+            assert payload["outcomes"][0]["applied"] is False
+            assert "RUNNING" in payload["outcomes"][0]["reason"]
+        finally:
+            block.set()
+            await asyncio.wait_for(sched.wait_all(), timeout=2.0)
+            sched.shutdown()
+
+    asyncio.run(_run())
+
+
+def test_task_delta_append_dispatches_new_segment_through_underlying() -> None:
+    """append's new segment must still reach the real ROS side effect
+    (via the underlying provider) once the channel pump runs it."""
+    underlying = _FakeUnderlying()
+
+    async def _run() -> None:
+        sched = TaskScheduler()
+        sched.start()
+
+        async def instant(task: SchedulerTask) -> TaskResult:
+            return TaskResult(payload=dict(task.args))
+
+        sched.submit(SchedulerTask(
+            task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+            executor=instant, args={"text": "verse0"}, group_id="g1", seg_idx=0,
+        ))
+        executor = SchedulerToolExecutor(underlying, scheduler=sched)
+        try:
+            result = await executor.execute(_delta_call(
+                "g1", [{"kind": "append", "args": {"text": "verse2 про енота"}}]
+            ))
+            payload = json.loads(result.content)
+            assert payload["success"] is True
+            assert payload["outcomes"][0]["kind"] == "append"
+            assert payload["outcomes"][0]["applied"] is True
+            await asyncio.wait_for(sched.wait_all(), timeout=2.0)
+            # The appended segment's executor dispatched a real speak_text
+            # call to the underlying provider (not a bypass no-op).
+            appended = [
+                c for c in underlying.executed
+                if c.arguments.get("text") == "verse2 про енота"
+            ]
+            assert len(appended) == 1
+            assert appended[0].name == "speak_text"
+        finally:
+            sched.shutdown()
+
+    asyncio.run(_run())
+
+
+def test_task_delta_empty_group_id_rejected_honestly() -> None:
+    underlying = _FakeUnderlying()
+
+    async def _run() -> None:
+        sched = TaskScheduler()
+        sched.start()
+        executor = SchedulerToolExecutor(underlying, scheduler=sched)
+        try:
+            result = await executor.execute(_delta_call("", [{"kind": "drop", "seg_idx": 0}]))
+            payload = json.loads(result.content)
+            assert payload["success"] is False
+            assert result.is_error is True
+        finally:
+            sched.shutdown()
+
+    asyncio.run(_run())
+
+
+def test_task_delta_unknown_group_returns_honest_error() -> None:
+    underlying = _FakeUnderlying()
+
+    async def _run() -> None:
+        sched = TaskScheduler()
+        sched.start()
+        executor = SchedulerToolExecutor(underlying, scheduler=sched)
+        try:
+            result = await executor.execute(_delta_call(
+                "no-such-group", [{"kind": "drop", "seg_idx": 0}]
+            ))
+            payload = json.loads(result.content)
+            assert payload["success"] is False
+            assert payload["error"] == "group_not_found"
+            assert result.is_error is True
+        finally:
+            sched.shutdown()
+
+    asyncio.run(_run())
+
+
+def test_task_delta_falls_back_to_underlying_when_scheduler_unavailable() -> None:
+    """Fail-open, same pattern as every other bypass path in this module:
+    a dead scheduler must not silence task_delta — it goes to mcp_server's
+    own capability-honest ``scheduler_unavailable`` failure instead."""
+    underlying = _FakeUnderlying()
+
+    async def _run() -> None:
+        executor = SchedulerToolExecutor(underlying, scheduler=None)
+        executor._scheduler_attempted = True  # noqa: SLF001 — test escape hatch
+        result = await executor.execute(_delta_call("g1", [{"kind": "drop", "seg_idx": 0}]))
+        assert underlying.executed == [_delta_call("g1", [{"kind": "drop", "seg_idx": 0}])]
+        # Delegated verbatim to the underlying provider (mcp_server's
+        # TaskDeltaTool), not fabricated here.
+        assert json.loads(result.content)["ok"] is True
 
     asyncio.run(_run())
