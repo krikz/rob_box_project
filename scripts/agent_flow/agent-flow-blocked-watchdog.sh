@@ -53,6 +53,29 @@
 # ============================================================================
 set -euo pipefail
 
+# --- Cron env preflight (ретро t_32997596, 2026-08-28) ----------------------
+# Cron может передать sandbox-HOME/HERMES_HOME из активного профиля; без
+# GH_CONFIG_DIR=/home/builder/.config/gh `gh auth status` падает. Source-им
+# shared lib_cron_env.sh которая это всё нормализует + source-ит
+# profiles/agent-flow/.env с export-existing-wins.
+#
+# Делаем preflight БЕЗ set -e (на случай ошибки source — хотим явный exit 1).
+set +e
+SCRIPT_DIR_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR_LIB}/lib_cron_env.sh" 2>/dev/null
+if [ $? -ne 0 ] || ! declare -F _cron_env_preflight >/dev/null 2>&1; then
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] blocked-watchdog: FATAL cannot source lib_cron_env.sh" >&2
+    exit 1
+fi
+_cron_env_preflight "GH_REPO=krikz/rob_box_project"
+preflight_rc=$?
+set -e
+if [ "$preflight_rc" -ne 0 ]; then
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] blocked-watchdog: FATAL cron env preflight failed (rc=$preflight_rc)" >&2
+    exit 1
+fi
+
 GH_REPO="${GH_REPO:-krikz/rob_box_project}"
 DRY_RUN="${BLOCKED_WATCHDOG_DRY_RUN:-false}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-blocked-watchdog.lock}"
@@ -67,9 +90,17 @@ if ! flock -n 9; then
 fi
 
 # --- gh auth probe ---------------------------------------------------------
+# Ретро t_32997596: раньше exit 1 при gh-auth fail ломал cron-tick каждые 4ч.
+# Стратегия — graceful-skip: log warning + exit 0 (НЕ exit 1). Если auth не
+# восстановится за 6h — мониторинг пропустит серию, но без ложных CRITICAL.
+# Strict-mode (для CI/ручного запуска): BLOCKED_WATCHDOG_STRICT=1.
 if ! gh auth status >/dev/null 2>&1; then
-    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] blocked-watchdog: gh auth failed — exit 1" >&2
-    exit 1
+    if [ "${BLOCKED_WATCHDOG_STRICT:-0}" = "1" ]; then
+        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] blocked-watchdog: gh auth failed (strict) — exit 1" >&2
+        exit 1
+    fi
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] blocked-watchdog: gh auth failed — graceful skip tick (exit 0)" >&2
+    exit 0
 fi
 
 # --- helpers ---------------------------------------------------------------

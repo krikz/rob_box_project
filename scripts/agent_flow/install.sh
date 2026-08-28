@@ -107,11 +107,17 @@ EXPECTED=(
     # те, для которых найден MERGED PR (PATTERN «карточки-призраки»).
     # Регистрация cron-job делается в ensure_blocked_watchdog_cron ниже.
     agent-flow-blocked-watchdog.sh
-    # Fail-streak escalation watchdog (ретро 28.08 t_faac94b0): no-agent,
+# Fail-streak escalation watchdog (ретро 28.08 t_faac94b0): no-agent,
     # вызывается ИЗ launcher'а (после e2e-process.sh tick), не отдельным
     # cron-job. При streak ≥ WARN → issue-comment, при streak ≥ PAUSE →
     # sentinel-файл → e2e-process замораживает ротацию.
     agent-flow-e2e-fail-streak-watchdog.sh
+    # Cron env preflight shared library (ретро t_32997596, 28.08.2026):
+    # source-ится из cron-launched скриптов (sweep, blocked-watchdog, ...)
+    # для нормализации HOME/HERMES_HOME и GH_CONFIG_DIR перед любым `gh`
+    # вызовом. Должен лежать рядом со скриптами во всех 4 профилях, иначе
+    # source упадёт → cron тикнет exit 1 с "lib_cron_env.sh not found".
+    lib_cron_env.sh
 )
 
 # Режим --list-files: печатает EXPECTED по одному имени на строку и выходит.
@@ -607,6 +613,65 @@ sys.exit(1)
 ensure_blocked_watchdog_cron
 
 echo
+echo "==> Ensure cron job registration: unlabeled-sweep (ретро t_32997596, 28.08.2026)"
+# Проблема: agent-flow-unlabeled-sweep.sh был в jobs.json (id 3e0585053226,
+# every 720m) с 19 провалами подряд из-за cron-env regression — но
+# install.sh его НЕ восстанавливал (в отличие от cleanup-249 / e2e-launcher /
+# blocked-watchdog). Если jobs.json обнулится — sweep пропадёт и stale-issue
+# маркировка остановится. Делаем ensure_unlabeled_sweep_cron() по той же
+# схеме: idempotent, interval-job, devops-профиль.
+ensure_unlabeled_sweep_cron() {
+    local profile_dir="/home/builder/.hermes/profiles/devops"
+    local jobs_file="$profile_dir/cron/jobs.json"
+    local job_name="Agent Flow Unlabeled Sweep"
+    local job_script="agent-flow-unlabeled-sweep.sh"
+    local job_schedule="every 720m"
+
+    if ! command -v hermes >/dev/null 2>&1; then
+        echo "  SKIP ensure-unlabeled-cron: hermes CLI not on PATH"
+        return 0
+    fi
+    if [ ! -f "$jobs_file" ]; then
+        echo "  SKIP ensure-unlabeled-cron: $jobs_file not present"
+        return 0
+    fi
+
+    if python3 -c "
+import json, sys
+try:
+    with open('$jobs_file') as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(0)
+for j in d.get('jobs', []):
+    if j.get('script') == '$job_script' and j.get('schedule', {}).get('kind') == 'interval' and j.get('enabled'):
+        sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then
+        echo "  OK   cron job '$job_name' already registered (interval, enabled)"
+        return 0
+    fi
+
+    echo "  ADD  registering cron job '$job_name' (devops, $job_schedule, no_agent)"
+    if $DRY_RUN; then
+        echo "  [DRY] hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir '$REPO_DIR'"
+        return 0
+    fi
+    if hermes --profile devops cron create "$job_schedule" \
+        --name "$job_name" \
+        --script "$job_script" \
+        --no-agent \
+        --deliver local \
+        --workdir "$REPO_DIR" >/dev/null 2>&1; then
+        echo "  ADD  cron job created: $job_name ($job_script, $job_schedule)"
+    else
+        echo "  WARN cron job creation failed (non-fatal): $job_name — register manually:"
+        echo "       hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir $REPO_DIR"
+    fi
+}
+ensure_unlabeled_sweep_cron
+
+echo
 echo "==> md5sum verify: 3 copies of agent-flow scripts are byte-identical (retro 25.08 t_24e645e7)"
 # Проблема: launcher agent-flow-e2e-process-launcher.sh раскладывается в 3
 # копии (agent-flow/, devops/, architect/) + .hermes/scripts/. Если хотя бы
@@ -655,6 +720,16 @@ verify_three_copies_md5sum "agent-flow-e2e-fail-streak-watchdog.sh" \
     "/home/builder/.hermes/profiles/architect/scripts/agent-flow-e2e-fail-streak-watchdog.sh" \
     "/home/builder/.hermes/profiles/devops/scripts/agent-flow-e2e-fail-streak-watchdog.sh" \
     "/home/builder/.hermes/scripts/agent-flow-e2e-fail-streak-watchdog.sh"
+verify_three_copies_md5sum "agent-flow-unlabeled-sweep.sh" \
+    "/home/builder/.hermes/profiles/agent-flow/scripts/agent-flow-unlabeled-sweep.sh" \
+    "/home/builder/.hermes/profiles/architect/scripts/agent-flow-unlabeled-sweep.sh" \
+    "/home/builder/.hermes/profiles/devops/scripts/agent-flow-unlabeled-sweep.sh" \
+    "/home/builder/.hermes/scripts/agent-flow-unlabeled-sweep.sh"
+verify_three_copies_md5sum "lib_cron_env.sh" \
+    "/home/builder/.hermes/profiles/agent-flow/scripts/lib_cron_env.sh" \
+    "/home/builder/.hermes/profiles/architect/scripts/lib_cron_env.sh" \
+    "/home/builder/.hermes/profiles/devops/scripts/lib_cron_env.sh" \
+    "/home/builder/.hermes/scripts/lib_cron_env.sh"
 
 echo
 echo "==> Telegram token sanity (retro 12.08 t_5af222ea): >1 active TELEGRAM_BOT_TOKEN = reconnect loop"

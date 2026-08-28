@@ -69,8 +69,32 @@
 # ============================================================================
 set -euo pipefail
 
-HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
-export HOME="${HOME:-/home/builder}"
+# --- Cron env preflight (ретро t_32997596, 2026-08-28) ----------------------
+# Cron запускает скрипт из workdir /home/builder/hermes-share/rob_box_project
+# с $HERMES_HOME=/home/builder/.hermes/profiles/<active> (sandbox), что
+# ломает путь к profiles/agent-flow/.env. Source-им shared lib_cron_env.sh
+# которая: (1) нормализует HOME→/home/builder, HERMES_HOME→/home/builder/.hermes,
+# GH_CONFIG_DIR→/home/builder/.config/gh, (2) source-ит profiles/agent-flow/.env
+# с export-existing-wins, (3) применяет переданные defaults.
+#
+# Делаем preflight БЕЗ `set -e` (на случай если source падает — хотим явный
+# exit 1 от нашего trap, а не silent die от pipefail).
+set +e
+SCRIPT_DIR_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR_LIB}/lib_cron_env.sh" 2>/dev/null
+if [ $? -ne 0 ] || ! declare -F _cron_env_preflight >/dev/null 2>&1; then
+    echo "[agent-flow-unlabeled-sweep] $(date -Iseconds) FATAL: cannot source lib_cron_env.sh" >&2
+    exit 1
+fi
+_cron_env_preflight "GH_REPO=krikz/rob_box_project"
+preflight_rc=$?
+set -e
+if [ "$preflight_rc" -ne 0 ]; then
+    echo "[agent-flow-unlabeled-sweep] $(date -Iseconds) FATAL: cron env preflight failed (rc=$preflight_rc)" >&2
+    exit 1
+fi
+: "${GH_REPO:?GH_REPO must be set (owner/repo) — preflight/default should have set it}"
 
 STALE_HOURS_1="${STALE_HOURS_1:-24}"
 STALE_HOURS_2="${STALE_HOURS_2:-24}"
@@ -93,22 +117,11 @@ STALE_LABEL="${STALE_LABEL:-${STALE_LABEL_DEFAULT}}"
 
 PREFIX="[agent-flow-unlabeled-sweep]"
 
-# --- MAINTENANCE gate + env (из .env если есть) -----------------------------
-# Ретро 28.08 (t_faac94b0, e2e-fail-streak-no-escalation): предыдущая
-# версия использовала `read IFS='='` парсинг key=val, который терял
-# значения при наличии `=` в URL/JSON/комментариях .env, плюс падал на
-# set -e если .env не существовал (cron sometimes имеет read-only HOME
-# и HERMES_HOME не задан). Результат: GH_REPO оставался пустым →
-# `: "${GH_REPO:?...}"` → exit 1 → 19 failures подряд. Заменили на
-# полный `set -a; source` (как в launcher) — robust для любого формата
-# .env.
-ENV_FILE="$HERMES_HOME/profiles/agent-flow/.env"
-if [ -f "$ENV_FILE" ]; then
-  # shellcheck disable=SC1090
-  set -a; . "$ENV_FILE"; set +a
-fi
-: "${GH_REPO:?GH_REPO must be set (owner/repo) — check $HERMES_HOME/profiles/agent-flow/.env}"
-
+# (Конфликт разрешён при rebase t_370960cc на develop b3b8f613:
+#  MAINTENANCE gate+env блок из b3b8f613 удалён — заменён на
+#  `_cron_env_preflight` из lib_cron_env.sh, который robust к read-only HOME
+#  и валидирует .env до запуска. Логика из b3b8f613 (`set -a; source`)
+#  теперь часть preflight.)
 log() { printf '%s %s %s\n' "$PREFIX" "$(date -Iseconds)" "$*" >&2; }
 
 cli_args() {
@@ -141,9 +154,17 @@ if [ "${UNLABELED_SWEEP_TEST_MODE:-0}" != "1" ]; then
 fi
 
 # --- gate: gh auth ----------------------------------------------------------
+# Ретро t_32997596: при cron-tick gh auth может быть недоступен (sandbox HOME,
+# битый GH_CONFIG_DIR). Стратегия — graceful-skip: log warning, exit 0
+# (НЕ exit 1), чтобы cron не алертил при transient gh-auth проблемах.
+# Strict-mode оставлен для ручного запуска: GH_AUTH_STRICT=1.
 if [ "${UNLABELED_SWEEP_TEST_MODE:-0}" != "1" ]; then
   if ! gh auth status >/dev/null 2>&1; then
-    log "gh auth not configured — exit 1"; exit 1
+    if [ "${GH_AUTH_STRICT:-0}" = "1" ]; then
+      log "gh auth not configured (strict mode) — exit 1"; exit 1
+    fi
+    log "gh auth not configured — graceful skip tick (exit 0)"
+    exit 0
   fi
 fi
 
