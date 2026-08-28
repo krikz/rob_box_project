@@ -249,6 +249,18 @@ fi
 # Ретро 24.08 t_8a8d9403 — страховка на случай кейса #1195.
 # Пример: E2E_FORCE_UNPAUSE=true bash agent-flow-e2e-process.sh
 : "${E2E_FORCE_UNPAUSE:=false}"
+# Ретро 28.08 (t_4ead2dd4): auto-escalation needs-review лейбла при fail-streak ≥ N.
+# Если L: E2E Voice Test падает N+ раундов подряд без SUCCESS — готовые PR с
+# Raw-evidence (CI зелёный, mergeStateStatus=CLEAN) сами по себе не получат
+# метку needs-review (post_round_sweep срабатывает только на SUCCESS run),
+# Шифу не видит их в очереди, drift растёт. Этот sweep дополняет PR #1721
+# watchdog: тот пишет issue-comment, этот — ставит needs-review на готовые PR.
+# Default 5 — параллельно E2E_FAIL_STREAK_WARN (PR #1721 watchdog) для
+# согласованности алертов в одном тике.
+: "${AUTO_NEEDS_REVIEW_ON_FAIL_STREAK:=5}"
+: "${AUTO_NEEDS_REVIEW_DRY_RUN:=false}"
+# Лимит OPEN PR за sweep (default 100 — все open PR; ротация небольшая).
+: "${AUTO_NEEDS_REVIEW_PR_LIMIT:=100}"
 
 # --- Worktree cleanup (issue #1707, ретро 28.08) ------------------------------
 # Скрипт создавал /tmp/agent-flow-e2e-<PID>/ на каждый round, но при
@@ -659,6 +671,236 @@ fi
 
 # (worktree defaults + cleanup helpers moved up to before helpers — see
 # "worktree defaults + cleanup helpers" block after E2E_ARTIFACTS_DIR.)
+
+# --- G2.7: auto-escalation needs-review при fail-streak (ретро 28.08 t_4ead2dd4) -
+# Проблема: L: E2E Voice Test fail-streak 24 раунда подряд (~3 дня) прошёл
+# БЕЗ единого PR с меткой needs-review. Почему: post_round_sweep ставит
+# needs-review/e2e-done только на SUCCESS-run (PR #1720/#1723/#1719 получили
+# метки вручную), а fail-streak=24 означает, что SUCCESS'а не было неделями.
+# Шифу не видел готовые PR в очереди review → drift.
+#
+# Решение: отдельный sweep, который при fail-streak ≥ AUTO_NEEDS_REVIEW_ON_FAIL_STREAK
+# (default 5) для каждого OPEN PR с mergeStateStatus=CLEAN и Raw-evidence в
+# body ставит метку needs-review. Это дополняет PR #1721 (fail-streak watchdog):
+# watchdog пишет issue-comment, этот sweep — помечает PR.
+#
+# Контракт (согласован с user-unlabel guard из lib_user_unlabel_check.sh, ретро
+# 18.08 t_de6bea69, Q22): если Шифу ВРУЧНУЮ снял needs-review — sweep её
+# обратно НЕ возвращает (idem­potent в обе стороны).
+#
+# ENV:
+#   AUTO_NEEDS_REVIEW_ON_FAIL_STREAK=5 — порог streak для эскалации
+#   AUTO_NEEDS_REVIEW_DRY_RUN=false    — log only, не трогать labels
+#   AUTO_NEEDS_REVIEW_PR_LIMIT=100     — лимит OPEN PR за тик
+#
+# Test mode (для tests/test_e2e_process_fail_streak_sweep.sh):
+#   AUTO_NEEDS_REVIEW_TEST_MODE=1 — пропускает gh run list / gh pr list,
+#   берёт мок-данные из переменных:
+#     _AUTO_NEEDS_REVIEW_TEST_RUNS_JSON — JSON-массив E2E runs (тот же
+#       формат, что `gh run list --json databaseId,conclusion,createdAt,
+#       headBranch`).
+#     _AUTO_NEEDS_REVIEW_TEST_PRS_JSON  — JSON-массив PR (тот же формат,
+#       что `gh pr list --state open --json number,title,body,labels,
+#       headRefName,mergeStateStatus`).
+#
+# Pitfalls (как в github-actions-orchestration skill):
+#   - gh run list --workflow принимает filename (не display name) на default
+#     branch. Используем $E2E_WORKFLOW (= L-E2E Voice Test.yml).
+#   - mergeStateStatus бывает "CLEAN" / "DIRTY" / "BLOCKED" / "UNSTABLE" /
+#     "BEHIND" / "UNKNOWN" — нас интересует только "CLEAN".
+#   - body может быть None (gh API) — нормализуем к "" через python3.
+#   - has_label нормализует входные данные к lowercase через tr.
+#
+# Гарантии (fail-OPEN):
+#   - gh run list упал → streak = 0 → sweep no-op (не блокируем тик).
+#   - gh pr list упал → возвращаем "[]" → sweep no-op.
+#   - body/mergeStateStatus/labels неожиданного типа → пропускаем PR (не crash).
+#   - user-unlabel guard: если Шифу снял метку, sweep её не возвращает.
+compute_e2e_fail_streak() {  # → prints "<streak>|<last_success_iso>"; empty on err
+    local _runs_json
+    if [ "${AUTO_NEEDS_REVIEW_TEST_MODE:-0}" = "1" ]; then
+        _runs_json="${_AUTO_NEEDS_REVIEW_TEST_RUNS_JSON:-[]}"
+    else
+        _runs_json="$(gh run list --repo "$GH_REPO" --workflow "$E2E_WORKFLOW" \
+            --limit 30 --json databaseId,conclusion,createdAt,headBranch 2>/dev/null || true)"
+    fi
+    if [ -z "$_runs_json" ] || [ "$_runs_json" = "[]" ]; then
+        printf '0|\n'
+        return 0
+    fi
+    printf '%s' "$_runs_json" | python3 -c '
+import json, sys
+try:
+    runs = json.load(sys.stdin)
+except Exception:
+    print("0|"); raise SystemExit(0)
+if not isinstance(runs, list):
+    print("0|"); raise SystemExit(0)
+streak = 0
+last_success_at = ""
+for r in runs:  # gh run list already sorted newest-first
+    c = r.get("conclusion")
+    if c == "success":
+        last_success_at = r.get("createdAt", "")
+        break
+    if c in ("failure", "cancelled", "timed_out"):
+        streak += 1
+    # in_progress / queued / null → пропускаем (не failure)
+print(f"{streak}|{last_success_at}")
+' 2>/dev/null || printf '0|\n'
+}
+
+# list_open_prs_for_escalation — список OPEN PR с полями number, title, body,
+# labels, mergeStateStatus, headRefName. Возвращает JSON-массив (или "[]").
+list_open_prs_for_escalation() {  # → prints JSON array
+    if [ "${AUTO_NEEDS_REVIEW_TEST_MODE:-0}" = "1" ]; then
+        printf '%s' "${_AUTO_NEEDS_REVIEW_TEST_PRS_JSON:-[]}"
+        return 0
+    fi
+    gh pr list --repo "$GH_REPO" --state open \
+        --limit "$AUTO_NEEDS_REVIEW_PR_LIMIT" \
+        --json number,title,body,labels,headRefName,baseRefName,mergeStateStatus \
+        2>/dev/null || printf '[]\n'
+}
+
+# fail_streak_needs_review_sweep — главная точка входа.
+# Возвращает 0 всегда (не блокирует тик при сбоях).
+fail_streak_needs_review_sweep() {
+    if [ "${AUTO_NEEDS_REVIEW_ON_FAIL_STREAK:-0}" -le 0 ] 2>/dev/null; then
+        # Sweep выключен (default 0 → если кто-то явно ставит 0 = off).
+        # Реальный default 5 задан выше (см. AUTO_NEEDS_REVIEW_ON_FAIL_STREAK:=5).
+        return 0
+    fi
+    if [ "$DRY_RUN" = "true" ] || [ "$AUTO_NEEDS_REVIEW_DRY_RUN" = "true" ]; then
+        log "needs-review sweep: dry-run (DRY_RUN=$DRY_RUN AUTO_NEEDS_REVIEW_DRY_RUN=$AUTO_NEEDS_REVIEW_DRY_RUN) — log only"
+    fi
+
+    local _streak_info _streak _last_success
+    _streak_info="$(compute_e2e_fail_streak)"
+    _streak="${_streak_info%%|*}"
+    _last_success="${_streak_info#*|}"
+    # Sanitize: _streak должен быть целым ≥0.
+    _streak="$(printf '%s' "$_streak" | tr -dc '0-9' | head -c6)"
+    [ -z "$_streak" ] && _streak=0
+    log "needs-review sweep: streak=${_streak} threshold=${AUTO_NEEDS_REVIEW_ON_FAIL_STREAK} last_success=${_last_success:-NONE}"
+
+    if [ "$_streak" -lt "$AUTO_NEEDS_REVIEW_ON_FAIL_STREAK" ] 2>/dev/null; then
+        return 0
+    fi
+
+    local _prs
+    _prs="$(list_open_prs_for_escalation)"
+    if [ -z "$_prs" ] || [ "$_prs" = "[]" ]; then
+        log "needs-review sweep: no OPEN PR — done"
+        return 0
+    fi
+
+    # Перебираем PR. python3 нормализует body/labels/mergeStateStatus и
+    # печатает строки "<number>\t<headRefName>\t<reason>" для кандидатов.
+    # _STREAK пробрасывается через env (skill github-actions-orchestration:
+    # внешние строки через env, не через f-string, чтобы избежать interpolation
+    # проблем на malformed JSON).
+    local _candidates
+    _candidates="$(printf '%s' "$_prs" | _STREAK="$_streak" python3 -c '
+import json, sys, os, re
+try:
+    prs = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+if not isinstance(prs, list):
+    raise SystemExit(0)
+streak = int(os.environ.get("_STREAK") or 0)
+
+def has_raw_evidence(body):
+    if not isinstance(body, str):
+        return False
+    # AGENTS.md §1, ADR-0018: H2/H3-раздел "## Raw-evidence" (основной
+    # сигнал) ИЛИ просто строка "Raw-evidence" в тексте (для PR, где
+    # раздел не оформлен явным markdown-heading).
+    return bool(re.search(r"(?im)^\s*#{1,6}\s*Raw[- ]?evidence\b", body)) or \
+           "Raw-evidence" in body
+
+def labels_lower(pr):
+    out = []
+    for l in pr.get("labels") or []:
+        if isinstance(l, dict):
+            n = l.get("name")
+        else:
+            n = l
+        if isinstance(n, str):
+            out.append(n.lower())
+    return out
+
+for pr in prs:
+    if not isinstance(pr, dict):
+        continue
+    num = pr.get("number")
+    if not isinstance(num, int):
+        continue
+    state = (pr.get("state") or "").lower()
+    if state != "open":
+        continue
+    mss = (pr.get("mergeStateStatus") or "").upper()
+    if mss != "CLEAN":
+        continue
+    lset = set(labels_lower(pr))
+    # Идемпотентность: если уже есть needs-review или e2e-done/e2e:rejected —
+    # не ставить (PR уже в очереди review или завершён).
+    if lset & {"needs-review", "e2e-done", "e2e:rejected"}:
+        continue
+    body = pr.get("body") or ""
+    if not has_raw_evidence(body):
+        continue
+    head = pr.get("headRefName") or ""
+    print(f"{num}\t{head}\tstreak={streak}\tmss={mss}\traw-evidence=yes")
+' 2>/dev/null || true)"
+
+    if [ -z "$_candidates" ]; then
+        log "needs-review sweep: no eligible PR (open+clean+raw-evidence+no-label) — done"
+        return 0
+    fi
+
+    local _count=0 _processed=0 _skipped_user=0
+    while IFS=$'\t' read -r _pr_num _pr_branch _reason; do
+        [ -z "$_pr_num" ] && continue
+        _count=$((_count+1))
+        # Sanitize PR number (skill github-actions-orchestration: убрать
+        # whitespace/multi-line во избежание cobra-краша 'accepts at most 1 arg').
+        _pr_num="$(printf '%s' "$_pr_num" | grep -oE '[0-9]+' | head -n1)"
+        [ -z "$_pr_num" ] && continue
+
+        # user-unlabel guard (Q22): если Шифу ВРУЧНУЮ снял needs-review —
+        # sweep НЕ должен возвращать метку. Используем существующий хелпер
+        # из lib_user_unlabel_check.sh (он уже sourced выше).
+        if user_removed_label_recently "$_pr_num" "$NEEDS_REVIEW_LABEL"; then
+            user_unlabel_log_skip "$_pr_num" "$NEEDS_REVIEW_LABEL" "needs-review sweep streak=${_streak}"
+            _skipped_user=$((_skipped_user+1))
+            continue
+        fi
+
+        if [ "$DRY_RUN" = "true" ] || [ "$AUTO_NEEDS_REVIEW_DRY_RUN" = "true" ]; then
+            log "needs-review sweep: DRY-RUN would: gh pr edit $_pr_num --add-label ${NEEDS_REVIEW_LABEL} (${_reason}; branch=${_pr_branch})"
+            _processed=$((_processed+1))
+            continue
+        fi
+
+        if gh pr edit "$_pr_num" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1; then
+            log "needs-review sweep: PR #${_pr_num} (${_pr_branch}) → ${NEEDS_REVIEW_LABEL} (${_reason})"
+            _processed=$((_processed+1))
+        else
+            log "needs-review sweep: WARNING gh pr edit failed for PR #${_pr_num} (will retry next tick)"
+        fi
+    done <<< "$_candidates"
+
+    log "needs-review sweep: done candidates=${_count} labeled=${_processed} skipped-user=${_skipped_user}"
+    return 0
+}
+
+# Вызов на каждом тике ПОСЛЕ gh-auth/G2.5 (нужны rate-limit + auth) и ДО
+# round_ensure (чтобы метка проставилась до merge-gate, который может
+# параллельно мержить PR). Идемпотентен — может вызываться на каждом тике.
+fail_streak_needs_review_sweep || true
+
 
 # --- find or create e2e/test-round-N -----------------------------------------
 # Returns 0 + sets ROUND_BRANCH on success. N = max($N) на remote + 1
