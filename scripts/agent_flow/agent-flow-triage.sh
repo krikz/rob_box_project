@@ -22,9 +22,23 @@
 #   4. List open issues with label $GSD_SOURCE_LABEL on $GH_REPO (Phase 2, retro t_360dc1a4)
 #      — оставляем только те, у которых нет метки $ISSUE_LABEL (GSD-orphans)
 #   5. For each issue (оба этапа используют один pipeline process_issues_json):
+#        G9a (intra-tick dedup — ретро t_dfd3d19d, ADR-0032): на этапе
+#             загрузки issues_json для каждой фазы группы issues с одинаковыми
+#             (sorted-labels, first-N-words-of-title) схлопываются — оставляем
+#             старейшую по number, остальные skip+comment+label
+#             «agent-flow:dedup-skip» (DRY_RUN — skip без side-effect).
+#             Реализован в Python pre-pass над issues_json (ниже).
 #        a. Skip if it already has $DONE_LABEL (e2e-done — work complete)
 #        b. Skip if comment marker `kanban: t_<id>` already present (idempotency)
 #        c. Skip if a card with `issue: #N` in body already exists (idempotency v2)
+#        G9b (race-window dedup — ретро t_dfd3d19d, ADR-0032): если
+#             вычисленная ветка `z-{agent}/<N>-<slug>` УЖЕ ЕСТЬ в remote refs
+#             (предыдущий tick запушил, или параллельный worker) — карточка
+#             создаст worker'а, который не сможет открыть ту же ветку
+#             (`git worktree add` → «already checked out»). Skip+inc
+#             dedup_race_skipped. Использует `git ls-remote
+#             https://github.com/${GH_REPO}.git refs/heads/${branch}` (см. G1).
+#             Реализован в process_issues_json — функция branch_exists_in_remote.
 #        d. Skip if the would-be branch already has a MERGED PR (work in develop)
 #        e. Resolve role from `agent:<role>` label, else $AGENT_FLOW_DEFAULT_ROLE
 #        f. Compute branch name (agent/<issue>-<slug> or ~<slug> for service/infra)
@@ -32,7 +46,12 @@
 #        h. Comment the new t_<id> into the issue (3x retry, exp-backoff)
 #   6. flock lock prevents parallel ticks.
 #
-# Gates G2..G7 follow the table in ~/.hermes/profiles/agent-flow/skills/.../SKILL.md.
+# Gates G2..G8 follow the table in ~/.hermes/profiles/agent-flow/skills/.../SKILL.md.
+# G9 — ретро-фикс t_dfd3d19d (26.08, 4-я повторяющаяся дупликат-серия:
+# #1477/#1478 → #1506 → #1562/#1563 → #1650/#1653/#1655/#1658); см. ADR-0032.
+# G8 (fingerprint dedup, t_b0fe4398) и G9 (intra-tick+race) дополняют друг друга:
+# G8 ловит «разные issues → один fix (added-lines fingerprint)»;
+# G9 ловит «один root-cause → разные issues в одном тике» + «потерянная ветка в remote».
 
 set -euo pipefail
 
@@ -60,6 +79,19 @@ AGENT_FLOW_MAX_RUNTIME_LARGE="${AGENT_FLOW_MAX_RUNTIME_LARGE:-3600}"
 # Порог "объёмного" body issue (символов) — грубый прокси размера задачи.
 AGENT_FLOW_LARGE_BODY_CHARS="${AGENT_FLOW_LARGE_BODY_CHARS:-2000}"
 AGENT_FLOW_MAX_RETRIES="${AGENT_FLOW_MAX_RETRIES:-2}"
+# Ретро-фикс (26.08 t_dfd3d19d, ADR-0032): intra-tick dedup (G9a).
+# Группы issues с одинаковыми (sorted-labels, first-N-words-of-title) схлопы-
+# ваются в одну — оставляем старейшую по number, остальные skip+comment
+# «agent-flow:dedup-skip». Длина prefix (в словах, default 6) — баланс:
+# слишком короткий → одинаковые группы у разных багов; слишком длинный →
+# пропускаем реальные дубли (#1477 «STT empty on echo» vs #1478 «echo STT
+# empty detected» — префиксы совпадают в первых 3-4 словах).
+AGENT_FLOW_DEDUP_TITLE_PREFIX_WORDS="${AGENT_FLOW_DEDUP_TITLE_PREFIX_WORDS:-6}"
+# Ретро-фикс (26.08 t_dfd3d19d, ADR-0032): race-window dedup (G9b).
+# Если вычисленная ветка `z-{agent}/<N>-<slug>` уже есть в remote refs (предыдущий
+# tick запушил, или параллельный worker) — skip. Disable через
+# AGENT_FLOW_DEDUP_RACE_GUARD=false (для тестов / отладки).
+AGENT_FLOW_DEDUP_RACE_GUARD="${AGENT_FLOW_DEDUP_RACE_GUARD:-true}"
 # ADR-0013 (docs/adr/0013-incremental-delivery-over-big-bang.md): PR > 50
 # коммитов ИЛИ > 3000 строк запрещён без метки `big-bang-override` на issue.
 # Triage проверяет это ДО `hermes kanban create` — если к issue уже привязан
@@ -121,6 +153,8 @@ fi
 : "${AGENT_FLOW_MAX_RUNTIME_LARGE:=3600}"
 : "${AGENT_FLOW_LARGE_BODY_CHARS:=2000}"
 : "${AGENT_FLOW_MAX_RETRIES:=2}"
+: "${AGENT_FLOW_DEDUP_TITLE_PREFIX_WORDS:=6}"
+: "${AGENT_FLOW_DEDUP_RACE_GUARD:=true}"
 : "${BIG_BANG_OVERRIDE_LABEL:=big-bang-override}"
 : "${BIG_BANG_MAX_COMMITS:=50}"
 : "${BIG_BANG_MAX_LINES:=3000}"
@@ -293,6 +327,166 @@ role_for() {  # $1=labels_json
         | head -n1 \
         | sed 's/^agent://' \
         || printf '%s' "$AGENT_FLOW_DEFAULT_ROLE"
+}
+
+# branch_exists_in_remote — ретро-фикс (26.08 t_dfd3d19d, ADR-0032): G9b
+# race-window dedup. Проверяет, существует ли уже ветка $1 в remote refs.
+# Использует тот же механизм, что G1 MAINTENANCE gate (line 189): `git ls-remote
+# https://github.com/${GH_REPO}.git refs/heads/${branch}`. Возвращает 0 если
+# ветка существует, 1 если нет, fail-OPEN если gh недоступен (чтобы не
+# блокировать нормальный поток из-за сетевого глюка).
+#
+# Пример:
+#   if branch_exists_in_remote "z-{agent}/1477-stt-empty-on-echo"; then
+#       log "branch уже в remote — skip kanban-create"
+#       skipped=$((skipped+1)); continue
+#   fi
+#
+# Disabling через AGENT_FLOW_DEDUP_RACE_GUARD=false (env-переменная).
+branch_exists_in_remote() {  # $1=branch
+    local branch="$1"
+    [ -n "${GH_REPO:-}" ] || return 1   # нет GH_REPO → нечего проверять → skip
+    [ "${AGENT_FLOW_DEDUP_RACE_GUARD:-true}" = "true" ] || return 1
+    [ -n "$branch" ] || return 1
+    # git ls-remote печатает tab-delimited: refs/heads/<branch>\t<sha>.
+    # Пустой результат (или код !=0) означает, что ветки нет.
+    if git ls-remote "https://github.com/${GH_REPO}.git" "refs/heads/${branch}" 2>/dev/null \
+        | grep -q "^${branch}[[:space:]]" ; then
+        return 0
+    fi
+    return 1
+}
+
+# dedup_intra_filter — ретро-фикс (26.08 t_dfd3d19d, ADR-0032): G9a intra-tick
+# dedup pre-pass. Принимает issues_json (из gh_list_issues_by_label или REST
+# fallback) и возвращает новый issues_json, в котором для каждой группы issues
+# с одинаковыми (sorted-labels, first-N-words-of-title) оставлена только
+# старейшая по number. Остальным — comment+label «agent-flow:dedup-skip».
+#
+# Аргументы:
+#   $1 — phase_label ("phase1" / "phase2") — только для логов
+#   $2 — issues_json (входной JSON-массив, формат как у gh_list_issues_by_label)
+#
+# Использование:
+#   g9_filtered="$(dedup_intra_filter "phase1" "$phase1_json" 2>"$g9_err_file")"
+#   g9_count="$(awk -F'[= ]' '/^DEDUP_INTRA:/{c++} END{print c+0}' "$g9_err_file")"
+#   dedup_intra_skipped=$((dedup_intra_skipped + g9_count))
+#   phase1_json="$g9_filtered"
+#
+# Вывод: stdout = JSON-array kept-issues; stderr → "$g9_err_file" (read by caller).
+dedup_intra_filter() {  # $1=phase_label  $2=issues_json
+    local phase_label="$1" issues_in="$2"
+    [ -n "$issues_in" ] || { printf '%s' ""; return 0; }
+    [ "$issues_in" != "[]" ] || { printf '%s' "[]"; return 0; }
+
+    # shellcheck disable=SC2016  # python heredoc — ${...} выглядит как vars, но это env
+    __PHASE_LABEL="$phase_label" \
+    __TITLE_WORDS="${AGENT_FLOW_DEDUP_TITLE_PREFIX_WORDS}" \
+    __DRY_RUN="${DRY_RUN:-false}" \
+    __GH_REPO="${GH_REPO:-}" \
+    printf '%s' "$issues_in" | python3 -c '
+import json, os, re, subprocess, sys
+
+PHASE_LABEL = os.environ.get("__PHASE_LABEL", "?")
+TITLE_WORDS = int(os.environ.get("__TITLE_WORDS", "6") or "6")
+DRY_RUN = (os.environ.get("__DRY_RUN", "false").lower() == "true")
+GH_REPO = os.environ.get("__GH_REPO", "")
+
+try:
+    raw = sys.stdin.read()
+    issues = json.loads(raw)
+except Exception as e:
+    sys.stderr.write("dedup_intra_filter: parse failed: %s, returning input as-is (fail-OPEN)\n" % e)
+    sys.stdout.write(raw if raw else "[]")
+    sys.exit(0)
+
+if not isinstance(issues, list) or not issues:
+    sys.stdout.write("[]")
+    sys.exit(0)
+
+def title_prefix(t, n):
+    s = (t or "").lower()
+    tokens = re.findall(r"[\w]+", s, flags=re.UNICODE)
+    return " ".join(tokens[:n])
+
+def sorted_labels(issue):
+    """Возвращает sorted-list имён меток через запятую."""
+    labels = issue.get("labels", []) or []
+    names = []
+    for lab in labels:
+        if isinstance(lab, dict):
+            n = lab.get("name", "")
+        else:
+            n = str(lab)
+        if n:
+            names.append(n)
+    return ",".join(sorted(set(names)))
+
+groups = {}
+for it in issues:
+    if not isinstance(it, dict):
+        continue
+    n = it.get("number")
+    if not isinstance(n, int):
+        continue
+    key = sorted_labels(it) + "||" + title_prefix(it.get("title", ""), TITLE_WORDS)
+    groups.setdefault(key, []).append(it)
+
+leader_nums = set()
+skips = []
+for _key, recs in groups.items():
+    if len(recs) == 1:
+        leader_nums.add(recs[0].get("number"))
+    else:
+        sorted_recs = sorted(recs, key=lambda x: x.get("number", 0))
+        leader = sorted_recs[0]
+        leader_nums.add(leader.get("number"))
+        for r in sorted_recs[1:]:
+            skips.append((r, leader.get("number")))
+
+# Emit лидеров в ИСХОДНОМ input-order для стабильности при повторных тиках.
+emitted = set()
+kept = []
+for it in issues:
+    if it.get("number") in leader_nums and it.get("number") not in emitted:
+        kept.append(it)
+        emitted.add(it["number"])
+
+# Output на stdout: keep-лидеров как JSON-array (тот же формат, что потребляет
+# process_issues_json на входе).
+sys.stdout.write(json.dumps(kept, ensure_ascii=False))
+
+# Логирование SKIP-маркеров в stderr (tab-separated для outer-парсера).
+# Side-effects (gh comment/edit) делаются прямо здесь — fail-OPEN (try/except).
+for r, leader_num in skips:
+    n = r.get("number")
+    tp = title_prefix(r.get("title", ""), TITLE_WORDS)
+    lbl = sorted_labels(r)
+    sys.stderr.write("DEDUP_INTRA\tphase=%s\tskip=%s\tleader=%s\ttitle_prefix=%s\tlabels=%s\n" %
+                     (PHASE_LABEL, n, leader_num, tp[:80], lbl[:80]))
+    if not DRY_RUN and GH_REPO:
+        comment_body = (
+            "agent-flow:dedup-skip (intra-tick, ретро t_dfd3d19d, ADR-0032)\n\n"
+            "Triage определил этот issue как дубликат #%d в текущем тике (%s) — оба имеют "
+            "идентичный набор меток и совпадающее начало заголовка («%s»). "
+            "Карточка будет создана для #%d, для этого — НЕ создаём.\n\n"
+            "Если это разные баги (одинаковое начало заголовка — совпадение):\n"
+            "1. **товарищ Шифу**: добавь уникальный distinguishing label (например "
+            "`distinguish:<короткий-тег>`) к одному из issues — дедуп их разнесёт.\n"
+            "2. Либо обнови title так, чтобы первые %d слов не совпадали.\n\n"
+            "Карточка для issue #%d будет создана на следующем тике после re-triage, если label добавить."
+            % (leader_num, PHASE_LABEL, tp, leader_num, TITLE_WORDS, n)
+        )
+        for argv in (
+            ["gh", "issue", "comment", str(n), "--repo", GH_REPO, "--body", comment_body],
+            ["gh", "issue", "edit", str(n), "--repo", GH_REPO, "--add-label", "agent-flow-error"],
+            ["gh", "issue", "edit", str(n), "--repo", GH_REPO, "--add-label", "agent-flow-dedup-skip"],
+        ):
+            try:
+                subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, check=False)
+            except Exception:
+                pass
+'
 }
 
 # Ретро-фикс (19.08, t_dd7a5749): assignee-existence guard.
@@ -784,6 +978,34 @@ process_issues_json() {
     branch="$(branch_for "$labels" "$number" "$title")"
     max_runtime="$(runtime_for "$labels" "$body")"
 
+    # Ретро-фикс (26.08 t_dfd3d19d, ADR-0032): G9b race-window dedup.
+    # Если вычисленная ветка уже есть в remote refs — карточка создаст
+    # worker'а, который не сможет открыть эту ветку (`git worktree add` →
+    # «already checked out»), карточка навсегда зависнет в blocked.
+    # Сценарий: предыдущий tick запушил branch, или параллельный worker
+    # уже ведёт ту же работу. `gh pr list` тут не поможет — нужен
+    # ls-remote refs check.
+    # branch_exists_in_remote fail-OPEN при сетевом сбое (подробности в ADR-0032
+    # §4.2). Возвращает 0 = branch существует → skip.
+    if branch_exists_in_remote "$branch"; then
+        log "issue #${number}: branch ${branch} already in remote refs (G9b race-window, ретро t_dfd3d19d) — карточку НЕ создаём"
+        if [ "$DRY_RUN" != "true" ]; then
+            gh issue comment "$number" --repo "$GH_REPO" --body \
+                "agent-flow:dedup-raceskip (ретро t_dfd3d19d, ADR-0032)
+
+Triage: вычисленная ветка \`${branch}\` уже существует в remote refs. Скорее всего, её создал предыдущий tick или параллельный worker, и новая карточка не сможет открыть эту ветку (\`worktree add\` → «already checked out»). Карточка для этого issue будет создана после очистки ветки.
+
+Если ветка должна быть переписана (старая неактуальна):
+1. **товарищ Шифу**: удалите ветку на remote \`git push origin :${branch}\` (или через gh CLI), либо присвойте этому issue explicit-ветку через label \`branch:<имя>\` — тогда triage использует её вместо вычисленной.
+2. После удаления повторный тик triage создаст карточку.
+
+См. ADR-0032 §4.2 для деталей race-scenarios." >/dev/null 2>&1 || true
+            gh issue edit "$number" --repo "$GH_REPO" --add-label "agent-flow-error" >/dev/null 2>&1 || true
+        fi
+        dedup_race_skipped=$((dedup_race_skipped+1))
+        skipped=$((skipped+1)); continue
+    fi
+
     # Ретро-фикс (22.08 t_8cde8449, issue #1506 reopened-loop): если на issue
     # есть явная метка `branch:NAME` (Шифу указал целевую ветку руками — например,
     # потому что slugify на кириллице неустойчив или ветка должна совпадать с
@@ -1195,6 +1417,11 @@ for issue in data:
 created=0
 skipped=0
 errored=0
+# Ретро-фикс (26.08 t_dfd3d19d, ADR-0032): отдельные счётчики для G9a/G9b —
+# чтобы в summary видеть, сколько issues поймал каждый guard (а не растворялось
+# в общем «skipped»). summary печатает «dedup-skipped: N (intra-tick), M (race)».
+dedup_intra_skipped=0
+dedup_race_skipped=0
 
 # --- Phase 1: primary filter (label=$ISSUE_LABEL, defaults to "hermes") ------
 # Ретро t_360dc1a4: до этого фикса triage фильтровал ТОЛЬКО по label 'hermes'.
@@ -1216,6 +1443,35 @@ if [ -z "$phase1_json" ] || [ "$phase1_json" = "[]" ]; then
     fi
     log "Phase 1: no issues with label '${ISSUE_LABEL}' on ${GH_REPO} (will still try Phase 2 GSD-orphans)"
     phase1_json=""
+fi
+
+# Ретро-фикс (26.08 t_dfd3d19d, ADR-0032): G9a intra-tick dedup для Phase 1.
+# Прогоняем phase1_json через dedup_intra_filter: группы issues с одинаковыми
+# (sorted-labels, first-N-words-of-title) схлопываются в одну (старейшую по
+# number), остальные skip+comment+label. Side-effects (gh calls) делаются
+# внутри python, fail-OPEN. Stderr-маркеры инкрементят dedup_intra_skipped.
+if [ -n "$phase1_json" ]; then
+    _g9_err="$(mktemp -t g9a-err.XXXXXX 2>/dev/null)" || _g9_err="/tmp/g9a-err.$$"
+    phase1_json="$(dedup_intra_filter "phase1" "$phase1_json" 2>"$_g9_err" || true)"
+    if [ -s "$_g9_err" ]; then
+        log "phase1 G9a intra-tick dedup: $(wc -l < "$_g9_err") skip-marker(s)"
+        # Парсим маркеры формата «DEDUP_INTRA\tphase=...\tskip=N\tleader=M\t...»
+        # и инкрементим счётчик + лог каждой строки.
+        awk -F'\t' '
+            /^DEDUP_INTRA/ {
+                # fields: 1=DEDUP_INTRA, 2="phase=X", 3="skip=N", 4="leader=M", 5="title_prefix=X", 6="labels=X"
+                for (i = 2; i <= NF; i++) {
+                    split($i, kv, "=")
+                    if (kv[1] == "skip") skp = kv[2]
+                    if (kv[1] == "leader") ld = kv[2]
+                    if (kv[1] == "title_prefix") tp = kv[2]
+                }
+                printf "  skip=#%s leader=#%s title-prefix=\"%s\"\n", skp, ld, tp
+            }
+        ' "$_g9_err" >&2
+        dedup_intra_skipped=$((dedup_intra_skipped + $(grep -c '^DEDUP_INTRA' "$_g9_err" || true)))
+    fi
+    rm -f "$_g9_err" 2>/dev/null || true
 fi
 
 # Track Phase 1 issue numbers so Phase 2 doesn't double-process them.
@@ -1325,13 +1581,38 @@ try: print(len(json.load(sys.stdin)))
 except Exception: print(0)
 ')"
     log "Phase 2: GSD-orphans (${orphan_count} issues, source:gsd without hermes)"
-    if [ "${orphan_count:-0}" -gt 0 ] 2>/dev/null; then
+
+    # Ретро-фикс (26.08 t_dfd3d19d, ADR-0032): G9a intra-tick dedup для Phase 2.
+    # Аналогично Phase 1 — прогоняем phase2_filtered через dedup_intra_filter,
+    # схлопываем группировки по (labels, title-prefix), инкрементим counter.
+    if [ -n "$phase2_filtered" ] && [ "$phase2_filtered" != "[]" ]; then
+        _g9_err="$(mktemp -t g9a-err.XXXXXX 2>/dev/null)" || _g9_err="/tmp/g9a-err.$$"
+        phase2_filtered="$(dedup_intra_filter "phase2" "$phase2_filtered" 2>"$_g9_err" || true)"
+        if [ -s "$_g9_err" ]; then
+            log "phase2 G9a intra-tick dedup: $(wc -l < "$_g9_err") skip-marker(s)"
+            awk -F'\t' '
+                /^DEDUP_INTRA/ {
+                    for (i = 2; i <= NF; i++) {
+                        split($i, kv, "=")
+                        if (kv[1] == "skip") skp = kv[2]
+                        if (kv[1] == "leader") ld = kv[2]
+                        if (kv[1] == "title_prefix") tp = kv[2]
+                    }
+                    printf "  skip=#%s leader=#%s title-prefix=\"%s\"\n", skp, ld, tp
+                }
+            ' "$_g9_err" >&2
+            dedup_intra_skipped=$((dedup_intra_skipped + $(grep -c '^DEDUP_INTRA' "$_g9_err" || true)))
+        fi
+        rm -f "$_g9_err" 2>/dev/null || true
+    fi
+
+    if [ -n "$phase2_filtered" ] && [ "$phase2_filtered" != "[]" ]; then
         process_issues_json "phase2" "$phase2_filtered"
     fi
 fi
 
 # --- summary -----------------------------------------------------------------
-log "tick done: created=${created} skipped=${skipped} errored=${errored}"
+log "tick done: created=${created} skipped=${skipped} errored=${errored} dedup-skipped: ${dedup_intra_skipped} (intra-tick), ${dedup_race_skipped} (race)"
 
 # Exit non-zero only on hard errors (G4/G5) so cron can alert.
 if [ "$errored" -gt 0 ]; then exit 1; fi

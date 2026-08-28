@@ -21,6 +21,8 @@ export enum FrameType {
   BINARY_FRAME = 0x10,
   JSON_CMD = 0x11,
   JSON_EVENT = 0x12,
+  // Рация (voice passthrough): голос оператора → сервер, payload = raw int16 PCM 16 kHz mono (D2).
+  VOICE_AUDIO = 0x13,
   GOODBYE = 0x20,
   ERROR = 0xff
 }

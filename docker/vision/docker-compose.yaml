@@ -319,7 +319,10 @@ services:
       - PYTHONUNBUFFERED=1
       # AV-9 Phase 1: monitor only. Phase 2 (active) requires voice_input_mode
       # in dialogue_node + AV-10 telegram refactor — see ADR-0028 §4.5.
-      - AVATAR_SUPERVISOR_MODE=monitor
+      # P7-simple (2026-08-27): voice_input_mode уже принят в dialogue_node
+      # (PR #1618) → включаем active, чтобы супервизор применял voice_input_mode
+      # (SetVoiceMode). Teleop-FSM/floors остаются Phase 2 (NOT_IMPLEMENTED).
+      - AVATAR_SUPERVISOR_MODE=active
     volumes:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro

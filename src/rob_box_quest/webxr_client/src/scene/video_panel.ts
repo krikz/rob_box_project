@@ -7,6 +7,14 @@
 import * as THREE from "three";
 import type { PanelState } from "./panel_manager";
 
+export interface VideoPanelOptions {
+  /** Рисовать debug-подпись topic в углу панели (default true). */
+  showLabel?: boolean;
+  /** Разрешение внутреннего canvas (default 640×360). */
+  canvasWidth?: number;
+  canvasHeight?: number;
+}
+
 export class VideoPanel {
   readonly mesh: THREE.Mesh;
   private canvas: HTMLCanvasElement;
@@ -16,14 +24,18 @@ export class VideoPanel {
   private state: PanelState;
   private frameCount = 0;
   private droppedCount = 0;
+  private readonly showLabel: boolean;
 
-  constructor(state: PanelState) {
+  constructor(state: PanelState, opts: VideoPanelOptions = {}) {
     this.state = state;
-    // Внутренний canvas 640×360 — типичный JPEG с камеры робота,
+    this.showLabel = opts.showLabel ?? true;
+    const canvasWidth = opts.canvasWidth ?? 640;
+    const canvasHeight = opts.canvasHeight ?? 360;
+    // Внутренний canvas — типичный JPEG с камеры робота,
     // CanvasTexture сама масштабируется на Plane.
     this.canvas = document.createElement("canvas");
-    this.canvas.width = 640;
-    this.canvas.height = 360;
+    this.canvas.width = canvasWidth;
+    this.canvas.height = canvasHeight;
     const ctx = this.canvas.getContext("2d", { alpha: false });
     if (!ctx) {
       throw new Error("VideoPanel: failed to acquire 2D context");
@@ -47,6 +59,11 @@ export class VideoPanel {
     this.applyTransform();
   }
 
+  /** topic текущего стрима панели. */
+  get topic(): string {
+    return this.state.topic;
+  }
+
   /** Обновить состояние панели (позиция / размер / facing). */
   setState(s: PanelState): void {
     this.state = s;
@@ -60,6 +77,7 @@ export class VideoPanel {
 
   /** Подпись с topic в углу панели (для UI/отладки). */
   setLabel(text: string): void {
+    if (!this.showLabel) return;
     this.drawLabel(text);
     this.texture.needsUpdate = true;
   }
@@ -79,7 +97,7 @@ export class VideoPanel {
       }
       this.currentImage = img;
       this.ctx!.drawImage(img, 0, 0, this.canvas.width, this.canvas.height);
-      this.drawLabel(this.state.topic);
+      if (this.showLabel) this.drawLabel(this.state.topic);
       this.texture.needsUpdate = true;
     };
     img.onerror = () => {

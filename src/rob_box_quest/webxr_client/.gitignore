@@ -12,8 +12,4 @@ coverage/
 # The gltf:verify CI guard will reject any *.glb that lacks Draco + Meshopt.
 public/models/**/*.glb
 public/models/**/*.gltf
-# Phase 2.0: optimized outputs (Draco + Meshopt) may be committed.
 !public/models/**/*.optimized.glb
-# Phase 2.1: KTX2 texture outputs (Draco + Meshopt + Basis/KTX2) may be
-# committed too — same rationale (CC0 source, optimizer pipeline).
-!public/models/**/*.ktx2.glb

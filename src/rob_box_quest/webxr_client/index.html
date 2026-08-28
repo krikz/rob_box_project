@@ -3,19 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>rob_box_quest — Captain Bridge</title>
+    <title>Rob Box — Вход на мостик</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <canvas id="scene"></canvas>
     <div id="hud">
       <div id="status" class="status status--connecting">CONNECTING…</div>
-      <div id="panel-info" class="panel-info"></div>
     </div>
     <div id="pin-overlay" class="pin-overlay">
       <form id="pin-form" class="pin-form" autocomplete="off">
-        <h1>rob_box_quest</h1>
-        <p class="pin-hint">Enter the 6-digit PIN from <code>docker logs rob_box_quest</code></p>
+        <h1>Вход на мостик Rob Box</h1>
+        <p class="pin-hint">Введите 6-значный PIN (см. логи робота)</p>
         <input
           id="pin-input"
           type="password"
@@ -26,8 +25,8 @@
           placeholder="123456"
           required
         />
-        <button type="submit">Connect</button>
-        <p id="pin-error" class="pin-error" hidden>Wrong PIN. Ask the operator.</p>
+        <button type="submit">Войти</button>
+        <p id="pin-error" class="pin-error" hidden>Неверный PIN.</p>
       </form>
     </div>
     <script type="module" src="/src/entry.ts"></script>

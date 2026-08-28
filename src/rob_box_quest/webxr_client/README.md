@@ -18,7 +18,7 @@ are forbidden in the tree — the CI guard `npm run gltf:verify` rejects any
 `.glb` that lacks `KHR_draco_mesh_compression` + `EXT_meshopt_compression`.
 
 Why: per ADR-0032 §3.2 we have hard size budgets (environment ≤ 2 MB,
-avatar ≤ 500 KB, panel ≤ 150 KB). Uncompressed glTF bloats past these
+panel ≤ 150 KB). Uncompressed glTF bloats past these
 budgets and forces 3G/Meta-Quest bandwidth choices we'd rather not make.
 
 ### Tooling
@@ -49,7 +49,6 @@ Driven by the first path segment under `public/models/`:
 | Category       | Budget  | Example                         |
 | -------------- | ------- | ------------------------------- |
 | `environment/` | ≤ 2 MB  | `public/models/environment/...` |
-| `avatar/`      | ≤ 500 KB| `public/models/avatar/...`      |
 | `panel/`       | ≤ 150 KB| `public/models/panel/...`       |
 | `texture/`     | ≤ 5 MB  | `public/models/texture/...`     |
 | `hdr/`         | ≤ 600 KB| `public/models/hdr/...`         |
@@ -70,9 +69,81 @@ add a directory under `public/models/` if you need a looser limit.
 4. PR — CI runs `gltf:verify` automatically.
 
 If you need to commit an asset that legitimately must stay raw (e.g. a
-source-of-truth mesh exported by an artist), add it to `.gitignore`
+|source-of-truth mesh exported by an artist), add it to `.gitignore`
 allowlist with a comment explaining why and link the ADR that authorises
 the exception.
+
+---
+
+## Captain Bridge environment (Phase 2.1, kanban t_0bd54b80)
+
+Five `.glb` files + one HDR live under `public/models/environment/`,
+representing the Captain Bridge scene that hosts hand-tracking + UI
+panels.
+
+| File                          | Optimized size | Purpose                                                                |
+| ----------------------------- | -------------- | ---------------------------------------------------------------------- |
+| `bridge_floor.optimized.glb`  |  22 KB         | Hex-grid floor (6×6 tiles, dark metal + emissive cyan edges).          |
+| `bridge_walls.optimized.glb`  |  12 KB         | 4 walls + viewports + console strips.                                  |
+| `bridge_props.optimized.glb`  |  24 KB         | Captain chair + main console + side terminals + holo-projectors.       |
+| `bridge_nav.optimized.glb`    |   8 KB         | 8 AABB markers for `safe_walk_area` + XR teleport anchors.             |
+| `bridge_occluders.optimized.glb` |  4 KB      | 4 wall-coincident planes for hiding UI panels behind walls.            |
+| `bridge_scene_meta.json`      |   5 KB         | Runtime metadata (design, safe_walk_area, nav_points, occluders).      |
+| `hdr/bridge_env_1k.hdr`       | 1.6 MB         | Radiance HDR for IBL on metallic parts (Poly Haven CC0).               |
+
+**Total GLB payload: 70 KB** — 3.4% of the 2 MB `environment/` budget per
+ADR-0032 §3.2.
+
+### Why synthesized meshes (not Quaternius packs)
+
+The Quaternius sci-fi packs are CC0 but distributed via itch.io
+pay-what-you-want and Google Drive share-link — neither automatable
+from this environment. The bridge is therefore synthesized from
+three.js primitives via `scripts/build_bridge_assets.mjs`, with the
+exact dimensions and palette documented in `bridge_scene_meta.json`.
+If товарищ Шифу wants the Quaternius-style models specifically, the
+swap is mechanical: drop the Quaternius `.glb` files into
+`public/models/environment/_raw/` and re-run `npm run gltf:optimize`.
+
+### Regenerating the environment
+
+```bash
+# 1. Re-synthesize raw GLB (writes to public/models/environment/_raw/)
+node scripts/build_bridge_assets.mjs
+
+# 2. Run the Phase 2.0 pipeline → *.optimized.glb in public/models/environment/
+npm run gltf:optimize
+
+# 3. CI guard — must PASS before commit
+npm run gltf:verify
+```
+
+`scripts/build_bridge_assets.mjs` also writes `bridge_scene_meta.json`
+which carries the `safe_walk_area` AABB, the 8 nav-points, and the 4
+occluder definitions consumed at runtime by `src/scene/bridge_assets.ts`.
+
+### Runtime integration
+
+`src/scene/bridge_assets.ts` exports `loadBridgeAssets(scene, renderer, opts)`
+which loads all 5 GLB + the HDR via `GLTFLoader + DRACOLoader +
+MeshoptDecoder + RGBELoader + PMREMGenerator`. The returned
+`BridgeAssetHandle` exposes `navPoints`, `occluders`, and `safeWalkArea`
+to the rest of the app — the XR layer can use the `entry`-tagged
+nav-points as teleport anchors, and the panel manager can use the
+occluder AABBs to clip panels against walls.
+
+`src/scene/captain_bridge.ts` integrates the loader via
+`bridge.loadEnvironment()` — fail-soft, so a missing GLB does not
+break the procedural fallback floor + grid.
+
+### Lighting & IBL
+
+- Ambient: `0xffffff` × 0.6.
+- Directional: `0xffffff` × 0.4, position `(2, 4, 1)`.
+- IBL: `hdr/bridge_env_1k.hdr` via `THREE.PMREMGenerator` →
+  `scene.environment`. `scene.background` is intentionally NOT set
+  (bridge walls/viewports provide the dark interior look). KTX2 path
+  for the HDR is opt-in (Phase 2.0); see *KTX2 / Basis pipeline* below.
 
 ---
 

@@ -15,7 +15,6 @@
     "gltf:verify": "node scripts/gltf-verify.mjs"
   },
   "dependencies": {
-    "lil-gui": "^0.19.2",
     "three": "^0.170.0"
   },
   "devDependencies": {
@@ -26,7 +25,6 @@
     "@types/three": "^0.170.0",
     "draco3dgltf": "^1.5.7",
     "jsdom": "^24.1.0",
-    "ktx2-encoder": "^0.6.0",
     "meshoptimizer": "^1.2.0",
     "sharp": "^0.33.5",
     "typescript": "^5.5.4",

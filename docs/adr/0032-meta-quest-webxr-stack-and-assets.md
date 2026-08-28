@@ -5,7 +5,7 @@
 | Статус | **Accepted** (финальный по research #1677, заменяет draft в ADR-0027 §3 / §4 для Phase 2+ Captain Bridge) |
 | Дата | 2026-08-26 |
 | Автор | architect (Hermes Agent), kanban t_2be7ef6f (re-issue от feature/avatar после архива t_280ca547, базовый PR #1679 был закрыт из-за base=develop), issue #1677 |
-| Контекст | Phase 2+ Captain Bridge требует avatar робота, hand-tracking, UI panels, environment — после Phase 1.5 (минимальный Three.js WebXR клиент из #1639). Нужно зафиксировать стек (Three.js vs Babylon / R3F), asset pipeline (glTF + Draco + Meshopt + KTX2), debug workflow, perf targets до начала implementation. |
+| Контекст | Phase 2+ Captain Bridge требует hand-tracking, UI panels, environment — после Phase 1.5 (минимальный Three.js WebXR клиент из #1639). Нужно зафиксировать стек (Three.js vs Babylon / R3F), asset pipeline (glTF + Draco + Meshopt + KTX2), debug workflow, perf targets до начала implementation. |
 | Затрагивает | (будущее) новый client-package `rob_box_quest_client` или доработка существующего в Phase 1.5; `docker/vision/` сервис `rob_box_quest` (уже частично в Phase 1.4–1.6); новый pipeline `gltf-transform` в `package.json`; WSS-схема telemetry (см. `docs/architecture/meta-quest-api.md`) |
 | Родители | ADR-0018 (honesty), ADR-0027 (Meta Quest AR — Phase 1), ADR-0028 (Avatar Supervisor), ADR-0030 (ADR-numbering SOT) |
 | Связанные | `docs/research/2026-08-26-meta-quest-webxr-best-practices.md` (детальный research); issue #1576, #1639, #1677; `docs/architecture/meta-quest-api.md`; `docs/plans/2026-08-25-webxr-captain-bridge-design.md` |
@@ -25,7 +25,6 @@
 **Phase 1.5 (issue #1639, в работе):** минимальный Three.js WebXR клиент. Пустая сцена, базовый hand/controller-render, подключение к WSS из Phase 1. Это **доказательство концепции** Three.js + WebXR на реальном Quest.
 
 **Phase 2+ Captain Bridge (цель этого ADR):** полноценная 3D-сцена с:
-- аватаром робота (glTF, наша модель 4-колёсной платформы),
 - hand-tracking / controller-render для teleop,
 - UI panels (teleop, camera streams, status),
 - environment (комната-мост, room-scale VR),
@@ -67,7 +66,7 @@
 | Honesty-стоимость перехода | — | Высокая (переписать Phase 1.5) | Средняя (обернуть в React) | **Очень высокая** (месяцы) |
 | Web-deploy (тот же код в desktop browser) | ✅ | ✅ | ✅ | ❌ |
 
-**Решение:** **Three.js r160+**. Phase 1.5 уже на нём, переход на Babylon в Phase 2+ — переписывание без business-value. R3F даёт +150 KB и React-overhead для сцены из 1 аватара + 5 UI-panels — не окупается. Native (Unity/OpenXR) дал бы +30% perf, но ADR-0027 §1.1 explicitly требует **единый** web-клиент для desktop/планшет/Quest. Компромисс — WebXR.
+**Решение:** **Three.js r160+**. Phase 1.5 уже на нём, переход на Babylon в Phase 2+ — переписывание без business-value. R3F даёт +150 KB и React-overhead для сцены из 5 UI-panels + environment — не окупается. Native (Unity/OpenXR) дал бы +30% perf, но ADR-0027 §1.1 explicitly требует **единый** web-клиент для desktop/планшет/Quest. Компромисс — WebXR.
 
 ### 2.2. Asset format: glTF + Draco + Meshopt + KTX2 (выбран) vs raw glTF vs FBX/OBJ vs VRM
 
@@ -131,7 +130,6 @@ Debug tools (dev-only, не в проде):
 | Категория | Файлов | Размер на диске | VRAM (после transcode) |
 |---|---|---|---|
 | Environment (bridge + props) | 4–6 glb | ≤ 2 MB | ≤ 15 MB |
-| Avatar робот | 2–3 glb | ≤ 500 KB | ≤ 5 MB |
 | UI panels | 3–4 glb | ≤ 150 KB | ≤ 2 MB |
 | Textures (KTX2) | 10–15 | ≤ 5 MB | ≤ 30 MB |
 | HDR env (KTX2) | 1 | ≤ 600 KB | ≤ 4 MB |
@@ -187,7 +185,7 @@ Debug tools (dev-only, не в проде):
 
 ### 4.3. Что мы теряем, выбирая glTF вместо VRM
 
-- **Humanoid avatar pipeline** — VRM имеет встроенные blend shapes, spring bones, eye tracking. На Phase 2+ нам не нужно (аватар — 4-колёсный робот). Если Шифу захочет humanoid (vision из ADR-0027 §1.1) — отдельный ADR добавит VRM pipeline.
+- **Humanoid avatar pipeline** — VRM имеет встроенные blend shapes, spring bones, eye tracking. На Phase 2+ нам не нужно (оператор смотрит глазами робота, 3D-модель робота не рендерим). Если Шифу захочет humanoid (vision из ADR-0027 §1.1) — отдельный ADR добавит VRM pipeline.
 
 ### 4.4. Что мы НЕ делаем (и почему)
 
@@ -210,9 +208,8 @@ Debug tools (dev-only, не в проде):
 
 ### 5.2. Phase 2.1+
 
-5. **Avatar робота** — модель по фото, glTF-pipeline через `gltf-transform`, animations (idle, forward, turn).
-6. **Environment** — bridge-room по Quaternius + Poly Haven.
-7. **AR passthrough overlay** — LiDAR-точки + depth-test (если Quest Browser поддержит `XRDepthSensing`).
+5. **Environment** — bridge-room по Quaternius + Poly Haven.
+6. **AR passthrough overlay** — LiDAR-точки + depth-test (если Quest Browser поддержит `XRDepthSensing`).
 
 ### 5.3. Phase 3+
 

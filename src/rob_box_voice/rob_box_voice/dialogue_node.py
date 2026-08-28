@@ -487,6 +487,12 @@ class DialogueNode(Node):
             )
         self.create_subscription(
             String, "/voice/stt/result", self._on_stt, qos_r, callback_group=cbg)
+        # ADR-0027 §3.4 — Quest robot-voice: stt_node публикует распознанную
+        # фразу с микрофона Quest в отдельный топик /voice/stt/quest (чтобы
+        # не ломать plain-text контракт /voice/stt/result). Маршрутизация —
+        # по voice_input_mode (см. _on_quest_stt).
+        self.create_subscription(
+            String, "/voice/stt/quest", self._on_quest_stt, qos_r, callback_group=cbg)
         # Issue #1279 — command_node публикует feedback («Двигаюсь вперёд»,
         # «Останавливаюсь») на /voice/command/feedback после выполнения
         # команды движения/статуса. dialogue_node озвучивает его через TTS,
@@ -1590,7 +1596,38 @@ class DialogueNode(Node):
                 f"⚠️ [issue 1279] Не удалось озвучить command feedback: {exc}"
             )
 
-    def _on_stt(self, msg: String) -> None:
+    def _on_quest_stt(self, msg: String) -> None:
+        """ADR-0027 §3.4 — STT-результат с микрофона Quest (PTT robot-voice).
+
+        ``stt_node`` публикует сюда распознанную фразу (plain text) из
+        ``/audio/quest_in``. Маршрутизация — по параметру
+        ``voice_input_mode`` (единственная точка переключения; его выставляет
+        супервизор — ADR-0028 S5):
+
+        - ``quest_ttts`` → **повторить голосом робота дословно** (STT → TTS,
+          без LLM — это не диалог, а «озвучка моих слов»);
+        - ``quest_stt`` → LLM-диалог без wake-word (Phase 2, follow-up);
+        - ``quest_passthrough`` → не сюда (звук играет sound_node напрямую);
+        - ``respeaker`` (default) → игнор: Quest-режим не активен.
+        """
+        try:
+            mode = str(self.get_parameter("voice_input_mode").value or "respeaker")
+        except Exception:  # noqa: BLE001 — голый объект в тестах без параметра
+            mode = "respeaker"
+        if mode == "quest_ttts":
+            text = (msg.data or "").strip()
+            if text:
+                self.get_logger().info(f"🗣️ [quest] robot-voice repeat: {text[:80]!r}")
+                self._speak_direct(text)
+            return
+        if mode == "quest_stt":
+            self._on_stt(msg, from_quest=True)
+            return
+        self.get_logger().info(
+            f"🔇 [quest] voice_input_mode={mode!r} — quest STT ignored"
+        )
+
+    def _on_stt(self, msg: String, from_quest: bool = False) -> None:
         text = (msg.data or "").strip()
         if not text:
             return
@@ -1612,6 +1649,12 @@ class DialogueNode(Node):
                 if tg_chat_id is not None:
                     self._active_tg_chat_id = tg_chat_id
                     text = text[marker_end + 1:].strip()
+        # ADR-0027 §3.4 — Quest robot-voice (PTT): результат пришёл через
+        # ``/voice/stt/quest`` (см. ``_on_quest_stt``), а не через
+        # wake-word-микрофон. Wake-word gate не нужен — оператор явно
+        # зажал PTT (как и для Telegram). Источник задаёт ``from_quest``,
+        # а не текстовый маркер.
+        is_quest: bool = from_quest
         text_lower = text.lower()
         # Issue #1077 — забираем speaker_tag для ЭТОГО текста (если stt_node
         # успел прислать speaker-событие). pop: один текст — один tag.
@@ -1663,7 +1706,8 @@ class DialogueNode(Node):
         # печатаем сводку ``llm_skipped_total``.
         # Issue #1195 — для текста из Telegram-чата ([TG:...]) wake-gate
         # пропускается: обращение в чате очевидно, нечего фильтровать.
-        if tg_chat_id is None and not has_wake_word(text_lower, self._wake_words):
+        # ADR-0027 §3.4 — для Quest robot-voice (from_quest) тоже пропускаем.
+        if tg_chat_id is None and not is_quest and not has_wake_word(text_lower, self._wake_words):
             accumulator = getattr(self, "_speech_accumulator", None)
             if getattr(self, "_accumulate_no_wake_enabled", False) and accumulator is not None:
                 # Бэклог-аккумулятор: не дропаем, а копим фоновую речь
@@ -1731,6 +1775,7 @@ class DialogueNode(Node):
         if (
             getattr(self, "_command_intent_gate_enabled", False)
             and tg_chat_id is None
+            and not is_quest
             and not any(
                 kw in text_lower for kw in self._MUSIC_STOP_OVERRIDES
             )
