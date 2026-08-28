@@ -698,3 +698,125 @@ class TestSegmentGrouping:
             await sched.wait_all()
         finally:
             sched.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# S2.2 — TaskScheduler.segments(group_id) (scheduler-segments-merge plan)
+# ---------------------------------------------------------------------------
+
+
+class TestSegmentsQuery:
+    def test_unknown_group_returns_empty_list(self):
+        sched = TaskScheduler(loop=asyncio.new_event_loop())
+        assert sched.segments("nope") == []
+
+    @pytest.mark.asyncio
+    async def test_returns_segments_ordered_by_seg_idx(self):
+        sched = _make_scheduler()
+        try:
+            # Submitted out of order — segments() must still return
+            # seg_idx-sorted, not submission-order.
+            sched.submit(SchedulerTask(
+                task_id="g1-b", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("b"), group_id="g1", seg_idx=1,
+            ))
+            sched.submit(SchedulerTask(
+                task_id="g1-a", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("a"), group_id="g1", seg_idx=0,
+            ))
+            segs = sched.segments("g1")
+            assert [s.task_id for s in segs] == ["g1-a", "g1-b"]
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_at_most_one_running_at_a_time(self):
+        sched = _make_scheduler()
+        try:
+            running_seen = asyncio.Event()
+            release = asyncio.Event()
+
+            async def slow(task: SchedulerTask) -> TaskResult:
+                running_seen.set()
+                await release.wait()
+                return TaskResult(payload=task.task_id)
+
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=slow, group_id="g1", seg_idx=0,
+            ))
+            sched.submit(SchedulerTask(
+                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("second"), group_id="g1", seg_idx=1,
+            ))
+            await asyncio.wait_for(running_seen.wait(), timeout=1.0)
+            segs = sched.segments("g1")
+            running = [s for s in segs if s.status is TaskStatus.RUNNING]
+            assert len(running) == 1
+            assert running[0].task_id == "g1-0"
+            release.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_completed_segments_stay_until_group_finishes(self):
+        sched = _make_scheduler()
+        try:
+            block = asyncio.Event()
+
+            async def blocked(task: SchedulerTask) -> TaskResult:
+                await block.wait()
+                return TaskResult(payload=task.task_id)
+
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("first"), group_id="g1", seg_idx=0,
+            ))
+            sched.submit(SchedulerTask(
+                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=blocked, group_id="g1", seg_idx=1,
+            ))
+            # Give the pump a moment to finish seg 0 and pick up seg 1.
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                segs = sched.segments("g1")
+                if len(segs) == 2 and segs[0].status is TaskStatus.COMPLETED:
+                    break
+                await asyncio.sleep(0.005)
+            segs = sched.segments("g1")
+            assert len(segs) == 2, "completed segment must stay until the group finishes"
+            assert segs[0].status is TaskStatus.COMPLETED
+            assert segs[1].status in (TaskStatus.SCHEDULED, TaskStatus.RUNNING)
+            block.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_group_cleared_after_all_segments_terminal(self):
+        sched = _make_scheduler()
+        try:
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("first"), group_id="g1", seg_idx=0,
+            ))
+            await sched.wait_all()
+            # First call observes the (now-terminal) segment...
+            segs = sched.segments("g1")
+            assert len(segs) == 1
+            # ...and clears the registry as a side effect once every
+            # segment in the group is terminal (§2.2 step 2).
+            assert sched.segments("g1") == []
+        finally:
+            sched.shutdown()
+
+    def test_ungrouped_task_not_registered(self):
+        """A task with group_id=None must not pollute the group registry."""
+        sched = TaskScheduler(loop=asyncio.new_event_loop())
+        sched.submit(SchedulerTask(
+            task_id="solo", tool="speak_text", channel=ChannelKind.VOICE,
+            executor=_echo_executor("solo"),
+        ))
+        assert sched.segments("solo") == []

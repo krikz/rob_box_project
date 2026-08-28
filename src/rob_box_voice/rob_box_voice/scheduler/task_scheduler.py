@@ -488,6 +488,10 @@ class TaskScheduler:
             )
         self._lock = threading.Lock()
         self._tasks: Dict[str, SchedulerTask] = {}
+        # S2.2 (scheduler-segments-merge) — group_id → ordered task_ids.
+        # Populated in submit(); cleared lazily in segments() once every
+        # segment of the group has reached a terminal status (§2.2).
+        self._groups: Dict[str, list[str]] = {}
         # W7c (issue #968): optional lifecycle callback — receives
         # ``(event, payload)`` for task.created / task.started /
         # task.completed / task.failed / task.cancelled. The dialogue
@@ -570,6 +574,8 @@ class TaskScheduler:
             task.task_id = uuid.uuid4().hex
         with self._lock:
             self._tasks[task.task_id] = task
+            if task.group_id is not None:
+                self._groups.setdefault(task.group_id, []).append(task.task_id)
         channel = self._channels[task.channel]
         # ``submit`` runs on the loop that owns the channel's
         # queue; it is a sync helper (``put_nowait``).
@@ -628,6 +634,30 @@ class TaskScheduler:
         """Return the live task record for *task_id*, or ``None``."""
         with self._lock:
             return self._tasks.get(task_id)
+
+    _TERMINAL_STATUSES = (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED)
+
+    def segments(self, group_id: str) -> list[SchedulerTask]:
+        """Return every segment of *group_id*, ordered by :attr:`SchedulerTask.seg_idx`.
+
+        S2.2 (scheduler-segments-merge, issue #968). Unknown or already-
+        cleared groups return ``[]`` — this is a read-only query used by
+        the future ``[SEGMENT PLAN]`` context block (S5), not an error
+        path like :meth:`TaskScheduler.update` (S3).
+
+        Completed/failed/cancelled segments stay in the returned list
+        (so the LLM/log can see "verse 1 already played") until every
+        segment in the group has reached a terminal status — at that
+        point the group is cleared from the registry as a side effect
+        of this call.
+        """
+        with self._lock:
+            task_ids = list(self._groups.get(group_id, ()))
+            tasks = [self._tasks[tid] for tid in task_ids if tid in self._tasks]
+            if tasks and all(t.status in self._TERMINAL_STATUSES for t in tasks):
+                self._groups.pop(group_id, None)
+        tasks.sort(key=lambda t: (t.seg_idx is None, t.seg_idx))
+        return tasks
 
     def wait(self, task_id: str, *, timeout: Optional[float] = None) -> SchedulerTask:
         """Block until *task_id* reaches a terminal status.
