@@ -17,7 +17,7 @@
 ## Место в процессе (Context Engineering)
 
 Этот файл — **сервисный агент**, работает после git-agent (деплой).  
-Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: `tasks.json`
+Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: GitHub Issues (устаревшая ссылка на `tasks.json`, файл больше не существует — см. `docs/development/agents/README.md`)
 
 Вызывай для Docker CI/CD, сборки образов, деплоя через GitHub Actions.  
 См. также: `.agents/skills/github-actions-runner/SKILL.md` и `.agents/skills/docker-expert/SKILL.md`

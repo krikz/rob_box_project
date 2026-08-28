@@ -4,7 +4,9 @@
 Используй соответствующий файл во время фаз **Design** и **Implement** как дополнительный контекст.
 
 > **Процесс разработки:** `.agents/skills/context-engineering/SKILL.md`  
-> **Задачи:** `tasks.json`
+> **Задачи:** GitHub Issues (`tasks.json`, упоминаемый ниже в отдельных файлах
+> этой директории, устарел и больше не существует в репо — актуальный backlog
+> это `gh issue list/view/create`, см. `.github/copilot-instructions.md`)
 
 ---
 
@@ -25,11 +27,11 @@
 
 | Файл | Роль | Когда вызывать |
 |------|------|----------------|
-| [product-manager-agent.md](product-manager-agent.md) | 📋 Product Manager | Актуализация PRD.md, приоритизация tasks.json, контроль прогресса Milestones |
+| [product-manager-agent.md](product-manager-agent.md) | 📋 Product Manager | Актуализация PRD.md, приоритизация backlog (GitHub Issues), контроль прогресса Milestones |
 | [devops-agent.md](devops-agent.md) | 🚀 DevOps Engineer | Docker, CI/CD, GitHub Actions, деплой, мониторинг |
 | [docs-agent.md](docs-agent.md) | 📚 Documentation Engineer | Обновление docs/, CHANGELOG.md, PRD.md после изменений |
 | [structure-agent.md](structure-agent.md) | 🏗️ Project Structure Guardian | Аудит структуры, рефакторинг, новые пакеты/сервисы |
-| [git-agent.md](git-agent.md) | 📝 Git Commit Engineer | Коммиты, PR, ветки, обновление tasks.json и progress.md |
+| [git-agent.md](git-agent.md) | 📝 Git Commit Engineer | Коммиты, ветки, progress.md (PR/merge — только через agent-flow, см. AGENTS.md) |
 | [diagnostics-agent.md](diagnostics-agent.md) | 🔍 Robot Diagnostics Engineer | Проверка логов на роботе, диагностика после деплоя, тесты в контейнерах |
 
 ---
@@ -37,7 +39,7 @@
 ## Workflow (Context Engineering)
 
 ```
-tasks.json → /research-codebase TASK-ID
+GitHub Issue → /research-codebase {issue-N}
     │  (используй domain context файл своего стека)
     ↓
 /design-feature <name> <research.md>     → docs/design/

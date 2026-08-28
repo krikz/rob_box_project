@@ -60,8 +60,15 @@ Original ID: {TASK-ID or TD-ID}
 
 1. Убедиться что тесты проходят (colcon build + pytest)
 2. Создать PR: `gh pr create --title "feat: [description]" --body "Closes #{N}" --repo krikz/rob_box_project`
-3. После merge: `gh issue close {N} --repo krikz/rob_box_project`
-4. Удалить ветку: `git branch -d {N}-{slug}`
+3. **Merge делает только товарищ Шифу** (`AGENTS.md`, ABSOLUTE-правило «НЕ мёржить PR») — агент ждёт, не мержит сам. Автономный agent-flow pipeline (`docs/design/AGENT_FLOW_PROPOSAL.md`) закрывает issue автоматически после merge (ADR-0014); в этом случае шаг 4 ниже выполнять не нужно вручную.
+4. Ручной запуск (не через agent-flow): после merge — `gh issue close {N} --repo krikz/rob_box_project`
+5. Удалить ветку: `git branch -d {N}-{slug}`
+
+> Примечание про имена веток: `gh issue develop {N} --checkout` (выше) даёт ветку
+> `{N}-{slug}` для ручной/интерактивной работы. Автономные worker'ы agent-flow
+> используют другой формат — `z-{agent}/<id>-<slug>` (см.
+> `docs/design/AGENT_FLOW_PROPOSAL.md` §2) — это не опечатка, а два разных
+> режима работы.
 
 ## Отклонение PR (ручное закрытие)
 

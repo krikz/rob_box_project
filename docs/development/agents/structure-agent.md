@@ -17,7 +17,7 @@
 ## Место в процессе (Context Engineering)
 
 Этот файл — **сервисный агент** для аудита структуры проекта.  
-Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: `tasks.json`
+Процесс: `.agents/skills/context-engineering/SKILL.md` | Бэклог: GitHub Issues (устаревшая ссылка на `tasks.json`, файл больше не существует — см. `docs/development/agents/README.md`)
 
 Вызывай при создании новых ROS 2 пакетов, аудите Docker структуры, или рефакторинге.
 

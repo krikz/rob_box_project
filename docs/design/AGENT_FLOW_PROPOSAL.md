@@ -17,7 +17,7 @@
 
 ```
 human → Issue[hermes+agent:role]
-   ↓ cron `agent-flow-triage` (every 5m)
+   ↓ cron `agent-flow-triage` (every 1m, было every 5m в исходном proposal — см. §4)
 kanban-карточка (assignee, инструкция, branch-naming)
    ↓ sub-agent по карточке
 worktree → рабочая ветка `z-{agent}/<id>-<slug>` → push + **комменты в issue о ходе** (Q23) → `kanban complete` → карточка в блок (ждёт CI)
@@ -46,7 +46,7 @@ issue-коммент: verdict + run + log + audio + ASR + diff + acceptance + ti
 |-----------|-----|--------|
 | Kanban Hermes | `~/.hermes/kanban/boards/robbox/` | ✅ карточки `t_*` |
 | Sub-agents | `hermes` (19 профилей с контрактом в SOUL) | ✅ |
-| triage cron | `agent-flow-triage.sh` (every 5m) | ✅ live-тест #1048/#1049 |
+| triage cron | `agent-flow-triage.sh` (every 1m, было 5m в proposal — см. §4) | ✅ live-тест #1048/#1049 |
 | merge-gate cron | `agent-flow-merge-gate.sh` (every 5m) | ✅ live-тест #1050 → PR #1051; Q21 block/unblock — в работе |
 | e2e-process | `agent-flow-e2e-process.sh` (every 1h) | ⏳ Q22 (block до e2e, done после merge) — в работе |
 | G: Run Tests | `.github/workflows/G-Run Tests.yml` | ✅ зелёный на develop (run 31251726974, 2m9s) |

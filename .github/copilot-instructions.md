@@ -13,6 +13,7 @@ Dual Raspberry Pi 5: Main (10.1.1.10) + Vision (10.1.1.11)
 | Тема | Файл | Что внутри |
 |------|------|-----------|
 | **Процесс разработки (ГЛАВНОЕ)** | `.agents/skills/context-engineering/SKILL.md` | Research→Design→Plan→Implement, команды, правила |
+| **Культура честности (АБСОЛЮТ)** | `AGENTS.md` (корень репо) | «Честный FAIL лучше красивого PASS» — ADR-0018, обязательно к прочтению |
 | **Бэклог задач** | GitHub Issues | `gh issue list/create/view/develop`; labels `source:gsd`; milestones M1/M2/M3 |
 | **Docker Rules** | `docs/development/DOCKER_STANDARDS.md` | ❌ COPY config/scripts, ✅ volumes, network_mode: host |
 | **Python Style** | `docs/development/PYTHON_STYLE_GUIDE.md` | black, isort, flake8, ROS 2 patterns, naming |
