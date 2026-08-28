@@ -139,6 +139,10 @@ def _install_ros_mocks() -> None:
         "rclpy.qos": types.SimpleNamespace(
             HistoryPolicy=types.SimpleNamespace(KEEP_LAST="KEEP_LAST"),
             ReliabilityPolicy=types.SimpleNamespace(RELIABLE="RELIABLE"),
+            DurabilityPolicy=types.SimpleNamespace(
+                TRANSIENT_LOCAL="transient_local",
+                VOLATILE="volatile",
+            ),
             QoSProfile=lambda *a, **kw: MagicMock(),
         ),
         "std_msgs": mock_std_msgs,

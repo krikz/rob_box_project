@@ -67,6 +67,10 @@ def _install_ros_mocks():
     mock_qos = types.SimpleNamespace(
         HistoryPolicy=types.SimpleNamespace(KEEP_LAST="KEEP_LAST"),
         ReliabilityPolicy=types.SimpleNamespace(RELIABLE="RELIABLE"),
+        DurabilityPolicy=types.SimpleNamespace(
+            TRANSIENT_LOCAL="transient_local",
+            VOLATILE="volatile",
+        ),
         QoSProfile=lambda *args, **kwargs: MagicMock(),
     )
 
