@@ -36,6 +36,19 @@ if [ -z "${GH_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
     [ -n "$GH_TOKEN" ] && export GH_TOKEN
 fi
 
+# 2.5 Defaults for fail-streak escalation (ретро 28.08 t_4ead2dd4).
+#   AUTO_NEEDS_REVIEW_ON_FAIL_STREAK — порог streak для auto-установки
+#     needs-review на готовые PR (mergeStateStatus=CLEAN + Raw-evidence).
+#     Параллельно E2E_FAIL_STREAK_WARN из PR #1721 watchdog для согласованных
+#     алертов в одном тике (issue-comment + needs-review).
+#   E2E_FAIL_STREAK_WARN / E2E_FAIL_STREAK_PAUSE — пороги watchdog'а из PR #1721
+#     (если он разложен install.sh; в develop его ещё нет — задаются для
+#     будущей совместимости, fallback'ом в e2e-process.sh).
+: "${AUTO_NEEDS_REVIEW_ON_FAIL_STREAK:=5}"
+: "${E2E_FAIL_STREAK_WARN:=5}"
+: "${E2E_FAIL_STREAK_PAUSE:=20}"
+export AUTO_NEEDS_REVIEW_ON_FAIL_STREAK E2E_FAIL_STREAK_WARN E2E_FAIL_STREAK_PAUSE
+
 # 3. Запуск канонического скрипта. Не используем flock здесь — он уже
 #    внутри e2e-process.sh (post-tick), и второй launcher просто пройдёт
 #    мимо через skip-логику скрипта. Cron scheduler сам даёт нам запуск
