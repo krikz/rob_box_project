@@ -37,7 +37,25 @@ import pytest
 
 
 def _load_tts_node_class():
-    """Загрузить ``rob_box_voice.tts_node`` и вернуть класс ``TTSNode``."""
+    """Загрузить ``rob_box_voice.tts_node`` и вернуть класс ``TTSNode``.
+
+    Возвращает ``(cls, saved_modules)``: второй элемент — снимок
+    затронутых ключей ``sys.modules`` ДО подмены, чтобы фикстура могла
+    их восстановить. Без восстановления MagicMock-``grpc`` протекает в
+    последующие файлы того же прогона и ломает тесты, которым нужен
+    настоящий SDK (``test_yandex_chunking``).
+    """
+    _touched = (
+        "grpc",
+        "yandex",
+        "yandex.cloud",
+        "yandex.cloud.ai",
+        "yandex.cloud.ai.tts",
+        "yandex.cloud.ai.tts.v3",
+        "rob_box_voice.tts_node",
+    )
+    saved = {k: sys.modules.get(k) for k in _touched}
+
     grpc_stub = MagicMock()
     grpc_stub.__version__ = "1.78.0"
     grpc_stub.RpcError = type("RpcError", (Exception,), {})
@@ -61,8 +79,8 @@ def _load_tts_node_class():
     tts_pkg.__path__ = []  # type: ignore[attr-defined]
     sys.modules["yandex.cloud.ai.tts"] = tts_pkg
     v3_pkg = types.ModuleType("yandex.cloud.ai.tts.v3")
-    v3_pkg.tts_pb2 = MagicMock()
-    v3_pkg.tts_service_pb2_grpc = MagicMock()
+    v3_pkg.tts_pb2 = MagicMock()  # type: ignore[attr-defined]
+    v3_pkg.tts_service_pb2_grpc = MagicMock()  # type: ignore[attr-defined]
     sys.modules["yandex.cloud.ai.tts.v3"] = v3_pkg
 
     pkg_root = Path(__file__).resolve().parent.parent.parent.parent
@@ -79,17 +97,23 @@ def _load_tts_node_class():
     mod = importlib.util.module_from_spec(spec)
     sys.modules["rob_box_voice.tts_node"] = mod
     spec.loader.exec_module(mod)
-    return mod.TTSNode
-
-
-_TTS_NODE_CLS_CACHE: dict = {}
+    return mod.TTSNode, saved
 
 
 @pytest.fixture(scope="module")
 def tts_node_cls():
-    if "_cls" not in _TTS_NODE_CLS_CACHE:
-        _TTS_NODE_CLS_CACHE["_cls"] = _load_tts_node_class()
-    return _TTS_NODE_CLS_CACHE["_cls"]
+    """TTSNode class; sys.modules-подмены откатываются после модуля."""
+    cls, saved = _load_tts_node_class()
+    try:
+        yield cls
+    finally:
+        # Возвращаем настоящие grpc / yandex SDK, иначе MagicMock-заглушки
+        # протекают в следующие тест-файлы прогона.
+        for key, value in saved.items():
+            if value is None:
+                sys.modules.pop(key, None)
+            else:
+                sys.modules[key] = value
 
 
 class _CapturingLogger:
