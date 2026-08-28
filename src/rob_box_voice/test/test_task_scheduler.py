@@ -634,3 +634,67 @@ class TestSnapshot:
             json.dumps(snap["t1"])
         finally:
             sched.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# S2.1 — group_id / seg_idx (scheduler-segments-merge plan)
+# ---------------------------------------------------------------------------
+
+
+class TestSegmentGrouping:
+    def test_group_id_and_seg_idx_default_to_none(self):
+        """Backward compat: a single (ungrouped) task defaults to None/None."""
+        task = SchedulerTask(
+            task_id="t1", tool="speak_text",
+            channel=ChannelKind.VOICE,
+            executor=_echo_executor("ok"),
+        )
+        assert task.group_id is None
+        assert task.seg_idx is None
+
+    def test_group_id_and_seg_idx_accepted(self):
+        task = SchedulerTask(
+            task_id="t1", tool="speak_text",
+            channel=ChannelKind.VOICE,
+            executor=_echo_executor("ok"),
+            group_id="t_001", seg_idx=2,
+        )
+        assert task.group_id == "t_001"
+        assert task.seg_idx == 2
+
+    def test_snapshot_includes_group_fields(self):
+        task = SchedulerTask(
+            task_id="t1", tool="speak_text",
+            channel=ChannelKind.VOICE,
+            executor=_echo_executor("ok"),
+            group_id="t_001", seg_idx=2,
+        )
+        snap = task.snapshot()
+        assert snap["group_id"] == "t_001"
+        assert snap["seg_idx"] == 2
+
+    def test_snapshot_includes_group_fields_when_none(self):
+        task = SchedulerTask(
+            task_id="t1", tool="speak_text",
+            channel=ChannelKind.VOICE,
+            executor=_echo_executor("ok"),
+        )
+        snap = task.snapshot()
+        assert snap["group_id"] is None
+        assert snap["seg_idx"] is None
+
+    @pytest.mark.asyncio
+    async def test_submit_preserves_group_fields(self):
+        sched = _make_scheduler()
+        try:
+            t1 = sched.submit(SchedulerTask(
+                task_id="t1", tool="speak_text",
+                channel=ChannelKind.VOICE,
+                executor=_echo_executor("ok"),
+                group_id="t_001", seg_idx=0,
+            ))
+            assert t1.group_id == "t_001"
+            assert t1.seg_idx == 0
+            await sched.wait_all()
+        finally:
+            sched.shutdown()

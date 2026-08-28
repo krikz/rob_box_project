@@ -165,6 +165,13 @@ class SchedulerTask:
             ``None`` until then.
         error: Exception text captured on :attr:`TaskStatus.FAILED`,
             or ``None`` until then.
+        group_id: S2 (scheduler-segments-merge, issue #968) —
+            identifies the multi-segment task this task belongs to
+            (e.g. all ``speak_text`` calls of one song). ``None``
+            means an ungrouped, standalone task — the default, so
+            existing callers are unaffected.
+        seg_idx: Position within :attr:`group_id`, 0-based. ``None``
+            when :attr:`group_id` is ``None``.
     """
 
     task_id: str
@@ -178,6 +185,8 @@ class SchedulerTask:
     finished_at: Optional[float] = None
     result: Optional[TaskResult] = None
     error: Optional[str] = None
+    group_id: Optional[str] = None
+    seg_idx: Optional[int] = None
 
     def snapshot(self) -> Dict[str, Any]:
         """Return a frozen, log-friendly view of the task.
@@ -196,6 +205,8 @@ class SchedulerTask:
             "finished_at": self.finished_at,
             "args_keys": sorted(self.args.keys()),
             "error": self.error,
+            "group_id": self.group_id,
+            "seg_idx": self.seg_idx,
         }
 
 
