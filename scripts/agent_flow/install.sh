@@ -102,6 +102,11 @@ EXPECTED=(
     cross-task-archive-sweeper.sh
     _cross_task_archive_sweeper_scan.py
     _cross_task_archive_sweeper_archive.py
+    # Orphan blocked-card watchdog (ретро t_1d0426e3): no-agent job,
+    # каждые 4h сканирует open issues с меткой needs-e2e в GH и закрывает
+    # те, для которых найден MERGED PR (PATTERN «карточки-призраки»).
+    # Регистрация cron-job делается в ensure_blocked_watchdog_cron ниже.
+    agent-flow-blocked-watchdog.sh
 )
 
 # Режим --list-files: печатает EXPECTED по одному имени на строку и выходит.
@@ -532,6 +537,71 @@ sys.exit(1)
 ensure_e2e_process_cron
 
 echo
+echo "==> Ensure cron job registration: orphan blocked-watchdog (ретро t_1d0426e3)"
+# Проблема: agent-flow-blocked-watchdog.sh раскладывается install.sh (commit
+# от t_1d0426e3), но cron-job НЕ создаётся автоматически. Без него manual
+# cleanup (t_547e17a7, t_3aa4c587, t_307bae4a) придётся повторять на каждом
+# новом orphan — pattern «карточки-призраки» системный.
+#
+# Решение: ensure_blocked_watchdog_cron() — идемпотентная функция,
+# регистрирующая interval-job (every 4h) в devops-профиле, no_agent
+# (скрипт = watchdog). Дубль-guard по (script + interval + enabled).
+#
+# Регистрация переживает install.sh: каждый запуск (в т.ч. auto-fix из
+# drift-detect) проверяет jobs.json и создаёт недостающий job.
+ensure_blocked_watchdog_cron() {
+    local profile_dir="/home/builder/.hermes/profiles/devops"
+    local jobs_file="$profile_dir/cron/jobs.json"
+    local job_name="Agent Flow Blocked Watchdog"
+    local job_script="agent-flow-blocked-watchdog.sh"
+    local job_schedule="every 4h"
+
+    if ! command -v hermes >/dev/null 2>&1; then
+        echo "  SKIP ensure-blocked-cron: hermes CLI not on PATH (nothing to register)"
+        return 0
+    fi
+    if [ ! -f "$jobs_file" ]; then
+        echo "  SKIP ensure-blocked-cron: $jobs_file not present (devops profile not set up here)"
+        return 0
+    fi
+
+    # Guard: уже есть interval-job на этот script.
+    if python3 -c "
+import json, sys
+try:
+    with open('$jobs_file') as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(0)
+for j in d.get('jobs', []):
+    if j.get('script') == '$job_script' and j.get('schedule', {}).get('kind') == 'interval' and j.get('enabled'):
+        sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then
+        echo "  OK   cron job '$job_name' already registered (interval, enabled)"
+        return 0
+    fi
+
+    echo "  ADD  registering cron job '$job_name' (devops, $job_schedule, no_agent)"
+    if $DRY_RUN; then
+        echo "  [DRY] hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir '$REPO_DIR'"
+        return 0
+    fi
+    if hermes --profile devops cron create "$job_schedule" \
+        --name "$job_name" \
+        --script "$job_script" \
+        --no-agent \
+        --deliver local \
+        --workdir "$REPO_DIR" >/dev/null 2>&1; then
+        echo "  ADD  cron job created: $job_name ($job_script, $job_schedule)"
+    else
+        echo "  WARN cron job creation failed (non-fatal): $job_name — register manually:"
+        echo "       hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir $REPO_DIR"
+    fi
+}
+ensure_blocked_watchdog_cron
+
+echo
 echo "==> md5sum verify: 3 copies of agent-flow scripts are byte-identical (retro 25.08 t_24e645e7)"
 # Проблема: launcher agent-flow-e2e-process-launcher.sh раскладывается в 3
 # копии (agent-flow/, devops/, architect/) + .hermes/scripts/. Если хотя бы
@@ -570,6 +640,11 @@ verify_three_copies_md5sum "agent-flow-e2e-process-launcher.sh" \
     "/home/builder/.hermes/profiles/architect/scripts/agent-flow-e2e-process-launcher.sh" \
     "/home/builder/.hermes/profiles/devops/scripts/agent-flow-e2e-process-launcher.sh" \
     "/home/builder/.hermes/scripts/agent-flow-e2e-process-launcher.sh"
+verify_three_copies_md5sum "agent-flow-blocked-watchdog.sh" \
+    "/home/builder/.hermes/profiles/agent-flow/scripts/agent-flow-blocked-watchdog.sh" \
+    "/home/builder/.hermes/profiles/architect/scripts/agent-flow-blocked-watchdog.sh" \
+    "/home/builder/.hermes/profiles/devops/scripts/agent-flow-blocked-watchdog.sh" \
+    "/home/builder/.hermes/scripts/agent-flow-blocked-watchdog.sh"
 
 echo
 echo "==> Telegram token sanity (retro 12.08 t_5af222ea): >1 active TELEGRAM_BOT_TOKEN = reconnect loop"
