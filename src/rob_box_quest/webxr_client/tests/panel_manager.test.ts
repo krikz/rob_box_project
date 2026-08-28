@@ -91,3 +91,94 @@ describe("PanelManager", () => {
     expect(mgr.get(id)?.position.x).not.toBe(999);
   });
 });
+
+describe("PanelManager — snapToZone", () => {
+  it("snaps to left zone when within snap radius", () => {
+    const mgr = new PanelManager({ radius: 2.0 });
+    const r = mgr.snapToZone("x", -1.7, 0.2, 0.5);
+    expect(r.snapped).toBe(true);
+    expect(r.zone).toBe("left");
+    expect(r.x).toBe(-2.0);
+    expect(r.z).toBe(0);
+  });
+
+  it("snaps to center zone when close to forward axis", () => {
+    const mgr = new PanelManager({ radius: 2.0 });
+    const r = mgr.snapToZone("x", 0.1, -1.6, 0.5);
+    expect(r.snapped).toBe(true);
+    expect(r.zone).toBe("center");
+    expect(r.x).toBe(0);
+    expect(r.z).toBe(-2.0);
+  });
+
+  it("snaps to right zone symmetric to left", () => {
+    const mgr = new PanelManager({ radius: 2.0 });
+    const r = mgr.snapToZone("x", 1.8, -0.1, 0.5);
+    expect(r.snapped).toBe(true);
+    expect(r.zone).toBe("right");
+    expect(r.x).toBe(2.0);
+    expect(r.z).toBe(0);
+  });
+
+  it("does not snap when outside snap radius (returns input coords)", () => {
+    const mgr = new PanelManager({ radius: 2.0 });
+    const r = mgr.snapToZone("x", 0, 0, 0.5);
+    // (0, 0) равноудалён от center (0, -2) и left/right — но distance=2,
+    // > snapRadius → no snap.
+    expect(r.snapped).toBe(false);
+    expect(r.zone).toBeNull();
+    expect(r.x).toBe(0);
+    expect(r.z).toBe(0);
+  });
+
+  it("picks nearest zone when in overlap", () => {
+    const mgr = new PanelManager({ radius: 2.0 });
+    // Расстояние до left: hypot(0.1 - (-2), 0 - 0) = 2.1
+    // Расстояние до center: hypot(0.1 - 0, 0 - (-2)) = 2.0
+    // snapRadius=2.5 → попадает в обе зоны, выбираем ближайшую (center).
+    const r = mgr.snapToZone("x", 0.1, 0, 2.5);
+    expect(r.snapped).toBe(true);
+    expect(r.zone).toBe("center");
+  });
+
+  it("respects custom snapRadius", () => {
+    const mgr = new PanelManager({ radius: 2.0 });
+    expect(mgr.snapToZone("x", -1.0, 0, 0.3).snapped).toBe(false);
+    expect(mgr.snapToZone("x", -1.0, 0, 1.5).snapped).toBe(true);
+  });
+});
+
+describe("PanelManager — moveWithSnap", () => {
+  it("applies snap and updates panel position+orientation", () => {
+    const mgr = new PanelManager({ radius: 2.0 });
+    const [id] = mgr.resetLayout();
+    const r = mgr.moveWithSnap(id, -1.9, 0.1, 0.5);
+    expect(r.moved).toBe(true);
+    expect(r.snapped).toBe(true);
+    expect(r.zone).toBe("left");
+    const p = mgr.get(id)!;
+    expect(p.position.x).toBe(-2.0);
+    expect(p.position.z).toBe(0);
+    // facing после move(): направлен к началу координат от (-2, 0) → (1, 0).
+    expect(p.facing.x).toBeCloseTo(1, 5);
+    expect(p.facing.z).toBeCloseTo(0, 5);
+  });
+
+  it("keeps original position when no snap", () => {
+    const mgr = new PanelManager({ radius: 2.0 });
+    const [id] = mgr.resetLayout();
+    const r = mgr.moveWithSnap(id, 0.1, 0.1, 0.3);
+    expect(r.moved).toBe(true);
+    expect(r.snapped).toBe(false);
+    expect(r.zone).toBeNull();
+    expect(mgr.get(id)!.position.x).toBe(0.1);
+    expect(mgr.get(id)!.position.z).toBe(0.1);
+  });
+
+  it("returns moved=false for unknown panel id", () => {
+    const mgr = new PanelManager({ radius: 2.0 });
+    const r = mgr.moveWithSnap("nope", 0, 0, 0.5);
+    expect(r.moved).toBe(false);
+    expect(r.snapped).toBe(false);
+  });
+});

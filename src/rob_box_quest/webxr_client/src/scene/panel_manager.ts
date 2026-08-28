@@ -9,6 +9,9 @@
 
 export type PanelId = string;
 
+/** Snap-zone куда магнитит panel: left/center/right относительно "вперёд" (-Z). */
+export type PanelZone = "left" | "center" | "right";
+
 export interface PanelState {
   id: PanelId;
   topic: string;
@@ -120,6 +123,52 @@ export class PanelManager {
       p.facing.z /= len;
     }
     return true;
+  }
+
+  /**
+   * Snap-to-zone: если panel в пределах snapRadius от центра зоны —
+   * магнитит к центру зоны. Зоны: left/center/right относительно
+   * направления "вперёд" (ось -Z).
+   *
+   * Возвращает {x, z, snapped: boolean} — caller решает, применить ли.
+   * snapRadius в метрах; типично 0.4–0.6 м.
+   */
+  snapToZone(
+    _id: PanelId,
+    x: number,
+    z: number,
+    snapRadius = 0.5
+  ): { x: number; z: number; snapped: boolean; zone: PanelZone | null } {
+    const zones: Array<{ zone: PanelZone; cx: number; cz: number }> = [
+      { zone: "left", cx: -this.opts.radius, cz: 0 },
+      { zone: "center", cx: 0, cz: -this.opts.radius },
+      { zone: "right", cx: this.opts.radius, cz: 0 }
+    ];
+    let best: { zone: PanelZone; cx: number; cz: number; d: number } | null = null;
+    for (const zone of zones) {
+      const d = Math.hypot(x - zone.cx, z - zone.cz);
+      if (best === null || d < best.d) best = { ...zone, d };
+    }
+    if (best && best.d <= snapRadius) {
+      return { x: best.cx, z: best.cz, snapped: true, zone: best.zone };
+    }
+    return { x, z, snapped: false, zone: null };
+  }
+
+  /**
+   * Переместить panel с автоматическим snap-to-zone. Применяет
+   * snapToZone() и, если примагнитило, обновляет panel через move().
+   * Возвращает {snapped, zone} для UI feedback.
+   */
+  moveWithSnap(
+    id: PanelId,
+    x: number,
+    z: number,
+    snapRadius = 0.5
+  ): { moved: boolean; snapped: boolean; zone: PanelZone | null } {
+    const snap = this.snapToZone(id, x, z, snapRadius);
+    const moved = this.move(id, snap.x, snap.z);
+    return { moved, snapped: snap.snapped, zone: snap.zone };
   }
 
   select(id: PanelId | null): void {
