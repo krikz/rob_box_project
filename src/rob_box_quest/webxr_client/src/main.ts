@@ -62,11 +62,19 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   // GPU probe опционален (EXT_disjoint_timer_query_webgl2 нет в Quest
   // Browser reliably) — если недоступен, gpu_ms просто null в payload.
   const telemetry = new TelemetryReporter({ intervalMs: 1000, fpsWindow: 60 });
-  // WebGL2 context получаем из renderer.domElement; используем non-null
-  // assertion — captain_bridge всегда создаёт WebGLRenderer на этом этапе.
+  // WebGL2 context получаем из renderer.domElement. Captain Bridge всегда
+  // создаёт WebGLRenderer; Three.js использует WebGL2 если доступно, иначе
+  // фолбэчит на WebGL1. Для EXT_disjoint_timer_query_webgl2 probe нам
+  // нужен WebGL2 — если renderer дал WebGL1, GPU-probe просто не активируется
+  // (runtime check через isWebGL2 / cast).
   const renderer = bridge.renderer;
   const gl = renderer.getContext();
-  telemetry.attachRenderer(gl);
+  if (typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext) {
+    telemetry.attachRenderer(gl);
+  } else {
+    // eslint-disable-next-line no-console
+    console.warn("[bootstrap] WebGL2 unavailable — GPU-time probe disabled");
+  }
   telemetry.onTick((payload) => {
     if (conn && !disconnected) conn.sendTelemetryPerf(payload);
   });

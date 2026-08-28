@@ -13,15 +13,8 @@
 // Если бы полный RFC — взяли бы npm-пакет; сейчас YAGNI.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import {
-  encodeTelemetryCbor,
-  TelemetryReporter,
-  GpuTimeProbe,
-  ThermalProbe,
-  sendTelemetryPerf
-} from "../src/wire/telemetry";
+import { encodeTelemetryCbor, TelemetryReporter, GpuTimeProbe, ThermalProbe, sendTelemetryPerf } from "../src/wire/telemetry";
 import { encodeFrame, decodeFrame, FrameType } from "../src/wire/protocol";
-import { Connection } from "../src/wire/connection";
 
 // ------------------------------------------------------------------
 // Inline CBOR decoder (mirror encoder'а в telemetry.ts).

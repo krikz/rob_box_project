@@ -24,6 +24,25 @@
 
 import { encodeFrame, FrameType } from "./protocol";
 
+// EXT_disjoint_timer_query_webgl2 — стандартный WebGL2 extension для замера
+// GPU time per frame. Не включён в @types/webxr / @types/three по умолчанию;
+// объявляем локально (минимальный контракт, который мы реально используем).
+// Источник: https://www.khronos.org/registry/webgl/extensions/EXT_disjoint_timer_query_webgl2/
+interface EXTDisjointTimerQueryWebGL2 {
+  readonly TIME_ELAPSED_EXT: number;
+  readonly GPU_DISJOINT_EXT: number;
+  timeElapsedQuery(query: WebGLQuery): void;
+  getQueryParameterEXT(query: WebGLQuery, pname: number): unknown;
+}
+type WebGL2RenderingContextWithTimer = WebGL2RenderingContext & {
+  getExtension(name: "EXT_disjoint_timer_query_webgl2"): EXTDisjointTimerQueryWebGL2 | null;
+  createQuery(): WebGLQuery | null;
+  deleteQuery(query: WebGLQuery): void;
+  getQueryParameter(query: WebGLQuery, pname: number): unknown;
+  QUERY_RESULT_AVAILABLE: number;
+  QUERY_RESULT: number;
+};
+
 // ------------------------------------------------------------------
 // Minimal CBOR encoder (major types 0, 3, 5, 7-tag1, 7-simple).
 // ------------------------------------------------------------------
@@ -138,15 +157,15 @@ export function encodeTelemetryCbor(obj: Record<string, number | string | boolea
  * `gpuProbe.readAverage()` раз в секунду.
  */
 export class GpuTimeProbe {
-  private gl: WebGL2RenderingContext | null = null;
-  private ext: GPU_disjoint_timer_query_webgl2 | null = null;
+  private gl: WebGL2RenderingContextWithTimer | null = null;
+  private ext: EXTDisjointTimerQueryWebGL2 | null = null;
   private queue: Array<{ query: WebGLQuery | null; startTime: number; pending: boolean }> = [];
   private readonly maxSamples = 30; // последние ~0.5 с при 60 fps, ок.
 
   attach(gl: WebGL2RenderingContext): boolean {
-    this.gl = gl;
-    const ext = gl.getExtension("EXT_disjoint_timer_query_webgl2");
-    this.ext = ext as GPU_disjoint_timer_query_webgl2 | null;
+    this.gl = gl as WebGL2RenderingContextWithTimer;
+    const ext = this.gl.getExtension("EXT_disjoint_timer_query_webgl2");
+    this.ext = ext;
     return this.ext !== null;
   }
 
@@ -256,7 +275,6 @@ export class TelemetryReporter {
   private thermal = new ThermalProbe();
   private timer: ReturnType<typeof setInterval> | null = null;
   private listener: ((payload: Uint8Array) => void) | null = null;
-  private lastTickTs = 0;
   private running = false;
 
   constructor(opts: TelemetryReporterOptions = {}) {
@@ -311,7 +329,6 @@ export class TelemetryReporter {
   start(): void {
     if (this.running) return;
     this.running = true;
-    this.lastTickTs = performance.now();
     this.timer = setInterval(() => this.tick(), this.opts.intervalMs);
     // Avoid blocking the main thread on the next interval boundary if
     // VR rAF stalled (e.g. tab backgrounded).
@@ -376,7 +393,6 @@ export class TelemetryReporter {
 
   private tick(): void {
     if (!this.listener) return;
-    const now = performance.now();
     const fps = this.computeFps();
     const frameMs = this.computeFrameMs();
     const gpuMs = this.gpuProbe.readAverage();
@@ -395,7 +411,6 @@ export class TelemetryReporter {
     });
     // Reset stale counter per tick (cumulative-since-last-tick).
     this.staleCount = 0;
-    this.lastTickTs = now;
     try {
       this.listener(payload);
     } catch {
