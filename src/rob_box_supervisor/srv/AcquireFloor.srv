@@ -1,0 +1,28 @@
+# ============================================================================
+# SOT (source-of-truth): AcquireFloor service contract (ADR-0028 §4.3, §4.5)
+# ----------------------------------------------------------------------------
+# Канонический IDL-контракт сервиса AcquireFloor. В ЭТОЙ карточке НЕ
+# интегрирован в ROS 2 rosidl runtime (это требует переключения пакета
+# rob_box_supervisor на ament_cmake — отдельная карточка Phase 2.1).
+#
+# Текущая реализация (Phase 2 wiring) использует std_srvs/Trigger с JSON-
+# конвенцией в Trigger.Request.data (см. supervisor_node._parse_floor_request)
+# для backward-compat с Phase 1 e2e. Файл сохранён как SOT — фиксирует
+# целевой контракт, на который мигрируем в Phase 2.1.
+#
+# В проде: client отправляет JSON в Trigger.Request.data:
+#   {"client_id": "quest", "floor": "teleop_floor"}
+# И получает JSON в Trigger.Response.message:
+#   {"success": true, "applied": true, "reason": "ok",
+#    "mode": "avatar_present", "state": {...}}
+# ============================================================================
+
+string client_id
+string floor  # "teleop_floor" | "voice_floor"
+string mode   # reserved (для будущей SetAvatarMode-семантики, Phase 2.1)
+---
+bool success
+bool applied
+string reason
+string mode           # current mode ("off" | "telegram_active" | "avatar_present" | "mixed")
+AvatarState state     # msgpack-encoded bytes (см. rob_box_supervisor/core/state.py)
