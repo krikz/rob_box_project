@@ -32,11 +32,16 @@ from rob_box_voice.scheduler import (
     ChannelKind,
     ChannelStatus,
     SchedulerTask,
+    TaskDelta,
     TaskResult,
     TaskScheduler,
     TaskStatus,
     TaskSubmitError,
     TaskNotFoundError,
+    append,
+    drop,
+    replace,
+    rewrite,
 )
 
 
@@ -820,3 +825,282 @@ class TestSegmentsQuery:
             executor=_echo_executor("solo"),
         ))
         assert sched.segments("solo") == []
+
+
+# ---------------------------------------------------------------------------
+# S3.2 — TaskScheduler.update() honouring the ACTIVE invariant (§2.3)
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateInvariant:
+    def test_unknown_group_raises_task_not_found(self):
+        sched = TaskScheduler(loop=asyncio.new_event_loop())
+        with pytest.raises(TaskNotFoundError):
+            sched.update("nope", TaskDelta(group_id="nope", ops=(drop(0),)))
+
+    @pytest.mark.asyncio
+    async def test_running_segment_is_never_touched_or_cancelled(self):
+        sched = _make_scheduler()
+        try:
+            release = asyncio.Event()
+            running = asyncio.Event()
+
+            async def slow(task: SchedulerTask) -> TaskResult:
+                running.set()
+                await release.wait()
+                return TaskResult(payload=dict(task.args))
+
+            t0 = sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=slow, args={"text": "old"}, group_id="g1", seg_idx=0,
+            ))
+            await asyncio.wait_for(running.wait(), timeout=1.0)
+            assert t0.status is TaskStatus.RUNNING
+
+            report = sched.update(
+                "g1", TaskDelta(group_id="g1", ops=(rewrite(0, {"text": "new"}),)),
+            )
+            assert report.outcomes[0].applied is False
+            # RUNNING segment: neither its args nor its status changed.
+            assert t0.args == {"text": "old"}
+            assert t0.status is TaskStatus.RUNNING
+
+            release.set()
+            await sched.wait_all()
+            assert t0.status is TaskStatus.COMPLETED
+            assert t0.result.payload == {"text": "old"}
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_pending_segment_rewrite_replaces_payload_order_preserved(self):
+        sched = _make_scheduler()
+        try:
+            block = asyncio.Event()
+
+            async def blocked(task: SchedulerTask) -> TaskResult:
+                await block.wait()
+                return TaskResult(payload=dict(task.args))
+
+            # seg 0 blocks the channel so seg 1/2 stay PENDING (QUEUED).
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=blocked, args={"text": "verse0"}, group_id="g1", seg_idx=0,
+            ))
+            t1 = sched.submit(SchedulerTask(
+                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse1"), args={"text": "verse1"},
+                group_id="g1", seg_idx=1,
+            ))
+            t2 = sched.submit(SchedulerTask(
+                task_id="g1-2", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse2"), args={"text": "verse2"},
+                group_id="g1", seg_idx=2,
+            ))
+
+            report = sched.update(
+                "g1",
+                TaskDelta(group_id="g1", ops=(
+                    rewrite(2, {"text": "про енота"}),
+                    replace(1, {"text": "заменённый куплет"}),
+                )),
+            )
+            assert all(o.applied for o in report.outcomes)
+            assert t1.args == {"text": "заменённый куплет"}
+            assert t2.args == {"text": "про енота"}
+            assert t1.status is TaskStatus.QUEUED
+            assert t2.status is TaskStatus.QUEUED
+
+            block.set()
+            await sched.wait_all()
+            # FIFO order preserved: seg1 still runs before seg2.
+            assert t1.finished_at <= t2.started_at
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_append_adds_to_tail_of_channel_queue(self):
+        sched = _make_scheduler()
+        try:
+            block = asyncio.Event()
+
+            async def blocked(task: SchedulerTask) -> TaskResult:
+                await block.wait()
+                return TaskResult(payload=dict(task.args))
+
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=blocked, args={"text": "verse0"}, group_id="g1", seg_idx=0,
+            ))
+
+            executed: list[str] = []
+
+            def factory(op):
+                async def _exec(task: SchedulerTask) -> TaskResult:
+                    executed.append(task.task_id)
+                    return TaskResult(payload=dict(task.args))
+                return _exec
+
+            report = sched.update(
+                "g1",
+                TaskDelta(group_id="g1", ops=(append({"text": "куплет 3"}),)),
+                executor_factory=factory,
+            )
+            assert report.outcomes[0].applied is True
+            segs = sched.segments("g1")
+            assert [s.seg_idx for s in segs] == [0, 1]
+            assert segs[1].args == {"text": "куплет 3"}
+            assert segs[1].status is TaskStatus.QUEUED
+
+            block.set()
+            await sched.wait_all()
+            assert executed == [segs[1].task_id]
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_append_without_executor_factory_raises(self):
+        sched = _make_scheduler()
+        try:
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse0"), args={"text": "verse0"},
+                group_id="g1", seg_idx=0,
+            ))
+            await sched.wait_all()
+            with pytest.raises(TaskSubmitError):
+                sched.update(
+                    "g1", TaskDelta(group_id="g1", ops=(append({"text": "x"}),)),
+                )
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_drop_removes_pending_segment(self):
+        sched = _make_scheduler()
+        try:
+            block = asyncio.Event()
+
+            async def blocked(task: SchedulerTask) -> TaskResult:
+                await block.wait()
+                return TaskResult(payload=dict(task.args))
+
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=blocked, args={"text": "verse0"}, group_id="g1", seg_idx=0,
+            ))
+            t1 = sched.submit(SchedulerTask(
+                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse1"), args={"text": "verse1"},
+                group_id="g1", seg_idx=1,
+            ))
+
+            report = sched.update(
+                "g1", TaskDelta(group_id="g1", ops=(drop(1),)),
+            )
+            assert report.outcomes[0].applied is True
+            assert t1.status is TaskStatus.CANCELLED
+
+            block.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_group_with_completed_segments_ignores_them(self):
+        """A group whose seg 0 already COMPLETED (and seg 1 is RUNNING):
+        update() must not error and must not touch either — only the
+        still-PENDING seg 2 gets rewritten."""
+        sched = _make_scheduler()
+        try:
+            block = asyncio.Event()
+
+            async def blocked(task: SchedulerTask) -> TaskResult:
+                await block.wait()
+                return TaskResult(payload=dict(task.args))
+
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse0"), args={"text": "verse0"},
+                group_id="g1", seg_idx=0,
+            ))
+            t1 = sched.submit(SchedulerTask(
+                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=blocked, args={"text": "verse1"}, group_id="g1", seg_idx=1,
+            ))
+            t2 = sched.submit(SchedulerTask(
+                task_id="g1-2", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse2"), args={"text": "verse2"},
+                group_id="g1", seg_idx=2,
+            ))
+            # Let seg 0 finish and seg 1 start running (VOICE is a single
+            # FIFO worker, so seg 2 stays QUEUED behind the blocked seg 1).
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                if (sched.get_task("g1-0").status is TaskStatus.COMPLETED
+                        and sched.get_task("g1-1").status is TaskStatus.RUNNING):
+                    break
+                await asyncio.sleep(0.005)
+            assert sched.get_task("g1-0").status is TaskStatus.COMPLETED
+            assert sched.get_task("g1-1").status is TaskStatus.RUNNING
+
+            report = sched.update(
+                "g1",
+                TaskDelta(group_id="g1", ops=(
+                    rewrite(0, {"text": "too late"}),
+                    rewrite(1, {"text": "also too late"}),
+                    rewrite(2, {"text": "про енота"}),
+                )),
+            )
+            outcome_by_seg = {o.op.seg_idx: o for o in report.outcomes}
+            assert outcome_by_seg[0].applied is False  # already terminal, ignored
+            assert outcome_by_seg[1].applied is False  # RUNNING, invariant
+            assert outcome_by_seg[2].applied is True
+            assert sched.get_task("g1-0").args == {"text": "verse0"}  # untouched
+            assert t1.args == {"text": "verse1"}  # untouched (RUNNING invariant)
+            assert t2.args == {"text": "про енота"}
+
+            block.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_race_update_vs_pump_never_double_executes_or_loses_segment(self):
+        """R2 — the race between snapshotting the channel queue and
+        ``_pump`` grabbing the head must not execute a segment twice
+        nor silently corrupt it. Reproduced deterministically by holding
+        the channel lock so the pump dequeues the head task and then
+        blocks — the exact window where the task has left the queue but
+        its ``status`` has not yet flipped to SCHEDULED."""
+        sched = _make_scheduler()
+        try:
+            seen_args: list[dict] = []
+
+            async def record(task: SchedulerTask) -> TaskResult:
+                seen_args.append(dict(task.args))
+                return TaskResult(payload=task.task_id)
+
+            channel = sched._channels[ChannelKind.VOICE]  # noqa: SLF001 test-only
+            await channel._lock.acquire()  # noqa: SLF001
+            try:
+                sched.submit(SchedulerTask(
+                    task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                    executor=record, args={"text": "old"}, group_id="g1", seg_idx=0,
+                ))
+                # Give the pump a chance to dequeue the head and block
+                # on the lock we are holding.
+                await asyncio.sleep(0.05)
+                report = sched.update(
+                    "g1", TaskDelta(group_id="g1", ops=(rewrite(0, {"text": "new"}),)),
+                )
+                # The task already left the queue — update() must see
+                # that (not apply), rather than corrupting the in-flight
+                # task or double-scheduling it.
+                assert report.outcomes[0].applied is False
+            finally:
+                channel._lock.release()  # noqa: SLF001
+            await sched.wait_all()
+            assert seen_args == [{"text": "old"}]
+        finally:
+            sched.shutdown()

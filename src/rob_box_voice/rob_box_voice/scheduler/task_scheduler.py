@@ -49,8 +49,9 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Protocol, runtime_checkable
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Protocol, runtime_checkable
 
+from .delta import DeltaOp, DeltaOpKind, TaskDelta
 
 _LOG = logging.getLogger(__name__)
 
@@ -396,7 +397,48 @@ class _Channel:
             kept.append(t)
         for t in kept:
             self._queue.put_nowait(t)
+            # 🔴 FIX (S3.2, scheduler-segments-merge) — put_nowait() here
+            # is a *re*-queue of an item whose original put() already
+            # counted toward asyncio.Queue's unfinished-task total.
+            # Without this compensating task_done(), every kept item
+            # permanently inflates that counter by one and wait_all()
+            # (Queue.join()) never returns once a snapshot rebuild has
+            # touched a queue with 2+ items. _pump's own task_done() at
+            # completion still fires later and brings the count back to
+            # zero — this just cancels the redundant +1 from our re-put.
+            self._queue.task_done()
         return removed
+
+    def replace_args(self, task_id: str, args: Dict[str, Any]) -> Optional[SchedulerTask]:
+        """Rewrite the ``args`` of *task_id* while it is still queued.
+
+        S3.2 (scheduler-segments-merge, §2.3 invariant / R2) — same
+        rebuild-from-snapshot technique as :meth:`remove`, which is
+        what makes it race-safe: ``get_nowait``/``put_nowait`` run with
+        no ``await`` in between, so nothing can interleave mid-rebuild.
+        If ``_pump`` already dequeued *task_id* (about to go RUNNING or
+        already terminal), it simply will not be found in this
+        snapshot — returns ``None`` rather than mutating a task that is
+        no longer safely ours to touch.
+        """
+        kept: list[SchedulerTask] = []
+        found: Optional[SchedulerTask] = None
+        while True:
+            try:
+                t = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if t.task_id == task_id and found is None:
+                t.args = dict(args)
+                found = t
+            kept.append(t)
+        for t in kept:
+            self._queue.put_nowait(t)
+            # Same Queue.join() accounting fix as remove() above.
+            self._queue.task_done()
+        if found is not None:
+            self._emit("task.updated", found)
+        return found
 
 
 # ---------------------------------------------------------------------------
@@ -414,6 +456,34 @@ class TaskNotFoundError(KeyError):
 
 class ChannelBusyError(RuntimeError):
     """Raised when a single-task channel already has a current task."""
+
+
+# ---------------------------------------------------------------------------
+# S3.1/S3.2 — MERGE delta application result (scheduler-segments-merge)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class UpdateOpOutcome:
+    """What happened to one :class:`~rob_box_voice.scheduler.delta.DeltaOp`.
+
+    ``applied=False`` is the normal, expected outcome for an op that
+    targets a RUNNING or already-terminal segment — the §2.3 invariant
+    means "ignored", not "error". ``reason`` explains why for logging.
+    """
+
+    op: DeltaOp
+    applied: bool
+    task_id: Optional[str] = None
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class UpdateReport:
+    """Result of :meth:`TaskScheduler.update` — one outcome per op, in order."""
+
+    group_id: str
+    outcomes: tuple[UpdateOpOutcome, ...]
 
 
 # ---------------------------------------------------------------------------
@@ -658,6 +728,109 @@ class TaskScheduler:
                 self._groups.pop(group_id, None)
         tasks.sort(key=lambda t: (t.seg_idx is None, t.seg_idx))
         return tasks
+
+    def update(
+        self,
+        group_id: str,
+        delta: TaskDelta,
+        *,
+        executor_factory: Optional[Callable[[DeltaOp], "TaskExecutor"]] = None,
+    ) -> UpdateReport:
+        """Apply *delta* to *group_id*, honouring the §2.3 ACTIVE invariant.
+
+        S3.2 (scheduler-segments-merge, issue #968) — the whole point of
+        this plan: a RUNNING segment is **never** rewritten or cancelled.
+        ``rewrite``/``replace`` mutate a PENDING (``QUEUED``/``SCHEDULED``)
+        segment's args in place, preserving FIFO order; ``drop`` removes a
+        PENDING segment (reuses :meth:`_Channel.remove`); ``append`` adds
+        a brand new segment to the tail via the normal :meth:`submit`
+        path. An op that targets a RUNNING or already-terminal segment is
+        *ignored*, not an error — see :class:`UpdateOpOutcome`.
+
+        Race safety (R2): the RUNNING/terminal check below is only an
+        optimisation. The actual safety comes from
+        :meth:`_Channel.replace_args` / :meth:`_Channel.remove`, which
+        operate on the live queue snapshot — if ``_pump`` already
+        dequeued the segment (even if ``status`` has not flipped to
+        SCHEDULED yet), they simply will not find it.
+
+        Raises:
+            TaskNotFoundError: *group_id* has no tracked segments (never
+                submitted, or fully cleared by a prior :meth:`segments`
+                call after every segment went terminal).
+            TaskSubmitError: *delta* contains an ``append`` op but no
+                *executor_factory* was given — the scheduler has no way
+                to build the new segment's executor on its own (that
+                requires tool-specific knowledge that lives in
+                :mod:`rob_box_voice.scheduler.tool_executor`, not here).
+        """
+        with self._lock:
+            task_ids = list(self._groups.get(group_id, ()))
+            by_seg_idx: Dict[int, SchedulerTask] = {
+                t.seg_idx: t
+                for t in (self._tasks.get(tid) for tid in task_ids)
+                if t is not None and t.seg_idx is not None
+            }
+            sample_task = next(
+                (self._tasks[tid] for tid in task_ids if tid in self._tasks), None
+            )
+        if sample_task is None:
+            raise TaskNotFoundError(group_id)
+        if delta.group_id != group_id:
+            raise ValueError(
+                f"delta.group_id={delta.group_id!r} does not match group_id={group_id!r}"
+            )
+        if executor_factory is None and any(
+            op.kind is DeltaOpKind.APPEND for op in delta.ops
+        ):
+            raise TaskSubmitError(
+                "delta contains an append op but no executor_factory was given"
+            )
+
+        channel = self._channels[sample_task.channel]
+        outcomes: List[UpdateOpOutcome] = []
+        for op in delta.ops:
+            if op.kind is DeltaOpKind.APPEND:
+                next_idx = (max(by_seg_idx) + 1) if by_seg_idx else 0
+                new_task = SchedulerTask(
+                    task_id="",
+                    tool=sample_task.tool,
+                    channel=sample_task.channel,
+                    executor=executor_factory(op),  # type: ignore[misc]
+                    args=dict(op.args or {}),
+                    group_id=group_id,
+                    seg_idx=next_idx,
+                )
+                self.submit(new_task)
+                by_seg_idx[next_idx] = new_task
+                outcomes.append(UpdateOpOutcome(op=op, applied=True, task_id=new_task.task_id))
+                continue
+
+            target = by_seg_idx.get(op.seg_idx)
+            if target is None:
+                outcomes.append(UpdateOpOutcome(op=op, applied=False, reason="segment not found"))
+                continue
+            if target.status not in (TaskStatus.QUEUED, TaskStatus.SCHEDULED):
+                reason = (
+                    "segment RUNNING (invariant)"
+                    if target.status is TaskStatus.RUNNING
+                    else "segment terminal"
+                )
+                outcomes.append(
+                    UpdateOpOutcome(op=op, applied=False, task_id=target.task_id, reason=reason)
+                )
+                continue
+
+            if op.kind in (DeltaOpKind.REWRITE, DeltaOpKind.REPLACE):
+                mutated = channel.replace_args(target.task_id, dict(op.args or {}))
+            else:  # DROP
+                mutated = channel.remove(target.task_id)
+            applied = mutated is not None
+            outcomes.append(UpdateOpOutcome(
+                op=op, applied=applied, task_id=target.task_id,
+                reason="" if applied else "segment started running before update landed",
+            ))
+        return UpdateReport(group_id=group_id, outcomes=tuple(outcomes))
 
     def wait(self, task_id: str, *, timeout: Optional[float] = None) -> SchedulerTask:
         """Block until *task_id* reaches a terminal status.
