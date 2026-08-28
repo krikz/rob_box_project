@@ -20,10 +20,13 @@
 # Pipeline per tick (per AGENT_FLOW_PROPOSAL §3.4, simplified MVP):
 #   1. MAINTENANCE gate (remote + local) -> exit 0 if paused
 #   2. gh auth check                     -> exit 1 if not authed
-#   3. Ensure `z-{e2e}/test-round-N` exists. If absent, create from
+#   3. Disk-space check (issue #1707)    -> exit 0 (skip) if free <20GB
+#   4. Worktree sweep (issue #1707)      -> remove orphaned /tmp/agent-flow-e2e-*
+#                                          and TTL-expired ones (>7 days)
+#   5. Ensure `z-{e2e}/test-round-N` exists. If absent, create from
 #      origin/develop (fresh fetch — Q24).
-#   4. List open issues with label `needs-e2e` (sorted by issue number).
-#   5. For each issue (sequential — to avoid concurrent round churn):
+#   6. List open issues with label `needs-e2e` (sorted by issue number).
+#   7. For each issue (sequential — to avoid concurrent round churn):
 #        a. Skip if already `e2e-done` or `e2e:rejected`.
 #        b. Look up the PR `z-{agent}/<id>-<slug>` (must be MERGED into develop
 #           OR — during MVP we're also tolerant of still-open-but-green).
@@ -36,11 +39,37 @@
 #        e. Push test-round-N.
 #        f. Trigger `L-E2E Voice Test.yml` workflow on test-round-N.
 #        g. Wait verdict (timeout E2E_RUN_TIMEOUT).
-#        h. Download run artifact (dialog_e2e.wav if present).
+#        h. Download run artifact (dialog_e2e.wav if present) — В $ARTIFACTS_DIR,
+#           ВНЕ worktree (issue #1707).
 #        k. Comment issue with verdict + run link + artifact links + meta.
 #        l. Label `e2e-done` (SUCCESS) or `e2e:rejected` (FAIL).
-#   6. Manual merge into develop stays human (Q5/Q7).
-#   7. flock lock prevents parallel ticks.
+#   8. Manual merge into develop stays human (Q5/Q7).
+#   9. flock lock prevents parallel ticks.
+#  10. trap cleanup EXIT INT TERM — на EXIT чистит свой worktree + делает
+#      `git worktree prune`. Это страховка для graceful exit.
+#
+# === Cleanup contract (issue #1707) =========================================
+# Каждый тик делает три вещи для предотвращения переполнения /tmp:
+#   1) `_wt_disk_check`: если свободно <E2E_DISK_MIN_GB (default 20) ГБ —
+#      skip tick. Это предохранитель ОТ попыток создать worktree когда
+#      диск полон (что даёт cryptic "no space left on device" на git fetch).
+#   2) `_wt_sweep_orphans`: чистит /tmp/agent-flow-e2e-* где PID уже мёртв
+#      (kill -0 не работает). Срабатывает на старте КАЖДОГО тика под flock —
+#      bounded growth даже если trap SIGKILL/OOM/reboot пропустил cleanup.
+#   3) `_wt_sweep_ttl`: чистит worktree старше E2E_WT_TTL_DAYS (default 7)
+#      по mtime. TTL защищает от случая, когда процесс «жив» в системе
+#      (zombie-таблица), но реально мёртв (orphan).
+#
+# Артефакты e2e прогонов (audio/acceptance) хранятся в /tmp/e2e_artifacts_<PID>/
+# (НЕ внутри worktree) — иначе trap cleanup удалял бы их вместе с worktree,
+# а issue-комментарии уже ссылаются на файлы. TTL тех папок — управляется
+# той же _wt_sweep_ttl (7 дней).
+#
+# Настройки (env-переменные):
+#   E2E_WT_TTL_DAYS=7      — TTL worktree в днях
+#   E2E_DISK_MIN_GB=20     — минимально свободное место на /tmp
+#   E2E_ARTIFACTS_DIR=/tmp/e2e_artifacts_$$ — где хранить артефакты
+# =============================================================================
 #
 # NOTE: this script does NOT auto-merge agent/<id>-<slug> into develop — that
 # is the merge-gate's contract (PR must be mergeable + CI green). We pick up
@@ -220,6 +249,23 @@ fi
 # Ретро 24.08 t_8a8d9403 — страховка на случай кейса #1195.
 # Пример: E2E_FORCE_UNPAUSE=true bash agent-flow-e2e-process.sh
 : "${E2E_FORCE_UNPAUSE:=false}"
+
+# --- Worktree cleanup (issue #1707, ретро 28.08) ------------------------------
+# Скрипт создавал /tmp/agent-flow-e2e-<PID>/ на каждый round, но при
+# SIGKILL / OOM / reboot cleanup() через trap НЕ вызывался → /tmp/
+# забивался (437+ worktree = ~87 ГБ, /dev/nvme0n1p2: 87% used).
+# Решение:
+#   1) TTL: чистим worktree старше E2E_WT_TTL_DAYS дней (default 7).
+#   2) Pre-tick sweep: чистим orphan /tmp/agent-flow-e2e-* (PID уже мёртв)
+#      сразу при старте каждого тика → bounded growth.
+#   3) Disk-space fail-fast: если free < E2E_DISK_MIN_GB ГБ — skip tick.
+#   4) Артефакты (.e2e-artifacts/<issue>) — ВНЕ worktree (в
+#      /tmp/e2e_artifacts_<PID>/) → переживают cleanup.
+#   5) git worktree prune в main clone → чистит orphaned refs.
+: "${E2E_WT_TTL_DAYS:=7}"
+: "${E2E_DISK_MIN_GB:=20}"
+# Где хранить скачанные run-артефакты (audio/acceptance) — вне worktree.
+: "${E2E_ARTIFACTS_DIR:=/tmp/e2e_artifacts_$$}"
 
 # --- helpers -----------------------------------------------------------------
 log() { printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*" >&2; }
@@ -425,6 +471,14 @@ if ! flock -n 9; then
     fi
 fi
 
+# --- G_pre_cleanup: worktree disk-space + sweep (issue #1707, ретро 28.08) --
+# Под замком (после flock), до ensure_worktree — гарантирует, что только
+# один тик одновременно чистит /tmp/agent-flow-e2e-*. Если места мало —
+# skip tick (exit 0, не ошибка): cron повторит через час.
+_wt_disk_check || exit 0
+_wt_sweep_orphans || true
+_wt_sweep_ttl || true
+
 # --- G0b: RUN_NOW — сразу удаляем сигнальный файл после получения lock ------
 # (ретро 12.08 #2): если оставить до конца тика, watchdog (every 2m) видит
 # RUN_NOW пока идёт долгий прогон (build+deploy+e2e ~40 мин) и каждые 2 мин
@@ -491,24 +545,143 @@ fi
 # IMPORTANT: the main clone may be dirty from other workers; we cannot
 # operate on its working tree without risking untracked state loss.
 WORKTREE_DIR="${WORKTREE_DIR:-/tmp/agent-flow-e2e-$$}"
+ARTIFACTS_DIR="${ARTIFACTS_DIR:-${E2E_ARTIFACTS_DIR:-/tmp/e2e_artifacts_$$}}"
+mkdir -p "$ARTIFACTS_DIR"
+
+# --- cleanup helpers (issue #1707) --------------------------------------------
+# _wt_self_pid: PID текущего скрипта (используется в cleanup, чтобы случайно
+# не снести свой собственный worktree). $$ — текущий PID bash-интерпретатора.
+_wt_self_pid="$$"
+# _wt_is_pid_alive <pid> → 0 если процесс жив (kill -0).
+_wt_is_pid_alive() {
+    local pid="${1:-}"
+    [ -n "$pid" ] && [ "$pid" -gt 0 ] 2>/dev/null && kill -0 "$pid" 2>/dev/null
+}
+
+# _wt_remove_single <path> — снять worktree (git bookkeeping) и удалить
+# каталог. Tolerates broken state: missing dir, broken .git, permission errors.
+_wt_remove_single() {
+    local wt="$1"
+    [ -n "$wt" ] || return 0
+    # git worktree remove --force — снимает административную запись в
+    # .git/worktrees/<name>. Если .git удалён или повреждён — падает тихо.
+    git -C "$REPO_DIR" worktree remove --force "$wt" 2>/dev/null || true
+    # safety net: чистим .git/worktrees/<basename> если остался (orphaned ref).
+    local bn
+    bn="$(basename "$wt")"
+    rm -rf "$REPO_DIR/.git/worktrees/$bn" 2>/dev/null || true
+    [ -d "$wt" ] && rm -rf "$wt" 2>/dev/null || true
+}
+
+# _wt_sweep_orphans — чистит /tmp/agent-flow-e2e-* где PID уже мёртв.
+# Запускается при старте каждого тика (до ensure_worktree) → bounded growth
+# даже если trap не сработал (SIGKILL/OOM/reboot).
+_wt_sweep_orphans() {
+    [ -d /tmp ] || return 0
+    local d pid cleaned=0 kept_self=0
+    # -mindepth 1 -maxdepth 1 — только прямые дети /tmp.
+    for d in /tmp/agent-flow-e2e-*; do
+        [ -d "$d" ] || continue
+        # Извлекаем PID из имени: /tmp/agent-flow-e2e-<PID> или
+        # /tmp/agent-flow-e2e-roundonly-<PID>.
+        pid="$(printf '%s' "$d" | sed -nE 's@.*/tmp/agent-flow-e2e-(roundonly-)?([0-9]+)@\2@p')"
+        if [ -z "$pid" ]; then
+            # Не наш формат имени (странная папка от чужой программы?) — skip.
+            continue
+        fi
+        if [ "$pid" = "$_wt_self_pid" ]; then
+            # Наш собственный worktree — обработает cleanup() через trap.
+            kept_self=$((kept_self+1)); continue
+        fi
+        if _wt_is_pid_alive "$pid"; then
+            # Процесс жив — конкурентный тик. Не трогаем (могут быть в
+            # середине run'a). TTL ниже подберёт его позже.
+            continue
+        fi
+        log "sweep_orphans: removing $d (PID $pid dead)"
+        _wt_remove_single "$d"
+        cleaned=$((cleaned+1))
+    done
+    if [ "$cleaned" -gt 0 ] || [ "$kept_self" -gt 0 ]; then
+        log "sweep_orphans: removed=${cleaned} kept_self=${kept_self}"
+    fi
+}
+
+# _wt_sweep_ttl — чистит worktree старше E2E_WT_TTL_DAYS дней по mtime.
+# TTL — даже если процесс «завис» (PID жив в zombie-таблице, но owner
+# давно умер, или systemd не прибрал) — рано или поздно диск освободится.
+_wt_sweep_ttl() {
+    [ -d /tmp ] || return 0
+    local d pid removed=0
+    # find -mtime +N — строго старше N дней. -print0 защищает от пробелов
+    # в именах (у нас их нет, но пусть будет корректно).
+    while IFS= read -r -d '' d; do
+        [ -d "$d" ] || continue
+        pid="$(printf '%s' "$d" | sed -nE 's@.*/tmp/agent-flow-e2e-(roundonly-)?([0-9]+)@\2@p')"
+        # Живой процесс НЕ удаляем даже если старый — пусть сам чистит.
+        if [ -n "$pid" ] && _wt_is_pid_alive "$pid"; then
+            continue
+        fi
+        log "sweep_ttl: removing $d (mtime +${E2E_WT_TTL_DAYS}d, PID ${pid:-dead})"
+        _wt_remove_single "$d"
+        removed=$((removed+1))
+    done < <(find /tmp -maxdepth 1 -mindepth 1 -type d \
+        -name 'agent-flow-e2e-*' -mtime "+${E2E_WT_TTL_DAYS}" -print0 2>/dev/null || true)
+    if [ "$removed" -gt 0 ]; then
+        log "sweep_ttl: removed=${removed}"
+    fi
+}
+
+# _wt_disk_check — fail-fast если свободного места меньше E2E_DISK_MIN_GB.
+# Печатает текущее значение free (ГБ) и exit 0 с пометкой skip (НЕ ошибка —
+# cron повторит через час). На логически смонтированном /tmp (например,
+# tmpfs) df вернёт размер tmpfs — проверяем именно /tmp, не $WORKTREE_DIR.
+_wt_disk_check() {
+    local free_gb
+    # df --output=avail -B 1G /tmp → 1я строка заголовок, 2я значение (ГБ).
+    free_gb="$(df --output=avail -B 1G /tmp 2>/dev/null | tail -n1 | tr -dc '0-9' || echo 0)"
+    [ -n "$free_gb" ] || free_gb=0
+    if [ "$free_gb" -lt "$E2E_DISK_MIN_GB" ]; then
+        log "disk check FAIL: free=${free_gb}GB < min=${E2E_DISK_MIN_GB}GB — skip tick (issue #1707)"
+        return 1
+    fi
+    return 0
+}
+
 cleanup() {
+    # 1) Свой собственный worktree (если ещё существует).
     if [ -d "$WORKTREE_DIR" ]; then
         # Remove git worktree bookkeeping first, then the dir.
         git -C "$REPO_DIR" worktree remove --force "$WORKTREE_DIR" 2>/dev/null || true
         [ -d "$WORKTREE_DIR" ] && rm -rf "$WORKTREE_DIR"
     fi
+    # 2) Артефакты текущего тика оставляем (ARTIFACTS_DIR=/tmp/e2e_artifacts_$$):
+    # их жизнью управляет _wt_sweep_ttl при следующем тике. Сюда НЕ удаляем —
+    # issue-комментарии ссылаются на файлы внутри.
+    # 3) git worktree prune в main clone — чистит orphaned refs от бывших
+    # удалённых worktree (на случай если worktree remove не справился).
+    git -C "$REPO_DIR" worktree prune 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
 # --- ensure we have a fresh worktree -------------------------------------------------
 ensure_worktree() {
-    # Reuse a worktree from the previous tick if it exists and is clean.
+    # Ретро 28.08 (issue #1707): параноидальный reuse — если worktree с
+    # прошлого тика остался, но сломан (SIGKILL предыдущего тика оставил
+    # dirty state, или .git повреждён), не валидируется как worktree —
+    # удаляем и создаём заново. Иначе `git fetch` упадёт, и весь тик
+    # бесполезен. Это убирает «мертвые» worktree от предыдущих падений.
     if [ -d "$WORKTREE_DIR" ] && [ -d "$WORKTREE_DIR/.git" ]; then
         if git -C "$WORKTREE_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
             log "reusing worktree $WORKTREE_DIR"
             git -C "$WORKTREE_DIR" fetch origin --prune --quiet 2>/dev/null || true
             return 0
         fi
+        # Worktree каталог есть, но git его не признаёт — это «зомби».
+        # Удаляем (через _wt_remove_single чтобы убрать и git bookkeeping)
+        # и упадём в ветку создания ниже.
+        log "ensure_worktree: stale worktree $WORKTREE_DIR (not a worktree) — recreating"
+        _wt_remove_single "$WORKTREE_DIR"
     fi
     rm -rf "$WORKTREE_DIR"
     mkdir -p "$(dirname "$WORKTREE_DIR")"
@@ -3203,7 +3376,12 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
     fi
 
     # --- download artifact (best-effort) ---
-    artifact_dir="${WORKTREE_DIR}/.e2e-artifacts/${number}"
+    # Ретро 28.08 (issue #1707): артефакты скачиваются ВНЕ worktree, в
+    # $ARTIFACTS_DIR (default /tmp/e2e_artifacts_<PID>/) — иначе cleanup()
+    # через trap удалял бы их вместе с worktree, а issue-комментарии уже
+    # содержат ссылки/имена файлов. TTL этих папок — управляется через
+    # _wt_sweep_ttl на следующих тиках (default 7 дней).
+    artifact_dir="${ARTIFACTS_DIR}/${number}"
     mkdir -p "$artifact_dir"
     # Надзор 13.08: guard — download только с валидным числовым run_id
     # (cobra-краш 'accepts at most 1 arg(s), received 2' на мусорном id).
