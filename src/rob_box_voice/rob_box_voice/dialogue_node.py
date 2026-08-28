@@ -1831,7 +1831,12 @@ class DialogueNode(Node):
             return
         if backlog_pending:
             self._pending_backlog_flush = True
-        self._cancel_run("new STT input")
+        # S1.3 (scheduler-segments-merge) — barge_in_policy="classify"
+        # cancels the turn but does NOT stop TTS, so a segment already
+        # playing (e.g. a song verse) finishes instead of being cut off.
+        # "replace" (default) reproduces today's behaviour exactly.
+        stop_tts = getattr(self, "_barge_in_policy", "replace") == "replace"
+        self._cancel_run("new STT input", stop_tts=stop_tts)
         sfx = String()
         sfx.data = "thinking"
         self._sound_trigger_pub.publish(sfx)
