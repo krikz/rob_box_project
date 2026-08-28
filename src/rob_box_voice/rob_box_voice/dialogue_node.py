@@ -1811,7 +1811,7 @@ class DialogueNode(Node):
                 and command.confidence >= self._command_intent_gate_confidence
             ):
                 self._llm_skipped_counter["command_intent"] += 1
-                self._cancel_run("command intent (issue 1279)")
+                self._cancel_run("command intent (issue 1279)", stop_tts=True)
                 self.get_logger().info(
                     f"🎯 [issue 1279] command intent="
                     f"{command.intent.value} conf={command.confidence:.2f} "
@@ -4470,7 +4470,7 @@ class DialogueNode(Node):
             self._vad_speech_detected = False
 
     def _handle_silence(self) -> None:
-        self._cancel_run("silence command")
+        self._cancel_run("silence command", stop_tts=True)
         self._dsm.on_event(DialogueEvent.SILENCE_COMMAND)
         self._publish_state()
         self._speak_direct("Хорошо, молчу.")
@@ -4491,7 +4491,7 @@ class DialogueNode(Node):
         STOP-команды в этом окне и спокойно синтезирует/воспроизводит.
         """
         # 1. Отменяем in-flight turn (barge-in + stop TTS + release effects).
-        self._cancel_run("new session reset")
+        self._cancel_run("new session reset", stop_tts=True)
         # 1a. Issue #1563 — открыть IMMUNE-окно для TTS, чтобы barge-in
         # STOP (пришедший в той же STT-фразе) не отменил подтверждение
         # «Начинаю новую сессию…». 700 мс — с запасом на синтез Yandex
@@ -4577,16 +4577,27 @@ class DialogueNode(Node):
             return
         self.get_logger().info(summary)
         self._last_skip_summary_ts = now
-    def _cancel_run(self, reason: str) -> None:
+    def _cancel_run(self, reason: str, *, stop_tts: bool = True) -> None:
+        """Cancel the in-flight LLM turn, optionally muting TTS.
+
+        S1.2 (scheduler-segments-merge, R1) — cancelling the turn and
+        muting TTS used to be one inseparable action. ``barge_in_policy=
+        "classify"`` (S1.3) needs to cancel the turn WITHOUT stopping
+        TTS, so a new user phrase doesn't cut off a segment mid-sentence.
+        ``stop_tts=False`` must still release the TTS/sound awaiters —
+        skipping that hangs ``speak_helpers._tts_events`` forever and the
+        robot never speaks again.
+        """
         self._run_cancelled = True
         with self._task_lock:
             task = self._run_task
         if task is not None and not task.done():
             self.get_logger().info(f"🛑 Cancel: {reason}")
             self._loop.call_soon_threadsafe(task.cancel)
-        stop_msg = String()
-        stop_msg.data = "STOP"
-        self._tts_control_pub.publish(stop_msg)
+        if stop_tts:
+            stop_msg = String()
+            stop_msg.data = "STOP"
+            self._tts_control_pub.publish(stop_msg)
         self._effects.release_all_tts()
         self._effects.clear_sound_event()
 

@@ -248,6 +248,55 @@ class TestBargeInPolicyParam:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  _cancel_run split: turn-cancel vs tts-stop (S1.2, scheduler-segments-merge)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCancelRunSplit:
+    def _running_task_node(self):
+        n = _make_node()
+        task = MagicMock()
+        task.done.return_value = False
+        n._run_task = task
+        n._task_lock = MagicMock()
+        n._task_lock.__enter__ = MagicMock(return_value=None)
+        n._task_lock.__exit__ = MagicMock(return_value=False)
+        n._loop = MagicMock()
+        n._loop.call_soon_threadsafe = lambda fn, *a, **kw: fn(*a, **kw)
+        n._effects = MagicMock()
+        return n, task
+
+    def test_stop_tts_true_publishes_stop(self):
+        """Default (stop_tts=True) — регресс сегодняшнего поведения."""
+        n, task = self._running_task_node()
+        n._cancel_run("reason", stop_tts=True)
+        assert n._run_cancelled is True
+        task.cancel.assert_called_once()
+        n._tts_control_pub.publish.assert_called_once()
+        published = n._tts_control_pub.publish.call_args.args[0]
+        assert published.data == "STOP"
+        n._effects.release_all_tts.assert_called_once()
+        n._effects.clear_sound_event.assert_called_once()
+
+    def test_default_stop_tts_is_true(self):
+        """Обратная совместимость: вызов без kwarg ведёт себя как раньше."""
+        n, task = self._running_task_node()
+        n._cancel_run("reason")
+        n._tts_control_pub.publish.assert_called_once()
+
+    def test_stop_tts_false_does_not_publish_stop_but_releases_awaiters(self):
+        """Ключевой инвариант R1: STOP не уходит, но awaiter'ы всё равно
+        отпускаются — иначе speak_helpers._tts_events залипают навсегда
+        и робот замолкает без возможности когда-либо заговорить снова."""
+        n, task = self._running_task_node()
+        n._cancel_run("reason", stop_tts=False)
+        assert n._run_cancelled is True
+        task.cancel.assert_called_once()
+        n._tts_control_pub.publish.assert_not_called()
+        n._effects.release_all_tts.assert_called_once()
+        n._effects.clear_sound_event.assert_called_once()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  API error handling (legacy: test_api_error_handling) — _FallbackLLM
 # ─────────────────────────────────────────────────────────────────────────────
 
