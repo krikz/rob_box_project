@@ -686,6 +686,44 @@ def test_extract_relevant_log_line_ignores_rtabmap_scan_voxel_size_transfer() ->
     assert line is None
 
 
+def test_extract_relevant_log_line_ignores_rtabmap_scan_normal_k_transfer() -> None:
+    """Issue #1680, deploy round-244: rtabmap icp_odometry prints
+    `Transferring value 5 of "Icp/PointToPlaneK" to ros parameter
+    "scan_normal_k" for convenience` when the YAML declares scan_normal_k
+    but Icp/PointToPlaneK is set to 5. Same root cause as the scan_voxel_size
+    pattern (#1485): a transparent parameter copy, not an SLAM fault —
+    the deploy gate must skip it.
+    """
+    log_text = (
+        "[icp_odometry-1] [WARN] [1787752712.754846620] [rtabmap.icp_odometry]: "
+        'IcpOdometry: Transferring value 5 of "Icp/PointToPlaneK" to ros parameter '
+        '"scan_normal_k" for convenience.'
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_audio_node_hpfonoff_fallback() -> None:
+    """Issue #1680, deploy round-244 (ADR-0013 §3.5): voice-assistant's
+    audio_node attempts to apply HPFONOFF (high-pass filter) to the UAC1.0
+    ReSpeaker. When the device rejects the write_parameter call (busy or
+    unsupported on non-XVF-3000 hardware), the node logs a warning and
+    falls back to firmware default — audio chain stays healthy. The WARN
+    keyword alone must not trigger a deployment-fail issue.
+    """
+    log_text = (
+        "[audio_node-1] [WARN] [1787752638.036746796] [audio_node]:   "
+        "HPFONOFF: write_parameter вернул False (устройство занято?). "
+        "Используется дефолт firmware."
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is None
+
+
 def test_extract_relevant_log_line_ignores_respeaker_threshold_warnings() -> None:
     """Issue #1485, deploy round-165 (sibling of issue #989): voice-assistant
     falls back to a software gate when the UAC1.0 ReSpeaker rejects the
