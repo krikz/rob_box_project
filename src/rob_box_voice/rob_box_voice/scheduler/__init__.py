@@ -76,6 +76,12 @@ from .event_bus import (
     EventQueueFullError,
     EventSubscription,
 )
+from .quick_decide import (
+    CONFIDENCE_FLOOR,
+    DEDUP_WINDOW_S,
+    QuickVerdict,
+    quick_decide,
+)
 from .pre_gen import (
     PreGenCandidate,
     PreGenCancelledError,
@@ -150,6 +156,10 @@ __all__ = [
     "EventEnvelope",
     "EventQueueFullError",
     "EventSubscription",
+    "CONFIDENCE_FLOOR",
+    "DEDUP_WINDOW_S",
+    "QuickVerdict",
+    "quick_decide",
     "PreGenCandidate",
     "PreGenCancelledError",
     "PreGenFactory",
