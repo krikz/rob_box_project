@@ -16,6 +16,8 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import String
 
+from .mcp_auth import RequestAuthenticator
+
 
 class DeepSeekToolCallAdapter:
     """
@@ -48,6 +50,11 @@ class DeepSeekToolCallAdapter:
 
         # Publisher для запросов выполнения инструментов
         self.execute_pub = node.create_publisher(String, "/mcp/execute", qos_profile)
+
+        # Подпись запросов общим секретом (см. mcp_auth.py).
+        self.authenticator = RequestAuthenticator.from_env(
+            sender="dialogue_node", logger=node.get_logger()
+        )
 
         # Subscriber для результатов (используем отдельную callback_group!)
         self.result_sub = node.create_subscription(
@@ -115,7 +122,7 @@ class DeepSeekToolCallAdapter:
 
         # Отправляем запрос
         msg = String()
-        msg.data = json.dumps(request, ensure_ascii=False)
+        msg.data = json.dumps(self.authenticator.sign(request), ensure_ascii=False)
         self.execute_pub.publish(msg)
 
         self.node.get_logger().info(f"📤 Отправлен запрос {request_id[:8]}: {tool_name}")

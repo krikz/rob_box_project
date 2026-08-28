@@ -145,16 +145,20 @@ class AsyncToolExecutor:
     - Sequence ID для отмены устаревших tool_calls при прерываниях
     """
 
-    def __init__(self, execute_pub, result_callback: Callable, logger):
+    def __init__(self, execute_pub, result_callback: Callable, logger, authenticator=None):
         """
         Args:
             execute_pub: ROS publisher для /mcp/execute
             result_callback: Callback для получения результатов (request_id, result)
             logger: ROS logger
+            authenticator: RequestAuthenticator для подписи запросов. None —
+                публикуем без подписи (mcp_server такой запрос отклонит,
+                см. mcp_auth.py); допустимо только в тестах.
         """
         self.execute_pub = execute_pub
         self.result_callback = result_callback
         self.logger = logger
+        self.authenticator = authenticator
 
         # Sequence ID для отслеживания актуальности tool_calls
         self._current_sequence_id: int = 0
@@ -269,6 +273,8 @@ class AsyncToolExecutor:
 
         # Публикуем запрос в ROS
         from std_msgs.msg import String
+        if self.authenticator is not None:
+            request = self.authenticator.sign(request)
         msg = String()
         msg.data = json.dumps(request, ensure_ascii=False)
         self.execute_pub.publish(msg)

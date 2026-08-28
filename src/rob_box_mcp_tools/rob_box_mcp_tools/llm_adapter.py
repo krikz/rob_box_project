@@ -28,6 +28,7 @@ from std_msgs.msg import String
 
 from .async_executor import AsyncToolExecutor, ToolCallAccumulator
 from .base import ToolExecutionType
+from .mcp_auth import RequestAuthenticator
 
 
 class LLMToolCallAdapter:
@@ -65,6 +66,12 @@ class LLMToolCallAdapter:
         # Publisher для запросов выполнения инструментов
         self.execute_pub = node.create_publisher(String, "/mcp/execute", qos_profile)
 
+        # Подпись запросов общим секретом — mcp_server отклоняет
+        # неподписанные tool-call-ы (см. mcp_auth.py).
+        self.authenticator = RequestAuthenticator.from_env(
+            sender="dialogue_node", logger=node.get_logger()
+        )
+
         # Subscriber для результатов (используем отдельную callback_group!)
         self.result_sub = node.create_subscription(
             String, "/mcp/result", self.on_result, qos_profile,
@@ -87,7 +94,8 @@ class LLMToolCallAdapter:
         self.async_executor = AsyncToolExecutor(
             execute_pub=self.execute_pub,
             result_callback=self._on_async_result,
-            logger=node.get_logger()
+            logger=node.get_logger(),
+            authenticator=self.authenticator,
         )
 
         # Tool Call Accumulator для streaming
@@ -167,7 +175,7 @@ class LLMToolCallAdapter:
 
         # Отправляем запрос
         msg = String()
-        msg.data = json.dumps(request, ensure_ascii=False)
+        msg.data = json.dumps(self.authenticator.sign(request), ensure_ascii=False)
         self.execute_pub.publish(msg)
 
         self.node.get_logger().info(f"📤 Отправлен запрос {request_id[:8]}: {tool_name}")
@@ -201,7 +209,9 @@ class LLMToolCallAdapter:
 
         # Публикуем запрос
         request_msg = String()
-        request_msg.data = json.dumps(request, ensure_ascii=False)
+        request_msg.data = json.dumps(
+            self.authenticator.sign(request), ensure_ascii=False
+        )
         self.execute_pub.publish(request_msg)
 
         self.node.get_logger().info(f"📤 Отправлен запрос {request_id[:8]}: {tool_name}")

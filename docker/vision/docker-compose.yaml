@@ -205,6 +205,12 @@ services:
       # Renardo paths (MusicSkill uses these to load reference docs and search samples)
       - RENARDO_REF_PATH=/renardo_ref/RENARDO_REFERENCE.md
       - RENARDO_SAMPLES_PATH=/root/.config/renardo/samples
+      # /mcp/execute sender authentication (see rob_box_mcp_tools/mcp_auth.py).
+      # dialogue_node and mcp_server run in THIS container, so they share the
+      # secret through a file on the /data volume — created automatically on
+      # first start, unreadable from other hosts. Set ROB_BOX_MCP_TOKEN here
+      # instead if the nodes are ever split across containers.
+      - ROB_BOX_MCP_TOKEN_FILE=/data/.mcp_token
     env_file:
       - .env.secrets  # API keys: MIMO_API_KEY, DEEPSEEK_API_KEY (для fallback), YANDEX_API_KEY, YANDEX_FOLDER_ID
     volumes:

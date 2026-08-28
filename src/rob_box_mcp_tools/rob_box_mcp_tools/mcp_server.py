@@ -98,6 +98,7 @@ except ImportError as _exc:  # noqa: BLE001
     GenDeleteFromLibraryTool = GenGetTrackInfoTool = None  # type: ignore[assignment,misc]
     _MINIMAX_MUSIC_AVAILABLE = False
     _MINIMAX_MUSIC_IMPORT_ERROR = str(_exc)
+from .mcp_auth import RequestAuthenticator
 from .waypoint_store import WaypointStore
 from .mapping_state import MappingState
 from .voice_state import VoiceStateStore
@@ -190,6 +191,12 @@ class MCPServer(Node):
             String, "/mcp/execute", self.on_execute_request, qos_profile,
             callback_group=self._execute_cb_group
         )
+
+        # Аутентификация отправителя /mcp/execute. Топик открыт всему
+        # ROS2/Zenoh-графу, а за ним сразу registry.execute() — без этой
+        # проверки любой пир исполняет инструменты в обход LLM и
+        # confirmation gate. См. mcp_auth.py.
+        self.authenticator = RequestAuthenticator.from_env(logger=self.get_logger())
 
         # Подписка на perception context для обновления инструментов
         try:
@@ -848,6 +855,20 @@ class MCPServer(Node):
             request_id = request.get("request_id", "")
 
             self.get_logger().info(f"📥 Запрос выполнения: {tool_name} с параметрами {parameters}")
+
+            # ── Auth Guard: запрос должен быть подписан общим секретом ──
+            # Стоит перед FSM-гардом и перед любым обращением к registry:
+            # неаутентифицированный запрос не должен даже влиять на
+            # replay-кэш имён инструментов в логах.
+            is_authentic, auth_error = self.authenticator.verify(request)
+            if not is_authentic:
+                self.get_logger().error(
+                    f"🚫 Отклонён неаутентифицированный /mcp/execute "
+                    f"'{tool_name}': {auth_error}"
+                )
+                self._publish_error(f"Запрос отклонён: {auth_error}", request_id)
+                return
+            # ────────────────────────────────────────────────────────────
 
             if not tool_name:
                 self._publish_error("Не указано имя инструмента", request_id)
