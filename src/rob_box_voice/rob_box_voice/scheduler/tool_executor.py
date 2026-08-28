@@ -38,9 +38,31 @@ from rob_box_voice.scheduler.task_scheduler import (
     ChannelKind,
     SchedulerTask,
     TaskScheduler,
+    TaskStatus,
 )
 
 _LOG = logging.getLogger(__name__)
+
+#: Max length of the payload snippet shown per segment in
+#: ``[SEGMENT PLAN]`` (S5.1) — keeps the block short even for a long
+#: song verse.
+_PAYLOAD_SNIPPET_LEN = 40
+
+
+def _short_payload(args: dict[str, Any]) -> str:
+    """Best-effort short text snippet for a segment's args (S5.1).
+
+    Most channel-routed tools carry their content under ``text``
+    (``speak_text``); anything else falls back to a compact repr of
+    the whole args dict so the block never renders empty/misleading.
+    """
+    text = args.get("text")
+    if isinstance(text, str) and text:
+        snippet = text.strip()
+        if len(snippet) > _PAYLOAD_SNIPPET_LEN:
+            snippet = snippet[:_PAYLOAD_SNIPPET_LEN].rstrip() + "…"
+        return snippet
+    return str(args)
 
 #: Tools that own the VOICE channel (FIFO, strictly sequential).
 _VOICE_TOOLS: frozenset[str] = frozenset({"speak_text"})
@@ -276,3 +298,65 @@ class SchedulerToolExecutor:
         if not lines:
             return ""
         return "[ACTIVE TASKS]\n" + "\n".join(lines)
+
+    def segment_plan_block(self) -> str:
+        """Return the ``[SEGMENT PLAN]`` block (S5.1, scheduler-segments-merge).
+
+        Empty when there is no active segment group (idle, or
+        ``begin_group()`` was never called) — a MERGE delta is
+        meaningless without an active group to target. FROZEN vs LIVE
+        is not distinguished yet (S9); every PENDING segment is
+        currently treated as rewriteable/at-risk (design §7.1's
+        FROZEN nuance is deferred, matching the plan's own scoping).
+        """
+        scheduler = self._scheduler
+        group_id = self._current_group_id
+        if scheduler is None or group_id is None:
+            return ""
+        try:
+            segments = scheduler.segments(group_id)
+        except Exception:  # noqa: BLE001 — context must never crash
+            return ""
+        if not segments:
+            return ""
+
+        lines: list[str] = []
+        rewriteable: list[str] = []
+        at_risk: list[str] = []
+        for seg in segments:
+            label = f"seg_{seg.seg_idx}" if seg.seg_idx is not None else seg.task_id
+            payload = _short_payload(seg.args)
+            if seg.status is TaskStatus.RUNNING:
+                remaining = self._active_segment_remaining(seg.channel)
+                lines.append(
+                    f"- ACTIVE: {label} {seg.channel.value} {payload!r} "
+                    f"(remaining={remaining})"
+                )
+            elif seg.status in (TaskStatus.QUEUED, TaskStatus.SCHEDULED):
+                lines.append(f"- PENDING: {label} {seg.channel.value} {payload!r}")
+                rewriteable.append(label)
+                at_risk.append(label)
+            # Terminal segments (COMPLETED/FAILED/CANCELLED) are
+            # omitted — the LLM needs "what's happening now / what it
+            # can still touch", not a play-by-play history.
+        if not lines:
+            return ""
+        lines.append(f"- REWRITEABLE_SEGMENTS: [{', '.join(rewriteable)}]")
+        lines.append(f"- AT_RISK_ON_REPLACE: [{', '.join(at_risk)}]")
+        return "[SEGMENT PLAN]\n" + "\n".join(lines)
+
+    def _active_segment_remaining(self, channel: ChannelKind) -> str:
+        """Best-effort ``remaining=Xs`` for the ACTIVE segment of *channel*.
+
+        Only populated when a Phase 3 ETA provider is wired
+        (:meth:`TaskScheduler.set_eta_provider`); otherwise ``"?"``,
+        matching the existing :meth:`active_tasks_block` convention.
+        """
+        scheduler = self._scheduler
+        if scheduler is None:
+            return "?"
+        try:
+            eta_s = scheduler.channel_status(channel).eta_s
+        except Exception:  # noqa: BLE001 — context must never crash
+            return "?"
+        return f"{eta_s:.1f}s" if eta_s is not None else "?"

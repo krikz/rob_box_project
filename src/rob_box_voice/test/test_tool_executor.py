@@ -373,6 +373,95 @@ def test_without_begin_group_tasks_are_ungrouped() -> None:
     asyncio.run(_run())
 
 
+# ---------------------------------------------------------------------------
+# S5.1 — [SEGMENT PLAN] block (scheduler-segments-merge plan)
+# ---------------------------------------------------------------------------
+
+
+def test_segment_plan_block_empty_when_no_active_group() -> None:
+    underlying = _FakeUnderlying()
+
+    async def _run() -> None:
+        sched = TaskScheduler()
+        sched.start()
+        executor = SchedulerToolExecutor(underlying, scheduler=sched)
+        try:
+            # begin_group() never called — no group has ever been open.
+            assert executor.segment_plan_block() == ""
+        finally:
+            sched.shutdown()
+
+    asyncio.run(_run())
+
+
+def test_segment_plan_block_empty_before_scheduler_exists() -> None:
+    underlying = _FakeUnderlying()
+    executor = SchedulerToolExecutor(underlying)  # no scheduler=, lazy-created
+    assert executor.segment_plan_block() == ""
+
+
+def test_segment_plan_block_shows_active_and_pending() -> None:
+    block_event = asyncio.Event()
+
+    class _BlockingUnderlying(_FakeUnderlying):
+        async def execute(self, call: ToolCall) -> ToolResult:
+            if call.id == "c1":
+                await block_event.wait()
+            return await super().execute(call)
+
+    underlying = _BlockingUnderlying()
+
+    async def _run() -> None:
+        sched = TaskScheduler()
+        sched.start()
+        executor = SchedulerToolExecutor(underlying, scheduler=sched)
+        try:
+            executor.begin_group()
+            await executor.execute(
+                ToolCall(id="c1", name="speak_text", arguments={"text": "куплет про комара"})
+            )
+            await executor.execute(
+                ToolCall(id="c2", name="speak_text", arguments={"text": "куплет 2"})
+            )
+            # Give the pump a moment to pick up c1 (RUNNING, blocked).
+            await asyncio.sleep(0.02)
+
+            block = executor.segment_plan_block()
+            assert block.startswith("[SEGMENT PLAN]")
+            assert "ACTIVE:" in block
+            assert "seg_0" in block
+            assert "куплет про комара" in block
+            assert "PENDING:" in block
+            assert "seg_1" in block
+            assert "REWRITEABLE_SEGMENTS: [seg_1]" in block
+            assert "AT_RISK_ON_REPLACE: [seg_1]" in block
+
+            block_event.set()
+            await asyncio.wait_for(sched.wait_all(), timeout=2.0)
+        finally:
+            sched.shutdown()
+
+    asyncio.run(_run())
+
+
+def test_segment_plan_block_empty_after_group_completes() -> None:
+    underlying = _FakeUnderlying()
+
+    async def _run() -> None:
+        sched = TaskScheduler()
+        sched.start()
+        executor = SchedulerToolExecutor(underlying, scheduler=sched)
+        try:
+            executor.begin_group()
+            await executor.execute(_call("c1", "speak_text"))
+            await asyncio.wait_for(sched.wait_all(), timeout=2.0)
+            assert executor.segment_plan_block() == ""
+        finally:
+            sched.shutdown()
+
+    asyncio.run(_run())
+
+
 def test_active_tasks_block_reflects_busy_channels() -> None:
     underlying = _FakeUnderlying()
 
