@@ -55,6 +55,7 @@ from .tools import (
     EstimateTtsDurationTool,
     RegisterSpeakerTool,
     SetVoiceTool,
+    TaskDeltaTool,
     MemorySaveTool,
     MemorySearchTool,
     MemoryContextTool,
@@ -605,6 +606,11 @@ class MCPServer(Node):
         # via MCP. speaker_id_node binds d-vector to name in /data/speakers.db.
         self.registry.register(RegisterSpeakerTool(self))
         self.registry.register(SearchWebTool(self))
+        # Issue #968 (S6) — task_delta: schema-only registration so the
+        # LLM sees the tool. Real execution is intercepted in-process by
+        # SchedulerToolExecutor (rob_box_voice, S6.2) before it ever
+        # reaches mcp_server — see TaskDeltaTool's docstring.
+        self.registry.register(TaskDeltaTool(self))
 
         # Memory tools (долгосрочная память + семантический поиск)
         self.registry.register(MemorySaveTool(self))
