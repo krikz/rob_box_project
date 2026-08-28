@@ -339,6 +339,14 @@ WARNING_EXCLUDE_BY_SCOPE = {
         # SLAM pipeline is healthy. The word "WARN" is the only reason the
         # deploy gate flagged it (round-165).
         r"transferring value.*scan_voxel_size",
+        # rtabmap icp_odometry (issue #1680, deploy round-244): sibling of
+        # the scan_voxel_size pattern above. Same root cause (rtabmap
+        # copies a YAML-declared Knn/K parameter into its public ROS param
+        # namespace transparently), different destination param.
+        # "Transferring value 5 of 'Icp/PointToPlaneK' to ros parameter
+        # 'scan_normal_k' for convenience" — SLAM pipeline is healthy, the
+        # WARN keyword is the only reason the deploy gate flagged it.
+        r"transferring value.*scan_normal_k",
         # Scope leak warning (issue #1485, deploy round-165, sibling of
         # the WARNING_EXCLUDE_COMMON "не принял threshold" entry):
         # main/perception's health_monitor rewrites the audio_node line
@@ -348,7 +356,19 @@ WARNING_EXCLUDE_BY_SCOPE = {
         # rewritten form so it cannot slip through as a non-voice-msg.
         r"\[warn\] audio_node.*не принял threshold",
     ],
-    "vision": [],
+    "vision": [
+        # audio_node HPFONOFF write (issue #1680, deploy round-244):
+        # voice-assistant prints "[WARN] HPFONOFF: write_parameter вернул
+        # False (устройство занято?). Используется дефолт firmware."
+        # whenever the UAC1.0 ReSpeaker rejects the audio_node-issued
+        # high-pass filter control. The fallback to firmware default is
+        # intentional (ADR-0013 §3.5: "USB write timeout / unknown device
+        # → log-warning, нода продолжает работать с firmware default").
+        # Real audio_node failures (ASLA fatal, JACK
+        # ProcessGraphAsyncMaster timeouts that miss recovery, sclang
+        # crashes) keep their severity because the phrasing differs.
+        r"hpfonoff: write_parameter вернул false",
+    ],
 }
 
 
