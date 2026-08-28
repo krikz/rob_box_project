@@ -57,6 +57,10 @@ class Bridge(Protocol):
         """Клиент активен (HELLO/SUBSCRIBE/ping) — сбросить watchdog."""
         ...
 
+    def reset(self) -> None:
+        """Новый HELLO / operator ack — снять emergency lock и edge-флаги."""
+        ...
+
     def emergency_stop(self) -> None:
         """Зафиксировать emergency lock (safe stop + close session)."""
         ...
@@ -77,6 +81,30 @@ class Bridge(Protocol):
         """JSON-payload для stream_select list cmd (Phase 2 R10)."""
         ...
 
+    def publish_voice_barge_in(self) -> None:
+        """PTT start: STOP в /voice/tts/control + /voice/sound/stop (barge-in)."""
+        ...
+
+    def publish_voice_audio(self, payload: bytes) -> None:
+        """VOICE_AUDIO: publish AudioData в /avatar/voice_in (int16 PCM 16 kHz)."""
+        ...
+
+    def publish_voice_stop(self) -> None:
+        """PTT stop: STOP в /voice/sound/stop → sound_node закрывает стрим."""
+        ...
+
+    def publish_voice_robot_start(self) -> None:
+        """PTT start (robot-voice): barge-in + начать буферизацию PCM для STT."""
+        ...
+
+    def publish_voice_robot_stop(self) -> None:
+        """PTT stop (robot-voice): буфер → AudioData в /audio/quest_in (STT)."""
+        ...
+
+    def set_voice_mode(self, mode: str) -> None:
+        """voice_mode cmd → сменить режим голоса (через супервизор, ADR-0028 S5)."""
+        ...
+
 
 class NoOpBridge:
     """Заглушка для тестов. Реальная реализация в quest_node.py."""
@@ -88,6 +116,9 @@ class NoOpBridge:
         return None
 
     def feed_client_alive(self) -> None:
+        return None
+
+    def reset(self) -> None:
         return None
 
     def emergency_stop(self) -> None:
@@ -112,6 +143,24 @@ class NoOpBridge:
             )
         return items
 
+    def publish_voice_barge_in(self) -> None:
+        return None
+
+    def publish_voice_audio(self, payload: bytes) -> None:
+        return None
+
+    def publish_voice_stop(self) -> None:
+        return None
+
+    def publish_voice_robot_start(self) -> None:
+        return None
+
+    def publish_voice_robot_stop(self) -> None:
+        return None
+
+    def set_voice_mode(self, mode: str) -> None:
+        return None
+
 
 # Текущий PIN — генерится один раз на старте контейнера, логируется.
 # Phase 1.6 в start_quest.sh выводит его в docker logs.
@@ -126,6 +175,12 @@ ACTIVE_PIN: str = os.environ.get("QUEST_PIN") or generate_pin()
 _stream_ids_in_use: set[int] = set()
 
 
+def _consume_future_exception(fut: "asyncio.Future[Any]") -> None:
+    """Глушим исключение из Future (иначе asyncio пишет "never retrieved")."""
+    if not fut.cancelled():
+        fut.exception()
+
+
 class WSSServer:
     """Серверная логика — собирает app + принимает aiohttp WS-коннекты."""
 
@@ -138,9 +193,18 @@ class WSSServer:
         # Хранится ОТДЕЛЬНО от ClientSession чтобы можно было отвязать
         # (без race на is_open() во время unregister).
         self._ws_by_session: dict[str, Any] = {}
+        # aiohttp event-loop для потокобезопасной отправки BINARY_FRAME.
+        # broadcast_frame вызывается из ROS/capture-потоков, где нет running
+        # loop — раньше кадр молча терялся (чёрный экран). Устанавливается
+        # quest_node через set_send_loop().
+        self._send_loop: Optional[asyncio.AbstractEventLoop] = None
 
     def get_active_sessions(self) -> int:
         return sum(1 for s in self._sessions.values() if s.is_open())
+
+    def set_send_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Установить aiohttp-loop для потокобезопасной отправки кадров."""
+        self._send_loop = loop
 
     def broadcast_frame(self, ui_name: str, payload: bytes) -> int:
         """Слать BINARY_FRAME всем сессиям, подписанным на ui_name.
@@ -171,16 +235,25 @@ class WSSServer:
         return count
 
     def _schedule_send(self, ws, frame: bytes) -> None:
-        """Отправить frame в ws. По умолчанию asyncio.create_task если
-        event-loop активен. Override в quest_node если нужен thread-safe.
+        """Отправить frame в ws из любого потока.
+
+        broadcast_frame вызывается из ROS-потока (rclpy executor) и
+        capture-потоков, где `asyncio.get_running_loop()` кидает RuntimeError —
+        раньше кадр молча терялся (чёрный экран). Теперь шлём через
+        run_coroutine_threadsafe на сохранённом aiohttp-loop.
         """
+        loop = self._send_loop
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            loop = None
+            pass
         if loop is None:
             return
-        loop.create_task(ws.send_bytes(frame))
+        try:
+            fut = asyncio.run_coroutine_threadsafe(ws.send_bytes(frame), loop)
+        except RuntimeError:
+            return  # loop закрыт/не запущен — кадр теряем, не роняем ноду
+        fut.add_done_callback(_consume_future_exception)
 
     async def _send(
         self,
@@ -248,6 +321,11 @@ class WSSServer:
         if not isinstance(capabilities, list):
             capabilities = []
         session.mark_authenticated(client_version, capabilities)
+
+        # Новый HELLO: снять emergency lock от прошлой сессии / stop_emergency
+        # и взвести bridge-watchdog (дальше его кормит клиентский ping).
+        self.bridge.reset()
+        self.bridge.feed_client_alive()
 
         await self._send(
             ws,
@@ -324,7 +402,8 @@ class WSSServer:
         - stop_emergency → Bridge.publish_emergency + emergency_stop
         - stream_select → переключение активного camera-стрима
         - stream_list → JSON_EVENT{type: stream_list, items: [...]}
-        - voice_mode / voice_ptt / ui_button → Phase 2
+        - voice_ptt_start/stop → Bridge barge-in / voice stop (рация, P3)
+        - voice_mode / ui_button → Phase 2
         """
         cmd = payload_obj.get("cmd")
         if cmd == "ping":
@@ -361,6 +440,35 @@ class WSSServer:
         if cmd == "stop_emergency":
             self.bridge.publish_emergency()
             self.bridge.emergency_stop()
+            return
+        if cmd == "voice_ptt_start":
+            # PTT start: mode "robot_voice" (левый grip) → STT → LLM → TTS;
+            # иначе "radio" (правый grip) → barge-in (прервать TTS + музыку).
+            if payload_obj.get("mode") == "robot_voice":
+                self.bridge.publish_voice_robot_start()
+            else:
+                self.bridge.publish_voice_barge_in()
+            return
+        if cmd == "voice_ptt_stop":
+            # Правый grip (рация) → закрыть голосовой стрим; левый grip
+            # (робот-голос) → вытолкнуть буфер PCM в STT.
+            if payload_obj.get("mode") == "robot_voice":
+                self.bridge.publish_voice_robot_stop()
+            else:
+                self.bridge.publish_voice_stop()
+            return
+        if cmd == "voice_mode":
+            # Смена режима голоса (off/passthrough/ttts_proxy/stt_llm/...).
+            # Маршрутизация — через супервизор (ADR-0028 S5): bridge переводит
+            # wire-режим в voice_input_mode и публикует запрос супервизору.
+            mode = payload_obj.get("mode")
+            self.bridge.set_voice_mode(mode)
+            await self._send(
+                ws,
+                FrameType.JSON_EVENT,
+                0,
+                {"type": "voice_mode_ack", "mode": mode, "ts_ms": int(time.time() * 1000)},
+            )
             return
         if cmd == "stream_select":
             # Meta-command: UI запросил смену активного стрима.
@@ -413,6 +521,10 @@ class WSSServer:
         event_type = payload_obj.get("type")
         if event_type == "ping":
             session.feed_ping()
+            # Клиентский ping (JSON_EVENT) — он же keepalive bridge-watchdog'а:
+            # иначе при простое (без teleop_twist) watchdog ложно триггерит
+            # emergency_stop и блокирует телеоп навсегда.
+            self.bridge.feed_client_alive()
 
     # Управление _on_json_cmd перенесено в новый метод выше (см. Phase 1.4):
     # stream_select / stream_list + teleop_twist / stop_emergency.
@@ -491,6 +603,9 @@ class WSSServer:
                 elif ftype == FrameType.GOODBYE:
                     await ws.close(code=1000, message=b"goodbye")
                     return ws
+                elif ftype == FrameType.VOICE_AUDIO:
+                    # Рация: голос оператора → /avatar/voice_in (int16 PCM 16 kHz).
+                    self.bridge.publish_voice_audio(payload)
                 else:
                     await self._send_error(
                         ws,

@@ -77,6 +77,142 @@ the exception.
 
 ---
 
+## Captain Bridge environment (Phase 2.1, kanban t_0bd54b80)
+
+Five `.glb` files + one HDR live under `public/models/environment/`,
+representing the Captain Bridge scene that hosts hand-tracking + UI
+panels.
+
+| File                          | Optimized size | Purpose                                                                |
+| ----------------------------- | -------------- | ---------------------------------------------------------------------- |
+| `bridge_floor.optimized.glb`  |  22 KB         | Hex-grid floor (6×6 tiles, dark metal + emissive cyan edges).          |
+| `bridge_walls.optimized.glb`  |  12 KB         | 4 walls + viewports + console strips.                                  |
+| `bridge_props.optimized.glb`  |  24 KB         | Captain chair + main console + side terminals + holo-projectors.       |
+| `bridge_nav.optimized.glb`    |   8 KB         | 8 AABB markers for `safe_walk_area` + XR teleport anchors.             |
+| `bridge_occluders.optimized.glb` |  4 KB      | 4 wall-coincident planes for hiding UI panels behind walls.            |
+| `bridge_scene_meta.json`      |   5 KB         | Runtime metadata (design, safe_walk_area, nav_points, occluders).      |
+| `hdr/bridge_env_1k.hdr`       | 1.6 MB         | Radiance HDR for IBL on metallic parts (Poly Haven CC0).               |
+
+**Total GLB payload: 70 KB** — 3.4% of the 2 MB `environment/` budget per
+ADR-0032 §3.2.
+
+### Why synthesized meshes (not Quaternius packs)
+
+The Quaternius sci-fi packs are CC0 but distributed via itch.io
+pay-what-you-want and Google Drive share-link — neither automatable
+from this environment. The bridge is therefore synthesized from
+three.js primitives via `scripts/build_bridge_assets.mjs`, with the
+exact dimensions and palette documented in `bridge_scene_meta.json`.
+If товарищ Шифу wants the Quaternius-style models specifically, the
+swap is mechanical: drop the Quaternius `.glb` files into
+`public/models/environment/_raw/` and re-run `npm run gltf:optimize`.
+
+### Regenerating the environment
+
+```bash
+# 1. Re-synthesize raw GLB (writes to public/models/environment/_raw/)
+node scripts/build_bridge_assets.mjs
+
+# 2. Run the Phase 2.0 pipeline → *.optimized.glb in public/models/environment/
+npm run gltf:optimize
+
+# 3. CI guard — must PASS before commit
+npm run gltf:verify
+```
+
+`scripts/build_bridge_assets.mjs` also writes `bridge_scene_meta.json`
+which carries the `safe_walk_area` AABB, the 8 nav-points, and the 4
+occluder definitions consumed at runtime by `src/scene/bridge_assets.ts`.
+
+### Runtime integration
+
+`src/scene/bridge_assets.ts` exports `loadBridgeAssets(scene, renderer, opts)`
+which loads all 5 GLB + the HDR via `GLTFLoader + DRACOLoader +
+MeshoptDecoder + RGBELoader + PMREMGenerator`. The returned
+`BridgeAssetHandle` exposes `navPoints`, `occluders`, and `safeWalkArea`
+to the rest of the app — the XR layer can use the `entry`-tagged
+nav-points as teleport anchors, and the panel manager can use the
+occluder AABBs to clip panels against walls.
+
+`src/scene/captain_bridge.ts` integrates the loader via
+`bridge.loadEnvironment()` — fail-soft, so a missing GLB does not
+break the procedural fallback floor + grid.
+
+### Lighting & IBL
+
+- Ambient: `0xffffff` × 0.6.
+- Directional: `0xffffff` × 0.4, position `(2, 4, 1)`.
+- IBL: `hdr/bridge_env_1k.hdr` via `THREE.PMREMGenerator` →
+  `scene.environment`. `scene.background` is intentionally NOT set
+  (bridge walls/viewports provide the dark interior look). KTX2 path
+  for the HDR is opt-in (Phase 2.0); see *KTX2 / Basis pipeline* below.
+
+---
+
+## Avatar (Phase 2.1)
+
+The avatar is a low-poly 4-wheeled robot synthesised programmatically by
+[`scripts/build-avatar.mjs`](scripts/build-avatar.mjs). All geometry is
+original code (Three.js `BoxGeometry` + `CylinderGeometry` + `SphereGeometry`)
+authored as part of `rob_box_quest`, released under **CC0** — no external
+mesh data or textures are referenced. See [`public/models/avatar/CREDITS.md`](public/models/avatar/CREDITS.md)
+for the full attribution.
+
+Output artefact: [`public/models/avatar/avatar.glb`](public/models/avatar/avatar.glb)
+— ~19 KB after Draco + Meshopt (3.8 % of the 500 KB budget per
+[ADR-0032 §3.2](../../../docs/adr/0032-meta-quest-webxr-stack-and-assets.md)).
+`avatar.optimized.glb` is the direct pipeline output and is byte-identical
+to `avatar.glb` at commit time (copied by `build-avatar.mjs --publish` so
+the runtime can drop the `.optimized.` suffix).
+
+### Geometry
+
+- Chassis: `BoxGeometry 0.6 × 0.18 × 0.8` (light-grey-blue PBR, metallic 0.6 / roughness 0.45)
+- 4 wheels: `CylinderGeometry R=0.16, w=0.12, 16 seg` (dark rubber)
+- Head: `BoxGeometry 0.28 × 0.18 × 0.18` (teal sensor head, emissive cyan trim)
+- Mast + tip: thin cylinder + emissive red sphere LED
+- Total: 9 meshes, 6 PBR materials, 9 nodes, ≈700 triangles before optimisation
+
+### Animations (5 clips, all LOOP, LINEAR interpolation)
+
+| Name             | Duration | Channels | Notes                                                  |
+| ---------------- | -------- | -------- | ------------------------------------------------------ |
+| `idle`           | 3.0 s    | 2        | chassis bob ±1 cm (sin) + head yaw scan ±10° (cos)     |
+| `drive_forward`  | 1.0 s    | 4        | all wheels at +π rad/s around the X axis               |
+| `drive_backward` | 1.0 s    | 4        | all wheels at −π rad/s                                  |
+| `turn_left`      | 1.0 s    | 4        | front ×1.5 speed, rear ×0.5 speed                      |
+| `turn_right`     | 1.0 s    | 4        | mirror of `turn_left`                                   |
+
+### Rebuild
+
+```
+npm run build:avatar         # raw → public/models/avatar/_raw/avatar.glb (~39 KB)
+npm run gltf:optimize        # Draco + Meshopt → _raw/avatar.optimized.glb (~19 KB)
+node scripts/build-avatar.mjs --publish   # move optimized → public/models/avatar/, drop raw
+cp public/models/avatar/avatar.optimized.glb public/models/avatar/avatar.glb
+npm run gltf:verify          # extension + budget guard
+npm test                     # unit tests (4 gltf-pipeline + 6 avatar-pipeline + ...)
+```
+
+### Runtime loading
+
+```ts
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { MeshoptDecoder } from 'meshoptimizer';
+
+const loader = new GLTFLoader();
+loader.setDRACOLoader(new DRACOLoader().setDecoderPath('/draco/'));
+loader.setMeshoptDecoder(MeshoptDecoder);
+
+const gltf = await loader.loadAsync('/models/avatar/avatar.glb');
+const mixer = new THREE.AnimationMixer(gltf.scene);
+const idle = mixer.clipAction(gltf.animations.find(a => a.name === 'idle'));
+idle.play();
+```
+
+---
+
 ## KTX2 / Basis pipeline (opt-in)
 
 To enable full KTX2 texture compression (`KHR_texture_basisu`):
@@ -104,66 +240,6 @@ The Three.js browser loader path (`GLTFLoader + DRACOLoader + MeshoptDecoder`)
 is exercised at runtime in the WebXR client on the Quest device — the unit
 test validates the artifact, not the browser path (jsdom has no
 `new Worker(...)`).
-
----
-
-## Avatar (Phase 2.1)
-
-The avatar is a low-poly 4-wheeled robot synthesised programmatically by
-[`scripts/build-avatar.mjs`](scripts/build-avatar.mjs). All geometry is
-original code (Three.js `BoxGeometry` + `CylinderGeometry` + `SphereGeometry`)
-authored as part of `rob_box_quest`, released under **CC0** — no external
-mesh data or textures are referenced. See [`public/models/avatar/CREDITS.md`](public/models/avatar/CREDITS.md)
-for the full attribution.
-
-Output artefact: [`public/models/avatar/avatar.optimized.glb`](public/models/avatar/avatar.optimized.glb)
-— ~19 KB after Draco + Meshopt (3.8 % of the 500 KB budget per
-[ADR-0032 §3.2](../../../docs/adr/0032-meta-quest-webxr-stack-and-assets.md)).
-
-### Geometry
-
-- Chassis: `BoxGeometry 0.6 × 0.18 × 0.8` (light-grey-blue PBR, metallic 0.6 / roughness 0.45)
-- 4 wheels: `CylinderGeometry R=0.16, w=0.12, 16 seg` (dark rubber)
-- Head: `BoxGeometry 0.28 × 0.18 × 0.18` (teal sensor head, emissive cyan trim)
-- Mast + tip: thin cylinder + emissive red sphere LED
-- Total: 9 meshes, 6 PBR materials, 9 nodes, ≈700 triangles before optimisation
-
-### Animations (5 clips, all LOOP, LINEAR interpolation)
-
-| Name             | Duration | Channels | Notes                                                  |
-| ---------------- | -------- | -------- | ------------------------------------------------------ |
-| `idle`           | 3.0 s    | 2        | chassis bob ±1 cm (sin) + head yaw scan ±10° (cos)     |
-| `drive_forward`  | 1.0 s    | 4        | all wheels at +π rad/s around the X axis               |
-| `drive_backward` | 1.0 s    | 4        | all wheels at −π rad/s                                  |
-| `turn_left`      | 1.0 s    | 4        | front ×1.5 speed, rear ×0.5 speed                      |
-| `turn_right`     | 1.0 s    | 4        | mirror of `turn_left`                                   |
-
-### Rebuild
-
-```
-npm run build:avatar         # raw → public/models/avatar/_raw/avatar.glb (~39 KB)
-npm run gltf:optimize        # Draco + Meshopt → _raw/avatar.optimized.glb (~19 KB)
-node scripts/build-avatar.mjs --publish   # move optimized → public/models/avatar/, drop raw
-npm run gltf:verify          # extension + budget guard
-npm test                     # 58 tests (4 gltf-pipeline + 6 avatar-pipeline + 48 other)
-```
-
-### Runtime loading
-
-```
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
-import { MeshoptDecoder } from 'meshoptimizer';
-
-const loader = new GLTFLoader();
-loader.setDRACOLoader(new DRACOLoader().setDecoderPath('/draco/'));
-loader.setMeshoptDecoder(MeshoptDecoder);
-
-const gltf = await loader.loadAsync('/models/avatar/avatar.optimized.glb');
-const mixer = new THREE.AnimationMixer(gltf.scene);
-const idle = mixer.clipAction(gltf.animations.find(a => a.name === 'idle'));
-idle.play();
-```
 
 ---
 

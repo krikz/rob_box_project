@@ -3,9 +3,13 @@
 Источник истины: docs/architecture/meta-quest-api.md §4 (camera_rear 0x1001),
 docs/plans/2026-08-24-meta-quest-telepresence.md §1.4.
 
-Phase 1 baseline: JPEG через cv_bridge (не нужен /dev/video, работает на
-любом sensor_msgs/Image). H.264 — отдельная карточка Phase 2 если
-latency > 200 мс (ADR-0027 §4.3).
+Phase 1 baseline: JPEG через numpy + cv2.imencode (БЕЗ cv_bridge).
+H.264 — отдельная карточка Phase 2 если latency > 200 мс (ADR-0027 §4.3).
+
+Почему без cv_bridge: ros-humble-cv-bridge собран под numpy 1.x, а в образе
+quest pip подтянул numpy 2.x → `from cv_bridge import CvBridge` падает
+(`AttributeError: _ARRAY_API not found`). Прямое numpy→cv2 конвертирование
+от cv_bridge не зависит и работает на numpy 2.x.
 """
 
 from __future__ import annotations
@@ -22,43 +26,51 @@ def image_to_payload(
 
     Args:
         msg: sensor_msgs/Image (тип проверяется лениво — модуль не импортируется,
-            чтобы можно было тестировать без cv_bridge в dev-env).
+            чтобы можно было тестировать без cv2 в dev-env).
         quality: JPEG quality (1-100). Дефолт 75 — баланс bandwidth/качество.
 
     Returns:
         JPEG bytes.
 
     Raises:
-        ImportError: если cv_bridge или cv2 недоступен (должен быть в Docker image).
+        ImportError: если numpy или cv2 недоступен (должны быть в Docker image).
         ValueError: если encoding не поддерживается (только rgb8/bgr8/mono8).
     """
-    # Ленивый импорт — без cv_bridge / cv2 код читается, но payload не построить.
-    from cv_bridge import CvBridge  # type: ignore[import-not-found]
+    # Ленивый импорт — без numpy / cv2 код читается, но payload не построить.
     import cv2  # type: ignore[import-not-found]
+    import numpy as np  # type: ignore[import-not-found]
 
     if msg.encoding not in ("rgb8", "bgr8", "mono8"):
         raise ValueError(f"unsupported encoding '{msg.encoding}' " "(supported: rgb8, bgr8, mono8)")
-    bridge = CvBridge()
-    if msg.encoding == "mono8":
-        cv_img = bridge.imgmsg_to_cv2(msg, desired_encoding="mono8")
-        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
-    elif msg.encoding == "rgb8":
-        cv_img = bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
-    else:  # bgr8
-        cv_img = bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
-    ok, buf = cv2.imencode(".jpg", cv_img, encode_params)
+
+    channels = 1 if msg.encoding == "mono8" else 3
+    row_bytes = int(msg.width) * channels
+    step = int(msg.step) if getattr(msg, "step", 0) > 0 else row_bytes
+
+    raw = np.frombuffer(msg.data, dtype=np.uint8)
+    if step != row_bytes:
+        # Неконтигуозный буфер (stride): вырезаем полезную область построчно.
+        raw = np.ascontiguousarray(raw.reshape(int(msg.height), step)[:, :row_bytes])
+
+    if channels == 3:
+        img = raw.reshape(int(msg.height), int(msg.width), channels)
+    else:
+        img = raw.reshape(int(msg.height), int(msg.width))
+
+    if msg.encoding == "rgb8":
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
+    ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
     if not ok:
         raise RuntimeError("cv2.imencode('.jpg') failed")
     return bytes(buf)
 
 
 def has_camera_deps() -> bool:
-    """Runtime-проверка: cv_bridge + cv2 доступны."""
+    """Runtime-проверка: numpy + cv2 доступны (для JPEG-кодирования)."""
     try:
         import cv2  # noqa: F401
-        from cv_bridge import CvBridge  # noqa: F401
+        import numpy  # noqa: F401
 
         return True
     except ImportError:

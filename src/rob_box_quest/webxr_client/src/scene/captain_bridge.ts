@@ -4,10 +4,26 @@ import * as THREE from "three";
 import { LidarOverlay } from "./lidar_overlay";
 import { VideoPanel } from "./video_panel";
 import { PanelManager } from "./panel_manager";
+import {
+  loadBridgeAssets,
+  type BridgeAssetHandle,
+} from "./bridge_assets";
+
+// Фронтальная камера робота — выводится на большой экран-стену перед
+// оператором. Это OAK-D color (0x1001), которая в protocol/topics.py
+// исторически названа "camera_rear", хотя это и есть передняя камера
+// (та же, что в Telegram: /camera/camera/color/image_raw).
+export const MAIN_SCREEN_TOPIC = "camera_rear";
 
 export interface CaptainBridgeOptions {
   canvas: HTMLCanvasElement;
   enableXr?: boolean;
+  /**
+   * Optional override for the environment base URL. Defaults to
+   * `/models/environment/`. Pass `null` to disable environment loading
+   * (e.g. unit tests that only exercise panels/LiDAR).
+   */
+  environmentBaseUrl?: string | null;
 }
 
 export interface CaptainBridgeHandle {
@@ -17,8 +33,21 @@ export interface CaptainBridgeHandle {
   lidar: LidarOverlay;
   panels: PanelManager;
   videoPanels: Map<string, VideoPanel>;
+  /** Большой экран-стена с фронтальной камерой (MAIN_SCREEN_TOPIC). */
+  mainScreen: VideoPanel;
+  /**
+   * Loaded environment handle once `loadEnvironment()` resolves. `null`
+   * until then, or if `environmentBaseUrl === null` was passed.
+   */
+  environment: BridgeAssetHandle | null;
+  /** Async-load the Phase 2.1 Captain Bridge environment (GLB + HDR). */
+  loadEnvironment(): Promise<BridgeAssetHandle | null>;
   initLayout(): void;
   attachXrSession(session: XRSession): Promise<void>;
+  /** Visual feedback: подсветить grip контроллеров (deadman зажат). */
+  setControllerActive(active: boolean): void;
+  /** Arm-state HUD на стене (справа вверху): true=ARM, false=DISARM. */
+  setArmState(armed: boolean): void;
   start(): () => void;
   resize(): void;
   dispose(): void;
@@ -80,9 +109,90 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   const lidar = new LidarOverlay();
   scene.add(lidar.object);
 
-  // Panel manager + video panels.
-  const panelMgr = new PanelManager();
+  // Panel manager + video panels. Дефолтных floating-панелей больше нет —
+  // вместо них один большой экран-стена (см. mainScreen ниже).
+  const panelMgr = new PanelManager({ defaultTopics: [] });
   const videoPanels = new Map<string, VideoPanel>();
+
+  // Большой экран-стена перед оператором: на него выводим фронтальную
+  // камеру. Стена мостика стоит на z = -4 (ROOM_D/2); экран висит чуть
+  // ближе (z = -3.9), лицом к пользователю (facing +Z).
+  const mainScreen = new VideoPanel(
+    {
+      id: "main_screen",
+      topic: MAIN_SCREEN_TOPIC,
+      position: { x: 0, y: 1.5, z: -3.9 },
+      facing: { x: 0, z: 1 },
+      size: { width: 4.8, height: 2.7 },
+      selected: false
+    },
+    { showLabel: false, canvasWidth: 1280, canvasHeight: 720 }
+  );
+  scene.add(mainScreen.mesh);
+
+  // Arm-state HUD: справа вверху на стене, рядом с экраном камеры.
+  // Sprite всегда повёрнут к камере — читается из любой позы оператора.
+  const armCanvas = document.createElement("canvas");
+  armCanvas.width = 512;
+  armCanvas.height = 128;
+  const armCtx = armCanvas.getContext("2d");
+  if (!armCtx) {
+    throw new Error("captain_bridge: failed to acquire arm HUD 2D context");
+  }
+  const armTexture = new THREE.CanvasTexture(armCanvas);
+  armTexture.minFilter = THREE.LinearFilter;
+  armTexture.magFilter = THREE.LinearFilter;
+  const armSprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: armTexture, depthTest: false, transparent: true })
+  );
+  // Правый верхний угол стены-экрана (mainScreen 4.8×2.7, центр y=1.5, z=-3.9).
+  armSprite.position.set(2.35, 2.95, -3.85);
+  armSprite.scale.set(1.1, 0.275, 1);
+  scene.add(armSprite);
+
+  function drawArmHud(armed: boolean): void {
+    const ctx = armCtx!;
+    ctx.clearRect(0, 0, armCanvas.width, armCanvas.height);
+    // Тёмная подложка.
+    ctx.fillStyle = "rgba(10, 13, 17, 0.72)";
+    ctx.fillRect(0, 0, armCanvas.width, armCanvas.height);
+    // Цветной индикатор слева.
+    ctx.fillStyle = armed ? "#2ec27e" : "#8b98a5";
+    ctx.fillRect(0, 0, 16, armCanvas.height);
+    // Текст.
+    ctx.fillStyle = armed ? "#2ec27e" : "#8b98a5";
+    ctx.font = "bold 56px monospace";
+    ctx.textBaseline = "middle";
+    ctx.fillText(armed ? "ARM" : "DISARM", 44, armCanvas.height / 2);
+    armTexture.needsUpdate = true;
+  }
+  drawArmHud(false);
+
+  function setArmState(armed: boolean): void {
+    drawArmHud(armed);
+  }
+
+  // Phase 2.1 environment (loaded lazily via loadEnvironment()).
+  let environment: BridgeAssetHandle | null = null;
+  const environmentBaseUrl = opts.environmentBaseUrl === null ? null : (opts.environmentBaseUrl ?? "/models/environment/");
+  async function loadEnvironment(): Promise<BridgeAssetHandle | null> {
+    if (environment) return environment;
+    if (environmentBaseUrl === null) return null;
+    try {
+      environment = await loadBridgeAssets(scene, renderer, {
+        baseUrl: environmentBaseUrl,
+        loadHdr: true,
+      });
+    } catch (err) {
+      // Fail soft: keep the procedural fallback floor + grid so the scene
+      // remains usable in environments where the GLB cannot be served
+      // (offline dev, missing static server, CDN failure). Log once.
+      // eslint-disable-next-line no-console
+      console.warn("[captain_bridge] bridge environment failed to load, falling back to procedural scene:", err);
+      environment = null;
+    }
+    return environment;
+  }
 
   function syncPanels(): void {
     const states = panelMgr.list();
@@ -144,9 +254,50 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
 
   // ---------- XR (опционально) ----------
 
+  // Визуализация XR-контроллеров: ray из targetRaySpace + маркер grip.
+  // Позиции/ориентацию подставляет three.js из XR-кадров автоматически.
+  const controllerGrips: THREE.Mesh[] = [];
+  const CONTROLLER_RAY_LENGTH = 1.5;
+  const GRIP_IDLE_COLOR = 0x556677;
+  const GRIP_ACTIVE_COLOR = 0x2ec27e;
+
+  function setControllerActive(active: boolean): void {
+    for (const grip of controllerGrips) {
+      (grip.material as THREE.MeshBasicMaterial).color.set(active ? GRIP_ACTIVE_COLOR : GRIP_IDLE_COLOR);
+    }
+  }
+
   async function attachXrSession(session: XRSession): Promise<void> {
     if (opts.enableXr === false) return;
+    // Включаем XR-режим рендерера ДО setSession: без этого three.js
+    // не подменяет камеру на XR-камеру (голова не отслеживается, взор
+    // зафиксирован) и не биндит XR framebuffer.
+    renderer.xr.enabled = true;
     await renderer.xr.setSession(session);
+
+    // Контроллеры: добавляем по одному разу (повторный вход в VR не дублирует).
+    for (let i = 0; i < 2; i++) {
+      if (controllerGrips[i]) continue;
+      const root = renderer.xr.getController(i);
+      const ray = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(0, 0, 0),
+          new THREE.Vector3(0, 0, -CONTROLLER_RAY_LENGTH)
+        ]),
+        new THREE.LineBasicMaterial({ color: 0x2ec27e, transparent: true, opacity: 0.75 })
+      );
+      root.add(ray);
+      const grip = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.02, 0.02, 0.14, 12),
+        new THREE.MeshBasicMaterial({ color: GRIP_IDLE_COLOR })
+      );
+      grip.rotation.x = Math.PI / 2; // цилиндр вдоль -Z (направление ray)
+      grip.position.set(0, 0, -0.07);
+      root.add(grip);
+      scene.add(root);
+      controllerGrips[i] = grip;
+    }
+
     renderer.setAnimationLoop(() => {
       renderer.render(scene, camera);
     });
@@ -154,8 +305,11 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
 
   function dispose(): void {
     window.removeEventListener("resize", resize);
+    mainScreen.dispose();
     for (const vp of videoPanels.values()) vp.dispose();
     lidar.dispose();
+    environment?.dispose();
+    armTexture.dispose();
     renderer.dispose();
   }
 
@@ -166,8 +320,13 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     lidar,
     panels: panelMgr,
     videoPanels,
+    mainScreen,
+    environment,
+    loadEnvironment,
     initLayout,
     attachXrSession,
+    setControllerActive,
+    setArmState,
     start,
     resize,
     dispose

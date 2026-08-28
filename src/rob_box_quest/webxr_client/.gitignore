@@ -12,7 +12,10 @@ coverage/
 # The gltf:verify CI guard will reject any *.glb that lacks Draco + Meshopt.
 public/models/**/*.glb
 public/models/**/*.gltf
+
+# Phase 2.0/2.1 committed optimized assets (canonical or .optimized suffix).
 !public/models/**/*.optimized.glb
+
 # Phase 2.1 canonical avatar artifact (kanban t_90c362bd, issue #1677):
 # gltf:optimize writes *.optimized.glb; the canonical published name for
 # the avatar is avatar.glb so the runtime can drop the `.optimized.` suffix

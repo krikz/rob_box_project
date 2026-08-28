@@ -16,13 +16,16 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          three: ["three"],
-          gui: ["lil-gui"]
+          three: ["three"]
         }
       }
     }
   },
   server: {
+    // Bind IPv4 loopback explicitly: `adb reverse tcp:5173 tcp:5173`
+    // tunnels to 127.0.0.1 on the host; the default `localhost` binding
+    // resolves to ::1 on Windows, which adb reverse cannot reach.
+    host: "127.0.0.1",
     port: 5173,
     proxy: {
       "/quest": {

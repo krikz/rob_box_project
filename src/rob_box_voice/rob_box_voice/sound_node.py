@@ -7,7 +7,10 @@ SoundNode - воспроизведение звуковых эффектов
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
+
+from audio_common_msgs.msg import AudioData
 
 import os
 import sys
@@ -22,6 +25,11 @@ from contextlib import contextmanager
 from pydub import AudioSegment
 from .utils.audio_utils import find_respeaker_device_sounddevice
 from .audio_playback_manager import AudioPlaybackManager
+
+
+# Рация (voice passthrough): тишина дольше этого порога (сек) закрывает
+# голосовой stream (план P1, Task 1.2, решение D7).
+VOICE_SILENCE_TIMEOUT = 0.3
 
 
 @contextmanager
@@ -80,6 +88,23 @@ class SoundNode(Node):
         # по wake word НЕ делаем — LLM сама решает стопить через stop_music,
         # видя состояние «сейчас играет трек» в system_context.
         self.sound_stop_sub = self.create_subscription(String, "/voice/sound/stop", self.sound_stop_callback, 10)
+        # Рация (voice passthrough): голос оператора из Quest (/avatar/voice_in).
+        # best-effort + volatile QoS, чтобы не доигрывать stale-чанки после
+        # потери соединения (план P1, Task 1.1).
+        voice_in_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            depth=10,
+        )
+        self.voice_in_sub = self.create_subscription(
+            AudioData, "/avatar/voice_in", self.voice_in_callback, voice_in_qos
+        )
+
+        # Состояние голосового стрима (Task 1.2)
+        self._voice_stream = None  # sd.OutputStream во время голоса оператора
+        self._voice_last_activity = 0.0  # monotonic timestamp последнего чанка
+        # Таймер: закрыть стрим при тишине (проверка каждый VOICE_SILENCE_TIMEOUT).
+        self.create_timer(VOICE_SILENCE_TIMEOUT, self._voice_stream_watchdog)
 
         # Publishers
         self.state_pub = self.create_publisher(String, "/voice/sound/state", 10)
@@ -217,6 +242,11 @@ class SoundNode(Node):
 
         self.get_logger().info(f"🔔 Триггер: {trigger}")
 
+        # Рация: голос оператора приоритетнее эффектов — не перебиваем стрим.
+        if self._voice_stream is not None:
+            self.get_logger().warn(f"⚠️ Голосовой стрим активен, пропускаю эффект {trigger}")
+            return
+
         # Проверить, не играет ли уже звук
         if self.is_playing:
             self.get_logger().warn(f"⚠️ Звук уже играет ({self.current_sound}), пропускаю {trigger}")
@@ -262,6 +292,93 @@ class SoundNode(Node):
         """Явная остановка mp3-трека (stop_music → /voice/sound/stop)."""
         if msg.data.strip().upper() == "STOP":
             self._stop_mp3()
+            # Рация: STOP также закрывает голосовой стрим (barge-in).
+            self._close_voice_stream()
+
+    def voice_in_callback(self, msg):
+        """Голос оператора (/avatar/voice_in, AudioData int16 PCM 16 kHz).
+
+        Стриминговый вывод: первый чанк открывает sd.OutputStream
+        (16 kHz, stereo int16 — ReSpeaker требует 2 канала), последующие
+        пишутся в него. Один stream на весь PTT-сеанс, чтобы не было
+        кликов/лага от повторного открытия (план P1, Task 1.2, D7).
+        """
+        try:
+            # AudioData.data приходит как list[int] (tts_node/audio_node публикуют
+            # `list(bytes)`) — нормализуем через bytes() перед frombuffer.
+            chunk = np.frombuffer(bytes(msg.data), dtype=np.int16)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"❌ voice_in: невалидный AudioData: {e}")
+            return
+        if chunk.size == 0:
+            return
+        # Mono → stereo (ReSpeaker playback требует 2 канала, как в tts_node).
+        stereo = np.column_stack((chunk, chunk))
+
+        if self._voice_stream is None:
+            self._open_voice_stream()
+        stream = self._voice_stream
+        if stream is None:
+            return
+
+        try:
+            stream.write(stereo)
+            self._voice_last_activity = time.monotonic()
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"❌ voice_in: ошибка записи в stream: {e}")
+            self._close_voice_stream()
+
+    def _open_voice_stream(self):
+        """Открыть OutputStream для голоса (16 kHz, stereo int16)."""
+        try:
+            self._voice_stream = sd.OutputStream(
+                samplerate=16000,
+                channels=2,
+                dtype="int16",
+                device=self.device_index,
+            )
+            self._voice_stream.start()
+            self._voice_last_activity = time.monotonic()
+            self.get_logger().info("🎙️ Voice passthrough stream открыт (16k stereo int16)")
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"❌ Не удалось открыть voice stream: {e}")
+            self._voice_stream = None
+
+    def _close_voice_stream(self):
+        """Закрыть голосовой stream (если открыт)."""
+        stream = self._voice_stream
+        if stream is None:
+            return
+        for op in ("stop", "close"):
+            try:
+                getattr(stream, op)()
+            except Exception:  # noqa: BLE001
+                pass
+        self._voice_stream = None
+
+    def _close_voice_stream_if_idle(self, now: Optional[float] = None) -> bool:
+        """Закрыть голосовой stream, если тишина дольше VOICE_SILENCE_TIMEOUT.
+
+        Args:
+            now: текущее время (time.monotonic). Для тестов можно передать
+                явно, чтобы детерминированно проверить порог.
+
+        Returns:
+            True, если stream закрыт; False иначе.
+        """
+        if self._voice_stream is None:
+            return False
+        if now is None:
+            now = time.monotonic()
+        if now - self._voice_last_activity >= VOICE_SILENCE_TIMEOUT:
+            self.get_logger().info("🎙️ Тишина — закрываю voice passthrough stream")
+            self._close_voice_stream()
+            return True
+        return False
+
+    def _voice_stream_watchdog(self):
+        """Таймер: закрыть стрим при тишине."""
+        self._close_voice_stream_if_idle()
 
     def _stop_mp3(self) -> None:
         """Остановить текущее mp3-воспроизведение (если идёт)."""

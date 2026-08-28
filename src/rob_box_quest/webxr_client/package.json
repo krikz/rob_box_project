@@ -20,11 +20,11 @@
     "lil-gui": "^0.19.2"
   },
   "devDependencies": {
+    "@gltf-transform/core": "^4.4.2",
+    "@gltf-transform/extensions": "^4.4.2",
+    "@gltf-transform/functions": "^4.4.2",
     "@types/three": "^0.170.0",
     "@types/node": "^20.12.7",
-    "@gltf-transform/core": "^4.4.2",
-    "@gltf-transform/functions": "^4.4.2",
-    "@gltf-transform/extensions": "^4.4.2",
     "draco3dgltf": "^1.5.7",
     "meshoptimizer": "^1.2.0",
     "sharp": "^0.33.5",
