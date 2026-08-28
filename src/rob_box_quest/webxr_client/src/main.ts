@@ -46,6 +46,14 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     // eslint-disable-next-line no-console
     console.warn("[bootstrap] bridge environment load rejected:", err);
   });
+  // Phase 2.2: load avatar (Draco + Meshopt compressed GLB via
+  // GLTFLoader + DRACOLoader + KTX2Loader + MeshoptDecoder, see
+  // src/scene/asset_loader.ts). Fail-soft like the environment — the
+  // procedural origin marker stays in place if the GLB fetch fails.
+  bridge.loadAvatar().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.warn("[bootstrap] avatar load rejected:", err);
+  });
 
   const fsm = new TeleopFSM();
   const desktopTeleop = createDesktopTeleop({ fsm });
