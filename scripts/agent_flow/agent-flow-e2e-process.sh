@@ -417,10 +417,21 @@ IFS=' ' read -r -a _blocker_sigs <<< "$KNOWN_BLOCKER_SIGNATURES" || true
 # rotation встал на ~12ч. С `no-e2e-required` мы говорим процессу: "это не e2e".
 blocker_issue_for_sig() {  # $1=sig
     local sig="$1"
+    # Ретро 28.08 (t_bb56f2a1): расширили exclude-фильтр меток, чтобы epic / feature
+    # issues с сигнатурой в title (например #1684 feat(quest) «Captain Bridge
+    # Phase 2 ... wake-word») НЕ считались блокерами. Они не имеют отношения к
+    # e2e rotation (фичи квест-эпика, не bug/process). Векторы false-positive:
+    #   - feature / feat → feature epic (Quest, Avatar, ...)
+    #   - epic:avatar / epic:quest / epic:captain-bridge → явные epic-метки
+    #   - meta-quest / webxr / xr → Meta Quest-специфика
+    #   - source:gsd → создано через GSD workflow, не bug-triage
+    # Также добавили `--limit 10` (было 5) — чтобы не пропустить нужный hit
+    # при нескольких false-positive кандидатах; max() всё равно выбирает
+    # старший (наиболее давний) номер.
     gh issue list --repo "$GH_REPO" --state open \
         --search "${sig} in:title,body" \
-        --limit 5 --json number,labels --jq \
-        '[.[] | select([.labels[].name] | index("needs-e2e") | not) | select([.labels[].name] | index("e2e-done") | not) | select([.labels[].name] | index("no-e2e-required") | not) | select([.labels[].name] | index("agent-flow") | not) | .number] | max // ""' 2>/dev/null || true
+        --limit 10 --json number,labels --jq \
+        '[.[] | select([.labels[].name] | index("needs-e2e") | not) | select([.labels[].name] | index("e2e-done") | not) | select([.labels[].name] | index("no-e2e-required") | not) | select([.labels[].name] | index("agent-flow") | not) | select([.labels[].name] | index("feature") | not) | select([.labels[].name] | index("epic:avatar") | not) | select([.labels[].name] | index("epic:quest") | not) | select([.labels[].name] | index("epic:captain-bridge") | not) | select([.labels[].name] | index("meta-quest") | not) | select([.labels[].name] | index("webxr") | not) | select([.labels[].name] | index("xr") | not) | select([.labels[].name] | index("source:gsd") | not) | .number] | max // ""' 2>/dev/null || true
 }
 
 # detect_known_blocker — известный блокер открыт? Источники:
@@ -433,7 +444,7 @@ blocker_issue_for_sig() {  # $1=sig
 #      IDLE-диагностика no_wake_word это не блокер, а нормальная работа).
 # Печатает "#<issue>" или "robot-log:<sig>"; пусто — блокера нет.
 detect_known_blocker() {
-    local sig hit _sig_logs _priyato_logs
+    local sig hit _sig_logs _priyato_logs _hit_is_real_blocker
     # Ретро 24.08 t_8a8d9403: manual override для экстренной разблокировки.
     # Если E2E_FORCE_UNPAUSE=true — пропускаем ВСЕ блокер-чеки (ротация
     # не блокируется известными сигнатурами). Используется только если фильтр
@@ -447,8 +458,21 @@ detect_known_blocker() {
         [ -z "$sig" ] && continue
         hit="$(blocker_issue_for_sig "$sig")"
         if [ -n "$hit" ] && [ "$hit" != "null" ]; then
-            printf '#%s' "$hit"
-            return 0
+            # Ретро 28.08 (t_bb56f2a1): false-positive guard. Если hit-issue
+            # НЕ имеет bug/process/voice/e2e/regression меток — это явно не
+            # блокер e2e (например, feature epic с упоминанием сигнатуры в
+            # title). Логируем false-positive и считаем блокер отсутствующим.
+            # Используем --jq вместо bash-glob pattern, чтобы избежать ложных
+            # срабатываний на похожих словах (release-buggy, voice-over, etc.).
+            _hit_is_real_blocker="$(gh issue view "$hit" --repo "$GH_REPO" --json labels \
+                --jq '[.labels[].name] | any(. == "bug" or . == "process" or . == "voice" or . == "e2e" or . == "regression" or . == "fail-streak" or . == "stt" or . == "wake-word" or . == "stale-branch" or . == "agent-flow")' 2>/dev/null || echo false)"
+            if [ "$_hit_is_real_blocker" = "true" ]; then
+                printf '#%s' "$hit"
+                return 0
+            fi
+            # hit-issue НЕ имеет сигнатурных меток → false-positive, продолжаем цикл
+            log "false-positive blocker guard: hit #${hit} сигнатура='${sig}' labels=$(gh issue view "$hit" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || echo "?") — НЕ блокер (нет bug/process/voice/e2e меток). Продолжаем ротацию."
+            continue
         fi
         if [ -n "${E2E_ROBOT_PASS:-}" ]; then
             # grep -F фиксированная строка (без regex-экранирования); '${sig}'
@@ -1159,6 +1183,10 @@ gh_list_issues_by_label() {
     # В REST labels — массив {name,...}, в GraphQL — то же самое. Достаточно
     # прокинуть number/title/labels/body; PR-ы (у REST issues включают PRs)
     # отфильтруем ниже по отсутствию поля pull_request.
+    # Ретро 28.08 (t_bb56f2a1): suppress traceback to stderr (2>/dev/null в
+    # конце) — JSONDecodeError от сторонних данных (rate-limit warning, etc.)
+    # больше не засоряет cron output. Сам `try/except` всё равно ловит и
+    # возвращает `[]` downstream'у.
     printf '%s' "$_api_json" | python3 -c '
 import json, sys
 try:
@@ -1394,7 +1422,12 @@ collect_issues_json() {
     if [ -n "$issues_json" ] && [ "$issues_json" != "[]" ]; then
         _filtered="$(printf '%s' "$issues_json" | python3 -c '
 import json, sys
-data = json.load(sys.stdin)
+try:
+    data = json.load(sys.stdin)
+except Exception as e:
+    print("[]", file=sys.stderr)
+    sys.stderr.write("collect_issues_json filter: JSON parse error: " + str(e) + "\n")
+    sys.exit(0)
 keep = []
 for issue in data:
     labels = [l["name"] for l in issue.get("labels", [])]
@@ -1402,13 +1435,20 @@ for issue in data:
         sys.stderr.write("issue #" + str(issue["number"]) + ": has e2e-done/e2e:rejected — skip\n")
         continue
     keep.append(issue)
-print(json.dumps(keep, ensure_ascii=False))')"
-        _filtered_count="$(printf '%s' "$_filtered" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-        _original_count="$(printf '%s' "$issues_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-        if [ "$_filtered_count" -lt "$_original_count" ]; then
+print(json.dumps(keep, ensure_ascii=False))
+' 2>/dev/null || echo '[]')"
+        # Ретро 28.08 (t_bb56f2a1): defense-in-depth — если _filtered парсинг
+        # упал (например, transient rate-limit text вместо JSON), считаем что
+        # фильтр ничего не убрал и используем оригинальный issues_json дальше.
+        _filtered_count="$(printf '%s' "$_filtered" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo "-1")"
+        _original_count="$(printf '%s' "$issues_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo "-1")"
+        if [ "$_filtered_count" -ge 0 ] && [ "$_original_count" -ge 0 ] \
+            && [ "$_filtered_count" -lt "$_original_count" ]; then
             log "filtered: ${_original_count} → ${_filtered_count} issues (skipped $((_original_count - _filtered_count)) already-labeled)"
+            issues_json="$_filtered"
+        elif [ "$_filtered_count" -lt 0 ] || [ "$_original_count" -lt 0 ]; then
+            log "WARNING: collect_issues_json filter parse error — fallback на оригинальный issues_json (${issues_json:0:60}...)"
         fi
-        issues_json="$_filtered"
     fi
 
     # Ретро 18.08 t_854c7c67: добавляем PRы с needs-e2e, которых нет в issues
@@ -1524,13 +1564,23 @@ for pr in prs:
         "branch": pr.get("headRefName") or "",
     })
 
-print(json.dumps(raw_issues, ensure_ascii=False))')"
-        _prs_count="$(printf '%s' "$_prs_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-        _merged_count="$(printf '%s' "$_merged" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-        if [ "$_merged_count" -gt "$((${_prs_count:-0} + 0))" ] || [ "$_merged_count" -gt "$(printf '%s' "${issues_json:-[]}" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)" ]; then
+print(json.dumps(raw_issues, ensure_ascii=False))' 2>/dev/null || true)"
+        # Ретро 28.08 (t_bb56f2a1): defense-in-depth — если _prs_count/_merged_count
+        # парсинг упал (transient), НЕ затираем issues_json (используем только если
+        # merge валиден). Условие «merged > 0» защищает от случайного «merged=0»
+        # при пустых входах.
+        _prs_count="$(printf '%s' "$_prs_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo "-1")"
+        _merged_count="$(printf '%s' "$_merged" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo "-1")"
+        if [ "$_merged_count" -ge 0 ] && [ "$_prs_count" -ge 0 ] \
+            && { [ "$_merged_count" -gt "$((${_prs_count:-0} + 0))" ] \
+                 || [ "$_merged_count" -gt "$(printf '%s' "${issues_json:-[]}" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)" ]; }; then
             log "queue: merged ${_prs_count} PR-side needs-e2e into issues_json (retro 18.08 t_854c7c67)"
         fi
-        issues_json="$_merged"
+        if [ "$_merged_count" -ge 0 ]; then
+            issues_json="$_merged"
+        else
+            log "WARNING: collect_issues_json merge parse error — оставляем issues_json без PR-side merge"
+        fi
     fi
 }
 
