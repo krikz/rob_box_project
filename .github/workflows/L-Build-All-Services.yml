@@ -5,17 +5,17 @@ name: "L: Build All Services"
 #
 # === Issue #1560: spam-runs protection (23.08.2026) ===
 # До этого фикса workflow запускался 30+ раз в день на develop с пустыми inputs.
-# Два механизма защиты:
-#   1. concurrency: group на github.ref — GitHub-уровневая защита от любого
-#      источника дублей (manual UI, leaked script, future orphan loop). Новый
-#      workflow_dispatch в течение окна будет в очереди; cancel-in-progress=false
-#      чтобы не отменять легитимный build, который уже стартанул.
-#   2. job `validate-trigger` — для workflow_dispatch на protected branches
-#      (develop/main) проверяет что triggered_by_script != "manual" ИЛИ
-#      triggered_by_card != "". Manual UI вызовы (например кем-то кликнувший
-#      "Run workflow" в GitHub UI) будут иметь triggered_by_script="manual" и
-#      triggered_by_card="" → job warning'ит с понятным логом. Это **источник
-#      диагностики**: следующий спам-build оставит fingerprint в CI logs.
+# Защита: job `validate-trigger` (для workflow_dispatch на protected branches
+# develop/main) проверяет что triggered_by_script != "manual" ИЛИ
+# triggered_by_card != "". Manual UI вызовы (например кем-то кликнувший
+# "Run workflow" в GitHub UI) будут иметь triggered_by_script="manual" и
+# triggered_by_card="" → job warning'ит с понятным логом. Это **источник
+# диагностики**: следующий спам-build оставит fingerprint в CI logs.
+#
+# Issue #1694 (26.08.2026): concurrency: group УДАЛЁН из этого workflow —
+# вешал новые runs в очередь без движения (cancel-in-progress=false → нет
+# активного run'а для cancel), что блокировало все builds. Защита от
+# spam осталась только через validate-trigger (см. блок ниже).
 # === Issue #1560 END ===
 
 on:
@@ -68,16 +68,16 @@ on:
         default: true
         type: boolean
 
-# Issue #1560: server-side dedup against spam-runs. GitHub Actions groups all
-# runs of this workflow for the same ref under one concurrency key; a second
-# workflow_dispatch within the group's lifetime (default = no timeout = forever)
-# is QUEUED (not cancelled) so a legitimate in-flight build is not killed.
-# Combined with the new job `validate-trigger` (only fires for workflow_dispatch
-# with triggered_by_script=manual + triggered_by_card='') this stops the
-# 30+ runs/day spam from manual UI clicks without breaking automation.
-concurrency:
-  group: l-build-all-services-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+# Issue #1694: concurrency block удалён (26.08.2026). concurrency:
+# group=l-build-all-services-<ref> вешал новые workflow_dispatch в очередь
+# БЕЗ движения (cancel-in-progress=false → нет активного run'а для cancel),
+# что блокировало все builds (Run #32985609438 завис 45+ мин в queued,
+# jobs=0, 9 self-hosted runners idle, 0 busy). Защита от spam-build'ов
+# (issue #1560) теперь только через job `validate-trigger` ниже — она
+# помечает spam-trigger вызовы fingerprint'ом в CI logs, но НЕ блокирует
+# build (continue-on-error: true). Spam-build'ы идут, но видны как spam,
+# и источник можно вычислить по fingerprint.
+# === Issue #1694 END ===
 
 permissions:
   contents: write  # Required for git push of .image-versions files
@@ -95,6 +95,9 @@ jobs:
   # как ⚠️ spam-trigger warning, а не как обычный build. Не действует на workflow_call
   # (G-Auto-merge to Main → L-Build-All-Services через uses:): там event_name !=
   # workflow_dispatch. Не действует на round-ветки z-{e2e}/test-round-N.
+  #
+  # Issue #1694 (26.08.2026): это ЕДИНСТВЕННАЯ защита от spam после удаления
+  # concurrency block (он блокировал все builds, см. шапку workflow).
   validate-trigger:
     name: "🛡 Trigger source validation (issue #1560)"
     runs-on: [self-hosted, rob-box]
