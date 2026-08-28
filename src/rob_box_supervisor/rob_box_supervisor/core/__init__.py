@@ -23,13 +23,35 @@ from rob_box_supervisor.core.fsm import (
     Mode,
     ModeManager,
 )
+from rob_box_supervisor.core.locks import (
+    FLOOR_TELEOP,
+    FLOOR_VOICE,
+    ConflictError as LockConflictError,
+    Floor,
+    LockManager,
+)
 from .aggregator import StateAggregator
 from .dead_man import DeadManCounter
+from .state import AvatarEvent, AvatarState, FloorState, pack, unpack
 
 __all__ = (
+    # FSM (AV-3)
     "FSMConflictError",
     "Mode",
     "ModeManager",
+    # LockManager (AV-4)
+    "FLOOR_TELEOP",
+    "FLOOR_VOICE",
+    "LockConflictError",
+    "Floor",
+    "LockManager",
+    # Aggregator + dead-man (AV-6)
     "StateAggregator",
     "DeadManCounter",
+    # State schema (AV-5)
+    "AvatarEvent",
+    "AvatarState",
+    "FloorState",
+    "pack",
+    "unpack",
 )

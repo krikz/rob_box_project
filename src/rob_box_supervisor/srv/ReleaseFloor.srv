@@ -1,0 +1,17 @@
+# ============================================================================
+# SOT (source-of-truth): ReleaseFloor service contract (ADR-0028 §4.3)
+# ----------------------------------------------------------------------------
+# Канонический IDL-контракт. В этой карточке НЕ интегрирован в rosidl
+# runtime — текущая реализация использует std_srvs/Trigger + JSON-convention
+# в Trigger.Request.data. Файл сохранён как SOT для будущей миграции
+# (Phase 2.1: ament_cmake + rosidl).
+# ============================================================================
+
+string client_id
+string floor  # "teleop_floor" | "voice_floor"
+---
+bool success
+bool applied
+string reason
+string mode
+AvatarState state
