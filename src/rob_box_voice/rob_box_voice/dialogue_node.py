@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
@@ -169,6 +170,13 @@ def _xml_attr(value: str) -> str:
 ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
 ASYNCIO_LOOP_DRIVER_NAME_PREFIX: str = "dialogue-async-loop"
 ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S: float = 2.0
+
+# S7 (scheduler-segments-merge, issue #968) — upper bound on
+# ``_pending_user_messages`` so a run of barge-ins during one very long
+# LLM turn cannot grow the queue unbounded. Appending past this cap
+# drops the OLDEST queued phrase (keep the most recent user intent) and
+# logs a warning — see _on_stt.
+_PENDING_USER_MESSAGES_MAX: int = 5
 
 # Issue #1389 compatibility alias. ``LLMSkipReason`` is now the canonical
 # source; this tuple remains for callers that imported the merged #1395 symbol.
@@ -369,6 +377,14 @@ class DialogueNode(Node):
         self._run_task: Optional[asyncio.Task] = None
         self._task_lock = threading.Lock()
         self._run_cancelled: bool = False
+        # S7 (scheduler-segments-merge, issue #968) — phrases that arrive
+        # while a turn's LLM cycle is still in flight (barge_in_policy=
+        # "classify", quick_decide=PENDING_LLM) are queued here instead of
+        # starting a second concurrent turn. Drained as ONE follow-up turn
+        # from _run_turn's ``finally`` once the turn slot frees up again —
+        # see _on_stt / _drain_pending_user_messages. Each entry is
+        # (text, enqueued_at) so the drain can log queue latency.
+        self._pending_user_messages: "deque[tuple[str, float]]" = deque()
         self._vad_speech_detected: bool = False
         self._effects = EffectAwaiterRegistry(
             release_tts=lambda ev: self._loop.call_soon_threadsafe(ev.set),
@@ -1856,6 +1872,28 @@ class DialogueNode(Node):
                     f"🔇 [quick_decide] IGNORE: {clean[:60]!r}"
                 )
                 return
+            if verdict is QuickVerdict.PENDING_LLM:
+                # S7 (scheduler-segments-merge) — a genuinely in-flight
+                # turn (LLM cycle not finished yet) must not be raced by
+                # a second concurrent turn. Queue the phrase instead of
+                # cancelling/dispatching; _run_turn's ``finally`` drains
+                # the queue as ONE follow-up turn once the slot frees up
+                # (§4.7.3). REPLACE (below) always cuts in regardless.
+                with self._task_lock:
+                    live_task = self._run_task
+                if live_task is not None and not live_task.done():
+                    if len(self._pending_user_messages) >= _PENDING_USER_MESSAGES_MAX:
+                        dropped, _dropped_ts = self._pending_user_messages.popleft()
+                        self.get_logger().warning(
+                            f"⚠️ [S7] pending_user_messages overflow "
+                            f"(max={_PENDING_USER_MESSAGES_MAX}), dropping "
+                            f"oldest: {dropped[:60]!r}"
+                        )
+                    self._pending_user_messages.append((clean, time.monotonic()))
+                    self.get_logger().info(
+                        f"📥 [S7] turn in flight — queued: {clean[:60]!r}"
+                    )
+                    return
             self._cancel_run(
                 "new STT input", stop_tts=verdict is QuickVerdict.REPLACE
             )
@@ -2859,6 +2897,14 @@ class DialogueNode(Node):
             with self._task_lock:
                 if self._run_task is asyncio.current_task():
                     self._run_task = None
+            # S7 (scheduler-segments-merge, issue #968) — drain any user
+            # phrases that arrived while THIS turn's LLM cycle was in
+            # flight (barge_in_policy=classify, quick_decide=PENDING_LLM,
+            # see _on_stt). Must run AFTER the slot is cleared above so
+            # the drained turn's own _run_turn re-entry sees a free
+            # _run_task. Multiple queued phrases are glued into ONE
+            # follow-up turn, never N.
+            pending_queue_dispatched = self._drain_pending_user_messages()
             # Issue #935 v3: if LLM called stop_music(), defer cleanup until
             # TTS finishes.  Otherwise keep music playing until next dialogue.
             # Issue #992: a second stop_music() call from a follow-up LLM
@@ -2974,10 +3020,14 @@ class DialogueNode(Node):
             # LLM gate fires; otherwise the synthetic prompt is
             # classified as STT_RESULT but the state stays in IDLE
             # (no-op), and the user never hears the retry answer.
+            # S7 — same reasoning for a drained pending-queue follow-up
+            # turn: it is a continuation of the same session, not the
+            # end of it.
             if (
                 self._dsm.current_state == DialogueStateKind.DIALOGUE
                 and not babble_retry_pending
                 and not music_retry_dispatched
+                and not pending_queue_dispatched
             ):
                 self._dsm.on_event(DialogueEvent.DIALOGUE_END)
                 # Issue #1160 — Prometheus metrics: сессия закрылась
@@ -4515,6 +4565,46 @@ class DialogueNode(Node):
         self._publish_state()
         self._speak_direct("Хорошо, молчу.")
 
+    def _drain_pending_user_messages(self) -> bool:
+        """S7 (scheduler-segments-merge, issue #968) — dispatch queued
+        phrases as ONE follow-up turn.
+
+        Phrases accumulate in ``self._pending_user_messages`` while a
+        turn's LLM cycle was in flight (barge_in_policy=classify,
+        quick_decide=PENDING_LLM verdict — see ``_on_stt``). Called from
+        ``_run_turn``'s ``finally`` once ``self._run_task`` has been
+        cleared, so the drained turn's own ``_run_turn`` re-entry finds
+        a free slot. Multiple accumulated phrases are glued into ONE
+        turn (newline-joined), never N — dispatching N follow-up turns
+        would just recreate the concurrency problem S7 exists to avoid.
+
+        Returns True when a follow-up turn was dispatched (the caller
+        must then suppress this turn's own DIALOGUE_END — the drained
+        turn is a continuation, not the end of the session).
+
+        getattr-guarded like ``_speech_accumulator`` elsewhere in this
+        class: this is called unconditionally from every ``_run_turn``,
+        and plenty of existing unit tests build a ``DialogueNode`` via
+        ``object.__new__`` (bypassing ``__init__``) without setting
+        every optional attribute — a missing queue must mean "nothing
+        to drain", not an ``AttributeError`` that breaks the turn.
+        """
+        queue = getattr(self, "_pending_user_messages", None)
+        if not queue:
+            return False
+        queued = list(queue)
+        queue.clear()
+        texts = [text for text, _enqueued_at in queued]
+        oldest_ts = min(ts for _text, ts in queued)
+        queue_latency_ms = (time.monotonic() - oldest_ts) * 1000
+        combined = "\n".join(texts)
+        self.get_logger().info(
+            f"📤 [S7] draining {len(texts)} pending message(s), "
+            f"queue_latency={queue_latency_ms:.0f}ms: {combined[:120]!r}"
+        )
+        self._dispatch_turn(combined, raw_user_command=combined)
+        return True
+
     def _reset_dialogue_session(self) -> None:
         """Issue #XXXX — сброс текущей диалоговой сессии.
 
@@ -4552,6 +4642,14 @@ class DialogueNode(Node):
             except Exception:  # noqa: BLE001
                 pass
         self._pending_backlog_flush = False
+        # 2a. S7 (scheduler-segments-merge) — очередь фраз, накопленных
+        # пока предыдущий турн был в полёте, тоже принадлежит старой
+        # сессии — сбрасываем вместе с бэклогом. getattr-guard — как и
+        # для _speech_accumulator выше: тестовые фикстуры на
+        # object.__new__(DialogueNode) не всегда проходят __init__.
+        pending_queue = getattr(self, "_pending_user_messages", None)
+        if pending_queue is not None:
+            pending_queue.clear()
         # 3. DSM → IDLE из любого состояния (rescue path).
         try:
             self._dsm.reset(DialogueStateKind.IDLE)

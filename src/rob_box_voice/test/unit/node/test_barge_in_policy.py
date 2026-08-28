@@ -5,11 +5,16 @@
 (``object.__new__(DialogueNode)`` + ручные атрибуты, без реального ROS2).
 """
 
-from unittest.mock import MagicMock
+import asyncio
+import threading
+import time
+from collections import deque
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from rob_box_harness.core.dialogue_state_machine import DialogueStateKind
+from rob_box_voice.core.music_guard import MusicGuard
 from rob_box_voice.dialogue_node import DialogueNode
 
 
@@ -54,6 +59,7 @@ def node():
     n._tts_control_pub = MagicMock()
 
     n._barge_in_policy = "replace"
+    n._pending_user_messages = deque()
     return n
 
 
@@ -145,3 +151,230 @@ class TestQuickDecideDispatch:
         node._barge_in_policy = "replace"
         node._on_stt(_stt("робот угу"))
         called.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# S7 — pending_user_messages queue (scheduler-segments-merge plan)
+#
+# Closes the hole S1 opens: with barge_in_policy=classify a PENDING_LLM
+# verdict no longer stops TTS, but the LLM turn itself is still
+# cancelled unconditionally today — these tests pin the NEW behaviour:
+# while a turn is genuinely still in flight (_run_task alive), a
+# PENDING_LLM phrase must not start a second concurrent turn at all —
+# it queues, and _run_turn's ``finally`` drains it as ONE follow-up
+# turn once the slot frees up (§4.7.3 "фраза ставится в очередь
+# user_messages для следующего хода").
+# ---------------------------------------------------------------------------
+
+
+class TestPendingUserMessagesQueueOnStt:
+    def test_pending_llm_with_live_task_queues_instead_of_dispatching(self, node):
+        """A turn is still in flight (_run_task not done) when a
+        PENDING_LLM phrase arrives — queue it, don't start a second
+        turn, don't touch the running turn at all (no cancel, no STOP,
+        no awaiter release)."""
+        node._barge_in_policy = "classify"
+        live_task = MagicMock()
+        live_task.done.return_value = False
+        node._run_task = live_task
+
+        node._on_stt(_stt("робот и ещё про енота"))
+
+        node._dispatch_turn.assert_not_called()
+        node._tts_control_pub.publish.assert_not_called()
+        node._effects.release_all_tts.assert_not_called()
+        assert node._run_cancelled is False
+        assert len(node._pending_user_messages) == 1
+        queued_text, _ts = node._pending_user_messages[0]
+        assert "енота" in queued_text
+
+    def test_pending_llm_with_finished_task_dispatches_normally(self, node):
+        """_run_task exists but is done() — free slot, dispatch as usual
+        (S4.2 regression, repeated here under S7 for traceability)."""
+        node._barge_in_policy = "classify"
+        finished_task = MagicMock()
+        finished_task.done.return_value = True
+        node._run_task = finished_task
+
+        node._on_stt(_stt("робот и ещё про енота"))
+
+        node._dispatch_turn.assert_called_once()
+        assert len(node._pending_user_messages) == 0
+
+    def test_pending_llm_with_no_task_dispatches_normally(self, node):
+        node._barge_in_policy = "classify"
+        node._run_task = None
+
+        node._on_stt(_stt("робот и ещё про енота"))
+
+        node._dispatch_turn.assert_called_once()
+        assert len(node._pending_user_messages) == 0
+
+    def test_replace_verdict_dispatches_even_with_live_task(self, node):
+        """An explicit imperative ("стоп") always cuts in — never queued,
+        even while a turn is in flight."""
+        node._barge_in_policy = "classify"
+        live_task = MagicMock()
+        live_task.done.return_value = False
+        node._run_task = live_task
+
+        node._on_stt(_stt("робот стоп"))
+
+        node._dispatch_turn.assert_called_once()
+        node._tts_control_pub.publish.assert_called_once()
+        assert len(node._pending_user_messages) == 0
+
+    def test_replace_policy_never_queues_even_with_live_task(self, node):
+        """policy=replace regression: never touches the queue at all —
+        always cancels + dispatches (S1 behaviour untouched)."""
+        node._barge_in_policy = "replace"
+        live_task = MagicMock()
+        live_task.done.return_value = False
+        node._run_task = live_task
+
+        node._on_stt(_stt("робот и ещё про енота"))
+
+        node._dispatch_turn.assert_called_once()
+        node._tts_control_pub.publish.assert_called_once()
+        assert len(node._pending_user_messages) == 0
+
+    def test_ignore_verdict_with_live_task_still_does_not_queue(self, node):
+        """Rule-level noise (IGNORE) is dropped outright — it never
+        enters the pending queue even while a turn is in flight."""
+        node._barge_in_policy = "classify"
+        live_task = MagicMock()
+        live_task.done.return_value = False
+        node._run_task = live_task
+
+        node._on_stt(_stt("робот угу"))
+
+        node._dispatch_turn.assert_not_called()
+        assert len(node._pending_user_messages) == 0
+
+    def test_queue_overflow_drops_oldest_and_logs(self, node):
+        node._barge_in_policy = "classify"
+        live_task = MagicMock()
+        live_task.done.return_value = False
+        node._run_task = live_task
+
+        from rob_box_voice.dialogue_node import _PENDING_USER_MESSAGES_MAX
+
+        for i in range(_PENDING_USER_MESSAGES_MAX):
+            node._on_stt(_stt(f"робот и ещё про {i}"))
+        assert len(node._pending_user_messages) == _PENDING_USER_MESSAGES_MAX
+        oldest_before = node._pending_user_messages[0][0]
+
+        node._on_stt(_stt("робот и ещё про переполнение"))
+
+        assert len(node._pending_user_messages) == _PENDING_USER_MESSAGES_MAX
+        assert node._pending_user_messages[0][0] != oldest_before
+        assert "переполнение" in node._pending_user_messages[-1][0]
+        node.get_logger().warning.assert_called()
+
+
+def _make_turn_node() -> DialogueNode:
+    """Minimal DialogueNode wired for ``_run_turn`` — same shape as
+    ``test_issue_1195_tg_source.py``'s ``test_run_turn_from_tg_*``
+    fixture, plus a ``_pending_user_messages`` queue to drain."""
+    n = object.__new__(DialogueNode)
+    n._task_lock = threading.Lock()
+    n._run_cancelled = False
+    n._babble_retry_used = False
+    n._music_guard = MusicGuard()
+    n._pending_music_cleanup = False
+    n._speaker_id_enabled = False
+    n._handle_speaker_turn = MagicMock()
+    n._apply_speaker_identity = MagicMock()
+    n._build_dynamic_system_context = MagicMock(return_value="<system_context/>")
+    n._llm = MagicMock()
+    n._speak_direct = MagicMock()
+    n._active_batches = set()
+    n._dsm = MagicMock()
+    n._dsm.current_state = DialogueStateKind.DIALOGUE
+    n._publish_state = MagicMock()
+    n._apply_music_guard = MagicMock(return_value=False)
+    n._publish_music_cleanup = MagicMock()
+    n._maybe_record_session_end = MagicMock()
+    n.get_logger = lambda: MagicMock()
+
+    class _Result:
+        spoken_text = "verse1"
+        tools_called = ()
+        error = None
+
+    n._core = MagicMock()
+    n._core.process_input = AsyncMock(return_value=_Result())
+    n._handle_result = MagicMock()
+    n._dispatch_turn = MagicMock()
+    n._pending_user_messages = deque()
+    return n
+
+
+class TestPendingUserMessagesDrain:
+    """S7 — draining the queue as ONE follow-up turn (_run_turn's finally)."""
+
+    def test_drains_single_queued_message_as_one_turn(self):
+        n = _make_turn_node()
+        n._pending_user_messages.append(("и ещё про енота", time.monotonic()))
+
+        asyncio.run(n._run_turn("спой про комара"))
+
+        n._dispatch_turn.assert_called_once()
+        dispatched_text = n._dispatch_turn.call_args.args[0]
+        assert "енота" in dispatched_text
+        assert len(n._pending_user_messages) == 0
+
+    def test_drains_multiple_queued_messages_as_a_single_glued_turn(self):
+        """Several accumulated phrases must produce ONE follow-up turn,
+        not N."""
+        n = _make_turn_node()
+        n._pending_user_messages.append(("и ещё про енота", time.monotonic()))
+        n._pending_user_messages.append(("и покороче", time.monotonic()))
+
+        asyncio.run(n._run_turn("спой про комара"))
+
+        n._dispatch_turn.assert_called_once()
+        dispatched_text = n._dispatch_turn.call_args.args[0]
+        assert "енота" in dispatched_text
+        assert "покороче" in dispatched_text
+
+    def test_empty_queue_does_not_dispatch_a_follow_up_turn(self):
+        n = _make_turn_node()
+
+        asyncio.run(n._run_turn("спой про комара"))
+
+        n._dispatch_turn.assert_not_called()
+
+    def test_drain_suppresses_dialogue_end_for_this_turn(self):
+        """A drained follow-up turn is a continuation, not the end of
+        the session — DIALOGUE_END must not fire on the turn that
+        dispatches it (mirrors babble_retry_pending /
+        music_retry_dispatched)."""
+        n = _make_turn_node()
+        n._pending_user_messages.append(("и ещё про енота", time.monotonic()))
+
+        asyncio.run(n._run_turn("спой про комара"))
+
+        n._dsm.on_event.assert_not_called()
+
+
+class TestPendingUserMessagesClearedOnReset:
+    def test_reset_dialogue_session_clears_pending_queue(self):
+        n = object.__new__(DialogueNode)
+        n.get_logger = lambda: MagicMock()
+        n._cancel_run = MagicMock()
+        n._tts_control_pub = MagicMock()
+        n._pending_backlog_flush = False
+        n._dsm = MagicMock()
+        n._speaker_lock = threading.Lock()
+        n._current_speaker = {"is_known": False}
+        n._speaker_by_text = {"x": {}}
+        n._speaker_tracker = MagicMock()
+        n._maybe_record_session_end = MagicMock()
+        n._publish_state = MagicMock()
+        n._publish_response = MagicMock()
+        n._pending_user_messages = deque([("и ещё про енота", time.monotonic())])
+
+        n._reset_dialogue_session()
+
+        assert len(n._pending_user_messages) == 0
