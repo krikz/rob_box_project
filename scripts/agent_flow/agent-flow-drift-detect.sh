@@ -4,10 +4,11 @@
 #
 # Source of truth: ветка origin/develop репозитория (после `git fetch origin`),
 # файлы <repo>/scripts/agent_flow/*.sh на origin/develop.
-# Проверяет, что md5sum между origin/develop и 4 хостами-копиями одинаковые:
+# Проверяет, что md5sum между origin/develop и 5 хостами-копиями одинаковые:
 #   - /home/builder/hermes-share/rob_box_project/scripts/agent_flow/<file>
 #   - /home/builder/.hermes/profiles/agent-flow/scripts/<file>
 #   - /home/builder/.hermes/profiles/architect/scripts/<file>
+#   - /home/builder/.hermes/profiles/backend/scripts/<file>     # ретро 28.08 t_7ebdfce0
 #   - /home/builder/.hermes/profiles/devops/scripts/<file>
 #   - /home/builder/.hermes/scripts/<file>
 #
@@ -164,10 +165,17 @@ if [ -n "${DRIFT_TARGETS:-}" ]; then
     # Тесты/hermetic прогоны: DRIFT_TARGETS — colon-separated список путей.
     IFS=':' read -r -a TARGETS <<< "$DRIFT_TARGETS"
 else
+    # Ретро 28.08 t_7ebdfce0 (agent-flow-e2e-process DRIFT → backend profile):
+    # раньше backend/scripts/ был MISSED в TARGETS, и drift-detect молча
+    # пропускал его (host ↔ origin сверялся для 4 хостов, не 5). После
+    # merge #1710 это давало ложное «OK» при фактическом дрейфе
+    # backend-копии. Добавление backend/scripts/ восстанавливает полноту
+    # контроля; install.sh параллельно расширен тем же target.
     TARGETS=(
         "$REPO_DIR/scripts/agent_flow"
         "/home/builder/.hermes/profiles/agent-flow/scripts"
         "/home/builder/.hermes/profiles/architect/scripts"
+        "/home/builder/.hermes/profiles/backend/scripts"
         "/home/builder/.hermes/profiles/devops/scripts"
         "/home/builder/.hermes/scripts"
     )

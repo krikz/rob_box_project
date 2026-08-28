@@ -5,7 +5,9 @@
 # Копии (которые ищет cron при старте):
 #   1. /home/builder/.hermes/profiles/agent-flow/scripts/   — каноническое место
 #   2. /home/builder/.hermes/profiles/architect/scripts/    — где cron сейчас ищет
-#   3. /home/builder/.hermes/scripts/                       — legacy (cron тоже стартует)
+#   3. /home/builder/.hermes/profiles/backend/scripts/     — добавлено ретро 28.08 t_7ebdfce0
+#   4. /home/builder/.hermes/profiles/devops/scripts/      — где cron сейчас ищет
+#   5. /home/builder/.hermes/scripts/                       — legacy (cron тоже стартует)
 #
 # Этот скрипт раскладывает **hardlink (cp -al) на канонические файлы из репо**.
 # Hardlink — обычный файл с тем же inode, поэтому он гарантированно остаётся
@@ -25,7 +27,7 @@
 #      для самой `~/.hermes/scripts/` symlink ЗАПРЕЩЁН (сломает guard).
 #
 # Гарантии:
-#   - Все 3 (или сколько есть) путей ссылаются на одну и ту же inode-копию
+#   - Все 5 (или сколько есть) путей ссылаются на одну и ту же inode-копию
 #     (hardlink) либо на одинаковое содержимое (cp);
 #   - Правка в репо (через PR/merge) автоматически расходится по всем путям
 #     сразу при следующем запуске этого скрипта;
@@ -135,12 +137,21 @@ SCRIPT_DIR="$REPO_DIR/scripts/agent_flow"
 # Канонические пути (все должны стать hardlink-ами на одну и ту же inode).
 # Переопределяются INSTALL_TARGET_DIRS (colon-separated) для тестов и
 # нестандартных хостов (см. tests/test_drift_detect_branch_active.sh).
+#
+# Ретро 28.08 t_7ebdfce0 (agent-flow-e2e-process DRIFT → backend profile):
+# install.sh раскладывал hardlink'и только в 4 целевые директории, но
+# backend-профиль (~/.hermes/profiles/backend/scripts/) был MISSED.
+# Результат — после merge #1710 (PR с cleanup-логикой) backend-воркер при
+# e2e-prod не делал disk-check / orphan-sweep / артефакт-evict, рискуя
+# переполнить /tmp. Добавление backend в TARGET_DIRS восстанавливает
+# полноту раскладки; drift-detect тоже расширен ниже.
 if [ -n "${INSTALL_TARGET_DIRS:-}" ]; then
     IFS=':' read -r -a TARGET_DIRS <<< "$INSTALL_TARGET_DIRS"
 else
     TARGET_DIRS=(
         "/home/builder/.hermes/profiles/agent-flow/scripts"
         "/home/builder/.hermes/profiles/architect/scripts"
+        "/home/builder/.hermes/profiles/backend/scripts"
         "/home/builder/.hermes/profiles/devops/scripts"
         "/home/builder/.hermes/scripts"
     )
@@ -537,6 +548,108 @@ sys.exit(1)
 ensure_e2e_process_cron
 
 echo
+echo "==> Ensure cron job registration: agent-flow install-daily (ретро 28.08 t_7ebdfce0)"
+# Проблема: PR #1710 (cleanup-логика) доехал в SOT, но install.sh был
+# запущен вручную только для части профилей — backend/scripts/ остался
+# на старом md5 (3772 строк) до следующего drift-detect тика (30 мин).
+# Регрессия повторяется после каждого merge, если оператор не запускает
+# install.sh руками.
+#
+# Решение: ensure_install_daily_cron() — ежедневный no_agent cron-job,
+# запускающий сам install.sh (без --dry-run) в 03:00 локального времени.
+# Сделан no_agent=True: install.sh пишет только в stdout при дрифте
+# (anti-escape warnings и т.п.), что в local-delivery не беспокоит
+# пользователя. Идемпотентность — на стороне install.sh: повторный запуск
+# no-op если hardlink'и уже на месте.
+#
+# Ретро 11.08 t_a6a236e0d9f0470e: cron 'Agent Cockpeat Watch Tock' падал
+# 50 тиков из-за того, что симлинки в HERMES_SCRIPTS_DIR не проходили
+# guard. Этот job использует РЕАЛЬНЫЙ install.sh, который уже корректно
+# раскладывает hardlink'и — guard-а не задевает.
+ensure_install_daily_cron() {
+    local profile_dir="/home/builder/.hermes/profiles/devops"
+    local jobs_file="$profile_dir/cron/jobs.json"
+    local job_name="agent-flow-install-daily"
+    local job_script="agent-flow-install-daily.sh"
+
+    if ! command -v hermes >/dev/null 2>&1; then
+        echo "  SKIP ensure-install-daily: hermes CLI not on PATH"
+        return 0
+    fi
+    if [ ! -f "$jobs_file" ]; then
+        echo "  SKIP ensure-install-daily: $jobs_file not present"
+        return 0
+    fi
+
+    # Guard: уже есть interval-job на этот script.
+    if python3 -c "
+import json, sys
+try:
+    with open('$jobs_file') as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(0)
+for j in d.get('jobs', []):
+    if j.get('script') == '$job_script' and j.get('schedule', {}).get('kind') == 'interval' and j.get('enabled'):
+        sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then
+        echo "  OK   cron job '$job_name' already registered (interval, enabled)"
+        return 0
+    fi
+
+    # Используем inline-wrapper в /tmp: install.sh раскладки не покрывает
+    # этот wrapper-скрипт (он не в EXPECTED — это служебная точка входа для
+    # cron), но cron-scheduler.py::_validate_script_path требует путь
+    # ВНУТРИ ~/.hermes/scripts/ (или эквивалент), поэтому используем
+    # копию hardlink в .hermes/scripts/.
+    #
+    # Idempotency: если wrapper уже существует — НЕ перезаписываем, чтобы
+    # операторские правки (например, добавленное логирование) пережили
+    # повторный install.sh. Тест: test_install_ensure_install_daily_cron.sh
+    # TEST 6 (retро 28.08 t_7ebdfce0).
+    local cron_script_dst="/home/builder/.hermes/scripts/$job_script"
+    if [ ! -f "$cron_script_dst" ]; then
+        if $DRY_RUN; then
+            echo "  [DRY] would create wrapper at $cron_script_dst"
+        else
+            cat > "$cron_script_dst" <<'WRAPPER'
+#!/bin/bash
+# agent-flow-install-daily.sh — wrapper для ежедневного install.sh тика.
+# Ретро 28.08 t_7ebdfce0: PR #1710 cleanup-логика доезжала только в
+# часть профилей; ежедневный запуск install.sh закрывает gap без ручного
+# запуска оператора. Используется из cron-job `agent-flow-install-daily`
+# (no_agent=True, daily 03:00, devops-профиль). Stdout — silent если
+# всё ОК (anti-escape OK + verify md5), иначе печатает diff.
+set -e
+REPO_DIR="${REPO_DIR:-/home/builder/hermes-share/rob_box_project}"
+exec bash "$REPO_DIR/scripts/agent_flow/install.sh"
+WRAPPER
+            chmod +x "$cron_script_dst"
+            echo "  WRAP created wrapper at $cron_script_dst"
+        fi
+    fi
+
+    echo "  ADD  registering cron job '$job_name' (devops, daily 03:00, no_agent)"
+    if $DRY_RUN; then
+        echo "  [DRY] hermes --profile devops cron create '0 3 * * *' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir '$REPO_DIR'"
+        return 0
+    fi
+    if hermes --profile devops cron create "0 3 * * *" \
+        --name "$job_name" \
+        --script "$job_script" \
+        --no-agent \
+        --deliver local \
+        --workdir "$REPO_DIR" >/dev/null 2>&1; then
+        echo "  ADD  cron job created: $job_name"
+    else
+        echo "  WARN cron job creation failed (non-fatal): $job_name — register manually:"
+        echo "       hermes --profile devops cron create '0 3 * * *' --name '$job_name' --script '$job_script' --no-agent --deliver local"
+    fi
+}
+ensure_install_daily_cron
+
+echo
 echo "==> Ensure cron job registration: orphan blocked-watchdog (ретро t_1d0426e3)"
 # Проблема: agent-flow-blocked-watchdog.sh раскладывается install.sh (commit
 # от t_1d0426e3), но cron-job НЕ создаётся автоматически. Без него manual
@@ -638,13 +751,21 @@ verify_three_copies_md5sum() {
 verify_three_copies_md5sum "agent-flow-e2e-process-launcher.sh" \
     "/home/builder/.hermes/profiles/agent-flow/scripts/agent-flow-e2e-process-launcher.sh" \
     "/home/builder/.hermes/profiles/architect/scripts/agent-flow-e2e-process-launcher.sh" \
+    "/home/builder/.hermes/profiles/backend/scripts/agent-flow-e2e-process-launcher.sh" \
     "/home/builder/.hermes/profiles/devops/scripts/agent-flow-e2e-process-launcher.sh" \
     "/home/builder/.hermes/scripts/agent-flow-e2e-process-launcher.sh"
 verify_three_copies_md5sum "agent-flow-blocked-watchdog.sh" \
     "/home/builder/.hermes/profiles/agent-flow/scripts/agent-flow-blocked-watchdog.sh" \
     "/home/builder/.hermes/profiles/architect/scripts/agent-flow-blocked-watchdog.sh" \
+    "/home/builder/.hermes/profiles/backend/scripts/agent-flow-blocked-watchdog.sh" \
     "/home/builder/.hermes/profiles/devops/scripts/agent-flow-blocked-watchdog.sh" \
     "/home/builder/.hermes/scripts/agent-flow-blocked-watchdog.sh"
+verify_three_copies_md5sum "agent-flow-e2e-process.sh" \
+    "/home/builder/.hermes/profiles/agent-flow/scripts/agent-flow-e2e-process.sh" \
+    "/home/builder/.hermes/profiles/architect/scripts/agent-flow-e2e-process.sh" \
+    "/home/builder/.hermes/profiles/backend/scripts/agent-flow-e2e-process.sh" \
+    "/home/builder/.hermes/profiles/devops/scripts/agent-flow-e2e-process.sh" \
+    "/home/builder/.hermes/scripts/agent-flow-e2e-process.sh"
 
 echo
 echo "==> Telegram token sanity (retro 12.08 t_5af222ea): >1 active TELEGRAM_BOT_TOKEN = reconnect loop"
@@ -762,6 +883,7 @@ if ! $DRY_RUN; then
         for fp in \
             "/home/builder/.hermes/profiles/agent-flow/scripts/$f" \
             "/home/builder/.hermes/profiles/architect/scripts/$f" \
+            "/home/builder/.hermes/profiles/backend/scripts/$f" \
             "/home/builder/.hermes/profiles/devops/scripts/$f" \
             "/home/builder/.hermes/scripts/$f"; do
             if [ -e "$fp" ]; then

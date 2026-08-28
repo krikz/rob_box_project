@@ -29,6 +29,20 @@ agent-PR → e2e → close цикла (см. `docs/design/AGENT_FLOW_PROPOSAL.md
 1. `/home/builder/.hermes/scripts/agent-flow-*.sh` — legacy, что-то стартует ещё
 2. `/home/builder/.hermes/profiles/agent-flow/scripts/` — gateway agent-flow
 3. `/home/builder/.hermes/profiles/architect/scripts/` — gateway architect
+4. `/home/builder/.hermes/profiles/backend/scripts/` — gateway backend (добавлено ретро 28.08 t_7ebdfce0)
+5. `/home/builder/.hermes/profiles/devops/scripts/` — gateway devops
+6. `/home/builder/.hermes/scripts/` — legacy (cron тоже стартует)
+
+**Process scripts sync (ретро 28.08 t_7ebdfce0, drift backend-profile):**
+при добавлении нового профиля в Hermes ОБЯЗАТЕЛЬНО расширяй `TARGET_DIRS`
+в `install.sh` и `TARGETS` в `agent-flow-drift-detect.sh` одной строкой,
+плюс одно `verify_three_copies_md5sum` в `install.sh` для критичных
+скриптов. Иначе после merge drift-detect молча пропустит новый профиль
+(host↔origin сверка для него не идёт → install.sh не покрывает его → 
+скрипты отстают на 1+ merge, пока кто-то руками не запустит install.sh).
+Самовосстановление: ежедневный cron `agent-flow-install-daily` (03:00,
+no_agent, devops-профиль, ретро t_7ebdfce0) запускает `install.sh`
+на хосте → догоняет дрифт за ≤24ч без ручного вмешательства.
 
 Чтобы избежать drift, **используй `install.sh` для раскладки hardlink-копий**:
 
@@ -37,7 +51,7 @@ bash <repo>/scripts/agent_flow/install.sh --dry-run   # только посмо�
 bash <repo>/scripts/agent_flow/install.sh             # реальная раскладка
 ```
 
-После этого все пути (agent-flow / architect / devops profiles +
+После этого все пути (agent-flow / architect / backend / devops profiles +
 `~/.hermes/scripts`) — hardlink-копии (inode) или одинаковое содержимое.
 Правка в репо видима везде после следующего `install.sh`.
 
