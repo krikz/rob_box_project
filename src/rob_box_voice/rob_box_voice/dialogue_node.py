@@ -82,6 +82,7 @@ from rob_box_voice.core.llm_skip_reasons import (
     LLMSkipReason,
     new_llm_skip_counter,
 )
+from rob_box_voice.scheduler.quick_decide import QuickVerdict, quick_decide
 from rob_box_voice.core.dialogue_guards import (
     BABBLE_BANNED_OPENERS as BABBLE_BANNED_OPENERS,
     BABBLE_PERFORMANCE_KEYWORDS as BABBLE_PERFORMANCE_KEYWORDS,
@@ -1831,12 +1832,35 @@ class DialogueNode(Node):
             return
         if backlog_pending:
             self._pending_backlog_flush = True
-        # S1.3 (scheduler-segments-merge) — barge_in_policy="classify"
-        # cancels the turn but does NOT stop TTS, so a segment already
-        # playing (e.g. a song verse) finishes instead of being cut off.
-        # "replace" (default) reproduces today's behaviour exactly.
-        stop_tts = getattr(self, "_barge_in_policy", "replace") == "replace"
-        self._cancel_run("new STT input", stop_tts=stop_tts)
+        # S4.2 (scheduler-segments-merge) — barge_in_policy="classify"
+        # routes the new input through quick_decide (S4.1, rules only,
+        # < 50ms, no second LLM): IGNORE means noise — the turn does not
+        # start at all, nothing is cancelled; REPLACE (explicit
+        # imperative) reproduces today's unconditional-STOP behaviour;
+        # PENDING_LLM cancels the turn WITHOUT stopping TTS (S1.2/S1.3)
+        # so an already-playing segment finishes instead of being cut
+        # off. "replace" (default) never calls quick_decide at all —
+        # exact regression of pre-S4 behaviour.
+        if getattr(self, "_barge_in_policy", "replace") == "classify":
+            verdict = quick_decide(
+                clean, source="tg" if tg_chat_id is not None else "stt",
+                active_group=None, clock=time.monotonic,
+                previous_text=getattr(self, "_last_stt_text", None),
+                previous_ts=getattr(self, "_last_stt_ts", None),
+            )
+            self._last_stt_text = clean
+            self._last_stt_ts = time.monotonic()
+            if verdict is QuickVerdict.IGNORE:
+                self._llm_skipped_counter["quick_decide_ignore"] += 1
+                self.get_logger().info(
+                    f"🔇 [quick_decide] IGNORE: {clean[:60]!r}"
+                )
+                return
+            self._cancel_run(
+                "new STT input", stop_tts=verdict is QuickVerdict.REPLACE
+            )
+        else:
+            self._cancel_run("new STT input", stop_tts=True)
         sfx = String()
         sfx.data = "thinking"
         self._sound_trigger_pub.publish(sfx)
