@@ -102,3 +102,7 @@ tests/e2e/_artifacts/
 # without local vite/node_modules (e.g. wrong cwd in PowerShell). Normal
 # vite cache for webxr_client is in src/rob_box_quest/webxr_client/.gitignore.
 /.vite/
+
+# Blender auto-backup files (created on every save)
+*.blend1
+*.blend2

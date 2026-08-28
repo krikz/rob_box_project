@@ -15,9 +15,9 @@
 
 | Поле | Значение |
 |---|---|
-| Имя | `avatar.glb` |
-| Формат | glTF 2.0 binary (`.glb`) |
-| Размер | ~38–40 KB (raw budget ≤ 100 KB, проверено build-avatar.mjs) |
+| Имя | `avatar.glb` (raw) + `avatar-anim.blend` (Blender source) |
+| Формат | glTF 2.0 binary (`.glb`) + Blender 4.x (`.blend`) |
+| Размер | ~50 KB raw .glb (raw budget ≤ 100 KB, проверено build-avatar.mjs и build_anim_blender.py); ~720 KB .blend (source) |
 | Геометрия | 9 нод, 9 мешей, 6 материалов |
 | Анимации | 5 клипов: `idle`, `drive_forward`, `drive_backward`, `turn_left`, `turn_right` |
 
@@ -80,6 +80,8 @@ Animated Character Pack (CC0)**, как зафиксировано в теле �
 
 ## Регенерация raw-исходника
 
+### Путь 1 — программная генерация (build-avatar.mjs, как раньше)
+
 Из корня `src/rob_box_quest/webxr_client`:
 
 ```bash
@@ -100,6 +102,37 @@ cp public/models/avatar/_raw/avatar.glb ../../../assets/source/avatar/avatar.glb
 > ⚠️ Шаг 4 — ручной, выполняется воркером после генерации (build-avatar.mjs
 > пишет только в `_raw/` под webxr_client). Это намеренно: `assets/source/`
 > хранит сырьё **вне** клиентского дерева, чтобы не путать с runtime-артефактами.
+
+### Путь 2 — Blender-аниматор (build_anim_blender.py, Phase 2.1 kanban t_770f3299)
+
+Blender 4.x headless-скрипт собирает ту же 4-колёсную платформу из
+примитивов, проставляет 5 Actions (idle / drive_forward / drive_backward /
+turn_left / turn_right) на ключевых кадрах и сохраняет .blend + переэкспортирует
+.glb. Используется, когда нужно поправить анимацию (тайминги, амплитуды,
+новые клипы) — правки идут в .blend, а .glb регенерируется из него.
+
+```bash
+# Требуется Blender 4.x в PATH или по абсолютному пути.
+# Из корня репо (assets/source/avatar/):
+BLENDER=~/blender-4.4.3-linux-x64/blender   # или где установлен
+$BLENDER --background --python build_anim_blender.py
+
+# Артефакты:
+#   assets/source/avatar/avatar-anim.blend   — Blender source
+#   assets/source/avatar/avatar.glb          — re-exported glTF binary
+```
+
+**Почему два пути?** Путь 1 (build-avatar.mjs) пишет .glb напрямую через
+@gltf-transform без посредника. Путь 2 (build_anim_blender.py) нужен для:
+  - визуального редактирования таймингов и амплитуд в Action Editor,
+  - добавления/правки ключевых кадров с покадровой точностью,
+  - проверки, что .glb корректно round-trip-ает через Blender (Blender
+    строже относится к glTF 2.0, чем THREE.js — помогает ловить malformed
+    accessor-ы).
+
+Оба пути дают **идентичную структуру** .glb (9 нод, 5 анимаций, те же
+имена каналов), чтобы downstream-пайплайн (Phase 2.0 gltf:optimize) был
+одинаков независимо от источника.
 
 ---
 
@@ -126,7 +159,10 @@ cp public/models/avatar/_raw/avatar.glb ../../../assets/source/avatar/avatar.glb
 - `docs/plans/2026-08-24-avatar-decomposition.md` — эпик-декомпозиция Avatar.
 - `src/rob_box_quest/webxr_client/public/models/avatar/CREDITS.md` — атрибуция оптимизированного артефакта.
 - `src/rob_box_quest/webxr_client/scripts/build-avatar.mjs` — генератор raw .glb.
+- `assets/source/avatar/build_anim_blender.py` — Blender 4.x headless-скрипт для .blend + .glb.
 - `src/rob_box_quest/webxr_client/scripts/gltf-optimize.mjs` — Phase 2.0 optimization (Draco + Meshopt).
-- Kanban t_cdb60035 — эта карточка (raw source).
-- Kanban t_1fa6e505 — Phase 2.1 (оптимизированный артефакт).
-- Kanban t_770f3299 — следующая фаза после raw source.
+- Kanban t_cdb60035 — генерация raw .glb.
+- Kanban t_770f3299 — Blender-аниматор (.blend + re-export .glb). Эта карточка.
+- Kanban t_90c362bd — оптимизация через gltf-transform (Phase 2.0 pipeline).
+- Kanban t_082391bb — CI-верификация и CREDITS.md.
+- Kanban t_1fa6e505 — Phase 2.1 epic (оптимизированный артефакт).
