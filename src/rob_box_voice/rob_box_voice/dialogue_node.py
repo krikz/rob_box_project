@@ -2535,6 +2535,17 @@ class DialogueNode(Node):
                 self.get_logger().debug(
                     f"⚠️ active_tasks_block failed: {exc}"
                 )
+            # S5.2 (scheduler-segments-merge) — [SEGMENT PLAN]: LLM видит
+            # ACTIVE/PENDING сегменты текущей группы и что можно
+            # переписать через task_delta (S6), не начиная песню заново.
+            try:
+                segment_block = executor.segment_plan_block()
+                if segment_block:
+                    lines.append(segment_block)
+            except Exception as exc:  # noqa: BLE001 — контекст не должен падать
+                self.get_logger().debug(
+                    f"⚠️ segment_plan_block failed: {exc}"
+                )
         return "\n".join(lines)
 
     async def _handle_speaker_turn(
