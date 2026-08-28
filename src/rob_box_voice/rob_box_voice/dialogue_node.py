@@ -3794,6 +3794,42 @@ class DialogueNode(Node):
         # ``speak_text_real_count`` (calls with non-empty ``text``) and
         # we skip only when speech REALLY happened.
         speak_text_real = int(getattr(result, "speak_text_real_count", 0) or 0)
+        # Issue #1708 — hallucinated-lyrics guard diagnostic. When the
+        # LLM called BOTH a music tool AND ``speak_text`` in the same
+        # cycle, DialogCore's heuristic may have suppressed the
+        # ``speak_text`` call (replaced with a sentinel error). If it
+        # did, ``speak_text_real_count`` was decremented to zero, but
+        # ``tools_called`` still lists both names so operators can see
+        # the suppression happened. Log a one-line diagnostic so the
+        # live log makes the pattern obvious without grepping.
+        # Mirrors dialog_core._MUSIC_LAUNCH_TOOLS — keep the two lists
+        # in sync if a new music tool is added to the manifest.
+        _music_tool_names = {
+            "execute_music_code", "generate_music",
+            "gen_play_from_library", "set_vibe_preset", "load_track",
+        }
+        _has_music_tool = any(
+            name in _music_tool_names for name in tools_called
+        )
+        _has_speak_text = "speak_text" in tools_called
+        if _has_music_tool and _has_speak_text:
+            # If speak_text_real==0 BUT tools_called still contains
+            # speak_text, the dialog_core guard dropped the call.
+            # Otherwise (speak_text_real>0), BACKING mode ran normally
+            # — only log at debug to avoid noise.
+            if speak_text_real == 0:
+                self.get_logger().warning(
+                    "🎤 [issue 1708] execute_music_code + speak_text в "
+                    "одном turn — speak_text ПОДАВЛЕН (hallucinated "
+                    f"lyrics guard). tools={list(tools_called)!r} "
+                    f"user_input={user_input!r}"
+                )
+            elif self._verbose_llm:
+                self.get_logger().debug(
+                    "🎤 [issue 1708] execute_music_code + speak_text "
+                    "(backing mode, lyrics allowed) — both ran. "
+                    f"tools={list(tools_called)!r}"
+                )
         if speak_text_real > 0:
             if self._verbose_llm:
                 self.get_logger().info(

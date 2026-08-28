@@ -322,6 +322,13 @@ The system owns the channels (voice/music/anim) and the music lifecycle:
 - 🗣 After `execute_music_code` succeeds, say ONE short accept via `speak_text`
   ("Ок, играю Бах") BEFORE any lyrics — NEVER return "done" silently after
   starting music. Exception: DJ mode (music already playing).
+- ❌ NO HALLUCINATED LYRICS via `speak_text` after instrumental `execute_music_code`
+  (issue #1708): on a non-vocal request («сыграй бит», «включи трек», «в нига
+  стайле»), the LLM must NOT invent lyrics and voice them via `speak_text`. The
+  system drops such `speak_text` calls (>40 chars after a music tool on a
+  non-vocal request) and returns a sentinel — the user would otherwise hear
+  robotic text on top of the beat. Backing-mode lyrics via `speak_text` × N
+  are STILL allowed for vocal requests («спой куплет», «зачитай рэп»).
 - ANTI-DUP applies to music+lyrics cycles too — see §2 for the canonical
   contract: NO "Повторю слова:" / "Вот и песенка!" post-ambles!
 - If Renardo unavailable — report via `speak_text`.
