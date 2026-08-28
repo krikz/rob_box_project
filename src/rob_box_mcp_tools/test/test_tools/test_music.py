@@ -171,6 +171,38 @@ class TestMusicManagerFilter:
         ok, err = self.mgr._filter_code("Clock.clear()")
         assert ok is True
 
+    # -- AST layer: bypasses of the plain-text blocklist --------------------
+
+    def test_dunder_attribute_chain_is_blocked(self):
+        """().__class__.__subclasses__() never appears as a blocked *word*."""
+        ok, err = self.mgr._filter_code("x = ().__class__")
+        assert ok is False
+        assert "__class__" in err
+
+    def test_dunder_globals_is_blocked(self):
+        ok, err = self.mgr._filter_code("f = (lambda: 0).__globals__")
+        assert ok is False
+
+    def test_computed_getattr_name_is_blocked(self):
+        """String-built identifiers are the standard blocklist bypass."""
+        ok, err = self.mgr._filter_code("getattr(p1, 'deg' + 'ree')")
+        assert ok is False
+        assert "getattr" in err
+
+    def test_computed_setattr_name_is_blocked(self):
+        ok, err = self.mgr._filter_code("setattr(Clock, chr(98) + 'pm', 170)")
+        assert ok is False
+
+    def test_getattr_with_dunder_literal_is_blocked(self):
+        ok, err = self.mgr._filter_code("getattr(p1, '__class__')")
+        assert ok is False
+        assert "__class__" in err
+
+    def test_syntax_error_is_rejected(self):
+        ok, err = self.mgr._filter_code("p1 >> pluck([0, 2")
+        assert ok is False
+        assert "интаксическая" in err
+
 
 # ---------------------------------------------------------------------------
 # MusicManager — issue #1000 anti-click caps (oct, amplify, ramp-down)
@@ -948,11 +980,48 @@ class TestMusicManagerExecuteCode:
 class TestMusicManagerStop:
     """Тесты остановки паттернов."""
 
-    def test_stop_unknown_pattern_succeeds_without_sc(self):
-        """stop_pattern always succeeds (discards from active set) even for unknown patterns."""
+    def test_stop_unknown_pattern_is_rejected(self):
+        """Unknown names are rejected — pattern_name is whitelisted (RCE fix)."""
         mgr = _make_manager()
         result = mgr.stop_pattern("unknown")
+        assert result["success"] is False
+        assert "unknown" in result["error"]
+
+    def test_stop_builtin_player_name_succeeds_without_sc(self):
+        """Renardo's own players (d1-d9/p1-p9/s1-s9/l1-l9) are always allowed."""
+        mgr = _make_manager()
+        result = mgr.stop_pattern("p1")
         assert result["success"] is True
+
+    def test_stop_pattern_rejects_code_injection(self):
+        """The RCE payload from the audit must not reach exec()."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.stop_pattern("__import__('os').system('id') #")
+        assert result["success"] is False
+        mock_exec.assert_not_called()
+
+    def test_stop_pattern_rejects_dotted_name(self):
+        """Anything that is not a bare identifier is refused."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._active_patterns.add("p1")
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.stop_pattern("p1.__class__")
+        assert result["success"] is False
+        mock_exec.assert_not_called()
+        assert "p1" in mgr._active_patterns
+
+    def test_stop_pattern_calls_player_stop_without_exec(self):
+        """The player object is resolved from the namespace, never exec'd."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        player = MagicMock()
+        mgr._renardo_context = {"bass": player}
+        mgr._active_patterns.add("bass")
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.stop_pattern("bass")
+        assert result["success"] is True
+        player.stop.assert_called_once_with()
+        mock_exec.assert_not_called()
 
     def test_stop_known_pattern_removes_from_active(self):
         mgr = _make_manager(sc_running=False, renardo_available=False)
@@ -1371,10 +1440,16 @@ class TestStopMusicTool:
         assert result.success is True
         assert "p1" not in mgr._active_patterns
 
-    def test_stop_unknown_pattern_succeeds(self, mock_node):
-        """stop_pattern always succeeds — LLM can stop any player name."""
+    def test_stop_unknown_pattern_is_rejected(self, mock_node):
+        """Names outside the whitelist are refused instead of exec'd (RCE fix)."""
         tool, _ = self._make_tool(mock_node)
         result = tool.execute(pattern_name="nonexistent")
+        assert result.success is False
+
+    def test_stop_builtin_player_name_succeeds(self, mock_node):
+        """The LLM can still stop any of Renardo's built-in players."""
+        tool, _ = self._make_tool(mock_node)
+        result = tool.execute(pattern_name="d1")
         assert result.success is True
 
 

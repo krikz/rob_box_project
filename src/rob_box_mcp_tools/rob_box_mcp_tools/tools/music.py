@@ -15,6 +15,7 @@ music.py - Инструменты для управления музыкой в 
 - DeleteTrackTool: Удалить трек из медиатеки
 """
 
+import ast
 import json
 import os
 import re
@@ -49,6 +50,30 @@ _BLOCKED_TOKENS = re.compile(
 
 # Live 13.08 — символы сэмплов в play("x-o-") для предзагрузки буферов.
 _PLAY_SYMBOLS_RE = re.compile(r'play\(\s*"([^"]*)"')
+
+# ---------------------------------------------------------------------------
+# Pattern-name whitelist (security) — see stop_pattern()
+# ---------------------------------------------------------------------------
+# ``stop_pattern`` used to build ``f"{pattern_name}.stop()"`` and hand it to
+# exec(), so an LLM-supplied (or prompt-injected) name like
+# ``__import__('os').system('id') #`` was arbitrary code execution with the
+# MCP server's privileges. The name is now (a) shape-checked against a plain
+# identifier, (b) checked against the whitelist of patterns that actually
+# exist, and (c) resolved via attribute lookup instead of exec.
+
+#: Renardo's built-in player namespace: d1-d9, p1-p9, s1-s9, l1-l9.
+_RENARDO_PLAYER_NAMES: frozenset = frozenset(
+    f"{prefix}{i}" for prefix in ("d", "p", "s", "l") for i in range(1, 10)
+)
+
+#: A pattern name must be a bare Python identifier — no dots, calls, quotes,
+#: comments or whitespace can survive this.
+_PATTERN_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,31}$")
+
+#: Reflection builtins that stay allowed (legitimate Renardo use — e.g.
+#: ``Clock.future(8, lambda: setattr(Clock, "bpm", 170))``) but only when the
+#: attribute name is a plain string literal, never a computed one.
+_LITERAL_ATTR_BUILTINS: frozenset = frozenset({"getattr", "setattr", "hasattr"})
 
 # ---------------------------------------------------------------------------
 # Issue #1016 — music-quality guardrail (dramaturgy validator)
@@ -86,6 +111,11 @@ _SPACK_NONZERO_RE = re.compile(r"\bspack\s*=\s*[1-9]")
 # ---------------------------------------------------------------------------
 # MusicManager
 # ---------------------------------------------------------------------------
+
+
+def _is_dunder(name: str) -> bool:
+    """``True`` для ``__name__``-подобных имён (см. :meth:`MusicManager._filter_code_ast`)."""
+    return name.startswith("__") and name.endswith("__")
 
 
 class MusicManager:
@@ -671,6 +701,17 @@ class MusicManager:
     def _filter_code(self, code: str) -> Tuple[bool, str]:
         """Проверить код на наличие опасных конструкций.
 
+        Двухслойная проверка:
+
+        1. Текстовый blocklist (``_BLOCKED_TOKENS``) — быстрый отсев
+           очевидных ``import`` / ``os`` / ``eval``.
+        2. AST-проход (:meth:`_filter_code_ast`) — закрывает классические
+           обходы текстового фильтра: доступ к dunder-атрибутам
+           (``__class__`` / ``__globals__`` / ``__subclasses__``) и
+           ``getattr``/``setattr`` с вычисляемым (собранным из строк)
+           именем атрибута. Литеральные ``setattr(Clock, "bpm", 170)``
+           остаются разрешены — они нужны для ``Clock.future()``.
+
         Args:
             code: Строка кода для проверки.
 
@@ -680,6 +721,53 @@ class MusicManager:
         match = _BLOCKED_TOKENS.search(code)
         if match:
             return False, f"Запрещённый токен в коде: '{match.group()}'"
+        return self._filter_code_ast(code)
+
+    @staticmethod
+    def _filter_code_ast(code: str) -> Tuple[bool, str]:
+        """AST-слой фильтра безопасности (см. :meth:`_filter_code`).
+
+        Текстовый blocklist сравнивает слова с исходником, поэтому его
+        обходит любое имя, собранное во время выполнения
+        (``getattr(x, "__cla" + "ss__")``) или добытое через dunder-цепочку
+        (``().__class__.__subclasses__()``). Здесь мы смотрим на реальную
+        структуру кода, а не на текст.
+
+        Args:
+            code: Строка кода для проверки.
+
+        Returns:
+            (is_safe, error_message) — (True, "") если код безопасен.
+        """
+        try:
+            tree = ast.parse(code)
+        except SyntaxError as exc:
+            return False, f"Синтаксическая ошибка в коде: {exc.msg}"
+
+        for node in ast.walk(tree):
+            # ``().__class__`` / ``p1.__globals__`` — цепочка побега из
+            # песочницы всегда проходит через dunder-атрибут.
+            if isinstance(node, ast.Attribute) and _is_dunder(node.attr):
+                return False, f"Запрещённый доступ к dunder-атрибуту: '{node.attr}'"
+            if isinstance(node, ast.Name) and _is_dunder(node.id):
+                return False, f"Запрещённое dunder-имя: '{node.id}'"
+            # ``getattr(x, name)`` с невычислимым именем — это обход
+            # текстового фильтра. Литеральное имя разрешаем (но не dunder).
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id in _LITERAL_ATTR_BUILTINS and len(node.args) >= 2:
+                    attr_arg = node.args[1]
+                    if not isinstance(attr_arg, ast.Constant) or not isinstance(
+                        attr_arg.value, str
+                    ):
+                        return False, (
+                            f"'{node.func.id}' допустим только со строковым "
+                            "литералом в качестве имени атрибута"
+                        )
+                    if _is_dunder(attr_arg.value):
+                        return False, (
+                            f"Запрещённый доступ к dunder-атрибуту: "
+                            f"'{attr_arg.value}'"
+                        )
         return True, ""
 
     # ------------------------------------------------------------------
@@ -1082,6 +1170,62 @@ class MusicManager:
         except Exception:  # noqa: BLE001 — предзагрузка не должна ломать exec
             return
 
+    def _resolve_pattern_name(self, pattern_name: str) -> Tuple[bool, str]:
+        """Проверить имя паттерна по whitelist перед остановкой.
+
+        Разрешены только: (а) встроенные плееры Renardo (d1-d9, p1-p9,
+        s1-s9, l1-l9) и (б) имена, которые мы сами зарегистрировали через
+        :meth:`execute_code`. Всё остальное — включая попытки протащить
+        код (``p1.stop(); __import__('os')...``) — отклоняется.
+
+        Args:
+            pattern_name: Имя из tool-call-а LLM.
+
+        Returns:
+            (is_valid, error_message) — (True, "") если имя допустимо.
+        """
+        if not isinstance(pattern_name, str) or not _PATTERN_NAME_RE.match(
+            pattern_name
+        ):
+            return False, (
+                "Недопустимое имя паттерна — ожидается идентификатор "
+                "вида 'p1' или 'bass'."
+            )
+        known = (
+            _RENARDO_PLAYER_NAMES
+            | set(self._active_patterns)
+            | set(self._pattern_history)
+        )
+        if pattern_name not in known:
+            if self._active_patterns:
+                available = ", ".join(sorted(self._active_patterns))
+                return False, (
+                    f"Неизвестный паттерн '{pattern_name}'. "
+                    f"Активны: {available}."
+                )
+            return False, (
+                f"Неизвестный паттерн '{pattern_name}' — "
+                "активных паттернов нет."
+            )
+        return True, ""
+
+    def _call_player_stop(self, pattern_name: str) -> None:
+        """Вызвать ``.stop()`` у плеера Renardo без ``exec()``.
+
+        Имя уже прошло :meth:`_resolve_pattern_name`, но мы всё равно
+        достаём объект через ``dict.get`` и вызываем метод напрямую —
+        так строка от LLM никогда не становится кодом.
+
+        Args:
+            pattern_name: Проверенное имя плеера.
+        """
+        player = self._renardo_context.get(pattern_name)
+        if player is None:
+            return
+        stop = getattr(player, "stop", None)
+        if callable(stop):
+            stop()
+
     def stop_pattern(self, pattern_name: str) -> Dict[str, Any]:
         """Остановить именованный паттерн.
 
@@ -1093,19 +1237,29 @@ class MusicManager:
         about), but we tell the caller that music is unavailable so the LLM
         can short-circuit further tool calls.
 
+        Security: ``pattern_name`` приходит от LLM (и, через отравленный
+        результат ``search_web``, потенциально от третьей стороны). Раньше
+        оно подставлялось в ``f"{pattern_name}.stop()"`` и уходило в
+        ``exec()`` — то есть было прямым RCE. Теперь имя проверяется по
+        whitelist (:meth:`_resolve_pattern_name`), а сам плеер достаётся
+        поиском по namespace-у Renardo, без сборки и выполнения кода.
+
         Args:
             pattern_name: Имя паттерна/плеера (d1, p1, bass и т.д.).
 
         Returns:
             dict с ключами ``success`` и ``message`` (или ``error``).
         """
-        stop_code = f"{pattern_name}.stop()"
+        name_ok, name_error = self._resolve_pattern_name(pattern_name)
+        if not name_ok:
+            return {"success": False, "error": name_error}
+
         stop_error: Optional[str] = None
         degraded = self._require_healthy and not self.is_music_stack_healthy()
 
         if not degraded and self._renardo_available and self._check_supercollider():
             try:
-                exec(stop_code, self._renardo_context)  # noqa: S102
+                self._call_player_stop(pattern_name)
             except Exception as exc:  # noqa: BLE001
                 # Renardo may not know this player (e.g. we never started it),
                 # or SC is degraded. Log and continue: we still want to drop
