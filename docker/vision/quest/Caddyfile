@@ -36,9 +36,21 @@
 
     encode gzip zstd
 
-    # Healthcheck endpoint — проксируем в aiohttp, который умеет /healthz.
+    # Healthcheck endpoint — проксируем в aiohttp quest_node, который умеет
+    # /healthz (см. server/ws_server.py build_app: /healthz + /quest).
+    #
+    # ВАЖНО: порт ДОЛЖЕН совпадать с /quest (8766). Оба эндпоинта отдаёт одно
+    # и то же aiohttp-приложение quest_node, поднятое на WS_PORT.
+    #
+    # Regression (t_0b926b23): здесь стоял 8765 — порт voice-action-server,
+    # который в host-network живёт рядом и тоже отвечает 200 на /healthz.
+    # Из-за этого smoke-скрипт (local_test/quest_smoke.sh, секция healthz)
+    # получал `{"ok": true, "active_goals": 0}` от ЧУЖОГО сервиса и печатал
+    # PASS даже когда quest_node лежал — классический «красивый PASS»
+    # (ADR-0018). Правильный ответ содержит status/sessions_active/
+    # server_version. Коммит f9bf3f68 перевёл WS на 8766, но /healthz забыл.
     handle /healthz {
-        reverse_proxy localhost:8765
+        reverse_proxy localhost:8766
     }
 
     # WebSocket-канал: flush_interval -1 — без буферизации, иначе JPEG/LiDAR
