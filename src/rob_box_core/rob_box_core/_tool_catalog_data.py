@@ -40,6 +40,218 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'signature': {'params': [], 'required': [], 'accepts_kwargs': False}},
     {   'llm_visible': True,
         'read_only': False,
+        'destructive': False,
+        'idempotent': False,
+        'execution_type': 'fast',
+        'name': 'compose_music',
+        'description': 'Сыграть музыкальную композицию С РАЗВИТИЕМ (вступление, '
+                       'нарастание, кульминация, брейк, финал). Ты описываешь только '
+                       'МАТЕРИАЛ — темп, тональность, лад и по несколько нот для баса, '
+                       'мелодии и подклада; форму и то, когда какой слой вступает и '
+                       'уходит, система строит сама. Используй ЭТОТ инструмент для '
+                       'любой просьбы сыграть музыку, трек, бит или сет. '
+                       'execute_music_code нужен только для точного воспроизведения '
+                       'известной мелодии по нотам.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'bpm': {   'type': 'number',
+                                                       'description': 'Темп, 60-180. '
+                                                                      'Медленное и '
+                                                                      'лиричное 70-95, '
+                                                                      'грув 100-120, '
+                                                                      'танцевальное '
+                                                                      '124-140.'},
+                                            'root': {   'type': 'string',
+                                                        'description': 'Тоника: C, D, '
+                                                                       'E, F, G, A, B '
+                                                                       '(можно с #).',
+                                                        'enum': [   'C',
+                                                                    'C#',
+                                                                    'D',
+                                                                    'D#',
+                                                                    'E',
+                                                                    'F',
+                                                                    'F#',
+                                                                    'G',
+                                                                    'G#',
+                                                                    'A',
+                                                                    'A#',
+                                                                    'B']},
+                                            'scale': {   'type': 'string',
+                                                         'description': 'Лад: minor, '
+                                                                        'major, '
+                                                                        'dorian, '
+                                                                        'mixolydian, '
+                                                                        'lydian, '
+                                                                        'phrygian, '
+                                                                        'majorPentatonic, '
+                                                                        'harmonicMinor.'},
+                                            'form': {   'type': 'string',
+                                                        'description': 'Форма '
+                                                                       'композиции. '
+                                                                       'arc — '
+                                                                       'универсальная '
+                                                                       'дуга; '
+                                                                       'verse_chorus — '
+                                                                       'куплет-припев; '
+                                                                       'buildup — '
+                                                                       'клубная с '
+                                                                       'дропом; '
+                                                                       'ambient — без '
+                                                                       'ударных, для '
+                                                                       'спокойного и '
+                                                                       'лиричного.',
+                                                        'enum': [   'ambient',
+                                                                    'arc',
+                                                                    'buildup',
+                                                                    'verse_chorus']},
+                                            'drums': {   'type': 'string',
+                                                         'description': 'Паттерн '
+                                                                        'бочки/малого '
+                                                                        'одной '
+                                                                        'строкой, '
+                                                                        'например '
+                                                                        '"X..o.X.o" '
+                                                                        'или '
+                                                                        '"X.X.X.X.". '
+                                                                        'Пропусти для '
+                                                                        'музыки без '
+                                                                        'ударных.'},
+                                            'drums_sample': {   'type': 'integer',
+                                                                'description': 'Индекс '
+                                                                               'набора '
+                                                                               'ударных '
+                                                                               '0-4. '
+                                                                               'Меняй '
+                                                                               'его '
+                                                                               'между '
+                                                                               'треками, '
+                                                                               'иначе '
+                                                                               'все '
+                                                                               'треки '
+                                                                               'звучат '
+                                                                               'одинаково.'},
+                                            'hats': {   'type': 'string',
+                                                        'description': 'Паттерн хэтов, '
+                                                                       'например '
+                                                                       '"--.-" или '
+                                                                       '"-.--".'},
+                                            'bass_synth': {   'type': 'string',
+                                                              'description': 'Синт '
+                                                                             'баса: '
+                                                                             'dub, '
+                                                                             'wobblebass, '
+                                                                             'fuzz, '
+                                                                             'bass, '
+                                                                             'jbass, '
+                                                                             'retrobass, '
+                                                                             'tb303, '
+                                                                             'moogbass.'},
+                                            'bass_notes': {   'type': 'string',
+                                                              'description': 'Ступени '
+                                                                             'лада для '
+                                                                             'баса '
+                                                                             'через '
+                                                                             'запятую, '
+                                                                             'например '
+                                                                             '"0, 0, '
+                                                                             '3, -2". '
+                                                                             'Держи '
+                                                                             '2-5 '
+                                                                             'нот.'},
+                                            'lead_synth': {   'type': 'string',
+                                                              'description': 'Синт '
+                                                                             'мелодии: '
+                                                                             'blip, '
+                                                                             'arpy, '
+                                                                             'supersawlead, '
+                                                                             'karp, '
+                                                                             'sitar, '
+                                                                             'marimba, '
+                                                                             'bell, '
+                                                                             'cs80lead, '
+                                                                             'pluck, '
+                                                                             'keys.'},
+                                            'lead_notes': {   'type': 'string',
+                                                              'description': 'Ступени '
+                                                                             'лада для '
+                                                                             'мелодии, '
+                                                                             'например '
+                                                                             '"0, 2, '
+                                                                             '4, 7, 4, '
+                                                                             '2". '
+                                                                             'Держи '
+                                                                             '4-8 нот '
+                                                                             '— это '
+                                                                             'мотив, а '
+                                                                             'не '
+                                                                             'гамма.'},
+                                            'pad_synth': {   'type': 'string',
+                                                             'description': 'Синт '
+                                                                            'подклада: '
+                                                                            'warmpad, '
+                                                                            'pads, '
+                                                                            'strings, '
+                                                                            'ambi, '
+                                                                            'space, '
+                                                                            'sinepad, '
+                                                                            'viola.'},
+                                            'pad_notes': {   'type': 'string',
+                                                             'description': 'Аккорд '
+                                                                            'подклада, '
+                                                                            'например '
+                                                                            '"0, 4, '
+                                                                            '7".'},
+                                            'progression': {   'type': 'string',
+                                                               'description': 'Движение '
+                                                                              'тоники '
+                                                                              'по '
+                                                                              'ступеням, '
+                                                                              'например '
+                                                                              '"0, 0, '
+                                                                              '5, 3". '
+                                                                              'Даёт '
+                                                                              'гармоническое '
+                                                                              'развитие '
+                                                                              '— с ним '
+                                                                              'трек '
+                                                                              'заметно '
+                                                                              'живее. '
+                                                                              'Пропусти '
+                                                                              'для '
+                                                                              'статичной '
+                                                                              'гармонии.'},
+                                            'repeat': {   'type': 'boolean',
+                                                          'description': 'true — форма '
+                                                                         'зацикливается '
+                                                                         '(диджей-сет, '
+                                                                         'фон под '
+                                                                         'речь). false '
+                                                                         '— трек '
+                                                                         'заканчивается '
+                                                                         'сам после '
+                                                                         'одной '
+                                                                         'формы.'}},
+                          'required': ['bpm', 'root', 'scale'],
+                          'additionalProperties': False},
+        'signature': {   'params': [   'bpm',
+                                       'root',
+                                       'scale',
+                                       'form',
+                                       'drums',
+                                       'drums_sample',
+                                       'hats',
+                                       'bass_synth',
+                                       'bass_notes',
+                                       'lead_synth',
+                                       'lead_notes',
+                                       'pad_synth',
+                                       'pad_notes',
+                                       'progression',
+                                       'repeat'],
+                         'required': ['bpm', 'root', 'scale'],
+                         'accepts_kwargs': False}},
+    {   'llm_visible': True,
+        'read_only': False,
         'destructive': True,
         'idempotent': False,
         'execution_type': 'medium',
@@ -1977,15 +2189,23 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'те, что перечислены в REWRITEABLE_SEGMENTS.',
         'parameters': {   'type': 'object',
                           'properties': {   'group_id': {   'type': 'string',
-                                                            'description': 'task_id '
-                                                                           'активной '
-                                                                           'группы '
-                                                                           'сегментов '
-                                                                           'из '
+                                                            'description': 'Значение '
+                                                                           'GROUP_ID '
+                                                                           'из блока '
                                                                            '[SEGMENT '
-                                                                           'PLAN] '
-                                                                           '(например '
-                                                                           't_001).'},
+                                                                           'PLAN] — '
+                                                                           'скопируй '
+                                                                           'его как '
+                                                                           'есть '
+                                                                           '(32-символьная '
+                                                                           'hex-строка). '
+                                                                           'Это НЕ '
+                                                                           'метка '
+                                                                           'сегмента '
+                                                                           '(seg_0, '
+                                                                           'seg_1) и '
+                                                                           'не '
+                                                                           'task_id.'},
                                             'ops': {   'type': 'array',
                                                        'description': 'Список '
                                                                       'операций. '
