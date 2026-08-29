@@ -308,10 +308,61 @@ def _sound_pack_triggers() -> list[str]:
     return triggers
 
 
+def _load_arranger():
+    """Import ``rob_box_mcp_tools.core.arranger`` without importing the package.
+
+    The arranger is deliberately ROS-free, so it can be loaded directly from
+    its file — importing the package would drag in ``rclpy``, which the
+    generator must run without.
+    """
+    import importlib.util
+
+    path = (
+        REPO_ROOT
+        / "src"
+        / "rob_box_mcp_tools"
+        / "rob_box_mcp_tools"
+        / "core"
+        / "arranger.py"
+    )
+    spec = importlib.util.spec_from_file_location("_arranger_for_catalog", path)
+    if spec is None or spec.loader is None:
+        raise ToolSourceError(f"cannot load arranger module from {path}")
+    module = importlib.util.module_from_spec(spec)
+    # Register before exec: ``dataclasses`` resolves field annotations through
+    # ``sys.modules[cls.__module__]``, which is None for an unregistered
+    # dynamically loaded module.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _composition_forms() -> list[str]:
+    """``compose_music.form`` enum — the arranger's own form table.
+
+    Read from the arranger rather than duplicated here, so adding a form
+    shows up as a catalog diff instead of leaving the LLM with a stale list.
+    """
+    forms = sorted(_load_arranger().FORMS)
+    if not forms:
+        raise ToolSourceError("arranger.FORMS is empty")
+    return forms
+
+
+def _composition_roots() -> list[str]:
+    """``compose_music.root`` enum — the arranger's accepted tonics."""
+    roots = list(_load_arranger().VALID_ROOTS)
+    if not roots:
+        raise ToolSourceError("arranger.VALID_ROOTS is empty")
+    return roots
+
+
 #: ``(tool_name, param_name)`` → resolver, for enums built from runtime data
 #: rather than from a literal in the tool module.
 DYNAMIC_ENUMS = {
     ("play_sound", "sound"): _sound_pack_triggers,
+    ("compose_music", "form"): _composition_forms,
+    ("compose_music", "root"): _composition_roots,
 }
 
 

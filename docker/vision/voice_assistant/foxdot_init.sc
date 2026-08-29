@@ -23,7 +23,12 @@ var startupSynths = [
     "scatter", "orient", "creep"
 ];
 var customSynthDir = "/ws/custom_synthdefs";
-var customSynths = ["warmpad", "retrobass", "supersawlead", "imperialbrass", "marchstrings", "strangerpulsepad", "strangerarp", "strangerbrass"];
+var customSynths = ["warmpad", "retrobass", "supersawlead", "imperialbrass", "marchstrings", "strangerpulsepad", "strangerarp", "strangerbrass", "masterlimiter"];
+
+// Мастер-лимитер: фиксированный node ID НИЖЕ 1000. renardo раздаёт ID
+// начиная с 1001 и только вверх (ServerManager.nextnodeID: self.node = 1000),
+// поэтому 999 не будет переиспользован ни при каком сценарии.
+var masterLimiterNode = 999;
 
 // Connect to running scsynth via alive thread
 Server.default.startAliveThread(0.5);
@@ -56,6 +61,24 @@ SystemClock.sched(3.0, {
         path.load;
         ("SynthDef preload ok: " ++ name).postln;
     });
+
+    // ── Мастер-лимитер в хвост RootNode ──────────────────────────────────
+    // /s_new <def> <id> <addAction=1:addToTail> <target=0:RootNode>
+    // Renardo играет в группе 1 (она создаётся addToHead node 0), значит
+    // хвост node 0 — всегда ПОСЛЕ всей музыки. `/g_freeAll 1` в
+    // Clock.clear() / stop_all() эту ноду не трогает.
+    //
+    // Одноразовая установка (без периодического re-arm): рестарт scsynth
+    // и так стирает ВСЕ SynthDef-ы, преложенные этим sclang, поэтому он
+    // уже требует перезапуска voice-assistant. Отдельный watchdog именно
+    // для лимитера ничего бы не спас.
+    SystemClock.sched(2.0, {
+        Server.default.sendMsg("/s_new", "masterlimiter", masterLimiterNode, 1, 0);
+        ("Master limiter armed at tail of RootNode (node "
+            ++ masterLimiterNode ++ ")").postln;
+        nil;
+    });
+
     nil;
 });
 

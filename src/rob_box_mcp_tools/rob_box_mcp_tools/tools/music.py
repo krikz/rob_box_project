@@ -35,6 +35,14 @@ from rob_box_voice.core.music_stack_validation import (
 from rob_box_voice.core.sc_only_custom_synthdefs import register_sc_only_custom_synthdefs
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+from ..core.arranger import (
+    FORMS,
+    VALID_ROOTS,
+    ArrangementError,
+    form_summary,
+    render,
+    spec_from_flat,
+)
 
 # ---------------------------------------------------------------------------
 # Safety filter — compiled once at import time
@@ -150,6 +158,25 @@ class MusicManager:
     SC_PORT: int = 57110
 
     # ------------------------------------------------------------------
+    # Master limiter (docs/analysis/2026-08-30-music-quality-audit.md)
+    # ------------------------------------------------------------------
+    #: Node ID синта ``masterlimiter``, который ``foxdot_init.sc`` ставит в
+    #: хвост RootNode. Держится НИЖЕ 1000: renardo раздаёт ID начиная с 1001
+    #: и только вверх (``ServerManager.nextnodeID``), поэтому коллизии быть
+    #: не может, а ``/g_freeAll 1`` (Clock.clear / stop_all) чистит только
+    #: группу 1 и лимитер не трогает.
+    MASTER_LIMITER_NODE: int = 999
+    #: Уровень мастер-фейдера ПОСЛЕ лимитера. Именно он задаёт громкость
+    #: музыки относительно речи (issue #986), а не покомпонентные капы amp.
+    DEFAULT_MASTER_GAIN: float = 0.5
+    #: Class-level fallback-ы: ``__init__`` их перекрывает, но менеджер
+    #: конструируют и через ``MusicManager.__new__`` (тесты, восстановление
+    #: после частичной деградации). Без них ``execute_code`` падал бы с
+    #: AttributeError — тот же defensive-SSoT приём, что в #1395.
+    _master_gain: float = DEFAULT_MASTER_GAIN
+    _master_gain_applied: bool = False
+
+    # ------------------------------------------------------------------
     # Issue #990 — segments safety-net contract
     # ------------------------------------------------------------------
     # The LLM must NOT pass duration_sec anymore (it cannot know the real
@@ -197,14 +224,26 @@ class MusicManager:
 
     def __init__(
         self,
-        max_amp: float = 0.7,
+        max_amp: float = 0.85,
         *,
+        master_gain: Optional[float] = None,
         critical_synths: Optional[List[str]] = None,
         require_healthy: Optional[bool] = None,
         sclang_log_path: Optional[str] = None,
     ) -> None:
-        #: максимальная амплитуда для любого паттерна (0.0-1.0)
+        #: Санитарный потолок амплитуды ОДНОГО слоя (0.0-1.0). Это НЕ
+        #: регулятор громкости: сумму держит ``masterlimiter`` в scsynth,
+        #: а уровень относительно речи — ``_master_gain``. Поэтому потолок
+        #: высокий: слоям снова можно быть разной громкости, иначе микс
+        #: получается плоским (RC1 в аудите).
         self._max_amp: float = max(0.0, min(1.0, max_amp))
+        #: Уровень мастер-фейдера лимитера.
+        self._master_gain: float = max(
+            0.0,
+            min(1.0, self.DEFAULT_MASTER_GAIN if master_gain is None else master_gain),
+        )
+        #: Отправлен ли ``/n_set`` с мастер-фейдером хотя бы раз.
+        self._master_gain_applied: bool = False
         #: pattern_name -> последний выполненный код
         self._pattern_history: Dict[str, str] = {}
         #: множество имён активных паттернов
@@ -660,7 +699,12 @@ class MusicManager:
         """Отправить raw OSC сообщение на scsynth (UDP 57110).
 
         OSC-packet собирается вручную: 4-byte aligned address + type-tag +
-        big-endian args. Поддерживает int (``i``) и float (``f``) аргументы.
+        big-endian args. Поддерживает int (``i``), float (``f``) и
+        string (``s``) аргументы. Строки нужны для ``/n_set <node>
+        <control-name> <value>`` (мастер-фейдер лимитера): имя контрола
+        обязано ехать как ``s``, иначе scsynth читает первые 4 байта имени
+        как int32 и молча игнорирует установку — ровно та же ловушка, что
+        описана в ``_verify_and_retry_synthdefs`` про ``"amp"``.
 
         Выделено как self-метод вместо замыкания, чтобы можно было
         переиспользовать из ``execute_music_code`` / ``stop_all`` без
@@ -681,18 +725,59 @@ class MusicManager:
         addr_bytes = address.encode() + b"\x00"
         while len(addr_bytes) % 4:
             addr_bytes += b"\x00"
-        types = b"," + b"".join(b"i" if isinstance(a, int) else b"f" for a in args) + b"\x00"
+
+        def _tag(value: Any) -> bytes:
+            if isinstance(value, str):
+                return b"s"
+            # bool is a subclass of int — проверяем int после str, как раньше.
+            return b"i" if isinstance(value, int) else b"f"
+
+        types = b"," + b"".join(_tag(a) for a in args) + b"\x00"
         while len(types) % 4:
             types += b"\x00"
         msg.extend(addr_bytes)
         msg.extend(types)
         for a in args:
-            if isinstance(a, int):
+            if isinstance(a, str):
+                blob = a.encode() + b"\x00"
+                while len(blob) % 4:
+                    blob += b"\x00"
+                msg.extend(blob)
+            elif isinstance(a, int):
                 msg.extend(struct.pack(">i", a))
             elif isinstance(a, float):
                 msg.extend(struct.pack(">f", a))
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.sendto(bytes(msg), (self.SC_HOST, self.SC_PORT))
+
+    # ------------------------------------------------------------------
+    # Master limiter fader
+    # ------------------------------------------------------------------
+
+    def set_master_gain(self, gain: float) -> float:
+        """Задать уровень мастер-фейдера ``masterlimiter`` в scsynth.
+
+        Это единственная ручка громкости музыки относительно речи
+        (issue #986). Внутренняя динамика микса при этом сохраняется —
+        в отличие от старого способа «зарезать amp каждого слоя до 0.42»,
+        который выравнивал слои и делал микс плоским.
+
+        Синт ``masterlimiter`` сглаживает изменение через ``Lag.kr``, так
+        что смена уровня на лету не даёт щелчка. Если синта нет (сборка без
+        обновлённого ``foxdot_init.sc``), scsynth просто залогирует
+        ``/n_set Node not found`` — музыка продолжит играть без фейдера.
+
+        Returns:
+            Применённое (клэмпнутое) значение.
+        """
+        self._master_gain = max(0.0, min(1.0, float(gain)))
+        try:
+            self._send_osc_raw(
+                "/n_set", self.MASTER_LIMITER_NODE, "gain", self._master_gain
+            )
+        except OSError as exc:  # UDP-сокет недоступен — не роняем музыку
+            self._log_warning(f"master gain not applied: {exc}")
+        return self._master_gain
 
     # ------------------------------------------------------------------
     # Code safety filter
@@ -856,10 +941,20 @@ class MusicManager:
         - ``amp=1``                 → ``amp=0.7``
         - ``amplify=var([1,0.3])``  → ``amplify=var([0.7,0.3])``
         - ``amplify=0.8``           → ``amplify=0.7``
-        - ``oct=5``                 → ``oct=4`` (макс 4 — oct=5 очень резкое/громкое)
+        - ``oct=9``                 → ``oct=6`` (санитарный потолок)
+
+        Октавный потолок (RC2 в docs/analysis/2026-08-30-music-quality-audit.md):
+        раньше здесь стояло ``max_oct = 4`` с обоснованием «oct=5 очень
+        резкое/громкое» (issue #1000). Резкость oct=5 — это алиасинг на
+        16 kHz, а не громкость; лечится LPF в ``masterlimiter``, а не
+        запретом. Кап до 4 при этом схлопывал бас (oct=3) и лид в соседние
+        октавы: аранжировка без регистрового разделения на слух и есть
+        «одна мелодия, которая повторяется». Потолок поднят до 6 —
+        это верхний регистр колокольчиков/арпеджио, выше на 16 kHz
+        действительно только писк.
         """
         max_amp = self._max_amp
-        max_oct = 4  # oct=5 и выше слишком резкое/громкое (issue #1000)
+        max_oct = 6
 
         # 1. Сначала P[...] паттерны (более специфичный случай)
         def _cap_p(m: re.Match) -> str:
@@ -1117,6 +1212,14 @@ class MusicManager:
                 self._send_osc_raw("/g_new", 1, 0, 0)
             except Exception:
                 pass
+
+        # Мастер-фейдер применяем лениво, на первом успешном выполнении:
+        # ``foxdot_init.sc`` ставит синт ``masterlimiter`` через ~5 с после
+        # старта sclang, а MusicManager конструируется раньше — отправка из
+        # __init__ пришла бы в несуществующую ноду.
+        if not self._master_gain_applied:
+            self._master_gain_applied = True
+            self.set_master_gain(self._master_gain)
 
         if pattern_name:
             self._pattern_history[pattern_name] = code
@@ -1705,6 +1808,232 @@ class ExecuteMusicCodeTool(MCPTool):
 
     def _notify_music_state(self) -> None:
         """Опубликовать /voice/music/state на сервере (issue 989 Fix C)."""
+        if self.node is None:
+            return
+        publisher = getattr(self.node, "publish_music_state", None)
+        if publisher is None:
+            return
+        try:
+            publisher()
+        except Exception as exc:  # noqa: BLE001
+            self.log_warning(f"Не удалось опубликовать music_state: {exc}")
+
+
+class ComposeMusicTool(MCPTool):
+    """Сыграть трек С ФОРМОЙ: модель даёт материал, аранжировщик — развитие.
+
+    Отличие от ``execute_music_code``: тот выполняет готовый код и играет
+    его неизменно до остановки (отсюда жалоба «однотипная мелодия, которая
+    повторяется»). Здесь модель описывает только материал, а секции,
+    вступление и уход слоёв, брейк и кульминацию строит
+    :mod:`rob_box_mcp_tools.core.arranger`.
+
+    См. docs/analysis/2026-08-30-music-quality-audit.md (RC4).
+    """
+
+    def __init__(self, node, manager: MusicManager) -> None:
+        super().__init__(node)
+        self._manager = manager
+
+    @property
+    def name(self) -> str:
+        return "compose_music"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Сыграть музыкальную композицию С РАЗВИТИЕМ (вступление, "
+            "нарастание, кульминация, брейк, финал). Ты описываешь только "
+            "МАТЕРИАЛ — темп, тональность, лад и по несколько нот для баса, "
+            "мелодии и подклада; форму и то, когда какой слой вступает и "
+            "уходит, система строит сама. Используй ЭТОТ инструмент для "
+            "любой просьбы сыграть музыку, трек, бит или сет. "
+            "execute_music_code нужен только для точного воспроизведения "
+            "известной мелодии по нотам."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="bpm",
+                type="number",
+                description="Темп, 60-180. Медленное и лиричное 70-95, "
+                "грув 100-120, танцевальное 124-140.",
+                required=True,
+            ),
+            MCPToolParameter(
+                name="root",
+                type="string",
+                description="Тоника: C, D, E, F, G, A, B (можно с #).",
+                required=True,
+                enum=list(VALID_ROOTS),
+                enum_strict=False,
+            ),
+            MCPToolParameter(
+                name="scale",
+                type="string",
+                description="Лад: minor, major, dorian, mixolydian, lydian, "
+                "phrygian, majorPentatonic, harmonicMinor.",
+                required=True,
+            ),
+            MCPToolParameter(
+                name="form",
+                type="string",
+                description=(
+                    "Форма композиции. "
+                    "arc — универсальная дуга; "
+                    "verse_chorus — куплет-припев; "
+                    "buildup — клубная с дропом; "
+                    "ambient — без ударных, для спокойного и лиричного."
+                ),
+                required=False,
+                enum=sorted(FORMS),
+                enum_strict=False,
+            ),
+            MCPToolParameter(
+                name="drums",
+                type="string",
+                description='Паттерн бочки/малого одной строкой, например '
+                '"X..o.X.o" или "X.X.X.X.". Пропусти для музыки без ударных.',
+                required=False,
+            ),
+            MCPToolParameter(
+                name="drums_sample",
+                type="integer",
+                description="Индекс набора ударных 0-4. Меняй его между "
+                "треками, иначе все треки звучат одинаково.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="hats",
+                type="string",
+                description='Паттерн хэтов, например "--.-" или "-.--".',
+                required=False,
+            ),
+            MCPToolParameter(
+                name="bass_synth",
+                type="string",
+                description="Синт баса: dub, wobblebass, fuzz, bass, jbass, "
+                "retrobass, tb303, moogbass.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="bass_notes",
+                type="string",
+                description='Ступени лада для баса через запятую, например '
+                '"0, 0, 3, -2". Держи 2-5 нот.',
+                required=False,
+            ),
+            MCPToolParameter(
+                name="lead_synth",
+                type="string",
+                description="Синт мелодии: blip, arpy, supersawlead, karp, "
+                "sitar, marimba, bell, cs80lead, pluck, keys.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="lead_notes",
+                type="string",
+                description='Ступени лада для мелодии, например '
+                '"0, 2, 4, 7, 4, 2". Держи 4-8 нот — это мотив, а не гамма.',
+                required=False,
+            ),
+            MCPToolParameter(
+                name="pad_synth",
+                type="string",
+                description="Синт подклада: warmpad, pads, strings, ambi, "
+                "space, sinepad, viola.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="pad_notes",
+                type="string",
+                description='Аккорд подклада, например "0, 4, 7".',
+                required=False,
+            ),
+            MCPToolParameter(
+                name="progression",
+                type="string",
+                description='Движение тоники по ступеням, например '
+                '"0, 0, 5, 3". Даёт гармоническое развитие — с ним трек '
+                "заметно живее. Пропусти для статичной гармонии.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="repeat",
+                type="boolean",
+                description="true — форма зацикливается (диджей-сет, фон под "
+                "речь). false — трек заканчивается сам после одной формы.",
+                required=False,
+            ),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(
+        self,
+        bpm: float,
+        root: str,
+        scale: str,
+        form: Optional[str] = None,
+        drums: Optional[str] = None,
+        drums_sample: int = 0,
+        hats: Optional[str] = None,
+        bass_synth: Optional[str] = None,
+        bass_notes: Optional[str] = None,
+        lead_synth: Optional[str] = None,
+        lead_notes: Optional[str] = None,
+        pad_synth: Optional[str] = None,
+        pad_notes: Optional[str] = None,
+        progression: Optional[str] = None,
+        repeat: bool = True,
+    ) -> MCPToolResult:
+        try:
+            spec = spec_from_flat(
+                bpm=bpm,
+                root=root,
+                scale=scale,
+                form=form or "arc",
+                drums=drums,
+                drums_sample=drums_sample,
+                hats=hats,
+                bass_synth=bass_synth,
+                bass_notes=bass_notes,
+                lead_synth=lead_synth,
+                lead_notes=lead_notes,
+                pad_synth=pad_synth,
+                pad_notes=pad_notes,
+                progression=progression,
+                repeat=repeat,
+            )
+            code = render(spec)
+        except ArrangementError as exc:
+            # Сообщение аранжировщика написано так, чтобы модель могла
+            # исправиться следующим вызовом, а не гадать.
+            return MCPToolResult(success=False, error=str(exc))
+
+        self.log_info(f"Композиция: {form_summary(spec.form)}")
+        result = self._manager.execute_code(code, pattern_name="composition")
+        if not result["success"]:
+            return MCPToolResult(success=False, error=result["error"])
+
+        self._notify_music_state()
+        result["form"] = form_summary(spec.form)
+        return MCPToolResult(
+            success=True,
+            data=result,
+            message=f"Играю композицию: {form_summary(spec.form)}",
+        )
+
+    def _notify_music_state(self) -> None:
+        """Опубликовать /voice/music/state (issue 989 Fix C)."""
         if self.node is None:
             return
         publisher = getattr(self.node, "publish_music_state", None)

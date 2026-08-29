@@ -221,14 +221,22 @@ class TestMusicManagerCaps:
     def setup_method(self):
         self.mgr = _make_manager()
 
-    def test_oct_is_capped_at_4(self):
-        # oct=5 (резкий диапазон) → oct=4
+    def test_oct_is_capped_at_6(self):
+        # Санитарный потолок: выше oct=6 на 16 kHz только писк.
+        code = "p1 >> pluck([0,2,4], oct=9)"
+        out = self.mgr._cap_amp(code)
+        assert "oct=6" in out
+        assert "oct=9" not in out
+
+    def test_oct_5_survives_for_register_separation(self):
+        # RC2 в docs/analysis/2026-08-30-music-quality-audit.md: старый кап
+        # oct<=4 схлопывал бас (oct=3) и лид в соседние октавы — микс без
+        # регистрового разделения слышится как «одна повторяющаяся мелодия».
         code = "p1 >> pluck([0,2,4], oct=5)"
         out = self.mgr._cap_amp(code)
-        assert "oct=4" in out
-        assert "oct=5" not in out
+        assert "oct=5" in out
 
-    def test_oct_unchanged_when_leq_4(self):
+    def test_oct_unchanged_when_leq_6(self):
         code = "p1 >> pluck([0,2,4], oct=3)"
         out = self.mgr._cap_amp(code)
         assert "oct=3" in out
@@ -412,6 +420,60 @@ class TestMusicManagerSCCheck:
         assert sent_data.endswith(struct.pack(">f", 0.5))
         # Type tag should contain ',if'
         assert b",if" in sent_data
+
+    def test_set_master_gain_targets_limiter_node_and_clamps(self):
+        """The fader is the only music-vs-speech level knob (issue #986).
+
+        It must land on the fixed ``masterlimiter`` node, and clamp — a
+        gain above 1.0 would push the mix back into the limiter and undo
+        the headroom the limiter exists to provide.
+        """
+        mgr = self._make_raw_manager()
+        with patch.object(MusicManager, "_send_osc_raw") as send:
+            assert mgr.set_master_gain(0.35) == 0.35
+            send.assert_called_once_with(
+                "/n_set", MusicManager.MASTER_LIMITER_NODE, "gain", 0.35
+            )
+        assert MusicManager.MASTER_LIMITER_NODE < 1000, (
+            "renardo hands out node IDs from 1001 upwards "
+            "(ServerManager.nextnodeID) — staying below 1000 is what keeps "
+            "the limiter node collision-free"
+        )
+        with patch.object(MusicManager, "_send_osc_raw"):
+            assert mgr.set_master_gain(3.0) == 1.0
+            assert mgr.set_master_gain(-1.0) == 0.0
+
+    def test_set_master_gain_survives_missing_socket(self):
+        """A dead OSC socket must not take the music tools down with it."""
+        mgr = self._make_raw_manager()
+        with patch.object(
+            MusicManager, "_send_osc_raw", side_effect=OSError("no route")
+        ):
+            assert mgr.set_master_gain(0.4) == 0.4
+
+    def test_send_osc_raw_string_arg_is_padded_and_tagged(self):
+        """Control names must travel as OSC ``s``, not as int32.
+
+        ``/n_set <node> <control-name> <value>`` is how the master limiter
+        fader is driven. If the name went out as ``i``, scsynth would read
+        the first 4 bytes of ``gain`` as an int32 and silently ignore the
+        set — the exact trap documented in ``_verify_and_retry_synthdefs``
+        for ``"amp"``.
+        """
+        import struct
+
+        mgr = self._make_raw_manager()
+        with patch("rob_box_mcp_tools.tools.music.socket.socket") as mock_sock_class:
+            mock_sock = MagicMock()
+            mock_sock_class.return_value.__enter__ = Mock(return_value=mock_sock)
+            mock_sock_class.return_value.__exit__ = Mock(return_value=False)
+            mgr._send_osc_raw("/n_set", 999, "gain", 0.5)
+        sent_data, _ = mock_sock.sendto.call_args[0]
+        assert b",isf" in sent_data
+        # "gain" is 4 chars -> needs a full 4-byte pad block for the NUL.
+        assert b"gain\x00\x00\x00\x00" in sent_data
+        assert sent_data.endswith(struct.pack(">f", 0.5))
+        assert len(sent_data) % 4 == 0
 
     def test_send_osc_raw_propagates_socket_errors(self):
         """_send_osc_raw is a raw transport — it propagates OSError.

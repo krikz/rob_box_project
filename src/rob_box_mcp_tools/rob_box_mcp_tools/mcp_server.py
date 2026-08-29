@@ -62,6 +62,7 @@ from .tools import (
     MusicManager,
     TrackLibrary,
     ExecuteMusicCodeTool,
+    ComposeMusicTool,
     StopMusicTool,
     SetVibePresetTool,
     GetMusicStateTool,
@@ -125,8 +126,20 @@ class MCPServer(Node):
         super().__init__("mcp_server")
 
         # Параметры ноды
-        # Issue 986: музыка орала, голос не был слышен — понизили max_amp с 0.7 до 0.42
-        self.declare_parameter("music_max_amp", 0.42)
+        # Громкость музыки — ДВА разных параметра, см.
+        # docs/analysis/2026-08-30-music-quality-audit.md (RC1).
+        #
+        # music_max_amp — санитарный потолок ОДНОГО слоя, не регулятор
+        # громкости. Issue 986 («музыка орала, голос не был слышен») чинили
+        # понижением до 0.42, но это выравнивало все слои по одному потолку:
+        # микс становился плоским, а клиппинг оставался (капается каждый amp,
+        # а не их сумма — 4 слоя * 0.42 = 1.68 на шине). Теперь сумму держит
+        # синт masterlimiter в scsynth, поэтому потолок поднят.
+        self.declare_parameter("music_max_amp", 0.85)
+        # music_master_gain — ЕДИНСТВЕННАЯ ручка уровня музыки относительно
+        # речи: мастер-фейдер ПОСЛЕ лимитера (/n_set 999 gain <v>).
+        # Внутренняя динамика микса при этом сохраняется.
+        self.declare_parameter("music_master_gain", 0.5)
         # Issue #1219 — активный TTS-провайдер для валидации голосов в
         # speak_text/set_voice. Должен совпадать с tts_node.yaml provider
         # (minimax). Используется для выбора списка голосов (Q4).
@@ -635,10 +648,16 @@ class MCPServer(Node):
     def _register_music_tools(self) -> None:
         """Регистрирует music tools, не роняя весь MCP server при частичной деградации."""
         music_max_amp = self.get_parameter("music_max_amp").value
-        self.get_logger().info(f"🎵 Music max_amp: {music_max_amp:.2f}")
+        music_master_gain = self.get_parameter("music_master_gain").value
+        self.get_logger().info(
+            f"🎵 Music max_amp: {music_max_amp:.2f}, "
+            f"master_gain: {music_master_gain:.2f}"
+        )
 
         try:
-            music_manager = MusicManager(max_amp=music_max_amp)
+            music_manager = MusicManager(
+                max_amp=music_max_amp, master_gain=music_master_gain
+            )
         except Exception as exc:
             self.get_logger().error(
                 f"❌ Music subsystem disabled: MusicManager init failed: {exc}"
@@ -652,6 +671,9 @@ class MCPServer(Node):
         # playback automatically.
         self._music_manager: Optional[MusicManager] = music_manager
         self.registry.register(ExecuteMusicCodeTool(self, music_manager))
+        # Форма трека строится кодом, а не LLM (RC4 в
+        # docs/analysis/2026-08-30-music-quality-audit.md).
+        self.registry.register(ComposeMusicTool(self, music_manager))
         self.registry.register(StopMusicTool(self, music_manager))
         self.registry.register(SetVibePresetTool(self, music_manager))
         self.registry.register(GetMusicStateTool(self, music_manager))
