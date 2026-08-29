@@ -233,3 +233,86 @@ def test_every_tool_has_a_usable_schema(catalog) -> None:
             assert required in params.get("properties", {}), (
                 f"{entry.name}: required parameter {required!r} is not declared"
             )
+
+
+# ---------------------------------------------------------------------------
+# 5. Relative imports inside the package resolve
+# ---------------------------------------------------------------------------
+#
+# The animation vocabulary move landed ``from ..animations import
+# KNOWN_ANIMATIONS, normalize_animation, ToolExecutionType`` in
+# ``tools/animation.py`` — but ``ToolExecutionType`` lives in ``..base``.
+# Nothing in this suite imports the ``tools`` package (``navigation.py``
+# pulls ``rclpy.action`` at module level, which is why the catalog is
+# built by AST in the first place), so the broken import shipped and every
+# ``mcp_server`` start crashed on it — taking every tool call in the
+# dialogue down with it. This check needs no ROS 2 either.
+
+PKG_DIR = TOOLS_DIR.parent
+
+
+def _module_level_names(path: pathlib.Path) -> set[str] | None:
+    """Names a module binds at import time, or ``None`` if it star-imports.
+
+    Deliberately over-generous: anything bound anywhere in the module —
+    including inside ``if``/``try`` bodies — counts, so the test can only
+    fail on a name that is nowhere to be found.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+        elif isinstance(node, ast.Import):
+            names.update(a.asname or a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if any(a.name == "*" for a in node.names):
+                return None
+            names.update(a.asname or a.name for a in node.names)
+    return names
+
+
+def _resolve_relative(source: pathlib.Path, node: ast.ImportFrom) -> pathlib.Path | None:
+    """The file a ``from ..mod import x`` refers to, or ``None`` if absent."""
+    target = source.parent
+    for _ in range(node.level - 1):
+        target = target.parent
+    target = target.joinpath(*(node.module or "").split(".")) if node.module else target
+    if target.with_suffix(".py").exists():
+        return target.with_suffix(".py")
+    if (target / "__init__.py").exists():
+        return target / "__init__.py"
+    return None
+
+
+def test_relative_imports_resolve() -> None:
+    """Every ``from .x import y`` in the package must name something that exists."""
+    broken: list[str] = []
+    for source in sorted(PKG_DIR.rglob("*.py")):
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or not node.level:
+                continue
+            where = f"{source.relative_to(REPO_ROOT).as_posix()}:{node.lineno}"
+            target = _resolve_relative(source, node)
+            if target is None:
+                broken.append(f"{where}: no module {'.' * node.level}{node.module}")
+                continue
+            provided = _module_level_names(target)
+            if provided is None:  # star-import: cannot tell, do not guess
+                continue
+            for alias in node.names:
+                if alias.name == "*" or alias.name in provided:
+                    continue
+                sibling = target.parent / alias.name
+                if sibling.with_suffix(".py").exists() or (sibling / "__init__.py").exists():
+                    continue  # importing a submodule, not a name
+                broken.append(
+                    f"{where}: {alias.name!r} is not defined in "
+                    f"{target.relative_to(REPO_ROOT).as_posix()}"
+                )
+    assert not broken, "unresolvable relative imports:\n  " + "\n  ".join(broken)

@@ -12,8 +12,8 @@ from typing import List, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from std_msgs.msg import String
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult
-from ..animations import KNOWN_ANIMATIONS, normalize_animation, ToolExecutionType
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+from ..animations import KNOWN_ANIMATIONS, normalize_animation
 
 
 class PlayAnimationTool(MCPTool):
