@@ -47,6 +47,7 @@ ROS-параметры ноды (см. ``declare_parameter`` в ``__init__``):
 """
 
 import asyncio
+import atexit
 import concurrent.futures
 import io
 import json
@@ -346,14 +347,42 @@ TTS_LOOP_MAX_WORKERS: int = 1
 # Fix: keep ONE event loop alive in a dedicated daemon thread and submit
 # every coroutine to it via ``run_coroutine_threadsafe``. The loop never
 # closes while the process lives, so the provider client stays valid.
+#: How long :func:`shutdown_tts_loop` waits for the driver to return.
+TTS_LOOP_SHUTDOWN_TIMEOUT_S: float = 2.0
+
 _TTS_LOOP_LOCK = threading.Lock()
 _TTS_LOOP: asyncio.AbstractEventLoop | None = None
-_TTS_LOOP_THREAD: threading.Thread | None = None
+_TTS_LOOP_EXECUTOR: "concurrent.futures.ThreadPoolExecutor | None" = None
+_TTS_LOOP_FUTURE: "concurrent.futures.Future | None" = None
+_TTS_LOOP_ATEXIT_REGISTERED = False
+
+
+def _register_tts_loop_atexit() -> None:
+    """Arrange for the loop to be stopped before the interpreter joins threads.
+
+    ``ThreadPoolExecutor`` workers are **non-daemon**, and CPython joins them
+    inside ``threading._shutdown()`` — which runs BEFORE ``atexit`` handlers.
+    A worker parked in ``run_forever()`` never returns, so the process hangs
+    after its last line of work: pytest would print its summary and then sit
+    there forever, and ``ros2 run`` would not exit on shutdown.
+
+    ``threading._register_atexit`` is the hook that runs at the *start* of
+    ``threading._shutdown()``; it is what ``concurrent.futures.thread`` itself
+    uses for exactly this problem. Falls back to ``atexit`` if it ever
+    disappears — that is too late to prevent the hang, but it still releases
+    the loop in embedded interpreters that never join threads.
+    """
+    global _TTS_LOOP_ATEXIT_REGISTERED
+    if _TTS_LOOP_ATEXIT_REGISTERED:
+        return
+    register = getattr(threading, "_register_atexit", None)
+    (register or atexit.register)(shutdown_tts_loop)
+    _TTS_LOOP_ATEXIT_REGISTERED = True
 
 
 def _ensure_tts_loop() -> asyncio.AbstractEventLoop:
     """Return the process-wide MiniMax TTS event loop (create on first use)."""
-    global _TTS_LOOP, _TTS_LOOP_THREAD
+    global _TTS_LOOP, _TTS_LOOP_EXECUTOR, _TTS_LOOP_FUTURE
     with _TTS_LOOP_LOCK:
         if _TTS_LOOP is not None and not _TTS_LOOP.is_closed():
             return _TTS_LOOP
@@ -361,12 +390,54 @@ def _ensure_tts_loop() -> asyncio.AbstractEventLoop:
         # Use bounded ``ThreadPoolExecutor`` (BLK-9 regression-guard) so we
         # never spawn a raw ``threading.Thread(daemon=True)``. The single
         # worker runs ``run_forever`` for the event loop until shutdown.
+        #
+        # Both the executor and the future are kept module-level: without a
+        # reference there is no way to stop the loop, and a non-daemon worker
+        # parked in ``run_forever`` blocks interpreter exit forever.
         _TTS_LOOP_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
             max_workers=TTS_LOOP_MAX_WORKERS,
             thread_name_prefix="minimax-tts-loop",
         )
-        _TTS_LOOP_THREAD = _TTS_LOOP_EXECUTOR.submit(_TTS_LOOP.run_forever)
+        _TTS_LOOP_FUTURE = _TTS_LOOP_EXECUTOR.submit(_TTS_LOOP.run_forever)
+        _register_tts_loop_atexit()
         return _TTS_LOOP
+
+
+def shutdown_tts_loop(timeout: float = TTS_LOOP_SHUTDOWN_TIMEOUT_S) -> None:
+    """Stop the process-wide TTS loop and release its worker thread.
+
+    Idempotent and safe to call when the loop was never started. Mirrors
+    ``DialogueNode.shutdown_asyncio_loop``; registered as a shutdown hook
+    because the loop is process-wide and no single node owns its lifetime.
+    """
+    global _TTS_LOOP, _TTS_LOOP_EXECUTOR, _TTS_LOOP_FUTURE
+    with _TTS_LOOP_LOCK:
+        loop, executor, future = _TTS_LOOP, _TTS_LOOP_EXECUTOR, _TTS_LOOP_FUTURE
+        _TTS_LOOP = _TTS_LOOP_EXECUTOR = _TTS_LOOP_FUTURE = None
+    if loop is None:
+        return
+    try:
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(loop.stop)
+    except RuntimeError:
+        # Loop already stopped/closed by someone else — nothing to do.
+        pass
+    if future is not None:
+        try:
+            future.result(timeout=timeout)
+        except Exception:  # noqa: BLE001 — includes TimeoutError
+            # Never raise from a shutdown hook: it runs while the interpreter
+            # is tearing down, where an exception is both unhelpful and
+            # easy to miss. A driver that refuses to stop shows up as the
+            # process failing to exit.
+            pass
+    if executor is not None:
+        executor.shutdown(wait=False)
+    try:
+        if not loop.is_closed():
+            loop.close()
+    except RuntimeError:
+        pass
 
 
 def _run_in_tts_loop(coro) -> Any:
