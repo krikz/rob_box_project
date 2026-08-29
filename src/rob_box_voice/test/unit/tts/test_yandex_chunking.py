@@ -167,8 +167,31 @@ def _import_chunk_text():
     # exercise the full code path without the real yandex SDK.
     import types
 
+    def _needs_pb2_stand_in(module) -> bool:
+        """True unless ``tts_pb2`` already builds a request that keeps its text.
+
+        ``hasattr`` is useless here: the project conftest registers
+        ``yandex.cloud.ai.tts.v3`` as a ``MagicMock``, which answers yes to
+        every attribute. The guard passed, the stand-in below was skipped, and
+        ``UtteranceSynthesisRequest(text=...)`` returned a MagicMock whose
+        ``.text`` is another MagicMock — ``len()`` of which is 0, so the
+        "too long text" branch never fired and the retry test saw one attempt
+        instead of three. It passed alone (no MagicMock in ``sys.modules``
+        yet) and failed in a directory run.
+        """
+        if module is None:
+            return True
+        pb2 = getattr(module, "tts_pb2", None)
+        if pb2 is None:
+            return True
+        try:
+            probe = pb2.UtteranceSynthesisRequest(text="probe")
+        except Exception:  # noqa: BLE001 — anything unusable needs the stub
+            return True
+        return getattr(probe, "text", None) != "probe"
+
     yandex_v3 = sys.modules.get("yandex.cloud.ai.tts.v3")
-    if yandex_v3 is None or not hasattr(yandex_v3, "tts_pb2"):
+    if _needs_pb2_stand_in(yandex_v3):
 
         class _Container:
             WAV = 0
