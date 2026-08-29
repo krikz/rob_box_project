@@ -76,9 +76,23 @@ dialogue_node:
     llm_timeout_sec: 90.0
     verbose_llm: true
     llm_streaming: true
+    # handle_navigation / handle_music — фасады, удалённые вместе со
+    # скиллами Compositor'а: фильтр по ним не отсекал ничего.
     history_excluded_tools:
-    - handle_navigation
-    sqlite_db_path: ~/.rob_box/voice.db
+    - move_direction
+    # Диалоговая история harness'а. ДОЛЖНА лежать на смонтированном томе:
+    # ``~/.rob_box/voice.db`` — это /root внутри контейнера, том туда не
+    # смонтирован, поэтому весь контекст разговора умирал вместе с
+    # контейнером (проверено на vision 29.08: файл создан в 15:29 вместе с
+    # контейнером, 69 ходов, ни одного старше).
+    #
+    # Это НЕ ``/data/voice_memory.db``: там живёт VoiceMemory из
+    # mcp_server, и схемы конфликтуют — у harness'а ``waypoints.name``
+    # PRIMARY KEY, у VoiceMemory ``waypoints`` с ``map_id NOT NULL`` и FK
+    # на maps; ``faq_items`` расходятся так же (created_at vs indexed_at).
+    # ``CREATE TABLE IF NOT EXISTS`` промолчал бы, а вставки бы падали.
+    # Два стора остаются двумя сторами — но оба переживают рестарт.
+    sqlite_db_path: /data/harness_voice.db
     # Issue #1077 — голосовая биометрия (speaker_id_node, resemblyzer):
     # префикс [Говорит <имя>] / [Говорит: незнакомец] + session lock.
     speaker_id_enabled: true
