@@ -507,3 +507,39 @@ def test_chunk_failure_propagates_for_silero_fallback(_import_chunk_text):
 
     with pytest.raises(Exception, match=r"(Too long text|Yandex (gRPC|synthesis) error)"):
         TTSNode._synthesize_yandex(node, text)  # type: ignore[arg-type]
+
+# ── _chunk_text не должен быть копией split_text ────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Он подумал… Потом ушёл… И вернулся… Снова подумал… Ушёл опять…",
+        "Раз. Два. Три. Четыре. Пять. Шесть. Семь. Восемь.",
+        "Ага! Точно? Ну да! Конечно? Ага! Точно? Ну да! Конечно?",
+        "Первый абзац тут.\nВторой абзац тут.\nТретий абзац тут.",
+    ],
+)
+@pytest.mark.parametrize("max_chars", [20, 40, 120])
+def test_chunk_text_agrees_with_shared_chunker(
+    _import_chunk_text, text: str, max_chars: int
+) -> None:
+    """``TTSNode._chunk_text`` обязан резать так же, как общий ``split_text``.
+
+    Тело ``_chunk_text`` было построчной копией
+    ``rob_box_voice.tts_chunking.split_text`` (сходство нормализованного
+    исходника 0.91, ~100 строк на копию), при том что ``tts_node`` и так
+    импортирует ``split_text``. Единственное, чем копия отличалась по
+    поведению, — набор разделителей: у неё ``".!?\n"``, у общего
+    чанкера ``".!?…\n"``.
+
+    Из-за этого многоточие не считалось границей предложения, и
+    Yandex-путь резал русскую речь с «…» по словам посреди фразы, ломая
+    паузу, — тогда как все остальные провайдеры резали по предложениям.
+    """
+    from rob_box_voice.tts_chunking import split_text
+
+    TTSNode, _ = _import_chunk_text
+    assert TTSNode._chunk_text(text, max_chars=max_chars) == split_text(
+        text, max_chars=max_chars
+    )

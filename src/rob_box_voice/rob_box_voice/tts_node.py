@@ -294,6 +294,7 @@ except ImportError:
 # rclpy). Сам ``tts_node.py`` его импортирует.
 from .tts_chunking import (
     CHUNK_LIMITS,
+    SENTENCE_SENTINELS,
     DEFAULT_MAX_RETRIES,
     MIN_CHUNK_CHARS,
     TooLongError,
@@ -2737,37 +2738,33 @@ class TTSNode(Node):
     def _chunk_text(
         text: str,
         max_chars: int = YANDEX_MAX_CHUNK_CHARS,
-        sentence_separators: str = ".!?\n",
+        sentence_separators: str = SENTENCE_SENTINELS,
     ) -> list[str]:
         """Разбить длинный текст на чанки для Yandex gRPC ``UtteranceSynthesis``.
 
-        Yandex API v3 принимает ≤2500 символов на один запрос
-        (см. https://cloud.yandex.ru/docs/speechkit/tts/limits). Чтобы
-        рассказы / длинные анекдоты (>2400 символов) не падали с
-        ``INVALID_ARGUMENT - Too long text``, текст нарезается по
-        границам предложений (``.`` ``!`` ``?`` ``\\n``), и только если
-        *одно* предложение длиннее ``max_chars`` — по границам слов
-        (whitespace).
+        Тонкая обёртка над :func:`rob_box_voice.tts_chunking.split_text` —
+        подставляет Yandex-лимит по умолчанию. Yandex API v3 принимает
+        ≤2500 символов на запрос (см.
+        https://cloud.yandex.ru/docs/speechkit/tts/limits), поэтому рассказы
+        и длинные анекдоты нарезаются, иначе запрос падает с
+        ``INVALID_ARGUMENT - Too long text``.
 
-        Алгоритм:
-
-        1. Если ``len(text) <= max_chars`` → вернуть ``[text]``.
-        2. Greedy-проход: идём по ``text`` и копим чанк. Граница
-           предложения (``sep_chars`` после непустого фрагмента)
-           закрывает чанк, если текущая длина ≤ ``max_chars``.
-        3. Если границы предложений не нашлись / одно предложение
-           длиннее лимита → разбиваем по whitespace.
-        4. Никогда не возвращаем чанк длиннее ``max_chars``.
+        Здесь лежала построчная копия ``split_text`` — тот же жадный
+        алгоритм, ничего Yandex-специфичного в теле не было. Копия
+        отличалась двумя вещами, обе в минус: разделители без «…»
+        (многоточие не считалось границей предложения, и русская речь с
+        «…» резалась по словам посреди фразы) и отсутствие проверки
+        ``max_chars <= 0``. Совпадение с общим чанкером держит
+        ``test_chunk_text_agrees_with_shared_chunker``.
 
         Args:
             text: Исходный текст (после ``normalize_for_tts``).
             max_chars: Лимит на длину чанка (по умолчанию
                 :data:`YANDEX_MAX_CHUNK_CHARS`).
-            sentence_separators: Символы-разделители предложений.
+            sentence_separators: Символы-границы предложений.
 
         Returns:
-            list[str] — фрагменты, объединение которых даёт исходный
-            текст. Каждый ≤ ``max_chars``. Пустой вход → ``[]``.
+            Список чанков, каждый ``<= max_chars``.
 
         Examples:
             >>> TTSNode._chunk_text("Короткий текст.")
@@ -2776,68 +2773,9 @@ class TTSNode(Node):
             >>> all(len(c) <= 100 for c in chunks)
             True
         """
-        if not text:
-            return []
-        text = text.strip()
-        if not text:
-            return []
-        if len(text) <= max_chars:
-            return [text]
-
-        # Walk character-by-character, prefer sentence boundaries.
-        sep_set = set(sentence_separators)
-        chunks: list[str] = []
-        current = ""
-        i = 0
-        n = len(text)
-        while i < n:
-            ch = text[i]
-            current += ch
-            # Close at sentence boundary only if we're under the limit.
-            if ch in sep_set and len(current) > 0 and len(current) < max_chars:
-                # Look ahead: if the rest of the text alone fits, don't
-                # bother appending more to this chunk.
-                remaining = text[i + 1:].lstrip()
-                if len(remaining) <= max_chars - len(current):
-                    current += text[i + 1:]
-                    i = n
-                    chunks.append(current.strip())
-                    current = ""
-                    break
-                if len(current) >= max_chars * 0.4:
-                    # Reasonable sentence — close the chunk.
-                    chunks.append(current.strip())
-                    current = ""
-            elif len(current) >= max_chars:
-                # Sentence didn't end in time — force a word-level split.
-                # Try to back off to the last whitespace within `current`.
-                last_space = current.rfind(" ")
-                if last_space > max_chars * 0.5:
-                    head = current[:last_space].strip()
-                    tail = current[last_space + 1:]
-                    if head:
-                        chunks.append(head)
-                    current = tail
-                else:
-                    # No whitespace in the second half — hard slice.
-                    chunks.append(current[:-1].strip())
-                    current = current[-1]
-                # If even this single segment exceeds the limit (one
-                # absurdly long "word"), accept it; Yandex will reject
-                # and we'll fall back to Silero for the whole text.
-                if len(current) > max_chars:
-                    chunks.append(current.strip())
-                    current = ""
-            i += 1
-
-        if current.strip():
-            chunks.append(current.strip())
-
-        # Filter empty strings (defensive — should not happen).
-        chunks = [c for c in chunks if c]
-        if not chunks:
-            return [text] if text else []
-        return chunks
+        return split_text(
+            text, max_chars, sentence_separators=sentence_separators
+        )
 
     def _synthesize_yandex(self, text: str, ssml_attributes: dict = None, voice: str = None) -> np.ndarray:
         """Синтез через Yandex Cloud TTS gRPC API v3 (anton voice!).
