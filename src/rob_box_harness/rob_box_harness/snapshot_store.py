@@ -106,7 +106,14 @@ class InMemorySnapshotStore(SnapshotStore):
         ]
         if not candidates:
             return None
-        return max(candidates, key=lambda e: e.captured_at)
+        # При РАВНЫХ ``captured_at`` побеждает положенный последним.
+        # ``max()`` возвращает первый максимальный элемент, а ничьи здесь
+        # обычное дело: ``time.monotonic()`` на Windows тикает раз в
+        # ~15.6 мс, и несколько ``put()`` подряд получают один и тот же
+        # timestamp. С ``max()`` «самым свежим» оказывался самый СТАРЫЙ
+        # снимок группы. ``self._store`` — dict, порядок вставки в нём
+        # сохраняется, поэтому обход с конца даёт нужный tie-break.
+        return max(reversed(candidates), key=lambda e: e.captured_at)
 
     async def expire(self, max_age_seconds: float) -> int:
         """Drop entries older than ``max_age_seconds``. Return count removed."""

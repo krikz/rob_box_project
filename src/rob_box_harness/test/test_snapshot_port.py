@@ -107,3 +107,34 @@ def test_parse_telegram_update_normalises_command_and_args() -> None:
 def test_parse_telegram_update_rejects_non_mapping_non_string() -> None:
     with pytest.raises(TypeError):
         parse_telegram_update(42)  # type: ignore[arg-type]
+
+def test_get_latest_breaks_timestamp_ties_by_insertion_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Снимки в одном тике часов — «свежий» тот, что положили последним.
+
+    ``captured_at`` берётся из ``time.monotonic()``, а у него на Windows
+    разрешение ~15.6 мс. Три ``put()`` подряд укладываются в один тик и
+    получают ОДИНАКОВЫЙ ``captured_at``. ``max()`` при равных ключах
+    возвращает ПЕРВЫЙ максимальный элемент, поэтому ``get_latest``
+    отдавал самый старый снимок из группы.
+
+    Отсюда мигающий ``test_snapshot_store_get_latest_picks_newest``:
+    полный прогон харнесса колебался между 20 и 21 падением, в изоляции
+    тест падал стабильно. Практический эффект — робот отвечает про
+    устаревшую фотографию, если две пришли в один тик.
+
+    Часы здесь заморожены, чтобы ничья была гарантированной, а не
+    зависела от того, насколько быстрая машина.
+    """
+    import rob_box_harness.snapshot_store as _mod
+
+    monkeypatch.setattr(_mod._time, "monotonic", lambda: 1000.0)
+
+    store = InMemorySnapshotStore()
+    _run(store.put(scope="tg:1", payload=b"first"))
+    _run(store.put(scope="tg:1", payload=b"second"))
+    _run(store.put(scope="tg:1", payload=b"third"))
+
+    latest = _run(store.get_latest(scope="tg:1"))
+    assert latest is not None and latest.payload == b"third"
