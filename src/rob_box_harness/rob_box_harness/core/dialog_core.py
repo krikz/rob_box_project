@@ -263,6 +263,48 @@ class DialogResult:
     raw_response: Any | None = None
 
 
+@dataclass(frozen=True)
+class _ToolLoopOutcome:
+    """Что вернул тул-цикл :meth:`DialogCore._run_with_tools`.
+
+    Раньше это был безымянный кортеж, который вызывающая сторона
+    распаковывала одной строкой в 118 символов. Аннотация при этом
+    обещала шесть элементов, а ``return`` отдавал семь — разъехались
+    молча, потому что распаковка длину не проверяет.
+
+    Fields
+    ------
+    spoken_text:
+        Финальный текст модели. Пустая строка, когда ход подавлен
+        (babble-фильтр issue #1253).
+    tools_called:
+        Уникальные имена вызванных тулов, в порядке первого вызова.
+    finish_reason:
+        ``finish_reason`` последнего ответа — нужен ноде, чтобы отличить
+        пустой ответ от обрыва по ``length``.
+    raw_response:
+        Сырой ответ провайдера, для логов.
+    speak_text_count:
+        Сколько раз модель ЗВАЛА ``speak_text`` (issue #992: отличает
+        BACKING-ход от TRACK-хода).
+    speak_text_real_count:
+        Сколько из них несли непустой ``text`` и реально бы прозвучали
+        (issue #1343 — deepseek шлёт ``speak_text({})``).
+    spoken_via_tool:
+        Что реально произнесено через ``speak_text``, склеенное через
+        перевод строки. Пишется в историю вместо маркера «done», иначе
+        модель начинает отвечать «done» сама.
+    """
+
+    spoken_text: str
+    tools_called: list[str]
+    finish_reason: str | None
+    raw_response: Any
+    speak_text_count: int
+    speak_text_real_count: int
+    spoken_via_tool: str
+
+
 # ---------------------------------------------------------------------------
 # DialogCore
 # ---------------------------------------------------------------------------
@@ -578,15 +620,13 @@ class DialogCore:
                             metadata=user_metadata,
                         ),
                     )
-                spoken, tools_called, finish_reason, raw_response, speak_text_count, speak_text_real_count, spoken_via_tool = (
-                    await self._run_with_tools(messages)
-                )
-                result.spoken_text = spoken
-                result.tools_called = list(tools_called)
-                result.speak_text_count = speak_text_count
-                result.speak_text_real_count = speak_text_real_count
-                result.finish_reason = finish_reason
-                result.raw_response = raw_response
+                outcome = await self._run_with_tools(messages)
+                result.spoken_text = outcome.spoken_text
+                result.tools_called = list(outcome.tools_called)
+                result.speak_text_count = outcome.speak_text_count
+                result.speak_text_real_count = outcome.speak_text_real_count
+                result.finish_reason = outcome.finish_reason
+                result.raw_response = outcome.raw_response
                 if not is_dj_auto:
                     # Persist an HONEST assistant turn: the text actually
                     # spoken via speak_text (or a real plain-text reply), NOT
@@ -594,7 +634,7 @@ class DialogCore:
                     # "done" misleads the model into (a) echoing old topics
                     # and (b) replying "done" itself (silent failures). Silent
                     # turns are dropped entirely — they add no useful context.
-                    assistant_content = spoken_via_tool or spoken
+                    assistant_content = outcome.spoken_via_tool or outcome.spoken_text
                     if not self._is_silent_spoken(assistant_content, ()):
                         await self._memory.append_turn(
                             self._user_id,
@@ -687,10 +727,8 @@ class DialogCore:
     async def _run_with_tools(
         self,
         messages: list[LLMMessage],
-    ) -> tuple[str, list[str], str | None, Any, int, int]:
-        """Run the LLM tool loop and return ``(spoken_text, tools_called,
-        finish_reason, raw_response, speak_text_count,
-        speak_text_real_count)``.
+    ) -> _ToolLoopOutcome:
+        """Run the LLM tool loop and return a :class:`_ToolLoopOutcome`.
 
         ``messages`` is the live message list — tool-result messages
         are appended in-place so the LLM sees a coherent conversation
@@ -986,24 +1024,24 @@ class DialogCore:
                 f"suppressing spoken text {response.content[:80]!r} "
                 "(system transition)"
             )
-            return (
-                "",
-                tools_called,
-                response.finish_reason,
-                response.raw,
-                speak_text_count,
-                speak_text_real_count,
-                "\n".join(spoken_texts),
+            return _ToolLoopOutcome(
+                spoken_text="",
+                tools_called=tools_called,
+                finish_reason=response.finish_reason,
+                raw_response=response.raw,
+                speak_text_count=speak_text_count,
+                speak_text_real_count=speak_text_real_count,
+                spoken_via_tool="\n".join(spoken_texts),
             )
 
-        return (
-            response.content,
-            tools_called,
-            response.finish_reason,
-            response.raw,
-            speak_text_count,
-            speak_text_real_count,
-            "\n".join(spoken_texts),
+        return _ToolLoopOutcome(
+            spoken_text=response.content,
+            tools_called=tools_called,
+            finish_reason=response.finish_reason,
+            raw_response=response.raw,
+            speak_text_count=speak_text_count,
+            speak_text_real_count=speak_text_real_count,
+            spoken_via_tool="\n".join(spoken_texts),
         )
 
     async def _stream_response(

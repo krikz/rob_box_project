@@ -2116,3 +2116,40 @@ def test_stream_response_cancelled_task_does_not_return_partial_answer() -> None
         assert llm.stream_obj.closed
 
     asyncio.run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# _run_with_tools возвращает именованный результат, а не безымянный кортеж
+# ---------------------------------------------------------------------------
+
+
+def test_run_with_tools_returns_named_outcome(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Результат тул-цикла читается по именам полей.
+
+    Аннотация метода обещала ``tuple[str, list[str], str | None, Any,
+    int, int]`` — шесть элементов, столько же перечислял докстринг. На
+    деле ``return`` отдавал семь: последним шло ``spoken_via_tool``
+    (честная история — что реально произнесено через ``speak_text``).
+    Расхождение прожило до этого теста, потому что единственный вызов
+    распаковывал кортеж вручную одной строкой в 118 символов, и никакой
+    проверки на длину там нет — добавь кто-нибудь восьмое поле, и
+    ошибка вылезла бы только в рантайме.
+
+    Именованные поля убирают и распаковку, и возможность разъехаться.
+    """
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    messages = [LLMMessage(role="user", content="привет")]
+
+    outcome = asyncio.run(core_obj._run_with_tools(messages))
+
+    assert outcome.spoken_text == "hello back"
+    assert outcome.tools_called == []
+    assert outcome.speak_text_count == 0
+    assert outcome.speak_text_real_count == 0
+    assert outcome.spoken_via_tool == ""
+    assert outcome.finish_reason is None
