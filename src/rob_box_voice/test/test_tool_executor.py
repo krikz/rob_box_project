@@ -743,3 +743,46 @@ def test_task_delta_falls_back_to_underlying_when_scheduler_unavailable() -> Non
         assert json.loads(result.content)["ok"] is True
 
     asyncio.run(_run())
+
+
+def test_segment_plan_block_exposes_group_id_for_task_delta() -> None:
+    """Блок обязан печатать ``group_id`` — без него ``task_delta`` не вызвать.
+
+    ``task_delta`` (``rob_box_mcp_tools/tools/scheduler.py``) объявляет
+    ``group_id`` обязательным параметром и описывает его как «task_id
+    активной группы сегментов из [SEGMENT PLAN]». Но блок печатал только
+    метки сегментов (``seg_0``, ``seg_1``) — самого идентификатора группы
+    в нём не было ни в каком виде.
+
+    Значит модель, следуя RULE #SEGMENT-PLAN из
+    ``master_prompt_compact.txt``, обязана передать значение, которого ей
+    никогда не показывали. Любая догадка не совпадёт с реальным id
+    (``uuid4().hex``, 32 символа), и ``_execute_task_delta`` вернёт
+    ``{"success": false, "error": "group_not_found"}``.
+
+    То есть MERGE — ради которого весь S5/S6 и делался — был недостижим:
+    перебить исполнение и вплести правку в ещё не сыгранные сегменты
+    модель не могла, ей оставался только перезапуск с начала.
+    """
+
+    async def _run() -> None:
+        sched = TaskScheduler()
+        sched.start()
+        executor = SchedulerToolExecutor(_FakeUnderlying(), scheduler=sched)
+        try:
+            group_id = executor.begin_group()
+            await executor.execute(
+                ToolCall(id="c0", name="speak_text", arguments={"text": "куплет 1"})
+            )
+            await executor.execute(
+                ToolCall(id="c1", name="speak_text", arguments={"text": "куплет 2"})
+            )
+            block = executor.segment_plan_block()
+            assert group_id in block, (
+                "group_id не выведен в [SEGMENT PLAN]; task_delta требует "
+                f"его обязательным аргументом. Блок:\n{block}"
+            )
+        finally:
+            sched.shutdown()
+
+    asyncio.run(_run())

@@ -90,8 +90,9 @@ class TaskDeltaTool(MCPTool):
                 name="group_id",
                 type="string",
                 description=(
-                    "task_id активной группы сегментов из [SEGMENT PLAN] "
-                    "(например t_001)."
+                    "Значение GROUP_ID из блока [SEGMENT PLAN] — "
+                    "скопируй его как есть (32-символьная hex-строка). "
+                    "Это НЕ метка сегмента (seg_0, seg_1) и не task_id."
                 ),
                 required=True,
             ),

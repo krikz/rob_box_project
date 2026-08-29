@@ -485,6 +485,12 @@ class SchedulerToolExecutor:
             return ""
         lines.append(f"- REWRITEABLE_SEGMENTS: [{', '.join(rewriteable)}]")
         lines.append(f"- AT_RISK_ON_REPLACE: [{', '.join(at_risk)}]")
+        # ``group_id`` — обязательный аргумент ``task_delta``. Без него в
+        # блоке модель физически не может собрать вызов: описание тула
+        # велит взять id «из [SEGMENT PLAN]», а его там не печаталось, и
+        # любая догадка ловила ``group_not_found``. То есть MERGE, ради
+        # которого весь S5/S6, был недостижим.
+        lines.insert(0, f"- GROUP_ID: {group_id}")
         return "[SEGMENT PLAN]\n" + "\n".join(lines)
 
     def _active_segment_remaining(self, channel: ChannelKind) -> str:
