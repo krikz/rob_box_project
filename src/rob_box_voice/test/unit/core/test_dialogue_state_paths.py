@@ -33,7 +33,12 @@ COMPOSE = REPO_ROOT / "docker" / "vision" / "docker-compose.yaml"
 CONFIGS = (
     REPO_ROOT / "docker" / "vision" / "config" / "voice_assistant" / "dialogue_node.yaml",
     REPO_ROOT / "src" / "rob_box_voice" / "config" / "dialogue_node.yaml",
-    REPO_ROOT / "src" / "rob_box_voice" / "config" / "voice_assistant.yaml",
+)
+
+# Per ADR-0004 (issue #1004) every node reads its own `<node>.yaml`.
+PACKAGE_CONFIG_DIR = REPO_ROOT / "src" / "rob_box_voice" / "config"
+DEPLOYED_CONFIG_DIR = (
+    REPO_ROOT / "docker" / "vision" / "config" / "voice_assistant"
 )
 
 # `docker-compose.yaml` mounts `./data/voice` here for the voice-assistant.
@@ -100,4 +105,71 @@ def test_compose_mounts_the_data_volume() -> None:
     assert ":/data\n" in content, (
         "docker-compose.yaml no longer mounts anything at /data — "
         "sqlite_db_path=/data/... would be container-local again"
+    )
+
+
+# ---------------------------------------------------------------------------
+# ADR-0004: one YAML per node, and no monolith to drift against it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "config_dir",
+    (PACKAGE_CONFIG_DIR, DEPLOYED_CONFIG_DIR),
+    ids=("package", "deployed"),
+)
+def test_no_multi_node_yaml_in_the_config_dir(config_dir: Path) -> None:
+    """No config file may configure more than one node.
+
+    ADR-0004 / issue #1004 replaced the monolithic `voice_assistant.yaml`
+    with per-node files, because nested `<node>:` sections in a shared file
+    become dotted parameters (`dialogue_node.llm_provider`) that
+    `get_parameter("llm_provider")` never finds — the node runs on defaults
+    and looks configured.
+
+    The deployment dropped it and three files say so in as many words
+    (`docker/vision/README.md`, `start_voice_assistant.sh`,
+    `voice_assistant_headless.launch.py`). The package kept shipping it
+    anyway, with a `wake_words` list eight spellings short of the live one —
+    the same drift that issue #1252 produced and #1734 paid for — while
+    `src/rob_box_voice/README.md` still told operators to edit it.
+    """
+    offenders = {}
+    for path in sorted(config_dir.glob("*.yaml")):
+        with path.open(encoding="utf-8") as fh:
+            loaded = yaml.safe_load(fh) or {}
+        if not isinstance(loaded, dict):
+            continue
+        nodes = [
+            key
+            for key, value in loaded.items()
+            if isinstance(value, dict) and "ros__parameters" in value
+        ]
+        if len(nodes) > 1:
+            offenders[path.name] = nodes
+    assert not offenders, (
+        "config files declaring more than one node (ADR-0004 forbids the "
+        f"monolith — split them per node): {offenders}"
+    )
+
+
+def test_every_package_config_matches_a_node_name() -> None:
+    """`<node>.yaml` must configure the node it is named after.
+
+    A file whose only section is a *different* node is loaded for nobody:
+    the launch file passes `config_dir/<node>.yaml` to that node alone.
+    """
+    mismatched = {}
+    for path in sorted(PACKAGE_CONFIG_DIR.glob("*_node.yaml")):
+        with path.open(encoding="utf-8") as fh:
+            loaded = yaml.safe_load(fh) or {}
+        nodes = [
+            key.lstrip("/")
+            for key, value in loaded.items()
+            if isinstance(value, dict) and "ros__parameters" in value
+        ]
+        if nodes and path.stem not in nodes:
+            mismatched[path.name] = nodes
+    assert not mismatched, (
+        f"config files that configure a node they are not named for: {mismatched}"
     )
