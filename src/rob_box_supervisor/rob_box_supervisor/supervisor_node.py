@@ -24,6 +24,19 @@ ADR-0028 §6 Q4). Контракт запроса — ЗАВЕДОМО пере�
 кастомного IDL (AV-5, ADR-0028 §4.3). Это ЧЕСТНО задокументированный
 технический долг, а не полноценный wire-контракт — см. ADR-0028 §4.2.
 
+W3-4 (issue #968 wave2) — ``set_avatar_mode`` перестал быть заглушкой:
+в ``active``-режиме реально прогоняет FSM-событие через
+:class:`~rob_box_supervisor.core.fsm.ModeManager` (переходы —
+ADR-0028 §4.1) и отвечает ``applied=true`` + текущим avatar-режимом
+(``actual_mode``, поле по ADR-0028 §4.3). Контракт запроса — тот же
+переходный техдолг, что и floor-ы (W3-2): ``event``/``client_id``
+вместо честного IDL (см. :py:meth:`_extract_avatar_mode_request`).
+При уходе из активного avatar-режима (``*_release``/``force_off``/
+``both_release``) floor-ы, которые ``ModeManager`` перестал считать
+занятыми, зеркально освобождаются и в ``LockManager`` — иначе остаётся
+висячий holder, до которого никто больше не может достучаться через
+``ReleaseFloor`` (см. :py:meth:`_set_avatar_mode_logic`).
+
 Источники истины:
 - ADR-0028 §4.3 (ROS 2 API)
 - ADR-0028 §4.5 (monitor-режим)
@@ -110,15 +123,27 @@ class AvatarSupervisor(Node):
         # Aggregator + dead-man counter (pure-Python, тестируются отдельно).
         # Импортируем лениво: в mock-rclpy окружении (CI) эти модули не
         # зависят от rclpy и импорт всегда безопасен.
-        from rob_box_supervisor.core import DeadManCounter, Floor, LockManager, StateAggregator
+        from rob_box_supervisor.core import (
+            DeadManCounter,
+            Floor,
+            LockManager,
+            ModeManager,
+            StateAggregator,
+        )
 
         self._aggregator = StateAggregator()
         self._dead_man = DeadManCounter()
         # LockManager — источник истины по voice_floor/teleop_floor (W3-2,
-        # ADR-0028 §4.2). ModeManager (core/fsm.py) НЕ используется здесь —
-        # он остаётся только за режимами аватара, floor-ы у него лишь вход
-        # для решений о переходах (см. core/__init__.py docstring).
+        # ADR-0028 §4.2) для сервисов AcquireFloor/ReleaseFloor.
         self._lock_manager = LockManager()
+        # ModeManager — FSM avatar-режимов (off/telegram_active/
+        # avatar_present/mixed, ADR-0028 §4.1), подключён в W3-4 под
+        # SetAvatarMode. Его voice_held_by/teleop_held_by — ТОЛЬКО вход
+        # для собственных решений о переходах (см. core/__init__.py
+        # docstring), НЕ источник истины по floor-ам — им остаётся
+        # LockManager. _set_avatar_mode_logic зеркалит releases между
+        # ними best-effort (см. её docstring).
+        self._mode_manager = ModeManager()
         # Снимок последних известных holder-ов — нужен только чтобы отличить
         # "floor освободился через dead-man" от "floor и так был свободен"
         # при периодической проверке в _publish_avatar_state (метрика
@@ -444,17 +469,126 @@ class AvatarSupervisor(Node):
         )
         return self._fill_floor_response(response, body)
 
-    def _on_set_avatar_mode(self, _request: Any, response: Any) -> Any:
-        """``SetAvatarMode`` — Phase 1 monitor (NOT_IMPLEMENTED для active)."""
-        if self._mode != "monitor":
-            # Phase 2: реальный FSM. Пока — refuse и остаёмся в monitor.
-            self._log.warning(
-                f"SetAvatarMode: mode={self._mode} запрошен, но Phase 2 не реализован "
-                f"(AV-6 = monitor-only). Отвечаю success=true/applied=false/reason={MONITOR_MODE_REASON}"
-            )
-        else:
-            self._log.info(f"SetAvatarMode received (mode={self._mode}) — phase 1 monitor")
-        return self._fill_monitor_response(response)
+    @staticmethod
+    def _extract_avatar_mode_request(request: Any) -> tuple[Optional[str], Optional[str]]:
+        """Достать ``event``/``client_id`` из SetAvatarMode-запроса (W3-4).
+
+        Тот же переходный контракт, что и :py:meth:`_extract_floor_request`
+        (W3-2): атрибуты запроса напрямую ИЛИ JSON в ``request.data``/
+        ``request.message`` — вместо честного IDL (AV-5, ADR-0028 §4.3).
+        ADR-0028 §4.3 документирует поле ``mode`` в контракте сервиса, но
+        :class:`~rob_box_supervisor.core.fsm.ModeManager` — событийный
+        автомат (переходы по ``EVENT_*`` из ADR-0028 §4.1 mermaid), а не
+        setter состояния, поэтому здесь и в клиентском payload ожидается
+        ``event`` — имя ребра диаграммы, а не целевой режим напрямую.
+        """
+        event = getattr(request, "event", None)
+        client_id = getattr(request, "client_id", None)
+        if event:
+            return str(event), (str(client_id) if client_id else None)
+
+        raw = getattr(request, "data", None) or getattr(request, "message", None)
+        data = AvatarSupervisor._try_parse_json(raw)
+        if isinstance(data, dict):
+            ev = data.get("event")
+            cid = data.get("client_id")
+            if ev:
+                return str(ev), (str(cid) if cid else None)
+        return None, None
+
+    def _set_avatar_mode_logic(self, event: Optional[str], client_id: Optional[str]) -> dict:
+        """Чистая логика ``SetAvatarMode`` через ModeManager (W3-4, тестируется без rclpy).
+
+        В ``monitor`` — как раньше: ``applied=false``, avatar-режим не
+        трогаем (ADR-0028 §4.5/S12). В ``active`` — реально прогоняем
+        событие через :class:`~rob_box_supervisor.core.fsm.ModeManager`;
+        валидация переходов (``ConflictError``/``ValueError`` для
+        неизвестного события) уже внутри самого ModeManager, здесь только
+        маппинг в ``success``/``applied``/``reason``.
+
+        Floor-синхронизация (решение W3-4, продолжение W3-2/ADR-0028 §4.2):
+        ``ModeManager`` хранит ``voice_held_by``/``teleop_held_by`` ТОЛЬКО
+        как вход для собственных решений о переходах — источник истины по
+        floor-ам для клиентов остаётся :class:`LockManager`. Но если
+        переход СНИМАЕТ holder-а в ``ModeManager`` (уход из активного
+        avatar-режима — ``*_release``/``force_off``/``both_release``), а
+        тот же floor всё ещё числится за тем же ``client_id`` в
+        ``LockManager`` — оставлять его висеть нельзя: FSM уже решила, что
+        клиент вышел, и достучаться до floor-а через ``ReleaseFloor``
+        больше некому. Поэтому здесь же best-effort зеркально освобождаем
+        такие floor-ы и в ``LockManager`` (idempotent — no-op, если там и
+        так уже свободно; не валит переход, если floor неожиданно занят
+        другим client_id — состояния разошлись, это отдельный инцидент).
+        """
+        if self._mode != "active":
+            return {
+                "success": True,
+                "applied": False,
+                "actual_mode": self._mode_manager.mode.value,
+                "reason": MONITOR_MODE_REASON,
+            }
+        if not event:
+            return {
+                "success": True,
+                "applied": False,
+                "actual_mode": self._mode_manager.mode.value,
+                "reason": f"invalid_request: event={event!r}",
+            }
+
+        from rob_box_supervisor.core import Floor, FSMConflictError  # noqa: PLC0415
+
+        prev_voice = self._mode_manager.voice_held_by()
+        prev_teleop = self._mode_manager.teleop_held_by()
+
+        try:
+            new_mode = self._mode_manager.transition(event, client_id)
+        except ValueError as exc:
+            return {
+                "success": True,
+                "applied": False,
+                "actual_mode": self._mode_manager.mode.value,
+                "reason": f"invalid_event: {exc}",
+            }
+        except FSMConflictError as exc:
+            return {
+                "success": True,
+                "applied": False,
+                "actual_mode": self._mode_manager.mode.value,
+                "reason": f"conflict: floor={exc.floor} held_by={exc.held_by}",
+            }
+
+        if prev_voice is not None and self._mode_manager.voice_held_by() is None:
+            self._release_lock_manager_floor(prev_voice, Floor.VOICE)
+        if prev_teleop is not None and self._mode_manager.teleop_held_by() is None:
+            self._release_lock_manager_floor(prev_teleop, Floor.TELEOP)
+
+        return {"success": True, "applied": True, "actual_mode": new_mode.value, "reason": "applied"}
+
+    def _release_lock_manager_floor(self, client_id: str, floor: str) -> None:
+        """Зеркально отпустить ``floor`` в ``LockManager`` вслед за ModeManager (W3-4).
+
+        ``PermissionError`` (floor в LockManager уже держит другой
+        client_id — состояния разошлись) не валит переход режима:
+        ModeManager уже принял решение, floor-синхронизация — best-effort
+        диагностика, а не транзакция.
+        """
+        try:
+            self._lock_manager.release(client_id, floor)
+        except PermissionError as exc:
+            self._log.warning(f"SetAvatarMode: floor sync release failed: {exc}")
+        if self._known_floor_holders.get(floor) == client_id:
+            self._known_floor_holders[floor] = None
+
+    def _on_set_avatar_mode(self, request: Any, response: Any) -> Any:
+        """``SetAvatarMode`` — active: реальный переход через ModeManager
+        (W3-4); monitor: лог + monitor response (ADR-0028 §4.5), как раньше."""
+        event, client_id = self._extract_avatar_mode_request(request)
+        body = self._set_avatar_mode_logic(event, client_id)
+        self._log.info(
+            f"SetAvatarMode: event={event} client_id={client_id} mode={self._mode} "
+            f"applied={body['applied']} actual_mode={body['actual_mode']} reason={body['reason']}"
+        )
+        return self._fill_floor_response(response, body)
 
     def _fill_monitor_response(self, response: Any) -> Any:
         """Заполнить std_srvs/Trigger.response (success/message) монитор-ответом.
@@ -470,12 +604,15 @@ class AvatarSupervisor(Node):
 
     @staticmethod
     def _fill_floor_response(response: Any, body: dict) -> Any:
-        """Заполнить std_srvs/Trigger.response для acquire/release_floor (W3-2).
+        """Заполнить std_srvs/Trigger.response для acquire/release_floor (W3-2)
+        и set_avatar_mode (W3-4) — все три сервиса разделяют один и тот же
+        JSON-конверт для ``response.message``.
 
         Симметрично :py:meth:`_fill_monitor_response`: ``response.message``
         несёт JSON со всеми полями кроме ``success`` (``applied``,
-        ``granted`` для acquire, ``reason``) — ``granted`` в body для
-        release просто отсутствует и в JSON не попадает.
+        ``granted`` для acquire, ``actual_mode`` для set_avatar_mode,
+        ``reason``) — отсутствующие в конкретном body ключи просто не
+        попадают в JSON.
         """
         response.success = bool(body["success"])
         payload = {k: v for k, v in body.items() if k != "success"}

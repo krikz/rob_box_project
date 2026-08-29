@@ -22,6 +22,7 @@ import types
 import unittest
 from unittest.mock import MagicMock
 
+from rob_box_supervisor.core.fsm import Mode, ModeManager
 from rob_box_supervisor.supervisor_node import (
     MONITOR_MODE_REASON,
     SET_VOICE_MODE_TOPIC,
@@ -423,6 +424,129 @@ class TestAvatarSupervisorFloorLockManager(unittest.TestCase):
         release_result = self._release("quest", "voice_floor")
         self.assertFalse(release_result["applied"])
         self.assertEqual(release_result["reason"], MONITOR_MODE_REASON)
+
+
+class TestAvatarSupervisorSetAvatarMode(unittest.TestCase):
+    """W3-4 (issue #968 wave2) — ``SetAvatarMode`` реально меняет avatar-режим
+    через :class:`ModeManager` (``core/fsm.py``) в ``active``-режиме, вместо
+    заглушки «Phase 2 не реализован» (ADR-0028 §4.1, §4.3).
+
+    Контракт запроса — тот же переходный паттерн, что и floor-ы (W3-2, см.
+    ``AvatarSupervisor._extract_floor_request``): атрибуты ``event``/
+    ``client_id`` на запросе ИЛИ JSON в ``request.data``. ``event`` — имя
+    FSM-события (``core.fsm.EVENT_*``), а не целевой режим напрямую:
+    ``ModeManager`` — событийный автомат (ADR-0028 §4.1 mermaid), а не
+    setter состояния.
+    """
+
+    def setUp(self) -> None:
+        self.node = AvatarSupervisor()
+        self.node._mode = "active"
+
+    def tearDown(self) -> None:
+        self.node.destroy_node()
+
+    @staticmethod
+    def _req(event, client_id):
+        return types.SimpleNamespace(event=event, client_id=client_id)
+
+    def _set_mode(self, event, client_id) -> dict:
+        resp = MagicMock()
+        resp.success = False
+        resp.message = ""
+        self.node._on_set_avatar_mode(self._req(event, client_id), resp)
+        return json.loads(resp.message)
+
+    def test_mode_manager_instantiated(self) -> None:
+        """W3-4 задел: ``ModeManager`` инстанцируется в ноде (раньше — нет)."""
+        self.assertIsInstance(self.node._mode_manager, ModeManager)
+        self.assertEqual(self.node._mode_manager.mode, Mode.OFF)
+
+    def test_valid_transition_applies_and_changes_mode(self) -> None:
+        """``off → telegram_active``: applied=true, новый режим виден в ответе."""
+        result = self._set_mode("telegram_acquire_floor", "telegram1")
+        self.assertTrue(result["applied"], result)
+        self.assertEqual(result["actual_mode"], "telegram_active")
+        self.assertEqual(self.node._mode_manager.mode, Mode.TELEGRAM_ACTIVE)
+
+    def test_invalid_transition_refused_as_conflict(self) -> None:
+        """``quest_acquire_floor_teleop_only`` из ``off`` — переход невалиден
+        (годится только из ``telegram_active``, ADR-0028 §4.1) — отказ,
+        режим не меняется."""
+        result = self._set_mode("quest_acquire_floor_teleop_only", "quest1")
+        self.assertFalse(result["applied"], result)
+        self.assertIn("conflict", result["reason"])
+        self.assertEqual(result["actual_mode"], "off")
+        self.assertEqual(self.node._mode_manager.mode, Mode.OFF)
+
+    def test_unknown_event_refused(self) -> None:
+        """Неизвестное имя события — отказ с внятной причиной, режим не меняется."""
+        result = self._set_mode("not_a_real_event", "telegram1")
+        self.assertFalse(result["applied"], result)
+        self.assertIn("invalid_event", result["reason"])
+        self.assertEqual(self.node._mode_manager.mode, Mode.OFF)
+
+    def test_monitor_mode_still_applied_false(self) -> None:
+        """Регресс ADR-0028 §4.5: в ``monitor`` SetAvatarMode по-прежнему
+        ``applied=false``, avatar-режим не трогается."""
+        self.node._mode = "monitor"
+        result = self._set_mode("telegram_acquire_floor", "telegram1")
+        self.assertFalse(result["applied"])
+        self.assertEqual(result["reason"], MONITOR_MODE_REASON)
+        self.assertEqual(self.node._mode_manager.mode, Mode.OFF)
+
+    def test_json_in_request_data_is_accepted(self) -> None:
+        """Переходный контракт (б): JSON в ``request.data`` вместо атрибутов."""
+        req = types.SimpleNamespace(
+            data=json.dumps({"event": "telegram_acquire_floor", "client_id": "telegram1"})
+        )
+        resp = MagicMock()
+        resp.success = False
+        resp.message = ""
+        self.node._on_set_avatar_mode(req, resp)
+        body = json.loads(resp.message)
+        self.assertTrue(body["applied"])
+        self.assertEqual(body["actual_mode"], "telegram_active")
+
+    def test_mode_change_releases_lock_manager_floors(self) -> None:
+        """W3-4 — уход из активного avatar-режима синхронно освобождает
+        LockManager floor-ы того же ``client_id``: иначе остаётся висячий
+        holder, до которого больше не достучаться через ``ReleaseFloor``
+        (см. docstring ``AvatarSupervisor._set_avatar_mode_logic``)."""
+        # Клиент реально держит оба floor-а через LockManager (как будто
+        # раньше отдельно вызвал AcquireFloor — W3-2).
+        self.node._acquire_floor_logic("questA", "teleop_floor")
+        self.node._acquire_floor_logic("questA", "voice_floor")
+        # И тот же client_id зафиксирован в FSM как участник avatar_present.
+        entered = self._set_mode("quest_acquire_floor", "questA")
+        self.assertEqual(entered["actual_mode"], "avatar_present")
+
+        result = self._set_mode("quest_release", "questA")
+        self.assertTrue(result["applied"], result)
+        self.assertEqual(result["actual_mode"], "off")
+
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        self.assertIsNone(self.node._lock_manager.holder(LockFloor.TELEOP))
+        self.assertIsNone(self.node._lock_manager.holder(LockFloor.VOICE))
+
+    def test_no_phase2_warning_logged(self) -> None:
+        """Регресс: вводящий в заблуждение warning «Phase 2 не реализован» убран."""
+        self.node._log.reset_mock()
+        self._set_mode("telegram_acquire_floor", "telegram1")
+        for call in self.node._log.warning.call_args_list:
+            msg = call.args[0] if call.args else ""
+            self.assertNotIn("Phase 2", msg)
+
+    def test_set_avatar_mode_logs_single_msg_arg(self) -> None:
+        """Регресс #1644 (см. ``_log_startup_diagnostics``): ``info()`` должен
+        получать РОВНО один позиционный ``msg``-аргумент."""
+        self.node._log.reset_mock()
+        self._set_mode("telegram_acquire_floor", "telegram1")
+        self.assertTrue(self.node._log.info.called)
+        call = self.node._log.info.call_args
+        self.assertEqual(len(call.args), 1, f"info() должен получить 1 positional arg, got {call.args!r}")
+        self.assertEqual(call.kwargs, {})
 
 
 if __name__ == "__main__":
