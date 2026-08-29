@@ -65,7 +65,10 @@ jobs:
           mkdir -p ${{ github.workspace }}/test_ws/src
           rsync -av --exclude='ros2leds' --exclude='vesc_nexus' --exclude='robot_sensor_hub_msg' src/ ${{ github.workspace }}/test_ws/src/
           # Sibling directories referenced by tests (NOT compiled by colcon).
-          for d in docker migrations docs; do
+          # .github is here for .github/e2e/{scenarios,voice_commands}: six
+          # tests in test_issue_1532_voice_multi_skazka.py read those fixtures
+          # and had been failing on every push with FileNotFoundError.
+          for d in docker migrations docs .github; do
             [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
           done
 

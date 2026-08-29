@@ -35,6 +35,8 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
+import pytest
+
 MASTER_PROMPT = (
     Path(__file__).resolve().parents[2]
     / "prompts"
@@ -376,15 +378,21 @@ def test_voice_command_is_under_vad_max_12s() -> None:
     укладываться в лимит.
     """
     import json
+    import shutil
     import subprocess
+
+    # The `returncode != 0` guard below never ran when ffprobe was absent:
+    # `subprocess.run` raises FileNotFoundError before returning anything,
+    # so the CI runner (no ffmpeg installed) got an error, not a skip.
+    if shutil.which("ffprobe") is None:
+        pytest.skip("ffprobe is not installed")
 
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-show_format", "-of", "json", str(VOICE_COMMAND)],
         capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
-        # ffprobe не установлен — пропускаем (но фиксируем для CI).
-        return
+        pytest.skip(f"ffprobe could not read {VOICE_COMMAND.name}")
     info = json.loads(result.stdout)
     duration = float(info.get("format", {}).get("duration", 0))
     assert duration < 12.0, (
