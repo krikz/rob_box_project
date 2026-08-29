@@ -1,0 +1,170 @@
+{
+  "name": "dialogue_gap_probe_v1",
+  "stability": "expected-partially-red",
+  "_stability_comment": [
+    "⚠️ ЭТА СЬЮТА НЕ ОБЯЗАНА БЫТЬ ЗЕЛЁНОЙ. Она диагностическая: каждый шаг —",
+    "зонд в место, которое по аудиту спека выглядит недоделанным. Красный шаг здесь",
+    "— это подтверждённая находка, а не поломка сборки. Ценность прогона — сырой лог,",
+    "а не вердикт. Поэтому acceptance намеренно мягкий (см. dialogue_gap_probe_acceptance_v1.json).",
+    "НЕ ставить эту сьюту в блокирующий gate CI, пока зонды не превратятся в закрытые",
+    "карточки: иначе она будет краснить пайплайн за уже известные дыры.",
+    "Расшифровка «что означает падение каждого зонда» — docs/e2e/dialogue-coverage-map-2026-08-29.md"
+  ],
+  "description": "Зонды в предполагаемые недоделки диалоговой ноды. Источник гипотез: docs/design/dialogue-mode-spec-2026-08-28.md (видение) против фактического кода — docs/plans/2026-08-29-dialogue-mode-wave2-plan.md.",
+  "steps": [
+    {
+      "label": "gp01_dj_set_has_plan",
+      "voice": "anton",
+      "text": "Робот, ты диджей, поставь короткий сет из трёх треков про космос и в конце попрощайся",
+      "patterns": ["set_dj_mode"],
+      "acceptance": {
+        "expected_tool_calls": ["set_dj_mode"],
+        "must_not_call": [],
+        "_comment": "ЗОНД §4.1 спека: «сет заканчивается финальным треком и прощанием». В коде тула save_dj_set_plan НЕ СУЩЕСТВУЕТ (прямой комментарий в core/dj_mode.py), плана нет, сет выключается по счётчику DJ_AUTO_MAX_TRANSITIONS=24. Ожидание: set_dj_mode вызовется, а плана и прощания не будет. Смотреть в логе: есть ли вообще попытка сохранить трек-лист."
+      }
+    },
+    {
+      "label": "gp02_dj_stop",
+      "voice": "anton",
+      "text": "Робот, хватит диджеить, останови музыку",
+      "patterns": ["stop_music"],
+      "acceptance": {
+        "expected_tool_calls": ["stop_music"],
+        "must_not_call": [],
+        "_comment": "Гигиена: гасим музыку до следующих зондов."
+      }
+    },
+    {
+      "label": "gp03_wake_under_music",
+      "voice": "anton",
+      "text": "Робот, сыграй renardo бит",
+      "patterns": ["execute_music_code"],
+      "acceptance": {
+        "expected_tool_calls": ["execute_music_code"],
+        "must_not_call": [],
+        "_comment": "Подготовка к gp04: нужен играющий звук."
+      }
+    },
+    {
+      "label": "gp04_wake_word_heard_under_music",
+      "voice": "zahar",
+      "text": "Робот, который сейчас час",
+      "patterns": ["get_current_time"],
+      "acceptance": {
+        "expected_tool_calls": ["get_current_time"],
+        "must_not_call": ["navigate_to_coordinates", "move_direction"],
+        "_comment": "ЗОНД ADR-0024 (статус proposed, не accepted): «wake-word под играющей музыкой не теряется». Заодно проверяем intent-gate: под музыку фраза не должна уехать в Nav2. Падение = ADR-0024 закрыт не полностью."
+      }
+    },
+    {
+      "label": "gp05_stop_music_after_probe",
+      "voice": "anton",
+      "text": "Робот, останови музыку",
+      "patterns": ["stop_music"],
+      "acceptance": {
+        "expected_tool_calls": ["stop_music"],
+        "must_not_call": [],
+        "_comment": "Гигиена."
+      }
+    },
+    {
+      "label": "gp06_tts_provider_switch",
+      "voice": "anton",
+      "text": "Робот, переключись на синтезатор яндекса и скажи проверка связи",
+      "patterns": ["speak_text"],
+      "acceptance": {
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "ЗОНД §4.4 спека: «установка работает и на уровне провайдера, явный инструмент смены TTS-провайдера». Такого тула в коде НЕТ (провайдер меняется только ROS-параметром tts_node). Ожидание: LLM либо промолчит про провайдера, либо выдумает вызов. Смотреть: появится ли в логе попытка вызвать несуществующий тул — это отдельный сорт бага (галлюцинация тула)."
+      }
+    },
+    {
+      "label": "gp07_foreign_language_output",
+      "voice": "anton",
+      "text": "Робот, скажи по-китайски фразу всем привет",
+      "patterns": ["speak_text"],
+      "acceptance": {
+        "expected_tool_calls": ["speak_text"],
+        "must_not_call": [],
+        "_comment": "ЗОНД §3.2/§3.6 спека (язык вывода) против tts_text_guard: чанк с >10% «чужой» письменности сейчас НЕ ПРОИЗНОСИТСЯ ВООБЩЕ (issue #1709). Ожидание: speak_text вызовется, но в логе будет отбраковка по guard и тишина в динамике. Падение/тишина = §3.2 физически заблокирован, нужна карточка W6-4/W6-5."
+      }
+    },
+    {
+      "label": "gp08_speaker_intro_first",
+      "voice": "ermil",
+      "text": "Робот, привет, меня зовут Борис, запомни мой голос",
+      "patterns": ["register_speaker"],
+      "acceptance": {
+        "expected_tool_calls": ["register_speaker"],
+        "must_not_call": [],
+        "_comment": "Подготовка к gp09. Первое представление нового голоса."
+      }
+    },
+    {
+      "label": "gp09_same_speaker_intro_again",
+      "voice": "ermil",
+      "text": "Робот, я Борис, ты меня помнишь",
+      "patterns": ["speaker_id"],
+      "acceptance": {
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "ЗОНД бага «один голос = два профиля» (карточка W5-4, фикс в develop 942f6d20). Повторное представление ТЕМ ЖЕ голосом НЕ должно заводить второй профиль. Смотреть в логе новые строки диагностики: 'identify candidates' и 'merged into existing profile'. Если в speakers.db появился второй Борис — фикс не сработал."
+      }
+    },
+    {
+      "label": "gp10_speaker_change_detection",
+      "voice": "zahar",
+      "text": "Робот, а что тебе только что рассказывал предыдущий человек",
+      "patterns": ["speaker_id"],
+      "acceptance": {
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "ЗОНД §2.3 спека: «смена говорящего → робот понимает, что это другой человек». Детектора смены speaker_tag в коде НЕТ ни в виде кода, ни в промпте. Ожидание: робот ответит, не заметив смены собеседника. Смотреть: упоминает ли он вообще, что говорит уже другой человек."
+      }
+    },
+    {
+      "label": "gp11_merge_non_song",
+      "voice": "anton",
+      "text": "Робот, посчитай вслух от одного до двадцати не торопясь",
+      "patterns": ["speak_text"],
+      "acceptance": {
+        "expected_tool_calls": ["speak_text"],
+        "must_not_call": [],
+        "_comment": "Подготовка к gp12: нужен длинный многосегментный вывод, но НЕ песня — issue #968 проверялся только на песне."
+      }
+    },
+    {
+      "label": "gp12_merge_addition_midway",
+      "voice": "anton",
+      "text": "Робот, и после каждого числа добавляй слово шаг",
+      "patterns": ["task_delta"],
+      "acceptance": {
+        "expected_tool_calls": [],
+        "must_not_call": ["STOP command received", "Cancel: new STT input"],
+        "_comment": "ЗОНД §2.5 спека вне песенного кейса. Требует barge_in_policy=classify на роботе. must_not_call — маркеры REPLACE-пути: если они сработали, MERGE не поехал. expected_tool_calls пуст намеренно: вызовет ли LLM task_delta — это и есть исследуемая часть. ВАЖНО: четыре хука планировщика (set_group_boundary, set_frozen_touch_hook, set_llm_continue_hook, set_eta_provider) на момент написания сьюты НИ К ЧЕМУ НЕ ПОДКЛЮЧЕНЫ, поэтому вероятный исход — робот не обрывается, но второй вариант приходит обычным ответом, а не правкой сегментов. Это тоже валидный результат: он отделяет «STOP больше не глушит» от «MERGE реально едет»."
+      }
+    },
+    {
+      "label": "gp13_memory_honesty_new_session",
+      "voice": "anton",
+      "text": "Робот, новая сессия",
+      "patterns": ["session"],
+      "acceptance": {
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "Подготовка к gp14: явный сброс сессии (§2.4 — сброс только по желанию юзера)."
+      }
+    },
+    {
+      "label": "gp14_no_leak_after_reset",
+      "voice": "anton",
+      "text": "Робот, о чём мы с тобой только что говорили",
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "ЗОНД §2.4 «память честная»: после новой сессии старые тёрны НЕ должны протекать в новый вопрос. Смотреть в сыром логе состав messages, уходящих в LLM: если там куплеты, Борис и диджей-сет из предыдущих шагов — утечка. Автоматически это не проверяется (нужен разбор запроса к LLM), поэтому шаг READ-ONLY: результат читается глазами."
+      }
+    }
+  ]
+}
