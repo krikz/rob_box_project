@@ -2110,7 +2110,10 @@ class TTSNode(Node):
                         _mm_voice, _mm_fell = _resolve_voice("minimax", voice)
                     except Exception:  # noqa: BLE001 — registry недоступен
                         _mm_voice, _mm_fell = voice or self.minimax_voice, False
-                    if _mm_fell:
+                    # ``resolve_voice`` reports fell_back=True when nothing was
+                    # requested at all (None -> provider default), so warn only
+                    # when the caller actually named a voice we could not honour.
+                    if _mm_fell and voice:
                         self.get_logger().warn(
                             f"⚠️ [issue 1219] Голос '{voice}' недоступен у MiniMax — "
                             f"использую дефолтный '{_mm_voice}'"
@@ -2176,7 +2179,10 @@ class TTSNode(Node):
                         _yandex_voice, _yandex_fell = _resolve_voice("yandex", voice)
                     except Exception:  # noqa: BLE001 — registry недоступен
                         _yandex_voice, _yandex_fell = voice or self.yandex_voice, False
-                    if _yandex_fell:
+                    # ``resolve_voice`` reports fell_back=True when nothing was
+                    # requested at all (None -> provider default), so warn only
+                    # when the caller actually named a voice we could not honour.
+                    if _yandex_fell and voice:
                         self.get_logger().warn(
                             f"⚠️ [issue 1219] Голос '{voice}' недоступен у Yandex — "
                             f"использую дефолтный '{_yandex_voice}'"
@@ -2300,7 +2306,10 @@ class TTSNode(Node):
                     _silero_voice, _silero_fell = _resolve_voice("silero", voice)
                 except Exception:  # noqa: BLE001 — registry недоступен
                     _silero_voice, _silero_fell = voice or self.silero_speaker, False
-                if _silero_fell:
+                # ``resolve_voice`` reports fell_back=True when nothing was
+                # requested at all (None -> provider default), so warn only
+                # when the caller actually named a voice we could not honour.
+                if _silero_fell and voice:
                     self.get_logger().warn(
                         f"⚠️ [issue 1219] Голос '{voice}' недоступен у Silero — "
                         f"использую дефолтный '{_silero_voice}'"
