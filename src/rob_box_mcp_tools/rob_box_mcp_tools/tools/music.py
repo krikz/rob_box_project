@@ -2794,6 +2794,12 @@ class SearchSamplesTool(MCPTool):
     def __init__(self, node, samples_path: Optional[str] = None) -> None:
         super().__init__(node)
         self._samples_path = Path(samples_path or _SEARCH_SAMPLES_DEFAULT_PATH)
+        #: Счётчик поворота окна результатов. Раньше поиск всегда отдавал
+        #: алфавитно первые совпадения, поэтому ``search_samples("kick")``
+        #: возвращал один и тот же ответ при каждом вызове и LLM выбирала
+        #: одни и те же сэмплы во всех генерациях — не потому что «хотела»,
+        #: а потому что остальной коллекции для неё не существовало.
+        self._rotation: int = 0
 
     @property
     def name(self) -> str:
@@ -2858,7 +2864,10 @@ class SearchSamplesTool(MCPTool):
         """Search samples by keyword."""
         from rob_box_voice.core.sample_search import search_renardo_samples
 
-        result = search_renardo_samples(self._samples_path, query, pack, case)
+        result = search_renardo_samples(
+            self._samples_path, query, pack, case, rotate=self._rotation
+        )
+        self._rotation += 1
 
         if "error" in result:
             hint = result.get("hint", "")
@@ -2896,13 +2905,17 @@ class SearchSamplesTool(MCPTool):
         self.log_info(
             f"[search_samples] query={query!r} pack={pack} → {found} results"
         )
+        # Показываем реальный размер коллекции, а не размер окна: «найдено
+        # 30» при двухстах доступных заставляет LLM считать набор бедным и
+        # переиспользовать первое попавшееся.
+        total = result.get("total_found", found)
         play_codes = [r["play_code"] for r in results_list[:5]]
-        suffix = f" ... и ещё {found - 5}" if found > 5 else ""
+        suffix = f" ... и ещё {total - len(play_codes)}" if total > len(play_codes) else ""
         return MCPToolResult(
             success=True,
             data=result,
             message=(
-                f"Найдено {found} сэмплов по запросу '{query}': "
+                f"Найдено {total} сэмплов по запросу '{query}': "
                 + ", ".join(play_codes)
                 + suffix
             ),
