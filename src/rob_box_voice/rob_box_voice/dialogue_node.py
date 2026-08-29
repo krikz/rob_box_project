@@ -200,42 +200,6 @@ def _has_singing_intent(text: "str | None") -> bool:
     """True если юзер явно просил петь/рэповать (BACKING), а не просто музыку."""
     return bool(text) and bool(_SINGING_INTENT_RE.search(text or ""))
 
-# Module-level skill class aliases (test contracts). Production code uses
-# these via ``MusicSkill`` etc, and tests can check ``hasattr(dialogue_node,
-# 'MusicSkill')`` to assert availability.
-try:
-    from rob_box_voice.skills.music_skill import MusicSkill as MusicSkill  # noqa: F811
-except Exception:
-    MusicSkill = None  # type: ignore[assignment,misc]
-try:
-    from rob_box_voice.skills.faq_skill import FAQSkill as FAQSkill  # noqa: F811
-except Exception:
-    FAQSkill = None  # type: ignore[assignment,misc]
-try:
-    from rob_box_voice.skills.web_search_skill import (
-        WebSearchSkill as WebSearchSkill,  # noqa: F811
-    )
-except Exception:
-    WebSearchSkill = None  # type: ignore[assignment,misc]
-try:
-    from rob_box_voice.skills.navigation_skill import (
-        NavigationSkill as NavigationSkill,
-    )  # noqa: F811
-except Exception:
-    NavigationSkill = None  # type: ignore[assignment,misc]
-try:
-    from rob_box_voice.skills.memory_skill import (
-        MemorySkill as MemorySkill,
-    )  # noqa: F811
-except Exception:
-    MemorySkill = None  # type: ignore[assignment,misc]
-try:
-    from rob_box_voice.skills.status_skill import (
-        StatusSkill as StatusSkill,
-    )  # noqa: F811
-except Exception:
-    StatusSkill = None  # type: ignore[assignment,misc] 
-
 # Issue #992 Bug D — banned metalanguage openers + performance keywords
 # live in :mod:`rob_box_voice.core.dialogue_guards` (TD-1 decomposition);
 # they are imported at the top of this module so
@@ -617,6 +581,24 @@ class DialogueNode(Node):
         self.create_subscription(
             String, "/voice/dj_mode",
             lambda m: self._dj.handle_message(m.data), 10, callback_group=cbg)
+        # Каталог инструментов от mcp_server. Подписка latched
+        # (TRANSIENT_LOCAL) — mcp_server публикует каталог один раз при
+        # старте, и порядок запуска нод перестаёт иметь значение.
+        #
+        # ``_on_mcp_tools_update`` существовал с issue #1409, но подписки к
+        # нему не было НИ ОДНОЙ: колбэк никогда не вызывался, а
+        # ``mcp_tools_available`` навсегда оставался False. Из-за этого в
+        # ``_on_vad`` ветка «не рвать agent-loop, пока идут тул-вызовы» была
+        # недостижима — barge-in рвал цикл всегда.
+        self.create_subscription(
+            String, "/mcp/tools", self._on_mcp_tools_update,
+            QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+            ),
+            callback_group=cbg)
 
         # Deferred music cleanup (issue #935 v2 → #980 → #992): music should
         # keep playing while TTS is still speaking (rap, poetry). Cleanup is
@@ -797,7 +779,9 @@ class DialogueNode(Node):
         # 🔴 FIX (live 06.08): стриминг LLM через конфиг (llm_streaming).
         # Замер без стриминга: false → complete() (полный ответ).
         self.declare_parameter("llm_streaming", False)
-        self.declare_parameter("history_excluded_tools", ["handle_navigation"])
+        # Раньше по умолчанию стоял ``handle_navigation`` — фасад, удалённый
+        # вместе с Compositor-скиллами, поэтому фильтр не отсекал ничего.
+        self.declare_parameter("history_excluded_tools", ["move_direction"])
         self.declare_parameter("sqlite_db_path", "~/.rob_box/voice.db")
         self.declare_parameter("speaker_id_enabled", True)
         self.declare_parameter("speaker_db_path", "/data/speakers.db")
@@ -1340,6 +1324,12 @@ class DialogueNode(Node):
         # 5. Assert ``list_tools()`` is non-empty — silent regression
         #    guard against the W5a mismatch re-appearing.
         backend = str(self.get_parameter("tool_provider").value or "ros_mcp")
+        # Состояние тул-поверхности. Выставляем ЗДЕСЬ, а не только в
+        # ``_on_mcp_tools_update``: провайдер — единственное место, которое
+        # достоверно знает, есть ли у LLM инструменты, и знает это ещё до
+        # того, как придёт первое сообщение из /mcp/tools.
+        self.available_tools: list = []
+        self.mcp_tools_available = False
         if backend == "fake" or backend == "none":
             self.get_logger().info(
                 f"⚙️ tool_provider={backend}: using FakeToolProvider "
@@ -1416,6 +1406,18 @@ class DialogueNode(Node):
                 "did not register correctly. Refusing to start — "
                 "voice commands would silently no-op."
             )
+        self.available_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": descriptor.name,
+                    "description": descriptor.description,
+                    "parameters": dict(descriptor.parameters),
+                },
+            }
+            for descriptor in catalogue
+        ]
+        self.mcp_tools_available = True
         self.get_logger().info(
             f"✅ tool_provider='ros_mcp': {len(catalogue)} MCP tools "
             f"wired via LLMToolCallAdapter → ROSMCPToolProvider "
@@ -1583,15 +1585,15 @@ class DialogueNode(Node):
 
         if getattr(self, "_faq_store", None) is not None:
             parts.append(
-                "ВАЖНО: сначала подними факты из FAQ (handle_faq), "
+                "ВАЖНО: сначала подними факты из FAQ (faq_search), "
                 "потом стилизуй ответ. Для стилизации можешь "
                 "использовать рэп или стихи. "
-                "Для музыки используй handle_music."
+                "Для музыки используй execute_music_code / load_track."
             )
         else:
             parts.append(
                 "Для стилизации используй рэп или стихи. "
-                "Для музыки используй handle_music."
+                "Для музыки используй execute_music_code / load_track."
             )
 
         parts.append(base_prompt)
@@ -1620,49 +1622,10 @@ class DialogueNode(Node):
                 lines.append(f"- Q: {q}")
             if a:
                 lines.append(f"  A: {a}")
-        lines.append("Используй handle_music для музыкального оформления.")
+        lines.append(
+            "Для музыкального оформления используй execute_music_code / load_track."
+        )
         return "\n".join(lines)
-
-    def _build_skills(self, model=None) -> list:
-        """Compose the list of skill tool definitions for the LLM.
-
-        Falls back to empty list when skills are not installed — callers
-        should still work because ``_execute_tool_calls`` handles missing
-        adapters gracefully.
-
-        Test contract: skill classes are resolved via **module-level
-        aliases** on ``rob_box_voice.dialogue_node`` (``MusicSkill``,
-        ``NavigationSkill``, ``MemorySkill``, ``StatusSkill``,
-        ``FAQSkill``).  Tests use ``monkeypatch.setattr(..., raising=False)``
-        to inject ``FakeSkill`` instances, so the lookup must go through
-        plain ``getattr`` on the module, NOT a dynamic
-        ``__import__("rob_box_voice.skills.faq_skill", ...)`` which
-        would bypass the monkeypatch.
-        """
-        tools: list = []
-
-        skill_aliases = [
-            ("MusicSkill", "handle_music"),
-            ("NavigationSkill", "handle_navigation"),
-            ("MemorySkill", "handle_memory"),
-            ("StatusSkill", "handle_status"),
-            ("FAQSkill", "handle_faq"),
-            ("WebSearchSkill", "search_web"),
-        ]
-        for cls_name, tool_name in skill_aliases:
-            cls = globals().get(cls_name)
-            if cls is None:
-                continue
-            try:
-                instance = cls()
-            except Exception:
-                continue
-            try:
-                tool = instance.as_tool(tool_name=tool_name, tool_description="")
-            except Exception:
-                continue
-            tools.append(tool)
-        return tools
 
     def _on_speaker(self, msg: String) -> None:
         """Issue #1077 — speaker_tag от Yandex speaker_analysis.
@@ -3489,8 +3452,8 @@ class DialogueNode(Node):
         side effects (dispatch, speak_direct, dialogue-reopen) out of
         the policy module so :class:`MusicGuard` is unit-testable.
 
-        Issue #992 Bug B — DJ auto-transitions: the LLM was told
-        ``Сыграй трек #N через handle_music``, but it frequently
+        Issue #992 Bug B — DJ auto-transitions: the LLM is asked to
+        play track #N through the music tools, but it frequently
         replies with just a spoken phrase and no ``execute_music_code``
         tool call. Without this guard the DJ cycle silently produces
         zero audio for that transition. We re-arm

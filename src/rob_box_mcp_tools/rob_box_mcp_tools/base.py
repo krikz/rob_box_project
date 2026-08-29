@@ -56,6 +56,12 @@ class MCPToolParameter:
     properties: Optional[Dict[str, "MCPToolParameter"]] = None  # Для type="object"
     items: Optional["MCPToolParameter"] = None  # Для type="array"
     default: Optional[Any] = None
+    #: Применять ли ``enum`` в ``validate_parameters``. ``False`` — список
+    #: остаётся в JSON Schema (ведёт LLM к правильным значениям), но
+    #: валидация его не навязывает. Нужно инструментам, которые сами
+    #: нормализуют вход: напр. ``speak_text(animation=...)`` принимает
+    #: русские названия и псевдонимы и приводит их к реальной анимации.
+    enum_strict: bool = True
 
     def to_json_schema(self) -> Dict[str, Any]:
         """Конвертировать в JSON Schema для OpenAI-совместимого Tool Calls формата."""
@@ -190,6 +196,18 @@ class MCPTool(ABC):
         return False
 
     @property
+    def llm_visible(self) -> bool:
+        """Показывать ли инструмент LLM в списке доступных tool calls.
+
+        ``False`` — инструмент остаётся исполняемым через ``/mcp/execute``
+        (внутренние вызовы, тесты, ручная отладка), но не попадает в
+        каталог, который получает модель. Нужен ровно для инструментов,
+        чей внешний бэкенд умер: см. ``GenerateMusicTool`` (MiniMax Music
+        API отключён, 410 Gone) — LLM не должен видеть мёртвый тул.
+        """
+        return True
+
+    @property
     def blocking(self) -> bool:
         """
         Требуется ли ждать результата перед продолжением диалога
@@ -294,7 +312,7 @@ class MCPTool(ABC):
 
         # Проверяем enum значения
         for param in self.parameters:
-            if param.name in kwargs and param.enum is not None:
+            if param.name in kwargs and param.enum is not None and param.enum_strict:
                 if kwargs[param.name] not in param.enum:
                     return (
                         False,

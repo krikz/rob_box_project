@@ -132,13 +132,6 @@ class TestNodeCreation:
         import rob_box_voice.dialogue_node as dn
         assert issubclass(dn.DialogueNode, dn.Node)
 
-    def test_module_exposes_skill_aliases(self):
-        """Модуль объявляет skill-классы как атрибуты (test contracts)."""
-        import rob_box_voice.dialogue_node as dn
-        for alias in ("MusicSkill", "FAQSkill", "WebSearchSkill",
-                      "NavigationSkill", "MemorySkill", "StatusSkill"):
-            assert hasattr(dn, alias)
-
     def test_module_constants_present(self):
         import rob_box_voice.dialogue_node as dn
         assert dn.ASYNCIO_LOOP_DRIVER_MAX_WORKERS == 1

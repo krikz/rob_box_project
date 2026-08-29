@@ -17,6 +17,57 @@ if TYPE_CHECKING:
 from ..base import MCPTool, MCPToolParameter, MCPToolResult
 from ..voice_state import VoiceStateStore
 
+# ---------------------------------------------------------------------------
+# Анимации LED-матрицы — ЕДИНЫЙ список (issue: единый каталог тулов).
+# ---------------------------------------------------------------------------
+# Раньше этот набор жил в трёх местах: локальной переменной внутри
+# ``SpeakTextTool.execute``, ``enum`` в harness-каталоге и прозой в описании
+# параметра. Теперь список один: схема инструмента (``enum``) и рантайм-
+# нормализация в ``execute`` читают одну и ту же константу, а каталог для LLM
+# генерируется из схемы (см. tools/gen_tool_catalog.py).
+KNOWN_ANIMATIONS: tuple[str, ...] = (
+    "idle", "talking", "wakeup", "sleep",
+    "happy", "sad", "angry", "surprised", "thinking", "victory",
+    "error", "low_battery", "charging",
+    "police_lights", "ambulance", "fire_truck", "road_service",
+    "turn_left", "turn_right", "accelerating", "braking",
+)
+
+#: Псевдонимы → реальные анимации. LLM (и русскоязычный ввод) регулярно
+#: присылает несуществующие имена; ``execute`` нормализует их молча, а всё
+#: непокрытое падает в ``talking`` с warning'ом.
+ANIMATION_ALIASES: dict[str, str] = {
+    # Русские названия
+    "нейтрально": "idle",
+    "нейтральная": "idle",
+    "нейтральный": "idle",
+    "радость": "happy",
+    "радостный": "happy",
+    "счастливый": "happy",
+    "грустный": "sad",
+    "грусть": "sad",
+    "печаль": "sad",
+    "злой": "angry",
+    "злость": "angry",
+    "возбужденный": "happy",
+    "возбуждение": "happy",
+    "смущенный": "thinking",
+    "смущение": "thinking",
+    "растерянный": "thinking",
+    # Несуществующие анимации → замена на похожие
+    "neutral": "idle",
+    "excited": "happy",
+    "confused": "thinking",
+    "laughing": "happy",
+    "smiling": "happy",
+    # ``dancing`` раньше маппился в "excited" — анимации с таким именем не
+    # существует, поэтому нормализация всё равно скатывалась в "talking".
+    "dancing": "happy",
+    "singing": "happy",
+    # LLM часто пишет "talk" вместо "talking"
+    "talk": "talking",
+}
+
 # Issue #1219 — LLM voice selection: единый реестр голосов живёт в
 # rob_box_voice (чистый Python, без ROS). Ленивый импорт с fallback,
 # чтобы пакет оставался импортируемым без rob_box_voice (CI linter).
@@ -327,6 +378,11 @@ class SpeakTextTool(MCPTool):
                     "Если указано неизвестное значение — будет warning в лог и анимация останется без изменений."
                 ),
                 required=False,
+                enum=list(KNOWN_ANIMATIONS),
+                # Нестрогий enum: список ведёт LLM к реальным именам, но
+                # ``execute`` умеет нормализовать псевдонимы и русские
+                # названия — валидация не должна рубить их до нормализации.
+                enum_strict=False,
             ),
         ]
 
@@ -465,45 +521,9 @@ class SpeakTextTool(MCPTool):
             )
 
         # Нормализация анимаций (для обратной совместимости и маппинга несуществующих)
-        animation_map = {
-            # Русские названия
-            "нейтрально": "idle",
-            "нейтральная": "idle",
-            "нейтральный": "idle",
-            "радость": "happy",
-            "радостный": "happy",
-            "счастливый": "happy",
-            "грустный": "sad",
-            "грусть": "sad",
-            "печаль": "sad",
-            "злой": "angry",
-            "злость": "angry",
-            "возбужденный": "happy",
-            "возбуждение": "happy",
-            "смущенный": "thinking",
-            "смущение": "thinking",
-            "растерянный": "thinking",
-            # Несуществующие анимации → замена на похожие
-            "neutral": "idle",
-            "excited": "happy",
-            "confused": "thinking",
-            "laughing": "happy",
-            "smiling": "happy",
-            "dancing": "excited",
-            "singing": "happy",
-            # LLM часто пишет "talk" вместо "talking"
-            "talk": "talking",
-        }
-        # Множество реально существующих анимаций (без алиасов)
-        _KNOWN_ANIMATIONS = {
-            "idle", "talking", "wakeup", "sleep",
-            "happy", "sad", "angry", "surprised", "thinking", "victory",
-            "error", "low_battery", "charging",
-            "police_lights", "ambulance", "fire_truck", "road_service",
-            "turn_left", "turn_right", "accelerating", "braking",
-        }
+        animation_map = ANIMATION_ALIASES
         animation = animation_map.get(animation.lower() if animation else "idle", animation) if animation else "idle"
-        if animation not in _KNOWN_ANIMATIONS:
+        if animation not in KNOWN_ANIMATIONS:
             self.log_warning(
                 f"⚠️ Неизвестная анимация '{animation}' — "
                 f"использую 'talking' (робот же говорит), текст будет произнесён"
@@ -866,12 +886,18 @@ class RegisterSpeakerTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Зарегистрировать голос текущего спикера в voice biometric DB. "
-            "Вызывай когда: (1) пользователь представился («меня зовут X») — "
-            "передай name=X, (2) хочешь узнать имя незнакомца — передай name=null "
+            "Зарегистрировать голос текущего собеседника в voice biometric DB "
+            "(resemblyzer d-vector). Вызывай когда: (1) пользователь "
+            "представился фразой типа «меня зовут X» / «моё имя X» — извлеки "
+            "имя из user_input и передай name=ИМЯ (Cyrillic, ≥2 буквы, с "
+            "заглавной); (2) хочешь узнать имя незнакомца — передай name=null "
             "и спроси «Как вас зовут?» через speak_text. "
-            "Имя сохранится в БД вместе с эмбеддингом голоса (resemblyzer d-vector), "
-            "после этого пользователя можно будет узнавать по голосу."
+            "ВАЖНО: НЕ передавай служебные слова «зовут», «имя», «меня», "
+            "«зовут-это», «зовут меня» — это шумовые токены из фразы, а не "
+            "реальные имена. Извлеки имя из контекста вручную (например, для "
+            "фразы «робот меня зовут Денис говорю» — передай name=\"Денис\"). "
+            "Имя сохранится в БД вместе с эмбеддингом голоса, после этого "
+            "пользователя можно будет узнавать по голосу."
         )
 
     @property

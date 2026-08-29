@@ -82,7 +82,7 @@ def test_render_event_instructions_requires_faq_before_stylization() -> None:
 
     assert "сначала подними факты из FAQ" in rendered
     assert "рэп" in rendered
-    assert "handle_music" in rendered
+    assert "execute_music_code" in rendered
 
 
 def test_build_event_faq_prefetch_context_uses_store_results() -> None:
@@ -114,7 +114,7 @@ def test_build_event_faq_prefetch_context_uses_store_results() -> None:
     )
     assert "FAQ для текущего запроса уже проверен" in context
     assert "Что рассказывают про госслужбу?" in context
-    assert "handle_music" in context
+    assert "execute_music_code" in context
 
 
 def test_build_event_faq_prefetch_context_returns_none_without_store_matches() -> None:
@@ -130,38 +130,6 @@ def test_build_event_faq_prefetch_context_returns_none_without_store_matches() -
     context = node._build_event_faq_prefetch_context("включи что-нибудь бодрое")
 
     assert context is None
-
-
-def test_build_skills_adds_faq_tool_when_event_mode_ready(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import rob_box_voice.dialogue_node as dialogue_node_module
-
-    class FakeSkill:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def as_tool(self, tool_name: str, tool_description: str):
-            return tool_name
-
-    monkeypatch.setattr(dialogue_node_module, "MusicSkill", FakeSkill)
-    monkeypatch.setattr(dialogue_node_module, "NavigationSkill", FakeSkill)
-    monkeypatch.setattr(dialogue_node_module, "MemorySkill", FakeSkill)
-    monkeypatch.setattr(dialogue_node_module, "StatusSkill", FakeSkill)
-    monkeypatch.setattr(dialogue_node_module, "FAQSkill", FakeSkill, raising=False)
-
-    node = _make_node()
-    node._mcp = MagicMock()
-    node._faq_store = MagicMock()
-    node._event_profile = {
-        "name": "День открытых дверей 2026",
-        "robot_role": "РОББОКС — ровер-помощник",
-    }
-    node._load_prompt_file = lambda _: "prompt"
-
-    tools = node._build_skills(model=MagicMock())
-
-    assert "handle_faq" in tools
 
 
 def test_faq_mode_clears_conversation_history_after_each_turn() -> None:

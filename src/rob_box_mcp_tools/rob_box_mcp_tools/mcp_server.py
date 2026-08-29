@@ -17,7 +17,7 @@ ROS 2 интерфейс:
 import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from std_msgs.msg import String
 import json
 import math
@@ -170,8 +170,24 @@ class MCPServer(Node):
         )
         self._qos_profile = qos_profile
 
-        # Publisher для списка инструментов
-        self.tools_pub = self.create_publisher(String, "/mcp/tools", qos_profile)
+        # Publisher для списка инструментов.
+        #
+        # TRANSIENT_LOCAL (latched): каталог инструментов — это статическое
+        # объявление, а не поток данных. Раньше здесь висел таймер на 10с,
+        # который каждые десять секунд сериализовал ~50 схем с indent=2 и
+        # публиковал их в топик, у которого в проде не было ни одного
+        # подписчика. У этой ноды уже была история CPU-петли
+        # (mcp-server-cpu-loop-2026-08-22), так что периодическая рассылка
+        # мегабайтного JSON в никуда — не мелочь. Теперь публикуем один раз
+        # при старте, а late joiner'ы (dialogue_node, `ros2 topic echo`)
+        # получают последнее сообщение из durability-кэша.
+        tools_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self.tools_pub = self.create_publisher(String, "/mcp/tools", tools_qos)
 
         # Publisher для результатов
         self.result_pub = self.create_publisher(String, "/mcp/result", qos_profile)
@@ -225,10 +241,7 @@ class MCPServer(Node):
                 f"⚠️ Не удалось подписаться на /voice/tts/provider_state: {exc}"
             )
 
-        # Таймер для периодической публикации списка инструментов
-        self.tools_timer = self.create_timer(10.0, self.publish_tools)
-
-        # Публикуем список инструментов сразу при старте
+        # Публикуем каталог инструментов один раз — он latched (см. tools_qos).
         self.publish_tools()
 
         # --------------------------------------------------------------
@@ -837,9 +850,10 @@ class MCPServer(Node):
         """Публикация списка доступных инструментов в OpenAI Tool Calls формате."""
         tools = self.registry.get_openai_tools()
         msg = String()
-        msg.data = json.dumps(tools, ensure_ascii=False, indent=2)
+        # Без indent: сообщение читает машина, а отступы удваивали payload.
+        msg.data = json.dumps(tools, ensure_ascii=False)
         self.tools_pub.publish(msg)
-        self.get_logger().debug(f"📤 Опубликован список {len(tools)} инструментов")
+        self.get_logger().info(f"📤 Опубликован каталог из {len(tools)} инструментов (latched)")
 
     def on_execute_request(self, msg: String):
         """
