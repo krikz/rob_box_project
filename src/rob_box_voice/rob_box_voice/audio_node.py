@@ -478,7 +478,9 @@ class AudioNode(Node):
                 # следующего захвата (иначе STT склеит «…роберт» из обрывка).
                 self.speech_prefetch_buffer = b""
             self.tts_active = True
-        elif state in ("ready", "idle", "stopped"):
+        # ``tts_silero_warming`` — чанк пропущен и озвучен не будет,
+        # то есть речь кончилась. Без него ``tts_active`` залипал.
+        elif state in ("ready", "idle", "stopped", "tts_silero_warming"):
             if self.tts_active:
                 self._tts_ended_at = time.monotonic()
                 self.get_logger().info(

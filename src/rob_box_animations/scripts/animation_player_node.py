@@ -226,7 +226,7 @@ class AnimationPlayerNode(Node):
         if self.manual_animation_active:
             self.get_logger().debug(f'⏸️  Пропуск авто-переключения: активна ручная анимация (TTS state: {state})')
             # Сбрасываем флаг при завершении речи, чтобы вернуться к idle
-            if state in ['ready', 'idle', 'stopped']:
+            if state in ['ready', 'idle', 'stopped', 'tts_silero_warming']:
                 self.manual_animation_active = False
                 self.get_logger().info('🔄 Ручной режим завершён, возврат к автопереключению')
             return
@@ -239,8 +239,11 @@ class AnimationPlayerNode(Node):
                 if not self.player.play_animation(f'{self.talking_animation}.yaml'):
                     self.get_logger().warn(f'⚠️  Не найдена анимация {self.talking_animation}.yaml')
 
-        elif state in ['ready', 'idle', 'stopped']:
-            # Robot stopped speaking - switch back to idle animation
+        elif state in ['ready', 'idle', 'stopped', 'tts_silero_warming']:
+            # Robot stopped speaking - switch back to idle animation.
+            # 'tts_silero_warming' — чанк пропущен и озвучен НЕ будет
+            # (tts_node: Silero ещё грелся). Без него рот продолжал
+            # артикулировать в тишине до следующего запроса TTS.
             if self.is_robot_speaking:
                 self.get_logger().info('🤐 Робот замолчал - возвращаюсь на idle анимацию')
                 self.is_robot_speaking = False

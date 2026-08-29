@@ -435,7 +435,12 @@ class STTNode(Node):
                 else:
                     self.get_logger().debug("🎤 [hardware AEC] Робот говорит - XVF-3000 фильтрует эхо")
                 self.is_robot_speaking = True
-        elif msg.data in ["ready", "idle"]:
+        # ``stopped`` — STOP/barge-in (``tts_node._handle_stop_command``),
+        # ``tts_silero_warming`` — чанк пропущен и озвучен не будет.
+        # Оба означают «робот молчит». Без них ``is_robot_speaking``
+        # залипал в ``True``, и ниже (hardware-AEC, конфиг робота) фразы
+        # короче 0.8 с молча отбрасывались — «робот», «стоп», «да».
+        elif msg.data in ["ready", "idle", "stopped", "tts_silero_warming"]:
             if self.is_robot_speaking:
                 self._tts_ended_at = time.monotonic()
                 if self.aec_mode == "software":
