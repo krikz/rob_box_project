@@ -43,6 +43,32 @@ def _read(prompt_path: Path) -> str:
     return prompt_path.read_text(encoding="utf-8")
 
 
+def _voice_rule_block() -> str:
+    """The body of ``RULE #VOICE``, from its header to the next rule header.
+
+    Anchored on the ``🚨 **RULE #VOICE — `` *header*, not on the
+    bare string ``RULE #VOICE``: the routing table at the top of the
+    prompt also says «смени голос» → §5 RULE #VOICE, and a plain
+    search matched that line first, returning the routing table as "the
+    rule block". Every content assertion below then tested the wrong 800
+    characters — four of them failed against a prompt that was in fact
+    correct, and ``test_master_prompt_default_matches_registry`` passed
+    vacuously because the routing table names no voice ids at all.
+    """
+    content = _read(MASTER_PROMPT)
+    match = re.search(
+        r"🚨 \*\*RULE #VOICE — .*?(?=🚨 \*\*RULE #)",
+        content,
+        re.DOTALL,
+    )
+    assert match, (
+        "RULE #VOICE block not found in master_prompt_compact.txt — expected "
+        "a line starting with '🚨 **RULE #VOICE — ' followed by another "
+        "'🚨 **RULE #'"
+    )
+    return match.group(0)
+
+
 # ── master_prompt_compact.txt ─────────────────────────────────────────
 
 
@@ -59,15 +85,7 @@ def test_master_prompt_contains_voice_rule() -> None:
 
 def test_voice_rule_directs_set_voice_tool() -> None:
     """The rule must explicitly mention set_voice as the way to change voice."""
-    content = _read(MASTER_PROMPT)
-    # Find RULE #VOICE block (single line/paragraph anchor up to next 🚨 RULE).
-    match = re.search(
-        r"RULE #VOICE.*?(?=🚨 \*\*RULE #)",
-        content,
-        re.DOTALL,
-    )
-    assert match, "RULE #VOICE block not delimited properly"
-    block = match.group(0)
+    block = _voice_rule_block()
     assert "set_voice" in block, (
         "RULE #VOICE does not mention set_voice tool — LLM has no way to "
         "learn it exists"
@@ -90,14 +108,7 @@ def test_voice_rule_documents_gender_mapping() -> None:
     'женский' or 'alena' (Yandex-only, not in minimax catalogue) →
     voice_unavailable → same default voice played.
     """
-    content = _read(MASTER_PROMPT)
-    match = re.search(
-        r"RULE #VOICE.*?(?=🚨 \*\*RULE #)",
-        content,
-        re.DOTALL,
-    )
-    assert match
-    block = match.group(0)
+    block = _voice_rule_block()
     assert "Russian_BrightHeroine" in block, (
         "RULE #VOICE must list at least one current minimax female voice id "
         "so LLM picks a valid name when the user says 'женским голосом'"
@@ -110,14 +121,7 @@ def test_voice_rule_documents_gender_mapping() -> None:
 
 def test_voice_rule_explains_voice_unavailable_fallback() -> None:
     """When set_voice returns voice_unavailable, LLM must self-recover."""
-    content = _read(MASTER_PROMPT)
-    match = re.search(
-        r"RULE #VOICE.*?(?=🚨 \*\*RULE #)",
-        content,
-        re.DOTALL,
-    )
-    assert match
-    block = match.group(0)
+    block = _voice_rule_block()
     assert "voice_unavailable" in block, (
         "RULE #VOICE must explain how to handle voice_unavailable "
         "response (pick another voice from [TTS] voices: ... list), "
@@ -139,14 +143,7 @@ def test_master_prompt_default_matches_registry() -> None:
     # Lazy import — registry is pure Python, no ROS dependencies.
     from rob_box_voice.tts_voice_registry import voices_for
 
-    content = _read(MASTER_PROMPT)
-    match = re.search(
-        r"RULE #VOICE.*?(?=🚨 \*\*RULE #)",
-        content,
-        re.DOTALL,
-    )
-    assert match
-    block = match.group(0)
+    block = _voice_rule_block()
 
     # Extract every voice id mentioned in the rule block (both legacy
     # `female-shaonv` / `male-qn-qingse` and current `Russian_*` ids).
@@ -177,14 +174,7 @@ def test_voice_rule_teaches_voice_enumeration() -> None:
     данных Yandex), потому что RULE #VOICE объясняла только set_voice при
     СМЕНЕ голоса, но не перечисление доступных голосов.
     """
-    content = _read(MASTER_PROMPT)
-    match = re.search(
-        r"RULE #VOICE.*?(?=🚨 \*\*RULE #)",
-        content,
-        re.DOTALL,
-    )
-    assert match
-    block = match.group(0)
+    block = _voice_rule_block()
     assert "какие у тебя голоса" in block, (
         "RULE #VOICE must teach the LLM to enumerate voices when the user "
         "asks 'какие у тебя голоса?' — otherwise it hallucinates names "
