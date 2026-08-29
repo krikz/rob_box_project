@@ -6,6 +6,17 @@ pytest автоматически применяет conftest.py к тестам
 """
 
 import sys
+import sys as _sys
+from pathlib import Path as _Path
+
+# Shared ROS2 stubs — see test/ros_stubs.py. These per-directory stub sets
+# are installed with ``sys.modules.setdefault``, so in a full run whichever
+# directory pytest reaches first wins. Using the shared ``rclpy.qos`` here
+# means the winner no longer matters: every directory publishes the same
+# policy names and the same kwargs-recording ``QoSProfile``.
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+from ros_stubs import qos_stub as _qos_stub  # noqa: E402
+
 import types
 from unittest.mock import MagicMock
 
@@ -64,18 +75,7 @@ def _install_ros_mocks():
         ReentrantCallbackGroup=type("ReentrantCallbackGroup", (), {}),
     )
 
-    mock_qos = types.SimpleNamespace(
-        HistoryPolicy=types.SimpleNamespace(KEEP_LAST="KEEP_LAST"),
-        ReliabilityPolicy=types.SimpleNamespace(RELIABLE="RELIABLE"),
-        # Issue #1734 — dialogue_node публикует barge_in_policy на latched
-        # (TRANSIENT_LOCAL) топике для stt_node; QoSProfile(durability=...)
-        # в __init__ нуждается в этом атрибуте, иначе import dialogue_node
-        # падает ImportError на все тесты в этой директории.
-        DurabilityPolicy=types.SimpleNamespace(
-            TRANSIENT_LOCAL="TRANSIENT_LOCAL", VOLATILE="VOLATILE"
-        ),
-        QoSProfile=lambda *args, **kwargs: MagicMock(),
-    )
+    mock_qos = _qos_stub()
 
     # ── std_msgs, std_srvs ─────────────────────────────────────────────────
     mock_std_msgs = MagicMock()

@@ -16,57 +16,11 @@ if TYPE_CHECKING:
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult
 from ..voice_state import VoiceStateStore
-
-# ---------------------------------------------------------------------------
-# Анимации LED-матрицы — ЕДИНЫЙ список (issue: единый каталог тулов).
-# ---------------------------------------------------------------------------
-# Раньше этот набор жил в трёх местах: локальной переменной внутри
-# ``SpeakTextTool.execute``, ``enum`` в harness-каталоге и прозой в описании
-# параметра. Теперь список один: схема инструмента (``enum``) и рантайм-
-# нормализация в ``execute`` читают одну и ту же константу, а каталог для LLM
-# генерируется из схемы (см. tools/gen_tool_catalog.py).
-KNOWN_ANIMATIONS: tuple[str, ...] = (
-    "idle", "talking", "wakeup", "sleep",
-    "happy", "sad", "angry", "surprised", "thinking", "victory",
-    "error", "low_battery", "charging",
-    "police_lights", "ambulance", "fire_truck", "road_service",
-    "turn_left", "turn_right", "accelerating", "braking",
+from ..animations import (
+    KNOWN_ANIMATIONS,
+    normalize_animation,
 )
 
-#: Псевдонимы → реальные анимации. LLM (и русскоязычный ввод) регулярно
-#: присылает несуществующие имена; ``execute`` нормализует их молча, а всё
-#: непокрытое падает в ``talking`` с warning'ом.
-ANIMATION_ALIASES: dict[str, str] = {
-    # Русские названия
-    "нейтрально": "idle",
-    "нейтральная": "idle",
-    "нейтральный": "idle",
-    "радость": "happy",
-    "радостный": "happy",
-    "счастливый": "happy",
-    "грустный": "sad",
-    "грусть": "sad",
-    "печаль": "sad",
-    "злой": "angry",
-    "злость": "angry",
-    "возбужденный": "happy",
-    "возбуждение": "happy",
-    "смущенный": "thinking",
-    "смущение": "thinking",
-    "растерянный": "thinking",
-    # Несуществующие анимации → замена на похожие
-    "neutral": "idle",
-    "excited": "happy",
-    "confused": "thinking",
-    "laughing": "happy",
-    "smiling": "happy",
-    # ``dancing`` раньше маппился в "excited" — анимации с таким именем не
-    # существует, поэтому нормализация всё равно скатывалась в "talking".
-    "dancing": "happy",
-    "singing": "happy",
-    # LLM часто пишет "talk" вместо "talking"
-    "talk": "talking",
-}
 
 # Issue #1219 — LLM voice selection: единый реестр голосов живёт в
 # rob_box_voice (чистый Python, без ROS). Ленивый импорт с fallback,
@@ -520,15 +474,17 @@ class SpeakTextTool(MCPTool):
                 ),
             )
 
-        # Нормализация анимаций (для обратной совместимости и маппинга несуществующих)
-        animation_map = ANIMATION_ALIASES
-        animation = animation_map.get(animation.lower() if animation else "idle", animation) if animation else "idle"
-        if animation not in KNOWN_ANIMATIONS:
-            self.log_warning(
-                f"⚠️ Неизвестная анимация '{animation}' — "
-                f"использую 'talking' (робот же говорит), текст будет произнесён"
-            )
-            animation = "talking"
+        # Нормализация анимаций: псевдонимы и русские названия приводятся к
+        # реальному имени манифеста, всё остальное падает в "talking"
+        # (робот же говорит) — текст при этом произносится в любом случае.
+        requested_animation = animation
+        animation = normalize_animation(animation, fallback="talking")
+        if requested_animation and animation != str(requested_animation).strip().lower():
+            if animation == "talking":
+                self.log_warning(
+                    f"⚠️ Неизвестная анимация '{requested_animation}' — "
+                    f"использую 'talking', текст будет произнесён"
+                )
 
         # Определяем pitch для голоса на основе анимации (только для эмоциональных)
         pitch_map = {

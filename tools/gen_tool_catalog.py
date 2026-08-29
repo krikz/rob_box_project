@@ -197,6 +197,27 @@ def _collect_class_constants(tree: ast.Module) -> dict[str, dict[str, ast.AST]]:
     return out
 
 
+#: Package-level modules whose literal constants tool schemas may reference.
+#: Kept as an explicit list rather than "resolve any import" so the generator
+#: never silently guesses at a value it cannot actually see.
+SHARED_CONSTANT_MODULES = (TOOLS_DIR.parent / "animations.py",)
+
+
+def _collect_shared_constants() -> dict[str, Any]:
+    """Constants that tools in different files legitimately share.
+
+    ``KNOWN_ANIMATIONS`` lives in ``rob_box_mcp_tools.animations`` precisely
+    so ``speak_text`` and ``play_animation`` cannot disagree; the generator
+    has to follow that import to render either enum.
+    """
+    shared: dict[str, Any] = {}
+    for module in SHARED_CONSTANT_MODULES:
+        if not module.exists():
+            continue
+        shared.update(_collect_module_constants(ast.parse(module.read_text(encoding="utf-8"))))
+    return shared
+
+
 def _collect_module_constants(tree: ast.Module) -> dict[str, Any]:
     """Collect top-level ``NAME = <literal>`` assignments."""
     constants: dict[str, Any] = {}
@@ -340,12 +361,13 @@ def extract_tools() -> list[dict[str, Any]]:
     """Read every ``MCPTool`` subclass under ``tools/`` into catalog entries."""
     global _MODULE_CONSTANTS, _CLASS_CONSTANTS, _CURRENT_CLASS, _PARAM_FACTORIES
     entries: list[dict[str, Any]] = []
+    shared_constants = _collect_shared_constants()
 
     for source in sorted(TOOLS_DIR.glob("*.py")):
         if source.name == "__init__.py":
             continue
         tree = ast.parse(source.read_text(encoding="utf-8"))
-        _MODULE_CONSTANTS = _collect_module_constants(tree)
+        _MODULE_CONSTANTS = {**shared_constants, **_collect_module_constants(tree)}
         _CLASS_CONSTANTS = _collect_class_constants(tree)
         _PARAM_FACTORIES = _collect_param_factories(tree)
 

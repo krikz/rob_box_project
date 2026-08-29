@@ -16,6 +16,17 @@ ROS), поэтому startup_greeting_node импортируется через
 from __future__ import annotations
 
 import sys
+import sys as _sys
+from pathlib import Path as _Path
+
+# Shared ROS2 stubs — see test/ros_stubs.py. These per-directory stub sets
+# are installed with ``sys.modules.setdefault``, so in a full run whichever
+# directory pytest reaches first wins. Using the shared ``rclpy.qos`` here
+# means the winner no longer matters: every directory publishes the same
+# policy names and the same kwargs-recording ``QoSProfile``.
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+from ros_stubs import qos_stub as _qos_stub  # noqa: E402
+
 import types
 from unittest.mock import MagicMock
 
@@ -70,6 +81,13 @@ def _install_ros_mocks() -> None:
 
         def set_parameters_atomically(self, params):
             return MagicMock(successful=True)
+
+        def add_on_set_parameters_callback(self, callback):
+            # sound_node registers one at construction time. This FakeNode
+            # wins the ``setdefault`` race for ``rclpy.node`` in a full run,
+            # so a method missing here breaks node construction in an
+            # unrelated directory rather than in this one.
+            return MagicMock()
 
         # ── publishers / subscribers / timers ───────────────────────────────
         def create_publisher(self, msg_type, topic: str, qos: int = 10):
@@ -136,11 +154,7 @@ def _install_ros_mocks() -> None:
         "rclpy.callback_groups": types.SimpleNamespace(
             ReentrantCallbackGroup=type("ReentrantCallbackGroup", (), {}),
         ),
-        "rclpy.qos": types.SimpleNamespace(
-            HistoryPolicy=types.SimpleNamespace(KEEP_LAST="KEEP_LAST"),
-            ReliabilityPolicy=types.SimpleNamespace(RELIABLE="RELIABLE"),
-            QoSProfile=lambda *a, **kw: MagicMock(),
-        ),
+        "rclpy.qos": _qos_stub(),
         "std_msgs": mock_std_msgs,
         "std_msgs.msg": mock_std_msgs_msg,
     }
