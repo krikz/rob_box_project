@@ -786,3 +786,50 @@ def test_segment_plan_block_exposes_group_id_for_task_delta() -> None:
             sched.shutdown()
 
     asyncio.run(_run())
+
+
+def test_task_created_carries_group_and_segment_index() -> None:
+    """``task.created`` должен нести ``group_id``/``seg_idx``.
+
+    Без них по ``/harness/task_events`` нельзя ответить на вопрос, от
+    которого зависит вся сегментная модель: приезжает выступление одним
+    батчем или по куску за итерацию тул-цикла.
+
+    ``begin_group()`` вызывается ``dialog_core`` на КАЖДЫЙ батч
+    (``tool_executor.begin_group``), поэтому число разных ``group_id`` за
+    тёрн = числу итераций, а ``seg_idx`` внутри группы = размеру батча.
+    Оба поля у задачи уже есть (``SchedulerTask.group_id``/``seg_idx``),
+    в событие они просто не попадали — измерить было нечем.
+
+    Контракт ``W7_INTEGRATION_PLAN.md`` §W7c уже содержит ``seg_idx``
+    (``task.segment_started(id, seg_idx)``), так что поля не чужеродны.
+    """
+    payloads: list[dict] = []
+
+    def _on_event(event: str, payload: dict) -> None:
+        if event == "task.created":
+            payloads.append(payload)
+
+    async def _run() -> None:
+        sched = TaskScheduler(on_event=_on_event)
+        sched.start()
+        executor = SchedulerToolExecutor(
+            _FakeUnderlying(), scheduler=sched, on_event=_on_event
+        )
+        try:
+            group_id = executor.begin_group()
+            await executor.execute(
+                ToolCall(id="c0", name="speak_text", arguments={"text": "куплет 1"})
+            )
+            await executor.execute(
+                ToolCall(id="c1", name="speak_text", arguments={"text": "куплет 2"})
+            )
+            await asyncio.wait_for(sched.wait_all(), timeout=2.0)
+
+            assert len(payloads) == 2, payloads
+            assert [p.get("seg_idx") for p in payloads] == [0, 1]
+            assert {p.get("group_id") for p in payloads} == {group_id}
+        finally:
+            sched.shutdown()
+
+    asyncio.run(_run())

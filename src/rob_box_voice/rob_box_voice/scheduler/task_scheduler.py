@@ -872,6 +872,17 @@ class TaskScheduler:
                 "channel": task.channel.value,
                 "status": task.status.value,
                 "args_keys": sorted(task.args.keys()),
+                # Сегментные координаты задачи. Без них по
+                # ``/harness/task_events`` нельзя посчитать, приезжает
+                # выступление одним батчем или по куску за итерацию
+                # тул-цикла: ``dialog_core`` зовёт ``begin_group()`` на
+                # КАЖДЫЙ батч, поэтому число разных ``group_id`` за тёрн
+                # равно числу итераций, а ``seg_idx`` внутри группы —
+                # размеру батча. Оба поля у задачи были всегда, в
+                # событие не попадали. ``None`` — задача вне группы
+                # (bypass-тул или submit без ``begin_group``).
+                "group_id": task.group_id,
+                "seg_idx": task.seg_idx,
             },
         )
         _LOG.debug(
