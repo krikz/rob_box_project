@@ -841,23 +841,34 @@ class DialogueNode(Node):
         # юнит-тестов и CI, где рконфликтует с другими тестами).
         self.declare_parameter("metrics_port", 9100)
         # Issue #1601 / ADR-0027 §3.4 — режим захвата голоса. Используется
-        # supervisor'ом (ADR-0028) для переключения источника входа
-        # (respeaker | quest_passthrough | quest_ttts | quest_stt |
-        # quest_llm_formalize). Реальная логика обработки режимов — в
-        # отдельных worker-issue (Phase 2). Здесь только объявление +
-        # stub-колбэк, пишущий изменение в лог.
+        # supervisor'ом (ADR-0028 S5, единственная точка смены) для
+        # переключения источника входа (respeaker | quest_passthrough |
+        # quest_ttts | quest_stt | quest_llm_formalize | off — W3-1).
+        # ``_voice_input_mode`` — кэш последнего значения в поле ноды,
+        # который обновляет ``parameters_callback`` и читают
+        # ``_on_stt``/``_on_quest_stt``; до прихода первого SetParameters
+        # от супервизора дефолт совпадает с YAML/declare_parameter —
+        # "respeaker" (обратная совместимость).
         self.declare_parameter("voice_input_mode", "respeaker")
+        self._voice_input_mode: str = "respeaker"
 
     def parameters_callback(self, params):
-        """Stub-обработчик изменений ROS-параметров (Issue #1601 / ADR-0027 §3.4).
+        """Роутер изменений ``voice_input_mode`` (Issue #1601 / ADR-0027 §3.4, W3-1).
 
-        Полноценная маршрутизация по ``voice_input_mode`` — в Phase 2
-        (отдельный worker-issue). Сейчас только логируем изменение, чтобы
-        supervisor мог переключать режим без падения ноды и в логах было
-        видно, что новый режим пришёл.
+        Сохраняет новое значение в ``self._voice_input_mode`` — это поле
+        читают ``_on_stt`` (гейт ReSpeaker-входа при ``off``) и
+        ``_on_quest_stt`` (маршрутизация Quest robot-voice). Супервизор
+        (ADR-0028 S5) — единственный, кто вызывает SetParameters сюда.
+
+        ⚠️ ``voice_input_mode="off"`` глушит ТОЛЬКО обычных людей у
+        ReSpeaker-микрофона. Вход ОПЕРАТОРА (Telegram, Quest robot-voice)
+        этим режимом не блокируется — см. docstring ``_on_stt`` и §3.5
+        docs/design/dialogue-mode-spec-2026-08-28.md. Не переворачивай
+        это правило при доработке.
         """
         for param in params:
             if param.name == "voice_input_mode":
+                self._voice_input_mode = param.value
                 self.get_logger().info(
                     f"🎙 voice_input_mode changed to {param.value!r}"
                 )
@@ -1713,6 +1724,26 @@ class DialogueNode(Node):
         # зажал PTT (как и для Telegram). Источник задаёт ``from_quest``,
         # а не текстовый маркер.
         is_quest: bool = from_quest
+        # W3-1 (ADR-0028 S5) — voice_input_mode="off": диалоговая нода
+        # глушит ТОЛЬКО обычных людей у ReSpeaker-микрофона (этот гейт
+        # смотрит именно на "голый" вход /voice/stt/result — без
+        # Telegram-маркера и без Quest-флага). Вход ОПЕРАТОРА этим НЕ
+        # блокируется: Telegram (tg_chat_id уже распознан выше) и Quest
+        # robot-voice (is_quest=True, приходит из _on_quest_stt при
+        # voice_input_mode=quest_stt) продолжают работать как обычно —
+        # "off" означает «диалог выключен для окружающих, полное
+        # управление у оператора» (§3.5 docs/design/
+        # dialogue-mode-spec-2026-08-28.md), а НЕ «робот оглох
+        # полностью». НЕ расширяй условие на tg_chat_id/is_quest —
+        # это ключевое решение заказчика, разворачивать нельзя.
+        if tg_chat_id is None and not is_quest:
+            mode = getattr(self, "_voice_input_mode", "respeaker")
+            if mode == "off":
+                self.get_logger().info(
+                    f"🔇 [W3-1] voice_input_mode=off — ReSpeaker вход "
+                    f"игнорируется: {text[:60]!r}"
+                )
+                return
         text_lower = text.lower()
         # Issue #1077 — забираем speaker_tag для ЭТОГО текста (если stt_node
         # успел прислать speaker-событие). pop: один текст — один tag.

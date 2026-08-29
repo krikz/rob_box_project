@@ -24,6 +24,7 @@ from unittest.mock import MagicMock
 from rob_box_supervisor.supervisor_node import (
     MONITOR_MODE_REASON,
     SET_VOICE_MODE_TOPIC,
+    VOICE_INPUT_MODES,
     AvatarSupervisor,
 )
 
@@ -290,6 +291,22 @@ class TestAvatarSupervisorVoiceMode(unittest.TestCase):
         self.node._apply_voice_mode = MagicMock(return_value=(False, MONITOR_MODE_REASON))
         self.node._on_set_voice_mode(_make_string_msg("quest_ttts"))
         self.node._apply_voice_mode.assert_called_once_with("quest_ttts")
+
+    def test_off_mode_is_valid(self) -> None:
+        """W3-1 — "off" ("диалог off", §3.5 dialogue-mode-spec) в списке
+        допустимых режимов voice_input_mode (ADR-0027 §3.4)."""
+        self.assertIn("off", VOICE_INPUT_MODES)
+
+    def test_active_mode_dispatches_off(self) -> None:
+        """В active режиме "off" применяется так же, как остальные режимы —
+        супервизор не отличает "off" от прочих значений на своей стороне,
+        вся логика блокировки ReSpeaker — в dialogue_node."""
+        self.node._mode = "active"
+        self.node._set_dialogue_param = MagicMock()
+        applied, reason = self.node._apply_voice_mode("off")
+        self.assertTrue(applied)
+        self.assertEqual(reason, "applied")
+        self.node._set_dialogue_param.assert_called_once_with("voice_input_mode", "off")
 
 
 if __name__ == "__main__":

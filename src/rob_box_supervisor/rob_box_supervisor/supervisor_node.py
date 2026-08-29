@@ -53,12 +53,16 @@ MONITOR_MODE_REASON = "supervisor_in_monitor_mode"
 
 # ADR-0027 §3.4 — валидные значения ``voice_input_mode`` на dialogue_node.
 # Супервизор — единственная точка, которая имеет право их менять (ADR-0028 S5).
+# "off" (W3-1, §3.5 docs/design/dialogue-mode-spec-2026-08-28.md) —
+# «диалог off»: блокирует диалоговую ноду ТОЛЬКО для обычных людей у
+# ReSpeaker-микрофона; вход оператора (Telegram/Quest) продолжает работать.
 VOICE_INPUT_MODES: tuple[str, ...] = (
     "respeaker",
     "quest_passthrough",
     "quest_ttts",
     "quest_stt",
     "quest_llm_formalize",
+    "off",
 )
 
 # Phase 1 транспорт запроса смены режима голоса. Phase 2 заменит на
