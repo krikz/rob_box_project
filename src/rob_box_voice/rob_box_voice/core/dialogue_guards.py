@@ -30,6 +30,47 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Music tool names — single source of truth
+# ---------------------------------------------------------------------------
+
+#: MCP tools that start Renardo playback.
+#:
+#: SSoT on purpose. This list used to be hardcoded separately in
+#: ``DialogueNode`` (``_music_starters``) and in ``MusicGuard``
+#: (``_music_started``), and every new music tool had to be added to both.
+#: It never was — which is how ``compose_music`` shipped and got
+#: auto-stopped 1.5 s after it started: ``dialogue_node`` did not recognise
+#: it as a music starter, armed ``_pending_music_cleanup``, then fired
+#: ``music_cleanup`` at turn end because no TTS batch existed yet. The
+#: comment above ``_music_starters`` already recorded the same accident
+#: happening once before with ``load_track`` / ``set_dj_mode``.
+#:
+#: Add new Renardo-side music tools HERE and nowhere else.
+RENARDO_MUSIC_TOOLS: frozenset = frozenset({
+    "execute_music_code",
+    "compose_music",
+})
+
+#: MiniMax mp3 playback. Separate set: these do not go through Renardo, so
+#: the Renardo cleanup path does not apply to them, but for the retry guard
+#: they still count as "music started".
+GENERATED_MUSIC_TOOLS: frozenset = frozenset({
+    "generate_music",
+    "gen_play_from_library",
+})
+
+#: Tools that put existing playback into a mode rather than starting it.
+#: They keep music alive for the cleanup logic but must NOT satisfy the DJ
+#: retry guard — calling ``set_dj_mode`` without playing anything is
+#: precisely the Bug-B failure it is there to catch.
+MUSIC_MODE_TOOLS: frozenset = frozenset({
+    "load_track",
+    "set_dj_mode",
+    "set_vibe_preset",
+})
+
+
+# ---------------------------------------------------------------------------
 # Issue #992 Bug D — banned metalanguage openers. When the LLM returns
 # plain text (no ``speak_text`` call) that begins with one of these
 # phrases — e.g. "Зачитаю рэп про космос!", "Могу бит добавить,

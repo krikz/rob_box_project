@@ -91,6 +91,8 @@ from rob_box_voice.core.dialogue_guards import (
     BABBLE_PERFORMANCE_KEYWORDS as BABBLE_PERFORMANCE_KEYWORDS,
     MUSIC_GUARD_KEYWORDS,
     MUSIC_GUARD_VOCAL_KEYWORDS,
+    MUSIC_MODE_TOOLS,
+    RENARDO_MUSIC_TOOLS,
     MUSIC_RETRY_PROMPT_PREFIX,
     MUSIC_STOP_OVERRIDES,
     build_babble_retry_prompt,
@@ -2996,7 +2998,11 @@ class DialogueNode(Node):
                 # 🔴 FIX (live 12.08): load_track, set_dj_mode, set_vibe_preset
                 # тоже запускают музыку (не только execute_music_code).
                 # Без этого эмбиент/трек умолкал через ~5с после tts_batch_complete.
-                _music_starters = {"execute_music_code", "load_track", "set_dj_mode", "set_vibe_preset"}
+                # 🔴 FIX (live 30.08): та же авария повторилась с compose_music —
+                # список имён теперь один на всю систему (dialogue_guards),
+                # чтобы следующий музыкальный инструмент не пришлось помнить
+                # добавить в двух местах.
+                _music_starters = RENARDO_MUSIC_TOOLS | MUSIC_MODE_TOOLS
                 if tools_now & _music_starters:
                     # Issue #992 TWO MUSIC MODES: BACKING (спой/рэп/песенку) —
                     # музыка это подложка под куплеты, систему ПРОСЯТ

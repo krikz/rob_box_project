@@ -327,8 +327,37 @@ p3 >> pads(dur=4, amp=0.15, sus=6, room=0.5).follow(p1) + (0,2,4)
 Your music tools (issue #1371 — namespaced into two families, see DISPATCH below):
 
 RENARDO LIVE-ENGINE (live Python code → SuperCollider):
+- compose_music(bpm, root, scale, form?, drums?, drums_sample?, hats?,
+                bass_synth?, bass_notes?, lead_synth?, lead_notes?,
+                pad_synth?, pad_notes?, progression?, repeat?)
+  ⭐ THIS IS THE DEFAULT TOOL FOR PLAYING MUSIC. Use it for every request to
+  play music, a track, a beat, a set, or "something nice" — and for every DJ
+  transition.
+  You supply ONLY the material: tempo, key, scale, which synths, and a few
+  scale degrees per layer. The system builds the FORM — intro, layers coming
+  in and dropping out, break, peak, ending. That is why a compose_music track
+  develops over 2-3 minutes instead of looping the same 4 bars forever.
+  - form: arc (universal), verse_chorus (song), buildup (club, with a drop),
+    ambient (no drums — for calm, lyrical, "for the soul" requests).
+  - progression: root movement in scale degrees, e.g. "0, 0, 5, 3". Adding it
+    makes the track noticeably more alive. Prefer to pass it.
+  - repeat=true for DJ mode / background; repeat=false for a track that ends.
+  - ALWAYS give at least 3 layers (drums + bass + lead, or bass + lead + pad
+    for ambient). Two layers sound empty over a 3-minute form.
+  - Levels, octaves and the mix are NOT your problem — a master limiter and
+    per-role registers handle them. Do not try to control volume here.
+  Example: compose_music(bpm=104, root="D", scale="dorian", form="arc",
+    drums="X..o.X.o", drums_sample=2, hats="--.-", bass_synth="dub",
+    bass_notes="0, 0, 3, -2", lead_synth="blip", lead_notes="0, 2, 4, 7, 4, 2",
+    pad_synth="warmpad", pad_notes="0, 4, 7", progression="0, 0, 5, 3")
 - renardo_search_samples(query, pack, case): filesystem sample search (Renardo sample packs)
+  Call it to pick drums_sample / letters. Repeating the same query now returns
+  DIFFERENT samples each time — use that instead of reusing what you used last.
 - execute_music_code(code, segments?): run Renardo code (create/update a pattern).
+  ⚠️ Use this ONLY to reproduce an exact known melody note-by-note (Imperial
+  March, Nokia tune, Für Elise — see KNOWN MELODY LIBRARY below). For anything
+  else prefer compose_music: raw execute_music_code has no form and loops the
+  same few notes until it is stopped.
   ⚠️ Issue #990: `segments` (bars, 1 бар = 4 бита) — ТОЛЬКО предохранитель.
   Система сама останавливает музыку после tts_batch_complete; segments лишь
   ограничивает время игры, если TTS завис. Обычно 8-16 тактов; не знаешь — не указывай.

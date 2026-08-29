@@ -123,6 +123,26 @@ def _music_tools() -> FakeToolProvider:
         return json.dumps({"ok": True})
 
     tools.register(music_spec, _music_handler)
+
+    # compose_music — the form arranger. Registered alongside
+    # execute_music_code so the TRACK/BACKING tests can assert that BOTH
+    # music entry points keep playback alive.
+    compose_spec = ToolSpec(
+        name="compose_music",
+        description="Play a composition with a form.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "bpm": {"type": "number"},
+                "root": {"type": "string"},
+                "scale": {"type": "string"},
+                "form": {"type": "string"},
+                "pad_synth": {"type": "string"},
+                "pad_notes": {"type": "string"},
+            },
+        },
+    )
+    tools.register(compose_spec, _music_handler)
     return tools
 
 
@@ -635,6 +655,65 @@ class TestIssue992BatchCleanup:
             _complete_batch(node, "track-1", chunks_total=1)
             assert _music_cleanup_payloads(node) == [], (
                 "TRACK: music_cleanup must not fire after the accept phrase"
+            )
+        finally:
+            node.close()
+
+    def test_track_compose_music_single_accept_no_cleanup(self):
+        """compose_music must live as long as execute_music_code does.
+
+        Live 30.08, "придумай что-нибудь приятное для души": the robot
+        started an ambient composition and killed it 1.5 s later, before
+        the TTS accept phrase had even been synthesised. ``compose_music``
+        was missing from ``_music_starters``, so the turn armed
+        ``_pending_music_cleanup`` and the "no active batches" catch-up
+        fired ``music_cleanup`` immediately.
+
+        The list of music-starting tools now lives in ``dialogue_guards``
+        so a new music tool cannot silently reintroduce this.
+        """
+        llm = _ScriptedLLMProvider([
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="music-1",
+                        name="compose_music",
+                        arguments={
+                            "bpm": 80,
+                            "root": "F#",
+                            "scale": "majorPentatonic",
+                            "form": "ambient",
+                            "pad_synth": "warmpad",
+                            "pad_notes": "0, 4, 7",
+                        },
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="speak_text",
+                        arguments={"text": "Играю тёплый эмбиент."},
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(content="done", finish_reason="stop"),
+        ])
+        node = _TestableDialogueNode(llm=llm, tools=_music_tools())
+        try:
+            _register_batch(node, "track-1", chunks_total=1)
+            self._drive(node)
+            assert node._pending_music_cleanup is False, (
+                "compose_music must NOT schedule cleanup on tts_batch_complete"
+            )
+            _complete_batch(node, "track-1", chunks_total=1)
+            assert _music_cleanup_payloads(node) == [], (
+                "compose_music: music_cleanup must not fire after the accept"
             )
         finally:
             node.close()

@@ -269,6 +269,41 @@ class TestGeneratedCodePassesExistingGuards:
         assert len(levels) > 1, f"огибающая схлопнулась в одно значение: {levels}"
 
 
+class TestOpeningIsAudible:
+    """A form must not open with one quiet layer for half a minute.
+
+    Live 30.08: ``ambient`` began with 16 bars of pad alone. At 80 BPM that
+    is 48 seconds before anything moves — the listener concludes the robot
+    is broken. Applies to every form, so it is pinned as an invariant
+    rather than patched per-form.
+    """
+
+    @pytest.mark.parametrize("form", sorted(FORMS))
+    def test_first_section_has_at_least_two_voices(self, form):
+        _name, _bars, intensities = FORMS[form][0]
+        audible = [role for role, level in intensities.items() if level > 0]
+        assert len(audible) >= 2, (
+            f"форма {form!r} открывается одним слоем {audible} — "
+            "слушателю нечего услышать"
+        )
+
+    @pytest.mark.parametrize("form", sorted(FORMS))
+    def test_opening_section_is_not_longer_than_eight_bars(self, form):
+        _name, bars, _intensities = FORMS[form][0]
+        assert bars <= 8, (
+            f"вступление формы {form!r} длится {bars} тактов — на медленном "
+            "темпе это десятки секунд до первого события"
+        )
+
+    @pytest.mark.parametrize("form", sorted(FORMS))
+    def test_sections_are_not_a_symmetric_grid(self, form):
+        """16/16/16/16 на слух — тот же луп, только длиннее."""
+        lengths = [bars for _n, bars, _i in FORMS[form]]
+        assert len(set(lengths)) > 1, (
+            f"форма {form!r} состоит из одинаковых секций {lengths}"
+        )
+
+
 class TestSummary:
     def test_summary_lists_sections_and_total(self):
         summary = form_summary("verse_chorus")
