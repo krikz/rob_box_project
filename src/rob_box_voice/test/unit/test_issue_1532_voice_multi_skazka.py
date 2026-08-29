@@ -370,10 +370,28 @@ def test_voice_command_file_exists() -> None:
     )
 
 
-def test_voice_command_is_under_vad_max_12s() -> None:
-    """Voice command duration must be < 12s (audio_node VAD max).
+def _vad_max_duration() -> float:
+    """`speech_max_duration` from the config the robot actually loads.
 
-    Live 12.08.2026: VAD отклоняет команды длиннее 12с ДО STT →
+    Was hard-coded 12.0 here. The limit had since been raised to 15.0 in
+    `audio_node.py` and in the deployed YAML, but not in the package one,
+    so this test enforced a number no running node used. Read it instead.
+    """
+    import yaml
+
+    config = (
+        Path(__file__).resolve().parents[4]
+        / "docker" / "vision" / "config" / "voice_assistant" / "audio_node.yaml"
+    )
+    with config.open(encoding="utf-8") as fh:
+        loaded = yaml.safe_load(fh)
+    return float(loaded["audio_node"]["ros__parameters"]["speech_max_duration"])
+
+
+def test_voice_command_is_under_vad_max() -> None:
+    """Voice command duration must be under audio_node's VAD maximum.
+
+    Live 12.08.2026: VAD отклоняет слишком длинные команды ДО STT →
     «Речь отклонена: 12.76с». Короткая команда про сказку должна
     укладываться в лимит.
     """
@@ -395,8 +413,9 @@ def test_voice_command_is_under_vad_max_12s() -> None:
         pytest.skip(f"ffprobe could not read {VOICE_COMMAND.name}")
     info = json.loads(result.stdout)
     duration = float(info.get("format", {}).get("duration", 0))
-    assert duration < 12.0, (
+    vad_max = _vad_max_duration()
+    assert duration < vad_max, (
         f"Voice command {VOICE_COMMAND.name} is {duration:.2f}s — "
-        f"exceeds audio_node VAD max (12.0с). VAD will reject it before "
-        f"STT — see .github/e2e/VOICE_COMMANDS_RESEARCH.md (VAD max=12с)."
+        f"exceeds audio_node VAD max ({vad_max}с). VAD will reject it "
+        f"before STT — see .github/e2e/VOICE_COMMANDS_RESEARCH.md."
     )
