@@ -39,6 +39,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Bool, String
+from nav_msgs.msg import Odometry
 
 from rob_box_harness.config import LLMConfig
 from rob_box_harness.core.dialog_core import DialogCore, DialogResult
@@ -573,8 +574,6 @@ class DialogueNode(Node):
         # жгла ~45% CPU через wait-set rebuild на rmw_zenoh, mcp-server-cpu-loop).
         self._pose_snapshot = None
         try:
-            from nav_msgs.msg import Odometry
-
             self.create_subscription(Odometry, "/odom", self._on_odom_snapshot, 10, callback_group=cbg)
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(f"⚠️ [dialogue_node] /odom подписка не удалась: {exc}")

@@ -83,6 +83,12 @@ def _install_ros_mocks():
     mock_std_msgs_msg.String = MagicMock
     mock_std_msgs_msg.Bool = MagicMock
 
+    # nav_msgs — declared <depend>, imported top-of-file like std_msgs
+    # (ADR-0021); the /odom position snapshot needs Odometry.
+    mock_nav_msgs = MagicMock()
+    mock_nav_msgs_msg = MagicMock()
+    mock_nav_msgs_msg.Odometry = MagicMock
+
     mock_std_srvs = MagicMock()
     mock_std_srvs_srv = MagicMock()
     mock_std_srvs_srv.Empty = MagicMock
@@ -147,6 +153,8 @@ def _install_ros_mocks():
         "rcl_interfaces.msg": mock_rcl_interfaces_msg,
         "std_msgs": mock_std_msgs,
         "std_msgs.msg": mock_std_msgs_msg,
+        "nav_msgs": mock_nav_msgs,
+        "nav_msgs.msg": mock_nav_msgs_msg,
         "std_srvs": mock_std_srvs,
         "std_srvs.srv": mock_std_srvs_srv,
         "rob_box_mcp_tools": mock_mcp,
