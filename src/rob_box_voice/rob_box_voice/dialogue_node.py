@@ -138,7 +138,10 @@ from rob_box_voice.observability import (
     is_metrics_enabled,
     record_barge_in,
     record_fallback,
+    record_pending_queue_latency,
+    record_quick_decide_verdict,
     record_session_duration,
+    record_task_updated,
     record_voice_llm_request,
     start_metrics_server,
     start_span,
@@ -1379,16 +1382,29 @@ class DialogueNode(Node):
         """
         try:
             pub = getattr(self, "_task_events_pub", None)
-            if pub is None:
-                return
-            msg = String(
-                data=json.dumps(
-                    {"event": event, **payload}, ensure_ascii=False
+            if pub is not None:
+                msg = String(
+                    data=json.dumps(
+                        {"event": event, **payload}, ensure_ascii=False
+                    )
                 )
-            )
-            pub.publish(msg)
+                pub.publish(msg)
         except Exception as exc:  # noqa: BLE001 — observer must not break
             self.get_logger().debug(f"⚠️ task_events publish failed: {exc}")
+        # W2-6 (issue #968) — второй наблюдатель того же события:
+        # "task.updated" уже эмитится TaskScheduler._Channel.replace_args
+        # (S3.2, применённый rewrite/replace MERGE-op на ещё не
+        # стартовавшем сегменте). Планировщик не импортирует
+        # observability напрямую — метрику считаем здесь, на стороне
+        # вызывающего слоя. Отдельный try/except — не должен ронять
+        # публикацию на /harness/task_events выше и наоборот.
+        if event == "task.updated" and is_metrics_enabled():
+            try:
+                record_task_updated()
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().debug(
+                    f"⚠️ [metrics] record_task_updated failed: {exc}"
+                )
     def _on_vad(self, msg: Bool) -> None:
         # Use the public attribute name (no underscore) since the pure-method
         # unit tests assert against ``vad_speech_detected``. The legacy
@@ -1866,6 +1882,15 @@ class DialogueNode(Node):
             )
             self._last_stt_text = clean
             self._last_stt_ts = time.monotonic()
+            # W2-6 (issue #968) — учёт вердиктов quick_decide (S4.1).
+            if is_metrics_enabled():
+                try:
+                    record_quick_decide_verdict(verdict.value)
+                except Exception as _metric_exc:  # noqa: BLE001
+                    self.get_logger().debug(
+                        f"⚠️ [metrics] record_quick_decide_verdict failed: "
+                        f"{_metric_exc!r}"
+                    )
             if verdict is QuickVerdict.IGNORE:
                 self._llm_skipped_counter["quick_decide_ignore"] += 1
                 self.get_logger().info(
@@ -4595,13 +4620,28 @@ class DialogueNode(Node):
         queued = list(queue)
         queue.clear()
         texts = [text for text, _enqueued_at in queued]
+        now = time.monotonic()
         oldest_ts = min(ts for _text, ts in queued)
-        queue_latency_ms = (time.monotonic() - oldest_ts) * 1000
+        queue_latency_ms = (now - oldest_ts) * 1000
         combined = "\n".join(texts)
         self.get_logger().info(
             f"📤 [S7] draining {len(texts)} pending message(s), "
             f"queue_latency={queue_latency_ms:.0f}ms: {combined[:120]!r}"
         )
+        # W2-6 (issue #968) — гистограмма queue-latency: по одному
+        # наблюдению на КАЖДУЮ отложенную фразу (не только самую
+        # старую) — так распределение отражает реальный разброс, а не
+        # только worst-case первой фразы в пачке. Цель — ≤ 200мс
+        # (см. docstring record_pending_queue_latency).
+        if is_metrics_enabled():
+            try:
+                for _text, enqueued_at in queued:
+                    record_pending_queue_latency(now - enqueued_at)
+            except Exception as _metric_exc:  # noqa: BLE001
+                self.get_logger().debug(
+                    f"⚠️ [metrics] record_pending_queue_latency failed: "
+                    f"{_metric_exc!r}"
+                )
         self._dispatch_turn(combined, raw_user_command=combined)
         return True
 

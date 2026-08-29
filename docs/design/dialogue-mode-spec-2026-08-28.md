@@ -54,7 +54,7 @@
               [куплет 2 уже про енота — без паузы]
 ```
 
-- **Инвариант:** правка (`update`) трогает только ещё не начатые (`PENDING`) сегменты; **текущий (`ACTIVE`) доигрывает до естественной границы**.
+- **Реализовано** (issue #968, волна scheduler-segments-merge, `TaskScheduler.update()` — `src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py`, метод `update()`): правка трогает только ещё не начатые (`QUEUED`/`SCHEDULED`) сегменты группы; `update()` явно игнорирует (`applied=False`, `reason="segment RUNNING (invariant)"`) любой op, чей `seg_idx` указывает на уже `RUNNING`-сегмент — текущий сегмент доигрывает до естественной границы без исключений. Это больше не цель, а проверяемое поведение (см. `test/test_task_scheduler.py`).
 - Классификация нового ввода **до** barge-in: `MERGE | REPLACE | QUEUE | IGNORE | CLARIFY`. `MERGE` — цикл живёт, LLM выдаёт `task_delta` → правка PENDING; `REPLACE` — отменить цикл, дождаться границы ACTIVE, новая задача.
 
 ## 3. Как оператор управляет голосом робота (режимы)

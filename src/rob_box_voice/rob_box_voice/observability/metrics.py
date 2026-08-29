@@ -37,6 +37,16 @@ TTS. Сейчас observability — только логи в Loki, и ответ
   (result ∈ success|fail — что произошло в конце диалога)
 * ``telegram_message_total{direction, type}`` — counter
 
+Метрики W2-6 (issue #968, волна scheduler-segments-merge, фаза S12):
+
+* ``voice_scheduler_quick_decide_total{verdict}`` — counter
+  (verdict ∈ IGNORE|REPLACE|PENDING_LLM, см. quick_decide.py)
+* ``voice_scheduler_task_updated_total`` — counter (применённая
+  MERGE-правка — TaskScheduler.update()/replace_args())
+* ``voice_scheduler_pending_queue_latency_seconds`` — histogram
+  (задержка отложенной пользовательской фразы в очереди
+  ``_pending_user_messages``, цель — ≤ 200 мс)
+
 Все метрики живут в ``prometheus_client.REGISTRY`` (process-global).
 Каждая ROS2-нода запускается в отдельном процессе, поэтому
 пересечения имён между нодами нет, но ВНУТРИ процесса (unit-тесты
@@ -501,3 +511,82 @@ def record_telegram_message(
         labelnames=("direction", "type"),
     )
     counter.labels(direction=direction, type=message_type).inc()
+
+
+# ── W2-6 (issue #968, scheduler-segments-merge, фаза S12) ──────────────
+# Метрики MERGE-цепочки: quick_decide-вердикты (S4.1), применённые
+# TaskScheduler.update()-правки (S3.2) и задержка очереди отложенных
+# фраз (S7).
+
+
+def record_quick_decide_verdict(verdict: str) -> None:
+    """Учёт одного вердикта ``quick_decide`` (S4.1, barge_in_policy="classify").
+
+    :param verdict: строковое значение :class:`QuickVerdict`
+        (``"IGNORE"`` / ``"REPLACE"`` / ``"PENDING_LLM"``) — см.
+        ``rob_box_voice.scheduler.quick_decide.QuickVerdict``. Дан как
+        ``str``, а не enum, чтобы этот модуль не тянул зависимость на
+        ``scheduler`` (наблюдатель не должен знать детали типа —
+        только его строковое значение для Prometheus-лейбла).
+    """
+    counter = get_metric(
+        "counter",
+        "voice_scheduler_quick_decide_total",
+        "quick_decide Level-1 verdicts, labelled by verdict "
+        "(IGNORE|REPLACE|PENDING_LLM).",
+        labelnames=("verdict",),
+    )
+    counter.labels(verdict=verdict).inc()
+
+
+def record_task_updated() -> None:
+    """Учёт одной применённой MERGE-правки (S3.2, ``TaskScheduler.update()``).
+
+    Инкрементируется на стороне вызывающего слоя (``dialogue_node``),
+    когда приходит lifecycle-событие ``"task.updated"`` от планировщика
+    (``_Channel.replace_args`` — rewrite/replace op применился к ещё не
+    стартовавшему сегменту). Планировщик (``task_scheduler.py``)
+    намеренно НЕ импортирует ``observability`` напрямую — событие уже
+    публикуется через существующий ``on_event``-колбэк
+    (``TaskScheduler(on_event=...)``), тот же механизм, что используется
+    для ``/harness/task_events`` (W7c), эта метрика — второй наблюдатель
+    того же события.
+    """
+    counter = get_metric(
+        "counter",
+        "voice_scheduler_task_updated_total",
+        "Applied TaskScheduler.update() edits (MERGE rewrite/replace "
+        "ops on a not-yet-started segment).",
+    )
+    counter.inc()
+
+
+#: Бакеты для ``voice_scheduler_pending_queue_latency_seconds`` —
+#: подобраны вокруг целевого порога 200мс (S7, §4.7.3), а не общих
+#: :data:`DEFAULT_BUCKETS` (те начинаются слишком грубо для суб-
+#: секундной цели).
+_PENDING_QUEUE_LATENCY_BUCKETS: tuple[float, ...] = (
+    0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 1.0, 2.0, 5.0, 10.0,
+)
+
+
+def record_pending_queue_latency(latency_s: float) -> None:
+    """Учёт задержки одной фразы в очереди ``_pending_user_messages`` (S7).
+
+    Задержка — от постановки в очередь (когда ``quick_decide`` вернул
+    ``PENDING_LLM`` во время in-flight турна) до дренажа
+    (``_drain_pending_user_messages``, когда предыдущий турн
+    освобождает слот). Целевое значение — **≤ 200 мс** (S7, §4.7.3):
+    если дренаж систематически превышает порог, значит турны копятся
+    быстрее, чем LLM-цикл успевает их обрабатывать.
+
+    :param latency_s: задержка в секундах (не мс).
+    """
+    hist = get_metric(
+        "histogram",
+        "voice_scheduler_pending_queue_latency_seconds",
+        "Queue latency of deferred user phrases in _pending_user_messages "
+        "(enqueue → drain), target <= 200ms.",
+        buckets=_PENDING_QUEUE_LATENCY_BUCKETS,
+    )
+    hist.observe(latency_s)
