@@ -13,6 +13,17 @@
   параметр читается, проверяется, и при попытке ``active`` нода
   логирует ``NOT_IMPLEMENTED`` и фактически остаётся в monitor.
 
+W3-2 (issue #968 wave2, провалы G2/G3) — ``acquire_floor``/
+``release_floor`` перестали быть безусловными заглушками: в
+``active``-режиме реально захватывают/отпускают floor через
+:class:`~rob_box_supervisor.core.locks.LockManager` (dead-man 500 мс,
+ADR-0028 §6 Q4). Контракт запроса — ЗАВЕДОМО переходный (см.
+:py:meth:`_extract_floor_request`): ``std_srvs/Trigger.Request`` в
+реальном ROS 2 не имеет полей вообще (пустой message перед ``---``),
+поэтому JSON/атрибуты ``client_id``/``floor`` — временное решение до
+кастомного IDL (AV-5, ADR-0028 §4.3). Это ЧЕСТНО задокументированный
+технический долг, а не полноценный wire-контракт — см. ADR-0028 §4.2.
+
 Источники истины:
 - ADR-0028 §4.3 (ROS 2 API)
 - ADR-0028 §4.5 (monitor-режим)
@@ -99,10 +110,20 @@ class AvatarSupervisor(Node):
         # Aggregator + dead-man counter (pure-Python, тестируются отдельно).
         # Импортируем лениво: в mock-rclpy окружении (CI) эти модули не
         # зависят от rclpy и импорт всегда безопасен.
-        from rob_box_supervisor.core import DeadManCounter, StateAggregator
+        from rob_box_supervisor.core import DeadManCounter, Floor, LockManager, StateAggregator
 
         self._aggregator = StateAggregator()
         self._dead_man = DeadManCounter()
+        # LockManager — источник истины по voice_floor/teleop_floor (W3-2,
+        # ADR-0028 §4.2). ModeManager (core/fsm.py) НЕ используется здесь —
+        # он остаётся только за режимами аватара, floor-ы у него лишь вход
+        # для решений о переходах (см. core/__init__.py docstring).
+        self._lock_manager = LockManager()
+        # Снимок последних известных holder-ов — нужен только чтобы отличить
+        # "floor освободился через dead-man" от "floor и так был свободен"
+        # при периодической проверке в _publish_avatar_state (метрика
+        # dead_man_trips_total, ADR-0028 §6 Q4).
+        self._known_floor_holders: dict = {Floor.TELEOP: None, Floor.VOICE: None}
 
         # Publisher /avatar/state (latched, transient_local — ADR-0028 §4.3).
         # QoSProfile(depth=1, transient_local=True) эмулирует "latched".
@@ -178,8 +199,32 @@ class AvatarSupervisor(Node):
             "reason": MONITOR_MODE_REASON,
         }
 
+    def _check_dead_man_trips(self) -> None:
+        """Периодически (1 Hz, из таймера) засечь dead-man авто-release floor-ов.
+
+        ``LockManager.holder()`` сам лениво чистит истёкшие floor-ы
+        (ADR-0028 §6 Q4, 500 мс), но не сообщает наружу, что именно
+        произошло. Здесь сравниваем со снимком прошлого тика: если
+        floor был занят client_id, а теперь свободен без явного
+        ``ReleaseFloor`` (мы бы уже обнулили ``_known_floor_holders`` в
+        :py:meth:`_release_floor_logic`) — это dead-man trip, инкрементируем
+        метрику ``dead_man_trips_total`` через агрегатор. Разрешение —
+        до 1с (период таймера), это метрика, а не enforcement (сам floor
+        снимается лениво и мгновенно при следующем acquire/holder()).
+        """
+        from rob_box_supervisor.core import Floor  # noqa: PLC0415
+
+        for floor in (Floor.TELEOP, Floor.VOICE):
+            prev = self._known_floor_holders.get(floor)
+            current = self._lock_manager.holder(floor)
+            if prev is not None and current is None:
+                new_count = self._aggregator.record_dead_man_trip(prev)
+                self._log.warning(f"dead_man_trip: client_id={prev} floor={floor} count={new_count}")
+            self._known_floor_holders[floor] = current
+
     def _publish_avatar_state(self) -> None:
         """Timer-callback: публикует свежий snapshot агрегатора в /avatar/state."""
+        self._check_dead_man_trips()
         snapshot = self._aggregator.snapshot()
         if _HAS_MSGPACK:
             try:
@@ -298,16 +343,106 @@ class AvatarSupervisor(Node):
 
         future.add_done_callback(_done)
 
-    # ── service callbacks (Phase 1: monitor → log + answer) ──────────
-    def _on_acquire_floor(self, _request: Any, response: Any) -> Any:
-        """``AcquireFloor`` — Phase 1 monitor: лог + monitor response."""
-        self._log.info(f"AcquireFloor received (mode={self._mode}) — phase 1 monitor")
-        return self._fill_monitor_response(response)
+    # ── service callbacks (W3-2: active → LockManager, monitor → как было) ──
+    @staticmethod
+    def _extract_floor_request(request: Any) -> tuple[Optional[str], Optional[str]]:
+        """Достать ``client_id``/``floor`` из запроса — ЗАВЕДОМО переходный код.
 
-    def _on_release_floor(self, _request: Any, response: Any) -> Any:
-        """``ReleaseFloor`` — Phase 1 monitor."""
-        self._log.info(f"ReleaseFloor received (mode={self._mode}) — phase 1 monitor")
-        return self._fill_monitor_response(response)
+        ``std_srvs/Trigger.Request`` в реальном ROS 2 не имеет полей вообще
+        (пустой message перед ``---``) — это НЕ полноценный wire-контракт,
+        а временное решение до кастомного IDL (AV-5, ADR-0028 §4.3). Пока
+        поддерживаем два пути, оба задокументированы как техдолг:
+
+        1. Атрибуты ``request.client_id``/``request.floor`` напрямую —
+           так будущий IDL (AV-5) подключится без изменений в этом методе.
+        2. JSON-строка в ``request.data`` (или ``request.message``) —
+           «быстрый» переходный вариант, симметричный тому, как
+           :py:meth:`_fill_monitor_response` уже пакует JSON в
+           ``response.message``.
+        """
+        client_id = getattr(request, "client_id", None)
+        floor = getattr(request, "floor", None)
+        if client_id and floor:
+            return str(client_id), str(floor)
+
+        raw = getattr(request, "data", None) or getattr(request, "message", None)
+        data = AvatarSupervisor._try_parse_json(raw)
+        if isinstance(data, dict):
+            cid = data.get("client_id")
+            fl = data.get("floor")
+            if cid and fl:
+                return str(cid), str(fl)
+        return None, None
+
+    def _acquire_floor_logic(self, client_id: Optional[str], floor: Optional[str]) -> dict:
+        """Чистая логика ``AcquireFloor`` (тестируется без rclpy).
+
+        В ``monitor`` — как раньше: ``applied=false``, floor не трогаем
+        (S12). В ``active`` — реально дёргаем :class:`LockManager`.
+        """
+        if self._mode != "active":
+            return {"success": True, "applied": False, "granted": False, "reason": MONITOR_MODE_REASON}
+        from rob_box_supervisor.core import Floor, LockConflictError  # noqa: PLC0415
+
+        if not client_id or floor not in Floor.values():
+            return {
+                "success": True,
+                "applied": False,
+                "granted": False,
+                "reason": f"invalid_request: client_id={client_id!r} floor={floor!r}",
+            }
+
+        try:
+            self._lock_manager.acquire(client_id, floor)
+        except LockConflictError as exc:
+            return {
+                "success": True,
+                "applied": True,
+                "granted": False,
+                "reason": f"conflict: held_by={exc.held_by}",
+            }
+        self._known_floor_holders[floor] = client_id
+        return {"success": True, "applied": True, "granted": True, "reason": "granted"}
+
+    def _release_floor_logic(self, client_id: Optional[str], floor: Optional[str]) -> dict:
+        """Чистая логика ``ReleaseFloor`` (тестируется без rclpy)."""
+        if self._mode != "active":
+            return {"success": True, "applied": False, "reason": MONITOR_MODE_REASON}
+        from rob_box_supervisor.core import Floor  # noqa: PLC0415
+
+        if not client_id or floor not in Floor.values():
+            return {
+                "success": True,
+                "applied": False,
+                "reason": f"invalid_request: client_id={client_id!r} floor={floor!r}",
+            }
+        try:
+            self._lock_manager.release(client_id, floor)
+        except PermissionError as exc:
+            return {"success": True, "applied": False, "reason": f"permission_denied: {exc}"}
+        if self._known_floor_holders.get(floor) == client_id:
+            self._known_floor_holders[floor] = None
+        return {"success": True, "applied": True, "reason": "released"}
+
+    def _on_acquire_floor(self, request: Any, response: Any) -> Any:
+        """``AcquireFloor`` — monitor: лог + monitor response; active: LockManager."""
+        client_id, floor = self._extract_floor_request(request)
+        body = self._acquire_floor_logic(client_id, floor)
+        self._log.info(
+            f"AcquireFloor: client_id={client_id} floor={floor} mode={self._mode} "
+            f"granted={body['granted']} reason={body['reason']}"
+        )
+        return self._fill_floor_response(response, body)
+
+    def _on_release_floor(self, request: Any, response: Any) -> Any:
+        """``ReleaseFloor`` — monitor: лог + monitor response; active: LockManager."""
+        client_id, floor = self._extract_floor_request(request)
+        body = self._release_floor_logic(client_id, floor)
+        self._log.info(
+            f"ReleaseFloor: client_id={client_id} floor={floor} mode={self._mode} "
+            f"applied={body['applied']} reason={body['reason']}"
+        )
+        return self._fill_floor_response(response, body)
 
     def _on_set_avatar_mode(self, _request: Any, response: Any) -> Any:
         """``SetAvatarMode`` — Phase 1 monitor (NOT_IMPLEMENTED для active)."""
@@ -331,6 +466,20 @@ class AvatarSupervisor(Node):
         body = self._monitor_response()
         response.success = bool(body["success"])
         response.message = json.dumps({"applied": body["applied"], "reason": body["reason"]})
+        return response
+
+    @staticmethod
+    def _fill_floor_response(response: Any, body: dict) -> Any:
+        """Заполнить std_srvs/Trigger.response для acquire/release_floor (W3-2).
+
+        Симметрично :py:meth:`_fill_monitor_response`: ``response.message``
+        несёт JSON со всеми полями кроме ``success`` (``applied``,
+        ``granted`` для acquire, ``reason``) — ``granted`` в body для
+        release просто отсутствует и в JSON не попадает.
+        """
+        response.success = bool(body["success"])
+        payload = {k: v for k, v in body.items() if k != "success"}
+        response.message = json.dumps(payload)
         return response
 
 

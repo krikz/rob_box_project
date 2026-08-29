@@ -209,6 +209,54 @@ caller — клиент). Супервизор может **отклонить**
 подписываются и **сами** решают, что значит «floor не у меня» (например,
 Telegram гасит свои кнопки движения).
 
+**Решение по дублю LockManager/ModeManager (W3-2, issue #968 wave2, G2/G3
+— зафиксировано, чтобы не путать снова):** в пакете исторически появились
+ДВЕ независимые реализации floor-логики — `core/locks.py::LockManager`
+(AV-4) и `core/fsm.py::ModeManager` (AV-3, floor-ы как побочный атрибут
+FSM режимов). Обе покрыты юнит-тестами, что маскирует дубль.
+
+- **`LockManager` (`core/locks.py`) — источник истины по floor-ам.**
+  Именно он стоит за сервисами `AcquireFloor`/`ReleaseFloor`: независимые
+  `teleop_floor`/`voice_floor`, dead-man 500 мс (§6 Q4), идемпотентный
+  повторный acquire тем же `client_id`, `ConflictError`/`PermissionError`
+  с точной причиной. Это ровно то, что нужно клиентам (Quest/Telegram),
+  которые дёргают `acquire_floor`/`release_floor` напрямую.
+- **`ModeManager` (`core/fsm.py`) остаётся ТОЛЬКО за режимами аватара**
+  (`off`/`telegram_active`/`avatar_present`/`mixed`, §4.1). Его
+  `voice_held_by`/`teleop_held_by` — это **вход** для решений о переходах
+  между режимами (например, «нельзя `off → avatar_present`, если
+  Telegram держит `voice_floor`»), а не отдельный сервис выдачи floor-ов
+  клиентам: своей dead-man логики у `ModeManager` нет (только
+  `IDLE_TIMEOUT_S = 30s` для простоя всего FSM — другая семантика).
+- Практическое следствие: `AvatarSupervisor.__init__` инстанцирует
+  `LockManager` рядом с `DeadManCounter`/`StateAggregator` (см.
+  `supervisor_node.py`); `ModeManager` пока не инстанцируется вовсе —
+  подключится вместе с `SetAvatarMode` (W3-4, смена режима в рантайме).
+  `ModeManager`/`FSMConflictError` держим экспортированными из
+  `core/__init__.py` как задел под будущую FSM-карточку, но НЕ считаем
+  их источником состояния floor-ов.
+- Если однажды понадобится смёржить обе реализации (например, чтобы
+  `ModeManager.transition()` сверялся с реальным состоянием
+  `LockManager` вместо собственных `_voice_held_by`/`_teleop_held_by`)
+  — это отдельная карточка, не W3-2: смёрживание задевает FSM-переходы
+  (`core/test_fsm.py`), а не только floor-сервисы.
+
+**Решение по контракту запроса `AcquireFloor`/`ReleaseFloor` (W3-2):**
+`std_srvs/Trigger.Request` в реальном ROS 2 **не имеет полей вообще**
+(пустой message перед `---` в `.srv`) — «JSON в `Trigger.request`»
+дословно невозможен, стандартных `std_srvs`/`rcl_interfaces` типов с
+подходящим строковым полем запроса тоже нет. Взят переходный вариант:
+сервис остаётся `std_srvs/Trigger` (нулевые изменения wire-типа), а
+`client_id`/`floor` читаются либо из атрибутов запроса напрямую
+(`request.client_id`/`request.floor` — совместимо с будущим кастомным
+IDL из AV-5 без правок кода), либо из JSON в `request.data` как
+fallback (см. `AvatarSupervisor._extract_floor_request`). Это ЧЕСТНО
+задокументированный техдолг: полноценный wire-контракт для `active`
+режима на других языках/процессах появится только с кастомным IDL
+(AV-5, §4.3) — до этого момента межпроцессный `active`-вызов
+`acquire_floor` по сети работать не будет, реальна только логика
+внутри процесса супервизора (LockManager, dead-man, конфликты).
+
 ### 4.3. ROS 2 API супервизора
 
 **Публикует (latched, transient_local):**

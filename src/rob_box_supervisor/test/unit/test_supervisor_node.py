@@ -18,6 +18,7 @@ conftest подсовывает FakeNode / FakeService / std_srvs.srv.Trigger.
 from __future__ import annotations
 
 import json
+import types
 import unittest
 from unittest.mock import MagicMock
 
@@ -307,6 +308,121 @@ class TestAvatarSupervisorVoiceMode(unittest.TestCase):
         self.assertTrue(applied)
         self.assertEqual(reason, "applied")
         self.node._set_dialogue_param.assert_called_once_with("voice_input_mode", "off")
+
+
+class TestAvatarSupervisorFloorLockManager(unittest.TestCase):
+    """W3-2 — acquire_floor/release_floor реально работают через LockManager.
+
+    Контракт запроса (см. ``AvatarSupervisor._extract_floor_request``) —
+    ЗАВЕДОМО переходный: атрибуты ``client_id``/``floor`` на запросе ИЛИ
+    JSON в ``request.data`` — до кастомного IDL (AV-5, ADR-0028 §4.3).
+    """
+
+    def setUp(self) -> None:
+        self.node = AvatarSupervisor()
+        self.node._mode = "active"
+
+    def tearDown(self) -> None:
+        self.node.destroy_node()
+
+    @staticmethod
+    def _req(client_id, floor):
+        """Переходный контракт (а): атрибуты client_id/floor на запросе."""
+        return types.SimpleNamespace(client_id=client_id, floor=floor)
+
+    def _acquire(self, client_id, floor) -> dict:
+        resp = MagicMock()
+        resp.success = False
+        resp.message = ""
+        self.node._on_acquire_floor(self._req(client_id, floor), resp)
+        return json.loads(resp.message)
+
+    def _release(self, client_id, floor) -> dict:
+        resp = MagicMock()
+        resp.success = False
+        resp.message = ""
+        self.node._on_release_floor(self._req(client_id, floor), resp)
+        return json.loads(resp.message)
+
+    def test_conflict_between_two_clients_on_same_floor(self) -> None:
+        """Второй клиент, запросивший уже занятый floor, получает granted=False."""
+        first = self._acquire("quest", "voice_floor")
+        self.assertTrue(first["granted"], first)
+
+        second = self._acquire("telegram", "voice_floor")
+        self.assertFalse(second["granted"])
+        self.assertIn("conflict", second["reason"])
+        self.assertIn("quest", second["reason"])  # внятная причина — кто держит
+
+    def test_idempotent_reacquire_same_client(self) -> None:
+        """Повторный acquire тем же client_id — не конфликт, granted=True оба раза."""
+        first = self._acquire("quest", "teleop_floor")
+        second = self._acquire("quest", "teleop_floor")
+        self.assertTrue(first["granted"])
+        self.assertTrue(second["granted"])
+        self.assertEqual(second["reason"], "granted")
+
+    def test_dead_man_releases_floor_after_500ms_without_heartbeat(self) -> None:
+        """Без heartbeat > 500 мс (ADR-0028 §6 Q4) floor освобождается — новый клиент может acquire."""
+        from rob_box_supervisor.core import LockManager
+
+        clock = {"t": 0}
+        self.node._lock_manager = LockManager(clock=lambda: clock["t"])
+
+        first = self._acquire("quest", "teleop_floor")
+        self.assertTrue(first["granted"])
+
+        clock["t"] += 501  # dead-man timeout = 500 мс
+
+        second = self._acquire("telegram", "teleop_floor")
+        self.assertTrue(second["granted"], second)
+
+    def test_dead_man_trip_increments_aggregator_metric(self) -> None:
+        """Dead-man авто-release замечается таймер-тиком и попадает в dead_man_trips_total."""
+        from rob_box_supervisor.core import LockManager
+
+        clock = {"t": 0}
+        self.node._lock_manager = LockManager(clock=lambda: clock["t"])
+
+        self._acquire("quest", "voice_floor")
+        clock["t"] += 501
+        self.node._check_dead_man_trips()
+
+        self.assertEqual(self.node._aggregator.dead_man_count("quest"), 1)
+
+    def test_release_by_owner_succeeds(self) -> None:
+        self._acquire("quest", "teleop_floor")
+        result = self._release("quest", "teleop_floor")
+        self.assertTrue(result["applied"])
+        self.assertEqual(result["reason"], "released")
+
+    def test_release_by_wrong_client_denied(self) -> None:
+        self._acquire("quest", "teleop_floor")
+        result = self._release("telegram", "teleop_floor")
+        self.assertFalse(result["applied"])
+        self.assertIn("permission_denied", result["reason"])
+
+    def test_json_in_request_data_is_accepted(self) -> None:
+        """Переходный контракт (б): JSON в request.data (без атрибутов client_id/floor)."""
+        req = types.SimpleNamespace(data=json.dumps({"client_id": "quest", "floor": "voice_floor"}))
+        resp = MagicMock()
+        resp.success = False
+        resp.message = ""
+        self.node._on_acquire_floor(req, resp)
+        body = json.loads(resp.message)
+        self.assertTrue(body["granted"])
+
+    def test_monitor_mode_still_applied_false_for_floor_ops(self) -> None:
+        """В monitor-режиме acquire/release_floor по-прежнему applied=false (регресс ADR-0028 §4.5)."""
+        self.node._mode = "monitor"
+        acquire_result = self._acquire("quest", "voice_floor")
+        self.assertFalse(acquire_result["applied"])
+        self.assertFalse(acquire_result["granted"])
+        self.assertEqual(acquire_result["reason"], MONITOR_MODE_REASON)
+
+        release_result = self._release("quest", "voice_floor")
+        self.assertFalse(release_result["applied"])
+        self.assertEqual(release_result["reason"], MONITOR_MODE_REASON)
 
 
 if __name__ == "__main__":
