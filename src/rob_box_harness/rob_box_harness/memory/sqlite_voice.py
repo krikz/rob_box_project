@@ -372,6 +372,20 @@ class SQLiteVoiceMemory(MemoryStore):
 
         await self._run_sync(_save)
 
+    async def clear_facts(self, scope: str) -> int:
+        """Remove every fact for ``scope``; returns the number of rows removed.
+
+        Issue W5-4 — используется ``merge_speaker_facts()`` для очистки
+        исходного scope после переноса фактов в основной профиль.
+        """
+
+        def _clear(conn: sqlite3.Connection) -> int:
+            cursor = conn.execute("DELETE FROM facts WHERE scope = ?", (scope,))
+            conn.commit()
+            return cursor.rowcount
+
+        return await self._run_sync(_clear)
+
     async def search_facts(
         self,
         scope: str,

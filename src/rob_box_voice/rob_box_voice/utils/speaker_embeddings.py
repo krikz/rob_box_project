@@ -4,13 +4,27 @@ speaker_embeddings.py — Speaker identification via resemblyzer d-vectors.
 
 Stores per-speaker embeddings in a SQLite database at /data/speakers.db.
 Each speaker can have multiple reference embeddings (one per registration),
-the identity decision uses mean-of-cosine similarity across all references.
+the identity decision uses MAX-of-cosine similarity across all references
+(не mean — старая формулировка докстринга была неверной, см. issue W5-4:
+``identify()`` берёт лучший, а не средний скор по пулу эмбеддингов спикера).
 
 Usage:
     db = SpeakerDatabase("/data/speakers.db")
     embedding = db.embed_audio(pcm_bytes, sample_rate=16000)
     result = db.identify(embedding)   # → SpeakerMatch | None
     new_id = db.register("Иван", embedding)
+
+Issue W5-4 (баг «один голос — два профиля»): голая ``register()`` ВСЕГДА
+создаёт новый speaker_id, если явно не передан ``speaker_id=``. До этой
+задачи вызывающий код (speaker_id_node) никогда его не передавал — то
+есть КАЖДЫЙ вызов register_speaker(name=...) от LLM создавал новый
+профиль, даже если голос уже был опознан. ``register_or_merge()`` — новый
+метод, который сначала пытается опознать говорящего по уже сохранённым
+эмбеддингам (более строгий порог, чем обычная идентификация, — см.
+REGISTER_MATCH_THRESHOLD) и, при совпадении, дописывает эмбеддинг в
+СУЩЕСТВУЮЩИЙ профиль вместо создания нового. ``merge_speakers()`` —
+ручная склейка уже расползшихся дублей (например, найденных оператором
+в списке спикеров).
 """
 
 from __future__ import annotations
@@ -31,6 +45,17 @@ logger = logging.getLogger(__name__)
 
 # ── Tuning constants ─────────────────────────────────────────────────────────
 IDENTIFY_THRESHOLD: float = 0.75    # cosine similarity to accept a match
+# Issue W5-4 — порог для решения «дописать эмбеддинг в СУЩЕСТВУЮЩИЙ профиль
+# vs завести новый» внутри register_or_merge(). Сознательно ВЫШЕ
+# IDENTIFY_THRESHOLD: обычная идентификация ошибается дёшево (один ход
+# «не узнал» — не страшно, поправится на следующей фразе), а решение при
+# регистрации — дорогое и малообратимое: ложное слияние смешает факты
+# ДВУХ разных людей под одним профилем (хуже, чем временный дубль, который
+# чинится merge_speakers() после факта). Синтетический бенчмарк (см.
+# отчёт задачи W5-4, docs/plans) не показал роста риска ложного слияния
+# между 0.75 и 0.85 для независимых голосов — граница взята консервативно
+# с запасом, а не в максимуме диапазона.
+REGISTER_MATCH_THRESHOLD: float = 0.82
 MIN_AUDIO_DURATION_SEC: float = 0.3  # minimum speech length for reliable embedding
 SAMPLE_RATE: int = 16000            # resemblyzer expects 16 kHz mono float32
 
@@ -145,22 +170,31 @@ class SpeakerDatabase:
             logger.error(f"embed_audio failed: {type(exc).__name__}: {exc}")
             return None
 
-    def identify(self, embedding: np.ndarray) -> Optional[SpeakerMatch]:
-        """Find the closest known speaker.  Returns None if confidence < threshold."""
+    def _score_all(self, embedding: np.ndarray) -> List[Tuple[str, str, float]]:
+        """Посчитать best-of-pool cosine similarity для КАЖДОГО известного спикера.
+
+        Возвращает список ``(speaker_id, name, score)``, отсортированный по
+        убыванию score. ``score`` — MAX косинусной близости по всем
+        сохранённым эмбеддингам спикера (не mean — устойчивее к разнородному
+        пулу: шум/громкость/дистанция одной "плохой" фразы не размывают уже
+        подтверждённое совпадение с лучшей референсной записью).
+
+        Общий метод для ``identify()`` (порог IDENTIFY_THRESHOLD) и
+        ``identify_candidates()`` (диагностика без порога, issue W5-4 п.4).
+        """
         rows = self._conn.execute(
             "SELECT s.speaker_id, s.name, e.embedding "
             "FROM embeddings e JOIN speakers s USING (speaker_id)"
         ).fetchall()
-
         if not rows:
-            return None
+            return []
 
-        # Build per-speaker pools and compute mean similarity.
-        # numpy-only cosine similarity (склейка по всем эмбеддингам) — не тянем
-        # sklearn как обязательную зависимость (issue #1077).
         query = embedding.reshape(1, -1)
         if query.shape[1] == 0:
-            return None
+            return []
+
+        # numpy-only cosine similarity — не тянем sklearn как обязательную
+        # зависимость (issue #1077).
         speaker_scores: dict[str, Tuple[str, float]] = {}
         for speaker_id, name, blob in rows:
             ref = self._blob_to_ndarray(blob).reshape(1, -1)
@@ -172,16 +206,62 @@ class SpeakerDatabase:
             if speaker_id not in speaker_scores or sim > speaker_scores[speaker_id][1]:
                 speaker_scores[speaker_id] = (name, sim)
 
-        best_id, (best_name, best_score) = max(speaker_scores.items(), key=lambda kv: kv[1][1])
+        ranked = sorted(
+            ((sid, name, score) for sid, (name, score) in speaker_scores.items()),
+            key=lambda t: -t[2],
+        )
+        return ranked
 
-        if best_score < IDENTIFY_THRESHOLD:
-            logger.debug(f"Best match {best_name!r} score={best_score:.3f} below threshold {IDENTIFY_THRESHOLD}")
+    def identify(
+        self, embedding: np.ndarray, threshold: Optional[float] = None
+    ) -> Optional[SpeakerMatch]:
+        """Find the closest known speaker.  Returns None if confidence < threshold.
+
+        ``threshold`` по умолчанию — модульный ``IDENTIFY_THRESHOLD``
+        (обычное распознавание на ход диалога). Вызывающий код может
+        передать более строгий порог — например, ``register_or_merge()``
+        использует ``REGISTER_MATCH_THRESHOLD`` для решения «слить с
+        существующим профилем vs завести новый» (issue W5-4).
+        """
+        ranked = self._score_all(embedding)
+        if not ranked:
+            return None
+        thr = IDENTIFY_THRESHOLD if threshold is None else threshold
+        best_id, best_name, best_score = ranked[0]
+
+        if best_score < thr:
+            logger.debug(f"Best match {best_name!r} score={best_score:.3f} below threshold {thr}")
             return None
 
         return SpeakerMatch(speaker_id=best_id, name=best_name, confidence=best_score)
 
+    def identify_candidates(
+        self, embedding: np.ndarray, top_n: int = 2
+    ) -> List[SpeakerMatch]:
+        """Топ-N кандидатов БЕЗ порога — для диагностики (issue W5-4 п.4).
+
+        Без этого в проде виден только булев результат identify() —
+        «известен / неизвестен» — и дрейф голоса между двумя дублирующими
+        профилями невозможно отследить постфактум: неясно, насколько
+        близко было решение и с кем именно конкурировал победитель.
+        Возвращает пустой список, если спикеров в БД ещё нет.
+        """
+        ranked = self._score_all(embedding)[: max(0, top_n)]
+        return [
+            SpeakerMatch(speaker_id=sid, name=name, confidence=score)
+            for sid, name, score in ranked
+        ]
+
     def register(self, name: str, embedding: np.ndarray, speaker_id: Optional[str] = None) -> str:
-        """Create a new speaker (or add another embedding to existing speaker_id)."""
+        """Create a new speaker (or add another embedding to existing speaker_id).
+
+        ⚠️ Issue W5-4: эта функция ВСЕГДА создаёт новый профиль, если
+        ``speaker_id`` не передан явно — она НЕ проверяет, похож ли голос
+        на уже известного спикера. Для потока «LLM вызвал register_speaker
+        по имени, услышанному в речи» используйте ``register_or_merge()``
+        — он сначала проверяет совпадение и только потом решает, создавать
+        новый профиль или дописать эмбеддинг в существующий.
+        """
         now = time.time()
         if speaker_id is None:
             speaker_id = str(uuid.uuid4())
@@ -202,6 +282,85 @@ class SpeakerDatabase:
         self._conn.commit()
         logger.info(f"Registered speaker '{name}' id={speaker_id[:8]}")
         return speaker_id
+
+    def register_or_merge(
+        self, name: str, embedding: np.ndarray, speaker_id: Optional[str] = None
+    ) -> Tuple[str, bool]:
+        """Зарегистрировать эмбеддинг, избегая создания дубля (issue W5-4).
+
+        Если ``speaker_id`` передан явно — поведение как у ``register()``
+        (вызывающий код уже знает, к какому профилю привязать эмбеддинг).
+
+        Иначе сначала проверяется, похож ли голос на уже известного
+        спикера (``identify(embedding, threshold=REGISTER_MATCH_THRESHOLD)``
+        — порог строже обычной идентификации, см. комментарий у константы).
+        При совпадении эмбеддинг дописывается в НАЙДЕННЫЙ профиль (имя
+        обновляется на переданное ``name`` — это же путь, которым раньше
+        шёл ``rename``), новый профиль не создаётся. Иначе — обычная
+        регистрация нового профиля.
+
+        Возвращает ``(speaker_id, reused)``: ``reused=True``, если
+        эмбеддинг присоединён к уже существующему профилю.
+        """
+        if speaker_id is not None:
+            return self.register(name, embedding, speaker_id=speaker_id), False
+
+        match = self.identify(embedding, threshold=REGISTER_MATCH_THRESHOLD)
+        if match is not None:
+            logger.info(
+                f"🔗 register_or_merge: голос похож на уже известного "
+                f"'{match.name}' (score={match.confidence:.3f} >= "
+                f"{REGISTER_MATCH_THRESHOLD}) — дописываю в id={match.speaker_id[:8]} "
+                f"вместо нового профиля"
+            )
+            return self.register(name, embedding, speaker_id=match.speaker_id), True
+
+        new_id = self.register(name, embedding, speaker_id=None)
+        return new_id, False
+
+    def merge_speakers(self, src_id: str, dst_id: str) -> int:
+        """Слить два профиля одного человека (issue W5-4).
+
+        Переносит ВСЕ эмбеддинги ``src_id`` под ``dst_id`` и удаляет
+        профиль ``src_id``. Имя ``dst_id`` не меняется — считается основным
+        (тот, под кем профиль решили оставить). Возвращает число
+        перенесённых эмбеддингов.
+
+        Идемпотентно/безопасно: возвращает 0 и ничего не делает, если
+        ``src_id == dst_id``, любой из id пуст, либо ``dst_id`` не найден
+        в БД (защита от опечатки в вызывающем коде — иначе можно случайно
+        "потерять" src, не создав валидный dst).
+
+        Факты собеседника (``scope="speaker:<id>"``) живут в отдельном
+        слое памяти (``rob_box_harness.memory`` / ``SQLiteVoiceMemory``) —
+        этот метод их не трогает. Вызывающий код, которому нужно склеить
+        и факты, должен ОТДЕЛЬНО вызвать
+        ``rob_box_harness.memory.merge_speaker_facts(store, src_id, dst_id)``
+        после (или до) вызова этого метода — SpeakerDatabase намеренно не
+        знает о MemoryStore, чтобы не размазывать ответственность между
+        слоями (голосовая биометрия vs LLM-память).
+        """
+        if not src_id or not dst_id or src_id == dst_id:
+            return 0
+        dst_exists = self._conn.execute(
+            "SELECT 1 FROM speakers WHERE speaker_id=?", (dst_id,)
+        ).fetchone()
+        if not dst_exists:
+            logger.warning(
+                f"merge_speakers: dst={dst_id[:8]} не найден в БД — отмена, "
+                f"src={src_id[:8]} не тронут"
+            )
+            return 0
+        cur = self._conn.execute(
+            "UPDATE embeddings SET speaker_id=? WHERE speaker_id=?", (dst_id, src_id)
+        )
+        moved = cur.rowcount
+        self._conn.execute("DELETE FROM speakers WHERE speaker_id=?", (src_id,))
+        self._conn.commit()
+        logger.info(
+            f"🔗 merge_speakers: {src_id[:8]} → {dst_id[:8]} ({moved} эмбеддингов перенесено)"
+        )
+        return moved
 
     def rename(self, speaker_id: str, new_name: str) -> bool:
         """Rename an existing speaker."""

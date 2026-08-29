@@ -5,15 +5,21 @@ speaker_id_node.py — Real-time speaker identification using resemblyzer d-vect
 Subscribes:
     /audio/speech_audio  (AudioData)  — full speech utterance from audio_node
     /voice/speaker/register (String)  — JSON {"name":"Иван"} — register current speaker
+    /voice/speaker/rename   (String)  — JSON {"speaker_id"|"old_name", "new_name"}
+    /voice/speaker/merge    (String)  — JSON {"src_speaker_id","dst_speaker_id"} —
+                                         issue W5-4, склейка дублей одного голоса
 
 Publishes:
     /voice/speaker/result (String) — JSON SpeakerMatch or {"is_known":false}
 
 Parameters:
-    db_path              (str)   — path to SQLite DB       [/data/speakers.db]
-    identify_threshold   (float) — cosine similarity gate  [0.75]
-    sample_rate          (int)   — PCM sample rate         [16000]
-    enabled              (bool)  — enable/disable node     [true]
+    db_path                  (str)   — path to SQLite DB       [/data/speakers.db]
+    identify_threshold       (float) — cosine similarity gate  [0.75]
+    register_match_threshold (float) — порог слияния при регистрации (issue
+                                        W5-4; строже identify_threshold — см.
+                                        speaker_embeddings.REGISTER_MATCH_THRESHOLD) [0.82]
+    sample_rate              (int)   — PCM sample rate         [16000]
+    enabled                  (bool)  — enable/disable node     [true]
 """
 
 import collections
@@ -51,6 +57,11 @@ class SpeakerIdNode(Node):
         # ── Parameters ────────────────────────────────────────────────────────
         self.declare_parameter("db_path", "/data/speakers.db")
         self.declare_parameter("identify_threshold", 0.75)
+        # Issue W5-4 — отдельный, более строгий порог для решения «слить с
+        # существующим профилем при регистрации vs завести новый» внутри
+        # register_or_merge(). См. speaker_embeddings.REGISTER_MATCH_THRESHOLD
+        # за обоснованием (синтетический бенчмарк, docs/plans задачи W5-4).
+        self.declare_parameter("register_match_threshold", 0.82)
         self.declare_parameter("sample_rate", 16000)
         self.declare_parameter("enabled", True)
         # Issue #1160 — Prometheus metrics endpoint. 9112 — speaker_id_node.
@@ -60,6 +71,7 @@ class SpeakerIdNode(Node):
         self._sample_rate: int = self.get_parameter("sample_rate").value
         db_path: str = self.get_parameter("db_path").value
         threshold: float = self.get_parameter("identify_threshold").value
+        register_threshold: float = self.get_parameter("register_match_threshold").value
 
         if not self._enabled:
             self.get_logger().info("⚠️ speaker_id_node disabled via parameter")
@@ -67,11 +79,15 @@ class SpeakerIdNode(Node):
 
         # ── Speaker DB (thread-safe via lock) ─────────────────────────────────
         self._db = SpeakerDatabase(db_path)
-        # Patch threshold from parameter
+        # Patch thresholds from parameters
         import rob_box_voice.utils.speaker_embeddings as _se_mod
 
         _se_mod.IDENTIFY_THRESHOLD = threshold
-        self.get_logger().info(f"✅ SpeakerDatabase opened: {db_path} threshold={threshold}")
+        _se_mod.REGISTER_MATCH_THRESHOLD = register_threshold
+        self.get_logger().info(
+            f"✅ SpeakerDatabase opened: {db_path} "
+            f"identify_threshold={threshold} register_match_threshold={register_threshold}"
+        )
 
         # ── Pending registration ───────────────────────────────────────────────
         # Set when user says "запомни мой голос как [name]" via /voice/speaker/register.
@@ -137,6 +153,15 @@ class SpeakerIdNode(Node):
             String,
             "/voice/speaker/rename",
             self._on_rename_request,
+            reliable_qos,
+        )
+        # Issue W5-4 — ручная склейка уже расползшихся дублей одного голоса
+        # (например, найденных оператором через list_speakers): JSON
+        # {"src_speaker_id": "...", "dst_speaker_id": "..."}.
+        self.create_subscription(
+            String,
+            "/voice/speaker/merge",
+            self._on_merge_request,
             reliable_qos,
         )
 
@@ -260,6 +285,7 @@ class SpeakerIdNode(Node):
             return
 
         match = self._db.identify(embedding)
+        self._log_identify_candidates(embedding)
         if match:
             self.get_logger().info(
                 f"👤 Speaker: '{match.name}' confidence={match.confidence:.3f} "
@@ -274,6 +300,34 @@ class SpeakerIdNode(Node):
             confidence=match.confidence if match else None,
         )
         self._publish_result(match)
+
+    def _log_identify_candidates(self, embedding: np.ndarray) -> None:
+        """Issue W5-4 п.4 — диагностика: best_score И второй кандидат.
+
+        Без этого лога в проде виден только булев результат identify()
+        («известен / неизвестен»), и дрейф голоса между двумя дублирующими
+        профилями невозможно отследить постфактум — неясно, насколько
+        близко было решение и с кем именно конкурировал победитель. Лог
+        уровня INFO — намеренно (не debug): это ровно то, что нужно
+        вытащить из логов робота при разборе жалобы «опознал не того».
+        """
+        candidates = self._db.identify_candidates(embedding, top_n=2)
+        if not candidates:
+            return
+        best = candidates[0]
+        if len(candidates) > 1:
+            second = candidates[1]
+            gap = best.confidence - second.confidence
+            self.get_logger().info(
+                f"🔍 identify candidates: best='{best.name}'({best.speaker_id[:8]}) "
+                f"score={best.confidence:.3f} | second='{second.name}'"
+                f"({second.speaker_id[:8]}) score={second.confidence:.3f} | gap={gap:.3f}"
+            )
+        else:
+            self.get_logger().info(
+                f"🔍 identify candidates: best='{best.name}'({best.speaker_id[:8]}) "
+                f"score={best.confidence:.3f} | (единственный известный спикер в БД)"
+            )
 
     def _on_rename_request(self, msg: String) -> None:
         """Rename an existing speaker entry.
@@ -326,19 +380,84 @@ class SpeakerIdNode(Node):
         )
         self._result_pub.publish(ack)
 
+    def _on_merge_request(self, msg: String) -> None:
+        """Issue W5-4 — склеить два профиля одного голоса («денчик» + «эйджик»).
+
+        Expected JSON: {"src_speaker_id": "<uuid>", "dst_speaker_id": "<uuid>"}
+        Все эмбеддинги ``src`` переносятся под ``dst``, профиль ``src``
+        удаляется. Имя ``dst`` остаётся как есть — вызывающий код должен
+        сам решить, какой из двух id — "основной".
+        """
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().warning("⚠️ merge_request: invalid JSON ignored")
+            return
+
+        src_id = str(data.get("src_speaker_id", "")).strip()
+        dst_id = str(data.get("dst_speaker_id", "")).strip()
+        if not src_id or not dst_id:
+            self.get_logger().warning(
+                "⚠️ merge_request: missing src_speaker_id or dst_speaker_id"
+            )
+            return
+
+        moved = self._db.merge_speakers(src_id, dst_id)
+        ok = moved > 0
+        if ok:
+            self.get_logger().info(
+                f"🔗 Merged speaker {src_id[:8]} → {dst_id[:8]} "
+                f"({moved} embeddings moved)"
+            )
+        else:
+            self.get_logger().warning(
+                f"⚠️ merge failed: src={src_id[:8]} dst={dst_id[:8]} "
+                "(src==dst, src not found, or dst not found in DB)"
+            )
+
+        ack = String()
+        ack.data = json.dumps(
+            {
+                "event": "merged",
+                "ok": ok,
+                "src_speaker_id": src_id,
+                "dst_speaker_id": dst_id,
+                "embeddings_moved": moved,
+            },
+            ensure_ascii=False,
+        )
+        self._result_pub.publish(ack)
+
     def _do_register(
         self,
         name: str,
         embedding: np.ndarray,
         speaker_id: Optional[str],
     ) -> None:
-        """Persist speaker embedding to DB and acknowledge."""
-        sid = self._db.register(name, embedding, speaker_id=speaker_id)
-        self.get_logger().info(f"✅ Speaker '{name}' registered (id={sid[:8]})")
+        """Persist speaker embedding to DB and acknowledge.
+
+        Issue W5-4 — использует ``register_or_merge()`` вместо голого
+        ``register()``: если ``speaker_id`` не передан явно (обычный путь
+        от LLM-тула register_speaker), сначала проверяется, не похож ли
+        голос на уже известный профиль (порог REGISTER_MATCH_THRESHOLD,
+        строже обычной идентификации) — и, при совпадении, эмбеддинг
+        дописывается в существующий профиль вместо создания дубля. Именно
+        отсутствие этой проверки было причиной бага «один голос — два
+        профиля» (денчик/эйджик): раньше КАЖДЫЙ вызов register_speaker
+        создавал новый speaker_id безусловно.
+        """
+        sid, reused = self._db.register_or_merge(name, embedding, speaker_id=speaker_id)
+        if reused:
+            self.get_logger().info(
+                f"🔗 Speaker '{name}' merged into existing profile (id={sid[:8]}) "
+                "— voice matched an already-known speaker, no duplicate created"
+            )
+        else:
+            self.get_logger().info(f"✅ Speaker '{name}' registered (id={sid[:8]})")
         # Publish a registration-ack so dialogue_node can confirm verbally
         ack = String()
         ack.data = json.dumps(
-            {"event": "registered", "name": name, "speaker_id": sid},
+            {"event": "registered", "name": name, "speaker_id": sid, "reused_profile": reused},
             ensure_ascii=False,
         )
         self._result_pub.publish(ack)

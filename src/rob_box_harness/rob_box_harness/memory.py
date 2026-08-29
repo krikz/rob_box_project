@@ -146,6 +146,16 @@ class MemoryStore(abc.ABC):
         """Persist ``fact`` under ``scope``."""
 
     @abc.abstractmethod
+    async def clear_facts(self, scope: str) -> int:
+        """Remove every fact stored under ``scope``.
+
+        Returns the number of facts removed (0 if the scope had none).
+        Issue W5-4 — used by :func:`merge_speaker_facts` to clean up the
+        source scope after moving its facts into the destination scope
+        during a speaker-profile merge.
+        """
+
+    @abc.abstractmethod
     async def search_facts(
         self,
         scope: str,
@@ -322,6 +332,11 @@ class InMemoryStore(MemoryStore):
                 bucket[index] = fact
                 return
         bucket.append(fact)
+
+    async def clear_facts(self, scope: str) -> int:
+        """Remove every fact for ``scope``; returns the count removed."""
+        bucket = self._facts.pop(scope, None)
+        return len(bucket) if bucket is not None else 0
 
     async def search_facts(
         self,
@@ -554,6 +569,46 @@ async def touch_speaker(
     return profile
 
 
+async def merge_speaker_facts(store: MemoryStore, src_tag: str, dst_tag: str) -> int:
+    """Перенести факты одного спикера в другой (issue W5-4 — склейка профилей).
+
+    Используется в паре с ``SpeakerDatabase.merge_speakers()``
+    (``rob_box_voice.utils.speaker_embeddings``), которая слепляет
+    эмбеддинги голоса. Эта функция — независимый аналог для слоя памяти
+    (факты), намеренно НЕ знающий о ``SpeakerDatabase``: биометрия и
+    LLM-память — разные слои с разной ответственностью, вызывающий код
+    (например, dialogue_node) сам решает, вызывать ли обе операции вместе.
+
+    Переносит все факты из ``speaker_scope(src_tag)`` в
+    ``speaker_scope(dst_tag)``. При конфликте ключей выигрывает dst —
+    dst считается основным (уже подтверждённым) профилем, его факты не
+    перезаписываются данными временного/дублирующего src. После переноса
+    ``src`` scope очищается полностью (в том числе конфликтные факты,
+    которые не были перенесены) — иначе застрявшие факты будут молча
+    проигнорированы при следующих чтениях по старому scope.
+
+    Возвращает число ФАКТИЧЕСКИ перенесённых фактов (без учёта
+    отброшенных из-за конфликта ключей).
+    """
+    if not src_tag or not dst_tag or src_tag == dst_tag:
+        return 0
+    src_scope = speaker_scope(src_tag)
+    dst_scope = speaker_scope(dst_tag)
+    src_facts = await store.list_facts(src_scope, limit=1000)
+    if not src_facts:
+        return 0
+    dst_facts = await store.list_facts(dst_scope, limit=1000)
+    dst_keys = {f.key for f in dst_facts}
+    moved = 0
+    for fact in src_facts:
+        if fact.key in dst_keys:
+            continue  # dst — основной профиль, его факты приоритетнее
+        await store.save_fact(dst_scope, fact)
+        moved += 1
+    await store.clear_facts(src_scope)
+    return moved
+
+
 __all__ = [
     "Turn",
     "Fact",
@@ -567,4 +622,5 @@ __all__ = [
     "get_speaker_profile",
     "ensure_speaker_profile",
     "touch_speaker",
+    "merge_speaker_facts",
 ]
