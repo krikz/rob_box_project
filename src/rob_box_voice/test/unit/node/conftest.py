@@ -15,7 +15,10 @@ from pathlib import Path as _Path
 # means the winner no longer matters: every directory publishes the same
 # policy names and the same kwargs-recording ``QoSProfile``.
 _sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
-from ros_stubs import qos_stub as _qos_stub  # noqa: E402
+from ros_stubs import (  # noqa: E402
+    FakeNode as _FakeNode,
+    qos_stub as _qos_stub,
+)
 
 import types
 from unittest.mock import MagicMock
@@ -28,45 +31,11 @@ def _install_ros_mocks():
     mock_rclpy = MagicMock()
 
     # Node — базовый класс DialogueNode
-    class FakeNode:
-        """Минимальная заглушка rclpy.node.Node без реальных сокетов."""
-
-        def __init__(self, name, **kwargs):
-            self._name = name
-            self._logger = MagicMock()
-            self._logger.info = MagicMock()
-            self._logger.warning = MagicMock()
-            self._logger.error = MagicMock()
-            self._logger.debug = MagicMock()
-
-        def get_logger(self):
-            return self._logger
-
-        def declare_parameter(self, name, default=None):
-            return MagicMock()
-
-        def get_parameter(self, name):
-            p = MagicMock()
-            p.value = None
-            return p
-
-        def create_publisher(self, *args, **kwargs):
-            return MagicMock()
-
-        def create_subscription(self, *args, **kwargs):
-            return MagicMock()
-
-        def create_timer(self, *args, **kwargs):
-            return MagicMock()
-
-        def create_service(self, *args, **kwargs):
-            return MagicMock()
-
-        def create_client(self, *args, **kwargs):
-            return MagicMock()
-
-        def get_name(self):
-            return self._name
+    # FakeNode is shared (test/ros_stubs.py). ``rclpy.node`` is installed
+    # with ``sys.modules.setdefault``, so only the first conftest to load
+    # supplies the base class for every directory — four private copies
+    # meant the winner decided which assertions could pass.
+    FakeNode = _FakeNode
 
     mock_rclpy_node = MagicMock()
     mock_rclpy_node.Node = FakeNode

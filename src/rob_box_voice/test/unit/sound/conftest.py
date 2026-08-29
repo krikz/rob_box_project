@@ -11,9 +11,14 @@ conftest ставит минимальные заглушки, чтобы мод
 голосового passthrough (подписка, стрим, координация с эффектами).
 """
 
-import sys
 import types
 from unittest.mock import MagicMock
+
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+from ros_stubs import install_ros_stubs  # noqa: E402
 
 _INSTALLED = False
 
@@ -24,114 +29,36 @@ def _install_all_mocks():
         return
     _INSTALLED = True
 
-    # ── rclpy.node.Node ──────────────────────────────────────────────────
-    class FakeNode:
-        """Минимальная заглушка rclpy.node.Node: записывает подписки/таймеры."""
+    # rclpy / rclpy.node / rclpy.qos / std_msgs come from the shared set, and
+    # ``install_ros_stubs`` is additive: whichever directory loads first
+    # registers them, the rest only fill in names that are missing. A private
+    # `std_msgs.msg` here carried `String` but not `Bool`, so running
+    # `unit/sound` before `unit/node` broke the *import* of 18 dialogue-node
+    # test modules that each passed on their own — the same failure shape
+    # `rclpy.qos` had before it was shared.
+    audio_msg = types.ModuleType("audio_common_msgs.msg")
+    audio_msg.AudioData = type("AudioData", (), {})
 
-        def __init__(self, name, **kwargs):
-            self._name = name
-            self._logger = MagicMock()
-            self._declared = {}
-            self._subscriptions = []
-            self._publishers = []
-            self._timers = []
+    rcl_ifaces_msg = types.ModuleType("rcl_interfaces.msg")
+    rcl_ifaces_msg.SetParametersResult = MagicMock
 
-        def get_logger(self):
-            return self._logger
+    pydub = types.ModuleType("pydub")
+    pydub.AudioSegment = type("AudioSegment", (), {})
 
-        def declare_parameter(self, name, default=None):
-            p = MagicMock()
-            p.value = default
-            self._declared[name] = p
-            return p
-
-        def get_parameter(self, name):
-            return self._declared.get(name, MagicMock(value=None))
-
-        def has_parameter(self, name):
-            return name in self._declared
-
-        def create_publisher(self, *args, **kwargs):
-            pub = MagicMock()
-            self._publishers.append((args, kwargs))
-            return pub
-
-        def create_subscription(self, *args, **kwargs):
-            sub = MagicMock()
-            self._subscriptions.append((args, kwargs))
-            return sub
-
-        def create_timer(self, *args, **kwargs):
-            timer = MagicMock()
-            self._timers.append((args, kwargs))
-            return timer
-
-        def add_on_set_parameters_callback(self, cb):
-            return MagicMock()
-
-        def get_name(self):
-            return self._name
-
-    mock_rclpy_node = types.ModuleType("rclpy.node")
-    mock_rclpy_node.Node = FakeNode
-
-    # ── rclpy.qos ────────────────────────────────────────────────────────
-    class _Policy:
-        BEST_EFFORT = "best_effort"
-        RELIABLE = "reliable"
-        VOLATILE = "volatile"
-        KEEP_LAST = "keep_last"
-
-    class FakeQoSProfile:
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
-
-    mock_rclpy_qos = types.ModuleType("rclpy.qos")
-    mock_rclpy_qos.QoSProfile = FakeQoSProfile
-    mock_rclpy_qos.ReliabilityPolicy = _Policy
-    mock_rclpy_qos.DurabilityPolicy = _Policy
-    mock_rclpy_qos.HistoryPolicy = _Policy
-
-    # ── std_msgs.msg ─────────────────────────────────────────────────────
-    mock_std_msgs = types.ModuleType("std_msgs")
-    mock_std_msgs_msg = types.ModuleType("std_msgs.msg")
-    mock_std_msgs_msg.String = type("String", (), {"data": ""})
-    sys.modules.setdefault("std_msgs", mock_std_msgs)
-    sys.modules.setdefault("std_msgs.msg", mock_std_msgs_msg)
-
-    # ── audio_common_msgs.msg ────────────────────────────────────────────
-    mock_audio_pkg = types.ModuleType("audio_common_msgs")
-    mock_audio_msg = types.ModuleType("audio_common_msgs.msg")
-    mock_audio_msg.AudioData = type("AudioData", (), {})
-    sys.modules.setdefault("audio_common_msgs", mock_audio_pkg)
-    sys.modules.setdefault("audio_common_msgs.msg", mock_audio_msg)
-
-    # ── rcl_interfaces.msg (lazy-import в parameters_callback) ───────────
-    mock_rcl_ifaces = types.ModuleType("rcl_interfaces")
-    mock_rcl_ifaces_msg = types.ModuleType("rcl_interfaces.msg")
-    mock_rcl_ifaces_msg.SetParametersResult = MagicMock
-    sys.modules.setdefault("rcl_interfaces", mock_rcl_ifaces)
-    sys.modules.setdefault("rcl_interfaces.msg", mock_rcl_ifaces_msg)
-
-    # ── audio deps: sounddevice / pyaudio / usb / pydub ──────────────────
-    sys.modules.setdefault("sounddevice", MagicMock())
-    sys.modules.setdefault("pyaudio", MagicMock())
-    sys.modules.setdefault("usb", MagicMock())
-    sys.modules.setdefault("usb.core", MagicMock())
-    sys.modules.setdefault("usb.util", MagicMock())
-    mock_pydub = types.ModuleType("pydub")
-    mock_pydub.AudioSegment = type("AudioSegment", (), {})
-    sys.modules.setdefault("pydub", mock_pydub)
-
-    # ── rclpy (корневой) ─────────────────────────────────────────────────
-    mock_rclpy = MagicMock()
-    mocks = {
-        "rclpy": mock_rclpy,
-        "rclpy.node": mock_rclpy_node,
-        "rclpy.qos": mock_rclpy_qos,
-    }
-    for name, mock in mocks.items():
-        sys.modules.setdefault(name, mock)
+    install_ros_stubs(extra={
+        "audio_common_msgs": types.ModuleType("audio_common_msgs"),
+        "audio_common_msgs.msg": audio_msg,
+        "rcl_interfaces": types.ModuleType("rcl_interfaces"),
+        "rcl_interfaces.msg": rcl_ifaces_msg,
+        # Audio backends: no ALSA, no ReSpeaker on a dev box or in CI
+        # (issue #1133 — sounddevice is optional).
+        "sounddevice": MagicMock(),
+        "pyaudio": MagicMock(),
+        "usb": MagicMock(),
+        "usb.core": MagicMock(),
+        "usb.util": MagicMock(),
+        "pydub": pydub,
+    })
 
 
 _install_all_mocks()

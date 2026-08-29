@@ -31,7 +31,32 @@ __all__ = ["FakeNode", "FakeQoSProfile", "install_ros_stubs", "qos_stub"]
 
 
 class FakeNode:
-    """Minimal stand-in for ``rclpy.node.Node`` — no sockets, no executor."""
+    """Stand-in for ``rclpy.node.Node`` — no sockets, no executor.
+
+    One class for every test directory, because only one can win.
+    ``rclpy.node`` is installed with ``sys.modules.setdefault``, so in a full
+    run the first conftest to load supplies the base class for *all* the
+    others. Four directories each had their own ``FakeNode`` and the winner
+    changed with the selection: ``unit/sound`` asserts on ``_subscriptions``,
+    which ``unit/node``'s copy never recorded, so
+    ``test_subscribes_to_avatar_voice_in_best_effort`` failed in a full run
+    and passed on its own; ``unit/node``'s copy also answered every
+    ``get_parameter`` with ``None``, so ``SoundNode.__init__`` died on
+    ``sound_pack_dir.startswith`` when it happened to load first.
+
+    So this records in every shape the suites read:
+
+    ``_parameters``    name -> declared default (greeting)
+    ``_declared``      name -> parameter object (tts, sound)
+    ``_publishers``    ``(topic, fake)`` (greeting)
+    ``_subscribers``   ``(topic, fake)`` (greeting)
+    ``_subscriptions`` ``(args, kwargs)`` (sound)
+    ``_timers``        timer objects with ``period``/``callback``/``cancel``
+
+    ``get_parameter`` returns the declared default rather than ``None``:
+    that is what ``rclpy`` does, and a stub that forgets defaults turns every
+    node constructor into a ``NoneType`` crash.
+    """
 
     def __init__(self, name, **kwargs):
         self._name = name
@@ -41,29 +66,75 @@ class FakeNode:
         self._logger.warn = MagicMock()
         self._logger.error = MagicMock()
         self._logger.debug = MagicMock()
+        self._parameters: dict = {}
+        self._declared: dict = {}
+        self._publishers: list = []
+        self._subscribers: list = []
+        self._subscriptions: list = []
+        self._timers: list = []
+
+    # ── identity ────────────────────────────────────────────────────────
+    def get_name(self):
+        return self._name
+
+    def get_namespace(self):
+        return ""
 
     def get_logger(self):
         return self._logger
 
+    # ── parameters ──────────────────────────────────────────────────────
     def declare_parameter(self, name, default=None):
-        return MagicMock()
+        if name not in self._parameters:
+            self._parameters[name] = default
+        parameter = MagicMock()
+        parameter.value = self._parameters[name]
+        self._declared[name] = parameter
+        return parameter
 
     def get_parameter(self, name):
+        if name in self._declared:
+            return self._declared[name]
         parameter = MagicMock()
         parameter.value = None
         return parameter
 
+    def has_parameter(self, name):
+        return name in self._declared
+
+    def set_parameters_atomically(self, params):
+        return MagicMock(successful=True)
+
     def add_on_set_parameters_callback(self, callback):
         return MagicMock()
 
-    def create_publisher(self, *args, **kwargs):
-        return MagicMock()
+    # ── publishers / subscriptions / timers ─────────────────────────────
+    def create_publisher(self, msg_type=None, topic=None, *args, **kwargs):
+        fake = MagicMock()
+        fake.topic = topic
+        fake.msg_type = msg_type
+        self._publishers.append((topic, fake))
+        return fake
 
-    def create_subscription(self, *args, **kwargs):
-        return MagicMock()
+    def create_subscription(self, msg_type=None, topic=None, callback=None,
+                            *args, **kwargs):
+        fake = MagicMock()
+        fake.topic = topic
+        fake.callback = callback
+        self._subscribers.append((topic, fake))
+        # Sound's assertions index this positionally: args[1] is the topic.
+        self._subscriptions.append(
+            ((msg_type, topic, callback, *args), kwargs)
+        )
+        return fake
 
-    def create_timer(self, *args, **kwargs):
-        return MagicMock()
+    def create_timer(self, period=None, callback=None, *args, **kwargs):
+        fake = MagicMock()
+        fake.period = period
+        fake.callback = callback
+        fake.cancel = MagicMock()
+        self._timers.append(fake)
+        return fake
 
     def create_service(self, *args, **kwargs):
         return MagicMock()
@@ -71,11 +142,26 @@ class FakeNode:
     def create_client(self, *args, **kwargs):
         return MagicMock()
 
-    def destroy_node(self):
-        return None
+    # ── introspection (startup_greeting_node waits on real subscribers) ──
+    def get_publisher_names_and_types_by_node(self, name, namespace):
+        return [(topic, ["std_msgs/String"]) for topic, _ in self._publishers]
 
-    def get_name(self):
-        return self._name
+    def get_subscriber_names_and_types_by_node(self, name, namespace):
+        return [(topic, ["std_msgs/String"]) for topic, _ in self._subscribers]
+
+    def count_subscribers(self, topic):
+        return sum(1 for t, _ in self._subscribers if t == topic)
+
+    def destroy_node(self):
+        self._publishers.clear()
+        self._subscribers.clear()
+        self._subscriptions.clear()
+        for timer in self._timers:
+            try:
+                timer.cancel()
+            except Exception:  # noqa: BLE001 — a MagicMock cannot fail, but
+                pass          # a test may swap in something that can.
+        self._timers.clear()
 
 
 class FakeQoSProfile:
@@ -132,8 +218,21 @@ def _build_stubs() -> dict[str, object]:
     mock_rclpy_node.Node = FakeNode
 
     mock_std_msgs_msg = MagicMock()
-    for message in ("String", "Bool", "Float32", "Int32", "Empty"):
-        setattr(mock_std_msgs_msg, message, MagicMock())
+    # Each message must be a *class*, not a MagicMock instance: calling a
+    # MagicMock returns the same `return_value` object every time, so
+    # `String()` handed every publisher the one shared message and a test
+    # reading `publish.call_args[0][0].data` saw whatever was written last
+    # («thinking» where it asserted «STOP», batch_index 2 where it asserted
+    # 1). A plain class with the field defaulted is what a real msg behaves
+    # like here.
+    for message, fields in (
+        ("String", {"data": ""}),
+        ("Bool", {"data": False}),
+        ("Float32", {"data": 0.0}),
+        ("Int32", {"data": 0}),
+        ("Empty", {}),
+    ):
+        setattr(mock_std_msgs_msg, message, type(message, (), dict(fields)))
     mock_std_msgs = MagicMock()
     mock_std_msgs.msg = mock_std_msgs_msg
 
