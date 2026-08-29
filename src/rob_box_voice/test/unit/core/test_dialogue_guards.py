@@ -258,3 +258,61 @@ def test_stop_overrides_are_caught_by_stop_detector() -> None:
             # The guard relies on the stop-check winning over the
             # music-request check in ``DialogueNode._apply_music_guard``.
             assert is_music_stop_command(stop) is True
+
+
+# ---------------------------------------------------------------------------
+# Вокальные словари harness и voice: РАЗНЫЕ вопросы, не копия друг друга
+# ---------------------------------------------------------------------------
+
+#: Речитатив: голос нужен, но и бит обязателен. Эти слова есть в
+#: harness-словаре и НАМЕРЕННО отсутствуют в voice-словаре.
+BEAT_REQUIRED_KEYWORDS = ("рэп", "реп", "rap", "зачитай", "куплет", "частушк")
+
+
+def test_harness_vocal_keywords_are_a_strict_superset() -> None:
+    """Два словаря отвечают на РАЗНЫЕ вопросы — сводить их нельзя.
+
+    * harness ``_VOCAL_REQUEST_KEYWORDS`` — «просил ли пользователь голос
+      вообще?». Гард галлюцинированных текстов (issue #1708) по нему решает,
+      что ``speak_text`` после музыкального тула подавлять нельзя.
+    * voice ``MUSIC_GUARD_VOCAL_KEYWORDS`` — «просил ли пользователь голос
+      БЕЗ бита?». Music-guard Bug C (issue #992) по нему решает, что
+      одного ``speak_text`` достаточно и нудить ретраем не за что.
+
+    Для рэпа и частушек бит обязателен, поэтому voice-словарь у́же — см.
+    комментарий на ``dialogue_guards.py`` над ``MUSIC_GUARD_VOCAL_KEYWORDS``:
+    «Для БИТО-обязательных (рэп/зачитай/диджей) — как было: нуднуть если
+    нет execute_music_code».
+
+    Тест держит инвариант с обеих сторон, потому что комментарий в
+    ``dialog_core`` называл свою копию «mirrors rob_box_voice…» и обещал,
+    что списки «stay in sync» — прочитав это, легко «починить» расхождение
+    слиянием и молча снять требование бита с рэпа.
+    """
+    from rob_box_harness.core.dialog_core import _VOCAL_REQUEST_KEYWORDS
+
+    harness_words = set(_VOCAL_REQUEST_KEYWORDS)
+    voice_words = set(MUSIC_GUARD_VOCAL_KEYWORDS)
+
+    assert voice_words < harness_words, (
+        "voice-словарь должен быть строгим подмножеством harness-словаря: "
+        f"лишнее в voice = {sorted(voice_words - harness_words)}"
+    )
+    for keyword in BEAT_REQUIRED_KEYWORDS:
+        assert keyword in harness_words, (
+            f"{keyword!r} пропал из harness-словаря — гард issue #1708 "
+            "начнёт глушить законный речитатив"
+        )
+        assert keyword not in voice_words, (
+            f"{keyword!r} добавлен в voice-словарь — music-guard перестанет "
+            "требовать бит для речитатива (issue #992 Bug C)"
+        )
+
+
+def test_beat_required_requests_still_get_nudged() -> None:
+    """«Зачитай рэп» — не ``vocal_satisfied``: без бита гард обязан нуднуть."""
+    for phrase in ("зачитай рэп про колобка", "давай частушку"):
+        assert is_vocal_request(phrase) is False, (
+            f"{phrase!r} признан вокальным-без-бита — music-guard пропустит "
+            "ход, где модель не вызвала execute_music_code"
+        )

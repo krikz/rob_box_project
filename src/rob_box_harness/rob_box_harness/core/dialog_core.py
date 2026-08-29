@@ -152,11 +152,24 @@ _SILENT_FINISH_REASONS: frozenset[str] = frozenset(
 # phrase threshold AND the user request was NOT a vocal one (rap / poem /
 # song — there backing mode legitimately calls speak_text × N).
 #
-# Mirrors :mod:`rob_box_voice.core.dialogue_guards` heuristic
-# (``is_vocal_request``) without importing it (dialog_core lives in
-# ``rob_box_harness`` and cannot import ``rob_box_voice``). The keyword
-# set is intentionally narrow — false positives would silence legitimate
-# rap backing-mode turns.
+# ⚠️ НЕ сводить с ``MUSIC_GUARD_VOCAL_KEYWORDS`` из
+# :mod:`rob_box_voice.core.dialogue_guards`. Имена похожи, вопросы разные:
+#
+# * здесь — «просил ли пользователь голос ВООБЩЕ?». На «да» гард
+#   галлюцинированных текстов не глушит ``speak_text``, потому что
+#   бэкинг-режим законно зовёт его несколько раз;
+# * там — «просил ли пользователь голос БЕЗ бита?». Список у́же
+#   намеренно: для речитатива (рэп / зачитай / частушка) бит обязателен,
+#   и music-guard Bug C (issue #992) должен нуднуть модель, если она не
+#   вызвала ``execute_music_code``.
+#
+# Слить их — значит молча снять требование бита с рэпа. Инвариант
+# «voice — строгое подмножество harness» закреплён тестом
+# ``test_harness_vocal_keywords_are_a_strict_superset``
+# (src/rob_box_voice/test/unit/core/test_dialogue_guards.py).
+#
+# Раньше здесь стояло «Mirrors rob_box_voice.core.dialogue_guards
+# heuristic», что читалось как «списки обязаны совпадать» — неверно.
 _VOCAL_REQUEST_KEYWORDS: tuple = (
     "спой", "пой ", "песня", "песню", "рэп", "реп", "rap",
     "зачитай", "зачита", "зачитывай", "стих", "стишок", "стихотворен",
