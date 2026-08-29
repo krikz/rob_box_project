@@ -52,8 +52,14 @@ from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Protocol, runtime_checkable
 
 from .delta import DeltaOp, DeltaOpKind, TaskDelta
+from .event_bus import EventEnvelope
 
 _LOG = logging.getLogger(__name__)
+
+#: S10 (scheduler-segments-merge, issue #968, §4.5) — events at this
+#: priority never satisfy the auto-trigger's "unapplied event" condition
+#: (anti-pattern: "При ``priority=low`` events (IGNORE / шум)").
+_LOW_PRIORITY = "low"
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +501,38 @@ class UpdateReport:
 
 
 # ---------------------------------------------------------------------------
+# S10 — llm_continue_hook (scheduler-segments-merge, issue #968, §4.5)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LlmContinueContext:
+    """Snapshot handed to the §4.5 ``llm_continue_hook`` when it fires.
+
+    Built by :meth:`TaskScheduler._maybe_trigger_continue` once all
+    three §4.5 conditions hold. Carries exactly what the hook needs to
+    build a ``[SEGMENT PLAN]``/``[PENDING EVENTS]``-style prompt and,
+    eventually, call :meth:`TaskScheduler.update` with the resulting
+    ``task_delta`` — the scheduler itself never builds that prompt or
+    calls an LLM; that is the hook's job (see :class:`LlmContinueHook`).
+    """
+
+    group_id: str
+    channel: ChannelKind
+    pending_segments: tuple[SchedulerTask, ...]
+    events: tuple[EventEnvelope, ...]
+
+
+#: §4.5 extension point. The scheduler calls ``hook(context)`` as a
+#: fire-and-forget task on its own loop when the auto-trigger fires; it
+#: does **not** know or care what the hook does with it (per revision
+#: v5 / §4.7, the intended implementation calls the MAIN LLM — never a
+#: second/light model — but that decision lives entirely on the caller
+#: side, e.g. ``dialogue_node.py``, not here).
+LlmContinueHook = Callable[[LlmContinueContext], Awaitable[None]]
+
+
+# ---------------------------------------------------------------------------
 # Scheduler façade
 # ---------------------------------------------------------------------------
 
@@ -583,8 +621,22 @@ class TaskScheduler:
         # node uses it to publish on /harness/task_events and to feed
         # the [ACTIVE TASKS] LLM-context block.
         self._on_event = on_event
+        # S10 (scheduler-segments-merge, issue #968, §4.5) — auto-trigger
+        # state. ``_pending_events`` holds unapplied EventEnvelopes per
+        # group_id (condition 2); ``_channel_running`` is a tri-state
+        # per channel: ``None`` = never started a task yet, ``True`` =
+        # currently RUNNING, ``False`` = previously RUNNING and now
+        # idle. The tri-state (not a plain bool) is what keeps the
+        # trigger from firing on a channel that simply hasn't started
+        # anything yet — only a real ACTIVE→idle transition counts as
+        # "voice: speaking → silence после ACTIVE".
+        self._pending_events: Dict[str, list[EventEnvelope]] = {}
+        self._channel_running: Dict[ChannelKind, Optional[bool]] = {
+            kind: None for kind in channels
+        }
+        self._llm_continue_hook: Optional[LlmContinueHook] = None
         self._channels: Dict[ChannelKind, _Channel] = {
-            kind: _Channel(kind, loop=self._loop, on_event=on_event)
+            kind: _Channel(kind, loop=self._loop, on_event=self._dispatch_channel_event)
             for kind in channels
         }
         self._started: bool = False
@@ -601,6 +653,153 @@ class TaskScheduler:
             self._on_event(event, payload)
         except Exception:  # noqa: BLE001 — observer must not break the scheduler
             _LOG.exception("scheduler: on_event(%s) callback failed", event)
+
+    # ----- S10: llm_continue_hook auto-trigger (§4.5) --------------------
+
+    _CHANNEL_LIFECYCLE_EVENTS = frozenset(
+        {"task.started", "task.completed", "task.failed", "task.cancelled"}
+    )
+
+    def _dispatch_channel_event(self, event: str, payload: Dict[str, Any]) -> None:
+        """``_Channel``'s ``on_event`` — updates §4.5 state, then forwards.
+
+        Runs synchronously, in-line with ``_Channel._pump``'s own
+        processing of the just-finished/just-started task, which is
+        exactly what makes the auto-trigger race-free: by the time this
+        function returns, nothing else on this event loop has had a
+        chance to dequeue the *next* segment out from under
+        :meth:`segments`'s snapshot (single-threaded asyncio — no
+        ``await`` happens in this call chain).
+        """
+        if event in self._CHANNEL_LIFECYCLE_EVENTS:
+            channel_value = payload.get("channel")
+            try:
+                kind = ChannelKind(channel_value)
+            except ValueError:
+                kind = None
+            if kind is not None:
+                self._channel_running[kind] = event == "task.started"
+                task_id = payload.get("task_id")
+                task = self.get_task(task_id) if task_id else None
+                if task is not None and task.group_id is not None:
+                    self._maybe_trigger_continue(task.group_id)
+        if self._on_event is not None:
+            try:
+                self._on_event(event, payload)
+            except Exception:  # noqa: BLE001 — observer must not break the pump
+                _LOG.exception("scheduler: on_event(%s) callback failed", event)
+
+    def _channel_needs_continuation(self, kind: ChannelKind) -> bool:
+        """§4.5 condition (3) — "канал выглядит требующим продолжения".
+
+        * ``VOICE`` — the ACTIVE segment just ended (state flipped
+          ``True`` → ``False``). ``None`` (nothing has run yet on this
+          channel) deliberately does NOT count — otherwise a MERGE
+          event registered before the group's first segment even
+          starts would fire immediately, which is not what §4.5 means
+          by "speaking → silence после ACTIVE".
+        * ``MUSIC``/``ANIM`` — §4.5's music branch fires WHILE the
+          segment is still playing (see the "комар+енот" §4.6
+          sequence: MERGE lands mid-verse-1). The full elapsed/eta
+          refinement ("_last_segment_user_initiated=false AND
+          elapsed > 0.5×eta") needs a per-task "user initiated" flag
+          and the Phase-3 :class:`SegmentEstimator` wired through
+          :meth:`set_eta_provider` — neither exists on
+          :class:`SchedulerTask` yet, so S10 deliberately ships the
+          simpler "channel is currently RUNNING" heuristic and leaves
+          the eta-ratio refinement as a follow-up (see final report).
+        """
+        state = self._channel_running.get(kind)
+        if kind is ChannelKind.VOICE:
+            return state is False
+        return state is True
+
+    def _maybe_trigger_continue(self, group_id: str) -> None:
+        """Re-evaluate the §4.5 three-condition auto-trigger for *group_id*.
+
+        Called after every VOICE/MUSIC/ANIM lifecycle transition and
+        every :meth:`notify_event` call. Cheap no-op when the hook is
+        not installed or any condition is unmet — see
+        :meth:`_channel_needs_continuation` for condition (3) and the
+        module docstring / §4.5 for the full three-condition contract.
+        """
+        hook = self._llm_continue_hook
+        if hook is None:
+            return
+        events = self._pending_events.get(group_id) or []
+        unapplied = tuple(e for e in events if e.priority != _LOW_PRIORITY)
+        if not unapplied:
+            return  # condition (2) unmet
+        pending_segments = tuple(
+            s for s in self.segments(group_id)
+            if s.status in (TaskStatus.QUEUED, TaskStatus.SCHEDULED)
+        )
+        if not pending_segments:
+            return  # condition (1) unmet
+        channel_kind = pending_segments[0].channel
+        if not self._channel_needs_continuation(channel_kind):
+            return  # condition (3) unmet
+        # All three hold — consume the events now so a second lifecycle
+        # transition (e.g. the next segment's task.started, fired right
+        # after this call returns) cannot fan the same events out twice.
+        self._pending_events.pop(group_id, None)
+        context = LlmContinueContext(
+            group_id=group_id,
+            channel=channel_kind,
+            pending_segments=pending_segments,
+            events=unapplied,
+        )
+        self._fire_llm_continue_hook(hook, context)
+
+    def _fire_llm_continue_hook(self, hook: LlmContinueHook, context: LlmContinueContext) -> None:
+        """Schedule *hook* as a fire-and-forget task on the scheduler's loop.
+
+        The scheduler never awaits the hook itself — §4.5 is explicit
+        that the scheduler "self-drives" this turn without blocking its
+        own channels on the LLM round-trip. A failing hook is logged,
+        not raised, matching every other observer boundary in this
+        module (:meth:`_emit`, ``_Channel._emit``).
+        """
+
+        async def _run() -> None:
+            try:
+                await hook(context)
+            except Exception:  # noqa: BLE001 — hook boundary must not break the scheduler
+                _LOG.exception(
+                    "scheduler: llm_continue_hook failed for group %s", context.group_id
+                )
+
+        self._loop.create_task(_run(), name=f"scheduler-llm-continue-{context.group_id}")
+
+    def notify_event(self, group_id: str, event: EventEnvelope) -> None:
+        """Register *event* as an unapplied §4.5 continuation signal.
+
+        Called by the quick_decide/EventBus integration layer (outside
+        this module) whenever a decision lands that could need a
+        follow-up ``task_delta`` — MERGE, ``battery_critical``, etc. —
+        but no fresh user turn is going to carry it. Immediately
+        re-evaluates the auto-trigger for *group_id*; if the other two
+        §4.5 conditions already hold, this call is what fires the
+        installed :meth:`set_llm_continue_hook` hook. A *group_id* the
+        scheduler has never seen (or has already fully drained) is a
+        harmless no-op — :meth:`segments` returns ``[]`` for it, so
+        condition (1) simply stays unmet.
+        """
+        self._pending_events.setdefault(group_id, []).append(event)
+        self._maybe_trigger_continue(group_id)
+
+    def set_llm_continue_hook(self, hook: Optional[LlmContinueHook]) -> None:
+        """Install (or clear, with ``None``) the §4.5 auto-trigger hook.
+
+        Mirrors :meth:`set_eta_provider`'s "Phase 3 hook" shape — the
+        scheduler exposes a plain extension point and stays ignorant of
+        what the hook does. Per revision v5 (§4.7, "Одна LLM, без
+        уровня 2"), the intended production hook calls the MAIN LLM
+        turn, not a second/light model; that decision is entirely the
+        caller's (``dialogue_node.py``/MCP integration), not enforced
+        here.
+        """
+        self._llm_continue_hook = hook
 
     # ----- lifecycle -----------------------------------------------------
 

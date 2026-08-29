@@ -116,6 +116,8 @@ from .speculative_executor import (
 from .task_scheduler import (
     ChannelKind,
     ChannelStatus,
+    LlmContinueContext,
+    LlmContinueHook,
     TaskOutcome,
     TaskScheduler,
     TaskStatus,
@@ -185,6 +187,8 @@ __all__ = [
     "command_to_view",
     "ChannelKind",
     "ChannelStatus",
+    "LlmContinueContext",
+    "LlmContinueHook",
     "TaskOutcome",
     "TaskScheduler",
     "TaskStatus",
