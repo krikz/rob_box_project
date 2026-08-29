@@ -67,6 +67,13 @@ def _install_ros_mocks():
     mock_qos = types.SimpleNamespace(
         HistoryPolicy=types.SimpleNamespace(KEEP_LAST="KEEP_LAST"),
         ReliabilityPolicy=types.SimpleNamespace(RELIABLE="RELIABLE"),
+        # Issue #1734 — dialogue_node публикует barge_in_policy на latched
+        # (TRANSIENT_LOCAL) топике для stt_node; QoSProfile(durability=...)
+        # в __init__ нуждается в этом атрибуте, иначе import dialogue_node
+        # падает ImportError на все тесты в этой директории.
+        DurabilityPolicy=types.SimpleNamespace(
+            TRANSIENT_LOCAL="TRANSIENT_LOCAL", VOLATILE="VOLATILE"
+        ),
         QoSProfile=lambda *args, **kwargs: MagicMock(),
     )
 

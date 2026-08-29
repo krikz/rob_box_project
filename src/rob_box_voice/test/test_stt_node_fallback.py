@@ -906,6 +906,14 @@ class TestBargeInWakeWordStopTTS:
     Раньше (Fix B из #989) VAD гейтился на всё время TTS, поэтому даже
     «робот, добавь бит» не доходило до STT. Теперь гейт снят, и STT обязан
     прервать TTS при wake word — это и есть barge-in.
+
+    Issue #1734 — этот немедленный STOP работает ТОЛЬКО при
+    ``barge_in_policy="replace"`` (дефолт, ``self._barge_in_policy``
+    инициализируется в "replace" в ``__init__`` — fail-safe до первого
+    сообщения от dialogue_node). Тесты ниже это явно закрепляют. Отдельная
+    ветка при ``barge_in_policy="classify"`` — класс ``TestBargeInClassifyPolicyDefersStop``
+    ниже: STOP там НЕ публикуется, решение отдаётся dialogue_node/quick_decide
+    (§2.5 SCHEDULER_DESIGN.md).
     """
 
     @staticmethod
@@ -930,6 +938,7 @@ class TestBargeInWakeWordStopTTS:
         from rob_box_voice import stt_node as stt_node_module
 
         self._patch_string_factory(monkeypatch, stt_node_module)
+        stt_node._barge_in_policy = "replace"  # issue #1734: явный regression-pin
         stt_node.tts_control_pub = MagicMock()
         stt_node.result_pub = MagicMock()
         # В фикстуре publish_result замокан (чтобы другие тесты не публиковали),
@@ -951,6 +960,7 @@ class TestBargeInWakeWordStopTTS:
         from rob_box_voice import stt_node as stt_node_module
 
         self._patch_string_factory(monkeypatch, stt_node_module)
+        stt_node._barge_in_policy = "replace"  # issue #1734: явный regression-pin
         stt_node.tts_control_pub = MagicMock()
         stt_node.result_pub = MagicMock()
         stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
@@ -973,6 +983,7 @@ class TestBargeInWakeWordStopTTS:
         from rob_box_voice import stt_node as stt_node_module
 
         self._patch_string_factory(monkeypatch, stt_node_module)
+        stt_node._barge_in_policy = "replace"  # issue #1734: явный regression-pin
         stt_node.aec_mode = "hardware"
         stt_node.tts_grace_s = 2.5
         stt_node.is_robot_speaking = True  # TTS активен
@@ -1019,6 +1030,107 @@ class TestBargeInWakeWordStopTTS:
 
         stt_node._recognize_with_fallback.assert_not_called()
         assert stt_node.publish_result.call_count == 0
+
+
+class TestBargeInClassifyPolicyDefersStop:
+    """Issue #1734: при ``barge_in_policy="classify"`` stt_node НЕ публикует
+    немедленный STOP на wake-word — решение (STOP/MERGE/PENDING_LLM/IGNORE)
+    отдаётся dialogue_node/quick_decide, чтобы «правка на лету без
+    замолкания» (§2.5 SCHEDULER_DESIGN.md) реально работала.
+
+    Regression pin: до фикса этот код публиковал STOP безусловно, что и
+    ломало сценарий из raw evidence issue #1734 («комар» обрывался на
+    «и ещё про енота», хотя quick_decide должен был смёржить сегменты) —
+    см. также test_barge_in_policy.py::TestQuickDecideDispatch на стороне
+    dialogue_node (там уже проверено, что _cancel_run сам публикует STOP
+    для REPLACE-вердикта — stt_node дублировать это не должен).
+    """
+
+    @staticmethod
+    def _patch_string_factory(monkeypatch, stt_node_module):
+        TestBargeInWakeWordStopTTS._patch_string_factory(monkeypatch, stt_node_module)
+
+    def test_classify_wake_word_does_not_stop_tts(self, stt_node, monkeypatch):
+        """policy=classify — wake-word НЕ шлёт STOP (в отличие от replace)."""
+        from rob_box_voice import stt_node as stt_node_module
+
+        self._patch_string_factory(monkeypatch, stt_node_module)
+        stt_node._barge_in_policy = "classify"
+        stt_node.tts_control_pub = MagicMock()
+        stt_node.result_pub = MagicMock()
+        stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
+            stt_node, stt_node_module.STTNode
+        )
+
+        stt_node.publish_result("робот и ещё про енота")
+
+        stt_node.tts_control_pub.publish.assert_not_called()
+        # Результат всё равно публикуется — dialogue_node должен его увидеть,
+        # чтобы вообще смочь прогнать quick_decide.
+        assert stt_node.result_pub.publish.call_count == 1
+
+    def test_classify_without_wake_word_no_stop(self, stt_node, monkeypatch):
+        """policy=classify без wake word — тоже без STOP (как и раньше)."""
+        from rob_box_voice import stt_node as stt_node_module
+
+        self._patch_string_factory(monkeypatch, stt_node_module)
+        stt_node._barge_in_policy = "classify"
+        stt_node.tts_control_pub = MagicMock()
+        stt_node.result_pub = MagicMock()
+        stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
+            stt_node, stt_node_module.STTNode
+        )
+
+        stt_node.publish_result("не расслышал скажи")
+
+        stt_node.tts_control_pub.publish.assert_not_called()
+        assert stt_node.result_pub.publish.call_count == 1
+
+    def test_default_policy_is_replace_before_any_topic_message(self, stt_node):
+        """Fail-safe: до первого сообщения от dialogue_node __init__
+        оставляет ``_barge_in_policy == "replace"`` — сохраняет поведение
+        issue #993, а не молча его выключает."""
+        assert stt_node._barge_in_policy == "replace"
+
+
+class TestBargeInPolicyCallback:
+    """Issue #1734 — приём политики от dialogue_node через latched-топик
+    ``/voice/dialogue/barge_in_policy`` (``barge_in_policy_callback``)."""
+
+    def test_classify_message_updates_policy(self, stt_node):
+        msg = MagicMock()
+        msg.data = "classify"
+        stt_node.barge_in_policy_callback(msg)
+        assert stt_node._barge_in_policy == "classify"
+
+    def test_replace_message_updates_policy(self, stt_node):
+        stt_node._barge_in_policy = "classify"
+        msg = MagicMock()
+        msg.data = "replace"
+        stt_node.barge_in_policy_callback(msg)
+        assert stt_node._barge_in_policy == "replace"
+
+    def test_case_insensitive_and_whitespace_tolerant(self, stt_node):
+        msg = MagicMock()
+        msg.data = "  CLASSIFY  "
+        stt_node.barge_in_policy_callback(msg)
+        assert stt_node._barge_in_policy == "classify"
+
+    def test_unknown_value_ignored_keeps_current_policy(self, stt_node):
+        """Опечатка/невалидное значение — dialogue_node уже сам провалидировал
+        и залогировал warning; здесь просто не трогаем текущее значение."""
+        stt_node._barge_in_policy = "replace"
+        msg = MagicMock()
+        msg.data = "yolo"
+        stt_node.barge_in_policy_callback(msg)
+        assert stt_node._barge_in_policy == "replace"
+
+    def test_empty_value_ignored(self, stt_node):
+        stt_node._barge_in_policy = "classify"
+        msg = MagicMock()
+        msg.data = ""
+        stt_node.barge_in_policy_callback(msg)
+        assert stt_node._barge_in_policy == "classify"
 
 
 # ---------------------------------------------------------------------------

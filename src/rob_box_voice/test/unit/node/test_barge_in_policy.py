@@ -378,3 +378,75 @@ class TestPendingUserMessagesClearedOnReset:
         n._reset_dialogue_session()
 
         assert len(n._pending_user_messages) == 0
+
+
+# ---------------------------------------------------------------------------
+# Issue #1734 — dialogue_node публикует barge_in_policy на latched-топик,
+# чтобы stt_node узнавал актуальное значение без второго параметра в своём
+# YAML (см. src/rob_box_voice/rob_box_voice/stt_node.py::publish_result /
+# barge_in_policy_callback — они читают именно этот топик).
+# ---------------------------------------------------------------------------
+
+
+class TestPublishBargeInPolicy:
+    def test_publishes_current_policy_value(self):
+        n = object.__new__(DialogueNode)
+        n._barge_in_policy = "classify"
+        n._barge_in_policy_pub = MagicMock()
+
+        n._publish_barge_in_policy()
+
+        n._barge_in_policy_pub.publish.assert_called_once()
+        published = n._barge_in_policy_pub.publish.call_args.args[0]
+        assert published.data == "classify"
+
+    def test_no_publisher_yet_is_a_no_op(self):
+        """object.__new__(DialogueNode) в тестах не всегда создаёт
+        паблишер (как и _speech_accumulator/_pending_user_messages
+        в других местах этого файла) — не должно падать."""
+        n = object.__new__(DialogueNode)
+        n._barge_in_policy = "replace"
+
+        n._publish_barge_in_policy()  # не должно бросить AttributeError
+
+
+class TestParametersCallbackBargeInPolicy:
+    """``ros2 param set /dialogue_node barge_in_policy classify`` — ровно
+    тот workflow, которым баг #1734 воспроизводили на роботе (см. raw
+    evidence в issue). Теперь runtime-изменение должно реально доходить
+    до stt_node через ``_publish_barge_in_policy``."""
+
+    @pytest.fixture
+    def n(self):
+        node = object.__new__(DialogueNode)
+        node.get_logger = lambda: MagicMock()
+        node._barge_in_policy = "replace"
+        node._barge_in_policy_pub = MagicMock()
+        node._voice_input_mode = "on"
+        return node
+
+    @staticmethod
+    def _param(name, value):
+        p = MagicMock()
+        p.name = name
+        p.value = value
+        return p
+
+    def test_valid_change_updates_and_republishes(self, n):
+        result = n.parameters_callback([self._param("barge_in_policy", "classify")])
+        assert n._barge_in_policy == "classify"
+        n._barge_in_policy_pub.publish.assert_called_once()
+        published = n._barge_in_policy_pub.publish.call_args.args[0]
+        assert published.data == "classify"
+        assert result.successful is True
+
+    def test_invalid_value_ignored_no_republish(self, n):
+        n.parameters_callback([self._param("barge_in_policy", "yolo")])
+        assert n._barge_in_policy == "replace"
+        n._barge_in_policy_pub.publish.assert_not_called()
+
+    def test_unrelated_param_does_not_touch_barge_in_policy(self, n):
+        n.parameters_callback([self._param("voice_input_mode", "off")])
+        assert n._barge_in_policy == "replace"
+        n._barge_in_policy_pub.publish.assert_not_called()
+        assert n._voice_input_mode == "off"

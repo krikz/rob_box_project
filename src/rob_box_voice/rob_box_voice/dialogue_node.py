@@ -36,7 +36,7 @@ import yaml
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Bool, String
 
@@ -476,6 +476,26 @@ class DialogueNode(Node):
         self._last_skip_summary_ts: float = time.monotonic()
         self._tts_control_pub = self.create_publisher(
             String, "/voice/tts/control", 10)
+        # Issue #1734 — единственный источник истины для barge_in_policy:
+        # latched (TRANSIENT_LOCAL) топик вместо ВТОРОГО параметра в
+        # stt_node.yaml. Дублирование параметра — ровно тот класс ошибки,
+        # который уже случился с wake_words (issue #1252, два YAML,
+        # разъехались) и который и породил issue #1734 (stt_node не знал
+        # про classify). TRANSIENT_LOCAL закрывает и «порядок старта нод»
+        # (поздний subscriber всё равно получает последний семпл), и
+        # «потерю отдельного сообщения» (durability держит семпл, пока
+        # жив этот publisher — а не полагается на «долетело/не долетело»
+        # одного datagram'а).
+        self._barge_in_policy_pub = self.create_publisher(
+            String,
+            "/voice/dialogue/barge_in_policy",
+            QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                depth=1,
+            ),
+        )
+        self._publish_barge_in_policy()
         # Music safety-net hook (issue #935): when the dialog ends and the
         # LLM forgot to call stop_music(), we still want playback to stop.
         # We publish a JSON payload on /mcp/music_cleanup so the MCP server
@@ -853,9 +873,10 @@ class DialogueNode(Node):
         self._voice_input_mode: str = "respeaker"
 
     def parameters_callback(self, params):
-        """Роутер изменений ``voice_input_mode`` (Issue #1601 / ADR-0027 §3.4, W3-1).
+        """Роутер runtime-изменений параметров (``ros2 param set``).
 
-        Сохраняет новое значение в ``self._voice_input_mode`` — это поле
+        ``voice_input_mode`` (Issue #1601 / ADR-0027 §3.4, W3-1):
+        сохраняет новое значение в ``self._voice_input_mode`` — это поле
         читают ``_on_stt`` (гейт ReSpeaker-входа при ``off``) и
         ``_on_quest_stt`` (маршрутизация Quest robot-voice). Супервизор
         (ADR-0028 S5) — единственный, кто вызывает SetParameters сюда.
@@ -865,12 +886,35 @@ class DialogueNode(Node):
         этим режимом не блокируется — см. docstring ``_on_stt`` и §3.5
         docs/design/dialogue-mode-spec-2026-08-28.md. Не переворачивай
         это правило при доработке.
+
+        ``barge_in_policy`` (issue #1734): обновляет ``self._barge_in_policy``
+        и тут же перепубликует его на latched-топик
+        ``/voice/dialogue/barge_in_policy`` (``_publish_barge_in_policy``),
+        чтобы stt_node узнал новое значение немедленно, без рестарта —
+        именно так этот параметр меняли на роботе при воспроизведении
+        бага #1734 (``ros2 param set /dialogue_node barge_in_policy
+        classify``). Невалидное значение игнорируем и остаёмся на
+        текущем — та же логика, что в ``_resolve_barge_in_policy``.
         """
         for param in params:
             if param.name == "voice_input_mode":
                 self._voice_input_mode = param.value
                 self.get_logger().info(
                     f"🎙 voice_input_mode changed to {param.value!r}"
+                )
+            elif param.name == "barge_in_policy":
+                raw = str(param.value or "replace").strip().lower()
+                if raw not in self._BARGE_IN_POLICIES:
+                    self.get_logger().warning(
+                        f"⚠️ [issue 1734] barge_in_policy={raw!r} — unknown, "
+                        f"ignoring runtime change (valid: {self._BARGE_IN_POLICIES})"
+                    )
+                    continue
+                self._barge_in_policy = raw
+                self._publish_barge_in_policy()
+                self.get_logger().info(
+                    f"🔄 [issue 1734] barge_in_policy changed to {raw!r} "
+                    f"(republished to stt_node)"
                 )
         return SetParametersResult(successful=True)
 
@@ -1043,6 +1087,31 @@ class DialogueNode(Node):
             )
             return "replace"
         return raw
+
+    def _publish_barge_in_policy(self) -> None:
+        """Публикует действующий ``barge_in_policy`` для stt_node (issue #1734).
+
+        stt_node НЕ хранит этот параметр в своём YAML (см. комментарий у
+        ``_barge_in_policy_pub`` в ``__init__``) — единственный способ
+        узнать актуальное значение это latched-топик
+        ``/voice/dialogue/barge_in_policy``. Вызывается один раз при
+        старте (сразу после создания паблишера — TRANSIENT_LOCAL
+        сохранит семпл для подписчиков, стартовавших позже) и повторно
+        из ``parameters_callback`` на каждое runtime-изменение через
+        ``ros2 param set /dialogue_node barge_in_policy ...`` — именно
+        так баг #1734 воспроизводили на роботе, и теперь это реально
+        доходит до stt_node без рестарта.
+
+        ``getattr``-guard: тесты строят ``DialogueNode`` через
+        ``object.__new__`` (см. ``test_barge_in_policy.py``) и не всегда
+        создают паблишер — тогда просто ничего не публикуем.
+        """
+        pub = getattr(self, "_barge_in_policy_pub", None)
+        if pub is None:
+            return
+        msg = String()
+        msg.data = self._barge_in_policy
+        pub.publish(msg)
 
     def _resolve_provider_chain(self) -> list[str]:
         """Resolve the ordered list of LLM provider names from config.

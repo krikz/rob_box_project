@@ -52,3 +52,9 @@ stt_node:
     # ~2-3с после конца фразы (а не ~8с, когда закончатся LLM+TTS).
     early_boop_enabled: true
     early_boop_trigger: boop
+    # ⚠️ issue #1734: barge_in_policy здесь НЕТ и не должно быть. Единственный
+    # источник истины — dialogue_node.yaml (ключ barge_in_policy). stt_node
+    # узнаёт актуальное значение runtime через latched-топик
+    # /voice/dialogue/barge_in_policy, а не из своего YAML — иначе получим
+    # тот же класс ошибки, что и с дублированием wake_words выше (#1252),
+    # который и породил #1734.

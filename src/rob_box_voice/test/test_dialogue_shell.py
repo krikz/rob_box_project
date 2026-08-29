@@ -146,6 +146,12 @@ sys.modules["rclpy.callback_groups"] = _cb
 _qos = _types.ModuleType("rclpy.qos")
 _qos.HistoryPolicy = _types.SimpleNamespace(KEEP_LAST="KEEP_LAST")
 _qos.ReliabilityPolicy = _types.SimpleNamespace(RELIABLE="RELIABLE")
+# Issue #1734 — dialogue_node.__init__ создаёт latched-топик barge_in_policy
+# (QoSProfile(durability=DurabilityPolicy.TRANSIENT_LOCAL)); без атрибута
+# import dialogue_node падает ImportError.
+_qos.DurabilityPolicy = _types.SimpleNamespace(
+    TRANSIENT_LOCAL="TRANSIENT_LOCAL", VOLATILE="VOLATILE"
+)
 _qos.QoSProfile = lambda *a, **kw: MagicMock()
 sys.modules["rclpy.qos"] = _qos
 

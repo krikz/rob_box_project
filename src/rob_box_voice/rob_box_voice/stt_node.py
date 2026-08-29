@@ -192,6 +192,18 @@ class STTNode(Node):
             self.get_logger().warning(f"⚠️ Неизвестный aec_mode '{self.aec_mode}', используется 'software'")
             self.aec_mode = "software"
         self.wake_words: list = list(self.get_parameter("wake_words").value)
+        # Issue #1734 — barge_in_policy НЕ читаем как свой параметр (это
+        # был бы второй YAML-источник для того же значения — ровно класс
+        # ошибки, который уже случился с wake_words выше, issue #1252, и
+        # который и породил #1734: stt_node не знал про
+        # dialogue_node.barge_in_policy=classify). Единственный источник
+        # истины — dialogue_node, публикующий latched-топик
+        # /voice/dialogue/barge_in_policy (см. create_subscription ниже и
+        # barge_in_policy_callback). "replace" — fail-safe дефолт ДО
+        # первого сообщения (или если dialogue_node ещё не стартовал/не
+        # публиковал): сохраняет поведение issue #993 (немедленный STOP
+        # TTS на wake-word), а не молча его выключает.
+        self._barge_in_policy: str = "replace"
         self.yandex_timeout_s: float = float(self.get_parameter("yandex_timeout_s").value)
         self.yandex_max_retries: int = int(self.get_parameter("yandex_max_retries").value)
         self.retry_backoff_s: float = float(self.get_parameter("retry_backoff_s").value)
@@ -262,6 +274,25 @@ class STTNode(Node):
 
         # Подписка на состояние TTS (чтобы не слышать себя)
         self.tts_state_sub = self.create_subscription(String, "/voice/tts/state", self.tts_state_callback, 10)
+
+        # Issue #1734 — подписка на действующую barge_in_policy от
+        # dialogue_node (единый источник истины, см. self._barge_in_policy
+        # выше). TRANSIENT_LOCAL: поздний subscriber (STT стартовал позже
+        # ИЛИ раньше dialogue_node) всё равно получает последний
+        # опубликованный семпл — durability закрывает и «порядок старта
+        # нод», и «потерю сообщения» (пока жив publisher на стороне
+        # dialogue_node).
+        barge_in_policy_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            depth=1,
+        )
+        self.barge_in_policy_sub = self.create_subscription(
+            String,
+            "/voice/dialogue/barge_in_policy",
+            self.barge_in_policy_callback,
+            barge_in_policy_qos,
+        )
 
         # Publishers
         self.result_pub = self.create_publisher(String, "/voice/stt/result", 10)
@@ -998,6 +1029,31 @@ class STTNode(Node):
             f"text={text[:40]!r}"
         )
 
+    def barge_in_policy_callback(self, msg: String):
+        """Приём действующей ``barge_in_policy`` от dialogue_node (issue #1734).
+
+        dialogue_node — единственный владелец этого параметра (см.
+        комментарий у ``self._barge_in_policy`` в ``__init__`` — почему
+        stt_node НЕ дублирует его в своём YAML). Публикует latched
+        (TRANSIENT_LOCAL) на ``/voice/dialogue/barge_in_policy`` при
+        старте и на каждое runtime-изменение (``ros2 param set
+        /dialogue_node barge_in_policy ...`` → ``parameters_callback`` →
+        ``_publish_barge_in_policy``).
+
+        Неизвестное/пустое значение игнорируем и остаёмся на текущем —
+        dialogue_node уже сам провалидировал ввод и залогировал warning
+        при опечатке; здесь незачем повторять эту проверку строже.
+        """
+        value = str(getattr(msg, "data", "") or "").strip().lower()
+        if value not in ("replace", "classify"):
+            return
+        if value != self._barge_in_policy:
+            self.get_logger().info(
+                f"🔄 [issue 1734] barge_in_policy → {value!r} "
+                f"(было {self._barge_in_policy!r})"
+            )
+        self._barge_in_policy = value
+
     def publish_result(self, text: str, result_pub=None):
         """Публикация финального результата распознавания.
 
@@ -1005,16 +1061,36 @@ class STTNode(Node):
         (``/voice/stt/result``); иначе — Quest-путь (``/voice/stt/quest``).
         Wake-word barge-in делаем только для ReSpeaker-пути: на Quest-пути
         barge-in уже выполнен quest-сервером при PTT start.
+
+        Issue #1734 — немедленный STOP на wake-word публикуется ТОЛЬКО
+        при ``barge_in_policy="replace"`` (дефолт, issue #993 — робот
+        должен реагировать на wake-word, даже пока сам говорит). При
+        ``"classify"`` STOP здесь НЕ публикуется: dialogue_node._on_stt
+        сам прогонит фразу через ``quick_decide`` и решит
+        ``_cancel_run(stop_tts=...)`` — REPLACE (явный императив) шлёт
+        STOP, MERGE/PENDING_LLM/IGNORE дают текущему сегменту доиграть
+        (§2.5 SCHEDULER_DESIGN.md, «правка на лету без замолкания»).
+        Раньше этот код публиковал STOP безусловно и обгонял решение
+        dialogue_node — см. raw evidence issue #1734 (куплет про комара
+        обрывался на «и ещё про енота», хотя quick_decide должен был
+        смёржить сегменты).
         """
         pub = result_pub if result_pub is not None else self.result_pub
         text_lower = text.lower()
 
-        # Если фраза начинается с wake word — немедленно прерываем TTS (barge-in)
+        # Если фраза начинается с wake word — сработал wake-word barge-in.
         if result_pub is None and any(text_lower.startswith(word) for word in self.wake_words):
-            self.get_logger().info(f'🎯 Wake word detected: "{text[:30]}" → STOP TTS')
-            stop_msg = String()
-            stop_msg.data = "STOP"
-            self.tts_control_pub.publish(stop_msg)
+            if self._barge_in_policy == "classify":
+                self.get_logger().info(
+                    f'🎯 [issue 1734] Wake word detected: "{text[:30]}" → '
+                    f"STOP TTS отложен (barge_in_policy=classify, решает "
+                    f"dialogue_node/quick_decide)"
+                )
+            else:
+                self.get_logger().info(f'🎯 Wake word detected: "{text[:30]}" → STOP TTS')
+                stop_msg = String()
+                stop_msg.data = "STOP"
+                self.tts_control_pub.publish(stop_msg)
 
         msg = String()
         msg.data = text
