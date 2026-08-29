@@ -70,6 +70,7 @@ from rob_box_harness.providers import (
     DEFAULT_MODEL as MINIMAX_DEFAULT_MODEL,
     DEEPSEEK_DEFAULT_BASE_URL,
     DEEPSEEK_DEFAULT_MODEL,
+    LLM_PROVIDER_REGISTRY,
     build_deepseek_provider,
     build_minimax_provider,
 )
@@ -1008,36 +1009,12 @@ class DialogueNode(Node):
     # (base_url, model, api_key) are read from the YAML section
     # ``<provider_name>.base_url`` etc., falling back to these defaults.
     # Extend this dict to add new providers.
-    _LLM_PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
-        "minimax": {
-            "display_name": "MiniMax",
-            "has_balance_api": False,
-            "default_base_url": "https://api.minimax.io/v1",
-            "default_model": "MiniMax-M3",
-            "env_key_var": "MINIMAX_API_KEY",
-        },
-        "deepseek": {
-            "display_name": "DeepSeek",
-            "has_balance_api": True,
-            "default_base_url": "https://api.deepseek.com",
-            "default_model": "deepseek-chat",
-            "env_key_var": "DEEPSEEK_API_KEY",
-        },
-        "mimo": {
-            "display_name": "MiMo",
-            "has_balance_api": False,
-            "default_base_url": "https://api.xiaomimimo.com/v1",
-            "default_model": "mimo-v2.5",
-            "env_key_var": "MIMO_API_KEY",
-        },
-        "qwen": {
-            "display_name": "Qwen",
-            "has_balance_api": False,
-            "default_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            "default_model": "qwen-turbo",
-            "env_key_var": "DASHSCOPE_API_KEY",
-        },
-    }
+    #: Well-known LLM providers. The table itself lives in
+    #: ``rob_box_harness.providers.catalog`` — a ROS2-free module — so the
+    #: local text-chat entry point (``scripts/dialogue/chat.py``) and this
+    #: node cannot drift apart on base URLs, models or env var names. This
+    #: attribute stays as the node-local alias the methods below read.
+    _LLM_PROVIDER_REGISTRY: dict[str, dict[str, Any]] = LLM_PROVIDER_REGISTRY
 
     _BARGE_IN_POLICIES = ("replace", "classify")
 

@@ -37,6 +37,12 @@ from rob_box_harness.providers.deepseek import (
     RetryPolicy,
     build_deepseek_provider,
 )
+from rob_box_harness.providers.catalog import (
+    LLM_PROVIDER_REGISTRY,
+    build_provider,
+    known_provider_names,
+    resolve_api_key,
+)
 from rob_box_harness.providers.dummy import DummyLLMProvider
 from rob_box_harness.providers.fake_llm import HarnessFakeLLMProvider
 from rob_box_harness.providers.mimo import (
@@ -61,6 +67,11 @@ from rob_box_harness.providers.minimax import (
 
 __all__ = [
     "DummyLLMProvider",
+    # Well-known provider table (shared with dialogue_node)
+    "LLM_PROVIDER_REGISTRY",
+    "build_provider",
+    "known_provider_names",
+    "resolve_api_key",
     "HarnessFakeLLMProvider",
     # MiniMax (harness-side)
     "MiniMaxProvider",
