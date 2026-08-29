@@ -104,6 +104,10 @@ def _make_node(parameters: dict | None = None) -> DialogueNode:
     n._effects.handle_sound_state = MagicMock()
 
     n._active_batches = {}
+    # Telegram echo routing (issue #1195) — `_publish_response` and
+    # `_publish_response_batch` read it unconditionally; `__init__` sets it
+    # to None and this fixture bypasses `__init__`.
+    n._active_tg_chat_id = None
     n._pending_music_cleanup = False
     n._session_started_at = None
     n._session_end_reason = "success"
@@ -582,7 +586,9 @@ class TestOnStt:
             / "rob_box_voice"
             / "dialogue_node.py"
         )
-        src = dialogue_node_path.read_text()
+        # dialogue_node.py is UTF-8 and full of Cyrillic comments; the
+        # default encoding is cp1252 on Windows.
+        src = dialogue_node_path.read_text(encoding="utf-8")
         # Только строки ``+= 1`` — не комментарии, не fixture-литералы.
         increment_keys: set[str] = set()
         for line in src.splitlines():

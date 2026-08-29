@@ -40,6 +40,10 @@ def node():
     n._startup_greeting_fired = False
     n._startup_greeting_text = ""
     n._greeting_timer = None
+    # `_publish_response` routes the Telegram echo by this id (issue #1195).
+    # `__init__` sets it to None; this fixture bypasses `__init__`, so it has
+    # to supply it — nothing here comes from a Telegram chat.
+    n._active_tg_chat_id = None
 
     n._dsm = MagicMock()
     n._dsm.current_state = DialogueStateKind.IDLE

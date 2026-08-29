@@ -30,7 +30,10 @@ def test_load_event_profile_from_yaml(tmp_path: Path) -> None:
         '  date: "2026-04-12"\n'
         '  description: "Презентация бакалавриата"\n'
         '  robot_role: "РОББОКС — ровер-помощник"\n'
-        f'  faq_file: "{tmp_path / "faq.xlsx"}"\n',
+        # as_posix(): a Windows temp path inside a double-quoted YAML scalar
+        # is escape-sequence soup (\U in \Users), safe_load raises, and
+        # _load_event_profile fails open with an empty profile.
+        f'  faq_file: "{(tmp_path / "faq.xlsx").as_posix()}"\n',
         encoding="utf-8",
     )
 

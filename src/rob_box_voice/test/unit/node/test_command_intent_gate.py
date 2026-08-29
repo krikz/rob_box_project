@@ -12,14 +12,33 @@ execute_music_code вместо движения («робот поёт вмес
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 
 from rob_box_voice.core.command_parser import CommandParser, IntentType
 from rob_box_voice.dialogue_node import DialogueNode
 
 _GATE_CONFIDENCE = 0.7
+
+# Wake words come from the config the node actually loads, not from a copy.
+# A hand-written ["робок", "робот", "роббокс"] here silently omitted
+# «робокс», so «робокс стоп» was dropped by the wake-word gate long before
+# it could reach the command-intent gate this file is about, and the test
+# failed against production behaviour that was correct.
+_CONFIG = (
+    Path(__file__).resolve().parents[3] / "config" / "dialogue_node.yaml"
+)
+
+
+def _wake_words() -> list[str]:
+    with _CONFIG.open(encoding="utf-8") as fh:
+        cfg = yaml.safe_load(fh)
+    words = cfg["dialogue_node"]["ros__parameters"]["wake_words"]
+    assert "робокс" in words, f"{_CONFIG} no longer lists «робокс»: {words}"
+    return list(words)
 
 
 def _make_node(gate_enabled: bool = True) -> DialogueNode:
@@ -28,7 +47,7 @@ def _make_node(gate_enabled: bool = True) -> DialogueNode:
     logger = MagicMock()
     n.get_logger = lambda: logger
 
-    n._wake_words = ["робок", "робот", "роббокс"]
+    n._wake_words = _wake_words()
     n._command_intent_gate_enabled = gate_enabled
     n._command_intent_gate_confidence = _GATE_CONFIDENCE
     n._command_parser = CommandParser(
