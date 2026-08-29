@@ -440,10 +440,15 @@ class SchedulerToolExecutor:
 
         Empty when there is no active segment group (idle, or
         ``begin_group()`` was never called) — a MERGE delta is
-        meaningless without an active group to target. FROZEN vs LIVE
-        is not distinguished yet (S9); every PENDING segment is
-        currently treated as rewriteable/at-risk (design §7.1's
-        FROZEN nuance is deferred, matching the plan's own scoping).
+        meaningless without an active group to target.
+
+        S9.2 (§6.5): ``REWRITEABLE_SEGMENTS`` lists only PENDING_LIVE
+        segments — a PENDING_FROZEN one already has speculative pre-gen
+        in flight (or done), so the LLM must not be invited to rewrite
+        it via ``task_delta`` (rule #SEGMENT-PLAN,
+        ``master_prompt_compact.txt``). ``AT_RISK_ON_REPLACE`` still
+        lists every PENDING segment (FROZEN included) — a ``REPLACE``
+        verdict blows away the whole group regardless of pre-gen state.
         """
         scheduler = self._scheduler
         group_id = self._current_group_id
@@ -470,8 +475,9 @@ class SchedulerToolExecutor:
                 )
             elif seg.status in (TaskStatus.QUEUED, TaskStatus.SCHEDULED):
                 lines.append(f"- PENDING: {label} {seg.channel.value} {payload!r}")
-                rewriteable.append(label)
                 at_risk.append(label)
+                if not scheduler.is_frozen(seg):
+                    rewriteable.append(label)
             # Terminal segments (COMPLETED/FAILED/CANCELLED) are
             # omitted — the LLM needs "what's happening now / what it
             # can still touch", not a play-by-play history.

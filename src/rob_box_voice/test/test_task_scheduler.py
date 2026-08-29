@@ -1104,3 +1104,330 @@ class TestUpdateInvariant:
             assert seen_args == [{"text": "old"}]
         finally:
             sched.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# S9.1 — PENDING_FROZEN / PENDING_LIVE via set_group_boundary()/is_frozen()
+# (scheduler-segments-merge plan, §6.5)
+# ---------------------------------------------------------------------------
+
+
+class TestFrozenLiveSegments:
+    def test_default_boundary_treats_every_pending_segment_as_live(self):
+        """No set_group_boundary() call yet == pre-S9 behaviour: nothing
+        is FROZEN."""
+        sched = TaskScheduler(loop=asyncio.new_event_loop())
+        segs = [
+            sched.submit(SchedulerTask(
+                task_id=f"g1-{i}", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor(f"seg{i}"), args={"text": f"seg{i}"},
+                group_id="g1", seg_idx=i,
+            ))
+            for i in range(3)
+        ]
+        assert all(not sched.is_frozen(s) for s in segs)
+
+    def test_boundary_splits_pending_segments_frozen_below_live_at_or_above(self):
+        sched = TaskScheduler(loop=asyncio.new_event_loop())
+        segs = [
+            sched.submit(SchedulerTask(
+                task_id=f"g1-{i}", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor(f"seg{i}"), args={"text": f"seg{i}"},
+                group_id="g1", seg_idx=i,
+            ))
+            for i in range(3)
+        ]
+        sched.set_group_boundary("g1", 2)
+        assert [sched.is_frozen(s) for s in segs] == [True, True, False]
+
+    def test_clearing_boundary_makes_every_pending_segment_live_again(self):
+        sched = TaskScheduler(loop=asyncio.new_event_loop())
+        segs = [
+            sched.submit(SchedulerTask(
+                task_id=f"g1-{i}", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor(f"seg{i}"), args={"text": f"seg{i}"},
+                group_id="g1", seg_idx=i,
+            ))
+            for i in range(2)
+        ]
+        sched.set_group_boundary("g1", 5)
+        assert all(sched.is_frozen(s) for s in segs)
+        sched.set_group_boundary("g1", None)
+        assert not any(sched.is_frozen(s) for s in segs)
+
+    def test_boundary_is_per_group(self):
+        """A boundary set for one group must not leak into another."""
+        sched = TaskScheduler(loop=asyncio.new_event_loop())
+        g1 = sched.submit(SchedulerTask(
+            task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+            executor=_echo_executor("a"), args={}, group_id="g1", seg_idx=0,
+        ))
+        g2 = sched.submit(SchedulerTask(
+            task_id="g2-0", tool="speak_text", channel=ChannelKind.VOICE,
+            executor=_echo_executor("a"), args={}, group_id="g2", seg_idx=0,
+        ))
+        sched.set_group_boundary("g1", 5)
+        assert sched.is_frozen(g1) is True
+        assert sched.is_frozen(g2) is False
+
+    def test_ungrouped_task_is_never_frozen(self):
+        sched = TaskScheduler(loop=asyncio.new_event_loop())
+        solo = sched.submit(SchedulerTask(
+            task_id="solo", tool="speak_text", channel=ChannelKind.VOICE,
+            executor=_echo_executor("solo"), args={},
+        ))
+        sched.set_group_boundary("solo", 5)  # no-op: task has no group_id
+        assert sched.is_frozen(solo) is False
+
+    @pytest.mark.asyncio
+    async def test_running_segment_is_never_frozen_even_below_boundary(self):
+        """§6.5: FROZEN only ever applies to PENDING segments — a RUNNING
+        segment is governed by the harder §2.3 invariant, not FROZEN/LIVE.
+        This is also "trigger 1" (segment start) — is_frozen must flip to
+        False the moment the segment starts, with no separate recompute
+        step needed because it is derived, not cached."""
+        sched = _make_scheduler()
+        try:
+            running = asyncio.Event()
+            release = asyncio.Event()
+
+            async def slow(task: SchedulerTask) -> TaskResult:
+                running.set()
+                await release.wait()
+                return TaskResult(payload=task.task_id)
+
+            t0 = sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=slow, args={"text": "seg0"}, group_id="g1", seg_idx=0,
+            ))
+            sched.set_group_boundary("g1", 5)  # every seg_idx < 5 is FROZEN if PENDING
+            await asyncio.wait_for(running.wait(), timeout=1.0)
+            assert t0.status is TaskStatus.RUNNING
+            assert sched.is_frozen(t0) is False
+
+            release.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    def test_boundary_recompute_trigger_estimator_record_widens_frozen_set(self):
+        """Trigger 2 (§6.5, "LLMEstimator.record"): after a fresh
+        build_plan pushes the boundary further out, is_frozen reflects
+        the wider FROZEN set on the very next query — no stale cache."""
+        sched = TaskScheduler(loop=asyncio.new_event_loop())
+        segs = [
+            sched.submit(SchedulerTask(
+                task_id=f"g1-{i}", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor(f"seg{i}"), args={"text": f"seg{i}"},
+                group_id="g1", seg_idx=i,
+            ))
+            for i in range(3)
+        ]
+        sched.set_group_boundary("g1", 0)
+        assert [sched.is_frozen(s) for s in segs] == [False, False, False]
+
+        sched.set_group_boundary("g1", 2)  # estimator recalibrated: LLM looks slower
+        assert [sched.is_frozen(s) for s in segs] == [True, True, False]
+
+
+# ---------------------------------------------------------------------------
+# S9.1 — update() touching a FROZEN segment (§6.5, "trigger 3")
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateTouchesFrozenSegment:
+    @pytest.mark.asyncio
+    async def test_rewrite_of_frozen_segment_is_applied_and_flagged(self):
+        sched = _make_scheduler()
+        try:
+            block = asyncio.Event()
+
+            async def blocked(task: SchedulerTask) -> TaskResult:
+                await block.wait()
+                return TaskResult(payload=dict(task.args))
+
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=blocked, args={"text": "verse0"}, group_id="g1", seg_idx=0,
+            ))
+            t1 = sched.submit(SchedulerTask(
+                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse1"), args={"text": "verse1"},
+                group_id="g1", seg_idx=1,
+            ))
+            # boundary=2 → seg_idx 1 (still PENDING) is FROZEN.
+            sched.set_group_boundary("g1", 2)
+
+            report = sched.update(
+                "g1", TaskDelta(group_id="g1", ops=(rewrite(1, {"text": "про енота"}),)),
+            )
+            assert report.outcomes[0].applied is True
+            assert report.outcomes[0].frozen is True
+            assert t1.args == {"text": "про енота"}
+            # FROZEN is not a hard block: the edit still lands, unlike RUNNING.
+            assert t1.status is TaskStatus.QUEUED
+
+            block.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_rewrite_of_live_segment_is_not_flagged_frozen(self):
+        sched = _make_scheduler()
+        try:
+            block = asyncio.Event()
+
+            async def blocked(task: SchedulerTask) -> TaskResult:
+                await block.wait()
+                return TaskResult(payload=dict(task.args))
+
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=blocked, args={"text": "verse0"}, group_id="g1", seg_idx=0,
+            ))
+            t1 = sched.submit(SchedulerTask(
+                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse1"), args={"text": "verse1"},
+                group_id="g1", seg_idx=1,
+            ))
+            # boundary=1 → seg_idx 1 is LIVE (>= boundary).
+            sched.set_group_boundary("g1", 1)
+
+            report = sched.update(
+                "g1", TaskDelta(group_id="g1", ops=(rewrite(1, {"text": "про енота"}),)),
+            )
+            assert report.outcomes[0].applied is True
+            assert report.outcomes[0].frozen is False
+            assert t1.args == {"text": "про енота"}
+
+            block.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_frozen_touch_fires_hook_with_cancel_reason(self):
+        """The whole point of S9.1: touching a FROZEN segment must let the
+        integration layer cancel that segment's speculative pre-gen with
+        speculative_executor.CANCEL_REASON_MERGE_TOUCHED_FROZEN — verified
+        here via the hook contract, since task_scheduler.py must not
+        import speculative_executor.py (circular import)."""
+        from rob_box_voice.scheduler.speculative_executor import (
+            CANCEL_REASON_MERGE_TOUCHED_FROZEN,
+        )
+
+        sched = _make_scheduler()
+        try:
+            touched: list[str] = []
+
+            def on_frozen_touch(task: SchedulerTask) -> None:
+                # The integration layer would call
+                # SpeculativeStepExecutor.cancel(reason=CANCEL_REASON_MERGE_TOUCHED_FROZEN)
+                # here; we just record that the hook fired with the right
+                # task and trust the constant is the one §6.5 defines.
+                touched.append(task.task_id)
+
+            sched.set_frozen_touch_hook(on_frozen_touch)
+
+            block = asyncio.Event()
+
+            async def blocked(task: SchedulerTask) -> TaskResult:
+                await block.wait()
+                return TaskResult(payload=dict(task.args))
+
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=blocked, args={"text": "verse0"}, group_id="g1", seg_idx=0,
+            ))
+            sched.submit(SchedulerTask(
+                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse1"), args={"text": "verse1"},
+                group_id="g1", seg_idx=1,
+            ))
+            sched.set_group_boundary("g1", 2)
+
+            sched.update(
+                "g1", TaskDelta(group_id="g1", ops=(rewrite(1, {"text": "про енота"}),)),
+            )
+            assert touched == ["g1-1"]
+            assert CANCEL_REASON_MERGE_TOUCHED_FROZEN == "merge_touched_frozen"
+
+            block.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_live_touch_does_not_fire_frozen_hook(self):
+        sched = _make_scheduler()
+        try:
+            touched: list[str] = []
+            sched.set_frozen_touch_hook(lambda task: touched.append(task.task_id))
+
+            block = asyncio.Event()
+
+            async def blocked(task: SchedulerTask) -> TaskResult:
+                await block.wait()
+                return TaskResult(payload=dict(task.args))
+
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=blocked, args={"text": "verse0"}, group_id="g1", seg_idx=0,
+            ))
+            sched.submit(SchedulerTask(
+                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse1"), args={"text": "verse1"},
+                group_id="g1", seg_idx=1,
+            ))
+            sched.set_group_boundary("g1", 1)  # seg 1 is LIVE
+
+            sched.update(
+                "g1", TaskDelta(group_id="g1", ops=(rewrite(1, {"text": "про енота"}),)),
+            )
+            assert touched == []
+
+            block.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_running_segment_invariant_unaffected_even_if_below_boundary(self):
+        """S9.1 must not weaken the pre-existing §2.3 RUNNING invariant:
+        a RUNNING segment below the boundary is still untouched/not
+        cancelled, and does not fire the frozen-touch hook (it is not
+        FROZEN — it is RUNNING, a stronger state)."""
+        sched = _make_scheduler()
+        try:
+            touched: list[str] = []
+            sched.set_frozen_touch_hook(lambda task: touched.append(task.task_id))
+
+            release = asyncio.Event()
+            running = asyncio.Event()
+
+            async def slow(task: SchedulerTask) -> TaskResult:
+                running.set()
+                await release.wait()
+                return TaskResult(payload=dict(task.args))
+
+            t0 = sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=slow, args={"text": "old"}, group_id="g1", seg_idx=0,
+            ))
+            sched.set_group_boundary("g1", 5)
+            await asyncio.wait_for(running.wait(), timeout=1.0)
+
+            report = sched.update(
+                "g1", TaskDelta(group_id="g1", ops=(rewrite(0, {"text": "new"}),)),
+            )
+            assert report.outcomes[0].applied is False
+            assert report.outcomes[0].frozen is False
+            assert t0.args == {"text": "old"}
+            assert t0.status is TaskStatus.RUNNING
+            assert touched == []
+
+            release.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()

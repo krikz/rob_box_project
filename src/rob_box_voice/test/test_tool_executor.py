@@ -446,6 +446,57 @@ def test_segment_plan_block_shows_active_and_pending() -> None:
     asyncio.run(_run())
 
 
+def test_segment_plan_block_excludes_frozen_from_rewriteable() -> None:
+    """S9.2 (§6.5): REWRITEABLE_SEGMENTS lists only PENDING_LIVE segments;
+    AT_RISK_ON_REPLACE still lists every PENDING segment, FROZEN included —
+    a REPLACE verdict blows away the whole group regardless of pre-gen
+    state."""
+    block_event = asyncio.Event()
+
+    class _BlockingUnderlying(_FakeUnderlying):
+        async def execute(self, call: ToolCall) -> ToolResult:
+            if call.id == "c1":
+                await block_event.wait()
+            return await super().execute(call)
+
+    underlying = _BlockingUnderlying()
+
+    async def _run() -> None:
+        sched = TaskScheduler()
+        sched.start()
+        executor = SchedulerToolExecutor(underlying, scheduler=sched)
+        try:
+            group_id = executor.begin_group()
+            await executor.execute(
+                ToolCall(id="c1", name="speak_text", arguments={"text": "куплет про комара"})
+            )
+            await executor.execute(
+                ToolCall(id="c2", name="speak_text", arguments={"text": "куплет про кузнечика"})
+            )
+            await executor.execute(
+                ToolCall(id="c3", name="speak_text", arguments={"text": "куплет про енота"})
+            )
+            # Give the pump a moment to pick up c1 (RUNNING, blocked).
+            await asyncio.sleep(0.02)
+
+            # seg_1 (c2) is already pre-gen'd/in flight → FROZEN.
+            # seg_2 (c3) is not yet reached → LIVE.
+            sched.set_group_boundary(group_id, 2)
+
+            block = executor.segment_plan_block()
+            assert "seg_1" in block
+            assert "seg_2" in block
+            assert "REWRITEABLE_SEGMENTS: [seg_2]" in block
+            assert "AT_RISK_ON_REPLACE: [seg_1, seg_2]" in block
+
+            block_event.set()
+            await asyncio.wait_for(sched.wait_all(), timeout=2.0)
+        finally:
+            sched.shutdown()
+
+    asyncio.run(_run())
+
+
 def test_segment_plan_block_empty_after_group_completes() -> None:
     underlying = _FakeUnderlying()
 

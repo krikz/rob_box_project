@@ -470,12 +470,20 @@ class UpdateOpOutcome:
     ``applied=False`` is the normal, expected outcome for an op that
     targets a RUNNING or already-terminal segment — the §2.3 invariant
     means "ignored", not "error". ``reason`` explains why for logging.
+
+    ``frozen`` (S9.1, §6.5): ``True`` when the op *was* applied but the
+    target segment was PENDING_FROZEN (past the group's pre-gen
+    boundary) at the time — the op still succeeded (FROZEN, unlike
+    RUNNING, is not a hard block), but the caller should treat this as
+    a signal to cancel/regenerate that segment's speculative pre-gen.
+    Always ``False`` for ``applied=False`` outcomes and for ``append``.
     """
 
     op: DeltaOp
     applied: bool
     task_id: Optional[str] = None
     reason: str = ""
+    frozen: bool = False
 
 
 @dataclass(frozen=True)
@@ -562,6 +570,13 @@ class TaskScheduler:
         # Populated in submit(); cleared lazily in segments() once every
         # segment of the group has reached a terminal status (§2.2).
         self._groups: Dict[str, list[str]] = {}
+        # S9.1 (scheduler-segments-merge, §6.5) — group_id → boundary_idx,
+        # mirroring the latest PreGenPlan.boundary_idx the caller computed
+        # for that group. See set_group_boundary()/is_frozen().
+        self._boundaries: Dict[str, int] = {}
+        # S9.1 — optional callback fired from update() when a FROZEN
+        # segment is edited (see set_frozen_touch_hook()).
+        self._on_frozen_touch: Optional[Callable[[SchedulerTask], None]] = None
         # W7c (issue #968): optional lifecycle callback — receives
         # ``(event, payload)`` for task.created / task.started /
         # task.completed / task.failed / task.cancelled. The dialogue
@@ -729,6 +744,84 @@ class TaskScheduler:
         tasks.sort(key=lambda t: (t.seg_idx is None, t.seg_idx))
         return tasks
 
+    def set_group_boundary(self, group_id: str, boundary_idx: Optional[int]) -> None:
+        """S9.1 (§6.5, scheduler-segments-merge) — record the PENDING_FROZEN /
+        PENDING_LIVE split for *group_id*.
+
+        ``boundary_idx`` mirrors :attr:`~.pre_gen.PreGenPlan.boundary_idx` —
+        the caller (whoever owns the ``SpeculativePreGenerator`` /
+        ``SpeculativeStepExecutor`` bridge, §6.5) is expected to call this
+        every time it recomputes ``build_plan`` for the group: when a
+        segment starts, after ``LLMEstimator.record`` recalibrates, and
+        right before :meth:`update`. This module deliberately does not
+        import ``pre_gen``/``speculative_executor`` itself — they already
+        import *this* module, so the dependency only runs one way — it
+        just stores whatever value the caller last computed.
+
+        :meth:`is_frozen` reads the stored boundary fresh on every call;
+        there is no separate cache to go stale, so "recompute at the
+        three triggers" simply means "call this setter again there".
+
+        ``None`` clears the boundary — every PENDING segment of the group
+        is then LIVE (matches pre-S9 behaviour, and a ``PreGenPlan`` with
+        no reachable boundary, e.g. an enormous LLM ETA).
+        """
+        with self._lock:
+            if boundary_idx is None:
+                self._boundaries.pop(group_id, None)
+            else:
+                self._boundaries[group_id] = boundary_idx
+
+    def is_frozen(self, task: SchedulerTask) -> bool:
+        """True when *task* is PENDING_FROZEN (§6.5).
+
+        FROZEN is deliberately **not** a :class:`TaskStatus` value — it
+        is a derived property of a PENDING (``QUEUED``/``SCHEDULED``)
+        segment: still queued, but at or past the pre-gen boundary index
+        recorded via :meth:`set_group_boundary` for its group. RUNNING
+        and terminal segments are never FROZEN — RUNNING is already
+        covered by the harder §2.3 invariant enforced in :meth:`update`.
+        """
+        if task.status not in (TaskStatus.QUEUED, TaskStatus.SCHEDULED):
+            return False
+        if task.group_id is None or task.seg_idx is None:
+            return False
+        with self._lock:
+            boundary = self._boundaries.get(task.group_id)
+        if boundary is None:
+            return False
+        return task.seg_idx < boundary
+
+    def _notify_frozen_touch(self, task: SchedulerTask) -> None:
+        """S9.1: fire the optional frozen-touch hook (see
+        :meth:`set_frozen_touch_hook`).
+
+        The hook lets the integration layer cancel that segment's
+        in-flight speculative pre-gen (with
+        ``speculative_executor.CANCEL_REASON_MERGE_TOUCHED_FROZEN``) and
+        let it regenerate — this module only notifies, it does not own
+        the pre-gen cache (§6.5 boundary rule, see
+        ``speculative_executor.py``'s module docstring).
+        """
+        if self._on_frozen_touch is None:
+            return
+        try:
+            self._on_frozen_touch(task)
+        except Exception:  # noqa: BLE001 — a hook bug must not corrupt update()
+            _LOG.exception(
+                "scheduler: on_frozen_touch hook failed for task %s", task.task_id
+            )
+
+    def set_frozen_touch_hook(
+        self, hook: Optional[Callable[[SchedulerTask], None]],
+    ) -> None:
+        """Install the S9.1 callback fired when :meth:`update` edits a
+        FROZEN segment (§6.5). ``None`` (the MVP default) disables it —
+        ``update`` still applies the edit either way; only the
+        notification is skipped.
+        """
+        self._on_frozen_touch = hook
+
     def update(
         self,
         group_id: str,
@@ -821,14 +914,21 @@ class TaskScheduler:
                 )
                 continue
 
+            # S9.1 (§6.5): FROZEN is not a hard block like RUNNING — the
+            # edit still goes through — but the caller needs to know so
+            # it can cancel/regenerate that segment's speculative pre-gen.
+            frozen = self.is_frozen(target)
             if op.kind in (DeltaOpKind.REWRITE, DeltaOpKind.REPLACE):
                 mutated = channel.replace_args(target.task_id, dict(op.args or {}))
             else:  # DROP
                 mutated = channel.remove(target.task_id)
             applied = mutated is not None
+            if applied and frozen:
+                self._notify_frozen_touch(target)
             outcomes.append(UpdateOpOutcome(
                 op=op, applied=applied, task_id=target.task_id,
                 reason="" if applied else "segment started running before update landed",
+                frozen=applied and frozen,
             ))
         return UpdateReport(group_id=group_id, outcomes=tuple(outcomes))
 
