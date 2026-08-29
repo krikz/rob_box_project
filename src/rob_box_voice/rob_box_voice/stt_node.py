@@ -57,11 +57,12 @@ from rob_box_voice.observability import (
 )
 
 try:
-    from rob_box_voice.core.dialogue_text import has_wake_word
+    from rob_box_voice.core.dialogue_text import DEFAULT_WAKE_WORDS, has_wake_word
 
     _HAS_WAKE_WORD_AVAILABLE = True
 except ImportError:  # pragma: no cover — защита для standalone-запуска
     _HAS_WAKE_WORD_AVAILABLE = False
+    DEFAULT_WAKE_WORDS = ()
 
     def has_wake_word(text_lower: str, wake_words: list) -> bool:  # type: ignore[no-redef]
         if not wake_words:
@@ -124,27 +125,14 @@ class STTNode(Node):
         self.declare_parameter("aec_mode", "hardware")
 
         # Wake words для немедленного STOP TTS (barge-in). Должны совпадать с dialogue_node!
-        # 🔴 fix(voice #1252): синхронизировано с dialogue_node.yaml (12 вариантов) +
-        # исторический «робик» (потерян при 9ca7fb29, 21.02). STT реально выдаёт
-        # кривые варианты («робок», «роберт», «рыбок», «роботс») — все покрываем.
-        self.declare_parameter(
-            "wake_words",
-            [
-                "робок",
-                "робот",
-                "роббокс",
-                "робокос",
-                "роббос",
-                "робокс",
-                "роберт",
-                "рыбок",
-                "рома",
-                "бот",
-                "робо",
-                "роб",
-                "робик",
-            ],
-        )
+        # Один список на весь проект — rob_box_voice.core.dialogue_text.
+        # Он же фолбек strip_wake_word, и его порядок неслучаен (длинные
+        # варианты первыми, иначе «роб» съедает «роб бокс»). Копий было
+        # семь и они разошлись на три разных списка: здесь и в
+        # dialogue_node.py лежало 13 вариантов, в четырёх YAML — 21, в
+        # e2e-конфиге — те же 13. Тот самый класс ошибки, из-за которого
+        # завели #1252 и заплатили #1734.
+        self.declare_parameter("wake_words", list(DEFAULT_WAKE_WORDS))
 
         # Параметры fallback/retry (issue #979): единое место для таймаутов,
         # retry и правила коротких фраз. См. rob_box_voice/stt_fallback.py.

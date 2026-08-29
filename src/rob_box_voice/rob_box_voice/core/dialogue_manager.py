@@ -30,6 +30,8 @@ import time
 from enum import Enum
 from typing import List, Optional
 
+from rob_box_voice.core.dialogue_text import DEFAULT_WAKE_WORDS
+
 
 class DialogueState(Enum):
     """Dialogue state machine states."""
@@ -94,14 +96,13 @@ class DialogueManager:
             dialogue_timeout: Seconds before returning to IDLE (default: 30.0)
             query_accumulation_timeout: Seconds to accumulate queries (default: 2.5)
         """
-        # Wake words
-        # 🔴 fix(voice #1252): синхронизировано с dialogue_node.yaml — 12 вариантов
-        # + исторический «робик» (потерян при 9ca7fb29, 21.02).
-        self.wake_words = wake_words if wake_words is not None else [
-            'робок', 'робот', 'роббокс', 'робокос', 'роббос', 'робокс',
-            'робэкс', 'робекс', 'робакс', 'рабокс', 'рубокс', 'роблокс',
-            'роберт', 'рыбок', 'рабок', 'робак', 'рома', 'бот', 'робо', 'роб', 'робик',
-        ]
+        # Wake words — единственное объявление живёт в
+        # rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS. Здесь был
+        # свой литерал на 21 вариант; ещё шесть копий лежали в нодах и
+        # YAML'ах и уже разъезжались (#1252 → #1734).
+        self.wake_words = (
+            list(wake_words) if wake_words is not None else list(DEFAULT_WAKE_WORDS)
+        )
         self.silence_commands = silence_commands or ['помолч', 'замолч', 'хватит']
         self.unsilence_commands = unsilence_commands or ['говори', 'включ', 'работ', 'отвеч', 'разговар']
 

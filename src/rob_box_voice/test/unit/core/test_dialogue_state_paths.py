@@ -173,3 +173,68 @@ def test_every_package_config_matches_a_node_name() -> None:
     assert not mismatched, (
         f"config files that configure a node they are not named for: {mismatched}"
     )
+
+
+# ---------------------------------------------------------------------------
+# wake_words: one declaration
+# ---------------------------------------------------------------------------
+
+E2E_CONFIG = (
+    REPO_ROOT / "docker" / "vision" / "test" / "config" / "voice_assistant_test.yaml"
+)
+ALL_CONFIG_DIRS = (PACKAGE_CONFIG_DIR, DEPLOYED_CONFIG_DIR)
+
+
+def _node_params(path: Path):
+    with path.open(encoding="utf-8") as fh:
+        loaded = yaml.safe_load(fh) or {}
+    for key, value in loaded.items():
+        if isinstance(value, dict) and "ros__parameters" in value:
+            yield key.lstrip("/"), (value["ros__parameters"] or {})
+
+
+def test_wake_words_are_declared_exactly_once() -> None:
+    """No YAML may carry its own copy of the wake-word list.
+
+    There were seven declarations and three different lists:
+    `dialogue_node.py` and `stt_node.py` defaulted to 13 spellings, four
+    YAMLs carried 21, the e2e config carried the same stale 13 — so the
+    test rig could not hear eight spellings the robot could. The comment
+    at `dialogue_node.py` on the barge-in topic already names this exact
+    failure: «Дублирование параметра — ровно тот класс ошибки, который уже
+    случился с wake_words (issue #1252, два YAML, разъехались) и который и
+    породил issue #1734».
+
+    `rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS` is the one list,
+    and its order matters — `strip_wake_word` alternates leftmost-first, so
+    «роб» must come after «роб бокс».
+    """
+    offenders = {}
+    for config_dir in ALL_CONFIG_DIRS:
+        for path in sorted(config_dir.glob("*.yaml")):
+            for node, params in _node_params(path):
+                if "wake_words" in params:
+                    offenders[f"{path.name}:{node}"] = params["wake_words"]
+    for node, params in _node_params(E2E_CONFIG):
+        if "wake_words" in params:
+            offenders[f"{E2E_CONFIG.name}:{node}"] = params["wake_words"]
+    assert not offenders, (
+        "wake_words re-declared in YAML — the list lives in "
+        "rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS and nowhere "
+        f"else: {sorted(offenders)}"
+    )
+
+
+def test_node_defaults_use_the_canonical_wake_words() -> None:
+    """Both nodes must default to the shared list, not a copy of it."""
+    from rob_box_voice.core.dialogue_text import DEFAULT_WAKE_WORDS
+
+    assert DEFAULT_WAKE_WORDS, "the canonical list is empty"
+    for module in ("dialogue_node.py", "stt_node.py"):
+        source = (
+            REPO_ROOT / "src" / "rob_box_voice" / "rob_box_voice" / module
+        ).read_text(encoding="utf-8")
+        assert 'declare_parameter("wake_words", list(DEFAULT_WAKE_WORDS))' in source, (
+            f"{module} declares wake_words with its own literal instead of "
+            "DEFAULT_WAKE_WORDS"
+        )

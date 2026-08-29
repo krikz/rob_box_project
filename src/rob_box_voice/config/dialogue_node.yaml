@@ -11,28 +11,10 @@
 dialogue_node:
   ros__parameters:
     metrics_port: 9100  # issue #1160 — Prometheus metrics endpoint
-    wake_words:
-    - робок
-    - робот
-    - роббокс
-    - робокос
-    - роббос
-    - робокс
-    - робэкс
-    - робекс
-    - робакс
-    - рабокс
-    - рубокс
-    - роблокс
-    - роберт
-    - рыбок
-    - рабок
-    - робак
-    - рома
-    - бот
-    - робо
-    - роб
-    - робик
+    # wake_words намеренно НЕ здесь: единственное объявление —
+    # rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS, откуда его берут
+    # дефолты dialogue_node и stt_node. Копия в YAML — это ровно то, что
+    # разъехалось в #1252 и стоило #1734.
     dialogue_timeout: 300.0
     llm_providers: "minimax,deepseek"   # issue #1089: первый = primary, остальные = fallbacks
     # Issue #1219 — активный TTS-провайдер для LLM-контекста [TTS].

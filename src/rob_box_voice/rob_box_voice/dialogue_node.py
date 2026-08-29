@@ -78,7 +78,7 @@ from rob_box_llm.errors import ProviderError
 
 from rob_box_voice.core.command_parser import CommandParser, IntentType
 from rob_box_voice.core.dialogue_text import (
-    has_wake_word, is_silence_command, is_unsilence_command, strip_wake_word,
+    DEFAULT_WAKE_WORDS, has_wake_word, is_silence_command, is_unsilence_command, strip_wake_word,
 )
 from rob_box_voice.core.llm_skip_reasons import (
     LLMSkipReason,
@@ -733,27 +733,14 @@ class DialogueNode(Node):
         # routes the verdict (S4). Garbage value → warn + fall back to
         # "replace" in _resolve_barge_in_policy().
         self.declare_parameter("barge_in_policy", "replace")
-        # 🔴 fix(voice #1252): wake words синхронизированы со stt_node.py — 12 вариантов
-        # из dialogue_node.yaml + исторический «робик» (потерян при 9ca7fb29, 21.02).
-        # STT реально выдаёт кривые варианты («робок», «роберт», «рыбок») — все покрываем.
-        self.declare_parameter(
-            "wake_words",
-            [
-                "робок",
-                "робот",
-                "роббокс",
-                "робокос",
-                "роббос",
-                "робокс",
-                "роберт",
-                "рыбок",
-                "рома",
-                "бот",
-                "робо",
-                "роб",
-                "робик",
-            ],
-        )
+        # Один список на весь проект — rob_box_voice.core.dialogue_text.
+        # Он же фолбек strip_wake_word, и его порядок неслучаен (длинные
+        # варианты первыми, иначе «роб» съедает «роб бокс»). Копий было
+        # семь и они разошлись на три разных списка: здесь и в
+        # stt_node.py лежало 13 вариантов, в четырёх YAML — 21, в
+        # e2e-конфиге — те же 13. Тот самый класс ошибки, из-за которого
+        # завели #1252 и заплатили #1734.
+        self.declare_parameter("wake_words", list(DEFAULT_WAKE_WORDS))
         self.declare_parameter("enable_mcp_tools", True)
         self.declare_parameter("llm_timeout_sec", 90.0)
         self.declare_parameter("verbose_llm", True)
