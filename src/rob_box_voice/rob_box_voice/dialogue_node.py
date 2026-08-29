@@ -2326,6 +2326,7 @@ class DialogueNode(Node):
         is_dj_auto: bool = False,
         was_idle: bool = False,
         is_babble_retry: bool = False,
+        is_synthetic: bool = False,
         raw_user_command: str | None = None,
         speaker_tag: str | None = None,
         speaker_duration_s: float = 0.0,
@@ -2366,6 +2367,7 @@ class DialogueNode(Node):
                 user_input,
                 is_dj_auto=is_dj_auto,
                 is_babble_retry=is_babble_retry,
+                is_synthetic=is_synthetic,
                 raw_user_command=raw_user_command,
                 speaker_tag=speaker_tag,
                 speaker_duration_s=speaker_duration_s,
@@ -2749,6 +2751,7 @@ class DialogueNode(Node):
         *,
         is_dj_auto: bool = False,
         is_babble_retry: bool = False,
+        is_synthetic: bool = False,
         raw_user_command: str | None = None,
         speaker_tag: str | None = None,
         speaker_duration_s: float = 0.0,
@@ -2881,6 +2884,7 @@ class DialogueNode(Node):
                     result: DialogResult = await self._core.process_input(
                         user_input,
                         is_dj_auto=was_dj_auto,
+                        is_synthetic=is_synthetic,
                         speaker_tag=speaker_tag,
                         speaker_context=speaker_context,
                         dynamic_system=dynamic_system,
@@ -3404,6 +3408,8 @@ class DialogueNode(Node):
         self._dispatch_turn(
             retry_prompt,
             is_babble_retry=True,
+            # Synthetic prompt — never persisted as something the user said.
+            is_synthetic=True,
             raw_user_command=user_input,
         )
         return True
@@ -3505,6 +3511,11 @@ class DialogueNode(Node):
                 verdict.prompt,
                 was_idle=False,
                 raw_user_command=user_input,
+                # ``verdict.prompt`` is our [CRITICAL] reminder, not the
+                # user's words — the real request is ``raw_user_command``
+                # and it was already written to history by the turn that
+                # triggered this retry.
+                is_synthetic=True,
             )
             return True
 
@@ -4519,9 +4530,13 @@ class DialogueNode(Node):
             return False
         if isinstance(error, ProviderError):
             return True
-        # DialogCore wraps LLM exceptions into a plain Exception with a
-        # traceback (4ba16f23), losing the ProviderError type — fall back
-        # to the stable health-aware marker embedded in the message.
+        # ``DialogCore`` used to wrap LLM exceptions into a plain
+        # ``Exception`` carrying the traceback text (4ba16f23), which threw
+        # the ``ProviderError`` type away and left only this substring
+        # match. It now keeps the exception itself (traceback goes to
+        # ``DialogResult.error_traceback``), so the ``isinstance`` above is
+        # the real check; the marker stays as a safety net for any provider
+        # that reports the same condition without the type.
         try:
             msg = str(error)
         except Exception:  # noqa: BLE001 — never crash on a broken __str__

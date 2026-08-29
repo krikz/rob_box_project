@@ -205,7 +205,16 @@ class DialogResult:
         plain text or the tool loop did not run.
     error:
         ``None`` on success, otherwise the exception that aborted the
-        turn. The shell logs this but does not raise it further.
+        turn — the original object, with its type intact. The shell
+        logs this but does not raise it further.
+    error_traceback:
+        Formatted traceback of ``error``, or ``None``. Kept beside the
+        exception rather than folded into it: ``result.error`` used to
+        be ``Exception(f"{exc}\n{traceback}")``, which made the text
+        available but threw the *type* away, and the shell had to
+        recover "is this a provider outage?" by substring-matching the
+        message (``dialogue_node._is_llm_unavailable_error``). The type
+        is the contract; the traceback is diagnostics. Both, separately.
     """
 
     spoken_text: str = ""
@@ -231,6 +240,7 @@ class DialogResult:
     # user hears the accept sound and then silence.
     speak_text_real_count: int = 0
     error: BaseException | None = None
+    error_traceback: str | None = None
     # ── LLM diagnostics (live 16:58) ────────────────────────────────────
     # When the LLM returns empty content (MiniMax M3 Interleaved Thinking
     # compaction, timeouts, finish_reason='length'), we want to know WHY
@@ -341,6 +351,7 @@ class DialogCore:
         *,
         history: Iterable[LLMMessage] | None = None,
         is_dj_auto: bool = False,
+        is_synthetic: bool = False,
         speaker_tag: str | None = None,
         speaker_context: str | None = None,
         dynamic_system: str | None = None,
@@ -351,9 +362,15 @@ class DialogCore:
         ``dynamic_system`` (live 10.08, two-system-prompt pattern) — XML
         ``<system_context>...</system_context>`` snapshot собирается
         dialogue_node каждый turn (текущий спикер, TTS-voice, session lock).
-        Вставляется вторым system-message в messages[] после статичного
-        system_prompt и до user input. Если None — dynamic system не
-        добавляется (backward-compatible).
+        Кладётся system-сообщением ПОСЛЕДНИМ перед user input — см.
+        комментарий на месте вставки. Если None — не добавляется.
+
+        ``is_synthetic`` — вход сгенерирован нами, а не человеком
+        (``[CRITICAL]``-ретраи babble/music guard'ов). Такой turn НЕ
+        пишется в историю как реплика пользователя: ответ модели —
+        пишется, потому что его слышал человек, а сам «промпт» человек
+        никогда не произносил. Тот же приём, что ``is_dj_auto`` — см.
+        комментарий у append_turn ниже.
 
         ``preclassified_event`` (live 10.08, issue #1101) — если caller
         уже классифицировал вход (через ``dsm.on_user_input`` + DSM-переход)
@@ -504,19 +521,19 @@ class DialogCore:
                 # Two-system-prompt pattern (live 10.08) — dynamic
                 # <system_context> snapshot: текущий спикер (resemblyzer),
                 # TTS-voice (gender alignment), session lock state.
-                # Вставляется ПОСЛЕ speaker_context и ДО user input, чтобы
-                # модель получала свежий runtime каждый turn.
+                #
+                # Кладётся ПОСЛЕДНИМ system-сообщением, вплотную к текущей
+                # реплике. Раньше он вставлялся в messages[1], то есть
+                # ПЕРЕД двадцатью ходами истории: модель читала «вот что
+                # происходит сейчас», а следом — два десятка ходов
+                # прошлого разговора, и никакого признака, что снапшот
+                # свежее всей этой истории, у неё не было. Волатильный
+                # runtime-стейт должен стоять там, где он и по времени —
+                # рядом с последним user-ходом.
                 if dynamic_system:
-                    if messages and messages[0].role == "system":
-                        messages.insert(
-                            1,
-                            LLMMessage(role="system", content=dynamic_system),
-                        )
-                    else:
-                        messages.insert(
-                            0,
-                            LLMMessage(role="system", content=dynamic_system),
-                        )
+                    messages.append(
+                        LLMMessage(role="system", content=dynamic_system)
+                    )
                 messages.append(LLMMessage(role="user", content=text))
                 # 🔴 FIX (live 11:19 DJ): DJ-переходы (is_dj_auto=True) НЕ
                 # пишутся в долгую память — иначе каждый переход (#1..#N)
@@ -529,7 +546,17 @@ class DialogCore:
                 user_metadata = {}
                 if speaker_tag is not None:
                     user_metadata["speaker_tag"] = speaker_tag
-                if not is_dj_auto:
+                #
+                # То же самое, слово в слово, верно для [CRITICAL]-ретраев
+                # babble/music guard'ов (``is_synthetic``). Живой лог с
+                # vision 29.08: из 20 ходов окна два — user-реплики вида
+                # «[CRITICAL] В прошлом цикле ты НЕ вызвал ни один
+                # музыкальный тул», которых человек не произносил. Модель
+                # на каждом следующем ходу перечитывала транскрипт, где её
+                # отчитывают, и отвечала «Менеджер не отвечает» вместо
+                # вызова тула. Ответ на ретрай пишется как обычно — его
+                # человек слышал.
+                if not is_dj_auto and not is_synthetic:
                     await self._memory.append_turn(
                         self._user_id,
                         Turn(
@@ -564,9 +591,10 @@ class DialogCore:
                                 metadata=dict(user_metadata),
                             ),
                         )
-            except Exception as exc:  # noqa: BLE001 — wrap into result
+            except Exception as exc:  # noqa: BLE001 — carry it in the result
                 import traceback as _tb
-                result.error = Exception(f"{exc}\n{_tb.format_exc()}")
+                result.error = exc
+                result.error_traceback = _tb.format_exc()
                 # The user turn was already appended BEFORE the LLM call
                 # (line above). On error, do NOT append again — that
                 # would produce a duplicate row in the conversation

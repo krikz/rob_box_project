@@ -447,14 +447,20 @@ def test_speaker_context_without_system_prompt_is_first(
     assert sent[1].role == "user"
 
 
-def test_dynamic_system_inserted_with_speaker_context(
+def test_dynamic_system_sits_last_before_the_user_turn(
     llm: _FakeLLMProvider,
     tools_provider: _FakeToolProvider,
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """dynamic_system (two-system-prompt pattern) вставляется вторым
-    system-сообщением, speaker_context — третьим (до user)."""
+    """Волатильный снапшот стоит вплотную к текущей реплике, а не в шапке.
+
+    Раньше ``dynamic_system`` вставлялся в ``messages[1]`` — то есть перед
+    всей историей. Модель читала «вот что происходит сейчас», а следом
+    двадцать ходов прошлого разговора, и отличить, что снапшот новее, было
+    не по чему. Порядок сообщений — единственный сигнал времени, который у
+    неё есть, поэтому снапшот теперь последний перед user.
+    """
     obj = DialogCore(
         llm=llm,
         tools=tools_provider,
@@ -470,14 +476,119 @@ def test_dynamic_system_inserted_with_speaker_context(
     ))
     sent = llm.calls[0][0]
     assert sent[0].content == "БАЗОВЫЙ ПРОМПТ"
-    # dynamic_system идёт сразу после базового промпта
+    # speaker_context — идентичность собеседника, остаётся в шапке.
     assert sent[1].role == "system"
-    assert "<system_context>" in sent[1].content
-    # speaker_context после dynamic_system, до user
-    assert sent[2].role == "system"
-    assert "Контекст о собеседнике" in sent[2].content
-    assert sent[3].role == "user"
-    assert sent[3].content == "привет"
+    assert "Контекст о собеседнике" in sent[1].content
+    # Снапшот — предпоследний, вплотную к реплике.
+    assert sent[-2].role == "system"
+    assert "<system_context>" in sent[-2].content
+    assert sent[-1].role == "user"
+    assert sent[-1].content == "привет"
+
+
+def test_dynamic_system_stays_after_history(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """С непустой историей снапшот всё равно оказывается ПОСЛЕ неё."""
+    from rob_box_harness.memory import Turn
+
+    memory.turns.extend([
+        Turn(role="user", content="старая реплика"),
+        Turn(role="assistant", content="старый ответ"),
+    ])
+    obj = DialogCore(
+        llm=llm,
+        tools=tools_provider,
+        memory=memory,
+        dsm=dsm,
+        system_prompt="БАЗОВЫЙ ПРОМПТ",
+        history_trim_limit=20,
+    )
+    asyncio.run(obj.handle_wake_word(""))
+    asyncio.run(obj.process_input(
+        "привет",
+        dynamic_system="<system_context>СВЕЖЕЕ</system_context>",
+    ))
+    sent = llm.calls[0][0]
+    contents = [m.content for m in sent]
+    assert "старая реплика" in contents
+    snapshot = next(i for i, m in enumerate(sent) if "СВЕЖЕЕ" in m.content)
+    history = contents.index("старая реплика")
+    assert snapshot > history, (
+        "снапшот обязан стоять после истории — иначе модель не может "
+        f"понять, что он свежее: {[m.role for m in sent]}"
+    )
+    assert sent[-1].role == "user"
+
+
+# ---------------------------------------------------------------------------
+# Synthetic retry turns must not enter the conversation history
+# ---------------------------------------------------------------------------
+
+
+def test_synthetic_input_is_not_persisted_as_a_user_turn(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """[CRITICAL]-ретрай — не реплика человека, в историю он не пишется.
+
+    Живой лог vision 29.08: два хода из двадцати в окне были user-репликами
+    «[CRITICAL] В прошлом цикле ты НЕ вызвал ни один музыкальный тул»,
+    которых пользователь не произносил. Модель перечитывала транскрипт,
+    где её отчитывают за невызванные тулы, и на следующих ходах отвечала
+    «Менеджер не отвечает» вместо того чтобы вызвать тул.
+    """
+    obj = DialogCore(
+        llm=llm, tools=tools_provider, memory=memory, dsm=dsm,
+        system_prompt="БАЗОВЫЙ ПРОМПТ",
+    )
+    asyncio.run(obj.handle_wake_word(""))
+    asyncio.run(obj.process_input(
+        "[CRITICAL] В прошлом цикле ты НЕ вызвал ни один музыкальный тул",
+        is_synthetic=True,
+    ))
+    persisted = [t.content for t in memory.turns]
+    assert not any("[CRITICAL]" in c for c in persisted), persisted
+
+
+def test_synthetic_turn_still_persists_what_the_user_heard(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Ответ на ретрай сохраняется: его человек действительно услышал."""
+    llm.response_text = "Ок, играю бит."
+    obj = DialogCore(
+        llm=llm, tools=tools_provider, memory=memory, dsm=dsm,
+        system_prompt="БАЗОВЫЙ ПРОМПТ",
+    )
+    asyncio.run(obj.handle_wake_word(""))
+    asyncio.run(obj.process_input("[CRITICAL] вызови тул", is_synthetic=True))
+    roles = [(t.role, t.content) for t in memory.turns]
+    assert ("assistant", "Ок, играю бит.") in roles, roles
+    assert all(r != "user" for r, _ in roles), roles
+
+
+def test_ordinary_input_is_still_persisted(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Обычная реплика пишется как раньше — гейт узкий, не задевает её."""
+    obj = DialogCore(
+        llm=llm, tools=tools_provider, memory=memory, dsm=dsm,
+        system_prompt="БАЗОВЫЙ ПРОМПТ",
+    )
+    asyncio.run(obj.handle_wake_word(""))
+    asyncio.run(obj.process_input("сыграй бит"))
+    assert ("user", "сыграй бит") in [(t.role, t.content) for t in memory.turns]
 
 
 def test_preclassified_event_skips_double_classification(
