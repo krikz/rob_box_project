@@ -50,6 +50,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import rclpy
 from rclpy.node import Node
+from std_msgs.msg import Bool as RosBool
 from std_msgs.msg import String as RosString
 
 # Phase 2 (AV-X) — pure-Python компоненты из core/. Импортируем явно
@@ -58,11 +59,15 @@ from std_msgs.msg import String as RosString
 # контракта ``core/__init__.py``.
 from rob_box_supervisor.core import (  # noqa: F401,E402
     AvatarState,
+    FLOOR_TELEOP,
+    FLOOR_VOICE,
     FloorState,
     LockManager,
     ModeManager,
     pack,
 )
+from rob_box_supervisor.core.fsm import EVENT_FORCE_OFF  # noqa: E402
+from rob_box_supervisor.core.locks import DEAD_MAN_TIMEOUT_MS  # noqa: E402
 
 # msgpack — Phase 1+2 wire-format для /avatar/state (см. ADR-0028 §4.3).
 # core/state.py даёт полный IDL (dataclasses + pack/unpack) — мы их
@@ -95,6 +100,26 @@ VOICE_INPUT_MODES: tuple[str, ...] = (
 # ``SetVoiceMode``-сервис с кастомным IDL (ADR-0028 §4.3) — здесь топик
 # достаточен, чтобы не плодить rosidl-интерфейсы ради monitor-фазы.
 SET_VOICE_MODE_TOPIC: str = "/avatar/set_voice_mode"
+
+# Топик для heartbeat-сообщений от клиентов (msgpack или JSON:
+# ``{"client_id": str, "ts_ms": int, "floor": str}``). Контракт:
+# - Клиент шлёт ≥ 10 Гц пока держит ``teleop_floor`` / ``voice_floor``.
+# - Без heartbeat > DEAD_MAN_TIMEOUT_MS — watchdog снимает floor
+#   (ADR-0028 §4.4 S10 + §6 Q4).
+# Phase 1/Phase 2 default: один общий топик (мульти-floor); per-floor
+# топики = Phase 2.1 (отдельная карточка).
+HEARTBEAT_TOPIC: str = "/avatar/heartbeat"
+
+# Boolean-топик для twist_mux lock (ADR-0028 §3 / §4.2): когда
+# ``teleop_floor`` держит клиент, супервизор публикует ``True``,
+# блокируя nav2/web/voice priority (см. ``docker/main/config/twist_mux/twist_mux.yaml``).
+# Когда floor отпущен (release или dead-man) — ``False``.
+# S12: В monitor-режиме НЕ публикуем (минимизируем blast radius).
+TELEOP_LOCK_TOPIC: str = "/teleop_lock"
+
+# Dead-man watchdog period. Должно быть <= DEAD_MAN_TIMEOUT_MS / 2,
+# чтобы trip-реакция укладывалась в < 500 мс. ADR-0028 §6 Q4 Q&A.
+DEAD_MAN_TICK_PERIOD_S: float = 0.1  # 10 Hz — достаточно для 500 ms порога.
 
 
 class AvatarSupervisor(Node):
@@ -174,9 +199,36 @@ class AvatarSupervisor(Node):
         self.create_subscription(
             RosString, SET_VOICE_MODE_TOPIC, self._on_set_voice_mode, 10
         )
-        # Параметр-клиент к dialogue_node создаётся лениво в active-режиме
-        # (в monitor супервизор НЕ трогает чужие параметры — S12).
+        # Heartbeat от клиентов (Phase 2 active). Параметр-клиент к
+        # dialogue_node создаётся лениво в active-режиме (в monitor
+        # супервизор НЕ трогает чужие параметры — S12).
         self._dialogue_param_client = None
+
+        # Heartbeat subscription (Phase 2 active, ADR-0028 §4.4 S10).
+        # В monitor-режиме подписка зарегистрирована, но callback no-op
+        # (S12: minimize blast radius; consumers still see consistent
+        # ``/avatar/state`` via aggregator).
+        self.create_subscription(RosString, HEARTBEAT_TOPIC, self._on_heartbeat_msg, 10)
+
+        # Twist_mux teleop_lock publisher (Phase 2 active, ADR-0028 §4.2).
+        # В monitor нода не вмешивается в twist_mux (S12). Publisher
+        # создаётся лениво на первом active-acquire teleop_floor или
+        # явно в ``_ensure_active_handlers`` — НЕ здесь, чтобы
+        # monitor-нода не держала лишний topic на стороне twist_mux
+        # (вдруг ``/teleop_lock`` ещё не зарегистрирован в twist_mux.yaml
+        # Phase 1.3).
+        self._teleop_lock_pub: Optional[Any] = None
+
+        # Dead-man watchdog (Phase 2 active). Периодический tick
+        # проверяет ``LockManager.holder()`` для каждого floor-а и при
+        # expired — снимает floor + FSM EVENT_FORCE_OFF (escape hatch).
+        # В monitor-режиме таймер ВСЁ РАВНО тикает (rclpy создаёт timer в
+        # __init__), но callback делает no-op (``_mode_manager is None``),
+        # чтобы сохранить прозрачный fallback для тестов, где нода
+        # переключается в active динамически.
+        self._dead_man_timer = self.create_timer(
+            DEAD_MAN_TICK_PERIOD_S, self._dead_man_tick
+        )
 
         # Services (Phase 1 — monitor: принимаем, логируем, отвечаем
         # success=true/applied=false/reason=monitor). Используем
@@ -472,6 +524,13 @@ class AvatarSupervisor(Node):
         Создаются ОДИН раз при первом active-вызове. Повторные вызовы —
         no-op. Гарантирует, что monitor-режим не держит FSM/Lock
         (S12, ADR-0028 §4.5).
+
+        Side-effects (Phase 2 dead-man, t_6fa213cc):
+          - ``self._teleop_lock_pub`` — eager-создаётся здесь, чтобы
+            ``_dead_man_tick`` мог publish ``False`` при trip-е без
+            отдельной lazy-логики. Twist_mux lock-topic живёт
+            *только* в active-режиме (monitor нода не вмешивается,
+            S12).
         """
         if self._active_inited:
             return
@@ -479,6 +538,11 @@ class AvatarSupervisor(Node):
 
         self._mode_manager = ModeManager()
         self._lock_manager = LockManager()
+        # Teleop-lock publisher — eager в active (см. docstring).
+        if self._teleop_lock_pub is None:
+            self._teleop_lock_pub = self.create_publisher(
+                RosBool, TELEOP_LOCK_TOPIC, 10
+            )
         self._active_inited = True
         self._log.info("Phase 2 active: ModeManager + LockManager initialized")
 
@@ -553,6 +617,14 @@ class AvatarSupervisor(Node):
                 "mode": self._mode_manager.mode.value,  # type: ignore[union-attr]
             }
 
+        # Side-effect: twist_mux lock для teleop_floor (ADR-0028 §4.2 S5).
+        # voice_floor НЕ блокирует twist_mux — пропускаем.
+        if floor == FLOOR_TELEOP:
+            try:
+                self._apply_teleop_lock(acquire=True)
+            except Exception as exc:  # noqa: BLE001 — не валим acquire на side-effect
+                self._log.warning(f"AcquireFloor: teleop_lock publish failed: {exc!r}")
+
         body: Dict[str, Any] = {
             "success": True,
             "applied": True,
@@ -582,6 +654,14 @@ class AvatarSupervisor(Node):
         # FSM: release-event в зависимости от client_id.
         event = self._pick_release_event(client_id=client_id)
         new_mode = self._mode_manager.transition(event, client_id=client_id)  # type: ignore[union-attr]
+
+        # Side-effect: снять twist_mux lock для teleop_floor (ADR-0028 §4.2).
+        # voice_floor не блокировал twist_mux — пропускаем.
+        if floor == FLOOR_TELEOP:
+            try:
+                self._apply_teleop_lock(acquire=False)
+            except Exception as exc:  # noqa: BLE001 — не валим release на side-effect
+                self._log.warning(f"ReleaseFloor: teleop_lock publish failed: {exc!r}")
 
         # Чистим bookkeeping.
         self._floor_acquired_at_ms.pop(floor, None)
@@ -716,6 +796,153 @@ class AvatarSupervisor(Node):
         response.success = True  # service call дошёл; applied=False — отказ.
         response.message = json.dumps({"applied": False, "reason": reason})
         return response
+
+    # ── Phase 2 active dead-man watchdog (AV-6 Phase 2, t_6fa213cc) ──
+    #
+    # ADR-0028 §4.4 S10: «Клиент, держащий teleop_floor, шлёт heartbeat
+    # ≥ 10 Гц; без heartbeat > DEAD_MAN_TIMEOUT_MS — снимаем floor».
+    # Реализовано в трёх местах:
+    #   1. ``_on_heartbeat_msg`` — обновляет ``last_heartbeat_ms`` через
+    #      ``LockManager.heartbeat()`` для каждого (client_id, floor)
+    #      в сообщении. Если клиент не держит этот floor — no-op
+    #      (race с release; без шума).
+    #   2. ``_dead_man_tick`` — периодический watchdog (10 Hz). Проходит
+    #      по всем (client_id, floor) в ``LockManager`` и при expired
+    #      снимает floor через ``EVENT_FORCE_OFF`` + трип счётчика.
+    #   3. ``_apply_teleop_lock`` — публикует ``True``/``False`` в
+    #      ``/teleop_lock`` при acquire/release teleop_floor (S5: нода —
+    #      единственный владелец twist_mux-side-effect).
+    def _on_heartbeat_msg(self, msg: RosString) -> None:
+        """Обработать heartbeat от клиента.
+
+        Конвенция payload (JSON): ``{"client_id": str, "ts_ms": int,
+        "floor": "teleop_floor"|"voice_floor"}``. Невалидный JSON или
+        отсутствующие поля → log + drop (heartbeat не должен валить
+        ноду). В monitor-режиме callback пропускает работу (S12).
+        """
+        if self._mode != "active":
+            return
+        data = self._try_parse_json(msg.data)
+        if not isinstance(data, dict):
+            return
+        client_id = data.get("client_id")
+        floor = data.get("floor")
+        if not isinstance(client_id, str) or not client_id:
+            return
+        if floor not in (FLOOR_TELEOP, FLOOR_VOICE):
+            return
+        if self._lock_manager is None:
+            return  # monitor / pre-init
+        now_ms = self._now_ms()
+        # ``heartbeat`` бросает PermissionError, если client_id != holder
+        # (или floor free). Это нормальная ситуация после release/deadman —
+        # просто игнорируем (ADR-0028 §4.2).
+        try:
+            self._lock_manager.heartbeat(client_id, floor, now_ms=now_ms)
+            # ``heartbeat`` обновляет только ``_last_heartbeat_ms`` в
+            # LockManager; параллельный bookkeeping в supervisor_node
+            # (_last_heartbeat_ms[(client_id, floor)]) тоже обновим,
+            # чтобы публикация ``/avatar/state`` сразу отражала свежий ts.
+            self._last_heartbeat_ms[(client_id, floor)] = now_ms
+        except Exception:  # noqa: BLE001 — heartbeat не валит ноду
+            pass
+
+    def _apply_teleop_lock(self, acquire: bool) -> None:
+        """Опубликовать ``acquire`` (True/False) в ``/teleop_lock``.
+
+        Вызывается из ``_acquire_floor_active`` / ``_release_floor_active``
+        только для ``floor="teleop_floor"`` (voice_floor не блокирует
+        twist_mux). В monitor-режиме метод не вызывается (выше по
+        call-stack стоит ``if self._mode != "active"`` early-return).
+
+        Publisher создаётся лениво (при первом acquire teleop_floor),
+        чтобы monitor-нода не держала лишний ROS 2 publisher, который
+        мог бы конфликтовать с twist_mux.yaml Phase 1 (где lock-topic
+        ``joystick_lock``, а не ``/teleop_lock``).
+        """
+        if self._teleop_lock_pub is None:
+            self._teleop_lock_pub = self.create_publisher(
+                RosBool, TELEOP_LOCK_TOPIC, 10
+            )
+        out = RosBool()
+        out.data = bool(acquire)
+        self._teleop_lock_pub.publish(out)
+        # f-string: RcutilsLogger принимает ОДИН msg (issue #1644).
+        self._log.info(f"teleop_lock publish: {out.data}")
+
+    def _dead_man_tick(self) -> None:
+        """Периодический watchdog: снять expired floor-ы.
+
+        Алгоритм (ADR-0028 §4.4 S10):
+          1. Для каждого floor-а вызвать ``LockManager.holder(floor)``.
+          2. ``holder()`` возвращает ``None`` если floor свободен ИЛИ
+             expired (LockManager сам авто-чистит expired при чтении).
+          3. Если мы ЗНАЕМ (через ``_last_heartbeat_ms`` / FSM), что у
+             floor был holder, а теперь ``None`` — это dead-man trip.
+          4. При trip: ``EVENT_FORCE_OFF`` (escape hatch ``* → off``,
+             ADR-0028 §4.1 §6 Q1), чистим bookkeeping,
+             ``DeadManCounter.trip(client_id)``, публикуем
+             ``/avatar/state`` со свежим mode=off.
+
+        В monitor-режиме ``_lock_manager is None`` — early return.
+        """
+        if self._lock_manager is None or self._mode_manager is None:
+            return
+        if self._mode != "active":
+            return  # S12: monitor не вмешивается
+
+        tripped = False
+        for floor in (FLOOR_TELEOP, FLOOR_VOICE):
+            # ``holder(floor)`` автоматически вычистит expired floor.
+            current_holder = self._lock_manager.holder(floor)
+            if current_holder is not None:
+                continue
+            # Floor освобождён. Проверим, был ли это dead-man trip
+            # (т.е. в нашем bookkeeping осталась запись с expired
+            # last_heartbeat_ms).
+            expired_clients = []
+            now_ms = self._now_ms()
+            for (cid, f), ts in list(self._last_heartbeat_ms.items()):
+                if f != floor:
+                    continue
+                if (now_ms - ts) <= DEAD_MAN_TIMEOUT_MS:
+                    continue  # Не expired — просто release до тика.
+                expired_clients.append((cid, ts))
+            if not expired_clients:
+                continue  # Это был явный release, не deadman.
+            # Dead-man trip!
+            tripped = True
+            # Берём первого expired клиента для счётчика (обычно один).
+            # Если их несколько — логируем, но FSM-event один (escape hatch).
+            for cid, ts in expired_clients:
+                self._dead_man.trip(cid)
+                # f-string: RcutilsLogger принимает ОДИН msg (issue #1644).
+                self._log.warning(
+                    f"dead_man trip: client={cid} floor={floor} "
+                    f"last_hb_ms={ts} now_ms={now_ms}"
+                )
+            # FSM: ``* → off`` через escape hatch. Очищаем bookkeeping,
+            # держим state согласованным.
+            try:
+                self._mode_manager.transition(EVENT_FORCE_OFF)
+            except Exception as exc:  # noqa: BLE001
+                # EVENT_FORCE_OFF не должен бросать (escape hatch),
+                # но мы защищаемся от теоретических регрессий в FSM.
+                self._log.warning(f"dead_man: FSM force_off failed: {exc!r}")
+            # Чистим bookkeeping floor-а.
+            self._floor_acquired_at_ms.pop(floor, None)
+            for cid, _ts in expired_clients:
+                self._last_heartbeat_ms.pop((cid, floor), None)
+            # Twist_mux lock: если был teleop-floor, снимаем lock.
+            if floor == FLOOR_TELEOP:
+                self._apply_teleop_lock(acquire=False)
+
+        if tripped:
+            # Публикуем свежий /avatar/state (mode=off, floors=None).
+            try:
+                self._publish_avatar_state()
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning(f"dead_man: publish_avatar_state failed: {exc!r}")
 
 
 def main(args: Optional[list] = None) -> None:

@@ -165,7 +165,14 @@ def _install_ros_mocks() -> None:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.data = ""
 
-    mock_std_msgs_msg = types.SimpleNamespace(String=FakeStringMsg)
+    class FakeBoolMsg:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.data = False
+
+    mock_std_msgs_msg = types.SimpleNamespace(
+        String=FakeStringMsg,
+        Bool=FakeBoolMsg,
+    )
     mock_std_msgs = types.SimpleNamespace(msg=mock_std_msgs_msg)
 
     # ── std_srvs.srv.Trigger ──────────────────────────────────────────
