@@ -1,0 +1,32 @@
+{
+  "name": "dialogue_motion_coverage_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "ADR-0022 GATE-1 acceptance для dialogue_motion_coverage_v1.json.",
+    "🚨 Сьюта двигает робота и перезаписывает карту — запускать только вручную,",
+    "в свободном пространстве, с человеком у кнопки останова. В CI не ставить.",
+    "AND-семантика: каждый перечисленный тул должен встретиться хотя бы раз.",
+    "must_not_call пуст намеренно: в этой сьюте движение — цель, а не запрет.",
+    "Единственный жёсткий инвариант безопасности выражен не здесь, а структурой",
+    "сценария: после каждого движущего шага идёт stop_navigation."
+  ],
+  "expected_tool_calls": [
+    "move_direction",
+    "stop_navigation",
+    "save_waypoint",
+    "navigate_to_waypoint",
+    "navigate_to_coordinates",
+    "start_mapping",
+    "continue_mapping",
+    "optimize_map",
+    "finish_mapping",
+    "load_map"
+  ],
+  "must_not_call": [],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "volume": 150,
+    "llm": "minimax-m2"
+  }
+}
