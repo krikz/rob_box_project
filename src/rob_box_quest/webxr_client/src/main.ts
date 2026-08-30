@@ -78,7 +78,18 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     // здесь только проверяем, что стор жив и listener работает.
   });
 
-  const bridge = createCaptainBridge({ canvas: opts.canvas, enableXr: true });
+  const bridge = createCaptainBridge({
+    canvas: opts.canvas,
+    enableXr: true,
+    // Панель сменила стрим через меню (R10): подписываемся на новый топик
+    // и отписываемся от старого, если его больше никто не показывает.
+    onPanelTopicChange: (_panelId, oldTopic, newTopic) => {
+      if (!conn || disconnected) return;
+      conn.subscribe(newTopic);
+      const stillUsed = bridge.videoTopics().includes(oldTopic);
+      if (!stillUsed) conn.unsubscribe(oldTopic);
+    }
+  });
   bridge.initLayout();
   const stopRender = bridge.start();
   // Phase 2.1: load Captain Bridge CC0 environment (5 GLB + HDR).
@@ -181,6 +192,8 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             for (const topic of [...bridge.videoTopics(), ...NON_VIDEO_TOPICS]) {
               conn!.subscribe(topic);
             }
+            // Каталог стримов → меню выбора на панелях (R10).
+            conn!.requestStreamList();
             opts.pinOverlay.classList.add("pin-overlay--hidden");
           } else if (state === "auth_failed") {
             setStatus("WRONG PIN", "lost");
@@ -222,6 +235,11 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
         },
         onRtt: (rttMs) => {
           bridge.statusHud.setRtt(rttMs);
+        },
+        onStreamList: (items) => {
+          bridge.setAvailableStreams(
+            items.map((it) => ({ topic: it.topic, description: it.description }))
+          );
         },
         onError: (code, message) => {
           if (code === "AUTH_FAIL") return;

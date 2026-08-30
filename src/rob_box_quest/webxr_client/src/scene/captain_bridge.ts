@@ -6,6 +6,7 @@ import { VideoPanel } from "./video_panel";
 import { PanelManager } from "./panel_manager";
 import { createStatusHud, type RobotStatus, type StatusHud } from "./status_hud";
 import { PointerSystem, type PointerRay } from "../interaction/pointer";
+import { createStreamMenu, topicFromTargetId, type StreamMenuHandle, type StreamMenuRow } from "./stream_menu";
 import {
   loadBridgeAssets,
   type BridgeAssetHandle,
@@ -30,6 +31,11 @@ export const SIDE_PANEL_ANGLES_DEG = [-75, 75];
 export interface CaptainBridgeOptions {
   canvas: HTMLCanvasElement;
   enableXr?: boolean;
+  /**
+   * Панель сменила топик через меню выбора стрима (R10). Клиент сам
+   * решает, что делать с подписками: сцена про WSS ничего не знает.
+   */
+  onPanelTopicChange?(panelId: string, oldTopic: string, newTopic: string): void;
   /**
    * Optional override for the environment base URL. Defaults to
    * `/models/environment/`. Pass `null` to disable environment loading
@@ -81,6 +87,11 @@ export interface CaptainBridgeHandle {
   updatePointer(ray: PointerRay | null): void;
   /** Слой указателя — сюда регистрируются будущие кликабельные объекты. */
   pointer: PointerSystem;
+  /**
+   * Каталог доступных стримов (из `stream_list`) — наполняет меню выбора
+   * стрима, которое всплывает по клику на панель.
+   */
+  setAvailableStreams(rows: StreamMenuRow[]): void;
   start(): () => void;
   resize(): void;
   dispose(): void;
@@ -161,9 +172,17 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     handlers: {
       onHover: () => refreshHighlights(),
       onSelect: (id) => {
-        // Клик по панели — выбор (снимается повторным кликом).
+        // Клик по строке меню — смена стрима выбранной панели.
+        const menuTopic = topicFromTargetId(id);
+        if (menuTopic !== null) {
+          applyMenuChoice(menuTopic);
+          return;
+        }
+        // Клик по панели — выбор + меню стримов (повторный клик закрывает).
         const already = panelMgr.get(id)?.selected ?? false;
         panelMgr.select(already ? null : id);
+        if (already) closeStreamMenu();
+        else openStreamMenu(id);
         refreshHighlights();
       },
       onDrag: (id, position) => {
@@ -304,6 +323,62 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     syncPanels();
   }
 
+  // ---------- меню выбора стрима (R10) ----------
+
+  let streamMenu: StreamMenuHandle | null = null;
+  let menuPanelId: string | null = null;
+
+  function setAvailableStreams(rows: StreamMenuRow[]): void {
+    closeStreamMenu();
+    streamMenu?.dispose();
+    if (streamMenu) scene.remove(streamMenu.object);
+    // В меню только видео: лидар и robot_status на панель не положишь.
+    const videoRows = rows.filter((r) => r.topic.startsWith("camera_"));
+    streamMenu = videoRows.length > 0 ? createStreamMenu(videoRows) : null;
+    if (streamMenu) scene.add(streamMenu.object);
+  }
+
+  function openStreamMenu(panelId: string): void {
+    const state = panelMgr.get(panelId);
+    if (!streamMenu || !state) return;
+    closeStreamMenu();
+    menuPanelId = panelId;
+    streamMenu.show(
+      new THREE.Vector3(state.position.x, state.position.y, state.position.z),
+      Math.atan2(state.facing.x, state.facing.z),
+      state.topic
+    );
+    // Цели регистрируем только на время показа: скрытый меш всё равно
+    // ловил бы луч, и оператор кликал бы в невидимое меню.
+    for (const t of streamMenu.targets()) {
+      pointer.addTarget({ id: t.id, object: t.object, draggable: false });
+    }
+  }
+
+  function closeStreamMenu(): void {
+    if (!streamMenu) return;
+    for (const t of streamMenu.targets()) pointer.removeTarget(t.id);
+    streamMenu.hide();
+    menuPanelId = null;
+  }
+
+  function applyMenuChoice(topic: string): void {
+    const panelId = menuPanelId;
+    if (!panelId) return;
+    const state = panelMgr.get(panelId);
+    closeStreamMenu();
+    if (!state || state.topic === topic) return;
+    const oldTopic = state.topic;
+    panelMgr.switchStream(panelId, topic);
+    const next = panelMgr.get(panelId);
+    const vp = videoPanels.get(panelId);
+    if (next && vp) {
+      vp.setState(next);
+      vp.setLabel(next.topic);
+    }
+    opts.onPanelTopicChange?.(panelId, oldTopic, topic);
+  }
+
   function updatePointer(ray: PointerRay | null): void {
     pointer.update(ray);
   }
@@ -411,6 +486,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     mainScreen.dispose();
     for (const vp of videoPanels.values()) vp.dispose();
     lidar.dispose();
+    streamMenu?.dispose();
     environment?.dispose();
     armTexture.dispose();
     statusHud.dispose();
@@ -430,6 +506,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     initLayout,
     updatePointer,
     pointer,
+    setAvailableStreams,
     attachXrSession,
     setControllerActive,
     setArmState,
