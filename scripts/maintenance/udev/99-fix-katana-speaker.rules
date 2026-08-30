@@ -1,0 +1,11 @@
+# udev rule: при появлении HDA-кодека hwC0D0 снять mute с Node 0x17.
+# Это страховка на случай, если systemd unit отработал ДО того, как
+# какая-нибудь фирмварь BIOS/ACPI переинициализирует codec (например,
+# после suspend/resume или горячего переподключения).
+#
+# Установка:
+#   sudo cp scripts/maintenance/udev/99-fix-katana-speaker.rules \
+#           /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+SUBSYSTEM=="sound", KERNEL=="hwC0D0", ACTION=="add", \
+    RUN+="/usr/bin/hda-verb /dev/snd/%k 0x17 0x3 0xB027"

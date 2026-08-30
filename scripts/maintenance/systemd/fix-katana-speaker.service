@@ -1,0 +1,22 @@
+[Unit]
+Description=Fix MSi Katana ALC3266 Node 0x17 muted state (issue #1731)
+Documentation=https://github.com/krikz/rob_box_project/issues/1731
+# Запускаем ПОСЛЕ инициализации звука и базовой системы,
+# но ДО пользовательских sound.target/profile, чтобы к моменту
+# входа в pulseaudio/pipewire Node 0x17 уже был размутлен.
+After=sound.target
+Before=pulseaudio.service pipewire.service pipewire-session-manager.service
+ConditionPathExists=/dev/snd/hwC0D0
+
+[Service]
+Type=oneshot
+# unmute Node 0x17 Speaker Pin Complex (gain=0xB0 ≈ 0 dB, mute cleared)
+#   verb  = SET_AMP (0x3)
+#   param = 0xB027 (gain 0xB0, оба канала, MUTE-bit снят)
+ExecStart=/usr/bin/hda-verb /dev/snd/hwC0D0 0x17 0x3 0xB027
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
