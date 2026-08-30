@@ -90,7 +90,7 @@ describe("parseLidar2d", () => {
     expect(pts[1].range).toBeCloseTo(2.0);
   });
 
-  it("scanToFloorPoints computes (x,z) for forward ray", () => {
+  it("maps the forward ray to scene −Z (in front of the operator)", () => {
     const scan = parseLidar2d(
       buildScan({
         angle_min: 0,
@@ -106,7 +106,72 @@ describe("parseLidar2d", () => {
     );
     const pts = scanToFloorPoints(scan);
     expect(pts.length).toBe(1);
-    expect(pts[0].x).toBeCloseTo(3.0, 5); // cos(0) = 1
-    expect(pts[0].z).toBeCloseTo(0, 5); // sin(0) = 0
+    // ROS a=0 — прямо перед роботом. В сцене «вперёд» = −Z (там экран-стена),
+    // поэтому луч 3 м должен лечь в (0, −3), а не в (3, 0) вправо от оператора.
+    expect(pts[0].x).toBeCloseTo(0, 5);
+    expect(pts[0].z).toBeCloseTo(-3.0, 5);
+  });
+
+  it("maps the left ray to scene −X (to the operator's left)", () => {
+    const scan = parseLidar2d(
+      buildScan({
+        angle_min: Math.PI / 2, // +90° по REP-103 — влево от робота
+        angle_max: Math.PI / 2,
+        angle_inc: 1,
+        range_min: 0,
+        range_max: 100,
+        time_inc: 0,
+        scan_time: 0,
+        ranges: [2.0],
+        intensities: [0.5]
+      })
+    );
+    const pts = scanToFloorPoints(scan);
+    expect(pts[0].x).toBeCloseTo(-2.0, 5);
+    expect(pts[0].z).toBeCloseTo(0, 5);
+  });
+
+  it("maps the right ray to scene +X", () => {
+    const scan = parseLidar2d(
+      buildScan({
+        angle_min: -Math.PI / 2,
+        angle_max: -Math.PI / 2,
+        angle_inc: 1,
+        range_min: 0,
+        range_max: 100,
+        time_inc: 0,
+        scan_time: 0,
+        ranges: [2.0],
+        intensities: [0.5]
+      })
+    );
+    const pts = scanToFloorPoints(scan);
+    expect(pts[0].x).toBeCloseTo(2.0, 5);
+    expect(pts[0].z).toBeCloseTo(0, 5);
+  });
+});
+// --- Цветовая шкала оверлея (видимость на тёмном фоне мостика) ---
+
+describe("rangeColor", () => {
+  it("paints near hits red", async () => {
+    const { rangeColor } = await import("../src/scene/lidar_overlay");
+    const [r, g, b] = rangeColor(0, 10);
+    expect(r).toBeGreaterThan(0.8);
+    expect(g).toBeLessThan(0.3);
+    expect(b).toBeLessThan(0.3);
+  });
+
+  it("paints far hits green, not near-black blue", async () => {
+    const { rangeColor } = await import("../src/scene/lidar_overlay");
+    const [r, g, b] = rangeColor(10, 10);
+    expect(g).toBeGreaterThan(0.8);
+    expect(r).toBeLessThan(0.3);
+    // Ключевое: прежняя шкала уходила в чистый синий, невидимый на #0a0d11.
+    expect(b).toBeLessThan(0.3);
+  });
+
+  it("clamps beyond max range", async () => {
+    const { rangeColor } = await import("../src/scene/lidar_overlay");
+    expect(rangeColor(50, 10)).toEqual(rangeColor(10, 10));
   });
 });

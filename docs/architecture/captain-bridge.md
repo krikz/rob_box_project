@@ -14,8 +14,8 @@
 
 Captain Bridge — это место, откуда оператор управляет роботом. Метафора:
 кресло пилота, перед ним большая стена-экран с фронтальной камерой
-робота и LiDAR-overhead, вокруг — 4 floating panels с другими
-видео-камерами (rear, OAK-D color/depth, ceiling).
+робота и LiDAR-overhead, по бокам — floating panels с остальными
+видео-камерами (OAK-D depth, ceiling), на стене — ARM- и status-индикаторы.
 
 Двухрежимный вход (по наличию WebXR):
 
@@ -44,6 +44,7 @@ src/
 │   ├── video_panel.ts          VideoPanel (Three.js mesh + JPEG ingestion)
 │   ├── lidar_overlay.ts        LiDAR points on the floor
 │   ├── lidar_payload.ts        LiDAR wire-format decoder
+│   ├── status_hud.ts           robot_status HUD (BAT/WIFI/SPD/RTT/MODE)
 │   └── bridge_assets.ts        CC0 GLB + HDR loader (DRACO + KTX2 + Meshopt)
 ├── input/
 │   ├── teleop_fsm.ts           FSM: idle → armed → emergency
@@ -54,6 +55,7 @@ src/
 ├── wire/
 │   ├── connection.ts           WSS client (HELLO/WELCOME/subscribe/binary)
 │   ├── protocol.ts             Binary frame codec
+│   ├── msgpack.ts              Минимальный msgpack-декодер (robot_status)
 │   └── messages.ts             JSON_CMD/JSON_EVENT TypeScript types
 └── ui/
     ├── loading_screen.ts       Async-asset loading overlay
@@ -87,7 +89,7 @@ main.ts bootstrap(opts)
     │   • THREE.WebGLRenderer
     │   • Scene: ambient + dir light, fog, floor, grid
     │   • PerspectiveCamera (70°, pos (0, 1.6, 0))
-    │   • PanelManager.resetLayout() — 4 panels на полукруге
+    │   • PanelManager.resetLayout() — боковые panels (±75°)
     │   • mainScreen (front wall screen для MAIN_SCREEN_TOPIC)
     │
     ├─ bridge.loadEnvironment()             ← Promise<BridgeAssetHandle>
@@ -134,16 +136,27 @@ THREE.Scene
 │   ├── bridge_nav.optimized.glb         (navmesh / walkable regions)
 │   ├── bridge_occluders.optimized.glb   (occluder meshes)
 │   └── bridge_env_1k.hdr                (IBL)
-├── PanelManager.panels: 4× VideoPanel
-│   ├── angle -60° from "forward"  → camera_rear
-│   ├── angle -20°                 → camera_oak_color
-│   ├── angle +20°                 → camera_oak_depth
-│   └── angle +60°                 → camera_ceiling
+├── PanelManager.panels: 2× VideoPanel (Wave 3.A)
+│   ├── angle -75° from "forward"  → camera_oak_depth
+│   └── angle +75°                 → camera_ceiling
 ├── mainScreen: VideoPanel (front wall, MAIN_SCREEN_TOPIC = camera_rear)
-├── LiDAR overlay (THREE.Points на плоскости пола)
+├── LiDAR overlay (Group в центре робота: Points на плоскости луча
+│      y=0.4765 м + вертикальный «занавес» до пола)
 ├── VR controller visuals (только в WebXR)
-└── Arm-state HUD (text-sprite на стене)
+├── Arm-state HUD (text-sprite справа вверху на стене)
+└── Status HUD (text-sprite слева вверху: BAT / WIFI / SPD / RTT / MODE)
 ```
+
+LiDAR строится от начала координат сцены — это `base_link` робота, то есть
+пол ровно под оператором. Точки лежат на реальной высоте плоскости луча N10
+(0.4765 м, `rob_box.xacro:338`), с учётом смещения лидара на 0.17 м назад.
+ROS→сцена: «вперёд робота» (+x REP-103) = −Z сцены, «влево» (+y) = −X.
+Точки рисуются без тумана и поверх геометрии комнаты (`alwaysVisible`),
+потому что скан достаёт до 10 м, а виртуальная комната ~7×8 м.
+
+`camera_oak_color` (0x1003) на панель не выводится: это тот же сенсор, что
+и на экране-стене (`camera_rear` = 0x1001 через ROS). Углы ±75° выбраны,
+чтобы панели не перекрывали экран-стену во фронтальном секторе.
 
 Camera: `PerspectiveCamera(70°, aspect, 0.05, 50)` в позиции
 `(0, 1.6, 0)` — высота глаз ~1.6 м. Y-offset для panels — та же высота
@@ -214,7 +227,7 @@ Edge-triggered — клиент шлёт `voice_ptt_start{mode}` / `voice_ptt_st
 Не state-machine в строгом смысле — pure-data store:
 
 ```
-resetLayout() → создать 4 panels на полукруге (дефолтные topics)
+resetLayout() → создать panels по углам из опции angles (дефолтные topics)
 createPanel(topic, pos, facing) → новый panel
 movePanel(id, pos) → обновить position (с clamping)
 resizePanel(id, size) → обновить size
@@ -223,10 +236,10 @@ setTopic(id, topic) → поменять topic (триггерит set_panel_top
 list() / get(id) → queries
 ```
 
-Persistence: Phase 2.3 пока НЕ сохраняет layout в localStorage
-(был дропнут в `d6548abb refactor(quest): drop lil-gui and orphaned
-voice/layout modules`). Каждый вход — дефолтный 4-panel layout.
-Phase 3 добавит localStorage persistence (`rob_box_quest.panel_layout.v1`).
+Persistence: layout в localStorage НЕ сохраняется (дропнут в `d6548abb
+refactor(quest): drop lil-gui and orphaned voice/layout modules`). Каждый
+вход — дефолтная раскладка. Wave 3.B добавит persistence
+(`rob_box_quest.panel_layout.v1`) и drag/resize панелей.
 
 ---
 
@@ -295,7 +308,27 @@ overlay вообще не появляется. Это снижает «flapping
 Игнорирует `H`/`Esc` когда фокус в `<input>` / `<textarea>` /
 `contenteditable` — иначе H печаталась бы в PIN-инпуте.
 
-### 7.4 Mode manager (client UI-state)
+### 7.4 Status HUD (Wave 3.A, R8)
+
+Спрайт слева вверху на стене — зеркально ARM-индикатору. Пять строк:
+
+| Строка | Источник | Нет источника |
+|---|---|---|
+| `BAT` | `robot_status.battery_pct`, иначе `battery_v` (вольты) | `—` |
+| `WIFI` | `robot_status.wifi_rssi` (`/proc/net/wireless` на Vision Pi) | `—` |
+| `SPD` | `robot_status.vel_linear` (из `/odom`) | `—` |
+| `RTT` | client ping → server pong (эхо `ts_ms`) | `—` до первого pong |
+| `MODE` | `emergency` / `teleop_active` / `idle` | `—` |
+
+Цвет значения: зелёный / жёлтый (WIFI ≤ -75 dBm, RTT ≥ 200 мс) /
+красный (BAT ≤ 20%, RTT ≥ 400 мс, MODE=emergency) / серый (нет источника).
+Прочерк вместо нуля намеренно: «0%» и «нет данных о заряде» — разные вещи.
+
+Формат строк — чистая функция `formatStatusLines` (`scene/status_hud.ts`),
+разбор payload — `parseRobotStatus` поверх минимального msgpack-декодера
+(`wire/msgpack.ts`, без runtime-зависимостей).
+
+### 7.5 Mode manager (client UI-state)
 
 Маленький observable-стор:
 - `voiceMode: "off" | "radio" | "robot_voice"`
@@ -327,16 +360,18 @@ Captain Bridge использует subprotocol `robbox-quest-v1`. Полная 
 Голосовой канал (`voice_ptt_start`) публикуется в бинарный поток
 `VOICE_AUDIO` (PCM 16 kHz int16) — см. `wire/protocol.ts`.
 
-Phase 2 §4 (TTS picker) — клиент посылает `list_voices` при подключении,
-получает `voice_list`, рисует UI dropdown (Phase 3 ещё не сделан).
-`set_voice` / `preview_voice` — кнопки в picker.
+**TTS picker (`list_voices` / `set_voice` / `preview_voice`) и
+`set_panel_topic` НЕ реализованы** — в клиенте есть только TypeScript-типы
+(`wire/messages.ts`), сервер этих команд не знает. Контракт зафиксирован,
+реализация — Wave 3.C (см. `docs/plans/2026-08-30-captain-bridge-feature-audit.md`).
+`voice_state` (0x1202) есть в registry, но публикатора на сервере нет.
 
 ---
 
 ## 9. Acceptance checklist (Phase 2.3)
 
 - [x] Bridge environment загружается (CC0 GLB + HDR, 5 файлов ≤ 130 KB total)
-- [x] Layout reset создаёт 4 panels на полукруге, facing inward
+- [x] Layout reset создаёт боковые panels (Wave 3.A: 2 шт, ±75°), facing inward
 - [x] Camera в (0, 1.6, 0), looking forward (no lookAt — задаётся через panel facing)
 - [x] WebXR auto-entry после PIN submit (immersive-vr)
 - [x] Desktop fallback (WASD + Space + E)
@@ -349,7 +384,8 @@ Phase 2 §4 (TTS picker) — клиент посылает `list_voices` при 
 - [x] `npm run build` + `npm test` зелёные (142/142 tests, build < 600 KB JS)
 - [x] `npm run gltf:verify` PASS (6/6 assets compliant, KTX2 — warning only)
 - [ ] FPS ≥ 60 на Meta Quest 2 — best effort, метрика в Phase 3 (telemetry)
-- [ ] LocalStorage layout persistence — Phase 3
+- [x] Status HUD: battery / Wi-Fi / speed / RTT / mode (Wave 3.A, R8)
+- [ ] LocalStorage layout persistence — Wave 3.B
 
 ---
 

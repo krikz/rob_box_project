@@ -65,11 +65,27 @@ export function parseLidar2d(payload: Uint8Array): LidarScan {
   };
 }
 
-// Преобразует LiDAR-scan в пары (x, z) в плоскости пола (y=0).
-// Расстояние 'r' под углом 'a' от робота → x = r*cos(a), z = r*sin(a).
-// Интенсивность используется как вес (зарезервировано под цвет).
+// Преобразует LiDAR-scan в точки СЦЕНЫ (x, z) вокруг центра робота.
+//
+// Системы координат (это место раньше было перепутано — скан выходил
+// повёрнутым на 90°, «перед робота» показывался справа от оператора):
+//
+//   ROS REP-103 (LaserScan): x — вперёд, y — влево, угол растёт против
+//     часовой от +x. Точка луча: x_ros = r·cos(a), y_ros = r·sin(a).
+//   three.js (сцена мостика): камера смотрит в −Z (там экран-стена),
+//     +X — вправо от оператора, +Y — вверх.
+//
+// Значит «вперёд робота» = −Z сцены, «влево робота» = −X сцены:
+//
+//   x_scene = −y_ros = −r·sin(a)
+//   z_scene = −x_ros = −r·cos(a)
+//
+// Так «что впереди робота» оказывается перед оператором — там же, где
+// картинка фронтальной камеры на экране-стене.
 export interface LidarPoint {
+  /** X в координатах сцены (вправо от оператора). */
   x: number;
+  /** Z в координатах сцены (−Z = вперёд, к экрану-стене). */
   z: number;
   range: number;
   intensity: number;
@@ -84,8 +100,8 @@ export function scanToFloorPoints(scan: LidarScan): LidarPoint[] {
     if (!Number.isFinite(r) || r < range_min || r > range_max) continue;
     const a = angle_min + i * angle_increment;
     out.push({
-      x: r * Math.cos(a),
-      z: r * Math.sin(a),
+      x: -r * Math.sin(a),
+      z: -r * Math.cos(a),
       range: r,
       intensity: intensities[i] ?? 0
     });
