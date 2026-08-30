@@ -13,7 +13,6 @@ from std_msgs.msg import String
 from audio_common_msgs.msg import AudioData
 
 import os
-import sys
 import json
 import random
 import threading
@@ -21,7 +20,6 @@ import time
 import numpy as np
 import sounddevice as sd
 from typing import Dict, List, Optional
-from contextlib import contextmanager
 from pydub import AudioSegment
 from .utils.audio_utils import find_respeaker_device_sounddevice
 from .audio_playback_manager import AudioPlaybackManager
@@ -30,28 +28,6 @@ from .audio_playback_manager import AudioPlaybackManager
 # Рация (voice passthrough): тишина дольше этого порога (сек) закрывает
 # голосовой stream (план P1, Task 1.2, решение D7).
 VOICE_SILENCE_TIMEOUT = 0.3
-
-
-@contextmanager
-def ignore_stderr(enable=True):
-    """Подавить ALSA ошибки от PyAudio (как в audio_node)."""
-    if enable:
-        devnull = None
-        try:
-            devnull = os.open(os.devnull, os.O_WRONLY)
-            stderr = os.dup(2)
-            sys.stderr.flush()
-            os.dup2(devnull, 2)
-            try:
-                yield
-            finally:
-                os.dup2(stderr, 2)
-                os.close(stderr)
-        finally:
-            if devnull is not None:
-                os.close(devnull)
-    else:
-        yield
 
 
 class SoundNode(Node):

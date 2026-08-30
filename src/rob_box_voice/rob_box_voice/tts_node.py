@@ -57,7 +57,6 @@ import sys
 import threading
 import time
 import wave
-from contextlib import contextmanager
 from pathlib import Path
 
 import grpc
@@ -78,6 +77,7 @@ from std_msgs.msg import String
 from typing import Any, Dict, Optional
 
 from .audio_playback_manager import AudioPlaybackManager
+from .utils.stderr_silence import ignore_stderr
 
 # Markdown sanitisation for TTS (issue #988) — shared with dialogue_node.
 from .core.speak_helpers import strip_markdown
@@ -141,28 +141,6 @@ from rob_box_voice.observability import (
     start_metrics_server,
     start_span_handle,
 )
-
-
-@contextmanager
-def ignore_stderr(enable=True):
-    """Подавить ALSA ошибки от sounddevice."""
-    if enable:
-        devnull = None
-        try:
-            devnull = os.open(os.devnull, os.O_WRONLY)
-            stderr = os.dup(2)
-            sys.stderr.flush()
-            os.dup2(devnull, 2)
-            try:
-                yield
-            finally:
-                os.dup2(stderr, 2)
-                os.close(stderr)
-        finally:
-            if devnull is not None:
-                os.close(devnull)
-    else:
-        yield
 
 
 def resample_audio(audio: np.ndarray, orig_sr: float, target_sr: float) -> np.ndarray:

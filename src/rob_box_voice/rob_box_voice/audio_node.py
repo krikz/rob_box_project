@@ -12,44 +12,17 @@ from audio_common_msgs.msg import AudioData
 import pyaudio
 import threading
 import time
-import os
-import sys
-from contextlib import contextmanager
 from typing import Optional
 
 from .utils.audio_utils import find_respeaker_device, list_audio_devices, calculate_rms, calculate_db
 from .utils.respeaker_interface import ReSpeakerInterface
+from .utils.stderr_silence import ignore_stderr
 
 # Issue #1160 — Prometheus metrics (этап 1 observability).
 from rob_box_voice.observability import (
     is_metrics_enabled,
     start_metrics_server,
 )
-
-
-@contextmanager
-def ignore_stderr(enable=True):
-    """
-    Подавить ALSA ошибки от PyAudio (как в jsk-ros-pkg)
-    https://github.com/jsk-ros-pkg/jsk_3rdparty/blob/master/respeaker_ros/src/respeaker_ros/__init__.py
-    """
-    if enable:
-        devnull = None
-        try:
-            devnull = os.open(os.devnull, os.O_WRONLY)
-            stderr = os.dup(2)
-            sys.stderr.flush()
-            os.dup2(devnull, 2)
-            try:
-                yield
-            finally:
-                os.dup2(stderr, 2)
-                os.close(stderr)
-        finally:
-            if devnull is not None:
-                os.close(devnull)
-    else:
-        yield
 
 
 class AudioNode(Node):
