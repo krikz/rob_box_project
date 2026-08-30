@@ -40,8 +40,10 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
+import tempfile
 import threading
 import time
 from collections import OrderedDict
@@ -156,7 +158,7 @@ class RequestAuthenticator:
         source = "env"
         if token is None:
             path = os.getenv(ENV_TOKEN_FILE, "").strip() or DEFAULT_TOKEN_PATH
-            token = _read_or_create_token_file(path)
+            token = _read_or_create_token_file(path, logger=logger)
             source = f"file {path}"
 
         if logger is not None:
@@ -293,64 +295,167 @@ class RequestAuthenticator:
 # ---------------------------------------------------------------------------
 
 
-def _read_or_create_token_file(path: str) -> Optional[str]:
+def _read_or_create_token_file(
+    path: str,
+    *,
+    logger: Optional[Any] = None,
+) -> Optional[str]:
     """Прочитать общий секрет, создав его при первом обращении.
 
-    Создание атомарно: секрет пишется во временный файл целиком, и только
-    потом связывается с целевым именем через ``os.link`` — так параллельно
-    стартующий процесс не может прочитать пустой файл (гонка, из-за которой
-    ноды разъехались бы по разным секретам).
+    Создание атомарно. Используется ``tempfile.NamedTemporaryFile`` в
+    той же директории, что и целевой файл (это гарантирует, что
+    ``os.replace`` будет атомарен — на одной ФС), и ``os.fsync`` ПЕРЕД
+    переименованием, чтобы содержимое действительно попало на диск до
+    того, как новый процесс увидит ``path``. ``O_EXCL`` + ``NamedTemporaryFile``
+    гарантирует, что параллельные процессы не перетрут чужой секрет.
+
+    Issue #1736 (29.08.2026, staging deploy run 33260223956): на overlay-FS
+    Docker ``os.link`` мог упасть с OSError, fallback ``os.replace``
+    при гонке двух процессов возвращал ``None`` второму — оба теряли
+    общий секрет, и dialogue_node/mcp_server расходились по токенам.
+    Теперь:
+      - каждый шаг логируется (если передан ``logger``),
+      - на любую ``OSError`` кроме уже-существующего-файла возвращается
+        ``None`` И логируется — mcp_server должен это видеть, а не молча
+        стартовать с пустым секретом,
+      - при гонке второй процесс перечитывает созданный первым секрет,
+        не перезаписывая его.
 
     Args:
         path: Путь к файлу секрета.
+        logger: Опциональный ROS-логгер (или любой объект с методами
+            ``info``/``warning``/``error``). Если ``None``, логирование
+            идёт в stdlib ``logging``.
 
     Returns:
         Секрет, либо ``None`` если файл недоступен и создать его нельзя.
     """
-    existing = _read_token_file(path)
+    log = logger or logging.getLogger(__name__)
+    existing = _read_token_file(path, logger=log)
     if existing is not None:
+        log.info(f"🔐 mcp_auth: секрет прочитан из {path}")
+        _check_token_file_mode(path, logger=log)
         return existing
 
     token = secrets.token_hex(32)
-    tmp_path = f"{path}.{os.getpid()}.tmp"
+    parent = os.path.dirname(path) or "."
     try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        fd = os.open(tmp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        try:
-            with os.fdopen(fd, "w") as handle:
-                handle.write(token)
-                handle.flush()
-                os.fsync(handle.fileno())
-        except BaseException:
-            os.unlink(tmp_path)
-            raise
-    except OSError:
+        os.makedirs(parent, exist_ok=True)
+    except OSError as exc:
+        log.error(f"❌ mcp_auth: не удалось создать директорию {parent}: {exc}")
         return None
 
     try:
-        os.link(tmp_path, path)
-    except FileExistsError:
-        # Гонку выиграл другой процесс — берём его секрет.
-        token = _read_token_file(path) or token
-    except OSError:
-        # Файловая система без hard-link-ов: rename тоже атомарен, просто
-        # не защищает от перезаписи. Здесь это приемлемо — в худшем случае
-        # процессы переиграют гонку и один получит отказ, а не пустой файл.
-        try:
-            os.replace(tmp_path, path)
-            return token
-        except OSError:
-            return None
+        # ``NamedTemporaryFile(delete=False)`` → мы сами управляем жизненным
+        # циклом tmp-файла и удаляем его в finally. ``dir=parent`` гарантирует,
+        # что ``os.replace`` будет атомарен (на той же ФС).
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=parent,
+            prefix=".mcp_token.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            tmp_path = handle.name
+            try:
+                handle.write(token)
+                handle.flush()
+                os.fsync(handle.fileno())
+            except BaseException:
+                _safe_unlink(tmp_path, logger=log)
+                raise
+        log.info(f"🔐 mcp_auth: секрет сгенерирован, tmp={tmp_path}")
+    except OSError as exc:
+        log.error(f"❌ mcp_auth: не удалось создать tmp-файл секрета: {exc}")
+        return None
+
+    try:
+        # os.replace атомарен в пределах одной ФС; NamedTemporaryFile
+        # создаёт файл в parent, так что tmp_path и path на одной ФС.
+        # Если параллельный процесс уже создал path — FileExistsError
+        # для os.replace НЕ возникает (replace перезаписывает), поэтому
+        # сначала проверим существование, и только потом replace.
+        if os.path.exists(path):
+            # Гонку выиграл другой процесс — берём его секрет.
+            log.warning(
+                f"⚠️ mcp_auth: {path} появился во время записи — "
+                "берём чужой секрет вместо своего"
+            )
+            other = _read_token_file(path, logger=log)
+            if other is not None:
+                token = other
+            # tmp_path оставляем на finally — там удалим.
+        else:
+            try:
+                os.replace(tmp_path, path)
+                log.info(f"🔐 mcp_auth: секрет атомарно записан в {path} (mode 0600)")
+            except OSError as exc:
+                log.error(f"❌ mcp_auth: os.replace упал на {path}: {exc}")
+                return None
     finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        _safe_unlink(tmp_path, logger=log)
+
+    # Проверим права (0600), потому что mcp_server в проде запускается от root,
+    # а мы хотим исключить случай, когда файл унаследовал маску 0644.
+    _check_token_file_mode(path, logger=log)
 
     return token
 
 
-def _read_token_file(path: str) -> Optional[str]:
+def _check_token_file_mode(path: str, *, logger: Optional[Any] = None) -> None:
+    """Предупредить, если права на файл шире, чем 0600.
+
+    mcp_server в проде запускается от root, но если ``umask`` при создании
+    был сбит (например, ``umask 022``), файл может оказаться ``-rw-r--r--``
+    и тогда любой пользователь в системе прочитает общий секрет.
+
+    Args:
+        path: Путь к файлу секрета.
+        logger: Опциональный ROS-логгер (или любой объект с методами
+            ``info``/``warning``/``error``).
+    """
+    try:
+        mode = stat_S_IMODE(os.stat(path).st_mode)
+    except OSError as exc:
+        if logger is not None:
+            logger.warning(f"⚠️ mcp_auth: stat {path} упал: {exc}")
+        return
+    if mode & 0o077:
+        log = logger or logging.getLogger(__name__)
+        log.warning(
+            f"⚠️ mcp_auth: {path} имеет mode={oct(mode)} — права шире, "
+            "чем 0600. Секрет readable для группы/прочих."
+        )
+
+
+def _safe_unlink(path: str, *, logger: Optional[Any] = None) -> None:
+    """Удалить файл, проглатывая ``FileNotFoundError`` и логируя ``OSError``.
+
+    Отдельная функция, чтобы ``_read_or_create_token_file`` оставался
+    читаемым: все четыре ветки финализации (``write failed``, ``replace
+    won by other``, ``replace failed``, ``success``) проходят через неё.
+    """
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        if logger is not None:
+            logger.warning(f"⚠️ mcp_auth: не удалось удалить tmp {path}: {exc}")
+
+
+def stat_S_IMODE(mode: int) -> int:
+    """``stat.S_IMODE`` shim для Python 3.11+ где он всё ещё есть,
+    но не помешает подстраховаться, если stdlib уберёт."""
+    import stat as _stat
+    return _stat.S_IMODE(mode)
+
+
+def _read_token_file(
+    path: str,
+    *,
+    logger: Optional[Any] = None,
+) -> Optional[str]:
     """Прочитать секрет из файла.
 
     Args:
@@ -362,6 +467,10 @@ def _read_token_file(path: str) -> Optional[str]:
     try:
         with open(path, "r", encoding="utf-8") as handle:
             token = handle.read().strip()
-    except OSError:
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if logger is not None:
+            logger.error(f"❌ mcp_auth: чтение {path} упало: {exc}")
         return None
     return token or None

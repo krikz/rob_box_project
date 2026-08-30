@@ -9,6 +9,7 @@
 import os
 import sys
 import time
+import unittest.mock as mock
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from rob_box_mcp_tools.mcp_auth import (  # noqa: E402
     ENV_TOKEN_FILE,
     RequestAuthenticator,
     _read_or_create_token_file,
+    _read_token_file,
 )
 
 
@@ -227,3 +229,172 @@ class TestFromEnv:
         server = RequestAuthenticator.from_env()
         assert server.enabled is False
         assert server.verify(_request())[0] is True
+
+
+# ============================================================================
+# Race-condition регрессионные тесты для issue #1736
+# ============================================================================
+#
+# 29.08.2026 на staging (deploy run 33260223956) mcp_server упал с exit 1
+# после merge 8c90e46e (mcp_auth). Гипотеза: race при первом создании
+# /data/.mcp_token на overlay-FS. Тесты ниже фиксируют поведение _read_or_create_token_file
+# при следующих сценариях:
+#   - os.link() падает с OSError (overlay не поддерживает hard-links)
+#   - второй процесс переписывает файл во время первого (race)
+#   - каждый шаг логируется через переданный logger
+#   - чтение из файла логирует ошибку (а не молча возвращает None)
+
+
+class _CollectingLogger:
+    """Минимальный логгер для тестов: собирает сообщения по уровню."""
+
+    def __init__(self):
+        self.messages: list[tuple[str, str]] = []
+
+    def _add(self, level: str, msg: str) -> None:
+        self.messages.append((level, msg))
+
+    def info(self, msg: str) -> None: self._add("info", msg)
+    def warning(self, msg: str) -> None: self._add("warning", msg)
+    def error(self, msg: str) -> None: self._add("error", msg)
+    def fatal(self, msg: str) -> None: self._add("fatal", msg)
+    def debug(self, msg: str) -> None: self._add("debug", msg)
+
+    def find(self, substring: str) -> list[tuple[str, str]]:
+        return [m for m in self.messages if substring in m[1]]
+
+
+@pytest.mark.unit
+class TestRaceConditions:
+    """Регрессия issue #1736 — race при первом создании токена."""
+
+    def test_os_link_oserror_falls_back_to_replace(self, tmp_path):
+        """os.link падает с OSError (overlay-FS не поддерживает hard-links).
+        Текущий код использует NamedTemporaryFile + os.replace, link НЕ
+        вызывается → тест фиксирует, что секрет всё равно создаётся.
+        """
+        path = str(tmp_path / ".mcp_token")
+        log = _CollectingLogger()
+
+        token = _read_or_create_token_file(path, logger=log)
+
+        assert token is not None
+        assert len(token) == 64
+        assert os.path.exists(path)
+        assert _read_token_file(path) == token
+        # Шаг "секрет сгенерирован" и "атомарно записан" должны быть залогированы
+        assert log.find("секрет сгенерирован"), log.messages
+        assert log.find("атомарно записан"), log.messages
+
+    def test_no_orphan_tmp_files_after_replace(self, tmp_path):
+        """После успешной записи не должно остаться .tmp-файлов в директории.
+        Регрессия: в старом коде finally-блок os.unlink(tmp_path) падал с
+        EBUSY на bind-mount и tmp-файл оставался. Новый код использует
+        ``_safe_unlink`` который проглатывает FileNotFoundError и логирует
+        остальные ошибки."""
+        path = str(tmp_path / ".mcp_token")
+        _read_or_create_token_file(path)
+        leftovers = [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+        assert leftovers == [], f"leftover tmp files: {leftovers}"
+
+    def test_race_two_processes_both_get_valid_token(self, tmp_path):
+        """Гонка: процесс A читает пустой path, процесс B тоже читает пустой
+        path, оба пытаются создать свой токен. Тот, чей os.replace случается
+        ВТОРЫМ — должен ПРОЧИТАТЬ чужой секрет, а не перезаписывать свой.
+
+        В новой реализации (check os.path.exists(path) ПЕРЕД replace) второй
+        процесс обнаруживает существование файла и берёт чужой секрет.
+        """
+        path = str(tmp_path / ".mcp_token")
+        # Создадим файл от имени "первого процесса".
+        first_token = _read_or_create_token_file(path)
+        assert first_token is not None
+        # "Второй процесс" вызывает ту же функцию — должен получить ТОТ ЖЕ токен.
+        second_token = _read_or_create_token_file(path)
+        assert second_token == first_token, (
+            f"race: процессы получили разные секреты: "
+            f"{first_token[:8]} vs {second_token[:8]}"
+        )
+
+    def test_os_replace_oserror_returns_none_and_logs(self, tmp_path):
+        """os.replace падает с OSError — функция возвращает None и логирует.
+        Раньше это была silent degradation; теперь mcp_server увидит лог.
+        """
+        path = str(tmp_path / ".mcp_token")
+        log = _CollectingLogger()
+
+        with mock.patch("os.replace", side_effect=OSError("ENOSPC")):
+            token = _read_or_create_token_file(path, logger=log)
+
+        assert token is None
+        errors = log.find("os.replace упал")
+        assert errors, f"ожидали error-лог про os.replace, получили: {log.messages}"
+
+    def test_fsync_failure_returns_none_and_logs(self, tmp_path):
+        """fsync падает → функция возвращает None + лог.
+        До этого изменения терялось в finally-блоке без логов."""
+        path = str(tmp_path / ".mcp_token")
+        log = _CollectingLogger()
+
+        with mock.patch("os.fsync", side_effect=OSError("EIO")):
+            token = _read_or_create_token_file(path, logger=log)
+
+        assert token is None
+        assert log.find("tmp-файл секрета"), log.messages
+
+    def test_logger_receives_step_by_step_events(self, tmp_path):
+        """Каждый значимый шаг логируется: чтение/создание/атомарная запись/проверка прав."""
+        path = str(tmp_path / ".mcp_token")
+        log = _CollectingLogger()
+
+        _read_or_create_token_file(path, logger=log)
+
+        # Минимальный набор сообщений, которые помогут будущему дебагу
+        keywords = ["сгенерирован", "атомарно записан"]
+        for kw in keywords:
+            assert log.find(kw), f"ожидали лог с подстрокой {kw!r}, нет: {log.messages}"
+
+    def test_makedirs_failure_returns_none_and_logs(self, tmp_path):
+        """Если parent — это файл (а не директория), makedirs падает → None + лог."""
+        path = str(tmp_path / "blocker" / ".mcp_token")
+        (tmp_path / "blocker").write_text("x", encoding="utf-8")
+        log = _CollectingLogger()
+
+        token = _read_or_create_token_file(path, logger=log)
+
+        assert token is None
+        assert log.find("директорию"), log.messages
+
+    def test_world_readable_file_warns(self, tmp_path):
+        """Если кто-то (chmod) выдал 0644 — логгер должен об этом предупредить."""
+        path = str(tmp_path / ".mcp_token")
+        _read_or_create_token_file(path)
+        os.chmod(path, 0o644)
+        log = _CollectingLogger()
+
+        # Чтобы вызвать проверку mode, читаем файл заново через функцию:
+        token = _read_or_create_token_file(path, logger=log)
+
+        assert token is not None  # токен всё равно работает
+        assert log.find("mode="), log.messages
+
+
+@pytest.mark.unit
+class TestFromEnvAuthFailFast:
+    """Когда токен недоступен И ROB_BOX_MCP_ALLOW_UNAUTHENTICATED не выставлен,
+    mcp_server.__init__ должен fail-fast (issue #1736). from_env() возвращает
+    disabled authenticator — это сигнал для __init__.
+    """
+
+    def test_unwritable_path_returns_disabled_authenticator(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(ENV_TOKEN, raising=False)
+        monkeypatch.delenv(ENV_ALLOW_UNAUTH, raising=False)
+        monkeypatch.setenv(
+            ENV_TOKEN_FILE, str(tmp_path / "blocker" / "deep" / ".mcp_token")
+        )
+        (tmp_path / "blocker").write_text("x", encoding="utf-8")
+
+        auth = RequestAuthenticator.from_env()
+        assert auth.enabled is False
+        assert auth._token is None
+

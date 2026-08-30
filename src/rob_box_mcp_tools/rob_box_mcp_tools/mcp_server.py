@@ -22,7 +22,8 @@ from std_msgs.msg import String
 import json
 import math
 import os
-from typing import Any, Dict, Optional
+import traceback
+from typing import Any, Callable, Dict, Optional
 
 from .registry import MCPToolRegistry
 from .tools import (
@@ -148,17 +149,30 @@ class MCPServer(Node):
         # Реестр инструментов
         self.registry = MCPToolRegistry()
 
+        # Каждый блок инициализации оборачивается в ``_init_step`` — это
+        # fail-fast wrapper, который:
+        #   * логирует FATAL через ROS2-логгер (видно в ``head -50`` workflow'а),
+        #   * поднимает RuntimeError, чтобы процесс упал с traceback, а не
+        #     тихо деградировал (как было в инциденте #1736 29.08: mcp_server
+        #     exit 1 без traceback, потому что ``__init__`` ROS2-ноды не
+        #     оборачивался).
+        # Issue #1736: логи ``L-Deploy and Verify`` режут ``head -50`` + ``tail -150``,
+        # middle logs SKIPPED — exit без явного stack trace теряется в
+        # "SKIPPED MIDDLE LOGS". Теперь любой необработанный exception во
+        # время ``__init__`` виден ДО 50-й строки (fatal) И сохраняется
+        # в stacktrace через RuntimeError.
+
         # Долгосрочная память (VoiceMemory) — инициализировать ДО регистрации инструментов
         self.voice_memory = None
-        self._init_voice_memory()
+        self._init_step("voice_memory", self._init_voice_memory)
 
         # FAQ store + event profile (event mode)
         self.faq_store = None
         self.event_profile = None
-        self._init_faq_store()
+        self._init_step("faq_store", self._init_faq_store)
 
         # WaypointStore — SQLite CRUD для вейпоинтов (одна БД с VoiceMemory)
-        self.waypoint_store = self._init_waypoint_store()
+        self.waypoint_store = self._init_step("waypoint_store", self._init_waypoint_store)
 
         # MappingState — FSM персистентное состояние (localization / mapping)
         self.mapping_state = MappingState()
@@ -171,8 +185,9 @@ class MCPServer(Node):
         self._pose_snapshot: "Dict[str, float] | None" = None
         self._init_pose_subscription()
 
-        # Регистрация инструментов
-        self._register_tools()
+        # Регистрация инструментов — критична, без неё нода бесполезна
+        self._init_step("register_tools", self._register_tools)
+
 
         # QoS RELIABLE для гарантированной доставки результатов через Zenoh
         # BEST_EFFORT терял сообщения в сетевом окружении!
@@ -239,7 +254,35 @@ class MCPServer(Node):
         # ROS2/Zenoh-графу, а за ним сразу registry.execute() — без этой
         # проверки любой пир исполняет инструменты в обход LLM и
         # confirmation gate. См. mcp_auth.py.
-        self.authenticator = RequestAuthenticator.from_env(logger=self.get_logger())
+        #
+        # Issue #1736: при гонке за первый запуск ``_read_or_create_token_file``
+        # может вернуть None — раньше это была SILENT DEGRADATION (authenticator
+        # enabled=False, все execute() отклоняются, но процесс жив). Теперь,
+        # если allow_unauthenticated=False и токен не получен, _init_step
+        # фейлит __init__ с FATAL-логом, который виден в head -50 workflow'а
+        # (раньше exit 1 без stack trace попадал в SKIPPED MIDDLE LOGS).
+        self.authenticator = self._init_step(
+            "authenticator",
+            lambda: RequestAuthenticator.from_env(logger=self.get_logger()),
+        )
+        if self.authenticator is None or not self.authenticator.enabled:
+            # Если ROB_BOX_MCP_ALLOW_UNAUTHENTICATED=1 явно — пропускаем (это
+            # документированный escape hatch и логируется как ERROR в
+            # from_env). Иначе — fail-fast.
+            allow_unauth = os.getenv(
+                "ROB_BOX_MCP_ALLOW_UNAUTHENTICATED", ""
+            ).strip().lower() in ("1", "true")
+            if not allow_unauth:
+                raise RuntimeError(
+                    "mcp_auth: секрет недоступен и ROB_BOX_MCP_ALLOW_UNAUTHENTICATED "
+                    "не выставлен — mcp_server не может безопасно принимать "
+                    "/mcp/execute. Задай ROB_BOX_MCP_TOKEN или выдай доступ "
+                    "на запись к /data/.mcp_token."
+                )
+            self.get_logger().error(
+                "⚠️ mcp_auth: токен недоступен + ROB_BOX_MCP_ALLOW_UNAUTHENTICATED=1 "
+                "— принимаем все /mcp/execute без подписи (security risk)."
+            )
 
         # Подписка на perception context для обновления инструментов
         try:
@@ -598,6 +641,49 @@ class MCPServer(Node):
             self.get_logger().info("📍 Подписан на /odom (лёгкий снимок позиции)")
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(f"⚠️ Не удалось подписаться на /odom: {exc}")
+
+    def _init_step(self, name: str, fn: Callable[[], Any]):
+        """Запустить блок инициализации ``fn`` под ``try/except`` с FATAL-логом.
+
+        Проблема (issue #1736, 29.08.2026 staging run 33260223956): mcp_server
+        падал с ``exit code 1`` в первые 5-10 секунд после старта launchsystem.
+        В логах workflow'а (``L-Deploy and Verify.yml`` режет ``head -50`` +
+        ``tail -150``) не было ни traceback, ни ERROR до 50-й строки — падение
+        попадало в "SKIPPED MIDDLE LOGS". Причина: ``__init__`` ROS2-ноды
+        выполняется в MainThread, и любое необработанное исключение роняет
+        процесс без явного stacktrace в ROS2-логгер.
+
+        Решение: любой блок инициализации, который ДОЛЖЕН работать, оборачивается
+        в ``_init_step``. Это:
+          1. Логирует шаг через ``info`` (видно в ``head -50`` при crash'е),
+          2. На исключение логирует FATAL с полным traceback (``logger.fatal``
+             в ROS2 пишет в stderr с поднятым уровнем — CI-deploy gate
+             ловит его надёжно),
+          3. Поднимает ``RuntimeError`` с контекстом — теперь crash ВСЕГДА
+             идёт с явным stacktrace, который сохранится в ``tail -150``.
+
+        Args:
+            name: Человекочитаемое имя шага (для логов).
+            fn:   Callable без аргументов, возвращает значение или None.
+
+        Returns:
+            Результат ``fn()``, либо ``None`` если она вернула ``None``.
+        """
+        self.get_logger().info(f"🔧 mcp_server init: {name}…")
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001
+            # ``logger.fatal`` — это ROS2-специфичный уровень, который пишет
+            # в stderr СРАЗУ, до любых буферов. Это критично, потому что
+            # workflow ``L-Deploy and Verify`` смотрит только ``head -50`` + ``tail -150``,
+            # и без немедленного вывода crash теряется в SKIPPED MIDDLE LOGS.
+            tb = traceback.format_exc()
+            self.get_logger().fatal(
+                f"❌ mcp_server init failed at step '{name}': {exc}\n{tb}"
+            )
+            raise RuntimeError(
+                f"mcp_server.__init__ failed at step '{name}': {exc}"
+            ) from exc
 
     def _on_odom_snapshot(self, msg) -> None:
         """Обновить снимок позиции {x, y, theta} из nav_msgs/Odometry."""
