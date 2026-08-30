@@ -450,8 +450,9 @@ class TestUnbackedActionClaimLive3008:
         [
             # Факт в память — не точка; save_waypoint тут ни при чём.
             ("запомни что я люблю зеленый чай без сахара", "Запомнила."),
-            # Чтение, а не мутация.
-            ("перечисли все точки которые ты запомнил", "Точек пока нет."),
+            # NB: «перечисли точки» переехало в TestReadOnlyClaims... —
+            # e2e 33251879328 показал, что это ТОЖЕ баг: робот отвечал
+            # «Точек пока нет» при tools=[], хотя точка уже сохранялась.
             # Стоп-команду закрывает FORCE_STOP в MusicGuard, не Bug E.
             ("останови музыку", "Музыка выключена."),
             # Разговор про удаление, но не команда удалить.
@@ -618,6 +619,88 @@ class TestLive3008E2eSecondRound:
                 user_input="поищи в своей памяти что я говорил про чай",
                 spoken="Нашла: зелёный чай без сахара.",
                 tools_called=(),
+            )
+            is None
+        )
+
+class TestReadOnlyClaimsFromE2e33251879328:
+    """GATE-1 из e2e 33251879328: «expected tool calls not invoked ...
+    LLM сделал verbal-only answer». Робот отвечает о ЖИВОМ состоянии по
+    памяти модели, не спросив систему."""
+
+    @pytest.mark.parametrize(
+        "user_input,spoken,category",
+        [
+            (
+                "перечисли все точки которые ты запомнил",
+                "Точек пока нет — карту ни разу не строили.",
+                "waypoint_list",
+            ),
+            (
+                "какие звуки ты умеешь проигрывать",
+                "Умею эмоции, интерфейсные сигналы, спецэффекты.",
+                "sound_info",
+            ),
+            ("играет ли сейчас музыка", "Нет, сейчас тишина.", "music_state"),
+            ("загрузи и включи трек тисбит", "Трек играет.", "track_load"),
+        ],
+    )
+    def test_state_claim_without_tool_is_detected(
+        self, user_input: str, spoken: str, category: str
+    ) -> None:
+        rule = detect_unbacked_action_claim(
+            user_input=user_input, spoken=spoken, tools_called=()
+        )
+        assert rule is not None
+        assert rule.category == category
+
+    @pytest.mark.parametrize(
+        "user_input,spoken,tool",
+        [
+            ("перечисли все точки", "Точек пока нет.", "list_waypoints"),
+            ("какие звуки ты умеешь", "Умею эмоции.", "get_sound_info"),
+            ("играет ли сейчас музыка", "Нет, тишина.", "get_music_state"),
+            ("загрузи и включи трек тисбит", "Трек играет.", "load_track"),
+            (
+                "загрузи и включи трек тисбит",
+                "Трек играет.",
+                "gen_play_from_library",
+            ),
+            (
+                "загрузи и включи трек тисбит",
+                "Трек играет.",
+                "execute_music_code",
+            ),
+        ],
+    )
+    def test_state_claim_with_the_tool_is_fine(
+        self, user_input: str, spoken: str, tool: str
+    ) -> None:
+        assert (
+            detect_unbacked_action_claim(
+                user_input=user_input, spoken=spoken, tools_called=(tool,)
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize(
+        "user_input,spoken",
+        [
+            # Рассказ о своих возможностях — не запрос живого состояния.
+            ("что ты умеешь делать расскажи по пунктам",
+             "Умею говорить, петь, играть музыку."),
+            # Запрос сыграть закрывается music-гуардом, не Bug E.
+            ("сыграй техно для души", "Бит качает."),
+            ("расскажи анекдот", "Колобок повесился."),
+            ("поехали вперед", "Еду."),
+        ],
+    )
+    def test_no_false_positives_on_readonly_rules(
+        self, user_input: str, spoken: str
+    ) -> None:
+        assert (
+            detect_unbacked_action_claim(
+                user_input=user_input, spoken=spoken, tools_called=()
             )
             is None
         )

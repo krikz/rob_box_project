@@ -253,3 +253,64 @@ def test_guard_call_sites_live_in_handle_result() -> None:
         f"guard-методы {missing} не вызываются из _handle_result — "
         f"проверь, куда попал блок вызова"
     )
+
+def test_every_guard_marks_its_retry_as_dispatched() -> None:
+    """Каждый ``_check_*_and_retry`` обязан звать ``_mark_retry_dispatched``.
+
+    🔴 e2e 33251879328, шаги tc12_delete_track и tc16_delete_waypoint:
+    гуард отправлял ретрай, родительский ход тут же слал ``DIALOGUE_END``,
+    DSM падал в IDLE — и ``process_input`` ретрая коротил на закрытом
+    диалоге, возвращая пустоту за 1 мс без единого HTTP-запроса::
+
+        15:09:31.712  calling process_input: '[CRITICAL] Ты ответил ...'
+        15:09:31.713  process_input returned: spoken='' tools=[]
+        15:09:31.715  Empty assistant response (LLM вернул пустоту)
+
+    Юзер слышал «Принял.», e2e ставил llm_error. Условие отсрочки
+    ``DIALOGUE_END`` перечисляло гуарды поимённо, и оба новых в него не
+    попали. Теперь флаг общий — тест следит, чтобы его ставили все.
+    """
+    methods = _methods()
+    guards = {
+        name for name in methods
+        if name.startswith("_check_") and name.endswith("_and_retry")
+    }
+    assert guards, "guard-методы исчезли — тест устарел"
+
+    missing = []
+    for name in sorted(guards):
+        called = {
+            node.func.attr
+            for node in ast.walk(methods[name])
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        if "_mark_retry_dispatched" not in called:
+            missing.append(name)
+    assert not missing, (
+        f"{missing} отправляют ретрай, не пометив его — "
+        f"DIALOGUE_END закроет диалог и ретрай вернётся пустым"
+    )
+
+
+def test_dialogue_end_defers_on_the_shared_flag() -> None:
+    """Отсрочка ``DIALOGUE_END`` смотрит на общий флаг, а не на имена гуардов.
+
+    Если условие снова начнёт перечислять ``_babble_retry_used`` и ему
+    подобные, следующий гуард опять окажется забыт.
+    """
+    run_turn = _methods()["_run_turn"]
+    reads = {
+        node.attr
+        for node in ast.walk(run_turn)
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)
+    }
+    assert "_retry_dispatched_in_turn" in reads, (
+        "_run_turn больше не читает общий флаг — отсрочка DIALOGUE_END сломана"
+    )
+    per_guard_flags = {"_babble_retry_used", "_code_speech_retry_used",
+                       "_action_claim_retry_used"}
+    leaked = sorted(per_guard_flags & reads)
+    assert not leaked, (
+        f"_run_turn снова читает поимённые флаги {leaked} — "
+        f"отсрочка DIALOGUE_END должна идти через _retry_dispatched_in_turn"
+    )

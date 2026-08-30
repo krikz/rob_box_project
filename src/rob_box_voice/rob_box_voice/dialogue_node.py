@@ -638,6 +638,22 @@ class DialogueNode(Node):
         # вооружается. Потолок остаётся за watchdog'ом (idle TTL 300 s и
         # segments-дедлайн), явным stop_music и cleanup'ом нового диалога.
         self._track_mode_music_active: bool = False
+
+        # 🔴 FIX (live 30.08, e2e 33251879328): один флаг «в этом ходе гуард
+        # уже отправил ретрай» на ВСЕ гуарды сразу.
+        #
+        # ``_run_turn`` откладывает ``DIALOGUE_END``, когда ретрай в пути:
+        # без этого родительский ход роняет DSM в IDLE, и ``process_input``
+        # ретрая коротит на закрытом диалоге — возвращает пустоту за 1 мс,
+        # без единого HTTP-запроса (issue #1204). Раньше условие
+        # перечисляло гуарды поимённо, и оба новых (Bug C′ и Bug E) в него
+        # не попали: шаги tc12_delete_track и tc16_delete_waypoint легли с
+        # ``llm_error``, юзер услышал «Принял.».
+        #
+        # Теперь флаг ставит :meth:`_mark_retry_dispatched`, а вызвать её
+        # обязан каждый ``_check_*_and_retry`` — это проверяет
+        # ``test_dialogue_retry_flag_wiring.py``.
+        self._retry_dispatched_in_turn: bool = False
         # Issue #992 Bug B / Bug C — retry budgets and policy now live
         # in :class:`MusicGuard` (TD-2 decomposition, ARCH-review #1405 /
         # ADR-0021). ``_run_turn`` resets the user-budget via
@@ -2799,7 +2815,10 @@ class DialogueNode(Node):
         # the retry's ``process_input`` classifies the synthetic
         # prompt as STT_RESULT but stays in IDLE (no-op), and the
         # LLM is never called — the user hears nothing.
-        babble_retry_pending = False
+        # Общий флаг «гуард отправил ретрай» — сбрасывается на КАЖДЫЙ ход,
+        # включая сам ретрай (иначе отложенный DIALOGUE_END залипнет).
+        self._retry_dispatched_in_turn = False
+        guard_retry_pending = False
         # Issue #918 — turn может быть отменён или упасть ДО присваивания
         # result (speaker-профиль, LLM, тул-луп). Инициализируем None
         # заранее, чтобы finally-блок мог безопасно отличить «результата
@@ -2946,7 +2965,7 @@ class DialogueNode(Node):
                 is_dj_auto=was_dj_auto,
                 raw_user_command=raw_user_command,
             )
-            babble_retry_pending = bool(self._babble_retry_used)
+            guard_retry_pending = bool(self._retry_dispatched_in_turn)
         except asyncio.CancelledError:
             self.get_logger().info("🛑 Turn cancelled (barge-in)")
             # Issue #1160 — Prometheus metrics: barge-in (пользователь
@@ -3139,7 +3158,7 @@ class DialogueNode(Node):
             # end of it.
             if (
                 self._dsm.current_state == DialogueStateKind.DIALOGUE
-                and not babble_retry_pending
+                and not guard_retry_pending
                 and not music_retry_dispatched
                 and not pending_queue_dispatched
             ):
@@ -3418,6 +3437,7 @@ class DialogueNode(Node):
         # call from the retry itself can never escalate to a second
         # retry.
         self._babble_retry_used = True
+        self._mark_retry_dispatched()
         retry_prompt = self._build_babble_retry_prompt(user_input or "")
         self.get_logger().warning(
             "🗣️ [issue 992 Bug D] LLM babble detected — retrying once with "
@@ -3494,6 +3514,7 @@ class DialogueNode(Node):
         # Помечаем ДО отправки — реентрантный вызов из самого ретрая не
         # должен уметь запустить второй.
         self._code_speech_retry_used = True
+        self._mark_retry_dispatched()
         self.get_logger().warning(
             "🎹 [issue 992 Bug C'] Renardo-код в тексте реплики — "
             "требую execute_music_code(code=...) "
@@ -3552,6 +3573,7 @@ class DialogueNode(Node):
         # Помечаем ДО отправки — реентрантный вызов из самого ретрая
         # не должен уметь запустить второй.
         self._action_claim_retry_used = True
+        self._mark_retry_dispatched()
         self.get_logger().warning(
             f"🧾 [issue 992 Bug E] заявлено действие без тула "
             f"(category={rule.category}, tools={list(tools_called)!r}, "
@@ -3584,6 +3606,22 @@ class DialogueNode(Node):
             self._publish_state()
         self._dsm.on_event(DialogueEvent.STT_RESULT)
         self._publish_state()
+
+    def _mark_retry_dispatched(self) -> None:
+        """Пометить, что гуард отправил синхронный ретрай в этом ходе.
+
+        Переоткрыть DSM (``_reopen_dialogue_for_retry``) — половина дела:
+        родительский ход в своём ``finally`` всё равно пошлёт
+        ``DIALOGUE_END`` и уронит DSM обратно в IDLE ДО того, как ретрай
+        доберётся до ``process_input``. Флаг говорит ``_run_turn``
+        отложить закрытие диалога (issue #1204).
+
+        Каждый ``_check_*_and_retry`` обязан вызвать этот метод рядом со
+        своим одноразовым флагом — иначе ретрай уйдёт в закрытый диалог и
+        вернётся пустым за миллисекунду. Именно так легли шаги
+        tc12_delete_track и tc16_delete_waypoint в e2e 33251879328.
+        """
+        self._retry_dispatched_in_turn = True
 
     def _apply_music_guard(
         self,

@@ -565,6 +565,62 @@ ACTION_CLAIM_RULES: tuple = (
         }),
         what="поиск (search_samples / list_tracks / gen_search_library)",
     ),
+    # ---- READ-ONLY заявки (e2e 33251879328, GATE-1) --------------------
+    # «expected tool calls not invoked ... LLM сделал verbal-only answer».
+    # Робот отвечает о ЖИВОМ состоянии по памяти модели, не спросив систему.
+    ActionClaimRule(
+        category="waypoint_list",
+        user_re=re.compile(
+            r"(?:перечисли|покажи|какие|список|назови)\b.{0,25}?"
+            r"(?:точк|вейпоинт|waypoint|мест)",
+            re.IGNORECASE),
+        # Утверждение о СОДЕРЖИМОМ списка — и «точек нет» тоже утверждение.
+        # Живой лог 30.08: «Точек пока нет — карту ни разу не строили» при
+        # tools=[], а точка к тому моменту уже сохранялась.
+        claim_re=re.compile(
+            r"точ(?:ек|ки|ка)\b|нет\s+точек|список\s+точек|пуст",
+            re.IGNORECASE),
+        tools=frozenset({"list_waypoints", "get_current_pose"}),
+        what="список точек (list_waypoints)",
+    ),
+    ActionClaimRule(
+        category="sound_info",
+        user_re=re.compile(
+            r"(?:какие|перечисли|покажи|список)\b.{0,25}?звук",
+            re.IGNORECASE),
+        claim_re=re.compile(r"звук\w*|умею|эмоци|сигнал|эффект", re.IGNORECASE),
+        tools=frozenset({"get_sound_info", "play_sound"}),
+        what="список звуков (get_sound_info)",
+    ),
+    ActionClaimRule(
+        category="music_state",
+        user_re=re.compile(
+            r"(?:играет\s+ли|что\s+(?:сейчас\s+)?играет|"
+            r"(?:сейчас\s+)?играет\s+(?:ли\s+)?музык|"
+            r"какая\s+(?:сейчас\s+)?музык|что\s+за\s+трек)",
+            re.IGNORECASE),
+        claim_re=re.compile(
+            r"тишин|ничего\s+не\s+игра|не\s+игра|игра\w*|звучит|включен",
+            re.IGNORECASE),
+        tools=frozenset({"get_music_state"}),
+        what="состояние музыки (get_music_state)",
+    ),
+    ActionClaimRule(
+        category="track_load",
+        user_re=re.compile(
+            r"(?:загрузи|включи|поставь|запусти)\b.{0,20}?"
+            r"(?:трек|композиц|мелоди)",
+            re.IGNORECASE),
+        # «Трек играет.» при tools=[] — live 30.08, музыка не стартовала.
+        claim_re=re.compile(
+            r"(?:игра|звучит|запустил|включил|поставил|загрузил)\w*",
+            re.IGNORECASE),
+        tools=frozenset({
+            "load_track", "gen_play_from_library", "execute_music_code",
+            "compose_music", "generate_music",
+        }),
+        what="запуск трека (load_track / gen_play_from_library)",
+    ),
 )
 
 
