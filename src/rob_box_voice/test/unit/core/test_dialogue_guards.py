@@ -704,3 +704,27 @@ class TestReadOnlyClaimsFromE2e33251879328:
             )
             is None
         )
+
+class TestMusicRetryPromptNamesBothLibraries:
+    """🔴 e2e tc10_load_track: промпт звал только в mp3-библиотеку.
+
+    «тисбит» сохранялся через save_track — то есть в Renardo-медиатеку, а
+    промпт предлагал gen_list_library. LLM звали туда, где трека нет, и
+    она сдавалась, повторяя «Трек тисбит играет.» с tools=[].
+    """
+
+    def test_prompt_names_the_renardo_library_first(self) -> None:
+        prompt = build_music_retry_prompt("загрузи и включи трек тисбит")
+        assert "list_tracks" in prompt
+        assert "load_track" in prompt
+        assert "save_track" in prompt, "надо объяснить, ГДЕ лежит сохранённый трек"
+
+    def test_prompt_still_names_the_mp3_library(self) -> None:
+        prompt = build_music_retry_prompt("включи случайный трек")
+        assert "gen_list_library" in prompt
+        assert "gen_play_from_library" in prompt
+
+    def test_prompt_forbids_inventing_success(self) -> None:
+        """Обе библиотеки пусты — честный ответ, а не «трек играет»."""
+        prompt = build_music_retry_prompt("включи трек которого нет")
+        assert "ЗАПРЕЩЕНО" in prompt

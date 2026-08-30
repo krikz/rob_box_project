@@ -38,6 +38,7 @@ from .dialogue_guards import (
     GENERATED_MUSIC_TOOLS,
     MUSIC_STOP_TOOLS,
     RENARDO_MUSIC_TOOLS,
+    USER_MUSIC_SATISFYING_TOOLS,
     is_music_stop_command,
     is_vocal_request,
     user_wants_music,
@@ -307,6 +308,23 @@ class MusicGuard:
             return MusicGuardVerdict(
                 kind=MusicGuardVerdictKind.FORCE_STOP,
                 reason="stop_command_unbacked",
+            )
+
+        # 🔴 FIX (live 30.08, e2e tc10_load_track): ``load_track`` реально
+        # запускает Renardo (внутри — ``execute_code``), но лежал только
+        # в ``MUSIC_MODE_TOOLS``, которые за «музыка пошла» не считаются.
+        # Корректный вызов уходил в ретрай, а на втором промахе юзер слышал
+        # «Я тут растерялся — бит не запустился».
+        _user_satisfied = tools_set & USER_MUSIC_SATISFYING_TOOLS
+        if _user_satisfied:
+            self._user_retry_count = 0
+            self._log_debug(
+                f"🎵 [music_guard] {sorted(_user_satisfied)!r} запустил "
+                "воспроизведение → SKIP"
+            )
+            return MusicGuardVerdict(
+                kind=MusicGuardVerdictKind.SKIP,
+                reason="executed_via_library",
             )
 
         # Bug C — user asked for music but LLM skipped execute_music_code.

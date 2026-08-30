@@ -80,6 +80,17 @@ MUSIC_MODE_TOOLS: frozenset = frozenset({
     "set_vibe_preset",
 })
 
+#: Тулы, которые закрывают ПОЛЬЗОВАТЕЛЬСКУЮ просьбу «включи трек X», но не
+#: закрывают DJ-переход.
+#:
+#: 🔴 FIX (live 30.08, e2e tc10_load_track): ``load_track`` внутри зовёт
+#: ``MusicManager.execute_code`` — то есть реально запускает Renardo. Но он
+#: лежал только в ``MUSIC_MODE_TOOLS``, которые гуард не считает за
+#: «музыка пошла», и корректный вызов всё равно уходил в ретрай.
+#: Для DJ-ветки он по-прежнему не годится: ``set_dj_mode`` без старта — это
+#: ровно та авария Bug B, которую ловит гуард.
+USER_MUSIC_SATISFYING_TOOLS: frozenset = frozenset({"load_track"})
+
 
 # ---------------------------------------------------------------------------
 # Issue #992 Bug D — banned metalanguage openers. When the LLM returns
@@ -707,17 +718,32 @@ def build_music_retry_prompt(user_input: str) -> str:
         "хотя пользователь ЯВНО попросил музыку/генерацию. "
         "Музыка сейчас НЕ играет — предыдущие треки уже остановлены. "
         "ОДИН ИЗ ЭТИХ инструментов ОБЯЗАТЕЛЕН (выбери по контексту): "
-        "1) execute_music_code (Renardo/SuperCollider) — бит/DJ/ambient/instrumental (быстрый, ~1с); "
+        "1) execute_music_code / compose_music (Renardo/SuperCollider) — "
+        "бит/DJ/ambient/instrumental (быстрый, ~1с); "
         "2) generate_music (MiniMax Music API, 40-160с) — песня с вокалом и лирикой; "
-        "3) gen_search_library / gen_list_library / gen_play_from_library — для уже сохранённых треков. "
+        "3) list_tracks / load_track — Renardo-МЕДИАТЕКА, именно туда пишет save_track; "
+        "4) gen_list_library / gen_search_library / gen_play_from_library — "
+        "ОТДЕЛЬНАЯ библиотека mp3 от generate_music. "
         "Запрос юзера: «"
         + (user_input or "")
         + "». "
         "Если это 'спой песню про X' / 'сгенерируй трек про X' / 'сочини музыку' — "
         "вызывай generate_music(...). Если 'бит/DJ/ambient' — execute_music_code(...). "
-        "Если 'включи/сыграй/поставь трек/мелодию', 'случайный/следующий трек', "
-        "'трек из библиотеки' — сначала gen_list_library(limit=5), выбери track_id, "
-        "затем gen_play_from_library(track_id=...). "
+        # 🔴 FIX (live 30.08, e2e tc10_load_track): «загрузи и включи трек
+        # тисбит» дважды вернулось «Трек тисбит играет.» с tools=[], и юзер
+        # услышал «Я тут растерялся». Этот промпт называл ТОЛЬКО gen_*, а
+        # «тисбит» лежал в Renardo-медиатеке (save_track → list_tracks →
+        # load_track). LLM звали в библиотеку, где трека нет, — она сдавалась
+        # и повторяла неправду. Библиотеки две, и выбирать надо по тому, чем
+        # трек сохраняли.
+        "Если 'включи/загрузи/поставь трек <имя>' — трек, сохранённый через "
+        "save_track, лежит в Renardo-медиатеке: сначала list_tracks(), найди "
+        "имя (оно могло сохраниться в транслитерации), затем load_track(name=...). "
+        "Только если там пусто — ищи в mp3-библиотеке: gen_list_library(limit=5), "
+        "выбери track_id, затем gen_play_from_library(track_id=...). "
+        "Если 'случайный/следующий трек' без имени — любая из двух библиотек. "
+        "Если оба списка пусты — СКАЖИ ОБ ЭТОМ ЧЕСТНО и предложи сыграть "
+        "новое через execute_music_code; выдумывать «трек играет» ЗАПРЕЩЕНО. "
         "Если и сейчас не вызовешь tool — цикл останется пустым."
     )
 

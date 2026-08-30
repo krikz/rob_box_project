@@ -326,6 +326,52 @@ class TestEvaluateUserMusicVocal:
 # ---------------------------------------------------------------------------
 
 
+class TestLoadTrackSatisfiesUserGuard:
+    """🔴 e2e 33251879328, tc10_load_track.
+
+    «загрузи и включи трек тисбит» дважды вернулось «Трек тисбит играет.»
+    с tools=[], и юзер услышал «Я тут растерялся — бит не запустился».
+    Две причины: retry-промпт звал только в mp3-библиотеку (трек лежал в
+    Renardo-медиатеке), и сам ``load_track`` гуард за старт не считал —
+    хотя внутри он зовёт ``MusicManager.execute_code``.
+    """
+
+    def test_load_track_closes_the_user_request(self) -> None:
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="загрузи и включи трек тисбит",
+            tools_called=("load_track",),
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.SKIP
+        assert verdict.reason == "executed_via_library"
+        assert guard.user_retry_count == 0
+
+    def test_load_track_does_not_close_a_dj_transition(self) -> None:
+        """Bug B остаётся строгим: DJ-переход обязан РОЖДАТЬ музыку."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=True,
+            user_input="dj transition",
+            tools_called=("load_track",),
+            dj_enabled=True,
+            build_dj_retry_prompt=lambda: "dj",
+        )
+        assert verdict.kind is MusicGuardVerdictKind.DJ_RETRY
+
+    def test_set_dj_mode_alone_still_retries(self) -> None:
+        """Режимные тулы без старта — ровно та авария, что ловит гуард."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="сыграй техно",
+            tools_called=("set_dj_mode",),
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.USER_RETRY
+
+
 class TestEvaluateStopCommand:
     """Стоп-команды.
 
