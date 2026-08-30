@@ -554,3 +554,70 @@ class TestBuildRenardoCodeRetryPrompt:
         assert "execute_music_code" in prompt
         assert "p1 >> blip([0,2,4])" in prompt
         assert "[CRITICAL]" in prompt
+
+class TestLive3008E2eSecondRound:
+    """Прогон 30.08 16:00-16:05 — уже с раскатанными первыми фиксами."""
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            # 15:56: лаунж играл 94 с и замолчал ровно на этой фразе —
+            # пары «глагол + существительное» в ней нет.
+            "продолжай лабать мы летим над парижем",
+            "полабай ещё",
+            "залабай что-нибудь",
+            "лабай дальше",
+            "продолжай лаунж",
+        ],
+    )
+    def test_music_slang_is_a_music_request(self, phrase: str) -> None:
+        assert user_wants_music(phrase) is True
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            # «лаб» как подстрока живёт в «ослабь» и «слабее» —  плюс
+            # список приставок обязаны их отсечь.
+            "ослабь громкость",
+            "стало слабее слышно",
+            "сходи в лабораторию",
+        ],
+    )
+    def test_slab_lookalikes_are_not_music(self, phrase: str) -> None:
+        assert user_wants_music(phrase) is False
+
+    def test_search_claim_without_tool_is_detected(self) -> None:
+        """16:04: «найди в библиотеке сэмплы барабанов» → «Сэмплы ударных
+        найдены.» при tools=[]. Поиска не было."""
+        rule = detect_unbacked_action_claim(
+            user_input="найди в своей библиотеке синтли барабанов",
+            spoken="Сэмплы ударных найдены.",
+            tools_called=(),
+        )
+        assert rule is not None
+        assert rule.category == "library_search"
+
+    @pytest.mark.parametrize(
+        "tool", ["search_samples", "list_tracks", "gen_search_library"],
+    )
+    def test_search_claim_with_any_search_tool_is_fine(self, tool: str) -> None:
+        assert (
+            detect_unbacked_action_claim(
+                user_input="найди в своей библиотеке сэмплы барабанов",
+                spoken="Сэмплы ударных найдены.",
+                tools_called=(tool,),
+            )
+            is None
+        )
+
+    def test_memory_search_is_not_a_library_search(self) -> None:
+        """Поиск по памяти закрывается своими тулами и в это правило
+        попадать не должен — в логе 30.08 он отработал верно."""
+        assert (
+            detect_unbacked_action_claim(
+                user_input="поищи в своей памяти что я говорил про чай",
+                spoken="Нашла: зелёный чай без сахара.",
+                tools_called=(),
+            )
+            is None
+        )

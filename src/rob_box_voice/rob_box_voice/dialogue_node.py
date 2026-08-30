@@ -621,6 +621,23 @@ class DialogueNode(Node):
         # LLM actually asked to stop music.
         self._pending_music_cleanup: bool = False
         self._active_batches: Dict[str, int] = {}
+
+        # 🔴 FIX (live 30.08 15:56): TRACK-музыка не должна умирать от хода,
+        # который её не трогал.
+        #
+        # Лаунж играл 94 секунды, юзер сказал «продолжай лабать мы летим над
+        # парижем», LLM ответила словами с tools=[] — и ветка «музыка в этом
+        # цикле не запускалась» вооружила cleanup, который остановил трек
+        # через 0.1 с после ответа. Робот сказал «Трек летит над Парижем» и
+        # замолчал.
+        #
+        # Контракт TRACK описан парой десятков строк ниже: «композиция живёт
+        # до segments или явного stop_music». Ветка ниже его нарушала для
+        # ЛЮБОГО следующего хода — включая «который час?» посреди трека.
+        # Флаг помнит, что живая музыка — это TRACK, и cleanup для неё не
+        # вооружается. Потолок остаётся за watchdog'ом (idle TTL 300 s и
+        # segments-дедлайн), явным stop_music и cleanup'ом нового диалога.
+        self._track_mode_music_active: bool = False
         # Issue #992 Bug B / Bug C — retry budgets and policy now live
         # in :class:`MusicGuard` (TD-2 decomposition, ARCH-review #1405 /
         # ADR-0021). ``_run_turn`` resets the user-budget via
@@ -3040,6 +3057,10 @@ class DialogueNode(Node):
                     backing_singing = bool(result) and (
                         getattr(result, "speak_text_count", 0) >= 2
                     ) and _has_singing_intent(raw_user_command or user_input)
+                    # Живая музыка теперь помнит свой режим: BACKING гасится
+                    # после последнего tts_batch_complete, TRACK — живёт
+                    # (live 30.08, см. ``_track_mode_music_active``).
+                    self._track_mode_music_active = not backing_singing
                     if backing_singing:
                         if not self._pending_music_cleanup:
                             self._pending_music_cleanup = True
@@ -3063,6 +3084,15 @@ class DialogueNode(Node):
                             "🎵 [issue 992] LLM started music — no cleanup "
                             "scheduled for this turn"
                         )
+                elif self._track_mode_music_active:
+                    # 🔴 FIX (live 30.08 15:56): ход не трогал музыку, но
+                    # играет TRACK с прошлого хода — он переживает этот ход.
+                    # Иначе «продолжай лабать» (или любой вопрос посреди
+                    # трека) глушил композицию через 0.1 с после ответа.
+                    self.get_logger().info(
+                        "🎵 TRACK играет с прошлого хода — cleanup НЕ "
+                        "вооружаем (живёт до stop_music/watchdog)"
+                    )
                 elif not was_dj_auto and not self._pending_music_cleanup:
                     self._pending_music_cleanup = True
                     self.get_logger().info(
@@ -4599,6 +4629,9 @@ class DialogueNode(Node):
         decides what to do — currently it logs and calls
         ``MusicManager.stop_music_on_session_end()``.
         """
+        # Что бы ни было причиной — стоп, новый диалог, конец BACKING-хода —
+        # после cleanup живой TRACK-музыки больше нет (live 30.08).
+        self._track_mode_music_active = False
         if getattr(self, "_music_cleanup_pub", None) is None:
             self.get_logger().debug("music_cleanup publisher not available")
             return
