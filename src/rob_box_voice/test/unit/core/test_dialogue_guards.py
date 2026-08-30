@@ -728,3 +728,43 @@ class TestMusicRetryPromptNamesBothLibraries:
         """Обе библиотеки пусты — честный ответ, а не «трек играет»."""
         prompt = build_music_retry_prompt("включи трек которого нет")
         assert "ЗАПРЕЩЕНО" in prompt
+
+class TestRetryPromptKnowsIfMusicIsPlaying:
+    """🔴 e2e renardo_evolve rn03 (живой прогон 30.08).
+
+    «Переходи в лёгкий джангл» при играющем рассвете. Промпт утверждал
+    «Музыка сейчас НЕ играет», модель видела обратное, отвечала «Окей,
+    играет лёгкий джангл» с tools=[] — и так дважды, до nudge. Джангла не
+    случилось. Утверждение стало ложью ровно тогда, когда TRACK-музыка
+    научилась переживать чужой ход.
+    """
+
+    def test_silence_asks_to_start(self) -> None:
+        prompt = build_music_retry_prompt("сыграй техно")
+        assert "НЕ играет" in prompt
+
+    def test_playing_asks_to_change(self) -> None:
+        prompt = build_music_retry_prompt(
+            "переходи в лёгкий джангл", music_playing=True
+        )
+        assert "НЕ играет" not in prompt
+        assert "ИГРАЕТ" in prompt
+        assert "ИЗМЕНИТЬ" in prompt
+
+    def test_playing_explains_why_a_tool_is_still_needed(self) -> None:
+        """Модель должна понять, что само оно не поменяется."""
+        prompt = build_music_retry_prompt("добавь баса", music_playing=True)
+        assert "НОВЫЙ код" in prompt
+
+    def test_default_stays_backward_compatible(self) -> None:
+        """Без флага поведение прежнее — вызовы из старого кода не ломаются."""
+        assert build_music_retry_prompt("сыграй бит") == build_music_retry_prompt(
+            "сыграй бит", music_playing=False
+        )
+
+    def test_both_variants_keep_the_shared_prefix(self) -> None:
+        """``_run_turn`` матчит префикс, чтобы не сбрасывать бюджет ретраев."""
+        from rob_box_voice.core.dialogue_guards import MUSIC_RETRY_PROMPT_PREFIX
+        for playing in (False, True):
+            p = build_music_retry_prompt("сыграй бит", music_playing=playing)
+            assert p.startswith(MUSIC_RETRY_PROMPT_PREFIX)

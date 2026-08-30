@@ -3659,6 +3659,21 @@ class DialogueNode(Node):
             own ``DIALOGUE_END`` so the retry's LLM gate fires
             (issue #1204). ``False`` otherwise.
         """
+        # 🔴 FIX (live 30.08, e2e renardo_evolve rn02): на «продолжай
+        # развивать эту мелодию и добавь баса» СРАЗУ сработали Bug D
+        # (ответ начинался с «Окей,») и Bug C (музыкального тула нет) —
+        # ушло ДВА синтетических ретрая, вернулось два ответа, и юзер
+        # услышал подряд «Тема рассвета с басом — поехали» и «Бас добавлен,
+        # мелодия мягко плывёт». Один промах модели = один ретрай: если
+        # гуард уже отправил ретрай в этом ходе, музыкальный молчит —
+        # ретрай-тур всё равно будет оценён заново.
+        if self._retry_dispatched_in_turn:
+            self.get_logger().info(
+                "🎵 [music_guard] в этом ходе ретрай уже отправлен — "
+                "music-гуард пропускает (без двойного дубля ответа)"
+            )
+            return False
+
         verdict = self._music_guard.evaluate(
             was_dj_auto=was_dj_auto,
             user_input=user_input,
@@ -3739,9 +3754,14 @@ class DialogueNode(Node):
 
         Delegates to
         :func:`rob_box_voice.core.dialogue_guards.build_music_retry_prompt`
-        (TD-1 decomposition).
+        (TD-1 decomposition), прокидывая ЖИВОЕ состояние плеера: с тех пор
+        как TRACK-музыка переживает чужой ход, «музыка не играет» в промпте
+        стало ложью, и на просьбу ИЗМЕНИТЬ играющее модель отвечала «окей,
+        играет X» без вызова тула (e2e renardo_evolve rn03).
         """
-        return build_music_retry_prompt(user_input)
+        return build_music_retry_prompt(
+            user_input, music_playing=self._track_mode_music_active
+        )
 
     def _build_dj_retry_prompt(self) -> str:
         """Synthetic auto-prompt for the Bug-B synchronous retry.

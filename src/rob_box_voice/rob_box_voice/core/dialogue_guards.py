@@ -701,23 +701,52 @@ def build_babble_retry_prompt(user_input: str) -> str:
     )
 
 
-def build_music_retry_prompt(user_input: str) -> str:
+def build_music_retry_prompt(
+    user_input: str, *, music_playing: bool = False
+) -> str:
     """Synthetic prompt for Bug C retry (user asked for music, LLM skipped
     the music tools).
 
     The LLM frequently concludes «музыка уже играет» from the dialogue
-    history (previous runs/songs) and returns ``done`` without calling
-    ``execute_music_code`` / ``generate_music``. This prompt explicitly
-    resets that assumption and demands the tool call — pointing at BOTH
-    engines directly (Renardo ``execute_music_code`` AND MiniMax
-    ``generate_music``), because ``handle_music`` (the old Compositor
-    skill facade) no longer has an executor after the harness migration.
+    history and returns ``done`` without calling a music tool. Historically
+    this prompt answered that by asserting «музыка НЕ играет — предыдущие
+    треки уже остановлены», which was true back when every turn ended with
+    ``music_cleanup``.
+
+    🔴 FIX (live 30.08, e2e renardo_evolve rn03): после того как TRACK-музыка
+    научилась переживать чужой ход, это утверждение стало ЛОЖЬЮ — и вышло
+    боком. «Переходи в лёгкий джангл» при играющем рассвете: модель видит,
+    что музыка идёт, читает в промпте обратное, отвечает «Окей, играет
+    лёгкий джангл» с ``tools=[]`` — и так дважды, до nudge «я растерялся».
+    Джангла не случилось.
+
+    Поэтому ``music_playing`` разводит два разных случая:
+
+    * ``False`` — тишина, надо ЗАПУСТИТЬ;
+    * ``True`` — что-то играет, и юзер просит это ИЗМЕНИТЬ. Само оно не
+      изменится: плеер крутит тот же паттерн, пока не придёт новый код.
+
+    Args:
+        user_input: оригинальная команда юзера.
+        music_playing: играет ли музыка прямо сейчас. Передаёт
+            ``DialogueNode`` из ``_track_mode_music_active``.
     """
+    if music_playing:
+        state_line = (
+            "Музыка СЕЙЧАС ИГРАЕТ, и юзер просит её ИЗМЕНИТЬ, а не завести "
+            "заново. Сама она не изменится: плеер крутит один и тот же "
+            "паттерн, пока ты не пришлёшь НОВЫЙ код. Ответ «окей, играет X» "
+            "без вызова тула = музыка осталась прежней, а ты соврал. "
+        )
+    else:
+        state_line = (
+            "Музыка сейчас НЕ играет — предыдущие треки уже остановлены. "
+        )
     return (
         MUSIC_RETRY_PROMPT_PREFIX + " ни один музыкальный тул, "
         "хотя пользователь ЯВНО попросил музыку/генерацию. "
-        "Музыка сейчас НЕ играет — предыдущие треки уже остановлены. "
-        "ОДИН ИЗ ЭТИХ инструментов ОБЯЗАТЕЛЕН (выбери по контексту): "
+        + state_line
+        + "ОДИН ИЗ ЭТИХ инструментов ОБЯЗАТЕЛЕН (выбери по контексту): "
         "1) compose_music / execute_music_code (Renardo/SuperCollider) — "
         "бит/DJ/ambient/instrumental/подложка (быстрый, ~1с); "
         "2) list_tracks / load_track — Renardo-МЕДИАТЕКА, именно туда пишет save_track; "
