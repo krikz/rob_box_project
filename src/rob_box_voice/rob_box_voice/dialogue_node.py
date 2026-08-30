@@ -3103,7 +3103,7 @@ class DialogueNode(Node):
                             "🎵 [issue 992] LLM started music — no cleanup "
                             "scheduled for this turn"
                         )
-                elif self._track_mode_music_active:
+                elif getattr(self, "_track_mode_music_active", False):
                     # 🔴 FIX (live 30.08 15:56): ход не трогал музыку, но
                     # играет TRACK с прошлого хода — он переживает этот ход.
                     # Иначе «продолжай лабать» (или любой вопрос посреди
@@ -3404,7 +3404,7 @@ class DialogueNode(Node):
             return False
         if not spoken:
             return False
-        if self._babble_retry_used:
+        if getattr(self, "_babble_retry_used", False):
             return False
         if not self._is_metalanguage_babble(spoken):
             return False
@@ -3492,7 +3492,7 @@ class DialogueNode(Node):
             ``True`` — ретрай отправлен, вызывающий НЕ должен публиковать
             текст в TTS.
         """
-        if self._code_speech_retry_used:
+        if getattr(self, "_code_speech_retry_used", False):
             return False
         if tools_called:
             # LLM уже вызвала тул в этом цикле — не вмешиваемся.
@@ -3552,7 +3552,7 @@ class DialogueNode(Node):
             ``True`` — ретрай отправлен, вызывающий НЕ должен публиковать
             текст в TTS (иначе юзер услышит неправду, а потом ответ ретрая).
         """
-        if self._action_claim_retry_used:
+        if getattr(self, "_action_claim_retry_used", False):
             return False
         rule = detect_unbacked_action_claim(
             user_input=user_input,
@@ -3760,7 +3760,7 @@ class DialogueNode(Node):
         играет X» без вызова тула (e2e renardo_evolve rn03).
         """
         return build_music_retry_prompt(
-            user_input, music_playing=self._track_mode_music_active
+            user_input, music_playing=getattr(self, "_track_mode_music_active", False)
         )
 
     def _build_dj_retry_prompt(self) -> str:
