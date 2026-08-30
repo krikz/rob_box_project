@@ -49,12 +49,12 @@
       ]
     },
     {
-      "label": "rn06_renardo_explicit",
+      "label": "rn06_hard_beat",
       "voice": "anton",
-      "text": "Робот, сыграй renardo бит.",
-      "_comment": "Якорь для агрегата GATE-1: эта формулировка детерминированно уходит в execute_music_code (проверено в music_library_suite_v1 ml07/ml08). Заодно негативный контроль — «бит» не должен утечь в generate_music.",
+      "text": "Робот, сыграй жёсткий барабанный бит.",
+      "_comment": "Прямая просьба про бит + негативный контроль (не должно утечь в generate_music). Раньше тут стояло «сыграй renardo бит»: живой прогон 30.08 показал, что Yandex STT слышит «ринардо убит», а LLM принимает это за название трека — четыре цикла без вызова тула и два nudge. Латиница в русской голосовой команде — ненадёжный якорь.",
       "patterns": [
-        "execute_music_code"
+        "execute_music_code|compose_music"
       ]
     },
     {
