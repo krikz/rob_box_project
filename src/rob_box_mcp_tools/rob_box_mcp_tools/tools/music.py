@@ -126,6 +126,39 @@ def _is_dunder(name: str) -> bool:
     return name.startswith("__") and name.endswith("__")
 
 
+# 🔴 FIX (live 30.08): этот список ОБЯЗАН покрывать всю палитру,
+# которую промпт предлагает модели. Раньше он был отдельной копией и
+# разъехался: живой опрос scsynth показал, что 15 предлагаемых синтов
+# на сервере отсутствуют, и девять из них — arpy, pianovel, cs80lead,
+# supersawlead, dirt, moogbass, strangerpulsepad, rave, donk — не
+# покрывались ни прелоадом, ни досылкой отсюда. Модель выбирает такой
+# синт для мелодии, /s_new отбивается, и трек играет без темы: в
+# прогоне 30.08 это был supersawlead. Синты из списка досылались и
+# работали, так что механизм исправен — дырой был именно охват.
+#
+# Порядок: сначала палитра из master_prompt_compact.txt, затем то,
+# что палитра не рекламирует, но чем пользуется execute_music_code.
+CRITICAL_SYNTHS: tuple = (
+    # melody
+    "blip", "arpy", "pianovel", "epiano", "rhpiano", "karp", "sitar",
+    "marimba", "bell", "cs80lead", "supersawlead", "imperialbrass",
+    "strangerarp",
+    # bass
+    "dub", "wobblebass", "fuzz", "dirt", "subbass", "moogbass",
+    "retrobass",
+    # pads
+    "strings", "pads", "ambi", "space", "sinepad", "warmpad",
+    "strangerpulsepad",
+    # brass
+    "brass", "flute", "soprano", "eoboe", "organ", "strangerbrass",
+    # glitch
+    "rave", "donk", "varsaw", "pulse", "tb303",
+    # не в палитре, но используются напрямую
+    "bass", "gong", "pluck", "saw", "square", "faim", "viola",
+    "noise", "scatter", "orient", "creep", "play1", "play2",
+)
+
+
 class MusicManager:
     """Управляет интеграцией с Renardo для LLM-контроля музыки в реальном времени.
 
@@ -491,14 +524,7 @@ class MusicManager:
         import struct as _struct
         import time as _time
 
-        _CRITICAL_SYNTHS = (
-            "pads", "bass", "bell", "blip", "fuzz", "gong", "karp",
-            "dub", "pluck", "space", "epiano", "saw", "varsaw", "square",
-            "ambi", "faim", "marimba", "sitar", "viola", "noise",
-            "scatter", "orient", "creep",
-            "strings", "wobblebass", "brass", "organ", "tb303",
-            "play1", "play2",
-        )
+        _CRITICAL_SYNTHS = CRITICAL_SYNTHS
 
         def _probe_missing(names):
             """Return subset of names whose SynthDef is absent in scsynth."""
