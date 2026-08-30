@@ -1,0 +1,39 @@
+{
+  "name": "renardo_evolve_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "ADR-0022 GATE-1 acceptance для renardo_evolve_suite_v1.json (живой Renardo-движок, НЕ MiniMax).",
+    "AND-semantics: каждый tool в expected_tool_calls должен встретиться хотя бы раз за весь прогон.",
+    "",
+    "expected_tool_calls:",
+    "  execute_music_code — Renardo live-engine заведён хотя бы раз. rn06_renardo_explicit",
+    "    ('сыграй renardo бит') детерминированно уходит в execute_music_code (проверено",
+    "    в music_library_suite_v1 ml07/ml08), поэтому OR-пары из паттернов шагов сюда не тянем.",
+    "",
+    "НЕ включены намеренно:",
+    "  stop_music — rn07_stop допускает Bug F force-stop (код гасит сам) как валидный исход,",
+    "    требовать именно тул значило бы хрупкость (см. комментарий rn07 в сценарии).",
+    "  get_current_time — гейтится per-step паттерном rn04 (get_current_time И [track-mode]).",
+    "  compose_music — альтернативный Renardo-стартер; GATE-1 не поддерживает OR, а",
+    "    execute_music_code гарантирован rn06.",
+    "",
+    "must_not_call:",
+    "  generate_music — негативный контроль: НИ ОДНА фраза сьюта не должна утечь в MiniMax",
+    "    (генерация 40-160с). rn06 явно проверяет «бит не должен утечь в generate_music».",
+    "",
+    "Требование к прогону: environment=test, scenario_file=renardo_evolve_suite_v1.json.",
+    "acceptance_file можно не задавать — харнесс сам найдёт этот файл по auto-discovery."
+  ],
+  "expected_tool_calls": [
+    "execute_music_code"
+  ],
+  "must_not_call": [
+    "generate_music"
+  ],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "volume": 150,
+    "llm": "minimax-m2"
+  }
+}
