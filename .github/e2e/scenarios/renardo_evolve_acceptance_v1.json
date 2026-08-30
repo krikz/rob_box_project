@@ -2,27 +2,42 @@
   "name": "renardo_evolve_acceptance_v1",
   "schema_version": 1,
   "_comment": [
-    "ADR-0022 GATE-1 acceptance для renardo_evolve_suite_v1.json (живой Renardo-движок, НЕ MiniMax).",
-    "AND-semantics: каждый tool в expected_tool_calls должен встретиться хотя бы раз за весь прогон.",
+    "ADR-0022 GATE-1 для renardo_evolve_suite_v1.json. Подхватывается",
+    "автоматически: scenario base 'renardo_evolve_suite_v1' → prefix",
+    "'renardo_evolve' → <prefix>_acceptance_v1.json (см. e2e_voice_test.sh,",
+    "цепочка auto-discovery, issue #1452).",
     "",
-    "expected_tool_calls:",
-    "  execute_music_code — Renardo live-engine заведён хотя бы раз. rn06_renardo_explicit",
-    "    ('сыграй renardo бит') детерминированно уходит в execute_music_code (проверено",
-    "    в music_library_suite_v1 ml07/ml08), поэтому OR-пары из паттернов шагов сюда не тянем.",
+    "ЧТО ЭТОТ SUITE ДОКАЗЫВАЕТ. Живой прогон 30.08 на Vision Pi показал, что",
+    "робот про музыку ГОВОРИТ, а не играет: 21 из 28 циклов LLM закончились",
+    "с tools=[]. Suite ведёт робота по короткой музыкальной сессии — завести",
+    "тему и несколько раз её развить — и на каждом шаге требует РЕАЛЬНОГО",
+    "вызова тула, а не рассказа о нём.",
     "",
-    "НЕ включены намеренно:",
-    "  stop_music — rn07_stop допускает Bug F force-stop (код гасит сам) как валидный исход,",
-    "    требовать именно тул значило бы хрупкость (см. комментарий rn07 в сценарии).",
-    "  get_current_time — гейтится per-step паттерном rn04 (get_current_time И [track-mode]).",
-    "  compose_music — альтернативный Renardo-стартер; GATE-1 не поддерживает OR, а",
-    "    execute_music_code гарантирован rn06.",
+    "ПОЧЕМУ АГРЕГАТ ТОЛЬКО execute_music_code. Верхнеуровневый",
+    "expected_tool_calls — это AND по всему прогону (GATE-1 §5.3): каждый",
+    "перечисленный тул обязан встретиться хотя бы раз, иначе e2e-done не",
+    "ставится. Из Renardo-стартеров детерминирован ровно один —",
+    "execute_music_code на шаге rn06 («сыграй renardo бит»); эта формулировка",
+    "уже закреплена как якорь в music_library_suite_v1 (ml07/ml08). Выбор",
+    "между execute_music_code и compose_music на свободных шагах отдан",
+    "модели: оба реально заводят Renardo, и требовать конкретный означало бы",
+    "красить тест в красный за законное решение. Эти шаги проверяются",
+    "per-step паттерном-альтернативой в самом сценарии.",
     "",
-    "must_not_call:",
-    "  generate_music — негативный контроль: НИ ОДНА фраза сьюта не должна утечь в MiniMax",
-    "    (генерация 40-160с). rn06 явно проверяет «бит не должен утечь в generate_music».",
+    "ПОЧЕМУ generate_music ЗАПРЕЩЁН. Suite про живой Renardo-движок (старт",
+    "~1с). MiniMax generate_music — другой тракт (40-160с, mp3 через",
+    "sound_node) и другая библиотека. Если LLM уводит туда «сыграй тему» —",
+    "это регрессия роутинга, ровно как issue #1403 в обратную сторону.",
+    "Формулировки шагов нарочно без «сочини»/«спой»/«песня»: промпт роутит",
+    "эти слова в generate_music.",
     "",
-    "Требование к прогону: environment=test, scenario_file=renardo_evolve_suite_v1.json.",
-    "acceptance_file можно не задавать — харнесс сам найдёт этот файл по auto-discovery."
+    "ШАГ rn04 — ГЛАВНЫЙ. Посторонний вопрос посреди играющего трека. До",
+    "фикса ветка «музыка в этом цикле не запускалась» вооружала",
+    "music_cleanup, и трек умирал через 0.1с после ответа: лаунж, игравший",
+    "94 секунды, замолчал ровно на «продолжай лабать». Паттерн [track-mode]",
+    "в сценарии — лог-строка, которой TRACK-музыка отказывается умирать от",
+    "чужого хода. Тула для этого нет, поэтому проверка живёт в patterns,",
+    "а не в expected_tool_calls."
   ],
   "expected_tool_calls": [
     "execute_music_code"
@@ -33,7 +48,88 @@
   "voice_provenance": {
     "voice": "anton",
     "tts": "yandex",
+    "stt": "yandex",
     "volume": 150,
     "llm": "minimax-m2"
-  }
+  },
+  "steps": [
+    {
+      "label": "rn01_theme",
+      "voice": "anton",
+      "text": "Робот, сыграй спокойную тему для рассвета на рояле.",
+      "patterns": ["execute_music_code|compose_music"],
+      "acceptance": {
+        "must_not_call": ["generate_music"],
+        "response_max_ms": 45000
+      }
+    },
+    {
+      "label": "rn02_add_bass",
+      "voice": "anton",
+      "text": "Робот, продолжай развивать эту мелодию и добавь баса.",
+      "patterns": ["execute_music_code|compose_music"],
+      "acceptance": {
+        "must_not_call": ["generate_music"],
+        "response_max_ms": 45000,
+        "_comment": "Пара «развива|добав» + «мелоди|бас». Живьём гуард молчал: «user does NOT want music»."
+      }
+    },
+    {
+      "label": "rn03_to_jungle",
+      "voice": "anton",
+      "text": "Робот, переходи в лёгкий джангл.",
+      "patterns": ["execute_music_code|compose_music"],
+      "acceptance": {
+        "must_not_call": ["generate_music"],
+        "response_max_ms": 45000,
+        "_comment": "Жанр вместо существительного: «переход» + «джангл»."
+      }
+    },
+    {
+      "label": "rn04_unrelated_turn",
+      "voice": "anton",
+      "text": "Робот, который час.",
+      "patterns": ["get_current_time", "\\[track-mode\\]"],
+      "acceptance": {
+        "expected_tool_calls": ["get_current_time"],
+        "must_not_call": ["generate_music"],
+        "response_max_ms": 30000,
+        "_comment": "Регрессия «посторонний ход глушит трек». Шаг красный и если робот не спросил время, и если убил музыку."
+      }
+    },
+    {
+      "label": "rn05_keep_labat",
+      "voice": "anton",
+      "text": "Робот, продолжай лабать, мы летим над облаками.",
+      "patterns": ["execute_music_code|compose_music"],
+      "acceptance": {
+        "must_not_call": ["generate_music"],
+        "response_max_ms": 45000,
+        "_comment": "Слэнг без музыкального существительного — пару «глагол+существительное» такое не ловит."
+      }
+    },
+    {
+      "label": "rn06_renardo_explicit",
+      "voice": "anton",
+      "text": "Робот, сыграй renardo бит.",
+      "patterns": ["execute_music_code"],
+      "acceptance": {
+        "expected_tool_calls": ["execute_music_code"],
+        "must_not_call": ["generate_music"],
+        "response_max_ms": 45000,
+        "_comment": "Якорь агрегата GATE-1 + негативный контроль роутинга."
+      }
+    },
+    {
+      "label": "rn07_stop",
+      "voice": "anton",
+      "text": "Робот, останови музыку.",
+      "patterns": ["stop_music|Bug F"],
+      "acceptance": {
+        "must_not_call": ["generate_music"],
+        "response_max_ms": 30000,
+        "_comment": "Годится и вызов stop_music, и код-сайд force-stop (Bug F): оба реально останавливают музыку. Требовать именно тул значило бы делать тест хрупким на поведении, которое сделано устойчивым намеренно."
+      }
+    }
+  ]
 }
