@@ -24,6 +24,7 @@ Owns two families of heuristics:
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -410,4 +411,54 @@ def build_music_retry_prompt(user_input: str) -> str:
         "'трек из библиотеки' — сначала gen_list_library(limit=5), выбери track_id, "
         "затем gen_play_from_library(track_id=...). "
         "Если и сейчас не вызовешь tool — цикл останется пустым."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Issue #992 Bug C' — Renardo code embedded in the spoken reply.
+# Live 30.08: the model composed a Renardo melody and wrote the code into its
+# spoken answer (``p1 >> keys(...)``, ``Clock.bpm = ...``) instead of calling
+# ``execute_music_code(code=...)`` — so TTS read the code aloud. These helpers
+# detect the embedded code lines and build the retry that forces the code back
+# into the tool call.
+# ---------------------------------------------------------------------------
+_RENARDO_CODE_LINE_RE = re.compile(
+    r"^\s*(?:"
+    r"[pdsl][1-9]\s*>>\s*\w+"                  # p1 >> blip([...])
+    r"|Clock\.bpm\s*="                          # Clock.bpm = 120
+    r"|(?:Scale|Root)\.default\s*(?:=|\.set\()"  # Scale.default = / Root.default.set(
+    r")"
+)
+
+
+def extract_renardo_code_lines(text: Optional[str]) -> Optional[str]:
+    """Extract Renardo code lines embedded in a spoken LLM reply.
+
+    Returns the code (matching lines joined by ``\\n``) when ``text`` contains
+    at least one Renardo statement, ``None`` otherwise.
+    """
+    if not text:
+        return None
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if _RENARDO_CODE_LINE_RE.match(line)
+    ]
+    if not lines:
+        return None
+    return "\n".join(lines)
+
+
+def build_renardo_code_retry_prompt(code: str) -> str:
+    """Synthetic retry: the LLM wrote Renardo code into its spoken reply
+    instead of calling ``execute_music_code``. Demand the tool call with the
+    exact code it already composed.
+    """
+    return (
+        "[CRITICAL] Ты сочинил Renardo-код, но вставил его в текст ответа — "
+        "робот произнёс код голосом вместо того, чтобы сыграть музыку. "
+        "❌ НИКОГДА не выводи Renardo-код в speak_text или текстом. "
+        "✅ В ЭТОМ же turn вызови execute_music_code(code=...) с этим кодом:\n"
+        f"{code}\n"
+        "После вызова верни 'done'."
     )
