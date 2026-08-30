@@ -3103,7 +3103,10 @@ class DialogueNode(Node):
                             "🎵 [issue 992] LLM started music — no cleanup "
                             "scheduled for this turn"
                         )
-                elif self._track_mode_music_active:
+                # ``getattr``-guard: тесты строят ``DialogueNode`` через
+                # ``object.__new__`` (см. ``test_barge_in_policy.py``) и
+                # не вызывают ``__init__`` — атрибут может отсутствовать.
+                elif getattr(self, "_track_mode_music_active", False):
                     # 🔴 FIX (live 30.08 15:56): ход не трогал музыку, но
                     # играет TRACK с прошлого хода — он переживает этот ход.
                     # Иначе «продолжай лабать» (или любой вопрос посреди
@@ -3404,7 +3407,10 @@ class DialogueNode(Node):
             return False
         if not spoken:
             return False
-        if self._babble_retry_used:
+        # ``getattr``-guard: тесты строят ``DialogueNode`` через
+        # ``object.__new__`` (см. ``test_issue_1195_tg_source.py`` и др.) и
+        # не вызывают ``__init__`` — атрибут может отсутствовать.
+        if getattr(self, "_babble_retry_used", False):
             return False
         if not self._is_metalanguage_babble(spoken):
             return False
@@ -3492,7 +3498,10 @@ class DialogueNode(Node):
             ``True`` — ретрай отправлен, вызывающий НЕ должен публиковать
             текст в TTS.
         """
-        if self._code_speech_retry_used:
+        # ``getattr``-guard: тесты строят ``DialogueNode`` через
+        # ``object.__new__`` (см. ``test_issue_1343_empty_speak_text.py``) и
+        # не вызывают ``__init__`` — атрибут может отсутствовать.
+        if getattr(self, "_code_speech_retry_used", False):
             return False
         if tools_called:
             # LLM уже вызвала тул в этом цикле — не вмешиваемся.
@@ -3552,7 +3561,10 @@ class DialogueNode(Node):
             ``True`` — ретрай отправлен, вызывающий НЕ должен публиковать
             текст в TTS (иначе юзер услышит неправду, а потом ответ ретрая).
         """
-        if self._action_claim_retry_used:
+        # ``getattr``-guard: тесты строят ``DialogueNode`` через
+        # ``object.__new__`` (см. ``test_issue_1343_empty_speak_text.py``) и
+        # не вызывают ``__init__`` — атрибут может отсутствовать.
+        if getattr(self, "_action_claim_retry_used", False):
             return False
         rule = detect_unbacked_action_claim(
             user_input=user_input,
@@ -3667,7 +3679,10 @@ class DialogueNode(Node):
         # мелодия мягко плывёт». Один промах модели = один ретрай: если
         # гуард уже отправил ретрай в этом ходе, музыкальный молчит —
         # ретрай-тур всё равно будет оценён заново.
-        if self._retry_dispatched_in_turn:
+        # ``getattr``-guard: тесты строят ``DialogueNode`` через
+        # ``object.__new__`` (см. ``test_barge_in_policy.py`` и др.) и
+        # не вызывают ``__init__`` — атрибут может отсутствовать.
+        if getattr(self, "_retry_dispatched_in_turn", False):
             self.get_logger().info(
                 "🎵 [music_guard] в этом ходе ретрай уже отправлен — "
                 "music-гуард пропускает (без двойного дубля ответа)"
@@ -3760,7 +3775,8 @@ class DialogueNode(Node):
         играет X» без вызова тула (e2e renardo_evolve rn03).
         """
         return build_music_retry_prompt(
-            user_input, music_playing=self._track_mode_music_active
+            user_input,
+            music_playing=getattr(self, "_track_mode_music_active", False),
         )
 
     def _build_dj_retry_prompt(self) -> str:
