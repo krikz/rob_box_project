@@ -91,3 +91,49 @@ describe("PanelManager", () => {
     expect(mgr.get(id)?.position.x).not.toBe(999);
   });
 });
+// --- Wave 3.A: раскладка мостика (боковые панели вокруг экрана-стены) ---
+
+describe("PanelManager — custom layout (captain bridge)", () => {
+  it("honours custom angles", () => {
+    const mgr = new PanelManager({
+      defaultTopics: ["camera_oak_depth", "camera_ceiling"],
+      angles: [-75, 75]
+    });
+    mgr.resetLayout();
+    const panels = mgr.list();
+    expect(panels.length).toBe(2);
+    // angle=-75° → x = 2*sin(-75°) ≈ -1.932, z = -2*cos(-75°) ≈ -0.518
+    expect(panels[0].position.x).toBeCloseTo(2 * Math.sin((-75 * Math.PI) / 180), 5);
+    expect(panels[0].position.z).toBeCloseTo(-2 * Math.cos((-75 * Math.PI) / 180), 5);
+    expect(panels[1].position.x).toBeCloseTo(2 * Math.sin((75 * Math.PI) / 180), 5);
+  });
+
+  it("side panels still face the operator", () => {
+    const mgr = new PanelManager({ defaultTopics: ["a", "b"], angles: [-75, 75] });
+    mgr.resetLayout();
+    for (const p of mgr.list()) {
+      const dot = p.facing.x * p.position.x + p.facing.z * p.position.z;
+      expect(dot).toBeLessThan(-0.9);
+    }
+  });
+
+  it("stops at whichever list runs out first", () => {
+    const mgr = new PanelManager({ defaultTopics: ["a", "b", "c"], angles: [-45, 45] });
+    expect(mgr.resetLayout().length).toBe(2);
+  });
+});
+
+describe("captain bridge layout constants", () => {
+  it("side panels do not duplicate the main screen topic", async () => {
+    const { MAIN_SCREEN_TOPIC, SIDE_PANEL_TOPICS, SIDE_PANEL_ANGLES_DEG } = await import(
+      "../src/scene/captain_bridge"
+    );
+    expect(SIDE_PANEL_TOPICS).not.toContain(MAIN_SCREEN_TOPIC);
+    // Один угол на панель — иначе панель молча потеряется.
+    expect(SIDE_PANEL_ANGLES_DEG.length).toBe(SIDE_PANEL_TOPICS.length);
+    // Панели уходят из фронтального сектора, чтобы не перекрывать экран.
+    for (const a of SIDE_PANEL_ANGLES_DEG) {
+      expect(Math.abs(a)).toBeGreaterThan(60);
+    }
+  });
+});

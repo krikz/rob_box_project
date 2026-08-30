@@ -13,7 +13,8 @@
 // Debug-панелей (lil-gui) больше нет — вход только через PIN-форму.
 
 import { Connection } from "./wire/connection";
-import { createCaptainBridge, MAIN_SCREEN_TOPIC } from "./scene/captain_bridge";
+import { createCaptainBridge } from "./scene/captain_bridge";
+import { parseRobotStatus } from "./scene/status_hud";
 import { TeleopFSM } from "./input/teleop_fsm";
 import { createDesktopTeleop } from "./input/desktop_teleop";
 import { createXrTeleop, pollXrInput } from "./input/xr_teleop";
@@ -32,10 +33,9 @@ import { createModeManager, type ClientModeManager } from "./ui/mode_manager";
 const CLIENT_VERSION = "0.1.0";
 const SUBPROTOCOL = "robbox-quest-v1";
 
-const DEFAULT_SUBSCRIBED_TOPICS = [
-  MAIN_SCREEN_TOPIC,
-  "lidar_2d"
-];
+// Не-видео стримы. Список видео-топиков берём у сцены (`videoTopics()`),
+// чтобы подписка не разъезжалась с тем, что она реально умеет показать.
+const NON_VIDEO_TOPICS = ["lidar_2d", "robot_status"];
 
 interface BootstrapOptions {
   url?: string;
@@ -172,7 +172,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             setStatus("CONNECTED", "connected");
             // Phase 2.3: ошибка прячется при восстановлении коннекта.
             watchdog.markConnected();
-            for (const topic of DEFAULT_SUBSCRIBED_TOPICS) {
+            for (const topic of [...bridge.videoTopics(), ...NON_VIDEO_TOPICS]) {
               conn!.subscribe(topic);
             }
             opts.pinOverlay.classList.add("pin-overlay--hidden");
@@ -184,6 +184,8 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             void exitVr();
           } else if (state === "reconnecting") {
             setStatus("RECONNECTING…", "connecting");
+            // Старый RTT после разрыва — враньё: обнуляем до первого pong.
+            bridge.statusHud.setRtt(null);
             // Disconnect-watchdog начинает отсчёт; если > 5s без успеха —
             // покажем error overlay (см. createDisconnectWatchdog).
             watchdog.markDisconnected();
@@ -191,6 +193,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             setStatus("CONNECTING…", "connecting");
           } else if (state === "closed") {
             setStatus("CLOSED", "lost");
+            bridge.statusHud.setRtt(null);
             disconnected = true;
             // "closed" — окончательно (не reconnect). Прямо сейчас
             // показываем overlay без 5-секундного порога.
@@ -204,10 +207,15 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             bridge.lidar.ingestPayload(payload);
             return;
           }
-          if (topic === MAIN_SCREEN_TOPIC) {
-            bridge.mainScreen.ingestJpeg(payload);
+          if (topic === "robot_status") {
+            bridge.setRobotStatus(parseRobotStatus(payload));
             return;
           }
+          // Видео: экран-стена и боковые панели (Wave 3.A).
+          bridge.ingestPanelFrame(topic, payload);
+        },
+        onRtt: (rttMs) => {
+          bridge.statusHud.setRtt(rttMs);
         },
         onError: (code, message) => {
           if (code === "AUTH_FAIL") return;

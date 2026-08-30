@@ -419,3 +419,43 @@ async def test_ping_resets_watchdog(client, fixed_pin):
             await ws.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+async def test_ping_gets_pong_with_echoed_ts(client, fixed_pin):
+    """Wave 3.A: pong с эхом ts_ms — клиент считает RTT по своим часам."""
+    http_client, _server = client
+    ws = await _open_ws(http_client)
+    try:
+        await _send_hello(ws, fixed_pin)
+        welcomed = False
+        deadline = time.monotonic() + 1.0
+        while not welcomed and time.monotonic() < deadline:
+            msg = await ws.receive()
+            if msg.type == WSMsgType.BINARY:
+                ftype, _sid, _payload = decode_frame(msg.data)
+                if ftype == FrameType.WELCOME:
+                    welcomed = True
+        assert welcomed
+
+        sent_ts = 1_700_000_000_123
+        payload = json.dumps({"type": "ping", "ts_ms": sent_ts}).encode("utf-8")
+        await ws.send_bytes(encode_frame(FrameType.JSON_EVENT, 0, payload))
+
+        got_pong = False
+        deadline = time.monotonic() + 1.0
+        while not got_pong and time.monotonic() < deadline:
+            msg = await ws.receive(timeout=0.5)
+            if msg.type == WSMsgType.BINARY:
+                ftype, _sid, payload = decode_frame(msg.data)
+                if ftype == FrameType.JSON_EVENT:
+                    body = json.loads(payload.decode("utf-8"))
+                    if body.get("type") == "pong":
+                        assert body["ts_ms"] == sent_ts
+                        assert body["server_ts_ms"] > 1_700_000_000_000
+                        got_pong = True
+        assert got_pong, "pong not received within 1s"
+    finally:
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass

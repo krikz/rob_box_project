@@ -4,6 +4,7 @@ import * as THREE from "three";
 import { LidarOverlay } from "./lidar_overlay";
 import { VideoPanel } from "./video_panel";
 import { PanelManager } from "./panel_manager";
+import { createStatusHud, type RobotStatus, type StatusHud } from "./status_hud";
 import {
   loadBridgeAssets,
   type BridgeAssetHandle,
@@ -14,6 +15,16 @@ import {
 // исторически названа "camera_rear", хотя это и есть передняя камера
 // (та же, что в Telegram: /camera/camera/color/image_raw).
 export const MAIN_SCREEN_TOPIC = "camera_rear";
+
+// Боковые панели (Wave 3.A). Экран-стена занимает фронт, поэтому на
+// панели уходят стримы, которых на нём нет: OAK-D depth и потолочная
+// камера. `camera_oak_color` сюда не берём — это тот же сенсор, что и
+// на экране-стене (registry: 0x1001 через ROS vs 0x1003 через depthai).
+export const SIDE_PANEL_TOPICS = ["camera_oak_depth", "camera_ceiling"] as const;
+
+// Углы боковых панелей: шире дефолтного полукруга (дизайн §3), чтобы
+// не перекрывать экран-стену во фронтальном секторе обзора.
+export const SIDE_PANEL_ANGLES_DEG = [-75, 75];
 
 export interface CaptainBridgeOptions {
   canvas: HTMLCanvasElement;
@@ -48,6 +59,20 @@ export interface CaptainBridgeHandle {
   setControllerActive(active: boolean): void;
   /** Arm-state HUD на стене (справа вверху): true=ARM, false=DISARM. */
   setArmState(armed: boolean): void;
+  /** Status HUD на стене (слева вверху): battery / Wi-Fi / speed / RTT. */
+  statusHud: StatusHud;
+  /**
+   * Топики, которые сцена умеет показывать — на них клиент подписывается
+   * после WELCOME (main screen + боковые панели).
+   */
+  videoTopics(): string[];
+  /**
+   * Отдать JPEG-кадр панели с этим topic. `false` — панели с таким
+   * топиком в сцене нет (или кадр дропнут, GPU занят).
+   */
+  ingestPanelFrame(topic: string, jpeg: Uint8Array): boolean;
+  /** robot_status (0x1201) → HUD. */
+  setRobotStatus(status: RobotStatus | null): void;
   start(): () => void;
   resize(): void;
   dispose(): void;
@@ -105,13 +130,18 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   origin.position.set(0, 0.005, 0);
   scene.add(origin);
 
-  // LiDAR overlay.
-  const lidar = new LidarOverlay();
+  // LiDAR строится от центра робота = начало координат сцены (пол под
+  // оператором), на реальной высоте плоскости луча. Подробности и причины
+  // настроек видимости — в lidar_overlay.ts.
+  const lidar = new LidarOverlay({ center: { x: 0, y: 0, z: 0 } });
   scene.add(lidar.object);
 
-  // Panel manager + video panels. Дефолтных floating-панелей больше нет —
-  // вместо них один большой экран-стена (см. mainScreen ниже).
-  const panelMgr = new PanelManager({ defaultTopics: [] });
+  // Panel manager + video panels: экран-стена спереди (mainScreen ниже)
+  // + боковые панели с остальными камерами (Wave 3.A).
+  const panelMgr = new PanelManager({
+    defaultTopics: [...SIDE_PANEL_TOPICS],
+    angles: [...SIDE_PANEL_ANGLES_DEG]
+  });
   const videoPanels = new Map<string, VideoPanel>();
 
   // Большой экран-стена перед оператором: на него выводим фронтальную
@@ -172,6 +202,11 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     drawArmHud(armed);
   }
 
+  // Status HUD (Wave 3.A / R8): battery, Wi-Fi, скорость, RTT, режим.
+  // Зеркально ARM-индикатору — левый верх стены-экрана.
+  const statusHud = createStatusHud();
+  scene.add(statusHud.sprite);
+
   // Phase 2.1 environment (loaded lazily via loadEnvironment()).
   let environment: BridgeAssetHandle | null = null;
   const environmentBaseUrl = opts.environmentBaseUrl === null ? null : (opts.environmentBaseUrl ?? "/models/environment/");
@@ -221,6 +256,24 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   function initLayout(): void {
     panelMgr.resetLayout();
     syncPanels();
+  }
+
+  function videoTopics(): string[] {
+    const topics = new Set<string>([MAIN_SCREEN_TOPIC]);
+    for (const s of panelMgr.list()) topics.add(s.topic);
+    return [...topics];
+  }
+
+  function ingestPanelFrame(topic: string, jpeg: Uint8Array): boolean {
+    if (topic === MAIN_SCREEN_TOPIC) return mainScreen.ingestJpeg(jpeg);
+    for (const vp of videoPanels.values()) {
+      if (vp.topic === topic) return vp.ingestJpeg(jpeg);
+    }
+    return false;
+  }
+
+  function setRobotStatus(status: RobotStatus | null): void {
+    statusHud.setStatus(status);
   }
 
   // ---------- render loop ----------
@@ -310,6 +363,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     lidar.dispose();
     environment?.dispose();
     armTexture.dispose();
+    statusHud.dispose();
     renderer.dispose();
   }
 
@@ -327,6 +381,10 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     attachXrSession,
     setControllerActive,
     setArmState,
+    statusHud,
+    videoTopics,
+    ingestPanelFrame,
+    setRobotStatus,
     start,
     resize,
     dispose

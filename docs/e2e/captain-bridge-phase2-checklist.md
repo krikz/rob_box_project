@@ -55,18 +55,34 @@ WebSocket сервер `rob_box_quest` (Phase 1.4), supervisor `avatar_superviso
 
 ---
 
-## 2. Default layout (4 panels)
+## 2. Default layout (экран-стена + боковые panels, Wave 3.A)
 
-- [ ] После успешного bootstrap видно **4 panels** в виде полукруга:
-      -60°, -20°, +20°, +60° (от направления "вперёд").
-- [ ] Каждый panel имеет default topic:
-      - `camera_rear` (-60°),
-      - `camera_oak_color` (-20°),
-      - `camera_oak_depth` (+20°),
-      - `camera_ceiling` (+60°).
+- [ ] Main screen (большая стена впереди, z=-3.9) показывает `camera_rear`
+      (фронтальная OAK-D color через ROS).
+- [ ] Видно **2 боковые panels** на ±75° от направления "вперёд":
+      - `camera_oak_depth` (-75°),
+      - `camera_ceiling` (+75°).
+- [ ] На панелях идёт картинка (а не чёрный прямоугольник с подписью) —
+      требует запущенного CameraProvider на Vision Pi (depthai + /dev/video0).
+      Если камеры нет — панель остаётся чёрной с подписью topic'а.
 - [ ] Panels повёрнуты лицом к пользователю (facing = -position direction).
+- [ ] Panels не перекрывают экран-стену во фронтальном секторе.
 - [ ] Camera на позиции `(0, 1.6, 0)`, смотрит "вперёд" (к main screen).
-- [ ] Main screen (большая стена впереди) показывает `camera_rear` (front).
+
+### Status HUD (Wave 3.A / R8)
+
+- [ ] Слева вверху на стене — 5 строк: `BAT`, `WIFI`, `SPD`, `RTT`, `MODE`.
+- [ ] `WIFI` показывает dBm (на Vision Pi читается `/proc/net/wireless`);
+      прочерк, если файла нет.
+- [ ] `RTT` появляется через ~250 мс после connect (первый pong) и держится
+      в пределах бюджета ADR-0027 §2 (≤ 200 мс комфортно).
+- [ ] `SPD` меняется при движении робота (источник — `/odom`).
+- [ ] `MODE`: `idle` без телеопа → `teleop_active` при ARM+стик →
+      `emergency` после B/Y.
+- [ ] `BAT` — прочерк, пока нет источника заряда (`/device/snapshot` не
+      публикуется, ADR-0010 §4); вольты, если доступен VESC-топик.
+- [ ] После разрыва связи `RTT` сбрасывается в прочерк (не показывает
+      старое значение).
 
 ### WSS status
 
@@ -174,7 +190,7 @@ WebSocket сервер `rob_box_quest` (Phase 1.4), supervisor `avatar_superviso
 ## 7. CI green
 
 - [ ] `npm run typecheck` — exit 0, no errors.
-- [ ] `npm test` — 142/142 PASS.
+- [ ] `npm test` — 182/182 PASS (Wave 3.A).
 - [ ] `npm run gltf:verify` — 6/6 assets compliant.
 - [ ] `npm run build` — exit 0, размер JS ≤ 600 KB (warning), CSS ≤ 10 KB.
 - [ ] PR `z-frontend/<card-id>-phase2-integration` → `feature/avatar`.

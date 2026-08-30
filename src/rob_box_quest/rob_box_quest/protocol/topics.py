@@ -79,11 +79,19 @@ def encode_robot_status(
     vel_linear: float,
     vel_angular: float,
     ts_ms: int,
+    battery_v: float | None = None,
 ) -> bytes:
-    """Encode robot_status (1 Hz) → MessagePack."""
+    """Encode robot_status (1 Hz) → MessagePack.
+
+    ``battery_v`` — аддитивное поле (meta-quest-api.md §11.2): процентов
+    заряда на роботе сегодня нет ни от одного источника, а напряжение с
+    VESC есть. ``None`` кладём явно, чтобы клиент отличал «нет источника»
+    от «0 вольт».
+    """
     return msgpack.packb(
         {
             "battery_pct": int(battery_pct),
+            "battery_v": float(battery_v) if battery_v is not None else None,
             "wifi_rssi": int(wifi_rssi),
             "mode": str(mode),
             "vel_linear": float(vel_linear),

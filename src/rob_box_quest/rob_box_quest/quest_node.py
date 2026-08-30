@@ -48,10 +48,12 @@ from .core.safety import Watchdog
 from .core.teleop import TeleopController
 from .server.session import WATCHDOG_TIMEOUT_S as SESSION_WATCHDOG_TIMEOUT_S
 from .server.ws_server import NoOpBridge, WSSServer, build_app
+from .streams.battery import parse_battery_json, voltage_to_pct
 from .streams.lidar import scan_to_payload
 from .streams.provider import CameraFrame, CameraProvider
 from .streams.registry import STREAM_CATALOG
 from .streams.status import StatusAggregator
+from .streams.wifi import read_wifi_rssi
 
 log = logging.getLogger(__name__)
 
@@ -352,6 +354,18 @@ class QuestBridge:
         msg.angular.z = float(twist.angular_z)
         self._pub_quest.publish(msg)
 
+    def current_mode(self, now_monotonic: float) -> str:
+        """Режим для robot_status HUD: emergency > teleop_active > idle.
+
+        ``TeleopController.tick`` — чистое чтение (не публикует), поэтому
+        его можно спросить «есть ли свежая команда» из status-таймера.
+        """
+        if self._teleop.is_emergency:
+            return "emergency"
+        if self._ws_server.get_active_sessions() == 0:
+            return "idle"
+        return "teleop_active" if self._teleop.tick(now_monotonic) is not None else "idle"
+
     def watchdog_check(self, now_monotonic: float) -> bool:
         """True если watchdog trip → safe stop нужен."""
         return self._watchdog.tripped(now_monotonic)
@@ -400,8 +414,23 @@ class QuestNode(Node):
         self.declare_parameter("ws_host", "0.0.0.0")
         self.declare_parameter("ws_port", 8765)
         self.declare_parameter("log_pin", True)
+        # Wave 3.A / R8 — live-телеметрия для HUD мостика.
+        # Топик JSON-снапшота с батареей (std_msgs/String). Сегодня его никто
+        # не публикует (ADR-0010 §4 — firmware сенсор-борда не готов), поэтому
+        # имя вынесено в параметр: появится источник — хватит смены топика.
+        self.declare_parameter("battery_json_topic", "/device/snapshot")
+        # Границы пакета для перевода вольт → проценты. 0 = не переводить
+        # (HUD покажет вольты). Угадывать химию/число банок нельзя.
+        self.declare_parameter("battery_voltage_empty", 0.0)
+        self.declare_parameter("battery_voltage_full", 0.0)
+        # Wi-Fi RSSI читаем локально на Vision Pi — это тот же линк, по
+        # которому идёт WSS до Quest. Пустое имя = первый интерфейс в таблице.
+        self.declare_parameter("wifi_iface", "")
 
         log_pin = bool(self.get_parameter("log_pin").value)
+        self._battery_v_empty = float(self.get_parameter("battery_voltage_empty").value)
+        self._battery_v_full = float(self.get_parameter("battery_voltage_full").value)
+        self._wifi_iface = str(self.get_parameter("wifi_iface").value) or None
 
         # Publishers (см. twist_mux.yaml: priority 40 quest, 255 emergency).
         _RE = QoSProfile(
@@ -449,6 +478,23 @@ class QuestNode(Node):
             self._on_camera_image,
             _CAMERA_QOS,
         )
+        # Батарея (Wave 3.A): JSON-снапшот сенсор-борда + VESC-напряжение.
+        # vesc_msgs есть не в каждом образе (пакет собирается на Main Pi),
+        # поэтому подписка опциональная — без него остаётся JSON-путь.
+        battery_topic = str(self.get_parameter("battery_json_topic").value)
+        self._battery_json_sub = self.create_subscription(String, battery_topic, self._on_battery_json, _RE)
+        self._vesc_state_sub = None
+        try:
+            from vesc_msgs.msg import VescStateStamped  # noqa: WPS433
+
+            self._vesc_state_sub = self.create_subscription(
+                VescStateStamped,
+                "/sensors/motor_state/front_left",
+                self._on_vesc_state,
+                _RE,
+            )
+        except ImportError:
+            self.get_logger().info("vesc_msgs unavailable — battery voltage from JSON snapshot only")
         self._latest_odom: Optional[Odometry] = None
         self._status = StatusAggregator()
 
@@ -552,8 +598,33 @@ class QuestNode(Node):
             self.bridge.publish_emergency()
             self.bridge.emergency_stop()
 
+    def _on_battery_json(self, msg: String) -> None:
+        """JSON-снапшот сенсор-борда (std_msgs/String) → battery_pct / battery_v."""
+        import json as _json
+
+        try:
+            data = _json.loads(msg.data)
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        pct, volts = parse_battery_json(data)
+        if pct is None:
+            pct = voltage_to_pct(volts, self._battery_v_empty, self._battery_v_full)
+        self._status.update_battery(pct=pct, volts=volts)
+
+    def _on_vesc_state(self, msg: Any) -> None:
+        """VESC state → напряжение пакета (единственный живой источник)."""
+        volts = getattr(getattr(msg, "state", None), "voltage_input", None)
+        if volts is None:
+            return
+        pct = voltage_to_pct(float(volts), self._battery_v_empty, self._battery_v_full)
+        self._status.update_battery(pct=pct, volts=float(volts))
+
     def _on_status_timer(self) -> None:
         """1 Hz robot_status broadcast."""
+        self._status.update_wifi(read_wifi_rssi(iface=self._wifi_iface))
+        self._status.set_mode(self.bridge.current_mode(time.monotonic()))
         try:
             payload = self._status.payload()
             self.bridge.publish_frame("robot_status", payload)

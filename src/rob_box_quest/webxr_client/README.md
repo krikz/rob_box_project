@@ -22,17 +22,22 @@ WSS protocol contract: [`docs/architecture/meta-quest-api.md`](../../../docs/arc
 - **Two-mode entry**: PIN form → if browser supports `immersive-vr`, auto-enter
   WebXR; otherwise stay in desktop fallback (WASD + 2D render).
 - **Scene graph**: Captain Bridge environment (5 CC0 GLB + HDR, ~70 KB total),
-  4 floating video panels (semi-circle), LiDAR overlay, main wall-screen for
-  front camera.
+  main wall-screen for the front camera, side video panels at ±75°
+  (`camera_oak_depth`, `camera_ceiling`), LiDAR overlay, ARM + status HUDs.
 - **Teleop**: XR controllers (oculus-touch-v2 mapping) — left stick movement,
   right stick click arm/disarm toggle, B/Y emergency stop. Desktop fallback
   WASD + Space + E. Arm-state visible in HUD on the front wall.
 - **Voice PTT**: left grip = robot_voice (STT→LLM→TTS via supervisor),
   right grip = radio (passthrough to robot speaker). Microphone is shared
   between modes; PTT is edge-triggered.
-- **WSS protocol**: `robbox-quest-v1` subprotocol. Streams (video/LiDAR),
-  teleop, voice mode, TTS picker (`list_voices` / `set_voice` /
-  `preview_voice`), and panel routing (`set_panel_topic`).
+- **Status HUD** (Wave 3.A / R8): battery (percent, or volts when only VESC
+  voltage is available), Wi-Fi RSSI, speed, ping/pong RTT, robot mode.
+- **WSS protocol**: `robbox-quest-v1` subprotocol. Implemented: streams
+  (video / LiDAR / `robot_status`), teleop, `voice_mode`, voice PTT,
+  `stream_list` / `stream_select`, ping/pong. **Not implemented** (types
+  only in `wire/messages.ts`): TTS picker (`list_voices` / `set_voice` /
+  `preview_voice`), `set_panel_topic`, `admin_logs` — see
+  `docs/plans/2026-08-30-captain-bridge-feature-audit.md`.
 
 ### Phase 2.3 UX overlays (NEW)
 
@@ -49,14 +54,16 @@ Three DOM-overlay modules in `src/ui/`:
 
 ### Default layout
 
-При старте клиент создаёт **4 panels** на полукруге радиуса 2.0 м:
+Экран-стена впереди + боковые panels на радиусе 2.0 м:
 
-| Angle | Default topic | Назначение |
+| Где | Topic | Назначение |
 |---|---|---|
-| -60° | `camera_rear` | rear-view камера |
-| -20° | `camera_oak_color` | OAK-D RGB |
-| +20° | `camera_oak_depth` | OAK-D depth |
-| +60° | `camera_ceiling` | ceiling (overhead) |
+| стена (z=-3.9) | `camera_rear` | фронтальная OAK-D color (через ROS) |
+| -75° | `camera_oak_depth` | OAK-D depth (depthai) |
+| +75° | `camera_ceiling` | потолочная USB-камера |
+
+`camera_oak_color` (0x1003) не дублируется на панель — это тот же сенсор,
+что и на экране-стене.
 
 Camera default: `pos=(0, 1.6, 0)`, `look forward` (в сторону main screen).
 

@@ -42,6 +42,8 @@ export interface ConnectionListeners {
   onStateChange?: (state: ConnectionState, info?: string) => void;
   onBinaryFrame?: (streamId: number, payload: Uint8Array) => void;
   onJsonEvent?: (event: JsonEvent) => void;
+  /** Свежий round-trip из ping/pong — для HUD (Wave 3.A). */
+  onRtt?: (rttMs: number) => void;
   onStreamList?: (items: StreamMeta[]) => void;
   onWelcome?: (sessionId: string, serverTimeMs: number) => void;
   onError?: (code: string, message: string) => void;
@@ -88,6 +90,8 @@ export class Connection {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempt = 0;
   private closedByUser = false;
+  // Последний измеренный round-trip (ping → pong), null пока pong не пришёл.
+  private rttMs: number | null = null;
   // stream_id → topic, присылается в subscribe_ack.
   private streamIdToTopic = new Map<number, string>();
   // topic → stream_id (для дедупа повторных SUBSCRIBE).
@@ -115,6 +119,11 @@ export class Connection {
 
   getState(): ConnectionState {
     return this.state;
+  }
+
+  /** Последний RTT в мс (ping → pong), `null` пока pong не приходил. */
+  getRttMs(): number | null {
+    return this.rttMs;
   }
 
   // map доступен только для чтения (снаружи — для панелей / lidar).
@@ -309,7 +318,15 @@ export class Connection {
       return;
     }
     const type = (ev as { type?: string }).type;
-    if (type === "subscribe_ack") {
+    if (type === "pong") {
+      // RTT считаем по своим часам: сервер эхом возвращает наш ts_ms
+      // (meta-quest-api.md §6/§7), поэтому рассинхрон часов не мешает.
+      const sent = (ev as { ts_ms?: number }).ts_ms;
+      if (typeof sent === "number" && Number.isFinite(sent)) {
+        this.rttMs = Math.max(0, Date.now() - sent);
+        this.listeners.onRtt?.(this.rttMs);
+      }
+    } else if (type === "subscribe_ack") {
       const ack = ev as { topic: string; stream_id: number; quality?: string };
       this.streamIdToTopic.set(ack.stream_id, ack.topic);
       this.topicToStreamId.set(ack.topic, ack.stream_id);

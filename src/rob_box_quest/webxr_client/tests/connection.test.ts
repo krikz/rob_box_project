@@ -280,3 +280,63 @@ describe("Connection handshake (loopback)", () => {
     expect(states).toContain("closed");
   });
 });
+describe("Connection RTT (ping → pong)", () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    FakeWebSocket.nextInstance = null;
+  });
+
+  function connect(onRtt: (ms: number) => void) {
+    const server = FakeWebSocket.makeServer();
+    const client = FakeWebSocket.reserveClient();
+    FakeWebSocket.link(client, server);
+    const conn = new Connection(
+      {
+        url: "ws://test",
+        clientVersion: "0.1.0",
+        pin: "123456",
+        autoReconnect: false,
+        pingIntervalMs: 100_000,
+        WebSocketCtor: FakeWebSocket as unknown as new (url: string, protocols?: string | string[]) => WebSocket
+      },
+      { onRtt }
+    );
+    conn.connect();
+    client.dispatchOpen();
+    server.dispatchOpen();
+    return { conn, server };
+  }
+
+  it("measures RTT from the echoed ts_ms", async () => {
+    const seen: number[] = [];
+    const { conn, server } = connect((ms) => seen.push(ms));
+    expect(conn.getRttMs()).toBeNull();
+
+    // Сервер эхом возвращает наш ts_ms (meta-quest-api.md §6/§7).
+    const sentTs = Date.now() - 42;
+    server.send(
+      encodeJsonFrame(FrameType.JSON_EVENT, 0, {
+        type: "pong",
+        ts_ms: sentTs,
+        server_ts_ms: Date.now()
+      }) as unknown as ArrayBuffer
+    );
+
+    await new Promise<void>((r) => queueMicrotask(() => queueMicrotask(() => r())));
+    expect(seen.length).toBe(1);
+    expect(seen[0]).toBeGreaterThanOrEqual(42);
+    expect(seen[0]).toBeLessThan(2000);
+    expect(conn.getRttMs()).toBe(seen[0]);
+  });
+
+  it("ignores a pong without a usable ts_ms", async () => {
+    const seen: number[] = [];
+    const { conn, server } = connect((ms) => seen.push(ms));
+    server.send(
+      encodeJsonFrame(FrameType.JSON_EVENT, 0, { type: "pong" }) as unknown as ArrayBuffer
+    );
+    await new Promise<void>((r) => queueMicrotask(() => queueMicrotask(() => r())));
+    expect(seen).toEqual([]);
+    expect(conn.getRttMs()).toBeNull();
+  });
+});

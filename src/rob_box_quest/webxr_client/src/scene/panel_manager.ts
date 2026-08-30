@@ -27,7 +27,16 @@ export interface PanelManagerOptions {
   panelHeight?: number;  // 0.7 м
   panelYOffset?: number; // 1.6 (высота глаз — см. дизайн §3)
   defaultTopics?: string[]; // порядок по умолчанию
+  /**
+   * Углы (в градусах) вокруг направления «вперёд» для resetLayout.
+   * Дефолт — полукруг из дизайна §3. Мостик передаёт свои: экран-стена
+   * занимает фронт, поэтому боковые панели уезжают к ±75°.
+   */
+  angles?: number[];
 }
+
+/** Углы дефолтной раскладки (дизайн §3, 4 панели полукругом). */
+export const DEFAULT_PANEL_ANGLES_DEG = [-60, -20, 20, 60];
 
 export const DEFAULT_VIDEO_TOPICS = [
   "camera_rear",
@@ -47,7 +56,8 @@ export class PanelManager {
       panelWidth: opts.panelWidth ?? 1.2,
       panelHeight: opts.panelHeight ?? 0.7,
       panelYOffset: opts.panelYOffset ?? 1.6,
-      defaultTopics: opts.defaultTopics ?? [...DEFAULT_VIDEO_TOPICS]
+      defaultTopics: opts.defaultTopics ?? [...DEFAULT_VIDEO_TOPICS],
+      angles: opts.angles ?? [...DEFAULT_PANEL_ANGLES_DEG]
     };
   }
 
@@ -61,7 +71,7 @@ export class PanelManager {
     // Углы: -60, -20, +20, +60 от направления "вперёд" (ось -Z в three.js,
     // но для layout-store нам нужен угол вокруг Y). Используем соглашение:
     // angle=0 → прямо перед пользователем (x=0, z=-radius).
-    const anglesDeg = [-60, -20, 20, 60];
+    const anglesDeg = this.opts.angles;
     for (let i = 0; i < topics.length && i < anglesDeg.length; i += 1) {
       const a = (anglesDeg[i] * Math.PI) / 180;
       const pos = {

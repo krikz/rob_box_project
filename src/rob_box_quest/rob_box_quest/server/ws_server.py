@@ -525,6 +525,18 @@ class WSSServer:
             # иначе при простое (без teleop_twist) watchdog ложно триггерит
             # emergency_stop и блокирует телеоп навсегда.
             self.bridge.feed_client_alive()
+            # pong с эхом клиентского ts_ms (meta-quest-api.md §6/§7): клиент
+            # считает RTT по своим часам, без синхронизации с сервером.
+            await self._send(
+                ws,
+                FrameType.JSON_EVENT,
+                0,
+                {
+                    "type": "pong",
+                    "ts_ms": payload_obj.get("ts_ms"),
+                    "server_ts_ms": int(time.time() * 1000),
+                },
+            )
 
     # Управление _on_json_cmd перенесено в новый метод выше (см. Phase 1.4):
     # stream_select / stream_list + teleop_twist / stop_emergency.
