@@ -19,26 +19,7 @@ if TYPE_CHECKING:
     from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
     from rcl_interfaces.srv import GetParameters, SetParameters
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
-
-
-def _wait_future(future, timeout_sec: float) -> bool:
-    """Wait for an rclpy Future without touching the executor.
-
-    ``rclpy.spin_until_future_complete()`` is UNSAFE to call from within a
-    callback that is already executing under ``MultiThreadedExecutor`` — it
-    internally tries to add the node to a *new* executor, which corrupts the
-    existing one and silently breaks all subsequent subscription callbacks.
-
-    This helper attaches a ``done_callback`` to the future so that a plain
-    ``threading.Event`` is set when the future completes.  The calling thread
-    blocks on the event, leaving the ROS 2 executor completely undisturbed.
-
-    Returns True if the future completed within *timeout_sec*, False otherwise.
-    """
-    event = threading.Event()
-    future.add_done_callback(lambda _: event.set())
-    return event.wait(timeout=timeout_sec)
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, wait_future
 
 
 class SetVolumeTool(MCPTool):
@@ -92,7 +73,7 @@ class SetVolumeTool(MCPTool):
         get_request = GetParameters.Request()
         get_request.names = ["volume_db"]
         future = self.get_params_client.call_async(get_request)
-        if not _wait_future(future, timeout_sec=2.0):
+        if not wait_future(future, timeout_sec=2.0):
             return MCPToolResult(success=False, error="Не удалось получить текущую громкость")
 
         if future.result() is None:
@@ -133,7 +114,7 @@ class SetVolumeTool(MCPTool):
         set_request.parameters = [param]
 
         future = self.set_params_client.call_async(set_request)
-        if not _wait_future(future, timeout_sec=2.0):
+        if not wait_future(future, timeout_sec=2.0):
             return MCPToolResult(success=False, error="Не удалось установить громкость (timeout)")
 
         if future.result() is None or not future.result().results[0].successful:
@@ -197,7 +178,7 @@ class SetPitchTool(MCPTool):
         get_request = GetParameters.Request()
         get_request.names = ["pitch_shift"]
         future = self.get_params_client.call_async(get_request)
-        if not _wait_future(future, timeout_sec=2.0):
+        if not wait_future(future, timeout_sec=2.0):
             return MCPToolResult(success=False, error="Не удалось получить текущий pitch")
 
         if future.result() is None:
@@ -235,7 +216,7 @@ class SetPitchTool(MCPTool):
         set_request.parameters = [param]
 
         future = self.set_params_client.call_async(set_request)
-        if not _wait_future(future, timeout_sec=2.0):
+        if not wait_future(future, timeout_sec=2.0):
             return MCPToolResult(success=False, error="Не удалось установить pitch (timeout)")
 
         if future.result() is None or not future.result().results[0].successful:
@@ -297,7 +278,7 @@ class SetSpeedTool(MCPTool):
         get_request = GetParameters.Request()
         get_request.names = ["yandex_speed"]
         future = self.get_params_client.call_async(get_request)
-        if not _wait_future(future, timeout_sec=2.0):
+        if not wait_future(future, timeout_sec=2.0):
             return MCPToolResult(success=False, error="Не удалось получить текущую скорость")
 
         if future.result() is None:
@@ -335,7 +316,7 @@ class SetSpeedTool(MCPTool):
         set_request.parameters = [param]
 
         future = self.set_params_client.call_async(set_request)
-        if not _wait_future(future, timeout_sec=2.0):
+        if not wait_future(future, timeout_sec=2.0):
             return MCPToolResult(success=False, error="Не удалось установить скорость (timeout)")
 
         if future.result() is None or not future.result().results[0].successful:

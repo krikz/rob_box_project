@@ -12,6 +12,40 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 from enum import Enum
 import json
+import threading
+
+
+# ---------------------------------------------------------------------------
+# Ожидание rclpy-future
+# ---------------------------------------------------------------------------
+
+
+def wait_future(future, timeout_sec: float) -> bool:
+    """Wait for an rclpy Future without touching the executor.
+
+    ``rclpy.spin_until_future_complete()`` is UNSAFE to call from within a
+    callback that is already executing under ``MultiThreadedExecutor`` — it
+    internally tries to add the node to a *new* executor, which corrupts the
+    existing one and silently breaks all subsequent subscription callbacks.
+
+    This helper attaches a ``done_callback`` to the future so that a plain
+    ``threading.Event`` is set when the future completes.  The calling thread
+    blocks on the event, leaving the ROS 2 executor completely undisturbed.
+
+    Returns True if the future completed within *timeout_sec*, False otherwise.
+
+    Живёт здесь, а не в ``tools/``: хелпер нужен трём модулям тулов
+    (``navigation``, ``system``, ``mapping``), а ``base`` — единственный
+    общий для них модуль, который при этом ROS-free. Тащить сюда
+    ``rclpy`` нельзя: каталог тулов собирается через AST именно потому,
+    что ``tools/navigation.py`` тянет ``rclpy.action`` на импорте
+    (``tools/gen_tool_catalog.py``). Раньше это были три дословные копии,
+    причём в ``mapping.py`` докстринг был ужат до одной строки и причина
+    запрета ``spin_until_future_complete`` там терялась (карточка W6-1).
+    """
+    event = threading.Event()
+    future.add_done_callback(lambda _: event.set())
+    return event.wait(timeout=timeout_sec)
 
 
 class ToolExecutionType(Enum):

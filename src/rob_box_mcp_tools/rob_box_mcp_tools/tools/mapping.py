@@ -11,7 +11,6 @@ mapping.py - Инструменты для управления картогра
 """
 
 from typing import List, Optional, TYPE_CHECKING
-import threading
 
 try:
     from rclpy.callback_groups import ReentrantCallbackGroup
@@ -24,14 +23,7 @@ if TYPE_CHECKING:
     from ..waypoint_store import WaypointStore
     from ..mapping_state import MappingState
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
-
-
-def _wait_future(future, timeout_sec: float) -> bool:
-    """Wait for an rclpy Future without disturbing the active executor."""
-    event = threading.Event()
-    future.add_done_callback(lambda _: event.set())
-    return event.wait(timeout=timeout_sec)
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, wait_future
 
 
 def _create_service_client(node, srv_type, srv_name, callback_group):
@@ -122,7 +114,7 @@ class StartMappingTool(MCPTool):
         from std_srvs.srv import Empty
         request = Empty.Request()
         future = self.set_mode_mapping_client.call_async(request)
-        if not _wait_future(future, timeout_sec=10.0):
+        if not wait_future(future, timeout_sec=10.0):
             return MCPToolResult(success=False, error="Таймаут ожидания set_mode_mapping")
         self.log_info("Режим mapping активирован")
 
@@ -138,7 +130,7 @@ class StartMappingTool(MCPTool):
         req.database_path = "/maps/rtabmap.db"
         req.clear = bool(new_location)
         future = self.load_database_client.call_async(req)
-        if not _wait_future(future, timeout_sec=20.0):
+        if not wait_future(future, timeout_sec=20.0):
             return MCPToolResult(success=False, error="Таймаут ожидания load_database")
         action = "очищена и перезагружена" if new_location else "перезагружена"
         self.log_info(f"База данных {action}")
@@ -300,7 +292,7 @@ class FinishMappingTool(MCPTool):
             from std_srvs.srv import Empty
             request = Empty.Request()
             future = self.set_mode_localization_client.call_async(request)
-            if _wait_future(future, timeout_sec=10.0):
+            if wait_future(future, timeout_sec=10.0):
                 self.log_info("Режим localization активирован")
             else:
                 self.log_warning("⚠️ Таймаут ожидания переключения в localization mode")
@@ -309,7 +301,7 @@ class FinishMappingTool(MCPTool):
 
         if self.publish_map_client is not None and self.publish_map_client.service_is_ready():
             future = self.publish_map_client.call_async(self._publish_map_request)
-            if _wait_future(future, timeout_sec=15.0):
+            if wait_future(future, timeout_sec=15.0):
                 self.log_info("Опубликована occupancy grid карта")
             else:
                 self.log_warning("⚠️ Таймаут ожидания publish_map")
@@ -459,7 +451,7 @@ class OptimizeMapTool(MCPTool):
                 continue
 
             future = client.call_async(request)
-            if not _wait_future(future, timeout_sec=timeout_sec) or future.result() is None:
+            if not wait_future(future, timeout_sec=timeout_sec) or future.result() is None:
                 self.log_warning(f"⚠️ {svc_name} не завершился успешно")
                 failed.append(svc_name)
                 continue

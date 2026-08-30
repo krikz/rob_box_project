@@ -299,7 +299,8 @@ flowchart TD
 - `/mcp/execute` подписан с `ReentrantCallbackGroup` — иначе ActionClient response callback
   не может выполниться → ложный timeout «Nav2 не ответил».
 - Не использовать `rclpy.spin_until_future_complete()` внутри callback
-  `MultiThreadedExecutor` — ломает executor. Используется `_wait_future` (threading.Event).
+  `MultiThreadedExecutor` — ломает executor. Используется `wait_future` (threading.Event),
+  одно объявление на пакет: `rob_box_mcp_tools/base.py`.
 
 ### 6.3. Memory leaks
 
@@ -333,7 +334,8 @@ flowchart TD
 - **ActionClient + MutuallyExclusiveCallbackGroup** → deadlock «Nav2 не ответил».
   Фикс: `/mcp/execute` подписан с `ReentrantCallbackGroup` (mcp_server.py:154).
 - **`spin_until_future_complete` внутри callback** → ломает executor, все подписки замолкают.
-  Фикс: `_wait_future` (navigation.py, system.py) — threading.Event + done_callback.
+  Фикс: `wait_future` (`rob_box_mcp_tools/base.py`; зовут navigation.py, system.py,
+  mapping.py) — threading.Event + done_callback.
 - **Async executor LONG задач** — `InterruptibleTask.cancel()` с interrupt_event;
   если задача игнорирует cancel, она продолжит в фоне — не блокирует цикл.
 - **Barge-in / отмена LLM stream** — при новом STT во время ответа DialogueNode
