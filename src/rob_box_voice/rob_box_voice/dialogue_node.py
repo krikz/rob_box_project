@@ -3108,9 +3108,12 @@ class DialogueNode(Node):
                     # играет TRACK с прошлого хода — он переживает этот ход.
                     # Иначе «продолжай лабать» (или любой вопрос посреди
                     # трека) глушил композицию через 0.1 с после ответа.
+                    # ASCII-тег [track-mode] — чтобы e2e мог грепнуть его
+                    # без кириллицы (grep -E в check_patterns бежит по ssh,
+                    # где локаль не гарантирована).
                     self.get_logger().info(
-                        "🎵 TRACK играет с прошлого хода — cleanup НЕ "
-                        "вооружаем (живёт до stop_music/watchdog)"
+                        "🎵 [track-mode] TRACK играет с прошлого хода — "
+                        "cleanup НЕ вооружаем (живёт до stop_music/watchdog)"
                     )
                 elif not was_dj_auto and not self._pending_music_cleanup:
                     self._pending_music_cleanup = True
