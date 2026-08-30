@@ -75,6 +75,18 @@ export class VideoPanel {
     geom.dispose();
   }
 
+  /**
+   * Подсветка при наведении луча (interaction/pointer). MeshBasicMaterial
+   * умножает map на color, поэтому «подсветка» — это лёгкий голубой тон,
+   * а выбранная панель светится сильнее.
+   */
+  setHighlight(state: "none" | "hover" | "selected"): void {
+    const mat = this.mesh.material as THREE.MeshBasicMaterial;
+    if (state === "hover") mat.color.setHex(0xbfe6ff);
+    else if (state === "selected") mat.color.setHex(0x8fd4ff);
+    else mat.color.setHex(0xffffff);
+  }
+
   /** Подпись с topic в углу панели (для UI/отладки). */
   setLabel(text: string): void {
     if (!this.showLabel) return;

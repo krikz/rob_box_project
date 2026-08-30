@@ -117,11 +117,17 @@ export class PanelManager {
     return true;
   }
 
-  move(id: PanelId, x: number, z: number): boolean {
+  /**
+   * Переставить панель. `y` опционален: драг лучом (interaction/pointer)
+   * катает панель по сфере вокруг оператора и меняет высоту тоже, а
+   * старые вызовы (раскладка) двигают только по полу.
+   */
+  move(id: PanelId, x: number, z: number, y?: number): boolean {
     const p = this.panels.get(id);
     if (!p) return false;
     p.position.x = x;
     p.position.z = z;
+    if (y !== undefined) p.position.y = y;
     p.facing.x = -x;
     p.facing.z = -z;
     const len = Math.hypot(p.facing.x, p.facing.z);

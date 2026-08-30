@@ -20,6 +20,8 @@ import { createDesktopTeleop } from "./input/desktop_teleop";
 import { createXrTeleop, pollXrInput } from "./input/xr_teleop";
 import { createVoiceCapture } from "./input/voice_capture";
 import { createXrBootstrap, type XrBootstrap } from "./xr_bootstrap";
+import { createDesktopPointer } from "./interaction/desktop_pointer";
+import { xrPointerRay } from "./interaction/xr_pointer";
 import { createLoadingScreen } from "./ui/loading_screen";
 import {
   createErrorOverlay,
@@ -84,6 +86,10 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   // fallback floor + grid stays in place if the GLB fetch fails.
   // loading.watch прячет overlay при успехе или показывает ошибку при сбое.
   void loading.watch(bridge.loadEnvironment(), "Loading environment…");
+
+  // Указатель: на десктопе — мышь через камеру, в VR — луч контроллера
+  // (см. XR-цикл ниже). Панели наводятся, выбираются и перетаскиваются.
+  const desktopPointer = createDesktopPointer({ canvas: opts.canvas, camera: bridge.camera });
 
   const fsm = new TeleopFSM();
   const desktopTeleop = createDesktopTeleop({ fsm });
@@ -334,6 +340,9 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       lastTickTs = now;
       tickTeleop();
     }
+    // В immersive-vr этот цикл заморожен, указатель там тикает из
+    // XR-кадра (ниже) — здесь только desktop-мышь.
+    if (!xr.isActive()) bridge.updatePointer(desktopPointer.poll());
     requestAnimationFrame(teleopLoop);
   }
   requestAnimationFrame(teleopLoop);
@@ -354,9 +363,14 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       // window.requestAnimationFrame в immersive-vr заморожен браузером,
       // поэтому teleop тикаем в XR-кадровом цикле (session.requestAnimationFrame).
       xrRafSession = session;
-      const xrFrame = (_time: DOMHighResTimeStamp, _frame: XRFrame): void => {
+      const refSpace = await session.requestReferenceSpace("local-floor").catch(() =>
+        session.requestReferenceSpace("local")
+      );
+      const xrFrame = (_time: DOMHighResTimeStamp, frame: XRFrame): void => {
         if (!xr.isActive()) return;
         tickTeleop();
+        // Луч указателя — из targetRaySpace активного контроллера.
+        bridge.updatePointer(refSpace ? xrPointerRay(frame, refSpace, xrInputSources) : null);
         xrRafId = session.requestAnimationFrame(xrFrame);
       };
       xrRafId = session.requestAnimationFrame(xrFrame);
@@ -413,6 +427,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
         xrRafSession.cancelAnimationFrame(xrRafId);
       }
       xrTeleopHandle?.destroy();
+      desktopPointer.destroy();
       voiceCapture.stop();
       conn?.close();
       bridge.dispose();

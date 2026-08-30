@@ -5,6 +5,7 @@ import { LidarOverlay } from "./lidar_overlay";
 import { VideoPanel } from "./video_panel";
 import { PanelManager } from "./panel_manager";
 import { createStatusHud, type RobotStatus, type StatusHud } from "./status_hud";
+import { PointerSystem, type PointerRay } from "../interaction/pointer";
 import {
   loadBridgeAssets,
   type BridgeAssetHandle,
@@ -73,6 +74,13 @@ export interface CaptainBridgeHandle {
   ingestPanelFrame(topic: string, jpeg: Uint8Array): boolean;
   /** robot_status (0x1201) → HUD. */
   setRobotStatus(status: RobotStatus | null): void;
+  /**
+   * Кадр указателя (мышь на десктопе, луч контроллера в VR). `null` —
+   * указателя нет: наведение снимается, начатый драг корректно закрывается.
+   */
+  updatePointer(ray: PointerRay | null): void;
+  /** Слой указателя — сюда регистрируются будущие кликабельные объекты. */
+  pointer: PointerSystem;
   start(): () => void;
   resize(): void;
   dispose(): void;
@@ -143,6 +151,29 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     angles: [...SIDE_PANEL_ANGLES_DEG]
   });
   const videoPanels = new Map<string, VideoPanel>();
+
+  // Указатель: наведение / клик / перетаскивание панелей лучом.
+  // Центр сферы драга — голова оператора (панели катаются вокруг него,
+  // расстояние не меняется, facing всегда в центр). Сюда же потом
+  // регистрируются кнопки панели режимов супервизора и карта.
+  const pointer = new PointerSystem({
+    center: { x: 0, y: 1.6, z: 0 },
+    handlers: {
+      onHover: () => refreshHighlights(),
+      onSelect: (id) => {
+        // Клик по панели — выбор (снимается повторным кликом).
+        const already = panelMgr.get(id)?.selected ?? false;
+        panelMgr.select(already ? null : id);
+        refreshHighlights();
+      },
+      onDrag: (id, position) => {
+        panelMgr.move(id, position.x, position.z, position.y);
+        const s = panelMgr.get(id);
+        if (s) videoPanels.get(id)?.setState(s);
+      },
+      onDragEnd: () => refreshHighlights()
+    }
+  });
 
   // Большой экран-стена перед оператором: на него выводим фронтальную
   // камеру. Стена мостика стоит на z = -4 (ROOM_D/2); экран висит чуть
@@ -239,23 +270,42 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
         vp = new VideoPanel(s);
         scene.add(vp.mesh);
         videoPanels.set(s.id, vp);
+        // Панель становится целью указателя: наводится, кликается, тянется.
+        pointer.addTarget({ id: s.id, object: vp.mesh, draggable: true });
       } else {
         vp.setState(s);
       }
       vp.setLabel(s.topic);
+      vp.setHighlight(highlightFor(s.id, s.selected));
     }
     for (const [id, vp] of videoPanels.entries()) {
       if (!seen.has(id)) {
         scene.remove(vp.mesh);
+        pointer.removeTarget(id);
         vp.dispose();
         videoPanels.delete(id);
       }
     }
   }
 
+  function highlightFor(id: string, selected: boolean): "none" | "hover" | "selected" {
+    if (selected) return "selected";
+    return pointer.getHovered() === id ? "hover" : "none";
+  }
+
+  function refreshHighlights(): void {
+    for (const s of panelMgr.list()) {
+      videoPanels.get(s.id)?.setHighlight(highlightFor(s.id, s.selected));
+    }
+  }
+
   function initLayout(): void {
     panelMgr.resetLayout();
     syncPanels();
+  }
+
+  function updatePointer(ray: PointerRay | null): void {
+    pointer.update(ray);
   }
 
   function videoTopics(): string[] {
@@ -378,6 +428,8 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     environment,
     loadEnvironment,
     initLayout,
+    updatePointer,
+    pointer,
     attachXrSession,
     setControllerActive,
     setArmState,
