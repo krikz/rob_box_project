@@ -639,15 +639,6 @@ class DialogueNode(Node):
         # meta-text verbatim and let the operator debug from logs.
         self._babble_retry_used: bool = False
 
-        # Issue #992 Bug C' — LLM написала сочинённый Renardo-код в реплику
-        # вместо execute_music_code(code=...). Код НЕ читаем вслух —
-        # требуем вызов тула.
-        if spoken and self._check_embedded_renardo_code_and_retry(
-            spoken=spoken,
-            user_input=raw_user_command or user_input,
-            tools_called=tools_called,
-        ):
-            return
         # Issue #992 Bug E — «отчитался о действии, но не вызвал тул».
         # Тот же одноразовый контракт, что у babble-флага выше: ретраим
         # РОВНО один раз, иначе LLM и код уходят в пинг-понг.
@@ -4249,6 +4240,15 @@ class DialogueNode(Node):
             user_input=raw_user_command or user_input,
             tools_called=tools_called,
             speak_text_real=speak_text_real,
+        ):
+            return
+        # Issue #992 Bug C' — LLM написала сочинённый Renardo-код в реплику
+        # вместо execute_music_code(code=...). Код НЕ читаем вслух —
+        # требуем вызов тула.
+        if spoken and self._check_embedded_renardo_code_and_retry(
+            spoken=spoken,
+            user_input=raw_user_command or user_input,
+            tools_called=tools_called,
         ):
             return
         # Issue #992 Bug E — «отчитался о действии, но не вызвал тул».

@@ -22,7 +22,7 @@ from std_msgs.msg import String
 import json
 import math
 import os
-from typing import Dict, Any
+from typing import Any, Dict, Optional
 
 from .registry import MCPToolRegistry
 from .tools import (
