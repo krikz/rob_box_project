@@ -20,6 +20,29 @@ Design notes:
   ADR-0004 §2.3 explicitly rejects this for the same reasons as the
   upstream registry: implicit side-effects, hard to test, hidden
   dependencies at import time.
+
+NOT a duplicate of the upstream registry — read this before "deduplicating"
+the two (card W6-2). The similarity is structural; the contracts differ on
+purpose, and the difference is the layer:
+
+============  =========================  =================================
+              ``rob_box_llm`` (upstream)  ``rob_box_harness`` (this module)
+============  =========================  =================================
+config         plain ``Mapping``          typed :class:`TTSConfig`
+``resolve``    raises ``KeyError``        raises ``ProviderNotFoundError``
+                                          with ``port="tts"``
+builder gives  the raw upstream provider  the harness wrapper (env auth,
+                                          retries, content-hash cache)
+============  =========================  =================================
+
+Merging them is also not possible in this direction: ``rob_box_harness``
+depends on ``rob_box_llm``, and the reverse dependency must not exist. The
+two-level split is the design signed off in
+``.planning/phases/06-harness-p0-finalization/06-ARCHITECT-REVIEW.md``
+(A.2.12) — which also names the price: "Каждое изменение MiniMax API =
+правка в 2 местах. Дрейф гарантирован". ``test/test_tts_registry_two_levels.py``
+is the guard against that drift: it pins the intentional differences and
+runs one shared contract against both registries.
 """
 
 from __future__ import annotations
