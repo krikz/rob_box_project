@@ -11,8 +11,11 @@
 - `/home/builder/.hermes/profiles/agent-flow/scripts/`
 - `/home/builder/.hermes/profiles/architect/scripts/`
 
-Эти 3 копии — **символические ссылки**, создаваемые `install.sh`.
-Любая правка там уйдёт при следующем `install.sh` через `ln -sf`.
+Эти копии — **hardlink'и** (`cp -al`), которые кладёт `install.sh`. Именно
+hardlink, а не симлинк: симлинк в `~/.hermes/scripts/` ресолвится наружу
+каталога и отклоняется guard'ом `scheduler.py::_validate_script_path`
+(ретро 11.08 `t_a6a236e0d9f0470e` — 50 упавших тиков подряд, 1ч42м
+даунтайма). Любая правка в копии уйдёт при следующем `install.sh`.
 
 ---
 
@@ -343,10 +346,42 @@ SWEEP_DAYS=2 bash <repo>/scripts/agent_flow/agent-flow-unlabeled-sweep.sh # ре
 Тонкая обёртка над cron-вызовами (используется как fallback когда
 Hermes-cron недоступен). Маленький, 854 байт.
 
-### `watchdog.sh` — мониторинг процессов
+### `watchdog.sh` — heartbeat агентов, every 2m
 
-Сторожевой таймер для долгоиграющих процессов (e2e-build, deploy).
-Запускается параллельно, проверяет живость по pid-файлу и heartbeat.
+Не «сторожевой таймер для e2e-build/deploy» (так было написано здесь до
+30.08 — описание не совпадало с кодом). Реально: целостность kanban-БД,
+залипшие карточки (heartbeat старше 10 мин), перезапуск диспетчера, когда
+running нет, а ready есть, recovery-карточка на умершего воркера, prune
+мёртвых PID, `RUN_NOW`-триггер немедленного e2e-прогона и block/unblock
+карточек при исчерпании провайдера (402/429 в логе воркера).
+Пустой stdout = тихий тик, токены не тратятся.
+
+### `watchdog-provider-quick.sh` — тот же provider-guard, но every 1m
+
+Горячий путь для исчерпания провайдера: 2-минутного скана `watchdog.sh`
+не хватает, чтобы среагировать до `consecutive_failures=2` → `gave_up`
+(ретро 24.08 `t_4c73490f`). Делит с `watchdog.sh` `PROVIDER_MARKERS` и
+логику recovery-волны, плюс маркеры HTTP 401 / Authentication Fails.
+
+### `agent-flow-e2e-drift-watchdog.sh` — метрика PR↔issue drift
+
+Только читает. Считает PR с меткой `e2e-done`, у которых issue уже вернулась
+в ротацию (`needs-e2e`) — то есть reconcile в merge-gate не сработал.
+`exit 1`, если максимальный drift старше `DRIFT_THRESHOLD` (30 мин).
+Reconcile делает merge-gate; этот скрипт — единственный способ увидеть,
+что тот НЕ сделал.
+
+### `agent-flow-rotation-watchdog.sh` — жива ли e2e-ротация
+
+Только читает, в GitHub не пишет вообще. Нет ни одного cron-тика и ни
+одного коммита в `origin/develop` за `ROTATION_DEAD_MIN` (2 ч) → `exit 1`.
+«N упавших e2e подряд» здесь НЕ считается — этим занимается
+`agent-flow-e2e-fail-streak-watchdog.sh` (дубль снят 30.08).
+
+> Оба вотчдога до 30.08 лежали в репо, но отсутствовали в `EXPECTED`
+> внутри `install.sh` — то есть на хост не раскладывались и запускаться
+> физически не могли. Сейчас раскладываются и покрыты drift-детектором;
+> **cron-job для них не зарегистрирован** — это отдельное решение Шифу.
 
 ## Vendor-патчи hermes-agent (ретро t_f00676f8)
 

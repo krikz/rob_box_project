@@ -20,7 +20,8 @@
 #
 # ENV:
 #   GH_REPO          — owner/repo (default krikz/rob_box_project)
-#   LOG_FILE         — путь к логу (default /var/log/agent-flow-e2e-drift-watchdog.log)
+#   HERMES_HOME      — база для лога (default /home/builder/.hermes)
+#   LOG_FILE         — путь к логу (default ${HERMES_HOME}/logs/agent-flow-e2e-drift-watchdog.log)
 #   DRIFT_THRESHOLD  — мин порог алерта (default 30m, для cron-нотификации)
 #
 # Использование:
@@ -35,7 +36,12 @@
 set -euo pipefail
 
 GH_REPO="${GH_REPO:-krikz/rob_box_project}"
-LOG_FILE="${LOG_FILE:-/var/log/agent-flow-e2e-drift-watchdog.log}"
+# Ретро 30.08 (дедуп процессного слоя): дефолт был /var/log/... — каталог
+# принадлежит root, `>> "$LOG_FILE"` под `set -euo pipefail` роняет тик с
+# «Permission denied» ещё до вывода summary. Пишем туда же, куда остальные
+# вотчдоги, — под HERMES_HOME.
+HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+LOG_FILE="${LOG_FILE:-${HERMES_HOME}/logs/agent-flow-e2e-drift-watchdog.log}"
 DRIFT_THRESHOLD="${DRIFT_THRESHOLD:-30}"
 WATCHDOG_DRY_RUN="${WATCHDOG_DRY_RUN:-false}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-e2e-drift-watchdog.lock}"
@@ -128,7 +134,7 @@ while IFS=$'\t' read -r pr_number title head_ref pr_state; do
     _drift_records+=("$(printf '%s\tPR #%s\tissue #%s\thead=%s\tstate=%s\tdrift=%sm' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pr_number" "$issue_num" "$head_ref" "$pr_state" "$drift_minutes")")
 
-done < <(printf '%s' "$_pr_done_json" | /usr/bin/python3 -c '
+done < <(printf '%s' "$_pr_done_json" | python3 -c '
 import json, sys
 try:
     data = json.load(sys.stdin)

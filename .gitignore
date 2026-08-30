@@ -92,6 +92,7 @@ docs/guides/BUILD_MACHINE_ACCESS.md
 Thumbs.db
 
 .worktrees/
+.claude/worktrees/
 docker/vision/config/voice_assistant/event_mode.yaml
 .colcon-bench/
 

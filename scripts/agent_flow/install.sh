@@ -112,6 +112,19 @@ EXPECTED=(
     # cron-job. При streak ≥ WARN → issue-comment, при streak ≥ PAUSE →
     # sentinel-файл → e2e-process замораживает ротацию.
     agent-flow-e2e-fail-streak-watchdog.sh
+    # Observability-вотчдоги (ретро 19.08 t_5cde0bc1 и 25.08 t_2d8cc9c4).
+    # Метки НЕ меняют — только читают и возвращают exit-код для cron-алерта,
+    # поэтому раскладка безопасна и без регистрации cron-job'а: файл на хосте
+    # + drift-detect его контролирует, запуск — руками или через cron, когда
+    # Шифу решит. До 30.08 оба лежали в репо ВНЕ этого списка, то есть на хост
+    # не попадали вообще и запускаться физически не могли.
+    #   drift    — сколько PR висят с e2e-done, пока их issue вернулась
+    #              в ротацию (merge-gate reconcile сделал, но если не сработал —
+    #              это единственный способ увидеть, что он не сработал);
+    #   rotation — жива ли e2e-ротация: нет тиков и нет новых
+    #              z-{e2e}/test-round-* за окно → ALERT.
+    agent-flow-e2e-drift-watchdog.sh
+    agent-flow-rotation-watchdog.sh
 )
 
 # Режим --list-files: печатает EXPECTED по одному имени на строку и выходит.
