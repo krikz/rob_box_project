@@ -38,6 +38,7 @@ from rob_box_mcp_tools.tools.music import (  # noqa: E402
     StopMusicTool,
     SetVibePresetTool,
     GetMusicStateTool,
+    TrackLibrary,
 )
 
 
@@ -914,6 +915,41 @@ class TestMusicManagerExecuteCode:
         remaining = mgr._music_deadline_at - time.monotonic()
         assert remaining >= MusicManager.MIN_SEGMENTS_DEADLINE_SECONDS - 0.5
 
+    def test_live_3008_short_beat_survives_longer_than_the_tts_reply(self):
+        """🔴 Регрессия 30.08 (vision-pi 12:30:22 → 12:30:43).
+
+        «сыграй короткий бит» → LLM отдала ``segments=8`` при
+        ``Clock.bpm=90``. Старая формула давала дедлайн 8*2.667 = 21.3 s,
+        и watchdog убил бит через 20 s: TTS-ответ («Бит играет и сохранён
+        как «тисбит».», 6.8 s) закончился на 11-й секунде, музыка играла
+        одна ещё 7 секунд и оборвалась. Следующая реплика юзера —
+        «продолжай развивать этот бит» — пришла в тишину.
+
+        Дедлайн обязан оставаться ПРЕДОХРАНИТЕЛЕМ: заметно длиннее того,
+        что напросила LLM, и не короче минуты.
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._renardo_context["Clock"] = SimpleNamespace(bpm=90)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> blip([0,2,4,7])", segments=8)
+        remaining = mgr._music_deadline_at - time.monotonic()
+        assert remaining >= 60.0 - 0.5, (
+            "8 баров на 90 bpm давали 21 s — бит умирал раньше, чем "
+            "юзер успевал попросить продолжение"
+        )
+
+    def test_segments_deadline_applies_the_safety_factor(self):
+        """Дедлайн = музыкальная длина × запас, а не ровно она."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        mgr._renardo_context["Clock"] = SimpleNamespace(bpm=120)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", segments=64)
+        bar = 4 * 60.0 / 120.0  # 2.0 s
+        expected = 64 * bar * MusicManager.SEGMENTS_DEADLINE_SAFETY_FACTOR
+        remaining = mgr._music_deadline_at - time.monotonic()
+        assert remaining == pytest.approx(expected, abs=1.0)
+        assert expected > MusicManager.MIN_SEGMENTS_DEADLINE_SECONDS
+
     def test_execute_with_segments_clamps_absurd_values(self):
         mgr = _make_manager(sc_running=True, renardo_available=True)
         with patch("builtins.exec"):
@@ -1469,6 +1505,51 @@ class TestExecuteMusicCodeTool:
 
 
 @pytest.mark.unit
+class TestTrackLibrarySlug:
+    """🔴 Регрессия 30.08: русское имя трека превращалось в частокол «_».
+
+    Старый ``_slug`` был ``re.sub(r"[^a-z0-9_]", "_", name.lower())``: КАЖДЫЙ
+    кириллический символ заменялся на «_», поэтому slug кодировал только
+    длину имени. В живой медиатеке робота лежит запись
+    ``('________________', 'комната_мудрости')``, а «сохрани как трек
+    тисбит» породило четыре записи одного трека — ``tisbeat``, ``tisbit``,
+    ``thisbit``, ``tinbit``: LLM каждый раз транслитерировала имя сама и
+    каждый раз по-своему. «Удали трек тисбит» после этого не находил ничего.
+    """
+
+    def test_cyrillic_is_transliterated(self):
+        assert TrackLibrary._slug("Тисбит") == "tisbit"
+
+    def test_slug_is_case_insensitive(self):
+        assert TrackLibrary._slug("ТисБит") == TrackLibrary._slug("тисбит")
+
+    def test_different_names_do_not_collide(self):
+        """Раньше «мурка» и «пляска» (по 5 букв) давали один и тот же slug."""
+        assert TrackLibrary._slug("мурка") != TrackLibrary._slug("пляск")
+
+    def test_spaces_do_not_become_a_picket_fence(self):
+        assert TrackLibrary._slug("комната мудрости") == "komnata_mudrosti"
+
+    def test_latin_slugs_are_unchanged(self):
+        """Существующие записи медиатеки не должны переехать."""
+        assert TrackLibrary._slug("csm_chill_v2") == "csm_chill_v2"
+        assert TrackLibrary._slug("club_energy_128bpm") == "club_energy_128bpm"
+
+    def test_empty_name_stays_empty(self):
+        """``save_track`` отвергает пустой slug — контракт не меняем."""
+        assert TrackLibrary._slug("   ") == ""
+
+    def test_save_and_delete_round_trip_by_russian_name(self, tmp_path):
+        lib = TrackLibrary(db_path=str(tmp_path / "tracks.db"))
+        saved = lib.save_track(name="Тисбит", code="p1 >> blip([0])")
+        assert saved["success"] is True
+        assert saved["name"] == "tisbit"
+        # То, как юзер произнёс имя во второй раз, значения не имеет.
+        deleted = lib.delete_track("тисбит")
+        assert deleted["success"] is True
+
+
+@pytest.mark.unit
 class TestStopMusicTool:
     """Тесты MCPTool для остановки музыки."""
 
@@ -1513,6 +1594,26 @@ class TestStopMusicTool:
         tool, _ = self._make_tool(mock_node)
         result = tool.execute(pattern_name="d1")
         assert result.success is True
+
+    def test_sound_stop_is_delegated_to_the_node(self, mock_node):
+        """🔴 Регрессия 30.08: mp3 из ``gen_play_from_library`` играет в
+        ``sound_node``, и остановить его умел ТОЛЬКО этот тул. Те же два
+        топика нужны ``music_cleanup`` и watchdog'у, поэтому публикация
+        переехала в ``McpServerNode.stop_generated_track_playback`` — тул
+        обязан звать её, а не дублировать паблишеры.
+        """
+        calls = []
+        mock_node.stop_generated_track_playback = lambda: calls.append(1)
+        tool, _ = self._make_tool(mock_node)
+        result = tool.execute()
+        assert result.success is True
+        assert calls == [1], "stop_music не позвал stop_generated_track_playback"
+
+    def test_sound_stop_degrades_when_node_has_no_helper(self, mock_node):
+        """Нода без хелпера (юнит-тесты / minimal install) — не падаем."""
+        assert not hasattr(mock_node, "stop_generated_track_playback")
+        tool, _ = self._make_tool(mock_node)
+        assert tool.execute().success is True
 
 
 # ---------------------------------------------------------------------------
@@ -1847,6 +1948,31 @@ class TestMusicSessionLifecycle:
         result = mgr.auto_stop_idle_music(ttl_seconds=999, now=now)
         assert result["stopped"] is True
         assert result.get("stop_reason") == "segments_deadline"
+
+    def test_idle_ttl_stop_reports_its_reason(self):
+        """Строка watchdog'а в логе врала: писала «после 20.1s (ttl=300s)»,
+        хотя убил музыку segments-дедлайн. Обе ветки теперь называют себя.
+        """
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        # Без segments дедлайна нет — сработает только idle-TTL.
+        assert mgr._music_deadline_at is None
+        result = mgr.auto_stop_idle_music(ttl_seconds=1, now=time.monotonic() + 10)
+        assert result["stopped"] is True
+        assert result.get("stop_reason") == "idle_ttl"
+
+    def test_segments_stop_reports_the_segments_value(self):
+        """``deadline_segments`` в результате — чтобы из лога было видно,
+        какую цифру напросила LLM."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1", segments=16)
+        result = mgr.auto_stop_idle_music(
+            ttl_seconds=300, now=mgr._music_deadline_at + 1
+        )
+        assert result.get("stop_reason") == "segments_deadline"
+        assert result.get("deadline_segments") == 16
 
     def test_stop_all_clears_segments_deadline(self):
         """tts_batch_complete → stop_all must cancel the backstop."""

@@ -36,6 +36,7 @@ from typing import Optional, Tuple
 
 from .dialogue_guards import (
     GENERATED_MUSIC_TOOLS,
+    MUSIC_STOP_TOOLS,
     RENARDO_MUSIC_TOOLS,
     is_music_stop_command,
     is_vocal_request,
@@ -63,6 +64,10 @@ class MusicGuardVerdictKind(str, Enum):
     #: попробуй ещё раз»). After a nudge the budget is reset so the
     #: next genuine user request gets a fresh one.
     NUDGE = "nudge"
+
+    #: User asked to STOP music but the LLM called no stop tool — the
+    #: adapter must force the stop itself (issue #992 Bug F, live 30.08).
+    FORCE_STOP = "force_stop"
 
     #: Guard deliberately skipped (stop-command OR user did not ask for
     #: music OR DJ was off). Adapter only logs a diagnostic.
@@ -288,6 +293,22 @@ class MusicGuard:
                 prompt=prompt,
             )
 
+        # 🔴 FIX (live 30.08, vision-pi 12:33): «останови музыку» → LLM
+        # ответила «Музыка выключена.» с ``tools=[]``. Ни ``stop_music``, ни
+        # чего-либо ещё вызвано не было, и mp3 из ``gen_play_from_library``
+        # доиграл до конца ещё 20 секунд после «выключена». Стоп —
+        # идемпотентная операция, поэтому здесь мы не ретраим LLM, а
+        # останавливаем музыку сами (адаптер публикует music_cleanup).
+        if is_music_stop_command(user_input) and not (tools_set & MUSIC_STOP_TOOLS):
+            self._log_warning(
+                "🎵 [issue 992 Bug F] stop-command без stop-тула "
+                f"(tools={sorted(tools_set)!r}) — принудительный стоп из кода"
+            )
+            return MusicGuardVerdict(
+                kind=MusicGuardVerdictKind.FORCE_STOP,
+                reason="stop_command_unbacked",
+            )
+
         # Bug C — user asked for music but LLM skipped execute_music_code.
         if not user_wants_music(user_input):
             self._log_info(
@@ -304,6 +325,8 @@ class MusicGuard:
         # «выключи музыку») must NOT trigger a music retry — they ask
         # to STOP music, not START it. Bug C previously mis-classified
         # them as music requests and re-enabled music via the retry.
+        # Сюда доходят только стопы, которые LLM уже отработала тулом
+        # (безтуловые перехвачены веткой FORCE_STOP выше).
         if is_music_stop_command(user_input):
             self._log_debug(
                 "🎵 [issue 992 Bug C] stop-command — skipping music "

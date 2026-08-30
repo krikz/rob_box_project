@@ -210,6 +210,19 @@ class MCPServer(Node):
         # audio_node подписывается на /voice/music/state ("playing"/"idle").
         self.music_state_pub = self.create_publisher(String, "/voice/music/state", qos_profile)
 
+        # 🔴 FIX (live 30.08, vision-pi 12:33): mp3-трек из
+        # ``gen_play_from_library`` играет в ``sound_node``, а не в Renardo.
+        # ``MusicManager.stop_all()`` про него ничего не знает, поэтому и
+        # ``music_cleanup``, и watchdog его не гасили: юзер сказал «останови
+        # музыку», робот ответил «Музыка выключена.», а трек доиграл до
+        # конца. Единственным местом, которое реально его останавливало,
+        # был ``StopMusicTool``. Публикуем те же два топика здесь, а тул
+        # теперь делегирует сюда (одна точка правды).
+        self.sound_stop_pub = self.create_publisher(String, "/voice/sound/stop", qos_profile)
+        self.generated_music_state_pub = self.create_publisher(
+            String, "/voice/generated_music/state", qos_profile
+        )
+
         # Subscriber для запросов на выполнение
         # ReentrantCallbackGroup — критически важно!
         # on_execute_request блокируется ожидая action result.
@@ -400,6 +413,29 @@ class MCPServer(Node):
                 f"🎵 [{reason}] Cleanup: активной музыки не обнаружено "
                 f"(stop_all вызван профилактически). msg={result.get('message')}"
             )
+        # Renardo погашен — гасим и mp3-трек в sound_node (см. комментарий
+        # у ``sound_stop_pub``).
+        self.stop_generated_track_playback()
+
+    def stop_generated_track_playback(self) -> None:
+        """Остановить mp3 из библиотеки сгенерированной музыки.
+
+        ``gen_play_from_library`` публикует путь в ``sound_node``; ни
+        ``MusicManager.stop_all()``, ни ``/g_freeAll`` до него не достают.
+        Одна точка правды для ``StopMusicTool``, ``music_cleanup`` и
+        watchdog — issue #1392 follow-up.
+        """
+        try:
+            msg = String()
+            msg.data = "STOP"
+            self.sound_stop_pub.publish(msg)
+            state = String()
+            state.data = json.dumps({"status": "idle"})
+            self.generated_music_state_pub.publish(state)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ Не удалось остановить mp3 в sound_node: {exc}"
+            )
 
     def _on_music_fallback(self, msg: "String") -> None:
         """Issue #1016 — play the top-rated library track when the LLM
@@ -483,10 +519,19 @@ class MCPServer(Node):
             patterns = result.get("active_patterns", [])
             idle = result.get("idle_seconds", "?")
             ttl = result.get("ttl_seconds", "?")
+            # 🔴 FIX (live 30.08): без ``stop_reason`` строка врала — писала
+            # «после 20.1s (ttl=300s)», хотя музыку убил segments-дедлайн,
+            # а не idle-TTL. Из лога было не понять, почему бит прожил 20
+            # секунд при ttl=300.
+            reason = result.get("stop_reason", "idle_ttl")
+            deadline_segments = result.get("deadline_segments")
             self.get_logger().warning(
-                f"🎵 [watchdog] Авто-стоп {len(patterns)} паттернов после "
-                f"{idle:.1f}s (ttl={ttl:.0f}s). Issue #935."
+                f"🎵 [watchdog] Авто-стоп {len(patterns)} паттернов: "
+                f"reason={reason} idle={idle:.1f}s ttl={ttl:.0f}s"
+                + (f" segments={deadline_segments}" if deadline_segments else "")
+                + ". Issue #935."
             )
+            self.stop_generated_track_playback()
         # Issue 989 Fix C: синхронизируем состояние музыки для audio_node
         # (поднятие VAD threshold при активной музыке). Watchdog тикает
         # каждые ~5s — достаточно для strict mode; tool-вызовы публикуют

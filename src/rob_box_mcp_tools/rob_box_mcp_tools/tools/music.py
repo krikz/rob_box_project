@@ -189,7 +189,22 @@ class MusicManager:
     #: Floor for the segments deadline (seconds). A tiny LLM guess (e.g.
     #: segments=2) must not cut a real song off after 2 seconds — the
     #: deadline is a TTS-hang backstop, not a song-length contract.
-    MIN_SEGMENTS_DEADLINE_SECONDS: float = 15.0
+    #:
+    #: 🔴 FIX (live 30.08, vision-pi 12:30): «сыграй короткий бит» →
+    #: ``segments=8`` при ``Clock.bpm=90`` = 21.3 s. Watchdog убил бит через
+    #: 20 s — то есть дедлайн, объявленный «предохранителем», на практике и
+    #: был длиной трека: TTS закончился на 11-й секунде, а музыка играла
+    #: одна ещё 7 секунд и оборвалась. Юзер в следующем ходе просил
+    #: «продолжай развивать бит», когда играть было уже нечему.
+    #:
+    #: Держим дедлайн предохранителем: пол поднят с 15 s до 60 s, а
+    #: посчитанная по ``segments`` длительность умножается на
+    #: ``SEGMENTS_DEADLINE_SAFETY_FACTOR``. Верхняя граница остаётся —
+    #: музыка по-прежнему не может играть вечно.
+    MIN_SEGMENTS_DEADLINE_SECONDS: float = 60.0
+    #: Во сколько раз дедлайн длиннее музыкальной длины, посчитанной по
+    #: ``segments``. Оценка LLM — ориентир, а не контракт.
+    SEGMENTS_DEADLINE_SAFETY_FACTOR: float = 2.0
     #: Upper bound for accepted segments (guard against absurd values).
     MAX_SEGMENTS: int = 512
     #: Backward-compat clamp for the deprecated ``duration_sec`` param
@@ -1020,7 +1035,10 @@ class MusicManager:
         guess cannot cut a real song off prematurely.
         """
         bar_duration_s = self.BEATS_PER_BAR * 60.0 / max(1.0, float(bpm))
-        timeout_s = max(segments * bar_duration_s, self.MIN_SEGMENTS_DEADLINE_SECONDS)
+        timeout_s = max(
+            segments * bar_duration_s * self.SEGMENTS_DEADLINE_SAFETY_FACTOR,
+            self.MIN_SEGMENTS_DEADLINE_SECONDS,
+        )
         self._music_deadline_at = time.monotonic() + timeout_s
         self._music_deadline_segments = int(segments)
 
@@ -1658,9 +1676,11 @@ class MusicManager:
                 self._music_deadline_at = None
                 self._music_deadline_segments = None
                 return result
+            segments_for_log = self._music_deadline_segments
             stop_result = self.stop_all()
             result["stopped"] = True
             result["stop_reason"] = "segments_deadline"
+            result["deadline_segments"] = segments_for_log
             result["stop_result"] = stop_result
             self._auto_stop_count += 1
             result["auto_stop_count"] = self._auto_stop_count
@@ -1672,6 +1692,7 @@ class MusicManager:
         # is reused as-is.
         stop_result = self.stop_all()
         result["stopped"] = True
+        result["stop_reason"] = "idle_ttl"
         result["stop_result"] = stop_result
         self._auto_stop_count += 1
         result["auto_stop_count"] = self._auto_stop_count
@@ -2143,7 +2164,20 @@ class StopMusicTool(MCPTool):
             self.log_warning(f"Не удалось опубликовать music_state: {exc}")
 
     def _notify_sound_stop(self) -> None:
-        """Остановить mp3-трек в sound_node + сбросить состояние (issue #1392)."""
+        """Остановить mp3-трек в sound_node + сбросить состояние (issue #1392).
+
+        Одна точка правды — ``McpServerNode.stop_generated_track_playback``:
+        те же два топика нужны ещё и ``music_cleanup``, и watchdog'у, а
+        раньше их публиковал только этот тул, из-за чего mp3 переживал и
+        конец диалога, и авто-стоп (live 30.08).
+        """
+        delegate = getattr(self.node, "stop_generated_track_playback", None)
+        if callable(delegate):
+            try:
+                delegate()
+                return
+            except Exception as exc:  # noqa: BLE001
+                self.log_warning(f"stop_generated_track_playback упал: {exc}")
         try:
             from std_msgs.msg import String
 
@@ -2323,9 +2357,42 @@ class TrackLibrary:
     # Helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _slug(name: str) -> str:
-        return re.sub(r"[^a-z0-9_]", "_", name.lower().strip())
+    #: Кириллица → латиница для ``_slug``.
+    #:
+    #: 🔴 FIX (live 30.08, vision-pi): старый ``_slug`` заменял КАЖДЫЙ
+    #: не-ASCII символ на «_», поэтому любое русское имя превращалось в
+    #: строку подчёркиваний той же длины. В живой медиатеке лежит
+    #: ``('________________', 'комната_мудрости')``, а «тисбит» и «мурка»
+    #: столкнулись бы в один slug, будь они одной длины. Юзер просил
+    #: «сохрани как трек тисбит» — LLM, зная про это, каждый раз сама
+    #: придумывала латинский slug и придумывала РАЗНЫЙ: в базе лежат
+    #: ``tisbeat``, ``tisbit``, ``thisbit``, ``tinbit`` — четыре записи
+    #: одного трека, и ни одну из них не находит «удали трек тисбит».
+    _TRANSLIT: dict = {
+        "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e",
+        "ё": "e", "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k",
+        "л": "l", "м": "m", "н": "n", "о": "o", "п": "p", "р": "r",
+        "с": "s", "т": "t", "у": "u", "ф": "f", "х": "h", "ц": "ts",
+        "ч": "ch", "ш": "sh", "щ": "sch", "ъ": "", "ы": "y", "ь": "",
+        "э": "e", "ю": "yu", "я": "ya",
+    }
+
+    @classmethod
+    def _slug(cls, name: str) -> str:
+        """Имя трека → стабильный ASCII-slug.
+
+        Кириллица транслитерируется, всё остальное не-ASCII схлопывается
+        в «_», повторные «_» склеиваются. «тисбит» → ``tisbit`` при любом
+        регистре, поэтому «сохрани как тисбит» и «удали трек тисбит»
+        попадают в одну запись.
+        """
+        lowered = (name or "").lower().strip()
+        translit = "".join(cls._TRANSLIT.get(ch, ch) for ch in lowered)
+        slug = re.sub(r"[^a-z0-9_]", "_", translit)
+        # Схлопываем подряд идущие «_», чтобы «комната мудрости» не
+        # превращалась в частокол и чтобы slug оставался читаемым.
+        slug = re.sub(r"_+", "_", slug).strip("_")
+        return slug
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row, include_code: bool = True) -> Dict[str, Any]:

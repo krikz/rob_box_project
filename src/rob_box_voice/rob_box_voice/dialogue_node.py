@@ -97,6 +97,8 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_STOP_OVERRIDES,
     build_babble_retry_prompt,
     build_music_retry_prompt,
+    build_unbacked_action_retry_prompt,
+    detect_unbacked_action_claim,
     is_metalanguage_babble,
     is_music_stop_command,
     user_wants_music,
@@ -634,6 +636,11 @@ class DialogueNode(Node):
         # babbles again after the retry, we fall through to publish the
         # meta-text verbatim and let the operator debug from logs.
         self._babble_retry_used: bool = False
+
+        # Issue #992 Bug E — «отчитался о действии, но не вызвал тул».
+        # Тот же одноразовый контракт, что у babble-флага выше: ретраим
+        # РОВНО один раз, иначе LLM и код уходят в пинг-понг.
+        self._action_claim_retry_used: bool = False
 
         # Issue #1160 — Prometheus metrics: длительность диалоговой
         # сессии. Фиксируем момент первого wake-word-диалога из IDLE;
@@ -2292,6 +2299,7 @@ class DialogueNode(Node):
         is_dj_auto: bool = False,
         was_idle: bool = False,
         is_babble_retry: bool = False,
+        is_action_claim_retry: bool = False,
         is_synthetic: bool = False,
         raw_user_command: str | None = None,
         speaker_tag: str | None = None,
@@ -2333,6 +2341,7 @@ class DialogueNode(Node):
                 user_input,
                 is_dj_auto=is_dj_auto,
                 is_babble_retry=is_babble_retry,
+                is_action_claim_retry=is_action_claim_retry,
                 is_synthetic=is_synthetic,
                 raw_user_command=raw_user_command,
                 speaker_tag=speaker_tag,
@@ -2717,6 +2726,7 @@ class DialogueNode(Node):
         *,
         is_dj_auto: bool = False,
         is_babble_retry: bool = False,
+        is_action_claim_retry: bool = False,
         is_synthetic: bool = False,
         raw_user_command: str | None = None,
         speaker_tag: str | None = None,
@@ -2739,6 +2749,8 @@ class DialogueNode(Node):
         # second retry (which would loop forever).
         if not is_babble_retry:
             self._babble_retry_used = False
+        if not is_action_claim_retry:
+            self._action_claim_retry_used = False
         # Bug C (юзер-музыка) — сброс бюджета на НОВЫЙ юзер-запрос,
         # чтобы каждый запрос получал свежий retry (retry-промпт
         # не должен считаться новым запросом и сбрасывать сам себя).
@@ -3398,6 +3410,66 @@ class DialogueNode(Node):
         """
         return build_babble_retry_prompt(user_input)
 
+    def _check_unbacked_action_claim_and_retry(
+        self,
+        *,
+        spoken: str,
+        user_input: Optional[str],
+        tools_called: tuple,
+    ) -> bool:
+        """Issue #992 Bug E — одноразовый ретрай «сказал, но не сделал».
+
+        Живой прогон 30.08 (vision-pi 12:31–12:38): восемь ходов из
+        восемнадцати заканчивались утверждением о выполненном действии при
+        пустом ``tools_called``. «Точка сохранена.» — а двумя ходами позже
+        «Точек пока нет». Детектор узкий (см.
+        :data:`~rob_box_voice.core.dialogue_guards.ACTION_CLAIM_RULES`):
+        должны совпасть И запрос юзера, И формулировка отчёта, И отсутствие
+        нужного тула.
+
+        Returns:
+            ``True`` — ретрай отправлен, вызывающий НЕ должен публиковать
+            текст в TTS (иначе юзер услышит неправду, а потом ответ ретрая).
+        """
+        if self._action_claim_retry_used:
+            return False
+        rule = detect_unbacked_action_claim(
+            user_input=user_input,
+            spoken=spoken,
+            tools_called=tuple(tools_called or ()),
+        )
+        if rule is None:
+            return False
+
+        # Тот же перевод DSM, что и в babble-ретрае: без него
+        # process_input увидит IDLE и вернёт пустой результат.
+        try:
+            if self._dsm.current_state == DialogueStateKind.IDLE:
+                self._dsm.on_event(DialogueEvent.WAKE_WORD)
+                self._publish_state()
+            self._dsm.on_event(DialogueEvent.STT_RESULT)
+            self._publish_state()
+        except ImportError:
+            pass
+
+        # Помечаем ДО отправки — реентрантный вызов из самого ретрая
+        # не должен уметь запустить второй.
+        self._action_claim_retry_used = True
+        self.get_logger().warning(
+            f"🧾 [issue 992 Bug E] заявлено действие без тула "
+            f"(category={rule.category}, tools={list(tools_called)!r}, "
+            f"spoken={spoken[:60]!r}) — один ретрай"
+        )
+        self._dispatch_turn(
+            build_unbacked_action_retry_prompt(
+                user_input=user_input or "", spoken=spoken, rule=rule
+            ),
+            is_action_claim_retry=True,
+            is_synthetic=True,
+            raw_user_command=user_input,
+        )
+        return True
+
     def _reopen_dialogue_for_retry(self) -> None:
         """Re-drive the DSM to DIALOGUE before a synchronous retry dispatch.
 
@@ -3488,6 +3560,24 @@ class DialogueNode(Node):
                 is_synthetic=True,
             )
             return True
+
+        if verdict.kind is MusicGuardVerdictKind.FORCE_STOP:
+            # 🔴 FIX (live 30.08): юзер сказал «останови музыку», LLM
+            # ответила «Музыка выключена.» и не вызвала stop_music —
+            # трек продолжал играть. Останавливаем сами: stop идемпотентен,
+            # ретрай тут дороже и ненадёжнее. mcp_server по music_cleanup
+            # гасит и Renardo-паттерны, и mp3 в sound_node.
+            self.get_logger().warning(
+                "🎵 [issue 992 Bug F] стоп-команда без stop-тула — "
+                "публикую music_cleanup сам"
+            )
+            try:
+                self._publish_music_cleanup(reason="stop_command_guard")
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().warning(
+                    f"🎵 force-stop failed: {exc}"
+                )
+            return False
 
         if verdict.kind is MusicGuardVerdictKind.NUDGE:
             self._speak_direct(
@@ -4083,6 +4173,16 @@ class DialogueNode(Node):
             user_input=raw_user_command or user_input,
             tools_called=tools_called,
             speak_text_real=speak_text_real,
+        ):
+            return
+        # Issue #992 Bug E — «отчитался о действии, но не вызвал тул».
+        # Live 30.08: «Точка сохранена.» / «Точка удалена.» / ««Тисбит»
+        # удалён из медиатеки.» — всё с tools=[]. Один ретрай, тем же
+        # контрактом, что и Bug D выше.
+        if spoken and self._check_unbacked_action_claim_and_retry(
+            spoken=spoken,
+            user_input=raw_user_command or user_input,
+            tools_called=tools_called,
         ):
             return
         # 💡 Diagnostic: log the actual state before deciding what to do.

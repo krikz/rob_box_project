@@ -24,7 +24,9 @@ Owns two families of heuristics:
 from __future__ import annotations
 
 import logging
-from typing import Optional
+import re
+from dataclasses import dataclass
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,15 @@ RENARDO_MUSIC_TOOLS: frozenset = frozenset({
 GENERATED_MUSIC_TOOLS: frozenset = frozenset({
     "generate_music",
     "gen_play_from_library",
+})
+
+#: Tools that stop playback. A stop-command turn that calls none of these
+#: has not stopped anything — see ``MusicGuardVerdictKind.FORCE_STOP``.
+#: ``set_dj_mode`` counts because «хватит диджеить» is satisfied by turning
+#: DJ mode off even when no Renardo pattern was running.
+MUSIC_STOP_TOOLS: frozenset = frozenset({
+    "stop_music",
+    "set_dj_mode",
 })
 
 #: Tools that put existing playback into a mode rather than starting it.
@@ -226,6 +237,84 @@ MUSIC_GUARD_VOCAL_KEYWORDS: tuple = (
 )
 
 
+# 🔴 FIX (live 30.08, vision-pi 12:52-12:57): «продолжай развивать этот бит»,
+# «переходи с лоу в небольшой джангл» — юзер просит РАЗВИТЬ уже играющую
+# музыку. Ни одна подстрока из ``MUSIC_GUARD_KEYWORDS`` в них не встречается
+# (там нет ни «сыграй», ни «включи трек»), поэтому Bug C молчал, а LLM
+# отвечала «Добавил новые слои в техно-бит.» / «Бит перешёл в джангл.» с
+# ``tools=[]`` — то есть НИЧЕГО не игралось, робот просто рассказывал про
+# музыку словами.
+#
+# Ловим это парой «глагол-продолжения + музыкальное существительное» в
+# любом порядке. Пара нужна именно как пара: отдельное «бит» ловит «битва»
+# и «орбита», отдельное «продолжай» — «продолжай маршрут».
+_MUSIC_CONTINUE_VERBS: str = (
+    r"развива|разверни|продолж|переход|перейд|усил|добав|убер|смен|поменя|"
+    r"ускор|замедл|раскач|наращ|нарасти|дораб|доработ"
+)
+_MUSIC_NOUNS: str = (
+    r"бит|мелоди|музык|трек|ритм|грув|луп|бас|барабан|темп|аккорд|парти|"
+    r"джангл|техно|хаус|дабстеп|эмбиент|амбиент|драм-?н-?бейс|драмн?бейс|"
+    r"хип-?хоп|лоу-?фай|lofi|транс|фанк|регги|брейкбит|синт"
+)
+
+#: Пара «глагол + существительное» в обоих порядках. ``\w*`` после каждой
+#: основы покрывает падежи/виды («развивай», «развивать», «развивая»;
+#: «бит», «бита», «битом»).
+MUSIC_CONTINUATION_RE = re.compile(
+    rf"(?:(?:{_MUSIC_CONTINUE_VERBS})\w*.{{0,40}}?(?:{_MUSIC_NOUNS})\w*)"
+    rf"|(?:(?:{_MUSIC_NOUNS})\w*.{{0,40}}?(?:{_MUSIC_CONTINUE_VERBS})\w*)",
+    re.IGNORECASE,
+)
+
+
+# ---------------------------------------------------------------------------
+# 🔴 FIX (live 30.08, vision-pi 12:28): babble-детектор ложно срабатывал на
+# ФАКТИЧЕСКОМ ответе. Юзер: «играет ли сейчас музыка» → LLM: «Сейчас тишина —
+# ничего не играет.» Ответ начинается с «сейчас » (опенер из
+# ``BABBLE_BANNED_OPENERS``), а ``user_wants_performance`` совпал по «музык» —
+# и Bug D сжёг лишний round-trip к LLM ради байт-в-байт того же ответа.
+#
+# Вопрос — не запрос на исполнение. Частица «ли» в русском практически не
+# встречается в императиве («зачитай рэп», «сыграй техно»), поэтому она —
+# надёжный маркер. Плюс горстка вопросительных зачинов.
+# ---------------------------------------------------------------------------
+QUESTION_MARKERS: tuple = (
+    " ли ",
+    " ли?",
+)
+
+QUESTION_OPENERS: tuple = (
+    "что играет",
+    "что сейчас",
+    "что за ",
+    "какая музык",
+    "какой трек",
+    "какие звуки",
+    "сколько ",
+    "умеешь ли",
+    "ты умеешь",
+    "есть ли",
+    "можешь ли",
+)
+
+
+def is_state_question(user_input: str) -> bool:
+    """Вопрос о состоянии, а не команда исполнить.
+
+    Используется ``user_wants_performance``: на вопрос «играет ли сейчас
+    музыка» правильный ответ — текст, и babble-ретрай Bug D для него не
+    нужен.
+    """
+    if not user_input:
+        return False
+    low = f" {user_input.lower().strip()} "
+    if any(marker in low for marker in QUESTION_MARKERS):
+        return True
+    stripped = user_input.lower().strip()
+    return any(stripped.startswith(opener) for opener in QUESTION_OPENERS)
+
+
 # ---------------------------------------------------------------------------
 # Detectors
 # ---------------------------------------------------------------------------
@@ -271,6 +360,11 @@ def user_wants_performance(user_input: str) -> bool:
     """
     if not user_input:
         return False
+    # 🔴 FIX (live 30.08): вопрос о состоянии — не запрос на исполнение.
+    # «играет ли сейчас музыка» совпадал по «музык» и гнал Bug D в ретрай
+    # ради того же самого текстового ответа. См. ``is_state_question``.
+    if is_state_question(user_input):
+        return False
     low = user_input.lower()
     return any(kw in low for kw in BABBLE_PERFORMANCE_KEYWORDS)
 
@@ -289,6 +383,16 @@ def user_wants_music(user_input: str, *, logger: Optional[logging.Logger] = None
     if not user_input:
         return False
     low = user_input.lower()
+    # 🔴 FIX (live 30.08): «продолжай развивать этот бит» / «переходи в
+    # джангл» — просьба развить уже играющую музыку. Подстрочных ключей на
+    # неё нет, поэтому сначала пробуем пару «глагол + муз. существительное».
+    if MUSIC_CONTINUATION_RE.search(low):
+        if logger is not None:
+            logger.debug(
+                f"🎵 [music_guard] user_input={user_input!r} matched "
+                f"MUSIC_CONTINUATION_RE → wants_music=True"
+            )
+        return True
     matched = [kw for kw in MUSIC_GUARD_KEYWORDS if kw in low]
     if matched:
         if logger is not None:
@@ -339,6 +443,112 @@ def is_vocal_request(user_input: str) -> bool:
         return False
     low = user_input.lower()
     return any(kw in low for kw in MUSIC_GUARD_VOCAL_KEYWORDS)
+
+
+# ---------------------------------------------------------------------------
+# 🔴 Issue #992 Bug E — «сделал» без единого тула.
+#
+# Live 30.08 (vision-pi 12:31–12:38), восемь ходов из восемнадцати: LLM
+# отвечает утверждением о выполненном действии, а ``tools_called`` пуст —
+# то есть не выполнено НИЧЕГО:
+#
+#   «запомни эту точку как тесточка»    → «Точка сохранена.»        tools=[]
+#   «удали точку тесточка»              → «Точка удалена.»          tools=[]
+#   «удали трек тисбит из сохраненных»  → ««Тисбит» удалён…»        tools=[]
+#   «загрузи и включи трек тисбит»      → «Трек играет.»            tools=[]
+#
+# Что «точек пока нет» после «Точка сохранена» видно в том же логе двумя
+# ходами позже. Bug C ловит только музыкальную ветку; здесь тот же класс
+# ошибки на навигации и медиатеке.
+#
+# Таблица ниже — узкая по построению: срабатывает только когда И запрос
+# юзера, И утверждение LLM попадают в одну и ту же пару шаблонов, И тул
+# из ``tools`` не вызван. Любое сомнение → не срабатываем: цена ложного
+# ретрая — лишний round-trip к LLM.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ActionClaimRule:
+    """Одно правило детектора «заявил, но не сделал».
+
+    Attributes:
+        category: Короткий тег для лога и для ветвления в тестах.
+        user_re: Что должен был попросить юзер.
+        claim_re: Как LLM отчитывается о выполнении.
+        tools: Тулы, любой из которых закрывает заявку. Пустой
+            ``tools_called`` при непустом ``tools`` = баг.
+        what: Человеческая формулировка для retry-промпта.
+    """
+
+    category: str
+    user_re: "re.Pattern[str]"
+    claim_re: "re.Pattern[str]"
+    tools: frozenset
+    what: str
+
+
+ACTION_CLAIM_RULES: tuple = (
+    ActionClaimRule(
+        category="waypoint_save",
+        user_re=re.compile(
+            r"(?:запомни|сохрани|запиши)\s+(?:эту\s+)?(?:точк|мест|координат|"
+            r"вейпоинт|waypoint)", re.IGNORECASE),
+        claim_re=re.compile(
+            r"точк\w*\s+(?:сохранен|запомнен|записан|добавлен)|"
+            r"(?:запомнил|сохранил|записал)\w*\s+(?:эту\s+)?точк",
+            re.IGNORECASE),
+        tools=frozenset({"save_waypoint"}),
+        what="сохранение точки (save_waypoint)",
+    ),
+    ActionClaimRule(
+        category="waypoint_delete",
+        user_re=re.compile(
+            r"(?:удали|сотри|забудь|убери)\s+(?:эту\s+)?(?:точк|вейпоинт|waypoint)",
+            re.IGNORECASE),
+        claim_re=re.compile(
+            r"точк\w*\s+(?:удален|стерт|убран)|"
+            r"(?:удалил|стёр|стер|убрал)\w*\s+(?:эту\s+)?точк",
+            re.IGNORECASE),
+        tools=frozenset({"delete_waypoint", "clear_waypoints"}),
+        what="удаление точки (delete_waypoint)",
+    ),
+    ActionClaimRule(
+        category="track_delete",
+        user_re=re.compile(
+            r"(?:удали|сотри|убери)\s+(?:трек|композиц|мелоди|песн)",
+            re.IGNORECASE),
+        claim_re=re.compile(
+            r"(?:удал|стёр|стер|убра)\w*", re.IGNORECASE),
+        tools=frozenset({"delete_track", "gen_delete_from_library"}),
+        what="удаление трека (delete_track / gen_delete_from_library)",
+    ),
+)
+
+
+def detect_unbacked_action_claim(
+    *,
+    user_input: Optional[str],
+    spoken: Optional[str],
+    tools_called: Optional[Tuple[str, ...]],
+) -> Optional[ActionClaimRule]:
+    """Issue #992 Bug E — LLM отчиталась о действии, не вызвав тул.
+
+    Возвращает сработавшее правило или ``None``. Правило считается
+    сработавшим, когда запрос юзера подходит под ``user_re``, ответ LLM —
+    под ``claim_re``, и ни один тул из ``rule.tools`` не был вызван.
+    """
+    if not user_input or not spoken:
+        return None
+    called = set(tools_called or ())
+    for rule in ACTION_CLAIM_RULES:
+        if not rule.user_re.search(user_input):
+            continue
+        if not rule.claim_re.search(spoken):
+            continue
+        if called & rule.tools:
+            continue
+        return rule
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -410,4 +620,23 @@ def build_music_retry_prompt(user_input: str) -> str:
         "'трек из библиотеки' — сначала gen_list_library(limit=5), выбери track_id, "
         "затем gen_play_from_library(track_id=...). "
         "Если и сейчас не вызовешь tool — цикл останется пустым."
+    )
+
+def build_unbacked_action_retry_prompt(
+    *, user_input: str, spoken: str, rule: "ActionClaimRule"
+) -> str:
+    """Issue #992 Bug E — синтетический ретрай «отчитался, но не сделал».
+
+    Повторяет контракт Bug C: одна попытка, текст промпта прямо называет
+    и заявление, и тул, которого не хватило.
+    """
+    return (
+        "[CRITICAL] Ты ответил «"
+        + (spoken or "").strip()[:120]
+        + "», но НЕ вызвал ни одного тула — значит действие НЕ выполнено, "
+        "а пользователю сказана неправда.\n"
+        "❌ ЗАПРЕЩЕНО отчитываться о выполненном действии без вызова тула.\n"
+        "✅ В ЭТОМ же turn вызови тул: " + rule.what + ".\n"
+        "Запрос юзера: «" + (user_input or "") + "».\n"
+        "Если тул вернёт ошибку — скажи об ошибке честно, не выдумывай успех."
     )

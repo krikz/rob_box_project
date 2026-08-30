@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from rob_box_voice.core.dialogue_guards import (
+    ACTION_CLAIM_RULES,
     BABBLE_BANNED_OPENERS,
     BABBLE_PERFORMANCE_KEYWORDS,
     MUSIC_GUARD_KEYWORDS,
@@ -23,8 +24,11 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_STOP_OVERRIDES,
     build_babble_retry_prompt,
     build_music_retry_prompt,
+    build_unbacked_action_retry_prompt,
+    detect_unbacked_action_claim,
     is_metalanguage_babble,
     is_music_stop_command,
+    is_state_question,
     is_vocal_request,
     user_wants_music,
     user_wants_performance,
@@ -316,3 +320,176 @@ def test_beat_required_requests_still_get_nudged() -> None:
             f"{phrase!r} признан вокальным-без-бита — music-guard пропустит "
             "ход, где модель не вызвала execute_music_code"
         )
+
+
+# ---------------------------------------------------------------------------
+# Live-прогон 30.08 (vision-pi 12:17–12:57) — регрессии, снятые с лога
+# ---------------------------------------------------------------------------
+
+
+class TestMusicContinuationLive3008:
+    """«Развивай бит» — просьба развить уже играющую музыку.
+
+    В логе три таких хода подряд закончились ``tools=[]`` и текстом
+    «Добавил новые слои в техно-бит.» / «Бит перешёл в джангл.» — то есть
+    робот РАССКАЗЫВАЛ про музыку вместо того, чтобы её играть. Bug C
+    молчал, потому что ни одной подстроки из ``MUSIC_GUARD_KEYWORDS``
+    в этих фразах нет.
+    """
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "продолжал развивать этот бит",
+            "переходи с лож в небольшой джангл",
+            "продолжая с кайфом развивать мелодию летим над воркутой",
+            "продолжая развивать мелодию мы пролетаем над логовом кукарекающих чинарей",
+            "добавь баса в трек",
+            "ускорь бит",
+            "смени ритм на техно",
+        ],
+    )
+    def test_continuation_phrases_are_music_requests(self, phrase: str) -> None:
+        assert user_wants_music(phrase) is True
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "продолжай маршрут до кухни",
+            "расскажи про битву при бородино",
+            "перечисли все точки которые ты запомнил",
+            "запомни что я люблю зеленый чай без сахара",
+            "добавь эту точку в карту",
+        ],
+    )
+    def test_non_music_continuations_stay_false(self, phrase: str) -> None:
+        assert user_wants_music(phrase) is False
+
+
+class TestStateQuestionLive3008:
+    """«играет ли сейчас музыка» → «Сейчас тишина — ничего не играет.»
+
+    Ответ начинается с «сейчас » (опенер babble) и запрос совпадал по
+    «музык» — Bug D сжигал лишний round-trip к LLM ради байт-в-байт того
+    же ответа (лог 12:28:11 → 12:28:15).
+    """
+
+    def test_li_particle_marks_a_question(self) -> None:
+        assert is_state_question("играет ли сейчас музыка") is True
+
+    def test_question_is_not_a_performance_request(self) -> None:
+        assert user_wants_performance("играет ли сейчас музыка") is False
+
+    def test_imperative_stays_a_performance_request(self) -> None:
+        assert user_wants_performance("зачитай рэп про космос") is True
+        assert user_wants_performance("спой песню про кота") is True
+
+    def test_answer_still_looks_like_babble_in_isolation(self) -> None:
+        """Опенер сам по себе не изменился — фильтрует именно запрос."""
+        assert is_metalanguage_babble("Сейчас тишина — ничего не играет.") is True
+
+
+class TestUnbackedActionClaimLive3008:
+    """Bug E — «сделал» при пустом ``tools_called``.
+
+    Все четыре кейса дословно из лога 30.08, 12:31–12:38.
+    """
+
+    @pytest.mark.parametrize(
+        "user_input,spoken,category",
+        [
+            ("запомни эту точку как тесточка", "Точка сохранена.", "waypoint_save"),
+            ("удали точку тесточка", "Точка удалена.", "waypoint_delete"),
+            (
+                "удали трек тисбит из сохраненных",
+                "«Тисбит» удалён из медиатеки.",
+                "track_delete",
+            ),
+        ],
+    )
+    def test_claim_without_tool_is_detected(
+        self, user_input: str, spoken: str, category: str
+    ) -> None:
+        rule = detect_unbacked_action_claim(
+            user_input=user_input, spoken=spoken, tools_called=()
+        )
+        assert rule is not None
+        assert rule.category == category
+
+    @pytest.mark.parametrize(
+        "user_input,spoken,tools",
+        [
+            ("запомни эту точку как тесточка", "Точка сохранена.", ("save_waypoint",)),
+            ("удали точку тесточка", "Точка удалена.", ("delete_waypoint",)),
+            (
+                "удали трек тисбит из сохраненных",
+                "«Тисбит» удалён.",
+                ("delete_track",),
+            ),
+            (
+                "удали трек тисбит из сохраненных",
+                "«Тисбит» удалён.",
+                ("gen_delete_from_library",),
+            ),
+        ],
+    )
+    def test_claim_with_the_tool_is_not_a_bug(
+        self, user_input: str, spoken: str, tools: tuple
+    ) -> None:
+        assert (
+            detect_unbacked_action_claim(
+                user_input=user_input, spoken=spoken, tools_called=tools
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize(
+        "user_input,spoken",
+        [
+            # Факт в память — не точка; save_waypoint тут ни при чём.
+            ("запомни что я люблю зеленый чай без сахара", "Запомнила."),
+            # Чтение, а не мутация.
+            ("перечисли все точки которые ты запомнил", "Точек пока нет."),
+            # Стоп-команду закрывает FORCE_STOP в MusicGuard, не Bug E.
+            ("останови музыку", "Музыка выключена."),
+            # Разговор про удаление, но не команда удалить.
+            ("а ты умеешь удалять треки", "Умею."),
+        ],
+    )
+    def test_no_false_positives(self, user_input: str, spoken: str) -> None:
+        assert (
+            detect_unbacked_action_claim(
+                user_input=user_input, spoken=spoken, tools_called=()
+            )
+            is None
+        )
+
+    def test_empty_inputs_are_safe(self) -> None:
+        assert (
+            detect_unbacked_action_claim(user_input=None, spoken="x", tools_called=())
+            is None
+        )
+        assert (
+            detect_unbacked_action_claim(user_input="x", spoken=None, tools_called=())
+            is None
+        )
+
+    def test_retry_prompt_names_the_missing_tool(self) -> None:
+        rule = detect_unbacked_action_claim(
+            user_input="удали точку тесточка",
+            spoken="Точка удалена.",
+            tools_called=(),
+        )
+        assert rule is not None
+        prompt = build_unbacked_action_retry_prompt(
+            user_input="удали точку тесточка", spoken="Точка удалена.", rule=rule
+        )
+        assert "[CRITICAL]" in prompt
+        assert "delete_waypoint" in prompt
+        assert "удали точку тесточка" in prompt
+
+    def test_every_rule_names_at_least_one_tool(self) -> None:
+        assert ACTION_CLAIM_RULES
+        for rule in ACTION_CLAIM_RULES:
+            assert rule.tools, f"{rule.category}: правило без тула бесполезно"
+            assert rule.what
