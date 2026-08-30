@@ -26,7 +26,11 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import String
 
-from .async_executor import AsyncToolExecutor, ToolCallAccumulator
+from .async_executor import AsyncToolExecutor
+# Накопитель стриминговых tool_calls — из core/. До карточки W6-1 он
+# импортировался из async_executor, где лежала вторая, более бедная
+# копия того же класса (без get_count()/has_tool_calls()).
+from .core.tool_call_accumulator import ToolCallAccumulator
 from .base import ToolExecutionType
 from .mcp_auth import RequestAuthenticator
 
