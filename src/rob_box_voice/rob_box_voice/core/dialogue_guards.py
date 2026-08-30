@@ -718,17 +718,27 @@ def build_music_retry_prompt(user_input: str) -> str:
         "хотя пользователь ЯВНО попросил музыку/генерацию. "
         "Музыка сейчас НЕ играет — предыдущие треки уже остановлены. "
         "ОДИН ИЗ ЭТИХ инструментов ОБЯЗАТЕЛЕН (выбери по контексту): "
-        "1) execute_music_code / compose_music (Renardo/SuperCollider) — "
-        "бит/DJ/ambient/instrumental (быстрый, ~1с); "
-        "2) generate_music (MiniMax Music API, 40-160с) — песня с вокалом и лирикой; "
-        "3) list_tracks / load_track — Renardo-МЕДИАТЕКА, именно туда пишет save_track; "
-        "4) gen_list_library / gen_search_library / gen_play_from_library — "
-        "ОТДЕЛЬНАЯ библиотека mp3 от generate_music. "
+        "1) compose_music / execute_music_code (Renardo/SuperCollider) — "
+        "бит/DJ/ambient/instrumental/подложка (быстрый, ~1с); "
+        "2) list_tracks / load_track — Renardo-МЕДИАТЕКА, именно туда пишет save_track; "
+        "3) gen_list_library / gen_search_library / gen_play_from_library — "
+        "ОТДЕЛЬНАЯ библиотека готовых mp3. "
         "Запрос юзера: «"
         + (user_input or "")
         + "». "
-        "Если это 'спой песню про X' / 'сгенерируй трек про X' / 'сочини музыку' — "
-        "вызывай generate_music(...). Если 'бит/DJ/ambient' — execute_music_code(...). "
+        # 🔴 FIX (live 30.08, 16:23): здесь стояло «спой песню про X →
+        # вызывай generate_music(...)». Но ``generate_music`` НЕ
+        # зарегистрирован на сервере с 20.08.2026 — MiniMax Music API отдаёт
+        # 410 Gone (mcp_server: «MiniMax music generation disabled»), и в
+        # живом списке из 52 тулов его нет. То есть CRITICAL-промпт требовал
+        # обязательно вызвать несуществующий тул: LLM не могла, отвечала
+        # словами, второй промах — и юзер слышал «Я тут растерялся».
+        # Вокальной генерации у робота сейчас нет; песня = подложка Renardo
+        # плюс текст голосом.
+        "Если это 'спой песню/рэп про X' — вокальной генерации у нас НЕТ: "
+        "заведи подложку через compose_music(...) и спой текст через "
+        "speak_text(...) построчно. Если 'бит/DJ/ambient' — "
+        "compose_music(...) или execute_music_code(...). "
         # 🔴 FIX (live 30.08, e2e tc10_load_track): «загрузи и включи трек
         # тисбит» дважды вернулось «Трек тисбит играет.» с tools=[], и юзер
         # услышал «Я тут растерялся». Этот промпт называл ТОЛЬКО gen_*, а
