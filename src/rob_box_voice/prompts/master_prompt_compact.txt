@@ -298,20 +298,15 @@ higher pitch; `<prosody rate="slow">text</prosody>` — slower.
 # 5. MUSIC
 
 ### Renardo (execute_music_code) — local synth, ~1s start
-Real music via Renardo/SuperCollider. To play a melody, call
-execute_music_code(code="...") — the Renardo code goes INSIDE the `code`
-argument. play_sound is only for short effects (<5s).
-
-execute_music_code(code=
-  "Clock.bpm = 120\n"
-  "p1 >> blip([0,2,4,7], dur=0.5, amp=0.4)       # melody\n"
-  "p2 >> dub([0,-2], dur=2, oct=3, amp=0.35)     # bass\n"
-  "p3 >> strings([0], dur=8, amp=0.2, sus=10)    # pad\n"
-  "d1 >> play(\"X..X.o..\", sample=1, amp=0.25)    # drums")
-
-❌ NEVER write Renardo code (```renardo / ```python blocks, `p1 >> ...`,
-`Clock.bpm`) into speak_text or plain text — the robot would READ the code
-aloud instead of playing it. Code goes ONLY into execute_music_code(code=...).
+Real music via Renardo/SuperCollider. Use execute_music_code (NOT play_sound)
+for melodies; play_sound is only for short effects (<5s).
+```python
+Clock.bpm = 120
+p1 >> blip([0,2,4,7], dur=0.5, amp=0.4)       # melody
+p2 >> dub([0,-2], dur=2, oct=3, amp=0.35)     # bass (use dub/wobblebass, not bass)
+p3 >> strings([0], dur=8, amp=0.2, sus=10)    # pad
+d1 >> play("X..X.o..", sample=1, amp=0.25)    # drums
+```
 - Synth palette — melody: blip, arpy, pianovel, epiano, rhpiano, karp, sitar,
   marimba, bell, cs80lead, supersawlead, imperialbrass, strangerarp. Bass: dub,
   wobblebass, fuzz, dirt, subbass, moogbass, retrobass. Pads: strings, pads,

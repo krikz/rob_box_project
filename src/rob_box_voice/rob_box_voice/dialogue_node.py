@@ -97,8 +97,6 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_STOP_OVERRIDES,
     build_babble_retry_prompt,
     build_music_retry_prompt,
-    build_renardo_code_retry_prompt,
-    extract_renardo_code_lines,
     is_metalanguage_babble,
     is_music_stop_command,
     user_wants_music,
@@ -636,12 +634,6 @@ class DialogueNode(Node):
         # babbles again after the retry, we fall through to publish the
         # meta-text verbatim and let the operator debug from logs.
         self._babble_retry_used: bool = False
-
-        # Issue #992 Bug C' — Renardo code embedded in the spoken reply.
-        # One-shot retry flag, same loop-guard contract as the babble flag
-        # above: the LLM wrote ``p1 >> ...`` into speak_text instead of
-        # calling execute_music_code; we retry ONCE to force the tool call.
-        self._code_speech_retry_used: bool = False
 
         # Issue #1160 — Prometheus metrics: длительность диалоговой
         # сессии. Фиксируем момент первого wake-word-диалога из IDLE;
@@ -2300,7 +2292,6 @@ class DialogueNode(Node):
         is_dj_auto: bool = False,
         was_idle: bool = False,
         is_babble_retry: bool = False,
-        is_code_retry: bool = False,
         is_synthetic: bool = False,
         raw_user_command: str | None = None,
         speaker_tag: str | None = None,
@@ -2748,8 +2739,6 @@ class DialogueNode(Node):
         # second retry (which would loop forever).
         if not is_babble_retry:
             self._babble_retry_used = False
-        if not is_code_retry:
-            self._code_speech_retry_used = False
         # Bug C (юзер-музыка) — сброс бюджета на НОВЫЙ юзер-запрос,
         # чтобы каждый запрос получал свежий retry (retry-промпт
         # не должен считаться новым запросом и сбрасывать сам себя).
@@ -3408,52 +3397,6 @@ class DialogueNode(Node):
         (TD-1 decomposition).
         """
         return build_babble_retry_prompt(user_input)
-
-    def _check_embedded_renardo_code_and_retry(
-        self,
-        *,
-        spoken: str,
-        user_input: Optional[str],
-        tools_called: tuple,
-    ) -> bool:
-        """Issue #992 Bug C' — one-shot retry when the LLM speaks Renardo code.
-
-        Live 30.08: the model composed a Renardo melody and wrote the code into
-        its spoken reply (``p1 >> keys(...)``, ``Clock.bpm = ...``) instead of
-        calling ``execute_music_code(code=...)`` — so TTS read the code aloud.
-        Detect the embedded code lines and force ONE retry that demands the
-        tool call with the exact code.
-
-        Returns ``True`` when a retry was dispatched (the caller must skip the
-        regular TTS publish), ``False`` otherwise.
-        """
-        if self._code_speech_retry_used:
-            return False
-        if tools_called:
-            # The LLM already called a tool this cycle — leave it alone.
-            return False
-        if not spoken:
-            return False
-        code = extract_renardo_code_lines(spoken)
-        if not code:
-            return False
-
-        # Mark used BEFORE dispatching so a re-entrant call from the retry
-        # can never escalate to a second retry (same contract as babble).
-        self._code_speech_retry_used = True
-        self.get_logger().warning(
-            "🎹 [issue 992 Bug C'] Renardo code embedded in spoken reply — "
-            "forcing execute_music_code(code=...) "
-            f"(code head={code[:80]!r})"
-        )
-        retry_prompt = build_renardo_code_retry_prompt(code)
-        self._dispatch_turn(
-            retry_prompt,
-            is_code_retry=True,
-            is_synthetic=True,
-            raw_user_command=user_input,
-        )
-        return True
 
     def _reopen_dialogue_for_retry(self) -> None:
         """Re-drive the DSM to DIALOGUE before a synchronous retry dispatch.
@@ -4140,15 +4083,6 @@ class DialogueNode(Node):
             user_input=raw_user_command or user_input,
             tools_called=tools_called,
             speak_text_real=speak_text_real,
-        ):
-            return
-        # Issue #992 Bug C' — LLM wrote the Renardo code it composed into the
-        # spoken reply instead of calling execute_music_code(code=...). Strip
-        # it from speech (never read code aloud) and force the tool call.
-        if spoken and self._check_embedded_renardo_code_and_retry(
-            spoken=spoken,
-            user_input=raw_user_command or user_input,
-            tools_called=tools_called,
         ):
             return
         # 💡 Diagnostic: log the actual state before deciding what to do.

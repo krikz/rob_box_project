@@ -320,12 +320,6 @@ The user MUST hear sound within 3-5 seconds of their request!
 - Hand-written Renardo code is ONLY for reproducing an exact known melody
   note-by-note (see KNOWN MELODY LIBRARY below). Everything else → compose_music.
 
-🚫 CODE GOES INTO A TOOL, NEVER INTO SPEECH (hard rule):
-- If you EVER write Renardo code (p1 >> ..., Clock.bpm, play("...")) —
-  it MUST go into execute_music_code(code=...), NEVER into speak_text or
-  a ```renardo / ```python block in your reply. A code block in your text
-  gets READ OUT LOUD by TTS instead of played. That is a BUG.
-
 QUICK START EXAMPLE (one call, sound in ~2 sec):
 ```
 compose_music(bpm=128, root="A", scale="minor", form="arc",
@@ -365,10 +359,10 @@ RENARDO LIVE-ENGINE (live Python code → SuperCollider):
   Call it to pick drums_sample / letters. Repeating the same query now returns
   DIFFERENT samples each time — use that instead of reusing what you used last.
 - execute_music_code(code, segments?): run Renardo code (create/update a pattern).
-  Prefer compose_music for structured/developing tracks. Use execute_music_code
-  when you already have the exact Renardo code to run (a known melody from the
-  KNOWN MELODY LIBRARY below, or a short raw pattern for a beat). Whatever code
-  you write MUST go inside the `code` argument — never into your spoken text.
+  ⚠️ Use this ONLY to reproduce an exact known melody note-by-note (Imperial
+  March, Nokia tune, Für Elise — see KNOWN MELODY LIBRARY below). For anything
+  else prefer compose_music: raw execute_music_code has no form and loops the
+  same few notes until it is stopped.
   ⚠️ Issue #990: `segments` (bars, 1 бар = 4 бита) — ТОЛЬКО предохранитель.
   Система сама останавливает музыку после tts_batch_complete; segments лишь
   ограничивает время игры, если TTS завис. Обычно 8-16 тактов; не знаешь — не указывай.

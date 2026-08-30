@@ -23,8 +23,6 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_STOP_OVERRIDES,
     build_babble_retry_prompt,
     build_music_retry_prompt,
-    build_renardo_code_retry_prompt,
-    extract_renardo_code_lines,
     is_metalanguage_babble,
     is_music_stop_command,
     is_vocal_request,
@@ -234,51 +232,6 @@ class TestBuildMusicRetryPrompt:
 
     def test_empty_user_input(self) -> None:
         prompt = build_music_retry_prompt("")
-        assert "[CRITICAL]" in prompt
-
-
-class TestExtractRenardoCodeLines:
-    def test_extracts_code_after_strip_markdown(self) -> None:
-        # After strip_markdown the ``` fences are gone but the code remains.
-        spoken = (
-            "Мелодия для души — мягкие клавиши.\n\n"
-            "renardo\n"
-            "Clock.bpm = 72\n"
-            'Scale.default = "major"\n'
-            'Root.default = "D"\n'
-            "p1 >> keys([0, 2, 4, 7], dur=0.5, amp=0.4)\n"
-            "p2 >> bell([4, 7, 11, 9, 7], dur=2, oct=5, amp=0.25)\n"
-            "p3 >> warmpad([0, 4, 7], dur=8, amp=0.2)"
-        )
-        code = extract_renardo_code_lines(spoken)
-        assert code is not None
-        assert "Clock.bpm = 72" in code
-        assert "p1 >> keys" in code
-        assert "p3 >> warmpad" in code
-        assert "Мелодия" not in code  # prose excluded
-
-    def test_none_when_no_code(self) -> None:
-        assert extract_renardo_code_lines("Расскажи анекдот про кота.") is None
-        assert extract_renardo_code_lines("") is None
-        assert extract_renardo_code_lines(None) is None
-
-    def test_root_default_set_call(self) -> None:
-        code = extract_renardo_code_lines(
-            'Root.default.set("A")\nScale.default.set("minor")\np1 >> saw([0,1,2])'
-        )
-        assert code is not None
-        assert "Root.default.set" in code
-
-    def test_plain_text_with_clock_word_is_not_code(self) -> None:
-        # «Clock.bpm» must be a real assignment, not prose.
-        assert extract_renardo_code_lines("включи бит и поставь темп") is None
-
-
-class TestBuildRenardoCodeRetryPrompt:
-    def test_contains_code_and_demands_tool(self) -> None:
-        prompt = build_renardo_code_retry_prompt("p1 >> blip([0,2,4])")
-        assert "execute_music_code" in prompt
-        assert "p1 >> blip([0,2,4])" in prompt
         assert "[CRITICAL]" in prompt
 
 
