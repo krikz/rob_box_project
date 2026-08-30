@@ -1148,6 +1148,55 @@ pr_state_now() {  # $1=pr_number
         || printf '%s' "unknown"
 }
 
+# Ретро 31.08 t_e00f448d: merge-gate UNSTABLE-блок раньше всегда создавал rebase-
+# карточки (по процессу Шифу 10.08 — «взять девелоп сейчас и позеленеть»), но это
+# работает только для stale-from-develop. Если CI красный ИЗ-ЗА unit/lint
+# regression в самом коде PR (PR #1740/1741 — реальный случай 31.08),
+# rebase не поможет: develop-фиксов нет, регрессия — в PR. Нужно отличать:
+#
+#   pr_classify_failure "$pr_head_oid"
+#     → печатает "unit_lint" если хотя бы один failed check-run — lint/unit-test
+#     → печатает "integration_e2e" если только build/deploy/e2e/integration
+#     → печатает "unknown" если не смогли достать check-runs (fail-open → старое
+#       поведение: rebase-карточка ОК, develop-фиксы могут починить e2e).
+#
+# Классификация по имени check-run (регулярка, регистронезависимо):
+#   unit_lint:    lint|test|unit|pytest|mypy|ruff|flake8|black|coverage
+#   integration:  integration|e2e|deploy|build|docker|release|smoke
+# При наличии ОБЕИХ категорий → unit_lint (худший случай: реальный код — лечить
+# код, не rebase'ить).
+pr_classify_failure() {  # $1=head_oid → печатает категорию
+    local head_oid="${1:-}"
+    [ -n "$head_oid" ] || { printf '%s' "unknown"; return 0; }
+    local failed_json
+    failed_json="$(gh api "repos/${GH_REPO}/commits/${head_oid}/check-runs" \
+        --jq '[.check_runs[] | select(.conclusion == "failure" or .conclusion == "timED_OUT" or .conclusion == "cANCELLED")] | map({name, html_url})' \
+        2>/dev/null || echo "")"
+    [ -z "$failed_json" ] || [ "$failed_json" = "null" ] || [ "$failed_json" = "[]" ] && \
+        { printf '%s' "unknown"; return 0; }
+    # Классификация по именам. Если хоть один матчит unit_lint → unit_lint
+    # (смесь = реальный код в PR — diagnostic).
+    if printf '%s' "$failed_json" | grep -qiE '"name"[[:space:]]*:[[:space:]]*"[^"]*(lint|test|unit|pytest|mypy|ruff|flake8|black|coverage)'; then
+        printf '%s' "unit_lint"
+        return 0
+    fi
+    if printf '%s' "$failed_json" | grep -qiE '"name"[[:space:]]*:[[:space:]]*"[^"]*(integration|e2e|deploy|build|docker|release|smoke)'; then
+        printf '%s' "integration_e2e"
+        return 0
+    fi
+    printf '%s' "unknown"
+}
+
+# Печатает JSON-список failed jobs в формате {name,html_url} для body карточки.
+# $1=head_oid. Пустая строка если не смогли достать (fail-open).
+pr_failed_jobs_json() {  # $1=head_oid
+    local head_oid="${1:-}"
+    [ -n "$head_oid" ] || { printf '%s' ""; return 0; }
+    gh api "repos/${GH_REPO}/commits/${head_oid}/check-runs" \
+        --jq '[.check_runs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled")] | map({name, html_url}) | tostring' \
+        2>/dev/null || printf '%s' ""
+}
+
 # detect_pr_kind — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
 # Ретро 25.08 t_00ba0224 (ADR-номер collision guard). merge-gate должен
@@ -1581,6 +1630,7 @@ pr_labels_csv = ",".join(sorted(
 pr_commits_count = len(pr.get("commits") or [])
 pr_additions = int(pr.get("additions") or 0)
 pr_deletions = int(pr.get("deletions") or 0)
+pr_head_oid = str(pr.get("headRefOid", "") or "")
 print(f"pr_number={shlex.quote(pr_number)}")
 print(f"pr_base={shlex.quote(pr_base)}")
 print(f"pr_deletions={pr_deletions}")
@@ -1593,6 +1643,7 @@ print(f"pr_title={shlex.quote(pr_title)}")
 print(f"pr_labels_csv={shlex.quote(pr_labels_csv)}")
 print(f"pr_commits_count={pr_commits_count}")
 print(f"pr_additions={pr_additions}")
+print(f"pr_head_oid={shlex.quote(pr_head_oid)}")
 ')"
 
     if [ -z "${pr_number:-}" ]; then
@@ -2514,6 +2565,123 @@ for t in data:
         # же ветка, никаких новых. Если карточки нет → создаём с assignee
         # по метке issue.
         if [ "$pr_merge_state" = "UNSTABLE" ] && [ "$pr_state" = "OPEN" ]; then
+            # Ретро 31.08 t_e00f448d: ДО reminder-логики — classify: реальная ли
+            # это регрессия в коде PR, или просто CI красный на integration/build,
+            # которые могут починиться develop-фиксами при rebase.
+            #   unit_lint       → ДИАГНОСТИЧЕСКАЯ карточка (assignee по label issue),
+            #                     raw-evidence (failed job names + html_url), НЕ rebase
+            #   integration_e2e → старая rebase-логика (develop-фиксы могут починить)
+            #   unknown         → fail-open: старая rebase-логика (безопасный default)
+            _un_class="$(pr_classify_failure "${pr_head_oid:-}")"
+            log "issue #${number}: PR #${pr_number} UNSTABLE classification=${_un_class} (head_oid=${pr_head_oid:-none})"
+            if [ "$_un_class" = "unit_lint" ]; then
+                # Диагностический путь: реальная CI-регрессия в коде PR, rebase
+                # бессилен. Создаём карточку с raw-evidence для профильного воркера
+                # (assignee по метке issue). Rate-limit по marker "CI UNSTABLE: DIAGNOSTIC
+                # #<pr_number>" чтобы не плодить дубликаты.
+                _un_diag_key="ci-unstable-diagnostic-pr-${pr_number}"
+                if [ -n "${task_id:-}" ]; then
+                    _un_diag_last="$(kanban_last_reminder_ts "$task_id" "$_un_diag_key")"
+                    _un_diag_now="$(date +%s)"
+                    if [ -n "$_un_diag_last" ] && [ $(( _un_diag_now - _un_diag_last )) -lt 7200 ]; then
+                        log "issue #${number}: PR #${pr_number} UNSTABLE unit_lint — diagnostic card rate-limited (last=${_un_diag_last})"
+                        skipped=$((skipped+1)); continue
+                    fi
+                fi
+                # Дополнительная защита: dedup по уже существующим карточкам с
+                # тем же PR в title (аналогично recovery-логике выше).
+                _un_diag_existing="$(hermes kanban --board "$KANBAN_BOARD" list --json 2>/dev/null | python3 -c "
+import json,sys
+try:
+    data = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(0)
+needle = 'CI UNSTABLE DIAGNOSTIC #${pr_number}'
+for t in data:
+    title = t.get('title','')
+    if needle in title:
+        print(t['id'], t.get('status',''))
+" 2>/dev/null || true)"
+                _un_diag_active="$(printf '%s\n' "$_un_diag_existing" | awk '$2 ~ /^(running|ready|todo)$/ {print $1" "$2; exit}')"
+                if [ -n "$_un_diag_active" ]; then
+                    log "issue #${number}: UNSTABLE unit_lint — diagnostic card already active (${_un_diag_active}) for PR #${pr_number} — skip"
+                    skipped=$((skipped+1)); continue
+                fi
+                # assignee по метке issue (та же логика, что и в rebase-блоке ниже).
+                _assignee="default"
+                for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
+                    case "$lbl" in
+                        agent:backend)    _assignee="backend"; break ;;
+                        agent:developer)  _assignee="developer"; break ;;
+                        agent:tester)     _assignee="tester"; break ;;
+                        agent:devops)     _assignee="devops"; break ;;
+                        agent:architect)  _assignee="architect"; break ;;
+                    esac
+                done
+                # Skill — профильный, как в recovery-блоке.
+                _skill="architecture-doc-review"
+                case "$_assignee" in
+                    backend)   _skill="test-driven-development" ;;
+                    developer) _skill="test-driven-development" ;;
+                    tester)    _skill="test-driven-development" ;;
+                    devops)    _skill="agent-flow-e2e-pipeline" ;;
+                esac
+                # Пере-проверяем state PR (мог закрыться пока мы тут).
+                if [ "$(pr_state_now "$pr_number")" = "CLOSED" ]; then
+                    log "issue #${number}: PR #${pr_number} CLOSED — UNSTABLE diagnostic card НЕ создаю (ретро t_16325ddd)"
+                    skipped=$((skipped+1)); continue
+                fi
+                # headRefName для body.
+                pr_head_ref="$(gh pr view "$pr_number" --repo "$GH_REPO" --json headRefName --jq '.headRefName' 2>/dev/null || echo "?")"
+                # Failed jobs list с html_url (raw-evidence).
+                _un_failed_jobs="$(pr_failed_jobs_json "${pr_head_oid:-}")"
+                # Формируем markdown-список failed jobs (не json-блоб, чтобы воркер
+                # сразу видел названия и мог кликнуть).
+                _un_failed_md="$(printf '%s' "$_un_failed_jobs" | python3 -c "
+import json,sys
+try:
+    arr = json.loads(sys.stdin.read())
+    if not arr:
+        print('- (не смог достать список failed jobs; см. вкладку Checks в PR)')
+    else:
+        for j in arr:
+            n = j.get('name','?')
+            u = j.get('html_url','')
+            print(f'- **{n}** — <{u}|job>')
+except Exception:
+    print('- (failed to parse jobs JSON)')
+" 2>/dev/null || echo '- (failed to extract failed jobs)')"
+                _un_diag_body="## 🐛 CI UNSTABLE: real regression в PR (merge-gate, ретро t_e00f448d, $(date -u +%H:%M:%SZ))
+
+**PR #${pr_number}** (\\\`${pr_head_ref}\\\`) = **mergeable=MERGEABLE + mergeStateStatus=UNSTABLE** + classification=**unit_lint**.
+Это **НЕ stale-from-develop**: develop-фиксов нет, регрессия — в коде этого PR. **rebase бессилен**, нужна починка кода/тестов.
+
+### Failed jobs (check-run)
+${_un_failed_md}
+
+### Issue/PR context
+- issue #${number}
+- PR head: \\\`${pr_head_ref}\\\` @ \\\`${pr_head_oid}\\\`
+
+### Что делать (НЕ rebase)
+1. Открыть failed jobs, прочитать assertion diff и имена упавших тестов.
+2. Починить код/тесты в \\\`${pr_head_ref}\\\` (НЕ делать rebase на develop — это не тот случай).
+3. Push --force-with-lease (или обычный push если коммиты были аддитивные).
+4. Когда CI станет зелёным → merge-gate следующего тика увидит MERGEABLE+CLEAN → поставит \\\`needs-e2e\\\`.
+
+Карточка закрывается когда PR станет MERGEABLE+CLEAN (CI зелёный).
+
+(merge-gate создал эту карточку, потому что classification check-runs = unit_lint — ретро t_e00f448d.)"
+                hermes kanban --board "$KANBAN_BOARD" create \
+                    --assignee "$_assignee" --skill "$_skill" --priority 90 --max-runtime 1800 \
+                    --body "$_un_diag_body" \
+                    "🐛 CI UNSTABLE DIAGNOSTIC #${pr_number} — \\\`${pr_head_ref}\\\` (issue #${number})" \
+                    >/dev/null 2>&1 \
+                    && log "issue #${number}: UNSTABLE unit_lint diagnostic card created for PR #${pr_number} (assignee=${_assignee})" \
+                    || log "issue #${number}: WARNING UNSTABLE unit_lint diagnostic card create failed for PR #${pr_number}"
+                skipped=$((skipped+1)); continue
+            fi
+            # integration_e2e / unknown → старая rebase-логика (как до фикса).
             # Ретро 12.08 t_8af6bf29: rate-limit — коммент не чаще 1 раза в 2ч.
             if [ -n "${task_id:-}" ]; then
                 _last_un="$(kanban_last_reminder_ts "$task_id" "CI UNSTABLE detected")"
@@ -2523,7 +2691,7 @@ for t in data:
                     skipped=$((skipped+1)); continue
                 fi
             fi
-            log "issue #${number}: PR #${pr_number} mergeStateStatus=UNSTABLE — appending rebase reminder"
+            log "issue #${number}: PR #${pr_number} mergeStateStatus=UNSTABLE — appending rebase reminder (class=${_un_class})"
             # Подтягиваем headRefName — UNSTABLE-блок не имеет его из основного цикла (регрессия t_1146)
             pr_head_ref="$(gh pr view "$pr_number" --repo "$GH_REPO" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")"
             [ -z "${pr_head_ref:-}" ] && log "issue #${number}: WARNING cannot fetch headRefName for PR #${pr_number}" && continue
