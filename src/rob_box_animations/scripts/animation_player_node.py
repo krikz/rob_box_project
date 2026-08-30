@@ -84,6 +84,13 @@ class AnimationPlayerNode(Node):
         self.is_robot_speaking = False
         self.manual_animation_active = False  # Флаг ручной анимации
         self.emotion_timer = None  # Таймер для возврата из эмоциональной анимации
+        # Дебаунс ухода в idle. tts_node шлёт ready после КАЖДОГО чанка и
+        # synthesizing перед следующим; в живом логе (рэп из 7 куплетов,
+        # 2026-08-29) между ними было 25–79 мс. Без задержки лицо на каждой
+        # границе куплетов успевало перезагрузить idle и вернуться в talking —
+        # видимый дёрг посреди непрерывного монолога.
+        self.idle_debounce_s = 0.6
+        self._idle_debounce_timer = None
 
         self.get_logger().info(f'✅ Subscribed to /voice/tts/state for automatic animation switching')
         self.get_logger().info(f'   Idle animation: {self.idle_animation}')
@@ -218,6 +225,33 @@ class AnimationPlayerNode(Node):
             if not self.player.play_animation(f'{self.talking_animation}.yaml'):
                 self.get_logger().warn(f'⚠️  Не найдена анимация {self.talking_animation}.yaml')
 
+    def _cancel_idle_debounce(self):
+        """Снять отложенный уход в idle (речь продолжилась)."""
+        if self._idle_debounce_timer is not None:
+            self._idle_debounce_timer.cancel()
+            self._idle_debounce_timer = None
+
+    def _schedule_idle_debounce(self):
+        """Отложить уход в idle на ``idle_debounce_s``.
+
+        Речь, нарезанная на чанки, даёт короткие провалы в «замолчал»
+        между ними. Мгновенный переход показывал бы idle на 25–79 мс —
+        именно это и мигало на границах куплетов.
+        """
+        self._cancel_idle_debounce()
+        self._idle_debounce_timer = self.create_timer(
+            self.idle_debounce_s, self._idle_debounce_fired
+        )
+
+    def _idle_debounce_fired(self):
+        """Пауза оказалась настоящей — гасим лицо."""
+        self._cancel_idle_debounce()
+        if self.is_robot_speaking or self.manual_animation_active:
+            return
+        self.get_logger().info('🤐 Робот замолчал - возвращаюсь на idle анимацию')
+        if not self.player.play_animation(f'{self.idle_animation}.yaml'):
+            self.get_logger().warn(f'⚠️  Не найдена анимация {self.idle_animation}.yaml')
+
     def tts_state_callback(self, msg):
         """Handle TTS state changes - switch between idle and talking animations."""
         state = msg.data
@@ -232,6 +266,16 @@ class AnimationPlayerNode(Node):
             return
 
         if state in ['synthesizing', 'playing']:
+            # Речь (продолжает) идти — отменяем отложенный уход в idle,
+            # иначе он погасит лицо посреди монолога.
+            resumed_within_debounce = self._idle_debounce_timer is not None
+            self._cancel_idle_debounce()
+            if resumed_within_debounce:
+                # Лицо в idle уйти не успело и всё ещё показывает talking —
+                # перезагружать тот же манифест значит воспроизвести ровно
+                # тот дёрг, ради которого дебаунс и заводился.
+                self.is_robot_speaking = True
+                return
             # Robot is speaking - switch to talking animation
             if not self.is_robot_speaking:
                 self.get_logger().info('🗣️ Робот говорит - переключаюсь на talking анимацию')
@@ -244,11 +288,14 @@ class AnimationPlayerNode(Node):
             # 'tts_silero_warming' — чанк пропущен и озвучен НЕ будет
             # (tts_node: Silero ещё грелся). Без него рот продолжал
             # артикулировать в тишине до следующего запроса TTS.
+            #
+            # Уход в idle ОТКЛАДЫВАЕТСЯ: между чанками одной реплики
+            # приходит ready, а следом synthesizing — переключаться на
+            # эти десятки миллисекунд значит мигать лицом на каждой
+            # границе куплетов (см. _schedule_idle_debounce).
             if self.is_robot_speaking:
-                self.get_logger().info('🤐 Робот замолчал - возвращаюсь на idle анимацию')
                 self.is_robot_speaking = False
-                if not self.player.play_animation(f'{self.idle_animation}.yaml'):
-                    self.get_logger().warn(f'⚠️  Не найдена анимация {self.idle_animation}.yaml')
+                self._schedule_idle_debounce()
 
     def play_callback(self, request, response):
         """Play animation service callback."""
