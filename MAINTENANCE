@@ -1,6 +1,0 @@
-MAINTENANCE — agent-flow приостановлен, юзер тестирует вручную на билдовой машине Katana (10.1.1.249).
-- agent-flow-triage: OFF
-- agent-flow-merge-gate: OFF
-- agent-flow-e2e-process: OFF
-Все cron-процессы, которые могут закоммитить/запушить/мерджить в develop, должны быть ОСТАНОВЛЕНЫ на время ручной работы.
-Юзер допиливает фичи руками. После завершения — `git rm MAINTENANCE` + commit.
