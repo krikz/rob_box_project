@@ -104,18 +104,18 @@ ISSUE_LIMIT="${ISSUE_LIMIT:-50}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-merge-gate.lock}"
 LOG_PREFIX="${LOG_PREFIX:-[agent-flow-merge-gate]}"
 
+# --- shared library bootstrap ------------------------------------------------
+# Отсюда merge-gate берёт: af_load_profile_env, af_flock_guard_or_exit,
+# af_maintenance_gate_or_exit, gh_list_issues_by_label, has_label, slugify,
+# detect_pr_kind, free_stale_worktrees_for (дедуп 30.08). Source ДО загрузки
+# .env — сам загрузчик живёт в библиотеке.
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=lib_agent_flow_common.sh
+. "$_LIB_DIR_HERE/lib_agent_flow_common.sh"
+
 # --- source profile .env if present -------------------------------------------
 PROFILE_ENV="${HERMES_HOME}/profiles/agent-flow/.env"
-if [ -f "$PROFILE_ENV" ]; then
-    while IFS='=' read -r key val; do
-        case "$key" in ''|\#*) continue ;; esac
-        val="${val%\"}"; val="${val#\"}"
-        val="${val%\'}"; val="${val#\'}"
-        if [ -z "${!key:-}" ]; then
-            export "$key=$val"
-        fi
-    done < "$PROFILE_ENV"
-fi
+af_load_profile_env "$PROFILE_ENV"
 
 # Defensive defaults (in case .env is partial).
 : "${KANBAN_BOARD:=robbox}"
@@ -144,7 +144,6 @@ fi
 # снял метку (e2e-done / needs-review) после auto-установки, merge-gate
 # НЕ должен её возвращать в reconcile / lint-путях. Источник — рядом со
 # скриптом (для тестов и для install-раскладки в ~/.hermes/...).
-_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=lib_user_unlabel_check.sh
 . "$_LIB_DIR_HERE/lib_user_unlabel_check.sh"
 # self-id / whoami helper (issue #1534): before any destructive
@@ -819,6 +818,8 @@ PR #${_wm_pr} (\`${_wm_head}\` → \`${_wm_base}\`, state=${_wm_state}) имее
     return 0
 }
 
+# gh_list_issues_by_label — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
+
 # --- deploy-issue label-less orphan backstop (ретро 15.08 t_238ff3f7) -------
 # Сценарий: L-Deploy and Verify создаёт deploy-issues с версией workflow-файла
 # С ВЕТКИ e2e-раунда (z-{e2e}/test-round-N), а не develop. Если round-ветка
@@ -831,57 +832,6 @@ PR #${_wm_pr} (\`${_wm_head}\` → \`${_wm_base}\`, state=${_wm_state}) имее
 # → триаж на следующем тике создаст kanban-карточку (как #1277).
 # Idempotent: после добавления hermes issue больше не подпадает под правило.
 # Вызывается рядом со stale_branch_scan_all (основной путь + no-issues путь).
-# --- gh_list_issues_by_label (ретро 19.08 #1457) ------------------------------
-# Fallback для `gh issue list --label X` (GraphQL-фильтр по label ломается на
-# некоторых версиях gh CLI). При пустом ответе gh-list — пробуем REST API
-# /issues?labels=X. Возвращает JSON-массив с полями: number,title,labels,body
-# (и updatedAt если присутствует, для deploy-issue-reconcile).
-gh_list_issues_by_label() {
-    local _label="$1" _state="${2:-open}" _limit="${3:-${ISSUE_LIMIT}}" _fields="${4:-number,title,labels,body,updatedAt}"
-    local _json="" _api_json=""
-    _json="$(gh issue list \
-        --repo "$GH_REPO" \
-        --label "$_label" \
-        --state "$_state" \
-        --limit "$_limit" \
-        --json "$_fields" 2>/dev/null || true)"
-    if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
-        printf '%s' "$_json"
-        return 0
-    fi
-    _api_json="$(gh api "repos/${GH_REPO}/issues?labels=${_label}&state=${_state}&per_page=${_limit}" 2>/dev/null || true)"
-    if [ -z "$_api_json" ] || [ "$_api_json" = "[]" ]; then
-        printf '[]'
-        return 0
-    fi
-    log "gh_list_issues_by_label(${_label}): gh-list пустой, fallback на REST API /issues?labels=${_label}"
-    printf '%s' "$_api_json" | python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    print("[]"); sys.exit(0)
-if not isinstance(data, list):
-    print("[]"); sys.exit(0)
-keep = []
-for it in data:
-    if not isinstance(it, dict):
-        continue
-    if it.get("pull_request"):
-        continue
-    rec = {
-        "number": it.get("number"),
-        "title": it.get("title") or "",
-        "labels": [{"name": (l.get("name") if isinstance(l, dict) else l)} for l in it.get("labels", [])],
-        "body": it.get("body") or "",
-    }
-    if "updatedAt" in it:
-        rec["updatedAt"] = it.get("updatedAt")
-    keep.append(rec)
-print(json.dumps(keep, ensure_ascii=False))
-'
-}
-
 deploy_issue_reconcile_all() {
     local _dep_json
     # Ретро 19.08 #1457: gh issue list --label ломает фильтр → fallback через
@@ -1051,23 +1001,13 @@ PYEOF
 }
 
 # G6: flock sentinel — skip tick if another instance holds the lock.
-exec 9>"$LOCK_FILE" || { log "cannot open lock $LOCK_FILE"; exit 1; }
-if ! flock -n 9; then
-    log "another instance holds $LOCK_FILE — skip"; exit 0
-fi
+# Тело — af_flock_guard_or_exit в lib_agent_flow_common.sh (дедуп 30.08).
+af_flock_guard_or_exit "$LOCK_FILE"
 
 # --- G1: MAINTENANCE gate (remote + local) -----------------------------------
-if [ -n "${GH_REPO:-}" ]; then
-    remote_ref="${MAINTENANCE_BRANCH}:${MAINTENANCE_FILE}"
-    if git ls-remote "https://github.com/${GH_REPO}.git" "$remote_ref" 2>/dev/null | grep -q .; then
-        log "🛑 MAINTENANCE flag set on remote ${remote_ref} — skip"; exit 0
-    fi
-fi
-if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ]; then
-    if git -C "$REPO_DIR" show "${MAINTENANCE_BRANCH}:${MAINTENANCE_FILE}" >/dev/null 2>&1; then
-        log "🛑 MAINTENANCE flag set locally in ${REPO_DIR} — skip"; exit 0
-    fi
-fi
+# Тело — af_maintenance_gate_or_exit в lib_agent_flow_common.sh (дедуп 30.08:
+# три байт-в-байт копии в triage / merge-gate / e2e-process).
+af_maintenance_gate_or_exit
 
 # --- G2: gh auth check -------------------------------------------------------
 if ! gh auth status >/dev/null 2>&1; then
@@ -1113,19 +1053,9 @@ if [ -z "$issues_json" ] || [ "$issues_json" = "[]" ]; then
     issues_json='[]'
 fi
 
-# --- shared helpers (kept compatible with triage.sh) -------------------------
-slugify() {
-    # lowercase, non-alnum -> -, collapse, trim, kebab-case, cap 40
-    printf '%s' "$1" \
-        | tr '[:upper:]' '[:lower:]' \
-        | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40
-}
+# slugify — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
-# Resolve predicate labels from a comma-joined label string.
-has_label() {  # $1=labels_csv (lowercased) $2=label_name
-    printf '%s' "$1" | tr ',' '\n' | grep -Fxq "$2"
-}
+# has_label — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
 # User-reopen guard helpers (issue #1391, retro 18.08 t_c4f1d5c8).
 # Если юзер вручную переоткрыл issue ПОСЛЕ того, как e2e-process поставил
@@ -1218,51 +1148,7 @@ pr_state_now() {  # $1=pr_number
         || printf '%s' "unknown"
 }
 
-# Detect PR kind: "lint" (no e2e needed) vs "functional" (e2e required).
-# Signal sources (priority order):
-#   1) PR label `${NO_E2E_LABEL}` → lint (explicit worker opt-out)
-#   2) PR title prefix `[lint]` / `[refactor]` → lint (worker shorthand)
-#   3) PR title prefix `fix(agent-flow` / `fix(agent_flow` → lint (ретро 13.08
-#      t_de63be1f): фиксы КОНВЕЙЕРА (e2e-process/merge-gate/triage/watchdog)
-#      не меняют поведение робота — e2e на железе не нужен, CI green
-#      достаточно. Раньше такие PR (#1189/#1190) уходили в e2e-очередь как
-#      functional и застревали.
-#   4) PR title prefix `docs(adr` / `docs(architecture` → lint (ретро 24.08
-#      t_388bb652): ADR-черновики архитектора (docs-only) НЕ меняют runtime,
-#      e2e на железе не нужен. Раньше такие PR (#1577/#1580/#1581/#1578)
-#      уходили в e2e-очередь как functional и залипали с e2e:rejected
-#      (cold-start wake-gate no_wake_word, см. ретро t_d9e70587).
-#   5) PR title prefix `wip(arch` / `wip(infra` → lint (ретро 24.08
-#      t_388bb652): WIP-черновики архитектора (verdict-сохранения, infra-обсуждения)
-#      НЕ являются runtime-фичами. Раньше PR #1559 (`wip(arch #1506 t_228de99c):
-#      verdict v3`) висел e2e:rejected 11ч49м без прогресса.
-#   6) PR title prefix `wip(voice-core` → lint (ретро 24.08 t_388bb652):
-#      verification-suite wip-черновик (e2e_routes/voice-core проверки),
-#      не runtime.
-#   7) otherwise → functional (e2e mandatory)
-# Inputs: $1=pr_labels_csv (lowercased), $2=pr_title
-# Output: prints "lint" or "functional"; rc=0 always.
-detect_pr_kind() {  # $1=labels_csv $2=title
-    local labels_csv title_lc prefix
-    labels_csv="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-    title_lc="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
-    if has_label "$labels_csv" "$NO_E2E_LABEL"; then
-        printf '%s' "lint"; return 0
-    fi
-    # Title prefix detection (case-insensitive): сматчить ПЕРВЫЙ токен (по пробелу)
-    # через glob `*` в конце — иначе `(` и `)` в conventional-commit prefix
-    # (docs(adr-0027), wip(arch #1506)) ломают extglob grouping pattern.
-    prefix="${title_lc%% *}"
-    case "$prefix" in
-        '[lint]'|'[refactor]') printf '%s' "lint"; return 0 ;;
-    esac
-    case "$title_lc" in
-        'fix(agent-flow'*|'fix(agent_flow'*|\
-        'docs(adr'*|'docs(architecture'*|\
-        'wip(arch'*|'wip(infra'*|'wip(voice-core'*) printf '%s' "lint"; return 0 ;;
-    esac
-    printf '%s' "functional"; return 0
-}
+# detect_pr_kind — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
 # Ретро 25.08 t_00ba0224 (ADR-номер collision guard). merge-gate должен
 # убедиться, что новый docs/adr/NNNN-*.md в PR не пересекается по номеру с
@@ -1445,39 +1331,7 @@ Merge-gate **НЕ поставит ${NEEDS_E2E_LABEL}** пока коллизи�
 
 # --- process each issue ------------------------------------------------------
 
-# Free stale worktrees on the SAME branch as this card's workspace
-# (kanban workspace_path aware — worktrees live in /home/builder/rob_box_project).
-free_stale_worktrees_for() {  # $1=task_id (t_<hex>)
-    local task_id="$1" my_wt my_branch line wt_path wt_branch owner
-    my_wt="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" show "$task_id" --json 2>/dev/null \
-        | python3 -c 'import sys,json
-try:
-    d=json.load(sys.stdin); print(d.get("task",{}).get("workspace_path") or "")
-except Exception: print("")' 2>/dev/null || true)"
-    if [ -z "$my_wt" ] || [ ! -d "$my_wt" ]; then
-        return 0
-    fi
-    my_branch="$(git -C "$my_wt" branch --show-current 2>/dev/null || true)"
-    [ -z "$my_branch" ] && return 0
-    wt_path=""
-    while IFS= read -r line; do
-        case "$line" in
-            worktree\ *) wt_path="${line#worktree }" ;;
-            branch\ *)
-                wt_branch="${line#branch refs/heads/}"
-                if [ "$wt_branch" = "$my_branch" ] && [ "$wt_path" != "$my_wt" ]; then
-                    owner="$(basename "$wt_path")"
-                    if [ "$owner" != "$task_id" ]; then
-                        git -C "$my_wt" worktree remove --force "$wt_path" 2>/dev/null \
-                            && log "  freed stale worktree $wt_path (branch $my_branch, card $owner)"
-                    fi
-                fi
-                ;;
-        esac
-    done < <(git -C "$my_wt" worktree list --porcelain 2>/dev/null)
-    git -C "$my_wt" worktree prune 2>/dev/null || true
-    return 0
-}
+# free_stale_worktrees_for — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
 considered=0
 labeled=0

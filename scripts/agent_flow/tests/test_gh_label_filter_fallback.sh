@@ -167,6 +167,34 @@ test_F_deploy_sweep_helper_falls_back() {
     assert_eq "1" "$_cnt" "F: deploy-sweep helper → 1 issue (REST fallback)"
 }
 
+# --- G. REST отдаёт updated_at (snake_case) → на выходе updatedAt ----------
+# Баг, живший во всех четырёх копиях helper'а до дедупа 30.08: маппинг
+# REST→gh-list делал `if "updatedAt" in it`, а GitHub REST отдаёт
+# `updated_at`. Условие не срабатывало никогда, и на fallback-пути поле
+# терялось. deploy-sweep читает его жёстко (`str(i["updatedAt"])`) внутри
+# `< <(python3 ...)` → KeyError, ноль обработанных issue и НЕизменившийся
+# exit-код тика, то есть отказ «в тишине».
+test_G_rest_snake_case_updated_at() {
+    new_test
+    install_mocks
+
+    set_state ISSUE_LIST_JSON '[]'
+    set_state REST_ISSUES_BY_LABEL_JSON '[{"number":1392,"title":"issue 1392","labels":[{"name":"deployment"}],"body":"","updated_at":"2026-08-19T00:00:00Z"}]'
+
+    local _out
+    _out="$(eval_helper "$DEPLOY_SWEEP" gh_list_issues_by_label deployment open 20 2>/dev/null || true)"
+
+    local _updated
+    _updated="$(printf '%s' "$_out" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d[0].get("updatedAt", ""))
+except Exception:
+    print("")')"
+    assert_eq "2026-08-19T00:00:00Z" "$_updated" "G: REST updated_at → updatedAt на выходе"
+}
+
 # ============================================================================
 # Override install_mocks: добавим gh api обработку /repos/.../issues?labels=
 # которая возвращает фикстуру REST_ISSUES_BY_LABEL_JSON.
@@ -298,5 +326,6 @@ run_test "C. оба пусты → []" test_C_both_empty_returns_empty_array
 run_test "D. triage.sh helper → fallback" test_D_triage_helper_falls_back
 run_test "E. merge-gate.sh helper (updatedAt) → fallback" test_E_merge_gate_helper_falls_back
 run_test "F. deploy-sweep.sh helper → fallback" test_F_deploy_sweep_helper_falls_back
+run_test "G. REST updated_at (snake_case) → updatedAt" test_G_rest_snake_case_updated_at
 
 summary

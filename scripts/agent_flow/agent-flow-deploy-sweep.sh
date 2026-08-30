@@ -49,17 +49,17 @@ VISION_PI_IP="${VISION_PI_IP:-10.1.1.11}"
 SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8}"
 PREFIX="[agent-flow-deploy-sweep]"
 
+# --- shared library bootstrap ------------------------------------------------
+# Отсюда deploy-sweep берёт: af_load_profile_env, af_flock_guard_or_exit,
+# af_maintenance_gate_or_exit, gh_list_issues_by_label, has_label_json
+# (дедуп 30.08). Source ДО загрузки .env — сам загрузчик живёт в библиотеке.
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=lib_agent_flow_common.sh
+. "$_LIB_DIR_HERE/lib_agent_flow_common.sh"
+
 # --- MAINTENANCE gate + env -------------------------------------------------
 ENV_FILE="$HERMES_HOME/profiles/agent-flow/.env"
-if [ -f "$ENV_FILE" ]; then
-  while IFS='=' read -r key val; do
-    case "$key" in ''|\#*) continue ;; esac
-    val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
-    if [ -z "${!key:-}" ]; then
-      export "$key=$val"
-    fi
-  done < "$ENV_FILE"
-fi
+af_load_profile_env "$ENV_FILE"
 : "${GH_REPO:?GH_REPO must be set (owner/repo)}"
 
 log() { printf '%s %s %s\n' "$PREFIX" "$(date -Iseconds)" "$*" >&2; }
@@ -72,65 +72,25 @@ run() {
 }
 
 # flock: skip tick if another instance holds the lock.
-exec 9>"$LOCK_FILE" || { log "cannot open lock $LOCK_FILE"; exit 1; }
-if ! flock -n 9; then
-  log "another instance holds $LOCK_FILE — skip"; exit 0
-fi
+# Тело — af_flock_guard_or_exit в lib_agent_flow_common.sh (дедуп 30.08).
+af_flock_guard_or_exit "$LOCK_FILE"
+
+# MAINTENANCE gate (kill-switch). Секция выше называлась «MAINTENANCE gate +
+# env» с 12.08, но самого гейта в скрипте не было НИКОГДА: deploy-sweep
+# продолжал ходить по SSH на Pi, вешать метку `hermes` и закрывать issues,
+# пока весь остальной конвейер стоял на паузе. Особенно заметно с
+# agents_sleep.sh (README §PEAK): тот ставит MAINTENANCE в PEAK-часы со
+# смыслом «все спят», а спали все, кроме этого скрипта. Гейт добавлен 30.08
+# вместе с дедупом — тем же af_maintenance_gate_or_exit, что у triage /
+# merge-gate / e2e-process.
+af_maintenance_gate_or_exit
 
 # gh auth check
 if ! gh auth status >/dev/null 2>&1; then
   log "gh auth not configured — exit 1"; exit 1
 fi
 
-# --- gh_list_issues_by_label (ретро 19.08 #1457) ------------------------------
-# Fallback для `gh issue list --label X` (GraphQL-фильтр по label ломается на
-# некоторых версиях gh CLI). При пустом ответе gh-list — пробуем REST API
-# /issues?labels=X. Возвращает JSON-массив с полями: number,title,labels,body.
-gh_list_issues_by_label() {
-    local _label="$1" _state="${2:-open}" _limit="${3:-${LIMIT:-20}}" _fields="${4:-number,title,labels,body,updatedAt}"
-    local _json="" _api_json=""
-    _json="$(gh issue list \
-        --repo "$GH_REPO" \
-        --label "$_label" \
-        --state "$_state" \
-        --limit "$_limit" \
-        --json "$_fields" 2>/dev/null || true)"
-    if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
-        printf '%s' "$_json"
-        return 0
-    fi
-    _api_json="$(gh api "repos/${GH_REPO}/issues?labels=${_label}&state=${_state}&per_page=${_limit}" 2>/dev/null || true)"
-    if [ -z "$_api_json" ] || [ "$_api_json" = "[]" ]; then
-        printf '[]'
-        return 0
-    fi
-    log "gh_list_issues_by_label(${_label}): gh-list пустой, fallback на REST API /issues?labels=${_label}"
-    printf '%s' "$_api_json" | python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    print("[]"); sys.exit(0)
-if not isinstance(data, list):
-    print("[]"); sys.exit(0)
-keep = []
-for it in data:
-    if not isinstance(it, dict):
-        continue
-    if it.get("pull_request"):
-        continue
-    rec = {
-        "number": it.get("number"),
-        "title": it.get("title") or "",
-        "labels": [{"name": (l.get("name") if isinstance(l, dict) else l)} for l in it.get("labels", [])],
-        "body": it.get("body") or "",
-    }
-    if "updatedAt" in it:
-        rec["updatedAt"] = it.get("updatedAt")
-    keep.append(rec)
-print(json.dumps(keep, ensure_ascii=False))
-'
-}
+# gh_list_issues_by_label — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
 # --- list open deployment issues --------------------------------------------
 issues_json="$(gh_list_issues_by_label deployment open "$LIMIT")"
@@ -140,9 +100,9 @@ if [ -z "$issues_json" ] || [ "$issues_json" = "[]" ]; then
 fi
 
 # --- helpers -----------------------------------------------------------------
-has_label() {  # $1=labels_json  $2=label_name
-  printf '%s' "$1" | grep -q "\"name\":\"$2\""
-}
+# has_label(JSON-контракт) — в lib_agent_flow_common.sh как has_label_json
+# (дедуп 30.08: одно имя несло два разных контракта — JSON здесь, CSV в
+# merge-gate / e2e-process / unlabeled-sweep; сводить их было нельзя).
 
 parse_signature() {  # $1=body → echo "env|scope|container|kind" or empty
   local sig
@@ -252,10 +212,10 @@ while IFS=$'\t' read -r number title_b64 updated_at body_b64; do
   labels_json="$(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '.labels' < /dev/null 2>/dev/null || echo '[]')"
 
   # Skip if already in triage / done
-  if has_label "$labels_json" "hermes"; then
+  if has_label_json "$labels_json" "hermes"; then
     log "issue #${number}: already has hermes — skip"; skipped=$((skipped+1)); continue
   fi
-  if has_label "$labels_json" "e2e-done" || has_label "$labels_json" "e2e:rejected"; then
+  if has_label_json "$labels_json" "e2e-done" || has_label_json "$labels_json" "e2e:rejected"; then
     log "issue #${number}: work already done/rejected — skip"; skipped=$((skipped+1)); continue
   fi
 

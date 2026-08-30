@@ -78,6 +78,14 @@ EXPECTED=(
     # MERGED PR в develop/main — запускает L-Build-All-Services чтобы
     # .image-versions.dev получил свежие dev-<sha> теги.
     agent-flow-post-merge-build.sh
+    # Shared library (дедуп 30.08): af_load_profile_env,
+    # af_flock_guard_or_exit, af_maintenance_gate_or_exit,
+    # gh_list_issues_by_label, has_label / has_label_json, slugify,
+    # detect_pr_kind, free_stale_worktrees_for. Source'ится из merge-gate /
+    # e2e-process / triage / deploy-sweep / unlabeled-sweep / handoff.
+    # До этого то же самое жило копипастой по шести скриптам и успело
+    # разъехаться дефолтами и текстами логов.
+    lib_agent_flow_common.sh
     # Shared library (ретро 18.08 t_de6bea69): source'ится из e2e-process и
     # merge-gate для «user-unlabel respect» guard'а. Должен лежать рядом со
     # скриптами во всех профилях.
@@ -433,6 +441,87 @@ else
     fi
 fi
 
+# --- ensure_cron_job (дедуп 30.08) ------------------------------------------
+# Общее тело трёх регистраторов ниже: они отличались только именем/скриптом/
+# расписанием, но каждый нёс свою копию проверок и своё сообщение об ошибке
+# (~30 строк ×3, python-guard был скопирован дословно дважды).
+#
+# Аргументы: <profile> <job_name> <job_script> <schedule> [guard]
+#
+# guard — как проверяем «джоб уже есть»:
+#   interval — есть enabled-джоб на этот script с schedule.kind=interval.
+#              Это правильная проверка: STALE once-job (state=completed,
+#              enabled=false) её НЕ проходит, и рядом создаётся живой
+#              interval-джоб (ретро 23.08+25.08 t_98bb3a1d/t_24e645e7 —
+#              e2e-rotation простоял 60+ часов именно на таком once-джобе).
+#   any      — есть ЛЮБОЙ джоб с этим script в jobs.json (исторический
+#              вариант ensure_cleanup_cron с 13.08).
+#              ⚠️ Слабее: completed once-джоб он засчитает как «живой», и
+#              cleanup-249 останется незарегистрированным. Оставлен как есть,
+#              чтобы дедуп не менял поведение крона на живом хосте; перевод
+#              cleanup на interval-guard — отдельное решение, см. §5bis
+#              docs/process-fix-roadmap.md.
+#
+# HERMES_PROFILES_ROOT переопределяется в тестах (см.
+# tests/test_install_ensure_cleanup_cron.sh); дефолт — путь на хосте ротации.
+ensure_cron_job() {  # $1=profile $2=job_name $3=job_script $4=schedule [$5=guard]
+    local profile="$1" job_name="$2" job_script="$3" job_schedule="$4"
+    local guard="${5:-interval}"
+    local profiles_root="${HERMES_PROFILES_ROOT:-/home/builder/.hermes/profiles}"
+    local jobs_file="$profiles_root/$profile/cron/jobs.json"
+    local registered=1
+
+    if ! command -v hermes >/dev/null 2>&1; then
+        echo "  SKIP ensure-cron ($job_script): hermes CLI not on PATH (nothing to register)"
+        return 0
+    fi
+    if [ ! -f "$jobs_file" ]; then
+        echo "  SKIP ensure-cron ($job_script): $jobs_file not present ($profile profile not set up here)"
+        return 0
+    fi
+
+    if [ "$guard" = "any" ]; then
+        if grep -q "\"script\": \"$job_script\"" "$jobs_file"; then registered=0; fi
+    else
+        if python3 -c "
+import json, sys
+try:
+    with open('$jobs_file') as f:
+        d = json.load(f)
+except Exception:
+    # Нечитаемый/битый jobs.json — считаем «джоб есть» и НЕ создаём новый
+    # (исходное поведение guard'а с 23.08: лучше не наплодить дублей).
+    sys.exit(0)
+for j in d.get('jobs', []):
+    if j.get('script') == '$job_script' and j.get('schedule', {}).get('kind') == 'interval' and j.get('enabled'):
+        sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then registered=0; fi
+    fi
+
+    if [ "$registered" -eq 0 ]; then
+        echo "  OK   cron job '$job_name' already registered ($job_script)"
+        return 0
+    fi
+
+    echo "  ADD  registering cron job '$job_name' ($profile, $job_schedule, no_agent)"
+    if $DRY_RUN; then
+        echo "  [DRY] hermes --profile $profile cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir '$REPO_DIR'"
+        return 0
+    fi
+    if hermes --profile "$profile" cron create "$job_schedule" \
+        --name "$job_name" \
+        --script "$job_script" \
+        --no-agent \
+        --deliver local \
+        --workdir "$REPO_DIR" >/dev/null 2>&1; then
+        echo "  ADD  cron job created: $job_name ($job_script, $job_schedule)"
+    else
+        echo "  WARN cron job creation failed (non-fatal): $job_name — register manually:"
+        echo "       hermes --profile $profile cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir $REPO_DIR"
+    fi
+}
+
 echo
 echo "==> Ensure cron job registration: agent-flow-cleanup-249.sh (ретро 13.08 t_04d73108)"
 # Проблема: cleanup-249 раскладывался install.sh, но cron-job НЕ создавался —
@@ -441,41 +530,8 @@ echo "==> Ensure cron job registration: agent-flow-cleanup-249.sh (ретро 13
 # Регистрация переживает install.sh: каждый запуск (в т.ч. auto-fix из
 # drift-detect) проверяет jobs.json и создаёт недостающий джоб.
 ensure_cleanup_cron() {
-    local profile_dir="/home/builder/.hermes/profiles/devops"
-    local jobs_file="$profile_dir/cron/jobs.json"
-    local job_name="Agent Flow Cleanup 249"
-    local job_script="agent-flow-cleanup-249.sh"
-
-    if ! command -v hermes >/dev/null 2>&1; then
-        echo "  SKIP ensure-cron: hermes CLI not on PATH (nothing to register)"
-        return 0
-    fi
-    if [ ! -f "$jobs_file" ]; then
-        echo "  SKIP ensure-cron: $jobs_file not present (devops profile not set up here)"
-        return 0
-    fi
-
-    if grep -q "\"script\": \"$job_script\"" "$jobs_file"; then
-        echo "  OK   cron job '$job_name' already registered ($job_script)"
-        return 0
-    fi
-
-    echo "  ADD  registering cron job '$job_name' (devops, every 6h, no_agent)"
-    if $DRY_RUN; then
-        echo "  [DRY] hermes --profile devops cron create 'every 6h' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir '$REPO_DIR'"
-        return 0
-    fi
-    if hermes --profile devops cron create "every 6h" \
-        --name "$job_name" \
-        --script "$job_script" \
-        --no-agent \
-        --deliver local \
-        --workdir "$REPO_DIR" >/dev/null 2>&1; then
-        echo "  ADD  cron job created: $job_name ($job_script)"
-    else
-        echo "  WARN cron job creation failed (non-fatal): $job_name — register manually:"
-        echo "       hermes --profile devops cron create 'every 6h' --name '$job_name' --script '$job_script' --no-agent --deliver local"
-    fi
+    # guard=any — исторический (и более слабый) вариант, см. ensure_cron_job.
+    ensure_cron_job devops "Agent Flow Cleanup 249" "agent-flow-cleanup-249.sh" "every 6h" any
 }
 ensure_cleanup_cron
 
@@ -499,58 +555,7 @@ echo "==> Ensure cron job registration: e2e-process auto-rotation (ретро 23
 # Регистрация переживает install.sh: каждый запуск (в т.ч. auto-fix из
 # drift-detect) проверяет jobs.json и создаёт недостающий джоб.
 ensure_e2e_process_cron() {
-    local profile_dir="/home/builder/.hermes/profiles/devops"
-    local jobs_file="$profile_dir/cron/jobs.json"
-    local job_name="e2e-process auto-rotation"
-    local job_script="agent-flow-e2e-process-launcher.sh"
-    local job_schedule="every 20m"
-
-    if ! command -v hermes >/dev/null 2>&1; then
-        echo "  SKIP ensure-e2e-cron: hermes CLI not on PATH (nothing to register)"
-        return 0
-    fi
-    if [ ! -f "$jobs_file" ]; then
-        echo "  SKIP ensure-e2e-cron: $jobs_file not present (devops profile not set up here)"
-        return 0
-    fi
-
-    # Guard 1: уже есть interval-job на этот script. Skip — идемпотентность.
-    if python3 -c "
-import json, sys
-try:
-    with open('$jobs_file') as f:
-        d = json.load(f)
-except Exception:
-    sys.exit(0)
-for j in d.get('jobs', []):
-    if j.get('script') == '$job_script' and j.get('schedule', {}).get('kind') == 'interval' and j.get('enabled'):
-        sys.exit(0)
-sys.exit(1)
-" 2>/dev/null; then
-        echo "  OK   cron job '$job_name' already registered (interval, enabled)"
-        return 0
-    fi
-
-    # Guard 2: в jobs.json может лежать STALE once-job (state=completed,
-    # enabled=false) от первоначальной ручной регистрации. Не трогаем его —
-    # он не вредит, и его история (last_run_at) ценна. Регистрируем interval-job.
-
-    echo "  ADD  registering cron job '$job_name' (devops, $job_schedule, no_agent)"
-    if $DRY_RUN; then
-        echo "  [DRY] hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir '$REPO_DIR'"
-        return 0
-    fi
-    if hermes --profile devops cron create "$job_schedule" \
-        --name "$job_name" \
-        --script "$job_script" \
-        --no-agent \
-        --deliver local \
-        --workdir "$REPO_DIR" >/dev/null 2>&1; then
-        echo "  ADD  cron job created: $job_name ($job_script, $job_schedule)"
-    else
-        echo "  WARN cron job creation failed (non-fatal): $job_name — register manually:"
-        echo "       hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir $REPO_DIR"
-    fi
+    ensure_cron_job devops "e2e-process auto-rotation" "agent-flow-e2e-process-launcher.sh" "every 20m" interval
 }
 ensure_e2e_process_cron
 
@@ -568,54 +573,7 @@ echo "==> Ensure cron job registration: orphan blocked-watchdog (ретро t_1d
 # Регистрация переживает install.sh: каждый запуск (в т.ч. auto-fix из
 # drift-detect) проверяет jobs.json и создаёт недостающий job.
 ensure_blocked_watchdog_cron() {
-    local profile_dir="/home/builder/.hermes/profiles/devops"
-    local jobs_file="$profile_dir/cron/jobs.json"
-    local job_name="Agent Flow Blocked Watchdog"
-    local job_script="agent-flow-blocked-watchdog.sh"
-    local job_schedule="every 4h"
-
-    if ! command -v hermes >/dev/null 2>&1; then
-        echo "  SKIP ensure-blocked-cron: hermes CLI not on PATH (nothing to register)"
-        return 0
-    fi
-    if [ ! -f "$jobs_file" ]; then
-        echo "  SKIP ensure-blocked-cron: $jobs_file not present (devops profile not set up here)"
-        return 0
-    fi
-
-    # Guard: уже есть interval-job на этот script.
-    if python3 -c "
-import json, sys
-try:
-    with open('$jobs_file') as f:
-        d = json.load(f)
-except Exception:
-    sys.exit(0)
-for j in d.get('jobs', []):
-    if j.get('script') == '$job_script' and j.get('schedule', {}).get('kind') == 'interval' and j.get('enabled'):
-        sys.exit(0)
-sys.exit(1)
-" 2>/dev/null; then
-        echo "  OK   cron job '$job_name' already registered (interval, enabled)"
-        return 0
-    fi
-
-    echo "  ADD  registering cron job '$job_name' (devops, $job_schedule, no_agent)"
-    if $DRY_RUN; then
-        echo "  [DRY] hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir '$REPO_DIR'"
-        return 0
-    fi
-    if hermes --profile devops cron create "$job_schedule" \
-        --name "$job_name" \
-        --script "$job_script" \
-        --no-agent \
-        --deliver local \
-        --workdir "$REPO_DIR" >/dev/null 2>&1; then
-        echo "  ADD  cron job created: $job_name ($job_script, $job_schedule)"
-    else
-        echo "  WARN cron job creation failed (non-fatal): $job_name — register manually:"
-        echo "       hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir $REPO_DIR"
-    fi
+    ensure_cron_job devops "Agent Flow Blocked Watchdog" "agent-flow-blocked-watchdog.sh" "every 4h" interval
 }
 ensure_blocked_watchdog_cron
 

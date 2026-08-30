@@ -221,7 +221,20 @@ while IFS= read -r line; do
 done < <(echo "$SC_OUT" | grep -E 'SC[0-9]+' || true)
 assert_eq "$SC_ERR_COUNT" "0" "shellcheck has no errors (only allowed warnings)"
 
-HELPERS=(has_label to_epoch last_reopen_at stale_labeled_at \
+# has_label с 30.08 живёт в lib_agent_flow_common.sh (дедуп: четыре копии,
+# два разных контракта — CSV здесь, JSON в deploy-sweep). Проверяем не
+# локальное определение, а то, что скрипт подключает библиотеку и та даёт
+# функцию.
+LIB_COMMON="$(cd "$(dirname "$SCRIPT_UNDER_TEST")" && pwd)/lib_agent_flow_common.sh"
+if grep -q 'lib_agent_flow_common\.sh' "$SCRIPT_UNDER_TEST" \
+   && grep -qE '^has_label\(\)' "$LIB_COMMON"; then
+  PASS=$((PASS+1)); echo "  ✓ has_label() из lib_agent_flow_common.sh"
+else
+  FAIL=$((FAIL+1)); FAILED_CASES+=("missing has_label() (lib)")
+  echo "  ✗ has_label(): библиотека не подключена или не содержит функцию"
+fi
+
+HELPERS=(to_epoch last_reopen_at stale_labeled_at \
          has_recent_marker_comment now_minus_h_iso)
 for fn in "${HELPERS[@]}"; do
   if grep -qE "^${fn}\(\)|^function ${fn} " "$SCRIPT_UNDER_TEST"; then

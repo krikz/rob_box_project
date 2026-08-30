@@ -25,27 +25,23 @@ DRY_RUN="${DRY_RUN:-false}"
 LOCK_FILE="${HANDOFF_LOCK_FILE:-/tmp/agent-flow-handoff.lock}"
 PREFIX="[agent-flow-handoff]"
 ENV_FILE="$HERMES_HOME/profiles/agent-flow/.env"
+# --- shared library bootstrap ------------------------------------------------
+# Общие помощники (дедуп 30.08): af_load_profile_env, af_flock_guard_or_exit,
+# af_maintenance_gate_or_exit. До этого здесь лежала пятая копия
+# .env-преамбулы и вторая копия MAINTENANCE-гейта — со своими текстами логов.
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=lib_agent_flow_common.sh
+. "$_LIB_DIR_HERE/lib_agent_flow_common.sh"
+
 # Preserve explicit caller overrides while loading non-secret configuration.
-if [[ -f "$ENV_FILE" ]]; then
-  while IFS='=' read -r key val; do
-    [[ -z "$key" || "$key" == \#* || -n "${!key:-}" ]] && continue
-    val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
-    export "$key=$val"
-  done < "$ENV_FILE"
-fi
+af_load_profile_env "$ENV_FILE"
 BOARD="${KANBAN_BOARD:-$BOARD}"
 MAINTENANCE_BRANCH="${MAINTENANCE_BRANCH:-develop}"
 MAINTENANCE_FILE="${MAINTENANCE_FILE:-MAINTENANCE}"
 log() { printf '%s %s\n' "$PREFIX" "$*"; }
-exec 9>"$LOCK_FILE"
-flock -n 9 || { log "another tick is running; skip"; exit 0; }
-# Q19: maintenance pauses the entire flow. Check configured local clone when present.
-if [[ -n "${REPO_DIR:-}" && -d "$REPO_DIR" ]] && git -C "$REPO_DIR" show "$MAINTENANCE_BRANCH:$MAINTENANCE_FILE" >/dev/null 2>&1; then
-  log "MAINTENANCE flag set locally; skip"; exit 0
-fi
-if [[ -n "${GH_REPO:-}" ]] && git ls-remote "https://github.com/${GH_REPO}.git" "$MAINTENANCE_BRANCH:$MAINTENANCE_FILE" 2>/dev/null | grep -q .; then
-  log "MAINTENANCE flag set remotely; skip"; exit 0
-fi
+af_flock_guard_or_exit "$LOCK_FILE"
+# Q19: maintenance pauses the entire flow (remote-флаг + локальный клон).
+af_maintenance_gate_or_exit
 cards="$($HERMES_BIN kanban --board "$BOARD" list --json)"
 # Emit one tab-delimited record per done card. Body is deliberately retained only in memory.
 while IFS=$'\t' read -r id title_b64 body_b64; do

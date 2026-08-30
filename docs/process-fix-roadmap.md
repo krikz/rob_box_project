@@ -284,6 +284,21 @@ grep '| devops ' docs/process-fix-roadmap.md
 | Шаг «Shell Scripts» в `G-Lint Code.yml` заглушен дважды (`\|\| echo` + `continue-on-error: true`) — упасть не может | 🔴 open | `.github/workflows/G-Lint Code.yml:211-223` |
 | ~1655 строк Python внутри bash-строк (130 `python3 -c`) | 🔴 open | e2e-process ~524, merge-gate ~531, triage ~282 |
 
+Волна 2 (общая библиотека), 30.08:
+
+| что | статус | где |
+|---|---|---|
+| `gh_list_issues_by_label` ×4, `.env`-преамбула ×5, MAINTENANCE-гейт ×4, flock-преамбула ×4, `detect_pr_kind` ×2, `free_stale_worktrees_for` ×2, `slugify` ×3, `has_label` ×4 | 🟢 resolved 30.08 | `lib_agent_flow_common.sh`, сорсится из шести скриптов |
+| REST-fallback читал `it.get("updatedAt")`, а GitHub REST отдаёт `updated_at` → на fallback-пути поле терялось; `deploy-sweep:314` обращается к нему жёстко → KeyError внутри `< <(python3 ...)`, ноль обработанных issue, exit-код тика не менялся | 🟢 resolved 30.08 | читаем оба имени; гард — `tests/test_gh_label_filter_fallback.sh` кейс G |
+| `tests/lib/lib_eval_func.sh` не существовал НИКОГДА, хотя `test_gh_label_filter_fallback.sh` сорсит его первой строкой — единственный гард бага #1457 не отработал ни разу | 🟢 resolved 30.08 | библиотека написана, тест зелёный (7 кейсов) |
+| Причина предыдущей строки: в `.gitignore` правило `lib/` без якоря матчит каталог с таким именем на ЛЮБОЙ глубине, включая `scripts/agent_flow/tests/lib/`. Файл писался локально и молча не попадал в коммиты | 🟢 resolved 30.08 | `/lib/`, `/lib64/` — python-артефакты в корне, как и задумывалось |
+| `test_detect_pr_kind.sh` извлекал `detect_pr_kind` из двух скриптов (гард «копии не разъехались»), после выноса в библиотеку извлекать стало нечего | 🟢 resolved 30.08 | берёт единственную реализацию из библиотеки + проверяет, что локальную копию не завели обратно |
+| `agent-flow-deploy-sweep.sh` и `agent-flow-unlabeled-sweep.sh` не проверяли MAINTENANCE, хотя секция в обоих называлась «MAINTENANCE gate + env»: первый ходил по SSH на Pi и правил issues, второй вешал `stale-candidate` и закрывал issues — пока конвейер стоял на паузе (в т.ч. в PEAK-часы `agents_sleep.sh`) | 🟢 resolved 30.08 | `af_maintenance_gate_or_exit` — **изменение поведения**, не только дедуп |
+| Доккоммент `deploy_issue_reconcile_all` (ретро 15.08 `t_238ff3f7`) снесло вместе с соседней функцией при выносе в библиотеку | 🟢 resolved 30.08 | восстановлен на месте |
+| Три `ensure_*_cron` в `install.sh` — по копии проверок и своему сообщению об ошибке в каждой | 🟢 resolved 30.08 | общий `ensure_cron_job`; путь профилей переопределяется через `HERMES_PROFILES_ROOT` (это же убрало `sed -i` по тексту функции в двух тестах) |
+| `ensure_cleanup_cron` использует guard `any` (любой джоб с этим script) вместо `interval` (enabled + interval). Completed once-джоб он засчитает как живой — ровно тот сценарий, из-за которого e2e-rotation простоял 60+ часов (`t_98bb3a1d`) | 🔴 open | `install.sh`, `ensure_cron_job … any`. Перевод на `interval` меняет поведение крона на живом хосте — решение за владельцем |
+| `agent-flow-unlabeled-sweep.sh` грузит `.env` через `set -a` — приоритет обратный остальным пяти скриптам (`.env` перебивает окружение вызывающего) | 🔴 open | `agent-flow-unlabeled-sweep.sh:~105`; смена приоритета меняет поведение, а тесты этого скрипта на dev-машине не гоняются |
+
 ---
 
 ## 6. Changelog документа
@@ -292,6 +307,7 @@ grep '| devops ' docs/process-fix-roadmap.md
 |------|----------------|-------|
 | 2026-08-19 | Initial creation (issue #1464) | architect (Hermes) |
 | 2026-08-30 | §5bis: зафиксирован пробел в 22 ретро (22.08–28.08) + находки дедупа процессного слоя | Claude Opus 5 |
+| 2026-08-30 | §5bis: волна 2 — общая библиотека, `updated_at`, MAINTENANCE-гейт deploy-sweep, воскрешённый гард #1457 | Claude Opus 5 |
 | TBD | следующая ретро добавляет строки через cherry-pick из `process-review-*.md` | — |
 
 ---

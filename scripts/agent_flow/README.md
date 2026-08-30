@@ -383,6 +383,37 @@ Reconcile делает merge-gate; этот скрипт — единствен�
 > физически не могли. Сейчас раскладываются и покрыты drift-детектором;
 > **cron-job для них не зарегистрирован** — это отдельное решение Шифу.
 
+## Общие библиотеки
+
+Четыре файла рядом со скриптами; раскладываются install.sh наравне с ними
+(они есть в `EXPECTED`, значит их сверяет и `agent-flow-drift-detect.sh`):
+
+| файл | что внутри | кто сорсит |
+|---|---|---|
+| `lib_agent_flow_common.sh` | `af_load_profile_env`, `af_flock_guard_or_exit`, `af_maintenance_gate_or_exit`, `gh_list_issues_by_label`, `has_label` / `has_label_json`, `slugify`, `detect_pr_kind`, `free_stale_worktrees_for` | triage, merge-gate, e2e-process, deploy-sweep, unlabeled-sweep, handoff |
+| `lib_user_unlabel_check.sh` | «user-unlabel respect» guard (ретро 18.08 t_de6bea69) | merge-gate, e2e-process |
+| `lib_workflow_dedup.sh` | дедуп запусков workflow между двумя кронами | e2e-process, post-merge-build |
+| `hermes_github.sh` | `whoami_*`-обёртки над мутациями issue/PR (кто именно правил метку) | triage, merge-gate, e2e-process, completion-check |
+
+`lib_agent_flow_common.sh` появился 30.08 при дедупе процессного слоя: до
+него `gh_list_issues_by_label` лежала в четырёх копиях, `.env`-преамбула и
+flock-преамбула — в пяти, MAINTENANCE-гейт — в четырёх. Копии успели
+разъехаться — дефолтами полей и текстами логов, — и баг чинился в одной из
+них (REST отдаёт `updated_at`, а маппинг читал `updatedAt`: на fallback-пути
+поле терялось, deploy-sweep падал по KeyError внутри подстановки, то есть
+молча). Гард на это — `tests/test_gh_label_filter_fallback.sh`, кейс G.
+
+Два намеренных исключения, не сводить:
+- `log()` у каждого скрипта свой (свой `LOG_PREFIX`, у handoff ещё и вывод в
+  stdout). Функции библиотеки зовут `_af_log`, который делегирует в `log`
+  вызывающего, если тот определён.
+- `has_label` из deploy-sweep принимает labels **JSON** (`gh issue view --json
+  labels`), а у остальных на входе **CSV**. Одно имя, два контракта: в
+  библиотеке они лежат как `has_label` (CSV) и `has_label_json` (JSON).
+
+Свой flock у `agent-flow-e2e-process.sh` (G6) тоже не сведён: он умеет ждать
+замок до 60с, если тик поднят вручную через RUN_NOW.
+
 ## Vendor-патчи hermes-agent (ретро t_f00676f8)
 
 Локальные фиксы `hermes-agent` (валидация скиллов по профилю — t_1ab37fa8:
@@ -492,9 +523,20 @@ resume (порядок важен, см. skill `synthesis-tts-chain-debugging` �
 
 ## MAINTENANCE-flag
 
-Скрипт `agent-flow-e2e-process.sh` первой строкой проверяет
-наличие `MAINTENANCE`-файла в `origin/develop`. Если есть — тик
-skip (exit 0). Включается через:
+Общий kill-switch: файл `MAINTENANCE` в `origin/develop`. Если он есть —
+тик пропускается (exit 0, это не ошибка). Проверяют его `agent-flow-triage.sh`,
+`agent-flow-merge-gate.sh`, `agent-flow-e2e-process.sh`, `agent-flow-handoff.sh`
+и (с 30.08) `agent-flow-deploy-sweep.sh` + `agent-flow-unlabeled-sweep.sh` —
+общей функцией `af_maintenance_gate_or_exit` из `lib_agent_flow_common.sh`.
+
+> deploy-sweep и unlabeled-sweep до 30.08 гейта НЕ имели, хотя секция в обоих
+> так и называлась — «MAINTENANCE gate + env». Первый продолжал ходить по SSH
+> на Pi, вешать `hermes` и закрывать issues, второй — вешать `stale-candidate`
+> и закрывать issues, пока весь остальной конвейер стоял. Особенно заметно с
+> `agents_sleep.sh`, который ставит MAINTENANCE в PEAK-часы со смыслом «все
+> спят».
+
+Включается через:
 
 ```bash
 cd /home/builder/hermes-share/rob_box_project

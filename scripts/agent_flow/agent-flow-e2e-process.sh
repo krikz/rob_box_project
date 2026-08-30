@@ -94,6 +94,12 @@ _LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # чтобы дедупликация была симметричной между двумя cron-скриптами.
 # shellcheck source=lib_workflow_dedup.sh
 . "$_LIB_DIR_HERE/lib_workflow_dedup.sh"
+# Общие помощники процессных скриптов (дедуп 30.08): af_load_profile_env,
+# af_maintenance_gate_or_exit, gh_list_issues_by_label, has_label, slugify,
+# detect_pr_kind, free_stale_worktrees_for. Раньше лежали копипастой здесь и
+# в merge-gate. Свой flock (G6) НЕ сведён — он умеет ждать до 60с под RUN_NOW.
+# shellcheck source=lib_agent_flow_common.sh
+. "$_LIB_DIR_HERE/lib_agent_flow_common.sh"
 
 # --- credentials bootstrap (ретро 23.08 t_b977cb4b, реконструкция t_98bb3a1d) ---
 # git 2.34.1 (Ubuntu 22.04) has a known bug where 'git push' fails with
@@ -192,16 +198,7 @@ BLOCKER_CONSECUTIVE_FAILS="${BLOCKER_CONSECUTIVE_FAILS:-2}"
 
 # --- source profile .env if present -------------------------------------------
 PROFILE_ENV="${HERMES_HOME}/profiles/agent-flow/.env"
-if [ -f "$PROFILE_ENV" ]; then
-    while IFS='=' read -r key val; do
-        case "$key" in ''|\#*) continue ;; esac
-        val="${val%\"}"; val="${val#\"}"
-        val="${val%\'}"; val="${val#\'}"
-        if [ -z "${!key:-}" ]; then
-            export "$key=$val"
-        fi
-    done < "$PROFILE_ENV"
-fi
+af_load_profile_env "$PROFILE_ENV"
 
 # Defensive defaults.
 : "${KANBAN_BOARD:=robbox}"
@@ -622,17 +619,9 @@ if [ "$_run_now_triggered" = "1" ] && [ "$DRY_RUN" != "true" ] && [ -n "${REPO_D
 fi
 
 # --- G1: MAINTENANCE gate (remote + local) -----------------------------------
-if [ -n "${GH_REPO:-}" ]; then
-    remote_ref="${MAINTENANCE_BRANCH}:${MAINTENANCE_FILE}"
-    if git ls-remote "https://github.com/${GH_REPO}.git" "$remote_ref" 2>/dev/null | grep -q .; then
-        log "🛑 MAINTENANCE flag set on remote ${remote_ref} — skip"; exit 0
-    fi
-fi
-if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ]; then
-    if git -C "$REPO_DIR" show "${MAINTENANCE_BRANCH}:${MAINTENANCE_FILE}" >/dev/null 2>&1; then
-        log "🛑 MAINTENANCE flag set locally in ${REPO_DIR} — skip"; exit 0
-    fi
-fi
+# Тело — af_maintenance_gate_or_exit в lib_agent_flow_common.sh (дедуп 30.08:
+# три байт-в-байт копии в triage / merge-gate / e2e-process).
+af_maintenance_gate_or_exit
 
 # --- G2: gh auth check (retry — сетевой сбой ≠ нет авторизации) ------------
 _gh_auth_ok=0
@@ -1123,69 +1112,7 @@ if [ "${ROUND_ONLY:-0}" = "1" ]; then
     exit 0
 fi
 
-# --- gh_list_issues_by_label (ретро 19.08 #1457) ------------------------------
-# Bug: `gh issue list --label X` на некоторых версиях gh CLI (2.x.x) возвращает
-# пустой массив, даже если есть открытые issues с меткой X. Параллельно
-# `gh search issues "label:X"` и `gh api repos/.../issues?labels=X` находят их.
-# Workaround: используем gh-list как primary, при пустом ответе — fallback на
-# прямой REST API, логируем fallback для observability. Возвращает JSON-массив
-# с полями: number,title,labels,body (минимальный набор для downstream).
-gh_list_issues_by_label() {
-    local _label="$1" _state="${2:-open}" _limit="${3:-${ISSUE_LIMIT}}" _fields="${4:-number,title,labels,body}"
-    local _json="" _api_json=""
-    _json="$(gh issue list \
-        --repo "$GH_REPO" \
-        --label "$_label" \
-        --state "$_state" \
-        --limit "$_limit" \
-        --json "$_fields" 2>/dev/null || true)"
-    # Если gh-list непустой — используем его (быстрее, идёт через GraphQL).
-    if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
-        printf '%s' "$_json"
-        return 0
-    fi
-    # Fallback: прямой REST API. gh issue list в --json GraphQL-режиме ломает
-    # фильтр по label (issue #1457). REST /issues?labels=X — надёжный источник.
-    _api_json="$(gh api "repos/${GH_REPO}/issues?labels=${_label}&state=${_state}&per_page=${_limit}" 2>/dev/null || true)"
-    if [ -z "$_api_json" ] || [ "$_api_json" = "[]" ]; then
-        # Действительно пусто — отдаём пустой массив downstream'у.
-        printf '[]'
-        return 0
-    fi
-    log "gh_list_issues_by_label(${_label}): gh-list пустой, fallback на REST API /issues?labels=${_label}"
-    # Нормализуем REST-ответ к GraphQL-шейпу: {number,title,labels,body,...}.
-    # В REST labels — массив {name,...}, в GraphQL — то же самое. Достаточно
-    # прокинуть number/title/labels/body; PR-ы (у REST issues включают PRs)
-    # отфильтруем ниже по отсутствию поля pull_request.
-    printf '%s' "$_api_json" | python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    print("[]"); sys.exit(0)
-if not isinstance(data, list):
-    print("[]"); sys.exit(0)
-keep = []
-for it in data:
-    if not isinstance(it, dict):
-        continue
-    # REST /issues возвращает и issues, и PRs — PRы имеют pull_request.
-    if it.get("pull_request"):
-        continue
-    rec = {
-        "number": it.get("number"),
-        "title": it.get("title") or "",
-        "labels": [{"name": (l.get("name") if isinstance(l, dict) else l)} for l in it.get("labels", [])],
-        "body": it.get("body") or "",
-    }
-    # Прокинем updatedAt (используется deploy-issue-reconcile), если есть —
-    # это не ломает существующий код, который читает только нужные поля.
-    if "updatedAt" in it:
-        rec["updatedAt"] = it.get("updatedAt")
-    keep.append(rec)
-print(json.dumps(keep, ensure_ascii=False))
-'
-}
+# gh_list_issues_by_label — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
 # --- gh_pr_state_by_head (ретро 25.08 t_7766fe44) ----------------------------
 # Bug: `gh pr list --head X --json` идёт через GraphQL. При исчерпании
@@ -1800,16 +1727,9 @@ trap _exit_sweep EXIT
 # определены ДО первого top-level вызова на line ~920.
 # (ретро t_df4fff46, issue #1586)
 
-slugify() {
-    printf '%s' "$1" \
-        | tr '[:upper:]' '[:lower:]' \
-        | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40
-}
+# slugify — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
-has_label() {
-    printf '%s' "$1" | tr ',' '\n' | grep -Fxq "$2"
-}
+# has_label — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
 # issue_needs_e2e_re_added_after_run <issue_number> <run_id>
 #   Returns 0 (true) если на issue есть LabeledEvent{label=needs-e2e}
@@ -1934,55 +1854,7 @@ else:
     return 1
 }
 
-# Detect PR kind: "lint" (no e2e needed) vs "functional" (e2e required).
-# Signal sources (priority order):
-#   1) PR label `${NO_E2E_LABEL}` → lint (explicit worker opt-out)
-#   2) PR title prefix `[lint]` / `[refactor]` → lint (worker shorthand)
-#   3) PR title prefix `fix(agent-flow` / `fix(agent_flow` → lint (ретро 13.08
-#      t_de63be1f): фиксы КОНВЕЙЕРА (e2e-process/merge-gate/triage/watchdog)
-#      не меняют поведение робота — e2e на железе для них не нужен, CI green
-#      достаточно. Раньше такие PR (#1189/#1190) уходили в e2e-очередь как
-#      functional и застревали (ротация жжёт build+deploy на заведомо
-#      непрофильный сценарий).
-#   4) PR title prefix `docs(adr` / `docs(architecture` → lint (ретро 24.08
-#      t_388bb652): ADR-черновики архитектора (docs-only) НЕ меняют runtime,
-#      e2e на железе не нужен. Раньше такие PR (#1577/#1580/#1581/#1578)
-#      уходили в e2e-очередь как functional и залипали с e2e:rejected
-#      (cold-start wake-gate no_wake_word, см. ретро t_d9e70587).
-#   5) PR title prefix `wip(arch` / `wip(infra` → lint (ретро 24.08
-#      t_388bb652): WIP-черновики архитектора (verdict-сохранения, infra-обсуждения)
-#      НЕ являются runtime-фичами. Раньше PR #1559 (`wip(arch #1506 t_228de99c):
-#      verdict v3`) висел e2e:rejected 11ч49м без прогресса.
-#   6) PR title prefix `wip(voice-core` → lint (ретро 24.08 t_388bb652):
-#      verification-suite wip-черновик (e2e_routes/voice-core проверки),
-#      не runtime.
-#   7) otherwise → functional (e2e mandatory)
-# Inputs: $1=pr_labels_csv (lowercased), $2=pr_title
-# Output: prints "lint" or "functional"; rc=0 always.
-detect_pr_kind() {  # $1=labels_csv $2=title
-    local labels_csv title_lc prefix
-    labels_csv="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-    title_lc="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
-    if has_label "$labels_csv" "$NO_E2E_LABEL"; then
-        printf '%s' "lint"; return 0
-    fi
-    # Title prefix detection (case-insensitive): сматчить ПЕРВЫЙ токен (по пробелу)
-    # через glob `*` в конце — иначе `(` и `)` в conventional-commit prefix
-    # (docs(adr-0027), wip(arch #1506)) ломают extglob grouping pattern.
-    # Два независимых case'а:
-    #   - по первому токену `prefix` для тегов без скобок: [lint], [refactor]
-    #   - по всей строке с glob для conventional-commit префиксов (включая docs/wip)
-    prefix="${title_lc%% *}"
-    case "$prefix" in
-        '[lint]'|'[refactor]') printf '%s' "lint"; return 0 ;;
-    esac
-    case "$title_lc" in
-        'fix(agent-flow'*|'fix(agent_flow'*|\
-        'docs(adr'*|'docs(architecture'*|\
-        'wip(arch'*|'wip(infra'*|'wip(voice-core'*) printf '%s' "lint"; return 0 ;;
-    esac
-    printf '%s' "functional"; return 0
-}
+# detect_pr_kind — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
 # Worker-evidence gate (ретро t_d0151eb3): воркер может сам опубликовать
 # комментарий с маркером `worker-evidence:` (raw-логи фичи на роботе,
@@ -2193,41 +2065,7 @@ _trigger_workflow_with_retry() {
     return 1
 }
 
-# Процесс-фикс (09.08): освободить ветку карточки от worktree старых
-# (done/archived) карточек — иначе респавн падает «git worktree add failed»
-# и карточка навсегда виснет в blocked. Путь worktree берём из самой карточки
-# (kanban workspace_path), список worktree — через git -C <wt> (родительский клон).
-free_stale_worktrees_for() {  # $1=task_id (t_<hex>)
-    local task_id="$1" my_wt my_branch line wt_path wt_branch owner
-    my_wt="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" show "$task_id" --json 2>/dev/null \
-        | python3 -c 'import sys,json
-try:
-    d=json.load(sys.stdin); print(d.get("task",{}).get("workspace_path") or "")
-except Exception: print("")' 2>/dev/null || true)"
-    if [ -z "$my_wt" ] || [ ! -d "$my_wt" ]; then
-        return 0
-    fi
-    my_branch="$(git -C "$my_wt" branch --show-current 2>/dev/null || true)"
-    [ -z "$my_branch" ] && return 0
-    wt_path=""
-    while IFS= read -r line; do
-        case "$line" in
-            worktree\ *) wt_path="${line#worktree }" ;;
-            branch\ *)
-                wt_branch="${line#branch refs/heads/}"
-                if [ "$wt_branch" = "$my_branch" ] && [ "$wt_path" != "$my_wt" ]; then
-                    owner="$(basename "$wt_path")"
-                    if [ "$owner" != "$task_id" ]; then
-                        git -C "$my_wt" worktree remove --force "$wt_path" 2>/dev/null \
-                            && log "  freed stale worktree $wt_path (branch $my_branch, card $owner)"
-                    fi
-                fi
-                ;;
-        esac
-    done < <(git -C "$my_wt" worktree list --porcelain 2>/dev/null)
-    git -C "$my_wt" worktree prune 2>/dev/null || true
-    return 0
-}
+# free_stale_worktrees_for — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
 # Read PR head branch from issue + title.
 compute_agent_branch() {  # $1=issue_number $2=title

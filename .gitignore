@@ -21,8 +21,13 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Якорь `/` обязателен: без него `lib/` матчит ЛЮБОЙ каталог с таким именем
+# на любой глубине. Из-за этого scripts/agent_flow/tests/lib/ был невидим для
+# git, и lib_eval_func.sh (без которого test_gh_label_filter_fallback.sh падал
+# первой строкой) не попадал в коммиты — тест не отработал ни разу. Здесь
+# имелись в виду python-артефакты сборки в корне репозитория.
+/lib/
+/lib64/
 parts/
 sdist/
 var/
