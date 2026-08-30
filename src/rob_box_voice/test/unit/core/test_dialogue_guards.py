@@ -24,8 +24,10 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_STOP_OVERRIDES,
     build_babble_retry_prompt,
     build_music_retry_prompt,
+    build_renardo_code_retry_prompt,
     build_unbacked_action_retry_prompt,
     detect_unbacked_action_claim,
+    extract_renardo_code_lines,
     is_metalanguage_babble,
     is_music_stop_command,
     is_state_question,
@@ -493,3 +495,62 @@ class TestUnbackedActionClaimLive3008:
         for rule in ACTION_CLAIM_RULES:
             assert rule.tools, f"{rule.category}: правило без тула бесполезно"
             assert rule.what
+
+
+class TestExtractRenardoCodeLines:
+    """Bug C′ — Renardo-код, попавший в реплику вместо execute_music_code."""
+
+    def test_extracts_code_after_strip_markdown(self) -> None:
+        # После strip_markdown ``` уже нет, а код остался.
+        spoken = (
+            "Мелодия для души — мягкие клавиши.\n\n"
+            "renardo\n"
+            "Clock.bpm = 72\n"
+            'Scale.default = "major"\n'
+            'Root.default = "D"\n'
+            "p1 >> keys([0, 2, 4, 7], dur=0.5, amp=0.4)\n"
+            "p2 >> bell([4, 7, 11, 9, 7], dur=2, oct=5, amp=0.25)\n"
+            "p3 >> warmpad([0, 4, 7], dur=8, amp=0.2)"
+        )
+        code = extract_renardo_code_lines(spoken)
+        assert code is not None
+        assert "Clock.bpm = 72" in code
+        assert "p1 >> keys" in code
+        assert "p3 >> warmpad" in code
+        assert "Мелодия" not in code  # проза не попадает в код
+
+    def test_none_when_no_code(self) -> None:
+        assert extract_renardo_code_lines("Расскажи анекдот про кота.") is None
+        assert extract_renardo_code_lines("") is None
+        assert extract_renardo_code_lines(None) is None
+
+    def test_root_default_set_call(self) -> None:
+        code = extract_renardo_code_lines(
+            'Root.default.set("A")\nScale.default.set("minor")\np1 >> saw([0,1,2])'
+        )
+        assert code is not None
+        assert "Root.default.set" in code
+
+    def test_plain_text_with_clock_word_is_not_code(self) -> None:
+        # «Clock.bpm» должно быть реальным присваиванием, а не прозой.
+        assert extract_renardo_code_lines("включи бит и поставь темп") is None
+
+    def test_live_3008_generated_code_is_recognised(self) -> None:
+        """Код из живого лога 30.08 — тот, что робот сыграл правильно.
+        Если бы он приехал в реплику, детектор обязан его увидеть."""
+        code = extract_renardo_code_lines(
+            "Clock.bpm = 128\n"
+            'Scale.default.set("minor")\n'
+            "p1 >> sawbass([0, -2, 0, 3], dur=0.5, amp=0.4, oct=3)\n"
+            'd1 >> play("X..X.o..", sample=2, amp=0.3)'
+        )
+        assert code is not None
+        assert "sawbass" in code
+
+
+class TestBuildRenardoCodeRetryPrompt:
+    def test_contains_code_and_demands_tool(self) -> None:
+        prompt = build_renardo_code_retry_prompt("p1 >> blip([0,2,4])")
+        assert "execute_music_code" in prompt
+        assert "p1 >> blip([0,2,4])" in prompt
+        assert "[CRITICAL]" in prompt

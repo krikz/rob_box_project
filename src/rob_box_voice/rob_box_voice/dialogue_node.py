@@ -97,8 +97,10 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_STOP_OVERRIDES,
     build_babble_retry_prompt,
     build_music_retry_prompt,
+    build_renardo_code_retry_prompt,
     build_unbacked_action_retry_prompt,
     detect_unbacked_action_claim,
+    extract_renardo_code_lines,
     is_metalanguage_babble,
     is_music_stop_command,
     user_wants_music,
@@ -637,10 +639,23 @@ class DialogueNode(Node):
         # meta-text verbatim and let the operator debug from logs.
         self._babble_retry_used: bool = False
 
+        # Issue #992 Bug C' — LLM написала сочинённый Renardo-код в реплику
+        # вместо execute_music_code(code=...). Код НЕ читаем вслух —
+        # требуем вызов тула.
+        if spoken and self._check_embedded_renardo_code_and_retry(
+            spoken=spoken,
+            user_input=raw_user_command or user_input,
+            tools_called=tools_called,
+        ):
+            return
         # Issue #992 Bug E — «отчитался о действии, но не вызвал тул».
         # Тот же одноразовый контракт, что у babble-флага выше: ретраим
         # РОВНО один раз, иначе LLM и код уходят в пинг-понг.
         self._action_claim_retry_used: bool = False
+
+        # Issue #992 Bug C' — Renardo-код, попавший в реплику вместо
+        # execute_music_code. Тот же одноразовый контракт.
+        self._code_speech_retry_used: bool = False
 
         # Issue #1160 — Prometheus metrics: длительность диалоговой
         # сессии. Фиксируем момент первого wake-word-диалога из IDLE;
@@ -2300,6 +2315,7 @@ class DialogueNode(Node):
         was_idle: bool = False,
         is_babble_retry: bool = False,
         is_action_claim_retry: bool = False,
+        is_code_retry: bool = False,
         is_synthetic: bool = False,
         raw_user_command: str | None = None,
         speaker_tag: str | None = None,
@@ -2342,6 +2358,7 @@ class DialogueNode(Node):
                 is_dj_auto=is_dj_auto,
                 is_babble_retry=is_babble_retry,
                 is_action_claim_retry=is_action_claim_retry,
+                is_code_retry=is_code_retry,
                 is_synthetic=is_synthetic,
                 raw_user_command=raw_user_command,
                 speaker_tag=speaker_tag,
@@ -2727,6 +2744,7 @@ class DialogueNode(Node):
         is_dj_auto: bool = False,
         is_babble_retry: bool = False,
         is_action_claim_retry: bool = False,
+        is_code_retry: bool = False,
         is_synthetic: bool = False,
         raw_user_command: str | None = None,
         speaker_tag: str | None = None,
@@ -2751,6 +2769,8 @@ class DialogueNode(Node):
             self._babble_retry_used = False
         if not is_action_claim_retry:
             self._action_claim_retry_used = False
+        if not is_code_retry:
+            self._code_speech_retry_used = False
         # Bug C (юзер-музыка) — сброс бюджета на НОВЫЙ юзер-запрос,
         # чтобы каждый запрос получал свежий retry (retry-промпт
         # не должен считаться новым запросом и сбрасывать сам себя).
@@ -3409,6 +3429,62 @@ class DialogueNode(Node):
         (TD-1 decomposition).
         """
         return build_babble_retry_prompt(user_input)
+
+    def _check_embedded_renardo_code_and_retry(
+        self,
+        *,
+        spoken: str,
+        user_input: Optional[str],
+        tools_called: tuple,
+    ) -> bool:
+        """Issue #992 Bug C' — одноразовый ретрай, когда LLM зачитывает код.
+
+        Live 30.08: модель сочинила мелодию и написала Renardo-код в текст
+        ответа (``p1 >> keys(...)``, ``Clock.bpm = ...``) вместо вызова
+        ``execute_music_code(code=...)`` — TTS зачитал код вслух. Находим
+        строки кода и требуем ОДИН ретрай с вызовом тула и тем же кодом.
+
+        Returns:
+            ``True`` — ретрай отправлен, вызывающий НЕ должен публиковать
+            текст в TTS.
+        """
+        if self._code_speech_retry_used:
+            return False
+        if tools_called:
+            # LLM уже вызвала тул в этом цикле — не вмешиваемся.
+            return False
+        if not spoken:
+            return False
+        code = extract_renardo_code_lines(spoken)
+        if not code:
+            return False
+
+        # Тот же перевод DSM, что и в babble-ретрае: без него process_input
+        # увидит IDLE и вернёт пустой результат.
+        try:
+            if self._dsm.current_state == DialogueStateKind.IDLE:
+                self._dsm.on_event(DialogueEvent.WAKE_WORD)
+                self._publish_state()
+            self._dsm.on_event(DialogueEvent.STT_RESULT)
+            self._publish_state()
+        except ImportError:
+            pass
+
+        # Помечаем ДО отправки — реентрантный вызов из самого ретрая не
+        # должен уметь запустить второй.
+        self._code_speech_retry_used = True
+        self.get_logger().warning(
+            "🎹 [issue 992 Bug C'] Renardo-код в тексте реплики — "
+            "требую execute_music_code(code=...) "
+            f"(code head={code[:80]!r})"
+        )
+        self._dispatch_turn(
+            build_renardo_code_retry_prompt(code),
+            is_code_retry=True,
+            is_synthetic=True,
+            raw_user_command=user_input,
+        )
+        return True
 
     def _check_unbacked_action_claim_and_retry(
         self,

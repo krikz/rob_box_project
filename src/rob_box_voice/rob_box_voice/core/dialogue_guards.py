@@ -640,3 +640,59 @@ def build_unbacked_action_retry_prompt(
         "Запрос юзера: «" + (user_input or "") + "».\n"
         "Если тул вернёт ошибку — скажи об ошибке честно, не выдумывай успех."
     )
+
+# ---------------------------------------------------------------------------
+# Issue #992 Bug C' — Renardo-код в тексте ответа.
+#
+# Live 30.08: модель сочиняла мелодию и писала код в РЕПЛИКУ
+# (``p1 >> keys(...)``, ``Clock.bpm = ...``) вместо вызова
+# ``execute_music_code(code=...)`` — TTS зачитывал код вслух.
+# Детектор вытаскивает строки кода, билдер строит ретрай, который
+# возвращает тот же код обратно в тул.
+#
+# Первая попытка этого фикса (0e7bb478, откачен в db0fba22) была верной по
+# сути и сломана водопроводом: флаг ``is_code_retry`` добавили в сигнатуру
+# ``_dispatch_turn``, а читали в теле ``_run_turn``, куда его не добавили и
+# не пробросили. ``NameError`` падал на 26-й строке ``_run_turn`` — до
+# вызова LLM, на КАЖДОМ ходе: STT принимал фразу, и робот замолкал.
+# Предохранитель от повторения — ``test_retry_flags_are_wired_through``.
+# ---------------------------------------------------------------------------
+_RENARDO_CODE_LINE_RE = re.compile(
+    r"^\s*(?:"
+    r"[pdsl][1-9]\s*>>\s*\w+"                    # p1 >> blip([...])
+    r"|Clock\.bpm\s*="                            # Clock.bpm = 120
+    r"|(?:Scale|Root)\.default\s*(?:=|\.set\()"   # Scale.default = / Root.default.set(
+    r")"
+)
+
+
+def extract_renardo_code_lines(text: Optional[str]) -> Optional[str]:
+    """Вытащить Renardo-код, попавший в текст реплики.
+
+    Возвращает код (совпавшие строки через ``\n``), если в ``text`` есть
+    хотя бы одна Renardo-инструкция, иначе ``None``.
+    """
+    if not text:
+        return None
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if _RENARDO_CODE_LINE_RE.match(line)
+    ]
+    if not lines:
+        return None
+    return "\n".join(lines)
+
+
+def build_renardo_code_retry_prompt(code: str) -> str:
+    """Синтетический ретрай: LLM написала Renardo-код в реплику вместо
+    вызова ``execute_music_code``. Требуем вызов с тем же кодом.
+    """
+    return (
+        "[CRITICAL] Ты сочинил Renardo-код, но вставил его в текст ответа — "
+        "робот произнёс код голосом вместо того, чтобы сыграть музыку. "
+        "❌ НИКОГДА не выводи Renardo-код в speak_text или текстом. "
+        "✅ В ЭТОМ же turn вызови execute_music_code(code=...) с этим кодом:\n"
+        f"{code}\n"
+        "После вызова верни 'done'."
+    )
