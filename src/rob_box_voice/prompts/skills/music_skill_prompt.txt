@@ -307,21 +307,26 @@ p3 >> pads(dur=4, amp=0.15, room=0.6, sus=6).follow(p1) + (0,2,4)  # auto-harmon
 
 ⚡ SPEED — RULE #0 (CRITICAL, read FIRST):
 The user MUST hear sound within 3-5 seconds of their request!
-- FIRST execute_music_code = MAX 8 lines: Clock.bpm + 3-4 inline patterns, NO def-functions!
-- Clock.future() structure (intro/verse/chorus) = ONLY the second execute_music_code, ≤ 25 lines
-- If the request doesn't need complex structure — ONE short execute (≤ 8 lines) is enough!
-- Do NOT write def intro/verse/chorus in the FIRST execute — write patterns directly!
+- ONE call to compose_music does the whole job — it starts playing immediately
+  AND gives the track a form. You do not need a second call.
 
-QUICK START EXAMPLE (≤8 lines, full request handled in 5 sec):
+🚫 ONE MUSIC CALL PER TURN (hard rule):
+- ❌ NEVER call execute_music_code after compose_music in the same turn.
+  Every music call starts with Clock.clear(), so the second call WIPES the
+  arrangement the first one just built — you would replace a 3-minute
+  composition with a 4-bar loop.
+- ❌ Do not "improve" or "add layers to" a compose_music track by writing
+  Renardo code afterwards. Pass more layers to compose_music instead.
+- Hand-written Renardo code is ONLY for reproducing an exact known melody
+  note-by-note (see KNOWN MELODY LIBRARY below). Everything else → compose_music.
+
+QUICK START EXAMPLE (one call, sound in ~2 sec):
 ```
-Clock.bpm = 128
-Root.default = "A"
-Scale.default = "minor"
-d1 >> play("X..X.o..", sample=1, amp=0.18)
-d2 >> play("--.-", dur=1, sample=3, amp=0.1, delay=PRand([0,PWhite(-0.1,0.1)]))
-p1 >> dub([0,0,4,5], dur=4, oct=3, amp=0.28)
-p2 >> arpy([0,2,4,2,3,1], dur=0.5, oct=5, amp=0.5, room=0.3)
-p3 >> pads(dur=4, amp=0.15, sus=6, room=0.5).follow(p1) + (0,2,4)
+compose_music(bpm=128, root="A", scale="minor", form="arc",
+  drums="X..X.o..", drums_sample=1, hats="--.-",
+  bass_synth="dub", bass_notes="0, 0, 4, 5",
+  lead_synth="arpy", lead_notes="0, 2, 4, 2, 3, 1",
+  pad_synth="warmpad", pad_notes="0, 2, 4", progression="0, 0, 5, 3")
 ```
 
 Your music tools (issue #1371 — namespaced into two families, see DISPATCH below):

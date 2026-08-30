@@ -72,6 +72,7 @@ class SimulatedToolProvider(ToolProvider):
             "memory_save": self._t_memory_save,
             "memory_context": self._t_memory_context,
             "memory_search": self._t_memory_search,
+            "compose_music": self._t_compose_music,
         }
 
     # ── ToolProvider contract ────────────────────────────────────────
@@ -126,6 +127,56 @@ class SimulatedToolProvider(ToolProvider):
             "simulated": True,
             "voice_used": str(args.get("voice") or "local-text"),
             "animation": args.get("animation"),
+        }
+
+    def _t_compose_music(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        """Run the real arranger and return the Renardo code it produces.
+
+        SuperCollider is not on the laptop, so nothing is audible — but the
+        arrangement itself is pure Python (``rob_box_mcp_tools.core.arranger``
+        is deliberately ROS-free). Rendering it here is what makes the local
+        chat useful for music work: you can see the actual sections, the amp
+        envelopes and the register layout for a given phrasing, and iterate
+        on the prompt without a build-and-deploy cycle.
+
+        A rejected spec is returned as an error rather than a stub success —
+        the arranger's messages are written for the model to correct itself,
+        and swallowing them here would hide a prompt problem.
+        """
+        from rob_box_mcp_tools.core.arranger import (
+            ArrangementError,
+            form_summary,
+            render,
+            spec_from_flat,
+        )
+
+        allowed = {
+            "bpm", "root", "scale", "form", "drums", "drums_sample", "hats",
+            "bass_synth", "bass_notes", "lead_synth", "lead_notes",
+            "pad_synth", "pad_notes", "progression", "repeat",
+        }
+        kwargs = {k: v for k, v in args.items() if k in allowed and v is not None}
+        try:
+            spec = spec_from_flat(**kwargs)
+            code = render(spec)
+        except (ArrangementError, TypeError, ValueError) as exc:
+            return {"status": "error", "error": str(exc), "simulated": True}
+
+        return {
+            "status": "ok",
+            "simulated": True,
+            "note": "SuperCollider is not running locally — code rendered only",
+            "form": form_summary(spec.form),
+            "layers": len(spec.layers),
+            "code": code,
+            # Mirrors ComposeMusicTool's real message. Without it the local
+            # chat under-reports the double-call problem: on the robot this
+            # sentence is what stops the model from following compose_music
+            # with hand-written Renardo code that wipes the arrangement.
+            "message": (
+                "Музыка уже звучит — НЕ вызывай execute_music_code после "
+                "этого, иначе аранжировка будет стёрта."
+            ),
         }
 
     def _t_current_time(self, args: Mapping[str, Any]) -> dict[str, Any]:

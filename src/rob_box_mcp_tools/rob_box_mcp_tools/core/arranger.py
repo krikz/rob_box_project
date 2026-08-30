@@ -451,14 +451,61 @@ def spec_from_flat(
                 )
             )
 
+    resolved_form = (form or DEFAULT_FORM).strip()
+    _autofill_bass(layers, resolved_form)
+
     return CompositionSpec(
         bpm=float(bpm),
         root=(root or "C").strip(),
         scale=(scale or "minor").strip(),
-        form=(form or DEFAULT_FORM).strip(),
+        form=resolved_form,
         layers=tuple(layers),
         progression=tuple(int(v) for v in parse_notes(progression)),
         repeat=bool(repeat),
+    )
+
+
+def _autofill_bass(layers: List[Layer], form: str) -> None:
+    """Добавить бас, если форма его ждёт, а модель его не дала.
+
+    Промпт просит «минимум 3 слоя», но модель регулярно отдаёт два (live
+    30.08: дважды подряд lead + pad без баса). Форма при этом планирует
+    басу заметную роль — в `ambient` секция `swell` рассчитана на него, —
+    и без баса середина композиции проваливается.
+
+    Бас выводится, а не выдумывается: берётся основной тон гармонии (первая
+    ступень пэда, иначе первая ступень мелодии) и его квинта. Получается
+    опора, которая гарантированно консонирует с тем, что уже играет —
+    в отличие от случайных ступеней, дающих ту самую диссонирующую кашу,
+    от которой промпт отговаривает отдельным правилом.
+
+    Мутирует ``layers`` на месте. Ничего не делает, если бас уже есть или
+    форма его не задействует.
+    """
+    if any(layer.role == "bass" for layer in layers):
+        return
+    plan = resolve_form(form)
+    if not any(section.get("bass", 0.0) > 0 for _n, _b, section in plan):
+        return
+
+    source = next(
+        (layer for layer in layers if layer.role == "pad" and layer.degrees),
+        None,
+    ) or next(
+        (layer for layer in layers if layer.role == "lead" and layer.degrees),
+        None,
+    )
+    if source is None:
+        return
+
+    tonic = source.degrees[0]
+    layers.append(
+        Layer(
+            role="bass",
+            synth="dub",
+            degrees=(tonic, tonic, tonic + 4, tonic),
+            dur=ROLE_DEFAULT_DUR["bass"],
+        )
     )
 
 

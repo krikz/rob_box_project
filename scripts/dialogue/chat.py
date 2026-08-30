@@ -53,6 +53,7 @@ _SRC_PACKAGES = (
     "rob_box_llm",
     "rob_box_harness",
     "rob_box_voice",  # only pure helpers (dialogue_text); never the node
+    "rob_box_mcp_tools",  # only core.arranger (ROS-free); never the tools
 )
 
 

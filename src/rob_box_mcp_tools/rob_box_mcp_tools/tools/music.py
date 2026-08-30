@@ -2026,10 +2026,19 @@ class ComposeMusicTool(MCPTool):
 
         self._notify_music_state()
         result["form"] = form_summary(spec.form)
+        # Явный стоп-сигнал в сообщении, а не только в промпте: live 30.08
+        # модель вызвала compose_music и следом execute_music_code со своим
+        # кодом. Любой музыкальный вызов начинается с Clock.clear(), поэтому
+        # второй вызов стирает только что построенную аранжировку — трёх-
+        # минутная композиция превращается в четырёхтактовый луп.
         return MCPToolResult(
             success=True,
             data=result,
-            message=f"Играю композицию: {form_summary(spec.form)}",
+            message=(
+                f"Играю композицию: {form_summary(spec.form)}. "
+                "Музыка уже звучит — НЕ вызывай execute_music_code после "
+                "этого, иначе аранжировка будет стёрта."
+            ),
         )
 
     def _notify_music_state(self) -> None:

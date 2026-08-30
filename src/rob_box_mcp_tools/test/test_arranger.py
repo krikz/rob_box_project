@@ -42,6 +42,7 @@ from rob_box_mcp_tools.core.arranger import (  # noqa: E402
     form_summary,
     render,
     resolve_form,
+    spec_from_flat,
 )
 
 
@@ -267,6 +268,67 @@ class TestGeneratedCodePassesExistingGuards:
             for v in re.search(r"amp=var\(\[([^\]]*)\]", lead).group(1).split(",")
         }
         assert len(levels) > 1, f"огибающая схлопнулась в одно значение: {levels}"
+
+
+class TestAutofill:
+    """The prompt asks for 3+ layers; the model keeps sending 2.
+
+    Live 30.08, twice in a row: lead + pad, no bass. The form still plans a
+    bass part (``ambient``'s ``swell`` section), so the middle of the piece
+    caves in. Enforced in code rather than by another prompt rule.
+    """
+
+    def _flat(self, **kwargs):
+        base = dict(
+            bpm=88,
+            root="A",
+            scale="lydian",
+            form="ambient",
+            lead_synth="sitar",
+            lead_notes="0, 2, 4, 7",
+            pad_synth="ambi",
+            pad_notes="2, 4, 7",
+        )
+        base.update(kwargs)
+        return spec_from_flat(**base)
+
+    def test_missing_bass_is_derived_from_the_harmony(self):
+        spec = self._flat()
+        bass = next(l for l in spec.layers if l.role == "bass")
+        # Root of the pad, not an invented degree — it has to consonate
+        # with what is already sounding.
+        assert bass.degrees[0] == 2
+        assert 4 in [d - bass.degrees[0] for d in bass.degrees]
+
+    def test_lead_is_the_fallback_source_when_there_is_no_pad(self):
+        spec = self._flat(pad_synth=None, pad_notes=None)
+        bass = next(l for l in spec.layers if l.role == "bass")
+        assert bass.degrees[0] == 0
+
+    def test_supplied_bass_is_never_overridden(self):
+        spec = self._flat(bass_synth="fuzz", bass_notes="0, -3")
+        basses = [l for l in spec.layers if l.role == "bass"]
+        assert len(basses) == 1
+        assert basses[0].synth == "fuzz"
+        assert basses[0].degrees == (0, -3)
+
+    def test_no_bass_invented_for_a_form_that_never_uses_one(self):
+        original = dict(FORMS)
+        FORMS["_test_no_bass"] = [
+            ("a", 4, {"pad": 0.6, "lead": 0.4}),
+            ("b", 8, {"pad": 0.8, "lead": 0.6}),
+        ]
+        try:
+            spec = self._flat(form="_test_no_bass")
+            assert not any(l.role == "bass" for l in spec.layers)
+        finally:
+            FORMS.clear()
+            FORMS.update(original)
+
+    def test_autofilled_bass_renders_in_its_own_register(self):
+        code = render(self._flat())
+        bass_line = next(l for l in code.splitlines() if l.startswith("p1 >>"))
+        assert "oct=3" in bass_line
 
 
 class TestOpeningIsAudible:
