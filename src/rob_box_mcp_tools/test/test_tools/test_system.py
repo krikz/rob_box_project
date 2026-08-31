@@ -47,7 +47,20 @@ def _install_ros_mocks_if_needed():
 
 _install_ros_mocks_if_needed()
 
-from rob_box_mcp_tools.tools.system import GetRobotStatusTool
+from rob_box_mcp_tools.tools.system import GetCurrentTimeTool, GetRobotStatusTool
+
+
+@pytest.fixture
+def mock_node_for_time():
+    """Mock-нода без реального ROS — глушит print() из log_info в тестах.
+
+    GetCurrentTimeTool не подписывается на топики, но log_info при node=None
+    печатает в stdout. С моком ноды log_info молча вызывает get_logger().info().
+    """
+    node = Mock()
+    logger = Mock()
+    node.get_logger.return_value = logger
+    return node
 
 
 def _make_odom_msg(x=1.5, y=-2.25, qz=0.0, qw=1.0):
@@ -170,3 +183,129 @@ class TestGetRobotStatusTool:
 
         assert result.success is False
         assert "/odom" in result.error
+
+
+@pytest.mark.unit
+class TestGetCurrentTimeTool:
+    """Тесты GetCurrentTimeTool — issue #1763.
+
+    Бот показывал UTC-время вместо MSK, потому что ``datetime.datetime.now()`
+    в контейнере с TZ=UTC возвращает UTC. После фикса инструмент использует
+    zoneinfo с приоритетом:
+        1. ``ROBOT_TIMEZONE`` env var
+        2. ``Europe/Moscow`` по умолчанию
+        3. UTC как graceful fallback (если zoneinfo не нашёл таймзону)
+    """
+
+    def test_tool_metadata(self, mock_node_for_time):
+        """Имя/описание/параметры соответствуют контракту для LLM."""
+        tool = GetCurrentTimeTool(mock_node_for_time)
+
+        assert tool.name == "get_current_time"
+        assert "время" in tool.description or "дат" in tool.description
+        assert tool.parameters == []  # без параметров
+
+    def test_default_timezone_is_moscow(self, monkeypatch, mock_node_for_time):
+        """Без env var — Europe/Moscow (UTC+3), не UTC."""
+        monkeypatch.delenv("ROBOT_TIMEZONE", raising=False)
+
+        tool = GetCurrentTimeTool(mock_node_for_time())
+
+        tz = tool._resolve_timezone()
+        # Europe/Moscow: UTC+3 круглый год (без DST с 2014)
+        from datetime import datetime
+        probe = datetime(2026, 1, 15, 12, 0, 0, tzinfo=tz)
+        offset = probe.utcoffset()
+        assert offset is not None
+        assert offset.total_seconds() == 3 * 3600
+
+    def test_uses_robot_timezone_env(self, monkeypatch, mock_node_for_time):
+        """ROBOT_TIMEZONE переопределяет дефолт."""
+        monkeypatch.setenv("ROBOT_TIMEZONE", "Europe/Berlin")
+
+        tool = GetCurrentTimeTool(mock_node_for_time())
+        tz = tool._resolve_timezone()
+
+        from datetime import datetime
+        probe = datetime(2026, 7, 1, 12, 0, 0, tzinfo=tz)  # лето — DST
+        offset = probe.utcoffset()
+        assert offset is not None
+        assert offset.total_seconds() == 2 * 3600  # Berlin CEST
+
+    def test_unknown_zoneinfo_falls_back_to_utc(self, monkeypatch, mock_node_for_time):
+        """Неизвестная таймзона → UTC + warn в лог, не падает."""
+        monkeypatch.setenv("ROBOT_TIMEZONE", "Mars/Olympus_Mons")
+
+        tool = GetCurrentTimeTool(mock_node_for_time())
+        tz = tool._resolve_timezone()
+
+        from datetime import datetime, timezone
+        probe = datetime(2026, 1, 1, 12, 0, 0, tzinfo=tz)
+        assert probe.utcoffset() == timezone.utc.utcoffset(probe)
+
+    def test_execute_returns_moscow_time_when_system_tz_is_utc(
+        self, monkeypatch, mock_node_for_time
+    ):
+        """Главный кейс бага #1763: системный TZ=UTC, после фикса бот вернёт MSK.
+
+        Проверяем, что разница между ``now()`` (naive, системный TZ=UTC в тестах)
+        и ``result.iso`` (после фикса — Europe/Moscow) ровно 3 часа.
+        """
+        import datetime as _dt
+        from zoneinfo import ZoneInfo
+
+        # Эмулируем «контейнер с TZ=UTC» — Python по умолчанию запускается в UTC.
+        monkeypatch.delenv("ROBOT_TIMEZONE", raising=False)
+        monkeypatch.delenv("TZ", raising=False)
+
+        tool = GetCurrentTimeTool(mock_node_for_time())
+        result = tool.execute()
+
+        assert result.success is True
+        assert result.message is not None
+        assert result.data is not None
+        assert result.message.startswith("Сейчас ")
+        assert result.data["period"] in ("утро", "день", "вечер", "ночь")
+        assert result.data["weekday"] in {
+            "понедельник", "вторник", "среда", "четверг",
+            "пятница", "суббота", "воскресенье",
+        }
+
+        # Проверяем, что iso содержит +03:00, а не naive (без tz) и не +00:00
+        msk = ZoneInfo("Europe/Moscow")
+        parsed = _dt.datetime.fromisoformat(result.data["iso"])
+        assert parsed.tzinfo is not None, (
+            f"iso должен быть tz-aware после фикса, получили {result.data['iso']!r}"
+        )
+        # MSK — это +03:00 круглый год (DST в Москве нет)
+        offset = parsed.utcoffset()
+        assert offset is not None
+        assert offset == _dt.timedelta(hours=3), (
+            f"Ожидался UTC+3 (Moscow), получили {offset} из {result.data['iso']!r}"
+        )
+        # Сверить с независимым now() в MSK — дельта не больше 5 секунд
+        now_msk = _dt.datetime.now(msk)
+        delta = abs((parsed - now_msk).total_seconds())
+        assert delta < 5, (
+            f"Инструмент вернул время далёкое от реального MSK now(): "
+            f"diff={delta}s, tool={parsed}, real={now_msk}"
+        )
+
+    def test_execute_uses_robot_timezone(self, monkeypatch, mock_node_for_time):
+        """Переопределение через ROBOT_TIMEZONE действительно применяется."""
+        monkeypatch.setenv("ROBOT_TIMEZONE", "Europe/Berlin")
+
+        tool = GetCurrentTimeTool(mock_node_for_time())
+        result = tool.execute()
+
+        assert result.success is True
+        assert result.data is not None
+        import datetime as _dt
+        parsed = _dt.datetime.fromisoformat(result.data["iso"])
+        # Berlin зимой +01, летом +02. Проверяем что НЕ +00 (UTC) и НЕ +03 (MSK).
+        offset = parsed.utcoffset()
+        assert offset is not None, f"iso должен быть tz-aware, получили {result.data['iso']!r}"
+        offset_hours = offset.total_seconds() / 3600
+        assert offset_hours in (1, 2), (
+            f"Berlin offset должен быть 1 или 2 часа, получили {offset_hours}"
+        )

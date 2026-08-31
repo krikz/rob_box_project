@@ -211,6 +211,12 @@ services:
       # first start, unreadable from other hosts. Set ROB_BOX_MCP_TOKEN here
       # instead if the nodes are ever split across containers.
       - ROB_BOX_MCP_TOKEN_FILE=/data/.mcp_token
+      # Timezone для системного вывода времени (issue #1763).
+      # - TZ — для всех C-библиотек и os.environ процессов (date, strftime, glibc-функции).
+      # - ROBOT_TIMEZONE — для Python zoneinfo в GetCurrentTimeTool.execute().
+      # По умолчанию Europe/Moscow, т.к. робот обслуживает русскоязычного оператора.
+      - TZ=${ROBOT_TIMEZONE:-Europe/Moscow}
+      - ROBOT_TIMEZONE=${ROBOT_TIMEZONE:-Europe/Moscow}
     env_file:
       - .env.secrets  # API keys: MIMO_API_KEY, DEEPSEEK_API_KEY (для fallback), YANDEX_API_KEY, YANDEX_FOLDER_ID
     volumes:
