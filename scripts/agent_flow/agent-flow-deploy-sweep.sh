@@ -58,8 +58,10 @@ _LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 . "$_LIB_DIR_HERE/lib_agent_flow_common.sh"
 
 # --- MAINTENANCE gate + env -------------------------------------------------
-ENV_FILE="$HERMES_HOME/profiles/agent-flow/.env"
-af_load_profile_env "$ENV_FILE"
+# Ретро 31.08 t_18941c54: либа делает 3-candidate fallback, поэтому
+# передаём пустой аргумент — пусть af_load_profile_env сама найдёт .env
+# в обход per-profile HERMES_HOME (как в PR #1750 для unlabeled-sweep).
+af_load_profile_env ""
 : "${GH_REPO:?GH_REPO must be set (owner/repo)}"
 
 log() { printf '%s %s %s\n' "$PREFIX" "$(date -Iseconds)" "$*" >&2; }
