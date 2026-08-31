@@ -296,6 +296,16 @@ def _build_payload(
     if lang is not None:
         voice_setting["language"] = lang
 
+    # MiniMax-specific pronunciation overrides (T2A v2 spec).
+    # Typed field on ``TTSSettings`` (issue #1780); we still keep the
+    # ``extra`` allow-list entry so callers that already pass
+    # ``extra={"pronunciation_dict": ...}`` keep working — the explicit
+    # field takes precedence if both are set, to avoid silently merging
+    # two shapes the API can't combine.
+    pronunciation_dict = settings.pronunciation_dict
+    if pronunciation_dict is None and settings.extra:
+        pronunciation_dict = settings.extra.get("pronunciation_dict")
+
     # MiniMax audio_setting accepts: sample_rate, bitrate, format ("mp3"|"pcm"|"wav"),
     # channel (1=mono, 2=stereo). We default to mono PCM at 32 kHz — matches
     # the default documented in MiniMax's T2A v2 reference.
@@ -318,6 +328,14 @@ def _build_payload(
     if settings.text_normalization is not None:
         payload["text_normalization"] = bool(settings.text_normalization)
 
+    # MiniMax ``pronunciation_dict`` — typed field on TTSSettings
+    # (issue #1780). We materialise it as a top-level payload key. If
+    # the caller ALSO passed it via ``settings.extra``, the typed field
+    # wins (set first), so the duplicated extra entry is dropped below
+    # to avoid sending two conflicting payloads to the API.
+    if pronunciation_dict:
+        payload["pronunciation_dict"] = dict(pronunciation_dict)
+
     # Whitelist `extra` to the documented top-level keys so a caller (e.g.
     # dialogue_node pulling user-supplied JSON) can't silently overwrite the
     # nested ``voice_setting`` / ``audio_setting`` objects above and inject
@@ -331,6 +349,10 @@ def _build_payload(
         from rob_box_llm.errors import TTSBadRequestError  # local import — see tts.py
 
         for key, value in settings.extra.items():
+            # If the typed ``pronunciation_dict`` already populated the
+            # payload, skip the duplicated extra entry — issue #1780.
+            if key == "pronunciation_dict" and "pronunciation_dict" in payload:
+                continue
             if key in _ALLOWED_EXTRA_KEYS:
                 payload[key] = value
             else:
@@ -643,18 +665,16 @@ class MiniMaxTTSProvider(BaseTTSProvider):
         * audio_format_pcm + audio_format_mp3 (documented)
         * audio_format_ogg (NOT documented; we transparently fall back
           to MP3 — see :meth:`synthesize` / :meth:`stream`)
+        * ``pronunciation_dict`` (issue #1780 — typed field on
+          :class:`TTSSettings`, forwarded as a top-level T2A v2 key).
 
-        We do NOT claim ``ssml`` (MiniMax has no SSML parser) or
-        ``pronunciation_dict`` (the field exists but is not surfaced in
-        the public ``TTSSettings`` shape yet — leave the flag off until
-        the value-object adds the field, otherwise tests would silently
-        start using a capability the provider doesn't actually expose).
+        We do NOT claim ``ssml`` (MiniMax has no SSML parser).
         """
         return TTSCapabilities(
             streaming=True,
             voice_cloning=True,
             ssml=False,
-            pronunciation_dict=False,
+            pronunciation_dict=True,
             audio_format_pcm=True,
             audio_format_mp3=True,
             audio_format_ogg=False,

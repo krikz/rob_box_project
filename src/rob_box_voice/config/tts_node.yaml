@@ -30,6 +30,20 @@ tts_node:
     # (MINIMAX_API_KEY / MINIMAX_GROUP_ID). Секреты не хранятся в YAML.
     minimax_api_key: ''
     minimax_group_id: ''
+    # Issue #1780 / issue #1004 — дефолтные emotion / pitch / volume /
+    # pronunciation_dict для MiniMax T2A v2. Нейтральные дефолты сохраняют
+    # текущее поведение (поля НЕ передаются в API, см. minimax_tts.py):
+    #   emotion = ""             → не передавать
+    #   pitch  = 0               → 0 = «не передавать»; иначе int semitones
+    #   volume = 0.0             → 0.0 = «не передавать»; иначе [1.0, 10.0]
+    #   pronunciation_dict = ""  → MiniMax-словарь произношения (JSON)
+    # Допустимые значения emotion (MiniMax T2A v2 voice_setting.emotion):
+    #   happy | neutral | sad | angry | fearful | disgusted | surprised
+    # Прокидывание значений в ``TTSSettings`` — в карточке t_4e98182a.
+    minimax_emotion: ''
+    minimax_pitch: 0
+    minimax_volume: 0.0
+    minimax_pronunciation_dict: ''
     normalize_text: true
     chipmunk_mode: false
     pitch_shift: 1.0
@@ -41,6 +55,14 @@ tts_node:
     yandex_api_key: ''
     yandex_voice: anton
     yandex_speed: 1.0
+    # Issue #1780 / issue #1004 — флаг «ssml-aware» режима для Yandex.
+    # При True — Yandex-провайдер должен передавать вход как SSML
+    # (``<speak>...<emotion>happy</emotion>...</speak>``) и использовать
+    # ``<emotion>`` / ``<prosody pitch=...>`` теги, поддерживаемые
+    # Yandex gRPC v3. Сейчас False (legacy: текст → Hints(voice, speed)).
+    # Полная интеграция — в карточке t_c401ecaa; флаг уже здесь, чтобы
+    # YAML был валиден и можно было безопасно переключать.
+    yandex_ssml_aware: false
     chunk_max_chars_yandex: 250
     chunk_max_chars_silero: 800
     chunk_max_chars_minimax: 5000
@@ -56,6 +78,16 @@ tts_node:
     minimax_max_retries: 2
     minimax_retry_backoff_ms: 500
     minimax_streaming: false
+    # Issue #1780 — emotion / pitch / volume / pronunciation_dict
+    # передаются в voice_setting T2A v2 запроса. Дефолты нейтральные
+    # (emotion="neutral" — совпадает с API-дефолтом; pitch/volume/
+    # pronunciation_dict пусты → поля опускаются из payload, поведение
+    # как до #1780). pronunciation_dict — JSON-строка вида
+    # '{"tone":["Alice/ˈælɪs"]}'. Подробности — в tts_node.py:declare_parameter.
+    minimax_emotion: neutral
+    minimax_pitch: ''
+    minimax_volume: ''
+    minimax_pronunciation_dict: ''
     # Issue #1229 — файл персистентного состояния фактического провайдера
     # TTS (после фолбека minimax→yandex). tts_node пишет сюда {provider,
     # dead_providers} при смене провайдера; при рестарте контейнера кэш

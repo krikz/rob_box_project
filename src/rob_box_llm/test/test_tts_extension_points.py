@@ -286,15 +286,62 @@ class TestMiniMaxTTSProviderCapabilities:
         # No custom endpoint — MiniMax is cloud-only as far as we model it.
         assert caps.custom_endpoint is False
 
-    def test_pronunciation_dict_unset_until_value_object_adds_field(
-        self, minimax_provider
-    ):
-        # ``pronunciation_dict`` is left False because the public
-        # TTSSettings value object doesn't surface that field yet.
-        # If a future PR adds the field, this test is the canary —
-        # update it AND consider flipping the flag to True.
+    def test_pronunciation_dict_is_a_typed_field(self, minimax_provider):
+        # ``pronunciation_dict`` was added to TTSSettings in issue #1780
+        # and the MiniMax provider now forwards it as a top-level T2A v2
+        # payload key. The capability flag flips to ``True`` — this test
+        # is the canary that keeps the contract honest: if a future PR
+        # accidentally drops the field or the forwarding, this assertion
+        # surfaces the regression.
         caps = minimax_provider.capabilities()
-        assert caps.pronunciation_dict is False
+        assert caps.pronunciation_dict is True
+
+    def test_pronunciation_dict_typed_field_propagates_to_payload(self, minimax_provider):
+        # MiniMax-shaped pronunciation_dict — issue #1780.
+        s = TTSSettings(
+            voice="v",
+            pronunciation_dict={"tone": ["Alice/ˈælɪs", "Bob/bɑb"]},
+        )
+        payload = _build_payload(
+            "hi", s, stream=False, default_voice="v", default_model="m"
+        )
+        assert payload["pronunciation_dict"] == {"tone": ["Alice/ˈælɪs", "Bob/bɑb"]}
+
+    def test_pronunciation_dict_via_extra_still_works(self, minimax_provider):
+        # Backwards-compat: pre-#1780 callers forwarded pronunciation_dict
+        # via ``settings.extra``. We still accept that path so existing
+        # dialogue_node / voice configs keep working without changes.
+        s = TTSSettings(
+            voice="v",
+            extra={"pronunciation_dict": {"phoneme": ["a/ɑ"]}},
+        )
+        payload = _build_payload(
+            "hi", s, stream=False, default_voice="v", default_model="m"
+        )
+        assert payload["pronunciation_dict"] == {"phoneme": ["a/ɑ"]}
+
+    def test_pronunciation_dict_typed_field_wins_over_extra(self, minimax_provider):
+        # If both paths are used, the typed field wins — sending two
+        # conflicting payloads to the API would invite a 400.
+        s = TTSSettings(
+            voice="v",
+            pronunciation_dict={"tone": ["typed/táɪpt"]},
+            extra={"pronunciation_dict": {"tone": ["extra/ɛkstrə"]}},
+        )
+        payload = _build_payload(
+            "hi", s, stream=False, default_voice="v", default_model="m"
+        )
+        assert payload["pronunciation_dict"] == {"tone": ["typed/táɪpt"]}
+
+    def test_pronunciation_dict_omitted_when_unset(self, minimax_provider):
+        # Backwards-compat: no field set → no ``pronunciation_dict`` key
+        # in payload. This is the default behaviour that the user should
+        # see when nothing is configured (issue #1780 acceptance).
+        s = TTSSettings(voice="v")
+        payload = _build_payload(
+            "hi", s, stream=False, default_voice="v", default_model="m"
+        )
+        assert "pronunciation_dict" not in payload
 
 
 class TestMiniMaxTTSProviderListVoices:
