@@ -254,6 +254,26 @@ class MCPServer(Node):
         except ImportError:
             self.get_logger().warning("⚠️ PerceptionEvent не найден, мониторинг контекста отключен")
 
+        # Issue #1770 — подписка на /voice/speaker/result, чтобы memory
+        # tools могли фильтровать facts/turns по speaker_id без явной передачи
+        # от LLM (fallback: ``node.current_speaker_id``). speaker_id_node
+        # публикует ``{"is_known": true, "speaker_id": "...", "name": "...",
+        # "confidence": 0.93}`` после каждой распознанной реплики; нам нужен
+        # только ``speaker_id`` (UUID), всё остальное — для логов.
+        self.current_speaker_id: Optional[str] = None
+        try:
+            self._speaker_result_sub = self.create_subscription(
+                String,
+                "/voice/speaker/result",
+                self._on_speaker_result,
+                10,
+            )
+            self.get_logger().info("🎙️ Подписан на /voice/speaker/result (issue #1770)")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ Не удалось подписаться на /voice/speaker/result: {exc}"
+            )
+
         # Issue #1229 — фактический провайдер TTS (после фолбека) от tts_node.
         # tts_node публикует JSON {"provider": str, "voice": str, ...} после
         # старта/фолбека/синтеза. SpeakTextTool/SetVoiceTool валидируют голоса
@@ -373,6 +393,51 @@ class MCPServer(Node):
             f"🎙️ [issue 1229] actual TTS provider → '{self.actual_tts_provider}' "
             f"(reason: {payload.get('reason')})"
         )
+
+    def _on_speaker_result(self, msg: "String") -> None:
+        """Issue #1770 — обновить ``current_speaker_id`` из speaker_id_node.
+
+        Формат: ``{"is_known": true, "speaker_id": "<uuid>",
+        "name": "Денчик", "confidence": 0.93}`` или
+        ``{"is_known": false}``. ``speaker_id`` есть только при
+        ``is_known=True``; в этом случае мы сохраняем UUID и используем
+        его как fallback в MemorySaveTool/MemorySearchTool/MemoryContextTool
+        (если LLM не передал ``speaker_id`` явно).
+
+        На событие ``{"event": "registered", "speaker_id": "..."}`` мы
+        также обновляем кэш — это значит, что прямо сейчас
+        зарегистрировали нового юзера и следующая реплика отнесётся к
+        нему.
+        """
+        try:
+            data = json.loads(msg.data or "{}")
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+
+        is_known = bool(data.get("is_known"))
+        raw_sid = data.get("speaker_id")
+        # Используем ``or`` чтобы отфильтровать пустые строки и None.
+        new_speaker_id: Optional[str] = str(raw_sid) if (is_known and raw_sid) else None
+        # ``registered`` событие несёт speaker_id даже без is_known.
+        if data.get("event") == "registered" and raw_sid:
+            new_speaker_id = str(raw_sid)
+
+        if new_speaker_id == self.current_speaker_id:
+            return  # без изменений — тихий return, не спамим лог
+        old = self.current_speaker_id
+        self.current_speaker_id = new_speaker_id
+        if new_speaker_id:
+            self.get_logger().info(
+                f"👤 [issue 1770] current_speaker_id: {old or '∅'} → "
+                f"{new_speaker_id[:12]}… (name={data.get('name')!r})"
+            )
+        else:
+            self.get_logger().info(
+                f"👤 [issue 1770] current_speaker_id: {old or '∅'} → ∅ "
+                "(unknown / is_known=false)"
+            )
 
     def _on_dj_mode(self, msg: "String") -> None:
         """Track DJ-mode state so the watchdog doesn't kill DJ sets.
