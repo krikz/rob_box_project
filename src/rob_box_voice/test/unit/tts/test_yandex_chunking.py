@@ -181,9 +181,12 @@ def _import_chunk_text():
                 self.container_audio = container_audio
 
         class _Hints:
-            def __init__(self, voice=None, speed=None):
+            def __init__(self, voice=None, speed=None, pitch_shift=None,
+                         volume=None):
                 self.voice = voice
                 self.speed = speed
+                self.pitch_shift = pitch_shift
+                self.volume = volume
 
         class _UtteranceSynthesisRequest:
             LUFS = 0
