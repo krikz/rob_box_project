@@ -761,6 +761,77 @@ def test_extract_relevant_log_line_still_catches_audio_node_real_fallback() -> N
     assert line == log_text
 
 
+def test_extract_relevant_log_line_ignores_supercollider_n_free_stale_node() -> None:
+    """Issue #1802, deploy run 33395279992 31.08: scsynth on Vision Pi
+    logs `FAILURE IN SERVER /n_free Node <id> not found` when FoxDot's
+    cleanup path releases SynthDef nodes that sclang has already freed
+    during the headless shutdown sequence. The plain `failure` keyword
+    trips CRITICAL_MATCH_RE and was filing a deploy-critical on every
+    staging run. The music stack stays healthy (Voice Pi container_status=
+    true + 189 ROS2 topics), the node-id race is a benign shutdown
+    byproduct, and the real scsynth crash wording (`Exception in Server`)
+    is NOT covered by this exclusion — so genuine outages still surface.
+    """
+    log_text = "\n".join(
+        [
+            "Buffer UGen: no buffer data",
+            "FAILURE IN SERVER /n_free Node 9002 not found",
+            "late 0.013253629",
+            "FAILURE IN SERVER /n_free Node 9017 not found",
+            "SuperCollider 3 server ready.",
+        ]
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_voice_assistant_music_stack_validation_echo() -> None:
+    """Issue #1802, deploy run 33395279992 31.08: voice-assistant's
+    startup wrapper prints `⚠ Music stack validation found non-critical
+    errors (degraded but usable)` whenever validate_music_stack.py exits
+    non-zero without declaring a fatal sclang crash (see
+    docker/vision/scripts/voice_assistant/start_voice_assistant.sh:138
+    and src/rob_box_voice/scripts/validate_music_stack.py — returns 1 on
+    degraded mode). The container is INTENTIONALLY continuing with a
+    degraded music stack; voice/TTS/STT stay healthy. The plain word
+    `errors` in the wrapper's own status line trips CRITICAL_MATCH_RE
+    and was filing a deploy-critical on every staging run. Same exclusion
+    tier as `missing critical synthdefs: none` / `log file not found:
+    sclang.log` (retro 15.08 t_a14ac65d, the sclang preload race).
+    """
+    log_text = "\n".join(
+        [
+            "✓ Music stack validation passed",
+            "  └─ Подробности: /tmp/sclang.log",
+            "sclang готов",
+            "Проверка music stack readiness...",
+            "⚠ Music stack validation found non-critical errors (degraded but usable)",
+            "  └─ Подробности: /tmp/sclang.log",
+        ]
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_still_catches_real_supercollider_failure() -> None:
+    """Negative test for #1802: a `FAILURE IN SERVER` line that is NOT
+    the benign /n_free stale-node race MUST still be reported. Catches a
+    future regression where someone over-broadens the exclusion.
+    """
+    log_text = (
+        "FAILURE IN SERVER /g_free Group 1234 not found while freeing "
+        "live synth — see sclang stack trace above"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line == log_text
+
+
 def test_extract_relevant_log_line_ignores_supercollider_n_free_node_not_found() -> None:
     """Issue #1737, deploy run 33335300188 (30.08 21:07, kanban t_fe19566c):
     supercollider logs `FAILURE IN SERVER /n_free Node <num> not found`
