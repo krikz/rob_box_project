@@ -226,6 +226,45 @@ class TestValidation:
         assert not re.search(r"\d\.\d{6,}", code), code
 
 
+class TestPatternLengthNormalization:
+    """``spec_from_flat`` приводит drums/hats/perc к степени двойки (#1803).
+
+    Живые прогоны 30-31.08, четыре трека подряд: модель писала рисунки
+    вроде ``"X..o.X.o."`` (9 шагов) рядом с ``"....o..."`` (8) — период не
+    делит такт, и грув «плывёт» на каждом повторе. Модель символы не
+    считает, поэтому приведение — на стороне ``spec_from_flat``, до того
+    как рисунок попадёт в ``render()``.
+    """
+
+    def _flat(self, **kwargs):
+        base = dict(bpm=120, root="C", scale="minor", form="arc")
+        base.update(kwargs)
+        return spec_from_flat(**base)
+
+    def test_nine_step_drums_padded_to_sixteen(self):
+        spec = self._flat(drums="X..X.o...")  # 9 шагов, живой инцидент
+        drums = next(l for l in spec.layers if l.role == "drums")
+        assert drums.pattern == "X..X.o...-------"
+        assert len(drums.pattern) == 16
+
+    def test_power_of_two_pattern_is_untouched(self):
+        spec = self._flat(hats="--.-")  # уже 4 шага — трогать нечего
+        hats = next(l for l in spec.layers if l.role == "hats")
+        assert hats.pattern == "--.-"
+
+    def test_eighteen_step_perc_padded_to_thirty_two(self):
+        spec = self._flat(perc=".......O.......O..")  # 19 шагов, live 31.08
+        perc = next(l for l in spec.layers if l.role == "perc")
+        assert len(perc.pattern) == 32
+        assert perc.pattern.startswith(".......O.......O..")
+
+    def test_single_step_pattern_is_left_alone(self):
+        # Длина 0/1 тривиально делит такт — приводить нечего.
+        spec = self._flat(drums="X")
+        drums = next(l for l in spec.layers if l.role == "drums")
+        assert drums.pattern == "X"
+
+
 class TestGeneratedCodePassesExistingGuards:
     """Аранжировщик обязан укладываться в уже существующие фильтры.
 
