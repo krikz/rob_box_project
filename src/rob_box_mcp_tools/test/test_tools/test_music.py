@@ -1005,10 +1005,14 @@ class TestSampleBufferPrewarm:
         mgr = _make_manager()
         mgr._renardo_context = {"Samples": _FakeSamples()}
 
-        mgr._prewarm_sample_buffers('d1 >> play("x-o-", dur=0.5, sample=1)')
+        # Issue #1815: "-" — звучащий хэт ("hyphen"), а не пауза; настоящая
+        # пауза — ".". Прогреваться должны x, "-" (дважды) и o — всё, кроме
+        # точки. Обе "-" объединены в проверке ниже, а не отброшены.
+        mgr._prewarm_sample_buffers('d1 >> play("x-o-.", dur=0.5, sample=1)')
 
-        assert [c[0] for c in calls] == ["x", "o"], (
-            f"должны грузиться только символы x и o, получено: {calls!r}"
+        assert [c[0] for c in calls] == ["x", "-", "o", "-"], (
+            f"должны грузиться все звучащие символы (в т.ч. '-'), кроме "
+            f"паузы '.', получено: {calls!r}"
         )
         assert all(spack == 0 for _, spack in calls)
 
