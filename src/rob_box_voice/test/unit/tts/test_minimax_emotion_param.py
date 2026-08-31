@@ -27,18 +27,16 @@ from pathlib import Path
 import pytest
 
 
-TTS_NODE_SRC = Path(
-    "/home/builder/rob_box_project/.worktrees/t_a5eed3a7/"
-    "src/rob_box_voice/rob_box_voice/tts_node.py"
-)
-SRC_YAML = Path(
-    "/home/builder/rob_box_project/.worktrees/t_a5eed3a7/"
-    "src/rob_box_voice/config/tts_node.yaml"
-)
-DOCKER_YAML = Path(
-    "/home/builder/rob_box_project/.worktrees/t_a5eed3a7/"
-    "docker/vision/config/voice_assistant/tts_node.yaml"
-)
+# Тест лежит в ``src/rob_box_voice/test/unit/tts/test_minimax_emotion_param.py``.
+# ``parents[5]`` поднимается на 5 уровней вверх до корня репо:
+#   tts/ → unit/ → test/ → rob_box_voice/ → src/ → <repo-root>
+# Это работает в CI (test_ws/build/...), на developer-host и в worktree —
+# мы не зашиваем абсолютные пути, как делал первый вариант теста (CI-фейл
+# из-за ``/home/builder/rob_box_project/.worktrees/...``).
+REPO_ROOT = Path(__file__).resolve().parents[5]
+TTS_NODE_SRC = REPO_ROOT / "src/rob_box_voice/rob_box_voice/tts_node.py"
+SRC_YAML = REPO_ROOT / "src/rob_box_voice/config/tts_node.yaml"
+DOCKER_YAML = REPO_ROOT / "docker/vision/config/voice_assistant/tts_node.yaml"
 
 # Пара → (YAML-ключ, declare_parameter-имя, тип default).
 # Тип default'а важен для обратной совместимости (issue #1004:
