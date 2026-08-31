@@ -55,6 +55,13 @@ def node():
     }
     n._maybe_log_skip_summary = MagicMock()
     n._active_tg_chat_id = None
+    # Upstream-regression t_5e06c47d: dialogue_node.py:640 / :678 / :682.
+    # ``object.__new__`` skips ``__init__`` — anything the SUT reads must be
+    # pre-seeded explicitly. Without these the wake-gate tests below
+    # AttributeError on the next code path that walks into ``_run_turn``.
+    n._track_mode_music_active = False
+    n._action_claim_retry_used = False
+    n._code_speech_retry_used = False
     return n
 
 
@@ -143,6 +150,9 @@ async def test_run_turn_from_tg_skips_speaker_identity_and_prefixes():
     n._apply_music_guard = MagicMock()
     n._publish_music_cleanup = MagicMock()
     n._maybe_record_session_end = MagicMock()
+    n._track_mode_music_active = False
+    n._action_claim_retry_used = False
+    n._code_speech_retry_used = False
 
     logger = MagicMock()
     n.get_logger = lambda: logger
