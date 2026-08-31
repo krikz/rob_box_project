@@ -987,15 +987,26 @@ class MusicManager:
         Октавный потолок (RC2 в docs/analysis/2026-08-30-music-quality-audit.md):
         раньше здесь стояло ``max_oct = 4`` с обоснованием «oct=5 очень
         резкое/громкое» (issue #1000). Резкость oct=5 — это алиасинг на
-        16 kHz, а не громкость; лечится LPF в ``masterlimiter``, а не
-        запретом. Кап до 4 при этом схлопывал бас (oct=3) и лид в соседние
-        октавы: аранжировка без регистрового разделения на слух и есть
-        «одна мелодия, которая повторяется». Потолок поднят до 6 —
-        это верхний регистр колокольчиков/арпеджио, выше на 16 kHz
-        действительно только писк.
+        16 kHz, а не громкость. Кап до 4 при этом схлопывал бас (oct=3) и
+        лид в соседние октавы: аранжировка без регистрового разделения на
+        слух и есть «одна мелодия, которая повторяется».
+
+        🔴 FIX (live 31.08): потолок был поднят до 6 в расчёте на то, что
+        алиасинг срежет LPF внутри ``masterlimiter``. Лимитер снят (он
+        выдавал NaN и глушил весь выход), и расчёт вместе с ним рухнул.
+        Живой прогон: модель написала ``bell(..., oct=7)``, кап опустил до
+        6 — и робот засвистел. Обертоны колокола на шестой октаве лежат
+        выше Найквиста (8 kHz) и зеркалятся обратно негармоничным визгом;
+        ``fuzz(drive=0.6)`` и ``play(rate=1.2)`` в том же коде добавляли
+        своих.
+
+        Потолок 5 покрывает регистры аранжировщика целиком (бас 3, пэд 4,
+        мелодия 5) — режется только то, что модель пишет от руки выше них.
+        Вернуть 6 можно, когда на мастер-шине снова будет анти-алиасинговый
+        фильтр — но уже с защитой от NaN.
         """
         max_amp = self._max_amp
-        max_oct = 6
+        max_oct = 5
 
         # 1. Сначала P[...] паттерны (более специфичный случай)
         def _cap_p(m: re.Match) -> str:
@@ -1959,6 +1970,27 @@ class ComposeMusicTool(MCPTool):
                 required=False,
             ),
             MCPToolParameter(
+                name="hats_sample",
+                type="integer",
+                description="Индекс сэмпла хэтов 0-4. Раньше был прибит к 3, "
+                "поэтому хэты во всех треках звучали одинаково. Меняй.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="perc",
+                type="string",
+                description='Паттерн перкуссии — третий ударный слой поверх '
+                'бочки и хэтов, например "..n." или "n..n.n". Форма отводит '
+                'ему место в кульминации; без него плотные секции пустее.',
+                required=False,
+            ),
+            MCPToolParameter(
+                name="perc_sample",
+                type="integer",
+                description="Индекс сэмпла перкуссии 0-4.",
+                required=False,
+            ),
+            MCPToolParameter(
                 name="bass_synth",
                 type="string",
                 description="Синт баса: dub, wobblebass, fuzz, bass, jbass, "
@@ -2032,6 +2064,9 @@ class ComposeMusicTool(MCPTool):
         form: Optional[str] = None,
         drums: Optional[str] = None,
         drums_sample: int = 0,
+        hats_sample: int = 3,
+        perc: Optional[str] = None,
+        perc_sample: int = 0,
         hats: Optional[str] = None,
         bass_synth: Optional[str] = None,
         bass_notes: Optional[str] = None,
@@ -2050,6 +2085,9 @@ class ComposeMusicTool(MCPTool):
                 form=form or "arc",
                 drums=drums,
                 drums_sample=drums_sample,
+                hats_sample=hats_sample,
+                perc=perc,
+                perc_sample=perc_sample,
                 hats=hats,
                 bass_synth=bass_synth,
                 bass_notes=bass_notes,

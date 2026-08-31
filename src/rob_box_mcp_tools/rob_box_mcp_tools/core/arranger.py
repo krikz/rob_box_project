@@ -408,6 +408,9 @@ def spec_from_flat(
     drums: Optional[str] = None,
     drums_sample: int = 0,
     hats: Optional[str] = None,
+    hats_sample: int = 3,
+    perc: Optional[str] = None,
+    perc_sample: int = 0,
     bass_synth: Optional[str] = None,
     bass_notes: Optional[str] = None,
     lead_synth: Optional[str] = None,
@@ -433,7 +436,19 @@ def spec_from_flat(
             Layer(role="drums", pattern=drums.strip(), sample=int(drums_sample or 0))
         )
     if hats and hats.strip():
-        layers.append(Layer(role="hats", pattern=hats.strip(), sample=3))
+        # 🔴 FIX (live 31.08): здесь стояло sample=3 намертво. В библиотеке
+        # 4585 сэмплов в трёх паках, а compose_music дотягивался только до
+        # вариантов бочки через drums_sample — хэты всегда звучали одним и
+        # тем же, перкуссия наружу не выводилась вовсе. Один и тот же
+        # тембр во всех треках слышится как «однотипно» ровно так же, как
+        # одна и та же мелодия.
+        layers.append(
+            Layer(role="hats", pattern=hats.strip(), sample=int(hats_sample or 0))
+        )
+    if perc and perc.strip():
+        layers.append(
+            Layer(role="perc", pattern=perc.strip(), sample=int(perc_sample or 0))
+        )
 
     for role, synth, notes in (
         ("bass", bass_synth, bass_notes),

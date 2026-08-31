@@ -135,6 +135,42 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                        'например '
                                                                        '"--.-" или '
                                                                        '"-.--".'},
+                                            'hats_sample': {   'type': 'integer',
+                                                               'description': 'Индекс '
+                                                                              'сэмпла '
+                                                                              'хэтов '
+                                                                              '0-4. '
+                                                                              'Раньше '
+                                                                              'был '
+                                                                              'прибит '
+                                                                              'к 3, '
+                                                                              'поэтому '
+                                                                              'хэты во '
+                                                                              'всех '
+                                                                              'треках '
+                                                                              'звучали '
+                                                                              'одинаково. '
+                                                                              'Меняй.'},
+                                            'perc': {   'type': 'string',
+                                                        'description': 'Паттерн '
+                                                                       'перкуссии — '
+                                                                       'третий ударный '
+                                                                       'слой поверх '
+                                                                       'бочки и хэтов, '
+                                                                       'например '
+                                                                       '"..n." или '
+                                                                       '"n..n.n". '
+                                                                       'Форма отводит '
+                                                                       'ему место в '
+                                                                       'кульминации; '
+                                                                       'без него '
+                                                                       'плотные секции '
+                                                                       'пустее.'},
+                                            'perc_sample': {   'type': 'integer',
+                                                               'description': 'Индекс '
+                                                                              'сэмпла '
+                                                                              'перкуссии '
+                                                                              '0-4.'},
                                             'bass_synth': {   'type': 'string',
                                                               'description': 'Синт '
                                                                              'баса: '
@@ -239,6 +275,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'form',
                                        'drums',
                                        'drums_sample',
+                                       'hats_sample',
+                                       'perc',
+                                       'perc_sample',
                                        'hats',
                                        'bass_synth',
                                        'bass_notes',

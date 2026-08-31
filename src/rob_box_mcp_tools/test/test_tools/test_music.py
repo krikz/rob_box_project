@@ -222,12 +222,27 @@ class TestMusicManagerCaps:
     def setup_method(self):
         self.mgr = _make_manager()
 
-    def test_oct_is_capped_at_6(self):
-        # Санитарный потолок: выше oct=6 на 16 kHz только писк.
+    def test_oct_is_capped_at_5(self):
+        """Санитарный потолок: выше oct=5 на 16 kHz только писк.
+
+        🔴 Live 31.08: потолок стоял на 6 в расчёте на анти-алиасинговый
+        LPF внутри ``masterlimiter``. Лимитер снят (выдавал NaN и глушил
+        выход), и модель тут же засвистела: ``bell(..., oct=7)`` обрезался
+        до 6 и всё равно зеркалил обертоны из-за Найквиста в 8 kHz.
+        Регистры аранжировщика (бас 3, пэд 4, мелодия 5) потолок 5 не
+        задевает — режется только рукописный код выше них.
+        """
         code = "p1 >> pluck([0,2,4], oct=9)"
         out = self.mgr._cap_amp(code)
-        assert "oct=6" in out
+        assert "oct=5" in out
         assert "oct=9" not in out
+
+    def test_bell_from_the_live_whistle_is_brought_down(self):
+        """Ровно та строка, на которой робот засвистел 31.08."""
+        code = "p3 >> bell([7, 4, 2, 0], dur=1, oct=7, amp=0.2)"
+        out = self.mgr._cap_amp(code)
+        assert "oct=5" in out
+        assert "oct=7" not in out
 
     def test_oct_5_survives_for_register_separation(self):
         # RC2 в docs/analysis/2026-08-30-music-quality-audit.md: старый кап
@@ -237,7 +252,7 @@ class TestMusicManagerCaps:
         out = self.mgr._cap_amp(code)
         assert "oct=5" in out
 
-    def test_oct_unchanged_when_leq_6(self):
+    def test_oct_unchanged_when_leq_5(self):
         code = "p1 >> pluck([0,2,4], oct=3)"
         out = self.mgr._cap_amp(code)
         assert "oct=3" in out
