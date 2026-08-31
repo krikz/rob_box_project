@@ -35,6 +35,7 @@ from rob_box_mcp_tools.core.arranger import (  # noqa: E402
     BEATS_PER_BAR,
     DEFAULT_FORM,
     FORMS,
+    OCTAVE_STEP,
     ROLE_PROFILE,
     ArrangementError,
     CompositionSpec,
@@ -44,6 +45,22 @@ from rob_box_mcp_tools.core.arranger import (  # noqa: E402
     resolve_form,
     spec_from_flat,
 )
+
+
+def _all_degree_values(code: str, player: str):
+    """Every scale-degree number ``player`` actually plays in the rendered
+    code — from a plain degree list, or, if the role develops material,
+    every variant packed into its ``{player}_motif = Pvar(...)`` line.
+    """
+    motif_match = re.search(
+        rf"^{re.escape(player)}_motif = Pvar\((\[\[.*?\]\])", code, re.M
+    )
+    if motif_match:
+        groups = re.findall(r"\[([^\[\]]+)\]", motif_match.group(1))
+        return [float(v) for g in groups for v in g.split(",")]
+    line = next(l for l in code.splitlines() if l.startswith(f"{player} >>"))
+    plain = re.search(r"\(\[([^\]]+)\]", line).group(1)
+    return [float(v) for v in plain.split(",")]
 
 
 def _spec(**kwargs) -> CompositionSpec:
@@ -115,7 +132,13 @@ class TestForm:
 
 class TestRegisters:
     def test_roles_are_spread_across_octaves(self):
-        """RC2: бас, пэд и лид в соседних октавах = каша вместо аранжировки."""
+        """RC2: бас, пэд и лид в соседних октавах = каша вместо аранжировки.
+
+        Проверяет только заявленный ``oct=``. Этого НЕ достаточно, чтобы
+        поймать регистровый разъезд — код может честно писать ``oct=4`` и
+        всё равно играть на две октавы выше через сдвинутые ступени лада
+        (ровно так проскочила регрессия #1805.1, см. тест ниже).
+        """
         code = render(_spec())
         octaves = {
             line.split(" >>")[0]: int(re.search(r"oct=(\d+)", line).group(1))
@@ -125,6 +148,73 @@ class TestRegisters:
         assert octaves["p1"] < octaves["p3"] < octaves["p2"], (
             f"бас/пэд/лид должны быть разведены по регистрам, получено {octaves}"
         )
+
+    def test_material_development_never_widens_a_roles_own_register(self):
+        """RC5.1 — regression, post-review fix for #1805.
+
+        Первая версия материала по секциям применяла транспозицию и
+        инверсию ко всем мелодическим ролям без учёта того, что ``degrees``
+        — это ступени лада, а не полутона: открытая раскладка пэда
+        ``(0, 4, 7, 11)`` (уже больше октавы сама по себе) после инверсии
+        и транспозиции превращалась в
+        ``Pvar([[0,4,7,11],[2,6,9,13],[0,-4,-7,-11], ...])`` — ступень 13
+        при oct=4 звучит почти на две октавы выше лида (oct=5), ступень
+        -11 — ниже баса (oct=3) и ниже HPF мастер-шины. ``oct=`` при этом
+        не менялся, поэтому ``test_roles_are_spread_across_octaves`` этого
+        не ловил.
+
+        Правило теперь: лид — единственная роль, которую транспонируют и
+        инвертируют (это тема, ей и положено развитие); бас может менять
+        только ПОРЯДОК своих нот (ретроград); пэд держит гармонию и
+        material вообще не меняет. Тест проверяет фактические ступени
+        (учитывая все варианты внутри ``Pvar``, если он есть) — ни одна
+        роль не должна выйти за пределы диапазона, который сама же и
+        получила от LLM.
+        """
+        code = render(
+            _spec(
+                layers=(
+                    Layer(role="bass", synth="jbass", degrees=(0, 0, 5, 3), dur=1),
+                    Layer(role="lead", synth="rhpiano", degrees=(0, 2, 4, 7), dur=0.5),
+                    Layer(role="pad", synth="warmpad", degrees=(0, 4, 7, 11), dur=4),
+                )
+            )
+        )
+        for role, player, original in (
+            ("bass", "p1", (0, 0, 5, 3)),
+            ("lead", "p2", (0, 2, 4, 7)),
+            ("pad", "p3", (0, 4, 7, 11)),
+        ):
+            values = _all_degree_values(code, player)
+            assert min(values) >= min(original), (
+                f"{role}: ступень {min(values)} ниже собственного диапазона "
+                f"{original} — слой провалился в чужой регистр"
+            )
+            assert max(values) <= max(original), (
+                f"{role}: ступень {max(values)} выше собственного диапазона "
+                f"{original} — слой залез в чужой регистр"
+            )
+
+    def test_roles_occupy_non_decreasing_absolute_registers(self):
+        """Фактическая высота (``oct + ступень/OCTAVE_STEP``), не только
+        ``oct=``: во всех вариантах материала бас не должен подниматься
+        выше пэда, а пэд — выше лида. Касание границы (общий тон — верх
+        пэда совпадает с низом лида) это нормальное голосоведение, а не
+        баг; настоящая бага — это низ одной роли ВЫШЕ верха соседней.
+        """
+        code = render(_spec())
+        bounds = {}
+        for role, player in (("bass", "p1"), ("pad", "p3"), ("lead", "p2")):
+            values = _all_degree_values(code, player)
+            octave = int(
+                re.search(rf"^{player} >>.*?oct=(\d+)", code, re.M).group(1)
+            )
+            bounds[role] = (
+                octave + min(values) / OCTAVE_STEP,
+                octave + max(values) / OCTAVE_STEP,
+            )
+        assert bounds["bass"][1] <= bounds["pad"][0], bounds
+        assert bounds["pad"][1] <= bounds["lead"][0], bounds
 
     def test_oct_shift_is_applied_and_clamped(self):
         code = render(

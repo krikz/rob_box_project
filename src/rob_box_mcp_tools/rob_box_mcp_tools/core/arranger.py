@@ -54,6 +54,20 @@ RC4 дал форме огибающую amp, но мелодия внутри �
   собственная интенсивность роли в этой секции (см. :data:`FORMS`), а не
   по имени секции и не случайно — форма уже это знает, спрашивать LLM не
   нужно.
+
+  RC5.1 (правка после ревью): транспозиция и инверсия — приёмы для ТЕМЫ,
+  а не для баса и не для аккордовой подкладки. Открытая раскладка пэда
+  (``0, 4, 7, 11`` — уже больше октавы) от инверсии/транспозиции уезжала
+  в подвал и в верха одновременно и рвала регистровое разведение RC2.
+  Поэтому: транспозиция/инверсия — только у ``lead``; ``bass`` может
+  только переставлять свои же ноты (ретроград), никогда не выходя из
+  своей октавы; ``pad`` держит гармонию и material не меняет вовсе
+  (развитие пэда — это :func:`_dur_var` и огибающая amp, неизменный
+  аккорд под движущейся мелодией — это голосоведение, а не тот луп, на
+  который жаловался #1805). Дополнительная страховка —
+  :func:`_fold_into_range`: любой вариант складывается обратно в
+  собственный диапазон ступеней мотива, так что роль физически не может
+  вылезти за пределы регистра, который сама же и получила от LLM.
 * :func:`_dur_var` — плотность нот по секциям через ``var()`` на ``dur``:
   громче роль в секции — гуще ноты, тише — ноты растянуты. Это отдельный
   диагноз (#1806): «постоянная длительность ноты = механическая сетка»
@@ -298,6 +312,18 @@ def _amp_envelope(
     return _merge_adjacent(amps, durs)
 
 
+#: Scale degrees per octave, used only to fold a transformed motif back
+#: into its own register (see :func:`_fold_into_range`). Renardo's degree
+#: indexing wraps at the scale length — degree N and N+len(scale) are the
+#: same pitch class an octave apart — and every scale this module exposes
+#: (minor, major, dorian, mixolydian, lydian, phrygian, harmonicMinor) has
+#: 7 notes. Pentatonic scales fold slightly loosely (their true octave is
+#: 5 degrees), but 7 still keeps a folded note from crossing into a
+#: neighbouring role's register, which is the only property this constant
+#: needs to guarantee.
+OCTAVE_STEP = 7
+
+
 def _transpose(degrees: Sequence[float], steps: float) -> Tuple[float, ...]:
     return tuple(d + steps for d in degrees)
 
@@ -317,6 +343,28 @@ def _retrograde(degrees: Sequence[float]) -> Tuple[float, ...]:
     return tuple(reversed(degrees))
 
 
+def _fold_into_range(degrees: Sequence[float], lo: float, hi: float) -> Tuple[float, ...]:
+    """Bring every note back inside ``[lo, hi]`` by whole octaves.
+
+    RC2 physically separates bass/pad/lead into adjacent octaves — a
+    transform that pushes a note outside the motif's OWN span can climb
+    into the role above or fall into the role below, which is exactly the
+    register bleed the RC2 separation exists to prevent. Folding by
+    :data:`OCTAVE_STEP` keeps the note's identity in the scale (unlike
+    clipping, which would flatten the contour into repeated boundary
+    notes) while guaranteeing it never leaves the register the LLM's own
+    motif already established.
+    """
+    folded: List[float] = []
+    for d in degrees:
+        while d > hi:
+            d -= OCTAVE_STEP
+        while d < lo:
+            d += OCTAVE_STEP
+        folded.append(d)
+    return tuple(folded)
+
+
 def _motif_variants(
     role: str,
     degrees: Sequence[float],
@@ -329,9 +377,14 @@ def _motif_variants(
 
     Nothing here is invented — every variant is a transform of the motif
     the LLM already supplied (see :func:`_autofill_bass` for the same
-    principle applied to harmony). Which transform fires is read off the
-    role's own intensity curve, which the form already owns, so no new
-    input is needed from the LLM or a random source:
+    principle applied to harmony).
+
+    Register review (#1805 follow-up, RC5.1): transposition and inversion
+    are devices for a THEME, not for a chord pad or a bassline — a wide
+    open-voiced pad chord like ``(0, 4, 7, 11)`` already spans more than an
+    octave, so inverting or transposing it reliably breaks RC2's register
+    separation (the pad climbs above the lead, or the bass drops below the
+    masterbus HPF). Only ``lead`` gets pitch-shifting development:
 
     * First entrance -> the motif verbatim (state the idea before varying
       it).
@@ -342,8 +395,26 @@ def _motif_variants(
       chorus, not the same one quieter).
     * Intensity holds -> retrograde (played backwards — recognisably the
       same idea without being a literal repeat).
+
+    ``bass`` may still develop, but only by reordering its own tones
+    (retrograde) — never transposed or inverted, so it can never leave its
+    own octave. ``pad`` holds the harmony: its material stays constant
+    (development there comes from :func:`_dur_var` and the amp envelope
+    alone) — an unchanging chord under a moving lead is voice-leading, not
+    the static loop #1805 complained about.
+
+    As a second line of defence (in case a future transform is added
+    here), every non-original variant is folded back into the original
+    motif's own ``[min(degrees), max(degrees)]`` span via
+    :func:`_fold_into_range` before it is used — a role can never end up
+    outside the register footprint the LLM itself chose.
     """
     original = tuple(degrees)
+    if role == "pad":
+        total_beats = sum(int(bars) for _n, bars, _i in plan) * BEATS_PER_BAR
+        return [original], [total_beats]
+
+    lo, hi = min(original), max(original)
     values: List[Tuple[float, ...]] = []
     durations: List[int] = []
     prev_intensity = 0.0
@@ -352,14 +423,18 @@ def _motif_variants(
         intensity = float(intensities.get(role, 0.0))
         if intensity <= 0.0 or not prev_audible:
             variant = original
+        elif role != "lead":
+            # bass: reorder tones only — never transpose/invert out of
+            # register (see docstring above).
+            variant = _fold_into_range(_retrograde(original), lo, hi)
         else:
             delta = intensity - prev_intensity
             if abs(delta) < 1e-6:
-                variant = _retrograde(original)
+                variant = _fold_into_range(_retrograde(original), lo, hi)
             elif delta > 0:
-                variant = _transpose(original, 2)
+                variant = _fold_into_range(_transpose(original, 2), lo, hi)
             else:
-                variant = _invert(original)
+                variant = _fold_into_range(_invert(original), lo, hi)
         values.append(variant)
         durations.append(int(bars) * BEATS_PER_BAR)
         prev_intensity = intensity
