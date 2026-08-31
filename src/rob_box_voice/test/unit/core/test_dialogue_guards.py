@@ -866,3 +866,58 @@ class TestStopClearsTheMusicPlayingFlagLive3108:
         assert stop_branch < starters_branch, (
             "сброс обязан идти ДО ветки запуска, иначе она будет затёрта"
         )
+
+
+class TestWatchdogStopClearsTheFlagLive3108:
+    """Музыку останавливает не только диалог — флаг обязан это узнавать.
+
+    Живой лог 31.08::
+
+        1788186658  [watchdog] Авто-стоп 1 паттернов: reason=idle_ttl
+        1788186797  [track-mode] TRACK играет с прошлого хода
+        1788186797  [Bug C] LLM skipped execute_music_code; publishing nudge
+                    TTS: «Я тут растерялся — бит не запустился»
+
+    Через 139 секунд после реальной остановки диалог всё ещё считал, что
+    трек играет. Комментарий в track-mode честно писал «живёт до
+    stop_music/watchdog», но канала для второго не существовало: топик
+    ``/voice/music/state`` слушал только audio_node.
+
+    Отсюда «после нескольких генераций робот начинает тупить»: ретрай-промпт
+    требовал ИЗМЕНИТЬ несуществующий трек, модель отвечала описанием, оба
+    ретрая выгорали.
+    """
+
+    def _dialogue_node_source(self) -> str:
+        from pathlib import Path
+
+        here = Path(__file__).resolve()
+        for parent in here.parents:
+            candidate = parent / "rob_box_voice" / "dialogue_node.py"
+            if candidate.is_file():
+                return candidate.read_text(encoding="utf-8")
+        raise AssertionError("dialogue_node.py not found")
+
+    def test_node_subscribes_to_the_server_music_state(self) -> None:
+        src = self._dialogue_node_source()
+        assert '"/voice/music/state"' in src, (
+            "диалог не слушает /voice/music/state — про остановку по "
+            "watchdog он не узнает"
+        )
+
+    def test_handler_clears_the_flag_on_idle(self) -> None:
+        src = self._dialogue_node_source()
+        start = src.index("def _on_music_state")
+        body = src[start:start + 1400]
+        assert "idle" in body
+        assert "_track_mode_music_active = False" in body
+
+    def test_handler_never_sets_the_flag(self) -> None:
+        """Взводит флаг только ход диалога: серверу не видно BACKING/TRACK."""
+        src = self._dialogue_node_source()
+        start = src.index("def _on_music_state")
+        body = src[start:start + 1400]
+        assert "_track_mode_music_active = True" not in body, (
+            "обработчик не должен взводить флаг — сервер не различает "
+            "BACKING (гасится после речи) и TRACK (живёт до стопа)"
+        )

@@ -556,6 +556,21 @@ class DialogueNode(Node):
         self.create_subscription(
             String, "/voice/generated_music/state", self._on_generated_music_state, 10,
             callback_group=cbg)
+        # 🔴 FIX (live 31.08): «после нескольких генераций робот начинает
+        # тупить и говорит, что растерялся». Музыку останавливает watchdog в
+        # mcp_server (reason=idle_ttl, 300 с без диалога), а диалог об этом
+        # не узнавал — комментарий в track-mode честно писал «живёт до
+        # stop_music/watchdog», но канала для второго не было. Из лога:
+        #     1788186658  [watchdog] Авто-стоп 1 паттернов: reason=idle_ttl
+        #     1788186797  [track-mode] TRACK играет с прошлого хода
+        #     1788186797  [Bug C] LLM skipped ...; publishing spoken nudge
+        # Через 139 с после реальной остановки флаг всё ещё говорил «играет»,
+        # ретрай-промпт требовал ИЗМЕНИТЬ несуществующий трек, модель
+        # отвечала словами — и робот произносил «я растерялся».
+        # Теперь флаг следует за сервером, а не за догадкой.
+        self.create_subscription(
+            String, "/voice/music/state", self._on_music_state, 10,
+            callback_group=cbg)
         # Issue #980 — fire music_cleanup only after the *last* TTS chunk of a
         # batch (rap, poetry), not after the first. tts_node publishes this
         # event once ``batch_index == batch_total`` for a given ``batch_id``.
@@ -2136,6 +2151,33 @@ class DialogueNode(Node):
         if not isinstance(payload, dict):
             return
         self._generated_music_state = payload
+
+    def _on_music_state(self, msg: String) -> None:
+        """Renardo-музыка остановилась на сервере — снять флаг «играет».
+
+        ``/voice/music/state`` публикует mcp_server: ``"playing"`` пока у
+        MusicManager есть открытая сессия или именованные паттерны, иначе
+        ``"idle"``. Раньше этот топик слушал только audio_node (порог VAD,
+        issue #989), а диалог вёл собственный ``_track_mode_music_active``
+        по своим догадкам — и расходился с реальностью каждый раз, когда
+        музыку останавливал не он: watchdog по idle_ttl, стоп из другого
+        клиента, падение паттерна.
+
+        Цена расхождения — ``build_music_retry_prompt``: при True он говорит
+        модели «музыка ИГРАЕТ, её надо ИЗМЕНИТЬ, а не заводить заново».
+        Сказанное про несуществующий трек уводит модель в описание вместо
+        вызова тула, ретраи выгорают, и робот произносит «я растерялся».
+
+        Только гасим. Взводит флаг по-прежнему ход диалога: там известно,
+        BACKING это или TRACK, а серверу такое различие не видно.
+        """
+        state = (msg.data or "").strip().lower()
+        if state.startswith("idle") and self._track_mode_music_active:
+            self._track_mode_music_active = False
+            self.get_logger().info(
+                "🎵 [track-mode] сервер сообщил idle — снимаю флаг «играет» "
+                "(музыку остановил не диалог: watchdog/внешний стоп)"
+            )
 
     def _on_tts_batch_registered(self, msg: String) -> None:
         """Pre-register an in-flight TTS batch (issue #992).
