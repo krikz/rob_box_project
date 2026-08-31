@@ -460,7 +460,23 @@ class GetCurrentTimeTool(MCPTool):
 
     Не требует ROS-зависимостей — время берётся из системных часов Python.
     Вызывать когда пользователь спрашивает время, дату, день недели и т.д.
+
+    Issue #1777 — время возвращается в timezone, который определяется
+    приоритетом:
+
+    1. ``ROBOT_TIMEZONE`` env var (per-deployment override, например
+       ``Europe/Berlin`` если робот переехал из Москвы).
+    2. ``Europe/Moscow`` default (matches operator locale + Russian prompts).
+    3. ``datetime.timezone.utc`` graceful fallback если ``zoneinfo`` не нашёл
+       таймзону (отсутствует tzdata). Логирует warning, никогда не падает.
+
+    Без этого фикса контейнер ``voice-assistant`` стартует с TZ=UTC по
+    умолчанию, ``datetime.datetime.now()`` возвращает UTC, а юзер слышит
+    «семь сорок шесть утра» вместо «десять сорок шесть утра» (см. #1763
+    и #1777).
     """
+
+    DEFAULT_TIMEZONE = "Europe/Moscow"
 
     @property
     def name(self) -> str:
@@ -483,10 +499,14 @@ class GetCurrentTimeTool(MCPTool):
         return ToolExecutionType.INSTANT
 
     def execute(self) -> MCPToolResult:
-        """Вернуть текущее время из системных часов.
+        """Вернуть текущее время в timezone робота (Europe/Moscow по умолчанию).
 
-        Issue #1777: возвращает ``formatted_time`` — время русской прописью
-        («двадцать два тридцать семь»), чтобы LLM не пыталось само
+        Issue #1777 (resolved by rebase): добавлена timezone-aware datetime
+        через ``_resolve_robot_timezone`` (ROBOT_TIMEZONE env → Europe/Moscow
+        default → UTC fallback).
+
+        Issue #1762 (этот PR): возвращает ``formatted_time`` — время русской
+        прописью («двадцать два тридцать семь»), чтобы LLM не пыталось само
         склеивать «22:37» + «вечера». Правила формата живут в
         ``format_time_ru``; LLM читает ``formatted_time`` дословно через
         ``speak_text``.
@@ -500,6 +520,13 @@ class GetCurrentTimeTool(MCPTool):
         else:
             now = _datetime.datetime.now()
 
+        # Русские названия дней и месяцев без зависимости от locale
+        WEEKDAYS_RU = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+        MONTHS_RU = [
+            "января", "февраля", "марта", "апреля", "мая", "июня",
+            "июля", "августа", "сентября", "октября", "ноября", "декабря",
+        ]
+
         hour = now.hour
         period = _hour_period(hour)
 
@@ -512,7 +539,8 @@ class GetCurrentTimeTool(MCPTool):
             "weekday": WEEKDAYS_RU[now.weekday()],
             "period": period,
             "iso": now.isoformat(timespec="seconds"),
-            # Issue #1777: русская пропись для дословного озвучивания.
+            "timezone": str(tz),
+            # Issue #1762: русская пропись для дословного озвучивания.
             "formatted_time": formatted_time,
         }
 
@@ -520,7 +548,7 @@ class GetCurrentTimeTool(MCPTool):
             f"Сейчас {data['time']}, {data['weekday']}, {data['date']}, {data['period']}. "
             f"По-русски: {formatted_time}."
         )
-        self.log_info(f"Текущее время: {message}")
+        self.log_info(f"Текущее время: {message} (tz={data['timezone']})")
         return MCPToolResult(success=True, data=data, message=message)
 
 

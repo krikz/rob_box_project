@@ -262,6 +262,11 @@ services:
       # Context Aggregator parameters
       - CONTEXT_PUBLISH_RATE=2.0  # Hz - частота событий
       - MEMORY_WINDOW=60  # секунды - окно короткой памяти
+      # Issue #1777 / #1763 — timezone для glibc strftime() и log-timestamps,
+      # а также для Python zoneinfo в MCP tools (get_current_time).
+      # Europe/Moscow по умолчанию, override через .env.secrets.
+      - TZ=${ROBOT_TIMEZONE:-Europe/Moscow}
+      - ROBOT_TIMEZONE=${ROBOT_TIMEZONE:-Europe/Moscow}
       # Python
       - PYTHONUNBUFFERED=1
       # Timezone (issue #1763). TZ — для C-функций и логов, ROBOT_TIMEZONE — для Python zoneinfo.

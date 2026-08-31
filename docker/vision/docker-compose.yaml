@@ -218,6 +218,12 @@ services:
       # VoiceMemory + Ollama
       - OLLAMA_BASE_URL=http://localhost:11434
       - VOICE_MEMORY_DB_PATH=/data/voice_memory.db
+      # Issue #1777 / #1763 — timezone для get_current_time tool. TZ нужен
+      # для glibc strftime() и лог-timestamps, ROBOT_TIMEZONE — для
+      # Python zoneinfo в GetCurrentTimeTool. Europe/Moscow по умолчанию,
+      # override через .env.secrets или env_file.
+      - TZ=${ROBOT_TIMEZONE:-Europe/Moscow}
+      - ROBOT_TIMEZONE=${ROBOT_TIMEZONE:-Europe/Moscow}
       # Agent skills feature flag (set to false to revert to flat tool mode)
       - USE_SKILLS=true
       # OpenAI SDK logging (set to debug for HTTP traffic dump, info for request-level, off for silent)
