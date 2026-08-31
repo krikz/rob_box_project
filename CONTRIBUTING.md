@@ -343,6 +343,31 @@ printf '%04d\n' "$NEXT"
 3. **При backfill** (см. `scripts/agent_flow/backfill_diag_markers.sh`): добавлять маркеры в конец body, не переписывать существующий текст.
 4. **Legacy diagnostic-карточки без маркеров** (созданные до 31.08.2026): detector их skip'ает с логом `no diag-pr marker, skip (legacy)`. Для их очистки — backfill вручную (Шифу решает когда).
 
+### 2g. Mis-scope guard: архитектурные изменения → architect/devops, не backend+TDD (ADR-0036, 31.08.2026)
+
+> Ретро `t_da8bf7cd`: карточка `t_e2ae0c29` «реализация ADR-0035» с `assignee=backend` + `skill=test-driven-development` провисела в running 5ч31м при `max_runtime_seconds=1800` (полчаса!). Worker жив, шлёт heartbeat, watchdog не классифицирует как stuck — но по сути это mis-scope: backend-воркер в TDD-loop пишет тесты на архитектурное решение, которого ещё нет в коде. Полное обоснование — в `docs/adr/0036-mis-scope-task-guard.md`.
+
+#### Правило выбора assignee для архитектурных/process-карточек
+
+Если задача = реализация ADR, design-decision, process-fix, pre-merge gate, merge-gate logic, skill-validation guard, agent-flow cron-фикс, watchdog-логика, dispatcher-валидация, vendor-патч → **assignee ОБЯЗАН быть одним из**:
+
+- **assignee=architect** + skill из профиля architect (`architecture-doc-review`, `plan`, `interactive-design-discuss`) — для design/ADR-работы
+- **assignee=devops** + skill из профиля devops (`agent-flow-ops`, `bash`, `versioning-runtime-scripts`) — для реализации фикса в существующем скрипте
+
+**Запрещено** для этих задач: `assignee=backend` + `skill=test-driven-development`. Это mis-scope — воркер уйдёт в TDD-цикл без архитектурного решения. См. `t_e2ae0c29` (stuck 5ч31м) и `t_6c6c98fb` (скилл чужого профиля, прецедент).
+
+#### Подсказка на стадии `kanban create`
+
+Vendor-патч `hermes-agent-skill-validation.patch` (ADR-0023 §2.5) расширяется функцией `_validate_scope_for_assignee` (ADR-0036 §4.1): если body карточки содержит архитектурные ключевые слова (`ADR-`, `pre-merge gate`, `merge-gate`, `dispatcher`, `process-fix`, ...) **И** assignee ∈ {backend, frontend, tester} **И** skill ∈ {test-driven-development, pytest, jest} → печатается structured warning в stderr + первый комментарий карточки. **Не блокирует** — обход через `--force-scope`.
+
+#### Watchdog runtime-overshoot (ADR-0036 §4.2)
+
+`scripts/agent_flow/watchdog.sh` дополняется блоком «1d. runtime-overshoot»: если worker жив, шлёт heartbeat, но `now - started_at > 4 × max_runtime_seconds` → авто-комментарий в карточку + SIGTERM через dispatcher API. SIGKILL через 60 сек если worker не умер. Множитель 4 — запас для legitimately-долгих задач; для них Шифу может выставить `max_runtime_seconds` явно больше.
+
+#### Cron-надзор (ADR-0036 §4.3)
+
+Расширение `agent-flow-blocked-watchdog.sh` (ежечасный): если running-карточка > 4ч **И** assignee ≠ architect **И** тело содержит «ADR-» → авто-комментарий «reviewer назначен неверно». Не kill, не reassign — Шифу принимает решение.
+
 ### 3. Merge и автоматическая сборка
 - После merge в `develop` → автоматическая сборка образов с тегом `dev`
 - После merge в `main` → автоматическая сборка образов с тегом `latest`
