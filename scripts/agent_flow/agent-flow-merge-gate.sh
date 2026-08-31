@@ -983,8 +983,8 @@ except Exception:
 # MERGED) ⇒ критерий карточки выполнен независимо от причины blocked
 # (timeout/needs_input/capability) → unblock (reason «фикс влит, критерий
 # выполнен») → complete → archive. Идемпотентно: повторный тик видит archived.
-archive_merged_card() {  # $1=card_id $2=issue number $3=pr_number (для completion-check)
-    local cid="$1" num="$2" pr="$3" cstate=""
+archive_merged_card() {  # $1=card_id $2=issue number $3=pr_number (для completion-check) $4=branch (опц.)
+    local cid="$1" num="$2" pr="$3" br="${4:-}" cstate=""
     [ -z "$cid" ] && return 0
     # GATE-3 (ADR-0022 §4.3): блокируем archive если PR имеет красный CI.
     # Типичный R5-сценарий (ретро 14.08 PR #1418): воркер завершился без
@@ -1005,19 +1005,53 @@ archive_merged_card() {  # $1=card_id $2=issue number $3=pr_number (для compl
     fi
     cstate="$(kanban_card_status "$cid")"
     if [ "$cstate" = "done" ]; then
-        "$HERMES_BIN" kanban --board "$KANBAN_BOARD" archive "$cid" >/dev/null 2>&1 \
-            && log "issue #${num}: card ${cid} archived (merged)" || true
+        if "$HERMES_BIN" kanban --board "$KANBAN_BOARD" archive "$cid" >/dev/null 2>&1; then
+            log "issue #${num}: card ${cid} archived (merged)"
+            # OpenSpec sync (ADR-0039): archive change folder при archive карточки.
+            # Если sync падает — НЕ блокируем merge-gate (warn + log). OpenSpec — advisory.
+            archive_openspec_change_for_merge "$cid" "$num" "$pr" "$br" || \
+                log "openspec-sync: WARN archive-change failed for card ${cid} (non-fatal, kanban ok)"
+        fi
     elif [ "$cstate" = "blocked" ]; then
         if "$HERMES_BIN" kanban --board "$KANBAN_BOARD" unblock \
                 --reason "фикс влит, критерий выполнен" "$cid" >/dev/null 2>&1 \
             && "$HERMES_BIN" kanban --board "$KANBAN_BOARD" complete \
                 --summary "фикс влит, критерий выполнен (ретро 14.08 t_0bd15be9)" "$cid" >/dev/null 2>&1; then
             "$HERMES_BIN" kanban --board "$KANBAN_BOARD" archive "$cid" >/dev/null 2>&1 \
-                && log "issue #${num}: card ${cid} unblocked+completed+archived (merged, was blocked)" \
+                && {
+                    log "issue #${num}: card ${cid} unblocked+completed+archived (merged, was blocked)"
+                    # OpenSpec sync (ADR-0039): archive change folder.
+                    archive_openspec_change_for_merge "$cid" "$num" "$pr" "$br" || \
+                        log "openspec-sync: WARN archive-change failed for card ${cid} (non-fatal, kanban ok)"
+                } \
                 || log "issue #${num}: WARNING card ${cid} complete ok, archive failed — retry next tick"
         else
             log "issue #${num}: WARNING card ${cid} blocked → unblock/complete failed — retry next tick"
         fi
+    fi
+}
+
+# --- OpenSpec sync (ADR-0039) ----------------------------------------------
+# Helper: archive OpenSpec change-folder при archive kanban-карточки.
+# Идемпотентно (см. agent-flow-openspec-sync.sh: archive-change skip if already
+# archived). Принимает branch опционально — для deriving slug из branch-suffix.
+# Если branch не передан, slug выводится из cid: t_<hex> → "<cid>".
+archive_openspec_change_for_merge() {  # $1=cid $2=num $3=pr $4=branch
+    local cid="$1" num="$2" pr="$3" br="$4" sync_bin _slug _out=1
+    [ -z "$cid" ] && return 0
+    sync_bin="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-flow-openspec-sync.sh"
+    [ -x "$sync_bin" ] || { log "openspec-sync: $sync_bin not found/executable — skipping"; return 0; }
+    # slug = branch-suffix (z-{agent}/<id>-<slug> → <slug>), fallback = cid.
+    if [ -n "$br" ]; then
+        _slug="$(printf '%s' "$br" | sed -E 's|^z-[a-z0-9_-]+/||; s|^[0-9]+-||')"
+    else
+        _slug="$cid"
+    fi
+    if "$sync_bin" archive-change "$num" "$cid" "$_slug" "$pr" >/dev/null 2>&1; then
+        log "openspec-sync: change folder archived for ${cid}-${_slug} (PR #${pr:-?})"
+        return 0
+    else
+        return 1
     fi
 }
 
@@ -2181,7 +2215,7 @@ except Exception:
                         # (unblock → complete → archive). Здесь destructive
                         # cleanup разрешён: close успешен (ADR-0014 §4 req 4).
                         if [ -n "${task_id:-}" ]; then
-                            archive_merged_card "$task_id" "$number" "${pr_number:-}"
+                            archive_merged_card "$task_id" "$number" "${pr_number:-}" "${branch:-}"
                         fi
                     else
                         log "issue #${number}: WARNING gh issue close failed (Q22 orphan) — retry next tick"
@@ -2242,7 +2276,7 @@ except Exception:
         # нет. Фикс влит (PR MERGED) ⇒ критерий карточки выполнен независимо
         # от причины blocked: unblock → complete → archive (см. helper).
         if [ -n "$card_id" ]; then
-            archive_merged_card "$card_id" "$number" "${pr_number:-}"
+            archive_merged_card "$card_id" "$number" "${pr_number:-}" "${branch:-}"
         fi
         # 5) Dedup cleanup-коммента (ретро 10.08 t_9caf5d52): раньше коммент
         #    «✅ PR #N смержен» постился КАЖДЫЙ тик (5 мин) → 6 одинаковых на
