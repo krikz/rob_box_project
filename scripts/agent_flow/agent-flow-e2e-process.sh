@@ -3064,6 +3064,28 @@ for t in data:
     # ПРОДОЛЖИТЬ, а не пересобирать: если для текущего HEAD round уже есть
     # успешный build-ран — пропускаем build (идём сразу в deploy/e2e).
     _round_head="$(git -C "$WORKTREE_DIR" rev-parse HEAD 2>/dev/null || echo '')"
+    # Issue #1826: defense in depth — CI commit SHA-tags (`ci: main|vision SHA
+    # tags → ... [skip ci]`) уже заблокированы в L-Build Main/Vision для
+    # round-веток, НО если когда-то этот guard отключат или появятся другие
+    # workflow, коммитящие в round — agent-flow всё равно не должен бесконечно
+    # триггерить build. Детектим: последний коммит round — это CI SHA-tag noise
+    # → ищем SUCCESS build для parent. Если есть → resume (не триггерим).
+    _round_parent="$(git -C "$WORKTREE_DIR" rev-parse HEAD^ 2>/dev/null || echo '')"
+    _round_head_subject="$(git -C "$WORKTREE_DIR" log -1 --pretty=%s 2>/dev/null || echo '')"
+    if [ -n "$_round_parent" ] \
+        && [[ "${_round_head_subject}" =~ ^ci:[[:space:]]*(main|vision)[[:space:]]+SHA[[:space:]]+tags ]] \
+        && [ "$_round_parent" != "$_round_head" ]; then
+        _parent_build="$(gh run list --repo "$GH_REPO" --workflow "$BUILD_WORKFLOW" --branch "$ROUND_BRANCH" \
+            --limit 10 --json databaseId,conclusion,headSha \
+            --jq "[.[] | select(.conclusion == \"success\" and .headSha == \"${_round_parent}\")][0].databaseId" 2>/dev/null || echo '')"
+        _parent_build="$(printf '%s' "$_parent_build" | grep -oE '[0-9]+' | head -n1 || true)"
+        if [ -n "$_parent_build" ] && [ "$_parent_build" != "null" ]; then
+            log "issue #${number}: CI SHA-tag spam, skipping — last commit on ${ROUND_BRANCH} is '${_round_head_subject}', parent ${_round_parent:0:7} has SUCCESS build ${_parent_build} (issue #1826). Treating current HEAD as noise; resuming deploy/e2e."
+            # Не триггерим build. Переводим _round_head на parent, чтобы дальнейший
+            # _existing_build/_existing_deploy ниже нашли SUCCESS для «истинного» HEAD.
+            _round_head="$_round_parent"
+        fi
+    fi
     # Ретро 22.08 t_c7761956 (A1): pre-dispatch consecutive-build-failed guard.
     # Если 2 последних build-run'а на ${ROUND_BRANCH} завершились failure → не
     # запускаем третий (race в update-image-versions / GHCR push реальный, retry
