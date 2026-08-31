@@ -165,6 +165,12 @@ async def test_run_turn_from_tg_skips_speaker_identity_and_prefixes():
     n._core = MagicMock()
     n._core.process_input = AsyncMock(return_value=_Result())
     n._handle_result = MagicMock()
+    # Issue #992 Bug C' (regression 30.08): новые retry-флаги в __init__
+    # DialogueNode — фикстура через object.__new__ их не получает, задаём вручную.
+    # _action_claim_retry_used живёт в _check_unbacked_action_claim_and_retry.
+    n._track_mode_music_active = False
+    n._code_speech_retry_used = False
+    n._action_claim_retry_used = False
 
     await n._run_turn("продолжай", from_tg=True)
 
