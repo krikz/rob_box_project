@@ -391,7 +391,6 @@ class GetCurrentTimeTool(MCPTool):
     def execute(self) -> MCPToolResult:
         """Вернуть текущее время в пользовательском часовом поясе."""
         import datetime
-        import locale
 
         tz = self._resolve_timezone()
         now = datetime.datetime.now(tz)
