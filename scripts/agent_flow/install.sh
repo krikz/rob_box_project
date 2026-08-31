@@ -124,7 +124,7 @@ EXPECTED=(
     # те, для которых найден MERGED PR (PATTERN «карточки-призраки»).
     # Регистрация cron-job делается в ensure_blocked_watchdog_cron ниже.
     agent-flow-blocked-watchdog.sh
-    # Fail-streak escalation watchdog (ретро 28.08 t_faac94b0): no-agent,
+# Fail-streak escalation watchdog (ретро 28.08 t_faac94b0): no-agent,
     # вызывается ИЗ launcher'а (после e2e-process.sh tick), не отдельным
     # cron-job. При streak ≥ WARN → issue-comment, при streak ≥ PAUSE →
     # sentinel-файл → e2e-process замораживает ротацию.
