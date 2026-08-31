@@ -812,6 +812,181 @@ class TestRetryPromptKnowsIfMusicIsPlaying:
             assert p.startswith(MUSIC_RETRY_PROMPT_PREFIX)
 
 
+# Issue #1777 / #1762 — non-music tool guard
+# ---------------------------------------------------------------------------
+
+
+class TestDetectRequiredTool:
+    """Issue #1777 / #1762 — ``detect_required_tool`` должен правильно
+    определять, какой tool явно просит юзер.
+
+    Главный кейс #1777 — «который час» / «сколько времени» / «время в Москве»
+    → get_current_time (раньше LLM говорил из головы).
+    Кейс #1762 — «погода в Бишкеке» / «новости про X» → search_web.
+    """
+
+    def test_time_phrases(self) -> None:
+        # Главный кейс #1777.
+        assert detect_required_tool("который час") == "get_current_time"
+        assert detect_required_tool("сколько времени") == "get_current_time"
+        assert detect_required_tool("сколько сейчас времени") == "get_current_time"
+        assert detect_required_tool("время в москве") == "get_current_time"
+        assert detect_required_tool("время по москве") == "get_current_time"
+        assert detect_required_tool("какая дата") == "get_current_time"
+        assert detect_required_tool("какой день недели") == "get_current_time"
+        assert detect_required_tool("какое сегодня число") == "get_current_time"
+
+    def test_search_web_phrases(self) -> None:
+        # Главный кейс #1762.
+        assert detect_required_tool("погода в бишкеке") == "search_web"
+        assert detect_required_tool("какая погода") == "search_web"
+        assert detect_required_tool("новости про биткоин") == "search_web"
+        assert detect_required_tool("что в интернете про илон маск") == "search_web"
+        assert detect_required_tool("загугли курс доллара") == "search_web"
+        assert detect_required_tool("расскажи про космос") == "search_web"
+
+    def test_set_voice_phrases(self) -> None:
+        # Кейс #1765.
+        assert detect_required_tool("переключи голос на арт") == "set_voice"
+        assert detect_required_tool("смени голос") == "set_voice"
+        assert detect_required_tool("голос зайцев") == "set_voice"
+        assert detect_required_tool("голос ермак") == "set_voice"
+        assert detect_required_tool("поставь голос окс") == "set_voice"
+
+    def test_memory_search_phrases(self) -> None:
+        # Кейс #1770.
+        assert detect_required_tool("что ты знаешь обо мне") == "memory_search"
+        assert detect_required_tool("помнишь меня") == "memory_search"
+        assert detect_required_tool("что помнишь про меня") == "memory_search"
+
+    def test_faq_search_phrases(self) -> None:
+        assert detect_required_tool("что ты умеешь") == "faq_search"
+        assert detect_required_tool("какие команды") == "faq_search"
+        assert detect_required_tool("справка") == "faq_search"
+        assert detect_required_tool("расскажи о себе") == "faq_search"
+
+    def test_no_match_returns_none(self) -> None:
+        # chit-chat НЕ должен ретраить — иначе спам.
+        assert detect_required_tool("как дела") is None
+        assert detect_required_tool("расскажи анекдот") is None
+        assert detect_required_tool("привет") is None
+        assert detect_required_tool("") is None
+        assert detect_required_tool(None) is None  # type: ignore[arg-type]
+
+    def test_reported_speech_does_not_match_set_voice(self) -> None:
+        """«говор »/«говори »/«говорит »/«голосом» были бы substring-match
+        без границ слова — совпали бы с обычным chit-chat про чужую речь и
+        заставили бы LLM звать set_voice в ходе, никак не связанном с
+        голосом робота."""
+        assert detect_required_tool("не говори глупости") is None
+        assert detect_required_tool("мама говорит что уже пора") is None
+        assert detect_required_tool("он говорит по-английски") is None
+        assert detect_required_tool("спой красивым голосом") is None
+
+    def test_music_phrases_dont_match_tool_guard(self) -> None:
+        """«спой песенку» / «включи музыку» → НЕ должен попадать в tool guard
+        (для них есть отдельный music guard, см. issue #992 Bug C)."""
+        assert detect_required_tool("спой песенку") is None
+        assert detect_required_tool("включи музыку") is None
+        assert detect_required_tool("поставь бит") is None
+
+    def test_all_known_tools_are_in_allow_list(self) -> None:
+        """Sanity-check: TOOL_REQUEST_PATTERNS покрывает 5 основных категорий."""
+        tool_names = {tool for tool, _ in TOOL_REQUEST_PATTERNS}
+        assert tool_names == {
+            "get_current_time",
+            "search_web",
+            "set_voice",
+            "memory_search",
+            "faq_search",
+        }
+
+    def test_keyword_tuples_non_empty_for_all_tools(self) -> None:
+        for tool, kws in TOOL_REQUEST_PATTERNS:
+            assert kws, f"empty keyword list for {tool}"
+
+
+class TestBuildToolRetryPrompt:
+    """Issue #1777 / #1762 — synthetic prompt для Bug C retry
+    (non-music tools)."""
+
+    def test_echoes_user_input(self) -> None:
+        prompt = build_tool_retry_prompt("который час", "get_current_time")
+        assert "который час" in prompt
+
+    def test_uses_critical_prefix(self) -> None:
+        """Тот же [CRITICAL] префикс, что и у music guard — иначе
+        dialogue_node._run_turn сбросит retry budget на синтетическом
+        ретрае и цикл зациклится (см. issue #992 Bug C root cause)."""
+        prompt = build_tool_retry_prompt("любой user input", "get_current_time")
+        assert prompt.startswith(MUSIC_RETRY_PROMPT_PREFIX)
+
+    def test_names_specific_tool(self) -> None:
+        # «погода в Бишкеке» → search_web.
+        prompt = build_tool_retry_prompt("погода в бишкеке", "search_web")
+        assert "search_web" in prompt
+        assert "get_current_time" not in prompt  # НЕ подменять инструмент
+
+    def test_time_retry_prompts_calls_get_current_time(self) -> None:
+        # Главный кейс #1777.
+        prompt = build_tool_retry_prompt("который час", "get_current_time")
+        assert "get_current_time" in prompt
+        # Предупреждаем LLM не выдумывать время из головы.
+        assert "Не выдумывай" in prompt or "не выдумывай" in prompt.lower()
+
+    def test_search_web_retry_prompts_calls_search_web(self) -> None:
+        prompt = build_tool_retry_prompt("погода в бишкеке", "search_web")
+        assert "search_web" in prompt
+        # Hint для search_web должен явно просить вызвать search_web,
+        # а не говорить «не выдумывай» (как для get_current_time).
+        assert "search_web(query=" in prompt
+
+    def test_set_voice_retry_prompts_calls_set_voice(self) -> None:
+        prompt = build_tool_retry_prompt("переключи голос на арт", "set_voice")
+        assert "set_voice" in prompt
+        assert "list_voices" in prompt  # подсказка проверить список
+
+    def test_memory_search_filters_by_current_speaker(self) -> None:
+        # Кейс #1770 — не подставлять факты чужих юзеров.
+        prompt = build_tool_retry_prompt("что ты знаешь обо мне", "memory_search")
+        assert "memory_search" in prompt
+        assert "speaker_id" in prompt
+        assert "ТЕКУЩЕГО" in prompt or "current" in prompt.lower()
+
+    def test_faq_retry_prompts_calls_faq_search(self) -> None:
+        prompt = build_tool_retry_prompt("что ты умеешь", "faq_search")
+        assert "faq_search" in prompt
+
+    def test_defence_in_depth_unknown_tool_returns_empty(self) -> None:
+        """Prompt-injection защита: неизвестный tool_name → "" → caller
+        пропускает retry. Без этого юзер мог бы через user_input заставитьть
+        LLM «вызвать evil_tool» (или хотя бы попытаться)."""
+        prompt = build_tool_retry_prompt("любой", "evil_tool_name")
+        assert prompt == ""
+
+    def test_both_prompts_use_same_critical_prefix(self) -> None:
+        """Sanity-check: оба retry-промпта должны иметь одинаковый
+        MUSIC_RETRY_PROMPT_PREFIX — это нужно для того, чтобы
+        dialogue_node._run_turn не сбрасывал retry budget на синтетическом
+        ретрае (см. issue #992 Bug C)."""
+        music_prompt = build_music_retry_prompt("x")
+        tool_prompt = build_tool_retry_prompt("x", "get_current_time")
+        assert music_prompt.startswith(MUSIC_RETRY_PROMPT_PREFIX)
+        assert tool_prompt.startswith(MUSIC_RETRY_PROMPT_PREFIX)
+
+
+def test_all_tool_retry_prompts_have_critical_prefix() -> None:
+    """Sanity-check: для всех 5 tool_names prefix должен быть [CRITICAL].
+    Защита от тихой регрессии: добавили новый tool_name, забыли prefix —
+    тест сразу скажет."""
+    for tool_name, _ in TOOL_REQUEST_PATTERNS:
+        prompt = build_tool_retry_prompt("любой user input", tool_name)
+        assert prompt.startswith(MUSIC_RETRY_PROMPT_PREFIX), (
+            f"tool {tool_name!r} retry prompt must start with "
+            f"MUSIC_RETRY_PROMPT_PREFIX, got: {prompt[:80]!r}"
+        )
+
+
 class TestStopClearsTheMusicPlayingFlagLive3108:
     """«Выключи музыку» обязана гасить ``_track_mode_music_active``.
 

@@ -76,8 +76,7 @@ class _MiniDialogueNode:
 
     def __init__(self) -> None:
         self._tool_retry_used: bool = False
-        self._babble_retry_used: bool = False
-        self._music_guard_retry_active_flag: bool = False
+        self._retry_dispatched_in_turn: bool = False
         self._dispatched: list[_DispatchCall] = []
         self._reopen_called: int = 0
         self.warnings: list[str] = []
@@ -116,9 +115,6 @@ class _MiniDialogueNode:
             )
         )
 
-    def _music_guard_retry_active(self) -> bool:
-        return self._music_guard_retry_active_flag
-
     # ── сам тестируемый метод — копия из dialogue_node._apply_tool_skipped_guard ──
 
     def _apply_tool_skipped_guard(
@@ -126,6 +122,7 @@ class _MiniDialogueNode:
         *,
         user_input: str,
         tools_called: tuple,
+        other_retry_dispatched: bool = False,
     ) -> bool:
         if tools_called:
             return False
@@ -133,7 +130,7 @@ class _MiniDialogueNode:
             return False
         if self._tool_retry_used:
             return False
-        if self._babble_retry_used or self._music_guard_retry_active():
+        if other_retry_dispatched or self._retry_dispatched_in_turn:
             return False
         # Import here чтобы избежать тяжёлой загрузки на верхнем уровне.
         from rob_box_voice.core.dialogue_guards import (
@@ -357,11 +354,14 @@ class TestToolSkippedGuardNegativeCases(unittest.TestCase):
         # Один ретрай, не два.
         self.assertEqual(len(node._dispatched), 1)
 
-    def test_babble_retry_used_blocks_tool_retry(self):
-        """Если babble guard уже задиспатчил ретрай, tool guard молчит —
-        иначе два параллельных ретрай-тура → двойной вызов LLM."""
+    def test_retry_dispatched_in_turn_blocks_tool_retry(self):
+        """Если babble/action-claim/renardo-code guard уже задиспатчил
+        ретрай в этом ходе (``_retry_dispatched_in_turn``), tool guard
+        молчит — иначе два параллельных ретрай-тура → двойной вызов LLM
+        (тот же класс бага, что live 30.08 e2e renardo_evolve rn02 для
+        music guard)."""
         node = _MiniDialogueNode()
-        node._babble_retry_used = True
+        node._retry_dispatched_in_turn = True
         self.assertFalse(
             node._apply_tool_skipped_guard(
                 user_input="который час",
@@ -369,14 +369,16 @@ class TestToolSkippedGuardNegativeCases(unittest.TestCase):
             )
         )
 
-    def test_music_guard_retry_active_blocks_tool_retry(self):
-        """Аналогично для music guard (защита от двойных retry-туров)."""
+    def test_other_retry_dispatched_param_blocks_tool_retry(self):
+        """``_apply_music_guard`` не выставляет ``_retry_dispatched_in_turn``
+        сам — caller обязан передать его результат явно через
+        ``other_retry_dispatched`` (см. ``_run_turn`` в dialogue_node.py)."""
         node = _MiniDialogueNode()
-        node._music_guard_retry_active_flag = True
         self.assertFalse(
             node._apply_tool_skipped_guard(
                 user_input="который час",
                 tools_called=(),
+                other_retry_dispatched=True,
             )
         )
 

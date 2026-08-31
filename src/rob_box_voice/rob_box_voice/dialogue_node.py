@@ -3265,6 +3265,7 @@ class DialogueNode(Node):
             tool_retry_dispatched = self._apply_tool_skipped_guard(
                 user_input=raw_user_command or user_input,
                 tools_called=result.tools_called if result else (),
+                other_retry_dispatched=music_retry_dispatched,
             )
             # Issue #992 Bug D — defer the DIALOGUE_END transition
             # when the babble detector scheduled a retry. The retry's
@@ -3909,6 +3910,7 @@ class DialogueNode(Node):
         *,
         user_input: str,
         tools_called: tuple,
+        other_retry_dispatched: bool = False,
     ) -> bool:
         """Issue #1777 / #1762 — Bug C retry для non-music tool-based запросов.
 
@@ -3928,8 +3930,23 @@ class DialogueNode(Node):
            :data:`TOOL_REQUEST_PATTERNS` (см.
            :func:`detect_required_tool`).
         3. ``_tool_retry_used`` ещё не взведён (защита от ping-pong).
-        4. Уже не было music/babble retry для этого turn (чтобы не
-           конкурировать с другими guards).
+        4. Уже не было music/babble/action-claim/code retry для этого
+           turn (чтобы не конкурировать с другими guards и не отправить
+           ДВА синтетических ретрая за один ход — см. Bug B/C
+           double-dispatch incident, live 30.08 e2e renardo_evolve rn02,
+           разобранный в :meth:`_apply_music_guard`).
+
+        Args:
+            other_retry_dispatched: ``True`` когда :meth:`_apply_music_guard`
+                (вызывается непосредственно перед этим guard'ом в
+                ``_run_turn.finally``) уже задиспатчил свой ретрай в этом
+                ходе. Музыкальный гуард не выставляет
+                ``_retry_dispatched_in_turn`` сам (историческая причина:
+                он проверяется по return value, а не по общему флагу),
+                поэтому caller обязан передать это явно — раньше здесь
+                стояла эвристика по DJ-таймеру (``next_transition_at``),
+                которая не покрывала Bug E (``_action_claim_retry_used``)
+                и могла молча разойтись с реальным состоянием.
 
         Returns:
             ``True`` когда retry диспатчен (caller должен отложить
@@ -3941,7 +3958,7 @@ class DialogueNode(Node):
             return False
         if self._tool_retry_used:
             return False
-        if self._babble_retry_used or self._music_guard_retry_active():
+        if other_retry_dispatched or self._retry_dispatched_in_turn:
             return False
         tool_name = detect_required_tool(user_input)
         if not tool_name:
@@ -3965,26 +3982,6 @@ class DialogueNode(Node):
             raw_user_command=user_input,
         )
         return True
-
-    def _music_guard_retry_active(self) -> bool:
-        """Issue #1777 — guard для _apply_tool_skipped_guard: если music guard
-        уже отправил retry в этом turn, не отправлять tool-retry (чтобы не
-        было двух параллельных retry-туров).
-
-        MusicGuard не выставляет публичный флаг (проверяется только по
-        return value в _run_turn.finally), поэтому смотрим на текущее
-        состояние через next_transition_at / state.transition_count — это
-        эвристика, не идеал.
-        """
-        try:
-            # Если DJ-таймер был перенесён в ближайшее будущее — ретрай активен.
-            return (
-                self._dj.state.next_transition_at > 0
-                and self._dj.state.next_transition_at
-                < time.time() + DJModeController.POSTPONE_INTERVAL_S + 1
-            )
-        except Exception:
-            return False
 
     # ═══════════════════════════════════════════════════════════════════════
     #  Agent loop methods (unit-test contracts — test_agent_loop.py)
