@@ -264,6 +264,9 @@ services:
       - MEMORY_WINDOW=60  # секунды - окно короткой памяти
       # Python
       - PYTHONUNBUFFERED=1
+      # Timezone (issue #1763). TZ — для C-функций и логов, ROBOT_TIMEZONE — для Python zoneinfo.
+      - TZ=${ROBOT_TIMEZONE:-Europe/Moscow}
+      - ROBOT_TIMEZONE=${ROBOT_TIMEZONE:-Europe/Moscow}
     env_file:
       - .env.secrets  # API keys: MIMO_API_KEY, DEEPSEEK_API_KEY (для fallback)
     volumes:

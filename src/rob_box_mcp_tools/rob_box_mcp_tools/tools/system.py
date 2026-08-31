@@ -10,6 +10,7 @@ system.py - Инструменты управления системой роб�
 """
 
 import math
+import os
 import threading
 from typing import List, Optional, TYPE_CHECKING
 
@@ -334,7 +335,38 @@ class GetCurrentTimeTool(MCPTool):
 
     Не требует ROS-зависимостей — время берётся из системных часов Python.
     Вызывать когда пользователь спрашивает время, дату, день недели и т.д.
+
+    Timezone resolution (issue #1763):
+        1. ROBOT_TIMEZONE env var, если задана и валидна через zoneinfo.
+        2. Дефолт "Europe/Moscow".
+        3. Graceful fallback на UTC, если zoneinfo не может найти таймзону
+           (на хосте без tzdata). Никогда не возвращаем naive datetime —
+           контейнер voice-assistant по умолчанию запускается с TZ=UTC,
+           и без явного таймзоны бот бы говорил "07:46 утра" вместо "10:46".
     """
+
+    DEFAULT_TIMEZONE = "Europe/Moscow"
+    ROBOT_TIMEZONE_ENV = "ROBOT_TIMEZONE"
+
+    def _resolve_timezone(self):
+        """Получить tzinfo из ROBOT_TIMEZONE или дефолтного Europe/Moscow.
+
+        Returns:
+            tzinfo: zoneinfo.ZoneInfo или datetime.timezone(UTC).
+        """
+        import datetime
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        candidate = os.environ.get(self.ROBOT_TIMEZONE_ENV, "").strip() or self.DEFAULT_TIMEZONE
+        try:
+            return ZoneInfo(candidate)
+        except ZoneInfoNotFoundError:
+            # Хост без tzdata или неизвестная зона — откатываемся на UTC.
+            self.log_info(
+                f"Таймзона '{candidate}' недоступна (нет tzdata?). "
+                f"Используем UTC. Установите пакет tzdata или задайте {self.ROBOT_TIMEZONE_ENV}=Europe/Moscow."
+            )
+            return datetime.timezone.utc
 
     @property
     def name(self) -> str:
@@ -357,11 +389,11 @@ class GetCurrentTimeTool(MCPTool):
         return ToolExecutionType.INSTANT
 
     def execute(self) -> MCPToolResult:
-        """Вернуть текущее время из системных часов."""
+        """Вернуть текущее время в пользовательском часовом поясе."""
         import datetime
-        import locale
 
-        now = datetime.datetime.now()
+        tz = self._resolve_timezone()
+        now = datetime.datetime.now(tz)
 
         # Русские названия дней и месяцев без зависимости от locale
         WEEKDAYS_RU = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
