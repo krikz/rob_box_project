@@ -49,7 +49,10 @@ try:
     from rob_box_voice.dialogue_node import DialogueNode
 
     _DIALOGUE_NODE_IMPORT_OK = True
-except Exception as _exc:  # noqa: BLE001 — import может падать по-разному
+except ImportError:
+    DialogueNode = None  # type: ignore[assignment]
+    _DIALOGUE_NODE_IMPORT_OK = False
+except Exception:  # noqa: BLE001 — import может падать по-разному
     DialogueNode = None  # type: ignore[assignment]
     _DIALOGUE_NODE_IMPORT_OK = False
 
@@ -226,12 +229,8 @@ class TestPhraseTriggerContract:
 
         # Извлекаем последний <reminder>...</reminder> блок (тот, что
         # про время) — это второй reminder, после stop_music.
-        reminders = re.findall(
-            r"<reminder>(.*?)</reminder>", ctx, flags=re.DOTALL
-        )
-        assert len(reminders) >= 2, (
-            f"expected ≥2 reminder blocks, got {len(reminders)}"
-        )
+        reminders = re.findall(r"<reminder>(.*?)</reminder>", ctx, flags=re.DOTALL)
+        assert len(reminders) >= 2, f"expected ≥2 reminder blocks, got {len(reminders)}"
         time_reminder = reminders[-1]  # последний = про время (issue #1777)
         # «date today» и «time?» — английские триггеры; проверяем что
         # хотя бы 3 русских триггера покрыты (полный список в reminder

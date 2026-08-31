@@ -126,18 +126,13 @@ class TestFormatTimeRu:
         """21:00 → «двадцать один час ровно» (час, не часов — 21 = 1 mod 10)."""
         from datetime import datetime
 
-        assert (
-            format_time_ru(datetime(2026, 8, 31, 21, 0))
-            == "двадцать один час ровно"
-        )
+        assert format_time_ru(datetime(2026, 8, 31, 21, 0)) == "двадцать один час ровно"
 
     def test_twenty_two_oclock_genitive(self):
         """22:00 → «двадцать два часа ровно»."""
         from datetime import datetime
 
-        assert (
-            format_time_ru(datetime(2026, 8, 31, 22, 0)) == "двадцать два часа ровно"
-        )
+        assert format_time_ru(datetime(2026, 8, 31, 22, 0)) == "двадцать два часа ровно"
 
     def test_twenty_two_thirty_seven_horror_case(self):
         """22:37 — именно этот кейс ломал LLM («тридцать семь минут
@@ -162,9 +157,7 @@ class TestFormatTimeRu:
         """13:00 → «тринадцать часов ровно»."""
         from datetime import datetime
 
-        assert (
-            format_time_ru(datetime(2026, 8, 31, 13, 0)) == "тринадцать часов ровно"
-        )
+        assert format_time_ru(datetime(2026, 8, 31, 13, 0)) == "тринадцать часов ровно"
 
     def test_seven_oh_five(self):
         """07:05 → «семь пять» (без ведущего «ноль пять»)."""
@@ -200,9 +193,7 @@ class TestFormatTimeRu:
         # Наивный datetime 22:37 в зоне +3 → format_time_ru вернёт «двадцать
         # два тридцать семь», НЕ «двадцать пять тридцать семь».
         naive = datetime(2026, 8, 31, 22, 37)
-        assert (
-            format_time_ru(naive, tz=tz_plus3) == "двадцать два тридцать семь"
-        )
+        assert format_time_ru(naive, tz=tz_plus3) == "двадцать два тридцать семь"
 
 
 # ─── GetCurrentTimeTool.execute(): formatted_time в data ────────────────
@@ -230,9 +221,9 @@ class TestGetCurrentTimeTool:
         # (наш формат не использует арабские цифры).
         assert isinstance(formatted, str)
         assert len(formatted) > 0
-        assert not any(ch.isdigit() for ch in formatted), (
-            f"formatted_time should not contain digits: {formatted!r}"
-        )
+        assert not any(
+            ch.isdigit() for ch in formatted
+        ), f"formatted_time should not contain digits: {formatted!r}"
 
     def test_execute_preserves_legacy_fields(self):
         """Обратная совместимость: старые поля ``time/date/weekday/period/iso``
