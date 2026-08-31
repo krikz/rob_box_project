@@ -2051,6 +2051,37 @@ _TBS="${AGENT_FLOW_SCRIPT:-agent-flow-e2e-process}"
 _TBA="${TRIGGERED_BY_AGENT:-agent-flow}"
 _TBC="${E2E_RUN_CARD:-${TRIGGERED_BY_CARD:-}}"
 _TBR="${E2E_RUN_REASON:-${TRIGGERED_BY_REASON:-scheduled-tick}}"
+
+# ADR-0040 §2.2.1: poll_run_for_epoch — resolve run_id, который стартанул
+# не раньше заданного epoch (ISO 8601 UTC). GitHub API eventual consistency:
+# gh workflow run может вернуть 202, а в gh run list run появится через
+# 5-10 сек. Poll каждые 2 сек, max ${E2E_TRIGGER_POLL_MAX:-10} сек.
+# Возвращает: 0 + run_id (числовой) в stdout если найден; 1 если timeout.
+poll_run_for_epoch() {  # $1=workflow $2=branch $3=repo $4=epoch_iso [$5=max_sec]
+    local _wf="$1" _br="$2" _repo="$3" _ep="$4" _max=${5:-${E2E_TRIGGER_POLL_MAX:-10}}
+    local _deadline=$((SECONDS + _max)) _run_id _jq
+    while [ "$SECONDS" -lt "$_deadline" ]; do
+        _jq='[.[] | select(.createdAt >= "'"$_ep"'")][0].databaseId'
+        _run_id="$(gh run list --repo "$_repo" --workflow "$_wf" --branch "$_br" \
+            --limit 3 --json databaseId,createdAt --jq "$_jq" 2>/dev/null || echo "")"
+        _run_id="$(printf '%s' "$_run_id" | grep -oE '[0-9]+' | head -n1 || true)"
+        if [[ "$_run_id" =~ ^[0-9]+$ ]]; then
+            printf '%s\n' "$_run_id"
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
+# ADR-0040 §2.2.1: новый контракт _trigger_workflow_with_retry:
+#   exit 0 + stdout = run_id (числовой)  — если стартанул и подтверждён poll'ом
+#   exit 0 + stdout = "existing:<run_id>" — если race-dedup: run уже есть на ветке
+#                                          (новый НЕ нужен, возвращаем существующий)
+#   exit 1 + stdout = пусто               — НЕ стартанул после всех попыток
+#                                          (caller ОБЯЗАН считать fail, ADR §2.2.2)
+# ADR-0040 Q5: race-dedup success возвращает "existing:<run_id>" чтобы caller
+# мог отличить "я только что стартанул" от "уже был, reuse'нул".
 _trigger_workflow_with_retry() {
     local _wf_name="$1"; shift
     local _attempts=0 _max=3 _sleep
@@ -2074,8 +2105,26 @@ _trigger_workflow_with_retry() {
     done
     local _pre_window="${E2E_PRE_DISPATCH_WINDOW:-60}"
     if [ -n "$_dedup_branch" ]; then
-        if [ "$(verify_recent_run "$_wf_name" "$_dedup_branch" "$GH_REPO" "$_pre_window")" = "ok" ]; then
-            log "    trigger ${_wf_name}: pre-dispatch dedup (recent run on ${_dedup_branch} ≤${_pre_window}s, issue #1540) — skip"
+        # Pre-dispatch dedup (Q5): путь только "existing:<run_id>", никогда
+        # не возвращает голый run_id (мы не стартовали ничего нового).
+        local _existing
+        _existing="$(verify_recent_run "$_wf_name" "$_dedup_branch" "$GH_REPO" "$_pre_window")"
+        if [ "$_existing" = "ok" ]; then
+            # Резолвим конкретный run_id через gh run list (verify_recent_run
+            # возвращает только "ok"/"miss", без id).
+            local _pre_existing_id
+            _pre_existing_id="$(gh run list --repo "$GH_REPO" --workflow "$_wf_name" \
+                --branch "$_dedup_branch" --limit 1 --json databaseId --jq '.[0].databaseId' \
+                2>/dev/null | grep -oE '[0-9]+' | head -n1 || true)"
+            if [[ "$_pre_existing_id" =~ ^[0-9]+$ ]]; then
+                log "    trigger ${_wf_name}: pre-dispatch dedup (recent run ${_pre_existing_id} on ${_dedup_branch} ≤${_pre_window}s, issue #1540) — reuse"
+                printf 'existing:%s\n' "$_pre_existing_id"
+                return 0
+            fi
+            log "    trigger ${_wf_name}: pre-dispatch dedup (recent run on ${_dedup_branch} ≤${_pre_window}s, issue #1540) — skip, no run_id resolvable"
+            # Не можем вернуть existing:<id> — caller решит. Возвращаем 0
+            # с пустым stdout (best-effort: caller увидит пустой run_id и
+            # пойдёт в race-dedup path).
             return 0
         fi
     fi
@@ -2089,6 +2138,10 @@ _trigger_workflow_with_retry() {
         # Issue #1540: используем общий verify_recent_run из lib_workflow_dedup.sh.
         [ "$(verify_recent_run "$_wf" "$_br" "$GH_REPO" 60)" = "ok" ]
     }
+    # ADR-0040: после УСПЕШНОГО gh workflow run (либо race-dedup) ОБЯЗАНЫ
+    # вернуть run_id в stdout. Poll через poll_run_for_epoch.
+    local _trigger_epoch _run_id
+    _trigger_epoch="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     while [ "$_attempts" -lt "$_max" ]; do
         if gh workflow run "$_wf_name" --repo "$GH_REPO" \
                 --field triggered_by_script="$_TBS" \
@@ -2096,10 +2149,37 @@ _trigger_workflow_with_retry() {
                 --field triggered_by_card="$_TBC" \
                 --field triggered_by_reason="$_TBR" \
                 "$@" >/dev/null 2>&1; then
-            return 0
+            # ADR-0040: poll run_id, не return 0 сразу.
+            if [ -n "$_dedup_branch" ]; then
+                _run_id="$(poll_run_for_epoch "$_wf_name" "$_dedup_branch" "$GH_REPO" "$_trigger_epoch")" \
+                    || _run_id=""
+                if [[ "$_run_id" =~ ^[0-9]+$ ]]; then
+                    log "    trigger ${_wf_name}: started run ${_run_id} on ${_dedup_branch} (epoch=${_trigger_epoch}, ADR-0040 §2.2.1)"
+                    printf '%s\n' "$_run_id"
+                    return 0
+                fi
+                log "    trigger ${_wf_name}: gh workflow run вернул 0, но run не появился в gh run list за ${E2E_TRIGGER_POLL_MAX:-10}s (eventual consistency timeout)"
+                # Считаем попытку провалившейся — retry loop ниже.
+            else
+                # Без _dedup_branch (не знаем на какой ветке poll'ить) —
+                # best-effort return 0 (legacy поведение для редких callers
+                # без --ref). Caller вряд ли полагается на run_id в этом
+                # случае.
+                return 0
+            fi
         fi
         if [ -n "$_dedup_branch" ] && _race_dedup_check "$_wf_name" "$_dedup_branch"; then
-            log "    trigger ${_wf_name}: race-condition detected (recent run on ${_dedup_branch} ≤60s) — accept as success (dedup, PR #1536)"
+            # Race-dedup success (Q5): путь "existing:<run_id>".
+            local _race_id
+            _race_id="$(gh run list --repo "$GH_REPO" --workflow "$_wf_name" \
+                --branch "$_dedup_branch" --limit 1 --json databaseId --jq '.[0].databaseId' \
+                2>/dev/null | grep -oE '[0-9]+' | head -n1 || true)"
+            if [[ "$_race_id" =~ ^[0-9]+$ ]]; then
+                log "    trigger ${_wf_name}: race-condition detected (existing run ${_race_id} on ${_dedup_branch} ≤60s) — accept as existing (PR #1536 + ADR-0040 Q5)"
+                printf 'existing:%s\n' "$_race_id"
+                return 0
+            fi
+            log "    trigger ${_wf_name}: race-condition detected but run_id unresolvable — accept (legacy)"
             return 0
         fi
         _attempts=$((_attempts + 1))
@@ -2109,6 +2189,8 @@ _trigger_workflow_with_retry() {
             sleep "$_sleep"
         fi
     done
+    # Все попытки исчерпаны — run НЕ стартанул. exit 1, пустой stdout.
+    log "    trigger ${_wf_name}: NOT STARTED after ${_max} attempts (ADR-0040 §2.2.1) — caller must treat as fail"
     return 1
 }
 
@@ -3196,10 +3278,15 @@ gh run view <run_id> --log-failed | grep -E 'Password required|ERROR|denied|403|
         b_epoch="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         # ретро 10.08 #1: race condition gh workflow run после свежего push.
         # API может вернуть non-zero exit, но workflow стартует. До 3 ретраев с backoff 5/10/15s.
-        if ! _trigger_workflow_with_retry "$BUILD_WORKFLOW" --ref "$ROUND_BRANCH" \
-            -f push_to_registry=true; then
-            log "issue #${number}: failed to trigger ${BUILD_WORKFLOW} after retries"; errored=$((errored+1)); continue
+        # ADR-0040 §2.2.1: trigger теперь возвращает run_id в stdout (или
+        # "existing:<run_id>" если race-dedup). Логируем для аудита; commit 3
+        # будет использовать run_id для state.json.
+        _b_run_id=""
+        if ! _b_run_id="$(_trigger_workflow_with_retry "$BUILD_WORKFLOW" --ref "$ROUND_BRANCH" \
+            -f push_to_registry=true)"; then
+            log "issue #${number}: failed to trigger ${BUILD_WORKFLOW} after retries (run NOT started, ADR-0040 §2.2.1)"; errored=$((errored+1)); continue
         fi
+        log "issue #${number}: build trigger resolved run_id='${_b_run_id}' (ADR-0040 §2.2.1)"
         if ! wait_workflow "$BUILD_WORKFLOW" "$ROUND_BRANCH" "$E2E_BUILD_TIMEOUT" "build" "$b_epoch"; then
             gh issue comment "$number" --repo "$GH_REPO" --body \
                 "agent-flow: ❌ build failed on ${ROUND_BRANCH} — e2e skipped. See https://github.com/${GH_REPO}/actions" >/dev/null 2>&1 || true
@@ -3220,10 +3307,13 @@ gh run view <run_id> --log-failed | grep -E 'Password required|ERROR|denied|403|
     else
         log "issue #${number}: triggering ${DEPLOY_WORKFLOW} on ${ROUND_BRANCH} (env=${E2E_DEPLOY_ENV}, registry=${E2E_DEPLOY_REGISTRY})"
         d_epoch="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        if ! _trigger_workflow_with_retry "$DEPLOY_WORKFLOW" --ref "$ROUND_BRANCH" \
-            -f environment="$E2E_DEPLOY_ENV" -f registry_source="$E2E_DEPLOY_REGISTRY"; then
-            log "issue #${number}: failed to trigger ${DEPLOY_WORKFLOW} after retries"; errored=$((errored+1)); continue
+        # ADR-0040 §2.2.1: trigger возвращает run_id в stdout (или existing:<id>).
+        _d_run_id=""
+        if ! _d_run_id="$(_trigger_workflow_with_retry "$DEPLOY_WORKFLOW" --ref "$ROUND_BRANCH" \
+            -f environment="$E2E_DEPLOY_ENV" -f registry_source="$E2E_DEPLOY_REGISTRY")"; then
+            log "issue #${number}: failed to trigger ${DEPLOY_WORKFLOW} after retries (run NOT started, ADR-0040 §2.2.1)"; errored=$((errored+1)); continue
         fi
+        log "issue #${number}: deploy trigger resolved run_id='${_d_run_id}' (ADR-0040 §2.2.1)"
         if ! wait_workflow "$DEPLOY_WORKFLOW" "$ROUND_BRANCH" "$E2E_DEPLOY_TIMEOUT" "deploy" "$d_epoch"; then
             gh issue comment "$number" --repo "$GH_REPO" --body \
                 "agent-flow: ❌ deploy failed on ${ROUND_BRANCH} — e2e skipped. See https://github.com/${GH_REPO}/actions" >/dev/null 2>&1 || true
@@ -3462,9 +3552,20 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
     if [ "${e2e_check_tg_echo:-false}" = "true" ] || [ "${e2e_check_tg_echo:-false}" = "1" ]; then
         e2e_args+=(-f "check_tg_echo=true")
     fi
-    if ! _trigger_workflow_with_retry "$E2E_WORKFLOW" --ref "$ROUND_BRANCH" "${e2e_args[@]}"; then
-        log "issue #${number}: failed to trigger ${E2E_WORKFLOW} after retries"; errored=$((errored+1)); continue
+    # ADR-0040 §2.2.1: trigger возвращает run_id в stdout (или existing:<id>).
+    # ADR-0040 §2.2.2: на non-zero — increment consecutive_fails в state (commit 3).
+    # Здесь (commit 2) — только захват run_id и корректное логирование.
+    _e_run_id=""
+    if ! _e_run_id="$(_trigger_workflow_with_retry "$E2E_WORKFLOW" --ref "$ROUND_BRANCH" "${e2e_args[@]}")"; then
+        # Run НЕ стартанул — старый код: errored++ + continue. Commit 3
+        # ДОБАВИТ сюда инкремент consecutive_fails (load + bump + save + branch
+        # на ≥3 → e2e:infra-fail). Это соглашение: commit 2 — только
+        # новый контракт trigger, без изменения реакции process_issue.
+        log "issue #${number}: failed to trigger ${E2E_WORKFLOW} after retries (run NOT started, ADR-0040 §2.2.1)"; errored=$((errored+1)); continue
     fi
+    log "issue #${number}: e2e trigger resolved run_id='${_e_run_id}' (ADR-0040 §2.2.1)"
+    # Сохраняем в $run_id для дальнейшего использования (verdict loop ниже).
+    run_id="$_e_run_id"
 
     # --- wait for verdict (только СВЕЖИЙ run, createdAt >= момента триггера) ---
     log "issue #${number}: waiting verdict (timeout ${E2E_RUN_TIMEOUT}s)"
