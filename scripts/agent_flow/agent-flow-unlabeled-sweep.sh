@@ -94,17 +94,34 @@ STALE_LABEL="${STALE_LABEL:-${STALE_LABEL_DEFAULT}}"
 PREFIX="[agent-flow-unlabeled-sweep]"
 
 # --- MAINTENANCE gate + env (из .env если есть) -----------------------------
-ENV_FILE="$HERMES_HOME/profiles/agent-flow/.env"
-if [ -f "$ENV_FILE" ]; then
-  while IFS='=' read -r key val; do
-    case "$key" in ''|\#*) continue ;; esac
-    val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
-    if [ -z "${!key:-}" ]; then
-      export "$key=$val"
-    fi
-  done < "$ENV_FILE"
+# Ретро 31.08 (t_9b0d60f7, agent-flow-unlabeled-sweep cron 24-fail подряд):
+# Скрипт падал в no_agent cron-режиме когда `$HERMES_HOME` в env указывал
+# на профильную папку (например `/home/builder/.hermes/profiles/devops`),
+# ENV_FILE вычислялся в `<profile>/profiles/agent-flow/.env` — не существовал
+# → set -e срабатывал раньше source → GH_REPO оставался пустым →
+# `: "${GH_REPO:?...}"` exit 1. Robust-фикс:
+#   (1) Пробуем несколько кандидатов ENV_FILE (по убыванию приоритета):
+#       - $HERMES_HOME/profiles/agent-flow/.env (как был)
+#       - $HOME/.hermes/profiles/agent-flow/.env (system-cron, ~ = HOME)
+#       - /home/builder/.hermes/profiles/agent-flow/.env (absolute fallback)
+#   (2) Используем `set -a; . "$ENV_FILE"; set +a` — robust к `=` в значениях,
+#       не падает на пустом .env.
+#   (3) Финальная проверка GH_REPO сообщает какой ENV_FILE пробовался.
+ENV_FILE=""
+for _candidate in \
+  "$HERMES_HOME/profiles/agent-flow/.env" \
+  "$HOME/.hermes/profiles/agent-flow/.env" \
+  "/home/builder/.hermes/profiles/agent-flow/.env"; do
+  if [ -n "$_candidate" ] && [ -f "$_candidate" ]; then
+    ENV_FILE="$_candidate"
+    break
+  fi
+done
+if [ -n "$ENV_FILE" ]; then
+  # shellcheck disable=SC1090
+  set -a; . "$ENV_FILE"; set +a
 fi
-: "${GH_REPO:?GH_REPO must be set (owner/repo)}"
+: "${GH_REPO:?GH_REPO must be set (owner/repo) — checked $HERMES_HOME/profiles/agent-flow/.env, $HOME/.hermes/profiles/agent-flow/.env, /home/builder/.hermes/profiles/agent-flow/.env}"
 
 log() { printf '%s %s %s\n' "$PREFIX" "$(date -Iseconds)" "$*" >&2; }
 
