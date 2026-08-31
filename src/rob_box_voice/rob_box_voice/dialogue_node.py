@@ -2702,6 +2702,19 @@ class DialogueNode(Node):
             "stop_music tool, а потом коротко подтверди; если ВСЁ stopped — "
             "verbal «уже выключено» без tool call.</reminder>"
         )
+        # Issue #1777 — SYSTEM REMINDER: русский формат времени. Tool
+        # ``get_current_time`` уже возвращает ``formatted_time`` русской
+        # прописью; LLM ДОЛЖЕН озвучивать его дословно через speak_text,
+        # не склеивать «22:37 вечера» сам. Если LLM игнорирует tool и
+        # отвечает разговорным пересказом («тридцать семь минут
+        # одиннадцатого») — это регрессия #1777, см. RULE #TIME-FORMAT.
+        lines.append(
+            "  <reminder>Если юзер спрашивает «который час», «сколько "
+            "времени», «время в Москве», «time?», «date today» — "
+            "ОБЯЗАТЕЛЬНО вызови get_current_time tool, прочитай поле "
+            "formatted_time дословно и озвучь его через speak_text. "
+            "НЕ выдумывай время сам.</reminder>"
+        )
         # Бэклог-аккумулятор фоновой речи без wake-слова: при сливе добавляем
         # <speech_backlog> внутрь <system_context>. raw_user_command при этом
         # не трогаем — гарды смотрят только на текущую фразу.
