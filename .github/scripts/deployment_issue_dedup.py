@@ -250,7 +250,24 @@ CRITICAL_EXCLUDE_COMMON = [
     # structured; a real dialogue_node crash shows up in a different
     # log shape, e.g. `Traceback (most recent call last):` followed by
     # a Python exception line that does NOT match `user_input='`).
-    r"user_input='",
+    #
+    # Issue #1834 (deploy run 33450019127, 31.08 23:17, kanban
+    # t_65a41c8c): dialogue_node formats the same payload via
+    # `{user_input!r}` (Python repr, see dialogue_node.py:4557).
+    # Python's repr() picks SINGLE quotes by default but switches to
+    # DOUBLE quotes whenever the string contains a `'` and no `"` -
+    # so a retry-cycle system-reminder like
+    # `"[Speaker:unknown] [CRITICAL] ...'` (yes, an unescaped `'` from
+    # the LLM-side raw text on a "НЕ вызвал ни один" line) ends up
+    # logged as `user_input="[Speaker:unknown] [CRITICAL] ..."`. The
+    # original rule `r"user_input='"` does not match, and the
+    # deploy-gate files a critical_log issue on an otherwise green
+    # run (Vision Pi all containers healthy + 210 ROS2 topics). The
+    # character class `['"]` covers both quote styles uniformly and
+    # keeps the rule tight (a real Python crash still shows up as a
+    # `Traceback (most recent call last):` header followed by an
+    # exception line that does not contain `user_input=...`).
+    r"""user_input=['"]""",
     # Music-stack validator self-report (deploy runs 33330895761 /
     # 33335300188, 30.08 19:31 / 21:07, kanban t_fe19566c, issue
     # #1737): start_voice_assistant.sh runs validate_music_stack.py
