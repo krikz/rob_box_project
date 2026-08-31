@@ -91,8 +91,11 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_STOP_OVERRIDES,
     build_babble_retry_prompt,
     build_music_retry_prompt,
+    build_tool_retry_prompt as build_tool_retry_prompt,
+    detect_required_tool as detect_required_tool,
     is_metalanguage_babble,
     is_music_stop_command,
+    looks_like_time_question as looks_like_time_question,
     user_wants_music,
     user_wants_performance,
 )
@@ -187,6 +190,35 @@ _SINGING_INTENT_RE = re.compile(
 def _has_singing_intent(text: "str | None") -> bool:
     """True если юзер явно просил петь/рэповать (BACKING), а не просто музыку."""
     return bool(text) and bool(_SINGING_INTENT_RE.search(text or ""))
+
+# Issue #1777 — паттерны маркеров времени в тексте LLM-ответа. Используется
+# для диагностического WARN'а ``time_question_no_tool_call`` (LLM
+# галлюцинирует время, отвечая текстом с маркерами часы/минуты вместо
+# вызова get_current_time). Не участвует в retry-логике напрямую —
+# только в логе. Чистая функция, тестируется отдельно.
+_TIME_MARKER_RE = re.compile(
+    r"(?:"
+    r"\b\d{1,2}[:\.]\d{2}\b"
+    r"|\b\d{1,2}\s*(?:час|часа|часов)\b"
+    r"|\b(?:утра|вечера|дня|ночи)\b"
+    r"|\bam|pm\b"
+    r"|\b\d{1,2}\s*(?:am|pm)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _spoken_text_contains_time_marker(spoken: "str | None") -> bool:
+    """Issue #1777 — есть ли в тексте ответа LLM маркеры времени?
+
+    Маркеры: ``HH:MM``, ``N часов``, ``утра/вечера/дня/ночи``, ``AM/PM``.
+    Используется в ``_run_turn.finally`` для логирования галлюцинаций
+    (LLM отвечает на «который час?» текстом с маркерами времени без
+    вызова get_current_time). Не используется для retry — для retry
+    есть :func:`detect_required_tool` (он триггерится по user_input).
+    """
+    return bool(spoken) and bool(_TIME_MARKER_RE.search(spoken))
+
 
 # Module-level skill class aliases (test contracts). Production code uses
 # these via ``MusicSkill`` etc, and tests can check ``hasattr(dialogue_node,
@@ -603,6 +635,15 @@ class DialogueNode(Node):
         # babbles again after the retry, we fall through to publish the
         # meta-text verbatim and let the operator debug from logs.
         self._babble_retry_used: bool = False
+
+        # Issue #1777 / #1762 — non-music tool-skipped retry budget.
+        # ``True`` после того как Bug C retry для явного tool-based
+        # запроса (``get_current_time`` / ``search_web`` / ``set_voice``
+        # / ``memory_search`` / ``faq_search``) уже был отправлен в
+        # текущем turn. Защита от бесконечного LLM ping-pong: один
+        # ретрай на turn. Сбрасывается на новый user-initiated turn
+        # (см. ``_run_turn``).
+        self._tool_retry_used: bool = False
 
         # Issue #1160 — Prometheus metrics: длительность диалоговой
         # сессии. Фиксируем момент первого wake-word-диалога из IDLE;
@@ -2407,6 +2448,33 @@ class DialogueNode(Node):
             "stop_music tool, а потом коротко подтверди; если ВСЁ stopped — "
             "verbal «уже выключено» без tool call.</reminder>"
         )
+        # Issue #1777 — SYSTEM REMINDER: «который час / сколько времени /
+        # время в Москве / what time is it / date today» требует
+        # ОБЯЗАТЕЛЬНОГО вызова tool ``get_current_time``. LLM в этом
+        # репо раньше отвечал текстом-обещанием («сейчас тридцать семь
+        # минут одиннадцатого вечера») без вызова tool — пользователь
+        # слышал выдуманное время. Отдельный блок: один reminder
+        # на turn, чтобы не размывать остальные правила.
+        #
+        # Примеры правильного поведения:
+        #   ✅ User: «который час?» → tool get_current_time() →
+        #      «Сейчас 14:35, вторник, 26 августа, день»
+        #   ✅ User: «время в Москве» → tool get_current_time() →
+        #      «В Москве сейчас 14:35».
+        #
+        # Примеры НЕПРАВИЛЬНОГО поведения (баг #1777):
+        #   ❌ User: «который час?» → «Сейчас тридцать семь минут
+        #      одиннадцатого вечера» (без tool call — галлюцинация).
+        #   ❌ User: «время в Берлине?» → «В Берлине сейчас примерно
+        #      13:35» (без tool call — выдумка).
+        lines.append(
+            "  <reminder>На ЛЮБОЙ вопрос про текущее время, дату или часовой "
+            "пояс — «который час», «сколько времени», «время в Москве», "
+            "«what time is it», «date today» — ТЫ ОБЯЗАН вызвать tool "
+            "``get_current_time``. Ответ из головы ЗАПРЕЩЁН: выдуманное "
+            "время = баг #1777. Если tool вернул ошибку или недоступен — "
+            "скажи «не удалось узнать время».</reminder>"
+        )
         # Бэклог-аккумулятор фоновой речи без wake-слова: при сливе добавляем
         # <speech_backlog> внутрь <system_context>. raw_user_command при этом
         # не трогаем — гарды смотрят только на текущую фразу.
@@ -2535,6 +2603,14 @@ class DialogueNode(Node):
         # second retry (which would loop forever).
         if not is_babble_retry:
             self._babble_retry_used = False
+        # Issue #1777 / #1762 — сброс tool-retry budget на новый
+        # user-initiated turn. На babble-retry НЕ сбрасываем (как и
+        # babble-budget — см. issue #992 Bug D), иначе синтетический
+        # ретрай сам себе «обнулит» бюджет и при следующей такой же
+        # ошибке запустит второй ретрай → ping-pong. То же ограничение,
+        # что и для music guard ниже.
+        if not is_babble_retry:
+            self._tool_retry_used = False
         # Bug C (юзер-музыка) — сброс бюджета на НОВЫЙ юзер-запрос,
         # чтобы каждый запрос получал свежий retry (retry-промпт
         # не должен считаться новым запросом и сбрасывать сам себя).
@@ -2858,6 +2934,45 @@ class DialogueNode(Node):
                 user_input=raw_user_command or user_input,
                 tools_called=result.tools_called if result else (),
             )
+            # Issue #1777 / #1762 — Bug C retry для non-music tool-based
+            # запросов. Раньше ретрай работал ТОЛЬКО для music (issue
+            # #992 Bug C). Теперь если юзер явно просит
+            # ``get_current_time`` / ``search_web`` / ``set_voice`` /
+            # ``memory_search`` / ``faq_search`` и LLM не вызвал tool
+            # (tools пустой), отправляем ОДИН CRITICAL retry с явным
+            # указанием нужного tool. Защита от ping-pong: один ретрай
+            # на turn (см. ``_tool_retry_used``).
+            #
+            # Вызывается ПОСЛЕ music guard — чтобы не гонять их по
+            # очереди и не дублировать retry для пересекающихся
+            # случаев (например «который час» не должен матчиться
+            # music guard'ом).
+            tool_retry_dispatched = self._apply_tool_skipped_guard(
+                user_input=raw_user_command or user_input,
+                tools_called=result.tools_called if result else (),
+            )
+            # Issue #1777 — диагностический WARN: LLM «ответил» на
+            # вопрос про время текстом (с маркерами часы/минуты), но
+            # без вызова get_current_time. Это явная галлюцинация —
+            # пишем WARN даже если detect_required_tool не сработал
+            # (например, LLM сам вписал «время» в chit-chat). Метрика
+            # для будущего Prometheus-счётчика, см. issue #1777.
+            if (
+                not tool_retry_dispatched
+                and result
+                and not (result.tools_called or ())
+                and looks_like_time_question(raw_user_command or user_input or "")
+                and _spoken_text_contains_time_marker(
+                    getattr(result, "spoken_text", "") or ""
+                )
+            ):
+                self.get_logger().warning(
+                    "⏰ [issue 1777] time_question_no_tool_call: LLM answered "
+                    "time question with spoken text instead of calling "
+                    "get_current_time (user_input=%r, spoken=%r[:80])",
+                    (raw_user_command or user_input)[:60],
+                    (getattr(result, "spoken_text", "") or "")[:80],
+                )
             # Issue #992 Bug D — defer the DIALOGUE_END transition
             # when the babble detector scheduled a retry. The retry's
             # ``_run_turn`` needs the DSM to stay in DIALOGUE so the
@@ -2868,6 +2983,7 @@ class DialogueNode(Node):
                 self._dsm.current_state == DialogueStateKind.DIALOGUE
                 and not babble_retry_pending
                 and not music_retry_dispatched
+                and not tool_retry_dispatched
             ):
                 self._dsm.on_event(DialogueEvent.DIALOGUE_END)
                 # Issue #1160 — Prometheus metrics: сессия закрылась
@@ -3271,6 +3387,90 @@ class DialogueNode(Node):
         # user did not request music, DJ off, etc.). Policy module already
         # logged the diagnostic.
         return False
+
+    # ── Issue #1777 / #1762 — non-music tool-skipped guard ─────────────
+
+    def _music_guard_retry_active(self) -> bool:
+        """Issue #1777 / #1762 — guard для ``_apply_tool_skipped_guard``:
+        если music guard уже отправил retry в этом turn, не отправлять
+        tool-retry (чтобы не было двух параллельных retry-туров).
+
+        Music guard не выставляет публичный флаг (проверяется только по
+        return value ``music_retry_dispatched`` в ``_run_turn.finally``),
+        поэтому смотрим на состояние ``DJModeController.next_transition_at``
+        как эвристику — если таймер был перенесён в ближайшее будущее,
+        значит DJ-retry в полёте.
+        """
+        try:
+            return (
+                self._dj.state.next_transition_at > 0
+                and self._dj.state.next_transition_at
+                < time.time() + DJModeController.POSTPONE_INTERVAL_S + 1
+            )
+        except Exception:  # noqa: BLE001 — эвристика, не критичный контракт
+            return False
+
+    def _apply_tool_skipped_guard(
+        self,
+        *,
+        user_input: str,
+        tools_called: tuple,
+    ) -> bool:
+        """Issue #1777 / #1762 — Bug C retry для non-music tool-based запросов.
+
+        Если юзер явно попросил конкретный tool (``get_current_time`` /
+        ``search_web`` / ``set_voice`` / ``memory_search`` /
+        ``faq_search``), а LLM вернул ``tools=[]`` (ответил текстом-
+        обещанием или просто не вызвал инструмент), отправляем ОДИН
+        CRITICAL retry с явным указанием нужного tool.
+
+        Не путать с :meth:`_apply_music_guard` (только music, см. issue
+        #992 Bug C) и :meth:`_check_babble_and_retry` (мета-обещания).
+        Здесь — конкретный tool-based пропуск.
+
+        Retry rules (все должны выполниться):
+        1. ``tools_called`` пустой (LLM не вызвал tool).
+        2. ``user_input`` матчит keyword-set в
+           :data:`TOOL_REQUEST_PATTERNS` (см.
+           :func:`detect_required_tool`).
+        3. ``_tool_retry_used`` ещё не взведён (защита от ping-pong).
+        4. Уже не было music/babble retry для этого turn (чтобы не
+           конкурировать с другими guards).
+
+        Returns:
+            ``True`` когда retry диспатчен (caller должен отложить
+            ``DIALOGUE_END``). ``False`` иначе.
+        """
+        if tools_called:
+            return False
+        if not user_input:
+            return False
+        if self._tool_retry_used:
+            return False
+        if self._babble_retry_used or self._music_guard_retry_active():
+            return False
+        tool_name = detect_required_tool(user_input)
+        if not tool_name:
+            return False
+        retry_prompt = build_tool_retry_prompt(user_input, tool_name)
+        if not retry_prompt:
+            # Defence-in-depth: build_tool_retry_prompt вернул "" —
+            # tool_name не из allow-list (промпт-инъекция?). Не ретраим.
+            return False
+        # DSM reopen — нужен DIALOGUE state для retry-тура (см. issue #1204).
+        self._reopen_dialogue_for_retry()
+        # Mark budget BEFORE dispatch — защита от re-entrant эскалации.
+        self._tool_retry_used = True
+        self.get_logger().warning(
+            f"🛠 [issue 1777 / 1762] LLM skip non-music tool {tool_name!r} — "
+            f"retrying once with CRITICAL reminder (user={user_input[:60]!r})"
+        )
+        self._dispatch_turn(
+            retry_prompt,
+            was_idle=False,
+            raw_user_command=user_input,
+        )
+        return True
 
     def _build_music_retry_prompt(self, user_input: str) -> str:
         """Synthetic prompt for Bug C retry (user asked for music, LLM skipped
