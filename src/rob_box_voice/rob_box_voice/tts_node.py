@@ -548,6 +548,15 @@ class TTSNode(Node):
         self.declare_parameter("yandex_api_key", "")
         self.declare_parameter("yandex_voice", "anton")  # anton (ОРИГИНАЛЬНЫЙ ГОЛОС РОББОКСА!)
         self.declare_parameter("yandex_speed", 1.0)  # 0.1-3.0 (1.0 = нормальная скорость речи)
+        # Issue #1780 / issue #1004: флаг «ssml-aware» режима для Yandex.
+        # При True — Yandex-провайдер должен пропускать вход как SSML
+        # (``<speak>...<emotion>happy</emotion>...</speak>``), используя
+        # ``<emotion>`` и ``<prosody pitch=...>`` теги, поддерживаемые
+        # Yandex gRPC v3. Сейчас (False) текст идёт в ``Hints(voice, speed)``
+        # как раньше — fallback совместимости. Полная интеграция — в карточке
+        # t_c401ecaa; этот параметр объявлен здесь, чтобы YAML был
+        # валиден с самого начала.
+        self.declare_parameter("yandex_ssml_aware", False)
 
         # Silero TTS (fallback)
         self.declare_parameter(
@@ -596,6 +605,21 @@ class TTSNode(Node):
         # (M5/M6). Эта настройка сейчас полезна для тестов и как
         # forward-compat hook. См. ADR-0003 §2.4.
         self.declare_parameter("minimax_streaming", False)
+        # Issue #1780 / issue #1004: дефолтные emotion / pitch / volume /
+        # pronunciation_dict для MiniMax T2A v2 (см. minimax_tts.py —
+        # ``voice_setting`` принимает ``emotion``, ``pitch`` int semitones,
+        # ``vol`` float [0.0, 10.0], ``pronunciation_dict`` str). Дефолты —
+        # нейтральные, чтобы сохранить текущее поведение (поля НЕ
+        # передаются в API, если явно не заданы):
+        #   emotion = ""               → не передавать
+        #   pitch  = 0                 → 0 = «не передавать»; иначе int semitones
+        #   volume = 0.0               → 0.0 = «не передавать»; иначе [1.0, 10.0]
+        #   pronunciation_dict = ""    → JSON-строка MiniMax-словаря
+        # Прокидывание значений в ``TTSSettings`` — в карточке t_4e98182a.
+        self.declare_parameter("minimax_emotion", "")  # "" | "happy"|"neutral"|"sad"|"angry"|"fearful"|"disgusted"|"surprised"
+        self.declare_parameter("minimax_pitch", 0)  # int semitones; 0 = «не передавать»
+        self.declare_parameter("minimax_volume", 0.0)  # MiniMax T2A v2 vol; 0.0 = «не передавать»
+        self.declare_parameter("minimax_pronunciation_dict", "")  # MiniMax pronunciation overrides JSON; "" = «не передавать»
 
         # Voice-prosody knobs for MiniMax T2A v2 (issue #1780).
         #
@@ -788,6 +812,23 @@ class TTSNode(Node):
         self._minimax_provider_lock = threading.Lock()
         self._minimax_provider_initialized = False
         self._minimax_shutdown_requested = False
+
+        # Issue #1780 / issue #1004: emotion / pitch / volume / pronunciation_dict
+        # для MiniMax. Нейтральные дефолты сохраняют текущее поведение (поля
+        # НЕ передаются в API). Прокидывание в ``TTSSettings`` — в t_4e98182a.
+        self.minimax_emotion = self._normalize_minimax_emotion(
+            str(self.get_parameter("minimax_emotion").value or "")
+        )
+        self.minimax_pitch = int(self.get_parameter("minimax_pitch").value)
+        self.minimax_volume = float(self.get_parameter("minimax_volume").value)
+        self.minimax_pronunciation_dict = str(
+            self.get_parameter("minimax_pronunciation_dict").value or ""
+        )
+
+        # Issue #1780 / issue #1004: «ssml-aware» режим для Yandex. Полная
+        # интеграция — в t_c401ecaa; параметр уже читается здесь, чтобы
+        # YAML был валиден и можно было безопасно переключать.
+        self.yandex_ssml_aware = bool(self.get_parameter("yandex_ssml_aware").value)
 
         self.audio_topic = str(self.get_parameter("audio_topic").value)
         self.audio_output_sample_rate = int(
@@ -3219,6 +3260,37 @@ class TTSNode(Node):
         except ValueError:
             valid = ", ".join(fmt.value for fmt in TTSFormat)
             raise ValueError(f"minimax_format={value!r} недопустим; разрешено: {valid}")
+
+    @staticmethod
+    def _normalize_minimax_emotion(value: str) -> str:
+        """Нормализовать ROS-параметр ``minimax_emotion``.
+
+        Допустимые значения MiniMax T2A v2 (см. ``minimax_tts.py`` —
+        ``voice_setting.emotion``):
+
+            happy | neutral | sad | angry | fearful | disgusted | surprised
+
+        Пустая строка / неизвестное значение → ``""`` (полагаем, что
+        emotion НЕ передаётся в API — нейтральный default).
+        Регистр игнорируется; ``neutral`` оставлен явно — некоторые
+        сценарии хотят жёстко зафиксировать нейтральную подачу.
+
+        Args:
+            value: значение из ``get_parameter("minimax_emotion")``.
+
+        Returns:
+            Один из 7 MiniMax-emotion lowercase или ``""``.
+        """
+        valid = {
+            "happy", "neutral", "sad",
+            "angry", "fearful", "disgusted", "surprised",
+        }
+        if not value:
+            return ""
+        normalized = value.strip().lower()
+        if normalized in valid:
+            return normalized
+        return ""
 
     async def _synthesize_minimax_async(self, text: str, ssml_attributes: dict = None, voice: str = None) -> dict:
         """Асинхронный синтез через MiniMax T2A v2 HTTP API.
