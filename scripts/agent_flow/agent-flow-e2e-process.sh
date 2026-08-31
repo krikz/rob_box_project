@@ -641,6 +641,157 @@ _e2e_run_state_ensure() {
 }
 _e2e_run_state_ensure
 
+# ADR-0040 §2.2.3 + §2.2.2: helpers для consecutive_fails per-issue.
+# Формат файла: {"schema_version":1,"issues":{"<num>":{"consecutive_fails":N,
+# "last_run_id":"...","last_attempt_at":"...","infra_fail":false}}}.
+#
+# API (вызываются только когда RUN_STATE_FILE непустой):
+#   e2e_run_state_load   → echo JSON на stdout, либо {"issues":{}} если пусто/битый
+#   e2e_run_state_save   → атомарная запись JSON через tmp + mv
+#   e2e_run_state_get    <issue> <key> → значение поля, либо "" если нет
+#   e2e_run_state_bump_fail <issue> <run_id> → increment consecutive_fails, save, echo NEW count
+#   e2e_run_state_reset   <issue> → consecutive_fails=0, infra_fail=false, save
+#   e2e_run_state_set_infra_fail <issue> → infra_fail=true, save
+#
+# Все операции сериализуются через lock-файл процесса (flock уже держится).
+# Если RUN_STATE_FILE пустой (init failed) — все helpers no-op, get → "".
+e2e_run_state_load() {
+    local _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || { printf '{"schema_version":1,"issues":{}}'; return 0; }
+    if [ ! -f "$_f" ] || [ ! -s "$_f" ]; then
+        printf '{"schema_version":1,"issues":{}}\n'
+        return 0
+    fi
+    cat "$_f" 2>/dev/null || printf '{"schema_version":1,"issues":{}}\n'
+}
+e2e_run_state_save() {  # $1=json_string
+    local _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || return 0
+    local _tmp="${_f}.tmp.$$"
+    if ! printf '%s\n' "$1" > "$_tmp" 2>/dev/null; then
+        log "WARNING: e2e_run_state_save: cannot write ${_tmp}"
+        return 1
+    fi
+    if ! mv -f "$_tmp" "$_f" 2>/dev/null; then
+        log "WARNING: e2e_run_state_save: cannot mv ${_tmp} → ${_f}"
+        return 1
+    fi
+    return 0
+}
+# jq-free JSON manipulation (нет зависимости от jq). Простая state-машина:
+# - schema_version:1 (int)
+# - issues: { "<num>": { consecutive_fails:int, last_run_id:str, last_attempt_at:str,
+#                        first_fail_at:str, infra_fail:bool } }
+# Структура плоская, проще regex-parse без jq.
+e2e_run_state_get() {  # $1=issue_num $2=key (consecutive_fails|last_run_id|infra_fail|first_fail_at|last_attempt_at)
+    local _num="$1" _key="$2" _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || { printf ''; return 0; }
+    [ -f "$_f" ] || { printf ''; return 0; }
+    E2E_RS_FP="$_f" E2E_RS_NUM="$_num" E2E_RS_KEY="$_key" \
+    python3 -c '
+import json, os
+fp = os.environ["E2E_RS_FP"]
+num = os.environ["E2E_RS_NUM"]
+key = os.environ["E2E_RS_KEY"]
+try:
+    with open(fp) as fh:
+        data = json.load(fh)
+    val = data.get("issues", {}).get(num, {}).get(key, "")
+    if isinstance(val, bool):
+        print("true" if val else "false")
+    elif val is None:
+        print("")
+    else:
+        print(val)
+except Exception:
+    print("")
+' 2>/dev/null || printf ''
+}
+e2e_run_state_bump_fail() {  # $1=issue_num $2=run_id (может быть пустым при NOT STARTED)
+    local _num="$1" _run_id="${2:-}" _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || { printf '0'; return 0; }
+    local _now _first_fail _prev_count _new_count
+    _now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    _prev_count="$(e2e_run_state_get "$_num" consecutive_fails 2>/dev/null || echo '0')"
+    [ -n "$_prev_count" ] || _prev_count=0
+    _new_count=$((_prev_count + 1))
+    _first_fail="$(e2e_run_state_get "$_num" first_fail_at 2>/dev/null || true)"
+    [ -n "$_first_fail" ] || _first_fail="$_now"
+    E2E_RS_FP="$_f" E2E_RS_NUM="$_num" E2E_RS_RUNID="$_run_id" \
+    E2E_RS_NOW="$_now" E2E_RS_FIRST="$_first_fail" E2E_RS_NEW="$_new_count" \
+    python3 -c '
+import json, os, sys
+fp = os.environ["E2E_RS_FP"]; num = os.environ["E2E_RS_NUM"]
+run_id = os.environ["E2E_RS_RUNID"]; now = os.environ["E2E_RS_NOW"]
+first_fail = os.environ["E2E_RS_FIRST"]; new_count = int(os.environ["E2E_RS_NEW"])
+try:
+    with open(fp) as fh:
+        data = json.load(fh)
+except Exception:
+    data = {"schema_version": 1, "issues": {}}
+data.setdefault("schema_version", 1)
+data.setdefault("issues", {})
+prev = data["issues"].get(num, {})
+prev["consecutive_fails"] = new_count
+prev["last_run_id"] = run_id
+prev["last_attempt_at"] = now
+prev["first_fail_at"] = first_fail
+prev["infra_fail"] = bool(prev.get("infra_fail", False))
+data["issues"][num] = prev
+tmp = fp + ".tmp." + str(os.getpid())
+with open(tmp, "w") as fh:
+    json.dump(data, fh, indent=2, sort_keys=True)
+os.replace(tmp, fp)
+' 2>/dev/null
+    printf '%s\n' "$_new_count"
+}
+e2e_run_state_reset() {  # $1=issue_num
+    local _num="$1" _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || return 0
+    E2E_RS_FP="$_f" E2E_RS_NUM="$_num" \
+    python3 -c '
+import json, os, sys
+fp = os.environ["E2E_RS_FP"]; num = os.environ["E2E_RS_NUM"]
+try:
+    with open(fp) as fh:
+        data = json.load(fh)
+except Exception:
+    sys.exit(0)
+data.setdefault("issues", {})
+if num in data["issues"]:
+    data["issues"][num]["consecutive_fails"] = 0
+    data["issues"][num]["infra_fail"] = False
+tmp = fp + ".tmp." + str(os.getpid())
+with open(tmp, "w") as fh:
+    json.dump(data, fh, indent=2, sort_keys=True)
+os.replace(tmp, fp)
+' 2>/dev/null
+    return 0
+}
+e2e_run_state_set_infra_fail() {  # $1=issue_num
+    local _num="$1" _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || return 0
+    E2E_RS_FP="$_f" E2E_RS_NUM="$_num" \
+    python3 -c '
+import json, os
+fp = os.environ["E2E_RS_FP"]; num = os.environ["E2E_RS_NUM"]
+try:
+    with open(fp) as fh:
+        data = json.load(fh)
+except Exception:
+    data = {"schema_version": 1, "issues": {}}
+data.setdefault("issues", {})
+prev = data["issues"].get(num, {})
+prev["infra_fail"] = True
+data["issues"][num] = prev
+tmp = fp + ".tmp." + str(os.getpid())
+with open(tmp, "w") as fh:
+    json.dump(data, fh, indent=2, sort_keys=True)
+os.replace(tmp, fp)
+' 2>/dev/null
+    return 0
+}
+
 # --- G_pre_cleanup: worktree disk-space + sweep (issue #1707, ретро 28.08) --
 # Под замком (после flock), до ensure_worktree — гарантирует, что только
 # один тик одновременно чистит /tmp/agent-flow-e2e-*. Если места мало —
@@ -3553,15 +3704,51 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
         e2e_args+=(-f "check_tg_echo=true")
     fi
     # ADR-0040 §2.2.1: trigger возвращает run_id в stdout (или existing:<id>).
-    # ADR-0040 §2.2.2: на non-zero — increment consecutive_fails в state (commit 3).
-    # Здесь (commit 2) — только захват run_id и корректное логирование.
+    # ADR-0040 §2.2.2: на non-zero — increment consecutive_fails в state,
+    # и если >= ${E2E_CONSECUTIVE_FAIL_LIMIT} — label e2e:infra-fail (terminal,
+    # ADR Q4), СНЯТЬ needs-e2e (чтобы issue не крутился бесконечно),
+    # comment с run-link. Round-ветка не используется для следующих issues
+    # в этом тике (помечается E2E_TRIGGER_FAILED_THIS_TICK=1, ADR-0040 Q1).
     _e_run_id=""
+    E2E_TRIGGER_FAILED_THIS_TICK=0
     if ! _e_run_id="$(_trigger_workflow_with_retry "$E2E_WORKFLOW" --ref "$ROUND_BRANCH" "${e2e_args[@]}")"; then
-        # Run НЕ стартанул — старый код: errored++ + continue. Commit 3
-        # ДОБАВИТ сюда инкремент consecutive_fails (load + bump + save + branch
-        # на ≥3 → e2e:infra-fail). Это соглашение: commit 2 — только
-        # новый контракт trigger, без изменения реакции process_issue.
-        log "issue #${number}: failed to trigger ${E2E_WORKFLOW} after retries (run NOT started, ADR-0040 §2.2.1)"; errored=$((errored+1)); continue
+        E2E_TRIGGER_FAILED_THIS_TICK=1
+        # Run НЕ стартанул → bump_fail + check threshold.
+        _new_fail_count="$(e2e_run_state_bump_fail "$number" "" 2>/dev/null || echo '0')"
+        # Strip newline
+        _new_fail_count="$(printf '%s' "$_new_fail_count" | tr -d '[:space:]')"
+        [ -n "$_new_fail_count" ] || _new_fail_count=0
+        log "issue #${number}: e2e trigger FAILED (run NOT started), consecutive_fails=${_new_fail_count}/${E2E_CONSECUTIVE_FAIL_LIMIT} (ADR-0040 §2.2.2)"
+        if [ "$_new_fail_count" -ge "$E2E_CONSECUTIVE_FAIL_LIMIT" ]; then
+            # Threshold reached — terminal infra-fail. ADR-0040 Q4.
+            e2e_run_state_set_infra_fail "$number" 2>/dev/null || true
+            # Idempotent label add.
+            if ! gh label list --repo "$GH_REPO" --limit 200 2>/dev/null | grep -q "^${INFRA_FAIL_LABEL}[[:space:]]"; then
+                gh label create "$INFRA_FAIL_LABEL" --repo "$GH_REPO" --color "fbca04" \
+                    --description "e2e infra broken: trigger failed ${E2E_CONSECUTIVE_FAIL_LIMIT} times — manual override required" \
+                    >/dev/null 2>&1 || log "WARNING: failed to create label ${INFRA_FAIL_LABEL}"
+            fi
+            gh issue edit "$number" --repo "$GH_REPO" --add-label "$INFRA_FAIL_LABEL" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+            gh issue comment "$number" --repo "$GH_REPO" --body "$(cat <<EOF
+agent-flow: 🛑 e2e infra-fail — run \`${E2E_WORKFLOW}\` НЕ стартанул ${E2E_CONSECUTIVE_FAIL_LIMIT} раз подряд (ADR-0040, issue #1831).
+
+Поставлена метка \`${INFRA_FAIL_LABEL}\` (terminal, ADR-0040 Q4), снята \`${NEEDS_E2E_LABEL}\` — issue больше НЕ в ротации.
+
+Что делать: проверить \`gh auth status\`, права репо (workflow_dispatch), quota GitHub Actions. Возможный repo perm change / expired CR_PAT / 429 от GitHub API.
+
+После починки — снять \`${INFRA_FAIL_LABEL}\` руками (Шифу) и заново поставить \`${NEEDS_E2E_LABEL}\` для следующего тика.
+
+Round-ветка \`${ROUND_BRANCH}\` НЕ использовалась для других issues в этом тике (помечена \`E2E_TRIGGER_FAILED_THIS_TICK=1\`).
+EOF
+)" >/dev/null 2>&1 || log "WARNING: failed to post infra-fail comment to issue #${number}"
+            log "issue #${number}: e2e:infra-fail SET (terminal, consecutive_fails=${_new_fail_count} >= ${E2E_CONSECUTIVE_FAIL_LIMIT})"
+            errored=$((errored+1))
+            continue
+        fi
+        # Не достигли порога — продолжаем тик. Round-ветка не для других
+        # issues (Q1): следующая issue пойдёт в отдельный round.
+        errored=$((errored+1))
+        continue
     fi
     log "issue #${number}: e2e trigger resolved run_id='${_e_run_id}' (ADR-0040 §2.2.1)"
     # Сохраняем в $run_id для дальнейшего использования (verdict loop ниже).
@@ -3688,6 +3875,47 @@ $(cat "$acc_file" 2>/dev/null || true)"
         log "issue #${number}: fail_kind=merged + verdict=${verdict} + explicit ${NEEDS_E2E_LABEL} override → переход в merged-override (ретро 19.08 t_b3691e1b, issue #1448)"
         fail_kind="merged-override"
     fi
+
+    # ADR-0040 §2.2.3: verdict handler — update run_state.json. Success →
+    # reset consecutive_fails=0 + last_run_id=run_id + last_attempt_at=now.
+    # Fail — leave counter (мы increment'или его на этапе trigger, если
+    # trigger совсем не сработал; на этапе verdict counter уже НЕ трогаем,
+    # потому что run реально стартанул и его fail — это verdict issue, а не
+    # infra-trigger fail). Однако, чтобы следующий re-test не получал
+    # «consecutive_fails=1» из старого trigger-fail, мы ОБНУЛЯЕМ counter
+    # на любом завершённом verdict (success ИЛИ fail_kind∈{merged,feature,
+    # merged-override,infra}). Это согласуется с ADR §2.2.3: counter
+    # сбрасывается на verdict, не только на success.
+    _verdict_now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [ -n "$run_id" ] && [[ "$run_id" =~ ^[0-9]+$ ]]; then
+        # Записываем last_run_id и last_attempt_at через python (state-машина).
+        if [ -n "$RUN_STATE_FILE" ]; then
+            E2E_RS_FP="$RUN_STATE_FILE" E2E_RS_NUM="$number" \
+            E2E_RS_RUNID="$run_id" E2E_RS_NOW="$_verdict_now" \
+            python3 -c '
+import json, os
+fp = os.environ["E2E_RS_FP"]; num = os.environ["E2E_RS_NUM"]
+run_id = os.environ["E2E_RS_RUNID"]; now = os.environ["E2E_RS_NOW"]
+try:
+    with open(fp) as fh:
+        data = json.load(fh)
+except Exception:
+    data = {"schema_version": 1, "issues": {}}
+data.setdefault("issues", {})
+prev = data["issues"].get(num, {})
+prev["last_run_id"] = run_id
+prev["last_attempt_at"] = now
+data["issues"][num] = prev
+tmp = fp + ".tmp." + str(os.getpid())
+with open(tmp, "w") as fh:
+    json.dump(data, fh, indent=2, sort_keys=True)
+os.replace(tmp, fp)
+' 2>/dev/null || log "WARNING: verdict handler: cannot update last_run_id in state"
+        fi
+    fi
+    # Reset counter для любого verdict (success ИЛИ fail_kind ≠ триггер-fail).
+    e2e_run_state_reset "$number" 2>/dev/null || true
+    log "issue #${number}: verdict='${verdict}' fail_kind='${fail_kind}' — run_state reset (consecutive_fails=0, ADR-0040 §2.2.3)"
 
     if [ "$verdict" = "success" ]; then
         label_action="add ${DONE_LABEL}"
