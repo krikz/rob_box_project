@@ -2021,6 +2021,16 @@ class DialogueNode(Node):
             clean = self._dj.preamble() + clean
         if self._verbose_llm:
             self.get_logger().info(f"📥 LLM INPUT: {clean[:200]!r}")
+        # Issue #1766 — логируем, что в user-turn прошёл бэклог: оператор / e2e
+        # видят «backlog_pending=true» в каждом LLM INPUT и могут сматчить с
+        # `backlog_handled=true` маркером в _build_dynamic_system_context, чтобы
+        # доказать, что бэклог дошёл до LLM в ОБА места (user + system).
+        if backlog_pending:
+            self.get_logger().info(
+                f"📥 LLM INPUT backlog_pending=true backlog_handled=false "
+                f"(backlog_hint injected into user-turn; "
+                f"backlog_handled=true появится при _build_dynamic_system_context)"
+            )
         # 🔴 FIX (live 12:45): Bug C guard должен смотреть ТОЛЬКО оригинальную
         # команду юзера, а не текст с DJ-preamble. Preamble содержит
         # «диджей: ...» — guard видел его и думал «юзер просит музыку»,
@@ -2652,15 +2662,23 @@ class DialogueNode(Node):
         # Бэклог-аккумулятор фоновой речи без wake-слова: при сливе добавляем
         # <speech_backlog> внутрь <system_context>. raw_user_command при этом
         # не трогаем — гарды смотрят только на текущую фразу.
+        # Issue #1766 — `backlog_handled=true` маркер в логе: оператор / e2e
+        # может грепом проверить «был ли в этом turn бэклог» и сравнить с
+        # acceptance (LLM должен выполнить явную команду из бэклога).
         if getattr(self, "_pending_backlog_flush", False):
             self._pending_backlog_flush = False
             acc = getattr(self, "_speech_accumulator", None)
             if acc is not None:
                 block = acc.format_block()
                 if block:
+                    # Кол-во записей уже учтено в block (format_block → prune).
+                    # Берём ДО clear() — это счётчик «сколько фраз было в
+                    # бэклоге при сливе», операторский/e2e-маркер.
+                    n_entries = len(acc._entries)  # noqa: SLF001 — diagnostic
                     lines.append(block)
                     self.get_logger().info(
-                        f"🗒️ [backlog] flushed to LLM: {block[:200]!r}"
+                        f"🗒️ [backlog] flushed to LLM backlog_handled=true "
+                        f"entries={n_entries} block={block[:200]!r}"
                     )
                 acc.clear()
         lines.append("</system_context>")
