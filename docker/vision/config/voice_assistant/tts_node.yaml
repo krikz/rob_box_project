@@ -14,20 +14,19 @@ tts_node:
     synthesis_max_queue: 16
     minimax_api_key: ''
     minimax_group_id: ''
-    # Issue #1780 / issue #1004 — дефолтные emotion / pitch / volume /
-    # pronunciation_dict для MiniMax T2A v2. Нейтральные дефолты сохраняют
-    # текущее поведение (поля НЕ передаются в API, см. minimax_tts.py):
-    #   emotion = ""             → не передавать
-    #   pitch  = 0               → 0 = «не передавать»; иначе int semitones
-    #   volume = 0.0             → 0.0 = «не передавать»; иначе [1.0, 10.0]
-    #   pronunciation_dict = ""  → MiniMax-словарь произношения (JSON)
+    # Issue #1780 / issue #1004 — emotion / pitch / volume /
+    # pronunciation_dict для MiniMax T2A v2 передаются в voice_setting
+    # (см. minimax_tts.py: ``emotion``, ``pitch`` int semitones, ``vol``
+    # float [0.0, 10.0], ``pronunciation_dict`` str). Нейтральные дефолты
+    # сохраняют текущее поведение (поля НЕ передаются в API, если явно
+    # не заданы). Канонический блок задаётся ниже (после
+    # ``yandex_ssml_aware``); первый блок с int/float ``pitch=0`` /
+    # ``volume=0.0`` был legacy и порождал дубликат ключа в YAML →
+    # rclpy set_parameters валился на типе (InvalidParameterTypeException
+    # → tts_node crash-loop на Vision Pi, issue #1830). Убран.
     # Допустимые значения emotion (MiniMax T2A v2 voice_setting.emotion):
     #   happy | neutral | sad | angry | fearful | disgusted | surprised
     # Прокидывание значений в ``TTSSettings`` — в карточке t_4e98182a.
-    minimax_emotion: ''
-    minimax_pitch: 0
-    minimax_volume: 0.0
-    minimax_pronunciation_dict: ''
     normalize_text: true
     chipmunk_mode: false
     pitch_shift: 1.0
@@ -62,9 +61,19 @@ tts_node:
     minimax_max_retries: 2
     minimax_retry_backoff_ms: 500
     minimax_streaming: false
-    # Issue #1780 — emotion / pitch / volume / pronunciation_dict. См.
-    # подробности в src/rob_box_voice/config/tts_node.yaml и в
-    # tts_node.py:declare_parameter.
+    # Issue #1780 / issue #1004 / issue #1830 — единственный канонический
+    # блок MiniMax emotion / pitch / volume / pronunciation_dict. В
+    # tts_node.py declare_parameter() ожидает STRING ("" → «не задан»);
+    # при чтении приводится через _parse_optional_int/_parse_optional_float
+    # → нейтральное поведение до явной настройки (поля опускаются из
+    # API payload).
+    #   emotion              ∈ {happy, neutral, sad, angry, fearful, disgusted, surprised}
+    #   pitch                — int semitones (-12..+12 typical); "" → None
+    #   volume               — float [0.0, 10.0]; "" → None
+    #   pronunciation_dict   — JSON-строка MiniMax-словаря; "" → None
+    # Допустимые значения emotion (MiniMax T2A v2 voice_setting.emotion):
+    #   happy | neutral | sad | angry | fearful | disgusted | surprised
+    # Прокидывание значений в ``TTSSettings`` — в карточке t_4e98182a.
     minimax_emotion: neutral
     minimax_pitch: ''
     minimax_volume: ''
