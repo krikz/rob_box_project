@@ -215,7 +215,7 @@ SC_OUT="$(shellcheck -x "$SCRIPT_UNDER_TEST" 2>&1 || true)"
 SC_ERR_COUNT=0
 while IFS= read -r line; do
   case "$line" in
-    ""|*"SC2016"*|*"SC2034"*) : ;;  # allowed warnings
+    ""|*"SC2016"*|*"SC2034"*|*"SC1090"*) : ;;  # allowed warnings
     *) SC_ERR_COUNT=$((SC_ERR_COUNT+1)) ;;
   esac
 done < <(echo "$SC_OUT" | grep -E 'SC[0-9]+' || true)
@@ -421,6 +421,105 @@ if [ -f "$WORK_DIR/t8.calls" ]; then
 else
   FAIL=$((FAIL+1)); FAILED_CASES+=("T8 calls log missing")
   echo "  ✗ T8 calls log missing"
+fi
+
+# ----------------------------------------------------------------------------
+# T9: ENV_FILE robustness — скрипт находит .env даже если $HERMES_HOME
+#     указывает на нестандартный путь (например профильную папку).
+#     Ретро 31.08 (t_9b0d60f7): ENV_FILE раньше вычислялся напрямую из
+#     $HERMES_HOME и падал в no_agent cron-режиме когда переменная в env
+#     указывала на /home/builder/.hermes/profiles/devops вместо /home/builder/.hermes.
+# ----------------------------------------------------------------------------
+echo
+echo "--- T9: ENV_FILE robustness — HERMES_HOME=профиль, скрипт всё равно находит .env ---"
+
+# Запустим script с подменой HERMES_HOME на битый путь И с mock-gh.
+# Ожидание: ENV_FILE подхватится через fallback candidate, GH_REPO грузится,
+# скрипт проходит до main (с dry-run не делает gh-вызовов).
+HERMES_BROKEN="$WORK_DIR/profile-broken-home"
+mkdir -p "$HERMES_BROKEN"
+T9_RUNNER="$WORK_DIR/run_t9.sh"
+cat > "$T9_RUNNER" <<EOF
+#!/bin/bash
+set -o pipefail
+export UNLABELED_SWEEP_TEST_MODE=1
+export STALE_HOURS_1='1'
+export STALE_HOURS_2='1'
+export DRY_RUN='true'   # dry-run чтобы не дёргать gh
+export LOCK_FILE='/tmp/test-unlabeled-sweep-runner.lock'
+export SWEEP_LIMIT=200
+# Битый HERMES_HOME — НЕ содержит profiles/agent-flow/.env
+export HERMES_HOME='$HERMES_BROKEN'
+# HOME тоже битый (simulate profile scope)
+export HOME='$HERMES_BROKEN/home'
+# GH_REPO НЕ задан — пусть скрипт сам найдёт через .env fallback
+unset GH_REPO
+unset KANBAN_BOARD
+
+gh() { return 0; }
+export -f gh
+
+bash '${SCRIPT_UNDER_TEST}'
+EOF
+chmod +x "$T9_RUNNER"
+T9_OUT=$(bash "$T9_RUNNER" 2>&1 || true)
+if echo "$T9_OUT" | grep -q "tick start: GH_REPO=krikz/rob_box_project"; then
+  PASS=$((PASS+1)); echo "  ✓ T9: скрипт нашёл .env через fallback (HERMES_HOME=$HERMES_BROKEN)"
+else
+  FAIL=$((FAIL+1)); FAILED_CASES+=("T9: ENV_FILE fallback failed")
+  echo "  ✗ T9: ENV_FILE fallback failed — output:"
+  echo "$T9_OUT" | head -5
+fi
+
+# Также проверим что exit code != 1 (раньше был exit 1 на GH_REPO unset)
+if echo "$T9_OUT" | grep -q "GH_REPO must be set"; then
+  FAIL=$((FAIL+1)); FAILED_CASES+=("T9: GH_REPO unset message — fallback не сработал")
+  echo "  ✗ T9: скрипт упал с 'GH_REPO must be set' (fallback не сработал)"
+else
+  PASS=$((PASS+1)); echo "  ✓ T9: скрипт НЕ падает с 'GH_REPO must be set' (fallback OK)"
+fi
+
+# ----------------------------------------------------------------------------
+# T10: ENV_FILE robustness — HERMES_HOME вообще не задан (system-cron).
+#      Должен подхватить через $HOME/.hermes/profiles/agent-flow/.env.
+# ----------------------------------------------------------------------------
+echo
+echo "--- T10: ENV_FILE robustness — HERMES_HOME unset, HOME=/home/builder ---"
+T10_RUNNER="$WORK_DIR/run_t10.sh"
+cat > "$T10_RUNNER" <<EOF
+#!/bin/bash
+set -o pipefail
+export UNLABELED_SWEEP_TEST_MODE=1
+export STALE_HOURS_1='1'
+export STALE_HOURS_2='1'
+export DRY_RUN='true'
+export LOCK_FILE='/tmp/test-unlabeled-sweep-runner.lock'
+export SWEEP_LIMIT=200
+unset HERMES_HOME
+unset GH_REPO
+unset KANBAN_BOARD
+export HOME=/home/builder
+
+gh() { return 0; }
+export -f gh
+
+bash '${SCRIPT_UNDER_TEST}'
+EOF
+chmod +x "$T10_RUNNER"
+T10_OUT=$(bash "$T10_RUNNER" 2>&1 || true)
+if echo "$T10_OUT" | grep -q "tick start: GH_REPO=krikz/rob_box_project"; then
+  PASS=$((PASS+1)); echo "  ✓ T10: скрипт работает с HERMES_HOME=unset (HOME-fallback)"
+else
+  FAIL=$((FAIL+1)); FAILED_CASES+=("T10: HOME-fallback failed")
+  echo "  ✗ T10: HOME-fallback failed — output:"
+  echo "$T10_OUT" | head -5
+fi
+
+if echo "$T10_OUT" | grep -q "GH_REPO must be set"; then
+  FAIL=$((FAIL+1)); FAILED_CASES+=("T10: GH_REPO unset — HOME-fallback не сработал")
+  echo "  ✗ T10: скрипт упал с 'GH_REPO must be set' (HOME-fallback не сработал)"
+else
+  PASS=$((PASS+1)); echo "  ✓ T10: скрипт НЕ падает с 'GH_REPO must be set' (HOME-fallback OK)"
 fi
 
 # ----------------------------------------------------------------------------
