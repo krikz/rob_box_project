@@ -100,6 +100,8 @@ from rob_box_voice.core.dialogue_guards import (
     build_music_retry_prompt,
     build_renardo_code_retry_prompt,
     build_unbacked_action_retry_prompt,
+    build_tool_retry_prompt as build_tool_retry_prompt,
+    detect_required_tool as detect_required_tool,
     detect_unbacked_action_claim,
     extract_renardo_code_lines,
     is_metalanguage_babble,
@@ -696,6 +698,14 @@ class DialogueNode(Node):
         # Issue #992 Bug C' — Renardo-код, попавший в реплику вместо
         # execute_music_code. Тот же одноразовый контракт.
         self._code_speech_retry_used: bool = False
+
+        # Issue #1777 / #1762 — non-music tool-skipped retry budget.
+        # ``True`` после того как Bug C retry для явного tool-based
+        # запроса (get_current_time / search_web / set_voice /
+        # memory_search / faq_search) уже был отправлен в текущем turn.
+        # Защита от бесконечного LLM ping-pong: один ретрай на turn.
+        # Сбрасывается на новый user-initiated turn (см. _run_turn).
+        self._tool_retry_used: bool = False
 
         # Issue #1160 — Prometheus metrics: длительность диалоговой
         # сессии. Фиксируем момент первого wake-word-диалога из IDLE;
@@ -2869,6 +2879,13 @@ class DialogueNode(Node):
             self._action_claim_retry_used = False
         if not is_code_retry:
             self._code_speech_retry_used = False
+        # Issue #1777 / #1762 — сброс tool-retry budget на новый
+        # user-initiated turn. На babble-retry НЕ сбрасываем (как и
+        # babble-budget — см. issue #992 Bug D), иначе синтетический
+        # ретрай сам себе «обнулит» бюджет и при следующей такой же
+        # ошибке запустит второй ретрай → ping-pong.
+        if not is_babble_retry:
+            self._tool_retry_used = False
         # Bug C (юзер-музыка) — сброс бюджета на НОВЫЙ юзер-запрос,
         # чтобы каждый запрос получал свежий retry (retry-промпт
         # не должен считаться новым запросом и сбрасывать сам себя).
@@ -3232,6 +3249,24 @@ class DialogueNode(Node):
                 user_input=raw_user_command or user_input,
                 tools_called=result.tools_called if result else (),
             )
+            # Issue #1777 / #1762 — Bug C retry для non-music tool-based
+            # запросов. Раньше ретрай работал ТОЛЬКО для music (issue
+            # #992 Bug C). Теперь если юзер явно просит
+            # ``get_current_time`` / ``search_web`` / ``set_voice`` /
+            # ``memory_search`` / ``faq_search`` и LLM не вызвал tool
+            # (tools пустой), отправляем ОДИН CRITICAL retry с явным
+            # указанием нужного tool. Защита от ping-pong: один
+            # ретрай на turn (см. ``_tool_retry_used``).
+            #
+            # Вызывается ПОСЛЕ music guard и babble guard — чтобы не
+            # гонять их по очереди и не дублировать retry для
+            # пересекающихся случаев (например «который час» не должен
+            # матчиться music guard'ом).
+            tool_retry_dispatched = self._apply_tool_skipped_guard(
+                user_input=raw_user_command or user_input,
+                tools_called=result.tools_called if result else (),
+                other_retry_dispatched=music_retry_dispatched,
+            )
             # Issue #992 Bug D — defer the DIALOGUE_END transition
             # when the babble detector scheduled a retry. The retry's
             # ``_run_turn`` needs the DSM to stay in DIALOGUE so the
@@ -3246,6 +3281,7 @@ class DialogueNode(Node):
                 and not guard_retry_pending
                 and not music_retry_dispatched
                 and not pending_queue_dispatched
+                and not tool_retry_dispatched
             ):
                 self._dsm.on_event(DialogueEvent.DIALOGUE_END)
                 # Issue #1160 — Prometheus metrics: сессия закрылась
@@ -3866,6 +3902,86 @@ class DialogueNode(Node):
             "execute_music_code, цикл будет считаться пустым и "
             "робот озвучит 'задумался'."
         )
+
+    # ── Issue #1777 / #1762 — non-music tool-skipped guard ─────────────
+
+    def _apply_tool_skipped_guard(
+        self,
+        *,
+        user_input: str,
+        tools_called: tuple,
+        other_retry_dispatched: bool = False,
+    ) -> bool:
+        """Issue #1777 / #1762 — Bug C retry для non-music tool-based запросов.
+
+        Если юзер явно попросил конкретный tool (``get_current_time`` /
+        ``search_web`` / ``set_voice`` / ``memory_search`` /
+        ``faq_search``), а LLM вернул ``tools=[]`` (ответил текстом-
+        обещанием или просто не вызвал инструмент), отправляем ОДИН
+        CRITICAL retry с явным указанием нужного tool.
+
+        Не путать с :meth:`_apply_music_guard` (только music, см. issue
+        #992 Bug C) и :meth:`_check_babble_and_retry` (мета-обещания).
+        Здесь — конкретный tool-based пропуск.
+
+        Retry rules (все должны выполниться):
+        1. ``tools_called`` пустой (LLM не вызвал tool).
+        2. ``user_input`` матчит keyword-set в
+           :data:`TOOL_REQUEST_PATTERNS` (см.
+           :func:`detect_required_tool`).
+        3. ``_tool_retry_used`` ещё не взведён (защита от ping-pong).
+        4. Уже не было music/babble/action-claim/code retry для этого
+           turn (чтобы не конкурировать с другими guards и не отправить
+           ДВА синтетических ретрая за один ход — см. Bug B/C
+           double-dispatch incident, live 30.08 e2e renardo_evolve rn02,
+           разобранный в :meth:`_apply_music_guard`).
+
+        Args:
+            other_retry_dispatched: ``True`` когда :meth:`_apply_music_guard`
+                (вызывается непосредственно перед этим guard'ом в
+                ``_run_turn.finally``) уже задиспатчил свой ретрай в этом
+                ходе. Музыкальный гуард не выставляет
+                ``_retry_dispatched_in_turn`` сам (историческая причина:
+                он проверяется по return value, а не по общему флагу),
+                поэтому caller обязан передать это явно — раньше здесь
+                стояла эвристика по DJ-таймеру (``next_transition_at``),
+                которая не покрывала Bug E (``_action_claim_retry_used``)
+                и могла молча разойтись с реальным состоянием.
+
+        Returns:
+            ``True`` когда retry диспатчен (caller должен отложить
+            ``DIALOGUE_END``). ``False`` иначе.
+        """
+        if tools_called:
+            return False
+        if not user_input:
+            return False
+        if self._tool_retry_used:
+            return False
+        if other_retry_dispatched or self._retry_dispatched_in_turn:
+            return False
+        tool_name = detect_required_tool(user_input)
+        if not tool_name:
+            return False
+        retry_prompt = build_tool_retry_prompt(user_input, tool_name)
+        if not retry_prompt:
+            # Defence-in-depth: build_tool_retry_prompt вернул "" —
+            # tool_name не из allow-list (промпт-инъекция?). Не ретраим.
+            return False
+        # DSM reopen — нужен DIALOGUE state для retry-тура (см. issue #1204).
+        self._reopen_dialogue_for_retry()
+        # Mark budget BEFORE dispatch — защита от re-entrant эскалации.
+        self._tool_retry_used = True
+        self.get_logger().warning(
+            f"🛠 [issue 1777 / 1762] LLM skip non-music tool {tool_name!r} — "
+            f"retrying once with CRITICAL reminder (user={user_input[:60]!r})"
+        )
+        self._dispatch_turn(
+            retry_prompt,
+            was_idle=False,
+            raw_user_command=user_input,
+        )
+        return True
 
     # ═══════════════════════════════════════════════════════════════════════
     #  Agent loop methods (unit-test contracts — test_agent_loop.py)

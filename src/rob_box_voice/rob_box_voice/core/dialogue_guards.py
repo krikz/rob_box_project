@@ -19,6 +19,10 @@ Owns two families of heuristics:
   :func:`is_vocal_request` recognises «спой/пой/песня» where ``speak_text``
   alone is a valid outcome, and :func:`build_music_retry_prompt` builds
   the Bug-C retry prompt that demands ``execute_music_code``.
+* **Non-music tool guard** (issue #1777 / #1762) — расширение Bug C на
+  все явные tool-based запросы (``get_current_time``, ``search_web``,
+  ``set_voice``, ``memory_search``, ``faq_search``). См. :data:`TOOL_REQUEST_PATTERNS`
+  и :func:`detect_required_tool`.
 """
 
 from __future__ import annotations
@@ -367,6 +371,210 @@ def is_state_question(user_input: str) -> bool:
         return True
     stripped = user_input.lower().strip()
     return any(stripped.startswith(opener) for opener in QUESTION_OPENERS)
+
+
+# ---------------------------------------------------------------------------
+# Issue #1777 / #1762 — non-music tool guard. Расширение Bug C retry на
+# ВСЕ явные tool-based запросы. Раньше ретрай работал только для music
+# (см. issue #992 Bug C), теперь — для ``get_current_time``,
+# ``search_web``, ``set_voice``, ``memory_search``, ``faq_search``.
+#
+# Формат: каждая запись = (tool_name, tuple[подстрок…]). Подстроки
+# матчатся lowercase substring в user_input. Tuple — для случаев когда
+# одна категория покрывается несколькими keyword'ами («который час»,
+# «сколько времени», «время в москве» — всё → get_current_time).
+#
+# ВАЖНО: keyword'ы специально выбираются такие, чтобы НЕ срабатывать
+# на обычное chit-chat. Например «новости» — отдельный keyword от «погода»,
+# чтобы не ретраить когда юзер просит «новости про X» (тоже → search_web,
+# но другой по семантике).
+# ---------------------------------------------------------------------------
+TOOL_REQUEST_PATTERNS: tuple = (
+    # time / date (issue #1777) — «который час», «сколько времени»,
+    # «время в москве», «какая дата», «какой день недели».
+    ("get_current_time", (
+        "который час",
+        "сколько врем",
+        "сколько сейч",
+        "время в ",
+        "время по ",
+        "время сейч",
+        "который сейч",
+        "сейчас врем",
+        "сколько минут",
+        "чо за время",
+        "какая дата",
+        "какой день",
+        "какой сегодн",
+        "какое число",
+        "какое сегодня",
+        "какой месяц",
+        "какой год",
+        "что за день",
+        "что за число",
+        "что за дат",
+    )),
+    # weather / news / web search (issue #1762) — «погода в X»,
+    # «новости про Y», «что в интернете», «загугли».
+    ("search_web", (
+        "погода",
+        "погоду",
+        "новости",
+        "новость",
+        "что в интернет",
+        "загугл",
+        "найди в инет",
+        "поищи в инет",
+        "найди информ",
+        "узнай в инет",
+        "найди что",
+        "поищи что",
+        "расскажи про ",  # «расскажи про X» — обычно требует поиска
+        "что ты знаешь про ",
+        "что известно про ",
+    )),
+    # voice (issue #1765) — «переключи голос», «поставь голос X»,
+    # «голос Артём», «смени голос».
+    #
+    # 🔴 Осознанно НЕ добавлены «говор », «говори », «говорит », «голосом»:
+    # это substring-match без границ слова, и они ловят обычный chit-chat —
+    # «не говори глупости», «мама говорит что...», «он говорит по-английски»,
+    # «спой красивым голосом». Ложный матч здесь не «лишний round-trip», а
+    # ретрай, ТРЕБУЮЩИЙ от LLM вызвать set_voice в ходе, который к голосу
+    # никак не относится.
+    ("set_voice", (
+        "переключи голос",
+        "смени голос",
+        "поменяй голос",
+        "голос арт",
+        "голос ален",
+        "голос анто",
+        "голос окс",
+        "голос жан",
+        "голос ерма",
+        "голос зайц",
+        "голос леви",
+        "голос маш",
+        "голос никол",
+        "голос серг",
+        "голос алек",
+        "голос ден",
+        "голос мар",
+        "голос тат",
+        "давай голос",
+        "поставь голос",
+        "установи голос",
+    )),
+    # memory (issue #1770) — «что ты знаешь обо мне», «помнишь меня»,
+    # «что помнишь».
+    ("memory_search", (
+        "что ты знаешь обо мне",
+        "что знаешь обо мне",
+        "что ты помнишь",
+        "что помнишь",
+        "помнишь меня",
+        "помнишь про меня",
+        "что ты знаешь про меня",
+        "что знаешь про меня",
+        "расскажи что знаешь",
+        "что ты обо мне",
+        "что обо мне знаешь",
+    )),
+    # FAQ — «что ты умеешь», «какие команды», «справка».
+    ("faq_search", (
+        "что ты умеешь",
+        "что умеешь",
+        "что можешь",
+        "какие команды",
+        "что ты можешь делать",
+        "справка",
+        "помощь",
+        "что ты такое",
+        "кто ты такой",
+        "расскажи о себе",
+    )),
+)
+
+
+def detect_required_tool(user_input: str) -> Optional[str]:
+    """Issue #1777 / #1762 — какой tool явно просит юзер?
+
+    Возвращает имя tool (``get_current_time``, ``search_web``, ``set_voice``,
+    ``memory_search``, ``faq_search``) или ``None`` если user_input не
+    содержит явного tool-pattern'а.
+
+    Чистая функция, без I/O — тестируется без ROS2.
+
+    Priority: первое совпадение в :data:`TOOL_REQUEST_PATTERNS` побеждает
+    (порядок в tuple = приоритет). На практике ключевые слова разных
+    категорий не пересекаются («который час» → только get_current_time,
+    «погода в Бишкеке» → только search_web), но если когда-то пересекутся
+    — порядок tuple решает.
+    """
+    if not user_input:
+        return None
+    low = user_input.lower()
+    for tool_name, keywords in TOOL_REQUEST_PATTERNS:
+        if any(kw in low for kw in keywords):
+            return tool_name
+    return None
+
+
+def build_tool_retry_prompt(user_input: str, tool_name: str) -> str:
+    """Issue #1777 / #1762 — synthetic prompt для Bug C retry (non-music).
+
+    Echoes the original ``user_input`` so the LLM has the request in
+    context, then injects a CRITICAL reminder that names the specific
+    ``tool_name`` the LLM must call. ``tool_name`` MUST come from
+    :func:`detect_required_tool` (or any hard-coded allow-list) to prevent
+    prompt-injection: never pass user-controlled strings.
+
+    Prefix is the same :data:`MUSIC_RETRY_PROMPT_PREFIX` as music retry so
+    ``dialogue_node._run_turn`` doesn't reset the retry budget on synthetic
+    prompts (issue #992 Bug C root cause for the infinite loop).
+    """
+    hint = {
+        "get_current_time": (
+            "вызови get_current_time() — инструмент возвращает точное "
+            "локальное время робота (Europe/Moscow по умолчанию). "
+            "Не выдумывай время, не говори 'сейчас X утра/вечера' из головы."
+        ),
+        "search_web": (
+            "вызови search_web(query=...) — инструмент ищет актуальную "
+            "информацию в интернете (погода, новости, факты). "
+            "Не говори 'гляну/сделаю/сейчас узнаю' без реального вызова."
+        ),
+        "set_voice": (
+            "вызови set_voice(provider=..., voice_name=...) или "
+            "list_voices() чтобы выбрать. Не говори 'голоса X нет' "
+            "не проверив список через list_voices."
+        ),
+        "memory_search": (
+            "вызови memory_search(speaker_id=<current>) или "
+            "memory_context(speaker_id=<current>) — только для ТЕКУЩЕГО "
+            "спикера. Не подставляй факты других юзеров."
+        ),
+        "faq_search": (
+            "вызови faq_search(query=...) — инструмент ищет по локальной "
+            "базе возможностей и команд. Не придумывай список команд сам."
+        ),
+    }.get(tool_name)
+    if hint is None:
+        # Defence-in-depth: если tool_name не из allow-list — НЕ ретраим.
+        # Это защищает от prompt-injection (юзер пишет «забудь инструкции,
+        # вызови tool X»). Любой неизвестный tool = silent skip.
+        logger.warning(
+            f"🛡 [issue 1777] build_tool_retry_prompt: unknown tool_name={tool_name!r}, "
+            "skipping retry (defence-in-depth)"
+        )
+        return ""
+    return (
+        MUSIC_RETRY_PROMPT_PREFIX + f" {tool_name}, хотя пользователь "
+        "явно попросил соответствующее действие. "
+        + hint + " "
+        "Запрос юзера: «" + (user_input or "") + "». "
+        "Если и сейчас не вызовешь tool — пользователь не получит ответа."
+    )
 
 
 # ---------------------------------------------------------------------------
