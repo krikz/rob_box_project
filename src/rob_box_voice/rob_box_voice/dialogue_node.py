@@ -96,6 +96,7 @@ from rob_box_voice.core.dialogue_guards import (
     is_metalanguage_babble,
     is_music_stop_command,
     looks_like_time_question as looks_like_time_question,
+    spoken_text_contains_time_marker as spoken_text_contains_time_marker,
     user_wants_music,
     user_wants_performance,
 )
@@ -190,35 +191,6 @@ _SINGING_INTENT_RE = re.compile(
 def _has_singing_intent(text: "str | None") -> bool:
     """True если юзер явно просил петь/рэповать (BACKING), а не просто музыку."""
     return bool(text) and bool(_SINGING_INTENT_RE.search(text or ""))
-
-# Issue #1777 — паттерны маркеров времени в тексте LLM-ответа. Используется
-# для диагностического WARN'а ``time_question_no_tool_call`` (LLM
-# галлюцинирует время, отвечая текстом с маркерами часы/минуты вместо
-# вызова get_current_time). Не участвует в retry-логике напрямую —
-# только в логе. Чистая функция, тестируется отдельно.
-_TIME_MARKER_RE = re.compile(
-    r"(?:"
-    r"\b\d{1,2}[:\.]\d{2}\b"
-    r"|\b\d{1,2}\s*(?:час|часа|часов)\b"
-    r"|\b(?:утра|вечера|дня|ночи)\b"
-    r"|\bam|pm\b"
-    r"|\b\d{1,2}\s*(?:am|pm)\b"
-    r")",
-    re.IGNORECASE,
-)
-
-
-def _spoken_text_contains_time_marker(spoken: "str | None") -> bool:
-    """Issue #1777 — есть ли в тексте ответа LLM маркеры времени?
-
-    Маркеры: ``HH:MM``, ``N часов``, ``утра/вечера/дня/ночи``, ``AM/PM``.
-    Используется в ``_run_turn.finally`` для логирования галлюцинаций
-    (LLM отвечает на «который час?» текстом с маркерами времени без
-    вызова get_current_time). Не используется для retry — для retry
-    есть :func:`detect_required_tool` (он триггерится по user_input).
-    """
-    return bool(spoken) and bool(_TIME_MARKER_RE.search(spoken))
-
 
 # Module-level skill class aliases (test contracts). Production code uses
 # these via ``MusicSkill`` etc, and tests can check ``hasattr(dialogue_node,
@@ -2962,7 +2934,7 @@ class DialogueNode(Node):
                 and result
                 and not (result.tools_called or ())
                 and looks_like_time_question(raw_user_command or user_input or "")
-                and _spoken_text_contains_time_marker(
+                and spoken_text_contains_time_marker(
                     getattr(result, "spoken_text", "") or ""
                 )
             ):

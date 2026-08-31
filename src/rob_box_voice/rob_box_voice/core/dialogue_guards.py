@@ -31,6 +31,7 @@ Owns two families of heuristics:
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -639,3 +640,32 @@ def looks_like_time_question(user_input: str) -> bool:
         "what time",
         "what date",
     ))
+
+
+# Issue #1777 — паттерны маркеров времени в тексте LLM-ответа. Используется
+# для диагностического WARN'а ``time_question_no_tool_call`` (LLM
+# галлюцинирует время, отвечая текстом с маркерами часы/минуты вместо
+# вызова get_current_time). Чистая функция — вынесена в guards, чтобы
+# тестироваться без ROS2-ноды.
+_TIME_MARKER_RE = re.compile(
+    r"(?:"
+    r"\b\d{1,2}[:\.]\d{2}\b"             # 12:34 / 12.34
+    r"|\b\d{1,2}\s*(?:час|часа|часов)\b"  # 12 часов
+    r"|\b(?:утра|вечера|дня|ночи)\b"     # период
+    r"|\bam|pm\b"                        # AM/PM
+    r"|\b\d{1,2}\s*(?:am|pm)\b"          # 12 am
+    r")",
+    re.IGNORECASE,
+)
+
+
+def spoken_text_contains_time_marker(spoken: "str | None") -> bool:
+    """Issue #1777 — есть ли в тексте ответа LLM маркеры времени?
+
+    Маркеры: ``HH:MM``, ``N часов``, ``утра/вечера/дня/ночи``, ``AM/PM``.
+    Используется в ``DialogueNode._run_turn.finally`` для логирования
+    галлюцинаций (LLM отвечает на «который час?» текстом с маркерами
+    времени без вызова ``get_current_time``). Не используется для retry —
+    для retry есть :func:`detect_required_tool`.
+    """
+    return bool(spoken) and bool(_TIME_MARKER_RE.search(spoken))
