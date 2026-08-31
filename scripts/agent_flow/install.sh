@@ -142,6 +142,12 @@ EXPECTED=(
     #              z-{e2e}/test-round-* за окно → ALERT.
     agent-flow-e2e-drift-watchdog.sh
     agent-flow-rotation-watchdog.sh
+    # Padavan-vakhta STEP 4 voice-smoke (issue #1772): "живая" проверка
+    # робота — проигрывает 2 .wav через динамик 10.1.1.249, читает логи
+    # voice-assistant на 10.1.1.21. Устойчив к отсутствию .wav (NO-OP +
+    # WARN, не валит cron tick). Вызывается LLM'ом в ШАГ 4 промпта
+    # падаван-вахты (5a070bf3ed3e).
+    padavan-step4-voice-smoke.sh
 )
 
 # Режим --list-files: печатает EXPECTED по одному имени на строку и выходит.
@@ -635,6 +641,11 @@ verify_three_copies_md5sum "agent-flow-e2e-fail-streak-watchdog.sh" \
     "/home/builder/.hermes/profiles/architect/scripts/agent-flow-e2e-fail-streak-watchdog.sh" \
     "/home/builder/.hermes/profiles/devops/scripts/agent-flow-e2e-fail-streak-watchdog.sh" \
     "/home/builder/.hermes/scripts/agent-flow-e2e-fail-streak-watchdog.sh"
+verify_three_copies_md5sum "padavan-step4-voice-smoke.sh" \
+    "/home/builder/.hermes/profiles/agent-flow/scripts/padavan-step4-voice-smoke.sh" \
+    "/home/builder/.hermes/profiles/architect/scripts/padavan-step4-voice-smoke.sh" \
+    "/home/builder/.hermes/profiles/devops/scripts/padavan-step4-voice-smoke.sh" \
+    "/home/builder/.hermes/scripts/padavan-step4-voice-smoke.sh"
 
 echo
 echo "==> Telegram token sanity (retro 12.08 t_5af222ea): >1 active TELEGRAM_BOT_TOKEN = reconnect loop"
