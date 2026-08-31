@@ -331,11 +331,17 @@ class TestPatternLengthNormalization:
         base.update(kwargs)
         return spec_from_flat(**base)
 
-    def test_nine_step_drums_padded_to_sixteen(self):
+    def test_nine_step_drums_trimmed_to_eight_not_padded_to_sixteen(self):
+        """Хвостовые паузы снимаются, а не добиваются до удвоенного такта.
+
+        🔴 live 01.09: первая версия давала "X..X.o..." + 7 точек = 16, и
+        грув начинал бить вдвое реже задуманного, а половину такта занимала
+        тишина. Девятый символ здесь — пауза, её отбрасывание даёт ровно 8.
+        """
         spec = self._flat(drums="X..X.o...")  # 9 шагов, живой инцидент
         drums = next(l for l in spec.layers if l.role == "drums")
-        assert drums.pattern == "X..X.o..." + "." * 7
-        assert len(drums.pattern) == 16
+        assert drums.pattern == "X..X.o.."
+        assert len(drums.pattern) == 8
 
     def test_padding_never_adds_a_sounding_hit(self):
         """``-`` — реальный сэмпл ("hyphen", renardo_gatherer/collections.py;
@@ -347,9 +353,10 @@ class TestPatternLengthNormalization:
         original = "X..o.X.o."  # 9 шагов, диско трек 6, live 31.08
         spec = self._flat(drums=original)
         drums = next(l for l in spec.layers if l.role == "drums")
-        assert drums.pattern.startswith(original)
-        added = drums.pattern[len(original):]
-        assert added == "." * len(added)
+        sounding = lambda p: [c for c in p if c != "."]
+        assert sounding(drums.pattern) == sounding(original), (
+            "звучащие символы обязаны сохраниться один в один"
+        )
         assert "-" not in drums.pattern
 
     def test_power_of_two_pattern_is_untouched(self):
@@ -357,11 +364,31 @@ class TestPatternLengthNormalization:
         hats = next(l for l in spec.layers if l.role == "hats")
         assert hats.pattern == "--.-"
 
-    def test_eighteen_step_perc_padded_to_thirty_two(self):
-        spec = self._flat(perc=".......O.......O..")  # 19 шагов, live 31.08
+    def test_eighteen_step_perc_trimmed_to_sixteen(self):
+        """Две хвостовые паузы снимаются — получается ровно такт, а не два."""
+        spec = self._flat(perc=".......O.......O..")  # 18 шагов, live 31.08
         perc = next(l for l in spec.layers if l.role == "perc")
-        assert len(perc.pattern) == 32
-        assert perc.pattern.startswith(".......O.......O..")
+        assert perc.pattern == ".......O.......O"
+        assert len(perc.pattern) == 16
+
+    def test_trailing_rests_are_not_stripped_past_a_power_of_two(self):
+        """'X.....' — это «бочка раз в шесть шагов».
+
+        Снять ВСЕ хвостовые паузы значило бы получить 'X' и заставить бочку
+        бить на каждом шаге — это громче и быстрее задуманного, то есть
+        хуже исходной ошибки. Останавливаемся на первой степени двойки.
+        """
+        spec = self._flat(drums="X.....")
+        drums = next(l for l in spec.layers if l.role == "drums")
+        assert drums.pattern == "X..."
+        assert drums.pattern.count("X") == 1
+
+    def test_pattern_without_trailing_rests_is_padded_as_before(self):
+        """'-.---' звучит до последнего символа — резать нечего, добиваем."""
+        spec = self._flat(hats="-.---")
+        hats = next(l for l in spec.layers if l.role == "hats")
+        assert hats.pattern == "-.---..."
+        assert len(hats.pattern) == 8
 
     def test_single_step_pattern_is_left_alone(self):
         # Длина 0/1 тривиально делит такт — приводить нечего.

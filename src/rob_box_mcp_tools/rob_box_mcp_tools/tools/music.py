@@ -1321,17 +1321,44 @@ class MusicManager:
         паке); ею и добиваем.
         """
 
+        def _pow2_at_least(value: int) -> int:
+            target = 1
+            while target < value:
+                target *= 2
+            return target
+
         def _pad(m: re.Match) -> str:
             ws, quote, pattern = m.group(1), m.group(2), m.group(3)
-            n = len(pattern)
-            if n <= 1:
+            if len(pattern) <= 1:
                 return m.group(0)
-            target = 1
-            while target < n:
-                target *= 2
-            if target == n:
-                return m.group(0)
-            padded = pattern + "." * (target - n)
+
+            # 🔴 FIX (live 01.09): сначала снять ХВОСТОВЫЕ ПАУЗЫ, потом
+            # округлять. Иначе типовой промах модели удваивал такт:
+            # 'X..o.X.o.' (9) → 'X..o.X.o........' (16). Девятый символ —
+            # пауза; отбросив её, получаем ровно 8, готовый грув нужной
+            # плотности. Добивка же растягивала такт вдвое, бочка начинала
+            # бить в половину задуманного темпа, а вторую половину такта
+            # занимала тишина — то есть лекарство от уползания по фазе
+            # портило грув сильнее самой болезни.
+            #
+            # Паузы снимаем ПООДИНОЧКЕ, до первой же степени двойки. Все
+            # подряд снимать нельзя: 'X.....' — это «бочка раз в шесть
+            # шагов», обрезка до 'X' заставила бы её бить на каждом шаге.
+            trimmed = pattern
+            while (
+                len(trimmed) > 1
+                and _pow2_at_least(len(trimmed)) != len(trimmed)
+                and trimmed[-1] == "."
+            ):
+                trimmed = trimmed[:-1]
+
+            target = _pow2_at_least(len(trimmed))
+            if target == len(trimmed):
+                if trimmed == pattern:
+                    return m.group(0)
+                return f"play({ws}{quote}{trimmed}{quote}"
+
+            padded = trimmed + "." * (target - len(trimmed))
             return f"play({ws}{quote}{padded}{quote}"
 
         return _PLAY_PATTERN_LEN_RE.sub(_pad, code)

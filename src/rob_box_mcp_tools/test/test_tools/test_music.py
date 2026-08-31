@@ -357,11 +357,15 @@ class TestMusicManagerPatternLength:
     def setup_method(self):
         self.mgr = _make_manager()
 
-    def test_nine_step_pattern_padded_to_sixteen(self):
-        # Ровно та строка из джаз-трека 30.08: 9 шагов вместо 8/16.
-        code = 'd1 >> play("X..X.o...")'
+    def test_nine_step_pattern_trimmed_to_eight(self):
+        """🔴 live 01.09: раньше добивали до 16, и грув бил вдвое реже.
+
+        Хвостовые паузы снимаются: 9 шагов с паузой на конце дают ровно
+        такт, а не два такта с тишиной во второй половине.
+        """
+        code = 'd1 >> play("X..X.o...")'  # джаз-трек 30.08
         out = self.mgr._fix_pattern_length(code)
-        assert 'play("X..X.o...' + "." * 7 + '")' in out
+        assert 'play("X..X.o..")' in out
 
     def test_pad_character_is_a_true_rest_not_a_sample(self):
         """Живой инцидент: добивка ``-`` — это звучащий сэмпл "hyphen"
@@ -374,10 +378,10 @@ class TestMusicManagerPatternLength:
         code = 'd1 >> play("X..o.X.o.")'  # 9 шагов, диско трек 6, live 31.08
         out = self.mgr._fix_pattern_length(code)
         pattern = re.search(r'play\("([^"]*)"\)', out).group(1)
-        assert len(pattern) == 16
-        assert pattern.startswith("X..o.X.o.")
-        added = pattern[len("X..o.X.o."):]
-        assert added == "." * len(added)
+        sounding = [c for c in pattern if c != "."]
+        assert sounding == [c for c in "X..o.X.o." if c != "."], (
+            "звучащие символы обязаны сохраниться один в один"
+        )
         assert "-" not in pattern
 
     def test_power_of_two_pattern_is_untouched(self):
@@ -385,23 +389,35 @@ class TestMusicManagerPatternLength:
         code = 'd3 >> play("....o...")'
         assert self.mgr._fix_pattern_length(code) == code
 
-    def test_nine_step_disco_pattern_padded_to_sixteen(self):
+    def test_nine_step_disco_pattern_trimmed_to_eight(self):
         code = 'd1 >> play("X..o.X.o.")'  # 9 шагов, диско трек 6, live 31.08
         out = self.mgr._fix_pattern_length(code)
-        assert len(re.search(r'play\("([^"]*)"\)', out).group(1)) == 16
+        assert len(re.search(r'play\("([^"]*)"\)', out).group(1)) == 8
 
     def test_single_quoted_pattern_is_handled(self):
         code = "d1 >> play('X..o.X.o.')"  # 9 шагов, диско трек 6
         out = self.mgr._fix_pattern_length(code)
-        assert "play('X..o.X.o." + "." * 7 + "')" in out
+        assert "play('X..o.X.o')" in out
 
-    def test_eighteen_step_pattern_padded_to_thirty_two(self):
+    def test_eighteen_step_pattern_trimmed_to_sixteen(self):
         # Финал диджей-сета: d2 >> play("V..o.....V..o.....") — 18 шагов.
         code = 'd2 >> play("V..o.....V..o.....")'
         out = self.mgr._fix_pattern_length(code)
         match = re.search(r'play\("([^"]*)"\)', out)
-        assert len(match.group(1)) == 32
-        assert match.group(1).startswith("V..o.....V..o.....")
+        assert len(match.group(1)) == 16
+        assert match.group(1) == "V..o.....V..o..."
+
+    def test_trailing_rests_are_not_stripped_past_a_power_of_two(self):
+        """'X.....' — «бочка раз в шесть шагов», не повод бить на каждом."""
+        code = 'd1 >> play("X.....")'
+        out = self.mgr._fix_pattern_length(code)
+        assert 'play("X...")' in out
+
+    def test_pattern_without_trailing_rests_is_padded_as_before(self):
+        """Резать нечего — добиваем, звучащие символы терять нельзя."""
+        code = 'd2 >> play("-.---")'
+        out = self.mgr._fix_pattern_length(code)
+        assert 'play("-.---...")' in out
 
     def test_short_pattern_left_alone(self):
         code = 'd1 >> play("X")'
@@ -416,7 +432,12 @@ class TestMusicManagerPatternLength:
         )
         out = self.mgr._fix_pattern_length(code)
         lengths = [len(m.group(1)) for m in re.finditer(r'play\("([^"]*)"\)', out)]
-        assert lengths == [16, 32, 16]
+        # d1 уже 16; у d2 семь хвостовых пауз снимаются до 16 (а не добиваются
+        # до 32); d3 звучит до последнего символа — режем нечего, добиваем.
+        assert lengths == [16, 16, 16], (
+            "после нормализации все три слоя обязаны делить такт ОДИНАКОВО, "
+            "иначе они продолжат расходиться по фазе"
+        )
 
     def test_execute_code_applies_pattern_fix_before_sending_to_renardo(self):
         mgr = _make_manager(sc_running=True, renardo_available=True)
@@ -424,9 +445,9 @@ class TestMusicManagerPatternLength:
             result = mgr.execute_code('d1 >> play("X..X.o...")')
         assert result["success"] is True
         assert "-" not in result["code"]
-        assert 'play("X..X.o...' + "." * 7 + '")' in result["code"]
+        assert 'play("X..X.o..")' in result["code"]
         executed_code = mock_exec.call_args[0][0]
-        assert 'play("X..X.o...' + "." * 7 + '")' in executed_code
+        assert 'play("X..X.o..")' in executed_code
 
 
 # ---------------------------------------------------------------------------
