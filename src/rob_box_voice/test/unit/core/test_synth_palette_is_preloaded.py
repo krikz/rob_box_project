@@ -162,25 +162,46 @@ def test_preload_waits_for_scsynth_after_each_load() -> None:
     assert syncs >= 2, "sync должен стоять и в startupSynths, и в customSynths"
 
 
-def test_master_limiter_is_not_armed() -> None:
-    """Лимитер снят 31.08 — по решению владельца робота.
-
-    Он НЕ был причиной тишины: живой опыт показал, что полная боевая цепочка
-    пропускает непрерывный тон. Снят, чтобы убрать недавно добавленное звено
-    из уравнения при отладке. Цена — сумма слоёв снова без потолка.
-
-    Тест держит решение явным: строка ``/s_new masterlimiter`` должна быть
-    закомментирована. Прежняя версия этого теста искала подстроку и потому
-    зеленела на закомментированной строке — то есть не проверяла ничего.
-    """
+def _armed_master_synths() -> list:
+    """Имена мастер-синтов, которые реально вооружаются (не в комментарии)."""
     content = FOXDOT_INIT.read_text(encoding="utf-8")
-    armed = [
-        line for line in content.splitlines()
-        if "masterlimiter" in line
-        and "/s_new" in line
+    return [
+        line.strip() for line in content.splitlines()
+        if "/s_new" in line
+        and "master" in line
         and not line.lstrip().startswith("//")
     ]
+
+
+def test_master_limiter_is_not_armed() -> None:
+    """``masterlimiter`` глушил весь выход — он не должен вооружаться.
+
+    Разбор на роботе 31.08: детектор CheckBadValues ДО него видел чистый
+    сигнал, детектор сразу ПОСЛЕ — NaN. Порченые сэмплы уходили в
+    ReplaceOut и убивали мастер-шину. На чистой синусоиде лимитер работал,
+    поэтому баг так долго и не находился.
+
+    Прежняя версия этого теста искала подстроку и зеленела на
+    закомментированной строке — то есть не проверяла ничего.
+    """
+    armed = [line for line in _armed_master_synths() if "masterlimiter" in line]
     assert not armed, f"лимитер снова вооружён: {armed}"
+
+
+def test_master_filter_is_armed() -> None:
+    """Замена лимитеру обязана стоять: от неё зависит потолок октав.
+
+    Без анти-алиасингового среза ``max_oct`` в music.py должен быть ниже —
+    это уже стреляло: лимитер сняли, потолок 6 остался, и робот засвистел
+    на ``bell(oct=7 -> 6)``.
+    """
+    armed = [line for line in _armed_master_synths() if "masterfilter" in line]
+    assert armed, "masterfilter не вооружён — мастер-шина без анти-алиасинга"
+
+
+def test_master_filter_is_preloaded() -> None:
+    content = FOXDOT_INIT.read_text(encoding="utf-8")
+    assert '"masterfilter"' in content, "masterfilter отсутствует в customSynths"
 
 
 def test_preload_runs_in_a_routine_so_sync_is_possible() -> None:

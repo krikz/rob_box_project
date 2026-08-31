@@ -40,7 +40,7 @@ var startupSynths = [
     "tb303", "tubularbell", "varsaw", "viola", "wobblebass"
 ];
 var customSynthDir = "/ws/custom_synthdefs";
-var customSynths = ["warmpad", "retrobass", "supersawlead", "imperialbrass", "marchstrings", "strangerpulsepad", "strangerarp", "strangerbrass", "masterlimiter"];
+var customSynths = ["warmpad", "retrobass", "supersawlead", "imperialbrass", "marchstrings", "strangerpulsepad", "strangerarp", "strangerbrass", "masterlimiter", "masterfilter"];
 
 // Мастер-лимитер: фиксированный node ID НИЖЕ 1000. renardo раздаёт ID
 // начиная с 1001 и только вверх (ServerManager.nextnodeID: self.node = 1000),
@@ -95,27 +95,24 @@ SystemClock.sched(3.0, {
         ("SynthDef preload finished: "
             ++ (startupSynths.size + customSynths.size) ++ " defs").postln;
 
-        // ── Мастер-лимитер СНЯТ (live 31.08) ─────────────────────────────
-        // Лимитер добавлялся ради потолка на сумму слоёв: Renardo мешает всё
-        // в bus 0 без контроля суммы, и покомпонентные капы от клиппинга не
-        // спасают. Но он же оказался единственным звеном между музыкой и
-        // выходом, которое мы добавили недавно, — и пока он стоял в хвосте,
-        // отладку тишины приходилось вести через него.
+        // ── Мастер-шина: masterfilter (сменил masterlimiter 31.08) ───────
+        // Лимитер глушил ВЕСЬ выход. Разбор на роботе: детектор
+        // CheckBadValues до него видел чистый сигнал, детектор сразу после —
+        // NaN. Порченые сэмплы уходили в ReplaceOut и убивали мастер-шину.
+        // На чистой синусоиде он при этом работал, поэтому и продержался
+        // так долго незамеченным — ломался только на живой музыке.
         //
-        // Прямой опыт на роботе показал, что сигнал он НЕ глушит: непрерывный
-        // тон через полную боевую цепочку (HPF → LPF → Compander → Limiter →
-        // gain → ReplaceOut) слышен нормально, и с коротким окном упреждения
-        // тоже. Так что причиной тишины он не был.
+        // masterfilter решает те же задачи (анти-алиасинг + потолок суммы),
+        // но устроен так, что повторить ту аварию не может: NaN чистится на
+        // входе, а вместо Compander/Limiter стоит tanh — функция без
+        // состояния, которой нечему защёлкнуться. Подробности в
+        // custom_synthdefs/masterfilter.scd.
         //
-        // Снимаем его тем не менее — по решению владельца робота, чтобы
-        // собрать заведомо чистую конфигурацию и убрать переменную из
-        // уравнения. Цена: сумма слоёв снова ничем не ограничена сверху,
-        // клиппинг на плотных аранжировках вернётся. Вернуть — раскомментить
-        // строку ниже; SynthDef и его прелоад остались на месте.
-        //
-        // Server.default.sendMsg("/s_new", "masterlimiter", masterLimiterNode, 1, 0);
-        ("Master limiter NOT armed (снят 31.08, node "
-            ++ masterLimiterNode ++ " свободен)").postln;
+        // Лимитер оставлен в прелоаде намеренно: SynthDef на месте, если
+        // понадобится сравнить поведение вживую.
+        Server.default.sendMsg("/s_new", "masterfilter", masterLimiterNode, 1, 0);
+        ("Master filter armed at tail of RootNode (node "
+            ++ masterLimiterNode ++ ")").postln;
     };
 
     nil;
