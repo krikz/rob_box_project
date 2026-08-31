@@ -163,6 +163,39 @@ def test_new_keys_read_into_self():
         )
 
 
+def test_pitch_volume_dict_use_parse_optional_helpers():
+    """Regression-guard для issue #1780 (post-#976 fix).
+
+    Дефолты ``minimax_pitch=""`` / ``minimax_volume=""`` приводят к
+    ``int("")`` → ValueError / ``float("")`` → ValueError. Чтение должно
+    идти через ``_parse_optional_int`` / ``_parse_optional_float`` (или
+    сохранять raw через ``*_raw`` суффикс), иначе rclpy init падает.
+    Заодно ловим случай, когда ``*_raw`` суффикс не используется там, где
+    downstream-код ожидает сырые строки (раньше падало с AttributeError).
+    """
+    src = TTS_NODE_SRC.read_text(encoding="utf-8")
+    # Локальный helper parse обязателен — раньше был голый int(...)
+    assert "_parse_optional_int(self.minimax_pitch_raw)" in src, (
+        "minimax_pitch должен парситься через _parse_optional_int из *_raw — "
+        "иначе int('') на дефолте уронит rclpy init."
+    )
+    assert "_parse_optional_float(self.minimax_volume_raw)" in src, (
+        "minimax_volume должен парситься через _parse_optional_float из *_raw — "
+        "иначе float('') на дефолте уронит rclpy init."
+    )
+    # *_raw атрибуты обязательны (downstream TTSSettings использует их)
+    for raw_attr in (
+        "self.minimax_pitch_raw",
+        "self.minimax_volume_raw",
+        "self.minimax_pronunciation_dict_raw",
+    ):
+        assert raw_attr in src, (
+            f"{raw_attr} обязателен — TTSSettings читает его для передачи "
+            "в MiniMax API (raw-строка → _parse_optional_*). "
+            "Без него AttributeError при первом синтезе."
+        )
+
+
 def test_normalize_minimax_emotion_helper_exists():
     """Helper для нормализации MiniMax-emotion обязателен (статик-метод)."""
     _, helpers = _parse_declares_and_helpers()
