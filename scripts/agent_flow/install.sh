@@ -56,6 +56,15 @@ EXPECTED=(
     # каждые 20 мин, подгружает env из .env и запускает e2e-process.sh.
     # SOT живёт в <repo>/scripts/agent_flow/, раскладывается install.sh.
     agent-flow-e2e-process-launcher.sh
+    # Daily install.sh tick wrapper (ретро 28.08 t_7ebdfce0, kanban
+    # t_36006bee): no-agent cron-job запускает install.sh каждый день в 03:00
+    # чтобы гарантировать раскладку процессных скриптов по всем 4 target-папкам
+    # без ручного запуска оператора. Wrapper-тонкий (10 строк), exec'ит
+    # install.sh из репо (SOT) с REPO_DIR=$HERMES_SHARE/rob_box_project.
+    # Раньше жил ТОЛЬКО в legacy ~/.hermes/scripts/ и не попадал в EXPECTED[],
+    # из-за чего drift-detect его не контролировал и на profile-уровне
+    # (devops/scripts/) его не было → cron-тик падал с «Script not found».
+    agent-flow-install-daily.sh
     agent-flow-handoff.sh
     round_ensure.sh
     agent-flow-cleanup-249.sh
