@@ -874,6 +874,92 @@ def test_extract_relevant_log_line_ignores_dialogue_user_input_payload_with_crit
     assert line is None
 
 
+def test_extract_relevant_log_line_ignores_dialogue_user_input_payload_with_critical_word_double_quoted() -> None:
+    """Issue #1834, deploy run 33450019127 (31.08 23:17, kanban t_65a41c8c).
+
+    Same shape as test_..._critical_word above (the single-quoted
+    variant covered by issue #1737): dialogue_node logs the full
+    `user_input="..."` payload it forwards to the LLM. Python's
+    `repr()` (used via `{user_input!r}` in dialogue_node.py:4557)
+    switches the quote style to DOUBLE whenever the payload contains
+    a `'` and no `"` — which is exactly the case for the music-guard
+    retry reminder ('НЕ вызвал ни один музыкальный тул'). The original
+    `r"user_input='"` exclude therefore misses the double-quoted
+    variant and the deploy gate filed a critical_log issue on an
+    otherwise green run (Vision Pi containers all healthy + 210 ROS2
+    topics).
+
+    The fix widens the rule to `user_input=['"]` so both quote styles
+    are excluded uniformly; this test is the regression guard for the
+    double-quoted branch. The negative cases (Python traceback with
+    `error=` exception, `DialogueNodeUserInput="..."` in a non-INFO
+    logger, etc.) are already covered by the existing
+    test_extract_relevant_log_line_ignores_* suite.
+    """
+    log_text = (
+        "[dialogue_node-4] [INFO] [1788218494.642279844] [dialogue_node]: "
+        "spoken='Запускаю тему для рассвета на рояле.' (len=36) tools=[] "
+        'user_input="[Speaker:unknown] [CRITICAL] В прошлом цикле ты '
+        'НЕ вызвал ни один музыкальный тул"'
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_dialogue_user_input_double_quoted_under_vision_scope() -> None:
+    """Issue #1834 — same payload as above but routed through the
+    vision-scope pipeline. The deploy gate uses scope="vision" for
+    Vision Pi, and the rule lives in CRITICAL_EXCLUDE_COMMON (not
+    CRITICAL_EXCLUDE_BY_SCOPE), but we still exercise the vision
+    path explicitly to lock in the production routing.
+    """
+    log_text = (
+        "[dialogue_node-4] [INFO] [1788218494.642279844] [dialogue_node]: "
+        'user_input="[Speaker:unknown] [CRITICAL] retry reminder"'
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_dialogue_user_input_double_quoted_with_real_crash_still_reports_critical() -> None:
+    """Issue #1834 / issue #1737 — make sure widening the `user_input=`
+    exclude to cover both quote styles does NOT silence a real
+    dialogue_node Python crash. The traceback header + exception
+    line below the payload still match CRITICAL_MATCH_RE via
+    `traceback` / `Error`, and the deploy gate must keep surfacing
+    them.
+
+    Pattern is identical to the negative test
+    `test_extract_relevant_log_line_still_catches_dialogue_python_
+    exception_after_traceback` (issue #1737), but the user_input
+    payload uses DOUBLE quotes to mirror the runtime mismatch this
+    PR fixes. If the regex widening ever got too generous (e.g.
+    swallowed the whole multi-line block), this test would fail.
+    """
+    log_text = "\n".join(
+        [
+            "[dialogue_node-4] [INFO] [...] [dialogue_node]: "
+            'user_input="[Speaker:unknown] [CRITICAL] retry reminder"',
+            "[dialogue_node-4] Traceback (most recent call last):",
+            '  File "/opt/ros/humble/lib/python3.10/site-packages/'
+            'rob_box_voice/dialogue_node.py", line 42, in process_input',
+            "ERROR: connection refused to upstream zenoh router",
+        ]
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    # Concrete Error line still must surface; the bare header alone is
+    # silenced (issue #1737), but the traceback + ERROR pair is a real
+    # crash signal that the gate must keep reporting.
+    assert line is not None
+    assert "ERROR" in line
+
+
 def test_extract_relevant_log_line_ignores_music_stack_validator_self_report() -> None:
     """Issue #1737, deploy runs 33330895761 / 33335300188 (30.08 19:31 /
     21:07, kanban t_fe19566c): start_voice_assistant.sh runs
