@@ -103,7 +103,6 @@ def _make_node(parameters: dict | None = None):  # type: ignore[no-untyped-def]
 # ────────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.unit
 class TestPromptTimeFormatRule:
     """System prompt содержит явное правило для LLM про формат времени."""
 
@@ -165,7 +164,6 @@ class TestPromptTimeFormatRule:
     _IS_PY_311_PLUS or not _DIALOGUE_NODE_IMPORT_OK,
     reason=_SKIP_REASON,
 )
-@pytest.mark.unit
 class TestDynamicContextTimeReminder:
     """``_build_dynamic_system_context()`` содержит напоминание про tool."""
 
@@ -202,7 +200,6 @@ class TestDynamicContextTimeReminder:
 # ────────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.unit
 class TestPhraseTriggerContract:
     """Контракт: фразы-триггеры должны покрываться reminder'ом и tool.
 

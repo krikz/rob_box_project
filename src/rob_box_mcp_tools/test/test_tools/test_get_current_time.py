@@ -58,7 +58,6 @@ GetCurrentTimeTool = _pkg.GetCurrentTimeTool
 
 
 # ─── format_time_ru: граничные кейсы ────────────────────────────────────
-@pytest.mark.unit
 class TestFormatTimeRu:
     """Pure-функция формата русского времени. Без I/O, без timezone."""
 
@@ -207,7 +206,6 @@ class TestFormatTimeRu:
 
 
 # ─── GetCurrentTimeTool.execute(): formatted_time в data ────────────────
-@pytest.mark.unit
 class TestGetCurrentTimeTool:
     """Tool contract: ``data['formatted_time']`` присутствует и читаем."""
 
