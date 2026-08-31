@@ -270,6 +270,27 @@ printf '%04d\n' "$NEXT"
 
 В `scripts/agent_flow/agent-flow-merge-gate.sh` есть проверка: если PR создаёт файл `docs/adr/NNNN-*.md`, то `NNNN` сверяется с `origin/develop`. При коллизии — reject с инструкцией «выберите следующий свободный номер». Реализация — child-задача devops (`t_45db74ad-d`).
 
+### 2f. Diagnostic-карточки merge-gate: маркеры `<!-- diag-* -->` в body (ADR-0035, 31.08.2026)
+
+`agent-flow-merge-gate.sh` (PR #1743, ретро `t_e00f448d`) создаёт **diagnostic-карточки** для CI UNSTABLE с classification `unit_lint` (= реальная регрессия в коде PR). Чтобы новый блок `stale_after_upstream_fix_scan_all` (ADR-0035) мог auto-detect «upstream-фикс уже в develop или в самом PR», при создании diagnostic-карточки в конец `body` дописываются **HTML-комментарии** (невидимые при рендере markdown, grep'абельные):
+
+```markdown
+<!-- diag-pr: 1740 -->
+<!-- diag-pr-sha: f924ad6c47bcf7deb66d2080dcee067c66cf5792 -->
+<!-- diag-pr-base: develop -->
+<!-- diag-sig: _track_mode_music_active, _code_speech_retry_used -->
+<!-- diag-tests: src/rob_box_voice/test/unit/node/test_barge_in_policy.py, src/.../test_issue_1195_tg_source.py -->
+<!-- diag-classification: unit_lint -->
+<!-- diag-created-ts: 1756598400 -->
+```
+
+**Правила для воркеров и cron'ов, которые пишут в body diagnostic-карточек:**
+
+1. **НЕ удалять существующие `<!-- diag-* -->` маркеры** при edit / comment / merge — detector использует их для stale-detect.
+2. **НЕ писать ложные маркеры** (например, `diag-pr: 99999` если карточка не про этот PR). Detector применит блокировку к неправильному PR.
+3. **При backfill** (см. `scripts/agent_flow/backfill_diag_markers.sh`): добавлять маркеры в конец body, не переписывать существующий текст.
+4. **Legacy diagnostic-карточки без маркеров** (созданные до 31.08.2026): detector их skip'ает с логом `no diag-pr marker, skip (legacy)`. Для их очистки — backfill вручную (Шифу решает когда).
+
 ### 3. Merge и автоматическая сборка
 - После merge в `develop` → автоматическая сборка образов с тегом `dev`
 - После merge в `main` → автоматическая сборка образов с тегом `latest`
