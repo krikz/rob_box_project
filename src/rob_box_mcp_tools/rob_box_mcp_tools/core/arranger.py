@@ -292,6 +292,29 @@ def resolve_form(name: Optional[str]) -> List[Tuple[str, int, Dict[str, float]]]
     return FORMS.get((name or "").strip().lower(), FORMS[DEFAULT_FORM])
 
 
+def form_duration_seconds(name: Optional[str], bpm: float) -> float:
+    """Длительность одного прохода формы в секундах реального времени.
+
+    Issue #1812: у трека, сыгранного с ``repeat=False``, форма конечна и её
+    длительность вычислима заранее — та же арифметика, что и в
+    :func:`render` при построении ``Clock.future(total_beats, Clock.clear)``.
+    Watchdog использует это, чтобы не гасить трек по TTL простоя диалога,
+    пока форма физически не доиграла: слушать музыку молча — штатный
+    сценарий, а не заброшенная сессия.
+
+    Args:
+        name: Имя формы (см. :data:`FORMS`); неизвестное/пустое — дефолт.
+        bpm: Темп. Клампится в :data:`BPM_RANGE`, как и в ``render()``.
+
+    Returns:
+        Длительность в секундах: ``total_bars * BEATS_PER_BAR * 60 / bpm``.
+    """
+    clamped_bpm = max(BPM_RANGE[0], min(BPM_RANGE[1], float(bpm)))
+    plan = resolve_form(name)
+    total_beats = sum(int(bars) for _n, bars, _i in plan) * BEATS_PER_BAR
+    return total_beats * 60.0 / clamped_bpm
+
+
 def _amp_envelope(
     role: str,
     plan: Sequence[Tuple[str, int, Dict[str, float]]],

@@ -39,6 +39,7 @@ from ..core.arranger import (
     FORMS,
     VALID_ROOTS,
     ArrangementError,
+    form_duration_seconds,
     form_summary,
     render,
     spec_from_flat,
@@ -393,8 +394,13 @@ class MusicManager:
         # ``_MAX_TOOL_ITERATIONS=5`` is hit and the loop returns the last
         # spoken text without flushing stop_music.
         # ------------------------------------------------------------------
-        # default 5 min — overridable via MUSIC_AUTO_STOP_TTL_SECONDS env
-        default_ttl = 300
+        # Issue #1812 — 300s was too short for "listening to a track in
+        # silence", which is the normal use case, not an abandoned session.
+        # default 30 min — overridable via MUSIC_AUTO_STOP_TTL_SECONDS env
+        # (mcp_server.py also exposes this as ``_music_watchdog_idle_ttl_s``
+        # and passes it explicitly to ``auto_stop_idle_music``; this default
+        # only matters when nobody overrides it).
+        default_ttl = 1800
         try:
             env_ttl = int(os.environ.get("MUSIC_AUTO_STOP_TTL_SECONDS", str(default_ttl)))
             self._auto_stop_ttl_seconds: int = max(1, env_ttl)
@@ -412,6 +418,16 @@ class MusicManager:
         self._music_deadline_at: Optional[float] = None
         #: segments value that produced the deadline (diagnostics only).
         self._music_deadline_segments: Optional[int] = None
+        # Issue #1812 — form-end deadline for a non-repeating compose_music()
+        # track. Wall-clock monotonic timestamp after which the composition
+        # has naturally finished playing its one pass of the form. While
+        # ``time.monotonic() < self._music_form_deadline_at``, the idle-TTL
+        # watchdog must NOT auto-stop the track even if dialogue has been
+        # silent for longer than the TTL — silently listening to a track is
+        # the expected use, not an abandoned session. None = no active
+        # form-end protection (repeat=True composition, or raw
+        # execute_music_code — the idle TTL alone governs those).
+        self._music_form_deadline_at: Optional[float] = None
         # stats — surfaced via get_state() for the DialogCore safety-net
         self._auto_stop_count: int = 0
         # ------------------------------------------------------------------
@@ -1443,6 +1459,32 @@ class MusicManager:
         self._music_deadline_segments = int(segments)
 
     # ------------------------------------------------------------------
+    # Issue #1812 — form-end deadline for non-repeating compose_music()
+    # ------------------------------------------------------------------
+
+    def set_form_deadline(self, duration_seconds: float) -> None:
+        """Записать момент, когда доиграет одна форма ``repeat=False``.
+
+        Вызывается из ``ComposeMusicTool`` сразу после успешного
+        ``execute_code`` для трека без зацикливания: длительность формы
+        известна заранее (сумма тактов формы в битах / темп), и до её
+        истечения watchdog не должен считать молчание диалога простоем.
+        """
+        self._music_form_deadline_at = time.monotonic() + max(0.0, float(duration_seconds))
+
+    def clear_form_deadline(self) -> None:
+        """Снять защиту «форма ещё не доиграла» (issue #1812).
+
+        Вызывается автоматически из ``execute_code`` в начале каждого
+        успешного выполнения (новый код заменяет то, что играло — старая
+        форма больше не актуальна) и из ``stop_all`` (музыка остановлена
+        явно — защищать больше нечего). ``ComposeMusicTool`` включает
+        защиту заново через :meth:`set_form_deadline`, если новый трек тоже
+        ``repeat=False``.
+        """
+        self._music_form_deadline_at = None
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -1664,6 +1706,11 @@ class MusicManager:
         self._last_music_activity_at = now
         if self._music_session_active_since is None:
             self._music_session_active_since = now
+        # Issue #1812 — fresh code replaces whatever was playing, so any
+        # earlier form-end protection no longer applies. ComposeMusicTool
+        # re-arms it right below via set_form_deadline() when the new
+        # composition is non-repeating.
+        self.clear_form_deadline()
 
         # Issue #1016 — quality warnings surfaced to the LLM so it can fix
         # them on the next call (e.g. add dur=, add a developing pattern).
@@ -1912,6 +1959,9 @@ class MusicManager:
         # music is no longer playing, so there is nothing to backstop.
         self._music_deadline_at = None
         self._music_deadline_segments = None
+        # Issue #1812 — a stop also cancels the form-end deadline: there is
+        # no composition left to protect from the idle watchdog.
+        self.clear_form_deadline()
         # Reset session only when the *whole* session is over so a partial
         # ``stop_pattern``-then-restart sequence doesn't lose the timer
         # (issue #935 — keeps audit trail of when music was active).
@@ -2109,6 +2159,18 @@ class MusicManager:
             result["auto_stop_count"] = self._auto_stop_count
             return result
         if idle < ttl:
+            return result
+        # Issue #1812 — a non-repeating compose_music() track has a
+        # computable finite length (form bars * beats-per-bar / bpm).
+        # Listening to it in silence is the expected use, not an abandoned
+        # dialogue session, so the idle TTL alone must not cut it off
+        # before its one pass of the form has actually finished playing.
+        # Only gates the *idle_ttl* stop below — the segments_deadline
+        # emergency stop above (hung TTS) still takes priority.
+        form_deadline = self._music_form_deadline_at
+        if form_deadline is not None and now_m < form_deadline:
+            result["held_reason"] = "form_not_finished"
+            result["form_deadline_remaining_s"] = form_deadline - now_m
             return result
         # Auto-stop — call the existing stop_all() so the closure logic
         # (3-stage clean: per-player stop + Clock.clear() + /g_freeAll)
@@ -2505,6 +2567,17 @@ class ComposeMusicTool(MCPTool):
         result = self._manager.execute_code(code, pattern_name="composition")
         if not result["success"]:
             return MCPToolResult(success=False, error=result["error"])
+
+        # Issue #1812 — a non-repeating track has a computable finite
+        # length; arm the watchdog's form-end protection so idle dialogue
+        # (the normal "listening in silence" case) can't cut it off before
+        # its one pass of the form has actually played out. A looping track
+        # (repeat=True) has no natural end, so the idle TTL alone governs
+        # it — make sure no stale deadline from a previous track lingers.
+        if spec.repeat:
+            self._manager.clear_form_deadline()
+        else:
+            self._manager.set_form_deadline(form_duration_seconds(spec.form, spec.bpm))
 
         self._notify_music_state()
         result["form"] = form_summary(spec.form)

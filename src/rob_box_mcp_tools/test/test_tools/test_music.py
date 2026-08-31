@@ -37,6 +37,7 @@ for _mod in [
 
 from rob_box_mcp_tools.tools.music import (  # noqa: E402
     MusicManager,
+    ComposeMusicTool,
     ExecuteMusicCodeTool,
     StopMusicTool,
     SetVibePresetTool,
@@ -84,6 +85,8 @@ def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) 
     # issue #990 — segments safety-net deadline
     mgr._music_deadline_at = None
     mgr._music_deadline_segments = None
+    # issue #1812 — non-repeating compose_music() form-end deadline
+    mgr._music_form_deadline_at = None
     # issue #1000 — DJ mode flag (default off; tests can call mgr.set_dj_mode(True))
     mgr._dj_mode_enabled = False
     mgr._check_supercollider = Mock(return_value=sc_running)
@@ -2101,6 +2104,89 @@ class TestExecuteMusicCodeTool:
 
 
 # ---------------------------------------------------------------------------
+# ComposeMusicTool — form-end watchdog protection (issue #1812)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestComposeMusicToolFormDeadline:
+    """A ``compose_music(repeat=False)`` track has a computable finite
+    length. The tool must arm the manager's form-end deadline so the idle
+    watchdog doesn't cut it off before it actually finishes (issue #1812).
+    A looping (``repeat=True``) track has no such end, so the deadline must
+    stay cleared and idle-TTL alone governs it — same as before #1812.
+    """
+
+    def _make_tool(self, mock_node, **kwargs):
+        mgr = _make_manager(sc_running=True, renardo_available=True, **kwargs)
+        return ComposeMusicTool(mock_node, mgr), mgr
+
+    _COMMON_KWARGS = dict(
+        bpm=100,
+        root="C",
+        scale="minor",
+        form="arc",
+        drums="X..o.X.o",
+        bass_synth="dub",
+        bass_notes="0, 0, 3, -2",
+        lead_synth="blip",
+        lead_notes="0, 2, 4, 7",
+    )
+
+    def test_repeat_false_arms_the_form_deadline(self, mock_node):
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            result = tool.execute(repeat=False, **self._COMMON_KWARGS)
+        assert result.success is True
+        assert mgr._music_form_deadline_at is not None
+        assert mgr._music_form_deadline_at > time.monotonic()
+
+    def test_repeat_false_deadline_matches_the_form_length(self, mock_node):
+        from rob_box_mcp_tools.core.arranger import FORMS, BEATS_PER_BAR
+
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            tool.execute(repeat=False, **self._COMMON_KWARGS)
+        total_beats = sum(bars for _n, bars, _i in FORMS["arc"]) * BEATS_PER_BAR
+        expected_duration = total_beats * 60.0 / 100.0
+        remaining = mgr._music_form_deadline_at - time.monotonic()
+        assert remaining == pytest.approx(expected_duration, abs=1.0)
+
+    def test_repeat_true_leaves_the_form_deadline_cleared(self, mock_node):
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            result = tool.execute(repeat=True, **self._COMMON_KWARGS)
+        assert result.success is True
+        assert mgr._music_form_deadline_at is None
+
+    def test_repeat_true_clears_a_stale_deadline_from_a_previous_track(self, mock_node):
+        """LLM plays a fixed-length track, then starts a DJ loop — the old
+        track's form-end protection must not leak into the new session."""
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            tool.execute(repeat=False, **self._COMMON_KWARGS)
+        assert mgr._music_form_deadline_at is not None
+        with patch("builtins.exec"):
+            tool.execute(repeat=True, **self._COMMON_KWARGS)
+        assert mgr._music_form_deadline_at is None
+
+    def test_repeat_false_track_survives_idle_ttl_via_the_real_watchdog_call(self, mock_node):
+        """End-to-end: compose a finite track, then run the exact watchdog
+        query (auto_stop_idle_music) that mcp_server's timer uses — it must
+        NOT stop the track while the form is still playing, even though
+        dialogue has been silent well past the (short, here) idle TTL."""
+        tool, mgr = self._make_tool(mock_node)
+        with patch("builtins.exec"):
+            tool.execute(repeat=False, **self._COMMON_KWARGS)
+        # Idle far past a short TTL, but still inside the form's own runtime.
+        result = mgr.auto_stop_idle_music(
+            ttl_seconds=1, now=mgr._music_form_deadline_at - 1.0
+        )
+        assert result["stopped"] is False
+        assert result.get("held_reason") == "form_not_finished"
+
+
+# ---------------------------------------------------------------------------
 # StopMusicTool
 # ---------------------------------------------------------------------------
 
@@ -2486,11 +2572,27 @@ class TestMusicSessionLifecycle:
         assert result2["stopped"] is True
         assert mgr._auto_stop_count == 2
 
-    def test_auto_stop_default_ttl_matches_env_or_300(self):
-        """The default TTL constant must be 300 seconds when env unset."""
-        mgr = _make_manager()
-        mgr._auto_stop_ttl_seconds = 300
-        assert mgr._auto_stop_ttl_seconds == 300
+    def test_real_init_default_ttl_is_1800_when_env_unset(self, monkeypatch):
+        """Issue #1812: 300s was too short for "listening in silence" —
+        the default TTL is now 1800s (30 min) when nobody overrides it.
+
+        Exercises the REAL ``MusicManager.__init__`` (not the ``_make_manager``
+        test double, which sets ``_auto_stop_ttl_seconds`` by hand) so the
+        assertion catches a regression in the actual constructor logic.
+        """
+        monkeypatch.delenv("MUSIC_AUTO_STOP_TTL_SECONDS", raising=False)
+        with patch.object(MusicManager, "_evaluate_music_stack_health", lambda self, **k: None), \
+                patch.object(MusicManager, "_initialize_renardo", lambda self: None):
+            mgr = MusicManager()
+        assert mgr._auto_stop_ttl_seconds == 1800
+
+    def test_real_init_honors_ttl_env_override(self, monkeypatch):
+        """``MUSIC_AUTO_STOP_TTL_SECONDS`` still overrides the 1800s default."""
+        monkeypatch.setenv("MUSIC_AUTO_STOP_TTL_SECONDS", "42")
+        with patch.object(MusicManager, "_evaluate_music_stack_health", lambda self, **k: None), \
+                patch.object(MusicManager, "_initialize_renardo", lambda self: None):
+            mgr = MusicManager()
+        assert mgr._auto_stop_ttl_seconds == 42
 
     def test_auto_stop_returns_diagnostic_fields(self):
         mgr = _make_manager(sc_running=True, renardo_available=True)
@@ -2592,6 +2694,81 @@ class TestMusicSessionLifecycle:
         state = mgr.get_state()
         assert state["music_deadline_segments"] == 8
         assert state["music_deadline_at"] == mgr._music_deadline_at
+
+    # ----- Issue #1812 — compose_music() form-end deadline -----------------
+
+    def test_set_form_deadline_arms_a_future_wall_clock_time(self):
+        mgr = _make_manager()
+        mgr.set_form_deadline(120.0)
+        assert mgr._music_form_deadline_at is not None
+        assert mgr._music_form_deadline_at > time.monotonic()
+
+    def test_clear_form_deadline_resets_to_none(self):
+        mgr = _make_manager()
+        mgr.set_form_deadline(120.0)
+        mgr.clear_form_deadline()
+        assert mgr._music_form_deadline_at is None
+
+    def test_form_not_finished_survives_idle_ttl(self):
+        """A repeat=False track must NOT be cut off by idle-TTL before its
+        one pass of the form has actually finished playing — listening to
+        music in silence is the expected use, not an abandoned session."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        # Form is 120s long; the idle-TTL (1s) has long been exceeded, but
+        # the form itself has 60s left to play.
+        mgr.set_form_deadline(120.0)
+        now = mgr._music_form_deadline_at - 60.0
+        result = mgr.auto_stop_idle_music(ttl_seconds=1, now=now)
+        assert result["stopped"] is False
+        assert result.get("held_reason") == "form_not_finished"
+        assert result["form_deadline_remaining_s"] == pytest.approx(60.0, abs=0.5)
+        # Music is still active — nothing was torn down.
+        assert "p1" in mgr._active_patterns
+
+    def test_form_deadline_passed_lets_idle_ttl_stop_it(self):
+        """Once the form has actually finished, idle-TTL governs normally."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        mgr.set_form_deadline(120.0)
+        # 1s past the form's natural end, and idle (ttl=1) is also exceeded.
+        now = mgr._music_form_deadline_at + 1.0
+        result = mgr.auto_stop_idle_music(ttl_seconds=1, now=now)
+        assert result["stopped"] is True
+        assert result.get("stop_reason") == "idle_ttl"
+
+    def test_looping_track_has_no_form_deadline_and_obeys_ttl(self):
+        """repeat=True music has no natural end — idle-TTL alone governs it,
+        exactly like before #1812 (form deadline stays None)."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        assert mgr._music_form_deadline_at is None
+        result = mgr.auto_stop_idle_music(ttl_seconds=1, now=time.monotonic() + 10)
+        assert result["stopped"] is True
+        assert result.get("stop_reason") == "idle_ttl"
+
+    def test_stop_all_clears_form_deadline(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        mgr.set_form_deadline(120.0)
+        mgr.stop_all()
+        assert mgr._music_form_deadline_at is None
+
+    def test_execute_code_clears_a_stale_form_deadline(self):
+        """A fresh code push (e.g. plain execute_music_code after a
+        compose_music track) must not stay protected by the OLD track's
+        form-end deadline — that would block idle-TTL for unrelated code."""
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec"):
+            mgr.execute_code("p1 >> pluck([0])", pattern_name="p1")
+        mgr.set_form_deadline(120.0)
+        with patch("builtins.exec"):
+            mgr.execute_code("p2 >> pluck([2])", pattern_name="p2")
+        assert mgr._music_form_deadline_at is None
 
     # ----- stop_music_on_session_end ---------------------------------------
 

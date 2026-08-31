@@ -317,6 +317,17 @@ class MCPServer(Node):
             os.environ.get("MUSIC_WATCHDOG_ENABLED", "true").lower()
             in ("1", "true", "yes", "on")
         )
+        # Issue #1812 — idle-TTL threshold, explicitly passed to
+        # ``auto_stop_idle_music`` on every tick so it overrides whatever
+        # default ``MusicManager`` picked up on construction. 300s was too
+        # short for "listening to a track in silence" (the normal case);
+        # 1800s (30 min) matches an actually abandoned session instead.
+        try:
+            self._music_watchdog_idle_ttl_s: float = float(
+                os.environ.get("MUSIC_WATCHDOG_IDLE_TTL_S", "1800.0")
+            )
+        except (TypeError, ValueError):
+            self._music_watchdog_idle_ttl_s = 1800.0
         # Subscribe to /mcp/music_cleanup — payload is JSON like
         # {"reason": "dialogue_end"} or {"reason": "shutdown"}. Empty
         # payload defaults to dialogue_end.
@@ -360,7 +371,7 @@ class MCPServer(Node):
                 )
                 self.get_logger().info(
                     f"🎵 Music watchdog timer запущен (period={period}s, "
-                    f"ttl={self._music_manager._auto_stop_ttl_seconds if self._music_manager else '?'}s)"
+                    f"ttl={self._music_watchdog_idle_ttl_s}s)"
                 )
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().warning(
@@ -578,12 +589,33 @@ class MCPServer(Node):
             # segments-дедлайну #990.
             if hasattr(self, "_dj_active"):
                 manager._dj_active = bool(self._dj_active)
-            result = manager.auto_stop_idle_music()
+            # Issue #1812 — explicit TTL from the (now 30-min-default)
+            # ROS-side parameter, so it always wins over whatever default
+            # MusicManager picked up on construction.
+            result = manager.auto_stop_idle_music(
+                ttl_seconds=self._music_watchdog_idle_ttl_s
+            )
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
                 f"⚠️ Music watchdog failed: {exc}"
             )
             return
+        if result.get("held_reason"):
+            # Issue #1812 — не спамим warning на каждый тик (period~5s) пока
+            # форма не доиграла; debug делает причину видимой при разборе
+            # логов, не засоряя обычный вывод.
+            idle_s = result.get("idle_seconds")
+            remaining_s = result.get("form_deadline_remaining_s")
+            idle_str = f"{idle_s:.1f}s" if isinstance(idle_s, (int, float)) else str(idle_s)
+            remaining_str = (
+                f" form_remaining={remaining_s:.1f}s"
+                if isinstance(remaining_s, (int, float))
+                else ""
+            )
+            self.get_logger().debug(
+                f"🎵 [watchdog] Не гашу: reason={result['held_reason']} "
+                f"idle={idle_str}{remaining_str}"
+            )
         if result.get("stopped"):
             patterns = result.get("active_patterns", [])
             idle = result.get("idle_seconds", "?")

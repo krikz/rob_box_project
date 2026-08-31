@@ -33,6 +33,7 @@ for _mod in [
 
 from rob_box_mcp_tools.core.arranger import (  # noqa: E402
     BEATS_PER_BAR,
+    BPM_RANGE,
     DEFAULT_FORM,
     FORMS,
     OCTAVE_STEP,
@@ -40,6 +41,7 @@ from rob_box_mcp_tools.core.arranger import (  # noqa: E402
     ArrangementError,
     CompositionSpec,
     Layer,
+    form_duration_seconds,
     form_summary,
     render,
     resolve_form,
@@ -287,6 +289,41 @@ class TestEnding:
     def test_ending_passes_a_callable_not_a_lambda(self):
         """lambda режется AST-фильтром безопасности."""
         assert "lambda" not in render(_spec(repeat=False))
+
+
+class TestFormDurationSeconds:
+    """Issue #1812: длительность одного прохода формы должна совпадать с
+    ``Clock.future(total_beats, Clock.clear)``, который ``render()`` ставит
+    для ``repeat=False`` — иначе watchdog и реальный конец трека разъедутся.
+    """
+
+    def test_matches_the_clock_future_deadline_render_schedules(self):
+        """Тот же ``total_beats``, что и в ``render()``, переведённый в секунды."""
+        bpm = 104.0
+        total_beats = sum(bars for _n, bars, _i in FORMS["arc"]) * BEATS_PER_BAR
+        expected = total_beats * 60.0 / bpm
+        assert form_duration_seconds("arc", bpm) == pytest.approx(expected)
+
+    def test_faster_tempo_gives_a_shorter_duration(self):
+        assert form_duration_seconds("arc", 160.0) < form_duration_seconds("arc", 80.0)
+
+    def test_unknown_form_falls_back_to_default_like_render_does(self):
+        assert form_duration_seconds("bogus_form", 120.0) == pytest.approx(
+            form_duration_seconds(DEFAULT_FORM, 120.0)
+        )
+
+    def test_bpm_is_clamped_like_render(self):
+        """Абсурдный bpm не даёт нулевую/бесконечную длительность."""
+        assert form_duration_seconds("arc", 1.0) == pytest.approx(
+            form_duration_seconds("arc", BPM_RANGE[0])
+        )
+        assert form_duration_seconds("arc", 9000.0) == pytest.approx(
+            form_duration_seconds("arc", BPM_RANGE[1])
+        )
+
+    def test_positive_for_every_known_form(self):
+        for name in FORMS:
+            assert form_duration_seconds(name, 120.0) > 0.0
 
 
 class TestValidation:
