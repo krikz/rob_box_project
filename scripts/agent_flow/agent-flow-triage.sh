@@ -1314,6 +1314,25 @@ role: ${role}"
     fi
 
     log "ok: issue #${number} -> ${task_id} (branch=${branch}, role=${role}) [${phase_label}]"
+
+    # OpenSpec sync (ADR-0039): создать change-folder skeleton для воркера.
+    #   * Гибрид: triage создаёт МИНИМУМ (proposal + tasks + README + .openspec.yaml),
+    #     воркер расширяет specs/ и design.md при работе над задачей.
+    #   * Скрипт идемпотентен: повторный вызов noop (см. agent-flow-openspec-sync.sh).
+    #   * Если sync падает — НЕ блокируем kanban (warn + log). OpenSpec — advisory.
+    if [ -x "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-flow-openspec-sync.sh" ]; then
+        _sync_bin="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-flow-openspec-sync.sh"
+        # slug = branch-suffix (z-{agent}/<id>-<slug> → <slug>)
+        _slug="$(printf '%s' "${branch}" | sed -E 's|^z-[a-z0-9_-]+/||; s|^[0-9]+-||')"
+        _issue_url="https://github.com/${GH_REPO}/issues/${number}"
+        if "$_sync_bin" create-change "$number" "$task_id" "$_slug" "$title" "$_issue_url" "$body" >/dev/null 2>&1; then
+            log "openspec-sync: change folder created (or already exists) for ${task_id}-${_slug}"
+        else
+            # Не блокируем: kanban-карточка создана, OpenSpec — secondary.
+            log "openspec-sync: WARN create-change failed for ${task_id}-${_slug} (continuing, kanban card ok)"
+        fi
+    fi
+
     created=$((created+1))
     done < <(printf '%s' "$issues_stream" | python3 -c '
 import json, sys

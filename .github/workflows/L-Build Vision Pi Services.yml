@@ -592,9 +592,23 @@ jobs:
               # Вместо inline retry-цикла зовём scripts/ci/push-image-versions.sh:
               # он делает pull --rebase перед push и ФЕЙЛИТ job при невосстановимой
               # ошибке (раньше job просто молча терял коммит и завершался success).
+              #
+              # Issue #1826: round-ветки (z-{e2e}/test-round-*) — transient
+              # branches для e2e-прогонов. SHA-tag push в round → agent-flow
+              # видит новый HEAD → триггерит ещё build → loop (каждые ~3-4 мин).
+              # SHA-теги нужны только для develop/main (deploy-flow читает из
+              # .image-versions). На round-ветках deploy читает напрямую через
+              # IMAGE_TAG, поэтому SHA-tag push в round НЕ нужен.
               CURRENT_BRANCH="$(git branch --show-current)"
-              git commit -m "ci: vision SHA tags → ${NEW_TAG} [skip ci]"
-              bash scripts/ci/push-image-versions.sh "$CURRENT_BRANCH" vision
+              if [[ "${CURRENT_BRANCH}" =~ ^z-\{e2e\}/test-round- ]] || \
+                 [[ "${CURRENT_BRANCH}" =~ ^z-\{e2e\}/wip- ]]; then
+                echo "⏭️  Issue #1826: skip SHA-tag push for round branch ${CURRENT_BRANCH}"
+                echo "   (prevents infinite build loop — agent-flow would re-trigger on each SHA commit)"
+                echo "   SHA-tag ${NEW_TAG} already pushed to local registry; deploy on round uses IMAGE_TAG directly"
+              else
+                git commit -m "ci: vision SHA tags → ${NEW_TAG} [skip ci]"
+                bash scripts/ci/push-image-versions.sh "$CURRENT_BRANCH" vision
+              fi
             fi
           else
             echo "⚠️  $VERSIONS_FILE not found"
