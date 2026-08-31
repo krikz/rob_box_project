@@ -35,6 +35,7 @@ from rob_box_mcp_tools.core.arranger import (  # noqa: E402
     BEATS_PER_BAR,
     DEFAULT_FORM,
     FORMS,
+    OCTAVE_STEP,
     ROLE_PROFILE,
     ArrangementError,
     CompositionSpec,
@@ -44,6 +45,22 @@ from rob_box_mcp_tools.core.arranger import (  # noqa: E402
     resolve_form,
     spec_from_flat,
 )
+
+
+def _all_degree_values(code: str, player: str):
+    """Every scale-degree number ``player`` actually plays in the rendered
+    code — from a plain degree list, or, if the role develops material,
+    every variant packed into its ``{player}_motif = Pvar(...)`` line.
+    """
+    motif_match = re.search(
+        rf"^{re.escape(player)}_motif = Pvar\((\[\[.*?\]\])", code, re.M
+    )
+    if motif_match:
+        groups = re.findall(r"\[([^\[\]]+)\]", motif_match.group(1))
+        return [float(v) for g in groups for v in g.split(",")]
+    line = next(l for l in code.splitlines() if l.startswith(f"{player} >>"))
+    plain = re.search(r"\(\[([^\]]+)\]", line).group(1)
+    return [float(v) for v in plain.split(",")]
 
 
 def _spec(**kwargs) -> CompositionSpec:
@@ -115,7 +132,13 @@ class TestForm:
 
 class TestRegisters:
     def test_roles_are_spread_across_octaves(self):
-        """RC2: бас, пэд и лид в соседних октавах = каша вместо аранжировки."""
+        """RC2: бас, пэд и лид в соседних октавах = каша вместо аранжировки.
+
+        Проверяет только заявленный ``oct=``. Этого НЕ достаточно, чтобы
+        поймать регистровый разъезд — код может честно писать ``oct=4`` и
+        всё равно играть на две октавы выше через сдвинутые ступени лада
+        (ровно так проскочила регрессия #1805.1, см. тест ниже).
+        """
         code = render(_spec())
         octaves = {
             line.split(" >>")[0]: int(re.search(r"oct=(\d+)", line).group(1))
@@ -125,6 +148,73 @@ class TestRegisters:
         assert octaves["p1"] < octaves["p3"] < octaves["p2"], (
             f"бас/пэд/лид должны быть разведены по регистрам, получено {octaves}"
         )
+
+    def test_material_development_never_widens_a_roles_own_register(self):
+        """RC5.1 — regression, post-review fix for #1805.
+
+        Первая версия материала по секциям применяла транспозицию и
+        инверсию ко всем мелодическим ролям без учёта того, что ``degrees``
+        — это ступени лада, а не полутона: открытая раскладка пэда
+        ``(0, 4, 7, 11)`` (уже больше октавы сама по себе) после инверсии
+        и транспозиции превращалась в
+        ``Pvar([[0,4,7,11],[2,6,9,13],[0,-4,-7,-11], ...])`` — ступень 13
+        при oct=4 звучит почти на две октавы выше лида (oct=5), ступень
+        -11 — ниже баса (oct=3) и ниже HPF мастер-шины. ``oct=`` при этом
+        не менялся, поэтому ``test_roles_are_spread_across_octaves`` этого
+        не ловил.
+
+        Правило теперь: лид — единственная роль, которую транспонируют и
+        инвертируют (это тема, ей и положено развитие); бас может менять
+        только ПОРЯДОК своих нот (ретроград); пэд держит гармонию и
+        material вообще не меняет. Тест проверяет фактические ступени
+        (учитывая все варианты внутри ``Pvar``, если он есть) — ни одна
+        роль не должна выйти за пределы диапазона, который сама же и
+        получила от LLM.
+        """
+        code = render(
+            _spec(
+                layers=(
+                    Layer(role="bass", synth="jbass", degrees=(0, 0, 5, 3), dur=1),
+                    Layer(role="lead", synth="rhpiano", degrees=(0, 2, 4, 7), dur=0.5),
+                    Layer(role="pad", synth="warmpad", degrees=(0, 4, 7, 11), dur=4),
+                )
+            )
+        )
+        for role, player, original in (
+            ("bass", "p1", (0, 0, 5, 3)),
+            ("lead", "p2", (0, 2, 4, 7)),
+            ("pad", "p3", (0, 4, 7, 11)),
+        ):
+            values = _all_degree_values(code, player)
+            assert min(values) >= min(original), (
+                f"{role}: ступень {min(values)} ниже собственного диапазона "
+                f"{original} — слой провалился в чужой регистр"
+            )
+            assert max(values) <= max(original), (
+                f"{role}: ступень {max(values)} выше собственного диапазона "
+                f"{original} — слой залез в чужой регистр"
+            )
+
+    def test_roles_occupy_non_decreasing_absolute_registers(self):
+        """Фактическая высота (``oct + ступень/OCTAVE_STEP``), не только
+        ``oct=``: во всех вариантах материала бас не должен подниматься
+        выше пэда, а пэд — выше лида. Касание границы (общий тон — верх
+        пэда совпадает с низом лида) это нормальное голосоведение, а не
+        баг; настоящая бага — это низ одной роли ВЫШЕ верха соседней.
+        """
+        code = render(_spec())
+        bounds = {}
+        for role, player in (("bass", "p1"), ("pad", "p3"), ("lead", "p2")):
+            values = _all_degree_values(code, player)
+            octave = int(
+                re.search(rf"^{player} >>.*?oct=(\d+)", code, re.M).group(1)
+            )
+            bounds[role] = (
+                octave + min(values) / OCTAVE_STEP,
+                octave + max(values) / OCTAVE_STEP,
+            )
+        assert bounds["bass"][1] <= bounds["pad"][0], bounds
+        assert bounds["pad"][1] <= bounds["lead"][0], bounds
 
     def test_oct_shift_is_applied_and_clamped(self):
         code = render(
@@ -309,6 +399,20 @@ class TestGeneratedCodePassesExistingGuards:
         assert errors == [], f"форма {form}: {errors}"
         assert warnings == [], f"форма {form}: {warnings}"
 
+    @pytest.mark.parametrize("form", sorted(FORMS))
+    def test_output_with_swing_and_motif_pvar_passes_both_guards(self, manager, form):
+        """#1805/#1806: the new ``{role}_motif = Pvar(...)`` line and the
+        ``dur=var(...)`` argument must not confuse the ``dur=`` regex in
+        ``_validate_music_code`` (it stops at the first ``)`` in the args,
+        which a naively-inlined ``Pvar(...)`` would break — see the comment
+        in ``_render_layer``)."""
+        code = render(_spec(form=form, swing=0.15))
+        is_safe, error = manager._filter_code(code)
+        assert is_safe, f"форма {form}: {error}"
+        errors, warnings = manager._validate_music_code(code)
+        assert errors == [], f"форма {form}: {errors}"
+        assert warnings == [], f"форма {form}: {warnings}"
+
     def test_amp_cap_does_not_flatten_the_envelope(self, manager):
         """RC1: покомпонентный кап не должен съедать динамику формы.
 
@@ -426,3 +530,136 @@ class TestSummary:
         assert "intro(8)" in summary
         total = sum(bars for _n, bars, _i in FORMS["verse_chorus"])
         assert f"{total} тактов" in summary
+
+
+class TestMotifDevelopment:
+    """#1805: sections used to change only ``amp`` — the melody played the
+    same seven notes for three minutes, only louder or quieter. A role that
+    passes through more than one distinct dramatic moment must now state a
+    transformation of its own motif per moment, via ``Pvar`` — never a note
+    the LLM didn't give it.
+    """
+
+    def test_lead_material_varies_across_the_form(self):
+        """The exact complaint: lead is audible in main/break/peak with three
+        different intensities, so it must play three different ideas."""
+        code = render(_spec())
+        assert "p2_motif = Pvar(" in code
+        assert "p2 >> blip(p2_motif," in code
+
+    def test_motif_pvar_durations_span_exactly_one_form(self):
+        """Same invariant as the amp envelope: the Pvar loop must not drift
+        relative to the rest of the form."""
+        code = render(_spec())
+        durs = re.search(r"p2_motif = Pvar\(\[\[.*?\]\], \[([^\]]*)\]\)", code).group(1)
+        total = sum(int(x) for x in durs.split(","))
+        expected = sum(bars for _n, bars, _i in FORMS["arc"]) * BEATS_PER_BAR
+        assert total == expected
+
+    def test_first_variant_states_the_motif_verbatim(self):
+        """The theme has to be stated plainly before it can be varied —
+        otherwise nothing establishes what is being developed."""
+        code = render(_spec())
+        nested = re.search(r"p2_motif = Pvar\((\[\[.*?\]\])", code).group(1)
+        first = re.match(r"\[\[([^\]]*)\]", nested).group(1)
+        assert first == "0, 2, 4, 7, 4, 2"  # исходный мотив лида из _spec()
+
+    def test_every_variant_is_the_same_length_as_the_original(self):
+        """A transform re-shapes the given motif; it never invents or drops
+        notes."""
+        code = render(_spec())
+        nested = re.search(r"p2_motif = Pvar\((\[\[.*?\]\])", code).group(1)
+        groups = re.findall(r"\[([^\[\]]+)\]", nested)
+        assert len(groups) > 1, "меньше двух вариантов — развития нет"
+        for group in groups:
+            assert len(group.split(",")) == 6  # len(lead.degrees) == 6
+
+    def test_role_audible_in_only_one_section_skips_the_pvar_wrapper(self):
+        """Nothing to develop against — a single appearance renders as a
+        plain degree list, exactly like before #1805."""
+        code = render(
+            _spec(
+                form="ambient",
+                layers=(Layer(role="bass", synth="dub", degrees=(0, 0, 4, 0), dur=1),),
+            )
+        )
+        assert "p1_motif" not in code
+        assert "p1 >> dub([0, 0, 4, 0]," in code
+
+class TestNoteDensity:
+    """#1806: a constant ``dur`` for the whole piece reads as mechanical
+    regardless of genre. Density now tracks the section's own intensity —
+    busier where the role is loudest, sparser where it is quiet."""
+
+    def test_lead_dur_thickens_and_thins_with_intensity(self):
+        code = render(_spec())
+        lead = next(l for l in code.splitlines() if l.startswith("p2 >>"))
+        match = re.search(r"dur=var\(\[([^\]]*)\], \[([^\]]*)\]\)", lead)
+        assert match, f"ожидался var() на dur, получено: {lead}"
+        values = [float(v) for v in match.group(1).split(",")]
+        assert len(set(values)) > 1, "плотность нот не меняется — та же жалоба #1806"
+        # peak — самая громкая секция лида — обязана быть самой плотной.
+        assert min(values) < 0.5  # base dur лида в _spec() == 0.5
+
+    def test_dur_var_durations_span_exactly_one_form(self):
+        code = render(_spec())
+        lead = next(l for l in code.splitlines() if l.startswith("p2 >>"))
+        durs = re.search(r"dur=var\(\[[^\]]*\], \[([^\]]*)\]\)", lead).group(1)
+        total = sum(int(x) for x in durs.split(","))
+        expected = sum(bars for _n, bars, _i in FORMS["arc"]) * BEATS_PER_BAR
+        assert total == expected
+
+    def test_role_with_no_change_in_intensity_keeps_a_scalar_dur(self):
+        """No development to reflect -> no var() noise in the code.
+
+        Unlike the Pvar-motif case, being audible everywhere is not enough
+        by itself — a role that is silent in some sections still gets a
+        denser dur in its loud ones. It takes the SAME intensity in every
+        audible section (no silence, no loud/quiet contrast) for density to
+        have nothing to track.
+        """
+        original = dict(FORMS)
+        FORMS["_test_flat_intensity"] = [
+            ("a", 4, {"lead": 0.5}),
+            ("b", 8, {"lead": 0.5}),
+        ]
+        try:
+            code = render(
+                _spec(
+                    form="_test_flat_intensity",
+                    layers=(Layer(role="lead", synth="blip", degrees=(0, 2, 4), dur=0.5),),
+                )
+            )
+        finally:
+            FORMS.clear()
+            FORMS.update(original)
+        lead = next(l for l in code.splitlines() if l.startswith("p2 >>"))
+        assert "dur=0.5," in lead
+        assert "var(" not in lead.split("dur=")[1].split(",")[0]
+
+
+class TestSwing:
+    """#1806: even eighth notes never read as jazz/blues/shuffle no matter
+    the instrument choice — ``Clock.swing()`` is the one-line fix already
+    proven to work in Renardo (``renardo_lib/TempoClock.py:290``)."""
+
+    def test_swing_is_off_by_default(self):
+        assert "Clock.swing" not in render(_spec())
+
+    def test_swing_emits_a_single_declarative_line(self):
+        code = render(_spec(swing=0.15))
+        assert "Clock.swing(0.15)" in code
+
+    def test_swing_is_clamped_to_a_musically_sane_range(self):
+        assert "Clock.swing(0.3)" in render(_spec(swing=5))
+        assert "Clock.swing" not in render(_spec(swing=-2))
+
+    def test_spec_from_flat_threads_swing_through(self):
+        base = dict(
+            bpm=120, root="C", scale="minor",
+            bass_synth="dub", bass_notes="0, 3",
+        )
+        assert spec_from_flat(**base).swing == 0.0
+        spec = spec_from_flat(**base, swing=0.12)
+        assert spec.swing == 0.12
+        assert "Clock.swing(0.12)" in render(spec)

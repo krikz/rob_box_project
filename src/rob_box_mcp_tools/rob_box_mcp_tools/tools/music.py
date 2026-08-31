@@ -2432,6 +2432,15 @@ class ComposeMusicTool(MCPTool):
                 "речь). false — трек заканчивается сам после одной формы.",
                 required=False,
             ),
+            MCPToolParameter(
+                name="swing",
+                type="number",
+                description="Свинг восьмых, 0-0.3. 0 (по умолчанию) — ровная "
+                "сетка, подходит большинству жанров. Ставь 0.1-0.2 для "
+                "джаза, блюза, свинга, шафла, фанка — на ровных восьмых "
+                "они не звучат как жанр независимо от инструментов.",
+                required=False,
+            ),
         ]
 
     @property
@@ -2462,6 +2471,7 @@ class ComposeMusicTool(MCPTool):
         pad_notes: Optional[str] = None,
         progression: Optional[str] = None,
         repeat: bool = True,
+        swing: float = 0.0,
     ) -> MCPToolResult:
         try:
             spec = spec_from_flat(
@@ -2483,6 +2493,7 @@ class ComposeMusicTool(MCPTool):
                 pad_notes=pad_notes,
                 progression=progression,
                 repeat=repeat,
+                swing=swing,
             )
             code = render(spec)
         except ArrangementError as exc:
