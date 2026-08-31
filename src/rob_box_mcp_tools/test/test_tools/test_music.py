@@ -310,7 +310,24 @@ class TestMusicManagerPatternLength:
         # Ровно та строка из джаз-трека 30.08: 9 шагов вместо 8/16.
         code = 'd1 >> play("X..X.o...")'
         out = self.mgr._fix_pattern_length(code)
-        assert 'play("X..X.o...-------")' in out
+        assert 'play("X..X.o...' + "." * 7 + '")' in out
+
+    def test_pad_character_is_a_true_rest_not_a_sample(self):
+        """Живой инцидент: добивка ``-`` — это звучащий сэмпл "hyphen"
+        (renardo_gatherer/collections.py, каталог
+        samples/0_foxdot_default/_/hyphen существует на роботе), а не
+        пауза. У ``.`` сэмпл-каталога нет ни в одном паке — это и есть
+        настоящая тишина. Проверяем инвариант напрямую: нормализация не
+        должна добавлять НИ ОДНОГО звучащего символа, только точки.
+        """
+        code = 'd1 >> play("X..o.X.o.")'  # 9 шагов, диско трек 6, live 31.08
+        out = self.mgr._fix_pattern_length(code)
+        pattern = re.search(r'play\("([^"]*)"\)', out).group(1)
+        assert len(pattern) == 16
+        assert pattern.startswith("X..o.X.o.")
+        added = pattern[len("X..o.X.o."):]
+        assert added == "." * len(added)
+        assert "-" not in pattern
 
     def test_power_of_two_pattern_is_untouched(self):
         # "....o..." — 8 шагов, уже степень двойки: трогать нечего.
@@ -325,7 +342,7 @@ class TestMusicManagerPatternLength:
     def test_single_quoted_pattern_is_handled(self):
         code = "d1 >> play('X..o.X.o.')"  # 9 шагов, диско трек 6
         out = self.mgr._fix_pattern_length(code)
-        assert "play('X..o.X.o.-------')" in out
+        assert "play('X..o.X.o." + "." * 7 + "')" in out
 
     def test_eighteen_step_pattern_padded_to_thirty_two(self):
         # Финал диджей-сета: d2 >> play("V..o.....V..o.....") — 18 шагов.
@@ -355,9 +372,10 @@ class TestMusicManagerPatternLength:
         with patch("builtins.exec") as mock_exec:
             result = mgr.execute_code('d1 >> play("X..X.o...")')
         assert result["success"] is True
-        assert result["code"].count("-") == 7
+        assert "-" not in result["code"]
+        assert 'play("X..X.o...' + "." * 7 + '")' in result["code"]
         executed_code = mock_exec.call_args[0][0]
-        assert 'play("X..X.o...-------")' in executed_code
+        assert 'play("X..X.o...' + "." * 7 + '")' in executed_code
 
 
 # ---------------------------------------------------------------------------

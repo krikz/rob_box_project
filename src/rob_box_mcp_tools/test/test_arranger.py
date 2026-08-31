@@ -244,8 +244,23 @@ class TestPatternLengthNormalization:
     def test_nine_step_drums_padded_to_sixteen(self):
         spec = self._flat(drums="X..X.o...")  # 9 шагов, живой инцидент
         drums = next(l for l in spec.layers if l.role == "drums")
-        assert drums.pattern == "X..X.o...-------"
+        assert drums.pattern == "X..X.o..." + "." * 7
         assert len(drums.pattern) == 16
+
+    def test_padding_never_adds_a_sounding_hit(self):
+        """``-`` — реальный сэмпл ("hyphen", renardo_gatherer/collections.py;
+        каталог samples/0_foxdot_default/_/hyphen существует на роботе), а
+        не пауза — проверено вживую. Добивка не должна добавлять НИ ОДНОГО
+        звучащего символа, кроме точек ``.`` (для них сэмпл-каталога нет ни
+        в одном паке).
+        """
+        original = "X..o.X.o."  # 9 шагов, диско трек 6, live 31.08
+        spec = self._flat(drums=original)
+        drums = next(l for l in spec.layers if l.role == "drums")
+        assert drums.pattern.startswith(original)
+        added = drums.pattern[len(original):]
+        assert added == "." * len(added)
+        assert "-" not in drums.pattern
 
     def test_power_of_two_pattern_is_untouched(self):
         spec = self._flat(hats="--.-")  # уже 4 шага — трогать нечего
