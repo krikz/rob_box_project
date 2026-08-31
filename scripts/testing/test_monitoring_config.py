@@ -69,6 +69,55 @@ def test_json_file(filepath):
         return False
 
 
+def test_otel_self_telemetry_prometheus_target_consistency(project_root):
+    """Регресс-страховка issue #1730.
+
+    Порт, на который otel-collector отдаёт self-metrics
+    (service.telemetry.metrics.address), должен совпадать с target'ом
+    job_name='otel-collector' в prometheus.yml. Иначе prometheus не будет
+    scrape'ить self-telemetry → потеря health pipeline.
+
+    Исторически дефолт otelcol v0.105 — :8888, но на Katana build-deepseek-proxy
+    (LiteLLM) занимает его под свои метрики, что приводит к crash-loop otel-collector.
+    Перенесли на :8889; этот тест закрепляет синхронность двух файлов.
+    """
+    cfg_path = project_root / "docker/monitoring/config/otel-collector.yaml"
+    prom_path = project_root / "docker/monitoring/config/prometheus.yml"
+
+    cfg = yaml.safe_load(cfg_path.read_text())
+    prom = yaml.safe_load(prom_path.read_text())
+
+    addr = cfg.get("service", {}).get("telemetry", {}).get("metrics", {}).get("address")
+    assert addr, f"otel-collector.yaml: service.telemetry.metrics.address не задан ({cfg_path})"
+
+    # '0.0.0.0:8889' → ('0.0.0.0', '8889')
+    host, _, port = addr.rpartition(":")
+    assert host and port, f"Некорректный telemetry address: {addr!r}"
+    assert port.isdigit(), f"Порт не число: {port!r}"
+    expected_target = f"localhost:{port}"
+
+    actual_target = None
+    for job in prom.get("scrape_configs", []):
+        if job.get("job_name") == "otel-collector":
+            for sc in job.get("static_configs", []):
+                targets = sc.get("targets", [])
+                if targets:
+                    actual_target = targets[0]
+                    break
+        if actual_target:
+            break
+
+    assert actual_target, (
+        f"prometheus.yml: job_name='otel-collector' не найден или пустой targets"
+    )
+    assert actual_target == expected_target, (
+        f"Порт рассогласован: otel self-telemetry {addr!r} → {expected_target}, "
+        f"но prometheus scrape-target = {actual_target!r}. "
+        f"См. issue #1730."
+    )
+    print(f"  ✓ otel self-telemetry {addr} == prometheus target {actual_target}")
+
+
 def main():
     """Run all monitoring configuration tests."""
     print("=" * 60)
@@ -165,7 +214,22 @@ def main():
         else:
             print(f"  ❌ {script} (missing or not executable)")
             results.append(False)
-    
+
+    print()
+    print("Consistency checks:")
+    print("-" * 60)
+
+    # Issue #1730 — синхронизация otel-collector self-telemetry и prometheus target.
+    try:
+        test_otel_self_telemetry_prometheus_target_consistency(project_root)
+        results.append(True)
+    except AssertionError as e:
+        print(f"  ❌ {e}")
+        results.append(False)
+    except Exception as e:
+        print(f"  ❌ Unexpected error: {e}")
+        results.append(False)
+
     print()
     print("=" * 60)
     
