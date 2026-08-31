@@ -78,17 +78,32 @@ def safe_save_turn(
     text: str,
     *,
     logger: logging.Logger | None = None,
+    speaker_id: Optional[str] = None,
 ) -> bool:
     """Save a turn to ``memory`` if available; swallow errors.
 
     Returns True if the save was attempted (regardless of outcome),
     False if ``memory`` was None and the call was skipped.
+
+    Args:
+        speaker_id: Optional voice-biometric user id (issue #1770) — passed
+                    through to ``memory.save_turn`` so the row is scoped to
+                    a single person. ``None`` writes a global / shared row.
+                    Falls back to a 2-arg call when the storage backend
+                    predates the speaker_id parameter (legacy / mocks).
     """
     if memory is None:
         return False
     log = logger or logging.getLogger(__name__)
     try:
-        memory.save_turn(role, text)
+        # Issue #1770: ``save_turn`` is the structured-typed Protocol target.
+        # Newer voice_memory accepts ``speaker_id``; legacy / mock storages
+        # may not — guard with a try/except so the import-time contract stays
+        # loose and we never break the dialogue loop.
+        try:
+            memory.save_turn(role, text, speaker_id=speaker_id)
+        except TypeError:
+            memory.save_turn(role, text)
         return True
     except Exception as exc:
         log.warning(f"⚠️ memory save_turn({role}) failed: {exc}")
