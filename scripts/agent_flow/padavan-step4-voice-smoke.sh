@@ -177,8 +177,6 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 
 # --- 4. Прогон команд ------------------------------------------------------
-PLAY_OK=0
-PLAY_FAIL=0
 for i in "${!PRESENT[@]}"; do
     path="${PRESENT[$i]}"
     label="${LABELS[$i]}"
