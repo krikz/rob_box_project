@@ -8,6 +8,8 @@ test_music.py - Unit тесты для инструментов управлен
 """
 
 import re
+import socket
+import struct
 import sys
 import time
 from types import SimpleNamespace
@@ -86,6 +88,55 @@ def _make_manager(*, sc_running: bool = False, renardo_available: bool = False) 
     mgr._dj_mode_enabled = False
     mgr._check_supercollider = Mock(return_value=sc_running)
     return mgr
+
+
+def _osc_string(s: str) -> bytes:
+    """Build one OSC string field: NUL-terminated, padded to a multiple of 4.
+
+    Mirrors the correct algorithm from issue #1808 (a naive
+    ``(4 - len(b) % 4) % 4`` gives ZERO padding for strings whose encoded
+    length is already a multiple of 4 — the exact bug this test helper must
+    NOT reproduce, since it is used to build the "ground truth" packets the
+    parser is tested against).
+    """
+    b = s.encode() + b"\x00"
+    while len(b) % 4:
+        b += b"\x00"
+    return b
+
+
+def _build_osc_message(address: str, tags: str = "", *args: object) -> bytes:
+    """Build a raw OSC message: address + (optional) type-tag string + args.
+
+    ``tags`` is the tag string WITHOUT the leading comma (e.g. ``"ss"``,
+    ``"sif"``); pass ``""`` for an address-only message (no type tag at
+    all — legal OSC, used by some scsynth notifications).
+    """
+    msg = bytearray(_osc_string(address))
+    if not tags:
+        return bytes(msg)
+    msg.extend(_osc_string("," + tags))
+    for tag, arg in zip(tags, args):
+        if tag == "s":
+            msg.extend(_osc_string(str(arg)))
+        elif tag == "i":
+            msg.extend(struct.pack(">i", int(arg)))
+        elif tag == "f":
+            msg.extend(struct.pack(">f", float(arg)))
+        else:  # pragma: no cover — test helper only supports s/i/f
+            raise ValueError(f"unsupported tag {tag!r} in test helper")
+    return bytes(msg)
+
+
+def _manager_with_captured_warnings():
+    """A ``_make_manager()`` instance whose ``_log_warning`` calls are
+    captured into a list instead of hitting stderr — used by the #1808
+    OSC-reply tests below."""
+    mgr = _make_manager()
+    mgr._logger = None
+    logged: list = []
+    mgr._log_warning = lambda message: logged.append(message)
+    return mgr, logged
 
 
 # ---------------------------------------------------------------------------
@@ -707,6 +758,336 @@ class TestMusicManagerSCCheck:
             )
             with pytest.raises(OSError):
                 mgr._send_osc_raw("/g_new", 1, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# MusicManager — OSC reply parsing (issue #1808)
+# ---------------------------------------------------------------------------
+#
+# scsynth's /fail replies used to be sent into the void (Renardo never reads
+# its own OSC socket). These are the pure byte-level parsing functions that
+# make the new listener trustworthy: if THEY silently swallow a malformed
+# packet or misparse a real /fail, the whole feature degrades back to
+# silent failure with an added false sense of safety — worse than before.
+
+
+@pytest.mark.unit
+class TestSplitOscAddress:
+    """``MusicManager._split_osc_address`` — byte-level, no socket needed."""
+
+    def test_fail_with_ss_args(self):
+        """Typical scsynth error: /fail ,ss <failed-command> <description>."""
+        data = _build_osc_message("/fail", "ss", "/g_new", "Group 1 not found")
+        address, rest = MusicManager._split_osc_address(data)
+        assert address == "/fail"
+        # Byte-exact: rest must start with the type-tag block, unchanged.
+        assert rest == data[8:]  # "/fail\0\0\0" is 8 bytes (5 chars + 3 pad)
+
+    def test_done_address_only_no_type_tag(self):
+        """Some scsynth notifications carry no type tag at all (legal OSC)."""
+        data = _build_osc_message("/done")
+        address, rest = MusicManager._split_osc_address(data)
+        assert address == "/done"
+        assert rest == b""
+
+    def test_address_length_multiple_of_4_still_gets_full_padding(self):
+        """Regression for the naive-padding trap named in issue #1808.
+
+        A naive ``(4 - len(b) % 4) % 4`` gives ZERO padding when the
+        encoded string length is already a multiple of 4 — the address
+        then has no NUL terminator at all and everything after it is
+        misaligned. "/abc" is 4 bytes before any terminator; a correct
+        packer still adds a full 4-byte pad block (1 terminator + 3 more
+        NULs), landing the payload at offset 8, not 4.
+        """
+        # Correctly built: "/abc" (4) + 4 pad bytes (terminator + 3 more) = 8.
+        data = b"/abc" + b"\x00" * 4 + b"MARKER!!"
+        address, rest = MusicManager._split_osc_address(data)
+        assert address == "/abc"
+        assert rest == b"MARKER!!"
+
+    def test_empty_bytes_returns_none_safely(self):
+        assert MusicManager._split_osc_address(b"") == (None, b"")
+
+    def test_missing_leading_slash_returns_none_safely(self):
+        """Garbage on the wire (not an OSC message at all) must not raise."""
+        assert MusicManager._split_osc_address(b"garbage\x00") == (None, b"")
+
+    def test_truncated_message_with_no_terminator_returns_none_safely(self):
+        """A cut-off UDP packet (no NUL anywhere) must not raise or hang."""
+        assert MusicManager._split_osc_address(b"/fail") == (None, b"")
+
+
+@pytest.mark.unit
+class TestDecodeOscArgs:
+    """``MusicManager._decode_osc_args`` — byte-level, no socket needed."""
+
+    def test_ss_args(self):
+        """The common /fail shape: failed command + human-readable reason."""
+        data = _build_osc_message("/fail", "ss", "/g_new", "Group 1 not found")
+        _address, rest = MusicManager._split_osc_address(data)
+        args = MusicManager._decode_osc_args(rest)
+        assert args == ["/g_new", "Group 1 not found"]
+
+    def test_sif_mixed_types_regression_1444(self):
+        """Regression for #1444: a control name typed as int32 by mistake.
+
+        ``/n_set`` with tag ``,isf`` sent a float 1.0 through an int32
+        slot and it came back as ``Node 1065353216 not found`` — a value
+        only explicable once you know 1065353216 is IEEE-754 1.0f reread
+        as int32. The decoder must keep ``i`` and ``f`` distinct instead
+        of collapsing everything to one numeric type.
+        """
+        data = _build_osc_message("/fail", "sif", "/n_set", 1065353216, 1.0)
+        _address, rest = MusicManager._split_osc_address(data)
+        args = MusicManager._decode_osc_args(rest)
+        assert args == ["/n_set", 1065353216, 1.0]
+        assert isinstance(args[1], int)
+        assert isinstance(args[2], float)
+
+    def test_done_style_ss_args_alignment(self):
+        """``,ss`` is itself exactly 4 bytes (",ss" + NUL) — zero EXTRA
+        padding needed after the terminator. Pins the other half of the
+        alignment math: the loop must add nothing when already aligned,
+        not just something when it isn't (see TestSplitOscAddress for the
+        opposite case)."""
+        data = _build_osc_message("/done", "ss", "/foxdot", "ok")
+        _address, rest = MusicManager._split_osc_address(data)
+        # ",ss\0" is 4 bytes: tag block ends exactly on a boundary.
+        assert rest[:4] == b",ss\x00"
+        args = MusicManager._decode_osc_args(rest)
+        assert args == ["/foxdot", "ok"]
+
+    def test_no_type_tag_returns_empty_list(self):
+        assert MusicManager._decode_osc_args(b"") == []
+        assert MusicManager._decode_osc_args(b"not-a-tag-block") == []
+
+    def test_truncated_after_type_tag_returns_partial_without_raising(self):
+        """Type tag promises an int, but the packet is cut short."""
+        rest = _osc_string(",i")  # tag block present, no int payload follows
+        assert MusicManager._decode_osc_args(rest) == []
+
+    def test_truncated_string_arg_returns_partial_without_raising(self):
+        """String tag with no NUL terminator anywhere in the remaining bytes."""
+        rest = _osc_string(",s") + b"nonulhere"
+        assert MusicManager._decode_osc_args(rest) == []
+
+    def test_unknown_type_tag_stops_without_raising(self):
+        """A blob ('b') or other unsupported tag must stop parsing cleanly,
+        keeping whatever was already decoded instead of raising."""
+        msg = bytearray(_osc_string(",sb"))
+        msg.extend(_osc_string("/s_new"))
+        # No attempt to encode a real blob — decoder must bail out at 'b'
+        # without needing valid blob bytes to follow.
+        args = MusicManager._decode_osc_args(bytes(msg))
+        assert args == ["/s_new"]
+
+
+@pytest.mark.unit
+class TestLogOscReply:
+    """``MusicManager._log_osc_reply`` — formatting into the mcp_server log."""
+
+    def test_fail_is_logged_with_command_and_description(self):
+        mgr, logged = _manager_with_captured_warnings()
+        data = _build_osc_message("/fail", "ss", "/g_new", "Group 1 not found")
+        mgr._log_osc_reply(data)
+        assert len(logged) == 1
+        assert "/g_new" in logged[0]
+        assert "Group 1 not found" in logged[0]
+
+    def test_fail_without_type_tag_falls_back_to_raw_bytes(self):
+        """Some scsynth versions/edge cases may send /fail with no args at
+        all — must still produce a readable (non-crashing) log line."""
+        mgr, logged = _manager_with_captured_warnings()
+        data = _build_osc_message("/fail")
+        mgr._log_osc_reply(data)
+        assert len(logged) == 1
+        assert "scsynth" in logged[0].lower() or "FAILURE" in logged[0]
+
+    def test_non_fail_address_is_not_logged(self):
+        """/done and friends are routine acks — logging them would drown
+        out the actual failures this feature exists to surface."""
+        mgr, logged = _manager_with_captured_warnings()
+        data = _build_osc_message("/done", "ss", "/foxdot", "ok")
+        mgr._log_osc_reply(data)
+        assert logged == []
+
+    def test_garbage_bytes_do_not_raise_or_log(self):
+        mgr, logged = _manager_with_captured_warnings()
+        mgr._log_osc_reply(b"\x00\x00\x00\x00")
+        assert logged == []
+
+
+# ---------------------------------------------------------------------------
+# MusicManager — reply-listener plumbing (issue #1808)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestLogScsynthReplyIfAny:
+    """``_send_osc_raw``'s post-sendto reply check — must never block long
+    or raise; a timeout (the common, successful case) is normal, not an
+    error."""
+
+    def test_timeout_is_swallowed_silently(self):
+        mgr, logged = _manager_with_captured_warnings()
+        sock = MagicMock()
+        sock.recvfrom.side_effect = socket.timeout
+        mgr._log_scsynth_reply_if_any(sock)
+        assert logged == []
+        sock.settimeout.assert_called_once_with(MusicManager.OSC_REPLY_TIMEOUT_SECONDS)
+
+    def test_fail_reply_is_logged(self):
+        mgr, logged = _manager_with_captured_warnings()
+        sock = MagicMock()
+        sock.recvfrom.return_value = (
+            _build_osc_message("/fail", "ss", "/g_new", "Group 1 not found"),
+            ("127.0.0.1", 57110),
+        )
+        mgr._log_scsynth_reply_if_any(sock)
+        assert len(logged) == 1
+        assert "Group 1 not found" in logged[0]
+
+    def test_arbitrary_socket_error_is_swallowed(self):
+        """Any transport hiccup here must never propagate into the admin
+        OSC send path it's attached to (``_send_osc_raw``)."""
+        mgr, logged = _manager_with_captured_warnings()
+        sock = MagicMock()
+        sock.recvfrom.side_effect = OSError("network unreachable")
+        mgr._log_scsynth_reply_if_any(sock)  # must not raise
+        assert logged == []
+
+
+@pytest.mark.unit
+class TestRenardoReplyListenerLoop:
+    """``_renardo_reply_listener_loop`` — the background thread body."""
+
+    def test_logs_fail_then_exits_cleanly_when_socket_closes(self):
+        mgr, logged = _manager_with_captured_warnings()
+        sock = MagicMock()
+        fail_packet = _build_osc_message("/fail", "ss", "/s_new", "SynthDef blip not found")
+        sock.recvfrom.side_effect = [
+            (fail_packet, ("127.0.0.1", 57110)),
+            OSError("socket closed"),
+        ]
+        # Must return (not hang) once the socket goes away.
+        mgr._renardo_reply_listener_loop(sock)
+        assert len(logged) == 1
+        assert "SynthDef blip not found" in logged[0]
+
+    def test_bad_packet_does_not_kill_the_loop(self):
+        """One malformed datagram must not stop the listener from seeing
+        the next (real) one."""
+        mgr, logged = _manager_with_captured_warnings()
+        sock = MagicMock()
+        fail_packet = _build_osc_message("/fail", "ss", "/g_new", "Group 1 not found")
+        sock.recvfrom.side_effect = [
+            (b"\xff\xff garbage", ("127.0.0.1", 57110)),
+            (fail_packet, ("127.0.0.1", 57110)),
+            OSError("socket closed"),
+        ]
+        mgr._renardo_reply_listener_loop(sock)
+        assert len(logged) == 1
+        assert "Group 1 not found" in logged[0]
+
+
+@pytest.mark.unit
+class TestAttachRenardoReplyListener:
+    """``_attach_renardo_reply_listener`` — best-effort tap onto Renardo's
+    own long-lived scsynth socket. Must never raise, regardless of what
+    ``_rt``'s object graph looks like, and must never spawn more than one
+    listener thread per underlying socket."""
+
+    def _mgr(self):
+        mgr = _make_manager()
+        mgr._logger = None
+        mgr._renardo_reply_sock = None
+        return mgr
+
+    def test_real_socket_gets_a_daemon_listener_thread(self):
+        mgr = self._mgr()
+        real_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            fake_rt = SimpleNamespace(
+                Server=SimpleNamespace(client=SimpleNamespace(socket=real_sock))
+            )
+            with patch("rob_box_mcp_tools.tools.music.threading.Thread") as mock_thread_cls:
+                mock_thread = Mock()
+                mock_thread_cls.return_value = mock_thread
+
+                mgr._attach_renardo_reply_listener(fake_rt)
+
+                assert mgr._renardo_reply_sock is real_sock
+                _args, kwargs = mock_thread_cls.call_args
+                assert kwargs["target"] == mgr._renardo_reply_listener_loop
+                assert kwargs["args"] == (real_sock,)
+                assert kwargs["daemon"] is True
+                mock_thread.start.assert_called_once()
+        finally:
+            real_sock.close()
+
+    def test_missing_server_attribute_does_not_raise_or_attach(self):
+        mgr = self._mgr()
+        with patch("rob_box_mcp_tools.tools.music.threading.Thread") as mock_thread_cls:
+            mgr._attach_renardo_reply_listener(SimpleNamespace())  # no .Server at all
+        assert mgr._renardo_reply_sock is None
+        mock_thread_cls.assert_not_called()
+
+    def test_none_rt_does_not_raise(self):
+        mgr = self._mgr()
+        mgr._attach_renardo_reply_listener(None)
+        assert mgr._renardo_reply_sock is None
+
+    def test_client_socket_attribute_missing_does_not_attach(self):
+        mgr = self._mgr()
+        fake_rt = SimpleNamespace(Server=SimpleNamespace(client=SimpleNamespace()))
+        with patch("rob_box_mcp_tools.tools.music.threading.Thread") as mock_thread_cls:
+            mgr._attach_renardo_reply_listener(fake_rt)
+        assert mgr._renardo_reply_sock is None
+        mock_thread_cls.assert_not_called()
+
+    def test_socket_attribute_is_not_a_real_socket_does_not_attach(self):
+        """A different Renardo version (or a mock in some other test) might
+        expose a ``.socket`` that isn't a ``socket.socket`` — must be
+        ignored rather than handed to a thread expecting real recv()."""
+        mgr = self._mgr()
+        fake_rt = SimpleNamespace(
+            Server=SimpleNamespace(client=SimpleNamespace(socket="not-a-socket"))
+        )
+        with patch("rob_box_mcp_tools.tools.music.threading.Thread") as mock_thread_cls:
+            mgr._attach_renardo_reply_listener(fake_rt)
+        assert mgr._renardo_reply_sock is None
+        mock_thread_cls.assert_not_called()
+
+    def test_same_socket_is_attached_only_once(self):
+        """A retried ``_ensure_renardo_available`` must not stack up a new
+        listener thread per retry as long as Renardo kept the same socket."""
+        mgr = self._mgr()
+        real_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            fake_rt = SimpleNamespace(
+                Server=SimpleNamespace(client=SimpleNamespace(socket=real_sock))
+            )
+            with patch("rob_box_mcp_tools.tools.music.threading.Thread") as mock_thread_cls:
+                mock_thread_cls.return_value = Mock()
+                mgr._attach_renardo_reply_listener(fake_rt)
+                mgr._attach_renardo_reply_listener(fake_rt)
+                assert mock_thread_cls.call_count == 1
+        finally:
+            real_sock.close()
+
+    def test_attaching_raises_internally_is_swallowed(self):
+        """Even a genuinely broken object graph (attribute access itself
+        raises) must not take down Renardo initialization."""
+        mgr = self._mgr()
+
+        class _Explodes:
+            @property
+            def Server(self):
+                raise RuntimeError("boom")
+
+        mgr._attach_renardo_reply_listener(_Explodes())  # must not raise
+        assert mgr._renardo_reply_sock is None
 
 
 # ---------------------------------------------------------------------------
