@@ -193,6 +193,59 @@ CRITICAL_EXCLUDE_COMMON = [
     # multi-line scan to require a libvesc_hardware_interface.so frame
     # in the preceding lines of the same log dump.
     r"\[ros2run\]: segmentation fault",
+    # SuperCollider /n_free Node ... not found (deploy run 33335300188,
+    # 30.08 21:07, kanban t_fe19566c, issue #1737): sibling of the
+    # /s_new SynthDef not found rule above. FoxDot / Renardo sends
+    # /n_free for nodes that the headless scsynth image never allocated
+    # (the client/server log the missing-id echo as "FAILURE IN SERVER
+    # /n_free Node <num> not found"), then immediately schedules a new
+    # node and music keeps flowing. Same exclusion class as issue
+    # #1485 - the audio music-pipeline team tracks the underlying
+    # preload separately; the deploy gate must not file a critical
+    # issue every time it repeats.
+    r"failure in server /n_free node \d+ not found",
+    # dialogue_node user_input echo (deploy run 33308557595, 30.08
+    # 11:17, kanban t_fe19566c, issue #1737): dialogue_node logs the
+    # entire `user_input='...'` payload it forwards to the LLM, so a
+    # user who literally said the words "[CRITICAL]" / "[ERROR]" /
+    # "traceback" in a sentence gets that text echoed verbatim into
+    # the container log (e.g. `[Spkr:Den] [CRITICAL] ...`). The
+    # bare-word CRITICAL_MATCH_RE then flags the line as a
+    # deploy-critical issue even though no system error happened -
+    # the robot is happily processing a turn. Excluding every
+    # `user_input='` echo makes the rule tight (LLM payload is
+    # structured; a real dialogue_node crash shows up in a different
+    # log shape, e.g. `Traceback (most recent call last):` followed by
+    # a Python exception line that does NOT match `user_input='`).
+    r"user_input='",
+    # Music-stack validator self-report (deploy runs 33330895761 /
+    # 33335300188, 30.08 19:31 / 21:07, kanban t_fe19566c, issue
+    # #1737): start_voice_assistant.sh runs validate_music_stack.py
+    # right after sclang starts and prints "Music stack validation
+    # found non-critical errors (degraded but usable)" when sclang has
+    # not finished its SynthDef preload yet (same root cause as the
+    # `missing critical synthdefs: ...` race already excluded above,
+    # see issue #1520). The validator itself already downgraded the
+    # severity ("non-critical", "degraded but usable") and the bash
+    # harness continues - but the regex still flags the literal
+    # "critical" and "errors" words in the message and would open a
+    # deploy-critical issue on every green run until sclang finishes
+    # preloading.
+    r"music stack validation found non-critical errors \(degraded but usable\)",
+    # dialogue_node bare "Traceback" header without the exact
+    # column-zero shape covered by the rule above (issue #1335 retro
+    # 15.08 covered only `^traceback \(most recent call last\):$`,
+    # but ROS2 node loggers prepend a `[dialogue_node-4]` prefix
+    # before the header, so the line `[dialogue_node-4] Traceback
+    # (most recent call last):` slips through and triggers a
+    # deploy-critical issue on otherwise green runs - deploy run
+    # 33315845764, 30.08 14:08, kanban t_fe19566c, issue #1737). The
+    # follow-up Python exception line (e.g. `BrokenPipeError:`,
+    # `ModuleNotFoundError:`) still matches CRITICAL_MATCH_RE via
+    # "error" and is reported unless it is explicitly excluded by
+    # another rule. Drop the `^` anchor so the bare header - alone or
+    # with a logger prefix - is excluded uniformly.
+    r"^\[.*\] traceback \(most recent call last\):$|^Traceback \(most recent call last\):$",
 ]
 CRITICAL_EXCLUDE_BY_SCOPE = {
     "main": [

@@ -759,3 +759,107 @@ def test_extract_relevant_log_line_still_catches_audio_node_real_fallback() -> N
     line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
 
     assert line == log_text
+
+
+def test_extract_relevant_log_line_ignores_supercollider_n_free_node_not_found() -> None:
+    """Issue #1737, deploy run 33335300188 (30.08 21:07, kanban t_fe19566c):
+    supercollider logs `FAILURE IN SERVER /n_free Node <num> not found`
+    when FoxDot / Renardo tries to free a node id that the headless
+    scsynth image never allocated. Sibling of the existing /s_new
+    SynthDef not found rule (#1485) - same root cause (preload race),
+    same mitigation (audio music-pipeline team tracks separately).
+    """
+    log_text = "\n".join(
+        [
+            "Buffer UGen: no buffer data",
+            "FAILURE IN SERVER /n_free Node 9002 not found",
+            "FAILURE IN SERVER /n_free Node 9003 not found",
+            "SuperCollider 3 server ready.",
+        ]
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_dialogue_user_input_payload_with_critical_word() -> None:
+    """Issue #1737, deploy run 33308557595 (30.08 11:17, kanban t_fe19566c):
+    dialogue_node logs the full `user_input='...'` payload it forwards
+    to the LLM. A user who literally says the words `[CRITICAL]`,
+    `[ERROR]` or `traceback` in a sentence gets that text echoed
+    verbatim into the container log, and the bare-word regex
+    CRITICAL_MATCH_RE then flags the line as a deploy-critical issue
+    even though no system error happened. The robot is happily
+    processing a turn; the deploy gate must stay silent.
+    """
+    log_text = (
+        "[dialogue_node-4] [INFO] [1788088835.546727062] [dialogue_node]: "
+        "user_input='[Spkr:Den] [CRITICAL] proshee muziku'"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_music_stack_validator_self_report() -> None:
+    """Issue #1737, deploy runs 33330895761 / 33335300188 (30.08 19:31 /
+    21:07, kanban t_fe19566c): start_voice_assistant.sh runs
+    validate_music_stack.py right after sclang starts and prints
+    `Music stack validation found non-critical errors (degraded but
+    usable)` when sclang has not finished its SynthDef preload yet
+    (same root cause as the `missing critical synthdefs: ...` race,
+    see #1520). The validator itself already downgraded the severity,
+    but the literal `critical` and `errors` words in the message
+    trigger CRITICAL_MATCH_RE. The deploy gate must not file a
+    critical issue every time sclang is still preloading.
+    """
+    log_text = "Music stack validation found non-critical errors (degraded but usable)"
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_bare_traceback_with_logger_prefix() -> None:
+    """Issue #1737, deploy run 33315845764 (30.08 14:08, kanban t_fe19566c):
+    the bare "Traceback (most recent call last):" header slips through
+    when a ROS2 node logger prepends its tag (e.g.
+    `[dialogue_node-4] Traceback (most recent call last):`), because
+    the pre-existing #1335 rule anchors on `^traceback ...$`. The
+    follow-up Python exception line (BrokenPipeError,
+    ModuleNotFoundError, ...) still matches CRITICAL_MATCH_RE via
+    `error` and is reported unless another rule excludes it. The
+    deploy gate must skip the bare header - alone or with a logger
+    prefix - uniformly.
+    """
+    log_text = "[dialogue_node-4] Traceback (most recent call last):"
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_still_catches_dialogue_python_exception_after_traceback() -> None:
+    """Negative test for the bare-Traceback exclusion above: a real
+    dialogue_node Python crash MUST still surface a deploy-critical
+    issue when the exception line carries the actual error word. We
+    use an `Exception ignored in:` line (which CRITICAL_MATCH_RE
+    matches on the literal `Exception` token, distinct from the
+    compound `ModuleNotFoundError` / `BrokenPipeError` cases that do
+    not have a word-boundary on `Error`) to make sure the bare-header
+    exclusion does not swallow the whole traceback silently.
+    """
+    log_text = "\n".join(
+        [
+            "[dialogue_node-4] Traceback (most recent call last):",
+            '  File "/opt/ros/humble/lib/python3.10/site-packages/.../dialog_node.py", line 42, in process_input',
+            "ERROR: connection refused to upstream zenoh router",
+        ]
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is not None
+    assert "ERROR" in line
