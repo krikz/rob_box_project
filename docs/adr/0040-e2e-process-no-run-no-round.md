@@ -2,7 +2,7 @@
 
 | Поле | Значение |
 |---|---|
-| Статус | **Proposed** (после merge PR в develop → Accepted) |
+| Статус | **Proposed** (после merge PR в develop → Accepted, **но merge заблокирован пока develop HEAD `G: Run Tests` красный — см. §1.4.1, требуется отдельный fix `test_dialogue_guards.py` импортов assignee=backend**) |
 | Дата | 2026-09-01 |
 | Автор | architect (Hermes Agent); карточка `t_a0890749`, issue #1831 |
 | Контекст | `agent-flow-e2e-process.sh` циклически создаёт round-ветки (`round-279…round-308` за день, `round-counter = 311`) потому что `gh workflow run` для `L: E2E Voice Test` либо не возвращает run-id, либо возвращает ошибку — а следующий тик всё равно видит `needs-e2e` issue и стартует round заново, инкрементируя счётчик. CI spam → лишние workflow runs → зашумлённый аудит trail. |
@@ -75,6 +75,53 @@ $ ls -la /tmp/agent-flow-e2e-process.lock
 | 6 | Stale PR > threshold10 (ветка жила давно) | ADR-0025 stale_branch_check, threshold=10, exclude SHA-tags (PR #1828). Live `git ls-remote` показывает round-ветки живые | **не основная причина** |
 
 **Реальная картина**: комбинация гипотез 2 + 4. `gh workflow run` иногда не создаёт run (eventual consistency), `_trigger_workflow_with_retry` либо сразу возвращает 0 (race-dedup решил, что run «уже есть» — но это другой run на другой ветке), либо возвращает 1 после 3 ретраев. В обоих случаях `wait_workflow` либо ждёт чужой run (и timeout), либо timeout сразу. Counter уже инкрементирован, round-ветка уже создана (или reuse'нута).
+
+### 1.4.1 Cross-check от architect (01.09 01:30 UTC, повторное расследование)
+
+Через ~25 мин после issue #1831 (юзер зафиксировал факты), сделана повторная проверка текущего состояния для подтверждения root cause:
+
+| Проверка | Результат | Источник |
+|---|---|---|
+| `agent-flow-e2e-process.sh` жив | PID 3472518 (текущая сессия), started 01:21 01.09 | `ps -ef` |
+| `~/.hermes/state/agent-flow-e2e-round-counter` | 311 (нет инкремента с момента дропа rounds в PR #1827) | `cat` |
+| `~/.hermes/state/agent-flow-e2e-ghost-rounds-total` | 250 (кумулятивный, ретро-метрика) | `cat` |
+| Lock `/tmp/agent-flow-e2e-process.lock` | 0 bytes (corrupted/empty) | `ls -la` |
+| Open issues с label `needs-e2e` | 10 штук (все виснут, т.к. e2e-process их не обрабатывает) | `gh issue list --label needs-e2e --state open` |
+| `gh auth status` | ok (token валиден) | `gh auth status` |
+| Last `L: E2E Voice Test` run | #33321193003, 30.08 16:00 UTC, `failure` | `gh run view 33321193003` |
+| PR #1786 (recent dialogue_guards fix, влит в develop) | UNSTABLE на момент merge (Unit Tests FAILURE — 21 failed) — **баг остался в develop** | `gh pr view 1786 --json statusCheckRollup` |
+| `origin/develop` HEAD `G: Run Tests` (последние 5 прогонов) | 5/5 `failure` — **develop HEAD тоже красный** | `gh run list --branch develop --workflow 'G: Run Tests' --limit 5` |
+| Конкретные упавшие тесты на develop HEAD | `test_dialogue_guards.py` — `NameError: detect_required_tool, TOOL_REQUEST_PATTERNS, build_tool_retry_prompt not defined`. Все 3 имени есть в `dialogue_guards.py` (lines 392, 499, 523), но **отсутствуют в import-блоке теста** (lines 18-37). | `gh run view 33449384600 --log-failed`, `grep` |
+
+**Архитектурный сигнал**: develop HEAD не имеет зелёного baseline. merge-gate в этом состоянии не может поставить `needs-e2e` ни на один PR (CI всегда UNSTABLE). Это **дополнительный failure mode**, который стоит зафиксировать: пока develop красный, **никакой** e2e раунд не пройдёт merge-gate reconcile (rule Q22 / ADR-0014). Шифу мерджит PR руками несмотря на красный CI, поэтому PRы в develop могут быть, но merge-gate их не обработает.
+
+**Связь с другими ADR и skill**:
+- `agent-flow-e2e-pipeline` skill (в hermes agent-flow): задокументированы reconciliation cycles (PR #1449, #1451), silent e2e-process из-за rate-limit / MAINTENANCE / lock. **Этот ADR закрывает ещё один silent mode** — silent trigger failure (exit 0 без run).
+- ADR-0022 (e2e done gates) — совместим: новая метка `e2e:infra-fail` вписывается в существующий label lifecycle.
+- ADR-0025 (stale-PR detection) — независимый failure mode, оба нужны.
+- ADR-0026 (recovery card contract) — `e2e:infra-fail` теперь триггерится автоматически, не руками через `kanban_create`.
+- PR #1828 (skip SHA-tags) — частично fix другой root cause (stale-PR tip), но не решает silent trigger fail.
+
+### 1.4.2 Точная локация исправления (где именно править в скрипте)
+
+Из ADR-0025 + agent-flow-e2e-pipeline skill (live evidence от 31.08):
+
+| Файл | Line range (по состоянию на 30.08, проверить `git blame`) | Что менять |
+|---|---|---|
+| `scripts/agent_flow/agent-flow-e2e-process.sh` | 2007–2066 | `_trigger_workflow_with_retry` — добавить `poll_run_for_epoch` + явный return 0+run_id / 1+nothing |
+| `scripts/agent_flow/agent-flow-e2e-process.sh` | 3130, 3154, 3396 | callers `_trigger_workflow_with_retry` — обновить под новый контракт (читать run_id из stdout) |
+| `scripts/agent_flow/agent-flow-e2e-process.sh` | 3396–3398 | `process_issue` non-zero branch — добавить `consecutive_fails` инкремент + проверку `≥3` |
+| `scripts/agent_flow/agent-flow-e2e-process.sh` | 3520+ | verdict handler — update `run_state.json` (success → reset counter) |
+| `scripts/agent_flow/agent-flow-e2e-process.sh` | 580–597 | lock init — писать `PID:EPOCH\n` в lock-файл + recovery при обнаружении stale lock |
+| `scripts/agent_flow/agent-flow-e2e-process.sh` | 3946 | post-tick cleanup — уже удаляет round-ветки с 0 runs; **ничего не менять** |
+| `scripts/agent_flow/lib_workflow_dedup.sh` | (не нужен diff) | race-dedup helper; оставить контракт как есть |
+
+**Не делать** (out of scope, ADR-0013 incremental delivery):
+- Не рефакторить весь `agent-flow-e2e-process.sh` (4033 строк). Менять ТОЛЬКО 5 точек выше.
+- Не трогать `round_ensure` — он уже правильно обрабатывает «0 runs» через post-tick cleanup (ретро 14.08 t_4268f2bf, 23.08 t_fdb19f7b).
+- Не трогать `wait_workflow` (line 2992) — его контракт остаётся «есть run_id, ждём verdict», но теперь он получает реальный run_id вместо пустого.
+- Не менять label `e2e:infra-fail` definition (уже правильный, ADR-0026 совместим).
+- Не чинить **отдельно** test_dialogue_guards.py — это отдельный баг develop, нужен отдельный PR (assignee: backend). **Этот ADR не должен его трогать**.
 
 ### 1.4 Бизнес-последствие
 
@@ -350,6 +397,15 @@ fi
 
 - `agent-flow-install-daily` workaround (issue #1831) продолжает работать (night pause + 5 fails → `e2e:blocked`). Этого достаточно, чтобы CI не спамил.
 - Мониторить `~/.hermes/state/agent-flow-e2e-round-counter` — если снова начал расти (311 → 320 за час) → эскалация через комментарий в issue #1831.
+- **Дополнительно (по результатам cross-check)**: пока develop HEAD красный, e2e-process в любом случае не сможет пройти merge-gate → priority workaround'а `agent-flow-install-daily` повышается. Рассмотреть вариант «night pause + manual kick» как primary mode, пока backend не починит test.
+
+**ВАЖНО — pre-condition для merge этого ADR (новое, по результатам cross-check 01.09 01:30 UTC):**
+
+1. **Сначала починить `test_dialogue_guards.py` импорты** (assignee: **backend**). Без этого develop HEAD не имеет зелёного baseline (`G: Run Tests` — 5/5 failure, см. §1.4.1), и ни один PR с docs/фиксом не пройдёт merge-gate (rule Q22 / ADR-0014 — `needs-e2e` ставится только на PR с CLEAN CI). Шифу мерджит руками несмотря на красный CI, поэтому код в develop попадает, но merge-gate его не обработает → e2e-process видит 0 кандидатов с `needs-e2e` → loop на месте.
+2. **Затем** — карточка для **agent-flow developer** реализует §2.2.1–§2.2.4 + §7 тесты в 4 коммитах.
+3. **После merge** ADR-0040 → отдельный commit `chore(adr): ADR-0040 status Accepted`.
+
+Эти **две задачи независимы** — backend может чинить test_dialogue_guards.py параллельно с разработкой e2e-process фикса. Обе могут идти в один round e2e (что доказывает, что фикс работает — counter перестаёт расти).
 
 **Не делать (out of scope):**
 
