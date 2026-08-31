@@ -55,6 +55,10 @@ from .tools import (
     EstimateTtsDurationTool,
     RegisterSpeakerTool,
     SetVoiceTool,
+    # Issue #1765 — cross-provider TTS switching.
+    SetTtsProviderTool,
+    ListTtsVoicesTool,
+    # S6.1 — task_delta MCP tool (scheduler segments).
     TaskDeltaTool,
     MemorySaveTool,
     MemorySearchTool,
@@ -672,6 +676,12 @@ class MCPServer(Node):
         self.registry.register(EstimateTtsDurationTool(self))
         self.registry.register(ListenForResponseTool(self))
         self.registry.register(SetVoiceTool(self, voice_store=voice_store))
+        # Issue #1765 — переключение TTS-провайдера + список голосов
+        # по провайдеру (кросс-провайдерный кейс: «Яндекс Артём» при
+        # активном minimax). Оба tool'а публикуют /voice/tts/set_provider,
+        # tts_node подписан и пересобирает provider_chain.
+        self.registry.register(SetTtsProviderTool(self, voice_store=voice_store))
+        self.registry.register(ListTtsVoicesTool(self))
         # Issue #1101 — LLM-driven speaker registration (replaces regex NLU).
         # LLM extracts name from user_input and calls register_speaker(name=X)
         # via MCP. speaker_id_node binds d-vector to name in /data/speakers.db.

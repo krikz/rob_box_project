@@ -846,6 +846,18 @@ class TTSNode(Node):
             String, "/voice/current_dialogue_id", self._on_new_dialogue_id, 1
         )
 
+        # Issue #1765 — переключение TTS-провайдера по запросу LLM через
+        # SetVoiceTool(provider=...) / SetTtsProviderTool. mcp_server
+        # публикует JSON {"provider": str, "voice": str|"", "source": str}
+        # в /voice/tts/set_provider; мы пересобираем provider_chain
+        # (новый провайдер первым, остальные в исходном порядке, silero
+        # всегда последним), чистим dead_until для нового провайдера и
+        # публикуем provider_state для dialogue_node/mcp_server (LLM
+        # увидит нового провайдера в [TTS] строке контекста).
+        self.set_provider_sub = self.create_subscription(
+            String, "/voice/tts/set_provider", self._on_set_provider, 10
+        )
+
         # Публикация аудио и состояния
         if self.audio_qos_reliability == "best_effort":
             audio_reliability = ReliabilityPolicy.BEST_EFFORT
@@ -1298,6 +1310,100 @@ class TTSNode(Node):
                 f"— устаревшие TTS-запросы будут отброшены"
             )
             self.current_dialogue_id = new_id
+
+    def _on_set_provider(self, msg: String):
+        """Issue #1765 — переключить активного TTS-провайдера по запросу LLM.
+
+        ``mcp_server`` публикует JSON ``{"provider": str, "voice": str|"",
+        "source": "set_voice"|"set_tts_provider"}`` после успешного
+        ``SetVoiceTool(provider=...)`` или ``SetTtsProviderTool()``.
+        Перестраиваем ``provider_chain`` так, чтобы запрошенный провайдер
+        стал первым (Silero по-прежнему последним — инвариант issue #1083),
+        чистим кэш «мёртвых» для него (юзер явно попросил — даём шанс),
+        и публикуем обновлённый ``provider_state`` для dialogue_node и
+        mcp_server (LLM увидит нового провайдера в ``[TTS]`` строке
+        следующего turn'а).
+
+        Idempotency: повторный set_provider на того же провайдера — no-op
+        (только перепубликация state). Невалидный JSON / неизвестный
+        провайдер — лог + игнор (LLM получит provider_unknown в tool result
+        и сам решит, что делать; tts_node не должен падать).
+        """
+        try:
+            payload = json.loads(msg.data) if msg.data else {}
+        except (TypeError, ValueError) as exc:
+            self.get_logger().warning(
+                f"⚠️ [issue 1765] set_provider: bad JSON payload: {exc}"
+            )
+            return
+        if not isinstance(payload, dict):
+            self.get_logger().warning(
+                "⚠️ [issue 1765] set_provider: payload is not a dict"
+            )
+            return
+
+        new_provider = str(payload.get("provider") or "").strip().lower()
+        if new_provider not in {"yandex", "minimax", "silero"}:
+            self.get_logger().warning(
+                f"⚠️ [issue 1765] set_provider: unknown provider "
+                f"{new_provider!r}; ignoring"
+            )
+            return
+
+        current_chain = list(getattr(self, "provider_chain", []) or [])
+        # Текущий эффективный провайдер (первый «живой» в цепочке).
+        current_effective = self._effective_provider()
+
+        # Если запрошенный провайдер уже стоит первым в chain и не
+        # мёртв — no-op (только перепубликация state для гарантии
+        # синхронности context у подписчиков).
+        if (
+            current_chain
+            and current_chain[0] == new_provider
+            and not self._provider_is_dead(new_provider)
+        ):
+            self.get_logger().info(
+                f"🎙️ [issue 1765] set_provider no-op: already on "
+                f"'{new_provider}'"
+            )
+            self._publish_provider_state("set_provider_noop")
+            return
+
+        # Пересобираем chain: новый провайдер первым, остальные — в
+        # исходном порядке (но без дубликатов и без нового). _normalize
+        # позаботится о silero-последний инварианте.
+        new_chain: list[str] = [new_provider]
+        for p in current_chain:
+            if p != new_provider:
+                new_chain.append(p)
+        new_chain = self._normalize_provider_chain(new_chain)
+        self.provider_chain = new_chain
+
+        # Чистим dead_until для нового провайдера — юзер явно попросил,
+        # даём ему шанс (даже если quota-сеть недавно фолбечили).
+        if hasattr(self, "_provider_dead_until"):
+            self._provider_dead_until.pop(new_provider, None)
+
+        # Если запрошенный провайдер совпадает с текущим эффективным
+        # (например, effective=yandex, попросили yandex после фолбека) —
+        # логируем как no-op. Иначе — переключение.
+        switched = new_provider != current_effective
+
+        self.get_logger().info(
+            f"🎙️ [issue 1765] set_provider: '{current_effective}' → "
+            f"'{new_provider}' "
+            f"(chain={self.provider_chain}, source="
+            f"{payload.get('source', 'unknown')}, voice="
+            f"{payload.get('voice', '')!r})"
+        )
+
+        # Перепубликуем provider_state — dialogue_node/mcp_server
+        # подхватят и обновят LLM-контекст [TTS].
+        self._publish_provider_state(
+            "set_provider" if switched else "set_provider_noop",
+            provider=new_provider,
+            voice=(payload.get("voice") or None) or None,
+        )
 
     def dialogue_callback(self, msg: String):
         """Обработка JSON chunks от dialogue_node."""
