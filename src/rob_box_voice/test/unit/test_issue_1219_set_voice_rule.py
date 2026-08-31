@@ -54,6 +54,11 @@ def _voice_rule_block() -> str:
     characters — four of them failed against a prompt that was in fact
     correct, and ``test_master_prompt_default_matches_registry`` passed
     vacuously because the routing table names no voice ids at all.
+
+    Issue #1765 added sibling rule blocks (RULE #VOICE-CROSS-PROVIDER,
+    RULE #TTS-PROVIDER) right after RULE #VOICE — the same fix that
+    already landed upstream (commit 6291f91e) is what keeps these
+    assertions pinned to the actual voice-change rule body.
     """
     content = _read(MASTER_PROMPT)
     match = re.search(
