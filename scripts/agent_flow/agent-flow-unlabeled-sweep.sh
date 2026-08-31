@@ -149,29 +149,12 @@ if [ "${UNLABELED_SWEEP_TEST_MODE:-0}" != "1" ]; then
   cli_args "$@"
 fi
 
-# --- shared library bootstrap ------------------------------------------------
-# Отсюда unlabeled-sweep берёт: af_flock_guard_or_exit,
-# af_maintenance_gate_or_exit, has_label (CSV-контракт) — дедуп 30.08.
-_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-# shellcheck source=lib_agent_flow_common.sh
-. "$_LIB_DIR_HERE/lib_agent_flow_common.sh"
-
-# ⚠️ Загрузка .env выше сделана через `set -a; . "$ENV_FILE"`, а не через
-# af_load_profile_env, как в merge-gate / triage / e2e-process / deploy-sweep /
-# handoff. Разница в приоритете: здесь .env ПЕРЕБИВАЕТ окружение вызывающего,
-# там — наоборот. Намеренно не сведено 30.08 (ретро 28.08 t_faac94b0 менял
-# этот парсер осознанно): смена приоритета меняет поведение, а тесты этого
-# скрипта на dev-машине не гоняются. Требует решения — см. §5bis
-# docs/process-fix-roadmap.md.
-
-# --- flock sentinel + MAINTENANCE gate --------------------------------------
-# MAINTENANCE-гейта здесь не было НИКОГДА, хотя секция «MAINTENANCE gate + env»
-# выше называется так с 12.08: скрипт продолжал вешать stale-candidate и
-# закрывать issues, пока конвейер стоял на паузе. Добавлен 30.08 — тем же
-# af_maintenance_gate_or_exit, что у остальных пяти скриптов.
+# --- flock sentinel ---------------------------------------------------------
 if [ "${UNLABELED_SWEEP_TEST_MODE:-0}" != "1" ]; then
-  af_flock_guard_or_exit "$LOCK_FILE"
-  af_maintenance_gate_or_exit
+  exec 9>"$LOCK_FILE" || { log "cannot open lock $LOCK_FILE"; exit 1; }
+  if ! flock -n 9; then
+    log "another instance holds $LOCK_FILE — skip tick"; exit 0
+  fi
 fi
 
 # --- gate: gh auth ----------------------------------------------------------
@@ -193,6 +176,11 @@ all_json="$(gh issue list \
     --limit "$SWEEP_LIMIT" \
     --json number,title,labels,updatedAt,createdAt 2>/dev/null || echo '[]')"
 if [ -z "$all_json" ]; then all_json='[]'; fi
+
+# --- helpers -----------------------------------------------------------------
+has_label() {  # $1=labels_csv(lowercase)  $2=label_name
+  case ",${1}," in *",${2},"*) return 0 ;; *) return 1 ;; esac
+}
 
 # Получить ISO-время последнего события `reopened` или пусто.
 # ADR-0022 GATE-2 + PR #1399: только событие 'reopened' из timeline
