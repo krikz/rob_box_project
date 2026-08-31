@@ -40,6 +40,13 @@ tts_node:
     minimax_max_retries: 2
     minimax_retry_backoff_ms: 500
     minimax_streaming: false
+    # Issue #1780 — emotion / pitch / volume / pronunciation_dict. См.
+    # подробности в src/rob_box_voice/config/tts_node.yaml и в
+    # tts_node.py:declare_parameter.
+    minimax_emotion: neutral
+    minimax_pitch: ''
+    minimax_volume: ''
+    minimax_pronunciation_dict: ''
     # Issue #1229 — файл персистентного состояния фактического провайдера
     # TTS (после фолбека minimax→yandex). tts_node пишет сюда {provider,
     # dead_providers} при смене провайдера; при рестарте контейнера кэш

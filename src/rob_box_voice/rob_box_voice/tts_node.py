@@ -58,6 +58,7 @@ import threading
 import time
 import wave
 from pathlib import Path
+from collections.abc import Mapping
 
 import grpc
 import numpy as np
@@ -244,6 +245,89 @@ except ImportError:
     def normalize_for_tts(text):
         """Fallback если нет normalizer."""
         return text
+
+
+def _parse_optional_int(value: object) -> int | None:
+    """Parse a ROS-stringy value into an ``int`` or ``None``.
+
+    Used for ``minimax_pitch`` (issue #1780). Empty string / ``None`` →
+    ``None`` (field omitted from payload). Any other string / number is
+    coerced via :class:`int`; :class:`ValueError` is logged and treated
+    as "unset" so a typo in YAML doesn't take the whole node down.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return int(stripped)
+        except ValueError:
+            return None
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_optional_float(value: object) -> float | None:
+    """Parse a ROS-stringy value into a ``float`` or ``None``.
+
+    Used for ``minimax_volume`` (issue #1780). Empty string / ``None`` →
+    ``None`` (field omitted from payload). Coercion failures are logged
+    as "unset" so a typo doesn't crash the node — the API still gets a
+    syntactically valid request.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_pronunciation_dict(value: object) -> dict | None:
+    """Parse the YAML/ROS string ``minimax_pronunciation_dict`` into a dict.
+
+    Used for ``minimax_pronunciation_dict`` (issue #1780). Accepts:
+
+    * Empty string / ``None`` → ``None`` (field omitted from payload).
+    * A JSON-encoded object — parsed via :mod:`json`; the MiniMax T2A v2
+      spec asks for ``{"tone": [...], "phoneme": [...], "contextual": [...]}``
+      so we expect ``Mapping[str, Sequence[str]]``-shaped payloads.
+    * Already a ``Mapping`` — passed through.
+
+    Anything else (``str`` that's not JSON, ``int``, ``list``) is logged
+    as "ignored" and we return ``None``. We deliberately do NOT raise
+    here: this is operator-config, not user-facing input; crashing the
+    node on a typo is worse than silently ignoring the malformed value.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            parsed = json.loads(stripped)
+        except (ValueError, TypeError):
+            return None
+    elif isinstance(value, Mapping):
+        parsed = value
+    else:
+        return None
+    if not isinstance(parsed, Mapping):
+        return None
+    return dict(parsed)
 
 
 # Yandex Cloud TTS API v3 (gRPC)
@@ -513,6 +597,27 @@ class TTSNode(Node):
         # forward-compat hook. См. ADR-0003 §2.4.
         self.declare_parameter("minimax_streaming", False)
 
+        # Voice-prosody knobs for MiniMax T2A v2 (issue #1780).
+        #
+        # Defaults are conservative: ``minimax_emotion="neutral"`` matches
+        # the API's implicit default so a populated payload stays
+        # behaviour-equivalent to the pre-#1780 empty payload (the API
+        # treats both as neutral). ``minimax_pitch`` / ``minimax_volume``
+        # default to empty strings — when empty, the field is omitted from
+        # ``voice_setting`` and the API applies its own defaults (no
+        # behaviour change vs. before). ``minimax_pronunciation_dict`` is a
+        # JSON-encoded MiniMax-shaped dict (e.g. ``{"tone": [...]}``) and
+        # is only forwarded when non-empty.
+        #
+        # Valid values (per T2A v2 spec):
+        #   emotion ∈ {happy, neutral, sad, angry, fearful, disgusted, surprised}
+        #   pitch   — int semitones (-12..+12 typical)
+        #   volume  — float in [0.0, 10.0]; (0, 10] accepted by the API
+        self.declare_parameter("minimax_emotion", "neutral")  # MiniMax T2A v2 emotion
+        self.declare_parameter("minimax_pitch", "")  # semitones; "" → не задан
+        self.declare_parameter("minimax_volume", "")  # 0.0..10.0; "" → не задан
+        self.declare_parameter("minimax_pronunciation_dict", "")  # JSON dict; "" → не задан
+
         # ROS audio bridge. AudioData carries raw int16 LE PCM without
         # sample-rate metadata, so publishers and sinks must share the configured
         # rate out of band. Best-effort/volatile avoids replaying stale speech and
@@ -665,6 +770,18 @@ class TTSNode(Node):
         )
         self.minimax_retry_backoff_ms = max(0, int(self.get_parameter("minimax_retry_backoff_ms").value))
         self.minimax_streaming = bool(self.get_parameter("minimax_streaming").value)
+        # Issue #1780 — emotion / pitch / volume / pronunciation_dict.
+        # Stored as strings (ROS String) so empty values cleanly mean
+        # "unset". ``minimax_emotion`` defaults to "neutral" — the API's
+        # implicit default — so the populated payload stays
+        # behaviour-equivalent to the pre-#1780 payload (see comment in
+        # ``declare_parameter`` above).
+        self.minimax_emotion = self.get_parameter("minimax_emotion").value or "neutral"
+        self.minimax_pitch_raw = self.get_parameter("minimax_pitch").value
+        self.minimax_volume_raw = self.get_parameter("minimax_volume").value
+        self.minimax_pronunciation_dict_raw = self.get_parameter(
+            "minimax_pronunciation_dict"
+        ).value
         self.minimax_provider = None  # lazy: создаётся в _ensure_minimax_provider()
         # Provider construction opens an httpx client and must be atomic with
         # shutdown.  ROS callbacks can run on different executor threads.
@@ -3032,6 +3149,18 @@ class TTSNode(Node):
             speed=speed,
             sample_rate=self.minimax_sample_rate,
             format=fmt,
+            # Issue #1780: forward emotion / pitch / volume /
+            # pronunciation_dict to the provider. Empty string → field
+            # is omitted (no behaviour change vs. pre-#1780). Emotion
+            # has a non-empty default ("neutral") which matches the
+            # API's implicit default — payload gains the ``emotion``
+            # key but the rendered voice is identical.
+            emotion=self.minimax_emotion or None,
+            pitch=_parse_optional_int(self.minimax_pitch_raw),
+            volume=_parse_optional_float(self.minimax_volume_raw),
+            pronunciation_dict=_parse_pronunciation_dict(
+                self.minimax_pronunciation_dict_raw
+            ),
         )
 
         try:
