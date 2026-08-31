@@ -1259,7 +1259,7 @@ PY
             if [ -n "$patterns_json" ] && [ "$patterns_json" != "[]" ]; then
                 pats="$(printf '%s' "$patterns_json" | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin)))')"
                 log "STEP ${label}: проверка паттернов: $pats"
-                check_patterns "$(date -u -d '-6 minutes' +%Y-%m-%dT%H:%M:%SZ)" $pats
+                check_patterns "$STEP_BEFORE" $pats
                 if [ $? != 0 ]; then
                     step_ok=0
                 else
@@ -1357,7 +1357,7 @@ else
     if [ "$rc" = "0" ] && [ -n "$PATTERNS" ]; then
         log "single: проверка паттернов: $PATTERNS"
         IFS=',' read -r -a pat_arr <<< "$PATTERNS"
-        check_patterns "$(date -u -d '-6 minutes' +%Y-%m-%dT%H:%M:%SZ)" "${pat_arr[@]}"
+        check_patterns "$STEP_BEFORE" "${pat_arr[@]}"
         if [ $? != 0 ]; then
             PASS=0; mark_fail_kind feature; echo "E2E_STEP single FAIL patterns"
         else
