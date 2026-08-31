@@ -115,18 +115,25 @@ def test_new_keys_not_duplicated():
 def test_new_keys_have_neutral_defaults():
     """Дефолты должны сохранять текущее поведение (issue #1780: «нейтральные дефолты»).
 
+    Семантика «нейтральный» для TTSNode с двумя TTS-params PR (t_4e98182a +
+    t_a5eed3a7, объединены в #1793): канонический блок использует
+    строковые дефолты (ROS String), чтобы пустые значения чисто означали
+    «не задан / fallback на API default», а ``minimax_emotion="neutral"``
+    — это явный MiniMax API default (= передать ``voice_setting.emotion =
+    "neutral"`` в API).
+
     Конкретно:
-      emotion = ''           → не передавать в API
-      pitch = 0              → 0 = «не передавать»
-      volume = 0.0           → 0.0 = «не передавать»
-      pronunciation_dict = ''→ пусто = «не передавать»
+      emotion = "neutral"      → MiniMax API default для voice_setting.emotion
+      pitch = ""               → не задан (int semitones → str, fallback на API)
+      volume = ""              → не задан (float 0.0..10.0 → str)
+      pronunciation_dict = ""  → JSON-словарь MiniMax; "" = «не передавать»
       yandex_ssml_aware = False → legacy Yandex (Hints(voice, speed))
     """
     declares, _ = _parse_declares_and_helpers()
     expected = {
-        "minimax_emotion": "",
-        "minimax_pitch": 0,
-        "minimax_volume": 0.0,
+        "minimax_emotion": "neutral",
+        "minimax_pitch": "",
+        "minimax_volume": "",
         "minimax_pronunciation_dict": "",
         "yandex_ssml_aware": False,
     }
