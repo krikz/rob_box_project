@@ -125,6 +125,58 @@
 - **�️ После финального merge proposal-ветка закрывается/архивируется** (remote-ветка удаляется, как и обычная feature). Если proposal нужно продолжить — создаётся НОВАЯ ветка от свежего `origin/develop` (например `z-architect/voice-selection-proposal-v2`). Не держим «вечные» proposal-ветки: раз PR не открыт неделями, ветка — кандидат на удаление.
 - **НЕ путать с:** ретро-ветками `z-architect/t_<card>-<slug>` (одноразовые, под карточку) и issue-ветками `z-architect/<issue>-<slug>`. Обе живут ровно до merge своего PR и удаляются.
 
+#### 🛑 Правило: «Один PR = одна ветка от свежего origin/develop» (ретро 31.08 t_04371252, PR #1753)
+
+> **Архитектурный долг: переиспользование уже влитой ветки = сломанный процесс.**
+
+Если ветка УЖЕ была влита в `develop` (через закрытый merged PR), новые
+коммиты в эту ветку + новый открытый PR с неё = **stale-branch reuse**.
+Это нарушает инвариант «одна ветка = одна задача = один merge».
+
+**Почему это плохо:**
+- PR-diff «удаляет» уже влитые фиксы (rebase'ы от старой базы) — это
+  скрытая регрессия, которая ломает CI на следующем раунде.
+- merge-gate scan обнаруживает stale-branch через ~5 мин после открытия,
+  но за это время PR уже попадает в очередь ревью (Шифу снимает
+  `needs-review`, но PR остаётся OPEN без чёткого маркера).
+- История коммитов теряет связь «PR → merge», и blame в develop ломается.
+
+**Что делать воркеру:**
+```bash
+# Хочешь ещё один фикс поверх ранее влитой ветки?
+# 1. Создай НОВУЮ ветку от свежего origin/develop (НЕ от старой):
+git fetch origin develop
+git checkout -b z-{agent}/t_<card>-<slug> origin/develop
+# 2. Перенеси ТОЛЬКО нужный фикс (cherry-pick, не rebase на старую):
+git cherry-pick <sha-of-needed-fix>
+# 3. Открой новый PR с новой ветки, закрой старый.
+```
+
+**Исключение** — proposal-ветки `z-architect/<proposal-slug>` (см. выше):
+они ЛЕГАЛЬНО живут после merge и могут принимать новые коммиты
+(retro 15.08 t_6024f414).
+
+**Что делает merge-gate** (`agent-flow-merge-gate.sh`):
+1. Каждый тик сканирует все OPEN PR.
+2. Если PR открыт на ветке, у которой уже есть MERGED PR с тем же
+   head → guard «stale-branch reuse».
+3. **Аддитивный PR** (deletions ≤ 20, нет функциональных файлов) →
+   пропускается (это может быть `docs/ci` продолжение, ретро 13.08
+   t_a3f170fe).
+4. **Функциональный stale-reuse** (новые `.py`/`.sh` в `src/`,
+   `docker/`, `scripts/agent_flow/`, `tests/agent_flow/`) → пишет
+   dedup-комментарий, снимает `needs-review`, **ставит метку
+   `stale-branch-reuse`** для downstream-фильтров (e2e-process,
+   clean-pr-sweep).
+5. **Регрессионный stale-reuse** (deletions > 20, удаляет влитые фиксы)
+   → блокируется полностью + метка `stale-branch-reuse`.
+
+**Detection** для разработчика:
+```bash
+gh pr list --state merged --head <branch-name> --json number --jq '.[0].number // "empty"'
+# Если non-empty — этот branch уже влит, новый PR с него будет stale.
+```
+
 ## 📐 ADR-процесс (Architecture Decision Records, ретро 25.08 t_00ba0224)
 
 ADR хранятся в `docs/adr/NNNN-<slug>.md` и нумеруются **глобальным
