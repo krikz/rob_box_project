@@ -727,7 +727,11 @@ class TestProsodyForwarding:
         node._minimax_provider_initialized = True
         node.minimax_provider = provider
 
-        async def _fake_decode(*_args, **_kwargs):
+        # ``_decode_minimax_audio`` is a regular (non-async) method in
+        # production; the production caller in ``_synthesize_minimax_async``
+        # assigns its return value directly (no ``await``). Match that
+        # shape so the call site stays in sync with the real code.
+        def _fake_decode(*_args, **_kwargs):
             import numpy as np
 
             return np.zeros(16, dtype=np.float32), 16_000
