@@ -60,6 +60,19 @@ def node():
 
     n._barge_in_policy = "replace"
     n._pending_user_messages = deque()
+    # Attributes normally set in DialogueNode.__init__ — ``object.__new__`` skips
+    # ``__init__``, so anything the SUT touches must be pre-seeded here. The
+    # list grows whenever upstream code starts reading a new field; the
+    # upstream-regression t_5e06c47d added these three (see
+    # dialogue_node.py:640 ``_track_mode_music_active``, :678
+    # ``_action_claim_retry_used``, :682 ``_code_speech_retry_used``).
+    # Without seeding all three, ``_handle_result`` cascades AttributeError
+    # across ``_check_embedded_renardo_code_and_retry`` /
+    # ``_check_unbacked_action_claim_and_retry`` /
+    # ``_check_embedded_renardo_code_and_retry`` in chain order.
+    n._track_mode_music_active = False
+    n._action_claim_retry_used = False
+    n._code_speech_retry_used = False
     return n
 
 
@@ -307,6 +320,13 @@ def _make_turn_node() -> DialogueNode:
     n._handle_result = MagicMock()
     n._dispatch_turn = MagicMock()
     n._pending_user_messages = deque()
+    # see t_5e06c47d — without these the S7 / drain tests hit AttributeError
+    # on ``_apply_music_guard`` → ``_build_music_retry_prompt`` (line 3763)
+    # plus the in-line _check_* chain inside a mocked-but-reachable
+    # ``_handle_result`` if the test ever crosses it.
+    n._track_mode_music_active = False
+    n._action_claim_retry_used = False
+    n._code_speech_retry_used = False
     return n
 
 
