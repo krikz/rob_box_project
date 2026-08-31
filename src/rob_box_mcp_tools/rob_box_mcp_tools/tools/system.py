@@ -6,9 +6,20 @@ system.py - Инструменты управления системой роб�
 - SetVolumeTool: Установить громкость TTS
 - SetPitchTool: Установить высоту голоса
 - SetSpeedTool: Установить скорость речи
+- GetCurrentTimeTool: Текущее время/дата (плюс ``formatted_time``
+  по-русски — issue #1777)
 - GetRobotStatusTool: Получить статус робота
+
+Issue #1777 — формат-гайд русского времени:
+LLM раньше халлюцинировал «тридцать семь минут одиннадцатого» / «22:37
+вечера» — tool возвращал корректные данные, но модель склеивала
+форматы. Решение: tool сам отдаёт уже-озвученную строку ``formatted_time``
+(«двадцать два тридцать семь»), и LLM читает её дословно. Это сильно
+уменьшает свободу галлюцинаций. Числа прописью берутся из
+``format_time_ru`` — pure-функция, покрыта юнит-тестами.
 """
 
+import datetime as _datetime
 import math
 import os
 import threading
@@ -330,43 +341,126 @@ class SetSpeedTool(MCPTool):
         )
 
 
+WEEKDAYS_RU = [
+    "понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье",
+]
+MONTHS_RU = [
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+]
+PERIOD_RU = ("ночь", "утро", "день", "вечер")
+
+# Часы 0..23 → именительный падеж: 0 → «ноль», 1 → «один», …, 23 → «двадцать три».
+HOURS_RU = (
+    "ноль", "один", "два", "три", "четыре", "пять",
+    "шесть", "семь", "восемь", "девять", "десять",
+    "одиннадцать", "двенадцать", "тринадцать", "четырнадцать", "пятнадцать",
+    "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать", "двадцать",
+    "двадцать один", "двадцать два", "двадцать три",
+)
+# Минуты 0..59 — те же слова, что часы (один/два/три/...); отдельная таблица
+# чтобы имена оставались стабильны и тестируемы.
+MINUTES_RU = HOURS_RU + (
+    "двадцать четыре", "двадцать пять", "двадцать шесть", "двадцать семь",
+    "двадцать восемь", "двадцать девять", "тридцать", "тридцать один",
+    "тридцать два", "тридцать три", "тридцать четыре", "тридцать пять",
+    "тридцать шесть", "тридцать семь", "тридцать восемь", "тридцать девять",
+    "сорок", "сорок один", "сорок два", "сорок три", "сорок четыре",
+    "сорок пять", "сорок шесть", "сорок семь", "сорок восемь", "сорок девять",
+    "пятьдесят", "пятьдесят один", "пятьдесят два", "пятьдесят три",
+    "пятьдесят четыре", "пятьдесят пять", "пятьдесят шесть", "пятьдесят семь",
+    "пятьдесят восемь", "пятьдесят девять",
+)
+
+# Часовые пояса для робота. По умолчанию Europe/Moscow — голосовой ассистент
+# сейчас работает только из Москвы (issue #1777). Если в окружении выставлен
+# ROBOT_TIMEZONE — уважаем (для тестов/других локаций).
+ROBOT_TIMEZONE = os.environ.get("ROBOT_TIMEZONE", "Europe/Moscow")
+
+
+def _resolve_robot_timezone():
+    """Best-effort resolve ``ROBOT_TIMEZONE`` → ``datetime.tzinfo``.
+
+    Возвращает ``None`` если zoneinfo не установлена или имя кривое — тогда
+    caller падает на local naive ``datetime.now()``. Без падения: голосовой
+    пайплайн не должен валиться на отсутствующей tzdata.
+    """
+    try:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError  # py3.9+
+    except Exception:  # noqa: BLE001 — old Python / нет zoneinfo
+        return None
+    try:
+        return ZoneInfo(ROBOT_TIMEZONE)
+    except ZoneInfoNotFoundError:
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _hour_period(hour: int) -> str:
+    """5..11 → «утро», 12..16 → «день», 17..21 → «вечер», иначе → «ночь»."""
+    if 5 <= hour < 12:
+        return PERIOD_RU[1]
+    if 12 <= hour < 17:
+        return PERIOD_RU[2]
+    if 17 <= hour < 22:
+        return PERIOD_RU[3]
+    return PERIOD_RU[0]
+
+
+def format_time_ru(dt: "_datetime.datetime", tz: "Optional[_datetime.tzinfo]" = None) -> str:
+    """Pure-функция: вернуть время ``dt`` (HH:MM) русской прописью.
+
+    Args:
+        dt: tz-aware (или naive) ``datetime``. Если naive и ``tz`` не передан —
+            используется ``dt.hour``/``dt.minute`` как есть. Если naive и ``tz``
+            передан — сначала ``dt.replace(tzinfo=tz)``.
+        tz: если задан, naive-``dt`` интерпретируется в этом tz (полезно когда
+            вызывающий уже знает «локальное время = робот-зона»).
+
+    Returns:
+        Строка вида «двадцать два тридцать семь» (HH прописью + MM прописью).
+        НЕ содержит «вечера/утра/дня» — этот «period суток» живёт в LLM.
+
+    Examples:
+        >>> from datetime import datetime
+        >>> format_time_ru(datetime(2026, 8, 31, 12, 0))      # doctest: +SKIP
+        'двенадцать ровно'
+        >>> format_time_ru(datetime(2026, 8, 31, 14, 0))      # doctest: +SKIP
+        'два часа ровно'
+        >>> format_time_ru(datetime(2026, 8, 31, 22, 37))     # doctest: +SKIP
+        'двадцать два тридцать семь'
+    """
+    if not isinstance(dt, _datetime.datetime):
+        raise TypeError(f"format_time_ru expected datetime, got {type(dt).__name__}")
+    if dt.tzinfo is None and tz is not None:
+        dt = dt.replace(tzinfo=tz)
+    hour = int(dt.hour) % 24
+    minute = int(dt.minute)
+    if not (0 <= hour < 24 and 0 <= minute < 60):
+        raise ValueError(f"hour/minute out of range: {hour}:{minute}")
+
+    h_word = HOURS_RU[hour]
+    if minute == 0:
+        # Целый час. По-русски род часа зависит от последней цифры:
+        # 1 → «час», 2..4 → «часа», 0/5..20 → «часов», 21 → «час»,
+        # 22..23 → «часа». «ровно» как маркер неопределённого рода нам не
+        # подходит: «два часа ровно» звучит коряво, поэтому говорим род.
+        if hour in (1, 21):
+            return f"{h_word} час ровно"
+        if hour in (2, 3, 4, 22, 23):
+            return f"{h_word} часа ровно"
+        # 0, 5..12, 13..20
+        return f"{h_word} часов ровно"
+    return f"{h_word} {MINUTES_RU[minute]}"
+
+
 class GetCurrentTimeTool(MCPTool):
     """Инструмент для получения текущего времени и даты.
 
     Не требует ROS-зависимостей — время берётся из системных часов Python.
     Вызывать когда пользователь спрашивает время, дату, день недели и т.д.
-
-    Timezone resolution (issue #1763):
-        1. ROBOT_TIMEZONE env var, если задана и валидна через zoneinfo.
-        2. Дефолт "Europe/Moscow".
-        3. Graceful fallback на UTC, если zoneinfo не может найти таймзону
-           (на хосте без tzdata). Никогда не возвращаем naive datetime —
-           контейнер voice-assistant по умолчанию запускается с TZ=UTC,
-           и без явного таймзоны бот бы говорил "07:46 утра" вместо "10:46".
     """
-
-    DEFAULT_TIMEZONE = "Europe/Moscow"
-    ROBOT_TIMEZONE_ENV = "ROBOT_TIMEZONE"
-
-    def _resolve_timezone(self):
-        """Получить tzinfo из ROBOT_TIMEZONE или дефолтного Europe/Moscow.
-
-        Returns:
-            tzinfo: zoneinfo.ZoneInfo или datetime.timezone(UTC).
-        """
-        import datetime
-        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
-        candidate = os.environ.get(self.ROBOT_TIMEZONE_ENV, "").strip() or self.DEFAULT_TIMEZONE
-        try:
-            return ZoneInfo(candidate)
-        except ZoneInfoNotFoundError:
-            # Хост без tzdata или неизвестная зона — откатываемся на UTC.
-            self.log_info(
-                f"Таймзона '{candidate}' недоступна (нет tzdata?). "
-                f"Используем UTC. Установите пакет tzdata или задайте {self.ROBOT_TIMEZONE_ENV}=Europe/Moscow."
-            )
-            return datetime.timezone.utc
 
     @property
     def name(self) -> str:
@@ -389,28 +483,28 @@ class GetCurrentTimeTool(MCPTool):
         return ToolExecutionType.INSTANT
 
     def execute(self) -> MCPToolResult:
-        """Вернуть текущее время в пользовательском часовом поясе."""
-        import datetime
+        """Вернуть текущее время из системных часов.
 
-        tz = self._resolve_timezone()
-        now = datetime.datetime.now(tz)
-
-        # Русские названия дней и месяцев без зависимости от locale
-        WEEKDAYS_RU = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
-        MONTHS_RU = [
-            "января", "февраля", "марта", "апреля", "мая", "июня",
-            "июля", "августа", "сентября", "октября", "ноября", "декабря"
-        ]
+        Issue #1777: возвращает ``formatted_time`` — время русской прописью
+        («двадцать два тридцать семь»), чтобы LLM не пыталось само
+        склеивать «22:37» + «вечера». Правила формата живут в
+        ``format_time_ru``; LLM читает ``formatted_time`` дословно через
+        ``speak_text``.
+        """
+        # Issue #1777: тайм-зона робота. По умолчанию Europe/Moscow
+        # (робот-ассистент сейчас работает из Москвы). Если zoneinfo
+        # недоступна / имя кривое — падаем на local naive как раньше.
+        tz = _resolve_robot_timezone()
+        if tz is not None:
+            now = _datetime.datetime.now(tz=tz)
+        else:
+            now = _datetime.datetime.now()
 
         hour = now.hour
-        if 5 <= hour < 12:
-            period = "утро"
-        elif 12 <= hour < 17:
-            period = "день"
-        elif 17 <= hour < 22:
-            period = "вечер"
-        else:
-            period = "ночь"
+        period = _hour_period(hour)
+
+        # formatted_time считается в локальной зоне now.tzinfo (или naive).
+        formatted_time = format_time_ru(now)
 
         data = {
             "time": now.strftime("%H:%M"),
@@ -418,10 +512,13 @@ class GetCurrentTimeTool(MCPTool):
             "weekday": WEEKDAYS_RU[now.weekday()],
             "period": period,
             "iso": now.isoformat(timespec="seconds"),
+            # Issue #1777: русская пропись для дословного озвучивания.
+            "formatted_time": formatted_time,
         }
 
         message = (
-            f"Сейчас {data['time']}, {data['weekday']}, {data['date']}, {data['period']}."
+            f"Сейчас {data['time']}, {data['weekday']}, {data['date']}, {data['period']}. "
+            f"По-русски: {formatted_time}."
         )
         self.log_info(f"Текущее время: {message}")
         return MCPToolResult(success=True, data=data, message=message)
