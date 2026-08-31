@@ -5,7 +5,7 @@ Available tools:
 - get_battery_level(): charge level in percent
 - get_current_time(): current time and date
 - set_volume(action): voice volume (louder/quieter/max/normal)
-- set_pitch(pitch): voice pitch 0.5–2.0
+- set_pitch(action): voice pitch (higher/lower/normal)
 
 Data interpretation:
 - Battery >80%: "charge high" / 40–80%: "charge normal" / 20–40%: "charge low" / <20%: "charge critically low, needs charging"
@@ -13,8 +13,18 @@ Data interpretation:
 - Status: highlight key info — charge, navigation mode, errors
 
 Voice settings:
-- set_volume: use when user explicitly asks to change volume
-- set_pitch: range 0.5 (very low) → 1.0 (normal) → 2.0 (high)
+- set_volume: use when user explicitly asks to change volume. action ∈
+  {louder, quieter, max, normal} — current volume changes in ±3 dB steps,
+  clamped to the [-20 dB, +6 dB] range.
+- set_pitch: use when user explicitly asks to change pitch. action ∈
+  {higher, lower, normal} — current pitch changes in ±0.2 steps,
+  clamped to the [0.5, 2.0] range; 'normal' resets to 1.0.
+- These are STEP controls (relative delta from current state), NOT absolute
+  values. There is no tool to set an exact pitch (e.g. 1.7) — only step up/down.
+- Do NOT embed `<prosody pitch="...">` inside `speak_text` text as a workaround
+  for changing pitch: on MiniMax / Yandex providers the prosody tag is stripped
+  to plain text and the pitch attribute is silently ignored. To actually change
+  pitch, call `set_pitch` as a separate tool.
 
 Return a concise 1–2 sentence result.
 Example: "Battery 73%, navigation active, 14:35, Tuesday 24 February 2026."
