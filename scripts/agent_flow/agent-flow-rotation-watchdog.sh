@@ -33,6 +33,16 @@
 #   ROTATION_DEAD_MIN    — мин окна (default 120 = 2h)
 #   WATCHDOG_DRY_RUN=true — только логировать, не алертить
 # ============================================================================
+set +e
+# shellcheck source=lib_cron_env.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib_cron_env.sh" || {
+    printf "[%s] %s: lib_cron_env preflight failed — exit 1
+" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(basename "${BASH_SOURCE[0]:-$0}")" >&2
+    exit 1
+}
+set -euo pipefail
+
 set -euo pipefail
 
 GH_REPO="${GH_REPO:-krikz/rob_box_project}"

@@ -103,6 +103,15 @@ EXPECTED=(
     # post-merge-build для verify_recent_run() — общий контракт dedup'а
     # вместо копи-пасты. Должен лежать рядом со скриптами во всех профилях.
     lib_workflow_dedup.sh
+    # Shared library (ретро t_a2521b07, 31.08 — cron no-agent env fragile):
+    # source'ится из 15 no-agent cron-скриптов (см. patch_lib_cron_env.sh)
+    # для FORCE HOME=/home/builder, HERMES_HOME=/home/builder/.hermes,
+    # GH_CONFIG_DIR=/home/builder/.config/gh и подгрузки
+    # profiles/agent-flow/.env (export-existing-wins). Без него `gh auth
+    # status` падает на sandbox-HOME из cron-env, и `: ${GH_REPO:?...}`
+    # падает без GH_REPO из .env (24-fail agent-flow-unlabeled-sweep,
+    # 16-fail agent-flow-blocked-watchdog и т.д.).
+    lib_cron_env.sh
     # Self-id / whoami helper (issue #1534): source'ится из 4 процессных
     # скриптов (merge-gate / triage / e2e-process / completion-check) чтобы
     # перед каждым side-effect на PR/issue писать «🤖 [agent:<role>]
@@ -646,6 +655,11 @@ verify_three_copies_md5sum "padavan-step4-voice-smoke.sh" \
     "/home/builder/.hermes/profiles/architect/scripts/padavan-step4-voice-smoke.sh" \
     "/home/builder/.hermes/profiles/devops/scripts/padavan-step4-voice-smoke.sh" \
     "/home/builder/.hermes/scripts/padavan-step4-voice-smoke.sh"
+verify_three_copies_md5sum "lib_cron_env.sh" \
+    "/home/builder/.hermes/profiles/agent-flow/scripts/lib_cron_env.sh" \
+    "/home/builder/.hermes/profiles/architect/scripts/lib_cron_env.sh" \
+    "/home/builder/.hermes/profiles/devops/scripts/lib_cron_env.sh" \
+    "/home/builder/.hermes/scripts/lib_cron_env.sh"
 
 echo
 echo "==> Telegram token sanity (retro 12.08 t_5af222ea): >1 active TELEGRAM_BOT_TOKEN = reconnect loop"

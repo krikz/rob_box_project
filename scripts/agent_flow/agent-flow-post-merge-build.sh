@@ -40,6 +40,16 @@
 #      GitHub сериализует одинаковые workflow по workflow_name+head_branch.
 #
 # Pure bash. No LLM. Idempotent.
+set +e
+# shellcheck source=lib_cron_env.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib_cron_env.sh" || {
+    printf "[%s] %s: lib_cron_env preflight failed — exit 1
+" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(basename "${BASH_SOURCE[0]:-$0}")" >&2
+    exit 1
+}
+set -euo pipefail
+
 set -euo pipefail
 
 # --- defaults (overridden by env / .env) -------------------------------------

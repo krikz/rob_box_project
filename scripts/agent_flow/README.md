@@ -521,6 +521,60 @@ hermes cron resume <job_id>      # обратно включить
 resume (порядок важен, см. skill `synthesis-tts-chain-debugging` §
 «CRITICAL: pause → patch → resume для crons»).
 
+## ⚠️ Cron-env-fragility (ретро t_a2521b07, 31.08)
+
+**Любой no-agent cron-скрипт ДОЛЖЕН source'ить `lib_cron_env.sh`** в самом
+начале (ДО `set -euo pipefail`). Иначе при тике из devops-профиля:
+
+1. `$HOME` приходит из sandbox: `/home/builder/.hermes/profiles/devops/home`
+   (НЕ реальный user-home). `gh auth status` ищет конфиг в
+   `$HOME/.config/gh/hosts.yml` → не находит → **exit 1**.
+2. `$HERMES_HOME` приходит из sandbox: `/home/builder/.hermes/profiles/devops`.
+   `.env` лежит в `/home/builder/.hermes/profiles/agent-flow/.env` →
+   путь разваливается → GH_REPO/KANBAN_BOARD пустые → guard
+   `: ${GH_REPO:?...}` → **exit 1**.
+
+Исторические fail-streaks (по архиву `hermes cron list`):
+- `agent-flow-blocked-watchdog` — 16 fail подряд (exit 1 на `gh auth status`)
+- `agent-flow-unlabeled-sweep` — 24 fail подряд (exit 1 на `: ${GH_REPO:?...}`)
+  (частично зафикшен через копипасту `ENV_FILE` fallback в
+  `agent-flow-unlabeled-sweep.sh`, см. ретро t_9b0d60f7)
+
+### Правильный env-bootstrap (в каждом no-agent cron-скрипте)
+
+```bash
+# В НАЧАЛЕ скрипта (после SOT-баннера, ДО `set -euo pipefail`):
+set +e
+# shellcheck source=lib_cron_env.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib_cron_env.sh" || {
+    printf "[%s] %s: lib_cron_env preflight failed — exit 1\n" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(basename "${BASH_SOURCE[0]:-$0}")" >&2
+    exit 1
+}
+set -euo pipefail
+```
+
+`lib_cron_env.sh` FORCE'ит:
+- `HOME=/home/builder`
+- `GH_CONFIG_DIR=/home/builder/.config/gh`
+- `HERMES_HOME=/home/builder/.hermes`
+- Подгружает `/home/builder/.hermes/profiles/agent-flow/.env`
+  (export-existing-wins — если caller уже задал, не перезаписываем)
+- Safety-net defaults: `GH_REPO=krikz/rob_box_project`,
+  `KANBAN_BOARD=robbox`, `REPO_DIR=/home/builder/hermes-share/rob_box_project`
+
+### Mass-patch helper
+
+`scripts/agent_flow/patch_lib_cron_env.sh` — идемпотентный awk-скрипт,
+который добавляет source-блок во все no-agent cron-скрипты разом.
+Используется:
+- при создании нового cron-скрипта (добавить в TARGETS в `patch_lib_cron_env.sh`);
+- при ретро в стиле «cron X упал на env» (запустить, добавить в TARGETS).
+
+Regression test: `tests/test_lib_cron_env.sh` (запускается с пустым
+`$HOME`/`$HERMES_HOME`/`$GH_CONFIG_DIR`, проверяет, что скрипт
+выставляет real paths).
+
 ## MAINTENANCE-flag
 
 Общий kill-switch: файл `MAINTENANCE` в `origin/develop`. Если он есть —

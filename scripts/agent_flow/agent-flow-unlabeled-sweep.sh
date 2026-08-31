@@ -93,42 +93,26 @@ STALE_LABEL="${STALE_LABEL:-${STALE_LABEL_DEFAULT}}"
 
 PREFIX="[agent-flow-unlabeled-sweep]"
 
-# --- MAINTENANCE gate + env (из .env если есть) -----------------------------
-# Ретро 31.08 (t_9b0d60f7, agent-flow-unlabeled-sweep cron 24-fail подряд):
-# Ретро 28.08 (t_faac94b0, e2e-fail-streak-no-escalation): предыдущая
-# версия использовала `read IFS='='` парсинг key=val — он уже заменён на
-# `set -a; .` ниже; новый код superset (robust + ENV_FILE-fallback).
-#
-# Supersedes ретро 28.08 (t_faac94b0) — добавляет robust fallback по
-# нескольким кандидатам ENV_FILE (однокандидатный fix развит до multi-candidate).
-#
-# Скрипт падал в no_agent cron-режиме когда `$HERMES_HOME` в env указывал
-# на профильную папку (например `/home/builder/.hermes/profiles/devops`),
-# ENV_FILE вычислялся в `<profile>/profiles/agent-flow/.env` — не существовал
-# → set -e срабатывал раньше source → GH_REPO оставался пустым →
-# `: "${GH_REPO:?...}"` exit 1. Robust-фикс:
-#   (1) Пробуем несколько кандидатов ENV_FILE (по убыванию приоритета):
-#       - $HERMES_HOME/profiles/agent-flow/.env (как был)
-#       - $HOME/.hermes/profiles/agent-flow/.env (system-cron, ~ = HOME)
-#       - /home/builder/.hermes/profiles/agent-flow/.env (absolute fallback)
-#   (2) Используем `set -a; . "$ENV_FILE"; set +a` — robust к `=` в значениях,
-#       не падает на пустом .env.
-#   (3) Финальная проверка GH_REPO сообщает какой ENV_FILE пробовался.
-ENV_FILE=""
-for _candidate in \
-  "$HERMES_HOME/profiles/agent-flow/.env" \
-  "$HOME/.hermes/profiles/agent-flow/.env" \
-  "/home/builder/.hermes/profiles/agent-flow/.env"; do
-  if [ -n "$_candidate" ] && [ -f "$_candidate" ]; then
-    ENV_FILE="$_candidate"
-    break
-  fi
-done
-if [ -n "$ENV_FILE" ]; then
-  # shellcheck disable=SC1090
-  set -a; . "$ENV_FILE"; set +a
-fi
-: "${GH_REPO:?GH_REPO must be set (owner/repo) — checked $HERMES_HOME/profiles/agent-flow/.env, $HOME/.hermes/profiles/agent-flow/.env, /home/builder/.hermes/profiles/agent-flow/.env}"
+# ============================================================================
+# Env preflight — ОБЯЗАТЕЛЬНО ДО set -e (lib_cron_env.sh FORCE'ит HOME/HERMES_HOME
+# /GH_CONFIG_DIR и подгружает .env, иначе guard `: ${GH_REPO:?...}` = exit 1).
+# Ретро t_a2521b07 (31.08, cron no-agent env fragile): раньше был свой
+# ENV_FILE-fallback через HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"
+# (фикс t_9b0d60f7), но это копипаста в каждом скрипте. Перешли на общий
+# lib_cron_env.sh — он же FORCE'ит HOME/HERMES_HOME/GH_CONFIG_DIR (а не только
+# fallback) и ловит sandbox-HOME из cron-env.
+# Альтернатива (develop HEAD): `set -a; . $ENV_FILE; set +a` — но это хрупкий
+# паттерн (заэкспортит ВСЕ переменные из .env, в т.ч. локальные функции),
+# плюс не решает root cause: sandbox HOME/HERMES_HOME всё равно приходят
+# из cron-env, и `gh auth status` ниже всё равно упадёт.
+set +e
+# shellcheck source=lib_cron_env.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib_cron_env.sh" || {
+    printf "[%s] %s: lib_cron_env preflight failed — exit 1\n" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(basename "${BASH_SOURCE[0]:-$0}")" >&2
+    exit 1
+}
+set -euo pipefail
 
 log() { printf '%s %s %s\n' "$PREFIX" "$(date -Iseconds)" "$*" >&2; }
 

@@ -11,6 +11,16 @@
 # ============================================================================
 # agent-flow-handoff.sh — Phase 2: done card -> approved, blocked child.
 # Idempotent, no LLM. Configuration is read from agent-flow/.env.
+set +e
+# shellcheck source=lib_cron_env.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib_cron_env.sh" || {
+    printf "[%s] %s: lib_cron_env preflight failed — exit 1
+" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(basename "${BASH_SOURCE[0]:-$0}")" >&2
+    exit 1
+}
+set -euo pipefail
+
 set -euo pipefail
 # NOTE: hardcode /home/builder/.hermes — cron from per-profile gateway sets
 # HERMES_HOME to the profile dir; ENV_FILE would then point at a non-existent

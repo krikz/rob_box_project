@@ -24,6 +24,18 @@
 # без process-меток).
 # ============================================================================
 
+# ============================================================================
+# Env preflight (ретро t_a2521b07, cron no-agent env fragile): FORCE'им
+# HOME/HERMES_HOME/GH_CONFIG_DIR реального юзера, иначе `gh auth token`
+# ниже пытается читать из sandbox-HOME → null → GH_TOKEN пустой →
+# downstream agent-flow-e2e-process.sh падает на `gh auth status`.
+set +e
+# shellcheck source=lib_cron_env.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib_cron_env.sh" || {
+    printf "[%s] %s: lib_cron_env preflight failed — exit 1\n" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(basename "${BASH_SOURCE[0]:-$0}")" >&2
+    exit 1
+}
 set -uo pipefail  # без -e — ошибки скрипта НЕ должны убивать cron-job
 
 # 1. env из профильного .env (там GH_REPO, KANBAN_BOARD, MAINTENANCE_*).

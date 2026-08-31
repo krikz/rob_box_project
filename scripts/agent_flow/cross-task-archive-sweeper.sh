@@ -65,6 +65,16 @@
 #   1 — не удалось открыть БД (критическая проблема — нужно вмешательство)
 #   2 — usage error
 # ============================================================================
+set +e
+# shellcheck source=lib_cron_env.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib_cron_env.sh" || {
+    printf "[%s] %s: lib_cron_env preflight failed — exit 1
+" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(basename "${BASH_SOURCE[0]:-$0}")" >&2
+    exit 1
+}
+set -euo pipefail
+
 set -euo pipefail
 
 # _LIB_DIR_HERE — каноническое место скрипта (нужно для питоновских

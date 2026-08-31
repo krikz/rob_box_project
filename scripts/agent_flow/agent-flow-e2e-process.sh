@@ -73,6 +73,16 @@
 # is the merge-gate's contract (PR must be mergeable + CI green). We pick up
 # where merge-gate left off.
 
+set +e
+# shellcheck source=lib_cron_env.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib_cron_env.sh" || {
+    printf "[%s] %s: lib_cron_env preflight failed — exit 1
+" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(basename "${BASH_SOURCE[0]:-$0}")" >&2
+    exit 1
+}
+set -euo pipefail
+
 set -euo pipefail
 
 # --- library bootstrap -------------------------------------------------------

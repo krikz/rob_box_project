@@ -33,6 +33,16 @@
 # Env: GH_REPO, STALE_HOURS, SSHPASS (или -p open), MAIN_PI_IP, VISION_PI_IP,
 #      SSH_USER, SSH_OPTS, LOCK_FILE, DRY_RUN, HERMES_HOME
 # ============================================================================
+set +e
+# shellcheck source=lib_cron_env.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib_cron_env.sh" || {
+    printf "[%s] %s: lib_cron_env preflight failed — exit 1
+" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(basename "${BASH_SOURCE[0]:-$0}")" >&2
+    exit 1
+}
+set -euo pipefail
+
 set -euo pipefail
 
 HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}"

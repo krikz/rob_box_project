@@ -41,6 +41,16 @@
 #
 # Собственный clone для git-операций (НЕ трогаем общий REPO_DIR — там живут
 # worktree'ы других агентов, и он часто сидит на фича-ветке с незакоммиченным).
+set +e
+# shellcheck source=lib_cron_env.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib_cron_env.sh" || {
+    printf "[%s] %s: lib_cron_env preflight failed — exit 1
+" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(basename "${BASH_SOURCE[0]:-$0}")" >&2
+    exit 1
+}
+set -euo pipefail
+
 set -euo pipefail
 
 # --- defaults (env-overridable) ---------------------------------------------

@@ -50,7 +50,25 @@
 #     (orphan может быть только для develop/feature/avatar).
 #   - comment в issue должен быть idempotent — если за последние 24h уже
 #     был написан marker "agent-flow-blocked-watchdog: closing", skip.
+#
+# Env bootstrap (ретро t_a2521b07, 31.08 — cron no-agent env fragile):
+#   set -euo pipefail; ... ; `gh auth status` — но $HOME пришёл из sandbox
+#   (/home/builder/.hermes/profiles/devops/home), gh ищет
+#   $HOME/.config/gh/hosts.yml → не находит → exit 1. Решение: source'им
+#   lib_cron_env.sh ДО set -e (set +e ... source ... set -e) — он FORCE'ом
+#   ставит HOME=/home/builder, GH_CONFIG_DIR=/home/builder/.config/gh,
+#   HERMES_HOME=/home/builder/.hermes и подгружает profiles/agent-flow/.env
+#   (export-existing-wins). GH_REPO остаётся как есть (caller всё равно
+#   переопределяет дефолтом ниже — на случай если .env не выставил).
 # ============================================================================
+# Env preflight — ОБЯЗАТЕЛЬНО ДО set -e, иначе preflight-fail = exit 1
+# без понятного сообщения.
+set +e
+# shellcheck source=lib_cron_env.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib_cron_env.sh" || {
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] blocked-watchdog: lib_cron_env preflight failed — exit 1" >&2
+    exit 1
+}
 set -euo pipefail
 
 GH_REPO="${GH_REPO:-krikz/rob_box_project}"
