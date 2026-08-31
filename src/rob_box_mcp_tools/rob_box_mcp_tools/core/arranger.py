@@ -399,6 +399,45 @@ def parse_notes(raw: Optional[str]) -> Tuple[float, ...]:
     return tuple(out)
 
 
+# 🔴 FIX (issue #1803): рисунок play(...), чья длина не делит такт, плывёт
+# относительно соседних слоёв на каждом повторе. Живые прогоны 30-31.08,
+# четыре трека подряд — модель писала "X..o.X.o." (9 шагов) рядом с
+# "....o..." (8 шагов): 9 не кратно 8, и уже со второго такта рисунки
+# расходятся по фазе. Модель символы не считает и считать не научится —
+# длина приводится к ближайшей СВЕРХУ степени двойки (4, 8, 16, 32, ...).
+# Округление именно вверх, а не вниз: степень двойки всегда кратна всем
+# меньшим степеням двойки, поэтому паттерн остаётся в фазе с любым другим
+# слоем той же природы, а округление вниз обрезало бы последний удар.
+#
+# 🔴 FIX (ревью после первого прохода): добивка ставилась символом "-".
+# Это НЕ пауза в FoxDot/Renardo — "-" маппится на реальный сэмпл ("hyphen",
+# renardo_gatherer/collections.py) и физически лежит в каждом сэмпл-паке
+# (samples/0_foxdot_default/_/hyphen), т.е. это звучащий хэт. Семь "-" на
+# конце девятишагового рисунка добавляли модели семь ударов, которых она
+# не писала — эффект хуже исходного уползания по фазе. Настоящая пауза —
+# "." (для неё сэмпл-каталога нет ни в одном паке); ею и добиваем.
+def _next_pow2(n: int) -> int:
+    """Наименьшая степень двойки, которая ``>= n`` (``n >= 1``)."""
+    p = 1
+    while p < n:
+        p *= 2
+    return p
+
+
+def _normalize_bar_pattern(pattern: str) -> str:
+    """Привести длину рисунка ``play(...)`` к степени двойки (issue #1803).
+
+    Паттерны длиной 0 или 1 уже тривиально делят такт — не трогаем.
+    """
+    n = len(pattern)
+    if n <= 1:
+        return pattern
+    target = _next_pow2(n)
+    if target == n:
+        return pattern
+    return pattern + "." * (target - n)
+
+
 def spec_from_flat(
     *,
     bpm: float = 120.0,
@@ -433,7 +472,11 @@ def spec_from_flat(
 
     if drums and drums.strip():
         layers.append(
-            Layer(role="drums", pattern=drums.strip(), sample=int(drums_sample or 0))
+            Layer(
+                role="drums",
+                pattern=_normalize_bar_pattern(drums.strip()),
+                sample=int(drums_sample or 0),
+            )
         )
     if hats and hats.strip():
         # 🔴 FIX (live 31.08): здесь стояло sample=3 намертво. В библиотеке
@@ -443,11 +486,19 @@ def spec_from_flat(
         # тембр во всех треках слышится как «однотипно» ровно так же, как
         # одна и та же мелодия.
         layers.append(
-            Layer(role="hats", pattern=hats.strip(), sample=int(hats_sample or 0))
+            Layer(
+                role="hats",
+                pattern=_normalize_bar_pattern(hats.strip()),
+                sample=int(hats_sample or 0),
+            )
         )
     if perc and perc.strip():
         layers.append(
-            Layer(role="perc", pattern=perc.strip(), sample=int(perc_sample or 0))
+            Layer(
+                role="perc",
+                pattern=_normalize_bar_pattern(perc.strip()),
+                sample=int(perc_sample or 0),
+            )
         )
 
     for role, synth, notes in (

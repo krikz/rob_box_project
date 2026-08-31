@@ -7,6 +7,7 @@ test_music.py - Unit тесты для инструментов управлен
 - ExecuteMusicCodeTool, StopMusicTool, SetVibePresetTool, GetMusicStateTool
 """
 
+import re
 import sys
 import time
 from types import SimpleNamespace
@@ -287,6 +288,206 @@ class TestMusicManagerCaps:
         assert self.mgr.dj_mode_enabled is True
         self.mgr.set_dj_mode(False)
         assert self.mgr.dj_mode_enabled is False
+
+
+# ---------------------------------------------------------------------------
+# MusicManager — issue #1803: рисунок play(...) должен делить такт
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicManagerPatternLength:
+    """``_fix_pattern_length`` достраивает рисунок до степени двойки.
+
+    Живые прогоны 30-31.08, четыре трека подряд — барабаны «плыли», потому
+    что модель писала рисунки, чья длина не делит такт (см. issue #1803).
+    """
+
+    def setup_method(self):
+        self.mgr = _make_manager()
+
+    def test_nine_step_pattern_padded_to_sixteen(self):
+        # Ровно та строка из джаз-трека 30.08: 9 шагов вместо 8/16.
+        code = 'd1 >> play("X..X.o...")'
+        out = self.mgr._fix_pattern_length(code)
+        assert 'play("X..X.o...' + "." * 7 + '")' in out
+
+    def test_pad_character_is_a_true_rest_not_a_sample(self):
+        """Живой инцидент: добивка ``-`` — это звучащий сэмпл "hyphen"
+        (renardo_gatherer/collections.py, каталог
+        samples/0_foxdot_default/_/hyphen существует на роботе), а не
+        пауза. У ``.`` сэмпл-каталога нет ни в одном паке — это и есть
+        настоящая тишина. Проверяем инвариант напрямую: нормализация не
+        должна добавлять НИ ОДНОГО звучащего символа, только точки.
+        """
+        code = 'd1 >> play("X..o.X.o.")'  # 9 шагов, диско трек 6, live 31.08
+        out = self.mgr._fix_pattern_length(code)
+        pattern = re.search(r'play\("([^"]*)"\)', out).group(1)
+        assert len(pattern) == 16
+        assert pattern.startswith("X..o.X.o.")
+        added = pattern[len("X..o.X.o."):]
+        assert added == "." * len(added)
+        assert "-" not in pattern
+
+    def test_power_of_two_pattern_is_untouched(self):
+        # "....o..." — 8 шагов, уже степень двойки: трогать нечего.
+        code = 'd3 >> play("....o...")'
+        assert self.mgr._fix_pattern_length(code) == code
+
+    def test_nine_step_disco_pattern_padded_to_sixteen(self):
+        code = 'd1 >> play("X..o.X.o.")'  # 9 шагов, диско трек 6, live 31.08
+        out = self.mgr._fix_pattern_length(code)
+        assert len(re.search(r'play\("([^"]*)"\)', out).group(1)) == 16
+
+    def test_single_quoted_pattern_is_handled(self):
+        code = "d1 >> play('X..o.X.o.')"  # 9 шагов, диско трек 6
+        out = self.mgr._fix_pattern_length(code)
+        assert "play('X..o.X.o." + "." * 7 + "')" in out
+
+    def test_eighteen_step_pattern_padded_to_thirty_two(self):
+        # Финал диджей-сета: d2 >> play("V..o.....V..o.....") — 18 шагов.
+        code = 'd2 >> play("V..o.....V..o.....")'
+        out = self.mgr._fix_pattern_length(code)
+        match = re.search(r'play\("([^"]*)"\)', out)
+        assert len(match.group(1)) == 32
+        assert match.group(1).startswith("V..o.....V..o.....")
+
+    def test_short_pattern_left_alone(self):
+        code = 'd1 >> play("X")'
+        assert self.mgr._fix_pattern_length(code) == code
+
+    def test_multiple_layers_each_normalized_independently(self):
+        # Дэт-метал трек: три рассинхронизированных рисунка в одном коде.
+        code = (
+            'd1 >> play("X...X...X...X...")\n'
+            'd2 >> play("..........o.......")\n'
+            'd3 >> play("---.-.-.-.-.-.-")\n'
+        )
+        out = self.mgr._fix_pattern_length(code)
+        lengths = [len(m.group(1)) for m in re.finditer(r'play\("([^"]*)"\)', out)]
+        assert lengths == [16, 32, 16]
+
+    def test_execute_code_applies_pattern_fix_before_sending_to_renardo(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code('d1 >> play("X..X.o...")')
+        assert result["success"] is True
+        assert "-" not in result["code"]
+        assert 'play("X..X.o...' + "." * 7 + '")' in result["code"]
+        executed_code = mock_exec.call_args[0][0]
+        assert 'play("X..X.o...' + "." * 7 + '")' in executed_code
+
+
+# ---------------------------------------------------------------------------
+# MusicManager — issue #1804: только d1-d3/p1-p3 звучат на роботе
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMusicManagerSlotRemap:
+    """``_remap_illegal_slots`` спасает слои из d4+/p4+ (issue #1804).
+
+    Живой прогон 31.08, «в траве сидел кузнечик»: ``p4 >> play(...)`` не
+    звучал — на роботе физически подключены только d1-d3/p1-p3, а тул
+    рапортовал success. Правило было только в промпте, кода-стража не было.
+    """
+
+    def setup_method(self):
+        self.mgr = _make_manager()
+
+    def test_illegal_play_slot_moves_to_free_d_slot(self):
+        code = 'p4 >> play("..o...o.", amp=0.2)'
+        out, error = self.mgr._remap_illegal_slots(code)
+        assert error is None
+        assert 'd1 >> play("..o...o.", amp=0.2)' in out
+
+    def test_illegal_synth_slot_moves_to_free_p_slot(self):
+        code = 'd4 >> pluck([0, 2, 4])'
+        out, error = self.mgr._remap_illegal_slots(code)
+        assert error is None
+        assert "p1 >> pluck([0, 2, 4])" in out
+
+    def test_preferred_category_full_falls_back_to_the_other(self):
+        # d1-d3 уже заняты — play() из d4 должен уйти в p-слот.
+        code = (
+            'd1 >> play("x")\n'
+            'd2 >> play("x")\n'
+            'd3 >> play("x")\n'
+            'd4 >> play("o")\n'
+        )
+        out, error = self.mgr._remap_illegal_slots(code)
+        assert error is None
+        assert 'p1 >> play("o")' in out
+
+    def test_no_free_slots_returns_honest_error_instead_of_silence(self):
+        code = (
+            'd1 >> play("x")\n'
+            'd2 >> play("x")\n'
+            'd3 >> play("x")\n'
+            'p1 >> pluck([0])\n'
+            'p2 >> pluck([2])\n'
+            'p3 >> pluck([4])\n'
+            'p4 >> play("o")\n'
+        )
+        out, error = self.mgr._remap_illegal_slots(code)
+        assert error is not None
+        assert "p4" in error
+        assert out == code  # исходный код не подменяется на невалидный
+
+    def test_repeated_illegal_name_reuses_the_same_new_slot(self):
+        # Один и тот же p4 упомянут дважды — не должен расщепиться на два
+        # разных плеера.
+        code = 'p4 >> play("x")\np4.amp = 0.3\n'
+        # `.amp =` не матчится ассайн-регексом (нет `>>`), поэтому
+        # проверяем именно случай двух `>>`-строк на одно илегальное имя:
+        code2 = 'p4 >> play("x")\np4 >> play("o")\n'
+        out, error = self.mgr._remap_illegal_slots(code2)
+        assert error is None
+        assert out.count("d1 >>") == 2
+
+    def test_the_live_grasshopper_incident_is_fixed(self):
+        # Ровно тот код из живого прогона 31.08.
+        code = (
+            "p1 >> blip([0,2,4,7,9,7,4,2], dur=0.25, amp=0.4)\n"
+            "p2 >> dub([0,0,0,-2], dur=0.5, oct=3, amp=0.35)\n"
+            'p3 >> play("X..X..X.", amp=0.25)\n'
+            'p4 >> play("..o...o.", amp=0.2)\n'
+        )
+        out, error = self.mgr._remap_illegal_slots(code)
+        assert error is None
+        assert "p4" not in out
+        assert 'd1 >> play("..o...o.", amp=0.2)' in out
+
+    def test_allowed_slots_are_never_touched(self):
+        code = "p1 >> pluck([0])\nd2 >> play('x-o-')\n"
+        out, error = self.mgr._remap_illegal_slots(code)
+        assert error is None
+        assert out == code
+
+    def test_execute_code_rejects_when_all_slots_are_taken(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        code = (
+            'd1 >> play("x")\n'
+            'd2 >> play("x")\n'
+            'd3 >> play("x")\n'
+            'p1 >> pluck([0])\n'
+            'p2 >> pluck([2])\n'
+            'p3 >> pluck([4])\n'
+            'p4 >> play("o")\n'
+        )
+        with patch("builtins.exec"):
+            result = mgr.execute_code(code)
+        assert result["success"] is False
+        assert "слот" in result["error"].lower()
+
+    def test_execute_code_remaps_before_sending_to_renardo(self):
+        mgr = _make_manager(sc_running=True, renardo_available=True)
+        with patch("builtins.exec") as mock_exec:
+            result = mgr.execute_code('p4 >> play("..o...o.")')
+        assert result["success"] is True
+        executed_code = mock_exec.call_args[0][0]
+        assert "p4" not in executed_code
+        assert "d1 >>" in executed_code
 
 
 # ---------------------------------------------------------------------------

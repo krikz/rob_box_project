@@ -115,6 +115,22 @@ _DEV_PATTERN_RE = re.compile(
 _CHOP_RE = re.compile(r"\bchop\s*=\s*(?!0\b)")
 _SPACK_NONZERO_RE = re.compile(r"\bspack\s*=\s*[1-9]")
 
+# Issue #1804 — на роботе физически смонтированы только d1-d3/p1-p3.
+# Токен слева от ``>>`` в форме [dpsl]+цифра — это renardo-плеер; если он
+# вне допустимой шестёрки, код обязан переставить слой в свободный слот
+# (см. ``_remap_illegal_slots``), а не молча дать модели написать в d4/p5.
+_ALLOWED_PLAYER_SLOTS: Tuple[str, ...] = ("d1", "d2", "d3", "p1", "p2", "p3")
+_ALLOWED_PLAYER_SLOTS_SET: frozenset = frozenset(_ALLOWED_PLAYER_SLOTS)
+_PLAYER_ASSIGN_RE = re.compile(
+    r"^(?P<indent>[ \t]*)(?P<name>[dpsl]\d+)(?P<arrow>\s*>>\s*)(?P<synth>\w+)\s*\(",
+    re.MULTILINE,
+)
+
+# Issue #1803 — длина рисунка play("...") задаёт его период; если она не
+# делит такт, рисунок плывёт относительно соседних слоёв на каждом
+# повторе (см. ``_fix_pattern_length``).
+_PLAY_PATTERN_LEN_RE = re.compile(r"play\((\s*)(['\"])([^'\"]*)\2")
+
 
 # ---------------------------------------------------------------------------
 # MusicManager
@@ -973,6 +989,129 @@ class MusicManager:
 
         return errors, warnings
 
+    # ------------------------------------------------------------------
+    # Issue #1804 — d4+/p4+ не звучат на роботе, кода-стражи не было
+    # ------------------------------------------------------------------
+
+    def _remap_illegal_slots(self, code: str) -> Tuple[str, Optional[str]]:
+        """Переставить d4+/p4+/s*/l* в свободный d1-d3/p1-p3 (issue #1804).
+
+        🔴 FIX (live 31.08, «в траве сидел кузнечик»): модель написала
+
+            p1 >> blip([0,2,4,7,9,7,4,2], dur=0.25, amp=0.4)
+            p2 >> dub([0,0,0,-2], dur=0.5, oct=3, amp=0.35)
+            p3 >> play("X..X..X.", amp=0.25)
+            p4 >> play("..o...o.", amp=0.2)     ← не звучит
+
+        Малый барабан пропал без единой ошибки в логах — на роботе physически
+        подключены только d1-d3/p1-p3, а p4/d4+ существуют в самом Renardo
+        и потому `execute_code` их молча принимал. В промпте это записано
+        прямым текстом ("Stay within d1-d3 and p1-p3"), но маленькие модели
+        такие правила регулярно нарушают — играть в угадайку с промптом
+        больше нельзя, слой должен либо спастись, либо честно провалиться.
+
+        Правило переназначения: play(...) — это обычно барабаны/перкуссия
+        → предпочитаем d-слот; любой другой синт (мелодия/бас/пэд) →
+        предпочитаем p-слот. Так совпадает с разводкой ролей в
+        ``core/arranger.ROLE_PROFILE``. Если предпочитаемая категория уже
+        занята — пробуем вторую перед тем, как сдаться. Один и тот же
+        недопустимый токен (например, второе упоминание ``p4``) всегда
+        переезжает в один и тот же новый слот, чтобы не расщепить один
+        логический слой на два разных плеера.
+
+        Returns:
+            ``(код, None)`` если всё поместилось в 6 слотов, либо
+            ``(исходный_код, сообщение_об_ошибке)`` если слотов не хватило
+            — исходный код НЕ должен уходить в Renardo в этом случае.
+        """
+        occupied: set = {
+            m.group("name")
+            for m in _PLAYER_ASSIGN_RE.finditer(code)
+            if m.group("name") in _ALLOWED_PLAYER_SLOTS_SET
+        }
+        remapped: Dict[str, str] = {}
+        errors: List[str] = []
+
+        def _remap(m: re.Match) -> str:
+            name = m.group("name")
+            synth = m.group("synth")
+            if name in _ALLOWED_PLAYER_SLOTS_SET:
+                return m.group(0)
+            if name in remapped:
+                new_name = remapped[name]
+            else:
+                preferred = (
+                    _ALLOWED_PLAYER_SLOTS
+                    if synth == "play"
+                    else _ALLOWED_PLAYER_SLOTS[3:] + _ALLOWED_PLAYER_SLOTS[:3]
+                )
+                free = next((slot for slot in preferred if slot not in occupied), None)
+                if free is None:
+                    errors.append(
+                        f"'{name} >> {synth}(...)' вне d1-d3/p1-p3, а все "
+                        "6 слотов уже заняты — слой некуда переставить. "
+                        "Убери один из существующих слоёв или объедини "
+                        "паттерны."
+                    )
+                    return m.group(0)
+                occupied.add(free)
+                remapped[name] = free
+                new_name = free
+            return f"{m.group('indent')}{new_name}{m.group('arrow')}{synth}("
+
+        fixed_code = _PLAYER_ASSIGN_RE.sub(_remap, code)
+        if errors:
+            return code, "⛔ Недопустимые слоты плееров: " + " ".join(errors)
+        return fixed_code, None
+
+    # ------------------------------------------------------------------
+    # Issue #1803 — рисунок play(...), который не делит такт, плывёт
+    # ------------------------------------------------------------------
+
+    def _fix_pattern_length(self, code: str) -> str:
+        """Достроить рисунок play("...") до степени двойки (issue #1803).
+
+        🔴 FIX (живые прогоны 30-31.08, четыре трека подряд): модель писала
+        рисунки, чья длина не делит такт —
+
+            d1 >> play("X..X.o...")   9 шагов
+            d2 >> play("=..=...=")    8 шагов
+
+        9 не кратно 8: уже со второго повтора d1 и d2 расходятся по фазе
+        друг с другом, и грув «плывёт» — это особенно слышно в жанрах,
+        где сетка обязана стоять намертво (диско, метал). Модель символы
+        не считает и считать не научится — длина приводится к ближайшей
+        СВЕРХУ степени двойки. Округление вверх, а не вниз: степень
+        двойки всегда кратна всем меньшим степеням двойки, поэтому
+        дополненный рисунок остаётся в фазе с любым другим рисунком той
+        же природы, а округление вниз обрезало бы последний удар модели.
+
+        🔴 FIX (ревью после первого прохода): добивка ставилась символом
+        ``-``. Это НЕ пауза в FoxDot/Renardo — ``-`` маппится на реальный
+        сэмпл (``"hyphen"``, ``renardo_gatherer/collections.py``) и лежит
+        в каждом сэмпл-паке (``samples/0_foxdot_default/_/hyphen``), т.е.
+        это звучащий хэт. Семь ``-`` на конце девятишагового рисунка
+        добавляли модели семь ударов, которых она не писала — грув менялся
+        сильнее, чем исходное уползание по фазе, которое чинил этот метод.
+        Настоящая пауза — ``.`` (для неё сэмпл-каталога нет ни в одном
+        паке); ею и добиваем.
+        """
+
+        def _pad(m: re.Match) -> str:
+            ws, quote, pattern = m.group(1), m.group(2), m.group(3)
+            n = len(pattern)
+            if n <= 1:
+                return m.group(0)
+            target = 1
+            while target < n:
+                target *= 2
+            if target == n:
+                return m.group(0)
+            padded = pattern + "." * (target - n)
+            return f"play({ws}{quote}{padded}{quote}"
+
+        return _PLAY_PATTERN_LEN_RE.sub(_pad, code)
+
     def _cap_amp(self, code: str) -> str:
         """Ограничить громкость/октаву в коде до безопасных пределов.
 
@@ -1135,6 +1274,14 @@ class MusicManager:
                 "code": code,
             }
 
+        # Issue #1804 — d4+/p4+ физически не звучат на роботе. Переставляем
+        # слой в свободный d1-d3/p1-p3; если свободных слотов не осталось —
+        # честная ошибка вместо тихо потерянного слоя (см. #1804 и
+        # ``_remap_illegal_slots`` выше).
+        code, slot_error = self._remap_illegal_slots(code)
+        if slot_error:
+            return {"success": False, "error": slot_error, "code": code}
+
         # 🔴 FIX (live 11:41 «цоканье»): автозамена pianovel/piano → rhpiano
         # (обе используют MdaPiano физмодель — цокает/щёлкает; rhpiano —
         # компилируемый и чистый). LLM продолжает писать pianovel несмотря
@@ -1144,6 +1291,11 @@ class MusicManager:
             code = code.replace("pianovel", "rhpiano")
         # piano заменяем только если это отдельное слово (не rhpiano, pianovel и т.д.)
         code = re.sub(r"(?<![a-zA-Z])piano(?![a-zA-Z])", "rhpiano", code)
+
+        # Issue #1803 — рисунок play(...), чья длина не делит такт, плывёт
+        # относительно соседних слоёв на каждом повторе (см.
+        # ``_fix_pattern_length`` выше).
+        code = self._fix_pattern_length(code)
 
         # Ограничиваем amp до максимально допустимого значения
         code = self._cap_amp(code)
