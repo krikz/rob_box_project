@@ -148,6 +148,13 @@ EXPECTED=(
     # WARN, не валит cron tick). Вызывается LLM'ом в ШАГ 4 промпта
     # падаван-вахты (5a070bf3ed3e).
     padavan-step4-voice-smoke.sh
+    # Cron-надзор mis-scope архитектурных карточек (ADR-0036 §4.3,
+    # ретро t_aa585aa7): no-agent job, каждый час сканирует running-карточки
+    # в kanban.db, для которых age > 4ч И assignee ≠ architect/devops И
+    # body LIKE '%ADR-%', и пишет ОДИН auto-comment (idempotent через
+    # task_comments). НЕ kill, НЕ reassign — Шифу принимает решение.
+    # Регистрация cron-job делается в ensure_blocked_watchdog_scope_cron.
+    agent-flow-blocked-watchdog-scope.sh
 )
 
 # Режим --list-files: печатает EXPECTED по одному имени на строку и выходит.
@@ -591,6 +598,67 @@ ensure_blocked_watchdog_cron() {
     ensure_cron_job devops "Agent Flow Blocked Watchdog" "agent-flow-blocked-watchdog.sh" "every 4h" interval
 }
 ensure_blocked_watchdog_cron
+echo "==> Ensure cron job registration: cron-надзор mis-scope карточек (ADR-0036 §4.3, ретро t_aa585aa7)"
+# Проблема: agent-flow-blocked-watchdog-scope.sh раскладывается install.sh
+# (commit от t_aa585aa7), но cron-job НЕ создаётся автоматически. Без него
+# Шифу вынужден мониторить running-список сам — нарушает «не делай руками».
+#
+# Решение: ensure_blocked_watchdog_scope_cron() — идемпотентная функция,
+# регистрирующая interval-job (every 1h) в devops-профиле, no_agent.
+# Дубль-guard по (script + interval + enabled). Каждый тик сканирует все
+# kanban-доски, для mis-scope running-карточек пишет ОДИН alert-комментарий
+# (idempotent). Шифу eyeball'ит, решает kill/reassign/keep.
+ensure_blocked_watchdog_scope_cron() {
+    local profile_dir="/home/builder/.hermes/profiles/devops"
+    local jobs_file="$profile_dir/cron/jobs.json"
+    local job_name="Agent Flow Blocked Watchdog Scope (ADR-0036 §4.3)"
+    local job_script="agent-flow-blocked-watchdog-scope.sh"
+    local job_schedule="every 1h"
+
+    if ! command -v hermes >/dev/null 2>&1; then
+        echo "  SKIP ensure-blocked-scope-cron: hermes CLI not on PATH (nothing to register)"
+        return 0
+    fi
+    if [ ! -f "$jobs_file" ]; then
+        echo "  SKIP ensure-blocked-scope-cron: $jobs_file not present (devops profile not set up here)"
+        return 0
+    fi
+
+    # Guard: уже есть interval-job на этот script.
+    if python3 -c "
+import json, sys
+try:
+    with open('$jobs_file') as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(0)
+for j in d.get('jobs', []):
+    if j.get('script') == '$job_script' and j.get('schedule', {}).get('kind') == 'interval' and j.get('enabled'):
+        sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then
+        echo "  OK   cron job '$job_name' already registered (interval, enabled)"
+        return 0
+    fi
+
+    echo "  ADD  registering cron job '$job_name' (devops, $job_schedule, no_agent)"
+    if $DRY_RUN; then
+        echo "  [DRY] hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir '$REPO_DIR'"
+        return 0
+    fi
+    if hermes --profile devops cron create "$job_schedule" \
+        --name "$job_name" \
+        --script "$job_script" \
+        --no-agent \
+        --deliver local \
+        --workdir "$REPO_DIR" >/dev/null 2>&1; then
+        echo "  ADD  cron job created: $job_name ($job_script, $job_schedule)"
+    else
+        echo "  WARN cron job creation failed (non-fatal): $job_name — register manually:"
+        echo "       hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir $REPO_DIR"
+    fi
+}
+ensure_blocked_watchdog_scope_cron
 
 echo
 echo "==> md5sum verify: 3 copies of agent-flow scripts are byte-identical (retro 25.08 t_24e645e7)"
@@ -646,6 +714,11 @@ verify_three_copies_md5sum "padavan-step4-voice-smoke.sh" \
     "/home/builder/.hermes/profiles/architect/scripts/padavan-step4-voice-smoke.sh" \
     "/home/builder/.hermes/profiles/devops/scripts/padavan-step4-voice-smoke.sh" \
     "/home/builder/.hermes/scripts/padavan-step4-voice-smoke.sh"
+verify_three_copies_md5sum "agent-flow-blocked-watchdog-scope.sh" \
+    "/home/builder/.hermes/profiles/agent-flow/scripts/agent-flow-blocked-watchdog-scope.sh" \
+    "/home/builder/.hermes/profiles/architect/scripts/agent-flow-blocked-watchdog-scope.sh" \
+    "/home/builder/.hermes/profiles/devops/scripts/agent-flow-blocked-watchdog-scope.sh" \
+    "/home/builder/.hermes/scripts/agent-flow-blocked-watchdog-scope.sh"
 
 echo
 echo "==> Telegram token sanity (retro 12.08 t_5af222ea): >1 active TELEGRAM_BOT_TOKEN = reconnect loop"
