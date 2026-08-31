@@ -110,6 +110,12 @@ def _make_fake_node():
     node.minimax_language = "ru"
     node.minimax_sample_rate = 32000
     node.minimax_format = TTSFormat.PCM
+    # Issue #1780 — emotion / pitch / volume / pronunciation_dict
+    # defaults wired through the stub so tests can override them.
+    node.minimax_emotion = "neutral"
+    node.minimax_pitch_raw = ""
+    node.minimax_volume_raw = ""
+    node.minimax_pronunciation_dict_raw = ""
     node.audio_output_sample_rate = 16000
     node.audio_pub = MagicMock()
     node.get_logger = MagicMock()
@@ -680,3 +686,180 @@ class TestProviderLifecycleSynchronization:
 
         assert provider.closed is True
         assert node.minimax_provider is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Issue #1780 — emotion / pitch / volume / pronunciation_dict are forwarded
+# from ROS-params (via the new _parse_* helpers) into TTSSettings. These
+# tests verify the contract without touching the network or the real ROS
+# stack — we capture the TTSSettings instance the stub provider sees.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _CapturingProvider:
+    """In-process ``TTSProvider`` stand-in that records the settings it gets."""
+
+    name = "capturing"
+
+    def __init__(self, **kwargs):  # pragma: no cover - kwargs ignored
+        self.kwargs = kwargs
+
+    async def synthesize(self, text, *, settings=None):
+        self.last_settings = settings
+        # Return PCM samples so the caller can complete the happy-path.
+        from rob_box_llm.tts import TTSAudio, TTSFormat
+
+        return TTSAudio(samples=b"\x00\x00" * 16, sample_rate=16_000, format=TTSFormat.PCM)
+
+    async def stream(self, text, *, settings=None):
+        raise NotImplementedError
+
+    async def aclose(self) -> None:
+        return None
+
+
+class TestProsodyForwarding:
+    """Voice-prosody knobs reach the provider verbatim."""
+
+    def _wire_provider(self, node, monkeypatch):
+        provider = _CapturingProvider()
+        monkeypatch.setattr(tts_node, "MiniMaxTTSProvider", lambda **kw: provider)
+        node._minimax_provider_initialized = True
+        node.minimax_provider = provider
+
+        # ``_decode_minimax_audio`` is a regular (non-async) method in
+        # production; the production caller in ``_synthesize_minimax_async``
+        # assigns its return value directly (no ``await``). Match that
+        # shape so the call site stays in sync with the real code.
+        def _fake_decode(*_args, **_kwargs):
+            import numpy as np
+
+            return np.zeros(16, dtype=np.float32), 16_000
+
+        node._decode_minimax_audio = _fake_decode
+        return provider
+
+    def test_emotion_pitch_volume_populate_voice_setting(self, monkeypatch):
+        """Non-empty emotion/pitch/volume produce the ``voice_setting.*`` keys."""
+        node = _make_fake_node()
+        # Defaults from the stub match the YAML defaults; override to
+        # values that are NOT MiniMax's implicit defaults so we can
+        # observe the wire shape unambiguously.
+        node.minimax_emotion = "happy"
+        node.minimax_pitch_raw = "3"
+        node.minimax_volume_raw = "1.5"
+
+        provider = self._wire_provider(node, monkeypatch)
+
+        out = asyncio.run(
+            tts_node.TTSNode._synthesize_minimax_async(node, "hello")
+        )
+        assert "audio_np" in out  # happy-path reached
+        settings = provider.last_settings
+        assert settings.emotion == "happy"
+        assert settings.pitch == 3
+        assert settings.volume == 1.5
+
+    def test_empty_pitch_and_volume_default_to_none(self, monkeypatch):
+        """Empty ROS-params (string '') → field omitted from TTSSettings.
+
+        This is the pre-#1780 behaviour: nothing in voice_setting beyond
+        what the existing default produces.
+        """
+        node = _make_fake_node()
+        node.minimax_emotion = "neutral"
+        node.minimax_pitch_raw = ""
+        node.minimax_volume_raw = ""
+        node.minimax_pronunciation_dict_raw = ""
+
+        provider = self._wire_provider(node, monkeypatch)
+
+        asyncio.run(tts_node.TTSNode._synthesize_minimax_async(node, "hi"))
+
+        settings = provider.last_settings
+        assert settings.pitch is None
+        assert settings.volume is None
+        assert settings.pronunciation_dict is None
+        # Emotion has a default — "neutral" — so it IS in TTSSettings
+        # (matches API default, behaviour-equivalent).
+        assert settings.emotion == "neutral"
+
+    def test_pronunciation_dict_json_string_parsed(self, monkeypatch):
+        """``minimax_pronunciation_dict`` accepts a JSON-encoded dict."""
+        node = _make_fake_node()
+        node.minimax_pronunciation_dict_raw = (
+            '{"tone": ["Alice/ˈælɪs", "Bob/bɑb"]}'
+        )
+
+        provider = self._wire_provider(node, monkeypatch)
+
+        asyncio.run(tts_node.TTSNode._synthesize_minimax_async(node, "hi"))
+
+        settings = provider.last_settings
+        assert settings.pronunciation_dict == {
+            "tone": ["Alice/ˈælɪs", "Bob/bɑb"]
+        }
+
+    def test_pronunciation_dict_garbage_string_is_ignored(self, monkeypatch):
+        """Malformed JSON in the YAML doesn't crash the node — field is omitted."""
+        node = _make_fake_node()
+        node.minimax_pronunciation_dict_raw = "not a json"
+
+        provider = self._wire_provider(node, monkeypatch)
+
+        asyncio.run(tts_node.TTSNode._synthesize_minimax_async(node, "hi"))
+
+        settings = provider.last_settings
+        assert settings.pronunciation_dict is None
+
+
+class TestParseHelpers:
+    """Direct unit tests for the helper parsers (no ROS, no network)."""
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            (None, None),
+            ("", None),
+            ("  ", None),
+            ("3", 3),
+            ("-2", -2),
+            ("12.7", None),  # not int-parseable
+            (0, 0),
+            (5, 5),
+        ],
+    )
+    def test_parse_optional_int(self, raw, expected):
+        assert tts_node._parse_optional_int(raw) == expected
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            (None, None),
+            ("", None),
+            ("  ", None),
+            ("1.5", 1.5),
+            ("0.0", 0.0),
+            ("10", 10.0),
+            ("abc", None),  # not float-parseable
+            (1.0, 1.0),
+        ],
+    )
+    def test_parse_optional_float(self, raw, expected):
+        assert tts_node._parse_optional_float(raw) == expected
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            (None, None),
+            ("", None),
+            ("  ", None),
+            ('{"tone": ["a/ɑ"]}', {"tone": ["a/ɑ"]}),
+            ("not json", None),
+            ("[]", None),  # not a Mapping
+            ("42", None),  # not a Mapping
+            ({"tone": ["x"]}, {"tone": ["x"]}),  # already a Mapping
+        ],
+    )
+    def test_parse_pronunciation_dict(self, raw, expected):
+        assert tts_node._parse_pronunciation_dict(raw) == expected
