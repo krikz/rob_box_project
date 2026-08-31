@@ -149,6 +149,39 @@ CRITICAL_EXCLUDE_COMMON = [
     # team can address the underlying preload separately.
     r"error: synthdef \S+ not found",
     r"failure in server /s_new synthdef not found",
+    # SuperCollider startup noise (issue #1802, deploy run 33395279992 31.08):
+    # FoxDot/Renardo cleanup path sends `/n_free Node <id>` for SynthDef
+    # nodes that were already freed by sclang during the headless shutdown
+    # sequence (node <id> not found is the expected reply). The scsynth
+    # server logs `FAILURE IN SERVER /n_free Node <id> not found` and the
+    # `failure` keyword trips CRITICAL_MATCH_RE → false deploy-critical on
+    # fully-green runs (Vision Pi supercollider + voice-assistant both stay
+    # healthy: 189 topics, container_status=true, music stack degraded-but-
+    # usable). Real scsynth crashes still match a different wording
+    # (`Exception in Server...`) which is NOT covered here, so genuine
+    # outages are still surfaced. Narrowed to `/n_free` so unrelated
+    # FAILURE IN SERVER lines (e.g. group/free races on /g_free) are still
+    # reported — those need an operator's eye.
+    r"failure in server /n_free node \S+ not found",
+    # Voice-assistant bootstrap echo (issue #1802, deploy run 33395279992
+    # 31.08): start_voice_assistant.sh prints `⚠ Music stack validation
+    # found non-critical errors (degraded but usable)` whenever
+    # validate_music_stack.py exits non-zero but did not declare a fatal
+    # sclang crash — see docker/vision/scripts/voice_assistant/start_voice_
+    # assistant.sh:138 and src/rob_box_voice/scripts/validate_music_stack.py
+    # (returns 1 on degraded mode). The container is INTENTIONALLY
+    # continuing with a degraded music stack; voice/TTS/STT stay healthy
+    # (Voice Pi container_status=true + 189 ROS2 topics). The plain word
+    # `errors` in the wrapper's own status line trips CRITICAL_MATCH_RE
+    # and was causing a deploy-critical issue to be filed on every
+    # staging run. Excluded here as the operator-facing tier of the
+    # earlier `missing critical synthdefs: none` / `log file not found:
+    # sclang.log` exclusions (all part of the same retro 15.08 t_a14ac65d
+    # sclang-preload race). The positive `✓ Music stack validation
+    # passed` line on the happy path is a normal boot log with no
+    # `error`/`critical`/`failure` keyword and therefore never matched
+    # CRITICAL_MATCH_RE in the first place — it needs no exclusion.
+    r"music stack validation found non-critical errors",
     # vesc_hardware_interface transient startup segfault (issue #1593,
     # deploy run 32771845791 24.08 / kanban t_efc1a364). libvesc_hardware_interface.so
     # starts CanInterface::receiveLoop() in parallel with hardware activate(),
