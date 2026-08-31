@@ -121,3 +121,71 @@ class TestBuildDynamicContextFlushes:
         assert "расскажи про погоду" in ctx
         assert node._pending_backlog_flush is False
         assert node._speech_accumulator.is_empty()
+
+    def test_flush_logs_backlog_handled_marker(self, node):
+        """Issue #1766 — в логе при сливе backlog должен быть маркер
+        ``backlog_handled=true``, чтобы оператор / e2e могли грепом
+        проверить «был ли в этом turn бэклог» и сравнить с acceptance
+        (LLM должен выполнить явную команду из бэклога)."""
+        node._on_stt(_stt(node, "включи трек про весну"))
+        node._on_stt(_stt(node, "робот"))
+        # Clear logger mocks from STT path so we can assert only the flush log.
+        logger = node.get_logger()
+        logger.reset_mock()
+        node._build_dynamic_system_context()
+        # Найти вызов info() с backlog_handled=true.
+        calls = [
+            c
+            for c in logger.info.call_args_list
+            if c.args and "backlog_handled=true" in str(c.args[0])
+        ]
+        assert calls, (
+            "Expected at least one logger.info call with 'backlog_handled=true' "
+            f"after backlog flush. All info calls: {logger.info.call_args_list!r}"
+        )
+        # В логе должно быть entries=N — операторский диагностический счётчик.
+        msg = calls[0].args[0]
+        assert "entries=1" in msg
+
+    def test_flush_does_not_log_when_no_backlog(self, node):
+        """Без backlog-флаша backlog_handled=true НЕ должно появляться в логе."""
+        logger = node.get_logger()
+        logger.reset_mock()
+        node._build_dynamic_system_context()
+        calls = [
+            c
+            for c in logger.info.call_args_list
+            if c.args and "backlog_handled=true" in str(c.args[0])
+        ]
+        assert not calls, (
+            f"Unexpected backlog_handled=true without backlog flush: {calls!r}"
+        )
+
+    def test_user_input_logs_backlog_pending_marker(self, node):
+        """Issue #1766 — при backlog_pending=true в user-turn должна появиться
+        отметка в логе, парная к backlog_handled=true (для сматчивания в e2e)."""
+        logger = node.get_logger()
+        node._on_stt(_stt(node, "включи трек про весну"))
+        logger.reset_mock()
+        node._on_stt(_stt(node, "робот"))
+        # Ищем именно новый маркер backlog_pending=true.
+        calls = [
+            c
+            for c in logger.info.call_args_list
+            if c.args and "backlog_pending=true" in str(c.args[0])
+        ]
+        assert calls, (
+            f"Expected logger.info call with 'backlog_pending=true'. "
+            f"All info calls: {logger.info.call_args_list!r}"
+        )
+
+    def test_user_input_no_backlog_no_marker(self, node):
+        """Без backlog_pending не должно быть backlog_pending=true в логе."""
+        logger = node.get_logger()
+        node._on_stt(_stt(node, "робот расскажи анекдот"))
+        calls = [
+            c
+            for c in logger.info.call_args_list
+            if c.args and "backlog_pending=true" in str(c.args[0])
+        ]
+        assert not calls, f"Unexpected backlog_pending=true: {calls!r}"
