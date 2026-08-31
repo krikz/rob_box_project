@@ -904,13 +904,26 @@ class TTSNode(Node):
         # Issue #1780 / issue #1004: emotion / pitch / volume / pronunciation_dict
         # для MiniMax. Нейтральные дефолты сохраняют текущее поведение (поля
         # НЕ передаются в API). Прокидывание в ``TTSSettings`` — в t_4e98182a.
+        # Храним сырые строки в ``*_raw`` (по дизайну helpers
+        # ``_parse_optional_int/float/_parse_pronunciation_dict`` —
+        # пустая строка → ``None`` → поле опускается в payload).
+        # Прямое приведение через ``int(self.minimax_pitch)`` упало бы на
+        # дефолте ``""`` (issue #1780 post-#1816-fix regression: PR #1820
+        # убрал duplicate declare_parameter, но оставил голый ``int(...)``
+        # на дефолте ``""`` → ``ValueError: invalid literal for int()``).
         self.minimax_emotion = self._normalize_minimax_emotion(
             str(self.get_parameter("minimax_emotion").value or "")
         )
-        self.minimax_pitch = int(self.get_parameter("minimax_pitch").value)
-        self.minimax_volume = float(self.get_parameter("minimax_volume").value)
-        self.minimax_pronunciation_dict = str(
-            self.get_parameter("minimax_pronunciation_dict").value or ""
+        self.minimax_pitch_raw = self.get_parameter("minimax_pitch").value
+        self.minimax_volume_raw = self.get_parameter("minimax_volume").value
+        self.minimax_pronunciation_dict_raw = self.get_parameter(
+            "minimax_pronunciation_dict"
+        ).value
+        # Typed-проекции для читаемости / unit-тестов:
+        self.minimax_pitch = _parse_optional_int(self.minimax_pitch_raw)
+        self.minimax_volume = _parse_optional_float(self.minimax_volume_raw)
+        self.minimax_pronunciation_dict = _parse_pronunciation_dict(
+            self.minimax_pronunciation_dict_raw
         )
 
         # Issue #1780 / issue #1004: «ssml-aware» режим для Yandex. Полная

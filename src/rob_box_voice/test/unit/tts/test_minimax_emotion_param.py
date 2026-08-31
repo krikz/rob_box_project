@@ -172,6 +172,56 @@ def test_normalize_minimax_emotion_helper_exists():
     )
 
 
+def test_pitch_volume_dict_use_parse_optional_helpers():
+    """Regression-guard для issue #1780 post-#1816 (#1820 merge) regression.
+
+    PR #1820 убрал duplicate ``declare_parameter`` для
+    ``minimax_pitch/volume/pronunciation_dict``, но оставил в
+    ``TTSNode.__init__`` голый ``int(self.get_parameter("minimax_pitch").value)``
+    / ``float(self.get_parameter("minimax_volume").value)``. Дефолт
+    ``minimax_pitch=""`` / ``minimax_volume=""`` (string) → ``int("")`` /
+    ``float("")`` → ``ValueError: invalid literal for int() with base 10: ''``
+    на каждом старте tts_node.
+
+    Downstream ``TTSSettings`` (_synthesize_minimax_async) тоже ожидает
+    ``self.minimax_pitch_raw`` / ``*_volume_raw`` / ``*_pronunciation_dict_raw``
+    (раньше их задавал второй duplicate-блок, удалённый в #1820).
+
+    Этот тест — AST-статик, без rclpy / tts_node import — просто
+    проверяет, что в tts_node.py используются правильные helpers.
+    """
+    src = TTS_NODE_SRC.read_text(encoding="utf-8")
+    # Голый int(...) на *_pitch / float(...) на *_volume недопустим — на дефолте "" упадёт.
+    assert not re.search(r"int\(self\.get_parameter\(\"minimax_pitch\"\)", src), (
+        "int(self.get_parameter(\"minimax_pitch\").value) на дефолте '' уронит "
+        "rclpy init (ValueError). Используйте _parse_optional_int(self.minimax_pitch_raw)."
+    )
+    assert not re.search(r"float\(self\.get_parameter\(\"minimax_volume\"\)", src), (
+        "float(self.get_parameter(\"minimax_volume\").value) на дефолте '' уронит "
+        "rclpy init (ValueError). Используйте _parse_optional_float(self.minimax_volume_raw)."
+    )
+    # Обязательно: parse через *_raw attrs (downstream TTSSettings использует их)
+    assert "_parse_optional_int(self.minimax_pitch_raw)" in src, (
+        "minimax_pitch должен парситься через _parse_optional_int из *_raw — "
+        "иначе int('') на дефолте уронит rclpy init."
+    )
+    assert "_parse_optional_float(self.minimax_volume_raw)" in src, (
+        "minimax_volume должен парситься через _parse_optional_float из *_raw — "
+        "иначе float('') на дефолте уронит rclpy init."
+    )
+    # *_raw атрибуты обязательны (downstream TTSSettings читает их для MiniMax API)
+    for raw_attr in (
+        "self.minimax_pitch_raw",
+        "self.minimax_volume_raw",
+        "self.minimax_pronunciation_dict_raw",
+    ):
+        assert raw_attr in src, (
+            f"{raw_attr} обязателен — TTSSettings читает его для передачи "
+            "в MiniMax API (raw-строка → _parse_optional_*). "
+            "Без него AttributeError при первом синтезе."
+        )
+
+
 def test_normalize_minimax_emotion_validates_minimax_t2a_v2():
     """Допустимые значения MiniMax T2A v2 voice_setting.emotion:
     happy | neutral | sad | angry | fearful | disgusted | surprised.
