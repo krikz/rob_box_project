@@ -96,7 +96,7 @@ PREFIX="[agent-flow-unlabeled-sweep]"
 # --- MAINTENANCE gate + env (из .env если есть) -----------------------------
 # Ретро 31.08 (t_9b0d60f7, agent-flow-unlabeled-sweep cron 24-fail подряд):
 # Supersedes ретро 28.08 (t_faac94b0) — добавляет robust fallback по
-# нескольким кандидатам ENV_FILE.
+# нескольким кандидатам ENV_FILE (однокандидатный fix развит до multi-candidate).
 #
 # Скрипт падал в no_agent cron-режиме когда `$HERMES_HOME` в env указывал
 # на профильную папку (например `/home/builder/.hermes/profiles/devops`),
