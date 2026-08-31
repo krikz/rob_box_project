@@ -739,32 +739,11 @@ class TTSNode(Node):
         # ``vol`` float [0.0, 10.0], ``pronunciation_dict`` str). Дефолты —
         # нейтральные, чтобы сохранить текущее поведение (поля НЕ
         # передаются в API, если явно не заданы):
-        #   emotion = ""               → не передавать
-        #   pitch  = 0                 → 0 = «не передавать»; иначе int semitones
-        #   volume = 0.0               → 0.0 = «не передавать»; иначе [1.0, 10.0]
+        #   emotion = "neutral"         → API default, поведение как до #1780
+        #   pitch  = ""                 → не передавать
+        #   volume = ""                 → не передавать
         #   pronunciation_dict = ""    → JSON-строка MiniMax-словаря
         # Прокидывание значений в ``TTSSettings`` — в карточке t_4e98182a.
-        self.declare_parameter("minimax_emotion", "")  # "" | "happy"|"neutral"|"sad"|"angry"|"fearful"|"disgusted"|"surprised"
-        self.declare_parameter("minimax_pitch", 0)  # int semitones; 0 = «не передавать»
-        self.declare_parameter("minimax_volume", 0.0)  # MiniMax T2A v2 vol; 0.0 = «не передавать»
-        self.declare_parameter("minimax_pronunciation_dict", "")  # MiniMax pronunciation overrides JSON; "" = «не передавать»
-
-        # Voice-prosody knobs for MiniMax T2A v2 (issue #1780).
-        #
-        # Defaults are conservative: ``minimax_emotion="neutral"`` matches
-        # the API's implicit default so a populated payload stays
-        # behaviour-equivalent to the pre-#1780 empty payload (the API
-        # treats both as neutral). ``minimax_pitch`` / ``minimax_volume``
-        # default to empty strings — when empty, the field is omitted from
-        # ``voice_setting`` and the API applies its own defaults (no
-        # behaviour change vs. before). ``minimax_pronunciation_dict`` is a
-        # JSON-encoded MiniMax-shaped dict (e.g. ``{"tone": [...]}``) and
-        # is only forwarded when non-empty.
-        #
-        # Valid values (per T2A v2 spec):
-        #   emotion ∈ {happy, neutral, sad, angry, fearful, disgusted, surprised}
-        #   pitch   — int semitones (-12..+12 typical)
-        #   volume  — float in [0.0, 10.0]; (0, 10] accepted by the API
         self.declare_parameter("minimax_emotion", "neutral")  # MiniMax T2A v2 emotion
         self.declare_parameter("minimax_pitch", "")  # semitones; "" → не задан
         self.declare_parameter("minimax_volume", "")  # 0.0..10.0; "" → не задан
@@ -922,25 +901,6 @@ class TTSNode(Node):
         )
         self.minimax_retry_backoff_ms = max(0, int(self.get_parameter("minimax_retry_backoff_ms").value))
         self.minimax_streaming = bool(self.get_parameter("minimax_streaming").value)
-        # Issue #1780 — emotion / pitch / volume / pronunciation_dict.
-        # Stored as strings (ROS String) so empty values cleanly mean
-        # "unset". ``minimax_emotion`` defaults to "neutral" — the API's
-        # implicit default — so the populated payload stays
-        # behaviour-equivalent to the pre-#1780 payload (see comment in
-        # ``declare_parameter`` above).
-        self.minimax_emotion = self.get_parameter("minimax_emotion").value or "neutral"
-        self.minimax_pitch_raw = self.get_parameter("minimax_pitch").value
-        self.minimax_volume_raw = self.get_parameter("minimax_volume").value
-        self.minimax_pronunciation_dict_raw = self.get_parameter(
-            "minimax_pronunciation_dict"
-        ).value
-        self.minimax_provider = None  # lazy: создаётся в _ensure_minimax_provider()
-        # Provider construction opens an httpx client and must be atomic with
-        # shutdown.  ROS callbacks can run on different executor threads.
-        self._minimax_provider_lock = threading.Lock()
-        self._minimax_provider_initialized = False
-        self._minimax_shutdown_requested = False
-
         # Issue #1780 / issue #1004: emotion / pitch / volume / pronunciation_dict
         # для MiniMax. Нейтральные дефолты сохраняют текущее поведение (поля
         # НЕ передаются в API). Прокидывание в ``TTSSettings`` — в t_4e98182a.
