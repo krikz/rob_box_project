@@ -368,6 +368,48 @@ class TestMusicContinuationLive3008:
         assert user_wants_music(phrase) is False
 
 
+class TestGenreStartLive3108:
+    """«Замути кайфовый джаз» → робот сказал «Кайфовый джаз пошёл» с tools=[].
+
+    Живой прогон 31.08: guard решил «user does NOT want music», Bug-C ретрай
+    не сработал, музыка не запускалась, и робот соврал про неё словами.
+    Две дыры сразу: глагола «замути» не знал ни один список, а «джаз»
+    отсутствовал среди жанров — при том что техно, хаус, эмбиент, фанк и
+    регги там были.
+    """
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "замути кайфовый джаз",
+            "замути музыку",
+            "замути бит",
+            "запили техно",
+            "накидай рок",
+            "поставь блюз",
+            "сообрази что-нибудь под вальс",
+            "организуй немного диско",
+        ],
+    )
+    def test_colloquial_genre_requests_are_music(self, phrase: str) -> None:
+        assert user_wants_music(phrase) is True
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            # Жанры дописаны через \b, иначе «сорок» ловится как «рок».
+            "добавь сорок процентов яркости",
+            "едь вперёд на сорок сантиметров",
+            # Глаголы старта сами по себе ничего не значат.
+            "замути чай",
+            "выдай отчёт по батарее",
+            "поставь будильник на семь",
+        ],
+    )
+    def test_start_verbs_alone_are_not_music(self, phrase: str) -> None:
+        assert user_wants_music(phrase) is False
+
+
 class TestStateQuestionLive3008:
     """«играет ли сейчас музыка» → «Сейчас тишина — ничего не играет.»
 
