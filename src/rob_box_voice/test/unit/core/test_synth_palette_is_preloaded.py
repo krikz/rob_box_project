@@ -162,17 +162,35 @@ def test_preload_waits_for_scsynth_after_each_load() -> None:
     assert syncs >= 2, "sync должен стоять и в startupSynths, и в customSynths"
 
 
-def test_master_limiter_is_armed_after_preload_not_on_a_timer() -> None:
-    """Лимитер ставится в конце прелоада, а не по фиксированной задержке.
+def test_master_limiter_is_not_armed() -> None:
+    """Лимитер снят 31.08 — по решению владельца робота.
 
-    ``masterlimiter`` сам лежит в ``customSynths``: по таймеру его могло не
-    оказаться в scsynth к моменту ``/s_new``.
+    Он НЕ был причиной тишины: живой опыт показал, что полная боевая цепочка
+    пропускает непрерывный тон. Снят, чтобы убрать недавно добавленное звено
+    из уравнения при отладке. Цена — сумма слоёв снова без потолка.
+
+    Тест держит решение явным: строка ``/s_new masterlimiter`` должна быть
+    закомментирована. Прежняя версия этого теста искала подстроку и потому
+    зеленела на закомментированной строке — то есть не проверяла ничего.
     """
     content = FOXDOT_INIT.read_text(encoding="utf-8")
+    armed = [
+        line for line in content.splitlines()
+        if "masterlimiter" in line
+        and "/s_new" in line
+        and not line.lstrip().startswith("//")
+    ]
+    assert not armed, f"лимитер снова вооружён: {armed}"
+
+
+def test_preload_runs_in_a_routine_so_sync_is_possible() -> None:
+    """Прелоад обязан идти в fork: без Routine ``Server.sync`` невозможен,
+    и «ok» снова начнёт означать «отправлено», а не «есть в scsynth»."""
+    content = FOXDOT_INIT.read_text(encoding="utf-8")
     assert "SystemClock.sched(2.0" not in content, (
-        "лимитер снова ставится по таймеру — верни его в конец fork-блока"
+        "прелоад снова по таймеру — верни его в fork-блок"
     )
-    assert "fork {" in content, "прелоад должен идти в Routine (fork), иначе sync невозможен"
+    assert "fork {" in content
 
 
 @pytest.mark.parametrize("synth", ["rhpiano", "subbass", "arpy", "jbass", "keys"])

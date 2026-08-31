@@ -810,3 +810,59 @@ class TestRetryPromptKnowsIfMusicIsPlaying:
         for playing in (False, True):
             p = build_music_retry_prompt("сыграй бит", music_playing=playing)
             assert p.startswith(MUSIC_RETRY_PROMPT_PREFIX)
+
+
+class TestStopClearsTheMusicPlayingFlagLive3108:
+    """«Выключи музыку» обязана гасить ``_track_mode_music_active``.
+
+    Живой лог 31.08. Флаг ставился в True при запуске музыки и снимался
+    ТОЛЬКО в ``_publish_music_cleanup``; ``stop_music`` его не трогал. После
+    «выключи музыку» он врал, а он выбирает формулировку Bug-C ретрая: при
+    True промпт говорит «музыка СЕЙЧАС ИГРАЕТ, её надо ИЗМЕНИТЬ, а не
+    заводить заново».
+
+    Дальше «сыграй джаз» → модель получает указание менять несуществующий
+    трек → отвечает «Джаз пошёл — лидийский лад, мягкие клавиши» с
+    ``tools=[]`` → оба ретрая выгорают → робот произносит «я растерялся —
+    бит не запустился». mcp_server в те же секунды писал «активной музыки
+    не обнаружено».
+
+    Сам узел требует rclpy, поэтому здесь проверяется проводка в исходнике —
+    так тест идёт в любом окружении, как и остальные текстовые проверки
+    контрактов в этом пакете.
+    """
+
+    def _dialogue_node_source(self) -> str:
+        from pathlib import Path
+
+        here = Path(__file__).resolve()
+        for parent in here.parents:
+            candidate = parent / "rob_box_voice" / "dialogue_node.py"
+            if candidate.is_file():
+                return candidate.read_text(encoding="utf-8")
+        raise AssertionError("dialogue_node.py not found")
+
+    def test_stop_music_is_a_stop_tool(self) -> None:
+        from rob_box_voice.core.dialogue_guards import MUSIC_STOP_TOOLS
+
+        assert "stop_music" in MUSIC_STOP_TOOLS
+
+    def test_node_clears_the_flag_on_stop_tools(self) -> None:
+        src = self._dialogue_node_source()
+        assert "tools_now & MUSIC_STOP_TOOLS" in src, (
+            "dialogue_node не гасит _track_mode_music_active на stop-тулах"
+        )
+        clear_at = src.index("tools_now & MUSIC_STOP_TOOLS")
+        tail = src[clear_at:clear_at + 300]
+        assert "_track_mode_music_active = False" in tail, (
+            "ветка stop-тулов не сбрасывает флаг"
+        )
+
+    def test_flag_is_cleared_before_the_starters_branch_sets_it(self) -> None:
+        """Ход «стоп + сразу играй» должен закончиться True, а не False."""
+        src = self._dialogue_node_source()
+        stop_branch = src.index("tools_now & MUSIC_STOP_TOOLS")
+        starters_branch = src.index("if tools_now & _music_starters")
+        assert stop_branch < starters_branch, (
+            "сброс обязан идти ДО ветки запуска, иначе она будет затёрта"
+        )

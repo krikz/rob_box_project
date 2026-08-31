@@ -92,6 +92,7 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_GUARD_KEYWORDS,
     MUSIC_GUARD_VOCAL_KEYWORDS,
     MUSIC_MODE_TOOLS,
+    MUSIC_STOP_TOOLS,
     RENARDO_MUSIC_TOOLS,
     MUSIC_RETRY_PROMPT_PREFIX,
     MUSIC_STOP_OVERRIDES,
@@ -3062,6 +3063,14 @@ class DialogueNode(Node):
                 # чтобы следующий музыкальный инструмент не пришлось помнить
                 # добавить в двух местах.
                 _music_starters = RENARDO_MUSIC_TOOLS | MUSIC_MODE_TOOLS
+                # 🔴 FIX (live 31.08): stop_music не гасил флаг «играет», а
+                # снимался он только в _publish_music_cleanup. После «выключи
+                # музыку» флаг врал, и следующий Bug-C ретрай уходил в
+                # формулировке «музыка ИГРАЕТ, измени её» — на пустоту.
+                # Модель послушно описывала изменения без вызова тула, оба
+                # ретрая выгорали, робот говорил «я растерялся».
+                if tools_now & MUSIC_STOP_TOOLS:
+                    self._track_mode_music_active = False
                 if tools_now & _music_starters:
                     # Issue #992 TWO MUSIC MODES: BACKING (спой/рэп/песенку) —
                     # музыка это подложка под куплеты, систему ПРОСЯТ
