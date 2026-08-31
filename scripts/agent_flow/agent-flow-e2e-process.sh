@@ -159,6 +159,14 @@ ROUND_COUNTER_FILE="${ROUND_COUNTER_FILE:-${HERMES_HOME}/state/agent-flow-e2e-ro
 # Файл переживает cleanup (как round-counter). Монитор парсит GHOST_ROUND маркер
 # в логах и/или инкремент этого файла.
 GHOST_ROUNDS_TOTAL_FILE="${GHOST_ROUNDS_TOTAL_FILE:-${HERMES_HOME}/state/agent-flow-e2e-ghost-rounds-total}"
+# ADR-0040 (issue #1831): run-state файл с consecutive_fails per-issue. Создаётся
+# при первом запуске ({schema_version:1, issues:{}}). Файл переживает MAINTENANCE
+# (как round-counter) — иначе issue будет бесконечно триггериться после паузы.
+# helpers: e2e_run_state_load, e2e_run_state_save, e2e_run_state_bump_fail,
+#          e2e_run_state_reset (commit 3).
+RUN_STATE_FILE="${RUN_STATE_FILE:-${HERMES_HOME}/state/agent-flow-e2e-run-state.json}"
+# ADR-0040 Q2: «3 fails подряд» = 1 issue, 3 тика подряд. Default 3.
+E2E_CONSECUTIVE_FAIL_LIMIT="${E2E_CONSECUTIVE_FAIL_LIMIT:-3}"
 E2E_WORKFLOW="${E2E_WORKFLOW:-L-E2E Voice Test.yml}"
 BUILD_WORKFLOW="${BUILD_WORKFLOW:-L-Build-All-Services.yml}"
 DEPLOY_WORKFLOW="${DEPLOY_WORKFLOW:-L-Deploy and Verify.yml}"
@@ -576,8 +584,26 @@ if [ -n "${GH_REPO:-}" ]; then
     fi
 fi
 
-# --- G6: flock sentinel.
+# --- G6: flock sentinel + ADR-0040 lock-recovery -----------------------------
+# ADR-0040 §2.2.4: lock-файл /tmp/agent-flow-e2e-process.lock пишется с
+# PID:EPOCH (вместо 0 bytes). Если lock пустой или owner PID мёртв
+# (kill -0 возвращает non-zero) — process логирует «lock stale, recovered»
+# и ПРОДОЛЖАЕТ работу (не выходит с «already running»). flock уже защищает
+# от race (только один writer может владеть), PID-collision в течение жизни
+# flock-сессии маловероятен (ADR-0040 Q7: не защищаемся).
 exec 9>"$LOCK_FILE" || { log "cannot open lock $LOCK_FILE"; exit 1; }
+# Перед flock: проверяем содержимое lock-файла (если там остался старый PID).
+_lock_owner=""
+if [ -s "$LOCK_FILE" ]; then
+    _lock_owner="$(tr -d '[:space:]' < "$LOCK_FILE" 2>/dev/null || true)"
+    _lock_pid="${_lock_owner%%:*}"
+    if [ -n "$_lock_pid" ] && [ "$_lock_pid" != "$$" ] \
+        && ! kill -0 "$_lock_pid" 2>/dev/null; then
+        log "🔓 lock stale (owner PID ${_lock_pid} мёртв, epoch=${_lock_owner#*:}) — recovered (ADR-0040 §2.2.4)"
+        # Truncate, чтобы flock получил чистый файл. flock дальше сам разрулит.
+        : > "$LOCK_FILE"
+    fi
+fi
 if ! flock -n 9; then
     if [ "$_run_now_triggered" = "1" ]; then
         log "⚠️ RUN_NOW set, but another instance holds $LOCK_FILE — ждём до 60с"
@@ -593,6 +619,27 @@ if ! flock -n 9; then
         log "another instance holds $LOCK_FILE — skip"; exit 0
     fi
 fi
+# Lock захвачен — записываем PID:EPOCH (ADR-0040). Дальше exec 9 держит flock,
+# процесс остаётся владельцем пока не завершится.
+printf '%s:%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LOCK_FILE"
+
+# --- G6.5: ADR-0040 run-state init -------------------------------------------
+# Создаёт ${RUN_STATE_FILE} с пустой схемой при первом запуске (Q6). Если
+# файл уже есть — оставляем как есть (consecutive_fails per-issue
+# переживают MAINTENANCE, как round-counter, ADR-0040 Q3).
+_e2e_run_state_ensure() {
+    local _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || return 0
+    if [ -f "$_f" ] && [ -s "$_f" ]; then
+        return 0
+    fi
+    mkdir -p "$(dirname "$_f")" 2>/dev/null || true
+    printf '%s\n' '{"schema_version":1,"issues":{}}' > "$_f" 2>/dev/null || {
+        log "WARNING: cannot init ${_f} (state per-issue disabled for this tick)"
+        RUN_STATE_FILE=""
+    }
+}
+_e2e_run_state_ensure
 
 # --- G_pre_cleanup: worktree disk-space + sweep (issue #1707, ретро 28.08) --
 # Под замком (после flock), до ensure_worktree — гарантирует, что только
