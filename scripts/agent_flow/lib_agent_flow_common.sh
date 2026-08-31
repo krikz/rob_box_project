@@ -64,8 +64,24 @@ _af_log() {
 # Дефолты (`: "${X:=...}"`) НЕ здесь — они у каждого скрипта свои.
 # ---------------------------------------------------------------------------
 af_load_profile_env() {
-    local _env_path="${1:-${HERMES_HOME}/profiles/agent-flow/.env}"
-    [ -f "$_env_path" ] || return 0
+    # Аргумент $1 — желаемый путь. Если файла нет — пробуем fallback-кандидаты
+    # (per-profile gateway может передать HERMES_HOME=<profile_dir>; тогда
+    # прямой путь уйдёт мимо реальной иерархии и GH_REPO не загрузится).
+    # Ретро 12.08 t_061d466e + ретро 31.08 t_18941c54 (deploy-sweep).
+    local _env_path="" _cand
+    if [ -n "${1:-}" ] && [ -f "$1" ]; then
+        _env_path="$1"
+    else
+        for _cand in \
+            "/home/builder/.hermes/profiles/agent-flow/.env" \
+            "${HERMES_HOME}/profiles/agent-flow/.env" \
+            "${HOME}/hermes/profiles/agent-flow/.env" \
+            "${HOME}/.hermes/profiles/agent-flow/.env"; do
+            [ -f "$_cand" ] && { _env_path="$_cand"; break; }
+        done
+    fi
+    unset _cand
+    [ -z "$_env_path" ] && return 0
     local key val
     while IFS='=' read -r key val; do
         # skip comments / blanks
