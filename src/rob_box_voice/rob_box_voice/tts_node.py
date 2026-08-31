@@ -183,6 +183,134 @@ def resample_audio(audio: np.ndarray, orig_sr: float, target_sr: float) -> np.nd
 _SILERO_PITCH_LEVELS = ("x-low", "low", "medium", "high", "x-high", "robot")
 
 
+# ── Issue #1780: Yandex gRPC v3 SSML → pitch/volume конвертация ────────────
+# Yandex Cloud TTS v3 ``Hints`` API поддерживает только:
+#   * ``pitch_shift`` — Hz-offset (range [-1000; 1000], default 0)
+#   * ``volume``      — LUFS dB-offset (range [-145; 0), default -19)
+#
+# SSML `<prosody>` оперирует относительными множителями/уровнями
+# (``pitch="+10%"``, ``volume="loud"``). Здесь мы приводим их к
+# Yandex-формату без потери смысла: «на сколько Hz поднять голос» и
+# «на сколько dB сделать громче/тише относительно дефолта».
+YANDEX_BASELINE_PITCH_HZ: float = 130.0  # средняя основная частота голоса anton (~130 Hz)
+YANDEX_BASELINE_VOLUME_LUFS: float = -19.0  # Yandex дефолт для LUFS-нормализации
+_YANDEX_PITCH_SHIFT_MAX_HZ: float = 1000.0  # абсолютный предел API
+_YANDEX_VOLUME_MIN_LUFS: float = -145.0  # нижний предел API
+
+
+def _ssml_pitch_to_hz(pitch) -> Optional[float]:
+    """SSML pitch → Hz-offset для Yandex gRPC v3 ``Hints.pitch_shift``.
+
+    Принимает те же формы, что и ``_parse_ssml_attributes``:
+    ``"+10%"``, ``"-25%"``, ``"1.2"``, ``"high"``, ``"low"``, ``"medium"``,
+    ``"x-high"``, ``"x-low"``, ``"robot"``, ``1.2`` (float), ``None``.
+    Возвращает число в ``[-1000; 1000]`` или ``None``, если вход не парсится.
+
+    Эвристика: дефолтный голос anton ≈ 130 Hz baseline; ``+10%`` →
+    ``+13 Hz``, ``high`` (~1.2×) → ``+26 Hz``, ``x-high`` (~1.5×) →
+    ``+65 Hz``. Отрицательные аналоги.
+    """
+    if pitch is None:
+        return None
+    factor: Optional[float] = None
+    if isinstance(pitch, (int, float)):
+        factor = float(pitch)
+    elif isinstance(pitch, str):
+        value = pitch.strip().lower()
+        # "robot" у Silero означает спец-эффект, не тон — для Yandex
+        # не имеет однозначного Hz-маппинга → None.
+        if value == "robot":
+            return None
+        if value in {"x-low", "low", "medium", "high", "x-high"}:
+            mapping = {
+                "x-low": 0.5,
+                "low": 0.8,
+                "medium": 1.0,
+                "high": 1.2,
+                "x-high": 1.5,
+            }
+            factor = mapping[value]
+        elif value.endswith("%"):
+            try:
+                factor = 1.0 + float(value[:-1]) / 100.0
+            except ValueError:
+                return None
+        else:
+            try:
+                factor = float(value)
+            except ValueError:
+                return None
+    else:
+        return None
+    if factor is None:
+        return None
+    hz = (factor - 1.0) * YANDEX_BASELINE_PITCH_HZ
+    # Clamp в валидный диапазон API.
+    return max(-_YANDEX_PITCH_SHIFT_MAX_HZ, min(_YANDEX_PITCH_SHIFT_MAX_HZ, hz))
+
+
+_SSML_NAMED_VOLUME_TO_DB: dict[str, float] = {
+    # SSML стандарт (https://www.w3.org/TR/speech-synthesis/#S3.2.4):
+    # silent (-∞, мы приравниваем к -145), x-soft (-12), soft (-6),
+    # medium (0), loud (+6), x-loud (+12). Шаг ~6 dB.
+    "silent": -145.0,
+    "x-soft": -12.0,
+    "soft": -6.0,
+    "medium": 0.0,
+    "loud": 6.0,
+    "x-loud": 12.0,
+}
+
+
+def _ssml_volume_to_lufs_target(volume) -> Optional[float]:
+    """SSML volume → абсолютная LUFS-цель для Yandex gRPC v3 ``Hints.volume``.
+
+    Yandex ``volume`` — абсолютная LUFS-цель в диапазоне ``[-145; 0)``.
+    SSML ``volume`` — относительный уровень (``"loud"`` = +6 dB относительно
+    дефолта). Возвращаем абсолютную LUFS-цель, от которой Yandex будет
+    нормализовать аудио (clamp в ``[-145; 0)``).
+
+    Поддерживает:
+    * числа в dB: ``"+5dB"``, ``"-3dB"``, ``"5"``, ``+5``, ``-3``;
+    * проценты: ``"+50%"``, ``"-25%"`` (100% = +6 dB);
+    * именованные уровни SSML: ``silent|x-soft|soft|medium|loud|x-loud``.
+    """
+    if volume is None:
+        return None
+    if isinstance(volume, (int, float)):
+        # Числовое значение — трактуем как dB-offset относительно baseline.
+        delta = float(volume)
+    elif isinstance(volume, str):
+        value = volume.strip().lower()
+        if value in _SSML_NAMED_VOLUME_TO_DB:
+            delta = _SSML_NAMED_VOLUME_TO_DB[value]
+        elif value.endswith("db"):
+            try:
+                delta = float(value[:-2].strip())
+            except ValueError:
+                return None
+        elif value.endswith("%"):
+            try:
+                pct = float(value[:-1])
+            except ValueError:
+                return None
+            # 100% = +6 dB (один SSML-шаг «громче»). Логарифмически 6 dB
+            # ≈ множитель 2× по амплитуде; для пользователя важнее
+            # линейная интерполяция в стопе «loud/soft» шагов.
+            delta = pct / 100.0 * 6.0
+        else:
+            try:
+                delta = float(value)
+            except ValueError:
+                return None
+    else:
+        return None
+    # Переводим смещение в абсолютную LUFS-цель.
+    target = YANDEX_BASELINE_VOLUME_LUFS + delta
+    # Clamp в валидный диапазон Yandex API: [-145; 0).
+    return max(_YANDEX_VOLUME_MIN_LUFS, min(-1.0, target))
+
+
 def normalize_silero_pitch(pitch) -> str:
     """Привести SSML pitch к уровню, который принимает Silero v5.
 
@@ -1758,15 +1886,24 @@ class TTSNode(Node):
 
     def _parse_ssml_attributes(self, ssml: str) -> dict:
         """
-        Извлекает атрибуты из SSML тегов (pitch, rate/speed)
+        Извлекает атрибуты из SSML тегов (pitch, rate/speed, volume)
 
         Returns:
-            dict: {'pitch': float, 'rate': float} или пустой dict
+            dict: ``{'pitch': float, 'rate': float, 'volume': float}`` или
+            пустой dict.
+
+            * ``pitch`` хранится как float-множитель (для Silero-фолбэка);
+              для Yandex gRPC v3 ``_synthesize_yandex_single`` конвертирует
+              его в Hz-offset через ``_ssml_pitch_to_hz``.
+            * ``volume`` хранится как АБСОЛЮТНАЯ LUFS-цель для Yandex
+              ``Hints.volume`` (range [-145; 0)); для SSML-именованных
+              уровней (``loud``/``soft``/…) вычисляется через
+              ``_ssml_volume_to_lufs_target`` относительно baseline -19 LUFS.
         """
         attributes = {}
 
         # Ищем <prosody> теги с атрибутами
-        # Примеры: <prosody pitch="+10%" rate="1.2">, <prosody pitch="high" rate="slow">
+        # Примеры: <prosody pitch="+10%" rate="1.2">, <prosody pitch="high" rate="slow" volume="loud">
         prosody_pattern = r"<prosody\s+([^>]+)>"
         matches = re.finditer(prosody_pattern, ssml, re.IGNORECASE)
 
@@ -1819,6 +1956,19 @@ class TTSNode(Node):
                         attributes["rate"] = float(rate_value)
                     except ValueError:
                         pass
+
+            # Парсим volume (громкость в LUFS для Yandex gRPC v3).
+            # Допускаем как числовые dB-формы ("+5dB", "-5dB", "5dB"),
+            # так и SSML-именованные уровни (silent/x-soft/soft/medium/loud/x-loud).
+            volume_match = re.search(
+                r'volume\s*=\s*["\']?([^"\'>\s]+)["\']?',
+                attrs_str,
+                re.IGNORECASE,
+            )
+            if volume_match:
+                attributes["volume"] = _ssml_volume_to_lufs_target(
+                    volume_match.group(1)
+                )
 
         return attributes
 
@@ -3061,10 +3211,23 @@ class TTSNode(Node):
             ssml_attributes = {}
 
         speech_rate = ssml_attributes.get("rate", self.yandex_speed)
+        # Issue #1780: pitch/volume теперь применяются — пробрасываем
+        # через ``_synthesize_yandex_single`` → ``Hints(pitch_shift, volume)``.
+        # ``pitch_hz`` конвертится из float-множителя (``1.2``, ``"+10%"``)
+        # в Hz-offset для Yandex API (``pitch_shift``).
+        pitch_hz = _ssml_pitch_to_hz(ssml_attributes.get("pitch"))
+        # ``volume`` уже абсолютная LUFS-цель из ``_parse_ssml_attributes``;
+        # если None — Yandex применит свой дефолт.
+        volume_lufs = ssml_attributes.get("volume")
 
-        if "pitch" in ssml_attributes:
+        if pitch_hz is not None or volume_lufs is not None:
+            applied_parts = []
+            if pitch_hz is not None:
+                applied_parts.append(f"pitch_shift={pitch_hz:+.1f} Hz")
+            if volume_lufs is not None:
+                applied_parts.append(f"volume={volume_lufs:.1f} LUFS")
             self.get_logger().info(
-                f"🎵 SSML pitch={ssml_attributes['pitch']} (не применяется в Yandex TTS)"
+                f"🎵 SSML применяется в Yandex TTS: {', '.join(applied_parts)}"
             )
 
         # Decide chunking strategy:
@@ -3085,7 +3248,11 @@ class TTSNode(Node):
             for idx, chunk_text in enumerate(chunks, start=1):
                 _chunk_t0 = time.monotonic()
                 segment, sample_rate = self._synthesize_yandex_single(
-                    chunk_text, speech_rate, voice=voice
+                    chunk_text,
+                    speech_rate,
+                    voice=voice,
+                    pitch_hz=pitch_hz,
+                    volume_lufs=volume_lufs,
                 )
                 _chunk_ms = (time.monotonic() - _chunk_t0) * 1000.0
                 self.get_logger().info(
@@ -3101,7 +3268,11 @@ class TTSNode(Node):
                     text,
                     "yandex_grpc_v3",
                     lambda chunk_text: self._synthesize_yandex_single_with_latency(
-                        chunk_text, speech_rate, voice=voice
+                        chunk_text,
+                        speech_rate,
+                        voice=voice,
+                        pitch_hz=pitch_hz,
+                        volume_lufs=volume_lufs,
                     ),
                     max_chars=self.chunk_max_chars_yandex,
                     max_retries=self.chunk_max_retries,
@@ -3136,23 +3307,42 @@ class TTSNode(Node):
         return audio_np
 
     def _synthesize_yandex_single(
-        self, text: str, speech_rate: float, voice: str = None
+        self,
+        text: str,
+        speech_rate: float,
+        voice: Optional[str] = None,
+        pitch_hz: Optional[float] = None,
+        volume_lufs: Optional[float] = None,
     ) -> tuple[np.ndarray, int]:
         """Один gRPC ``UtteranceSynthesis`` → ``(audio_np, sample_rate)``.
 
         Helper для :meth:`_synthesize_yandex` (multi-chunk loop). Не
         предполагается вызывать напрямую извне — публичный контракт
         остаётся через ``_synthesize_yandex``.
+
+        Args:
+            text: текст для синтеза.
+            speech_rate: множитель скорости (1.0 = норма).
+            voice: голос Yandex (None → ``self.yandex_voice``).
+            pitch_hz: SSML ``<prosody pitch="...">`` в Hz-offset для
+                Yandex ``Hints.pitch_shift`` (range [-1000; 1000]).
+                None → Yandex применит свой дефолт (0 Hz).
+            volume_lufs: SSML ``<prosody volume="...">`` в виде абсолютной
+                LUFS-цели для Yandex ``Hints.volume`` (range [-145; 0)).
+                None → Yandex применит свой дефолт (-19 LUFS).
         """
+        hints = [tts_pb2.Hints(voice=voice or self.yandex_voice)]
+        hints.append(tts_pb2.Hints(speed=speech_rate))
+        if pitch_hz is not None:
+            hints.append(tts_pb2.Hints(pitch_shift=pitch_hz))
+        if volume_lufs is not None:
+            hints.append(tts_pb2.Hints(volume=volume_lufs))
         request = tts_pb2.UtteranceSynthesisRequest(
             text=text,
             output_audio_spec=tts_pb2.AudioFormatOptions(
                 container_audio=tts_pb2.ContainerAudio(container_audio_type=tts_pb2.ContainerAudio.WAV)
             ),
-            hints=[
-                tts_pb2.Hints(voice=voice or self.yandex_voice),  # anton! (issue #1219 — voice override)
-                tts_pb2.Hints(speed=speech_rate),
-            ],
+            hints=hints,
             loudness_normalization_type=tts_pb2.UtteranceSynthesisRequest.LUFS,
         )
 
@@ -3187,7 +3377,12 @@ class TTSNode(Node):
             raise Exception(f"Yandex synthesis error: {e}")
 
     def _synthesize_yandex_single_with_latency(
-        self, text: str, speech_rate: float, voice: str = None
+        self,
+        text: str,
+        speech_rate: float,
+        voice: Optional[str] = None,
+        pitch_hz: Optional[float] = None,
+        volume_lufs: Optional[float] = None,
     ) -> tuple[np.ndarray, int]:
         """``_synthesize_yandex_single`` + лог латентности (issue #931 acceptance).
 
@@ -3197,7 +3392,13 @@ class TTSNode(Node):
         «Latency добавлена в логи (время синтеза каждого чанка)»).
         """
         _t0 = time.monotonic()
-        segment, sample_rate = self._synthesize_yandex_single(text, speech_rate, voice=voice)
+        segment, sample_rate = self._synthesize_yandex_single(
+            text,
+            speech_rate,
+            voice=voice,
+            pitch_hz=pitch_hz,
+            volume_lufs=volume_lufs,
+        )
         _elapsed_ms = (time.monotonic() - _t0) * 1000.0
         self.get_logger().info(
             f"⏱️ Yandex synth: {len(text)} chars → {_elapsed_ms:.0f} ms "
