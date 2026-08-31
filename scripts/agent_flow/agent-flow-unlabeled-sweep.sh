@@ -95,6 +95,10 @@ PREFIX="[agent-flow-unlabeled-sweep]"
 
 # --- MAINTENANCE gate + env (из .env если есть) -----------------------------
 # Ретро 31.08 (t_9b0d60f7, agent-flow-unlabeled-sweep cron 24-fail подряд):
+# Ретро 28.08 (t_faac94b0, e2e-fail-streak-no-escalation): предыдущая
+# версия использовала `read IFS='='` парсинг key=val — он уже заменён на
+# `set -a; .` ниже; новый код superset (robust + ENV_FILE-fallback).
+#
 # Supersedes ретро 28.08 (t_faac94b0) — добавляет robust fallback по
 # нескольким кандидатам ENV_FILE (однокандидатный fix развит до multi-candidate).
 #
