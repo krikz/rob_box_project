@@ -121,6 +121,29 @@ services:
 
   # non-ROS service: аудиосервер SuperCollider (scsynth).
   # Не публикует/подписывается на ROS-топики, depends_on: zenoh-router не требуется.
+  #
+  # 🔴 issue #1807 — ОСТОРОЖНО с одиночным `docker restart supercollider`.
+  # Вся палитра SynthDef (~300 определений) живёт только в памяти scsynth,
+  # грузит её процесс sclang из СОСЕДНЕГО контейнера voice-assistant — один
+  # раз, при своём собственном старте. Если перезапустить только этот
+  # контейнер, scsynth поднимется пустым (RootNode и ничего больше), а
+  # voice-assistant не перезапускался и повторно грузить нечего не станет:
+  # робот немеет ПОЛНОСТЬЮ, при этом healthcheck ниже (`pgrep scsynth`)
+  # зелёный, оба контейнера healthy, в логах чисто.
+  #
+  # Митигация: foxdot_init.sc (в voice-assistant) следит за
+  # Server.default.serverRunning и сам перезаливает всю запомненную палитру,
+  # если ловит переход true→false→true — см. комментарий там же. Но это
+  # подстраховка, а не гарантия (например, если оба контейнера рестартуют
+  # одновременно при деплое — sclang перезагрузится и перезальёт всё штатно
+  # через собственный прелоад, это ок). Проверить фактическое состояние
+  # можно метрикой `supercollider_synthdefs_count` (issue #1809): она
+  # опрашивает сам scsynth через OSC /status и покажет реальное число
+  # загруженных SynthDef, а не число файлов на диске — значение в разы ниже
+  # ожидаемого (~300) означает пустую палитру НЕЗАВИСИМО от healthcheck.
+  #
+  # Безопасный путь при необходимости рестарта: `docker compose restart
+  # supercollider voice-assistant` (оба вместе), не только supercollider.
   supercollider:
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:supercollider-${IMAGE_TAG:-local}
     container_name: supercollider
