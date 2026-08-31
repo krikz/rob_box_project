@@ -266,7 +266,26 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                          'заканчивается '
                                                                          'сам после '
                                                                          'одной '
-                                                                         'формы.'}},
+                                                                         'формы.'},
+                                            'swing': {   'type': 'number',
+                                                         'description': 'Свинг '
+                                                                        'восьмых, '
+                                                                        '0-0.3. 0 (по '
+                                                                        'умолчанию) — '
+                                                                        'ровная сетка, '
+                                                                        'подходит '
+                                                                        'большинству '
+                                                                        'жанров. Ставь '
+                                                                        '0.1-0.2 для '
+                                                                        'джаза, блюза, '
+                                                                        'свинга, '
+                                                                        'шафла, фанка '
+                                                                        '— на ровных '
+                                                                        'восьмых они '
+                                                                        'не звучат как '
+                                                                        'жанр '
+                                                                        'независимо от '
+                                                                        'инструментов.'}},
                           'required': ['bpm', 'root', 'scale'],
                           'additionalProperties': False},
         'signature': {   'params': [   'bpm',
@@ -286,7 +305,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'pad_synth',
                                        'pad_notes',
                                        'progression',
-                                       'repeat'],
+                                       'repeat',
+                                       'swing'],
                          'required': ['bpm', 'root', 'scale'],
                          'accepts_kwargs': False}},
     {   'llm_visible': True,
@@ -1044,6 +1064,36 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'signature': {   'params': ['tag', 'min_rating'],
                          'required': [],
                          'accepts_kwargs': False}},
+    {   'llm_visible': True,
+        'read_only': False,
+        'destructive': False,
+        'idempotent': False,
+        'execution_type': 'fast',
+        'name': 'list_tts_voices',
+        'description': 'Список доступных голосов TTS. Без аргументов — голоса '
+                       'АКТИВНОГО провайдера (см. [TTS] provider: в контексте). С '
+                       'аргументом provider — голоса конкретного провайдера («какие '
+                       "голоса есть на Яндексе?» → provider='yandex'). Используй когда "
+                       'юзер спрашивает «какие у тебя голоса?» / «а на yandex какие?».',
+        'parameters': {   'type': 'object',
+                          'properties': {   'provider': {   'type': 'string',
+                                                            'description': 'Опциональный '
+                                                                           'TTS-провайдер '
+                                                                           '(«yandex» '
+                                                                           '| '
+                                                                           '«minimax» '
+                                                                           '| '
+                                                                           '«silero»). '
+                                                                           'Без '
+                                                                           'аргумента '
+                                                                           '— активный '
+                                                                           'провайдер.',
+                                                            'enum': [   'yandex',
+                                                                        'minimax',
+                                                                        'silero']}},
+                          'required': [],
+                          'additionalProperties': False},
+        'signature': {'params': ['provider'], 'required': [], 'accepts_kwargs': False}},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -1932,6 +1982,34 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': False,
         'idempotent': False,
         'execution_type': 'fast',
+        'name': 'set_tts_provider',
+        'description': 'Переключить активного TTS-провайдера (yandex ↔ minimax ↔ '
+                       'silero). Используй когда юзер просит СМЕНИТЬ ПРОВАЙДЕРА '
+                       'целиком: «давай говорить Яндексом», «переключись на MiniMax», '
+                       '«через Silero — без интернета». Голос будет дефолтным для '
+                       'нового провайдера. Для смены голоса внутри текущего провайдера '
+                       '— используй set_voice(voice=...).',
+        'parameters': {   'type': 'object',
+                          'properties': {   'provider': {   'type': 'string',
+                                                            'description': 'Имя '
+                                                                           'TTS-провайдера: '
+                                                                           '«yandex» | '
+                                                                           '«minimax» '
+                                                                           '| '
+                                                                           '«silero».',
+                                                            'enum': [   'yandex',
+                                                                        'minimax',
+                                                                        'silero']}},
+                          'required': ['provider'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['provider'],
+                         'required': ['provider'],
+                         'accepts_kwargs': False}},
+    {   'llm_visible': True,
+        'read_only': False,
+        'destructive': False,
+        'idempotent': False,
+        'execution_type': 'fast',
         'name': 'set_vibe_preset',
         'description': 'Применить вайб-пресет для быстрой настройки музыкального '
                        'контекста. Устанавливает скейл, BPM и тонику в Renardo одной '
@@ -1977,7 +2055,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'Используй когда: (1) пользователь просит «говори голосом X» — '
                        'передай voice=X; (2) хочешь рассказывать историю от разных лиц '
                        '(старик → zahar, девушка → alena и т.п.); (3) хочешь вернуться '
-                       'к дефолтному голосу — передай voice=<default_voice>. Доступные '
+                       'к дефолтному голосу — передай voice=<default_voice>; (4) юзер '
+                       'просит голос с КОНКРЕТНОГО провайдера («Яндекс Артём», «Yandex '
+                       "anton») — передай voice=... И provider='yandex'. Доступные "
                        'голоса перечислены в контексте: [TTS] voices=... После '
                        'set_voice следующий speak_text без voice= говорит '
                        'установленным голосом.',
@@ -1996,10 +2076,51 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         'Russian_BrightHeroine '
                                                                         '(MiniMax); '
                                                                         'aidar, baya '
-                                                                        '(Silero).'}},
+                                                                        '(Silero).'},
+                                            'provider': {   'type': 'string',
+                                                            'description': 'Опциональный '
+                                                                           'TTS-провайдер '
+                                                                           '(«yandex» '
+                                                                           '| '
+                                                                           '«minimax» '
+                                                                           '| '
+                                                                           '«silero»). '
+                                                                           'Если задан '
+                                                                           '— бот '
+                                                                           'СНАЧАЛА '
+                                                                           'переключает '
+                                                                           'провайдера, '
+                                                                           'потом '
+                                                                           'валидирует '
+                                                                           'voice '
+                                                                           'против '
+                                                                           'голосов '
+                                                                           'НОВОГО '
+                                                                           'провайдера. '
+                                                                           'Используй '
+                                                                           'когда юзер '
+                                                                           'просит '
+                                                                           'голос по '
+                                                                           'имени, '
+                                                                           'привязанному '
+                                                                           'к '
+                                                                           'конкретному '
+                                                                           'провайдеру '
+                                                                           '(«Яндекс '
+                                                                           'Артём», '
+                                                                           '«Yandex '
+                                                                           'anton»), а '
+                                                                           'в [TTS] '
+                                                                           'provider: '
+                                                                           'сейчас '
+                                                                           'другой '
+                                                                           'провайдер.',
+                                                            'enum': [   'yandex',
+                                                                        'minimax',
+                                                                        'silero']}},
                           'required': ['voice'],
                           'additionalProperties': False},
-        'signature': {   'params': ['voice'],
+        'signature': {   'params': ['voice', 'provider'],
                          'required': ['voice'],
                          'accepts_kwargs': False}},
     {   'llm_visible': True,
