@@ -207,6 +207,26 @@ class MusicManager:
     SC_PORT: int = 57110
 
     # ------------------------------------------------------------------
+    # Issue #1808 — слушатель ответов scsynth (/fail, /done)
+    # ------------------------------------------------------------------
+    # Renardo шлёт ноты в scsynth fire-and-forget и НИКОГДА не читает ответы
+    # (см. ``_attach_renardo_reply_listener`` ниже) — все отказы звукового
+    # тракта («SynthDef not found», «too many nodes», «Group N not found»)
+    # были видны только в логе контейнера ``supercollider`` (сам scsynth их
+    # печатает), куда никто не смотрит при разборе инцидентов.
+    #
+    # Таймаут ниже используется ТОЛЬКО в ``_send_osc_raw`` (наши собственные
+    # админ-сообщения — /g_new, /g_freeAll, /n_set мастер-фейдера): после
+    # sendto() кратко слушаем тот же сокет на предмет /fail. На УСПЕШНЫЙ
+    # /g_new или /n_set scsynth вообще ничего не шлёт в ответ — значит этот
+    # таймаут оплачивается ПОЛНОСТЬЮ на каждом успешном вызове. Держим его
+    # маленьким (заметно меньше уже существующей паузы 50ms между
+    # /g_freeAll и /g_new, issue #778) — на loopback ответ, если он будет,
+    # приходит за микросекунды, а лишние 30ms на нечастых admin-вызовах
+    # (пересоздание группы, смена мастер-гейна) незаметны на фоне музыки.
+    OSC_REPLY_TIMEOUT_SECONDS: float = 0.03
+
+    # ------------------------------------------------------------------
     # Master limiter (docs/analysis/2026-08-30-music-quality-audit.md)
     # ------------------------------------------------------------------
     #: Node ID синта ``masterlimiter``, который ``foxdot_init.sc`` ставит в
@@ -224,6 +244,12 @@ class MusicManager:
     #: AttributeError — тот же defensive-SSoT приём, что в #1395.
     _master_gain: float = DEFAULT_MASTER_GAIN
     _master_gain_applied: bool = False
+    #: Issue #1808 — сокет Renardo (``_rt.Server.client.socket``), к которому
+    #: подключён фоновый слушатель ответов scsynth. ``None`` пока слушатель
+    #: не подключён (или подключить не удалось — best-effort). Тот же
+    #: defensive-SSoT приём: тесты создают ``MusicManager`` через
+    #: ``__new__`` в обход ``__init__``.
+    _renardo_reply_sock: Optional[Any] = None
 
     # ------------------------------------------------------------------
     # Issue #990 — segments safety-net contract
@@ -324,6 +350,9 @@ class MusicManager:
         self._renardo_available: Optional[bool] = None
         #: Последняя ошибка инициализации renardo для диагностики
         self._renardo_last_error: Optional[str] = None
+        #: Issue #1808 — сокет Renardo, к которому подключён фоновый
+        #: слушатель ответов scsynth (см. ``_attach_renardo_reply_listener``).
+        self._renardo_reply_sock: Optional[Any] = None
         #: Music-stack health snapshot (from ``load_sclang_health``). When
         #: ``is_healthy is False``, ``execute_music_code`` / ``set_vibe_preset``
         #: short-circuit with a clear "music unavailable" error so the LLM
@@ -470,6 +499,15 @@ class MusicManager:
             # Подключаемся к scsynth (Server.booted = True после этого)
             if not _rt.Server.booted:
                 _rt.Server.init_connection()
+
+            # 🔴 FIX (issue #1808): Renardo шлёт ноты в scsynth
+            # fire-and-forget и никогда не читает ответы — все отказы
+            # звукового тракта («SynthDef X not found», «too many nodes»,
+            # «Group N not found») уходили только в лог контейнера
+            # supercollider, куда никто не смотрит при разборе (см.
+            # docstring ``_attach_renardo_reply_listener``). Best-effort,
+            # ничего не ломает при неудаче.
+            self._attach_renardo_reply_listener(_rt)
 
             # Создаём Group 1 в scsynth — renardo отправляет все ноты в эту группу.
             # Без неё scsynth возвращает "Group 1 not found" на каждый /s_new.
@@ -647,6 +685,182 @@ class MusicManager:
         _sys.stderr.write(f"{message}\n")
         _sys.stderr.flush()
 
+    # ------------------------------------------------------------------
+    # Issue #1808 — слушатель ответов scsynth (/fail, /done)
+    # ------------------------------------------------------------------
+    #
+    # РЕШЕНИЕ (обоснование выбора «только логировать», см. issue #1808):
+    #
+    # У scsynth-трафика два независимых источника:
+    #   (а) наши собственные админ-команды — ``_send_osc_raw`` (создание
+    #       Group 1, /g_freeAll+/g_new при Clock.clear(), /n_set мастер-
+    #       фейдера) — синхронные, отправляются и завершаются внутри
+    #       одного вызова Python;
+    #   (б) реальные ноты, которые Renardo шлёт из своего Clock-потока —
+    #       АСИНХРОННО, зачастую на следующий бит ПОСЛЕ того, как
+    #       ``execute_code``/``compose_music`` уже вернул «успешно».
+    #
+    # Для (б) нет способа синхронно привязать ответ scsynth к конкретному
+    # вызову тула — только эвристика по времени, а именно её юзер попросил
+    # не городить («привязывать по времени осторожно, ложные срабатывания
+    # хуже молчания»). Один /fail может относиться к вызову N, а прийти
+    # уже во время обработки вызова N+1 — риск обвинить не тот tool-call.
+    #
+    # Поэтому оба источника (а) и (б) только ЛОГИРУЮТСЯ в лог ноды
+    # mcp_server (тот же ``_log_warning``, что и остальные диагностические
+    # сообщения в этом файле — попадает в ``docker logs voice-assistant``).
+    # Возврат в результат ``execute_music_code``/``compose_music`` — заявлен
+    # в issue как ценное развитие, оставлен как отдельный follow-up, когда
+    # появится безопасный способ привязки без ложных срабатываний.
+
+    def _attach_renardo_reply_listener(self, _rt: Any) -> None:
+        """Повесить фоновый слушатель на СОБСТВЕННЫЙ сокет Renardo (best-effort).
+
+        Renardo (``renardo.sc_backend.server_manager.ServerManager``) держит
+        ОДИН долгоживущий UDP-сокет для всех сообщений к scsynth
+        (``Server.client.socket``, законнекченный на 127.0.0.1:57110) и
+        никогда его не читает — ``OSCClient.send()`` только ``sendall()``,
+        ни одного ``recv`` во всём классе. Значит ответы scsynth на РЕАЛЬНЫЕ
+        ноты («SynthDef blip not found», «/s_new too many nodes», «Group N
+        not found» — именно те три бага, что стоили нам двух дней отладки)
+        сейчас просто лежат непрочитанными в приёмном буфере этого сокета.
+
+        Мы ничего не меняем в отправке (Renardo продолжает слать как
+        раньше) и только ЧИТАЕМ из ТОГО ЖЕ сокета в отдельном потоке —
+        recv() и send() на законнекченном UDP-сокете независимы друг от
+        друга, гонки с Renardo нет (он этот сокет не читает вовсе).
+
+        Полностью best-effort и не бросает исключений наружу: если версия
+        Renardo другая и объектный граф не совпадает (``Server``/``client``/
+        ``socket`` переименованы или отсутствуют), просто не получаем этот
+        источник и остаёмся с логированием только ``_send_osc_raw`` —
+        никогда не роняем инициализацию музыки и никогда не выдумываем
+        логи (нечего слушать = тишина, а не ложное срабатывание).
+        """
+        try:
+            server = getattr(_rt, "Server", None)
+            client = getattr(server, "client", None)
+            sock = getattr(client, "socket", None)
+            if not isinstance(sock, socket.socket):
+                return
+            if sock is self._renardo_reply_sock:
+                return  # уже слушаем этот же сокет (повторный _ensure_renardo_available)
+            self._renardo_reply_sock = sock
+            thread = threading.Thread(
+                target=self._renardo_reply_listener_loop,
+                args=(sock,),
+                name="scsynth-reply-listener",
+                daemon=True,
+            )
+            thread.start()
+        except Exception:  # noqa: BLE001 — best-effort, не мешаем инициализации
+            pass
+
+    def _renardo_reply_listener_loop(self, sock: "socket.socket") -> None:
+        """Фоновый цикл: блокирующий recv на сокете Renardo, лог каждого /fail.
+
+        Сокет Renardo обычно блокирующий (без ``settimeout``) — поток тихо
+        спит между ответами, CPU не тратит. Если сокет закроют (например,
+        Renardo пересоздаст ``Server.client`` при повторной инициализации),
+        ``recvfrom`` бросит ``OSError`` — поток завершается сам, без шума.
+        """
+        while True:
+            try:
+                data, _addr = sock.recvfrom(4096)
+            except OSError:
+                return
+            except Exception:  # noqa: BLE001 — единичный кривой пакет не должен убивать поток
+                continue
+            try:
+                self._log_osc_reply(data)
+            except Exception:  # noqa: BLE001
+                continue
+
+    def _log_scsynth_reply_if_any(self, sock: "socket.socket") -> None:
+        """После собственного ``sendto`` кратко послушать тот же сокет на /fail.
+
+        Таймаут короткий (``OSC_REPLY_TIMEOUT_SECONDS``) — см. обоснование
+        у объявления константы. Полностью best-effort: таймаут/любая ошибка
+        чтения — это НОРМА (большинство успешных admin-команд scsynth не
+        подтверждает вовсе), а не повод помешать вызывающему коду.
+        """
+        try:
+            sock.settimeout(self.OSC_REPLY_TIMEOUT_SECONDS)
+            data, _addr = sock.recvfrom(4096)
+        except Exception:  # noqa: BLE001 — таймаут = scsynth принял молча (норма)
+            return
+        try:
+            self._log_osc_reply(data)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _log_osc_reply(self, data: bytes) -> None:
+        """Разобрать ответ scsynth; залогировать, если это ``/fail``.
+
+        Полный OSC-парсер не нужен — только различить ``/fail`` (реальный
+        отказ, ту самую строку из логов supercollider, которую раньше
+        никто не видел) от остального (``/done``, ``/synced`` и т.п. —
+        штатные подтверждения, шум для лога ошибок).
+        """
+        address, rest = self._split_osc_address(data)
+        if address != "/fail":
+            return
+        args = self._decode_osc_args(rest)
+        detail = " ".join(str(a) for a in args) if args else rest.decode("utf-8", "replace")
+        self._log_warning(f"🔴 [scsynth] FAILURE IN SERVER: {detail}")
+
+    @staticmethod
+    def _split_osc_address(data: bytes) -> Tuple[Optional[str], bytes]:
+        """Извлечь OSC-адрес из пакета; вернуть (адрес, остаток-с-выравниванием)."""
+        if not data or data[0:1] != b"/":
+            return None, b""
+        end = data.find(b"\x00")
+        if end == -1:
+            return None, b""
+        address = data[:end].decode("ascii", "replace")
+        consumed = end + 1
+        while consumed % 4:
+            consumed += 1
+        return address, data[consumed:]
+
+    @staticmethod
+    def _decode_osc_args(rest: bytes) -> List[Any]:
+        """Разобрать OSC type-tag строку (``,ssif``...) и аргументы за ней."""
+        if not rest or rest[0:1] != b",":
+            return []
+        end = rest.find(b"\x00")
+        if end == -1:
+            return []
+        tags = rest[1:end].decode("ascii", "replace")
+        offset = end + 1
+        while offset % 4:
+            offset += 1
+        args: List[Any] = []
+        for tag in tags:
+            if tag == "i":
+                if offset + 4 > len(rest):
+                    break
+                args.append(struct.unpack(">i", rest[offset:offset + 4])[0])
+                offset += 4
+            elif tag == "f":
+                if offset + 4 > len(rest):
+                    break
+                args.append(struct.unpack(">f", rest[offset:offset + 4])[0])
+                offset += 4
+            elif tag == "s":
+                str_end = rest.find(b"\x00", offset)
+                if str_end == -1:
+                    break
+                args.append(rest[offset:str_end].decode("utf-8", "replace"))
+                offset = str_end + 1
+                while offset % 4:
+                    offset += 1
+            else:
+                # blob (b) и прочие типы не разбираем — для лога достаточно
+                # того, что уже накопили; останавливаемся, а не падаем.
+                break
+        return args
+
     def _ensure_renardo_available(self) -> bool:
         """Retry Renardo initialization when a previous startup attempt failed.
 
@@ -777,6 +991,13 @@ class MusicManager:
         condition без изменения семантики (свободные ноды умирают
         сами, мы просто даём scsynth обработать free до пересоздания
         Group).
+
+        🔴 FIX (issue #1808): раньше сокет закрывался сразу после
+        ``sendto`` (``with`` выходил из блока) — если scsynth отвечал
+        ``/fail`` (например «Group 1 not found»), ответ прилетал уже на
+        закрытый сокет и терялся молча. Теперь перед закрытием кратко
+        слушаем этот же сокет (``_log_scsynth_reply_if_any``) — см.
+        обоснование таймаута у ``OSC_REPLY_TIMEOUT_SECONDS``.
         """
         msg = bytearray()
         addr_bytes = address.encode() + b"\x00"
@@ -806,6 +1027,9 @@ class MusicManager:
                 msg.extend(struct.pack(">f", a))
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.sendto(bytes(msg), (self.SC_HOST, self.SC_PORT))
+            # Issue #1808 — см. docstring выше и обоснование у
+            # OSC_REPLY_TIMEOUT_SECONDS. Best-effort, никогда не бросает.
+            self._log_scsynth_reply_if_any(sock)
 
     # ------------------------------------------------------------------
     # Master limiter fader
@@ -1470,8 +1694,18 @@ class MusicManager:
                 return
             for match in _PLAY_SYMBOLS_RE.finditer(code):
                 for symbol in match.group(1):
-                    # "-" — пауза (rest), пробел — разделитель; сэмплов нет.
-                    if symbol.isspace() or symbol == "-":
+                    # 🔴 FIX (issue #1815): раньше тут пропускался и "-", с
+                    # комментарием "пауза (rest)" — НЕВЕРНО. "-" звучащий
+                    # сэмпл (renardo_gatherer/collections.py:27 маппит его
+                    # на каталог "hyphen", он есть в 0_foxdot_default/_/ и
+                    # в 1_pitchglitch_samples/_/ на роботе). Настоящая пауза
+                    # — "." (для неё каталога нет ни в одном сэмпл-паке).
+                    # "-" — САМЫЙ ходовой символ хэтов (`play("--.-")` почти
+                    # в каждом треке), то есть функция не прогревала буфер
+                    # именно там, где щелчок/xrun наиболее вероятен — ровно
+                    # тот риск, ради которого её и писали. Пробел — просто
+                    # разделитель форматирования паттерна, сэмплов не несёт.
+                    if symbol.isspace() or symbol == ".":
                         continue
                     try:
                         samples.getBufferFromSymbol(symbol, 0)
