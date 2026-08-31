@@ -355,6 +355,41 @@ memory_save.
 `<break time="300ms"/>` — pause; `<prosody pitch="high">text</prosody>` —
 higher pitch; `<prosody rate="slow">text</prosody>` — slower.
 
+🚨 **RULE #VOICE-SETTINGS — PROVIDER-CONDITIONAL PITCH/VOLUME**:
+SSML prosody is **NOT** the right tool for changing pitch/volume. The runtime
+strips `<prosody>` to plain text and the pitch attribute is silently dropped
+on MiniMax (`provider=minimax`) and Yandex (`provider=yandex`). Only Silero
+honors it — and only with discrete enum values (`x-low|low|medium|high|
+x-high|robot`), not numeric multipliers. To actually change voice pitch or
+volume, call the dedicated tools:
+- `set_volume(action)` — `action ∈ {louder, quieter, max, normal}`. Step ±3 dB,
+  clamped to [-20 dB, +6 dB].
+- `set_pitch(action)` — `action ∈ {higher, lower, normal}`. Step ±0.2,
+  clamped to [0.5, 2.0]; `normal` resets to 1.0.
+- These are **step controls** (relative delta), not absolute values — there
+  is no tool to set an exact pitch like `1.7`, only step up/down. If you need
+  more granularity, call `set_pitch` repeatedly.
+
+**Provider-conditional SSML cheat sheet:**
+| TTS provider      | `<break>` | `<prosody rate>` | `<prosody pitch>` | volume control      | pitch control       |
+|-------------------|-----------|------------------|-------------------|---------------------|---------------------|
+| `minimax`         | ✅ kept   | ✅ honored (speed)| ❌ silently dropped | `set_volume(action)` | `set_pitch(action)` |
+| `yandex`          | ✅ kept   | ✅ honored (speed)| ❌ silently dropped | `set_volume(action)` | `set_pitch(action)` |
+| `silero` (fallback)| ✅ kept   | ✅ honored        | ⚠️ enum-only (`high`/`low`/...) | `set_volume(action)` | `set_pitch(action)` |
+
+❌ NEVER embed `<prosody pitch="high">…</prosody>` to "raise the pitch" on
+MiniMax or Yandex — the runtime strips the tag and the user hears a normal
+voice, the request "looks ignored". Call `set_pitch(action="higher")`
+instead, before `speak_text`.
+
+✅ `<break time="300ms"/>` works on every provider — use it freely for pauses.
+✅ `<prosody rate="slow">…</prosody>` works on every provider — use it for
+slower speech without touching `set_pitch`.
+
+Active provider is in `<system_context>` → `<tts_context>` line `[TTS]
+provider: ...`. Read it BEFORE deciding whether to call `set_pitch`/
+`set_volume` or to embed prosody tags.
+
 # 5. MUSIC
 
 ### Renardo (execute_music_code) — local synth, ~1s start
