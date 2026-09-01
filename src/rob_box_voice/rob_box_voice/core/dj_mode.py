@@ -94,16 +94,21 @@ class DJModeController:
             self._logger.warning(f"⚠️ DJ mode: bad message {payload!r}")
             return
 
+        # Issue #992 — capture BEFORE overwriting: this is the only
+        # reliable "is this a genuine fresh start" signal. See
+        # ``_apply_enable_payload`` for why ``transition_count == 0`` and
+        # plan-string equality both turned out to be wrong signals for it.
+        was_enabled = self.state.enabled
         self.state.enabled = enabled
         if enabled:
-            self._apply_enable_payload(data)
+            self._apply_enable_payload(data, is_fresh_start=not was_enabled)
         else:
             self._reset_state()
 
-    def _apply_enable_payload(self, data: dict) -> None:
+    def _apply_enable_payload(self, data: dict, *, is_fresh_start: bool) -> None:
         theme = data.get("theme")
         if theme and isinstance(theme, str) and theme.strip():
-            if self.state.transition_count == 0 or not self.state.theme:
+            if is_fresh_start or not self.state.theme:
                 self.state.theme = theme.strip()
                 self._logger.info(f"🎧 DJ theme: {self.state.theme!r}")
         # 🔴 FIX (live 10:13 DJ): персона юзера — «ты диджей Пёс» →
@@ -118,18 +123,36 @@ class DJModeController:
         # 🔴 FIX (live 15:30 06.08): план сета из set_dj_mode(plan=...) —
         # DJ идёт по плану и завершается финальным объявлением, а не
         # молча по лимиту DJ_AUTO_MAX_TRANSITIONS.
+        #
+        # 🔴 FIX (live 01.09, issue #992): старая логика сравнивала СТРОКУ
+        # плана и сбрасывала transition_count при любом расхождении. На
+        # практике модель почти на КАЖДОМ переходе присылает set_dj_mode с
+        # planом, переписанным своими словами (промпт этого не запрещает) —
+        # строка отличается, счётчик обнулялся, build_auto_prompt(1) снова
+        # получал «[DJ_AUTO — СТАРТ ВЕЧЕРИНКИ]», модель снова сочиняла план
+        # и снова вызывала set_dj_mode(plan=...) — бесконечный цикл, сет
+        # НИКОГДА не доходил ни до финального трека, ни до auto-stop
+        # (оба гейтятся на transition_count vs длину плана). Живой прогон
+        # 01.09: «вечеринка у черепашек-ниндзя» — 8 «rewrite» подряд за 12
+        # минут, ни одного перехода дальше #1. Теперь только ГЕНУИННЫЙ
+        # старт (DJ был выключен) обнуляет прогресс; текст плана,
+        # присланный ВНУТРИ уже идущей сессии, обновляет описание, но не
+        # трогает счётчик.
         plan = data.get("plan")
         if plan and isinstance(plan, str) and plan.strip():
             new_plan = plan.strip()
             if new_plan != self.state.set_plan:
-                is_rewrite = bool(self.state.set_plan)
                 self.state.set_plan = new_plan
-                if is_rewrite:
-                    # Переписываем сет заново — счётчик с нуля.
+                if is_fresh_start:
                     self.state.transition_count = 0
+                suffix = (
+                    ""
+                    if is_fresh_start
+                    else f" (updated mid-session, progress kept at "
+                    f"#{self.state.transition_count})"
+                )
                 self._logger.info(
-                    f"🎧 DJ plan: {len(new_plan.splitlines())} треков"
-                    f"{' (rewrite)' if is_rewrite else ''}"
+                    f"🎧 DJ plan: {len(new_plan.splitlines())} треков{suffix}"
                 )
         self._logger.info(f"🎧 DJ Mode ON — next transition in {delay:.0f}s")
 
