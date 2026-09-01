@@ -3313,7 +3313,30 @@ for t in data:
                     log "issue #${number}: ${lbl} OK (run ${rid})"
                     return 0
                 else
-                    log "issue #${number}: ${lbl} FAILED (run ${rid}, ${concl:-unknown})"
+                    # Ретро-фикс 01.09 (t_32c28562): conclusion=failure тоже
+                    # бывает ложным в момент перехода in_progress→success.
+                    # 09.08 #4 чинил только пустой/null conclusion, а реальный
+                    # race на 01.09 был 4-й раз подряд (round-316/317/319/
+                    # 320/321/322, issue #1824): gh run view вернул 'failure'
+                    # в момент transition, через 1 мин статус стал success.
+                    # Решение: post-fail recheck loop — до 5 повторов по 10с,
+                    # если хоть один recheck даст success — это race, считаем
+                    # OK и пишем audit-комментарий в issue. Только если ВСЕ 6
+                    # polls (1 начальный + 5 recheck) дают failure → настоящий FAIL.
+                    local _recheck_concl _rc_try _rc_success_seen
+                    _rc_success_seen=0
+                    for _rc_try in 1 2 3 4 5; do
+                        sleep 10
+                        _recheck_concl="$(gh run view "$rid" --repo "$GH_REPO" --json conclusion --jq '.conclusion' 2>/dev/null || echo "")"
+                        if [ "$_recheck_concl" = "success" ]; then
+                            _rc_success_seen=1
+                            log "issue #${number}: ⚠️ race detected on ${lbl} run ${rid} — initial=failure, recheck#${_rc_try}=success (01.09 t_32c28562)"
+                            gh issue comment "$number" --repo "$GH_REPO" --body \
+                                "agent-flow: ⚠️ race detected on ${lbl} run \`${rid}\` — initial poll=failure, recheck#${_rc_try}=success (workflow still in transition). Accepting as OK. https://github.com/${GH_REPO}/actions/runs/${rid}" >/dev/null 2>&1 || true
+                            return 0
+                        fi
+                    done
+                    log "issue #${number}: ${lbl} FAILED (run ${rid}, ${concl:-unknown}, recheck×5=failure — confirmed)"
                     return 1
                 fi
             fi
