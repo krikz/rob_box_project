@@ -49,7 +49,7 @@ on:
       volume:
         description: Speaker volume percent
         required: false
-        default: '150'
+        default: '100'
       record_seconds:
         description: DEPRECATED — atomic harness waits for full cycle itself
         required: false

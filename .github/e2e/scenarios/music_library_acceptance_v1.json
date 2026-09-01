@@ -46,7 +46,7 @@
   "voice_provenance": {
     "voice": "anton",
     "tts": "yandex",
-    "volume": 150,
+    "volume": 100,
     "record_seconds_max": 200,
     "llm": "minimax-m3"
   },

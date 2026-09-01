@@ -55,7 +55,7 @@
     "voice": "anton",
     "tts": "yandex",
     "stt": "yandex",
-    "volume": 150,
+    "volume": 100,
     "llm": "minimax-m2"
   },
   "steps": [
