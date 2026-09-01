@@ -423,13 +423,35 @@ class TestEvaluateStopCommand:
         assert verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
         assert guard.user_retry_count == 0
 
-    def test_stop_command_with_set_dj_mode_skips(self) -> None:
-        """«хватит диджеить» закрывается выключением DJ-режима."""
+    def test_stop_command_with_only_set_dj_mode_still_force_stops(self) -> None:
+        """Issue #992, live 01.09 — ``set_dj_mode(enabled=False)`` alone does
+        NOT prove the audio stopped: it only flips a bool flag
+        (rob_box_mcp_tools/tools/music.py) and never touches Renardo/
+        SuperCollider. Verified live against scsynth's own OSC ``/status``:
+        publishing ``enabled=False`` left numSynths unchanged (65) — the
+        track kept looping until an explicit ``stop_music``/music_cleanup
+        was sent. «хватит диджеить» while a ``repeat=True`` DJ track is
+        playing is the NORMAL case, not an edge case, so this must still
+        force-stop rather than skip."""
         guard = MusicGuard()
         verdict = guard.evaluate(
             was_dj_auto=False,
             user_input="хватит диджеить",
             tools_called=("set_dj_mode",),
+            dj_enabled=False,
+            build_music_retry_prompt=_music_prompt,
+        )
+        assert verdict.kind is MusicGuardVerdictKind.FORCE_STOP
+        assert verdict.reason == "stop_command_unbacked"
+
+    def test_stop_command_with_set_dj_mode_and_stop_music_skips(self) -> None:
+        """When ``stop_music`` IS in the mix, the audio really did stop —
+        no need for the code-side force-stop regardless of what else ran."""
+        guard = MusicGuard()
+        verdict = guard.evaluate(
+            was_dj_auto=False,
+            user_input="хватит диджеить",
+            tools_called=("set_dj_mode", "stop_music"),
             dj_enabled=False,
             build_music_retry_prompt=_music_prompt,
         )

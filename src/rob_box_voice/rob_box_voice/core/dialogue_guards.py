@@ -65,13 +65,40 @@ GENERATED_MUSIC_TOOLS: frozenset = frozenset({
     "gen_play_from_library",
 })
 
-#: Tools that stop playback. A stop-command turn that calls none of these
-#: has not stopped anything — see ``MusicGuardVerdictKind.FORCE_STOP``.
-#: ``set_dj_mode`` counts because «хватит диджеить» is satisfied by turning
-#: DJ mode off even when no Renardo pattern was running.
+#: Tools that mean "this turn is no longer starting/managing TRACK-mode
+#: music" — used ONLY to clear ``dialogue_node._track_mode_music_active``
+#: bookkeeping (see the 31.08 fix at the call site) so a later Bug-C retry
+#: doesn't claim music is still playing when the turn just turned DJ
+#: orchestration off. ``set_dj_mode`` belongs here.
+#:
+#: 🔴 Do NOT use this set to decide whether a stop-COMMAND was actually
+#: satisfied — see ``MUSIC_HARD_STOP_TOOLS`` below for why.
 MUSIC_STOP_TOOLS: frozenset = frozenset({
     "stop_music",
     "set_dj_mode",
+})
+
+#: Tools that actually SILENCE currently-audible Renardo output. Used by
+#: ``MusicGuardVerdictKind.FORCE_STOP`` to decide whether a stop-command
+#: («хватит диджеить») was really honoured.
+#:
+#: 🔴 FIX (live 01.09, issue #992): ``set_dj_mode`` used to count as a stop
+#: tool here (it was in ``MUSIC_STOP_TOOLS``, shared with the bookkeeping
+#: use above) on the theory that turning DJ mode off is "satisfied by
+#: turning DJ mode off even when no Renardo pattern was running". That
+#: theory is false whenever DJ mode turns off WHILE a ``repeat=True``
+#: track from the last transition is still looping — which is the normal
+#: case, not the exception. ``set_dj_mode()`` (rob_box_mcp_tools/tools/
+#: music.py) only flips a bool flag; it never touches Renardo/SuperCollider.
+#: Verified live: publishing ``set_dj_mode(enabled=False)`` alone left
+#: ``numSynths`` at 65 on the scsynth OSC ``/status`` reply — the track
+#: kept looping until an explicit ``/mcp/music_cleanup`` was sent. A user
+#: saying "хватит диджеить" mid-set, answered by the LLM calling only
+#: ``set_dj_mode(enabled=False)`` (the natural response to that phrasing),
+#: would hear the same thing: nothing stops. Only ``stop_music`` proves
+#: the audio was actually silenced.
+MUSIC_HARD_STOP_TOOLS: frozenset = frozenset({
+    "stop_music",
 })
 
 #: Tools that put existing playback into a mode rather than starting it.

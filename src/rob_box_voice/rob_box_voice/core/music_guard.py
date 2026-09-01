@@ -36,7 +36,7 @@ from typing import Optional, Tuple
 
 from .dialogue_guards import (
     GENERATED_MUSIC_TOOLS,
-    MUSIC_STOP_TOOLS,
+    MUSIC_HARD_STOP_TOOLS,
     RENARDO_MUSIC_TOOLS,
     USER_MUSIC_SATISFYING_TOOLS,
     is_music_stop_command,
@@ -305,7 +305,7 @@ class MusicGuard:
         # доиграл до конца ещё 20 секунд после «выключена». Стоп —
         # идемпотентная операция, поэтому здесь мы не ретраим LLM, а
         # останавливаем музыку сами (адаптер публикует music_cleanup).
-        if is_music_stop_command(user_input) and not (tools_set & MUSIC_STOP_TOOLS):
+        if is_music_stop_command(user_input) and not (tools_set & MUSIC_HARD_STOP_TOOLS):
             self._log_warning(
                 "🎵 [issue 992 Bug F] stop-command без stop-тула "
                 f"(tools={sorted(tools_set)!r}) — принудительный стоп из кода"
