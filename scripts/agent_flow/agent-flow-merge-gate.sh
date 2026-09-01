@@ -84,6 +84,13 @@ DEVELOP_BRANCH="${DEVELOP_BRANCH:-develop}"
 STALE_REBASE_AHEAD_THRESHOLD="${STALE_REBASE_AHEAD_THRESHOLD:-30}"
 STALE_REBASE_COMMENT_DEDUP_HOURS="${STALE_REBASE_COMMENT_DEDUP_HOURS:-24}"
 STALE_REBASE_REMINDER_COOLDOWN_SECONDS="${STALE_REBASE_REMINDER_COOLDOWN_SECONDS:-7200}"
+# Ретро 31.08 t_9d375e3e / ADR-0035: stale-after-upstream-fix detector для
+# diagnostic-карточек (PR #1743, retro t_e00f448d). Маркеры `<!-- diag-* -->`
+# в body диагностической карточки (PR + head SHA + sig + tests + class +
+# created-ts) → scan-all-prs обнаруживает upstream-фикс (стратегии A/B/C)
+# и auto-block с kind=transient.
+STALE_AFTER_UPSTREAM_FIX_SCAN="${STALE_AFTER_UPSTREAM_FIX_SCAN:-true}"
+STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS="${STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS:-7200}"
 # Ретро 15.08 t_238ff3f7: deploy-issue label-less orphan backstop. L-Deploy and
 # Verify создаёт deploy-issues с версией workflow-файла С ВЕТКИ e2e-раунда
 # (z-{e2e}/test-round-N). Если round-ветка ответвилась ДО фикса #1263
@@ -931,6 +938,387 @@ for i in d:
     done
     return 0
 }
+# --- stale-after-upstream-fix detector (ретро 31.08 t_9d375e3e / ADR-0035) --
+# Diagnostic-карточки (PR #1743, retro t_e00f448d) создаются при CI UNSTABLE
+# с classification=unit_lint. Без auto-detect они "вечно живые" после
+# upstream-фикса (PR влит / upstream залил фикс в develop / фикс уже в
+# самом PR). Этот scan каждый тик merge-gate:
+#   1. Берёт все live diagnostic-карточки (status != done/archived) с
+#      маркерами `<!-- diag-pr: N -->` в body.
+#   2. Парсит маркеры (PR, head SHA, sig, tests, classification, created-ts).
+#   3. Вызывает detect_stale_after_upstream_fix() (pure, без побочных
+#      эффектов) — возвращает структуру {stale, upstream_sha, strategy,
+#      reason, evidence_diff}. Применяются 3 стратегии детекта:
+#      A. PR head SHA --is-ancestor origin/<base> (PR уже слит в develop).
+#      B. git log origin/<base> -S <attr> (фикс атрибута в develop после
+#         создания карточки) — основной кейс t_5c524b12.
+#      C. Все failing-tests файлы уже в PR-diff + CI SUCCESS (фикс в
+#         самом PR, ещё не слит, но уже зелёный).
+#      Fallback: REST compare identical (стратегия A без REPO_DIR).
+#   4. При наличии upstream-фикса → orchestrator применяет auto-block +
+#      comment patch + rate-limit. Этот orchestrator НЕ вызывает auto-block
+#      из detector'а — разделение для тестируемости (task #1 делает block,
+#      detector делает только detect; см. ADR-0035 §5.2).
+#   5. Rate-limit: один auto-block на карточку в
+#      STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS секунд (default 2ч).
+#   6. Legacy diagnostic без маркеров → skip (не ломаем старые карточки).
+
+# detect_stale_after_upstream_fix — pure detector (без побочных эффектов).
+# Входные данные (все позиционные, никаких глобалов не модифицирует):
+#   $1 = card_id
+#   $2 = pr_num
+#   $3 = pr_sha (head SHA из diag-pr-sha)
+#   $4 = pr_base (из diag-pr-base, default $DEVELOP_BRANCH)
+#   $5 = sig_csv (comma-separated attrs из diag-sig)
+#   $6 = tests_csv (comma-separated файлов из diag-tests)
+#   $7 = created_ts (epoch из diag-created-ts; 0 если неизвестно)
+#   $8 = repo_dir (default = $REPO_DIR; пусто → REST fallback)
+#   $9 = gh_repo (default = $GH_REPO)
+# Выход: stdout TSV (5 полей), return 0:
+#   field 1: stale (true|false)
+#   field 2: upstream_sha (short SHA, или "" если strat C)
+#   field 3: strategy (closed|A|B|C|rest_fallback|none)
+#   field 4: reason (человекочитаемая строка для kanban block)
+#   field 5: evidence_diff (multi-line git log output для комментария)
+# Если карточка не stale — печатает "false\t\t\tnone\t\t" (пустые поля).
+# Это pure-функция: НЕ вызывает `hermes kanban block`, НЕ пишет в journal,
+# НЕ логирует через `log` — только читает (git/gh) и возвращает TSV. Это
+# позволяет unit-тесту вызывать её напрямую с моками и assert'ить результат.
+detect_stale_after_upstream_fix() {
+    local card_id="$1" pr_num="$2" pr_sha="$3" pr_base="$4"
+    local sig_csv="$5" tests_csv="$6" created_ts="$7"
+    local repo_dir="${8:-${REPO_DIR:-}}"
+    local gh_repo="${9:-${GH_REPO:-krikz/rob_box_project}}"
+    local upstream_sha="" strategy="" reason="" evidence="" hit attr test_file _a _b _s
+
+    # Стратегия 0: PR CLOSED → fast skip (не нужен git, нужен gh pr view).
+    # Вызываем ДО остальных, потому что стратегии A/B/C не работают для
+    # закрытого PR (head SHA больше не ancestor of develop если PR закрыт
+    # не merge'ом).
+    if [ -n "$pr_num" ] && [ "$(pr_state_now "$pr_num")" = "CLOSED" ]; then
+        printf '%s\t%s\t%s\t%s\t%s\n' \
+            "true" "" "closed" \
+            "stale-after-upstream-fix: PR #${pr_num} CLOSED (починка upstream или неактуален, ретро t_9d375e3e / ADR-0035)" \
+            ""
+        return 0
+    fi
+
+    # Стратегия A: PR head SHA ancestor of origin/<base> (git merge-base).
+    if [ -n "$pr_sha" ] && [ -n "$repo_dir" ] && [ -d "$repo_dir" ]; then
+        if git -C "$repo_dir" merge-base --is-ancestor "$pr_sha" "origin/${pr_base}" 2>/dev/null; then
+            printf '%s\t%s\t%s\t%s\t%s\n' \
+                "true" "$pr_sha" "A" \
+                "stale-after-upstream-fix: PR #${pr_num} head ${pr_sha:0:8} уже в origin/${pr_base} (ретро t_9d375e3e / ADR-0035)" \
+                ""
+            return 0
+        fi
+    fi
+
+    # Стратегия B: upstream-фикс по сигнатуре / failing-tests (git log -S).
+    if [ -n "$repo_dir" ] && [ -d "$repo_dir" ]; then
+        upstream_sha=""
+        # B-attr: ищем коммит, добавивший/удаливший атрибут сигнатуры.
+        if [ -n "$sig_csv" ]; then
+            while IFS=',' read -r attr; do
+                [ -z "$attr" ] && continue
+                attr="$(printf '%s' "$attr" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "")"
+                [ -z "$attr" ] && continue
+                hit="$(git -C "$repo_dir" log "origin/${pr_base}" \
+                    --since="@${created_ts:-0}" -S "$attr" \
+                    --pretty=format:'%H' 2>/dev/null | head -1 || echo "")"
+                if [ -n "$hit" ]; then
+                    upstream_sha="$hit"
+                    evidence="git log origin/${pr_base} --since=@${created_ts:-0} -S '${attr}' → ${hit:0:8}"
+                    strategy="B-attr:$attr"
+                    break
+                fi
+            done < <(printf '%s\n' "$sig_csv" | tr ',' '\n')
+        fi
+        # B-tests: ищем коммит, изменивший failing-test файл.
+        if [ -z "$upstream_sha" ] && [ -n "$tests_csv" ]; then
+            while IFS=',' read -r test_file; do
+                [ -z "$test_file" ] && continue
+                test_file="$(printf '%s' "$test_file" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "")"
+                [ -z "$test_file" ] && continue
+                hit="$(git -C "$repo_dir" log "origin/${pr_base}" \
+                    --since="@${created_ts:-0}" -- "$test_file" \
+                    --pretty=format:'%H' 2>/dev/null | head -1 || echo "")"
+                if [ -n "$hit" ]; then
+                    upstream_sha="$hit"
+                    evidence="git log origin/${pr_base} --since=@${created_ts:-0} -- '${test_file}' → ${hit:0:8}"
+                    strategy="B-tests:$test_file"
+                    break
+                fi
+            done < <(printf '%s\n' "$tests_csv" | tr ',' '\n')
+        fi
+
+        if [ -n "$upstream_sha" ]; then
+            reason="stale-after-upstream-fix: upstream-фикс ${upstream_sha:0:8} уже в origin/${pr_base} (после создания карточки, ретро t_9d375e3e / ADR-0035) [strat=${strategy}]"
+            printf '%s\t%s\t%s\t%s\t%s\n' \
+                "true" "$upstream_sha" "B" \
+                "$reason" "$evidence"
+            return 0
+        fi
+    fi
+
+    # Стратегия C: фикс в самом PR + CI SUCCESS.
+    if [ -n "$tests_csv" ] && [ -n "$pr_num" ]; then
+        local pr_files pr_checks_ok all_in_pr
+        pr_files="$(gh pr view "$pr_num" --repo "$gh_repo" --json files --jq '[.files[].path]' 2>/dev/null || echo '[]')"
+        pr_checks_ok="$(gh pr checks "$pr_num" --repo "$gh_repo" --json state --jq '[.[] | select(.state != "SUCCESS")] | length' 2>/dev/null || echo 999)"
+        if [ "${pr_checks_ok:-999}" = "0" ]; then
+            all_in_pr=1
+            while IFS=',' read -r test_file; do
+                [ -z "$test_file" ] && continue
+                test_file="$(printf '%s' "$test_file" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "")"
+                [ -z "$test_file" ] && continue
+                if ! printf '%s' "$pr_files" | grep -qF "$test_file"; then
+                    all_in_pr=0
+                    break
+                fi
+            done < <(printf '%s\n' "$tests_csv" | tr ',' '\n')
+            if [ "$all_in_pr" = "1" ]; then
+                reason="stale-after-upstream-fix: фикс уже в самом PR #${pr_num} (failing-tests файлы в PR-diff + CI SUCCESS, ждать merge в develop, ретро t_9d375e3e / ADR-0035)"
+                evidence="PR #${pr_num} files contain all failing-tests; CI SUCCESS"
+                printf '%s\t%s\t%s\t%s\t%s\n' \
+                    "true" "" "C" "$reason" "$evidence"
+                return 0
+            fi
+        fi
+    fi
+
+    # REST compare fallback (если REPO_DIR пуст / стратегии A/B/C не дали
+    # результата). Использует `gh pr view <n> --json mergedAt` — самый
+    # прямой признак "PR уже влит в base". Если mergedAt != null → stale.
+    # Раньше здесь был `gh api repos/.../compare/<base>...<pr_sha>` —
+    # убран в пользу pr view mergedAt: тот же семантический ответ ("PR
+    # влит в base"), но не зависит от COMPARE_DEFAULT mock'а, который для
+    # stale-rebase watchdog отдаёт {"ahead_by":0,...,"identical"} по
+    # умолчанию (fail-open). С mergedAt фолбэк только когда PR реально
+    # слит, и unit-тесты могут явно через PR_<n>_MERGEDAT_JSON
+    # контролировать merge-состояние.
+    if [ -n "$pr_num" ]; then
+        local merged_at
+        merged_at="$(gh pr view "$pr_num" --repo "$gh_repo" --json mergedAt --jq '.mergedAt // ""' 2>/dev/null || echo '')"
+        if [ -n "$merged_at" ] && [ "$merged_at" != "null" ]; then
+            reason="stale-after-upstream-fix: PR #${pr_num} уже в origin/${pr_base} (REST mergedAt=${merged_at}, ретро t_9d375e3e / ADR-0035)"
+            evidence="gh pr view ${pr_num} --json mergedAt → ${merged_at}"
+            printf '%s\t%s\t%s\t%s\t%s\n' \
+                "true" "$pr_sha" "rest_fallback" "$reason" "$evidence"
+            unset merged_at
+            return 0
+        fi
+        unset merged_at
+    fi
+
+    # Ни одна стратегия не сработала — карточка не stale.
+    printf '%s\t%s\t%s\t%s\t%s\n' "false" "" "none" "" ""
+    return 0
+}
+
+stale_after_upstream_fix_scan_all() {
+    # Orchestrator для auto-block + rate-limit (ADR-0035 §5.2). Сама detect
+    # логика живёт в detect_stale_after_upstream_fix() — pure функция без
+    # побочных эффектов, тестируемая отдельно. Этот orchestrator:
+    #   1. Собирает список diagnostic-карточек.
+    #   2. Для каждой — парсит маркеры и вызывает detect_*() → TSV-результат.
+    #   3. Если stale — проверяет rate-limit, применяет auto-block + comment.
+    [ "$STALE_AFTER_UPSTREAM_FIX_SCAN" = "true" ] || {
+        log "stale-after-upstream-fix: STALE_AFTER_UPSTREAM_FIX_SCAN=false — skip"
+        return 0
+    }
+    local diag_cards _card_id _body _pr_num _pr_sha _pr_base _sig_list _tests_list
+    local _created_ts _marker _last_ts _now_ts _reason _commit_sha _gh_url _patch
+    local _det_stale _det_sha _det_strategy _det_reason _det_evidence _det_line
+
+    diag_cards="$(hermes kanban --board "$KANBAN_BOARD" list --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(0)
+for t in data:
+    title = t.get("title", "") or ""
+    body = t.get("body", "") or ""
+    status = t.get("status", "") or ""
+    # Сигнатура diagnostic-карточки из PR #1743 (ретро t_e00f448d):
+    # title начинается с "🐛 CI UNSTABLE DIAGNOSTIC #..." (НЕ с
+    # "🐛 CI UNSTABLE:" — в карточках нет двоеточия сразу после UNSTABLE;
+    # "🔀 rebase PR #..." — rebase reminder, тоже кандидат на маркеры).
+    # ADR-0035: не фильтруем по наличию маркера здесь — legacy-карточки
+    # без маркеров должны попасть в скан, чтобы bash мог залогировать
+    # "no diag-pr marker, skip (legacy)" (test D5).
+    is_diag = (title.startswith("🐛 CI UNSTABLE DIAGNOSTIC") or
+               title.startswith("🔀 rebase PR #"))
+    if is_diag and status not in ("done", "archived"):
+        print(t.get("id", "") + "\t" + status)
+' 2>/dev/null || true)"
+
+    if [ -z "$diag_cards" ]; then
+        log "stale-after-upstream-fix: no live diagnostic cards with markers"
+        return 0
+    fi
+
+    while IFS=$'\t' read -r _card_id _card_status; do
+        [ -z "$_card_id" ] && continue
+        [ "$_card_status" = "done" ] && continue
+        [ "$_card_status" = "archived" ] && continue
+
+        # 2. Достать body карточки (через REST-like show, чтобы не зависеть от
+        # hermes CLI-парсинга list output).
+        _body="$(hermes kanban --board "$KANBAN_BOARD" show "$_card_id" --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    # Поддержка двух форматов: {body: "..."} или {task: {body: "..."}}.
+    body = data.get("body") or (data.get("task", {}) or {}).get("body", "")
+    print(body)
+except Exception:
+    pass
+' 2>/dev/null || true)"
+
+        # 3. Парсинг маркеров (grep + sed). Каждый маркер — одна строка.
+        # ADR-0035: для sha используем [a-f0-9]+ (минимум 7 символов — git
+        # short SHA) чтобы избежать захвата одиночных букв из имён маркеров
+        # (например, 'd' от 'diag-pr-sha:' при greedy match в начале body).
+        # Такой баг был в первой версии — _pr_sha получал "d\na\na\n<full>".
+        # ВАЖНО (set -o pipefail): каждая команда в pipeline может вернуть
+        # ненулевой код (grep при отсутствии совпадений = 1, sed на пустом
+        # stdin = 0). Чтобы assignment не провалился под set -e, после каждого
+        # pipeline ставим `|| echo ""` — подавляем ошибку и подставляем пусто.
+        _pr_num="$(printf '%s' "$_body" | grep -oE '<!-- diag-pr: [0-9]+ -->' | head -1 | grep -oE '[0-9]+' || echo "")"
+        _pr_sha="$(printf '%s' "$_body" | grep -oE '<!-- diag-pr-sha: [a-f0-9]+ -->' | head -1 | grep -oE '[a-f0-9]{7,}' || echo "")"
+        _pr_base="$(printf '%s' "$_body" | grep -oE '<!-- diag-pr-base: [^ ]+ -->' | head -1 | sed 's/<!-- diag-pr-base: //;s/ -->//' || echo "")"
+        # sig/tests могут содержать запятые и пути. Берём всё до -->.
+        # ADR-0035 (D9): whitespace-only маркеры (backfill оставляет пустые
+        # значения: «<!-- diag-sig:  -->») НЕ должны считаться непустыми
+        # списками — иначе strat C ошибочно срабатывает на легаси-карточках.
+        # После sed убираем trailing --> и trim'им whitespace — пустые
+        # маркеры → пустая строка → strat C/B skip корректно.
+        _sig_list="$(printf '%s' "$_body" | grep -oE '<!-- diag-sig: [^>]+-->' | head -1 | sed 's/<!-- diag-sig: //;s/-->$//' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "")"
+        _tests_list="$(printf '%s' "$_body" | grep -oE '<!-- diag-tests: [^>]+-->' | head -1 | sed 's/<!-- diag-tests: //;s/-->$//' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "")"
+        _created_ts="$(printf '%s' "$_body" | grep -oE '<!-- diag-created-ts: [0-9]+ -->' | head -1 | grep -oE '[0-9]+' || echo "")"
+
+        if [ -z "$_pr_num" ]; then
+            log "stale-after-upstream-fix: ${_card_id} — no diag-pr marker, skip (legacy)"
+            continue
+        fi
+        [ -z "$_pr_base" ] && _pr_base="$DEVELOP_BRANCH"
+
+        # 4. Rate-limit: ищем предыдущий block-комментарий с маркером.
+        # Используем GH_JOURNAL как fallback (для тестов, где KANBAN_DB
+        # недоступна) — production-путь остаётся kanban_last_reminder_ts.
+        _marker="stale-after-upstream-fix:${_pr_num}"
+        _last_ts="$(kanban_last_reminder_ts "$_card_id" "$_marker" 2>/dev/null || echo "")"
+        if [ -z "$_last_ts" ] && [ -n "${GH_JOURNAL:-}" ] && [ -f "${GH_JOURNAL:-/nonexistent}" ]; then
+            # ADR-0035 test fixture: pre-seeded journal entries simulating
+            # prior tick. Grep for the marker line and parse its timestamp.
+            _last_ts="$(grep -E "hermes .* block ${_card_id}.*${_marker}" "${GH_JOURNAL}" 2>/dev/null \
+                | head -1 | awk '{print $1}' \
+                | awk -F'T' '{print $1"T"$2}' \
+                | python3 -c '
+import sys, datetime
+try:
+    line = sys.stdin.read().strip()
+    if not line: sys.exit(0)
+    dt = datetime.datetime.fromisoformat(line.replace("Z", "+00:00"))
+    print(int(dt.timestamp()))
+except Exception:
+    pass
+' 2>/dev/null || echo "")"
+        fi
+        _now_ts="$(date +%s)"
+        if [ -n "$_last_ts" ] && [ $(( _now_ts - _last_ts )) -lt "$STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS" ]; then
+            log "stale-after-upstream-fix: ${_card_id} — rate-limited (last=${_last_ts})"
+            continue
+        fi
+
+        # 5. Pure detector (ADR-0035 §5.2: detect и auto-block РАЗДЕЛЬНЫ).
+        # Возвращает TSV на stdout: stale\tsha\tstrategy\treason\tevidence.
+        # Никаких side-effects — это ключевая гарантия тестируемости.
+        # ВАЖНО (set -o pipefail): вызов функции внутри $() сам по себе не
+        # проваливается — `|| true` не нужен, detect возвращает 0 всегда.
+        # Но внутри detect её собственные pipelines защищены `|| echo ""`.
+        _det_line="$(detect_stale_after_upstream_fix \
+            "$_card_id" "$_pr_num" "$_pr_sha" "$_pr_base" \
+            "$_sig_list" "$_tests_list" "$_created_ts" \
+            "${REPO_DIR:-}" "${GH_REPO:-krikz/rob_box_project}" \
+            2>/dev/null || true)"
+        # Парсим TSV (5 полей через tab). Bash `read -r` с IFS=$'\t'
+        # НЕ сохраняет пустые поля (consecutive delimiters collapse) — используем
+        # python (надёжно для empty-field TSV). ADR-0035 §5.2: TSV-контракт
+        # между detect и orchestrator должен быть стабильным, поэтому
+        # парсим детерминированно через python, а не через IFS gymnastics.
+        # ВАЖНО (eval и shlex.quote): значения содержат `:` (например,
+        # "stale-after-upstream-fix: ...") и `;`, поэтому eval БЕЗ кавычек
+        # пытается выполнить их как команды (`фикс: command not found` —
+        # известная ловушка). shlex.quote() оборачивает в одинарные кавычки.
+        eval "$(_det_line="$_det_line" python3 -c '
+import os, shlex
+line = os.environ.get("_det_line", "") or ""
+if line.endswith("\n"):
+    line = line[:-1]
+parts = line.split("\t", 4)  # max 5 полей; последний (evidence) может
+                              # содержать tabs — split("...", 4) ограничивает.
+while len(parts) < 5:
+    parts.append("")
+print("_det_stale=" + shlex.quote(parts[0]))
+print("_det_sha=" + shlex.quote(parts[1]))
+print("_det_strategy=" + shlex.quote(parts[2]))
+print("_det_reason=" + shlex.quote(parts[3]))
+print("_det_evidence=" + shlex.quote(parts[4]))
+' 2>/dev/null)"
+        _det_stale="${_det_stale:-false}"
+        _det_sha="${_det_sha:-}"
+        _det_strategy="${_det_strategy:-none}"
+        _det_reason="${_det_reason:-}"
+        _det_evidence="${_det_evidence:-}"
+
+        if [ "$_det_stale" != "true" ]; then
+            log "stale-after-upstream-fix: ${_card_id} (PR #${_pr_num}) — upstream-фикс пока не найден, skip"
+            continue
+        fi
+
+        # 6. Логируем какая стратегия сработала (нужно для диагностики и для
+        # тестов D1/D2/D3/D4/D9 — каждая ищет свой marker в stderr).
+        case "$_det_strategy" in
+            closed)        log "stale-after-upstream-fix: ${_card_id} — PR #${_pr_num} CLOSED, blocking as transient" ;;
+            A)             log "stale-after-upstream-fix: ${_card_id} — strat A (PR merged)" ;;
+            B)             log "stale-after-upstream-fix: ${_card_id} — strat B (upstream-fix hit: ${_det_sha:0:8})" ;;
+            C)             log "stale-after-upstream-fix: ${_card_id} — strat C (fix in same PR)" ;;
+            rest_fallback) log "stale-after-upstream-fix: ${_card_id} — REST fallback (PR mergedAt)" ;;
+        esac
+
+        _reason="$_det_reason"
+        _commit_sha="$_det_sha"
+
+        # 7. DRY_RUN: только лог.
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would: block ${_card_id} with reason: ${_reason}"
+            continue
+        fi
+
+        # 8. Auto-block + body patch (side effects — ТОЛЬКО orchestrator).
+        if hermes kanban --board "$KANBAN_BOARD" block --kind transient \
+            "$_card_id" "$_reason" >/dev/null 2>&1; then
+            log "stale-after-upstream-fix: ${_card_id} auto-blocked (PR #${_pr_num}, sha=${_commit_sha:-none})"
+        else
+            log "stale-after-upstream-fix: WARNING block ${_card_id} failed"
+            continue
+        fi
+
+        # 9. Patch body: добавить секцию "Upstream-фикс (auto-detected)".
+        if [ -n "$_commit_sha" ]; then
+            _gh_url="https://github.com/${GH_REPO}/commit/${_commit_sha}"
+            _patch="$(printf '\n\n### ✅ Upstream-фикс уже в develop (auto-detected, merge-gate ADR-0035, %s)\n\n**Причина блокировки:** %s\n\n**Upstream-коммит:** [%s](%s)\n\n**Что делать:** карточка может быть закрыта как `done` (stale-diagnostic-after-upstream-fix). Воркеру не нужно ничего чинить — регрессия upstream-починена, тесты на develop уже зелёные.\n' "$(date -u +%H:%M:%SZ)" "$_reason" "${_commit_sha:0:8}" "$_gh_url")"
+            hermes kanban --board "$KANBAN_BOARD" comment "$_card_id" "$_patch" >/dev/null 2>&1 \
+                || log "stale-after-upstream-fix: WARNING body patch comment failed for ${_card_id}"
+        fi
+    done < <(printf '%s\n' "$diag_cards")
+    log "stale-after-upstream-fix: scan complete"
+    return 0
+}
+
 # --- kanban card status helper (ретро 12.08 t_8af6bf29) ---------------------
 # 'hermes kanban show' ПАДАЕТ после hermes-agent v0.20.0 (sqlite3.ProgrammingError
 # 'Cannot operate on a closed database' в task_graph_context — краш после вывода
@@ -3343,6 +3731,11 @@ pr_without_marker_scan_all
 # Deploy-issue label-less orphan backstop (ретро 15.08 t_238ff3f7): тот же
 # паттерн вызова — основной путь + no-issues путь сходятся сюда.
 deploy_issue_reconcile_all
+# Ретро 31.08 t_9d375e3e / ADR-0035: stale-after-upstream-fix detector.
+# Безопасно вызывать в начале секции: не зависит от issues_json, сканирует
+# только kanban board. Дешёвая проверка (≤10 live diagnostic-карточек типично).
+# Skip если STALE_AFTER_UPSTREAM_FIX_SCAN=false.
+stale_after_upstream_fix_scan_all
 
 # Маппинг head-branch → task_id через wt/... ветки (t_51b5ad24-respeaker-downmix-tests → t_51b5ad24)
 _prs_json="$(gh pr list --repo "$GH_REPO" --state open \
