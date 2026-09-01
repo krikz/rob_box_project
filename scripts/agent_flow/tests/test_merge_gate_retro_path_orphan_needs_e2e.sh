@@ -92,9 +92,11 @@ test_OR1_orphan_needs_e2e_e2e_pass_closes() {
     close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
     assert_eq "1" "$close_calls" "orphan needs-e2e + e2e PASS → close" || return 1
 
-    # Audit-комментарий «post-merge needs-e2e cleanup, retro-path» опубликован.
+    # Audit-комментарий «🧹 ретро-путь (orphan-cleanup, t_365de06c)» опубликован
+    # (маркер dedup'а, отличается от «✅ ретро-путь» чтобы две ветки не
+    # считали друг друга дубликатами).
     local audit_comment
-    audit_comment="$(printf '%s\n' "$journal" | grep -c 'post-merge needs-e2e cleanup, retro-path' || true)"
+    audit_comment="$(printf '%s\n' "$journal" | grep -c '🧹 ретро-путь (orphan-cleanup, t_365de06c)' || true)"
     assert_eq "1" "$audit_comment" "audit comment with retro-path reason present" || return 1
 
     # needs-e2e НЕ ставится повторно.
@@ -148,9 +150,9 @@ test_OR3_orphan_needs_e2e_no_pass_audit() {
     fixture_orphan_needs_e2e "$issue" "$pr" "$head" '2026-09-01T04:42:23Z'
     # e2e run нет.
     set_state "RUN_LIST_${head}_JSON" '[]'
-    # PR меняет код робота (НЕ CI-only) + CI green, но для orphan-CI-only не
-    # работает, e2e run нет → PASS нет.
-    set_state "PR_${pr}_FILES_JSON" '{"files":[{"path":"scripts/agent_flow/agent-flow-triage.sh"}]}'
+    # PR меняет ФУНКЦИОНАЛЬНЫЙ код робота (НЕ CI-only: src/...) + CI green —
+    # для orphan-CI-only не подходит, e2e run нет → PASS нет.
+    set_state "PR_${pr}_FILES_JSON" '{"files":[{"path":"src/robot_voice/dialogue.py"}]}'
     set_state "PR_${pr}_ROLLUP_JSON" '{"statusCheckRollup":[{"conclusion":"SUCCESS"}]}'
 
     run_merge_gate
@@ -164,7 +166,7 @@ test_OR3_orphan_needs_e2e_no_pass_audit() {
 
     # Audit-коммент про ручной разбор (НЕ про PASS-cleanup).
     local audit_comment
-    audit_comment="$(printf '%s\n' "$journal" | grep -c 'merge без PASS\|нужен ручной разбор' || true)"
+    audit_comment="$(printf '%s\n' "$journal" | grep -c '🧹 ретро-путь (orphan-cleanup, t_365de06c)' || true)"
     assert_eq "1" "$audit_comment" "audit comment for orphan no-PASS published" || return 1
 
     # Close НЕ вызывается (нет PASS-доказательства).

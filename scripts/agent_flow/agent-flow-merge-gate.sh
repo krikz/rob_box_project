@@ -4122,8 +4122,7 @@ while IFS=$'\t' read -r r_issue r_pr r_head; do
     if has_label "$_r_labels_norm" "$REJECTED_LABEL"; then
         _r_was_rejected=1
         log "retro-path: issue #${r_issue} имеет ${REJECTED_LABEL} — ищем PASS-доказательство (ретро t_061d466e)"
-    elif has_label "$_r_labels_norm" "$NEEDS_E2E_LABEL" \
-        || has_label "$_r_labels_norm" "$DONE_LABEL" \
+    elif has_label "$_r_labels_norm" "$DONE_LABEL" \
         || has_label "$_r_labels_norm" "$NO_E2E_LABEL" \
         || has_label "$_r_labels_norm" "$NEEDS_REVIEW_LABEL"; then
         # needs-review в skip-листе (ретро 13.08, надзор, #942): иначе ретро-путь
@@ -4133,6 +4132,46 @@ while IFS=$'\t' read -r r_issue r_pr r_head; do
         # скипает (нет PR-ветки) → issue висит с двумя метками навсегда.
         log "retro-path: issue #${r_issue} уже в process-цикле (${_r_labels_norm}) — skip"
         continue
+    elif has_label "$_r_labels_norm" "$NEEDS_E2E_LABEL"; then
+        # Ретро 01.09 t_365de06c: needs-e2e БЕЗ ${ISSUE_LABEL} (= hermes) +
+        # merged PR → orphan в process-цикле. main-cycle не видит (нет hermes),
+        # e2e-process тоже не подберёт (нет живой PR-ветки: PR уже влит).
+        # Раньше skip'ались здесь вместе с e2e-done/no-e2e/needs-review, и
+        # issue висела OPEN вечно (issue #1824, наблюдение архитектора 01.09
+        # ~07:10Z: PR #1843 влит, issue #1824 OPEN с одной needs-e2e, без
+        # hermes; main-cycle skip'ает, retro-path skip'ает, e2e-process skip'ает).
+        #
+        # Решение: orphan-cleanup внутри retro-path:
+        #   - СНЯТЬ needs-e2e (orphan больше не претендует на e2e-ротацию;
+        #     следующий тик увидит issue уже без этой метки и не зациклится).
+        #   - Проверить PASS-доказательство (тот же блок 4155-4196):
+        #       PASS → close + comment «post-merge needs-e2e cleanup, retro-path»
+        #              (reason = audit-строка для последующего разбора);
+        #       no PASS → оставить issue как есть (без needs-e2e), audit-коммент
+        #                 «merge без PASS — ручной разбор» (НЕ close, НЕ re-add
+        #                 needs-e2e: иначе e2e-process возьмёт issue, у которой
+        #                 нет живой PR-ветки, и поставит e2e:rejected — лишний шум).
+        #
+        # ВАЖНО (regression guard): НЕ цепляем hermes+needs-e2e — это territory
+        # e2e-process (test_O_retro_hermes_with_needs_e2e_still_skips в
+        # test_merge_gate_retro_path.sh). Условие явно проверяет
+        # !has_label(hermes).
+        if has_label "$_r_labels_norm" "$ISSUE_LABEL"; then
+            # hermes+needs-e2e — НЕ наш случай, e2e-process обрабатывает.
+            log "retro-path: issue #${r_issue} hermes+${NEEDS_E2E_LABEL} — e2e-process owns, skip"
+            continue
+        fi
+        log "retro-path: issue #${r_issue} orphan needs-e2e (no ${ISSUE_LABEL}) — post-merge cleanup"
+        # Снимаем needs-e2e (orphan-cleanup). Если не удалось — не критично,
+        # close/audit-коммент всё равно выполнятся; следующий тик снова попытается.
+        if [ "$DRY_RUN" != "true" ]; then
+            gh issue edit "$r_issue" --repo "$GH_REPO" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 \
+                && log "retro-path: issue #${r_issue} ${NEEDS_E2E_LABEL} снят (orphan-cleanup)" \
+                || log "retro-path: WARNING не удалось снять ${NEEDS_E2E_LABEL} с #${r_issue}"
+        fi
+        # Метим факт orphan-cleanup — основной close-блок ниже (4155+) использует
+        # этот флаг, чтобы выдать корректный audit-комментарий и логировать.
+        _r_was_orphan=1
     fi
     # Ретро 19.08 t_498dc624 (process-fix-hermes-stuck-open): ${ISSUE_LABEL}
     # (= hermes) БЕЗ workflow-меток (needs-e2e/e2e-done/no-e2e-required/
@@ -4219,8 +4258,16 @@ except Exception:
             if [ "$_r_was_rejected" = "1" ]; then
                 _r_rejected_note=" Снят ${REJECTED_LABEL} (фикс влит, e2e не требуется)."
             fi
-            gh issue comment "$r_issue" --repo "$GH_REPO" --body \
-                "✅ ретро-путь (ADR-0014 gap, t_68607832/t_061d466e): PR #${r_pr} смержен в ${DEVELOP_BRANCH}. PASS-доказательство: ${_r_evidence}.${_r_rejected_note} Issue закрыта." >/dev/null 2>&1 || true
+            # Ретро 01.09 t_365de06c: orphan-cleanup имеет собственный префикс
+            # комментария для grep'a при разборе (отличается от «✅ ретро-путь»
+            # чтобы dedup не считал обычный и orphan-cleanup одной веткой).
+            if [ "${_r_was_orphan:-0}" = "1" ]; then
+                gh issue comment "$r_issue" --repo "$GH_REPO" --body \
+                    "🧹 ретро-путь (orphan-cleanup, t_365de06c): issue имела только ${NEEDS_E2E_LABEL} без ${ISSUE_LABEL} (= hermes) после merge PR #${r_pr} в ${DEVELOP_BRANCH}. Снят ${NEEDS_E2E_LABEL} (orphan вышел из e2e-ротации). PASS-доказательство: ${_r_evidence}. Issue закрыта." >/dev/null 2>&1 || true
+            else
+                gh issue comment "$r_issue" --repo "$GH_REPO" --body \
+                    "✅ ретро-путь (ADR-0014 gap, t_68607832/t_061d466e): PR #${r_pr} смержен в ${DEVELOP_BRANCH}. PASS-доказательство: ${_r_evidence}.${_r_rejected_note} Issue закрыта." >/dev/null 2>&1 || true
+            fi
         fi
         # issue #1534: self-id whoami BEFORE close (retro-path).
         whoami_close_issue "$r_issue" "retro-path close: PR #${r_pr} merged into ${DEVELOP_BRANCH} (ADR-0014 gap t_68607832/t_061d466e)"
@@ -4237,6 +4284,24 @@ except Exception:
             # поставит rejected (петля). Оставляем rejected — нужен ручной
             # разбор (ретро 12.08 t_061d466e).
             log "retro-path: issue #${r_issue} имеет ${REJECTED_LABEL}, PASS-доказательства нет — НЕ трогаем (нужен ручной разбор)"
+            skipped=$((skipped+1))
+            continue
+        fi
+        if [ "${_r_was_orphan:-0}" = "1" ]; then
+            # Ретро 01.09 t_365de06c: orphan-cleanup без PASS. issue уже без
+            # ${NEEDS_E2E_LABEL} (сняли выше). НЕ ставим needs-e2e повторно
+            # (иначе e2e-process возьмёт issue без живой PR-ветки → поставит
+            # ${REJECTED_LABEL}, лишний шум). НЕ close'им (нет PASS). Audit-
+            # коммент с маркером «нужен ручной разбор» — следующий тик его
+            # не повторит (dedup 6h), а юзер/разбор увидит явный сигнал.
+            log "retro-path: issue #${r_issue} orphan, PASS-доказательства нет — НЕ close, оставлен ручной разбор"
+            _r_orphan_dedup_since="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            _r_orphan_dup_count="$(gh api "repos/${GH_REPO}/issues/${r_issue}/comments?since=${_r_orphan_dedup_since}&per_page=100" \
+                --jq '[.[] | select(.body | contains("🧹 ретро-путь (orphan-cleanup, t_365de06c)"))] | length' 2>/dev/null || echo 0)"
+            if [ "${_r_orphan_dup_count:-0}" -eq 0 ] && [ "$DRY_RUN" != "true" ]; then
+                gh issue comment "$r_issue" --repo "$GH_REPO" --body \
+                    "🧹 ретро-путь (orphan-cleanup, t_365de06c): issue имела только ${NEEDS_E2E_LABEL} без ${ISSUE_LABEL} (= hermes) после merge PR #${r_pr} в ${DEVELOP_BRANCH}. Снят ${NEEDS_E2E_LABEL} (orphan-cleanup). PASS-доказательства не найдено (нет e2e SUCCESS, PR не CI-only или CI не зелёный). Issue НЕ закрыта автоматически — нужен ручной разбор (verify фикса в роботе/на стенде и закрыть вручную)." >/dev/null 2>&1 || true
+            fi
             skipped=$((skipped+1))
             continue
         fi
