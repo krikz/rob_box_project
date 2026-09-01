@@ -52,7 +52,13 @@ class SearchWebTool(MCPTool):
             "спорт («счёт матча Спартак-Зенит»), "
             "локальная информация («работает ли метро в Москве»), "
             "факты и даты («когда день города в Ростове»). "
-            "НЕ используй для: музыкального ресёрча (genre/BPM — используй "
+            # issue #1810: the old wording («не для музыкального ресёрча») pushed the
+            # music skill away from the one tool that can find a melody it does
+            # not know, so it substituted a generic scale instead. Samples are
+            # what search_samples is for; notes and artist style are web search.
+            "ТАКЖЕ для музыки: ноты незнакомой мелодии («<название> ноты», "
+            "«<name> melody notes MIDI») и стиль/темп артиста или группы. "
+            "НЕ используй для: подбора сэмплов (буква/индекс — используй "
             "search_samples), личных фактов о собеседнике "
             "(memory_search/memory_context)."
         )

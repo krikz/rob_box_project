@@ -1212,7 +1212,34 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         'реплики '
                                                                         'вместо '
                                                                         'хронологических '
-                                                                        'последних.'}},
+                                                                        'последних.'},
+                                            'speaker_id': {   'type': 'string',
+                                                              'description': 'Опционально: '
+                                                                             'voice-biometric '
+                                                                             'id '
+                                                                             'текущего '
+                                                                             'спикера '
+                                                                             '(из '
+                                                                             '<system_context>/<speaker_id>). '
+                                                                             'Передавай '
+                                                                             'ВСЕГДА, '
+                                                                             'когда '
+                                                                             'вопрос '
+                                                                             'про '
+                                                                             'конкретного '
+                                                                             'человека '
+                                                                             '("о чём '
+                                                                             'мы '
+                                                                             'говорили", '
+                                                                             '"что ты '
+                                                                             'обо мне '
+                                                                             'знаешь") '
+                                                                             '— иначе '
+                                                                             'вернутся '
+                                                                             'факты/реплики '
+                                                                             'ДРУГОГО '
+                                                                             'зарегистрированного '
+                                                                             'пользователя.'}},
                           'required': [],
                           'additionalProperties': False},
         'signature': {'params': [], 'required': [], 'accepts_kwargs': True}},
@@ -1246,7 +1273,34 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                             'enum': [   'preference',
                                                                         'habit',
                                                                         'name',
-                                                                        'general']}},
+                                                                        'general']},
+                                            'speaker_id': {   'type': 'string',
+                                                              'description': 'Опционально: '
+                                                                             'voice-biometric '
+                                                                             'id '
+                                                                             'текущего '
+                                                                             'спикера '
+                                                                             '(из '
+                                                                             '<system_context>/<speaker_id>). '
+                                                                             'Если '
+                                                                             'передан '
+                                                                             '— факт '
+                                                                             'сохраняется '
+                                                                             'ТОЛЬКО '
+                                                                             'этому '
+                                                                             'пользователю; '
+                                                                             'иначе '
+                                                                             'факт '
+                                                                             'становится '
+                                                                             'глобальным. '
+                                                                             'ВСЕГДА '
+                                                                             'передавай '
+                                                                             'speaker_id '
+                                                                             'для '
+                                                                             'персональных '
+                                                                             'фактов '
+                                                                             '(имя, '
+                                                                             'предпочтения).'}},
                           'required': ['fact'],
                           'additionalProperties': False},
         'signature': {'params': [], 'required': [], 'accepts_kwargs': True}},
@@ -1272,7 +1326,32 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         'результатов '
                                                                         '(по умолчанию '
                                                                         '5, максимум '
-                                                                        '20).'}},
+                                                                        '20).'},
+                                            'speaker_id': {   'type': 'string',
+                                                              'description': 'Опционально: '
+                                                                             'voice-biometric '
+                                                                             'id '
+                                                                             'текущего '
+                                                                             'спикера '
+                                                                             '(из '
+                                                                             '<system_context>/<speaker_id>). '
+                                                                             'Передавай '
+                                                                             'ВСЕГДА, '
+                                                                             'когда '
+                                                                             'вопрос '
+                                                                             'про '
+                                                                             'конкретного '
+                                                                             'человека '
+                                                                             '("что я '
+                                                                             'люблю", '
+                                                                             '"моё '
+                                                                             'имя") — '
+                                                                             'иначе '
+                                                                             'вернутся '
+                                                                             'факты/реплики '
+                                                                             'ДРУГОГО '
+                                                                             'зарегистрированного '
+                                                                             'пользователя.'}},
                           'required': ['query'],
                           'additionalProperties': False},
         'signature': {'params': [], 'required': [], 'accepts_kwargs': True}},
@@ -1758,8 +1837,10 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'случилось в мире сегодня»), курсы и цены («курс доллара '
                        'сейчас», «сколько стоит iPhone 16»), спорт («счёт матча '
                        'Спартак-Зенит»), локальная информация («работает ли метро в '
-                       'Москве»), факты и даты («когда день города в Ростове»). НЕ '
-                       'используй для: музыкального ресёрча (genre/BPM — используй '
+                       'Москве»), факты и даты («когда день города в Ростове»). ТАКЖЕ '
+                       'для музыки: ноты незнакомой мелодии («<название> ноты», '
+                       '«<name> melody notes MIDI») и стиль/темп артиста или группы. '
+                       'НЕ используй для: подбора сэмплов (буква/индекс — используй '
                        'search_samples), личных фактов о собеседнике '
                        '(memory_search/memory_context).',
         'parameters': {   'type': 'object',

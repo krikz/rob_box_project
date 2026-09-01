@@ -238,3 +238,75 @@ def test_master_prompt_delegates_named_tracks_to_the_general_style_rule() -> Non
     for part in ("opening motif", "bridge", "answer phrase"):
         assert part in content.lower(), f"style rule lost '{part}'"
     assert "first phrase" in content.lower()
+
+
+# ── issue #1810 — the music skill could not look anything up ─────────────
+#
+# The skill prompt told the model to research artists with
+# ``search_artist_style(...)`` and to pick samples with
+# ``renardo_search_samples(...)``. Neither tool has ever existed: the real
+# names are ``search_web`` and ``search_samples``. ``_validate_tools_in_prompt``
+# did not catch it — it only warns about registered tools *missing* from the
+# prompt, never about invented ones present in it. So the model was told to
+# call a tool that would fail, and fell back to inventing a melody instead of
+# looking one up. These tests pin the real names down.
+
+_PHANTOM_TOOL_NAMES = (
+    "search_artist_style",
+    "renardo_search_samples",
+    "renardo_list_tracks",
+    "renardo_save_track",
+    "renardo_load_track",
+    "renardo_delete_track",
+)
+
+
+def test_music_skill_prompt_names_no_unregistered_tools() -> None:
+    """#1810 — every tool the prompt orders must actually be registered."""
+    content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
+
+    for phantom in _PHANTOM_TOOL_NAMES:
+        assert phantom not in content, (
+            f"music_skill_prompt.txt orders '{phantom}', which is not a "
+            f"registered MCP tool (see _tool_catalog_data.py). The LLM will "
+            f"get a tool-not-found error and fall back to prose or to "
+            f"inventing music."
+        )
+
+
+def test_music_skill_prompt_offers_search_web_for_unknown_melodies() -> None:
+    """#1810 — the skill must know it can look a melody up on the web.
+
+    ``search_web`` is registered and reachable from this skill, but the
+    prompt never mentioned it, so an unknown tune became a generic scale in
+    the right mood presented as the real thing.
+    """
+    content = MUSIC_SKILL_PROMPT_PATH.read_text(encoding="utf-8")
+
+    assert "search_web(query, max_results=5)" in content
+    assert "RULE #NOTES" in content
+    # The rule has to cover both halves: look it up, and if that fails, say so.
+    lowered = content.lower()
+    assert "ноты" in lowered  # «ноты» — the search query it should run
+    assert "melody notes" in lowered
+    assert "не знаю" in lowered  # honest «не знаю» instead of a substitution
+
+
+def test_search_web_description_does_not_ban_music_research() -> None:
+    """#1810 — the tool's own description used to wave the music skill off.
+
+    «НЕ используй для музыкального ресёрча» applied to sample picking, but
+    the model read it as "not for music", which is the opposite of what the
+    melody-lookup path needs.
+    """
+    catalog_path = (
+        REPO_ROOT / "src" / "rob_box_core" / "rob_box_core" / "_tool_catalog_data.py"
+    )
+    content = catalog_path.read_text(encoding="utf-8")
+    start = content.index("'name': 'search_web'")
+    entry = content[start:start + 2000]
+
+    assert "музыкального ресёрча" not in entry, (
+        "search_web still tells the LLM not to use it for music research"
+    )
+    assert "ноты" in entry
