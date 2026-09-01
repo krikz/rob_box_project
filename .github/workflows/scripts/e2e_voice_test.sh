@@ -908,7 +908,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         for battempt in $(seq 1 "$E2E_MAX_ATTEMPTS"); do
             BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
             log "STEP ${label}: PLAY backlog attempt ${battempt}/${E2E_MAX_ATTEMPTS}"
-            pactl set-sink-volume @DEFAULT_SINK@ 150% 2>/dev/null || true
+            pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null || true
             paplay "$OUT_DIR/cmd_${safe}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
             sleep "$E2E_REACTION_WINDOW"
             if check_backlog_accumulated "$BEFORE"; then
@@ -931,9 +931,9 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     for attempt in $(seq 1 "$E2E_MAX_ATTEMPTS"); do
         BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
         log "STEP ${label}: PLAY attempt ${attempt}/${E2E_MAX_ATTEMPTS}"
-        # Katana: громкость динамика 150% (по VOICE_COMMANDS_RESEARCH.md —
-        # 100% даёт -42dB на микрофоне, wake word теряется)
-        pactl set-sink-volume @DEFAULT_SINK@ 150% 2>/dev/null || true
+        # Громкость динамика 100% (по умолчанию; явный >100% доступен через
+        # inputs.volume в workflow, e.g. -f volume=120).
+        pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null || true
         # cleanup-resilience (ретро 11.08 t_26a6d362): если eq-файл пропал
         # (OUT_DIR удалён внешним cleanup на 249) — пере-синтезируем и EQ,
         # а не получаем ложный FAIL от paplay open(): No such file.
