@@ -26,7 +26,6 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -402,7 +401,7 @@ def user_wants_performance(user_input: str) -> bool:
     return any(kw in low for kw in BABBLE_PERFORMANCE_KEYWORDS)
 
 
-def user_wants_music(user_input: str, *, logger: Optional[logging.Logger] = None) -> bool:
+def user_wants_music(user_input: str, *, logger: logging.Logger | None = None) -> bool:
     """Heuristic: does the user request music / a track?
 
     Used by the Bug-C code-side fallback to decide whether a retry
@@ -514,8 +513,8 @@ class ActionClaimRule:
     """
 
     category: str
-    user_re: "re.Pattern[str]"
-    claim_re: "re.Pattern[str]"
+    user_re: re.Pattern[str]
+    claim_re: re.Pattern[str]
     tools: frozenset
     what: str
 
@@ -637,10 +636,10 @@ ACTION_CLAIM_RULES: tuple = (
 
 def detect_unbacked_action_claim(
     *,
-    user_input: Optional[str],
-    spoken: Optional[str],
-    tools_called: Optional[Tuple[str, ...]],
-) -> Optional[ActionClaimRule]:
+    user_input: str | None,
+    spoken: str | None,
+    tools_called: tuple[str, ...] | None,
+) -> ActionClaimRule | None:
     """Issue #992 Bug E — LLM отчиталась о действии, не вызвав тул.
 
     Возвращает сработавшее правило или ``None``. Правило считается
@@ -787,7 +786,7 @@ def build_music_retry_prompt(
     )
 
 def build_unbacked_action_retry_prompt(
-    *, user_input: str, spoken: str, rule: "ActionClaimRule"
+    *, user_input: str, spoken: str, rule: ActionClaimRule
 ) -> str:
     """Issue #992 Bug E — синтетический ретрай «отчитался, но не сделал».
 
@@ -830,7 +829,7 @@ _RENARDO_CODE_LINE_RE = re.compile(
 )
 
 
-def extract_renardo_code_lines(text: Optional[str]) -> Optional[str]:
+def extract_renardo_code_lines(text: str | None) -> str | None:
     """Вытащить Renardo-код, попавший в текст реплики.
 
     Возвращает код (совпавшие строки через ``\n``), если в ``text`` есть
@@ -860,3 +859,302 @@ def build_renardo_code_retry_prompt(code: str) -> str:
         f"{code}\n"
         "После вызова верни 'done'."
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #1777 / #1762 — non-music tool-skipped guard (Bug C for non-music).
+#
+# Баг: юзер просит «который час / время в Москве / date today», а LLM
+# отвечает текстом-обещанием («сейчас тридцать семь минут одиннадцатого
+# вечера») без вызова ``get_current_time``. Пользователь слышит
+# выдуманное время. Гейт в e2e GATE-1 ждёт, что у робота в логах будет
+# либо вызов ``get_current_time``, либо WARN
+# ``time_question_no_tool_call`` — иначе он считает ход сломавшимся.
+#
+# Параллельно Bug C (issue #992) для музыки: там ретрай уже отработан.
+# Здесь — для «information tools» (``get_current_time``, ``search_web``,
+# ``set_voice``, ``memory_search``, ``faq_search``), где явный запрос
+# пользователя ОБЯЗАН уйти в tool. Тот же общий флаг
+# ``_retry_dispatched_in_turn`` (см. ef41d3d8) защищает от ping-pong —
+# один ретрай на turn.
+# ---------------------------------------------------------------------------
+
+#: Каталог «tool_name → ключевые слова запроса». ``detect_required_tool``
+#: проверяет, что в ``user_input`` есть хотя бы одно ключевое слово из
+#: соответствующего фрозсета, и возвращает имя tool. Если ни один не
+#: совпал — ``None``. Слова — нижний регистр, морфологию покрываем
+#: проверкой подстроки ``in``: «который час», «которого часа», «какое
+#: время суток» все матчатся на «час»/«время».
+#:
+#: Список нарочно узкий — мы НЕ ловим общие сценарии («расскажи анекдот»),
+#: а только запросы, у которых есть конкретный правильный tool.
+
+#: Regex-паттерны для разнесённых в фразе слов: «сколько ... времени».
+#: Подстроковый поиск здесь бессилен, поэтому отдельная re-проверка
+#: срабатывает после обычного фрозсета. Список маленький: только то,
+#: что иначе ловится через substring и даёт ложные срабатывания.
+_TIME_QUESTION_RE = re.compile(
+    r"\bсколько\b.{0,15}\bвремени\b"  # сколько (сейчас) времени
+    r"|\bсколько\b.{0,15}\bминут\b"   # сколько минут осталось / прошло
+    r"|\bсколько\b.{0,15}\bчасов\b"   # сколько часов
+    r"|\bсколько\b.{0,15}\bсекунд\b"
+)
+
+TOOL_REQUEST_PATTERNS: dict = {
+    # Issue #1777 — основной кейс: «который час / время в Берлине /
+    # сколько времени / what time is it / date today».
+    "get_current_time": frozenset({
+        # RU — вопросы про текущее время
+        "который час",
+        "которого часа",
+        "которому часу",
+        "сколько времени",
+        "какое время",
+        "какое число",
+        "какое сегодня число",
+        "какой день",
+        "какой сегодня день",
+        "какая дата",
+        "какая сегодня дата",
+        "сколько минут",  # «сколько минут осталось до обеда» — спорно,
+                          # но как интент про время попадает сюда же.
+        "время в ",       # «время в Москве/Берлине/Токио»
+        "время по ",      # «время по Москве»
+        "время сейчас",
+        "сейчас время",
+        "дата сегодня",
+        "число сегодня",
+        "день недели",
+        "какой год",
+        "сейчас сколько",
+        # EN
+        "what time",
+        "what date",
+        "what day",
+        "current time",
+        "time in ",
+        "date today",
+        "today's date",
+        "today date",
+        "what's the time",
+    }),
+    # web-поиск — пользователь явно просит найти что-то в сети
+    "search_web": frozenset({
+        "найди в интернете",
+        "поищи в интернете",
+        "поищи в сети",
+        "загугли",
+        "погугли",
+        "search the web",
+        "search the internet",
+        "look up online",
+    }),
+    # смена голоса/тона
+    "set_voice": frozenset({
+        "смени голос",
+        "смени тон",
+        "измени голос",
+        "измени тон",
+        "поменяй голос",
+        "поменяй тон",
+        "говори ниже",
+        "говори выше",
+        "говори басом",
+        "говори пискля",
+        "голос ниже",
+        "голос выше",
+        "change voice",
+        "change pitch",
+        "set pitch",
+        "set voice",
+    }),
+    # память (что юзер говорил раньше)
+    "memory_search": frozenset({
+        "что я говорил",
+        "что я говори",
+        "что я тебе говорил",
+        "что я рассказывал",
+        "что я тебе рассказывал",
+        "помнишь что я",
+        "помнишь ли ты что я",
+        "ты помнишь что я",
+        "что ты обо мне знаешь",
+        "что ты знаешь обо мне",
+        "что ты помнишь",
+        "memory search",
+        "search memory",
+    }),
+    # FAQ — поиск по локальной базе знаний
+    "faq_search": frozenset({
+        "в своей базе знаний",
+        "в базе знаний",
+        "в faq",
+        "в своих faq",
+        "faq search",
+    }),
+}
+
+
+def _normalise(user_input: str) -> str:
+    """Нормализация для матчинга: lower + пробелы по краям + ё→е.
+
+    Простой и предсказуемый вариант — без лемматизации (pymorphy в
+    guards тащить не хочется). Подстроки покрывают большинство
+    падежей/времён; где не покрывают — лучше пропустить, чем дать
+    ложный ретрай.
+    """
+    if not user_input:
+        return ""
+    return user_input.lower().replace("ё", "е").strip()
+
+
+def detect_required_tool(user_input: str) -> str | None:
+    """Issue #1777 / #1762 — какой tool требуется для этого юзер-запроса?
+
+    Возвращает имя tool (``get_current_time`` / ``search_web`` /
+    ``set_voice`` / ``memory_search`` / ``faq_search``), если
+    ``user_input`` явно просит этот tool, иначе ``None``.
+
+    Первое совпадение выигрывает. Если в одной фразе пересеклось два
+    tool'а — сработает тот, что раньше в ``TOOL_REQUEST_PATTERNS``.
+    Для нашего кейса («который час?» + ничего больше) это не проблема.
+
+    Порядок проверок:
+    1. Каталог ``TOOL_REQUEST_PATTERNS`` (substring-match).
+    2. Regex-паттерны для разнесённых слов (например,
+       «сколько ... времени»).
+    """
+    norm = _normalise(user_input)
+    if not norm:
+        return None
+    for tool_name, keywords in TOOL_REQUEST_PATTERNS.items():
+        for kw in keywords:
+            if kw in norm:
+                return tool_name
+    if _TIME_QUESTION_RE.search(norm):
+        return "get_current_time"
+    return None
+
+
+def build_tool_retry_prompt(user_input: str, tool_name: str) -> str:
+    """Synthetic CRITICAL prompt for non-music tool-skipped retry.
+
+    Args:
+        user_input: оригинальная команда юзера (для контекста LLM).
+        tool_name: имя tool, который LLM должен вызвать. ОБЯЗАН быть
+            ключом ``TOOL_REQUEST_PATTERNS`` — иначе возвращаем ``""``
+            (defence-in-depth против prompt-injection / опечаток).
+
+    Returns:
+        Готовый CRITICAL-промпт, либо ``""`` если ``tool_name`` не из
+        allow-list (тогда ``_apply_tool_skipped_guard`` пропустит ход).
+    """
+    if tool_name not in TOOL_REQUEST_PATTERNS:
+        return ""
+    return (
+        "[CRITICAL] Пользователь явно попросил: «"
+        + (user_input or "").strip()
+        + "». "
+        "Для ответа ОБЯЗАТЕЛЬНО нужен tool ``"
+        + tool_name
+        + "``. "
+        "❌ ЗАПРЕЩЕНО отвечать текстом-обещанием или из головы: "
+        "выдуманное время / дата / данные = баг #1777. "
+        "✅ В ЭТОМ же turn вызови tool ``"
+        + tool_name
+        + "()`` и опирайся на его результат. "
+        "Если tool вернул ошибку или недоступен — честно скажи, что "
+        "не удалось узнать («не удалось узнать время» для "
+        "``get_current_time``, «не нашёл в интернете» для "
+        "``search_web`` и т.п.). Не выдумывай ответ."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Issue #1777 — детекторы для диагностического WARN-лога.
+# ---------------------------------------------------------------------------
+
+#: Маркеры времени в произвольном тексте ответа. Ловим и цифровой
+#: формат «14:35», и русские «часов/минут», и английские «AM/PM».
+#: Цифровой шаблон отделён, чтобы не ломать компиляцию re.
+_TIME_DIGIT_RE = re.compile(
+    r"\b\d{1,2}\s*:\s*\d{2}\b"  # 14:35, 9:05
+    r"|\b\d{1,2}\s*:\s*\d{2}\s*:\s*\d{2}\b"  # 14:35:42
+    r"|\b\d{1,2}\s+(?:утра|дня|вечера|ночи)\b"  # 5 утра, 3 дня
+    r"|\b\d{1,2}\s+час(?:а|ов)?\s+ночи\b"  # «в 3 часа ночи»
+)
+
+#: Keyword-маркеры времени в spoken-ответе LLM.
+#:
+#: 🔴 FIX: голые «час/часа/часов» слишком жадные — «У меня нет часов»
+#: ложно срабатывает. Оставляем только то, что в НОРМАЛЬНОМ ответе
+#: про время не может появиться случайно:
+#: - «минут» / «секунд» — почти всегда про время;
+#: - am/pm — однозначно про время;
+#: - «утра/дня/вечера/ночи» — только если рядом цифра, обработает regex;
+#: - «ровно», «сейчас» — характерные опенеры галлюцинации.
+_TIME_KEYWORDS: tuple = (
+    # минуты / секунды
+    "минут", "минута", "минуты",
+    "секунд", "секунда", "секунды",
+    # am/pm — варианты с пробелом и без (lower-case нормализация):
+    # «9:05 am», «9:05 am.», «9:05am», «9 am», «am», ...
+    " am ", " pm ", " a.m.", " p.m.",
+    " am.", " pm.",
+    " am,", " pm,",
+    # характерные опенеры ответа про время
+    "ровно ",
+    "сейчас ",
+)
+
+
+def looks_like_time_question(user_input: str) -> bool:
+    """Issue #1777 — user_input похож на вопрос про текущее время/дату?
+
+    Используется в двух местах:
+    * ``_apply_tool_skipped_guard`` — чтобы не уходить в ретрай для
+      «расскажи мне про часы» (это chit-chat, не запрос tool'а).
+    * WARN-лог ``time_question_no_tool_call`` — чтобы помечать
+      диагностикой именно запросы-в-время, а не любой текст.
+
+    Замечание: функция пересекается с :func:`detect_required_tool`, но
+    шире: «расскажи про часы» вернёт ``True`` здесь и ``None`` там.
+    Это сознательно: WARN-лог полезен и для случая, когда LLM
+    решила ответить chit-chat вместо вызова tool.
+    """
+    norm = _normalise(user_input)
+    if not norm:
+        return False
+    # Сначала точный детектор по каталогу.
+    if detect_required_tool(norm) == "get_current_time":
+        return True
+    # Потом — вопросительная форма + ключевое слово.
+    if "?" in user_input:
+        # Цифровое «14:35» в вопросе нерелевантно, ключевые — «время /
+        # час / дата».
+        for kw in ("время", "час", "дата", "число", "день", "year", "time"):
+            if kw in norm:
+                return True
+    return False
+
+
+def spoken_text_contains_time_marker(spoken_text: str) -> bool:
+    """Issue #1777 — есть ли в spoken-ответе LLM маркер времени?
+
+    Используется для WARN-лога ``time_question_no_tool_call``: если
+    LLM «ответила» на вопрос про время текстом с конкретным
+    временем (часы/минуты/AM/PM), значит галлюцинировала. Без
+    маркера — текст типа «не знаю» или «спроси у Siri» —
+    диагностика не нужна.
+    """
+    if not spoken_text:
+        return False
+    low = _normalise(spoken_text)
+    if not low:
+        return False
+    if _TIME_DIGIT_RE.search(spoken_text):
+        return True
+    for kw in _TIME_KEYWORDS:
+        if kw in low:
+            return True
+    return False

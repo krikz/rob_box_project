@@ -14,7 +14,6 @@ These are pure-Python functions — no ROS2 node required.
 from __future__ import annotations
 
 import pytest
-
 from rob_box_voice.core.dialogue_guards import (
     ACTION_CLAIM_RULES,
     BABBLE_BANNED_OPENERS,
@@ -22,20 +21,24 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_GUARD_KEYWORDS,
     MUSIC_GUARD_VOCAL_KEYWORDS,
     MUSIC_STOP_OVERRIDES,
+    TOOL_REQUEST_PATTERNS,
     build_babble_retry_prompt,
     build_music_retry_prompt,
     build_renardo_code_retry_prompt,
+    build_tool_retry_prompt,
     build_unbacked_action_retry_prompt,
+    detect_required_tool,
     detect_unbacked_action_claim,
     extract_renardo_code_lines,
     is_metalanguage_babble,
     is_music_stop_command,
     is_state_question,
     is_vocal_request,
+    looks_like_time_question,
+    spoken_text_contains_time_marker,
     user_wants_music,
     user_wants_performance,
 )
-
 
 # ---------------------------------------------------------------------------
 # is_metalanguage_babble
@@ -768,3 +771,250 @@ class TestRetryPromptKnowsIfMusicIsPlaying:
         for playing in (False, True):
             p = build_music_retry_prompt("сыграй бит", music_playing=playing)
             assert p.startswith(MUSIC_RETRY_PROMPT_PREFIX)
+
+
+# ---------------------------------------------------------------------------
+# Issue #1777 — non-music tool-skipped guard (Bug C для information tools).
+#
+# Закрываем две проблемы:
+# 1. LLM отвечает на «который час?» без вызова ``get_current_time`` —
+#    ``detect_required_tool`` ловит интент, ``build_tool_retry_prompt``
+#    формирует CRITICAL-промпт.
+# 2. LLM отвечает текстом с маркерами времени («сейчас 14:35») без
+#    вызова tool — ``spoken_text_contains_time_marker`` это видит,
+#    ``looks_like_time_question`` подтверждает, что запрос был про
+#    время, WARN-лог фиксирует инцидент.
+# ---------------------------------------------------------------------------
+
+
+class TestDetectRequiredTool:
+    """Issue #1777 — какой tool требуется для user_input."""
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "который час",
+            "Который час?",
+            "которого часа",
+            "сколько времени",
+            "сколько сейчас времени",
+            "какое время",
+            "время в Москве",
+            "время в Берлине",
+            "время по токио",
+            "время сейчас",
+            "сейчас сколько",
+            "дата сегодня",
+            "какое сегодня число",
+            "день недели",
+            "what time is it",
+            "what time",
+            "what date",
+            "date today",
+        ],
+    )
+    def test_detects_time_tool(self, phrase: str) -> None:
+        assert detect_required_tool(phrase) == "get_current_time"
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "найди в интернете про космос",
+            "погугли рецепт шарлотки",
+            "загугли python tutorial",
+            "search the web for python",
+        ],
+    )
+    def test_detects_web_search(self, phrase: str) -> None:
+        assert detect_required_tool(phrase) == "search_web"
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "смени голос",
+            "поменяй тон",
+            "говори басом",
+            "голос ниже",
+            "change pitch",
+        ],
+    )
+    def test_detects_voice_change(self, phrase: str) -> None:
+        assert detect_required_tool(phrase) == "set_voice"
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "что я тебе говорил про чай",
+            "помнишь что я рассказывал",
+            "что ты обо мне знаешь",
+        ],
+    )
+    def test_detects_memory_search(self, phrase: str) -> None:
+        assert detect_required_tool(phrase) == "memory_search"
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "как тебя зовут",
+            "расскажи анекдот",
+            "поехали вперёд",
+            "сыграй техно",
+        ],
+    )
+    def test_no_tool_for_general_chitchat(self, phrase: str) -> None:
+        """Чатовые фразы не должны ловиться tool-guard'ом."""
+        assert detect_required_tool(phrase) is None
+
+    def test_empty_input_returns_none(self) -> None:
+        assert detect_required_tool("") is None
+        assert detect_required_tool("   ") is None
+        assert detect_required_tool(None) is None  # type: ignore[arg-type]
+
+    def test_yo_normalised_to_e(self) -> None:
+        """«всё хорошо» vs «всe хорошо» — ё→е."""
+        assert detect_required_tool("который час") == "get_current_time"
+
+
+class TestBuildToolRetryPrompt:
+    """Issue #1777 / #1762 — CRITICAL-промпт ретрая."""
+
+    def test_contains_tool_name_and_user_input(self) -> None:
+        prompt = build_tool_retry_prompt("который час", "get_current_time")
+        assert "get_current_time" in prompt
+        assert "который час" in prompt
+        assert "[CRITICAL]" in prompt
+        # Явный запрет на выдумку — главная защита от бага #1777.
+        assert "ЗАПРЕЩЕНО" in prompt
+        # Чёткое указание «не выдумывай».
+        assert "не удалось" in prompt or "честно" in prompt.lower()
+
+    def test_user_input_passthrough(self) -> None:
+        prompt = build_tool_retry_prompt(
+            "время в Берлине пожалуйста", "get_current_time"
+        )
+        assert "время в Берлине пожалуйста" in prompt
+
+    def test_unknown_tool_returns_empty(self) -> None:
+        """Defence-in-depth: tool_name вне allow-list — пустой промпт.
+
+        Это защищает _apply_tool_skipped_guard от prompt-injection:
+        если LLM-ответ выдумал имя tool'а, retry просто не сработает.
+        """
+        assert build_tool_retry_prompt("привет", "delete_everything") == ""
+        assert build_tool_retry_prompt("привет", "") == ""
+        assert build_tool_retry_prompt("привет", "execute_shell") == ""
+
+    def test_all_catalog_tools_produce_non_empty_prompt(self) -> None:
+        """Каждый tool из каталога обязан давать валидный промпт."""
+        for tool_name in TOOL_REQUEST_PATTERNS:
+            prompt = build_tool_retry_prompt("запрос пользователя", tool_name)
+            assert prompt, f"empty prompt for known tool {tool_name!r}"
+            assert tool_name in prompt
+            assert "[CRITICAL]" in prompt
+
+
+class TestLooksLikeTimeQuestion:
+    """Issue #1777 — детектор «похоже на вопрос про время»."""
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "который час",
+            "Который час?",
+            "сколько времени?",
+            "время в Москве",
+            "дата сегодня",
+            "what time is it",
+            "what date",
+            "time in London",
+        ],
+    )
+    def test_detects_time_questions(self, phrase: str) -> None:
+        assert looks_like_time_question(phrase) is True
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            # chit-chat с упоминанием часов — не запрос tool'а.
+            "расскажи про часы",
+            "я люблю часы",
+            "а ты знаешь что такое время суток",
+            # обычные команды без вопроса.
+            "сыграй бит",
+            "поехали вперёд",
+            "расскажи анекдот",
+        ],
+    )
+    def test_chitchat_is_not_time_question(self, phrase: str) -> None:
+        assert looks_like_time_question(phrase) is False
+
+    def test_empty_returns_false(self) -> None:
+        assert looks_like_time_question("") is False
+        assert looks_like_time_question(None) is False  # type: ignore[arg-type]
+
+    def test_question_mark_alone_with_word_time(self) -> None:
+        """Вопрос с ключевым словом — тоже да, даже если не из каталога."""
+        assert looks_like_time_question("а сколько день длится?") is True
+        assert looks_like_time_question("а какой это час?") is True
+
+
+class TestSpokenContainsTimeMarker:
+    """Issue #1777 — есть ли в ответе LLM маркер времени."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Сейчас 14:35, вторник, 26 августа, день.",
+            "В Москве сейчас 14:35.",
+            "It's 14:35:42.",
+            "Сейчас тридцать семь минут одиннадцатого вечера.",
+            "В Берлине сейчас примерно 13:35 утра.",
+            "It's 3:35 PM.",
+            "9:05 am.",
+            "Сейчас ровно 5 часов 12 минут.",
+            "В 3 часа ночи.",
+        ],
+    )
+    def test_detects_time_markers(self, text: str) -> None:
+        assert spoken_text_contains_time_marker(text) is True
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Не знаю, спроси у Siri.",
+            "У меня нет часов.",
+            "Привет, как дела?",
+            "",
+        ],
+    )
+    def test_no_markers_in_neutral_text(self, text: str) -> None:
+        assert spoken_text_contains_time_marker(text) is False
+
+    def test_none_safe(self) -> None:
+        assert spoken_text_contains_time_marker(None) is False  # type: ignore[arg-type]
+
+
+class TestToolRequestPatternsContract:
+    """SSoT — каталог tool'ов. Следим, чтобы он не «протух»."""
+
+    def test_get_current_time_present(self) -> None:
+        """Базовый кейс бага #1777."""
+        assert "get_current_time" in TOOL_REQUEST_PATTERNS
+        assert TOOL_REQUEST_PATTERNS["get_current_time"], "пустой фрозсет"
+
+    def test_each_pattern_is_non_empty_frozenset(self) -> None:
+        for tool_name, kws in TOOL_REQUEST_PATTERNS.items():
+            assert isinstance(kws, frozenset)
+            assert kws, f"tool {tool_name!r} has empty keywords"
+
+    def test_all_keywords_are_lowercase_strings(self) -> None:
+        """Ключевые слова сравниваются после ``_normalise``, но
+        хранение в нижнем регистре — это контракт. Если кто-то
+        добавит «Который час» с большой буквы, оно сматчится, но
+        тест на «нет дубликатов в upper-case» просядет."""
+        for tool_name, kws in TOOL_REQUEST_PATTERNS.items():
+            for kw in kws:
+                assert isinstance(kw, str)
+                assert kw == kw.lower(), (
+                    f"keyword {kw!r} in {tool_name!r} not lowercase"
+                )
