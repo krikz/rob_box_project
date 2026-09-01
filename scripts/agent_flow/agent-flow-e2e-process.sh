@@ -159,6 +159,14 @@ ROUND_COUNTER_FILE="${ROUND_COUNTER_FILE:-${HERMES_HOME}/state/agent-flow-e2e-ro
 # Файл переживает cleanup (как round-counter). Монитор парсит GHOST_ROUND маркер
 # в логах и/или инкремент этого файла.
 GHOST_ROUNDS_TOTAL_FILE="${GHOST_ROUNDS_TOTAL_FILE:-${HERMES_HOME}/state/agent-flow-e2e-ghost-rounds-total}"
+# ADR-0040 (issue #1831): run-state файл с consecutive_fails per-issue. Создаётся
+# при первом запуске ({schema_version:1, issues:{}}). Файл переживает MAINTENANCE
+# (как round-counter) — иначе issue будет бесконечно триггериться после паузы.
+# helpers: e2e_run_state_load, e2e_run_state_save, e2e_run_state_bump_fail,
+#          e2e_run_state_reset (commit 3).
+RUN_STATE_FILE="${RUN_STATE_FILE:-${HERMES_HOME}/state/agent-flow-e2e-run-state.json}"
+# ADR-0040 Q2: «3 fails подряд» = 1 issue, 3 тика подряд. Default 3.
+E2E_CONSECUTIVE_FAIL_LIMIT="${E2E_CONSECUTIVE_FAIL_LIMIT:-3}"
 E2E_WORKFLOW="${E2E_WORKFLOW:-L-E2E Voice Test.yml}"
 BUILD_WORKFLOW="${BUILD_WORKFLOW:-L-Build-All-Services.yml}"
 DEPLOY_WORKFLOW="${DEPLOY_WORKFLOW:-L-Deploy and Verify.yml}"
@@ -576,7 +584,26 @@ if [ -n "${GH_REPO:-}" ]; then
     fi
 fi
 
-# --- G6: flock sentinel.
+# --- G6: flock sentinel + ADR-0040 lock-recovery -----------------------------
+# ADR-0040 §2.2.4: lock-файл /tmp/agent-flow-e2e-process.lock пишется с
+# PID:EPOCH (вместо 0 bytes). Если lock пустой или owner PID мёртв
+# (kill -0 возвращает non-zero) — process логирует «lock stale, recovered»
+# и ПРОДОЛЖАЕТ работу (не выходит с «already running»). flock уже защищает
+# от race (только один writer может владеть), PID-collision в течение жизни
+# flock-сессии маловероятен (ADR-0040 Q7: не защищаемся).
+# ВАЖНО: проверка stale-состояния ДОЛЖНА быть ДО exec 9> (которое truncate'ит
+# файл при O_TRUNC открытии). Иначе реальный crash оставит lock с PID:EPOCH,
+# новый процесс сделает exec 9> → truncate → recovery никогда не сработает.
+if [ -s "$LOCK_FILE" ]; then
+    _lock_owner="$(tr -d '[:space:]' < "$LOCK_FILE" 2>/dev/null || true)"
+    _lock_pid="${_lock_owner%%:*}"
+    if [ -n "$_lock_pid" ] && [ "$_lock_pid" != "$$" ] \
+        && ! kill -0 "$_lock_pid" 2>/dev/null; then
+        log "🔓 lock stale (owner PID ${_lock_pid} мёртв, epoch=${_lock_owner#*:}) — recovered (ADR-0040 §2.2.4)"
+        # Truncate, чтобы flock получил чистый файл. flock дальше сам разрулит.
+        : > "$LOCK_FILE"
+    fi
+fi
 exec 9>"$LOCK_FILE" || { log "cannot open lock $LOCK_FILE"; exit 1; }
 if ! flock -n 9; then
     if [ "$_run_now_triggered" = "1" ]; then
@@ -593,6 +620,178 @@ if ! flock -n 9; then
         log "another instance holds $LOCK_FILE — skip"; exit 0
     fi
 fi
+# Lock захвачен — записываем PID:EPOCH (ADR-0040). Дальше exec 9 держит flock,
+# процесс остаётся владельцем пока не завершится.
+printf '%s:%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LOCK_FILE"
+
+# --- G6.5: ADR-0040 run-state init -------------------------------------------
+# Создаёт ${RUN_STATE_FILE} с пустой схемой при первом запуске (Q6). Если
+# файл уже есть — оставляем как есть (consecutive_fails per-issue
+# переживают MAINTENANCE, как round-counter, ADR-0040 Q3).
+_e2e_run_state_ensure() {
+    local _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || return 0
+    if [ -f "$_f" ] && [ -s "$_f" ]; then
+        return 0
+    fi
+    mkdir -p "$(dirname "$_f")" 2>/dev/null || true
+    printf '%s\n' '{"schema_version":1,"issues":{}}' > "$_f" 2>/dev/null || {
+        log "WARNING: cannot init ${_f} (state per-issue disabled for this tick)"
+        RUN_STATE_FILE=""
+    }
+}
+_e2e_run_state_ensure
+
+# ADR-0040 §2.2.3 + §2.2.2: helpers для consecutive_fails per-issue.
+# Формат файла: {"schema_version":1,"issues":{"<num>":{"consecutive_fails":N,
+# "last_run_id":"...","last_attempt_at":"...","infra_fail":false}}}.
+#
+# API (вызываются только когда RUN_STATE_FILE непустой):
+#   e2e_run_state_load   → echo JSON на stdout, либо {"issues":{}} если пусто/битый
+#   e2e_run_state_save   → атомарная запись JSON через tmp + mv
+#   e2e_run_state_get    <issue> <key> → значение поля, либо "" если нет
+#   e2e_run_state_bump_fail <issue> <run_id> → increment consecutive_fails, save, echo NEW count
+#   e2e_run_state_reset   <issue> → consecutive_fails=0, infra_fail=false, save
+#   e2e_run_state_set_infra_fail <issue> → infra_fail=true, save
+#
+# Все операции сериализуются через lock-файл процесса (flock уже держится).
+# Если RUN_STATE_FILE пустой (init failed) — все helpers no-op, get → "".
+e2e_run_state_load() {
+    local _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || { printf '{"schema_version":1,"issues":{}}'; return 0; }
+    if [ ! -f "$_f" ] || [ ! -s "$_f" ]; then
+        printf '{"schema_version":1,"issues":{}}\n'
+        return 0
+    fi
+    cat "$_f" 2>/dev/null || printf '{"schema_version":1,"issues":{}}\n'
+}
+e2e_run_state_save() {  # $1=json_string
+    local _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || return 0
+    local _tmp="${_f}.tmp.$$"
+    if ! printf '%s\n' "$1" > "$_tmp" 2>/dev/null; then
+        log "WARNING: e2e_run_state_save: cannot write ${_tmp}"
+        return 1
+    fi
+    if ! mv -f "$_tmp" "$_f" 2>/dev/null; then
+        log "WARNING: e2e_run_state_save: cannot mv ${_tmp} → ${_f}"
+        return 1
+    fi
+    return 0
+}
+# jq-free JSON manipulation (нет зависимости от jq). Простая state-машина:
+# - schema_version:1 (int)
+# - issues: { "<num>": { consecutive_fails:int, last_run_id:str, last_attempt_at:str,
+#                        first_fail_at:str, infra_fail:bool } }
+# Структура плоская, проще regex-parse без jq.
+e2e_run_state_get() {  # $1=issue_num $2=key (consecutive_fails|last_run_id|infra_fail|first_fail_at|last_attempt_at)
+    local _num="$1" _key="$2" _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || { printf ''; return 0; }
+    [ -f "$_f" ] || { printf ''; return 0; }
+    E2E_RS_FP="$_f" E2E_RS_NUM="$_num" E2E_RS_KEY="$_key" \
+    python3 -c '
+import json, os
+fp = os.environ["E2E_RS_FP"]
+num = os.environ["E2E_RS_NUM"]
+key = os.environ["E2E_RS_KEY"]
+try:
+    with open(fp) as fh:
+        data = json.load(fh)
+    val = data.get("issues", {}).get(num, {}).get(key, "")
+    if isinstance(val, bool):
+        print("true" if val else "false")
+    elif val is None:
+        print("")
+    else:
+        print(val)
+except Exception:
+    print("")
+' 2>/dev/null || printf ''
+}
+e2e_run_state_bump_fail() {  # $1=issue_num $2=run_id (может быть пустым при NOT STARTED)
+    local _num="$1" _run_id="${2:-}" _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || { printf '0'; return 0; }
+    local _now _first_fail _prev_count _new_count
+    _now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    _prev_count="$(e2e_run_state_get "$_num" consecutive_fails 2>/dev/null || echo '0')"
+    [ -n "$_prev_count" ] || _prev_count=0
+    _new_count=$((_prev_count + 1))
+    _first_fail="$(e2e_run_state_get "$_num" first_fail_at 2>/dev/null || true)"
+    [ -n "$_first_fail" ] || _first_fail="$_now"
+    E2E_RS_FP="$_f" E2E_RS_NUM="$_num" E2E_RS_RUNID="$_run_id" \
+    E2E_RS_NOW="$_now" E2E_RS_FIRST="$_first_fail" E2E_RS_NEW="$_new_count" \
+    python3 -c '
+import json, os, sys
+fp = os.environ["E2E_RS_FP"]; num = os.environ["E2E_RS_NUM"]
+run_id = os.environ["E2E_RS_RUNID"]; now = os.environ["E2E_RS_NOW"]
+first_fail = os.environ["E2E_RS_FIRST"]; new_count = int(os.environ["E2E_RS_NEW"])
+try:
+    with open(fp) as fh:
+        data = json.load(fh)
+except Exception:
+    data = {"schema_version": 1, "issues": {}}
+data.setdefault("schema_version", 1)
+data.setdefault("issues", {})
+prev = data["issues"].get(num, {})
+prev["consecutive_fails"] = new_count
+prev["last_run_id"] = run_id
+prev["last_attempt_at"] = now
+prev["first_fail_at"] = first_fail
+prev["infra_fail"] = bool(prev.get("infra_fail", False))
+data["issues"][num] = prev
+tmp = fp + ".tmp." + str(os.getpid())
+with open(tmp, "w") as fh:
+    json.dump(data, fh, indent=2, sort_keys=True)
+os.replace(tmp, fp)
+' 2>/dev/null
+    printf '%s\n' "$_new_count"
+}
+e2e_run_state_reset() {  # $1=issue_num
+    local _num="$1" _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || return 0
+    E2E_RS_FP="$_f" E2E_RS_NUM="$_num" \
+    python3 -c '
+import json, os, sys
+fp = os.environ["E2E_RS_FP"]; num = os.environ["E2E_RS_NUM"]
+try:
+    with open(fp) as fh:
+        data = json.load(fh)
+except Exception:
+    sys.exit(0)
+data.setdefault("issues", {})
+if num in data["issues"]:
+    data["issues"][num]["consecutive_fails"] = 0
+    data["issues"][num]["infra_fail"] = False
+tmp = fp + ".tmp." + str(os.getpid())
+with open(tmp, "w") as fh:
+    json.dump(data, fh, indent=2, sort_keys=True)
+os.replace(tmp, fp)
+' 2>/dev/null
+    return 0
+}
+e2e_run_state_set_infra_fail() {  # $1=issue_num
+    local _num="$1" _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || return 0
+    E2E_RS_FP="$_f" E2E_RS_NUM="$_num" \
+    python3 -c '
+import json, os
+fp = os.environ["E2E_RS_FP"]; num = os.environ["E2E_RS_NUM"]
+try:
+    with open(fp) as fh:
+        data = json.load(fh)
+except Exception:
+    data = {"schema_version": 1, "issues": {}}
+data.setdefault("issues", {})
+prev = data["issues"].get(num, {})
+prev["infra_fail"] = True
+data["issues"][num] = prev
+tmp = fp + ".tmp." + str(os.getpid())
+with open(tmp, "w") as fh:
+    json.dump(data, fh, indent=2, sort_keys=True)
+os.replace(tmp, fp)
+' 2>/dev/null
+    return 0
+}
 
 # --- G_pre_cleanup: worktree disk-space + sweep (issue #1707, ретро 28.08) --
 # Под замком (после flock), до ensure_worktree — гарантирует, что только
@@ -2004,6 +2203,37 @@ _TBS="${AGENT_FLOW_SCRIPT:-agent-flow-e2e-process}"
 _TBA="${TRIGGERED_BY_AGENT:-agent-flow}"
 _TBC="${E2E_RUN_CARD:-${TRIGGERED_BY_CARD:-}}"
 _TBR="${E2E_RUN_REASON:-${TRIGGERED_BY_REASON:-scheduled-tick}}"
+
+# ADR-0040 §2.2.1: poll_run_for_epoch — resolve run_id, который стартанул
+# не раньше заданного epoch (ISO 8601 UTC). GitHub API eventual consistency:
+# gh workflow run может вернуть 202, а в gh run list run появится через
+# 5-10 сек. Poll каждые 2 сек, max ${E2E_TRIGGER_POLL_MAX:-10} сек.
+# Возвращает: 0 + run_id (числовой) в stdout если найден; 1 если timeout.
+poll_run_for_epoch() {  # $1=workflow $2=branch $3=repo $4=epoch_iso [$5=max_sec]
+    local _wf="$1" _br="$2" _repo="$3" _ep="$4" _max=${5:-${E2E_TRIGGER_POLL_MAX:-10}}
+    local _deadline=$((SECONDS + _max)) _run_id _jq
+    while [ "$SECONDS" -lt "$_deadline" ]; do
+        _jq='[.[] | select(.createdAt >= "'"$_ep"'")][0].databaseId'
+        _run_id="$(gh run list --repo "$_repo" --workflow "$_wf" --branch "$_br" \
+            --limit 3 --json databaseId,createdAt --jq "$_jq" 2>/dev/null || echo "")"
+        _run_id="$(printf '%s' "$_run_id" | grep -oE '[0-9]+' | head -n1 || true)"
+        if [[ "$_run_id" =~ ^[0-9]+$ ]]; then
+            printf '%s\n' "$_run_id"
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
+# ADR-0040 §2.2.1: новый контракт _trigger_workflow_with_retry:
+#   exit 0 + stdout = run_id (числовой)  — если стартанул и подтверждён poll'ом
+#   exit 0 + stdout = "existing:<run_id>" — если race-dedup: run уже есть на ветке
+#                                          (новый НЕ нужен, возвращаем существующий)
+#   exit 1 + stdout = пусто               — НЕ стартанул после всех попыток
+#                                          (caller ОБЯЗАН считать fail, ADR §2.2.2)
+# ADR-0040 Q5: race-dedup success возвращает "existing:<run_id>" чтобы caller
+# мог отличить "я только что стартанул" от "уже был, reuse'нул".
 _trigger_workflow_with_retry() {
     local _wf_name="$1"; shift
     local _attempts=0 _max=3 _sleep
@@ -2027,8 +2257,26 @@ _trigger_workflow_with_retry() {
     done
     local _pre_window="${E2E_PRE_DISPATCH_WINDOW:-60}"
     if [ -n "$_dedup_branch" ]; then
-        if [ "$(verify_recent_run "$_wf_name" "$_dedup_branch" "$GH_REPO" "$_pre_window")" = "ok" ]; then
-            log "    trigger ${_wf_name}: pre-dispatch dedup (recent run on ${_dedup_branch} ≤${_pre_window}s, issue #1540) — skip"
+        # Pre-dispatch dedup (Q5): путь только "existing:<run_id>", никогда
+        # не возвращает голый run_id (мы не стартовали ничего нового).
+        local _existing
+        _existing="$(verify_recent_run "$_wf_name" "$_dedup_branch" "$GH_REPO" "$_pre_window")"
+        if [ "$_existing" = "ok" ]; then
+            # Резолвим конкретный run_id через gh run list (verify_recent_run
+            # возвращает только "ok"/"miss", без id).
+            local _pre_existing_id
+            _pre_existing_id="$(gh run list --repo "$GH_REPO" --workflow "$_wf_name" \
+                --branch "$_dedup_branch" --limit 1 --json databaseId --jq '.[0].databaseId' \
+                2>/dev/null | grep -oE '[0-9]+' | head -n1 || true)"
+            if [[ "$_pre_existing_id" =~ ^[0-9]+$ ]]; then
+                log "    trigger ${_wf_name}: pre-dispatch dedup (recent run ${_pre_existing_id} on ${_dedup_branch} ≤${_pre_window}s, issue #1540) — reuse"
+                printf 'existing:%s\n' "$_pre_existing_id"
+                return 0
+            fi
+            log "    trigger ${_wf_name}: pre-dispatch dedup (recent run on ${_dedup_branch} ≤${_pre_window}s, issue #1540) — skip, no run_id resolvable"
+            # Не можем вернуть existing:<id> — caller решит. Возвращаем 0
+            # с пустым stdout (best-effort: caller увидит пустой run_id и
+            # пойдёт в race-dedup path).
             return 0
         fi
     fi
@@ -2042,6 +2290,10 @@ _trigger_workflow_with_retry() {
         # Issue #1540: используем общий verify_recent_run из lib_workflow_dedup.sh.
         [ "$(verify_recent_run "$_wf" "$_br" "$GH_REPO" 60)" = "ok" ]
     }
+    # ADR-0040: после УСПЕШНОГО gh workflow run (либо race-dedup) ОБЯЗАНЫ
+    # вернуть run_id в stdout. Poll через poll_run_for_epoch.
+    local _trigger_epoch _run_id
+    _trigger_epoch="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     while [ "$_attempts" -lt "$_max" ]; do
         if gh workflow run "$_wf_name" --repo "$GH_REPO" \
                 --field triggered_by_script="$_TBS" \
@@ -2049,10 +2301,37 @@ _trigger_workflow_with_retry() {
                 --field triggered_by_card="$_TBC" \
                 --field triggered_by_reason="$_TBR" \
                 "$@" >/dev/null 2>&1; then
-            return 0
+            # ADR-0040: poll run_id, не return 0 сразу.
+            if [ -n "$_dedup_branch" ]; then
+                _run_id="$(poll_run_for_epoch "$_wf_name" "$_dedup_branch" "$GH_REPO" "$_trigger_epoch")" \
+                    || _run_id=""
+                if [[ "$_run_id" =~ ^[0-9]+$ ]]; then
+                    log "    trigger ${_wf_name}: started run ${_run_id} on ${_dedup_branch} (epoch=${_trigger_epoch}, ADR-0040 §2.2.1)"
+                    printf '%s\n' "$_run_id"
+                    return 0
+                fi
+                log "    trigger ${_wf_name}: gh workflow run вернул 0, но run не появился в gh run list за ${E2E_TRIGGER_POLL_MAX:-10}s (eventual consistency timeout)"
+                # Считаем попытку провалившейся — retry loop ниже.
+            else
+                # Без _dedup_branch (не знаем на какой ветке poll'ить) —
+                # best-effort return 0 (legacy поведение для редких callers
+                # без --ref). Caller вряд ли полагается на run_id в этом
+                # случае.
+                return 0
+            fi
         fi
         if [ -n "$_dedup_branch" ] && _race_dedup_check "$_wf_name" "$_dedup_branch"; then
-            log "    trigger ${_wf_name}: race-condition detected (recent run on ${_dedup_branch} ≤60s) — accept as success (dedup, PR #1536)"
+            # Race-dedup success (Q5): путь "existing:<run_id>".
+            local _race_id
+            _race_id="$(gh run list --repo "$GH_REPO" --workflow "$_wf_name" \
+                --branch "$_dedup_branch" --limit 1 --json databaseId --jq '.[0].databaseId' \
+                2>/dev/null | grep -oE '[0-9]+' | head -n1 || true)"
+            if [[ "$_race_id" =~ ^[0-9]+$ ]]; then
+                log "    trigger ${_wf_name}: race-condition detected (existing run ${_race_id} on ${_dedup_branch} ≤60s) — accept as existing (PR #1536 + ADR-0040 Q5)"
+                printf 'existing:%s\n' "$_race_id"
+                return 0
+            fi
+            log "    trigger ${_wf_name}: race-condition detected but run_id unresolvable — accept (legacy)"
             return 0
         fi
         _attempts=$((_attempts + 1))
@@ -2062,6 +2341,8 @@ _trigger_workflow_with_retry() {
             sleep "$_sleep"
         fi
     done
+    # Все попытки исчерпаны — run НЕ стартанул. exit 1, пустой stdout.
+    log "    trigger ${_wf_name}: NOT STARTED after ${_max} attempts (ADR-0040 §2.2.1) — caller must treat as fail"
     return 1
 }
 
@@ -3149,10 +3430,15 @@ gh run view <run_id> --log-failed | grep -E 'Password required|ERROR|denied|403|
         b_epoch="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         # ретро 10.08 #1: race condition gh workflow run после свежего push.
         # API может вернуть non-zero exit, но workflow стартует. До 3 ретраев с backoff 5/10/15s.
-        if ! _trigger_workflow_with_retry "$BUILD_WORKFLOW" --ref "$ROUND_BRANCH" \
-            -f push_to_registry=true; then
-            log "issue #${number}: failed to trigger ${BUILD_WORKFLOW} after retries"; errored=$((errored+1)); continue
+        # ADR-0040 §2.2.1: trigger теперь возвращает run_id в stdout (или
+        # "existing:<run_id>" если race-dedup). Логируем для аудита; commit 3
+        # будет использовать run_id для state.json.
+        _b_run_id=""
+        if ! _b_run_id="$(_trigger_workflow_with_retry "$BUILD_WORKFLOW" --ref "$ROUND_BRANCH" \
+            -f push_to_registry=true)"; then
+            log "issue #${number}: failed to trigger ${BUILD_WORKFLOW} after retries (run NOT started, ADR-0040 §2.2.1)"; errored=$((errored+1)); continue
         fi
+        log "issue #${number}: build trigger resolved run_id='${_b_run_id}' (ADR-0040 §2.2.1)"
         if ! wait_workflow "$BUILD_WORKFLOW" "$ROUND_BRANCH" "$E2E_BUILD_TIMEOUT" "build" "$b_epoch"; then
             gh issue comment "$number" --repo "$GH_REPO" --body \
                 "agent-flow: ❌ build failed on ${ROUND_BRANCH} — e2e skipped. See https://github.com/${GH_REPO}/actions" >/dev/null 2>&1 || true
@@ -3173,10 +3459,13 @@ gh run view <run_id> --log-failed | grep -E 'Password required|ERROR|denied|403|
     else
         log "issue #${number}: triggering ${DEPLOY_WORKFLOW} on ${ROUND_BRANCH} (env=${E2E_DEPLOY_ENV}, registry=${E2E_DEPLOY_REGISTRY})"
         d_epoch="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        if ! _trigger_workflow_with_retry "$DEPLOY_WORKFLOW" --ref "$ROUND_BRANCH" \
-            -f environment="$E2E_DEPLOY_ENV" -f registry_source="$E2E_DEPLOY_REGISTRY"; then
-            log "issue #${number}: failed to trigger ${DEPLOY_WORKFLOW} after retries"; errored=$((errored+1)); continue
+        # ADR-0040 §2.2.1: trigger возвращает run_id в stdout (или existing:<id>).
+        _d_run_id=""
+        if ! _d_run_id="$(_trigger_workflow_with_retry "$DEPLOY_WORKFLOW" --ref "$ROUND_BRANCH" \
+            -f environment="$E2E_DEPLOY_ENV" -f registry_source="$E2E_DEPLOY_REGISTRY")"; then
+            log "issue #${number}: failed to trigger ${DEPLOY_WORKFLOW} after retries (run NOT started, ADR-0040 §2.2.1)"; errored=$((errored+1)); continue
         fi
+        log "issue #${number}: deploy trigger resolved run_id='${_d_run_id}' (ADR-0040 §2.2.1)"
         if ! wait_workflow "$DEPLOY_WORKFLOW" "$ROUND_BRANCH" "$E2E_DEPLOY_TIMEOUT" "deploy" "$d_epoch"; then
             gh issue comment "$number" --repo "$GH_REPO" --body \
                 "agent-flow: ❌ deploy failed on ${ROUND_BRANCH} — e2e skipped. See https://github.com/${GH_REPO}/actions" >/dev/null 2>&1 || true
@@ -3415,9 +3704,56 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
     if [ "${e2e_check_tg_echo:-false}" = "true" ] || [ "${e2e_check_tg_echo:-false}" = "1" ]; then
         e2e_args+=(-f "check_tg_echo=true")
     fi
-    if ! _trigger_workflow_with_retry "$E2E_WORKFLOW" --ref "$ROUND_BRANCH" "${e2e_args[@]}"; then
-        log "issue #${number}: failed to trigger ${E2E_WORKFLOW} after retries"; errored=$((errored+1)); continue
+    # ADR-0040 §2.2.1: trigger возвращает run_id в stdout (или existing:<id>).
+    # ADR-0040 §2.2.2: на non-zero — increment consecutive_fails в state,
+    # и если >= ${E2E_CONSECUTIVE_FAIL_LIMIT} — label e2e:infra-fail (terminal,
+    # ADR Q4), СНЯТЬ needs-e2e (чтобы issue не крутился бесконечно),
+    # comment с run-link. Round-ветка не используется для следующих issues
+    # в этом тике (помечается E2E_TRIGGER_FAILED_THIS_TICK=1, ADR-0040 Q1).
+    _e_run_id=""
+    E2E_TRIGGER_FAILED_THIS_TICK=0
+    if ! _e_run_id="$(_trigger_workflow_with_retry "$E2E_WORKFLOW" --ref "$ROUND_BRANCH" "${e2e_args[@]}")"; then
+        E2E_TRIGGER_FAILED_THIS_TICK=1
+        # Run НЕ стартанул → bump_fail + check threshold.
+        _new_fail_count="$(e2e_run_state_bump_fail "$number" "" 2>/dev/null || echo '0')"
+        # Strip newline
+        _new_fail_count="$(printf '%s' "$_new_fail_count" | tr -d '[:space:]')"
+        [ -n "$_new_fail_count" ] || _new_fail_count=0
+        log "issue #${number}: e2e trigger FAILED (run NOT started), consecutive_fails=${_new_fail_count}/${E2E_CONSECUTIVE_FAIL_LIMIT} (ADR-0040 §2.2.2)"
+        if [ "$_new_fail_count" -ge "$E2E_CONSECUTIVE_FAIL_LIMIT" ]; then
+            # Threshold reached — terminal infra-fail. ADR-0040 Q4.
+            e2e_run_state_set_infra_fail "$number" 2>/dev/null || true
+            # Idempotent label add.
+            if ! gh label list --repo "$GH_REPO" --limit 200 2>/dev/null | grep -q "^${INFRA_FAIL_LABEL}[[:space:]]"; then
+                gh label create "$INFRA_FAIL_LABEL" --repo "$GH_REPO" --color "fbca04" \
+                    --description "e2e infra broken: trigger failed ${E2E_CONSECUTIVE_FAIL_LIMIT} times — manual override required" \
+                    >/dev/null 2>&1 || log "WARNING: failed to create label ${INFRA_FAIL_LABEL}"
+            fi
+            gh issue edit "$number" --repo "$GH_REPO" --add-label "$INFRA_FAIL_LABEL" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+            gh issue comment "$number" --repo "$GH_REPO" --body "$(cat <<EOF
+agent-flow: 🛑 e2e infra-fail — run \`${E2E_WORKFLOW}\` НЕ стартанул ${E2E_CONSECUTIVE_FAIL_LIMIT} раз подряд (ADR-0040, issue #1831).
+
+Поставлена метка \`${INFRA_FAIL_LABEL}\` (terminal, ADR-0040 Q4), снята \`${NEEDS_E2E_LABEL}\` — issue больше НЕ в ротации.
+
+Что делать: проверить \`gh auth status\`, права репо (workflow_dispatch), quota GitHub Actions. Возможный repo perm change / expired CR_PAT / 429 от GitHub API.
+
+После починки — снять \`${INFRA_FAIL_LABEL}\` руками (Шифу) и заново поставить \`${NEEDS_E2E_LABEL}\` для следующего тика.
+
+Round-ветка \`${ROUND_BRANCH}\` НЕ использовалась для других issues в этом тике (помечена \`E2E_TRIGGER_FAILED_THIS_TICK=1\`).
+EOF
+)" >/dev/null 2>&1 || log "WARNING: failed to post infra-fail comment to issue #${number}"
+            log "issue #${number}: e2e:infra-fail SET (terminal, consecutive_fails=${_new_fail_count} >= ${E2E_CONSECUTIVE_FAIL_LIMIT})"
+            errored=$((errored+1))
+            continue
+        fi
+        # Не достигли порога — продолжаем тик. Round-ветка не для других
+        # issues (Q1): следующая issue пойдёт в отдельный round.
+        errored=$((errored+1))
+        continue
     fi
+    log "issue #${number}: e2e trigger resolved run_id='${_e_run_id}' (ADR-0040 §2.2.1)"
+    # Сохраняем в $run_id для дальнейшего использования (verdict loop ниже).
+    run_id="$_e_run_id"
 
     # --- wait for verdict (только СВЕЖИЙ run, createdAt >= момента триггера) ---
     log "issue #${number}: waiting verdict (timeout ${E2E_RUN_TIMEOUT}s)"
@@ -3540,6 +3876,47 @@ $(cat "$acc_file" 2>/dev/null || true)"
         log "issue #${number}: fail_kind=merged + verdict=${verdict} + explicit ${NEEDS_E2E_LABEL} override → переход в merged-override (ретро 19.08 t_b3691e1b, issue #1448)"
         fail_kind="merged-override"
     fi
+
+    # ADR-0040 §2.2.3: verdict handler — update run_state.json. Success →
+    # reset consecutive_fails=0 + last_run_id=run_id + last_attempt_at=now.
+    # Fail — leave counter (мы increment'или его на этапе trigger, если
+    # trigger совсем не сработал; на этапе verdict counter уже НЕ трогаем,
+    # потому что run реально стартанул и его fail — это verdict issue, а не
+    # infra-trigger fail). Однако, чтобы следующий re-test не получал
+    # «consecutive_fails=1» из старого trigger-fail, мы ОБНУЛЯЕМ counter
+    # на любом завершённом verdict (success ИЛИ fail_kind∈{merged,feature,
+    # merged-override,infra}). Это согласуется с ADR §2.2.3: counter
+    # сбрасывается на verdict, не только на success.
+    _verdict_now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [ -n "$run_id" ] && [[ "$run_id" =~ ^[0-9]+$ ]]; then
+        # Записываем last_run_id и last_attempt_at через python (state-машина).
+        if [ -n "$RUN_STATE_FILE" ]; then
+            E2E_RS_FP="$RUN_STATE_FILE" E2E_RS_NUM="$number" \
+            E2E_RS_RUNID="$run_id" E2E_RS_NOW="$_verdict_now" \
+            python3 -c '
+import json, os
+fp = os.environ["E2E_RS_FP"]; num = os.environ["E2E_RS_NUM"]
+run_id = os.environ["E2E_RS_RUNID"]; now = os.environ["E2E_RS_NOW"]
+try:
+    with open(fp) as fh:
+        data = json.load(fh)
+except Exception:
+    data = {"schema_version": 1, "issues": {}}
+data.setdefault("issues", {})
+prev = data["issues"].get(num, {})
+prev["last_run_id"] = run_id
+prev["last_attempt_at"] = now
+data["issues"][num] = prev
+tmp = fp + ".tmp." + str(os.getpid())
+with open(tmp, "w") as fh:
+    json.dump(data, fh, indent=2, sort_keys=True)
+os.replace(tmp, fp)
+' 2>/dev/null || log "WARNING: verdict handler: cannot update last_run_id in state"
+        fi
+    fi
+    # Reset counter для любого verdict (success ИЛИ fail_kind ≠ триггер-fail).
+    e2e_run_state_reset "$number" 2>/dev/null || true
+    log "issue #${number}: verdict='${verdict}' fail_kind='${fail_kind}' — run_state reset (consecutive_fails=0, ADR-0040 §2.2.3)"
 
     if [ "$verdict" = "success" ]; then
         label_action="add ${DONE_LABEL}"
