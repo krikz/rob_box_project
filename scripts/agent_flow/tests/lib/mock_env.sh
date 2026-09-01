@@ -573,6 +573,15 @@ case "$subcmd" in
                     journal "gh pr view $pr_num --json statusCheckRollup"
                     _data="$(get_state PR_${pr_num}_ROLLUP_JSON)"
                     apply_jq "$_data" "$_jq_filter"
+                # ADR-0035 (merge-gate stale-after-upstream-fix detector, ретро
+                # 31.08 t_9d375e3e): REST fallback использует `gh pr view N
+                # --json mergedAt`. Fixture key: PR_<n>_MERGEDAT_JSON.
+                # Default = "" (not merged). Tests that want rest_fallback to
+                # fire set this to an ISO timestamp.
+                elif printf '%s' "$*" | grep -q -- '--json mergedAt'; then
+                    journal "gh pr view $pr_num --json mergedAt"
+                    _data="$(get_state PR_${pr_num}_MERGEDAT_JSON)"
+                    apply_jq "${_data:-}" "$_jq_filter"
                 elif printf '%s' "$*" | grep -q -- '--json number'; then
                     # Ретро-путь guard PR/issue (13.08, надзор): gh pr view N
                     # на не-PR-номере падает с exit 1 — так ведёт себя настоящий
@@ -592,6 +601,19 @@ case "$subcmd" in
                 ;;
             edit)
                 journal "gh pr edit $*"
+                ;;
+            # ADR-0035 (merge-gate stale-after-upstream-fix detector, ретро
+            # 31.08 t_9d375e3e): strategy C calls `gh pr checks N --json
+            # state` and pipes through `--jq '[.[] | select(.state !=
+            # "SUCCESS")] | length'`. Result must be 0 for strat C to fire
+            # (no failing checks). Fixture key:
+            # PR_<n>_CHECKS_FAILING_JSON (default 0 → all SUCCESS).
+            checks)
+                pr_num="$1"; shift || true
+                journal "gh pr checks $pr_num $*"
+                _data="$(get_state PR_${pr_num}_CHECKS_FAILING_JSON)"
+                printf '%s' "${_data:-0}"
+                exit 0
                 ;;
             *)
                 journal "gh pr $action $*"
@@ -760,6 +782,17 @@ ts="$(date -Iseconds 2>/dev/null || date)"
 
 journal() { printf '%s\t%s\n' "$ts" "$*" >>"$journal"; }
 
+# ADR-0035 (merge-gate stale-after-upstream-fix detector, ретро 31.08
+# t_9d375e3e): support `git merge-base --is-ancestor <sha> origin/<base>`
+# for strategy A and `git log -S <attr> ... --pretty=format:%H` for
+# strategy B. Without these mocks the test harness crashes on the real
+# git binary (which fails because REPO_DIR points to a fixture).
+# NOTE: merge-gate calls these with `git -C "$REPO_DIR" merge-base ...`,
+# so the first arg is "-C" and the second is the path. Skip both before
+# dispatching on the subcommand.
+if [ "${1:-}" = "-C" ]; then
+    shift 2
+fi
 case "$1" in
     ls-remote)
         branch="${@: -1}"
@@ -768,6 +801,60 @@ case "$1" in
             exit 0
         fi
         exit 1
+        ;;
+    # ADR-0035 (merge-gate stale-after-upstream-fix detector, ретро 31.08
+    # t_9d375e3e): support `git merge-base --is-ancestor <sha> origin/<base>`
+    # for strategy A and `git log -S <attr> ... --pretty=format:%H` for
+    # strategy B. Without these mocks the test harness crashes on the real
+    # git binary (which fails because REPO_DIR points to a fixture).
+    merge-base)
+        journal "git merge-base $*"
+        # Pattern: git merge-base --is-ancestor <sha> origin/<base>.
+        # Strategy A: returns 0 (true) if STALE_DIAG_ANCESTOR_<sha>=1,
+        # else 1 (false). merge-gate consumes only exit code.
+        if [ "${2:-}" = "--is-ancestor" ]; then
+            local_sha="${3:-}"
+            if [ -f "$state" ] && grep -Eq "^STALE_DIAG_ANCESTOR_${local_sha}=1$" "$state"; then
+                exit 0
+            fi
+            exit 1
+        fi
+        exit 1
+        ;;
+    log)
+        journal "git log $*"
+        # Pattern A: `git log <ref> --since=@<ts> -S <attr> --pretty=format:%H`.
+        # We scan args for `-S <attr>` and consult STALE_DIAG_ATTR_HIT_<attr>.
+        # Pattern B: `git log <ref> --since=@<ts> -- <file> ...` for strat B-tests.
+        # Strategy B tests: emit up to 1 fake sha if hit, else nothing.
+        # Pattern B-tests consults STALE_DIAG_ATTR_HIT_<file> (same fixture
+        # namespace as B-attr — both upstream-fixes keyed by what changed).
+        attr=""
+        prev=""
+        for a in "$@"; do
+            if [ "$prev" = "-S" ]; then attr="$a"; break; fi
+            prev="$a"
+        done
+        # If we didn't find -S, check for `-- <file>` pattern (B-tests).
+        if [ -z "$attr" ]; then
+            prev=""
+            for a in "$@"; do
+                if [ "$prev" = "--" ]; then
+                    # First file after `--` becomes the lookup key.
+                    attr="$a"
+                    break
+                fi
+                prev="$a"
+            done
+        fi
+        if [ -n "$attr" ] && [ -f "$state" ]; then
+            hit="$(grep -E "^STALE_DIAG_ATTR_HIT_${attr}=" "$state" | head -n1 | sed "s@^STALE_DIAG_ATTR_HIT_${attr}=@@")"
+            if [ -n "$hit" ]; then
+                printf '%s\n' "$hit"
+                exit 0
+            fi
+        fi
+        exit 0
         ;;
     ls-tree)
         journal "git ls-tree $*"
@@ -863,7 +950,20 @@ fi
 HERMES_MOCK_EOF
     chmod +x "$bin_dir/hermes"
 
-    export PATH="$bin_dir:$PATH"
+    # Strip any previously-exported mock bin/ directories from PATH so that
+    # *this* test's mocks win over leftover mocks from prior tests (PATH
+    # accumulates across `new_test()` calls when the same shell invokes
+    # multiple tests sequentially — без этого детектор на тесте D9 после
+    # D1-D8 ходил в старый bin/gh, который ещё не поддерживал mergedAt).
+    local _real_path=""
+    IFS=: read -ra _parts <<<"$PATH"
+    for _p in "${_parts[@]}"; do
+        case "$_p" in
+            */agent-flow-merge-gate-tests.*/bin) ;;  # drop prior mock bins
+            *) _real_path="${_real_path:+$_real_path:}$_p" ;;
+        esac
+    done
+    export PATH="$bin_dir:$_real_path"
     export GH_STATE="$TEST_TMP/gh_state"
     export GH_JOURNAL="$TEST_TMP/journal"
     : >"$GH_STATE"
@@ -906,6 +1006,14 @@ run_merge_gate() {
         # The script sources a profile .env if present — override HOME
         # and PROFILE_ENV paths so it can't load real config.
         export HOME=/tmp
+        # ADR-0035: stale-after-upstream-fix detector uses REPO_DIR for git
+        # merge-base / git log -S strategies. Tests with REPO_DIR want
+        # strategies A/B to fire; tests without want REST fallback (D9).
+        # Default: empty. Tests that want git strategies export REPO_DIR
+        # themselves BEFORE calling run_merge_gate. If REPO_DIR was not
+        # exported by the test, the inner subshell inherits whatever
+        # value (or unset state) the test shell had — which after new_test()
+        # is unset. ADR-0035 test D9 expects REST fallback (no REPO_DIR).
         bash "$MERGE_GATE" 2>>"$TEST_TMP/stderr.log"
     )
     local rc=$?
@@ -915,6 +1023,12 @@ run_merge_gate() {
 # Per-test scratch: every test runs in its own GH_STATE file.
 new_test() {
     TEST_TMP="$(mktemp -d /tmp/agent-flow-merge-gate-tests.XXXXXX)"
+    # ADR-0035: tests must start with REPO_DIR unset so run_merge_gate's
+    # default "no REPO_DIR → REST fallback" applies. The parent Hermes
+    # session exports REPO_DIR=/home/builder/hermes-share/rob_box_project,
+    # which would otherwise leak into every test. Tests that need git
+    # strategies (A/B) export REPO_DIR explicitly before run_merge_gate.
+    unset REPO_DIR 2>/dev/null || true
     install_mocks
     : >"$TEST_TMP/stderr.log"
 }
