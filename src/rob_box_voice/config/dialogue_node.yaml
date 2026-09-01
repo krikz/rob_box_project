@@ -16,7 +16,14 @@ dialogue_node:
     # дефолты dialogue_node и stt_node. Копия в YAML — это ровно то, что
     # разъехалось в #1252 и стоило #1734.
     dialogue_timeout: 300.0
-    llm_providers: "deepseek,minimax"   # issue #1089: первый = primary, остальные = fallbacks
+    # TODO(legacy-config): 2026-09-15 — отложенный rollout deepseek primary.
+    # Документация (docstring'и в src/rob_box_harness/rob_box_harness/providers/*.py,
+    # docs/guides/examples/minimax_llm.yaml) говорит [deepseek, minimax, mimo],
+    # runtime yaml оставлен на legacy [minimax, deepseek] намеренно (см. ADR-0040).
+    # При обновлении — синхронизировать test_both_voice_configs_route_dialogue_to_minimax
+    # (src/rob_box_voice/test/test_dialogue_shell.py) в том же коммите.
+    # issue #1089: первый = primary, остальные = fallbacks
+    llm_providers: "minimax,deepseek"
     # Issue #1219 — активный TTS-провайдер для LLM-контекста [TTS].
     # Должен совпадать с tts_node.yaml provider (minimax).
     tts_provider: minimax
