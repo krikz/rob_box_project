@@ -3895,11 +3895,11 @@ class DialogueNode(Node):
         return (
             base
             + "\n\n[CRITICAL] В прошлом цикле ты НЕ вызвал "
-            "execute_music_code — DJ-режим остался без музыки. "
-            "В этом цикле ОБЯЗАТЕЛЬНО вызови execute_music_code "
-            "(Renardo code). НЕ вызывай speak_text и другие тулы — "
+            "compose_music — DJ-режим остался без музыки. "
+            "В этом цикле ОБЯЗАТЕЛЬНО вызови compose_music. "
+            "НЕ вызывай speak_text и другие тулы — "
             "только музыку. Если ты снова не вызовешь "
-            "execute_music_code, цикл будет считаться пустым и "
+            "compose_music, цикл будет считаться пустым и "
             "робот озвучит 'задумался'."
         )
 

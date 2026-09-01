@@ -281,7 +281,7 @@ class MusicGuard:
             prompt = (
                 build_dj_retry_prompt()
                 if build_dj_retry_prompt is not None
-                else "[CRITICAL] DJ retry — call execute_music_code"
+                else "[CRITICAL] DJ retry — call compose_music"
             )
             self._log_warning(
                 "🎵 [issue 992 Bug B] DJ auto-transition completed "
