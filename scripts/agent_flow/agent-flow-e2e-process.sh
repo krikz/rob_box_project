@@ -591,9 +591,9 @@ fi
 # и ПРОДОЛЖАЕТ работу (не выходит с «already running»). flock уже защищает
 # от race (только один writer может владеть), PID-collision в течение жизни
 # flock-сессии маловероятен (ADR-0040 Q7: не защищаемся).
-exec 9>"$LOCK_FILE" || { log "cannot open lock $LOCK_FILE"; exit 1; }
-# Перед flock: проверяем содержимое lock-файла (если там остался старый PID).
-_lock_owner=""
+# ВАЖНО: проверка stale-состояния ДОЛЖНА быть ДО exec 9> (которое truncate'ит
+# файл при O_TRUNC открытии). Иначе реальный crash оставит lock с PID:EPOCH,
+# новый процесс сделает exec 9> → truncate → recovery никогда не сработает.
 if [ -s "$LOCK_FILE" ]; then
     _lock_owner="$(tr -d '[:space:]' < "$LOCK_FILE" 2>/dev/null || true)"
     _lock_pid="${_lock_owner%%:*}"
@@ -604,6 +604,7 @@ if [ -s "$LOCK_FILE" ]; then
         : > "$LOCK_FILE"
     fi
 fi
+exec 9>"$LOCK_FILE" || { log "cannot open lock $LOCK_FILE"; exit 1; }
 if ! flock -n 9; then
     if [ "$_run_now_triggered" = "1" ]; then
         log "⚠️ RUN_NOW set, but another instance holds $LOCK_FILE — ждём до 60с"
