@@ -22,7 +22,7 @@ dialogue_node:
     # TODO(legacy-config): 2026-09-15 — отложенный rollout deepseek primary.
     # Документация (docstring'и в src/rob_box_harness/rob_box_harness/providers/*.py,
     # docs/guides/examples/minimax_llm.yaml) говорит [deepseek, minimax, mimo],
-    # runtime yaml оставлен на legacy [minimax, deepseek] намеренно (см. ADR-0040).
+    # runtime yaml оставлен на legacy [minimax, deepseek] намеренно (см. ADR-0043).
     # При обновлении — синхронизировать test_both_voice_configs_route_dialogue_to_minimax
     # (src/rob_box_voice/test/test_dialogue_shell.py) в том же коммите.
     # первый = primary, остальные = fallbacks

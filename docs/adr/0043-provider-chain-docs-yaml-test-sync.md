@@ -1,4 +1,4 @@
-# ADR-0040: Docs/PR contract — синхронизация default chain провайдеров в одном коммите
+# ADR-0043: Docs/PR contract — синхронизация default chain провайдеров в одном коммите
 
 | Поле | Значение |
 |---|---|
@@ -93,7 +93,7 @@ Input CSV изменился, expected-output остался. Это **клас�
 > - runtime yaml-конфигах `src/rob_box_voice/config/*.yaml` или `docker/vision/config/voice_assistant/*.yaml`
 > - unit-test assert'ах в `src/rob_box_voice/test/`
 >
-> То **в том же коммите** обязаны быть обновлены ВСЕ 4 поверхности (см. ADR-0040 §2). Если runtime yaml намеренно остаётся на legacy — добавить маркер `TODO(legacy-config): YYYY-MM-DD — <причина>` в оба yaml-файла.
+> То **в том же коммите** обязаны быть обновлены ВСЕ 4 поверхности (см. ADR-0043 §2). Если runtime yaml намеренно остаётся на legacy — добавить маркер `TODO(legacy-config): YYYY-MM-DD — <причина>` в оба yaml-файла.
 
 ### 3.2 Маркер в текущих yaml-файлах (staged rollout — вариант 2 из карточки)
 
@@ -105,7 +105,7 @@ Input CSV изменился, expected-output остался. Это **клас�
     # TODO(legacy-config): 2026-09-15 — отложенный rollout deepseek primary.
     # Документация (docstring'и, docs/guides/examples/minimax_llm.yaml)
     # говорит [deepseek, minimax, mimo], runtime yaml оставлен на legacy
-    # [minimax, deepseek] намеренно (см. ADR-0040 §3.2). При обновлении —
+    # [minimax, deepseek] намеренно (см. ADR-0043 §3.2). При обновлении —
     # синхронизировать test_both_voice_configs_route_dialogue_to_minimax
     # (test/test_dialogue_shell.py) в том же коммите.
     llm_providers: "minimax,deepseek"
@@ -137,7 +137,7 @@ runtime=$(grep -h 'llm_providers:' \
 # Если expected ≠ runtime И в yaml НЕТ TODO(legacy-config) маркера → alert
 if ! grep -q 'TODO(legacy-config)' src/rob_box_voice/config/dialogue_node.yaml; then
     if [ "$expected" != "$runtime" ]; then
-        echo "BLOCK: provider-chain drift docs/runtime (ADR-0040 §3.3)"
+        echo "BLOCK: provider-chain drift docs/runtime (ADR-0043 §3.3)"
         exit 1
     fi
 fi
@@ -157,7 +157,7 @@ fi
 
 ## 5. Что делаем прямо сейчас (карточка `t_5d93c7b1`)
 
-1. ✅ Закоммитить этот ADR в `docs/adr/0040-provider-chain-docs-yaml-test-sync.md` (этот файл).
+1. ✅ Закоммитить этот ADR в `docs/adr/0043-provider-chain-docs-yaml-test-sync.md` (этот файл).
 2. ✅ Закоммитить TODO-маркер в оба yaml-файла (`src/rob_box_voice/config/dialogue_node.yaml`, `docker/vision/config/voice_assistant/dialogue_node.yaml`).
 3. ✅ **НЕ** править `CONTRIBUTING.md` в этом PR — это отдельная задача, которую возьмёт backend-карточка `t_3fa38f4b` или новая (после явного одобрения Шифу).
 4. ✅ **НЕ** править unit-tests в этом PR — это `t_3fa38f4b`.
@@ -172,14 +172,14 @@ fi
 
 ## 7. Где SOT (single source of truth)
 
-- **После merge ADR-0040:** `docs/adr/0040-provider-chain-docs-yaml-test-sync.md` — правило «sync 4 поверхностей» (этот ADR).
+- **После merge ADR-0043:** `docs/adr/0043-provider-chain-docs-yaml-test-sync.md` — правило «sync 4 поверхностей» (этот ADR).
 - **Текущее runtime поведение:** yaml-файлы с `TODO(legacy-config)` маркером.
 - **Целевое (post-rollout) поведение:** docstring'и в `providers/*.py` + `docs/guides/examples/minimax_llm.yaml`.
 - **Граница переключения:** 2026-09-15 (Шифу ревьюит yaml vs docs и решает rollout).
 
 ## 8. Verification (что проверить после merge)
 
-- [ ] `git log --diff-filter=M -- docs/adr/0040-provider-chain-docs-yaml-test-sync.md` — файл появился.
+- [ ] `git log --diff-filter=M -- docs/adr/0043-provider-chain-docs-yaml-test-sync.md` — файл появился.
 - [ ] `grep -n "TODO(legacy-config)" src/rob_box_voice/config/dialogue_node.yaml docker/vision/config/voice_assistant/dialogue_node.yaml` — маркер в обоих yaml.
 - [ ] `pytest src/rob_box_voice/test/unit/node/test_dialogue_node.py -k test_resolve_provider_chain_parses_csv` — остаётся зелёным (yaml не трогали, assert не трогали).
 - [ ] `grep -c "deepseek.*minimax" src/rob_box_voice/config/dialogue_node.yaml` — по-прежнему `0` (chain ordering в yaml не меняли).
