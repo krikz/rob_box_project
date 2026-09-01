@@ -114,10 +114,31 @@ BIG_BANG_MAX_LINES="${BIG_BANG_MAX_LINES:-3000}"
 # Whitelist — файлы, где devops-воркер обычно делает одно-строчный фикс
 # (compose, .env.example, package.xml, setup.py, Dockerfile, install/setup).
 # Список glob'ов через `|`, проверяется case-функцией `file_in_fp_whitelist`.
-FINGERPRINT_FILE_GLOBS="${FINGERPRINT_FILE_GLOBS:-docker/*/docker-compose.yaml|docker/*/.env.example|docker/*/Dockerfile|docker/*/setup.sh|docker/*/install.sh|src/*/package.xml|src/*/setup.py|install/setup*.sh}"
+FINGERPRINT_FILE_GLOBS="docker/*/docker-compose.yaml|docker/*/.env.example|docker/*/Dockerfile|docker/*/setup.sh|docker/*/install.sh|src/*/package.xml|src/*/setup.py|install/setup*.sh"
 # Сколько существующих OPEN PR с ТЕМ ЖЕ fix-fingerprint достаточно, чтобы
 # считать это дубликатом (1 = любой существующий PR с тем же фиксом → дубль).
 FINGERPRINT_DUPLICATE_THRESHOLD="${FINGERPRINT_DUPLICATE_THRESHOLD:-1}"
+# Ретро-фикс (01.09, t_e1a9613d, issue #1824): break-on-unknown-assignee +
+# rollup-комментарий. До фикса: каждый тик (каждые 1 мин, т.к. cron
+# agent-flow-triage every 1m) писал ОТДЕЛЬНЫЙ комментарий на каждый issue с
+# невалидным assignee (2 комментария: invalid-assignee + whoami-label) → при
+# 20+ unknown issues получалось 40+ комментариев в минуту (issue #1824,
+# "спам ретро каждые 2 мин").
+#
+# Решение: вместо per-issue комментариев собираем unknown-assignee records в
+# массив, после Phase 1+2 пишем ОДИН rollup-комментарий в $UNKNOWN_ASSIGNEE_ROLLUP_ISSUE
+# (default = #1824 в репе rob_box_project). Per-tick dedup в окне
+# $UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN минут НЕ повторяет комментарий, если
+# свежий уже есть в rollup-issue.
+#
+# Отключить (для тестов) → UNKNOWN_ASSIGNEE_ROLLUP_DRY_RUN=true.
+UNKNOWN_ASSIGNEE_ROLLUP_ISSUE="${UNKNOWN_ASSIGNEE_ROLLUP_ISSUE:-1824}"
+UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN="${UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN:-30}"
+UNKNOWN_ASSIGNEE_ROLLUP_LABEL="${UNKNOWN_ASSIGNEE_ROLLUP_LABEL:-agent-flow-error}"
+UNKNOWN_ASSIGNEE_ROLLUP_MARKER="${UNKNOWN_ASSIGNEE_ROLLUP_MARKER:-agent-flow-triage:unknown-assignee-rollup}"
+# Max unknown-assignee issues за ОДИН tick, после которых phase-break (чтобы
+# не блокировать остальной triage если у нас массовый баг в метках).
+UNKNOWN_ASSIGNEE_PHASE_BREAK_AT="${UNKNOWN_ASSIGNEE_PHASE_BREAK_AT:-50}"
 DRY_RUN="${DRY_RUN:-false}"
 ISSUE_LIMIT="${ISSUE_LIMIT:-50}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-triage.lock}"
@@ -154,6 +175,11 @@ af_load_profile_env "$PROFILE_ENV"
 : "${BIG_BANG_MAX_LINES:=3000}"
 : "${FINGERPRINT_FILE_GLOBS:=docker/*/docker-compose.yaml|docker/*/.env.example|docker/*/Dockerfile|docker/*/setup.sh|docker/*/install.sh|src/*/package.xml|src/*/setup.py|install/setup*.sh}"
 : "${FINGERPRINT_DUPLICATE_THRESHOLD:=1}"
+: "${UNKNOWN_ASSIGNEE_ROLLUP_ISSUE:=1824}"
+: "${UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN:=30}"
+: "${UNKNOWN_ASSIGNEE_ROLLUP_LABEL:=agent-flow-error}"
+: "${UNKNOWN_ASSIGNEE_ROLLUP_MARKER:=agent-flow-triage:unknown-assignee-rollup}"
+: "${UNKNOWN_ASSIGNEE_PHASE_BREAK_AT:=50}"
 : "${DRY_RUN:=false}"
 : "${ISSUE_LABEL:=hermes}"
 : "${DONE_LABEL:=e2e-done}"
@@ -955,39 +981,53 @@ Triage: вычисленная ветка \`${branch}\` уже существу�
     # несуществующим assignee (например, `triager` в t_1ca827a6) и навсегда
     # висит в ready — dispatcher не имеет worker-pool для такого assignee.
     #
-    # Поведение:
+    # Поведение (ретро 01.09 t_e1a9613d, issue #1824):
     #   - role валиден → continue (нормальный путь, карточка создастся)
-    #   - role НЕ валиден → errored++, комментарий в issue, НЕ создаём карточку
+    #   - role НЕ валиден → добавляем в _unknown_assignee_records[] (number,
+    #     role, title_prefix), errored++, label `agent-flow-error` (один раз
+    #     через дедуп), НЕ создаём карточку, НЕ пишем per-issue комментарий.
+    #     ВМЕСТО этого — ОДИН rollup-комментарий после цикла в
+    #     $UNKNOWN_ASSIGNEE_ROLLUP_ISSUE (default #1824) с маркером
+    #     `agent-flow-triage:unknown-assignee-rollup`. Это закрывает infinite-loop
+    #     спам, который был до фикса (каждый тик — 2 комментария на каждый issue,
+    #     при 20+ unknown issues = 40+ комментариев каждые 2 мин).
     #   - guard disabled (fail-open) → continue (CLI был недоступен, не ломаем процесс)
+    #
+    # Per-tick dedup делает _emit_unknown_assignee_rollup (вызывается после
+    # Phase 1+2 циклов): если в rollup-issue уже есть свежий комментарий с
+    # маркером (≤UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN мин), новый НЕ пишется —
+    # молча добавляем label `agent-flow-error` на unknown issues и завершаемся.
+    # Это страхует от «спам даже после фикса», если rollup-issue закрыт.
     #
     # Это ДО branch/merge-pr guards: если role невалиден, дальнейшие проверки
     # (merged_pr на этой ветке, recent_cards) — бессмысленны, мы всё равно не
     # создадим карточку. Load profiles lazily — один раз за тик.
     load_valid_profiles
     if ! is_valid_profile "$role"; then
-        log "🚨 issue #${number}: assignee '${role}' НЕВАЛИДЕН (нет в profile list) — пропускаем (errored)"
-        if [ "$DRY_RUN" != "true" ]; then
-            _valid_csv="$(printf '%s' "$VALID_PROFILES" | tr '|' ',' | sed 's/^,//;s/,$//')"
-            gh issue comment "$number" --repo "$GH_REPO" --body \
-                "🚨 **agent-flow-triage: invalid assignee**
-
-Triage **НЕ создал** kanban-карточку для этого issue, потому что assignee=\`${role}\` (из label \`agent:${role}\` или \`AGENT_FLOW_DEFAULT_ROLE\`) **не существует** в списке профилей hermes:
-
-\`\`\`
-${_valid_csv}
-\`\`\`
-
-**Что делать (товарищ Шифу):**
-1. Поставить правильную метку \`agent:<valid-role>\` на этот issue (например, \`agent:devops\`)
-2. Либо создать новый профиль \`${role}\` через \`hermes profile create ${role}\` (если роль действительно нужна)
-3. Либо удалить эту метку — тогда triage возьмёт \`AGENT_FLOW_DEFAULT_ROLE\` (по дефолту \`architect\`)
-
-Ретро-карточка: t_dd7a5749." >/dev/null 2>&1 || true
-            # issue #1534: self-id whoami BEFORE adding agent-flow-error label.
-            whoami_add_label "$number" "agent-flow-error" "invalid assignee=${role} (label agent:${role} or default), valid profiles: ${_valid_csv} (retro t_dd7a5749)"
-            gh issue edit "$number" --repo "$GH_REPO" --add-label "agent-flow-error" >/dev/null 2>&1 || true
+        log "🚨 issue #${number}: assignee '${role}' НЕВАЛИДЕН — добавляю в rollup (errored, no per-issue comment, retro t_e1a9613d, issue #1824)"
+        # Собираем (number, role, title_prefix) в outer-scope массив.
+        # Outer-scope: _unknown_assignee_records (инициализирован в main loop).
+        _tp="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:][:space:]' ' ' | awk '{for(i=1;i<=6 && i<=NF;i++) printf "%s%s", $i, (i==6 || i==NF)?"":" "; print ""}')"
+        # Ретро-фикс (01.09, t_e1a9613d, issue #1824 fix v2): используем
+        # реальный \n как record-separator, а НЕ $IFS (3 chars: space+tab+newline)
+        # — bash `${var//$IFS/\\n}` подставляет литерал \n (backslash-n), а не
+        # реальный newline, и cut -f3 захватывал остаток строки. Сейчас
+        # каждая запись = "<number>\t<role>\t<title_prefix>\n" (newline-
+        # terminated), парсится через `IFS= read` per-line.
+        _unknown_assignee_records+="$(printf '%s\t%s\t%s\n' "$number" "$role" "$_tp")"
+        errored=$((errored+1))
+        # Ретро-фикс (01.09, t_e1a9613d, issue #1824): phase-break если у нас
+        # массовый баг в метках (>= UNKNOWN_ASSIGNEE_PHASE_BREAK_AT = 50).
+        # Иначе можем собрать 100+ issues в rollup, и `gh issue comment` с
+        # большим body упадёт на API limit. Break — продолжим Phase 2,
+        # затем _emit_unknown_assignee_rollup.
+        if [ "${_unknown_assignee_records:-}" ] && [ "$(printf '%s' "$_unknown_assignee_records" | awk 'END{print NR}')" -ge "${UNKNOWN_ASSIGNEE_PHASE_BREAK_AT}" ]; then
+            # NB: awk END{print NR} считает кол-во \n в строке (т.е. кол-во
+            # записей в accumulator) — каждая запись newline-terminated.
+            log "🚨 phase-break: ${UNKNOWN_ASSIGNEE_PHASE_BREAK_AT}+ unknown-assignee in phase=${phase_label}, breaking inner loop"
+            break
         fi
-        errored=$((errored+1)); continue
+        continue
     fi
 
     # Ретро-фикс (11.08 t_ce3ca0d9): если на ветке, которую мы бы создали для
@@ -1357,6 +1397,142 @@ errored=0
 # в общем «skipped»). summary печатает «dedup-skipped: N (intra-tick), M (race)».
 dedup_intra_skipped=0
 dedup_race_skipped=0
+# Ретро-фикс (01.09, t_e1a9613d, issue #1824): массив для unknown-assignee
+# records (number, role, title_prefix), собирается в `process_issues_json`,
+# обрабатывается в _emit_unknown_assignee_rollup после Phase 1+2.
+# Формат записей: "$number\t$role\t$title_prefix", separator между записями = $IFS.
+_unknown_assignee_records=""
+unknown_assignee_rollup_emitted=0
+
+# _emit_unknown_assignee_rollup — единый rollup-комментарий для всех unknown-
+# assignee issues, собранных в $_unknown_assignee_records (формат: number, role,
+# title_prefix через IFS). Per-tick dedup через REST API проверяет свежий
+# комментарий с маркером $UNKNOWN_ASSIGNEE_ROLLUP_MARKER в
+# $UNKNOWN_ASSIGNEE_ROLLUP_ISSUE (default #1824).
+#
+# Алгоритм:
+#   1. Если $_unknown_assignee_records пуст → return.
+#   2. Per-tick dedup: REST API comments?per_page=20 → grep маркер →
+#      если свежий (≤ UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN мин) — НЕ пишем новый,
+#      молча ставим label agent-flow-error на каждый unknown issue (через
+#      дедуп whoami_add_label), return.
+#   3. Формируем body: marker header + valid-profiles list + список issues
+#      (number, role, title_prefix), с инструкцией что делать.
+#   4. gh issue comment на rollup-issue + edit для метки.
+#   5. Label $UNKNOWN_ASSIGNEE_ROLLUP_LABEL на каждый unknown issue.
+#
+# Side-effects (gh calls) — fail-OPEN (try/except не используется; команды
+# делаются с `|| true`, чтобы одиночный сбой не валил весь tick).
+#
+# shellcheck disable=SC2016  # много `printf '...%s...'` с литералами (Markdown
+# backticks, `\n`) — SC2016 ругается на `%s` в single-quoted format string,
+# но это false-positive: значения передаются как отдельные args printf.
+_emit_unknown_assignee_rollup() {
+    [ -n "${_unknown_assignee_records:-}" ] || return 0
+
+    # Rollup-state counters — declared as `local` so they don't pollute outer scope.
+    # (unknown_assignee_rollup_emitted/_dedup_hit читаются из outer scope в
+    # summary log, поэтому мы пишем туда через `declare -g` если нужно.)
+    local _count=0 _bad_roles_seen="" _now_epoch _cutoff_epoch _last_marker_epoch _valid_csv _marker _last_iso
+    local _rec _n _role _tp
+    while IFS= read -r _rec; do
+        [ -n "$_rec" ] || continue
+        _count=$((_count+1))
+    done < <(printf '%s' "$_unknown_assignee_records")
+    # Соберём distinct bad roles для UX-сообщения (не показывать только последний).
+    while IFS= read -r _rec; do
+        [ -n "$_rec" ] || continue
+        _role="$(printf '%s' "$_rec" | cut -f2)"
+        case ",${_bad_roles_seen}," in *",${_role},"*) ;; *) _bad_roles_seen="${_bad_roles_seen:-}${_bad_roles_seen:+,}${_role}" ;; esac
+    done < <(printf '%s' "$_unknown_assignee_records")
+
+    log "_emit_unknown_assignee_rollup: ${_count} unknown-assignee records (will roll up to issue #${UNKNOWN_ASSIGNEE_ROLLUP_ISSUE}, bad_roles=${_bad_roles_seen:-none})"
+
+    if [ "${UNKNOWN_ASSIGNEE_ROLLUP_DRY_RUN:-false}" = "true" ]; then
+        log "DRY-RUN: would emit rollup to #${UNKNOWN_ASSIGNEE_ROLLUP_ISSUE}"
+        return 0
+    fi
+
+    # Per-tick dedup: проверяем последний комментарий с маркером.
+    _marker="${UNKNOWN_ASSIGNEE_ROLLUP_MARKER}"
+    _now_epoch="$(date -u +%s)"
+    _cutoff_epoch=$((_now_epoch - UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN * 60))
+    _last_marker_epoch="0"
+    _last_iso=""
+    # gh issue view возвращает ISO-время → парсим через date.
+    # Экранируем маркер для jq regex test() (регекс-спецсимволы внутри строки).
+    _marker_jq="$(printf '%s' "$_marker" | sed 's/[][\\^$.*?+|(){}]/\\&/g')"
+    if _last_iso="$(gh api "repos/${GH_REPO}/issues/${UNKNOWN_ASSIGNEE_ROLLUP_ISSUE}/comments?per_page=20" \
+        --jq '([.[] | select((.body // "") | test("'"${_marker_jq}"'"))] | last | .created_at) // empty' 2>/dev/null || true)" \
+        && [ -n "$_last_iso" ]; then
+        _last_marker_epoch="$(date -u -d "$_last_iso" +%s 2>/dev/null || echo 0)"
+    fi
+
+    # Per-issue label — делаем всегда (и для dedup-hit, и для fresh-write),
+    # потому что label `agent-flow-error` нужен Шифу для фильтрации,
+    # а rollup-комментарий — это сводка. whoami_add_label сама делает dedup
+    # в окне 2ч (hermes_github.sh).
+    while IFS= read -r _rec; do
+        [ -n "$_rec" ] || continue
+        _n="$(printf '%s' "$_rec" | cut -f1)"
+        _role="$(printf '%s' "$_rec" | cut -f2)"
+        _tp="$(printf '%s' "$_rec" | cut -f3)"
+        whoami_add_label "$_n" "$UNKNOWN_ASSIGNEE_ROLLUP_LABEL" \
+            "unknown assignee=${_role} (retro t_e1a9613d, issue #1824)" \
+            >/dev/null 2>&1 || true
+        gh issue edit "$_n" --repo "$GH_REPO" --add-label "$UNKNOWN_ASSIGNEE_ROLLUP_LABEL" \
+            >/dev/null 2>&1 || true
+    done < <(printf '%s' "$_unknown_assignee_records")
+
+    # Если свежий rollup-комментарий уже есть — dedup-hit: не пишем ещё раз.
+    if [ "${_last_marker_epoch:-0}" -ge "${_cutoff_epoch}" ] 2>/dev/null; then
+        log "_emit_unknown_assignee_rollup: dedup-hit (last rollup @ ${_last_iso}, cutoff ${UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN}m ago) — skip new comment"
+        # outer-scope counter: declare -g если нужно изменить из subshell,
+        # но мы в той же shell, поэтому прямое присваивание работает
+        # (counter declared в main script scope).
+        unknown_assignee_rollup_dedup_hit=$(( ${unknown_assignee_rollup_dedup_hit:-0} + 1 ))
+        return 0
+    fi
+
+    # Fresh write: формируем body.
+    _valid_csv="$(printf '%s' "${VALID_PROFILES:-}" | tr '|' ',' | sed 's/^,//;s/,$//')"
+    {
+        printf '%s (tick=%s)\n\n' "${UNKNOWN_ASSIGNEE_ROLLUP_MARKER}" "$(date -Iseconds)"
+        printf '🚨 **agent-flow-triage: unknown-assignee rollup** (%d issue(s))\n\n' "${_count}"
+        printf 'Triage **НЕ создал** kanban-карточки для следующих issues, потому что метка `agent:<role>` указывает на профиль, **которого нет** в hermes profile list:\n\n'
+        printf '**Валидные профили:** `%s`\n\n' "${_valid_csv}"
+        printf '**Bad roles в этом тике:** `%s`\n\n' "${_bad_roles_seen}"
+        printf '| Issue | Bad role | Title prefix |\n|---|---|---|\n'
+        while IFS= read -r _rec; do
+            [ -n "$_rec" ] || continue
+            _n="$(printf '%s' "$_rec" | cut -f1)"
+            _role="$(printf '%s' "$_rec" | cut -f2)"
+            _tp="$(printf '%s' "$_rec" | cut -f3)"
+            printf '| #%s | `agent:%s` | `%s` |\n' "$_n" "$_role" "$_tp"
+        done < <(printf '%s' "$_unknown_assignee_records")
+        printf '\n**Что делать (товарищ Шифу):**\n'
+        printf '1. Поставить правильную метку `agent:<valid-role>` на каждый issue (например, `agent:devops`).\n'
+        # Перечисляем ВСЕ bad roles (не только последний) для UX.
+        local _r
+        IFS=',' read -r -a _bad_roles_arr <<< "$_bad_roles_seen"
+        for _r in "${_bad_roles_arr[@]}"; do
+            [ -n "$_r" ] || continue
+            printf '2. Либо создать профиль `%s` через `hermes profile create %s` (если роль действительно нужна).\n' "$_r" "$_r"
+        done
+        printf '3. Либо удалить эту метку — тогда triage возьмёт `AGENT_FLOW_DEFAULT_ROLE` (по дефолту `architect`).\n\n'
+        printf 'Per-tick dedup: новый rollup-комментарий НЕ будет писаться в течение `%s` мин (см. `UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN`).\n' "${UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN}"
+        printf '\nРетро-карточка: t_e1a9613d (issue #1824 + retro-key: triage-cron-orphan-issues).\n'
+    } > /tmp/agent-flow-rollup-body.$$.md
+
+    gh issue comment "${UNKNOWN_ASSIGNEE_ROLLUP_ISSUE}" --repo "${GH_REPO}" \
+        --body "$(cat /tmp/agent-flow-rollup-body.$$.md)" >/dev/null 2>&1 || true
+    rm -f /tmp/agent-flow-rollup-body.$$.md
+
+    unknown_assignee_rollup_emitted=$(( ${unknown_assignee_rollup_emitted:-0} + 1 ))
+    log "_emit_unknown_assignee_rollup: wrote rollup to issue #${UNKNOWN_ASSIGNEE_ROLLUP_ISSUE} (${_count} unknown-assignee)"
+    return 0
+}
+unknown_assignee_rollup_dedup_hit=0
 
 # --- Phase 1: primary filter (label=$ISSUE_LABEL, defaults to "hermes") ------
 # Ретро t_360dc1a4: до этого фикса triage фильтровал ТОЛЬКО по label 'hermes'.
@@ -1546,8 +1722,15 @@ except Exception: print(0)
     fi
 fi
 
+# Ретро-фикс (01.09, t_e1a9613d, issue #1824): ЕДИНЫЙ rollup-комментарий
+# для всех unknown-assignee issues, собранных в _unknown_assignee_records
+# из обеих фаз (Phase 1 + Phase 2). Без этого каждый тик (cron every 1m)
+# спамил бы 2 комментария на каждый issue с невалидным assignee — ретро-баг
+# «спам ретро каждые 2 мин» в issue #1824.
+_emit_unknown_assignee_rollup || true
+
 # --- summary -----------------------------------------------------------------
-log "tick done: created=${created} skipped=${skipped} errored=${errored} dedup-skipped: ${dedup_intra_skipped} (intra-tick), ${dedup_race_skipped} (race)"
+log "tick done: created=${created} skipped=${skipped} errored=${errored} dedup-skipped: ${dedup_intra_skipped} (intra-tick), ${dedup_race_skipped} (race), unknown-assignee: rollup-emitted=${unknown_assignee_rollup_emitted} (dedup-hit=${unknown_assignee_rollup_dedup_hit})"
 
 # Exit non-zero only on hard errors (G4/G5) so cron can alert.
 if [ "$errored" -gt 0 ]; then exit 1; fi
