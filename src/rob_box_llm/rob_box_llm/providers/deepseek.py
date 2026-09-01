@@ -180,6 +180,61 @@ def _map_exception(exc: Exception, *, provider: str) -> ProviderError:
 # ---------------------------------------------------------------------------
 
 
+def _trace_llm_request(
+    messages: Iterable[Any],
+    tools: Iterable[Mapping[str, Any]],
+    *,
+    provider: str,
+    stream: bool,
+) -> None:
+    """Dump the FULL context the model sees to stderr (docker logs).
+
+    Enabled by ``ROBOT_LLM_VERBOSE`` (default ``1`` = always on). Written to
+    stderr because rclpy owns stdout formatting and python ``logging`` from
+    library code does not reach ``docker logs`` in this image.
+
+    Extracted from :meth:`_OpenAICompatibleProvider.complete` (live 01.09):
+    the dump existed ONLY on the ``complete()`` path, while dialogue_node
+    always streams (see ``[health] -> streaming from provider=...``). Every
+    production turn was therefore invisible: the music guard logged
+    ``tools=[]`` but nothing showed WHAT history and WHICH tool surface the
+    model had been given.
+    """
+    if os.environ.get("ROBOT_LLM_VERBOSE", "1") != "1":
+        return
+    import sys as _sys
+
+    mode = "stream" if stream else "complete"
+    _sys.stderr.write(
+        f"\U0001f50e LLM REQUEST START provider={provider} mode={mode}\n"
+    )
+    for i, m in enumerate(messages):
+        role = getattr(m, "role", "?")
+        content = getattr(m, "content", "")
+        if isinstance(content, list):
+            content = json.dumps(content, ensure_ascii=False)[:500]
+        else:
+            content = str(content)[:500]
+        tc = getattr(m, "tool_calls", None)
+        tc_str = ""
+        if tc:
+            try:
+                tc_str = " tool_calls=" + json.dumps(
+                    [{"name": t.name, "args": t.arguments} for t in tc],
+                    ensure_ascii=False)[:400]
+            except Exception:  # noqa: BLE001 — a trace must never break a turn
+                tc_str = f" tool_calls={tc!r}"[:400]
+        _sys.stderr.write(f"  [{i}] {role}: {content!r}{tc_str}\n")
+    tools = tuple(tools)
+    if tools:
+        _sys.stderr.write("  tools(" + str(len(tools)) + "): " + ", ".join(
+            t.get("function", {}).get("name", "?") for t in tools) + "\n")
+    else:
+        _sys.stderr.write("  tools(0): <NONE PASSED>\n")
+    _sys.stderr.write("\U0001f50e LLM REQUEST END\n")
+    _sys.stderr.flush()
+
+
 class _OpenAICompatibleProvider(LLMProvider):
     """Shared implementation for any OpenAI Chat-Completions compatible API."""
 
@@ -356,33 +411,7 @@ class _OpenAICompatibleProvider(LLMProvider):
         tools = tuple(tools)
         self._require_capability_for_messages(messages, settings, tools, stream=False)
         kwargs = self._build_kwargs(messages, tools, settings, stream=False)
-        # 🐞 VERBOSE LLM TRACE: полный контекст, который видит модель.
-        # Пишем в stderr (как rclpy) — python logging не виден в docker logs.
-        # Включается env ROBOT_LLM_VERBOSE (по умолчанию 1 = всегда).
-        if os.environ.get("ROBOT_LLM_VERBOSE", "1") == "1":
-            import sys as _sys
-            _sys.stderr.write("🔎 LLM REQUEST START\n"); _sys.stderr.flush()
-            for i, m in enumerate(messages):
-                role = getattr(m, "role", "?")
-                content = getattr(m, "content", "")
-                if isinstance(content, list):
-                    content = json.dumps(content, ensure_ascii=False)[:500]
-                else:
-                    content = str(content)[:500]
-                tc = getattr(m, "tool_calls", None)
-                tc_str = ""
-                if tc:
-                    try:
-                        tc_str = " tool_calls=" + json.dumps(
-                            [{"name": t.name, "args": t.arguments} for t in tc],
-                            ensure_ascii=False)[:400]
-                    except Exception:
-                        tc_str = f" tool_calls={tc!r}"[:400]
-                _sys.stderr.write(f"  [{i}] {role}: {content!r}{tc_str}\n")
-            if tools:
-                _sys.stderr.write("  tools(" + str(len(tools)) + "): " + ", ".join(
-                    t.get("function", {}).get("name", "?") for t in tools) + "\n")
-            _sys.stderr.write("🔎 LLM REQUEST END\n"); _sys.stderr.flush()
+        _trace_llm_request(messages, tools, provider=self.name, stream=False)
         try:
             resp = await self._client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001 — convert to our domain errors
@@ -441,6 +470,7 @@ class _OpenAICompatibleProvider(LLMProvider):
         tools = tuple(tools)
         self._require_capability_for_messages(messages, settings, tools, stream=True)
         kwargs = self._build_kwargs(messages, tools, settings, stream=True)
+        _trace_llm_request(messages, tools, provider=self.name, stream=True)
         try:
             stream_obj = await self._client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001

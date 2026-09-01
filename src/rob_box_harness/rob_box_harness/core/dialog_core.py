@@ -81,6 +81,23 @@ _DEFER_TO_END_TOOLS: frozenset[str] = frozenset(
 )
 
 
+def _tools_called_from_metadata(turn: Any) -> list[str]:
+    """Return the tool names recorded on ``turn`` by ``process_input``.
+
+    Defensive by design: ``metadata`` comes back from SQLite as decoded
+    JSON, so a hand-edited row (or an older schema) can hold anything.
+    Anything that is not a non-empty list of strings yields ``[]`` — a
+    malformed history row must never break a live turn.
+    """
+    metadata = getattr(turn, "metadata", None) or {}
+    if not isinstance(metadata, Mapping):
+        return []
+    raw = metadata.get("tools_called")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [str(name) for name in raw if isinstance(name, str) and name]
+
+
 def _order_tool_calls(
     calls: Iterable[ToolCall],
 ) -> tuple[list[ToolCall], set[str]]:
@@ -636,12 +653,33 @@ class DialogCore:
                     # turns are dropped entirely — they add no useful context.
                     assistant_content = outcome.spoken_via_tool or outcome.spoken_text
                     if not self._is_silent_spoken(assistant_content, ()):
+                        assistant_metadata = dict(user_metadata)
+                        # 🔴 FIX (live 01.09, vision-pi): история хранила
+                        # ТОЛЬКО текст. Ход «сыграй жёсткий барабанный бит»
+                        # → compose_music + speak_text ложился в SQLite как
+                        # голая фраза «Бочка как кувалда, малый хлёсткий»,
+                        # без единого следа вызова. Через десять ходов
+                        # модель читала транскрипт, где КАЖДАЯ просьба о
+                        # музыке отвечена красивой фразой и ни одним тулом,
+                        # и добросовестно продолжала этот few-shot: болтала
+                        # про саксофон с ``tools=[]``, а гуард выдавал «Я тут
+                        # растерялся — бит не запустился». Чем длиннее сессия,
+                        # тем сильнее вранью учил собственный контекст.
+                        #
+                        # Пишем факт вызова в metadata (LLMMessage несёт
+                        # только role+content, поэтому в промпт его
+                        # раскрывает ``_resolve_history`` отдельным
+                        # system-сообщением — см. там).
+                        if outcome.tools_called:
+                            assistant_metadata["tools_called"] = list(
+                                dict.fromkeys(outcome.tools_called)
+                            )
                         await self._memory.append_turn(
                             self._user_id,
                             Turn(
                                 role="assistant",
                                 content=assistant_content,
-                                metadata=dict(user_metadata),
+                                metadata=assistant_metadata,
                             ),
                         )
             except Exception as exc:  # noqa: BLE001 — carry it in the result
@@ -1136,10 +1174,33 @@ class DialogCore:
         # в messages не было [0] system.
         if self._system_prompt:
             out.append(LLMMessage(role="system", content=self._system_prompt))
-        history_messages = [
-            LLMMessage(role=turn.role, content=turn.content)
-            for turn in recent_turns
-        ]
+        history_messages: list[LLMMessage] = []
+        for turn in recent_turns:
+            # 🔴 FIX (live 01.09): развернуть ``tools_called`` из metadata в
+            # отдельное system-сообщение ПЕРЕД ответом ассистента. Без него
+            # история — набор примеров «просьбу о музыке закрывают словами»
+            # (см. комментарий в ``process_input``).
+            #
+            # Роль именно ``system``, а не префикс в тексте ассистента:
+            # модель копирует то, что видит в своих же репликах (ретро 20.08,
+            # утечка ``[Spkr:...]`` в TTS), а system-текст она не озвучивает.
+            # И не отдельный ``Turn`` в SQLite: окно ``load_recent`` считает
+            # строки, лишняя строка на каждый ход с тулом съела бы треть
+            # истории.
+            evidence = _tools_called_from_metadata(turn)
+            if evidence:
+                history_messages.append(
+                    LLMMessage(
+                        role="system",
+                        content=(
+                            "[выполнено в прошлом ходе] вызваны инструменты: "
+                            + ", ".join(evidence)
+                        ),
+                    )
+                )
+            history_messages.append(
+                LLMMessage(role=turn.role, content=turn.content)
+            )
         out.extend(self._clean_history_turns(history_messages))
         return out
 
