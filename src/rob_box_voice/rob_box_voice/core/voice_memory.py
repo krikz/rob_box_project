@@ -191,6 +191,25 @@ class VoiceMemory:
             self.conn.execute("PRAGMA synchronous = NORMAL")
 
         # Resolve migrations dir (4 levels up from core/ -> project root/migrations)
+        #
+        # 🔴 KNOWN GAP (live 01.09): this only lands on a real
+        # ``migrations/`` directory when running from the SOURCE tree.
+        # Under the ROS2-installed layout deployed to the robot, this file
+        # lives at ``.../rob_box_voice/lib/python3.*/site-packages/
+        # rob_box_voice/core/voice_memory.py`` — 4 levels up lands on a
+        # nonexistent path, so ``_run_migrations`` silently falls back to
+        # ``_create_schema_inline`` (a no-op against the pre-existing DB).
+        # Pointing this at the deployment's shared ``/migrations`` mount
+        # instead was tried and reverted: that directory is a single
+        # numbered stream covering SEVERAL unrelated databases (waypoints,
+        # music library, github presets...), and running it wholesale
+        # against ``voice_memory.db`` hit a non-idempotent ``ALTER TABLE
+        # ... ADD COLUMN type`` in ``006_music_github_presets.sql`` —
+        # "duplicate column name: type" — because an earlier migration in
+        # that SAME stream had already added it via a different table.
+        # ``_ensure_speaker_id_columns`` below is the narrow, actually-safe
+        # fix: it repairs exactly the missing column this class needs,
+        # regardless of which schema-setup path ran.
         if migrations_dir:
             self.migrations_dir = migrations_dir
         else:
@@ -201,6 +220,12 @@ class VoiceMemory:
                 )
             )
 
+        # Must run BEFORE _run_migrations(): on a pre-existing DB missing
+        # the column, _create_schema_inline()'s own script fails with
+        # "no such column: speaker_id" at its ``CREATE INDEX ...
+        # ON voice_turns(speaker_id, ...)`` statement — the column has to
+        # exist before that script runs, not after.
+        self._ensure_speaker_id_columns()
         self._run_migrations()
         self._repair_fts_index()
 
@@ -301,6 +326,53 @@ class VoiceMemory:
         """
         with self.lock, self.conn:
             self.conn.executescript(schema)
+
+    def _ensure_speaker_id_columns(self) -> None:
+        """Issue #1770, live 01.09 — repair a pre-migration-009 database.
+
+        ``009_voice_memory_speaker_id.sql`` adds ``speaker_id`` to
+        ``voice_turns``/``voice_facts`` via a plain (non-idempotent)
+        ``ALTER TABLE``, but ``_run_migrations`` never actually reaches it
+        on the deployed robot (see the comment on ``migrations_dir``
+        above) — every DB created before this column existed stays
+        without it forever, and every query referencing ``speaker_id``
+        (nearly all of them — see ``search``/``save_fact``/``save_turn``)
+        raises ``sqlite3.OperationalError: no such column: speaker_id``.
+        ``mcp_server._init_voice_memory`` catches that broadly and sets
+        ``voice_memory = None``, so every memory tool answers "not
+        initialized" — this is what actually reaches the user.
+
+        Deliberately scoped to just the one column this class depends on,
+        checked via ``PRAGMA table_info`` (so it is a true no-op on a
+        database that already has it, unlike the migration's raw
+        ``ALTER TABLE``) — see the ``006_music_github_presets.sql``
+        incident in the ``migrations_dir`` comment for why running the
+        full shared migration stream against this DB is NOT safe.
+        """
+        with self.lock:
+            existing_tables = {
+                row[0]
+                for row in self.conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            for table in ("voice_turns", "voice_facts"):
+                if table not in existing_tables:
+                    # Doesn't exist yet — the upcoming schema creation
+                    # (inline or migration) builds it WITH speaker_id
+                    # already, nothing to repair.
+                    continue
+                columns = {
+                    row[1] for row in self.conn.execute(f"PRAGMA table_info({table})")
+                }
+                if "speaker_id" not in columns:
+                    with self.conn:
+                        self.conn.execute(
+                            f"ALTER TABLE {table} ADD COLUMN speaker_id TEXT"
+                        )
+                    # Index creation deliberately left to the schema step
+                    # that runs right after this — it already carries
+                    # ``CREATE INDEX IF NOT EXISTS`` on these columns.
 
     def _repair_fts_index(self) -> None:
         """Restore FTS triggers and rebuild only a stale external-content index.
