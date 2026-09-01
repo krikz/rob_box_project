@@ -51,7 +51,11 @@ def test_n1_contains_library_and_stage_lines() -> None:
     # Library line: DJ transitions must NOT load stored tracks (load_track
     # auto-plays them → harsh cut between tracks).
     assert "НЕ вызывай load_track" in prompt, "load_track ban missing from n=1 prompt"
-    assert "С НУЛЯ" in prompt, "fresh-generation instruction missing from n=1 prompt"
+    # Issue #1811: DJ mode plays through compose_music, not hand-written code.
+    assert "compose_music" in prompt, "compose_music instruction missing from n=1 prompt"
+    assert "execute_music_code" not in prompt, (
+        "n=1 prompt must not tell the model to hand-write Renardo code"
+    )
 
     # Stage line: progress indicator for the LLM.
     assert "переход #1" in prompt, f"stage_line missing — got: {prompt[:200]!r}"
@@ -65,20 +69,27 @@ def test_n1_contains_library_and_stage_lines() -> None:
 
 
 def test_n2_requires_dramaturgy() -> None:
+    """Issue #1811: development is now the arranger's job (compose_music's
+    ``form``), not hand-written ``.every()``/``Pvar``/``Clock.future`` code."""
     ctrl = _build_controller()
     ctrl.state.theme = "тёмный техно"
     prompt = ctrl.build_auto_prompt(2)
 
     assert "DJ_AUTO переход #2" in prompt
-    assert "РАЗВИТИЕМ" in prompt, "transition prompt must demand dramaturgy"
+    assert "РАЗВИВАТЬСЯ" in prompt, "transition prompt must still demand development"
+    assert "compose_music" in prompt, "transition must go through compose_music"
+    assert "form=" in prompt, "form is what carries development now"
 
-    # All four dramaturgy patterns must be listed (model picks at least one).
-    for pattern in (".every", "Pvar", "linvar", "Clock.future"):
-        assert pattern in prompt, f"{pattern!r} missing from dramaturgy list"
+    # The old hand-written-code dramaturgy techniques are no longer required.
+    for pattern in (".every()", "Pvar", "linvar", "Clock.future"):
+        assert pattern not in prompt, (
+            f"{pattern!r} is a hand-written-code technique — compose_music "
+            "should not need it"
+        )
+    assert "execute_music_code" not in prompt
 
     # Library line still present on transitions — as a BAN (no auto-play).
     assert "НЕ вызывай load_track" in prompt
-    assert "С НУЛЯ" in prompt
 
 
 def test_no_task_ids_leak_into_prompt() -> None:
@@ -115,26 +126,34 @@ def test_n1_contains_research_and_plan_instructions() -> None:
 
 
 def test_tech_guardrails_present_on_transition() -> None:
-    """Каждый переход обязан нести тех-лимиты против какофонии."""
+    """Issue #1811: аранжировщик и мастер-фильтр держат амплитуды/паттерны —
+    переход обязан нести НЕ ручные лимиты, а инструкцию разнообразить
+    compose_music-параметры между треками."""
     ctrl = _build_controller()
     ctrl.state.theme = "техно"
     prompt = ctrl.build_auto_prompt(2)
 
-    assert "Clock.clear()" in prompt
-    assert "НЕ используй chop" in prompt
-    assert "СУММА amp" in prompt
-    assert "d4/d5/p4/p5" in prompt
+    assert "compose_music" in prompt
+    assert "hats_sample" in prompt
+    assert "perc" in prompt
+    assert "swing" in prompt
     assert "search_samples" in prompt
 
+    # Hand-managed limits from the execute_music_code era are gone — the
+    # arranger and master filter own this now, the model shouldn't compute it.
+    for stale in ("Clock.clear()", "СУММА amp", "d4/d5/p4/p5", "chop="):
+        assert stale not in prompt, f"{stale!r} is a pre-#1811 hand-coded limit"
 
-def test_chop_is_banned_not_recommended() -> None:
-    """chop= должен встречаться только как запрет (щелчки на 16kHz)."""
+
+def test_chop_is_never_mentioned_in_dj_transitions() -> None:
+    """compose_music has no chop= parameter — DJ prompts should not mention it
+    at all anymore (issue #1811), unlike the old hand-written-code era."""
     ctrl = _build_controller()
     ctrl.state.theme = "техно"
     prompt = ctrl.build_auto_prompt(2)
 
-    assert ".every()" in prompt
-    assert "НЕ используй chop=" in prompt
+    assert "chop" not in prompt
+    assert ".every()" not in prompt
 
 
 def test_final_track_when_plan_set() -> None:
