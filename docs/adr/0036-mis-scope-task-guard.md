@@ -222,6 +222,26 @@ for db in sorted(glob.glob(f"{boards_dir}/*/kanban.db")):
 
 Вынесено в отдельный блок watchdog-надзора, **не** в watchdog.sh (2 мин), потому что false-positive rate выше (нужен человеческий eyeball). Действие: comment + флаг в `task_events.kind='overshoot_alert'`. Не kill, не reassign — Шифу принимает решение.
 
+#### 4.3.1 break-on-unknown-assignee + per-tick dedup (ADR-0042)
+
+Ретро-фикс (01.09, t_e1a9613d, issue #1824): «спам ретро каждые 2 мин» от `agent-flow-triage.sh` — каждый тик (cron every 1m) писал отдельный комментарий на каждый issue с невалидным assignee. При 20+ таких issues это 40+ комментариев/мин.
+
+Правила, добавленные в cron-надзор (ADR-0042):
+
+1. **break-on-unknown-assignee**: при первом unknown-assignee issue → собирать в accumulator (не писать per-issue комментарий). После Phase 1+2 — **один** rollup-комментарий.
+2. **Mass-break**: если собрано `>= UNKNOWN_ASSIGNEE_PHASE_BREAK_AT=50` unknown-assignee issues в текущей фазе → `break` (защита от огромного body).
+3. **per-tick dedup**: rollup-комментарий пишется не чаще раза в `UNKNOWN_ASSIGNEE_ROLLUP_DEDUP_MIN=30` минут. Свежесть проверяется REST API `comments?per_page=20` с фильтром на marker.
+4. **Rollup target**: `$UNKNOWN_ASSIGNEE_ROLLUP_ISSUE` (default `1824` — сам reporter бага) для сводного комментария.
+5. **Per-issue метка `agent-flow-error`** всё равно ставится через `whoami_add_label` (dedup 2ч), чтобы Шифу мог фильтровать issues в GitHub UI.
+
+См. `docs/adr/0042-unknown-assignee-rollup-guard.md` для деталей (env-переменные, dry-run флаг, mass-break, side-effects, alternatives, trade-offs).
+
+#### 4.3.2 Auto-escalation на long-streak cron-failures (ADR-0042 §4.4)
+
+Если какой-то из процессных cron-ов (unlabeled-sweep, drift-detect, blocked-watchdog) имеет `failure_streak >= 5` подряд (или эквивалент — например, 26 подряд в случае unlabeled-sweep до фикса), watchdog-shared создаёт auto-escalation issue с метками `agent-flow-error`, `needs-review`, `auto-escalation`. Это страховка от «silent regression» (env-fix протух, lib потерялась из sync, новый cron не имеет ENV_FILE-fallback).
+
+Backlog: реализация в `agent-flow-blocked-watchdog-scope.sh` (см. ADR-0036 §4.3 backlog, не блокер для текущего PR).
+
 ### 4.4 CONTRIBUTING.md — правило кто создаёт
 
 Дополняем §2f (после ADR-0030 §2e о запрете ручного коммита):
