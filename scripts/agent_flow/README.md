@@ -175,6 +175,43 @@ bash scripts/agent_flow/tests/test_validate_honesty.sh
 В `EXPECTED` `install.sh` → drift-detect контролирует, что скрипт не пропал
 из репо. Регистрация: `validate_honesty.sh` в `EXPECTED` (см. PR #1397).
 
+### `validate_adr_namespace.sh` — pre-PR check на ADR namespace collision (ретро 01.09 t_debcb647)
+
+Дополняет `validate_honesty.sh` функцией проверки ADR-нумерации (ADR-0030).
+Сравнивает номера **новых** ADR-файлов в diff `origin/develop...HEAD` с
+**существующими** номерами в `origin/develop docs/adr/`. Если номер занят
+→ exit 1 + actionable сообщение со списком коллизий, slug'ом файла в
+baseline и **next free slot** (= max(existing ADR number) + 1).
+
+Это pre-PR версия `check_adr_number_collision()` из `agent-flow-merge-gate.sh`:
+merge-gate ловит коллизию ПОСЛЕ открытия PR (и reject'ит + label), этот
+скрипт — ДО (`gh pr create` ещё не было), чтобы воркер мог переименовать
+`0040-collide.md → 0043-fresh.md` и сразу открыть чистый PR.
+
+```bash
+# Pre-PR (воркеры прогоняют локально перед `gh pr create`):
+cd /home/builder/rob_box_project
+bash scripts/agent_flow/validate_adr_namespace.sh
+# → exit 0 (clean) или exit 1 (collision, см. stderr)
+
+# Альтернативный baseline (например для экспериментальных веток):
+bash scripts/agent_flow/validate_adr_namespace.sh --ref main
+
+# Тест:
+bash scripts/agent_flow/tests/test_validate_adr_namespace.sh
+```
+
+**Регистрация:** в `EXPECTED` `install.sh` → drift-detect контролирует.
+**НЕ вызывается из merge-gate** (там своя полная реализация с override-метками
+`adr-collision-override` и 24h dedup; см. `agent-flow-merge-gate.sh` →
+`check_adr_number_collision`). Запускается воркером вручную как часть
+локального pre-PR чек-листа.
+
+**Exit codes:**
+- `0` — нет коллизии (clean) или нет новых ADR-файлов в diff
+- `1` — ADR namespace collision (см. stderr для списка конфликтов и next-free)
+- `2` — usage error (неизвестный флаг, baseline не достижим)
+
 ### `round_ensure.sh` — ручной валидационный e2e-раунд (ретро 11.08 t_26a6d362)
 
 **Процессное правило:** ручные валидационные раунды devops (проверить
