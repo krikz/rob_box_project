@@ -164,7 +164,7 @@ class TestBuildLlm:
         assert n._resolve_provider_chain() == ["deepseek"]
 
     def test_resolve_provider_chain_parses_csv(self):
-        n = _make_node({"llm_providers": "minimax, deepseek"})
+        n = _make_node({"llm_providers": "deepseek, minimax"})
         assert n._resolve_provider_chain() == ["minimax", "deepseek"]
 
     def test_resolve_provider_chain_empty_uses_default(self):

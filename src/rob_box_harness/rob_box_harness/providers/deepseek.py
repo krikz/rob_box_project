@@ -29,7 +29,7 @@ the upstream provider, mirroring :class:`HarnessMiniMaxProvider`:
 
 The class is async-end-to-end (``asyncio``) and exposes the canonical
 ``name = "deepseek"`` so the harness registry's fallback chain
-(``[minimax, deepseek, mimo]``) can pick it by name.
+(``[deepseek, minimax, mimo]``) can pick it by name.
 """
 
 from __future__ import annotations

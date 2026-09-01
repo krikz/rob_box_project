@@ -1,6 +1,6 @@
 """Provider health-check / quota cache for LLM fallback chains (issue #1082).
 
-The reactive fallback chain (``[minimax, deepseek]``) wastes 15-19s when
+The reactive fallback chain (``[deepseek, minimax]``) wastes 15-19s when
 the primary provider's quota is exhausted: MiniMax returns
 ``429 rate_limit_error Token Plan usage limit reached (2056)`` on every
 call, the provider retries with backoff three times, and only then does

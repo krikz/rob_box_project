@@ -29,7 +29,7 @@ the upstream provider:
 
 The class is async-end-to-end (``asyncio``) and exposes the canonical
 ``name = "minimax"`` so the harness registry's fallback chain
-(``[minimax, deepseek, mimo]``) can pick it by name.
+(``[deepseek, minimax, mimo]``) can pick it by name.
 
 The actual HTTP transport is delegated to the OpenAI SDK that
 :class:`rob_box_llm.providers.minimax.MiniMaxProvider` wraps, so a

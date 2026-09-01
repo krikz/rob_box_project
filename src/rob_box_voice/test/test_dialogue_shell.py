@@ -1101,7 +1101,7 @@ class TestLLMProviderWiring(unittest.TestCase):
 
     def test_minimax_init_success_still_wraps_in_health_aware_fallback(self):
         """Зелёный путь: оба провайдера собираются → HealthAwareFallbackLLM
-        с цепочкой [minimax, deepseek]. Каждый со своим base_url.
+        с цепочкой [deepseek, minimax]. Каждый со своим base_url.
         """
         from unittest.mock import patch
 
