@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
@@ -145,6 +146,25 @@ def _order_tool_calls(
 _SILENT_DONE_MARKERS: frozenset[str] = frozenset(
     {"done", "task complete", "task_complete", "готово", "всё", "выполнено"}
 )
+
+#: 🔴 FIX (live 01.09, vision-pi 10:17): MiniMax отдаёт ПСЕВДО-ВЫЗОВ ТЕКСТОМ.
+#: На «переходи в легкий джанго» модель вернула content
+#: ``<compose_music composition here>`` и ``tool_calls=()``. Формально это
+#: «содержательный текст», поэтому ход считался нормальным ответом: он ушёл
+#: в TTS-ветку, лёг в историю — и дальше повторялся уже как пример. Через
+#: два хода модель выдавала эту заглушку детерминированно, и на первой
+#: попытке, и на CRITICAL-ретрае; юзер слышал «Я тут растерялся».
+#:
+#: Признак узкий нарочно: ВЕСЬ ответ — одна угловая скобка без прозы вокруг.
+#: Живая реплика целиком внутри ``<...>`` не встречается, а частичное
+#: совпадение («скажу <тихо> привет») трогать нельзя.
+_PSEUDO_TOOL_CALL_RE = re.compile(r"^<[^<>]{1,160}>$")
+
+
+def _is_pseudo_tool_call(text: str) -> bool:
+    """Return ``True`` when ``text`` is a tool call the model WROTE instead of made."""
+    return bool(_PSEUDO_TOOL_CALL_RE.match((text or "").strip()))
+
 
 #: ``finish_reason`` values that mean "the model produced NO usable output"
 #: even though the HTTP call succeeded. DeepSeek documents
@@ -721,6 +741,12 @@ class DialogCore:
         content = (response.content or "").strip().lower()
         if (not content) or content in _SILENT_DONE_MARKERS:
             return True
+        # live 01.09 — псевдо-вызов текстом (``<compose_music composition
+        # here>``) ничего не сделал и озвучен быть не может. Ловим ЗДЕСЬ,
+        # внутри цикла: модель получает корректирующий ретрай сразу, а не
+        # через внешний Bug-C гуард двумя ходами позже.
+        if _is_pseudo_tool_call(response.content or ""):
+            return True
         # Issue #1253 — interrupted / filtered generation is not a valid
         # final answer even with a partial content fragment.
         return response.finish_reason in _SILENT_FINISH_REASONS
@@ -737,7 +763,12 @@ class DialogCore:
         if tools_called:
             return False
         content = (spoken or "").strip().lower()
-        return (not content) or content in _SILENT_DONE_MARKERS
+        if (not content) or content in _SILENT_DONE_MARKERS:
+            return True
+        # live 01.09 — заглушка вида ``<compose_music composition here>``.
+        # Юзер её не слышал (ход ничего не сделал), а в истории она работает
+        # как обучающий пример: следующий ход модель копирует её дословно.
+        return _is_pseudo_tool_call(spoken or "")
 
     @staticmethod
     def _clean_history_turns(
@@ -837,18 +868,33 @@ class DialogCore:
                         messages.append(
                             LLMMessage(role="assistant", content=response.content)
                         )
-                    messages.append(
-                        LLMMessage(
-                            role="user",
-                            content=(
-                                "[SYSTEM CORRECTION] Твой предыдущий ответ "
-                                "был пустым: ни текста, ни tool-вызова. "
-                                "Пользователь ничего не услышал, ничего не "
-                                "произошло. ОБЯЗАТЕЛЬНО в ЭТОМ ответе вызови "
-                                "нужный tool (speak_text — для речи) или дай "
-                                "содержательный текстовый ответ."
-                            ),
+                    # live 01.09 — упрёк «ответ был пустым» на псевдо-вызов
+                    # неверен и не помогает: модель ВИДИТ, что текст был.
+                    # Ей надо объяснить, что написать вызов текстом — не
+                    # значит вызвать.
+                    if _is_pseudo_tool_call(response.content or ""):
+                        correction = (
+                            "[SYSTEM CORRECTION] Ты НАПИСАЛ вызов инструмента "
+                            "текстом: "
+                            + (response.content or "").strip()[:120]
+                            + ". Это не вызов — это строка, её никто не "
+                            "выполнил, и пользователь ничего не услышал. "
+                            "Инструменты вызываются механизмом function "
+                            "calling, а не текстом ответа. Повтори ход и "
+                            "вызови нужный tool ПО-НАСТОЯЩЕМУ, со всеми "
+                            "аргументами."
                         )
+                    else:
+                        correction = (
+                            "[SYSTEM CORRECTION] Твой предыдущий ответ "
+                            "был пустым: ни текста, ни tool-вызова. "
+                            "Пользователь ничего не услышал, ничего не "
+                            "произошло. ОБЯЗАТЕЛЬНО в ЭТОМ ответе вызови "
+                            "нужный tool (speak_text — для речи) или дай "
+                            "содержательный текстовый ответ."
+                        )
+                    messages.append(
+                        LLMMessage(role="user", content=correction)
                     )
                     response = await self._stream_response(messages, tools=openai_tools)
                     continue

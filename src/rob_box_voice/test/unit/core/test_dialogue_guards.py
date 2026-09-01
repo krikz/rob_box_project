@@ -1148,3 +1148,49 @@ class TestLive0109PlayVerbAndDjangoGenre:
     )
     def test_non_music_stays_non_music(self, phrase: str) -> None:
         assert user_wants_music(phrase) is False
+
+
+class TestLive0109DevelopTheThemeAndPseudoCall:
+    """🔴 Живой лог vision-pi, 01.09 09:55 и 10:17.
+
+    ``развивай тему`` при играющем джанго: гуард сказал «user does NOT want
+    music», ретрая не было, ход пропал молча. «Тема» — обычное музыкальное
+    слово, но в общий список жанров его класть нельзя: оно склеится с
+    «смени», и разговорное «смени тему» станет просьбой о музыке. Поэтому
+    пара только с глаголами РАЗВИТИЯ материала.
+
+    Там же 10:17: на ``развивай мелодию`` модель трижды подряд вернула
+    ТЕКСТ ``<compose_music composition here>`` с ``tools=[]``. CRITICAL-промпт
+    про такой промах молчал, поэтому и ретрай его повторял.
+    """
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "развивай тему",
+            "продолжай тему",
+            "доработай тему",
+            "тему развивай",
+            "усложни тему",
+        ],
+    )
+    def test_developing_a_theme_is_music(self, phrase: str) -> None:
+        assert user_wants_music(phrase) is True
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "смени тему",
+            "давай сменим тему",
+            "поменяй тему разговора",
+            "какая тема",
+            "темно на улице",
+        ],
+    )
+    def test_changing_the_subject_is_not_music(self, phrase: str) -> None:
+        assert user_wants_music(phrase) is False
+
+    def test_retry_prompt_says_text_is_not_a_call(self) -> None:
+        prompt = build_music_retry_prompt("развивай мелодию", music_playing=True)
+        assert "function calling" in prompt
+        assert "НЕ " in prompt and "вызов" in prompt

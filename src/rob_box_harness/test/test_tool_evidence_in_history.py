@@ -244,3 +244,94 @@ def test_malformed_metadata_does_not_break_the_turn(broken: dict) -> None:
     assert result.error is None
     sent = llm.calls[0][0]
     assert [m.role for m in sent].count("system") == 1
+
+
+class TestPseudoToolCall:
+    """🔴 Живой лог vision-pi, 01.09 10:17 — вызов, написанный текстом.
+
+    На «переходи в легкий джанго» MiniMax вернула ``content`` =
+    ``<compose_music composition here>`` и ``tool_calls=()``. Формально это
+    содержательный текст, поэтому ход прошёл как нормальный ответ: лёг в
+    историю — и через два хода модель выдавала заглушку детерминированно, и
+    на первой попытке, и на CRITICAL-ретрае. В дампе запроса::
+
+        [5] assistant: '<compose_music composition here>'
+        [9] assistant: '<compose_music composition here>'
+        [11] assistant: '<compose_music composition here>'
+
+    Юзер слышал «Я тут растерялся — бит не запустился».
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "<compose_music composition here>",
+            "  <execute_music_code code here>  ",
+            "<tool_call>",
+        ],
+    )
+    def test_placeholder_is_a_silent_turn(self, text: str) -> None:
+        assert DialogCore._is_silent_spoken(text, ()) is True
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Лёгкий джанго, наслаждайся!",
+            "Скажу <тихо> и продолжу",
+            "5 < 7 и 9 > 3",
+            "<не закрыт",
+        ],
+    )
+    def test_real_speech_survives(self, text: str) -> None:
+        assert DialogCore._is_silent_spoken(text, ()) is False
+
+    def test_placeholder_with_a_real_tool_call_is_not_silent(self) -> None:
+        # Тул отработал — ход настоящий, каким бы ни был текст.
+        assert DialogCore._is_silent_spoken(
+            "<compose_music composition here>", ("compose_music",)
+        ) is False
+
+    def test_response_with_placeholder_triggers_the_corrective_retry(self) -> None:
+        assert DialogCore._is_silent_response(
+            LLMResponse(content="<compose_music composition here>", tool_calls=())
+        ) is True
+
+
+def test_placeholder_turn_is_not_persisted() -> None:
+    """Заглушка не должна попасть в память — иначе она сама себя размножает."""
+    memory = _FakeMemoryStore()
+    core = _core(
+        _FakeLLMProvider(
+            responses=[
+                LLMResponse(content="<compose_music composition here>", tool_calls=()),
+                LLMResponse(content="<compose_music composition here>", tool_calls=()),
+            ]
+        ),
+        memory,
+    )
+
+    asyncio.run(core.process_input("развивай мелодию"))
+
+    assistant_turns = [t for t in memory.turns if t.role == "assistant"]
+    assert assistant_turns == [], (
+        "псевдо-вызов сохранён в историю — следующий ход модель его скопирует"
+    )
+
+
+def test_correction_explains_that_text_is_not_a_call() -> None:
+    """Упрёк «ответ был пустым» на псевдо-вызов неверен: текст-то был."""
+    llm = _FakeLLMProvider(
+        responses=[
+            LLMResponse(content="<compose_music composition here>", tool_calls=()),
+            LLMResponse(content="Джанго пошёл!", tool_calls=()),
+        ]
+    )
+    core = _core(llm, _FakeMemoryStore())
+
+    asyncio.run(core.process_input("развивай мелодию"))
+
+    correction = llm.calls[1][0][-1]
+    assert correction.role == "user"
+    assert "НАПИСАЛ вызов инструмента" in correction.content
+    assert "compose_music" in correction.content
+    assert "был пустым" not in correction.content
