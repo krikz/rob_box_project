@@ -142,15 +142,21 @@ class DJModeController:
         if plan and isinstance(plan, str) and plan.strip():
             new_plan = plan.strip()
             if new_plan != self.state.set_plan:
+                # Перезапись плана = у юзера (или модератора) новый сет,
+                # счётчик переходов сбрасываем. Первый план (set_plan был
+                # пустой) — НЕ трогаем счётчик: build_auto_prompt(1) уже
+                # был вызван, иначе следующий tick снова запустит
+                # «СТАРТ ВЕЧЕРИНКИ».
+                is_rewrite = bool(self.state.set_plan)
                 self.state.set_plan = new_plan
-                if is_fresh_start:
+                if is_rewrite:
                     self.state.transition_count = 0
-                suffix = (
-                    ""
-                    if is_fresh_start
-                    else f" (updated mid-session, progress kept at "
-                    f"#{self.state.transition_count})"
-                )
+                    suffix = " (rewrite, counter reset to 0)"
+                else:
+                    suffix = (
+                        f" (first plan, progress kept at "
+                        f"#{self.state.transition_count})"
+                    )
                 self._logger.info(
                     f"🎧 DJ plan: {len(new_plan.splitlines())} треков{suffix}"
                 )
