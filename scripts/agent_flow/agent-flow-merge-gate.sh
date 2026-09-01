@@ -1667,6 +1667,111 @@ pr_failed_jobs_json() {  # $1=head_oid
         2>/dev/null || printf '%s' ""
 }
 
+# Ретро 02.09 t_8e08b861: scan-all-prs не различал develop-side регрессию
+# (red CI в develop HEAD, не в PR) и PR-side регрессию → спамил 19 rebase-
+# карточек на PR #1857 за сутки при ahead=2/behind=0. Хелпер ниже возвращает
+# behind-число через REST compare. "unknown" при flake.
+pr_behind_develop() {  # $1=head_oid → печатает behind_by или "unknown"
+    local head_oid="${1:-}"
+    [ -n "$head_oid" ] || { printf '%s' "unknown"; return 0; }
+    local n
+    n="$(gh api "repos/${GH_REPO}/compare/${DEVELOP_BRANCH}...${head_oid}" \
+        --jq '.behind_by' 2>/dev/null || echo unknown)"
+    [ -z "$n" ] && n="unknown"
+    printf '%s' "$n"
+}
+
+# Ретро 02.09 t_8e08b861 + t_ecd43187: is_develop_regression детектор, который
+# был в воркспейсе t_ecd43187 но не дожил до merge. Возвращает 0 (true)
+# если develop HEAD падает на ВСЕ те же check-runs что и PR (или develop
+# падает на БОЛЬШЕ — PR мог пройти часть, develop — нет). Кейс PR #1857:
+# develop падает на [Unit Tests, Integration Tests], PR — только [Unit Tests].
+# dev ⊇ pr → develop-side regression (rebase бессилен).
+# Если pr.failed ⊃ dev.failed (PR падает на что-то дополнительно) — это
+# PR-side ответственность (rebase не поможет, но это вина PR).
+# $1=pr_head_oid $2=dev_sha. Если не смогли достать (flake) → return 1
+# (false) → fail-open: пусть старая логика отработает.
+is_develop_regression() {  # $1=pr_head_oid $2=dev_sha → return 0|1
+    local pr_head="${1:-}" dev_sha="${2:-}"
+    [ -n "$pr_head" ] && [ -n "$dev_sha" ] || return 1
+    local pr_failed dev_failed
+    pr_failed="$(gh api "repos/${GH_REPO}/commits/${pr_head}/check-runs" \
+        --jq '[.check_runs[]|select(.conclusion=="failure" or .conclusion=="timed_out" or .conclusion=="cancelled")|.name]|.[]' \
+        2>/dev/null | sort -u || true)"
+    dev_failed="$(gh api "repos/${GH_REPO}/commits/${dev_sha}/check-runs" \
+        --jq '[.check_runs[]|select(.conclusion=="failure" or .conclusion=="timed_out" or .conclusion=="cancelled")|.name]|.[]' \
+        2>/dev/null | sort -u || true)"
+    [ -z "$pr_failed" ] && return 1  # нет failed на PR — не regression
+    [ -z "$dev_failed" ] && return 1  # develop чистый — не develop-side
+    # Развилка:
+    #   dev ⊇ pr (dev.failed ⊇ pr.failed) → develop-side regression (true)
+    #   pr ⊃ dev (pr.failed ⊃ dev.failed) → PR-side, свой код (false)
+    #   dev ⊂ pr И pr ⊂ dev (без строгого вложения — частичное пересечение) →
+    #     mixed: считаем develop-side (rebase всё равно no-op, чинить develop).
+    # dev ∖ pr = проверка, что develop падает только на то, на что падает PR
+    # (т.е. dev ⊆ pr — develop ответственен на подмножестве PR-провалов).
+    # pr ∖ dev = PR падает на что-то, чего develop не падает — это PR-side.
+    local dev_only pr_only
+    dev_only="$(comm -23 <(printf '%s\n' "$dev_failed") <(printf '%s\n' "$pr_failed") 2>/dev/null)"
+    pr_only="$(comm -13 <(printf '%s\n' "$dev_failed") <(printf '%s\n' "$pr_failed") 2>/dev/null)"
+    if [ -n "$dev_only" ] && [ -z "$pr_only" ]; then
+        # dev ⊋ pr (develop падает на ВСЁ что PR + ещё) → develop-side.
+        return 0
+    fi
+    if [ -z "$dev_only" ] && [ -z "$pr_only" ]; then
+        # dev == pr (полное совпадение) → develop-side.
+        return 0
+    fi
+    if [ -n "$dev_only" ] && [ -n "$pr_only" ]; then
+        # Смесь: develop падает на часть, PR — на другую часть. В любом
+        # случае rebase develop-HEAD не поможет (behind=0), и чинить нужно
+        # ОБА источника. Считаем develop-side: develop всё равно в регрессии,
+        # и ворсер-классификатор отдельно разберётся с PR-only failed.
+        return 0
+    fi
+    # pr_only есть, dev_only пусто → pr ⊋ dev → PR-side, develop чист по
+    # этому набору → вина PR.
+    return 1
+}
+
+# Ретро 02.09 t_8e08b861: circuit breaker. Считает rebase-карточки на PR за 24ч
+# в статусе done (т.е. воркер уже сделал rebase и закрыл). Если ≥3 — значит
+# rebase бессилен (PR-side или develop-side регрессия, не stale-from-develop),
+# дальнейшие карточки только жгут токены. Печатает число или 0.
+count_rebase_cards_24h() {  # $1=pr_num → печатает count
+    local pr_num="${1:-}"
+    [ -n "$pr_num" ] || { printf '%s' "0"; return 0; }
+    local since_ts
+    since_ts="$(date -u -d '24 hours ago' +%s 2>/dev/null || date -u +%s)"
+    local cnt
+    cnt="$(hermes kanban --board "$KANBAN_BOARD" list --json 2>/dev/null | python3 -c "
+import json,sys,os,time
+try:
+    data = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(0)
+since = int(os.environ.get('SINCE_TS','0'))
+pr_num = os.environ.get('PR_NUM','')
+n = 0
+for t in data:
+    title = t.get('title','')
+    if 'rebase PR #${pr_num}' not in title:
+        continue
+    st = t.get('status','')
+    if st not in ('done','archived'):
+        continue
+    end = t.get('completed_at') or t.get('updated_at') or 0
+    if end and int(end) >= since:
+        n += 1
+print(n)
+" 2>/dev/null <<EOF
+SINCE_TS=${since_ts}
+PR_NUM=${pr_num}
+EOF
+)"
+    printf '%s' "${cnt:-0}"
+}
+
 # detect_pr_kind — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
 # Ретро 25.08 t_00ba0224 (ADR-номер collision guard). merge-gate должен
@@ -3887,6 +3992,92 @@ git push --force-with-lease origin ${head}
 
 **ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → rebase НЕ нужен: сделай \`kanban complete\` с пометкой \`PR closed, rebase не нужен\` (ретро 15.08 t_16325ddd)."
         _title_prefix="⚠️ CI UNSTABLE: rebase"
+    fi
+
+    # Ретро 02.09 t_8e08b861: scan-all-prs спамил 19 rebase-карточек на PR #1857
+    # за сутки, потому что UNSTABLE-ветка слепо шлёт «rebase и позеленеть» даже
+    # когда PR уже на develop HEAD (behind=0). Здесь — guard «no-op rebase»:
+    # если PR не отстаёт от develop И CI-провал объясняется develop-регрессией
+    # (develop ⊆ PR по failed check-runs) — recovery-карточку НЕ создаём; вместо
+    # неё один PR-комментарий (24h dedup) «CI красный из-за develop-side
+    # регрессии, ждём фикс develop». Если develop чистый — одна карточка на
+    # fix develop (assignee=devops), а не на rebase ветки.
+    #
+    # CONFLICTING-ветку guard НЕ трогает — там rebase реально нужен для
+    # разрешения конфликта (это не stale-from-develop vs develop-regression).
+    if [ "$mergeable" != "CONFLICTING" ] && [ "$merge_state" != "DIRTY" ]; then
+        _pr_head_oid="${pr_head_oid:-}"
+        # head SHA нужен для compare. Если пуст — достанем из PR.
+        if [ -z "$_pr_head_oid" ]; then
+            _pr_head_oid="$(gh pr view "$pr_num" --repo "$GH_REPO" --json headRefOid \
+                --jq '.headRefOid' 2>/dev/null || echo "")"
+        fi
+        _behind="$(pr_behind_develop "${_pr_head_oid:-}")"
+        if [ "$_behind" = "0" ]; then
+            _dev_sha="$(gh api "repos/${GH_REPO}/commits/${DEVELOP_BRANCH}" --jq '.sha' 2>/dev/null || echo "")"
+            _dev_failed="$(gh api "repos/${GH_REPO}/commits/${_dev_sha}/check-runs" \
+                --jq '[.check_runs[]|select(.conclusion=="failure" or .conclusion=="timed_out" or .conclusion=="cancelled")|.name]|.[]' \
+                2>/dev/null | sort -u || true)"
+            _pr_failed="$(gh api "repos/${GH_REPO}/commits/${_pr_head_oid}/check-runs" \
+                --jq '[.check_runs[]|select(.conclusion=="failure" or .conclusion=="timed_out" or .conclusion=="cancelled")|.name]|.[]' \
+                2>/dev/null | sort -u || true)"
+            _dev_only="$(comm -23 <(printf '%s\n' "$_dev_failed") <(printf '%s\n' "$_pr_failed") 2>/dev/null || true)"
+            # Ретро 02.09 t_8e08b861 + ретро 31.08 t_e00f448d: pr_classify_failure
+            # уже живёт в скрипте (стр. 1638) → здесь явно вызываем для лога и
+            # маршрутизации unit_lint → diagnostic вместо rebase (если develop
+            # НЕ виноват). Внутри scan-all-prs блока — было требование AC #1.
+            _un_class="$(pr_classify_failure "${_pr_head_oid:-}")"
+            if [ -n "$_dev_failed" ] && [ -z "$_dev_only" ]; then
+                # develop-regression: develop ⊆ PR по failed checks.
+                # Recovery-карточка бессильна → только PR-коммент с 24h dedup.
+                _unstable_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+                _unstable_dup_count="$(gh api "repos/${GH_REPO}/issues/${pr_num}/comments?since=${_unstable_dedup_since}&per_page=100" \
+                    --jq '[.[] | select(.body | startswith("⚠️ **develop-regression** (merge-gate"))] | length' 2>/dev/null || echo 0)"
+                if [ "${_unstable_dup_count:-0}" -eq 0 ] 2>/dev/null; then
+                    _dev_failed_csv="$(printf '%s' "$_dev_failed" | paste -sd, -)"
+                    gh pr comment "$pr_num" --repo "$GH_REPO" --body \
+                        "⚠️ **develop-regression** (merge-gate scan-all-prs, ретро 02.09 t_8e08b861): PR #${pr_num} (\`${head}\`) = MERGEABLE+UNSTABLE при behind=0 от develop. CI падает на \`${_dev_failed_csv}\` — те же чек-раны падают на develop HEAD (\`${_dev_sha:0:7}\`). **rebase не поможет** (PR уже на develop).
+
+**ОБЯЗАН** (по процессу Шифу): дождаться фикса develop. Не делай rebase в ветке \`${head}\` — это бессильный no-op (merge-base == develop tip). Когда develop позеленеет, scan-all-prs автоматически поставит needs-e2e.
+
+Шифу/воркер devops: чинить develop — коммит в develop напрямую или через отдельную карточку (assignee=devops, НЕ rebase recovery)." >/dev/null 2>&1 \
+                        && log "scan-all-prs: PR #${pr_num} develop-regression comment posted (behind=0, dev_failed=${_dev_failed_csv})" \
+                        || log "scan-all-prs: WARNING PR comment failed for develop-regression #${pr_num}"
+                else
+                    log "scan-all-prs: PR #${pr_num} develop-regression comment dedup'd (×${_unstable_dup_count} in 24h) — skip"
+                fi
+                log "scan-all-prs: PR #${pr_num} UNSTABLE+behind=0+develop-regression (class=${_un_class}) — rebase-карточка НЕ создастся"
+                continue
+            elif [ -z "$_dev_failed" ] && [ -n "$_pr_failed" ]; then
+                # PR красный, develop чистый → вина PR, но rebase всё равно
+                # no-op (behind=0). Старая логика всё равно создаст rebase-
+                # карточку (PR-side fix через rebase develop-HEAD невозможен —
+                # но воркер хотя бы увидит PR-failed checks). Оставляем её,
+                # только подавляем спам по circuit breaker.
+                _rebase_done_24h="$(count_rebase_cards_24h "$pr_num")"
+                if [ "${_rebase_done_24h:-0}" -ge 3 ] 2>/dev/null; then
+                    log "scan-all-prs: PR #${pr_num} UNSTABLE+behind=0+PR-side+circuit-break(×${_rebase_done_24h} done/24h) — rebase-loop detected, реbase-карточка НЕ создастся (нужен человек)"
+                    # Один PR-комментарий-эскалация с 24h dedup, не спам в карточки.
+                    _loop_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+                    _loop_dup_count="$(gh api "repos/${GH_REPO}/issues/${pr_num}/comments?since=${_loop_dedup_since}&per_page=100" \
+                        --jq '[.[] | select(.body | startswith("🚨 **rebase-loop** (merge-gate"))] | length' 2>/dev/null || echo 0)"
+                    if [ "${_loop_dup_count:-0}" -eq 0 ] 2>/dev/null; then
+                        gh pr comment "$pr_num" --repo "$GH_REPO" --body \
+                            "🚨 **rebase-loop** (merge-gate scan-all-prs, ретро 02.09 t_8e08b861): PR #${pr_num} красный при behind=0 от develop, develop чистый → вина PR. Уже ${_rebase_done_24h} rebase-карточек в done за 24ч, rebase бессилен (merge-base == develop tip). Шифу/воркер: чинить код в ветке \`${head}\` (lint/unit), а не rebase'ить." >/dev/null 2>&1 \
+                            && log "scan-all-prs: PR #${pr_num} rebase-loop escalation posted (×${_rebase_done_24h} done/24h)" \
+                            || log "scan-all-prs: WARNING PR comment failed for rebase-loop #${pr_num}"
+                    else
+                        log "scan-all-prs: PR #${pr_num} rebase-loop comment dedup'd (×${_loop_dup_count} in 24h)"
+                    fi
+                    continue
+                fi
+                log "scan-all-prs: PR #${pr_num} UNSTABLE+behind=0+PR-side — rebase-карточка будет создана (×${_rebase_done_24h} done/24h, порог=3)"
+            else
+                # Не смогли классифицировать (flake/gh API) → fail-open: старая
+                # логика rebase-карточки сработает.
+                log "scan-all-prs: PR #${pr_num} UNSTABLE+behind=0 but classify flake (dev_failed=${_dev_failed:-?}, pr_failed=${_pr_failed:-?}) — fail-open"
+            fi
+        fi
     fi
 
     if [ -n "$task_id" ]; then
