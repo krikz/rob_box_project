@@ -946,6 +946,49 @@ fi
 if printf '%s' "$*" | grep -q -- ' archive '; then
     exit 0
 fi
+# `kanban --board <b> complete <id> ...` → эмулируем РЕАЛЬНЫЙ контракт
+# kanban_db.complete_task(): переход разрешён только из
+# {running, ready, blocked, review}. Карточка в `todo` (или уже done/archived)
+# в проде падает с «cannot complete <id> (unknown id or terminal state)»,
+# exit 1. Раньше мок отвечал success на ЛЮБОЙ статус и скрывал этот класс
+# багов (post-merge-child-resolution ретро t_58c69473: проход честно звал
+# complete на todo-карточку и молча ничего не закрывал в проде).
+# Статус читается из KANBAN_LIST_JSON; если карточки там нет — success
+# (fail-open, как и раньше, чтобы не ломать старые тесты без фикстуры).
+if printf '%s' "$*" | grep -q -- ' complete '; then
+    _cid="$(printf '%s' "$*" | sed -nE 's/.* complete ([^ ]+).*/\1/p')"
+    _lj="$(grep -E '^KANBAN_LIST_JSON=' "$state" 2>/dev/null | head -n1 | sed 's@^KANBAN_LIST_JSON=@@')"
+    if [ -n "$_lj" ] && [ -n "$_cid" ]; then
+        _st="$(printf '%s' "$_lj" | python3 -c '
+import json, sys
+cid = sys.argv[1]
+try:
+    d = json.load(sys.stdin)
+    tasks = d if isinstance(d, list) else d.get("tasks", [])
+except Exception:
+    raise SystemExit(0)
+for t in tasks:
+    if t.get("id") == cid:
+        print(t.get("status") or "")
+        break
+' "$_cid" 2>/dev/null || true)"
+        case "${_st:-}" in
+            running|ready|blocked|review|'') : ;;
+            *)
+                printf 'cannot complete %s (unknown id or terminal state)\n' "$_cid" >&2
+                exit 1
+                ;;
+        esac
+    fi
+    exit 0
+fi
+# `kanban --board <b> promote <id> [--force] ...` → эмулируем реальный
+# контракт: без --force промоушен падает при незакрытых родителях. В моке
+# считаем, что --force всегда успешен, а без --force — успешен тоже
+# (у тестовых карточек родителей нет). Журнал уже записан выше.
+if printf '%s' "$*" | grep -q -- ' promote '; then
+    exit 0
+fi
 # Simulate success; specific subcommands are recorded for assertions.
 HERMES_MOCK_EOF
     chmod +x "$bin_dir/hermes"

@@ -1772,6 +1772,78 @@ EOF
     printf '%s' "${cnt:-0}"
 }
 
+# ----------------------------------------------------------------------------
+# Ретро 01.09 t_527e1231 → process-fix t_58c69473, блок B («decompose-on-rebase»).
+#
+# Кейс t_002aae48: PR #1857 = MERGEABLE+UNSTABLE и БЕЗ hermes-issue, поэтому
+# основной цикл (с его pr_classify_failure по head_oid) до него не доходит, а
+# scan-all-prs создаёт карточку «🔀 rebase PR #1857 … на develop» с
+# assignee=default. Но падал **Unit Tests** — contract drift ВНУТРИ PR, rebase
+# бессилен. Default-воркер без скиллов провисел 1.6ч.
+#
+# pr_classify_rollup — та же классификация, что pr_classify_failure, но по
+# `statusCheckRollup` (доступен в scan-all-prs без head_oid):
+#   contract_drift   — упал хотя бы один unit/lint/build-чек (реальный код PR)
+#   rebase_candidate — упали только integration/e2e/deploy/docker/smoke
+#   unknown          — rollup недоступен / нет failed (fail-open → старое
+#                      поведение: assignee=default, rebase-карточка)
+# $1=pr_number → печатает категорию.
+# ----------------------------------------------------------------------------
+pr_classify_rollup() {  # $1=pr_number → contract_drift|rebase_candidate|unknown
+    local pr_num="${1:-}"
+    [ -n "$pr_num" ] || { printf '%s' "unknown"; return 0; }
+    gh pr view "$pr_num" --repo "$GH_REPO" --json statusCheckRollup 2>/dev/null \
+        | python3 -c '
+import json, re, sys
+DRIFT = re.compile(r"(unit|lint|build|pytest|mypy|ruff|flake8|black|coverage|test summary|code quality|dockerfile|yaml)", re.I)
+REBASE = re.compile(r"(integration|e2e|deploy|docker build|release|smoke)", re.I)
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("unknown"); raise SystemExit(0)
+rollup = d.get("statusCheckRollup") if isinstance(d, dict) else d
+if not isinstance(rollup, list):
+    print("unknown"); raise SystemExit(0)
+failed = [c for c in rollup
+          if isinstance(c, dict)
+          and str(c.get("conclusion") or "").upper() in ("FAILURE", "TIMED_OUT", "CANCELLED")]
+if not failed:
+    print("unknown"); raise SystemExit(0)
+names = [str(c.get("name") or "") for c in failed]
+# Смесь → contract_drift (худший случай: лечим код, не rebase-им).
+if any(DRIFT.search(n) and not REBASE.search(n) for n in names):
+    print("contract_drift"); raise SystemExit(0)
+if any(REBASE.search(n) for n in names):
+    print("rebase_candidate"); raise SystemExit(0)
+print("unknown")
+' 2>/dev/null || printf '%s' "unknown"
+}
+
+# Markdown-список failed jobs из statusCheckRollup (для body карточки).
+# $1=pr_number → markdown-строки «- **name** — <url>» или пустая строка.
+pr_failed_rollup_md() {  # $1=pr_number
+    local pr_num="${1:-}"
+    [ -n "$pr_num" ] || { printf '%s' ""; return 0; }
+    gh pr view "$pr_num" --repo "$GH_REPO" --json statusCheckRollup 2>/dev/null \
+        | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+rollup = d.get("statusCheckRollup") if isinstance(d, dict) else d
+if not isinstance(rollup, list):
+    raise SystemExit(0)
+for c in rollup:
+    if not isinstance(c, dict):
+        continue
+    if str(c.get("conclusion") or "").upper() not in ("FAILURE", "TIMED_OUT", "CANCELLED"):
+        continue
+    url = c.get("detailsUrl") or c.get("targetUrl") or c.get("html_url") or ""
+    print("- **{}** — {}".format(c.get("name") or "?", url))
+}' 2>/dev/null || printf '%s' ""
+}
+
 # detect_pr_kind — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
 # Ретро 25.08 t_00ba0224 (ADR-номер collision guard). merge-gate должен
@@ -3937,16 +4009,60 @@ for pr in data:
     # Определяем assignee по меткам issue (если знаем issue_num)
     # Ретро 02.09 t_2bd2e7ea: default → devops fallback (default невалиден).
     _assignee="devops"
+    _assignee_explicit=0
     if [ -n "$issue_num" ]; then
         for lbl in $(gh issue view "$issue_num" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
             case "$lbl" in
-                agent:backend)    _assignee="backend"; break ;;
-                agent:developer)  _assignee="developer"; break ;;
-                agent:tester)     _assignee="tester"; break ;;
-                agent:devops)     _assignee="devops"; break ;;
-                agent:architect)  _assignee="architect"; break ;;
+                agent:backend)    _assignee="backend"; _assignee_explicit=1; break ;;
+                agent:developer)  _assignee="developer"; _assignee_explicit=1; break ;;
+                agent:tester)     _assignee="tester"; _assignee_explicit=1; break ;;
+                agent:devops)     _assignee="devops"; _assignee_explicit=1; break ;;
+                agent:architect)  _assignee="architect"; _assignee_explicit=1; break ;;
             esac
         done
+    fi
+
+    # ------------------------------------------------------------------------
+    # Ретро 01.09 t_527e1231 → process-fix t_58c69473, блок B.
+    # Кейс t_002aae48: UNSTABLE PR #1857 без hermes-issue → карточка «rebase
+    # PR #1857» с assignee=default, хотя падал Unit Tests (contract drift
+    # ВНУТРИ PR — rebase бессилен, default-воркер без скиллов провисел 1.6ч).
+    # Для UNSTABLE (НЕ CONFLICTING) классифицируем rollup:
+    #   contract_drift   → assignee=backend (если метка issue не дала явного
+    #                      владельца) + ОБЯЗАТЕЛЬНЫЙ блок «## Contract-drift
+    #                      pre-check» в body (CI run + список failing jobs);
+    #   rebase_candidate / unknown → поведение как раньше (assignee=default).
+    # Для CONFLICTING блок НЕ добавляем: там rebase — правильный ответ.
+    # ------------------------------------------------------------------------
+    _drift_block=""
+    _drift_class="n/a"
+    if [ "$mergeable" != "CONFLICTING" ] && [ "$merge_state" != "DIRTY" ]; then
+        _drift_class="$(pr_classify_rollup "$pr_num")"
+        log "scan-all-prs: PR #${pr_num} rollup classification=${_drift_class} (assignee_explicit=${_assignee_explicit})"
+        if [ "$_drift_class" = "contract_drift" ]; then
+            if [ "$_assignee_explicit" = "0" ]; then
+                _assignee="backend"
+                log "scan-all-prs: PR #${pr_num} contract_drift + no agent:* label → assignee=backend (ретро t_527e1231)"
+            fi
+            _drift_jobs_md="$(pr_failed_rollup_md "$pr_num")"
+            [ -n "$_drift_jobs_md" ] || _drift_jobs_md="- (не смог достать список failing jobs; см. вкладку Checks в PR)"
+            _drift_block="## Contract-drift pre-check (merge-gate, ретро t_527e1231)
+
+CI на PR #${pr_num} красный из-за **unit/lint/build**-чеков — это **contract drift ВНУТРИ этого PR**, не отставание от develop. **Rebase скорее всего НЕ поможет.**
+
+**Failing jobs (statusCheckRollup):**
+${_drift_jobs_md}
+
+**Порядок работы (ОБЯЗАТЕЛЬНО ДО rebase):**
+1. Открой failing job по ссылке выше, прочитай assertion diff / имя упавшего теста.
+2. Определи: расходятся ли реализация и тест ВНУТРИ PR (contract drift)? Если да — правь код/тест в ветке \`${head}\`, **rebase не нужен**.
+3. Только если падение вызвано отставанием от develop (в develop есть фикс) — делай rebase по шпаргалке ниже.
+4. Не создавай новую ветку и новый PR — работай в \`${head}\`.
+
+---
+
+"
+        fi
     fi
 
     # Формируем reminder (тот же текст, что в основном цикле).
@@ -3977,7 +4093,7 @@ git push --force-with-lease origin ${head}
 **ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → rebase НЕ нужен: сделай \`kanban complete\` с пометкой \`PR closed, rebase не нужен\` (ретро 15.08 t_16325ddd)."
         _title_prefix="🔀 merge conflict"
     else
-        _reminder="## ⚠️ CI UNSTABLE detected (merge-gate scan-all-prs, $(date -u +%H:%M:%SZ))
+        _reminder="${_drift_block}## ⚠️ CI UNSTABLE detected (merge-gate scan-all-prs, $(date -u +%H:%M:%SZ))
 
 PR #${pr_num} (\`${head}\`) = **MERGEABLE + UNSTABLE** (CI fail, конфликтов нет).
 
@@ -5089,6 +5205,131 @@ while IFS=$'\t' read -r c_id c_status c_branch c_title; do
 done < <(printf '%s\n' "$_arch_cards")
 
 # ============================================================================
+# post-merge-child-resolution: закрытие ЖИВЫХ карточек по MERGED PR
+# (ретро 01.09 t_527e1231 → process-fix t_58c69473, «orphan-parent pattern»)
+# ----------------------------------------------------------------------------
+# ПРОБЛЕМА: карточка висит в `todo`/`ready` НАВСЕГДА, хотя её работа уже влита
+# в develop через MERGED PR. Кейсы 01.09:
+#   - t_e2ae0c29 (todo, assignee=agent-flow, >сутки в todo): реализация
+#     ADR-0035 влита через PR #1849 (MERGED 01.09 06:10:45Z) — никто не закрыл,
+#     карточка успела дать 4 крэша воркеров и сжечь ассигнования по 1800s.
+#   - issue #1810/#1811: fix в develop (ae170b717 + 0237fbdb5), issue OPEN.
+#
+# Почему существующие проходы НЕ ловят:
+#   - main-cycle archive-путь ищет карточку по issue-линку; ретро/decomposer-
+#     карточки issue не имеют вообще;
+#   - retro-card-archive (выше, ретро 14.08 t_36c9ac4e) обрабатывает ТОЛЬКО
+#     status ∈ {done, blocked} — карточка в todo/ready не подпадает;
+#   - scan-all-prs смотрит OPEN PR, а тут PR уже MERGED.
+#
+# СТРАТЕГИИ матчинга «MERGED PR → живая карточка» (обе консервативные):
+#   S1 (marker):       body карточки содержит `parent-pr:<N>` — явный контракт
+#                      (auto-decomposer / архитектор ставят маркер при fan-out).
+#   S2 (branch-token): id карточки (t_<hex>) — exact-токен head-ветки
+#                      смерженного PR (тот же приём, что retro-card-archive).
+#
+# ГЛАВНЫЙ GUARD (не убить живую работу): если на ЛЮБОЙ открытой PR-ветке
+# встречается токен id этой карточки — карточка НЕ закрывается (работа
+# продолжается в следующем PR; кейс t_e2ae0c29: PR #1849 MERGED, но PR #1853
+# на той же ветке ещё OPEN). Плюс жёсткое ограничение по статусу: только
+# todo/ready. running не трогаем (живой воркер), done/blocked/archived —
+# territory retro-card-archive.
+# ============================================================================
+pmcr_completed=0
+log "post-merge-child-resolution: scanning merged PRs → live (todo/ready) cards by parent-pr marker / branch token"
+
+# Карточки с body: id<TAB>status<TAB>parent_pr_csv. Пустой csv → "-".
+# Только не-archived; фильтр по статусу — ниже (чтобы логировать причины).
+_pmcr_cards="$( "$HERMES_BIN" kanban --board "$KANBAN_BOARD" list --json 2>/dev/null \
+    | python3 -c '
+import sys, json, re
+try:
+    d = json.load(sys.stdin)
+    tasks = d if isinstance(d, list) else d.get("tasks", [])
+except Exception:
+    tasks = []
+for t in tasks:
+    status = (t.get("status") or "")
+    if "archived" in status:
+        continue
+    body = t.get("body") or ""
+    prs = sorted(set(re.findall(r"parent-pr:\s*#?(\d+)", body)))
+    print("{}\t{}\t{}".format(t.get("id", ""), status, ",".join(prs) if prs else "-"))
+' 2>/dev/null || true)"
+
+while IFS=$'\t' read -r p_id p_status p_prs; do
+    [ -z "$p_id" ] && continue
+    # Только живые НЕ-запущенные карточки. running — живой воркер (сам закроет),
+    # done/blocked/archived — retro-card-archive выше.
+    case "$p_status" in
+        todo|ready) ;;
+        *) continue ;;
+    esac
+    [ "$p_prs" = "-" ] && p_prs=""
+    # S1: маркер parent-pr:<N> совпал со смерженным PR.
+    _pmcr_pr=""
+    _pmcr_strategy=""
+    if [ -n "$p_prs" ]; then
+        _pmcr_pr="$(printf '%s\n' "$_arch_refs" | awk -F'\t' -v csv="$p_prs" '
+            {
+                n = split(csv, a, ",")
+                for (i = 1; i <= n; i++) if (a[i] != "" && a[i] == $1) { print $1; exit }
+            }')"
+        [ -n "$_pmcr_pr" ] && _pmcr_strategy="marker"
+    fi
+    # S2: id карточки — exact-токен t_<hex> head-ветки смерженного PR.
+    if [ -z "$_pmcr_pr" ]; then
+        _pmcr_pr="$(printf '%s\n' "$_arch_refs" | awk -F'\t' -v id="$p_id" '
+            {
+                if (match($2, /t_[a-f0-9]+/)) {
+                    tok = substr($2, RSTART, RLENGTH)
+                    if (tok == id) { print $1; exit }
+                }
+            }')"
+        [ -n "$_pmcr_pr" ] && _pmcr_strategy="branch-token"
+    fi
+    [ -z "$_pmcr_pr" ] && continue
+    # GUARD: открытый PR на ветке с тем же токеном → работа продолжается.
+    if printf '%s\n' "$_arch_open_heads" | grep -Fq -- "$p_id"; then
+        log "post-merge-child-resolution: card ${p_id} (${p_status}) matched PR #${_pmcr_pr} via ${_pmcr_strategy}, но есть OPEN PR на ветке с токеном ${p_id} — работа продолжается, НЕ закрываю"
+        continue
+    fi
+    log "post-merge-child-resolution: card ${p_id} (${p_status}) ← MERGED PR #${_pmcr_pr} (${_pmcr_strategy}) → complete"
+    if [ "$DRY_RUN" = "true" ]; then
+        log "DRY-RUN would complete card ${p_id} (PR #${_pmcr_pr} MERGED, ${_pmcr_strategy})"
+        pmcr_completed=$((pmcr_completed+1)); continue
+    fi
+    # ВАЖНО (проверено вживую 01.09 на t_e2ae0c29 / t_4019c107): реальный
+    # kanban_db.complete_task() принимает только status ∈
+    # {running, ready, blocked, review} И требует satisfied parents. Для карточки
+    # в `todo` (наш основной кейс — orphan-parent) прямой `complete` падает с
+    # «cannot complete <id> (unknown id or terminal state)», а `promote` без
+    # --force — с «unsatisfied parent dependencies». Поэтому todo сначала
+    # promote --force (родители нам не указ: работа УЖЕ влита в develop,
+    # доказательство — MERGED PR), затем complete.
+    if [ "$p_status" = "todo" ]; then
+        # ВНИМАНИЕ на порядок аргументов (проверено вживую 01.09): `reason` —
+        # ПОЗИЦИОННЫЙ аргумент и должен идти ДО флага --force, иначе argparse
+        # падает с «unrecognized arguments: <reason>».
+        if "$HERMES_BIN" kanban --board "$KANBAN_BOARD" promote "$p_id" \
+            "PR #${_pmcr_pr} MERGED — post-merge-child-resolution (ретро t_527e1231)" \
+            --force >/dev/null 2>&1; then
+            log "post-merge-child-resolution: card ${p_id} promoted (todo → ready, --force: работа влита в ${DEVELOP_BRANCH})"
+        else
+            log "post-merge-child-resolution: WARNING promote --force failed for ${p_id} — complete всё равно пробуем"
+        fi
+    fi
+    if "$HERMES_BIN" kanban --board "$KANBAN_BOARD" complete "$p_id" \
+        --summary "PR #${_pmcr_pr} MERGED в ${DEVELOP_BRANCH}, no further action needed (merge-gate post-merge-child-resolution, ${_pmcr_strategy}, ретро t_527e1231)" \
+        >/dev/null 2>&1; then
+        pmcr_completed=$((pmcr_completed+1))
+        log "post-merge-child-resolution: card ${p_id} completed (PR #${_pmcr_pr} MERGED)"
+    else
+        log "post-merge-child-resolution: WARNING complete failed for ${p_id} (PR #${_pmcr_pr}) — retry next tick"
+    fi
+done < <(printf '%s\n' "$_pmcr_cards")
+
+# ============================================================================
 # REST-based backfill: open PR без меток старше 30 мин (ретро 15.08 t_2c814334)
 # ----------------------------------------------------------------------------
 # ПРОБЛЕМА: clean-pr-sweep (выше) и pr-orphan-reconcile (ниже) используют
@@ -5258,7 +5499,7 @@ for pr in data:
 ' "$BACKFILL_AGE_MINUTES" 2>/dev/null)
 
 # --- summary -----------------------------------------------------------------
-log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled} orphan_labeled=${orphan_labeled} backfill_labeled=${backfill_labeled} retro_archived=${retro_archived} human_close_propagated=${human_close_propagated}"
+log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled} orphan_labeled=${orphan_labeled} backfill_labeled=${backfill_labeled} retro_archived=${retro_archived} pmcr_completed=${pmcr_completed} human_close_propagated=${human_close_propagated}"
 
 # Exit non-zero only on hard errors so cron can alert.
 if [ "$errored" -gt 0 ]; then exit 1; fi
