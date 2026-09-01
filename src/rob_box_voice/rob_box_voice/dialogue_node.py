@@ -3744,6 +3744,38 @@ class DialogueNode(Node):
         """
         self._retry_dispatched_in_turn = True
 
+    def _discard_last_music_reply(self) -> None:
+        """Fire-and-forget: retract the last persisted assistant turn.
+
+        Issue #992 — called from :meth:`_apply_music_guard` the moment a
+        guard has CONFIRMED a music request got no tool call (its own
+        retry included). ``DialogCore.discard_last_reply`` is a coroutine
+        and this method runs on the ROS2 callback thread, so it is
+        scheduled on the asyncio loop the same way ``_dispatch_turn``
+        schedules ``_run_turn`` — fire-and-forget, with a done-callback
+        only to log failures (losing the retraction is not fatal, the
+        turn stays in history same as before this fix).
+        """
+        future = asyncio.run_coroutine_threadsafe(
+            self._core.discard_last_reply(), self._loop
+        )
+
+        def _log_if_failed(fut: "asyncio.Future[bool]") -> None:
+            try:
+                removed = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().warning(
+                    f"🎵 [issue 992] discard_last_reply failed: {exc}"
+                )
+                return
+            if not removed:
+                self.get_logger().debug(
+                    "🎵 [issue 992] discard_last_reply: no assistant turn "
+                    "found to retract"
+                )
+
+        future.add_done_callback(_log_if_failed)
+
     def _apply_music_guard(
         self,
         *,
@@ -3817,6 +3849,14 @@ class DialogueNode(Node):
 
         if verdict.kind is MusicGuardVerdictKind.USER_RETRY:
             assert verdict.prompt is not None
+            # Issue #992 — the attempt we just evaluated (tools_called
+            # empty on a music request) already had its assistant reply
+            # persisted by DialogCore as an ordinary successful turn (see
+            # ``discard_last_reply`` docstring). Retract it BEFORE
+            # dispatching the retry so the next LLM call — and every
+            # later turn — doesn't read its own unlabeled false
+            # confirmation back as a good example to imitate.
+            self._discard_last_music_reply()
             # Issue #1204: ретрай должен реально дойти до LLM —
             # переоткрываем DIALOGUE (process_input уже закрыл его).
             self._reopen_dialogue_for_retry()
@@ -3851,6 +3891,12 @@ class DialogueNode(Node):
             return False
 
         if verdict.kind is MusicGuardVerdictKind.NUDGE:
+            # Issue #992 — the exhausted retry's assistant reply is the
+            # same kind of unlabeled fake confirmation as above; retract
+            # it too, otherwise it sits in history right next to the
+            # honest "растерялся" (which is spoken via ``_speak_direct``
+            # and never persisted) as if it were the real answer.
+            self._discard_last_music_reply()
             self._speak_direct(
                 "Я тут растерялся — бит не запустился, попробуй ещё раз."
             )

@@ -141,6 +141,40 @@ class MemoryStore(abc.ABC):
         unknown). Used by the voice shell to reset a dialogue session.
         """
 
+    async def delete_last_turn(self, scope: str, *, role: str) -> bool:
+        """Retract the most recent ``role`` turn from ``scope``'s history.
+
+        Issue #992 — a turn can look like a normal, persistable reply
+        (non-empty text, not a bare "done" marker) and still be a
+        confirmed lie: the LLM claimed an action ("Сыграю его по нотам!")
+        without calling any tool, a guard caught it after the fact, and
+        the retry/nudge already told the user the truth. Left in history,
+        that unlabeled "successful-sounding" turn becomes a few-shot
+        example the model imitates on the next similar request — the
+        longer the session, the more its own context teaches it to lie
+        (see :meth:`DialogCore._is_silent_spoken`). Callers use this to
+        retract exactly that turn once a guard confirms the failure.
+
+        Generic default: reload the scope, drop the most recent turn
+        matching ``role``, replay everything else. Correct for any
+        :class:`MemoryStore` without requiring a new abstract method;
+        concrete stores may override with a targeted single-row delete.
+        Returns ``True`` if a turn was found and removed.
+        """
+        turns = await self.load_recent(scope, limit=1000)
+        idx = None
+        for i in range(len(turns) - 1, -1, -1):
+            if turns[i].role == role:
+                idx = i
+                break
+        if idx is None:
+            return False
+        del turns[idx]
+        await self.clear_turns(scope)
+        for turn in turns:
+            await self.append_turn(scope, turn)
+        return True
+
     @abc.abstractmethod
     async def save_fact(self, scope: str, fact: Fact) -> None:
         """Persist ``fact`` under ``scope``."""

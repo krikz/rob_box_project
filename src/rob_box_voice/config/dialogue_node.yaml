@@ -16,7 +16,7 @@ dialogue_node:
     # дефолты dialogue_node и stt_node. Копия в YAML — это ровно то, что
     # разъехалось в #1252 и стоило #1734.
     dialogue_timeout: 300.0
-    llm_providers: "minimax,deepseek"   # issue #1089: первый = primary, остальные = fallbacks
+    llm_providers: "deepseek,minimax"   # issue #1089: первый = primary, остальные = fallbacks
     # Issue #1219 — активный TTS-провайдер для LLM-контекста [TTS].
     # Должен совпадать с tts_node.yaml provider (minimax).
     tts_provider: minimax

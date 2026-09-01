@@ -134,7 +134,12 @@ class MusicGuard:
     #: Legacy defaults preserved verbatim from the original
     #: ``DialogueNode`` constants so behaviour does not regress.
     DEFAULT_MAX_DJ_RETRIES: int = 2
-    DEFAULT_MAX_USER_RETRIES: int = 1
+    #: Live 01.09 — bumped 1 → 8 to test whether more retries change
+    #: outcomes when ``user_wants_music()`` false-positives (e.g. bare
+    #: mention of the DJ persona's name). Does NOT fix the misclassification
+    #: itself — the CRITICAL retry text is still wrong for those turns, this
+    #: just delays the "растерялся" fallback and burns more LLM round-trips.
+    DEFAULT_MAX_USER_RETRIES: int = 8
 
     def __init__(
         self,

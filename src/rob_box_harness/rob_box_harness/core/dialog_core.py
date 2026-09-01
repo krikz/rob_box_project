@@ -770,6 +770,23 @@ class DialogCore:
         # как обучающий пример: следующий ход модель копирует её дословно.
         return _is_pseudo_tool_call(spoken or "")
 
+    async def discard_last_reply(self) -> bool:
+        """Retract the most recently persisted assistant turn for this user.
+
+        Issue #992 — ``_is_silent_spoken`` only filters empty/marker/
+        pseudo-call text at persist-time; a confident, well-formed
+        "Сыграю его по нотам!" with ``tools_called=[]`` sails through as a
+        normal successful turn (see :meth:`_is_silent_spoken` docstring).
+        A domain-specific guard living above ``DialogCore`` (e.g. the
+        voice shell's music guard) is what actually knows a given request
+        was action-flavoured and got no tool call — once THAT guard
+        confirms the failure (its own retry also produced no tool call),
+        it calls this to remove the unlabeled fake-confirmation turn
+        before it becomes a few-shot example for the next similar
+        request. Delegates to :meth:`MemoryStore.delete_last_turn`.
+        """
+        return await self._memory.delete_last_turn(self._user_id, role="assistant")
+
     @staticmethod
     def _clean_history_turns(
         turns: Iterable[LLMMessage],

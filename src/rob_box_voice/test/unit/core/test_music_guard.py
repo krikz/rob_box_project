@@ -230,10 +230,14 @@ class TestEvaluateUserMusicVocal:
         assert guard.user_retry_count == 1
 
     def test_vocal_request_after_user_budget_returns_nudge(self) -> None:
-        """``max_user_retries=1`` (production default) — the 2nd empty
-        vocal request returns NUDGE and resets the budget so the next
-        genuine user request gets a fresh allocation."""
-        guard = MusicGuard()  # default max_user_retries=1
+        """``max_user_retries=1`` — the 2nd empty vocal request returns
+        NUDGE and resets the budget so the next genuine user request
+        gets a fresh allocation. Pinned explicitly (not via the
+        production default, which is now 8 — see
+        ``test_default_max_user_retries_matches_legacy_constant``) so
+        this test keeps covering the exhausted-budget transition itself
+        regardless of what the default happens to be."""
+        guard = MusicGuard(max_user_retries=1)
         # 1st failure — USER_RETRY
         first = guard.evaluate(
             was_dj_auto=False,
@@ -759,13 +763,13 @@ def test_default_max_dj_retries_matches_legacy_constant() -> None:
 
 
 def test_default_max_user_retries_matches_legacy_constant() -> None:
-    """Legacy ``MAX_MUSIC_GUARD_RETRIES=1`` — preserved as default. The
-    acceptance spec suggested ``max_user_retries=2`` but the production
-    behaviour has been ``1`` since the 06.08 live fix; changing it
-    here would be a silent behaviour change."""
-    assert MusicGuard.DEFAULT_MAX_USER_RETRIES == 1
+    """Issue #992, live 01.09 — bumped 1 → 8 to test whether more
+    retries change outcomes when ``user_wants_music()`` false-positives
+    (e.g. bare mention of the DJ persona's name). This does NOT fix the
+    misclassification itself, only delays the "растерялся" fallback."""
+    assert MusicGuard.DEFAULT_MAX_USER_RETRIES == 8
     guard = MusicGuard()
-    assert guard.max_user_retries == 1
+    assert guard.max_user_retries == 8
 
 
 def test_logger_is_optional() -> None:
