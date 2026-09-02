@@ -169,6 +169,14 @@ EXPECTED=(
     #   rotation — жива ли e2e-ротация: нет тиков и нет новых
     #              z-{e2e}/test-round-* за окно → ALERT.
     agent-flow-e2e-drift-watchdog.sh
+    # One-shot cleanup для /tmp/agent-flow-e2e-* orphan mess (issue #1707,
+    # ретро t_0ff29dcd): раскладывается install.sh, чтобы оператор мог
+    # `bash scripts/agent_flow/agent-flow-e2e-wt-sweep.sh` с любой 3-target
+    # директории (~/.hermes/scripts/ / ~/.hermes/profiles/<agent>/scripts/ /
+    # hermes-share/...) без поиска SOT-пути в репо. Cron-job'ом НЕ
+    # регистрируется — per-tick sweep в e2e-process.sh делает то же самое
+    # при каждом запуске (issue #1707).
+    agent-flow-e2e-wt-sweep.sh
     agent-flow-rotation-watchdog.sh
     # Padavan-vakhta STEP 4 voice-smoke (issue #1772): "живая" проверка
     # робота — проигрывает 2 .wav через динамик 10.1.1.249, читает логи

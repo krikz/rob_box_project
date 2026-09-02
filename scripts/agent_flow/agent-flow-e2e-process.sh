@@ -402,6 +402,82 @@ ensure_worktree() {
 log() { printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*" >&2; }
 run() { if [ "$DRY_RUN" = "true" ]; then printf '%s DRY-RUN %s\n' "$LOG_PREFIX" "$*" >&2; else eval "$@"; fi; }
 
+# --- CLI + self-test mode (issue #1707, ретро t_0ff29dcd) ---------------------
+# Этот скрипт исторически читает только env (.env из profile). Для оператора
+# добавлены два флага (compose-style: --self-test --cleanup-only):
+#
+#   --self-test           — печатает what-it-would-do + exit 0; не пишет ни в
+#                          repo, ни в cron lock, ни в gh. Используется cron'ом
+#                          devops-профиля для smoke-check после install.sh.
+#   --cleanup-only        — выполнить ТОЛЬКО блок G_pre_cleanup (диск-check
+#                          + sweep_orphans + sweep_ttl), потом exit 0.
+#                          Используется для одноразовой зачистки 87 ГБ orphan
+#                          mess (issue #1707) перед ручным запуском install.sh.
+#
+# Оба флага проходят ПЕРЕД flock/lock — иначе cron-probe мог бы залипнуть на 60с.
+# _wt_count_worktrees — подсчёт /tmp/agent-flow-e2e-* (для watchdog-метрики).
+_wt_count_worktrees() {
+    [ -d /tmp ] || { printf '0\n'; return 0; }
+    local cnt=0
+    # shellcheck disable=SC2044  # for-loop on glob — намеренно (быстрее find -z)
+    for d in /tmp/agent-flow-e2e-*; do
+        [ -d "$d" ] || continue
+        # fallback для glob, который не раскрылся в пустой каталог
+        [ "$d" = "/tmp/agent-flow-e2e-*" ] && break
+        cnt=$((cnt+1))
+    done
+    printf '%s\n' "$cnt"
+}
+
+_SELF_TEST=0
+_CLEANUP_ONLY=0
+_ST_COUNTER_DRY=0
+for _arg in "$@"; do
+    case "$_arg" in
+        --self-test)         _SELF_TEST=1 ;;
+        --cleanup-only)      _CLEANUP_ONLY=1 ;;
+        --count-dry-run)     _ST_COUNTER_DRY=1 ;;  # internal: только посчитать + exit
+        --help|-h)
+            printf '%s\n' \
+                "Usage: agent-flow-e2e-process.sh [--self-test] [--cleanup-only]" \
+                "  --self-test       print what-it-would-do + exit 0 (no side effects)" \
+                "  --cleanup-only    run G_pre_cleanup (disk + sweep_orphans + sweep_ttl) and exit" \
+                ""
+            exit 0
+            ;;
+        *)
+            printf '%s ERROR: unknown arg %s (try --help)\n' "$LOG_PREFIX" "$_arg" >&2
+            exit 2
+            ;;
+    esac
+done
+
+# --- early-exit: --self-test с одним под-режимом --count-dry-run -------------
+# Это позволяет watchdog'у быстро дёргать счётчик без flock/ENV (до 0.1с).
+if [ "$_SELF_TEST" = "1" ] && [ "$_ST_COUNTER_DRY" = "1" ]; then
+    _wt_count_worktrees
+    exit 0
+fi
+if [ "$_SELF_TEST" = "1" ]; then
+    cnt="$(_wt_count_worktrees)"
+    log "self-test: e2e_worktree_count=${cnt} (single-PID dirs under /tmp/agent-flow-e2e-*)"
+    log "self-test: WORKTREE_DIR=${WORKTREE_DIR} (default /tmp/agent-flow-e2e-\$\$)"
+    log "self-test: REPO_DIR=${REPO_DIR:-<unset>}; would-pass to env via .env"
+    log "self-test: scripts/agent_flow scripts synced via bash install.sh (run before cron)"
+    exit 0
+fi
+if [ "$_CLEANUP_ONLY" = "1" ]; then
+    # В cleanup-only режиме REPO_DIR опционален — если пустой, всё равно
+    # делаем best-effort rm -rf для orphan (важно для лечения 87GB mess).
+    log "cleanup-only: e2e_worktree_count(before)=$(_wt_count_worktrees)"
+    _wt_disk_check || { log "cleanup-only: disk check FAILED (free <${E2E_DISK_MIN_GB}GB) — abort (issue #1707)"; exit 1; }
+    _wt_sweep_orphans || true
+    _wt_sweep_ttl || true
+    git -C "$REPO_DIR" worktree prune 2>/dev/null || true
+    log "cleanup-only: e2e_worktree_count(after)=$(_wt_count_worktrees)"
+    exit 0
+fi
+
 # --- known-blocker helpers (ретро 11.08 t_c26b73e7) -------------------------
 # Сигнатуры известных блокеров — space-separated список для перебора.
 _blocker_sigs=()
