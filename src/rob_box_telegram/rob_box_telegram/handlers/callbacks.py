@@ -44,6 +44,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await _handle_quick(query, context, data.split(":", 1)[1])
     elif data.startswith("vol:"):
         await _handle_volume(query, context, data.split(":", 1)[1])
+    elif data.startswith("floor:"):
+        await _handle_floor(query, context, data)
+    elif data == "avatar:refresh":
+        await _handle_avatar_refresh(query, context)
     elif data.startswith("confirm:"):
         await query.edit_message_text(f"{'✅ Confirmed' if data == 'confirm:yes' else '❌ Cancelled'}")
     else:
@@ -125,9 +129,21 @@ def _publish_stop(node) -> None:
 
     AV-10: через ``publish_move_with_floor`` — если floor уже не у
     нас, останавливаться не нужно (другой клиент рулит).
+
+    AV-24: результат проверяем — если floor у другого клиента,
+    логируем (этот случай уже отфильтрован UI-gate'ом выше, но
+    race между gate'ом и таймером возможен).
     """
     twist = Twist()
-    node.publish_move_with_floor(twist)
+    result = node.publish_move_with_floor(twist)
+    if not result.granted:
+        # Это нормальный race: пока таймер ждал, Quest забрал floor.
+        # Ничего не делаем — другой клиент уже рулит.
+        logger.info(
+            "_publish_stop: floor удерживает %s (race с другим клиентом), "
+            "stop не публикуем",
+            result.held_by or "unknown",
+        )
 
 
 async def _handle_quick(query, context, action: str) -> None:
@@ -212,3 +228,130 @@ async def _handle_volume(query, context, direction: str) -> None:
     delta = 10 if direction == "up" else -10
     node.forward_to_stt(f"/volume {direction}")
     await query.message.reply_text(f"🔊 Volume {direction} (Δ={delta:+d}) — forwarded")
+
+
+# ─── AV-24: floor-кнопки из /avatar ────────────────────────────────────────
+
+
+async def _handle_floor(query, context, data: str) -> None:
+    """Обработать нажатие ``floor:take:teleop|voice`` / ``floor:release:*``.
+
+    callback_data формат: ``floor:{take|release}:{teleop|voice}``.
+
+    На отказ показываем «кто держит» (held_by из ``AcquireResult``).
+    На успех — обновляем карточку с новым состоянием.
+    """
+    from ..avatar_card import build_floor_keyboard, format_avatar_card
+    from ..supervisor_client import Floor
+
+    node = _node(context)
+    bot_data = context.application.bot_data if hasattr(context, "application") else context.bot_data
+    store = bot_data.get("avatar_card_store")
+
+    parts = data.split(":")
+    if len(parts) != 3:
+        logger.warning("Bad floor callback_data: %s", data)
+        return
+    op, floor_name = parts[1], parts[2]
+    if op not in ("take", "release") or floor_name not in ("teleop", "voice"):
+        logger.warning("Unknown floor op: %s", data)
+        return
+
+    floor = Floor.TELEOP if floor_name == "teleop" else Floor.VOICE
+
+    if op == "take":
+        result = node.supervisor.acquire_floor(floor)
+    else:
+        node.supervisor.release_floor(floor)
+        result = node.supervisor.acquire_floor(floor) if False else _released_result()
+
+    state = node.supervisor.state
+    text = format_avatar_card(state, now_s=store.now() if store else 0.0)
+    keyboard_rows = build_floor_keyboard(
+        state.teleop_floor, state.voice_floor, client_id=node.supervisor.client_id
+    )["rows"]
+    markup_rows = [
+        [
+            _button(btn["text"], btn["callback_data"])
+            for btn in row
+        ]
+        for row in keyboard_rows
+    ]
+    from telegram import InlineKeyboardMarkup
+    reply_markup = InlineKeyboardMarkup(markup_rows)
+
+    if op == "take" and not result.granted:
+        held = result.held_by or "другим оператором"
+        # Сначала отвечаем на callback (иначе крутилка в Telegram).
+        await query.answer(f"🚫 Руль/голос удерживает {held}", show_alert=False)
+        # Показываем «отказ» в самой карточке: пишем объяснение вверху.
+        denied_text = (
+            f"🚫 Не удалось взять {floor_name}: удерживает {held}.\n\n" + text
+        )
+        await _safe_edit(query, denied_text, reply_markup)
+        return
+
+    if op == "release":
+        await query.answer(f"✅ {floor_name} отдан", show_alert=False)
+    else:
+        await query.answer(f"✅ {floor_name} взят", show_alert=False)
+
+    await _safe_edit(query, text, reply_markup)
+
+    if store is not None:
+        store.register(query.message.chat_id, query.message.message_id, text, state)
+
+
+async def _handle_avatar_refresh(query, context) -> None:
+    """«Обновить» — форсированно перерисовать карточку из текущего state.
+
+    Полезно, когда ``AvatarCardStore`` подавил edit из-за throttling'а или
+    одинакового текста.
+    """
+    from ..avatar_card import build_floor_keyboard, format_avatar_card
+    from telegram import InlineKeyboardMarkup
+
+    node = _node(context)
+    bot_data = context.application.bot_data if hasattr(context, "application") else context.bot_data
+    store = bot_data.get("avatar_card_store")
+
+    state = node.supervisor.state
+    text = format_avatar_card(state, now_s=store.now() if store else 0.0)
+    keyboard_rows = build_floor_keyboard(
+        state.teleop_floor, state.voice_floor, client_id=node.supervisor.client_id
+    )["rows"]
+    markup_rows = [
+        [_button(btn["text"], btn["callback_data"]) for btn in row]
+        for row in keyboard_rows
+    ]
+    await query.answer("🔄 Обновлено")
+    await _safe_edit(query, text, InlineKeyboardMarkup(markup_rows))
+
+    if store is not None:
+        store.register(query.message.chat_id, query.message.message_id, text, state)
+
+
+def _button(text: str, callback_data: str):
+    """Ленивая обёртка — python-telegram-bot импортируется в handler'е."""
+    from telegram import InlineKeyboardButton
+    return InlineKeyboardButton(text=text, callback_data=callback_data)
+
+
+async def _safe_edit(query, text: str, reply_markup) -> None:
+    """edit_message_text, игнорирующий ``message is not modified``."""
+    try:
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
+    except Exception as exc:  # noqa: BLE001
+        name = type(exc).__name__
+        msg = str(exc).lower()
+        if name == "BadRequest" and "not modified" in msg:
+            return
+        logger.warning("Floor button edit failed: %r", exc)
+
+
+def _released_result() -> "AcquireResult":
+    """Фиктивный «успешный» результат для release-ветки (только чтобы
+    не дублировать AcquireResult-создание). Release не возвращает
+    AcquireResult по API ``SupervisorClient.release_floor``."""
+    from ..supervisor_client import AcquireResult
+    return AcquireResult(granted=True, contacted_service=False)
