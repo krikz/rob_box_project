@@ -41,6 +41,11 @@ from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Bool, String
 from nav_msgs.msg import Odometry
 
+from rob_box_core.prompt_sections import (
+    PromptMarkupError,
+    merge_skill_prompts,
+    render_prompt,
+)
 from rob_box_core.tool_catalog import CORE_SKILL, skill_names, tools_for_skill
 from rob_box_harness.config import LLMConfig
 from rob_box_harness.core.dialog_core import DialogCore, DialogResult
@@ -323,6 +328,13 @@ class DialogueNode(Node):
         self._mcp_tool_names: set[str] = self._collect_mcp_tool_names()
         self._system_prompt: str = self._load_system_prompt()
         self._skill_prompts: dict[str, str] = self._load_skill_prompts()
+        # Фаза 5 change'а: §5 MUSIC и §6 WAYPOINTS размечены в мастер-промпте
+        # как секции скиллов. При skills_enabled=false остаются на месте
+        # (побайтово как раньше), при true — уезжают во фрагменты и едут
+        # вплотную к текущему ходу.
+        self._system_prompt, self._skill_prompts = self._split_skill_sections(
+            self._system_prompt, self._skill_prompts
+        )
         self._validate_skill_fragments(self._skill_prompts)
         #: Детерминированный пред-роутер домена. None — скиллы выключены.
         self._skill_router: Any = None
@@ -1120,6 +1132,66 @@ class DialogueNode(Node):
                     f"[skills] {skill}: все {len(tools)} инструментов описаны ✓"
                 )
 
+    def _skills_enabled(self) -> bool:
+        """Значение параметра ``skills_enabled`` (Move A).
+
+        Отдельный метод, потому что параметр читают два места — загрузка
+        фрагментов и раскол мастер-промпта, — и они обязаны видеть одно и
+        то же значение. Старый yaml без параметра — это ``False``.
+        """
+        try:
+            return bool(self.get_parameter("skills_enabled").value)
+        except Exception:  # noqa: BLE001 — параметр не объявлен (старый yaml)
+            return False
+
+    def _split_skill_sections(
+        self, prompt: str, fragments: dict[str, str]
+    ) -> tuple[str, dict[str, str]]:
+        """Развернуть разметку доменных секций мастер-промпта (фаза 5).
+
+        При ``skills_enabled=false`` возвращает промпт БЕЗ изменений (только
+        без строк-маркеров) и фрагменты как есть — дефолтная конфигурация
+        обязана вести себя ровно как до change'а.
+
+        При ``true`` секции §5 MUSIC и §6 WAYPOINTS уезжают из системного
+        промпта во фрагменты своих скиллов: там они окажутся вплотную к
+        текущей реплике вместо позиции 0.
+
+        Сломанная разметка не роняет ноду и не теряет правила: остаёмся в
+        режиме выключенных скиллов, то есть текст секций остаётся в промпте.
+        """
+        enabled = self._skills_enabled()
+        try:
+            rendered = render_prompt(prompt, skills_enabled=enabled)
+        except PromptMarkupError as exc:
+            self.get_logger().error(
+                f"❌ Разметка секций мастер-промпта сломана: {exc}. "
+                f"Доменные секции остаются в системном промпте "
+                f"(поведение как при skills_enabled=false)."
+            )
+            try:
+                rendered = render_prompt(prompt, skills_enabled=False)
+            except PromptMarkupError:
+                return prompt, fragments
+            return rendered.system_prompt, fragments
+
+        if not enabled:
+            return rendered.system_prompt, fragments
+
+        merged = merge_skill_prompts(fragments, rendered)
+        moved = rendered.by_skill()
+        if moved:
+            self.get_logger().info(
+                "🧩 Доменные секции мастер-промпта уехали во фрагменты: "
+                + ", ".join(
+                    f"{skill} (+{len(text)} симв)"
+                    for skill, text in sorted(moved.items())
+                )
+                + f"; системный промпт {len(prompt)} → "
+                f"{len(rendered.system_prompt)} симв"
+            )
+        return rendered.system_prompt, merged
+
     def _load_skill_prompts(self) -> dict[str, str]:
         """Прочитать фрагменты доменных скиллов с диска.
 
@@ -1134,14 +1206,11 @@ class DialogueNode(Node):
         текста, а его инструменты никуда не денутся. Ронять ноду из-за
         промпта нельзя — робот должен подняться и говорить.
         """
-        try:
-            if not bool(self.get_parameter("skills_enabled").value):
-                self.get_logger().info(
-                    "ℹ️ skills_enabled=false — доменные скиллы выключены "
-                    "(Move A не активен, поведение как до change'а)"
-                )
-                return {}
-        except Exception:  # noqa: BLE001 — параметр не объявлен (старый yaml)
+        if not self._skills_enabled():
+            self.get_logger().info(
+                "ℹ️ skills_enabled=false — доменные скиллы выключены "
+                "(Move A не активен, поведение как до change'а)"
+            )
             return {}
 
         try:
