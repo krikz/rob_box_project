@@ -747,12 +747,6 @@ class DialogueNode(Node):
         # ``self._<name>_retry_used = True``, и декрементят
         # ``_synthetic_retries_left`` через ``_consume_synthetic_retry``.
         self._synthetic_retries_left: int = self.DEFAULT_SYNTHETIC_RETRIES
-        # ``_synthetic_retries_left`` для следующего user-turn —
-        # выставляется ДО ``_run_turn`` (в ``_dispatch_turn`` и
-        # ``_dispatch_dj_turn``). Это решает проблему «первого
-        # turn'a»: budget выставляется именно там, где turn начинается,
-        # а не там, где guard'ы впервые решают «а нужен ли ретрай».
-        self._pending_synthetic_retries: Optional[int] = None
 
         # Issue #1160 — Prometheus metrics: длительность диалоговой
         # сессии. Фиксируем момент первого wake-word-диалога из IDLE;
@@ -4168,13 +4162,34 @@ class DialogueNode(Node):
 
         if verdict.kind is MusicGuardVerdictKind.DJ_RETRY:
             assert verdict.prompt is not None  # build_dj_retry_prompt is wired
+            # Issue #1895 (follow-up to #1881): DJ_RETRY должен списывать
+            # общий budget `_synthetic_retries_left` иначе ping-pong
+            # DJ_RETRY ↔ babble/code/tool даёт до 9 LLM-вызовов на
+            # один переход без единого слова юзера (см. live-логи
+            # #1881). Декремент ДО диспатча, на исчерпании — spoken
+            # nudge, как в USER_RETRY ниже.
+            if not self._consume_synthetic_retry(guard_name="music_dj"):
+                self._discard_last_music_reply()
+                self._speak_direct(
+                    "Я тут растерялся — бит не запустился, попробуй ещё раз."
+                )
+                return False
+            # Помечаем «в этом ходе ретрай уже отправлен» — иначе
+            # babble-/tool-guards в следующем цикле guard'ов могут
+            # выстрелить ещё раз (см. ``_retry_dispatched_in_turn``
+            # гейт в начале ``_apply_music_guard``).
+            self._mark_retry_dispatched()
             self._dj.state.next_transition_at = (
                 time.time() + DJModeController.POSTPONE_INTERVAL_S
             )
             # Issue #1204: ретрай должен реально дойти до LLM —
             # переоткрываем DIALOGUE (process_input уже закрыл его).
             self._reopen_dialogue_for_retry()
-            self._dispatch_dj_turn(verdict.prompt)
+            # ``from_tick=False`` — это синхронный ретрай из music-guard,
+            # а не свежий DJ-transition; НЕ сбрасываем
+            # ``MusicGuard._dj_retry_count`` (внутренний счётчик
+            # guard'а). Общий budget уже декрементнут выше.
+            self._dispatch_dj_turn(verdict.prompt, from_tick=False)
             return True
 
         if verdict.kind is MusicGuardVerdictKind.USER_RETRY:
