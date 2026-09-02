@@ -112,6 +112,31 @@ class StateAggregator:
         """Текущее значение счётчика (0 если ещё не было трипов)."""
         return self._dead_man.get(str(client_id), 0)
 
+    # ── heartbeat (AV-13) ─────────────────────────────────────────────
+    def record_heartbeat_seen(self, client_id: str) -> None:
+        """Засчитать, что ``/teleop_heartbeat`` пришёл от client_id.
+
+        Метрика для Phase 1 диагностики: «сколько heartbeat-ов пришло
+        из monitor-режима, не доходя до :py:meth:`record_dead_man_trip`».
+        В active-режиме этот метод **не** зовётся — там heartbeat
+        продлевает ``last_heartbeat_ms`` через ``LockManager.heartbeat``,
+        и trip-метрика уже покажет «клиент вышел», если что-то не так.
+
+        Не валит на пустой строке (защита от мусорных IDL с пустым
+        ``client_id``).
+        """
+        cid = str(client_id) if client_id else ""
+        if not cid:
+            return
+        # Не дублируем :data:`_dead_man` (он про TRIPS, а это про HEARTBEATS —
+        # разные counter-ы). Пока складываем в ``_last_event`` для
+        # диагностики — Prometheus-экспорт (Phase 1.5) добавит отдельный
+        # ``heartbeats_total{client_id}`` без правок остального кода.
+        self._last_event = {
+            "kind": "heartbeat_seen",
+            "client_id": cid,
+        }
+
     # ── snapshot ──────────────────────────────────────────────────────
     def snapshot(self) -> AvatarState:
         """Собрать текущий :class:`AvatarState` (для публикации)."""

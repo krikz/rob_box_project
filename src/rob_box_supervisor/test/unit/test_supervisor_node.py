@@ -17,6 +17,7 @@ conftest подсовывает FakeNode / FakeService / std_srvs.srv.Trigger.
 
 from __future__ import annotations
 
+import inspect
 import json
 import types
 import unittest
@@ -379,15 +380,26 @@ class TestAvatarSupervisorFloorLockManager(unittest.TestCase):
         self.assertTrue(second["granted"], second)
 
     def test_dead_man_trip_increments_aggregator_metric(self) -> None:
-        """Dead-man авто-release замечается таймер-тиком и попадает в dead_man_trips_total."""
+        """Dead-man авто-release замечается 10 Гц watcher-ом и попадает в dead_man_trips_total.
+
+        AV-13: после рефакторинга trip-метрика собирается в
+        :py:meth:`AvatarSupervisor._check_floor_expiry` (10 Гц
+        watcher), а не в прежней ``_check_dead_man_trips`` (1 Гц
+        ленивая детекция). Тест обновлён под новый единый путь.
+        """
         from rob_box_supervisor.core import LockManager
 
         clock = {"t": 0}
-        self.node._lock_manager = LockManager(clock=lambda: clock["t"])
+        # AV-13: конструктор LockManager теперь принимает ``clock`` +
+        # ``timeout_ms``; node-уровневые часы пробрасываем, чтобы
+        # watcher увидел fake-time при вызове _check_floor_expiry().
+        self.node._lock_manager = LockManager(clock=lambda: clock["t"], timeout_ms=500)
+        # node._now_ms должен использовать те же fake-часы для watcher-а.
+        self.node._now_ms = lambda: clock["t"]
 
         self._acquire("quest", "voice_floor")
         clock["t"] += 501
-        self.node._check_dead_man_trips()
+        self.node._check_floor_expiry()
 
         self.assertEqual(self.node._aggregator.dead_man_count("quest"), 1)
 
@@ -547,6 +559,247 @@ class TestAvatarSupervisorSetAvatarMode(unittest.TestCase):
         call = self.node._log.info.call_args
         self.assertEqual(len(call.args), 1, f"info() должен получить 1 positional arg, got {call.args!r}")
         self.assertEqual(call.kwargs, {})
+
+
+class TestAvatarSupervisorTeleopHeartbeat(unittest.TestCase):
+    """AV-13 — подписка на ``/teleop_heartbeat`` + dead-man watcher 500 мс.
+
+    Acceptance criteria (issue #1905):
+
+    1. Подписка на ``/teleop_heartbeat`` есть в ``_subscriptions``
+       (через try-import IDL; в CI пакет недоступен → факт подписки не
+       проверяем напрямую, но проверяем через ``_heartbeat_msg_type``
+       и наличие callback-метода).
+    2. ROS-параметр ``dead_man_timeout_ms`` объявлен с default 500.
+    3. ``mode=monitor`` — heartbeat приходит, floor НЕ трогается.
+    4. ``mode=active``, fake-clock: heartbeat каждые 100 мс 2 секунды →
+       floor держится у клиента.
+    5. ``mode=active``, fake-clock: heartbeat прекратился → ≤600 мс
+       holder=None, dead_man_trips_total[client]=1, /avatar/state
+       опубликован внеочередно.
+    6. Второй клиент может взять floor сразу после протухания первого.
+    7. Heartbeat от клиента, который floor НЕ держит, — игнорируется.
+    8. Часы подменяемы в тестах (никаких ``time.time()`` в новом коде).
+    """
+
+    def setUp(self) -> None:
+        self.node = AvatarSupervisor()
+        # В CI пакет IDL недоступен → ``_heartbeat_msg_type = None``, подписка
+        # не регистрируется. Callback всё равно тестируем напрямую — это
+        # unit-test, не integration.
+        self.node._heartbeat_msg_type = None  # mock: IDL отсутствует
+        # Fake-clock для детерминированных временных тестов. Заменяем
+        # и ``_now_ms`` (для watcher-а и callback), и ``_lock_manager``
+        # (LockManager хранит ссылку на clock из конструктора — после
+        # __init__ это реальное время, нужно пересоздать с fake-часами,
+        # иначе watcher видит реальное время и force_expire не сработает).
+        self._clock = {"t": 0}
+        fake_clock_fn = lambda: self._clock["t"]  # noqa: E731
+        self.node._now_ms = fake_clock_fn
+        from rob_box_supervisor.core import LockManager
+
+        self.node._lock_manager = LockManager(clock=fake_clock_fn, timeout_ms=self.node._dead_man_timeout_ms)
+
+    def tearDown(self) -> None:
+        self.node.destroy_node()
+
+    # ── acceptance 1: параметр объявлен ───────────────────────────────
+    def test_dead_man_timeout_ms_parameter_declared_with_default_500(self) -> None:
+        """ROS-параметр ``dead_man_timeout_ms`` объявлен, default = 500 мс."""
+        self.assertTrue(self.node.has_parameter("dead_man_timeout_ms"))
+        self.assertEqual(self.node.get_parameter("dead_man_timeout_ms").value, 500)
+        self.assertEqual(self.node._dead_man_timeout_ms, 500)
+
+    def test_callback_method_exists(self) -> None:
+        """Метод ``_on_teleop_heartbeat`` определён и callable."""
+        self.assertTrue(callable(getattr(self.node, "_on_teleop_heartbeat", None)))
+        self.assertTrue(callable(getattr(self.node, "_check_floor_expiry", None)))
+        self.assertTrue(callable(getattr(self.node, "_try_import_heartbeat_msg", None)))
+
+    # ── acceptance 3: monitor — heartbeat не трогает floor ────────────
+    def test_monitor_mode_heartbeat_does_not_touch_floor(self) -> None:
+        """В monitor heartbeat приходит, но floor НЕ берётся и НЕ держится."""
+        self.node._mode = "monitor"
+        # Имитируем ``/teleop_heartbeat`` от клиента.
+        msg = types.SimpleNamespace(client_id="quest1", ts_ms=0, seq=1)
+        # Floor изначально свободен.
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        self.assertIsNone(self.node._lock_manager.holder(LockFloor.TELEOP))
+
+        self.node._on_teleop_heartbeat(msg)
+
+        # После heartbeat-а в monitor floor всё ещё None (НЕ взят).
+        self.assertIsNone(self.node._lock_manager.holder(LockFloor.TELEOP))
+
+    # ── acceptance 7: heartbeat от чужого/не-держателя — игнор ────────
+    def test_active_mode_heartbeat_without_holder_is_ignored(self) -> None:
+        """Heartbeat от клиента, который НЕ держит floor — игнорируется,
+        не создаёт floor."""
+        self.node._mode = "active"
+        # Floor ещё никем не занят.
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        self.assertIsNone(self.node._lock_manager.holder(LockFloor.TELEOP))
+
+        # Heartbeat приходит.
+        msg = types.SimpleNamespace(client_id="ghost", ts_ms=0, seq=1)
+        self.node._on_teleop_heartbeat(msg)
+
+        # Floor всё ещё None — heartbeat НЕ создал holder-а.
+        self.assertIsNone(self.node._lock_manager.holder(LockFloor.TELEOP))
+
+    def test_active_mode_heartbeat_from_other_client_is_ignored(self) -> None:
+        """Heartbeat от client_id, который НЕ совпадает с текущим holder-ом —
+        отказ (LockManager.heartbeat → PermissionError), floor не трогается."""
+        self.node._mode = "active"
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        # Quest держит floor.
+        self.node._lock_manager.acquire("quest", LockFloor.TELEOP, now_ms=0)
+        self._clock["t"] = 100
+        # Телеграм шлёт heartbeat — не его floor.
+        msg = types.SimpleNamespace(client_id="telegram", ts_ms=0, seq=1)
+        self.node._on_teleop_heartbeat(msg)
+
+        # Quest всё ещё держит floor.
+        self.assertEqual(self.node._lock_manager.holder(LockFloor.TELEOP), "quest")
+
+    # ── acceptance 4: heartbeat держит floor живым ────────────────────
+    def test_active_mode_heartbeat_keeps_floor_alive_2s(self) -> None:
+        """Heartbeat каждые 100 мс 2 секунды → floor всё ещё у клиента."""
+        self.node._mode = "active"
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        # Клиент взял floor.
+        self.node._lock_manager.acquire("quest", LockFloor.TELEOP, now_ms=0)
+
+        # Шлём heartbeat каждые 100 мс в течение 2 секунд (20 тиков).
+        for tick in range(20):
+            self._clock["t"] = (tick + 1) * 100
+            msg = types.SimpleNamespace(client_id="quest", ts_ms=self._clock["t"], seq=tick)
+            self.node._on_teleop_heartbeat(msg)
+
+        # Floor всё ещё у quest — 2000 мс прошло, но heartbeat-ы держали.
+        self._clock["t"] = 2000
+        self.assertEqual(self.node._lock_manager.holder(LockFloor.TELEOP), "quest")
+
+    # ── acceptance 5: trip после прекращения heartbeat ────────────────
+    def test_active_mode_no_heartbeat_triggers_dead_man_within_600ms(self) -> None:
+        """Heartbeat прекратился → через ≤600 мс holder=None,
+        dead_man_trips_total[client]=1, /avatar/state опубликован внеочередно."""
+        self.node._mode = "active"
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        # Клиент взял floor.
+        self.node._lock_manager.acquire("quest", LockFloor.TELEOP, now_ms=0)
+        self.assertEqual(self.node._lock_manager.holder(LockFloor.TELEOP), "quest")
+
+        # Один heartbeat, чтобы снимок holder-ов в ноде был согласован.
+        self._clock["t"] = 100
+        self.node._on_teleop_heartbeat(types.SimpleNamespace(client_id="quest", ts_ms=100, seq=1))
+
+        # Запоминаем сколько публикаций было до trip-а.
+        pub = self.node._publishers["/avatar/state"]
+        before_count = len(pub.published)
+
+        # Перематываем время на 600 мс (dead-man = 500 мс).
+        self._clock["t"] = 700
+
+        # Запускаем watcher-таймер вручную.
+        self.node._check_floor_expiry()
+
+        # Floor снят.
+        self.assertIsNone(self.node._lock_manager.holder(LockFloor.TELEOP))
+
+        # Метрика инкрементнулась.
+        self.assertEqual(self.node._aggregator.dead_man_count("quest"), 1)
+
+        # /avatar/state опубликован внеочередно (была публикация ПОСЛЕ before_count).
+        self.assertGreater(
+            len(pub.published),
+            before_count,
+            "watcher должен опубликовать /avatar/state внеочередно при trip",
+        )
+
+    # ── acceptance 5b: точный порог 500 мс (boundary) ─────────────────
+    def test_dead_man_trips_exactly_at_501ms_not_at_500ms(self) -> None:
+        """Граница dead-man (>timeout, не >=): ровно 500 мс — alive, 501 мс — trip."""
+        self.node._mode = "active"
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        self.node._lock_manager.acquire("quest", LockFloor.TELEOP, now_ms=0)
+        self._clock["t"] = 100
+        self.node._on_teleop_heartbeat(types.SimpleNamespace(client_id="quest", ts_ms=100, seq=1))
+
+        # Ровно 500 мс с последнего heartbeat — ещё держит.
+        self._clock["t"] = 600  # 500 мс после heartbeat
+        self.node._check_floor_expiry()
+        self.assertEqual(self.node._lock_manager.holder(LockFloor.TELEOP), "quest")
+
+        # 501 мс — trip.
+        self._clock["t"] = 601
+        self.node._check_floor_expiry()
+        self.assertIsNone(self.node._lock_manager.holder(LockFloor.TELEOP))
+        self.assertEqual(self.node._aggregator.dead_man_count("quest"), 1)
+
+    # ── acceptance 6: второй клиент сразу после протухания ────────────
+    def test_second_client_acquires_floor_after_first_expires(self) -> None:
+        """После trip первого клиента второй может взять teleop_floor сразу."""
+        self.node._mode = "active"
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        # Quest взял floor.
+        self.node._lock_manager.acquire("quest", LockFloor.TELEOP, now_ms=0)
+        self._clock["t"] = 100
+        self.node._on_teleop_heartbeat(types.SimpleNamespace(client_id="quest", ts_ms=100, seq=1))
+
+        # Ждём trip.
+        self._clock["t"] = 700
+        self.node._check_floor_expiry()
+        self.assertIsNone(self.node._lock_manager.holder(LockFloor.TELEOP))
+
+        # Telegram сразу берёт floor — без конфликта.
+        self.node._lock_manager.acquire("telegram", LockFloor.TELEOP, now_ms=self._clock["t"])
+        self.assertEqual(self.node._lock_manager.holder(LockFloor.TELEOP), "telegram")
+
+    # ── acceptance 8: часы подменяемы ─────────────────────────────────
+    def test_no_time_time_in_heartbeat_or_watcher_code(self) -> None:
+        """Регресс-контракт: ни в одном новом методе нет прямого ``time.time()``
+        или ``time.monotonic()`` — только ``self._now_ms()`` / ``self._clock``.
+
+        Смотрим на AST (а не сырой текст через ``inspect.getsource``),
+        чтобы docstring с упоминанием ``time.time()`` не давал ложного
+        срабатывания. Проверяем только ``ast.Call`` нод с func.id
+        ``time.time`` / ``time.monotonic`` — это ловит именно runtime
+        вызов, а не комментарий. ``inspect.getsource`` возвращает тело
+        метода С отступом класса (4 пробела) — снимаем через
+        ``textwrap.dedent`` чтобы ``ast.parse`` не упал на IndentationError.
+        """
+        import ast
+        import textwrap
+
+        for method_name in ("_on_teleop_heartbeat", "_check_floor_expiry", "_try_import_heartbeat_msg"):
+            method = getattr(self.node, method_name)
+            source = textwrap.dedent(inspect.getsource(method))
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                # func.attr указывает на последний атрибут цепочки
+                # (``time.time()`` → ast.Attribute(attr='time', value=ast.Name(id='time'))).
+                if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                    if func.value.id == "time" and func.attr in ("time", "monotonic"):
+                        self.fail(f"{method_name} должен использовать self._now_ms() вместо time.{func.attr}()")
+
+    # ── дополнительно: пустой client_id защищён ───────────────────────
+    def test_empty_client_id_is_ignored(self) -> None:
+        """Heartbeat с пустым ``client_id`` не валит ноду, просто логирует WARN."""
+        self.node._mode = "active"
+        msg = types.SimpleNamespace(client_id="", ts_ms=0, seq=1)
+        # Не должно быть исключений.
+        self.node._on_teleop_heartbeat(msg)
 
 
 if __name__ == "__main__":
