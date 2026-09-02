@@ -1,0 +1,22 @@
+# SetAvatarMode.srv — typed avatar-mode FSM transition (ADR-0028 §4.1 / §4.3)
+#
+# Event-driven: server-side ModeManager takes an FSM event name from
+# `mode` (see core.fsm.EVENT_* in rob_box_supervisor). We do NOT use the
+# target mode as input — ModeManager is an event automaton, not a setter.
+# Allowed values: "telegram_acquire_floor", "quest_acquire_floor",
+# "quest_acquire_floor_teleop_only", "telegram_acquire_voice_floor",
+# "quest_acquire_full_floor", "telegram_release", "quest_release",
+# "quest_release_teleop", "telegram_release_voice", "both_release",
+# "force_off". See ADR-0028 §4.1 mermaid.
+
+string client_id
+string mode          # FSM event name (NOT target mode)
+
+---
+
+bool   success
+string mode          # avatar mode AFTER applying the transition (echo of
+                     # ModeManager.mode.value). Lets clients observe FSM
+                     # without subscribing to /avatar/state.
+string reason        # "", "mode_conflict", "bad_request", "monitor"
+bool   applied       # false in monitor mode (ADR-0028 §4.5)

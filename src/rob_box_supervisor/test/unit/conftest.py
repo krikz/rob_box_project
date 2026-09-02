@@ -185,6 +185,122 @@ def _install_ros_mocks() -> None:
     mock_std_srvs_srv = types.SimpleNamespace(Trigger=FakeTrigger)
     mock_std_srvs = types.SimpleNamespace(srv=mock_std_srvs_srv)
 
+    # ── rob_box_supervisor_msgs (AV-12) ────────────────────────────────
+    # mock-rclpy CI не имеет собранного IDL-пакета; без этого mock нода
+    # откатится на Trigger fallback и потеряет coverage типизированного
+    # контракта (см. supervisor_node._try_load_supervisor_msgs).
+    #
+    # Типы выровнены с src/rob_box_supervisor_msgs/{srv,msg}/*.{srv,msg}:
+    #   srv.AcquireFloor.{Request, Response}
+    #   srv.ReleaseFloor.{Request, Response}
+    #   srv.SetAvatarMode.{Request, Response}
+    #   msg.{TeleopHeartbeat, FloorState, AvatarStateMsg}
+    # Объект Request — пустой конструктор + атрибуты после .set_fields()-стиля
+    # (в коде нода читает request.client_id / request.floor / request.mode).
+    # Объект Response — конструктор без args, поля как bool/string с дефолтами.
+
+    class _SrvRequest:  # noqa: WPS431 — базовый класс
+        def __init__(self) -> None:
+            for name in getattr(self, "_FIELDS", ()):
+                setattr(self, name, _DEFAULT_FOR_FIELD(name))
+
+    class _SrvResponse:  # noqa: WPS431 — базовый класс
+        def __init__(self) -> None:
+            for name in getattr(self, "_FIELDS", ()):
+                setattr(self, name, _DEFAULT_FOR_FIELD(name))
+
+    def _make_srv_type(
+        class_name: str,
+        request_fields: tuple[str, ...],
+        response_fields: tuple[str, ...],
+    ) -> Any:
+        """Создать пару (Request, Response) + ``srv``-класс под mock-rclpy.
+
+        Каждый Request/Response — простой класс с ``__init__`` без args
+        и атрибутами-полями. Используем ``type(name, bases, dict)``, а
+        не ``types.new_class`` (последний хочет callable exec_body).
+        """
+
+        class _Req(_SrvRequest):
+            _FIELDS = request_fields
+
+        class _Resp(_SrvResponse):
+            _FIELDS = response_fields
+
+        cls_dict = {"Request": _Req, "Response": _Resp}
+        return type(class_name, (object,), cls_dict)
+
+    def _make_msg_type(class_name: str, fields: tuple[str, ...]) -> Any:
+        """Создать msg-класс с конструктором без args + полями."""
+
+        class _Msg(_SrvResponse):
+            _FIELDS = fields
+
+        return type(class_name, (object,), {})
+
+    def _default_for_field(name: str) -> Any:
+        """Дефолт по типичному IDL-имени: bool → False, uint → 0, string → ""."""
+        if name in ("client_id", "floor", "mode", "held_by", "reason", "message", "last_event"):
+            return ""
+        if name in ("granted", "success", "applied"):
+            return False
+        if name in ("ts_ms", "since_ms", "last_heartbeat_ms"):
+            return 0
+        if name in ("seq", "version"):
+            return 0
+        return ""
+
+    global _DEFAULT_FOR_FIELD  # noqa: PLW0603 — глобалка для вложенных классов
+    _DEFAULT_FOR_FIELD = _default_for_field
+
+    # srv-types
+    AcquireFloor = _make_srv_type(
+        "AcquireFloor",
+        request_fields=("client_id", "floor"),
+        response_fields=("granted", "held_by", "reason", "applied"),
+    )
+    # NB: имя класса AcquireFloor, у него есть .Request/.Response;
+    # но mock-rclpy supervisor_node вызывает .create_service(<AcquireFloor>,
+    # name, callback) — create_service в FakeNode сохраняет srv_type как
+    # объект, так что сохранение через ``AcquireFloor`` ок.
+    # Чтобы ``_try_load_supervisor_msgs`` импортировал ровно эти имена,
+    # обернём через ``as`` ниже.
+    ReleaseFloor = _make_srv_type(
+        "ReleaseFloor",
+        request_fields=("client_id", "floor"),
+        response_fields=("success", "reason", "applied"),
+    )
+    SetAvatarMode = _make_srv_type(
+        "SetAvatarMode",
+        request_fields=("client_id", "mode"),
+        response_fields=("success", "mode", "reason", "applied"),
+    )
+
+    mock_rob_box_supervisor_msgs_srv = types.SimpleNamespace(
+        AcquireFloor=AcquireFloor,
+        ReleaseFloor=ReleaseFloor,
+        SetAvatarMode=SetAvatarMode,
+    )
+
+    # msg-types (для Phase 2 / teleop heartbeat / floor state — нужны только
+    # для импорта, в Phase 1 не используются, но mock на месте для полноты
+    # и под future-тестов AV-13/AV-14).
+    TeleopHeartbeat = _make_msg_type("TeleopHeartbeat", ("client_id", "ts_ms", "seq"))
+    FloorState = _make_msg_type("FloorState", ("client_id", "since_ms", "last_heartbeat_ms"))
+    AvatarStateMsg = _make_msg_type(
+        "AvatarStateMsg",
+        ("mode", "teleop_floor", "voice_floor", "last_event", "since_ms", "version"),
+    )
+    mock_rob_box_supervisor_msgs_msg = types.SimpleNamespace(
+        TeleopHeartbeat=TeleopHeartbeat,
+        FloorState=FloorState,
+        AvatarStateMsg=AvatarStateMsg,
+    )
+    mock_rob_box_supervisor_msgs = types.SimpleNamespace(
+        srv=mock_rob_box_supervisor_msgs_srv,
+        msg=mock_rob_box_supervisor_msgs_msg,
+    )
+
     # ── register all mocks ────────────────────────────────────────────
     mocks = {
         "rclpy": mock_rclpy,
@@ -194,6 +310,9 @@ def _install_ros_mocks() -> None:
         "std_msgs.msg": mock_std_msgs_msg,
         "std_srvs": mock_std_srvs,
         "std_srvs.srv": mock_std_srvs_srv,
+        "rob_box_supervisor_msgs": mock_rob_box_supervisor_msgs,
+        "rob_box_supervisor_msgs.srv": mock_rob_box_supervisor_msgs_srv,
+        "rob_box_supervisor_msgs.msg": mock_rob_box_supervisor_msgs_msg,
     }
     for name, mock in mocks.items():
         sys.modules.setdefault(name, mock)
