@@ -34,7 +34,7 @@ dialogue_node:
     # префикс провайдера остаётся кэшируемым.
     # ВЫКЛЮЧЕНО: включать после сравнения voice_llm_prompt_tokens с
     # baseline (Migration Plan change'а, шаг 2).
-    skills_enabled: false
+    skills_enabled: true
     # Move B — сузить tools= до core + активный скилл. Ломает
     # кэшируемый префикс провайдера при каждой смене домена и
     # добавляет отказ «роутер промахнулся -> LLM не видит нужный
