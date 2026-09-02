@@ -30,7 +30,41 @@ class ErrorCode:
     BAD_PAYLOAD = "BAD_PAYLOAD"
     TOPIC_UNKNOWN = "TOPIC_UNKNOWN"
     RATE_LIMIT = "RATE_LIMIT"
+    PROTOCOL_VERSION = "PROTOCOL_VERSION"  # AV-16: subprotocol mismatch (§11)
+    FLOOR_HELD = "FLOOR_HELD"  # AV-16: ACQUIRE_FLOOR / RELEASE_FLOOR (§8)
+    MODE_CONFLICT = "MODE_CONFLICT"  # AV-16: SET_MODE отвергнут FSM (§8)
     INTERNAL = "INTERNAL"
+
+
+# Поддерживаемые wire-subprotocol-версии (AV-16, docs §11.1).
+# Порядок объявления важен: aiohttp выбирает первый совпавший, поэтому
+# v2 объявлен первым и сервер его предпочитает при наличии.
+SUPPORTED_SUBPROTOCOLS_V2: tuple[str, ...] = ("robbox-quest-v2", "robbox-quest-v1")
+SUPPORTED_SUBPROTOCOLS_V1: tuple[str, ...] = ("robbox-quest-v1",)
+
+
+def _subprotocol_to_version(subprotocol: Optional[str]) -> int:
+    """Превратить ``ws.ws_protocol`` в наш внутренний subprotocol-version.
+
+    v2 → 2, v1 → 1, None/unknown → 1 (по умолчанию, обратная совместимость
+    с прежними клиентами, которые не объявляли subprotocol).
+    """
+    if subprotocol == "robbox-quest-v2":
+        return 2
+    return 1
+
+
+def server_client_id(session_id: str) -> str:
+    """Серверный ``client_id`` для ``Bridge.supervisor_*`` вызовов.
+
+    Источник истины для client_id — сервер. По карточке AV-16/§11 требование:
+    «клиент не должен уметь представиться Telegram-ом» → клиентский
+    payload-``client_id`` игнорируется; сервер квантует по собственному
+    ``session_id``. Формат — ``"quest:<uuid>"``: подтип (``quest``) явно
+    отличает от telegram-клиентов в логах/метриках супервизора и при
+    extensions на других клиентов (admin-panel, curl).
+    """
+    return f"quest:{session_id}"
 
 
 # Heartbeat/watchdog тайминги (meta-quest-api.md §7 + ADR-0027 §3.3).
@@ -50,12 +84,23 @@ class ClientSession:
     state: SessionState = SessionState.AWAITING_HELLO
     client_version: Optional[str] = None
     capabilities: list[str] = field(default_factory=list)
+    # Subprotocol-version: 1 (Phase 1, robbox-quest-v1) или 2 (Phase 2,
+    # robbox-quest-v2 + supervisor API). Заполняется через
+    # ``apply_subprotocol`` ПОСЛЕ ``ws.prepare`` — aiohttp согласует
+    # версию в WS-handshake, до этого момента поле = None. По нему
+    # handler-ы 0x30..0x33 решают, можно ли слать STATE_UPDATE этому
+    # клиенту и принимать от него supervisor-команды.
+    protocol_version: Optional[int] = None
     # subscribed: topic_ui_name -> server-initiated stream_id (0x1000..0xFFFF).
     subscribed: Dict[str, int] = field(default_factory=dict)
     # timestamps для watchdog (monotonic, seconds).
     last_ping_monotonic: Optional[float] = None
     last_heartbeat_monotonic: Optional[float] = None
     created_monotonic: float = field(default_factory=time.monotonic)
+    # Серверный client_id для supervisor API («quest:<session_id>»). Заполняется
+    # в ``mark_authenticated``; используется в Bridge.supervisor_* вызовах
+    # вместо client-supplied client_id из payload (см. AV-16/§11).
+    server_client_id: Optional[str] = None
 
     def is_open(self) -> bool:
         return self.state != SessionState.CLOSED
@@ -69,6 +114,19 @@ class ClientSession:
         self.capabilities = list(capabilities)
         # Первый ping-таймер — момент рукопожатия.
         self.last_ping_monotonic = time.monotonic()
+        # Серверный client_id, готов к supervisor_* вызовам (см. AV-16/§11).
+        self.server_client_id = server_client_id(self.session_id)
+
+    def apply_subprotocol(self, negotiated: Optional[str]) -> int:
+        """Зафиксировать согласованный subprotocol-уровень сессии.
+
+        Вызывается после ``aiohttp.WSResponse.prepare(request)`` —
+        ``negotiated`` берётся из ``ws.ws_protocol``. None/unknown →
+        subprotocol v1 (обратная совместимость со старыми клиентами,
+        которые Sec-WebSocket-Protocol не объявляли).
+        """
+        self.protocol_version = _subprotocol_to_version(negotiated)
+        return self.protocol_version
 
     def feed_ping(self, now_monotonic: Optional[float] = None) -> None:
         """Клиент прислал JSON_EVENT{type:"ping"} → сбрасываем watchdog."""
