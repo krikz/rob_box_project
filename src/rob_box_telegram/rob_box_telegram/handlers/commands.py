@@ -26,6 +26,7 @@ from telegram.ext import ContextTypes
 
 from ..auth import authorized
 from ..keyboard_layouts import MAIN_MENU_KEYBOARD, MOVEMENT_KEYBOARD
+from ..radio import get_radio_mode, set_radio_mode
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,8 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/photo\\_map — 2D карта помещения (RTAB-Map)\n\n"
         "*Голос:*\n"
         "/say <текст> — произнести текст\n"
-        "/playvoice — режим: следующее голосовое проиграть\n\n"
+        "/playvoice — режим: следующее голосовое проиграть\n"
+        "/radio on|off|status — рация (голос → динамик робота)\n\n"
         "*Навигация:*\n"
         "/goto <вейпоинт> — ехать к точке\n"
         "/waypoints — список вейпоинтов\n"
@@ -439,15 +441,79 @@ async def say_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 @authorized
 async def playvoice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /playvoice — next voice message will be transcribed and spoken by the robot."""
+    """Handle /playvoice — robot speaks the transcribed text of the NEXT voice.
+
+    AV-23 / ADR-0021: это **отдельный** режим от ``/radio``. Разница:
+
+    * ``/playvoice`` (one-shot, 1 сообщение) — STT → текст → TTS (робот
+      произносит РАСПОЗНАННЫЙ текст голосом TTS). Используется, чтобы
+      дать роботу голосовое сообщение «без клавиатуры».
+    * ``/radio on|off`` (per-chat, sticky) — голос оператора БЕЗ обработки
+      идёт в динамик робота как рация (см. ``docs/plans/2026-08-27-
+      quest-voice-passthrough-design.md`` §1.1, режим «рация»).
+
+    Плодить второй механизм для одной задачи запрещено (ADR-0021),
+    но это РАЗНЫЕ задачи: playvoice = STT→TTS echo, radio = raw passthrough.
+    """
     # Issue #1195 — echo path: remember the chat so the played voice
     # text is echoed into the right chat.
     node = _node(context)
     node.set_active_chat(update.effective_chat.id)
     context.user_data["playvoice_mode"] = True
     await update.message.reply_text(
-        "🎤 Режим озвучки активирован.\n" "Отправьте голосовое сообщение — робот произнесёт его текст.",
+        "🎤 Режим озвучки активирован.\n"
+        "Отправьте голосовое сообщение — робот произнесёт его текст.\n\n"
+        "Если хотите, чтобы голос шёл в динамик как рация — "
+        "используйте /radio on.",
     )
+
+
+# ─── /radio ──────────────────────────────────────────────────────────────
+
+
+@authorized
+async def radio_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle ``/radio on|off|status`` — per-chat режим рации (AV-23).
+
+    Семантика:
+      * default — ``off`` (как до фичи, никаких побочных эффектов).
+      * ``on``  — следующие голосовые из этого чата идут прямо в
+        ``/avatar/voice_in`` (рация), STT НЕ запускается.
+      * ``off`` — вернуться к STT-режиму.
+      * ``status`` — текущее состояние.
+    """
+    user_data = context.user_data or {}
+    if context.user_data is None:
+        # python-telegram-bot хранит per-chat state в Context.user_data,
+        # но в новой версии (21.x) он может быть None до первого
+        # обращения. Нам mutate-нужно, поэтому прокинем dict через
+        # ``__setattr__`` (Context — не обычный dataclass).
+        try:
+            context.user_data = user_data
+        except AttributeError:
+            pass
+    arg = (context.args[0].lower() if context.args else "status")
+    if arg == "on":
+        set_radio_mode(user_data, True)
+        await update.message.reply_text(
+            "📻 Рация включена.\n"
+            "Голосовые сообщения будут звучать в динамике робота "
+            "(как рация). Для возврата — /radio off."
+        )
+    elif arg == "off":
+        set_radio_mode(user_data, False)
+        await update.message.reply_text(
+            "📴 Рация выключена. Голосовые снова идут через STT."
+        )
+    elif arg == "status":
+        on = get_radio_mode(user_data)
+        await update.message.reply_text(
+            "📻 Рация: " + ("включена ✅" if on else "выключена ❌")
+        )
+    else:
+        await update.message.reply_text(
+            "Использование: /radio on | off | status"
+        )
 
 
 # ─── Tool-bridged commands (W7: forward intents to /voice/stt/result) ──

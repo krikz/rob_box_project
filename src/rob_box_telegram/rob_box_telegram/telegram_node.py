@@ -6,6 +6,7 @@ from geometry_msgs.msg import Twist
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from audio_common_msgs.msg import AudioData
 from sensor_msgs.msg import CompressedImage
 from nav_msgs.msg import OccupancyGrid
 from std_msgs.msg import String
@@ -14,6 +15,9 @@ from .camera_cache import CameraCache
 from .handlers import commands as _cmds
 from .handlers.callbacks import callback_handler
 from .handlers.messages import text_message_handler, voice_message_handler
+# AV-23 (issue #1915, P8): per-chat /radio mode — голосовые из Telegram
+# как рация → /avatar/voice_in. См. radio.py + voice_transcode.py.
+from .radio import RadioPublisher, RadioResult
 # Issue #1160 — Prometheus metrics (этап 1 observability). Telegram-bot —
 # отдельный контейнер, поэтому у него свой лёгкий observability-модуль
 # (не тянет rob_box_voice).
@@ -29,6 +33,15 @@ from .supervisor_client import Floor, SupervisorClient
 _BE = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1)
 _RE = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
 _TL = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+# AV-23 (issue #1915, P8): рация из Telegram публикует в /avatar/voice_in.
+# best-effort + volatile — как делает quest_node (D7), чтобы sound_node не
+# доигрывал stale-чанки после потери соединения.
+_VOICE_IN_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+)
 class TelegramNode(Node):
     """Telegram Bot API ↔ /voice/stt/result + /voice/dialogue/response bridge.
 
@@ -55,6 +68,10 @@ class TelegramNode(Node):
         self.declare_parameter(
             self.SUPERVISOR_MODE_PARAM, self.SUPERVISOR_DEFAULT_MODE
         )
+        # AV-23 (issue #1915, P8) — лимиты рации из Telegram.
+        self.declare_parameter("radio_max_duration_s", 30.0)
+        self.declare_parameter("radio_max_bytes", 5 * 1024 * 1024)
+        self.declare_parameter("radio_chunk_ms", 20)
         p = self.get_parameter
         self.camera_topic, self.camera_depth_topic, self.camera_up_topic = p("camera_topic").value, p("camera_depth_topic").value, p("camera_up_topic").value
         self.camera_cache = CameraCache(ttl=p("camera_cache_ttl").value)
@@ -89,6 +106,18 @@ class TelegramNode(Node):
         # (см. ``publish_move_with_floor``/``publish_tts_with_floor``).
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel_web", _RE)
         self.tts_pub = self.create_publisher(String, "/voice/tts/request", _RE)
+        # AV-23 (issue #1915, P8) — рация из Telegram в /avatar/voice_in
+        # + явный STOP в /voice/sound/stop (закрыть stream после рации,
+        # barge-in уже использует тот же канал). best-effort + volatile
+        # — см. _VOICE_IN_QOS (как у quest_node, D7).
+        self._voice_in_pub = self.create_publisher(AudioData, "/avatar/voice_in", _VOICE_IN_QOS)
+        self._voice_stop_pub = self.create_publisher(String, "/voice/sound/stop", _RE)
+        self._radio = RadioPublisher(
+            self,
+            chunk_ms=int(p("radio_chunk_ms").value or 20),
+            max_duration_s=float(p("radio_max_duration_s").value or 30.0),
+            max_bytes=int(p("radio_max_bytes").value or 5 * 1024 * 1024),
+        )
         # AV-10 — клиент супервизора. Создаётся до старта telegram-loop,
         # чтобы handlers могли безопасно вызывать ``acquire_floor``.
         supervisor_mode = str(
@@ -234,6 +263,34 @@ class TelegramNode(Node):
             self.cmd_vel_pub.publish(twist)
 
         return self.supervisor.with_floor(Floor.TELEOP, _do_publish)
+    def publish_voice_audio_chunk(self, pcm_bytes: bytes) -> None:
+        """AV-23: один PCM-чанк в /avatar/voice_in (radиo из Telegram).
+
+        ``msg.data`` — это ``list(uint8)``, как ожидает ``sound_node``
+        (он нормализует через ``bytes(msg.data)`` перед ``np.frombuffer``,
+        см. ``voice_in_callback``). Поэтому заворачиваем именно bytes.
+        """
+        msg = AudioData()
+        msg.data = list(pcm_bytes)
+        self._voice_in_pub.publish(msg)
+
+    def publish_voice_audio_stop(self) -> None:
+        """AV-23: явный STOP в /voice/sound/stop после рации.
+
+        ``sound_node.sound_stop_callback`` закрывает голосовой stream
+        (он же используется для barge-in). Без него sound_node ждёт
+        ``VOICE_SILENCE_TIMEOUT = 0.3 c`` — обычно ОК, но если оператор
+        шлёт голосовое каждые 250 мс, watchdog не успевает.
+        """
+        msg = String()
+        msg.data = "STOP"
+        self._voice_stop_pub.publish(msg)
+
+    @property
+    def radio(self) -> RadioPublisher:
+        """AV-23: per-chat /radio паблишер (handler'ы зовут его)."""
+        return self._radio
+
     def _on_response(self, msg: String) -> None:
         """Echo dialogue/TTS output back into the active Telegram chat.
 
