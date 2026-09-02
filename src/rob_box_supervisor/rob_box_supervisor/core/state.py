@@ -156,9 +156,7 @@ def unpack(data: bytes) -> AvatarState:
     """
     raw = msgpack.unpackb(data, raw=False, strict_map_key=False)
     if not isinstance(raw, dict):
-        raise ValueError(
-            f"avatar/state: expected msgpack map, got {type(raw).__name__}"
-        )
+        raise ValueError(f"avatar/state: expected msgpack map, got {type(raw).__name__}")
 
     version = int(raw.get("version", 0))
     if version > SCHEMA_VERSION:
@@ -236,9 +234,13 @@ def decode_from_ros_string(data: str) -> AvatarState:
     fallback on the consumer side is exactly the bug we are fixing.
     """
     if not isinstance(data, str):
-        raise StateTransportError(
-            f"avatar/state: expected str, got {type(data).__name__}"
-        )
+        raise StateTransportError(f"avatar/state: expected str, got {type(data).__name__}")
+    if not data:
+        # Empty payload is a wire-contract violation (latched topic should
+        # at minimum carry a msgpack frame). Raise the typed error so the
+        # consumer counter can categorise it instead of catching the bare
+        # msgpack ValueError downstream.
+        raise StateTransportError("avatar/state: empty payload (no msgpack frame)")
     try:
         payload_bytes = data.encode("latin-1")
     except UnicodeEncodeError as exc:

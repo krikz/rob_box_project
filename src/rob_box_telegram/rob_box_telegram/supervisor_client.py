@@ -80,23 +80,16 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, Optional
 
 from .observability import record_avatar_state_decode_error
 
-if TYPE_CHECKING:
-    # AV-14: codec lives in rob_box_supervisor.core.state. Import is
-    # defensive at runtime (see ``_on_state_msg``) to keep the bot
-    # importable in minimal CI envs without the supervisor package
-    # installed (e.g. early-cycle tests); the runtime fallback is
-    # "log + skip", NOT "fall back to json.loads" — silent fallback
-    # is exactly the bug #1906 we are closing.
-    from rob_box_supervisor.core.state import (  # noqa: F401
-        AvatarState as SupervisorAvatarState,
-        StateTransportError as SupervisorStateTransportError,
-        StateVersionError as SupervisorStateVersionError,
-        decode_from_ros_string,
-    )
+# AV-14: codec lives in rob_box_supervisor.core.state. The runtime
+# import is done lazily inside ``_on_state_msg`` so the bot stays
+# importable in minimal CI envs without the supervisor package
+# installed. The runtime fallback on import failure is "log + skip",
+# NOT "fall back to json.loads" — silent fallback is exactly the bug
+# #1906 we are closing.
 
 logger = logging.getLogger(__name__)
 
@@ -123,8 +116,7 @@ def _maybe_warn_decode(reason: str, exc: BaseException) -> None:
             return
         _decode_warn_last_ts = now
     logger.warning(
-        "SupervisorClient: /avatar/state decode failed (%s): %r "
-        "(rate-limited: 1 WARN per %.0fs)",
+        "SupervisorClient: /avatar/state decode failed (%s): %r " "(rate-limited: 1 WARN per %.0fs)",
         reason,
         exc,
         _DECODE_WARN_PERIOD_S,
@@ -335,12 +327,8 @@ class SupervisorClient:
             from std_msgs.msg import String as RosString  # type: ignore
         except ImportError:
             return
-        self._heartbeat_pub = self._node.create_publisher(
-            RosString, self.TOPIC_HEARTBEAT, 10
-        )
-        self._heartbeat_timer = self._node.create_timer(
-            self._heartbeat_period_s, self._send_heartbeat
-        )
+        self._heartbeat_pub = self._node.create_publisher(RosString, self.TOPIC_HEARTBEAT, 10)
+        self._heartbeat_timer = self._node.create_timer(self._heartbeat_period_s, self._send_heartbeat)
         logger.info(
             "SupervisorClient[%s] heartbeat started (period=%.3fs)",
             self._client_id,
@@ -353,9 +341,7 @@ class SupervisorClient:
             self._heartbeat_timer = None
         self._heartbeat_pub = None
 
-    def subscribe_state(
-        self, listener: Callable[[AvatarState], None]
-    ) -> Callable[[], None]:
+    def subscribe_state(self, listener: Callable[[AvatarState], None]) -> Callable[[], None]:
         """Подписка на изменения /avatar/state. Возвращает unsubscribe."""
         self._state_listeners.append(listener)
         # Сразу отдадим текущее состояние — UI не должен ждать первого
@@ -498,12 +484,8 @@ class SupervisorClient:
         # (_handle_move, _on_avatar_state) and existing tests only read
         # ``.client_id``-shaped values; ``since_ms`` and the event
         # become raw fallback fields for now.
-        teleop_holder: Optional[str] = (
-            decoded.teleop_floor.client_id if decoded.teleop_floor else None
-        )
-        voice_holder: Optional[str] = (
-            decoded.voice_floor.client_id if decoded.voice_floor else None
-        )
+        teleop_holder: Optional[str] = decoded.teleop_floor.client_id if decoded.teleop_floor else None
+        voice_holder: Optional[str] = decoded.voice_floor.client_id if decoded.voice_floor else None
         new_state = AvatarState(
             teleop_floor=teleop_holder,
             voice_floor=voice_holder,
@@ -551,9 +533,7 @@ class SupervisorClient:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("State listener raised: %r", exc)
 
-    def _acquire_via_service(
-        self, floor: Floor, timeout_s: float
-    ) -> AcquireResult:
+    def _acquire_via_service(self, floor: Floor, timeout_s: float) -> AcquireResult:
         """Реальный service-call (Phase 2)."""
         try:
             from rclpy.client import Client  # noqa: F401  type: ignore

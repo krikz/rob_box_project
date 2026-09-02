@@ -502,9 +502,7 @@ class TestAvatarSupervisorSetAvatarMode(unittest.TestCase):
 
     def test_json_in_request_data_is_accepted(self) -> None:
         """Переходный контракт (б): JSON в ``request.data`` вместо атрибутов."""
-        req = types.SimpleNamespace(
-            data=json.dumps({"event": "telegram_acquire_floor", "client_id": "telegram1"})
-        )
+        req = types.SimpleNamespace(data=json.dumps({"event": "telegram_acquire_floor", "client_id": "telegram1"}))
         resp = MagicMock()
         resp.success = False
         resp.message = ""

@@ -335,15 +335,10 @@ class AvatarSupervisor(Node):
         except (StateTransportError, StateVersionError) as exc:
             # Rate-limit: один WARN на тик максимум, чтобы не засорять лог
             # при циклической ошибке (publisher 1 Hz, log-flooding = bad).
-            self._log.warning(
-                f"avatar_supervisor: /avatar/state publish skipped: {exc}"
-            )
+            self._log.warning(f"avatar_supervisor: /avatar/state publish skipped: {exc}")
             return
         except Exception as exc:  # noqa: BLE001 — не валить таймер
-            self._log.warning(
-                f"avatar_supervisor: unexpected encode failure: "
-                f"{type(exc).__name__}: {exc}"
-            )
+            self._log.warning(f"avatar_supervisor: unexpected encode failure: " f"{type(exc).__name__}: {exc}")
             return
 
         msg = RosString()
