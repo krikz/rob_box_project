@@ -99,7 +99,7 @@ LLM читает дословно.
 
 ## 6. Уборка мёртвого
 
-- [ ] 6.1 Удалить `rob_box_voice/skills/status_skill.py` — битый импорт
+- [x] 6.1 Удалить `rob_box_voice/skills/status_skill.py` — битый импорт
       `from .base_skill import BaseSkill`, модуль удалён в `e96b912d`;
       каталога `__init__.py` нет, никто не импортирует. Разобраться с
       тестом `test_issue_t85b38d89_voice_settings_rule.py`, который его
@@ -107,10 +107,19 @@ LLM читает дословно.
       скилла `voice-tts`, тест перенацеливается туда.
       **Здесь же** повторить сверку surface `openai-agents` на версии из
       образа (`>=0.19.4`) — см. `design.md` §Decisions.4, оговорка.
-- [ ] 6.2 Разобрать `prompts/skills/*.txt`: что по делу — становится
-      фрагментом скилла (задача 2.1), остальное удалить.
-      `music_skill_prompt.txt` — 80 КБ, в рантайм не грузится.
-- [ ] 6.3 Удалить `prompts/compositor_prompt.txt` (15 КБ, ссылается на
+- [~] 6.2 ЧАСТИЧНО. Удалены мёртвые `status_skill_prompt.txt` (содержание
+      перенесено в `voice-tts.txt`), `memory_skill_prompt.txt`,
+      `navigation_skill_prompt.txt`, `faq_skill_prompt.txt`.
+      **`music_skill_prompt.txt` (80 КБ) НЕ удалён — задача оказалась
+      шире, чем в неё заложено.** В рантайм он действительно не грузится,
+      но на нём висят пять контрактных тестов: `test_generate_music_is_gone`,
+      `test_known_melody_library_1810`, `test_music_runtime_assets`,
+      `test_synth_palette_is_preloaded`, `test_issue_988_prompt_anti_duplicate`.
+      Они проверяют настоящие инварианты (палитра синтов, библиотека
+      мелодий, runtime-ассеты), которых нет ни в каталоге, ни в кратком
+      `composer.txt`. Удалить файл = молча выкинуть эти проверки. Нужна
+      отдельная карточка: решить, куда переезжают инварианты.
+- [x] 6.3 Удалить `prompts/compositor_prompt.txt` (15 КБ, ссылается на
       удалённые фасады `handle_music`/`handle_navigation`) вместе с тремя
       сторожащими его тестами (`test_compositor_prompt.py`,
       `test_issue_1392_compositor_prompt_minimax.py`, музыкальную часть
