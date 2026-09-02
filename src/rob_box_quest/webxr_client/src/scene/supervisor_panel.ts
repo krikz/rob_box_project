@@ -434,13 +434,14 @@ export function hitTest(
 
 // ───────────────────────── тексты / форматирование ─────────────────────────
 
-/** Подпись «кто держит» для индикатора floor (короткое имя). */
+/**
+ * Подпись «кто держит» для индикатора floor. Использует короткую форму
+ * (хвост после `:`) для длинных id, чтобы не растягивать UI. Для id < 8
+ * символов оставляем оригинал — tg:42 узнаваемее, чем "42".
+ */
 export function shortHolderName(clientId: string | null | undefined): string {
   if (!clientId) return "—";
-  // «quest:<session6>», «tg:<userId>» → вторая часть.
-  const parts = clientId.split(":");
-  const id = parts[parts.length - 1] ?? clientId;
-  return id.length > 8 ? id.slice(0, 6) + "…" : id;
+  return clientId.length > 8 ? clientId.slice(0, 6) + "…" : clientId;
 }
 
 /**
