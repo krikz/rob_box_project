@@ -738,6 +738,14 @@ def is_metalanguage_babble(spoken_text: str) -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# Issue #1882 — hard-mute для planning-narration жильёт в dialogue_node.py
+# (`_handle_result`, ветка ПЕРЕД babble-retry). Сам детектор `is_planning_narration`
+# определён выше в этом файле (введён в 78403dba), тут дублировать его не надо —
+# иначе будет две функции с одним именем.
+# ---------------------------------------------------------------------------
+
+
 def user_wants_performance(user_input: str) -> bool:
     """Issue #992 Bug D — does the user request a *performance*?
 
