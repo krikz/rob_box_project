@@ -53,7 +53,7 @@ dialogue_node:
       base_url: "https://api.minimax.io/v1"
       model: "MiniMax-M3"
       temperature: 0.7
-      max_tokens: 500
+      max_tokens: 3000   # см. #1883: 500 режет tool-call пополам
       timeout_s: 90.0
 
     # DeepSeek (fallback — дешёвый, быстрый, надёжный)
@@ -62,7 +62,7 @@ dialogue_node:
       base_url: "https://api.deepseek.com"
       model: "deepseek-chat"
       temperature: 0.7
-      max_tokens: 500
+      max_tokens: 3000   # см. #1883: 500 режет tool-call пополам
       timeout_s: 90.0
 
     # MiMo (Xiaomi — fallback #2). Раскомментируй и добавь "mimo" в

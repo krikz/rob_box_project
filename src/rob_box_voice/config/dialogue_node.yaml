@@ -56,7 +56,14 @@ dialogue_node:
     # Дополнительные ключи для переопределения оператором:
     # (все имеют default в коде — здесь выставляем «безопасные» значения)
     temperature: 0.7
-    max_tokens: 500
+    # 🔴 3000, а не 500 (02.09.2026). До #1883 (fe35b448) значение из YAML
+    # до провайдера НЕ доезжало, и лимит был провайдерский. После фикса оно
+    # реально уходит в API — и 500 токенов перестало вмещать tool-call:
+    # аргументы execute_music_code / compose_music (код трека, progression,
+    # план сета на 4-8 треков) режутся на finish_reason='length', JSON
+    # приходит битым, ход уходит в корректирующий ретрай. На роботе за один
+    # вечер — 8 срезов подряд (TRUNCATED_TOOL_ARGS, len=616..704).
+    max_tokens: 3000
     agent_max_turns: 20
     enable_mcp_tools: true
     # Issue #1279 — command-intent gate: фразы-команды (NAVIGATE/STOP/STATUS/
