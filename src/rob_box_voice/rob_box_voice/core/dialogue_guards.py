@@ -1036,6 +1036,16 @@ def build_babble_retry_prompt(user_input: str) -> str:
     in context, then appends a CRITICAL instruction that names the
     babble pattern and demands a tool-call reply (no plain text
     promises).
+
+    🔴 FIX (live 02.09, "включи трек про весну"): этот список не называл
+    вариант «уже существующий трек» вовсе — только «мелодия →
+    execute_music_code(...)». Bug C (``build_music_retry_prompt``) корректно
+    вёл модель в библиотеку (gen_search_library → gen_play_from_library), но
+    когда следом срабатывал Bug D babble-ретрай на ТОМ ЖЕ запросе, его
+    промпт не упоминал библиотеку вовсе — и модель, уже нашедшая правильный
+    трек через gen_search_library в прошлом ходе, сочиняла новую мелодию
+    через compose_music вместо gen_play_from_library(track_id=...) найденного
+    трека. Юзер попросил «Весна пришла», получил синт.
     """
     return (
         f"{user_input}\n\n"
@@ -1048,8 +1058,14 @@ def build_babble_retry_prompt(user_input: str) -> str:
         "✅ ОБЯЗАТЕЛЬНО: вызови нужный tool в ЭТОМ же turn:\n"
         "  • rap/песня → execute_music_code + speak_text(lyrics),\n"
         "  • поэзия → speak_text(...) × N строк,\n"
-        "  • мелодия → execute_music_code(...),\n"
-        "  • анекдот → speak_text(...) × N.\n"
+        "  • новая мелодия/бит с нуля → execute_music_code(...),\n"
+        "  • анекдот → speak_text(...) × N,\n"
+        "  • уже существующий/сохранённый трек по имени или теме — "
+        "НЕ сочиняй новый: если в этом диалоге уже был вызов "
+        "gen_search_library/gen_list_library/list_tracks с подходящим "
+        "результатом, возьми его track_id/name и вызови "
+        "gen_play_from_library(track_id=...) или load_track(name=...); "
+        "иначе вызови поиск сейчас, а не execute_music_code/compose_music.\n"
         "После последнего speak_text верни 'done'. Никаких "
         "мета-фраз, никаких 'Слушай, сейчас...', 'Зачитаю...', "
         "'Могу бит добавить, хочешь?' — это BUG."
