@@ -383,6 +383,14 @@ class DialogResult:
     # and consumed by dialogue_node when spoken_text is empty.
     finish_reason: str | None = None
     raw_response: Any | None = None
+    # Issue #1899 — propagated from ``LLMResponse.truncated_tool_args``.
+    # True when the last LLM stream produced tool-call arguments JSON that
+    # was cut off mid-stream (most often ``finish_reason='length'``).
+    # dialogue_node surfaces this in the per-turn info log so operators
+    # can correlate the +6 s retry with the upstream token-budget
+    # exhaustion. DialogCore itself ALSO uses the flag (see
+    # ``_run_with_tools``) to ask the model for a shorter retry.
+    truncated_tool_args: bool = False
 
 
 @dataclass(frozen=True)
@@ -416,6 +424,14 @@ class _ToolLoopOutcome:
         Что реально произнесено через ``speak_text``, склеенное через
         перевод строки. Пишется в историю вместо маркера «done», иначе
         модель начинает отвечать «done» сама.
+    truncated_tool_args:
+        Issue #1899 — propagated from the last ``LLMResponse.truncated_tool_args``.
+        ``True`` when the last stream assembled tool-call arguments that
+        were cut off mid-JSON (most often ``finish_reason='length'``).
+        The agent loop already asked the model for a shorter retry
+        before falling out of the tool loop; the flag is preserved so
+        ``DialogResult`` consumers (dialogue_node / future analytics)
+        can see the upstream budget exhaustion.
     """
 
     spoken_text: str
@@ -425,6 +441,7 @@ class _ToolLoopOutcome:
     speak_text_count: int
     speak_text_real_count: int
     spoken_via_tool: str
+    truncated_tool_args: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -824,6 +841,7 @@ class DialogCore:
                 result.speak_text_real_count = outcome.speak_text_real_count
                 result.finish_reason = outcome.finish_reason
                 result.raw_response = outcome.raw_response
+                result.truncated_tool_args = outcome.truncated_tool_args
                 if not is_dj_auto:
                     # Persist an HONEST assistant turn: the text actually
                     # spoken via speak_text (or a real plain-text reply), NOT
@@ -1055,8 +1073,71 @@ class DialogCore:
         # (``not tools_called``): a final "done" AFTER speak_text is
         # legitimate per the master-prompt contract and must not be retried.
         _silent_retried = False
+        # Issue #1899: when the LLM hit ``max_tokens`` while still emitting
+        # tool-call arguments JSON, ``_safe_json`` silently degrades to
+        # ``{}``, the tool then fails validation, and the agent loop
+        # wastes ~6 s on a retry that produces the same broken call. We
+        # detect this BEFORE execution and ask the model to redo the turn
+        # with shorter argument payloads. Mirrors the ``_silent_retried``
+        # pattern above — single-shot retry, no recursion.
+        _truncated_tool_args_retried = False
 
         for _ in range(_MAX_TOOL_ITERATIONS):
+            # Issue #1899 — truncated tool-call arguments. The model
+            # asked for tools but the JSON was cut off mid-stream (most
+            # often ``finish_reason='length'``). Do NOT execute broken
+            # tool-calls; ask the model to redo with a tighter payload.
+            if (
+                response.tool_calls
+                and response.truncated_tool_args
+                and not _truncated_tool_args_retried
+            ):
+                _truncated_tool_args_retried = True
+                _names = sorted({c.name for c in response.tool_calls})
+                logging.getLogger(__name__).warning(
+                    "DialogCore [issue 1899]: tool-call arguments JSON cut "
+                    "off mid-stream (finish_reason=%r). Asking model to "
+                    "retry with shorter args. tools=%s",
+                    response.finish_reason,
+                    _names,
+                )
+                # Record the assistant turn we received so the chat
+                # history stays valid (OpenAI requires an assistant
+                # message before the next user message when tool_calls
+                # were emitted).
+                if response.content or response.tool_calls:
+                    messages.append(
+                        LLMMessage(
+                            role="assistant",
+                            content=response.content,
+                            tool_calls=response.tool_calls,
+                        )
+                    )
+                # Issue #1899 — diagnostic via ``finish_reason`` so the
+                # next worker / live operator sees WHY the retry fired
+                # without grepping logs.
+                messages.append(
+                    LLMMessage(
+                        role="user",
+                        content=(
+                            "[SYSTEM CORRECTION] Твой предыдущий tool-call "
+                            "был ОБРЕЗАН: ответ не поместился в max_tokens "
+                            "и JSON-аргументы НЕ ЗАКРЫЛИСЬ. Инструмент "
+                            f"{_names!r} НЕ БЫЛ вызван (валидация бы упала "
+                            "на пустых/обрезанных аргументах). "
+                            "Повтори ход и вызови нужный tool снова, но "
+                            "с БОЛЕЕ КОРОТКИМИ значениями аргументов — "
+                            "короткие строки, никаких многострочных "
+                            "описаний. Если аргументов слишком много для "
+                            "бюджета токенов, разбей на несколько ходов: "
+                            "сначала вызови основной tool с минимальным "
+                            "набором полей, остальное — следующим ходом."
+                        ),
+                    )
+                )
+                response = await self._stream_response(messages, tools=openai_tools)
+                continue
+
             if not response.tool_calls:
                 if (
                     not _silent_retried
@@ -1327,6 +1408,7 @@ class DialogCore:
                 speak_text_count=speak_text_count,
                 speak_text_real_count=speak_text_real_count,
                 spoken_via_tool="\n".join(spoken_texts),
+                truncated_tool_args=response.truncated_tool_args,
             )
 
         return _ToolLoopOutcome(
@@ -1337,6 +1419,7 @@ class DialogCore:
             speak_text_count=speak_text_count,
             speak_text_real_count=speak_text_real_count,
             spoken_via_tool="\n".join(spoken_texts),
+            truncated_tool_args=response.truncated_tool_args,
         )
 
     async def _stream_response(
@@ -1373,6 +1456,13 @@ class DialogCore:
         tool_calls: list[ToolCall] = []
         finish_reason: str | None = None
         usage: Mapping[str, int] | None = None
+        # Issue #1899: when ANY tool-call in this stream had its
+        # arguments JSON cut off mid-stream, the assembled
+        # ``ToolCall.arguments`` may be ``{}`` or partial. We propagate
+        # the flag into ``LLMResponse.truncated_tool_args`` so
+        # ``_run_with_tools`` can choose to retry the request instead
+        # of executing the broken tool-call.
+        truncated_tool_args: bool = False
         raw: Any = None
         stream = self._llm.stream(
             messages, tools=tools, settings=effective_settings
@@ -1398,6 +1488,11 @@ class DialogCore:
                     finish_reason = chunk.finish_reason
                 if chunk.usage:
                     usage = chunk.usage
+                # Issue #1899 — the terminal chunk carries the verdict
+                # whether ANY tool-call in this stream had its arguments
+                # JSON cut off mid-stream.
+                if chunk.truncated_tool_args:
+                    truncated_tool_args = True
         finally:
             # 🔴 FIX (issue #1280): гарантированно закрываем stream при
             # ЛЮБОМ выходе — включая CancelledError при barge-in. Без
@@ -1421,6 +1516,7 @@ class DialogCore:
             finish_reason=finish_reason,
             usage=usage,
             raw=raw,
+            truncated_tool_args=truncated_tool_args,
         )
 
     # ---- skills (Move A) -------------------------------------------------

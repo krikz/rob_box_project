@@ -3578,8 +3578,18 @@ class DialogueNode(Node):
                             f"{_metric_exc!r}"
                         )
             self.get_logger().info(
+                # Issue #1899: include ``finish_reason`` on EVERY completed
+                # stream (was previously logged only when the response was
+                # empty). Together with the new ``truncated_tool_args`` flag
+                # this lets operators see WHY the agent loop burned ~6 s on
+                # a redundant tool-call retry — i.e. ``finish_reason='length'``
+                # + ``truncated_tool_args=True`` ⇒ the model hit max_tokens
+                # while still emitting arguments JSON.
                 f"✅ [turn] process_input returned: spoken={result.spoken_text!r}[:60] "
-                f"tools={list(result.tools_called or ())!r} error={result.error!r}"
+                f"tools={list(result.tools_called or ())!r} "
+                f"finish_reason={getattr(result, 'finish_reason', None)!r} "
+                f"truncated_tool_args={getattr(result, 'truncated_tool_args', None)!r} "
+                f"error={result.error!r}"
             )
             self._handle_result(
                 result,

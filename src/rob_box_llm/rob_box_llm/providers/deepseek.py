@@ -441,6 +441,11 @@ class _OpenAICompatibleProvider(LLMProvider):
         choice = resp.choices[0] if resp.choices else None
         content = choice.message.content if choice and choice.message else ""
         tool_calls: tuple[ToolCall, ...] = ()
+        # Issue #1899: reset the verdict BEFORE we start parsing so a
+        # non-streaming ``complete()`` call after a streaming one cannot
+        # inherit a stale True from the previous turn.
+        global _LAST_SAFE_JSON_TRUNCATED
+        _LAST_SAFE_JSON_TRUNCATED = False
         if choice and choice.message and choice.message.tool_calls:
             tool_calls = tuple(
                 ToolCall(
@@ -458,6 +463,7 @@ class _OpenAICompatibleProvider(LLMProvider):
             finish_reason=finish,
             usage=self._usage_from(resp),
             raw=resp,
+            truncated_tool_args=_LAST_SAFE_JSON_TRUNCATED,
         )
 
     # -- stream ------------------------------------------------------------
@@ -524,6 +530,12 @@ class _OpenAICompatibleProvider(LLMProvider):
                                 slot["arguments"] += fn.arguments
             if finish and finish_reason is None:
                 finish_reason = finish
+                # Issue #1899: reset the verdict right before we start
+                # emitting tool-call deltas so we only flag truncations
+                # detected WITHIN this stream (not stale values from
+                # earlier turns).
+                global _LAST_SAFE_JSON_TRUNCATED
+                _LAST_SAFE_JSON_TRUNCATED = False
                 # Emit fully-assembled tool calls; the terminal chunk waits
                 # until the stream is drained so it can carry ``usage``.
                 for idx in sorted(pending):
@@ -542,7 +554,15 @@ class _OpenAICompatibleProvider(LLMProvider):
                 content_delta="",
                 finish_reason=finish_reason,
                 usage=usage or None,
+                # Issue #1899: surface the truncation verdict on the
+                # terminal chunk so ``dialog_core._stream_response`` can
+                # aggregate it into ``LLMResponse.truncated_tool_args``.
+                # Without this, the broken ``{}`` arguments would reach
+                # the executor and trigger ``ToolValidationError`` plus
+                # a +6 s redundant agent-loop retry.
+                truncated_tool_args=_LAST_SAFE_JSON_TRUNCATED,
             )
+        return
 
     async def aclose(self) -> None:
         # Idempotent — safe to call multiple times from ``finally`` blocks.
@@ -560,17 +580,87 @@ class _OpenAICompatibleProvider(LLMProvider):
 
 
 def _safe_json(raw: Any) -> dict[str, Any]:
+    """Parse a tool-call ``arguments`` JSON payload defensively.
+
+    Issue #1899: the previous version returned ``{}`` on ANY parse error.
+    For ``finish_reason="length"`` that is the worst possible outcome —
+    the model was cut off mid-arguments JSON, ``{}`` reaches the tool
+    executor as valid input, validation rejects it, and the agent loop
+    spends ~6 s retrying with the same broken request.
+
+    The heuristic distinguishes three cases:
+
+    * **valid JSON**  → return the parsed dict.
+    * **truncated**   → the input looks like an unfinished JSON object
+      (most common shape: ends inside a string value or after a ``,``
+      with no closing brace — typical of stream cut on ``max_tokens``).
+      Return ``{}`` AND log a clearly-tagged warning so callers know
+      the empty dict is the parser's last resort, not the model's
+      intent.
+    * **junk**        → the input is structurally broken in a way that
+      cannot be a truncation (e.g. random garbage, a leaked prompt
+      fragment with mismatched braces). Return ``{}`` with a normal
+      warning — the caller cannot recover either way.
+
+    To avoid leaking the new shape across the whole module while still
+    letting ``stream``/``complete`` distinguish "truncated" from
+    "junk", we expose the truncation verdict via a module-level
+    "last call" sentinel — ``_LAST_SAFE_JSON_TRUNCATED``. Both call
+    sites (``complete`` and ``stream``) read it right after invoking
+    ``_safe_json`` and propagate the flag into the public
+    ``LLMResponse``/``LLMChunk`` payload via ``truncated_tool_args``.
+    This is intentionally narrow: only ONE thread/process hits the
+    provider at a time per dialog_core turn, and the verdict is read
+    immediately after parsing on the same line.
+    """
+    # Issue #1899 — clear the verdict on every entry so a successful
+    # parse on this call cannot inherit ``True`` from a previous one.
+    global _LAST_SAFE_JSON_TRUNCATED
+    _LAST_SAFE_JSON_TRUNCATED = False
+
     if isinstance(raw, dict):
         return raw
     if not isinstance(raw, str) or not raw:
         return {}
     import json
 
+    # Fast path: well-formed JSON.
     try:
         return json.loads(raw)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — re-classified below
+        pass
+
+    # Truncation heuristic — apply only when the input is "JSON-ish"
+    # (starts with ``{`` or ``[``) AND lacks a matching closer at the
+    # end. This is the exact shape DeepSeek/MiniMax produce when the
+    # stream is cut on ``max_tokens`` while still emitting arguments.
+    stripped = raw.strip()
+    looks_like_object = stripped.startswith("{")
+    looks_like_array = stripped.startswith("[")
+    has_closing_brace = stripped.endswith("}")
+    has_closing_bracket = stripped.endswith("]")
+    truncated = (looks_like_object and not has_closing_brace) or (
+        looks_like_array and not has_closing_bracket
+    )
+
+    if truncated:
+        _LAST_SAFE_JSON_TRUNCATED = True
+        _log.warning(
+            "TRUNCATED_TOOL_ARGS: tool-call arguments JSON cut off "
+            "(finish_reason='length' likely). len=%d tail=%r",
+            len(raw),
+            raw[-80:],
+        )
+    else:
         _log.warning("Could not parse tool-call arguments JSON: %r", raw)
-        return {}
+    return {}
+
+
+# Issue #1899 — module-level flag set by ``_safe_json`` when the input
+# looked like a truncated JSON object/array. Cleared on every entry to
+# ``_safe_json`` so a successful parse does NOT inherit a stale True
+# from a previous turn. Read by the two call sites right after parsing.
+_LAST_SAFE_JSON_TRUNCATED: bool = False
 
 
 # ---------------------------------------------------------------------------
