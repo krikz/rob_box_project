@@ -158,6 +158,7 @@ from rob_box_voice.observability import (
     record_quick_decide_verdict,
     record_session_duration,
     record_task_updated,
+    record_llm_prompt_tokens,
     record_voice_llm_request,
     start_metrics_server,
     start_span,
@@ -433,6 +434,7 @@ class DialogueNode(Node):
             inactivity_timeout=float(self.get_parameter("dialogue_timeout").value),
             system_prompt=self._system_prompt,
             use_streaming=bool(self.get_parameter("llm_streaming").value),
+            on_prompt=self._on_prompt_stats,
         )
 
         cbg = ReentrantCallbackGroup()
@@ -1076,6 +1078,33 @@ class DialogueNode(Node):
                 f"[issue 1409] All {len(tool_names)} MCP tools are "
                 f"mentioned in {prompt_file} ✓"
             )
+    def _on_prompt_stats(self, stats: Any) -> None:
+        """Опубликовать размер промпта, посчитанный DialogCore.
+
+        Колбэк зовётся из harness на КАЖДОЕ обращение к LLM, включая
+        каждую итерацию тул-цикла. Harness намеренно ничего не знает про
+        Prometheus — он только считает, публикует нода.
+
+        Любое исключение здесь гасится: телеметрия не имеет права ронять
+        живой ход. DialogCore тоже глушит исключения наблюдателя, это
+        второй слой на случай прямого вызова из тестов.
+        """
+        try:
+            record_llm_prompt_tokens(
+                stats.provider,
+                tokens=stats.prompt_tokens,
+                skill=stats.skill,
+                estimated=stats.estimated,
+            )
+            if self._verbose_llm:
+                self.get_logger().debug(
+                    f"[prompt] tokens={stats.prompt_tokens} "
+                    f"provider={stats.provider} skill={stats.skill} "
+                    f"estimated={stats.estimated}"
+                )
+        except Exception as exc:  # noqa: BLE001 — метрика не роняет ход
+            self.get_logger().debug(f"⚠️ [metrics] prompt stats failed: {exc}")
+
     def _build_memory(self) -> MemoryStore:
         try:
             store: MemoryStore = SQLiteVoiceMemory(

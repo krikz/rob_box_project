@@ -191,6 +191,12 @@ class LLMChunk:
     content_delta: str = ""
     tool_call_delta: ToolCall | None = None
     finish_reason: str | None = None
+    #: Token accounting, when the provider reports it. OpenAI-compatible
+    #: APIs attach it to the terminal chunk, and only when the request asked
+    #: for it (``stream_options={"include_usage": True}``) — so every chunk
+    #: before that carries ``None``. Consumers MUST treat ``None`` as
+    #: "unknown", never as "zero": the prompt-size metric falls back to a
+    #: client-side estimate instead of publishing a false 0.
     usage: Mapping[str, int] | None = None
 
 

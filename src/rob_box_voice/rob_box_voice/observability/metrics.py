@@ -367,6 +367,55 @@ def record_voice_llm_request(
     hist.labels(provider=provider).observe(duration_s)
 
 
+#: Бакеты для ``voice_llm_prompt_tokens``. Подобраны вокруг сегодняшнего
+#: фиксированного префикса (~27 100 токенов на 02.09.2026: 16 240 схемы
+#: инструментов + 10 838 мастер-промпт), чтобы сдвиг вниз от доменных
+#: скиллов был виден по перцентилям, а не тонул в одном бакете.
+PROMPT_TOKENS_BUCKETS: tuple[float, ...] = (
+    2000, 4000, 8000, 12000, 16000, 20000, 24000, 28000, 32000, 40000,
+    48000, 64000, float("inf"),
+)
+
+
+def record_llm_prompt_tokens(
+    provider: str,
+    *,
+    tokens: int,
+    skill: str = "none",
+    estimated: bool = True,
+) -> None:
+    """Учёт размера ОДНОГО запроса к LLM в токенах.
+
+    Зовётся на каждое обращение к провайдеру, включая каждую итерацию
+    тул-цикла: ход с восемью итерациями стоит восьми промптов.
+
+    :param provider: ``"minimax"`` / ``"deepseek"`` / ...
+    :param tokens: размер промпта. Неположительные значения игнорируются —
+        это признак того, что провайдер прислал мусор, и записывать его в
+        гистограмму значит испортить перцентили.
+    :param skill: имя активного доменного скилла (``"none"`` пока скиллы
+        не включены). Именно эта метка отвечает на вопрос «сколько стоит
+        ход композитора против хода плеера».
+    :param estimated: ``True`` — число получено клиентской эвристикой,
+        потому что провайдер не прислал usage. Метка позволяет не смешивать
+        точные и оценочные измерения в одной выборке.
+    """
+    if tokens <= 0:
+        return
+    hist = get_metric(
+        "histogram",
+        "voice_llm_prompt_tokens",
+        "Prompt size in tokens per LLM request, by provider, skill and source.",
+        labelnames=("provider", "skill", "estimated"),
+        buckets=PROMPT_TOKENS_BUCKETS,
+    )
+    hist.labels(
+        provider=provider,
+        skill=skill or "none",
+        estimated="true" if estimated else "false",
+    ).observe(tokens)
+
+
 def record_fallback(
     primary: str,
     fallback: str,

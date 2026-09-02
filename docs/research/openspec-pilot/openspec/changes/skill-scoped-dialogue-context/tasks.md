@@ -3,17 +3,17 @@
 Без этой фазы любое «стало лучше» — голословный PASS (ADR-0018). Фаза едет
 в прод отдельным PR и живёт неделю до начала фазы 2.
 
-- [ ] 0.1 Заполнить `LLMResponse.usage` в minimax-провайдере
+- [x] 0.1 Заполнить `LLMResponse.usage` в minimax-провайдере
       (`rob_box_harness/providers/minimax.py`) — сейчас пусто у
       primary-провайдера, заполняет только deepseek
       (`rob_box_llm/providers/deepseek.py:375`).
-- [ ] 0.2 Гистограмма `voice_llm_prompt_tokens` в
+- [x] 0.2 Гистограмма `voice_llm_prompt_tokens` в
       `rob_box_voice/observability/metrics.py` с метками `provider`,
       `skill`, `estimated` (bool). Бакеты подобрать вокруг сегодняшних
       ~27k: `[8k, 16k, 24k, 32k, 48k, 64k, +Inf]`.
-- [ ] 0.3 Клиентская оценка токенов на случай, когда провайдер не вернул
+- [x] 0.3 Клиентская оценка токенов на случай, когда провайдер не вернул
       usage; помечается `estimated=true`, обращение к LLM не прерывается.
-- [ ] 0.4 Unit-тест: провайдер вернул usage → метрика с `estimated=false`;
+- [x] 0.4 Unit-тест: провайдер вернул usage → метрика с `estimated=false`;
       провайдер не вернул → `estimated=true`, исключения нет.
 - [ ] 0.5 Выкатить на vision-pi, собрать **7 дней** baseline. В карточку
       приложить raw: скрин/дамп `voice_llm_prompt_tokens` p50/p95/p99 и

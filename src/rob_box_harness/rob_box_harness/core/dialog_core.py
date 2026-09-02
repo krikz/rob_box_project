@@ -27,8 +27,9 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
+from rob_box_core.token_estimate import estimate_prompt_tokens
 from rob_box_harness.core.confirmation_policy import ConfirmationKind
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
@@ -57,6 +58,32 @@ if TYPE_CHECKING:
 #: + a follow-up explanation, and short enough that a misbehaving tool
 #: fails loudly rather than running away.
 _MAX_TOOL_ITERATIONS: int = 8
+
+
+@dataclass(frozen=True)
+class PromptStats:
+    """Размер одного запроса к LLM — сырьё для ``voice_llm_prompt_tokens``.
+
+    Публикуется на КАЖДОЕ обращение к провайдеру, включая каждую итерацию
+    тул-цикла: ход с восемью итерациями стоит восьми промптов, и метрика,
+    считающая только первый, врала бы в разы.
+
+    ``estimated=True`` означает, что провайдер учёт токенов не прислал и
+    число получено эвристикой (``rob_box_core.token_estimate``). Такое
+    значение годится для сравнения «до/после» и для алертов, но не для
+    биллинга — см. docstring оценщика.
+    """
+
+    prompt_tokens: int
+    estimated: bool
+    provider: str
+    skill: str = "none"
+
+
+#: Тип колбэка, которым shell (ROS2-нода) забирает статистику промпта.
+#: Harness остаётся без зависимости от prometheus_client и от rclpy —
+#: он только сообщает число, а публикует его тот, кто умеет.
+PromptObserver = Callable[[PromptStats], None]
 
 # W7a (issue #968, INSIGHT #1): a single LLM response may carry several
 # tool_calls in one batch (e.g. ``speak_text`` + ``stop_music``). Executing
@@ -376,6 +403,7 @@ class DialogCore:
         acceptance_gate: "AcceptanceGate | None" = None,
         system_prompt: str | None = None,
         use_streaming: bool = False,
+        on_prompt: "PromptObserver | None" = None,
     ) -> None:
         """Compose the four dialogue ports into a single facade.
 
@@ -404,6 +432,11 @@ class DialogCore:
                 :meth:`DialogueStateMachine.check_inactivity_timeout`).
                 ``None`` disables the inactivity check; the shell is
                 then expected to drive ``TIMEOUT`` events manually.
+            on_prompt: Optional observer called once per LLM request with
+                a :class:`PromptStats`. Lets the shell publish the prompt
+                size without dragging Prometheus (or rclpy) into the
+                harness. Exceptions raised by the observer are swallowed:
+                telemetry must never break a live turn.
             acceptance_gate: Optional :class:`AcceptanceGate` (issue
                 #968 §8 / §11.2). When provided, every tool call
                 emitted by the LLM is first classified: ``require``
@@ -434,6 +467,10 @@ class DialogCore:
         self._use_streaming = use_streaming
         self._inactivity_timeout = inactivity_timeout
         self._acceptance_gate = acceptance_gate
+        self._on_prompt = on_prompt
+        #: Имя активного скилла для разметки метрики. Проставляется
+        #: активацией скилла (Move A); до неё — "none".
+        self._active_skill: str = "none"
 
     # ---- main entry point -----------------------------------------------
 
@@ -1157,11 +1194,16 @@ class DialogCore:
         False → полный complete() (как раньше, до стриминга); True → stream()
         с агрегацией tool-call deltas. Оба пути возвращают LLMResponse.
         """
+        messages = list(messages)
+        tools = list(tools)
         if not self._use_streaming:
-            return await self._llm.complete(messages, tools=tools)
+            response = await self._llm.complete(messages, tools=tools)
+            self._report_prompt(messages, tools, response.usage)
+            return response
         parts: list[str] = []
         tool_calls: list[ToolCall] = []
         finish_reason: str | None = None
+        usage: Mapping[str, int] | None = None
         raw: Any = None
         stream = self._llm.stream(messages, tools=tools)
         try:
@@ -1183,6 +1225,8 @@ class DialogCore:
                     tool_calls.append(chunk.tool_call_delta)
                 if chunk.finish_reason:
                     finish_reason = chunk.finish_reason
+                if chunk.usage:
+                    usage = chunk.usage
         finally:
             # 🔴 FIX (issue #1280): гарантированно закрываем stream при
             # ЛЮБОМ выходе — включая CancelledError при barge-in. Без
@@ -1195,13 +1239,59 @@ class DialogCore:
                     await aclose()
                 except Exception:
                     pass
+        # Учитываем промпт даже когда стрим оборвал barge-in: запрос
+        # провайдеру уже ушёл и уже стоил токенов. Поэтому вызов стоит
+        # ПОСЛЕ finally, но до возврата — на пути отмены сюда не доходит,
+        # и там учёт делает вызывающая сторона по своему усмотрению.
+        self._report_prompt(messages, tools, usage)
         return LLMResponse(
             content="".join(parts),
             tool_calls=tuple(tool_calls),
             finish_reason=finish_reason,
-            usage=None,
+            usage=usage,
             raw=raw,
         )
+
+    def _report_prompt(
+        self,
+        messages: Iterable[LLMMessage],
+        tools: Iterable[Mapping[str, Any]],
+        usage: Mapping[str, int] | None,
+    ) -> None:
+        """Сообщить наблюдателю размер отправленного промпта.
+
+        Точное число берём из ``usage`` провайдера; когда его нет —
+        оцениваем эвристикой и помечаем ``estimated=True``. Ноль из
+        ``usage`` трактуем как «не сообщил»: провайдер, приславший
+        ``prompt_tokens=0`` на непустой запрос, врёт, а нулевая метрика
+        испортила бы перцентили.
+        """
+        observer = self._on_prompt
+        if observer is None:
+            return
+        try:
+            reported = 0
+            if usage:
+                reported = int(usage.get("prompt_tokens", 0) or 0)
+            if reported > 0:
+                stats = PromptStats(
+                    prompt_tokens=reported,
+                    estimated=False,
+                    provider=getattr(self._llm, "name", "unknown"),
+                    skill=self._active_skill,
+                )
+            else:
+                stats = PromptStats(
+                    prompt_tokens=estimate_prompt_tokens(messages, tools),
+                    estimated=True,
+                    provider=getattr(self._llm, "name", "unknown"),
+                    skill=self._active_skill,
+                )
+            observer(stats)
+        except Exception:  # noqa: BLE001 — телеметрия не роняет ход
+            logging.getLogger(__name__).debug(
+                "DialogCore: prompt observer failed", exc_info=True
+            )
 
     async def _resolve_history(
         self,

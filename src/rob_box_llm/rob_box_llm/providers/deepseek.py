@@ -345,6 +345,12 @@ class _OpenAICompatibleProvider(LLMProvider):
             "messages": _to_openai_messages(messages),
             "stream": stream,
         }
+        if stream:
+            # Без этого OpenAI-совместимый стрим не присылает usage вообще,
+            # и размер промпта приходится оценивать эвристикой. Провайдер,
+            # который опции не знает, её игнорирует — поэтому спрашиваем
+            # всегда, а отсутствие usage обрабатываем как "неизвестно".
+            kwargs["stream_options"] = {"include_usage": True}
         if s.temperature is not None:
             kwargs["temperature"] = s.temperature
         if s.max_tokens is not None:
@@ -484,8 +490,17 @@ class _OpenAICompatibleProvider(LLMProvider):
         # callers had to use complete() and lost ~20s latency on the first
         # turn (MiniMax cold start + full non-streamed response).
         pending: dict[int, dict] = {}  # index -> {id, name, arguments}
+        # ``usage`` прилетает ОТДЕЛЬНЫМ финальным чанком уже ПОСЛЕ чанка с
+        # finish_reason, и у него ``choices == []``. Поэтому на finish
+        # нельзя делать return — иначе учёт токенов теряется всегда.
+        # Дочитываем поток до конца и отдаём терминальный чанк после цикла.
+        finish_reason: str | None = None
+        usage: dict[str, int] = {}
         async for event in stream_obj:
             self._post_process_response(event)
+            event_usage = self._usage_from(event)
+            if event_usage:
+                usage = event_usage
             choice = event.choices[0] if event.choices else None
             delta = choice.delta if choice else None
             finish = getattr(choice, "finish_reason", None)
@@ -507,8 +522,10 @@ class _OpenAICompatibleProvider(LLMProvider):
                                 slot["name"] += fn.name
                             if getattr(fn, "arguments", None):
                                 slot["arguments"] += fn.arguments
-            if finish:
-                # Emit fully-assembled tool calls, then the terminal chunk.
+            if finish and finish_reason is None:
+                finish_reason = finish
+                # Emit fully-assembled tool calls; the terminal chunk waits
+                # until the stream is drained so it can carry ``usage``.
                 for idx in sorted(pending):
                     slot = pending[idx]
                     name = slot["name"]
@@ -520,8 +537,12 @@ class _OpenAICompatibleProvider(LLMProvider):
                         tool_call_delta=ToolCall(id=slot["id"] or f"call_{idx}", name=name, arguments=args),
                         finish_reason=None,
                     )
-                yield LLMChunk(content_delta="", finish_reason=finish)
-                return
+        if finish_reason is not None:
+            yield LLMChunk(
+                content_delta="",
+                finish_reason=finish_reason,
+                usage=usage or None,
+            )
 
     async def aclose(self) -> None:
         # Idempotent — safe to call multiple times from ``finally`` blocks.
