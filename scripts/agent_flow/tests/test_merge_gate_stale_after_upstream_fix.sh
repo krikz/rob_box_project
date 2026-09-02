@@ -338,7 +338,14 @@ test_D6_dry_run() {
 
 # ============================================================================
 # D7. Rate-limit: 2й тик подряд, тот же PR → skip "rate-limited".
-# Моделируем, что KANBAN_DB уже содержит предыдущий block-комментарий с маркером.
+#
+# ADR-0035 / task t_d83c9430: rate-limit переехал с DB-комментариев на
+# state-файл $STATE_DIR/auto-block-rate.json. State-файл SOT, DB-fallback
+# только для backward compatibility со старыми тиками (не тестируется
+# здесь — это regression для unit-теста R2, см. test_merge_gate_auto_block_rate_limit.sh).
+#
+# Сценарий: pre-seed state-файла с last_block_ts = NOW - 60s для карточки
+# `t_diag_d7` → 2-й тик scan_all видит свежую запись → skip + warn.
 # ============================================================================
 test_D7_rate_limit() {
     new_test
@@ -346,30 +353,26 @@ test_D7_rate_limit() {
     fixture_diag_card "$cid" "ready" "$pr" "$sha" "develop" \
         "_d7_attr" "" "unit_lint" "1756598400"
     fixture_git_merge_base_ancestor "$sha"
-    # Pre-seed the (mocked) kanban DB comment history with our marker
-    # < STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS (default 7200) ago.
-    # Mock reads KANBAN_DB which is set to a non-existent path → fallback
-    # to no-history. So rate-limit triggers when journal already has a
-    # prior block command from this run (simulating 2nd tick).
-    # To simulate: pre-populate GH_JOURNAL with a prior block entry.
-    # Use NOW - 60s so the cooldown window (default 7200s) is still active
-    # and rate-limit fires. Hardcoded "2026-08-31T03:25:00" was too old
-    # and broke the test on later dates.
-    local marker="stale-after-upstream-fix:${pr}"
-    local recent_ts
-    recent_ts="$(date -u -d '60 seconds ago' +%Y-%m-%dT%H:%M:%S+00:00)"
-    printf '%s\thermes --board robbox block %s %s ...\n' "$recent_ts" "$cid" "$marker" >> "$GH_JOURNAL"
+    # ADR-0035 / t_d83c9430: state-файл изолирован в $TEST_TMP/stale-auto-block-state/
+    # (run_merge_gate делает это автоматически). Pre-seed last_block_ts = NOW - 60s
+    # (внутри 14400s cooldown). Записываем JSON в state-файл напрямую.
+    local state_file="$TEST_TMP/stale-auto-block-state/auto-block-rate.json"
+    mkdir -p "$(dirname "$state_file")"
+    local now_ts recent_ts
+    now_ts="$(date +%s)"
+    recent_ts=$((now_ts - 60))
+    printf '{"%s":%d}' "$cid" "$recent_ts" > "$state_file"
 
     run_merge_gate
     local journal
     journal="$(cat "$GH_JOURNAL")"
 
-    # Only the pre-seeded block line, no new block.
+    # 0 новых block-команд (state заблокировал).
     local new_blocks
     new_blocks="$(printf '%s\n' "$journal" | grep -cE "hermes .* block.* ${cid} " || true)"
-    assert_eq "1" "$new_blocks" "no new block (rate-limited, pre-seeded count = 1)" || return 1
+    assert_eq "0" "$new_blocks" "no new block (rate-limited via state-file)" || return 1
 
-    # stderr logs rate-limit.
+    # stderr содержит rate-limit лог.
     local stderr_log
     stderr_log="$(cat "$TEST_TMP/stderr.log" 2>/dev/null || true)"
     assert_contains "rate-limited" "$stderr_log" "stderr logs rate-limit skip" || return 1

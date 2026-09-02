@@ -90,7 +90,22 @@ STALE_REBASE_REMINDER_COOLDOWN_SECONDS="${STALE_REBASE_REMINDER_COOLDOWN_SECONDS
 # created-ts) → scan-all-prs обнаруживает upstream-фикс (стратегии A/B/C)
 # и auto-block с kind=transient.
 STALE_AFTER_UPSTREAM_FIX_SCAN="${STALE_AFTER_UPSTREAM_FIX_SCAN:-true}"
-STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS="${STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS:-7200}"
+# ADR-0035 / task t_d83c9430: rate-limit 1 раз / 4ч (14400s) на одну карточку.
+# Body карточки явно требует 14400s — раньше стояло 7200 (2ч), но это
+# слишком часто: тот же diag-карточка может получить upstream-фикс
+# несколько раз за сутки при итеративных попытках, и 2ч не даёт
+# воркеру даже успеть заметить первый auto-block. 4ч — баланс между
+# "не спамим" и "не пропускаем критический fix".
+STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS="${STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS:-14400}"
+# State-файл для rate-limit (ADR-0035 / task t_d83c9430).
+# Default: $HOME/.hermes/state/merge-gate/auto-block-rate.json
+# (имя "auto-block-rate.json" — это спецификация из body карточки t_d83c9430).
+# Override: STALE_AUTO_BLOCK_STATE_DIR / STALE_AUTO_BLOCK_STATE_FILE.
+# Формат: {"<card_id>": <last_block_epoch>, ...}. JSON для атомарной
+# записи через python (не bash append — race condition при параллельных
+# тиках merge-gate, коих быть не должно, но flock иногда пропускает).
+STALE_AUTO_BLOCK_STATE_DIR="${STALE_AUTO_BLOCK_STATE_DIR:-$HOME/.hermes/state/merge-gate}"
+STALE_AUTO_BLOCK_STATE_FILE="${STALE_AUTO_BLOCK_STATE_FILE:-$STALE_AUTO_BLOCK_STATE_DIR/auto-block-rate.json}"
 # Ретро 15.08 t_238ff3f7: deploy-issue label-less orphan backstop. L-Deploy and
 # Verify создаёт deploy-issues с версией workflow-файла С ВЕТКИ e2e-раунда
 # (z-{e2e}/test-round-N). Если round-ветка ответвилась ДО фикса #1263
@@ -1116,6 +1131,200 @@ detect_stale_after_upstream_fix() {
     return 0
 }
 
+# stale_auto_block_state_dir — возвращает каталог для state-файла
+# (override через STALE_AUTO_BLOCK_STATE_DIR для тестов и custom deploy'ов).
+stale_auto_block_state_dir() {
+    printf '%s' "${STALE_AUTO_BLOCK_STATE_DIR:-$HOME/.hermes/state/merge-gate}"
+}
+
+# stale_auto_block_state_file — полный путь к state-файлу.
+stale_auto_block_state_file() {
+    printf '%s' "${STALE_AUTO_BLOCK_STATE_FILE:-$(stale_auto_block_state_dir)/stale-auto-block.json}"
+}
+
+# stale_auto_block_load — читает JSON state-файла в stdout (формат:
+# {"<card_id>": <epoch>, ...}). Если файл не существует или битый —
+# возвращает пустой JSON "{}". Не падает, всегда exit 0 (идемпотентно).
+stale_auto_block_load() {
+    local _file
+    _file="$(stale_auto_block_state_file)"
+    if [ ! -f "$_file" ]; then
+        printf '{}'
+        return 0
+    fi
+    python3 - "$_file" <<'PYEOF' 2>/dev/null || printf '{}'
+import json, sys, os
+p = sys.argv[1]
+try:
+    if not os.path.exists(p):
+        print("{}"); sys.exit(0)
+    with open(p, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        print("{}"); sys.exit(0)
+    # Фильтруем только int-значения (защита от мусорных ключей).
+    clean = {str(k): int(v) for k, v in data.items() if isinstance(v, (int, float))}
+    print(json.dumps(clean))
+except Exception:
+    print("{}")
+PYEOF
+}
+
+# stale_auto_block_save — атомарно записывает state-файл.
+# Использует python tempfile + os.replace для атомарности.
+# $1=JSON dict {"<card_id>": <epoch>, ...} — финальное содержимое.
+stale_auto_block_save() {
+    local _new_json="$1"
+    local _file _dir
+    _file="$(stale_auto_block_state_file)"
+    _dir="$(stale_auto_block_state_dir)"
+    mkdir -p "$_dir" 2>/dev/null || true
+    python3 - "$_file" "$_new_json" <<'PYEOF' 2>/dev/null || return 1
+import json, sys, os, tempfile
+path = sys.argv[1]
+new_data = sys.argv[2]
+try:
+    data = json.loads(new_data) if new_data else {}
+    if not isinstance(data, dict):
+        data = {}
+    parent = os.path.dirname(path)
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=parent, prefix=".stale-auto-block.", suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, sort_keys=True)
+    os.replace(tmp, path)
+except Exception:
+    sys.exit(1)
+PYEOF
+}
+
+# stale_auto_block_should_skip — primary rate-limit gate.
+# Возвращает 0 (skip = rate-limited), если state-файл содержит свежую запись
+# для card_id (NOW - last_block < cooldown). Иначе — 1 (block разрешён).
+# Это PRIMARY rate-limit (ADR-0035 / task t_d83c9430). FALLBACK на DB-комментарии
+# (kanban_last_reminder_ts) сохранён для backward compatibility со старыми
+# тиками — но если state-файл уже содержит свежую запись, DB-fallback не
+# проверяется (state-файл приоритетнее, иначе двойная проверка добавляет
+# лишний слой race condition).
+stale_auto_block_should_skip() {  # $1=card_id
+    local cid="$1"
+    local _state _last_ts _now_ts _cooldown
+    [ -z "$cid" ] && return 1
+    _state="$(stale_auto_block_load)"
+    _last_ts="$(printf '%s' "$_state" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    v = d.get('$cid')
+    print(int(v) if isinstance(v, (int, float)) else '')
+except Exception:
+    print('')
+" 2>/dev/null || true)"
+    if [ -n "$_last_ts" ]; then
+        _now_ts="$(date +%s)"
+        _cooldown="${STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS:-14400}"
+        if [ $(( _now_ts - _last_ts )) -lt "$_cooldown" ]; then
+            return 0  # skip
+        fi
+    fi
+    # PRIMARY state-файл свежей записи не нашёл → fallback на DB-комментарии
+    # (исторический rate-limit из D7, сохранён для backward compat).
+    local _marker _db_ts
+    _marker="stale-after-upstream-fix"
+    _db_ts="$(kanban_last_reminder_ts "$cid" "$_marker" 2>/dev/null || echo "")"
+    if [ -n "$_db_ts" ]; then
+        _now_ts="$(date +%s)"
+        _cooldown="${STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS:-14400}"
+        if [ $(( _now_ts - _db_ts )) -lt "$_cooldown" ]; then
+            return 0  # skip via DB fallback
+        fi
+    fi
+    return 1  # allow
+}
+
+# stale_auto_block_mark — записывает текущий timestamp в state-файл для card_id.
+stale_auto_block_mark() {  # $1=card_id
+    local cid="$1"
+    [ -z "$cid" ] && return 1
+    local _state _now_ts _new_json
+    _state="$(stale_auto_block_load)"
+    _now_ts="$(date +%s)"
+    _new_json="$(printf '%s' "$_state" | python3 -c "
+import json, sys
+cid = sys.argv[1]
+now = int(sys.argv[2])
+try:
+    data = json.load(sys.stdin)
+    if not isinstance(data, dict):
+        data = {}
+except Exception:
+    data = {}
+data[cid] = now
+print(json.dumps(data, sort_keys=True))
+" "$cid" "$_now_ts" 2>/dev/null)"
+    [ -z "$_new_json" ] && return 1
+    stale_auto_block_save "$_new_json"
+}
+
+# stale_auto_block_fetch_upstream_diff — формирует diff-строку для body patch:
+# `git log --oneline <created_ts>..origin/<base> | grep <sig>` (или tests).
+# Возвращает многострочный вывод (1+ строк), либо пустую строку если
+# ни одна стратегия не сработала. Использует REPO_DIR/git; на ошибке
+# (нет REPO_DIR / пустой git) — fallback на строку "(no diff available)".
+stale_auto_block_fetch_upstream_diff() {  # $1=created_ts $2=pr_base $3=sig_csv $4=tests_csv
+    local created_ts="$1" pr_base="$2" sig_csv="$3" tests_csv="$4"
+    local repo_dir="${REPO_DIR:-}"
+    [ -z "$repo_dir" ] || [ ! -d "$repo_dir" ] && {
+        echo "(no diff: REPO_DIR unavailable)"
+        return 0
+    }
+    local range
+    if [ -n "$created_ts" ] && [ "$created_ts" != "0" ]; then
+        range="@${created_ts}..origin/${pr_base}"
+    else
+        range="origin/${pr_base}"
+    fi
+    local out=""
+    # 1) Ищем по sig (стратегия B-attr).
+    if [ -n "$sig_csv" ]; then
+        local attr
+        attr="$(printf '%s' "$sig_csv" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | head -1)"
+        if [ -n "$attr" ]; then
+            out="$(git -C "$repo_dir" log "$range" --pretty=oneline 2>/dev/null \
+                | grep -F -- "$attr" || true)"
+        fi
+    fi
+    # 2) Fallback: ищем по tests файлам (стратегия B-tests).
+    if [ -z "$out" ] && [ -n "$tests_csv" ]; then
+        local test_file
+        test_file="$(printf '%s' "$tests_csv" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | head -1)"
+        if [ -n "$test_file" ]; then
+            out="$(git -C "$repo_dir" log "$range" --pretty=oneline -- "$test_file" 2>/dev/null || true)"
+        fi
+    fi
+    if [ -z "$out" ]; then
+        echo "(no upstream commits matched sig/tests in $range)"
+        return 0
+    fi
+    printf '%s\n' "$out" | head -10
+}
+
+# stale_auto_block_fetch_subject — возвращает subject upstream-коммита
+# (первая строка `git log -1 <sha> --pretty=%s`). Если sha пустой или
+# git/repo недоступен — возвращает пустую строку.
+stale_auto_block_fetch_subject() {  # $1=sha
+    local sha="$1"
+    local repo_dir="${REPO_DIR:-}"
+    [ -z "$sha" ] && return 0
+    [ -z "$repo_dir" ] || [ ! -d "$repo_dir" ] && {
+        # Fallback: REST API gh pr view <pr_num> не даёт subject напрямую,
+        # но для теста R4 этого достаточно — пустая строка не ломает reason,
+        # а просто оставляет sha без subject.
+        return 0
+    }
+    git -C "$repo_dir" log -1 "$sha" --pretty=format:'%s' 2>/dev/null | head -1 || true
+}
+
 stale_after_upstream_fix_scan_all() {
     # Orchestrator для auto-block + rate-limit (ADR-0035 §5.2). Сама detect
     # логика живёт в detect_stale_after_upstream_fix() — pure функция без
@@ -1205,31 +1414,13 @@ except Exception:
         fi
         [ -z "$_pr_base" ] && _pr_base="$DEVELOP_BRANCH"
 
-        # 4. Rate-limit: ищем предыдущий block-комментарий с маркером.
-        # Используем GH_JOURNAL как fallback (для тестов, где KANBAN_DB
-        # недоступна) — production-путь остаётся kanban_last_reminder_ts.
-        _marker="stale-after-upstream-fix:${_pr_num}"
-        _last_ts="$(kanban_last_reminder_ts "$_card_id" "$_marker" 2>/dev/null || echo "")"
-        if [ -z "$_last_ts" ] && [ -n "${GH_JOURNAL:-}" ] && [ -f "${GH_JOURNAL:-/nonexistent}" ]; then
-            # ADR-0035 test fixture: pre-seeded journal entries simulating
-            # prior tick. Grep for the marker line and parse its timestamp.
-            _last_ts="$(grep -E "hermes .* block ${_card_id}.*${_marker}" "${GH_JOURNAL}" 2>/dev/null \
-                | head -1 | awk '{print $1}' \
-                | awk -F'T' '{print $1"T"$2}' \
-                | python3 -c '
-import sys, datetime
-try:
-    line = sys.stdin.read().strip()
-    if not line: sys.exit(0)
-    dt = datetime.datetime.fromisoformat(line.replace("Z", "+00:00"))
-    print(int(dt.timestamp()))
-except Exception:
-    pass
-' 2>/dev/null || echo "")"
-        fi
-        _now_ts="$(date +%s)"
-        if [ -n "$_last_ts" ] && [ $(( _now_ts - _last_ts )) -lt "$STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS" ]; then
-            log "stale-after-upstream-fix: ${_card_id} — rate-limited (last=${_last_ts})"
+        # 4. Rate-limit через state-файл $STATE_DIR/auto-block-rate.json
+        # (ADR-0035 / task t_d83c9430). PRIMARY: state-файл с last_block_ts
+        # по card_id. FALLBACK на DB-комментарии (kanban_last_reminder_ts)
+        # сохранён для backward compatibility со старыми тиками, но
+        # НЕ используется когда state-файл уже содержит свежую запись.
+        if stale_auto_block_should_skip "$_card_id"; then
+            log "stale-after-upstream-fix: ${_card_id} — rate-limited (state-file or DB fallback)"
             continue
         fi
 
@@ -1292,6 +1483,21 @@ print("_det_evidence=" + shlex.quote(parts[4]))
         _reason="$_det_reason"
         _commit_sha="$_det_sha"
 
+        # 6.5. ADR-0035 / task t_d83c9430: обогатить reason commit_subject'ом.
+        # Формат: `stale-after-upstream-fix: <sha> <commit_message_short>`.
+        # Subject получаем через `git log -1 <sha> --pretty=%s` (с fallback
+        # на REST gh api для случаев когда REPO_DIR недоступен — там subject
+        # просто отсутствует, reason остаётся без short-сообщения).
+        if [ -n "$_commit_sha" ]; then
+            _subject="$(stale_auto_block_fetch_subject "$_commit_sha" || true)"
+            # Добавляем subject ТОЛЬКО если (а) sha есть, (б) subject непустой,
+            # (в) reason ещё НЕ содержит subject (избегаем двойного append при
+            # повторных тиках). Format: <reason> — <subject>.
+            if [ -n "$_subject" ] && ! printf '%s' "$_reason" | grep -qF "$_subject"; then
+                _reason="${_reason} — ${_subject}"
+            fi
+        fi
+
         # 7. DRY_RUN: только лог.
         if [ "$DRY_RUN" = "true" ]; then
             log "DRY-RUN would: block ${_card_id} with reason: ${_reason}"
@@ -1302,15 +1508,30 @@ print("_det_evidence=" + shlex.quote(parts[4]))
         if hermes kanban --board "$KANBAN_BOARD" block --kind transient \
             "$_card_id" "$_reason" >/dev/null 2>&1; then
             log "stale-after-upstream-fix: ${_card_id} auto-blocked (PR #${_pr_num}, sha=${_commit_sha:-none})"
+            # ADR-0035 / task t_d83c9430: обновить state-файл ПОСЛЕ успешного
+            # block. Это PRIMARY rate-limit запись для следующего тика.
+            stale_auto_block_mark "$_card_id" || \
+                log "stale-after-upstream-fix: WARNING state-file mark failed for ${_card_id}"
         else
             log "stale-after-upstream-fix: WARNING block ${_card_id} failed"
             continue
         fi
 
         # 9. Patch body: добавить секцию "Upstream-фикс (auto-detected)".
+        # ADR-0035 / task t_d83c9430: теперь включает
+        #   (а) URL upstream-коммита (было в прошлом PR);
+        #   (б) diff `git log --oneline <created_ts>..origin/<base> | grep <sig>`
+        #       для визуального подтверждения upstream-фикса.
         if [ -n "$_commit_sha" ]; then
             _gh_url="https://github.com/${GH_REPO}/commit/${_commit_sha}"
-            _patch="$(printf '\n\n### ✅ Upstream-фикс уже в develop (auto-detected, merge-gate ADR-0035, %s)\n\n**Причина блокировки:** %s\n\n**Upstream-коммит:** [%s](%s)\n\n**Что делать:** карточка может быть закрыта как `done` (stale-diagnostic-after-upstream-fix). Воркеру не нужно ничего чинить — регрессия upstream-починена, тесты на develop уже зелёные.\n' "$(date -u +%H:%M:%SZ)" "$_reason" "${_commit_sha:0:8}" "$_gh_url")"
+            _diff_text="$(stale_auto_block_fetch_upstream_diff \
+                "$_created_ts" "$_pr_base" "$_sig_list" "$_tests_list" || true)"
+            _diff_section=""
+            if [ -n "$_diff_text" ]; then
+                # Оборачиваем diff в ```...``` для markdown-блока.
+                _diff_section="$(printf '\n\n**Upstream-фикс (diff):**\n\n\`\`\`\n%s\n\`\`\`\n' "$_diff_text")"
+            fi
+            _patch="$(printf '\n\n### ✅ Upstream-фикс уже в develop (auto-detected, merge-gate ADR-0035, %s)\n\n**Причина блокировки:** %s\n\n**Upstream-коммит:** [%s](%s)\n%s\n**Что делать:** карточка может быть закрыта как `done` (stale-diagnostic-after-upstream-fix). Воркеру не нужно ничего чинить — регрессия upstream-починена, тесты на develop уже зелёные.\n' "$(date -u +%H:%M:%SZ)" "$_reason" "${_commit_sha:0:8}" "$_gh_url" "$_diff_section")"
             hermes kanban --board "$KANBAN_BOARD" comment "$_card_id" "$_patch" >/dev/null 2>&1 \
                 || log "stale-after-upstream-fix: WARNING body patch comment failed for ${_card_id}"
         fi

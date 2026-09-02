@@ -829,6 +829,41 @@ case "$1" in
         # Strategy B tests: emit up to 1 fake sha if hit, else nothing.
         # Pattern B-tests consults STALE_DIAG_ATTR_HIT_<file> (same fixture
         # namespace as B-attr — both upstream-fixes keyed by what changed).
+        #
+        # ADR-0035 / task t_d83c9430 (rate-limit + body patch):
+        # Pattern C: `git log -1 <sha> --pretty=format:%s` — fetch subject
+        # of upstream commit (для reason). Lookup STALE_DIAG_COMMIT_SUBJECT_<sha>.
+        # Pattern D: `git log <range> --pretty=oneline` — fetch diff lines
+        # for body patch. Lookup STALE_DIAG_LOG_ONELINE_<attr_or_file>.
+        #
+        # First: check if this is `git log -1 <sha> --pretty=format:%s`.
+        # Scan args for "-1" followed by a sha, plus "--pretty=format:%s" pattern.
+        pretty_format=""
+        prev=""
+        _has_minus_1=0
+        _minus_1_arg=""
+        for a in "$@"; do
+            case "$prev" in
+                -1) _has_minus_1=1; _minus_1_arg="$a" ;;
+            esac
+            case "$a" in
+                --pretty=*) pretty_format="$a" ;;
+            esac
+            prev="$a"
+        done
+        if [ "$_has_minus_1" = "1" ] && [ -n "$_minus_1_arg" ] \
+            && [ "$pretty_format" = "--pretty=format:%s" ] && [ -f "$state" ]; then
+            subj="$(grep -E "^STALE_DIAG_COMMIT_SUBJECT_${_minus_1_arg}=" "$state" \
+                | head -n1 | sed "s@^STALE_DIAG_COMMIT_SUBJECT_${_minus_1_arg}=@@")"
+            if [ -n "$subj" ]; then
+                printf '%s\n' "$subj"
+                exit 0
+            fi
+            # No fixture → empty subject (real git log would print subject or
+            # nothing if sha unknown; merge-gate handles empty subject fine).
+            exit 0
+        fi
+
         attr=""
         prev=""
         for a in "$@"; do
@@ -846,6 +881,27 @@ case "$1" in
                 fi
                 prev="$a"
             done
+        fi
+        # Pattern D: `git log <range> --pretty=oneline` (without -S attr).
+        # If we found no -S attr (so attr from above loop is empty or
+        # is "-- file") AND the call uses --pretty=oneline, consult
+        # STALE_DIAG_LOG_ONELINE_<attr>. This is used by stale_auto_block_fetch_upstream_diff
+        # (task t_d83c9430) to build the body-patch diff section.
+        pretty_oneline=0
+        for a in "$@"; do
+            case "$a" in
+                --pretty=oneline) pretty_oneline=1 ;;
+            esac
+        done
+        if [ "$pretty_oneline" = "1" ] && [ -f "$state" ] && [ -n "$attr" ]; then
+            diff_lines="$(grep -E "^STALE_DIAG_LOG_ONELINE_${attr}=" "$state" \
+                | head -n1 | sed "s@^STALE_DIAG_LOG_ONELINE_${attr}=@@")"
+            if [ -n "$diff_lines" ]; then
+                # Разделитель — наш собственный (чтобы не конфликтовать с
+                # \n внутри diff). Используем символ │ как record-sep.
+                printf '%s' "$diff_lines" | tr '|' '\n'
+                exit 0
+            fi
         fi
         if [ -n "$attr" ] && [ -f "$state" ]; then
             hit="$(grep -E "^STALE_DIAG_ATTR_HIT_${attr}=" "$state" | head -n1 | sed "s@^STALE_DIAG_ATTR_HIT_${attr}=@@")"
@@ -1002,6 +1058,15 @@ run_merge_gate() {
         # Isolate the flock sentinel: the production merge-gate cron holds
         # /tmp/agent-flow-merge-gate.lock and would make tests flaky.
         LOCK_FILE="$TEST_TMP/merge-gate.lock"
+        # ADR-0035 / task t_d83c9430: изолируем state-файл rate-limit,
+        # чтобы тесты не писали в production $HOME/.hermes/state/merge-gate/
+        # (одна записанная запись могла бы skip'нуть ВСЕ последующие тесты
+        # если default directory не изолирован). Override через
+        # STALE_AUTO_BLOCK_STATE_DIR в самом тесте имеет приоритет.
+        if [ -z "${STALE_AUTO_BLOCK_STATE_DIR:-}" ]; then
+            export STALE_AUTO_BLOCK_STATE_DIR="$TEST_TMP/stale-auto-block-state"
+            export STALE_AUTO_BLOCK_STATE_FILE="$STALE_AUTO_BLOCK_STATE_DIR/auto-block-rate.json"
+        fi
         export GH_REPO KANBAN_BOARD DRY_RUN ISSUE_LIMIT HERMES_HOME HERMES_BIN KANBAN_DB LOCK_FILE
         # The script sources a profile .env if present — override HOME
         # and PROFILE_ENV paths so it can't load real config.
@@ -1032,6 +1097,69 @@ new_test() {
     install_mocks
     : >"$TEST_TMP/stderr.log"
 }
+
+# ============================================================================
+# Shared fixtures (ADR-0035, task t_d83c9430)
+# ============================================================================
+# Раньше эти фикстуры жили в test_merge_gate_stale_after_upstream_fix.sh —
+# но test_merge_gate_auto_block_rate_limit.sh нужен тот же набор, и чтобы
+# не дублировать ~80 строк python-кода, выносим сюда. Existing tests тоже
+# могут их использовать (но не обязаны — старые inline-определения
+# продолжают работать как fallback, т.к. fixture_diag_card() ниже
+# override'ит себя, только если не определена).
+#
+# Координаты параметров fixture_diag_card:
+#   $1=card_id $2=status $3=pr_num $4=pr_sha $5=pr_base $6=sig_csv
+#   $7=tests_csv $8=classification $9=created_ts
+fixture_diag_card() {
+    local cid="$1" status="$2" pr_num="$3" pr_sha="$4" pr_base="$5"
+    local sig_csv="$6" tests_csv="$7" classification="$8" created_ts="$9"
+
+    # Build marker block (однострочно для совместимости с mock_env.sh,
+    # который читает key=value построчно через grep -E ... | head -n1).
+    # JSON body is single-line (raw newlines break json.loads).
+    local markers
+    markers="<!-- diag-pr: ${pr_num} --> <!-- diag-pr-sha: ${pr_sha} --> <!-- diag-pr-base: ${pr_base} --> <!-- diag-sig: ${sig_csv} --> <!-- diag-tests: ${tests_csv} --> <!-- diag-classification: ${classification} --> <!-- diag-created-ts: ${created_ts} -->"
+
+    local body="## 🐛 CI UNSTABLE: real regression в PR ${markers} Body content for card ${cid}."
+
+    # KANBAN_LIST_JSON: scan выбирает все non-terminal diagnostic-карточки.
+    local card_json
+    card_json="{\"id\":\"${cid}\",\"title\":\"🐛 CI UNSTABLE DIAGNOSTIC #${pr_num} — wts/branch\",\"status\":\"${status}\",\"body\":\"${body}\"}"
+    set_state KANBAN_LIST_JSON "[${card_json}]"
+
+    # KANBAN_SHOW_<cid>_JSON: scan достаёт body для парсинга маркеров.
+    set_state "KANBAN_SHOW_${cid}_JSON" "{\"task\":{\"id\":\"${cid}\",\"status\":\"${status}\",\"body\":\"${body}\"}}"
+
+    # PR_<pr>_VIEW_JSON: gh pr view N --json state
+    set_state "PR_${pr_num}_VIEW_JSON" '{"state":"OPEN","headRefOid":"'"${pr_sha}"'","headRefName":"wts/branch","mergeable":"MERGEABLE","mergeStateStatus":"UNSTABLE"}'
+
+    # gh pr checks N (statusCheckRollup): for strategy C (all SUCCESS).
+    # Default = SUCCESS so strat C не сработает случайно.
+    set_state "PR_${pr_num}_ROLLUP_JSON" '[{"name":"Unit Tests (ROS2 Humble)","conclusion":"SUCCESS","status":"COMPLETED"}]'
+
+    # Empty open-PR list: needed so gh pr list --state open doesn't error.
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_LIST_ALL_OPEN_REST_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+}
+
+# Strategy-B fixture: simulate `git log origin/develop -S <attr>` hit.
+# Sets STALE_DIAG_GIT_LOG_HIT_<attr>=<sha> for the mock to return.
+fixture_git_log_hit_attr() {
+    local attr="$1" sha="$2"
+    set_state "STALE_DIAG_ATTR_HIT_${attr}" "$sha"
+}
+
+# Strategy-A fixture: simulate `git merge-base --is-ancestor <sha> origin/dev`.
+fixture_git_merge_base_ancestor() {
+    local sha="$1"
+    set_state "STALE_DIAG_ANCESTOR_${sha}" "1"
+}
+
+# ============================================================================
+# Per-test scratch + journal helpers
+# ============================================================================
 
 # Helper: read all journal lines matching a pattern
 journal_grep() {  # $1=pattern
