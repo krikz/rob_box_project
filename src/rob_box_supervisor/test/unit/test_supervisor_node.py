@@ -64,6 +64,7 @@ def _make_string_msg(data: str) -> MagicMock:
 # так тесты проверяют тот самый контракт, который клиенты получают по
 # проводу, а не Trigger-обёртку. Это и есть смысл AV-12.
 
+
 def _make_typed_acquire_request(client_id: str = "", floor: str = "") -> MagicMock:
     """Создать typed-объект AcquireFloor.Request с заданными полями.
 
@@ -322,9 +323,7 @@ class TestAvatarSupervisorMonitorServices(unittest.TestCase):
 
     def test_set_avatar_mode_monitor_response(self) -> None:
         svc = next(s for s in self.node._services if s.name == "set_avatar_mode")
-        req = _make_typed_set_mode_request(
-            client_id="telegram1", mode="telegram_acquire_floor"
-        )
+        req = _make_typed_set_mode_request(client_id="telegram1", mode="telegram_acquire_floor")
         resp = _make_typed_response(_get_typed_set_mode_full_type())
         svc.callback(req, resp)
         body = _set_mode_response_to_dict(resp)

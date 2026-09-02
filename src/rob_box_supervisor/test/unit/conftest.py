@@ -23,7 +23,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 
-def _install_ros_mocks() -> None:
+def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with IDL mocks
     # ── rclpy package + sub-modules ───────────────────────────────────
     mock_rclpy = MagicMock()
     mock_rclpy.ok = MagicMock(return_value=True)

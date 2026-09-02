@@ -331,7 +331,9 @@ class AvatarSupervisor(Node):
         # (CI mock-rclpy, битая сборка), фолбэк на std_srvs/Trigger с
         # JSON-в-message — прежний W3-2 контракт, и нода остаётся в monitor.
         self._msgs_types = _try_load_supervisor_msgs()
-        self._use_typed_floor_services: bool = self._msgs_types["AcqReq"] is not None and self._msgs_types["SetReq"] is not None
+        self._use_typed_floor_services: bool = (
+            self._msgs_types["AcqReq"] is not None and self._msgs_types["SetReq"] is not None
+        )
 
         if not self._use_typed_floor_services:
             # Не fatal — это fail-safe (ADR-0028 §4.5). Нода остаётся
@@ -381,15 +383,9 @@ class AvatarSupervisor(Node):
         else:
             from std_srvs.srv import Trigger
 
-            self._srv_acquire = self.create_service(
-                Trigger, self.ACQUIRE_FLOOR_SERVICE, self._on_acquire_floor_fb
-            )
-            self._srv_release = self.create_service(
-                Trigger, self.RELEASE_FLOOR_SERVICE, self._on_release_floor_fb
-            )
-            self._srv_set_mode = self.create_service(
-                Trigger, self.SET_AVATAR_MODE_SERVICE, self._on_set_avatar_mode_fb
-            )
+            self._srv_acquire = self.create_service(Trigger, self.ACQUIRE_FLOOR_SERVICE, self._on_acquire_floor_fb)
+            self._srv_release = self.create_service(Trigger, self.RELEASE_FLOOR_SERVICE, self._on_release_floor_fb)
+            self._srv_set_mode = self.create_service(Trigger, self.SET_AVATAR_MODE_SERVICE, self._on_set_avatar_mode_fb)
 
     # ── helpers ──────────────────────────────────────────────────────
     def _log_startup_diagnostics(self) -> None:
@@ -818,14 +814,14 @@ class AvatarSupervisor(Node):
 
         try:
             new_mode = self._mode_manager.transition(event, client_id)
-        except ValueError as exc:
+        except ValueError:
             return {
                 "success": True,
                 "applied": False,
                 "mode": self._mode_manager.mode.value,
                 "reason": REASON_INVALID_EVENT,
             }
-        except FSMConflictError as exc:
+        except FSMConflictError:
             return {
                 "success": True,
                 "applied": False,
