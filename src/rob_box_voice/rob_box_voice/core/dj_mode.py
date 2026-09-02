@@ -124,33 +124,37 @@ class DJModeController:
         # DJ идёт по плану и завершается финальным объявлением, а не
         # молча по лимиту DJ_AUTO_MAX_TRANSITIONS.
         #
-        # 🔴 FIX (live 01.09, issue #992): старая логика сравнивала СТРОКУ
-        # плана и сбрасывала transition_count при любом расхождении. На
-        # практике модель почти на КАЖДОМ переходе присылает set_dj_mode с
-        # planом, переписанным своими словами (промпт этого не запрещает) —
-        # строка отличается, счётчик обнулялся, build_auto_prompt(1) снова
-        # получал «[DJ_AUTO — СТАРТ ВЕЧЕРИНКИ]», модель снова сочиняла план
-        # и снова вызывала set_dj_mode(plan=...) — бесконечный цикл, сет
-        # НИКОГДА не доходил ни до финального трека, ни до auto-stop
-        # (оба гейтятся на transition_count vs длину плана). Живой прогон
-        # 01.09: «вечеринка у черепашек-ниндзя» — 8 «rewrite» подряд за 12
-        # минут, ни одного перехода дальше #1. Теперь только ГЕНУИННЫЙ
-        # старт (DJ был выключен) обнуляет прогресс; текст плана,
-        # присланный ВНУТРИ уже идущей сессии, обновляет описание, но не
-        # трогает счётчик.
+        # 🔴 FIX (issue #992, follow-up 01.09): предыдущая логика опиралась
+        # на `is_fresh_start` (DJ был выключен) и не сбрасывала
+        # transition_count при переписывании плана ВНУТРИ уже идущей сессии —
+        # ровно тот сценарий, когда юзер/модератор заменил сет на лету:
+        # счётчик оставался 5+, build_auto_prompt снова уходил в
+        # «[DJ_AUTO — СТАРТ ВЕЧЕРИНКИ]», следующий tick запускал переход #1
+        # на новом сете вместо продолжения. Контракт из
+        # test_dramaturgy_fix_1016:
+        #   * первый план (set_plan был пустой) — НЕ сбрасываем, иначе
+        #     build_auto_prompt(1) уже отстрелял бы повторно;
+        #   * переписывание плана (set_plan уже непустой) — счётчик с нуля,
+        #     это ГЕНУИННЫЙ новый сет.
         plan = data.get("plan")
         if plan and isinstance(plan, str) and plan.strip():
             new_plan = plan.strip()
             if new_plan != self.state.set_plan:
+                # Перезапись плана = у юзера (или модератора) новый сет,
+                # счётчик переходов сбрасываем. Первый план (set_plan был
+                # пустой) — НЕ трогаем счётчик: build_auto_prompt(1) уже
+                # был вызван, иначе следующий tick снова запустит
+                # «СТАРТ ВЕЧЕРИНКИ».
+                is_rewrite = bool(self.state.set_plan)
                 self.state.set_plan = new_plan
-                if is_fresh_start:
+                if is_rewrite:
                     self.state.transition_count = 0
-                suffix = (
-                    ""
-                    if is_fresh_start
-                    else f" (updated mid-session, progress kept at "
-                    f"#{self.state.transition_count})"
-                )
+                    suffix = " (rewrite, counter reset to 0)"
+                else:
+                    suffix = (
+                        f" (first plan, progress kept at "
+                        f"#{self.state.transition_count})"
+                    )
                 self._logger.info(
                     f"🎧 DJ plan: {len(new_plan.splitlines())} треков{suffix}"
                 )
