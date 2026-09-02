@@ -9,15 +9,25 @@ ROS-окружение):
        --cases /config/voice_bench/cases.yaml --out /tmp/bench_on.json --repeat 3"
 
 Как устроено. Реплика публикуется в ``/voice/stt/result`` — тот же топик,
-в который пишет stt_node, поэтому робот обрабатывает её как обычную речь
-(wake-word в тексте обязателен, иначе сработает gate). Результат хода
+в который пишет ``stt_node``, поэтому робот обрабатывает её как обычную
+речь (wake-word в тексте обязателен, иначе сработает gate). Результат
 берётся из лог-файла ноды: там лежит и ``spoken``, и список вызванных
 инструментов, и предупреждения о ретраях — то есть вся траектория, а не
-только финальная фраза. Оценка по траектории, а не по словам — принцип
-τ-bench и BFCL.
+только финальная фраза. Оценка по траектории — принцип τ-bench и BFCL.
 
 Скрипт НИЧЕГО не оценивает: он собирает сырьё. Баллы ставит ``score.py``,
 чтобы правила оценки можно было менять и перепроверять, не трогая прогон.
+
+Три грабли, на которые он наступил на живом роботе — не наступайте снова:
+
+1. ``ros2 topic pub --once`` теряет сообщение: одноразовый паблишер
+   закрывается раньше, чем подписчик его обнаружит. Отсюда ``Speaker``.
+2. ``TextIOWrapper.seek`` принимает не байты, а cookie от ``tell()`` —
+   чтение с байтового смещения молча уходило в никуда.
+3. Ходы РОБОТА идут вперемешку с нашими: DJ-режим сам генерирует
+   переходы каждые 45-75 секунд. Ждать «первое завершение после
+   публикации» нельзя — кейс заберёт чужой ход. Корреляция строго по
+   ``user_input`` в строке ``handle_result``.
 """
 from __future__ import annotations
 
@@ -30,14 +40,34 @@ from pathlib import Path
 from typing import Any
 
 LOG_DIR = Path("/root/.ros/log")
-#: Хвост строки завершения хода в разных сборках разный: где-то
-#: ``error=None``, где-то ``finish_reason='stop'``. Цепляемся за то, что
-#: стабильно — spoken и tools, — а хвост разбираем отдельно.
-TURN_RE = re.compile(
-    r"process_input returned: spoken=(?P<spoken>.*?)\[:60\] "
-    r"tools=(?P<tools>\[.*?\])(?P<tail>.*)"
+
+#: Строка с результатом хода, несущая И ответ, И исходную реплику —
+#: единственная в логе, по которой ход можно связать со своей репликой.
+RESULT_RE = re.compile(
+    r"\[handle_result\] spoken=(?P<spoken>.*?) \(len=\d+\) "
+    r"tools=(?P<tools>\[.*?\]) user_input='(?P<user>.*?)'",
+    re.DOTALL,
 )
 TOOLCALL_RE = re.compile(r"ToolCall\(id='[^']*', name='(?P<name>\w+)'")
+
+#: Ходы, которые робот генерирует сам (автопереходы диджея). Их нельзя
+#: путать с ответами на наши реплики.
+_ROBOT_OWN = ("[DJ_AUTO", "[SYSTEM CORRECTION")
+
+_WAKE_WORDS = ("робот", "робокс", "робобокс")
+
+#: Фраза, которой глушим музыку, если кейс оставил диджея включённым.
+QUIET_PHRASE = "робот хватит диджеить выключи музыку"
+
+
+def _tail(path: Path, size: int) -> str:
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, 2)
+            fh.seek(max(0, fh.tell() - size))
+            return fh.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
 
 
 def find_log() -> Path:
@@ -56,24 +86,27 @@ def find_log() -> Path:
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
-def _tail(path: Path, size: int) -> str:
-    try:
-        with path.open("rb") as fh:
-            fh.seek(0, 2)
-            fh.seek(max(0, fh.tell() - size))
-            return fh.read().decode("utf-8", "replace")
-    except OSError:
-        return ""
+def _read_from(log: Path, offset: int) -> str:
+    """Прочитать хвост файла с байтового смещения (строго бинарно)."""
+    with log.open("rb") as fh:
+        fh.seek(offset)
+        return fh.read().decode("utf-8", "replace")
+
+
+def _key_of(phrase: str) -> str:
+    """Отпечаток реплики, по которому её видно в ``user_input``.
+
+    Нода печатает реплику без wake-word и обрезает длинные — поэтому
+    берём начало фразы, а не всю.
+    """
+    words = phrase.split()
+    if words and words[0].lower().strip(",") in _WAKE_WORDS:
+        words = words[1:]
+    return " ".join(words).strip()[:28]
 
 
 class Speaker:
-    """Публикует реплики в ``/voice/stt/result`` от лица «распознанной речи».
-
-    Через ``ros2 topic pub --once`` это не работает: одноразовый паблишер
-    успевает закрыться раньше, чем подписчик его обнаружит, и сообщение
-    теряется молча (первые прогоны бенчмарка собрали нули именно так).
-    Поэтому свой узел, живущий весь прогон, и явное ожидание подписчика.
-    """
+    """Публикует реплики в ``/voice/stt/result`` от лица «распознанной речи»."""
 
     def __init__(self) -> None:
         import rclpy
@@ -112,84 +145,57 @@ class Speaker:
         self._rclpy.shutdown()
 
 
-def _read_from(log: Path, offset: int) -> str:
-    """Прочитать хвост файла с байтового смещения.
+def _match_ours(chunk: str, key: str) -> re.Match[str] | None:
+    """Найти ход, который отвечает ИМЕННО на нашу реплику."""
+    for m in RESULT_RE.finditer(chunk):
+        user = m.group("user")
+        if any(user.startswith(marker) for marker in _ROBOT_OWN):
+            continue  # ход робота о себе самом (автопереход диджея)
+        if key and key[:20] in user:
+            return m
+    return None
 
-    Строго в бинарном режиме: ``TextIOWrapper.seek`` принимает не байты, а
-    непрозрачный cookie от ``tell()``, и произвольное смещение уводит
-    чтение в никуда — на этом первый прогон бенчмарка молча собрал нули.
-    """
-    with log.open("rb") as fh:
-        fh.seek(offset)
-        return fh.read().decode("utf-8", "replace")
 
-
-def _key_of(phrase: str) -> str:
-    """Отпечаток реплики, по которому её видно в логе.
-
-    Нода печатает ``user_input`` уже без wake-word и с префиксом
-    ``[Speaker:...]``, поэтому цепляемся за остаток фразы.
-    """
-    words = phrase.split()
-    if words and words[0].lower().strip(",") in ("робот", "робокс", "робобокс"):
-        words = words[1:]
-    return " ".join(words).strip()
+def _stats(text: str) -> dict[str, Any]:
+    return {
+        "llm_requests": _llm_calls(text),
+        "truncated": text.count("TRUNCATED_TOOL_ARGS"),
+        "retry_no_music": text.count("В прошлом цикле ты НЕ вызвал"),
+        "provider_fallback": text.count("UNCLASSIFIED failure"),
+        "suppressed_speech": text.count("issue 1708"),
+        "dj_auto_turns": text.count("DJ auto-transition"),
+        "skill": _skill(text),
+    }
 
 
 def collect(log: Path, offset: int, timeout: float, phrase: str) -> dict[str, Any]:
-    """Дождаться завершения ИМЕННО НАШЕГО хода и вытащить его траекторию.
-
-    Ждать «первое завершение после публикации» нельзя: если предыдущий
-    ход ещё доигрывал, кейс забирал ЕГО результат, а свой оставлял
-    следующему. Первый полный прогон на роботе именно так и уехал —
-    ответы сдвинулись на один кейс, и таблица стала мусором, выглядящим
-    правдоподобно. Поэтому сначала ищем в логе свою реплику, и только
-    после неё — завершение хода.
-    """
+    """Дождаться завершения НАШЕГО хода и вытащить его траекторию."""
     key = _key_of(phrase)
     deadline = time.time() + timeout
     while time.time() < deadline:
         chunk = _read_from(log, offset)
-        start = chunk.find(key)
-        if start != -1:
-            mine = chunk[start:]
-            m = TURN_RE.search(mine)
-            if m:
-                return _parse(mine, m)
+        m = _match_ours(chunk, key)
+        if m:
+            body = chunk[: m.end()]
+            return {
+                "spoken": m.group("spoken").strip().strip("'"),
+                "tools": re.findall(r"'(\w+)'", m.group("tools")),
+                "tool_calls": TOOLCALL_RE.findall(body),
+                "error": None,
+                "raw": body[-4000:],
+                **_stats(body),
+            }
         time.sleep(0.7)
+
     chunk = _read_from(log, offset)
-    if key not in chunk:
-        chunk = f"[реплика не дошла до ноды] {chunk}"
+    delivered = key[:20] in chunk
     return {
         "spoken": "",
         "tools": [],
-        "error": "NOT_DELIVERED" if "не дошла" in chunk else "TIMEOUT",
-        "llm_requests": _llm_calls(chunk),
-        "truncated": chunk.count("TRUNCATED_TOOL_ARGS"),
-        "retry_no_music": chunk.count("В прошлом цикле ты НЕ вызвал"),
-        "provider_fallback": chunk.count("UNCLASSIFIED failure"),
-        "suppressed_speech": chunk.count("issue 1708"),
-        "skill": _skill(chunk),
+        "tool_calls": [],
+        "error": "TIMEOUT" if delivered else "NOT_DELIVERED",
         "raw": chunk[-4000:],
-    }
-
-
-def _parse(chunk: str, m: re.Match[str]) -> dict[str, Any]:
-    body = chunk[: m.end()]
-    spoken = m.group("spoken").strip().strip("'")
-    tools = re.findall(r"'(\w+)'", m.group("tools"))
-    return {
-        "spoken": spoken,
-        "tools": tools,
-        "tool_calls": TOOLCALL_RE.findall(body),
-        "error": _error_of(m.group("tail")),
-        "llm_requests": _llm_calls(body),
-        "truncated": body.count("TRUNCATED_TOOL_ARGS"),
-        "retry_no_music": body.count("В прошлом цикле ты НЕ вызвал"),
-        "provider_fallback": body.count("UNCLASSIFIED failure"),
-        "suppressed_speech": body.count("issue 1708"),
-        "skill": _skill(body),
-        "raw": body[-4000:],
+        **_stats(chunk),
     }
 
 
@@ -198,18 +204,11 @@ def _llm_calls(text: str) -> int:
 
     ``LLM REQUEST START`` печатается в stdout контейнера, а не в лог ноды,
     поэтому считаем по строке health-обёртки: она пишется штатным
-    логгером на каждое обращение, включая ретраи и уход на запасного
-    провайдера.
+    логгером на каждое обращение, включая ретраи и уход на запасного.
     """
-    return max(1, len(re.findall(r"streaming from provider|complete from provider", text)))
-
-
-def _error_of(tail: str) -> str | None:
-    """Ошибка хода из хвоста строки, если сборка её туда пишет."""
-    m = re.search(r"error=(\S+)", tail)
-    if not m or m.group(1).rstrip(",") == "None":
-        return None
-    return m.group(1).rstrip(",")
+    return max(
+        1, len(re.findall(r"streaming from provider|complete from provider", text))
+    )
 
 
 def _skill(text: str) -> str:
@@ -218,12 +217,8 @@ def _skill(text: str) -> str:
     return found[-1] if found else "none"
 
 
-def _wait_idle(log: Path, extra: float, limit: float = 25.0) -> None:
-    """Подождать, пока лог перестанет расти: ход и его TTS доиграли.
-
-    Без этого следующая реплика уходит роботу, пока он ещё говорит
-    предыдущую, и ходы наслаиваются.
-    """
+def _wait_idle(log: Path, limit: float = 25.0) -> None:
+    """Подождать, пока лог перестанет расти: ход и его TTS доиграли."""
     deadline = time.time() + limit
     last = -1
     while time.time() < deadline:
@@ -234,13 +229,28 @@ def _wait_idle(log: Path, extra: float, limit: float = 25.0) -> None:
         time.sleep(1.5)
 
 
+def _quiet_down(speaker: Speaker, log: Path, turn: dict[str, Any]) -> bool:
+    """Заглушить диджея, если кейс оставил его включённым.
+
+    Иначе автопереходы диджея идут вперемешку с остальными кейсами и
+    портят весь дальнейший прогон — так уехал первый прогон со
+    скиллами выключенными.
+    """
+    if "set_dj_mode" not in turn.get("tools", []) and not turn.get("dj_auto_turns"):
+        return False
+    speaker.say(QUIET_PHRASE)
+    time.sleep(4)
+    _wait_idle(log)
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cases", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
-    ap.add_argument("--repeat", type=int, default=1, help="повторов каждого кейса (pass^k)")
-    ap.add_argument("--timeout", type=float, default=60.0, help="ожидание хода, секунд")
-    ap.add_argument("--pause", type=float, default=6.0, help="пауза между кейсами, секунд")
+    ap.add_argument("--repeat", type=int, default=1, help="повторов кейса (pass^k)")
+    ap.add_argument("--timeout", type=float, default=60.0, help="ожидание хода, сек")
+    ap.add_argument("--pause", type=float, default=4.0, help="пауза между кейсами, сек")
     ap.add_argument("--only", help="id кейсов через запятую")
     ap.add_argument("--label", default="", help="метка конфигурации в отчёте")
     args = ap.parse_args(argv)
@@ -262,20 +272,22 @@ def main(argv: list[str] | None = None) -> int:
     turns: list[dict[str, Any]] = []
     for rep in range(1, args.repeat + 1):
         for case in cases:
+            _wait_idle(log)
             offset = log.stat().st_size
             print(f"[{rep}/{args.repeat}] {case['id']}: {case['say']}", flush=True)
             speaker.say(str(case["say"]))
-            turn = collect(log, offset, args.timeout, str(case['say']))
+            turn = collect(log, offset, args.timeout, str(case["say"]))
             turn.update(case_id=str(case["id"]), repeat=rep, say=str(case["say"]))
             turns.append(turn)
             print(
-                f"    → tools={turn['tools']} spoken={turn['spoken'][:50]!r} "
-                f"skill={turn['skill']} llm×{turn['llm_requests']}",
+                f"    → tools={turn['tools']} spoken={turn['spoken'][:48]!r} "
+                f"skill={turn['skill']} llm×{turn['llm_requests']}"
+                + ("  [глушу диджея]" if _quiet_down(speaker, log, turn) else ""),
                 flush=True,
             )
             time.sleep(args.pause)
-            _wait_idle(log, args.pause)
 
+    speaker.close()
     payload = {
         "config": {
             "label": args.label,
@@ -284,7 +296,6 @@ def main(argv: list[str] | None = None) -> int:
         },
         "turns": turns,
     }
-    speaker.close()
     args.out.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )

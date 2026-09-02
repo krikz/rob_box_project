@@ -223,11 +223,10 @@ def test_collect_takes_its_own_turn_not_the_previous_one(tmp_path) -> None:
     log = tmp_path / "node.log"
     _write(
         log,
-        "[dialogue_node]: process_input returned: spoken='ЧУЖОЙ ОТВЕТ'[:60] "
-        "tools=['set_dj_mode'] finish_reason='stop'",
-        "[dialogue_node]: calling process_input: user_input='[Speaker:unknown] это кухня'",
-        "[dialogue_node]: process_input returned: spoken='Запомнила кухню.'[:60] "
-        "tools=['save_waypoint'] finish_reason='stop'",
+        "[dialogue_node]: [handle_result] spoken='ЧУЖОЙ ОТВЕТ' (len=11) "
+        "tools=['set_dj_mode'] user_input='будь диджеем устрой вечеринку'",
+        "[dialogue_node]: [handle_result] spoken='Запомнила кухню.' (len=16) "
+        "tools=['save_waypoint'] user_input='[Speaker:unknown] это кухня'",
     )
     turn = rb.collect(log, 0, timeout=1.0, phrase="робот это кухня")
     assert turn["spoken"] == "Запомнила кухню."
@@ -256,8 +255,49 @@ def test_collect_reads_from_byte_offset(tmp_path) -> None:
     offset = log.stat().st_size
     _append(
         log,
-        "calling process_input: user_input='[Speaker:unknown] это кухня'",
-        "process_input returned: spoken='Ок'[:60] tools=['save_waypoint'] error=None",
+        "[handle_result] spoken='Ок' (len=2) tools=['save_waypoint'] "
+        "user_input='[Speaker:unknown] это кухня'",
     )
     turn = rb.collect(log, offset, timeout=1.0, phrase="робот это кухня")
     assert turn["tools"] == ["save_waypoint"]
+
+
+def test_collect_ignores_the_robots_own_dj_turns(tmp_path) -> None:
+    """Диджей сам генерирует ходы каждые 45-75 секунд.
+
+    Прогон со скиллами выключенными уехал именно так: dj-stop не сработал,
+    диджей продолжил крутить сет, и кейс `nav-save` получил ответ
+    «Трек #1 в деле — разгоняю вечеринку».
+    """
+    rb = _runner()
+    log = tmp_path / "node.log"
+    _write(
+        log,
+        "[handle_result] spoken='Трек #1 в деле' (len=14) "
+        "tools=['compose_music'] user_input='[DJ_AUTO переход #3] Ты диджей'",
+        "[handle_result] spoken='Запомнила кухню.' (len=16) "
+        "tools=['save_waypoint'] user_input='[Speaker:unknown] это кухня'",
+    )
+    turn = rb.collect(log, 0, timeout=1.0, phrase="робот это кухня")
+    assert turn["tools"] == ["save_waypoint"]
+    assert "Трек" not in turn["spoken"]
+
+
+def test_quiet_down_fires_when_a_case_leaves_the_dj_running(tmp_path) -> None:
+    """Кейс, включивший диджея, обязан быть заглушен до следующего."""
+    rb = _runner()
+    log = tmp_path / "node.log"
+    _write(log, "тихо")
+
+    said: list[str] = []
+
+    class _FakeSpeaker:
+        def say(self, text: str) -> None:
+            said.append(text)
+
+    assert rb._quiet_down(_FakeSpeaker(), log, {"tools": ["set_dj_mode"]}) is True
+    assert said == [rb.QUIET_PHRASE]
+
+    said.clear()
+    assert rb._quiet_down(_FakeSpeaker(), log, {"tools": ["save_waypoint"]}) is False
+    assert said == []
