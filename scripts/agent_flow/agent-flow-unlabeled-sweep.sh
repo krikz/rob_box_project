@@ -356,8 +356,12 @@ while IFS=$'\t' read -r number title updated_at created_at labels_csv; do
     if [ "$DRY_RUN" != "true" ]; then
       gh issue edit "$number" --repo "$GH_REPO" --remove-label "$STALE_LABEL" >/dev/null 2>&1 || true
       gh issue comment "$number" --repo "$GH_REPO" --body \
-        "$(printf '⏰ auto-sweep stale-candidate → close (ADR-0022 GATE-2): issue в OPEN без process-меток %s+ час, метка %s висела %s+ час без user-reopen. Закрыто как not_planned. Если проблема всё ещё актуальна — откройте новый issue с актуальным контекстом.' "$STALE_HOURS_1" "$STALE_LABEL" "$STALE_HOURS_2")" >/dev/null 2>&1 || true
-      if gh issue close "$number" --repo "$GH_REPO" --reason not_planned >/dev/null 2>&1; then
+        "$(printf '⏰ auto-sweep stale-candidate → close (ADR-0022 GATE-2): issue в OPEN без process-меток %s+ час, метка %s висела %s+ час без user-reopen. Закрыто как not planned. Если проблема всё ещё актуальна — откройте новый issue с актуальным контекстом.' "$STALE_HOURS_1" "$STALE_LABEL" "$STALE_HOURS_2")" >/dev/null 2>&1 || true
+      # Ретро t_e198c3f3: gh CLI требует `--reason "not planned"` (с пробелом),
+      # НЕ `not_planned` (подчёркивание) — иначе close падает с
+      # "invalid argument" и errored+=1 каждый тик, метка уже снята, issue
+      # остаётся OPEN → бесконечный retry.
+      if gh issue close "$number" --repo "$GH_REPO" --reason "not planned" >/dev/null 2>&1; then
         closed=$((closed+1))
       else
         log "issue #${number}: WARNING close failed — retry next tick"
@@ -387,7 +391,7 @@ while IFS=$'\t' read -r number title updated_at created_at labels_csv; do
   if [ "$DRY_RUN" != "true" ]; then
     if gh issue edit "$number" --repo "$GH_REPO" --add-label "$STALE_LABEL" >/dev/null 2>&1; then
       gh issue comment "$number" --repo "$GH_REPO" --body \
-        "$(printf '⚠️ auto-sweep pending stale-candidate (ADR-0022 GATE-2): issue в OPEN без process-меток уже %s+ час. Через %s час метка `stale-candidate` будет снята и issue закрыта как not_planned. Если вы работаете над ней — откройте любой комментарий или переоткройте issue после возможного системного close, метка будет снята автоматически.' "$STALE_HOURS_1" "$STALE_HOURS_2")" >/dev/null 2>&1 || true
+        "$(printf '⚠️ auto-sweep pending stale-candidate (ADR-0022 GATE-2): issue в OPEN без process-меток уже %s+ час. Через %s час метка `stale-candidate` будет снята и issue закрыта как not planned. Если вы работаете над ней — откройте любой комментарий или переоткройте issue после возможного системного close, метка будет снята автоматически.' "$STALE_HOURS_1" "$STALE_HOURS_2")" >/dev/null 2>&1 || true
       stale_marked=$((stale_marked+1))
     else
       log "issue #${number}: WARNING label-add failed — retry next tick"
