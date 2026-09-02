@@ -1020,3 +1020,130 @@ def test_extract_relevant_log_line_still_catches_dialogue_python_exception_after
 
     assert line is not None
     assert "ERROR" in line
+
+
+def test_extract_relevant_log_line_ignores_stt_yandex_error_vosk_ok_success_chain() -> None:
+    """Issue #1875, deploy run 33605805375 (02.09 07:53 UTC, kanban
+    t_198f9374): voice-assistant logs `[stt_attempt]
+    yandex:error(52ms)->yandex:error(551ms)->vosk:ok(1557ms '...') ->
+    accepted '...'` whenever Yandex STT returns transient errors but
+    Vosk successfully recognizes the phrase and the turn is accepted.
+    The `yandex:error` token trips CRITICAL_MATCH_RE on the bare word
+    `error` and files a false deploy-critical on otherwise green runs
+    (Vision Pi voice-assistant healthy + 193 ROS2 topics, Main Pi
+    perception healthy, all container_status checks passing). The
+    exclusion matches lines that carry BOTH `[stt_attempt]` and
+    `vosk:ok` in the same chain — the operator-facing signal here is
+    `accepted`, not `error`.
+    """
+    log_text = (
+        "[INFO] [ros_vision-1]: process started with pid [123]\n"
+        "[INFO] [1788335862.073783216] [stt_node]: [stt_attempt] "
+        "yandex:error(52ms)->yandex:error(551ms)->vosk:ok(1557ms "
+        "'а меня бабушка') -> accepted 'а меня бабушка'\n"
+        "[INFO] [voice_node]: pipeline healthy"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_stt_yandex_error_vosk_ok_in_main_scope() -> None:
+    """Sibling of the previous test: the exclusion is in
+    CRITICAL_EXCLUDE_COMMON, so it must silence the FP regardless of
+    scope. health_monitor re-echoes stt_node lines over the shared
+    /rosout bus, and the deploy gate used to file a false
+    deployment-critical against the perception container for the
+    Vision Pi voice-assistant's transient STT fallback. Same pattern
+    must NOT match here either.
+    """
+    log_text = (
+        "[dialogue_node-4] dialogue turn completed\n"
+        "[INFO] [stt_node]: [stt_attempt] "
+        "yandex:error(80ms)->vosk:ok(1200ms 'привет') -> accepted 'привет'"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_still_catches_stt_yandex_error_without_fallback() -> None:
+    """Negative test for the yandex:error→vosk:ok exclusion above:
+    real STT failures where the fallback chain does NOT recover MUST
+    still surface as a deploy-critical issue. `yandex:error(1500ms) -
+    no stt provider succeeded` carries no `vosk:ok` token in the line,
+    so the exclusion does not match and CRITICAL_MATCH_RE flags the
+    `error` word as before.
+    """
+    log_text = (
+        "[ERROR] [stt_node]: [stt_attempt] yandex:error(1500ms) - no stt provider succeeded\n"
+        "[INFO] [voice_node]: pipeline degraded"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is not None
+    assert "no stt provider succeeded" in line
+
+
+def test_extract_relevant_log_line_still_catches_stt_attempt_all_providers_error_rejected() -> None:
+    """Negative test for the yandex:error→vosk:ok exclusion: when the
+    STT attempt chain fails completely (`yandex:error->vosk:error->
+    rejected`), there is no successful `vosk:ok` token and the
+    exclusion does not match. CRITICAL_MATCH_RE still flags `error`
+    via the yandex:error and vosk:error tokens, so the operator sees
+    the deploy-critical issue. Without this negative test the
+    exclusion could silently regress to swallow ALL stt_attempt
+    failures.
+    """
+    log_text = (
+        "[ERROR] [stt_node]: [stt_attempt] "
+        "yandex:error(100ms)->vosk:error(200ms) -> rejected\n"
+        "[WARN] [voice_node]: user turn aborted"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is not None
+    assert "rejected" in line
+
+
+def test_extract_relevant_log_line_still_catches_stt_yandex_ok_without_error_token() -> None:
+    """Negative test for the yandex:error→vosk:ok exclusion: a
+    successful single-provider STT chain (`yandex:ok(100ms) -> accepted
+    'привет'`) carries no `yandex:error` token, so the exclusion does
+    not match. CRITICAL_MATCH_RE does not fire on the `ok` token
+    either, so the line returns None on its own. The important point
+    is that the exclusion does NOT cause this benign line to surface
+    as a deploy-critical — we assert None explicitly to lock the
+    behaviour.
+    """
+    log_text = (
+        "[INFO] [stt_node]: [stt_attempt] yandex:ok(100ms) -> accepted 'привет'"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_still_catches_stt_fatal_microphone_error() -> None:
+    """Negative test for the yandex:error→vosk:ok exclusion: a hard
+    STT failure (`FATAL: microphone device not found`) carries no
+    `[stt_attempt]` envelope at all, so the exclusion cannot apply.
+    CRITICAL_MATCH_RE matches `fatal` and the operator sees the
+    deploy-critical issue. This guards against the exclusion being
+    open-ended enough to swallow real `FATAL` lines that happen to
+    mention stt_node in their logger prefix.
+    """
+    log_text = (
+        "[ERROR] [stt_node]: FATAL: microphone device not found - aborting\n"
+        "[INFO] [voice_node]: pipeline aborted"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is not None
+    assert "FATAL" in line

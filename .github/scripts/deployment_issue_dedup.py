@@ -296,6 +296,24 @@ CRITICAL_EXCLUDE_COMMON = [
     # another rule. Drop the `^` anchor so the bare header - alone or
     # with a logger prefix - is excluded uniformly.
     r"^\[.*\] traceback \(most recent call last\):$|^Traceback \(most recent call last\):$",
+    # stt_node successful-fallback echo (issue #1875, deploy run
+    # 33605805375, 02.09 07:53 UTC, kanban t_198f9374): voice-assistant
+    # logs `[stt_attempt] yandex:error(Nms)->...->vosk:ok(Nms '...') ->
+    # accepted '...'` whenever Yandex STT returns transient errors but
+    # Vosk successfully recognizes the phrase and the turn is accepted.
+    # The `yandex:error` token trips CRITICAL_MATCH_RE on the bare word
+    # `error` and files a false deploy-critical on otherwise green runs
+    # (Vision Pi voice-assistant healthy + 193 ROS2 topics, Main Pi
+    # perception healthy, all container_status checks passing). The
+    # pre-existing `yandex:empty(.*)->.*:empty(.*) -> rejected` warning
+    # exclusion (retro 12.08 t_d3e44336) only covers the empty-rejection
+    # code path; the error→ok success path needs its own rule. Narrow
+    # the match to lines that carry BOTH `[stt_attempt]` and a `vosk:ok`
+    # provider in the same chain - real STT failures (`FATAL: microphone
+    # not found`, `yandex:error(1500ms) - no stt provider succeeded`,
+    # `[stt_attempt] yandex:error->vosk:error->rejected`) do not match
+    # the `vosk:ok` half and continue to surface as critical issues.
+    r"\[stt_attempt\][^]]*yandex:error[^]]*vosk:ok",
 ]
 CRITICAL_EXCLUDE_BY_SCOPE = {
     "main": [
