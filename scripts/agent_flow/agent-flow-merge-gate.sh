@@ -759,7 +759,7 @@ for (fname, sha), prs in sorted(seen.items()):
 #
 # Кейсы:
 #   - PR #1623 / #1611 (25.08.2026): architect-worker открыл напрямую,
-#     base=feature/avatar, нет kanban-marker в issue #1600/#1597. CONFLICTING
+#     base=develop (пример), нет kanban-marker в issue #1600/#1597. CONFLICTING
 #     висит 5-8ч.
 #   - PR с label `agent-flow` / `agent-flow-error` / `needs-e2e` /
 #     `needs-review` но без marker'а — должен попасть под этот guard.
@@ -852,7 +852,7 @@ PR имеет process-метку (agent-flow* / needs-e2e / needs-review), но 
 **Что делать (приоритет для шисюна/Шифу):**
 1. Связать PR ↔ kanban-карточку: добавить kanban-marker в issue #${_wm_issue} (комментарий \`kanban: t_xxxxxxxxxxxxx branch: ${_wm_head} role: <role>\`), затем \`hermes kanban --board robbox complete t_xxxxxxxxxxxxx\` с raw-evidence и тестами.
 2. Либо закрыть этот PR (если архитектура не предполагает его merge) и переоткрыть из новой kanban-карточки.
-3. Если PR нужен (например AV-6 / AV-3 в feature/avatar) — добавить kanban-card через \`hermes kanban create --assignee <agent>\` и привязать.
+3. Если PR нужен (например AV-6 / AV-3, base=develop) — добавить kanban-card через \`hermes kanban create --assignee <agent>\` и привязать.
 
 Merge-gate **НЕ блокирует** CI/e2e (alert, не gate). Решение за человеком (Шифу / шисюн)." >/dev/null 2>&1 || true
         fi

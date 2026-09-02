@@ -55,7 +55,7 @@ fixture_wm_pr() {
     set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
     # gh pr view N --json headRefName/baseRefName/mergeStateStatus идёт через
     # общую PR_N_VIEW_JSON (default-branch мока).
-    set_state "PR_${pr}_VIEW_JSON" "{\"headRefName\":\"${head}\",\"baseRefName\":\"feature/avatar\",\"mergeStateStatus\":\"CONFLICTING\"}"
+    set_state "PR_${pr}_VIEW_JSON" "{\"headRefName\":\"${head}\",\"baseRefName\":\"develop\",\"mergeStateStatus\":\"CONFLICTING\"}"
     if [ -n "$issue" ]; then
         # Для дедупа — стартовый пустой (нет «уже висевшего» marker-комментария).
         # REST-массив (как у реального gh api .../issues/N/comments).

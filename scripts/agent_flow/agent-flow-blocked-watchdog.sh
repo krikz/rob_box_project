@@ -12,18 +12,18 @@
 #
 # Контекст / ретро t_1d0426e3:
 #   Pattern "карточки-призраки": orphan blocked-карточки остаются на доске
-#   после того, как задача решена через параллельную ветку (PR merged,
-#   но issue НЕ закрыт). Причина — расхождение меток: issue в labels
-#   имеет `needs-e2e`, хотя реализация уже в feature/avatar (или develop).
-#   Manual cleanup уже проведён для t_547e17a7, t_3aa4c587, t_307bae4a,
-#   но pattern системный — нужна автоматизация.
+# после того, как задача решена через параллельную ветку (PR merged,
+# но issue НЕ закрыт). Причина — расхождение меток: issue в labels
+# имеет `needs-e2e`, хотя реализация уже в develop.
+# Manual cleanup уже проведён для t_547e17a7, t_3aa4c587, t_307bae4a,
+# но pattern системный — нужна автоматизация.
 #
 # Контракт (per tick):
 #   1. List open issues with label `needs-e2e` in repo $GH_REPO
 #   2. For each: search MERGED PR (gh pr list --state merged --search "#NNN")
 #   3. If MERGED PR found:
-#        - Verify mergeCommit exists in base branch (develop / feature/avatar)
-#          via `git branch --contains <sha>` (локально) или `gh api`
+#        - Verify mergeCommit exists in base branch (develop) via
+#          `git branch --contains <sha>` (локально) или `gh api`
 #        - Comment issue with reason
 #        - Close issue with state_reason=completed
 #        - Find related kanban-card (t_<id> in issue body OR via label
@@ -33,7 +33,7 @@
 # ENV:
 #   GH_REPO                — owner/repo (default krikz/rob_box_project)
 #   BLOCKED_WATCHDOG_DRY_RUN=true — only log, no side-effects
-#   BASE_BRANCHES          — colon-separated, default develop:feature/avatar
+#   BASE_BRANCHES          — colon-separated, default develop:develop
 #   LOCK_FILE              — flock guard against merge-gate (default
 #                            /tmp/agent-flow-blocked-watchdog.lock)
 #
@@ -47,7 +47,7 @@
 #   - gh search возвращает MERGED PR'ы в общем списке; надо фильтровать
 #     --state merged И проверять mergeCommit.oid (None для closed-not-merged).
 #   - Не закрывать issue если базовая ветка — НЕ та, в которой работаем
-#     (orphan может быть только для develop/feature/avatar).
+#     (orphan валиден только для develop).
 #   - comment в issue должен быть idempotent — если за последние 24h уже
 #     был написан marker "agent-flow-blocked-watchdog: closing", skip.
 # ============================================================================
@@ -56,7 +56,7 @@ set -euo pipefail
 GH_REPO="${GH_REPO:-krikz/rob_box_project}"
 DRY_RUN="${BLOCKED_WATCHDOG_DRY_RUN:-false}"
 LOCK_FILE="${LOCK_FILE:-/tmp/agent-flow-blocked-watchdog.lock}"
-BASE_BRANCHES="${BASE_BRANCHES:-develop:feature/avatar}"
+BASE_BRANCHES="${BASE_BRANCHES:-develop:develop}"
 WINDOW_HOURS=24  # comment idempotency window
 
 # --- flock guard (avoid race with merge-gate) ------------------------------
