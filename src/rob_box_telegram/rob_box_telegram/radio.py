@@ -42,14 +42,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-import time
-from typing import Any, Awaitable, Callable, Dict, Optional, Set
+from typing import Any, Dict, Optional
 
 from .voice_transcode import (
-    VoiceTranscodeError,
     TARGET_CHANNELS,
     TARGET_SAMPLE_RATE_HZ,
     TARGET_SAMPLE_WIDTH_BYTES,
+    VoiceTranscodeError,
     ogg_to_pcm16k,
 )
 
@@ -77,13 +76,7 @@ RADIO_REJECTED_TOO_LONG_LOG = "radio rejected: duration %d > %d s"
 
 def _chunk_pcm_bytes(chunk_ms: int) -> int:
     """Размер PCM-чанка в байтах для заданной длительности."""
-    return (
-        TARGET_SAMPLE_RATE_HZ
-        * TARGET_CHANNELS
-        * TARGET_SAMPLE_WIDTH_BYTES
-        * chunk_ms
-        // 1000
-    )
+    return TARGET_SAMPLE_RATE_HZ * TARGET_CHANNELS * TARGET_SAMPLE_WIDTH_BYTES * chunk_ms // 1000
 
 
 def get_radio_mode(context_user_data: Dict[str, Any]) -> bool:
@@ -209,9 +202,7 @@ class RadioPublisher:
             )
 
         # 3. Длительность и лимит по времени.
-        duration_ms = len(pcm) // (
-            TARGET_SAMPLE_RATE_HZ * TARGET_CHANNELS * TARGET_SAMPLE_WIDTH_BYTES // 1000
-        )
+        duration_ms = len(pcm) // (TARGET_SAMPLE_RATE_HZ * TARGET_CHANNELS * TARGET_SAMPLE_WIDTH_BYTES // 1000)
         duration_s = duration_ms / 1000.0
         if duration_s > self._max_duration_s:
             logger.info(

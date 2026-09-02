@@ -15,9 +15,11 @@ from .camera_cache import CameraCache
 from .handlers import commands as _cmds
 from .handlers.callbacks import callback_handler
 from .handlers.messages import text_message_handler, voice_message_handler
+
 # AV-23 (issue #1915, P8): per-chat /radio mode — голосовые из Telegram
 # как рация → /avatar/voice_in. См. radio.py + voice_transcode.py.
-from .radio import RadioPublisher, RadioResult
+from .radio import RadioPublisher
+
 # Issue #1160 — Prometheus metrics (этап 1 observability). Telegram-bot —
 # отдельный контейнер, поэтому у него свой лёгкий observability-модуль
 # (не тянет rob_box_voice).
@@ -26,13 +28,20 @@ from .observability import (
     record_telegram_message,
     start_metrics_server,
 )
+
 # AV-10 (issue #1604, ADR-0028 §4.4) — клиент avatar_supervisor.
 # Phase 1 живёт в monitor-режиме (только локальный grant), Phase 2
 # переключается параметром ``supervisor_mode=active``.
 from .supervisor_client import Floor, SupervisorClient
+
 _BE = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1)
 _RE = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
-_TL = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+_TL = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
 # AV-23 (issue #1915, P8): рация из Telegram публикует в /avatar/voice_in.
 # best-effort + volatile — как делает quest_node (D7), чтобы sound_node не
 # доигрывал stale-чанки после потери соединения.
@@ -42,6 +51,8 @@ _VOICE_IN_QOS = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
     depth=10,
 )
+
+
 class TelegramNode(Node):
     """Telegram Bot API ↔ /voice/stt/result + /voice/dialogue/response bridge.
 
@@ -65,15 +76,17 @@ class TelegramNode(Node):
         # AV-10 — режим клиента супервизора: ``monitor`` (default,
         # Phase 1 — все floors выдаются локально) или ``active``
         # (Phase 2 — реальные service-calls в avatar_supervisor).
-        self.declare_parameter(
-            self.SUPERVISOR_MODE_PARAM, self.SUPERVISOR_DEFAULT_MODE
-        )
+        self.declare_parameter(self.SUPERVISOR_MODE_PARAM, self.SUPERVISOR_DEFAULT_MODE)
         # AV-23 (issue #1915, P8) — лимиты рации из Telegram.
         self.declare_parameter("radio_max_duration_s", 30.0)
         self.declare_parameter("radio_max_bytes", 5 * 1024 * 1024)
         self.declare_parameter("radio_chunk_ms", 20)
         p = self.get_parameter
-        self.camera_topic, self.camera_depth_topic, self.camera_up_topic = p("camera_topic").value, p("camera_depth_topic").value, p("camera_up_topic").value
+        self.camera_topic, self.camera_depth_topic, self.camera_up_topic = (
+            p("camera_topic").value,
+            p("camera_depth_topic").value,
+            p("camera_up_topic").value,
+        )
         self.camera_cache = CameraCache(ttl=p("camera_cache_ttl").value)
         self.latest_map_grid = self._active_chat_id = self._telegram_app = None
         # Issue #1195 — echo path (LLM replies back into the chat).
@@ -86,7 +99,11 @@ class TelegramNode(Node):
         self._response_queue: Optional[asyncio.Queue] = None
         self._echo_task: Optional[asyncio.Task] = None
         g = ReentrantCallbackGroup()
-        for topic, cb in ((self.camera_topic, self._on_camera_front), (self.camera_depth_topic, self._on_camera_depth), (self.camera_up_topic, self._on_camera_up)):
+        for topic, cb in (
+            (self.camera_topic, self._on_camera_front),
+            (self.camera_depth_topic, self._on_camera_depth),
+            (self.camera_up_topic, self._on_camera_up),
+        ):
             self.create_subscription(CompressedImage, topic, cb, _BE, callback_group=g)
         self.create_subscription(OccupancyGrid, "/rtabmap/grid_prob_map", self._on_map, _TL, callback_group=g)
         self._stt_pub = self.create_publisher(String, "/voice/stt/result", _RE)
@@ -96,7 +113,10 @@ class TelegramNode(Node):
         # what the robot says (removed in 88cecc91 because of the
         # asyncio-loop bug; reimplemented queue-based, see _on_response).
         self._response_sub = self.create_subscription(
-            String, "/voice/dialogue/response", self._on_response, _RE,
+            String,
+            "/voice/dialogue/response",
+            self._on_response,
+            _RE,
             callback_group=g,
         )
         # AV-10 — direct publishers оставлены как fallback для Phase 1
@@ -120,9 +140,7 @@ class TelegramNode(Node):
         )
         # AV-10 — клиент супервизора. Создаётся до старта telegram-loop,
         # чтобы handlers могли безопасно вызывать ``acquire_floor``.
-        supervisor_mode = str(
-            p(self.SUPERVISOR_MODE_PARAM).value or self.SUPERVISOR_DEFAULT_MODE
-        )
+        supervisor_mode = str(p(self.SUPERVISOR_MODE_PARAM).value or self.SUPERVISOR_DEFAULT_MODE)
         self.supervisor = SupervisorClient(
             node=self,
             client_id="telegram",
@@ -140,33 +158,36 @@ class TelegramNode(Node):
             # supervisor-ноды. _on_avatar_state сейчас только
             # логирует (когда supervisor-нода появится, тут будет
             # edit_message_text по сохранённым query_id).
-            self._avatar_state_unsubscribe = self.supervisor.subscribe_state(
-                self._on_avatar_state
-            )
+            self._avatar_state_unsubscribe = self.supervisor.subscribe_state(self._on_avatar_state)
         # Issue #1160 — Prometheus metrics server (этап 1).
         # Порт 9101 — стандартный для telegram-bot (см. observability).
         metrics_port = int(p("metrics_port").value or 0)
         if metrics_port > 0 and is_metrics_enabled():
             if start_metrics_server(metrics_port):
-                self.get_logger().info(
-                    f"📊 Telegram metrics server listening on :{metrics_port}/metrics"
-                )
+                self.get_logger().info(f"📊 Telegram metrics server listening on :{metrics_port}/metrics")
             else:
                 self.get_logger().warning(
-                    f"📊 Telegram metrics port {metrics_port} not bound "
-                    "(busy or prometheus_client missing)"
+                    f"📊 Telegram metrics port {metrics_port} not bound " "(busy or prometheus_client missing)"
                 )
         token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-        if not token: self.get_logger().error("TELEGRAM_BOT_TOKEN not set"); return
+        if not token:
+            self.get_logger().error("TELEGRAM_BOT_TOKEN not set")
+            return
         self._start_telegram_bot(token)
-        self.get_logger().info(
-            "TelegramNode: thin ROS 2 bridge (W8), supervisor_mode="
-            f"{supervisor_mode} (AV-10)"
-        )
-    def _on_camera_front(self, m): self.camera_cache.update(self.camera_topic, bytes(m.data))
-    def _on_camera_depth(self, m): self.camera_cache.update(self.camera_depth_topic, bytes(m.data))
-    def _on_camera_up(self, m): self.camera_cache.update(self.camera_up_topic, bytes(m.data))
-    def _on_map(self, m): self.latest_map_grid = m
+        self.get_logger().info("TelegramNode: thin ROS 2 bridge (W8), supervisor_mode=" f"{supervisor_mode} (AV-10)")
+
+    def _on_camera_front(self, m):
+        self.camera_cache.update(self.camera_topic, bytes(m.data))
+
+    def _on_camera_depth(self, m):
+        self.camera_cache.update(self.camera_depth_topic, bytes(m.data))
+
+    def _on_camera_up(self, m):
+        self.camera_cache.update(self.camera_up_topic, bytes(m.data))
+
+    def _on_map(self, m):
+        self.latest_map_grid = m
+
     def _on_avatar_state(self, state) -> None:
         """AV-10: обработчик обновлений /avatar/state.
 
@@ -180,17 +201,20 @@ class TelegramNode(Node):
         """
         if state.teleop_floor and state.teleop_floor != "telegram":
             self.get_logger().info(
-                f"AV-10: teleop_floor у {state.teleop_floor}, "
-                "movement buttons дизейблятся (UI gate в _handle_move)"
+                f"AV-10: teleop_floor у {state.teleop_floor}, " "movement buttons дизейблятся (UI gate в _handle_move)"
             )
         else:
             self.get_logger().debug(
                 f"AV-10: /avatar/state teleop_floor={state.teleop_floor} "
                 f"voice_floor={state.voice_floor} mode={state.mode}"
             )
-    def set_active_chat(self, chat_id: int) -> None: self._active_chat_id = chat_id
+
+    def set_active_chat(self, chat_id: int) -> None:
+        self._active_chat_id = chat_id
+
     def forward_to_stt(self, text: str, chat_id: Optional[int] = None) -> None:
-        if not text: return
+        if not text:
+            return
         # Issue #1195 — source marker: [TG:chat_id] text. dialogue_node
         # parses it to skip the wake-word gate (chat messages are explicit
         # address), remembers the chat for echo routing and does NOT attach
@@ -202,7 +226,10 @@ class TelegramNode(Node):
         # Issue #1160 — Prometheus metrics: входящее сообщение (текст/команда).
         if is_metrics_enabled():
             record_telegram_message("in", message_type="text")
-        m = String(); m.data = text; self._stt_pub.publish(m)
+        m = String()
+        m.data = text
+        self._stt_pub.publish(m)
+
     def publish_tts(self, text: str) -> None:
         """AV-10 backward-compat shim.
 
@@ -216,9 +243,11 @@ class TelegramNode(Node):
         """
         if is_metrics_enabled():
             record_telegram_message("out", message_type="voice")
-        m = String(); m.data = json.dumps(
-            {"ssml": f"<speak>{text}</speak>", "speech_id": str(uuid.uuid4()), "emotion": "neutral"},
-            ensure_ascii=False); self._response_pub.publish(m)
+        m = String()
+        m.data = json.dumps(
+            {"ssml": f"<speak>{text}</speak>", "speech_id": str(uuid.uuid4()), "emotion": "neutral"}, ensure_ascii=False
+        )
+        self._response_pub.publish(m)
 
     def publish_tts_with_floor(self, text: str):
         """AV-10: publish TTS, обернув в AcquireFloor(voice).
@@ -230,7 +259,8 @@ class TelegramNode(Node):
         """
 
         def _do_publish() -> None:
-            m = String(); m.data = json.dumps(
+            m = String()
+            m.data = json.dumps(
                 {
                     "ssml": f"<speak>{text}</speak>",
                     "speech_id": str(uuid.uuid4()),
@@ -263,6 +293,7 @@ class TelegramNode(Node):
             self.cmd_vel_pub.publish(twist)
 
         return self.supervisor.with_floor(Floor.TELEOP, _do_publish)
+
     def publish_voice_audio_chunk(self, pcm_bytes: bytes) -> None:
         """AV-23: один PCM-чанк в /avatar/voice_in (radиo из Telegram).
 
@@ -330,9 +361,8 @@ class TelegramNode(Node):
             # Loop closed underneath us (bot crashed, outer loop is between
             # attempts). Drop rather than crash the ROS executor — the next
             # valid response will be picked up after the loop is restored.
-            self.get_logger().error(
-                f"Failed to schedule TG echo (loop closed?): {exc!r}"
-            )
+            self.get_logger().error(f"Failed to schedule TG echo (loop closed?): {exc!r}")
+
     async def _chat_echo_worker(self) -> None:
         """Consume dialogue responses and send them into the chat.
 
@@ -352,26 +382,33 @@ class TelegramNode(Node):
                 try:
                     await app.bot.send_message(chat_id=chat_id, text=text)
                 except Exception as exc:  # noqa: BLE001
-                    self.get_logger().warning(
-                        f"Failed to echo LLM reply to chat {chat_id}: {exc!r}"
-                    )
+                    self.get_logger().warning(f"Failed to echo LLM reply to chat {chat_id}: {exc!r}")
         except asyncio.CancelledError:
             pass
+
     def _start_telegram_bot(self, token: str) -> None:
-        threading.Thread(target=self._run_telegram_loop, args=(token,), daemon=True,
-                         name="telegram-bot").start()
+        threading.Thread(target=self._run_telegram_loop, args=(token,), daemon=True, name="telegram-bot").start()
+
     def _run_telegram_loop(self, token: str) -> None:
         attempt, delay = 0, 5.0
         while rclpy.ok():
-            loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
-            try: loop.run_until_complete(self._run_telegram(token)); loop.close(); return
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(self._run_telegram(token))
+                loop.close()
+                return
             except Exception as e:
-                attempt += 1; d = min(delay * attempt, 60.0)
+                attempt += 1
+                d = min(delay * attempt, 60.0)
                 self.get_logger().error(f"Bot crashed ({attempt}): {e}. Retry in {d:.0f}s")
-                loop.close(); time.sleep(d)
+                loop.close()
+                time.sleep(d)
+
     async def _run_telegram(self, token: str) -> None:
         app = Application.builder().token(token).build()
-        app.bot_data["node"] = self; self._telegram_app = app
+        app.bot_data["node"] = self
+        self._telegram_app = app
         # Issue #1195 — echo path: capture the loop we run on and create
         # the queue the ROS thread feeds via call_soon_threadsafe. The
         # worker task lives inside this loop, so no cross-loop coroutine
@@ -385,27 +422,32 @@ class TelegramNode(Node):
         app.add_handler(CallbackQueryHandler(callback_handler))
         app.add_handler(MessageHandler(filters.VOICE, voice_message_handler))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
-        await app.initialize(); await app.start()
+        await app.initialize()
+        await app.start()
         try:
             await app.updater.start_polling(poll_interval=1.0, timeout=30)
         except Exception as exc:
-            self.get_logger().warning(
-                f"start_polling failed: {exc!r}; outer loop will retry"
-            )
+            self.get_logger().warning(f"start_polling failed: {exc!r}; outer loop will retry")
             raise
         try:
-            while rclpy.ok(): await asyncio.sleep(1.0)
+            while rclpy.ok():
+                await asyncio.sleep(1.0)
         finally:
             if self._echo_task is not None:
                 self._echo_task.cancel()
                 self._echo_task = None
-            await app.updater.stop(); await app.stop(); await app.shutdown()
+            await app.updater.stop()
+            await app.stop()
+            await app.shutdown()
 
 
 def main(args=None):
-    rclpy.init(args=args); node = TelegramNode()
-    try: rclpy.spin(node)
-    except KeyboardInterrupt: pass
+    rclpy.init(args=args)
+    node = TelegramNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         # AV-10: остановить heartbeat / освободить floors перед destroy.
         sup = getattr(node, "supervisor", None)
@@ -414,7 +456,9 @@ def main(args=None):
                 sup.shutdown()
             except Exception as exc:  # noqa: BLE001
                 node.get_logger().warning(f"supervisor shutdown failed: {exc!r}")
-        node.destroy_node(); rclpy.try_shutdown()
+        node.destroy_node()
+        rclpy.try_shutdown()
 
 
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    main()

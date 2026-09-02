@@ -196,10 +196,7 @@ async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         result = node.publish_tts_with_floor(text)
         if not result.granted:
             held = result.held_by or "другим оператором"
-            await update.message.reply_text(
-                f"🚫 Голос удерживает {held}. "
-                "Дождитесь окончания текущего ответа."
-            )
+            await update.message.reply_text(f"🚫 Голос удерживает {held}. " "Дождитесь окончания текущего ответа.")
             return
         await update.message.reply_text(
             f"🎤 Распознано: _{text}_\n\n🗣 Робот произносит текст.",
@@ -227,14 +224,9 @@ async def _reply_radio_result(update: Update, chat_id: int, result) -> None:
 
     reason = result.reason
     if reason == RadioResult.REASON_TOO_BIG:
-        text = (
-            f"📻 Слишком большой файл ({result.bytes_ // 1024} КБ)."
-        )
+        text = f"📻 Слишком большой файл ({result.bytes_ // 1024} КБ)."
     elif reason == RadioResult.REASON_TOO_LONG:
-        text = (
-            f"📻 Слишком длинное сообщение ({result.duration_ms / 1000:.1f} с). "
-            "Укоротите запись."
-        )
+        text = f"📻 Слишком длинное сообщение ({result.duration_ms / 1000:.1f} с). " "Укоротите запись."
     elif reason == RadioResult.REASON_FLOOR_BUSY:
         held = result.held_by or "другим оператором"
         text = f"🚫 Голос удерживает {held}. Рация сейчас недоступна."

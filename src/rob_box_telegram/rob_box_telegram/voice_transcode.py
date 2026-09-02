@@ -99,8 +99,7 @@ def ogg_to_pcm16k(ogg: bytes, *, probe_duration_ms: Optional[int] = None) -> byt
 
     if len(ogg) > MAX_INPUT_BYTES:
         raise VoiceTranscodeError(
-            f"input too large: {len(ogg)} bytes > {MAX_INPUT_BYTES} limit "
-            "(likely a corrupt or malicious upload)"
+            f"input too large: {len(ogg)} bytes > {MAX_INPUT_BYTES} limit " "(likely a corrupt or malicious upload)"
         )
 
     ffmpeg = _find_ffmpeg()
@@ -108,13 +107,19 @@ def ogg_to_pcm16k(ogg: bytes, *, probe_duration_ms: Optional[int] = None) -> byt
     cmd = [
         ffmpeg,
         "-hide_banner",
-        "-loglevel", "error",
-        "-i", "pipe:0",          # stdin
-        "-f", "s16le",            # raw int16 LE
-        "-acodec", "pcm_s16le",
-        "-ac", str(TARGET_CHANNELS),
-        "-ar", str(TARGET_SAMPLE_RATE_HZ),
-        "pipe:1",                 # stdout
+        "-loglevel",
+        "error",
+        "-i",
+        "pipe:0",  # stdin
+        "-f",
+        "s16le",  # raw int16 LE
+        "-acodec",
+        "pcm_s16le",
+        "-ac",
+        str(TARGET_CHANNELS),
+        "-ar",
+        str(TARGET_SAMPLE_RATE_HZ),
+        "pipe:1",  # stdout
     ]
 
     try:
@@ -126,9 +131,7 @@ def ogg_to_pcm16k(ogg: bytes, *, probe_duration_ms: Optional[int] = None) -> byt
             timeout=30,
         )
     except subprocess.TimeoutExpired as exc:
-        raise VoiceTranscodeError(
-            f"ffmpeg timeout after 30s (input size {len(ogg)} bytes)"
-        ) from exc
+        raise VoiceTranscodeError(f"ffmpeg timeout after 30s (input size {len(ogg)} bytes)") from exc
     except OSError as exc:
         # Например, ffmpeg бинарь есть, но не запускается (нет прав).
         raise VoiceTranscodeError(f"ffmpeg failed to start: {exc}") from exc
@@ -143,8 +146,7 @@ def ogg_to_pcm16k(ogg: bytes, *, probe_duration_ms: Optional[int] = None) -> byt
     pcm = proc.stdout
     if not pcm:
         raise VoiceTranscodeError(
-            f"ffmpeg produced empty output for input of {len(ogg)} bytes "
-            "(likely corrupt OGG/Opus stream)"
+            f"ffmpeg produced empty output for input of {len(ogg)} bytes " "(likely corrupt OGG/Opus stream)"
         )
 
     if len(pcm) % TARGET_SAMPLE_WIDTH_BYTES != 0:
@@ -155,16 +157,13 @@ def ogg_to_pcm16k(ogg: bytes, *, probe_duration_ms: Optional[int] = None) -> byt
             f"{TARGET_SAMPLE_WIDTH_BYTES} bytes (s16le framing broken)"
         )
 
-    pcm_duration_ms = len(pcm) // (
-        TARGET_SAMPLE_RATE_HZ * TARGET_CHANNELS * TARGET_SAMPLE_WIDTH_BYTES // 1000
-    )
+    pcm_duration_ms = len(pcm) // (TARGET_SAMPLE_RATE_HZ * TARGET_CHANNELS * TARGET_SAMPLE_WIDTH_BYTES // 1000)
 
     if probe_duration_ms is not None and abs(pcm_duration_ms - probe_duration_ms) > DURATION_TOLERANCE_MS:
         # Не фатально — ffmpeg resample может сильно разойтись на коротких
         # файлах или при нестандартных частотах. Логируем warning.
         logger.warning(
-            "ogg_to_pcm16k: duration probe mismatch — probed %s ms, "
-            "pcm %s ms (delta %s ms, tolerance %s ms)",
+            "ogg_to_pcm16k: duration probe mismatch — probed %s ms, " "pcm %s ms (delta %s ms, tolerance %s ms)",
             probe_duration_ms,
             pcm_duration_ms,
             pcm_duration_ms - probe_duration_ms,
@@ -180,33 +179,73 @@ def probe_ogg_duration_ms(ogg: bytes) -> Optional[int]:
     Используется только в sanity-check (см. ``ogg_to_pcm16k``). Возвращает
     ``None``, если ffprobe недоступен или не смог распарсить.
 
-    Не бросает — это best-effort метрика.
+    Не бросает — это best-effort метрика. На старых ffprobe, которые
+    не умеют ``-i pipe:0``, пишем во временный файл и пробим его.
     """
     ffprobe = shutil.which("ffprobe")
     if not ffprobe:
         return None
+
+    # Сначала пробуем stdin-probe (быстро, без I/O).
     try:
         proc = subprocess.run(
             [
                 ffprobe,
                 "-hide_banner",
-                "-loglevel", "error",
-                "-i", "pipe:0",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
+                "-loglevel",
+                "error",
+                "-i",
+                "pipe:0",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
             ],
             input=ogg,
             capture_output=True,
             check=False,
             timeout=10,
         )
+        if proc.returncode == 0:
+            try:
+                seconds = float((proc.stdout or b"").decode("utf-8", "replace").strip())
+                return int(seconds * 1000)
+            except ValueError:
+                pass
     except (subprocess.TimeoutExpired, OSError) as exc:  # noqa: BLE001
-        logger.debug("ffprobe failed: %s", exc)
-        return None
-    if proc.returncode != 0:
-        return None
+        logger.debug("ffprobe stdin-probe failed: %s", exc)
+
+    # Fallback: временный файл (нужно для старых ffprobe).
+    import tempfile
+
     try:
-        seconds = float((proc.stdout or b"").decode("utf-8", "replace").strip())
-    except ValueError:
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=True) as fp:
+            fp.write(ogg)
+            fp.flush()
+            proc = subprocess.run(
+                [
+                    ffprobe,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    fp.name,
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                ],
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+            if proc.returncode != 0:
+                return None
+            try:
+                seconds = float((proc.stdout or b"").decode("utf-8", "replace").strip())
+                return int(seconds * 1000)
+            except ValueError:
+                return None
+    except (subprocess.TimeoutExpired, OSError) as exc:  # noqa: BLE001
+        logger.debug("ffprobe file-probe failed: %s", exc)
         return None
-    return int(seconds * 1000)

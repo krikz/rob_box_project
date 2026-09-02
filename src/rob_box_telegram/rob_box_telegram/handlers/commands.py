@@ -492,7 +492,7 @@ async def radio_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             context.user_data = user_data
         except AttributeError:
             pass
-    arg = (context.args[0].lower() if context.args else "status")
+    arg = context.args[0].lower() if context.args else "status"
     if arg == "on":
         set_radio_mode(user_data, True)
         await update.message.reply_text(
@@ -502,18 +502,12 @@ async def radio_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
     elif arg == "off":
         set_radio_mode(user_data, False)
-        await update.message.reply_text(
-            "📴 Рация выключена. Голосовые снова идут через STT."
-        )
+        await update.message.reply_text("📴 Рация выключена. Голосовые снова идут через STT.")
     elif arg == "status":
         on = get_radio_mode(user_data)
-        await update.message.reply_text(
-            "📻 Рация: " + ("включена ✅" if on else "выключена ❌")
-        )
+        await update.message.reply_text("📻 Рация: " + ("включена ✅" if on else "выключена ❌"))
     else:
-        await update.message.reply_text(
-            "Использование: /radio on | off | status"
-        )
+        await update.message.reply_text("Использование: /radio on | off | status")
 
 
 # ─── Tool-bridged commands (W7: forward intents to /voice/stt/result) ──
