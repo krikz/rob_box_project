@@ -180,3 +180,84 @@ def test_report_aggregates_by_domain_and_ignores_unknown_cases() -> None:
     assert set(rep["by_domain"]) == {"composer"}
     assert 0.0 < rep["mean"] < 1.0
     assert rep["config"]["label"] == "skills=on"
+
+
+# ── корреляция реплики и хода в раннере ──────────────────────────────────
+
+
+def _runner():
+    """Раннер импортируется отдельно: он тянет rclpy только внутри Speaker."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "voice_bench_runner", _BENCH / "run_bench.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _write(path: Path, *lines: str) -> None:
+    path.write_text(chr(10).join(lines) + chr(10), encoding="utf-8")
+
+
+def _append(path: Path, *lines: str) -> None:
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(chr(10).join(lines) + chr(10))
+
+
+def test_key_strips_the_wake_word() -> None:
+    """Нода печатает user_input уже без wake-word — ключ обязан совпасть."""
+    rb = _runner()
+    assert rb._key_of("робот сыграй бит") == "сыграй бит"
+    assert rb._key_of("какие точки ты знаешь") == "какие точки ты знаешь"
+
+
+def test_collect_takes_its_own_turn_not_the_previous_one(tmp_path) -> None:
+    """Регрессия первого прогона: ответы сдвинулись на кейс.
+
+    В логе сначала лежит хвост ПРЕДЫДУЩЕГО хода, потом наша реплика и наш
+    ответ. Раннер обязан вернуть наш, а не первый попавшийся.
+    """
+    rb = _runner()
+    log = tmp_path / "node.log"
+    _write(
+        log,
+        "[dialogue_node]: process_input returned: spoken='ЧУЖОЙ ОТВЕТ'[:60] "
+        "tools=['set_dj_mode'] finish_reason='stop'",
+        "[dialogue_node]: calling process_input: user_input='[Speaker:unknown] это кухня'",
+        "[dialogue_node]: process_input returned: spoken='Запомнила кухню.'[:60] "
+        "tools=['save_waypoint'] finish_reason='stop'",
+    )
+    turn = rb.collect(log, 0, timeout=1.0, phrase="робот это кухня")
+    assert turn["spoken"] == "Запомнила кухню."
+    assert turn["tools"] == ["save_waypoint"]
+
+
+def test_collect_reports_undelivered_phrase(tmp_path) -> None:
+    """Реплика не долетела до ноды — это не «робот промолчал», а обрыв связи."""
+    rb = _runner()
+    log = tmp_path / "node.log"
+    _write(log, "[dialogue_node]: тишина")
+    turn = rb.collect(log, 0, timeout=0.5, phrase="робот это кухня")
+    assert turn["error"] == "NOT_DELIVERED"
+
+
+def test_collect_reads_from_byte_offset(tmp_path) -> None:
+    """Смещение — в байтах: текстовый seek уводил чтение в никуда.
+
+    Кириллица занимает по два байта на символ, поэтому подмена байтового
+    смещения символьным уезжает в середину строки и молча возвращает
+    пустоту — ровно так первый прогон бенчмарка собрал нули.
+    """
+    rb = _runner()
+    log = tmp_path / "node.log"
+    _write(log, "старое: кириллица занимает два байта на символ")
+    offset = log.stat().st_size
+    _append(
+        log,
+        "calling process_input: user_input='[Speaker:unknown] это кухня'",
+        "process_input returned: spoken='Ок'[:60] tools=['save_waypoint'] error=None",
+    )
+    turn = rb.collect(log, offset, timeout=1.0, phrase="робот это кухня")
+    assert turn["tools"] == ["save_waypoint"]

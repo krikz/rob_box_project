@@ -124,20 +124,46 @@ def _read_from(log: Path, offset: int) -> str:
         return fh.read().decode("utf-8", "replace")
 
 
-def collect(log: Path, offset: int, timeout: float) -> dict[str, Any]:
-    """Дождаться завершения хода и вытащить из лога его траекторию."""
+def _key_of(phrase: str) -> str:
+    """Отпечаток реплики, по которому её видно в логе.
+
+    Нода печатает ``user_input`` уже без wake-word и с префиксом
+    ``[Speaker:...]``, поэтому цепляемся за остаток фразы.
+    """
+    words = phrase.split()
+    if words and words[0].lower().strip(",") in ("робот", "робокс", "робобокс"):
+        words = words[1:]
+    return " ".join(words).strip()
+
+
+def collect(log: Path, offset: int, timeout: float, phrase: str) -> dict[str, Any]:
+    """Дождаться завершения ИМЕННО НАШЕГО хода и вытащить его траекторию.
+
+    Ждать «первое завершение после публикации» нельзя: если предыдущий
+    ход ещё доигрывал, кейс забирал ЕГО результат, а свой оставлял
+    следующему. Первый полный прогон на роботе именно так и уехал —
+    ответы сдвинулись на один кейс, и таблица стала мусором, выглядящим
+    правдоподобно. Поэтому сначала ищем в логе свою реплику, и только
+    после неё — завершение хода.
+    """
+    key = _key_of(phrase)
     deadline = time.time() + timeout
     while time.time() < deadline:
         chunk = _read_from(log, offset)
-        m = TURN_RE.search(chunk)
-        if m:
-            return _parse(chunk, m)
+        start = chunk.find(key)
+        if start != -1:
+            mine = chunk[start:]
+            m = TURN_RE.search(mine)
+            if m:
+                return _parse(mine, m)
         time.sleep(0.7)
     chunk = _read_from(log, offset)
+    if key not in chunk:
+        chunk = f"[реплика не дошла до ноды] {chunk}"
     return {
         "spoken": "",
         "tools": [],
-        "error": "TIMEOUT",
+        "error": "NOT_DELIVERED" if "не дошла" in chunk else "TIMEOUT",
         "llm_requests": _llm_calls(chunk),
         "truncated": chunk.count("TRUNCATED_TOOL_ARGS"),
         "retry_no_music": chunk.count("В прошлом цикле ты НЕ вызвал"),
@@ -192,6 +218,22 @@ def _skill(text: str) -> str:
     return found[-1] if found else "none"
 
 
+def _wait_idle(log: Path, extra: float, limit: float = 25.0) -> None:
+    """Подождать, пока лог перестанет расти: ход и его TTS доиграли.
+
+    Без этого следующая реплика уходит роботу, пока он ещё говорит
+    предыдущую, и ходы наслаиваются.
+    """
+    deadline = time.time() + limit
+    last = -1
+    while time.time() < deadline:
+        size = log.stat().st_size
+        if size == last:
+            return
+        last = size
+        time.sleep(1.5)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cases", required=True, type=Path)
@@ -223,7 +265,7 @@ def main(argv: list[str] | None = None) -> int:
             offset = log.stat().st_size
             print(f"[{rep}/{args.repeat}] {case['id']}: {case['say']}", flush=True)
             speaker.say(str(case["say"]))
-            turn = collect(log, offset, args.timeout)
+            turn = collect(log, offset, args.timeout, str(case['say']))
             turn.update(case_id=str(case["id"]), repeat=rep, say=str(case["say"]))
             turns.append(turn)
             print(
@@ -232,6 +274,7 @@ def main(argv: list[str] | None = None) -> int:
                 flush=True,
             )
             time.sleep(args.pause)
+            _wait_idle(log, args.pause)
 
     payload = {
         "config": {
