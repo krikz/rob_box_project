@@ -478,6 +478,104 @@ def test_extract_relevant_log_line_ignores_stt_short_rejection_vision() -> None:
     assert line is None
 
 
+def test_extract_relevant_log_line_ignores_stt_attempt_metric_vision() -> None:
+    """Issue #1893 (deploy run 33650766141 02.09 / kanban t_583c838d).
+
+    stt_node logs a structured `[stt_attempt_metric] ... reason=error ...`
+    line at INFO level for every failed provider attempt so the operator
+    can spot provider outages in Loki. The word `error` is only inside
+    the `reason=` field — stt_node itself is healthy and the
+    multi-provider fallback chain (yandex → vosk → silero) keeps STT
+    working. The deploy gate must not file a critical issue for this
+    metric echo. Real stt_node crashes still surface as a Python
+    traceback, which is caught by the existing CRITICAL rules.
+    """
+    log_text = (
+        "[stt_node-6] [INFO] [1788364572.271636563] [stt_node]: "
+        "[stt_attempt_metric] provider=yandex reason=error "
+        "latency_ms=436 attempt=0 text=-"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_stt_yandex_error_rejection_vision() -> None:
+    """Issue #1893 (deploy run 33650766141 02.09 / kanban t_583c838d).
+
+    stt_node logs the full provider chain as a WARN when the multi-
+    provider fallback drops the utterance, e.g.
+    `yandex:error(66ms)->yandex:error(418ms)->vosk:low_confidence(2681ms 'да') -> rejected`.
+    The token `yandex:error` appears whenever yandex returned an HTTP
+    5xx / quota error / network timeout — the chain then falls back to
+    vosk and the robot keeps listening. Sibling of the existing
+    `yandex:empty` rule (issue #989) which covers the empty-rejection
+    path; this rule covers the provider-error / fallback path. A real
+    STT outage (provider timeout that deadlocks stt_node, missing
+    API key, missing yaml) surfaces as a Python traceback in
+    stt_node, which CRITICAL rules still catch.
+    """
+    log_text = (
+        "[stt_node-6] [WARN] [1788364597.784793903] [stt_node]: "
+        "[stt_attempt] yandex:error(66ms)->yandex:error(418ms)"
+        "->vosk:low_confidence(2681ms 'да') -> rejected"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_stt_node_scope_leak_main() -> None:
+    """Issue #1893 (deploy run 33650766141 02.09 / kanban t_583c838d).
+
+    Scope leak: stt_node lives in the voice-assistant container on the
+    Vision Pi (ROS_DOMAIN_ID=0 / shared /rosout bus via Zenoh router).
+    The Main Pi perception's context_aggregator / health_monitor
+    subscribes to /rosout and prints the same lines in its periodic
+    report, prefixed as `[WARN] stt_node (1s ago): ...`. The bare
+    word `error` in the re-echoed yandex chain then trips
+    CRITICAL_MATCH_RE in the main scope. Same shape as the
+    telegram_node (issue #775) and audio_node (issue #1368)
+    exclusions. Real stt_node crash on the Vision Pi still surfaces
+    in the vision container's own log dump, where the rule does not
+    apply.
+    """
+    log_text = (
+        "[health_monitor-3]   [WARN] stt_node (1s ago): [stt_attempt] "
+        "yandex:error(66ms)->yandex:error(418ms)->vosk:"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_ignores_rtabmap_drop_image_main() -> None:
+    """Issue #1893 (deploy run 33650766141 02.09 / kanban t_583c838d).
+
+    rtabmap icp_odometry logs
+    `Dropping image/scan data with stamp <t> (delay...` when the
+    first scan arrives after the SLAM node is up but the static TF
+    tree is still being published. The data is dropped once, the
+    next message stamps correctly, and the SLAM pipeline catches up
+    within ~5s. Same family as the existing `scan_voxel_size` /
+    `scan_normal_k` exclusions (issues #1485, #1680) — informational
+    WARN during startup handshake. Bare `Dropping image/scan`
+    without the `stamp ... (delay` continuation (a real scan drop
+    after the TF tree is stable) is still reported.
+    """
+    log_text = (
+        "[health_monitor-3]   [WARN] rtabmap.icp_odometry (0s ago): "
+        "Dropping image/scan data with stamp 1788364573.559437 (delay"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="warning")
+
+    assert line is None
+
+
 def test_extract_relevant_log_line_ignores_missing_critical_synthdefs_none() -> None:
     """Retro 15.08 t_a14ac65d: voice-assistant readiness line.
 
