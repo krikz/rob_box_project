@@ -131,3 +131,75 @@ def test_install_ros_stubs_idempotent_for_audio_common(clean_audio_stubs):
     AudioData = sys.modules["audio_common_msgs.msg"].AudioData
     assert isinstance(AudioData, type)
     assert AudioData.__name__ == "AudioData"
+
+
+def test_sound_conftest_force_overrides_mock_audio_data(clean_audio_stubs):
+    """Репродуцирует CI-сценарий issue #1879: до sound/conftest.py какой-то
+    conftest (например, unit/tts/conftest.py) поставил ``audio_common_msgs.msg``
+    как ``Mock()`` (auto-attr ``.AudioData`` возвращает Mock-инстанс).
+
+    ``install_ros_stubs()`` additive и сам по себе не перезаписывает уже
+    существующий атрибут модуля — поэтому sound/conftest.py **сам**
+    выполняет defensive override перед ``install_ros_stubs(extra=...)``.
+
+    Этот тест эмулирует ту defensive-проверку напрямую: после неё
+    ``AudioData`` обязан быть настоящим классом с ``__name__ == 'AudioData'``.
+    """
+    from unittest.mock import Mock
+
+    # Шаг 1: более ранний conftest/test поставил Mock() (НЕ MagicMock)
+    # для audio_common_msgs.msg — auto-attr даёт .AudioData → Mock-инстанс.
+    sys.modules["audio_common_msgs.msg"] = Mock()
+    pre_existing = sys.modules["audio_common_msgs.msg"]
+    assert not isinstance(pre_existing.AudioData, type)
+    # Mock instance has no real __name__ attribute — confirm defensive case.
+    try:
+        _ = pre_existing.AudioData.__name__
+        has_name = True
+    except AttributeError:
+        has_name = False
+    assert not has_name, (
+        "Mock().AudioData already has __name__? surprising"
+    )
+
+    # Шаг 2: defensive override из sound/conftest.py
+    audio_msg = types.ModuleType("audio_common_msgs.msg")
+    audio_msg.AudioData = type("AudioData", (), {})
+
+    existing_audio_msg = sys.modules.get("audio_common_msgs.msg")
+    existing_audio_data = getattr(existing_audio_msg, "AudioData", None)
+    if not isinstance(existing_audio_data, type) or existing_audio_data.__name__ != "AudioData":
+        existing_audio_msg.AudioData = audio_msg.AudioData
+
+    # Шаг 3: после defensive — AudioData настоящий класс
+    AudioData = sys.modules["audio_common_msgs.msg"].AudioData
+    assert isinstance(AudioData, type), (
+        f"defensive override failed: AudioData is {type(AudioData).__name__}"
+    )
+    assert AudioData.__name__ == "AudioData", (
+        f"defensive override failed: AudioData.__name__ = {AudioData.__name__!r}"
+    )
+
+
+def test_sound_conftest_handles_magicmock_audio_data(clean_audio_stubs):
+    """То же, что и предыдущий, но с ``MagicMock()`` (тоже встречается в
+    tts/conftest.py через ``MagicMock()``). Defensive должен справиться
+    и с MagicMock, и с обычным Mock."""
+    from unittest.mock import MagicMock
+
+    sys.modules["audio_common_msgs.msg"] = MagicMock()
+    pre_existing = sys.modules["audio_common_msgs.msg"]
+    # MagicMock().AudioData — MagicMock instance, не класс.
+    assert not isinstance(pre_existing.AudioData, type)
+
+    audio_msg = types.ModuleType("audio_common_msgs.msg")
+    audio_msg.AudioData = type("AudioData", (), {})
+
+    existing_audio_msg = sys.modules.get("audio_common_msgs.msg")
+    existing_audio_data = getattr(existing_audio_msg, "AudioData", None)
+    if not isinstance(existing_audio_data, type) or existing_audio_data.__name__ != "AudioData":
+        existing_audio_msg.AudioData = audio_msg.AudioData
+
+    AudioData = sys.modules["audio_common_msgs.msg"].AudioData
+    assert isinstance(AudioData, type)
+    assert AudioData.__name__ == "AudioData"
