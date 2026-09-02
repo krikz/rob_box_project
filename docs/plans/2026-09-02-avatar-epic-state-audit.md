@@ -17,7 +17,9 @@
 
 1. **Супервизор зелёный в юнит-тестах и мёртвый на проводе.** FSM, LockManager,
    StateAggregator, msgpack-схема — всё написано и покрыто тестами. Но между
-   нодами не работает ни один из четырёх стыков: сервисы объявлены на
+   нодами не работает ни один из **пяти** стыков (пятый, G25, — имена сервисов
+   относительные на сервере против абсолютных у клиента, найден при подготовке
+   брифа): сервисы объявлены на
    `std_srvs/Trigger`, у которого **пустой Request** (передать `client_id`/`floor`
    физически нечем); `/teleop_heartbeat` публикует один Telegram и **не читает
    никто**; `/avatar/state` супервизор пишет msgpack'ом, а Telegram-клиент
@@ -130,6 +132,24 @@ telegram/supervisor_client.py:409-419
 `with_floor` в `telegram_node.py:194-236` — декорация: он никогда никого не
 остановит.
 
+#### G25. Имена сервисов не совпадают — клиент и сервер не встретятся даже после IDL
+
+```
+supervisor_node.py:108-110        ACQUIRE_FLOOR_SERVICE = "acquire_floor"        # относительное
+telegram/supervisor_client.py:112 SERVICE_ACQUIRE       = "/supervisor/acquire_floor"  # абсолютное
+```
+
+Относительное имя у ноды `avatar_supervisor` без ROS-namespace резолвится в
+`/acquire_floor`. ROS-namespace нода не получает:
+`docker/vision/scripts/ros_with_namespace.sh` задаёт **только Zenoh-namespace**
+(`namespace: "robots/$ROBOT_ID"` в session-config), а `start_supervisor.sh`
+зовёт `ros2 run ... --ros-args -p mode:=...` без `-r __ns:=`.
+
+То есть даже когда AV-12 даст типизированный IDL, а AV-15 — настоящий
+service-call, они всё равно бы не соединились. Найдено при подготовке
+брифа воркеров, чинится в AV-12 (источник истины — абсолютные
+`/supervisor/*`, меняем сервер: клиентов трое, сервер один).
+
 ### 1.3. Чего нет вовсе
 
 - **G5. Супервизор-агента нет.** `avatar_supervisor` — координатор (FSM, floors,
@@ -220,7 +240,7 @@ observability, `SupervisorClient` с `with_floor` на TTS и движение
 
 | Карточка | Что | Закрывает |
 |---|---|---|
-| [AV-12 #1904](../../../issues/1904) | Пакет `rob_box_supervisor_msgs` (IDL) + переезд сервисов с `Trigger` | G1 |
+| [AV-12 #1904](../../../issues/1904) | Пакет `rob_box_supervisor_msgs` (IDL) + переезд сервисов с `Trigger` + абсолютные имена `/supervisor/*` | G1, G25 |
 | [AV-13 #1905](../../../issues/1905) | `/teleop_heartbeat` подписка + настоящий dead-man 500 мс | G2 |
 | [AV-14 #1906](../../../issues/1906) | Единый кодек `/avatar/state` + тест стыка супервизор↔клиенты | G3 |
 | [AV-15 #1907](../../../issues/1907) | Telegram: настоящий service-call вместо заглушки | G4, G21 |
@@ -293,6 +313,13 @@ observability, `SupervisorClient` с `with_floor` на TTS и движение
 ---
 
 ## 7. Дисциплина для воркеров по этим карточкам
+
+> **Единый бриф воркера — `docs/plans/2026-09-02-avatar-worker-brief.md`.**
+> Там заморожены имена топиков и сервисов, поля srv/msg, байты фреймов
+> `0x30`–`0x33`, кодек `/avatar/state`, формат `client_id`, значения
+> параметров по умолчанию и граф зависимостей. Семнадцать карточек делаются
+> параллельно — без общей таблицы контрактов мы получим шестой разрыв.
+> Ссылка на бриф проставлена комментарием в каждой карточке #1904–#1920.
 
 1. **OpenSpec обязателен** (ADR-0038, ADR-0039). Change-folder создаёт триаж;
    воркер **расширяет** `proposal.md` / `design.md` / `specs/<capability>/spec.md`
