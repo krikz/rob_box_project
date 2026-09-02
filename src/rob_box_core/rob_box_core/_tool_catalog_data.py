@@ -2019,6 +2019,37 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'accepts_kwargs': False},
         'skill': ('navigation',)},
     {   'llm_visible': True,
+        'read_only': False,
+        'destructive': True,
+        'idempotent': False,
+        'execution_type': 'instant',
+        'name': 'say',
+        'description': 'Произнести текст голосом от имени оператора робота. Используй, '
+                       'когда оператор дал голосовую или текстовую команду произнести '
+                       'что-то вслух (например, мотивирующая фраза, обращение к людям '
+                       'рядом, объявление). НЕ используй для эмоциональной реплики от '
+                       'лица робота — это делает speak_text. Пока say выполняется, '
+                       'личность робота молчит (ADR-0028 S5).',
+        'parameters': {   'type': 'object',
+                          'properties': {   'text': {   'type': 'string',
+                                                        'description': 'Текст для '
+                                                                       'произнесения. '
+                                                                       'Без ударений и '
+                                                                       'SSML — '
+                                                                       'операторский '
+                                                                       'voice-floor '
+                                                                       'сам выберет '
+                                                                       'провайдера и '
+                                                                       'голос. Можно '
+                                                                       'использовать '
+                                                                       'русский '
+                                                                       'язык.'}},
+                          'required': ['text'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['text'],
+                         'required': ['text'],
+                         'accepts_kwargs': False}},
+    {   'llm_visible': True,
         'read_only': True,
         'destructive': False,
         'idempotent': False,
