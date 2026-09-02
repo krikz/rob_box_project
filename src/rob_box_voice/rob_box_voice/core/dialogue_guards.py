@@ -1037,6 +1037,42 @@ def detect_unbacked_action_claim(
 MUSIC_RETRY_PROMPT_PREFIX: str = "[CRITICAL] В прошлом цикле ты НЕ вызвал"
 
 
+CRITICAL_BLOCK_MARKER = "[CRITICAL]"
+CRITICAL_BLOCK_MARKER_LEN = len(CRITICAL_BLOCK_MARKER)
+
+
+def _strip_trailing_critical_block(user_input: str) -> str:
+    """Issue #1881 — убрать последний ``[CRITICAL]``-блок из ``user_input``.
+
+    На babble-retry ``user_input`` уже содержит прошлый CRITICAL-блок
+    (от прошлого ретрая этого же turn'а). Если просто склеить его с
+    НОВЫМ блоком — модель видит два ПРОТИВОРЕЧИВЫХ требования
+    («вызови tool» vs «вызови music-tool») и начинает мешать их в
+    ответе (vision-pi 02.09: «однако другой [CRITICAL] говорит...»).
+
+    Решение: если input заканчивается на блок, начинающийся с
+    ``[CRITICAL]`` — обрезаем до его начала. Юзер-фраза остаётся;
+    старый блок заменяется новым.
+
+    Edge cases:
+    * Без маркера — возвращаем ``user_input`` as-is.
+    * Маркер в самом начале (user_input="[CRITICAL]...") — возвращаем
+      пустую строку (нет юзер-фразы для сохранения). Это безопасно:
+      даже пустой входной текст + новый блок = «без исходного
+      запроса». LLM выдаст инструментальный ответ или пустоту, что
+      лучше, чем два конфликтующих CRITICAL'a.
+    """
+    if not user_input:
+        return user_input
+    idx = user_input.rfind(CRITICAL_BLOCK_MARKER)
+    if idx <= 0:
+        # Нет маркера вообще, или маркер в самом начале (idx==0).
+        # В обоих случаях склеивать не с чем — возвращаем as-is.
+        return user_input
+    # ``idx > 0``: маркер где-то внутри. Обрезаем всё от него до конца.
+    return user_input[:idx].rstrip()
+
+
 def build_babble_retry_prompt(user_input: str) -> str:
     """Issue #992 Bug D — synthetic follow-up prompt for babble retry.
 
@@ -1045,7 +1081,7 @@ def build_babble_retry_prompt(user_input: str) -> str:
     babble pattern and demands a tool-call reply (no plain text
     promises).
 
-    🔴 FIX (live 02.09, "включи трек про весну"): этот список не называл
+🔴 FIX (live 02.09, "включи трек про весну"): этот список не называл
     вариант «уже существующий трек» вовсе — только «мелодия →
     execute_music_code(...)». Bug C (``build_music_retry_prompt``) корректно
     вёл модель в библиотеку (gen_search_library → gen_play_from_library), но
@@ -1054,9 +1090,16 @@ def build_babble_retry_prompt(user_input: str) -> str:
     трек через gen_search_library в прошлом ходе, сочиняла новую мелодию
     через compose_music вместо gen_play_from_library(track_id=...) найденного
     трека. Юзер попросил «Весна пришла», получил синт.
+
+    Issue #1881 — если ``user_input`` уже содержит предыдущий
+    ``[CRITICAL]``-блок (от прошлого ретрая этого же turn'а), он
+    обрезается перед склейкой, чтобы НЕ накапливать противоречивые
+    инструкции. Иначе модель читает «вызови tool» + «вызови
+    music-tool» и в каждом ответе спорит сама с собой.
     """
+    cleaned = _strip_trailing_critical_block(user_input)
     return (
-        f"{user_input}\n\n"
+        f"{cleaned}\n\n"
         "[CRITICAL] Твой предыдущий ответ был метатекст "
         "(начинался с «зачит», «могу», «хочешь», «сейчас», "
         "«устроим», «погнали», «слушай», «давай», «так» или "
