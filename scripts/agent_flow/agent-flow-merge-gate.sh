@@ -47,6 +47,10 @@ ISSUE_LABEL="${ISSUE_LABEL:-hermes}"
 NEEDS_E2E_LABEL="${NEEDS_E2E_LABEL:-needs-e2e}"
 NEEDS_REVIEW_LABEL="${NEEDS_REVIEW_LABEL:-needs-review}"
 DONE_LABEL="${DONE_LABEL:-e2e-done}"
+# Ретро 02.09 t_4869a1f7 / PR #1863: метка для needs-review + CONFLICTING
+# reconcile (ставится вместо needs-review когда PR стал CONFLICTING после
+# label-установки; снимается когда PR восстановится до MERGEABLE+CLEAN).
+MERGE_CONFLICT_LABEL="${MERGE_CONFLICT_LABEL:-merge-conflict}"
 REJECTED_LABEL="${REJECTED_LABEL:-e2e:rejected}"
 NO_E2E_LABEL="${NO_E2E_LABEL:-no-e2e-required}"
 BIG_BANG_OVERRIDE_LABEL="${BIG_BANG_OVERRIDE_LABEL:-big-bang-override}"
@@ -672,6 +676,196 @@ e2e-rotation каждый тик skip-ает round с reason «stale-conflicting
                     log "stale-conflicting-scan: PR #${_sc_pr_num} — task ${_sc_task_id} status=${_sc_card_status:-?}, escalation только в PR-коммент"
                     ;;
             esac
+        fi
+    done
+    return 0
+}
+
+# --- needs-review + CONFLICTING reconcile (ретро 02.09 t_4869a1f7 / PR #1863) -
+# Сценарий: merge-gate (lint path / e2e-done reconcile / clean-pr-sweep) ставит
+# метку `needs-review` когда PR = MERGEABLE + CLEAN. Дальше develop убегает
+# вперёд → PR становится CONFLICTING + DIRTY, но метка `needs-review` остаётся.
+# Шифу видит `needs-review` в review queue, открывает PR → merge button disabled
+# («Pull request is not mergeable: This branch has conflicts that must be
+# resolved»). Тратит время на разбор, потом пишет воркеру 'rebase'. PR не
+# вливается, лаг.
+#
+# `stale_conflicting_scan_all` выше ловит только PR с меткой `needs-e2e` —
+# `needs-review + CONFLICTING` остаётся серой зоной (PR #1863: ветка
+# `z-backend/t_ad97d944-fix-dramaturgy`, лаг 30+ минут, оверлапы с PR #1869,
+# который уже влит с тем же фиксом).
+#
+# Решение: НЕ ЖДАТЬ 24ч (как stale-conflicting) — для needs-review нужен
+# НЕМЕДЛЕННЫЙ reconcile, потому что Шифу видит метку в очереди ревью ПРЯМО
+# СЕЙЧАС. На каждый тик merge-gate сканирует OPEN PR с `needs-review`:
+#   - mergeable=MERGEABLE + mergeStateStatus=CLEAN → ok, ничего не делаем
+#     (PR в нормальном review-state). Если `merge-conflict` остался от прошлого
+#     CONFLICTING → снимаем и пишем recovery-коммент «rebase прошёл».
+#   - mergeable=CONFLICTING ИЛИ mergeStateStatus=DIRTY:
+#       1) `gh pr edit --remove-label needs-review` (PR выпадает из review queue
+#          Шифу, merge-ui не дёргает «merge»);
+#       2) `gh pr edit --add-label merge-conflict` (новая метка — сигнал
+#          воркеру и Шифу «rebase нужен до ревью»);
+#       3) PR-коммент «нужен rebase на develop» (24ч dedup).
+#   - mergeable=UNKNOWN (CI calc in progress) → skip, не дёргаем (false positive
+#     дороже чем пропуск).
+#
+# Не блокируем CI, не создаём recovery-карточек — `scan-all-prs` (CONFLICTING
+# ветка, стр. 3971) уже делает это для веток с распознанным task_id. Если
+# task_id не определился (как PR #1863 — ветка wt-style без issue-marker),
+# watch останется только в виде PR-коммента + label-swap.
+#
+# Идемпотентность:
+#   - remove-label / add-label — no-op при повторе.
+#   - коммент dedup 24ч (windowed по prefix «🟠 needs-review + CONFLICTING»).
+#   - cleanup-блок для восстановленного PR (MERGEABLE+CLEAN с merge-conflict):
+#     однократный swap обратно + recovery-коммент.
+#
+# Вызывается рядом со stale_conflicting_scan_all (scan-all-prs блок).
+needs_review_conflict_reconcile_all() {
+    local _nrc_dedup_since
+    _nrc_dedup_since="$(date -u -d "${NEEDS_REVIEW_CONFLICT_DEDUP_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # Берём open PR с needs-review + mergeable + mergeStateStatus + labels.
+    local _nrc_prs
+    _nrc_prs="$(gh pr list --repo "$GH_REPO" --state open --label "$NEEDS_REVIEW_LABEL" \
+        --json number,headRefName,mergeable,mergeStateStatus,labels 2>/dev/null || echo '[]')"
+    if [ -z "$_nrc_prs" ] || [ "$_nrc_prs" = "[]" ]; then
+        log "needs-review-conflict-reconcile: no needs-review PRs — nothing to do"
+        return 0
+    fi
+
+    printf '%s' "$_nrc_prs" | python3 -c '
+import json, sys, shlex
+data = json.load(sys.stdin)
+CONFLICT_LABEL = sys.argv[1]
+for pr in data:
+    pr_num = pr["number"]
+    head = pr.get("headRefName", "") or ""
+    mergeable = pr.get("mergeable", "") or ""
+    merge_state = pr.get("mergeStateStatus", "") or ""
+    labels = [l["name"] for l in (pr.get("labels") or [])]
+    has_review = "needs-review" in labels
+    has_conflict = CONFLICT_LABEL in labels
+    print("{}\t{}\t{}\t{}\t{}\t{}".format(
+        pr_num, head, mergeable, merge_state,
+        "yes" if has_review else "no",
+        "yes" if has_conflict else "no"))
+' "$MERGE_CONFLICT_LABEL" 2>/dev/null \
+    | while IFS=$'\t' read -r _nrc_pr_num _nrc_head _nrc_mergeable _nrc_merge_state _nrc_has_review _nrc_has_conflict; do
+        [ -z "$_nrc_pr_num" ] && continue
+
+        # Решение classify: PR сейчас MERGEABLE+CLEAN или нет?
+        # GitHub API: mergeable ∈ {MERGEABLE, CONFLICTING, UNKNOWN}; mergeStateStatus
+        # ∈ {BLOCKED, CLEAN, DIRTY, DRAFT, HAS_HOOKS, UNSTABLE, BEHIND}.
+        # Конфликт = mergeable=CONFLICTING OR mergeStateStatus=DIRTY (GitHub
+        # отдаёт их асинхронно — ретро 12.08 t_618208c0).
+        local _nrc_is_conflict=0
+        if [ "$_nrc_mergeable" = "CONFLICTING" ] || [ "$_nrc_merge_state" = "DIRTY" ]; then
+            _nrc_is_conflict=1
+        fi
+
+        # CLEAN-блок: PR восстановился до MERGEABLE+CLEAN. Если висит
+        # merge-conflict — снимаем (PR снова готов к ревью). needs-review
+        # обычно уже на месте; если Шифу её снял руками — НЕ возвращаем
+        # (user-unlabel guard, ретро 18.08 t_de6bea69).
+        if [ "$_nrc_is_conflict" = "0" ]; then
+            # UNKNOWN пропускаем (CI calc in progress) — не снимаем/не ставим.
+            if [ "$_nrc_mergeable" = "UNKNOWN" ]; then
+                log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} mergeable=UNKNOWN — skip (CI recalc)"
+                continue
+            fi
+            if [ "$_nrc_has_conflict" = "yes" ]; then
+                if [ "$DRY_RUN" = "true" ]; then
+                    log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} MERGEABLE+CLEAN, has ${MERGE_CONFLICT_LABEL} — DRY-RUN would remove + add needs-review (recovery)"
+                else
+                    gh pr edit "$_nrc_pr_num" --repo "$GH_REPO" --remove-label "$MERGE_CONFLICT_LABEL" >/dev/null 2>&1 \
+                        && log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} MERGEABLE+CLEAN — removed ${MERGE_CONFLICT_LABEL} (rebase прошёл)" \
+                        || log "needs-review-conflict-reconcile: WARNING remove ${MERGE_CONFLICT_LABEL} on PR #${_nrc_pr_num} failed (non-fatal)"
+                    # Если needs-review уже снята Шифу — не возвращаем.
+                    if [ "$_nrc_has_review" = "no" ] \
+                        && ! user_removed_label_recently "$_nrc_pr_num" "$NEEDS_REVIEW_LABEL"; then
+                        gh pr edit "$_nrc_pr_num" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 \
+                            && log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} MERGEABLE+CLEAN — restored ${NEEDS_REVIEW_LABEL}" \
+                            || log "needs-review-conflict-reconcile: WARNING restore ${NEEDS_REVIEW_LABEL} on PR #${_nrc_pr_num} failed (non-fatal)"
+                    fi
+                    # Одноразовый recovery-коммент (24ч dedup).
+                    local _nrc_recover_dup
+                    _nrc_recover_dup="$(gh api "repos/${GH_REPO}/issues/${_nrc_pr_num}/comments?since=${_nrc_dedup_since}&per_page=100" \
+                        --jq '[.[] | select(.body | contains("✅ needs-review conflict RECOVERED"))] | length' 2>/dev/null \
+                        || echo 0)"
+                    if [ "${_nrc_recover_dup:-0}" -eq 0 ] && [ "$DRY_RUN" != "true" ]; then
+                        gh pr comment "$_nrc_pr_num" --repo "$GH_REPO" --body \
+"✅ **needs-review conflict RECOVERED (merge-gate needs-review-conflict-reconcile, $(date -u +%H:%M:%SZ), ретро 02.09 t_4869a1f7)**
+
+PR #${_nrc_pr_num} (\\\\\`${_nrc_head}\\\\\`) → develop = **MERGEABLE+ CLEAN** (был CONFLICTING+ DIRTY, rebase прошёл).
+- Метка \\\\\`${MERGE_CONFLICT_LABEL}\\\\\` снята.
+- Метка \\\\\`${NEEDS_REVIEW_LABEL}\\\\\` ${_nrc_has_review:+уже была}${_nrc_has_review:-восстановлена (раньше была снята автоматически)}.
+
+Шифу — PR снова в очереди ревью. Перед merge убедись что upstream develop не убежал вперёд (ahead-of-develop). Метка \\\\\`${MERGE_CONFLICT_LABEL}\\\\\` вернётся автоматически если PR снова станет CONFLICTING." >/dev/null 2>&1 || true
+                    fi
+                fi
+            else
+                log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} MERGEABLE+CLEAN — ok, без ${MERGE_CONFLICT_LABEL}"
+            fi
+            continue
+        fi
+
+        # CONFLICTING-блок. user-unlabel guard: если Шифу руками СНЯЛ
+        # needs-review после нашего auto-add — НЕ ставим merge-conflict
+        # (он уже решил проблему, не дёргаем его метками).
+        if user_removed_label_recently "$_nrc_pr_num" "$NEEDS_REVIEW_LABEL"; then
+            log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} CONFLICTING — needs-review был снят Шифу руками, не трогаю (ретро 18.08 t_de6bea69, Q22)"
+            continue
+        fi
+
+        # Снимаем needs-review (Шифу больше не видит PR в review queue).
+        if [ "$_nrc_has_review" = "yes" ] && [ "$DRY_RUN" != "true" ]; then
+            gh pr edit "$_nrc_pr_num" --repo "$GH_REPO" --remove-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 \
+                && log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} CONFLICTING — removed ${NEEDS_REVIEW_LABEL} (merge-ui disabled)" \
+                || log "needs-review-conflict-reconcile: WARNING remove ${NEEDS_REVIEW_LABEL} on PR #${_nrc_pr_num} failed (non-fatal)"
+        fi
+
+        # Ставим merge-conflict (новая метка для воркера и Шифу).
+        if [ "$_nrc_has_conflict" = "no" ] && [ "$DRY_RUN" != "true" ]; then
+            whoami_add_label "$_nrc_pr_num" "$MERGE_CONFLICT_LABEL" \
+                "needs-review+CONFLICTING (merge-gate, ретро 02.09 t_4869a1f7): mergeable=${_nrc_mergeable} state=${_nrc_merge_state}" \
+                "pr=${_nrc_pr_num}" \
+                || log "needs-review-conflict-reconcile: WARNING add ${MERGE_CONFLICT_LABEL} on PR #${_nrc_pr_num} failed (non-fatal)"
+        fi
+
+        # PR-коммент с инструкцией rebase (24ч dedup).
+        local _nrc_dup
+        _nrc_dup="$(gh api "repos/${GH_REPO}/issues/${_nrc_pr_num}/comments?since=${_nrc_dedup_since}&per_page=100" \
+            --jq '[.[] | select(.body | startswith("🟠 needs-review + CONFLICTING"))] | length' 2>/dev/null \
+            || echo 0)"
+        if [ "${_nrc_dup:-0}" -eq 0 ] && [ "$DRY_RUN" != "true" ]; then
+            gh pr comment "$_nrc_pr_num" --repo "$GH_REPO" --body \
+"🟠 **needs-review + CONFLICTING (merge-gate, ретро 02.09 t_4869a1f7, $(date -u +%H:%M:%SZ))**
+
+PR #${_nrc_pr_num} (\\\\\`${_nrc_head}\\\\\`) → develop = **mergeable=${_nrc_mergeable} + mergeStateStatus=${_nrc_merge_state}**. Develop убежал вперёд после того как merge-gate поставил \\\\\`needs-review\\\\\` (PR был MERGEABLE+CLEAN на момент label).
+
+Сделано:
+- \\\\\`needs-review\\\\\` снят (PR выпал из очереди ревью; merge-ui показывает disabled «This branch has conflicts that must be resolved»).
+- \\\\\`${MERGE_CONFLICT_LABEL}\\\\\` поставлен (сигнал воркеру и Шифу — rebase нужен до ревью).
+
+**Что делать** (по процессу Шифу 10.08):
+1. **В той же ветке** \\\\\`${_nrc_head}\\\\\` — НЕ создавай новую ветку и НЕ новый PR.
+2. **rebase** на origin/develop:
+   \\\\\`\\\\\`\\\\\`bash
+   git fetch origin develop
+   git checkout ${_nrc_head}
+   git rebase origin/develop
+   # ... resolve conflicts ...
+   git add -A && git rebase --continue
+   git push --force-with-lease origin ${_nrc_head}
+   \\\\\`\\\\\`\\\\\`
+3. После force-push PR станет MERGEABLE+CLEAN → merge-gate автоматически снимет \\\\\`${MERGE_CONFLICT_LABEL}\\\\\` и (если needs-review был снят автоматически) восстановит.
+
+Метка \\\\\`${MERGE_CONFLICT_LABEL}\\\\\` снимается автоматически когда PR = MERGEABLE+CLEAN." >/dev/null 2>&1 || true
+            log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} CONFLICTING — comment posted"
+        else
+            log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} CONFLICTING — comment dedup (есть < ${NEEDS_REVIEW_CONFLICT_DEDUP_HOURS}ч), skip"
         fi
     done
     return 0
@@ -3832,6 +4026,12 @@ stale_branch_scan_all
 # open needs-e2e PR независимо от issue-cycle (stale branch мог остаться
 # от archived-issue). Skip если HELM_HOOK_DRY_RUN.
 stale_conflicting_scan_all
+# Needs-review + CONFLICTING reconcile (ретро 02.09 t_4869a1f7 / PR #1863):
+# СРАЗУ ЖЕ после stale_conflicting_scan_all. Ловит open PR с `needs-review`,
+# mergeable которых уехал в CONFLICTING после label-установки → снимает
+# needs-review (merge-ui «disabled»), ставит merge-conflict, пишет dedup-коммент.
+# Возвращает label обратно когда PR восстановится до MERGEABLE+CLEAN.
+needs_review_conflict_reconcile_all
 # Дубль-файл scan (ретро 15.08 t_20383d32): тот же паттерн вызова, что у
 # stale_branch_scan_all — основной путь + no-issues путь сходятся сюда.
 duplicate_file_scan_all
