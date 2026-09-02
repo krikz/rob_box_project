@@ -52,7 +52,7 @@
 | `type` | Имя | Направление | Payload schema |
 |---|---|---|---|
 | `0x01` | `HELLO` | client → server | `{client_version: "0.1.0", capabilities: ["webxr","hand_tracking"], session_pin: "123456"}` |
-| `0x02` | `WELCOME` | server → client | `{server_version: "0.1.0", session_id: "<uuid4>", server_time_ms: 1234567890, robot_status: {...}}` |
+| `0x02` | `WELCOME` | server → client | `{server_version: "0.1.0", session_id: "<uuid4>", server_time_ms: 1234567890, robot_status: {...}, teleop_floor_held_by: "<client_id>"\|null}` |
 | `0x03` | `SUBSCRIBE` | client → server | `{topic: "camera_rear"\|"camera_front"\|"lidar_2d"\|"lidar_3d"\|"voice_state"\|"robot_status"\|"person_detections", quality: "low"\|"med"\|"high"}` |
 | `0x04` | `UNSUBSCRIBE` | client → server | `{topic: "..."}` |
 | `0x10` | `BINARY_FRAME` | server → client | binary blob (raw bytes; topic указан в subscribe-confirm или заголовке см. §4) |
@@ -64,6 +64,14 @@
 | `0x31` | `ACQUIRE_FLOOR` | client → supervisor | msgpack `{client_id, floor: "teleop"\|"voice"}` |
 | `0x32` | `RELEASE_FLOOR` | client → supervisor | msgpack `{client_id, floor: "teleop"\|"voice"}` |
 | `0x33` | `STATE_UPDATE` | supervisor → client | msgpack `{state: <packed AvatarState>}` — публикуется на каждое изменение FSM/floor-ов + 1 Hz keep-alive |
+
+> **AV-19 (issue #1911, ADR-0028 §4.4 S10)** — heartbeat-контракт:
+> пока клиент держит `teleop_floor`, он шлёт `teleop_heartbeat` (см.
+> §5 «JSON_CMD») не реже **10 Гц**. Сервер **пересылает** каждый такой
+> фрейм в ROS-топик `/teleop_heartbeat` (msgpack `std_msgs/String`).
+> Никакого «авто-loop» на сервере: источник живости — клиент. Если
+> heartbeat не приходит > 500 мс — супервизор снимает `teleop_floor`
+> (см. ADR-0028 §6 Q4, dead-man).
 
 **Handshake:**
 
@@ -157,6 +165,37 @@ stateDiagram-v2
 сервер игнорирует фрейм (это страховка от «отпустил grip, но пакет
 застрял в TCP буфере и пришёл позже»). Throttle: не чаще 30 Гц
 (`seq` монотонный, сервер отбрасывает фреймы с повторным `seq`).
+
+> **AV-19 — `teleop_twist` и `teleop_floor`.** При
+> `require_teleop_floor=true` (ROS-параметр ноды
+> `quest_node`, default `false`) и если эта сессия **не** держит
+> `teleop_floor` (т.е. `WELCOME.teleop_floor_held_by != session_id`
+> и/или клиент получил `ERROR{FLOOR_HELD}` хотя бы раз), сервер:
+>
+> 1. **Не** публикует `cmd_vel_quest` (robot не двигается).
+> 2. Шлёт `ERROR{FLOOR_HELD}` **rate-limited** (≤ 1 Гц на сессию),
+>    иначе на 30 Гц `teleop_twist` зальём сокет ошибками.
+> 3. **Не** релеит `teleop_heartbeat` от этой сессии (клиент не
+>    должен жить в логе супервизора как владелец floor).
+>
+> `stop_emergency` (§5) **всегда** в обход гейта — аварийная остановка
+> обязана работать у любого клиента, у кого бы ни был floor.
+
+```json
+{
+  "cmd": "teleop_heartbeat",
+  "ts_ms": 1234567890,
+  "seq": 12345
+}
+```
+
+AV-19 (ADR-0028 §4.4 S10): клиент шлёт `teleop_heartbeat` 10 Гц пока
+**ARM + floor наш**. Сервер пробрасывает каждый фрейм в ROS-топик
+`/teleop_heartbeat` (`std_msgs/String`, JSON `{"client_id",
+"ts_ms", "seq"}`). Клиент НЕ шлёт heartbeat в `armed_no_floor`,
+`idle`, или `stopping` — иначе супервизор примет чужую сессию за
+живого владельца и не снимет floor. Это **отдельный** контракт от
+существующего ping/watchdog (`connection.ts`), их не смешивать.
 
 ```json
 {
@@ -359,6 +398,11 @@ JSON-обёртка нужна для admin-панели и тестовых к�
 { "type": "preview_voice_done",  "request_id": "...", "ts_ms": 1234567890 }
 { "type": "preview_voice_error", "request_id": "...", "reason": "tts_timeout", "ts_ms": 1234567890 }
 { "type": "stream_select_ack",  "topic": "camera_oak_color", "stream_id": 0x1002, "kind": "jpeg" } // §6.2
+// AV-19: сервер сообщает, что наша сессия больше не держит
+// teleop_floor (dead-man 500 мс, FSM-переход супервизора, или
+// ручной release). Клиент обязан мгновенно DISARM-нуться
+// (teleop_fsm.setHasFloor(false)) и показать тост «возьми руль».
+{ "type": "floor_lost",     "floor": "teleop"|"voice", "reason": "external_supervisor_or_lost", "ts_ms": 1234567890 }
 ```
 
 `robot_alert` codes (Phase 1): `BATTERY_LOW (<20%)`, `WIFI_WEAK (<-75 dBm)`,
@@ -389,7 +433,7 @@ JSON-обёртка нужна для admin-панели и тестовых к�
 | `TOPIC_NOT_AVAILABLE_YET` | source-данные ещё не пришли (lidar не запущен) | автоматический retry через 1 с |
 | `INTERNAL` | неожиданная ошибка сервера | UI показывает «Server error, reconnect» |
 | `PROTOCOL_VERSION` | subprotocol не совпадает с поддерживаемой версией (см. §11) | close socket, UI «Update client» |
-| `FLOOR_HELD` | `0x31 ACQUIRE_FLOOR` / `supervisor_acquire_floor` — запрошенный floor уже держит другой `client_id`; или `0x32 RELEASE_FLOOR` для floor-а, который клиент не держит | показать «Floor held by another operator» (см. ADR-0028 §4.2 transfer-протокол) |
+| `FLOOR_HELD` | `0x31 ACQUIRE_FLOOR` / `supervisor_acquire_floor` — запрошенный floor уже держит другой `client_id`; или `0x32 RELEASE_FLOOR` для floor-а, который клиент не держит. **AV-19**: также шлётся при `teleop_twist` без своего `teleop_floor` (`require_teleop_floor=true`), rate-limited ≤ 1 Гц. | показать «Floor held by another operator» (см. ADR-0028 §4.2 transfer-протокол) или тост «возьми руль» (AV-19) |
 | `MODE_CONFLICT` | `0x30 SET_MODE` / `supervisor_set_mode` — FSМ супервизора отклонила переход | показать «Mode not allowed now» |
 
 ## 9. Rate limits (Phase 1)
@@ -397,6 +441,7 @@ JSON-обёртка нужна для admin-панели и тестовых к�
 | Frame | Max rate | Action on overflow |
 |---|---|---|
 | `teleop_twist` | 30 Hz (per client) | drop + `ERROR{RATE_LIMIT}` |
+| `teleop_heartbeat` | 10 Hz (per client, AV-19) | клиент сам throttle'ит через `teleop_fsm.heartbeatCmd`; relay 1:1 |
 | `ui_button` | 5 Hz | drop |
 | `voice_ptt_start` / `voice_ptt_stop` | edge-triggered, max 2 start/s | drop |
 | `voice_mode` | 1 per 5 s | drop |

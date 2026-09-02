@@ -108,6 +108,16 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
 
   let conn: Connection | null = null;
   let disconnected = true;
+  // AV-19 (issue #1911, ADR-0028 §4.4): session_id нашей сессии.
+  // Сравнивается с WELCOME.teleop_floor_held_by — если равны, мы держим
+  // teleop_floor. Запоминается при первом WELCOME и сбрасывается на disconnect.
+  // В текущей реализации FSM уже синхронизируется через onWelcome
+  // (teleopFloorHeldBy === sessionId). Переменная оставлена как hook
+  // для Phase 2 (e.g. конкретный «Acquired by YOU» indicator в HUD).
+  let mySessionId: string | null = null;
+  // AV-19: текст тоста «возьми руль», показывается когда ARM заблокирован
+  // из-за чужого floor. Снимается когда floor снова наш.
+  let floorBlockToast: { show(): void; hide(): void } | null = null;
   let xrTeleopHandle: ReturnType<typeof createXrTeleop> | null = null;
   // Последний кэшированный inputSources; обновляется через inputsourceschange.
   let xrInputSources: XRInputSource[] = [];
@@ -131,6 +141,30 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   });
   // Edge-состояние PTT. Робот-голос приоритетнее рации, если зажаты оба.
   let voicePttMode: "none" | "radio" | "robot_voice" = "none";
+
+  /**
+   * AV-19: показать/скрыть тост «возьми руль», когда ARM заблокирован.
+   * Создаём отдельный ErrorOverlay как info-toast (не конфликтует с
+   * disconnect-overlay); общий parent — body.
+   */
+  function setFloorBlocked(blocked: boolean): void {
+    if (blocked) {
+      if (floorBlockToast === null) {
+        const toast = createErrorOverlay(opts.body, { level: "info" });
+        floorBlockToast = {
+          show() {
+            toast.show("Возьми руль", "Управление у другого оператора");
+          },
+          hide() {
+            toast.dismiss();
+          }
+        };
+      }
+      floorBlockToast.show();
+    } else {
+      floorBlockToast?.hide();
+    }
+  }
 
   function applyVoicePtt(radio: boolean, robot: boolean): void {
     const next: "none" | "radio" | "robot_voice" = robot ? "robot_voice" : radio ? "radio" : "none";
@@ -205,6 +239,12 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             setStatus("RECONNECTING…", "connecting");
             // Старый RTT после разрыва — враньё: обнуляем до первого pong.
             bridge.statusHud.setRtt(null);
+            // AV-19: на reconnect FSM предполагает «оптимистично» hasFloor=true;
+            // настоящее состояние придёт из WELCOME.teleop_floor_held_by
+            // и/или первого FLOOR_HELD/floor_lost.
+            mySessionId = null;
+            fsm.setHasFloor(true);
+            setFloorBlocked(false);
             // Disconnect-watchdog начинает отсчёт; если > 5s без успеха —
             // покажем error overlay (см. createDisconnectWatchdog).
             watchdog.markDisconnected();
@@ -214,9 +254,26 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             setStatus("CLOSED", "lost");
             bridge.statusHud.setRtt(null);
             disconnected = true;
+            // AV-19: сброс FSM-state и тостов.
+            mySessionId = null;
+            fsm.setHasFloor(true);
+            setFloorBlocked(false);
             // "closed" — окончательно (не reconnect). Прямо сейчас
             // показываем overlay без 5-секундного порога.
             errorOverlay.show("Disconnected", "Connection closed by server");
+          }
+        },
+        onWelcome: (sessionId, _serverTimeMs, teleopFloorHeldBy) => {
+          // AV-19: запоминаем наш session_id для сравнения с WELCOME.teleop_floor_held_by.
+          mySessionId = sessionId;
+          // Сервер в WELCOME уже сообщил, держит ли floor наша сессия.
+          // Если да — hasFloor=true; если поле отсутствует (Phase 1 бэкенд)
+          // — оставляем оптимистичный default; первый FLOOR_HELD/floor_lost
+          // скорректирует.
+          if (teleopFloorHeldBy !== null) {
+            const weHold = teleopFloorHeldBy === sessionId;
+            fsm.setHasFloor(weHold);
+            setFloorBlocked(!weHold);
           }
         },
         onBinaryFrame: (streamId, payload) => {
@@ -240,6 +297,19 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
           bridge.setAvailableStreams(
             items.map((it) => ({ topic: it.topic, description: it.description }))
           );
+        },
+        onJsonEvent: (ev) => {
+          // AV-19: JSON_EVENT{type:"floor_lost"} → мгновенный DISARM.
+          if ((ev as { type?: string }).type === "floor_lost") {
+            fsm.setHasFloor(false);
+            setFloorBlocked(true);
+            // eslint-disable-next-line no-console
+            console.warn(
+              "[quest] floor_lost (reason=%s) — DISARM, toast shown. my_session_id=%s",
+              (ev as { reason?: string }).reason ?? "n/a",
+              mySessionId ?? "unknown"
+            );
+          }
         },
         onError: (code, message) => {
           if (code === "AUTH_FAIL") return;
@@ -315,10 +385,22 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     }
     // Edge-triggered toggle: нажал стик → ARM, нажал ещё раз → DISARM.
     if (armPress && !xrArmWasPressed) {
-      armed = !armed;
-      bridge.setArmState(armed);
-      // Phase 2.3: mode-manager синхронизируется с реальным arm-стейтом.
-      modeManager.setTeleopState(armed ? "armed" : "disarmed");
+      // AV-19: ARM требует наш teleop_floor. Если нет — НЕ ставим
+      // armed=true (FSM сама не пошлёт twist благодаря setHasFloor(false),
+      // но XR-стейк мог быть включён, и нам нужно показать «возьми руль»
+      // + оставить deadman=false чтобы не накапливать «активность».
+      if (fsm.hasFloor()) {
+        armed = !armed;
+        bridge.setArmState(armed);
+        // Phase 2.3: mode-manager синхронизируется с реальным arm-стейтом.
+        modeManager.setTeleopState(armed ? "armed" : "disarmed");
+        setFloorBlocked(false);
+      } else {
+        // Floor чужой — показываем тост, ARM не активируем.
+        setFloorBlocked(true);
+        // НЕ ставим armed=true; оставляем deadman=false чтобы FSM не
+        // пыталась слать twist из stopping-стейта (мы уже в idle).
+      }
     }
     xrArmWasPressed = armPress;
     fsm.setDeadman(armed);
@@ -331,6 +413,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       armed = false;
       bridge.setArmState(false);
       modeManager.setTeleopState("disarmed");
+      setFloorBlocked(false);
     }
     xrEmergencyWasPressed = emergency;
     applyVoicePtt(ptt, robotPtt);
@@ -348,6 +431,12 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       }
       const out = fsm.tick(Date.now());
       if (out) conn.send(out.cmd);
+      // AV-19: relay teleop_heartbeat 10 Гц пока FSM в armed (== ARM+floor).
+      // Источник живости — клиент; сервер не генерирует heartbeat-ы сам
+      // (иначе dead-man теряет смысл). Шлём через общий tick, чтобы
+      // пользоваться одним event-loop и не плодить setInterval.
+      const hb = fsm.heartbeatCmd(Date.now());
+      if (hb) conn.send(hb);
     }
     pollXrControllers();
   }
