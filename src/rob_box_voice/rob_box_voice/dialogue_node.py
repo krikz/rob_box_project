@@ -90,6 +90,7 @@ from rob_box_voice.scheduler.quick_decide import QuickVerdict, quick_decide
 from rob_box_voice.core.dialogue_guards import (
     BABBLE_BANNED_OPENERS as BABBLE_BANNED_OPENERS,
     BABBLE_PERFORMANCE_KEYWORDS as BABBLE_PERFORMANCE_KEYWORDS,
+    GENERATED_MUSIC_TOOLS,
     MUSIC_GUARD_KEYWORDS,
     MUSIC_GUARD_VOCAL_KEYWORDS,
     MUSIC_MODE_TOOLS,
@@ -3317,7 +3318,17 @@ class DialogueNode(Node):
                 # список имён теперь один на всю систему (dialogue_guards),
                 # чтобы следующий музыкальный инструмент не пришлось помнить
                 # добавить в двух местах.
-                _music_starters = RENARDO_MUSIC_TOOLS | MUSIC_MODE_TOOLS
+                # 🔴 FIX (live 02.09): та же авария в третий раз — теперь с
+                # ``gen_play_from_library`` (mp3 из AI-библиотеки). Live-кейс:
+                # «включи трек про весну» реально запустил mp3, но
+                # ``GENERATED_MUSIC_TOOLS`` тут не учитывался — флаг
+                # ``_track_mode_music_active`` не взводился, следующая
+                # реплика («ну вот ты включил уже») пришла из idle,
+                # ``_publish_music_cleanup(reason="new_dialogue")`` считал
+                # мёртвый воздух и профилактически глушил mp3 через ~14с
+                # после старта. Юзер слышал, как робот 3 хода подряд врал
+                # «уже играет» на самом деле остановленному треку.
+                _music_starters = RENARDO_MUSIC_TOOLS | MUSIC_MODE_TOOLS | GENERATED_MUSIC_TOOLS
                 # 🔴 FIX (live 31.08): stop_music не гасил флаг «играет», а
                 # снимался он только в _publish_music_cleanup. После «выключи
                 # музыку» флаг врал, и следующий Bug-C ретрай уходил в
