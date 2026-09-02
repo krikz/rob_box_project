@@ -155,6 +155,15 @@ EXPECTED=(
     # task_comments). НЕ kill, НЕ reassign — Шифу принимает решение.
     # Регистрация cron-job делается в ensure_blocked_watchdog_scope_cron.
     agent-flow-blocked-watchdog-scope.sh
+    # Protocol-violation recovery watchdog (ретро t_52a6b973, 2026-09-02):
+    # no-agent job, каждый час сканирует todo/ready-карточки assignee=agent-flow
+    # с protocol_violation streak (worker exited rc=0 без kanban_complete),
+    # ищет для issue MERGED PR в base branch, и вызывает kanban complete
+    # от имени watchdog'а с verifier-summary. Закрывает карточки-призраки
+    # типа t_0ed5689a, где вся работа сделана через дочерние задачи, но
+    # корневая карточка висит в todo с consecutive_crashes=4.
+    # Регистрация cron-job делается в ensure_pv_watchdog_cron ниже.
+    agent-flow-protocol-violation-watchdog.sh
 )
 
 # Режим --list-files: печатает EXPECTED по одному имени на строку и выходит.
@@ -661,6 +670,69 @@ sys.exit(1)
 ensure_blocked_watchdog_scope_cron
 
 echo
+echo "==> Ensure cron job registration: protocol-violation recovery (ретро t_52a6b973)"
+# Проблема: карточки assignee=agent-flow могут застрять в todo с
+# consecutive_crashes=4 (worker exited rc=0 без kanban_complete), хотя вся
+# работа уже merged в develop через дочерние задачи (t_0ed5689a — типичный
+# случай). Без watchdog'а Шифу вынужден вручную вызывать kanban complete.
+#
+# Решение: ensure_pv_watchdog_cron() — идемпотентная функция, регистрирующая
+# interval-job (every 1h) в devops-профиле, no_agent. Сканирует todo/ready
+# карточки assignee=agent-flow с protocol_violation streak, проверяет merged
+# PR в base branch, вызывает kanban complete с verifier-summary.
+# Дубль-guard по (script + interval + enabled).
+ensure_pv_watchdog_cron() {
+    local profile_dir="/home/builder/.hermes/profiles/devops"
+    local jobs_file="$profile_dir/cron/jobs.json"
+    local job_name="Agent Flow Protocol Violation Recovery (t_52a6b973)"
+    local job_script="agent-flow-protocol-violation-watchdog.sh"
+    local job_schedule="every 1h"
+
+    if ! command -v hermes >/dev/null 2>&1; then
+        echo "  SKIP ensure-pv-watchdog-cron: hermes CLI not on PATH"
+        return 0
+    fi
+    if [ ! -f "$jobs_file" ]; then
+        echo "  SKIP ensure-pv-watchdog-cron: $jobs_file not present"
+        return 0
+    fi
+
+    if python3 -c "
+import json, sys
+try:
+    with open('$jobs_file') as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(0)
+for j in d.get('jobs', []):
+    if j.get('script') == '$job_script' and j.get('schedule', {}).get('kind') == 'interval' and j.get('enabled'):
+        sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then
+        echo "  OK   cron job '$job_name' already registered"
+        return 0
+    fi
+
+    echo "  ADD  registering cron job '$job_name' (devops, $job_schedule, no_agent)"
+    if $DRY_RUN; then
+        echo "  [DRY] hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir '$REPO_DIR'"
+        return 0
+    fi
+    if hermes --profile devops cron create "$job_schedule" \
+        --name "$job_name" \
+        --script "$job_script" \
+        --no-agent \
+        --deliver local \
+        --workdir "$REPO_DIR" >/dev/null 2>&1; then
+        echo "  ADD  cron job created: $job_name ($job_script, $job_schedule)"
+    else
+        echo "  WARN cron job creation failed (non-fatal): $job_name — register manually:"
+        echo "       hermes --profile devops cron create '$job_schedule' --name '$job_name' --script '$job_script' --no-agent --deliver local --workdir $REPO_DIR"
+    fi
+}
+ensure_pv_watchdog_cron
+
+echo
 echo "==> md5sum verify: 3 copies of agent-flow scripts are byte-identical (retro 25.08 t_24e645e7)"
 # Проблема: launcher agent-flow-e2e-process-launcher.sh раскладывается в 3
 # копии (agent-flow/, devops/, architect/) + .hermes/scripts/. Если хотя бы
@@ -719,6 +791,11 @@ verify_three_copies_md5sum "agent-flow-blocked-watchdog-scope.sh" \
     "/home/builder/.hermes/profiles/architect/scripts/agent-flow-blocked-watchdog-scope.sh" \
     "/home/builder/.hermes/profiles/devops/scripts/agent-flow-blocked-watchdog-scope.sh" \
     "/home/builder/.hermes/scripts/agent-flow-blocked-watchdog-scope.sh"
+verify_three_copies_md5sum "agent-flow-protocol-violation-watchdog.sh" \
+    "/home/builder/.hermes/profiles/agent-flow/scripts/agent-flow-protocol-violation-watchdog.sh" \
+    "/home/builder/.hermes/profiles/architect/scripts/agent-flow-protocol-violation-watchdog.sh" \
+    "/home/builder/.hermes/profiles/devops/scripts/agent-flow-protocol-violation-watchdog.sh" \
+    "/home/builder/.hermes/scripts/agent-flow-protocol-violation-watchdog.sh"
 
 echo
 echo "==> Telegram token sanity (retro 12.08 t_5af222ea): >1 active TELEGRAM_BOT_TOKEN = reconnect loop"
