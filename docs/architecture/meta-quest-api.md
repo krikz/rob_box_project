@@ -450,27 +450,67 @@ Server-side enforcement — token bucket per client; reset при reconnect.
 | `robbox-quest-v1` | Phase 1 (Quest → `rob_box_quest`) | `0x01`..`0x20`, `0xFF`, `0x10`–`0x12` | `wss://<vision-pi>:8443/quest` |
 | `robbox-quest-v2` | Phase 2 (Quest → `avatar_supervisor`) | `0x01`..`0x20`, `0xFF`, `0x30`–`0x33` | тот же endpoint, маршрутизация по `subprotocol` |
 
-**Backward-compat:** при `subprotocol = "robbox-quest-v1"` сервер
-(Phase 2 build) отвечает `ERROR{PROTOCOL_VERSION}` и закрывает сокет —
-v1 клиент не понимает `0x30`–`0x33` и `STATE_UPDATE`, а v2-сессия
-требует supervisor-aware flow. Клиент обязан быть перекомпилирован с
-флагом `--subprotocol=v2` перед подключением к Phase 2 серверу.
+**Negotiation (aiohttp, при WS-handshake):** сервер объявляет оба subprotocol
+через `WebSocketResponse(protocols=("robbox-quest-v2", "robbox-quest-v1"))`.
+aiohttp выбирает первый совпавший из объявленных клиентом. Клиент без
+`Sec-WebSocket-Protocol` — сервер fallback на v2 (первый в списке) для новых
+сессий, но рекомендуется явно объявлять — иначе `Sec-WebSocket-Protocol`-aware
+инфраструктура может ругаться. См. реализацию — `SUPPORTED_SUBPROTOCOLS_V2`
+в `server/session.py`.
 
-**Forward-compat:** v2 сервер также принимает `subprotocol =
-"robbox-quest-v1"` *только* в режиме `monitor` (ADR-0028 §4.5) —
-read-only наблюдение за камерами/лидаром/роботом; supervisor-команды
-(`0x30`–`0x33`, §5.1) молча игнорируются с лог-записью
-`client_id=... subprotocol=v1 ignored supervisor frame 0x3X`. Это нужно
-для поэтапного rollout: сначала деплоим supervisor в `monitor`, потом
-обновляем Quest-клиент. **Решение фиксируется здесь:** в режиме
-`monitor` v1-клиенты принимаются; в режиме `active` v1-клиенты
-получают `ERROR{PROTOCOL_VERSION}` сразу. Реализация гранулярного
-режима — карточка **AV-10**.
+**Backward-compat:** при `subprotocol = "robbox-quest-v1"` сервер (Phase 2 build)
+отвечает `ERROR{PROTOCOL_VERSION}` и **немедленно закрывает сокет** при попытке
+v1-клиента отправить `0x30`/`0x31`/`0x32` (supervisor-команды); v1-сессии НЕ
+получают `0x33 STATE_UPDATE` ни в ответ на команды, ни в keep-alive 1 Hz
+(см. §11.2 для деталей по выбранному поведению). v1 клиент не понимает
+`0x30`–`0x33`, а v2-сессия требует supervisor-aware flow. Клиент обязан быть
+перекомпилирован с флагом `--subprotocol=v2` перед подключением к Phase 2
+серверу.
+
+**Forward-compat:** v2 сервер также принимает `subprotocol = "robbox-quest-v1"`
+*только* в режиме `monitor` (ADR-0028 §4.5) — read-only наблюдение за
+камерами/лидаром/роботом; supervisor-команды (`0x30`–`0x33`, §5.1) молча
+игнорируются с лог-записью `client_id=... subprotocol=v1 ignored supervisor
+frame 0x3X`. Это нужно для поэтапного rollout: сначала деплоим supervisor в
+`monitor`, потом обновляем Quest-клиент.
 
 Изменение семантики существующего frame-типа = bump subprotocol (v3+).
 Новое поле в payload — без bump-а (клиент игнорирует неизвестные поля).
 
-### 11.2. Эволюция полей в Phase 2.1+
+### 11.2. Поведение v1 vs v2 для supervisor-frame-ов (AV-16, #1908)
+
+Карточка AV-16 закрывает отсутствующую реализацию клиентского supervisor API
+в `rob_box_quest`. Конкретный поведенческий контракт:
+
+| Действие клиента | v1-сессия | v2-сессия |
+|---|---|---|
+| `0x30 SET_MODE` (msgpack) | `ERROR{PROTOCOL_VERSION}` + close | `Bridge.supervisor_set_mode` → `STATE_UPDATE` (msgpack) при `applied=true`, `ERROR{MODE_CONFLICT}` иначе |
+| `0x31 ACQUIRE_FLOOR` (msgpack) | `ERROR{PROTOCOL_VERSION}` + close | `Bridge.supervisor_acquire_floor` → `STATE_UPDATE` при `granted=true`, `ERROR{FLOOR_HELD}` (с `held_by` в message) иначе |
+| `0x32 RELEASE_FLOOR` (msgpack) | `ERROR{PROTOCOL_VERSION}` + close | `Bridge.supervisor_release_floor` → `STATE_UPDATE` при `applied=true`, `ERROR{FLOOR_HELD}` (с `held_by`) иначе |
+| `0x33 STATE_UPDATE` (от клиента) | — `STATE_UPDATE` только server→client | — `STATE_UPDATE` только server→client |
+| сервер шлёт `0x33 STATE_UPDATE` | не отправляется (§11.2 per-row) | broadcast на каждое изменение `/avatar/state` + keep-alive 1 Hz (§3 строка 66) |
+| `JSON_CMD{supervisor_set_mode}` etc. (§5.1) | `ERROR{PROTOCOL_VERSION}` | `JSON_EVENT{type:supervisor_state, state, ts_ms}` |
+
+**Почему `ERROR`, а не молча игнорировать.** Альтернативой была бы «молча
+проглатывать 0x31 на v1-сессии с лог-записью `subprotocol=v1 ignored`. Это тот
+же механизм, что прятал баги в AV-14 («клиент шлёт лишнее — сервер молча ест»),
+поэтому v1-клиент СРАЗУ получит явный сигнал обновиться через
+`ERROR{PROTOCOL_VERSION}`. См. §8 коды ошибок.
+
+**`client_id` — серверный, не client-supplied.** Все supervisor-вызовы (`0x30..0x32`,
+JSON-эквиваленты) получают `client_id = "quest:<session_id>"`, сформированный
+сервером в момент HELLO. Значение `client_id` из payload-а **игнорируется**, при
+несовпадении пишется WARNING в лог. Защита от Telegram-spoofing: клиент НЕ
+должен иметь возможность представиться чужим `client_id`.
+
+**Service-call timeouts.** `Bridge.supervisor_*` вызывает ROS-сервисы через
+`asyncio.run_coroutine_threadsafe(call_async, ros_loop)` с timeout 50 мс.
+«Зависший» supervisor degradation на `INTERNAL` (`applied=False/reason=
+supervisor_service_timeout`), НЕ блокирует event-loop aiohttp (acceptance
+критерий карточки). Если сервис вообще не задеплоен — fallback
+`service_unavailable` с `applied=False`.
+
+### 11.3. Эволюция полей в Phase 2.1+
 
 На subprotocol `robbox-quest-v1` поверх Phase 1.0 контракта добавились
 новые команды и события **без bump-а subprotocol** (naming evolution):
