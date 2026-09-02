@@ -10,6 +10,12 @@ from sensor_msgs.msg import CompressedImage
 from nav_msgs.msg import OccupancyGrid
 from std_msgs.msg import String
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
+from rob_box_core.avatar_command import (
+    AVATAR_COMMAND_TOPIC,
+    build_command,
+    encode_command,
+    make_telegram_client_id,
+)
 from .camera_cache import CameraCache
 from .handlers import commands as _cmds
 from .handlers.callbacks import callback_handler
@@ -74,6 +80,13 @@ class TelegramNode(Node):
         self.create_subscription(OccupancyGrid, "/rtabmap/grid_prob_map", self._on_map, _TL, callback_group=g)
         self._stt_pub = self.create_publisher(String, "/voice/stt/result", _RE)
         self._response_pub = self.create_publisher(String, "/voice/dialogue/response", _RE)
+        # AV-22 (Issue #1914) — producer /avatar/command для супервизор-агента.
+        # Тот же топик, что и quest-нода, единый контракт
+        # (worker-brief §3.3, rob_box_core.avatar_command). RELIABLE depth=10 —
+        # оператор не должен потерять команду при всплеске трафика.
+        self._avatar_command_pub = self.create_publisher(
+            String, AVATAR_COMMAND_TOPIC, _RE
+        )
         # Issue #1195 — restore the echo path: dialogue/TTS output is
         # duplicated into the active Telegram chat so the operator sees
         # what the robot says (removed in 88cecc91 because of the
@@ -174,6 +187,35 @@ class TelegramNode(Node):
         if is_metrics_enabled():
             record_telegram_message("in", message_type="text")
         m = String(); m.data = text; self._stt_pub.publish(m)
+    def publish_avatar_command(self, text: str, chat_id: int) -> Optional[str]:
+        """AV-22 (Issue #1914) — публикация команды оператора в ``/avatar/command``.
+
+        Возвращает ``request_id`` (UUID) для логов/observability, либо
+        ``None`` если ``text`` пустой (тогда публикация не делается).
+        ``chat_id`` обязателен — формируем ``client_id=telegram:<chat_id>``
+        на СЕРВЕРНОЙ стороне, как требует worker-brief §1.3.
+        """
+        if not text or not text.strip():
+            return None
+        try:
+            payload = build_command(
+                source="telegram",
+                client_id=make_telegram_client_id(int(chat_id)),
+                text=text,
+            )
+        except ValueError as exc:
+            self.get_logger().warning(
+                f"⚠️ [AV-22] publish_avatar_command: невалидный payload: {exc}"
+            )
+            return None
+        m = String()
+        m.data = encode_command(payload)
+        self._avatar_command_pub.publish(m)
+        self.get_logger().info(
+            f"🎮 [telegram/cmd] → /avatar/command request_id={payload['request_id']} "
+            f"chat_id={chat_id} text={text[:80]!r}"
+        )
+        return payload["request_id"]
     def publish_tts(self, text: str) -> None:
         """AV-10 backward-compat shim.
 
