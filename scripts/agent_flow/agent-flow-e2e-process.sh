@@ -1525,6 +1525,13 @@ for issue in data:
     if "e2e-done" in labels or "e2e:rejected" in labels:
         sys.stderr.write("issue #" + str(issue["number"]) + ": has e2e-done/e2e:rejected — skip\n")
         continue
+    # Ретро 02.09 t_a09e893a (orphan-needs-e2e-after-merge): merged-no-e2e-stale
+    # означает «PR MERGED, ветка жива >grace, merge-gate вывел из auto-ротации».
+    # e2e-process НЕ должен возвращать issue обратно в needs-e2e rotation —
+    # иначе наш трим бесполезен (ping-pong).
+    if "merged-no-e2e-stale" in labels:
+        sys.stderr.write("issue #" + str(issue["number"]) + ": has merged-no-e2e-stale — merge-gate audit-trim, skip e2e\n")
+        continue
     keep.append(issue)
 print(json.dumps(keep, ensure_ascii=False))')"
         _filtered_count="$(printf '%s' "$_filtered" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"

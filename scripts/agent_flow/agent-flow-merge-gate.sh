@@ -53,6 +53,18 @@ DONE_LABEL="${DONE_LABEL:-e2e-done}"
 MERGE_CONFLICT_LABEL="${MERGE_CONFLICT_LABEL:-merge-conflict}"
 REJECTED_LABEL="${REJECTED_LABEL:-e2e:rejected}"
 NO_E2E_LABEL="${NO_E2E_LABEL:-no-e2e-required}"
+# Ретро 02.09 t_a09e893a (orphan-needs-e2e-after-merge): audit-метка для
+# issue, у которой PR MERGED, но ветка жива >grace-часов → e2e-ротация
+# зависла. Merge-gate снимает `needs-e2e` и ставит эту метку вместо close
+# (Шифу решает закрывать или открывать follow-up). e2e-process должен
+# skip'ать issue с этой меткой — иначе трим бесполезен.
+MERGED_NO_E2E_STALE_LABEL="${MERGED_NO_E2E_STALE_LABEL:-merged-no-e2e-stale}"
+MERGED_LABELED_GRACE_HOURS="${MERGED_LABELED_GRACE_HOURS:-24}"
+# Список известных branch-prefix'ов для fallback-lookup PR (по issue number).
+# Ретро 02.09 t_a09e893a: канонический `z-{agent}/<n>-slug` НЕ покрывает
+# реальные ветки воркеров (`z-backend/<n>-...`, `z-developer/<n>-...`, ...).
+# Список пополняем по мере появления новых профилей в ~/.hermes/profiles/.
+AGENT_FLOW_BRANCH_PREFIXES="${AGENT_FLOW_BRANCH_PREFIXES:-z-backend z-developer z-llm-expert z-architect z-devops z-designer z-analyst z-tester}"
 BIG_BANG_OVERRIDE_LABEL="${BIG_BANG_OVERRIDE_LABEL:-big-bang-override}"
 # Ретро 31.08 t_04371252 (PR #1753): stale-branch scan ставит эту метку на
 # OPEN PR с уже влитой веткой + функциональным диффом, чтобы downstream
@@ -2771,7 +2783,7 @@ except Exception: print("")' 2>/dev/null || true)"
         --json number,mergeable,mergeStateStatus,statusCheckRollup,baseRefName,state,mergedAt,title,labels,additions,deletions,commits 2>/dev/null || true)"
 
     # Процесс-фикс (09.08): воркеры ретро-карточек создают ветки `wt/<task_id>`
-    # (нет issue → конвенция z-{agent}/<id>-<slug> неприменима). Такие PR
+    # (нет issue → конвенция z-{agent}/<id>-slug неприменима). Такие PR
     # выпадали из конвейера: merge-gate не находил их и не ставил needs-e2e.
     # Fallback: ищем PR по ветке wt/<task_id> (последняя карточка issue).
     if [ -z "$pr_json" ] || [ "$pr_json" = "[]" ]; then
@@ -2788,6 +2800,80 @@ except Exception: print("")' 2>/dev/null || true)"
             else
                 pr_json=""
             fi
+        fi
+    fi
+
+    # Ретро 02.09 t_a09e893a (orphan-needs-e2e-after-merge):
+    # Воркеры НЕ всегда следуют каноническому шаблону `z-{agent}/<n>-slug` —
+    # на практике ветки называются `z-backend/1764-...`, `z-developer/1780-...`,
+    # `z-llm-expert/1777-...` и т.д. Канонический lookup выше их не ловит →
+    # `pr_json=[]` → issue зависает в needs-e2e rotation вечно (PR был
+    # смержен, но merge-gate не видит его).
+    #
+    # Fix: дополнительный проход по списку известных agent-prefix'ов. Если
+    # нашли PR — переписываем `branch` на найденную, чтобы downstream
+    # Q22-путь (`git ls-remote --heads $branch`) корректно проверял
+    # существование ветки. Идемпотентно: если канонический lookup уже
+    # нашёл — этот блок skip'ается (`pr_json` не пуст).
+    #
+    # Список пополняем по мере появления новых профилей. SOT — agent-flow
+    # profiles (см. ~/.hermes/profiles/); 6 baseline покрывает все
+    # исторические случаи (#1764 backend, #1777 llm-expert, #1780 developer).
+    if [ -z "$pr_json" ] || [ "$pr_json" = "[]" ]; then
+        _agent_prefixes="${AGENT_FLOW_BRANCH_PREFIXES:-z-backend z-developer z-llm-expert z-architect z-devops z-designer z-analyst z-tester}"
+        _fallback_branch=""
+        _fallback_pr_json=""
+        for _prefix in $_agent_prefixes; do
+            _probe="z-{agent}/${number}-"  # намерение: переменная подставляется ниже
+            # Используем search по title чтобы поймать все варианты именования
+            # (z-backend/1764-..., z-backend/t_xxx-1764-...). Один API-вызов,
+            # фильтрация в shell.
+            _probe_json="$(gh pr list \
+                --repo "$GH_REPO" \
+                --state all \
+                --search "${number} in:title" \
+                --json number,headRefName,mergeable,mergeStateStatus,statusCheckRollup,baseRefName,state,mergedAt,title,labels,additions,deletions,commits 2>/dev/null || echo '[]')"
+            # Берём первый PR где headRefName содержит issue number и
+            # начинается с известного префикса. Нестрогая проверка — issue
+            # может фигурировать в PR-title как «#1764» или «(issue #1764)».
+            _match="$(printf '%s' "$_probe_json" | python3 -c '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    if not isinstance(data, list):
+        sys.exit(0)
+    issue_num = sys.argv[1]
+    prefixes = sys.argv[2].split()
+    # Сначала ищем точное совпадение headRefName: <prefix>/<num>-*
+    for pr in data:
+        head = pr.get("headRefName") or ""
+        for p in prefixes:
+            # формат: z-<agent>/<num>-slug или z-<agent>/t_<id>-<num>-slug
+            if head.startswith(p + "/" + issue_num + "-") or \
+               head.startswith(p + "/t_") and ("-" + issue_num + "-" in head or head.endswith("-" + issue_num)):
+                print(f"{head}|{json.dumps(pr)}")
+                sys.exit(0)
+    # Fallback 2: headRefName содержит issue number где угодно
+    for pr in data:
+        head = pr.get("headRefName") or ""
+        if ("-" + issue_num + "-" in head) or head.endswith("-" + issue_num):
+            for p in prefixes:
+                if head.startswith(p + "/"):
+                    print(f"{head}|{json.dumps(pr)}")
+                    sys.exit(0)
+except Exception:
+    pass
+' "$number" "$_agent_prefixes" 2>/dev/null || true)"
+            if [ -n "$_match" ]; then
+                _fallback_branch="${_match%%|*}"
+                _fallback_pr_json="${_match#*|}"
+                log "issue #${number}: PR найден через agent-prefix fallback (${_fallback_branch})"
+                break
+            fi
+        done
+        if [ -n "$_fallback_pr_json" ] && [ "$_fallback_pr_json" != "[]" ]; then
+            branch="$_fallback_branch"
+            pr_json="[$_fallback_pr_json]"
         fi
     fi
 
@@ -3288,6 +3374,74 @@ except Exception:
                     #       (branch already gone).
                     if git ls-remote --heads "https://github.com/$GH_REPO.git" "$branch" 2>/dev/null | grep -q "$branch"; then
                         log "issue #${number}: MERGED but awaiting ${DONE_LABEL} — branch ${branch} exists, destructive cleanup deferred"
+                        # Ретро 02.09 t_a09e893a (orphan-needs-e2e-after-merge):
+                        # case (a) выше откладывал cleanup до исчезновения ветки
+                        # без ограничения по времени. Ретро: issue #1764/#1777/#1780
+                        # провисели в needs-e2e rotation 49+ часов после merge
+                        # потому что ветки `z-backend/<n>-*`, `z-{agent}/<n>-*`
+                        # НЕ удалялись автоматически (нет auto-delete-branch-on-merge
+                        # для шаблонов вне канонического `z-{agent}/<n>-slug`),
+                        # но e2e-process мог прогнать раунд и выставить
+                        # `e2e-done` даже на нестандартной ветке. Вместо вечного
+                        # ожидания: триммируем `needs-e2e` через staleness-окно
+                        # (MERGED_LABELED_GRACE_HOURS) и переключаем issue на
+                        # audit-метку `merged-no-e2e-stale` — это выводит из
+                        # e2e-ротации (e2e-process skip по label), но НЕ закрывает
+                        # issue (Шифу решает). Метрика/алерт: после grace-окна
+                        # issue становится orphan-audit, видно в board.
+                        #
+                        # НЕ делаем trim пока issue свежая (< grace) — даём
+                        # e2e-process шанс прогнать раунд на новой нестандартной
+                        # ветке. Если ветка и через grace существует — это
+                        # архитектурный долг (auto-delete-branch-on-merge не
+                        # настроен для нестандартных шаблонов), а не наш баг.
+                        _merged_at_iso="$(gh pr view "$pr_number" --repo "$GH_REPO" --json mergedAt \
+                            --jq '.mergedAt // empty' 2>/dev/null || echo '')"
+                        _merged_grace_hours="${MERGED_LABELED_GRACE_HOURS:-24}"
+                        if [ -n "$_merged_at_iso" ] && [ "$_merged_at_iso" != "null" ]; then
+                            _merged_at_s="$(date -u -d "$_merged_at_iso" +%s 2>/dev/null || echo 0)"
+                            _now_s="$(date -u +%s)"
+                            if [ "$_merged_at_s" -gt 0 ] 2>/dev/null; then
+                                _age_h=$(( ( _now_s - _merged_at_s ) / 3600 ))
+                                if [ "$_age_h" -ge "$_merged_grace_hours" ] 2>/dev/null; then
+                                    # Grace истёк — триммируем needs-e2e, ставим
+                                    # audit-метку. Идемпотентно: повторный тик
+                                    # видит метку и не дёргает API зря.
+                                    if has_label "$labels_norm" "$MERGED_NO_E2E_STALE_LABEL"; then
+                                        log "issue #${number}: MERGED ${_age_h}ч назад, branch ${branch} ещё существует, но уже помечен ${MERGED_NO_E2E_STALE_LABEL} — skip (idempotent)"
+                                        labeled=$((labeled+1)); continue
+                                    fi
+                                    log "issue #${number}: MERGED ${_age_h}ч назад (>${_merged_grace_hours}ч grace), branch ${branch} жива — трим ${NEEDS_E2E_LABEL}, ставлю ${MERGED_NO_E2E_STALE_LABEL}"
+                                    if [ "$DRY_RUN" != "true" ]; then
+                                        gh issue edit "$number" --repo "$GH_REPO" \
+                                            --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+                                        gh issue edit "$number" --repo "$GH_REPO" \
+                                            --add-label "$MERGED_NO_E2E_STALE_LABEL" >/dev/null 2>&1 || true
+                                        gh issue edit "$number" --repo "$GH_REPO" \
+                                            --remove-label "$REJECTED_LABEL" >/dev/null 2>&1 || true
+                                        _mnes_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+                                        _mnes_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_mnes_dedup_since}&per_page=100" \
+                                            --jq '[.[] | select(.body | contains("merged-no-e2e-stale"))] | length' 2>/dev/null || echo 0)"
+                                        if [ "${_mnes_dup:-0}" -eq 0 ]; then
+                                            gh issue comment "$number" --repo "$GH_REPO" --body \
+"🧹 merge-gate (ретро 02.09 t_a09e893a, orphan-needs-e2e-after-merge):
+
+PR #${pr_number} MERGED в ${DEVELOP_BRANCH} ещё ${_age_h}ч назад, но ветка \`${branch}\` всё ещё существует → e2e-ротация не закрылась. Снят \`${NEEDS_E2E_LABEL}\`, поставлен \`${MERGED_NO_E2E_STALE_LABEL}\` (audit-marker).
+
+**Что делать**:
+1. Если фикс влит окончательно — закрой issue вручную (\`gh issue close N --reason completed\`).
+2. Если e2e всё-таки нужен — открой follow-up PR с НОВОЙ ветки (канонический шаблон \`z-{agent}/<n>-slug\` ИЛИ с auto-delete-branch-on-merge), и merge-gate следующего раунда подхватит.
+
+ROOT cause: ретро-фикс в этом PR добавил branch-pattern fallback (\`z-backend/<n>-*\`, \`z-developer/<n>-*\`, etc.) — чтобы такие issue не зависали в будущем. Трим срабатывает по grace-окну (default 24ч)." >/dev/null 2>&1 || true
+                                        fi
+                                    fi
+                                    labeled=$((labeled+1)); continue
+                                fi
+                            fi
+                        fi
+                        # Issue ещё в grace-окне — обычный путь: defer, ждём
+                        # e2e-done или удаления ветки. Никаких label-изменений,
+                        # чтобы не сломать ожидаемое поведение e2e-process.
                         labeled=$((labeled+1)); continue
                     fi
                     log "issue #${number}: MERGED без ${DONE_LABEL}, ветка ${branch} удалена — e2e невозможен (Q22 user-merge), закрываю issue"
