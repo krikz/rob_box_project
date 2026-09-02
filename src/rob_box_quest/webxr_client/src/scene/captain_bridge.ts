@@ -7,6 +7,7 @@ import { PanelManager } from "./panel_manager";
 import { createStatusHud, type RobotStatus, type StatusHud } from "./status_hud";
 import { PointerSystem, type PointerRay } from "../interaction/pointer";
 import { createStreamMenu, topicFromTargetId, type StreamMenuHandle, type StreamMenuRow } from "./stream_menu";
+import { createSupervisorPanel, type SupervisorPanelHandle, PANEL_TARGET_PREFIX } from "./supervisor_panel";
 import {
   loadBridgeAssets,
   type BridgeAssetHandle,
@@ -36,6 +37,17 @@ export interface CaptainBridgeOptions {
    * решает, что делать с подписками: сцена про WSS ничего не знает.
    */
   onPanelTopicChange?(panelId: string, oldTopic: string, newTopic: string): void;
+  /**
+   * Клик по кнопке панели супервизора (R14). Действие — одна из строк:
+   *   `mode:<avatar_mode>` — отправить SET_MODE (`avatar_set_mode` cmd);
+   *   `floor:<teleop|voice>:<acquire|release>` — `ACQUIRE/RELEASE_FLOOR`;
+   *   `dialogue:toggle` — переключить локальный `voice_mode`.
+   * Сцена сама не знает транспорт — это ответственность bootstrap.
+   */
+  onSupervisorAction?(
+    action: string,
+    panel: SupervisorPanelHandle
+  ): void;
   /**
    * Optional override for the environment base URL. Defaults to
    * `/models/environment/`. Pass `null` to disable environment loading
@@ -68,6 +80,12 @@ export interface CaptainBridgeHandle {
   setArmState(armed: boolean): void;
   /** Status HUD на стене (слева вверху): battery / Wi-Fi / speed / RTT. */
   statusHud: StatusHud;
+  /**
+   * 3D-панель управления режимами аватара (R14, ADR-0027 R14 + ADR-0028 §4).
+   * Создаётся сразу, видима после `supervisorPanel.setVisible(true)` (или
+   * переключается клавишей `M` на десктопе).
+   */
+  supervisorPanel: SupervisorPanelHandle;
   /**
    * Топики, которые сцена умеет показывать — на них клиент подписывается
    * после WELCOME (main screen + боковые панели).
@@ -178,6 +196,13 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
           applyMenuChoice(menuTopic);
           return;
         }
+        // Клик по кнопке панели супервизора (R14): маршрутизируем в
+        // callback, который установлен через `onSupervisorAction`.
+        if (id.startsWith(PANEL_TARGET_PREFIX)) {
+          const action = id.slice(PANEL_TARGET_PREFIX.length);
+          opts.onSupervisorAction?.(action, supervisorPanel);
+          return;
+        }
         // Клик по панели — выбор + меню стримов (повторный клик закрывает).
         const already = panelMgr.get(id)?.selected ?? false;
         panelMgr.select(already ? null : id);
@@ -193,6 +218,17 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
       onDragEnd: () => refreshHighlights()
     }
   });
+
+  // 3D-панель управления режимами аватара (R14). Каждая кнопка — отдельный
+  // меш, raycaster из PointerSystem ловит её по prefix `sup:`. Сама панель
+  // не перекрывается stream_menu (renderOrder=15 < 20) и не участвует в
+  // PanelManager-геометрии (это не видео-панель с потоком). По умолчанию
+  // скрыта — оператор открывает её клавишей M на десктопе, в VR лучом контроллера.
+  const supervisorPanel = createSupervisorPanel();
+  scene.add(supervisorPanel.object);
+  for (const t of supervisorPanel.targets()) {
+    pointer.addTarget({ id: t.id, object: t.object, draggable: false });
+  }
 
   // Большой экран-стена перед оператором: на него выводим фронтальную
   // камеру. Стена мостика стоит на z = -4 (ROOM_D/2); экран висит чуть
@@ -490,6 +526,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     environment?.dispose();
     armTexture.dispose();
     statusHud.dispose();
+    supervisorPanel.dispose();
     renderer.dispose();
   }
 
@@ -506,6 +543,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     initLayout,
     updatePointer,
     pointer,
+    supervisorPanel,
     setAvailableStreams,
     attachXrSession,
     setControllerActive,

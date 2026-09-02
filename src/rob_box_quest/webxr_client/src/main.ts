@@ -15,6 +15,13 @@
 import { Connection } from "./wire/connection";
 import { createCaptainBridge } from "./scene/captain_bridge";
 import { parseRobotStatus } from "./scene/status_hud";
+import {
+  canTransitionMode,
+  isUnknownState,
+  type AvatarMode,
+  type SupervisorState,
+  UNKNOWN_STATE
+} from "./scene/supervisor_panel";
 import { TeleopFSM } from "./input/teleop_fsm";
 import { createDesktopTeleop } from "./input/desktop_teleop";
 import { createXrTeleop, pollXrInput } from "./input/xr_teleop";
@@ -31,6 +38,7 @@ import {
 } from "./ui/error_overlay";
 import { createHelpOverlay, type HelpOverlay } from "./ui/help_overlay";
 import { createModeManager, type ClientModeManager } from "./ui/mode_manager";
+import type { JsonCmd } from "./wire/messages";
 
 const CLIENT_VERSION = "0.1.0";
 const SUBPROTOCOL = "robbox-quest-v1";
@@ -56,6 +64,118 @@ interface BootstrapOptions {
 
 export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   const url = opts.url ?? deriveWsUrl();
+  // Состояние панели супервизора (R14): live-стор от сервера.
+  // `UNKNOWN_STATE` означает «до первого STATE_UPDATE» — клиент тогда
+  // блокирует floor-кнопки в supervisor_panel.ts (см. `draw()` там).
+  let supervisorState: SupervisorState = UNKNOWN_STATE;
+  // Кэш последнего подтверждённого voice_input_mode==off (диалог выкл).
+  // Используется supervisorActionToCmd, чтобы корректно выставить следующий
+  // режим без лишнего round-trip.
+  let voiceOffCached = false;
+
+  /** Маппит действие с панели супервизора (R14) в JSON_CMD. */
+  function supervisorActionToCmd(
+    action: string,
+    panel: { showToast(msg: string, level?: "warn" | "bad"): void }
+  ): JsonCmd | null {
+    const ts = Date.now();
+
+    if (action.startsWith("mode:")) {
+      const target = action.slice("mode:".length) as AvatarMode;
+      const result = canTransitionMode(supervisorState.mode, target);
+      if (!result.applied) {
+        panel.showToast(result.reason ?? "переход запрещён", "bad");
+        return null;
+      }
+      return {
+        cmd: "avatar_set_mode",
+        ts_ms: ts,
+        mode: target,
+        reason: "ui_panel"
+      };
+    }
+
+    if (action.startsWith("floor:")) {
+      // `floor:teleop:acquire` / `floor:voice:release`
+      const [, kind, op] = action.split(":");
+      if (kind !== "teleop" && kind !== "voice") return null;
+      if (op === "acquire") {
+        // До STATE_UPDATE кнопка всё равно заблокирована в UI (см. supervisor_panel
+        // draw → blocked). Доп. сторож здесь на случай пропуска события.
+        if (isUnknownState(supervisorState)) {
+          panel.showToast("статус неизвестен, повторите позже", "warn");
+          return null;
+        }
+        return { cmd: "avatar_acquire_floor", ts_ms: ts, kind };
+      }
+      if (op === "release") {
+        return { cmd: "avatar_release_floor", ts_ms: ts, kind };
+      }
+      return null;
+    }
+
+    if (action === "dialogue:toggle") {
+      // Существующий путь: voice_mode → супервизор → dialogue_node.
+      // off — глушит ТОЛЬКО ReSpeaker (люди рядом, ADR-0028 S5), не Quest-микрофон.
+      const next = voiceOffCached ? "passthrough" : "off";
+      voiceOffCached = !voiceOffCached;
+      return { cmd: "voice_mode", ts_ms: ts, mode: next };
+    }
+
+    return null;
+  }
+
+  /**
+   * Распаковывает `state` из avatar_state_ack. Сервер сейчас шлёт state
+   * JSON-объектом внутри JSON_EVENT; msgpack-вариант (0x1203) —
+   * forward-compatible, парсер уже есть в supervisor_panel.ts.
+   */
+  function applySupervisorAck(
+    raw: Record<string, unknown>,
+    panel: { setState(s: SupervisorState): void }
+  ): void {
+    const mode = typeof raw.mode === "string" ? (raw.mode as AvatarMode) : "off";
+    const teleopRaw = (raw.teleop as Record<string, unknown> | undefined) ?? {};
+    const voiceRaw = (raw.voice as Record<string, unknown> | undefined) ?? {};
+    const teleop = parseFloorShallow(teleopRaw);
+    const voice = parseFloorShallow(voiceRaw);
+    const lastEvent =
+      typeof raw.last_event === "string" ? raw.last_event : "STATE_UPDATE";
+    const lastTs =
+      typeof raw.last_event_ts_ms === "number" ? raw.last_event_ts_ms : Date.now();
+    supervisorState = {
+      mode,
+      teleop_floor: teleop,
+      voice_floor: voice,
+      last_event: lastEvent,
+      last_event_ts_ms: lastTs
+    };
+    panel.setState(supervisorState);
+  }
+
+  function parseFloorShallow(v: Record<string, unknown>): {
+    held_by: { client_id: string; since_ms: number } | null;
+    last_event: "ACQUIRED" | "RELEASED" | "TAKEOVER" | "DENIED" | null;
+  } {
+    const heldRaw = v.held_by;
+    let heldBy: { client_id: string; since_ms: number } | null = null;
+    if (heldRaw && typeof heldRaw === "object") {
+      const h = heldRaw as Record<string, unknown>;
+      heldBy = {
+        client_id: typeof h.client_id === "string" ? h.client_id : "unknown",
+        since_ms: typeof h.since_ms === "number" ? h.since_ms : Date.now()
+      };
+    }
+    const ev = v.last_event;
+    const lastEvent =
+      ev === "ACQUIRED" ||
+      ev === "RELEASED" ||
+      ev === "TAKEOVER" ||
+      ev === "DENIED"
+        ? ev
+        : null;
+    return { held_by: heldBy, last_event: lastEvent };
+  }
 
   // Phase 2.3 overlays — создаём ДО старта асинхронных pipeline'ов,
   // чтобы loading-screen сразу перекрыл экран пока грузятся CC0 GLB.
@@ -88,6 +208,13 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       conn.subscribe(newTopic);
       const stillUsed = bridge.videoTopics().includes(oldTopic);
       if (!stillUsed) conn.unsubscribe(oldTopic);
+    },
+    // Клик по кнопке панели супервизора (R14): маппим action → JSON_CMD.
+    onSupervisorAction: (action) => {
+      if (!conn || disconnected) return;
+      const cmd = supervisorActionToCmd(action, bridge.supervisorPanel);
+      if (cmd === null) return;
+      conn.send(cmd);
     }
   });
   bridge.initLayout();
@@ -241,6 +368,25 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             items.map((it) => ({ topic: it.topic, description: it.description }))
           );
         },
+        onJsonEvent: (ev) => {
+          const t = (ev as { type?: string }).type;
+          if (t === "avatar_state_ack") {
+            const raw = (ev as { state?: Record<string, unknown> }).state;
+            if (raw) applySupervisorAck(raw, bridge.supervisorPanel);
+            return;
+          }
+          if (t === "avatar_state_nack") {
+            const reason = (ev as { reason?: string }).reason ?? "супервизор отклонил";
+            bridge.supervisorPanel.showToast(reason, "bad");
+            return;
+          }
+          if (t === "voice_mode_ack") {
+            const mode = (ev as { mode?: string }).mode;
+            voiceOffCached = mode === "off";
+            bridge.supervisorPanel.setVoiceOff(voiceOffCached);
+            return;
+          }
+        },
         onError: (code, message) => {
           if (code === "AUTH_FAIL") return;
           if (code === "RECONNECT") {
@@ -365,7 +511,24 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   }
   requestAnimationFrame(teleopLoop);
 
-  // ---------- WebXR entry / exit ----------
+  // ---- Hot keys (M: panel, H: help) ---------------------------------------
+
+  function onHotKey(ev: KeyboardEvent): void {
+    // Не реагируем, если фокус на input/textarea (PIN, future chat).
+    const target = ev.target as HTMLElement | null;
+    const tag = target?.tagName?.toLowerCase();
+    if (tag === "input" || tag === "textarea" || target?.isContentEditable) {
+      return;
+    }
+    // PIN-overlay ещё на экране → не открывать панель M-клавишей.
+    if (!opts.pinOverlay.classList.contains("pin-overlay--hidden")) return;
+
+    if (ev.key === "m" || ev.key === "M" || ev.key === "ь" || ev.key === "Ь") {
+      ev.preventDefault();
+      bridge.supervisorPanel.toggleVisible();
+    }
+  }
+  document.addEventListener("keydown", onHotKey);
 
   async function enterVr(): Promise<void> {
     try {
@@ -439,6 +602,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
 
   return {
     dispose(): void {
+      document.removeEventListener("keydown", onHotKey);
       stopRender();
       desktopTeleop.destroy();
       if (xrRafSession && xrRafId) {
