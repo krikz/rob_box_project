@@ -8,9 +8,20 @@ Subscribes:
     /voice/speaker/rename   (String)  — JSON {"speaker_id"|"old_name", "new_name"}
     /voice/speaker/merge    (String)  — JSON {"src_speaker_id","dst_speaker_id"} —
                                          issue W5-4, склейка дублей одного голоса
+    /voice/speaker/observe  (String)  — JSON {"speaker_id","text"} — реплика
+                                         известного спикера для подсчёта тем и
+                                         выбора эпитета (issue #1787)
+    /voice/speaker/epithet  (String)  — JSON {"speaker_id","epithet"} — кличка,
+                                         придуманная LLM (слой 2 гибрида);
+                                         принимается после валидации
 
 Publishes:
-    /voice/speaker/result (String) — JSON SpeakerMatch or {"is_known":false}
+    /voice/speaker/result (String) — JSON SpeakerMatch or {"is_known":false};
+                                     у известного спикера есть поле "epithet"
+                                     (внутренняя кличка, issue #1787)
+    /voice/speaker/epithet_request (String) — JSON {"speaker_id","fallback",
+                                     "cluster","hints","messages"} — просьба к
+                                     dialogue_node придумать кличку через LLM
 
 Parameters:
     db_path                  (str)   — path to SQLite DB       [/data/speakers.db]
@@ -27,7 +38,7 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Deque, Optional, Tuple
+from typing import Deque, Dict, Optional, Tuple
 
 import numpy as np
 import rclpy
@@ -36,6 +47,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
+from .core import epithets
 from .utils.speaker_embeddings import SpeakerDatabase, SpeakerMatch
 
 # Issue #1160 — Prometheus metrics (этап 1 observability).
@@ -101,6 +113,15 @@ class SpeakerIdNode(Node):
         self._recent_embeddings: Deque[Tuple[float, np.ndarray]] = collections.deque(maxlen=20)
         self._MAX_EMBED_AGE_SEC: float = 30.0
 
+        # Issue #1787 — окно последних реплик КАЖДОГО спикера: на нём
+        # считаются темы (epithets.extract_tags) и валентность. 50 — из
+        # research §4.1 («новая доминирующая тема > 40% последних 50
+        # реплик»). Живёт в памяти ноды, а не в БД: это скользящее окно
+        # для решения «пора менять кличку», а не история диалога — её
+        # хранит слой памяти harness'а.
+        self._speech_log: Dict[str, Deque[str]] = {}
+        self._speech_log_lock = threading.Lock()
+
         # ── Thread pool for inference (non-blocking ROS callbacks) ────────────
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="speaker_id")
         # Warm up resemblyzer model immediately so first real inference is fast
@@ -120,6 +141,13 @@ class SpeakerIdNode(Node):
 
         # ── Publishers ────────────────────────────────────────────────────────
         self._result_pub = self.create_publisher(String, "/voice/speaker/result", reliable_qos)
+        # Issue #1787, слой 2 — просьба к dialogue_node придумать кличку
+        # через LLM. Сам узел LLM не знает (и не должен: биометрия обязана
+        # работать офлайн), поэтому запрос уходит топиком, а ответ
+        # приходит на /voice/speaker/epithet.
+        self._epithet_request_pub = self.create_publisher(
+            String, "/voice/speaker/epithet_request", reliable_qos
+        )
 
         # Issue #1160 — Prometheus metrics endpoint. 9112 — speaker_id_node.
         # Запускаем сервер ТОЛЬКО если есть резёмблизер (иначе нода не даёт
@@ -162,6 +190,24 @@ class SpeakerIdNode(Node):
             String,
             "/voice/speaker/merge",
             self._on_merge_request,
+            reliable_qos,
+        )
+        # Issue #1787 — реплики известного спикера для выбора эпитета.
+        # Текст живёт в dialogue_node (STT), голос — здесь; связывает их
+        # speaker_id. Отдельный топик, а не расширение /voice/stt/result:
+        # эпитет нужен ТОЛЬКО когда биометрия уже опознала говорящего,
+        # иначе теми чужой речи испортили бы чужой профиль.
+        self.create_subscription(
+            String,
+            "/voice/speaker/observe",
+            self._on_observe_request,
+            reliable_qos,
+        )
+        # Issue #1787, слой 2 — кличка, придуманная LLM в dialogue_node.
+        self.create_subscription(
+            String,
+            "/voice/speaker/epithet",
+            self._on_epithet_result,
             reliable_qos,
         )
 
@@ -454,6 +500,8 @@ class SpeakerIdNode(Node):
             )
         else:
             self.get_logger().info(f"✅ Speaker '{name}' registered (id={sid[:8]})")
+        # Issue #1787 — новый профиль сразу получает внутреннюю кличку.
+        self._ensure_epithet(sid)
         # Publish a registration-ack so dialogue_node can confirm verbally
         ack = String()
         ack.data = json.dumps(
@@ -461,6 +509,222 @@ class SpeakerIdNode(Node):
             ensure_ascii=False,
         )
         self._result_pub.publish(ack)
+
+    # ── Эпитеты (issue #1787) ─────────────────────────────────────────────────
+
+    def _on_observe_request(self, msg: String) -> None:
+        """Принять реплику известного спикера — вход для выбора эпитета.
+
+        Expected JSON: ``{"speaker_id": "<uuid>", "text": "..."}``.
+
+        Сама обработка уходит в тот же однопоточный executor, что и
+        инференс: SQLite-соединение открыто с ``check_same_thread=False``,
+        и параллельные записи из ROS-колбэка и из ``_do_register``
+        конкурировали бы за один коннект. Один воркер = сериализация без
+        отдельного мьютекса на БД.
+        """
+        try:
+            data = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            self.get_logger().warning("⚠️ observe_request: invalid JSON ignored")
+            return
+        speaker_id = str(data.get("speaker_id", "")).strip()
+        text = str(data.get("text", "")).strip()
+        if not speaker_id or not text:
+            return
+        self._executor.submit(self._process_observation, speaker_id, text)
+
+    def _process_observation(self, speaker_id: str, text: str) -> None:
+        """Обновить темы спикера и, если есть повод, пересмотреть кличку."""
+        try:
+            with self._speech_log_lock:
+                window = self._speech_log.setdefault(
+                    speaker_id, collections.deque(maxlen=50)
+                )
+                window.append(text)
+                messages = list(window)
+
+            profile = self._db.get_speaker_profile(speaker_id)
+            if profile is None:
+                # Спикера удалили/слили между публикацией и обработкой.
+                return
+
+            tags = epithets.extract_tags(messages)
+            sentiment = epithets.score_sentiment(messages)
+            if tags:
+                self._db.update_speaker_stats(
+                    speaker_id,
+                    tags=[t.cluster for t in tags],
+                    sentiment_score=sentiment,
+                )
+            else:
+                self._db.update_speaker_stats(speaker_id, sentiment_score=sentiment)
+
+            if not profile["epithet"]:
+                # Кличка ещё не назначена (или профиль старше миграции) —
+                # ставим сразу, не дожидаясь накопления тем (research §5.1,
+                # вариант 2: юзер получает кличку немедленно, она может
+                # уточниться позже).
+                self._assign_epithet(
+                    speaker_id,
+                    tags,
+                    sentiment,
+                    epithets.REASON_FIRST_SEEN,
+                    messages=messages,
+                )
+                return
+
+            # Пересмотр — только при новой доминирующей теме И не чаще
+            # раза в MIN_REVIEW_INTERVAL_DAYS (research §4.1: стабильность
+            # клички важнее реактивности).
+            if not epithets.should_review(profile["last_epithet_review"], time.time()):
+                return
+            new_topic = epithets.find_distinctive_topic(profile["tags"], tags)
+            if not new_topic:
+                return
+            # Кличку берём из НОВОЙ темы, а не из общего топа: старая тема
+            # часто ещё лидирует по количеству упоминаний в окне (человек
+            # не перестаёт говорить о прежнем разом), и без этой
+            # перестановки пересмотр выдавал кандидата из того же
+            # кластера — то есть ту же самую кличку.
+            ordered = [t for t in tags if t.cluster == new_topic]
+            ordered += [t for t in tags if t.cluster != new_topic]
+            self._assign_epithet(
+                speaker_id,
+                ordered,
+                sentiment,
+                f"{epithets.REASON_NEW_TOPIC}:{new_topic}",
+                messages=messages,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Эпитет — вспомогательная метка. Любой сбой здесь не должен
+            # ронять воркер, который в следующий момент считает эмбеддинг.
+            self.get_logger().warning(
+                f"⚠️ [issue 1787] observe failed for {speaker_id[:8]}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    def _assign_epithet(
+        self,
+        speaker_id: str,
+        tags,
+        sentiment: float,
+        reason: str,
+        messages: Optional[list] = None,
+    ) -> Optional[str]:
+        """Слой 1 гибрида: подобрать свободную кличку из словаря.
+
+        ``taken_epithets(exclude_speaker_id=…)`` — то самое место, где
+        закрывается коллизия тёзок: кандидат не может совпасть ни с одной
+        уже выданной кличкой.
+
+        Записав словарного кандидата, узел просит LLM придумать своё
+        слово (слой 2). Порядок именно такой — сначала пишем, потом
+        спрашиваем: словарь отвечает мгновенно и офлайн, поэтому робот
+        никогда не остаётся без клички, даже если LLM недоступна или
+        вернёт мусор.
+        """
+        candidate = epithets.choose_epithet(
+            tags,
+            speaker_id=speaker_id,
+            taken=self._db.taken_epithets(exclude_speaker_id=speaker_id),
+            sentiment=sentiment,
+        )
+        if not self._db.set_epithet(speaker_id, candidate.label, reason):
+            return None
+        self.get_logger().info(
+            f"🔤 [issue 1787] Эпитет {speaker_id[:8]} → {candidate.label!r} "
+            f"(кластер={candidate.source_cluster}, {reason})"
+        )
+        self._request_llm_epithet(speaker_id, candidate, messages or [])
+        return candidate.label
+
+    def _request_llm_epithet(self, speaker_id: str, candidate, messages: list) -> None:
+        """Попросить dialogue_node придумать кличку через LLM (слой 2)."""
+        pub = getattr(self, "_epithet_request_pub", None)
+        if pub is None:
+            return
+        try:
+            msg = String()
+            msg.data = json.dumps(
+                {
+                    "speaker_id": speaker_id,
+                    "fallback": candidate.label,
+                    "cluster": candidate.source_cluster,
+                    "hints": list(
+                        epithets.EPITHET_LEXICON.get(
+                            candidate.source_cluster, epithets.DEFAULT_POOL_NEUTRAL
+                        )[:3]
+                    ),
+                    "messages": [m for m in messages[-5:] if m],
+                },
+                ensure_ascii=False,
+            )
+            pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [issue 1787] epithet_request publish failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    def _on_epithet_result(self, msg: String) -> None:
+        """Принять кличку, придуманную LLM, и применить её после проверки.
+
+        Expected JSON: ``{"speaker_id": "<uuid>", "epithet": "Кулибин"}``.
+
+        Всё, что не прошло ``sanitize_llm_epithet`` (фраза вместо слова,
+        цифры, уже занятая кличка), молча отбрасывается — в профиле
+        остаётся словарный кандидат. Это единственное разумное поведение:
+        текст пришёл из модели, которую попросили «придумать слово», и
+        доверять ему как команде нельзя.
+        """
+        try:
+            data = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            self.get_logger().warning("⚠️ epithet result: invalid JSON ignored")
+            return
+        speaker_id = str(data.get("speaker_id", "")).strip()
+        raw = data.get("epithet")
+        if not speaker_id:
+            return
+
+        label = epithets.sanitize_llm_epithet(
+            raw, taken=self._db.taken_epithets(exclude_speaker_id=speaker_id)
+        )
+        if not label:
+            self.get_logger().info(
+                f"🔤 [issue 1787] LLM-кличка {raw!r} отклонена — "
+                f"остаётся словарная у {speaker_id[:8]}"
+            )
+            return
+        if self._db.set_epithet(speaker_id, label, epithets.REASON_LLM):
+            self.get_logger().info(
+                f"🔤 [issue 1787] LLM переименовала {speaker_id[:8]} → {label!r}"
+            )
+
+    def _ensure_epithet(self, speaker_id: str) -> None:
+        """Выдать кличку сразу при регистрации, если её ещё нет.
+
+        Без этого новый профиль жил бы без эпитета до первой реплики,
+        прилетевшей в ``/voice/speaker/observe`` — а регистрация как раз
+        и есть момент, когда робот впервые «знакомится» с голосом.
+        """
+        try:
+            if self._db.get_epithet(speaker_id):
+                return
+            with self._speech_log_lock:
+                messages = list(self._speech_log.get(speaker_id, ()))
+            self._assign_epithet(
+                speaker_id,
+                epithets.extract_tags(messages),
+                epithets.score_sentiment(messages),
+                epithets.REASON_FIRST_SEEN,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [issue 1787] Не удалось назначить эпитет "
+                f"{speaker_id[:8]}: {type(exc).__name__}: {exc}"
+            )
 
     def _publish_result(self, match: Optional[SpeakerMatch]) -> None:
         """Serialise and publish the speaker identification result."""
@@ -470,9 +734,13 @@ class SpeakerIdNode(Node):
                 "speaker_id": match.speaker_id,
                 "name": match.name,
                 "confidence": round(match.confidence, 4),
+                # Issue #1787 — внутренняя кличка. None до первой реплики
+                # (профиль из старой БД) — потребитель обязан это терпеть.
+                "epithet": match.epithet,
             }
             self.get_logger().info(
-                f"📢 Publishing: is_known=true name={match.name!r} conf={match.confidence:.3f}"
+                f"📢 Publishing: is_known=true name={match.name!r} "
+                f"epithet={match.epithet!r} conf={match.confidence:.3f}"
             )
         else:
             payload = {"is_known": False}

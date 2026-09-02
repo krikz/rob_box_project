@@ -76,6 +76,7 @@ from rob_box_harness.providers import (
 )
 from rob_box_harness.tools import FakeToolProvider, ToolProvider
 from rob_box_llm.errors import ProviderError
+from rob_box_llm.provider import LLMMessage, LLMSettings
 
 from rob_box_voice.core.command_parser import CommandParser, IntentType
 from rob_box_voice.core.dialogue_text import (
@@ -140,6 +141,8 @@ from rob_box_voice.speaker_profiles import (
     format_speaker_context,
 )
 from rob_box_voice.tts_voice_registry import format_tts_context
+# Issue #1787 — сборка промпта и валидация клички, придуманной LLM.
+from rob_box_voice.core import epithets
 
 # Issue #1160 — Prometheus metrics (этап 1 observability).
 # ``prometheus_client`` — optional dep; если её нет, всё превращается в
@@ -534,6 +537,20 @@ class DialogueNode(Node):
                 callback_group=cbg)
             self._speaker_register_pub = self.create_publisher(
                 String, "/voice/speaker/register", 10)
+            # Issue #1787 — реплики опознанного спикера уходят в
+            # speaker_id_node, который считает по ним темы и выбирает
+            # внутреннюю кличку (эпитет). Текст есть только здесь, БД
+            # спикеров — только там.
+            self._speaker_observe_pub = self.create_publisher(
+                String, "/voice/speaker/observe", 10)
+            # Issue #1787, слой 2 гибрида — speaker_id_node просит
+            # придумать кличку (LLM живёт только здесь), ответ уходит
+            # обратно на /voice/speaker/epithet.
+            self.create_subscription(
+                String, "/voice/speaker/epithet_request",
+                self._on_epithet_request, qos_r, callback_group=cbg)
+            self._speaker_epithet_pub = self.create_publisher(
+                String, "/voice/speaker/epithet", 10)
         self.create_subscription(
             Bool, "/audio/vad", self._on_vad, 10, callback_group=cbg)
         self.create_subscription(
@@ -2498,6 +2515,14 @@ class DialogueNode(Node):
             name = str(sp.get("name") or "")
             conf = float(sp.get("confidence") or 0.0)
             sid = str(sp.get("speaker_id") or "")[:8]
+            # Issue #1787 — отдаём реплику speaker_id_node: он копит по ней
+            # темы и подбирает внутреннюю кличку. Публикуем СЫРОЙ текст,
+            # до служебных префиксов ([Spkr:…] исказил бы подсчёт тем).
+            # Делается до проверки имени: эпитет нужен как раз тем, у кого
+            # имя мусорное или отсутствует.
+            self._publish_speaker_observation(
+                str(sp.get("speaker_id") or ""), user_input
+            )
             if name:
                 # 🔴 FIX (live 12.08): защита от мусорных имён в БД
                 # (resemblyzer может хранить "Null", "null", "None").
@@ -2527,6 +2552,130 @@ class DialogueNode(Node):
             if speaker_context is None:
                 user_input = f"[Speaker:unknown] {user_input}"
         return user_input
+
+    # Issue #1787 — сколько ждём LLM на выдумывание клички. Это фоновая
+    # задача, никто её не слушает в реальном времени: словарная кличка уже
+    # записана, и просрочка просто оставляет её в силе. Держим таймаут
+    # коротким, чтобы висящий запрос не занимал слот у провайдера.
+    EPITHET_LLM_TIMEOUT_S: float = 12.0
+
+    def _on_epithet_request(self, msg: String) -> None:
+        """Issue #1787 — speaker_id_node просит LLM придумать кличку.
+
+        JSON: ``{"speaker_id", "fallback", "cluster", "hints", "messages"}``.
+        Сам запрос уходит в фон: колбэк ROS не должен ждать сеть.
+        """
+        try:
+            data = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return
+        speaker_id = str(data.get("speaker_id", "")).strip()
+        if not speaker_id:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._generate_epithet(
+                    speaker_id,
+                    fallback=str(data.get("fallback") or ""),
+                    cluster=str(data.get("cluster") or "default"),
+                    hints=list(data.get("hints") or ()),
+                    messages=list(data.get("messages") or ()),
+                ),
+                self._loop,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [issue 1787] не удалось запустить генерацию эпитета: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    async def _generate_epithet(
+        self,
+        speaker_id: str,
+        *,
+        fallback: str,
+        cluster: str,
+        hints: list,
+        messages: list,
+    ) -> None:
+        """Спросить у LLM одно слово-кличку и вернуть его speaker_id_node.
+
+        Одноразовый запрос мимо диалогового цикла: история разговора сюда
+        не идёт (кличка не должна зависеть от текущего контекста робота),
+        инструменты не подключаются, ``max_tokens`` мал — нужно одно
+        слово. Любая ошибка провайдера тихо оставляет словарную кличку:
+        она уже записана в БД до этого вызова.
+
+        Ответ модели НЕ применяется здесь — он публикуется как
+        предложение, а решение принимает speaker_id_node, который один
+        владеет БД и знает, какие клички уже заняты.
+        """
+        llm = getattr(self, "_llm", None)
+        pub = getattr(self, "_speaker_epithet_pub", None)
+        if llm is None or pub is None:
+            return
+        prompt = epithets.build_llm_prompt(
+            messages, fallback=fallback, cluster=cluster, hints=hints
+        )
+        try:
+            response = await asyncio.wait_for(
+                llm.complete(
+                    [LLMMessage(role="user", content=prompt)],
+                    settings=LLMSettings(max_tokens=16, temperature=1.0),
+                ),
+                timeout=self.EPITHET_LLM_TIMEOUT_S,
+            )
+        except (asyncio.TimeoutError, ProviderError) as exc:
+            self.get_logger().info(
+                f"🔤 [issue 1787] LLM не придумала кличку "
+                f"({type(exc).__name__}) — остаётся {fallback!r}"
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [issue 1787] epithet LLM failed: {type(exc).__name__}: {exc}"
+            )
+            return
+
+        proposal = epithets.sanitize_llm_epithet(getattr(response, "content", ""))
+        if not proposal:
+            self.get_logger().info(
+                f"🔤 [issue 1787] ответ LLM не похож на кличку "
+                f"({str(getattr(response, 'content', ''))[:40]!r}) — "
+                f"остаётся {fallback!r}"
+            )
+            return
+        out = String()
+        out.data = json.dumps(
+            {"speaker_id": speaker_id, "epithet": proposal}, ensure_ascii=False
+        )
+        pub.publish(out)
+        self.get_logger().info(
+            f"🔤 [issue 1787] LLM предложила кличку {proposal!r} "
+            f"для {speaker_id[:8]} (словарная была {fallback!r})"
+        )
+
+    def _publish_speaker_observation(self, speaker_id: str, text: str) -> None:
+        """Issue #1787 — отдать реплику спикера в speaker_id_node.
+
+        Односторонний best-effort канал: если публикация не удалась (нода
+        не поднята, speaker_id_node выключен параметром), спикер просто
+        останется без обновления тем — на диалог это не влияет, поэтому
+        любое исключение здесь глушится в лог.
+        """
+        pub = getattr(self, "_speaker_observe_pub", None)
+        if pub is None or not speaker_id or not text.strip():
+            return
+        try:
+            msg = String()
+            msg.data = json.dumps(
+                {"speaker_id": speaker_id, "text": text}, ensure_ascii=False
+            )
+            pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().debug(
+                f"[issue 1787] observe publish failed: {type(exc).__name__}: {exc}"
+            )
 
     # ── Music state snapshot ───────────────────────────────────────────
     #
@@ -2676,6 +2825,21 @@ class DialogueNode(Node):
             lines.append(f"    <voice_confidence>{sp_conf:.2f}</voice_confidence>")
         if sp_id:
             lines.append(f"    <speaker_id>{sp_id[:8]}</speaker_id>")
+        # Issue #1787 — внутренняя кличка. Даёт LLM якорь, когда имён
+        # два одинаковых или имени нет вовсе. Research §5.3: озвучивать
+        # её НЕЛЬЗЯ — юзер этого слова никогда не слышал, «привет,
+        # Гроссмейстер» звучало бы как обращение к постороннему.
+        sp_epithet = str(sp.get("epithet") or "").strip()
+        if sp_epithet:
+            lines.append(
+                f"    <epithet internal=\"true\">{sp_epithet}</epithet>"
+            )
+            lines.append(
+                "    <epithet_rule>Внутренняя метка робота для различения "
+                "тёзок. НИКОГДА не произноси её вслух и не упоминай в "
+                "ответе — используй только как признак «это тот же "
+                "человек».</epithet_rule>"
+            )
         lines.append("  </user_profile>")
         lines.append("  <hardware>")
         lines.append(f"    <battery>{battery}</battery>")
