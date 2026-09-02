@@ -197,6 +197,53 @@ LLM-кронов (архитектор-надзор 5c96a6eedf93 и т.п.). З�
   --key <стабильный-slug>
 ```
 
+### `agent-flow-nightly-review.sh` — ночной ревью-цикл (ADR-0049, 03.09.2026)
+
+`no_agent`, cron `every 1h` (профиль devops), но работает только внутри
+ночного окна `[NIGHTLY_REVIEW_HOUR, +NIGHTLY_REVIEW_WINDOW_HOURS)` —
+default `[02:00, 06:00)` по локальному времени хоста. Остальные тики стоят
+один `date` и `exit 0`.
+
+Закрывает два пробела, которых не покрывает ни один другой контур: (a) нет
+среза «что за сутки реально доехало и что осталось висеть»; (b) никто не
+перечитывает код, который воркеры за день влили (дубли, глюки LLM,
+недоделки, расхождение с ADR/README).
+
+Что делает за тик:
+
+1. Механически собирает дайджест за ревью-сутки (`REVIEW_DATE 00:00`
+   локально → now): merged PR, коммиты `origin/develop`, issues
+   open/closed, красные CI-прогоны, kanban (закрытые / упавшие / висящие
+   >6ч / ретро), churn по компонентам. Секция без данных печатает
+   `НЕТ ДАННЫХ (<причина>)`, а не пустой список.
+2. Создаёт ОДНУ карточку **«🌙 ночной ревью \<дата\>»** на `architect`
+   (key `nightly-review-<дата>`).
+3. Создаёт до `COMPONENT_REVIEW_MAX` (default 3) карточек
+   **«🔍 ревью компонента: \<comp\>»** на `analyst`
+   (key `component-review-<slug>-<дата>`) — по компонентам с наибольшим
+   churn, мимо `COMPONENT_REVIEW_EXCLUDE_RE` (`docs/`, `evidence/`, …) и
+   мимо компонентов на кулдауне (`COMPONENT_REVIEW_COOLDOWN_DAYS`,
+   default 7 дней).
+
+Обе карточки идут через `kanban-retro-create.sh` (три слоя дедупа), плюс
+sentinel `/tmp/agent-flow-nightly-review.<дата>.done` — «одна ночь = один
+комплект карточек». Скрипт НЕ чинит код, НЕ трогает метки/PR/issues и НЕ
+зовёт LLM: рассуждения живут внутри созданных карточек.
+
+```bash
+# сухой прогон в любое время суток (карточки не создаются):
+NIGHTLY_REVIEW_FORCE=true NIGHTLY_REVIEW_DRY_RUN=true bash scripts/agent_flow/agent-flow-nightly-review.sh
+
+# ревью за конкретные сутки:
+NIGHTLY_REVIEW_FORCE=true NIGHTLY_REVIEW_DATE=2026-09-02 bash scripts/agent_flow/agent-flow-nightly-review.sh
+
+# тест: bash scripts/agent_flow/tests/test_nightly_review.sh
+```
+
+Ночное окно НЕ должно попадать в PEAK-окна `agents_sleep_schedule.conf`
+(`04:00-07:00` и `09:00-13:00` MSK) — там висит MAINTENANCE и тик
+пропускается. Двигаете PEAK — двигайте `NIGHTLY_REVIEW_HOUR`.
+
 ### `validate_honesty.sh` — pre-PR check на «голословный PASS» (ADR-0018, 18.08.2026)
 
 Сканирует PR body (или файл / stdin) на claim-маркеры (`проверил`, `работает`,
