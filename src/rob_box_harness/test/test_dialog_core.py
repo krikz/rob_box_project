@@ -1499,6 +1499,217 @@ def test_normal_plain_reply_does_not_retry(
     assert len(llm.calls) == 1
 
 
+# ---------------------------------------------------------------------
+# Issue #1899 — tool-call arguments JSON cut off mid-stream.
+#
+# When the LLM stream is cut on ``max_tokens`` while still inside
+# arguments JSON, the provider surfaces ``truncated_tool_args=True``.
+# ``DialogCore._run_with_tools`` must NOT execute the broken call —
+# it asks the model to redo with shorter arguments instead, single-shot.
+# ---------------------------------------------------------------------
+def test_truncated_tool_args_triggers_retry_with_shorter_args_prompt(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """First LLM call returns a tool-call whose args JSON was truncated
+    by the stream cutoff. DialogCore must:
+      * NOT execute the broken call (no ToolValidationError in the
+        executor — but more importantly, the user would never hear the
+        intended action);
+      * ask the model for a single-shot retry with shorter arguments;
+      * on the second call, accept whatever the model returns.
+    """
+    llm.responses = [
+        # First response: broken — truncated_tool_args + a tool-call that
+        # the executor would normally reject on validation.
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(
+                    id="c_broken",
+                    name="set_dj_mode",
+                    arguments={},  # empty because _safe_json fell back
+                ),
+            ),
+            finish_reason="length",
+            truncated_tool_args=True,
+        ),
+        # Second response: well-formed. The executor actually runs.
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(
+                    id="c_ok",
+                    name="echo",
+                    arguments={"text": "ok"},
+                ),
+            ),
+            finish_reason="tool_calls",
+        ),
+        # Tool loop asks one more time after the tool runs.
+        LLMResponse(content="done", tool_calls=()),
+    ]
+    async def echo(args: dict[str, object]) -> str:
+        return f"e:{args.get('text')}"
+    tools_provider._handler_map = {"echo": echo}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("поставь музыку", history=[]))
+
+    # 3 LLM calls total: truncated→retry→execute→done.
+    assert len(llm.calls) == 3
+    # The retry's user-message carries the truncation correction.
+    retry_messages = llm.calls[1][0]
+    correction_msgs = [
+        m for m in retry_messages
+        if "[SYSTEM CORRECTION]" in str(m.content)
+        and "ОБРЕЗАН" in str(m.content)
+    ]
+    assert len(correction_msgs) == 1, (
+        "Expected exactly one SYSTEM CORRECTION about truncated args "
+        f"between calls; got {len(correction_msgs)}"
+    )
+    # The retry's assistant-message preserves the previous tool_calls
+    # so OpenAI's history stays valid.
+    retry_assistant_msgs = [
+        m for m in retry_messages if m.role == "assistant" and m.tool_calls
+    ]
+    assert retry_assistant_msgs, "Retry must carry the broken assistant turn"
+    # The retry worked — final result runs ``echo`` (NOT the broken one).
+    assert result.tools_called == ["echo"]
+    assert result.error is None
+    # The diagnostic flag propagated to DialogResult.
+    assert result.truncated_tool_args is False  # final response was clean
+    # First response was marked truncated so the shell sees it in logs.
+    # (The final value reflects the LAST response, which was clean — but
+    # the warning was logged during the loop. We don't assert logs here.)
+
+
+def test_truncated_tool_args_retry_is_one_shot(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """If the model ALSO truncates the retry, DialogCore must NOT loop.
+
+    Mirror of ``test_silent_done_retry_does_not_loop`` — the corrective
+    retry fires exactly once. After that the response is accepted as-is
+    so the shell's downstream fallback can take over (instead of
+    wasting 10s of wall time on a loop the model can't escape).
+    """
+    llm.responses = [
+        LLMResponse(
+            content="",
+            tool_calls=(ToolCall(id="c1", name="echo", arguments={}),),
+            finish_reason="length",
+            truncated_tool_args=True,
+        ),
+        # Retry ALSO truncated — same flag, same empty args.
+        LLMResponse(
+            content="",
+            tool_calls=(ToolCall(id="c2", name="echo", arguments={}),),
+            finish_reason="length",
+            truncated_tool_args=True,
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+    async def echo(args: dict[str, object]) -> str:
+        return f"e:{args.get('text')}"
+    tools_provider._handler_map = {"echo": echo}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("hi", history=[]))
+
+    # 3 calls: original truncated + one-shot retry + done.
+    # Critically NOT 4+ — no infinite loop.
+    assert len(llm.calls) == 3
+    assert result.error is None
+
+
+def test_clean_tool_args_does_not_retry(
+    core: DialogCore,
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+) -> None:
+    """Sanity: the retry fires ONLY on ``truncated_tool_args=True`` —
+    clean tool calls must NOT trigger an extra LLM call.
+
+    Without this guard a single response with a well-formed tool-call
+    would waste an LLM roundtrip on every turn.
+    """
+    llm.responses = [
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c1", name="echo", arguments={"text": "hi"}),
+            ),
+            finish_reason="tool_calls",
+            truncated_tool_args=False,
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+    async def echo(args: dict[str, object]) -> str:
+        return f"e:{args.get('text')}"
+    tools_provider._handler_map = {"echo": echo}
+
+    result = asyncio.run(core.process_input("hi", history=[]))
+
+    # 2 LLM calls: tool-call + done. NO retry was triggered.
+    assert len(llm.calls) == 2
+    final_messages = llm.calls[0][0]
+    assert not any("[SYSTEM CORRECTION]" in str(m.content) for m in final_messages)
+    assert result.tools_called == ["echo"]
+
+
+def test_dialog_result_carries_truncated_tool_args(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """The final ``DialogResult.truncated_tool_args`` reflects the LAST
+    ``LLMResponse`` (post-retry). dialogue_node reads this for the
+    per-turn info log so operators can correlate the +6 s retry with
+    the upstream budget exhaustion.
+    """
+    llm.responses = [
+        LLMResponse(
+            content="",
+            tool_calls=(ToolCall(id="c1", name="echo", arguments={}),),
+            finish_reason="length",
+            truncated_tool_args=True,
+        ),
+        # Retry is clean (well-formed args, finish_reason=tool_calls).
+        LLMResponse(
+            content="",
+            tool_calls=(
+                ToolCall(id="c2", name="echo", arguments={"text": "ok"}),
+            ),
+            finish_reason="tool_calls",
+            truncated_tool_args=False,
+        ),
+        LLMResponse(content="done", tool_calls=()),
+    ]
+    async def echo(args: dict[str, object]) -> str:
+        return f"e:{args.get('text')}"
+    tools_provider._handler_map = {"echo": echo}
+
+    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("hi", history=[]))
+
+    assert result.truncated_tool_args is False  # post-retry verdict
+    assert result.tools_called == ["echo"]
+
+
 def test_silent_failure_turn_not_persisted_to_memory(
     llm: _FakeLLMProvider,
     tools_provider: _FakeToolProvider,
