@@ -1299,8 +1299,22 @@ Triage **НЕ создал** kanban-карточку для этого issue, ч
 
     log "creating card: issue=#${number} role=${role} branch=${branch} max_runtime=${max_runtime}"
 
+    # Ретро t_b3476561: без --skill воркер либо крашится rc=0 сразу, либо
+    # висит timeout 30/30 (не знает что делать). af_skill_for_profile()
+    # даёт детерминированный skill по assignee + проверяет, что он реально
+    # установлен в профиле (fail-OPEN если нет — карточка создаётся без
+    # skill, как раньше, лучше так чем fail-fast над process-скриптом).
+    skill_for_card="$(af_skill_for_profile "$role")"
+    skill_args=()
+    if [ -n "$skill_for_card" ]; then
+        skill_args=(--skill "$skill_for_card")
+        log "  skill-inference: role=${role} -> skill=${skill_for_card}"
+    else
+        log "  skill-inference: role=${role} → нет валидного skill в профиле, --skill не передаём"
+    fi
+
     if [ "$DRY_RUN" = "true" ]; then
-        log "DRY-RUN would run: ${HERMES_BIN} kanban --board ${KANBAN_BOARD} create --assignee ${role} --workspace worktree --branch ${branch} --max-runtime ${max_runtime} --max-retries ${AGENT_FLOW_MAX_RETRIES} --body <...> -- \"<title>\""
+        log "DRY-RUN would run: ${HERMES_BIN} kanban --board ${KANBAN_BOARD} create --assignee ${role} --workspace worktree --branch ${branch} --max-runtime ${max_runtime} --max-retries ${AGENT_FLOW_MAX_RETRIES} ${skill_args[*]:-} --body <...> -- \"<title>\""
         created=$((created+1)); continue
     fi
 
@@ -1312,6 +1326,7 @@ Triage **НЕ создал** kanban-карточку для этого issue, ч
             --branch "$branch" \
             --max-runtime "$max_runtime" \
             --max-retries "$AGENT_FLOW_MAX_RETRIES" \
+            "${skill_args[@]}" \
             --body "$full_body" \
             --created-by "agent-flow-triage" \
             -- "$title" 2>&1
