@@ -433,6 +433,14 @@ class DialogueNode(Node):
             inactivity_timeout=float(self.get_parameter("dialogue_timeout").value),
             system_prompt=self._system_prompt,
             use_streaming=bool(self.get_parameter("llm_streaming").value),
+            # 🔴 FIX (issue #1883): forward the primary provider's
+            # ``LLMSettings`` so ``max_tokens`` / ``temperature`` from
+            # ``dialogue_node.yaml`` actually reach the wire request.
+            # Multi-provider chains get per-provider overrides via
+            # ``HealthAwareFallbackLLM.settings_for`` — the wrapper
+            # dispatches the right ``LLMSettings`` to whichever
+            # provider ends up answering.
+            llm_settings=getattr(self, "_llm_settings", None),
         )
 
         cbg = ReentrantCallbackGroup()
@@ -1222,19 +1230,16 @@ class DialogueNode(Node):
             if env_var:
                 api_key = os.environ.get(env_var) or None
 
-        # Timeout / temperature / max_tokens — only if YAML set non-zero
+        # Timeout — read here so the provider build can use it directly.
+        # ``temperature`` and ``max_tokens`` are read by ``_build_llm``
+        # (issue #1883) where they are assembled into a ``LLMSettings``
+        # object that flows into ``DialogCore``. Reading them here too
+        # would be a duplicate path that drifts silently — ``_build_llm``
+        # is the single owner.
         try:
             timeout_s = float(self.get_parameter(f"{name}.timeout_s").value or 0)
         except Exception:
             timeout_s = 0.0
-        try:
-            temperature = float(self.get_parameter(f"{name}.temperature").value or 0)
-        except Exception:
-            temperature = 0.0
-        try:
-            max_tokens = int(self.get_parameter(f"{name}.max_tokens").value or 0)
-        except Exception:
-            max_tokens = 0
 
         # ── Build ──────────────────────────────────────────────────
         try:
@@ -1297,12 +1302,26 @@ class DialogueNode(Node):
                 "Check API keys and environment variables."
             )
 
+        # ── Issue #1883: per-provider LLM settings (max_tokens / temperature)
+        # Build a {provider_name: LLMSettings} map from the YAML
+        # ``<name>.temperature`` / ``<name>.max_tokens`` params, falling
+        # back to the global ``temperature`` / ``max_tokens`` for that
+        # provider. The map is consumed by ``HealthAwareFallbackLLM`` so
+        # each provider in the chain actually receives its own settings
+        # on the wire (previously the values were logged and silently
+        # dropped). ``None`` for a field means "leave it to the provider
+        # default" — exactly the LLMSettings semantics.
+        settings_for: dict[str, LLMSettings] = {
+            name: self._build_llm_settings_for(name) for name in chain_display
+        }
+        primary_settings: LLMSettings = settings_for[chain_display[0]]
+
         # ── Start-up config log ─────────────────────────────────────────
-        temperature = float(self.get_parameter("temperature").value or 0.7)
-        max_tokens = int(self.get_parameter("max_tokens").value or 500)
         self.get_logger().info(
             f"⚙️ LLM CONFIG: chain={chain_display} "
-            f"temperature={temperature} max_tokens={max_tokens}"
+            f"primary.temperature={primary_settings.temperature} "
+            f"primary.max_tokens={primary_settings.max_tokens} "
+            f"per_provider={[f'{n}=({s.temperature},{s.max_tokens})' for n, s in settings_for.items()]}"
         )
 
         # ── Single provider — no fallback needed ────────────────────────
@@ -1313,6 +1332,10 @@ class DialogueNode(Node):
             self.get_logger().info(
                 f"[health] build_llm: provider_chain={chain_display} active={chain_display[0]} (single)",
             )
+            # Stash on the provider object so the node's __init__ can pick
+            # up the same LLMSettings when wiring DialogCore (single-provider
+            # path doesn't go through HealthAwareFallbackLLM).
+            self._llm_settings = primary_settings
             return built[0]
 
         # ── Multi-provider: HealthAwareFallbackLLM ──────────────────────
@@ -1353,12 +1376,77 @@ class DialogueNode(Node):
         self.get_logger().info(
             f"[health] build_llm: provider_chain={chain_display} active={chain_display[0]} (health-aware, TTL {health_ttl:.0f}s)",
         )
+        # Stash for the DialogCore wiring below — the fallback wrapper
+        # is the LLM that DialogCore talks to, but it will dispatch
+        # ``settings_for[name]`` to each provider on its own, so we pass
+        # the PRIMARY provider's settings as the DialogCore default and
+        # let ``HealthAwareFallbackLLM.settings_for`` do the per-provider
+        # rewrite on top.
+        self._llm_settings = primary_settings
         return HealthAwareFallbackLLM(
             built,
             cache=cache,
             balance_checkers=balance_checkers,
             logger=self.get_logger(),
+            settings_for=settings_for,
         )
+
+    def _build_llm_settings_for(self, name: str) -> LLMSettings:
+        """Build the ``LLMSettings`` for one provider in the chain.
+
+        Per-provider YAML (issue #1883) overrides the global values::
+
+            temperature: 0.7
+            max_tokens: 500
+            minimax:
+              temperature: 0.3        # only used when minimax is active
+              max_tokens: 250
+            deepseek:
+              max_tokens: 800         # deepseek has a longer context
+
+        The precedence:
+
+        1. ``<name>.temperature`` / ``<name>.max_tokens`` — per-provider.
+           ``0`` means "no override; fall back to global".
+        2. Global ``temperature`` / ``max_tokens``.
+
+        The result is forwarded to ``HealthAwareFallbackLLM`` via
+        ``settings_for=`` so each provider in the chain receives its
+        own ``LLMSettings`` on the wire.
+        """
+        try:
+            per_temperature = float(
+                self.get_parameter(f"{name}.temperature").value or 0.0
+            )
+        except Exception:
+            per_temperature = 0.0
+        try:
+            per_max_tokens = int(
+                self.get_parameter(f"{name}.max_tokens").value or 0
+            )
+        except Exception:
+            per_max_tokens = 0
+        try:
+            global_temperature = float(self.get_parameter("temperature").value or 0.0)
+        except Exception:
+            global_temperature = 0.0
+        try:
+            global_max_tokens = int(self.get_parameter("max_tokens").value or 0)
+        except Exception:
+            global_max_tokens = 0
+        temperature = per_temperature if per_temperature > 0 else global_temperature
+        max_tokens = per_max_tokens if per_max_tokens > 0 else global_max_tokens
+        # ``LLMSettings`` uses ``None`` to mean "leave it to the provider
+        # default"; we use ``0`` as "no override" because YAML params
+        # can't tell the difference between "0" and "unset" for the ROS
+        # double/int parameters. Translate 0 → None to keep the wire
+        # request clean (no ``temperature: 0`` shoved to MiniMax, which
+        # would override the model default and likely break responses).
+        return LLMSettings(
+            temperature=(temperature if temperature > 0 else None),
+            max_tokens=(max_tokens if max_tokens > 0 else None),
+        )
+
     def _build_tool_provider(self) -> ToolProvider:
         # W5a: wire the real ROSMCPToolProvider when ``tool_provider``
         # is the default ``"ros_mcp"``. The previous version silently

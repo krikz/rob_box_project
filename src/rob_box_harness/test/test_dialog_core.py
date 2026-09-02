@@ -39,7 +39,7 @@ from rob_box_harness.core.dialogue_state_machine import (
     DialogueStateMachine,
 )
 from rob_box_llm.errors import ProviderError
-from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse, ToolCall
+from rob_box_llm.provider import LLMChunk, LLMMessage, LLMSettings, LLMResponse, ToolCall
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +76,10 @@ class _FakeLLMProvider:
         self.responses: list[object] = list(responses or [])
         # Records every complete() call as (messages, tools).
         self.calls: list[tuple[list[Any], Any]] = []
+        # Parallel list of the ``settings=`` argument on each
+        # ``complete()`` invocation (issue #1883). ``None`` when the
+        # caller did not pass settings (legacy behaviour).
+        self.settings_calls: list[Any] = []
 
     async def complete(
         self,
@@ -93,6 +97,7 @@ class _FakeLLMProvider:
         else:
             materialised = list(messages)
         self.calls.append((materialised, tools))
+        self.settings_calls.append(settings)
 
         if self.responses:
             item = self.responses.pop(0)
@@ -2041,7 +2046,16 @@ class _FakeStreamingLLM:
     def __init__(self) -> None:
         self.stream_obj: _TrackedStreamIterator | None = None
 
-    def stream(self, messages: Any, tools: Any = ()) -> _TrackedStreamIterator:
+    def stream(
+        self,
+        messages: Any,
+        tools: Any = (),
+        settings: Any = None,
+    ) -> _TrackedStreamIterator:
+        # Issue #1883 — ``settings=`` is plumbed through by ``DialogCore``
+        # on every call; this fake ignores it (we only care about the
+        # aclose/cancel contract for the barge-in tests below).
+        del settings
         self.stream_obj = _TrackedStreamIterator()
         return self.stream_obj
 
@@ -2153,3 +2167,125 @@ def test_run_with_tools_returns_named_outcome(
     assert outcome.speak_text_real_count == 0
     assert outcome.spoken_via_tool == ""
     assert outcome.finish_reason is None
+
+
+# ---------------------------------------------------------------------------
+# Issue #1883 — DialogCore forwards LLMSettings to the LLM provider
+# ---------------------------------------------------------------------------
+
+
+def test_dialog_core_propagates_llm_settings_to_provider(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """``DialogCore(llm_settings=...)`` forwards the ``LLMSettings`` to
+    every ``complete()`` / ``stream()`` call.
+
+    Regression test for issue #1883. Before the fix, ``DialogCore``
+    called ``self._llm.complete(messages, tools=tools)`` WITHOUT
+    ``settings=`` — so ``max_tokens`` and ``temperature`` from
+    ``dialogue_node.yaml`` died in the logger and the robot answered
+    with ~2500 chars regardless of the configured cap.
+    """
+    settings = LLMSettings(temperature=0.3, max_tokens=250)
+    core_obj = DialogCore(
+        llm=llm,
+        tools=tools_provider,
+        memory=memory,
+        dsm=dsm,
+        llm_settings=settings,
+    )
+    # Drive the DSM into LISTENING so ``process_input`` actually invokes
+    # the LLM (the DSM starts in IDLE and STT_RESULT is a no-op there).
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("hi", history=[]))
+
+    assert result.error is None
+    assert result.spoken_text == "hello back"
+    # The provider received the SAME ``LLMSettings`` instance on its
+    # ``complete()`` call (the harness doesn't copy it; identity is
+    # cheap to assert and catches accidental rebinding).
+    assert len(llm.calls) >= 1
+    assert llm.settings_calls[0] is settings
+
+
+def test_dialog_core_without_llm_settings_passes_none(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Legacy behaviour: no ``llm_settings=`` → ``settings=None`` on the wire.
+
+    Every existing test that builds ``DialogCore(llm=..., tools=...,
+    memory=..., dsm=...)`` without an explicit ``llm_settings`` kwarg
+    must keep working unchanged. The provider still receives a kwarg
+    named ``settings``, just with the value ``None``.
+    """
+    core_obj = DialogCore(
+        llm=llm,
+        tools=tools_provider,
+        memory=memory,
+        dsm=dsm,
+    )
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    asyncio.run(core_obj.process_input("hi", history=[]))
+
+    assert llm.settings_calls
+    assert llm.settings_calls[0] is None
+
+
+def test_dialog_core_streams_settings_on_streaming_path(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """The streaming path (``use_streaming=True``) also forwards settings.
+
+    The voice node switches between ``complete()`` and ``stream()``
+    at runtime via the ``llm_streaming`` ROS param; either branch
+    MUST receive the configured ``max_tokens`` / ``temperature``.
+    """
+    # Replace the synchronous _FakeLLMProvider with one that exposes
+    # both ``complete`` and ``stream`` so we can drive the streaming
+    # code path in DialogCore.
+    class _StreamingFakeLLM(_FakeLLMProvider):
+        async def stream(
+            self,
+            messages: Any = None,
+            *,
+            tools: Any = (),
+            settings: Any = None,
+            **_kwargs: Any,
+        ) -> Any:
+            self.calls.append((list(messages or []), tools))
+            self.settings_calls.append(settings)
+            # Emit one terminal chunk so DialogCore's stream aggregator
+            # exits its loop.
+            yield LLMChunk(content_delta="hello back", finish_reason="stop")
+
+    streaming_llm = _StreamingFakeLLM()
+    settings = LLMSettings(temperature=0.1, max_tokens=123)
+    core_obj = DialogCore(
+        llm=streaming_llm,
+        tools=tools_provider,
+        memory=memory,
+        dsm=dsm,
+        llm_settings=settings,
+        use_streaming=True,
+    )
+    # Drive the DSM into LISTENING → the next ``process_input`` transitions
+    # into DIALOGUE and actually invokes the LLM. Without this the DSM
+    # is still in IDLE and the test silently returns a no-op result.
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("hi", history=[]))
+
+    assert result.error is None
+    assert streaming_llm.settings_calls
+    assert streaming_llm.settings_calls[0] is settings
