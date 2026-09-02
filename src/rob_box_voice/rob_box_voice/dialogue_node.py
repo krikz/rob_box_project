@@ -5635,7 +5635,8 @@ class DialogueNode(Node):
 
         Полный сброс состояния текущего диалога: in-flight turn, DSM → IDLE,
         бэклог-аккумулятор, speaker-состояние, таймер сессии и история
-        (асинхронно через ``memory.clear_turns``). LLM не вызывается —
+        (in-memory окно ходов через ``DialogCore.clear_history``). LLM не
+        вызывается —
         вместо этого говорим детерминированное подтверждение.
 
         Issue #1563 — после ``_publish_response`` TTS должен успеть синтези-
@@ -5693,8 +5694,8 @@ class DialogueNode(Node):
             self._maybe_record_session_end(result="reset")
         except Exception:  # noqa: BLE001
             pass
-        # 6. История диалога (scope = DialogCore user_id "default") —
-        #    асинхронно, потому что SQLiteVoiceMemory работает через loop.
+        # 6. История диалога — in-memory окно ходов в DialogCore.
+        #    Обёртка остаётся async для совместимости с loop-диспетчером.
         loop = getattr(self, "_loop", None)
         if loop is not None:
             try:
@@ -5711,15 +5712,17 @@ class DialogueNode(Node):
         )
 
     async def _clear_session_turns(self) -> None:
-        """Асинхронно очистить историю диалога текущей сессии."""
+        """Очистить in-memory окно ходов текущей сессии."""
         try:
-            removed = await self._memory.clear_turns("default")
+            core = getattr(self, "_core", None)
+            if core is not None:
+                core.clear_history()
             self.get_logger().info(
-                f"🧹 [new-session] conversation history cleared ({removed} turns)"
+                "🧹 [new-session] in-memory turn window cleared"
             )
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
-                f"⚠️ [new-session] clear_turns failed: {exc}"
+                f"⚠️ [new-session] clear_history failed: {exc}"
             )
 
     def _maybe_log_skip_summary(self, window_s: float = 300.0) -> None:

@@ -19,7 +19,7 @@ Coverage:
 * ``process_input(text, history)`` returns a DialogResult
 * Result carries the new state, spoken text, and tools called
 * Silence / wake-word / timeout paths delegate to the DSM
-* MemoryStore.append_turn is invoked for each turn
+* Turns are kept in an in-memory sliding window (never persisted)
 * Errors in the LLM are wrapped into DialogResult.error (not raised)
 """
 
@@ -190,22 +190,10 @@ class _FakeToolProvider:
 
 
 class _FakeMemoryStore:
-    """Records append_turn / load_recent / save_fact / search_facts calls."""
+    """Records save_fact / search_facts calls (turns are NOT stored)."""
 
     def __init__(self) -> None:
-        from rob_box_harness.memory import Turn
-        self.turns: list[Turn] = []
         self.facts: list[tuple[str, str]] = []
-        self.load_recent_calls: list[tuple[str, int]] = []
-
-    async def append_turn(self, scope: str, turn: Any) -> None:
-        self.turns.append(turn)
-
-    async def load_recent(self, scope: str, limit: int = 10) -> list[Any]:
-        self.load_recent_calls.append((scope, limit))
-        # Return the last ``limit`` turns in chronological order —
-        # mirrors the real MemoryStore contract.
-        return list(self.turns[-limit:])
 
     async def save_fact(self, scope: str, fact: Any) -> None:
         self.facts.append((fact.key, fact.value))
@@ -331,11 +319,11 @@ def test_process_input_returns_dialog_result(core: DialogCore) -> None:
     assert result.error is None
 
 
-def test_process_input_persists_turns(core: DialogCore, memory: _FakeMemoryStore) -> None:
-    """User turn + assistant turn are appended to memory."""
+def test_process_input_records_turns_in_window(core: DialogCore) -> None:
+    """User turn + assistant turn land in the in-memory sliding window."""
     asyncio.run(core.process_input("hello", history=[]))
     # 2 turns: user + assistant
-    roles = [t.role for t in memory.turns]
+    roles = [t.role for t in core._turn_window]
     assert roles == ["user", "assistant"]
 
 
@@ -500,10 +488,6 @@ def test_dynamic_system_stays_after_history(
     """С непустой историей снапшот всё равно оказывается ПОСЛЕ неё."""
     from rob_box_harness.memory import Turn
 
-    memory.turns.extend([
-        Turn(role="user", content="старая реплика"),
-        Turn(role="assistant", content="старый ответ"),
-    ])
     obj = DialogCore(
         llm=llm,
         tools=tools_provider,
@@ -512,6 +496,10 @@ def test_dynamic_system_stays_after_history(
         system_prompt="БАЗОВЫЙ ПРОМПТ",
         history_trim_limit=20,
     )
+    obj._turn_window.extend([
+        Turn(role="user", content="старая реплика"),
+        Turn(role="assistant", content="старый ответ"),
+    ])
     asyncio.run(obj.handle_wake_word(""))
     asyncio.run(obj.process_input(
         "привет",
@@ -557,7 +545,7 @@ def test_synthetic_input_is_not_persisted_as_a_user_turn(
         "[CRITICAL] В прошлом цикле ты НЕ вызвал ни один музыкальный тул",
         is_synthetic=True,
     ))
-    persisted = [t.content for t in memory.turns]
+    persisted = [t.content for t in obj._turn_window]
     assert not any("[CRITICAL]" in c for c in persisted), persisted
 
 
@@ -575,7 +563,7 @@ def test_synthetic_turn_still_persists_what_the_user_heard(
     )
     asyncio.run(obj.handle_wake_word(""))
     asyncio.run(obj.process_input("[CRITICAL] вызови тул", is_synthetic=True))
-    roles = [(t.role, t.content) for t in memory.turns]
+    roles = [(t.role, t.content) for t in obj._turn_window]
     assert ("assistant", "Ок, играю бит.") in roles, roles
     assert all(r != "user" for r, _ in roles), roles
 
@@ -593,7 +581,7 @@ def test_ordinary_input_is_still_persisted(
     )
     asyncio.run(obj.handle_wake_word(""))
     asyncio.run(obj.process_input("сыграй бит"))
-    assert ("user", "сыграй бит") in [(t.role, t.content) for t in memory.turns]
+    assert ("user", "сыграй бит") in [(t.role, t.content) for t in obj._turn_window]
 
 
 def test_preclassified_event_skips_double_classification(
@@ -635,8 +623,8 @@ def test_speaker_tag_persisted_in_turn_metadata(
     obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
     asyncio.run(obj.handle_wake_word(""))
     asyncio.run(obj.process_input("привет", speaker_tag="0"))
-    user_turn = memory.turns[-2]
-    assistant_turn = memory.turns[-1]
+    user_turn = obj._turn_window[-2]
+    assistant_turn = obj._turn_window[-1]
     assert user_turn.role == "user"
     assert user_turn.metadata == {"speaker_tag": "0"}
     assert assistant_turn.role == "assistant"
@@ -654,18 +642,18 @@ def test_speaker_tag_none_means_empty_metadata(
     obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
     asyncio.run(obj.handle_wake_word(""))
     asyncio.run(obj.process_input("привет"))
-    user_turn = memory.turns[-2]
+    user_turn = obj._turn_window[-2]
     assert user_turn.metadata == {}
 
 
 def test_process_input_error_does_not_persist_assistant_turn(
     core: DialogCore, memory: _FakeMemoryStore, llm: _FakeLLMProvider
 ) -> None:
-    """When the LLM fails, only the user turn is persisted."""
+    """When the LLM fails, only the user turn lands in the window."""
     llm.error = ProviderError("boom")
     asyncio.run(core.process_input("hello", history=[]))
-    assert len(memory.turns) == 1
-    turn = memory.turns[0]
+    assert len(core._turn_window) == 1
+    turn = core._turn_window[0]
     assert turn.role == "user"
     assert turn.content == "hello"
 
@@ -801,20 +789,18 @@ def test_check_timeout_legacy_event_path(
 # ---------------------------------------------------------------------------
 
 
-def test_history_trim_delegates_to_memory_store(
+def test_in_memory_window_used_when_history_none(
     llm: _FakeLLMProvider,
     tools_provider: _FakeToolProvider,
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """When history=None and trim_limit is set, DialogCore asks memory."""
-    # Seed memory with prior turns.
+    """When history=None the core uses its own in-memory turn window."""
     from rob_box_harness.memory import Turn
     prior = [
         Turn(role="user", content="earlier question"),
         Turn(role="assistant", content="earlier answer"),
     ]
-    memory.turns.extend(prior)
 
     core_obj = DialogCore(
         llm=llm,
@@ -823,14 +809,13 @@ def test_history_trim_delegates_to_memory_store(
         dsm=dsm,
         history_trim_limit=10,
     )
+    core_obj._turn_window.extend(prior)
     # Drive to LISTENING so the next STT_RESULT transitions into DIALOGUE.
     asyncio.run(core_obj.handle_wake_word(""))
     asyncio.run(core_obj.process_input("now question", history=None))
 
-    # memory.load_recent must have been called for the trim delegation.
-    assert memory.load_recent_calls, "DialogCore did not delegate to memory"
     sent = llm.calls[0][0]
-    # Two prior turns from memory + the new user message.
+    # Two prior turns from the window + the new user message.
     assert len(sent) == 3
     assert sent[0].content == "earlier question"
     assert sent[1].content == "earlier answer"
@@ -843,7 +828,7 @@ def test_explicit_history_overrides_memory_trim(
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """When the caller passes history, memory is NOT consulted."""
+    """When the caller passes history, the in-memory window is NOT consulted."""
     core_obj = DialogCore(
         llm=llm,
         tools=tools_provider,
@@ -858,23 +843,18 @@ def test_explicit_history_overrides_memory_trim(
     assert len(sent) == 2
     assert sent[0].content == "explicit"
     assert sent[1].content == "now"
-    # Explicit history → memory must NOT have been consulted.
-    assert memory.load_recent_calls == []
 
 
-def test_history_none_without_trim_limit_yields_empty(
+def test_history_none_with_empty_window_yields_just_user_turn(
     llm: _FakeLLMProvider,
     tools_provider: _FakeToolProvider,
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """history=None with no trim limit → empty list, no memory call."""
-    # No history_trim_limit → DialogCore returns [] without
-    # consulting memory.
+    """history=None with an empty window → only the current user turn."""
     core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
     asyncio.run(core_obj.handle_wake_word(""))
     asyncio.run(core_obj.process_input("now", history=None))
-    assert memory.load_recent_calls == []
     sent = llm.calls[0][0]
     # Only the user turn we just appended.
     assert len(sent) == 1
@@ -1542,7 +1522,7 @@ def test_silent_failure_turn_not_persisted_to_memory(
     result = asyncio.run(core_obj.process_input("привет", history=[]))
     assert result.spoken_text == "done"
 
-    roles = [t.role for t in memory.turns]
+    roles = [t.role for t in core_obj._turn_window]
     # Only the user turn was persisted — no synthetic 'done' assistant turn.
     assert roles == ["user"]
 
@@ -1553,9 +1533,9 @@ def test_normal_turn_still_persisted_to_memory(
 ) -> None:
     """A healthy turn (real reply) is still persisted as user+assistant."""
     asyncio.run(core.process_input("hello", history=[]))
-    roles = [t.role for t in memory.turns]
+    roles = [t.role for t in core._turn_window]
     assert roles == ["user", "assistant"]
-    assert memory.turns[-1].content == "hello back"
+    assert core._turn_window[-1].content == "hello back"
 
 
 def test_process_input_tool_loop_aborts_on_transport_error(
@@ -1586,8 +1566,8 @@ def test_process_input_tool_loop_aborts_on_transport_error(
     result = asyncio.run(core_obj.process_input("о чём?", history=[]))
     assert isinstance(result.error, ToolExecutionError)
     assert result.spoken_text == ""
-    # Only the user turn made it to memory.
-    assert [t.role for t in memory.turns] == ["user"]
+    # Only the user turn made it into the window.
+    assert [t.role for t in core_obj._turn_window] == ["user"]
 
 
 def test_process_input_tool_loop_keeps_user_turn_once_on_error(
@@ -1604,10 +1584,10 @@ def test_process_input_tool_loop_keeps_user_turn_once_on_error(
 
     result = asyncio.run(core_obj.process_input("hello", history=[]))
     assert isinstance(result.error, ProviderError)
-    # Exactly one user turn in memory — no duplicate row.
-    assert len(memory.turns) == 1
-    assert memory.turns[0].role == "user"
-    assert memory.turns[0].content == "hello"
+    # Exactly one user turn in the window — no duplicate.
+    assert len(core_obj._turn_window) == 1
+    assert core_obj._turn_window[0].role == "user"
+    assert core_obj._turn_window[0].content == "hello"
 
 
 # ---------------------------------------------------------------------------
@@ -1728,11 +1708,11 @@ def test_assistant_turn_persists_actual_spoken_text(
     asyncio.run(core_obj.handle_wake_word(""))
     asyncio.run(core_obj.process_input("расскажи сказку", history=[]))
 
-    assert len(memory.turns) == 2
-    assert memory.turns[0].role == "user"
-    assert memory.turns[1].role == "assistant"
-    assert memory.turns[1].content == "Жила-была девочка."
-    assert memory.turns[1].content != "done"
+    assert len(core_obj._turn_window) == 2
+    assert core_obj._turn_window[0].role == "user"
+    assert core_obj._turn_window[1].role == "assistant"
+    assert core_obj._turn_window[1].content == "Жила-была девочка."
+    assert core_obj._turn_window[1].content != "done"
 
 
 def test_silent_done_turn_is_not_persisted(
@@ -1752,8 +1732,8 @@ def test_silent_done_turn_is_not_persisted(
     asyncio.run(core_obj.process_input("расскажи анекдот", history=[]))
 
     # Only the user turn is stored — no "done" assistant turn.
-    assert len(memory.turns) == 1
-    assert memory.turns[0].role == "user"
+    assert len(core_obj._turn_window) == 1
+    assert core_obj._turn_window[0].role == "user"
 
 
 def test_orphaned_user_turn_collapsed_before_llm(
@@ -1769,7 +1749,6 @@ def test_orphaned_user_turn_collapsed_before_llm(
     """
     from rob_box_harness.memory import Turn
 
-    memory.turns.append(Turn(role="user", content="старый вопрос без ответа"))
     llm.responses = [LLMResponse(content="новый ответ", tool_calls=())]
 
     core_obj = DialogCore(
@@ -1778,6 +1757,9 @@ def test_orphaned_user_turn_collapsed_before_llm(
         memory=memory,
         dsm=dsm,
         history_trim_limit=20,
+    )
+    core_obj._turn_window.append(
+        Turn(role="user", content="старый вопрос без ответа")
     )
     asyncio.run(core_obj.handle_wake_word(""))
     asyncio.run(core_obj.process_input("новый вопрос"))
