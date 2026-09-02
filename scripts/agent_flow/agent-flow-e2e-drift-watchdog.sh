@@ -178,4 +178,33 @@ if [ "$_drift_count" -gt 0 ]; then
 fi
 
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] watchdog: ✓ no drift (scanned $(printf '%s' "$_pr_done_json" | grep -oE '"number":' | wc -l) PRs with e2e-done)" >&2
+
+# --- 5) e2e-worktree-count observability (issue #1707, ретро t_0ff29dcd) -------
+# Метрика: кол-во /tmp/agent-flow-e2e-*/. Если > E2E_WT_COUNT_WARN (default 10)
+# — алертим (диск может забиваться orphan-worktree'ами даже после фикса
+# PR #1889: SIGKILL под нагрузкой / kill -9 из watchdog'а / OOM reaper).
+#
+# Метрика считается через bash-glob (быстрее find -z, проще отлаживать).
+# Сам замер отказоустойчив — даже если REPO_DIR битый, /tmp всегда доступен.
+_e2e_wt_count=0
+for _d in /tmp/agent-flow-e2e-*; do
+    [ -d "$_d" ] || continue
+    [ "$_d" = "/tmp/agent-flow-e2e-*" ] && break
+    _e2e_wt_count=$(( _e2e_wt_count + 1 ))
+done
+E2E_WT_COUNT_WARN="${E2E_WT_COUNT_WARN:-10}"
+E2E_WT_COUNT_CRIT="${E2E_WT_COUNT_CRIT:-50}"
+{
+    printf '%s\te2e_worktree_count=%s\twarn=%s\tcrit=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "$_e2e_wt_count" \
+        "$E2E_WT_COUNT_WARN" \
+        "$E2E_WT_COUNT_CRIT"
+} >> "$LOG_FILE"
+if [ "$_e2e_wt_count" -ge "$E2E_WT_COUNT_CRIT" ] 2>/dev/null; then
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] watchdog: 🚨 e2e_worktree_count=${_e2e_wt_count} >= crit=${E2E_WT_COUNT_CRIT} — orphan leak (issue #1707), run bash scripts/agent_flow/agent-flow-e2e-wt-sweep.sh" >&2
+    [ "$WATCHDOG_DRY_RUN" != "true" ] && exit 1
+elif [ "$_e2e_wt_count" -ge "$E2E_WT_COUNT_WARN" ] 2>/dev/null; then
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] watchdog: ⚠️ e2e_worktree_count=${_e2e_wt_count} >= warn=${E2E_WT_COUNT_WARN} (threshold-lazy alarm)" >&2
+fi
 exit 0

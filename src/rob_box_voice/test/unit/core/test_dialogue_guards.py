@@ -35,6 +35,7 @@ from rob_box_voice.core.dialogue_guards import (
     extract_renardo_code_lines,
     is_metalanguage_babble,
     is_music_stop_command,
+    is_planning_narration,
     is_state_question,
     is_vocal_request,
     user_wants_music,
@@ -1210,6 +1211,12 @@ class TestPlanningNarration:
     запускается». Ни ``BABBLE_BANNED_OPENERS`` (там обещания, а не
     рассуждения), ни ``MUSIC_GUARD_KEYWORDS`` (смотрят на реплику юзера —
     «ебани ланудж») этот случай не покрывали.
+
+    Тесты для develop-версии `is_planning_narration` (введена в 78403dba).
+    Этот PR (issue #1882) добавляет поверх — **hard-mute guard** в
+    `_handle_result` (см. dialogue_node.py), который закрывает дыру
+    «babble-ретрай уже потрачен, monologue всё равно уходит в TTS».
+    Нода-тесты для hard-mute — в test_issue_1882_planning_narration.py.
     """
 
     @pytest.mark.parametrize(

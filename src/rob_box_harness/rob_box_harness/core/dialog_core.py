@@ -26,6 +26,7 @@ import asyncio
 import json
 import logging
 import re
+from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
@@ -37,9 +38,16 @@ from rob_box_harness.core.dialogue_state_machine import (
     DialogueStateKind,
     DialogueStateMachine,
 )
-from rob_box_harness.memory import MemoryStore
+from rob_box_harness.memory import MemoryStore, Turn
 from rob_box_harness.tools import ToolProvider, ToolSpec
-from rob_box_llm.provider import LLMMessage, LLMProvider, LLMResponse, ToolCall, ToolResult
+from rob_box_llm.provider import (
+    LLMMessage,
+    LLMSettings,
+    LLMProvider,
+    LLMResponse,
+    ToolCall,
+    ToolResult,
+)
 
 if TYPE_CHECKING:
     # Forward import — AcceptanceGate is in rob_box_harness.core.acceptance
@@ -434,10 +442,10 @@ class DialogCore:
        assistant turn, and returns a :class:`DialogResult`.
     3. Shell publishes the result.
 
-    The core is intentionally stateless across turns — every turn is a
-    self-contained ``process_input`` call. The DSM keeps the lifecycle
-    state, the MemoryStore keeps the conversation, the LLM keeps no
-    state at all (the shell passes the history explicitly).
+    The core keeps the conversation as an in-memory sliding window of
+    turns (never persisted to the store). The DSM keeps the lifecycle
+    state, the LLM keeps no state at all — the shell either passes an
+    explicit history or lets the core use its own window.
     """
 
     def __init__(
@@ -456,6 +464,7 @@ class DialogCore:
         on_prompt: "PromptObserver | None" = None,
         skill_prompts: Mapping[str, str] | None = None,
         narrow_tools_to_skill: bool = False,
+        llm_settings: LLMSettings | None = None,
     ) -> None:
         """Compose the four dialogue ports into a single facade.
 
@@ -468,16 +477,18 @@ class DialogCore:
                 tool call. Required even when the LLM never invokes
                 a tool, because the loop is the only way the model
                 can discover ``memory_context`` and friends.
-            memory: Conversation + facts store — required.
+            memory: Facts / waypoints / FAQ / event-profile store —
+                required. NOTE: the core does NOT persist conversation
+                turns through this store anymore; turns live in an
+                in-memory sliding window. The store is retained for the
+                shell's fact operations and backward compatibility.
             dsm: Dialogue state machine — required.
             user_id: Scope key used when calling the memory store.
                 Defaults to ``"default"``.
-            history_trim_limit: When set and the caller passes
-                ``history=None`` to :meth:`process_input`, ask
-                ``memory.load_recent(user_id, limit=history_trim_limit)``
-                instead of running with an empty history. Lets the
-                shell trim history purely through the memory port
-                without re-implementing slicing.
+            history_trim_limit: Cap of the in-memory sliding window of
+                turns. When the caller passes ``history=None`` to
+                :meth:`process_input`, the core uses its own window
+                (never the memory port) and this value bounds its size.
             inactivity_timeout: When set, ``check_timeout()`` drops
                 out of ``LISTENING`` after this many seconds of
                 silence (forwarded to
@@ -514,6 +525,15 @@ class DialogCore:
                 are executed as before. When ``None`` the core runs
                 the legacy un-gated path — backward-compatible with
                 every existing test that doesn't construct a gate.
+            llm_settings: Optional per-call knobs forwarded to the
+                LLM provider on EVERY ``complete()`` / ``stream()``
+                (issue #1883). Without this, ``max_tokens`` and
+                ``temperature`` from ``dialogue_node.yaml`` never
+                reached the provider — only the logger. ``None`` is
+                the legacy behaviour (no ``settings=`` kwarg on the
+                LLM call). The provider decides what to do with
+                ``None`` fields (typically: omit the parameter from
+                the wire request and let the model use its default).
         """
         if llm is None:
             raise TypeError("DialogCore: llm is required")
@@ -530,6 +550,15 @@ class DialogCore:
         self._user_id = user_id
         self._system_prompt = system_prompt
         self._history_trim_limit = history_trim_limit
+        # Turns live ONLY in memory (sliding window) — never persisted to
+        # SQLite (Shifu directive 2026-09-02). Only user facts go to the
+        # store. The window is capped by ``history_trim_limit`` when set.
+        _window_max = (
+            history_trim_limit
+            if (history_trim_limit and history_trim_limit > 0)
+            else None
+        )
+        self._turn_window: deque[Turn] = deque(maxlen=_window_max)
         # 🔴 FIX (live 06.08): стриминг управляется конфигом (dialogue_node.yaml
         # → llm_streaming). Дефолт False — консервативно, без стриминга.
         self._use_streaming = use_streaming
@@ -551,6 +580,11 @@ class DialogCore:
         self._skill_loaded_by_llm: int = 0
         #: Сколько раз LLM попросила несуществующий домен.
         self._skill_load_misses: int = 0
+        # 🔴 FIX (issue #1883): per-call knobs (max_tokens / temperature /
+        # thinking-policy merge). Forwarded as ``settings=`` to every
+        # ``complete()`` / ``stream()`` so YAML-driven configuration
+        # actually reaches the provider instead of dying in the log.
+        self._llm_settings = llm_settings
 
     # ---- main entry point -----------------------------------------------
 
@@ -579,7 +613,7 @@ class DialogCore:
         пишется в историю как реплика пользователя: ответ модели —
         пишется, потому что его слышал человек, а сам «промпт» человек
         никогда не произносил. Тот же приём, что ``is_dj_auto`` — см.
-        комментарий у append_turn ниже.
+        комментарий у записи user-хода ниже.
 
         ``preclassified_event`` (live 10.08, issue #1101) — если caller
         уже классифицировал вход (через ``dsm.on_user_input`` + DSM-переход)
@@ -609,12 +643,11 @@ class DialogCore:
         exactly the production symptom in issue #992 ("DJ cycle never
         produces music, robot says 'задумался'").
 
-        History trimming: if the caller passes ``history=None`` AND
-        ``history_trim_limit`` was set at construction, the memory
-        port's ``load_recent`` is queried for the trimmed window.
-        The shell therefore never has to slice the history itself —
-        it just decides whether to pass an explicit list or trust
-        the memory port.
+        History: if the caller passes ``history=None`` the core uses its
+        in-memory sliding window of turns (capped by
+        ``history_trim_limit``). Turns are never persisted — only user
+        facts reach the store. The shell decides whether to pass an
+        explicit list or trust the core's window.
 
         Steps:
         1. Classify the input via ``dsm.on_user_input``.
@@ -706,11 +739,10 @@ class DialogCore:
             self._dsm.current_state == DialogueStateKind.DIALOGUE
             and event == DialogueEvent.STT_RESULT
         ):
-            from rob_box_harness.memory import Turn
             try:
-                # Resolve the trimmed history BEFORE we append the
-                # new turn — otherwise ``load_recent`` would echo
-                # the just-stored user message back into the prompt.
+                # Resolve the history BEFORE we append the new turn —
+                # otherwise the window would echo the just-stored user
+                # message back into the prompt.
                 messages = await self._resolve_history(history)
                 # Issue #1077 — контекст о спикере (профиль + факты из
                 # scope=speaker:<tag>). Вставляем system-сообщением сразу
@@ -778,13 +810,12 @@ class DialogCore:
                 # вызова тула. Ответ на ретрай пишется как обычно — его
                 # человек слышал.
                 if not is_dj_auto and not is_synthetic:
-                    await self._memory.append_turn(
-                        self._user_id,
+                    self._turn_window.append(
                         Turn(
                             role="user",
                             content=text,
                             metadata=user_metadata,
-                        ),
+                        )
                     )
                 outcome = await self._run_with_tools(messages)
                 result.spoken_text = outcome.spoken_text
@@ -823,23 +854,20 @@ class DialogCore:
                             assistant_metadata["tools_called"] = list(
                                 dict.fromkeys(outcome.tools_called)
                             )
-                        await self._memory.append_turn(
-                            self._user_id,
+                        self._turn_window.append(
                             Turn(
                                 role="assistant",
                                 content=assistant_content,
                                 metadata=assistant_metadata,
-                            ),
+                            )
                         )
             except Exception as exc:  # noqa: BLE001 — carry it in the result
                 import traceback as _tb
                 result.error = exc
                 result.error_traceback = _tb.format_exc()
-                # The user turn was already appended BEFORE the LLM call
-                # (line above). On error, do NOT append again — that
-                # would produce a duplicate row in the conversation
-                # history. SQLiteVoiceMemory also has its own 5-second
-                # dedup window as a safety net.
+                # The user turn was already appended to the in-memory
+                # window BEFORE the LLM call (line above). On error, do
+                # NOT append again — that would duplicate the turn.
             # End-of-dialogue: drive the state machine back to IDLE.
             self._dsm.on_event(DialogueEvent.DIALOGUE_END)
             result.new_state = self._dsm.current_state
@@ -912,9 +940,22 @@ class DialogCore:
         confirms the failure (its own retry also produced no tool call),
         it calls this to remove the unlabeled fake-confirmation turn
         before it becomes a few-shot example for the next similar
-        request. Delegates to :meth:`MemoryStore.delete_last_turn`.
+        request. Removed directly from the in-memory window.
         """
-        return await self._memory.delete_last_turn(self._user_id, role="assistant")
+        for index in range(len(self._turn_window) - 1, -1, -1):
+            if self._turn_window[index].role == "assistant":
+                del self._turn_window[index]
+                return True
+        return False
+
+    def clear_history(self) -> None:
+        """Drop all turns from the in-memory sliding window.
+
+        Called by the shell when the user starts a new session
+        («новая сессия» / «/clear»). Turns are ephemeral and must
+        not survive a session boundary.
+        """
+        self._turn_window.clear()
 
     @staticmethod
     def _clean_history_turns(
@@ -1303,17 +1344,29 @@ class DialogCore:
         messages: Iterable[LLMMessage],
         *,
         tools: Iterable[Mapping[str, Any]] = (),
+        settings: LLMSettings | None = None,
     ) -> LLMResponse:
         """Streaming LLM completion aggregated into a full :class:`LLMResponse`.
 
         🔴 FIX (live 06.08): стриминг переключается конфигом (llm_streaming).
         False → полный complete() (как раньше, до стриминга); True → stream()
         с агрегацией tool-call deltas. Оба пути возвращают LLMResponse.
+
+        ``settings`` overrides the instance-level ``_llm_settings`` (issue
+        #1883) so the corrective retry inside ``_run_with_tools`` can pass
+        a per-call override when needed. ``None`` here → fall back to the
+        instance default; ``None`` instance default → ``None`` on the wire
+        (provider legacy behaviour).
         """
         messages = list(messages)
         tools = list(tools)
+        effective_settings: LLMSettings | None = (
+            settings if settings is not None else self._llm_settings
+        )
         if not self._use_streaming:
-            response = await self._llm.complete(messages, tools=tools)
+            response = await self._llm.complete(
+                messages, tools=tools, settings=effective_settings
+            )
             self._report_prompt(messages, tools, response.usage)
             return response
         parts: list[str] = []
@@ -1321,7 +1374,9 @@ class DialogCore:
         finish_reason: str | None = None
         usage: Mapping[str, int] | None = None
         raw: Any = None
-        stream = self._llm.stream(messages, tools=tools)
+        stream = self._llm.stream(
+            messages, tools=tools, settings=effective_settings
+        )
         try:
             async for chunk in stream:
                 # 🔴 FIX (issue #1280): barge-in — новый STT-инпут уже
@@ -1521,27 +1576,17 @@ class DialogCore:
         self,
         history: Iterable[LLMMessage] | None,
     ) -> list[LLMMessage]:
-        """Build the LLM message list — either from ``history`` or.
-        via ``memory.load_recent``.
+        """Build the LLM message list — from an explicit ``history`` or
+        from the in-memory sliding window of turns.
 
         * When the caller passes an explicit iterable, that wins —
           the shell owns the trim there.
-        * When ``history`` is ``None`` and ``history_trim_limit`` is
-          set, the memory port provides the trimmed window.
-        * When ``history`` is ``None`` and no trim limit is set, we
-          return an empty list (the shell can fall back to whatever
-          it has in mind).
+        * When ``history`` is ``None``, the core's own in-memory turn
+          window (a ``deque`` capped by ``history_trim_limit``) is used.
+          Turns are NEVER persisted — only user facts reach the store.
         """
         if history is not None:
             return list(history)
-        if self._history_trim_limit is None:
-            out: list[LLMMessage] = []
-            if self._system_prompt:
-                out.append(LLMMessage(role="system", content=self._system_prompt))
-            return out
-        recent_turns = await self._memory.load_recent(
-            self._user_id, limit=self._history_trim_limit
-        )
         out: list[LLMMessage] = []
         # 🔴 FIX: system prompt обязателен первым сообщением — раньше
         # dialogue_node грузил _system_prompt, но никогда не передавал
@@ -1552,7 +1597,7 @@ class DialogCore:
         if self._system_prompt:
             out.append(LLMMessage(role="system", content=self._system_prompt))
         history_messages: list[LLMMessage] = []
-        for turn in recent_turns:
+        for turn in self._turn_window:
             # 🔴 FIX (live 01.09): развернуть ``tools_called`` из metadata в
             # отдельное system-сообщение ПЕРЕД ответом ассистента. Без него
             # история — набор примеров «просьбу о музыке закрывают словами»
@@ -1561,9 +1606,8 @@ class DialogCore:
             # Роль именно ``system``, а не префикс в тексте ассистента:
             # модель копирует то, что видит в своих же репликах (ретро 20.08,
             # утечка ``[Spkr:...]`` в TTS), а system-текст она не озвучивает.
-            # И не отдельный ``Turn`` в SQLite: окно ``load_recent`` считает
-            # строки, лишняя строка на каждый ход с тулом съела бы треть
-            # истории.
+            # system-сообщение не считается репликой: лишняя строка на
+            # каждый ход с тулом съела бы треть окна.
             evidence = _tools_called_from_metadata(turn)
             if evidence:
                 history_messages.append(

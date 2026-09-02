@@ -118,14 +118,13 @@ def _index_of(messages: list[LLMMessage], needle: str) -> int:
 def test_skill_text_lands_after_the_history() -> None:
     """Задача 2.4 — фрагмент ПОСЛЕ последнего сообщения истории."""
     provider = _CapturingProvider()
-    memory = InMemoryStore()
-    asyncio.run(memory.init())
-    asyncio.run(memory.append_turn("default", Turn(role="user", content="старый вопрос")))
-    asyncio.run(
-        memory.append_turn("default", Turn(role="assistant", content="старый ответ"))
-    )
-
-    core = _core(provider, skill_prompts={"composer": _COMPOSER_TEXT}, memory=memory)
+    core = _core(provider, skill_prompts={"composer": _COMPOSER_TEXT})
+    # История живёт в окне DialogCore, а не в MemoryStore (b5cf5daf:
+    # «turns live in memory only, never in SQLite»).
+    core._turn_window.extend([
+        Turn(role="user", content="старый вопрос"),
+        Turn(role="assistant", content="старый ответ"),
+    ])
     core.set_active_skill("composer")
     _run(core)
 
@@ -140,17 +139,10 @@ def test_skill_text_survives_a_deep_session() -> None:
     сессия, тем дальше инструкция с позиции 0 от момента, когда она нужна.
     """
     provider = _CapturingProvider()
-    memory = InMemoryStore()
-    asyncio.run(memory.init())
+    core = _core(provider, skill_prompts={"composer": _COMPOSER_TEXT})
     for i in range(20):
-        asyncio.run(
-            memory.append_turn("default", Turn(role="user", content=f"вопрос {i}"))
-        )
-        asyncio.run(
-            memory.append_turn("default", Turn(role="assistant", content=f"ответ {i}"))
-        )
-
-    core = _core(provider, skill_prompts={"composer": _COMPOSER_TEXT}, memory=memory)
+        core._turn_window.append(Turn(role="user", content=f"вопрос {i}"))
+        core._turn_window.append(Turn(role="assistant", content=f"ответ {i}"))
     core.set_active_skill("composer")
     _run(core)
 

@@ -19,7 +19,7 @@ Coverage:
 * ``process_input(text, history)`` returns a DialogResult
 * Result carries the new state, spoken text, and tools called
 * Silence / wake-word / timeout paths delegate to the DSM
-* MemoryStore.append_turn is invoked for each turn
+* Turns are kept in an in-memory sliding window (never persisted)
 * Errors in the LLM are wrapped into DialogResult.error (not raised)
 """
 
@@ -39,7 +39,7 @@ from rob_box_harness.core.dialogue_state_machine import (
     DialogueStateMachine,
 )
 from rob_box_llm.errors import ProviderError
-from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse, ToolCall
+from rob_box_llm.provider import LLMChunk, LLMMessage, LLMSettings, LLMResponse, ToolCall
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +76,10 @@ class _FakeLLMProvider:
         self.responses: list[object] = list(responses or [])
         # Records every complete() call as (messages, tools).
         self.calls: list[tuple[list[Any], Any]] = []
+        # Parallel list of the ``settings=`` argument on each
+        # ``complete()`` invocation (issue #1883). ``None`` when the
+        # caller did not pass settings (legacy behaviour).
+        self.settings_calls: list[Any] = []
 
     async def complete(
         self,
@@ -93,6 +97,7 @@ class _FakeLLMProvider:
         else:
             materialised = list(messages)
         self.calls.append((materialised, tools))
+        self.settings_calls.append(settings)
 
         if self.responses:
             item = self.responses.pop(0)
@@ -185,22 +190,10 @@ class _FakeToolProvider:
 
 
 class _FakeMemoryStore:
-    """Records append_turn / load_recent / save_fact / search_facts calls."""
+    """Records save_fact / search_facts calls (turns are NOT stored)."""
 
     def __init__(self) -> None:
-        from rob_box_harness.memory import Turn
-        self.turns: list[Turn] = []
         self.facts: list[tuple[str, str]] = []
-        self.load_recent_calls: list[tuple[str, int]] = []
-
-    async def append_turn(self, scope: str, turn: Any) -> None:
-        self.turns.append(turn)
-
-    async def load_recent(self, scope: str, limit: int = 10) -> list[Any]:
-        self.load_recent_calls.append((scope, limit))
-        # Return the last ``limit`` turns in chronological order —
-        # mirrors the real MemoryStore contract.
-        return list(self.turns[-limit:])
 
     async def save_fact(self, scope: str, fact: Any) -> None:
         self.facts.append((fact.key, fact.value))
@@ -326,11 +319,11 @@ def test_process_input_returns_dialog_result(core: DialogCore) -> None:
     assert result.error is None
 
 
-def test_process_input_persists_turns(core: DialogCore, memory: _FakeMemoryStore) -> None:
-    """User turn + assistant turn are appended to memory."""
+def test_process_input_records_turns_in_window(core: DialogCore) -> None:
+    """User turn + assistant turn land in the in-memory sliding window."""
     asyncio.run(core.process_input("hello", history=[]))
     # 2 turns: user + assistant
-    roles = [t.role for t in memory.turns]
+    roles = [t.role for t in core._turn_window]
     assert roles == ["user", "assistant"]
 
 
@@ -495,10 +488,6 @@ def test_dynamic_system_stays_after_history(
     """С непустой историей снапшот всё равно оказывается ПОСЛЕ неё."""
     from rob_box_harness.memory import Turn
 
-    memory.turns.extend([
-        Turn(role="user", content="старая реплика"),
-        Turn(role="assistant", content="старый ответ"),
-    ])
     obj = DialogCore(
         llm=llm,
         tools=tools_provider,
@@ -507,6 +496,10 @@ def test_dynamic_system_stays_after_history(
         system_prompt="БАЗОВЫЙ ПРОМПТ",
         history_trim_limit=20,
     )
+    obj._turn_window.extend([
+        Turn(role="user", content="старая реплика"),
+        Turn(role="assistant", content="старый ответ"),
+    ])
     asyncio.run(obj.handle_wake_word(""))
     asyncio.run(obj.process_input(
         "привет",
@@ -552,7 +545,7 @@ def test_synthetic_input_is_not_persisted_as_a_user_turn(
         "[CRITICAL] В прошлом цикле ты НЕ вызвал ни один музыкальный тул",
         is_synthetic=True,
     ))
-    persisted = [t.content for t in memory.turns]
+    persisted = [t.content for t in obj._turn_window]
     assert not any("[CRITICAL]" in c for c in persisted), persisted
 
 
@@ -570,7 +563,7 @@ def test_synthetic_turn_still_persists_what_the_user_heard(
     )
     asyncio.run(obj.handle_wake_word(""))
     asyncio.run(obj.process_input("[CRITICAL] вызови тул", is_synthetic=True))
-    roles = [(t.role, t.content) for t in memory.turns]
+    roles = [(t.role, t.content) for t in obj._turn_window]
     assert ("assistant", "Ок, играю бит.") in roles, roles
     assert all(r != "user" for r, _ in roles), roles
 
@@ -588,7 +581,7 @@ def test_ordinary_input_is_still_persisted(
     )
     asyncio.run(obj.handle_wake_word(""))
     asyncio.run(obj.process_input("сыграй бит"))
-    assert ("user", "сыграй бит") in [(t.role, t.content) for t in memory.turns]
+    assert ("user", "сыграй бит") in [(t.role, t.content) for t in obj._turn_window]
 
 
 def test_preclassified_event_skips_double_classification(
@@ -630,8 +623,8 @@ def test_speaker_tag_persisted_in_turn_metadata(
     obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
     asyncio.run(obj.handle_wake_word(""))
     asyncio.run(obj.process_input("привет", speaker_tag="0"))
-    user_turn = memory.turns[-2]
-    assistant_turn = memory.turns[-1]
+    user_turn = obj._turn_window[-2]
+    assistant_turn = obj._turn_window[-1]
     assert user_turn.role == "user"
     assert user_turn.metadata == {"speaker_tag": "0"}
     assert assistant_turn.role == "assistant"
@@ -649,18 +642,18 @@ def test_speaker_tag_none_means_empty_metadata(
     obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
     asyncio.run(obj.handle_wake_word(""))
     asyncio.run(obj.process_input("привет"))
-    user_turn = memory.turns[-2]
+    user_turn = obj._turn_window[-2]
     assert user_turn.metadata == {}
 
 
 def test_process_input_error_does_not_persist_assistant_turn(
     core: DialogCore, memory: _FakeMemoryStore, llm: _FakeLLMProvider
 ) -> None:
-    """When the LLM fails, only the user turn is persisted."""
+    """When the LLM fails, only the user turn lands in the window."""
     llm.error = ProviderError("boom")
     asyncio.run(core.process_input("hello", history=[]))
-    assert len(memory.turns) == 1
-    turn = memory.turns[0]
+    assert len(core._turn_window) == 1
+    turn = core._turn_window[0]
     assert turn.role == "user"
     assert turn.content == "hello"
 
@@ -796,20 +789,18 @@ def test_check_timeout_legacy_event_path(
 # ---------------------------------------------------------------------------
 
 
-def test_history_trim_delegates_to_memory_store(
+def test_in_memory_window_used_when_history_none(
     llm: _FakeLLMProvider,
     tools_provider: _FakeToolProvider,
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """When history=None and trim_limit is set, DialogCore asks memory."""
-    # Seed memory with prior turns.
+    """When history=None the core uses its own in-memory turn window."""
     from rob_box_harness.memory import Turn
     prior = [
         Turn(role="user", content="earlier question"),
         Turn(role="assistant", content="earlier answer"),
     ]
-    memory.turns.extend(prior)
 
     core_obj = DialogCore(
         llm=llm,
@@ -818,14 +809,13 @@ def test_history_trim_delegates_to_memory_store(
         dsm=dsm,
         history_trim_limit=10,
     )
+    core_obj._turn_window.extend(prior)
     # Drive to LISTENING so the next STT_RESULT transitions into DIALOGUE.
     asyncio.run(core_obj.handle_wake_word(""))
     asyncio.run(core_obj.process_input("now question", history=None))
 
-    # memory.load_recent must have been called for the trim delegation.
-    assert memory.load_recent_calls, "DialogCore did not delegate to memory"
     sent = llm.calls[0][0]
-    # Two prior turns from memory + the new user message.
+    # Two prior turns from the window + the new user message.
     assert len(sent) == 3
     assert sent[0].content == "earlier question"
     assert sent[1].content == "earlier answer"
@@ -838,7 +828,7 @@ def test_explicit_history_overrides_memory_trim(
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """When the caller passes history, memory is NOT consulted."""
+    """When the caller passes history, the in-memory window is NOT consulted."""
     core_obj = DialogCore(
         llm=llm,
         tools=tools_provider,
@@ -853,23 +843,18 @@ def test_explicit_history_overrides_memory_trim(
     assert len(sent) == 2
     assert sent[0].content == "explicit"
     assert sent[1].content == "now"
-    # Explicit history → memory must NOT have been consulted.
-    assert memory.load_recent_calls == []
 
 
-def test_history_none_without_trim_limit_yields_empty(
+def test_history_none_with_empty_window_yields_just_user_turn(
     llm: _FakeLLMProvider,
     tools_provider: _FakeToolProvider,
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """history=None with no trim limit → empty list, no memory call."""
-    # No history_trim_limit → DialogCore returns [] without
-    # consulting memory.
+    """history=None with an empty window → only the current user turn."""
     core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
     asyncio.run(core_obj.handle_wake_word(""))
     asyncio.run(core_obj.process_input("now", history=None))
-    assert memory.load_recent_calls == []
     sent = llm.calls[0][0]
     # Only the user turn we just appended.
     assert len(sent) == 1
@@ -1537,7 +1522,7 @@ def test_silent_failure_turn_not_persisted_to_memory(
     result = asyncio.run(core_obj.process_input("привет", history=[]))
     assert result.spoken_text == "done"
 
-    roles = [t.role for t in memory.turns]
+    roles = [t.role for t in core_obj._turn_window]
     # Only the user turn was persisted — no synthetic 'done' assistant turn.
     assert roles == ["user"]
 
@@ -1548,9 +1533,9 @@ def test_normal_turn_still_persisted_to_memory(
 ) -> None:
     """A healthy turn (real reply) is still persisted as user+assistant."""
     asyncio.run(core.process_input("hello", history=[]))
-    roles = [t.role for t in memory.turns]
+    roles = [t.role for t in core._turn_window]
     assert roles == ["user", "assistant"]
-    assert memory.turns[-1].content == "hello back"
+    assert core._turn_window[-1].content == "hello back"
 
 
 def test_process_input_tool_loop_aborts_on_transport_error(
@@ -1581,8 +1566,8 @@ def test_process_input_tool_loop_aborts_on_transport_error(
     result = asyncio.run(core_obj.process_input("о чём?", history=[]))
     assert isinstance(result.error, ToolExecutionError)
     assert result.spoken_text == ""
-    # Only the user turn made it to memory.
-    assert [t.role for t in memory.turns] == ["user"]
+    # Only the user turn made it into the window.
+    assert [t.role for t in core_obj._turn_window] == ["user"]
 
 
 def test_process_input_tool_loop_keeps_user_turn_once_on_error(
@@ -1599,10 +1584,10 @@ def test_process_input_tool_loop_keeps_user_turn_once_on_error(
 
     result = asyncio.run(core_obj.process_input("hello", history=[]))
     assert isinstance(result.error, ProviderError)
-    # Exactly one user turn in memory — no duplicate row.
-    assert len(memory.turns) == 1
-    assert memory.turns[0].role == "user"
-    assert memory.turns[0].content == "hello"
+    # Exactly one user turn in the window — no duplicate.
+    assert len(core_obj._turn_window) == 1
+    assert core_obj._turn_window[0].role == "user"
+    assert core_obj._turn_window[0].content == "hello"
 
 
 # ---------------------------------------------------------------------------
@@ -1723,11 +1708,11 @@ def test_assistant_turn_persists_actual_spoken_text(
     asyncio.run(core_obj.handle_wake_word(""))
     asyncio.run(core_obj.process_input("расскажи сказку", history=[]))
 
-    assert len(memory.turns) == 2
-    assert memory.turns[0].role == "user"
-    assert memory.turns[1].role == "assistant"
-    assert memory.turns[1].content == "Жила-была девочка."
-    assert memory.turns[1].content != "done"
+    assert len(core_obj._turn_window) == 2
+    assert core_obj._turn_window[0].role == "user"
+    assert core_obj._turn_window[1].role == "assistant"
+    assert core_obj._turn_window[1].content == "Жила-была девочка."
+    assert core_obj._turn_window[1].content != "done"
 
 
 def test_silent_done_turn_is_not_persisted(
@@ -1747,8 +1732,8 @@ def test_silent_done_turn_is_not_persisted(
     asyncio.run(core_obj.process_input("расскажи анекдот", history=[]))
 
     # Only the user turn is stored — no "done" assistant turn.
-    assert len(memory.turns) == 1
-    assert memory.turns[0].role == "user"
+    assert len(core_obj._turn_window) == 1
+    assert core_obj._turn_window[0].role == "user"
 
 
 def test_orphaned_user_turn_collapsed_before_llm(
@@ -1764,7 +1749,6 @@ def test_orphaned_user_turn_collapsed_before_llm(
     """
     from rob_box_harness.memory import Turn
 
-    memory.turns.append(Turn(role="user", content="старый вопрос без ответа"))
     llm.responses = [LLMResponse(content="новый ответ", tool_calls=())]
 
     core_obj = DialogCore(
@@ -1773,6 +1757,9 @@ def test_orphaned_user_turn_collapsed_before_llm(
         memory=memory,
         dsm=dsm,
         history_trim_limit=20,
+    )
+    core_obj._turn_window.append(
+        Turn(role="user", content="старый вопрос без ответа")
     )
     asyncio.run(core_obj.handle_wake_word(""))
     asyncio.run(core_obj.process_input("новый вопрос"))
@@ -2041,7 +2028,16 @@ class _FakeStreamingLLM:
     def __init__(self) -> None:
         self.stream_obj: _TrackedStreamIterator | None = None
 
-    def stream(self, messages: Any, tools: Any = ()) -> _TrackedStreamIterator:
+    def stream(
+        self,
+        messages: Any,
+        tools: Any = (),
+        settings: Any = None,
+    ) -> _TrackedStreamIterator:
+        # Issue #1883 — ``settings=`` is plumbed through by ``DialogCore``
+        # on every call; this fake ignores it (we only care about the
+        # aclose/cancel contract for the barge-in tests below).
+        del settings
         self.stream_obj = _TrackedStreamIterator()
         return self.stream_obj
 
@@ -2153,3 +2149,125 @@ def test_run_with_tools_returns_named_outcome(
     assert outcome.speak_text_real_count == 0
     assert outcome.spoken_via_tool == ""
     assert outcome.finish_reason is None
+
+
+# ---------------------------------------------------------------------------
+# Issue #1883 — DialogCore forwards LLMSettings to the LLM provider
+# ---------------------------------------------------------------------------
+
+
+def test_dialog_core_propagates_llm_settings_to_provider(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """``DialogCore(llm_settings=...)`` forwards the ``LLMSettings`` to
+    every ``complete()`` / ``stream()`` call.
+
+    Regression test for issue #1883. Before the fix, ``DialogCore``
+    called ``self._llm.complete(messages, tools=tools)`` WITHOUT
+    ``settings=`` — so ``max_tokens`` and ``temperature`` from
+    ``dialogue_node.yaml`` died in the logger and the robot answered
+    with ~2500 chars regardless of the configured cap.
+    """
+    settings = LLMSettings(temperature=0.3, max_tokens=250)
+    core_obj = DialogCore(
+        llm=llm,
+        tools=tools_provider,
+        memory=memory,
+        dsm=dsm,
+        llm_settings=settings,
+    )
+    # Drive the DSM into LISTENING so ``process_input`` actually invokes
+    # the LLM (the DSM starts in IDLE and STT_RESULT is a no-op there).
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("hi", history=[]))
+
+    assert result.error is None
+    assert result.spoken_text == "hello back"
+    # The provider received the SAME ``LLMSettings`` instance on its
+    # ``complete()`` call (the harness doesn't copy it; identity is
+    # cheap to assert and catches accidental rebinding).
+    assert len(llm.calls) >= 1
+    assert llm.settings_calls[0] is settings
+
+
+def test_dialog_core_without_llm_settings_passes_none(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Legacy behaviour: no ``llm_settings=`` → ``settings=None`` on the wire.
+
+    Every existing test that builds ``DialogCore(llm=..., tools=...,
+    memory=..., dsm=...)`` without an explicit ``llm_settings`` kwarg
+    must keep working unchanged. The provider still receives a kwarg
+    named ``settings``, just with the value ``None``.
+    """
+    core_obj = DialogCore(
+        llm=llm,
+        tools=tools_provider,
+        memory=memory,
+        dsm=dsm,
+    )
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    asyncio.run(core_obj.process_input("hi", history=[]))
+
+    assert llm.settings_calls
+    assert llm.settings_calls[0] is None
+
+
+def test_dialog_core_streams_settings_on_streaming_path(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """The streaming path (``use_streaming=True``) also forwards settings.
+
+    The voice node switches between ``complete()`` and ``stream()``
+    at runtime via the ``llm_streaming`` ROS param; either branch
+    MUST receive the configured ``max_tokens`` / ``temperature``.
+    """
+    # Replace the synchronous _FakeLLMProvider with one that exposes
+    # both ``complete`` and ``stream`` so we can drive the streaming
+    # code path in DialogCore.
+    class _StreamingFakeLLM(_FakeLLMProvider):
+        async def stream(
+            self,
+            messages: Any = None,
+            *,
+            tools: Any = (),
+            settings: Any = None,
+            **_kwargs: Any,
+        ) -> Any:
+            self.calls.append((list(messages or []), tools))
+            self.settings_calls.append(settings)
+            # Emit one terminal chunk so DialogCore's stream aggregator
+            # exits its loop.
+            yield LLMChunk(content_delta="hello back", finish_reason="stop")
+
+    streaming_llm = _StreamingFakeLLM()
+    settings = LLMSettings(temperature=0.1, max_tokens=123)
+    core_obj = DialogCore(
+        llm=streaming_llm,
+        tools=tools_provider,
+        memory=memory,
+        dsm=dsm,
+        llm_settings=settings,
+        use_streaming=True,
+    )
+    # Drive the DSM into LISTENING → the next ``process_input`` transitions
+    # into DIALOGUE and actually invokes the LLM. Without this the DSM
+    # is still in IDLE and the test silently returns a no-op result.
+    asyncio.run(core_obj.handle_wake_word(""))
+
+    result = asyncio.run(core_obj.process_input("hi", history=[]))
+
+    assert result.error is None
+    assert streaming_llm.settings_calls
+    assert streaming_llm.settings_calls[0] is settings

@@ -114,8 +114,8 @@ from rob_box_voice.core.dialogue_guards import (
     detect_unbacked_action_claim,
     extract_renardo_code_lines,
     is_metalanguage_babble,
-    is_planning_narration,
     is_music_stop_command,
+    is_planning_narration,
     user_wants_music,
     user_wants_performance,
 )
@@ -473,6 +473,14 @@ class DialogueNode(Node):
             narrow_tools_to_skill=bool(
                 self.get_parameter("skill_tool_narrowing").value
             ),
+            # 🔴 FIX (issue #1883): forward the primary provider's
+            # ``LLMSettings`` so ``max_tokens`` / ``temperature`` from
+            # ``dialogue_node.yaml`` actually reach the wire request.
+            # Multi-provider chains get per-provider overrides via
+            # ``HealthAwareFallbackLLM.settings_for`` — the wrapper
+            # dispatches the right ``LLMSettings`` to whichever
+            # provider ends up answering.
+            llm_settings=getattr(self, "_llm_settings", None),
         )
 
         cbg = ReentrantCallbackGroup()
@@ -765,6 +773,26 @@ class DialogueNode(Node):
         # Защита от бесконечного LLM ping-pong: один ретрай на turn.
         # Сбрасывается на новый user-initiated turn (см. _run_turn).
         self._tool_retry_used: bool = False
+
+        # Issue #1881 — общий бюджет СИНТЕТИЧЕСКИХ ретраев на user-turn.
+        # Раньше у каждого guard'а был свой одноразовый флаг
+        # (``_babble_retry_used`` / ``_action_claim_retry_used`` /
+        # ``_code_speech_retry_used`` / ``_tool_retry_used``), и каждый
+        # СВОЙ сбрасывал ЧУЖИЕ на следующем turn — ping-pong был неизбежен.
+        # Единый бюджет декрементируется любым guard'ом; на свежем
+        # user-initiated turn (или DJ-transition) — ресетится в
+        # ``_dispatch_turn`` / ``_run_turn``. Чтобы существующие
+        # поимённые флаги не разъехались с новым бюджетом (тесты читают
+        # их напрямую), все три guard'а синхронно выставляют и
+        # ``self._<name>_retry_used = True``, и декрементят
+        # ``_synthetic_retries_left`` через ``_consume_synthetic_retry``.
+        self._synthetic_retries_left: int = self.DEFAULT_SYNTHETIC_RETRIES
+        # ``_synthetic_retries_left`` для следующего user-turn —
+        # выставляется ДО ``_run_turn`` (в ``_dispatch_turn`` и
+        # ``_dispatch_dj_turn``). Это решает проблему «первого
+        # turn'a»: budget выставляется именно там, где turn начинается,
+        # а не там, где guard'ы впервые решают «а нужен ли ретрай».
+        self._pending_synthetic_retries: Optional[int] = None
 
         # Issue #1160 — Prometheus metrics: длительность диалоговой
         # сессии. Фиксируем момент первого wake-word-диалога из IDLE;
@@ -1472,19 +1500,16 @@ class DialogueNode(Node):
             if env_var:
                 api_key = os.environ.get(env_var) or None
 
-        # Timeout / temperature / max_tokens — only if YAML set non-zero
+        # Timeout — read here so the provider build can use it directly.
+        # ``temperature`` and ``max_tokens`` are read by ``_build_llm``
+        # (issue #1883) where they are assembled into a ``LLMSettings``
+        # object that flows into ``DialogCore``. Reading them here too
+        # would be a duplicate path that drifts silently — ``_build_llm``
+        # is the single owner.
         try:
             timeout_s = float(self.get_parameter(f"{name}.timeout_s").value or 0)
         except Exception:
             timeout_s = 0.0
-        try:
-            temperature = float(self.get_parameter(f"{name}.temperature").value or 0)
-        except Exception:
-            temperature = 0.0
-        try:
-            max_tokens = int(self.get_parameter(f"{name}.max_tokens").value or 0)
-        except Exception:
-            max_tokens = 0
 
         # ── Build ──────────────────────────────────────────────────
         try:
@@ -1547,12 +1572,26 @@ class DialogueNode(Node):
                 "Check API keys and environment variables."
             )
 
+        # ── Issue #1883: per-provider LLM settings (max_tokens / temperature)
+        # Build a {provider_name: LLMSettings} map from the YAML
+        # ``<name>.temperature`` / ``<name>.max_tokens`` params, falling
+        # back to the global ``temperature`` / ``max_tokens`` for that
+        # provider. The map is consumed by ``HealthAwareFallbackLLM`` so
+        # each provider in the chain actually receives its own settings
+        # on the wire (previously the values were logged and silently
+        # dropped). ``None`` for a field means "leave it to the provider
+        # default" — exactly the LLMSettings semantics.
+        settings_for: dict[str, LLMSettings] = {
+            name: self._build_llm_settings_for(name) for name in chain_display
+        }
+        primary_settings: LLMSettings = settings_for[chain_display[0]]
+
         # ── Start-up config log ─────────────────────────────────────────
-        temperature = float(self.get_parameter("temperature").value or 0.7)
-        max_tokens = int(self.get_parameter("max_tokens").value or 500)
         self.get_logger().info(
             f"⚙️ LLM CONFIG: chain={chain_display} "
-            f"temperature={temperature} max_tokens={max_tokens}"
+            f"primary.temperature={primary_settings.temperature} "
+            f"primary.max_tokens={primary_settings.max_tokens} "
+            f"per_provider={[f'{n}=({s.temperature},{s.max_tokens})' for n, s in settings_for.items()]}"
         )
 
         # ── Single provider — no fallback needed ────────────────────────
@@ -1563,6 +1602,10 @@ class DialogueNode(Node):
             self.get_logger().info(
                 f"[health] build_llm: provider_chain={chain_display} active={chain_display[0]} (single)",
             )
+            # Stash on the provider object so the node's __init__ can pick
+            # up the same LLMSettings when wiring DialogCore (single-provider
+            # path doesn't go through HealthAwareFallbackLLM).
+            self._llm_settings = primary_settings
             return built[0]
 
         # ── Multi-provider: HealthAwareFallbackLLM ──────────────────────
@@ -1603,12 +1646,77 @@ class DialogueNode(Node):
         self.get_logger().info(
             f"[health] build_llm: provider_chain={chain_display} active={chain_display[0]} (health-aware, TTL {health_ttl:.0f}s)",
         )
+        # Stash for the DialogCore wiring below — the fallback wrapper
+        # is the LLM that DialogCore talks to, but it will dispatch
+        # ``settings_for[name]`` to each provider on its own, so we pass
+        # the PRIMARY provider's settings as the DialogCore default and
+        # let ``HealthAwareFallbackLLM.settings_for`` do the per-provider
+        # rewrite on top.
+        self._llm_settings = primary_settings
         return HealthAwareFallbackLLM(
             built,
             cache=cache,
             balance_checkers=balance_checkers,
             logger=self.get_logger(),
+            settings_for=settings_for,
         )
+
+    def _build_llm_settings_for(self, name: str) -> LLMSettings:
+        """Build the ``LLMSettings`` for one provider in the chain.
+
+        Per-provider YAML (issue #1883) overrides the global values::
+
+            temperature: 0.7
+            max_tokens: 500
+            minimax:
+              temperature: 0.3        # only used when minimax is active
+              max_tokens: 250
+            deepseek:
+              max_tokens: 800         # deepseek has a longer context
+
+        The precedence:
+
+        1. ``<name>.temperature`` / ``<name>.max_tokens`` — per-provider.
+           ``0`` means "no override; fall back to global".
+        2. Global ``temperature`` / ``max_tokens``.
+
+        The result is forwarded to ``HealthAwareFallbackLLM`` via
+        ``settings_for=`` so each provider in the chain receives its
+        own ``LLMSettings`` on the wire.
+        """
+        try:
+            per_temperature = float(
+                self.get_parameter(f"{name}.temperature").value or 0.0
+            )
+        except Exception:
+            per_temperature = 0.0
+        try:
+            per_max_tokens = int(
+                self.get_parameter(f"{name}.max_tokens").value or 0
+            )
+        except Exception:
+            per_max_tokens = 0
+        try:
+            global_temperature = float(self.get_parameter("temperature").value or 0.0)
+        except Exception:
+            global_temperature = 0.0
+        try:
+            global_max_tokens = int(self.get_parameter("max_tokens").value or 0)
+        except Exception:
+            global_max_tokens = 0
+        temperature = per_temperature if per_temperature > 0 else global_temperature
+        max_tokens = per_max_tokens if per_max_tokens > 0 else global_max_tokens
+        # ``LLMSettings`` uses ``None`` to mean "leave it to the provider
+        # default"; we use ``0`` as "no override" because YAML params
+        # can't tell the difference between "0" and "unset" for the ROS
+        # double/int parameters. Translate 0 → None to keep the wire
+        # request clean (no ``temperature: 0`` shoved to MiniMax, which
+        # would override the model default and likely break responses).
+        return LLMSettings(
+            temperature=(temperature if temperature > 0 else None),
+            max_tokens=(max_tokens if max_tokens > 0 else None),
+        )
+
     def _build_tool_provider(self) -> ToolProvider:
         # W5a: wire the real ROSMCPToolProvider when ``tool_provider``
         # is the default ``"ros_mcp"``. The previous version silently
@@ -3289,29 +3397,29 @@ class DialogueNode(Node):
         # :meth:`_check_babble_and_retry`, and the flag MUST stay True
         # so a still-babbling retry response is not escalated to a
         # second retry (which would loop forever).
-        if not is_babble_retry:
+        #
+        # Issue #1881 — общий budget ``_synthetic_retries_left`` сбрасывается
+        # ТОЛЬКО на user-initiated turn (is_synthetic=False) — синтетический
+        # ретрай не считается новым запросом юзера и не должен обнулять сам
+        # себе бюджет. Это закрывает ping-pong: раньше каждый guard сбрасывал
+        # ЧУЖИЕ поимённые флаги через ``if not is_<X>_retry`` —
+        # babble-retry → babble-budget сбрасывался → music-retry →
+        # music-budget сбрасывался → babble-retry снова мог выстрелить → 8
+        # вызовов на одну фразу (vision-pi 02.09, raw в карточке #1881).
+        if not is_synthetic:
             self._babble_retry_used = False
-        if not is_action_claim_retry:
             self._action_claim_retry_used = False
-        if not is_code_retry:
             self._code_speech_retry_used = False
-        # Issue #1777 / #1762 — сброс tool-retry budget на новый
-        # user-initiated turn. На babble-retry НЕ сбрасываем (как и
-        # babble-budget — см. issue #992 Bug D), иначе синтетический
-        # ретрай сам себе «обнулит» бюджет и при следующей такой же
-        # ошибке запустит второй ретрай → ping-pong.
-        if not is_babble_retry:
             self._tool_retry_used = False
-        # Bug C (юзер-музыка) — сброс бюджета на НОВЫЙ юзер-запрос,
-        # чтобы каждый запрос получал свежий retry (retry-промпт
-        # не должен считаться новым запросом и сбрасывать сам себя).
-        # DJ budget оставлен как есть — DJ-retry внутри DJ-transition
-        # живёт своей жизнью и ресетится в ``_dispatch_dj_turn``
-        # (``reset_for_new_dj_transition``) только при свежем тике.
-        if not is_babble_retry and not was_dj_auto and not user_input.startswith(
-            MUSIC_RETRY_PROMPT_PREFIX
-        ):
-            self._music_guard.reset_for_new_user_request()
+            self._synthetic_retries_left = self.DEFAULT_SYNTHETIC_RETRIES
+            # Bug C (юзер-музыка) — сброс user-budget тоже только на
+            # user-initiated turn; DJ-transition живёт своей жизнью и
+            # ресетится в ``_dispatch_dj_turn``
+            # (``reset_for_new_dj_transition``) только при свежем тике.
+            if not was_dj_auto and not user_input.startswith(
+                MUSIC_RETRY_PROMPT_PREFIX
+            ):
+                self._music_guard.reset_for_new_user_request()
         # Issue #992 Bug D — when the babble detector schedules a retry
         # we MUST NOT end the dialogue at the bottom of this turn. The
         # retry's ``_run_turn`` will run on the same DSM session and
@@ -3995,6 +4103,11 @@ class DialogueNode(Node):
         # Mark the retry as used BEFORE dispatching so a re-entrant
         # call from the retry itself can never escalate to a second
         # retry.
+        # Issue #1881 — общий budget декрементится рядом с поимённым
+        # флагом. Если budget == 0, ретрай НЕ отправляется — и
+        # babble-текст публикуется как есть (см. live-логи 02.09).
+        if not self._consume_synthetic_retry(guard_name="babble"):
+            return False
         self._babble_retry_used = True
         self._mark_retry_dispatched()
         retry_prompt = self._build_babble_retry_prompt(user_input or "")
@@ -4072,6 +4185,10 @@ class DialogueNode(Node):
 
         # Помечаем ДО отправки — реентрантный вызов из самого ретрая не
         # должен уметь запустить второй.
+        # Issue #1881 — общий budget декрементится рядом с поимённым
+        # флагом. Если budget == 0, ретрай НЕ отправляется.
+        if not self._consume_synthetic_retry(guard_name="code_speech"):
+            return False
         self._code_speech_retry_used = True
         self._mark_retry_dispatched()
         self.get_logger().warning(
@@ -4131,6 +4248,10 @@ class DialogueNode(Node):
 
         # Помечаем ДО отправки — реентрантный вызов из самого ретрая
         # не должен уметь запустить второй.
+        # Issue #1881 — общий budget декрементится рядом с поимённым
+        # флагом. Если budget == 0, ретрай НЕ отправляется.
+        if not self._consume_synthetic_retry(guard_name="action_claim"):
+            return False
         self._action_claim_retry_used = True
         self._mark_retry_dispatched()
         self.get_logger().warning(
@@ -4181,6 +4302,34 @@ class DialogueNode(Node):
         tc12_delete_track и tc16_delete_waypoint в e2e 33251879328.
         """
         self._retry_dispatched_in_turn = True
+
+    def _consume_synthetic_retry(self, *, guard_name: str) -> bool:
+        """Issue #1881 — попытаться списать один синтетический ретрай.
+
+        Гарантирует, что общий бюджет ``_synthetic_retries_left`` и
+        поимённые флаги (``_babble_retry_used`` / ``_action_claim_retry_used``
+        / ``_code_speech_retry_used`` / ``_tool_retry_used``) синхронны
+        и не разъезжаются. Каждый guard, который собирается
+        задиспатчить ретрай, ОБЯЗАН сначала вызвать этот метод; если
+        он вернул ``False`` — ретрай отменяется, даже если поимённый
+        флаг ещё не взведён.
+
+        Returns:
+            ``True`` — ретрай разрешён (budget декрементнут), guard
+                может диспатчить.
+            ``False`` — budget исчерпан (== 0); guard должен
+                вернуть ``False`` из своего ``_check_*_and_retry``.
+                На этом ЛОГируется предупреждение, чтобы в логе
+                было видно, что цикл оборвали НАМЕРЕННО (не молча).
+        """
+        if self._synthetic_retries_left <= 0:
+            self.get_logger().warning(
+                f"🚦 [issue 1881 retry-budget] исчерпан на turn, отдаю как есть "
+                f"(guard={guard_name})"
+            )
+            return False
+        self._synthetic_retries_left -= 1
+        return True
 
     def _discard_last_music_reply(self) -> None:
         """Fire-and-forget: retract the last persisted assistant turn.
@@ -4287,6 +4436,22 @@ class DialogueNode(Node):
 
         if verdict.kind is MusicGuardVerdictKind.USER_RETRY:
             assert verdict.prompt is not None
+            # Issue #1881 — общий budget декрементится здесь, ДО того
+            # как music-guard соберётся диспатчить ещё один ретрай.
+            # ``MusicGuard._user_retry_count`` остаётся как был (это
+            # внутренний счётчик «сколько раз guard уже ретраил»);
+            # новый общий budget страхует от кросс-guard ping-pong'а
+            # (babble → music → babble → music...), который раньше
+            # обходил поимённые флаги.
+            if not self._consume_synthetic_retry(guard_name="music_user"):
+                # Бюджет исчерпан — публикуем spoken nudge (как при
+                # budget_exhausted внутри ``MusicGuard``) и НЕ
+                # диспатчим второй ретрай.
+                self._discard_last_music_reply()
+                self._speak_direct(
+                    "Я тут растерялся — бит не запустился, попробуй ещё раз."
+                )
+                return False
             # Issue #992 — the attempt we just evaluated (tools_called
             # empty on a music request) already had its assistant reply
             # persisted by DialogCore as an ordinary successful turn (see
@@ -4452,6 +4617,12 @@ class DialogueNode(Node):
             # Defence-in-depth: build_tool_retry_prompt вернул "" —
             # tool_name не из allow-list (промпт-инъекция?). Не ретраим.
             return False
+        # Issue #1881 — общий budget декрементится здесь. Если
+        # budget == 0, ретрай НЕ отправляется — это закрывает кейс
+        # «babble → tool → babble → tool → ...» (vision-pi 02.09, raw в
+        # карточке #1881).
+        if not self._consume_synthetic_retry(guard_name="tool_skipped"):
+            return False
         # DSM reopen — нужен DIALOGUE state для retry-тура (см. issue #1204).
         self._reopen_dialogue_for_retry()
         # Mark budget BEFORE dispatch — защита от re-entrant эскалации.
@@ -4460,10 +4631,18 @@ class DialogueNode(Node):
             f"🛠 [issue 1777 / 1762] LLM skip non-music tool {tool_name!r} — "
             f"retrying once with CRITICAL reminder (user={user_input[:60]!r})"
         )
+        # Issue #1881 — tool-retry помечается ``is_synthetic=True``
+        # обязательно. Раньше он диспатчился как user-input, и
+        # следующий babble-guard мог считать его новым user-turn'ом и
+        # сбросить babble-budget → ping-pong. Сейчас
+        # ``_run_turn`` сбрасывает общий budget ТОЛЬКО на
+        # user-initiated turn (``is_synthetic=False``), так что
+        # tool-retry budget не обнулит сам себе.
         self._dispatch_turn(
             retry_prompt,
             was_idle=False,
             raw_user_command=user_input,
+            is_synthetic=True,
         )
         return True
 
@@ -4473,6 +4652,23 @@ class DialogueNode(Node):
 
     #: Maximum tool-call iterations before forced stop (agent loop guard).
     MAX_ITERATIONS: int = 30
+
+    #: Issue #1881 — лимит синтетических ретраев на ОДИН user-initiated turn.
+    #:
+    #: Раньше каждый guard (babble / action-claim / code-speech / tool /
+    #: music) имел собственный одноразовый флаг и при ретрае сбрасывал
+    #: чужие через ``if not is_<X>_retry: self._<Y>_retry_used = False``
+    # в ``_run_turn`` — это и был источник ping-pong'a на 8 LLM-вызовов.
+    #:
+    #: Теперь общий budget живёт в ``self._synthetic_retries_left`` и
+    #: декрементится через :meth:`_consume_synthetic_retry`; любой guard
+    #: может выстрелить, пока budget > 0. На свежем user-initiated turn
+    #: (или DJ-transition) — ресетится в :meth:`_dispatch_turn` /
+    #: ``_dispatch_dj_turn`` / :meth:`_run_turn`. 2 взято из live-логов:
+    #: babble-retry (1) → если и ретрай babble'нул → ещё 1 (music/babble
+    #: любой) → «растерялся». Больше 2 — уже деградация UX, как раз то,
+    #: что увидели 02.09 на 8 вызовах.
+    DEFAULT_SYNTHETIC_RETRIES: int = 2
 
     def _continue_after_tool_calls(
         self,
@@ -5000,7 +5196,7 @@ class DialogueNode(Node):
                     f"(anti-duplicate): {spoken[:80]!r}"
                 )
             return
-        # 🔴 FIX (live 02.09): «во время сочинения музыки LLM много говорит».
+# 🔴 FIX (live 02.09): «во время сочинения музыки LLM много говорит».
         # Промпт среднего DJ-перехода запрещает speak_text, но НЕ запрещал
         # обычный текст ответа — а он тоже уходит в TTS. Живой лог: каждые
         # 45 секунд поверх бита звучало «Переход номер два отыгран —
@@ -5017,6 +5213,34 @@ class DialogueNode(Node):
                 "🔇 [DJ] музыкальный переход #"
                 f"{self._dj.state.transition_count} — свободный текст НЕ "
                 f"озвучиваю (юзер ничего не спрашивал): {spoken[:120]!r}"
+            )
+            return
+        # Issue #1882 — planning-narration guard (hard-mute).
+        #
+        # Live 02.09 (Vision Pi): MiniMax-M3 при выключенном thinking
+        # выдаёт НЕ финальный ответ, а ВНУТРЕННИЙ МОНОЛОГ вида
+        # «Юзер Иван (65e62885) — оператор. ... [CRITICAL] говорит ...
+        # Решение: ... Аргументы для composemusic ...» — до 2.5 КБ
+        # символов, 16 TTS-чанков. Юзер слышит кухню модели.
+        #
+        # develop-ветка (78403dba) расширила babble-retry: planning тоже
+        # уходит в ретрай. Это работает, пока babble-бюджет НЕ потрачен.
+        # Когда babble уже потрачен — planning всё равно уходит в TTS.
+        # Этот guard закрывает дыру: planning НИКОГДА не валидный ответ,
+        # независимо от состояния retry-флагов. Гейт speak_text_real == 0
+        # и пустой tools_called обязателен, иначе guard сожжёт легитимный
+        # ответ вида «Юзер, а что умеет speak_text?» (там planning-маркеры
+        # есть, но speak_text_real > 0).
+        if (
+            spoken
+            and speak_text_real == 0
+            and not tools_called
+            and is_planning_narration(spoken)
+        ):
+            self.get_logger().warning(
+                "🤐 [issue 1882] planning-narration hard-mute: "
+                "spoken matches planning pattern, tools empty, "
+                f"speaking nothing (head={spoken[:120]!r})"
             )
             return
         # Issue #992 Bug D — metalanguage / babble detector. Fires ONE
@@ -5668,7 +5892,8 @@ class DialogueNode(Node):
 
         Полный сброс состояния текущего диалога: in-flight turn, DSM → IDLE,
         бэклог-аккумулятор, speaker-состояние, таймер сессии и история
-        (асинхронно через ``memory.clear_turns``). LLM не вызывается —
+        (in-memory окно ходов через ``DialogCore.clear_history``). LLM не
+        вызывается —
         вместо этого говорим детерминированное подтверждение.
 
         Issue #1563 — после ``_publish_response`` TTS должен успеть синтези-
@@ -5726,8 +5951,8 @@ class DialogueNode(Node):
             self._maybe_record_session_end(result="reset")
         except Exception:  # noqa: BLE001
             pass
-        # 6. История диалога (scope = DialogCore user_id "default") —
-        #    асинхронно, потому что SQLiteVoiceMemory работает через loop.
+        # 6. История диалога — in-memory окно ходов в DialogCore.
+        #    Обёртка остаётся async для совместимости с loop-диспетчером.
         loop = getattr(self, "_loop", None)
         if loop is not None:
             try:
@@ -5744,15 +5969,17 @@ class DialogueNode(Node):
         )
 
     async def _clear_session_turns(self) -> None:
-        """Асинхронно очистить историю диалога текущей сессии."""
+        """Очистить in-memory окно ходов текущей сессии."""
         try:
-            removed = await self._memory.clear_turns("default")
+            core = getattr(self, "_core", None)
+            if core is not None:
+                core.clear_history()
             self.get_logger().info(
-                f"🧹 [new-session] conversation history cleared ({removed} turns)"
+                "🧹 [new-session] in-memory turn window cleared"
             )
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
-                f"⚠️ [new-session] clear_turns failed: {exc}"
+                f"⚠️ [new-session] clear_history failed: {exc}"
             )
 
     def _maybe_log_skip_summary(self, window_s: float = 300.0) -> None:

@@ -4,7 +4,6 @@ Covers the user-facing behaviour of the smoke test fixtures:
 
 * ``EchoHarness`` round-trips the LLM's response.
 * ``UpperHarness`` uppercases it.
-* Both persist turns to the memory store.
 * Both dispatch an EchoEffect on the side-effect bus.
 * Both decorate the snapshot with ``last_assistant_text``.
 """
@@ -28,21 +27,6 @@ async def test_echo_harness_returns_response() -> None:
     await harness.init()
     result = await harness.run("hello world")
     assert result.output == "echo: hello world"
-
-
-@pytest.mark.asyncio
-async def test_echo_harness_persists_turns() -> None:
-    """Both user and assistant turns are appended to memory."""
-    config = HarnessConfig.from_dict(
-        {"harness": {"kind": "echo", "name": "echo_session"}}
-    )
-    harness = EchoHarness(config)
-    await harness.init()
-    await harness.run("hi there")
-    turns = await harness.memory.load_recent("echo_session", limit=10)
-    assert [t.role for t in turns] == ["assistant", "user"]
-    assert turns[0].content == "echo: hi there"
-    assert turns[1].content == "hi there"
 
 
 @pytest.mark.asyncio
