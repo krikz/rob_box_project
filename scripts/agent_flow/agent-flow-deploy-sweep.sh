@@ -190,6 +190,47 @@ label_hermes() {  # $1=issue $2=verdict_detail
     "🔎 **Авто-sweep** ($(date -u '+%Y-%m-%d %H:%M UTC')): проблема **АКТУАЛЬНА** — $2. Проставлена метка \`hermes\` для триажа (ретро 12.08: stale deployment issue > 72ч → авто-метка hermes)."
 }
 
+# --- orphan-deploy pre-check (ретро 02.09 t_f8d369ab) -----------------------
+# L: Deploy and Verify при fail авто-создаёт issue с `Branch: <name>` в body.
+# e2e-rotation watchdog удаляет z-{e2e}/test-round-* ветки после streak-pause;
+# deploy-issue остаётся OPEN навсегда (43-128h шума). Закрываем как not_planned
+# сразу, до Pi-проверки. Pre-check:
+#   1) в body найден `Branch: <branch>` (или backticked в markdown)
+#   2) `git ls-remote origin <branch>` пустой → branch DELETED
+#   3) issue без метки needs-e2e (там живой фикс — не трогаем)
+# Не выкидывает false-positive на feature/* (там long-lived branch).
+close_orphan_deploy() {  # $1=issue $2=branch $3=age_hours
+  log "issue #${1}: ORPHAN-DEPLOY (branch '${2}' deleted, age ${3}h) — close as not_planned"
+  run gh issue comment "$1" --repo "$GH_REPO" --body \
+    "🧹 **Авто-sweep** ($(date -u '+%Y-%m-%d %H:%M UTC')): branch \`${2}\` удалён из origin (git ls-remote вернул 0 refs). Deploy-issue orphan от L: Deploy and Verify → e2e-rotation watchdog. Закрыто как not_planned (ретро 02.09 t_f8d369ab, stale-deploy-issues-deleted-round-branch)."
+  run gh issue close "$1" --repo "$GH_REPO" --reason "not planned" >/dev/null
+}
+
+# Извлекает branch из body. L-Deploy использует формат:
+#   ** `z-{e2e}/test-round-NNN`     (markdown bold + backticks)
+#   Branch: feature/avatar
+# Возвращает branch-name или пусто.
+extract_branch_from_body() {  # $1=body
+  local b
+  # 1) backticked после `** ` (стандарт L-Deploy)
+  b="$(printf '%s' "$1" | grep -oE '\*\*[[:space:]]+`[a-zA-Z0-9_./{}-]+`' | head -n1 | sed -E 's/^\*\*[[:space:]]+`//; s/`$//' || true)"
+  # 2) явный "Branch: <name>"
+  [ -z "$b" ] && b="$(printf '%s' "$1" | grep -oE '[Bb]ranch:[[:space:]]*[a-zA-Z0-9_./{}-]+' | head -n1 | sed -E 's/^[Bb]ranch:[[:space:]]*//' || true)"
+  # 3) fallback: первый backticked путь похожий на branch
+  [ -z "$b" ] && b="$(printf '%s' "$1" | grep -oE '`(z-\{e2e\}/test-round-[0-9]+|feature/[a-zA-Z0-9_-]+|fix/[a-zA-Z0-9_/-]+)`' | head -n1 | tr -d '`' || true)"
+  printf '%s' "$b"
+}
+
+# Возвращает "deleted" если `git ls-remote origin <branch>` пустой,
+# "exists" если найден, "skip" если branch пустой.
+branch_remote_status() {  # $1=branch
+  local out b="$1"
+  [ -z "$b" ] && { echo "skip"; return 0; }
+  out="$(git ls-remote --heads origin "$b" 2>/dev/null | head -n1 || true)"
+  [ -z "$out" ] && { echo "deleted"; return 0; }
+  echo "exists"
+}
+
 # --- resolve dedup helper path (for critical_log verify) ---------------------
 # Prefer REPO_DIR (set in agent-flow/.env); fallback to CWD.
 DEDUP_HELPER="${DEDUP_HELPER:-}"
@@ -220,12 +261,33 @@ while IFS=$'\t' read -r number title_b64 updated_at body_b64; do
   if has_label_json "$labels_json" "e2e-done" || has_label_json "$labels_json" "e2e:rejected"; then
     log "issue #${number}: work already done/rejected — skip"; skipped=$((skipped+1)); continue
   fi
+  # Не трогаем живой фикс (ретро 02.09 t_f8d369ab: там ручная работа идёт).
+  if has_label_json "$labels_json" "needs-e2e"; then
+    log "issue #${number}: has needs-e2e (живой фикс) — skip"; skipped=$((skipped+1)); continue
+  fi
 
   # Skip fresh issues (< STALE_HOURS since last update)
   upd_epoch="$(date -d "$updated_at" +%s 2>/dev/null || echo 0)"
   now_epoch="$(date +%s)"
+  age_h=$(( (now_epoch - upd_epoch) / 3600 ))
   if [ $(( now_epoch - upd_epoch )) -lt $(( STALE_HOURS * 3600 )) ]; then
-    log "issue #${number}: updated < ${STALE_HOURS}h ago — fresh, skip"; skipped=$((skipped+1)); continue
+    log "issue #${number}: updated < ${STALE_HOURS}h ago (${age_h}h) — fresh, skip"; skipped=$((skipped+1)); continue
+  fi
+
+  # --- orphan-deploy pre-check (ретро 02.09 t_f8d369ab) ---
+  # Branch из body → git ls-remote origin → DELETED? → close not_planned.
+  # Работает в любой момент, не зависит от deploy-signature и STALE_HOURS.
+  branch_name="$(extract_branch_from_body "$body")"
+  if [ -n "$branch_name" ]; then
+    bstatus="$(branch_remote_status "$branch_name")"
+    if [ "$bstatus" = "deleted" ]; then
+      close_orphan_deploy "$number" "$branch_name" "${age_h}"
+      closed=$((closed+1)); swept=$((swept+1))
+      continue
+    fi
+    log "issue #${number}: branch '${branch_name}' status=${bstatus} — proceed to verification"
+  else
+    log "issue #${number}: no branch found in body — proceed to signature verify"
   fi
 
   # Parse deploy-signature
