@@ -314,6 +314,27 @@ CRITICAL_EXCLUDE_COMMON = [
     # `[stt_attempt] yandex:error->vosk:error->rejected`) do not match
     # the `vosk:ok` half and continue to surface as critical issues.
     r"\[stt_attempt\][^]]*yandex:error[^]]*vosk:ok",
+    # dialogue_node self-recovery echo (deploy run 33609815109, 02.09
+    # 08:42, kanban t_c9c7238c, issue #1877): dialogue_node's babble
+    # guard logs `[issue 992 Bug D] LLM babble detected — retrying
+    # once with CRITICAL reminder (head=...)` at WARN level when the
+    # metalanguage detector trips on the LLM's reply. The literal
+    # `CRITICAL reminder` string is part of the retry-injection prompt
+    # (see dialogue_node.py:3564-3565), NOT a system failure — the
+    # node recovers via the synthetic one-shot retry and continues
+    # serving the turn. The bare `CRITICAL` keyword trips
+    # CRITICAL_MATCH_RE and was filing a false deploy-critical issue
+    # on an otherwise green run (Vision Pi all containers healthy +
+    # 189 topics, Main Pi perception healthy). Same root cause /
+    # recovery shape as the `[issue 1777 / 1762] LLM skip non-music
+    # tool ... retrying once with CRITICAL reminder` echo from the
+    # tool-skipped guard (dialogue_node.py:4023) — both are
+    # intentional retry notifications, not crashes. The follow-up
+    # turn either succeeds (babble gone, tool called) or fails
+    # loudly through the normal error channel (Traceback + Error line
+    # that does NOT carry `CRITICAL reminder` and is still surfaced).
+    r"\[issue 992 bug d\] llm babble detected — retrying once with critical reminder",
+    r"\[issue 1777\s*/\s*1762\] llm skip non-music tool .*— retrying once with critical reminder",
 ]
 CRITICAL_EXCLUDE_BY_SCOPE = {
     "main": [
@@ -434,6 +455,51 @@ WARNING_EXCLUDE_COMMON = [
     # explicit "Ignore this warning if the ini file does not exist yet" —
     # rtabmap creates the file on shutdown, benign (round-117).
     r"section .* in /config/rtabmap/rtabmap.ini doesn't exist",
+    # dialogue_node self-recovery echo (deploy run 33609815109, 02.09
+    # 08:42, kanban t_c9c7238c, issue #1877): the babble/tool-skipped
+    # retry notifications in dialogue_node.py:3564 and 4023 log at
+    # `[WARN]` severity, and the message text contains the literal
+    # phrase `CRITICAL reminder` (part of the synthetic retry prompt
+    # name, not a real failure). The CRITICAL exclusion above
+    # silences them in the `critical` pass; the WARNING pass scans
+    # the same line on the bare `[WARN]` token (`re.compile(r"\b(warn
+    # |warning)\b", re.IGNORECASE)`) and would file a parallel
+    # `warning_log` finding, producing a duplicate FP for the same
+    # healthy turn. Mirror both CRITICAL exclusions here so the
+    # WARNING pass also drops them — without this guard, a single
+    # babble recovery would still bump `warning_count` and trigger
+    # the `DEPLOYMENT COMPLETED WITH ISSUES` path on otherwise green
+    # runs.
+    r"\[issue 992 bug d\] llm babble detected — retrying once with critical reminder",
+    r"\[issue 1777\s*/\s*1762\] llm skip non-music tool .*— retrying once with critical reminder",
+    # tts_node STOP command receipt (deploy run 33609815109, 02.09
+    # 08:42, kanban t_c9c7238c, issue #1877): tts_node logs
+    # `[WARN] 🔇 STOP command received - немедленная остановка TTS`
+    # every time the user/operator issues a stop. This is the routine
+    # interruption path inside `_handle_stop_command()`
+    # (tts_node.py:1529) — playback halts, state publishes "stopped",
+    # the audio pipeline comes back to idle. The `WARN` severity is
+    # correct from a state-change standpoint, but is unrelated to
+    # deployment health. Without this exclusion, the deploy detector
+    # filed a warning_log finding on every green run where the user
+    # happened to issue a stop command during the deploy window.
+    r"stop command received - немедленная остановка tts",
+    # rob_box_quest startup PIN echo (deploy run 33609815109, 02.09
+    # 08:42, kanban t_c9c7238c, issue #1877): quest_node logs
+    # `[WARN] 🔑 Quest PIN: <num> (show this to operator — required
+    # to start a session)` ONCE during startup when log_pin is set
+    # (quest_node.py:520). The line is informational — telling the
+    # operator which PIN to use to start a session — but the node
+    # uses `warning()` severity so the deploy detector picks it up.
+    # Same exclusion class as the `[issue 989] ReSpeaker не принял
+    # threshold` rule above (legitimate WARN carrying operator
+    # guidance, not a deployment failure). `extract_relevant_log_line`
+    # scans the raw line (no `normalize_pattern` pass), so the PIN
+    # number is still present as digits — `.*` matches any digits
+    # here. Narrow to the literal `quest pin: <digits> (show this to
+    # operator` signature so we don't accidentally silence unrelated
+    # WARN lines from rob_box_quest that DO need operator attention.
+    r"quest pin: \d+ \(show this to operator",
 ]
 WARNING_EXCLUDE_BY_SCOPE = {
     "main": [

@@ -1147,3 +1147,159 @@ def test_extract_relevant_log_line_still_catches_stt_fatal_microphone_error() ->
 
     assert line is not None
     assert "FATAL" in line
+
+
+def test_extract_relevant_log_line_ignores_dialogue_babble_retry_reminder() -> None:
+    """Issue #1877 / deploy run 33609815109 (02.09 08:42, kanban
+    t_c9c7238c): dialogue_node's babble guard logs `[issue 992 Bug
+    D] LLM babble detected — retrying once with CRITICAL reminder
+    (head=...)` at WARN level when the metalanguage detector trips
+    (dialogue_node.py:3564). The literal `CRITICAL reminder` string
+    is the name of the injected retry prompt — NOT a system failure.
+    The deploy gate was filing a false `critical_log` finding on an
+    otherwise green run (Vision Pi all containers healthy + 189
+    topics, Main Pi perception healthy). The exclusion must silence
+    both the CRITICAL and WARNING passes (the line carries `[WARN]`
+    too) so a single babble recovery does not double-count as a
+    `warning_log` finding on the same healthy turn.
+    """
+    log_text = (
+        "[dialogue_node-4] [WARN] [1788338459.426762332] [dialogue_node]: "
+        "[issue 992 Bug D] LLM babble detected \u2014 retrying once with "
+        "CRITICAL reminder "
+        "(head='\u042e\u0437\u0435\u0440 (\u043e\u043f\u0435\u0440\u0430\u0442\u043e\u0440) \u043f\u0440\u043e\u0441\u0438\u0442 \u0434\u0435\u0440\u043d\u0443\u0442\u044c"
+        " gensearchlibrary \u0431\u0435\u0437 \u043f\u0430\u0440\u0430\u043c\u0435\u0442\u0440')"
+    )
+
+    critical = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+    warning = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert critical is None
+    assert warning is None
+
+
+def test_extract_relevant_log_line_ignores_dialogue_tool_retry_reminder() -> None:
+    """Issue #1877, sibling of the babble retry exclusion: the
+    tool-skipped guard in dialogue_node.py:4023 logs `[issue 1777 /
+    1762] LLM skip non-music tool <name> \u2014 retrying once with
+    CRITICAL reminder (user=...)` at WARN level. Same shape as the
+    babble exclusion (literal `CRITICAL reminder`, intentional
+    one-shot retry notification, not a system failure). The exclusion
+    must silence both the CRITICAL and WARNING passes uniformly.
+    """
+    log_text = (
+        "[dialogue_node-4] [WARN] [1788338461.123456] [dialogue_node]: "
+        "[issue 1777 / 1762] LLM skip non-music tool 'gensearchlibrary' "
+        "\u2014 retrying once with CRITICAL reminder "
+        "(user='\u042e\u0437\u0435\u0440 \u043f\u0440\u043e\u0441\u0438\u0442')"
+    )
+
+    critical = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+    warning = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert critical is None
+    assert warning is None
+
+
+def test_extract_relevant_log_line_still_catches_dialogue_value_error_after_babble() -> None:
+    """Negative test for the babble/tool-retry exclusion. If a real
+    dialogue_node Python exception fires in the same turn as a babble
+    recovery, the exception line must still surface — only the
+    babble notification itself is silenced. Without this guard the
+    exclusion would swallow real crashes that happen to follow a
+    babble event in the log dump.
+    """
+    log_text = "\n".join(
+        [
+            "[dialogue_node-4] [WARN] [1788338459.426762332] [dialogue_node]: "
+            "[issue 992 Bug D] LLM babble detected \u2014 retrying once with "
+            "CRITICAL reminder (head='hello')",
+            "[dialogue_node-4] ERROR ValueError: real downstream problem after babble",
+        ]
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="critical")
+
+    assert line is not None
+    assert "ValueError" in line
+
+
+def test_extract_relevant_log_line_ignores_tts_node_stop_command_warning() -> None:
+    """Issue #1877 / deploy run 33609815109: tts_node's
+    `_handle_stop_command()` (tts_node.py:1529) logs `[WARN] STOP
+    command received - \u043d\u0435\u043c\u0435\u0434\u043b\u0435\u043d\u043d\u0430\u044f
+    \u043e\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0430 TTS` every time the
+    user/operator issues a stop. The WARN severity is correct (it's
+    a state change) but unrelated to deployment health. The deploy
+    detector must not file a warning_log finding when the operator
+    happened to interrupt TTS during the deploy window.
+    """
+    log_text = (
+        "[tts_node-5] [WARN] [1788338456.811434096] [tts_node]: "
+        "STOP command received - \u043d\u0435\u043c\u0435\u0434\u043b\u0435\u043d\u043d\u0430\u044f "
+        "\u043e\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0430 TTS"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_still_catches_other_tts_node_warnings() -> None:
+    """Negative test for the STOP-command rule above. A genuinely
+    concerning tts_node WARN that's NOT the STOP-receipt echo must
+    still surface \u2014 e.g. an audio backend fatal or a synthesiser
+    crash warning. The exclusion is anchored on the literal
+    `STOP command received` phrase, so any other WARN from
+    tts_node keeps its severity.
+    """
+    log_text = (
+        "[tts_node-5] [WARN] [1234.567] [tts_node]: "
+        "synthesiser backend fatal: cannot open alsa device hw:0,0"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is not None
+    assert "synthesiser backend fatal" in line
+
+
+def test_extract_relevant_log_line_ignores_quest_node_pin_warning() -> None:
+    """Issue #1877 / deploy run 33609815109: rob_box_quest's
+    quest_node.py:520 logs `[WARN] Quest PIN: <num> (show this to
+    operator \u2014 required to start a session)` once at startup when
+    `log_pin` is set. The line is informational (telling the operator
+    which PIN unlocks the current session) but the node uses
+    `warning()` severity so the deploy detector picks it up. The
+    exclusion must silence the literal `Quest PIN: <digits> (show
+    this to operator` signature; any other quest_node WARN keeps its
+    severity.
+    """
+    log_text = (
+        "[WARN] [1788338402.304899095] [quest_node]: "
+        "Quest PIN: 103856 (show this to operator \u2014 required to start a session)"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is None
+
+
+def test_extract_relevant_log_line_still_catches_other_quest_node_warnings() -> None:
+    """Negative test for the Quest-PIN rule above. A genuinely
+    concerning quest_node WARN that is NOT the PIN-echo startup line
+    must still surface \u2014 e.g. an actual game-flow problem. The
+    exclusion is anchored on `Quest PIN: <digits> (show this to
+    operator`, so any other WARN from quest_node keeps its severity
+    and the operator still sees deploy issues originating from the
+    quest subsystem.
+    """
+    log_text = (
+        "[quest_node] [WARN] [1234.567]: "
+        "player stuck in invalid state, score=42 not advancing"
+    )
+
+    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+
+    assert line is not None
+    assert "player stuck" in line
