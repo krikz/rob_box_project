@@ -734,6 +734,26 @@ class DialogueNode(Node):
         # Сбрасывается на новый user-initiated turn (см. _run_turn).
         self._tool_retry_used: bool = False
 
+        # Issue #1881 — общий бюджет СИНТЕТИЧЕСКИХ ретраев на user-turn.
+        # Раньше у каждого guard'а был свой одноразовый флаг
+        # (``_babble_retry_used`` / ``_action_claim_retry_used`` /
+        # ``_code_speech_retry_used`` / ``_tool_retry_used``), и каждый
+        # СВОЙ сбрасывал ЧУЖИЕ на следующем turn — ping-pong был неизбежен.
+        # Единый бюджет декрементируется любым guard'ом; на свежем
+        # user-initiated turn (или DJ-transition) — ресетится в
+        # ``_dispatch_turn`` / ``_run_turn``. Чтобы существующие
+        # поимённые флаги не разъехались с новым бюджетом (тесты читают
+        # их напрямую), все три guard'а синхронно выставляют и
+        # ``self._<name>_retry_used = True``, и декрементят
+        # ``_synthetic_retries_left`` через ``_consume_synthetic_retry``.
+        self._synthetic_retries_left: int = self.DEFAULT_SYNTHETIC_RETRIES
+        # ``_synthetic_retries_left`` для следующего user-turn —
+        # выставляется ДО ``_run_turn`` (в ``_dispatch_turn`` и
+        # ``_dispatch_dj_turn``). Это решает проблему «первого
+        # turn'a»: budget выставляется именно там, где turn начинается,
+        # а не там, где guard'ы впервые решают «а нужен ли ретрай».
+        self._pending_synthetic_retries: Optional[int] = None
+
         # Issue #1160 — Prometheus metrics: длительность диалоговой
         # сессии. Фиксируем момент первого wake-word-диалога из IDLE;
         # при DIALOGUE_END / timeout пишем histogram.
@@ -3127,29 +3147,29 @@ class DialogueNode(Node):
         # :meth:`_check_babble_and_retry`, and the flag MUST stay True
         # so a still-babbling retry response is not escalated to a
         # second retry (which would loop forever).
-        if not is_babble_retry:
+        #
+        # Issue #1881 — общий budget ``_synthetic_retries_left`` сбрасывается
+        # ТОЛЬКО на user-initiated turn (is_synthetic=False) — синтетический
+        # ретрай не считается новым запросом юзера и не должен обнулять сам
+        # себе бюджет. Это закрывает ping-pong: раньше каждый guard сбрасывал
+        # ЧУЖИЕ поимённые флаги через ``if not is_<X>_retry`` —
+        # babble-retry → babble-budget сбрасывался → music-retry →
+        # music-budget сбрасывался → babble-retry снова мог выстрелить → 8
+        # вызовов на одну фразу (vision-pi 02.09, raw в карточке #1881).
+        if not is_synthetic:
             self._babble_retry_used = False
-        if not is_action_claim_retry:
             self._action_claim_retry_used = False
-        if not is_code_retry:
             self._code_speech_retry_used = False
-        # Issue #1777 / #1762 — сброс tool-retry budget на новый
-        # user-initiated turn. На babble-retry НЕ сбрасываем (как и
-        # babble-budget — см. issue #992 Bug D), иначе синтетический
-        # ретрай сам себе «обнулит» бюджет и при следующей такой же
-        # ошибке запустит второй ретрай → ping-pong.
-        if not is_babble_retry:
             self._tool_retry_used = False
-        # Bug C (юзер-музыка) — сброс бюджета на НОВЫЙ юзер-запрос,
-        # чтобы каждый запрос получал свежий retry (retry-промпт
-        # не должен считаться новым запросом и сбрасывать сам себя).
-        # DJ budget оставлен как есть — DJ-retry внутри DJ-transition
-        # живёт своей жизнью и ресетится в ``_dispatch_dj_turn``
-        # (``reset_for_new_dj_transition``) только при свежем тике.
-        if not is_babble_retry and not was_dj_auto and not user_input.startswith(
-            MUSIC_RETRY_PROMPT_PREFIX
-        ):
-            self._music_guard.reset_for_new_user_request()
+            self._synthetic_retries_left = self.DEFAULT_SYNTHETIC_RETRIES
+            # Bug C (юзер-музыка) — сброс user-budget тоже только на
+            # user-initiated turn; DJ-transition живёт своей жизнью и
+            # ресетится в ``_dispatch_dj_turn``
+            # (``reset_for_new_dj_transition``) только при свежем тике.
+            if not was_dj_auto and not user_input.startswith(
+                MUSIC_RETRY_PROMPT_PREFIX
+            ):
+                self._music_guard.reset_for_new_user_request()
         # Issue #992 Bug D — when the babble detector schedules a retry
         # we MUST NOT end the dialogue at the bottom of this turn. The
         # retry's ``_run_turn`` will run on the same DSM session and
@@ -3826,6 +3846,11 @@ class DialogueNode(Node):
         # Mark the retry as used BEFORE dispatching so a re-entrant
         # call from the retry itself can never escalate to a second
         # retry.
+        # Issue #1881 — общий budget декрементится рядом с поимённым
+        # флагом. Если budget == 0, ретрай НЕ отправляется — и
+        # babble-текст публикуется как есть (см. live-логи 02.09).
+        if not self._consume_synthetic_retry(guard_name="babble"):
+            return False
         self._babble_retry_used = True
         self._mark_retry_dispatched()
         retry_prompt = self._build_babble_retry_prompt(user_input or "")
@@ -3903,6 +3928,10 @@ class DialogueNode(Node):
 
         # Помечаем ДО отправки — реентрантный вызов из самого ретрая не
         # должен уметь запустить второй.
+        # Issue #1881 — общий budget декрементится рядом с поимённым
+        # флагом. Если budget == 0, ретрай НЕ отправляется.
+        if not self._consume_synthetic_retry(guard_name="code_speech"):
+            return False
         self._code_speech_retry_used = True
         self._mark_retry_dispatched()
         self.get_logger().warning(
@@ -3962,6 +3991,10 @@ class DialogueNode(Node):
 
         # Помечаем ДО отправки — реентрантный вызов из самого ретрая
         # не должен уметь запустить второй.
+        # Issue #1881 — общий budget декрементится рядом с поимённым
+        # флагом. Если budget == 0, ретрай НЕ отправляется.
+        if not self._consume_synthetic_retry(guard_name="action_claim"):
+            return False
         self._action_claim_retry_used = True
         self._mark_retry_dispatched()
         self.get_logger().warning(
@@ -4012,6 +4045,34 @@ class DialogueNode(Node):
         tc12_delete_track и tc16_delete_waypoint в e2e 33251879328.
         """
         self._retry_dispatched_in_turn = True
+
+    def _consume_synthetic_retry(self, *, guard_name: str) -> bool:
+        """Issue #1881 — попытаться списать один синтетический ретрай.
+
+        Гарантирует, что общий бюджет ``_synthetic_retries_left`` и
+        поимённые флаги (``_babble_retry_used`` / ``_action_claim_retry_used``
+        / ``_code_speech_retry_used`` / ``_tool_retry_used``) синхронны
+        и не разъезжаются. Каждый guard, который собирается
+        задиспатчить ретрай, ОБЯЗАН сначала вызвать этот метод; если
+        он вернул ``False`` — ретрай отменяется, даже если поимённый
+        флаг ещё не взведён.
+
+        Returns:
+            ``True`` — ретрай разрешён (budget декрементнут), guard
+                может диспатчить.
+            ``False`` — budget исчерпан (== 0); guard должен
+                вернуть ``False`` из своего ``_check_*_and_retry``.
+                На этом ЛОГируется предупреждение, чтобы в логе
+                было видно, что цикл оборвали НАМЕРЕННО (не молча).
+        """
+        if self._synthetic_retries_left <= 0:
+            self.get_logger().warning(
+                f"🚦 [issue 1881 retry-budget] исчерпан на turn, отдаю как есть "
+                f"(guard={guard_name})"
+            )
+            return False
+        self._synthetic_retries_left -= 1
+        return True
 
     def _discard_last_music_reply(self) -> None:
         """Fire-and-forget: retract the last persisted assistant turn.
@@ -4118,6 +4179,22 @@ class DialogueNode(Node):
 
         if verdict.kind is MusicGuardVerdictKind.USER_RETRY:
             assert verdict.prompt is not None
+            # Issue #1881 — общий budget декрементится здесь, ДО того
+            # как music-guard соберётся диспатчить ещё один ретрай.
+            # ``MusicGuard._user_retry_count`` остаётся как был (это
+            # внутренний счётчик «сколько раз guard уже ретраил»);
+            # новый общий budget страхует от кросс-guard ping-pong'а
+            # (babble → music → babble → music...), который раньше
+            # обходил поимённые флаги.
+            if not self._consume_synthetic_retry(guard_name="music_user"):
+                # Бюджет исчерпан — публикуем spoken nudge (как при
+                # budget_exhausted внутри ``MusicGuard``) и НЕ
+                # диспатчим второй ретрай.
+                self._discard_last_music_reply()
+                self._speak_direct(
+                    "Я тут растерялся — бит не запустился, попробуй ещё раз."
+                )
+                return False
             # Issue #992 — the attempt we just evaluated (tools_called
             # empty on a music request) already had its assistant reply
             # persisted by DialogCore as an ordinary successful turn (see
@@ -4283,6 +4360,12 @@ class DialogueNode(Node):
             # Defence-in-depth: build_tool_retry_prompt вернул "" —
             # tool_name не из allow-list (промпт-инъекция?). Не ретраим.
             return False
+        # Issue #1881 — общий budget декрементится здесь. Если
+        # budget == 0, ретрай НЕ отправляется — это закрывает кейс
+        # «babble → tool → babble → tool → ...» (vision-pi 02.09, raw в
+        # карточке #1881).
+        if not self._consume_synthetic_retry(guard_name="tool_skipped"):
+            return False
         # DSM reopen — нужен DIALOGUE state для retry-тура (см. issue #1204).
         self._reopen_dialogue_for_retry()
         # Mark budget BEFORE dispatch — защита от re-entrant эскалации.
@@ -4291,10 +4374,18 @@ class DialogueNode(Node):
             f"🛠 [issue 1777 / 1762] LLM skip non-music tool {tool_name!r} — "
             f"retrying once with CRITICAL reminder (user={user_input[:60]!r})"
         )
+        # Issue #1881 — tool-retry помечается ``is_synthetic=True``
+        # обязательно. Раньше он диспатчился как user-input, и
+        # следующий babble-guard мог считать его новым user-turn'ом и
+        # сбросить babble-budget → ping-pong. Сейчас
+        # ``_run_turn`` сбрасывает общий budget ТОЛЬКО на
+        # user-initiated turn (``is_synthetic=False``), так что
+        # tool-retry budget не обнулит сам себе.
         self._dispatch_turn(
             retry_prompt,
             was_idle=False,
             raw_user_command=user_input,
+            is_synthetic=True,
         )
         return True
 
@@ -4304,6 +4395,23 @@ class DialogueNode(Node):
 
     #: Maximum tool-call iterations before forced stop (agent loop guard).
     MAX_ITERATIONS: int = 30
+
+    #: Issue #1881 — лимит синтетических ретраев на ОДИН user-initiated turn.
+    #:
+    #: Раньше каждый guard (babble / action-claim / code-speech / tool /
+    #: music) имел собственный одноразовый флаг и при ретрае сбрасывал
+    #: чужие через ``if not is_<X>_retry: self._<Y>_retry_used = False``
+    # в ``_run_turn`` — это и был источник ping-pong'a на 8 LLM-вызовов.
+    #:
+    #: Теперь общий budget живёт в ``self._synthetic_retries_left`` и
+    #: декрементится через :meth:`_consume_synthetic_retry`; любой guard
+    #: может выстрелить, пока budget > 0. На свежем user-initiated turn
+    #: (или DJ-transition) — ресетится в :meth:`_dispatch_turn` /
+    #: ``_dispatch_dj_turn`` / :meth:`_run_turn`. 2 взято из live-логов:
+    #: babble-retry (1) → если и ретрай babble'нул → ещё 1 (music/babble
+    #: любой) → «растерялся». Больше 2 — уже деградация UX, как раз то,
+    #: что увидели 02.09 на 8 вызовах.
+    DEFAULT_SYNTHETIC_RETRIES: int = 2
 
     def _continue_after_tool_calls(
         self,
