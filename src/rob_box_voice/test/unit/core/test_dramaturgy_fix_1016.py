@@ -244,3 +244,42 @@ def test_fresh_start_resets_transition_count() -> None:
         "при генуинном старте (enabled False→True) счётчик сбрасывается "
         "в 0, даже если план уже был — is_fresh_start = not was_enabled"
     )
+
+
+def test_middle_transitions_are_music_only() -> None:
+    """🔴 Живой лог 02.09: на КАЖДОМ переходе поверх бита звучало
+    «Переход номер два отыгран — нарастание с дропом в ре миноре
+    фригийском, сто сорок ударов!». Промпт запрещал только ``speak_text``,
+    а свободный текст ответа тоже уходит в TTS. Юзер: «во время сочинения
+    музыки LLM много говорит».
+    """
+    ctrl = _build_controller()
+    ctrl.state.set_plan = "\n".join(
+        f"Трек {i}: {c}" for i, c in enumerate("abcd", start=1)
+    )
+
+    # #1 — представление диджея, говорить можно.
+    assert ctrl.is_music_only_transition(1) is False
+    # Середина сета — только музыка.
+    assert ctrl.is_music_only_transition(2) is True
+    assert ctrl.is_music_only_transition(3) is True
+    # Финальный трек плана — прощание, говорить можно.
+    assert ctrl.is_music_only_transition(4) is False
+
+
+def test_music_only_without_a_plan() -> None:
+    """Без плана финального трека не существует — молчат все переходы,
+    кроме первого."""
+    ctrl = _build_controller()
+    assert ctrl.is_music_only_transition(1) is False
+    assert ctrl.is_music_only_transition(7) is True
+
+
+def test_transition_prompt_asks_for_the_form_length() -> None:
+    """Форма compose_music играет 96-190 секунд, а промпт просил
+    ``next_transition_sec=45`` — дроп не звучал ни разу за 30 часов лога."""
+    ctrl = _build_controller()
+    for n in (1, 2):
+        prompt = ctrl.build_auto_prompt(n)
+        assert "next_transition_sec=45" not in prompt
+        assert "длительность" in prompt.lower()

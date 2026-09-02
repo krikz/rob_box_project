@@ -32,6 +32,7 @@ for _mod in [
     sys.modules.setdefault(_mod, MagicMock())
 
 from rob_box_mcp_tools.core.arranger import (  # noqa: E402
+    BARS_PER_CHORD,
     BEATS_PER_BAR,
     BPM_RANGE,
     DEFAULT_FORM,
@@ -61,8 +62,10 @@ def _all_degree_values(code: str, player: str):
         groups = re.findall(r"\[([^\[\]]+)\]", motif_match.group(1))
         return [float(v) for g in groups for v in g.split(",")]
     line = next(l for l in code.splitlines() if l.startswith(f"{player} >>"))
-    plain = re.search(r"\(\[([^\]]+)\]", line).group(1)
-    return [float(v) for v in plain.split(",")]
+    # Пэд рендерится аккордом — PGroup в круглых скобках; остальные роли
+    # играют последовательность в квадратных.
+    plain = re.search(r"\(\[([^\]]+)\]|\(\(([^)]+)\)", line)
+    return [float(v) for v in (plain.group(1) or plain.group(2)).split(",")]
 
 
 def _spec(**kwargs) -> CompositionSpec:
@@ -248,12 +251,42 @@ class TestRegisters:
 
 
 class TestHarmonyAndMotion:
-    def test_progression_spans_exactly_one_form(self):
-        """Иначе гармония и аранжировка разъезжаются на длинной дистанции."""
-        code = render(_spec(progression=(0, 0, 5, 3)))
+    def test_progression_changes_on_a_four_bar_grid(self):
+        """Аккорд держится ровно 4 такта — квадрат, а не «одна прогрессия
+        на всю форму».
+
+        Прежний контракт растягивал прогрессию на форму целиком: на
+        buildup (76 тактов) шаг выходил 76 БИТОВ, то есть 19 тактов, и
+        тоника менялась посреди фразы, посреди секции, под держащейся
+        нотой пэда. Смена гармонии, не попадающая в сетку, слышится не
+        как гармония, а как сбой (живая жалоба «какофония», 02.09).
+        ``var`` в Renardo зацикливается сам, поэтому прогрессия просто
+        прокручивается по кругу до конца формы.
+        """
+        code = render(_spec(progression=(0, 0, 4, 3)))
         step = int(re.search(r"Root\.default = var\(\[.*?\], (\d+)\)", code).group(1))
-        total = sum(bars for _n, bars, _i in FORMS["arc"]) * BEATS_PER_BAR
-        assert step * 4 == total
+        assert step == BARS_PER_CHORD * BEATS_PER_BAR
+
+    def test_progression_is_relative_to_the_requested_root(self):
+        """``root`` не должен теряться при наличии прогрессии.
+
+        ``Root.default`` в Renardo — ХРОМАТИЧЕСКИЙ номер ноты (Root.py,
+        ``CHROMATIC_NOTES``), поэтому прежний
+        ``Root.default = var([0, 0, 5, 3], ...)`` играл в до независимо от
+        запрошенной тоники: 91 из 99 живых вызовов шли с прогрессией, и
+        весь сет звучал в одном тональном центре.
+        """
+        code = render(_spec(root="A", scale="minor", progression=(0, 0, 4, 3)))
+        # A = 9 полутонов; в миноре V ступень = +7, IV = +5.
+        assert "Root.default = var([9, 9, 16, 14]," in code
+
+    def test_progression_degrees_are_scale_steps_not_semitones(self):
+        """И схема тула, и промпт обещают «ступени лада» — лад и должен
+        решать, на сколько полутонов уедет тоника."""
+        minor = render(_spec(root="C", scale="minor", progression=(0, 2)))
+        major = render(_spec(root="C", scale="major", progression=(0, 2)))
+        assert "Root.default = var([0, 3]," in minor  # III ступень минора
+        assert "Root.default = var([0, 4]," in major  # III ступень мажора
 
     def test_static_root_when_no_progression(self):
         code = render(_spec(root="F"))

@@ -24,6 +24,7 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_RETRY_PROMPT_PREFIX,
     MUSIC_STOP_OVERRIDES,
     TOOL_REQUEST_PATTERNS,
+    is_planning_narration,
     build_babble_retry_prompt,
     build_music_retry_prompt,
     build_renardo_code_retry_prompt,
@@ -1194,3 +1195,58 @@ class TestLive0109DevelopTheThemeAndPseudoCall:
         prompt = build_music_retry_prompt("развивай мелодию", music_playing=True)
         assert "function calling" in prompt
         assert "НЕ " in prompt and "вызов" in prompt
+
+
+class TestPlanningNarration:
+    """🔴 Живой лог робота 02.09 — модель отдавала своё планирование в
+    качестве реплики, TTS зачитывал его вслух, тулов при этом не было.
+
+    Пример из лога (06:58:01 UTC, ``tools=[]``):
+        'Юзер явно просит «ебани лаундж» (лоундж запрошен снова/повторно).
+         DJ уже выключен в прошлом ходе. Запускаю расслабленную
+         лоундж-композицию через compose_music.'
+
+    Юзер слышал «робот говорит, что запускает музыку, но ничего не
+    запускается». Ни ``BABBLE_BANNED_OPENERS`` (там обещания, а не
+    рассуждения), ни ``MUSIC_GUARD_KEYWORDS`` (смотрят на реплику юзера —
+    «ебани ланудж») этот случай не покрывали.
+    """
+
+    @pytest.mark.parametrize(
+        "spoken",
+        [
+            "Юзер явно просит «ебани лаундж». Запускаю лоундж-композицию "
+            "через compose_music.",
+            "Пользователь спрашивает «где бит?» — хочет услышать бит. "
+            "Проверю состояние музыки.",
+            "Юзер назначил меня диджеем. Это очевидная просьба про музыку.",
+            "Сначала вызову stop_music, потом заведу новый трек.",
+            "Отвечу через speak_text.",
+        ],
+    )
+    def test_planning_narration_is_detected(self, spoken: str) -> None:
+        assert is_planning_narration(spoken) is True
+
+    @pytest.mark.parametrize(
+        "spoken",
+        [
+            "Бит пошёл — бум-бум, ловлю волну.",
+            "Тебя зовут Саша! Любишь зелёный чай без сахара.",
+            "Вот и всё, вечеринка заканчивается! Спасибо, что были со мной.",
+            "Сейчас пятнадцать семь, вторник, первое сентября.",
+            "",
+        ],
+    )
+    def test_normal_answers_pass(self, spoken: str) -> None:
+        assert is_planning_narration(spoken) is False
+
+    def test_tool_name_alone_is_enough(self) -> None:
+        """Идентификатор в snake_case, прочитанный вслух, — всегда баг,
+        независимо от того, о чём просил юзер."""
+        assert is_planning_narration("Готово, execute_music_code отработал.")
+
+    def test_planning_narration_counts_as_babble(self) -> None:
+        """Ретрай-механика Bug D переиспользуется как есть."""
+        assert is_metalanguage_babble(
+            "Юзер просит музыку. Запускаю через compose_music."
+        )
