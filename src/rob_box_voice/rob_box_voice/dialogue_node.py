@@ -107,8 +107,8 @@ from rob_box_voice.core.dialogue_guards import (
     detect_unbacked_action_claim,
     extract_renardo_code_lines,
     is_metalanguage_babble,
-    is_planning_narration,
     is_music_stop_command,
+    is_planning_narration,
     user_wants_music,
     user_wants_performance,
 )
@@ -4831,7 +4831,7 @@ class DialogueNode(Node):
                     f"(anti-duplicate): {spoken[:80]!r}"
                 )
             return
-        # 🔴 FIX (live 02.09): «во время сочинения музыки LLM много говорит».
+# 🔴 FIX (live 02.09): «во время сочинения музыки LLM много говорит».
         # Промпт среднего DJ-перехода запрещает speak_text, но НЕ запрещал
         # обычный текст ответа — а он тоже уходит в TTS. Живой лог: каждые
         # 45 секунд поверх бита звучало «Переход номер два отыгран —
@@ -4848,6 +4848,34 @@ class DialogueNode(Node):
                 "🔇 [DJ] музыкальный переход #"
                 f"{self._dj.state.transition_count} — свободный текст НЕ "
                 f"озвучиваю (юзер ничего не спрашивал): {spoken[:120]!r}"
+            )
+            return
+        # Issue #1882 — planning-narration guard (hard-mute).
+        #
+        # Live 02.09 (Vision Pi): MiniMax-M3 при выключенном thinking
+        # выдаёт НЕ финальный ответ, а ВНУТРЕННИЙ МОНОЛОГ вида
+        # «Юзер Иван (65e62885) — оператор. ... [CRITICAL] говорит ...
+        # Решение: ... Аргументы для composemusic ...» — до 2.5 КБ
+        # символов, 16 TTS-чанков. Юзер слышит кухню модели.
+        #
+        # develop-ветка (78403dba) расширила babble-retry: planning тоже
+        # уходит в ретрай. Это работает, пока babble-бюджет НЕ потрачен.
+        # Когда babble уже потрачен — planning всё равно уходит в TTS.
+        # Этот guard закрывает дыру: planning НИКОГДА не валидный ответ,
+        # независимо от состояния retry-флагов. Гейт speak_text_real == 0
+        # и пустой tools_called обязателен, иначе guard сожжёт легитимный
+        # ответ вида «Юзер, а что умеет speak_text?» (там planning-маркеры
+        # есть, но speak_text_real > 0).
+        if (
+            spoken
+            and speak_text_real == 0
+            and not tools_called
+            and is_planning_narration(spoken)
+        ):
+            self.get_logger().warning(
+                "🤐 [issue 1882] planning-narration hard-mute: "
+                "spoken matches planning pattern, tools empty, "
+                f"speaking nothing (head={spoken[:120]!r})"
             )
             return
         # Issue #992 Bug D — metalanguage / babble detector. Fires ONE
