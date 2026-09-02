@@ -105,7 +105,15 @@ _ABSOLUTE_FREQ_RE = re.compile(
     r"\b(?:freq|frequency|hz|midinote|note)\s*=\s*(\d+(?:\.\d+)?)"
 )
 # Player creation lines: `p1 >> pluck([0,2,4], dur=0.5)` / `d1 >> play("x-o-")`
-_PLAYER_LINE_RE = re.compile(r"^\s*(\w+)\s*>>\s*(\w+)\s*\(([^)]*)\)", re.MULTILINE)
+#
+# 🔴 FIX (live 02.09): аргументы захватываются ДО КОНЦА СТРОКИ, а не до
+# первой закрывающей скобки. С `[^)]*` любая вложенная скобка обрывала
+# захват, и всё, что за ней, для валидатора не существовало. Аккорд пэда —
+# PGroup, то есть круглые скобки (`p3 >> warmpad((0, 2, 4), dur=4, ...)`):
+# захват обрывался на `(0, 2, 4)`, dur= в аргументы не попадал, и правило
+# «у каждого не-play плеера должен быть dur» ругалось на строку, где dur
+# есть. Та же слепота касалась inline `var(...)`/`Pvar(...)`.
+_PLAYER_LINE_RE = re.compile(r"^\s*(\w+)\s*>>\s*(\w+)\s*\((.*)\)\s*$", re.MULTILINE)
 # Developing patterns that break a static loop (issue #1016).
 _DEV_PATTERN_RE = re.compile(
     r"\.every\(|Pvar\(|pvar\(|linvar\(|var\(|Clock\.future|chop=|stutter|shuffle|reverse"
@@ -2364,9 +2372,50 @@ class ComposeMusicTool(MCPTool):
     См. docs/analysis/2026-08-30-music-quality-audit.md (RC4).
     """
 
+    #: Поля, по которым сет слышится «одним треком», если они не меняются.
+    #: Возвращаются модели в ответе тула — см. :meth:`_repeat_warning`.
+    _IDENTITY_FIELDS = (
+        "root", "scale", "bpm", "progression", "lead_notes", "lead_synth",
+        "bass_synth", "drums", "drums_sample", "hats_sample", "form",
+    )
+
     def __init__(self, node, manager: MusicManager) -> None:
         super().__init__(node)
         self._manager = manager
+        #: Плоские параметры предыдущего успешного вызова. Нужны только для
+        #: обратной связи модели: она не видит своих прошлых tool-вызовов
+        #: настолько подробно, чтобы заметить, что третий трек подряд идёт
+        #: в ля миноре с тем же движением тоники.
+        self._last_flat: Dict[str, Any] = {}
+
+    @staticmethod
+    def _fmt(value: Any) -> str:
+        return str(value).replace(" ", "") if value is not None else "—"
+
+    def _repeat_warning(self, flat: Dict[str, Any]) -> str:
+        """Назвать поля, совпавшие с предыдущим треком.
+
+        Живой лог робота за 30 часов: 56% вызовов пришли с одним и тем же
+        ``progression``, 53% — с одним ``drums_sample``, 70% — в minor или
+        phrygian. Модель не видит эту статистику по своей истории, поэтому
+        тул показывает ей ровно то, что она только что повторила.
+        """
+        prev = self._last_flat
+        if not prev:
+            return ""
+        same = [
+            f"{k}={self._fmt(flat.get(k))}"
+            for k in self._IDENTITY_FIELDS
+            if flat.get(k) is not None
+            and self._fmt(flat.get(k)) == self._fmt(prev.get(k))
+        ]
+        if len(same) < 3:
+            return ""
+        return (
+            " ⚠️ Совпало с предыдущим треком: " + ", ".join(same) +
+            ". Следующий трек делай на другом материале, иначе сет "
+            "слышится как один длинный трек."
+        )
 
     @property
     def name(self) -> str:
@@ -2427,42 +2476,58 @@ class ComposeMusicTool(MCPTool):
             MCPToolParameter(
                 name="drums",
                 type="string",
-                description='Паттерн бочки/малого одной строкой, например '
-                '"X..o.X.o" или "X.X.X.X.". Пропусти для музыки без ударных.',
+                description="Паттерн бочки/малого одной строкой: X — бочка, "
+                "o — малый, n — перкуссия, точка — пауза. Длина 4, 8 или 16 "
+                "знаков. Рисунок сочиняй под жанр (ровная четверть, бэкбит, "
+                "брейкбит, синкопа) — не переноси один и тот же из трека в "
+                "трек. Пропусти для музыки без ударных.",
                 required=False,
             ),
             MCPToolParameter(
                 name="drums_sample",
                 type="integer",
-                description="Индекс набора ударных 0-4. Меняй его между "
-                "треками, иначе все треки звучат одинаково.",
+                description="Индекс сэмпла ударных. В паке НЕ пять "
+                "вариантов: на X их 43, на o — 58, на n — 56. Индекс "
+                "заворачивается по модулю, поэтому безопасно любое число "
+                "0-40. Раньше здесь было написано «0-4», и робот полгода "
+                "играл пятью бочками из сорока трёх. Бери из всего "
+                "диапазона и меняй между треками; search_samples покажет, "
+                "что именно лежит по индексу.",
                 required=False,
             ),
             MCPToolParameter(
                 name="hats",
                 type="string",
-                description='Паттерн хэтов, например "--.-" или "-.--".',
+                description="Паттерн хэтов: дефис — удар, точка — пауза. "
+                "Длина 4, 8 или 16 знаков. Плотность хэтов — половина "
+                "жанра: ровные шестнадцатые, скупые восьмые и синкопа "
+                "звучат по-разному на одном и том же бите.",
                 required=False,
             ),
             MCPToolParameter(
                 name="hats_sample",
                 type="integer",
-                description="Индекс сэмпла хэтов 0-4. Раньше был прибит к 3, "
-                "поэтому хэты во всех треках звучали одинаково. Меняй.",
+                description="Индекс сэмпла хэтов. Для символа '-' в паке "
+                "10 вариантов (0-9), индекс заворачивается по модулю. "
+                "Раньше был прибит к 3, потом описан как «0-4» — хэты во "
+                "всех треках звучали одинаково. Меняй между треками.",
                 required=False,
             ),
             MCPToolParameter(
                 name="perc",
                 type="string",
-                description='Паттерн перкуссии — третий ударный слой поверх '
-                'бочки и хэтов, например "..n." или "n..n.n". Форма отводит '
-                'ему место в кульминации; без него плотные секции пустее.',
+                description="Паттерн перкуссии — третий ударный слой поверх "
+                "бочки и хэтов: n — удар, точка — пауза, длина 4, 8 или 16 "
+                "знаков. Форма отводит ему место в кульминации; без него "
+                "плотные секции пустее.",
                 required=False,
             ),
             MCPToolParameter(
                 name="perc_sample",
                 type="integer",
-                description="Индекс сэмпла перкуссии 0-4.",
+                description="Индекс сэмпла перкуссии. Для символа 'n' в "
+                "паке 56 вариантов, индекс заворачивается по модулю — "
+                "безопасно любое число 0-40, а не «0-4».",
                 required=False,
             ),
             MCPToolParameter(
@@ -2475,8 +2540,10 @@ class ComposeMusicTool(MCPTool):
             MCPToolParameter(
                 name="bass_notes",
                 type="string",
-                description='Ступени лада для баса через запятую, например '
-                '"0, 0, 3, -2". Держи 2-5 нот.',
+                description="Ступени лада для баса через запятую, 2-5 "
+                "чисел (отрицательные — вниз от тоники). Бас держит "
+                "гармонию: он должен согласоваться с progression, а не "
+                "повторять мотив лида.",
                 required=False,
             ),
             MCPToolParameter(
@@ -2489,8 +2556,10 @@ class ComposeMusicTool(MCPTool):
             MCPToolParameter(
                 name="lead_notes",
                 type="string",
-                description='Ступени лада для мелодии, например '
-                '"0, 2, 4, 7, 4, 2". Держи 4-8 нот — это мотив, а не гамма.',
+                description="Ступени лада для мелодии через запятую, 4-8 "
+                "чисел. Это МОТИВ, а не гамма: нужен скачок и ответ на "
+                "него, а не пробег по соседним ступеням вверх-вниз. "
+                "Сочиняй под тему и жанр каждого трека заново.",
                 required=False,
             ),
             MCPToolParameter(
@@ -2503,22 +2572,35 @@ class ComposeMusicTool(MCPTool):
             MCPToolParameter(
                 name="pad_notes",
                 type="string",
-                description='Аккорд подклада, например "0, 4, 7".',
+                description="Аккорд подклада — 3-4 ступени лада через "
+                "запятую. Трезвучие тоники (терция + квинта) — самый "
+                "нейтральный вариант; секста, септима и обращения дают "
+                "трекам разный цвет.",
                 required=False,
             ),
             MCPToolParameter(
                 name="progression",
                 type="string",
-                description='Движение тоники по ступеням, например '
-                '"0, 0, 5, 3". Даёт гармоническое развитие — с ним трек '
-                "заметно живее. Пропусти для статичной гармонии.",
+                description="Движение тоники по ступеням лада — 3-4 "
+                "числа через запятую, по одному на секцию формы. Даёт "
+                "гармоническое развитие, с ним трек заметно живее. "
+                "Выбирай движение под жанр и настроение конкретного "
+                "трека: в живом логе 56% вызовов пришли с ОДНОЙ и той же "
+                "последовательностью, скопированной из этого описания, — "
+                "именно поэтому сет звучал как один трек. Пропусти для "
+                "статичной гармонии.",
                 required=False,
             ),
             MCPToolParameter(
                 name="repeat",
                 type="boolean",
-                description="true — форма зацикливается (диджей-сет, фон под "
-                "речь). false — трек заканчивается сам после одной формы.",
+                description="true — форма зацикливается БЕСКОНЕЧНО, до "
+                "явного stop_music (диджей-сет, фон под долгую речь). "
+                "false (по умолчанию) — трек доигрывает одну форму и "
+                "заканчивается сам. Ставь true ТОЛЬКО когда музыка должна "
+                "звучать неопределённо долго: на обычную просьбу «сыграй "
+                "что-нибудь» зацикленный трек играет часами и юзеру "
+                "приходится просить остановить.",
                 required=False,
             ),
             MCPToolParameter(
@@ -2559,7 +2641,7 @@ class ComposeMusicTool(MCPTool):
         pad_synth: Optional[str] = None,
         pad_notes: Optional[str] = None,
         progression: Optional[str] = None,
-        repeat: bool = True,
+        repeat: bool = False,
         swing: float = 0.0,
     ) -> MCPToolResult:
         try:
@@ -2608,6 +2690,22 @@ class ComposeMusicTool(MCPTool):
 
         self._notify_music_state()
         result["form"] = form_summary(spec.form)
+        # Issue #1811 follow-up (live 02.09): диджей ставил
+        # next_transition_sec=45, а форма играет 96-190 секунд — дроп и
+        # кульминация не звучали НИ РАЗУ за 30 часов лога. Длительность
+        # считается ровно той же арифметикой, что и Clock.future в render(),
+        # поэтому её можно просто отдать модели.
+        duration_s = form_duration_seconds(spec.form, spec.bpm)
+        result["duration_seconds"] = round(duration_s, 1)
+        flat = {
+            "bpm": bpm, "root": root, "scale": scale, "form": form or "arc",
+            "drums": drums, "drums_sample": drums_sample,
+            "hats_sample": hats_sample, "bass_synth": bass_synth,
+            "lead_synth": lead_synth, "lead_notes": lead_notes,
+            "progression": progression,
+        }
+        repeat_warning = self._repeat_warning(flat)
+        self._last_flat = flat
         # Явный стоп-сигнал в сообщении, а не только в промпте: live 30.08
         # модель вызвала compose_music и следом execute_music_code со своим
         # кодом. Любой музыкальный вызов начинается с Clock.clear(), поэтому
@@ -2618,8 +2716,12 @@ class ComposeMusicTool(MCPTool):
             data=result,
             message=(
                 f"Играю композицию: {form_summary(spec.form)}. "
+                f"Полная форма звучит {duration_s:.0f} секунд — столько же "
+                "ставь в next_transition_sec, если это DJ-переход: "
+                "переключение раньше срезает кульминацию, и все треки "
+                "сета слышатся как одинаковые вступления. "
                 "Музыка уже звучит — НЕ вызывай execute_music_code после "
-                "этого, иначе аранжировка будет стёрта."
+                "этого, иначе аранжировка будет стёрта." + repeat_warning
             ),
         )
 

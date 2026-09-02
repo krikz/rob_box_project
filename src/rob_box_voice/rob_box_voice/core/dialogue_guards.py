@@ -157,6 +157,71 @@ BABBLE_BANNED_OPENERS: tuple = (
     "переключ",
 )
 
+# 🔴 FIX (live 02.09): «робот говорит, что запускает музыку, а ничего не
+# запускается» + «LLM много говорит во время музыки».
+#
+# Живой лог робота, 06:58:01 UTC:
+#   spoken='Юзер явно просит «ебани лаундж» (лоундж запрошен снова).
+#           DJ уже выключен в прошлом ходе. Запускаю расслабленную
+#           лоундж-композицию через compose_music.' tools=[]
+# и следом TTS честно зачитал это вслух. Модель отдала своё планирование
+# вместо ответа и не вызвала ни одного тула.
+#
+# Ни один существующий детектор это не ловил: BABBLE_BANNED_OPENERS ищет
+# обещания («зачитаю», «погнали»), а тут рассуждение; music-гуард смотрел
+# на реплику ЮЗЕРА («ебани ланудж») и не нашёл там ключевых слов.
+# Расширять словари бесполезно — их не хватит никогда.
+#
+# Надёжный признак другой и от словаря не зависит:
+#   * в тексте назван ИНСТРУМЕНТ (compose_music и т.п.). Идентификатор в
+#     snake_case, прочитанный вслух, — всегда баг, что бы ни просил юзер;
+#   * реплика начинается с рассказа о собеседнике в ТРЕТЬЕМ лице («Юзер
+#     просит...», «Пользователь спрашивает...»). Ответ, адресованный
+#     человеку, так не начинается — так начинается план.
+PLANNING_NARRATION_TOOL_NAMES: tuple = (
+    "compose_music",
+    "execute_music_code",
+    "speak_text",
+    "set_dj_mode",
+    "search_samples",
+    "stop_music",
+    "load_track",
+    "list_tracks",
+    "save_track",
+    "gen_play_from_library",
+    "gen_search_library",
+    "set_vibe_preset",
+    "play_animation",
+    "play_sound",
+    "memory_save",
+    "memory_search",
+    "search_web",
+    "listen_for_response",
+    "navigate_to_waypoint",
+)
+
+#: Начала реплики, где модель говорит о собеседнике в третьем лице.
+PLANNING_NARRATION_OPENERS: tuple = (
+    "юзер",
+    "пользовател",
+    "user ",
+)
+
+
+def is_planning_narration(spoken_text: str) -> bool:
+    """Похоже ли на внутреннее планирование модели, а не на ответ человеку?
+
+    Признаки и причина, по которой они именно такие, — в комментарии выше.
+    """
+    if not spoken_text:
+        return False
+    low = spoken_text.lower()
+    if any(name in low for name in PLANNING_NARRATION_TOOL_NAMES):
+        return True
+    head = low.lstrip(" \t*#>-—«\"'")[:40]
+    return any(head.startswith(opener) for opener in PLANNING_NARRATION_OPENERS)
+
+
 # Issue #992 Bug D — keywords that mark the user request as a
 # performance command. When the LLM babbles on a performance request
 # we *must* retry, because the alternative is the user hearing nothing
@@ -658,6 +723,8 @@ def is_metalanguage_babble(spoken_text: str) -> bool:
     """
     if not spoken_text:
         return False
+    if is_planning_narration(spoken_text):
+        return True
     head = spoken_text[:80].lower().lstrip(" \t*#>-")
     # Match the opener only at the START of the head or inside the
     # first 30 chars (after stripping). 30 chars is enough to cover

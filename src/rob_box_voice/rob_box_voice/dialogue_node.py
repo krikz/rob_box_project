@@ -106,6 +106,7 @@ from rob_box_voice.core.dialogue_guards import (
     detect_unbacked_action_claim,
     extract_renardo_code_lines,
     is_metalanguage_babble,
+    is_planning_narration,
     is_music_stop_command,
     user_wants_music,
     user_wants_performance,
@@ -3690,8 +3691,13 @@ class DialogueNode(Node):
             return False
         if not self._is_metalanguage_babble(spoken):
             return False
+        # 🔴 FIX (live 02.09): планирование модели вслух («Юзер просит...,
+        # запускаю через compose_music») — НИКОГДА не валидный ответ, что бы
+        # ни просил юзер. Гейт по user_wants_performance тут не нужен: в
+        # живом логе он и не сработал (юзер сказал «ебани ланудж», ни одного
+        # ключевого слова), и робот зачитал план вслух, не вызвав тулов.
         user_wants_perf = self._user_wants_performance(user_input or "")
-        if not user_wants_perf:
+        if not user_wants_perf and not is_planning_narration(spoken):
             # The promise-only subset always retries regardless of
             # user_input — these phrases are NEVER valid answers.
             promise_only = (
@@ -4725,6 +4731,25 @@ class DialogueNode(Node):
                     f"🔇 [issue 988] speak_text called — final text skipped "
                     f"(anti-duplicate): {spoken[:80]!r}"
                 )
+            return
+        # 🔴 FIX (live 02.09): «во время сочинения музыки LLM много говорит».
+        # Промпт среднего DJ-перехода запрещает speak_text, но НЕ запрещал
+        # обычный текст ответа — а он тоже уходит в TTS. Живой лог: каждые
+        # 45 секунд поверх бита звучало «Переход номер два отыгран —
+        # нарастание с дропом в ре миноре фригийском, сто сорок ударов!».
+        # Юзер про такие переходы ничего не спрашивал: это тик таймера.
+        # Представление диджея (#1) и прощание (финальный трек) — говорят,
+        # см. DJModeController.is_music_only_transition.
+        if (
+            spoken
+            and is_dj_auto
+            and self._dj.is_music_only_transition(self._dj.state.transition_count)
+        ):
+            self.get_logger().info(
+                "🔇 [DJ] музыкальный переход #"
+                f"{self._dj.state.transition_count} — свободный текст НЕ "
+                f"озвучиваю (юзер ничего не спрашивал): {spoken[:120]!r}"
+            )
             return
         # Issue #992 Bug D — metalanguage / babble detector. Fires ONE
         # synchronous retry with a CRITICAL prompt reminder when the
