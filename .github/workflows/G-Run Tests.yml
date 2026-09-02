@@ -281,6 +281,14 @@ jobs:
           source /opt/ros/humble/setup.bash
           mkdir -p ${{ github.workspace }}/test_ws/src
           rsync -av --exclude='ros2leds' --exclude='vesc_nexus' --exclude='robot_sensor_hub_msg' src/ ${{ github.workspace }}/test_ws/src/
+          # Sibling directories referenced by tests (NOT compiled by colcon).
+          # Same as the unit-tests job above. Without this, tests that walk up
+          # to find e.g. docker/vision/scripts/supercollider/metrics_server.py
+          # raise FileNotFoundError at collection time
+          # (test_supercollider_metrics_osc_status).
+          for d in docker migrations docs .github; do
+            [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
+          done
           cd ${{ github.workspace }}/test_ws
           colcon build --symlink-install \
             --packages-up-to rob_box_voice rob_box_animations rob_box_perception \
