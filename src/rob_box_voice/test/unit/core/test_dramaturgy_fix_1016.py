@@ -185,8 +185,25 @@ def test_first_plan_does_not_reset_transition_count() -> None:
     assert ctrl.state.transition_count == 1, "первый план не должен сбрасывать счётчик"
 
 
-def test_plan_rewrite_resets_transition_count() -> None:
-    """Переписывание сета (новый план при уже существующем) — счётчик с нуля."""
+def test_mid_session_plan_rewrite_keeps_transition_count() -> None:
+    """Перезапись плана ВНУТРИ идущей сессии — счётчик НЕ сбрасывается.
+
+    Контракт изменён сознательно в ``ef525468e`` ("fix(dj): keep transition
+    progress on mid-session plan updates", live 01.09, issue #992). До него
+    сигналом «новый сет» была строка плана: ``is_rewrite = bool(set_plan)``.
+    На практике модель переписывает план своими словами почти на КАЖДОМ
+    переходе (промпт этого не запрещает) → строка отличается → счётчик
+    обнулялся → ``build_auto_prompt(1)`` снова выдавал «СТАРТ ВЕЧЕРИНКИ» →
+    модель снова сочиняла план → бесконечный цикл. И финальный трек, и
+    auto-stop гейтятся на ``transition_count`` vs длину плана (см.
+    ``tick()``), поэтому сет НИКОГДА не завершался. Живой прогон 01.09
+    («вечеринка у черепашек-ниндзя»): 8 «rewrite» подряд за 12 минут, ни
+    одного перехода дальше #1.
+
+    Теперь единственный сигнал генуинного старта — DJ был ВЫКЛЮЧЕН
+    (``is_fresh_start = not was_enabled``), см.
+    ``test_fresh_start_resets_transition_count`` ниже.
+    """
     ctrl = _build_controller()
     ctrl.state.enabled = True
     ctrl.state.set_plan = "Трек 1: old"
@@ -197,4 +214,33 @@ def test_plan_rewrite_resets_transition_count() -> None:
         "plan": "Трек 1: new\nТрек 2: new2",
     }))
 
-    assert ctrl.state.transition_count == 0, "переписывание плана должно сбрасывать счётчик"
+    assert ctrl.state.set_plan == "Трек 1: new\nТрек 2: new2", (
+        "текст плана обновляется даже без сброса счётчика"
+    )
+    assert ctrl.state.transition_count == 5, (
+        "перезапись плана в идущей сессии НЕ должна сбрасывать счётчик "
+        "(ef525468e, issue #992) — иначе сет зацикливается на переходе #1"
+    )
+
+
+def test_fresh_start_resets_transition_count() -> None:
+    """Генуинный старт (DJ был выключен) — счётчик с нуля.
+
+    Обратная сторона ``ef525468e``: сброс прогресса остался, но привязан к
+    переходу enabled False→True, а не к тексту плана.
+    """
+    ctrl = _build_controller()
+    ctrl.state.enabled = False
+    ctrl.state.set_plan = "Трек 1: old"
+    ctrl.state.transition_count = 5
+
+    ctrl.handle_message(json.dumps({
+        "enabled": True,
+        "plan": "Трек 1: new\nТрек 2: new2",
+    }))
+
+    assert ctrl.state.set_plan == "Трек 1: new\nТрек 2: new2"
+    assert ctrl.state.transition_count == 0, (
+        "при генуинном старте (enabled False→True) счётчик сбрасывается "
+        "в 0, даже если план уже был — is_fresh_start = not was_enabled"
+    )
