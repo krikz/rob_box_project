@@ -83,6 +83,14 @@ EXPECTED=(
     agent-flow-drift-detect.sh
     kanban-retro-create.sh
     validate_honesty.sh
+    # Pre-PR check на ADR namespace collision (ретро 01.09 t_debcb647):
+    # дополняет validate_honesty.sh (claim-evidence) функцией проверки
+    # ADR-номеров. Локальный запуск воркером ДО `gh pr create` ловит
+    # collision раньше, чем merge-gate отвергнет PR. Запускается
+    # руками (`bash scripts/agent_flow/validate_adr_namespace.sh`),
+    # не блокер CI — воркер видит actionable ошибку и сам переименовывает
+    # в next-free slot (вычисляется из max(origin/develop ADR number) + 1).
+    validate_adr_namespace.sh
     # Post-merge build trigger (issue #1475, ADR-0022 extension): после
     # MERGED PR в develop/main — запускает L-Build-All-Services чтобы
     # .image-versions.dev получил свежие dev-<sha> теги.
