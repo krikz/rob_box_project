@@ -63,11 +63,20 @@ next: $next
 awaiting-approval: approve execution of the handoff described below.
 
 $body"
+  # Ретро t_b3476561: handoff раньше не передавал --skill → карточки stuck.
+  # af_skill_for_profile() даёт детерминированный skill по assignee + check
+  # что он реально есть в профиле (fail-OPEN если нет).
+  child_skill="$(af_skill_for_profile "$next")"
+  child_skill_args=()
+  if [ -n "$child_skill" ]; then
+    child_skill_args=(--skill "$child_skill")
+    log "  skill-inference (handoff): next=${next} -> skill=${child_skill}"
+  fi
   if [[ "$DRY_RUN" == true ]]; then
-    log "DRY-RUN: would create blocked child for $id -> $next and subscribe telegram:495039871"
+    log "DRY-RUN: would create blocked child for $id -> $next (skill=${child_skill:-none}) and subscribe telegram:495039871"
     continue
   fi
-  out="$($HERMES_BIN kanban --board "$BOARD" create --assignee "$next" --parent "$id" --workspace worktree --branch "z-{agent}/${id}-${next}" --initial-status blocked --body "$child_body" --created-by agent-flow-handoff "$child_title" 2>&1)" || { log "create failed for $id: $out"; exit 1; }
+  out="$($HERMES_BIN kanban --board "$BOARD" create --assignee "$next" --parent "$id" --workspace worktree --branch "z-{agent}/${id}-${next}" --initial-status blocked "${child_skill_args[@]}" --body "$child_body" --created-by agent-flow-handoff "$child_title" 2>&1)" || { log "create failed for $id: $out"; exit 1; }
   child="$(printf '%s' "$out" | grep -oE 't_[a-f0-9]+' | head -n1 || true)"
   [[ -n "$child" ]] || { log "cannot parse child id: $out"; exit 1; }
   "$HERMES_BIN" kanban --board "$BOARD" notify-subscribe --platform telegram --chat-id 495039871 --notifier-profile pm "$child" >/dev/null

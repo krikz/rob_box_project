@@ -255,6 +255,94 @@ print(json.dumps(keep, ensure_ascii=False))
 }
 
 # ---------------------------------------------------------------------------
+# af_skill_for_profile <assignee> → печатает skill (или пусто).
+#
+# Ретро t_b3476561: agent-flow-triage.sh создавал kanban-карточки БЕЗ
+# `--skill`, и они либо падали в «worker exited cleanly (rc=0) without
+# calling kanban_complete» (crash), либо в timeout 30/30 (worker не знал что
+# делать без доменного skill). Минимум 7 карточек застряли в todo/blocked:
+# t_42d98188, t_08288c77, t_0ed5689a, t_7ac9b225, t_82f555cf, t_77a878a8,
+# t_93effef9, t_1a42a5b4, t_c401ecaa, t_a02c368b.
+#
+# Решение (ADR ещё не написан — это retro 02.09.2026): deterministic mapping
+# assignee → skill + проверка, что этот skill реально установлен в профиле
+# assignee (по on-disk layout skills/<category>/<skill>/SKILL.md, тем же
+# walker, что и hermes-agent/_profile_skill_names). Если skill не найден в
+# профиле — fail-OPEN: печатаем пусто (карточка создастся без skill, как
+# раньше — лучше «нет skill» чем fail-fast над process-скриптом).
+#
+# Контракт:
+#   $1 = assignee (profile id, например "devops", "backend", ...)
+#   stdout = один skill name (если найден в профиле) или пустая строка
+#   exit = 0 всегда (fail-OPEN)
+#
+# Mapping (выбирался так, чтобы каждое значение было реально установлено
+# хотя бы у одного профиля и НЕ ломалось vendor-патчем
+# hermes-agent-skill-validation.patch::_validate_skills_for_assignee):
+#
+#   backend       → git-workflow            (CI/CD/process задачи backend)
+#   devops        → git-workflow            (CI/CD/process задачи devops)
+#   tester        → sdlc-review             (process-ревью в SDLC цикле)
+#   agent-flow    → agent-flow-merge-gate   (специфический для agent-flow)
+#   architect     → agent-flow-pipeline-ops (pipeline-проектирование)
+#   pr-reviewer   → sdlc-review             (ревью PR в SDLC)
+#   default       → simplify-code           (shared через symlink, всегда есть)
+#
+# Проверка наличия: walk <PROFILE>/skills/SKILL.md (symlink-following),
+# grep «<skill>/SKILL.md» → если да — печатаем, иначе пусто.
+#
+# Путь к профилям берём из HERMES_HOME (default /home/builder/.hermes),
+# как и весь остальной код agent-flow. _profile_skill_names в hermes-agent
+# использует тот же источник (get_profile_dir()).
+# ---------------------------------------------------------------------------
+af_skill_for_profile() {  # $1=assignee
+    local _assignee="${1:-}" _hermes_home _skills_dir _candidate
+    [ -n "$_assignee" ] || { return 0; }
+    _hermes_home="${HERMES_HOME:-/home/builder/.hermes}"
+    _skills_dir="${_hermes_home}/profiles/${_assignee}/skills"
+    if [ ! -d "$_skills_dir" ]; then
+        return 0
+    fi
+    # Mapping присваиваем через case (быстрее и проще, чем ассоц. массив).
+    case "$_assignee" in
+        backend)        _candidate="git-workflow" ;;
+        devops)         _candidate="git-workflow" ;;
+        tester)         _candidate="sdlc-review" ;;
+        agent-flow)     _candidate="agent-flow-merge-gate" ;;
+        architect)      _candidate="agent-flow-pipeline-ops" ;;
+        pr-reviewer)    _candidate="sdlc-review" ;;
+        default)        _candidate="simplify-code" ;;
+        *)              _candidate="simplify-code" ;;  # shared default fallback
+    esac
+    # Проверяем, что skill реально установлен в профиле (symlink-following
+    # walk, как _profile_skill_names в hermes-agent). Используем `find -L`
+    # вместо iter_skill_index_files (тот внутри Python), чтобы остаться
+    # в bash-контексте скрипта.
+    if [ -f "$_skills_dir/${_candidate}/SKILL.md" ] \
+        || [ -f "$_skills_dir/bundled/${_candidate}/SKILL.md" ] \
+        || [ -f "$_skills_dir/devops/${_candidate}/SKILL.md" ] \
+        || [ -f "$_skills_dir/autonomous-ai-agents/${_candidate}/SKILL.md" ] \
+        || [ -f "$_skills_dir/software-development/${_candidate}/SKILL.md" ] \
+        || [ -f "$_skills_dir/productivity/${_candidate}/SKILL.md" ] \
+        || [ -f "$_skills_dir/research/${_candidate}/SKILL.md" ] \
+        || [ -f "$_skills_dir/process/${_candidate}/SKILL.md" ]; then
+        printf '%s' "$_candidate"
+        return 0
+    fi
+    # Fallback: walk все категории (slow path, но бывает при свежей
+    # раскладке профиля — категория может быть ещё не symlink). Это тот
+    # же алгоритм что и _profile_skill_names, но средствами bash.
+    if find -L "$_skills_dir" -maxdepth 4 -path '*/_org' -prune -o \
+        -type f -name SKILL.md -print 2>/dev/null \
+        | grep -q "/${_candidate}/SKILL.md$"; then
+        printf '%s' "$_candidate"
+        return 0
+    fi
+    _af_log "af_skill_for_profile(${_assignee}): candidate '${_candidate}' not installed in profile — falling back (no --skill)"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # detect_pr_kind <pr_labels_csv> <pr_title> → печатает "lint" | "functional"
 #
 # "lint" = e2e на железе не нужен, зелёного CI достаточно.
