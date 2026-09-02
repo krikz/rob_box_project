@@ -89,6 +89,15 @@ jobs:
           # Force pip pytest 9.x (container has both apt 6.2.5 + pip 9.x)
           export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
 
+          # Anchor for tests that walk up the directory tree to find the repo
+          # root (e.g. test_sclang_resyncs_after_scsynth_restart.py and friends
+          # in src/rob_box_voice/test/unit/core/). Without this, a test whose
+          # ``__file__`` resolves outside test_ws/{src,docker} — most often
+          # through a colcon test build/install mirror — raises
+          # ``RuntimeError: repo root not found`` at import time. See the
+          # `_repo_root()` helper in those tests for the matching fallback.
+          export ROB_BOX_REPO_ROOT="${{ github.workspace }}/test_ws"
+
           # Uninstall launch_testing (apt, compiled for pytest 6, crashes pytest 9).
           # Cannot be blocklisted via PYTEST_ADDOPTS or pytest.ini — only removal works.
           pip uninstall -y launch_testing launch_testing_ros 2>/dev/null || true
@@ -287,6 +296,15 @@ jobs:
 
           # Force pip pytest 9.x (container has both apt 6.2.5 + pip 9.x)
           export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
+
+          # Anchor for tests that walk up the directory tree to find the repo
+          # root (e.g. test_sclang_resyncs_after_scsynth_restart.py and friends
+          # in src/rob_box_voice/test/unit/core/). Without this, a test whose
+          # ``__file__`` resolves outside test_ws/{src,docker} — most often
+          # through a colcon test build/install mirror — raises
+          # ``RuntimeError: repo root not found`` at import time. See the
+          # `_repo_root()` helper in those tests for the matching fallback.
+          export ROB_BOX_REPO_ROOT="${{ github.workspace }}/test_ws"
 
           # Uninstall launch_testing (apt, compiled for pytest 6, crashes pytest 9).
           # Same workaround as the unit-tests job above — without it pytest 9.x

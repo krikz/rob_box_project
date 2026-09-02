@@ -32,6 +32,9 @@ agent-PR → e2e → close цикла (см. `docs/design/AGENT_FLOW_PROPOSAL.md
 1. `/home/builder/.hermes/scripts/agent-flow-*.sh` — legacy, что-то стартует ещё
 2. `/home/builder/.hermes/profiles/agent-flow/scripts/` — gateway agent-flow
 3. `/home/builder/.hermes/profiles/architect/scripts/` — gateway architect
+4. `/home/builder/.hermes/profiles/devops/scripts/` — gateway devops (с 21.08)
+5. `/home/builder/.hermes/profiles/backend/scripts/` — gateway backend (с 01.09, см. ретро t_a3ba921e)
+6. `/home/builder/.hermes/profiles/analyst/scripts/` — gateway analyst (с 01.09, см. ретро t_a3ba921e)
 
 Чтобы избежать drift, **используй `install.sh` для раскладки hardlink-копий**:
 
@@ -40,16 +43,26 @@ bash <repo>/scripts/agent_flow/install.sh --dry-run   # только посмо�
 bash <repo>/scripts/agent_flow/install.sh             # реальная раскладка
 ```
 
-После этого все пути (agent-flow / architect / devops profiles +
-`~/.hermes/scripts`) — hardlink-копии (inode) или одинаковое содержимое.
-Правка в репо видима везде после следующего `install.sh`.
+После этого все 6 путей (agent-flow / architect / devops / backend / analyst
+profiles + `~/.hermes/scripts`) — hardlink-копии (inode) или одинаковое
+содержимое. Правка в репо видна везде после следующего `install.sh`.
+
+После раскладки `install.sh` делает жёсткий dual md5+size verify по всем
+6 TARGET_DIRS × N EXPECTED-файлам (post_install_verify). Если host-копия
+отличается от SOT — `install.sh` завершается с exit code 3 + alert-log
+(см. `agent-flow-drift.alert.log`). Раньше эта проверка отсутствовала —
+ретро 01.09 t_a3ba921e как раз и вышло из того, что 480 строк
+(§4 stale-after-upstream-fix detector) отстали на backend/analyst после
+PR #1849 ADR-0035, потому что install.sh их не покрывал. Теперь покрывает,
+и post_install_verify это поймает немедленно.
 
 **Контроль дрейфа: `agent-flow-drift-detect.sh`** (cron, every 30m).
 Эталон — `origin/develop` (после `git fetch origin develop`), НЕ локальное
 дерево: при local!=origin локальное дерево больше НЕ используется как
 эталон (ретро 13.08 t_9a3f2e0c — слепота дрейфа host↔origin при
-устаревшем local). Автофикс через `install.sh`; если не помог — сразу
-создаётся kanban-карточка (create_drift_card), не ждём следующего тика.
+устаревшем local). С 01.09 t_a3ba921e dual md5+size check (а не только
+md5 — `compute_drift`). Автофикс через `install.sh`; если не помог —
+сразу создаётся kanban-карточка (create_drift_card), не ждём следующего тика.
 
 **BRANCH_ACTIVE (главный worktree на фича-ветке воркера):** при дрейфе
 host↔origin автофикс выполняется из ВРЕМЕННОГО worktree на `origin/develop`
@@ -57,7 +70,40 @@ host↔origin автофикс выполняется из ВРЕМЕННОГО 
 содержит незамерженный код — install.sh из него разнёс бы веточные скрипты):
 `git worktree add --detach <wt> origin/develop` → `REPO_DIR=<wt> bash
 <wt>/scripts/agent_flow/install.sh` → `git worktree remove --force <wt>`.
-Карточка создаётся только если и этот путь не помог (md5-сверка после).
+Карточка создаётся только если и этот путь не помог (md5+size-сверка после).
+
+## Добавление нового профиля в install.sh
+
+При появлении нового Hermes-профиля, который должен запускать cron-job'ы
+(например, `developer`, `pr-reviewer`, `frontend` — все уже существуют,
+но без скриптов):
+
+1. Откройте `<repo>/scripts/agent_flow/install.sh`.
+2. Добавьте путь профиля в массив `TARGET_DIRS` (после строки 222):
+   ```bash
+   "/home/builder/.hermes/profiles/<profile>/scripts"
+   ```
+3. Добавьте комментарий-строку в шапке install.sh (раздел «Копии»).
+4. Запустите `bash <repo>/scripts/agent_flow/install.sh --dry-run` —
+   post_install_verify покажет «FAIL missing» для ВСЕХ EXPECTED-файлов,
+   которые ещё не разложены. Не пугайтесь: это значит, что install.sh
+   их ТОЛЬКО ЧТО впервые разложит в новый профиль.
+5. Без `--dry-run` — реальная раскладка. Все EXPECTED-файлы окажутся
+   во всех 7 TARGET_DIRS.
+
+Профиль создаётся через `profile-create.sh` или вручную (`mkdir -p`).
+
+## Почему install.sh всё-таки drift'нулся на backend/analyst в t_a3ba921e
+
+> Был проведён ретро: install.sh раскладывал 4 TARGET_DIRS, а backend и
+> analyst получили скрипты через profile-create.sh (snapshot с 31.08 —
+> до MERGE PR #1849 ADR-0035). 480 строк §4 stale-after-upstream-fix
+> detector у этих профилей — старая версия; ADR-0035 для них не работало.
+
+После merge PR починки install.sh в t_a3ba921e фикс автоматически
+дотянется: каждый cron-job (cleanup-249 / e2e-process / blocked-watchdog /
+blocked-watchdog-scope), зарегистрированный на backend и analyst, теперь
+получает свежие EXPECTED-скрипты.
 
 ## Скрипты
 

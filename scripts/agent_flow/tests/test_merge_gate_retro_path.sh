@@ -477,20 +477,9 @@ test_L_retro_issue_942_not_skipped_by_guard() {
 }
 
 # ===========================================================================
-# Run
+# (старый блок «Run» удалён — ретро-фикс от дубль-регистрации тестов;
+# новые run_test() смотри ниже.)
 # ===========================================================================
-run_test "A. retro-path: e2e PASS evidence → close unlabeled issue" test_A_retro_e2e_pass_closes
-run_test "B. retro-path: CI-only PR green → close (e2e not required)" test_B_retro_ci_only_green_closes
-run_test "C. retro-path: no PASS evidence → needs-e2e, no close" test_C_retro_no_evidence_labels_needs_e2e
-run_test "D. retro-path: issue with needs-e2e → skip" test_D_retro_skips_labeled_issue
-run_test "E. retro-path: CLOSED issue → skip" test_E_retro_skips_closed_issue
-run_test "F. retro-path: old PR outside window → skip" test_F_retro_skips_old_pr
-run_test "G. retro-path: self-reference ignored" test_G_retro_ignores_self_reference
-run_test "H. retro-path: e2e:rejected + merged CI-only green → close + remove rejected" test_H_retro_rejected_ci_only_green_closes
-run_test "I. retro-path: e2e:rejected + merged no PASS → no needs-e2e loop" test_I_retro_rejected_no_evidence_no_loop
-run_test "J. retro-path: PR-number reference NOT closed (guard 13.08)" test_J_retro_pr_number_not_closed
-run_test "K. retro-path: needs-review issue NOT re-labeled (13.08)" test_K_retro_skips_needs_review_issue
-run_test "L. retro-path: issue #942 NOT skipped by PR/issue guard (13.08)" test_L_retro_issue_942_not_skipped_by_guard
 
 # ===========================================================================
 # M. (19.08 t_498dc624 process-fix-hermes-stuck-open): issue с меткой hermes
