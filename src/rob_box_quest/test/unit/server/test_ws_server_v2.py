@@ -33,13 +33,14 @@ from rob_box_quest.server.session import (
     SUPPORTED_SUBPROTOCOLS_V2,
     server_client_id,
 )
-from rob_box_quest.server.ws_server import NoOpBridge, WSSServer, build_app
+from rob_box_quest.server.ws_server import WSSServer, build_app
 
 
 pytestmark = pytest.mark.asyncio
 
 
 # === Test doubles ============================================================
+
 
 class _FakeServiceClient:
     """Подделка ROS-клиента для unit-тестов _run_supervisor_service.
@@ -81,9 +82,7 @@ class _FakeServiceClient:
             class _Resp:
                 def __init__(self, body: dict) -> None:
                     self.success = bool(body.get("success", True))
-                    self.message = json.dumps(
-                        {k: v for k, v in body.items() if k != "success"}
-                    )
+                    self.message = json.dumps({k: v for k, v in body.items() if k != "success"})
 
             return _Resp(self._response)
 
@@ -241,9 +240,7 @@ async def _drain_welcome(ws, timeout_s: float = 1.0) -> None:
 
 
 async def _send_hello(ws, pin="123456"):
-    body = json.dumps(
-        {"client_version": "0.1.0", "capabilities": ["webxr"], "session_pin": pin}
-    ).encode("utf-8")
+    body = json.dumps({"client_version": "0.1.0", "capabilities": ["webxr"], "session_pin": pin}).encode("utf-8")
     await ws.send_bytes(encode_frame(FrameType.HELLO, 0, body))
 
 
@@ -288,9 +285,7 @@ async def test_v1_session_gets_protocol_version_on_acquire_floor(v1_client, fixe
     try:
         await _send_hello(ws, fixed_pin)
         await _drain_welcome(ws)
-        payload = msgpack.packb(
-            {"client_id": "malicious", "floor": "teleop"}, use_bin_type=True
-        )
+        payload = msgpack.packb({"client_id": "malicious", "floor": "teleop"}, use_bin_type=True)
         await ws.send_bytes(encode_frame(FrameType.ACQUIRE_FLOOR, 0, payload))
 
         # Ждём ERROR{PROTOCOL_VERSION}.
@@ -344,9 +339,7 @@ async def test_v1_session_no_state_update_keepalive(v1_client, fixed_pin):
                     ftype, _, _ = decode_frame(msg.data)
                     if ftype == FrameType.STATE_UPDATE:
                         state_updates += 1
-            assert state_updates == 0, (
-                f"v1 received {state_updates} STATE_UPDATE frames; should be zero"
-            )
+            assert state_updates == 0, f"v1 received {state_updates} STATE_UPDATE frames; should be zero"
         finally:
             ping_task.cancel()
             try:
@@ -408,9 +401,7 @@ async def test_v2_set_mode_invalid_returns_bad_payload(v2_client, fixed_pin):
     try:
         await _send_hello(ws, fixed_pin)
         await _drain_welcome(ws)
-        payload = msgpack.packb(
-            {"client_id": "quest:xyz", "mode": "hacker_special"}, use_bin_type=True
-        )
+        payload = msgpack.packb({"client_id": "quest:xyz", "mode": "hacker_special"}, use_bin_type=True)
         await ws.send_bytes(encode_frame(FrameType.SET_MODE, 0, payload))
 
         def is_bad_payload(ftype, p):
@@ -514,9 +505,7 @@ async def test_v2_json_cmd_supervisor_acquire_floor(v2_client, fixed_pin):
     try:
         await _send_hello(ws, fixed_pin)
         await _drain_welcome(ws)
-        body = json.dumps(
-            {"cmd": "supervisor_acquire_floor", "client_id": "any", "floor": "voice"}
-        ).encode("utf-8")
+        body = json.dumps({"cmd": "supervisor_acquire_floor", "client_id": "any", "floor": "voice"}).encode("utf-8")
         await ws.send_bytes(encode_frame(FrameType.JSON_CMD, 0, body))
 
         def is_supervisor_state(ftype, p):
@@ -576,9 +565,7 @@ async def test_client_id_in_payload_ignored_server_supplies_own(v2_client, fixed
     try:
         await _send_hello(ws, fixed_pin)
         await _drain_welcome(ws)
-        payload = msgpack.packb(
-            {"client_id": "telegram:budget", "floor": "voice"}, use_bin_type=True
-        )
+        payload = msgpack.packb({"client_id": "telegram:budget", "floor": "voice"}, use_bin_type=True)
         await ws.send_bytes(encode_frame(FrameType.ACQUIRE_FLOOR, 0, payload))
 
         def is_any(ftype, p):

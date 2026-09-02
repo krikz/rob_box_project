@@ -62,17 +62,13 @@ VALID_MODES_V2: tuple[str, ...] = (
 def _pack_msgpack(payload: dict) -> bytes:
     """Serialize dict → msgpack bytes (bin-type=True для bytes-полей)."""
     if _msgpack is None:
-        raise RuntimeError(
-            "msgpack not available — supervisor API requires python3-msgpack"
-        )
+        raise RuntimeError("msgpack not available — supervisor API requires python3-msgpack")
     return _msgpack.packb(payload, use_bin_type=True)  # type: ignore[union-attr]
 
 
 def _unpack_msgpack(data: bytes) -> dict:
     if _msgpack is None:
-        raise RuntimeError(
-            "msgpack not available — supervisor API requires python3-msgpack"
-        )
+        raise RuntimeError("msgpack not available — supervisor API requires python3-msgpack")
     raw = _msgpack.unpackb(data, raw=False, strict_map_key=False)  # type: ignore[union-attr]
     if not isinstance(raw, dict):
         raise ValueError(f"supervisor payload: expected msgpack map, got {type(raw).__name__}")
@@ -696,8 +692,7 @@ class WSSServer:
             payload_client_id = payload_obj.get("client_id")
             if payload_client_id is not None and payload_client_id != client_id:
                 log.warning(
-                    "supervisor_api (JSON): client_id mismatch session=%s "
-                    "payload=%s (ignored; using server-side)",
+                    "supervisor_api (JSON): client_id mismatch session=%s " "payload=%s (ignored; using server-side)",
                     session.session_id,
                     payload_client_id,
                 )
@@ -726,8 +721,7 @@ class WSSServer:
                         ws,
                         0,
                         ErrorCode.INTERNAL,
-                        "supervisor_state snapshot is msgpack bytes; "
-                        "use binary STATE_UPDATE frame instead",
+                        "supervisor_state snapshot is msgpack bytes; " "use binary STATE_UPDATE frame instead",
                     )
                     return
                 await self._send(
@@ -812,9 +806,7 @@ class WSSServer:
             if not granted:
                 held_by = body.get("held_by")
                 reason = body.get("reason", "refused")
-                err_message = (
-                    reason if held_by is None else f"{reason}; held_by={held_by}"
-                )
+                err_message = reason if held_by is None else f"{reason}; held_by={held_by}"
                 await self._send_error(
                     ws,
                     0,
@@ -1143,8 +1135,7 @@ class WSSServer:
         payload_client_id = data.get("client_id")
         if payload_client_id is not None and payload_client_id != client_id:
             log.warning(
-                "supervisor_api: client_id mismatch session=%s payload=%s "
-                "(ignored; using server-side)",
+                "supervisor_api: client_id mismatch session=%s payload=%s " "(ignored; using server-side)",
                 session.session_id,
                 payload_client_id,
             )
@@ -1194,9 +1185,7 @@ class WSSServer:
                 payload_bytes = _pack_msgpack({"state": snapshot})
             else:
                 return
-            await ws.send_bytes(
-                encode_frame(FrameType.STATE_UPDATE, 0, payload_bytes)
-            )
+            await ws.send_bytes(encode_frame(FrameType.STATE_UPDATE, 0, payload_bytes))
             return
 
         if ftype in (FrameType.ACQUIRE_FLOOR, FrameType.RELEASE_FLOOR):
@@ -1250,9 +1239,7 @@ class WSSServer:
                 payload_bytes = _pack_msgpack({"state": snapshot})
             else:
                 return
-            await ws.send_bytes(
-                encode_frame(FrameType.STATE_UPDATE, 0, payload_bytes)
-            )
+            await ws.send_bytes(encode_frame(FrameType.STATE_UPDATE, 0, payload_bytes))
             return
 
         # Unreachable: elif chain выше покрывает все три frame-type.

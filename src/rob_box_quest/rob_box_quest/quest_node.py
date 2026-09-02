@@ -449,14 +449,12 @@ class QuestBridge:
         """
         if self._srv_acquire is None:
             return self._supervisor_unavailable("acquire_floor")
-        return self._run_supervisor_service("acquire_floor", self._srv_acquire,
-                                            client_id=client_id, floor=floor)
+        return self._run_supervisor_service("acquire_floor", self._srv_acquire, client_id=client_id, floor=floor)
 
     def supervisor_release_floor(self, client_id: str, floor: str) -> dict:
         if self._srv_release is None:
             return self._supervisor_unavailable("release_floor")
-        return self._run_supervisor_service("release_floor", self._srv_release,
-                                            client_id=client_id, floor=floor)
+        return self._run_supervisor_service("release_floor", self._srv_release, client_id=client_id, floor=floor)
 
     def supervisor_set_mode(self, client_id: str, mode: str) -> dict:
         if self._srv_set_mode is None:
@@ -465,8 +463,7 @@ class QuestBridge:
         # конвертируем per WS-API в event name (см. supervisor_node.py
         # EVENT_* константы; см. ADR-0028 §4.1 mermaid).
         event = self._wire_mode_to_fsm_event(mode)
-        return self._run_supervisor_service("set_avatar_mode", self._srv_set_mode,
-                                            event=event, client_id=client_id)
+        return self._run_supervisor_service("set_avatar_mode", self._srv_set_mode, event=event, client_id=client_id)
 
     @staticmethod
     def _wire_mode_to_fsm_event(mode: str) -> str:
@@ -526,20 +523,14 @@ class QuestBridge:
         ros_loop = getattr(self._node, "_ros_loop", None)
         if ros_loop is None:
             # rclpy.executors не разворачивает loop явно — попросим у самого Node.
+            # Внутри rclpy-spin-callback-а ``asyncio.get_event_loop()`` бросит
+            # ``RuntimeError`` (есть running-loop уже у rclpy). В этом случае
+            # Sync-вызов через ``run_coroutine_threadsafe`` не пройдёт: spin_once
+            # не обработает наш future, ws-handler ждать не может. Возвращаемся
+            # к fallback — service_unavailable (см. монитор-режим supervisor-а).
             try:
-                import rclpy  # noqa: F401 — defensive import
-                ros_loop = asyncio.get_event_loop()
+                ros_loop = asyncio.get_event_loop()  # noqa: F841 — defensive
             except RuntimeError:
-                # За пределами async-loop (в rclpy-spin-callback-е это нормально —
-                # мы уже там). Используем rclpy.get_global_executor() вместо.
-                from rclpy.executors import MultiThreadedExecutor  # noqa: WPS433 — локальный тип
-
-                executor = self._node.executor if hasattr(self._node, "executor") else None
-                if executor is None:
-                    return self._supervisor_unavailable(service_name)
-                # Sync-вызов без loop: блокирующий future не пройдёт через
-                # rclpy.spin_once (deadlock), а ws-handler ждать не может.
-                # Возвращаемся к fallback — service_unavailable.
                 return self._supervisor_unavailable(service_name)
 
         # Формируем request через ``client.cli_type.Request()`` — это
@@ -571,9 +562,7 @@ class QuestBridge:
                 "reason": f"supervisor_service_timeout:{service_name}",
             }
         except Exception as exc:  # noqa: BLE001
-            self._node.get_logger().warning(
-                f"supervisor_service:{service_name} failed: {exc}"
-            )
+            self._node.get_logger().warning(f"supervisor_service:{service_name} failed: {exc}")
             return {
                 "applied": False,
                 "granted": False,
@@ -630,9 +619,7 @@ class QuestBridge:
             return
         loop = self._aio_send_loop
         try:
-            asyncio.run_coroutine_threadsafe(
-                self._dispatch_state_update(raw_bytes), loop
-            )
+            asyncio.run_coroutine_threadsafe(self._dispatch_state_update(raw_bytes), loop)
         except RuntimeError:
             pass  # loop уже закрыт
 
