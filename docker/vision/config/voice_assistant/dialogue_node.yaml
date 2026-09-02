@@ -86,6 +86,18 @@ dialogue_node:
 
     # Промпт система
     system_prompt_file: master_prompt_compact.txt
+    # Move A (change skill-scoped-dialogue-context). true — доменные
+    # инструкции (§5 MUSIC, §6 WAYPOINTS и фрагменты prompts/skills/*.txt)
+    # уезжают из системного промпта и приезжают вплотную к текущему ходу.
+    # false — побайтово прежнее поведение, секции стоят на позиции 0.
+    # Включать по шагу 2 Migration Plan: после недели baseline по
+    # voice_llm_prompt_tokens (задача 0.5). Откат — вернуть false + рестарт.
+    skills_enabled: false
+    # Move B — сузить tools= до core + активный скилл. Ломает кэшируемый
+    # префикс провайдера при каждой смене домена и добавляет отказ
+    # «роутер промахнулся -> LLM не видит нужный инструмент» (#1403).
+    # Включать только после замера prefix-cache (задача 7.4).
+    skill_tool_narrowing: false
     history_max_turns: 20
     agent_max_turns: 20
     llm_timeout_sec: 90.0
