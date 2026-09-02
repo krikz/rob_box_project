@@ -274,6 +274,22 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     void autoEnterVr();
   });
 
+  // ---- AV-25: глобальные хоткеи мостика ----
+  //
+  // R — сброс раскладки панелей к default (стирает localStorage и
+  // пересоздаёт панели). Слушаем на document, чтобы работало и в VR
+  // (XR-сессия не глушит document keydown), и в desktop-режиме.
+  document.addEventListener("keydown", (ev) => {
+    if (ev.repeat) return;
+    const target = ev.target as HTMLElement | null;
+    const tag = target?.tagName?.toLowerCase();
+    if (tag === "input" || tag === "textarea" || target?.isContentEditable) return;
+    if (ev.key === "r" || ev.key === "R") {
+      ev.preventDefault();
+      bridge.resetPanelLayout();
+    }
+  });
+
   // ---- Teleop loop -----------------------------------------------------------
 
   let lastTickTs = 0;

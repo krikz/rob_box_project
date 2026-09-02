@@ -125,3 +125,96 @@ export const CLICK_SLOP_M = 0.04;
 export function isDrag(from: Vec3, to: Vec3, slop: number = CLICK_SLOP_M): boolean {
   return length({ x: to.x - from.x, y: to.y - from.y, z: to.z - from.z }) > slop;
 }
+
+/**
+ * Углы панели (для хит-теста на угловые «ручки» resize). Панель стоит
+ * на сфере вокруг оператора лицом к нему. UV-координаты Three.js для
+ * PlaneGeometry: u ∈ [0,1] слева направо, v ∈ [0,1] снизу вверх. Углы:
+ *   bl=(0,0), br=(1,0), tr=(1,1), tl=(0,1).
+ */
+export type PanelCorner = "br" | "tr" | "tl" | "bl";
+
+/** Размер угловой hit-зоны в долях от UV. 0.12 = 12% по каждой оси. */
+export const RESIZE_CORNER_UV_FRACTION = 0.12;
+
+/**
+ * Найти угол панели по UV координатам точки пересечения луча с
+ * плоскостью панели. `null` — попадание не в угловую зону (центральная
+ * часть панели — клик/драг).
+ */
+export function cornerFromUv(
+  uv: { x: number; y: number },
+  fraction: number = RESIZE_CORNER_UV_FRACTION
+): PanelCorner | null {
+  const { x: u, y: v } = uv;
+  if (!Number.isFinite(u) || !Number.isFinite(v)) return null;
+  if (u <= fraction && v <= fraction) return "bl";
+  if (u >= 1 - fraction && v <= fraction) return "br";
+  if (u >= 1 - fraction && v >= 1 - fraction) return "tr";
+  if (u <= fraction && v >= 1 - fraction) return "tl";
+  return null;
+}
+
+/**
+ * Вычислить новый размер панели при ресайзе за угол. Семантика:
+ * «противоположный» угол остаётся на месте, схваченный угол переезжает
+ * на `cornerPosition`. Размер = удвоенная проекция вектора между
+ * ними на оси панели.
+ *
+ * Параметры:
+ *   `position`       — текущий центр панели,
+ *   `size`           — старые width/height,
+ *   `cornerPosition` — где сейчас угол (на сфере вокруг оператора),
+ *   `facing`         — нормаль панели (направлена к оператору).
+ *
+ * Возвращает предложенный размер ДО клампа по min/max (клампит
+ * PanelManager.resize — здесь честная геометрия).
+ */
+export function resizeSize(
+  position: Vec3,
+  size: { width: number; height: number },
+  cornerPosition: Vec3,
+  facing: Vec2,
+  corner: PanelCorner
+): { width: number; height: number } {
+  // «Право» панели в мире: cross(forward, +Y). forward = -facing
+  // (направление взгляда оператора К панели). forward лежит в плоскости
+  // пола, up = (0,1,0). cross даёт горизонтальный вектор, перпендикулярный
+  // обоим — это «правая» сторона панели со стороны оператора.
+  const forwardX = -facing.x;
+  const forwardZ = -facing.z;
+  const rightX = -forwardZ;
+  const rightZ = forwardX;
+  // Знак угла: +1 = br/tr (правая сторона), -1 = bl/tl (левая сторона).
+  // По вертикали: +1 = tr/tl (верх), -1 = br/bl (низ).
+  // «Противоположный» угол имеет противоположные знаки — он остаётся
+  // на месте при ресайзе.
+  const sx = corner === "tr" || corner === "br" ? 1 : -1;
+  const sy = corner === "tr" || corner === "tl" ? 1 : -1;
+  const sxOpp = -sx;
+  const syOpp = -sy;
+  // Старый «противоположный» угол = центр ± половинки.
+  const oppX = position.x + sxOpp * (size.width / 2) * rightX;
+  const oppY = position.y + syOpp * (size.height / 2);
+  const oppZ = position.z + sxOpp * (size.width / 2) * rightZ;
+  // Вектор от противоположного угла к схваченному.
+  const vx = cornerPosition.x - oppX;
+  const vy = cornerPosition.y - oppY;
+  const vz = cornerPosition.z - oppZ;
+  // Размеры: проекция вектора на оси панели (без удвоения —
+  // расстояние между противоположными углами и есть размер).
+  const width = Math.abs(vx * rightX + vz * rightZ);
+  const height = Math.abs(vy);
+  return { width, height };
+}
+
+/**
+ * Квадрат расстояния от точки `p` до центра `c` (без sqrt — для
+ * горячего hit-теста на каждом кадре).
+ */
+export function distSq(a: Vec3, b: Vec3): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  const dz = a.z - b.z;
+  return dx * dx + dy * dy + dz * dz;
+}
