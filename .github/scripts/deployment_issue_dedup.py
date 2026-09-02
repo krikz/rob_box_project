@@ -335,6 +335,28 @@ CRITICAL_EXCLUDE_COMMON = [
     # that does NOT carry `CRITICAL reminder` and is still surfaced).
     r"\[issue 992 bug d\] llm babble detected — retrying once with critical reminder",
     r"\[issue 1777\s*/\s*1762\] llm skip non-music tool .*— retrying once with critical reminder",
+    # stt_node structured metric (issue #1893, deploy run 33650766141
+    # 02.09 / kanban t_583c838d): stt_node logs every STT attempt as
+    # `[stt_attempt_metric] provider=<p> reason=<r> latency_ms=<n>
+    # attempt=<n> text=<text>` so the operator can spot provider
+    # outages / bad network in Loki. The metric is emitted at INFO
+    # level, not ERROR - the word `error` only appears inside the
+    # `reason=` field (e.g. `reason=error` when yandex returned an
+    # HTTP 5xx or the quota check failed), so CRITICAL_MATCH_RE
+    # catches it via the bare \berror\b keyword. The real stt_node
+    # failure mode is a Python traceback (see the rules above for
+    # `^Traceback` / `BrokenPipeError`), which still surfaces as
+    # deploy-critical because it has its own log shape. The metric
+    # line by itself is informational and the deploy gate must not
+    # file a critical issue every time yandex drops a single
+    # request - the e2e voice harness already covers real STT
+    # breakage end-to-end (see `.github/e2e/voice_commands/`).
+    # Complementary to the #1875 rule above: #1875 covers the
+    # `stt_attempt yandex:error->...->vosk:ok -> accepted` success
+    # path; this rule covers the `stt_attempt_metric ... reason=error`
+    # INFO-level metric line that the multi-provider chain emits on
+    # every fallback attempt regardless of the final outcome.
+    r"\[stt_attempt_metric\].*reason=error",
 ]
 CRITICAL_EXCLUDE_BY_SCOPE = {
     "main": [
@@ -377,6 +399,23 @@ CRITICAL_EXCLUDE_BY_SCOPE = {
         # restart on Vision Pi) is not a deployment failure.
         r"нода упала: /audio_node",
         r"/audio_node\b",
+        # Scope leak (issue #1893, deploy run 33650766141 02.09 /
+        # kanban t_583c838d): stt_node lives in the voice-assistant
+        # container on the Vision Pi (ROS_DOMAIN_ID=0, shared /rosout
+        # bus via Zenoh router). The Main Pi perception's
+        # context_aggregator / health_monitor subscribes to /rosout
+        # and prints the same lines in its periodic report, e.g.
+        # `[WARN] stt_node (1s ago): [stt_attempt] yandex:error(...)->
+        # ...`. The bare word `error` in the re-echoed yandex chain
+        # is what trips CRITICAL_MATCH_RE in the main scope. Same
+        # shape as the telegram_node / audio_node exclusions above —
+        # the real root cause is on the Vision Pi (transient yandex
+        # 5xx), and the multi-provider fallback chain keeps STT
+        # working. A real stt_node crash on the Vision Pi still
+        # surfaces in the vision container's own log dump, where the
+        # exclusion does not apply. The narrow `[WARN] stt_node`
+        # prefix is the health_monitor's exact rewrite shape.
+        r"\[warn\] stt_node.*\[stt_attempt\]",
     ],
     "vision": [
         # telegram_node start_polling transient (issue #1433 / deploy run
@@ -435,6 +474,23 @@ WARNING_EXCLUDE_COMMON = [
     # deployment failure (retro 12.08 t_d3e44336, issue #989, #684).
     r"отклонено \(пустое\)",
     r"yandex:empty\(.*\)->.*:empty\(.*\) -> rejected",
+    # STT provider-error rejection (issue #1893, deploy run 33650766141
+    # 02.09 / kanban t_583c838d): stt_node logs the provider chain
+    # `[stt_attempt] <p1>:<r1>(<ms>ms)-><p2>:<r2>(<ms>ms)->...
+    # -> rejected` whenever the multi-provider fallback chain fails
+    # and the utterance is dropped. The yandex:error token appears
+    # when yandex returned an HTTP 5xx / quota error / network
+    # timeout; the chain then falls back to vosk / silero. The word
+    # `WARN` is the only signal deploy gate sees (no `error` keyword
+    # in WARNING_MATCH_RE) and stt_attempt_metric at INFO level does
+    # NOT count. Same exclusion class as the empty-rejection rule
+    # above — the existing rule covers the empty path; this sibling
+    # covers the error/fallback path. Real STT failures (provider
+    # timeout that deadlocks stt_node, missing yaml, missing api
+    # key) all surface as a Python traceback in stt_node, which the
+    # CRITICAL rules above already catch. Deploy gate must not flag
+    # a transient 4xx/5xx from yandex as a deploy-warning.
+    r"yandex:error\(.*\)->.*-> rejected",
     r"отклонено \(короткое",
     r"интернет недоступен",
     # PyAudio overflow: input overrun is handled by the audio pipeline,
@@ -542,6 +598,21 @@ WARNING_EXCLUDE_BY_SCOPE = {
         # covers the literal phrase; this MAIN-scope pattern catches the
         # rewritten form so it cannot slip through as a non-voice-msg.
         r"\[warn\] audio_node.*не принял threshold",
+        # rtabmap icp_odometry (issue #1893, deploy run 33650766141
+        # 02.09 / kanban t_583c838d): rtabmap logs
+        # `Dropping image/scan data with stamp <t> (delay...` when
+        # the first scan arrives after rtabmap's SLAM node is up
+        # but the static TF tree is still being published. The
+        # data is dropped once, the next message stamps correctly,
+        # and the SLAM pipeline catches up within ~5s. Same family
+        # as the `scan_voxel_size` / `scan_normal_k` exclusions
+        # above (issue #1485, #1680): rtabmap prints an
+        # informational WARN during startup handshake, deploy gate
+        # must not flag the warning per-run. Bare "Dropping
+        # image/scan" without the `stamp ... (delay` continuation
+        # (e.g. a real scan drop after the TF tree is stable) is
+        # still reported.
+        r"rtabmap\.icp_odometry.*dropping image/scan data with stamp.*\(delay",
     ],
     "vision": [
         # audio_node HPFONOFF write (issue #1680, deploy round-244):
