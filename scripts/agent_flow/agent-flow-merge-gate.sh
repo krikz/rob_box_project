@@ -2889,7 +2889,10 @@ except Exception:
                 [ -z "${pr_head_ref:-}" ] && log "issue #${number}: WARNING cannot fetch headRefName for PR #${pr_number}" && continue
             fi
             # Определяем assignee по меткам issue (для recovery-карточки).
-            _assignee="default"
+            # Ретро 02.09 t_2bd2e7ea: default НЕ валиден — упал бы в ADR-0041
+            # silent-drop. Если метки нет, fallback на devops (он же воркер,
+            # который и должен разрешать конфликт через force-with-lease push).
+            _assignee="devops"
             for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
                 case "$lbl" in
                     agent:backend)    _assignee="backend"; break ;;
@@ -3091,7 +3094,8 @@ for t in data:
                     skipped=$((skipped+1)); continue
                 fi
                 # assignee по метке issue (та же логика, что и в rebase-блоке ниже).
-                _assignee="default"
+                # Ретро 02.09 t_2bd2e7ea: default → devops fallback.
+                _assignee="devops"
                 for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
                     case "$lbl" in
                         agent:backend)    _assignee="backend"; break ;;
@@ -3178,7 +3182,8 @@ ${_un_failed_md}
             # Подтягиваем headRefName — UNSTABLE-блок не имеет его из основного цикла (регрессия t_1146)
             pr_head_ref="$(gh pr view "$pr_number" --repo "$GH_REPO" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")"
             [ -z "${pr_head_ref:-}" ] && log "issue #${number}: WARNING cannot fetch headRefName for PR #${pr_number}" && continue
-            _assignee="default"
+            # Ретро 02.09 t_2bd2e7ea: default → devops fallback.
+            _assignee="devops"
             for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
                 case "$lbl" in
                     agent:backend)    _assignee="backend"; break ;;
@@ -3825,7 +3830,8 @@ for pr in data:
     fi
 
     # Определяем assignee по меткам issue (если знаем issue_num)
-    _assignee="default"
+    # Ретро 02.09 t_2bd2e7ea: default → devops fallback (default невалиден).
+    _assignee="devops"
     if [ -n "$issue_num" ]; then
         for lbl in $(gh issue view "$issue_num" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
             case "$lbl" in

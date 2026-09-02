@@ -3097,7 +3097,9 @@ except Exception:
         # разрешить конфликт в ТОЙ ЖЕ ветке (никаких новых веток — Шифу прямо),
         # запушить, дождаться следующего прогона. Создаём карточку воркеру с
         # assignee=профиль по метке issue (agent:backend → backend, etc).
-        _conflict_assignee="default"
+        # Ретро 02.09 t_2bd2e7ea: default → devops fallback (default невалиден
+        # по ADR-0041 — silent-drop в диспетчере).
+        _conflict_assignee="devops"
         for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
             case "$lbl" in
                 agent:backend)    _conflict_assignee="backend"; break ;;
@@ -4162,7 +4164,8 @@ sshpass -p open ssh ros2@10.1.1.21 'docker logs voice-assistant --since <ts> | g
         # ретро 10.08 (t_9caf5d52): при infra-FAIL / merged-PR карточку воркеру
         # НЕ создаём — воркеру нечего чинить (квота/робот/build или фикс уже в develop).
         # Определяем профиль воркера по меткам issue (agent:<role>)
-        _worker_assignee="default"
+        # Ретро 02.09 t_2bd2e7ea: default → devops fallback.
+        _worker_assignee="devops"
         for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
             case "$lbl" in
                 agent:backend)    _worker_assignee="backend"; break ;;
