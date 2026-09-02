@@ -1664,6 +1664,139 @@ archive_openspec_change_for_merge() {  # $1=cid $2=num $3=pr $4=branch
     fi
 }
 
+# --- pr_label_sweep_after_merge (ретро 01.09 t_fd604461) -------------------
+# Сценарий: PR смержен (state=MERGED, base=develop), но на нём всё ещё висят
+# process-метки (needs-e2e / needs-review / e2e-done / e2e:rejected /
+# no-e2e-required / agent-flow-error). Эти метки «залипают» после merge и
+# порождают хронические проблемы:
+#   - PR маячит в `gh pr list --label needs-e2e` → e2e-process может взять
+#     в ротацию уже влитую ветку и поставить e2e:rejected (лишний шум);
+#   - PR с needs-review после merge попадает в очередь ревью Шифу
+#     (повторный review того же кода);
+#   - dashboards по process-меткам показывают ложные срабатывания.
+#
+# Снимаем ТОЛЬКО с MERGED PR (state=MERGED) — для OPEN/CLOSED PR не трогаем
+# (там метки могут быть сигналом для других процессов). Идемпотентно:
+# remove-label на отсутствующей метке = no-op (gh exit 0).
+#
+# Аргументы: $1=pr_number. Опциональный $2=context (для лога, какой путь
+# закрытия вызвал sweep). Не фейлит: WARN на API-сбой, retry next tick.
+# ============================================================================
+pr_label_sweep_after_merge() {  # $1=pr_number [$2=context]
+    local pr_num="${1:?pr_label_sweep_after_merge: missing pr_number}"
+    local context="${2:-merge-gate auto-cleanup}"
+    [ "$pr_num" = "0" ] && return 0
+    # Re-read PR state — race с пользователем (юзер может re-open, тогда
+    # НЕ чистим: state перестанет быть MERGED).
+    local _pr_state _pr_labels_csv _pr_labels_norm
+    _pr_state="$(gh pr view "$pr_num" --repo "$GH_REPO" --json state --jq '.state' 2>/dev/null || echo "")"
+    if [ "$_pr_state" != "MERGED" ]; then
+        log "pr-label-sweep: PR #${pr_num} state=${_pr_state:-?} — skip (не MERGED)"
+        return 0
+    fi
+    _pr_labels_csv="$(gh pr view "$pr_num" --repo "$GH_REPO" --json labels \
+        --jq '[.labels[].name] | join(",")' 2>/dev/null || echo "")"
+    _pr_labels_norm="$(printf '%s' "$_pr_labels_csv" | tr '[:upper:]' '[:lower:]')"
+    # Process-метки, которые должны быть сняты с MERGED PR. Список
+    # фиксирован (как ADR-0022 §4.4 process-labels), иначе рискуем снять
+    # пользовательские метки (например `service:foo`, `infra:bar`).
+    local _to_remove=""
+    if has_label "$_pr_labels_norm" "$NEEDS_E2E_LABEL"; then
+        _to_remove="${_to_remove} ${NEEDS_E2E_LABEL}"
+    fi
+    if has_label "$_pr_labels_norm" "$NEEDS_REVIEW_LABEL"; then
+        _to_remove="${_to_remove} ${NEEDS_REVIEW_LABEL}"
+    fi
+    if has_label "$_pr_labels_norm" "$DONE_LABEL"; then
+        _to_remove="${_to_remove} ${DONE_LABEL}"
+    fi
+    if has_label "$_pr_labels_norm" "$REJECTED_LABEL"; then
+        _to_remove="${_to_remove} ${REJECTED_LABEL}"
+    fi
+    if has_label "$_pr_labels_norm" "$NO_E2E_LABEL"; then
+        _to_remove="${_to_remove} ${NO_E2E_LABEL}"
+    fi
+    if has_label "$_pr_labels_norm" "agent-flow-error"; then
+        _to_remove="${_to_remove} agent-flow-error"
+    fi
+    if has_label "$_pr_labels_norm" "${STALE_CONFLICTING_LABEL:-stale-conflicting}"; then
+        _to_remove="${_to_remove} ${STALE_CONFLICTING_LABEL:-stale-conflicting}"
+    fi
+    if has_label "$_pr_labels_norm" "${STALE_BRANCH_REUSE_LABEL:-stale-branch-reuse}"; then
+        _to_remove="${_to_remove} ${STALE_BRANCH_REUSE_LABEL:-stale-branch-reuse}"
+    fi
+    _to_remove="$(printf '%s' "$_to_remove" | xargs)"  # trim leading/trailing spaces
+    if [ -z "$_to_remove" ]; then
+        log "pr-label-sweep: PR #${pr_num} уже чист (context=${context})"
+        return 0
+    fi
+    if [ "$DRY_RUN" = "true" ]; then
+        log "DRY-RUN pr-label-sweep: PR #${pr_num} remove: ${_to_remove} (context=${context})"
+        return 0
+    fi
+    local _removed=0 _failed=0
+    for lbl in $_to_remove; do
+        if gh pr edit "$pr_num" --repo "$GH_REPO" --remove-label "$lbl" >/dev/null 2>&1; then
+            _removed=$((_removed+1))
+        else
+            _failed=$((_failed+1))
+            log "pr-label-sweep: WARNING PR #${pr_num} remove ${lbl} failed (non-fatal, retry next tick)"
+        fi
+    done
+    log "pr-label-sweep: PR #${pr_num} MERGED — снято ${_removed}/${_to_remove// /,} меток (context=${context})"
+    return 0
+}
+
+# --- pr_label_sweep_merged_pass_all (ретро 01.09 t_fd604461) ----------------
+# Standalone sweep на КАЖДЫЙ тик: сканирует MERGED PR за последние
+# RETRO_MERGED_DAYS дней с process-метками и снимает их (даже если issue
+# уже закрыта другим путём — manual close, Q22-user-merge, или вообще
+# orphan-cleanup). Это backstop для случаев, когда метки на PR залипли
+# ДО того, как pr_label_sweep_after_merge был добавлен (миграция исторических
+# залипших меток), и для PR, которые были закрыты вне merge-gate.
+#
+# Окно = RETRO_MERGED_DAYS (14 дней) — старые PR не трогаем, чтобы не
+# возрождать метки на архивных ветках, где e2e-процесс уже давно прошёл.
+# ============================================================================
+pr_label_sweep_merged_pass_all() {
+    local _since _prs_json _pr_num _pr_state _pr_labels_csv _pr_labels_norm _has_process
+    _since="$(date -u -d "${RETRO_MERGED_DAYS:-14} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    log "pr-label-sweep-merged-pass: scanning MERGED PRs (last ${RETRO_MERGED_DAYS:-14}d) with stale process labels"
+    # Один REST-запрос на тик; limit 200 — больше, чем 14-дневный объём merge
+    # в rob_box_project (~5-15 PR/день × 14 = 70-210 PR; берём 200 чтобы
+    # покрыть пик, расширяемое).
+    _prs_json="$(gh pr list --repo "$GH_REPO" --state merged --base "$DEVELOP_BRANCH" \
+        --limit 200 --json number,mergedAt,labels 2>/dev/null || echo '[]')"
+    if [ -z "$_prs_json" ]; then
+        _prs_json='[]'
+    fi
+    printf '%s' "$_prs_json" | python3 -c '
+import json, sys, os
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+PROCESS = {"needs-e2e", "needs-review", "e2e-done", "e2e:rejected",
+           "no-e2e-required", "agent-flow-error", "stale-conflicting",
+           "stale-branch-reuse"}
+since = sys.argv[1] if len(sys.argv) > 1 else ""
+for pr in data:
+    pr_num = str(pr.get("number", ""))
+    merged = pr.get("mergedAt") or ""
+    if since and merged < since:
+        continue
+    labels = {l.get("name", "") for l in (pr.get("labels") or [])}
+    if not (PROCESS & labels):
+        continue
+    sys.stdout.write(pr_num + "\n")
+' "$_since" 2>/dev/null | while IFS= read -r _pr_num; do
+        [ -z "$_pr_num" ] && continue
+        pr_label_sweep_after_merge "$_pr_num" "merged-pass-backstop"
+    done
+    return 0
+}
+
 # --- rate-limit конфликт/UNSTABLE-комментариев (ретро 12.08 t_8af6bf29) -----
 # scan-all-prs комментил карточку 'ОБЯЗАН rebase' КАЖДЫЙ тик (~10 мин) при
 # PR CONFLICTING → шум. Теперь: коммент не чаще 1 раза в 2 часа. Таймстамп
@@ -2733,6 +2866,9 @@ except Exception:
                 # Reflect the new state for the case statement below so
                 # it walks into the CLOSED branch (skip close + cleanup).
                 _issue_state="CLOSED"
+                # Ретро 01.09 t_fd604461: снять process-метки с MERGED PR
+                # (state гарантированно MERGED в этой ветке: line ~2064).
+                pr_label_sweep_after_merge "${pr_number}" "no-e2e-required close" || true
             else
                 log "issue #${number}: WARNING gh issue close failed (${NO_E2E_LABEL} path) — retry next tick"
                 labeled=$((labeled+1)); continue
@@ -2854,6 +2990,8 @@ except Exception:
                     if gh issue close "$number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
                         _closed_this_tick=1
                         log "issue #${number}: CLOSED (reason=completed, PASS-proven via ${DONE_LABEL})"
+                        # Ретро 01.09 t_fd604461: снять process-метки с MERGED PR.
+                        pr_label_sweep_after_merge "${pr_number}" "e2e-done close" || true
                     else
                         # Close API failure — destructive cleanup MUST be
                         # deferred, otherwise we lose the mapping. Warning
@@ -2931,6 +3069,8 @@ except Exception:
                         if [ -n "${task_id:-}" ]; then
                             archive_merged_card "$task_id" "$number" "${pr_number:-}" "${branch:-}"
                         fi
+                        # Ретро 01.09 t_fd604461: снять process-метки с MERGED PR.
+                        pr_label_sweep_after_merge "${pr_number}" "Q22 user-merge close" || true
                     else
                         log "issue #${number}: WARNING gh issue close failed (Q22 orphan) — retry next tick"
                     fi
@@ -5085,6 +5225,9 @@ except Exception:
         if gh issue close "$r_issue" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
             retro_closed=$((retro_closed+1))
             log "retro-path: issue #${r_issue} CLOSED (reason=completed, ретро-путь)"
+            # Ретро 01.09 t_fd604461: снять process-метки с MERGED PR (это
+            # основной путь: orphan-cleanup закрыл issue по PASS-доказательству).
+            pr_label_sweep_after_merge "${r_pr}" "retro-path close" || true
         else
             log "retro-path: WARNING close failed for #${r_issue} — retry next tick"
         fi
@@ -5477,6 +5620,19 @@ for pr in data:
     labels_out = labels_csv if labels_csv else "-"
     print(f"{pr_num}\t{head}\t{title}\t{labels_out}\t{issue_out}\t{created}")
 ' "$BACKFILL_AGE_MINUTES" 2>/dev/null)
+
+# ============================================================================
+# PR-label-sweep merged-pass (ретро 01.09 t_fd604461)
+# ----------------------------------------------------------------------------
+# Backstop для исторически залипших process-меток на MERGED PR: какие-то
+# PR были закрыты ДО того, как pr_label_sweep_after_merge был добавлен
+# (например, ручной merge без e2e), и метки needs-e2e/needs-review/
+# e2e:rejected так и висят. Этот проход снимает их на КАЖДОМ тике.
+#
+# Окно: RETRO_MERGED_DAYS (14 дней) — старые PR не трогаем, иначе возрождаем
+# метки на давно архивных ветках (где e2e-процесс уже завершён).
+# ============================================================================
+pr_label_sweep_merged_pass_all || true
 
 # --- summary -----------------------------------------------------------------
 log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled} orphan_labeled=${orphan_labeled} backfill_labeled=${backfill_labeled} retro_archived=${retro_archived} human_close_propagated=${human_close_propagated}"
