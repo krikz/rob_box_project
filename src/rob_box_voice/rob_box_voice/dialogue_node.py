@@ -41,6 +41,7 @@ from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Bool, String
 from nav_msgs.msg import Odometry
 
+from rob_box_core.tool_catalog import CORE_SKILL, skill_names, tools_for_skill
 from rob_box_harness.config import LLMConfig
 from rob_box_harness.core.dialog_core import DialogCore, DialogResult
 from rob_box_harness.core.dialogue_state_machine import (
@@ -320,6 +321,7 @@ class DialogueNode(Node):
         self._mcp_tool_names: set[str] = self._collect_mcp_tool_names()
         self._system_prompt: str = self._load_system_prompt()
         self._skill_prompts: dict[str, str] = self._load_skill_prompts()
+        self._validate_skill_fragments(self._skill_prompts)
         self._verbose_llm: bool = bool(self.get_parameter("verbose_llm").value)
         self._wake_words: List[str] = list(self.get_parameter("wake_words").value)
         # Issue #1279 — gate команд движения/статуса: фразы, которые уже
@@ -1026,7 +1028,6 @@ class DialogueNode(Node):
             # registered but never mentioned, so the LLM kept using Renardo).
             # Other domain prompts (FAQ, navigation, web_search) stay
             # unchecked for now — TODO when their contracts harden.
-            self._validate_tools_in_prompt(prompt_file, prompt)
             return prompt
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(f"⚠️ Prompt not found ({exc})")
@@ -1050,129 +1051,48 @@ class DialogueNode(Node):
             )
             return set()
 
-    def _validate_tools_in_prompt(
-        self, prompt_file: str, prompt_text: str
-    ) -> None:
-        """Warn if MCP tools are missing from ``music_skill_prompt.txt``.
+    def _validate_skill_fragments(self, fragments: dict[str, str]) -> None:
+        """Предупредить, если инструмент скилла не назван в его тексте.
 
-        Music-domain only (per ARCH-review #1405 / #1409 / issue #1403
-        scope — the music prompt is a static contract the LLM reads
-        verbatim, so drift there is user-visible. Other domain prompts
-        stay unchecked; that's a future-cycle TODO).
+        Блокер живёт в тесте (``test_skill_prompt_contract.py``) — здесь
+        рантайм-страховка на случай, когда на робот приехал промпт из
+        другой сборки: контейнер поднимется и заговорит, но оператор
+        увидит в логе, какой именно скилл разъехался.
+
+        Раньше эта проверка (``_validate_tools_in_prompt``) смотрела
+        ТОЛЬКО музыкальный промпт и только предупреждением — а класс
+        расхождения общий: #1403 (``generate_music`` зарегистрирован, в
+        тексте не упомянут → LLM отвечает «нет такой функции»).
         """
-        # Match by filename stem — the prompt lives under prompts/skills/.
-        if "music_skill" not in prompt_file:
+        if not fragments:
             return
-        tool_names: set[str] = getattr(self, "_mcp_tool_names", set()) or set()
-        if not tool_names:
-            # Either ToolRegistry probe failed (already warned above) or
-            # the registry is empty — no point in spamming warnings.
-            return
-        prompt_lower = prompt_text.lower()
-        missing: list[str] = []
-        for tool_name in sorted(tool_names):
-            if tool_name.lower() not in prompt_lower:
-                missing.append(tool_name)
-        if missing:
-            self.get_logger().warning(
-                f"[issue 1409] {len(missing)} MCP tool(s) not described "
-                f"in {prompt_file}: {', '.join(missing)}. "
-                f"LLM may answer «нет такой функции» and fall back to "
-                f"a different tool (regression class of #1403)."
-            )
-        else:
-            self.get_logger().debug(
-                f"[issue 1409] All {len(tool_names)} MCP tools are "
-                f"mentioned in {prompt_file} ✓"
-            )
-    def _load_skill_prompts(self) -> dict[str, str]:
-        """Прочитать фрагменты доменных скиллов с диска.
-
-        Файлы читает нода, а не harness: harness обязан оставаться без
-        файловой системы и без ROS2 (он получает уже готовый словарь).
-
-        При ``skills_enabled=false`` возвращаем пустой словарь — тогда
-        DialogCore ведёт себя ровно как до скиллов, побайтово.
-
-        Имя файла = имя скилла из каталога. Отсутствие файла для
-        объявленного скилла — не ошибка старта: скилл просто останется
-        без текста, а инструменты его никуда не денутся. Ронять ноду
-        из-за промпта нельзя, робот должен подняться и говорить.
-        """
-        try:
-            if not bool(self.get_parameter("skills_enabled").value):
-                self.get_logger().info(
-                    "ℹ️ skills_enabled=false — доменные скиллы выключены "
-                    "(Move A не активен, поведение как до change'а)"
+        for skill, text in sorted(fragments.items()):
+            lowered = text.lower()
+            try:
+                tools = tools_for_skill(
+                    skill, include_core=(skill == CORE_SKILL)
                 )
-                return {}
-        except Exception:  # noqa: BLE001 — параметр не объявлен (старый yaml)
-            return {}
-
-        try:
-            from ament_index_python.packages import get_package_share_directory
-            from rob_box_core.tool_catalog import skill_names
-
-            skills_dir = os.path.join(
-                get_package_share_directory("rob_box_voice"), "prompts", "skills"
-            )
-            loaded: dict[str, str] = {}
-            absent: list[str] = []
-            for skill in skill_names():
-                path = os.path.join(skills_dir, f"{skill}.txt")
-                try:
-                    with open(path, "r", encoding="utf-8") as fh:
-                        text = fh.read().strip()
-                except OSError:
-                    absent.append(skill)
-                    continue
-                if text:
-                    loaded[skill] = text
-                else:
-                    absent.append(skill)
-            self.get_logger().info(
-                f"🧩 Загружено фрагментов скиллов: {len(loaded)} "
-                f"({', '.join(sorted(loaded)) or '—'})"
-            )
-            if absent:
+            except KeyError:
                 self.get_logger().warning(
-                    f"⚠️ Без текста остались скиллы: {', '.join(sorted(absent))} "
-                    "— их инструменты работают, но доменных инструкций у LLM нет"
+                    f"⚠️ [skills] фрагмент {skill!r} не соответствует ни "
+                    "одному скиллу каталога — он не будет активирован"
                 )
-            return loaded
-        except Exception as exc:  # noqa: BLE001 — промпт не роняет ноду
-            self.get_logger().warning(
-                f"⚠️ Не удалось загрузить фрагменты скиллов ({exc}); "
-                "Move A остаётся выключенным"
+                continue
+            missing = sorted(
+                entry.name for entry in tools
+                if entry.name.lower() not in lowered
             )
-            return {}
-
-    def _on_prompt_stats(self, stats: Any) -> None:
-        """Опубликовать размер промпта, посчитанный DialogCore.
-
-        Колбэк зовётся из harness на КАЖДОЕ обращение к LLM, включая
-        каждую итерацию тул-цикла. Harness намеренно ничего не знает про
-        Prometheus — он только считает, публикует нода.
-
-        Любое исключение здесь гасится: телеметрия не имеет права ронять
-        живой ход. DialogCore тоже глушит исключения наблюдателя, это
-        второй слой на случай прямого вызова из тестов.
-        """
-        try:
-            record_llm_prompt_tokens(
-                stats.provider,
-                tokens=stats.prompt_tokens,
-                skill=stats.skill,
-                estimated=stats.estimated,
-            )
-            if self._verbose_llm:
+            if missing:
+                self.get_logger().warning(
+                    f"⚠️ [skills] скилл {skill!r}: {len(missing)} "
+                    f"инструмент(ов) не описаны во фрагменте: "
+                    f"{', '.join(missing)}. LLM может ответить «нет такой "
+                    f"функции» (класс регрессии #1403)."
+                )
+            else:
                 self.get_logger().debug(
-                    f"[prompt] tokens={stats.prompt_tokens} "
-                    f"provider={stats.provider} skill={stats.skill} "
-                    f"estimated={stats.estimated}"
+                    f"[skills] {skill}: все {len(tools)} инструментов описаны ✓"
                 )
-        except Exception as exc:  # noqa: BLE001 — метрика не роняет ход
-            self.get_logger().debug(f"⚠️ [metrics] prompt stats failed: {exc}")
 
     def _build_memory(self) -> MemoryStore:
         try:
