@@ -416,6 +416,32 @@ def record_llm_prompt_tokens(
     ).observe(tokens)
 
 
+def record_skill_activation(
+    skill: str,
+    *,
+    source: str,
+) -> None:
+    """Учёт одной активации доменного скилла.
+
+    :param skill: имя скилла (``"none"`` — активации не было).
+    :param source: ``"router"`` — сработал детерминированный
+        пред-роутер; ``"llm"`` — домен пришлось грузить вызовом
+        ``load_skill``, то есть роутер промахнулся; ``"miss"`` — LLM
+        запросила несуществующий домен.
+
+    Доля ``source="llm"`` и есть метрика промахов роутера (задача 3.7):
+    если она растёт, роутер не покрывает реальные формулировки, и
+    включать сужение каталога (Move B) рано.
+    """
+    counter = get_metric(
+        "counter",
+        "voice_skill_activation_total",
+        "Domain-skill activations, labelled by skill and how it was chosen.",
+        labelnames=("skill", "source"),
+    )
+    counter.labels(skill=skill or "none", source=source).inc()
+
+
 def record_fallback(
     primary: str,
     fallback: str,

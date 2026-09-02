@@ -80,6 +80,7 @@ from rob_box_llm.errors import ProviderError
 from rob_box_llm.provider import LLMMessage, LLMSettings
 
 from rob_box_voice.core.command_parser import CommandParser, IntentType
+from rob_box_voice.core.skill_router import SkillRouter
 from rob_box_voice.core.dialogue_text import (
     DEFAULT_WAKE_WORDS, has_wake_word, is_silence_command, is_unsilence_command, strip_wake_word,
 )
@@ -160,6 +161,7 @@ from rob_box_voice.observability import (
     record_session_duration,
     record_task_updated,
     record_llm_prompt_tokens,
+    record_skill_activation,
     record_voice_llm_request,
     start_metrics_server,
     start_span,
@@ -322,6 +324,11 @@ class DialogueNode(Node):
         self._system_prompt: str = self._load_system_prompt()
         self._skill_prompts: dict[str, str] = self._load_skill_prompts()
         self._validate_skill_fragments(self._skill_prompts)
+        #: Детерминированный пред-роутер домена. None — скиллы выключены.
+        self._skill_router: Any = None
+        #: Последние прочитанные счётчики load_skill из DialogCore — нужны,
+        #: чтобы публиковать ПРИРОСТ, а не абсолютное значение.
+        self._skill_load_seen: tuple[int, int] = (0, 0)
         self._verbose_llm: bool = bool(self.get_parameter("verbose_llm").value)
         self._wake_words: List[str] = list(self.get_parameter("wake_words").value)
         # Issue #1279 — gate команд движения/статуса: фразы, которые уже
@@ -339,6 +346,18 @@ class DialogueNode(Node):
             wake_words=["робот", "робокс", "робобокс"],
             confidence_base=0.8,
         )
+        # Пред-роутер домена переиспользует ТОТ ЖЕ CommandParser, что и
+        # command_intent_gate — второй классификатор не заводим.
+        if self._skill_prompts:
+            self._skill_router = SkillRouter(
+                self._command_parser,
+                known_skills=tuple(sorted(self._skill_prompts)),
+                confidence=self._command_intent_gate_confidence,
+            )
+            self.get_logger().info(
+                f"🧭 Пред-роутер скиллов включён: "
+                f"{', '.join(sorted(self._skill_prompts))}"
+            )
         # Issue #XXXX — «новая сессия» / «сбрось всё» / Telegram «/clear»:
         # сброс всего контекста текущего диалога. Фразы читаем из YAML,
         # дефолт — _DEFAULT_NEW_SESSION_PHRASES.
@@ -1093,6 +1112,143 @@ class DialogueNode(Node):
                 self.get_logger().debug(
                     f"[skills] {skill}: все {len(tools)} инструментов описаны ✓"
                 )
+
+    def _load_skill_prompts(self) -> dict[str, str]:
+        """Прочитать фрагменты доменных скиллов с диска.
+
+        Файлы читает нода, а не harness: harness обязан оставаться без
+        файловой системы и без ROS2 (он получает готовый словарь).
+
+        При ``skills_enabled=false`` возвращаем пустой словарь — тогда
+        DialogCore ведёт себя ровно как до скиллов, побайтово.
+
+        Имя файла = имя скилла из каталога. Отсутствие файла для
+        объявленного скилла — не ошибка старта: скилл останется без
+        текста, а его инструменты никуда не денутся. Ронять ноду из-за
+        промпта нельзя — робот должен подняться и говорить.
+        """
+        try:
+            if not bool(self.get_parameter("skills_enabled").value):
+                self.get_logger().info(
+                    "ℹ️ skills_enabled=false — доменные скиллы выключены "
+                    "(Move A не активен, поведение как до change'а)"
+                )
+                return {}
+        except Exception:  # noqa: BLE001 — параметр не объявлен (старый yaml)
+            return {}
+
+        try:
+            from ament_index_python.packages import get_package_share_directory
+
+            skills_dir = os.path.join(
+                get_package_share_directory("rob_box_voice"), "prompts", "skills"
+            )
+            loaded: dict[str, str] = {}
+            absent: list[str] = []
+            for skill in skill_names():
+                path = os.path.join(skills_dir, f"{skill}.txt")
+                try:
+                    with open(path, "r", encoding="utf-8") as fh:
+                        text = fh.read().strip()
+                except OSError:
+                    absent.append(skill)
+                    continue
+                if text:
+                    loaded[skill] = text
+                else:
+                    absent.append(skill)
+            self.get_logger().info(
+                f"🧩 Загружено фрагментов скиллов: {len(loaded)} "
+                f"({', '.join(sorted(loaded)) or '—'})"
+            )
+            if absent:
+                self.get_logger().warning(
+                    f"⚠️ Без текста остались скиллы: {', '.join(sorted(absent))} "
+                    "— их инструменты работают, но доменных инструкций у LLM нет"
+                )
+            return loaded
+        except Exception as exc:  # noqa: BLE001 — промпт не роняет ноду
+            self.get_logger().warning(
+                f"⚠️ Не удалось загрузить фрагменты скиллов ({exc}); "
+                "Move A остаётся выключенным"
+            )
+            return {}
+
+    def _activate_skill_for(self, text: str) -> None:
+        """Активировать домен ДО обращения к LLM.
+
+        Промах роутера безвреден: при выключенном сужении каталога LLM
+        видит все инструменты и при необходимости позовёт ``load_skill``
+        сама. Поэтому здесь нет ни ретраев, ни исключений наружу —
+        только попытка и метрика.
+        """
+        # getattr, а не прямой доступ: юнит-тесты этого репо собирают ноду
+        # через object.__new__ и не исполняют __init__, поэтому атрибута
+        # может не быть. Телеметрия и активация не имеют права ронять ход
+        # ни в проде, ни в тестовом двойнике.
+        router = getattr(self, "_skill_router", None)
+        if router is None:
+            return
+        try:
+            skill = router.route(text)
+        except Exception as exc:  # noqa: BLE001 — роутер не роняет ход
+            self.get_logger().debug(f"⚠️ [skills] router failed: {exc}")
+            return
+        if not skill:
+            return
+        try:
+            self._core.set_active_skill(skill)
+            record_skill_activation(skill, source="router")
+            self.get_logger().debug(f"🧭 [skills] активирован {skill!r}")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().debug(f"⚠️ [skills] activation failed: {exc}")
+
+    def _publish_skill_load_counters(self) -> None:
+        """Опубликовать прирост «домен пришлось грузить вызовом LLM».
+
+        Доля этого источника против ``router`` — метрика промахов
+        пред-роутера (задача 3.7).
+        """
+        core = getattr(self, "_core", None)
+        if core is None or getattr(self, "_skill_router", None) is None:
+            return
+        try:
+            loaded, misses = core.skill_load_counters
+        except Exception:  # noqa: BLE001
+            return
+        seen_loaded, seen_misses = getattr(self, "_skill_load_seen", (0, 0))
+        for _ in range(max(0, loaded - seen_loaded)):
+            record_skill_activation(core.active_skill, source="llm")
+        for _ in range(max(0, misses - seen_misses)):
+            record_skill_activation("none", source="miss")
+        self._skill_load_seen = (loaded, misses)
+
+    def _on_prompt_stats(self, stats: Any) -> None:
+        """Опубликовать размер промпта, посчитанный DialogCore.
+
+        Колбэк зовётся из harness на КАЖДОЕ обращение к LLM, включая
+        каждую итерацию тул-цикла. Harness намеренно ничего не знает про
+        Prometheus — он только считает, публикует нода.
+
+        Любое исключение здесь гасится: телеметрия не имеет права ронять
+        живой ход. DialogCore тоже глушит исключения наблюдателя — это
+        второй слой на случай прямого вызова из тестов.
+        """
+        try:
+            record_llm_prompt_tokens(
+                stats.provider,
+                tokens=stats.prompt_tokens,
+                skill=stats.skill,
+                estimated=stats.estimated,
+            )
+            if self._verbose_llm:
+                self.get_logger().debug(
+                    f"[prompt] tokens={stats.prompt_tokens} "
+                    f"provider={stats.provider} skill={stats.skill} "
+                    f"estimated={stats.estimated}"
+                )
+        except Exception as exc:  # noqa: BLE001 — метрика не роняет ход
+            self.get_logger().debug(f"⚠️ [metrics] prompt stats failed: {exc}")
 
     def _build_memory(self) -> MemoryStore:
         try:
@@ -3181,6 +3337,10 @@ class DialogueNode(Node):
                         or getattr(self._llm, "_model", ""),
                     },
                 ) as _llm_span:
+                    # Детерминированная активация домена ДО обращения к
+                    # LLM: фрагмент попадает уже в ПЕРВЫЙ запрос хода,
+                    # лишнего round-trip нет.
+                    self._activate_skill_for(user_input)
                     result: DialogResult = await self._core.process_input(
                         user_input,
                         is_dj_auto=was_dj_auto,
@@ -3190,6 +3350,9 @@ class DialogueNode(Node):
                         dynamic_system=dynamic_system,
                         preclassified_event=DialogueEvent.STT_RESULT,
                     )
+                    # Прирост «домен пришлось грузить вызовом LLM» —
+                    # это и есть метрика промахов пред-роутера.
+                    self._publish_skill_load_counters()
                     _llm_span.set_attribute(
                         "fallback",
                         _llm_provider_name == "HealthAwareFallbackLLM",

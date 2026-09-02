@@ -60,6 +60,55 @@ if TYPE_CHECKING:
 _MAX_TOOL_ITERATIONS: int = 8
 
 
+#: Имя инструмента, которым LLM подгружает доменный скилл сама.
+#:
+#: Он НЕ живёт в ``rob_box_core.tool_catalog`` намеренно: каталог
+#: описывает то, что робот УМЕЕТ ДЕЛАТЬ (ехать, играть, говорить), а этот
+#: вызов ничего на роботе не исполняет — он меняет состав промпта внутри
+#: harness'а и возвращает текст. Класть его в каталог значило бы просить
+#: mcp_server исполнять то, до чего он не дотягивается: фрагменты лежат в
+#: rob_box_voice, а MCP-сервер — отдельная нода в отдельном контейнере.
+LOAD_SKILL_TOOL: str = "load_skill"
+
+
+def _load_skill_spec(known: tuple[str, ...]) -> dict[str, Any]:
+    """Схема ``load_skill`` в OpenAI-формате.
+
+    Список доступных имён встроен в enum: модель не должна угадывать
+    строку, а промах по имени становится ошибкой валидации у провайдера,
+    а не тихой загрузкой пустоты.
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": LOAD_SKILL_TOOL,
+            "description": (
+                "Загрузить инструкции по работе с доменом, когда запрос "
+                "пользователя относится к музыке, навигации, памяти, "
+                "голосу или другому домену из списка. Возвращает текст "
+                "инструкций — прочитай его и продолжай ЭТОТ ЖЕ ход. "
+                "Вызывай ОДИН раз, до первого доменного действия."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "enum": list(known),
+                        "description": "Имя домена.",
+                    }
+                },
+                "required": ["skill"],
+            },
+        },
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+        },
+    }
+
+
 @dataclass(frozen=True)
 class PromptStats:
     """Размер одного запроса к LLM — сырьё для ``voice_llm_prompt_tokens``.
@@ -484,6 +533,12 @@ class DialogCore:
         #: shell (ROS2-нода) — harness не ходит в файловую систему.
         #: Пустой словарь = Move A выключен, вклеивать нечего.
         self._skill_prompts: dict[str, str] = dict(skill_prompts or {})
+        #: Сколько раз скилл пришлось грузить вызовом LLM вместо
+        #: детерминированного роутера — это и есть «промахи роутера»
+        #: (задача 3.7). Читается нодой для метрики.
+        self._skill_loaded_by_llm: int = 0
+        #: Сколько раз LLM попросила несуществующий домен.
+        self._skill_load_misses: int = 0
 
     # ---- main entry point -----------------------------------------------
 
@@ -903,6 +958,12 @@ class DialogCore:
         """
         tool_schemas = await self._tools.discover()
         openai_tools = [_tool_spec_to_openai(spec) for spec in tool_schemas]
+        # Модельный путь активации: LLM сама просит домен, если
+        # детерминированный роутер промахнулся. Результат вызова —
+        # tool-сообщение в самом хвосте messages, то есть позиция
+        # максимальной свежести, и модель действует в ТОМ ЖЕ ходу.
+        if self._skill_prompts:
+            openai_tools.append(_load_skill_spec(self.known_skills()))
 
         tools_called: list[str] = []
         seen: set[str] = set()
@@ -1144,6 +1205,10 @@ class DialogCore:
                                 pass
                     continue
 
+                if call.name == LOAD_SKILL_TOOL:
+                    results_by_call_id[call.id] = self._handle_load_skill(call)
+                    continue
+
                 results_by_call_id[call.id] = await self._tools.execute(call)
 
             for call in response.tool_calls:
@@ -1295,9 +1360,52 @@ class DialogCore:
         """
         self._active_skill = skill or "none"
 
+    @property
+    def skill_load_counters(self) -> tuple[int, int]:
+        """``(загружено вызовом LLM, промахов по имени)``.
+
+        Первое число — метрика промахов детерминированного роутера: если
+        оно растёт, роутер не покрывает реальные формулировки.
+        """
+        return self._skill_loaded_by_llm, self._skill_load_misses
+
     def known_skills(self) -> tuple[str, ...]:
         """Скиллы, для которых есть текст фрагмента."""
         return tuple(sorted(self._skill_prompts))
+
+    def _handle_load_skill(self, call: ToolCall) -> ToolResult:
+        """Исполнить ``load_skill`` внутри harness'а.
+
+        Активирует скилл (он останется активным и на следующих ходах) и
+        возвращает текст инструкций tool-результатом. Ход НЕ прерывается
+        ни при каком исходе: неизвестное имя возвращает ошибку со списком
+        доступных, и модель может исправиться на следующей итерации.
+        """
+        arguments = call.arguments or {}
+        requested = ""
+        if isinstance(arguments, Mapping):
+            requested = str(arguments.get("skill", "") or "").strip()
+
+        text = self._skill_prompts.get(requested)
+        if not text:
+            self._skill_load_misses += 1
+            return ToolResult(
+                tool_call_id=call.id,
+                content=(
+                    f"Неизвестный домен {requested!r}. Доступны: "
+                    + ", ".join(self.known_skills())
+                    + ". Выбери один из них или действуй без загрузки."
+                ),
+                is_error=True,
+            )
+
+        self.set_active_skill(requested)
+        self._skill_loaded_by_llm += 1
+        return ToolResult(
+            tool_call_id=call.id,
+            content=text,
+            is_error=False,
+        )
 
     def _resolve_skill_prompt(self) -> str:
         """Текст активного скилла или пустая строка."""
