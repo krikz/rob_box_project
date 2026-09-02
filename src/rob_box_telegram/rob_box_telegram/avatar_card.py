@@ -203,12 +203,18 @@ class AvatarCardStore:
         return self._now_fn()
 
     def register(self, chat_id: int, message_id: int, text: str, state: AvatarState) -> None:
-        """Зарегистрировать только что отправленную карточку."""
+        """Зарегистрировать только что отправленную карточку.
+
+        ``last_edit_s`` выставляется в ``-inf``, чтобы первое же обновление
+        state'а прошло без throttling'а (карточка только что создана — нам не
+        нужно ждать ``EDIT_THROTTLE_S``). Дальнейшие edit'ы уже подчиняются
+        обычному правилу «не чаще раза в 2 с».
+        """
         rec = CardRecord(
             chat_id=chat_id,
             message_id=message_id,
             last_text=text,
-            last_edit_s=self.now(),
+            last_edit_s=-1e9,
             last_seen_state=state,
         )
         with self._lock:
@@ -386,21 +392,13 @@ def build_floor_keyboard(
     if teleop_held:
         rows.append([{"text": "🛞 Отдать руль", "callback_data": "floor:release:teleop"}])
     else:
-        label = (
-            f"🛞 Руль у {_operator_name(teleop_floor)}"
-            if teleop_floor
-            else "🛞 Взять руль"
-        )
+        label = f"🛞 Руль у {_operator_name(teleop_floor)}" if teleop_floor else "🛞 Взять руль"
         rows.append([{"text": label, "callback_data": "floor:take:teleop"}])
 
     if voice_held:
         rows.append([{"text": "🎤 Отдать голос", "callback_data": "floor:release:voice"}])
     else:
-        label = (
-            f"🎤 Голос у {_operator_name(voice_floor)}"
-            if voice_floor
-            else "🎤 Взять голос"
-        )
+        label = f"🎤 Голос у {_operator_name(voice_floor)}" if voice_floor else "🎤 Взять голос"
         rows.append([{"text": label, "callback_data": "floor:take:voice"}])
 
     rows.append([{"text": "🔄 Обновить", "callback_data": "avatar:refresh"}])

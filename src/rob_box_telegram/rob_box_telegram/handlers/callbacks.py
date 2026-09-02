@@ -140,8 +140,7 @@ def _publish_stop(node) -> None:
         # Это нормальный race: пока таймер ждал, Quest забрал floor.
         # Ничего не делаем — другой клиент уже рулит.
         logger.info(
-            "_publish_stop: floor удерживает %s (race с другим клиентом), "
-            "stop не публикуем",
+            "_publish_stop: floor удерживает %s (race с другим клиентом), " "stop не публикуем",
             result.held_by or "unknown",
         )
 
@@ -267,17 +266,12 @@ async def _handle_floor(query, context, data: str) -> None:
 
     state = node.supervisor.state
     text = format_avatar_card(state, now_s=store.now() if store else 0.0)
-    keyboard_rows = build_floor_keyboard(
-        state.teleop_floor, state.voice_floor, client_id=node.supervisor.client_id
-    )["rows"]
-    markup_rows = [
-        [
-            _button(btn["text"], btn["callback_data"])
-            for btn in row
-        ]
-        for row in keyboard_rows
+    keyboard_rows = build_floor_keyboard(state.teleop_floor, state.voice_floor, client_id=node.supervisor.client_id)[
+        "rows"
     ]
+    markup_rows = [[_button(btn["text"], btn["callback_data"]) for btn in row] for row in keyboard_rows]
     from telegram import InlineKeyboardMarkup
+
     reply_markup = InlineKeyboardMarkup(markup_rows)
 
     if op == "take" and not result.granted:
@@ -285,9 +279,7 @@ async def _handle_floor(query, context, data: str) -> None:
         # Сначала отвечаем на callback (иначе крутилка в Telegram).
         await query.answer(f"🚫 Руль/голос удерживает {held}", show_alert=False)
         # Показываем «отказ» в самой карточке: пишем объяснение вверху.
-        denied_text = (
-            f"🚫 Не удалось взять {floor_name}: удерживает {held}.\n\n" + text
-        )
+        denied_text = f"🚫 Не удалось взять {floor_name}: удерживает {held}.\n\n" + text
         await _safe_edit(query, denied_text, reply_markup)
         return
 
@@ -317,13 +309,10 @@ async def _handle_avatar_refresh(query, context) -> None:
 
     state = node.supervisor.state
     text = format_avatar_card(state, now_s=store.now() if store else 0.0)
-    keyboard_rows = build_floor_keyboard(
-        state.teleop_floor, state.voice_floor, client_id=node.supervisor.client_id
-    )["rows"]
-    markup_rows = [
-        [_button(btn["text"], btn["callback_data"]) for btn in row]
-        for row in keyboard_rows
+    keyboard_rows = build_floor_keyboard(state.teleop_floor, state.voice_floor, client_id=node.supervisor.client_id)[
+        "rows"
     ]
+    markup_rows = [[_button(btn["text"], btn["callback_data"]) for btn in row] for row in keyboard_rows]
     await query.answer("🔄 Обновлено")
     await _safe_edit(query, text, InlineKeyboardMarkup(markup_rows))
 
@@ -334,6 +323,7 @@ async def _handle_avatar_refresh(query, context) -> None:
 def _button(text: str, callback_data: str):
     """Ленивая обёртка — python-telegram-bot импортируется в handler'е."""
     from telegram import InlineKeyboardButton
+
     return InlineKeyboardButton(text=text, callback_data=callback_data)
 
 
@@ -354,4 +344,5 @@ def _released_result() -> "AcquireResult":
     не дублировать AcquireResult-создание). Release не возвращает
     AcquireResult по API ``SupervisorClient.release_floor``."""
     from ..supervisor_client import AcquireResult
+
     return AcquireResult(granted=True, contacted_service=False)

@@ -72,8 +72,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
     else:
         await update.message.reply_text(
-            f"👋 Привет! Ваш chat ID: `{chat_id}`\n\n"
-            "Отправьте этот ID администратору для получения доступа.",
+            f"👋 Привет! Ваш chat ID: `{chat_id}`\n\n" "Отправьте этот ID администратору для получения доступа.",
             parse_mode="Markdown",
         )
 
@@ -214,12 +213,7 @@ def _build_inline_markup(rows: list) -> "InlineKeyboardMarkup":
 
     markup_rows = []
     for row in rows:
-        markup_rows.append(
-            [
-                InlineKeyboardButton(text=btn["text"], callback_data=btn["callback_data"])
-                for btn in row
-            ]
-        )
+        markup_rows.append([InlineKeyboardButton(text=btn["text"], callback_data=btn["callback_data"]) for btn in row])
     return InlineKeyboardMarkup(markup_rows)
 
 
@@ -325,9 +319,9 @@ def _occupancy_grid_to_png(grid) -> bytes:
     w = grid.info.width
     data = np.array(grid.data, dtype=np.int8).reshape(h, w)
 
-    rgb = np.full((h, w, 3), 128, dtype=np.uint8)   # unknown = gray
-    rgb[data == 0] = [235, 235, 235]                 # free = light
-    rgb[data == 100] = [20, 20, 20]                  # occupied = dark
+    rgb = np.full((h, w, 3), 128, dtype=np.uint8)  # unknown = gray
+    rgb[data == 0] = [235, 235, 235]  # free = light
+    rgb[data == 100] = [20, 20, 20]  # occupied = dark
     # Partial occupancy gradient
     mask = (data > 0) & (data < 100)
     if mask.any():
@@ -391,9 +385,7 @@ async def photo_map_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     node = _node(context)
     grid = getattr(node, "latest_map_grid", None)
     if grid is None:
-        await update.message.reply_text(
-            "⚠️ Карта ещё не построена. Подождите пока rtabmap создаст карту."
-        )
+        await update.message.reply_text("⚠️ Карта ещё не построена. Подождите пока rtabmap создаст карту.")
         return
 
     try:
@@ -436,8 +428,7 @@ async def say_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not result.granted:
         held = result.held_by or "другим оператором"
         await update.message.reply_text(
-            f"🚫 Голос удерживает {held}. "
-            "Дождитесь окончания текущего ответа или используйте текст."
+            f"🚫 Голос удерживает {held}. " "Дождитесь окончания текущего ответа или используйте текст."
         )
         return
     await update.message.reply_text(f"🗣 Озвучиваю: _{text}_", parse_mode="Markdown")
@@ -455,8 +446,7 @@ async def playvoice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     node.set_active_chat(update.effective_chat.id)
     context.user_data["playvoice_mode"] = True
     await update.message.reply_text(
-        "🎤 Режим озвучки активирован.\n"
-        "Отправьте голосовое сообщение — робот произнесёт его текст.",
+        "🎤 Режим озвучки активирован.\n" "Отправьте голосовое сообщение — робот произнесёт его текст.",
     )
 
 
