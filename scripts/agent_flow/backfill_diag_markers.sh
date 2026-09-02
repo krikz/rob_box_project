@@ -63,7 +63,17 @@ except Exception:
 for t in data:
     title = t.get("title", "") or ""
     status = t.get("status", "") or ""
+    # Сигнатуры diagnostic-карточек (синхронизировано с
+    # stale_after_upstream_fix_scan_all в agent-flow-merge-gate.sh):
+    #   - LEGACY: "🐛 CI UNSTABLE: ..." (PR #1743 Этап 0, до маркеров).
+    #     ВАЖНО для ретро t_beefef7a (02.09.2026): без этой строки
+    #     backfill не подбирает карточки t_8f764875 / t_5c524b12
+    #     (PR #1740/#1741 CLOSED Шифу, upstream-фикс PR #1748 уже в
+    #     develop). С 02.09 они висят в todo 33ч+.
+    #   - NEW: "🐛 CI UNSTABLE DIAGNOSTIC ..." (после PR #1743).
+    #   - REBASE: "🔀 rebase PR #..." (reminder).
     is_diag = (title.startswith("🐛 CI UNSTABLE DIAGNOSTIC") or
+               title.startswith("🐛 CI UNSTABLE:") or
                title.startswith("🔀 rebase PR #"))
     if is_diag and status not in ("done", "archived"):
         print(t.get("id", "") + chr(9) + title)

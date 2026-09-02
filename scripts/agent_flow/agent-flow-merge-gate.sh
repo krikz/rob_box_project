@@ -1350,14 +1350,19 @@ for t in data:
     title = t.get("title", "") or ""
     body = t.get("body", "") or ""
     status = t.get("status", "") or ""
-    # Сигнатура diagnostic-карточки из PR #1743 (ретро t_e00f448d):
-    # title начинается с "🐛 CI UNSTABLE DIAGNOSTIC #..." (НЕ с
-    # "🐛 CI UNSTABLE:" — в карточках нет двоеточия сразу после UNSTABLE;
-    # "🔀 rebase PR #..." — rebase reminder, тоже кандидат на маркеры).
+    # Сигнатуры diagnostic-карточек:
+    #   LEGACY (PR #1743 Этап 0, до введения маркеров): title
+    #     начинается с "🐛 CI UNSTABLE: ..." (с двоеточием сразу после
+    #     UNSTABLE). Карточки t_8f764875 / t_5c524b12 — именно LEGACY.
+    #     Без этого расширения фильтра они зависают в todo навсегда
+    #     (ретро t_beefef7a, 02.09.2026).
+    #   NEW (PR #1743 → develop, Этап 1): "🐛 CI UNSTABLE DIAGNOSTIC #...".
+    #   REBASE reminder: "🔀 rebase PR #..." — тоже кандидат на маркеры.
     # ADR-0035: не фильтруем по наличию маркера здесь — legacy-карточки
     # без маркеров должны попасть в скан, чтобы bash мог залогировать
     # "no diag-pr marker, skip (legacy)" (test D5).
     is_diag = (title.startswith("🐛 CI UNSTABLE DIAGNOSTIC") or
+               title.startswith("🐛 CI UNSTABLE:") or
                title.startswith("🔀 rebase PR #"))
     if is_diag and status not in ("done", "archived"):
         print(t.get("id", "") + "\t" + status)

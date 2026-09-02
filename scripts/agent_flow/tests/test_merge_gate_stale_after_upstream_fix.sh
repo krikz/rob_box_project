@@ -29,6 +29,11 @@
 #   D9.  REPO_DIR пуст (REST compare fallback) → strategy A через
 #         gh api compare, B+C skip с логом
 #   D10. diag-sig + diag-tests оба пустые → только strategy A (PR-merge)
+#   D11. LEGACY title (`🐛 CI UNSTABLE: ...` с двоеточием) — ретро t_beefef7a:
+#         карточка, созданная merge-gate'ом ДО PR #1743 (Этап 0 ADR-0035),
+#         должна попадать в скан и блокироваться по strat B (upstream-fix
+#         по сигнатуре). Без этого теста ADR-0035 v2 не имеет регрессии —
+#         фильтр is_diag тихо выкидывал все legacy-карточки из скана.
 #   M1.  маркеры корректно записываются в body при создании
 #         diagnostic-карточки (UNSTABLE-блок основного цикла).
 #         ЗАГЛУШКА: реализация живёт в PR #1743 (ретро t_e00f448d),
@@ -39,6 +44,10 @@
 #         маркеры добавляются (через HERMES body show/add)
 #   B2.  backfill: diagnostic с маркерами → НЕ дублирует (idempotent)
 #   B3.  backfill: DRY_RUN=true → файл body не изменяется
+#   B4.  backfill: LEGACY title (`🐛 CI UNSTABLE: ...` без DIAGNOSTIC) —
+#         должен подбираться (ретро t_beefef7a). До фикса ADR-0035 v2
+#         фильтр is_diag в backfill'е отсеивал legacy-карточки — orphan
+#         вроде t_8f764875 / t_5c524b12 висели без шанса на backfill.
 #
 # Run:
 #   bash scripts/agent_flow/tests/test_merge_gate_stale_after_upstream_fix.sh
@@ -93,6 +102,39 @@ fixture_diag_card() {
     # Empty open-PR list: needed so gh pr list --state open doesn't error
     # in stale_branch_scan_all (использует read -r, который падает на
     # пустом stdin без этой заглушки).
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_LIST_ALL_OPEN_REST_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+}
+
+# ============================================================================
+# Fixture: LEGACY diagnostic-карточка с маркерами `<!-- diag-* -->` и
+# legacy title `🐛 CI UNSTABLE: ...` (с двоеточием сразу после UNSTABLE).
+# Отличается от fixture_diag_card только префиксом title — это сигнатура,
+# которая была до введения PR #1743 (Этап 0 ADR-0035, до 02.09.2026).
+#
+# Используется в test_D11 (legacy title coverage). Сигнатура `"🐛 CI UNSTABLE DIAGNOSTIC"`
+# НЕ совпадает с legacy — фильтр is_diag в stale_after_upstream_fix_scan_all
+# должен принимать ОБЕ формы после фикса ADR-0035 v2 (ретро t_beefef7a).
+# ============================================================================
+fixture_legacy_diag_card() {
+    local cid="$1" status="$2" pr_num="$3" pr_sha="$4" pr_base="$5"
+    local sig_csv="$6" tests_csv="$7" classification="$8" created_ts="$9"
+
+    local markers
+    markers="<!-- diag-pr: ${pr_num} --> <!-- diag-pr-sha: ${pr_sha} --> <!-- diag-pr-base: ${pr_base} --> <!-- diag-sig: ${sig_csv} --> <!-- diag-tests: ${tests_csv} --> <!-- diag-classification: ${classification} --> <!-- diag-created-ts: ${created_ts} -->"
+
+    local body="## 🐛 CI UNSTABLE: real regression в PR ${markers} Body content for legacy card ${cid}."
+
+    local card_json
+    # KEY DIFFERENCE from fixture_diag_card: title prefix is legacy
+    # `"🐛 CI UNSTABLE: "` (с двоеточием), а не `"🐛 CI UNSTABLE DIAGNOSTIC ..."`.
+    card_json="{\"id\":\"${cid}\",\"title\":\"🐛 CI UNSTABLE: rob_box_voice unit-tests failed (PR #${pr_num}) — legacy\",\"status\":\"${status}\",\"body\":\"${body}\"}"
+    set_state KANBAN_LIST_JSON "[${card_json}]"
+
+    set_state "KANBAN_SHOW_${cid}_JSON" "{\"task\":{\"id\":\"${cid}\",\"status\":\"${status}\",\"body\":\"${body}\"}}"
+    set_state "PR_${pr_num}_VIEW_JSON" '{"state":"OPEN","headRefOid":"'"${pr_sha}"'","headRefName":"wts/branch","mergeable":"MERGEABLE","mergeStateStatus":"UNSTABLE"}'
+    set_state "PR_${pr_num}_ROLLUP_JSON" '[{"name":"Unit Tests (ROS2 Humble)","conclusion":"SUCCESS","status":"COMPLETED"}]'
     set_state PR_LIST_ALL_OPEN_JSON '[]'
     set_state PR_LIST_ALL_OPEN_REST_JSON '[]'
     set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
@@ -461,6 +503,58 @@ test_D10_no_sig_no_tests_only_strat_a() {
 }
 
 # ============================================================================
+# D11. LEGACY diagnostic title (`🐛 CI UNSTABLE: ...` с двоеточием).
+# Ретро t_beefef7a (02.09.2026): карточки t_8f764875 / t_5c524b12 (PR #1740/
+# #1741) были созданы merge-gate'ом ДО PR #1743 (Этап 0 ADR-0035), и их
+# title имеет legacy-сигнатуру с двоеточием после UNSTABLE. Старый фильтр
+# is_diag (`title.startswith("🐛 CI UNSTABLE DIAGNOSTIC")`) их пропускал —
+# scan_all никогда не пытался их парсить. Этот тест регрессирует правку
+# ADR-0035 v2: после расширения фильтра legacy-карточка должна попадать
+# в скан и блокироваться по strat B (upstream-fix по сигнатуре).
+# ============================================================================
+test_D11_legacy_title_covered_by_scan() {
+    new_test
+    REPO_DIR="$TEST_TMP"
+    export REPO_DIR
+    local cid="t_diag_d11_legacy" pr=1740 sha="f924ad6c47bcf7deb66d2080dcee067c66cf5792"
+    # Legacy title (`🐛 CI UNSTABLE: ...`) — ДОЛЖЕН проходить расширенный фильтр.
+    fixture_legacy_diag_card "$cid" "ready" "$pr" "$sha" "develop" \
+        "_track_mode_music_active" \
+        "src/rob_box_voice/test/unit/node/test_barge_in_policy.py" \
+        "unit_lint" "1756598400"
+    local upstream_sha="06b83b01b6a8c1de76c32bf90d809f0cfa809ffc"
+    fixture_git_log_hit_attr "_track_mode_music_active" "$upstream_sha"
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # КЛЮЧЕВОЕ: карточка должна быть заблокирована — до фикса ADR-0035 v2
+    # фильтр is_diag её тихо пропускал и journal был бы пустой.
+    local blocks
+    blocks="$(printf '%s\n' "$journal" | grep -cE "hermes .* block.* ${cid} " || true)"
+    assert_eq "1" "$blocks" "legacy-title diagnostic blocked via strat B" || return 1
+
+    # Причина содержит stale-after-upstream-fix + upstream SHA short.
+    local block_line
+    block_line="$(printf '%s\n' "$journal" | grep -E "hermes .* block.* ${cid}" | head -1)"
+    assert_contains "stale-after-upstream-fix" "$block_line" "reason contains stale-after-upstream-fix marker" || return 1
+    assert_contains "${upstream_sha:0:8}" "$block_line" "reason contains upstream sha prefix" || return 1
+
+    # Дополнительно: stderr фиксирует, что карточка именно попала в скан
+    # (не "no diag-pr marker, skip (legacy)", что было бы для совсем без
+    # маркеров).
+    local stderr_log
+    stderr_log="$(cat "$TEST_TMP/stderr.log" 2>/dev/null || true)"
+    assert_contains "auto-blocked" "$stderr_log" "stderr logs auto-block success" || return 1
+    # Не должно быть "no diag-pr marker, skip" — маркеры в body есть.
+    if printf '%s' "$stderr_log" | grep -q "no diag-pr marker"; then
+        echo "FAIL: legacy card was incorrectly skipped as no-marker" >&2
+        return 1
+    fi
+}
+
+# ============================================================================
 # M1. NOT TESTED IN THIS PR.
 #   Маркеры `<!-- diag-* -->` пишутся в body diagnostic-карточки в
 #   UNSTABLE-блоке основного цикла. Этот блок живёт в PR #1743 (retro
@@ -572,6 +666,44 @@ test_B3_backfill_dry_run() {
 }
 
 # ============================================================================
+# B4. backfill: LEGACY title (`🐛 CI UNSTABLE: ...` без DIAGNOSTIC).
+# Ретро t_beefef7a (02.09.2026): карточки t_8f764875 / t_5c524b12 имеют
+# именно legacy title. До ADR-0035 v2 фильтр is_diag в backfill'е их
+# отсеивал — backfill не подбирал карточки без маркеров для обогащения.
+# После ADR-0035 v2 фильтр принимает обе сигнатуры, и legacy-карточки
+# должны попадать в backfill (по regex из title — `PR #\d+`).
+# ============================================================================
+test_B4_backfill_covers_legacy_title() {
+    new_test
+    local cid="t_legacy_backfill" pr=1740 sha="f924ad6c47bcf7deb66d2080dcee067c66cf5792"
+    # KEY: title — LEGACY сигнатура `🐛 CI UNSTABLE: ...` (с двоеточием,
+    # без DIAGNOSTIC). Это точная копия title t_8f764875.
+    local body="## 🐛 CI UNSTABLE: real regression в PR Body content without markers (legacy)."
+    set_state KANBAN_LIST_JSON "[{\"id\":\"${cid}\",\"title\":\"🐛 CI UNSTABLE: rob_box_voice unit-tests failed (PR #${pr}) — legacy\",\"status\":\"ready\",\"body\":\"${body}\"}]"
+    set_state "KANBAN_SHOW_${cid}_JSON" "{\"task\":{\"id\":\"${cid}\",\"status\":\"ready\",\"body\":\"${body}\"}}"
+    set_state "PR_${pr}_VIEW_JSON" '{"state":"OPEN","headRefOid":"'"${sha}"'","headRefName":"branch","mergeable":"MERGEABLE","mergeStateStatus":"UNSTABLE"}'
+
+    (
+        export PATH="$TEST_TMP/bin:$PATH"
+        export GH_STATE="$GH_STATE"
+        export GH_JOURNAL="$GH_JOURNAL"
+        bash "$BACKFILL_SCRIPT" 2>>"$TEST_TMP/stderr.log"
+    )
+
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # КЛЮЧЕВОЕ: backfill должен был найти legacy-title карточку и
+    # запостить comment с маркерами. До фикса ADR-0035 v2 — карточка
+    # тихо отфильтровывалась, comment_lines=0.
+    local comment_lines marker_lines
+    comment_lines="$(printf '%s\n' "$journal" | grep -cE "hermes .* comment.* ${cid} " || true)"
+    marker_lines="$(printf '%s\n' "$journal" | grep -cE "diag-pr: ${pr}" || true)"
+    assert_contains "1" "$comment_lines" "backfill posted comment for legacy title card" || return 1
+    assert_contains "1" "$marker_lines" "backfill posted comment with diag-pr marker" || return 1
+}
+
+# ============================================================================
 # Run
 # ============================================================================
 run_test "D1.  upstream-fix via signature (strat B)"          test_D1_upstream_fix_via_signature
@@ -584,11 +716,13 @@ run_test "D7.  rate-limit (2nd tick same PR)"                test_D7_rate_limit
 run_test "D8.  done status → skip"                           test_D8_done_status_skipped
 run_test "D9.  REST compare fallback (REPO_DIR empty)"       test_D9_rest_compare_fallback
 run_test "D10. no sig + no tests → strat A only"             test_D10_no_sig_no_tests_only_strat_a
+run_test "D11. LEGACY title (🐛 CI UNSTABLE:) → covered"     test_D11_legacy_title_covered_by_scan
 # M1: covered in PR #1743 (UNSTABLE diagnostic-klassifikator), не в этом PR.
 # После merge PR #1743 можно будет перенести test_M1_markers_in_diag_body
 # в test_merge_gate_unstable_diagnostic.sh (как ADR-0035 §5.4 Этап 1).
 run_test "B1.  backfill adds markers to legacy"              test_B1_backfill_adds_markers
 run_test "B2.  backfill idempotent"                          test_B2_backfill_idempotent
 run_test "B3.  backfill DRY_RUN"                             test_B3_backfill_dry_run
+run_test "B4.  backfill covers LEGACY title (🐛 CI UNSTABLE:)" test_B4_backfill_covers_legacy_title
 
 summary
