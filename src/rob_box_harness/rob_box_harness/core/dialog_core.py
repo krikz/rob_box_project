@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
 from rob_box_core.token_estimate import estimate_prompt_tokens
+from rob_box_core.tool_catalog import tools_for_skill
 from rob_box_harness.core.confirmation_policy import ConfirmationKind
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
@@ -454,6 +455,7 @@ class DialogCore:
         use_streaming: bool = False,
         on_prompt: "PromptObserver | None" = None,
         skill_prompts: Mapping[str, str] | None = None,
+        narrow_tools_to_skill: bool = False,
     ) -> None:
         """Compose the four dialogue ports into a single facade.
 
@@ -482,6 +484,14 @@ class DialogCore:
                 :meth:`DialogueStateMachine.check_inactivity_timeout`).
                 ``None`` disables the inactivity check; the shell is
                 then expected to drive ``TIMEOUT`` events manually.
+            narrow_tools_to_skill: Move B. When ``True`` and a skill is
+                active, the LLM is offered only ``core`` plus that skill's
+                tools instead of the whole catalog. Default ``False`` —
+                the full catalog, byte for byte today's behaviour. Turning
+                it on shrinks the prompt but breaks the provider's cached
+                prefix on every skill switch and introduces a failure mode
+                where a mis-routed turn cannot see the tool it needs; the
+                model can recover via ``load_skill``.
             skill_prompts: Optional mapping ``skill name -> instruction
                 text``. When a skill is active and present here, its text
                 is appended as the LAST system message of the turn —
@@ -533,6 +543,8 @@ class DialogCore:
         #: shell (ROS2-нода) — harness не ходит в файловую систему.
         #: Пустой словарь = Move A выключен, вклеивать нечего.
         self._skill_prompts: dict[str, str] = dict(skill_prompts or {})
+        #: Move B. ``False`` — LLM видит весь каталог, как сегодня.
+        self._narrow_tools_to_skill = narrow_tools_to_skill
         #: Сколько раз скилл пришлось грузить вызовом LLM вместо
         #: детерминированного роутера — это и есть «промахи роутера»
         #: (задача 3.7). Читается нодой для метрики.
@@ -958,6 +970,13 @@ class DialogCore:
         """
         tool_schemas = await self._tools.discover()
         openai_tools = [_tool_spec_to_openai(spec) for spec in tool_schemas]
+        # Полный набор держим отдельно: при включённом сужении список
+        # нужно ПЕРЕСОБИРАТЬ после каждого load_skill, иначе модель,
+        # сменившая домен, до конца хода так и не увидит его инструменты
+        # (поймано тестом test_model_can_reach_another_domain_via_load_skill).
+        all_openai_tools = list(openai_tools)
+        openai_tools = self._narrow_tools(all_openai_tools)
+        tools_built_for_skill = self._active_skill
         # Модельный путь активации: LLM сама просит домен, если
         # детерминированный роутер промахнулся. Результат вызова —
         # tool-сообщение в самом хвосте messages, то есть позиция
@@ -1224,6 +1243,13 @@ class DialogCore:
                     )
                 )
 
+            # load_skill мог сменить домен — пересобираем набор, иначе
+            # загрузка скилла была бы бессмысленной: текст пришёл, а
+            # инструменты остались от прошлого домена.
+            if self._active_skill != tools_built_for_skill:
+                openai_tools = self._narrow_tools(all_openai_tools)
+                tools_built_for_skill = self._active_skill
+
             response = await self._stream_response(messages, tools=openai_tools)
 
         else:  # for-else: loop exhausted without breaking
@@ -1406,6 +1432,43 @@ class DialogCore:
             content=text,
             is_error=False,
         )
+
+    def _narrow_tools(
+        self, offered: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Сузить каталог до ``core`` + активный скилл (Move B).
+
+        Ничего не делает при выключенном флаге и при неактивном скилле —
+        тогда возвращается ровно то, что пришло.
+
+        Если сужение оставило бы список пустым (скилл не из каталога,
+        рассинхрон манифеста), возвращаем ПОЛНЫЙ набор: пустой tools=
+        доезжает до юзера как «нет такой функции», а это хуже длинного
+        промпта.
+        """
+        if not self._narrow_tools_to_skill:
+            return offered
+        skill = self._active_skill
+        if skill in ("", "none"):
+            return offered
+        try:
+            allowed = {entry.name for entry in tools_for_skill(skill)}
+        except KeyError:
+            # Неизвестный домен: сузить не по чему — отдаём всё.
+            return offered
+        narrowed = [
+            tool
+            for tool in offered
+            if tool.get("function", {}).get("name") in allowed
+        ]
+        if not narrowed:
+            logging.getLogger(__name__).warning(
+                "DialogCore: narrowing to skill %r left no tools; "
+                "falling back to the full catalog",
+                skill,
+            )
+            return offered
+        return narrowed
 
     def _resolve_skill_prompt(self) -> str:
         """Текст активного скилла или пустая строка."""

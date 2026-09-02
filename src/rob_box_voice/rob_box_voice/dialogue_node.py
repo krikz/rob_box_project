@@ -458,6 +458,9 @@ class DialogueNode(Node):
             use_streaming=bool(self.get_parameter("llm_streaming").value),
             on_prompt=self._on_prompt_stats,
             skill_prompts=self._skill_prompts,
+            narrow_tools_to_skill=bool(
+                self.get_parameter("skill_tool_narrowing").value
+            ),
         )
 
         cbg = ReentrantCallbackGroup()
@@ -849,6 +852,10 @@ class DialogueNode(Node):
         # ВЫКЛЮЧЕНО по умолчанию — включается решением Шифу по метрикам
         # voice_llm_prompt_tokens, см. Migration Plan change'а.
         self.declare_parameter("skills_enabled", False)
+        # Move B — сужение каталога до активного скилла. ВЫКЛЮЧЕНО:
+        # включать только после подтверждённого выигрыша по метрикам
+        # (Migration Plan change'а, шаг 3).
+        self.declare_parameter("skill_tool_narrowing", False)
         self.declare_parameter("history_max_turns", 20)
         self.declare_parameter("agent_max_turns", 20)
         self.declare_parameter("dialogue_timeout", 300.0)

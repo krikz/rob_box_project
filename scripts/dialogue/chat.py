@@ -270,6 +270,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "skills_enabled."
         ),
     )
+    parser.add_argument(
+        "--narrow-tools",
+        action="store_true",
+        help=(
+            "Move B: показывать LLM только инструменты core + активного "
+            "скилла. Требует --skills. На роботе это dialogue_node.yaml "
+            "skill_tool_narrowing."
+        ),
+    )
     parser.add_argument("--no-color", action="store_true", help="Без ANSI-цветов.")
     parser.add_argument(
         "--debug", action="store_true", help="DEBUG-логи провайдеров и полные traceback'и."
@@ -494,6 +503,7 @@ class ChatSession:
             system_prompt=system_prompt,
             use_streaming=not self.args.no_stream,
             skill_prompts=self.skill_prompts,
+            narrow_tools_to_skill=bool(getattr(self.args, "narrow_tools", False)),
             on_prompt=self._on_prompt_stats,
         )
         self._prompt_sizes: list[tuple[int, bool, str]] = []
@@ -508,6 +518,12 @@ class ChatSession:
         self._prompt_sizes.append(
             (stats.prompt_tokens, stats.estimated, stats.skill)
         )
+        if getattr(self.args, "skills", False):
+            mark = "~" if stats.estimated else "="
+            print(
+                f"   [промпт {mark}{stats.prompt_tokens} ток · "
+                f"скилл={stats.skill}]"
+            )
 
     def _route_skill(self, text: str) -> None:
         """Активировать домен до обращения к LLM (детерминированный путь)."""

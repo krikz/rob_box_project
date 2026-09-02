@@ -35,6 +35,12 @@ dialogue_node:
     # ВЫКЛЮЧЕНО: включать после сравнения voice_llm_prompt_tokens с
     # baseline (Migration Plan change'а, шаг 2).
     skills_enabled: false
+    # Move B — сузить tools= до core + активный скилл. Ломает
+    # кэшируемый префикс провайдера при каждой смене домена и
+    # добавляет отказ «роутер промахнулся -> LLM не видит нужный
+    # инструмент» (модель выкручивается через load_skill).
+    # ВЫКЛЮЧЕНО до подтверждённого выигрыша по метрикам.
+    skill_tool_narrowing: false
     history_max_turns: 20
     faq_mode_enabled: false
     faq_event_config_file: ''
