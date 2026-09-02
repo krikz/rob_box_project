@@ -319,6 +319,7 @@ class DialogueNode(Node):
         # confidently say «нет такой функции» (see issue #1403).
         self._mcp_tool_names: set[str] = self._collect_mcp_tool_names()
         self._system_prompt: str = self._load_system_prompt()
+        self._skill_prompts: dict[str, str] = self._load_skill_prompts()
         self._verbose_llm: bool = bool(self.get_parameter("verbose_llm").value)
         self._wake_words: List[str] = list(self.get_parameter("wake_words").value)
         # Issue #1279 — gate команд движения/статуса: фразы, которые уже
@@ -435,6 +436,7 @@ class DialogueNode(Node):
             system_prompt=self._system_prompt,
             use_streaming=bool(self.get_parameter("llm_streaming").value),
             on_prompt=self._on_prompt_stats,
+            skill_prompts=self._skill_prompts,
         )
 
         cbg = ReentrantCallbackGroup()
@@ -821,6 +823,11 @@ class DialogueNode(Node):
         self.declare_parameter("temperature", 0.7)
         self.declare_parameter("max_tokens", 500)
         self.declare_parameter("system_prompt_file", "master_prompt_compact.txt")
+        # Move A (change skill-scoped-dialogue-context, фаза 2): доменные
+        # фрагменты инструкций, приезжающие вплотную к текущему ходу.
+        # ВЫКЛЮЧЕНО по умолчанию — включается решением Шифу по метрикам
+        # voice_llm_prompt_tokens, см. Migration Plan change'а.
+        self.declare_parameter("skills_enabled", False)
         self.declare_parameter("history_max_turns", 20)
         self.declare_parameter("agent_max_turns", 20)
         self.declare_parameter("dialogue_timeout", 300.0)
@@ -1078,6 +1085,68 @@ class DialogueNode(Node):
                 f"[issue 1409] All {len(tool_names)} MCP tools are "
                 f"mentioned in {prompt_file} ✓"
             )
+    def _load_skill_prompts(self) -> dict[str, str]:
+        """Прочитать фрагменты доменных скиллов с диска.
+
+        Файлы читает нода, а не harness: harness обязан оставаться без
+        файловой системы и без ROS2 (он получает уже готовый словарь).
+
+        При ``skills_enabled=false`` возвращаем пустой словарь — тогда
+        DialogCore ведёт себя ровно как до скиллов, побайтово.
+
+        Имя файла = имя скилла из каталога. Отсутствие файла для
+        объявленного скилла — не ошибка старта: скилл просто останется
+        без текста, а инструменты его никуда не денутся. Ронять ноду
+        из-за промпта нельзя, робот должен подняться и говорить.
+        """
+        try:
+            if not bool(self.get_parameter("skills_enabled").value):
+                self.get_logger().info(
+                    "ℹ️ skills_enabled=false — доменные скиллы выключены "
+                    "(Move A не активен, поведение как до change'а)"
+                )
+                return {}
+        except Exception:  # noqa: BLE001 — параметр не объявлен (старый yaml)
+            return {}
+
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            from rob_box_core.tool_catalog import skill_names
+
+            skills_dir = os.path.join(
+                get_package_share_directory("rob_box_voice"), "prompts", "skills"
+            )
+            loaded: dict[str, str] = {}
+            absent: list[str] = []
+            for skill in skill_names():
+                path = os.path.join(skills_dir, f"{skill}.txt")
+                try:
+                    with open(path, "r", encoding="utf-8") as fh:
+                        text = fh.read().strip()
+                except OSError:
+                    absent.append(skill)
+                    continue
+                if text:
+                    loaded[skill] = text
+                else:
+                    absent.append(skill)
+            self.get_logger().info(
+                f"🧩 Загружено фрагментов скиллов: {len(loaded)} "
+                f"({', '.join(sorted(loaded)) or '—'})"
+            )
+            if absent:
+                self.get_logger().warning(
+                    f"⚠️ Без текста остались скиллы: {', '.join(sorted(absent))} "
+                    "— их инструменты работают, но доменных инструкций у LLM нет"
+                )
+            return loaded
+        except Exception as exc:  # noqa: BLE001 — промпт не роняет ноду
+            self.get_logger().warning(
+                f"⚠️ Не удалось загрузить фрагменты скиллов ({exc}); "
+                "Move A остаётся выключенным"
+            )
+            return {}
+
     def _on_prompt_stats(self, stats: Any) -> None:
         """Опубликовать размер промпта, посчитанный DialogCore.
 

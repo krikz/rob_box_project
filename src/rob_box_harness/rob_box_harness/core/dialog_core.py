@@ -404,6 +404,7 @@ class DialogCore:
         system_prompt: str | None = None,
         use_streaming: bool = False,
         on_prompt: "PromptObserver | None" = None,
+        skill_prompts: Mapping[str, str] | None = None,
     ) -> None:
         """Compose the four dialogue ports into a single facade.
 
@@ -432,6 +433,14 @@ class DialogCore:
                 :meth:`DialogueStateMachine.check_inactivity_timeout`).
                 ``None`` disables the inactivity check; the shell is
                 then expected to drive ``TIMEOUT`` events manually.
+            skill_prompts: Optional mapping ``skill name -> instruction
+                text``. When a skill is active and present here, its text
+                is appended as the LAST system message of the turn —
+                immediately before the user's line, i.e. AFTER the whole
+                history. That position is the entire point: instructions
+                sitting at index 0 lose to twenty turns of history that
+                demonstrate the opposite behaviour. Empty mapping keeps
+                the pre-skill behaviour byte for byte.
             on_prompt: Optional observer called once per LLM request with
                 a :class:`PromptStats`. Lets the shell publish the prompt
                 size without dragging Prometheus (or rclpy) into the
@@ -468,9 +477,13 @@ class DialogCore:
         self._inactivity_timeout = inactivity_timeout
         self._acceptance_gate = acceptance_gate
         self._on_prompt = on_prompt
-        #: Имя активного скилла для разметки метрики. Проставляется
-        #: активацией скилла (Move A); до неё — "none".
+        #: Имя активного скилла. Проставляется активацией (фаза 3);
+        #: "none" — скилл не активирован, поведение как до скиллов.
         self._active_skill: str = "none"
+        #: Тексты фрагментов: имя скилла -> инструкции. Файлы читает
+        #: shell (ROS2-нода) — harness не ходит в файловую систему.
+        #: Пустой словарь = Move A выключен, вклеивать нечего.
+        self._skill_prompts: dict[str, str] = dict(skill_prompts or {})
 
     # ---- main entry point -----------------------------------------------
 
@@ -662,6 +675,18 @@ class DialogCore:
                 if dynamic_system:
                     messages.append(
                         LLMMessage(role="system", content=dynamic_system)
+                    )
+                # Move A — фрагмент активного скилла. Кладётся ПОСЛЕДНИМ
+                # системным сообщением, вплотную к реплике юзера: это тот
+                # же принцип, по которому сюда переехал <system_context>
+                # (см. комментарий выше). Инструкция «как пользоваться
+                # этим инструментом» нужна модели В МОМЕНТ вызова, а не
+                # на позиции 0 за двадцать ходов до него, где её
+                # перевешивает свежий few-shot из истории.
+                skill_prompt = self._resolve_skill_prompt()
+                if skill_prompt:
+                    messages.append(
+                        LLMMessage(role="system", content=skill_prompt)
                     )
                 messages.append(LLMMessage(role="user", content=text))
                 # 🔴 FIX (live 11:19 DJ): DJ-переходы (is_dj_auto=True) НЕ
@@ -1251,6 +1276,34 @@ class DialogCore:
             usage=usage,
             raw=raw,
         )
+
+    # ---- skills (Move A) -------------------------------------------------
+
+    @property
+    def active_skill(self) -> str:
+        """Имя активного скилла (``"none"`` — не активирован)."""
+        return self._active_skill
+
+    def set_active_skill(self, skill: str | None) -> None:
+        """Активировать доменный скилл на последующие ходы.
+
+        ``None`` / ``"none"`` снимает активацию. Неизвестное имя НЕ
+        роняет ход: активация приходит из классификатора и из вызова
+        LLM, а ни то ни другое не повод оборвать разговор — скилл просто
+        останется неактивным, и модель увидит полный каталог, как
+        сегодня.
+        """
+        self._active_skill = skill or "none"
+
+    def known_skills(self) -> tuple[str, ...]:
+        """Скиллы, для которых есть текст фрагмента."""
+        return tuple(sorted(self._skill_prompts))
+
+    def _resolve_skill_prompt(self) -> str:
+        """Текст активного скилла или пустая строка."""
+        if self._active_skill in ("", "none"):
+            return ""
+        return self._skill_prompts.get(self._active_skill, "")
 
     def _report_prompt(
         self,

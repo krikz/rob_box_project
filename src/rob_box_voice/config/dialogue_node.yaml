@@ -28,6 +28,13 @@ dialogue_node:
     # Должен совпадать с tts_node.yaml provider (minimax).
     tts_provider: minimax
     system_prompt_file: master_prompt_compact.txt
+    # Move A (change skill-scoped-dialogue-context): доменные фрагменты
+    # инструкций приезжают вплотную к текущему ходу, а не лежат на
+    # позиции 0 за двадцатью ходами истории. tools= при этом НЕ меняется,
+    # префикс провайдера остаётся кэшируемым.
+    # ВЫКЛЮЧЕНО: включать после сравнения voice_llm_prompt_tokens с
+    # baseline (Migration Plan change'а, шаг 2).
+    skills_enabled: false
     history_max_turns: 20
     faq_mode_enabled: false
     faq_event_config_file: ''
