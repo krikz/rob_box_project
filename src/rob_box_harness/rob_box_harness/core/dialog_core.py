@@ -37,7 +37,14 @@ from rob_box_harness.core.dialogue_state_machine import (
 )
 from rob_box_harness.memory import MemoryStore
 from rob_box_harness.tools import ToolProvider, ToolSpec
-from rob_box_llm.provider import LLMMessage, LLMProvider, LLMResponse, ToolCall, ToolResult
+from rob_box_llm.provider import (
+    LLMMessage,
+    LLMSettings,
+    LLMProvider,
+    LLMResponse,
+    ToolCall,
+    ToolResult,
+)
 
 if TYPE_CHECKING:
     # Forward import — AcceptanceGate is in rob_box_harness.core.acceptance
@@ -376,6 +383,7 @@ class DialogCore:
         acceptance_gate: "AcceptanceGate | None" = None,
         system_prompt: str | None = None,
         use_streaming: bool = False,
+        llm_settings: LLMSettings | None = None,
     ) -> None:
         """Compose the four dialogue ports into a single facade.
 
@@ -413,6 +421,15 @@ class DialogCore:
                 are executed as before. When ``None`` the core runs
                 the legacy un-gated path — backward-compatible with
                 every existing test that doesn't construct a gate.
+            llm_settings: Optional per-call knobs forwarded to the
+                LLM provider on EVERY ``complete()`` / ``stream()``
+                (issue #1883). Without this, ``max_tokens`` and
+                ``temperature`` from ``dialogue_node.yaml`` never
+                reached the provider — only the logger. ``None`` is
+                the legacy behaviour (no ``settings=`` kwarg on the
+                LLM call). The provider decides what to do with
+                ``None`` fields (typically: omit the parameter from
+                the wire request and let the model use its default).
         """
         if llm is None:
             raise TypeError("DialogCore: llm is required")
@@ -434,6 +451,11 @@ class DialogCore:
         self._use_streaming = use_streaming
         self._inactivity_timeout = inactivity_timeout
         self._acceptance_gate = acceptance_gate
+        # 🔴 FIX (issue #1883): per-call knobs (max_tokens / temperature /
+        # thinking-policy merge). Forwarded as ``settings=`` to every
+        # ``complete()`` / ``stream()`` so YAML-driven configuration
+        # actually reaches the provider instead of dying in the log.
+        self._llm_settings = llm_settings
 
     # ---- main entry point -----------------------------------------------
 
@@ -1150,20 +1172,34 @@ class DialogCore:
         messages: Iterable[LLMMessage],
         *,
         tools: Iterable[Mapping[str, Any]] = (),
+        settings: LLMSettings | None = None,
     ) -> LLMResponse:
         """Streaming LLM completion aggregated into a full :class:`LLMResponse`.
 
         🔴 FIX (live 06.08): стриминг переключается конфигом (llm_streaming).
         False → полный complete() (как раньше, до стриминга); True → stream()
         с агрегацией tool-call deltas. Оба пути возвращают LLMResponse.
+
+        ``settings`` overrides the instance-level ``_llm_settings`` (issue
+        #1883) so the corrective retry inside ``_run_with_tools`` can pass
+        a per-call override when needed. ``None`` here → fall back to the
+        instance default; ``None`` instance default → ``None`` on the wire
+        (provider legacy behaviour).
         """
+        effective_settings: LLMSettings | None = (
+            settings if settings is not None else self._llm_settings
+        )
         if not self._use_streaming:
-            return await self._llm.complete(messages, tools=tools)
+            return await self._llm.complete(
+                messages, tools=tools, settings=effective_settings
+            )
         parts: list[str] = []
         tool_calls: list[ToolCall] = []
         finish_reason: str | None = None
         raw: Any = None
-        stream = self._llm.stream(messages, tools=tools)
+        stream = self._llm.stream(
+            messages, tools=tools, settings=effective_settings
+        )
         try:
             async for chunk in stream:
                 # 🔴 FIX (issue #1280): barge-in — новый STT-инпут уже
