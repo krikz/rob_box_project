@@ -51,10 +51,13 @@ rmw_zenoh_cpp автоматически — нам читать её вручн
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
 import time
-from typing import Any, Optional
+import uuid
+from typing import Any, Iterator, Mapping, Optional
 
 import rclpy
 from rclpy.node import Node
@@ -104,6 +107,32 @@ VOICE_INPUT_MODES: tuple[str, ...] = (
 # достаточен, чтобы не плодить rosidl-интерфейсы ради monitor-фазы.
 SET_VOICE_MODE_TOPIC: str = "/avatar/set_voice_mode"
 
+# AV-21 (issue #1913) — супервизор-агент «мозг оператора» (ADR-0028 §1.1).
+# Вход: ``/avatar/command`` (std_msgs/String, JSON), выход:
+# ``/avatar/command_result``. Полные JSON-схемы — в
+# ``docs/architecture/avatar-supervisor-agent.md``. Наполнять вход
+# будут карточки-после (AV-22: Quest STT, Telegram-текст).
+AVATAR_COMMAND_TOPIC: str = "/avatar/command"
+AVATAR_COMMAND_RESULT_TOPIC: str = "/avatar/command_result"
+
+# Какой ``voice_input_mode`` выставлять на ``dialogue_node`` пока супервизор
+# обрабатывает команду оператора. ``"off"`` — «диалог off» (W3-1, полное
+# управление оператора; см. dialogue-mode-spec-2026-08-28.md §3.5).
+# Переопределяется параметром ``agent_during_voice_mode``.
+AGENT_DURING_VOICE_MODE_DEFAULT: str = "off"
+
+# Валидные ``source``-поля в ``/avatar/command``. Используется только для
+# метрик (label) и валидации payload-а — НЕ для роутинга (это работа
+# AV-22). Неизвестные источники НЕ отбрасываем, лишь логируем warning
+# (расширяемость — future: ``"web"``, ``"admin"``).
+AGENT_COMMAND_SOURCES: tuple[str, ...] = ("quest", "telegram")
+
+# Timeout ожидания ответа от OperatorHarness при обработке команды
+# (защита от зависшего LLM, который отправил запрос и не вернул
+# ответ). В текущем PR — без жёсткого таймаута, но константа здесь,
+# чтобы Phase 2 не пришлось переписывать.
+AGENT_COMMAND_TIMEOUT_S: float = 30.0
+
 
 class AvatarSupervisor(Node):
     """ROS 2 нода ``avatar_supervisor`` (Vision Pi, Phase 1 monitor)."""
@@ -118,6 +147,17 @@ class AvatarSupervisor(Node):
     ACQUIRE_FLOOR_SERVICE = "acquire_floor"
     RELEASE_FLOOR_SERVICE = "release_floor"
     SET_AVATAR_MODE_SERVICE = "set_avatar_mode"
+
+    # AV-21 (issue #1913) — супервизор-агент «мозг оператора».
+    # ``agent_enabled`` гейт всего agent-прохода (default false — без
+    # включения нода ведёт себя как сегодня). ``system_prompt_file`` —
+    # имя файла в ``rob_box_harness/prompts/`` (см. _load_system_prompt).
+    # ``agent_during_voice_mode`` — какой voice_input_mode выставлять на
+    # dialogue_node на время обработки команды (default "off" —
+    # "диалог off", полное управление оператора).
+    AGENT_ENABLED_PARAM = "agent_enabled"
+    SYSTEM_PROMPT_FILE_PARAM = "system_prompt_file"
+    AGENT_DURING_VOICE_MODE_PARAM = "agent_during_voice_mode"
 
     def __init__(self) -> None:
         super().__init__("avatar_supervisor")
@@ -204,6 +244,52 @@ class AvatarSupervisor(Node):
             self.SET_AVATAR_MODE_SERVICE,
             self._on_set_avatar_mode,
         )
+
+        # ── AV-21: супервизор-агент «мозг оператора» ────────────────
+        # Параметры (см. ``AGENT_*_PARAM`` выше). ``agent_enabled`` —
+        # мастер-гейт: при false нода ведёт себя как сегодня, никаких
+        # tool-каллов и свапов голоса. ``system_prompt_file`` —
+        # override имени файла в rob_box_harness/prompts/. ``agent_during_voice_mode``
+        # — какой voice_input_mode ставить на время обработки команды
+        # (default "off" — полное управление оператора).
+        self.declare_parameter(self.AGENT_ENABLED_PARAM, False)
+        self.declare_parameter(self.SYSTEM_PROMPT_FILE_PARAM, "operator_system_prompt.txt")
+        self.declare_parameter(self.AGENT_DURING_VOICE_MODE_PARAM, AGENT_DURING_VOICE_MODE_DEFAULT)
+        self._agent_enabled: bool = bool(self.get_parameter(self.AGENT_ENABLED_PARAM).value)
+        self._system_prompt_file: str = str(
+            self.get_parameter(self.SYSTEM_PROMPT_FILE_PARAM).value or "operator_system_prompt.txt"
+        )
+        self._agent_during_voice_mode: str = str(
+            self.get_parameter(self.AGENT_DURING_VOICE_MODE_PARAM).value or AGENT_DURING_VOICE_MODE_DEFAULT
+        )
+
+        # OperatorHarness создаётся ЛЕНИВО (см. _ensure_agent_harness):
+        # при ``agent_enabled=false`` мы не должны инстанцировать LLM /
+        # Tools / Memory, чтобы нода в monitor-режиме не делала лишнего
+        # ввода-вывода. Инвариант тестов: enabled=false → harness не
+        # создаётся.
+        self._agent_harness: Any = None
+        # Текущий ``voice_input_mode`` dialogue_node — нужен для
+        # _voice_mode_swap (восстановить прежнее значение в finally).
+        # ``None`` = мы не знаем (первый swap после старта) → в finally
+        # НЕ делаем restore, только логируем warning, чтобы не сбросить
+        # режим в дефолт по своей инициативе.
+        self._voice_input_mode_before_swap: Optional[str] = None
+
+        # Publisher /avatar/command_result (для супервизор-агента).
+        # QoS — default reliable (depth=10). Не latched: результаты
+        # привязаны к конкретной команде, late joiner их НЕ получит
+        # (это поведение «command-response», не «state-broadcast»).
+        self._agent_result_pub = self.create_publisher(RosString, AVATAR_COMMAND_RESULT_TOPIC, 10)
+        # Подписка /avatar/command — JSON с командой оператора.
+        self.create_subscription(RosString, AVATAR_COMMAND_TOPIC, self._on_avatar_command, 10)
+
+        # Метрики (см. rob_box_voice.observability.metrics). Регистрируются
+        # лениво через get_metric — если prometheus_client недоступен,
+        # это no-op (см. там же is_metrics_enabled). Метрики-объекты
+        # кладём в self один раз (lazy init в __init__, не в каждом
+        # callback — иначе на каждое сообщение новый Counter).
+        self._agent_metrics = self._build_agent_metrics()
 
         # Периодическая публикация /avatar/state — 1 Hz достаточно для
         # monitor (Phase 2 увеличит частоту / сделает event-driven).
@@ -700,6 +786,484 @@ class AvatarSupervisor(Node):
         payload = {k: v for k, v in body.items() if k != "success"}
         response.message = json.dumps(payload)
         return response
+
+    # ── AV-21 (issue #1913): супервизор-агент «мозг оператора» ─────
+    # Скелет: топики /avatar/command → /avatar/command_result, гейт
+    # ``agent_enabled``, voice-mode swap с try/finally, метрики через
+    # rob_box_voice.observability.metrics. Дизайн / acceptance —
+    # docs/plans/2026-09-02-avatar-supervisor-agent-design.md §5.
+
+    # ── helpers: metrics ─────────────────────────────────────────────────────────────────
+
+    def _build_agent_metrics(self) -> dict[str, Any]:
+        """Зарегистрировать / достать метрики супервизор-агента.
+
+        Используем ``get_metric`` из rob_box_voice.observability.metrics —
+        он no-op'ит если prometheus_client нет (CI / unit-тесты), и
+        идемпотентно регистрирует счётчик/гистограмму (повторный вызов
+        с тем же именем = тот же объект). Метрики, как и в voice-слое,
+        живут в process-global prometheus REGISTRY (cross-node в проде
+        не пересекаются, т.к. каждая ROS-нода = отдельный процесс).
+        """
+        try:
+            from rob_box_voice.observability.metrics import get_metric  # noqa: PLC0415
+        except ImportError:
+            # Если rob_box_voice недоступен (минимальный CI-env без
+            # voice-пакета) — все методы record_* станут no-op через
+            # ``MetricsDisabled``. Это идома проекта, см. metrics.py.
+            get_metric = None  # type: ignore[assignment]
+        if get_metric is None:
+            # Подменяем на заглушки, чтобы ``self._agent_metrics`` всегда
+            # был dict-ом и все .inc/.observe/.labels были no-op.
+            return {
+                "commands": _NoopLabelCounter(),
+                "tool_calls": _NoopLabelCounter(),
+                "latency": _NoopHistogram(),
+                "enabled": False,
+            }
+        return {
+            "commands": get_metric(
+                "counter",
+                "avatar_agent_commands_total",
+                "Supervisor-agent command outcomes, labelled by source and result.",
+                labelnames=("source", "result"),
+            ),
+            "tool_calls": get_metric(
+                "counter",
+                "avatar_agent_tool_calls_total",
+                "Supervisor-agent tool invocations, labelled by tool name.",
+                labelnames=("tool",),
+            ),
+            "latency": get_metric(
+                "histogram",
+                "avatar_agent_latency_seconds",
+                "Supervisor-agent end-to-end command latency (seconds).",
+            ),
+            "enabled": True,
+        }
+
+    def _record_agent_command(self, source: str, result: str, latency_s: Optional[float] = None) -> None:
+        """Инкрементить ``avatar_agent_commands_total`` и засечь гистограмму."""
+        metrics = self._agent_metrics
+        if not metrics.get("enabled", False):
+            return
+        try:
+            metrics["commands"].labels(source=source or "unknown", result=result).inc()
+            if latency_s is not None:
+                metrics["latency"].observe(latency_s)
+        except Exception as exc:  # noqa: BLE001 — метрики best-effort
+            self._log.warning(f"agent_metrics: command record failed: {exc}")
+
+    def _record_agent_tool_call(self, tool_name: str) -> None:
+        """Инкрементить ``avatar_agent_tool_calls_total``."""
+        metrics = self._agent_metrics
+        if not metrics.get("enabled", False):
+            return
+        try:
+            metrics["tool_calls"].labels(tool=tool_name).inc()
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(f"agent_metrics: tool_call record failed: {exc}")
+
+    # ── helpers: voice-mode swap (ADR-0028 S5) ─────────────────────────────────────
+
+    @contextlib.contextmanager
+    def _voice_mode_swap(self) -> Iterator[None]:
+        """Контекст-менеджер «пока оператор работает, личность молчит».
+
+        ADR-0028 S5: единственная точка, которая имеет право менять
+        ``voice_input_mode`` на ``dialogue_node`` — супервизор (через
+        ``_apply_voice_mode`` / ``_set_dialogue_param``). При входе
+        ставим ``agent_during_voice_mode`` (default "off"), при выходе
+        (в ``finally``, включая путь с исключением) — восстанавливаем
+        предыдущее значение. Если предыдущее неизвестно (``None`` —
+        см. :py:meth:`_capture_current_voice_mode`), в finally НЕ делаем
+        restore и только логируем — иначе свапнём режим в дефолт по
+        своей инициативе.
+
+        Контекст-менеджер намеренно вызывает ``_apply_voice_mode`` (а
+        не пишет в dialogue_node напрямую) — это и есть «через
+        супервизор», а не side-door (карточка §4). В monitor-режиме
+        ``_apply_voice_mode`` возвращает ``(False, MONITOR_MODE_REASON)``,
+        и свап фактически не применяется — но try/finally дисциплина
+        сохраняется (тест-инвариант AC #8: «voice_input_mode
+        восстановлен даже если LLM упал»).
+        """
+        prev_mode = self._voice_input_mode_before_swap
+        # Входим в режим «оператор работает».
+        applied_in, reason_in = self._apply_voice_mode(self._agent_during_voice_mode)
+        if not applied_in:
+            # В monitor — это ожидаемо; в active — повод для warn (но
+            # НЕ ошибка, чтобы не валить обработку команды).
+            self._log.debug(
+                f"voice_mode_swap.enter: mode={self._agent_during_voice_mode} "
+                f"applied={applied_in} reason={reason_in}"
+            )
+        try:
+            yield
+        finally:
+            # Восстанавливаем ТОЛЬКО если знаем предыдущее значение И
+            # оно отличается от текущего. ``None`` = «не знаем»
+            # (см. _capture_current_voice_mode) — НЕ делаем restore,
+            # иначе свапнём dialogue_node в дефолт по своей инициативе.
+            if prev_mode is not None and prev_mode != self._agent_during_voice_mode:
+                applied_out, reason_out = self._apply_voice_mode(prev_mode)
+                if not applied_out:
+                    self._log.warning(
+                        f"voice_mode_swap.exit: failed to restore mode={prev_mode} " f"reason={reason_out}"
+                    )
+            elif prev_mode is None:
+                self._log.debug("voice_mode_swap.exit: previous mode unknown, no restore")
+            # Сбрасываем snapshot: следующий swap начнёт с чистого
+            # состояния (``prev_mode`` будет снова захвачен в
+            # _on_avatar_command ДО входа в swap).
+            self._voice_input_mode_before_swap = None
+
+    def _capture_current_voice_mode(self) -> Optional[str]:
+        """Захватить текущий ``voice_input_mode`` dialogue_node для swap.
+
+        Phase 1 (монитор): у нас нет гарантированного способа узнать
+        текущее значение (нет GetParameters клиента к dialogue_node).
+        Возвращаем ``None`` — swap использует его как «не пытаться
+        restore в finally». Phase 2 (active-режим) заменит это на
+        настоящий GetParameters.ack.
+
+        Тест-инвариант (AC #8): если LLM бросит исключение после
+        capture, finally-ветка _voice_mode_swap НЕ пытается
+        восстанавливать ``None — иначе свапнём dialogue_node в дефолт
+        по своей инициативе.
+        """
+        return None
+
+    # ── helpers: harness ─────────────────────────────────────────────────────────────
+
+    def _build_agent_harness_sync(self) -> Any:
+        """Создать и ``init()``-нуть OperatorHarness.
+
+        Импорт ленивый: ``rob_box_harness`` — opt dep для
+        ``rob_box_supervisor``, в минимальном CI-env может отсутствовать.
+        При отсутствии — публикуем ``ok=false, summary="harness_unavailable"``
+        в /avatar/command_result (а не валим ноду).
+
+        ``init()`` асинхронный, дрок-вызываем в новом asyncio-цикле
+        (см. _run_harness_sync). Это безопасно для тестов с FakeLLMProvider
+        (он sync-friendly) и для прод-вызовов в ROS callback (rclpy.spin
+        блокирует основной поток; asyncio.run в callback создаёт свой
+        loop, отрабатывает, закрывает — но конфликта с rclpy-loop нет,
+        т.к. rclpy использует свой собственный event loop в C).
+        """
+        try:
+            from rob_box_harness.config import HarnessConfig  # noqa: PLC0415
+            from rob_box_harness.harnesses.operator import OperatorHarness  # noqa: PLC0415
+        except ImportError as exc:
+            self._log.warning(f"_build_agent_harness_sync: import failed: {exc}")
+            return None
+
+        config = HarnessConfig(harness="operator", name="operator_agent")
+        harness = OperatorHarness(config, prompt_file=self._system_prompt_file)
+        try:
+            asyncio.run(harness.init())
+        except Exception as exc:  # noqa: BLE001 — ленивый init падать не должен
+            self._log.warning(f"_build_agent_harness_sync: harness.init() failed: {exc}")
+            return None
+        return harness
+
+    def _ensure_agent_harness(self) -> Any:
+        """Ленивая инициализация harness (один раз на ноду).
+
+        Тест-инвариант: ``agent_enabled=false`` → harness НЕ создаётся
+        (см. _on_avatar_command, где _ensure_agent_harness не
+        вызывается). Высжим ``self._agent_harness`` кешем, чтобы на
+        каждый /avatar/command не пересоздавать OperatorHarness (это
+        дорого — там Tools/LLM/Memory init).
+        """
+        if self._agent_harness is None:
+            self._agent_harness = self._build_agent_harness_sync()
+        return self._agent_harness
+
+    def _run_harness_sync(self, harness: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Дрок-вызов async ``harness.step(payload)`` в новом loop.
+
+        Возвращает mapping из ``OperatorHarness.step``. Ошибки harness-а
+        (например, LLM exception) превращаем в ``ok=False`` с внятным
+        ``summary`` — ADR-0018 в рантайме: лучше честный FAIL, чем
+        придуманное действие.
+
+        ``step()`` сам по себе async — оператор HARNESS.step
+        (``rob_box_harness/harnesses/operator.py:183``) уже ловит
+        LLM-исключения и возвращает ``ok=False, summary="llm_error: ..."``.
+        Здесь ловим только исключения самого ``asyncio.run`` (не
+        запустился loop) или init-ошибки выше по стеку.
+        """
+        try:
+            result = asyncio.run(harness.run(payload))
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "summary": f"llm_error: {type(exc).__name__}",
+                "tool_calls": [],
+                "error": str(exc),
+                "source": payload.get("source", ""),
+                "client_id": payload.get("client_id", ""),
+            }
+        # HarnessRunResult.output — это mapping из step.
+        return result.output if hasattr(result, "output") else result
+
+    # ── /avatar/command processing ─────────────────────────────────────────────────
+
+    def _parse_command_payload(self, raw: str) -> dict[str, Any]:
+        """Распарсить JSON из ``/avatar/command``.
+
+        Возвращает ``{ok, payload, error}`` — pure-функция для
+        тестируемости. ``ok=False`` если JSON битый ИЛИ
+        отсутствуют обязательные поля ``source``/``client_id``/``text``.
+        Допускаем ``ts_ms`` опциональным (генерируем client-side).
+        """
+        if not raw:
+            return {"ok": False, "error": "empty payload"}
+        data = self._try_parse_json(raw)
+        if not isinstance(data, dict):
+            return {"ok": False, "error": "malformed_input: not a JSON object"}
+        text = data.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return {"ok": False, "error": "malformed_input: missing 'text' field"}
+        source = data.get("source")
+        if not isinstance(source, str) or not source.strip():
+            return {"ok": False, "error": "malformed_input: missing 'source' field"}
+        client_id = data.get("client_id", "")
+        if not isinstance(client_id, str):
+            client_id = str(client_id) if client_id is not None else ""
+        ts_ms = data.get("ts_ms")
+        return {
+            "ok": True,
+            "payload": {
+                "source": source,
+                "client_id": client_id,
+                "text": text.strip(),
+                "ts_ms": ts_ms,
+            },
+        }
+
+    def _generate_request_id(self, payload: Mapping[str, Any]) -> str:
+        """Сгенерировать ``request_id`` для /avatar/command_result.
+
+        Детерминированно из ``client_id + ts_ms`` если есть (повторная
+        обработка той же команды = тот же request_id — удобно для
+        дедупликации на клиенте). Иначе — UUID4.
+        """
+        cid = str(payload.get("client_id", "") or "")
+        ts = payload.get("ts_ms")
+        if cid and ts is not None:
+            return f"{cid}:{ts}"
+        return uuid.uuid4().hex
+
+    def _publish_command_result(self, request_id: str, body: Mapping[str, Any]) -> None:
+        """Опубликовать результат в /avatar/command_result (std_msgs/String JSON).
+
+        Схема — docs/architecture/avatar-supervisor-agent.md §3.
+        ``body`` содержит ``ok``/``summary``/``tool_calls``/опц.
+        ``latency_ms``. Невалидный JSON невозможен (мы сами собираем),
+        но защищаемся от битых типов: всё приводится к примитивам.
+        """
+        result = {
+            "request_id": request_id,
+            "ok": bool(body.get("ok", False)),
+            "summary": str(body.get("summary", "")),
+            "tool_calls": list(body.get("tool_calls", []) or []),
+        }
+        if "latency_ms" in body:
+            result["latency_ms"] = int(body["latency_ms"])
+        try:
+            payload = json.dumps(result, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            self._log.warning(f"_publish_command_result: json.dumps failed: {exc}")
+            payload = json.dumps({"request_id": request_id, "ok": False, "summary": "publish_error"})
+        msg = RosString()
+        msg.data = payload
+        self._agent_result_pub.publish(msg)
+
+    # Функция by-design ветвится на: malformed_input / agent_disabled /
+    # harness_unavailable / ok / no_tool / llm_error / outer_error.
+    # Каждая ветка — короткий блок с побочкой (publish + metric).
+    # Извлечение в helper-ы увеличит indirection без выигрыша по
+    # читаемости (флоу плоский, не цикл).
+    def _on_avatar_command(self, msg: RosString) -> None:  # noqa: C901
+        """ROS-callback ``/avatar/command`` — главная точка входа супервизор-агента.
+
+        Поток (см. design.md §5.3):
+          1. Парсинг JSON. Битый → публикуем ``malformed_input``, выходим.
+          2. Гейт ``agent_enabled``. False → публикуем ``agent_disabled``.
+          3. Ленивая инициализация harness (один раз).
+          4. ``_voice_mode_swap()`` (try/finally) — личность молчит
+             пока мы работаем.
+          5. ``harness.step(payload)`` → результат.
+          6. Публикация результата в ``/avatar/command_result``.
+          7. Метрики.
+        """
+        started_ns = time.monotonic_ns()
+        raw = msg.data or ""
+        parsed = self._parse_command_payload(raw)
+        if not parsed["ok"]:
+            self._log.warning(f"_on_avatar_command: {parsed['error']}")
+            self._publish_command_result(
+                request_id=uuid.uuid4().hex,
+                body={"ok": False, "summary": "malformed_input", "tool_calls": []},
+            )
+            self._record_agent_command(source="unknown", result="malformed_input")
+            return
+
+        payload = parsed["payload"]
+        source = payload["source"]
+        request_id = self._generate_request_id(payload)
+
+        if not self._agent_enabled:
+            self._publish_command_result(
+                request_id=request_id,
+                body={"ok": False, "summary": "agent_disabled", "tool_calls": []},
+            )
+            self._record_agent_command(source=source, result="agent_disabled")
+            return
+
+        if source not in AGENT_COMMAND_SOURCES:
+            # Не блокируем (расширяемость — AV-22 добавит "web"/"admin"),
+            # но логируем — чтобы оператор видел «незнакомый источник».
+            self._log.warning(
+                f"_on_avatar_command: unknown source={source!r} (expected one of "
+                f"{AGENT_COMMAND_SOURCES}); processing anyway"
+            )
+
+        harness = self._ensure_agent_harness()
+        if harness is None:
+            self._publish_command_result(
+                request_id=request_id,
+                body={"ok": False, "summary": "harness_unavailable", "tool_calls": []},
+            )
+            self._record_agent_command(source=source, result="harness_unavailable")
+            return
+
+        # Снимок «текущего» voice_input_mode ДО swap.apply — нужно
+        # для finally-восстановления. В Phase 1 это всегда "unknown"
+        # (см. _capture_current_voice_mode), в active-режиме Phase 2
+        # заменит на настоящий GetParameters.
+        self._voice_input_mode_before_swap = self._capture_current_voice_mode()
+
+        try:
+            with self._voice_mode_swap():
+                result = self._run_harness_sync(harness, payload)
+        except Exception as exc:  # noqa: BLE001 — НЕ ДОЛЖНО сбежать из swap
+            # ``_voice_mode_swap`` имеет try/finally, но защищаемся от
+            # ошибок ВНЕ swap (publish, метрики). Сам swap уже
+            # восстановил voice_input_mode.
+            self._log.warning(f"_on_avatar_command: outer exception: {exc}")
+            result = {
+                "ok": False,
+                "summary": f"outer_error: {type(exc).__name__}",
+                "tool_calls": [],
+            }
+
+        # Нормализуем tool_calls (OperatorHarness.step уже возвращает
+        # dict-ы; дополнительно — записываем метрики на каждый tool).
+        tool_calls = result.get("tool_calls", []) or []
+        for tc in tool_calls:
+            name = tc.get("name") if isinstance(tc, dict) else None
+            if isinstance(name, str) and name:
+                self._record_agent_tool_call(name)
+
+        latency_ms = int((time.monotonic_ns() - started_ns) / 1_000_000)
+        self._publish_command_result(
+            request_id=request_id,
+            body={
+                "ok": bool(result.get("ok", False)),
+                "summary": str(result.get("summary", "")),
+                "tool_calls": tool_calls,
+                "latency_ms": latency_ms,
+            },
+        )
+
+        result_label = "ok" if result.get("ok", False) else "error"
+        if not result.get("ok", False):
+            # Различаем «no_tool» от «error» — иначе в метрике сольются
+            # два разных operational-сигнала.
+            summary = str(result.get("summary", ""))
+            if summary.startswith("no_tool"):
+                result_label = "no_tool"
+            elif summary.startswith("llm_error"):
+                result_label = "llm_error"
+        self._record_agent_command(
+            source=source,
+            result=result_label,
+            latency_s=(time.monotonic_ns() - started_ns) / 1_000_000_000.0,
+        )
+
+    # ── /avatar/command: pure-logic wrapper (тестируется без rclpy) ─────────
+
+    def _handle_avatar_command_logic(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        harness_factory: Any = None,
+    ) -> dict[str, Any]:
+        """Pure-логика «получили payload → вернули result».
+
+        Без side-effects (не публикует в ROS, не меняет voice_mode,
+        не дёргает метрики — это делает _on_avatar_command в
+        try/finally-disciplined fashion). Используется для unit-тестов
+        с подменой harness через ``harness_factory``.
+
+        ``harness_factory`` — callable(payload) → mapping c
+        ``ok``/``summary``/``tool_calls``. По умолчанию используется
+        ``self._agent_harness`` (если уже создан) или возвращается
+        ``ok=False, summary="harness_unavailable"``.
+
+        Тест-инвариант: если harness.step бросит исключение —
+        возвращаем ``ok=False, summary="llm_error: <type>"`` вместо
+        propagate (см. AC #7 — не выдумываем действий).
+        """
+        if not self._agent_enabled:
+            return {"ok": False, "summary": "agent_disabled", "tool_calls": []}
+        if harness_factory is not None:
+            try:
+                return harness_factory(payload)
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "ok": False,
+                    "summary": f"llm_error: {type(exc).__name__}",
+                    "tool_calls": [],
+                    "error": str(exc),
+                }
+        harness = self._agent_harness
+        if harness is None:
+            return {"ok": False, "summary": "harness_unavailable", "tool_calls": []}
+        return self._run_harness_sync(harness, payload)
+
+
+class _NoopLabelCounter:
+    """Заглушка для метрик при отсутствии ``rob_box_voice`` (минимальный CI-env).
+
+    Имеет те же ``labels(...).inc()``, что и prometheus Counter, но
+    ничего не считает. Это позволяет ``self._agent_metrics`` быть
+    всегда dict-ом, без ``if rob_box_voice is not None`` в каждом
+    методе record_*.
+    """
+
+    __slots__ = ()
+
+    def labels(self, *args: Any, **kwargs: Any) -> "_NoopLabelCounter":
+        return self
+
+    def inc(self, amount: float = 1.0) -> None:
+        return None
+
+
+class _NoopHistogram:
+    """Заглушка для гистограммы latency при отсутствии ``rob_box_voice``."""
+
+    __slots__ = ()
+
+    def observe(self, amount: float) -> None:
+        return None
+
+    def labels(self, *args: Any, **kwargs: Any) -> "_NoopHistogram":
+        return self
 
 
 def main(args: Optional[list] = None) -> None:
