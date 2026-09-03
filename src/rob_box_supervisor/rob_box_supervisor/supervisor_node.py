@@ -97,6 +97,11 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String as RosString
 
+# AV-27 / issue #1919 — импорт SoT голосов. Pure-Python, без rclpy —
+# безопасен в любом окружении. Используется в _apply_set_voice и
+# _on_preview_voice для валидации voice_id.
+from rob_box_voice.tts_voice_registry import voices_for as _voices_for
+
 from rob_box_supervisor.core.state import (
     AvatarEvent,
     AvatarState,
@@ -104,6 +109,30 @@ from rob_box_supervisor.core.state import (
     StateVersionError,
     encode_for_ros_string,
 )
+
+
+def _voice_param_key_for(provider: str) -> str:
+    """Целевой параметр tts_node для голоса активного провайдера.
+
+    Соответствие задано в src/rob_box_voice/config/tts_node.yaml:
+      yandex  → yandex_voice   (tts_node.py:677)
+      minimax → minimax_voice  (tts_node.py:716)
+      silero  → silero_speaker (tts_node.py:691)
+
+    Это единственное место, где живёт маппинг provider → param-key. Если
+    завтра появится новый провайдер — добавить ветку здесь + соответствующее
+    объявление параметра в tts_node.yaml + запись в PROVIDER_VOICES.
+    """
+    if provider == "yandex":
+        return "yandex_voice"
+    if provider == "minimax":
+        return "minimax_voice"
+    if provider == "silero":
+        return "silero_speaker"
+    # Provider без поддержки смены голоса — вызывающий код ловит
+    # ``voice_unavailable:provider:voice_id`` через validation.
+    return ""
+
 
 # AV-14 (issue #1906) — ``/avatar/state`` wire format lives in
 # :mod:`rob_box_supervisor.core.state`. The supervisor here ONLY calls
@@ -153,9 +182,17 @@ VOICE_INPUT_MODES: tuple[str, ...] = (
 
 # Phase 1 транспорт запроса смены режима голоса. Phase 2 заменит на
 # ``SetVoiceMode``-сервис с кастомным IDL (ADR-0028 §4.3) — здесь топик
-# достаточен, чтобы не плодить rosidl-интерфейсы ради monitor-фазы.
+# достаточен, чтобы не плодить rosidl-интерфейсы ради ради-фазы.
 SET_VOICE_MODE_TOPIC: str = "/avatar/set_voice_mode"
 
+# AV-27 / issue #1919 — TTS picker топики (симметрично /avatar/set_voice_mode).
+# Payload — JSON в std_msgs/String, как принято в supervisor_node. См.
+# docs/architecture/tts-picker-ros-path.md §128-150.
+SET_VOICE_TOPIC: str = "/avatar/set_voice"
+PREVIEW_VOICE_TOPIC: str = "/avatar/preview_voice"
+PREVIEW_VOICE_RESULT_TOPIC: str = "/avatar/preview_voice/result"
+PREVIEW_VOICE_AUDIO_TOPIC: str = "/avatar/preview_voice/audio"
+PREVIEW_VOICE_ERROR_TOPIC: str = "/avatar/preview_voice/error"
 # AV-21 (issue #1913) — супервизор-агент «мозг оператора» (ADR-0028 §1.1).
 # Вход: ``/avatar/command`` (std_msgs/String, JSON), выход:
 # ``/avatar/command_result``. Полные JSON-схемы — в
@@ -504,9 +541,21 @@ class AvatarSupervisor(Node):
         # ADR-0028 S5 — супервизор единственный, кто меняет voice_input_mode
         # на dialogue_node. Phase 1 транспорт — топик (см. SET_VOICE_MODE_TOPIC).
         self.create_subscription(RosString, SET_VOICE_MODE_TOPIC, self._on_set_voice_mode, 10)
+        # AV-27 / issue #1919 — set_voice / preview_voice → супервизор.
+        # Валидируем voice_id по реестру и выставляем параметр tts_node.
+        self.create_subscription(RosString, SET_VOICE_TOPIC, self._on_set_voice, 10)
+        self.create_subscription(RosString, PREVIEW_VOICE_TOPIC, self._on_preview_voice, 10)
+        # Publishers для ответов preview_voice. Аудио (BINARY) отдельно от
+        # result/error (String JSON) — UI Quest матчит по request_id.
+        self._preview_result_pub = self.create_publisher(RosString, PREVIEW_VOICE_RESULT_TOPIC, 10)
+        self._preview_audio_pub = self.create_publisher(RosString, PREVIEW_VOICE_AUDIO_TOPIC, 10)
+        self._preview_error_pub = self.create_publisher(RosString, PREVIEW_VOICE_ERROR_TOPIC, 10)
         # Параметр-клиент к dialogue_node создаётся лениво в active-режиме
         # (в monitor супервизор НЕ трогает чужие параметры — S12).
         self._dialogue_param_client = None
+        # AV-27 — параметр-клиент к tts_node. Создаётся лениво в _set_tts_voice_param
+        # (минимальный контакт с tts_node, в monitor — не создаётся).
+        self._tts_param_client = None
 
         # AV-13: подписка на /teleop_heartbeat (ADR-0028 §4.4 S10).
         # QoS best-effort, depth=10 (heartbeat терпит потери — важна
@@ -1042,6 +1091,183 @@ class AvatarSupervisor(Node):
 
         future.add_done_callback(_done)
 
+    # ── AV-27 TTS picker (issue #1919) ──────────────────────────────
+    def _on_set_voice(self, msg: RosString) -> None:
+        """Обработка ``/avatar/set_voice`` — сменить голос TTS.
+
+        Дизайн (docs/architecture/tts-picker-ros-path.md §128-150): валидируем
+        voice_id по ``tts_voice_registry``, выставляем соответствующий
+        строковый параметр на ``tts_node`` через SetParameters
+        (lazy-клиент /tts_node/set_parameters). В monitor-режиме НЕ трогаем
+        чужие параметры (S12) — только логируем и выходим.
+
+        Quest-сервер уже выполнил свою валидацию по текущему активному
+        провайдеру (по /voice/tts/provider_state); мы дублируем её по SoT
+        (tts_voice_registry.voices_for) — это страховка от race, когда
+        провайдер переключился между cmd'ом и обработкой на supervisor.
+        """
+        raw = (msg.data or "").strip()
+        if not raw:
+            self._log.warning("SetVoice: empty payload")
+            return
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            self._log.warning(f"SetVoice: bad json: {exc}")
+            return
+        voice_id = data.get("voice_id") if isinstance(data, dict) else None
+        if not isinstance(voice_id, str) or not voice_id:
+            self._log.warning(f"SetVoice: missing voice_id (raw={raw!r})")
+            return
+        provider_hint = data.get("provider") if isinstance(data, dict) else None
+        applied, reason = self._apply_set_voice(voice_id, provider_hint=provider_hint)
+        # f-string: RcutilsLogger принимает ОДИН один (issue #1644).
+        self._log.info(f"SetVoice: voice_id={voice_id} provider={provider_hint} applied={applied} reason={reason}")
+
+    def _apply_set_voice(
+        self, voice_id: str, provider_hint: str | None = None
+    ) -> tuple[bool, str]:
+        """Чистая логика применения set_voice (тестируется без rclpy).
+
+        Возвращает ``(applied, reason)``. В monitor — ``applied=False`` без
+        записи (S12). В active — SetParameters на tts_node с параметр-ключом,
+        зависящим от активного провайдера (см. ``_voice_param_key_for``).
+        """
+        if self._mode != "active":
+            return False, MONITOR_MODE_REASON
+        # Резолвим целевой provider. Предпочитаем hint из payload (quest_node
+        # знает активного из /voice/tts/provider_state), fallback — первое
+        # вхождение voice_id в любом провайдере (минимальный fallback для
+        # тестовых сред; в проде hint всегда есть).
+        provider = provider_hint
+        if not provider:
+            for p in ("yandex", "minimax", "silero"):
+                if voice_id in _voices_for(p):
+                    provider = p
+                    break
+        if not provider:
+            return False, f"voice_not_in_any_provider: {voice_id!r}"
+        if voice_id not in _voices_for(provider):
+            return False, f"voice_unavailable:{provider}:{voice_id}"
+        param_key = _voice_param_key_for(provider)
+        if not param_key:
+            return False, f"no_param_key_for_provider:{provider}"
+        try:
+            self._set_tts_voice_param(param_key, voice_id)
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(f"SetVoice: tts_node param-set failed: {exc}")
+            return False, f"param_set_failed:{exc}"
+        return True, f"applied:{provider}:{param_key}"
+
+    def _set_tts_voice_param(self, name: str, value: str) -> None:
+        """Выставить string-параметр голоса на ``tts_node``.
+
+        Клиент создаётся лениво (первый вызов в active-режиме). Аналогично
+        :py:meth:`_set_dialogue_param` — разные клиенты потому что SetParameters
+        скоуплен на конкретный нод (см. design t_5b9d5d0c §23-27).
+        """
+        # Ленивый импорт — как в _set_dialogue_param (ADR-0021):
+        # supervisor_node обязан импортироваться без ROS-стека.
+        from rcl_interfaces.msg import (  # noqa: PLC0415
+            Parameter,
+            ParameterType,
+            ParameterValue,
+        )
+        from rcl_interfaces.srv import SetParameters  # noqa: PLC0415
+
+        if self._tts_param_client is None:
+            self._tts_param_client = self.create_client(SetParameters, "/tts_node/set_parameters")
+        req = SetParameters.Request()
+        param = Parameter()
+        param.name = name
+        param.value = ParameterValue()
+        param.value.type = ParameterType.PARAMETER_STRING
+        param.value.string_value = value
+        req.parameters = [param]
+
+        future = self._tts_param_client.call_async(req)
+
+        def _done(fut) -> None:
+            try:
+                res = fut.result()
+                ok = bool(res and res.results and res.results[0].successful)
+                if not ok:
+                    self._log.warning("SetVoice: tts_node rejected parameter set")
+                else:
+                    self._log.info(f"SetVoice: tts_node accepted param {name}={value!r}")
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning(f"SetVoice: parameter set future failed: {exc}")
+
+        future.add_done_callback(_done)
+
+    def _on_preview_voice(self, msg: RosString) -> None:
+        """Обработка ``/avatar/preview_voice`` — синтезировать preview-фразу.
+
+        Текущий MVP: full preview-synthesis в tts_node — отдельная карточка
+        (рефакторинг _synthesize_and_play на pure-synth + playback). Здесь
+        supervisor делает валидацию и публикует honest error в
+        ``/avatar/preview_voice/error``. Контракт ws_server ↔ клиент
+        сохранён полностью — UI увидит причину и отрисует «preview пока
+        недоступен, попробуйте позже».
+        """
+        raw = (msg.data or "").strip()
+        if not raw:
+            self._log.warning("PreviewVoice: empty payload")
+            return
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            self._log.warning(f"PreviewVoice: bad json: {exc}")
+            return
+        if not isinstance(data, dict):
+            self._log.warning("PreviewVoice: payload not dict")
+            return
+        request_id = data.get("request_id")
+        voice_id = data.get("voice_id")
+        text = data.get("text")
+        provider = data.get("provider")
+        if not isinstance(request_id, str) or not request_id:
+            self._log.warning("PreviewVoice: missing request_id")
+            return
+        if not isinstance(voice_id, str) or not voice_id:
+            self._publish_preview_error(request_id, "voice_id_required")
+            return
+        if not isinstance(text, str) or not text:
+            self._publish_preview_error(request_id, "text_required")
+            return
+        # Валидация по реестру.
+        if provider and isinstance(provider, str):
+            if voice_id not in _voices_for(provider):
+                self._publish_preview_error(request_id, f"voice_unavailable:{provider}:{voice_id}")
+                return
+        else:
+            # Без hint — ищем где знают.
+            known_in = [p for p in ("yandex", "minimax", "silero") if voice_id in _voices_for(p)]
+            if not known_in:
+                self._publish_preview_error(request_id, "voice_unknown")
+                return
+        # MVP: честная ошибка.
+        self._publish_preview_error(request_id, "preview_synthesis_not_implemented_in_mvp")
+
+    def _publish_preview_error(self, request_id: str, reason: str) -> None:
+        """Опубликовать preview_voice_error (JSON) для ws_server.
+
+        ws_server слушает /avatar/preview_voice/error и шлёт клиенту
+        ``JSON_EVENT{type:"preview_voice_error", request_id, reason, ts_ms}``.
+        """
+        payload = {
+            "request_id": request_id,
+            "reason": reason,
+            "ts_ms": int(time.time() * 1000),
+        }
+        try:
+            msg = RosString()
+            msg.data = json.dumps(payload, ensure_ascii=False)
+            self._preview_error_pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(f"PreviewVoice: error publish failed: {exc}")
+
+    # ── service callbacks (W3-2: active → LockManager, monitor → как было) ──
     # ── typed service callbacks (ADR-0028 §4.3, AV-12) ────────────────
     @staticmethod
     def _extract_floor_request(request: Any) -> tuple[Optional[str], Optional[str]]:

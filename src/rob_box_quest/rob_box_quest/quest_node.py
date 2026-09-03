@@ -25,6 +25,7 @@ docs/plans/2026-08-24-meta-quest-telepresence.md §1.3.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 import time
@@ -211,6 +212,9 @@ class QuestBridge:
         sound_stop_pub=None,
         stt_in_pub=None,
         set_voice_mode_pub=None,
+        set_voice_pub=None,
+        preview_voice_pub=None,
+        voices_cache_ttl_sec: float = 300.0,
         heartbeat_pub=None,  # AV-19: publisher in /teleop_heartbeat
         supervisor_acquire_client=None,
         supervisor_release_client=None,
@@ -228,6 +232,9 @@ class QuestBridge:
         self._stt_in_pub = stt_in_pub
         # voice_mode → супервизор (ADR-0028 S5): /avatar/set_voice_mode.
         self._set_voice_mode_pub = set_voice_mode_pub
+        # AV-27 / issue #1919 — set_voice / preview_voice → супервизор.
+        self._set_voice_pub = set_voice_pub
+        self._preview_voice_pub = preview_voice_pub
         # AV-19: publisher в /teleop_heartbeat. None в unit-тестах —
         # тогда relay_teleop_heartbeat будет no-op (см. его комментарий).
         self._heartbeat_pub = heartbeat_pub
@@ -259,6 +266,19 @@ class QuestBridge:
         self._emergency_published: bool = False
         # Маппинг camera ui_name → device_id (для on_frame callback из CameraProvider).
         self._camera_id_to_ui: dict[str, str] = {}
+        # ── AV-27 voices-cache ────────────────────────────────────────────
+        # Кэш последнего /voice/tts/voices (latched, TRANSIENT_LOCAL). tts_node
+        # перепубликует на старт + каждый set_provider → мы не теряем свежести.
+        # Тем не менее держим локальный expiry на случай переподключения WS без
+        # рестарта quest_node (tts_node мог переподняться, а quest-WS не
+        # переподписался). По дизайн-доку t_5b9d5d0c §128-150.
+        self._voices_cache: list[dict[str, Any]] = []
+        self._voices_cache_ts: float = 0.0
+        self._voices_cache_ttl_sec: float = float(voices_cache_ttl_sec)
+        self._voices_cache_lock = threading.Lock()
+        # Кэш активного провайдера + голоса (/voice/tts/provider_state).
+        self._active_provider: str = ""
+        self._active_voice: str = ""
         # Сохраняем loop aiohttp для отправки STATE_UPDATE из ROS-callback-а.
         # None до тех пор, пока ``QuestNode._start_aiohttp()`` не сходится.
         self._aio_send_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -424,6 +444,167 @@ class QuestBridge:
             self._node.get_logger().warning(f"quest: unknown voice_mode {mode!r}")
             return
         self._set_voice_mode_pub.publish(_string_msg(param_mode))
+
+    # ── AV-27 TTS picker (issue #1919) ────────────────────────────────────
+
+    def list_voices_snapshot(self) -> dict[str, Any]:
+        """Sync-снимок voices-кэша + активный провайдер/голос.
+
+        Возвращаемый словарь — это ровно та полезная нагрузка, которую ws_server
+        форвардит клиенту в ``JSON_EVENT{type:"voice_list"}`` + добавляет ts_ms.
+        Если tts_node ещё ни разу не прислал /voice/tts/voices (например, нода
+        упала) — voices=[] и active_provider="" ; UI отрисует
+        «провайдер не отдаёт список голосов» (acceptance #1919). Никаких
+        хардкод-fallback'ов (см. design t_5b9d5d0c §52-87).
+        """
+        with self._voices_cache_lock:
+            cache = list(self._voices_cache)
+            cache_ts = self._voices_cache_ts
+        fresh = (cache_ts > 0.0) and (
+            (time.monotonic() - cache_ts) <= self._voices_cache_ttl_sec
+        )
+        if not fresh:
+            cache = []  # просрочен — честно пусто (WS-клиент увидит voices=[])
+        return {
+            "voices": cache,
+            "active_provider": self._active_provider,
+            "active_voice": self._active_voice,
+        }
+
+    def set_voice(
+        self, voice_id: str, preset: str | None
+    ) -> tuple[bool, str | None, str | None, list[str] | None]:
+        """Sync-валидация + публикация запроса на /avatar/set_voice.
+
+        Валидация делается ЗДЕСЬ (а не откладывается на supervisor) чтобы
+        ws_server мог сразу вернуть voice_set_nack с осмысленным reason
+        (voice_unavailable / tts_unreachable / unknown_voice_id) — пользователь
+        в UI Quest увидит ошибку мгновенно, а не через 1.5 с после таймаута.
+
+        Returns:
+            (ok, applied_voice_id, reason, available)
+            * ok=True, applied_voice_id=voice_id (мы подтверждаем голос, зная
+              что он есть у активного провайдера), reason=None, available=None —
+              нормальный ack; фактическое применение подтвердится через
+              /voice/tts/provider_state (republish tts_node на смену параметра).
+            * ok=False, reason="tts_unreachable"|"voice_unavailable"|"missing_publisher"
+              — nack; available заполняется списком id голосов активного
+              провайдера когда reason="voice_unavailable" (UI-подсказка).
+        """
+        if self._set_voice_pub is None:
+            return False, None, "missing_publisher", None
+        provider = self._active_provider
+        if not provider:
+            return False, None, "tts_unreachable", None
+        voices = _voices_for(provider)
+        if not voices:
+            return False, None, "tts_unreachable", None
+        if voice_id not in voices:
+            return False, None, "voice_unavailable", voices
+        # Валидно → публикуем запрос супервизору. Формат: JSON-строка в
+        # std_msgs/String (как /avatar/set_voice_mode и /avatar/set_voice).
+        payload = {
+            "voice_id": voice_id,
+            "preset": preset,
+            "provider": provider,
+            "ts_ms": int(time.time() * 1000),
+        }
+        try:
+            self._set_voice_pub.publish(_string_msg(json.dumps(payload, ensure_ascii=False)))
+        except Exception as exc:  # noqa: BLE001
+            self._node.get_logger().warning(f"quest: set_voice publish failed: {exc}")
+            return False, None, "publish_failed", None
+        return True, voice_id, None, None
+
+    def publish_preview_voice(self, request_id: str, voice_id: str, text: str) -> None:
+        """Опубликовать запрос на preview-синтез.
+
+        Ответ придёт асинхронно через /avatar/preview_voice/{audio,result,error}.
+        ws_server держит маппинг request_id → ws и форвардит preview_voice_audio
+        (BINARY_FRAME + JSON_EVENT{type:"preview_voice_audio", ...}) + итоговые
+        done/error. Это разделение делает мост «publish-only»: топик односторонний,
+        supervisor пишет ответ в СВОЙ топик, ws_server слушает его и шлёт клиенту.
+        """
+        if self._preview_voice_pub is None:
+            return
+        provider = self._active_provider or ""
+        payload = {
+            "request_id": request_id,
+            "voice_id": voice_id,
+            "text": text,
+            "provider": provider,
+            "ts_ms": int(time.time() * 1000),
+        }
+        try:
+            self._preview_voice_pub.publish(_string_msg(json.dumps(payload, ensure_ascii=False)))
+        except Exception as exc:  # noqa: BLE001
+            self._node.get_logger().warning(f"quest: preview_voice publish failed: {exc}")
+
+    # ── AV-27 ROS hooks (tts_node → quest_node) ──────────────────────────
+
+    def on_voices_message(self, msg: String) -> None:
+        """Подписка на /voice/tts/voices (TRANSIENT_LOCAL, depth=1).
+
+        Полученный JSON парсим и заменяем кэш. TTL — монотонный clock; устаревший
+        кэш (если tts_node пропал) отдаётся как [] через list_voices_snapshot.
+        """
+        try:
+            data = json.loads(msg.data) if msg.data else None
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        voices_raw = data.get("voices")
+        if not isinstance(voices_raw, list):
+            return
+        # Приводим к dict-структуре. tts_node публикует список dict'ов с
+        # полями voice_id, display_name, language, gender, presets, provider;
+        # голоса «без метаданных» (fallback в registry) уже включают все
+        # обязательные поля — см. tts_voice_registry.voice_info_for.
+        normalized: list[dict[str, Any]] = []
+        for entry in voices_raw:
+            if isinstance(entry, dict) and "voice_id" in entry:
+                normalized.append(entry)
+        with self._voices_cache_lock:
+            self._voices_cache = normalized
+            self._voices_cache_ts = time.monotonic()
+        # active_provider/active_voice могут прилететь и в /voice/tts/voices
+        # payload — обновляем по согласованию (provider_state — основной
+        # источник, этот — fallback).
+        provider = data.get("provider")
+        voice = data.get("voice") or data.get("default_voice")
+        if isinstance(provider, str) and provider:
+            self._active_provider = provider
+        if isinstance(voice, str) and voice:
+            self._active_voice = voice
+
+    def on_provider_state_message(self, msg: String) -> None:
+        """Подписка на /voice/tts/provider_state (volatile, depth=10).
+
+        Это SoT для ``active_provider``/``active_voice`` на стороне Quest.
+        Полезно при холодном старте quest_node (latched /voice/tts/voices
+        уже пришёл, но провайдер мог переключиться с тех пор). Также
+        триггерит invalidation voices-кэша если провайдер изменился — UI
+        увидит новые голоса немедленно (см. design §128-150 invalidation).
+        """
+        try:
+            data = json.loads(msg.data) if msg.data else None
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        provider = data.get("provider")
+        voice = data.get("voice") or data.get("default_voice")
+        if isinstance(provider, str) and provider and provider != self._active_provider:
+            self._active_provider = provider
+            # Смена провайдера → invalidate локальный TTL, чтобы следующий
+            # list_voices заставил нас либо использовать свежий latched-publish
+            # от tts_node (он уже прилетит сразу за provider_state), либо
+            # честно показать [] пока не получим.
+            with self._voices_cache_lock:
+                self._voices_cache_ts = 0.0
+        if isinstance(voice, str) and voice:
+            self._active_voice = voice
 
     def on_camera_frame(self, frame: CameraFrame) -> None:
         """Hook из CameraProvider.capture-loop (capture-thread)."""
@@ -838,6 +1019,11 @@ class QuestNode(Node):
         self.declare_parameter("alert_stuck_cmd_eps", 0.05)
         self.declare_parameter("alert_hold_ms", 10_000)
 
+        # AV-27 / issue #1919 — TTL локального voices-кэша. По дизайн-доку
+        # t_5b9d5d0c §128-150 default 300 (5 минут); 0 = «никогда не
+        # протухает, всегда отдавать последний latched-payload».
+        self.declare_parameter("voices_cache_ttl_sec", 300)
+
         log_pin = bool(self.get_parameter("log_pin").value)
         self._battery_v_empty = float(self.get_parameter("battery_voltage_empty").value)
         self._battery_v_full = float(self.get_parameter("battery_voltage_full").value)
@@ -878,6 +1064,50 @@ class QuestNode(Node):
         self._stt_in_pub = self.create_publisher(AudioData, "/audio/quest_in", _VOICE_QOS)
         # voice_mode → супервизор (ADR-0028 S5): /avatar/set_voice_mode.
         self._set_voice_mode_pub = self.create_publisher(String, "/avatar/set_voice_mode", _RE)
+        # AV-27 / issue #1919 — TTS picker: set_voice / preview_voice →
+        # супервизор (ADR-0028 S5/S12 — никаких прямых SetParameters из
+        # quest_node на tts_node). Топики std_msgs/String (JSON payload),
+        # симметрично /avatar/set_voice_mode.
+        self._set_voice_pub = self.create_publisher(String, "/avatar/set_voice", _RE)
+        self._preview_voice_pub = self.create_publisher(String, "/avatar/preview_voice", _RE)
+        # Ответы preview_voice (String JSON):
+        # /avatar/preview_voice/result — done/error с request_id;
+        # /avatar/preview_voice/audio  — metaданные аудио (String JSON);
+        # /avatar/preview_voice/error  — error напрямую.
+        # payload для audio — JSON с audio_b64 (base64-encoded bytes);
+        # BINARY-топик пока не используется (MVP — base64 внутри String).
+        self._preview_result_sub = self.create_subscription(
+            String, "/avatar/preview_voice/result", self._on_preview_result, 10
+        )
+        self._preview_audio_sub = self.create_subscription(
+            String, "/avatar/preview_voice/audio", self._on_preview_audio, 10
+        )
+        self._preview_error_sub = self.create_subscription(
+            String, "/avatar/preview_voice/error", self._on_preview_error, 10
+        )
+        # Подписка на /voice/tts/voices (TRANSIENT_LOCAL depth=1) — это
+        # первый TRANSIENT_LOCAL publisher tts_node (см. design t_5b9d5d0c
+        # §47-49). RELIABLE обязательно — TRANSIENT_LOCAL «latched» semantics
+        # работают только при совпадении durability обеих сторон.
+        _LATCHED_VOICES_QOS = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._voices_sub = self.create_subscription(
+            String,
+            "/voice/tts/voices",
+            self._on_tts_voices,
+            _LATCHED_VOICES_QOS,
+        )
+        # /voice/tts/provider_state — SoT для active_provider/active_voice.
+        self._provider_state_sub = self.create_subscription(
+            String,
+            "/voice/tts/provider_state",
+            self._on_tts_provider_state,
+            10,
+        )
         # AV-19 (issue #1911, ADR-0028 §4.4 S10): relay teleop_heartbeat.
         # Сюда ws_server релеит клиентский teleop_heartbeat / teleop_twist
         # от имени client_id (см. WSSServer._on_json_cmd).
@@ -1004,6 +1234,9 @@ class QuestNode(Node):
             sound_stop_pub=self._sound_stop_pub,
             stt_in_pub=self._stt_in_pub,
             set_voice_mode_pub=self._set_voice_mode_pub,
+            set_voice_pub=self._set_voice_pub,
+            preview_voice_pub=self._preview_voice_pub,
+            voices_cache_ttl_sec=float(self.get_parameter("voices_cache_ttl_sec").value),
             heartbeat_pub=self._heartbeat_pub,
             supervisor_acquire_client=self._srv_acquire,
             supervisor_release_client=self._srv_release,
@@ -1113,6 +1346,104 @@ class QuestNode(Node):
             self.bridge.publish_frame("voice_state", payload)
         except Exception as e:  # noqa: BLE001
             self.get_logger().debug(f"voice_state publish failed: {e}")
+
+    def _on_tts_voices(self, msg: String) -> None:
+        """ROS /voice/tts/voices (TRANSIENT_LOCAL, latched) → bridge кэш.
+
+        Источник истины для voice_list payload. Приходит ОДИН раз на старте
+        (latched от tts_node) + на каждое переключение provider.
+        """
+        self.bridge.on_voices_message(msg)
+
+    def _on_tts_provider_state(self, msg: String) -> None:
+        """ROS /voice/tts/provider_state → bridge.active_provider/active_voice.
+
+        SoT для активного провайдера и голоса; инвалидирует voices-кэш
+        если провайдер сменился (см. design t_5b9d5d0c §128-150).
+        """
+        self.bridge.on_provider_state_message(msg)
+
+    def _on_preview_result(self, msg: String) -> None:
+        """ROS /avatar/preview_voice/result (String JSON) → ws_server.deliver_preview_done.
+
+        ``done`` — финальный preview_voice_done для клиента. Чистим
+        pending и шлём JSON_EVENT. В MVP supervisor никогда не публикует
+        done (только error) — но контракт есть, и через этот канал
+        будущие карточки добавят success-путь.
+        """
+        try:
+            data = json.loads(msg.data) if msg.data else None
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        request_id = data.get("request_id")
+        if not isinstance(request_id, str):
+            return
+        # WS-серверный поток: ws_server уже зарегистрировал request_id в
+        # start_preview_session → здесь просто достаём и шлём done.
+        try:
+            self.ws_server.deliver_preview_done(request_id)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(f"preview_result deliver failed: {exc}")
+
+    def _on_preview_audio(self, msg: String) -> None:
+        """ROS /avatar/preview_voice/audio (String JSON, audio_b64) → WS audio.
+
+        payload: ``{request_id, format, content_type, audio_b64, seq, total}``.
+        audio_b64 декодируется в raw bytes и отправляется отдельным
+        BINARY_FRAME после JSON_EVENT-метаданных. В MVP не используется
+        (supervisor отвечает только error) — канал готов для followup.
+        """
+        try:
+            data = json.loads(msg.data) if msg.data else None
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        request_id = data.get("request_id")
+        if not isinstance(request_id, str):
+            return
+        audio_format = data.get("format") or "mp3"
+        content_type = data.get("content_type") or f"audio/{audio_format}"
+        seq = int(data.get("seq") or 0)
+        total = int(data.get("total") or 1)
+        b64 = data.get("audio_b64") or ""
+        try:
+            import base64
+
+            audio_bytes = base64.b64decode(b64) if b64 else b""
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(f"preview_audio decode failed: {exc}")
+            audio_bytes = b""
+        try:
+            self.ws_server.deliver_preview_audio(
+                request_id=request_id,
+                audio_bytes=audio_bytes,
+                audio_format=str(audio_format),
+                content_type=str(content_type),
+                seq=seq,
+                total=total,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(f"preview_audio deliver failed: {exc}")
+
+    def _on_preview_error(self, msg: String) -> None:
+        """ROS /avatar/preview_voice/error → ws_server.deliver_preview_error."""
+        try:
+            data = json.loads(msg.data) if msg.data else None
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        request_id = data.get("request_id")
+        reason = data.get("reason") or "preview_error"
+        if not isinstance(request_id, str):
+            return
+        try:
+            self.ws_server.deliver_preview_error(request_id, str(reason))
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(f"preview_error deliver failed: {exc}")
 
     def _on_tick_timer(self) -> None:
         if not self._aio_started:

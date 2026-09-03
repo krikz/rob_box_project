@@ -15,6 +15,7 @@
 
   <!-- Core ROS2 dependencies (per AV-2 acceptance, ADR-0028 §4.6) -->
   <depend>rclpy</depend>
+  <exec_depend>rcl_interfaces</exec_depend>
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
   <!-- AV-12 / ADR-0028 §4.3: typed IDL для acquire/release/mode сервисов.

@@ -10,6 +10,9 @@ test.
 """
 
 import msgpack
+import json
+import time
+
 import pytest
 
 from rob_box_quest.core.safety import WATCHDOG_TIMEOUT_S
@@ -452,3 +455,199 @@ def test_dialogue_state_callback_updates_last_voice_state_cache():
     msg.data = "DIALOGUE"
     node._on_dialogue_state(msg)
     assert node._last_voice_state["state"] == "speaking"
+
+
+# ── AV-27 / issue #1919 — TTS picker (list_voices / set_voice / preview_voice) ─
+
+
+class _MockStringPublisher(_MockPublisher):
+    """Publisher, ожидающий std_msgs/String payload как .data."""
+
+    def publish(self, msg) -> None:
+        # Сохраняем .data (как rclpy.String) + repr для отладки.
+        super().publish(getattr(msg, "data", msg))
+
+
+def _make_voice_bridge(set_voice_pub=None, preview_voice_pub=None, voices_cache_ttl_sec=300.0):
+    """Construct QuestBridge с mock-publishers для voice-picker.
+
+    set_voice_pub / preview_voice_pub опциональны (None → мост будет
+    возвращать nack для set_voice / молча drop для preview_voice).
+
+    QuestBridge живёт в rob_box_quest.quest_node, который тянет rclpy +
+    audio_common_msgs — пропускаем в dev-env (см. _make_bridge выше).
+    """
+    pytest.importorskip("audio_common_msgs", reason="QuestBridge требует rclpy/audio_common_msgs (только в Docker image)")
+    from rob_box_quest.quest_node import QuestBridge
+
+    node = _MockNode()
+    pub_quest = _MockPublisher()
+    pub_emergency = _MockPublisher()
+    svp = set_voice_pub or _MockStringPublisher()
+    pvp = preview_voice_pub or _MockStringPublisher()
+    bridge = QuestBridge(
+        node=node,
+        cmd_vel_quest_pub=pub_quest,
+        cmd_vel_emergency_pub=pub_emergency,
+        set_voice_pub=svp,
+        preview_voice_pub=pvp,
+        voices_cache_ttl_sec=voices_cache_ttl_sec,
+    )
+    return bridge, svp, pvp
+
+
+def _string_msg(payload_str: str):
+    """Создаёт fake ros String без зависимости от rclpy."""
+    class _Msg:
+        def __init__(self, d: str) -> None:
+            self.data = d
+    return _Msg(payload_str)
+
+
+def test_voices_cache_empty_snapshot_before_latched_publish():
+    """Без latched-publish от tts_node — snapshot возвращает voices=[]."""
+    bridge, _, _ = _make_voice_bridge()
+    snap = bridge.list_voices_snapshot()
+    assert snap["voices"] == []
+    assert snap["active_provider"] == ""
+    assert snap["active_voice"] == ""
+
+
+def test_voices_cache_hit_after_latched_publish():
+    """После on_voices_message с приличным payload — snapshot содержит voices."""
+    bridge, _, _ = _make_voice_bridge()
+    payload = json.dumps({
+        "provider": "yandex",
+        "voice": "alena",
+        "default_voice": "anton",
+        "voices": [
+            {"voice_id": "alena", "display_name": "Алёна", "language": "ru-RU", "gender": "female"},
+            {"voice_id": "anton", "display_name": "Антон", "language": "ru-RU", "gender": "male"},
+        ],
+        "ts": 12345.0,
+    })
+    bridge.on_voices_message(_string_msg(payload))
+    snap = bridge.list_voices_snapshot()
+    assert len(snap["voices"]) == 2
+    assert snap["voices"][0]["voice_id"] == "alena"
+    assert snap["active_provider"] == "yandex"
+    assert snap["active_voice"] == "alena"
+
+
+def test_voices_cache_expiry_returns_empty():
+    """voices_cache_ttl_sec=0.1 → через 0.2 с snapshot пустой (TTL истёк)."""
+    bridge, _, _ = _make_voice_bridge(voices_cache_ttl_sec=0.1)
+    payload = json.dumps({
+        "provider": "yandex",
+        "voice": "alena",
+        "default_voice": "anton",
+        "voices": [{"voice_id": "alena"}],
+        "ts": 1.0,
+    })
+    bridge.on_voices_message(_string_msg(payload))
+    snap1 = bridge.list_voices_snapshot()
+    assert snap1["voices"] != []
+    time.sleep(0.15)
+    snap2 = bridge.list_voices_snapshot()
+    assert snap2["voices"] == [], f"cache should expire but got {snap2['voices']}"
+
+
+def test_on_provider_state_message_invalidates_cache_on_provider_change():
+    """Смена провайдера → invalidate cache (TTL=0, чтобы следующий list увидел [])."""
+    bridge, _, _ = _make_voice_bridge()
+    payload = json.dumps({
+        "provider": "yandex",
+        "voice": "alena",
+        "default_voice": "anton",
+        "voices": [{"voice_id": "alena"}],
+        "ts": 1.0,
+    })
+    bridge.on_voices_message(_string_msg(payload))
+    assert bridge.list_voices_snapshot()["voices"] != []
+    # Провайдер сменился на minimax → cache invalidates.
+    bridge.on_provider_state_message(_string_msg(json.dumps({"provider": "minimax", "voice": "male-qn-qingse"})))
+    snap = bridge.list_voices_snapshot()
+    assert snap["voices"] == [], "cache should be invalidated by provider change"
+    assert snap["active_provider"] == "minimax"
+    assert snap["active_voice"] == "male-qn-qingse"
+
+
+def test_set_voice_unknown_returns_nack_with_available():
+    """set_voice(bogus) при активном yandex → nack + available=текущий список."""
+    bridge, svp, _ = _make_voice_bridge()
+    # Актитируем активный провайдер через provider_state (как сделал бы tts_node).
+    bridge.on_provider_state_message(_string_msg(json.dumps({"provider": "yandex", "voice": "alena"})))
+    # Загружаем voices_payload (через on_voices_message).
+    bridge.on_voices_message(_string_msg(json.dumps({
+        "provider": "yandex",
+        "voice": "alena",
+        "default_voice": "anton",
+        "voices": [
+            {"voice_id": "alena"},
+            {"voice_id": "anton"},
+        ],
+        "ts": 1.0,
+    })))
+    ok, applied, reason, available = bridge.set_voice("bogus", None)
+    assert ok is False
+    assert applied is None
+    assert reason == "voice_unavailable"
+    assert sorted(available) == ["alena", "anton"]
+    assert svp.published == [], "set_voice publisher must not be called on nack"
+
+
+def test_set_voice_success_publishes_json_with_provider_hint():
+    """set_voice(alena) при активном yandex → ack + publish в /avatar/set_voice."""
+    bridge, svp, _ = _make_voice_bridge()
+    bridge.on_provider_state_message(_string_msg(json.dumps({"provider": "yandex", "voice": "alena"})))
+    bridge.on_voices_message(_string_msg(json.dumps({
+        "provider": "yandex",
+        "voice": "alena",
+        "default_voice": "anton",
+        "voices": [{"voice_id": "alena"}],
+        "ts": 1.0,
+    })))
+    ok, applied, reason, available = bridge.set_voice("alena", "friendly")
+    assert ok is True
+    assert applied == "alena"
+    assert reason is None
+    assert available is None
+    assert len(svp.published) == 1
+    parsed = json.loads(svp.published[0])
+    assert parsed["voice_id"] == "alena"
+    assert parsed["preset"] == "friendly"
+    assert parsed["provider"] == "yandex"
+    assert "ts_ms" in parsed
+
+
+def test_set_voice_no_active_provider_returns_tts_unreachable():
+    """Без provider_state — set_voice возвращает tts_unreachable, ничего не публикует."""
+    bridge, svp, _ = _make_voice_bridge()
+    ok, _, reason, _ = bridge.set_voice("alena", None)
+    assert ok is False
+    assert reason == "tts_unreachable"
+    assert svp.published == []
+
+
+def test_publish_preview_voice_emits_json():
+    """publish_preview_voice → JSON в preview_voice_pub с request_id/voice_id/text."""
+    bridge, _, pvp = _make_voice_bridge()
+    bridge.on_provider_state_message(_string_msg(json.dumps({"provider": "yandex", "voice": "alena"})))
+    bridge.publish_preview_voice("req-1", "alena", "Привет, оператор!")
+    assert len(pvp.published) == 1
+    parsed = json.loads(pvp.published[0])
+    assert parsed["request_id"] == "req-1"
+    assert parsed["voice_id"] == "alena"
+    assert parsed["text"] == "Привет, оператор!"
+    assert parsed["provider"] == "yandex"
+    assert "ts_ms" in parsed
+
+
+def test_publish_preview_voice_without_provider_still_emits():
+    """preview_voice без provider_state (холодный старт) — provider="", но payload валиден."""
+    bridge, _, pvp = _make_voice_bridge()
+    bridge.publish_preview_voice("req-x", "alena", "test")
+    assert len(pvp.published) == 1
+    parsed = json.loads(pvp.published[0])
+    assert parsed["provider"] == ""
+    assert parsed["request_id"] == "req-x"

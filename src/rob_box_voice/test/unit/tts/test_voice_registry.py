@@ -26,7 +26,9 @@ from rob_box_voice.tts_voice_registry import (  # noqa: E402
     effective_provider,
     format_tts_context,
     resolve_voice,
+    voice_info_for,
     voices_for,
+    voices_info_for,
 )
 
 
@@ -187,4 +189,59 @@ def test_minimax_registry_has_current_russian_system_voices() -> None:
         "tts_voice_registry.PROVIDER_VOICES['minimax'] lost current Russian "
         f"system voices from the MiniMax FAQ: {sorted(missing)}"
     )
+
+
+# AV-27 / issue #1919 — voice_info_for + voices_info_for (wire payload для
+# /voice/tts/voices → JSON_EVENT{type:voice_list}).
+
+
+def test_voice_info_for_known_provider_has_required_fields():
+    """voice_info_for(yandex, anton) → dict со всеми wire-полями."""
+    info = voice_info_for("yandex", "anton")
+    assert info is not None
+    assert info["voice_id"] == "anton"
+    assert info["display_name"] == "Антон"
+    assert info["language"] == "ru-RU"
+    assert info["gender"] == "male"
+    assert "standard" in info["presets"]
+
+
+def test_voice_info_for_unknown_voice_returns_none():
+    """voice_info_for(yandex, bogus) → None (нет в каталоге провайдера)."""
+    assert voice_info_for("yandex", "bogus") is None
+
+
+def test_voice_info_for_unknown_provider_returns_none():
+    """voice_info_for(unknown, *) → None."""
+    assert voice_info_for("unknown_provider", "anything") is None
+
+
+def test_voice_info_for_each_provider_has_at_least_one():
+    """Все известные провайдеры имеют хотя бы один голос с метаданными."""
+    for provider in ("yandex", "minimax", "silero"):
+        voices = voices_for(provider)
+        assert voices, f"{provider} has no voices"
+        first = voice_info_for(provider, voices[0])
+        assert first is not None
+        assert "voice_id" in first
+        assert "display_name" in first
+
+
+def test_voices_info_for_returns_list_in_provider_order():
+    """voices_info_for(yandex) повторяет порядок PROVIDER_VOICES[yandex]."""
+    raw_ids = voices_for("yandex")
+    infos = voices_info_for("yandex")
+    assert [i["voice_id"] for i in infos] == raw_ids
+
+
+def test_voices_info_for_unknown_provider_returns_empty():
+    """voices_info_for(unknown) → [] (честный пустой список, без fallback)."""
+    assert voices_info_for("unknown_provider") == []
+
+
+def test_voices_info_for_minimax_includes_legacy_ids():
+    """male-qn-qingse + female-shaonv доступны (legacy совместимость)."""
+    info_ids = {i["voice_id"] for i in voices_info_for("minimax")}
+    assert "male-qn-qingse" in info_ids
+    assert "female-shaonv" in info_ids
 
