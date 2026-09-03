@@ -42,7 +42,7 @@ import {
   type ClientModeManager,
   type ClientModeDefaults
 } from "./ui/mode_manager";
-import { createVoicePresetsPanel, type VoicePresetsPanel } from "./ui/voice_presets_panel";
+import { PRESET_ORDER } from "./scene/voice_pipeline_panel";
 import type {
   VoiceLanguage,
   VoicePresetId,
@@ -74,16 +74,6 @@ const SUBPROTOCOL = "robbox-quest-v2";
 // default_preset / default_language в voice_presets.yaml.
 const DEFAULT_VOICE_PRESET: VoicePresetId = "technical";
 const DEFAULT_VOICE_LANGUAGE: VoiceLanguage = "ru";
-// Fallback-список пресетов до ответа сервера (см. voice_presets.yaml).
-// Если сервер пришлёт свой voice_presets event — этот список заменится.
-const FALLBACK_PRESETS: VoicePresetInfo[] = [
-  { id: "technical", name: "Технический" },
-  { id: "street", name: "По понятиям" },
-  { id: "caveman", name: "Пещерный" },
-  { id: "business", name: "Деловой" },
-  { id: "philosopher", name: "Философ" },
-  { id: "lenin", name: "Ленин" }
-];
 
 // Не-видео стримы. Список видео-топиков берём у сцены (`videoTopics()`),
 // чтобы подписка не разъезжалась с тем, что она реально умеет показать.
@@ -248,55 +238,60 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     errorOverlay
   });
 
-  // Панель выбора пресета/языка (AV-28 §P7). До ответа сервера показывает
-  // fallback-список и дефолтную подсветку; setLoading(true) отключает
-  // кнопки. TODO: когда AV-18-якорь в 3D-сцене будет готов (R12 из
-  // task-graph), переместить эту панель в 3D-HUD; сейчас — DOM-overlay
-  // в нижнем-левом углу, проецируется в VR рядом с левым грипом.
-  const voicePanel: VoicePresetsPanel = createVoicePresetsPanel(opts.body, {
-    presets: FALLBACK_PRESETS,
-    languages: [DEFAULT_VOICE_LANGUAGE, "en"],
-    currentPreset: DEFAULT_VOICE_PRESET,
-    currentLanguage: DEFAULT_VOICE_LANGUAGE,
-    loading: true,
-    onPresetChange: (preset) => {
-      const c = conn;
-      if (!c || disconnected) return;
-      // Запоминаем желание → mode_manager уже синхронизирован panel'ом;
-      // шлём на сервер. ACK подтвердит, NACK откатит.
-      try {
-        c.send({
-          cmd: "set_voice",
-          ts_ms: Date.now(),
-          voice_id: modeManager.snapshot().currentVoice ?? "",
-          preset,
-          language: modeManager.snapshot().currentLanguage ?? DEFAULT_VOICE_LANGUAGE
-        });
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn("[quest] set_voice send failed:", err);
-        // Откатываем UI к последнему известному состоянию.
-        voicePanel.setCurrentPreset(modeManager.snapshot().currentPreset);
-      }
-    },
-    onLanguageChange: (language) => {
-      const c = conn;
-      if (!c || disconnected) return;
-      try {
-        c.send({
-          cmd: "set_voice",
-          ts_ms: Date.now(),
-          voice_id: modeManager.snapshot().currentVoice ?? "",
-          preset: modeManager.snapshot().currentPreset ?? DEFAULT_VOICE_PRESET,
-          language
-        });
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn("[quest] set_voice send failed:", err);
-        voicePanel.setCurrentLanguage(modeManager.snapshot().currentLanguage);
-      }
+  // W6-2 / спека §3.6: панель голосового пайплайна теперь 3D на мостике
+  // (bridge.voicePipeline). Здесь — только клиентское состояние тумблеров
+  // STT/LLM (намерение оператора) и маппинг в wire-команды. Дефолт —
+  // ttts_proxy (STT вкл, LLM выкл) — ровно то, что шлёт applyVoicePtt при
+  // входе в робот-голос; voice_mode_ack синхронизирует состояние.
+  let pipelineSttOn: boolean | null = null;
+  let pipelineLlmOn: boolean | null = null;
+  // AV-28 §P7: пока не пришёл список пресетов — кнопки заблокированы.
+  let voicePresetsLoading = true;
+
+  /** Смена стиля речи / языка вывода → `set_voice` (AV-28 §P7). */
+  function sendStyleChange(preset?: VoicePresetId, language?: VoiceLanguage): void {
+    const c = conn;
+    if (!c || disconnected) return;
+    const snap = modeManager.snapshot();
+    c.send({
+      cmd: "set_voice",
+      ts_ms: Date.now(),
+      voice_id: snap.currentVoice ?? "",
+      preset: preset ?? snap.currentPreset ?? DEFAULT_VOICE_PRESET,
+      language: language ?? snap.currentLanguage ?? DEFAULT_VOICE_LANGUAGE
+    });
+  }
+
+  /**
+   * WIRE_TO_VOICE_INPUT_MODE (quest_node.py) → тумблеры панели пайплайна:
+   *   passthrough → STT выкл (рация);
+   *   ttts_proxy → STT вкл, LLM выкл (STT→TTS дословно);
+   *   stt_llm / llm_formalize → STT вкл, LLM вкл (полный пайплайн);
+   *   off / прочее → неизвестно (показываем «…»).
+   */
+  function applyVoiceModeToPipeline(mode: string | undefined): void {
+    switch (mode) {
+      case "passthrough":
+        pipelineSttOn = false;
+        pipelineLlmOn = false;
+        break;
+      case "ttts_proxy":
+        pipelineSttOn = true;
+        pipelineLlmOn = false;
+        break;
+      case "stt_llm":
+      case "llm_formalize":
+        pipelineSttOn = true;
+        pipelineLlmOn = true;
+        break;
+      default:
+        pipelineSttOn = null;
+        pipelineLlmOn = null;
+        break;
     }
-  });
+    bridge.voicePipeline.setSttOn(pipelineSttOn);
+    bridge.voicePipeline.setLlmOn(pipelineLlmOn);
+  }
 
   // HUD: подключаем help-toggle кнопку (если есть) к help overlay.
   if (opts.helpToggle) {
@@ -331,6 +326,66 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       const cmd = supervisorActionToCmd(action, bridge.supervisorPanel);
       if (cmd === null) return;
       conn.send(cmd);
+    },
+    // Клик по панели голосового пайплайна (W6-2 / спека §3.6).
+    onPipelineAction: (action) => {
+      if (!conn || disconnected) {
+        // Нет соединения: оптимистичную подсветку откатываем к стора.
+        if (action.kind === "preset") {
+          bridge.voicePipeline.setCurrentPreset(modeManager.snapshot().currentPreset);
+        } else if (action.kind === "lang") {
+          bridge.voicePipeline.setCurrentLanguage(modeManager.snapshot().currentLanguage);
+        }
+        return;
+      }
+      switch (action.kind) {
+        case "stt": {
+          const nextStt = !pipelineSttOn;
+          pipelineSttOn = nextStt;
+          const mode = !nextStt ? "passthrough" : pipelineLlmOn ? "llm_formalize" : "ttts_proxy";
+          bridge.voicePipeline.setSttOn(nextStt);
+          conn.send({ cmd: "voice_mode", ts_ms: Date.now(), mode });
+          return;
+        }
+        case "llm": {
+          const nextLlm = !pipelineLlmOn;
+          pipelineLlmOn = nextLlm;
+          const mode = nextLlm ? "llm_formalize" : "ttts_proxy";
+          bridge.voicePipeline.setLlmOn(nextLlm);
+          conn.send({ cmd: "voice_mode", ts_ms: Date.now(), mode });
+          return;
+        }
+        case "tts": {
+          toggleTtsPicker();
+          return;
+        }
+        case "preset": {
+          if (voicePresetsLoading) return;
+          bridge.voicePipeline.setCurrentPreset(action.preset);
+          modeManager.setCurrentPreset(action.preset);
+          try {
+            sendStyleChange(action.preset);
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn("[quest] set_voice preset send failed:", err);
+            bridge.voicePipeline.setCurrentPreset(modeManager.snapshot().currentPreset);
+          }
+          return;
+        }
+        case "lang": {
+          if (voicePresetsLoading) return;
+          bridge.voicePipeline.setCurrentLanguage(action.language);
+          modeManager.setCurrentLanguage(action.language);
+          try {
+            sendStyleChange(undefined, action.language);
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn("[quest] set_voice lang send failed:", err);
+            bridge.voicePipeline.setCurrentLanguage(modeManager.snapshot().currentLanguage);
+          }
+          return;
+        }
+      }
     }
   });
   bridge.initLayout();
@@ -583,8 +638,11 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
           activeProvider: e.active_provider ?? null
         });
         // Активный голос сервера — единственный источник истины для
-        // mode_manager (клиент своё значение не выдумывает).
-        if (typeof e.active_voice === "string") modeManager.setCurrentVoice(e.active_voice);
+        // mode_manager и панели пайплайна (клиент своё значение не выдумывает).
+        if (typeof e.active_voice === "string") {
+          modeManager.setCurrentVoice(e.active_voice);
+          bridge.voicePipeline.setCurrentVoice(e.active_voice);
+        }
         return true;
       }
       case "voice_set_ack": {
@@ -876,13 +934,12 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             const mode = (event as { mode?: string }).mode;
             voiceOffCached = mode === "off";
             bridge.supervisorPanel.setVoiceOff(voiceOffCached);
+            applyVoiceModeToPipeline(mode);
             return;
           }
 
           // AV-28 §P7: voice_presets / voice_set_ack / voice_set_nack.
           // Свои типы событий, дальше по функции их уже не ждут.
-          const type = (event as { type?: string }).type;
-          if (type === "voice_presets" || type === "voice_set_ack" || type === "voice_set_nack") {
           const type = (event as { type?: string }).type;
           if (type === "voice_presets") {
             // Сервер прислал канонический список пресетов + дефолты
@@ -894,10 +951,10 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
               default_language?: VoiceLanguage;
             };
             if (Array.isArray(p.presets) && p.presets.length > 0) {
-              voicePanel.setPresets(p.presets);
+              bridge.voicePipeline.setPresets(p.presets);
             }
             if (Array.isArray(p.languages) && p.languages.length > 0) {
-              voicePanel.setLanguages(p.languages);
+              bridge.voicePipeline.setLanguages(p.languages);
             }
             // Дефолт сервера имеет приоритет над локальным fallback.
             const srvPreset =
@@ -905,37 +962,57 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             const srvLang =
               p.default_language ?? modeManager.snapshot().currentLanguage;
             if (srvPreset) {
-              voicePanel.setCurrentPreset(srvPreset);
+              bridge.voicePipeline.setCurrentPreset(srvPreset);
               modeManager.setCurrentPreset(srvPreset);
             }
             if (srvLang) {
-              voicePanel.setCurrentLanguage(srvLang);
+              bridge.voicePipeline.setCurrentLanguage(srvLang);
               modeManager.setCurrentLanguage(srvLang);
             }
-            voicePanel.setLoading(false);
-          } else if (type === "voice_set_ack") {
+            voicePresetsLoading = false;
+            bridge.voicePipeline.setLoading(false);
+            return;
+          }
+          if (type === "voice_set_ack") {
             const ack = event as {
               voice_id?: string;
-              preset?: VoicePresetId;
-              language?: VoiceLanguage;
+              preset?: string;
+              language?: string;
             };
-            if (ack.voice_id) modeManager.setCurrentVoice(ack.voice_id);
-            if (ack.preset) modeManager.setCurrentPreset(ack.preset);
-            if (ack.language) modeManager.setCurrentLanguage(ack.language);
-          } else if (type === "voice_set_nack") {
+            // AV-27 (TTS picker): ack всегда с voice_id; preset там — пресет
+            // провайдера (standard/friendly/...), а НЕ стиль речи AV-28.
+            if (typeof ack.voice_id === "string" && ack.voice_id) {
+              modeManager.setCurrentVoice(ack.voice_id);
+              bridge.voicePipeline.setCurrentVoice(ack.voice_id);
+            }
+            // AV-28 (§P7): стиль речи только из whitelist'а PRESET_ORDER.
+            const stylePreset =
+              typeof ack.preset === "string" && (PRESET_ORDER as readonly string[]).includes(ack.preset)
+                ? (ack.preset as VoicePresetId)
+                : null;
+            if (stylePreset) {
+              modeManager.setCurrentPreset(stylePreset);
+              bridge.voicePipeline.setCurrentPreset(stylePreset);
+            }
+            if (ack.language === "ru" || ack.language === "en") {
+              modeManager.setCurrentLanguage(ack.language);
+              bridge.voicePipeline.setCurrentLanguage(ack.language);
+            }
+            return;
+          }
+          if (type === "voice_set_nack") {
             // Сервер отказал — откатываем UI и mode_manager к последнему
             // известному «хорошему» значению из snapshot.
             const nack = event as { reason?: string };
             // eslint-disable-next-line no-console
             console.warn("[quest] voice_set_nack:", nack.reason ?? "(no reason)");
             const snap = modeManager.snapshot();
-            voicePanel.setCurrentPreset(snap.currentPreset);
-            voicePanel.setCurrentLanguage(snap.currentLanguage);
+            bridge.voicePipeline.setCurrentPreset(snap.currentPreset);
+            bridge.voicePipeline.setCurrentLanguage(snap.currentLanguage);
             errorOverlay.show(
               "Не удалось сменить голос",
               nack.reason ?? "Сервер отклонил запрос"
             );
-            }
             return;
           }
           // AV-19: JSON_EVENT{type:"floor_lost"} → мгновенный DISARM.
@@ -1262,7 +1339,6 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       errorOverlay.dispose();
       help.dispose();
       watchdog.dispose();
-      voicePanel.dispose();
       alertToast.dispose();
     }
   };

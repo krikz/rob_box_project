@@ -24,6 +24,10 @@ WSS protocol contract: [`docs/architecture/meta-quest-api.md`](../../../docs/arc
 - **Scene graph**: Captain Bridge environment (5 CC0 GLB + HDR, ~70 KB total),
   main wall-screen for the front camera, side video panels at ±75°
   (`camera_oak_depth`, `camera_ceiling`), LiDAR overlay, ARM + status HUDs.
+- **Voice pipeline panel**: always-visible 3D panel on the right (+105°),
+  showing `voice → STT → LLM → TTS → speaker` with per-stage toggles, six
+  style presets + output language, and a TTS voice button opening the TTS
+  picker. Only the PIN form is HTML — all panels live in the 3D scene.
 - **Teleop**: XR controllers (oculus-touch-v2 mapping) — left stick movement,
   right stick click arm/disarm toggle, B/Y emergency stop. Desktop fallback
   WASD + Space + E. Arm-state visible in HUD on the front wall.

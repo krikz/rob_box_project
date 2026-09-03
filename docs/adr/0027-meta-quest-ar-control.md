@@ -358,7 +358,7 @@ ws_server (`VOICE_PRESET_IDS` / `VOICE_LANGUAGES`) и supervisor; невалид
 именно для **стиля речи**, чтобы не путать с `voice_id` (TTS picker,
 AV-27) — другой «слой», отдельный выбор голоса. Контракт рендера —
 pure-функция `renderHud(preset, language)` в
-`src/rob_box_quest/webxr_client/src/ui/voice_presets_panel.ts`; формат:
+`src/rob_box_quest/webxr_client/src/scene/voice_pipeline_panel.ts`; формат:
 
 ```
 renderHud(null, null)             = "ST:--"
@@ -370,7 +370,7 @@ HUD обновляется оптимистично при локальном к
 сервера) и подтверждается через `voice_set_ack` (mode_manager). На
 невалидный preset/language → UI откатывает optimistic update по
 `voice_set_nack.reason` (UI-state хранится в mode_manager, см.
-`voice_presets_panel.ts:setCurrentPreset/setCurrentLanguage`).
+`voice_pipeline_panel.ts:setCurrentPreset/setCurrentLanguage`).
 
 **Контракт клиент↔сервер** (см. `docs/architecture/meta-quest-api.md` §P7
 + `src/rob_box_quest/webxr_client/src/wire/messages.ts`):

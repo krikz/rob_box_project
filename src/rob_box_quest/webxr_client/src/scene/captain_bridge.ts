@@ -21,6 +21,12 @@ import { createTtsPickerMenu, type TtsPickerMenuHandle } from "./tts_picker_menu
 import { parseTtsTargetId, type TtsPickerState, type TtsPickerTarget } from "../state/tts_picker_state";
 import { createSupervisorPanel, type SupervisorPanelHandle, PANEL_TARGET_PREFIX } from "./supervisor_panel";
 import {
+  createVoicePipelinePanel,
+  parsePipelineTargetId,
+  type VoicePipelineAction,
+  type VoicePipelinePanelHandle
+} from "./voice_pipeline_panel";
+import {
   loadBridgeAssets,
   type BridgeAssetHandle,
 } from "./bridge_assets";
@@ -73,6 +79,14 @@ export interface CaptainBridgeOptions {
     panel: SupervisorPanelHandle
   ): void;
   /**
+   * Клик по кнопке панели голосового пайплайна (W6-2 / спека §3.6):
+   *   `stt` / `llm` — тумблеры ступеней (клиент решает, какой `voice_mode`
+   *   слать); `tts` — открыть TTS picker; `preset:<id>` / `lang:<lang>` —
+   *   сменить стиль/язык. Сцена сама не знает транспорт — это ответственность
+   *   bootstrap (тот же контракт, что у `onSupervisorAction`).
+   */
+  onPipelineAction?(action: VoicePipelineAction): void;
+  /**
    * Optional override for the environment base URL. Defaults to
    * `/models/environment/`. Pass `null` to disable environment loading
    * (e.g. unit tests that only exercise panels/LiDAR).
@@ -122,6 +136,12 @@ export interface CaptainBridgeHandle {
    * переключается клавишей `M` на десктопе).
    */
   supervisorPanel: SupervisorPanelHandle;
+  /**
+   * 3D-панель голосового пайплайна оператора (W6-2 / спека §3.6):
+   * `голос → STT → LLM → TTS → динамик` + быстрые настройки ступеней.
+   * Всегда видима (это не HUD-оверлей, а панель на мостике).
+   */
+  voicePipeline: VoicePipelinePanelHandle;
   /**
    * Топики, которые сцена умеет показывать — на них клиент подписывается
    * после WELCOME (main screen + боковые панели).
@@ -279,6 +299,13 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     handlers: {
       onHover: () => refreshHighlights(),
       onSelect: (id) => {
+        // W6-2: клик по панели голосового пайплайна (vpl:*) — раньше
+        // всего остального: его цели на том же слое указателя.
+        const pipelineTarget = parsePipelineTargetId(id);
+        if (pipelineTarget !== null) {
+          opts.onPipelineAction?.(pipelineTarget);
+          return;
+        }
         // AV-27: клик по TTS picker'у (вкладка VOICE, строка, PREVIEW,
         // APPLY, STOP, CLOSE) — раньше всего остального: его цели живут
         // на том же слое указателя, что панели и stream_menu.
@@ -340,6 +367,17 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   const supervisorPanel = createSupervisorPanel();
   scene.add(supervisorPanel.object);
   for (const t of supervisorPanel.targets()) {
+    pointer.addTarget({ id: t.id, object: t.object, draggable: false });
+  }
+
+  // 3D-панель голосового пайплайна (W6-2 / спека §3.6): оператор видит и
+  // настраивает путь «голос → STT → LLM → TTS → динамик». Стоит справа
+  // (+105°), симметрично supervisor-панели (−105°). Всегда видима — это
+  // панель на мостике, а не всплывающее меню. Кнопки — отдельные меши на
+  // слое указателя (prefix `vpl:`).
+  const voicePipeline = createVoicePipelinePanel();
+  scene.add(voicePipeline.object);
+  for (const t of voicePipeline.targets()) {
     pointer.addTarget({ id: t.id, object: t.object, draggable: false });
   }
 
@@ -774,6 +812,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     armTexture.dispose();
     statusHud.dispose();
     supervisorPanel.dispose();
+    voicePipeline.dispose();
     voiceIndicator.dispose();
     renderer.dispose();
   }
@@ -793,6 +832,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     updatePointer,
     pointer,
     supervisorPanel,
+    voicePipeline,
     setAvailableStreams,
     renderTtsPicker,
     openTtsPicker,
