@@ -153,6 +153,25 @@ export interface SetPanelTopicCmd {
   topic: string;
 }
 
+// Avatar supervisor panel (R14, ADR-0027 §2 R14 + ADR-0028 §4):
+// Клиент-управляемые режимы/floor. Идемпотентные на стороне супервизора.
+export interface AvatarSetModeCmd {
+  cmd: "avatar_set_mode";
+  ts_ms: number;
+  mode: "off" | "telegram_active" | "avatar_present" | "teleop_only" | "voice_only" | "mixed";
+  reason?: string;
+}
+export interface AvatarAcquireFloorCmd {
+  cmd: "avatar_acquire_floor";
+  ts_ms: number;
+  kind: "teleop" | "voice";
+}
+export interface AvatarReleaseFloorCmd {
+  cmd: "avatar_release_floor";
+  ts_ms: number;
+  kind: "teleop" | "voice";
+}
+
 export type JsonCmd =
   | TeleopTwistCmd
   | TeleopHeartbeatCmd
@@ -166,6 +185,9 @@ export type JsonCmd =
   | SetVoiceCmd
   | PreviewVoiceCmd
   | SetPanelTopicCmd
+  | AvatarSetModeCmd
+  | AvatarAcquireFloorCmd
+  | AvatarReleaseFloorCmd
   | { cmd: string; ts_ms: number; [k: string]: unknown };
 
 // Структура описания голоса из voice-pipeline.
@@ -229,6 +251,8 @@ export type JsonEvent =
       available?: string[];
       ts_ms: number;
     }
+  | { type: "avatar_state_ack"; state: Record<string, unknown>; ts_ms: number }
+  | { type: "avatar_state_nack"; reason: string; ts_ms: number }
   | {
       type: "preview_voice_audio";
       request_id: string;

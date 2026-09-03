@@ -39,6 +39,7 @@ export const DEFAULT_HOTKEYS: ReadonlyArray<HotkeyEntry> = Object.freeze([
   { key: "W A S D", description: "Движение робота (desktop fallback)", category: "Desktop" },
   { key: "Space", description: "Boost (×1.5, desktop)", category: "Desktop" },
   { key: "E", description: "Emergency stop (desktop)", category: "Desktop" },
+  { key: "M", description: "Показать / скрыть 3D-панель режима аватара", category: "Desktop" },
   { key: "R", description: "Сброс раскладки панелей к default", category: "Desktop" },
   { key: "V", description: "TTS picker: выбор голоса робота", category: "Desktop" },
   { key: "L", description: "Left stick forward/back/strafe", category: "WebXR" },
