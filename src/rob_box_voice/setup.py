@@ -21,6 +21,10 @@ setup(
         # Config files
         (os.path.join('share', package_name, 'config'),
             glob('config/*.yaml') + glob('config/*.json')),
+        # AV-28: voice style presets (config/presets/*.txt) — dialogue_node
+        # читает их из ROS-share при voice_input_mode=quest_llm_formalize.
+        (os.path.join('share', package_name, 'config', 'presets'),
+            glob('config/presets/*.txt')),
         # Prompts
         (os.path.join('share', package_name, 'prompts'),
             glob('prompts/*.txt') + glob('prompts/*.yaml')),

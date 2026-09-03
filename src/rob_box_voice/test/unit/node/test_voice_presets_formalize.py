@@ -177,6 +177,26 @@ class TestVoicePresetsYaml:
         )
 
 
+class TestPresetsPackaging:
+    """setup.py должен паковать ``config/presets/*.txt`` в ROS-share.
+
+    Если пресеты не попадают в ``share/rob_box_voice/config/presets/``
+    Docker-образа, dialogue_node на проде пишет
+    ``preset ... prompt file missing`` и честно падает в
+    ``fallback to direct TTS`` — оператор в шлеме слышит дословный повтор
+    вместо стилизации (AV-28). Локально файлы есть, поэтому это
+    единственное место, где разрыв видно статически.
+    """
+
+    def test_setup_py_packages_presets_txt(self):
+        setup_py = REPO_ROOT / "src" / "rob_box_voice" / "setup.py"
+        src = setup_py.read_text(encoding="utf-8")
+        assert "config/presets" in src, (
+            "setup.py: data_files не пакет config/presets/*.txt — "
+            "пресеты не попадут в ROS-share Docker-образа"
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Тест (2) — промпт-композиция: каждый preset имеет рабочий промпт
 # ─────────────────────────────────────────────────────────────────────────────
