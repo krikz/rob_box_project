@@ -1,13 +1,16 @@
-"""Unit tests for TTS provider fallback chain (issue #1083).
+"""Unit tests for TTS provider fallback chain (issue #1083 + #1976).
 
-Covers the kanban task ``t_424e8172``:
+Covers the kanban task ``t_b33bfee1`` (issue #1976) and the prior
+``t_424e8172`` (issue #1083):
 
-* ``minimax → yandex → silero`` priority chain (config-driven via
-  ``provider_chain`` ROS parameter, derived from ``provider`` otherwise);
-* failover on provider error — MiniMax 2056 quota goes to Yandex (NOT
-  straight to Silero), Yandex gRPC failure goes to Silero;
+* ``yandex → minimax → silero`` priority chain (config-driven via
+  ``provider_chain`` ROS parameter, derived from ``provider`` otherwise) —
+  **Yandex-first per Шифу, карточка t_b33bfee1**;
+* failover on provider error — Yandex gRPC failure (or ``YANDEX_AUTHERROR``
+  surfaced via plain ``RuntimeError``) goes to MiniMax, MiniMax 2056 quota
+  goes to Silero;
 * dead-provider cache with TTL (long for quota/auth, short for transient),
-  so a dead MiniMax isn't hammered on every turn;
+  so a dead Yandex isn't hammered on every turn;
 * ``_synthesize_and_play`` end-to-end chain walk with fake provider
   failures (acceptance: fake failure of each provider → correct next
   in chain).
@@ -16,6 +19,14 @@ Tests use the ``conftest.py`` rclpy/grpc/torch stubs so the module can be
 imported without the heavy ROS2 stack; node stubs are bare classes with
 just the attributes the hot path reads (same contract as
 ``test_minimax_integration._make_fake_node``).
+
+Spec history:
+
+* #1083: цепочка ``minimax → yandex → silero`` с dead-cache — первая
+  попытка (commit ``9462005b``).
+* #1976: Шифу требует ``yandex → minimax → silero`` (Yandex-first), плюс
+  новый модуль ``tts_chain.py`` с классом-обёрткой (см.
+  ``test_tts_chain.py``).
 """
 from __future__ import annotations
 
@@ -46,19 +57,29 @@ MiniMaxTTSAuthError = tts_node.MiniMaxTTSAuthError
 # ── Pure chain helpers (no node needed) ──────────────────────────────────────
 
 
-def test_default_provider_chain_is_minimax_yandex_silero() -> None:
-    assert TTSNode._default_provider_chain() == ["minimax", "yandex", "silero"]
+def test_default_provider_chain_is_yandex_minimax_silero() -> None:
+    # Issue #1976 / t_b33bfee1: Шифу требует Yandex-first (исторический
+    # голос робота — Yandex-anton).
+    assert TTSNode._default_provider_chain() == ["yandex", "minimax", "silero"]
 
 
-def test_chain_from_provider_minimax() -> None:
-    # The core fix for #1083: provider=minimax must fall back to Yandex
-    # (not Silero) when MiniMax dies.
-    assert TTSNode._chain_from_provider("minimax") == ["minimax", "yandex", "silero"]
+def test_chain_from_provider_yandex_keeps_yandex_first() -> None:
+    # Yandex-first дефолт (issue #1976).
+    assert TTSNode._chain_from_provider("yandex") == [
+        "yandex",
+        "minimax",
+        "silero",
+    ]
 
 
-def test_chain_from_provider_yandex_backcompat() -> None:
-    # Back-compat: provider=yandex stays yandex → silero (no MiniMax).
-    assert TTSNode._chain_from_provider("yandex") == ["yandex", "silero"]
+def test_chain_from_provider_minimax_first() -> None:
+    # Back-compat: provider=minimax даёт minimax-first цепочку
+    # (отличается от дефолта, но легитимно — пользователь явно попросил).
+    assert TTSNode._chain_from_provider("minimax") == [
+        "minimax",
+        "yandex",
+        "silero",
+    ]
 
 
 def test_chain_from_provider_silero_only() -> None:
@@ -68,17 +89,18 @@ def test_chain_from_provider_silero_only() -> None:
 @pytest.mark.parametrize(
     "chain,expected",
     [
-        (["minimax", "yandex", "silero"], ["minimax", "yandex", "silero"]),
+        # Issue #1976 / t_b33bfee1: новый дефолт — Yandex-first.
+        (["yandex", "minimax", "silero"], ["yandex", "minimax", "silero"]),
         # Silero mid-chain is moved to the end (invariant: always last).
-        (["silero", "minimax", "yandex"], ["minimax", "yandex", "silero"]),
+        (["silero", "yandex", "minimax"], ["yandex", "minimax", "silero"]),
         # Unknown providers are dropped.
-        (["bogus", "minimax", "nope"], ["minimax", "silero"]),
+        (["bogus", "yandex", "nope"], ["yandex", "silero"]),
         # Duplicates are removed.
-        (["minimax", "minimax", "yandex"], ["minimax", "yandex", "silero"]),
+        (["yandex", "yandex", "minimax"], ["yandex", "minimax", "silero"]),
         # Missing silero → appended at the end.
         (["yandex"], ["yandex", "silero"]),
-        # Empty chain → default full chain.
-        ([], ["minimax", "yandex", "silero"]),
+        # Empty chain → default full chain (Yandex-first).
+        ([], ["yandex", "minimax", "silero"]),
         # Explicit silero-only is legit (provider=silero mode).
         (["silero"], ["silero"]),
     ],
@@ -89,15 +111,32 @@ def test_normalize_provider_chain(chain: list[str], expected: list[str]) -> None
 
 def test_effective_provider_chain_uses_attribute_first() -> None:
     node = _bare_node()
-    node.provider_chain = ["yandex", "silero"]
-    node.provider = "minimax"  # must be ignored — attribute wins
-    assert TTSNode._effective_provider_chain(node) == ["yandex", "silero"]
+    node.provider_chain = ["minimax", "silero"]
+    node.provider = "yandex"  # must be ignored — attribute wins
+    assert TTSNode._effective_provider_chain(node) == ["minimax", "silero"]
 
 
 def test_effective_provider_chain_falls_back_to_provider() -> None:
+    # provider=yandex → дефолт issue #1976: [yandex, minimax, silero].
     node = _bare_node()
     node.provider = "yandex"
-    assert TTSNode._effective_provider_chain(node) == ["yandex", "silero"]
+    assert TTSNode._effective_provider_chain(node) == [
+        "yandex",
+        "minimax",
+        "silero",
+    ]
+
+
+def test_effective_provider_chain_falls_back_to_default() -> None:
+    # provider=minimax → [minimax, yandex, silero] (back-compat, см.
+    # _chain_from_provider). Проверяем что fallback на дефолт работает.
+    node = _bare_node()
+    node.provider = "minimax"
+    assert TTSNode._effective_provider_chain(node) == [
+        "minimax",
+        "yandex",
+        "silero",
+    ]
 
 
 # ── Dead-provider cache with TTL ─────────────────────────────────────────────
