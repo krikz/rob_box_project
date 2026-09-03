@@ -2,14 +2,38 @@ import { describe, it, expect, vi } from "vitest";
 import { createModeManager } from "../src/ui/mode_manager";
 
 describe("createModeManager", () => {
-  it("starts with default snapshot", () => {
+  it("starts with default snapshot (no defaults)", () => {
     const mm = createModeManager();
     expect(mm.snapshot()).toEqual({
       voiceMode: "off",
       teleopState: "disarmed",
       currentVoice: null,
-      currentPreset: null
+      currentPreset: null,
+      currentLanguage: null
     });
+  });
+
+  it("uses defaults when no explicit initial preset/language is given", () => {
+    const mm = createModeManager(undefined, {
+      preset: "technical",
+      language: "ru"
+    });
+    expect(mm.snapshot()).toEqual({
+      voiceMode: "off",
+      teleopState: "disarmed",
+      currentVoice: null,
+      currentPreset: "technical",
+      currentLanguage: "ru"
+    });
+  });
+
+  it("explicit initial overrides defaults (initial wins)", () => {
+    const mm = createModeManager(
+      { currentPreset: "lenin", currentLanguage: "en" },
+      { preset: "technical", language: "ru" }
+    );
+    expect(mm.snapshot().currentPreset).toBe("lenin");
+    expect(mm.snapshot().currentLanguage).toBe("en");
   });
 
   it("setVoiceMode updates snapshot and fires listener", () => {
@@ -30,16 +54,18 @@ describe("createModeManager", () => {
     expect(cb).not.toHaveBeenCalled();
   });
 
-  it("setTeleopState / setCurrentVoice / setCurrentPreset update independent fields", () => {
+  it("setTeleopState / setCurrentVoice / setCurrentPreset / setCurrentLanguage update independent fields", () => {
     const mm = createModeManager();
     mm.setTeleopState("armed");
     mm.setCurrentVoice("alena");
     mm.setCurrentPreset("friendly");
+    mm.setCurrentLanguage("en");
     expect(mm.snapshot()).toEqual({
       voiceMode: "off",
       teleopState: "armed",
       currentVoice: "alena",
-      currentPreset: "friendly"
+      currentPreset: "friendly",
+      currentLanguage: "en"
     });
   });
 
@@ -78,14 +104,39 @@ describe("createModeManager", () => {
     expect(mm.snapshot().voiceMode).toBe("off");
   });
 
-  it("reset() returns to defaults and fires listeners", () => {
-    const mm = createModeManager({ voiceMode: "radio", currentVoice: "x" });
+  it("reset() returns to initial+defaults (preset+language fall back to defaults)", () => {
+    const mm = createModeManager(
+      { voiceMode: "radio", currentVoice: "x" },
+      { preset: "technical", language: "ru" }
+    );
     const cb = vi.fn();
     mm.on(cb);
+    mm.setCurrentPreset("lenin");
+    mm.setCurrentLanguage("en");
+    mm.reset();
+    // После reset(): voiceMode/currentVoice — из initial (radio/x),
+    // preset/language — из defaults (technical/ru), потому что initial
+    // их не задавал.
+    expect(mm.snapshot().voiceMode).toBe("radio");
+    expect(mm.snapshot().currentVoice).toBe("x");
+    expect(mm.snapshot().currentPreset).toBe("technical");
+    expect(mm.snapshot().currentLanguage).toBe("ru");
+    // 2 emit от setPreset + setLanguage + 1 от reset = 3.
+    expect(cb).toHaveBeenCalledTimes(3);
+  });
+
+  it("reset() with no initial returns to defaults (full reset)", () => {
+    const mm = createModeManager(undefined, {
+      preset: "technical",
+      language: "ru"
+    });
+    mm.setCurrentPreset("lenin");
+    mm.setVoiceMode("robot_voice");
     mm.reset();
     expect(mm.snapshot().voiceMode).toBe("off");
     expect(mm.snapshot().currentVoice).toBeNull();
-    expect(cb).toHaveBeenCalledTimes(1);
+    expect(mm.snapshot().currentPreset).toBe("technical"); // default
+    expect(mm.snapshot().currentLanguage).toBe("ru"); // default
   });
 
   it("accepts partial initial snapshot", () => {
@@ -97,7 +148,16 @@ describe("createModeManager", () => {
       voiceMode: "off",
       teleopState: "armed",
       currentVoice: null,
-      currentPreset: "whisper"
+      currentPreset: "whisper",
+      currentLanguage: null
     });
+  });
+
+  it("does not fire listener when setCurrentLanguage value unchanged", () => {
+    const mm = createModeManager(undefined, { language: "ru" });
+    const cb = vi.fn();
+    mm.on(cb);
+    mm.setCurrentLanguage("ru"); // уже ru
+    expect(cb).not.toHaveBeenCalled();
   });
 });

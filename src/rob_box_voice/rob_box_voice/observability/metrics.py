@@ -136,9 +136,10 @@ class MetricsDisabled:
     тот же объект (или self), не падает и не считает. Это позволяет
     прод-коду вызывать ``counter.labels(...).inc()`` без
     ``if prometheus_client is not None`` в каждом месте.
-    """
 
-    __slots__ = ()
+    ``labels`` — обычный атрибут экземпляра (не слот), чтобы unit-тесты
+    могли подменять его на spy и перехватывать вызовы ``.inc()``.
+    """
 
     def labels(self, *args: Any, **kwargs: Any) -> "MetricsDisabled":
         return self

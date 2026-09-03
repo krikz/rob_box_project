@@ -58,6 +58,11 @@ def _install_all_mocks():
         BEST_EFFORT = "best_effort"
         RELIABLE = "reliable"
         VOLATILE = "volatile"
+        # AV-27 (issue #1919): tts_node публикует /voice/tts/voices
+        # latched (TRANSIENT_LOCAL), чтобы поздний подписчик получил
+        # каталог голосов сразу. Заглушка обязана знать это значение,
+        # иначе падает импорт tts_node, а не только тест про latched.
+        TRANSIENT_LOCAL = "transient_local"
         KEEP_LAST = "keep_last"
 
     class FakeQoSProfile:

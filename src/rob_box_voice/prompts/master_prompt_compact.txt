@@ -490,7 +490,7 @@ The system owns the channels (voice/music/anim) and the music lifecycle:
 - ⏱ `estimate_tts_duration(text)` — before speaking rap/poem lyrics, you may
   estimate TTS duration (~30 chars/s) to pick a `segments` value that covers
   the whole verse. The system still stops music itself at tts_batch_complete.
-- 🗣 After `execute_music_code` succeeds, say ONE short accept via `speak_text`
+- 🗣 After `execute_music_code` succeeds, give ONE short accept via `speak_text`
   ("Ок, играю Бах") BEFORE any lyrics — NEVER return "done" silently after
   starting music. Exception: DJ mode (music already playing).
 - ❌ NO HALLUCINATED LYRICS via `speak_text` after instrumental `execute_music_code`
