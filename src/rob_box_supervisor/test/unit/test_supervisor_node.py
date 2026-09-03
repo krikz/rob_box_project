@@ -228,6 +228,43 @@ class TestAvatarSupervisorCreation(unittest.TestCase):
         finally:
             node.destroy_node()
 
+    def test_self_clock_not_overwritten_with_callable_issue_1968(self) -> None:
+        """Issue #1968 regression: ``AvatarSupervisor.__init__`` НЕ должен
+        перезаписывать ``self._clock`` call'able-объектом.
+
+        ``self._clock`` зарезервировано rclpy.Node для clock-объекта
+        (``rclpy.clock.Clock``), у которого есть ``.handle`` атрибут.
+        ``rclpy.timer.Timer.__init__`` читает ``self._clock.handle`` и
+        ``self._context.handle`` — перезапись лямбдой ломает
+        ``create_timer()`` с ``AttributeError: 'function' object has no
+        attribute 'handle'`` (deploy run 33751147006, 2026-09-03).
+
+        Контракт (после фикса):
+        - ``self._now_ms`` — call'able, возвращает ``int`` (ms).
+        - ``self._clock`` либо отсутствует, либо не является call'able
+          (оставлен за rclpy или просто не нужен).
+        """
+        node = AvatarSupervisor()
+        try:
+            # 1. self._now_ms должен быть call'able
+            self.assertTrue(callable(node._now_ms))
+            # 2. self._clock, ЕСЛИ есть, НЕ должен быть call'able
+            if hasattr(node, "_clock"):
+                # В mock-rclpy _clock может быть MagicMock — это ОК (не
+                # call'able). В реальном rclpy — это rclpy.clock.Clock
+                # (тоже не call'able). Если же мы получили call'able — это
+                # именно та регрессия из issue #1968.
+                self.assertFalse(
+                    callable(node._clock),
+                    "self._clock must NOT be a callable (issue #1968): "
+                    "AvatarSupervisor.__init__ must store the time-source "
+                    "only in self._now_ms; self._clock belongs to rclpy.Node.",
+                )
+            # 3. self._now_ms() возвращает int (ms).
+            self.assertIsInstance(node._now_ms(), int)
+        finally:
+            node.destroy_node()
+
     def test_mode_parameter_defaults_to_monitor(self) -> None:
         node = AvatarSupervisor()
         try:

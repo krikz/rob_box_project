@@ -198,7 +198,7 @@ rob_box_quest — только Zenoh pub/sub.
 | `camera_rear` | `ros2_main/oak_d/stereo/image_rect_raw` или MJPEG topic с Vision Pi | 30 fps | H.264 в `BINARY_FRAME.data` (Annex-B, ~2 Mbps на 720p) |
 | `lidar_2d` | `ros2_main/lslidar/scan` | 10 Hz | MessagePack: ranges + intensities |
 | `lidar_3d` (опц.) | `ros2_main/rtabmap/cloud_map` | 2-5 Hz | подвыборка до 10k точек, zstd-compressed в `data_bytes` |
-| `voice_state` | `voice/state` | event | MessagePack: idle/listening/speaking |
+| `voice_state` | `voice/state` | event | MessagePack: `idle`/`listening`/`thinking`/`speaking`/`denied` (state + ts_ms + utterance_id? + holder_id? + detail?). Семантика `denied`/`holder_id`/`detail` — VoiceFloor (server-side mutex, см. §3.1-bis ниже и `rob_box_quest/server/voice_floor.py`); контракт зафиксирован в [meta-quest-api.md §6](../architecture/meta-quest-api.md). Аудит G8/G19 (issue #1912). |
 | `robot_status` | агрегатор (mode, battery, Wi-Fi rssi) | 1 Hz | MessagePack |
 
 Публикации (Zenoh keyexpr):
@@ -216,6 +216,45 @@ rob_box_quest — только Zenoh pub/sub.
 приоритетом **ниже** joystick (чтобы физический пульт всегда побеждал) и
 таймаутом 0.5 с — если от Quest нет фреймов 0.5 с, twist_mux отключает этот
 input и робот останавливается (dead-man switch, см. §3.3).
+
+### 3.1-bis. VoiceFloor — серверный mutex на голосовой поток (дополнение, AV-25)
+
+> **Дополнение от 03.09.2026** (post-ADR, реализовано в PR #1933,
+> контракт — issue #1912 + meta-quest-api.md §6).
+
+Когда AV-23 (Telegram-рация) приземлится, два WS-клиента (operator-quest
+в Meta Quest + telegram-bridge) получат возможность одновременно слать
+голос. Голосовой поток квеста (`voice_ptt_start/stop`, `VOICE_AUDIO`
+фреймы → `/avatar/voice_in`) сейчас один на всех WS-клиентов. Без
+серверного gate'а два клиента начнут микшировать голос в один PCM
+и рвать звук.
+
+**Решение**: добавляем in-memory `VoiceFloor` в `rob_box_quest.server`:
+
+- ровно один держатель на все WS-сессии;
+- `holder_id` = `"<client_id>:<session_id_short>"` (≤ ~32 символа, чтобы
+  влезло в `voice_state.detail` без обрезки);
+- `voice_ptt_start`:
+  - floor свободен → `try_acquire` → `state=listening` + `holder_id`;
+  - floor занят → `state=denied` + `holder_id` текущего + `detail="busy: <holder_id>"`,
+    bridge **не** вызывается;
+- `voice_ptt_stop`:
+  - от держателя → `state=idle`;
+  - от НЕ-держателя → no-op (защита от двойного stop от постороннего);
+- watchdog/disconnect → `force_release_for(old_session_id)` → следующий
+  клиент может захватить floor;
+- `SUBSCRIBE voice_state` → snapshot текущего состояния сразу (UI не
+  ждёт первого события).
+
+Состояние `denied` — **локальное расширение** для UI (quest-сервера),
+не входит в основной state-машину `dialogue_node`. Это позволяет
+показать «у робота говорит другой» без введения нового типа события
+или wire-frame.
+
+Полный список тестов: `test_voice_floor.py` (13 unit, pure-logic) +
+`test_ws_server_voice.py` (8 integration на aiohttp WS) +
+`test_voice_floor_e2e_full_flow.py` (e2e-сценарий двух клиентов) +
+`test_voice_floor_edge_cases.py` (watchdog-trip, retry-storm, recon).
 
 ### 3.3. Dead-man switch и safety
 
@@ -487,6 +526,18 @@ desktop-сценария, но:
 - Не вводим rosbridge / web_video_server (см. §5).
 - Не делаем standalone Android-приложение (см. §5.4).
 - Не выносим voice-pipeline в отдельный сервис — расширяем dialogue_node.
+
+**Уточнение (03.09.2026, t_53a576a4, issue #1912):**
+
+В §3.1 таблица стримов указывает Zenoh-keyexpr `voice/state` для
+voice_state. В этом же разделе §7 п.6 выше упомянут топик `/audio/quest_in`
+в контексте параметра `voice_input_mode` dialogue_node. Это **не**
+расхождение имени одного и того же топика: `voice/state` — это
+**событийный** VoiceState (FSM → UI), а `/audio/quest_in` — это
+**командный** входной канал (PCM от Quest-микрофона). Они дополняют
+друг друга, оба попадают в одну FSM внутри dialogue_node. Пометка
+закрыта; AV-25 (PR #1933) добавил VoiceFloor как server-side mutex
+между WS-клиентами (см. §3.1-bis).
 
 ---
 

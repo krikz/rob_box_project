@@ -462,12 +462,21 @@ class AvatarSupervisor(Node):
         self.declare_parameter("dead_man_timeout_ms", 500)
         self._dead_man_timeout_ms: int = int(self.get_parameter("dead_man_timeout_ms").value or 500)
 
-        # AV-13: единственный источник времени ноды (для тестируемости).
-        # LockManager и watcher используют self._now_ms() вместо time.time() —
-        # тесты подменяют на fake clock через self._clock, нода в проде —
-        # оставляет default (time.monotonic).
-        self._clock: Callable[[], int] = lambda: int(time.monotonic() * 1000)
-        self._now_ms = self._clock
+        # AV-13 / Issue #1968: единый источник времени ноды (для
+        # тестируемости). LockManager и watcher используют self._now_ms()
+        # вместо time.time() — тесты подменяют на fake clock через
+        # ``AvatarSupervisor._now_ms``, нода в проде — оставляет default
+        # (time.monotonic).
+        #
+        # ВАЖНО: имя ``_clock`` было зарезервировано rclpy.Node для clock-
+        # объекта (rclpy.clock.Clock), у которого есть ``.handle`` атрибут.
+        # rclpy.timer.Timer.__init__ читает ``self._clock.handle`` и
+        # ``self._context.handle`` — перезапись ``self._clock`` лямбдой
+        # приводит к ``AttributeError: 'function' object has no attribute
+        # 'handle'`` на ``create_timer()`` (issue #1968, deploy run 33751147006
+        # от 2026-09-03). Храним call'able только в ``self._now_ms``,
+        # ``self._clock`` остаётся за rclpy.
+        self._now_ms: Callable[[], int] = lambda: int(time.monotonic() * 1000)
 
         # AV-13: подписка на /teleop_heartbeat. В CI (mock-rclpy) пакета
         # сообщений нет — импорт делаем лениво, при неудаче логируем WARN и
