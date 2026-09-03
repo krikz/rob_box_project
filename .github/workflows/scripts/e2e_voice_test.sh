@@ -908,7 +908,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         for battempt in $(seq 1 "$E2E_MAX_ATTEMPTS"); do
             BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
             log "STEP ${label}: PLAY backlog attempt ${battempt}/${E2E_MAX_ATTEMPTS}"
-            pactl set-sink-volume @DEFAULT_SINK@ 150% 2>/dev/null || true
+            pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null || true
             paplay "$OUT_DIR/cmd_${safe}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
             sleep "$E2E_REACTION_WINDOW"
             if check_backlog_accumulated "$BEFORE"; then
@@ -931,9 +931,9 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     for attempt in $(seq 1 "$E2E_MAX_ATTEMPTS"); do
         BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
         log "STEP ${label}: PLAY attempt ${attempt}/${E2E_MAX_ATTEMPTS}"
-        # Katana: громкость динамика 150% (по VOICE_COMMANDS_RESEARCH.md —
-        # 100% даёт -42dB на микрофоне, wake word теряется)
-        pactl set-sink-volume @DEFAULT_SINK@ 150% 2>/dev/null || true
+        # Громкость динамика 100% (по умолчанию; явный >100% доступен через
+        # inputs.volume в workflow, e.g. -f volume=120).
+        pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null || true
         # cleanup-resilience (ретро 11.08 t_26a6d362): если eq-файл пропал
         # (OUT_DIR удалён внешним cleanup на 249) — пере-синтезируем и EQ,
         # а не получаем ложный FAIL от paplay open(): No such file.
@@ -1259,7 +1259,7 @@ PY
             if [ -n "$patterns_json" ] && [ "$patterns_json" != "[]" ]; then
                 pats="$(printf '%s' "$patterns_json" | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin)))')"
                 log "STEP ${label}: проверка паттернов: $pats"
-                check_patterns "$(date -u -d '-6 minutes' +%Y-%m-%dT%H:%M:%SZ)" $pats
+                check_patterns "$STEP_BEFORE" $pats
                 if [ $? != 0 ]; then
                     step_ok=0
                 else
@@ -1357,7 +1357,7 @@ else
     if [ "$rc" = "0" ] && [ -n "$PATTERNS" ]; then
         log "single: проверка паттернов: $PATTERNS"
         IFS=',' read -r -a pat_arr <<< "$PATTERNS"
-        check_patterns "$(date -u -d '-6 minutes' +%Y-%m-%dT%H:%M:%SZ)" "${pat_arr[@]}"
+        check_patterns "$STEP_BEFORE" "${pat_arr[@]}"
         if [ $? != 0 ]; then
             PASS=0; mark_fail_kind feature; echo "E2E_STEP single FAIL patterns"
         else

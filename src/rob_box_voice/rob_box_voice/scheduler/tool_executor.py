@@ -29,17 +29,43 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from typing import Any, Callable, Optional
 
 from rob_box_llm.provider import ToolCall, ToolResult
 
+from rob_box_voice.scheduler.delta import DeltaOp, DeltaOpKind, TaskDelta
 from rob_box_voice.scheduler.task_scheduler import (
     ChannelKind,
     SchedulerTask,
+    TaskNotFoundError,
     TaskScheduler,
+    TaskStatus,
+    TaskSubmitError,
 )
 
 _LOG = logging.getLogger(__name__)
+
+#: Max length of the payload snippet shown per segment in
+#: ``[SEGMENT PLAN]`` (S5.1) — keeps the block short even for a long
+#: song verse.
+_PAYLOAD_SNIPPET_LEN = 40
+
+
+def _short_payload(args: dict[str, Any]) -> str:
+    """Best-effort short text snippet for a segment's args (S5.1).
+
+    Most channel-routed tools carry their content under ``text``
+    (``speak_text``); anything else falls back to a compact repr of
+    the whole args dict so the block never renders empty/misleading.
+    """
+    text = args.get("text")
+    if isinstance(text, str) and text:
+        snippet = text.strip()
+        if len(snippet) > _PAYLOAD_SNIPPET_LEN:
+            snippet = snippet[:_PAYLOAD_SNIPPET_LEN].rstrip() + "…"
+        return snippet
+    return str(args)
 
 #: Tools that own the VOICE channel (FIFO, strictly sequential).
 _VOICE_TOOLS: frozenset[str] = frozenset({"speak_text"})
@@ -64,6 +90,27 @@ _ANIM_TOOLS: frozenset[str] = frozenset({"play_animation"})
 #: to land on the robot milliseconds after speak_text, killing music
 #: mid-phrase.
 _DEFERRED_DESTRUCTIVE_TOOLS: frozenset[str] = frozenset({"stop_music"})
+
+
+def _parse_delta_op(raw: Any) -> DeltaOp:
+    """Parse one JSON-ish ``ops[]`` entry into a validated :class:`DeltaOp`.
+
+    Mirrors ``rob_box_mcp_tools.tools.scheduler._parse_op`` (S6.1) —
+    both sides validate the same wire shape, one in the schema-only MCP
+    process, one here where the delta is actually applied.
+
+    Raises ``ValueError``/``TypeError`` on anything malformed — the
+    caller turns that into an honest ``ToolResult(is_error=True)``.
+    """
+    if not isinstance(raw, dict):
+        raise TypeError(f"each op must be an object, got {type(raw).__name__}")
+    kind_raw = raw.get("kind")
+    try:
+        kind = DeltaOpKind(kind_raw)
+    except ValueError:
+        valid = [k.value for k in DeltaOpKind]
+        raise ValueError(f"unknown op kind {kind_raw!r}; valid: {valid}") from None
+    return DeltaOp(kind=kind, seg_idx=raw.get("seg_idx"), args=raw.get("args"))
 
 
 def channel_for_tool(tool: str) -> Optional[ChannelKind]:
@@ -105,6 +152,26 @@ class SchedulerToolExecutor:
         self._scheduler = scheduler
         self._on_event = on_event
         self._scheduler_attempted = False
+        # S2.3 (scheduler-segments-merge) — group_id/seg_idx assigned to
+        # every channel-routed task submitted while a group is open.
+        # None until the first begin_group() call (backward compat:
+        # ungrouped tasks keep group_id=None like before this feature).
+        self._current_group_id: Optional[str] = None
+        self._current_seg_idx: int = 0
+
+    def begin_group(self) -> str:
+        """Start a new segment group (issue #968, S2.3).
+
+        Called by ``dialog_core`` right before it processes one LLM
+        batch of tool_calls (the same re-ordering point W7a already
+        hooks into). Every channel-routed task :meth:`execute` submits
+        afterwards gets this call's ``group_id`` and a ``seg_idx``
+        counting up from 0, until the next ``begin_group()`` call
+        starts a fresh group.
+        """
+        self._current_group_id = uuid.uuid4().hex
+        self._current_seg_idx = 0
+        return self._current_group_id
 
     # ----- port surface --------------------------------------------------
 
@@ -123,6 +190,17 @@ class SchedulerToolExecutor:
         the real side effect runs asynchronously on the scheduler's
         channel pump. Bypass tools return the underlying result.
         """
+        # S6.2 (scheduler-segments-merge, issue #968) — task_delta is
+        # intercepted BEFORE the channel_for_tool queued/bypass split.
+        # mcp_server's TaskDeltaTool (S6.1) only advertises the schema —
+        # it has no TaskScheduler of its own (separate ROS2 process).
+        # The real execution happens here, directly against
+        # TaskScheduler.update(), same bypass philosophy as the music
+        # starters below: the LLM must see the REAL per-op result, not
+        # a fire-and-forget {"status": "queued"}.
+        if call.name == "task_delta":
+            return await self._execute_task_delta(call)
+
         channel = channel_for_tool(call.name)
         if channel is None:
             return await self._underlying.execute(call)
@@ -132,6 +210,11 @@ class SchedulerToolExecutor:
             return await self._underlying.execute(call)
 
         deferred = call.name in _DEFERRED_DESTRUCTIVE_TOOLS
+        group_id = self._current_group_id
+        seg_idx: Optional[int] = None
+        if group_id is not None:
+            seg_idx = self._current_seg_idx
+            self._current_seg_idx += 1
         try:
             task = scheduler.submit(
                 SchedulerTask(
@@ -140,6 +223,8 @@ class SchedulerToolExecutor:
                     channel=channel,
                     executor=self._make_executor(call, deferred),
                     args=dict(call.arguments or {}),
+                    group_id=group_id,
+                    seg_idx=seg_idx,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — fail-open: never break voice
@@ -171,6 +256,107 @@ class SchedulerToolExecutor:
             ),
             is_error=False,
         )
+
+    async def _execute_task_delta(self, call: ToolCall) -> ToolResult:
+        """S6.2 — apply ``task_delta`` directly via ``TaskScheduler.update``.
+
+        Bypasses both the queued contract (``channel_for_tool`` is never
+        consulted for this tool) and the underlying provider/mcp_server
+        for the common case: this executor is the ONLY place with
+        access to the live in-process :class:`TaskScheduler` that
+        :meth:`SchedulerToolExecutor.begin_group`-tagged tasks live on.
+
+        Fail-open (mirrors the rest of this class): if the scheduler
+        itself is unavailable, falls back to the underlying provider —
+        which reaches mcp_server's ``TaskDeltaTool`` (S6.1), returning
+        its own honest ``scheduler_unavailable`` failure rather than a
+        fabricated one from here.
+        """
+        scheduler = self._ensure_scheduler()
+        if scheduler is None:
+            return await self._underlying.execute(call)
+
+        args = call.arguments or {}
+        group_id = str(args.get("group_id") or "").strip()
+        raw_ops = args.get("ops") or []
+        try:
+            if not group_id:
+                raise ValueError("group_id must not be empty")
+            parsed_ops = tuple(_parse_delta_op(op) for op in raw_ops)
+            delta = TaskDelta(group_id=group_id, ops=parsed_ops)
+        except (ValueError, TypeError) as exc:
+            return ToolResult(
+                tool_call_id=call.id,
+                content=json.dumps(
+                    {"success": False, "error": "invalid_delta", "message": str(exc)},
+                    ensure_ascii=False,
+                ),
+                is_error=True,
+            )
+
+        try:
+            report = scheduler.update(
+                group_id, delta, executor_factory=self._delta_append_executor_factory
+            )
+        except TaskNotFoundError:
+            return ToolResult(
+                tool_call_id=call.id,
+                content=json.dumps(
+                    {"success": False, "error": "group_not_found", "group_id": group_id},
+                    ensure_ascii=False,
+                ),
+                is_error=True,
+            )
+        except TaskSubmitError as exc:
+            return ToolResult(
+                tool_call_id=call.id,
+                content=json.dumps(
+                    {"success": False, "error": "submit_error", "message": str(exc)},
+                    ensure_ascii=False,
+                ),
+                is_error=True,
+            )
+
+        outcomes = [
+            {
+                "kind": outcome.op.kind.value,
+                "seg_idx": outcome.op.seg_idx,
+                "applied": outcome.applied,
+                "task_id": outcome.task_id,
+                "reason": outcome.reason,
+            }
+            for outcome in report.outcomes
+        ]
+        return ToolResult(
+            tool_call_id=call.id,
+            content=json.dumps(
+                {"success": True, "group_id": group_id, "outcomes": outcomes},
+                ensure_ascii=False,
+            ),
+            is_error=False,
+        )
+
+    def _delta_append_executor_factory(
+        self, op: DeltaOp
+    ) -> Callable[[SchedulerTask], Any]:
+        """Build the executor for a ``task_delta`` ``append`` op's new segment.
+
+        ``TaskScheduler.update`` constructs the new :class:`SchedulerTask`
+        itself (inheriting the group's existing ``tool``, e.g.
+        ``speak_text``) and only asks this factory for its executor —
+        mirrors :meth:`_make_executor` but keyed off the task the
+        scheduler builds rather than an LLM-issued :class:`ToolCall`.
+        """
+
+        async def _run(task: SchedulerTask) -> Any:
+            synthetic_call = ToolCall(
+                id=f"{task.task_id}:task_delta_append",
+                name=task.tool,
+                arguments=dict(task.args),
+            )
+            return await self._underlying.execute(synthetic_call)
+
+        return _run
 
     # ----- internals -----------------------------------------------------
 
@@ -248,3 +434,77 @@ class SchedulerToolExecutor:
         if not lines:
             return ""
         return "[ACTIVE TASKS]\n" + "\n".join(lines)
+
+    def segment_plan_block(self) -> str:
+        """Return the ``[SEGMENT PLAN]`` block (S5.1, scheduler-segments-merge).
+
+        Empty when there is no active segment group (idle, or
+        ``begin_group()`` was never called) — a MERGE delta is
+        meaningless without an active group to target.
+
+        S9.2 (§6.5): ``REWRITEABLE_SEGMENTS`` lists only PENDING_LIVE
+        segments — a PENDING_FROZEN one already has speculative pre-gen
+        in flight (or done), so the LLM must not be invited to rewrite
+        it via ``task_delta`` (rule #SEGMENT-PLAN,
+        ``master_prompt_compact.txt``). ``AT_RISK_ON_REPLACE`` still
+        lists every PENDING segment (FROZEN included) — a ``REPLACE``
+        verdict blows away the whole group regardless of pre-gen state.
+        """
+        scheduler = self._scheduler
+        group_id = self._current_group_id
+        if scheduler is None or group_id is None:
+            return ""
+        try:
+            segments = scheduler.segments(group_id)
+        except Exception:  # noqa: BLE001 — context must never crash
+            return ""
+        if not segments:
+            return ""
+
+        lines: list[str] = []
+        rewriteable: list[str] = []
+        at_risk: list[str] = []
+        for seg in segments:
+            label = f"seg_{seg.seg_idx}" if seg.seg_idx is not None else seg.task_id
+            payload = _short_payload(seg.args)
+            if seg.status is TaskStatus.RUNNING:
+                remaining = self._active_segment_remaining(seg.channel)
+                lines.append(
+                    f"- ACTIVE: {label} {seg.channel.value} {payload!r} "
+                    f"(remaining={remaining})"
+                )
+            elif seg.status in (TaskStatus.QUEUED, TaskStatus.SCHEDULED):
+                lines.append(f"- PENDING: {label} {seg.channel.value} {payload!r}")
+                at_risk.append(label)
+                if not scheduler.is_frozen(seg):
+                    rewriteable.append(label)
+            # Terminal segments (COMPLETED/FAILED/CANCELLED) are
+            # omitted — the LLM needs "what's happening now / what it
+            # can still touch", not a play-by-play history.
+        if not lines:
+            return ""
+        lines.append(f"- REWRITEABLE_SEGMENTS: [{', '.join(rewriteable)}]")
+        lines.append(f"- AT_RISK_ON_REPLACE: [{', '.join(at_risk)}]")
+        # ``group_id`` — обязательный аргумент ``task_delta``. Без него в
+        # блоке модель физически не может собрать вызов: описание тула
+        # велит взять id «из [SEGMENT PLAN]», а его там не печаталось, и
+        # любая догадка ловила ``group_not_found``. То есть MERGE, ради
+        # которого весь S5/S6, был недостижим.
+        lines.insert(0, f"- GROUP_ID: {group_id}")
+        return "[SEGMENT PLAN]\n" + "\n".join(lines)
+
+    def _active_segment_remaining(self, channel: ChannelKind) -> str:
+        """Best-effort ``remaining=Xs`` for the ACTIVE segment of *channel*.
+
+        Only populated when a Phase 3 ETA provider is wired
+        (:meth:`TaskScheduler.set_eta_provider`); otherwise ``"?"``,
+        matching the existing :meth:`active_tasks_block` convention.
+        """
+        scheduler = self._scheduler
+        if scheduler is None:
+            return "?"
+        try:
+            eta_s = scheduler.channel_status(channel).eta_s
+        except Exception:  # noqa: BLE001 — context must never crash
+            return "?"
+        return f"{eta_s:.1f}s" if eta_s is not None else "?"

@@ -32,11 +32,16 @@ from rob_box_voice.scheduler import (
     ChannelKind,
     ChannelStatus,
     SchedulerTask,
+    TaskDelta,
     TaskResult,
     TaskScheduler,
     TaskStatus,
     TaskSubmitError,
     TaskNotFoundError,
+    append,
+    drop,
+    replace,
+    rewrite,
 )
 
 
@@ -632,5 +637,797 @@ class TestSnapshot:
             assert "t1" in snap
             # Must round-trip through JSON.
             json.dumps(snap["t1"])
+        finally:
+            sched.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# S2.1 — group_id / seg_idx (scheduler-segments-merge plan)
+# ---------------------------------------------------------------------------
+
+
+class TestSegmentGrouping:
+    def test_group_id_and_seg_idx_default_to_none(self):
+        """Backward compat: a single (ungrouped) task defaults to None/None."""
+        task = SchedulerTask(
+            task_id="t1", tool="speak_text",
+            channel=ChannelKind.VOICE,
+            executor=_echo_executor("ok"),
+        )
+        assert task.group_id is None
+        assert task.seg_idx is None
+
+    def test_group_id_and_seg_idx_accepted(self):
+        task = SchedulerTask(
+            task_id="t1", tool="speak_text",
+            channel=ChannelKind.VOICE,
+            executor=_echo_executor("ok"),
+            group_id="t_001", seg_idx=2,
+        )
+        assert task.group_id == "t_001"
+        assert task.seg_idx == 2
+
+    def test_snapshot_includes_group_fields(self):
+        task = SchedulerTask(
+            task_id="t1", tool="speak_text",
+            channel=ChannelKind.VOICE,
+            executor=_echo_executor("ok"),
+            group_id="t_001", seg_idx=2,
+        )
+        snap = task.snapshot()
+        assert snap["group_id"] == "t_001"
+        assert snap["seg_idx"] == 2
+
+    def test_snapshot_includes_group_fields_when_none(self):
+        task = SchedulerTask(
+            task_id="t1", tool="speak_text",
+            channel=ChannelKind.VOICE,
+            executor=_echo_executor("ok"),
+        )
+        snap = task.snapshot()
+        assert snap["group_id"] is None
+        assert snap["seg_idx"] is None
+
+    @pytest.mark.asyncio
+    async def test_submit_preserves_group_fields(self):
+        sched = _make_scheduler()
+        try:
+            t1 = sched.submit(SchedulerTask(
+                task_id="t1", tool="speak_text",
+                channel=ChannelKind.VOICE,
+                executor=_echo_executor("ok"),
+                group_id="t_001", seg_idx=0,
+            ))
+            assert t1.group_id == "t_001"
+            assert t1.seg_idx == 0
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# S2.2 — TaskScheduler.segments(group_id) (scheduler-segments-merge plan)
+# ---------------------------------------------------------------------------
+
+
+class TestSegmentsQuery:
+    def test_unknown_group_returns_empty_list(self):
+        sched = TaskScheduler(loop=asyncio.new_event_loop())
+        assert sched.segments("nope") == []
+
+    @pytest.mark.asyncio
+    async def test_returns_segments_ordered_by_seg_idx(self):
+        sched = _make_scheduler()
+        try:
+            # Submitted out of order — segments() must still return
+            # seg_idx-sorted, not submission-order.
+            sched.submit(SchedulerTask(
+                task_id="g1-b", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("b"), group_id="g1", seg_idx=1,
+            ))
+            sched.submit(SchedulerTask(
+                task_id="g1-a", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("a"), group_id="g1", seg_idx=0,
+            ))
+            segs = sched.segments("g1")
+            assert [s.task_id for s in segs] == ["g1-a", "g1-b"]
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_at_most_one_running_at_a_time(self):
+        sched = _make_scheduler()
+        try:
+            running_seen = asyncio.Event()
+            release = asyncio.Event()
+
+            async def slow(task: SchedulerTask) -> TaskResult:
+                running_seen.set()
+                await release.wait()
+                return TaskResult(payload=task.task_id)
+
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=slow, group_id="g1", seg_idx=0,
+            ))
+            sched.submit(SchedulerTask(
+                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("second"), group_id="g1", seg_idx=1,
+            ))
+            await asyncio.wait_for(running_seen.wait(), timeout=1.0)
+            segs = sched.segments("g1")
+            running = [s for s in segs if s.status is TaskStatus.RUNNING]
+            assert len(running) == 1
+            assert running[0].task_id == "g1-0"
+            release.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_completed_segments_stay_until_group_finishes(self):
+        sched = _make_scheduler()
+        try:
+            block = asyncio.Event()
+
+            async def blocked(task: SchedulerTask) -> TaskResult:
+                await block.wait()
+                return TaskResult(payload=task.task_id)
+
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("first"), group_id="g1", seg_idx=0,
+            ))
+            sched.submit(SchedulerTask(
+                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=blocked, group_id="g1", seg_idx=1,
+            ))
+            # Give the pump a moment to finish seg 0 and pick up seg 1.
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                segs = sched.segments("g1")
+                if len(segs) == 2 and segs[0].status is TaskStatus.COMPLETED:
+                    break
+                await asyncio.sleep(0.005)
+            segs = sched.segments("g1")
+            assert len(segs) == 2, "completed segment must stay until the group finishes"
+            assert segs[0].status is TaskStatus.COMPLETED
+            assert segs[1].status in (TaskStatus.SCHEDULED, TaskStatus.RUNNING)
+            block.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_group_cleared_after_all_segments_terminal(self):
+        sched = _make_scheduler()
+        try:
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("first"), group_id="g1", seg_idx=0,
+            ))
+            await sched.wait_all()
+            # First call observes the (now-terminal) segment...
+            segs = sched.segments("g1")
+            assert len(segs) == 1
+            # ...and clears the registry as a side effect once every
+            # segment in the group is terminal (§2.2 step 2).
+            assert sched.segments("g1") == []
+        finally:
+            sched.shutdown()
+
+    def test_ungrouped_task_not_registered(self):
+        """A task with group_id=None must not pollute the group registry."""
+        sched = TaskScheduler(loop=asyncio.new_event_loop())
+        sched.submit(SchedulerTask(
+            task_id="solo", tool="speak_text", channel=ChannelKind.VOICE,
+            executor=_echo_executor("solo"),
+        ))
+        assert sched.segments("solo") == []
+
+
+# ---------------------------------------------------------------------------
+# S3.2 — TaskScheduler.update() honouring the ACTIVE invariant (§2.3)
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateInvariant:
+    def test_unknown_group_raises_task_not_found(self):
+        sched = TaskScheduler(loop=asyncio.new_event_loop())
+        with pytest.raises(TaskNotFoundError):
+            sched.update("nope", TaskDelta(group_id="nope", ops=(drop(0),)))
+
+    @pytest.mark.asyncio
+    async def test_running_segment_is_never_touched_or_cancelled(self):
+        sched = _make_scheduler()
+        try:
+            release = asyncio.Event()
+            running = asyncio.Event()
+
+            async def slow(task: SchedulerTask) -> TaskResult:
+                running.set()
+                await release.wait()
+                return TaskResult(payload=dict(task.args))
+
+            t0 = sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=slow, args={"text": "old"}, group_id="g1", seg_idx=0,
+            ))
+            await asyncio.wait_for(running.wait(), timeout=1.0)
+            assert t0.status is TaskStatus.RUNNING
+
+            report = sched.update(
+                "g1", TaskDelta(group_id="g1", ops=(rewrite(0, {"text": "new"}),)),
+            )
+            assert report.outcomes[0].applied is False
+            # RUNNING segment: neither its args nor its status changed.
+            assert t0.args == {"text": "old"}
+            assert t0.status is TaskStatus.RUNNING
+
+            release.set()
+            await sched.wait_all()
+            assert t0.status is TaskStatus.COMPLETED
+            assert t0.result.payload == {"text": "old"}
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_pending_segment_rewrite_replaces_payload_order_preserved(self):
+        sched = _make_scheduler()
+        try:
+            block = asyncio.Event()
+
+            async def blocked(task: SchedulerTask) -> TaskResult:
+                await block.wait()
+                return TaskResult(payload=dict(task.args))
+
+            # seg 0 blocks the channel so seg 1/2 stay PENDING (QUEUED).
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=blocked, args={"text": "verse0"}, group_id="g1", seg_idx=0,
+            ))
+            t1 = sched.submit(SchedulerTask(
+                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse1"), args={"text": "verse1"},
+                group_id="g1", seg_idx=1,
+            ))
+            t2 = sched.submit(SchedulerTask(
+                task_id="g1-2", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse2"), args={"text": "verse2"},
+                group_id="g1", seg_idx=2,
+            ))
+
+            report = sched.update(
+                "g1",
+                TaskDelta(group_id="g1", ops=(
+                    rewrite(2, {"text": "про енота"}),
+                    replace(1, {"text": "заменённый куплет"}),
+                )),
+            )
+            assert all(o.applied for o in report.outcomes)
+            assert t1.args == {"text": "заменённый куплет"}
+            assert t2.args == {"text": "про енота"}
+            assert t1.status is TaskStatus.QUEUED
+            assert t2.status is TaskStatus.QUEUED
+
+            block.set()
+            await sched.wait_all()
+            # FIFO order preserved: seg1 still runs before seg2.
+            assert t1.finished_at <= t2.started_at
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_append_adds_to_tail_of_channel_queue(self):
+        sched = _make_scheduler()
+        try:
+            block = asyncio.Event()
+
+            async def blocked(task: SchedulerTask) -> TaskResult:
+                await block.wait()
+                return TaskResult(payload=dict(task.args))
+
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=blocked, args={"text": "verse0"}, group_id="g1", seg_idx=0,
+            ))
+
+            executed: list[str] = []
+
+            def factory(op):
+                async def _exec(task: SchedulerTask) -> TaskResult:
+                    executed.append(task.task_id)
+                    return TaskResult(payload=dict(task.args))
+                return _exec
+
+            report = sched.update(
+                "g1",
+                TaskDelta(group_id="g1", ops=(append({"text": "куплет 3"}),)),
+                executor_factory=factory,
+            )
+            assert report.outcomes[0].applied is True
+            segs = sched.segments("g1")
+            assert [s.seg_idx for s in segs] == [0, 1]
+            assert segs[1].args == {"text": "куплет 3"}
+            assert segs[1].status is TaskStatus.QUEUED
+
+            block.set()
+            await sched.wait_all()
+            assert executed == [segs[1].task_id]
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_append_without_executor_factory_raises(self):
+        sched = _make_scheduler()
+        try:
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse0"), args={"text": "verse0"},
+                group_id="g1", seg_idx=0,
+            ))
+            await sched.wait_all()
+            with pytest.raises(TaskSubmitError):
+                sched.update(
+                    "g1", TaskDelta(group_id="g1", ops=(append({"text": "x"}),)),
+                )
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_drop_removes_pending_segment(self):
+        sched = _make_scheduler()
+        try:
+            block = asyncio.Event()
+
+            async def blocked(task: SchedulerTask) -> TaskResult:
+                await block.wait()
+                return TaskResult(payload=dict(task.args))
+
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=blocked, args={"text": "verse0"}, group_id="g1", seg_idx=0,
+            ))
+            t1 = sched.submit(SchedulerTask(
+                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse1"), args={"text": "verse1"},
+                group_id="g1", seg_idx=1,
+            ))
+
+            report = sched.update(
+                "g1", TaskDelta(group_id="g1", ops=(drop(1),)),
+            )
+            assert report.outcomes[0].applied is True
+            assert t1.status is TaskStatus.CANCELLED
+
+            block.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_group_with_completed_segments_ignores_them(self):
+        """A group whose seg 0 already COMPLETED (and seg 1 is RUNNING):
+        update() must not error and must not touch either — only the
+        still-PENDING seg 2 gets rewritten."""
+        sched = _make_scheduler()
+        try:
+            block = asyncio.Event()
+
+            async def blocked(task: SchedulerTask) -> TaskResult:
+                await block.wait()
+                return TaskResult(payload=dict(task.args))
+
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse0"), args={"text": "verse0"},
+                group_id="g1", seg_idx=0,
+            ))
+            t1 = sched.submit(SchedulerTask(
+                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=blocked, args={"text": "verse1"}, group_id="g1", seg_idx=1,
+            ))
+            t2 = sched.submit(SchedulerTask(
+                task_id="g1-2", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse2"), args={"text": "verse2"},
+                group_id="g1", seg_idx=2,
+            ))
+            # Let seg 0 finish and seg 1 start running (VOICE is a single
+            # FIFO worker, so seg 2 stays QUEUED behind the blocked seg 1).
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                if (sched.get_task("g1-0").status is TaskStatus.COMPLETED
+                        and sched.get_task("g1-1").status is TaskStatus.RUNNING):
+                    break
+                await asyncio.sleep(0.005)
+            assert sched.get_task("g1-0").status is TaskStatus.COMPLETED
+            assert sched.get_task("g1-1").status is TaskStatus.RUNNING
+
+            report = sched.update(
+                "g1",
+                TaskDelta(group_id="g1", ops=(
+                    rewrite(0, {"text": "too late"}),
+                    rewrite(1, {"text": "also too late"}),
+                    rewrite(2, {"text": "про енота"}),
+                )),
+            )
+            outcome_by_seg = {o.op.seg_idx: o for o in report.outcomes}
+            assert outcome_by_seg[0].applied is False  # already terminal, ignored
+            assert outcome_by_seg[1].applied is False  # RUNNING, invariant
+            assert outcome_by_seg[2].applied is True
+            assert sched.get_task("g1-0").args == {"text": "verse0"}  # untouched
+            assert t1.args == {"text": "verse1"}  # untouched (RUNNING invariant)
+            assert t2.args == {"text": "про енота"}
+
+            block.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_race_update_vs_pump_never_double_executes_or_loses_segment(self):
+        """R2 — the race between snapshotting the channel queue and
+        ``_pump`` grabbing the head must not execute a segment twice
+        nor silently corrupt it. Reproduced deterministically by holding
+        the channel lock so the pump dequeues the head task and then
+        blocks — the exact window where the task has left the queue but
+        its ``status`` has not yet flipped to SCHEDULED."""
+        sched = _make_scheduler()
+        try:
+            seen_args: list[dict] = []
+
+            async def record(task: SchedulerTask) -> TaskResult:
+                seen_args.append(dict(task.args))
+                return TaskResult(payload=task.task_id)
+
+            channel = sched._channels[ChannelKind.VOICE]  # noqa: SLF001 test-only
+            await channel._lock.acquire()  # noqa: SLF001
+            try:
+                sched.submit(SchedulerTask(
+                    task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                    executor=record, args={"text": "old"}, group_id="g1", seg_idx=0,
+                ))
+                # Give the pump a chance to dequeue the head and block
+                # on the lock we are holding.
+                await asyncio.sleep(0.05)
+                report = sched.update(
+                    "g1", TaskDelta(group_id="g1", ops=(rewrite(0, {"text": "new"}),)),
+                )
+                # The task already left the queue — update() must see
+                # that (not apply), rather than corrupting the in-flight
+                # task or double-scheduling it.
+                assert report.outcomes[0].applied is False
+            finally:
+                channel._lock.release()  # noqa: SLF001
+            await sched.wait_all()
+            assert seen_args == [{"text": "old"}]
+        finally:
+            sched.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# S9.1 — PENDING_FROZEN / PENDING_LIVE via set_group_boundary()/is_frozen()
+# (scheduler-segments-merge plan, §6.5)
+# ---------------------------------------------------------------------------
+
+
+class TestFrozenLiveSegments:
+    def test_default_boundary_treats_every_pending_segment_as_live(self):
+        """No set_group_boundary() call yet == pre-S9 behaviour: nothing
+        is FROZEN."""
+        sched = TaskScheduler(loop=asyncio.new_event_loop())
+        segs = [
+            sched.submit(SchedulerTask(
+                task_id=f"g1-{i}", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor(f"seg{i}"), args={"text": f"seg{i}"},
+                group_id="g1", seg_idx=i,
+            ))
+            for i in range(3)
+        ]
+        assert all(not sched.is_frozen(s) for s in segs)
+
+    def test_boundary_splits_pending_segments_frozen_below_live_at_or_above(self):
+        sched = TaskScheduler(loop=asyncio.new_event_loop())
+        segs = [
+            sched.submit(SchedulerTask(
+                task_id=f"g1-{i}", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor(f"seg{i}"), args={"text": f"seg{i}"},
+                group_id="g1", seg_idx=i,
+            ))
+            for i in range(3)
+        ]
+        sched.set_group_boundary("g1", 2)
+        assert [sched.is_frozen(s) for s in segs] == [True, True, False]
+
+    def test_clearing_boundary_makes_every_pending_segment_live_again(self):
+        sched = TaskScheduler(loop=asyncio.new_event_loop())
+        segs = [
+            sched.submit(SchedulerTask(
+                task_id=f"g1-{i}", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor(f"seg{i}"), args={"text": f"seg{i}"},
+                group_id="g1", seg_idx=i,
+            ))
+            for i in range(2)
+        ]
+        sched.set_group_boundary("g1", 5)
+        assert all(sched.is_frozen(s) for s in segs)
+        sched.set_group_boundary("g1", None)
+        assert not any(sched.is_frozen(s) for s in segs)
+
+    def test_boundary_is_per_group(self):
+        """A boundary set for one group must not leak into another."""
+        sched = TaskScheduler(loop=asyncio.new_event_loop())
+        g1 = sched.submit(SchedulerTask(
+            task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+            executor=_echo_executor("a"), args={}, group_id="g1", seg_idx=0,
+        ))
+        g2 = sched.submit(SchedulerTask(
+            task_id="g2-0", tool="speak_text", channel=ChannelKind.VOICE,
+            executor=_echo_executor("a"), args={}, group_id="g2", seg_idx=0,
+        ))
+        sched.set_group_boundary("g1", 5)
+        assert sched.is_frozen(g1) is True
+        assert sched.is_frozen(g2) is False
+
+    def test_ungrouped_task_is_never_frozen(self):
+        sched = TaskScheduler(loop=asyncio.new_event_loop())
+        solo = sched.submit(SchedulerTask(
+            task_id="solo", tool="speak_text", channel=ChannelKind.VOICE,
+            executor=_echo_executor("solo"), args={},
+        ))
+        sched.set_group_boundary("solo", 5)  # no-op: task has no group_id
+        assert sched.is_frozen(solo) is False
+
+    @pytest.mark.asyncio
+    async def test_running_segment_is_never_frozen_even_below_boundary(self):
+        """§6.5: FROZEN only ever applies to PENDING segments — a RUNNING
+        segment is governed by the harder §2.3 invariant, not FROZEN/LIVE.
+        This is also "trigger 1" (segment start) — is_frozen must flip to
+        False the moment the segment starts, with no separate recompute
+        step needed because it is derived, not cached."""
+        sched = _make_scheduler()
+        try:
+            running = asyncio.Event()
+            release = asyncio.Event()
+
+            async def slow(task: SchedulerTask) -> TaskResult:
+                running.set()
+                await release.wait()
+                return TaskResult(payload=task.task_id)
+
+            t0 = sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=slow, args={"text": "seg0"}, group_id="g1", seg_idx=0,
+            ))
+            sched.set_group_boundary("g1", 5)  # every seg_idx < 5 is FROZEN if PENDING
+            await asyncio.wait_for(running.wait(), timeout=1.0)
+            assert t0.status is TaskStatus.RUNNING
+            assert sched.is_frozen(t0) is False
+
+            release.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    def test_boundary_recompute_trigger_estimator_record_widens_frozen_set(self):
+        """Trigger 2 (§6.5, "LLMEstimator.record"): after a fresh
+        build_plan pushes the boundary further out, is_frozen reflects
+        the wider FROZEN set on the very next query — no stale cache."""
+        sched = TaskScheduler(loop=asyncio.new_event_loop())
+        segs = [
+            sched.submit(SchedulerTask(
+                task_id=f"g1-{i}", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor(f"seg{i}"), args={"text": f"seg{i}"},
+                group_id="g1", seg_idx=i,
+            ))
+            for i in range(3)
+        ]
+        sched.set_group_boundary("g1", 0)
+        assert [sched.is_frozen(s) for s in segs] == [False, False, False]
+
+        sched.set_group_boundary("g1", 2)  # estimator recalibrated: LLM looks slower
+        assert [sched.is_frozen(s) for s in segs] == [True, True, False]
+
+
+# ---------------------------------------------------------------------------
+# S9.1 — update() touching a FROZEN segment (§6.5, "trigger 3")
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateTouchesFrozenSegment:
+    @pytest.mark.asyncio
+    async def test_rewrite_of_frozen_segment_is_applied_and_flagged(self):
+        sched = _make_scheduler()
+        try:
+            block = asyncio.Event()
+
+            async def blocked(task: SchedulerTask) -> TaskResult:
+                await block.wait()
+                return TaskResult(payload=dict(task.args))
+
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=blocked, args={"text": "verse0"}, group_id="g1", seg_idx=0,
+            ))
+            t1 = sched.submit(SchedulerTask(
+                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse1"), args={"text": "verse1"},
+                group_id="g1", seg_idx=1,
+            ))
+            # boundary=2 → seg_idx 1 (still PENDING) is FROZEN.
+            sched.set_group_boundary("g1", 2)
+
+            report = sched.update(
+                "g1", TaskDelta(group_id="g1", ops=(rewrite(1, {"text": "про енота"}),)),
+            )
+            assert report.outcomes[0].applied is True
+            assert report.outcomes[0].frozen is True
+            assert t1.args == {"text": "про енота"}
+            # FROZEN is not a hard block: the edit still lands, unlike RUNNING.
+            assert t1.status is TaskStatus.QUEUED
+
+            block.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_rewrite_of_live_segment_is_not_flagged_frozen(self):
+        sched = _make_scheduler()
+        try:
+            block = asyncio.Event()
+
+            async def blocked(task: SchedulerTask) -> TaskResult:
+                await block.wait()
+                return TaskResult(payload=dict(task.args))
+
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=blocked, args={"text": "verse0"}, group_id="g1", seg_idx=0,
+            ))
+            t1 = sched.submit(SchedulerTask(
+                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse1"), args={"text": "verse1"},
+                group_id="g1", seg_idx=1,
+            ))
+            # boundary=1 → seg_idx 1 is LIVE (>= boundary).
+            sched.set_group_boundary("g1", 1)
+
+            report = sched.update(
+                "g1", TaskDelta(group_id="g1", ops=(rewrite(1, {"text": "про енота"}),)),
+            )
+            assert report.outcomes[0].applied is True
+            assert report.outcomes[0].frozen is False
+            assert t1.args == {"text": "про енота"}
+
+            block.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_frozen_touch_fires_hook_with_cancel_reason(self):
+        """The whole point of S9.1: touching a FROZEN segment must let the
+        integration layer cancel that segment's speculative pre-gen with
+        speculative_executor.CANCEL_REASON_MERGE_TOUCHED_FROZEN — verified
+        here via the hook contract, since task_scheduler.py must not
+        import speculative_executor.py (circular import)."""
+        from rob_box_voice.scheduler.speculative_executor import (
+            CANCEL_REASON_MERGE_TOUCHED_FROZEN,
+        )
+
+        sched = _make_scheduler()
+        try:
+            touched: list[str] = []
+
+            def on_frozen_touch(task: SchedulerTask) -> None:
+                # The integration layer would call
+                # SpeculativeStepExecutor.cancel(reason=CANCEL_REASON_MERGE_TOUCHED_FROZEN)
+                # here; we just record that the hook fired with the right
+                # task and trust the constant is the one §6.5 defines.
+                touched.append(task.task_id)
+
+            sched.set_frozen_touch_hook(on_frozen_touch)
+
+            block = asyncio.Event()
+
+            async def blocked(task: SchedulerTask) -> TaskResult:
+                await block.wait()
+                return TaskResult(payload=dict(task.args))
+
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=blocked, args={"text": "verse0"}, group_id="g1", seg_idx=0,
+            ))
+            sched.submit(SchedulerTask(
+                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse1"), args={"text": "verse1"},
+                group_id="g1", seg_idx=1,
+            ))
+            sched.set_group_boundary("g1", 2)
+
+            sched.update(
+                "g1", TaskDelta(group_id="g1", ops=(rewrite(1, {"text": "про енота"}),)),
+            )
+            assert touched == ["g1-1"]
+            assert CANCEL_REASON_MERGE_TOUCHED_FROZEN == "merge_touched_frozen"
+
+            block.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_live_touch_does_not_fire_frozen_hook(self):
+        sched = _make_scheduler()
+        try:
+            touched: list[str] = []
+            sched.set_frozen_touch_hook(lambda task: touched.append(task.task_id))
+
+            block = asyncio.Event()
+
+            async def blocked(task: SchedulerTask) -> TaskResult:
+                await block.wait()
+                return TaskResult(payload=dict(task.args))
+
+            sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=blocked, args={"text": "verse0"}, group_id="g1", seg_idx=0,
+            ))
+            sched.submit(SchedulerTask(
+                task_id="g1-1", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=_echo_executor("verse1"), args={"text": "verse1"},
+                group_id="g1", seg_idx=1,
+            ))
+            sched.set_group_boundary("g1", 1)  # seg 1 is LIVE
+
+            sched.update(
+                "g1", TaskDelta(group_id="g1", ops=(rewrite(1, {"text": "про енота"}),)),
+            )
+            assert touched == []
+
+            block.set()
+            await sched.wait_all()
+        finally:
+            sched.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_running_segment_invariant_unaffected_even_if_below_boundary(self):
+        """S9.1 must not weaken the pre-existing §2.3 RUNNING invariant:
+        a RUNNING segment below the boundary is still untouched/not
+        cancelled, and does not fire the frozen-touch hook (it is not
+        FROZEN — it is RUNNING, a stronger state)."""
+        sched = _make_scheduler()
+        try:
+            touched: list[str] = []
+            sched.set_frozen_touch_hook(lambda task: touched.append(task.task_id))
+
+            release = asyncio.Event()
+            running = asyncio.Event()
+
+            async def slow(task: SchedulerTask) -> TaskResult:
+                running.set()
+                await release.wait()
+                return TaskResult(payload=dict(task.args))
+
+            t0 = sched.submit(SchedulerTask(
+                task_id="g1-0", tool="speak_text", channel=ChannelKind.VOICE,
+                executor=slow, args={"text": "old"}, group_id="g1", seg_idx=0,
+            ))
+            sched.set_group_boundary("g1", 5)
+            await asyncio.wait_for(running.wait(), timeout=1.0)
+
+            report = sched.update(
+                "g1", TaskDelta(group_id="g1", ops=(rewrite(0, {"text": "new"}),)),
+            )
+            assert report.outcomes[0].applied is False
+            assert report.outcomes[0].frozen is False
+            assert t0.args == {"text": "old"}
+            assert t0.status is TaskStatus.RUNNING
+            assert touched == []
+
+            release.set()
+            await sched.wait_all()
         finally:
             sched.shutdown()

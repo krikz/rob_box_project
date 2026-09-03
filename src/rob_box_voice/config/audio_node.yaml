@@ -48,9 +48,13 @@ audio_node:
     # теряет начало фразы («робот» → «роберт»).
     speech_prefetch: 1.5
     speech_min_duration: 0.3
-    # 12.0 (было 10.0): pre-roll 1.5s входит в duration=len(buf)/sr,
-    # запас на длинные фразы (10s речи + 1.5s pre-roll ≤ 11.5s).
-    speech_max_duration: 12.0
+    # 15.0 — совпадает с дефолтом audio_node.py:176 и с деплойным
+    # docker/vision/config/voice_assistant/audio_node.yaml. Здесь
+    # оставалось 12.0 с прошлого подъёма лимита: pre-roll 1.5s входит в
+    # duration=len(buf)/sr, и длинные фразы отклонялись («Речь
+    # отклонена: 12.76с»), из-за чего порог и подняли — в двух местах
+    # из трёх.
+    speech_max_duration: 15.0
     tts_grace_s: 2.5
     music_vad_threshold: 6.0
     music_vad_min_db: -35.0

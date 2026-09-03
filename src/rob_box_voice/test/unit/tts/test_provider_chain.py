@@ -141,10 +141,18 @@ def test_dead_cache_quota_error_uses_long_ttl() -> None:
 
 
 def test_dead_cache_expires_after_ttl() -> None:
+    """A deadline in the past means the provider is live again.
+
+    Was `ttl_s=0.01` plus `time.sleep(0.02)`. `time.monotonic()` ticks about
+    every 15.6 ms on Windows, which is longer than both, so either assertion
+    could land on the wrong side of the deadline — the test failed roughly
+    one run in five with nothing to show for it. Expiry is a comparison, so
+    move the deadline instead of waiting for it.
+    """
     node = _bind_dead_cache(_bare_node())
-    TTSNode._mark_provider_dead(node, "minimax", RuntimeError("boom"), ttl_s=0.01)
+    TTSNode._mark_provider_dead(node, "minimax", RuntimeError("boom"), ttl_s=60.0)
     assert TTSNode._provider_is_dead(node, "minimax") is True
-    time.sleep(0.02)
+    node._provider_dead_until["minimax"] = time.monotonic() - 1.0
     assert TTSNode._provider_is_dead(node, "minimax") is False
 
 

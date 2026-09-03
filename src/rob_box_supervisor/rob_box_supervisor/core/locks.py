@@ -96,8 +96,23 @@ class LockManager:
     однопоточного FSM-обработчика ROS 2 callback-group, см. ADR-0028 §4).
     """
 
-    def __init__(self, clock: Optional[Callable[[], int]] = None):
+    def __init__(
+        self,
+        clock: Optional[Callable[[], int]] = None,
+        timeout_ms: Optional[int] = None,
+    ):
+        """Создать LockManager.
+
+        :param clock: опциональный инжектируемый источник времени (ms).
+            ``None`` → ``time.monotonic()``.
+        :param timeout_ms: опциональный override dead-man timeout. ``None`` →
+            module-level :data:`DEAD_MAN_TIMEOUT_MS`. AV-13: супервизор
+            пробрасывает сюда значение ROS-параметра
+            ``dead_man_timeout_ms`` (ADR-0028 §6 Q4 — настраивается на
+            железе без пересборки).
+        """
         self._clock = clock or self._default_clock
+        self._timeout_ms = timeout_ms if timeout_ms is not None else DEAD_MAN_TIMEOUT_MS
         # floor → _FloorState (None если свободен)
         self._floors: Dict[str, Optional[_FloorState]] = {
             FLOOR_TELEOP: None,
@@ -184,6 +199,30 @@ class LockManager:
             return None
         return state.holder
 
+    def force_expire(self, floor: str, now_ms: Optional[int] = None) -> Optional[str]:
+        """Активно снять floor по истечении dead-man timeout (AV-13).
+
+        Возвращает ``client_id`` который держал floor, или ``None`` если
+        floor уже свободен / не истёк / неизвестен. Не валит на
+        не-валидном floor (это watcher, он обходит все floor-ы из
+        :py:meth:`Floor.values`).
+
+        Контракт: в отличие от :py:meth:`holder` (ленивый auto-release
+        при чтении), :py:meth:`force_expire` активно переводит expired
+        floor в ``None`` — это нужно watcher-у, чтобы засечь trip и
+        опубликовать ``/avatar/state`` ВНЕОЧЕРЕДНО (а не ждать следующего
+        ``holder()``). Идемпотентно: повторный вызов на уже-released
+        floor → ``None``.
+        """
+        state = self._floors.get(floor)
+        if state is None:
+            return None
+        if self._is_alive(state, now_ms):
+            return None  # ещё не истёк
+        expired_holder = state.holder
+        self._floors[floor] = None
+        return expired_holder
+
     # ---------- внутреннее ----------
 
     @staticmethod
@@ -196,9 +235,14 @@ class LockManager:
         return now_ms if now_ms is not None else self._clock()
 
     def _is_alive(self, state: _FloorState, now_ms: Optional[int]) -> bool:
-        """True если с последнего heartbeat прошло <= DEAD_MAN_TIMEOUT_MS."""
+        """True если с последнего heartbeat прошло <= self._timeout_ms.
+
+        AV-13: раньше был жёстко зашит :data:`DEAD_MAN_TIMEOUT_MS` — теперь
+        берётся из instance, чтобы супервизор мог тюнить порог через
+        ROS-параметр ``dead_man_timeout_ms`` без пересборки.
+        """
         ts = self._resolve_now(now_ms)
-        return (ts - state.last_heartbeat_ms) <= DEAD_MAN_TIMEOUT_MS
+        return (ts - state.last_heartbeat_ms) <= self._timeout_ms
 
     @staticmethod
     def _validate_client_id(client_id: str) -> None:

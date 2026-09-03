@@ -160,6 +160,10 @@ def _make_audio_node_stub(**param_overrides):
         tts_grace_s=2.5,
         music_vad_threshold=6.0,
         music_vad_min_db=-35.0,
+        # Issue #1764: по умолчанию barge-in с музыкой ВКЛЮЧЁН (AEC ReSpeaker
+        # уже убирает музыку). Тесты для legacy strict-режима (989 Fix C)
+        # переопределяют это в False явно.
+        barge_in_with_music=True,
         # Issue #1117 round-2: DSP tuning. По умолчанию выключено в
         # тестах (моки), иначе USB-write дёргается в неожиданный момент.
         dsp_apply_on_start=False,
@@ -278,9 +282,21 @@ class TestTTSGraceGate:
 
 
 class TestMusicStrictGate:
-    """Fix C: при активной музыке VAD гейтится по RMS, порог поднимается."""
+    """Fix C: при активной музыке VAD гейтится по RMS, порог поднимается.
+
+    Issue #1764: legacy strict-режим — barge_in_with_music=False.
+    В этом режиме _vad_gated режет VAD по RMS при активной музыке
+    (защита от ложных срабатываний на бит, когда AEC недоступен).
+    """
+
+    def _disable_barge_in_with_music(self, audio_node):
+        """Legacy Fix C: строгий RMS-гейт при активной музыке."""
+        audio_node.barge_in_with_music = False
 
     def test_music_active_raises_threshold_on_respeaker(self, audio_node):
+        """Legacy Fix C: barge_in_with_music=False + активная музыка →
+        железный VAD threshold поднимается с vad_threshold до music_vad_threshold."""
+        self._disable_barge_in_with_music(audio_node)
         audio_node.respeaker.is_connected = MagicMock(return_value=True)
         audio_node.respeaker.set_vad_threshold = MagicMock(return_value=True)
 
@@ -304,7 +320,9 @@ class TestMusicStrictGate:
         audio_node.respeaker.set_vad_threshold.assert_called_with(3.5)
 
     def test_vad_suppressed_when_music_and_quiet_signal(self, audio_node):
-        """Музыка активна, уровень сигнала ниже music_vad_min_db → VAD подавлен."""
+        """Legacy Fix C: музыка активна + barge_in_with_music=False,
+        уровень сигнала ниже music_vad_min_db → VAD подавлен."""
+        self._disable_barge_in_with_music(audio_node)
         audio_node.tts_active = False
         audio_node._tts_ended_at = 0.0  # «давно, не в grace»
         audio_node.music_active = True
@@ -314,7 +332,9 @@ class TestMusicStrictGate:
         assert audio_node._vad_gated(True) is False
 
     def test_vad_passes_when_music_and_loud_signal(self, audio_node):
-        """Музыка активна, но уровень сигнала высокий (голос поверх) → VAD проходит."""
+        """Legacy Fix C: музыка активна + barge_in_with_music=False,
+        но уровень сигнала высокий (голос поверх) → VAD проходит."""
+        self._disable_barge_in_with_music(audio_node)
         audio_node.tts_active = False
         audio_node._tts_ended_at = 0.0
         audio_node.music_active = True
@@ -334,6 +354,118 @@ class TestMusicStrictGate:
 
         # Повторный "playing" не дёргает set_vad_threshold снова
         audio_node.respeaker.set_vad_threshold.assert_not_called()
+
+
+class TestBargeInWithMusic:
+    """Issue #1764: TRACK (Renardo/SuperCollider) barge-in.
+
+    Симптом (issue #1764): пользователь говорит «робот, выключи музыку»
+    во время TRACK — VAD не пропускает речь, wake-word отбрасывается,
+    робот «глохнет».
+
+    Root cause: Fix C (issue #989) подавлял VAD при любой активной музыке,
+    включая TRACK из SuperCollider (отдельный контейнер, не через TTS-ноду).
+    С barge_in_with_music=True (дефолт) ReSpeaker AEC на Ch1 убирает
+    музыку из ASR-канала — VAD пропускает речь без RMS-гейта.
+
+    Acceptance:
+    - barge_in_with_music=True + music_active=True → VAD=True пропускается.
+    - _on_music_state("playing") НЕ поднимает аппаратный VAD threshold.
+    - _on_music_state("idle") восстанавливает поведение.
+    """
+
+    def test_vad_passes_during_music_when_barge_in_enabled(self, audio_node):
+        """Issue #1764: при активной музыке + barge_in_with_music=True
+        VAD пропускается независимо от RMS — wake-word «робот» проходит."""
+        # barge_in_with_music=True — дефолт в _make_audio_node_stub.
+        assert audio_node.barge_in_with_music is True
+        audio_node.tts_active = False
+        audio_node._tts_ended_at = 0.0  # вне grace
+        audio_node.music_active = True
+        # _current_db = -100.0 (тишина) — в legacy-режиме VAD подавлен;
+        # в новом режиме RMS вообще не проверяется.
+        audio_node._current_db = -100.0
+
+        assert audio_node._vad_gated(True) is True
+
+    def test_vad_passes_with_loud_signal_during_music(self, audio_node):
+        """Issue #1764: даже громкая музыка не давит VAD."""
+        assert audio_node.barge_in_with_music is True
+        audio_node.tts_active = False
+        audio_node._tts_ended_at = 0.0
+        audio_node.music_active = True
+        audio_node._current_db = -10.0  # очень громко
+
+        assert audio_node._vad_gated(True) is True
+
+    def test_vad_false_when_hardware_silence(self, audio_node):
+        """Issue #1764: barge_in_with_music=True не ломает базовый гейт —
+        если аппаратный VAD=False, VAD остаётся False."""
+        audio_node.tts_active = False
+        audio_node._tts_ended_at = 0.0
+        audio_node.music_active = True
+
+        assert audio_node._vad_gated(False) is False
+
+    def test_on_music_playing_does_not_change_respeaker_threshold(self, audio_node):
+        """Issue #1764: при barge_in_with_music=True _on_music_state("playing")
+        НЕ зовёт set_vad_threshold — железный VAD остаётся на дефолте."""
+        audio_node.respeaker.is_connected = MagicMock(return_value=True)
+        audio_node.respeaker.set_vad_threshold = MagicMock(return_value=True)
+
+        playing = MagicMock()
+        playing.data = "playing"
+        audio_node._on_music_state(playing)
+
+        # music_active переключился, но set_vad_threshold НЕ вызван —
+        # ReSpeaker VAD threshold остаётся на vad_threshold (3.5 dB).
+        assert audio_node.music_active is True
+        audio_node.respeaker.set_vad_threshold.assert_not_called()
+
+    def test_on_music_idle_restores_threshold(self, audio_node):
+        """Issue #1764: при остановке музыки возвращаем дефолтный VAD."""
+        audio_node.respeaker.is_connected = MagicMock(return_value=True)
+        audio_node.respeaker.set_vad_threshold = MagicMock(return_value=True)
+        audio_node.music_active = True
+
+        idle = MagicMock()
+        idle.data = "idle"
+        audio_node._on_music_state(idle)
+
+        assert audio_node.music_active is False
+        audio_node.respeaker.set_vad_threshold.assert_called_with(3.5)
+
+    def test_barge_in_disabled_falls_back_to_rms_gate(self, audio_node):
+        """Issue #1764: barge_in_with_music=False — legacy RMS-гейт.
+        Если RMS ниже music_vad_min_db, VAD подавлен (защита без AEC)."""
+        audio_node.barge_in_with_music = False
+        audio_node.tts_active = False
+        audio_node._tts_ended_at = 0.0
+        audio_node.music_active = True
+        audio_node.music_vad_min_db = -35.0
+        audio_node._current_db = -50.0  # тихо
+
+        assert audio_node._vad_gated(True) is False
+
+    def test_tts_active_overrides_music_barge_in(self, audio_node):
+        """TTS активен — VAD пропускается независимо от music/barge-in
+        (issue 993 barge-in: wake-word gate режет эхо)."""
+        audio_node.tts_active = True
+        audio_node.music_active = True
+        audio_node.barge_in_with_music = True
+
+        assert audio_node._vad_gated(True) is True
+
+    def test_tts_grace_still_suppresses_after_tts(self, audio_node):
+        """TTS grace (issue 989 Fix B) активен — VAD подавлен даже во время
+        музыки: эхо собственного голоса режется первым."""
+        audio_node.tts_active = False
+        audio_node.tts_grace_s = 2.5
+        audio_node._tts_ended_at = time.monotonic() - 1.0  # 1с назад — в grace
+        audio_node.music_active = True
+        audio_node.barge_in_with_music = True
+
+        assert audio_node._vad_gated(True) is False
 
 
 class TestInputOverflowHandling:

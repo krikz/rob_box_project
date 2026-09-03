@@ -1,15 +1,13 @@
 #!/bin/bash
 # ============================================================================
 # SOT (source-of-truth): <repo>/scripts/agent_flow/agent-flow-e2e-process.sh
-# Каноническая версия живёт в репо. На хост раскладывается через
-# `bash <repo>/scripts/agent_flow/install.sh`, который создаёт
-# символические ссылки в:
-#   - ~/.hermes/profiles/agent-flow/scripts/agent-flow-e2e-process.sh
-#   - ~/.hermes/profiles/architect/scripts/agent-flow-e2e-process.sh
-#   - ~/.hermes/scripts/agent-flow-e2e-process.sh
-# Правка: редактируем <repo>/scripts/agent_flow/agent-flow-e2e-process.sh, commit, merge.
-# На хост: bash <repo>/scripts/agent_flow/install.sh (или вручную cp + ln -sf).
-# Если ты правишь этот файл НА ХОСТЕ руками — синхронизируй обратно в репо.
+# Правим ТОЛЬКО здесь + commit + merge в develop. На хост раскладывает
+# `bash <repo>/scripts/agent_flow/install.sh` — hardlink-копиями (cp -al), НЕ
+# симлинками: симлинк в ~/.hermes/scripts/ ресолвится наружу и отклоняется
+# guard'ом hermes-agent scheduler.py::_validate_script_path (ретро 11.08
+# t_a6a236e0d9f0470e — 50 упавших тиков подряд, 1ч42м даунтайма).
+# Полный список путей раскладки — в install.sh, сверку копий держит
+# agent-flow-drift-detect.sh. Ручная правка копии на хосте затрётся.
 # ============================================================================
 # agent-flow-e2e-process.sh — Phase 3: needs-e2e → bring up e2e/test-round-N,
 # merge agent PR, run e2e, attach verdict to issue.
@@ -96,6 +94,12 @@ _LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # чтобы дедупликация была симметричной между двумя cron-скриптами.
 # shellcheck source=lib_workflow_dedup.sh
 . "$_LIB_DIR_HERE/lib_workflow_dedup.sh"
+# Общие помощники процессных скриптов (дедуп 30.08): af_load_profile_env,
+# af_maintenance_gate_or_exit, gh_list_issues_by_label, has_label, slugify,
+# detect_pr_kind, free_stale_worktrees_for. Раньше лежали копипастой здесь и
+# в merge-gate. Свой flock (G6) НЕ сведён — он умеет ждать до 60с под RUN_NOW.
+# shellcheck source=lib_agent_flow_common.sh
+. "$_LIB_DIR_HERE/lib_agent_flow_common.sh"
 
 # --- credentials bootstrap (ретро 23.08 t_b977cb4b, реконструкция t_98bb3a1d) ---
 # git 2.34.1 (Ubuntu 22.04) has a known bug where 'git push' fails with
@@ -155,6 +159,14 @@ ROUND_COUNTER_FILE="${ROUND_COUNTER_FILE:-${HERMES_HOME}/state/agent-flow-e2e-ro
 # Файл переживает cleanup (как round-counter). Монитор парсит GHOST_ROUND маркер
 # в логах и/или инкремент этого файла.
 GHOST_ROUNDS_TOTAL_FILE="${GHOST_ROUNDS_TOTAL_FILE:-${HERMES_HOME}/state/agent-flow-e2e-ghost-rounds-total}"
+# ADR-0040 (issue #1831): run-state файл с consecutive_fails per-issue. Создаётся
+# при первом запуске ({schema_version:1, issues:{}}). Файл переживает MAINTENANCE
+# (как round-counter) — иначе issue будет бесконечно триггериться после паузы.
+# helpers: e2e_run_state_load, e2e_run_state_save, e2e_run_state_bump_fail,
+#          e2e_run_state_reset (commit 3).
+RUN_STATE_FILE="${RUN_STATE_FILE:-${HERMES_HOME}/state/agent-flow-e2e-run-state.json}"
+# ADR-0040 Q2: «3 fails подряд» = 1 issue, 3 тика подряд. Default 3.
+E2E_CONSECUTIVE_FAIL_LIMIT="${E2E_CONSECUTIVE_FAIL_LIMIT:-3}"
 E2E_WORKFLOW="${E2E_WORKFLOW:-L-E2E Voice Test.yml}"
 BUILD_WORKFLOW="${BUILD_WORKFLOW:-L-Build-All-Services.yml}"
 DEPLOY_WORKFLOW="${DEPLOY_WORKFLOW:-L-Deploy and Verify.yml}"
@@ -194,16 +206,7 @@ BLOCKER_CONSECUTIVE_FAILS="${BLOCKER_CONSECUTIVE_FAILS:-2}"
 
 # --- source profile .env if present -------------------------------------------
 PROFILE_ENV="${HERMES_HOME}/profiles/agent-flow/.env"
-if [ -f "$PROFILE_ENV" ]; then
-    while IFS='=' read -r key val; do
-        case "$key" in ''|\#*) continue ;; esac
-        val="${val%\"}"; val="${val#\"}"
-        val="${val%\'}"; val="${val#\'}"
-        if [ -z "${!key:-}" ]; then
-            export "$key=$val"
-        fi
-    done < "$PROFILE_ENV"
-fi
+af_load_profile_env "$PROFILE_ENV"
 
 # Defensive defaults.
 : "${KANBAN_BOARD:=robbox}"
@@ -249,6 +252,18 @@ fi
 # Ретро 24.08 t_8a8d9403 — страховка на случай кейса #1195.
 # Пример: E2E_FORCE_UNPAUSE=true bash agent-flow-e2e-process.sh
 : "${E2E_FORCE_UNPAUSE:=false}"
+# Ретро 28.08 (t_4ead2dd4): auto-escalation needs-review лейбла при fail-streak ≥ N.
+# Если L: E2E Voice Test падает N+ раундов подряд без SUCCESS — готовые PR с
+# Raw-evidence (CI зелёный, mergeStateStatus=CLEAN) сами по себе не получат
+# метку needs-review (post_round_sweep срабатывает только на SUCCESS run),
+# Шифу не видит их в очереди, drift растёт. Этот sweep дополняет PR #1721
+# watchdog: тот пишет issue-comment, этот — ставит needs-review на готовые PR.
+# Default 5 — параллельно E2E_FAIL_STREAK_WARN (PR #1721 watchdog) для
+# согласованности алертов в одном тике.
+: "${AUTO_NEEDS_REVIEW_ON_FAIL_STREAK:=5}"
+: "${AUTO_NEEDS_REVIEW_DRY_RUN:=false}"
+# Лимит OPEN PR за sweep (default 100 — все open PR; ротация небольшая).
+: "${AUTO_NEEDS_REVIEW_PR_LIMIT:=100}"
 
 # --- Worktree cleanup (issue #1707, ретро 28.08) ------------------------------
 # Скрипт создавал /tmp/agent-flow-e2e-<PID>/ на каждый round, но при
@@ -386,6 +401,82 @@ ensure_worktree() {
 # --- helpers -----------------------------------------------------------------
 log() { printf '%s %s %s\n' "$LOG_PREFIX" "$(date -Iseconds)" "$*" >&2; }
 run() { if [ "$DRY_RUN" = "true" ]; then printf '%s DRY-RUN %s\n' "$LOG_PREFIX" "$*" >&2; else eval "$@"; fi; }
+
+# --- CLI + self-test mode (issue #1707, ретро t_0ff29dcd) ---------------------
+# Этот скрипт исторически читает только env (.env из profile). Для оператора
+# добавлены два флага (compose-style: --self-test --cleanup-only):
+#
+#   --self-test           — печатает what-it-would-do + exit 0; не пишет ни в
+#                          repo, ни в cron lock, ни в gh. Используется cron'ом
+#                          devops-профиля для smoke-check после install.sh.
+#   --cleanup-only        — выполнить ТОЛЬКО блок G_pre_cleanup (диск-check
+#                          + sweep_orphans + sweep_ttl), потом exit 0.
+#                          Используется для одноразовой зачистки 87 ГБ orphan
+#                          mess (issue #1707) перед ручным запуском install.sh.
+#
+# Оба флага проходят ПЕРЕД flock/lock — иначе cron-probe мог бы залипнуть на 60с.
+# _wt_count_worktrees — подсчёт /tmp/agent-flow-e2e-* (для watchdog-метрики).
+_wt_count_worktrees() {
+    [ -d /tmp ] || { printf '0\n'; return 0; }
+    local cnt=0
+    # shellcheck disable=SC2044  # for-loop on glob — намеренно (быстрее find -z)
+    for d in /tmp/agent-flow-e2e-*; do
+        [ -d "$d" ] || continue
+        # fallback для glob, который не раскрылся в пустой каталог
+        [ "$d" = "/tmp/agent-flow-e2e-*" ] && break
+        cnt=$((cnt+1))
+    done
+    printf '%s\n' "$cnt"
+}
+
+_SELF_TEST=0
+_CLEANUP_ONLY=0
+_ST_COUNTER_DRY=0
+for _arg in "$@"; do
+    case "$_arg" in
+        --self-test)         _SELF_TEST=1 ;;
+        --cleanup-only)      _CLEANUP_ONLY=1 ;;
+        --count-dry-run)     _ST_COUNTER_DRY=1 ;;  # internal: только посчитать + exit
+        --help|-h)
+            printf '%s\n' \
+                "Usage: agent-flow-e2e-process.sh [--self-test] [--cleanup-only]" \
+                "  --self-test       print what-it-would-do + exit 0 (no side effects)" \
+                "  --cleanup-only    run G_pre_cleanup (disk + sweep_orphans + sweep_ttl) and exit" \
+                ""
+            exit 0
+            ;;
+        *)
+            printf '%s ERROR: unknown arg %s (try --help)\n' "$LOG_PREFIX" "$_arg" >&2
+            exit 2
+            ;;
+    esac
+done
+
+# --- early-exit: --self-test с одним под-режимом --count-dry-run -------------
+# Это позволяет watchdog'у быстро дёргать счётчик без flock/ENV (до 0.1с).
+if [ "$_SELF_TEST" = "1" ] && [ "$_ST_COUNTER_DRY" = "1" ]; then
+    _wt_count_worktrees
+    exit 0
+fi
+if [ "$_SELF_TEST" = "1" ]; then
+    cnt="$(_wt_count_worktrees)"
+    log "self-test: e2e_worktree_count=${cnt} (single-PID dirs under /tmp/agent-flow-e2e-*)"
+    log "self-test: WORKTREE_DIR=${WORKTREE_DIR} (default /tmp/agent-flow-e2e-\$\$)"
+    log "self-test: REPO_DIR=${REPO_DIR:-<unset>}; would-pass to env via .env"
+    log "self-test: scripts/agent_flow scripts synced via bash install.sh (run before cron)"
+    exit 0
+fi
+if [ "$_CLEANUP_ONLY" = "1" ]; then
+    # В cleanup-only режиме REPO_DIR опционален — если пустой, всё равно
+    # делаем best-effort rm -rf для orphan (важно для лечения 87GB mess).
+    log "cleanup-only: e2e_worktree_count(before)=$(_wt_count_worktrees)"
+    _wt_disk_check || { log "cleanup-only: disk check FAILED (free <${E2E_DISK_MIN_GB}GB) — abort (issue #1707)"; exit 1; }
+    _wt_sweep_orphans || true
+    _wt_sweep_ttl || true
+    git -C "$REPO_DIR" worktree prune 2>/dev/null || true
+    log "cleanup-only: e2e_worktree_count(after)=$(_wt_count_worktrees)"
+    exit 0
+fi
 
 # --- known-blocker helpers (ретро 11.08 t_c26b73e7) -------------------------
 # Сигнатуры известных блокеров — space-separated список для перебора.
@@ -569,7 +660,26 @@ if [ -n "${GH_REPO:-}" ]; then
     fi
 fi
 
-# --- G6: flock sentinel.
+# --- G6: flock sentinel + ADR-0040 lock-recovery -----------------------------
+# ADR-0040 §2.2.4: lock-файл /tmp/agent-flow-e2e-process.lock пишется с
+# PID:EPOCH (вместо 0 bytes). Если lock пустой или owner PID мёртв
+# (kill -0 возвращает non-zero) — process логирует «lock stale, recovered»
+# и ПРОДОЛЖАЕТ работу (не выходит с «already running»). flock уже защищает
+# от race (только один writer может владеть), PID-collision в течение жизни
+# flock-сессии маловероятен (ADR-0040 Q7: не защищаемся).
+# ВАЖНО: проверка stale-состояния ДОЛЖНА быть ДО exec 9> (которое truncate'ит
+# файл при O_TRUNC открытии). Иначе реальный crash оставит lock с PID:EPOCH,
+# новый процесс сделает exec 9> → truncate → recovery никогда не сработает.
+if [ -s "$LOCK_FILE" ]; then
+    _lock_owner="$(tr -d '[:space:]' < "$LOCK_FILE" 2>/dev/null || true)"
+    _lock_pid="${_lock_owner%%:*}"
+    if [ -n "$_lock_pid" ] && [ "$_lock_pid" != "$$" ] \
+        && ! kill -0 "$_lock_pid" 2>/dev/null; then
+        log "🔓 lock stale (owner PID ${_lock_pid} мёртв, epoch=${_lock_owner#*:}) — recovered (ADR-0040 §2.2.4)"
+        # Truncate, чтобы flock получил чистый файл. flock дальше сам разрулит.
+        : > "$LOCK_FILE"
+    fi
+fi
 exec 9>"$LOCK_FILE" || { log "cannot open lock $LOCK_FILE"; exit 1; }
 if ! flock -n 9; then
     if [ "$_run_now_triggered" = "1" ]; then
@@ -586,6 +696,178 @@ if ! flock -n 9; then
         log "another instance holds $LOCK_FILE — skip"; exit 0
     fi
 fi
+# Lock захвачен — записываем PID:EPOCH (ADR-0040). Дальше exec 9 держит flock,
+# процесс остаётся владельцем пока не завершится.
+printf '%s:%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LOCK_FILE"
+
+# --- G6.5: ADR-0040 run-state init -------------------------------------------
+# Создаёт ${RUN_STATE_FILE} с пустой схемой при первом запуске (Q6). Если
+# файл уже есть — оставляем как есть (consecutive_fails per-issue
+# переживают MAINTENANCE, как round-counter, ADR-0040 Q3).
+_e2e_run_state_ensure() {
+    local _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || return 0
+    if [ -f "$_f" ] && [ -s "$_f" ]; then
+        return 0
+    fi
+    mkdir -p "$(dirname "$_f")" 2>/dev/null || true
+    printf '%s\n' '{"schema_version":1,"issues":{}}' > "$_f" 2>/dev/null || {
+        log "WARNING: cannot init ${_f} (state per-issue disabled for this tick)"
+        RUN_STATE_FILE=""
+    }
+}
+_e2e_run_state_ensure
+
+# ADR-0040 §2.2.3 + §2.2.2: helpers для consecutive_fails per-issue.
+# Формат файла: {"schema_version":1,"issues":{"<num>":{"consecutive_fails":N,
+# "last_run_id":"...","last_attempt_at":"...","infra_fail":false}}}.
+#
+# API (вызываются только когда RUN_STATE_FILE непустой):
+#   e2e_run_state_load   → echo JSON на stdout, либо {"issues":{}} если пусто/битый
+#   e2e_run_state_save   → атомарная запись JSON через tmp + mv
+#   e2e_run_state_get    <issue> <key> → значение поля, либо "" если нет
+#   e2e_run_state_bump_fail <issue> <run_id> → increment consecutive_fails, save, echo NEW count
+#   e2e_run_state_reset   <issue> → consecutive_fails=0, infra_fail=false, save
+#   e2e_run_state_set_infra_fail <issue> → infra_fail=true, save
+#
+# Все операции сериализуются через lock-файл процесса (flock уже держится).
+# Если RUN_STATE_FILE пустой (init failed) — все helpers no-op, get → "".
+e2e_run_state_load() {
+    local _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || { printf '{"schema_version":1,"issues":{}}'; return 0; }
+    if [ ! -f "$_f" ] || [ ! -s "$_f" ]; then
+        printf '{"schema_version":1,"issues":{}}\n'
+        return 0
+    fi
+    cat "$_f" 2>/dev/null || printf '{"schema_version":1,"issues":{}}\n'
+}
+e2e_run_state_save() {  # $1=json_string
+    local _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || return 0
+    local _tmp="${_f}.tmp.$$"
+    if ! printf '%s\n' "$1" > "$_tmp" 2>/dev/null; then
+        log "WARNING: e2e_run_state_save: cannot write ${_tmp}"
+        return 1
+    fi
+    if ! mv -f "$_tmp" "$_f" 2>/dev/null; then
+        log "WARNING: e2e_run_state_save: cannot mv ${_tmp} → ${_f}"
+        return 1
+    fi
+    return 0
+}
+# jq-free JSON manipulation (нет зависимости от jq). Простая state-машина:
+# - schema_version:1 (int)
+# - issues: { "<num>": { consecutive_fails:int, last_run_id:str, last_attempt_at:str,
+#                        first_fail_at:str, infra_fail:bool } }
+# Структура плоская, проще regex-parse без jq.
+e2e_run_state_get() {  # $1=issue_num $2=key (consecutive_fails|last_run_id|infra_fail|first_fail_at|last_attempt_at)
+    local _num="$1" _key="$2" _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || { printf ''; return 0; }
+    [ -f "$_f" ] || { printf ''; return 0; }
+    E2E_RS_FP="$_f" E2E_RS_NUM="$_num" E2E_RS_KEY="$_key" \
+    python3 -c '
+import json, os
+fp = os.environ["E2E_RS_FP"]
+num = os.environ["E2E_RS_NUM"]
+key = os.environ["E2E_RS_KEY"]
+try:
+    with open(fp) as fh:
+        data = json.load(fh)
+    val = data.get("issues", {}).get(num, {}).get(key, "")
+    if isinstance(val, bool):
+        print("true" if val else "false")
+    elif val is None:
+        print("")
+    else:
+        print(val)
+except Exception:
+    print("")
+' 2>/dev/null || printf ''
+}
+e2e_run_state_bump_fail() {  # $1=issue_num $2=run_id (может быть пустым при NOT STARTED)
+    local _num="$1" _run_id="${2:-}" _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || { printf '0'; return 0; }
+    local _now _first_fail _prev_count _new_count
+    _now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    _prev_count="$(e2e_run_state_get "$_num" consecutive_fails 2>/dev/null || echo '0')"
+    [ -n "$_prev_count" ] || _prev_count=0
+    _new_count=$((_prev_count + 1))
+    _first_fail="$(e2e_run_state_get "$_num" first_fail_at 2>/dev/null || true)"
+    [ -n "$_first_fail" ] || _first_fail="$_now"
+    E2E_RS_FP="$_f" E2E_RS_NUM="$_num" E2E_RS_RUNID="$_run_id" \
+    E2E_RS_NOW="$_now" E2E_RS_FIRST="$_first_fail" E2E_RS_NEW="$_new_count" \
+    python3 -c '
+import json, os, sys
+fp = os.environ["E2E_RS_FP"]; num = os.environ["E2E_RS_NUM"]
+run_id = os.environ["E2E_RS_RUNID"]; now = os.environ["E2E_RS_NOW"]
+first_fail = os.environ["E2E_RS_FIRST"]; new_count = int(os.environ["E2E_RS_NEW"])
+try:
+    with open(fp) as fh:
+        data = json.load(fh)
+except Exception:
+    data = {"schema_version": 1, "issues": {}}
+data.setdefault("schema_version", 1)
+data.setdefault("issues", {})
+prev = data["issues"].get(num, {})
+prev["consecutive_fails"] = new_count
+prev["last_run_id"] = run_id
+prev["last_attempt_at"] = now
+prev["first_fail_at"] = first_fail
+prev["infra_fail"] = bool(prev.get("infra_fail", False))
+data["issues"][num] = prev
+tmp = fp + ".tmp." + str(os.getpid())
+with open(tmp, "w") as fh:
+    json.dump(data, fh, indent=2, sort_keys=True)
+os.replace(tmp, fp)
+' 2>/dev/null
+    printf '%s\n' "$_new_count"
+}
+e2e_run_state_reset() {  # $1=issue_num
+    local _num="$1" _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || return 0
+    E2E_RS_FP="$_f" E2E_RS_NUM="$_num" \
+    python3 -c '
+import json, os, sys
+fp = os.environ["E2E_RS_FP"]; num = os.environ["E2E_RS_NUM"]
+try:
+    with open(fp) as fh:
+        data = json.load(fh)
+except Exception:
+    sys.exit(0)
+data.setdefault("issues", {})
+if num in data["issues"]:
+    data["issues"][num]["consecutive_fails"] = 0
+    data["issues"][num]["infra_fail"] = False
+tmp = fp + ".tmp." + str(os.getpid())
+with open(tmp, "w") as fh:
+    json.dump(data, fh, indent=2, sort_keys=True)
+os.replace(tmp, fp)
+' 2>/dev/null
+    return 0
+}
+e2e_run_state_set_infra_fail() {  # $1=issue_num
+    local _num="$1" _f="$RUN_STATE_FILE"
+    [ -n "$_f" ] || return 0
+    E2E_RS_FP="$_f" E2E_RS_NUM="$_num" \
+    python3 -c '
+import json, os
+fp = os.environ["E2E_RS_FP"]; num = os.environ["E2E_RS_NUM"]
+try:
+    with open(fp) as fh:
+        data = json.load(fh)
+except Exception:
+    data = {"schema_version": 1, "issues": {}}
+data.setdefault("issues", {})
+prev = data["issues"].get(num, {})
+prev["infra_fail"] = True
+data["issues"][num] = prev
+tmp = fp + ".tmp." + str(os.getpid())
+with open(tmp, "w") as fh:
+    json.dump(data, fh, indent=2, sort_keys=True)
+os.replace(tmp, fp)
+' 2>/dev/null
+    return 0
+}
 
 # --- G_pre_cleanup: worktree disk-space + sweep (issue #1707, ретро 28.08) --
 # Под замком (после flock), до ensure_worktree — гарантирует, что только
@@ -612,17 +894,9 @@ if [ "$_run_now_triggered" = "1" ] && [ "$DRY_RUN" != "true" ] && [ -n "${REPO_D
 fi
 
 # --- G1: MAINTENANCE gate (remote + local) -----------------------------------
-if [ -n "${GH_REPO:-}" ]; then
-    remote_ref="${MAINTENANCE_BRANCH}:${MAINTENANCE_FILE}"
-    if git ls-remote "https://github.com/${GH_REPO}.git" "$remote_ref" 2>/dev/null | grep -q .; then
-        log "🛑 MAINTENANCE flag set on remote ${remote_ref} — skip"; exit 0
-    fi
-fi
-if [ -n "${REPO_DIR:-}" ] && [ -d "$REPO_DIR" ]; then
-    if git -C "$REPO_DIR" show "${MAINTENANCE_BRANCH}:${MAINTENANCE_FILE}" >/dev/null 2>&1; then
-        log "🛑 MAINTENANCE flag set locally in ${REPO_DIR} — skip"; exit 0
-    fi
-fi
+# Тело — af_maintenance_gate_or_exit в lib_agent_flow_common.sh (дедуп 30.08:
+# три байт-в-байт копии в triage / merge-gate / e2e-process).
+af_maintenance_gate_or_exit
 
 # --- G2: gh auth check (retry — сетевой сбой ≠ нет авторизации) ------------
 _gh_auth_ok=0
@@ -651,6 +925,19 @@ if [ "${_rate:-999}" -lt 100 ] 2>/dev/null; then
     exit 0
 fi
 
+# --- G3: e2e fail-streak pause-sentinel (ретро 28.08 t_faac94b0) -----------
+# Если watchdog обнаружил fail-streak ≥ E2E_FAIL_STREAK_PAUSE (default 20)
+# подряд — он создаёт sentinel файл и ротация ЗАМОРАЖИВАЕТСЯ до ручного
+# override (Шиф/юзер: удалить файл после починки регрессии + свежий SUCCESS).
+# Это намеренный kill-switch: следующие 20+ FAIL'ов только усугубят ситуацию
+# и сожгут CI minutes без продуктивного результата.
+FAIL_STREAK_PAUSE_SENTINEL="${FAIL_STREAK_PAUSE_SENTINEL:-${HERMES_HOME}/state/agent-flow-e2e-fail-streak-pause}"
+if [ -f "$FAIL_STREAK_PAUSE_SENTINEL" ]; then
+    log "🛑 fail-streak PAUSE-SENTINEL present: ${FAIL_STREAK_PAUSE_SENTINEL} — skip rotation (manual override required to resume)"
+    log "   Чтобы снять паузу: почини регрессию, дождись свежего SUCCESS-run, затем rm ${FAIL_STREAK_PAUSE_SENTINEL}"
+    exit 0
+fi
+
 # --- required env ------------------------------------------------------------
 : "${GH_REPO:?GH_REPO must be set (owner/repo)}"
 if [ -z "${REPO_DIR}" ] || [ ! -d "$REPO_DIR" ]; then
@@ -659,6 +946,236 @@ fi
 
 # (worktree defaults + cleanup helpers moved up to before helpers — see
 # "worktree defaults + cleanup helpers" block after E2E_ARTIFACTS_DIR.)
+
+# --- G2.7: auto-escalation needs-review при fail-streak (ретро 28.08 t_4ead2dd4) -
+# Проблема: L: E2E Voice Test fail-streak 24 раунда подряд (~3 дня) прошёл
+# БЕЗ единого PR с меткой needs-review. Почему: post_round_sweep ставит
+# needs-review/e2e-done только на SUCCESS-run (PR #1720/#1723/#1719 получили
+# метки вручную), а fail-streak=24 означает, что SUCCESS'а не было неделями.
+# Шифу не видел готовые PR в очереди review → drift.
+#
+# Решение: отдельный sweep, который при fail-streak ≥ AUTO_NEEDS_REVIEW_ON_FAIL_STREAK
+# (default 5) для каждого OPEN PR с mergeStateStatus=CLEAN и Raw-evidence в
+# body ставит метку needs-review. Это дополняет PR #1721 (fail-streak watchdog):
+# watchdog пишет issue-comment, этот sweep — помечает PR.
+#
+# Контракт (согласован с user-unlabel guard из lib_user_unlabel_check.sh, ретро
+# 18.08 t_de6bea69, Q22): если Шифу ВРУЧНУЮ снял needs-review — sweep её
+# обратно НЕ возвращает (idem­potent в обе стороны).
+#
+# ENV:
+#   AUTO_NEEDS_REVIEW_ON_FAIL_STREAK=5 — порог streak для эскалации
+#   AUTO_NEEDS_REVIEW_DRY_RUN=false    — log only, не трогать labels
+#   AUTO_NEEDS_REVIEW_PR_LIMIT=100     — лимит OPEN PR за тик
+#
+# Test mode (для tests/test_e2e_process_fail_streak_sweep.sh):
+#   AUTO_NEEDS_REVIEW_TEST_MODE=1 — пропускает gh run list / gh pr list,
+#   берёт мок-данные из переменных:
+#     _AUTO_NEEDS_REVIEW_TEST_RUNS_JSON — JSON-массив E2E runs (тот же
+#       формат, что `gh run list --json databaseId,conclusion,createdAt,
+#       headBranch`).
+#     _AUTO_NEEDS_REVIEW_TEST_PRS_JSON  — JSON-массив PR (тот же формат,
+#       что `gh pr list --state open --json number,title,body,labels,
+#       headRefName,mergeStateStatus`).
+#
+# Pitfalls (как в github-actions-orchestration skill):
+#   - gh run list --workflow принимает filename (не display name) на default
+#     branch. Используем $E2E_WORKFLOW (= L-E2E Voice Test.yml).
+#   - mergeStateStatus бывает "CLEAN" / "DIRTY" / "BLOCKED" / "UNSTABLE" /
+#     "BEHIND" / "UNKNOWN" — нас интересует только "CLEAN".
+#   - body может быть None (gh API) — нормализуем к "" через python3.
+#   - has_label нормализует входные данные к lowercase через tr.
+#
+# Гарантии (fail-OPEN):
+#   - gh run list упал → streak = 0 → sweep no-op (не блокируем тик).
+#   - gh pr list упал → возвращаем "[]" → sweep no-op.
+#   - body/mergeStateStatus/labels неожиданного типа → пропускаем PR (не crash).
+#   - user-unlabel guard: если Шифу снял метку, sweep её не возвращает.
+compute_e2e_fail_streak() {  # → prints "<streak>|<last_success_iso>"; empty on err
+    local _runs_json
+    if [ "${AUTO_NEEDS_REVIEW_TEST_MODE:-0}" = "1" ]; then
+        _runs_json="${_AUTO_NEEDS_REVIEW_TEST_RUNS_JSON:-[]}"
+    else
+        _runs_json="$(gh run list --repo "$GH_REPO" --workflow "$E2E_WORKFLOW" \
+            --limit 30 --json databaseId,conclusion,createdAt,headBranch 2>/dev/null || true)"
+    fi
+    if [ -z "$_runs_json" ] || [ "$_runs_json" = "[]" ]; then
+        printf '0|\n'
+        return 0
+    fi
+    printf '%s' "$_runs_json" | python3 -c '
+import json, sys
+try:
+    runs = json.load(sys.stdin)
+except Exception:
+    print("0|"); raise SystemExit(0)
+if not isinstance(runs, list):
+    print("0|"); raise SystemExit(0)
+streak = 0
+last_success_at = ""
+for r in runs:  # gh run list already sorted newest-first
+    c = r.get("conclusion")
+    if c == "success":
+        last_success_at = r.get("createdAt", "")
+        break
+    if c in ("failure", "cancelled", "timed_out"):
+        streak += 1
+    # in_progress / queued / null → пропускаем (не failure)
+print(f"{streak}|{last_success_at}")
+' 2>/dev/null || printf '0|\n'
+}
+
+# list_open_prs_for_escalation — список OPEN PR с полями number, title, body,
+# labels, mergeStateStatus, headRefName. Возвращает JSON-массив (или "[]").
+list_open_prs_for_escalation() {  # → prints JSON array
+    if [ "${AUTO_NEEDS_REVIEW_TEST_MODE:-0}" = "1" ]; then
+        printf '%s' "${_AUTO_NEEDS_REVIEW_TEST_PRS_JSON:-[]}"
+        return 0
+    fi
+    gh pr list --repo "$GH_REPO" --state open \
+        --limit "$AUTO_NEEDS_REVIEW_PR_LIMIT" \
+        --json number,title,body,labels,headRefName,baseRefName,mergeStateStatus \
+        2>/dev/null || printf '[]\n'
+}
+
+# fail_streak_needs_review_sweep — главная точка входа.
+# Возвращает 0 всегда (не блокирует тик при сбоях).
+fail_streak_needs_review_sweep() {
+    if [ "${AUTO_NEEDS_REVIEW_ON_FAIL_STREAK:-0}" -le 0 ] 2>/dev/null; then
+        # Sweep выключен (default 0 → если кто-то явно ставит 0 = off).
+        # Реальный default 5 задан выше (см. AUTO_NEEDS_REVIEW_ON_FAIL_STREAK:=5).
+        return 0
+    fi
+    if [ "$DRY_RUN" = "true" ] || [ "$AUTO_NEEDS_REVIEW_DRY_RUN" = "true" ]; then
+        log "needs-review sweep: dry-run (DRY_RUN=$DRY_RUN AUTO_NEEDS_REVIEW_DRY_RUN=$AUTO_NEEDS_REVIEW_DRY_RUN) — log only"
+    fi
+
+    local _streak_info _streak _last_success
+    _streak_info="$(compute_e2e_fail_streak)"
+    _streak="${_streak_info%%|*}"
+    _last_success="${_streak_info#*|}"
+    # Sanitize: _streak должен быть целым ≥0.
+    _streak="$(printf '%s' "$_streak" | tr -dc '0-9' | head -c6)"
+    [ -z "$_streak" ] && _streak=0
+    log "needs-review sweep: streak=${_streak} threshold=${AUTO_NEEDS_REVIEW_ON_FAIL_STREAK} last_success=${_last_success:-NONE}"
+
+    if [ "$_streak" -lt "$AUTO_NEEDS_REVIEW_ON_FAIL_STREAK" ] 2>/dev/null; then
+        return 0
+    fi
+
+    local _prs
+    _prs="$(list_open_prs_for_escalation)"
+    if [ -z "$_prs" ] || [ "$_prs" = "[]" ]; then
+        log "needs-review sweep: no OPEN PR — done"
+        return 0
+    fi
+
+    # Перебираем PR. python3 нормализует body/labels/mergeStateStatus и
+    # печатает строки "<number>\t<headRefName>\t<reason>" для кандидатов.
+    # _STREAK пробрасывается через env (skill github-actions-orchestration:
+    # внешние строки через env, не через f-string, чтобы избежать interpolation
+    # проблем на malformed JSON).
+    local _candidates
+    _candidates="$(printf '%s' "$_prs" | _STREAK="$_streak" python3 -c '
+import json, sys, os, re
+try:
+    prs = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+if not isinstance(prs, list):
+    raise SystemExit(0)
+streak = int(os.environ.get("_STREAK") or 0)
+
+def has_raw_evidence(body):
+    if not isinstance(body, str):
+        return False
+    # AGENTS.md §1, ADR-0018: H2/H3-раздел "## Raw-evidence" (основной
+    # сигнал) ИЛИ просто строка "Raw-evidence" в тексте (для PR, где
+    # раздел не оформлен явным markdown-heading).
+    return bool(re.search(r"(?im)^\s*#{1,6}\s*Raw[- ]?evidence\b", body)) or \
+           "Raw-evidence" in body
+
+def labels_lower(pr):
+    out = []
+    for l in pr.get("labels") or []:
+        if isinstance(l, dict):
+            n = l.get("name")
+        else:
+            n = l
+        if isinstance(n, str):
+            out.append(n.lower())
+    return out
+
+for pr in prs:
+    if not isinstance(pr, dict):
+        continue
+    num = pr.get("number")
+    if not isinstance(num, int):
+        continue
+    state = (pr.get("state") or "").lower()
+    if state != "open":
+        continue
+    mss = (pr.get("mergeStateStatus") or "").upper()
+    if mss != "CLEAN":
+        continue
+    lset = set(labels_lower(pr))
+    # Идемпотентность: если уже есть needs-review или e2e-done/e2e:rejected —
+    # не ставить (PR уже в очереди review или завершён).
+    if lset & {"needs-review", "e2e-done", "e2e:rejected"}:
+        continue
+    body = pr.get("body") or ""
+    if not has_raw_evidence(body):
+        continue
+    head = pr.get("headRefName") or ""
+    print(f"{num}\t{head}\tstreak={streak}\tmss={mss}\traw-evidence=yes")
+' 2>/dev/null || true)"
+
+    if [ -z "$_candidates" ]; then
+        log "needs-review sweep: no eligible PR (open+clean+raw-evidence+no-label) — done"
+        return 0
+    fi
+
+    local _count=0 _processed=0 _skipped_user=0
+    while IFS=$'\t' read -r _pr_num _pr_branch _reason; do
+        [ -z "$_pr_num" ] && continue
+        _count=$((_count+1))
+        # Sanitize PR number (skill github-actions-orchestration: убрать
+        # whitespace/multi-line во избежание cobra-краша 'accepts at most 1 arg').
+        _pr_num="$(printf '%s' "$_pr_num" | grep -oE '[0-9]+' | head -n1)"
+        [ -z "$_pr_num" ] && continue
+
+        # user-unlabel guard (Q22): если Шифу ВРУЧНУЮ снял needs-review —
+        # sweep НЕ должен возвращать метку. Используем существующий хелпер
+        # из lib_user_unlabel_check.sh (он уже sourced выше).
+        if user_removed_label_recently "$_pr_num" "$NEEDS_REVIEW_LABEL"; then
+            user_unlabel_log_skip "$_pr_num" "$NEEDS_REVIEW_LABEL" "needs-review sweep streak=${_streak}"
+            _skipped_user=$((_skipped_user+1))
+            continue
+        fi
+
+        if [ "$DRY_RUN" = "true" ] || [ "$AUTO_NEEDS_REVIEW_DRY_RUN" = "true" ]; then
+            log "needs-review sweep: DRY-RUN would: gh pr edit $_pr_num --add-label ${NEEDS_REVIEW_LABEL} (${_reason}; branch=${_pr_branch})"
+            _processed=$((_processed+1))
+            continue
+        fi
+
+        if gh pr edit "$_pr_num" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1; then
+            log "needs-review sweep: PR #${_pr_num} (${_pr_branch}) → ${NEEDS_REVIEW_LABEL} (${_reason})"
+            _processed=$((_processed+1))
+        else
+            log "needs-review sweep: WARNING gh pr edit failed for PR #${_pr_num} (will retry next tick)"
+        fi
+    done <<< "$_candidates"
+
+    log "needs-review sweep: done candidates=${_count} labeled=${_processed} skipped-user=${_skipped_user}"
+    return 0
+}
+
+# Вызов на каждом тике ПОСЛЕ gh-auth/G2.5 (нужны rate-limit + auth) и ДО
+# round_ensure (чтобы метка проставилась до merge-gate, который может
+# параллельно мержить PR). Идемпотентен — может вызываться на каждом тике.
+fail_streak_needs_review_sweep || true
+
 
 # --- find or create e2e/test-round-N -----------------------------------------
 # Returns 0 + sets ROUND_BRANCH on success. N = max($N) на remote + 1
@@ -870,69 +1387,7 @@ if [ "${ROUND_ONLY:-0}" = "1" ]; then
     exit 0
 fi
 
-# --- gh_list_issues_by_label (ретро 19.08 #1457) ------------------------------
-# Bug: `gh issue list --label X` на некоторых версиях gh CLI (2.x.x) возвращает
-# пустой массив, даже если есть открытые issues с меткой X. Параллельно
-# `gh search issues "label:X"` и `gh api repos/.../issues?labels=X` находят их.
-# Workaround: используем gh-list как primary, при пустом ответе — fallback на
-# прямой REST API, логируем fallback для observability. Возвращает JSON-массив
-# с полями: number,title,labels,body (минимальный набор для downstream).
-gh_list_issues_by_label() {
-    local _label="$1" _state="${2:-open}" _limit="${3:-${ISSUE_LIMIT}}" _fields="${4:-number,title,labels,body}"
-    local _json="" _api_json=""
-    _json="$(gh issue list \
-        --repo "$GH_REPO" \
-        --label "$_label" \
-        --state "$_state" \
-        --limit "$_limit" \
-        --json "$_fields" 2>/dev/null || true)"
-    # Если gh-list непустой — используем его (быстрее, идёт через GraphQL).
-    if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
-        printf '%s' "$_json"
-        return 0
-    fi
-    # Fallback: прямой REST API. gh issue list в --json GraphQL-режиме ломает
-    # фильтр по label (issue #1457). REST /issues?labels=X — надёжный источник.
-    _api_json="$(gh api "repos/${GH_REPO}/issues?labels=${_label}&state=${_state}&per_page=${_limit}" 2>/dev/null || true)"
-    if [ -z "$_api_json" ] || [ "$_api_json" = "[]" ]; then
-        # Действительно пусто — отдаём пустой массив downstream'у.
-        printf '[]'
-        return 0
-    fi
-    log "gh_list_issues_by_label(${_label}): gh-list пустой, fallback на REST API /issues?labels=${_label}"
-    # Нормализуем REST-ответ к GraphQL-шейпу: {number,title,labels,body,...}.
-    # В REST labels — массив {name,...}, в GraphQL — то же самое. Достаточно
-    # прокинуть number/title/labels/body; PR-ы (у REST issues включают PRs)
-    # отфильтруем ниже по отсутствию поля pull_request.
-    printf '%s' "$_api_json" | python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    print("[]"); sys.exit(0)
-if not isinstance(data, list):
-    print("[]"); sys.exit(0)
-keep = []
-for it in data:
-    if not isinstance(it, dict):
-        continue
-    # REST /issues возвращает и issues, и PRs — PRы имеют pull_request.
-    if it.get("pull_request"):
-        continue
-    rec = {
-        "number": it.get("number"),
-        "title": it.get("title") or "",
-        "labels": [{"name": (l.get("name") if isinstance(l, dict) else l)} for l in it.get("labels", [])],
-        "body": it.get("body") or "",
-    }
-    # Прокинем updatedAt (используется deploy-issue-reconcile), если есть —
-    # это не ломает существующий код, который читает только нужные поля.
-    if "updatedAt" in it:
-        rec["updatedAt"] = it.get("updatedAt")
-    keep.append(rec)
-print(json.dumps(keep, ensure_ascii=False))
-'
-}
+# gh_list_issues_by_label — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
 # --- gh_pr_state_by_head (ретро 25.08 t_7766fe44) ----------------------------
 # Bug: `gh pr list --head X --json` идёт через GraphQL. При исчерпании
@@ -1145,6 +1600,13 @@ for issue in data:
     labels = [l["name"] for l in issue.get("labels", [])]
     if "e2e-done" in labels or "e2e:rejected" in labels:
         sys.stderr.write("issue #" + str(issue["number"]) + ": has e2e-done/e2e:rejected — skip\n")
+        continue
+    # Ретро 02.09 t_a09e893a (orphan-needs-e2e-after-merge): merged-no-e2e-stale
+    # означает «PR MERGED, ветка жива >grace, merge-gate вывел из auto-ротации».
+    # e2e-process НЕ должен возвращать issue обратно в needs-e2e rotation —
+    # иначе наш трим бесполезен (ping-pong).
+    if "merged-no-e2e-stale" in labels:
+        sys.stderr.write("issue #" + str(issue["number"]) + ": has merged-no-e2e-stale — merge-gate audit-trim, skip e2e\n")
         continue
     keep.append(issue)
 print(json.dumps(keep, ensure_ascii=False))')"
@@ -1547,16 +2009,9 @@ trap _exit_sweep EXIT
 # определены ДО первого top-level вызова на line ~920.
 # (ретро t_df4fff46, issue #1586)
 
-slugify() {
-    printf '%s' "$1" \
-        | tr '[:upper:]' '[:lower:]' \
-        | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g; s/-{2,}/-/g' \
-        | cut -c1-40
-}
+# slugify — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
-has_label() {
-    printf '%s' "$1" | tr ',' '\n' | grep -Fxq "$2"
-}
+# has_label — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
 # issue_needs_e2e_re_added_after_run <issue_number> <run_id>
 #   Returns 0 (true) если на issue есть LabeledEvent{label=needs-e2e}
@@ -1681,55 +2136,7 @@ else:
     return 1
 }
 
-# Detect PR kind: "lint" (no e2e needed) vs "functional" (e2e required).
-# Signal sources (priority order):
-#   1) PR label `${NO_E2E_LABEL}` → lint (explicit worker opt-out)
-#   2) PR title prefix `[lint]` / `[refactor]` → lint (worker shorthand)
-#   3) PR title prefix `fix(agent-flow` / `fix(agent_flow` → lint (ретро 13.08
-#      t_de63be1f): фиксы КОНВЕЙЕРА (e2e-process/merge-gate/triage/watchdog)
-#      не меняют поведение робота — e2e на железе для них не нужен, CI green
-#      достаточно. Раньше такие PR (#1189/#1190) уходили в e2e-очередь как
-#      functional и застревали (ротация жжёт build+deploy на заведомо
-#      непрофильный сценарий).
-#   4) PR title prefix `docs(adr` / `docs(architecture` → lint (ретро 24.08
-#      t_388bb652): ADR-черновики архитектора (docs-only) НЕ меняют runtime,
-#      e2e на железе не нужен. Раньше такие PR (#1577/#1580/#1581/#1578)
-#      уходили в e2e-очередь как functional и залипали с e2e:rejected
-#      (cold-start wake-gate no_wake_word, см. ретро t_d9e70587).
-#   5) PR title prefix `wip(arch` / `wip(infra` → lint (ретро 24.08
-#      t_388bb652): WIP-черновики архитектора (verdict-сохранения, infra-обсуждения)
-#      НЕ являются runtime-фичами. Раньше PR #1559 (`wip(arch #1506 t_228de99c):
-#      verdict v3`) висел e2e:rejected 11ч49м без прогресса.
-#   6) PR title prefix `wip(voice-core` → lint (ретро 24.08 t_388bb652):
-#      verification-suite wip-черновик (e2e_routes/voice-core проверки),
-#      не runtime.
-#   7) otherwise → functional (e2e mandatory)
-# Inputs: $1=pr_labels_csv (lowercased), $2=pr_title
-# Output: prints "lint" or "functional"; rc=0 always.
-detect_pr_kind() {  # $1=labels_csv $2=title
-    local labels_csv title_lc prefix
-    labels_csv="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-    title_lc="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
-    if has_label "$labels_csv" "$NO_E2E_LABEL"; then
-        printf '%s' "lint"; return 0
-    fi
-    # Title prefix detection (case-insensitive): сматчить ПЕРВЫЙ токен (по пробелу)
-    # через glob `*` в конце — иначе `(` и `)` в conventional-commit prefix
-    # (docs(adr-0027), wip(arch #1506)) ломают extglob grouping pattern.
-    # Два независимых case'а:
-    #   - по первому токену `prefix` для тегов без скобок: [lint], [refactor]
-    #   - по всей строке с glob для conventional-commit префиксов (включая docs/wip)
-    prefix="${title_lc%% *}"
-    case "$prefix" in
-        '[lint]'|'[refactor]') printf '%s' "lint"; return 0 ;;
-    esac
-    case "$title_lc" in
-        'fix(agent-flow'*|'fix(agent_flow'*|\
-        'docs(adr'*|'docs(architecture'*|\
-        'wip(arch'*|'wip(infra'*|'wip(voice-core'*) printf '%s' "lint"; return 0 ;;
-    esac
-    printf '%s' "functional"; return 0
-}
+# detect_pr_kind — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
 # Worker-evidence gate (ретро t_d0151eb3): воркер может сам опубликовать
 # комментарий с маркером `worker-evidence:` (raw-логи фичи на роботе,
@@ -1879,6 +2286,37 @@ _TBS="${AGENT_FLOW_SCRIPT:-agent-flow-e2e-process}"
 _TBA="${TRIGGERED_BY_AGENT:-agent-flow}"
 _TBC="${E2E_RUN_CARD:-${TRIGGERED_BY_CARD:-}}"
 _TBR="${E2E_RUN_REASON:-${TRIGGERED_BY_REASON:-scheduled-tick}}"
+
+# ADR-0040 §2.2.1: poll_run_for_epoch — resolve run_id, который стартанул
+# не раньше заданного epoch (ISO 8601 UTC). GitHub API eventual consistency:
+# gh workflow run может вернуть 202, а в gh run list run появится через
+# 5-10 сек. Poll каждые 2 сек, max ${E2E_TRIGGER_POLL_MAX:-10} сек.
+# Возвращает: 0 + run_id (числовой) в stdout если найден; 1 если timeout.
+poll_run_for_epoch() {  # $1=workflow $2=branch $3=repo $4=epoch_iso [$5=max_sec]
+    local _wf="$1" _br="$2" _repo="$3" _ep="$4" _max=${5:-${E2E_TRIGGER_POLL_MAX:-10}}
+    local _deadline=$((SECONDS + _max)) _run_id _jq
+    while [ "$SECONDS" -lt "$_deadline" ]; do
+        _jq='[.[] | select(.createdAt >= "'"$_ep"'")][0].databaseId'
+        _run_id="$(gh run list --repo "$_repo" --workflow "$_wf" --branch "$_br" \
+            --limit 3 --json databaseId,createdAt --jq "$_jq" 2>/dev/null || echo "")"
+        _run_id="$(printf '%s' "$_run_id" | grep -oE '[0-9]+' | head -n1 || true)"
+        if [[ "$_run_id" =~ ^[0-9]+$ ]]; then
+            printf '%s\n' "$_run_id"
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
+# ADR-0040 §2.2.1: новый контракт _trigger_workflow_with_retry:
+#   exit 0 + stdout = run_id (числовой)  — если стартанул и подтверждён poll'ом
+#   exit 0 + stdout = "existing:<run_id>" — если race-dedup: run уже есть на ветке
+#                                          (новый НЕ нужен, возвращаем существующий)
+#   exit 1 + stdout = пусто               — НЕ стартанул после всех попыток
+#                                          (caller ОБЯЗАН считать fail, ADR §2.2.2)
+# ADR-0040 Q5: race-dedup success возвращает "existing:<run_id>" чтобы caller
+# мог отличить "я только что стартанул" от "уже был, reuse'нул".
 _trigger_workflow_with_retry() {
     local _wf_name="$1"; shift
     local _attempts=0 _max=3 _sleep
@@ -1902,8 +2340,26 @@ _trigger_workflow_with_retry() {
     done
     local _pre_window="${E2E_PRE_DISPATCH_WINDOW:-60}"
     if [ -n "$_dedup_branch" ]; then
-        if [ "$(verify_recent_run "$_wf_name" "$_dedup_branch" "$GH_REPO" "$_pre_window")" = "ok" ]; then
-            log "    trigger ${_wf_name}: pre-dispatch dedup (recent run on ${_dedup_branch} ≤${_pre_window}s, issue #1540) — skip"
+        # Pre-dispatch dedup (Q5): путь только "existing:<run_id>", никогда
+        # не возвращает голый run_id (мы не стартовали ничего нового).
+        local _existing
+        _existing="$(verify_recent_run "$_wf_name" "$_dedup_branch" "$GH_REPO" "$_pre_window")"
+        if [ "$_existing" = "ok" ]; then
+            # Резолвим конкретный run_id через gh run list (verify_recent_run
+            # возвращает только "ok"/"miss", без id).
+            local _pre_existing_id
+            _pre_existing_id="$(gh run list --repo "$GH_REPO" --workflow "$_wf_name" \
+                --branch "$_dedup_branch" --limit 1 --json databaseId --jq '.[0].databaseId' \
+                2>/dev/null | grep -oE '[0-9]+' | head -n1 || true)"
+            if [[ "$_pre_existing_id" =~ ^[0-9]+$ ]]; then
+                log "    trigger ${_wf_name}: pre-dispatch dedup (recent run ${_pre_existing_id} on ${_dedup_branch} ≤${_pre_window}s, issue #1540) — reuse"
+                printf 'existing:%s\n' "$_pre_existing_id"
+                return 0
+            fi
+            log "    trigger ${_wf_name}: pre-dispatch dedup (recent run on ${_dedup_branch} ≤${_pre_window}s, issue #1540) — skip, no run_id resolvable"
+            # Не можем вернуть existing:<id> — caller решит. Возвращаем 0
+            # с пустым stdout (best-effort: caller увидит пустой run_id и
+            # пойдёт в race-dedup path).
             return 0
         fi
     fi
@@ -1917,6 +2373,10 @@ _trigger_workflow_with_retry() {
         # Issue #1540: используем общий verify_recent_run из lib_workflow_dedup.sh.
         [ "$(verify_recent_run "$_wf" "$_br" "$GH_REPO" 60)" = "ok" ]
     }
+    # ADR-0040: после УСПЕШНОГО gh workflow run (либо race-dedup) ОБЯЗАНЫ
+    # вернуть run_id в stdout. Poll через poll_run_for_epoch.
+    local _trigger_epoch _run_id
+    _trigger_epoch="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     while [ "$_attempts" -lt "$_max" ]; do
         if gh workflow run "$_wf_name" --repo "$GH_REPO" \
                 --field triggered_by_script="$_TBS" \
@@ -1924,10 +2384,37 @@ _trigger_workflow_with_retry() {
                 --field triggered_by_card="$_TBC" \
                 --field triggered_by_reason="$_TBR" \
                 "$@" >/dev/null 2>&1; then
-            return 0
+            # ADR-0040: poll run_id, не return 0 сразу.
+            if [ -n "$_dedup_branch" ]; then
+                _run_id="$(poll_run_for_epoch "$_wf_name" "$_dedup_branch" "$GH_REPO" "$_trigger_epoch")" \
+                    || _run_id=""
+                if [[ "$_run_id" =~ ^[0-9]+$ ]]; then
+                    log "    trigger ${_wf_name}: started run ${_run_id} on ${_dedup_branch} (epoch=${_trigger_epoch}, ADR-0040 §2.2.1)"
+                    printf '%s\n' "$_run_id"
+                    return 0
+                fi
+                log "    trigger ${_wf_name}: gh workflow run вернул 0, но run не появился в gh run list за ${E2E_TRIGGER_POLL_MAX:-10}s (eventual consistency timeout)"
+                # Считаем попытку провалившейся — retry loop ниже.
+            else
+                # Без _dedup_branch (не знаем на какой ветке poll'ить) —
+                # best-effort return 0 (legacy поведение для редких callers
+                # без --ref). Caller вряд ли полагается на run_id в этом
+                # случае.
+                return 0
+            fi
         fi
         if [ -n "$_dedup_branch" ] && _race_dedup_check "$_wf_name" "$_dedup_branch"; then
-            log "    trigger ${_wf_name}: race-condition detected (recent run on ${_dedup_branch} ≤60s) — accept as success (dedup, PR #1536)"
+            # Race-dedup success (Q5): путь "existing:<run_id>".
+            local _race_id
+            _race_id="$(gh run list --repo "$GH_REPO" --workflow "$_wf_name" \
+                --branch "$_dedup_branch" --limit 1 --json databaseId --jq '.[0].databaseId' \
+                2>/dev/null | grep -oE '[0-9]+' | head -n1 || true)"
+            if [[ "$_race_id" =~ ^[0-9]+$ ]]; then
+                log "    trigger ${_wf_name}: race-condition detected (existing run ${_race_id} on ${_dedup_branch} ≤60s) — accept as existing (PR #1536 + ADR-0040 Q5)"
+                printf 'existing:%s\n' "$_race_id"
+                return 0
+            fi
+            log "    trigger ${_wf_name}: race-condition detected but run_id unresolvable — accept (legacy)"
             return 0
         fi
         _attempts=$((_attempts + 1))
@@ -1937,44 +2424,12 @@ _trigger_workflow_with_retry() {
             sleep "$_sleep"
         fi
     done
+    # Все попытки исчерпаны — run НЕ стартанул. exit 1, пустой stdout.
+    log "    trigger ${_wf_name}: NOT STARTED after ${_max} attempts (ADR-0040 §2.2.1) — caller must treat as fail"
     return 1
 }
 
-# Процесс-фикс (09.08): освободить ветку карточки от worktree старых
-# (done/archived) карточек — иначе респавн падает «git worktree add failed»
-# и карточка навсегда виснет в blocked. Путь worktree берём из самой карточки
-# (kanban workspace_path), список worktree — через git -C <wt> (родительский клон).
-free_stale_worktrees_for() {  # $1=task_id (t_<hex>)
-    local task_id="$1" my_wt my_branch line wt_path wt_branch owner
-    my_wt="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" show "$task_id" --json 2>/dev/null \
-        | python3 -c 'import sys,json
-try:
-    d=json.load(sys.stdin); print(d.get("task",{}).get("workspace_path") or "")
-except Exception: print("")' 2>/dev/null || true)"
-    if [ -z "$my_wt" ] || [ ! -d "$my_wt" ]; then
-        return 0
-    fi
-    my_branch="$(git -C "$my_wt" branch --show-current 2>/dev/null || true)"
-    [ -z "$my_branch" ] && return 0
-    wt_path=""
-    while IFS= read -r line; do
-        case "$line" in
-            worktree\ *) wt_path="${line#worktree }" ;;
-            branch\ *)
-                wt_branch="${line#branch refs/heads/}"
-                if [ "$wt_branch" = "$my_branch" ] && [ "$wt_path" != "$my_wt" ]; then
-                    owner="$(basename "$wt_path")"
-                    if [ "$owner" != "$task_id" ]; then
-                        git -C "$my_wt" worktree remove --force "$wt_path" 2>/dev/null \
-                            && log "  freed stale worktree $wt_path (branch $my_branch, card $owner)"
-                    fi
-                fi
-                ;;
-        esac
-    done < <(git -C "$my_wt" worktree list --porcelain 2>/dev/null)
-    git -C "$my_wt" worktree prune 2>/dev/null || true
-    return 0
-}
+# free_stale_worktrees_for — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
 # Read PR head branch from issue + title.
 compute_agent_branch() {  # $1=issue_number $2=title
@@ -2725,7 +3180,9 @@ except Exception:
         # разрешить конфликт в ТОЙ ЖЕ ветке (никаких новых веток — Шифу прямо),
         # запушить, дождаться следующего прогона. Создаём карточку воркеру с
         # assignee=профиль по метке issue (agent:backend → backend, etc).
-        _conflict_assignee="default"
+        # Ретро 02.09 t_2bd2e7ea: default → devops fallback (default невалиден
+        # по ADR-0041 — silent-drop в диспетчере).
+        _conflict_assignee="devops"
         for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
             case "$lbl" in
                 agent:backend)    _conflict_assignee="backend"; break ;;
@@ -2941,7 +3398,30 @@ for t in data:
                     log "issue #${number}: ${lbl} OK (run ${rid})"
                     return 0
                 else
-                    log "issue #${number}: ${lbl} FAILED (run ${rid}, ${concl:-unknown})"
+                    # Ретро-фикс 01.09 (t_32c28562): conclusion=failure тоже
+                    # бывает ложным в момент перехода in_progress→success.
+                    # 09.08 #4 чинил только пустой/null conclusion, а реальный
+                    # race на 01.09 был 4-й раз подряд (round-316/317/319/
+                    # 320/321/322, issue #1824): gh run view вернул 'failure'
+                    # в момент transition, через 1 мин статус стал success.
+                    # Решение: post-fail recheck loop — до 5 повторов по 10с,
+                    # если хоть один recheck даст success — это race, считаем
+                    # OK и пишем audit-комментарий в issue. Только если ВСЕ 6
+                    # polls (1 начальный + 5 recheck) дают failure → настоящий FAIL.
+                    local _recheck_concl _rc_try _rc_success_seen
+                    _rc_success_seen=0
+                    for _rc_try in 1 2 3 4 5; do
+                        sleep 10
+                        _recheck_concl="$(gh run view "$rid" --repo "$GH_REPO" --json conclusion --jq '.conclusion' 2>/dev/null || echo "")"
+                        if [ "$_recheck_concl" = "success" ]; then
+                            _rc_success_seen=1
+                            log "issue #${number}: ⚠️ race detected on ${lbl} run ${rid} — initial=failure, recheck#${_rc_try}=success (01.09 t_32c28562)"
+                            gh issue comment "$number" --repo "$GH_REPO" --body \
+                                "agent-flow: ⚠️ race detected on ${lbl} run \`${rid}\` — initial poll=failure, recheck#${_rc_try}=success (workflow still in transition). Accepting as OK. https://github.com/${GH_REPO}/actions/runs/${rid}" >/dev/null 2>&1 || true
+                            return 0
+                        fi
+                    done
+                    log "issue #${number}: ${lbl} FAILED (run ${rid}, ${concl:-unknown}, recheck×5=failure — confirmed)"
                     return 1
                 fi
             fi
@@ -2973,6 +3453,28 @@ for t in data:
     # ПРОДОЛЖИТЬ, а не пересобирать: если для текущего HEAD round уже есть
     # успешный build-ран — пропускаем build (идём сразу в deploy/e2e).
     _round_head="$(git -C "$WORKTREE_DIR" rev-parse HEAD 2>/dev/null || echo '')"
+    # Issue #1826: defense in depth — CI commit SHA-tags (`ci: main|vision SHA
+    # tags → ... [skip ci]`) уже заблокированы в L-Build Main/Vision для
+    # round-веток, НО если когда-то этот guard отключат или появятся другие
+    # workflow, коммитящие в round — agent-flow всё равно не должен бесконечно
+    # триггерить build. Детектим: последний коммит round — это CI SHA-tag noise
+    # → ищем SUCCESS build для parent. Если есть → resume (не триггерим).
+    _round_parent="$(git -C "$WORKTREE_DIR" rev-parse HEAD^ 2>/dev/null || echo '')"
+    _round_head_subject="$(git -C "$WORKTREE_DIR" log -1 --pretty=%s 2>/dev/null || echo '')"
+    if [ -n "$_round_parent" ] \
+        && [[ "${_round_head_subject}" =~ ^ci:[[:space:]]*(main|vision)[[:space:]]+SHA[[:space:]]+tags ]] \
+        && [ "$_round_parent" != "$_round_head" ]; then
+        _parent_build="$(gh run list --repo "$GH_REPO" --workflow "$BUILD_WORKFLOW" --branch "$ROUND_BRANCH" \
+            --limit 10 --json databaseId,conclusion,headSha \
+            --jq "[.[] | select(.conclusion == \"success\" and .headSha == \"${_round_parent}\")][0].databaseId" 2>/dev/null || echo '')"
+        _parent_build="$(printf '%s' "$_parent_build" | grep -oE '[0-9]+' | head -n1 || true)"
+        if [ -n "$_parent_build" ] && [ "$_parent_build" != "null" ]; then
+            log "issue #${number}: CI SHA-tag spam, skipping — last commit on ${ROUND_BRANCH} is '${_round_head_subject}', parent ${_round_parent:0:7} has SUCCESS build ${_parent_build} (issue #1826). Treating current HEAD as noise; resuming deploy/e2e."
+            # Не триггерим build. Переводим _round_head на parent, чтобы дальнейший
+            # _existing_build/_existing_deploy ниже нашли SUCCESS для «истинного» HEAD.
+            _round_head="$_round_parent"
+        fi
+    fi
     # Ретро 22.08 t_c7761956 (A1): pre-dispatch consecutive-build-failed guard.
     # Если 2 последних build-run'а на ${ROUND_BRANCH} завершились failure → не
     # запускаем третий (race в update-image-versions / GHCR push реальный, retry
@@ -3036,10 +3538,15 @@ gh run view <run_id> --log-failed | grep -E 'Password required|ERROR|denied|403|
         b_epoch="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         # ретро 10.08 #1: race condition gh workflow run после свежего push.
         # API может вернуть non-zero exit, но workflow стартует. До 3 ретраев с backoff 5/10/15s.
-        if ! _trigger_workflow_with_retry "$BUILD_WORKFLOW" --ref "$ROUND_BRANCH" \
-            -f push_to_registry=true; then
-            log "issue #${number}: failed to trigger ${BUILD_WORKFLOW} after retries"; errored=$((errored+1)); continue
+        # ADR-0040 §2.2.1: trigger теперь возвращает run_id в stdout (или
+        # "existing:<run_id>" если race-dedup). Логируем для аудита; commit 3
+        # будет использовать run_id для state.json.
+        _b_run_id=""
+        if ! _b_run_id="$(_trigger_workflow_with_retry "$BUILD_WORKFLOW" --ref "$ROUND_BRANCH" \
+            -f push_to_registry=true)"; then
+            log "issue #${number}: failed to trigger ${BUILD_WORKFLOW} after retries (run NOT started, ADR-0040 §2.2.1)"; errored=$((errored+1)); continue
         fi
+        log "issue #${number}: build trigger resolved run_id='${_b_run_id}' (ADR-0040 §2.2.1)"
         if ! wait_workflow "$BUILD_WORKFLOW" "$ROUND_BRANCH" "$E2E_BUILD_TIMEOUT" "build" "$b_epoch"; then
             gh issue comment "$number" --repo "$GH_REPO" --body \
                 "agent-flow: ❌ build failed on ${ROUND_BRANCH} — e2e skipped. See https://github.com/${GH_REPO}/actions" >/dev/null 2>&1 || true
@@ -3060,10 +3567,13 @@ gh run view <run_id> --log-failed | grep -E 'Password required|ERROR|denied|403|
     else
         log "issue #${number}: triggering ${DEPLOY_WORKFLOW} on ${ROUND_BRANCH} (env=${E2E_DEPLOY_ENV}, registry=${E2E_DEPLOY_REGISTRY})"
         d_epoch="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        if ! _trigger_workflow_with_retry "$DEPLOY_WORKFLOW" --ref "$ROUND_BRANCH" \
-            -f environment="$E2E_DEPLOY_ENV" -f registry_source="$E2E_DEPLOY_REGISTRY"; then
-            log "issue #${number}: failed to trigger ${DEPLOY_WORKFLOW} after retries"; errored=$((errored+1)); continue
+        # ADR-0040 §2.2.1: trigger возвращает run_id в stdout (или existing:<id>).
+        _d_run_id=""
+        if ! _d_run_id="$(_trigger_workflow_with_retry "$DEPLOY_WORKFLOW" --ref "$ROUND_BRANCH" \
+            -f environment="$E2E_DEPLOY_ENV" -f registry_source="$E2E_DEPLOY_REGISTRY")"; then
+            log "issue #${number}: failed to trigger ${DEPLOY_WORKFLOW} after retries (run NOT started, ADR-0040 §2.2.1)"; errored=$((errored+1)); continue
         fi
+        log "issue #${number}: deploy trigger resolved run_id='${_d_run_id}' (ADR-0040 §2.2.1)"
         if ! wait_workflow "$DEPLOY_WORKFLOW" "$ROUND_BRANCH" "$E2E_DEPLOY_TIMEOUT" "deploy" "$d_epoch"; then
             gh issue comment "$number" --repo "$GH_REPO" --body \
                 "agent-flow: ❌ deploy failed on ${ROUND_BRANCH} — e2e skipped. See https://github.com/${GH_REPO}/actions" >/dev/null 2>&1 || true
@@ -3302,9 +3812,56 @@ vision_default на Pi — перед up добавлен 'docker rm -f voice-re
     if [ "${e2e_check_tg_echo:-false}" = "true" ] || [ "${e2e_check_tg_echo:-false}" = "1" ]; then
         e2e_args+=(-f "check_tg_echo=true")
     fi
-    if ! _trigger_workflow_with_retry "$E2E_WORKFLOW" --ref "$ROUND_BRANCH" "${e2e_args[@]}"; then
-        log "issue #${number}: failed to trigger ${E2E_WORKFLOW} after retries"; errored=$((errored+1)); continue
+    # ADR-0040 §2.2.1: trigger возвращает run_id в stdout (или existing:<id>).
+    # ADR-0040 §2.2.2: на non-zero — increment consecutive_fails в state,
+    # и если >= ${E2E_CONSECUTIVE_FAIL_LIMIT} — label e2e:infra-fail (terminal,
+    # ADR Q4), СНЯТЬ needs-e2e (чтобы issue не крутился бесконечно),
+    # comment с run-link. Round-ветка не используется для следующих issues
+    # в этом тике (помечается E2E_TRIGGER_FAILED_THIS_TICK=1, ADR-0040 Q1).
+    _e_run_id=""
+    E2E_TRIGGER_FAILED_THIS_TICK=0
+    if ! _e_run_id="$(_trigger_workflow_with_retry "$E2E_WORKFLOW" --ref "$ROUND_BRANCH" "${e2e_args[@]}")"; then
+        E2E_TRIGGER_FAILED_THIS_TICK=1
+        # Run НЕ стартанул → bump_fail + check threshold.
+        _new_fail_count="$(e2e_run_state_bump_fail "$number" "" 2>/dev/null || echo '0')"
+        # Strip newline
+        _new_fail_count="$(printf '%s' "$_new_fail_count" | tr -d '[:space:]')"
+        [ -n "$_new_fail_count" ] || _new_fail_count=0
+        log "issue #${number}: e2e trigger FAILED (run NOT started), consecutive_fails=${_new_fail_count}/${E2E_CONSECUTIVE_FAIL_LIMIT} (ADR-0040 §2.2.2)"
+        if [ "$_new_fail_count" -ge "$E2E_CONSECUTIVE_FAIL_LIMIT" ]; then
+            # Threshold reached — terminal infra-fail. ADR-0040 Q4.
+            e2e_run_state_set_infra_fail "$number" 2>/dev/null || true
+            # Idempotent label add.
+            if ! gh label list --repo "$GH_REPO" --limit 200 2>/dev/null | grep -q "^${INFRA_FAIL_LABEL}[[:space:]]"; then
+                gh label create "$INFRA_FAIL_LABEL" --repo "$GH_REPO" --color "fbca04" \
+                    --description "e2e infra broken: trigger failed ${E2E_CONSECUTIVE_FAIL_LIMIT} times — manual override required" \
+                    >/dev/null 2>&1 || log "WARNING: failed to create label ${INFRA_FAIL_LABEL}"
+            fi
+            gh issue edit "$number" --repo "$GH_REPO" --add-label "$INFRA_FAIL_LABEL" --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+            gh issue comment "$number" --repo "$GH_REPO" --body "$(cat <<EOF
+agent-flow: 🛑 e2e infra-fail — run \`${E2E_WORKFLOW}\` НЕ стартанул ${E2E_CONSECUTIVE_FAIL_LIMIT} раз подряд (ADR-0040, issue #1831).
+
+Поставлена метка \`${INFRA_FAIL_LABEL}\` (terminal, ADR-0040 Q4), снята \`${NEEDS_E2E_LABEL}\` — issue больше НЕ в ротации.
+
+Что делать: проверить \`gh auth status\`, права репо (workflow_dispatch), quota GitHub Actions. Возможный repo perm change / expired CR_PAT / 429 от GitHub API.
+
+После починки — снять \`${INFRA_FAIL_LABEL}\` руками (Шифу) и заново поставить \`${NEEDS_E2E_LABEL}\` для следующего тика.
+
+Round-ветка \`${ROUND_BRANCH}\` НЕ использовалась для других issues в этом тике (помечена \`E2E_TRIGGER_FAILED_THIS_TICK=1\`).
+EOF
+)" >/dev/null 2>&1 || log "WARNING: failed to post infra-fail comment to issue #${number}"
+            log "issue #${number}: e2e:infra-fail SET (terminal, consecutive_fails=${_new_fail_count} >= ${E2E_CONSECUTIVE_FAIL_LIMIT})"
+            errored=$((errored+1))
+            continue
+        fi
+        # Не достигли порога — продолжаем тик. Round-ветка не для других
+        # issues (Q1): следующая issue пойдёт в отдельный round.
+        errored=$((errored+1))
+        continue
     fi
+    log "issue #${number}: e2e trigger resolved run_id='${_e_run_id}' (ADR-0040 §2.2.1)"
+    # Сохраняем в $run_id для дальнейшего использования (verdict loop ниже).
+    run_id="$_e_run_id"
 
     # --- wait for verdict (только СВЕЖИЙ run, createdAt >= момента триггера) ---
     log "issue #${number}: waiting verdict (timeout ${E2E_RUN_TIMEOUT}s)"
@@ -3427,6 +3984,47 @@ $(cat "$acc_file" 2>/dev/null || true)"
         log "issue #${number}: fail_kind=merged + verdict=${verdict} + explicit ${NEEDS_E2E_LABEL} override → переход в merged-override (ретро 19.08 t_b3691e1b, issue #1448)"
         fail_kind="merged-override"
     fi
+
+    # ADR-0040 §2.2.3: verdict handler — update run_state.json. Success →
+    # reset consecutive_fails=0 + last_run_id=run_id + last_attempt_at=now.
+    # Fail — leave counter (мы increment'или его на этапе trigger, если
+    # trigger совсем не сработал; на этапе verdict counter уже НЕ трогаем,
+    # потому что run реально стартанул и его fail — это verdict issue, а не
+    # infra-trigger fail). Однако, чтобы следующий re-test не получал
+    # «consecutive_fails=1» из старого trigger-fail, мы ОБНУЛЯЕМ counter
+    # на любом завершённом verdict (success ИЛИ fail_kind∈{merged,feature,
+    # merged-override,infra}). Это согласуется с ADR §2.2.3: counter
+    # сбрасывается на verdict, не только на success.
+    _verdict_now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [ -n "$run_id" ] && [[ "$run_id" =~ ^[0-9]+$ ]]; then
+        # Записываем last_run_id и last_attempt_at через python (state-машина).
+        if [ -n "$RUN_STATE_FILE" ]; then
+            E2E_RS_FP="$RUN_STATE_FILE" E2E_RS_NUM="$number" \
+            E2E_RS_RUNID="$run_id" E2E_RS_NOW="$_verdict_now" \
+            python3 -c '
+import json, os
+fp = os.environ["E2E_RS_FP"]; num = os.environ["E2E_RS_NUM"]
+run_id = os.environ["E2E_RS_RUNID"]; now = os.environ["E2E_RS_NOW"]
+try:
+    with open(fp) as fh:
+        data = json.load(fh)
+except Exception:
+    data = {"schema_version": 1, "issues": {}}
+data.setdefault("issues", {})
+prev = data["issues"].get(num, {})
+prev["last_run_id"] = run_id
+prev["last_attempt_at"] = now
+data["issues"][num] = prev
+tmp = fp + ".tmp." + str(os.getpid())
+with open(tmp, "w") as fh:
+    json.dump(data, fh, indent=2, sort_keys=True)
+os.replace(tmp, fp)
+' 2>/dev/null || log "WARNING: verdict handler: cannot update last_run_id in state"
+        fi
+    fi
+    # Reset counter для любого verdict (success ИЛИ fail_kind ≠ триггер-fail).
+    e2e_run_state_reset "$number" 2>/dev/null || true
+    log "issue #${number}: verdict='${verdict}' fail_kind='${fail_kind}' — run_state reset (consecutive_fails=0, ADR-0040 §2.2.3)"
 
     if [ "$verdict" = "success" ]; then
         label_action="add ${DONE_LABEL}"
@@ -3649,7 +4247,8 @@ sshpass -p open ssh ros2@10.1.1.21 'docker logs voice-assistant --since <ts> | g
         # ретро 10.08 (t_9caf5d52): при infra-FAIL / merged-PR карточку воркеру
         # НЕ создаём — воркеру нечего чинить (квота/робот/build или фикс уже в develop).
         # Определяем профиль воркера по меткам issue (agent:<role>)
-        _worker_assignee="default"
+        # Ретро 02.09 t_2bd2e7ea: default → devops fallback.
+        _worker_assignee="devops"
         for lbl in $(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
             case "$lbl" in
                 agent:backend)    _worker_assignee="backend"; break ;;

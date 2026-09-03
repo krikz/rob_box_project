@@ -35,6 +35,15 @@ from rob_box_voice.core.music_stack_validation import (
 from rob_box_voice.core.sc_only_custom_synthdefs import register_sc_only_custom_synthdefs
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+from ..core.arranger import (
+    FORMS,
+    VALID_ROOTS,
+    ArrangementError,
+    form_duration_seconds,
+    form_summary,
+    render,
+    spec_from_flat,
+)
 
 # ---------------------------------------------------------------------------
 # Safety filter — compiled once at import time
@@ -96,7 +105,15 @@ _ABSOLUTE_FREQ_RE = re.compile(
     r"\b(?:freq|frequency|hz|midinote|note)\s*=\s*(\d+(?:\.\d+)?)"
 )
 # Player creation lines: `p1 >> pluck([0,2,4], dur=0.5)` / `d1 >> play("x-o-")`
-_PLAYER_LINE_RE = re.compile(r"^\s*(\w+)\s*>>\s*(\w+)\s*\(([^)]*)\)", re.MULTILINE)
+#
+# 🔴 FIX (live 02.09): аргументы захватываются ДО КОНЦА СТРОКИ, а не до
+# первой закрывающей скобки. С `[^)]*` любая вложенная скобка обрывала
+# захват, и всё, что за ней, для валидатора не существовало. Аккорд пэда —
+# PGroup, то есть круглые скобки (`p3 >> warmpad((0, 2, 4), dur=4, ...)`):
+# захват обрывался на `(0, 2, 4)`, dur= в аргументы не попадал, и правило
+# «у каждого не-play плеера должен быть dur» ругалось на строку, где dur
+# есть. Та же слепота касалась inline `var(...)`/`Pvar(...)`.
+_PLAYER_LINE_RE = re.compile(r"^\s*(\w+)\s*>>\s*(\w+)\s*\((.*)\)\s*$", re.MULTILINE)
 # Developing patterns that break a static loop (issue #1016).
 _DEV_PATTERN_RE = re.compile(
     r"\.every\(|Pvar\(|pvar\(|linvar\(|var\(|Clock\.future|chop=|stutter|shuffle|reverse"
@@ -107,6 +124,22 @@ _DEV_PATTERN_RE = re.compile(
 _CHOP_RE = re.compile(r"\bchop\s*=\s*(?!0\b)")
 _SPACK_NONZERO_RE = re.compile(r"\bspack\s*=\s*[1-9]")
 
+# Issue #1804 — на роботе физически смонтированы только d1-d3/p1-p3.
+# Токен слева от ``>>`` в форме [dpsl]+цифра — это renardo-плеер; если он
+# вне допустимой шестёрки, код обязан переставить слой в свободный слот
+# (см. ``_remap_illegal_slots``), а не молча дать модели написать в d4/p5.
+_ALLOWED_PLAYER_SLOTS: Tuple[str, ...] = ("d1", "d2", "d3", "p1", "p2", "p3")
+_ALLOWED_PLAYER_SLOTS_SET: frozenset = frozenset(_ALLOWED_PLAYER_SLOTS)
+_PLAYER_ASSIGN_RE = re.compile(
+    r"^(?P<indent>[ \t]*)(?P<name>[dpsl]\d+)(?P<arrow>\s*>>\s*)(?P<synth>\w+)\s*\(",
+    re.MULTILINE,
+)
+
+# Issue #1803 — длина рисунка play("...") задаёт его период; если она не
+# делит такт, рисунок плывёт относительно соседних слоёв на каждом
+# повторе (см. ``_fix_pattern_length``).
+_PLAY_PATTERN_LEN_RE = re.compile(r"play\((\s*)(['\"])([^'\"]*)\2")
+
 
 # ---------------------------------------------------------------------------
 # MusicManager
@@ -116,6 +149,39 @@ _SPACK_NONZERO_RE = re.compile(r"\bspack\s*=\s*[1-9]")
 def _is_dunder(name: str) -> bool:
     """``True`` для ``__name__``-подобных имён (см. :meth:`MusicManager._filter_code_ast`)."""
     return name.startswith("__") and name.endswith("__")
+
+
+# 🔴 FIX (live 30.08): этот список ОБЯЗАН покрывать всю палитру,
+# которую промпт предлагает модели. Раньше он был отдельной копией и
+# разъехался: живой опрос scsynth показал, что 15 предлагаемых синтов
+# на сервере отсутствуют, и девять из них — arpy, pianovel, cs80lead,
+# supersawlead, dirt, moogbass, strangerpulsepad, rave, donk — не
+# покрывались ни прелоадом, ни досылкой отсюда. Модель выбирает такой
+# синт для мелодии, /s_new отбивается, и трек играет без темы: в
+# прогоне 30.08 это был supersawlead. Синты из списка досылались и
+# работали, так что механизм исправен — дырой был именно охват.
+#
+# Порядок: сначала палитра из master_prompt_compact.txt, затем то,
+# что палитра не рекламирует, но чем пользуется execute_music_code.
+CRITICAL_SYNTHS: tuple = (
+    # melody
+    "blip", "arpy", "pianovel", "epiano", "rhpiano", "karp", "sitar",
+    "marimba", "bell", "cs80lead", "supersawlead", "imperialbrass",
+    "strangerarp",
+    # bass
+    "dub", "wobblebass", "fuzz", "dirt", "subbass", "moogbass",
+    "retrobass",
+    # pads
+    "strings", "pads", "ambi", "space", "sinepad", "warmpad",
+    "strangerpulsepad",
+    # brass
+    "brass", "flute", "soprano", "eoboe", "organ", "strangerbrass",
+    # glitch
+    "rave", "donk", "varsaw", "pulse", "tb303",
+    # не в палитре, но используются напрямую
+    "bass", "gong", "pluck", "saw", "square", "faim", "viola",
+    "noise", "scatter", "orient", "creep", "play1", "play2",
+)
 
 
 class MusicManager:
@@ -150,6 +216,51 @@ class MusicManager:
     SC_PORT: int = 57110
 
     # ------------------------------------------------------------------
+    # Issue #1808 — слушатель ответов scsynth (/fail, /done)
+    # ------------------------------------------------------------------
+    # Renardo шлёт ноты в scsynth fire-and-forget и НИКОГДА не читает ответы
+    # (см. ``_attach_renardo_reply_listener`` ниже) — все отказы звукового
+    # тракта («SynthDef not found», «too many nodes», «Group N not found»)
+    # были видны только в логе контейнера ``supercollider`` (сам scsynth их
+    # печатает), куда никто не смотрит при разборе инцидентов.
+    #
+    # Таймаут ниже используется ТОЛЬКО в ``_send_osc_raw`` (наши собственные
+    # админ-сообщения — /g_new, /g_freeAll, /n_set мастер-фейдера): после
+    # sendto() кратко слушаем тот же сокет на предмет /fail. На УСПЕШНЫЙ
+    # /g_new или /n_set scsynth вообще ничего не шлёт в ответ — значит этот
+    # таймаут оплачивается ПОЛНОСТЬЮ на каждом успешном вызове. Держим его
+    # маленьким (заметно меньше уже существующей паузы 50ms между
+    # /g_freeAll и /g_new, issue #778) — на loopback ответ, если он будет,
+    # приходит за микросекунды, а лишние 30ms на нечастых admin-вызовах
+    # (пересоздание группы, смена мастер-гейна) незаметны на фоне музыки.
+    OSC_REPLY_TIMEOUT_SECONDS: float = 0.03
+
+    # ------------------------------------------------------------------
+    # Master limiter (docs/analysis/2026-08-30-music-quality-audit.md)
+    # ------------------------------------------------------------------
+    #: Node ID синта ``masterlimiter``, который ``foxdot_init.sc`` ставит в
+    #: хвост RootNode. Держится НИЖЕ 1000: renardo раздаёт ID начиная с 1001
+    #: и только вверх (``ServerManager.nextnodeID``), поэтому коллизии быть
+    #: не может, а ``/g_freeAll 1`` (Clock.clear / stop_all) чистит только
+    #: группу 1 и лимитер не трогает.
+    MASTER_LIMITER_NODE: int = 999
+    #: Уровень мастер-фейдера ПОСЛЕ лимитера. Именно он задаёт громкость
+    #: музыки относительно речи (issue #986), а не покомпонентные капы amp.
+    DEFAULT_MASTER_GAIN: float = 0.5
+    #: Class-level fallback-ы: ``__init__`` их перекрывает, но менеджер
+    #: конструируют и через ``MusicManager.__new__`` (тесты, восстановление
+    #: после частичной деградации). Без них ``execute_code`` падал бы с
+    #: AttributeError — тот же defensive-SSoT приём, что в #1395.
+    _master_gain: float = DEFAULT_MASTER_GAIN
+    _master_gain_applied: bool = False
+    #: Issue #1808 — сокет Renardo (``_rt.Server.client.socket``), к которому
+    #: подключён фоновый слушатель ответов scsynth. ``None`` пока слушатель
+    #: не подключён (или подключить не удалось — best-effort). Тот же
+    #: defensive-SSoT приём: тесты создают ``MusicManager`` через
+    #: ``__new__`` в обход ``__init__``.
+    _renardo_reply_sock: Optional[Any] = None
+
+    # ------------------------------------------------------------------
     # Issue #990 — segments safety-net contract
     # ------------------------------------------------------------------
     # The LLM must NOT pass duration_sec anymore (it cannot know the real
@@ -162,7 +273,22 @@ class MusicManager:
     #: Floor for the segments deadline (seconds). A tiny LLM guess (e.g.
     #: segments=2) must not cut a real song off after 2 seconds — the
     #: deadline is a TTS-hang backstop, not a song-length contract.
-    MIN_SEGMENTS_DEADLINE_SECONDS: float = 15.0
+    #:
+    #: 🔴 FIX (live 30.08, vision-pi 12:30): «сыграй короткий бит» →
+    #: ``segments=8`` при ``Clock.bpm=90`` = 21.3 s. Watchdog убил бит через
+    #: 20 s — то есть дедлайн, объявленный «предохранителем», на практике и
+    #: был длиной трека: TTS закончился на 11-й секунде, а музыка играла
+    #: одна ещё 7 секунд и оборвалась. Юзер в следующем ходе просил
+    #: «продолжай развивать бит», когда играть было уже нечему.
+    #:
+    #: Держим дедлайн предохранителем: пол поднят с 15 s до 60 s, а
+    #: посчитанная по ``segments`` длительность умножается на
+    #: ``SEGMENTS_DEADLINE_SAFETY_FACTOR``. Верхняя граница остаётся —
+    #: музыка по-прежнему не может играть вечно.
+    MIN_SEGMENTS_DEADLINE_SECONDS: float = 60.0
+    #: Во сколько раз дедлайн длиннее музыкальной длины, посчитанной по
+    #: ``segments``. Оценка LLM — ориентир, а не контракт.
+    SEGMENTS_DEADLINE_SAFETY_FACTOR: float = 2.0
     #: Upper bound for accepted segments (guard against absurd values).
     MAX_SEGMENTS: int = 512
     #: Backward-compat clamp for the deprecated ``duration_sec`` param
@@ -197,14 +323,26 @@ class MusicManager:
 
     def __init__(
         self,
-        max_amp: float = 0.7,
+        max_amp: float = 0.85,
         *,
+        master_gain: Optional[float] = None,
         critical_synths: Optional[List[str]] = None,
         require_healthy: Optional[bool] = None,
         sclang_log_path: Optional[str] = None,
     ) -> None:
-        #: максимальная амплитуда для любого паттерна (0.0-1.0)
+        #: Санитарный потолок амплитуды ОДНОГО слоя (0.0-1.0). Это НЕ
+        #: регулятор громкости: сумму держит ``masterlimiter`` в scsynth,
+        #: а уровень относительно речи — ``_master_gain``. Поэтому потолок
+        #: высокий: слоям снова можно быть разной громкости, иначе микс
+        #: получается плоским (RC1 в аудите).
         self._max_amp: float = max(0.0, min(1.0, max_amp))
+        #: Уровень мастер-фейдера лимитера.
+        self._master_gain: float = max(
+            0.0,
+            min(1.0, self.DEFAULT_MASTER_GAIN if master_gain is None else master_gain),
+        )
+        #: Отправлен ли ``/n_set`` с мастер-фейдером хотя бы раз.
+        self._master_gain_applied: bool = False
         #: pattern_name -> последний выполненный код
         self._pattern_history: Dict[str, str] = {}
         #: множество имён активных паттернов
@@ -221,6 +359,9 @@ class MusicManager:
         self._renardo_available: Optional[bool] = None
         #: Последняя ошибка инициализации renardo для диагностики
         self._renardo_last_error: Optional[str] = None
+        #: Issue #1808 — сокет Renardo, к которому подключён фоновый
+        #: слушатель ответов scsynth (см. ``_attach_renardo_reply_listener``).
+        self._renardo_reply_sock: Optional[Any] = None
         #: Music-stack health snapshot (from ``load_sclang_health``). When
         #: ``is_healthy is False``, ``execute_music_code`` / ``set_vibe_preset``
         #: short-circuit with a clear "music unavailable" error so the LLM
@@ -261,8 +402,13 @@ class MusicManager:
         # ``_MAX_TOOL_ITERATIONS=5`` is hit and the loop returns the last
         # spoken text without flushing stop_music.
         # ------------------------------------------------------------------
-        # default 5 min — overridable via MUSIC_AUTO_STOP_TTL_SECONDS env
-        default_ttl = 300
+        # Issue #1812 — 300s was too short for "listening to a track in
+        # silence", which is the normal use case, not an abandoned session.
+        # default 30 min — overridable via MUSIC_AUTO_STOP_TTL_SECONDS env
+        # (mcp_server.py also exposes this as ``_music_watchdog_idle_ttl_s``
+        # and passes it explicitly to ``auto_stop_idle_music``; this default
+        # only matters when nobody overrides it).
+        default_ttl = 1800
         try:
             env_ttl = int(os.environ.get("MUSIC_AUTO_STOP_TTL_SECONDS", str(default_ttl)))
             self._auto_stop_ttl_seconds: int = max(1, env_ttl)
@@ -280,6 +426,16 @@ class MusicManager:
         self._music_deadline_at: Optional[float] = None
         #: segments value that produced the deadline (diagnostics only).
         self._music_deadline_segments: Optional[int] = None
+        # Issue #1812 — form-end deadline for a non-repeating compose_music()
+        # track. Wall-clock monotonic timestamp after which the composition
+        # has naturally finished playing its one pass of the form. While
+        # ``time.monotonic() < self._music_form_deadline_at``, the idle-TTL
+        # watchdog must NOT auto-stop the track even if dialogue has been
+        # silent for longer than the TTL — silently listening to a track is
+        # the expected use, not an abandoned session. None = no active
+        # form-end protection (repeat=True composition, or raw
+        # execute_music_code — the idle TTL alone governs those).
+        self._music_form_deadline_at: Optional[float] = None
         # stats — surfaced via get_state() for the DialogCore safety-net
         self._auto_stop_count: int = 0
         # ------------------------------------------------------------------
@@ -368,6 +524,15 @@ class MusicManager:
             if not _rt.Server.booted:
                 _rt.Server.init_connection()
 
+            # 🔴 FIX (issue #1808): Renardo шлёт ноты в scsynth
+            # fire-and-forget и никогда не читает ответы — все отказы
+            # звукового тракта («SynthDef X not found», «too many nodes»,
+            # «Group N not found») уходили только в лог контейнера
+            # supercollider, куда никто не смотрит при разборе (см.
+            # docstring ``_attach_renardo_reply_listener``). Best-effort,
+            # ничего не ломает при неудаче.
+            self._attach_renardo_reply_listener(_rt)
+
             # Создаём Group 1 в scsynth — renardo отправляет все ноты в эту группу.
             # Без неё scsynth возвращает "Group 1 not found" на каждый /s_new.
             self._send_osc_raw("/g_new", 1, 0, 0)
@@ -437,14 +602,7 @@ class MusicManager:
         import struct as _struct
         import time as _time
 
-        _CRITICAL_SYNTHS = (
-            "pads", "bass", "bell", "blip", "fuzz", "gong", "karp",
-            "dub", "pluck", "space", "epiano", "saw", "varsaw", "square",
-            "ambi", "faim", "marimba", "sitar", "viola", "noise",
-            "scatter", "orient", "creep",
-            "strings", "wobblebass", "brass", "organ", "tb303",
-            "play1", "play2",
-        )
+        _CRITICAL_SYNTHS = CRITICAL_SYNTHS
 
         def _probe_missing(names):
             """Return subset of names whose SynthDef is absent in scsynth."""
@@ -550,6 +708,182 @@ class MusicManager:
         import sys as _sys
         _sys.stderr.write(f"{message}\n")
         _sys.stderr.flush()
+
+    # ------------------------------------------------------------------
+    # Issue #1808 — слушатель ответов scsynth (/fail, /done)
+    # ------------------------------------------------------------------
+    #
+    # РЕШЕНИЕ (обоснование выбора «только логировать», см. issue #1808):
+    #
+    # У scsynth-трафика два независимых источника:
+    #   (а) наши собственные админ-команды — ``_send_osc_raw`` (создание
+    #       Group 1, /g_freeAll+/g_new при Clock.clear(), /n_set мастер-
+    #       фейдера) — синхронные, отправляются и завершаются внутри
+    #       одного вызова Python;
+    #   (б) реальные ноты, которые Renardo шлёт из своего Clock-потока —
+    #       АСИНХРОННО, зачастую на следующий бит ПОСЛЕ того, как
+    #       ``execute_code``/``compose_music`` уже вернул «успешно».
+    #
+    # Для (б) нет способа синхронно привязать ответ scsynth к конкретному
+    # вызову тула — только эвристика по времени, а именно её юзер попросил
+    # не городить («привязывать по времени осторожно, ложные срабатывания
+    # хуже молчания»). Один /fail может относиться к вызову N, а прийти
+    # уже во время обработки вызова N+1 — риск обвинить не тот tool-call.
+    #
+    # Поэтому оба источника (а) и (б) только ЛОГИРУЮТСЯ в лог ноды
+    # mcp_server (тот же ``_log_warning``, что и остальные диагностические
+    # сообщения в этом файле — попадает в ``docker logs voice-assistant``).
+    # Возврат в результат ``execute_music_code``/``compose_music`` — заявлен
+    # в issue как ценное развитие, оставлен как отдельный follow-up, когда
+    # появится безопасный способ привязки без ложных срабатываний.
+
+    def _attach_renardo_reply_listener(self, _rt: Any) -> None:
+        """Повесить фоновый слушатель на СОБСТВЕННЫЙ сокет Renardo (best-effort).
+
+        Renardo (``renardo.sc_backend.server_manager.ServerManager``) держит
+        ОДИН долгоживущий UDP-сокет для всех сообщений к scsynth
+        (``Server.client.socket``, законнекченный на 127.0.0.1:57110) и
+        никогда его не читает — ``OSCClient.send()`` только ``sendall()``,
+        ни одного ``recv`` во всём классе. Значит ответы scsynth на РЕАЛЬНЫЕ
+        ноты («SynthDef blip not found», «/s_new too many nodes», «Group N
+        not found» — именно те три бага, что стоили нам двух дней отладки)
+        сейчас просто лежат непрочитанными в приёмном буфере этого сокета.
+
+        Мы ничего не меняем в отправке (Renardo продолжает слать как
+        раньше) и только ЧИТАЕМ из ТОГО ЖЕ сокета в отдельном потоке —
+        recv() и send() на законнекченном UDP-сокете независимы друг от
+        друга, гонки с Renardo нет (он этот сокет не читает вовсе).
+
+        Полностью best-effort и не бросает исключений наружу: если версия
+        Renardo другая и объектный граф не совпадает (``Server``/``client``/
+        ``socket`` переименованы или отсутствуют), просто не получаем этот
+        источник и остаёмся с логированием только ``_send_osc_raw`` —
+        никогда не роняем инициализацию музыки и никогда не выдумываем
+        логи (нечего слушать = тишина, а не ложное срабатывание).
+        """
+        try:
+            server = getattr(_rt, "Server", None)
+            client = getattr(server, "client", None)
+            sock = getattr(client, "socket", None)
+            if not isinstance(sock, socket.socket):
+                return
+            if sock is self._renardo_reply_sock:
+                return  # уже слушаем этот же сокет (повторный _ensure_renardo_available)
+            self._renardo_reply_sock = sock
+            thread = threading.Thread(
+                target=self._renardo_reply_listener_loop,
+                args=(sock,),
+                name="scsynth-reply-listener",
+                daemon=True,
+            )
+            thread.start()
+        except Exception:  # noqa: BLE001 — best-effort, не мешаем инициализации
+            pass
+
+    def _renardo_reply_listener_loop(self, sock: "socket.socket") -> None:
+        """Фоновый цикл: блокирующий recv на сокете Renardo, лог каждого /fail.
+
+        Сокет Renardo обычно блокирующий (без ``settimeout``) — поток тихо
+        спит между ответами, CPU не тратит. Если сокет закроют (например,
+        Renardo пересоздаст ``Server.client`` при повторной инициализации),
+        ``recvfrom`` бросит ``OSError`` — поток завершается сам, без шума.
+        """
+        while True:
+            try:
+                data, _addr = sock.recvfrom(4096)
+            except OSError:
+                return
+            except Exception:  # noqa: BLE001 — единичный кривой пакет не должен убивать поток
+                continue
+            try:
+                self._log_osc_reply(data)
+            except Exception:  # noqa: BLE001
+                continue
+
+    def _log_scsynth_reply_if_any(self, sock: "socket.socket") -> None:
+        """После собственного ``sendto`` кратко послушать тот же сокет на /fail.
+
+        Таймаут короткий (``OSC_REPLY_TIMEOUT_SECONDS``) — см. обоснование
+        у объявления константы. Полностью best-effort: таймаут/любая ошибка
+        чтения — это НОРМА (большинство успешных admin-команд scsynth не
+        подтверждает вовсе), а не повод помешать вызывающему коду.
+        """
+        try:
+            sock.settimeout(self.OSC_REPLY_TIMEOUT_SECONDS)
+            data, _addr = sock.recvfrom(4096)
+        except Exception:  # noqa: BLE001 — таймаут = scsynth принял молча (норма)
+            return
+        try:
+            self._log_osc_reply(data)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _log_osc_reply(self, data: bytes) -> None:
+        """Разобрать ответ scsynth; залогировать, если это ``/fail``.
+
+        Полный OSC-парсер не нужен — только различить ``/fail`` (реальный
+        отказ, ту самую строку из логов supercollider, которую раньше
+        никто не видел) от остального (``/done``, ``/synced`` и т.п. —
+        штатные подтверждения, шум для лога ошибок).
+        """
+        address, rest = self._split_osc_address(data)
+        if address != "/fail":
+            return
+        args = self._decode_osc_args(rest)
+        detail = " ".join(str(a) for a in args) if args else rest.decode("utf-8", "replace")
+        self._log_warning(f"🔴 [scsynth] FAILURE IN SERVER: {detail}")
+
+    @staticmethod
+    def _split_osc_address(data: bytes) -> Tuple[Optional[str], bytes]:
+        """Извлечь OSC-адрес из пакета; вернуть (адрес, остаток-с-выравниванием)."""
+        if not data or data[0:1] != b"/":
+            return None, b""
+        end = data.find(b"\x00")
+        if end == -1:
+            return None, b""
+        address = data[:end].decode("ascii", "replace")
+        consumed = end + 1
+        while consumed % 4:
+            consumed += 1
+        return address, data[consumed:]
+
+    @staticmethod
+    def _decode_osc_args(rest: bytes) -> List[Any]:
+        """Разобрать OSC type-tag строку (``,ssif``...) и аргументы за ней."""
+        if not rest or rest[0:1] != b",":
+            return []
+        end = rest.find(b"\x00")
+        if end == -1:
+            return []
+        tags = rest[1:end].decode("ascii", "replace")
+        offset = end + 1
+        while offset % 4:
+            offset += 1
+        args: List[Any] = []
+        for tag in tags:
+            if tag == "i":
+                if offset + 4 > len(rest):
+                    break
+                args.append(struct.unpack(">i", rest[offset:offset + 4])[0])
+                offset += 4
+            elif tag == "f":
+                if offset + 4 > len(rest):
+                    break
+                args.append(struct.unpack(">f", rest[offset:offset + 4])[0])
+                offset += 4
+            elif tag == "s":
+                str_end = rest.find(b"\x00", offset)
+                if str_end == -1:
+                    break
+                args.append(rest[offset:str_end].decode("utf-8", "replace"))
+                offset = str_end + 1
+                while offset % 4:
+                    offset += 1
+            else:
+                # blob (b) и прочие типы не разбираем — для лога достаточно
+                # того, что уже накопили; останавливаемся, а не падаем.
+                break
+        return args
 
     def _ensure_renardo_available(self) -> bool:
         """Retry Renardo initialization when a previous startup attempt failed.
@@ -660,7 +994,12 @@ class MusicManager:
         """Отправить raw OSC сообщение на scsynth (UDP 57110).
 
         OSC-packet собирается вручную: 4-byte aligned address + type-tag +
-        big-endian args. Поддерживает int (``i``) и float (``f``) аргументы.
+        big-endian args. Поддерживает int (``i``), float (``f``) и
+        string (``s``) аргументы. Строки нужны для ``/n_set <node>
+        <control-name> <value>`` (мастер-фейдер лимитера): имя контрола
+        обязано ехать как ``s``, иначе scsynth читает первые 4 байта имени
+        как int32 и молча игнорирует установку — ровно та же ловушка, что
+        описана в ``_verify_and_retry_synthdefs`` про ``"amp"``.
 
         Выделено как self-метод вместо замыкания, чтобы можно было
         переиспользовать из ``execute_music_code`` / ``stop_all`` без
@@ -676,23 +1015,74 @@ class MusicManager:
         condition без изменения семантики (свободные ноды умирают
         сами, мы просто даём scsynth обработать free до пересоздания
         Group).
+
+        🔴 FIX (issue #1808): раньше сокет закрывался сразу после
+        ``sendto`` (``with`` выходил из блока) — если scsynth отвечал
+        ``/fail`` (например «Group 1 not found»), ответ прилетал уже на
+        закрытый сокет и терялся молча. Теперь перед закрытием кратко
+        слушаем этот же сокет (``_log_scsynth_reply_if_any``) — см.
+        обоснование таймаута у ``OSC_REPLY_TIMEOUT_SECONDS``.
         """
         msg = bytearray()
         addr_bytes = address.encode() + b"\x00"
         while len(addr_bytes) % 4:
             addr_bytes += b"\x00"
-        types = b"," + b"".join(b"i" if isinstance(a, int) else b"f" for a in args) + b"\x00"
+
+        def _tag(value: Any) -> bytes:
+            if isinstance(value, str):
+                return b"s"
+            # bool is a subclass of int — проверяем int после str, как раньше.
+            return b"i" if isinstance(value, int) else b"f"
+
+        types = b"," + b"".join(_tag(a) for a in args) + b"\x00"
         while len(types) % 4:
             types += b"\x00"
         msg.extend(addr_bytes)
         msg.extend(types)
         for a in args:
-            if isinstance(a, int):
+            if isinstance(a, str):
+                blob = a.encode() + b"\x00"
+                while len(blob) % 4:
+                    blob += b"\x00"
+                msg.extend(blob)
+            elif isinstance(a, int):
                 msg.extend(struct.pack(">i", a))
             elif isinstance(a, float):
                 msg.extend(struct.pack(">f", a))
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.sendto(bytes(msg), (self.SC_HOST, self.SC_PORT))
+            # Issue #1808 — см. docstring выше и обоснование у
+            # OSC_REPLY_TIMEOUT_SECONDS. Best-effort, никогда не бросает.
+            self._log_scsynth_reply_if_any(sock)
+
+    # ------------------------------------------------------------------
+    # Master limiter fader
+    # ------------------------------------------------------------------
+
+    def set_master_gain(self, gain: float) -> float:
+        """Задать уровень мастер-фейдера ``masterlimiter`` в scsynth.
+
+        Это единственная ручка громкости музыки относительно речи
+        (issue #986). Внутренняя динамика микса при этом сохраняется —
+        в отличие от старого способа «зарезать amp каждого слоя до 0.42»,
+        который выравнивал слои и делал микс плоским.
+
+        Синт ``masterlimiter`` сглаживает изменение через ``Lag.kr``, так
+        что смена уровня на лету не даёт щелчка. Если синта нет (сборка без
+        обновлённого ``foxdot_init.sc``), scsynth просто залогирует
+        ``/n_set Node not found`` — музыка продолжит играть без фейдера.
+
+        Returns:
+            Применённое (клэмпнутое) значение.
+        """
+        self._master_gain = max(0.0, min(1.0, float(gain)))
+        try:
+            self._send_osc_raw(
+                "/n_set", self.MASTER_LIMITER_NODE, "gain", self._master_gain
+            )
+        except OSError as exc:  # UDP-сокет недоступен — не роняем музыку
+            self._log_warning(f"master gain not applied: {exc}")
+        return self._master_gain
 
     # ------------------------------------------------------------------
     # Code safety filter
@@ -847,6 +1237,156 @@ class MusicManager:
 
         return errors, warnings
 
+    # ------------------------------------------------------------------
+    # Issue #1804 — d4+/p4+ не звучат на роботе, кода-стражи не было
+    # ------------------------------------------------------------------
+
+    def _remap_illegal_slots(self, code: str) -> Tuple[str, Optional[str]]:
+        """Переставить d4+/p4+/s*/l* в свободный d1-d3/p1-p3 (issue #1804).
+
+        🔴 FIX (live 31.08, «в траве сидел кузнечик»): модель написала
+
+            p1 >> blip([0,2,4,7,9,7,4,2], dur=0.25, amp=0.4)
+            p2 >> dub([0,0,0,-2], dur=0.5, oct=3, amp=0.35)
+            p3 >> play("X..X..X.", amp=0.25)
+            p4 >> play("..o...o.", amp=0.2)     ← не звучит
+
+        Малый барабан пропал без единой ошибки в логах — на роботе physически
+        подключены только d1-d3/p1-p3, а p4/d4+ существуют в самом Renardo
+        и потому `execute_code` их молча принимал. В промпте это записано
+        прямым текстом ("Stay within d1-d3 and p1-p3"), но маленькие модели
+        такие правила регулярно нарушают — играть в угадайку с промптом
+        больше нельзя, слой должен либо спастись, либо честно провалиться.
+
+        Правило переназначения: play(...) — это обычно барабаны/перкуссия
+        → предпочитаем d-слот; любой другой синт (мелодия/бас/пэд) →
+        предпочитаем p-слот. Так совпадает с разводкой ролей в
+        ``core/arranger.ROLE_PROFILE``. Если предпочитаемая категория уже
+        занята — пробуем вторую перед тем, как сдаться. Один и тот же
+        недопустимый токен (например, второе упоминание ``p4``) всегда
+        переезжает в один и тот же новый слот, чтобы не расщепить один
+        логический слой на два разных плеера.
+
+        Returns:
+            ``(код, None)`` если всё поместилось в 6 слотов, либо
+            ``(исходный_код, сообщение_об_ошибке)`` если слотов не хватило
+            — исходный код НЕ должен уходить в Renardo в этом случае.
+        """
+        occupied: set = {
+            m.group("name")
+            for m in _PLAYER_ASSIGN_RE.finditer(code)
+            if m.group("name") in _ALLOWED_PLAYER_SLOTS_SET
+        }
+        remapped: Dict[str, str] = {}
+        errors: List[str] = []
+
+        def _remap(m: re.Match) -> str:
+            name = m.group("name")
+            synth = m.group("synth")
+            if name in _ALLOWED_PLAYER_SLOTS_SET:
+                return m.group(0)
+            if name in remapped:
+                new_name = remapped[name]
+            else:
+                preferred = (
+                    _ALLOWED_PLAYER_SLOTS
+                    if synth == "play"
+                    else _ALLOWED_PLAYER_SLOTS[3:] + _ALLOWED_PLAYER_SLOTS[:3]
+                )
+                free = next((slot for slot in preferred if slot not in occupied), None)
+                if free is None:
+                    errors.append(
+                        f"'{name} >> {synth}(...)' вне d1-d3/p1-p3, а все "
+                        "6 слотов уже заняты — слой некуда переставить. "
+                        "Убери один из существующих слоёв или объедини "
+                        "паттерны."
+                    )
+                    return m.group(0)
+                occupied.add(free)
+                remapped[name] = free
+                new_name = free
+            return f"{m.group('indent')}{new_name}{m.group('arrow')}{synth}("
+
+        fixed_code = _PLAYER_ASSIGN_RE.sub(_remap, code)
+        if errors:
+            return code, "⛔ Недопустимые слоты плееров: " + " ".join(errors)
+        return fixed_code, None
+
+    # ------------------------------------------------------------------
+    # Issue #1803 — рисунок play(...), который не делит такт, плывёт
+    # ------------------------------------------------------------------
+
+    def _fix_pattern_length(self, code: str) -> str:
+        """Достроить рисунок play("...") до степени двойки (issue #1803).
+
+        🔴 FIX (живые прогоны 30-31.08, четыре трека подряд): модель писала
+        рисунки, чья длина не делит такт —
+
+            d1 >> play("X..X.o...")   9 шагов
+            d2 >> play("=..=...=")    8 шагов
+
+        9 не кратно 8: уже со второго повтора d1 и d2 расходятся по фазе
+        друг с другом, и грув «плывёт» — это особенно слышно в жанрах,
+        где сетка обязана стоять намертво (диско, метал). Модель символы
+        не считает и считать не научится — длина приводится к ближайшей
+        СВЕРХУ степени двойки. Округление вверх, а не вниз: степень
+        двойки всегда кратна всем меньшим степеням двойки, поэтому
+        дополненный рисунок остаётся в фазе с любым другим рисунком той
+        же природы, а округление вниз обрезало бы последний удар модели.
+
+        🔴 FIX (ревью после первого прохода): добивка ставилась символом
+        ``-``. Это НЕ пауза в FoxDot/Renardo — ``-`` маппится на реальный
+        сэмпл (``"hyphen"``, ``renardo_gatherer/collections.py``) и лежит
+        в каждом сэмпл-паке (``samples/0_foxdot_default/_/hyphen``), т.е.
+        это звучащий хэт. Семь ``-`` на конце девятишагового рисунка
+        добавляли модели семь ударов, которых она не писала — грув менялся
+        сильнее, чем исходное уползание по фазе, которое чинил этот метод.
+        Настоящая пауза — ``.`` (для неё сэмпл-каталога нет ни в одном
+        паке); ею и добиваем.
+        """
+
+        def _pow2_at_least(value: int) -> int:
+            target = 1
+            while target < value:
+                target *= 2
+            return target
+
+        def _pad(m: re.Match) -> str:
+            ws, quote, pattern = m.group(1), m.group(2), m.group(3)
+            if len(pattern) <= 1:
+                return m.group(0)
+
+            # 🔴 FIX (live 01.09): сначала снять ХВОСТОВЫЕ ПАУЗЫ, потом
+            # округлять. Иначе типовой промах модели удваивал такт:
+            # 'X..o.X.o.' (9) → 'X..o.X.o........' (16). Девятый символ —
+            # пауза; отбросив её, получаем ровно 8, готовый грув нужной
+            # плотности. Добивка же растягивала такт вдвое, бочка начинала
+            # бить в половину задуманного темпа, а вторую половину такта
+            # занимала тишина — то есть лекарство от уползания по фазе
+            # портило грув сильнее самой болезни.
+            #
+            # Паузы снимаем ПООДИНОЧКЕ, до первой же степени двойки. Все
+            # подряд снимать нельзя: 'X.....' — это «бочка раз в шесть
+            # шагов», обрезка до 'X' заставила бы её бить на каждом шаге.
+            trimmed = pattern
+            while (
+                len(trimmed) > 1
+                and _pow2_at_least(len(trimmed)) != len(trimmed)
+                and trimmed[-1] == "."
+            ):
+                trimmed = trimmed[:-1]
+
+            target = _pow2_at_least(len(trimmed))
+            if target == len(trimmed):
+                if trimmed == pattern:
+                    return m.group(0)
+                return f"play({ws}{quote}{trimmed}{quote}"
+
+            padded = trimmed + "." * (target - len(trimmed))
+            return f"play({ws}{quote}{padded}{quote}"
+
+        return _PLAY_PATTERN_LEN_RE.sub(_pad, code)
+
     def _cap_amp(self, code: str) -> str:
         """Ограничить громкость/октаву в коде до безопасных пределов.
 
@@ -856,10 +1396,31 @@ class MusicManager:
         - ``amp=1``                 → ``amp=0.7``
         - ``amplify=var([1,0.3])``  → ``amplify=var([0.7,0.3])``
         - ``amplify=0.8``           → ``amplify=0.7``
-        - ``oct=5``                 → ``oct=4`` (макс 4 — oct=5 очень резкое/громкое)
+        - ``oct=9``                 → ``oct=6`` (санитарный потолок)
+
+        Октавный потолок (RC2 в docs/analysis/2026-08-30-music-quality-audit.md):
+        раньше здесь стояло ``max_oct = 4`` с обоснованием «oct=5 очень
+        резкое/громкое» (issue #1000). Резкость oct=5 — это алиасинг на
+        16 kHz, а не громкость. Кап до 4 при этом схлопывал бас (oct=3) и
+        лид в соседние октавы: аранжировка без регистрового разделения на
+        слух и есть «одна мелодия, которая повторяется».
+
+        🔴 FIX (live 31.08): потолок был поднят до 6 в расчёте на то, что
+        алиасинг срежет LPF внутри ``masterlimiter``. Лимитер снят (он
+        выдавал NaN и глушил весь выход), и расчёт вместе с ним рухнул.
+        Живой прогон: модель написала ``bell(..., oct=7)``, кап опустил до
+        6 — и робот засвистел. Обертоны колокола на шестой октаве лежат
+        выше Найквиста (8 kHz) и зеркалятся обратно негармоничным визгом;
+        ``fuzz(drive=0.6)`` и ``play(rate=1.2)`` в том же коде добавляли
+        своих.
+
+        Потолок 5 покрывает регистры аранжировщика целиком (бас 3, пэд 4,
+        мелодия 5) — режется только то, что модель пишет от руки выше них.
+        Вернуть 6 можно, когда на мастер-шине снова будет анти-алиасинговый
+        фильтр — но уже с защитой от NaN.
         """
         max_amp = self._max_amp
-        max_oct = 4  # oct=5 и выше слишком резкое/громкое (issue #1000)
+        max_oct = 5
 
         # 1. Сначала P[...] паттерны (более специфичный случай)
         def _cap_p(m: re.Match) -> str:
@@ -925,9 +1486,38 @@ class MusicManager:
         guess cannot cut a real song off prematurely.
         """
         bar_duration_s = self.BEATS_PER_BAR * 60.0 / max(1.0, float(bpm))
-        timeout_s = max(segments * bar_duration_s, self.MIN_SEGMENTS_DEADLINE_SECONDS)
+        timeout_s = max(
+            segments * bar_duration_s * self.SEGMENTS_DEADLINE_SAFETY_FACTOR,
+            self.MIN_SEGMENTS_DEADLINE_SECONDS,
+        )
         self._music_deadline_at = time.monotonic() + timeout_s
         self._music_deadline_segments = int(segments)
+
+    # ------------------------------------------------------------------
+    # Issue #1812 — form-end deadline for non-repeating compose_music()
+    # ------------------------------------------------------------------
+
+    def set_form_deadline(self, duration_seconds: float) -> None:
+        """Записать момент, когда доиграет одна форма ``repeat=False``.
+
+        Вызывается из ``ComposeMusicTool`` сразу после успешного
+        ``execute_code`` для трека без зацикливания: длительность формы
+        известна заранее (сумма тактов формы в битах / темп), и до её
+        истечения watchdog не должен считать молчание диалога простоем.
+        """
+        self._music_form_deadline_at = time.monotonic() + max(0.0, float(duration_seconds))
+
+    def clear_form_deadline(self) -> None:
+        """Снять защиту «форма ещё не доиграла» (issue #1812).
+
+        Вызывается автоматически из ``execute_code`` в начале каждого
+        успешного выполнения (новый код заменяет то, что играло — старая
+        форма больше не актуальна) и из ``stop_all`` (музыка остановлена
+        явно — защищать больше нечего). ``ComposeMusicTool`` включает
+        защиту заново через :meth:`set_form_deadline`, если новый трек тоже
+        ``repeat=False``.
+        """
+        self._music_form_deadline_at = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -985,6 +1575,14 @@ class MusicManager:
                 "code": code,
             }
 
+        # Issue #1804 — d4+/p4+ физически не звучат на роботе. Переставляем
+        # слой в свободный d1-d3/p1-p3; если свободных слотов не осталось —
+        # честная ошибка вместо тихо потерянного слоя (см. #1804 и
+        # ``_remap_illegal_slots`` выше).
+        code, slot_error = self._remap_illegal_slots(code)
+        if slot_error:
+            return {"success": False, "error": slot_error, "code": code}
+
         # 🔴 FIX (live 11:41 «цоканье»): автозамена pianovel/piano → rhpiano
         # (обе используют MdaPiano физмодель — цокает/щёлкает; rhpiano —
         # компилируемый и чистый). LLM продолжает писать pianovel несмотря
@@ -994,6 +1592,11 @@ class MusicManager:
             code = code.replace("pianovel", "rhpiano")
         # piano заменяем только если это отдельное слово (не rhpiano, pianovel и т.д.)
         code = re.sub(r"(?<![a-zA-Z])piano(?![a-zA-Z])", "rhpiano", code)
+
+        # Issue #1803 — рисунок play(...), чья длина не делит такт, плывёт
+        # относительно соседних слоёв на каждом повторе (см.
+        # ``_fix_pattern_length`` выше).
+        code = self._fix_pattern_length(code)
 
         # Ограничиваем amp до максимально допустимого значения
         code = self._cap_amp(code)
@@ -1118,6 +1721,14 @@ class MusicManager:
             except Exception:
                 pass
 
+        # Мастер-фейдер применяем лениво, на первом успешном выполнении:
+        # ``foxdot_init.sc`` ставит синт ``masterlimiter`` через ~5 с после
+        # старта sclang, а MusicManager конструируется раньше — отправка из
+        # __init__ пришла бы в несуществующую ноду.
+        if not self._master_gain_applied:
+            self._master_gain_applied = True
+            self.set_master_gain(self._master_gain)
+
         if pattern_name:
             self._pattern_history[pattern_name] = code
             self._active_patterns.add(pattern_name)
@@ -1130,6 +1741,11 @@ class MusicManager:
         self._last_music_activity_at = now
         if self._music_session_active_since is None:
             self._music_session_active_since = now
+        # Issue #1812 — fresh code replaces whatever was playing, so any
+        # earlier form-end protection no longer applies. ComposeMusicTool
+        # re-arms it right below via set_form_deadline() when the new
+        # composition is non-repeating.
+        self.clear_form_deadline()
 
         # Issue #1016 — quality warnings surfaced to the LLM so it can fix
         # them on the next call (e.g. add dur=, add a developing pattern).
@@ -1160,8 +1776,18 @@ class MusicManager:
                 return
             for match in _PLAY_SYMBOLS_RE.finditer(code):
                 for symbol in match.group(1):
-                    # "-" — пауза (rest), пробел — разделитель; сэмплов нет.
-                    if symbol.isspace() or symbol == "-":
+                    # 🔴 FIX (issue #1815): раньше тут пропускался и "-", с
+                    # комментарием "пауза (rest)" — НЕВЕРНО. "-" звучащий
+                    # сэмпл (renardo_gatherer/collections.py:27 маппит его
+                    # на каталог "hyphen", он есть в 0_foxdot_default/_/ и
+                    # в 1_pitchglitch_samples/_/ на роботе). Настоящая пауза
+                    # — "." (для неё каталога нет ни в одном сэмпл-паке).
+                    # "-" — САМЫЙ ходовой символ хэтов (`play("--.-")` почти
+                    # в каждом треке), то есть функция не прогревала буфер
+                    # именно там, где щелчок/xrun наиболее вероятен — ровно
+                    # тот риск, ради которого её и писали. Пробел — просто
+                    # разделитель форматирования паттерна, сэмплов не несёт.
+                    if symbol.isspace() or symbol == ".":
                         continue
                     try:
                         samples.getBufferFromSymbol(symbol, 0)
@@ -1368,6 +1994,9 @@ class MusicManager:
         # music is no longer playing, so there is nothing to backstop.
         self._music_deadline_at = None
         self._music_deadline_segments = None
+        # Issue #1812 — a stop also cancels the form-end deadline: there is
+        # no composition left to protect from the idle watchdog.
+        self.clear_form_deadline()
         # Reset session only when the *whole* session is over so a partial
         # ``stop_pattern``-then-restart sequence doesn't lose the timer
         # (issue #935 — keeps audit trail of when music was active).
@@ -1555,20 +2184,35 @@ class MusicManager:
                 self._music_deadline_at = None
                 self._music_deadline_segments = None
                 return result
+            segments_for_log = self._music_deadline_segments
             stop_result = self.stop_all()
             result["stopped"] = True
             result["stop_reason"] = "segments_deadline"
+            result["deadline_segments"] = segments_for_log
             result["stop_result"] = stop_result
             self._auto_stop_count += 1
             result["auto_stop_count"] = self._auto_stop_count
             return result
         if idle < ttl:
             return result
+        # Issue #1812 — a non-repeating compose_music() track has a
+        # computable finite length (form bars * beats-per-bar / bpm).
+        # Listening to it in silence is the expected use, not an abandoned
+        # dialogue session, so the idle TTL alone must not cut it off
+        # before its one pass of the form has actually finished playing.
+        # Only gates the *idle_ttl* stop below — the segments_deadline
+        # emergency stop above (hung TTS) still takes priority.
+        form_deadline = self._music_form_deadline_at
+        if form_deadline is not None and now_m < form_deadline:
+            result["held_reason"] = "form_not_finished"
+            result["form_deadline_remaining_s"] = form_deadline - now_m
+            return result
         # Auto-stop — call the existing stop_all() so the closure logic
         # (3-stage clean: per-player stop + Clock.clear() + /g_freeAll)
         # is reused as-is.
         stop_result = self.stop_all()
         result["stopped"] = True
+        result["stop_reason"] = "idle_ttl"
         result["stop_result"] = stop_result
         self._auto_stop_count += 1
         result["auto_stop_count"] = self._auto_stop_count
@@ -1716,6 +2360,384 @@ class ExecuteMusicCodeTool(MCPTool):
             self.log_warning(f"Не удалось опубликовать music_state: {exc}")
 
 
+class ComposeMusicTool(MCPTool):
+    """Сыграть трек С ФОРМОЙ: модель даёт материал, аранжировщик — развитие.
+
+    Отличие от ``execute_music_code``: тот выполняет готовый код и играет
+    его неизменно до остановки (отсюда жалоба «однотипная мелодия, которая
+    повторяется»). Здесь модель описывает только материал, а секции,
+    вступление и уход слоёв, брейк и кульминацию строит
+    :mod:`rob_box_mcp_tools.core.arranger`.
+
+    См. docs/analysis/2026-08-30-music-quality-audit.md (RC4).
+    """
+
+    #: Поля, по которым сет слышится «одним треком», если они не меняются.
+    #: Возвращаются модели в ответе тула — см. :meth:`_repeat_warning`.
+    _IDENTITY_FIELDS = (
+        "root", "scale", "bpm", "progression", "lead_notes", "lead_synth",
+        "bass_synth", "drums", "drums_sample", "hats_sample", "form",
+    )
+
+    def __init__(self, node, manager: MusicManager) -> None:
+        super().__init__(node)
+        self._manager = manager
+        #: Плоские параметры предыдущего успешного вызова. Нужны только для
+        #: обратной связи модели: она не видит своих прошлых tool-вызовов
+        #: настолько подробно, чтобы заметить, что третий трек подряд идёт
+        #: в ля миноре с тем же движением тоники.
+        self._last_flat: Dict[str, Any] = {}
+
+    @staticmethod
+    def _fmt(value: Any) -> str:
+        return str(value).replace(" ", "") if value is not None else "—"
+
+    def _repeat_warning(self, flat: Dict[str, Any]) -> str:
+        """Назвать поля, совпавшие с предыдущим треком.
+
+        Живой лог робота за 30 часов: 56% вызовов пришли с одним и тем же
+        ``progression``, 53% — с одним ``drums_sample``, 70% — в minor или
+        phrygian. Модель не видит эту статистику по своей истории, поэтому
+        тул показывает ей ровно то, что она только что повторила.
+        """
+        prev = self._last_flat
+        if not prev:
+            return ""
+        same = [
+            f"{k}={self._fmt(flat.get(k))}"
+            for k in self._IDENTITY_FIELDS
+            if flat.get(k) is not None
+            and self._fmt(flat.get(k)) == self._fmt(prev.get(k))
+        ]
+        if len(same) < 3:
+            return ""
+        return (
+            " ⚠️ Совпало с предыдущим треком: " + ", ".join(same) +
+            ". Следующий трек делай на другом материале, иначе сет "
+            "слышится как один длинный трек."
+        )
+
+    @property
+    def name(self) -> str:
+        return "compose_music"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Сыграть музыкальную композицию С РАЗВИТИЕМ (вступление, "
+            "нарастание, кульминация, брейк, финал). Ты описываешь только "
+            "МАТЕРИАЛ — темп, тональность, лад и по несколько нот для баса, "
+            "мелодии и подклада; форму и то, когда какой слой вступает и "
+            "уходит, система строит сама. Используй ЭТОТ инструмент для "
+            "любой просьбы сыграть музыку, трек, бит или сет. "
+            "execute_music_code нужен только для точного воспроизведения "
+            "известной мелодии по нотам."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="bpm",
+                type="number",
+                description="Темп, 60-180. Медленное и лиричное 70-95, "
+                "грув 100-120, танцевальное 124-140.",
+                required=True,
+            ),
+            MCPToolParameter(
+                name="root",
+                type="string",
+                description="Тоника: C, D, E, F, G, A, B (можно с #).",
+                required=True,
+                enum=list(VALID_ROOTS),
+                enum_strict=False,
+            ),
+            MCPToolParameter(
+                name="scale",
+                type="string",
+                description="Лад: minor, major, dorian, mixolydian, lydian, "
+                "phrygian, majorPentatonic, harmonicMinor.",
+                required=True,
+            ),
+            MCPToolParameter(
+                name="form",
+                type="string",
+                description=(
+                    "Форма композиции. "
+                    "arc — универсальная дуга; "
+                    "verse_chorus — куплет-припев; "
+                    "buildup — клубная с дропом; "
+                    "ambient — без ударных, для спокойного и лиричного."
+                ),
+                required=False,
+                enum=sorted(FORMS),
+                enum_strict=False,
+            ),
+            MCPToolParameter(
+                name="drums",
+                type="string",
+                description="Паттерн бочки/малого одной строкой: X — бочка, "
+                "o — малый, n — перкуссия, точка — пауза. Длина 4, 8 или 16 "
+                "знаков. Рисунок сочиняй под жанр (ровная четверть, бэкбит, "
+                "брейкбит, синкопа) — не переноси один и тот же из трека в "
+                "трек. Пропусти для музыки без ударных.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="drums_sample",
+                type="integer",
+                description="Индекс сэмпла ударных. В паке НЕ пять "
+                "вариантов: на X их 43, на o — 58, на n — 56. Индекс "
+                "заворачивается по модулю, поэтому безопасно любое число "
+                "0-40. Раньше здесь было написано «0-4», и робот полгода "
+                "играл пятью бочками из сорока трёх. Бери из всего "
+                "диапазона и меняй между треками; search_samples покажет, "
+                "что именно лежит по индексу.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="hats",
+                type="string",
+                description="Паттерн хэтов: дефис — удар, точка — пауза. "
+                "Длина 4, 8 или 16 знаков. Плотность хэтов — половина "
+                "жанра: ровные шестнадцатые, скупые восьмые и синкопа "
+                "звучат по-разному на одном и том же бите.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="hats_sample",
+                type="integer",
+                description="Индекс сэмпла хэтов. Для символа '-' в паке "
+                "10 вариантов (0-9), индекс заворачивается по модулю. "
+                "Раньше был прибит к 3, потом описан как «0-4» — хэты во "
+                "всех треках звучали одинаково. Меняй между треками.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="perc",
+                type="string",
+                description="Паттерн перкуссии — третий ударный слой поверх "
+                "бочки и хэтов: n — удар, точка — пауза, длина 4, 8 или 16 "
+                "знаков. Форма отводит ему место в кульминации; без него "
+                "плотные секции пустее.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="perc_sample",
+                type="integer",
+                description="Индекс сэмпла перкуссии. Для символа 'n' в "
+                "паке 56 вариантов, индекс заворачивается по модулю — "
+                "безопасно любое число 0-40, а не «0-4».",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="bass_synth",
+                type="string",
+                description="Синт баса: dub, wobblebass, fuzz, bass, jbass, "
+                "retrobass, tb303, moogbass.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="bass_notes",
+                type="string",
+                description="Ступени лада для баса через запятую, 2-5 "
+                "чисел (отрицательные — вниз от тоники). Бас держит "
+                "гармонию: он должен согласоваться с progression, а не "
+                "повторять мотив лида.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="lead_synth",
+                type="string",
+                description="Синт мелодии: blip, arpy, supersawlead, karp, "
+                "sitar, marimba, bell, cs80lead, pluck, keys.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="lead_notes",
+                type="string",
+                description="Ступени лада для мелодии через запятую, 4-8 "
+                "чисел. Это МОТИВ, а не гамма: нужен скачок и ответ на "
+                "него, а не пробег по соседним ступеням вверх-вниз. "
+                "Сочиняй под тему и жанр каждого трека заново.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="pad_synth",
+                type="string",
+                description="Синт подклада: warmpad, pads, strings, ambi, "
+                "space, sinepad, viola.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="pad_notes",
+                type="string",
+                description="Аккорд подклада — 3-4 ступени лада через "
+                "запятую. Трезвучие тоники (терция + квинта) — самый "
+                "нейтральный вариант; секста, септима и обращения дают "
+                "трекам разный цвет.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="progression",
+                type="string",
+                description="Движение тоники по ступеням лада — 3-4 "
+                "числа через запятую, по одному на секцию формы. Даёт "
+                "гармоническое развитие, с ним трек заметно живее. "
+                "Выбирай движение под жанр и настроение конкретного "
+                "трека: в живом логе 56% вызовов пришли с ОДНОЙ и той же "
+                "последовательностью, скопированной из этого описания, — "
+                "именно поэтому сет звучал как один трек. Пропусти для "
+                "статичной гармонии.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="repeat",
+                type="boolean",
+                description="true — форма зацикливается БЕСКОНЕЧНО, до "
+                "явного stop_music (диджей-сет, фон под долгую речь). "
+                "false (по умолчанию) — трек доигрывает одну форму и "
+                "заканчивается сам. Ставь true ТОЛЬКО когда музыка должна "
+                "звучать неопределённо долго: на обычную просьбу «сыграй "
+                "что-нибудь» зацикленный трек играет часами и юзеру "
+                "приходится просить остановить.",
+                required=False,
+            ),
+            MCPToolParameter(
+                name="swing",
+                type="number",
+                description="Свинг восьмых, 0-0.3. 0 (по умолчанию) — ровная "
+                "сетка, подходит большинству жанров. Ставь 0.1-0.2 для "
+                "джаза, блюза, свинга, шафла, фанка — на ровных восьмых "
+                "они не звучат как жанр независимо от инструментов.",
+                required=False,
+            ),
+        ]
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(
+        self,
+        bpm: float,
+        root: str,
+        scale: str,
+        form: Optional[str] = None,
+        drums: Optional[str] = None,
+        drums_sample: int = 0,
+        hats_sample: int = 3,
+        perc: Optional[str] = None,
+        perc_sample: int = 0,
+        hats: Optional[str] = None,
+        bass_synth: Optional[str] = None,
+        bass_notes: Optional[str] = None,
+        lead_synth: Optional[str] = None,
+        lead_notes: Optional[str] = None,
+        pad_synth: Optional[str] = None,
+        pad_notes: Optional[str] = None,
+        progression: Optional[str] = None,
+        repeat: bool = False,
+        swing: float = 0.0,
+    ) -> MCPToolResult:
+        try:
+            spec = spec_from_flat(
+                bpm=bpm,
+                root=root,
+                scale=scale,
+                form=form or "arc",
+                drums=drums,
+                drums_sample=drums_sample,
+                hats_sample=hats_sample,
+                perc=perc,
+                perc_sample=perc_sample,
+                hats=hats,
+                bass_synth=bass_synth,
+                bass_notes=bass_notes,
+                lead_synth=lead_synth,
+                lead_notes=lead_notes,
+                pad_synth=pad_synth,
+                pad_notes=pad_notes,
+                progression=progression,
+                repeat=repeat,
+                swing=swing,
+            )
+            code = render(spec)
+        except ArrangementError as exc:
+            # Сообщение аранжировщика написано так, чтобы модель могла
+            # исправиться следующим вызовом, а не гадать.
+            return MCPToolResult(success=False, error=str(exc))
+
+        self.log_info(f"Композиция: {form_summary(spec.form)}")
+        result = self._manager.execute_code(code, pattern_name="composition")
+        if not result["success"]:
+            return MCPToolResult(success=False, error=result["error"])
+
+        # Issue #1812 — a non-repeating track has a computable finite
+        # length; arm the watchdog's form-end protection so idle dialogue
+        # (the normal "listening in silence" case) can't cut it off before
+        # its one pass of the form has actually played out. A looping track
+        # (repeat=True) has no natural end, so the idle TTL alone governs
+        # it — make sure no stale deadline from a previous track lingers.
+        if spec.repeat:
+            self._manager.clear_form_deadline()
+        else:
+            self._manager.set_form_deadline(form_duration_seconds(spec.form, spec.bpm))
+
+        self._notify_music_state()
+        result["form"] = form_summary(spec.form)
+        # Issue #1811 follow-up (live 02.09): диджей ставил
+        # next_transition_sec=45, а форма играет 96-190 секунд — дроп и
+        # кульминация не звучали НИ РАЗУ за 30 часов лога. Длительность
+        # считается ровно той же арифметикой, что и Clock.future в render(),
+        # поэтому её можно просто отдать модели.
+        duration_s = form_duration_seconds(spec.form, spec.bpm)
+        result["duration_seconds"] = round(duration_s, 1)
+        flat = {
+            "bpm": bpm, "root": root, "scale": scale, "form": form or "arc",
+            "drums": drums, "drums_sample": drums_sample,
+            "hats_sample": hats_sample, "bass_synth": bass_synth,
+            "lead_synth": lead_synth, "lead_notes": lead_notes,
+            "progression": progression,
+        }
+        repeat_warning = self._repeat_warning(flat)
+        self._last_flat = flat
+        # Явный стоп-сигнал в сообщении, а не только в промпте: live 30.08
+        # модель вызвала compose_music и следом execute_music_code со своим
+        # кодом. Любой музыкальный вызов начинается с Clock.clear(), поэтому
+        # второй вызов стирает только что построенную аранжировку — трёх-
+        # минутная композиция превращается в четырёхтактовый луп.
+        return MCPToolResult(
+            success=True,
+            data=result,
+            message=(
+                f"Играю композицию: {form_summary(spec.form)}. "
+                f"Полная форма звучит {duration_s:.0f} секунд — столько же "
+                "ставь в next_transition_sec, если это DJ-переход: "
+                "переключение раньше срезает кульминацию, и все треки "
+                "сета слышатся как одинаковые вступления. "
+                "Музыка уже звучит — НЕ вызывай execute_music_code после "
+                "этого, иначе аранжировка будет стёрта." + repeat_warning
+            ),
+        )
+
+    def _notify_music_state(self) -> None:
+        """Опубликовать /voice/music/state (issue 989 Fix C)."""
+        if self.node is None:
+            return
+        publisher = getattr(self.node, "publish_music_state", None)
+        if publisher is None:
+            return
+        try:
+            publisher()
+        except Exception as exc:  # noqa: BLE001
+            self.log_warning(f"Не удалось опубликовать music_state: {exc}")
+
+
 class StopMusicTool(MCPTool):
     """Остановить музыкальный паттерн по имени или всю музыку сразу."""
 
@@ -1805,7 +2827,20 @@ class StopMusicTool(MCPTool):
             self.log_warning(f"Не удалось опубликовать music_state: {exc}")
 
     def _notify_sound_stop(self) -> None:
-        """Остановить mp3-трек в sound_node + сбросить состояние (issue #1392)."""
+        """Остановить mp3-трек в sound_node + сбросить состояние (issue #1392).
+
+        Одна точка правды — ``McpServerNode.stop_generated_track_playback``:
+        те же два топика нужны ещё и ``music_cleanup``, и watchdog'у, а
+        раньше их публиковал только этот тул, из-за чего mp3 переживал и
+        конец диалога, и авто-стоп (live 30.08).
+        """
+        delegate = getattr(self.node, "stop_generated_track_playback", None)
+        if callable(delegate):
+            try:
+                delegate()
+                return
+            except Exception as exc:  # noqa: BLE001
+                self.log_warning(f"stop_generated_track_playback упал: {exc}")
         try:
             from std_msgs.msg import String
 
@@ -1985,9 +3020,42 @@ class TrackLibrary:
     # Helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _slug(name: str) -> str:
-        return re.sub(r"[^a-z0-9_]", "_", name.lower().strip())
+    #: Кириллица → латиница для ``_slug``.
+    #:
+    #: 🔴 FIX (live 30.08, vision-pi): старый ``_slug`` заменял КАЖДЫЙ
+    #: не-ASCII символ на «_», поэтому любое русское имя превращалось в
+    #: строку подчёркиваний той же длины. В живой медиатеке лежит
+    #: ``('________________', 'комната_мудрости')``, а «тисбит» и «мурка»
+    #: столкнулись бы в один slug, будь они одной длины. Юзер просил
+    #: «сохрани как трек тисбит» — LLM, зная про это, каждый раз сама
+    #: придумывала латинский slug и придумывала РАЗНЫЙ: в базе лежат
+    #: ``tisbeat``, ``tisbit``, ``thisbit``, ``tinbit`` — четыре записи
+    #: одного трека, и ни одну из них не находит «удали трек тисбит».
+    _TRANSLIT: dict = {
+        "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e",
+        "ё": "e", "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k",
+        "л": "l", "м": "m", "н": "n", "о": "o", "п": "p", "р": "r",
+        "с": "s", "т": "t", "у": "u", "ф": "f", "х": "h", "ц": "ts",
+        "ч": "ch", "ш": "sh", "щ": "sch", "ъ": "", "ы": "y", "ь": "",
+        "э": "e", "ю": "yu", "я": "ya",
+    }
+
+    @classmethod
+    def _slug(cls, name: str) -> str:
+        """Имя трека → стабильный ASCII-slug.
+
+        Кириллица транслитерируется, всё остальное не-ASCII схлопывается
+        в «_», повторные «_» склеиваются. «тисбит» → ``tisbit`` при любом
+        регистре, поэтому «сохрани как тисбит» и «удали трек тисбит»
+        попадают в одну запись.
+        """
+        lowered = (name or "").lower().strip()
+        translit = "".join(cls._TRANSLIT.get(ch, ch) for ch in lowered)
+        slug = re.sub(r"[^a-z0-9_]", "_", translit)
+        # Схлопываем подряд идущие «_», чтобы «комната мудрости» не
+        # превращалась в частокол и чтобы slug оставался читаемым.
+        slug = re.sub(r"_+", "_", slug).strip("_")
+        return slug
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row, include_code: bool = True) -> Dict[str, Any]:
@@ -2179,7 +3247,17 @@ class SaveTrackTool(MCPTool):
             MCPToolParameter(
                 name="name",
                 type="string",
-                description="Уникальное имя-идентификатор трека (slug, например: 'csm_chill_v2')",
+                description=(
+                    "Имя трека — передавай РОВНО ТО СЛОВО, которым его назвал "
+                    "пользователь, включая русское («тисбит», «мурка»). "
+                    "Библиотека сама транслитерирует и нормализует его в slug, "
+                    "так что «Тисбит», «ТисБит» и «тисбит» попадут в ОДНУ "
+                    "запись, и «удали трек тисбит» её найдёт. "
+                    "❌ НЕ придумывай свою латинскую транскрипцию: живой лог "
+                    "30.08 — один и тот же «тисбит» лёг в базу четырьмя "
+                    "записями (tisbeat, tisbit, thisbit, tinbit), и удалить "
+                    "его стало нечем."
+                ),
                 required=True,
             ),
             MCPToolParameter(
@@ -2465,6 +3543,12 @@ class SearchSamplesTool(MCPTool):
     def __init__(self, node, samples_path: Optional[str] = None) -> None:
         super().__init__(node)
         self._samples_path = Path(samples_path or _SEARCH_SAMPLES_DEFAULT_PATH)
+        #: Счётчик поворота окна результатов. Раньше поиск всегда отдавал
+        #: алфавитно первые совпадения, поэтому ``search_samples("kick")``
+        #: возвращал один и тот же ответ при каждом вызове и LLM выбирала
+        #: одни и те же сэмплы во всех генерациях — не потому что «хотела»,
+        #: а потому что остальной коллекции для неё не существовало.
+        self._rotation: int = 0
 
     @property
     def name(self) -> str:
@@ -2529,7 +3613,10 @@ class SearchSamplesTool(MCPTool):
         """Search samples by keyword."""
         from rob_box_voice.core.sample_search import search_renardo_samples
 
-        result = search_renardo_samples(self._samples_path, query, pack, case)
+        result = search_renardo_samples(
+            self._samples_path, query, pack, case, rotate=self._rotation
+        )
+        self._rotation += 1
 
         if "error" in result:
             hint = result.get("hint", "")
@@ -2567,13 +3654,17 @@ class SearchSamplesTool(MCPTool):
         self.log_info(
             f"[search_samples] query={query!r} pack={pack} → {found} results"
         )
+        # Показываем реальный размер коллекции, а не размер окна: «найдено
+        # 30» при двухстах доступных заставляет LLM считать набор бедным и
+        # переиспользовать первое попавшееся.
+        total = result.get("total_found", found)
         play_codes = [r["play_code"] for r in results_list[:5]]
-        suffix = f" ... и ещё {found - 5}" if found > 5 else ""
+        suffix = f" ... и ещё {total - len(play_codes)}" if total > len(play_codes) else ""
         return MCPToolResult(
             success=True,
             data=result,
             message=(
-                f"Найдено {found} сэмплов по запросу '{query}': "
+                f"Найдено {total} сэмплов по запросу '{query}': "
                 + ", ".join(play_codes)
                 + suffix
             ),

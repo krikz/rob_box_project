@@ -35,13 +35,6 @@ DIALOGUE_NODE = (
 # Whitelist: эти модули МОЖНО импортировать лениво (justified optional).
 # Каждый — ДОЛЖЕН быть обёрнут в try/except (или иметь комментарий-обоснование).
 LAZY_WHITELIST = frozenset({
-    # Skill-классы (top-level try/except, optional features)
-    "rob_box_voice.skills.music_skill",
-    "rob_box_voice.skills.faq_skill",
-    "rob_box_voice.skills.web_search_skill",
-    "rob_box_voice.skills.navigation_skill",
-    "rob_box_voice.skills.memory_skill",
-    "rob_box_voice.skills.status_skill",
     # ament_index_python — ROS runtime only, не объявлен в package.xml как
     # <exec_depend> нашему пакету; оставлен lazy, чтобы dev-юниты без
     # ROS2 не падали. Используется в try/except с probe-fallback.

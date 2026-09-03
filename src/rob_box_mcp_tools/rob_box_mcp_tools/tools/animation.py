@@ -13,40 +13,16 @@ if TYPE_CHECKING:
     from std_msgs.msg import String
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+from ..animations import KNOWN_ANIMATIONS, normalize_animation
 
 
 class PlayAnimationTool(MCPTool):
     """Инструмент для запуска LED анимации."""
 
-    # Доступные анимации
-    AVAILABLE_ANIMATIONS = [
-        "idle",
-        "happy",
-        "sad",
-        "angry",
-        "surprised",
-        "thinking",
-        "victory",
-        "wakeup",
-        "sleep",
-        "talking",
-        "error",
-        "low_battery",
-        "charging",
-        # 🔴 FIX (live 17:20): MiniMax M3 систематически шлёт "excited" —
-        # он в общем LLM-словаре эмоций, но тут его не было → валидация
-        # падала каждый раз. "excited" маппим на "happy" (та же эмоция).
-        "excited",
-        # Дорожные
-        "police_lights",
-        "ambulance",
-        "fire_truck",
-        "road_service",
-        "turn_left",
-        "turn_right",
-        "accelerating",
-        "braking",
-    ]
+    #: Kept as a class attribute for backwards compatibility; the list
+    #: itself lives in :mod:`rob_box_mcp_tools.animations` so ``speak_text``
+    #: and ``play_animation`` cannot disagree about what the matrix can show.
+    AVAILABLE_ANIMATIONS = list(KNOWN_ANIMATIONS)
 
     def __init__(self, node):
         super().__init__(node)
@@ -104,18 +80,19 @@ class PlayAnimationTool(MCPTool):
         """Запустить анимацию."""
         self.log_info(f"Запуск анимации: {animation}, длительность: {duration}s")
 
-        if animation not in self.AVAILABLE_ANIMATIONS:
+        # Псевдонимы (``excited`` от MiniMax M3, русские названия) приводятся
+        # к реальному имени манифеста общей картой — раньше здесь был
+        # одиночный ``if animation == "excited"``, из-за чего каждое новое
+        # слово из эмоционального словаря модели приходилось добавлять сюда
+        # руками, отдельно от такой же карты в ``speak_text``.
+        resolved = normalize_animation(animation, fallback="")
+        if not resolved:
             return MCPToolResult(
                 success=False,
                 error=f"Неизвестная анимация: {animation}",
-                message=f"Доступные: {', '.join(self.AVAILABLE_ANIMATIONS)}",
+                message=f"Доступные: {', '.join(KNOWN_ANIMATIONS)}",
             )
-
-        # 🔴 FIX (live 17:20): MiniMax M3 шлёт "excited" — его НЕТ на
-        # стороне робота (animation_player знает только happy и др.).
-        # Маппим на happy, чтобы и валидация прошла, и робот понял.
-        if animation == "excited":
-            animation = "happy"
+        animation = resolved
 
         # Валидация длительности - если вне диапазона, устанавливаем минимальную
         if duration is not None:

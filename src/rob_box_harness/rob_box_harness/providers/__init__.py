@@ -34,8 +34,17 @@ from rob_box_harness.providers.deepseek import (
     DEFAULT_MODEL as DEEPSEEK_DEFAULT_MODEL,
     DeepSeekProvider,
     HarnessDeepSeekProvider,
-    RetryPolicy,
     build_deepseek_provider,
+)
+# Одна ретрай-политика на весь харнес — и на LLM-, и на TTS-половину.
+# Раньше её брали отсюда (копия deepseek), а tts/__init__ — из minimax:
+# два разных класса под одним именем (карточка W6-1).
+from rob_box_harness.providers.retry import RetryPolicy
+from rob_box_harness.providers.catalog import (
+    LLM_PROVIDER_REGISTRY,
+    build_provider,
+    known_provider_names,
+    resolve_api_key,
 )
 from rob_box_harness.providers.dummy import DummyLLMProvider
 from rob_box_harness.providers.fake_llm import HarnessFakeLLMProvider
@@ -61,6 +70,11 @@ from rob_box_harness.providers.minimax import (
 
 __all__ = [
     "DummyLLMProvider",
+    # Well-known provider table (shared with dialogue_node)
+    "LLM_PROVIDER_REGISTRY",
+    "build_provider",
+    "known_provider_names",
+    "resolve_api_key",
     "HarnessFakeLLMProvider",
     # MiniMax (harness-side)
     "MiniMaxProvider",

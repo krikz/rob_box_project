@@ -29,7 +29,7 @@ the upstream provider:
 
 The class is async-end-to-end (``asyncio``) and exposes the canonical
 ``name = "minimax"`` so the harness registry's fallback chain
-(``[minimax, deepseek, mimo]``) can pick it by name.
+(``[deepseek, minimax, mimo]``) can pick it by name.
 
 The actual HTTP transport is delegated to the OpenAI SDK that
 :class:`rob_box_llm.providers.minimax.MiniMaxProvider` wraps, so a
@@ -45,8 +45,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import random
-from dataclasses import dataclass, asdict
+from dataclasses import asdict
 from typing import Any, AsyncIterator, Iterable, Mapping
 
 from openai import AsyncOpenAI
@@ -54,6 +53,11 @@ from openai import AsyncOpenAI
 from rob_box_harness.config import LLMConfig
 from rob_box_harness.errors import ConfigError
 from rob_box_harness.health import is_quota_exhausted
+# Ретрай-политика — одна на харнес (providers/retry.py). Раньше здесь
+# лежала своя копия класса, дословно совпадавшая с копией в deepseek.py,
+# но БУДУЧИ другим объектом (карточка W6-1). Имя оставлено в модуле:
+# по нему ходят tts/minimax_tts.py и тесты.
+from rob_box_harness.providers.retry import RetryPolicy
 
 # Re-export the upstream provider + helpers so callers can ``from
 # rob_box_harness.providers.minimax import MiniMaxProvider`` exactly
@@ -117,65 +121,6 @@ _log = logging.getLogger(__name__)
 #: never as a YAML literal. ``build_minimax_provider`` reads this var
 #: when no explicit ``api_key=`` is supplied.
 MINIMAX_API_KEY_ENV: str = "MINIMAX_API_KEY"
-
-
-# ---------------------------------------------------------------------------
-# Retry policy
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class RetryPolicy:
-    """Retry behaviour for transient MiniMax failures.
-
-    Only transient errors (``RateLimitError`` / ``TimeoutError``) are
-    retried. ``AuthError`` / ``ContentFilterError`` /
-    ``CapabilityUnavailableError`` always propagate immediately —
-    retrying them only hides a real bug.
-
-    ``max_attempts`` is the upper bound including the initial call.
-    ``max_attempts=1`` disables retries (the initial call still
-    happens). ``backoff_base`` is the first retry delay in seconds;
-    each subsequent delay is ``backoff_base * 2 ** (attempt - 1)``
-    plus a uniform random jitter in ``[0, backoff_jitter)`` to avoid
-    thundering herds. Wait times are therefore bounded by
-    ``sum(backoff_base * 2 ** i for i in range(max_attempts - 1))``
-    plus jitter.
-    """
-
-    max_attempts: int = 3
-    backoff_base: float = 0.5
-    backoff_jitter: float = 0.25
-
-    def __post_init__(self) -> None:
-        if self.max_attempts < 1:
-            raise ValueError(
-                f"RetryPolicy.max_attempts must be >= 1; got {self.max_attempts}"
-            )
-        if self.backoff_base < 0:
-            raise ValueError(
-                f"RetryPolicy.backoff_base must be >= 0; got {self.backoff_base}"
-            )
-        if self.backoff_jitter < 0:
-            raise ValueError(
-                f"RetryPolicy.backoff_jitter must be >= 0; got {self.backoff_jitter}"
-            )
-
-    def delay_for(self, attempt: int) -> float:
-        """Return the sleep duration before retry ``attempt`` (1-based).
-
-        ``attempt=1`` is the first retry (after the initial call).
-        Returns 0.0 when ``attempt`` is out of range — callers should
-        never invoke ``delay_for`` past ``max_attempts - 1``.
-        """
-        if attempt < 1:
-            return 0.0
-        base: float = self.backoff_base * (2 ** (attempt - 1))
-        jitter: float = 0.0
-        if self.backoff_jitter:
-            jitter = float(random.uniform(0.0, self.backoff_jitter))
-        return base + jitter
-
 
 
 # ---------------------------------------------------------------------------

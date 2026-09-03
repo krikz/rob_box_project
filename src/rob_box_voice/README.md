@@ -103,7 +103,7 @@ source install/setup.bash
 Для максимальной автономности и минимальной зависимости от интернета:
 
 ```yaml
-# config/voice_assistant.yaml
+# config/stt_node.yaml
 
 stt_node:
   provider: "vosk"  # Основной: быстрый, offline
@@ -145,9 +145,14 @@ dialogue_node:
 
 ### Основные параметры
 
-Файл `config/voice_assistant.yaml`:
+Каждая нода читает свой файл — `config/<node>.yaml` (ADR-0004,
+issue #1004). Монолитного `voice_assistant.yaml` нет: вложенные
+секции `<node>:` в общем файле превращались в dotted-параметры
+`dialogue_node.llm_provider`, которых `get_parameter("llm_provider")`
+не находил, и нода молча работала на дефолтах.
 
 ```yaml
+# config/audio_node.yaml
 audio_node:
   sample_rate: 16000
   channels: 1
@@ -432,7 +437,10 @@ rob_box_voice/
 │       ├── llm_client.py       # DeepSeek API client
 │       └── cache_manager.py    # Кэширование TTS
 ├── config/
-│   ├── voice_assistant.yaml    # Основные параметры
+│   ├── audio_node.yaml         # По файлу на ноду (ADR-0004)
+│   ├── dialogue_node.yaml
+│   ├── stt_node.yaml
+│   ├── tts_node.yaml           # ... и так далее
 │   └── secrets.yaml.example    # Шаблон для API ключей
 ├── launch/
 │   └── voice_assistant.launch.py

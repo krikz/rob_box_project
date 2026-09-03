@@ -221,7 +221,20 @@ while IFS= read -r line; do
 done < <(echo "$SC_OUT" | grep -E 'SC[0-9]+' || true)
 assert_eq "$SC_ERR_COUNT" "0" "shellcheck has no errors (only allowed warnings)"
 
-HELPERS=(has_label to_epoch last_reopen_at stale_labeled_at \
+# has_label с 30.08 живёт в lib_agent_flow_common.sh (дедуп: четыре копии,
+# два разных контракта — CSV здесь, JSON в deploy-sweep). Проверяем не
+# локальное определение, а то, что скрипт подключает библиотеку и та даёт
+# функцию.
+LIB_COMMON="$(cd "$(dirname "$SCRIPT_UNDER_TEST")" && pwd)/lib_agent_flow_common.sh"
+if grep -q 'lib_agent_flow_common\.sh' "$SCRIPT_UNDER_TEST" \
+   && grep -qE '^has_label\(\)' "$LIB_COMMON"; then
+  PASS=$((PASS+1)); echo "  ✓ has_label() из lib_agent_flow_common.sh"
+else
+  FAIL=$((FAIL+1)); FAILED_CASES+=("missing has_label() (lib)")
+  echo "  ✗ has_label(): библиотека не подключена или не содержит функцию"
+fi
+
+HELPERS=(to_epoch last_reopen_at stale_labeled_at \
          has_recent_marker_comment now_minus_h_iso)
 for fn in "${HELPERS[@]}"; do
   if grep -qE "^${fn}\(\)|^function ${fn} " "$SCRIPT_UNDER_TEST"; then
@@ -507,6 +520,196 @@ if echo "$T10_OUT" | grep -q "GH_REPO must be set"; then
   echo "  ✗ T10: скрипт упал с 'GH_REPO must be set' (HOME-fallback не сработал)"
 else
   PASS=$((PASS+1)); echo "  ✓ T10: скрипт НЕ падает с 'GH_REPO must be set' (HOME-fallback OK)"
+fi
+
+# ----------------------------------------------------------------------------
+# T11: gh CLI --reason для close должен быть "not planned" (с пробелом),
+#      а не "not_planned". Ретро t_e198c3f3: при "not_planned" close падает
+#      с "invalid argument", метка stale-candidate снимается, issue остаётся
+#      OPEN — бесконечный retry-loop с errored+=1 на каждом тике.
+#
+# Подход: скрипт с реальным вызовом (НЕ dry-run) и мок-gh, который:
+#   - принимает `--reason "not planned"` (с пробелом) → возвращает 0
+#   - принимает `--reason not_planned` (подчёркивание) → возвращает 1
+# имитируя реальный gh CLI.
+# ----------------------------------------------------------------------------
+echo
+echo "--- T11: close --reason 'not planned' (с пробелом) — регресс t_e198c3f3 ---"
+T11_RUNNER="$WORK_DIR/run_t11.sh"
+cat > "$T11_RUNNER" <<EOF
+#!/bin/bash
+set -o pipefail
+export UNLABELED_SWEEP_TEST_MODE=1
+export STALE_HOURS_1='0'   # age не важно — у нас уже есть stale-candidate метка
+export STALE_HOURS_2='0'   # close сработает сразу
+export DRY_RUN='false'     # РЕАЛЬНЫЙ путь — чтобы close вызвался
+export LOCK_FILE='/tmp/test-unlabeled-sweep-t11.lock'
+export SWEEP_LIMIT=10
+export GH_REPO='krikz/rob_box_project'
+
+# Мок gh: возвращает issue с stale-candidate (50h ago), timeline с labeled
+# event (30h ago), и проверяет --reason для close.
+#   - --reason "not planned"  (с пробелом) → return 0 (OK)
+#   - --reason not_planned   (подчёркивание) → return 1 (gh CLI reject)
+gh() {
+  local cmd="\$1"
+  case "\$cmd" in
+    issue)
+      local subcmd="\$2"
+      case "\$subcmd" in
+        list)
+          printf '[{"number":9001,"title":"T11 fixture","updatedAt":"$(date -u -d '50 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)","createdAt":"2026-01-01T00:00:00Z","labels":[{"name":"stale-candidate"}]}]'
+          return 0 ;;
+        view) return 0 ;;
+        edit) return 0 ;;
+        comment) return 0 ;;
+        close)
+          # Парсим --reason и значение
+          local prev=""
+          for arg in "\$@"; do
+            if [ "\$prev" = "--reason" ]; then
+              case "\$arg" in
+                "not planned") return 0 ;;
+                "not_planned")
+                  printf 'invalid argument "not_planned" for "-r, --reason" flag\n' >&2
+                  return 1 ;;
+                *)
+                  printf 'unknown reason: %s\n' "\$arg" >&2
+                  return 1 ;;
+              esac
+            fi
+            prev="\$arg"
+          done
+          # --reason не передан
+          return 1 ;;
+      esac
+      return 0 ;;
+    api)
+      local path="\$2"
+      case "\$path" in
+        repos/*\/*/issues/*\/*)
+          case "\$path" in
+            *timeline*)
+              printf '[{"event":"labeled","label":{"name":"stale-candidate"},"created_at":"$(date -u -d '30 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"}]'
+              return 0 ;;
+            *comments*)
+              printf '[]'
+              return 0 ;;
+          esac
+          printf '[]'
+          return 0 ;;
+      esac
+      printf '[]'
+      return 0 ;;
+  esac
+  return 1
+}
+export -f gh
+
+bash '${SCRIPT_UNDER_TEST}'
+EOF
+chmod +x "$T11_RUNNER"
+T11_OUT=$(bash "$T11_RUNNER" 2>&1 || true)
+
+# Скрипт не должен errored'ить: ожидаем "closed=1" в summary
+if echo "$T11_OUT" | grep -qE 'tick done: considered=[0-9]+ fresh=[0-9]+ labeled=[0-9]+ closed=1 un_staled=[0-9]+ skipped=[0-9]+ errored=0'; then
+  PASS=$((PASS+1)); echo "  ✓ T11: скрипт закрыл issue c --reason 'not planned' (closed=1, errored=0)"
+else
+  FAIL=$((FAIL+1)); FAILED_CASES+=("T11: close не выполнился с правильным reason")
+  echo "  ✗ T11: ожидался closed=1 errored=0. Output:"
+  echo "$T11_OUT" | tail -10
+fi
+
+# Не должно быть WARNING close failed
+if echo "$T11_OUT" | grep -q 'WARNING close failed'; then
+  FAIL=$((FAIL+1)); FAILED_CASES+=("T11: WARNING close failed (reason rejected by gh)")
+  echo "  ✗ T11: WARNING close failed — gh отверг reason"
+else
+  PASS=$((PASS+1)); echo "  ✓ T11: NO 'WARNING close failed' (reason accepted)"
+fi
+
+# Защита от регрессии в обратную сторону: если кто-то снова вернёт
+# not_planned (подчёркивание), скрипт должен fail с errored>=1.
+# Копируем скрипт + lib рядом (source через _LIB_DIR_HERE), затем
+# подменяем reason на not_planned и запускаем с mock-gh, который
+# отвергает not_planned (как реальный CLI).
+cp "$SCRIPT_UNDER_TEST" "$WORK_DIR/sut-regress.sh"
+cp "$(dirname "$SCRIPT_UNDER_TEST")/lib_agent_flow_common.sh" "$WORK_DIR/lib_agent_flow_common.sh"
+sed -i 's/--reason "not planned"/--reason not_planned/' "$WORK_DIR/sut-regress.sh"
+T11_REGRESS_RUNNER="$WORK_DIR/run_t11_regress.sh"
+# gh CLI: отвергаем not_planned (как реальный CLI), принимаем "not planned".
+# Используем mock-gh чтобы убедиться что скрипт с reason=not_planned
+# ВЫЯВЛЯЕТ ошибку и errored+=1, а не молча "закрывает".
+cat > "$T11_REGRESS_RUNNER" <<EOF
+#!/bin/bash
+set -o pipefail
+export UNLABELED_SWEEP_TEST_MODE=1
+export STALE_HOURS_1='0'
+export STALE_HOURS_2='0'
+export DRY_RUN='false'
+export LOCK_FILE='/tmp/test-unlabeled-sweep-t11r.lock'
+export SWEEP_LIMIT=10
+export GH_REPO='krikz/rob_box_project'
+
+gh() {
+  local cmd="\$1"
+  case "\$cmd" in
+    issue)
+      local subcmd="\$2"
+      case "\$subcmd" in
+        list)
+          printf '[{"number":9001,"title":"T11 regress fixture","updatedAt":"$(date -u -d '50 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)","createdAt":"2026-01-01T00:00:00Z","labels":[{"name":"stale-candidate"}]}]'
+          return 0 ;;
+        view|edit|comment) return 0 ;;
+        close)
+          local prev=""
+          for arg in "\$@"; do
+            if [ "\$prev" = "--reason" ]; then
+              case "\$arg" in
+                "not planned") return 0 ;;
+                "not_planned")
+                  printf 'invalid argument "not_planned" for "-r, --reason" flag\n' >&2
+                  return 1 ;;
+                *) return 1 ;;
+              esac
+            fi
+            prev="\$arg"
+          done
+          return 1 ;;
+      esac
+      return 0 ;;
+    api)
+      local path="\$2"
+      case "\$path" in
+        repos/*\/*/issues/*\/*)
+          case "\$path" in
+            *timeline*)
+              printf '[{"event":"labeled","label":{"name":"stale-candidate"},"created_at":"$(date -u -d '30 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"}]'
+              return 0 ;;
+            *comments*)
+              printf '[]'
+              return 0 ;;
+          esac
+          printf '[]'
+          return 0 ;;
+      esac
+      printf '[]'
+      return 0 ;;
+  esac
+  return 1
+}
+export -f gh
+
+bash '$WORK_DIR/sut-regress.sh'
+EOF
+chmod +x "$T11_REGRESS_RUNNER"
+T11_REGRESS_OUT=$(bash "$T11_REGRESS_RUNNER" 2>&1 || true)
+if echo "$T11_REGRESS_OUT" | grep -qE 'errored=[1-9]'; then
+  PASS=$((PASS+1)); echo "  ✓ T11-regress: not_planned (подчёркивание) → errored>=1 (защита от регрессии)"
+else
+  FAIL=$((FAIL+1)); FAILED_CASES+=("T11-regress: not_planned не дал errored>=1")
+  echo "  ✗ T11-regress: ожидался errored>=1 при not_planned. Output:"
+  echo "$T11_REGRESS_OUT" | tail -5
 fi
 
 # ----------------------------------------------------------------------------

@@ -16,7 +16,6 @@ navigation.py - Инструменты навигации и движения р
 
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import math
-import threading
 from rclpy.action import ActionClient
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import NavigateToPose
@@ -26,26 +25,7 @@ from action_msgs.msg import GoalInfo
 if TYPE_CHECKING:
     from ..waypoint_store import WaypointStore
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
-
-
-def _wait_future(future, timeout_sec: float) -> bool:
-    """Wait for an rclpy Future without touching the executor.
-
-    ``rclpy.spin_until_future_complete()`` is UNSAFE to call from within a
-    callback that is already executing under ``MultiThreadedExecutor`` — it
-    internally tries to add the node to a *new* executor, which corrupts the
-    existing one and silently breaks all subsequent subscription callbacks.
-
-    This helper attaches a ``done_callback`` to the future so that a plain
-    ``threading.Event`` is set when the future completes.  The calling thread
-    blocks on the event, leaving the ROS 2 executor completely undisturbed.
-
-    Returns True if the future completed within *timeout_sec*, False otherwise.
-    """
-    event = threading.Event()
-    future.add_done_callback(lambda _: event.set())
-    return event.wait(timeout=timeout_sec)
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, wait_future
 
 
 def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id: str = "map", timeout: float = 120.0):
@@ -66,7 +46,7 @@ def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id:
     goal.pose.pose.orientation.w = math.cos(theta / 2.0)
 
     send_future = nav_client.send_goal_async(goal)
-    if not _wait_future(send_future, timeout_sec=10.0) or send_future.result() is None:
+    if not wait_future(send_future, timeout_sec=10.0) or send_future.result() is None:
         return MCPToolResult(success=False, error="Nav2 не ответил на цель", message="Навигация недоступна")
 
     goal_handle = send_future.result()
@@ -74,7 +54,7 @@ def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id:
         return MCPToolResult(success=False, error="Nav2 отклонил цель", message="Цель недостижима")
 
     result_future = goal_handle.get_result_async()
-    if not _wait_future(result_future, timeout_sec=timeout) or result_future.result() is None:
+    if not wait_future(result_future, timeout_sec=timeout) or result_future.result() is None:
         return MCPToolResult(success=False, error="Навигация превысила таймаут", message="Не доехал до точки")
 
     return MCPToolResult(success=True)

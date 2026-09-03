@@ -37,11 +37,32 @@ _spec.loader.exec_module(_se)
 SpeakerDatabase = _se.SpeakerDatabase
 SpeakerMatch = _se.SpeakerMatch
 IDENTIFY_THRESHOLD = _se.IDENTIFY_THRESHOLD
+REGISTER_MATCH_THRESHOLD = _se.REGISTER_MATCH_THRESHOLD
 
 
 def _random_embedding(seed: int = 0, dim: int = 256) -> np.ndarray:
     rng = np.random.default_rng(seed)
     v = rng.standard_normal(dim).astype(np.float32)
+    return v / np.linalg.norm(v)
+
+
+def _degraded(base: np.ndarray, alpha: float, noise_seed: int) -> np.ndarray:
+    """Тот же голос, но "в других условиях записи" (issue W5-4).
+
+    base + alpha * (независимый случайный единичный вектор), затем
+    ре-нормализация — тот же приём, что и в TestIdentify выше, но с
+    параметризуемой амплитудой деградации. Для двух независимых единичных
+    векторов в 256D dot(base, noise)~0, поэтому аналитически
+    cos(base, degraded) ~= 1/sqrt(1+alpha^2):
+        alpha=0.3  -> cos~0.96 (чистая запись)
+        alpha=0.6  -> cos~0.86 (шум/дистанция)
+        alpha=1.0  -> cos~0.71 (сильно деградированная запись)
+        alpha=1.4  -> cos~0.58 (почти неузнаваемо)
+    Числа подтверждены синтетическим бенчмарком задачи W5-4
+    (docs/plans/2026-08-29-wave2-worker-prompts.md, карточка W5-4).
+    """
+    noise = _random_embedding(noise_seed, dim=len(base))
+    v = base + alpha * noise
     return v / np.linalg.norm(v)
 
 
@@ -134,6 +155,159 @@ class TestRenameListDelete:
         sid = db.register("Саша", _random_embedding(1))
         assert db.delete_speaker(sid) is True
         assert db.list_speakers() == []
+
+
+class TestDuplicateVoiceBug:
+    """Issue W5-4 — «один голос заводится как два профиля, и они дрейфуют».
+
+    Симптом с робота: один и тот же человек распознавался то как
+    «денчик», то как «эйджик» — завелись ДВЕ записи на одного человека.
+    Корневая причина: голый ``register()`` (которым раньше безусловно
+    пользовался speaker_id_node на каждый вызов LLM-тула
+    register_speaker) НИКОГДА не проверял, похож ли голос на уже
+    известный профиль — он просто создавал новый speaker_id.
+    """
+
+    def test_raw_register_always_creates_new_profile_even_for_same_voice(self, db):
+        """Документирует механизм бага: register() без speaker_id слепой.
+
+        Это ПОВЕДЕНИЕ ПО ДИЗАЙНУ register() (используется, когда
+        вызывающий код уже знает id) — но именно это поведение,
+        применённое speaker_id_node к КАЖДОМУ вызову register_speaker,
+        и порождало дубли. register_or_merge() (ниже) — исправление.
+        """
+        base = _random_embedding(100)
+        # Первая фраза — регистрация "Денчик"
+        sid1 = db.register("Денчик", _degraded(base, 0.3, 101))
+        # Тот же человек, чуть другие условия записи — LLM снова вызывает
+        # register_speaker (например, услышал имя иначе): raw register()
+        # НЕ проверяет похожесть голоса и создаёт НОВЫЙ профиль.
+        sid2 = db.register("Эйджик", _degraded(base, 0.3, 102))
+
+        assert sid1 != sid2, "raw register() всегда создаёт новый id — это и есть баг"
+        speakers = db.list_speakers()
+        assert len(speakers) == 2, "один голос представлен ДВУМЯ профилями в БД"
+
+    def test_register_or_merge_reuses_existing_profile_for_same_voice(self, db):
+        """Красный→зелёный тест исправления: register_or_merge не плодит дубли."""
+        base = _random_embedding(200)
+        sid1, reused1 = db.register_or_merge("Денчик", _degraded(base, 0.3, 201))
+        assert reused1 is False  # первая регистрация — новый профиль, это ок
+
+        # Тот же человек, деградированная запись (шум/дистанция/громкость) —
+        # LLM снова вызывает register_speaker с (возможно) другим именем.
+        sid2, reused2 = db.register_or_merge("Эйджик", _degraded(base, 0.45, 202))
+
+        assert reused2 is True, "деградированная запись ТОГО ЖЕ голоса должна слиться с профилем"
+        assert sid2 == sid1, "не должно появиться второго speaker_id для одного голоса"
+        assert len(db.list_speakers()) == 1, "в БД должен остаться ОДИН профиль, а не два"
+
+    def test_register_or_merge_does_not_drift_across_repeated_degraded_utterances(self, db):
+        """Симптом «они дальше расходятся»: серия деградированных фраз ОДНОГО
+        человека не должна плодить второй, отдельно растущий профиль."""
+        base = _random_embedding(300)
+        sid, _ = db.register_or_merge("Денчик", _degraded(base, 0.2, 301))
+        for i, alpha in enumerate([0.3, 0.35, 0.4, 0.45], start=1):
+            next_id, reused = db.register_or_merge("Денчик", _degraded(base, alpha, 400 + i))
+            assert reused is True, f"фраза #{i} (alpha={alpha}) создала отдельный профиль"
+            assert next_id == sid
+
+        assert len(db.list_speakers()) == 1
+        assert db.list_speakers()[0]["embeddings"] == 5  # 1 исходная + 4 деградированные
+
+    def test_register_or_merge_keeps_different_speakers_separate(self, db):
+        """Разные люди НЕ должны склеиваться в один профиль (ложное слияние)."""
+        sid1, reused1 = db.register_or_merge("Иван", _random_embedding(1))
+        sid2, reused2 = db.register_or_merge("Пётр", _random_embedding(2))
+        assert reused1 is False
+        assert reused2 is False
+        assert sid1 != sid2
+        assert len(db.list_speakers()) == 2
+
+    def test_register_or_merge_honours_explicit_speaker_id(self, db):
+        """Явный speaker_id (например, из rename-потока) обходит проверку похожести."""
+        sid = db.register("Саша", _random_embedding(5))
+        sid2, reused = db.register_or_merge(
+            "Саша", _random_embedding(6), speaker_id=sid
+        )
+        assert sid2 == sid
+        assert reused is False  # explicit path — не "нашли похожего", а "сказали явно"
+        assert len(db.list_speakers()) == 1
+        assert db.list_speakers()[0]["embeddings"] == 2
+
+
+class TestIdentifyCandidatesDiagnostics:
+    """Issue W5-4 п.4 — диагностика: best_score И второй кандидат."""
+
+    def test_empty_db_returns_empty_list(self, db):
+        assert db.identify_candidates(_random_embedding(1)) == []
+
+    def test_returns_top_n_sorted_desc(self, db):
+        base = _random_embedding(10)
+        db.register("Первый", base)
+        db.register("Второй", _degraded(base, 0.5, 11))
+        db.register("Третий", _random_embedding(99))  # непохожий голос
+
+        candidates = db.identify_candidates(base, top_n=2)
+        assert len(candidates) == 2
+        assert candidates[0].confidence >= candidates[1].confidence
+        assert candidates[0].name == "Первый"  # точное совпадение — лучший скор
+
+    def test_identify_accepts_custom_threshold(self, db):
+        base = _random_embedding(20)
+        db.register("Саша", base)
+        far = _degraded(base, 1.2, 21)  # ниже 0.75, но выше низкого порога
+
+        assert db.identify(far, threshold=0.3) is not None
+        assert db.identify(far, threshold=0.99) is None
+
+
+class TestMergeSpeakers:
+    """Issue W5-4 — merge_speakers(): ручная склейка уже расползшихся дублей."""
+
+    def test_merge_moves_embeddings_and_deletes_src(self, db):
+        base = _random_embedding(30)
+        dst = db.register("Денчик", base)
+        src = db.register("Эйджик", _degraded(base, 0.4, 31))
+        db.register("Эйджик", _degraded(base, 0.5, 32), speaker_id=src)  # 2 embeddings on src
+
+        moved = db.merge_speakers(src, dst)
+
+        assert moved == 2
+        speakers = {s["id"]: s for s in db.list_speakers()}
+        assert src not in speakers, "src должен быть удалён после слияния"
+        assert dst in speakers
+        assert speakers[dst]["embeddings"] == 3  # 1 исходный + 2 перенесённых
+        assert speakers[dst]["name"] == "Денчик"  # имя dst не меняется
+
+    def test_merged_voice_now_identifies_as_dst(self, db):
+        base = _random_embedding(40)
+        dst = db.register("Денчик", base)
+        src = db.register("Эйджик", _degraded(base, 0.3, 41))
+
+        db.merge_speakers(src, dst)
+
+        match = db.identify(_degraded(base, 0.3, 42))
+        assert match is not None
+        assert match.speaker_id == dst
+        assert match.name == "Денчик"
+
+    def test_merge_noop_when_src_equals_dst(self, db):
+        sid = db.register("Саша", _random_embedding(1))
+        assert db.merge_speakers(sid, sid) == 0
+        assert len(db.list_speakers()) == 1
+
+    def test_merge_noop_when_dst_missing(self, db):
+        src = db.register("Саша", _random_embedding(1))
+        assert db.merge_speakers(src, "no-such-id") == 0
+        # src НЕ должен быть тронут при неудачном слиянии
+        assert len(db.list_speakers()) == 1
+        assert db.list_speakers()[0]["id"] == src
+
+    def test_merge_noop_when_src_missing(self, db):
+        dst = db.register("Саша", _random_embedding(1))
+        assert db.merge_speakers("no-such-id", dst) == 0
+        assert len(db.list_speakers()) == 1
 
 
 class TestEmbedAudio:

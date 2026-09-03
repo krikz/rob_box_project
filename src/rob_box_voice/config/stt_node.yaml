@@ -13,31 +13,10 @@ stt_node:
     metrics_port: 9111  # issue #1160 — Prometheus metrics endpoint
     model_path: /models/vosk-model-small-ru-0.22
     sample_rate: 16000
-    # 🔴 fix(voice #1252): wake words синхронизированы с dialogue_node.yaml —
-    # 12 вариантов + исторический «робик». STT реально выдаёт кривые варианты
-    # («робок», «роберт», «рыбок») — все покрываем для надёжного barge-in.
-    wake_words:
-    - робок
-    - робот
-    - роббокс
-    - робокос
-    - роббос
-    - робокс
-    - робэкс
-    - робекс
-    - робакс
-    - рабокс
-    - рубокс
-    - роблокс
-    - роберт
-    - рыбок
-    - рабок
-    - робак
-    - рома
-    - бот
-    - робо
-    - роб
-    - робик
+    # wake_words намеренно НЕ здесь: единственное объявление —
+    # rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS, откуда его берут
+    # дефолты dialogue_node и stt_node. Копия в YAML — это ровно то, что
+    # разъехалось в #1252 и стоило #1734.
     # ===== Fallback/retry/short-phrase (issue #979) =====
     yandex_timeout_s: 5.0
     yandex_max_retries: 1
@@ -52,3 +31,9 @@ stt_node:
     # ~2-3с после конца фразы (а не ~8с, когда закончатся LLM+TTS).
     early_boop_enabled: true
     early_boop_trigger: boop
+    # ⚠️ issue #1734: barge_in_policy здесь НЕТ и не должно быть. Единственный
+    # источник истины — dialogue_node.yaml (ключ barge_in_policy). stt_node
+    # узнаёт актуальное значение runtime через latched-топик
+    # /voice/dialogue/barge_in_policy, а не из своего YAML — иначе получим
+    # тот же класс ошибки, что и с дублированием wake_words выше (#1252),
+    # который и породил #1734.

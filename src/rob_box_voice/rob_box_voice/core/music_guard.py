@@ -35,6 +35,10 @@ from enum import Enum
 from typing import Optional, Tuple
 
 from .dialogue_guards import (
+    GENERATED_MUSIC_TOOLS,
+    MUSIC_HARD_STOP_TOOLS,
+    RENARDO_MUSIC_TOOLS,
+    USER_MUSIC_SATISFYING_TOOLS,
     is_music_stop_command,
     is_vocal_request,
     user_wants_music,
@@ -61,6 +65,10 @@ class MusicGuardVerdictKind(str, Enum):
     #: попробуй ещё раз»). After a nudge the budget is reset so the
     #: next genuine user request gets a fresh one.
     NUDGE = "nudge"
+
+    #: User asked to STOP music but the LLM called no stop tool — the
+    #: adapter must force the stop itself (issue #992 Bug F, live 30.08).
+    FORCE_STOP = "force_stop"
 
     #: Guard deliberately skipped (stop-command OR user did not ask for
     #: music OR DJ was off). Adapter only logs a diagnostic.
@@ -126,7 +134,12 @@ class MusicGuard:
     #: Legacy defaults preserved verbatim from the original
     #: ``DialogueNode`` constants so behaviour does not regress.
     DEFAULT_MAX_DJ_RETRIES: int = 2
-    DEFAULT_MAX_USER_RETRIES: int = 1
+    #: Live 01.09 — bumped 1 → 8 to test whether more retries change
+    #: outcomes when ``user_wants_music()`` false-positives (e.g. bare
+    #: mention of the DJ persona's name). Does NOT fix the misclassification
+    #: itself — the CRITICAL retry text is still wrong for those turns, this
+    #: just delays the "растерялся" fallback and burns more LLM round-trips.
+    DEFAULT_MAX_USER_RETRIES: int = 8
 
     def __init__(
         self,
@@ -239,11 +252,7 @@ class MusicGuard:
         # Issue #1392 follow-up: MiniMax AI-генерация тоже «запустила музыку».
         # Без этого Bug C ретраил «сгенерируй трек про X» (не-vocal, без
         # execute_music_code) → retry-prompt гнал LLM в фантомный handle_music.
-        _music_started = tools_set & {
-            "execute_music_code",
-            "generate_music",
-            "gen_play_from_library",
-        }
+        _music_started = tools_set & (RENARDO_MUSIC_TOOLS | GENERATED_MUSIC_TOOLS)
         if _music_started:
             # Success — reset both budgets so a future failure gets a
             # fresh allocation. Mirrors the legacy 2787/2788 reset.
@@ -277,7 +286,7 @@ class MusicGuard:
             prompt = (
                 build_dj_retry_prompt()
                 if build_dj_retry_prompt is not None
-                else "[CRITICAL] DJ retry — call execute_music_code"
+                else "[CRITICAL] DJ retry — call compose_music"
             )
             self._log_warning(
                 "🎵 [issue 992 Bug B] DJ auto-transition completed "
@@ -288,6 +297,39 @@ class MusicGuard:
                 kind=MusicGuardVerdictKind.DJ_RETRY,
                 reason="bug_b",
                 prompt=prompt,
+            )
+
+        # 🔴 FIX (live 30.08, vision-pi 12:33): «останови музыку» → LLM
+        # ответила «Музыка выключена.» с ``tools=[]``. Ни ``stop_music``, ни
+        # чего-либо ещё вызвано не было, и mp3 из ``gen_play_from_library``
+        # доиграл до конца ещё 20 секунд после «выключена». Стоп —
+        # идемпотентная операция, поэтому здесь мы не ретраим LLM, а
+        # останавливаем музыку сами (адаптер публикует music_cleanup).
+        if is_music_stop_command(user_input) and not (tools_set & MUSIC_HARD_STOP_TOOLS):
+            self._log_warning(
+                "🎵 [issue 992 Bug F] stop-command без stop-тула "
+                f"(tools={sorted(tools_set)!r}) — принудительный стоп из кода"
+            )
+            return MusicGuardVerdict(
+                kind=MusicGuardVerdictKind.FORCE_STOP,
+                reason="stop_command_unbacked",
+            )
+
+        # 🔴 FIX (live 30.08, e2e tc10_load_track): ``load_track`` реально
+        # запускает Renardo (внутри — ``execute_code``), но лежал только
+        # в ``MUSIC_MODE_TOOLS``, которые за «музыка пошла» не считаются.
+        # Корректный вызов уходил в ретрай, а на втором промахе юзер слышал
+        # «Я тут растерялся — бит не запустился».
+        _user_satisfied = tools_set & USER_MUSIC_SATISFYING_TOOLS
+        if _user_satisfied:
+            self._user_retry_count = 0
+            self._log_debug(
+                f"🎵 [music_guard] {sorted(_user_satisfied)!r} запустил "
+                "воспроизведение → SKIP"
+            )
+            return MusicGuardVerdict(
+                kind=MusicGuardVerdictKind.SKIP,
+                reason="executed_via_library",
             )
 
         # Bug C — user asked for music but LLM skipped execute_music_code.
@@ -306,6 +348,8 @@ class MusicGuard:
         # «выключи музыку») must NOT trigger a music retry — they ask
         # to STOP music, not START it. Bug C previously mis-classified
         # them as music requests and re-enabled music via the retry.
+        # Сюда доходят только стопы, которые LLM уже отработала тулом
+        # (безтуловые перехвачены веткой FORCE_STOP выше).
         if is_music_stop_command(user_input):
             self._log_debug(
                 "🎵 [issue 992 Bug C] stop-command — skipping music "

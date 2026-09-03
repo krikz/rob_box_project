@@ -17,6 +17,12 @@ import sys
 import types
 from unittest.mock import MagicMock
 
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+from ros_stubs import FakeNode as _FakeNode  # noqa: E402
+
 
 _MOCKS_INSTALLED = False
 
@@ -39,44 +45,11 @@ def _install_all_mocks():
     # ── rclpy ─────────────────────────────────────────────────────────────
     mock_rclpy = MagicMock()
 
-    class FakeNode:
-        """Minimal stub of rclpy.node.Node. TTSNode.__init__ calls.
-        declare_parameter (for ~30 params), get_parameter,
-        create_publisher / create_subscription, and
-        add_on_set_parameters_callback.
-        """
-
-        def __init__(self, name, **kwargs):
-            self._name = name
-            self._logger = MagicMock()
-            self._declared = {}
-
-        def get_logger(self):
-            return self._logger
-
-        def declare_parameter(self, name, default=None):
-            p = MagicMock()
-            p.value = default
-            self._declared[name] = p
-            return p
-
-        def get_parameter(self, name):
-            return self._declared.get(name, MagicMock(value=None))
-
-        def has_parameter(self, name):
-            return name in self._declared
-
-        def create_publisher(self, *args, **kwargs):
-            return MagicMock()
-
-        def create_subscription(self, *args, **kwargs):
-            return MagicMock()
-
-        def add_on_set_parameters_callback(self, cb):
-            return MagicMock()
-
-        def get_name(self):
-            return self._name
+    # FakeNode is shared (test/ros_stubs.py). ``rclpy.node`` is installed
+    # with ``sys.modules.setdefault``, so only the first conftest to load
+    # supplies the base class for every directory — four private copies
+    # meant the winner decided which assertions could pass.
+    FakeNode = _FakeNode
 
     mock_rclpy_node = types.ModuleType("rclpy.node")
     mock_rclpy_node.Node = FakeNode

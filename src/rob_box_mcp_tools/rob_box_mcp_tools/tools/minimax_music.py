@@ -119,6 +119,17 @@ class GenerateMusicTool(MCPTool):
         return "generate_music"
 
     @property
+    def llm_visible(self) -> bool:
+        """MiniMax Music API отключён для новых юзеров (410 Gone, 20.08.2026).
+
+        Инструмент оставлен исполняемым (ручная отладка, возврат API), но
+        из каталога для LLM исключён: модель не должна видеть мёртвый тул
+        (e2e regression dj01 «сыграй renardo бит» → forbidden tool call).
+        ``mcp_server`` его и не регистрирует — см. ``_register_minimax_music_tools``.
+        """
+        return False
+
+    @property
     def description(self) -> str:
         return (
             "Сгенерировать новый музыкальный трек через MiniMax Music API и "

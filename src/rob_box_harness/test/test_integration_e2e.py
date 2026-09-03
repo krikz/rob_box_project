@@ -16,8 +16,6 @@ node) and validate the full processing chain:
   * **Error paths** — failing LLM provider → graceful fallback.
   * **Isolation** — two harnesses running concurrently do not share
     state, memory, or side-effect streams.
-  * **Persistence** — turns written by one harness instance survive
-    via SQLiteVoiceMemory and are visible to a fresh harness.
   * **Lifecycle** — async-with context manager wires init/teardown
     correctly with no resource leaks.
 
@@ -47,7 +45,7 @@ from rob_box_harness.effects import EchoEffect, RecordingBus
 from rob_box_harness.harnesses.dialog import DialogHarness
 from rob_box_harness.harnesses.telegram import TelegramHarness
 from rob_box_harness.memory import InMemoryStore
-from rob_box_harness.memory.sqlite_voice import SQLiteVoiceMemory, Turn
+from rob_box_harness.memory.sqlite_voice import SQLiteVoiceMemory
 from rob_box_harness.tools import FakeToolProvider
 from rob_box_harness.transport import FakeTransport
 
@@ -208,13 +206,7 @@ class TestVoiceInputToTTSChain:
             f"TTS effect text not found in {[e.text for e in tts_effects]}"
         )
 
-        # Assert 5: memory holds both user and assistant turns
-        turns = _run(memory.load_recent("test_dialog_e2e", limit=10))
-        assert len(turns) >= 2, f"Expected ≥2 turns, got {len(turns)}"
-        roles = [t.role for t in turns]
-        assert "user" in roles and "assistant" in roles
-
-        # Assert 6: state reflects the last turn
+        # Assert 5: state reflects the last turn
         assert harness.state.turn_count >= 1
         assert harness.state.last_response == "Здравствуйте!"
 
@@ -266,15 +258,13 @@ class TestTelegramMessageToResponseChain:
             for m in last_call
         )
 
-        # Assert 3: memory has both user and assistant turns (tg: prefix scope)
-        # InMemoryStore returns newest-first (DESC), so turns[0] is the
-        # most recent (assistant), turns[1] is the user message
-        turns = _run(memory.load_recent("tg:chat_42", limit=10))
+        # Assert 3: in-memory per-chat history holds user + assistant turns
+        turns = harness._chat_history["tg:chat_42"]
         assert len(turns) >= 2
-        assert turns[0].role == "assistant"
-        assert turns[1].role == "user"
-        assert "Солнечно" in turns[0].content
-        assert "погода" in turns[1].content
+        assert turns[0].role == "user"
+        assert turns[1].role == "assistant"
+        assert "Солнечно" in turns[1].content
+        assert "погода" in turns[0].content
 
         # Assert 4: state tracked the chat correctly
         assert harness.state.chat_id == "chat_42"
@@ -501,15 +491,12 @@ class TestConcurrentHarnessIsolation:
         dialog_texts = [e.text for e in dialog_effects.effects if hasattr(e, "text")]
         assert all("Dialog" in t or "Привет" in t or "Ping" in t for t in dialog_texts)
 
-        # Assert 3: messages are stored in separate memory scopes
-        dialog_turns = _run(dialog_memory.load_recent("test_dialog_e2e"))
-        telegram_turns = _run(telegram_memory.load_recent("tg:iso_test"))
-        assert len(dialog_turns) >= 2
+        # Assert 3: Telegram keeps its own in-memory per-chat history
+        telegram_turns = telegram._chat_history["tg:iso_test"]
         assert len(telegram_turns) >= 2
 
-        # Assert 4: dialog memory has no telegram messages (cross-contamination)
-        dialog_contents = [t.content for t in dialog_turns]
-        assert not any("ping" in c.lower() and "chat" in str(dialog_effects) for c in dialog_contents)
+        # Assert 4: the dialog harness keeps no persistent turn store
+        assert not hasattr(dialog, "_chat_history")
 
         # Assert 5: state counters are independent
         assert dialog.state.turn_count >= 1
@@ -517,88 +504,6 @@ class TestConcurrentHarnessIsolation:
 
         _run(dialog.teardown())
         _run(telegram.teardown())
-
-
-# ---------------------------------------------------------------------------
-# 6. Memory persistence across sessions
-# ---------------------------------------------------------------------------
-
-
-class TestMemoryPersistenceAcrossSessions:
-    """SQLiteVoiceMemory persists turns across harness lifecycle."""
-
-    def test_memory_persistence_across_sessions(self) -> None:
-        """Turns written by one harness survive in SQLiteVoiceMemory.
-        and are visible to a fresh harness that points at the same
-        file.
-
-        Uses the TelegramHarness because it writes ``Turn`` objects
-        directly (the documented SQLiteVoiceMemory contract), while
-        DialogHarness delegates to ``run_request_response_loop`` which
-        passes LLMMessage — these are duck-typed compatible with
-        InMemoryStore but not yet with SQLiteVoiceMemory. The
-        persistence contract under test is the SQLiteVoiceMemory
-        storage, not the harness-side LLMMessage→Turn adapter.
-        """
-        # Create a temp file for the SQLite DB — ":memory:" would
-        # give per-connection state, defeating the test.
-        fd, db_path = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
-        try:
-            shared_memory = SQLiteVoiceMemory(db_path=db_path)
-            # SQLiteVoiceMemory must be initialised before the harness
-            # uses it — DialogHarness.init() only auto-inits the memory
-            # it constructs itself (None branch), not externally-supplied
-            # instances.
-            _run(shared_memory.init())
-            llm_a = ScriptedLLMProvider(responses=[MockResponse(content="Hi from A")])
-            harness_a = _make_telegram_harness(
-                llm=llm_a, memory=shared_memory,
-                config=_make_telegram_config("persistent_session"),
-            )
-
-            _run(harness_a.init())
-            result_a = _run(harness_a.step({
-                "chat_id": "persistent_session",
-                "user_id": "u1",
-                "text": "hello",
-            }))
-            assert "Hi from A" in result_a
-            _run(harness_a.teardown())
-
-            # Verify the DB file has data on disk
-            assert os.path.getsize(db_path) > 0, "SQLite DB file should have content"
-
-            # Session B: brand-new harness + brand-new memory wrapper
-            # pointing at the same file
-            shared_memory_b = SQLiteVoiceMemory(db_path=db_path)
-            _run(shared_memory_b.init())
-            harness_b = _make_telegram_harness(
-                llm=ScriptedLLMProvider(),
-                memory=shared_memory_b,
-                config=_make_telegram_config("persistent_session"),
-            )
-
-            _run(harness_b.init())
-
-            # Assert 1: the previous turns are visible to session B
-            prior_turns = _run(shared_memory_b.load_recent("tg:persistent_session", limit=20))
-            assert len(prior_turns) >= 2, (
-                f"Expected ≥2 turns persisted from session A, got {len(prior_turns)}"
-            )
-            # The "hello" turn must be present
-            assert any(t.content == "hello" and t.role == "user" for t in prior_turns)
-            assert any("Hi from A" in t.content and t.role == "assistant" for t in prior_turns)
-
-            # Assert 2: memory scopes are still isolated (other scopes empty)
-            other_turns = _run(shared_memory_b.load_recent("default", limit=10))
-            assert other_turns == []
-
-            _run(harness_b.teardown())
-        finally:
-            # Clean up the temp file
-            if os.path.exists(db_path):
-                os.unlink(db_path)
 
 
 # ---------------------------------------------------------------------------

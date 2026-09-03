@@ -1,0 +1,41 @@
+{
+  "name": "dialogue_gap_probe_acceptance_v1",
+  "schema_version": 1,
+  "_comment": [
+    "ADR-0022 GATE-1 acceptance для dialogue_gap_probe_v1.json.",
+    "⚠️ НАМЕРЕННО МЯГКИЙ. Это диагностическая сьюта: её задача — не пройти, а показать.",
+    "В expected_tool_calls вынесены только те вызовы, отсутствие которых означало бы",
+    "поломку УЖЕ РАБОТАЮЩЕЙ функциональности (регрессия), а не известную дыру:",
+    "  set_dj_mode / execute_music_code / stop_music — DJ и Renardo работают сегодня",
+    "  get_current_time                              — wake-word под музыкой (ADR-0024)",
+    "  register_speaker                              — регистрация голоса работает",
+    "  speak_text                                    — базовая озвучка",
+    "НЕ включены намеренно (это и есть исследуемые дыры, их отсутствие — находка):",
+    "  task_delta        — MERGE вне песенного кейса, хуки планировщика не подключены",
+    "  memory_search     — проверяется в coverage-сьюте, здесь не гейт",
+    "  любой тул смены TTS-провайдера — его в коде нет вообще (§4.4 спека)",
+    "must_not_call: маркеры REPLACE-пути. Их появление означает, что barge-in снова",
+    "глушит TTS — то есть регресс issue #1734 / фазы S1-S7 issue #968.",
+    "ТРЕБОВАНИЕ К ПРОГОНУ: barge_in_policy=classify (ros2 param set /dialogue_node",
+    "barge_in_policy classify). При replace шаги gp11/gp12 бессмысленны.",
+    "Расшифровка каждого зонда — docs/e2e/dialogue-coverage-map-2026-08-29.md"
+  ],
+  "expected_tool_calls": [
+    "set_dj_mode",
+    "execute_music_code",
+    "stop_music",
+    "get_current_time",
+    "register_speaker",
+    "speak_text"
+  ],
+  "must_not_call": [
+    "STOP command received",
+    "Cancel: new STT input"
+  ],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "volume": 100,
+    "llm": "minimax-m2"
+  }
+}

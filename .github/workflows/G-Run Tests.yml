@@ -65,14 +65,27 @@ jobs:
           mkdir -p ${{ github.workspace }}/test_ws/src
           rsync -av --exclude='ros2leds' --exclude='vesc_nexus' --exclude='robot_sensor_hub_msg' src/ ${{ github.workspace }}/test_ws/src/
           # Sibling directories referenced by tests (NOT compiled by colcon).
-          for d in docker migrations docs; do
+          # .github is here for .github/e2e/{scenarios,voice_commands}: six
+          # tests in test_issue_1532_voice_multi_skazka.py read those fixtures
+          # and had been failing on every push with FileNotFoundError.
+          # scripts is here for scripts/voice_bench/score.py, imported by
+          # src/rob_box_voice/test/unit/test_voice_bench_scoring.py — without it
+          # that test raises RuntimeError at COLLECTION time, which fails the
+          # whole rob_box_voice batch (develop was RED ~9h on 03.09, blocking
+          # 20+ PRs). tools is here for tools/gen_tool_catalog.py, imported by
+          # src/rob_box_harness/test/test_skill_catalog.py — without it those
+          # tests silently SKIP (skipif(not _GENERATOR.exists())), masking a
+          # real contract regression as a green CI. Guard against the next
+          # occurrence:
+          #   python3 scripts/agent_flow/validate_test_ws_dirs.py
+          for d in docker migrations docs .github scripts tools; do
             [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
           done
 
           # Build packages (use --packages-up-to to include dependencies)
           cd ${{ github.workspace }}/test_ws
           colcon build --symlink-install \
-            --packages-up-to rob_box_voice rob_box_animations rob_box_perception \
+            --packages-up-to rob_box_voice rob_box_animations rob_box_perception rob_box_core rob_box_telegram rob_box_teleop \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
 
       - name: Run unit tests
@@ -85,6 +98,15 @@ jobs:
 
           # Force pip pytest 9.x (container has both apt 6.2.5 + pip 9.x)
           export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
+
+          # Anchor for tests that walk up the directory tree to find the repo
+          # root (e.g. test_sclang_resyncs_after_scsynth_restart.py and friends
+          # in src/rob_box_voice/test/unit/core/). Without this, a test whose
+          # ``__file__`` resolves outside test_ws/{src,docker} — most often
+          # through a colcon test build/install mirror — raises
+          # ``RuntimeError: repo root not found`` at import time. See the
+          # `_repo_root()` helper in those tests for the matching fallback.
+          export ROB_BOX_REPO_ROOT="${{ github.workspace }}/test_ws"
 
           # Uninstall launch_testing (apt, compiled for pytest 6, crashes pytest 9).
           # Cannot be blocklisted via PYTEST_ADDOPTS or pytest.ini — only removal works.
@@ -152,7 +174,7 @@ jobs:
             [ -f "$TG_TEST" ] || continue
             TG_NAME="$(basename "$TG_TEST")"
             echo "--- rob_box_telegram: $TG_NAME ---"
-            ( cd "$TG_DIR" && PYTHONPATH=. timeout 120 python3 -m pytest \
+            ( cd "$TG_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 120 python3 -m pytest \
                 -p no:launch_testing \
                 -p no:ament_flake8 -p no:ament_pep257 \
                 -p no:ament_copyright -p no:ament_xmllint \
@@ -172,7 +194,7 @@ jobs:
           # are self-contained (no cross-file pollution like telegram).
           echo "=== pytest: rob_box_teleop (issue #1344) ==="
           TELEOP_DIR="${{ github.workspace }}/test_ws/src/rob_box_teleop"
-          ( cd "$TELEOP_DIR" && PYTHONPATH=. timeout 120 python3 -m pytest \
+          ( cd "$TELEOP_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 120 python3 -m pytest \
               -p no:launch_testing \
               -p no:ament_flake8 -p no:ament_pep257 \
               -p no:ament_copyright -p no:ament_xmllint \
@@ -269,9 +291,21 @@ jobs:
           source /opt/ros/humble/setup.bash
           mkdir -p ${{ github.workspace }}/test_ws/src
           rsync -av --exclude='ros2leds' --exclude='vesc_nexus' --exclude='robot_sensor_hub_msg' src/ ${{ github.workspace }}/test_ws/src/
+          # Sibling directories referenced by tests (NOT compiled by colcon).
+          # Same as the unit-tests job above. Without this, tests that walk up
+          # to find e.g. docker/vision/scripts/supercollider/metrics_server.py
+          # raise FileNotFoundError at collection time
+          # (test_supercollider_metrics_osc_status).
+          # scripts is here for the same reason as in unit-tests above
+          # (scripts/voice_bench/score.py, test_voice_bench_scoring.py).
+          # tools is here for the same reason as in unit-tests above
+          # (tools/gen_tool_catalog.py, test_skill_catalog.py).
+          for d in docker migrations docs .github scripts tools; do
+            [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
+          done
           cd ${{ github.workspace }}/test_ws
           colcon build --symlink-install \
-            --packages-up-to rob_box_voice rob_box_animations rob_box_perception \
+            --packages-up-to rob_box_voice rob_box_animations rob_box_perception rob_box_core rob_box_telegram rob_box_teleop \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
 
       - name: Run integration tests
@@ -284,6 +318,15 @@ jobs:
 
           # Force pip pytest 9.x (container has both apt 6.2.5 + pip 9.x)
           export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
+
+          # Anchor for tests that walk up the directory tree to find the repo
+          # root (e.g. test_sclang_resyncs_after_scsynth_restart.py and friends
+          # in src/rob_box_voice/test/unit/core/). Without this, a test whose
+          # ``__file__`` resolves outside test_ws/{src,docker} — most often
+          # through a colcon test build/install mirror — raises
+          # ``RuntimeError: repo root not found`` at import time. See the
+          # `_repo_root()` helper in those tests for the matching fallback.
+          export ROB_BOX_REPO_ROOT="${{ github.workspace }}/test_ws"
 
           # Uninstall launch_testing (apt, compiled for pytest 6, crashes pytest 9).
           # Same workaround as the unit-tests job above — without it pytest 9.x

@@ -1,15 +1,13 @@
 #!/bin/bash
 # ============================================================================
 # SOT (source-of-truth): <repo>/scripts/agent_flow/watchdog.sh
-# Каноническая версия живёт в репо. На хост раскладывается через
-# `bash <repo>/scripts/agent_flow/install.sh`, который создаёт
-# символические ссылки в:
-#   - ~/.hermes/profiles/agent-flow/scripts/watchdog.sh
-#   - ~/.hermes/profiles/architect/scripts/watchdog.sh
-#   - ~/.hermes/scripts/watchdog.sh
-# Правка: редактируем <repo>/scripts/agent_flow/watchdog.sh, commit, merge.
-# На хост: bash <repo>/scripts/agent_flow/install.sh (или вручную cp + ln -sf).
-# Если ты правишь этот файл НА ХОСТЕ руками — синхронизируй обратно в репо.
+# Правим ТОЛЬКО здесь + commit + merge в develop. На хост раскладывает
+# `bash <repo>/scripts/agent_flow/install.sh` — hardlink-копиями (cp -al), НЕ
+# симлинками: симлинк в ~/.hermes/scripts/ ресолвится наружу и отклоняется
+# guard'ом hermes-agent scheduler.py::_validate_script_path (ретро 11.08
+# t_a6a236e0d9f0470e — 50 упавших тиков подряд, 1ч42м даунтайма).
+# Полный список путей раскладки — в install.sh, сверку копий держит
+# agent-flow-drift-detect.sh. Ручная правка копии на хосте затрётся.
 # ============================================================================
 # Agent Cockpeat / Flow Watch Tock — Agent heartbeat watchdog.
 # Runs every 2 minutes via `hermes cron` (no LLM, this script IS the job).
@@ -52,6 +50,11 @@ E2E_LOCK_FILE="${E2E_LOCK_FILE:-/tmp/agent-flow-e2e-process.lock}"
 # логе воркера и разблокирует их, когда провайдеры снова отвечают.
 HERMES_BIN="${HERMES_BIN:-/home/builder/.hermes/hermes-agent/venv/bin/hermes}"
 PROVIDER_ACTIONS_FILE="${PROVIDER_ACTIONS_FILE:-$HERMES_HOME/state/watchdog-provider-actions.txt}"
+# Runtime-overshoot actions (ADR-0036 §4.2 / kanban t_8234ed76): Python heredoc
+# пишет сюда "board|task|pid|sigterm|sigkill" — bash читает и делает kill -TERM/-KILL.
+# SIGTERM отправляется через hermes kanban CLI (если команда существует) с
+# fallback на прямой kill -TERM <pid>; SIGKILL — всегда напрямую.
+OVERSHOOT_ACTIONS_FILE="${OVERSHOOT_ACTIONS_FILE:-$HERMES_HOME/state/watchdog-overshoot-actions.txt}"
 
 if gh api "repos/${GH_REPO}/contents/${RUN_NOW_FILE}?ref=develop" --jq '.name' >/dev/null 2>&1; then
     # Есть RUN_NOW → запускаем e2e-process (если он не запущен и не в процессе).
@@ -91,7 +94,7 @@ fi
 
 # Delegate all detection to a Python helper so we can use the bundled
 # Python 3 (with sqlite3) without depending on the sqlite3 CLI.
-python3 - "$HERMES_HOME" "$KANBAN_BOARDS_DIR" "$HEARTBEAT_STALE_SECONDS" "$TELEGRAM_STUCK_MINUTES" "$PROVIDER_ACTIONS_FILE" \
+python3 - "$HERMES_HOME" "$KANBAN_BOARDS_DIR" "$HEARTBEAT_STALE_SECONDS" "$TELEGRAM_STUCK_MINUTES" "$PROVIDER_ACTIONS_FILE" "$OVERSHOOT_ACTIONS_FILE" \
     <<'PYEOF'
 import os, sys, glob, subprocess, time, sqlite3, json
 from datetime import datetime
@@ -101,10 +104,12 @@ boards_dir = sys.argv[2]
 stale_sec = int(sys.argv[3])
 telegram_stuck_min = int(sys.argv[4]) if len(sys.argv) > 4 else 15
 provider_actions_file = sys.argv[5] if len(sys.argv) > 5 else ""
+overshoot_actions_file = sys.argv[6] if len(sys.argv) > 6 else ""
 
 issues = []
 recovery = []
 workers_by_unit = set()   # systemd units hosting live kanban worker pids
+overshoot_actions: list[str] = []   # строки "board|task|pid|sigterm" / "sigkill" (для bash-части watchdog.sh)
 
 for db in sorted(glob.glob(f"{boards_dir}/*/kanban.db")):
     if not os.path.isfile(db):
@@ -154,6 +159,139 @@ for db in sorted(glob.glob(f"{boards_dir}/*/kanban.db")):
         con.close()
     except Exception as exc:
         issues.append(f"[{board}] db error: {exc}")
+
+# 1d. runtime-overshoot (ADR-0036 §4.2 / kanban t_8234ed76)
+# Catch-all для зависших воркеров: heartbeat может быть свежим (процесс жив,
+# шлёт heartbeat), но age-since-started > 4*max_rt — типичные mis-scope:
+# TDD-loop без архитектуры, bash-loop без прогресса. Множитель 4 — запас
+# поверх max_runtime_seconds (Шифу может выставить явно больше).
+#
+# Идемпотентность через task_comments (НЕ task_events.kind='comment' — это
+# typo из ADR §4.2; реальная таблица — task_comments, см.
+# hermes_cli/kanban_db.py CREATE TABLE IF NOT EXISTS task_comments).
+#
+# State machine (живёт в task_events.kind='overshoot_kill'):
+#   1. первый overshoot → пишем comment + emit sigterm-action +
+#      пишем task_events(kind='overshoot_kill', payload={"sent_at": now})
+#   2. следующий тик в течение 60с после SIGTERM → pid ещё жив, ждём
+#   3. через 60с после SIGTERM, pid всё ещё жив → emit sigkill-action
+#      (НЕ пишем новый comment — только в фазе 1; флаг уже стоит)
+OVERSHOOT_MULTIPLIER = 4
+OVERSHOOT_COMMENT_MARKER = "runtime-overshoot"
+OVERSHOOT_KILL_GRACE_SEC = 60   # SIGTERM → SIGKILL
+for db in sorted(glob.glob(f"{boards_dir}/*/kanban.db")):
+    if not os.path.isfile(db):
+        continue
+    board = os.path.basename(os.path.dirname(db))
+    try:
+        con = sqlite3.connect(db)
+        try:
+            cur = con.execute(
+                "SELECT id, COALESCE(worker_pid,0), COALESCE(started_at,0), "
+                "COALESCE(max_runtime_seconds,0), COALESCE(last_heartbeat_at,0) "
+                "FROM tasks WHERE status='running'"
+            )
+            for task_id, pid, started_at, max_rt, heartbeat_ts in cur.fetchall():
+                if max_rt <= 0 or started_at <= 0:
+                    # Нет max_rt или нет started_at → не можем судить; skip
+                    # (max_runtime_seconds может быть NULL/0 для унаследованных
+                    # карточек — гарантия «не блокируем legitimately-долгие»)
+                    continue
+                age = now - int(started_at)
+                if age <= OVERSHOOT_MULTIPLIER * int(max_rt):
+                    continue   # в пределах бюджета — ок
+                # Overshoot detected.
+                # (a) проверить task_events на SIGTERM-маркер
+                sent_row = con.execute(
+                    "SELECT payload FROM task_events "
+                    "WHERE task_id=? AND kind='overshoot_kill' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (task_id,),
+                ).fetchone()
+                sent_at = None
+                if sent_row and sent_row[0]:
+                    try:
+                        sent_at = json.loads(sent_row[0]).get("sent_at")
+                    except (ValueError, TypeError):
+                        sent_at = None
+                # pid ещё жив? (для решения sigterm vs sigkill vs пропустить)
+                pid_alive = False
+                if pid and pid > 0:
+                    try:
+                        os.kill(int(pid), 0)
+                        pid_alive = True
+                    except (OSError, ProcessLookupError):
+                        pid_alive = False
+                if sent_at is None:
+                    # Фаза 1: SIGTERM ещё не отправляли
+                    if not pid_alive:
+                        # Процесс уже мёртв — карточка в running по инерции;
+                        # dispatcher уберёт на heartbeat-stale тике.
+                        # overshoot-флага не ставим — лишний шум.
+                        continue
+                    # Идемпотентный comment. Если прошлый watchdog-тик успел
+                    # записать comment, но упал перед SIGTERM — мы второй раз
+                    # INSERT не делаем, а сразу шлём SIGTERM.
+                    already = con.execute(
+                        "SELECT 1 FROM task_comments WHERE task_id=? "
+                        "AND body LIKE ? LIMIT 1",
+                        (task_id, f"%{OVERSHOOT_COMMENT_MARKER}%"),
+                    ).fetchone()
+                    if not already:
+                        try:
+                            con.execute(
+                                "INSERT INTO task_comments "
+                                "(task_id, author, body, created_at) "
+                                "VALUES (?, 'watchdog', ?, ?)",
+                                (
+                                    task_id,
+                                    f"[runtime-overshoot] {task_id}: age={age}s "
+                                    f"exceeds {OVERSHOOT_MULTIPLIER}x "
+                                    f"max_runtime={max_rt}s — SIGTERM pending. "
+                                    f"PID={pid} alive. (ADR-0036 §4.2)",
+                                    int(time.time()),
+                                ),
+                            )
+                            con.commit()
+                        except Exception as exc:
+                            issues.append(
+                                f"[{board}] {task_id} overshoot-comment write failed: {exc}"
+                            )
+                    overshoot_actions.append(f"{board}|{task_id}|{pid}|sigterm")
+                    issues.append(
+                        f"[{board}] {task_id} runtime-overshoot: age={age}s > "
+                        f"{OVERSHOOT_MULTIPLIER}*max_rt={max_rt}s (pid={pid} alive) — SIGTERM"
+                    )
+                else:
+                    # Фаза 2: SIGTERM уже отправлен. Решаем SIGKILL vs пропуск.
+                    if not pid_alive:
+                        # Воркер умер после SIGTERM — отлично, ничего не делаем.
+                        # overshoot_kill event оставляем как аудит.
+                        continue
+                    elapsed = now - int(sent_at)
+                    if elapsed < OVERSHOOT_KILL_GRACE_SEC:
+                        # Ещё в grace-окне — следующий тик решит.
+                        continue
+                    # Прошло >= 60с, pid жив → SIGKILL.
+                    overshoot_actions.append(f"{board}|{task_id}|{pid}|sigkill")
+                    issues.append(
+                        f"[{board}] {task_id} runtime-overshoot: SIGTERM был {elapsed}s назад, "
+                        f"pid={pid} всё ещё жив — SIGKILL"
+                    )
+        finally:
+            con.close()
+    except Exception as exc:
+        issues.append(f"[{board}] runtime-overshoot scan error: {exc}")
+
+# Пишем overshoot-actions в файл для bash-части (stdout watchdog — отчёт,
+# не команды; kill-syscall делаем ниже после PYEOF).
+if overshoot_actions and overshoot_actions_file:
+    os.makedirs(os.path.dirname(overshoot_actions_file), exist_ok=True)
+    try:
+        with open(overshoot_actions_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(overshoot_actions) + "\n")
+    except Exception as exc:
+        issues.append(f"[runtime-overshoot] запись действий не удалась: {exc}")
 
 # 1c. provider-exhaustion (ретро 15.08 t_3b9fadc5)
 # Масс-блок: при 402/429 (MiniMax 429/2056, DeepSeek 402) воркер печатает
@@ -615,6 +753,99 @@ if [ -s "$PROVIDER_ACTIONS_FILE" ]; then
         esac
     done < "$PROVIDER_ACTIONS_FILE"
     rm -f "$PROVIDER_ACTIONS_FILE"
+fi
+
+# ============================================================================
+# Runtime-overshoot actions (ADR-0036 §4.2 / kanban t_8234ed76)
+# Python-часть записала в $OVERSHOOT_ACTIONS_FILE строки
+# "board|task_id|pid|sigterm" или "board|task_id|pid|sigkill".
+# Логика:
+#   - sigterm: пытаемся graceful через `hermes kanban stop` (если команда
+#     появится в будущем), fallback на kill -TERM <pid>. После успешного
+#     SIGTERM пишем task_events(kind='overshoot_kill', payload={"sent_at": now})
+#     в kanban DB — это маркер для следующего тика (через 60с → SIGKILL).
+#   - sigkill: kill -KILL <pid> (безусловно — grace уже истёк).
+# Idempotентно: bash-блок можно дёргать повторно; Python уже дедуплицирует
+# по task_comments + task_events.overshoot_kill.
+# ============================================================================
+if [ -s "$OVERSHOOT_ACTIONS_FILE" ]; then
+    log "overshoot-actions: $(wc -l < "$OVERSHOOT_ACTIONS_FILE") действие(й) из $OVERSHOOT_ACTIONS_FILE"
+    _now="$(date +%s)"
+    while IFS='|' read -r board task_id pid action; do
+        [ -n "$action" ] || continue
+        case "$action" in
+            sigterm)
+                # Пытаемся через dispatcher API (на будущее); сейчас команды
+                # `kanban stop` не существует → fallback срабатывает всегда.
+                if "$HERMES_BIN" kanban --board "$board" stop \
+                    --task-id "$task_id" --signal SIGTERM \
+                    >/dev/null 2>&1; then
+                    log "✅ overshoot-sigterm $board/$task_id via hermes kanban stop"
+                else
+                    # Fallback: прямой kill -TERM <pid>. ESRCH (pid уже нет)
+                    # идемпотентен — SIGTERM отправлять некуда, ничего не
+                    # делаем (Python на следующем тике увидит sent_at и не
+                    # выпустит новый SIGTERM-action).
+                    if kill -TERM "$pid" 2>/dev/null; then
+                        log "✅ overshoot-sigterm $board/$task_id pid=$pid (direct kill)"
+                    else
+                        log "⚠️ overshoot-sigterm $board/$task_id pid=$pid FAILED (already gone?)"
+                    fi
+                fi
+                # После SIGTERM (любым способом) — ставим маркер в task_events
+                # через прямой INSERT в kanban DB. payload={"sent_at": now}
+                # используется следующим тиком для решения SIGKILL-vs-skip.
+                # Используем python3+sqlite3 (а не sqlite3 CLI — в шапке
+                # watchdog.sh явно сказано «without depending on the sqlite3
+                # CLI»).
+                _overshoot_marker_rc=1
+                if [ -n "$task_id" ] && [ -n "$board" ]; then
+                    _db_path="$KANBAN_BOARDS_DIR/$board/kanban.db"
+                    if [ -f "$_db_path" ]; then
+                        OVERSHOOT_BOARD="$board" \
+                            OVERSHOOT_TASK="$task_id" \
+                            OVERSHOOT_NOW="$_now" \
+                            OVERSHOOT_DB="$_db_path" \
+                            python3 - <<'PYOVERSHOOT'
+import os, sqlite3
+db = os.environ["OVERSHOOT_DB"]
+board = os.environ["OVERSHOOT_BOARD"]
+task_id = os.environ["OVERSHOOT_TASK"]
+now = int(os.environ["OVERSHOOT_NOW"])
+con = sqlite3.connect(db)
+try:
+    con.execute(
+        "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+        "VALUES (?, NULL, 'overshoot_kill', ?, ?)",
+        (task_id, f'{{"sent_at":{now},"board":"{board}"}}', now),
+    )
+    con.commit()
+finally:
+    con.close()
+PYOVERSHOOT
+                        _overshoot_marker_rc=$?
+                    fi
+                fi
+                if [ "$_overshoot_marker_rc" = "0" ]; then
+                    log "✅ overshoot-sigterm marker set in task_events: $board/$task_id sent_at=$_now"
+                else
+                    log "⚠️ overshoot-sigterm marker INSERT failed for $board/$task_id (python rc=$_overshoot_marker_rc)"
+                fi
+                ;;
+            sigkill)
+                # SIGKILL — безусловно. Если pid уже нет → OK, ничего делать.
+                if kill -KILL "$pid" 2>/dev/null; then
+                    log "✅ overshoot-sigkill $board/$task_id pid=$pid"
+                else
+                    log "⚠️ overshoot-sigkill $board/$task_id pid=$pid FAILED (already gone)"
+                fi
+                ;;
+            *)
+                log "⚠️ overshoot-action: неизвестное действие '$action'"
+                ;;
+        esac
+    done < "$OVERSHOOT_ACTIONS_FILE"
+    rm -f "$OVERSHOOT_ACTIONS_FILE"
 fi
 
 # ============================================================================

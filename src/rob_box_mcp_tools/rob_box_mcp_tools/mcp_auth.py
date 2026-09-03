@@ -71,7 +71,7 @@ _REPLAY_CACHE_SIZE = 1024
 
 #: Кто имеет право звать тулы. Совпадает с набором нодов, которые
 #: действительно публикуют в ``/mcp/execute`` (см. llm_adapter.py,
-#: deepseek_adapter.py, async_executor.py).
+#: async_executor.py).
 DEFAULT_ALLOWED_SENDERS = frozenset({"dialogue_node", "harness"})
 
 

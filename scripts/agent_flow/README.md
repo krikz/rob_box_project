@@ -11,8 +11,11 @@
 - `/home/builder/.hermes/profiles/agent-flow/scripts/`
 - `/home/builder/.hermes/profiles/architect/scripts/`
 
-Эти 3 копии — **символические ссылки**, создаваемые `install.sh`.
-Любая правка там уйдёт при следующем `install.sh` через `ln -sf`.
+Эти копии — **hardlink'и** (`cp -al`), которые кладёт `install.sh`. Именно
+hardlink, а не симлинк: симлинк в `~/.hermes/scripts/` ресолвится наружу
+каталога и отклоняется guard'ом `scheduler.py::_validate_script_path`
+(ретро 11.08 `t_a6a236e0d9f0470e` — 50 упавших тиков подряд, 1ч42м
+даунтайма). Любая правка в копии уйдёт при следующем `install.sh`.
 
 ---
 
@@ -29,6 +32,9 @@ agent-PR → e2e → close цикла (см. `docs/design/AGENT_FLOW_PROPOSAL.md
 1. `/home/builder/.hermes/scripts/agent-flow-*.sh` — legacy, что-то стартует ещё
 2. `/home/builder/.hermes/profiles/agent-flow/scripts/` — gateway agent-flow
 3. `/home/builder/.hermes/profiles/architect/scripts/` — gateway architect
+4. `/home/builder/.hermes/profiles/devops/scripts/` — gateway devops (с 21.08)
+5. `/home/builder/.hermes/profiles/backend/scripts/` — gateway backend (с 01.09, см. ретро t_a3ba921e)
+6. `/home/builder/.hermes/profiles/analyst/scripts/` — gateway analyst (с 01.09, см. ретро t_a3ba921e)
 
 Чтобы избежать drift, **используй `install.sh` для раскладки hardlink-копий**:
 
@@ -37,16 +43,26 @@ bash <repo>/scripts/agent_flow/install.sh --dry-run   # только посмо�
 bash <repo>/scripts/agent_flow/install.sh             # реальная раскладка
 ```
 
-После этого все пути (agent-flow / architect / devops profiles +
-`~/.hermes/scripts`) — hardlink-копии (inode) или одинаковое содержимое.
-Правка в репо видима везде после следующего `install.sh`.
+После этого все 6 путей (agent-flow / architect / devops / backend / analyst
+profiles + `~/.hermes/scripts`) — hardlink-копии (inode) или одинаковое
+содержимое. Правка в репо видна везде после следующего `install.sh`.
+
+После раскладки `install.sh` делает жёсткий dual md5+size verify по всем
+6 TARGET_DIRS × N EXPECTED-файлам (post_install_verify). Если host-копия
+отличается от SOT — `install.sh` завершается с exit code 3 + alert-log
+(см. `agent-flow-drift.alert.log`). Раньше эта проверка отсутствовала —
+ретро 01.09 t_a3ba921e как раз и вышло из того, что 480 строк
+(§4 stale-after-upstream-fix detector) отстали на backend/analyst после
+PR #1849 ADR-0035, потому что install.sh их не покрывал. Теперь покрывает,
+и post_install_verify это поймает немедленно.
 
 **Контроль дрейфа: `agent-flow-drift-detect.sh`** (cron, every 30m).
 Эталон — `origin/develop` (после `git fetch origin develop`), НЕ локальное
 дерево: при local!=origin локальное дерево больше НЕ используется как
 эталон (ретро 13.08 t_9a3f2e0c — слепота дрейфа host↔origin при
-устаревшем local). Автофикс через `install.sh`; если не помог — сразу
-создаётся kanban-карточка (create_drift_card), не ждём следующего тика.
+устаревшем local). С 01.09 t_a3ba921e dual md5+size check (а не только
+md5 — `compute_drift`). Автофикс через `install.sh`; если не помог —
+сразу создаётся kanban-карточка (create_drift_card), не ждём следующего тика.
 
 **BRANCH_ACTIVE (главный worktree на фича-ветке воркера):** при дрейфе
 host↔origin автофикс выполняется из ВРЕМЕННОГО worktree на `origin/develop`
@@ -54,7 +70,40 @@ host↔origin автофикс выполняется из ВРЕМЕННОГО 
 содержит незамерженный код — install.sh из него разнёс бы веточные скрипты):
 `git worktree add --detach <wt> origin/develop` → `REPO_DIR=<wt> bash
 <wt>/scripts/agent_flow/install.sh` → `git worktree remove --force <wt>`.
-Карточка создаётся только если и этот путь не помог (md5-сверка после).
+Карточка создаётся только если и этот путь не помог (md5+size-сверка после).
+
+## Добавление нового профиля в install.sh
+
+При появлении нового Hermes-профиля, который должен запускать cron-job'ы
+(например, `developer`, `pr-reviewer`, `frontend` — все уже существуют,
+но без скриптов):
+
+1. Откройте `<repo>/scripts/agent_flow/install.sh`.
+2. Добавьте путь профиля в массив `TARGET_DIRS` (после строки 222):
+   ```bash
+   "/home/builder/.hermes/profiles/<profile>/scripts"
+   ```
+3. Добавьте комментарий-строку в шапке install.sh (раздел «Копии»).
+4. Запустите `bash <repo>/scripts/agent_flow/install.sh --dry-run` —
+   post_install_verify покажет «FAIL missing» для ВСЕХ EXPECTED-файлов,
+   которые ещё не разложены. Не пугайтесь: это значит, что install.sh
+   их ТОЛЬКО ЧТО впервые разложит в новый профиль.
+5. Без `--dry-run` — реальная раскладка. Все EXPECTED-файлы окажутся
+   во всех 7 TARGET_DIRS.
+
+Профиль создаётся через `profile-create.sh` или вручную (`mkdir -p`).
+
+## Почему install.sh всё-таки drift'нулся на backend/analyst в t_a3ba921e
+
+> Был проведён ретро: install.sh раскладывал 4 TARGET_DIRS, а backend и
+> analyst получили скрипты через profile-create.sh (snapshot с 31.08 —
+> до MERGE PR #1849 ADR-0035). 480 строк §4 stale-after-upstream-fix
+> detector у этих профилей — старая версия; ADR-0035 для них не работало.
+
+После merge PR починки install.sh в t_a3ba921e фикс автоматически
+дотянется: каждый cron-job (cleanup-249 / e2e-process / blocked-watchdog /
+blocked-watchdog-scope), зарегистрированный на backend и analyst, теперь
+получает свежие EXPECTED-скрипты.
 
 ## Скрипты
 
@@ -148,6 +197,53 @@ LLM-кронов (архитектор-надзор 5c96a6eedf93 и т.п.). З�
   --key <стабильный-slug>
 ```
 
+### `agent-flow-nightly-review.sh` — ночной ревью-цикл (ADR-0049, 03.09.2026)
+
+`no_agent`, cron `every 1h` (профиль devops), но работает только внутри
+ночного окна `[NIGHTLY_REVIEW_HOUR, +NIGHTLY_REVIEW_WINDOW_HOURS)` —
+default `[02:00, 06:00)` по локальному времени хоста. Остальные тики стоят
+один `date` и `exit 0`.
+
+Закрывает два пробела, которых не покрывает ни один другой контур: (a) нет
+среза «что за сутки реально доехало и что осталось висеть»; (b) никто не
+перечитывает код, который воркеры за день влили (дубли, глюки LLM,
+недоделки, расхождение с ADR/README).
+
+Что делает за тик:
+
+1. Механически собирает дайджест за ревью-сутки (`REVIEW_DATE 00:00`
+   локально → now): merged PR, коммиты `origin/develop`, issues
+   open/closed, красные CI-прогоны, kanban (закрытые / упавшие / висящие
+   >6ч / ретро), churn по компонентам. Секция без данных печатает
+   `НЕТ ДАННЫХ (<причина>)`, а не пустой список.
+2. Создаёт ОДНУ карточку **«🌙 ночной ревью \<дата\>»** на `architect`
+   (key `nightly-review-<дата>`).
+3. Создаёт до `COMPONENT_REVIEW_MAX` (default 3) карточек
+   **«🔍 ревью компонента: \<comp\>»** на `analyst`
+   (key `component-review-<slug>-<дата>`) — по компонентам с наибольшим
+   churn, мимо `COMPONENT_REVIEW_EXCLUDE_RE` (`docs/`, `evidence/`, …) и
+   мимо компонентов на кулдауне (`COMPONENT_REVIEW_COOLDOWN_DAYS`,
+   default 7 дней).
+
+Обе карточки идут через `kanban-retro-create.sh` (три слоя дедупа), плюс
+sentinel `/tmp/agent-flow-nightly-review.<дата>.done` — «одна ночь = один
+комплект карточек». Скрипт НЕ чинит код, НЕ трогает метки/PR/issues и НЕ
+зовёт LLM: рассуждения живут внутри созданных карточек.
+
+```bash
+# сухой прогон в любое время суток (карточки не создаются):
+NIGHTLY_REVIEW_FORCE=true NIGHTLY_REVIEW_DRY_RUN=true bash scripts/agent_flow/agent-flow-nightly-review.sh
+
+# ревью за конкретные сутки:
+NIGHTLY_REVIEW_FORCE=true NIGHTLY_REVIEW_DATE=2026-09-02 bash scripts/agent_flow/agent-flow-nightly-review.sh
+
+# тест: bash scripts/agent_flow/tests/test_nightly_review.sh
+```
+
+Ночное окно НЕ должно попадать в PEAK-окна `agents_sleep_schedule.conf`
+(`04:00-07:00` и `09:00-13:00` MSK) — там висит MAINTENANCE и тик
+пропускается. Двигаете PEAK — двигайте `NIGHTLY_REVIEW_HOUR`.
+
 ### `validate_honesty.sh` — pre-PR check на «голословный PASS» (ADR-0018, 18.08.2026)
 
 Сканирует PR body (или файл / stdin) на claim-маркеры (`проверил`, `работает`,
@@ -171,6 +267,99 @@ bash scripts/agent_flow/tests/test_validate_honesty.sh
 который дёргает валидатор в e2e-done review и логирует WARN (без блокировки).
 В `EXPECTED` `install.sh` → drift-detect контролирует, что скрипт не пропал
 из репо. Регистрация: `validate_honesty.sh` в `EXPECTED` (см. PR #1397).
+
+### `validate_adr_namespace.sh` — pre-PR check на ADR namespace collision (ретро 01.09 t_debcb647)
+
+Дополняет `validate_honesty.sh` функцией проверки ADR-нумерации (ADR-0030).
+Сравнивает номера **новых** ADR-файлов в diff `origin/develop...HEAD` с
+**существующими** номерами в `origin/develop docs/adr/`. Если номер занят
+→ exit 1 + actionable сообщение со списком коллизий, slug'ом файла в
+baseline и **next free slot** (= max(existing ADR number) + 1).
+
+Это pre-PR версия `check_adr_number_collision()` из `agent-flow-merge-gate.sh`:
+merge-gate ловит коллизию ПОСЛЕ открытия PR (и reject'ит + label), этот
+скрипт — ДО (`gh pr create` ещё не было), чтобы воркер мог переименовать
+`0040-collide.md → 0043-fresh.md` и сразу открыть чистый PR.
+
+```bash
+# Pre-PR (воркеры прогоняют локально перед `gh pr create`):
+cd /home/builder/rob_box_project
+bash scripts/agent_flow/validate_adr_namespace.sh
+# → exit 0 (clean) или exit 1 (collision, см. stderr)
+
+# Альтернативный baseline (например для экспериментальных веток):
+bash scripts/agent_flow/validate_adr_namespace.sh --ref main
+
+# Тест:
+bash scripts/agent_flow/tests/test_validate_adr_namespace.sh
+```
+
+**Регистрация:** в `EXPECTED` `install.sh` → drift-detect контролирует.
+**НЕ вызывается из merge-gate** (там своя полная реализация с override-метками
+`adr-collision-override` и 24h dedup; см. `agent-flow-merge-gate.sh` →
+`check_adr_number_collision`). Запускается воркером вручную как часть
+локального pre-PR чек-листа.
+
+**Exit codes:**
+- `0` — нет коллизии (clean) или нет новых ADR-файлов в diff
+- `1` — ADR namespace collision (см. stderr для списка конфликтов и next-free)
+- `2` — usage error (неизвестный флаг, baseline не достижим)
+
+### `validate_test_ws_dirs.py` — pre-PR check на молчаливый контракт test_ws (ретро 03.09 t_cfa21388)
+
+`G-Run Tests.yml` собирает CI-workspace `test_ws/` из **подмножества** корня репо:
+
+```yaml
+rsync src/ -> test_ws/src/
+for d in docker migrations docs .github scripts; do rsync "$d" test_ws/; done
+```
+
+Список `for d in ...` — **молчаливый контракт**. Тест, который ходит walk-up'ом
+до корня репо и читает корневой каталог ВНЕ этого списка, локально зелёный, а
+на CI падает collect-error'ом — и роняет весь батч пакета, а не один тест.
+
+Баг случался дважды в одном файле:
+
+| Карточка | PR | Чего не было | Последствие |
+|----------|-----|--------------|-------------|
+| `t_29b9ce36` (02.09) | #1874 | `docker/` | `metrics_server.py not found` |
+| `t_cfa21388` (03.09) | #1958 | `scripts/` | `score.py not found`, develop RED ~9ч, 20+ PR заблокированы |
+
+Guard закрывает **класс**, а не третий экземпляр: сверяет rsync-список
+**каждого** job'а со всеми корневыми каталогами, на которые тесты ссылаются
+**от корня репо** (`Path(__file__).resolve().parents[N]` с N до корня, обход
+`parents`, или якорь `ROB_BOX_REPO_ROOT`). Package-local каталоги
+(`src/rob_box_animations/scripts/`) не считаются — иначе ложные срабатывания.
+
+**Severity:**
+- `FAIL` (exit 1) — каталог не скопирован и обращение не защищено `skipif` →
+  CI упадёт collect-error'ом. Блокирует.
+- `WARN` (exit 0) — обращение под `pytest.mark.skipif(...exists())` → тест
+  молча **скипается** на CI. Не блокирует, но это дыра в покрытии.
+  На 03.09 таких 4 (`tools/gen_tool_catalog.py`, `test_skill_catalog.py`) —
+  тех-долг, отдельной карточкой.
+
+```bash
+# Pre-PR (воркеры прогоняют локально перед `gh pr create`):
+cd /home/builder/rob_box_project
+python3 scripts/agent_flow/validate_test_ws_dirs.py
+# → exit 0 (clean / только WARN) или exit 1 (непокрытый каталог)
+
+# Строгий режим — WARN тоже валит (для аудита тех-долга):
+python3 scripts/agent_flow/validate_test_ws_dirs.py --strict
+
+# Тест:
+bash scripts/agent_flow/tests/test_validate_test_ws_dirs.sh
+```
+
+**Регистрация:** в `EXPECTED` `install.sh` → drift-detect контролирует.
+**НЕ вызывается из merge-gate** — запускается воркером вручную как часть
+локального pre-PR чек-листа (по аналогии с `validate_adr_namespace.sh`).
+
+**Exit codes:**
+- `0` — все читаемые тестами корневые каталоги покрыты во всех job'ах
+- `1` — есть непокрытый каталог (FAIL), либо WARN при `--strict`
+- `2` — usage error (workflow не найден / изменилась структура `for d in`)
 
 ### `round_ensure.sh` — ручной валидационный e2e-раунд (ретро 11.08 t_26a6d362)
 
@@ -343,10 +532,73 @@ SWEEP_DAYS=2 bash <repo>/scripts/agent_flow/agent-flow-unlabeled-sweep.sh # ре
 Тонкая обёртка над cron-вызовами (используется как fallback когда
 Hermes-cron недоступен). Маленький, 854 байт.
 
-### `watchdog.sh` — мониторинг процессов
+### `watchdog.sh` — heartbeat агентов, every 2m
 
-Сторожевой таймер для долгоиграющих процессов (e2e-build, deploy).
-Запускается параллельно, проверяет живость по pid-файлу и heartbeat.
+Не «сторожевой таймер для e2e-build/deploy» (так было написано здесь до
+30.08 — описание не совпадало с кодом). Реально: целостность kanban-БД,
+залипшие карточки (heartbeat старше 10 мин), перезапуск диспетчера, когда
+running нет, а ready есть, recovery-карточка на умершего воркера, prune
+мёртвых PID, `RUN_NOW`-триггер немедленного e2e-прогона и block/unblock
+карточек при исчерпании провайдера (402/429 в логе воркера).
+Пустой stdout = тихий тик, токены не тратятся.
+
+### `watchdog-provider-quick.sh` — тот же provider-guard, но every 1m
+
+Горячий путь для исчерпания провайдера: 2-минутного скана `watchdog.sh`
+не хватает, чтобы среагировать до `consecutive_failures=2` → `gave_up`
+(ретро 24.08 `t_4c73490f`). Делит с `watchdog.sh` `PROVIDER_MARKERS` и
+логику recovery-волны, плюс маркеры HTTP 401 / Authentication Fails.
+
+### `agent-flow-e2e-drift-watchdog.sh` — метрика PR↔issue drift
+
+Только читает. Считает PR с меткой `e2e-done`, у которых issue уже вернулась
+в ротацию (`needs-e2e`) — то есть reconcile в merge-gate не сработал.
+`exit 1`, если максимальный drift старше `DRIFT_THRESHOLD` (30 мин).
+Reconcile делает merge-gate; этот скрипт — единственный способ увидеть,
+что тот НЕ сделал.
+
+### `agent-flow-rotation-watchdog.sh` — жива ли e2e-ротация
+
+Только читает, в GitHub не пишет вообще. Нет ни одного cron-тика и ни
+одного коммита в `origin/develop` за `ROTATION_DEAD_MIN` (2 ч) → `exit 1`.
+«N упавших e2e подряд» здесь НЕ считается — этим занимается
+`agent-flow-e2e-fail-streak-watchdog.sh` (дубль снят 30.08).
+
+> Оба вотчдога до 30.08 лежали в репо, но отсутствовали в `EXPECTED`
+> внутри `install.sh` — то есть на хост не раскладывались и запускаться
+> физически не могли. Сейчас раскладываются и покрыты drift-детектором;
+> **cron-job для них не зарегистрирован** — это отдельное решение Шифу.
+
+## Общие библиотеки
+
+Четыре файла рядом со скриптами; раскладываются install.sh наравне с ними
+(они есть в `EXPECTED`, значит их сверяет и `agent-flow-drift-detect.sh`):
+
+| файл | что внутри | кто сорсит |
+|---|---|---|
+| `lib_agent_flow_common.sh` | `af_load_profile_env`, `af_flock_guard_or_exit`, `af_maintenance_gate_or_exit`, `gh_list_issues_by_label`, `has_label` / `has_label_json`, `slugify`, `detect_pr_kind`, `free_stale_worktrees_for` | triage, merge-gate, e2e-process, deploy-sweep, unlabeled-sweep, handoff |
+| `lib_user_unlabel_check.sh` | «user-unlabel respect» guard (ретро 18.08 t_de6bea69) | merge-gate, e2e-process |
+| `lib_workflow_dedup.sh` | дедуп запусков workflow между двумя кронами | e2e-process, post-merge-build |
+| `hermes_github.sh` | `whoami_*`-обёртки над мутациями issue/PR (кто именно правил метку) | triage, merge-gate, e2e-process, completion-check |
+
+`lib_agent_flow_common.sh` появился 30.08 при дедупе процессного слоя: до
+него `gh_list_issues_by_label` лежала в четырёх копиях, `.env`-преамбула и
+flock-преамбула — в пяти, MAINTENANCE-гейт — в четырёх. Копии успели
+разъехаться — дефолтами полей и текстами логов, — и баг чинился в одной из
+них (REST отдаёт `updated_at`, а маппинг читал `updatedAt`: на fallback-пути
+поле терялось, deploy-sweep падал по KeyError внутри подстановки, то есть
+молча). Гард на это — `tests/test_gh_label_filter_fallback.sh`, кейс G.
+
+Два намеренных исключения, не сводить:
+- `log()` у каждого скрипта свой (свой `LOG_PREFIX`, у handoff ещё и вывод в
+  stdout). Функции библиотеки зовут `_af_log`, который делегирует в `log`
+  вызывающего, если тот определён.
+- `has_label` из deploy-sweep принимает labels **JSON** (`gh issue view --json
+  labels`), а у остальных на входе **CSV**. Одно имя, два контракта: в
+  библиотеке они лежат как `has_label` (CSV) и `has_label_json` (JSON).
+
+Свой flock у `agent-flow-e2e-process.sh` (G6) тоже не сведён: он умеет ждать
+замок до 60с, если тик поднят вручную через RUN_NOW.
 
 ## Vendor-патчи hermes-agent (ретро t_f00676f8)
 
@@ -457,9 +709,20 @@ resume (порядок важен, см. skill `synthesis-tts-chain-debugging` �
 
 ## MAINTENANCE-flag
 
-Скрипт `agent-flow-e2e-process.sh` первой строкой проверяет
-наличие `MAINTENANCE`-файла в `origin/develop`. Если есть — тик
-skip (exit 0). Включается через:
+Общий kill-switch: файл `MAINTENANCE` в `origin/develop`. Если он есть —
+тик пропускается (exit 0, это не ошибка). Проверяют его `agent-flow-triage.sh`,
+`agent-flow-merge-gate.sh`, `agent-flow-e2e-process.sh`, `agent-flow-handoff.sh`
+и (с 30.08) `agent-flow-deploy-sweep.sh` + `agent-flow-unlabeled-sweep.sh` —
+общей функцией `af_maintenance_gate_or_exit` из `lib_agent_flow_common.sh`.
+
+> deploy-sweep и unlabeled-sweep до 30.08 гейта НЕ имели, хотя секция в обоих
+> так и называлась — «MAINTENANCE gate + env». Первый продолжал ходить по SSH
+> на Pi, вешать `hermes` и закрывать issues, второй — вешать `stale-candidate`
+> и закрывать issues, пока весь остальной конвейер стоял. Особенно заметно с
+> `agents_sleep.sh`, который ставит MAINTENANCE в PEAK-часы со смыслом «все
+> спят».
+
+Включается через:
 
 ```bash
 cd /home/builder/hermes-share/rob_box_project

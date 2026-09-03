@@ -25,6 +25,18 @@ AUDIO_EXTENSIONS: set[str] = {".wav", ".aif", ".aiff", ".mp3"}
 
 MAX_RESULTS = 30
 
+#: Шаг поворота окна результатов между вызовами с одним и тем же запросом.
+#:
+#: Зачем: раньше поиск шёл по ``sorted()`` и обрывался на первых
+#: ``MAX_RESULTS`` совпадениях, то есть ``search_samples("kick")`` ВСЕГДА
+#: возвращал одни и те же алфавитно первые сэмплы. LLM не «выбирала одно и
+#: то же» — ей просто ни разу не показали ничего другого. Поворот окна на
+#: каждом вызове раскрывает всю коллекцию.
+#:
+#: 7 — взаимно простое с типичными размерами наборов, поэтому окно
+#: сдвигается по всей выборке, а не топчется на нескольких позициях.
+ROTATION_STRIDE = 7
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -36,6 +48,7 @@ def search_renardo_samples(
     query: str,
     pack: str = "0_foxdot_default",
     case: str = "lower",
+    rotate: int = 0,
 ) -> Dict[str, Any]:
     """Search Renardo sample packs by keyword in filename.
 
@@ -49,6 +62,11 @@ def search_renardo_samples(
         pack: Sample pack name — ``"0_foxdot_default"`` (standard) or
             ``"1_pitchglitch_samples"`` (extended, includes vocals/FX).
         case: Letter case in ``play()`` — ``"lower"`` or ``"upper"``.
+        rotate: Which window of the match set to return when there are more
+            than :data:`MAX_RESULTS` matches. The function stays pure and
+            deterministic — the *caller* supplies an incrementing counter so
+            that repeating the same query surfaces different samples. See
+            :data:`ROTATION_STRIDE`.
 
     Returns:
         Dict with keys:
@@ -68,7 +86,8 @@ def search_renardo_samples(
         - ``query`` (str)
         - ``pack`` (str)
         - ``case`` (str)
-        - ``found`` (int)
+        - ``found`` (int) — how many were returned
+        - ``total_found`` (int) — how many exist in total
         - ``results`` (list[dict]) — each with ``letter``, ``sample_index``,
           ``spack``, ``filename``, ``play_code``
     """
@@ -121,8 +140,11 @@ def search_renardo_samples(
         }
 
     # ── Keyword search ────────────────────────────────────────────────
+    # Собираем ВСЕ совпадения, а не первые MAX_RESULTS: без полного набора
+    # нельзя ни сказать, сколько их на самом деле, ни показать разные при
+    # повторном запросе.
     q = query.lower().strip()
-    results: List[Dict[str, Any]] = []
+    matches: List[Dict[str, Any]] = []
     for folder in sorted(pack_path.iterdir()):
         if not folder.is_dir() or folder.name.startswith("."):
             continue
@@ -139,7 +161,7 @@ def search_renardo_samples(
                 play_letter = (
                     folder.name.upper() if case == "upper" else folder.name
                 )
-                results.append(
+                matches.append(
                     {
                         "letter": play_letter,
                         "sample_index": idx,
@@ -151,23 +173,34 @@ def search_renardo_samples(
                         ),
                     }
                 )
-                if len(results) >= MAX_RESULTS:
-                    break
-        if len(results) >= MAX_RESULTS:
-            break
 
-    if not results:
+    if not matches:
         return {
             "query": query,
             "pack": pack,
             "case": case,
             "found": 0,
+            "total_found": 0,
         }
+
+    total_found = len(matches)
+    if total_found > MAX_RESULTS:
+        # Поворачиваем окно, а не срезаем начало: иначе каждый вызов с одним
+        # и тем же запросом отдаёт одни и те же сэмплы и вся остальная
+        # коллекция для LLM не существует.
+        start = (int(rotate) * ROTATION_STRIDE) % total_found
+        results = [matches[(start + i) % total_found] for i in range(MAX_RESULTS)]
+    else:
+        results = matches
 
     return {
         "query": query,
         "pack": pack,
         "case": case,
+        # ``found`` — сколько вернули (контракт не менялся).
         "found": len(results),
+        # ``total_found`` — сколько есть на самом деле. Без него LLM видит
+        # «найдено 30» при двухстах доступных и считает коллекцию бедной.
+        "total_found": total_found,
         "results": results,
     }

@@ -1,17 +1,13 @@
 #!/bin/bash
 # ============================================================================
 # SOT (source-of-truth): <repo>/scripts/agent_flow/watchdog-provider-quick.sh
-# Каноническая версия живёт в репо. На хост раскладывается через
-# `bash <repo>/scripts/agent_flow/install.sh`, который создаёт
-# символические ссылки (hardlinks) в:
-#   - ~/.hermes/profiles/agent-flow/scripts/watchdog-provider-quick.sh
-#   - ~/.hermes/profiles/architect/scripts/watchdog-provider-quick.sh
-#   - ~/.hermes/profiles/devops/scripts/watchdog-provider-quick.sh
-#   - ~/.hermes/scripts/watchdog-provider-quick.sh
-# Правка: редактируем <repo>/scripts/agent_flow/watchdog-provider-quick.sh,
-# commit, merge. На хост: bash <repo>/scripts/agent_flow/install.sh
-# (или вручную cp + ln -sf). Если ты правишь этот файл НА ХОСТЕ руками —
-# синхронизируй обратно в репо.
+# Правим ТОЛЬКО здесь + commit + merge в develop. На хост раскладывает
+# `bash <repo>/scripts/agent_flow/install.sh` — hardlink-копиями (cp -al), НЕ
+# симлинками: симлинк в ~/.hermes/scripts/ ресолвится наружу и отклоняется
+# guard'ом hermes-agent scheduler.py::_validate_script_path (ретро 11.08
+# t_a6a236e0d9f0470e — 50 упавших тиков подряд, 1ч42м даунтайма).
+# Полный список путей раскладки — в install.sh, сверку копий держит
+# agent-flow-drift-detect.sh. Ручная правка копии на хосте затрётся.
 # ============================================================================
 # Watchdog provider-exhaustion FAST-TICK guard (ретро 24.08 t_4c73490f).
 #

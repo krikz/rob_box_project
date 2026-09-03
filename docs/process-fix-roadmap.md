@@ -236,11 +236,78 @@ grep '| devops ' docs/process-fix-roadmap.md
 
 ---
 
+## 5bis. Пробел: 22 ретро после 19.08 не попали в таблицу (найдено 30.08)
+
+Правило §0.1 этого документа — «любая новая ретроспектива обязана добавить
+строки в мастер-таблицу». Между 22.08 и 28.08 процессные скрипты сослались
+на **22 ретро-карточки, ни одной из которых нет в §1**. То есть TL;DR внизу
+(«один файл = весь process debt») с 22.08 неверен.
+
+Ниже — не находки, а рабочий список: где каждая карточка задокументирована
+в коде. Статусы/PR'ы сюда не проставлены намеренно — их надо брать из самих
+карточек, а не додумывать.
+
+| дата | retro_id | где задокументировано |
+|---|---|---|
+| 22.08 | `t_562a8682` | `agent-flow-merge-gate.sh:2904` |
+| 22.08 | `t_8cde8449` | `agent-flow-triage.sh:292` |
+| 22.08 | `t_944df2c5` | `agent-flow-e2e-process.sh:3531` |
+| 22.08 | `t_9e61d788` | `agent-flow-merge-gate.sh:2338` |
+| 22.08 | `t_a24ffe39` | `agent-flow-triage.sh:1216` |
+| 22.08 | `t_a2cd5753` | `agent-flow-e2e-process.sh:2251` (stale-branch блокировка PR) |
+| 22.08 | `t_d9b4c600` | `install.sh:95` (ADR-0024, cross-task archive sweeper) |
+| 22.08 | `t_deba66ef` | `agent-flow-cleanup-249.sh:32` |
+| 22.08 | `t_e8d52cb7` | `agent-flow-merge-gate.sh:186` |
+| 23.08 | `t_8abada71` | `push-via-gh-api.sh:12` |
+| 23.08 | `t_98bb3a1d` | `install.sh:55` (e2e-process launcher как no-agent job) |
+| 23.08 | `t_b977cb4b` | `agent-flow-e2e-process.sh:98` |
+| 24.08 | `t_388bb652` | `agent-flow-e2e-process.sh:1956` (docs(adr / wip(arch → lint) |
+| 24.08 | `t_4c73490f` | `install.sh:68` (provider-exhaustion fast-tick) |
+| 24.08 | `t_bf7cd662` | `lib_user_unlabel_check.sh:43` |
+| 24.08 | `t_cd32788f` | `agent-flow-e2e-process.sh:2535` |
+| 25.08 | `t_00ba0224` | `agent-flow-merge-gate.sh:1419` (ADR-процесс) |
+| 25.08 | `t_1a4f3275` | `agent-flow-merge-gate.sh:697` |
+| 25.08 | `t_7766fe44` | `agent-flow-e2e-process.sh:647` |
+| 26.08 | `t_b0fe4398` | `agent-flow-triage.sh:1089` |
+| 28.08 | `t_4ead2dd4` | `agent-flow-e2e-process-launcher.sh:46` |
+| 28.08 | `t_faac94b0` | `agent-flow-e2e-process-launcher.sh:73` (fail-streak watchdog) |
+
+Отдельно, тем же сканом 30.08 (дедупликация процессного слоя):
+
+| что | статус | где |
+|---|---|---|
+| `agent-flow-e2e-drift-watchdog.sh` и `agent-flow-rotation-watchdog.sh` лежали вне `EXPECTED` в `install.sh` — на хост не раскладывались, запускаться не могли | 🟢 resolved 30.08 | добавлены в `EXPECTED`; cron-job для них по-прежнему НЕ зарегистрирован |
+| `agent-flow-rotation-watchdog.sh` §2 дублировал fail-streak-watchdog (`t_faac94b0`) | 🟢 resolved 30.08 | §2 снят, границы ответственности записаны в заголовок |
+| Заголовок SOT в 9 скриптах утверждал «символические ссылки», хотя `install.sh` кладёт hardlink'и именно чтобы не сломать guard (ретро 11.08 `t_a6a236e0d9f0470e`) | 🟢 resolved 30.08 | один общий текст заголовка во всех файлах |
+| `LOG_FILE` дефолт `/var/log/...` у drift-вотчдога → `Permission denied` под `set -euo pipefail` | 🟢 resolved 30.08 | дефолт под `HERMES_HOME` |
+| 79 тестов `scripts/agent_flow/tests/` не запускаются ни в одном workflow | 🔴 open | см. волну 4 дедупа 30.08 |
+| Шаг «Shell Scripts» в `G-Lint Code.yml` заглушен дважды (`\|\| echo` + `continue-on-error: true`) — упасть не может | 🔴 open | `.github/workflows/G-Lint Code.yml:211-223` |
+| ~1655 строк Python внутри bash-строк (130 `python3 -c`) | 🔴 open | e2e-process ~524, merge-gate ~531, triage ~282 |
+
+Волна 2 (общая библиотека), 30.08:
+
+| что | статус | где |
+|---|---|---|
+| `gh_list_issues_by_label` ×4, `.env`-преамбула ×5, MAINTENANCE-гейт ×4, flock-преамбула ×4, `detect_pr_kind` ×2, `free_stale_worktrees_for` ×2, `slugify` ×3, `has_label` ×4 | 🟢 resolved 30.08 | `lib_agent_flow_common.sh`, сорсится из шести скриптов |
+| REST-fallback читал `it.get("updatedAt")`, а GitHub REST отдаёт `updated_at` → на fallback-пути поле терялось; `deploy-sweep:314` обращается к нему жёстко → KeyError внутри `< <(python3 ...)`, ноль обработанных issue, exit-код тика не менялся | 🟢 resolved 30.08 | читаем оба имени; гард — `tests/test_gh_label_filter_fallback.sh` кейс G |
+| `tests/lib/lib_eval_func.sh` не существовал НИКОГДА, хотя `test_gh_label_filter_fallback.sh` сорсит его первой строкой — единственный гард бага #1457 не отработал ни разу | 🟢 resolved 30.08 | библиотека написана, тест зелёный (7 кейсов) |
+| Причина предыдущей строки: в `.gitignore` правило `lib/` без якоря матчит каталог с таким именем на ЛЮБОЙ глубине, включая `scripts/agent_flow/tests/lib/`. Файл писался локально и молча не попадал в коммиты | 🟢 resolved 30.08 | `/lib/`, `/lib64/` — python-артефакты в корне, как и задумывалось |
+| `test_detect_pr_kind.sh` извлекал `detect_pr_kind` из двух скриптов (гард «копии не разъехались»), после выноса в библиотеку извлекать стало нечего | 🟢 resolved 30.08 | берёт единственную реализацию из библиотеки + проверяет, что локальную копию не завели обратно |
+| `agent-flow-deploy-sweep.sh` и `agent-flow-unlabeled-sweep.sh` не проверяли MAINTENANCE, хотя секция в обоих называлась «MAINTENANCE gate + env»: первый ходил по SSH на Pi и правил issues, второй вешал `stale-candidate` и закрывал issues — пока конвейер стоял на паузе (в т.ч. в PEAK-часы `agents_sleep.sh`) | 🟢 resolved 30.08 | `af_maintenance_gate_or_exit` — **изменение поведения**, не только дедуп |
+| Доккоммент `deploy_issue_reconcile_all` (ретро 15.08 `t_238ff3f7`) снесло вместе с соседней функцией при выносе в библиотеку | 🟢 resolved 30.08 | восстановлен на месте |
+| Три `ensure_*_cron` в `install.sh` — по копии проверок и своему сообщению об ошибке в каждой | 🟢 resolved 30.08 | общий `ensure_cron_job`; путь профилей переопределяется через `HERMES_PROFILES_ROOT` (это же убрало `sed -i` по тексту функции в двух тестах) |
+| `ensure_cleanup_cron` использует guard `any` (любой джоб с этим script) вместо `interval` (enabled + interval). Completed once-джоб он засчитает как живой — ровно тот сценарий, из-за которого e2e-rotation простоял 60+ часов (`t_98bb3a1d`) | 🔴 open | `install.sh`, `ensure_cron_job … any`. Перевод на `interval` меняет поведение крона на живом хосте — решение за владельцем |
+| `agent-flow-unlabeled-sweep.sh` грузит `.env` через `set -a` — приоритет обратный остальным пяти скриптам (`.env` перебивает окружение вызывающего) | 🔴 open | `agent-flow-unlabeled-sweep.sh:~105`; смена приоритета меняет поведение, а тесты этого скрипта на dev-машине не гоняются |
+
+---
+
 ## 6. Changelog документа
 
 | Дата | Что изменилось | Автор |
 |------|----------------|-------|
 | 2026-08-19 | Initial creation (issue #1464) | architect (Hermes) |
+| 2026-08-30 | §5bis: зафиксирован пробел в 22 ретро (22.08–28.08) + находки дедупа процессного слоя | Claude Opus 5 |
+| 2026-08-30 | §5bis: волна 2 — общая библиотека, `updated_at`, MAINTENANCE-гейт deploy-sweep, воскрешённый гард #1457 | Claude Opus 5 |
 | TBD | следующая ретро добавляет строки через cherry-pick из `process-review-*.md` | — |
 
 ---

@@ -2,7 +2,7 @@
 
 | Поле | Значение |
 |---|---|
-| Статус | Proposed (дизайн-фаза, реализация отложена) |
+| Статус | Accepted (wire contract — §4.7 — реализован карточкой AV-14 / issue #1906) |
 | Дата | 2026-08-24 |
 | Автор | architect, по инициативе товарища Шифу |
 | Контекст | Расширение фичи #1576 (Meta Quest / WebXR-аватар). Telegram-бот (`rob_box_telegram`) сейчас работает автономно, минуя общий state — отсюда race conditions (Quest едет, а Telegram шлёт `/forward`) и дублирование логики режимов |
@@ -209,6 +209,54 @@ caller — клиент). Супервизор может **отклонить**
 подписываются и **сами** решают, что значит «floor не у меня» (например,
 Telegram гасит свои кнопки движения).
 
+**Решение по дублю LockManager/ModeManager (W3-2, issue #968 wave2, G2/G3
+— зафиксировано, чтобы не путать снова):** в пакете исторически появились
+ДВЕ независимые реализации floor-логики — `core/locks.py::LockManager`
+(AV-4) и `core/fsm.py::ModeManager` (AV-3, floor-ы как побочный атрибут
+FSM режимов). Обе покрыты юнит-тестами, что маскирует дубль.
+
+- **`LockManager` (`core/locks.py`) — источник истины по floor-ам.**
+  Именно он стоит за сервисами `AcquireFloor`/`ReleaseFloor`: независимые
+  `teleop_floor`/`voice_floor`, dead-man 500 мс (§6 Q4), идемпотентный
+  повторный acquire тем же `client_id`, `ConflictError`/`PermissionError`
+  с точной причиной. Это ровно то, что нужно клиентам (Quest/Telegram),
+  которые дёргают `acquire_floor`/`release_floor` напрямую.
+- **`ModeManager` (`core/fsm.py`) остаётся ТОЛЬКО за режимами аватара**
+  (`off`/`telegram_active`/`avatar_present`/`mixed`, §4.1). Его
+  `voice_held_by`/`teleop_held_by` — это **вход** для решений о переходах
+  между режимами (например, «нельзя `off → avatar_present`, если
+  Telegram держит `voice_floor`»), а не отдельный сервис выдачи floor-ов
+  клиентам: своей dead-man логики у `ModeManager` нет (только
+  `IDLE_TIMEOUT_S = 30s` для простоя всего FSM — другая семантика).
+- Практическое следствие: `AvatarSupervisor.__init__` инстанцирует
+  `LockManager` рядом с `DeadManCounter`/`StateAggregator` (см.
+  `supervisor_node.py`); `ModeManager` пока не инстанцируется вовсе —
+  подключится вместе с `SetAvatarMode` (W3-4, смена режима в рантайме).
+  `ModeManager`/`FSMConflictError` держим экспортированными из
+  `core/__init__.py` как задел под будущую FSM-карточку, но НЕ считаем
+  их источником состояния floor-ов.
+- Если однажды понадобится смёржить обе реализации (например, чтобы
+  `ModeManager.transition()` сверялся с реальным состоянием
+  `LockManager` вместо собственных `_voice_held_by`/`_teleop_held_by`)
+  — это отдельная карточка, не W3-2: смёрживание задевает FSM-переходы
+  (`core/test_fsm.py`), а не только floor-сервисы.
+
+**Решение по контракту запроса `AcquireFloor`/`ReleaseFloor` (W3-2):**
+`std_srvs/Trigger.Request` в реальном ROS 2 **не имеет полей вообще**
+(пустой message перед `---` в `.srv`) — «JSON в `Trigger.request`»
+дословно невозможен, стандартных `std_srvs`/`rcl_interfaces` типов с
+подходящим строковым полем запроса тоже нет. Взят переходный вариант:
+сервис остаётся `std_srvs/Trigger` (нулевые изменения wire-типа), а
+`client_id`/`floor` читаются либо из атрибутов запроса напрямую
+(`request.client_id`/`request.floor` — совместимо с будущим кастомным
+IDL из AV-5 без правок кода), либо из JSON в `request.data` как
+fallback (см. `AvatarSupervisor._extract_floor_request`). Это ЧЕСТНО
+задокументированный техдолг: полноценный wire-контракт для `active`
+режима на других языках/процессах появится только с кастомным IDL
+(AV-5, §4.3) — до этого момента межпроцессный `active`-вызов
+`acquire_floor` по сети работать не будет, реальна только логика
+внутри процесса супервизора (LockManager, dead-man, конфликты).
+
 ### 4.3. ROS 2 API супервизора
 
 **Публикует (latched, transient_local):**
@@ -309,6 +357,84 @@ src/rob_box_supervisor/
 **Деплой:** новый docker-сервис `rob_box_supervisor` на Vision Pi (там же
 Quest), `network_mode: host`, depends_on: `zenoh-router-vision`.
 Vol-монтирования конфигов — по `DOCKER_STANDARDS.md`.
+
+### 4.7. Wire-контракт `/avatar/state` (AV-14, issue #1906)
+
+Сообщение `/avatar/state` живёт в `std_msgs/String` (UTF-8). Payload —
+msgpack-словарь, **завёрнутый в latin-1 строку**. Кодирование/декодирование
+делает **только** `rob_box_supervisor.core.state` через
+`encode_for_ros_string` / `decode_from_ros_string`. Это — единственное
+место, где формат определён. И издатель (`supervisor_node._publish_avatar_state`),
+и любой потребитель (сейчас `rob_box_telegram.supervisor_client`, скоро
+`rob_box_quest` через WSS-мост) **обязаны** идти через эти хелперы и
+**не** пытаться угадать формат заново.
+
+**Почему msgpack, а не JSON / protobuf / свой IDL:**
+
+- *msgpack* — компактный (off-mode idle ≤200 байт, проверено в
+  `test_state.py::5`), быстрый, без IDL-генерации (не тянем
+  `rosidl-*` под одно высокочастотное сообщение), широко
+  используется в ROS 2 ecosystem.
+- *JSON* — текст, читабельный в логах, но ~2× больше и не
+  гарантирует 1:1 round-trip для бинарных полей (если завтра
+  добавится `bytes` в `AvatarEvent.args`).
+- *protobuf / flatbuffers* — хороший выбор при Phase 2 / IDL, но
+  требует code-generation step в CI и не оправдан для одной
+  introspection-ноды (S11 «минимальный инструмент под задачу»).
+- *Свой IDL `.msg` + rosidl* — Phase 2 (AV-5), когда появится ≥2
+  типа сообщений и внешние потребители (admin-панель, web-dash).
+  Сейчас вводить его преждевременно.
+
+**Почему latin-1 между msgpack-байтами и `std_msgs/String`:**
+
+`std_msgs/String` — UTF-8 (требование DDS). Голые байты 0x80..0xFF в
+него **нельзя** класть. У нас три варианта:
+
+- *latin-1* (выбран): каждый из 256 code points latin-1 совпадает с
+  одним байтом 0x00..0xFF. То есть `bytes.decode("latin-1")` и
+  обратный `str.encode("latin-1")` — lossless round-trip. msgpack
+  никогда не порождает invalid UTF-8 sequences (это бинарь, не текст),
+  поэтому latin-1 строка переживает DDS-сериализацию в UTF-8 без
+  потерь: каждый char становится одним байтом, который UTF-8 тоже
+  кодирует 1:1.
+- *base64* (+33% к размеру): для 1 Гц топика приемлемо, но бессмысленно
+  — мы в одном Python-процессе, нет нужды в текст-безопасности для
+  транспортного слоя.
+- *hex* (+100%): то же.
+
+**Почему **запрещён** «тихий fallback» на другой кодек:**
+
+До AV-14 `supervisor_node._publish_avatar_state` умел
+`msgpack.packb(...)` с `except: payload = json.dumps(...)` — и
+`supervisor_client._on_state_msg` умел `json.loads(...)` с
+`except: return`. Две стороны говорили на разных языках: издатель
+отправлял msgpack-as-latin-1, потребитель ждал JSON. Каждый фрейм
+падал в `JSONDecodeError`/`msgpack.UnpackException`, оба `except`-а
+**молча проглатывали** ошибку, и Telegram-бот **никогда** не видел
+состояния супервизора. UI-gate (`_handle_move`) не блокировал кнопки
+даже когда другой оператор держал `teleop_floor` — это и был баг
+#1906, обнаруженный в проде спустя месяц.
+
+Правило: codec в `core.state` либо работает, либо **явно** raise
+(`StateTransportError` / `StateVersionError`). Потребитель
+**обязан** либо обработать ошибку (rate-limited WARN + счётчик), либо
+пропустить payload, но **никогда** не пытаться угадать формат заново
+(`json.loads`, `ast.literal_eval`, regex-парсинг, etc.). Молчаливый
+fallback — это и есть тот класс дефектов, который спрятал #1906.
+
+**Прямой контракт на стыке (test_state_wire_contract.py):**
+
+- `encode_for_ros_string(state) → str` → UTF-8 round-trip
+  (`s.encode("utf-8").decode("utf-8")`, что и делает DDS) →
+  `decode_from_ros_string(...)` → равенство с исходным `state` поле-в-поле.
+- Кириллица в `client_id` / `last_event.client_id` (мульти-байт UTF-8)
+  и одиночные байты > 0x7F в `args` round-trip-ятся без потерь.
+- `version > SCHEMA_VERSION` → `StateVersionError` (forward-compat).
+- Не-`str` или пустая строка → `StateTransportError`.
+- Битый (не-msgpack) payload → исключение (типизированное, не молча).
+- Реальный `SupervisorClient._on_state_msg` принимает то, что
+  производит `encode_for_ros_string` (это тест-кейс, который, будучи
+  добавлен месяц назад, поймал бы баг на первом CI-прогоне).
 
 ---
 

@@ -17,12 +17,12 @@ ROS 2 интерфейс:
 import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from std_msgs.msg import String
 import json
 import math
 import os
-from typing import Dict, Any
+from typing import Any, Dict, Optional
 
 from .registry import MCPToolRegistry
 from .tools import (
@@ -55,12 +55,18 @@ from .tools import (
     EstimateTtsDurationTool,
     RegisterSpeakerTool,
     SetVoiceTool,
+    # Issue #1765 — cross-provider TTS switching.
+    SetTtsProviderTool,
+    ListTtsVoicesTool,
+    # S6.1 — task_delta MCP tool (scheduler segments).
+    TaskDeltaTool,
     MemorySaveTool,
     MemorySearchTool,
     MemoryContextTool,
     MusicManager,
     TrackLibrary,
     ExecuteMusicCodeTool,
+    ComposeMusicTool,
     StopMusicTool,
     SetVibePresetTool,
     GetMusicStateTool,
@@ -124,8 +130,20 @@ class MCPServer(Node):
         super().__init__("mcp_server")
 
         # Параметры ноды
-        # Issue 986: музыка орала, голос не был слышен — понизили max_amp с 0.7 до 0.42
-        self.declare_parameter("music_max_amp", 0.42)
+        # Громкость музыки — ДВА разных параметра, см.
+        # docs/analysis/2026-08-30-music-quality-audit.md (RC1).
+        #
+        # music_max_amp — санитарный потолок ОДНОГО слоя, не регулятор
+        # громкости. Issue 986 («музыка орала, голос не был слышен») чинили
+        # понижением до 0.42, но это выравнивало все слои по одному потолку:
+        # микс становился плоским, а клиппинг оставался (капается каждый amp,
+        # а не их сумма — 4 слоя * 0.42 = 1.68 на шине). Теперь сумму держит
+        # синт masterlimiter в scsynth, поэтому потолок поднят.
+        self.declare_parameter("music_max_amp", 0.85)
+        # music_master_gain — ЕДИНСТВЕННАЯ ручка уровня музыки относительно
+        # речи: мастер-фейдер ПОСЛЕ лимитера (/n_set 999 gain <v>).
+        # Внутренняя динамика микса при этом сохраняется.
+        self.declare_parameter("music_master_gain", 0.5)
         # Issue #1219 — активный TTS-провайдер для валидации голосов в
         # speak_text/set_voice. Должен совпадать с tts_node.yaml provider
         # (minimax). Используется для выбора списка голосов (Q4).
@@ -169,8 +187,24 @@ class MCPServer(Node):
         )
         self._qos_profile = qos_profile
 
-        # Publisher для списка инструментов
-        self.tools_pub = self.create_publisher(String, "/mcp/tools", qos_profile)
+        # Publisher для списка инструментов.
+        #
+        # TRANSIENT_LOCAL (latched): каталог инструментов — это статическое
+        # объявление, а не поток данных. Раньше здесь висел таймер на 10с,
+        # который каждые десять секунд сериализовал ~50 схем с indent=2 и
+        # публиковал их в топик, у которого в проде не было ни одного
+        # подписчика. У этой ноды уже была история CPU-петли
+        # (mcp-server-cpu-loop-2026-08-22), так что периодическая рассылка
+        # мегабайтного JSON в никуда — не мелочь. Теперь публикуем один раз
+        # при старте, а late joiner'ы (dialogue_node, `ros2 topic echo`)
+        # получают последнее сообщение из durability-кэша.
+        tools_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self.tools_pub = self.create_publisher(String, "/mcp/tools", tools_qos)
 
         # Publisher для результатов
         self.result_pub = self.create_publisher(String, "/mcp/result", qos_profile)
@@ -179,6 +213,19 @@ class MCPServer(Node):
         # тот поднимал VAD threshold при активной музыке (strict mode).
         # audio_node подписывается на /voice/music/state ("playing"/"idle").
         self.music_state_pub = self.create_publisher(String, "/voice/music/state", qos_profile)
+
+        # 🔴 FIX (live 30.08, vision-pi 12:33): mp3-трек из
+        # ``gen_play_from_library`` играет в ``sound_node``, а не в Renardo.
+        # ``MusicManager.stop_all()`` про него ничего не знает, поэтому и
+        # ``music_cleanup``, и watchdog его не гасили: юзер сказал «останови
+        # музыку», робот ответил «Музыка выключена.», а трек доиграл до
+        # конца. Единственным местом, которое реально его останавливало,
+        # был ``StopMusicTool``. Публикуем те же два топика здесь, а тул
+        # теперь делегирует сюда (одна точка правды).
+        self.sound_stop_pub = self.create_publisher(String, "/voice/sound/stop", qos_profile)
+        self.generated_music_state_pub = self.create_publisher(
+            String, "/voice/generated_music/state", qos_profile
+        )
 
         # Subscriber для запросов на выполнение
         # ReentrantCallbackGroup — критически важно!
@@ -207,6 +254,26 @@ class MCPServer(Node):
         except ImportError:
             self.get_logger().warning("⚠️ PerceptionEvent не найден, мониторинг контекста отключен")
 
+        # Issue #1770 — подписка на /voice/speaker/result, чтобы memory
+        # tools могли фильтровать facts/turns по speaker_id без явной передачи
+        # от LLM (fallback: ``node.current_speaker_id``). speaker_id_node
+        # публикует ``{"is_known": true, "speaker_id": "...", "name": "...",
+        # "confidence": 0.93}`` после каждой распознанной реплики; нам нужен
+        # только ``speaker_id`` (UUID), всё остальное — для логов.
+        self.current_speaker_id: Optional[str] = None
+        try:
+            self._speaker_result_sub = self.create_subscription(
+                String,
+                "/voice/speaker/result",
+                self._on_speaker_result,
+                10,
+            )
+            self.get_logger().info("🎙️ Подписан на /voice/speaker/result (issue #1770)")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ Не удалось подписаться на /voice/speaker/result: {exc}"
+            )
+
         # Issue #1229 — фактический провайдер TTS (после фолбека) от tts_node.
         # tts_node публикует JSON {"provider": str, "voice": str, ...} после
         # старта/фолбека/синтеза. SpeakTextTool/SetVoiceTool валидируют голоса
@@ -224,10 +291,7 @@ class MCPServer(Node):
                 f"⚠️ Не удалось подписаться на /voice/tts/provider_state: {exc}"
             )
 
-        # Таймер для периодической публикации списка инструментов
-        self.tools_timer = self.create_timer(10.0, self.publish_tools)
-
-        # Публикуем список инструментов сразу при старте
+        # Публикуем каталог инструментов один раз — он latched (см. tools_qos).
         self.publish_tools()
 
         # --------------------------------------------------------------
@@ -253,6 +317,17 @@ class MCPServer(Node):
             os.environ.get("MUSIC_WATCHDOG_ENABLED", "true").lower()
             in ("1", "true", "yes", "on")
         )
+        # Issue #1812 — idle-TTL threshold, explicitly passed to
+        # ``auto_stop_idle_music`` on every tick so it overrides whatever
+        # default ``MusicManager`` picked up on construction. 300s was too
+        # short for "listening to a track in silence" (the normal case);
+        # 1800s (30 min) matches an actually abandoned session instead.
+        try:
+            self._music_watchdog_idle_ttl_s: float = float(
+                os.environ.get("MUSIC_WATCHDOG_IDLE_TTL_S", "1800.0")
+            )
+        except (TypeError, ValueError):
+            self._music_watchdog_idle_ttl_s = 1800.0
         # Subscribe to /mcp/music_cleanup — payload is JSON like
         # {"reason": "dialogue_end"} or {"reason": "shutdown"}. Empty
         # payload defaults to dialogue_end.
@@ -296,7 +371,7 @@ class MCPServer(Node):
                 )
                 self.get_logger().info(
                     f"🎵 Music watchdog timer запущен (period={period}s, "
-                    f"ttl={self._music_manager._auto_stop_ttl_seconds if self._music_manager else '?'}s)"
+                    f"ttl={self._music_watchdog_idle_ttl_s}s)"
                 )
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().warning(
@@ -329,6 +404,51 @@ class MCPServer(Node):
             f"🎙️ [issue 1229] actual TTS provider → '{self.actual_tts_provider}' "
             f"(reason: {payload.get('reason')})"
         )
+
+    def _on_speaker_result(self, msg: "String") -> None:
+        """Issue #1770 — обновить ``current_speaker_id`` из speaker_id_node.
+
+        Формат: ``{"is_known": true, "speaker_id": "<uuid>",
+        "name": "Денчик", "confidence": 0.93}`` или
+        ``{"is_known": false}``. ``speaker_id`` есть только при
+        ``is_known=True``; в этом случае мы сохраняем UUID и используем
+        его как fallback в MemorySaveTool/MemorySearchTool/MemoryContextTool
+        (если LLM не передал ``speaker_id`` явно).
+
+        На событие ``{"event": "registered", "speaker_id": "..."}`` мы
+        также обновляем кэш — это значит, что прямо сейчас
+        зарегистрировали нового юзера и следующая реплика отнесётся к
+        нему.
+        """
+        try:
+            data = json.loads(msg.data or "{}")
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+
+        is_known = bool(data.get("is_known"))
+        raw_sid = data.get("speaker_id")
+        # Используем ``or`` чтобы отфильтровать пустые строки и None.
+        new_speaker_id: Optional[str] = str(raw_sid) if (is_known and raw_sid) else None
+        # ``registered`` событие несёт speaker_id даже без is_known.
+        if data.get("event") == "registered" and raw_sid:
+            new_speaker_id = str(raw_sid)
+
+        if new_speaker_id == self.current_speaker_id:
+            return  # без изменений — тихий return, не спамим лог
+        old = self.current_speaker_id
+        self.current_speaker_id = new_speaker_id
+        if new_speaker_id:
+            self.get_logger().info(
+                f"👤 [issue 1770] current_speaker_id: {old or '∅'} → "
+                f"{new_speaker_id[:12]}… (name={data.get('name')!r})"
+            )
+        else:
+            self.get_logger().info(
+                f"👤 [issue 1770] current_speaker_id: {old or '∅'} → ∅ "
+                "(unknown / is_known=false)"
+            )
 
     def _on_dj_mode(self, msg: "String") -> None:
         """Track DJ-mode state so the watchdog doesn't kill DJ sets.
@@ -372,6 +492,29 @@ class MCPServer(Node):
             self.get_logger().info(
                 f"🎵 [{reason}] Cleanup: активной музыки не обнаружено "
                 f"(stop_all вызван профилактически). msg={result.get('message')}"
+            )
+        # Renardo погашен — гасим и mp3-трек в sound_node (см. комментарий
+        # у ``sound_stop_pub``).
+        self.stop_generated_track_playback()
+
+    def stop_generated_track_playback(self) -> None:
+        """Остановить mp3 из библиотеки сгенерированной музыки.
+
+        ``gen_play_from_library`` публикует путь в ``sound_node``; ни
+        ``MusicManager.stop_all()``, ни ``/g_freeAll`` до него не достают.
+        Одна точка правды для ``StopMusicTool``, ``music_cleanup`` и
+        watchdog — issue #1392 follow-up.
+        """
+        try:
+            msg = String()
+            msg.data = "STOP"
+            self.sound_stop_pub.publish(msg)
+            state = String()
+            state.data = json.dumps({"status": "idle"})
+            self.generated_music_state_pub.publish(state)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ Не удалось остановить mp3 в sound_node: {exc}"
             )
 
     def _on_music_fallback(self, msg: "String") -> None:
@@ -446,20 +589,50 @@ class MCPServer(Node):
             # segments-дедлайну #990.
             if hasattr(self, "_dj_active"):
                 manager._dj_active = bool(self._dj_active)
-            result = manager.auto_stop_idle_music()
+            # Issue #1812 — explicit TTL from the (now 30-min-default)
+            # ROS-side parameter, so it always wins over whatever default
+            # MusicManager picked up on construction.
+            result = manager.auto_stop_idle_music(
+                ttl_seconds=self._music_watchdog_idle_ttl_s
+            )
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
                 f"⚠️ Music watchdog failed: {exc}"
             )
             return
+        if result.get("held_reason"):
+            # Issue #1812 — не спамим warning на каждый тик (period~5s) пока
+            # форма не доиграла; debug делает причину видимой при разборе
+            # логов, не засоряя обычный вывод.
+            idle_s = result.get("idle_seconds")
+            remaining_s = result.get("form_deadline_remaining_s")
+            idle_str = f"{idle_s:.1f}s" if isinstance(idle_s, (int, float)) else str(idle_s)
+            remaining_str = (
+                f" form_remaining={remaining_s:.1f}s"
+                if isinstance(remaining_s, (int, float))
+                else ""
+            )
+            self.get_logger().debug(
+                f"🎵 [watchdog] Не гашу: reason={result['held_reason']} "
+                f"idle={idle_str}{remaining_str}"
+            )
         if result.get("stopped"):
             patterns = result.get("active_patterns", [])
             idle = result.get("idle_seconds", "?")
             ttl = result.get("ttl_seconds", "?")
+            # 🔴 FIX (live 30.08): без ``stop_reason`` строка врала — писала
+            # «после 20.1s (ttl=300s)», хотя музыку убил segments-дедлайн,
+            # а не idle-TTL. Из лога было не понять, почему бит прожил 20
+            # секунд при ttl=300.
+            reason = result.get("stop_reason", "idle_ttl")
+            deadline_segments = result.get("deadline_segments")
             self.get_logger().warning(
-                f"🎵 [watchdog] Авто-стоп {len(patterns)} паттернов после "
-                f"{idle:.1f}s (ttl={ttl:.0f}s). Issue #935."
+                f"🎵 [watchdog] Авто-стоп {len(patterns)} паттернов: "
+                f"reason={reason} idle={idle:.1f}s ttl={ttl:.0f}s"
+                + (f" segments={deadline_segments}" if deadline_segments else "")
+                + ". Issue #935."
             )
+            self.stop_generated_track_playback()
         # Issue 989 Fix C: синхронизируем состояние музыки для audio_node
         # (поднятие VAD threshold при активной музыке). Watchdog тикает
         # каждые ~5s — достаточно для strict mode; tool-вызовы публикуют
@@ -600,11 +773,22 @@ class MCPServer(Node):
         self.registry.register(EstimateTtsDurationTool(self))
         self.registry.register(ListenForResponseTool(self))
         self.registry.register(SetVoiceTool(self, voice_store=voice_store))
+        # Issue #1765 — переключение TTS-провайдера + список голосов
+        # по провайдеру (кросс-провайдерный кейс: «Яндекс Артём» при
+        # активном minimax). Оба tool'а публикуют /voice/tts/set_provider,
+        # tts_node подписан и пересобирает provider_chain.
+        self.registry.register(SetTtsProviderTool(self, voice_store=voice_store))
+        self.registry.register(ListTtsVoicesTool(self))
         # Issue #1101 — LLM-driven speaker registration (replaces regex NLU).
         # LLM extracts name from user_input and calls register_speaker(name=X)
         # via MCP. speaker_id_node binds d-vector to name in /data/speakers.db.
         self.registry.register(RegisterSpeakerTool(self))
         self.registry.register(SearchWebTool(self))
+        # Issue #968 (S6) — task_delta: schema-only registration so the
+        # LLM sees the tool. Real execution is intercepted in-process by
+        # SchedulerToolExecutor (rob_box_voice, S6.2) before it ever
+        # reaches mcp_server — see TaskDeltaTool's docstring.
+        self.registry.register(TaskDeltaTool(self))
 
         # Memory tools (долгосрочная память + семантический поиск)
         self.registry.register(MemorySaveTool(self))
@@ -616,10 +800,16 @@ class MCPServer(Node):
     def _register_music_tools(self) -> None:
         """Регистрирует music tools, не роняя весь MCP server при частичной деградации."""
         music_max_amp = self.get_parameter("music_max_amp").value
-        self.get_logger().info(f"🎵 Music max_amp: {music_max_amp:.2f}")
+        music_master_gain = self.get_parameter("music_master_gain").value
+        self.get_logger().info(
+            f"🎵 Music max_amp: {music_max_amp:.2f}, "
+            f"master_gain: {music_master_gain:.2f}"
+        )
 
         try:
-            music_manager = MusicManager(max_amp=music_max_amp)
+            music_manager = MusicManager(
+                max_amp=music_max_amp, master_gain=music_master_gain
+            )
         except Exception as exc:
             self.get_logger().error(
                 f"❌ Music subsystem disabled: MusicManager init failed: {exc}"
@@ -633,6 +823,9 @@ class MCPServer(Node):
         # playback automatically.
         self._music_manager: Optional[MusicManager] = music_manager
         self.registry.register(ExecuteMusicCodeTool(self, music_manager))
+        # Форма трека строится кодом, а не LLM (RC4 в
+        # docs/analysis/2026-08-30-music-quality-audit.md).
+        self.registry.register(ComposeMusicTool(self, music_manager))
         self.registry.register(StopMusicTool(self, music_manager))
         self.registry.register(SetVibePresetTool(self, music_manager))
         self.registry.register(GetMusicStateTool(self, music_manager))
@@ -831,9 +1024,10 @@ class MCPServer(Node):
         """Публикация списка доступных инструментов в OpenAI Tool Calls формате."""
         tools = self.registry.get_openai_tools()
         msg = String()
-        msg.data = json.dumps(tools, ensure_ascii=False, indent=2)
+        # Без indent: сообщение читает машина, а отступы удваивали payload.
+        msg.data = json.dumps(tools, ensure_ascii=False)
         self.tools_pub.publish(msg)
-        self.get_logger().debug(f"📤 Опубликован список {len(tools)} инструментов")
+        self.get_logger().info(f"📤 Опубликован каталог из {len(tools)} инструментов (latched)")
 
     def on_execute_request(self, msg: String):
         """

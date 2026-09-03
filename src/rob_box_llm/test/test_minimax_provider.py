@@ -393,6 +393,34 @@ def test_thinking_policy_callers_can_override():
     }
 
 
+def test_thinking_policy_still_applied_when_caller_sets_only_max_tokens(
+) -> None:
+    """Issue #1883 regression: caller passes ``LLMSettings(max_tokens=500)``.
+
+    Before the fix, ``DialogCore`` never forwarded ``settings=`` to the
+    provider, so this scenario could never arise in production. After
+    the fix, the voice node sends ``LLMSettings(temperature=0.7,
+    max_tokens=500)`` on every call. That ``LLMSettings`` has no
+    ``thinking`` key — but the instance thinking policy MUST still land
+    in ``extra_body``; otherwise MiniMax-M3 silently flips back to
+    adaptive thinking and the voice latency goes from ~1.5 s to ~15 s.
+    """
+    p, c = _make_minimax()  # instance default: thinking={"type": "disabled"}
+    c.chat.completions.next_response = _ok_response("ok")
+    asyncio.run(
+        p.complete(
+            [LLMMessage(role="user", content="hi")],
+            settings=LLMSettings(temperature=0.7, max_tokens=500),
+        )
+    )
+    kwargs = c.chat.completions.calls[0]
+    # The instance thinking policy survived the merge.
+    assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+    # And max_tokens / temperature made it to the wire.
+    assert kwargs["max_tokens"] == 500
+    assert kwargs["temperature"] == 0.7
+
+
 # ---------------------------------------------------------------------------
 # stream() — text only (streaming + tools is capability-gated)
 # ---------------------------------------------------------------------------

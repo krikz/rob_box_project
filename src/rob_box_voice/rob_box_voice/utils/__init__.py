@@ -18,6 +18,7 @@ from .respeaker_interface import (
     ReSpeakerTuning,
 )
 from .redact import redact_upstream_body
+from .stderr_silence import ignore_stderr
 
 __all__ = [
     'find_respeaker_device',
@@ -33,4 +34,5 @@ __all__ = [
     'ReSpeakerInterface',
     'ReSpeakerTuning',
     'redact_upstream_body',
+    'ignore_stderr',
 ]

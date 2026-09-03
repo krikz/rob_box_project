@@ -12,44 +12,17 @@ from audio_common_msgs.msg import AudioData
 import pyaudio
 import threading
 import time
-import os
-import sys
-from contextlib import contextmanager
 from typing import Optional
 
 from .utils.audio_utils import find_respeaker_device, list_audio_devices, calculate_rms, calculate_db
 from .utils.respeaker_interface import ReSpeakerInterface
+from .utils.stderr_silence import ignore_stderr
 
 # Issue #1160 — Prometheus metrics (этап 1 observability).
 from rob_box_voice.observability import (
     is_metrics_enabled,
     start_metrics_server,
 )
-
-
-@contextmanager
-def ignore_stderr(enable=True):
-    """
-    Подавить ALSA ошибки от PyAudio (как в jsk-ros-pkg)
-    https://github.com/jsk-ros-pkg/jsk_3rdparty/blob/master/respeaker_ros/src/respeaker_ros/__init__.py
-    """
-    if enable:
-        devnull = None
-        try:
-            devnull = os.open(os.devnull, os.O_WRONLY)
-            stderr = os.dup(2)
-            sys.stderr.flush()
-            os.dup2(devnull, 2)
-            try:
-                yield
-            finally:
-                os.dup2(stderr, 2)
-                os.close(stderr)
-        finally:
-            if devnull is not None:
-                os.close(devnull)
-    else:
-        yield
 
 
 class AudioNode(Node):
@@ -94,6 +67,16 @@ class AudioNode(Node):
         # музыка не должна триггерить VAD как речь.
         self.declare_parameter('music_vad_threshold', 6.0)
         self.declare_parameter('music_vad_min_db', -35.0)
+        # Issue #1764: TRACK (Renardo/SuperCollider) — barge-in через
+        # wake-gate не работал, потому что Fix C подавлял VAD даже когда
+        # TTS НЕ активен. С TRACK-музыкой пользователь не мог перебить
+        # трек командой «робот, выключи музыку» — wake-word отбрасывалось
+        # как no_wake_word. Если barge_in_with_music=True (дефолт),
+        # _vad_gated пропускает речь через AEC ReSpeaker (Ch1 в
+        # 6-канальном режиме), и wake-word проходит как обычно. Старый
+        # RMS-гейт остаётся fallback'ом (barge_in_with_music=False)
+        # для сценариев без AEC (микрофон сырой, музыка из динамика).
+        self.declare_parameter('barge_in_with_music', True)
 
         # Issue #1117 round-2: настройка DSP XVF-3000 при старте ноды
         # (через USB control transfer). Если устройство не найдено
@@ -118,6 +101,8 @@ class AudioNode(Node):
         self.tts_grace_s = float(self.get_parameter('tts_grace_s').value)
         self.music_vad_threshold = float(self.get_parameter('music_vad_threshold').value)
         self.music_vad_min_db = float(self.get_parameter('music_vad_min_db').value)
+        # Issue #1764: см. declare_parameter ниже.
+        self.barge_in_with_music = bool(self.get_parameter('barge_in_with_music').value)
         # Issue #1117 round-2: DSP tuning при старте.
         self.dsp_apply_on_start = bool(self.get_parameter('dsp_apply_on_start').value)
         self.hpf_on = int(self.get_parameter('hpf_on').value)
@@ -478,7 +463,9 @@ class AudioNode(Node):
                 # следующего захвата (иначе STT склеит «…роберт» из обрывка).
                 self.speech_prefetch_buffer = b""
             self.tts_active = True
-        elif state in ("ready", "idle", "stopped"):
+        # ``tts_silero_warming`` — чанк пропущен и озвучен не будет,
+        # то есть речь кончилась. Без него ``tts_active`` залипал.
+        elif state in ("ready", "idle", "stopped", "tts_silero_warming"):
             if self.tts_active:
                 self._tts_ended_at = time.monotonic()
                 self.get_logger().info(
@@ -497,6 +484,12 @@ class AudioNode(Node):
         чтобы бит/мелодия не триггерили «речь». Порог применяется к железу
         best-effort (set_vad_threshold может не поддерживаться на всех
         прошивках ReSpeaker) и к программному гейту по RMS.
+
+        Issue #1764: если barge_in_with_music=True, при активной музыке
+        НЕ поднимаем порог VAD и НЕ гейтим RMS — пользователь должен
+        мочь перебить TRACK командой «робот, …» через AEC ReSpeaker
+        (Ch1 в 6-канальном режиме). Аппаратный VAD остаётся на дефолтном
+        уровне; музыкальный фон уже подавлен AEC.
         """
         state = (msg.data or "").strip()
         was_active = self.music_active
@@ -504,11 +497,22 @@ class AudioNode(Node):
         if self.music_active == was_active:
             return
         if self.music_active:
-            self.get_logger().info(
-                f"🎵 [issue 989] Музыка активна — VAD threshold {self.vad_threshold} → "
-                f"{self.music_vad_threshold} dB (strict mode)"
-            )
-            self._apply_vad_threshold(self.music_vad_threshold)
+            if self.barge_in_with_music:
+                # Issue #1764: оставляем VAD на дефолтном пороге — wake-word
+                # должен проходить как без музыки. AEC на ReSpeaker Ch1 уже
+                # убирает музыкальный сигнал из ASR-канала.
+                self.get_logger().info(
+                    f"🎵 [issue 1764] Музыка активна + barge_in_with_music=True "
+                    f"— VAD threshold остаётся {self.vad_threshold} dB "
+                    f"(wake-gate пропускает «робот» поверх трека)"
+                )
+                # НЕ зовём _apply_vad_threshold → железный VAD на дефолте.
+            else:
+                self.get_logger().info(
+                    f"🎵 [issue 989] Музыка активна — VAD threshold {self.vad_threshold} → "
+                    f"{self.music_vad_threshold} dB (strict mode)"
+                )
+                self._apply_vad_threshold(self.music_vad_threshold)
         else:
             self.get_logger().info(
                 f"🎵 [issue 989] Музыка остановлена — VAD threshold → {self.vad_threshold} dB"
@@ -547,6 +551,15 @@ class AudioNode(Node):
           пользователь может перебить робот командой «робот, …» —
           barge-in работает.
         - активной музыки (Fix C): требуем программный порог по RMS
+
+        Issue #1764 (TRACK/Renardo barge-in): если barge_in_with_music=True
+        И музыка активна — НЕ гейтим VAD по RMS. AEC на ReSpeaker Ch1
+        (6-канальный режим) уже убирает музыкальный сигнал из
+        ASR-канала, поэтому wake-word «робот» проходит как обычно.
+        Иначе VAD подавляет тихое «Р» в «робот» поверх бита, STT получает
+        «обот» → dialogue отбрасывает как no_wake_word → робот «глохнет».
+        Legacy-поведение (barge_in_with_music=False) сохранено для
+        сценариев без AEC (микрофон сырой, e2e через стену).
         """
         # Issue 993 barge-in: пока TTS активен — НЕ гейтим. Эхо
         # отсекается wake-word gate в dialogue_node.
@@ -560,7 +573,12 @@ class AudioNode(Node):
         if not vad:
             return False
         if self.music_active:
-            # Музыка активна: аппаратный VAD может ловить бит как «речь».
+            # Issue #1764: barge-in через TRACK. AEC на ReSpeaker уже
+            # фильтрует музыку; пользователь должен мочь сказать «робот,
+            # выключи музыку» во время трека. Пропускаем VAD без RMS-гейта.
+            if self.barge_in_with_music:
+                return True
+            # Legacy Fix C: аппаратный VAD может ловить бит как «речь».
             # Программный гейт: RMS должен быть выше music_vad_min_db,
             # иначе это музыка/шум, а не голос поверх музыки.
             if self._current_db < self.music_vad_min_db:

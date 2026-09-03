@@ -118,7 +118,9 @@ class TestCrud:
         # meta.json sidecar
         meta_path = library.library_root / "abc123" / "meta.json"
         assert meta_path.exists()
-        meta = json.loads(meta_path.read_text())
+        # UTF-8 explicitly: the fixture title is Cyrillic and the default
+        # encoding is cp1252 on Windows, which cannot decode it.
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
         assert meta["track_id"] == "abc123"
 
     def test_save_updates_existing(self, library: GeneratedMusicLibrary) -> None:

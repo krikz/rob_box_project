@@ -1,15 +1,13 @@
 #!/bin/bash
 # ============================================================================
 # SOT (source-of-truth): <repo>/scripts/agent_flow/agent-flow-handoff.sh
-# Каноническая версия живёт в репо. На хост раскладывается через
-# `bash <repo>/scripts/agent_flow/install.sh`, который создаёт
-# символические ссылки в:
-#   - ~/.hermes/profiles/agent-flow/scripts/agent-flow-handoff.sh
-#   - ~/.hermes/profiles/architect/scripts/agent-flow-handoff.sh
-#   - ~/.hermes/scripts/agent-flow-handoff.sh
-# Правка: редактируем <repo>/scripts/agent_flow/agent-flow-handoff.sh, commit, merge.
-# На хост: bash <repo>/scripts/agent_flow/install.sh (или вручную cp + ln -sf).
-# Если ты правишь этот файл НА ХОСТЕ руками — синхронизируй обратно в репо.
+# Правим ТОЛЬКО здесь + commit + merge в develop. На хост раскладывает
+# `bash <repo>/scripts/agent_flow/install.sh` — hardlink-копиями (cp -al), НЕ
+# симлинками: симлинк в ~/.hermes/scripts/ ресолвится наружу и отклоняется
+# guard'ом hermes-agent scheduler.py::_validate_script_path (ретро 11.08
+# t_a6a236e0d9f0470e — 50 упавших тиков подряд, 1ч42м даунтайма).
+# Полный список путей раскладки — в install.sh, сверку копий держит
+# agent-flow-drift-detect.sh. Ручная правка копии на хосте затрётся.
 # ============================================================================
 # agent-flow-handoff.sh — Phase 2: done card -> approved, blocked child.
 # Idempotent, no LLM. Configuration is read from agent-flow/.env.
@@ -27,27 +25,23 @@ DRY_RUN="${DRY_RUN:-false}"
 LOCK_FILE="${HANDOFF_LOCK_FILE:-/tmp/agent-flow-handoff.lock}"
 PREFIX="[agent-flow-handoff]"
 ENV_FILE="$HERMES_HOME/profiles/agent-flow/.env"
+# --- shared library bootstrap ------------------------------------------------
+# Общие помощники (дедуп 30.08): af_load_profile_env, af_flock_guard_or_exit,
+# af_maintenance_gate_or_exit. До этого здесь лежала пятая копия
+# .env-преамбулы и вторая копия MAINTENANCE-гейта — со своими текстами логов.
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=lib_agent_flow_common.sh
+. "$_LIB_DIR_HERE/lib_agent_flow_common.sh"
+
 # Preserve explicit caller overrides while loading non-secret configuration.
-if [[ -f "$ENV_FILE" ]]; then
-  while IFS='=' read -r key val; do
-    [[ -z "$key" || "$key" == \#* || -n "${!key:-}" ]] && continue
-    val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
-    export "$key=$val"
-  done < "$ENV_FILE"
-fi
+af_load_profile_env "$ENV_FILE"
 BOARD="${KANBAN_BOARD:-$BOARD}"
 MAINTENANCE_BRANCH="${MAINTENANCE_BRANCH:-develop}"
 MAINTENANCE_FILE="${MAINTENANCE_FILE:-MAINTENANCE}"
 log() { printf '%s %s\n' "$PREFIX" "$*"; }
-exec 9>"$LOCK_FILE"
-flock -n 9 || { log "another tick is running; skip"; exit 0; }
-# Q19: maintenance pauses the entire flow. Check configured local clone when present.
-if [[ -n "${REPO_DIR:-}" && -d "$REPO_DIR" ]] && git -C "$REPO_DIR" show "$MAINTENANCE_BRANCH:$MAINTENANCE_FILE" >/dev/null 2>&1; then
-  log "MAINTENANCE flag set locally; skip"; exit 0
-fi
-if [[ -n "${GH_REPO:-}" ]] && git ls-remote "https://github.com/${GH_REPO}.git" "$MAINTENANCE_BRANCH:$MAINTENANCE_FILE" 2>/dev/null | grep -q .; then
-  log "MAINTENANCE flag set remotely; skip"; exit 0
-fi
+af_flock_guard_or_exit "$LOCK_FILE"
+# Q19: maintenance pauses the entire flow (remote-флаг + локальный клон).
+af_maintenance_gate_or_exit
 cards="$($HERMES_BIN kanban --board "$BOARD" list --json)"
 # Emit one tab-delimited record per done card. Body is deliberately retained only in memory.
 while IFS=$'\t' read -r id title_b64 body_b64; do
@@ -69,11 +63,20 @@ next: $next
 awaiting-approval: approve execution of the handoff described below.
 
 $body"
+  # Ретро t_b3476561: handoff раньше не передавал --skill → карточки stuck.
+  # af_skill_for_profile() даёт детерминированный skill по assignee + check
+  # что он реально есть в профиле (fail-OPEN если нет).
+  child_skill="$(af_skill_for_profile "$next")"
+  child_skill_args=()
+  if [ -n "$child_skill" ]; then
+    child_skill_args=(--skill "$child_skill")
+    log "  skill-inference (handoff): next=${next} -> skill=${child_skill}"
+  fi
   if [[ "$DRY_RUN" == true ]]; then
-    log "DRY-RUN: would create blocked child for $id -> $next and subscribe telegram:495039871"
+    log "DRY-RUN: would create blocked child for $id -> $next (skill=${child_skill:-none}) and subscribe telegram:495039871"
     continue
   fi
-  out="$($HERMES_BIN kanban --board "$BOARD" create --assignee "$next" --parent "$id" --workspace worktree --branch "z-{agent}/${id}-${next}" --initial-status blocked --body "$child_body" --created-by agent-flow-handoff "$child_title" 2>&1)" || { log "create failed for $id: $out"; exit 1; }
+  out="$($HERMES_BIN kanban --board "$BOARD" create --assignee "$next" --parent "$id" --workspace worktree --branch "z-{agent}/${id}-${next}" --initial-status blocked "${child_skill_args[@]}" --body "$child_body" --created-by agent-flow-handoff "$child_title" 2>&1)" || { log "create failed for $id: $out"; exit 1; }
   child="$(printf '%s' "$out" | grep -oE 't_[a-f0-9]+' | head -n1 || true)"
   [[ -n "$child" ]] || { log "cannot parse child id: $out"; exit 1; }
   "$HERMES_BIN" kanban --board "$BOARD" notify-subscribe --platform telegram --chat-id 495039871 --notifier-profile pm "$child" >/dev/null

@@ -95,33 +95,63 @@ PREFIX="[agent-flow-unlabeled-sweep]"
 
 # --- MAINTENANCE gate + env (из .env если есть) -----------------------------
 # Ретро 31.08 (t_9b0d60f7, agent-flow-unlabeled-sweep cron 24-fail подряд):
+# Ретро 28.08 (t_faac94b0, e2e-fail-streak-no-escalation): предыдущая
+# версия использовала `read IFS='='` парсинг key=val — он уже заменён на
+# `set -a; .` ниже; новый код superset (robust + ENV_FILE-fallback).
+#
+# Supersedes ретро 28.08 (t_faac94b0) — добавляет robust fallback по
+# нескольким кандидатам ENV_FILE (однокандидатный fix развит до multi-candidate).
+#
 # Скрипт падал в no_agent cron-режиме когда `$HERMES_HOME` в env указывал
 # на профильную папку (например `/home/builder/.hermes/profiles/devops`),
 # ENV_FILE вычислялся в `<profile>/profiles/agent-flow/.env` — не существовал
 # → set -e срабатывал раньше source → GH_REPO оставался пустым →
 # `: "${GH_REPO:?...}"` exit 1. Robust-фикс:
 #   (1) Пробуем несколько кандидатов ENV_FILE (по убыванию приоритета):
-#       - $HERMES_HOME/profiles/agent-flow/.env (как был)
+#       - /home/builder/.hermes/profiles/agent-flow/.env (absolute SOT)
+#       - $HERMES_HOME/profiles/agent-flow/.env (per-profile gateway)
 #       - $HOME/.hermes/profiles/agent-flow/.env (system-cron, ~ = HOME)
-#       - /home/builder/.hermes/profiles/agent-flow/.env (absolute fallback)
 #   (2) Используем `set -a; . "$ENV_FILE"; set +a` — robust к `=` в значениях,
 #       не падает на пустом .env.
 #   (3) Финальная проверка GH_REPO сообщает какой ENV_FILE пробовался.
-ENV_FILE=""
-for _candidate in \
-  "$HERMES_HOME/profiles/agent-flow/.env" \
-  "$HOME/.hermes/profiles/agent-flow/.env" \
-  "/home/builder/.hermes/profiles/agent-flow/.env"; do
-  if [ -n "$_candidate" ] && [ -f "$_candidate" ]; then
-    ENV_FILE="$_candidate"
-    break
-  fi
-done
-if [ -n "$ENV_FILE" ]; then
-  # shellcheck disable=SC1090
-  set -a; . "$ENV_FILE"; set +a
+#
+# Ретро-фикс (01.09, t_e1a9613d, issue #1824, 26-fail streak): заменяем
+# локальный 3-кандидатный fallback на общую функцию `af_load_profile_env`
+# из `lib_agent_flow_common.sh` (DRY — у неё уже правильный набор 4
+# кандидатов: `/home/builder/.hermes/profiles/agent-flow/.env` ИДЁТ ПЕРВЫМ,
+# что было критично — локальный fallback ставил per-profile-relative пути
+# ВПЕРЁД, и при запуске из любого профиля cron получал exit 1 на 26 тиков
+# подряд). Также добавляем `af_load_profile_env` с явным первым кандидатом,
+# чтобы убрать необходимость в ручном ENV_FILE-fallback (lib делает это сам).
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=lib_agent_flow_common.sh
+. "$_LIB_DIR_HERE/lib_agent_flow_common.sh"
+
+# Ретро-фикс (01.09, t_e1a9613d, issue #1824): заменить локальный 3-кандидат
+# fallback на lib af_load_profile_env. Локальный fallback ставил
+# `$HERMES_HOME/profiles/agent-flow/.env` ПЕРВЫМ, что для cron-профилей
+# (agent-flow, devops, architect) вычислялось в
+# `/home/builder/.hermes/profiles/<profile>/profiles/agent-flow/.env` —
+# не существует → exit 1. У lib — `/home/builder/.hermes/profiles/agent-flow/.env`
+# идёт ПЕРВЫМ (absolute SOT, 4 кандидата, проверено 31.08 t_18941c54).
+af_load_profile_env "${HERMES_HOME}/profiles/agent-flow/.env" || true
+
+# Defensive: если GH_REPO всё ещё пустой (lib не нашла .env), пробуем
+# hardcoded absolute-path fallback (на случай если lib потеряна из sync).
+# shellcheck disable=SC1090  # ENV_FILE — runtime path, не constant source
+if [ -z "${GH_REPO:-}" ] && [ -f "/home/builder/.hermes/profiles/agent-flow/.env" ]; then
+    ENV_FILE="/home/builder/.hermes/profiles/agent-flow/.env"
+    set -a; . "$ENV_FILE"; set +a
 fi
-: "${GH_REPO:?GH_REPO must be set (owner/repo) — checked $HERMES_HOME/profiles/agent-flow/.env, $HOME/.hermes/profiles/agent-flow/.env, /home/builder/.hermes/profiles/agent-flow/.env}"
+: "${GH_REPO:?GH_REPO must be set (owner/repo) — checked lib af_load_profile_env + /home/builder/.hermes/profiles/agent-flow/.env}"
+
+# Ретро-фикс (01.09, t_186ae5b3, devops): в cron no_agent env `_sanitize_subprocess_env`
+# заменяет HOME на `$HERMES_HOME/home` (= /home/builder/.hermes/profiles/<profile>/home),
+# `gh` ищет config там — не находит → "You are not logged into any GitHub hosts" → exit 1.
+# Подкладываем GH_CONFIG_DIR к абсолютному пути если он ещё не установлен и там есть hosts.yml.
+if [ -z "${GH_CONFIG_DIR:-}" ] && [ -f "/home/builder/.config/gh/hosts.yml" ]; then
+    export GH_CONFIG_DIR=/home/builder/.config/gh
+fi
 
 log() { printf '%s %s %s\n' "$PREFIX" "$(date -Iseconds)" "$*" >&2; }
 
@@ -326,8 +356,12 @@ while IFS=$'\t' read -r number title updated_at created_at labels_csv; do
     if [ "$DRY_RUN" != "true" ]; then
       gh issue edit "$number" --repo "$GH_REPO" --remove-label "$STALE_LABEL" >/dev/null 2>&1 || true
       gh issue comment "$number" --repo "$GH_REPO" --body \
-        "$(printf '⏰ auto-sweep stale-candidate → close (ADR-0022 GATE-2): issue в OPEN без process-меток %s+ час, метка %s висела %s+ час без user-reopen. Закрыто как not_planned. Если проблема всё ещё актуальна — откройте новый issue с актуальным контекстом.' "$STALE_HOURS_1" "$STALE_LABEL" "$STALE_HOURS_2")" >/dev/null 2>&1 || true
-      if gh issue close "$number" --repo "$GH_REPO" --reason not_planned >/dev/null 2>&1; then
+        "$(printf '⏰ auto-sweep stale-candidate → close (ADR-0022 GATE-2): issue в OPEN без process-меток %s+ час, метка %s висела %s+ час без user-reopen. Закрыто как not planned. Если проблема всё ещё актуальна — откройте новый issue с актуальным контекстом.' "$STALE_HOURS_1" "$STALE_LABEL" "$STALE_HOURS_2")" >/dev/null 2>&1 || true
+      # Ретро t_e198c3f3: gh CLI требует `--reason "not planned"` (с пробелом),
+      # НЕ `not_planned` (подчёркивание) — иначе close падает с
+      # "invalid argument" и errored+=1 каждый тик, метка уже снята, issue
+      # остаётся OPEN → бесконечный retry.
+      if gh issue close "$number" --repo "$GH_REPO" --reason "not planned" >/dev/null 2>&1; then
         closed=$((closed+1))
       else
         log "issue #${number}: WARNING close failed — retry next tick"
@@ -357,7 +391,7 @@ while IFS=$'\t' read -r number title updated_at created_at labels_csv; do
   if [ "$DRY_RUN" != "true" ]; then
     if gh issue edit "$number" --repo "$GH_REPO" --add-label "$STALE_LABEL" >/dev/null 2>&1; then
       gh issue comment "$number" --repo "$GH_REPO" --body \
-        "$(printf '⚠️ auto-sweep pending stale-candidate (ADR-0022 GATE-2): issue в OPEN без process-меток уже %s+ час. Через %s час метка `stale-candidate` будет снята и issue закрыта как not_planned. Если вы работаете над ней — откройте любой комментарий или переоткройте issue после возможного системного close, метка будет снята автоматически.' "$STALE_HOURS_1" "$STALE_HOURS_2")" >/dev/null 2>&1 || true
+        "$(printf '⚠️ auto-sweep pending stale-candidate (ADR-0022 GATE-2): issue в OPEN без process-меток уже %s+ час. Через %s час метка `stale-candidate` будет снята и issue закрыта как not planned. Если вы работаете над ней — откройте любой комментарий или переоткройте issue после возможного системного close, метка будет снята автоматически.' "$STALE_HOURS_1" "$STALE_HOURS_2")" >/dev/null 2>&1 || true
       stale_marked=$((stale_marked+1))
     else
       log "issue #${number}: WARNING label-add failed — retry next tick"

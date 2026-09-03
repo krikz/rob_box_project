@@ -1,0 +1,27 @@
+{
+  "name": "968_merge_song_komar_i_enot_acceptance",
+  "schema_version": 1,
+  "_comment": [
+    "ADR-0022 GATE-1 acceptance for 968_merge_song_komar_i_enot.json.",
+    "Core S8 invariant (SCHEDULER_DESIGN.md §2.5, issue #968): a non-imperative",
+    "topic addition while the robot is mid-song must NOT stop TTS. must_not_call",
+    "here is a plain log substring check (harness has no negative-tool-call",
+    "concept), so we use it to assert the REPLACE-path markers never fired for",
+    "this run: no forced STOP publish, no _cancel_run('new STT input') cancel.",
+    "expected_tool_calls left empty on purpose — whether the LLM actually calls",
+    "task_delta to rewrite PENDING segments is the exploratory part of this",
+    "live run, not a hard gate yet (S5/S6 prompt-side enforcement not proven",
+    "live before this run)."
+  ],
+  "expected_tool_calls": [],
+  "must_not_call": [
+    "STOP command received",
+    "Cancel: new STT input"
+  ],
+  "voice_provenance": {
+    "voice": "anton",
+    "tts": "yandex",
+    "volume": 100,
+    "llm": "minimax-m2"
+  }
+}

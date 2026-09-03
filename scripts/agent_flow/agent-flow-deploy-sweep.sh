@@ -49,17 +49,19 @@ VISION_PI_IP="${VISION_PI_IP:-10.1.1.11}"
 SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8}"
 PREFIX="[agent-flow-deploy-sweep]"
 
+# --- shared library bootstrap ------------------------------------------------
+# Отсюда deploy-sweep берёт: af_load_profile_env, af_flock_guard_or_exit,
+# af_maintenance_gate_or_exit, gh_list_issues_by_label, has_label_json
+# (дедуп 30.08). Source ДО загрузки .env — сам загрузчик живёт в библиотеке.
+_LIB_DIR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=lib_agent_flow_common.sh
+. "$_LIB_DIR_HERE/lib_agent_flow_common.sh"
+
 # --- MAINTENANCE gate + env -------------------------------------------------
-ENV_FILE="$HERMES_HOME/profiles/agent-flow/.env"
-if [ -f "$ENV_FILE" ]; then
-  while IFS='=' read -r key val; do
-    case "$key" in ''|\#*) continue ;; esac
-    val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
-    if [ -z "${!key:-}" ]; then
-      export "$key=$val"
-    fi
-  done < "$ENV_FILE"
-fi
+# Ретро 31.08 t_18941c54: либа делает 3-candidate fallback, поэтому
+# передаём пустой аргумент — пусть af_load_profile_env сама найдёт .env
+# в обход per-profile HERMES_HOME (как в PR #1750 для unlabeled-sweep).
+af_load_profile_env ""
 : "${GH_REPO:?GH_REPO must be set (owner/repo)}"
 
 log() { printf '%s %s %s\n' "$PREFIX" "$(date -Iseconds)" "$*" >&2; }
@@ -72,65 +74,25 @@ run() {
 }
 
 # flock: skip tick if another instance holds the lock.
-exec 9>"$LOCK_FILE" || { log "cannot open lock $LOCK_FILE"; exit 1; }
-if ! flock -n 9; then
-  log "another instance holds $LOCK_FILE — skip"; exit 0
-fi
+# Тело — af_flock_guard_or_exit в lib_agent_flow_common.sh (дедуп 30.08).
+af_flock_guard_or_exit "$LOCK_FILE"
+
+# MAINTENANCE gate (kill-switch). Секция выше называлась «MAINTENANCE gate +
+# env» с 12.08, но самого гейта в скрипте не было НИКОГДА: deploy-sweep
+# продолжал ходить по SSH на Pi, вешать метку `hermes` и закрывать issues,
+# пока весь остальной конвейер стоял на паузе. Особенно заметно с
+# agents_sleep.sh (README §PEAK): тот ставит MAINTENANCE в PEAK-часы со
+# смыслом «все спят», а спали все, кроме этого скрипта. Гейт добавлен 30.08
+# вместе с дедупом — тем же af_maintenance_gate_or_exit, что у triage /
+# merge-gate / e2e-process.
+af_maintenance_gate_or_exit
 
 # gh auth check
 if ! gh auth status >/dev/null 2>&1; then
   log "gh auth not configured — exit 1"; exit 1
 fi
 
-# --- gh_list_issues_by_label (ретро 19.08 #1457) ------------------------------
-# Fallback для `gh issue list --label X` (GraphQL-фильтр по label ломается на
-# некоторых версиях gh CLI). При пустом ответе gh-list — пробуем REST API
-# /issues?labels=X. Возвращает JSON-массив с полями: number,title,labels,body.
-gh_list_issues_by_label() {
-    local _label="$1" _state="${2:-open}" _limit="${3:-${LIMIT:-20}}" _fields="${4:-number,title,labels,body,updatedAt}"
-    local _json="" _api_json=""
-    _json="$(gh issue list \
-        --repo "$GH_REPO" \
-        --label "$_label" \
-        --state "$_state" \
-        --limit "$_limit" \
-        --json "$_fields" 2>/dev/null || true)"
-    if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
-        printf '%s' "$_json"
-        return 0
-    fi
-    _api_json="$(gh api "repos/${GH_REPO}/issues?labels=${_label}&state=${_state}&per_page=${_limit}" 2>/dev/null || true)"
-    if [ -z "$_api_json" ] || [ "$_api_json" = "[]" ]; then
-        printf '[]'
-        return 0
-    fi
-    log "gh_list_issues_by_label(${_label}): gh-list пустой, fallback на REST API /issues?labels=${_label}"
-    printf '%s' "$_api_json" | python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    print("[]"); sys.exit(0)
-if not isinstance(data, list):
-    print("[]"); sys.exit(0)
-keep = []
-for it in data:
-    if not isinstance(it, dict):
-        continue
-    if it.get("pull_request"):
-        continue
-    rec = {
-        "number": it.get("number"),
-        "title": it.get("title") or "",
-        "labels": [{"name": (l.get("name") if isinstance(l, dict) else l)} for l in it.get("labels", [])],
-        "body": it.get("body") or "",
-    }
-    if "updatedAt" in it:
-        rec["updatedAt"] = it.get("updatedAt")
-    keep.append(rec)
-print(json.dumps(keep, ensure_ascii=False))
-'
-}
+# gh_list_issues_by_label — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
 
 # --- list open deployment issues --------------------------------------------
 issues_json="$(gh_list_issues_by_label deployment open "$LIMIT")"
@@ -140,9 +102,9 @@ if [ -z "$issues_json" ] || [ "$issues_json" = "[]" ]; then
 fi
 
 # --- helpers -----------------------------------------------------------------
-has_label() {  # $1=labels_json  $2=label_name
-  printf '%s' "$1" | grep -q "\"name\":\"$2\""
-}
+# has_label(JSON-контракт) — в lib_agent_flow_common.sh как has_label_json
+# (дедуп 30.08: одно имя несло два разных контракта — JSON здесь, CSV в
+# merge-gate / e2e-process / unlabeled-sweep; сводить их было нельзя).
 
 parse_signature() {  # $1=body → echo "env|scope|container|kind" or empty
   local sig
@@ -228,6 +190,47 @@ label_hermes() {  # $1=issue $2=verdict_detail
     "🔎 **Авто-sweep** ($(date -u '+%Y-%m-%d %H:%M UTC')): проблема **АКТУАЛЬНА** — $2. Проставлена метка \`hermes\` для триажа (ретро 12.08: stale deployment issue > 72ч → авто-метка hermes)."
 }
 
+# --- orphan-deploy pre-check (ретро 02.09 t_f8d369ab) -----------------------
+# L: Deploy and Verify при fail авто-создаёт issue с `Branch: <name>` в body.
+# e2e-rotation watchdog удаляет z-{e2e}/test-round-* ветки после streak-pause;
+# deploy-issue остаётся OPEN навсегда (43-128h шума). Закрываем как not_planned
+# сразу, до Pi-проверки. Pre-check:
+#   1) в body найден `Branch: <branch>` (или backticked в markdown)
+#   2) `git ls-remote origin <branch>` пустой → branch DELETED
+#   3) issue без метки needs-e2e (там живой фикс — не трогаем)
+# Не выкидывает false-positive на feature/* (там long-lived branch).
+close_orphan_deploy() {  # $1=issue $2=branch $3=age_hours
+  log "issue #${1}: ORPHAN-DEPLOY (branch '${2}' deleted, age ${3}h) — close as not_planned"
+  run gh issue comment "$1" --repo "$GH_REPO" --body \
+    "🧹 **Авто-sweep** ($(date -u '+%Y-%m-%d %H:%M UTC')): branch \`${2}\` удалён из origin (git ls-remote вернул 0 refs). Deploy-issue orphan от L: Deploy and Verify → e2e-rotation watchdog. Закрыто как not_planned (ретро 02.09 t_f8d369ab, stale-deploy-issues-deleted-round-branch)."
+  run gh issue close "$1" --repo "$GH_REPO" --reason "not planned" >/dev/null
+}
+
+# Извлекает branch из body. L-Deploy использует формат:
+#   ** `z-{e2e}/test-round-NNN`     (markdown bold + backticks)
+#   Branch: feature/avatar
+# Возвращает branch-name или пусто.
+extract_branch_from_body() {  # $1=body
+  local b
+  # 1) backticked после `** ` (стандарт L-Deploy)
+  b="$(printf '%s' "$1" | grep -oE '\*\*[[:space:]]+`[a-zA-Z0-9_./{}-]+`' | head -n1 | sed -E 's/^\*\*[[:space:]]+`//; s/`$//' || true)"
+  # 2) явный "Branch: <name>"
+  [ -z "$b" ] && b="$(printf '%s' "$1" | grep -oE '[Bb]ranch:[[:space:]]*[a-zA-Z0-9_./{}-]+' | head -n1 | sed -E 's/^[Bb]ranch:[[:space:]]*//' || true)"
+  # 3) fallback: первый backticked путь похожий на branch
+  [ -z "$b" ] && b="$(printf '%s' "$1" | grep -oE '`(z-\{e2e\}/test-round-[0-9]+|feature/[a-zA-Z0-9_-]+|fix/[a-zA-Z0-9_/-]+)`' | head -n1 | tr -d '`' || true)"
+  printf '%s' "$b"
+}
+
+# Возвращает "deleted" если `git ls-remote origin <branch>` пустой,
+# "exists" если найден, "skip" если branch пустой.
+branch_remote_status() {  # $1=branch
+  local out b="$1"
+  [ -z "$b" ] && { echo "skip"; return 0; }
+  out="$(git ls-remote --heads origin "$b" 2>/dev/null | head -n1 || true)"
+  [ -z "$out" ] && { echo "deleted"; return 0; }
+  echo "exists"
+}
+
 # --- resolve dedup helper path (for critical_log verify) ---------------------
 # Prefer REPO_DIR (set in agent-flow/.env); fallback to CWD.
 DEDUP_HELPER="${DEDUP_HELPER:-}"
@@ -252,18 +255,39 @@ while IFS=$'\t' read -r number title_b64 updated_at body_b64; do
   labels_json="$(gh issue view "$number" --repo "$GH_REPO" --json labels --jq '.labels' < /dev/null 2>/dev/null || echo '[]')"
 
   # Skip if already in triage / done
-  if has_label "$labels_json" "hermes"; then
+  if has_label_json "$labels_json" "hermes"; then
     log "issue #${number}: already has hermes — skip"; skipped=$((skipped+1)); continue
   fi
-  if has_label "$labels_json" "e2e-done" || has_label "$labels_json" "e2e:rejected"; then
+  if has_label_json "$labels_json" "e2e-done" || has_label_json "$labels_json" "e2e:rejected"; then
     log "issue #${number}: work already done/rejected — skip"; skipped=$((skipped+1)); continue
+  fi
+  # Не трогаем живой фикс (ретро 02.09 t_f8d369ab: там ручная работа идёт).
+  if has_label_json "$labels_json" "needs-e2e"; then
+    log "issue #${number}: has needs-e2e (живой фикс) — skip"; skipped=$((skipped+1)); continue
   fi
 
   # Skip fresh issues (< STALE_HOURS since last update)
   upd_epoch="$(date -d "$updated_at" +%s 2>/dev/null || echo 0)"
   now_epoch="$(date +%s)"
+  age_h=$(( (now_epoch - upd_epoch) / 3600 ))
   if [ $(( now_epoch - upd_epoch )) -lt $(( STALE_HOURS * 3600 )) ]; then
-    log "issue #${number}: updated < ${STALE_HOURS}h ago — fresh, skip"; skipped=$((skipped+1)); continue
+    log "issue #${number}: updated < ${STALE_HOURS}h ago (${age_h}h) — fresh, skip"; skipped=$((skipped+1)); continue
+  fi
+
+  # --- orphan-deploy pre-check (ретро 02.09 t_f8d369ab) ---
+  # Branch из body → git ls-remote origin → DELETED? → close not_planned.
+  # Работает в любой момент, не зависит от deploy-signature и STALE_HOURS.
+  branch_name="$(extract_branch_from_body "$body")"
+  if [ -n "$branch_name" ]; then
+    bstatus="$(branch_remote_status "$branch_name")"
+    if [ "$bstatus" = "deleted" ]; then
+      close_orphan_deploy "$number" "$branch_name" "${age_h}"
+      closed=$((closed+1)); swept=$((swept+1))
+      continue
+    fi
+    log "issue #${number}: branch '${branch_name}' status=${bstatus} — proceed to verification"
+  else
+    log "issue #${number}: no branch found in body — proceed to signature verify"
   fi
 
   # Parse deploy-signature

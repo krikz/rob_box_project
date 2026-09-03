@@ -503,9 +503,26 @@ jobs:
               # Issue #1388: race main↔vision — оба коммитят в одну ветку.
               # Зовём scripts/ci/push-image-versions.sh: pull --rebase + push с retry
               # и ФЕЙЛ при невосстановимой ошибке (раньше job просто молча терял коммит).
+              #
+              # Issue #1826: round-ветки (z-{e2e}/test-round-*) — это transient
+              # branches для e2e-прогонов. SHA-tag коммит в round-ветку создаёт
+              # infinite build chain: agent-flow триггерит L-Build → CI коммитит
+              # SHA-tag в round → agent-flow видит новый HEAD → триггерит ещё
+              # build. Loop. SHA-теги нужны только для develop/main, где их
+              # читает deploy-flow. На round-ветках .image-versions.test
+              # обновляется в локальном реестре и в deploy-flow читается
+              # напрямую через IMAGE_TAG (не из .image-versions файла), поэтому
+              # SHA-tag push в round НЕ нужен.
               CURRENT_BRANCH="$(git branch --show-current)"
-              git commit -m "ci: main SHA tags → ${NEW_TAG} [skip ci]"
-              bash scripts/ci/push-image-versions.sh "$CURRENT_BRANCH" main
+              if [[ "${CURRENT_BRANCH}" =~ ^z-\{e2e\}/test-round- ]] || \
+                 [[ "${CURRENT_BRANCH}" =~ ^z-\{e2e\}/wip- ]]; then
+                echo "⏭️  Issue #1826: skip SHA-tag push for round branch ${CURRENT_BRANCH}"
+                echo "   (prevents infinite build loop — agent-flow would re-trigger on each SHA commit)"
+                echo "   SHA-tag ${NEW_TAG} already pushed to local registry; deploy on round uses IMAGE_TAG directly"
+              else
+                git commit -m "ci: main SHA tags → ${NEW_TAG} [skip ci]"
+                bash scripts/ci/push-image-versions.sh "$CURRENT_BRANCH" main
+              fi
             fi
           else
             echo "⚠️  $VERSIONS_FILE not found"

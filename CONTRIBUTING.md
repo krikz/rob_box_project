@@ -125,6 +125,58 @@
 - **�️ После финального merge proposal-ветка закрывается/архивируется** (remote-ветка удаляется, как и обычная feature). Если proposal нужно продолжить — создаётся НОВАЯ ветка от свежего `origin/develop` (например `z-architect/voice-selection-proposal-v2`). Не держим «вечные» proposal-ветки: раз PR не открыт неделями, ветка — кандидат на удаление.
 - **НЕ путать с:** ретро-ветками `z-architect/t_<card>-<slug>` (одноразовые, под карточку) и issue-ветками `z-architect/<issue>-<slug>`. Обе живут ровно до merge своего PR и удаляются.
 
+#### 🛑 Правило: «Один PR = одна ветка от свежего origin/develop» (ретро 31.08 t_04371252, PR #1753)
+
+> **Архитектурный долг: переиспользование уже влитой ветки = сломанный процесс.**
+
+Если ветка УЖЕ была влита в `develop` (через закрытый merged PR), новые
+коммиты в эту ветку + новый открытый PR с неё = **stale-branch reuse**.
+Это нарушает инвариант «одна ветка = одна задача = один merge».
+
+**Почему это плохо:**
+- PR-diff «удаляет» уже влитые фиксы (rebase'ы от старой базы) — это
+  скрытая регрессия, которая ломает CI на следующем раунде.
+- merge-gate scan обнаруживает stale-branch через ~5 мин после открытия,
+  но за это время PR уже попадает в очередь ревью (Шифу снимает
+  `needs-review`, но PR остаётся OPEN без чёткого маркера).
+- История коммитов теряет связь «PR → merge», и blame в develop ломается.
+
+**Что делать воркеру:**
+```bash
+# Хочешь ещё один фикс поверх ранее влитой ветки?
+# 1. Создай НОВУЮ ветку от свежего origin/develop (НЕ от старой):
+git fetch origin develop
+git checkout -b z-{agent}/t_<card>-<slug> origin/develop
+# 2. Перенеси ТОЛЬКО нужный фикс (cherry-pick, не rebase на старую):
+git cherry-pick <sha-of-needed-fix>
+# 3. Открой новый PR с новой ветки, закрой старый.
+```
+
+**Исключение** — proposal-ветки `z-architect/<proposal-slug>` (см. выше):
+они ЛЕГАЛЬНО живут после merge и могут принимать новые коммиты
+(retro 15.08 t_6024f414).
+
+**Что делает merge-gate** (`agent-flow-merge-gate.sh`):
+1. Каждый тик сканирует все OPEN PR.
+2. Если PR открыт на ветке, у которой уже есть MERGED PR с тем же
+   head → guard «stale-branch reuse».
+3. **Аддитивный PR** (deletions ≤ 20, нет функциональных файлов) →
+   пропускается (это может быть `docs/ci` продолжение, ретро 13.08
+   t_a3f170fe).
+4. **Функциональный stale-reuse** (новые `.py`/`.sh` в `src/`,
+   `docker/`, `scripts/agent_flow/`, `tests/agent_flow/`) → пишет
+   dedup-комментарий, снимает `needs-review`, **ставит метку
+   `stale-branch-reuse`** для downstream-фильтров (e2e-process,
+   clean-pr-sweep).
+5. **Регрессионный stale-reuse** (deletions > 20, удаляет влитые фиксы)
+   → блокируется полностью + метка `stale-branch-reuse`.
+
+**Detection** для разработчика:
+```bash
+gh pr list --state merged --head <branch-name> --json number --jq '.[0].number // "empty"'
+# Если non-empty — этот branch уже влит, новый PR с него будет stale.
+```
+
 ## 📐 ADR-процесс (Architecture Decision Records, ретро 25.08 t_00ba0224)
 
 ADR хранятся в `docs/adr/NNNN-<slug>.md` и нумеруются **глобальным
@@ -270,9 +322,86 @@ printf '%04d\n' "$NEXT"
 
 В `scripts/agent_flow/agent-flow-merge-gate.sh` есть проверка: если PR создаёт файл `docs/adr/NNNN-*.md`, то `NNNN` сверяется с `origin/develop`. При коллизии — reject с инструкцией «выберите следующий свободный номер». Реализация — child-задача devops (`t_45db74ad-d`).
 
+### 2f. Diagnostic-карточки merge-gate: маркеры `<!-- diag-* -->` в body (ADR-0035, 31.08.2026)
+
+`agent-flow-merge-gate.sh` (PR #1743, ретро `t_e00f448d`) создаёт **diagnostic-карточки** для CI UNSTABLE с classification `unit_lint` (= реальная регрессия в коде PR). Чтобы новый блок `stale_after_upstream_fix_scan_all` (ADR-0035) мог auto-detect «upstream-фикс уже в develop или в самом PR», при создании diagnostic-карточки в конец `body` дописываются **HTML-комментарии** (невидимые при рендере markdown, grep'абельные):
+
+```markdown
+<!-- diag-pr: 1740 -->
+<!-- diag-pr-sha: f924ad6c47bcf7deb66d2080dcee067c66cf5792 -->
+<!-- diag-pr-base: develop -->
+<!-- diag-sig: _track_mode_music_active, _code_speech_retry_used -->
+<!-- diag-tests: src/rob_box_voice/test/unit/node/test_barge_in_policy.py, src/.../test_issue_1195_tg_source.py -->
+<!-- diag-classification: unit_lint -->
+<!-- diag-created-ts: 1756598400 -->
+```
+
+**Правила для воркеров и cron'ов, которые пишут в body diagnostic-карточек:**
+
+1. **НЕ удалять существующие `<!-- diag-* -->` маркеры** при edit / comment / merge — detector использует их для stale-detect.
+2. **НЕ писать ложные маркеры** (например, `diag-pr: 99999` если карточка не про этот PR). Detector применит блокировку к неправильному PR.
+3. **При backfill** (см. `scripts/agent_flow/backfill_diag_markers.sh`): добавлять маркеры в конец body, не переписывать существующий текст.
+4. **Legacy diagnostic-карточки без маркеров** (созданные до 31.08.2026): detector их skip'ает с логом `no diag-pr marker, skip (legacy)`. Для их очистки — backfill вручную (Шифу решает когда).
+
+### 2g. Mis-scope guard: архитектурные изменения → architect/devops, не backend+TDD (ADR-0036, 31.08.2026)
+
+> Ретро `t_da8bf7cd`: карточка `t_e2ae0c29` «реализация ADR-0035» с `assignee=backend` + `skill=test-driven-development` провисела в running 5ч31м при `max_runtime_seconds=1800` (полчаса!). Worker жив, шлёт heartbeat, watchdog не классифицирует как stuck — но по сути это mis-scope: backend-воркер в TDD-loop пишет тесты на архитектурное решение, которого ещё нет в коде. Полное обоснование — в `docs/adr/0036-mis-scope-task-guard.md`.
+
+#### Правило выбора assignee для архитектурных/process-карточек
+
+Если задача = реализация ADR, design-decision, process-fix, pre-merge gate, merge-gate logic, skill-validation guard, agent-flow cron-фикс, watchdog-логика, dispatcher-валидация, vendor-патч → **assignee ОБЯЗАН быть одним из**:
+
+- **assignee=architect** + skill из профиля architect (`architecture-doc-review`, `plan`, `interactive-design-discuss`) — для design/ADR-работы
+- **assignee=devops** + skill из профиля devops (`agent-flow-ops`, `bash`, `versioning-runtime-scripts`) — для реализации фикса в существующем скрипте
+
+**Запрещено** для этих задач: `assignee=backend` + `skill=test-driven-development`. Это mis-scope — воркер уйдёт в TDD-цикл без архитектурного решения. См. `t_e2ae0c29` (stuck 5ч31м) и `t_6c6c98fb` (скилл чужого профиля, прецедент).
+
+#### Подсказка на стадии `kanban create`
+
+Vendor-патч `hermes-agent-skill-validation.patch` (ADR-0023 §2.5) расширяется функцией `_validate_scope_for_assignee` (ADR-0036 §4.1): если body карточки содержит архитектурные ключевые слова (`ADR-`, `pre-merge gate`, `merge-gate`, `dispatcher`, `process-fix`, ...) **И** assignee ∈ {backend, frontend, tester} **И** skill ∈ {test-driven-development, pytest, jest} → печатается structured warning в stderr + первый комментарий карточки. **Не блокирует** — обход через `--force-scope`.
+
+#### Watchdog runtime-overshoot (ADR-0036 §4.2)
+
+`scripts/agent_flow/watchdog.sh` дополняется блоком «1d. runtime-overshoot»: если worker жив, шлёт heartbeat, но `now - started_at > 4 × max_runtime_seconds` → авто-комментарий в карточку + SIGTERM через dispatcher API. SIGKILL через 60 сек если worker не умер. Множитель 4 — запас для legitimately-долгих задач; для них Шифу может выставить `max_runtime_seconds` явно больше.
+
+#### Cron-надзор (ADR-0036 §4.3)
+
+Расширение `agent-flow-blocked-watchdog.sh` (ежечасный): если running-карточка > 4ч **И** assignee ≠ architect **И** тело содержит «ADR-» → авто-комментарий «reviewer назначен неверно». Не kill, не reassign — Шифу принимает решение.
+
 ### 3. Merge и автоматическая сборка
 - После merge в `develop` → автоматическая сборка образов с тегом `dev`
 - После merge в `main` → автоматическая сборка образов с тегом `latest`
+
+### 3a. Ночной ревью (ADR-0049, 03.09.2026)
+
+Каждую ночь (окно `[02:00, 06:00)` локального времени хоста) cron-скрипт
+`scripts/agent_flow/agent-flow-nightly-review.sh` заводит **две категории
+карточек**:
+
+1. **«🌙 ночной ревью \<дата\>»** (assignee `architect`) — механический
+   дайджест за прошедшие сутки (merged PR, коммиты в develop, issues,
+   красный CI, kanban: закрытые / упавшие / висящие >6ч / ретро) и задание:
+   сверить «PR merged ↔ issue закрыта ↔ карточка не висит», разобрать
+   зависшие, назвать приоритеты на новый день.
+2. **«🔍 ревью компонента: \<comp\>»** (assignee `analyst`) — по 1-3
+   компонентам, которые за сутки меняли. Ищем то, что не ловит CI: дубли
+   (написали своё вместо существующего), глюки LLM (мёртвый код, вызовы
+   несуществующих полей, заглушки-всегда-успех, тесты без проверок),
+   недоделки (`TODO`/`NotImplementedError` в merged-коде, фича без теста,
+   скрипт без регистрации в `install.sh`), расхождение кода с ADR/README.
+
+**Правила для воркера в обеих карточках:**
+
+- Каждая находка — с raw-evidence (`file:line` + цитата строки, номер
+  PR/issue, `t_<id>`, ссылка на run). Без raw находка не считается.
+- Подтверждённый дефект → **отдельный GitHub issue** с меткой `hermes`
+  (штатный триаж подхватит). **Ревью не чинит и не открывает PR с фиксами.**
+- Находок нет → так и написать, перечислив проверенное. Честный пустой
+  отчёт лучше выдуманного списка (ADR-0018).
+
+Компонент, на который уже есть живая ревью-карточка (или архивная моложе
+7 дней), в ту же ночь повторно не ревьюится — очередь достаётся следующему
+по объёму изменений.
 
 ## 🛡️ GATE-2: stale-candidate (ADR-0022 §4.2)
 

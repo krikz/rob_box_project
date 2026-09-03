@@ -1654,9 +1654,10 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 | 2.5 (Reflex) | `ReflexLayer` (STOP/direction/debounce/metrics) | `src/rob_box_voice/rob_box_voice/scheduler/reflex.py` | ✅ приземлено |
 | 3 (Estimators + speculative) | `SegmentEstimator`, `EstimatorQualityTracker`, `SpeculativePreGenerator` | `scheduler/estimator.py`, `quality.py`, `pre_gen.py`, `speculative_executor.py` | ✅ приземлено |
 | 4 (Action server + PASTE) | HTTP+JSON action server, PASTE shadow queue, docker sidecar | `src/rob_box_voice/rob_box_voice/action_server/`, `docker/vision/docker-compose.yaml` | ✅ приземлено (ADR-0011 accepted) |
-| W7 (интеграция) | Подключение `TaskScheduler` к `speak_text`/`execute_music_code`/`stop_music` в `dialogue_node` | `dialogue_node.py` | ⏳ **открыто** — следующий PR. **Код-точный план: `docs/design/W7_INTEGRATION_PLAN.md` v1.0 (2026-08-13)** — W7a ре-ордеринг батча в `dialog_core.py` (INSIGHT #1: гонка внутри одного ответа LLM), W7b SchedulerToolExecutor, W7c task_events + [ACTIVE TASKS] в LLM-контекст, W7d снятие костылей (_pending_music_cleanup, deferred cleanup, debounce). |
+| W7 (интеграция) | Подключение `TaskScheduler` к `speak_text`/`execute_music_code`/`stop_music` в `dialogue_node` | `dialogue_node.py`, `scheduler/tool_executor.py` | ✅ **приземлено** — W7a/W7b/W7c landed (`SchedulerToolExecutor`, task_events publisher, `[ACTIVE TASKS]` в LLM-контекст). Музыкальные стартеры (`execute_music_code`/`set_vibe_preset`/`load_track`) намеренно исполняются в обход планировщика (bypass) — фикс «party regression» 19.08, см. ADR-0033. |
+| S1–S12 (scheduler-segments-merge) | Сегментная модель (`group_id`/`seg_idx`), MERGE (`TaskScheduler.update()`), `quick_decide` (Level 1), `barge_in_policy=classify`, очередь отложенных фраз (S7) | `scheduler/task_scheduler.py` (`SchedulerTask.group_id`/`seg_idx` — строки 189-190, `segments()` — строка 710, `update()` — строка 732), `scheduler/quick_decide.py`, `dialogue_node.py` (`_barge_in_policy`, `_pending_user_messages`, `_drain_pending_user_messages`) | ✅ **приземлено** (issue #968, волна scheduler-segments-merge). MERGE ограничен voice-каналом — не распространяется на музыкальный канал (см. ADR-0033). |
 
-**Вывод для исполнителя:** архитектурные блоки готовы и покрыты unit-тестами; осталась интеграционная работа — «обернуть» function_tool'ы `dialogue_node` в `SchedulerTask` и провести e2e «комар + енот». Решение по AWAITING-рендеру — §8.11 (A'2), по `task_events` — §14.1 (publisher в dialogue_node).
+**Вывод для исполнителя:** архитектурные блоки готовы и покрыты unit-тестами, W7-интеграция и сегментная модель/MERGE приземлены в develop. Решение по AWAITING-рендеру — §8.11 (A'2), по `task_events` — §14.1 (publisher в dialogue_node). Оставшиеся открытые вопросы — §12, §14.
 
 ---
 
@@ -1673,8 +1674,19 @@ Scheduler **не дублирует** `async_executor`. Использует е�
 
 **Что осталось как OPEN issue:**
 - LLM не видит состояние каналов → пост-амбл, не знает что TTS играет
-- Классификация ввода (MERGE/REPLACE/QUEUE/IGNORE/CLARIFY) до barge-in — **блокер П1**
-- Сегментная модель + правка PENDING без прерывания ACTIVE
+- ~~Классификация ввода (MERGE/REPLACE/QUEUE/IGNORE/CLARIFY) до barge-in — **блокер П1**~~ —
+  **закрыто (S4/S12, scheduler-segments-merge).** Безусловный STOP на новом
+  вводе снят: `dialogue_node._resolve_barge_in_policy()` читает параметр
+  `barge_in_policy` (`"replace"` — старое поведение по умолчанию, `"classify"`
+  — маршрутизация через `quick_decide()`, IGNORE/REPLACE/PENDING_LLM, см.
+  `dialogue_node.py` строка ~1876 и `scheduler/quick_decide.py`).
+- ~~Сегментная модель + правка PENDING без прерывания ACTIVE~~ — **закрыто
+  (S2/S3, scheduler-segments-merge).** `SchedulerTask.group_id`/`seg_idx`
+  (`task_scheduler.py:189-190`), `TaskScheduler.segments()`
+  (`task_scheduler.py:710`), `TaskScheduler.update()` (`task_scheduler.py:732`,
+  rewrite/replace/drop/append, честит §2.3 инвариант — RUNNING-сегмент
+  никогда не переписывается). MERGE ограничен voice-каналом, не
+  распространяется на музыкальный канал — см. ADR-0033.
 - Speculative pre-gen для устранения пауз
 - ~~Единый EventBus для внешних событий (батарея, препятствия, Hermes)~~ — **закрыто §5.5: `SchedulerEventBus` строится в фазе 2, разведён с ADR-0001 `SideEffectBus`**
 

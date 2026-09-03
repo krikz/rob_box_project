@@ -7,14 +7,25 @@ import time
 import pytest
 
 from rob_box_voice.scheduler import (
+    ChannelKind,
     EventBus,
     EventEnvelope,
     PreGenCandidate,
     PreGenCancelledError,
     PreGenPlan,
+    SchedulerTask,
     SegmentEstimate,
     SpeculativePreGenerator,
+    TaskResult,
+    TaskScheduler,
 )
+
+
+async def _noop_executor(task: SchedulerTask) -> TaskResult:  # noqa: ARG001
+    """Never invoked — S9 tests below only submit PENDING segments and
+    never start the scheduler's pumps, so this exists purely to satisfy
+    SchedulerTask.executor's required, callable contract."""
+    raise AssertionError("must not run: scheduler.start() was never called")
 
 
 def _candidate(
@@ -427,3 +438,60 @@ def test_pre_gen_cancelled_error_carries_metadata() -> None:
     assert err.task_id == "seg_3"
     assert err.reason == "merge_touched_frozen"
     assert isinstance(err, asyncio.CancelledError)
+
+
+# ---------------------------------------------------------------------------
+# S9.1 — PreGenPlan.boundary_idx feeding TaskScheduler's FROZEN/LIVE split
+# (scheduler-segments-merge plan, §6.5). This is the integration seam: the
+# boundary_idx algorithm itself is NOT touched (out of scope) — these tests
+# only check that a real build_plan() result, handed to
+# TaskScheduler.set_group_boundary(), classifies PENDING segments the way
+# §6.5 requires.
+# ---------------------------------------------------------------------------
+
+
+def test_build_plan_boundary_idx_marks_matching_pending_segments_frozen() -> None:
+    pre = SpeculativePreGenerator(safety_margin_ms=500.0)
+    candidates = [
+        _candidate("g1-0", 1000.0),
+        _candidate("g1-1", 2000.0),
+        _candidate("g1-2", 1500.0),
+    ]
+    # Same numbers as test_build_plan_finds_boundary_at_first_segment_past_eta_plus_margin
+    # above — boundary_idx == 1 is not a hand-picked value for this test.
+    plan = pre.build_plan(candidates, llm_eta_ms=2500.0)
+    assert plan.boundary_idx == 1
+
+    sched = TaskScheduler(loop=asyncio.new_event_loop())
+    segs = [
+        sched.submit(SchedulerTask(
+            task_id=c.task_id, tool="speak_text", channel=ChannelKind.VOICE,
+            executor=_noop_executor, args={"text": c.task_id},
+            group_id="g1", seg_idx=i,
+        ))
+        for i, c in enumerate(candidates)
+    ]
+    sched.set_group_boundary("g1", plan.boundary_idx)
+    assert [sched.is_frozen(s) for s in segs] == [True, False, False]
+
+
+def test_build_plan_none_boundary_leaves_every_pending_segment_live() -> None:
+    """A ``None`` boundary_idx (LLM ETA so large nothing crosses the
+    budget) must mean nothing is FROZEN — set_group_boundary(None-ish)
+    is a legitimate build_plan outcome, not just a test convenience."""
+    pre = SpeculativePreGenerator()
+    candidates = [_candidate("g1-0", 1000.0), _candidate("g1-1", 2000.0)]
+    plan = pre.build_plan(candidates, llm_eta_ms=20_000.0)
+    assert plan.boundary_idx is None
+
+    sched = TaskScheduler(loop=asyncio.new_event_loop())
+    segs = [
+        sched.submit(SchedulerTask(
+            task_id=c.task_id, tool="speak_text", channel=ChannelKind.VOICE,
+            executor=_noop_executor, args={"text": c.task_id},
+            group_id="g1", seg_idx=i,
+        ))
+        for i, c in enumerate(candidates)
+    ]
+    sched.set_group_boundary("g1", plan.boundary_idx)
+    assert not any(sched.is_frozen(s) for s in segs)

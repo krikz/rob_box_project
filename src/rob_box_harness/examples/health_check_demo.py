@@ -175,7 +175,7 @@ async def demo_dead_minimax_first_request_goes_to_deepseek() -> None:
     minimax = FakeProvider("minimax", fail=quota_error)
     deepseek = FakeProvider("deepseek")
     cache = HealthCache()
-    wrapper = HealthAwareFallbackLLM([minimax, deepseek], cache=cache)
+    wrapper = HealthAwareFallbackLLM([deepseek, minimax], cache=cache)
 
     t0 = time.monotonic()
     response = await wrapper.complete(msg())
@@ -285,7 +285,7 @@ async def demo_ttl_expiry_puts_provider_back_first() -> None:
     cache = HealthCache(clock=clock)
     cache.mark_unavailable("minimax", reason="quota 2056")
 
-    wrapper = HealthAwareFallbackLLM([minimax, deepseek], cache=cache)
+    wrapper = HealthAwareFallbackLLM([deepseek, minimax], cache=cache)
 
     r1 = await wrapper.complete(msg("в пределах TTL"))
     print(f"в пределах TTL:   {r1.content!r}  (minimax.calls={minimax.calls})")

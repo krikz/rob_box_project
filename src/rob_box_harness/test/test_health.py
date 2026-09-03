@@ -58,6 +58,11 @@ class _FakeProvider:
         self.calls = 0
         self.stream_calls = 0
         self.closed = False
+        # Issue #1883 — record the ``settings=`` argument on each
+        # ``complete()`` / ``stream()`` call so tests can verify the
+        # per-provider dispatch in ``HealthAwareFallbackLLM``.
+        self.settings_received: list[LLMSettings | None] = []
+        self.stream_settings_received: list[LLMSettings | None] = []
 
     async def complete(
         self,
@@ -67,6 +72,7 @@ class _FakeProvider:
         settings: LLMSettings | None = None,
     ) -> LLMResponse:
         self.calls += 1
+        self.settings_received.append(settings)
         if self.fail is not None:
             raise self.fail
         return LLMResponse(content=f"from-{self.name}")
@@ -79,6 +85,7 @@ class _FakeProvider:
         settings: LLMSettings | None = None,
     ) -> AsyncIterator[LLMChunk]:
         self.stream_calls += 1
+        self.stream_settings_received.append(settings)
         if self.fail is not None:
             raise self.fail
         yield LLMChunk(content_delta=f"from-{self.name}", finish_reason="stop")
@@ -673,6 +680,111 @@ async def test_aclose_closes_all_providers() -> None:
 def test_empty_provider_list_rejected() -> None:
     with pytest.raises(ValueError):
         HealthAwareFallbackLLM([])
+
+
+# ---------------------------------------------------------------------------
+# Issue #1883 — per-provider LLM settings dispatch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_complete_dispatches_per_provider_settings() -> None:
+    """``settings_for={name: LLMSettings}`` overrides the global ``settings=`` arg.
+
+    Regression for issue #1883: ``dialogue_node.yaml`` allows the operator
+    to set ``minimax.max_tokens`` and ``deepseek.max_tokens`` to different
+    values. Without per-provider dispatch, both providers would receive
+    whichever settings the caller passed last (the primary's).
+    """
+    primary = _FakeProvider("minimax")
+    fallback = _FakeProvider("deepseek")
+    minimax_settings = LLMSettings(temperature=0.3, max_tokens=250)
+    deepseek_settings = LLMSettings(temperature=0.9, max_tokens=800)
+    wrapper = HealthAwareFallbackLLM(
+        [primary, fallback],
+        # No global ``settings=`` arg → each provider MUST receive its
+        # own mapped LLMSettings.
+        settings_for={
+            "minimax": minimax_settings,
+            "deepseek": deepseek_settings,
+        },
+    )
+
+    # 1) Primary answers → it MUST receive minimax_settings.
+    response = await wrapper.complete(_msg())
+    assert response.content == "from-minimax"
+    assert primary.settings_received[-1] is minimax_settings
+    assert fallback.settings_received == []
+
+    # 2) Mark minimax unavailable → wrapper falls through to deepseek
+    #    which MUST receive deepseek_settings.
+    cache = HealthCache()
+    cache.mark_unavailable("minimax", reason="test")
+    wrapper_with_cache = HealthAwareFallbackLLM(
+        [primary, fallback],
+        cache=cache,
+        settings_for={
+            "minimax": minimax_settings,
+            "deepseek": deepseek_settings,
+        },
+    )
+    response = await wrapper_with_cache.complete(_msg())
+    assert response.content == "from-deepseek"
+    assert fallback.settings_received[-1] is deepseek_settings
+
+
+@pytest.mark.asyncio
+async def test_complete_global_settings_used_when_no_per_provider_override() -> None:
+    """When ``settings_for`` is empty, every provider uses the caller's settings.
+
+    Backward-compat: a caller that doesn't know about per-provider
+    settings keeps seeing its own ``settings=`` argument on every
+    downstream ``complete()`` call.
+    """
+    primary = _FakeProvider("minimax")
+    fallback = _FakeProvider("deepseek")
+    wrapper = HealthAwareFallbackLLM([primary, fallback])  # settings_for={}
+
+    global_settings = LLMSettings(temperature=0.5, max_tokens=400)
+    await wrapper.complete(_msg(), settings=global_settings)
+
+    assert primary.settings_received[-1] is global_settings
+
+    # Even when the primary fails and the fallback answers, the fallback
+    # STILL receives the global settings.
+    primary.fail = RateLimitError(_QUOTA_MSG, provider="minimax")
+    fallback.calls = 0
+    fallback.settings_received.clear()
+    response = await wrapper.complete(_msg(), settings=global_settings)
+    assert response.content == "from-deepseek"
+    assert fallback.settings_received[-1] is global_settings
+
+
+@pytest.mark.asyncio
+async def test_stream_dispatches_per_provider_settings() -> None:
+    """Streaming path also honours ``settings_for`` (issue #1883).
+
+    The voice node uses ``stream()`` when ``llm_streaming=true`` is set
+    in YAML; the per-provider dispatch MUST apply to that branch too.
+    """
+    primary = _FakeProvider("minimax")
+    fallback = _FakeProvider("deepseek")
+    minimax_settings = LLMSettings(temperature=0.1, max_tokens=120)
+    deepseek_settings = LLMSettings(temperature=0.8, max_tokens=900)
+    wrapper = HealthAwareFallbackLLM(
+        [primary, fallback],
+        settings_for={
+            "minimax": minimax_settings,
+            "deepseek": deepseek_settings,
+        },
+    )
+
+    chunks: list[LLMChunk] = []
+    async for ch in wrapper.stream(_msg()):
+        chunks.append(ch)
+    assert chunks and chunks[-1].content_delta == "from-minimax"
+    assert primary.stream_settings_received[-1] is minimax_settings
+    assert fallback.stream_settings_received == []
 
 
 def test_capabilities_forward_from_primary() -> None:

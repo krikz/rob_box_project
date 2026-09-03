@@ -22,6 +22,7 @@ from .sound import *
 from .dialogue import *
 from .memory import *
 from .music import *
+from .scheduler import *
 from .web_search import *
 
 __all__ = [
@@ -59,6 +60,8 @@ __all__ = [
     "SpeakTextTool",
     "ListenForResponseTool",
     "SetVoiceTool",
+    # Scheduler tools (issue #968, S6)
+    "TaskDeltaTool",
     # Memory tools
     "MemorySaveTool",
     "MemorySearchTool",

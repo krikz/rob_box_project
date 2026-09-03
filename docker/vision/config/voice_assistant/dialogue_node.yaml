@@ -10,30 +10,23 @@
 
 dialogue_node:
   ros__parameters:
-    wake_words:
-    - робок
-    - робот
-    - роббокс
-    - робокос
-    - роббос
-    - робокс
-    - робэкс
-    - робекс
-    - робакс
-    - рабокс
-    - рубокс
-    - роблокс
-    - роберт
-    - рыбок
-    - рабок
-    - робак
-    - рома
-    - бот
-    - робо
-    - роб
-    - робик
+    # wake_words намеренно НЕ здесь: единственное объявление —
+    # rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS, откуда его берут
+    # дефолты dialogue_node и stt_node. Копия в YAML — это ровно то, что
+    # разъехалось в #1252 и стоило #1734.
     dialogue_timeout: 300.0
-    llm_providers: "minimax,deepseek"  # первый = primary, остальные = fallbacks
+    # S1 (scheduler-segments-merge) — "replace" = сегодняшнее поведение
+    # (STOP на любой новый STT-ввод). "classify" включается в S8.3 после
+    # зелёного e2e; до этого — аварийный откат одной строкой.
+    barge_in_policy: "replace"
+    # TODO(legacy-config): 2026-09-15 — отложенный rollout deepseek primary.
+    # Документация (docstring'и в src/rob_box_harness/rob_box_harness/providers/*.py,
+    # docs/guides/examples/minimax_llm.yaml) говорит [deepseek, minimax, mimo],
+    # runtime yaml оставлен на legacy [minimax, deepseek] намеренно (см. ADR-0043).
+    # При обновлении — синхронизировать test_both_voice_configs_route_dialogue_to_minimax
+    # (src/rob_box_voice/test/test_dialogue_shell.py) в том же коммите.
+    # первый = primary, остальные = fallbacks
+    llm_providers: "minimax,deepseek"
     enable_mcp_tools: true
 
     # Бэклог-аккумулятор фоновой речи без wake-слова.
@@ -60,7 +53,7 @@ dialogue_node:
       base_url: "https://api.minimax.io/v1"
       model: "MiniMax-M3"
       temperature: 0.7
-      max_tokens: 500
+      max_tokens: 3000   # см. #1883: 500 режет tool-call пополам
       timeout_s: 90.0
 
     # DeepSeek (fallback — дешёвый, быстрый, надёжный)
@@ -69,7 +62,7 @@ dialogue_node:
       base_url: "https://api.deepseek.com"
       model: "deepseek-chat"
       temperature: 0.7
-      max_tokens: 500
+      max_tokens: 3000   # см. #1883: 500 режет tool-call пополам
       timeout_s: 90.0
 
     # MiMo (Xiaomi — fallback #2). Раскомментируй и добавь "mimo" в
@@ -93,6 +86,20 @@ dialogue_node:
 
     # Промпт система
     system_prompt_file: master_prompt_compact.txt
+    # Move A (change skill-scoped-dialogue-context). true — доменные
+    # инструкции (§5 MUSIC, §6 WAYPOINTS и фрагменты prompts/skills/*.txt)
+    # уезжают из системного промпта и приезжают вплотную к текущему ходу.
+    # false — побайтово прежнее поведение, секции стоят на позиции 0.
+    # ВКЛЮЧЕНО 02.09.2026 решением владельца — без недели baseline
+    # (Migration Plan шаг 2 сокращён сознательно). Откат — false + рестарт
+    # контейнера, промпт при false побайтово дореформенный (проверено
+    # хэшем на роботе, evidence-vision-pi.md §3).
+    skills_enabled: true
+    # Move B — сузить tools= до core + активный скилл. Ломает кэшируемый
+    # префикс провайдера при каждой смене домена и добавляет отказ
+    # «роутер промахнулся -> LLM не видит нужный инструмент» (#1403).
+    # Включать только после замера prefix-cache (задача 7.4).
+    skill_tool_narrowing: false
     history_max_turns: 20
     agent_max_turns: 20
     llm_timeout_sec: 90.0
@@ -102,10 +109,23 @@ dialogue_node:
     faq_event_config_file: ""   # Например: /config/voice_assistant/event_mode.yaml
     # Инструменты, чьи тёрны исключаются из истории диалога (issue DeepSeek
     # pattern-completion: handle_navigation + handle_music).
+    # handle_navigation / handle_music — фасады, удалённые вместе со
+    # скиллами Compositor'а: фильтр по ним не отсекал ничего.
     history_excluded_tools:
-    - handle_navigation
-    - handle_music
-    sqlite_db_path: ~/.rob_box/voice.db
+    - move_direction
+    # Диалоговая история harness'а. ДОЛЖНА лежать на смонтированном томе:
+    # ``~/.rob_box/voice.db`` — это /root внутри контейнера, том туда не
+    # смонтирован, поэтому весь контекст разговора умирал вместе с
+    # контейнером (проверено на vision 29.08: файл создан в 15:29 вместе с
+    # контейнером, 69 ходов, ни одного старше).
+    #
+    # Это НЕ ``/data/voice_memory.db``: там живёт VoiceMemory из
+    # mcp_server, и схемы конфликтуют — у harness'а ``waypoints.name``
+    # PRIMARY KEY, у VoiceMemory ``waypoints`` с ``map_id NOT NULL`` и FK
+    # на maps; ``faq_items`` расходятся так же (created_at vs indexed_at).
+    # ``CREATE TABLE IF NOT EXISTS`` промолчал бы, а вставки бы падали.
+    # Два стора остаются двумя сторами — но оба переживают рестарт.
+    sqlite_db_path: /data/harness_voice.db
     speaker_id_enabled: true
     speaker_db_path: /data/speakers.db
     startup_greeting_sec: 12.0

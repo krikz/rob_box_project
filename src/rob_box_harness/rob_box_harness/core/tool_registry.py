@@ -1,61 +1,44 @@
-"""``ToolRegistry`` — manifest-only registry of all dialogue tools.
+"""``ToolRegistry`` — the dialogue tools the LLM is offered.
 
-This module is the **catalog** of every tool that ``dialogue_node``
-exposes to the LLM. It is intentionally **pure Python** — no
-``rclpy``, no ``openai-agents``, no ROS2 transport. The actual tool
-implementations live in :class:`rob_box_harness.executors.ros_mcp
-.ROSMCPToolProvider` (which bridges ROS2 topics), but the *specs*
-(names, descriptions, JSON schemas) are owned here so that:
+This module is the harness-side **view** of the tool catalog. It stays
+intentionally pure Python — no ``rclpy``, no ``openai-agents``, no ROS2
+transport — so the catalog is unit-testable without a ROS2 runtime, which
+is why it exists as a separate layer at all.
 
-1. The catalog is unit-testable without ROS2.
-2. The LLM-side ``complete()`` / ``stream()`` calls always have a
-   consistent view of what tools exist, regardless of which handlers
-   are wired up.
-3. New tools can be added in one place without touching the dialogue
-   shell.
+What changed
+------------
+The specs used to be *hand-written here*, in parallel with the ``MCPTool``
+classes in ``rob_box_mcp_tools`` that actually implement ``execute()``. Two
+declarations of the same contract drifted, badly and silently:
 
-The inventory mirrors ``dialogue_node._make_tools`` /
-``_make_output_tools`` / ``_build_skills`` from the legacy code path,
-decomposed into 32 *flat* tools and 5 *skill* sub-agents (per
-``06-01-PLAN.md`` §W2). ``voice_settings`` was removed in issue #1229 —
-LLM must not call it (set_voice + speak_text(voice=) cover voice
-selection; the MCP-side ``set_volume``/``set_pitch`` still exist).
+* ``navigate_to_waypoint`` advertised ``name`` while ``execute()`` took
+  ``waypoint`` — every LLM-driven waypoint navigation failed validation.
+* ``move_direction`` advertised ``duration`` against a ``distance``
+  parameter — ``TypeError`` on every call that used it.
+* 13 tools registered by ``mcp_server`` were missing here entirely, so the
+  LLM could not call them at all (``task_delta``, ``stop_navigation``, the
+  whole mapping FSM, ``set_volume``/``set_pitch``/``set_speed``, …).
+* 29 of 38 shared descriptions had decayed into one-line stubs
+  (``play_sound``: 782 characters of guidance reduced to 40).
 
-Tool specs use :class:`rob_box_harness.tools.ToolSpec` so they can be
-passed straight to :class:`FakeToolProvider` for unit tests and to
-:class:`ROSMCPToolProvider` for production.
+Specs are now derived from :mod:`rob_box_core.tool_catalog`, which is
+generated from the tool classes by ``tools/gen_tool_catalog.py`` and kept
+honest by ``test_tool_catalog_is_current``. Adding a tool means writing one
+``MCPTool`` subclass and regenerating — there is no second list to update.
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable, Mapping
 
+from rob_box_core.tool_catalog import (
+    ToolCatalogEntry,
+    llm_visible_tools,
+    tools_for_skill,
+)
 from rob_box_harness.tools import ToolHandler, ToolSpec
 
-
-# ---------------------------------------------------------------------------
-# JSON-Schema fragments reused across multiple tools
-# ---------------------------------------------------------------------------
-
-_TEXT_PROPERTY: dict[str, Any] = {
-    "type": "string",
-    "description": "Text string.",
-}
-
-_INT_PROPERTY: dict[str, Any] = {
-    "type": "integer",
-    "description": "Integer.",
-}
-
-_FLOAT_PROPERTY: dict[str, Any] = {
-    "type": "number",
-    "description": "Floating-point number.",
-}
-
-_BOOL_PROPERTY: dict[str, Any] = {
-    "type": "boolean",
-    "description": "Boolean flag.",
-}
+__all__ = ["ToolRegistry", "ToolSpec", "ToolHandler", "spec_from_catalog"]
 
 
 # ---------------------------------------------------------------------------
@@ -63,727 +46,78 @@ _BOOL_PROPERTY: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 
-async def _default_handler(args: dict[str, Any]) -> dict[str, Any]:
+async def _default_handler(args: Mapping[str, Any]) -> dict[str, Any]:
     """Default no-op handler used at registry-construction time.
 
-    Real handlers (ROS2 bridges, MCP adapters) are wired in by the
-    caller. The default returns the arguments dict unchanged so
-    callers can still ``discover()`` the registry without crashing.
+    Real handlers (ROS2 bridges, MCP adapters) are wired in by the caller.
+    The default returns the arguments dict unchanged so callers can still
+    ``discover()`` the registry without crashing.
     """
     return dict(args)
 
 
-# ---------------------------------------------------------------------------
-# The 32 flat tools (audio / memory / status / navigation / music / tracks)
-# ---------------------------------------------------------------------------
-
-
-def _build_flat_specs() -> tuple[ToolSpec, ...]:
-    """Build the 32 flat tool specs.
-
-    Names and descriptions follow the legacy ``dialogue_node`` so the
-    LLM-facing contract is stable across the harness migration.
-    Parameter schemas are minimal but valid JSON Schema — enough for
-    the LLM to call correctly.
-    """
-    return (
-        ToolSpec(
-            name="speak_text",
-            description="Speak ``text`` via the TTS pipeline with the given animation.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "text": _TEXT_PROPERTY,
-                    "voice": {
-                        "type": "string",
-                        "description": (
-                            "TTS voice for this reply (issue #1219). Name of a "
-                            "voice of the active provider (see [TTS] voices in "
-                            "system context): e.g. alena/zahar (yandex), "
-                            "Russian_ReliableMan/Russian_BrightHeroine (minimax), aidar/baya "
-                            "(silero). Omit to use the set_voice voice or the "
-                            "provider default. Unknown voice falls back to the "
-                            "default; the actual voice is returned as voice_used."
-                        ),
-                    },
-                    "animation": {
-                        "type": "string",
-                        "description": (
-                            "LED matrix animation to play while speaking. "
-                            "Choose one that matches the emotional tone or context. "
-                            "Aliases are auto-normalized: neutral→idle, excited→happy, confused→thinking."
-                        ),
-                        "enum": [
-                            "idle", "talking", "wakeup", "sleep",
-                            "happy", "sad", "angry", "surprised", "thinking", "victory",
-                            "error", "low_battery", "charging",
-                            "police_lights", "ambulance", "fire_truck", "road_service",
-                            "turn_left", "turn_right", "accelerating", "braking",
-                            "neutral", "excited", "confused",
-                        ],
-                    },
-                },
-                "required": ["text"],
-            },
-        ),
-        # Issue #1219 — persistent TTS voice selection. The MCP-side
-        # ``SetVoiceTool`` lives in ``rob_box_mcp_tools.tools.dialogue``;
-        # this harness-side spec is what the LLM actually sees in
-        # chat-completion ``tools=`` (same pattern as register_speaker).
-        # Wire-up: ``SetVoiceTool.execute(voice)`` validates against the
-        # active provider's voice list and stores current_voice in-memory
-        # (VoiceStateStore); the next speak_text without voice= uses it.
-        ToolSpec(
-            name="set_voice",
-            description=(
-                "Set the TTS voice for the dialogue (persistent until changed). "
-                "Use when: (1) the user asks «говори голосом X» — pass voice=X; "
-                "(2) you want to tell a story with different characters "
-                "(old man → zahar, girl → alena, etc.); (3) you want to return "
-                "to the default voice — pass voice=<default_voice>. "
-                "Available voices are listed in the system context: [TTS] voices=... "
-                "After set_voice, the next speak_text without voice= uses the "
-                "set voice."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "voice": {
-                        "type": "string",
-                        "description": (
-                            "Voice name to set (from the [TTS] voices=... list): "
-                            "e.g. alena, zahar, jane (yandex); male-qn-qingse, "
-                            "female-shaonv (minimax); aidar, baya (silero)."
-                        ),
-                    },
-                },
-                "required": ["voice"],
-            },
-        ),
-        ToolSpec(
-            name="estimate_tts_duration",
-            description=(
-                "Estimate TTS playback duration in seconds for a given text. "
-                "Use BEFORE speak_text to plan music arrangement timing (#949). "
-                "Returns estimate_sec (float) — approximate playback time with chipmunk 2x speedup."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "text": _TEXT_PROPERTY,
-                    "chars_per_second": {
-                        "type": "number",
-                        "description": (
-                            "Speech rate in chars/second. Default 30 — calibrated "
-                            "for Russian TTS with ROBBOX chipmunk 2x effect."
-                        ),
-                    },
-                },
-                "required": ["text"],
-            },
-        ),
-        ToolSpec(
-            name="play_sound",
-            description="Play a sound effect from the sound pack.",
-            parameters={
-                "type": "object",
-                "properties": {"sound": _TEXT_PROPERTY},
-                "required": ["sound"],
-            },
-        ),
-        ToolSpec(
-            name="play_animation",
-            description="Trigger a robot animation for ``duration`` seconds.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "animation": _TEXT_PROPERTY,
-                    "duration": _FLOAT_PROPERTY,
-                },
-                "required": ["animation"],
-            },
-        ),
-        ToolSpec(
-            name="memory_context",
-            description="Load recent conversation context from long-term memory.",
-            parameters={
-                "type": "object",
-                "properties": {"limit": _INT_PROPERTY},
-            },
-        ),
-        ToolSpec(
-            name="memory_save",
-            description="Save a fact to long-term memory under a category.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "fact": _TEXT_PROPERTY,
-                    "category": _TEXT_PROPERTY,
-                },
-                "required": ["fact"],
-            },
-        ),
-        ToolSpec(
-            name="memory_search",
-            description="Search long-term memory for relevant facts.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "query": _TEXT_PROPERTY,
-                    "limit": _INT_PROPERTY,
-                },
-                "required": ["query"],
-            },
-        ),
-        ToolSpec(
-            name="faq_search",
-            description="Search the active event's FAQ for an answer.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "query": _TEXT_PROPERTY,
-                    "limit": _INT_PROPERTY,
-                },
-                "required": ["query"],
-            },
-        ),
-        ToolSpec(
-            name="get_current_time",
-            description="Return the current local time as an ISO-8601 string.",
-            parameters={"type": "object", "properties": {}},
-        ),
-        ToolSpec(
-            name="get_robot_status",
-            description="Return the robot's current status (idle/moving/silent).",
-            parameters={"type": "object", "properties": {}},
-        ),
-        ToolSpec(
-            name="get_battery_level",
-            description="Return the current battery percentage.",
-            parameters={"type": "object", "properties": {}},
-        ),
-        ToolSpec(
-            name="navigate_to_waypoint",
-            description="Drive to a previously-saved waypoint by name.",
-            parameters={
-                "type": "object",
-                "properties": {"name": _TEXT_PROPERTY},
-                "required": ["name"],
-            },
-        ),
-        ToolSpec(
-            name="navigate_to_coordinates",
-            description="Drive to an absolute (x, y, theta) pose.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "x": _FLOAT_PROPERTY,
-                    "y": _FLOAT_PROPERTY,
-                    "theta": _FLOAT_PROPERTY,
-                },
-                "required": ["x", "y", "theta"],
-            },
-        ),
-        ToolSpec(
-            name="move_direction",
-            description="Move in a direction (``forward``/``back``/``left``/``right``) for a duration.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "direction": _TEXT_PROPERTY,
-                    "duration": _FLOAT_PROPERTY,
-                },
-                "required": ["direction"],
-            },
-        ),
-        ToolSpec(
-            name="list_waypoints",
-            description="List all saved waypoints.",
-            parameters={"type": "object", "properties": {}},
-        ),
-        ToolSpec(
-            name="save_waypoint",
-            description="Save the current pose as a named waypoint.",
-            parameters={
-                "type": "object",
-                "properties": {"name": _TEXT_PROPERTY},
-                "required": ["name"],
-            },
-        ),
-        ToolSpec(
-            name="delete_waypoint",
-            description="Delete a saved waypoint by name.",
-            parameters={
-                "type": "object",
-                "properties": {"name": _TEXT_PROPERTY},
-                "required": ["name"],
-            },
-        ),
-        ToolSpec(
-            name="clear_waypoints",
-            description="Delete every saved waypoint.",
-            parameters={"type": "object", "properties": {}},
-        ),
-        ToolSpec(
-            name="get_current_pose",
-            description="Return the robot's current pose as (x, y, theta).",
-            parameters={"type": "object", "properties": {}},
-        ),
-        ToolSpec(
-            name="search_samples",
-            description="Search Renardo sample packs by keyword in filename. Returns letter, sample_index, and ready-to-use play_code.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Keyword: kick, snare, hat, bass, synth, vocal, glitch. Use '*' for overview."},
-                    "pack": {"type": "string", "description": "Sample pack: 0_foxdot_default (standard) or 1_pitchglitch_samples (extended)."},
-                    "case": {"type": "string", "description": "Letter case: lower or upper."},
-                },
-                "required": ["query"],
-            },
-        ),
-        ToolSpec(
-            name="execute_music_code",
-            description=(
-                "Execute FoxDot / music code in the runtime. Pass `segments` "
-                "(number of bars, 4 beats per bar) as a safety net only — the "
-                "system stops the music itself at tts_batch_complete (issue #990). "
-                "Do NOT pass duration_sec (deprecated, ignored)."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "code": _TEXT_PROPERTY,
-                    "segments": {
-                        "type": "integer",
-                        "description": (
-                            "Number of bars (4 beats per bar) the background music "
-                            "should play as a backstop. The system stops music at "
-                            "tts_batch_complete; segments only caps playback if TTS "
-                            "hangs. Typical song background: 8-16 bars. Omit if "
-                            "unsure (default: until tts_batch_complete)."
-                        ),
-                    },
-                    "duration_sec": {
-                        "type": "number",
-                        "description": (
-                            "DEPRECATED (issue #990) — ignored for stopping. "
-                            "Backward compatibility only; do not use."
-                        ),
-                    },
-                },
-                "required": ["code"],
-            },
-        ),
-        ToolSpec(
-            name="stop_music",
-            description="Stop all music / DJ playback.",
-            parameters={"type": "object", "properties": {}},
-        ),
-        # Canonical name is ``preset_name`` to match the MCP ``SetVibePresetTool``
-        # schema (see rob_box_mcp_tools/tools/music.py) — the previous ``preset``
-        # alias caused `mcp_server` validation errors in issue #935.
-        ToolSpec(
-            name="set_vibe_preset",
-            description=(
-                "Apply a named vibe preset (tempo, scale, root key). "
-                "Preset values: chill (85bpm), energetic (140bpm), ambient (70bpm), "
-                "jazz (120bpm), dark (100bpm), rock (120bpm), latin (105bpm), "
-                "electronic (128bpm), cinematic (90bpm), funk (110bpm), "
-                "reggae (75bpm), classical (100bpm)."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {"preset_name": _TEXT_PROPERTY},
-                "required": ["preset_name"],
-            },
-        ),
-        ToolSpec(
-            name="get_music_state",
-            description="Return the current music runtime state.",
-            parameters={"type": "object", "properties": {}},
-        ),
-        ToolSpec(
-            name="set_dj_mode",
-            description="Enable/disable DJ mode and configure transitions.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "enabled": _BOOL_PROPERTY,
-                    "theme": _TEXT_PROPERTY,
-                    "transition_seconds": _INT_PROPERTY,
-                },
-                "required": ["enabled"],
-            },
-        ),
-        ToolSpec(
-            name="list_tracks",
-            description="List saved music tracks.",
-            parameters={"type": "object", "properties": {}},
-        ),
-        ToolSpec(
-            name="save_track",
-            description="Save the current music runtime state as a named track.",
-            parameters={
-                "type": "object",
-                "properties": {"name": _TEXT_PROPERTY},
-                "required": ["name"],
-            },
-        ),
-        ToolSpec(
-            name="load_track",
-            description="Load a previously-saved music track by name.",
-            parameters={
-                "type": "object",
-                "properties": {"name": _TEXT_PROPERTY},
-                "required": ["name"],
-            },
-        ),
-        ToolSpec(
-            name="delete_track",
-            description="Delete a saved music track by name.",
-            parameters={
-                "type": "object",
-                "properties": {"name": _TEXT_PROPERTY},
-                "required": ["name"],
-            },
-        ),
-        # 20.08.2026 — MiniMax Music API отключён для новых юзеров (410 Gone,
-        # status_code 2153). ``generate_music`` удалён из LLM-каталога: LLM
-        # не должен видеть/вызывать мёртвый инструмент (e2e regression: dj01
-        # «сыграй renardo бит» → LLM вызывал generate_music как forbidden
-        # tool). gen_* библиотечные тулзы (list/search/save/play/delete/
-        # get_info) остаются — они работают с локальной /data/music_library
-        # без API.
-        ToolSpec(
-            name="gen_list_library",
-            description=(
-                "Показать список треков из библиотеки сгенерированной музыки "
-                "(/data/music_library). Возвращает id, title, prompt, tags, "
-                "mood, genre, rating, play_count."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "limit": _INT_PROPERTY,
-                    "sort_by": {
-                        "type": "string",
-                        "description": "recent (default) | popular | rating.",
-                    },
-                    "tag": _TEXT_PROPERTY,
-                    "mood": _TEXT_PROPERTY,
-                },
-            },
-        ),
-        ToolSpec(
-            name="gen_search_library",
-            description=(
-                "Поиск по библиотеке сгенерированной музыки по ключевому слову "
-                "(title/prompt/lyrics/genre/mood/notes)."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Поисковый запрос (1-200 chars)."},
-                    "limit": _INT_PROPERTY,
-                },
-                "required": ["query"],
-            },
-        ),
-        ToolSpec(
-            name="gen_save_to_library",
-            description=(
-                "Обновить метаданные (tags/rating/mood/genre/title) уже "
-                "сгенерированного трека."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "track_id": {"type": "string", "description": "UUID трека."},
-                    "title": _TEXT_PROPERTY,
-                    "tags": _TEXT_PROPERTY,
-                    "mood": _TEXT_PROPERTY,
-                    "genre": _TEXT_PROPERTY,
-                    "rating": _INT_PROPERTY,
-                    "notes": _TEXT_PROPERTY,
-                },
-                "required": ["track_id"],
-            },
-        ),
-        ToolSpec(
-            name="gen_play_from_library",
-            description=(
-                "Получить путь к mp3 сгенерированного трека из библиотеки для "
-                "воспроизведения."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "track_id": {"type": "string", "description": "UUID трека."},
-                },
-                "required": ["track_id"],
-            },
-        ),
-        ToolSpec(
-            name="gen_delete_from_library",
-            description="Удалить трек из библиотеки сгенерированной музыки (необратимо).",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "track_id": {"type": "string", "description": "UUID трека."},
-                },
-                "required": ["track_id"],
-            },
-        ),
-        ToolSpec(
-            name="gen_get_track_info",
-            description="Полные метаданные одного сгенерированного трека.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "track_id": {"type": "string", "description": "UUID трека."},
-                },
-                "required": ["track_id"],
-            },
-        ),
-        # Issue #1101 — voice biometrics (resemblyzer d-vectors). The
-        # MCP-side ``RegisterSpeakerTool`` was registered in
-        # ``rob_box_mcp_tools.tools.dialogue`` (issue #1077) but NEVER
-        # wired into this harness-side catalog, so LLM never received
-        # the schema and could never call it. Without this spec the
-        # user_input «робот меня зовут Денис» ends with LLM answering
-        # textually ("Запомнил тебя!") but never saving the d-vector.
-        #
-        # Wire-up: ``RegisterSpeakerTool.execute()`` publishes to
-        # ``/voice/speaker/register``; ``speaker_id_node`` keeps a
-        # 30-second ring-buffer of recent embeddings and binds the
-        # name to the closest one in time.
-        ToolSpec(
-            name="register_speaker",
-            description=(
-                "Зарегистрировать голос текущего собеседника в voice "
-                "biometric DB (resemblyzer d-vector). "
-                "Вызывай когда: (1) пользователь представился "
-                "фразой типа «меня зовут X» / «моё имя X» — извлеки "
-                "имя из user_input и передай name=ИМЯ (Cyrillic, ≥2 "
-                "буквы, с заглавной); (2) хочешь узнать имя "
-                "незнакомца — передай name=null и спроси «Как вас "
-                "зовут?» через speak_text. "
-                "ВАЖНО: НЕ передавай служебные слова «зовут», «имя», "
-                "«меня», «зовут-это», «зовут меня» — это шумовые "
-                "токены из фразы, а не реальные имена. Извлеки имя "
-                "из контекста вручную (например, для фразы «робот "
-                "меня зовут Денис говорю» — передай name=\"Денис\")."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": (
-                            "Имя собеседника на кириллице (Cyrillic) "
-                            "с заглавной буквы, минимум 2 символа. "
-                            "Передай null/None, если хочешь спросить "
-                            "имя незнакомца. НЕ передавай слова "
-                            "«зовут», «имя», «меня», «зовут-это» — "
-                            "это шум из фразы, такой вызов будет "
-                            "отклонён MCP-сервером."
-                        ),
-                    },
-                },
-            },
-        ),
-        # Issue #1101 — DuckDuckGo web search (MCP tool). The voice-level
-        # ``WebSearchSkill`` existed before the harness migration but was
-        # never wired into the harness-side ``ToolRegistry``, so LLM saw
-        # no ``search_web`` tool and replied «поиск в интернете пока
-        # недоступен» even though the DuckDuckGo wrapper was installed.
-        # The MCP side ``SearchWebTool`` is registered in
-        # ``rob_box_mcp_tools.tools.web_search`` and wired through
-        # ``mcp_server.py`` (same pattern as ``RegisterSpeakerTool``).
-        ToolSpec(
-            name="search_web",
-            description=(
-                "Поиск в интернете через DuckDuckGo. Возвращает до N "
-                "сниппетов (title, text, url). Используй ОБЯЗАТЕЛЬНО "
-                "для любых вопросов, требующих свежих данных, которых "
-                "нет в твоей тренировочной выборке:\n"
-                "- **Погода**: «погода в Батайске сегодня», «будет ли "
-                "дождь завтра в Москве»\n"
-                "- **Новости**: «последние новости ИИ», «что случилось "
-                "в мире сегодня»\n"
-                "- **Курсы/цены**: «курс доллара сейчас», «сколько "
-                "стоит iPhone 16»\n"
-                "- **Спорт**: «счёт матча Спартак-Зенит»\n"
-                "- **Локальная информация**: «работает ли метро в "
-                "Москве», «где поесть в Сочи»\n"
-                "- **Факты/даты**: «когда день города в Ростове», "
-                "«сколько лет Путину»\n"
-                "НЕ используй для: музыкального ресёрча (genre/BPM — "
-                "используй search_samples), личных фактов о собеседнике "
-                "(memory_search/memory_context)."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": (
-                            "Поисковый запрос на русском или английском. "
-                            "Будь конкретным: укажи город, дату, тему."
-                        ),
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Сколько результатов (1-10, default 5).",
-                    },
-                },
-                "required": ["query"],
-            },
-        ),
+def spec_from_catalog(entry: ToolCatalogEntry) -> ToolSpec:
+    """Convert a catalog entry into the harness's :class:`ToolSpec`."""
+    return ToolSpec(
+        name=entry.name,
+        description=entry.description,
+        parameters=dict(entry.parameters),
     )
-
-
-# ---------------------------------------------------------------------------
-# The 5 skill sub-agents (compositor mode)
-# ---------------------------------------------------------------------------
-
-
-def _build_skill_specs() -> tuple[ToolSpec, ...]:
-    """Build the 5 skill sub-agent specs (compositor mode).
-
-    Each skill is a thin facade that wraps a group of flat tools and
-    exposes them through a single high-level entry point.
-    """
-    return (
-        ToolSpec(
-            name="handle_music",
-            description="Skill: handle music-related requests (search, play, stop, DJ).",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "intent": {
-                        "type": "string",
-                        "description": "Music intent (play/stop/set_dj/save/load/…).",
-                    },
-                    "args": {
-                        "type": "object",
-                        "description": "Intent-specific arguments.",
-                    },
-                },
-                "required": ["intent"],
-            },
-        ),
-        ToolSpec(
-            name="handle_navigation",
-            description="Skill: handle navigation requests (goto waypoint, move direction).",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "intent": {
-                        "type": "string",
-                        "description": "Navigation intent.",
-                    },
-                    "args": {
-                        "type": "object",
-                        "description": "Intent-specific arguments.",
-                    },
-                },
-                "required": ["intent"],
-            },
-        ),
-        ToolSpec(
-            name="handle_memory",
-            description="Skill: handle memory operations (save/search/load context).",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "intent": {
-                        "type": "string",
-                        "description": "Memory intent.",
-                    },
-                    "args": {
-                        "type": "object",
-                        "description": "Intent-specific arguments.",
-                    },
-                },
-                "required": ["intent"],
-            },
-        ),
-        ToolSpec(
-            name="handle_status",
-            description="Skill: handle status queries (time, battery, pose, robot state).",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "intent": {
-                        "type": "string",
-                        "description": "Status intent.",
-                    },
-                    "args": {
-                        "type": "object",
-                        "description": "Intent-specific arguments.",
-                    },
-                },
-                "required": ["intent"],
-            },
-        ),
-        ToolSpec(
-            name="handle_faq",
-            description="Skill: handle FAQ lookup against the active event profile.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "query": _TEXT_PROPERTY,
-                    "limit": _INT_PROPERTY,
-                },
-                "required": ["query"],
-            },
-        ),
-    )
-
-
-# ---------------------------------------------------------------------------
-# The registry
-# ---------------------------------------------------------------------------
 
 
 class ToolRegistry:
-    """Manifest-only registry of all dialogue tools.
+    """Manifest registry of the dialogue tools offered to the LLM.
 
-    Each tool is a (spec, handler) pair. The handler can be replaced
-    via :meth:`register` (with ``override=True``) — production wires in
+    Each tool is a (spec, handler) pair. The handler can be replaced via
+    :meth:`register` (with ``override=True``) — production wires in
     :class:`ROSMCPToolProvider` handlers, tests register mocks.
 
-    The registry is intentionally a plain Python class (not a
-    :class:`ToolProvider` subclass) so it can be reused as a manifest
-    source by *any* :class:`ToolProvider` implementation.
+    The registry is a plain Python class (not a :class:`ToolProvider`
+    subclass) so it can be reused as a manifest source by *any*
+    :class:`ToolProvider` implementation.
+
+    Only ``llm_visible`` catalog entries are pre-registered. A tool hidden
+    from the LLM stays executable over ``/mcp/execute`` but must never
+    appear in ``tools=`` — the LLM picking a dead tool is a user-visible
+    failure (see ``generate_music``, whose MiniMax backend returns 410).
     """
 
     name = "tool_registry"
 
     def __init__(self) -> None:
-        self._tools: dict[str, tuple[ToolSpec, ToolHandler]] = {}
-        # Pre-register only the FLAT tools with the default no-op handler.
-        #
-        # 🔴 FIX (party regression, live 19.08): the 5 skill facades from
-        # ``_build_skill_specs()`` (``handle_music``, ``handle_navigation``,
-        # ``handle_memory``, ``handle_status``, ``handle_faq``) were exposed
-        # to the LLM but have NO executor — the local Compositor skill path
-        # (``dialogue_node._build_skills``) was retired during the harness
-        # migration, and ``ROSMCPToolProvider`` routes every tool to the MCP
-        # server, which never registered ``handle_*``. The LLM therefore
-        # picked the inviting ``handle_music`` spec for DJ/party requests
-        # and got ``Инструмент 'handle_music' не найден`` instead of
-        # playing music. Only register the tools that are actually wired.
-        for spec in _build_flat_specs():
-            self._tools[spec.name] = (spec, _default_handler)
+        self._tools: dict[str, tuple[ToolSpec, ToolHandler]] = {
+            entry.name: (spec_from_catalog(entry), _default_handler)
+            for entry in llm_visible_tools()
+        }
 
     # ---- read API -------------------------------------------------------
 
-    def list_tools(self) -> tuple[ToolSpec, ...]:
-        """Return every registered tool's spec."""
-        return tuple(spec for spec, _ in self._tools.values())
+    def list_tools(
+        self,
+        *,
+        skills: "tuple[str, ...] | None" = None,
+    ) -> tuple[ToolSpec, ...]:
+        """Return registered tool specs.
+
+        ``skills=None`` (default) returns everything, which is today's
+        behaviour and what the LLM sees while tool-narrowing is off.
+
+        Passing ``skills`` narrows the result to the tools of those
+        domain skills plus ``core`` — the Move B path. Only tools that are
+        actually registered here are returned, so a handler replaced via
+        :meth:`register` keeps working.
+
+        :raises KeyError: on an unknown skill name (never silently empty —
+            an empty tool list reaches the LLM as "нет такой функции").
+        """
+        if skills is None:
+            return tuple(spec for spec, _ in self._tools.values())
+        wanted = {entry.name for entry in tools_for_skill(*skills)}
+        return tuple(
+            spec
+            for name, (spec, _) in self._tools.items()
+            if name in wanted
+        )
 
     def get(self, name: str) -> ToolSpec:
         """Return the spec for ``name``.
@@ -826,6 +160,3 @@ class ToolRegistry:
                 "pass override=True to replace it"
             )
         self._tools[spec.name] = (spec, handler)
-
-
-__all__ = ["ToolRegistry", "ToolSpec", "ToolHandler"]

@@ -100,6 +100,11 @@ def _ensure_rclpy_mock(monkeypatch):
         QoSProfile = MagicMock()
         ReliabilityPolicy = MagicMock()
         HistoryPolicy = MagicMock()
+        # Issue #1734 — dialogue_node.__init__ создаёт latched-топик
+        # barge_in_policy (QoSProfile(durability=DurabilityPolicy.
+        # TRANSIENT_LOCAL)); без атрибута import dialogue_node падает
+        # ImportError.
+        DurabilityPolicy = MagicMock()
 
     monkeypatch.setitem(sys.modules, "rclpy.qos", _QoSMod())
 

@@ -61,7 +61,7 @@ async def run_request_response_loop(
       3. If the response includes ``tool_calls``, execute them via
          ``self.tools``, feed the tool results back to the LLM,
          and use the follow-up response as the final text.
-      4. Persist user / tool / assistant turns in ``self.memory``.
+      4. (No turn persistence — turns are ephemeral.)
       5. Dispatch an :class:`EchoEffect` carrying the final text
          (after any ``post_process``).
       6. Return the final text to the caller.
@@ -80,11 +80,6 @@ async def run_request_response_loop(
     response = await harness.llm.complete(messages)
     assistant_text = (
         response.content if isinstance(response.content, str) else str(response.content)
-    )
-
-    await harness.memory.append_turn(
-        harness.config.name,
-        LLMMessage(role="user", content=user_text),
     )
 
     if response.tool_calls:
@@ -116,15 +111,8 @@ async def run_request_response_loop(
             if isinstance(follow_up.content, str)
             else str(follow_up.content)
         )
-        for tool_msg in tool_messages:
-            await harness.memory.append_turn(harness.config.name, tool_msg)
 
     final_text = post_process(assistant_text)
-
-    await harness.memory.append_turn(
-        harness.config.name,
-        LLMMessage(role="assistant", content=final_text),
-    )
 
     await harness.effects.dispatch(EchoEffect(text=final_text))
     harness._record("last_assistant_text", final_text)

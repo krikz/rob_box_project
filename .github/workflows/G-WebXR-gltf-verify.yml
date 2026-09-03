@@ -1,0 +1,71 @@
+name: "G: WebXR glTF Pipeline Verify"
+
+# CI guard for the rob_box_quest WebXR client glTF asset pipeline
+# (Phase 2.0, ADR-0032). Runs on every PR touching the webxr_client
+# or any committed *.glb under public/models/.
+#
+# - gltf:verify fails the build when an unoptimized glTF asset sneaks in
+#   (no Draco + Meshopt extensions, or over the per-category size budget).
+# - vitest exercises the committed Duck.optimized.glb through the same
+#   decoders that ship to production.
+#
+# Triggers on changes under src/rob_box_quest/webxr_client/** and on any
+# committed glTF/glb under public/models/. The path filter keeps PRs
+# unrelated to WebXR fast (the rest of the repo runs in the ROS2 +
+# Python workflows).
+on:
+  pull_request:
+    branches:
+      - develop
+      - main
+      - 'feature/**'
+    paths:
+      - 'src/rob_box_quest/webxr_client/**'
+      - 'src/rob_box_quest/webxr_client/public/models/**/*.glb'
+      - 'src/rob_box_quest/webxr_client/public/models/**/*.gltf'
+      - '.github/workflows/G-WebXR-gltf-verify.yml'
+  push:
+    branches:
+      - develop
+      - main
+      - 'feature/**'
+    paths:
+      - 'src/rob_box_quest/webxr_client/**'
+      - 'src/rob_box_quest/webxr_client/public/models/**/*.glb'
+      - 'src/rob_box_quest/webxr_client/public/models/**/*.gltf'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gltf-pipeline:
+    name: gltf:verify + unit tests (webxr_client)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: src/rob_box_quest/webxr_client
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: src/rob_box_quest/webxr_client/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Run gltf:verify (no unoptimized glTF committed)
+        run: npm run gltf:verify
+
+      - name: Run typecheck
+        run: npm run typecheck
+
+      - name: Run unit tests (incl. gltf_pipeline smoke)
+        run: npm test -- --reporter=default

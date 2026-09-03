@@ -47,6 +47,7 @@ ROS-параметры ноды (см. ``declare_parameter`` в ``__init__``):
 """
 
 import asyncio
+import atexit
 import concurrent.futures
 import io
 import json
@@ -56,7 +57,6 @@ import sys
 import threading
 import time
 import wave
-from contextlib import contextmanager
 from pathlib import Path
 from collections.abc import Mapping
 
@@ -78,6 +78,7 @@ from std_msgs.msg import String
 from typing import Any, Dict, Optional
 
 from .audio_playback_manager import AudioPlaybackManager
+from .utils.stderr_silence import ignore_stderr
 
 # Markdown sanitisation for TTS (issue #988) — shared with dialogue_node.
 from .core.speak_helpers import strip_markdown
@@ -141,28 +142,6 @@ from rob_box_voice.observability import (
     start_metrics_server,
     start_span_handle,
 )
-
-
-@contextmanager
-def ignore_stderr(enable=True):
-    """Подавить ALSA ошибки от sounddevice."""
-    if enable:
-        devnull = None
-        try:
-            devnull = os.open(os.devnull, os.O_WRONLY)
-            stderr = os.dup(2)
-            sys.stderr.flush()
-            os.dup2(devnull, 2)
-            try:
-                yield
-            finally:
-                os.dup2(stderr, 2)
-                os.close(stderr)
-        finally:
-            if devnull is not None:
-                os.close(devnull)
-    else:
-        yield
 
 
 def resample_audio(audio: np.ndarray, orig_sr: float, target_sr: float) -> np.ndarray:
@@ -505,6 +484,7 @@ except ImportError:
 # rclpy). Сам ``tts_node.py`` его импортирует.
 from .tts_chunking import (
     CHUNK_LIMITS,
+    SENTENCE_SENTINELS,
     DEFAULT_MAX_RETRIES,
     MIN_CHUNK_CHARS,
     TooLongError,
@@ -558,14 +538,42 @@ TTS_LOOP_MAX_WORKERS: int = 1
 # Fix: keep ONE event loop alive in a dedicated daemon thread and submit
 # every coroutine to it via ``run_coroutine_threadsafe``. The loop never
 # closes while the process lives, so the provider client stays valid.
+#: How long :func:`shutdown_tts_loop` waits for the driver to return.
+TTS_LOOP_SHUTDOWN_TIMEOUT_S: float = 2.0
+
 _TTS_LOOP_LOCK = threading.Lock()
 _TTS_LOOP: asyncio.AbstractEventLoop | None = None
-_TTS_LOOP_THREAD: threading.Thread | None = None
+_TTS_LOOP_EXECUTOR: "concurrent.futures.ThreadPoolExecutor | None" = None
+_TTS_LOOP_FUTURE: "concurrent.futures.Future | None" = None
+_TTS_LOOP_ATEXIT_REGISTERED = False
+
+
+def _register_tts_loop_atexit() -> None:
+    """Arrange for the loop to be stopped before the interpreter joins threads.
+
+    ``ThreadPoolExecutor`` workers are **non-daemon**, and CPython joins them
+    inside ``threading._shutdown()`` — which runs BEFORE ``atexit`` handlers.
+    A worker parked in ``run_forever()`` never returns, so the process hangs
+    after its last line of work: pytest would print its summary and then sit
+    there forever, and ``ros2 run`` would not exit on shutdown.
+
+    ``threading._register_atexit`` is the hook that runs at the *start* of
+    ``threading._shutdown()``; it is what ``concurrent.futures.thread`` itself
+    uses for exactly this problem. Falls back to ``atexit`` if it ever
+    disappears — that is too late to prevent the hang, but it still releases
+    the loop in embedded interpreters that never join threads.
+    """
+    global _TTS_LOOP_ATEXIT_REGISTERED
+    if _TTS_LOOP_ATEXIT_REGISTERED:
+        return
+    register = getattr(threading, "_register_atexit", None)
+    (register or atexit.register)(shutdown_tts_loop)
+    _TTS_LOOP_ATEXIT_REGISTERED = True
 
 
 def _ensure_tts_loop() -> asyncio.AbstractEventLoop:
     """Return the process-wide MiniMax TTS event loop (create on first use)."""
-    global _TTS_LOOP, _TTS_LOOP_THREAD
+    global _TTS_LOOP, _TTS_LOOP_EXECUTOR, _TTS_LOOP_FUTURE
     with _TTS_LOOP_LOCK:
         if _TTS_LOOP is not None and not _TTS_LOOP.is_closed():
             return _TTS_LOOP
@@ -573,12 +581,54 @@ def _ensure_tts_loop() -> asyncio.AbstractEventLoop:
         # Use bounded ``ThreadPoolExecutor`` (BLK-9 regression-guard) so we
         # never spawn a raw bare daemon thread. The single
         # worker runs ``run_forever`` for the event loop until shutdown.
+        #
+        # Both the executor and the future are kept module-level: without a
+        # reference there is no way to stop the loop, and a non-daemon worker
+        # parked in ``run_forever`` blocks interpreter exit forever.
         _TTS_LOOP_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
             max_workers=TTS_LOOP_MAX_WORKERS,
             thread_name_prefix="minimax-tts-loop",
         )
-        _TTS_LOOP_THREAD = _TTS_LOOP_EXECUTOR.submit(_TTS_LOOP.run_forever)
+        _TTS_LOOP_FUTURE = _TTS_LOOP_EXECUTOR.submit(_TTS_LOOP.run_forever)
+        _register_tts_loop_atexit()
         return _TTS_LOOP
+
+
+def shutdown_tts_loop(timeout: float = TTS_LOOP_SHUTDOWN_TIMEOUT_S) -> None:
+    """Stop the process-wide TTS loop and release its worker thread.
+
+    Idempotent and safe to call when the loop was never started. Mirrors
+    ``DialogueNode.shutdown_asyncio_loop``; registered as a shutdown hook
+    because the loop is process-wide and no single node owns its lifetime.
+    """
+    global _TTS_LOOP, _TTS_LOOP_EXECUTOR, _TTS_LOOP_FUTURE
+    with _TTS_LOOP_LOCK:
+        loop, executor, future = _TTS_LOOP, _TTS_LOOP_EXECUTOR, _TTS_LOOP_FUTURE
+        _TTS_LOOP = _TTS_LOOP_EXECUTOR = _TTS_LOOP_FUTURE = None
+    if loop is None:
+        return
+    try:
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(loop.stop)
+    except RuntimeError:
+        # Loop already stopped/closed by someone else — nothing to do.
+        pass
+    if future is not None:
+        try:
+            future.result(timeout=timeout)
+        except Exception:  # noqa: BLE001 — includes TimeoutError
+            # Never raise from a shutdown hook: it runs while the interpreter
+            # is tearing down, where an exception is both unhelpful and
+            # easy to miss. A driver that refuses to stop shows up as the
+            # process failing to exit.
+            pass
+    if executor is not None:
+        executor.shutdown(wait=False)
+    try:
+        if not loop.is_closed():
+            loop.close()
+    except RuntimeError:
+        pass
 
 
 def _run_in_tts_loop(coro) -> Any:
@@ -626,6 +676,15 @@ class TTSNode(Node):
         self.declare_parameter("yandex_api_key", "")
         self.declare_parameter("yandex_voice", "anton")  # anton (ОРИГИНАЛЬНЫЙ ГОЛОС РОББОКСА!)
         self.declare_parameter("yandex_speed", 1.0)  # 0.1-3.0 (1.0 = нормальная скорость речи)
+        # Issue #1780 / issue #1004: флаг «ssml-aware» режима для Yandex.
+        # При True — Yandex-провайдер должен пропускать вход как SSML
+        # (``<speak>...<emotion>happy</emotion>...</speak>``), используя
+        # ``<emotion>`` и ``<prosody pitch=...>`` теги, поддерживаемые
+        # Yandex gRPC v3. Сейчас (False) текст идёт в ``Hints(voice, speed)``
+        # как раньше — fallback совместимости. Полная интеграция — в карточке
+        # t_c401ecaa; этот параметр объявлен здесь, чтобы YAML был
+        # валиден с самого начала.
+        self.declare_parameter("yandex_ssml_aware", False)
 
         # Silero TTS (fallback)
         self.declare_parameter(
@@ -674,23 +733,17 @@ class TTSNode(Node):
         # (M5/M6). Эта настройка сейчас полезна для тестов и как
         # forward-compat hook. См. ADR-0003 §2.4.
         self.declare_parameter("minimax_streaming", False)
-
-        # Voice-prosody knobs for MiniMax T2A v2 (issue #1780).
-        #
-        # Defaults are conservative: ``minimax_emotion="neutral"`` matches
-        # the API's implicit default so a populated payload stays
-        # behaviour-equivalent to the pre-#1780 empty payload (the API
-        # treats both as neutral). ``minimax_pitch`` / ``minimax_volume``
-        # default to empty strings — when empty, the field is omitted from
-        # ``voice_setting`` and the API applies its own defaults (no
-        # behaviour change vs. before). ``minimax_pronunciation_dict`` is a
-        # JSON-encoded MiniMax-shaped dict (e.g. ``{"tone": [...]}``) and
-        # is only forwarded when non-empty.
-        #
-        # Valid values (per T2A v2 spec):
-        #   emotion ∈ {happy, neutral, sad, angry, fearful, disgusted, surprised}
-        #   pitch   — int semitones (-12..+12 typical)
-        #   volume  — float in [0.0, 10.0]; (0, 10] accepted by the API
+        # Issue #1780 / issue #1004: дефолтные emotion / pitch / volume /
+        # pronunciation_dict для MiniMax T2A v2 (см. minimax_tts.py —
+        # ``voice_setting`` принимает ``emotion``, ``pitch`` int semitones,
+        # ``vol`` float [0.0, 10.0], ``pronunciation_dict`` str). Дефолты —
+        # нейтральные, чтобы сохранить текущее поведение (поля НЕ
+        # передаются в API, если явно не заданы):
+        #   emotion = "neutral"         → API default, поведение как до #1780
+        #   pitch  = ""                 → не передавать
+        #   volume = ""                 → не передавать
+        #   pronunciation_dict = ""    → JSON-строка MiniMax-словаря
+        # Прокидывание значений в ``TTSSettings`` — в карточке t_4e98182a.
         self.declare_parameter("minimax_emotion", "neutral")  # MiniMax T2A v2 emotion
         self.declare_parameter("minimax_pitch", "")  # semitones; "" → не задан
         self.declare_parameter("minimax_volume", "")  # 0.0..10.0; "" → не задан
@@ -848,13 +901,19 @@ class TTSNode(Node):
         )
         self.minimax_retry_backoff_ms = max(0, int(self.get_parameter("minimax_retry_backoff_ms").value))
         self.minimax_streaming = bool(self.get_parameter("minimax_streaming").value)
-        # Issue #1780 — emotion / pitch / volume / pronunciation_dict.
-        # Stored as strings (ROS String) so empty values cleanly mean
-        # "unset". ``minimax_emotion`` defaults to "neutral" — the API's
-        # implicit default — so the populated payload stays
-        # behaviour-equivalent to the pre-#1780 payload (see comment in
-        # ``declare_parameter`` above).
-        self.minimax_emotion = self.get_parameter("minimax_emotion").value or "neutral"
+        # Issue #1780 / issue #1004: emotion / pitch / volume / pronunciation_dict
+        # для MiniMax. Нейтральные дефолты сохраняют текущее поведение (поля
+        # НЕ передаются в API). Прокидывание в ``TTSSettings`` — в t_4e98182a.
+        # Храним сырые строки в ``*_raw`` (по дизайну helpers
+        # ``_parse_optional_int/float/_parse_pronunciation_dict`` —
+        # пустая строка → ``None`` → поле опускается в payload).
+        # Прямое приведение через ``int(self.minimax_pitch)`` упало бы на
+        # дефолте ``""`` (issue #1780 post-#1816-fix regression: PR #1820
+        # убрал duplicate declare_parameter, но оставил голый ``int(...)``
+        # на дефолте ``""`` → ``ValueError: invalid literal for int()``).
+        self.minimax_emotion = self._normalize_minimax_emotion(
+            str(self.get_parameter("minimax_emotion").value or "")
+        )
         self.minimax_pitch_raw = self.get_parameter("minimax_pitch").value
         self.minimax_volume_raw = self.get_parameter("minimax_volume").value
         self.minimax_pronunciation_dict_raw = self.get_parameter(
@@ -866,6 +925,17 @@ class TTSNode(Node):
         self._minimax_provider_lock = threading.Lock()
         self._minimax_provider_initialized = False
         self._minimax_shutdown_requested = False
+        # Typed-проекции для читаемости / unit-тестов:
+        self.minimax_pitch = _parse_optional_int(self.minimax_pitch_raw)
+        self.minimax_volume = _parse_optional_float(self.minimax_volume_raw)
+        self.minimax_pronunciation_dict = _parse_pronunciation_dict(
+            self.minimax_pronunciation_dict_raw
+        )
+
+        # Issue #1780 / issue #1004: «ssml-aware» режим для Yandex. Полная
+        # интеграция — в t_c401ecaa; параметр уже читается здесь, чтобы
+        # YAML был валиден и можно было безопасно переключать.
+        self.yandex_ssml_aware = bool(self.get_parameter("yandex_ssml_aware").value)
 
         self.audio_topic = str(self.get_parameter("audio_topic").value)
         self.audio_output_sample_rate = int(
@@ -1039,6 +1109,18 @@ class TTSNode(Node):
         # Позволяет отбрасывать устаревшие TTS-запросы от старого диалога после barge-in.
         self._new_dialogue_id_sub = self.create_subscription(
             String, "/voice/current_dialogue_id", self._on_new_dialogue_id, 1
+        )
+
+        # Issue #1765 — переключение TTS-провайдера по запросу LLM через
+        # SetVoiceTool(provider=...) / SetTtsProviderTool. mcp_server
+        # публикует JSON {"provider": str, "voice": str|"", "source": str}
+        # в /voice/tts/set_provider; мы пересобираем provider_chain
+        # (новый провайдер первым, остальные в исходном порядке, silero
+        # всегда последним), чистим dead_until для нового провайдера и
+        # публикуем provider_state для dialogue_node/mcp_server (LLM
+        # увидит нового провайдера в [TTS] строке контекста).
+        self.set_provider_sub = self.create_subscription(
+            String, "/voice/tts/set_provider", self._on_set_provider, 10
         )
 
         # Публикация аудио и состояния
@@ -1504,6 +1586,100 @@ class TTSNode(Node):
                 f"— устаревшие TTS-запросы будут отброшены"
             )
             self.current_dialogue_id = new_id
+
+    def _on_set_provider(self, msg: String):
+        """Issue #1765 — переключить активного TTS-провайдера по запросу LLM.
+
+        ``mcp_server`` публикует JSON ``{"provider": str, "voice": str|"",
+        "source": "set_voice"|"set_tts_provider"}`` после успешного
+        ``SetVoiceTool(provider=...)`` или ``SetTtsProviderTool()``.
+        Перестраиваем ``provider_chain`` так, чтобы запрошенный провайдер
+        стал первым (Silero по-прежнему последним — инвариант issue #1083),
+        чистим кэш «мёртвых» для него (юзер явно попросил — даём шанс),
+        и публикуем обновлённый ``provider_state`` для dialogue_node и
+        mcp_server (LLM увидит нового провайдера в ``[TTS]`` строке
+        следующего turn'а).
+
+        Idempotency: повторный set_provider на того же провайдера — no-op
+        (только перепубликация state). Невалидный JSON / неизвестный
+        провайдер — лог + игнор (LLM получит provider_unknown в tool result
+        и сам решит, что делать; tts_node не должен падать).
+        """
+        try:
+            payload = json.loads(msg.data) if msg.data else {}
+        except (TypeError, ValueError) as exc:
+            self.get_logger().warning(
+                f"⚠️ [issue 1765] set_provider: bad JSON payload: {exc}"
+            )
+            return
+        if not isinstance(payload, dict):
+            self.get_logger().warning(
+                "⚠️ [issue 1765] set_provider: payload is not a dict"
+            )
+            return
+
+        new_provider = str(payload.get("provider") or "").strip().lower()
+        if new_provider not in {"yandex", "minimax", "silero"}:
+            self.get_logger().warning(
+                f"⚠️ [issue 1765] set_provider: unknown provider "
+                f"{new_provider!r}; ignoring"
+            )
+            return
+
+        current_chain = list(getattr(self, "provider_chain", []) or [])
+        # Текущий эффективный провайдер (первый «живой» в цепочке).
+        current_effective = self._effective_provider()
+
+        # Если запрошенный провайдер уже стоит первым в chain и не
+        # мёртв — no-op (только перепубликация state для гарантии
+        # синхронности context у подписчиков).
+        if (
+            current_chain
+            and current_chain[0] == new_provider
+            and not self._provider_is_dead(new_provider)
+        ):
+            self.get_logger().info(
+                f"🎙️ [issue 1765] set_provider no-op: already on "
+                f"'{new_provider}'"
+            )
+            self._publish_provider_state("set_provider_noop")
+            return
+
+        # Пересобираем chain: новый провайдер первым, остальные — в
+        # исходном порядке (но без дубликатов и без нового). _normalize
+        # позаботится о silero-последний инварианте.
+        new_chain: list[str] = [new_provider]
+        for p in current_chain:
+            if p != new_provider:
+                new_chain.append(p)
+        new_chain = self._normalize_provider_chain(new_chain)
+        self.provider_chain = new_chain
+
+        # Чистим dead_until для нового провайдера — юзер явно попросил,
+        # даём ему шанс (даже если quota-сеть недавно фолбечили).
+        if hasattr(self, "_provider_dead_until"):
+            self._provider_dead_until.pop(new_provider, None)
+
+        # Если запрошенный провайдер совпадает с текущим эффективным
+        # (например, effective=yandex, попросили yandex после фолбека) —
+        # логируем как no-op. Иначе — переключение.
+        switched = new_provider != current_effective
+
+        self.get_logger().info(
+            f"🎙️ [issue 1765] set_provider: '{current_effective}' → "
+            f"'{new_provider}' "
+            f"(chain={self.provider_chain}, source="
+            f"{payload.get('source', 'unknown')}, voice="
+            f"{payload.get('voice', '')!r})"
+        )
+
+        # Перепубликуем provider_state — dialogue_node/mcp_server
+        # подхватят и обновят LLM-контекст [TTS].
+        self._publish_provider_state(
+            "set_provider" if switched else "set_provider_noop",
+            provider=new_provider,
+            voice=(payload.get("voice") or None) or None,
+        )
 
     def dialogue_callback(self, msg: String):
         """Обработка JSON chunks от dialogue_node."""
@@ -2317,7 +2493,10 @@ class TTSNode(Node):
                         _mm_voice, _mm_fell = _resolve_voice("minimax", voice)
                     except Exception:  # noqa: BLE001 — registry недоступен
                         _mm_voice, _mm_fell = voice or self.minimax_voice, False
-                    if _mm_fell:
+                    # ``resolve_voice`` reports fell_back=True when nothing was
+                    # requested at all (None -> provider default), so warn only
+                    # when the caller actually named a voice we could not honour.
+                    if _mm_fell and voice:
                         self.get_logger().warn(
                             f"⚠️ [issue 1219] Голос '{voice}' недоступен у MiniMax — "
                             f"использую дефолтный '{_mm_voice}'"
@@ -2383,7 +2562,10 @@ class TTSNode(Node):
                         _yandex_voice, _yandex_fell = _resolve_voice("yandex", voice)
                     except Exception:  # noqa: BLE001 — registry недоступен
                         _yandex_voice, _yandex_fell = voice or self.yandex_voice, False
-                    if _yandex_fell:
+                    # ``resolve_voice`` reports fell_back=True when nothing was
+                    # requested at all (None -> provider default), so warn only
+                    # when the caller actually named a voice we could not honour.
+                    if _yandex_fell and voice:
                         self.get_logger().warn(
                             f"⚠️ [issue 1219] Голос '{voice}' недоступен у Yandex — "
                             f"использую дефолтный '{_yandex_voice}'"
@@ -2507,7 +2689,10 @@ class TTSNode(Node):
                     _silero_voice, _silero_fell = _resolve_voice("silero", voice)
                 except Exception:  # noqa: BLE001 — registry недоступен
                     _silero_voice, _silero_fell = voice or self.silero_speaker, False
-                if _silero_fell:
+                # ``resolve_voice`` reports fell_back=True when nothing was
+                # requested at all (None -> provider default), so warn only
+                # when the caller actually named a voice we could not honour.
+                if _silero_fell and voice:
                     self.get_logger().warn(
                         f"⚠️ [issue 1219] Голос '{voice}' недоступен у Silero — "
                         f"использую дефолтный '{_silero_voice}'"
@@ -2935,37 +3120,33 @@ class TTSNode(Node):
     def _chunk_text(
         text: str,
         max_chars: int = YANDEX_MAX_CHUNK_CHARS,
-        sentence_separators: str = ".!?\n",
+        sentence_separators: str = SENTENCE_SENTINELS,
     ) -> list[str]:
         """Разбить длинный текст на чанки для Yandex gRPC ``UtteranceSynthesis``.
 
-        Yandex API v3 принимает ≤2500 символов на один запрос
-        (см. https://cloud.yandex.ru/docs/speechkit/tts/limits). Чтобы
-        рассказы / длинные анекдоты (>2400 символов) не падали с
-        ``INVALID_ARGUMENT - Too long text``, текст нарезается по
-        границам предложений (``.`` ``!`` ``?`` ``\\n``), и только если
-        *одно* предложение длиннее ``max_chars`` — по границам слов
-        (whitespace).
+        Тонкая обёртка над :func:`rob_box_voice.tts_chunking.split_text` —
+        подставляет Yandex-лимит по умолчанию. Yandex API v3 принимает
+        ≤2500 символов на запрос (см.
+        https://cloud.yandex.ru/docs/speechkit/tts/limits), поэтому рассказы
+        и длинные анекдоты нарезаются, иначе запрос падает с
+        ``INVALID_ARGUMENT - Too long text``.
 
-        Алгоритм:
-
-        1. Если ``len(text) <= max_chars`` → вернуть ``[text]``.
-        2. Greedy-проход: идём по ``text`` и копим чанк. Граница
-           предложения (``sep_chars`` после непустого фрагмента)
-           закрывает чанк, если текущая длина ≤ ``max_chars``.
-        3. Если границы предложений не нашлись / одно предложение
-           длиннее лимита → разбиваем по whitespace.
-        4. Никогда не возвращаем чанк длиннее ``max_chars``.
+        Здесь лежала построчная копия ``split_text`` — тот же жадный
+        алгоритм, ничего Yandex-специфичного в теле не было. Копия
+        отличалась двумя вещами, обе в минус: разделители без «…»
+        (многоточие не считалось границей предложения, и русская речь с
+        «…» резалась по словам посреди фразы) и отсутствие проверки
+        ``max_chars <= 0``. Совпадение с общим чанкером держит
+        ``test_chunk_text_agrees_with_shared_chunker``.
 
         Args:
             text: Исходный текст (после ``normalize_for_tts``).
             max_chars: Лимит на длину чанка (по умолчанию
                 :data:`YANDEX_MAX_CHUNK_CHARS`).
-            sentence_separators: Символы-разделители предложений.
+            sentence_separators: Символы-границы предложений.
 
         Returns:
-            list[str] — фрагменты, объединение которых даёт исходный
-            текст. Каждый ≤ ``max_chars``. Пустой вход → ``[]``.
+            Список чанков, каждый ``<= max_chars``.
 
         Examples:
             >>> TTSNode._chunk_text("Короткий текст.")
@@ -2974,68 +3155,9 @@ class TTSNode(Node):
             >>> all(len(c) <= 100 for c in chunks)
             True
         """
-        if not text:
-            return []
-        text = text.strip()
-        if not text:
-            return []
-        if len(text) <= max_chars:
-            return [text]
-
-        # Walk character-by-character, prefer sentence boundaries.
-        sep_set = set(sentence_separators)
-        chunks: list[str] = []
-        current = ""
-        i = 0
-        n = len(text)
-        while i < n:
-            ch = text[i]
-            current += ch
-            # Close at sentence boundary only if we're under the limit.
-            if ch in sep_set and len(current) > 0 and len(current) < max_chars:
-                # Look ahead: if the rest of the text alone fits, don't
-                # bother appending more to this chunk.
-                remaining = text[i + 1:].lstrip()
-                if len(remaining) <= max_chars - len(current):
-                    current += text[i + 1:]
-                    i = n
-                    chunks.append(current.strip())
-                    current = ""
-                    break
-                if len(current) >= max_chars * 0.4:
-                    # Reasonable sentence — close the chunk.
-                    chunks.append(current.strip())
-                    current = ""
-            elif len(current) >= max_chars:
-                # Sentence didn't end in time — force a word-level split.
-                # Try to back off to the last whitespace within `current`.
-                last_space = current.rfind(" ")
-                if last_space > max_chars * 0.5:
-                    head = current[:last_space].strip()
-                    tail = current[last_space + 1:]
-                    if head:
-                        chunks.append(head)
-                    current = tail
-                else:
-                    # No whitespace in the second half — hard slice.
-                    chunks.append(current[:-1].strip())
-                    current = current[-1]
-                # If even this single segment exceeds the limit (one
-                # absurdly long "word"), accept it; Yandex will reject
-                # and we'll fall back to Silero for the whole text.
-                if len(current) > max_chars:
-                    chunks.append(current.strip())
-                    current = ""
-            i += 1
-
-        if current.strip():
-            chunks.append(current.strip())
-
-        # Filter empty strings (defensive — should not happen).
-        chunks = [c for c in chunks if c]
-        if not chunks:
-            return [text] if text else []
-        return chunks
+        return split_text(
+            text, max_chars, sentence_separators=sentence_separators
+        )
 
     def _synthesize_yandex(self, text: str, ssml_attributes: dict = None, voice: str = None) -> np.ndarray:
         """Синтез через Yandex Cloud TTS gRPC API v3 (anton voice!).
@@ -3318,6 +3440,37 @@ class TTSNode(Node):
         except ValueError:
             valid = ", ".join(fmt.value for fmt in TTSFormat)
             raise ValueError(f"minimax_format={value!r} недопустим; разрешено: {valid}")
+
+    @staticmethod
+    def _normalize_minimax_emotion(value: str) -> str:
+        """Нормализовать ROS-параметр ``minimax_emotion``.
+
+        Допустимые значения MiniMax T2A v2 (см. ``minimax_tts.py`` —
+        ``voice_setting.emotion``):
+
+            happy | neutral | sad | angry | fearful | disgusted | surprised
+
+        Пустая строка / неизвестное значение → ``""`` (полагаем, что
+        emotion НЕ передаётся в API — нейтральный default).
+        Регистр игнорируется; ``neutral`` оставлен явно — некоторые
+        сценарии хотят жёстко зафиксировать нейтральную подачу.
+
+        Args:
+            value: значение из ``get_parameter("minimax_emotion")``.
+
+        Returns:
+            Один из 7 MiniMax-emotion lowercase или ``""``.
+        """
+        valid = {
+            "happy", "neutral", "sad",
+            "angry", "fearful", "disgusted", "surprised",
+        }
+        if not value:
+            return ""
+        normalized = value.strip().lower()
+        if normalized in valid:
+            return normalized
+        return ""
 
     async def _synthesize_minimax_async(self, text: str, ssml_attributes: dict = None, voice: str = None) -> dict:
         """Асинхронный синтез через MiniMax T2A v2 HTTP API.

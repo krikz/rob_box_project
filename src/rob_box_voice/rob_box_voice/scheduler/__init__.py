@@ -40,6 +40,15 @@ See :class:`TaskScheduler` for the public entry point.
 
 from __future__ import annotations
 
+from .delta import (
+    DeltaOp,
+    DeltaOpKind,
+    TaskDelta,
+    append,
+    drop,
+    replace,
+    rewrite,
+)
 from .decision import (
     DecisionCoordinator,
     DecisionPlan,
@@ -66,6 +75,12 @@ from .event_bus import (
     EventEnvelope,
     EventQueueFullError,
     EventSubscription,
+)
+from .quick_decide import (
+    CONFIDENCE_FLOOR,
+    DEDUP_WINDOW_S,
+    QuickVerdict,
+    quick_decide,
 )
 from .pre_gen import (
     PreGenCandidate,
@@ -101,6 +116,8 @@ from .speculative_executor import (
 from .task_scheduler import (
     ChannelKind,
     ChannelStatus,
+    LlmContinueContext,
+    LlmContinueHook,
     TaskOutcome,
     TaskScheduler,
     TaskStatus,
@@ -113,6 +130,13 @@ from .task_scheduler import (
 )
 
 __all__ = [
+    "DeltaOp",
+    "DeltaOpKind",
+    "TaskDelta",
+    "append",
+    "drop",
+    "replace",
+    "rewrite",
     "DecisionCoordinator",
     "DecisionPlan",
     "HighLevelPlanner",
@@ -134,6 +158,10 @@ __all__ = [
     "EventEnvelope",
     "EventQueueFullError",
     "EventSubscription",
+    "CONFIDENCE_FLOOR",
+    "DEDUP_WINDOW_S",
+    "QuickVerdict",
+    "quick_decide",
     "PreGenCandidate",
     "PreGenCancelledError",
     "PreGenFactory",
@@ -159,6 +187,8 @@ __all__ = [
     "command_to_view",
     "ChannelKind",
     "ChannelStatus",
+    "LlmContinueContext",
+    "LlmContinueHook",
     "TaskOutcome",
     "TaskScheduler",
     "TaskStatus",

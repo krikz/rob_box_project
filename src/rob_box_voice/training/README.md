@@ -284,7 +284,7 @@ cp ~/robbox_tts_training/models/robbox_piper/checkpoints/best_model.pt \
    /path/to/rob_box_project/models/robbox_custom.pt
 
 # 2. Обновляем конфигурацию
-nano /path/to/rob_box_project/src/rob_box_voice/config/voice_assistant.yaml
+nano /path/to/rob_box_project/src/rob_box_voice/config/tts_node.yaml
 
 # Измените:
 # silero:

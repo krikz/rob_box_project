@@ -104,6 +104,10 @@ def _make_node(parameters: dict | None = None) -> DialogueNode:
     n._effects.handle_sound_state = MagicMock()
 
     n._active_batches = {}
+    # Telegram echo routing (issue #1195) — `_publish_response` and
+    # `_publish_response_batch` read it unconditionally; `__init__` sets it
+    # to None and this fixture bypasses `__init__`.
+    n._active_tg_chat_id = None
     n._pending_music_cleanup = False
     n._session_started_at = None
     n._session_end_reason = "success"
@@ -131,13 +135,6 @@ class TestNodeCreation:
         """
         import rob_box_voice.dialogue_node as dn
         assert issubclass(dn.DialogueNode, dn.Node)
-
-    def test_module_exposes_skill_aliases(self):
-        """Модуль объявляет skill-классы как атрибуты (test contracts)."""
-        import rob_box_voice.dialogue_node as dn
-        for alias in ("MusicSkill", "FAQSkill", "WebSearchSkill",
-                      "NavigationSkill", "MemorySkill", "StatusSkill"):
-            assert hasattr(dn, alias)
 
     def test_module_constants_present(self):
         import rob_box_voice.dialogue_node as dn
@@ -167,8 +164,8 @@ class TestBuildLlm:
         assert n._resolve_provider_chain() == ["deepseek"]
 
     def test_resolve_provider_chain_parses_csv(self):
-        n = _make_node({"llm_providers": "minimax, deepseek"})
-        assert n._resolve_provider_chain() == ["minimax", "deepseek"]
+        n = _make_node({"llm_providers": "deepseek, minimax"})
+        assert n._resolve_provider_chain() == ["deepseek", "minimax"]
 
     def test_resolve_provider_chain_empty_uses_default(self):
         n = _make_node({"llm_providers": ""})
@@ -215,6 +212,85 @@ class TestBuildLlm:
                 os.environ.pop("DEEPSEEK_API_KEY", None)
             else:
                 os.environ["DEEPSEEK_API_KEY"] = old
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  barge_in_policy parameter (S1.1, scheduler-segments-merge plan)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestBargeInPolicyParam:
+    def test_declares_default_replace(self):
+        """_declare_params объявляет barge_in_policy с дефолтом 'replace'."""
+        import rob_box_voice.dialogue_node as dn
+        import inspect
+        src = inspect.getsource(dn.DialogueNode._declare_params)
+        assert 'declare_parameter("barge_in_policy", "replace")' in src
+
+    def test_resolve_default_missing_param_is_replace(self):
+        n = _make_node()
+        assert n._resolve_barge_in_policy() == "replace"
+
+    def test_resolve_accepts_replace(self):
+        n = _make_node({"barge_in_policy": "replace"})
+        assert n._resolve_barge_in_policy() == "replace"
+
+    def test_resolve_accepts_classify(self):
+        n = _make_node({"barge_in_policy": "classify"})
+        assert n._resolve_barge_in_policy() == "classify"
+
+    def test_resolve_garbage_value_warns_and_falls_back(self):
+        n = _make_node({"barge_in_policy": "yolo"})
+        assert n._resolve_barge_in_policy() == "replace"
+        n.get_logger().warning.assert_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  _cancel_run split: turn-cancel vs tts-stop (S1.2, scheduler-segments-merge)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCancelRunSplit:
+    def _running_task_node(self):
+        n = _make_node()
+        task = MagicMock()
+        task.done.return_value = False
+        n._run_task = task
+        n._task_lock = MagicMock()
+        n._task_lock.__enter__ = MagicMock(return_value=None)
+        n._task_lock.__exit__ = MagicMock(return_value=False)
+        n._loop = MagicMock()
+        n._loop.call_soon_threadsafe = lambda fn, *a, **kw: fn(*a, **kw)
+        n._effects = MagicMock()
+        return n, task
+
+    def test_stop_tts_true_publishes_stop(self):
+        """Default (stop_tts=True) — регресс сегодняшнего поведения."""
+        n, task = self._running_task_node()
+        n._cancel_run("reason", stop_tts=True)
+        assert n._run_cancelled is True
+        task.cancel.assert_called_once()
+        n._tts_control_pub.publish.assert_called_once()
+        published = n._tts_control_pub.publish.call_args.args[0]
+        assert published.data == "STOP"
+        n._effects.release_all_tts.assert_called_once()
+        n._effects.clear_sound_event.assert_called_once()
+
+    def test_default_stop_tts_is_true(self):
+        """Обратная совместимость: вызов без kwarg ведёт себя как раньше."""
+        n, task = self._running_task_node()
+        n._cancel_run("reason")
+        n._tts_control_pub.publish.assert_called_once()
+
+    def test_stop_tts_false_does_not_publish_stop_but_releases_awaiters(self):
+        """Ключевой инвариант R1: STOP не уходит, но awaiter'ы всё равно
+        отпускаются — иначе speak_helpers._tts_events залипают навсегда
+        и робот замолкает без возможности когда-либо заговорить снова."""
+        n, task = self._running_task_node()
+        n._cancel_run("reason", stop_tts=False)
+        assert n._run_cancelled is True
+        task.cancel.assert_called_once()
+        n._tts_control_pub.publish.assert_not_called()
+        n._effects.release_all_tts.assert_called_once()
+        n._effects.clear_sound_event.assert_called_once()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -320,6 +396,43 @@ class TestBuildDynamicSystemContext:
         n = _make_node({"provider": "minimax"})
         ctx = n._build_dynamic_system_context()
         assert "<tts_provider>minimax</tts_provider>" in ctx
+
+    # --- S5.2: [SEGMENT PLAN] block --------------------------------------
+
+    def test_no_segment_plan_block_when_idle(self):
+        """No scheduler executor at all → idle, no [SEGMENT PLAN]."""
+        n = _make_node({"provider": "yandex"})
+        ctx = n._build_dynamic_system_context()
+        assert "[SEGMENT PLAN]" not in ctx
+
+    def test_no_segment_plan_block_when_executor_reports_empty(self):
+        n = _make_node({"provider": "yandex"})
+        n._scheduler_executor = MagicMock()
+        n._scheduler_executor.active_tasks_block.return_value = ""
+        n._scheduler_executor.segment_plan_block.return_value = ""
+        ctx = n._build_dynamic_system_context()
+        assert "[SEGMENT PLAN]" not in ctx
+
+    def test_segment_plan_block_included_when_active_group(self):
+        n = _make_node({"provider": "yandex"})
+        n._scheduler_executor = MagicMock()
+        n._scheduler_executor.active_tasks_block.return_value = ""
+        n._scheduler_executor.segment_plan_block.return_value = (
+            "[SEGMENT PLAN]\n- ACTIVE: seg_0 voice 'куплет' (remaining=?)\n"
+            "- REWRITEABLE_SEGMENTS: []\n- AT_RISK_ON_REPLACE: []"
+        )
+        ctx = n._build_dynamic_system_context()
+        assert "[SEGMENT PLAN]" in ctx
+        assert "seg_0" in ctx
+
+    def test_segment_plan_block_render_error_does_not_crash_context(self):
+        n = _make_node({"provider": "yandex"})
+        n._scheduler_executor = MagicMock()
+        n._scheduler_executor.active_tasks_block.return_value = ""
+        n._scheduler_executor.segment_plan_block.side_effect = RuntimeError("boom")
+        ctx = n._build_dynamic_system_context()  # must not raise
+        assert "<system_context>" in ctx
+        assert "[SEGMENT PLAN]" not in ctx
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -473,7 +586,9 @@ class TestOnStt:
             / "rob_box_voice"
             / "dialogue_node.py"
         )
-        src = dialogue_node_path.read_text()
+        # dialogue_node.py is UTF-8 and full of Cyrillic comments; the
+        # default encoding is cp1252 on Windows.
+        src = dialogue_node_path.read_text(encoding="utf-8")
         # Только строки ``+= 1`` — не комментарии, не fixture-литералы.
         increment_keys: set[str] = set()
         for line in src.splitlines():

@@ -17,9 +17,17 @@ from unittest.mock import MagicMock
 import pytest
 
 from rob_box_voice.core.command_parser import CommandParser, IntentType
+from rob_box_voice.core.dialogue_text import DEFAULT_WAKE_WORDS
 from rob_box_voice.dialogue_node import DialogueNode
 
 _GATE_CONFIDENCE = 0.7
+
+# The wake words the node really runs on. A hand-written
+# ["робок", "робот", "роббокс"] here silently omitted «робокс», and since
+# `has_wake_word` matches whole words (#1292), «робокс стоп» was dropped by
+# the wake gate long before it could reach the command-intent gate this
+# file is about. It used to read the YAML; the list now lives in exactly
+# one place and the YAML copies are gone.
 
 
 def _make_node(gate_enabled: bool = True) -> DialogueNode:
@@ -28,7 +36,7 @@ def _make_node(gate_enabled: bool = True) -> DialogueNode:
     logger = MagicMock()
     n.get_logger = lambda: logger
 
-    n._wake_words = ["робок", "робот", "роббокс"]
+    n._wake_words = list(DEFAULT_WAKE_WORDS)
     n._command_intent_gate_enabled = gate_enabled
     n._command_intent_gate_confidence = _GATE_CONFIDENCE
     n._command_parser = CommandParser(

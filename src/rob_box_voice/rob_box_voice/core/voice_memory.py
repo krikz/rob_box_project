@@ -191,6 +191,25 @@ class VoiceMemory:
             self.conn.execute("PRAGMA synchronous = NORMAL")
 
         # Resolve migrations dir (4 levels up from core/ -> project root/migrations)
+        #
+        # 🔴 KNOWN GAP (live 01.09): this only lands on a real
+        # ``migrations/`` directory when running from the SOURCE tree.
+        # Under the ROS2-installed layout deployed to the robot, this file
+        # lives at ``.../rob_box_voice/lib/python3.*/site-packages/
+        # rob_box_voice/core/voice_memory.py`` — 4 levels up lands on a
+        # nonexistent path, so ``_run_migrations`` silently falls back to
+        # ``_create_schema_inline`` (a no-op against the pre-existing DB).
+        # Pointing this at the deployment's shared ``/migrations`` mount
+        # instead was tried and reverted: that directory is a single
+        # numbered stream covering SEVERAL unrelated databases (waypoints,
+        # music library, github presets...), and running it wholesale
+        # against ``voice_memory.db`` hit a non-idempotent ``ALTER TABLE
+        # ... ADD COLUMN type`` in ``006_music_github_presets.sql`` —
+        # "duplicate column name: type" — because an earlier migration in
+        # that SAME stream had already added it via a different table.
+        # ``_ensure_speaker_id_columns`` below is the narrow, actually-safe
+        # fix: it repairs exactly the missing column this class needs,
+        # regardless of which schema-setup path ran.
         if migrations_dir:
             self.migrations_dir = migrations_dir
         else:
@@ -201,6 +220,12 @@ class VoiceMemory:
                 )
             )
 
+        # Must run BEFORE _run_migrations(): on a pre-existing DB missing
+        # the column, _create_schema_inline()'s own script fails with
+        # "no such column: speaker_id" at its ``CREATE INDEX ...
+        # ON voice_turns(speaker_id, ...)`` statement — the column has to
+        # exist before that script runs, not after.
+        self._ensure_speaker_id_columns()
         self._run_migrations()
         self._repair_fts_index()
 
@@ -258,10 +283,13 @@ class VoiceMemory:
             session_id TEXT NOT NULL,
             role       TEXT NOT NULL,
             content    TEXT NOT NULL,
-            timestamp  REAL NOT NULL
+            timestamp  REAL NOT NULL,
+            speaker_id TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_vt_session   ON voice_turns(session_id);
         CREATE INDEX IF NOT EXISTS idx_vt_timestamp ON voice_turns(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_vt_speaker_timestamp
+            ON voice_turns(speaker_id, timestamp DESC);
 
         CREATE VIRTUAL TABLE IF NOT EXISTS voice_turns_fts USING fts5(
             content,
@@ -284,9 +312,12 @@ class VoiceMemory:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             fact TEXT NOT NULL,
             category TEXT NOT NULL DEFAULT 'general',
+            speaker_id TEXT,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
         );
+        CREATE INDEX IF NOT EXISTS idx_vf_speaker_updated
+            ON voice_facts(speaker_id, updated_at DESC);
 
         CREATE TABLE IF NOT EXISTS voice_memory_meta (
             key   TEXT PRIMARY KEY,
@@ -295,6 +326,53 @@ class VoiceMemory:
         """
         with self.lock, self.conn:
             self.conn.executescript(schema)
+
+    def _ensure_speaker_id_columns(self) -> None:
+        """Issue #1770, live 01.09 — repair a pre-migration-009 database.
+
+        ``009_voice_memory_speaker_id.sql`` adds ``speaker_id`` to
+        ``voice_turns``/``voice_facts`` via a plain (non-idempotent)
+        ``ALTER TABLE``, but ``_run_migrations`` never actually reaches it
+        on the deployed robot (see the comment on ``migrations_dir``
+        above) — every DB created before this column existed stays
+        without it forever, and every query referencing ``speaker_id``
+        (nearly all of them — see ``search``/``save_fact``/``save_turn``)
+        raises ``sqlite3.OperationalError: no such column: speaker_id``.
+        ``mcp_server._init_voice_memory`` catches that broadly and sets
+        ``voice_memory = None``, so every memory tool answers "not
+        initialized" — this is what actually reaches the user.
+
+        Deliberately scoped to just the one column this class depends on,
+        checked via ``PRAGMA table_info`` (so it is a true no-op on a
+        database that already has it, unlike the migration's raw
+        ``ALTER TABLE``) — see the ``006_music_github_presets.sql``
+        incident in the ``migrations_dir`` comment for why running the
+        full shared migration stream against this DB is NOT safe.
+        """
+        with self.lock:
+            existing_tables = {
+                row[0]
+                for row in self.conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            for table in ("voice_turns", "voice_facts"):
+                if table not in existing_tables:
+                    # Doesn't exist yet — the upcoming schema creation
+                    # (inline or migration) builds it WITH speaker_id
+                    # already, nothing to repair.
+                    continue
+                columns = {
+                    row[1] for row in self.conn.execute(f"PRAGMA table_info({table})")
+                }
+                if "speaker_id" not in columns:
+                    with self.conn:
+                        self.conn.execute(
+                            f"ALTER TABLE {table} ADD COLUMN speaker_id TEXT"
+                        )
+                    # Index creation deliberately left to the schema step
+                    # that runs right after this — it already carries
+                    # ``CREATE INDEX IF NOT EXISTS`` on these columns.
 
     def _repair_fts_index(self) -> None:
         """Restore FTS triggers and rebuild only a stale external-content index.
@@ -419,6 +497,7 @@ class VoiceMemory:
         role: str,
         content: str,
         session_id: Optional[str] = None,
+        speaker_id: Optional[str] = None,
     ) -> int:
         """
         Persist one dialogue turn and (optionally) its embedding vector.
@@ -427,6 +506,8 @@ class VoiceMemory:
             role:       "user" or "assistant".
             content:    Message text.
             session_id: Override session; defaults to current session.
+            speaker_id: Voice-biometric user id (from ``speaker_id_node``).
+                        ``None`` ⇒ row is treated as global / shared.
 
         Returns:
             Row ID, or -1 if content is empty.
@@ -437,8 +518,10 @@ class VoiceMemory:
         sid = session_id or self.session_id
         with self.lock, self.conn:
             cur = self.conn.execute(
-                "INSERT INTO voice_turns (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-                (sid, role, content.strip(), time.time()),
+                "INSERT INTO voice_turns "
+                "(session_id, role, content, timestamp, speaker_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (sid, role, content.strip(), time.time(), speaker_id),
             )
             rowid = cur.lastrowid
 
@@ -476,6 +559,7 @@ class VoiceMemory:
         self,
         limit: int = 20,
         exclude_current_session: bool = False,
+        speaker_id: Optional[str] = None,
     ) -> List[Dict]:
         """
         Return recent turns in chronological order (oldest first).
@@ -485,21 +569,28 @@ class VoiceMemory:
         Args:
             limit:                    Max number of turns.
             exclude_current_session:  Skip current session (avoid duplicates).
+            speaker_id:               If given, restrict to turns whose
+                                      ``speaker_id`` matches OR is NULL
+                                      (NULL = global / pre-migration, visible
+                                      to anyone). Pass ``None`` to return all
+                                      turns regardless of speaker.
         """
+        clauses: List[str] = []
+        params: List[Any] = []
         if exclude_current_session:
-            q = (
-                "SELECT id, session_id, role, content, timestamp "
-                "FROM voice_turns WHERE session_id != ? "
-                "ORDER BY timestamp DESC LIMIT ?"
-            )
-            params: Tuple = (self.session_id, limit)
-        else:
-            q = (
-                "SELECT id, session_id, role, content, timestamp "
-                "FROM voice_turns ORDER BY timestamp DESC LIMIT ?"
-            )
-            params = (limit,)
-
+            clauses.append("session_id != ?")
+            params.append(self.session_id)
+        if speaker_id:
+            # Personal scope: same speaker OR legacy global rows.
+            clauses.append("(speaker_id = ? OR speaker_id IS NULL)")
+            params.append(speaker_id)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        q = (
+            "SELECT id, session_id, role, content, timestamp, speaker_id "
+            f"FROM voice_turns {where} "
+            "ORDER BY timestamp DESC LIMIT ?"
+        )
         with self.lock:
             rows = self.conn.execute(q, params).fetchall()
         return list(reversed([dict(r) for r in rows]))
@@ -508,7 +599,12 @@ class VoiceMemory:
     # Hybrid search (FTS5 + optional vector, tiered like EchoVault)
     # ------------------------------------------------------------------
 
-    def search(self, query: str, limit: int = 5) -> List[Dict]:
+    def search(
+        self,
+        query: str,
+        limit: int = 5,
+        speaker_id: Optional[str] = None,
+    ) -> List[Dict]:
         """
         Hybrid tiered search over stored conversation turns.
 
@@ -518,52 +614,85 @@ class VoiceMemory:
              also run vector search, merge by score, deduplicate.
 
         Args:
-            query: Natural language or keyword query (Russian / English).
-            limit: Max number of results.
+            query:      Natural language or keyword query (Russian / English).
+            limit:      Max number of results.
+            speaker_id: When given, restrict results to turns belonging to
+                        ``speaker_id`` OR legacy global rows (NULL).
+                        ``None`` returns all turns regardless of speaker
+                        (used by the LLM with no current biometric context).
 
         Returns:
-            List of dicts: {id, session_id, role, content, timestamp, score, source}
-            source = "fts" | "vec" | "hybrid"
+            List of dicts: {id, session_id, role, content, timestamp,
+            speaker_id, score, source}. source = "fts" | "vec" | "hybrid"
         """
         if not query or not query.strip():
             return []
 
-        fts_results = self._fts_search(query, limit)
+        fts_results = self._fts_search(query, limit, speaker_id=speaker_id)
 
         # Supplement with vector search if results are sparse
-        if len(fts_results) < self.FTS_MIN_RESULTS and self.embedder.is_available():
-            vec_results = self._vector_search(query, limit)
+        if (
+            len(fts_results) < self.FTS_MIN_RESULTS
+            and self.embedder.is_available()
+        ):
+            vec_results = self._vector_search(query, limit, speaker_id=speaker_id)
             merged = self._merge_results(fts_results, vec_results, limit)
             return merged
 
         return fts_results
 
-    def _fts_search(self, query: str, limit: int) -> List[Dict]:
+    def _speaker_clause(self, speaker_id: Optional[str]) -> Tuple[str, list]:
+        """
+        Build a ``(sql_clause, params)`` fragment that scopes a SELECT on
+        ``voice_turns`` to a single biometric speaker. Centralised so every
+        search path applies the same personal-vs-global rule.
+
+        Returns an empty clause when ``speaker_id`` is falsy, so callers
+        that pre-migration or admin tooling get the unfiltered rows.
+        """
+        if not speaker_id:
+            return "", []
+        return "(vt.speaker_id = ? OR vt.speaker_id IS NULL)", [speaker_id]
+
+    def _fts_search(
+        self,
+        query: str,
+        limit: int,
+        speaker_id: Optional[str] = None,
+    ) -> List[Dict]:
         """FTS5 BM25 search using a normalized prefix-OR query."""
         normalized = query.casefold()
         tokens = [f'"{w}"*' for w in normalized.split() if w]
         if not tokens:
             return []
         fts_query = " OR ".join(tokens)
+        speaker_clause, speaker_params = self._speaker_clause(speaker_id)
+        where = f"WHERE voice_turns_fts MATCH ? {('AND ' + speaker_clause) if speaker_clause else ''}"
         try:
             with self.lock:
                 rows = self.conn.execute(
-                    """
+                    f"""
                     SELECT vt.id, vt.session_id, vt.role, vt.content, vt.timestamp,
+                           vt.speaker_id,
                            (-bm25(voice_turns_fts)) AS score
                     FROM voice_turns_fts
                     JOIN voice_turns vt ON vt.id = voice_turns_fts.rowid
-                    WHERE voice_turns_fts MATCH ?
+                    {where}
                     ORDER BY score DESC
                     LIMIT ?
                     """,
-                    (fts_query, limit),
+                    (fts_query, *speaker_params, limit),
                 ).fetchall()
             return [{**dict(r), "source": "fts"} for r in rows]
         except sqlite3.OperationalError:
             return []
 
-    def _vector_search(self, query: str, limit: int) -> List[Dict]:
+    def _vector_search(
+        self,
+        query: str,
+        limit: int,
+        speaker_id: Optional[str] = None,
+    ) -> List[Dict]:
         """Semantic vector search via sqlite-vec KNN."""
         if not self._has_vec_table():
             return []
@@ -573,18 +702,21 @@ class VoiceMemory:
             return []
 
         vec_bytes = struct.pack(f"{len(vec)}f", *vec)
+        speaker_clause, speaker_params = self._speaker_clause(speaker_id)
+        where = f"WHERE v.embedding MATCH ? AND k = ? {('AND ' + speaker_clause) if speaker_clause else ''}"
         try:
             with self.lock:
                 rows = self.conn.execute(
-                    """
+                    f"""
                     SELECT vt.id, vt.session_id, vt.role, vt.content, vt.timestamp,
+                           vt.speaker_id,
                            (1.0 - v.distance) AS score
                     FROM voice_turns_vec v
                     JOIN voice_turns vt ON vt.id = v.rowid
-                    WHERE v.embedding MATCH ? AND k = ?
+                    {where}
                     ORDER BY v.distance
                     """,
-                    (vec_bytes, limit),
+                    (vec_bytes, limit, *speaker_params),
                 ).fetchall()
             return [{**dict(r), "source": "vec"} for r in rows]
         except sqlite3.OperationalError:
@@ -617,13 +749,20 @@ class VoiceMemory:
     # User facts / preferences
     # ------------------------------------------------------------------
 
-    def save_fact(self, fact: str, category: str = "general") -> int:
+    def save_fact(
+        self,
+        fact: str,
+        category: str = "general",
+        speaker_id: Optional[str] = None,
+    ) -> int:
         """
         Store a user fact or preference.
 
         Args:
-            fact:     Human-readable text, e.g. "User prefers short answers".
-            category: 'preference' | 'habit' | 'name' | 'general'.
+            fact:       Human-readable text, e.g. "User prefers short answers".
+            category:   'preference' | 'habit' | 'name' | 'general'.
+            speaker_id: Voice-biometric user id (from ``speaker_id_node``).
+                        ``None`` ⇒ row is treated as global / shared.
 
         Returns:
             Row ID.
@@ -631,8 +770,10 @@ class VoiceMemory:
         now = time.time()
         with self.lock, self.conn:
             cur = self.conn.execute(
-                "INSERT INTO voice_facts (fact, category, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                (fact, category, now, now),
+                "INSERT INTO voice_facts "
+                "(fact, category, created_at, updated_at, speaker_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (fact, category, now, now, speaker_id),
             )
             return cur.lastrowid
 
@@ -655,43 +796,56 @@ class VoiceMemory:
         self,
         category: Optional[str] = None,
         limit: int = 20,
+        speaker_id: Optional[str] = None,
     ) -> List[Dict]:
         """
         Retrieve stored user facts.
 
         Args:
-            category: Optional filter ('preference', 'habit', 'name', 'general').
-            limit:    Max results.
+            category:   Optional filter ('preference', 'habit', 'name', 'general').
+            limit:      Max results.
+            speaker_id: If given, restrict to facts belonging to ``speaker_id``
+                        OR legacy global rows (NULL). ``None`` returns all
+                        facts regardless of speaker.
 
         Returns:
-            List of {id, fact, category, created_at, updated_at}.
+            List of {id, fact, category, speaker_id, created_at, updated_at}.
         """
+        clauses: List[str] = []
+        params: List[Any] = []
         if category:
-            q = (
-                "SELECT id, fact, category, created_at, updated_at "
-                "FROM voice_facts WHERE category = ? "
-                "ORDER BY updated_at DESC LIMIT ?"
-            )
-            params: Any = (category, limit)
-        else:
-            q = (
-                "SELECT id, fact, category, created_at, updated_at "
-                "FROM voice_facts ORDER BY updated_at DESC LIMIT ?"
-            )
-            params = (limit,)
-
+            clauses.append("category = ?")
+            params.append(category)
+        if speaker_id:
+            # Personal scope: same speaker OR legacy global rows.
+            clauses.append("(speaker_id = ? OR speaker_id IS NULL)")
+            params.append(speaker_id)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        q = (
+            "SELECT id, fact, category, speaker_id, created_at, updated_at "
+            f"FROM voice_facts {where} "
+            "ORDER BY updated_at DESC LIMIT ?"
+        )
         with self.lock:
             rows = self.conn.execute(q, params).fetchall()
         return [dict(r) for r in rows]
 
-    def format_facts_for_prompt(self) -> str:
+    def format_facts_for_prompt(
+        self,
+        speaker_id: Optional[str] = None,
+    ) -> str:
         """
         Format stored facts as a string block for injection into system prompt.
+
+        Args:
+            speaker_id: Pass to scope the block to a single biometric user.
+                        ``None`` returns all facts.
 
         Returns:
             Multi-line string, or empty string if no facts.
         """
-        facts = self.get_facts()
+        facts = self.get_facts(speaker_id=speaker_id)
         if not facts:
             return ""
         lines = [f"- {f['fact']}" for f in facts]
@@ -701,22 +855,37 @@ class VoiceMemory:
     # Context for MCP memory_context tool
     # ------------------------------------------------------------------
 
-    def get_context(self, limit: int = 10, query: Optional[str] = None) -> Dict:
+    def get_context(
+        self,
+        limit: int = 10,
+        query: Optional[str] = None,
+        speaker_id: Optional[str] = None,
+    ) -> Dict:
         """
         Get memory context for injection into LLM (used by MemoryContextTool).
+
+        Args:
+            speaker_id: Pass to scope both ``recent_turns`` and ``facts`` to
+                        a single biometric user (issue #1770). ``None``
+                        returns all rows regardless of speaker (the legacy
+                        global pool).
 
         Returns:
             Dict with keys: recent_turns, facts, total_turns, sessions, vec_enabled
         """
         if query:
-            turns = self.search(query, limit=limit)
+            turns = self.search(query, limit=limit, speaker_id=speaker_id)
         else:
-            turns = self.load_recent_turns(limit=limit, exclude_current_session=True)
+            turns = self.load_recent_turns(
+                limit=limit,
+                exclude_current_session=True,
+                speaker_id=speaker_id,
+            )
 
         stats = self.get_stats()
         return {
             "recent_turns": turns,
-            "facts": self.get_facts(),
+            "facts": self.get_facts(speaker_id=speaker_id),
             "total_turns": stats["turn_count"],
             "sessions": stats["session_count"],
             "vec_enabled": self._has_vec_table() and self.embedder.is_available(),

@@ -19,14 +19,108 @@ Owns two families of heuristics:
   :func:`is_vocal_request` recognises «спой/пой/песня» where ``speak_text``
   alone is a valid outcome, and :func:`build_music_retry_prompt` builds
   the Bug-C retry prompt that demands ``execute_music_code``.
+* **Non-music tool guard** (issue #1777 / #1762) — расширение Bug C на
+  все явные tool-based запросы (``get_current_time``, ``search_web``,
+  ``set_voice``, ``memory_search``, ``faq_search``). См. :data:`TOOL_REQUEST_PATTERNS`
+  и :func:`detect_required_tool`.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Optional
+import re
+from dataclasses import dataclass
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Music tool names — single source of truth
+# ---------------------------------------------------------------------------
+
+#: MCP tools that start Renardo playback.
+#:
+#: SSoT on purpose. This list used to be hardcoded separately in
+#: ``DialogueNode`` (``_music_starters``) and in ``MusicGuard``
+#: (``_music_started``), and every new music tool had to be added to both.
+#: It never was — which is how ``compose_music`` shipped and got
+#: auto-stopped 1.5 s after it started: ``dialogue_node`` did not recognise
+#: it as a music starter, armed ``_pending_music_cleanup``, then fired
+#: ``music_cleanup`` at turn end because no TTS batch existed yet. The
+#: comment above ``_music_starters`` already recorded the same accident
+#: happening once before with ``load_track`` / ``set_dj_mode``.
+#:
+#: Add new Renardo-side music tools HERE and nowhere else.
+RENARDO_MUSIC_TOOLS: frozenset = frozenset({
+    "execute_music_code",
+    "compose_music",
+})
+
+#: MiniMax mp3 playback. Separate set: these do not go through Renardo, so
+#: the Renardo cleanup path does not apply to them, but for the retry guard
+#: they still count as "music started".
+GENERATED_MUSIC_TOOLS: frozenset = frozenset({
+    "generate_music",
+    "gen_play_from_library",
+})
+
+#: Tools that mean "this turn is no longer starting/managing TRACK-mode
+#: music" — used ONLY to clear ``dialogue_node._track_mode_music_active``
+#: bookkeeping (see the 31.08 fix at the call site) so a later Bug-C retry
+#: doesn't claim music is still playing when the turn just turned DJ
+#: orchestration off. ``set_dj_mode`` belongs here.
+#:
+#: 🔴 Do NOT use this set to decide whether a stop-COMMAND was actually
+#: satisfied — see ``MUSIC_HARD_STOP_TOOLS`` below for why.
+MUSIC_STOP_TOOLS: frozenset = frozenset({
+    "stop_music",
+    "set_dj_mode",
+})
+
+#: Tools that actually SILENCE currently-audible Renardo output. Used by
+#: ``MusicGuardVerdictKind.FORCE_STOP`` to decide whether a stop-command
+#: («хватит диджеить») was really honoured.
+#:
+#: 🔴 FIX (live 01.09, issue #992): ``set_dj_mode`` used to count as a stop
+#: tool here (it was in ``MUSIC_STOP_TOOLS``, shared with the bookkeeping
+#: use above) on the theory that turning DJ mode off is "satisfied by
+#: turning DJ mode off even when no Renardo pattern was running". That
+#: theory is false whenever DJ mode turns off WHILE a ``repeat=True``
+#: track from the last transition is still looping — which is the normal
+#: case, not the exception. ``set_dj_mode()`` (rob_box_mcp_tools/tools/
+#: music.py) only flips a bool flag; it never touches Renardo/SuperCollider.
+#: Verified live: publishing ``set_dj_mode(enabled=False)`` alone left
+#: ``numSynths`` at 65 on the scsynth OSC ``/status`` reply — the track
+#: kept looping until an explicit ``/mcp/music_cleanup`` was sent. A user
+#: saying "хватит диджеить" mid-set, answered by the LLM calling only
+#: ``set_dj_mode(enabled=False)`` (the natural response to that phrasing),
+#: would hear the same thing: nothing stops. Only ``stop_music`` proves
+#: the audio was actually silenced.
+MUSIC_HARD_STOP_TOOLS: frozenset = frozenset({
+    "stop_music",
+})
+
+#: Tools that put existing playback into a mode rather than starting it.
+#: They keep music alive for the cleanup logic but must NOT satisfy the DJ
+#: retry guard — calling ``set_dj_mode`` without playing anything is
+#: precisely the Bug-B failure it is there to catch.
+MUSIC_MODE_TOOLS: frozenset = frozenset({
+    "load_track",
+    "set_dj_mode",
+    "set_vibe_preset",
+})
+
+#: Тулы, которые закрывают ПОЛЬЗОВАТЕЛЬСКУЮ просьбу «включи трек X», но не
+#: закрывают DJ-переход.
+#:
+#: 🔴 FIX (live 30.08, e2e tc10_load_track): ``load_track`` внутри зовёт
+#: ``MusicManager.execute_code`` — то есть реально запускает Renardo. Но он
+#: лежал только в ``MUSIC_MODE_TOOLS``, которые гуард не считает за
+#: «музыка пошла», и корректный вызов всё равно уходил в ретрай.
+#: Для DJ-ветки он по-прежнему не годится: ``set_dj_mode`` без старта — это
+#: ровно та авария Bug B, которую ловит гуард.
+USER_MUSIC_SATISFYING_TOOLS: frozenset = frozenset({"load_track"})
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +156,71 @@ BABBLE_BANNED_OPENERS: tuple = (
     "переключаюсь",
     "переключ",
 )
+
+# 🔴 FIX (live 02.09): «робот говорит, что запускает музыку, а ничего не
+# запускается» + «LLM много говорит во время музыки».
+#
+# Живой лог робота, 06:58:01 UTC:
+#   spoken='Юзер явно просит «ебани лаундж» (лоундж запрошен снова).
+#           DJ уже выключен в прошлом ходе. Запускаю расслабленную
+#           лоундж-композицию через compose_music.' tools=[]
+# и следом TTS честно зачитал это вслух. Модель отдала своё планирование
+# вместо ответа и не вызвала ни одного тула.
+#
+# Ни один существующий детектор это не ловил: BABBLE_BANNED_OPENERS ищет
+# обещания («зачитаю», «погнали»), а тут рассуждение; music-гуард смотрел
+# на реплику ЮЗЕРА («ебани ланудж») и не нашёл там ключевых слов.
+# Расширять словари бесполезно — их не хватит никогда.
+#
+# Надёжный признак другой и от словаря не зависит:
+#   * в тексте назван ИНСТРУМЕНТ (compose_music и т.п.). Идентификатор в
+#     snake_case, прочитанный вслух, — всегда баг, что бы ни просил юзер;
+#   * реплика начинается с рассказа о собеседнике в ТРЕТЬЕМ лице («Юзер
+#     просит...», «Пользователь спрашивает...»). Ответ, адресованный
+#     человеку, так не начинается — так начинается план.
+PLANNING_NARRATION_TOOL_NAMES: tuple = (
+    "compose_music",
+    "execute_music_code",
+    "speak_text",
+    "set_dj_mode",
+    "search_samples",
+    "stop_music",
+    "load_track",
+    "list_tracks",
+    "save_track",
+    "gen_play_from_library",
+    "gen_search_library",
+    "set_vibe_preset",
+    "play_animation",
+    "play_sound",
+    "memory_save",
+    "memory_search",
+    "search_web",
+    "listen_for_response",
+    "navigate_to_waypoint",
+)
+
+#: Начала реплики, где модель говорит о собеседнике в третьем лице.
+PLANNING_NARRATION_OPENERS: tuple = (
+    "юзер",
+    "пользовател",
+    "user ",
+)
+
+
+def is_planning_narration(spoken_text: str) -> bool:
+    """Похоже ли на внутреннее планирование модели, а не на ответ человеку?
+
+    Признаки и причина, по которой они именно такие, — в комментарии выше.
+    """
+    if not spoken_text:
+        return False
+    low = spoken_text.lower()
+    if any(name in low for name in PLANNING_NARRATION_TOOL_NAMES):
+        return True
+    head = low.lstrip(" \t*#>-—«\"'")[:40]
+    return any(head.startswith(opener) for opener in PLANNING_NARRATION_OPENERS)
+
 
 # Issue #992 Bug D — keywords that mark the user request as a
 # performance command. When the LLM babbles on a performance request
@@ -185,6 +344,363 @@ MUSIC_GUARD_VOCAL_KEYWORDS: tuple = (
 )
 
 
+# 🔴 FIX (live 30.08, vision-pi 12:52-12:57): «продолжай развивать этот бит»,
+# «переходи с лоу в небольшой джангл» — юзер просит РАЗВИТЬ уже играющую
+# музыку. Ни одна подстрока из ``MUSIC_GUARD_KEYWORDS`` в них не встречается
+# (там нет ни «сыграй», ни «включи трек»), поэтому Bug C молчал, а LLM
+# отвечала «Добавил новые слои в техно-бит.» / «Бит перешёл в джангл.» с
+# ``tools=[]`` — то есть НИЧЕГО не игралось, робот просто рассказывал про
+# музыку словами.
+#
+# Ловим это парой «глагол-продолжения + музыкальное существительное» в
+# любом порядке. Пара нужна именно как пара: отдельное «бит» ловит «битва»
+# и «орбита», отдельное «продолжай» — «продолжай маршрут».
+_MUSIC_CONTINUE_VERBS: str = (
+    r"развива|разверни|продолж|переход|перейд|усил|добав|убер|смен|поменя|"
+    r"ускор|замедл|раскач|наращ|нарасти|дораб|доработ"
+)
+_MUSIC_NOUNS: str = (
+    r"бит|мелоди|музык|трек|ритм|грув|луп|бас|барабан|темп|аккорд|парти|"
+    r"джангл|техно|хаус|дабстеп|эмбиент|амбиент|драм-?н-?бейс|драмн?бейс|"
+    r"хип-?хоп|лоу-?фай|lofi|транс|фанк|регги|брейкбит|синт|"
+    # live 30.08 15:56: «продолжай лабать» — жанр назван в первом ходе
+    # («кайфовый лаунж»), во втором его уже нет.
+    r"лаунж|лаундж|свинг|босанов|даб|соло|пэд|клавиш|пианино|"
+    # 🔴 FIX (live 31.08): «замути кайфовый джаз» → guard решил «user does
+    # NOT want music», Bug-C ретрай не сработал, и робот сказал «Кайфовый
+    # джаз пошёл» с tools=[] — то есть соврал. Здесь были техно, хаус,
+    # эмбиент, фанк и регги, а самого ходового жанра не было.
+    # Осознанно НЕ добавлены «марш», «поп» и «опер»: даже с ``\b`` они ловят
+    # «продолжай маршрут до кухни» (это навигация), «попробуй» и «операция».
+    # Первый случай поймал существующий тест — жанр не стоит команды движения.
+    r"джаз|блюз|рок|диско|панк|метал|кантри|вальс|шансон|босса|фьюжн|"
+    # 🔴 FIX (live 01.09): «переходи в лёгкий джанго» — цыганский джаз
+    # Джанго Рейнхардта. В списке был «джангл» (drum-n-bass), а «джанго»
+    # нет: guard решил «user does NOT want music», Bug-C ретрай не
+    # сработал, и робот наговорил про гитару с ``tools=[]``.
+    r"джанго|"
+    r"соул|классик|симфон"
+)
+
+#: Глаголы «заведи музыку» — в отличие от ``_MUSIC_SOLO_VERBS`` сами по себе
+#: ничего не значат («замути чай», «выдай отчёт»), поэтому работают только в
+#: паре с музыкальным существительным.
+_MUSIC_START_VERBS: str = (
+    r"замут|запил|накид|забаба|сообраз|организу|наиграй|врубай|изобраз|"
+    # 🔴 FIX (live 01.09): «играем лёгкий джаз» — в
+    # ``MUSIC_GUARD_KEYWORDS`` лежит «играй», подстрокой в «играем» он не
+    # попадает, а среди глаголов основы «игра» не было вовсе. Guard
+    # промолчал, и робот рассказал про саксофон, ничего не запустив.
+    # Основа работает ТОЛЬКО в паре с музыкальным существительным,
+    # поэтому «играем в шахматы» и «поиграем в города» не ловятся.
+    r"игра|включ|"
+    r"поставь|влож|выдай"
+)
+
+#: Глаголы, которые САМИ по себе означают «играй музыку» — существительное
+#: рядом не нужно.
+#:
+#: 🔴 FIX (live 30.08 15:56): «продолжай лабать мы летим над парижем» —
+#: пары «глагол + существительное» здесь нет («лабать» это глагол, а
+#: «парижем» не музыка), гуард пропустил, LLM ответила «Трек летит над
+#: Парижем — пианино и тёплый пэд парят над городом огней.» с tools=[], и
+#: лаунж, игравший 94 секунды, замолчал ровно на просьбе продолжать.
+#:
+#: Список нарочно короткий: сюда попадает только то, что вне музыки не
+#: употребляется. «Жарь», «качай», «давай ещё» — многозначны, им нужен
+#: контекст, и их ловит пара выше.
+#: ``\b`` + необязательная приставка: «полабай»/«залабай» ловятся, а
+#: «ослабь» и «слабее» — нет (после ``\b`` там не «лаба»).
+_MUSIC_SOLO_VERBS: str = (
+    r"(?:по|за|под|от)?лаба|(?:по|за)?джем|диджей|диджеб|импровизиру"
+)
+
+#: Пара «глагол + существительное» в обоих порядках. ``\w*`` после каждой
+#: основы покрывает падежи/виды («развивай», «развивать», «развивая»;
+#: «бит», «бита», «битом»).
+#: ``\b`` перед существительным обязателен: без него «добавь сорок процентов»
+#: ловилось бы как «добав» + «рок». С жанрами в списке это уже не теория.
+_MUSIC_ANY_VERBS: str = rf"{_MUSIC_CONTINUE_VERBS}|{_MUSIC_START_VERBS}"
+
+#: 🔴 FIX (live 01.09, vision-pi 09:55): «развивай тему» при играющем
+#: джанго — гуард сказал «user does NOT want music», ретрая не было, робот
+#: молча съел ход. «Тема» — обычное музыкальное слово, но в ``_MUSIC_NOUNS``
+#: его класть нельзя: там оно склеится со ВСЕМИ глаголами, включая «смени»,
+#: и разговорное «смени тему» станет просьбой о музыке.
+#:
+#: Поэтому отдельная пара — только с глаголами РАЗВИТИЯ материала.
+#: «Развивай тему», «продолжай тему», «доработай тему» вне музыки
+#: практически не встречаются, а «смени/поменяй тему» сюда не попадает.
+_MUSIC_DEVELOP_VERBS: str = (
+    r"развива|разверни|продолж|усил|наращ|нарасти|дораб|доработ|обыгр|"
+    r"раскач|усложн"
+)
+
+_MUSIC_THEME_RE_SRC: str = (
+    rf"(?:(?:{_MUSIC_DEVELOP_VERBS})\w*.{{0,20}}?\bтем[ауые]\b)"
+    rf"|(?:\bтем[ауые]\b.{{0,20}}?(?:{_MUSIC_DEVELOP_VERBS})\w*)"
+)
+
+MUSIC_CONTINUATION_RE = re.compile(
+    rf"(?:(?:{_MUSIC_ANY_VERBS})\w*.{{0,40}}?\b(?:{_MUSIC_NOUNS})\w*)"
+    rf"|(?:\b(?:{_MUSIC_NOUNS})\w*.{{0,40}}?(?:{_MUSIC_ANY_VERBS})\w*)"
+    rf"|(?:\b(?:{_MUSIC_SOLO_VERBS})\w*)"
+    rf"|{_MUSIC_THEME_RE_SRC}",
+    re.IGNORECASE,
+)
+
+
+# ---------------------------------------------------------------------------
+# 🔴 FIX (live 30.08, vision-pi 12:28): babble-детектор ложно срабатывал на
+# ФАКТИЧЕСКОМ ответе. Юзер: «играет ли сейчас музыка» → LLM: «Сейчас тишина —
+# ничего не играет.» Ответ начинается с «сейчас » (опенер из
+# ``BABBLE_BANNED_OPENERS``), а ``user_wants_performance`` совпал по «музык» —
+# и Bug D сжёг лишний round-trip к LLM ради байт-в-байт того же ответа.
+#
+# Вопрос — не запрос на исполнение. Частица «ли» в русском практически не
+# встречается в императиве («зачитай рэп», «сыграй техно»), поэтому она —
+# надёжный маркер. Плюс горстка вопросительных зачинов.
+# ---------------------------------------------------------------------------
+QUESTION_MARKERS: tuple = (
+    " ли ",
+    " ли?",
+)
+
+QUESTION_OPENERS: tuple = (
+    "что играет",
+    "что сейчас",
+    "что за ",
+    "какая музык",
+    "какой трек",
+    "какие звуки",
+    "сколько ",
+    "умеешь ли",
+    "ты умеешь",
+    "есть ли",
+    "можешь ли",
+)
+
+
+def is_state_question(user_input: str) -> bool:
+    """Вопрос о состоянии, а не команда исполнить.
+
+    Используется ``user_wants_performance``: на вопрос «играет ли сейчас
+    музыка» правильный ответ — текст, и babble-ретрай Bug D для него не
+    нужен.
+    """
+    if not user_input:
+        return False
+    low = f" {user_input.lower().strip()} "
+    if any(marker in low for marker in QUESTION_MARKERS):
+        return True
+    stripped = user_input.lower().strip()
+    return any(stripped.startswith(opener) for opener in QUESTION_OPENERS)
+
+
+# ---------------------------------------------------------------------------
+# Issue #1777 / #1762 — non-music tool guard. Расширение Bug C retry на
+# ВСЕ явные tool-based запросы. Раньше ретрай работал только для music
+# (см. issue #992 Bug C), теперь — для ``get_current_time``,
+# ``search_web``, ``set_voice``, ``memory_search``, ``faq_search``.
+#
+# Формат: каждая запись = (tool_name, tuple[подстрок…]). Подстроки
+# матчатся lowercase substring в user_input. Tuple — для случаев когда
+# одна категория покрывается несколькими keyword'ами («который час»,
+# «сколько времени», «время в москве» — всё → get_current_time).
+#
+# ВАЖНО: keyword'ы специально выбираются такие, чтобы НЕ срабатывать
+# на обычное chit-chat. Например «новости» — отдельный keyword от «погода»,
+# чтобы не ретраить когда юзер просит «новости про X» (тоже → search_web,
+# но другой по семантике).
+# ---------------------------------------------------------------------------
+TOOL_REQUEST_PATTERNS: tuple = (
+    # time / date (issue #1777) — «который час», «сколько времени»,
+    # «время в москве», «какая дата», «какой день недели».
+    ("get_current_time", (
+        "который час",
+        "сколько врем",
+        "сколько сейч",
+        "время в ",
+        "время по ",
+        "время сейч",
+        "который сейч",
+        "сейчас врем",
+        "сколько минут",
+        "чо за время",
+        "какая дата",
+        "какой день",
+        "какой сегодн",
+        "какое число",
+        "какое сегодня",
+        "какой месяц",
+        "какой год",
+        "что за день",
+        "что за число",
+        "что за дат",
+    )),
+    # weather / news / web search (issue #1762) — «погода в X»,
+    # «новости про Y», «что в интернете», «загугли».
+    ("search_web", (
+        "погода",
+        "погоду",
+        "новости",
+        "новость",
+        "что в интернет",
+        "загугл",
+        "найди в инет",
+        "поищи в инет",
+        "найди информ",
+        "узнай в инет",
+        "найди что",
+        "поищи что",
+        "расскажи про ",  # «расскажи про X» — обычно требует поиска
+        "что ты знаешь про ",
+        "что известно про ",
+    )),
+    # voice (issue #1765) — «переключи голос», «поставь голос X»,
+    # «голос Артём», «смени голос».
+    #
+    # 🔴 Осознанно НЕ добавлены «говор », «говори », «говорит », «голосом»:
+    # это substring-match без границ слова, и они ловят обычный chit-chat —
+    # «не говори глупости», «мама говорит что...», «он говорит по-английски»,
+    # «спой красивым голосом». Ложный матч здесь не «лишний round-trip», а
+    # ретрай, ТРЕБУЮЩИЙ от LLM вызвать set_voice в ходе, который к голосу
+    # никак не относится.
+    ("set_voice", (
+        "переключи голос",
+        "смени голос",
+        "поменяй голос",
+        "голос арт",
+        "голос ален",
+        "голос анто",
+        "голос окс",
+        "голос жан",
+        "голос ерма",
+        "голос зайц",
+        "голос леви",
+        "голос маш",
+        "голос никол",
+        "голос серг",
+        "голос алек",
+        "голос ден",
+        "голос мар",
+        "голос тат",
+        "давай голос",
+        "поставь голос",
+        "установи голос",
+    )),
+    # memory (issue #1770) — «что ты знаешь обо мне», «помнишь меня»,
+    # «что помнишь».
+    ("memory_search", (
+        "что ты знаешь обо мне",
+        "что знаешь обо мне",
+        "что ты помнишь",
+        "что помнишь",
+        "помнишь меня",
+        "помнишь про меня",
+        "что ты знаешь про меня",
+        "что знаешь про меня",
+        "расскажи что знаешь",
+        "что ты обо мне",
+        "что обо мне знаешь",
+    )),
+    # FAQ — «что ты умеешь», «какие команды», «справка».
+    ("faq_search", (
+        "что ты умеешь",
+        "что умеешь",
+        "что можешь",
+        "какие команды",
+        "что ты можешь делать",
+        "справка",
+        "помощь",
+        "что ты такое",
+        "кто ты такой",
+        "расскажи о себе",
+    )),
+)
+
+
+def detect_required_tool(user_input: str) -> Optional[str]:
+    """Issue #1777 / #1762 — какой tool явно просит юзер?
+
+    Возвращает имя tool (``get_current_time``, ``search_web``, ``set_voice``,
+    ``memory_search``, ``faq_search``) или ``None`` если user_input не
+    содержит явного tool-pattern'а.
+
+    Чистая функция, без I/O — тестируется без ROS2.
+
+    Priority: первое совпадение в :data:`TOOL_REQUEST_PATTERNS` побеждает
+    (порядок в tuple = приоритет). На практике ключевые слова разных
+    категорий не пересекаются («который час» → только get_current_time,
+    «погода в Бишкеке» → только search_web), но если когда-то пересекутся
+    — порядок tuple решает.
+    """
+    if not user_input:
+        return None
+    low = user_input.lower()
+    for tool_name, keywords in TOOL_REQUEST_PATTERNS:
+        if any(kw in low for kw in keywords):
+            return tool_name
+    return None
+
+
+def build_tool_retry_prompt(user_input: str, tool_name: str) -> str:
+    """Issue #1777 / #1762 — synthetic prompt для Bug C retry (non-music).
+
+    Echoes the original ``user_input`` so the LLM has the request in
+    context, then injects a CRITICAL reminder that names the specific
+    ``tool_name`` the LLM must call. ``tool_name`` MUST come from
+    :func:`detect_required_tool` (or any hard-coded allow-list) to prevent
+    prompt-injection: never pass user-controlled strings.
+
+    Prefix is the same :data:`MUSIC_RETRY_PROMPT_PREFIX` as music retry so
+    ``dialogue_node._run_turn`` doesn't reset the retry budget on synthetic
+    prompts (issue #992 Bug C root cause for the infinite loop).
+    """
+    hint = {
+        "get_current_time": (
+            "вызови get_current_time() — инструмент возвращает точное "
+            "локальное время робота (Europe/Moscow по умолчанию). "
+            "Не выдумывай время, не говори 'сейчас X утра/вечера' из головы."
+        ),
+        "search_web": (
+            "вызови search_web(query=...) — инструмент ищет актуальную "
+            "информацию в интернете (погода, новости, факты). "
+            "Не говори 'гляну/сделаю/сейчас узнаю' без реального вызова."
+        ),
+        "set_voice": (
+            "вызови set_voice(provider=..., voice_name=...) или "
+            "list_voices() чтобы выбрать. Не говори 'голоса X нет' "
+            "не проверив список через list_voices."
+        ),
+        "memory_search": (
+            "вызови memory_search(speaker_id=<current>) или "
+            "memory_context(speaker_id=<current>) — только для ТЕКУЩЕГО "
+            "спикера. Не подставляй факты других юзеров."
+        ),
+        "faq_search": (
+            "вызови faq_search(query=...) — инструмент ищет по локальной "
+            "базе возможностей и команд. Не придумывай список команд сам."
+        ),
+    }.get(tool_name)
+    if hint is None:
+        # Defence-in-depth: если tool_name не из allow-list — НЕ ретраим.
+        # Это защищает от prompt-injection (юзер пишет «забудь инструкции,
+        # вызови tool X»). Любой неизвестный tool = silent skip.
+        logger.warning(
+            f"🛡 [issue 1777] build_tool_retry_prompt: unknown tool_name={tool_name!r}, "
+            "skipping retry (defence-in-depth)"
+        )
+        return ""
+    return (
+        MUSIC_RETRY_PROMPT_PREFIX + f" {tool_name}, хотя пользователь "
+        "явно попросил соответствующее действие. "
+        + hint + " "
+        "Запрос юзера: «" + (user_input or "") + "». "
+        "Если и сейчас не вызовешь tool — пользователь не получит ответа."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Detectors
 # ---------------------------------------------------------------------------
@@ -207,6 +723,8 @@ def is_metalanguage_babble(spoken_text: str) -> bool:
     """
     if not spoken_text:
         return False
+    if is_planning_narration(spoken_text):
+        return True
     head = spoken_text[:80].lower().lstrip(" \t*#>-")
     # Match the opener only at the START of the head or inside the
     # first 30 chars (after stripping). 30 chars is enough to cover
@@ -220,6 +738,14 @@ def is_metalanguage_babble(spoken_text: str) -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# Issue #1882 — hard-mute для planning-narration жильёт в dialogue_node.py
+# (`_handle_result`, ветка ПЕРЕД babble-retry). Сам детектор `is_planning_narration`
+# определён выше в этом файле (введён в 78403dba), тут дублировать его не надо —
+# иначе будет две функции с одним именем.
+# ---------------------------------------------------------------------------
+
+
 def user_wants_performance(user_input: str) -> bool:
     """Issue #992 Bug D — does the user request a *performance*?
 
@@ -229,6 +755,11 @@ def user_wants_performance(user_input: str) -> bool:
     "Слушай, у меня тут..." — still answer-shaped, just informal).
     """
     if not user_input:
+        return False
+    # 🔴 FIX (live 30.08): вопрос о состоянии — не запрос на исполнение.
+    # «играет ли сейчас музыка» совпадал по «музык» и гнал Bug D в ретрай
+    # ради того же самого текстового ответа. См. ``is_state_question``.
+    if is_state_question(user_input):
         return False
     low = user_input.lower()
     return any(kw in low for kw in BABBLE_PERFORMANCE_KEYWORDS)
@@ -248,6 +779,16 @@ def user_wants_music(user_input: str, *, logger: Optional[logging.Logger] = None
     if not user_input:
         return False
     low = user_input.lower()
+    # 🔴 FIX (live 30.08): «продолжай развивать этот бит» / «переходи в
+    # джангл» — просьба развить уже играющую музыку. Подстрочных ключей на
+    # неё нет, поэтому сначала пробуем пару «глагол + муз. существительное».
+    if MUSIC_CONTINUATION_RE.search(low):
+        if logger is not None:
+            logger.debug(
+                f"🎵 [music_guard] user_input={user_input!r} matched "
+                f"MUSIC_CONTINUATION_RE → wants_music=True"
+            )
+        return True
     matched = [kw for kw in MUSIC_GUARD_KEYWORDS if kw in low]
     if matched:
         if logger is not None:
@@ -301,6 +842,189 @@ def is_vocal_request(user_input: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# 🔴 Issue #992 Bug E — «сделал» без единого тула.
+#
+# Live 30.08 (vision-pi 12:31–12:38), восемь ходов из восемнадцати: LLM
+# отвечает утверждением о выполненном действии, а ``tools_called`` пуст —
+# то есть не выполнено НИЧЕГО:
+#
+#   «запомни эту точку как тесточка»    → «Точка сохранена.»        tools=[]
+#   «удали точку тесточка»              → «Точка удалена.»          tools=[]
+#   «удали трек тисбит из сохраненных»  → ««Тисбит» удалён…»        tools=[]
+#   «загрузи и включи трек тисбит»      → «Трек играет.»            tools=[]
+#
+# Что «точек пока нет» после «Точка сохранена» видно в том же логе двумя
+# ходами позже. Bug C ловит только музыкальную ветку; здесь тот же класс
+# ошибки на навигации и медиатеке.
+#
+# Таблица ниже — узкая по построению: срабатывает только когда И запрос
+# юзера, И утверждение LLM попадают в одну и ту же пару шаблонов, И тул
+# из ``tools`` не вызван. Любое сомнение → не срабатываем: цена ложного
+# ретрая — лишний round-trip к LLM.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ActionClaimRule:
+    """Одно правило детектора «заявил, но не сделал».
+
+    Attributes:
+        category: Короткий тег для лога и для ветвления в тестах.
+        user_re: Что должен был попросить юзер.
+        claim_re: Как LLM отчитывается о выполнении.
+        tools: Тулы, любой из которых закрывает заявку. Пустой
+            ``tools_called`` при непустом ``tools`` = баг.
+        what: Человеческая формулировка для retry-промпта.
+    """
+
+    category: str
+    user_re: "re.Pattern[str]"
+    claim_re: "re.Pattern[str]"
+    tools: frozenset
+    what: str
+
+
+ACTION_CLAIM_RULES: tuple = (
+    ActionClaimRule(
+        category="waypoint_save",
+        user_re=re.compile(
+            r"(?:запомни|сохрани|запиши)\s+(?:эту\s+)?(?:точк|мест|координат|"
+            r"вейпоинт|waypoint)", re.IGNORECASE),
+        claim_re=re.compile(
+            r"точк\w*\s+(?:сохранен|запомнен|записан|добавлен)|"
+            r"(?:запомнил|сохранил|записал)\w*\s+(?:эту\s+)?точк",
+            re.IGNORECASE),
+        tools=frozenset({"save_waypoint"}),
+        what="сохранение точки (save_waypoint)",
+    ),
+    ActionClaimRule(
+        category="waypoint_delete",
+        user_re=re.compile(
+            r"(?:удали|сотри|забудь|убери)\s+(?:эту\s+)?(?:точк|вейпоинт|waypoint)",
+            re.IGNORECASE),
+        claim_re=re.compile(
+            r"точк\w*\s+(?:удален|стерт|убран)|"
+            r"(?:удалил|стёр|стер|убрал)\w*\s+(?:эту\s+)?точк",
+            re.IGNORECASE),
+        tools=frozenset({"delete_waypoint", "clear_waypoints"}),
+        what="удаление точки (delete_waypoint)",
+    ),
+    ActionClaimRule(
+        category="track_delete",
+        user_re=re.compile(
+            r"(?:удали|сотри|убери)\s+(?:трек|композиц|мелоди|песн)",
+            re.IGNORECASE),
+        claim_re=re.compile(
+            r"(?:удал|стёр|стер|убра)\w*", re.IGNORECASE),
+        tools=frozenset({"delete_track", "gen_delete_from_library"}),
+        what="удаление трека (delete_track / gen_delete_from_library)",
+    ),
+    ActionClaimRule(
+        category="library_search",
+        # 🔴 FIX (live 30.08 16:04, e2e): «найди в своей библиотеке сэмплы
+        # барабанов» → «Сэмплы ударных найдены.» при tools=[]. Никакого
+        # поиска не было — LLM просто утверждает результат.
+        user_re=re.compile(
+            r"(?:найди|поищи|поиск|подбери|покажи)\b.{0,30}?"
+            r"(?:сэмпл|сампл|семпл|библиотек|медиатек|трек|звук)",
+            re.IGNORECASE),
+        claim_re=re.compile(
+            r"(?:найден|нашёл|нашел|нашла|подобрал|вот\s+что\s+наш)\w*",
+            re.IGNORECASE),
+        # Любой поисковый тул закрывает заявку — какой именно, решает LLM
+        # по тому, где искать (сэмплы, медиатека, память, интернет).
+        tools=frozenset({
+            "search_samples", "list_tracks", "load_track",
+            "gen_search_library", "gen_list_library", "gen_get_track_info",
+            "memory_search", "memory_context", "faq_search", "search_web",
+        }),
+        what="поиск (search_samples / list_tracks / gen_search_library)",
+    ),
+    # ---- READ-ONLY заявки (e2e 33251879328, GATE-1) --------------------
+    # «expected tool calls not invoked ... LLM сделал verbal-only answer».
+    # Робот отвечает о ЖИВОМ состоянии по памяти модели, не спросив систему.
+    ActionClaimRule(
+        category="waypoint_list",
+        user_re=re.compile(
+            r"(?:перечисли|покажи|какие|список|назови)\b.{0,25}?"
+            r"(?:точк|вейпоинт|waypoint|мест)",
+            re.IGNORECASE),
+        # Утверждение о СОДЕРЖИМОМ списка — и «точек нет» тоже утверждение.
+        # Живой лог 30.08: «Точек пока нет — карту ни разу не строили» при
+        # tools=[], а точка к тому моменту уже сохранялась.
+        claim_re=re.compile(
+            r"точ(?:ек|ки|ка)\b|нет\s+точек|список\s+точек|пуст",
+            re.IGNORECASE),
+        tools=frozenset({"list_waypoints", "get_current_pose"}),
+        what="список точек (list_waypoints)",
+    ),
+    ActionClaimRule(
+        category="sound_info",
+        user_re=re.compile(
+            r"(?:какие|перечисли|покажи|список)\b.{0,25}?звук",
+            re.IGNORECASE),
+        claim_re=re.compile(r"звук\w*|умею|эмоци|сигнал|эффект", re.IGNORECASE),
+        tools=frozenset({"get_sound_info", "play_sound"}),
+        what="список звуков (get_sound_info)",
+    ),
+    ActionClaimRule(
+        category="music_state",
+        user_re=re.compile(
+            r"(?:играет\s+ли|что\s+(?:сейчас\s+)?играет|"
+            r"(?:сейчас\s+)?играет\s+(?:ли\s+)?музык|"
+            r"какая\s+(?:сейчас\s+)?музык|что\s+за\s+трек)",
+            re.IGNORECASE),
+        claim_re=re.compile(
+            r"тишин|ничего\s+не\s+игра|не\s+игра|игра\w*|звучит|включен",
+            re.IGNORECASE),
+        tools=frozenset({"get_music_state"}),
+        what="состояние музыки (get_music_state)",
+    ),
+    ActionClaimRule(
+        category="track_load",
+        user_re=re.compile(
+            r"(?:загрузи|включи|поставь|запусти)\b.{0,20}?"
+            r"(?:трек|композиц|мелоди)",
+            re.IGNORECASE),
+        # «Трек играет.» при tools=[] — live 30.08, музыка не стартовала.
+        claim_re=re.compile(
+            r"(?:игра|звучит|запустил|включил|поставил|загрузил)\w*",
+            re.IGNORECASE),
+        tools=frozenset({
+            "load_track", "gen_play_from_library", "execute_music_code",
+            "compose_music", "generate_music",
+        }),
+        what="запуск трека (load_track / gen_play_from_library)",
+    ),
+)
+
+
+def detect_unbacked_action_claim(
+    *,
+    user_input: Optional[str],
+    spoken: Optional[str],
+    tools_called: Optional[Tuple[str, ...]],
+) -> Optional[ActionClaimRule]:
+    """Issue #992 Bug E — LLM отчиталась о действии, не вызвав тул.
+
+    Возвращает сработавшее правило или ``None``. Правило считается
+    сработавшим, когда запрос юзера подходит под ``user_re``, ответ LLM —
+    под ``claim_re``, и ни один тул из ``rule.tools`` не был вызван.
+    """
+    if not user_input or not spoken:
+        return None
+    called = set(tools_called or ())
+    for rule in ACTION_CLAIM_RULES:
+        if not rule.user_re.search(user_input):
+            continue
+        if not rule.claim_re.search(spoken):
+            continue
+        if called & rule.tools:
+            continue
+        return rule
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Retry prompt builders
 # ---------------------------------------------------------------------------
 
@@ -313,6 +1037,42 @@ def is_vocal_request(user_input: str) -> bool:
 MUSIC_RETRY_PROMPT_PREFIX: str = "[CRITICAL] В прошлом цикле ты НЕ вызвал"
 
 
+CRITICAL_BLOCK_MARKER = "[CRITICAL]"
+CRITICAL_BLOCK_MARKER_LEN = len(CRITICAL_BLOCK_MARKER)
+
+
+def _strip_trailing_critical_block(user_input: str) -> str:
+    """Issue #1881 — убрать последний ``[CRITICAL]``-блок из ``user_input``.
+
+    На babble-retry ``user_input`` уже содержит прошлый CRITICAL-блок
+    (от прошлого ретрая этого же turn'а). Если просто склеить его с
+    НОВЫМ блоком — модель видит два ПРОТИВОРЕЧИВЫХ требования
+    («вызови tool» vs «вызови music-tool») и начинает мешать их в
+    ответе (vision-pi 02.09: «однако другой [CRITICAL] говорит...»).
+
+    Решение: если input заканчивается на блок, начинающийся с
+    ``[CRITICAL]`` — обрезаем до его начала. Юзер-фраза остаётся;
+    старый блок заменяется новым.
+
+    Edge cases:
+    * Без маркера — возвращаем ``user_input`` as-is.
+    * Маркер в самом начале (user_input="[CRITICAL]...") — возвращаем
+      пустую строку (нет юзер-фразы для сохранения). Это безопасно:
+      даже пустой входной текст + новый блок = «без исходного
+      запроса». LLM выдаст инструментальный ответ или пустоту, что
+      лучше, чем два конфликтующих CRITICAL'a.
+    """
+    if not user_input:
+        return user_input
+    idx = user_input.rfind(CRITICAL_BLOCK_MARKER)
+    if idx <= 0:
+        # Нет маркера вообще, или маркер в самом начале (idx==0).
+        # В обоих случаях склеивать не с чем — возвращаем as-is.
+        return user_input
+    # ``idx > 0``: маркер где-то внутри. Обрезаем всё от него до конца.
+    return user_input[:idx].rstrip()
+
+
 def build_babble_retry_prompt(user_input: str) -> str:
     """Issue #992 Bug D — synthetic follow-up prompt for babble retry.
 
@@ -320,9 +1080,26 @@ def build_babble_retry_prompt(user_input: str) -> str:
     in context, then appends a CRITICAL instruction that names the
     babble pattern and demands a tool-call reply (no plain text
     promises).
+
+🔴 FIX (live 02.09, "включи трек про весну"): этот список не называл
+    вариант «уже существующий трек» вовсе — только «мелодия →
+    execute_music_code(...)». Bug C (``build_music_retry_prompt``) корректно
+    вёл модель в библиотеку (gen_search_library → gen_play_from_library), но
+    когда следом срабатывал Bug D babble-ретрай на ТОМ ЖЕ запросе, его
+    промпт не упоминал библиотеку вовсе — и модель, уже нашедшая правильный
+    трек через gen_search_library в прошлом ходе, сочиняла новую мелодию
+    через compose_music вместо gen_play_from_library(track_id=...) найденного
+    трека. Юзер попросил «Весна пришла», получил синт.
+
+    Issue #1881 — если ``user_input`` уже содержит предыдущий
+    ``[CRITICAL]``-блок (от прошлого ретрая этого же turn'а), он
+    обрезается перед склейкой, чтобы НЕ накапливать противоречивые
+    инструкции. Иначе модель читает «вызови tool» + «вызови
+    music-tool» и в каждом ответе спорит сама с собой.
     """
+    cleaned = _strip_trailing_critical_block(user_input)
     return (
-        f"{user_input}\n\n"
+        f"{cleaned}\n\n"
         "[CRITICAL] Твой предыдущий ответ был метатекст "
         "(начинался с «зачит», «могу», «хочешь», «сейчас», "
         "«устроим», «погнали», «слушай», «давай», «так» или "
@@ -332,41 +1109,183 @@ def build_babble_retry_prompt(user_input: str) -> str:
         "✅ ОБЯЗАТЕЛЬНО: вызови нужный tool в ЭТОМ же turn:\n"
         "  • rap/песня → execute_music_code + speak_text(lyrics),\n"
         "  • поэзия → speak_text(...) × N строк,\n"
-        "  • мелодия → execute_music_code(...),\n"
-        "  • анекдот → speak_text(...) × N.\n"
+        "  • новая мелодия/бит с нуля → execute_music_code(...),\n"
+        "  • анекдот → speak_text(...) × N,\n"
+        "  • уже существующий/сохранённый трек по имени или теме — "
+        "НЕ сочиняй новый: если в этом диалоге уже был вызов "
+        "gen_search_library/gen_list_library/list_tracks с подходящим "
+        "результатом, возьми его track_id/name и вызови "
+        "gen_play_from_library(track_id=...) или load_track(name=...); "
+        "иначе вызови поиск сейчас, а не execute_music_code/compose_music.\n"
         "После последнего speak_text верни 'done'. Никаких "
         "мета-фраз, никаких 'Слушай, сейчас...', 'Зачитаю...', "
         "'Могу бит добавить, хочешь?' — это BUG."
     )
 
 
-def build_music_retry_prompt(user_input: str) -> str:
+def build_music_retry_prompt(
+    user_input: str, *, music_playing: bool = False
+) -> str:
     """Synthetic prompt for Bug C retry (user asked for music, LLM skipped
     the music tools).
 
     The LLM frequently concludes «музыка уже играет» from the dialogue
-    history (previous runs/songs) and returns ``done`` without calling
-    ``execute_music_code`` / ``generate_music``. This prompt explicitly
-    resets that assumption and demands the tool call — pointing at BOTH
-    engines directly (Renardo ``execute_music_code`` AND MiniMax
-    ``generate_music``), because ``handle_music`` (the old Compositor
-    skill facade) no longer has an executor after the harness migration.
+    history and returns ``done`` without calling a music tool. Historically
+    this prompt answered that by asserting «музыка НЕ играет — предыдущие
+    треки уже остановлены», which was true back when every turn ended with
+    ``music_cleanup``.
+
+    🔴 FIX (live 30.08, e2e renardo_evolve rn03): после того как TRACK-музыка
+    научилась переживать чужой ход, это утверждение стало ЛОЖЬЮ — и вышло
+    боком. «Переходи в лёгкий джангл» при играющем рассвете: модель видит,
+    что музыка идёт, читает в промпте обратное, отвечает «Окей, играет
+    лёгкий джангл» с ``tools=[]`` — и так дважды, до nudge «я растерялся».
+    Джангла не случилось.
+
+    Поэтому ``music_playing`` разводит два разных случая:
+
+    * ``False`` — тишина, надо ЗАПУСТИТЬ;
+    * ``True`` — что-то играет, и юзер просит это ИЗМЕНИТЬ. Само оно не
+      изменится: плеер крутит тот же паттерн, пока не придёт новый код.
+
+    Args:
+        user_input: оригинальная команда юзера.
+        music_playing: играет ли музыка прямо сейчас. Передаёт
+            ``DialogueNode`` из ``_track_mode_music_active``.
     """
+    if music_playing:
+        state_line = (
+            "Музыка СЕЙЧАС ИГРАЕТ, и юзер просит её ИЗМЕНИТЬ, а не завести "
+            "заново. Сама она не изменится: плеер крутит один и тот же "
+            "паттерн, пока ты не пришлёшь НОВЫЙ код. Ответ «окей, играет X» "
+            "без вызова тула = музыка осталась прежней, а ты соврал. "
+        )
+    else:
+        state_line = (
+            "Музыка сейчас НЕ играет — предыдущие треки уже остановлены. "
+        )
     return (
         MUSIC_RETRY_PROMPT_PREFIX + " ни один музыкальный тул, "
         "хотя пользователь ЯВНО попросил музыку/генерацию. "
-        "Музыка сейчас НЕ играет — предыдущие треки уже остановлены. "
-        "ОДИН ИЗ ЭТИХ инструментов ОБЯЗАТЕЛЕН (выбери по контексту): "
-        "1) execute_music_code (Renardo/SuperCollider) — бит/DJ/ambient/instrumental (быстрый, ~1с); "
-        "2) generate_music (MiniMax Music API, 40-160с) — песня с вокалом и лирикой; "
-        "3) gen_search_library / gen_list_library / gen_play_from_library — для уже сохранённых треков. "
+        + state_line
+        + "ОДИН ИЗ ЭТИХ инструментов ОБЯЗАТЕЛЕН (выбери по контексту): "
+        "1) compose_music / execute_music_code (Renardo/SuperCollider) — "
+        "бит/DJ/ambient/instrumental/подложка (быстрый, ~1с); "
+        "2) list_tracks / load_track — Renardo-МЕДИАТЕКА, именно туда пишет save_track; "
+        "3) gen_list_library / gen_search_library / gen_play_from_library — "
+        "ОТДЕЛЬНАЯ библиотека готовых mp3. "
         "Запрос юзера: «"
         + (user_input or "")
         + "». "
-        "Если это 'спой песню про X' / 'сгенерируй трек про X' / 'сочини музыку' — "
-        "вызывай generate_music(...). Если 'бит/DJ/ambient' — execute_music_code(...). "
-        "Если 'включи/сыграй/поставь трек/мелодию', 'случайный/следующий трек', "
-        "'трек из библиотеки' — сначала gen_list_library(limit=5), выбери track_id, "
-        "затем gen_play_from_library(track_id=...). "
+        # 🔴 FIX (live 30.08, 16:23): здесь стояло «спой песню про X →
+        # вызывай generate_music(...)». Но ``generate_music`` НЕ
+        # зарегистрирован на сервере с 20.08.2026 — MiniMax Music API отдаёт
+        # 410 Gone (mcp_server: «MiniMax music generation disabled»), и в
+        # живом списке из 52 тулов его нет. То есть CRITICAL-промпт требовал
+        # обязательно вызвать несуществующий тул: LLM не могла, отвечала
+        # словами, второй промах — и юзер слышал «Я тут растерялся».
+        # Вокальной генерации у робота сейчас нет; песня = подложка Renardo
+        # плюс текст голосом.
+        "Если это 'спой песню/рэп про X' — вокальной генерации у нас НЕТ: "
+        "заведи подложку через compose_music(...) и спой текст через "
+        "speak_text(...) построчно. Если 'бит/DJ/ambient' — "
+        "compose_music(...) или execute_music_code(...). "
+        # 🔴 FIX (live 30.08, e2e tc10_load_track): «загрузи и включи трек
+        # тисбит» дважды вернулось «Трек тисбит играет.» с tools=[], и юзер
+        # услышал «Я тут растерялся». Этот промпт называл ТОЛЬКО gen_*, а
+        # «тисбит» лежал в Renardo-медиатеке (save_track → list_tracks →
+        # load_track). LLM звали в библиотеку, где трека нет, — она сдавалась
+        # и повторяла неправду. Библиотеки две, и выбирать надо по тому, чем
+        # трек сохраняли.
+        "Если 'включи/загрузи/поставь трек <имя>' — трек, сохранённый через "
+        "save_track, лежит в Renardo-медиатеке: сначала list_tracks(), найди "
+        "имя (оно могло сохраниться в транслитерации), затем load_track(name=...). "
+        "Только если там пусто — ищи в mp3-библиотеке: gen_list_library(limit=5), "
+        "выбери track_id, затем gen_play_from_library(track_id=...). "
+        "Если 'случайный/следующий трек' без имени — любая из двух библиотек. "
+        "Если оба списка пусты — СКАЖИ ОБ ЭТОМ ЧЕСТНО и предложи сыграть "
+        "новое через execute_music_code; выдумывать «трек играет» ЗАПРЕЩЕНО. "
+        # 🔴 FIX (live 01.09, vision-pi 10:17): на «развивай мелодию»
+        # модель трижды подряд вернула ТЕКСТ «<compose_music composition
+        # here>» с tools=[] — псевдо-вызов вместо вызова. Промпт про такой
+        # промах не говорил ни слова, поэтому и ретрай его повторял.
+        "Вызов делается механизмом function calling. Написать "
+        "«<compose_music ...>» или любой другой текст с именем тула — НЕ "
+        "вызов: строку никто не выполнит, музыка не изменится. "
         "Если и сейчас не вызовешь tool — цикл останется пустым."
+    )
+
+def build_unbacked_action_retry_prompt(
+    *, user_input: str, spoken: str, rule: "ActionClaimRule"
+) -> str:
+    """Issue #992 Bug E — синтетический ретрай «отчитался, но не сделал».
+
+    Повторяет контракт Bug C: одна попытка, текст промпта прямо называет
+    и заявление, и тул, которого не хватило.
+    """
+    return (
+        "[CRITICAL] Ты ответил «"
+        + (spoken or "").strip()[:120]
+        + "», но НЕ вызвал ни одного тула — значит действие НЕ выполнено, "
+        "а пользователю сказана неправда.\n"
+        "❌ ЗАПРЕЩЕНО отчитываться о выполненном действии без вызова тула.\n"
+        "✅ В ЭТОМ же turn вызови тул: " + rule.what + ".\n"
+        "Запрос юзера: «" + (user_input or "") + "».\n"
+        "Если тул вернёт ошибку — скажи об ошибке честно, не выдумывай успех."
+    )
+
+# ---------------------------------------------------------------------------
+# Issue #992 Bug C' — Renardo-код в тексте ответа.
+#
+# Live 30.08: модель сочиняла мелодию и писала код в РЕПЛИКУ
+# (``p1 >> keys(...)``, ``Clock.bpm = ...``) вместо вызова
+# ``execute_music_code(code=...)`` — TTS зачитывал код вслух.
+# Детектор вытаскивает строки кода, билдер строит ретрай, который
+# возвращает тот же код обратно в тул.
+#
+# Первая попытка этого фикса (0e7bb478, откачен в db0fba22) была верной по
+# сути и сломана водопроводом: флаг ``is_code_retry`` добавили в сигнатуру
+# ``_dispatch_turn``, а читали в теле ``_run_turn``, куда его не добавили и
+# не пробросили. ``NameError`` падал на 26-й строке ``_run_turn`` — до
+# вызова LLM, на КАЖДОМ ходе: STT принимал фразу, и робот замолкал.
+# Предохранитель от повторения — ``test_retry_flags_are_wired_through``.
+# ---------------------------------------------------------------------------
+_RENARDO_CODE_LINE_RE = re.compile(
+    r"^\s*(?:"
+    r"[pdsl][1-9]\s*>>\s*\w+"                    # p1 >> blip([...])
+    r"|Clock\.bpm\s*="                            # Clock.bpm = 120
+    r"|(?:Scale|Root)\.default\s*(?:=|\.set\()"   # Scale.default = / Root.default.set(
+    r")"
+)
+
+
+def extract_renardo_code_lines(text: Optional[str]) -> Optional[str]:
+    """Вытащить Renardo-код, попавший в текст реплики.
+
+    Возвращает код (совпавшие строки через ``\n``), если в ``text`` есть
+    хотя бы одна Renardo-инструкция, иначе ``None``.
+    """
+    if not text:
+        return None
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if _RENARDO_CODE_LINE_RE.match(line)
+    ]
+    if not lines:
+        return None
+    return "\n".join(lines)
+
+
+def build_renardo_code_retry_prompt(code: str) -> str:
+    """Синтетический ретрай: LLM написала Renardo-код в реплику вместо
+    вызова ``execute_music_code``. Требуем вызов с тем же кодом.
+    """
+    return (
+        "[CRITICAL] Ты сочинил Renardo-код, но вставил его в текст ответа — "
+        "робот произнёс код голосом вместо того, чтобы сыграть музыку. "
+        "❌ НИКОГДА не выводи Renardo-код в speak_text или текстом. "
+        "✅ В ЭТОМ же turn вызови execute_music_code(code=...) с этим кодом:\n"
+        f"{code}\n"
+        "После вызова верни 'done'."
     )

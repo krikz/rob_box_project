@@ -5,10 +5,10 @@
 # регресс R5 (типичный случай: PR #1418, merge-gate merge'нул c красным CI,
 # карточка archive'нулась как done) больше не повторялся.
 #
-# Source of truth: <repo>/scripts/agent_flow/agent-flow-completion-check.sh
-# На хост раскладывается через `bash <repo>/scripts/agent_flow/install.sh`
-# (символические/hardlink-копии в ~/.hermes/profiles/{agent-flow,architect,
-# devops}/scripts/ + ~/.hermes/scripts/).
+# SOT (source-of-truth): <repo>/scripts/agent_flow/agent-flow-completion-check.sh
+# На хост раскладывает `bash <repo>/scripts/agent_flow/install.sh` —
+# hardlink-копиями (cp -al), НЕ симлинками (см. заголовок install.sh).
+# Полный список путей — там же; сверку копий держит agent-flow-drift-detect.sh.
 #
 # Usage:
 #   bash agent-flow-completion-check.sh <pr_number>

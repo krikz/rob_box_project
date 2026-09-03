@@ -49,7 +49,7 @@ on:
       volume:
         description: Speaker volume percent
         required: false
-        default: '150'
+        default: '100'
       record_seconds:
         description: DEPRECATED — atomic harness waits for full cycle itself
         required: false
@@ -201,11 +201,22 @@ jobs:
           # на line 234 (`source "$SCRIPT_DIR_E2E/e2e_voice_lib.sh"`) и падал
           # с "No such file or directory" в каждом run. Симптом скрывался тем,
           # что GATE-1 падал раньше и до source не доходили.
+          #
+          # bug(issue #1735, live run 33248080006): e2e_voice_test.sh:329 ТАКЖЕ
+          # source'ит e2e_voice_wake_gate.sh (ADR-0027 §5.2, classify_step_expect)
+          # — этот файл сюда не копировался вообще. Скрипт не падает целиком
+          # (нет set -e), но classify_step_expect не определена →
+          # expect="$(classify_step_expect ...)" тихо резолвится в пустую строку
+          # → run_step дефолтит на "cycle" вместо "backlog"/"wake-gated".
+          # Симптом: voice_core_suite_v1 ds01/ds02 (expect=backlog) валятся
+          # с "FAIL no_accept" вместо корректной backlog-проверки.
           chmod +x .github/workflows/scripts/e2e_voice_test.sh
           chmod +x .github/workflows/scripts/e2e_voice_lib.sh
+          chmod +x .github/workflows/scripts/e2e_voice_wake_gate.sh
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_test.sh ros2@10.1.1.249:/tmp/e2e_voice_test.sh
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_lib.sh ros2@10.1.1.249:/tmp/e2e_voice_lib.sh
-          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh && echo HARNESS_PUSHED"
+          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_voice_wake_gate.sh ros2@10.1.1.249:/tmp/e2e_voice_wake_gate.sh
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh /tmp/e2e_voice_wake_gate.sh && echo HARNESS_PUSHED"
           # CRLF sanitization (single-line): отрезаем \r и \n от начала/конца.
           # Внутри значения CR/LF недопустимы для имён файлов/путей.
           SCENARIO_FILE_CLEAN=$(printf '%s' "$SCENARIO_FILE" | tr -d '\r\n')

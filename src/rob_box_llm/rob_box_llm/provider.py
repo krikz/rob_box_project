@@ -177,6 +177,14 @@ class LLMResponse:
     finish_reason: str | None = None
     usage: Mapping[str, int] = field(default_factory=dict)
     raw: Any | None = None  # the original SDK response, kept for diagnostics
+    # Issue #1899: True when the model emitted tool-call arguments JSON that
+    # was cut off mid-stream (the wire chunk never closed the object — most
+    # often because ``finish_reason="length"`` triggered while still inside
+    # the arguments payload). When True, callers MUST treat ``tool_calls``
+    # as unreliable: the ``arguments`` dict may be empty or partial, and the
+    # tool would crash on validation. See ``_safe_json`` in
+    # ``rob_box_llm.providers.deepseek`` for the detection heuristic.
+    truncated_tool_args: bool = False
 
 
 @dataclass(frozen=True)
@@ -186,12 +194,28 @@ class LLMChunk:
     Providers MUST emit at least one final chunk with `finish_reason` set so
     callers can detect end-of-stream deterministically (instead of guessing
     based on empty content).
+
+    ``truncated_tool_args`` (issue #1899) is set on the final chunk ONLY when
+    at least one assembled tool-call had its arguments JSON cut off mid-stream
+    (most often because ``finish_reason="length"`` triggered while still
+    inside the arguments payload). Callers MUST then treat the
+    ``tool_call_delta`` for that index as unreliable — its ``arguments`` may
+    be ``{}`` or partial, and the tool would crash on validation. The
+    canonical use is for ``dialog_core`` to retry the request once instead
+    of feeding a broken tool-call into the executor.
     """
 
     content_delta: str = ""
     tool_call_delta: ToolCall | None = None
     finish_reason: str | None = None
+    #: Token accounting, when the provider reports it. OpenAI-compatible
+    #: APIs attach it to the terminal chunk, and only when the request asked
+    #: for it (``stream_options={"include_usage": True}``) — so every chunk
+    #: before that carries ``None``. Consumers MUST treat ``None`` as
+    #: "unknown", never as "zero": the prompt-size metric falls back to a
+    #: client-side estimate instead of publishing a false 0.
     usage: Mapping[str, int] | None = None
+    truncated_tool_args: bool = False
 
 
 # ---------------------------------------------------------------------------

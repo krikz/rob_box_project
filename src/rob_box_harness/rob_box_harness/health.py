@@ -1,6 +1,6 @@
 """Provider health-check / quota cache for LLM fallback chains (issue #1082).
 
-The reactive fallback chain (``[minimax, deepseek]``) wastes 15-19s when
+The reactive fallback chain (``[deepseek, minimax]``) wastes 15-19s when
 the primary provider's quota is exhausted: MiniMax returns
 ``429 rate_limit_error Token Plan usage limit reached (2056)`` on every
 call, the provider retries with backoff three times, and only then does
@@ -470,6 +470,7 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
         cache: HealthCache | None = None,
         balance_checkers: Mapping[str, Any] | None = None,
         logger: Any = None,
+        settings_for: Mapping[str, LLMSettings] | None = None,
     ) -> None:
         self._providers: list[LLMProvider] = list(providers)
         if not self._providers:
@@ -477,6 +478,14 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
         self._cache: HealthCache = cache or HealthCache()
         self._checkers: dict[str, Any] = dict(balance_checkers or {})
         self._log = _coerce_logger(logger)
+        # Per-provider settings lookup (issue #1883). When provided, each
+        # provider in the chain receives its own ``LLMSettings``; when the
+        # caller passes a single ``settings=`` arg, that arg is used for
+        # every provider in the chain EXCEPT the ones explicitly listed
+        # in this map (their mapped value wins). ``None`` (default) → use
+        # the ``settings=`` arg verbatim for every provider (legacy
+        # behaviour).
+        self._settings_for: dict[str, Any] = dict(settings_for or {})
 
     # ---- capability introspection --------------------------------------
 
@@ -492,6 +501,29 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
 
     def _provider_name(self, provider: LLMProvider) -> str:
         return getattr(provider, "name", type(provider).__name__)
+
+    def _resolve_settings_for(
+        self, name: str, default: LLMSettings | None
+    ) -> LLMSettings | None:
+        """Pick the right ``LLMSettings`` for ``name``.
+
+        Order (issue #1883, per-provider overrides):
+
+        1. Explicit per-provider entry in ``settings_for`` (the YAML
+           declared ``minimax.temperature=...`` etc.).
+        2. The ``settings`` passed by the caller to ``complete()`` /
+           ``stream()``.
+
+        The per-provider entry ALWAYS wins when present — that's the
+        only way an operator can set ``minimax.max_tokens`` to one
+        value and ``deepseek.max_tokens`` to another without writing
+        custom glue. A ``None`` value in the map means "use the
+        caller's settings verbatim" (no override for this provider).
+        """
+        override = self._settings_for.get(name)
+        if override is not None:
+            return override
+        return default
 
     def _build_chain(self) -> list[LLMProvider]:
         """Order the chain as ``[healthy] + [unchecked]``, skip dead."""
@@ -654,9 +686,10 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
             if self._cache.is_unavailable(name):
                 continue  # probe just marked it dead
             try:
+                provider_settings = self._resolve_settings_for(name, settings)
                 self._log.info("[health] → calling provider=%s", name)
                 result = await provider.complete(
-                    messages, tools=tools, settings=settings
+                    messages, tools=tools, settings=provider_settings
                 )
                 self._log.info("[health] ← answered by provider=%s", name)
                 return result
@@ -698,9 +731,10 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
             if self._cache.is_unavailable(name):
                 continue
             try:
+                provider_settings = self._resolve_settings_for(name, settings)
                 self._log.info("[health] → streaming from provider=%s", name)
                 async for chunk in provider.stream(
-                    messages, tools=tools, settings=settings
+                    messages, tools=tools, settings=provider_settings
                 ):
                     yield chunk
                 self._log.info("[health] ← stream finished by provider=%s", name)

@@ -6,6 +6,20 @@ pytest автоматически применяет conftest.py к тестам
 """
 
 import sys
+import sys as _sys
+from pathlib import Path as _Path
+
+# Shared ROS2 stubs — see test/ros_stubs.py. These per-directory stub sets
+# are installed with ``sys.modules.setdefault``, so in a full run whichever
+# directory pytest reaches first wins. Using the shared ``rclpy.qos`` here
+# means the winner no longer matters: every directory publishes the same
+# policy names and the same kwargs-recording ``QoSProfile``.
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+from ros_stubs import (  # noqa: E402
+    FakeNode as _FakeNode,
+    qos_stub as _qos_stub,
+)
+
 import types
 from unittest.mock import MagicMock
 
@@ -17,45 +31,11 @@ def _install_ros_mocks():
     mock_rclpy = MagicMock()
 
     # Node — базовый класс DialogueNode
-    class FakeNode:
-        """Минимальная заглушка rclpy.node.Node без реальных сокетов."""
-
-        def __init__(self, name, **kwargs):
-            self._name = name
-            self._logger = MagicMock()
-            self._logger.info = MagicMock()
-            self._logger.warning = MagicMock()
-            self._logger.error = MagicMock()
-            self._logger.debug = MagicMock()
-
-        def get_logger(self):
-            return self._logger
-
-        def declare_parameter(self, name, default=None):
-            return MagicMock()
-
-        def get_parameter(self, name):
-            p = MagicMock()
-            p.value = None
-            return p
-
-        def create_publisher(self, *args, **kwargs):
-            return MagicMock()
-
-        def create_subscription(self, *args, **kwargs):
-            return MagicMock()
-
-        def create_timer(self, *args, **kwargs):
-            return MagicMock()
-
-        def create_service(self, *args, **kwargs):
-            return MagicMock()
-
-        def create_client(self, *args, **kwargs):
-            return MagicMock()
-
-        def get_name(self):
-            return self._name
+    # FakeNode is shared (test/ros_stubs.py). ``rclpy.node`` is installed
+    # with ``sys.modules.setdefault``, so only the first conftest to load
+    # supplies the base class for every directory — four private copies
+    # meant the winner decided which assertions could pass.
+    FakeNode = _FakeNode
 
     mock_rclpy_node = MagicMock()
     mock_rclpy_node.Node = FakeNode
@@ -64,17 +44,19 @@ def _install_ros_mocks():
         ReentrantCallbackGroup=type("ReentrantCallbackGroup", (), {}),
     )
 
-    mock_qos = types.SimpleNamespace(
-        HistoryPolicy=types.SimpleNamespace(KEEP_LAST="KEEP_LAST"),
-        ReliabilityPolicy=types.SimpleNamespace(RELIABLE="RELIABLE"),
-        QoSProfile=lambda *args, **kwargs: MagicMock(),
-    )
+    mock_qos = _qos_stub()
 
     # ── std_msgs, std_srvs ─────────────────────────────────────────────────
     mock_std_msgs = MagicMock()
     mock_std_msgs_msg = MagicMock()
     mock_std_msgs_msg.String = MagicMock
     mock_std_msgs_msg.Bool = MagicMock
+
+    # nav_msgs — declared <depend>, imported top-of-file like std_msgs
+    # (ADR-0021); the /odom position snapshot needs Odometry.
+    mock_nav_msgs = MagicMock()
+    mock_nav_msgs_msg = MagicMock()
+    mock_nav_msgs_msg.Odometry = MagicMock
 
     mock_std_srvs = MagicMock()
     mock_std_srvs_srv = MagicMock()
@@ -140,6 +122,8 @@ def _install_ros_mocks():
         "rcl_interfaces.msg": mock_rcl_interfaces_msg,
         "std_msgs": mock_std_msgs,
         "std_msgs.msg": mock_std_msgs_msg,
+        "nav_msgs": mock_nav_msgs,
+        "nav_msgs.msg": mock_nav_msgs_msg,
         "std_srvs": mock_std_srvs,
         "std_srvs.srv": mock_std_srvs_srv,
         "rob_box_mcp_tools": mock_mcp,

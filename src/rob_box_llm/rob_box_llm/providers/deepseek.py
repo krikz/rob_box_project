@@ -14,6 +14,7 @@ P0 plan ("Что НЕ делаем: не трогаем существующих
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 from typing import Any, AsyncIterator, Iterable, Mapping, Optional, Union
@@ -179,6 +180,61 @@ def _map_exception(exc: Exception, *, provider: str) -> ProviderError:
 # ---------------------------------------------------------------------------
 
 
+def _trace_llm_request(
+    messages: Iterable[Any],
+    tools: Iterable[Mapping[str, Any]],
+    *,
+    provider: str,
+    stream: bool,
+) -> None:
+    """Dump the FULL context the model sees to stderr (docker logs).
+
+    Enabled by ``ROBOT_LLM_VERBOSE`` (default ``1`` = always on). Written to
+    stderr because rclpy owns stdout formatting and python ``logging`` from
+    library code does not reach ``docker logs`` in this image.
+
+    Extracted from :meth:`_OpenAICompatibleProvider.complete` (live 01.09):
+    the dump existed ONLY on the ``complete()`` path, while dialogue_node
+    always streams (see ``[health] -> streaming from provider=...``). Every
+    production turn was therefore invisible: the music guard logged
+    ``tools=[]`` but nothing showed WHAT history and WHICH tool surface the
+    model had been given.
+    """
+    if os.environ.get("ROBOT_LLM_VERBOSE", "1") != "1":
+        return
+    import sys as _sys
+
+    mode = "stream" if stream else "complete"
+    _sys.stderr.write(
+        f"\U0001f50e LLM REQUEST START provider={provider} mode={mode}\n"
+    )
+    for i, m in enumerate(messages):
+        role = getattr(m, "role", "?")
+        content = getattr(m, "content", "")
+        if isinstance(content, list):
+            content = json.dumps(content, ensure_ascii=False)[:500]
+        else:
+            content = str(content)[:500]
+        tc = getattr(m, "tool_calls", None)
+        tc_str = ""
+        if tc:
+            try:
+                tc_str = " tool_calls=" + json.dumps(
+                    [{"name": t.name, "args": t.arguments} for t in tc],
+                    ensure_ascii=False)[:400]
+            except Exception:  # noqa: BLE001 — a trace must never break a turn
+                tc_str = f" tool_calls={tc!r}"[:400]
+        _sys.stderr.write(f"  [{i}] {role}: {content!r}{tc_str}\n")
+    tools = tuple(tools)
+    if tools:
+        _sys.stderr.write("  tools(" + str(len(tools)) + "): " + ", ".join(
+            t.get("function", {}).get("name", "?") for t in tools) + "\n")
+    else:
+        _sys.stderr.write("  tools(0): <NONE PASSED>\n")
+    _sys.stderr.write("\U0001f50e LLM REQUEST END\n")
+    _sys.stderr.flush()
+
+
 class _OpenAICompatibleProvider(LLMProvider):
     """Shared implementation for any OpenAI Chat-Completions compatible API."""
 
@@ -289,6 +345,12 @@ class _OpenAICompatibleProvider(LLMProvider):
             "messages": _to_openai_messages(messages),
             "stream": stream,
         }
+        if stream:
+            # Без этого OpenAI-совместимый стрим не присылает usage вообще,
+            # и размер промпта приходится оценивать эвристикой. Провайдер,
+            # который опции не знает, её игнорирует — поэтому спрашиваем
+            # всегда, а отсутствие usage обрабатываем как "неизвестно".
+            kwargs["stream_options"] = {"include_usage": True}
         if s.temperature is not None:
             kwargs["temperature"] = s.temperature
         if s.max_tokens is not None:
@@ -355,33 +417,7 @@ class _OpenAICompatibleProvider(LLMProvider):
         tools = tuple(tools)
         self._require_capability_for_messages(messages, settings, tools, stream=False)
         kwargs = self._build_kwargs(messages, tools, settings, stream=False)
-        # 🐞 VERBOSE LLM TRACE: полный контекст, который видит модель.
-        # Пишем в stderr (как rclpy) — python logging не виден в docker logs.
-        # Включается env ROBOT_LLM_VERBOSE (по умолчанию 1 = всегда).
-        if os.environ.get("ROBOT_LLM_VERBOSE", "1") == "1":
-            import sys as _sys
-            _sys.stderr.write("🔎 LLM REQUEST START\n"); _sys.stderr.flush()
-            for i, m in enumerate(messages):
-                role = getattr(m, "role", "?")
-                content = getattr(m, "content", "")
-                if isinstance(content, list):
-                    content = json.dumps(content, ensure_ascii=False)[:500]
-                else:
-                    content = str(content)[:500]
-                tc = getattr(m, "tool_calls", None)
-                tc_str = ""
-                if tc:
-                    try:
-                        tc_str = " tool_calls=" + json.dumps(
-                            [{"name": t.name, "args": t.arguments} for t in tc],
-                            ensure_ascii=False)[:400]
-                    except Exception:
-                        tc_str = f" tool_calls={tc!r}"[:400]
-                _sys.stderr.write(f"  [{i}] {role}: {content!r}{tc_str}\n")
-            if tools:
-                _sys.stderr.write("  tools(" + str(len(tools)) + "): " + ", ".join(
-                    t.get("function", {}).get("name", "?") for t in tools) + "\n")
-            _sys.stderr.write("🔎 LLM REQUEST END\n"); _sys.stderr.flush()
+        _trace_llm_request(messages, tools, provider=self.name, stream=False)
         try:
             resp = await self._client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001 — convert to our domain errors
@@ -405,6 +441,11 @@ class _OpenAICompatibleProvider(LLMProvider):
         choice = resp.choices[0] if resp.choices else None
         content = choice.message.content if choice and choice.message else ""
         tool_calls: tuple[ToolCall, ...] = ()
+        # Issue #1899: reset the verdict BEFORE we start parsing so a
+        # non-streaming ``complete()`` call after a streaming one cannot
+        # inherit a stale True from the previous turn.
+        global _LAST_SAFE_JSON_TRUNCATED
+        _LAST_SAFE_JSON_TRUNCATED = False
         if choice and choice.message and choice.message.tool_calls:
             tool_calls = tuple(
                 ToolCall(
@@ -422,6 +463,7 @@ class _OpenAICompatibleProvider(LLMProvider):
             finish_reason=finish,
             usage=self._usage_from(resp),
             raw=resp,
+            truncated_tool_args=_LAST_SAFE_JSON_TRUNCATED,
         )
 
     # -- stream ------------------------------------------------------------
@@ -440,6 +482,7 @@ class _OpenAICompatibleProvider(LLMProvider):
         tools = tuple(tools)
         self._require_capability_for_messages(messages, settings, tools, stream=True)
         kwargs = self._build_kwargs(messages, tools, settings, stream=True)
+        _trace_llm_request(messages, tools, provider=self.name, stream=True)
         try:
             stream_obj = await self._client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001
@@ -453,8 +496,17 @@ class _OpenAICompatibleProvider(LLMProvider):
         # callers had to use complete() and lost ~20s latency on the first
         # turn (MiniMax cold start + full non-streamed response).
         pending: dict[int, dict] = {}  # index -> {id, name, arguments}
+        # ``usage`` прилетает ОТДЕЛЬНЫМ финальным чанком уже ПОСЛЕ чанка с
+        # finish_reason, и у него ``choices == []``. Поэтому на finish
+        # нельзя делать return — иначе учёт токенов теряется всегда.
+        # Дочитываем поток до конца и отдаём терминальный чанк после цикла.
+        finish_reason: str | None = None
+        usage: dict[str, int] = {}
         async for event in stream_obj:
             self._post_process_response(event)
+            event_usage = self._usage_from(event)
+            if event_usage:
+                usage = event_usage
             choice = event.choices[0] if event.choices else None
             delta = choice.delta if choice else None
             finish = getattr(choice, "finish_reason", None)
@@ -476,8 +528,16 @@ class _OpenAICompatibleProvider(LLMProvider):
                                 slot["name"] += fn.name
                             if getattr(fn, "arguments", None):
                                 slot["arguments"] += fn.arguments
-            if finish:
-                # Emit fully-assembled tool calls, then the terminal chunk.
+            if finish and finish_reason is None:
+                finish_reason = finish
+                # Issue #1899: reset the verdict right before we start
+                # emitting tool-call deltas so we only flag truncations
+                # detected WITHIN this stream (not stale values from
+                # earlier turns).
+                global _LAST_SAFE_JSON_TRUNCATED
+                _LAST_SAFE_JSON_TRUNCATED = False
+                # Emit fully-assembled tool calls; the terminal chunk waits
+                # until the stream is drained so it can carry ``usage``.
                 for idx in sorted(pending):
                     slot = pending[idx]
                     name = slot["name"]
@@ -489,8 +549,20 @@ class _OpenAICompatibleProvider(LLMProvider):
                         tool_call_delta=ToolCall(id=slot["id"] or f"call_{idx}", name=name, arguments=args),
                         finish_reason=None,
                     )
-                yield LLMChunk(content_delta="", finish_reason=finish)
-                return
+        if finish_reason is not None:
+            yield LLMChunk(
+                content_delta="",
+                finish_reason=finish_reason,
+                usage=usage or None,
+                # Issue #1899: surface the truncation verdict on the
+                # terminal chunk so ``dialog_core._stream_response`` can
+                # aggregate it into ``LLMResponse.truncated_tool_args``.
+                # Without this, the broken ``{}`` arguments would reach
+                # the executor and trigger ``ToolValidationError`` plus
+                # a +6 s redundant agent-loop retry.
+                truncated_tool_args=_LAST_SAFE_JSON_TRUNCATED,
+            )
+        return
 
     async def aclose(self) -> None:
         # Idempotent — safe to call multiple times from ``finally`` blocks.
@@ -508,17 +580,87 @@ class _OpenAICompatibleProvider(LLMProvider):
 
 
 def _safe_json(raw: Any) -> dict[str, Any]:
+    """Parse a tool-call ``arguments`` JSON payload defensively.
+
+    Issue #1899: the previous version returned ``{}`` on ANY parse error.
+    For ``finish_reason="length"`` that is the worst possible outcome —
+    the model was cut off mid-arguments JSON, ``{}`` reaches the tool
+    executor as valid input, validation rejects it, and the agent loop
+    spends ~6 s retrying with the same broken request.
+
+    The heuristic distinguishes three cases:
+
+    * **valid JSON**  → return the parsed dict.
+    * **truncated**   → the input looks like an unfinished JSON object
+      (most common shape: ends inside a string value or after a ``,``
+      with no closing brace — typical of stream cut on ``max_tokens``).
+      Return ``{}`` AND log a clearly-tagged warning so callers know
+      the empty dict is the parser's last resort, not the model's
+      intent.
+    * **junk**        → the input is structurally broken in a way that
+      cannot be a truncation (e.g. random garbage, a leaked prompt
+      fragment with mismatched braces). Return ``{}`` with a normal
+      warning — the caller cannot recover either way.
+
+    To avoid leaking the new shape across the whole module while still
+    letting ``stream``/``complete`` distinguish "truncated" from
+    "junk", we expose the truncation verdict via a module-level
+    "last call" sentinel — ``_LAST_SAFE_JSON_TRUNCATED``. Both call
+    sites (``complete`` and ``stream``) read it right after invoking
+    ``_safe_json`` and propagate the flag into the public
+    ``LLMResponse``/``LLMChunk`` payload via ``truncated_tool_args``.
+    This is intentionally narrow: only ONE thread/process hits the
+    provider at a time per dialog_core turn, and the verdict is read
+    immediately after parsing on the same line.
+    """
+    # Issue #1899 — clear the verdict on every entry so a successful
+    # parse on this call cannot inherit ``True`` from a previous one.
+    global _LAST_SAFE_JSON_TRUNCATED
+    _LAST_SAFE_JSON_TRUNCATED = False
+
     if isinstance(raw, dict):
         return raw
     if not isinstance(raw, str) or not raw:
         return {}
     import json
 
+    # Fast path: well-formed JSON.
     try:
         return json.loads(raw)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — re-classified below
+        pass
+
+    # Truncation heuristic — apply only when the input is "JSON-ish"
+    # (starts with ``{`` or ``[``) AND lacks a matching closer at the
+    # end. This is the exact shape DeepSeek/MiniMax produce when the
+    # stream is cut on ``max_tokens`` while still emitting arguments.
+    stripped = raw.strip()
+    looks_like_object = stripped.startswith("{")
+    looks_like_array = stripped.startswith("[")
+    has_closing_brace = stripped.endswith("}")
+    has_closing_bracket = stripped.endswith("]")
+    truncated = (looks_like_object and not has_closing_brace) or (
+        looks_like_array and not has_closing_bracket
+    )
+
+    if truncated:
+        _LAST_SAFE_JSON_TRUNCATED = True
+        _log.warning(
+            "TRUNCATED_TOOL_ARGS: tool-call arguments JSON cut off "
+            "(finish_reason='length' likely). len=%d tail=%r",
+            len(raw),
+            raw[-80:],
+        )
+    else:
         _log.warning("Could not parse tool-call arguments JSON: %r", raw)
-        return {}
+    return {}
+
+
+# Issue #1899 — module-level flag set by ``_safe_json`` when the input
+# looked like a truncated JSON object/array. Cleared on every entry to
+# ``_safe_json`` so a successful parse does NOT inherit a stale True
+# from a previous turn. Read by the two call sites right after parsing.
+_LAST_SAFE_JSON_TRUNCATED: bool = False
 
 
 # ---------------------------------------------------------------------------

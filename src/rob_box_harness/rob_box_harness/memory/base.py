@@ -1,0 +1,577 @@
+"""MemoryStore port — scoped facts plus robot-global state.
+
+Turns are intentionally NOT part of the store: dialogue turns live in an
+in-memory sliding window owned by ``DialogCore`` (Shifu directive
+2026-09-02) and are never persisted. The contract covers:
+
+Facts (scoped):
+* ``save_fact``    — persist a structured fact (e.g. "user likes jazz").
+* ``search_facts`` — best-effort semantic search over stored facts.
+* ``list_facts``   — list facts for a scope.
+* ``clear_facts``  — remove facts for a scope.
+
+Waypoints (global navigation memory):
+* ``save_waypoint(name, x, y, theta)`` — store a named pose.
+* ``list_waypoints()``                 — all saved waypoints.
+* ``delete_waypoint(name)``            — remove by name.
+* ``clear_waypoints()``                — wipe all.
+
+FAQ (per event):
+* ``load_faq(event_id, items)``        — replace FAQ rows for an event.
+* ``search_faq(event_id, query, limit)`` — keyword search over FAQ.
+
+Event profile (singleton, active event context):
+* ``set_event_profile(profile)``       — set/overwrite active profile.
+* ``get_event_profile()``              — read the active profile.
+
+The ``scope`` argument is deliberately a string (not an enum) so
+harnesses can pass arbitrary bucket names: ``"user:42"``,
+``"chat:tg:9001"``, ``"session:abc"``. The format is harness-specific
+and the MemoryStore doesn't need to interpret it.
+
+Waypoints, FAQ, and the event profile are *not* scoped per-user —
+they belong to the robot itself or to a single active event — so
+their API does not take a ``scope`` argument.
+
+Concrete implementations in this package:
+
+* :class:`InMemoryStore` — list-of-dicts backed; perfect for tests
+  and the smoke harness. No persistence.
+
+The SQL implementation (``SQLiteVoiceMemory``) lives in this package
+under ``memory/sqlite_voice.py`` and is wired in via the registry.
+"""
+
+from __future__ import annotations
+
+import abc
+import time
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Mapping
+
+
+@dataclass(frozen=True)
+class Turn:
+    """A single conversation turn.
+
+    ``role`` is ``"user" | "assistant" | "tool" | "system"``. For
+    ``role == "tool"`` the ``content`` may be the raw tool-result
+    payload, and ``tool_call_id`` MUST be set.
+    """
+
+    role: str
+    content: str
+    name: str | None = None
+    tool_call_id: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Fact:
+    """A persisted fact with semantic-search metadata.
+
+    ``key`` is the canonical identifier (e.g. ``"music_genre"``);
+    ``value`` is the actual data (string, JSON, anything JSONable).
+    ``tags`` are searchable keywords; ``confidence`` is a float in
+    [0.0, 1.0] tracking how sure the system is about the fact.
+    """
+
+    key: str
+    value: Any
+    tags: tuple[str, ...] = ()
+    confidence: float = 1.0
+
+
+@dataclass(frozen=True)
+class Waypoint:
+    """A named navigation pose.
+
+    Stores the (x, y) position in the map frame plus the heading
+    ``theta`` (radians). ``name`` is the human-readable label
+    ("kitchen", "dock", "lobby").
+    """
+
+    name: str
+    x: float
+    y: float
+    theta: float = 0.0
+
+
+@dataclass(frozen=True)
+class FAQItem:
+    """A single FAQ entry for an event.
+
+    Mirrors the shape used by ``rob_box_voice.core.faq_store``: an
+    ``event_id`` tag, a ``question``, an ``answer``, an optional
+    ``category`` (defaults to ``"general"``) and an optional
+    ``source`` reference (file path / URL).
+    """
+
+    event_id: str
+    question: str
+    answer: str
+    category: str = "general"
+    source: str = ""
+
+
+class MemoryStore(abc.ABC):
+    """Abstract memory store."""
+
+    name: str = "abstract"
+
+    @abc.abstractmethod
+    async def save_fact(self, scope: str, fact: Fact) -> None:
+        """Persist ``fact`` under ``scope``."""
+
+    @abc.abstractmethod
+    async def clear_facts(self, scope: str) -> int:
+        """Remove every fact stored under ``scope``.
+
+        Returns the number of facts removed (0 if the scope had none).
+        Issue W5-4 — used by :func:`merge_speaker_facts` to clean up the
+        source scope after moving its facts into the destination scope
+        during a speaker-profile merge.
+        """
+
+    @abc.abstractmethod
+    async def search_facts(
+        self,
+        scope: str,
+        query: str,
+        *,
+        top_k: int = 5,
+    ) -> list[Fact]:
+        """Return up to ``top_k`` facts matching ``query``."""
+
+    async def list_facts(
+        self,
+        scope: str,
+        *,
+        limit: int = 50,
+    ) -> list[Fact]:
+        """Return up to ``limit`` facts stored under ``scope`` (newest first).
+
+        Default implementation falls back to :meth:`search_facts` with a
+        broad query; concrete stores override it with a direct scan so the
+        LLM context can load ALL speaker facts (issue #1077) without a
+        query.
+        """
+        return await self.search_facts(scope, query="", top_k=limit)
+
+    # ── Waypoints (global navigation memory) ─────────────────────────
+
+    @abc.abstractmethod
+    async def save_waypoint(
+        self,
+        name: str,
+        x: float,
+        y: float,
+        theta: float = 0.0,
+    ) -> None:
+        """Persist (or overwrite) a named pose in navigation memory.
+
+        ``name`` is the user-facing label; coordinates are in the
+        map frame. Storing the same ``name`` twice replaces the
+        previous pose (upsert by name).
+        """
+
+    @abc.abstractmethod
+    async def list_waypoints(self) -> list[Waypoint]:
+        """Return every saved waypoint, sorted by name ascending."""
+
+    @abc.abstractmethod
+    async def delete_waypoint(self, name: str) -> bool:
+        """Remove a single waypoint by name.
+
+        Returns ``True`` if a row was removed, ``False`` if no
+        waypoint with that name existed.
+        """
+
+    @abc.abstractmethod
+    async def clear_waypoints(self) -> int:
+        """Remove every saved waypoint.
+
+        Returns the number of rows removed (0 if the table was
+        already empty).
+        """
+
+    # ── FAQ (per-event knowledge base) ───────────────────────────────
+
+    @abc.abstractmethod
+    async def load_faq(
+        self,
+        event_id: str,
+        items: Iterable[Mapping[str, Any]],
+    ) -> int:
+        """Replace FAQ rows for ``event_id`` with ``items``.
+
+        ``items`` is an iterable of mappings with at least
+        ``question`` and ``answer`` keys; ``category`` and
+        ``source`` are optional. Any rows previously stored for
+        the same ``event_id`` are deleted first. Returns the
+        number of rows actually inserted.
+        """
+
+    @abc.abstractmethod
+    async def search_faq(
+        self,
+        event_id: str,
+        query: str,
+        *,
+        limit: int = 5,
+    ) -> list[FAQItem]:
+        """Return up to ``limit`` FAQ items for ``event_id`` matching ``query``.
+
+        Implementations should do a best-effort keyword search
+        over both ``question`` and ``answer``. Empty / blank
+        ``query`` returns an empty list.
+        """
+
+    # ── Event profile (singleton active-event context) ──────────────
+
+    @abc.abstractmethod
+    async def set_event_profile(self, profile: Mapping[str, Any]) -> None:
+        """Store ``profile`` as the active event context.
+
+        There is at most one event profile at a time — calling
+        ``set_event_profile`` overwrites any previous value.
+        """
+
+    @abc.abstractmethod
+    async def get_event_profile(self) -> dict[str, Any] | None:
+        """Return the active event profile, or ``None`` if unset."""
+
+    async def aclose(self) -> None:
+        """Release resources. Default no-op."""
+        return None
+
+
+class InMemoryStore(MemoryStore):
+    """In-memory implementation of :class:`MemoryStore`.
+
+    Thread-unsafe by design — single event loop, single scope access.
+    Used by tests and the dummy harnesses to keep the smoke path
+    dependency-free. Stores facts and robot-global state only; turns are
+    never persisted.
+    """
+
+    name = "in_memory"
+
+    def __init__(self) -> None:
+        self._facts: dict[str, list[Fact]] = {}
+        self._waypoints: dict[str, Waypoint] = {}
+        self._faq: dict[str, list[FAQItem]] = {}
+        self._event_profile: dict[str, Any] | None = None
+
+    async def init(self) -> None:
+        """No-op for in-memory store.
+
+        Provided so the shell's ``store.init()`` fallback path doesn't
+        raise ``AttributeError`` when ``SQLiteVoiceMemory.init()`` is
+        unavailable (e.g., when the DB file path can't be created).
+        Concrete storage backends may use this to open connections /
+        run migrations; in-memory has nothing to do.
+        """
+        return None
+
+    async def save_fact(self, scope: str, fact: Fact) -> None:
+        """Persist ``fact`` under ``scope``, replacing any same-key fact."""
+        bucket = self._facts.setdefault(scope, [])
+        # Replace existing fact with the same key (idempotent).
+        for index, existing in enumerate(bucket):
+            if existing.key == fact.key:
+                bucket[index] = fact
+                return
+        bucket.append(fact)
+
+    async def clear_facts(self, scope: str) -> int:
+        """Remove every fact for ``scope``; returns the count removed."""
+        bucket = self._facts.pop(scope, None)
+        return len(bucket) if bucket is not None else 0
+
+    async def search_facts(
+        self,
+        scope: str,
+        query: str,
+        *,
+        top_k: int = 5,
+    ) -> list[Fact]:
+        """Return up to ``top_k`` facts whose key/tags overlap ``query``."""
+        if top_k <= 0:
+            raise ValueError(f"top_k must be positive, got {top_k}")
+        if not query:
+            raise ValueError("query must be a non-empty string")
+        query_tokens = {token.lower() for token in query.split()}
+        bucket = self._facts.get(scope, [])
+        scored: list[tuple[int, Fact]] = []
+        for fact in bucket:
+            haystack = {fact.key.lower()}
+            haystack.update(tag.lower() for tag in fact.tags)
+            score = len(query_tokens & haystack)
+            if score > 0:
+                scored.append((score, fact))
+        scored.sort(key=lambda pair: (-pair[0], pair[1].key))
+        return [fact for _, fact in scored[:top_k]]
+
+    async def list_facts(
+        self,
+        scope: str,
+        *,
+        limit: int = 50,
+    ) -> list[Fact]:
+        """Return up to ``limit`` facts stored under ``scope`` (newest first)."""
+        if limit <= 0:
+            raise ValueError(f"limit must be positive, got {limit}")
+        bucket = self._facts.get(scope, [])
+        return list(reversed(bucket[-limit:]))
+
+    # ── Waypoints ────────────────────────────────────────────────
+
+    async def save_waypoint(
+        self,
+        name: str,
+        x: float,
+        y: float,
+        theta: float = 0.0,
+    ) -> None:
+        """Upsert a waypoint by name (last write wins)."""
+        if not name:
+            raise ValueError("waypoint name must be a non-empty string")
+        self._waypoints[name] = Waypoint(name=name, x=x, y=y, theta=theta)
+
+    async def list_waypoints(self) -> list[Waypoint]:
+        """Return every waypoint sorted by name."""
+        return [self._waypoints[name] for name in sorted(self._waypoints)]
+
+    async def delete_waypoint(self, name: str) -> bool:
+        """Remove a waypoint by name; True if a row was deleted."""
+        return self._waypoints.pop(name, None) is not None
+
+    async def clear_waypoints(self) -> int:
+        """Wipe all waypoints; returns the count removed."""
+        count = len(self._waypoints)
+        self._waypoints.clear()
+        return count
+
+    # ── FAQ ──────────────────────────────────────────────────────
+
+    async def load_faq(
+        self,
+        event_id: str,
+        items: Iterable[Mapping[str, Any]],
+    ) -> int:
+        """Replace all FAQ rows for ``event_id`` with ``items``.
+
+        Existing rows for the same ``event_id`` are dropped first.
+        """
+        if not event_id:
+            raise ValueError("event_id must be a non-empty string")
+        # Drop existing rows for this event
+        self._faq.pop(event_id, None)
+        inserted = 0
+        for item in items:
+            question = item.get("question", "") if isinstance(item, Mapping) else ""
+            answer = item.get("answer", "") if isinstance(item, Mapping) else ""
+            if not question and not answer:
+                continue  # skip malformed rows
+            self._faq.setdefault(event_id, []).append(
+                FAQItem(
+                    event_id=event_id,
+                    question=question,
+                    answer=answer,
+                    category=(
+                        item.get("category", "general")
+                        if isinstance(item, Mapping)
+                        else "general"
+                    ),
+                    source=(
+                        item.get("source", "")
+                        if isinstance(item, Mapping)
+                        else ""
+                    ),
+                )
+            )
+            inserted += 1
+        return inserted
+
+    async def search_faq(
+        self,
+        event_id: str,
+        query: str,
+        *,
+        limit: int = 5,
+    ) -> list[FAQItem]:
+        """Keyword search across question + answer for ``event_id``."""
+        if limit <= 0:
+            raise ValueError(f"limit must be positive, got {limit}")
+        if not query or not query.strip():
+            return []
+        query_tokens = [token.lower() for token in query.split() if token]
+        if not query_tokens:
+            return []
+        bucket = self._faq.get(event_id, [])
+        scored: list[tuple[int, FAQItem]] = []
+        for item in bucket:
+            haystack = (item.question + " " + item.answer).lower()
+            score = sum(1 for token in query_tokens if token in haystack)
+            if score > 0:
+                scored.append((score, item))
+        # Newest match first on tie; tests assert ordering is stable.
+        scored.sort(key=lambda pair: (-pair[0], pair[1].question))
+        return [item for _, item in scored[:limit]]
+
+    # ── Event profile ────────────────────────────────────────────
+
+    async def set_event_profile(self, profile: Mapping[str, Any]) -> None:
+        """Store the active event profile (overwrites any previous)."""
+        self._event_profile = dict(profile)
+
+    async def get_event_profile(self) -> dict[str, Any] | None:
+        """Return the active event profile or ``None`` if unset."""
+        return None if self._event_profile is None else dict(self._event_profile)
+
+    # ---------- test helpers ------------------------------------------------
+
+    def all_turns(self, scope: str) -> Iterable[Turn]:
+        """Return every turn in ``scope`` (oldest first). Test-only."""
+        return list(self._turns.get(scope, ()))
+
+
+# ---------------------------------------------------------------------------
+# Speaker profile helpers (issue #1077)
+# ---------------------------------------------------------------------------
+#
+# Профиль спикера — это обычный факт с ключом ``profile`` в скоупе
+# ``speaker:<tag>``. Отдельной таблицы не нужно: ``save_fact``/``search_facts``
+# уже умеют изолировать данные по scope (ADR-0001 §2.4.3). Хелперы ниже —
+# просто удобная обёртка над существующими методами MemoryStore, чтобы
+# dialogue_node не дублировал логику «прочитать/создать/обновить профиль».
+
+SPEAKER_SCOPE_PREFIX = "speaker:"
+SPEAKER_PROFILE_KEY = "profile"
+
+
+def speaker_scope(tag: str) -> str:
+    """Scope-ключ памяти для спикера с Yandex ``speaker_tag``."""
+    return f"{SPEAKER_SCOPE_PREFIX}{tag}"
+
+
+async def get_speaker_profile(store: MemoryStore, tag: str) -> dict | None:
+    """Вернуть dict-профиль спикера (или ``None``, если профиля нет)."""
+    scope = speaker_scope(tag)
+    facts = await store.search_facts(scope, query="profile", top_k=10)
+    for fact in facts:
+        if fact.key == SPEAKER_PROFILE_KEY and isinstance(fact.value, dict):
+            return dict(fact.value)
+    return None
+
+
+async def ensure_speaker_profile(
+    store: MemoryStore,
+    tag: str,
+    *,
+    now: float | None = None,
+) -> dict:
+    """Создать профиль спикера, если его ещё нет; вернуть актуальный dict.
+
+    Профиль: ``{first_seen, last_seen, dialog_count}`` (плюс позже — имя,
+    факты через обычный ``save_fact`` в том же scope).
+    """
+    existing = await get_speaker_profile(store, tag)
+    if existing is not None:
+        return existing
+    ts = now if now is not None else time.time()
+    profile = {"first_seen": ts, "last_seen": ts, "dialog_count": 0}
+    await store.save_fact(
+        speaker_scope(tag),
+        Fact(
+            key=SPEAKER_PROFILE_KEY,
+            value=profile,
+            tags=("speaker", "profile"),
+        ),
+    )
+    return profile
+
+
+async def touch_speaker(
+    store: MemoryStore,
+    tag: str,
+    *,
+    now: float | None = None,
+) -> dict:
+    """Обновить ``last_seen``/``dialog_count`` спикера (создаёт при первом).
+
+    Вызывается на каждый подтверждённый ход спикера. Возвращает
+    обновлённый профиль.
+    """
+    profile = await ensure_speaker_profile(store, tag, now=now)
+    ts = now if now is not None else time.time()
+    profile = dict(profile)
+    profile["last_seen"] = ts
+    profile["dialog_count"] = int(profile.get("dialog_count", 0)) + 1
+    await store.save_fact(
+        speaker_scope(tag),
+        Fact(
+            key=SPEAKER_PROFILE_KEY,
+            value=profile,
+            tags=("speaker", "profile"),
+        ),
+    )
+    return profile
+
+
+async def merge_speaker_facts(store: MemoryStore, src_tag: str, dst_tag: str) -> int:
+    """Перенести факты одного спикера в другой (issue W5-4 — склейка профилей).
+
+    Используется в паре с ``SpeakerDatabase.merge_speakers()``
+    (``rob_box_voice.utils.speaker_embeddings``), которая слепляет
+    эмбеддинги голоса. Эта функция — независимый аналог для слоя памяти
+    (факты), намеренно НЕ знающий о ``SpeakerDatabase``: биометрия и
+    LLM-память — разные слои с разной ответственностью, вызывающий код
+    (например, dialogue_node) сам решает, вызывать ли обе операции вместе.
+
+    Переносит все факты из ``speaker_scope(src_tag)`` в
+    ``speaker_scope(dst_tag)``. При конфликте ключей выигрывает dst —
+    dst считается основным (уже подтверждённым) профилем, его факты не
+    перезаписываются данными временного/дублирующего src. После переноса
+    ``src`` scope очищается полностью (в том числе конфликтные факты,
+    которые не были перенесены) — иначе застрявшие факты будут молча
+    проигнорированы при следующих чтениях по старому scope.
+
+    Возвращает число ФАКТИЧЕСКИ перенесённых фактов (без учёта
+    отброшенных из-за конфликта ключей).
+    """
+    if not src_tag or not dst_tag or src_tag == dst_tag:
+        return 0
+    src_scope = speaker_scope(src_tag)
+    dst_scope = speaker_scope(dst_tag)
+    src_facts = await store.list_facts(src_scope, limit=1000)
+    if not src_facts:
+        return 0
+    dst_facts = await store.list_facts(dst_scope, limit=1000)
+    dst_keys = {f.key for f in dst_facts}
+    moved = 0
+    for fact in src_facts:
+        if fact.key in dst_keys:
+            continue  # dst — основной профиль, его факты приоритетнее
+        await store.save_fact(dst_scope, fact)
+        moved += 1
+    await store.clear_facts(src_scope)
+    return moved
+
+
+__all__ = [
+    "Turn",
+    "Fact",
+    "Waypoint",
+    "FAQItem",
+    "MemoryStore",
+    "InMemoryStore",
+    "SPEAKER_SCOPE_PREFIX",
+    "SPEAKER_PROFILE_KEY",
+    "speaker_scope",
+    "get_speaker_profile",
+    "ensure_speaker_profile",
+    "touch_speaker",
+    "merge_speaker_facts",
+]

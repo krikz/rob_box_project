@@ -94,18 +94,50 @@ class DJModeController:
             self._logger.warning(f"⚠️ DJ mode: bad message {payload!r}")
             return
 
+        # Issue #992 — capture BEFORE overwriting: this is the only
+        # reliable "is this a genuine fresh start" signal. See
+        # ``_apply_enable_payload`` for why ``transition_count == 0`` and
+        # plan-string equality both turned out to be wrong signals for it.
+        was_enabled = self.state.enabled
         self.state.enabled = enabled
         if enabled:
-            self._apply_enable_payload(data)
+            self._apply_enable_payload(data, is_fresh_start=not was_enabled)
         else:
             self._reset_state()
 
-    def _apply_enable_payload(self, data: dict) -> None:
+    def _apply_enable_payload(self, data: dict, *, is_fresh_start: bool) -> None:
+        # 🔴 FIX (live 03.09 07:58): тема обновлялась ТОЛЬКО на генуинном
+        # старте (``is_fresh_start or not self.state.theme``) — внутри
+        # идущего сета «теперь тема Изнанка» меняло персону (у неё такого
+        # гейта нет) и НЕ меняло тему. ``build_auto_prompt`` продолжал
+        # подставлять `Тема вечеринки: "<старая>"` в каждый переход, и сет
+        # уезжал обратно к прошлой теме. Асимметрия persona/theme ничем не
+        # оправдана — обновляем так же безусловно.
         theme = data.get("theme")
         if theme and isinstance(theme, str) and theme.strip():
-            if self.state.transition_count == 0 or not self.state.theme:
-                self.state.theme = theme.strip()
+            new_theme = theme.strip()
+            if new_theme != self.state.theme:
+                theme_changed_midset = bool(
+                    self.state.theme and not is_fresh_start
+                )
+                self.state.theme = new_theme
                 self._logger.info(f"🎧 DJ theme: {self.state.theme!r}")
+                if theme_changed_midset and self.state.set_plan:
+                    # План прошлой темы («Трек 1: костры рябин...») в промпте
+                    # новой темы — тот же откат, только через plan_block.
+                    # Чистим ЗДЕСЬ, до разбора ``plan`` ниже: payload, где
+                    # тема и новый план пришли вместе, отработает штатно.
+                    #
+                    # transition_count НЕ трогаем сознательно: сброс счётчика
+                    # по содержимому payload — ровно та регрессия #992, из-за
+                    # которой каждый переход снова становился «СТАРТ
+                    # ВЕЧЕРИНКИ» (см. длинный комментарий ниже).
+                    self._logger.info(
+                        "🎧 DJ тема сменилась внутри сета — сбрасываю план "
+                        f"прошлой темы (прогресс сохранён на "
+                        f"#{self.state.transition_count})"
+                    )
+                    self.state.set_plan = ""
         # 🔴 FIX (live 10:13 DJ): персона юзера — «ты диджей Пёс» →
         # сохраняем, чтобы автопромпты использовали её вместо дефолта.
         persona = data.get("persona")
@@ -118,19 +150,54 @@ class DJModeController:
         # 🔴 FIX (live 15:30 06.08): план сета из set_dj_mode(plan=...) —
         # DJ идёт по плану и завершается финальным объявлением, а не
         # молча по лимиту DJ_AUTO_MAX_TRANSITIONS.
+        #
+
+        # 🔴 FIX (issue #992, ef525468e; РЕГРЕССИЯ вернулась в 102a6dea и
+        # снова снята здесь). Текст плана — НЕГОДНЫЙ сигнал «новый сет».
+        # Промпт перехода #1 сам просит модель сочинить план и отдать его
+        # через set_dj_mode(plan=...), а стартовый вызов юзера почти всегда
+        # уже несёт какой-нибудь план («Трек 1: ...»). Значит set_plan к
+        # моменту перехода #1 непустой, приходящий план от него отличается —
+        # и сброс счётчика по «переписыванию» превращал КАЖДЫЙ переход в
+        # переход #1: build_auto_prompt(1) снова выдавал «СТАРТ ВЕЧЕРИНКИ»,
+        # модель снова представлялась и снова писала план.
+        #
+        # Живой лог робота 01.09 (до ef525468e), «панк-вечеринка»:
+        #   08:20:04 DJ auto-transition #1 → 08:20:27 plan 7 треков (rewrite)
+        #   08:21:14 DJ auto-transition #1 → 08:21:33 plan 8 треков (rewrite)
+        #   08:22:19 DJ auto-transition #1 → 08:22:40 plan 7 треков (rewrite)
+        #   08:23:29 DJ auto-transition #1 → ... шесть раз подряд, ни одного
+        # перехода дальше #1. И финальный трек, и auto-stop гейтятся на
+        # transition_count, поэтому сет не мог ни развиться, ни закончиться.
+        #
+        # Единственный надёжный сигнал генуинного старта — DJ был ВЫКЛЮЧЕН
+        # (``is_fresh_start = not was_enabled``), он обрабатывается ниже.
+        #
+        # Контракт (``test_dramaturgy_fix_1016``):
+        #   * генуинный старт (DJ был выключен) — счётчик с нуля, иначе
+        #     наследие прошлой сессии заставит ``build_auto_prompt(1)``
+        #     притвориться «СТАРТ ВЕЧЕРИНКИ» уже не для новой партии;
+        #   * первый план внутри идущей сессии — счётчик не трогаем;
+        #   * переписывание плана в идущей сессии — тоже не трогаем:
+        #     переписанный текст ≠ новый сет, прогресс должен сохраниться.
         plan = data.get("plan")
         if plan and isinstance(plan, str) and plan.strip():
             new_plan = plan.strip()
             if new_plan != self.state.set_plan:
-                is_rewrite = bool(self.state.set_plan)
                 self.state.set_plan = new_plan
-                if is_rewrite:
-                    # Переписываем сет заново — счётчик с нуля.
-                    self.state.transition_count = 0
+
                 self._logger.info(
-                    f"🎧 DJ plan: {len(new_plan.splitlines())} треков"
-                    f"{' (rewrite)' if is_rewrite else ''}"
+                    f"🎧 DJ plan: {len(new_plan.splitlines())} треков "
+                    f"(progress kept at #{self.state.transition_count})"
                 )
+        if is_fresh_start and self.state.transition_count:
+            # Генуинный старт (enabled False→True) — прогресс прошлого сета
+            # не должен утекать в новый.
+            self._logger.info(
+                f"🎧 DJ fresh start — сбрасываю счётчик переходов "
+                f"(был #{self.state.transition_count})"
+            )
+            self.state.transition_count = 0
         self._logger.info(f"🎧 DJ Mode ON — next transition in {delay:.0f}s")
 
     def _reset_state(self) -> None:
@@ -229,6 +296,27 @@ class DJModeController:
             "музыку, если юзер об этом не просит.] "
         )
 
+    def is_music_only_transition(self, n: int) -> bool:
+        """True, когда промпт перехода ``n`` запрещает модели говорить.
+
+        Зеркалит ветвление :meth:`build_auto_prompt`: переход #1 —
+        «СТАРТ ВЕЧЕРИНКИ» с представлением диджея, последний трек плана —
+        прощание; всё между ними обязано быть только музыкой.
+
+        Shell использует это, чтобы не озвучивать свободный текст ответа
+        LLM на таких переходах. Запрет «НЕ вызывай speak_text» в промпте
+        закрывал только тул: модель вместо него писала обычную реплику
+        («Переход номер два отыгран — нарастание с дропом в ре миноре
+        фригийском, сто сорок ударов!»), и та уходила в TTS поверх бита
+        каждые 45 секунд.
+        """
+        if n <= 1:
+            return False
+        plan_tracks = self.state.set_plan.count("Трек ") if self.state.set_plan else 0
+        if plan_tracks and n >= plan_tracks:
+            return False  # финальный трек — прощание разрешено
+        return True
+
     def build_auto_prompt(self, n: int) -> str:
         persona = self.state.persona or self._persona_default
         theme_line = (
@@ -236,31 +324,51 @@ class DJModeController:
             if self.state.theme
             else ""
         )
-        # Тех-ограничения (live 20.08): какофония из-за chop/драйва/
-        # выдуманных сэмплов/лишних слоёв на 16kHz DAC без лимитера.
+        # 🔴 FIX (issue #1811): переходы раньше писались рукописным
+        # Renardo-кодом мимо аранжировщика — отсюда слои на p4 (#1804),
+        # рисунки не по такту (#1803), октавы за пределом (bell(oct=7)).
+        # #1805/#1806 научили compose_music развитию по секциям
+        # (транспозиция/инверсия/ракоход/реприза), плотности и свингу —
+        # старые ограничения на паттерны/сумму amp теперь держит аранжировщик
+        # и мастер-фильтр, модели про них думать не нужно.
         tech_line = (
-            "⚙️ ТЕХНИКА МУЗЫКИ (жёстко, без исключений): "
-            "1) ПЕРВАЯ строка кода — Clock.clear() (иначе старые паттерны "
-            "копятся поверх новых → каша из 50+ голосов). "
-            "2) Максимум 6 паттернов: d1-d3 + p1-p3. НИКОГДА d4/d5/p4/p5. "
-            "3) Барабаны amp≤0.2, синты amp≤0.5, СУММА amp всех слоёв ≤0.8. "
-            "4) dur≥0.5, BPM≥60. "
-            "5) НЕ используй chop= — на 16kHz даёт щелчки. "
-            "6) НЕ выдумывай буквы сэмплов — сначала search_samples(<слово>) "
-            "и бери ТОЧНО возвращённую букву. "
-            "7) НЕ повторяй синт/гамму предыдущего трека."
+            "⚙️ compose_music: используй hats_sample/perc/perc_sample, "
+            "чтобы хэты и перкуссия отличались от предыдущего трека — "
+            "иначе сет звучит одним и тем же битом. swing=0.1-0.2 для "
+            "джаза/фанка/шафла — на ровных восьмых они не звучат как жанр. "
+            "Разные drums_sample/hats_sample/perc_sample индексы между "
+            "треками — не переиспользуй одни и те же. НЕ повторяй "
+            "synth/root/scale предыдущего трека — меняй хотя бы один."
+        )
+        # 🔴 FIX (live 02.09): диджей переключал трек каждые 40-45 с, а форма
+        # compose_music играет 96-190 с (arranger.FORMS). На buildup при
+        # 128 BPM это 142 с: intro 15 с + build 30 с — и переключение ровно
+        # на 45-й секунде, ДО gap/drop/drop2. За 30 часов лога робота drop не
+        # прозвучал ни разу ни в одном сете: слушатель получал шесть подряд
+        # «вступление + разгон». Отсюда жалоба «музыка однотипная» — при том
+        # что материал у треков был вполне разный.
+        length_line = (
+            "⏱ compose_music возвращает длительность формы. Дай треку "
+            "доиграть: следующий переход назначай НЕ РАНЬШЕ этого времени "
+            "(next_transition_sec). Переключение на 45-й секунде срезает "
+            "дроп и кульминацию — весь сет звучит как несколько одинаковых "
+            "вступлений."
         )
         stage_line = (
             f"Стадия сета: переход #{n}. "
-            "Трек должен РАЗВИВАТЬСЯ внутри перехода "
-            "(не повторять один и тот же рисунок)."
+            "Трек должен РАЗВИВАТЬСЯ внутри перехода — это делает форма "
+            "compose_music (form=buildup для нарастания с дропом, form=arc "
+            "для универсальной дуги), передавай progression и 3+ слоя, "
+            "не проси статичный четырёхтактовый луп."
         )
         library_line = (
-            "🎵 СЭМПЛЫ: ❌ НЕ вызывай load_track / list_tracks в переходах — "
-            "load_track СРАЗУ запускает сохранённый трек из базы и даёт резкую "
-            "вставку между треками. ✅ Пиши новый трек С НУЛЯ через "
-            "execute_music_code, реальные сэмплы бери через search_samples(<стиль>). "
-            "НЕ упрощай до статичного лупа."
+            "🎵 compose_music — ТВОЙ ИНСТРУМЕНТ ДЛЯ ЛЮБОГО ПЕРЕХОДА: он даёт "
+            "форму и развитие бесплатно, тебе нужно только описать материал "
+            "(bpm/root/scale/синты/ступени). "
+            "❌ НЕ вызывай load_track / list_tracks в переходах — load_track "
+            "СРАЗУ запускает сохранённый трек из базы и даёт резкую вставку "
+            "между треками. ✅ search_samples(<стиль>) — для "
+            "реальных сэмплов и разнообразия тембров между треками."
         )
         if n == 1:
             return (
@@ -274,8 +382,10 @@ class DJModeController:
                 "📋 ЗАТЕМ СОСТАВЬ ПЛАН СЕТА из 5-8 треков (дуга: вход → "
                 "нарастание → пик → спуск) и сохрани через "
                 "set_dj_mode(enabled=true, plan=<список треков, каждый с новой "
-                "строки 'Трек N: ...'>, next_transition_sec=45). Потом сыграй "
-                f"трек #1 через execute_music_code. {library_line} {stage_line} "
+                "строки 'Трек N: ...'>, next_transition_sec=<длительность формы "
+                "из ответа compose_music>). Потом сыграй "
+                f"трек #1 через compose_music. {library_line} {stage_line} "
+                f"{length_line} "
                 f"Затем представься как {persona} через speak_text."
             )
         plan_block = (
@@ -288,8 +398,9 @@ class DJModeController:
                 f"Ты {persona}. {theme_line}{plan_block}"
                 f"{library_line} {tech_line} "
                 "Это ПОСЛЕДНИЙ трек сета. Сыграй завершающий трек через "
-                "execute_music_code (спокойный финал, затухание). Затем "
-                "ОБЯЗАТЕЛЬНО: 1) speak_text: «Вот и всё, вечеринка "
+                "compose_music с repeat=false (форма сама доводит его до "
+                "спокойного финала и затухания — не проси зацикленный трек). "
+                "Затем ОБЯЗАТЕЛЬНО: 1) speak_text: «Вот и всё, вечеринка "
                 "заканчивается! Спасибо, что были со мной!» (или в тему "
                 "сета); 2) set_dj_mode(enabled=false) — DJ-режим завершается."
             )
@@ -297,12 +408,13 @@ class DJModeController:
             f"[DJ_AUTO переход #{n}] "
             f"Ты {persona}. {theme_line}{plan_block}"
             f"{library_line} {tech_line} {stage_line} "
-            "Сыграй следующий трек через execute_music_code (segments 64-128, "
-            "другой бит/темп в духе темы, С РАЗВИТИЕМ внутри трека — "
-            "минимум один из: .every(), Pvar, linvar, Clock.future). "
-            "После этого вызови set_dj_mode(enabled=true, next_transition_sec=45) "
-            "для следующего перехода. НЕ вызывай speak_text — переход только "
-            "про музыку, без случайных фраз."
+            "Сыграй следующий трек через compose_music (repeat=true, другой "
+            "bpm/root/scale/synth в духе темы, чем предыдущий трек). "
+            f"{length_line} "
+            "После этого вызови set_dj_mode(enabled=true, "
+            "next_transition_sec=<столько же секунд>) для следующего перехода. "
+            "НЕ вызывай speak_text И НЕ ПИШИ текст ответа — переход только про "
+            "музыку. Объявление поверх играющего бита юзер не просил."
         )
 
 

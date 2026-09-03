@@ -1,10 +1,54 @@
+diff --git a/hermes_cli/kanban.py b/hermes_cli/kanban.py
+index 6dd0f5e..a1c4252 100644
+--- a/hermes_cli/kanban.py
++++ b/hermes_cli/kanban.py
+@@ -400,6 +400,18 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
+                           help="Initial card status. Use 'blocked' for cards "
+                                "that require immediate human ops (R3 gate) "
+                                "to skip the brief running-to-blocked transition.")
++    p_create.add_argument("--force-scope", action="store_true",
++                          dest="force_scope",
++                          help="Suppress the architectural-mis-scope hint "
++                               "(ADR-0036 §4.1). Normally `hermes kanban create` "
++                               "prints a stderr warning + records a "
++                               "`scope_hint` event on the card when an "
++                               "implementation profile (backend / frontend / "
++                               "tester) is asked to do work that reads as "
++                               "architectural and a TDD-shaped skill is "
++                               "pinned on the task. Use this flag when "
++                               "Шифу has already evaluated the scope and "
++                               "deliberately wants to proceed.")
+     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
+ 
+     # --- swarm ---
+@@ -1626,6 +1638,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
+             goal_mode=bool(getattr(args, "goal_mode", False)),
+             goal_max_turns=getattr(args, "goal_max_turns", None),
+             initial_status=getattr(args, "initial_status", "running"),
++            force_scope=bool(getattr(args, "force_scope", False)),
+         )
+         task = kb.get_task(conn, task_id)
+     if getattr(args, "json", False):
+@@ -3608,3 +3621,4 @@ def run_slash(rest: str) -> str:
+     if err and out:
+         return f"{out}\n{err}"
+     return err if err else (out or "(no output)")
++
 diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
-index 8696c95..38b51b6 100644
+index 311a05b..6cb5dd5 100644
 --- a/hermes_cli/kanban_db.py
 +++ b/hermes_cli/kanban_db.py
-@@ -3336,6 +3336,87 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
-     return normalize_profile_name(assignee)
- 
+@@ -84,6 +84,7 @@ import sys
+ import threading
+ import logging
+ import time
++import warnings
+ from contextvars import ContextVar, Token
+ from dataclasses import dataclass, field
+ from pathlib import Path
+@@ -3417,6 +3418,179 @@ def _validate_skills_for_assignee(assignee: Optional[str], skills: list[str]) ->
+             + (", ".join(sorted(installed)) if installed else "(none)")
+         )
  
 +def _profile_skill_names(assignee: Optional[str]) -> Optional[frozenset[str]]:
 +    """Return the set of skill names installed on ``assignee``'s profile.
@@ -87,13 +131,113 @@ index 8696c95..38b51b6 100644
 +            + (", ".join(sorted(installed)) if installed else "(none)")
 +        )
 +
++
++# Architectural-scope hint constants (ADR-0036 §4.1).
++# Keywords that, when present in a task body, signal the task is an
++# architectural/process-fix decision and should NOT be picked up by an
++# implementation profile (backend/frontend/tester) just because it carries
++# a TDD-shaped skill. Heuristic only — the cost of a false positive is a
++# stderr warning + a comment on the card, never a blocked creation.
++ARCHITECTURAL_KEYWORDS = (
++    "ADR-",
++    "ADR №",
++    "architecture decision",
++    "pre-merge gate",
++    "merge-gate",
++    "dispatcher",
++    "skill-validation",
++    "agent-flow",
++    "процесс-фикс",
++    "архитект",
++    "ADR ",
++    "process-fix",
++)
++NON_ARCHITECT_PROFILES = ("backend", "frontend", "tester")
++_TEST_SKILL_MARKERS = ("test-driven-development", "pytest", "jest")
++
++
++def _validate_scope_for_assignee(
++    assignee: Optional[str],
++    body: Optional[str],
++    skills: Optional[Iterable[str]],
++    *,
++    force: bool = False,
++) -> Optional[str]:
++    """Hint-only mis-scope detection for ``kanban create`` (ADR-0036 §4.1).
++
++    Returns a structured warning string when an implementation profile
++    (backend / frontend / tester) is being asked to do work that reads as
++    an architectural or process-fix decision AND the worker is being
++    pointed at a TDD-shaped skill. The intent is to flag — without
++    blocking — the classic mis-scope loop (ADR-0035 retrospective,
++    card t_e2ae0c29: ``assignee=backend`` + ``skills=[test-driven-
++    development]`` running 5h31m on what is really an ADR doc + a
++    merge-gate refactor).
++
++    Heuristic (no LLM, by design — ADR-0036 §5):
++
++      warn iff (and only iff):
++        assignee ∈ NON_ARCHITECT_PROFILES
++        AND body contains any ARCHITECTURAL_KEYWORDS substring
++        AND any of skills ∩ _TEST_SKILL_MARKERS is non-empty
++
++    Side effects when triggered:
++      * emit ``warnings.warn(...)`` so the CLI prints it to stderr;
++      * append a structured ``task_event`` row (kind='scope_hint') so the
++        dashboard surfaces the warning inline with the card.
++
++    ``force=True`` suppresses both side effects (Шифу override — escape
++    hatch via ``--force-scope``). Returns ``None`` when suppressed or the
++    heuristic does not match.
++
++    Returns:
++        The structured warning message string when a hint fires (the
++        caller may embed it in a comment), or ``None`` otherwise.
++    """
++    if force:
++        return None
++    if not assignee or not body:
++        return None
++    canonical = _canonical_assignee(assignee) or assignee
++    if canonical not in NON_ARCHITECT_PROFILES:
++        return None
++    body_lower = body.lower()
++    matched_kw: Optional[str] = None
++    for kw in ARCHITECTURAL_KEYWORDS:
++        if kw.lower() in body_lower:
++            matched_kw = kw
++            break
++    if matched_kw is None:
++        return None
++    skill_list = list(skills or ())
++    if not any(s in _TEST_SKILL_MARKERS for s in skill_list):
++        return None
++    msg = (
++        f"scope-hint: assignee={canonical!r} is in NON_ARCHITECT_PROFILES "
++        f"but body contains architectural keyword {matched_kw!r} AND a "
++        f"TDD-shaped skill was requested. This pattern matches ADR-0035 / "
++        f"t_e2ae0c29 (5h31m mis-scope loop). Hint only — re-evaluate "
++        f"assignee (architect / devops typically own this) or pass "
++        f"--force-scope to suppress."
++    )
++    warnings.warn(msg, stacklevel=2)
++    return msg
++
  def create_task(
      conn: sqlite3.Connection,
      *,
-@@ -3610,6 +3691,13 @@ def create_task(
-                 "capabilities (e.g. `web`, `browser`, `terminal`)."
-             )
-         skills_list = cleaned
+@@ -3445,6 +3619,7 @@ def create_task(
+     board: Optional[str] = None,
+     project_id: Optional[str] = None,
+     project_source_task_id: Optional[str] = None,
++    force_scope: bool = False,
+     crp_schema: Optional[Union[str, dict]] = None,
+ ) -> str:
+     """Create a new task and optionally link it under parent tasks.
+@@ -3697,6 +3872,29 @@ def create_task(
+     # skills=[devops]); the task would be created and then the worker would
+     # crash on spawn when `--skills devops` fails to resolve. Fail fast here.
+     _validate_skills_for_assignee(assignee, skills_list or [])
 +    # Cross-check per-task skills against the assignee profile's installed
 +    # skills. An LLM worker can pick a skill that *sounds* right for the task
 +    # but belongs to a different profile (t_6c6c98fb: assignee=architect with
@@ -101,6 +245,54 @@ index 8696c95..38b51b6 100644
 +    # crash on spawn when `--skills devops` fails to resolve. Fail fast here.
 +    _validate_skills_for_assignee(assignee, skills_list or [])
 +
++    # Mis-scope hint (ADR-0036 §4.1): warn — do NOT block — when an
++    # implementation profile is being asked to do work that smells like
++    # an architectural / process-fix decision AND a TDD-shaped skill is
++    # pinned on the task. Hint fires only; the task is still created.
++    # ``force_scope`` (CLI flag ``--force-scope``) suppresses the hint
++    # so Шифу can deliberately proceed when the heuristic is wrong.
++    # The hint is captured into a local so we can write it as a
++    # ``task_events`` row inside the same write_txn that creates the
++    # task — that way the dashboard surfaces the warning inline with
++    # the card and the agent-flow cron can grep it later.
++    _scope_hint_msg = _validate_scope_for_assignee(
++        assignee,
++        body,
++        skills_list or [],
++        force=force_scope,
++    )
+ 
  
      # Idempotency check — return the existing task instead of creating a
-     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
+@@ -3862,6 +4060,26 @@ def create_task(
+                         "provider_override": provider_override,
+                     },
+                 )
++                # Mis-scope hint side effect (ADR-0036 §4.1): if the
++                # heuristic fired, persist a structured ``scope_hint``
++                # event so the dashboard surfaces the warning inline
++                # with the card and downstream tooling can grep it.
++                # Written inside the same write_txn as the task insert
++                # so a partially-created task never has a dangling hint
++                # event (or vice versa).
++                if _scope_hint_msg:
++                    _append_event(
++                        conn,
++                        task_id,
++                        "scope_hint",
++                        {
++                            "message": _scope_hint_msg,
++                            "assignee": assignee,
++                            "skills": list(skills_list) if skills_list else None,
++                            "forced": bool(force_scope),
++                        },
++                    )
++
+                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
+             return task_id
+         except sqlite3.IntegrityError:
+@@ -13314,3 +13532,4 @@ def latest_summaries(
+         ids,
+     ).fetchall()
+     return {r["task_id"]: r["summary"] for r in rows}
++

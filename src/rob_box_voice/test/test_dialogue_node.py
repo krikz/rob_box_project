@@ -74,6 +74,12 @@ def _install_ros_mocks():
     mock_qos = types.SimpleNamespace(
         HistoryPolicy=types.SimpleNamespace(KEEP_LAST="KEEP_LAST"),
         ReliabilityPolicy=types.SimpleNamespace(RELIABLE="RELIABLE"),
+        # Issue #1734 — dialogue_node.__init__ теперь создаёт latched-топик
+        # barge_in_policy (QoSProfile(durability=DurabilityPolicy.TRANSIENT_LOCAL)),
+        # без этого атрибута import dialogue_node падает ImportError.
+        DurabilityPolicy=types.SimpleNamespace(
+            TRANSIENT_LOCAL="TRANSIENT_LOCAL", VOLATILE="VOLATILE"
+        ),
         QoSProfile=lambda *args, **kwargs: MagicMock(),
     )
 

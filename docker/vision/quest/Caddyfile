@@ -18,7 +18,10 @@
     admin off
 }
 
-:8443 {
+# 8443 оставлен для smoke-скрипта Phase 1.7 и обратной совместимости.
+# 443 — основной порт для Meta Quest: при заходе на https://quest.rob_box.local/
+# браузер очков идёт на дефолтный 443.
+:443, :8443 {
     tls /certs/selfsigned.crt /certs/selfsigned.key {
         protocols tls1.2 tls1.3
     }
@@ -31,23 +34,49 @@
         -Server
     }
 
-    # Статический WebXR-клиент (Vite build из /srv/quest_static)
-    root * /srv/quest_static
     encode gzip zstd
-    file_server
 
-    # Healthcheck endpoint — проксируем в aiohttp, который умеет /healthz.
+    # Healthcheck endpoint — проксируем в aiohttp quest_node, который умеет
+    # /healthz (см. server/ws_server.py build_app: /healthz + /quest).
+    #
+    # ВАЖНО: порт ДОЛЖЕН совпадать с /quest (8766). Оба эндпоинта отдаёт одно
+    # и то же aiohttp-приложение quest_node, поднятое на WS_PORT.
+    #
+    # Regression (t_0b926b23): здесь стоял 8765 — порт voice-action-server,
+    # который в host-network живёт рядом и тоже отвечает 200 на /healthz.
+    # Из-за этого smoke-скрипт (local_test/quest_smoke.sh, секция healthz)
+    # получал `{"ok": true, "active_goals": 0}` от ЧУЖОГО сервиса и печатал
+    # PASS даже когда quest_node лежал — классический «красивый PASS»
+    # (ADR-0018). Правильный ответ содержит status/sessions_active/
+    # server_version. Коммит f9bf3f68 перевёл WS на 8766, но /healthz забыл.
     handle /healthz {
-        reverse_proxy localhost:8765
+        reverse_proxy localhost:8766
     }
 
-    # Всё остальное → aiohttp WSS-server (rob_box_quest).
-    # flush_interval -1 — без буферизации, иначе WebSocket-фреймы JPEG/LiDAR
-    # будут копиться в очереди Caddy и на Quest появится лаг.
-    reverse_proxy localhost:8765 {
-        flush_interval -1
-        transport http {
-            versions h2c 1.1
+    # WebSocket-канал: flush_interval -1 — без буферизации, иначе JPEG/LiDAR
+    # будут копиться в очереди Caddy и на Quest появится лаг. Явный handle —
+    # чтобы file_server корня SPA не съел этот путь.
+    #
+    # transport http { versions 1.1 } — только HTTP/1.1 на апстрим.
+    # Если оставить h2c 1.1, Caddy пытается WebSocket-апгрейд по h2c и
+    # ломается ("http2: invalid Upgrade request header: [websocket]"),
+    # отдавая 502 на каждый handshake. С чистым HTTP/1.1 upgrade проходит
+    # штатно (aiohttp aiohttp WS-роутер принимает соединение).
+    handle /quest {
+        reverse_proxy localhost:8766 {
+            flush_interval -1
+            transport http {
+                versions 1.1
+            }
         }
+    }
+
+    # Статика Three.js (Vite build из /srv/quest_static).
+    # index.html (после Phase 1.5b — base='/') ссылается на /assets/* —
+    # отдаём из /srv/quest_static. file_server на корне SPA уже покрывает
+    # и index.html, и ассеты единым правилом.
+    handle {
+        root * /srv/quest_static
+        file_server
     }
 }

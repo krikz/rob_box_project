@@ -32,13 +32,22 @@ class EventQueueFullError(EventBusError):
 
 @dataclass(frozen=True)
 class EventEnvelope:
-    """Immutable message exchanged by scheduler components."""
+    """Immutable message exchanged by scheduler components.
+
+    ``priority`` — S10 (scheduler-segments-merge, issue #968, §4.5):
+    used by :meth:`TaskScheduler.notify_event`/``_maybe_trigger_continue``
+    to decide whether an event counts toward the auto-trigger's
+    "unapplied event" condition. ``"low"`` events (noise/IGNORE-level
+    signals) never count; anything else (default ``"normal"``) does.
+    Defaults to ``"normal"`` so every existing caller is unaffected.
+    """
 
     topic: str
     payload: Any
     event_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     created_at: float = field(default_factory=time.monotonic)
     correlation_id: str | None = None
+    priority: str = "normal"
 
     def __post_init__(self) -> None:
         if not self.topic:
