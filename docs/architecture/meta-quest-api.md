@@ -256,14 +256,38 @@ start (если рассогласование — сервер игнориру
   "cmd": "set_voice",
   "ts_ms": 1234567890,
   "voice_id": "alena",
-  "preset": "standard" | "friendly" | "authoritative" | "whisper"
+  "preset": "standard" | "friendly" | "authoritative" | "whisper",
+  "language": "ru" | "en"   // AV-28 §P7 (см. §P7 ниже)
 }
 ```
 
-Phase 2 §4.3. Меняет активный голос TTS на сервере. `preset`
-опционален — если не указан, сервер использует текущий preset голоса.
-Сервер отвечает `JSON_EVENT{type: "voice_set_ack", voice_id, preset}`
-или `voice_set_nack` с reason.
+Phase 2 §4.3. Меняет активный голос TTS на сервере. `preset` опционален —
+если не указан, сервер использует текущий preset голоса; `language` опциональна
+(AV-28 §P7). Сервер отвечает `JSON_EVENT{type: "voice_set_ack", voice_id,
+preset, language}` или `voice_set_nack` с reason.
+
+> **§P7 (AV-28, фаза P7-full)** — расширение команды для стиля речи +
+> языка вывода (фаза P7-simple смотри §3.4 AV-27). Дополнительные
+> значения `preset`:
+>
+> | Поле | Допустимые значения |
+> |---|---|
+> | `preset` (AV-28) | `technical` \| `street` \| `caveman` \| `business` \| `philosopher` \| `lenin` (стиль речи из `voice_presets.yaml`) |
+> | `language` | `ru` \| `en` (язык вывода LLM-перефразирования и TTS) |
+>
+> Маршрут: UI → ws_server → Bridge → `/avatar/set_voice_preset` (или
+> `/avatar/set_voice_language`) → avatar_supervisor → `SetParameters`
+> на `dialogue_node`. Supervisor — единственная точка записи
+> (ADR-0028 S5); прямых `SetParameters` из `rob_box_quest` нет.
+>
+> Whitelist — единый на стороне ws_server (`VOICE_PRESET_IDS` /
+> `VOICE_LANGUAGES`) и supervisor. Невалидное значение →
+> `voice_set_nack{reason: "invalid_voice_preset" | "invalid_voice_language"}`,
+> UI откатывает optimistic update.
+>
+> В режиме `voice_input_mode=quest_llm_formalize` следующая фраза оператора
+> через STT → LLM (с выбранным промптом пресета) → TTS на выбранном языке.
+> Подробнее — ADR-0027 §3.4.1 и спецификация формализатора (PR #1952).
 
 ```json
 {

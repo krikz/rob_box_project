@@ -56,9 +56,14 @@ export function renderHud(
   preset: VoicePreset | null,
   language: VoiceLanguage | null
 ): string {
+  // ADR-0027 §3.4.1: HUD-индикатор стиля речи всегда с префиксом "ST:"
+  // (отличает стиль речи AV-28 от voice_id AV-27). Формат:
+  //   ST:--            — ничего не выбрано
+  //   ST:PRESET        — выбран пресет, язык не задан
+  //   ST:PRESET@LANG   — выбран пресет и язык
   if (!preset) return "ST:--";
   const st = String(preset).toUpperCase();
-  return language ? `${st}@${String(language).toUpperCase()}` : st;
+  return language ? `ST:${st}@${String(language).toUpperCase()}` : `ST:${st}`;
 }
 
 export interface VoicePresetsPanelOptions {
@@ -215,6 +220,9 @@ export function createVoicePresetsPanel(
             child.getAttribute("data-preset") === p.id ? "true" : "false"
           );
         }
+        // HUD-метка должна обновляться оптимистично при любом выборе —
+        // оператор видит ST:CAVEMAN сразу после клика, до ответа сервера.
+        updateHud();
         // Если выбранный пресет реально сменился — дёргаем callback.
         if (prev !== p.id) {
           try {
@@ -312,13 +320,6 @@ export function createVoicePresetsPanel(
         child.getAttribute("data-preset") === preset ? "true" : "false"
       );
     }
-    updateHud();
-  }
-
-  function setCurrentLanguage(language: VoiceLanguage | null): void {
-    if (disposed) return;
-    if (currentLanguage === language) return;
-    currentLanguage = language;
     updateHud();
   }
 
