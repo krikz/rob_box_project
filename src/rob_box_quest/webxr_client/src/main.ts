@@ -15,6 +15,12 @@
 import { Connection } from "./wire/connection";
 import { createCaptainBridge } from "./scene/captain_bridge";
 import { parseRobotStatus } from "./scene/status_hud";
+import {
+  isUnknownState,
+  type AvatarMode,
+  type SupervisorState as PanelSupervisorState,
+  UNKNOWN_STATE
+} from "./scene/supervisor_panel";
 import { createAlertToast, alertText } from "./scene/alert_toast";
 import { TeleopFSM } from "./input/teleop_fsm";
 import { createDesktopTeleop } from "./input/desktop_teleop";
@@ -44,6 +50,7 @@ import type {
 } from "./wire/messages";
 import { createToast, type Toast } from "./ui/toast";
 import { supervisorEffect, type FloorLabel, type SupervisorState } from "./state/supervisor_state";
+import type { JsonCmd } from "./wire/messages";
 
 const CLIENT_VERSION = "0.1.0";
 // AV-17: subprotocol v2 по умолчанию. Если сервер на v1 — supervisor
@@ -88,6 +95,124 @@ interface BootstrapOptions {
 
 export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   const url = opts.url ?? deriveWsUrl();
+  // Состояние ПАНЕЛИ режимов (R14) — проекция того же STATE_UPDATE,
+  // который разбирает AV-17. Отдельная переменная нужна лишь потому, что
+  // у панели своя форма (teleop_floor/voice_floor c last_event), а не
+  // потому, что это второй источник истины: пишется она только из
+  // applySupervisorState и из avatar_state_ack.
+  // `UNKNOWN_STATE` — «до первого STATE_UPDATE»: панель блокирует
+  // floor-кнопки (см. `draw()` в supervisor_panel.ts).
+  let panelState: PanelSupervisorState = UNKNOWN_STATE;
+  // Кэш последнего подтверждённого voice_input_mode==off (диалог выкл).
+  // Используется supervisorActionToCmd, чтобы корректно выставить следующий
+  // режим без лишнего round-trip.
+  let voiceOffCached = false;
+
+  /** Маппит действие с панели супервизора (R14) в JSON_CMD. */
+  function supervisorActionToCmd(
+    action: string,
+    panel: { showToast(msg: string, level?: "warn" | "bad"): void }
+  ): JsonCmd | null {
+    const ts = Date.now();
+
+    if (action.startsWith("mode:")) {
+      const target = action.slice("mode:".length) as AvatarMode;
+      // Допустимость перехода решает супервизор, а не клиент. Раньше
+      // здесь стояла локальная копия таблицы переходов FSM — она успела
+      // разъехаться с сервером (разрешала telegram_active →
+      // avatar_present, который сервер отклоняет, и запрещала
+      // telegram_active → mixed, который сервер как раз разрешает).
+      // Отказ прилетит как ERROR{MODE_CONFLICT} и покажется тостом
+      // (см. onSupervisorError).
+      return {
+        cmd: "avatar_set_mode",
+        ts_ms: ts,
+        mode: target,
+        reason: "ui_panel"
+      };
+    }
+
+    if (action.startsWith("floor:")) {
+      // `floor:teleop:acquire` / `floor:voice:release`
+      const [, kind, op] = action.split(":");
+      if (kind !== "teleop" && kind !== "voice") return null;
+      if (op === "acquire") {
+        // До STATE_UPDATE кнопка всё равно заблокирована в UI (см. supervisor_panel
+        // draw → blocked). Доп. сторож здесь на случай пропуска события.
+        if (isUnknownState(panelState)) {
+          panel.showToast("статус неизвестен, повторите позже", "warn");
+          return null;
+        }
+        return { cmd: "avatar_acquire_floor", ts_ms: ts, kind };
+      }
+      if (op === "release") {
+        return { cmd: "avatar_release_floor", ts_ms: ts, kind };
+      }
+      return null;
+    }
+
+    if (action === "dialogue:toggle") {
+      // Существующий путь: voice_mode → супервизор → dialogue_node.
+      // off — глушит ТОЛЬКО ReSpeaker (люди рядом, ADR-0028 S5), не Quest-микрофон.
+      const next = voiceOffCached ? "passthrough" : "off";
+      voiceOffCached = !voiceOffCached;
+      return { cmd: "voice_mode", ts_ms: ts, mode: next };
+    }
+
+    return null;
+  }
+
+  /**
+   * Распаковывает `state` из avatar_state_ack. Сервер сейчас шлёт state
+   * JSON-объектом внутри JSON_EVENT; msgpack-вариант (0x1203) —
+   * forward-compatible, парсер уже есть в supervisor_panel.ts.
+   */
+  function applySupervisorAck(
+    raw: Record<string, unknown>,
+    panel: { setState(s: PanelSupervisorState): void }
+  ): void {
+    const mode = typeof raw.mode === "string" ? (raw.mode as AvatarMode) : "off";
+    const teleopRaw = (raw.teleop as Record<string, unknown> | undefined) ?? {};
+    const voiceRaw = (raw.voice as Record<string, unknown> | undefined) ?? {};
+    const teleop = parseFloorShallow(teleopRaw);
+    const voice = parseFloorShallow(voiceRaw);
+    const lastEvent =
+      typeof raw.last_event === "string" ? raw.last_event : "STATE_UPDATE";
+    const lastTs =
+      typeof raw.last_event_ts_ms === "number" ? raw.last_event_ts_ms : Date.now();
+    panelState = {
+      mode,
+      teleop_floor: teleop,
+      voice_floor: voice,
+      last_event: lastEvent,
+      last_event_ts_ms: lastTs
+    };
+    panel.setState(panelState);
+  }
+
+  function parseFloorShallow(v: Record<string, unknown>): {
+    held_by: { client_id: string; since_ms: number } | null;
+    last_event: "ACQUIRED" | "RELEASED" | "TAKEOVER" | "DENIED" | null;
+  } {
+    const heldRaw = v.held_by;
+    let heldBy: { client_id: string; since_ms: number } | null = null;
+    if (heldRaw && typeof heldRaw === "object") {
+      const h = heldRaw as Record<string, unknown>;
+      heldBy = {
+        client_id: typeof h.client_id === "string" ? h.client_id : "unknown",
+        since_ms: typeof h.since_ms === "number" ? h.since_ms : Date.now()
+      };
+    }
+    const ev = v.last_event;
+    const lastEvent =
+      ev === "ACQUIRED" ||
+      ev === "RELEASED" ||
+      ev === "TAKEOVER" ||
+      ev === "DENIED"
+        ? ev
+        : null;
+    return { held_by: heldBy, last_event: lastEvent };
+  }
 
   // Phase 2.3 overlays — создаём ДО старта асинхронных pipeline'ов,
   // чтобы loading-screen сразу перекрыл экран пока грузятся CC0 GLB.
@@ -185,6 +310,13 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       conn.subscribe(newTopic);
       const stillUsed = bridge.videoTopics().includes(oldTopic);
       if (!stillUsed) conn.unsubscribe(oldTopic);
+    },
+    // Клик по кнопке панели супервизора (R14): маппим action → JSON_CMD.
+    onSupervisorAction: (action) => {
+      if (!conn || disconnected) return;
+      const cmd = supervisorActionToCmd(action, bridge.supervisorPanel);
+      if (cmd === null) return;
+      conn.send(cmd);
     }
   });
   bridge.initLayout();
@@ -341,6 +473,39 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     prevTeleopLabel = eff.teleopLabel;
 
     bridge.statusHud.setSupervisor(next, supervisorMyClientId, { degraded: supervisorDegraded });
+
+    // AV-18: та же истина — в панель режимов. Панель не подписывается на
+    // сервер сама: STATE_UPDATE разбирается один раз здесь, дальше это
+    // просто вторая проекция того же состояния.
+    panelState =
+      next === null
+        ? UNKNOWN_STATE
+        : {
+            mode: next.mode as AvatarMode,
+            teleop_floor: {
+              held_by:
+                next.teleopFloor.clientId === null
+                  ? null
+                  : {
+                      client_id: next.teleopFloor.clientId,
+                      since_ms: next.teleopFloor.sinceMs
+                    },
+              last_event: null
+            },
+            voice_floor: {
+              held_by:
+                next.voiceFloor.clientId === null
+                  ? null
+                  : {
+                      client_id: next.voiceFloor.clientId,
+                      since_ms: next.voiceFloor.sinceMs
+                    },
+              last_event: null
+            },
+            last_event: "STATE_UPDATE",
+            last_event_ts_ms: next.updatedMs
+          };
+    bridge.supervisorPanel.setState(panelState);
   }
 
   function openConnection(): void {
@@ -477,6 +642,26 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
           toast.show(text, { level: "warn", autoHideMs: 5000 });
         },
         onJsonEvent: (event) => {
+          // AV-18: ack/nack панели режимов — у них свои типы событий,
+          // ниже по функции их уже не ждут.
+          const t = (event as { type?: string }).type;
+          if (t === "avatar_state_ack") {
+            const raw = (event as { state?: Record<string, unknown> }).state;
+            if (raw) applySupervisorAck(raw, bridge.supervisorPanel);
+            return;
+          }
+          if (t === "avatar_state_nack") {
+            const reason = (event as { reason?: string }).reason ?? "супервизор отклонил";
+            bridge.supervisorPanel.showToast(reason, "bad");
+            return;
+          }
+          if (t === "voice_mode_ack") {
+            const mode = (event as { mode?: string }).mode;
+            voiceOffCached = mode === "off";
+            bridge.supervisorPanel.setVoiceOff(voiceOffCached);
+            return;
+          }
+
           // AV-28 §P7: voice_presets / voice_set_ack / voice_set_nack.
           // Свои типы событий, дальше по функции их уже не ждут.
           const type = (event as { type?: string }).type;
@@ -746,7 +931,24 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   }
   requestAnimationFrame(teleopLoop);
 
-  // ---------- WebXR entry / exit ----------
+  // ---- Hot keys (M: panel, H: help) ---------------------------------------
+
+  function onHotKey(ev: KeyboardEvent): void {
+    // Не реагируем, если фокус на input/textarea (PIN, future chat).
+    const target = ev.target as HTMLElement | null;
+    const tag = target?.tagName?.toLowerCase();
+    if (tag === "input" || tag === "textarea" || target?.isContentEditable) {
+      return;
+    }
+    // PIN-overlay ещё на экране → не открывать панель M-клавишей.
+    if (!opts.pinOverlay.classList.contains("pin-overlay--hidden")) return;
+
+    if (ev.key === "m" || ev.key === "M" || ev.key === "ь" || ev.key === "Ь") {
+      ev.preventDefault();
+      bridge.supervisorPanel.toggleVisible();
+    }
+  }
+  document.addEventListener("keydown", onHotKey);
 
   async function enterVr(): Promise<void> {
     try {
@@ -820,6 +1022,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
 
   return {
     dispose(): void {
+      document.removeEventListener("keydown", onHotKey);
       stopRender();
       desktopTeleop.destroy();
       if (xrRafSession && xrRafId) {
