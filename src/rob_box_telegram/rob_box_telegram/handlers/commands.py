@@ -72,8 +72,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
     else:
         await update.message.reply_text(
-            f"👋 Привет! Ваш chat ID: `{chat_id}`\n\n"
-            "Отправьте этот ID администратору для получения доступа.",
+            f"👋 Привет! Ваш chat ID: `{chat_id}`\n\n" "Отправьте этот ID администратору для получения доступа.",
             parse_mode="Markdown",
         )
 
@@ -111,7 +110,8 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "*Управление:*\n"
         "/control — пульт движения\n"
         "/menu — быстрое меню\n"
-        "/volume <0-100> — громкость\n\n"
+        "/volume <0-100> — громкость\n"
+        "/avatar — состояние аватара, кто за рулём/голосом, кнопки floor\n\n"
         "*Эффекты:*\n"
         "/animation <имя> — LED анимация\n"
         "/sound <имя> — звуковой эффект\n\n"
@@ -128,6 +128,93 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/myid — показать chat ID\n",
         parse_mode="Markdown",
     )
+
+
+# ─── /avatar ──────────────────────────────────────────────────────────────
+
+
+@authorized
+async def avatar_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /avatar — карточка состояния аватара.
+
+    AV-24 (issue #1916): оператор в Telegram хочет видеть, кто сейчас рулит
+    (Quest-оператор в очках или сам Telegram), как долго держится floor, и
+    почему получает отказ на команду движения/TTS. Эта команда показывает
+    inline-карточку с состоянием и кнопками floor. Дальнейшие обновления
+    карточки приходят через ``AvatarCardStore.on_state_update`` — listener
+    подписан на ``/avatar/state`` (один на процесс, не на каждый ``/avatar``).
+    """
+    from ..avatar_card import (
+        AvatarCardStore,
+        build_floor_keyboard,
+        format_avatar_card,
+    )
+
+    node = _node(context)
+    chat_id = update.effective_chat.id
+
+    # AV-24: ленивая инициализация store + единый state-listener. Каждый
+    # вызов /avatar НЕ создаёт новый listener — иначе через 100 нажатий
+    # в чате жили бы 100 callback'ов на каждый state-update (это и есть
+    # «утячка listener'ов» из acceptance criteria).
+    bot_data = context.application.bot_data if hasattr(context, "application") else context.bot_data
+    store: AvatarCardStore = bot_data.setdefault(
+        "avatar_card_store",
+        AvatarCardStore(),
+    )
+
+    # Первый store в процессе → подписываемся на /avatar/state один раз.
+    if not bot_data.get("avatar_state_listener_installed"):
+        _install_state_listener(node, store, bot_data)
+
+    state = node.supervisor.state
+    text = format_avatar_card(state, now_s=store.now(), last_seen_s=store.now())
+    keyboard_rows = build_floor_keyboard(
+        state.teleop_floor,
+        state.voice_floor,
+        client_id=node.supervisor.client_id,
+    )["rows"]
+    reply_markup = _build_inline_markup(keyboard_rows)
+
+    sent = await update.message.reply_text(text, reply_markup=reply_markup)
+    store.register(chat_id, sent.message_id, text, state)
+
+
+def _install_state_listener(node, store: "AvatarCardStore", bot_data: dict) -> None:
+    """Подписаться на ``/avatar/state`` (один раз на процесс).
+
+    Listener живёт в ``bot_data["avatar_state_listener_unsubscribe"]`` —
+    handler'ы могут его дёрнуть (например, при shutdown). Listener-функция
+    **сама** не делает Telegram-вызовов: она делегирует это
+    ``AvatarCardDispatcher`` (см. ``avatar_card_dispatcher.py``), который
+    вызывается из ROS-потока через ``call_soon_threadsafe``.
+
+    AV-24 / ADR-0028 §4.4: ``supervisor.subscribe_state`` уже имеет
+    механизм отписки — используем его, а не пишем свой.
+    """
+    from .avatar_card_dispatcher import make_dispatcher
+
+    loop = bot_data.get("telegram_loop")
+    dispatcher = make_dispatcher(loop=loop, store=store, bot_data=bot_data)
+    unsubscribe = node.supervisor.subscribe_state(dispatcher)
+    bot_data["avatar_state_listener_unsubscribe"] = unsubscribe
+    bot_data["avatar_state_listener_installed"] = True
+    bot_data["avatar_state_dispatcher"] = dispatcher
+
+
+def _build_inline_markup(rows: list) -> "InlineKeyboardMarkup":
+    """Собрать ``InlineKeyboardMarkup`` из словарного описания.
+
+    ``rows`` — список списков ``{"text": "...", "callback_data": "..."}``.
+    Тестируем без ``python-telegram-bot`` (словарный формат), а в handler'е
+    разворачиваем в настоящую разметку.
+    """
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    markup_rows = []
+    for row in rows:
+        markup_rows.append([InlineKeyboardButton(text=btn["text"], callback_data=btn["callback_data"]) for btn in row])
+    return InlineKeyboardMarkup(markup_rows)
 
 
 # ─── /menu ───────────────────────────────────────────────────────────────
@@ -232,9 +319,9 @@ def _occupancy_grid_to_png(grid) -> bytes:
     w = grid.info.width
     data = np.array(grid.data, dtype=np.int8).reshape(h, w)
 
-    rgb = np.full((h, w, 3), 128, dtype=np.uint8)   # unknown = gray
-    rgb[data == 0] = [235, 235, 235]                 # free = light
-    rgb[data == 100] = [20, 20, 20]                  # occupied = dark
+    rgb = np.full((h, w, 3), 128, dtype=np.uint8)  # unknown = gray
+    rgb[data == 0] = [235, 235, 235]  # free = light
+    rgb[data == 100] = [20, 20, 20]  # occupied = dark
     # Partial occupancy gradient
     mask = (data > 0) & (data < 100)
     if mask.any():
@@ -298,9 +385,7 @@ async def photo_map_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     node = _node(context)
     grid = getattr(node, "latest_map_grid", None)
     if grid is None:
-        await update.message.reply_text(
-            "⚠️ Карта ещё не построена. Подождите пока rtabmap создаст карту."
-        )
+        await update.message.reply_text("⚠️ Карта ещё не построена. Подождите пока rtabmap создаст карту.")
         return
 
     try:
@@ -343,8 +428,7 @@ async def say_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not result.granted:
         held = result.held_by or "другим оператором"
         await update.message.reply_text(
-            f"🚫 Голос удерживает {held}. "
-            "Дождитесь окончания текущего ответа или используйте текст."
+            f"🚫 Голос удерживает {held}. " "Дождитесь окончания текущего ответа или используйте текст."
         )
         return
     await update.message.reply_text(f"🗣 Озвучиваю: _{text}_", parse_mode="Markdown")
@@ -362,8 +446,7 @@ async def playvoice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     node.set_active_chat(update.effective_chat.id)
     context.user_data["playvoice_mode"] = True
     await update.message.reply_text(
-        "🎤 Режим озвучки активирован.\n"
-        "Отправьте голосовое сообщение — робот произнесёт его текст.",
+        "🎤 Режим озвучки активирован.\n" "Отправьте голосовое сообщение — робот произнесёт его текст.",
     )
 
 
