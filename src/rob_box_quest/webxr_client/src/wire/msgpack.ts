@@ -259,11 +259,12 @@ class Writer {
   }
 
   u16(v: number): void {
-    this.chunks.push(v & 0xff, (v >>> 8) & 0xff);
+    // msgpack — big-endian (декодер читает через DataView.getUint16 без LE-флага).
+    this.chunks.push((v >>> 8) & 0xff, v & 0xff);
   }
 
   u32(v: number): void {
-    this.chunks.push(v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff);
+    this.chunks.push((v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff);
   }
 
   u64(v: number): void {
