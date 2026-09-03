@@ -389,7 +389,9 @@ class TestAvatarSupervisorMonitorServices(unittest.TestCase):
 
     def test_set_avatar_mode_monitor_response(self) -> None:
         svc = next(s for s in self.node._services if s.name == "set_avatar_mode")
-        req = _make_typed_set_mode_request(client_id="telegram1", mode="telegram_active")
+        req = _make_typed_set_mode_request(
+            client_id="telegram1", mode="telegram_active"
+        )
         resp = _make_typed_response(_get_typed_set_mode_full_type())
         svc.callback(req, resp)
         body = _set_mode_response_to_dict(resp)
@@ -501,6 +503,7 @@ class TestCreateServiceSrvTypeContract(unittest.TestCase):
         node = _FakeNode("__test__")
         try:
             import sys as _sys
+
             bad_srv_type = _sys.modules[
                 "rob_box_supervisor_msgs.srv"
             ].AcquireFloor.Response
@@ -571,6 +574,7 @@ class TestCreateServiceSrvTypeContract(unittest.TestCase):
             self.assertFalse(recomputed)
             # Возвращаем как было для tearDown.
             import sys as _sys2
+
             msgs["Acq"] = _get_typed_srv_type()
             msgs["Set"] = _sys2.modules["rob_box_supervisor_msgs.srv"].SetAvatarMode
         finally:
@@ -619,8 +623,12 @@ class TestAvatarSupervisorPublishHeartbeat(unittest.TestCase):
     def test_subscription_callbacks_feed_aggregator(self) -> None:
         """Сообщения в /odom, /device/snapshot, /voice/dialogue/state обновляют state."""
         self.node._on_odom_msg(_make_string_msg(json.dumps({"x": 5.0, "y": -3.0})))
-        self.node._on_device_snapshot_msg(_make_string_msg(json.dumps({"battery_pct": 73.2})))
-        self.node._on_voice_state_msg(_make_string_msg(json.dumps({"state": "speaking"})))
+        self.node._on_device_snapshot_msg(
+            _make_string_msg(json.dumps({"battery_pct": 73.2}))
+        )
+        self.node._on_voice_state_msg(
+            _make_string_msg(json.dumps({"state": "speaking"}))
+        )
         snap = self.node._aggregator.snapshot()
         self.assertEqual(snap.pose_xy, (5.0, -3.0))
         self.assertEqual(snap.battery_pct, 73.2)
@@ -744,11 +752,15 @@ class TestAvatarSupervisorVoiceMode(unittest.TestCase):
         applied, reason = self.node._apply_voice_mode("quest_ttts")
         self.assertTrue(applied)
         self.assertEqual(reason, "applied")
-        self.node._set_dialogue_param.assert_called_once_with("voice_input_mode", "quest_ttts")
+        self.node._set_dialogue_param.assert_called_once_with(
+            "voice_input_mode", "quest_ttts"
+        )
 
     def test_on_set_voice_mode_feeds_apply(self) -> None:
         """Топик → _apply_voice_mode; в monitor применяется=false."""
-        self.node._apply_voice_mode = MagicMock(return_value=(False, MONITOR_MODE_REASON))
+        self.node._apply_voice_mode = MagicMock(
+            return_value=(False, MONITOR_MODE_REASON)
+        )
         self.node._on_set_voice_mode(_make_string_msg("quest_ttts"))
         self.node._apply_voice_mode.assert_called_once_with("quest_ttts")
 
@@ -1225,13 +1237,19 @@ class TestSetAvatarModeTypedContract(unittest.TestCase):
         self._set_mode("telegram1", "telegram_active")
         self.assertTrue(self.node._log.info.called)
         call = self.node._log.info.call_args
-        self.assertEqual(len(call.args), 1, f"info() должен получить 1 positional arg, got {call.args!r}")
+        self.assertEqual(
+            len(call.args),
+            1,
+            f"info() должен получить 1 positional arg, got {call.args!r}",
+        )
         self.assertEqual(call.kwargs, {})
 
     def test_no_json_in_data_field_used(self) -> None:
         """Рергресс R13: _extract_avatar_mode_request НЕ парсит JSON из request.data."""
         legacy_req = MagicMock(spec=["data"])
-        legacy_req.data = json.dumps({"mode": "telegram_active", "client_id": "telegram1"})
+        legacy_req.data = json.dumps(
+            {"mode": "telegram_active", "client_id": "telegram1"}
+        )
 
         svc = next(s for s in self.node._services if s.name == "set_avatar_mode")
         resp = _make_typed_response(_get_typed_set_mode_full_type())
@@ -1278,7 +1296,9 @@ class TestAvatarSupervisorTeleopHeartbeat(unittest.TestCase):
         self.node._now_ms = fake_clock_fn
         from rob_box_supervisor.core import LockManager
 
-        self.node._lock_manager = LockManager(clock=fake_clock_fn, timeout_ms=self.node._dead_man_timeout_ms)
+        self.node._lock_manager = LockManager(
+            clock=fake_clock_fn, timeout_ms=self.node._dead_man_timeout_ms
+        )
 
     def tearDown(self) -> None:
         self.node.destroy_node()
@@ -1357,7 +1377,9 @@ class TestAvatarSupervisorTeleopHeartbeat(unittest.TestCase):
         # Шлём heartbeat каждые 100 мс в течение 2 секунд (20 тиков).
         for tick in range(20):
             self._clock["t"] = (tick + 1) * 100
-            msg = types.SimpleNamespace(client_id="quest", ts_ms=self._clock["t"], seq=tick)
+            msg = types.SimpleNamespace(
+                client_id="quest", ts_ms=self._clock["t"], seq=tick
+            )
             self.node._on_teleop_heartbeat(msg)
 
         # Floor всё ещё у quest — 2000 мс прошло, но heartbeat-ы держали.
@@ -1377,7 +1399,9 @@ class TestAvatarSupervisorTeleopHeartbeat(unittest.TestCase):
 
         # Один heartbeat, чтобы снимок holder-ов в ноде был согласован.
         self._clock["t"] = 100
-        self.node._on_teleop_heartbeat(types.SimpleNamespace(client_id="quest", ts_ms=100, seq=1))
+        self.node._on_teleop_heartbeat(
+            types.SimpleNamespace(client_id="quest", ts_ms=100, seq=1)
+        )
 
         # Запоминаем сколько публикаций было до trip-а.
         pub = self.node._publishers["/avatar/state"]
@@ -1410,7 +1434,9 @@ class TestAvatarSupervisorTeleopHeartbeat(unittest.TestCase):
 
         self.node._lock_manager.acquire("quest", LockFloor.TELEOP, now_ms=0)
         self._clock["t"] = 100
-        self.node._on_teleop_heartbeat(types.SimpleNamespace(client_id="quest", ts_ms=100, seq=1))
+        self.node._on_teleop_heartbeat(
+            types.SimpleNamespace(client_id="quest", ts_ms=100, seq=1)
+        )
 
         # Ровно 500 мс с последнего heartbeat — ещё держит.
         self._clock["t"] = 600  # 500 мс после heartbeat
@@ -1432,7 +1458,9 @@ class TestAvatarSupervisorTeleopHeartbeat(unittest.TestCase):
         # Quest взял floor.
         self.node._lock_manager.acquire("quest", LockFloor.TELEOP, now_ms=0)
         self._clock["t"] = 100
-        self.node._on_teleop_heartbeat(types.SimpleNamespace(client_id="quest", ts_ms=100, seq=1))
+        self.node._on_teleop_heartbeat(
+            types.SimpleNamespace(client_id="quest", ts_ms=100, seq=1)
+        )
 
         # Ждём trip.
         self._clock["t"] = 700
@@ -1440,7 +1468,9 @@ class TestAvatarSupervisorTeleopHeartbeat(unittest.TestCase):
         self.assertIsNone(self.node._lock_manager.holder(LockFloor.TELEOP))
 
         # Telegram сразу берёт floor — без конфликта.
-        self.node._lock_manager.acquire("telegram", LockFloor.TELEOP, now_ms=self._clock["t"])
+        self.node._lock_manager.acquire(
+            "telegram", LockFloor.TELEOP, now_ms=self._clock["t"]
+        )
         self.assertEqual(self.node._lock_manager.holder(LockFloor.TELEOP), "telegram")
 
     # ── acceptance 8: часы подменяемы ─────────────────────────────────
@@ -1459,7 +1489,11 @@ class TestAvatarSupervisorTeleopHeartbeat(unittest.TestCase):
         import ast
         import textwrap
 
-        for method_name in ("_on_teleop_heartbeat", "_check_floor_expiry", "_try_import_heartbeat_msg"):
+        for method_name in (
+            "_on_teleop_heartbeat",
+            "_check_floor_expiry",
+            "_try_import_heartbeat_msg",
+        ):
             method = getattr(self.node, method_name)
             source = textwrap.dedent(inspect.getsource(method))
             tree = ast.parse(source)
@@ -1471,7 +1505,9 @@ class TestAvatarSupervisorTeleopHeartbeat(unittest.TestCase):
                 # (``time.time()`` → ast.Attribute(attr='time', value=ast.Name(id='time'))).
                 if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
                     if func.value.id == "time" and func.attr in ("time", "monotonic"):
-                        self.fail(f"{method_name} должен использовать self._now_ms() вместо time.{func.attr}()")
+                        self.fail(
+                            f"{method_name} должен использовать self._now_ms() вместо time.{func.attr}()"
+                        )
 
     # ── дополнительно: пустой client_id защищён ───────────────────────
     def test_empty_client_id_is_ignored(self) -> None:
