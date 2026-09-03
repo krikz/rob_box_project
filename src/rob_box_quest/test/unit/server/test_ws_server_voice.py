@@ -42,6 +42,11 @@ class RecordingBridge(NoOpBridge):
         self.active_provider: str = "yandex"
         self.active_voice: str = "alena"
         self.voices_payload: list[dict[str, Any]] = []
+        # AV-28 §P7: дополнительные каналы для preset + language.
+        self.voice_presets: list[str] = []
+        self.voice_languages: list[str] = []
+        self.set_voice_preset_calls: int = 0
+        self.set_voice_language_calls: int = 0
 
     def publish_voice_barge_in(self) -> None:
         self.barge_in_calls += 1
@@ -88,6 +93,16 @@ class RecordingBridge(NoOpBridge):
     def publish_preview_voice(self, request_id: str, voice_id: str, text: str) -> None:
         self.preview_voice_calls.append((request_id, voice_id, text))
 
+    # ── AV-28 §P7 stubs (issue #1920) ────────────────────────────────
+
+    def set_voice_preset(self, preset: str) -> None:
+        self.voice_presets.append(preset)
+        self.set_voice_preset_calls += 1
+
+    def set_voice_language(self, language: str) -> None:
+        self.voice_languages.append(language)
+        self.set_voice_language_calls += 1
+
 
 @pytest.fixture
 def bridge() -> RecordingBridge:
@@ -102,20 +117,7 @@ def fixed_pin(monkeypatch) -> str:
 
 
 @pytest.fixture
-def long_watchdog(monkeypatch) -> None:
-    """Отключить watchdog для floor-тестов (они ждут ответ дольше 0.6 с).
-
-    В проде WATCHDOG_TIMEOUT_S = 0.6 (meta-quest-api.md §7 + ADR-0027 §3.3).
-    Здесь поднимаем до 30 с, чтобы тесты не зависели от реального RTT
-    event-loop'а. Поведение server-логики voice-floor не затронуто.
-    """
-    import rob_box_quest.server.session as _session_mod
-
-    monkeypatch.setattr(_session_mod, "WATCHDOG_TIMEOUT_S", 30.0)
-
-
-@pytest.fixture
-async def client(fixed_pin, long_watchdog, bridge):
+async def client(fixed_pin, bridge):
     server = WSSServer(bridge=bridge, pin=fixed_pin)
     app = build_app(server)
     async with TestClient(TestServer(app)) as client:
@@ -440,6 +442,128 @@ async def test_voice_rate_limit_drops_repeat(client, fixed_pin):
 #  - отвал клиента освобождает floor (force_release_for).
 # --------------------------------------------------------------------------
 
+
+# === AV-28 §P7: set_voice {preset, language} → Bridge → supervisor === #
+
+
+async def _collect_events(ws, n: int = 1, timeout_s: float = 1.0) -> list[dict]:
+    """Собрать N JSON_EVENT-фреймов от сервера."""
+    events: list[dict] = []
+    deadline = time.monotonic() + timeout_s
+    while len(events) < n and time.monotonic() < deadline:
+        msg = await ws.receive()
+        if msg.type == WSMsgType.BINARY:
+            ftype, _sid, payload = decode_frame(msg.data)
+            if ftype == FrameType.JSON_EVENT:
+                events.append(json.loads(payload.decode("utf-8")))
+    return events
+
+
+async def test_set_voice_routes_preset_and_language_to_bridge(client, fixed_pin):
+    """Валидный set_voice {preset, language} → bridge.set_voice_preset +
+    set_voice_language + voice_set_ack."""
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(
+            ws,
+            {
+                "cmd": "set_voice",
+                "ts_ms": 0,
+                "preset": "lenin",
+                "language": "en"
+            }
+        )
+        events = await _collect_events(ws, n=1)
+        ack = next(e for e in events if e.get("type") == "voice_set_ack")
+        assert ack["preset"] == "lenin"
+        assert ack["language"] == "en"
+        await asyncio.sleep(0.02)
+        assert bridge.voice_presets == ["lenin"]
+        assert bridge.voice_languages == ["en"]
+    finally:
+        await ws.close()
+
+
+async def test_set_voice_preset_only_does_not_touch_language(client, fixed_pin):
+    """Только preset — language не меняется (Bridge-метод не вызывается)."""
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(
+            ws, {"cmd": "set_voice", "ts_ms": 0, "preset": "philosopher"}
+        )
+        events = await _collect_events(ws, n=1)
+        ack = next(e for e in events if e.get("type") == "voice_set_ack")
+        assert ack["preset"] == "philosopher"
+        assert ack["language"] is None
+        await asyncio.sleep(0.02)
+        assert bridge.voice_presets == ["philosopher"]
+        assert bridge.voice_languages == []
+    finally:
+        await ws.close()
+
+
+async def test_set_voice_invalid_preset_sends_nack_no_bridge_call(
+    client, fixed_pin
+):
+    """Не-whitelisted preset → voice_set_nack + bridge НЕ дёргается."""
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(
+            ws, {"cmd": "set_voice", "ts_ms": 0, "preset": "scammer"}
+        )
+        events = await _collect_events(ws, n=1)
+        nack = next(e for e in events if e.get("type") == "voice_set_nack")
+        assert "invalid_voice_preset" in nack["reason"]
+        assert nack["preset"] == "scammer"
+        await asyncio.sleep(0.02)
+        # Bridge не должен вызываться для невалидного preset.
+        assert bridge.voice_presets == []
+        assert bridge.voice_languages == []
+    finally:
+        await ws.close()
+
+
+async def test_set_voice_invalid_language_sends_nack(client, fixed_pin):
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(
+            ws, {"cmd": "set_voice", "ts_ms": 0, "language": "de"}
+        )
+        events = await _collect_events(ws, n=1)
+        nack = next(e for e in events if e.get("type") == "voice_set_nack")
+        assert "invalid_voice_language" in nack["reason"]
+        assert nack["language"] == "de"
+        await asyncio.sleep(0.02)
+        assert bridge.voice_languages == []
+    finally:
+        await ws.close()
+
+
+async def test_validate_voice_set_payload_whitelist() -> None:
+    """Pure-функция _validate_voice_set_payload (тест без WS/Rclpy)."""
+    from rob_box_quest.server.ws_server import (
+        VOICE_LANGUAGES,
+        VOICE_PRESET_IDS,
+        _validate_voice_set_payload,
+    )
+
+    # Валидные комбинации.
+    assert _validate_voice_set_payload(None, None) is None
+    for preset in VOICE_PRESET_IDS:
+        assert _validate_voice_set_payload(preset, None) is None
+    for lang in VOICE_LANGUAGES:
+        assert _validate_voice_set_payload(None, lang) is None
+    assert _validate_voice_set_payload("lenin", "ru") is None
+    # Невалидный preset.
+    assert _validate_voice_set_payload("scammer", None) is not None
+    # Невалидный language.
+    assert _validate_voice_set_payload(None, "de") is not None
+    # Оба вместе — первый невалидный попадает в reason первой строкой.
+    assert _validate_voice_set_payload("scammer", "ru") is not None
 
 async def _next_voice_state_event(ws, timeout_s: float = 1.0):
     """Дождаться JSON_EVENT{type:'voice_state',...}, пропуская прочие события

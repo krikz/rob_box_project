@@ -38,6 +38,29 @@ import type {
   VoicePresetInfo
 } from "../wire/messages";
 
+/**
+ * AV-28 §P7: HUD-метка текущего выбора голоса. Короткий формат, читаемый
+ * с расстояния (HUD-надпись в 3D-сцене или chip-fixed в DOM-overlay).
+ *
+ * Формат:
+ *   - нет выбора: ``"ST:--"`` (бэкенд ещё не прислал defaults).
+ *   - только пресет: ``"ST:LENIN"``.
+ *   - пресет + язык: ``"ST:LENIN@RU"``.
+ *
+ * Legacy-пресеты (standard/friendly/...) НЕ маркируются как ST, потому что
+ * это другой «слой» (TTS picker, AV-27) — UI использует префикс
+ * ``ST:`` исключительно для стиля речи (voice_preset) AV-28, чтобы оператор
+ * не путал «стиль» и «голос».
+ */
+export function renderHud(
+  preset: VoicePreset | null,
+  language: VoiceLanguage | null
+): string {
+  if (!preset) return "ST:--";
+  const st = String(preset).toUpperCase();
+  return language ? `${st}@${String(language).toUpperCase()}` : st;
+}
+
 export interface VoicePresetsPanelOptions {
   /** Начальный список пресетов (дефолт, до ответа сервера). */
   presets?: VoicePresetInfo[];
@@ -103,6 +126,19 @@ export function createVoicePresetsPanel(
   heading.className = "voice-presets-panel__heading";
   heading.textContent = "Голос";
 
+  // AV-28 §P7: HUD-индикатор текущего выбора (читается с расстояния,
+  // без чтения chip-надписей). Формат ST:LENIN / ST:LENIN@RU —
+  // совпадает с тем, как стилевой пресет индицируется на сервере
+  // и в supervisor-логах. Появляется сразу после успешного ack.
+  const hud = document.createElement("div");
+  hud.className = "voice-presets-panel__hud";
+  hud.setAttribute("data-testid", "voice-presets-hud");
+  hud.setAttribute("aria-live", "polite");
+  hud.textContent = renderHud(
+    options.currentPreset ?? null,
+    options.currentLanguage ?? null
+  );
+
   // ----- Список пресетов -------------------------------------------------
   const presetsLabel = document.createElement("div");
   presetsLabel.className = "voice-presets-panel__subheading";
@@ -131,6 +167,7 @@ export function createVoicePresetsPanel(
 
   // ----- Сборка DOM ------------------------------------------------------
   root.appendChild(heading);
+  root.appendChild(hud);
   root.appendChild(presetsLabel);
   root.appendChild(presetsGroup);
   root.appendChild(langLabel);
@@ -275,6 +312,19 @@ export function createVoicePresetsPanel(
         child.getAttribute("data-preset") === preset ? "true" : "false"
       );
     }
+    updateHud();
+  }
+
+  function setCurrentLanguage(language: VoiceLanguage | null): void {
+    if (disposed) return;
+    if (currentLanguage === language) return;
+    currentLanguage = language;
+    updateHud();
+  }
+
+  /** HUD: перерисовать короткую метку текущего выбора. */
+  function updateHud(): void {
+    hud.textContent = renderHud(currentPreset, currentLanguage);
   }
 
   function setCurrentLanguage(language: VoiceLanguage | null): void {
@@ -287,6 +337,7 @@ export function createVoicePresetsPanel(
         child.getAttribute("data-language") === language ? "true" : "false"
       );
     }
+    updateHud();
   }
 
   function setLoading(next: boolean): void {
