@@ -9,15 +9,21 @@ Owner: architect (recon only — no production code)
 **built-in static catalogue** at
 `src/rob_box_voice/rob_box_voice/tts_voice_registry.py:40-66`
 (`PROVIDER_VOICES` / `DEFAULT_VOICES`). tts_node exposes the answer to the
-ROS graph as a new **latched topic** `/voice/tts/voices` (one-shot publish on
+ROS graph as a new **latched topic** `/voice/tts/voices` published with
+`DurabilityPolicy.TRANSIENT_LOCAL` + `depth=1` (one-shot publish on
 startup + on every `set_provider` change). quest_node subscribes to that
 topic and caches; no new ROS service, no synchronous RPC.
 
 **Mechanism for `set_voice`:** publish a JSON request to a new topic
-`/avatar/set_voice` and let the **supervisor** apply it to `tts_node` via the
-existing `SetParameters` pattern at
-`src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py:332-369`
-(`_set_dialogue_param`). quest_node never touches tts_node parameters
+`/avatar/set_voice` and let the **supervisor** apply it to `tts_node` via a
+**second SetParameters client** on `/tts_node/set_parameters` (mirrors the
+existing `_set_dialogue_param` at
+`src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py:332-369`,
+which calls `/dialogue_node/set_parameters`). The voice parameter
+(`yandex_voice` / `minimax_voice` / `silero_speaker`) lives on `tts_node`
+(`tts_node.py:677` and `config/tts_node.yaml:62,77`), not on
+`dialogue_node`, so we add `_set_tts_voice_param` next to
+`_set_dialogue_param`. quest_node never touches tts_node parameters
 directly (ADR-0028 S5, S12).
 
 **`preview_voice`** is a separate concern (synthesize + stream back) and is
@@ -33,8 +39,11 @@ We considered three options. Trade-offs:
 | **Topic** (latched `/voice/tts/voices`) | new publisher/subscriber wiring; quest_node must remember to (re)read on cache miss | cheap; works across nodes; survives quest_node restart (latched QoS); no IDL needed | ✅ chosen. |
 | **Direct cross-package call** (quest_node imports `rob_box_voice.tts_voice_registry`) | works (registry is pure Python, already shared with `rob_box_mcp_tools`) but breaks ADR-0028 layering (quest_node bypasses supervisor) | zero ROS plumbing | ❌ rejected for `set_voice` (must go via supervisor); accepted as **internal-to-tts_node** source only. |
 
-The chosen topic pattern mirrors what already exists for `/voice/tts/state`
-(latched String published by tts_node) — same QoS, same wiring idiom.
+The chosen topic pattern uses **transient-local durability** so quest_node
+gets the last-published payload on (re)connect. Note this is *not* the same
+QoS as `/voice/tts/state` (which is volatile — `tts_node.py:1137`) — for
+`/voice/tts/voices` we explicitly want latched to survive quest WS
+reconnects without a 5-min TTL wait.
 
 ## Source of truth for the catalogue
 
@@ -184,3 +193,40 @@ default `300`).
 - ✅ Cache TTL = 5 min, configurable, invalidation on `provider_state`.
 - ✅ `set_voice` must go through supervisor (mirrors `voice_mode`).
 - ⏳ Server-side implementation, UI, tests — separate cards.
+
+## Verified during this re-run (recon handoff)
+
+- Confirmed by reading actual sources (not from prior commit's prose):
+  - `tts_provider_base.py:225-227` → async `list_voices()` returns `[]`
+  - `tts_provider_registry.py:53-95` → `TTSProviderRegistry` (in-memory,
+    process-lifetime)
+  - `tts_voice_registry.py:40-66,69-71` → `PROVIDER_VOICES`, `DEFAULT_VOICES`,
+    `voices_for()`
+  - `tts_node.py:1116-1148,2310-2355` → publishes `/voice/tts/state`
+    (volatile, depth=10) + `/voice/tts/provider_state`; subscribes to
+    `/voice/tts/set_provider`. **No transient-local QoS in this package yet**
+    (grep `DurabilityPolicy` → only one use, at line 1134 for audio, set to
+    VOLATILE) — so the new `/voice/tts/voices` publisher is the first
+    transient-local topic in `tts_node`.
+  - `supervisor_node.py:316-369` → `_apply_voice_mode` /
+    `_set_dialogue_param` pattern; client is `/dialogue_node/set_parameters`,
+    lazy-init, only in active mode (S12). No existing client for
+    `/tts_node/set_parameters` — must be added (named `_set_tts_voice_param`
+    in this design).
+  - `tts_node.py:677` + `config/tts_node.yaml:62,77` → voice params are
+    declared on tts_node (`yandex_voice`, `minimax_voice`), so set_voice
+    must target tts_node parameters, not dialogue_node.
+  - `quest_node.py:302-316,467` + `ws_server.py:460-472` → end-to-end
+    pattern for `set_voice_mode` to mirror for `set_voice`.
+  - `mcp_tools/tools/dialogue.py:1086-1088` → publishes
+    `/voice/tts/set_provider` (separate path, not used by set_voice).
+  - ADR-0028 §4.4 (`S5`, `S12`) → external client → supervisor → param
+    flow is the only allowed path for `dialogue_node` and must be mirrored
+    for `tts_node` parameters.
+- Two corrections to the prior version of this doc:
+  1. Removed the false "mirrors `/voice/tts/state` (latched)" analogy —
+     that topic is volatile. New text specifies `TRANSIENT_LOCAL` + depth=1
+     for `/voice/tts/voices` explicitly.
+  2. Made explicit that set_voice needs a **second** SetParameters client
+     on `/tts_node/set_parameters`, not a reuse of the dialogue_node one,
+     because the voice parameter is on tts_node.
