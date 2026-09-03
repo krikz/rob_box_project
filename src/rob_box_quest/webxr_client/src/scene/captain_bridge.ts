@@ -670,6 +670,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     videoTopics,
     ingestPanelFrame,
     setRobotStatus,
+    setVoiceState,
     start,
     resize,
     dispose

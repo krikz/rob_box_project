@@ -81,19 +81,19 @@ const VALID_DETAILS: ReadonlyArray<VoiceDetail> = [
 
 function normalizeState(raw: unknown): VoiceState {
   if (typeof raw !== "string") return "unknown";
-  const lower = raw.toLowerCase();
-  // BRIDGE_STATES содержит lowercase литералы; проверяем через Set
-  // чтобы не делать лишних аллокаций.
-  return (BRIDGE_STATES as readonly string[]).includes(lower)
-    ? (lower as VoiceState)
+  // Backend (streams/voice_state.py) нормализует FSM-state в lowercase
+  // литералы из BRIDGE_STATES. Uppercase от старого upstream НЕ
+  // поддерживаем: пусть парсер вернёт unknown и backend залогирует
+  // WARNING, чем мы будем молча принимать невалидный формат.
+  return (BRIDGE_STATES as readonly string[]).includes(raw)
+    ? (raw as VoiceState)
     : "unknown";
 }
 
 function normalizeDetail(raw: unknown): VoiceDetail {
   if (typeof raw !== "string") return "none";
-  const lower = raw.toLowerCase();
-  return (VALID_DETAILS as readonly string[]).includes(lower)
-    ? (lower as VoiceDetail)
+  return (VALID_DETAILS as readonly string[]).includes(raw)
+    ? (raw as VoiceDetail)
     : "none";
 }
 
