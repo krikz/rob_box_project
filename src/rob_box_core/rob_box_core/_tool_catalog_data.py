@@ -37,7 +37,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'properties': {},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {'params': [], 'required': [], 'accepts_kwargs': False}},
+        'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
+        'skill': ('navigation',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': False,
@@ -108,58 +109,136 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                          'description': 'Паттерн '
                                                                         'бочки/малого '
                                                                         'одной '
-                                                                        'строкой, '
-                                                                        'например '
-                                                                        '"X..o.X.o" '
-                                                                        'или '
-                                                                        '"X.X.X.X.". '
+                                                                        'строкой: X — '
+                                                                        'бочка, o — '
+                                                                        'малый, n — '
+                                                                        'перкуссия, '
+                                                                        'точка — '
+                                                                        'пауза. Длина '
+                                                                        '4, 8 или 16 '
+                                                                        'знаков. '
+                                                                        'Рисунок '
+                                                                        'сочиняй под '
+                                                                        'жанр (ровная '
+                                                                        'четверть, '
+                                                                        'бэкбит, '
+                                                                        'брейкбит, '
+                                                                        'синкопа) — не '
+                                                                        'переноси один '
+                                                                        'и тот же из '
+                                                                        'трека в трек. '
                                                                         'Пропусти для '
                                                                         'музыки без '
                                                                         'ударных.'},
                                             'drums_sample': {   'type': 'integer',
                                                                 'description': 'Индекс '
-                                                                               'набора '
-                                                                               'ударных '
-                                                                               '0-4. '
-                                                                               'Меняй '
-                                                                               'его '
+                                                                               'сэмпла '
+                                                                               'ударных. '
+                                                                               'В паке '
+                                                                               'НЕ '
+                                                                               'пять '
+                                                                               'вариантов: '
+                                                                               'на X '
+                                                                               'их 43, '
+                                                                               'на o — '
+                                                                               '58, на '
+                                                                               'n — '
+                                                                               '56. '
+                                                                               'Индекс '
+                                                                               'заворачивается '
+                                                                               'по '
+                                                                               'модулю, '
+                                                                               'поэтому '
+                                                                               'безопасно '
+                                                                               'любое '
+                                                                               'число '
+                                                                               '0-40. '
+                                                                               'Раньше '
+                                                                               'здесь '
+                                                                               'было '
+                                                                               'написано '
+                                                                               '«0-4», '
+                                                                               'и '
+                                                                               'робот '
+                                                                               'полгода '
+                                                                               'играл '
+                                                                               'пятью '
+                                                                               'бочками '
+                                                                               'из '
+                                                                               'сорока '
+                                                                               'трёх. '
+                                                                               'Бери '
+                                                                               'из '
+                                                                               'всего '
+                                                                               'диапазона '
+                                                                               'и '
+                                                                               'меняй '
                                                                                'между '
-                                                                               'треками, '
-                                                                               'иначе '
-                                                                               'все '
-                                                                               'треки '
-                                                                               'звучат '
-                                                                               'одинаково.'},
+                                                                               'треками; '
+                                                                               'search_samples '
+                                                                               'покажет, '
+                                                                               'что '
+                                                                               'именно '
+                                                                               'лежит '
+                                                                               'по '
+                                                                               'индексу.'},
                                             'hats': {   'type': 'string',
-                                                        'description': 'Паттерн хэтов, '
-                                                                       'например '
-                                                                       '"--.-" или '
-                                                                       '"-.--".'},
+                                                        'description': 'Паттерн хэтов: '
+                                                                       'дефис — удар, '
+                                                                       'точка — пауза. '
+                                                                       'Длина 4, 8 или '
+                                                                       '16 знаков. '
+                                                                       'Плотность '
+                                                                       'хэтов — '
+                                                                       'половина '
+                                                                       'жанра: ровные '
+                                                                       'шестнадцатые, '
+                                                                       'скупые восьмые '
+                                                                       'и синкопа '
+                                                                       'звучат '
+                                                                       'по-разному на '
+                                                                       'одном и том же '
+                                                                       'бите.'},
                                             'hats_sample': {   'type': 'integer',
                                                                'description': 'Индекс '
                                                                               'сэмпла '
-                                                                              'хэтов '
-                                                                              '0-4. '
+                                                                              'хэтов. '
+                                                                              'Для '
+                                                                              'символа '
+                                                                              "'-' в "
+                                                                              'паке 10 '
+                                                                              'вариантов '
+                                                                              '(0-9), '
+                                                                              'индекс '
+                                                                              'заворачивается '
+                                                                              'по '
+                                                                              'модулю. '
                                                                               'Раньше '
                                                                               'был '
                                                                               'прибит '
                                                                               'к 3, '
-                                                                              'поэтому '
+                                                                              'потом '
+                                                                              'описан '
+                                                                              'как '
+                                                                              '«0-4» — '
                                                                               'хэты во '
                                                                               'всех '
                                                                               'треках '
                                                                               'звучали '
                                                                               'одинаково. '
-                                                                              'Меняй.'},
+                                                                              'Меняй '
+                                                                              'между '
+                                                                              'треками.'},
                                             'perc': {   'type': 'string',
                                                         'description': 'Паттерн '
                                                                        'перкуссии — '
                                                                        'третий ударный '
                                                                        'слой поверх '
-                                                                       'бочки и хэтов, '
-                                                                       'например '
-                                                                       '"..n." или '
-                                                                       '"n..n.n". '
+                                                                       'бочки и хэтов: '
+                                                                       'n — удар, '
+                                                                       'точка — пауза, '
+                                                                       'длина 4, 8 или '
+                                                                       '16 знаков. '
                                                                        'Форма отводит '
                                                                        'ему место в '
                                                                        'кульминации; '
@@ -169,8 +248,23 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                             'perc_sample': {   'type': 'integer',
                                                                'description': 'Индекс '
                                                                               'сэмпла '
-                                                                              'перкуссии '
-                                                                              '0-4.'},
+                                                                              'перкуссии. '
+                                                                              'Для '
+                                                                              'символа '
+                                                                              "'n' в "
+                                                                              'паке 56 '
+                                                                              'вариантов, '
+                                                                              'индекс '
+                                                                              'заворачивается '
+                                                                              'по '
+                                                                              'модулю '
+                                                                              '— '
+                                                                              'безопасно '
+                                                                              'любое '
+                                                                              'число '
+                                                                              '0-40, а '
+                                                                              'не '
+                                                                              '«0-4».'},
                                             'bass_synth': {   'type': 'string',
                                                               'description': 'Синт '
                                                                              'баса: '
@@ -188,12 +282,24 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                              'баса '
                                                                              'через '
                                                                              'запятую, '
-                                                                             'например '
-                                                                             '"0, 0, '
-                                                                             '3, -2". '
-                                                                             'Держи '
                                                                              '2-5 '
-                                                                             'нот.'},
+                                                                             'чисел '
+                                                                             '(отрицательные '
+                                                                             '— вниз '
+                                                                             'от '
+                                                                             'тоники). '
+                                                                             'Бас '
+                                                                             'держит '
+                                                                             'гармонию: '
+                                                                             'он '
+                                                                             'должен '
+                                                                             'согласоваться '
+                                                                             'с '
+                                                                             'progression, '
+                                                                             'а не '
+                                                                             'повторять '
+                                                                             'мотив '
+                                                                             'лида.'},
                                             'lead_synth': {   'type': 'string',
                                                               'description': 'Синт '
                                                                              'мелодии: '
@@ -210,17 +316,31 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                             'lead_notes': {   'type': 'string',
                                                               'description': 'Ступени '
                                                                              'лада для '
-                                                                             'мелодии, '
-                                                                             'например '
-                                                                             '"0, 2, '
-                                                                             '4, 7, 4, '
-                                                                             '2". '
-                                                                             'Держи '
-                                                                             '4-8 нот '
-                                                                             '— это '
-                                                                             'мотив, а '
+                                                                             'мелодии '
+                                                                             'через '
+                                                                             'запятую, '
+                                                                             '4-8 '
+                                                                             'чисел. '
+                                                                             'Это '
+                                                                             'МОТИВ, а '
                                                                              'не '
-                                                                             'гамма.'},
+                                                                             'гамма: '
+                                                                             'нужен '
+                                                                             'скачок и '
+                                                                             'ответ на '
+                                                                             'него, а '
+                                                                             'не '
+                                                                             'пробег '
+                                                                             'по '
+                                                                             'соседним '
+                                                                             'ступеням '
+                                                                             'вверх-вниз. '
+                                                                             'Сочиняй '
+                                                                             'под тему '
+                                                                             'и жанр '
+                                                                             'каждого '
+                                                                             'трека '
+                                                                             'заново.'},
                                             'pad_synth': {   'type': 'string',
                                                              'description': 'Синт '
                                                                             'подклада: '
@@ -233,25 +353,76 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                             'viola.'},
                                             'pad_notes': {   'type': 'string',
                                                              'description': 'Аккорд '
-                                                                            'подклада, '
-                                                                            'например '
-                                                                            '"0, 4, '
-                                                                            '7".'},
+                                                                            'подклада '
+                                                                            '— 3-4 '
+                                                                            'ступени '
+                                                                            'лада '
+                                                                            'через '
+                                                                            'запятую. '
+                                                                            'Трезвучие '
+                                                                            'тоники '
+                                                                            '(терция + '
+                                                                            'квинта) — '
+                                                                            'самый '
+                                                                            'нейтральный '
+                                                                            'вариант; '
+                                                                            'секста, '
+                                                                            'септима и '
+                                                                            'обращения '
+                                                                            'дают '
+                                                                            'трекам '
+                                                                            'разный '
+                                                                            'цвет.'},
                                             'progression': {   'type': 'string',
                                                                'description': 'Движение '
                                                                               'тоники '
                                                                               'по '
-                                                                              'ступеням, '
-                                                                              'например '
-                                                                              '"0, 0, '
-                                                                              '5, 3". '
+                                                                              'ступеням '
+                                                                              'лада — '
+                                                                              '3-4 '
+                                                                              'числа '
+                                                                              'через '
+                                                                              'запятую, '
+                                                                              'по '
+                                                                              'одному '
+                                                                              'на '
+                                                                              'секцию '
+                                                                              'формы. '
                                                                               'Даёт '
                                                                               'гармоническое '
-                                                                              'развитие '
-                                                                              '— с ним '
+                                                                              'развитие, '
+                                                                              'с ним '
                                                                               'трек '
                                                                               'заметно '
                                                                               'живее. '
+                                                                              'Выбирай '
+                                                                              'движение '
+                                                                              'под '
+                                                                              'жанр и '
+                                                                              'настроение '
+                                                                              'конкретного '
+                                                                              'трека: '
+                                                                              'в живом '
+                                                                              'логе '
+                                                                              '56% '
+                                                                              'вызовов '
+                                                                              'пришли '
+                                                                              'с ОДНОЙ '
+                                                                              'и той '
+                                                                              'же '
+                                                                              'последовательностью, '
+                                                                              'скопированной '
+                                                                              'из '
+                                                                              'этого '
+                                                                              'описания, '
+                                                                              '— '
+                                                                              'именно '
+                                                                              'поэтому '
+                                                                              'сет '
+                                                                              'звучал '
+                                                                              'как '
+                                                                              'один '
+                                                                              'трек. '
                                                                               'Пропусти '
                                                                               'для '
                                                                               'статичной '
@@ -259,14 +430,37 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                             'repeat': {   'type': 'boolean',
                                                           'description': 'true — форма '
                                                                          'зацикливается '
+                                                                         'БЕСКОНЕЧНО, '
+                                                                         'до явного '
+                                                                         'stop_music '
                                                                          '(диджей-сет, '
                                                                          'фон под '
+                                                                         'долгую '
                                                                          'речь). false '
-                                                                         '— трек '
+                                                                         '(по '
+                                                                         'умолчанию) — '
+                                                                         'трек '
+                                                                         'доигрывает '
+                                                                         'одну форму и '
                                                                          'заканчивается '
-                                                                         'сам после '
-                                                                         'одной '
-                                                                         'формы.'},
+                                                                         'сам. Ставь '
+                                                                         'true ТОЛЬКО '
+                                                                         'когда музыка '
+                                                                         'должна '
+                                                                         'звучать '
+                                                                         'неопределённо '
+                                                                         'долго: на '
+                                                                         'обычную '
+                                                                         'просьбу '
+                                                                         '«сыграй '
+                                                                         'что-нибудь» '
+                                                                         'зацикленный '
+                                                                         'трек играет '
+                                                                         'часами и '
+                                                                         'юзеру '
+                                                                         'приходится '
+                                                                         'просить '
+                                                                         'остановить.'},
                                             'swing': {   'type': 'number',
                                                          'description': 'Свинг '
                                                                         'восьмых, '
@@ -308,7 +502,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'repeat',
                                        'swing'],
                          'required': ['bpm', 'root', 'scale'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('composer',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -321,7 +516,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'properties': {},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {'params': [], 'required': [], 'accepts_kwargs': False}},
+        'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
+        'skill': ('mapping',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -339,7 +535,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['name'],
                          'required': ['name'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('renardo-library',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -356,7 +553,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['name'],
                          'required': ['name'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('navigation',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': False,
@@ -393,7 +591,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['text', 'chars_per_second'],
                          'required': ['text'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('voice-tts',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': False,
@@ -494,7 +693,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['code', 'pattern_name', 'segments', 'duration_sec'],
                          'required': ['code'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('composer',)},
     {   'llm_visible': True,
         'read_only': True,
         'destructive': False,
@@ -524,7 +724,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['query', 'limit'],
                          'required': ['query'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('knowledge',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -543,7 +744,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                            "'квартира')"}},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {'params': ['map_name'], 'required': [], 'accepts_kwargs': False}},
+        'signature': {'params': ['map_name'], 'required': [], 'accepts_kwargs': False},
+        'skill': ('mapping',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -571,7 +773,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['track_id'],
                          'required': ['track_id'],
-                         'accepts_kwargs': True}},
+                         'accepts_kwargs': True},
+        'skill': ('player',)},
     {   'llm_visible': True,
         'read_only': True,
         'destructive': False,
@@ -599,7 +802,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['track_id'],
                          'required': ['track_id'],
-                         'accepts_kwargs': True}},
+                         'accepts_kwargs': True},
+        'skill': ('player',)},
     {   'llm_visible': True,
         'read_only': True,
         'destructive': False,
@@ -643,7 +847,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['limit', 'sort_by', 'tag', 'mood'],
                          'required': [],
-                         'accepts_kwargs': True}},
+                         'accepts_kwargs': True},
+        'skill': ('player',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': False,
@@ -672,7 +877,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['track_id'],
                          'required': ['track_id'],
-                         'accepts_kwargs': True}},
+                         'accepts_kwargs': True},
+        'skill': ('player',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -739,7 +945,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'rating',
                                        'notes'],
                          'required': ['track_id'],
-                         'accepts_kwargs': True}},
+                         'accepts_kwargs': True},
+        'skill': ('player',)},
     {   'llm_visible': True,
         'read_only': True,
         'destructive': True,
@@ -765,7 +972,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['query', 'limit'],
                          'required': ['query'],
-                         'accepts_kwargs': True}},
+                         'accepts_kwargs': True},
+        'skill': ('player',)},
     {   'llm_visible': False,
         'read_only': False,
         'destructive': True,
@@ -912,7 +1120,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'title',
                                        'auto_save'],
                          'required': ['prompt'],
-                         'accepts_kwargs': True}},
+                         'accepts_kwargs': True},
+        'skill': ()},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -924,7 +1133,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'properties': {},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {'params': [], 'required': [], 'accepts_kwargs': False}},
+        'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
+        'skill': ('core',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -938,7 +1148,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'properties': {},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {'params': [], 'required': [], 'accepts_kwargs': False}},
+        'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
+        'skill': ('navigation',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -952,7 +1163,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'properties': {},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {'params': [], 'required': [], 'accepts_kwargs': False}},
+        'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
+        'skill': ('core',)},
     {   'llm_visible': True,
         'read_only': True,
         'destructive': False,
@@ -966,7 +1178,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'properties': {},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {'params': [], 'required': [], 'accepts_kwargs': False}},
+        'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
+        'skill': ('composer', 'dj')},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -979,7 +1192,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'properties': {},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {'params': [], 'required': [], 'accepts_kwargs': False}},
+        'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
+        'skill': ('core',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -992,7 +1206,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'properties': {},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {'params': [], 'required': [], 'accepts_kwargs': False}},
+        'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
+        'skill': ('core',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -1034,7 +1249,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['sound_name', 'category'],
                          'required': [],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('expression',)},
     {   'llm_visible': True,
         'read_only': True,
         'destructive': False,
@@ -1063,7 +1279,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['tag', 'min_rating'],
                          'required': [],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('renardo-library',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': False,
@@ -1093,7 +1310,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                         'silero']}},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {'params': ['provider'], 'required': [], 'accepts_kwargs': False}},
+        'signature': {'params': ['provider'], 'required': [], 'accepts_kwargs': False},
+        'skill': ('voice-tts',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -1106,7 +1324,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'properties': {},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {'params': [], 'required': [], 'accepts_kwargs': False}},
+        'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
+        'skill': ('navigation',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -1137,7 +1356,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['timeout_seconds', 'prompt_text'],
                          'required': [],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('core',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -1161,7 +1381,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                            'текущую.'}},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {'params': ['map_name'], 'required': [], 'accepts_kwargs': False}},
+        'signature': {'params': ['map_name'], 'required': [], 'accepts_kwargs': False},
+        'skill': ('mapping',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': False,
@@ -1183,7 +1404,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['name'],
                          'required': ['name'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('renardo-library',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -1242,7 +1464,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                              'пользователя.'}},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {'params': [], 'required': [], 'accepts_kwargs': True}},
+        'signature': {'params': [], 'required': [], 'accepts_kwargs': True},
+        'skill': ('memory',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -1303,7 +1526,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                              'предпочтения).'}},
                           'required': ['fact'],
                           'additionalProperties': False},
-        'signature': {'params': [], 'required': [], 'accepts_kwargs': True}},
+        'signature': {'params': [], 'required': [], 'accepts_kwargs': True},
+        'skill': ('memory',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -1354,7 +1578,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                              'пользователя.'}},
                           'required': ['query'],
                           'additionalProperties': False},
-        'signature': {'params': [], 'required': [], 'accepts_kwargs': True}},
+        'signature': {'params': [], 'required': [], 'accepts_kwargs': True},
+        'skill': ('memory',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -1385,7 +1610,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['direction', 'distance'],
                          'required': ['direction'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('navigation',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -1412,7 +1638,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['x', 'y', 'theta'],
                          'required': ['x', 'y'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('navigation',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -1434,7 +1661,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['waypoint'],
                          'required': ['waypoint'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('navigation',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -1448,7 +1676,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'properties': {},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {'params': [], 'required': [], 'accepts_kwargs': False}},
+        'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
+        'skill': ('mapping',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -1510,7 +1739,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['animation', 'duration'],
                          'required': ['animation'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('expression',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -1598,7 +1828,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['sound'],
                          'required': ['sound'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('expression',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': False,
@@ -1658,7 +1889,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['name', 'old_name'],
                          'required': [],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('memory',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': False,
@@ -1761,7 +1993,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'rating',
                                        'notes'],
                          'required': ['name'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('renardo-library',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -1783,7 +2016,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['name'],
                          'required': ['name'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('navigation',)},
     {   'llm_visible': True,
         'read_only': True,
         'destructive': False,
@@ -1823,7 +2057,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['query', 'pack', 'case'],
                          'required': ['query'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('composer',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': False,
@@ -1865,7 +2100,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['query', 'max_results'],
                          'required': ['query'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('knowledge',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': False,
@@ -2015,7 +2251,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'persona',
                                        'plan'],
                          'required': ['enabled'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('dj',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -2036,7 +2273,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['action'],
                          'required': ['action'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('voice-tts',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -2057,7 +2295,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['action'],
                          'required': ['action'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('voice-tts',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': False,
@@ -2085,7 +2324,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['provider'],
                          'required': ['provider'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('voice-tts',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': False,
@@ -2125,7 +2365,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['preset_name'],
                          'required': ['preset_name'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('composer',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': False,
@@ -2203,7 +2444,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['voice', 'provider'],
                          'required': ['voice'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('voice-tts',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -2224,7 +2466,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['action'],
                          'required': ['action'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('voice-tts',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -2345,7 +2588,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['text', 'animation', 'voice'],
                          'required': ['text'],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('core',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -2400,7 +2644,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['map_name', 'new_location'],
                          'required': [],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('mapping',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': False,
@@ -2433,7 +2678,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['pattern_name'],
                          'required': [],
-                         'accepts_kwargs': False}},
+                         'accepts_kwargs': False},
+        'skill': ('composer', 'dj', 'player')},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': True,
@@ -2446,7 +2692,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'properties': {},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {'params': [], 'required': [], 'accepts_kwargs': False}},
+        'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
+        'skill': ('navigation',)},
     {   'llm_visible': True,
         'read_only': False,
         'destructive': False,
@@ -2502,4 +2749,5 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'additionalProperties': False},
         'signature': {   'params': ['group_id', 'ops'],
                          'required': [],
-                         'accepts_kwargs': False}})
+                         'accepts_kwargs': False},
+        'skill': ('scheduler',)})

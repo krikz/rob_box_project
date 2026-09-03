@@ -28,15 +28,61 @@ into the script rather than merely described in a comment.
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
 
 def _repo_root(start: Path) -> Path:
+    """Locate the rob_box_project repo root, robust to dev vs CI layouts.
+
+    Three layouts we must support:
+
+    1. **Dev / krikz worktree** — test file lives under ``src/rob_box_voice/test/...``.
+       Walking up: ``core → unit → test → rob_box_voice → src → <repo>``.
+       The ``<repo>`` directory has both ``src/`` and ``docker/`` next to it.
+
+    2. **GitHub Actions ``test_ws``** — CI mirrors ``src/`` into
+       ``test_ws/src/`` and ``docker/`` into ``test_ws/docker/`` (see
+       ``.github/workflows/G-Run Tests.yml``). Same walk lands at ``test_ws``
+       and the parent's ``src/`` + ``docker/`` check matches.
+
+    3. **``colcon test`` build tree** — when integration tests run under
+       ``colcon test``, pytest may discover the test file from
+       ``test_ws/build/<pkg>/...`` or from ``test_ws/install/...`` where the
+       ``src/`` and ``docker/`` siblings are absent. In that case the env
+       var ``ROB_BOX_REPO_ROOT`` (set by the workflow) is the only reliable
+       anchor.
+
+    Search order:
+
+    * explicit override via ``ROB_BOX_REPO_ROOT`` env var (set in CI);
+    * any ancestor whose direct children are both ``src/`` and ``docker/``;
+    * any ancestor that contains a ``src/rob_box_voice`` subdir (dev-repo);
+    * as a last resort, walk all the way up looking for a sibling pair.
+
+    A hard ``RuntimeError`` is kept ONLY if nothing matches at all — that
+    means the file is genuinely outside the repo, which is a configuration
+    problem, not a CI vs dev mismatch.
+    """
+    override = os.environ.get("ROB_BOX_REPO_ROOT")
+    if override:
+        candidate = Path(override).expanduser().resolve()
+        if (candidate / "src").is_dir():
+            return candidate
+
     for parent in [start, *start.parents]:
         if (parent / "src").is_dir() and (parent / "docker").is_dir():
             return parent
-    raise RuntimeError("repo root not found")
+
+    for parent in [start, *start.parents]:
+        if (parent / "src" / "rob_box_voice").is_dir():
+            return parent
+
+    raise RuntimeError(
+        f"repo root not found for {start!s}; set ROB_BOX_REPO_ROOT or run "
+        "from inside rob_box_project"
+    )
 
 
 REPO_ROOT = _repo_root(Path(__file__).resolve())

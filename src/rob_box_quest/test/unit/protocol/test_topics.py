@@ -13,6 +13,7 @@ from rob_box_quest.protocol.topics import (
     encode_lidar_2d,
     encode_person_detections,
     encode_robot_status,
+    encode_voice_state,
 )
 
 
@@ -107,3 +108,53 @@ class TestPersonDetectionsPayload:
         assert isinstance(decoded["detections"], list)
         assert len(decoded["detections"]) == 1
         assert decoded["detections"][0]["cls"] == "person"
+
+
+class TestVoiceStatePayload:
+    """voice_state (0x1202): msgpack-dict по meta-quest-api.md §4.
+
+    Контракт: ``{state, ts_ms, detail?}`` где ``state`` —
+    одна из ``idle/listening/thinking/speaking``.
+    """
+
+    def test_required_keys_no_detail(self):
+        payload = encode_voice_state(state="listening", ts_ms=1234567890)
+        decoded = msgpack.unpackb(payload, raw=False)
+        assert decoded["state"] == "listening"
+        assert decoded["ts_ms"] == 1234567890
+        # detail не кладём, если None/пусто — обратная совместимость с клиентом.
+        assert "detail" not in decoded
+
+    def test_detail_omitted_when_empty_string(self):
+        payload = encode_voice_state(state="idle", ts_ms=1, detail="")
+        decoded = msgpack.unpackb(payload, raw=False)
+        assert "detail" not in decoded
+
+    def test_detail_included_when_provided(self):
+        payload = encode_voice_state(
+            state="idle", ts_ms=1, detail="silenced"
+        )
+        decoded = msgpack.unpackb(payload, raw=False)
+        assert decoded["state"] == "idle"
+        assert decoded["detail"] == "silenced"
+        assert decoded["ts_ms"] == 1
+
+    @pytest.mark.parametrize(
+        "state",
+        ["idle", "listening", "thinking", "speaking"],
+    )
+    def test_all_bridge_states_serialize(self, state: str):
+        payload = encode_voice_state(state=state, ts_ms=42)
+        decoded = msgpack.unpackb(payload, raw=False)
+        assert decoded["state"] == state
+        assert decoded["ts_ms"] == 42
+
+    def test_ts_ms_int_required(self):
+        """ts_ms — int (не float, не str). Клиент делает на нём дедуп."""
+        payload = encode_voice_state(state="idle", ts_ms=1234567890)
+        decoded = msgpack.unpackb(payload, raw=False)
+        assert isinstance(decoded["ts_ms"], int)
+
+    def test_topic_id_is_0x1202(self):
+        """``voice_state`` зарегистрирован под 0x1202 — guard от регрессии."""
+        assert TOPIC_IDS["voice_state"] == 0x1202

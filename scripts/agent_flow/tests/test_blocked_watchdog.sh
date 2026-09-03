@@ -208,16 +208,16 @@ assert_contains "SKIP #1605 PR #1700" "$STDERR_LOG" "W3: merged PR sha не в b
 assert_contains "closed=0" "$STDERR_LOG" "W3: closed=0 (не закрыт)" || fail "W3 closed counter"
 
 # ============================================================================
-# W4. merged PR sha В feature/avatar → DRY_RUN → counter инкрементируется,
-#      но NO actual close в journal.
+# W4. merged PR sha В develop (default BASE_BRANCHES) → DRY_RUN → counter
+#      инкрементируется, но NO actual close в journal.
 # ============================================================================
 cat > "$WORK/issues.json" <<'JSON'
 [{"number":1605,"title":"AV-11 mixed-mode test"}]
 JSON
 cat > "$WORK/prs.json" <<'JSON'
-[{"number":1701,"mergeCommit":{"oid":"abcdef1234567890"},"baseRefName":"feature/avatar","headRefName":"z-agent/wip","mergedAt":"2026-08-28T01:00:00Z","title":"[AV-11] #1605 attempt-8"}]
+[{"number":1701,"mergeCommit":{"oid":"abcdef1234567890"},"baseRefName":"develop","headRefName":"z-agent/wip","mergedAt":"2026-08-28T01:00:00Z","title":"[AV-11] #1605 attempt-8"}]
 JSON
-echo "  feature/avatar" > "$WORK/branch_contains.txt"  # содержит нужную ветку
+echo "  develop" > "$WORK/branch_contains.txt"  # содержит нужную ветку
 cat > "$WORK/issue_view.json" <<'JSON'
 {"_default":{"body":"linked kanban: t_deadbeef","state":"OPEN","labels":[{"name":"needs-e2e"}]}}
 JSON
@@ -242,7 +242,7 @@ JSON
 # PR с #1595 в title и хешем, который случайно содержит "1605" (поиск по
 # `gh pr list --search "#1605"` найдёт этот PR), но НЕ содержит ровно "#1605"
 cat > "$WORK/prs.json" <<'JSON'
-[{"number":1606,"mergeCommit":{"oid":"abcdef1234567890"},"baseRefName":"feature/avatar","headRefName":"z-agent/decomp","mergedAt":"2026-08-24T21:11:57Z","title":"feat(avatar AV-1 #1595): decomposition"}]
+[{"number":1606,"mergeCommit":{"oid":"abcdef1234567890"},"baseRefName":"develop","headRefName":"z-agent/decomp","mergedAt":"2026-08-24T21:11:57Z","title":"feat(avatar AV-1 #1595): decomposition"}]
 JSON
 run_watchdog "MOCK_GH_ISSUE_LIST=$WORK/issues.json MOCK_GH_PR_LIST=$WORK/prs.json MOCK_GH_API=$WORK/prs.json MOCK_BRANCH_CONTAINS_FILE=$WORK/branch_contains.txt"
 assert_contains "SKIP #1605 (no merged PR found)" "$STDERR_LOG" "W5: PR с похожим но не равным #NNNN → SKIP" || fail "W5"
@@ -255,9 +255,9 @@ cat > "$WORK/issues.json" <<'JSON'
 [{"number":1605,"title":"AV-11 mixed-mode test"}]
 JSON
 cat > "$WORK/prs.json" <<'JSON'
-[{"number":1701,"mergeCommit":{"oid":"abcdef1234567890"},"baseRefName":"feature/avatar","headRefName":"z-agent/wip","mergedAt":"2026-08-28T01:00:00Z","title":"[AV-11] #1605 attempt-8"}]
+[{"number":1701,"mergeCommit":{"oid":"abcdef1234567890"},"baseRefName":"develop","headRefName":"z-agent/wip","mergedAt":"2026-08-28T01:00:00Z","title":"[AV-11] #1605 attempt-8"}]
 JSON
-echo "  feature/avatar" > "$WORK/branch_contains.txt"
+echo "  develop" > "$WORK/branch_contains.txt"
 # Комментарии с нашим marker (только что оставленный)
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 cat > "$WORK/comments.json" <<EOF

@@ -260,6 +260,35 @@ class WSSServer:
             return  # loop закрыт/не запущен — кадр теряем, не роняем ноду
         fut.add_done_callback(_consume_future_exception)
 
+    def broadcast_json_event(self, payload_obj: dict[str, Any]) -> int:
+        """Слать JSON_EVENT (control notification) всем открытым сессиям.
+
+        В отличие от ``broadcast_frame`` (BINARY_FRAME, привязан к stream_id
+        через ``subscribed``), JSON_EVENT — control-frame (stream_id=0) и
+        не требует подписки: клиент видит все JSON_EVENT'ы потому что
+        соединён. Сейчас используется для ``robot_alert`` (AV-26 / R7);
+        ``safety_stop`` уже шлётся через ``_send`` напрямую в сессионном
+        цикле.
+
+        Sync (вызывается из ROS/capture-потоков). Возвращает количество
+        клиентов которым доставлено. Loop-потокобезопасность — как у
+        ``broadcast_frame``.
+        """
+        if not self._sessions:
+            return 0
+        raw = json.dumps(payload_obj, separators=(",", ":")).encode("utf-8")
+        frame = encode_frame(FrameType.JSON_EVENT, 0, raw)
+        count = 0
+        for sid, session in list(self._sessions.items()):
+            if not session.is_open():
+                continue
+            ws = self._ws_by_session.get(sid)
+            if ws is None:
+                continue
+            self._schedule_send(ws, frame)
+            count += 1
+        return count
+
     async def _send(
         self,
         ws,

@@ -182,9 +182,9 @@ class TestAuth:
         assert "запрещ" not in result.lower()
 
 
-class TestMemoryPersistence:
+class TestInMemoryChatHistory:
 
-    def test_turns_saved(self) -> None:
+    def test_turns_saved_in_memory(self) -> None:
         memory = InMemoryStore()
         harness = TelegramHarness(
             config=_make_config(), llm=MockLLMProvider(),
@@ -192,7 +192,7 @@ class TestMemoryPersistence:
         )
         _run(harness.init())
         _run(harness.step({"chat_id": "123", "user_id": "456", "text": "hello"}))
-        turns = _run(memory.load_recent("tg:123"))
+        turns = harness._chat_history["tg:123"]
         assert len(turns) >= 2
 
     def test_multiple_messages_accumulate(self) -> None:
@@ -204,7 +204,7 @@ class TestMemoryPersistence:
         _run(harness.init())
         _run(harness.step({"chat_id": "123", "user_id": "456", "text": "msg1"}))
         _run(harness.step({"chat_id": "123", "user_id": "456", "text": "msg2"}))
-        turns = _run(memory.load_recent("tg:123"))
+        turns = harness._chat_history["tg:123"]
         assert len(turns) >= 4
 
 

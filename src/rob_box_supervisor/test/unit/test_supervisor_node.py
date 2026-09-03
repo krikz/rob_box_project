@@ -241,11 +241,16 @@ class TestAvatarSupervisorDoesNotMutateExternalState(unittest.TestCase):
         )
         msg = call.args[0]
         self.assertIsInstance(msg, str)
-        # Сообщение содержит ключевые поля (mode/zenoh/msgpack), которые
-        # раньше передавались как отдельные format-args.
+        # Сообщение содержит ключевые поля (mode/zenoh), которые раньше
+        # передавались как отдельные format-args. ``msgpack=…`` убрано в
+        # AV-14 (#1906) — msgpack стал hard dep в ``rob_box_supervisor``,
+        # смёржен на уровне ``core.state``, и эта diagnostics-строка
+        # больше не должна сообщать про его наличие (это уже не поле,
+        # которое варьируется на проде).
         self.assertIn("avatar_supervisor started", msg)
         self.assertIn(f"mode={self.node._mode}", msg)
-        self.assertIn("msgpack=", msg)
+        # ``msgpack=`` намеренно отсутствует — см. комментарий выше.
+        self.assertNotIn("msgpack=", msg)
         # Никаких kwargs %-форматирования быть не должно (kwargs в rclpy
         # info() не поддерживаются и упадут так же, как и >1 args).
         self.assertEqual(
@@ -497,9 +502,7 @@ class TestAvatarSupervisorSetAvatarMode(unittest.TestCase):
 
     def test_json_in_request_data_is_accepted(self) -> None:
         """Переходный контракт (б): JSON в ``request.data`` вместо атрибутов."""
-        req = types.SimpleNamespace(
-            data=json.dumps({"event": "telegram_acquire_floor", "client_id": "telegram1"})
-        )
+        req = types.SimpleNamespace(data=json.dumps({"event": "telegram_acquire_floor", "client_id": "telegram1"}))
         resp = MagicMock()
         resp.success = False
         resp.message = ""

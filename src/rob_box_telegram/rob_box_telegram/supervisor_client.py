@@ -37,6 +37,27 @@ ADR-0028 §4.5 разделяет развёртывание супервизо�
 работать в режиме fallback (как ``monitor``). Это сохраняет
 работоспособность бота во время раскатки supervisor-ноды.
 
+Wire format ``/avatar/state`` (AV-14, issue #1906)
+--------------------------------------------------
+
+До AV-14 этот модуль пытался декодировать ``/avatar/state`` через
+``json.loads`` — что было **тихо неправильно** (издатель
+сериализует msgpack в latin-1 строку, потребитель ждал JSON).
+Результат: каждый ``/avatar/state`` падал в ``JSONDecodeError``,
+``except`` молча проглатывал ошибку, и Telegram-бот **никогда** не
+видел состояния супервизора. UI-gate (``_handle_move``) не блокировал
+кнопки даже когда другой оператор держал ``teleop_floor`` — это
+и был баг #1906.
+
+AV-14 переносит единственный кодек в :mod:`rob_box_supervisor.core.state`:
+``encode_for_ros_string`` / ``decode_from_ros_string``. Эта сторона
+**обязана** использовать его и **не** пытаться парсить payload
+самостоятельно. Если импорт кодека невозможен (например, на минимальном
+CI без ``rob_box_supervisor``) — мы возвращаемся к прежнему
+``AvatarState()``-default и логируем rate-limited WARN, **не**
+``json.loads``-fallback (молчаливый fallback ровно то, что спрятал
+баг, не повторяем).
+
 Моки для тестов
 ---------------
 
@@ -61,7 +82,45 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, Optional
 
+from .observability import record_avatar_state_decode_error
+
+# AV-14: codec lives in rob_box_supervisor.core.state. The runtime
+# import is done lazily inside ``_on_state_msg`` so the bot stays
+# importable in minimal CI envs without the supervisor package
+# installed. The runtime fallback on import failure is "log + skip",
+# NOT "fall back to json.loads" — silent fallback is exactly the bug
+# #1906 we are closing.
+
 logger = logging.getLogger(__name__)
+
+
+# AV-14: rate-limited WARN для декодирования /avatar/state. Не чаще
+# раза в 10 секунд — иначе на 1 Гц топике с битым payload залогируем
+# лишних ~10 строк/сек, и нужный сигнал утонет.
+_DECODE_WARN_PERIOD_S: float = 10.0
+_decode_warn_last_ts: float = 0.0
+_decode_warn_lock = threading.Lock()
+
+
+def _maybe_warn_decode(reason: str, exc: BaseException) -> None:
+    """Записать ошибку декодирования в счётчик и (rate-limited) в лог."""
+    global _decode_warn_last_ts
+    try:
+        record_avatar_state_decode_error(reason=reason)
+    except Exception:  # noqa: BLE001 — observability никогда не валит hot path
+        pass
+    now = time.monotonic()
+    with _decode_warn_lock:
+        last = _decode_warn_last_ts
+        if now - last < _DECODE_WARN_PERIOD_S:
+            return
+        _decode_warn_last_ts = now
+    logger.warning(
+        "SupervisorClient: /avatar/state decode failed (%s): %r " "(rate-limited: 1 WARN per %.0fs)",
+        reason,
+        exc,
+        _DECODE_WARN_PERIOD_S,
+    )
 
 
 class Floor(str, Enum):
@@ -268,12 +327,8 @@ class SupervisorClient:
             from std_msgs.msg import String as RosString  # type: ignore
         except ImportError:
             return
-        self._heartbeat_pub = self._node.create_publisher(
-            RosString, self.TOPIC_HEARTBEAT, 10
-        )
-        self._heartbeat_timer = self._node.create_timer(
-            self._heartbeat_period_s, self._send_heartbeat
-        )
+        self._heartbeat_pub = self._node.create_publisher(RosString, self.TOPIC_HEARTBEAT, 10)
+        self._heartbeat_timer = self._node.create_timer(self._heartbeat_period_s, self._send_heartbeat)
         logger.info(
             "SupervisorClient[%s] heartbeat started (period=%.3fs)",
             self._client_id,
@@ -286,9 +341,7 @@ class SupervisorClient:
             self._heartbeat_timer = None
         self._heartbeat_pub = None
 
-    def subscribe_state(
-        self, listener: Callable[[AvatarState], None]
-    ) -> Callable[[], None]:
+    def subscribe_state(self, listener: Callable[[AvatarState], None]) -> Callable[[], None]:
         """Подписка на изменения /avatar/state. Возвращает unsubscribe."""
         self._state_listeners.append(listener)
         # Сразу отдадим текущее состояние — UI не должен ждать первого
@@ -385,18 +438,92 @@ class SupervisorClient:
             )
 
     def _on_state_msg(self, msg: Any) -> None:
+        """Decode ``/avatar/state`` via the single codec in rob_box_supervisor.
+
+        AV-14 (issue #1906): the publisher and this consumer MUST speak the
+        same wire format, defined in :mod:`rob_box_supervisor.core.state`.
+        We deliberately do **not** fall back to ``json.loads`` here — that
+        silent fallback is exactly the bug we are closing.
+
+        On any decode failure we (a) bump the
+        ``avatar_state_decode_errors_total`` counter and (b) log a
+        rate-limited WARN, but we do NOT update ``self._state`` (UI-gate
+        would silently keep its previous value, which is preferable to
+        resetting to a default-constructed ``AvatarState()`` that lies
+        about "no other operator" — that lie is also a safety bug).
+        """
+        data = getattr(msg, "data", None)
+        if not isinstance(data, str) or not data:
+            _maybe_warn_decode("empty", ValueError("empty msg.data"))
+            return
+
         try:
-            payload = json.loads(getattr(msg, "data", "") or "{}")
-        except (json.JSONDecodeError, TypeError):
+            from rob_box_supervisor.core.state import (  # noqa: PLC0415
+                StateTransportError,
+                StateVersionError,
+                decode_from_ros_string,
+            )
+        except ImportError as exc:
+            # Codec unavailable (e.g. minimal CI without rob_box_supervisor
+            # installed). Same contract: log + skip, never silently default.
+            _maybe_warn_decode("missing_codec", exc)
             return
-        if not isinstance(payload, dict):
+
+        try:
+            decoded = decode_from_ros_string(data)
+        except (StateTransportError, StateVersionError) as exc:
+            _maybe_warn_decode("transport_or_version", exc)
             return
+        except Exception as exc:  # noqa: BLE001 — не валить подписку
+            _maybe_warn_decode("other", exc)
+            return
+
+        # Bridge supervisor schema (FloorState dataclass with client_id +
+        # since_ms + last_heartbeat_ms) → Telegram UI contract
+        # (teleop_floor/voice_floor = Optional[str] client_id). Callbacks
+        # (_handle_move, _on_avatar_state) and existing tests only read
+        # ``.client_id``-shaped values; ``since_ms`` and the event
+        # become raw fallback fields for now.
+        teleop_holder: Optional[str] = decoded.teleop_floor.client_id if decoded.teleop_floor else None
+        voice_holder: Optional[str] = decoded.voice_floor.client_id if decoded.voice_floor else None
         new_state = AvatarState(
-            teleop_floor=payload.get("teleop_floor"),
-            voice_floor=payload.get("voice_floor"),
-            mode=str(payload.get("mode", "off")),
-            since_ms=int(payload.get("since_ms", 0)),
-            raw=payload,
+            teleop_floor=teleop_holder,
+            voice_floor=voice_holder,
+            mode=str(decoded.mode or "off"),
+            since_ms=int(decoded.since_ms or 0),
+            raw={
+                "mode": decoded.mode,
+                "teleop_floor": (
+                    {
+                        "client_id": teleop_holder,
+                        "since_ms": decoded.teleop_floor.since_ms,
+                        "last_heartbeat_ms": decoded.teleop_floor.last_heartbeat_ms,
+                    }
+                    if decoded.teleop_floor
+                    else None
+                ),
+                "voice_floor": (
+                    {
+                        "client_id": voice_holder,
+                        "since_ms": decoded.voice_floor.since_ms,
+                        "last_heartbeat_ms": decoded.voice_floor.last_heartbeat_ms,
+                    }
+                    if decoded.voice_floor
+                    else None
+                ),
+                "last_event": (
+                    {
+                        "timestamp_ms": decoded.last_event.timestamp_ms,
+                        "client_id": decoded.last_event.client_id,
+                        "kind": decoded.last_event.kind,
+                        "args": dict(decoded.last_event.args),
+                    }
+                    if decoded.last_event
+                    else None
+                ),
+                "since_ms": decoded.since_ms,
+                "version": decoded.version,
+            },
         )
         with self._state_lock:
             self._state = new_state
@@ -406,9 +533,7 @@ class SupervisorClient:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("State listener raised: %r", exc)
 
-    def _acquire_via_service(
-        self, floor: Floor, timeout_s: float
-    ) -> AcquireResult:
+    def _acquire_via_service(self, floor: Floor, timeout_s: float) -> AcquireResult:
         """Реальный service-call (Phase 2)."""
         try:
             from rclpy.client import Client  # noqa: F401  type: ignore

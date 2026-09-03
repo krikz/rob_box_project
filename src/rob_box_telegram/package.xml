@@ -15,6 +15,12 @@
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>rob_box_core</depend>
+  <!-- AV-14 (issue #1906): single codec for /avatar/state lives in
+       rob_box_supervisor.core.state (encode_for_ros_string /
+       decode_from_ros_string). We only import the pure-Python module
+       (no rclpy transitively required), but ament still needs the
+       package to be a build/run-time peer of rob_box_telegram. -->
+  <exec_depend>rob_box_supervisor</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

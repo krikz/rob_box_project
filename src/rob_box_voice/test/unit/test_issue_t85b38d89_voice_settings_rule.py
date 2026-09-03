@@ -21,7 +21,7 @@ kanban-задачи t_85b38d89 (LLM-prompt: emotion/pitch/volume + skill set_pit
 Фикс:
 1. ``status_skill.py`` объявляет ``set_pitch(action: str)`` —
    синхронно с MCP ``SetPitchTool``.
-2. ``status_skill_prompt.txt`` документирует enum и step-control
+2. ``prompts/skills/voice-tts.txt`` документирует enum и step-control
    семантику; явно запрещает SSML pitch-атрибут как workaround.
 3. ``master_prompt_compact.txt`` имеет новый RULE #VOICE-SETTINGS
    с provider-conditional cheat sheet (minimax/yandex/silero).
@@ -32,7 +32,9 @@ kanban-задачи t_85b38d89 (LLM-prompt: emotion/pitch/volume + skill set_pit
 
 Refs:
 * t_85b38d89 — kanban-карточка с этим fix-path
-* src/rob_box_voice/rob_box_voice/skills/status_skill.py — код skill'а
+* src/rob_box_voice/prompts/skills/voice-tts.txt — фрагмент скилла
+  (change skill-scoped-dialogue-context: status_skill.py удалён как
+  мёртвый код Compositor'а, правило переехало сюда)
 * src/rob_box_mcp_tools/rob_box_mcp_tools/tools/system.py — MCP SetPitchTool
 * src/rob_box_voice/rob_box_voice/tts_node.py:2794-2797 — Yandex pitch ignored
 """
@@ -49,11 +51,11 @@ MASTER_PROMPT = (
     / "master_prompt_compact.txt"
 )
 
-STATUS_PROMPT = (
+_SKILL_FRAGMENT = (
     Path(__file__).resolve().parents[2]
     / "prompts"
     / "skills"
-    / "status_skill_prompt.txt"
+    / "voice-tts.txt"
 )
 
 
@@ -168,79 +170,89 @@ def test_voice_settings_rule_anchors_to_tts_context_tag() -> None:
     )
 
 
-# ── status_skill_prompt.txt ───────────────────────────────────────────
+# ── prompts/skills/voice-tts.txt ───────────────────────────────────────────
 
 
-def test_status_skill_prompt_documents_set_pitch_action_enum() -> None:
-    """status_skill_prompt должен документировать set_pitch(action: enum)."""
-    content = _read(STATUS_PROMPT)
-    # set_pitch(action) signature
-    assert re.search(r"set_pitch\(action\)", content), (
-        "status_skill_prompt.txt потерял сигнатуру set_pitch(action)"
+def test_voice_tts_fragment_documents_set_pitch_action_enum() -> None:
+    """Фрагмент обязан документировать set_pitch как action-enum.
+
+    Формулировка русская (фрагменты скиллов пишутся на языке диалога),
+    поэтому проверяем СУТЬ: назван инструмент и назван параметр action.
+    Инвариант тот же, что был у английского status_skill_prompt.txt:
+    LLM не должна считать, что pitch задаётся числом (t_85b38d89).
+    """
+    content = _read(_SKILL_FRAGMENT)
+    assert "set_pitch" in content, (
+        "prompts/skills/voice-tts.txt потерял упоминание set_pitch"
+    )
+    assert re.search(r"set_pitch.{0,80}action", content, re.S), (
+        "prompts/skills/voice-tts.txt не связывает set_pitch с параметром action"
     )
     # enum values
     assert "higher" in content and "lower" in content and "normal" in content, (
-        "status_skill_prompt.txt должен перечислять set_pitch enum: "
+        "prompts/skills/voice-tts.txt должен перечислять set_pitch enum: "
         "higher/lower/normal"
     )
 
 
-def test_status_skill_prompt_documents_step_clamps() -> None:
-    """status_skill_prompt должен документировать диапазоны clamp
+def test_voice_tts_fragment_documents_step_clamps() -> None:
+    """Фрагмент должен документировать диапазоны clamp
     (pitch [0.5, 2.0], volume dB-диапазон) — чтобы LLM не обещал
     невозможное (например, pitch=3.0)."""
-    content = _read(STATUS_PROMPT)
+    content = _read(_SKILL_FRAGMENT)
     assert "0.5" in content and "2.0" in content, (
-        "status_skill_prompt.txt должен документировать clamp-диапазон pitch "
+        "prompts/skills/voice-tts.txt должен документировать clamp-диапазон pitch "
         "[0.5, 2.0]"
     )
 
 
-def test_status_skill_prompt_warns_against_inline_prosody_pitch() -> None:
-    """status_skill_prompt должен явно предупреждать skill-LLM, что
-    <prosody pitch=...> внутри speak_text — не workaround для
-    изменения голоса."""
-    content = _read(STATUS_PROMPT)
-    assert "prosody" in content.lower(), (
-        "status_skill_prompt.txt должен упоминать prosody-тег "
+def test_voice_tts_fragment_warns_against_inline_prosody_pitch() -> None:
+    """Фрагмент обязан предупреждать, что <prosody pitch=...> внутри
+    speak_text — НЕ workaround для смены высоты голоса.
+
+    Это самое коварное место t_85b38d89: тег молча вырезается, юзер не
+    слышит разницы, а модель считает просьбу выполненной. Проверяем и
+    упоминание тега, и явное указание, что он не работает — на русском,
+    как и сам фрагмент."""
+    content = _read(_SKILL_FRAGMENT).lower()
+    assert "prosody" in content, (
+        "prompts/skills/voice-tts.txt должен упоминать prosody-тег "
         "(предупреждение о неработающем workaround)"
     )
-    assert "ignored" in content.lower() or "dropped" in content.lower(), (
-        "status_skill_prompt.txt должен явно говорить, что prosody pitch "
-        "ignored/dropped на minimax/yandex"
+    assert any(
+        marker in content
+        for marker in ("игнорир", "вырезает", "ignored", "dropped")
+    ), (
+        "prompts/skills/voice-tts.txt должен явно говорить, что prosody pitch "
+        "не срабатывает на minimax/yandex"
     )
 
 
-# ── status_skill.py code (schema parity) ─────────────────────────────
+# ── schema parity: каталог инструментов ──────────────────────────────
+#
+# Раньше здесь проверялась сигнатура ``set_pitch`` в
+# ``skills/status_skill.py`` — обёртке удалённого Compositor'а. Обёртка
+# была ВТОРЫМ объявлением контракта и разошлась с ``execute()``: она
+# обещала LLM ``set_pitch(pitch: float)`` при реальном
+# ``set_pitch(action: str)``. Обёртки больше нет; источник правды —
+# каталог, генерируемый из самих классов инструментов.
 
 
-def test_status_skill_set_pitch_signature_matches_mcp_action_enum() -> None:
-    """``status_skill.py`` объявляет ``set_pitch(action: str)`` —
-    синхронно с MCP ``SetPitchTool`` (action ∈ {higher, lower, normal}).
+def test_set_pitch_advertises_an_action_enum() -> None:
+    """``set_pitch`` принимает строку-действие, а не число."""
+    from rob_box_core.tool_catalog import get_tool
 
-    Если кто-то рефакторит skill обратно на float — тест сломается,
-    что и нужно (это и был исходный баг t_85b38d89)."""
-    skill_path = (
-        Path(__file__).resolve().parents[2]
-        / "rob_box_voice"
-        / "skills"
-        / "status_skill.py"
+    schema = dict(get_tool("set_pitch").parameters)
+    properties = schema.get("properties", {})
+    assert "action" in properties, (
+        "set_pitch должен принимать action; параметр pitch:float — это "
+        "регрессия класса t_85b38d89"
     )
-    src = skill_path.read_text(encoding="utf-8")
-    # Сигнатура set_pitch(action: str)
-    m = re.search(
-        r"async def set_pitch\s*\(([^)]*)\)",
-        src,
-    )
-    assert m is not None, "status_skill.py не содержит set_pitch(...)"
-    sig = m.group(1)
-    assert "action" in sig, (
-        f"status_skill.py set_pitch(...) должен принимать 'action', "
-        f"получили: {sig!r} (это был исходный баг t_85b38d89 — "
-        f"сигнатура была pitch: float, не совпадала с MCP SetPitchTool)"
-    )
-    # Не должно быть float как типа параметра
-    assert ": float" not in sig, (
-        f"status_skill.py set_pitch(...): float НЕ допустим — MCP принимает "
-        f"action: enum, не число. Сигнатура: {sig!r}"
-    )
+    assert properties["action"].get("type") == "string"
+
+
+def test_voice_tts_fragment_mentions_pitch_actions() -> None:
+    """Фрагмент скилла обязан описывать реальные значения action."""
+    text = _SKILL_FRAGMENT.read_text(encoding="utf-8").lower()
+    for action in ("higher", "lower", "normal"):
+        assert action in text, f"voice-tts.txt не описывает action={action!r}"

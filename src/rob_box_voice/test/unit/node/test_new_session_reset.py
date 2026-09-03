@@ -19,7 +19,6 @@ import pytest
 
 from rob_box_voice.core.llm_skip_reasons import new_llm_skip_counter
 from rob_box_voice.dialogue_node import DialogueNode
-from rob_box_harness.memory import InMemoryStore, Turn
 
 
 def _make_node(new_session_enabled: bool = True) -> DialogueNode:
@@ -157,23 +156,15 @@ class TestOnSttNewSession:
 
 
 class TestClearSessionTurns:
-    """Асинхронная очистка истории через memory.clear_turns."""
+    """Очистка in-memory окна ходов через DialogCore.clear_history."""
 
-    def test_clear_session_turns_empties_scope(self):
+    def test_clear_session_turns_calls_core_clear_history(self):
         n = _make_node()
-        n._memory = InMemoryStore()
-        n._loop = None  # не нужен — зовём корутину напрямую
+        n._core = MagicMock()
 
-        async def _seed_and_clear():
-            await n._memory.append_turn("default", Turn(role="user", content="привет"))
-            await n._memory.append_turn(
-                "default", Turn(role="assistant", content="здравствуй")
-            )
-            assert len(await n._memory.load_recent("default", limit=10)) == 2
-            await n._clear_session_turns()
-            assert await n._memory.load_recent("default", limit=10) == []
+        asyncio.run(n._clear_session_turns())
 
-        asyncio.run(_seed_and_clear())
+        n._core.clear_history.assert_called_once()
 
 
 class TestResetPublishesTtsImmune:
