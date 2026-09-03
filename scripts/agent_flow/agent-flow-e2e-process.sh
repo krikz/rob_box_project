@@ -130,6 +130,16 @@ fi
 HERMES_HOME=/home/builder/.hermes
 HERMES_BIN="${HERMES_BIN:-/home/builder/.hermes/hermes-agent/venv/bin/hermes}"
 export HOME=/home/builder
+# Ретро 03.09 t_a2ce09f8 (issue #1973): cron per-profile ставит HOME в
+# sandbox-profile-home (например, $HERMES_HOME/profiles/architect/home), и
+# gh auth status валится 3 раза подряд ("not logged into any GitHub hosts")
+# потому что в этой sandbox-HOME НЕТ валидной ~/.config/gh/hosts.yml —
+# hosts.yml с oauth_token лежит в основном /home/builder/.config/gh/
+# (для architect файл существует, но без oauth_token; для devops — нет вовсе).
+# Fix: форсировать GH_CONFIG_DIR на основной конфиг, общий для всех 6 профилей.
+# merge-gate страдает аналогично (использует тот же `gh`); правка там ниже.
+GH_CONFIG_DIR="${GH_CONFIG_DIR:-/home/builder/.config/gh}"
+export GH_CONFIG_DIR
 
 ISSUE_LABEL="${ISSUE_LABEL:-hermes}"
 NEEDS_E2E_LABEL="${NEEDS_E2E_LABEL:-needs-e2e}"

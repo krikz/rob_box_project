@@ -42,6 +42,14 @@ HERMES_BIN="${HERMES_BIN:-/home/builder/.hermes/hermes-agent/venv/bin/hermes}"
 
 # Force HOME=/home/builder — see comments in agent-flow-triage.sh.
 export HOME=/home/builder
+# Ретро 03.09 t_a2ce09f8 (issue #1973): cron per-profile ставит HOME в
+# sandbox-profile-home (например, $HERMES_HOME/profiles/architect/home), и
+# gh cli ищет конфиг в $HOME/.config/gh/. У architect-профиля в этой
+# sandbox-HOME hosts.yml есть, но без oauth_token; у devops — нет вовсе.
+# Форсируем GH_CONFIG_DIR на основной конфиг, общий для всех 6 профилей —
+# иначе merge-gate потенциально падает на любом gh api вызове с 401/404.
+GH_CONFIG_DIR="${GH_CONFIG_DIR:-/home/builder/.config/gh}"
+export GH_CONFIG_DIR
 
 ISSUE_LABEL="${ISSUE_LABEL:-hermes}"
 NEEDS_E2E_LABEL="${NEEDS_E2E_LABEL:-needs-e2e}"
@@ -80,6 +88,12 @@ STALE_BRANCH_REUSE_LABEL="${STALE_BRANCH_REUSE_LABEL:-stale-branch-reuse}"
 ADR_COLLISION_OVERRIDE_LABEL="${ADR_COLLISION_OVERRIDE_LABEL:-adr-collision-override}"
 ADR_COLLISION_BLOCKED_LABEL="${ADR_COLLISION_BLOCKED_LABEL:-agent-flow:adr-collision}"
 ADR_COLLISION_COMMENT_DEDUP_HOURS="${ADR_COLLISION_COMMENT_DEDUP_HOURS:-24}"
+# Ретро 03.09 t_a2ce09f8 (issue #1973): comment-dedup окно для needs-review +
+# CONFLICTING reconcile (используется в needs_review_conflict_reconcile_all).
+# Без default скрипт падает под `set -u` на line 755 → 196 фаилов подряд
+# в cron (job 1082e70dc68f). Семантика идентична ADR_COLLISION_COMMENT_DEDUP_HOURS:
+# 24 часа — не спамить один и тот же комментарий на PR чаще раза в сутки.
+NEEDS_REVIEW_CONFLICT_DEDUP_HOURS="${NEEDS_REVIEW_CONFLICT_DEDUP_HOURS:-24}"
 # ADR-0013 (docs/adr/0013-incremental-delivery-over-big-bang.md): PR > 50
 # commits OR > 3000 lines is forbidden without an explicit `big-bang-override`
 # label on the issue. Шифу (товарищ) is the only one allowed to set it. We
