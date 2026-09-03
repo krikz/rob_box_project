@@ -113,12 +113,19 @@ class TelegramNode(Node):
         self.declare_parameter("radio_max_duration_s", 30.0)
         self.declare_parameter("radio_max_bytes", 5 * 1024 * 1024)
         self.declare_parameter("radio_chunk_ms", 20)
+        # Выпало при W8-рефакторинге (b2ed9480), хотя handlers/messages.py
+        # и telegram_bot.yaml их по-прежнему используют — voice_message_handler
+        # падал AttributeError на любом голосовом вне /radio (issue найден 03.09).
+        self.declare_parameter("voice_stt_method", "yandex")
+        self.declare_parameter("voice_stt_language", "ru-RU")
         p = self.get_parameter
         self.camera_topic, self.camera_depth_topic, self.camera_up_topic = (
             p("camera_topic").value,
             p("camera_depth_topic").value,
             p("camera_up_topic").value,
         )
+        self.voice_stt_method: str = p("voice_stt_method").value
+        self.voice_stt_language: str = p("voice_stt_language").value
         self.camera_cache = CameraCache(ttl=p("camera_cache_ttl").value)
         self.latest_map_grid = self._active_chat_id = self._telegram_app = None
         # Issue #1195 — echo path (LLM replies back into the chat).
