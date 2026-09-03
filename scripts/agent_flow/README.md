@@ -305,6 +305,62 @@ bash scripts/agent_flow/tests/test_validate_adr_namespace.sh
 - `1` — ADR namespace collision (см. stderr для списка конфликтов и next-free)
 - `2` — usage error (неизвестный флаг, baseline не достижим)
 
+### `validate_test_ws_dirs.py` — pre-PR check на молчаливый контракт test_ws (ретро 03.09 t_cfa21388)
+
+`G-Run Tests.yml` собирает CI-workspace `test_ws/` из **подмножества** корня репо:
+
+```yaml
+rsync src/ -> test_ws/src/
+for d in docker migrations docs .github scripts; do rsync "$d" test_ws/; done
+```
+
+Список `for d in ...` — **молчаливый контракт**. Тест, который ходит walk-up'ом
+до корня репо и читает корневой каталог ВНЕ этого списка, локально зелёный, а
+на CI падает collect-error'ом — и роняет весь батч пакета, а не один тест.
+
+Баг случался дважды в одном файле:
+
+| Карточка | PR | Чего не было | Последствие |
+|----------|-----|--------------|-------------|
+| `t_29b9ce36` (02.09) | #1874 | `docker/` | `metrics_server.py not found` |
+| `t_cfa21388` (03.09) | #1958 | `scripts/` | `score.py not found`, develop RED ~9ч, 20+ PR заблокированы |
+
+Guard закрывает **класс**, а не третий экземпляр: сверяет rsync-список
+**каждого** job'а со всеми корневыми каталогами, на которые тесты ссылаются
+**от корня репо** (`Path(__file__).resolve().parents[N]` с N до корня, обход
+`parents`, или якорь `ROB_BOX_REPO_ROOT`). Package-local каталоги
+(`src/rob_box_animations/scripts/`) не считаются — иначе ложные срабатывания.
+
+**Severity:**
+- `FAIL` (exit 1) — каталог не скопирован и обращение не защищено `skipif` →
+  CI упадёт collect-error'ом. Блокирует.
+- `WARN` (exit 0) — обращение под `pytest.mark.skipif(...exists())` → тест
+  молча **скипается** на CI. Не блокирует, но это дыра в покрытии.
+  На 03.09 таких 4 (`tools/gen_tool_catalog.py`, `test_skill_catalog.py`) —
+  тех-долг, отдельной карточкой.
+
+```bash
+# Pre-PR (воркеры прогоняют локально перед `gh pr create`):
+cd /home/builder/rob_box_project
+python3 scripts/agent_flow/validate_test_ws_dirs.py
+# → exit 0 (clean / только WARN) или exit 1 (непокрытый каталог)
+
+# Строгий режим — WARN тоже валит (для аудита тех-долга):
+python3 scripts/agent_flow/validate_test_ws_dirs.py --strict
+
+# Тест:
+bash scripts/agent_flow/tests/test_validate_test_ws_dirs.sh
+```
+
+**Регистрация:** в `EXPECTED` `install.sh` → drift-detect контролирует.
+**НЕ вызывается из merge-gate** — запускается воркером вручную как часть
+локального pre-PR чек-листа (по аналогии с `validate_adr_namespace.sh`).
+
+**Exit codes:**
+- `0` — все читаемые тестами корневые каталоги покрыты во всех job'ах
+- `1` — есть непокрытый каталог (FAIL), либо WARN при `--strict`
+- `2` — usage error (workflow не найден / изменилась структура `for d in`)
+
 ### `round_ensure.sh` — ручной валидационный e2e-раунд (ретро 11.08 t_26a6d362)
 
 **Процессное правило:** ручные валидационные раунды devops (проверить

@@ -51,7 +51,17 @@ export interface ConnectionListeners {
   /** Свежий round-trip из ping/pong — для HUD (Wave 3.A). */
   onRtt?: (rttMs: number) => void;
   onStreamList?: (items: StreamMeta[]) => void;
-  onWelcome?: (sessionId: string, serverTimeMs: number) => void;
+  /**
+   * WELCOME от сервера. AV-19 (issue #1911): ``teleopFloorHeldBy`` —
+   * client_id текущего держателя teleop_floor (``null`` если никто);
+   * клиент сверяет с ``sessionId`` (== own session_id), чтобы сразу
+   * определить hasFloor (см. teleop_fsm.setHasFloor).
+   */
+  onWelcome?: (
+    sessionId: string,
+    serverTimeMs: number,
+    teleopFloorHeldBy: string | null
+  ) => void;
   /**
    * Сервер прислал `STATE_UPDATE` (frame 0x33). Если сервер на v1 —
    * колбэк никогда не сработает (подробности в `meta-quest-api.md`
@@ -423,11 +433,22 @@ export class Connection {
 
   private handleWelcome(frame: DecodedFrame): void {
     try {
-      const obj = JSON.parse(new TextDecoder().decode(frame.payload));
+      const obj = JSON.parse(new TextDecoder().decode(frame.payload)) as {
+        session_id?: string;
+        server_time_ms?: number;
+        // AV-19: optional floor-claim, может отсутствовать у Phase 1
+        // серверов (которые ещё не знают про AV-19). Тогда мы остаёмся
+        // в оптимистичном default и ждём первого FLOOR_HELD/floor_lost.
+        teleop_floor_held_by?: string | null;
+      };
       console.log("[quest] WELCOME received", obj);
       this.setState("connected");
       this.reconnectAttempt = 0;
-      this.listeners.onWelcome?.(obj.session_id, obj.server_time_ms);
+      const heldBy =
+        typeof obj.teleop_floor_held_by === "string"
+          ? obj.teleop_floor_held_by
+          : null;
+      this.listeners.onWelcome?.(obj.session_id ?? "", obj.server_time_ms ?? 0, heldBy);
       this.startPing();
     } catch (err) {
       console.log("[quest] WELCOME parse error", err);

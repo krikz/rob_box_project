@@ -17,6 +17,11 @@
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
+  <!-- AV-12 / ADR-0028 §4.3: typed IDL для acquire/release/mode сервисов.
+       Импорт через try-import (см. supervisor_node._try_load_supervisor_msgs) —
+       если пакет не собран (например, mock-rclpy в CI), нода откатывается
+       на std_srvs/Trigger + JSON fallback и остаётся в monitor (ADR-0028 §4.5). -->
+  <depend>rob_box_supervisor_msgs</depend>
   <exec_depend>python3-msgpack</exec_depend>
   <exec_depend>rob_box_core</exec_depend>
 

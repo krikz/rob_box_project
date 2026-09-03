@@ -68,14 +68,24 @@ jobs:
           # .github is here for .github/e2e/{scenarios,voice_commands}: six
           # tests in test_issue_1532_voice_multi_skazka.py read those fixtures
           # and had been failing on every push with FileNotFoundError.
-          for d in docker migrations docs .github; do
+          # scripts is here for scripts/voice_bench/score.py, imported by
+          # src/rob_box_voice/test/unit/test_voice_bench_scoring.py — without it
+          # that test raises RuntimeError at COLLECTION time, which fails the
+          # whole rob_box_voice batch (develop was RED ~9h on 03.09, blocking
+          # 20+ PRs). tools is here for tools/gen_tool_catalog.py, imported by
+          # src/rob_box_harness/test/test_skill_catalog.py — without it those
+          # tests silently SKIP (skipif(not _GENERATOR.exists())), masking a
+          # real contract regression as a green CI. Guard against the next
+          # occurrence:
+          #   python3 scripts/agent_flow/validate_test_ws_dirs.py
+          for d in docker migrations docs .github scripts tools; do
             [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
           done
 
           # Build packages (use --packages-up-to to include dependencies)
           cd ${{ github.workspace }}/test_ws
           colcon build --symlink-install \
-            --packages-up-to rob_box_voice rob_box_animations rob_box_perception \
+            --packages-up-to rob_box_voice rob_box_animations rob_box_perception rob_box_core rob_box_telegram rob_box_teleop \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
 
       - name: Run unit tests
@@ -164,7 +174,7 @@ jobs:
             [ -f "$TG_TEST" ] || continue
             TG_NAME="$(basename "$TG_TEST")"
             echo "--- rob_box_telegram: $TG_NAME ---"
-            ( cd "$TG_DIR" && PYTHONPATH=. timeout 120 python3 -m pytest \
+            ( cd "$TG_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 120 python3 -m pytest \
                 -p no:launch_testing \
                 -p no:ament_flake8 -p no:ament_pep257 \
                 -p no:ament_copyright -p no:ament_xmllint \
@@ -184,7 +194,7 @@ jobs:
           # are self-contained (no cross-file pollution like telegram).
           echo "=== pytest: rob_box_teleop (issue #1344) ==="
           TELEOP_DIR="${{ github.workspace }}/test_ws/src/rob_box_teleop"
-          ( cd "$TELEOP_DIR" && PYTHONPATH=. timeout 120 python3 -m pytest \
+          ( cd "$TELEOP_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 120 python3 -m pytest \
               -p no:launch_testing \
               -p no:ament_flake8 -p no:ament_pep257 \
               -p no:ament_copyright -p no:ament_xmllint \
@@ -286,12 +296,16 @@ jobs:
           # to find e.g. docker/vision/scripts/supercollider/metrics_server.py
           # raise FileNotFoundError at collection time
           # (test_supercollider_metrics_osc_status).
-          for d in docker migrations docs .github; do
+          # scripts is here for the same reason as in unit-tests above
+          # (scripts/voice_bench/score.py, test_voice_bench_scoring.py).
+          # tools is here for the same reason as in unit-tests above
+          # (tools/gen_tool_catalog.py, test_skill_catalog.py).
+          for d in docker migrations docs .github scripts tools; do
             [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
           done
           cd ${{ github.workspace }}/test_ws
           colcon build --symlink-install \
-            --packages-up-to rob_box_voice rob_box_animations rob_box_perception \
+            --packages-up-to rob_box_voice rob_box_animations rob_box_perception rob_box_core rob_box_telegram rob_box_teleop \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
 
       - name: Run integration tests

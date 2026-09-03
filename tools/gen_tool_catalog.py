@@ -259,15 +259,11 @@ def _vibe_preset_description() -> str:
     for node in ast.walk(tree):
         if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", "") == "VIBE_PRESETS":
             presets = _literal(node.value)
-        elif isinstance(node, ast.Assign) and any(
-            getattr(t, "id", "") == "VIBE_PRESETS" for t in node.targets
-        ):
+        elif isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "VIBE_PRESETS" for t in node.targets):
             presets = _literal(node.value)
     if not isinstance(presets, dict):
         raise ToolSourceError("could not read MusicManager.VIBE_PRESETS from music.py")
-    presets_desc = ", ".join(
-        f"{name} (scale={p['scale']}, bpm={p['bpm']})" for name, p in presets.items()
-    )
+    presets_desc = ", ".join(f"{name} (scale={p['scale']}, bpm={p['bpm']})" for name, p in presets.items())
     return (
         "Применить вайб-пресет для быстрой настройки музыкального контекста. "
         "Устанавливает скейл, BPM и тонику в Renardo одной командой. "
@@ -293,9 +289,7 @@ def _sound_pack_triggers() -> list[str]:
     """
     import json
 
-    catalog = json.loads(
-        (REPO_ROOT / "sound_pack" / "sound_catalog.json").read_text(encoding="utf-8")
-    )
+    catalog = json.loads((REPO_ROOT / "sound_pack" / "sound_catalog.json").read_text(encoding="utf-8"))
     # Mirrors PlaySoundTool._load_sounds_from_catalog exactly: the enum is the
     # ``trigger`` names, NOT the ``.mp3`` filenames the dict is keyed by.
     triggers = sorted(
@@ -317,14 +311,7 @@ def _load_arranger():
     """
     import importlib.util
 
-    path = (
-        REPO_ROOT
-        / "src"
-        / "rob_box_mcp_tools"
-        / "rob_box_mcp_tools"
-        / "core"
-        / "arranger.py"
-    )
+    path = REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "core" / "arranger.py"
     spec = importlib.util.spec_from_file_location("_arranger_for_catalog", path)
     if spec is None or spec.loader is None:
         raise ToolSourceError(f"cannot load arranger module from {path}")
@@ -382,12 +369,8 @@ def _json_schema(param: dict[str, Any]) -> dict[str, Any]:
     if param.get("default") is not None:
         schema["default"] = param["default"]
     if param.get("type") == "object" and param.get("properties"):
-        schema["properties"] = {
-            name: _json_schema(sub) for name, sub in param["properties"].items()
-        }
-        schema["required"] = [
-            name for name, sub in param["properties"].items() if sub.get("required")
-        ]
+        schema["properties"] = {name: _json_schema(sub) for name, sub in param["properties"].items()}
+        schema["required"] = [name for name, sub in param["properties"].items() if sub.get("required")]
         schema["additionalProperties"] = False
     if param.get("type") == "array" and param.get("items"):
         schema["items"] = _json_schema(param["items"])
@@ -484,6 +467,7 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "list_tts_voices",
         "set_tts_provider",
         "estimate_tts_duration",
+        "say",
     ),
     "memory": (
         "memory_save",
@@ -500,9 +484,7 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "search_web",
         "faq_search",
     ),
-    "scheduler": (
-        "task_delta",
-    ),
+    "scheduler": ("task_delta",),
 }
 
 
@@ -537,16 +519,10 @@ def _assign_skills(entries: list[dict[str, Any]]) -> None:
 
     for entry in entries:
         entry["skill"] = tuple(
-            skill
-            for skill, tool_names in sorted(SKILL_TOOLS.items())
-            if entry["name"] in tool_names
+            skill for skill, tool_names in sorted(SKILL_TOOLS.items()) if entry["name"] in tool_names
         )
 
-    orphans = sorted(
-        entry["name"]
-        for entry in entries
-        if entry.get("llm_visible", True) and not entry["skill"]
-    )
+    orphans = sorted(entry["name"] for entry in entries if entry.get("llm_visible", True) and not entry["skill"])
     if orphans:
         raise SystemExit(
             f"{len(orphans)} llm_visible инструмент(ов) не отнесены "
@@ -684,9 +660,7 @@ def _extract_parameters(fn: ast.AST, cls_name: str, filename: str) -> list[dict[
             returned = node.value
             break
     if not isinstance(returned, (ast.List, ast.Tuple)):
-        raise ToolSourceError(
-            f"{cls_name} ({filename}): `parameters` must return a list literal"
-        )
+        raise ToolSourceError(f"{cls_name} ({filename}): `parameters` must return a list literal")
 
     params: list[dict[str, Any]] = []
     for element in returned.elts:
@@ -716,23 +690,15 @@ def _param_from_factory(factory: ast.FunctionDef, call: ast.Call) -> dict[str, A
     bare ``_prompt_param()`` yields the mandatory one.
     """
     inner = next(
-        n
-        for n in ast.walk(factory)
-        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "MCPToolParameter"
+        n for n in ast.walk(factory) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "MCPToolParameter"
     )
     param = _param_from_call(inner)
 
     # Factory defaults, then call-site overrides, for any field the factory
     # forwards from its own signature (`required=required`).
-    forwarded = {
-        kw.arg: kw.value.id
-        for kw in inner.keywords
-        if kw.arg and isinstance(kw.value, ast.Name)
-    }
+    forwarded = {kw.arg: kw.value.id for kw in inner.keywords if kw.arg and isinstance(kw.value, ast.Name)}
     arg_names = [a.arg for a in factory.args.args]
-    defaults = dict(
-        zip(arg_names[len(arg_names) - len(factory.args.defaults):], factory.args.defaults)
-    )
+    defaults = dict(zip(arg_names[len(arg_names) - len(factory.args.defaults) :], factory.args.defaults))
     supplied = {kw.arg: kw.value for kw in call.keywords if kw.arg}
     for positional_name, value in zip(arg_names, call.args):
         supplied[positional_name] = value
@@ -824,8 +790,7 @@ def main() -> int:
         current = OUT_FILE.read_text(encoding="utf-8") if OUT_FILE.exists() else ""
         if current != rendered:
             print(
-                f"{OUT_FILE.relative_to(REPO_ROOT)} is stale — "
-                "run `python tools/gen_tool_catalog.py`",
+                f"{OUT_FILE.relative_to(REPO_ROOT)} is stale — " "run `python tools/gen_tool_catalog.py`",
                 file=sys.stderr,
             )
             return 1

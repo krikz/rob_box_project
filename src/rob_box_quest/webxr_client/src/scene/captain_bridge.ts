@@ -21,6 +21,12 @@ import {
   loadBridgeAssets,
   type BridgeAssetHandle,
 } from "./bridge_assets";
+import {
+  createVoiceStateIndicator,
+  parseVoiceState,
+  type VoiceStateFrame,
+  type VoiceStateIndicator
+} from "../ui/voice_state_indicator";
 
 // Фронтальная камера робота — выводится на большой экран-стену перед
 // оператором. Это OAK-D color (0x1001), которая в protocol/topics.py
@@ -102,6 +108,12 @@ export interface CaptainBridgeHandle {
   ingestPanelFrame(topic: string, jpeg: Uint8Array): boolean;
   /** robot_status (0x1201) → HUD. */
   setRobotStatus(status: RobotStatus | null): void;
+  /**
+   * voice_state (0x1202) → центральный HUD-индикатор. Парсит msgpack-payload
+   * и обновляет визуальное состояние + a11y live-region. Если payload
+   * битый — кадр пропускается (молча, без падения).
+   */
+  setVoiceState(payload: Uint8Array | null): void;
   /**
    * Кадр указателя (мышь на десктопе, луч контроллера в VR). `null` —
    * указателя нет: наведение снимается, начатый драг корректно закрывается.
@@ -332,6 +344,18 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   const statusHud = createStatusHud();
   scene.add(statusHud.sprite);
 
+  // Voice state indicator (AV-20): центр стены над экраном, между
+  // status_hud и arm-sprite. Позиция (0, 2.85, -3.85) — выше main screen
+  // (центр y=1.5) и не перекрывает ни ARM-sprite (x=2.35), ни status_hud
+  // (x=-2.35). Размер 1.1 × 0.5 — компактнее, чем статус/ARM: это не
+  // «главный HUD», а индикатор активности микрофона при работе с PTT на
+  // гриппах (аудит §4-bis).
+  const voiceIndicator: VoiceStateIndicator = createVoiceStateIndicator({
+    position: { x: 0, y: 2.85, z: -3.85 },
+    scale: { x: 1.1, y: 0.5 }
+  });
+  scene.add(voiceIndicator.sprite);
+
   // Phase 2.1 environment (loaded lazily via loadEnvironment()).
   let environment: BridgeAssetHandle | null = null;
   const environmentBaseUrl = opts.environmentBaseUrl === null ? null : (opts.environmentBaseUrl ?? "/models/environment/");
@@ -505,6 +529,20 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     statusHud.setStatus(status);
   }
 
+  /**
+   * Voice state (0x1202) → индикатор. Парсинг в чистой функции
+   * (parseVoiceState) — битый payload не падает, мы просто его пропускаем.
+   * До первого кадра показываем «—» (state="unknown").
+   */
+  function setVoiceState(payload: Uint8Array | null): void {
+    if (!payload) {
+      voiceIndicator.setState(null);
+      return;
+    }
+    const frame: VoiceStateFrame | null = parseVoiceState(payload);
+    if (frame) voiceIndicator.setState(frame);
+  }
+
   // ---------- render loop ----------
 
   let running = false;
@@ -606,6 +644,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     environment?.dispose();
     armTexture.dispose();
     statusHud.dispose();
+    voiceIndicator.dispose();
     renderer.dispose();
   }
 
@@ -631,6 +670,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     videoTopics,
     ingestPanelFrame,
     setRobotStatus,
+    setVoiceState,
     start,
     resize,
     dispose
