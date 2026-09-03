@@ -80,16 +80,22 @@ VALID_MODES_V2: tuple[str, ...] = (
 def _pack_msgpack(payload: dict) -> bytes:
     """Serialize dict → msgpack bytes (bin-type=True для bytes-полей)."""
     if _msgpack is None:
-        raise RuntimeError("msgpack not available — supervisor API requires python3-msgpack")
+        raise RuntimeError(
+            "msgpack not available — supervisor API requires python3-msgpack"
+        )
     return _msgpack.packb(payload, use_bin_type=True)  # type: ignore[union-attr]
 
 
 def _unpack_msgpack(data: bytes) -> dict:
     if _msgpack is None:
-        raise RuntimeError("msgpack not available — supervisor API requires python3-msgpack")
+        raise RuntimeError(
+            "msgpack not available — supervisor API requires python3-msgpack"
+        )
     raw = _msgpack.unpackb(data, raw=False, strict_map_key=False)  # type: ignore[union-attr]
     if not isinstance(raw, dict):
-        raise ValueError(f"supervisor payload: expected msgpack map, got {type(raw).__name__}")
+        raise ValueError(
+            f"supervisor payload: expected msgpack map, got {type(raw).__name__}"
+        )
     return raw
 
 
@@ -211,7 +217,9 @@ class Bridge(Protocol):
         """
         ...
 
-    def set_voice(self, voice_id: str, preset: str | None) -> tuple[bool, str | None, str | None, list[str] | None]:
+    def set_voice(
+        self, voice_id: str, preset: str | None
+    ) -> tuple[bool, str | None, str | None, list[str] | None]:
         """Sync-валидация + публикация /avatar/set_voice.
 
         Returns:
@@ -439,11 +447,14 @@ class NoOpBridge:
 
     def relay_teleop_heartbeat(self, client_id: str, ts_ms: int, seq: int) -> None:
         # NoOpBridge: ничего не публикуем, но логируем для тестов.
-        log.debug("NoOpBridge: relay_teleop_heartbeat client_id=%s seq=%d", client_id, seq)
+        log.debug(
+            "NoOpBridge: relay_teleop_heartbeat client_id=%s seq=%d", client_id, seq
+        )
 
     def on_floor_lost(self, client_id: str) -> None:
         # NoOpBridge: no-op для тестов; реальная реализация в QuestBridge.
         log.debug("NoOpBridge: on_floor_lost client_id=%s", client_id)
+
     # === AV-16: supervisor API заглушки (для unit-тестов ws_server без ROS). ===
 
     def supervisor_acquire_floor(self, client_id: str, floor: str) -> dict:
@@ -682,7 +693,10 @@ class WSSServer:
         """
         loop = self._send_loop
         if loop is None or not loop.is_running():
-            log.debug("ws_server: no event loop; deliver dropped (test_voice=%s)", body.get("type"))
+            log.debug(
+                "ws_server: no event loop; deliver dropped (test_voice=%s)",
+                body.get("type"),
+            )
             return
         try:
             loop.call_soon_threadsafe(self._send_async, ws, body)
@@ -727,6 +741,7 @@ class WSSServer:
         if ws.closed:
             return
         await ws.send_bytes(encode_frame(FrameType.BINARY_FRAME, 0, payload))
+
     def _should_send_floor_held_error(self, session_id: str) -> bool:
         """Обёртка над floor_tracker.should_send_floor_held_error.
 
@@ -1076,7 +1091,9 @@ class WSSServer:
         payload_obj: dict[str, Any],
     ) -> None:
         if session.state.value != "authenticated":
-            await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "subscribe before HELLO")
+            await self._send_error(
+                ws, 0, ErrorCode.BAD_PAYLOAD, "subscribe before HELLO"
+            )
             return
         topic = payload_obj.get("topic")
         spec = get_stream(topic) if isinstance(topic, str) else None
@@ -1174,7 +1191,9 @@ class WSSServer:
                 linear = float(payload_obj.get("linear", {}).get("x", 0.0))
                 angular = float(payload_obj.get("angular", {}).get("z", 0.0))
             except (TypeError, ValueError):
-                await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "teleop_twist: bad linear/angular")
+                await self._send_error(
+                    ws, 0, ErrorCode.BAD_PAYLOAD, "teleop_twist: bad linear/angular"
+                )
                 return
             deadman = bool(payload_obj.get("deadman", False))
             # AV-19: gate teleop_twist (ADR-0028 §4.4, meta-quest-api.md §5).
@@ -1188,7 +1207,11 @@ class WSSServer:
             ts_ms_raw = payload_obj.get("ts_ms", int(time.time() * 1000))
             seq_raw = payload_obj.get("seq", 0)
             try:
-                ts_ms = int(ts_ms_raw) if isinstance(ts_ms_raw, (int, float)) else int(time.time() * 1000)
+                ts_ms = (
+                    int(ts_ms_raw)
+                    if isinstance(ts_ms_raw, (int, float))
+                    else int(time.time() * 1000)
+                )
                 seq = int(seq_raw) if isinstance(seq_raw, (int, float)) else 0
             except (TypeError, ValueError):
                 ts_ms, seq = int(time.time() * 1000), 0
@@ -1230,7 +1253,11 @@ class WSSServer:
             ts_ms_raw = payload_obj.get("ts_ms", int(time.time() * 1000))
             seq_raw = payload_obj.get("seq", 0)
             try:
-                ts_ms = int(ts_ms_raw) if isinstance(ts_ms_raw, (int, float)) else int(time.time() * 1000)
+                ts_ms = (
+                    int(ts_ms_raw)
+                    if isinstance(ts_ms_raw, (int, float))
+                    else int(time.time() * 1000)
+                )
                 seq = int(seq_raw) if isinstance(seq_raw, (int, float)) else 0
             except (TypeError, ValueError):
                 ts_ms, seq = int(time.time() * 1000), 0
@@ -1278,7 +1305,9 @@ class WSSServer:
                 session.session_id, client_id
             )
             if not acquired:
-                busy_label = busy_holder.label() if busy_holder is not None else "unknown"
+                busy_label = (
+                    busy_holder.label() if busy_holder is not None else "unknown"
+                )
                 log.info(
                     "quest: voice floor DENIED session=%s busy=%s",
                     session.session_id,
@@ -1305,9 +1334,11 @@ class WSSServer:
                 ws,
                 state="listening",
                 ts_ms=int(time.time() * 1000),
-                holder_id=self._voice_floor.holder.label()
-                if self._voice_floor.holder
-                else None,
+                holder_id=(
+                    self._voice_floor.holder.label()
+                    if self._voice_floor.holder
+                    else None
+                ),
             )
             return
         if cmd == "voice_ptt_stop":
@@ -1345,7 +1376,11 @@ class WSSServer:
                 ws,
                 FrameType.JSON_EVENT,
                 0,
-                {"type": "voice_mode_ack", "mode": mode, "ts_ms": int(time.time() * 1000)},
+                {
+                    "type": "voice_mode_ack",
+                    "mode": mode,
+                    "ts_ms": int(time.time() * 1000),
+                },
             )
             return
         if cmd == "stream_select":
@@ -1408,7 +1443,8 @@ class WSSServer:
             payload_client_id = payload_obj.get("client_id")
             if payload_client_id is not None and payload_client_id != client_id:
                 log.warning(
-                    "supervisor_api (JSON): client_id mismatch session=%s " "payload=%s (ignored; using server-side)",
+                    "supervisor_api (JSON): client_id mismatch session=%s "
+                    "payload=%s (ignored; using server-side)",
                     session.session_id,
                     payload_client_id,
                 )
@@ -1437,7 +1473,8 @@ class WSSServer:
                         ws,
                         0,
                         ErrorCode.INTERNAL,
-                        "supervisor_state snapshot is msgpack bytes; " "use binary STATE_UPDATE frame instead",
+                        "supervisor_state snapshot is msgpack bytes; "
+                        "use binary STATE_UPDATE frame instead",
                     )
                     return
                 await self._send(
@@ -1522,7 +1559,9 @@ class WSSServer:
             if not granted:
                 held_by = body.get("held_by")
                 reason = body.get("reason", "refused")
-                err_message = reason if held_by is None else f"{reason}; held_by={held_by}"
+                err_message = (
+                    reason if held_by is None else f"{reason}; held_by={held_by}"
+                )
                 await self._send_error(
                     ws,
                     0,
@@ -1544,7 +1583,9 @@ class WSSServer:
 
         # ── AV-27 / issue #1919 — TTS picker ──────────────────────────
         if cmd == "list_voices":
-            if not self._voice_rate_limit_check(ws, "list_voices", VOICE_LIST_MIN_INTERVAL_S):
+            if not self._voice_rate_limit_check(
+                ws, "list_voices", VOICE_LIST_MIN_INTERVAL_S
+            ):
                 return  # drop + log внутри
             snap = self.bridge.list_voices_snapshot()
             await self._send(
@@ -1572,16 +1613,20 @@ class WSSServer:
             #    → bridge.set_voice(voice_id, preset) (TTS picker).
             # Один rate-limit slot «set_voice» шарится между фичами — это
             # сознательно, чтобы UI не мог flood-ить через разные поля.
-            if not self._voice_rate_limit_check(ws, "set_voice", VOICE_SET_MIN_INTERVAL_S):
+            if not self._voice_rate_limit_check(
+                ws, "set_voice", VOICE_SET_MIN_INTERVAL_S
+            ):
                 return
             voice_id = payload_obj.get("voice_id")
             preset = payload_obj.get("preset")
             language = payload_obj.get("language")
             ts_ms = int(time.time() * 1000)
             # ── AV-28 §P7: style preset / language flow ────────────────────
+            # Если клиент прислал preset ИЛИ language — это AV-28 запрос
+            # (whitelist обязателен). Если оба None — fallback на AV-27.
             av28_preset = preset if isinstance(preset, str) else None
             av28_language = language if isinstance(language, str) else None
-            is_av28_request = av28_preset in VOICE_PRESET_IDS or av28_language in VOICE_LANGUAGES
+            is_av28_request = av28_preset is not None or av28_language is not None
             if is_av28_request:
                 nack_reason = _validate_voice_set_payload(
                     preset=av28_preset, language=av28_language
@@ -1621,12 +1666,21 @@ class WSSServer:
                 return
             # ── AV-27 / issue #1919: TTS picker flow ───────────────────────
             if not isinstance(voice_id, str) or not voice_id:
-                await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "set_voice: voice_id or preset/language required")
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.BAD_PAYLOAD,
+                    "set_voice: voice_id or preset/language required",
+                )
                 return
             if preset is not None and not isinstance(preset, str):
-                await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "set_voice: preset must be string")
+                await self._send_error(
+                    ws, 0, ErrorCode.BAD_PAYLOAD, "set_voice: preset must be string"
+                )
                 return
-            ok, applied_voice, reason, available = self.bridge.set_voice(voice_id, preset)
+            ok, applied_voice, reason, available = self.bridge.set_voice(
+                voice_id, preset
+            )
             if not ok:
                 err_payload = {
                     "type": "voice_set_nack",
@@ -1651,19 +1705,27 @@ class WSSServer:
             )
             return
         if cmd == "preview_voice":
-            if not self._voice_rate_limit_check(ws, "preview_voice", VOICE_PREVIEW_MIN_INTERVAL_S):
+            if not self._voice_rate_limit_check(
+                ws, "preview_voice", VOICE_PREVIEW_MIN_INTERVAL_S
+            ):
                 return
             request_id = payload_obj.get("request_id")
             voice_id = payload_obj.get("voice_id")
             text = payload_obj.get("text")
             if not isinstance(request_id, str) or not request_id:
-                await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "preview_voice: request_id required")
+                await self._send_error(
+                    ws, 0, ErrorCode.BAD_PAYLOAD, "preview_voice: request_id required"
+                )
                 return
             if not isinstance(voice_id, str) or not voice_id:
-                await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "preview_voice: voice_id required")
+                await self._send_error(
+                    ws, 0, ErrorCode.BAD_PAYLOAD, "preview_voice: voice_id required"
+                )
                 return
             if not isinstance(text, str) or not text:
-                await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "preview_voice: text required")
+                await self._send_error(
+                    ws, 0, ErrorCode.BAD_PAYLOAD, "preview_voice: text required"
+                )
                 return
             if not self.start_preview_session(request_id, ws):
                 await self._send(
@@ -1759,7 +1821,9 @@ class WSSServer:
         # Watchdog loop.
         watchdog_task = asyncio.create_task(self._watchdog_loop(ws, session))
         # STATE_UPDATE keep-alive 1 Hz (только для v2-сессий; для v1 — no-op).
-        state_update_task = asyncio.create_task(self._state_update_keepalive_loop(ws, session))
+        state_update_task = asyncio.create_task(
+            self._state_update_keepalive_loop(ws, session)
+        )
 
         try:
             async for msg in ws:
@@ -1774,7 +1838,9 @@ class WSSServer:
                     try:
                         payload_obj = json.loads(payload.decode("utf-8"))
                     except (UnicodeDecodeError, json.JSONDecodeError) as e:
-                        await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, f"bad HELLO json: {e}")
+                        await self._send_error(
+                            ws, 0, ErrorCode.BAD_PAYLOAD, f"bad HELLO json: {e}"
+                        )
                         continue
                     if not await self._on_hello(ws, session, payload_obj):
                         # AUTH_FAIL → закрыть сокет после отправки ERROR.
@@ -1782,13 +1848,17 @@ class WSSServer:
                         return ws
                     continue
                 if session.state.value != "authenticated":
-                    await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "HELLO required first")
+                    await self._send_error(
+                        ws, 0, ErrorCode.BAD_PAYLOAD, "HELLO required first"
+                    )
                     continue
                 if ftype == FrameType.SUBSCRIBE:
                     try:
                         payload_obj = json.loads(payload.decode("utf-8"))
                     except (UnicodeDecodeError, json.JSONDecodeError):
-                        await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "bad SUBSCRIBE json")
+                        await self._send_error(
+                            ws, 0, ErrorCode.BAD_PAYLOAD, "bad SUBSCRIBE json"
+                        )
                         continue
                     await self._on_subscribe(ws, session, payload_obj)
                 elif ftype == FrameType.UNSUBSCRIBE:
@@ -1807,7 +1877,9 @@ class WSSServer:
                     try:
                         payload_obj = json.loads(payload.decode("utf-8"))
                     except (UnicodeDecodeError, json.JSONDecodeError):
-                        await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "bad JSON_CMD json")
+                        await self._send_error(
+                            ws, 0, ErrorCode.BAD_PAYLOAD, "bad JSON_CMD json"
+                        )
                         continue
                     await self._on_json_cmd(ws, session, payload_obj)
                 elif ftype == FrameType.GOODBYE:
@@ -1966,7 +2038,9 @@ class WSSServer:
             # Пре-аутентификация, теоретически не должно случиться (выше в
             # _ws_handler есть защита «session.state != authenticated»), но
             # defensive: ошибка аутентификации, не падать.
-            await self._send_error(ws, 0, ErrorCode.AUTH_FAIL, "session not authenticated")
+            await self._send_error(
+                ws, 0, ErrorCode.AUTH_FAIL, "session not authenticated"
+            )
             return
 
         # unpack msgpack
@@ -1990,7 +2064,8 @@ class WSSServer:
         payload_client_id = data.get("client_id")
         if payload_client_id is not None and payload_client_id != client_id:
             log.warning(
-                "supervisor_api: client_id mismatch session=%s payload=%s " "(ignored; using server-side)",
+                "supervisor_api: client_id mismatch session=%s payload=%s "
+                "(ignored; using server-side)",
                 session.session_id,
                 payload_client_id,
             )
@@ -2075,7 +2150,9 @@ class WSSServer:
                 # код для обоих сценариев; ``held_by`` в message.
                 held_by = body.get("held_by")
                 reason = body.get("reason", "refused")
-                err_message = reason if held_by is None else f"{reason}; held_by={held_by}"
+                err_message = (
+                    reason if held_by is None else f"{reason}; held_by={held_by}"
+                )
                 await self._send_error(
                     ws,
                     0,

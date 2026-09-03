@@ -199,6 +199,18 @@ PREVIEW_VOICE_ERROR_TOPIC: str = "/avatar/preview_voice/error"
 # Супервизор делает SetParameters на dialogue_node (см. ADR-0028 §S5).
 SET_VOICE_PRESET_TOPIC: str = "/avatar/set_voice_preset"
 SET_VOICE_LANGUAGE_TOPIC: str = "/avatar/set_voice_language"
+# Whitelist preset/language для AV-28 §P7. Должен совпадать с ws_server.
+# (Мы не импортируем ws_server — цикл. Источник и правы — voice_presets.yaml;
+# здесь — копия для runtime-валидации.)
+VOICE_PRESET_IDS: tuple[str, ...] = (
+    "technical",
+    "street",
+    "caveman",
+    "business",
+    "philosopher",
+    "lenin",
+)
+VOICE_LANGUAGES: tuple[str, ...] = ("ru", "en")
 # AV-21 (issue #1913) — супервизор-агент «мозг оператора» (ADR-0028 §1.1).
 # Вход: ``/avatar/command`` (std_msgs/String, JSON), выход:
 # ``/avatar/command_result``. Полные JSON-схемы — в
@@ -428,7 +440,9 @@ class AvatarSupervisor(Node):
 
     ODOM_TOPIC = "/odom"
     DEVICE_SNAPSHOT_TOPIC = "/device/snapshot"
-    VOICE_DIALOGUE_STATE_TOPIC = "/voice/dialogue/state"  # НЕ /voice/state (ADR-0027 #2)
+    VOICE_DIALOGUE_STATE_TOPIC = (
+        "/voice/dialogue/state"  # НЕ /voice/state (ADR-0027 #2)
+    )
 
     ACQUIRE_FLOOR_SERVICE = "acquire_floor"
     RELEASE_FLOOR_SERVICE = "release_floor"
@@ -466,7 +480,9 @@ class AvatarSupervisor(Node):
         # (Phase 1 метрика — собрать dead_man_trips_total и посмотреть на
         # практике, см. ADR-0028 §6 Q4).
         self.declare_parameter("dead_man_timeout_ms", 500)
-        self._dead_man_timeout_ms: int = int(self.get_parameter("dead_man_timeout_ms").value or 500)
+        self._dead_man_timeout_ms: int = int(
+            self.get_parameter("dead_man_timeout_ms").value or 500
+        )
 
         # AV-13 / Issue #1968: единый источник времени ноды (для
         # тестируемости). LockManager и watcher используют self._now_ms()
@@ -513,7 +529,9 @@ class AvatarSupervisor(Node):
         # пробрасываем ``dead_man_timeout_ms`` (ROS-параметр) как
         # конструкторский override, чтобы можно было тюнить порог на железе
         # без пересборки. ``clock`` тоже инжектируем — для тестов с fake-clock.
-        self._lock_manager = LockManager(clock=self._now_ms, timeout_ms=self._dead_man_timeout_ms)
+        self._lock_manager = LockManager(
+            clock=self._now_ms, timeout_ms=self._dead_man_timeout_ms
+        )
         # ModeManager — FSM avatar-режимов (off/telegram_active/
         # avatar_present/mixed, ADR-0028 §4.1), подключён в W3-4 под
         # SetAvatarMode. Его voice_held_by/teleop_held_by — ТОЛЬКО вход
@@ -537,31 +555,51 @@ class AvatarSupervisor(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             reliability=rclpy.qos.ReliabilityPolicy.RELIABLE,
         )
-        self._state_pub = self.create_publisher(RosString, self.AVATAR_STATE_TOPIC, state_qos)
+        self._state_pub = self.create_publisher(
+            RosString, self.AVATAR_STATE_TOPIC, state_qos
+        )
 
         # Subscriptions — на Phase 1 только регистрируем callback-и и
         # обновляем aggregator. Полный IDL / парсинг msg — Phase 2.
         self.create_subscription(RosString, self.ODOM_TOPIC, self._on_odom_msg, 10)
-        self.create_subscription(RosString, self.DEVICE_SNAPSHOT_TOPIC, self._on_device_snapshot_msg, 10)
-        self.create_subscription(RosString, self.VOICE_DIALOGUE_STATE_TOPIC, self._on_voice_state_msg, 10)
+        self.create_subscription(
+            RosString, self.DEVICE_SNAPSHOT_TOPIC, self._on_device_snapshot_msg, 10
+        )
+        self.create_subscription(
+            RosString, self.VOICE_DIALOGUE_STATE_TOPIC, self._on_voice_state_msg, 10
+        )
         # ADR-0028 S5 — супервизор единственный, кто меняет voice_input_mode
         # на dialogue_node. Phase 1 транспорт — топик (см. SET_VOICE_MODE_TOPIC).
-        self.create_subscription(RosString, SET_VOICE_MODE_TOPIC, self._on_set_voice_mode, 10)
+        self.create_subscription(
+            RosString, SET_VOICE_MODE_TOPIC, self._on_set_voice_mode, 10
+        )
         # AV-28 §P7 (issue #1920) — voice style preset / language топики.
         # Валидируем ID по whitelist (тот же, что в ws_server.py) и выставляем
         # SetParameters на dialogue_node (voice_preset / voice_output_language).
         # Без рестарта dialogue_node — параметр подхватывается на следующей фразе.
-        self.create_subscription(RosString, SET_VOICE_PRESET_TOPIC, self._on_set_voice_preset, 10)
-        self.create_subscription(RosString, SET_VOICE_LANGUAGE_TOPIC, self._on_set_voice_language, 10)
+        self.create_subscription(
+            RosString, SET_VOICE_PRESET_TOPIC, self._on_set_voice_preset, 10
+        )
+        self.create_subscription(
+            RosString, SET_VOICE_LANGUAGE_TOPIC, self._on_set_voice_language, 10
+        )
         # AV-27 / issue #1919 — set_voice / preview_voice → супервизор.
         # Валидируем voice_id по реестру и выставляем параметр tts_node.
         self.create_subscription(RosString, SET_VOICE_TOPIC, self._on_set_voice, 10)
-        self.create_subscription(RosString, PREVIEW_VOICE_TOPIC, self._on_preview_voice, 10)
+        self.create_subscription(
+            RosString, PREVIEW_VOICE_TOPIC, self._on_preview_voice, 10
+        )
         # Publishers для ответов preview_voice. Аудио (BINARY) отдельно от
         # result/error (String JSON) — UI Quest матчит по request_id.
-        self._preview_result_pub = self.create_publisher(RosString, PREVIEW_VOICE_RESULT_TOPIC, 10)
-        self._preview_audio_pub = self.create_publisher(RosString, PREVIEW_VOICE_AUDIO_TOPIC, 10)
-        self._preview_error_pub = self.create_publisher(RosString, PREVIEW_VOICE_ERROR_TOPIC, 10)
+        self._preview_result_pub = self.create_publisher(
+            RosString, PREVIEW_VOICE_RESULT_TOPIC, 10
+        )
+        self._preview_audio_pub = self.create_publisher(
+            RosString, PREVIEW_VOICE_AUDIO_TOPIC, 10
+        )
+        self._preview_error_pub = self.create_publisher(
+            RosString, PREVIEW_VOICE_ERROR_TOPIC, 10
+        )
         # Параметр-клиент к dialogue_node создаётся лениво в active-режиме
         # (в monitor супервизор НЕ трогает чужие параметры — S12).
         self._dialogue_param_client = None
@@ -600,7 +638,9 @@ class AvatarSupervisor(Node):
         # 1 Гц-таймера публикации /avatar/state, потому что при dead-man trip
         # мы публикуем /avatar/state ВНЕОЧЕРЕДНО (см. _check_floor_expiry),
         # а не ждём следующего 1 Гц-тика.
-        self._expiry_timer = self.create_timer(self.FLOOR_EXPIRY_CHECK_PERIOD_S, self._check_floor_expiry)
+        self._expiry_timer = self.create_timer(
+            self.FLOOR_EXPIRY_CHECK_PERIOD_S, self._check_floor_expiry
+        )
 
         # ── IDL-типы для типизированных сервисов (AV-12, ADR-0028 §4.3) ──
         # Пытаемся загрузить rob_box_supervisor_msgs. Если недоступен
@@ -624,14 +664,22 @@ class AvatarSupervisor(Node):
         # — какой voice_input_mode ставить на время обработки команды
         # (default "off" — полное управление оператора).
         self.declare_parameter(self.AGENT_ENABLED_PARAM, False)
-        self.declare_parameter(self.SYSTEM_PROMPT_FILE_PARAM, "operator_system_prompt.txt")
-        self.declare_parameter(self.AGENT_DURING_VOICE_MODE_PARAM, AGENT_DURING_VOICE_MODE_DEFAULT)
-        self._agent_enabled: bool = bool(self.get_parameter(self.AGENT_ENABLED_PARAM).value)
+        self.declare_parameter(
+            self.SYSTEM_PROMPT_FILE_PARAM, "operator_system_prompt.txt"
+        )
+        self.declare_parameter(
+            self.AGENT_DURING_VOICE_MODE_PARAM, AGENT_DURING_VOICE_MODE_DEFAULT
+        )
+        self._agent_enabled: bool = bool(
+            self.get_parameter(self.AGENT_ENABLED_PARAM).value
+        )
         self._system_prompt_file: str = str(
-            self.get_parameter(self.SYSTEM_PROMPT_FILE_PARAM).value or "operator_system_prompt.txt"
+            self.get_parameter(self.SYSTEM_PROMPT_FILE_PARAM).value
+            or "operator_system_prompt.txt"
         )
         self._agent_during_voice_mode: str = str(
-            self.get_parameter(self.AGENT_DURING_VOICE_MODE_PARAM).value or AGENT_DURING_VOICE_MODE_DEFAULT
+            self.get_parameter(self.AGENT_DURING_VOICE_MODE_PARAM).value
+            or AGENT_DURING_VOICE_MODE_DEFAULT
         )
 
         # OperatorHarness создаётся ЛЕНИВО (см. _ensure_agent_harness):
@@ -651,9 +699,13 @@ class AvatarSupervisor(Node):
         # QoS — default reliable (depth=10). Не latched: результаты
         # привязаны к конкретной команде, late joiner их НЕ получит
         # (это поведение «command-response», не «state-broadcast»).
-        self._agent_result_pub = self.create_publisher(RosString, AVATAR_COMMAND_RESULT_TOPIC, 10)
+        self._agent_result_pub = self.create_publisher(
+            RosString, AVATAR_COMMAND_RESULT_TOPIC, 10
+        )
         # Подписка /avatar/command — JSON с командой оператора.
-        self.create_subscription(RosString, AVATAR_COMMAND_TOPIC, self._on_avatar_command, 10)
+        self.create_subscription(
+            RosString, AVATAR_COMMAND_TOPIC, self._on_avatar_command, 10
+        )
 
         # Метрики (см. rob_box_voice.observability.metrics). Регистрируются
         # лениво через get_metric — если prometheus_client недоступен,
@@ -743,7 +795,9 @@ class AvatarSupervisor(Node):
             # Контракт LockManager.heartbeat: PermissionError если нет
             # holder-а или чужой client_id. Не валим ноду, логируем WARN —
             # типичный случай race с release.
-            self._log.warning(f"teleop_heartbeat: rejected client_id={client_id} reason={exc}")
+            self._log.warning(
+                f"teleop_heartbeat: rejected client_id={client_id} reason={exc}"
+            )
             return
         # Продлили — обновим снимок holder-ов, чтобы метрика trip
         # (см. _check_floor_expiry) корректно отличала «клиент вышел»
@@ -826,7 +880,9 @@ class AvatarSupervisor(Node):
             state = self._build_published_avatar_state()
             payload_str = encode_for_ros_string(state)
         except (StateTransportError, StateVersionError) as exc:
-            self._log.warning(f"avatar_supervisor: внеочередной publish пропущен: {exc}")
+            self._log.warning(
+                f"avatar_supervisor: внеочередной publish пропущен: {exc}"
+            )
             return
         except Exception as exc:  # noqa: BLE001 — не валить watcher
             self._log.warning(
@@ -836,6 +892,7 @@ class AvatarSupervisor(Node):
         msg = RosString()
         msg.data = payload_str
         self._state_pub.publish(msg)
+
     # ── service registration (типизированный IDL или fallback) ────────
     def _register_services(self) -> None:
         """Объявить ``acquire_floor`` / ``release_floor`` / ``set_avatar_mode``.
@@ -873,9 +930,15 @@ class AvatarSupervisor(Node):
         else:
             from std_srvs.srv import Trigger
 
-            self._srv_acquire = self.create_service(Trigger, self.ACQUIRE_FLOOR_SERVICE, self._on_acquire_floor_fb)
-            self._srv_release = self.create_service(Trigger, self.RELEASE_FLOOR_SERVICE, self._on_release_floor_fb)
-            self._srv_set_mode = self.create_service(Trigger, self.SET_AVATAR_MODE_SERVICE, self._on_set_avatar_mode_fb)
+            self._srv_acquire = self.create_service(
+                Trigger, self.ACQUIRE_FLOOR_SERVICE, self._on_acquire_floor_fb
+            )
+            self._srv_release = self.create_service(
+                Trigger, self.RELEASE_FLOOR_SERVICE, self._on_release_floor_fb
+            )
+            self._srv_set_mode = self.create_service(
+                Trigger, self.SET_AVATAR_MODE_SERVICE, self._on_set_avatar_mode_fb
+            )
 
     # ── helpers ──────────────────────────────────────────────────────
     def _log_startup_diagnostics(self) -> None:
@@ -897,7 +960,6 @@ class AvatarSupervisor(Node):
             f"avatar_supervisor started: mode={self._mode}, "
             f"zenoh={zenoh}, typed_services={self._use_typed_floor_services}"
         )
-
 
     def _monitor_response(self) -> dict:
         """Стандартный ответ для всех сервисов в monitor-режиме.
@@ -988,10 +1050,15 @@ class AvatarSupervisor(Node):
         except (StateTransportError, StateVersionError) as exc:
             # Rate-limit: один WARN на тик максимум, чтобы не засорять лог
             # при циклической ошибке (publisher 1 Hz, log-flooding = bad).
-            self._log.warning(f"avatar_supervisor: /avatar/state publish skipped: {exc}")
+            self._log.warning(
+                f"avatar_supervisor: /avatar/state publish skipped: {exc}"
+            )
             return
         except Exception as exc:  # noqa: BLE001 — не валить таймер
-            self._log.warning(f"avatar_supervisor: unexpected encode failure: " f"{type(exc).__name__}: {exc}")
+            self._log.warning(
+                f"avatar_supervisor: unexpected encode failure: "
+                f"{type(exc).__name__}: {exc}"
+            )
             return
 
         msg = RosString()
@@ -1082,7 +1149,9 @@ class AvatarSupervisor(Node):
         """Обработка ``/avatar/set_voice_preset`` — запрос сменить стиль речи."""
         preset = (msg.data or "").strip()
         applied, reason = self._apply_voice_preset(preset)
-        self._log.info(f"SetVoicePreset: preset={preset} applied={applied} reason={reason}")
+        self._log.info(
+            f"SetVoicePreset: preset={preset} applied={applied} reason={reason}"
+        )
 
     def _apply_voice_preset(self, preset: str) -> tuple[bool, str]:
         """Чистая логика применения ``voice_preset`` (тестируется без rclpy)."""
@@ -1103,7 +1172,9 @@ class AvatarSupervisor(Node):
         """Обработка ``/avatar/set_voice_language`` — запрос сменить язык вывода."""
         language = (msg.data or "").strip()
         applied, reason = self._apply_voice_language(language)
-        self._log.info(f"SetVoiceLanguage: language={language} applied={applied} reason={reason}")
+        self._log.info(
+            f"SetVoiceLanguage: language={language} applied={applied} reason={reason}"
+        )
 
     def _apply_voice_language(self, language: str) -> tuple[bool, str]:
         """Чистая логика применения ``voice_output_language`` (тестируется без rclpy)."""
@@ -1130,7 +1201,9 @@ class AvatarSupervisor(Node):
         if self._dialogue_param_client is None:
             from rcl_interfaces.srv import SetParameters  # noqa: PLC0415
 
-            self._dialogue_param_client = self.create_client(SetParameters, "/dialogue_node/set_parameters")
+            self._dialogue_param_client = self.create_client(
+                SetParameters, "/dialogue_node/set_parameters"
+            )
         from rcl_interfaces.msg import (  # noqa: PLC0415
             Parameter,
             ParameterType,
@@ -1153,7 +1226,9 @@ class AvatarSupervisor(Node):
                 res = fut.result()
                 ok = bool(res and res.results and res.results[0].successful)
                 if not ok:
-                    self._log.warning("SetVoiceMode: dialogue_node rejected parameter set")
+                    self._log.warning(
+                        "SetVoiceMode: dialogue_node rejected parameter set"
+                    )
             except Exception as exc:  # noqa: BLE001
                 self._log.warning(f"SetVoiceMode: parameter set failed: {exc}")
 
@@ -1190,7 +1265,9 @@ class AvatarSupervisor(Node):
         provider_hint = data.get("provider") if isinstance(data, dict) else None
         applied, reason = self._apply_set_voice(voice_id, provider_hint=provider_hint)
         # f-string: RcutilsLogger принимает ОДИН один (issue #1644).
-        self._log.info(f"SetVoice: voice_id={voice_id} provider={provider_hint} applied={applied} reason={reason}")
+        self._log.info(
+            f"SetVoice: voice_id={voice_id} provider={provider_hint} applied={applied} reason={reason}"
+        )
 
     def _apply_set_voice(
         self, voice_id: str, provider_hint: str | None = None
@@ -1244,7 +1321,9 @@ class AvatarSupervisor(Node):
         from rcl_interfaces.srv import SetParameters  # noqa: PLC0415
 
         if self._tts_param_client is None:
-            self._tts_param_client = self.create_client(SetParameters, "/tts_node/set_parameters")
+            self._tts_param_client = self.create_client(
+                SetParameters, "/tts_node/set_parameters"
+            )
         req = SetParameters.Request()
         param = Parameter()
         param.name = name
@@ -1262,7 +1341,9 @@ class AvatarSupervisor(Node):
                 if not ok:
                     self._log.warning("SetVoice: tts_node rejected parameter set")
                 else:
-                    self._log.info(f"SetVoice: tts_node accepted param {name}={value!r}")
+                    self._log.info(
+                        f"SetVoice: tts_node accepted param {name}={value!r}"
+                    )
             except Exception as exc:  # noqa: BLE001
                 self._log.warning(f"SetVoice: parameter set future failed: {exc}")
 
@@ -1306,16 +1387,22 @@ class AvatarSupervisor(Node):
         # Валидация по реестру.
         if provider and isinstance(provider, str):
             if voice_id not in _voices_for(provider):
-                self._publish_preview_error(request_id, f"voice_unavailable:{provider}:{voice_id}")
+                self._publish_preview_error(
+                    request_id, f"voice_unavailable:{provider}:{voice_id}"
+                )
                 return
         else:
             # Без hint — ищем где знают.
-            known_in = [p for p in ("yandex", "minimax", "silero") if voice_id in _voices_for(p)]
+            known_in = [
+                p for p in ("yandex", "minimax", "silero") if voice_id in _voices_for(p)
+            ]
             if not known_in:
                 self._publish_preview_error(request_id, "voice_unknown")
                 return
         # MVP: честная ошибка.
-        self._publish_preview_error(request_id, "preview_synthesis_not_implemented_in_mvp")
+        self._publish_preview_error(
+            request_id, "preview_synthesis_not_implemented_in_mvp"
+        )
 
     def _publish_preview_error(self, request_id: str, reason: str) -> None:
         """Опубликовать preview_voice_error (JSON) для ws_server.
@@ -1359,7 +1446,9 @@ class AvatarSupervisor(Node):
             return None, None
         return str(client_id), (str(floor) if floor else None)
 
-    def _acquire_floor_logic(self, client_id: Optional[str], floor: Optional[str]) -> dict:
+    def _acquire_floor_logic(
+        self, client_id: Optional[str], floor: Optional[str]
+    ) -> dict:
         """Чистая логика ``AcquireFloor`` (тестируется без rclpy).
 
         В ``monitor`` — как раньше: ``applied=false``, floor не трогаем
@@ -1441,7 +1530,9 @@ class AvatarSupervisor(Node):
             "reason": REASON_GRANTED,
         }
 
-    def _release_floor_logic(self, client_id: Optional[str], floor: Optional[str]) -> dict:
+    def _release_floor_logic(
+        self, client_id: Optional[str], floor: Optional[str]
+    ) -> dict:
         """Чистая логика ``ReleaseFloor`` (тестируется без rclpy).
 
         Возвращает dict для адаптера ``_fill_release_floor_response``.
@@ -1510,7 +1601,9 @@ class AvatarSupervisor(Node):
         return self._fill_release_floor_response(response, body)
 
     @staticmethod
-    def _extract_avatar_mode_request(request: Any) -> tuple[Optional[str], Optional[str]]:
+    def _extract_avatar_mode_request(
+        request: Any,
+    ) -> tuple[Optional[str], Optional[str]]:
         """Достать ``mode``/``client_id`` из типизированного SetAvatarMode-запроса.
 
         AV-12: ``SetAvatarMode.Request`` из ``rob_box_supervisor_msgs``
@@ -1836,7 +1929,9 @@ class AvatarSupervisor(Node):
             "enabled": True,
         }
 
-    def _record_agent_command(self, source: str, result: str, latency_s: Optional[float] = None) -> None:
+    def _record_agent_command(
+        self, source: str, result: str, latency_s: Optional[float] = None
+    ) -> None:
         """Инкрементить ``avatar_agent_commands_total`` и засечь гистограмму."""
         metrics = self._agent_metrics
         if not metrics.get("enabled", False):
@@ -1903,10 +1998,13 @@ class AvatarSupervisor(Node):
                 applied_out, reason_out = self._apply_voice_mode(prev_mode)
                 if not applied_out:
                     self._log.warning(
-                        f"voice_mode_swap.exit: failed to restore mode={prev_mode} " f"reason={reason_out}"
+                        f"voice_mode_swap.exit: failed to restore mode={prev_mode} "
+                        f"reason={reason_out}"
                     )
             elif prev_mode is None:
-                self._log.debug("voice_mode_swap.exit: previous mode unknown, no restore")
+                self._log.debug(
+                    "voice_mode_swap.exit: previous mode unknown, no restore"
+                )
             # Сбрасываем snapshot: следующий swap начнёт с чистого
             # состояния (``prev_mode`` будет снова захвачен в
             # _on_avatar_command ДО входа в swap).
@@ -1947,7 +2045,9 @@ class AvatarSupervisor(Node):
         """
         try:
             from rob_box_harness.config import HarnessConfig  # noqa: PLC0415
-            from rob_box_harness.harnesses.operator import OperatorHarness  # noqa: PLC0415
+            from rob_box_harness.harnesses.operator import (
+                OperatorHarness,
+            )  # noqa: PLC0415
         except ImportError as exc:
             self._log.warning(f"_build_agent_harness_sync: import failed: {exc}")
             return None
@@ -1957,7 +2057,9 @@ class AvatarSupervisor(Node):
         try:
             asyncio.run(harness.init())
         except Exception as exc:  # noqa: BLE001 — ленивый init падать не должен
-            self._log.warning(f"_build_agent_harness_sync: harness.init() failed: {exc}")
+            self._log.warning(
+                f"_build_agent_harness_sync: harness.init() failed: {exc}"
+            )
             return None
         return harness
 
@@ -1974,7 +2076,9 @@ class AvatarSupervisor(Node):
             self._agent_harness = self._build_agent_harness_sync()
         return self._agent_harness
 
-    def _run_harness_sync(self, harness: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def _run_harness_sync(
+        self, harness: Any, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
         """Дрок-вызов async ``harness.step(payload)`` в новом loop.
 
         Возвращает mapping из ``OperatorHarness.step``. Ошибки harness-а
@@ -2070,7 +2174,9 @@ class AvatarSupervisor(Node):
             payload = json.dumps(result, ensure_ascii=False)
         except (TypeError, ValueError) as exc:
             self._log.warning(f"_publish_command_result: json.dumps failed: {exc}")
-            payload = json.dumps({"request_id": request_id, "ok": False, "summary": "publish_error"})
+            payload = json.dumps(
+                {"request_id": request_id, "ok": False, "summary": "publish_error"}
+            )
         msg = RosString()
         msg.data = payload
         self._agent_result_pub.publish(msg)

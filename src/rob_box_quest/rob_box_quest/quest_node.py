@@ -132,7 +132,9 @@ def _read_alert_thresholds(node) -> AlertThresholds:
     тесты могли использовать ту же логику без rclpy-ноды."""
     return AlertThresholds(
         battery_low_pct=int(node.get_parameter("alert_battery_low_pct").value),
-        battery_hysteresis_pct=int(node.get_parameter("alert_battery_hysteresis_pct").value),
+        battery_hysteresis_pct=int(
+            node.get_parameter("alert_battery_hysteresis_pct").value
+        ),
         wifi_weak_dbm=int(node.get_parameter("alert_wifi_weak_dbm").value),
         wifi_hysteresis_dbm=int(node.get_parameter("alert_wifi_hysteresis_dbm").value),
         stuck_timeout_s=float(node.get_parameter("alert_stuck_timeout_s").value),
@@ -334,7 +336,9 @@ class QuestBridge:
         if self._emergency_published:
             return
         self._emergency_published = True
-        self._node.get_logger().warning("🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency")
+        self._node.get_logger().warning(
+            "🛑 EMERGENCY STOP from Quest client — publishing cmd_vel_emergency"
+        )
         self._pub_emergency.publish(Twist())
 
     def feed_client_alive(self) -> None:
@@ -551,7 +555,9 @@ class QuestBridge:
             "ts_ms": int(time.time() * 1000),
         }
         try:
-            self._set_voice_pub.publish(_string_msg(json.dumps(payload, ensure_ascii=False)))
+            self._set_voice_pub.publish(
+                _string_msg(json.dumps(payload, ensure_ascii=False))
+            )
         except Exception as exc:  # noqa: BLE001
             self._node.get_logger().warning(f"quest: set_voice publish failed: {exc}")
             return False, None, "publish_failed", None
@@ -577,9 +583,13 @@ class QuestBridge:
             "ts_ms": int(time.time() * 1000),
         }
         try:
-            self._preview_voice_pub.publish(_string_msg(json.dumps(payload, ensure_ascii=False)))
+            self._preview_voice_pub.publish(
+                _string_msg(json.dumps(payload, ensure_ascii=False))
+            )
         except Exception as exc:  # noqa: BLE001
-            self._node.get_logger().warning(f"quest: preview_voice publish failed: {exc}")
+            self._node.get_logger().warning(
+                f"quest: preview_voice publish failed: {exc}"
+            )
 
     # ── AV-27 ROS hooks (tts_node → quest_node) ──────────────────────────
 
@@ -696,7 +706,9 @@ class QuestBridge:
             return "emergency"
         if self._ws_server.get_active_sessions() == 0:
             return "idle"
-        return "teleop_active" if self._teleop.tick(now_monotonic) is not None else "idle"
+        return (
+            "teleop_active" if self._teleop.tick(now_monotonic) is not None else "idle"
+        )
 
     def last_cmd_twist(self) -> tuple[float, float]:
         """Последний non-zero (linear.x, angular.z) от teleop для ROBOT_STUCK.
@@ -758,7 +770,9 @@ class QuestBridge:
             msg.data = _json.dumps(payload, ensure_ascii=False)
             self._heartbeat_pub.publish(msg)
         except Exception as exc:  # noqa: BLE001 — relay не должен ронять ноду
-            self._node.get_logger().warning(f"quest: relay_teleop_heartbeat failed: {exc}")
+            self._node.get_logger().warning(
+                f"quest: relay_teleop_heartbeat failed: {exc}"
+            )
 
     def on_floor_lost(self, client_id: str) -> None:
         """Fail-safe при потере teleop_floor (ADR-0028 §4.4).
@@ -811,12 +825,16 @@ class QuestBridge:
         """
         if self._srv_acquire is None:
             return self._supervisor_unavailable("acquire_floor")
-        return self._run_supervisor_service("acquire_floor", self._srv_acquire, client_id=client_id, floor=floor)
+        return self._run_supervisor_service(
+            "acquire_floor", self._srv_acquire, client_id=client_id, floor=floor
+        )
 
     def supervisor_release_floor(self, client_id: str, floor: str) -> dict:
         if self._srv_release is None:
             return self._supervisor_unavailable("release_floor")
-        return self._run_supervisor_service("release_floor", self._srv_release, client_id=client_id, floor=floor)
+        return self._run_supervisor_service(
+            "release_floor", self._srv_release, client_id=client_id, floor=floor
+        )
 
     def supervisor_set_mode(self, client_id: str, mode: str) -> dict:
         """``SET_MODE`` (0x30) → сервис ``set_avatar_mode``.
@@ -917,7 +935,9 @@ class QuestBridge:
                 "reason": f"supervisor_service_timeout:{service_name}",
             }
         except Exception as exc:  # noqa: BLE001
-            self._node.get_logger().warning(f"supervisor_service:{service_name} failed: {exc}")
+            self._node.get_logger().warning(
+                f"supervisor_service:{service_name} failed: {exc}"
+            )
             return {
                 "applied": False,
                 "granted": False,
@@ -958,7 +978,9 @@ class QuestBridge:
             return
         # Валидация через единый decoder (запрет собственного парсера).
         try:
-            from rob_box_supervisor.core.state import unpack as _state_unpack  # noqa: WPS433
+            from rob_box_supervisor.core.state import (
+                unpack as _state_unpack,
+            )  # noqa: WPS433
 
             _state_unpack(raw_bytes)
         except Exception as exc:  # noqa: BLE001
@@ -974,7 +996,9 @@ class QuestBridge:
             return
         loop = self._aio_send_loop
         try:
-            asyncio.run_coroutine_threadsafe(self._dispatch_state_update(raw_bytes), loop)
+            asyncio.run_coroutine_threadsafe(
+                self._dispatch_state_update(raw_bytes), loop
+            )
         except RuntimeError:
             pass  # loop уже закрыт
 
@@ -1069,7 +1093,9 @@ class QuestNode(Node):
         self._battery_v_empty = float(self.get_parameter("battery_voltage_empty").value)
         self._battery_v_full = float(self.get_parameter("battery_voltage_full").value)
         self._wifi_iface = str(self.get_parameter("wifi_iface").value) or None
-        self._require_teleop_floor = bool(self.get_parameter("require_teleop_floor").value)
+        self._require_teleop_floor = bool(
+            self.get_parameter("require_teleop_floor").value
+        )
         self._alert_thresholds = _read_alert_thresholds(self)
 
         # Publishers (см. twist_mux.yaml: priority 40 quest, 255 emergency).
@@ -1098,13 +1124,19 @@ class QuestNode(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
         )
-        self._voice_in_pub = self.create_publisher(AudioData, "/avatar/voice_in", _VOICE_QOS)
+        self._voice_in_pub = self.create_publisher(
+            AudioData, "/avatar/voice_in", _VOICE_QOS
+        )
         self._tts_control_pub = self.create_publisher(String, "/voice/tts/control", _RE)
         self._sound_stop_pub = self.create_publisher(String, "/voice/sound/stop", _RE)
         # Робот-голос (P7): буфер операторского PCM → STT через /audio/quest_in.
-        self._stt_in_pub = self.create_publisher(AudioData, "/audio/quest_in", _VOICE_QOS)
+        self._stt_in_pub = self.create_publisher(
+            AudioData, "/audio/quest_in", _VOICE_QOS
+        )
         # voice_mode → супервизор (ADR-0028 S5): /avatar/set_voice_mode.
-        self._set_voice_mode_pub = self.create_publisher(String, "/avatar/set_voice_mode", _RE)
+        self._set_voice_mode_pub = self.create_publisher(
+            String, "/avatar/set_voice_mode", _RE
+        )
         # AV-28 §P7 (issue #1920) — voice style preset / language → супервизор.
         # Топики /avatar/set_voice_preset, /avatar/set_voice_language
         # (см. meta-quest-api.md §P7). Супервизор делает SetParameters на
@@ -1121,7 +1153,9 @@ class QuestNode(Node):
         # quest_node на tts_node). Топики std_msgs/String (JSON payload),
         # симметрично /avatar/set_voice_mode.
         self._set_voice_pub = self.create_publisher(String, "/avatar/set_voice", _RE)
-        self._preview_voice_pub = self.create_publisher(String, "/avatar/preview_voice", _RE)
+        self._preview_voice_pub = self.create_publisher(
+            String, "/avatar/preview_voice", _RE
+        )
         # Ответы preview_voice (String JSON):
         # /avatar/preview_voice/result — done/error с request_id;
         # /avatar/preview_voice/audio  — metaданные аудио (String JSON);
@@ -1199,7 +1233,10 @@ class QuestNode(Node):
         # depth 1 = «latched» по ADR-0028 §4.3 + supervisor_node:153-162).
         # QoS — те же параметры, что и у publisher'а супервизора; иначе
         # подписка не увидит late-joining snapshot.
-        from rclpy.qos import DurabilityPolicy as _DPolicy, ReliabilityPolicy as _RPolicy  # noqa: PLC0415
+        from rclpy.qos import (
+            DurabilityPolicy as _DPolicy,
+            ReliabilityPolicy as _RPolicy,
+        )  # noqa: PLC0415
 
         _STATE_QOS = QoSProfile(
             depth=1,
@@ -1218,7 +1255,9 @@ class QuestNode(Node):
         # Подписки для стримов (Phase 1.4 v2: lidar + camera_rear-фолбэк через
         # ROS; остальные камеры — мимо ROS через CameraProvider).
         self._odom_sub = self.create_subscription(Odometry, "/odom", self._on_odom, _RE)
-        self._scan_sub = self.create_subscription(LaserScan, "/scan", self._on_scan, _RE)
+        self._scan_sub = self.create_subscription(
+            LaserScan, "/scan", self._on_scan, _RE
+        )
         # camera_rear (0x1001): OAK-D color JPEG (image_transport compressed) →
         # форвардим bytes as-is в WS. Лёгкий путь: без cv2/numpy/перекодирования,
         # сеть грузится ~300 KB/s вместо raw ~13.5 MB/s.
@@ -1247,7 +1286,9 @@ class QuestNode(Node):
         # vesc_msgs есть не в каждом образе (пакет собирается на Main Pi),
         # поэтому подписка опциональная — без него остаётся JSON-путь.
         battery_topic = str(self.get_parameter("battery_json_topic").value)
-        self._battery_json_sub = self.create_subscription(String, battery_topic, self._on_battery_json, _RE)
+        self._battery_json_sub = self.create_subscription(
+            String, battery_topic, self._on_battery_json, _RE
+        )
         self._vesc_state_sub = None
         try:
             from vesc_msgs.msg import VescStateStamped  # noqa: WPS433
@@ -1259,7 +1300,9 @@ class QuestNode(Node):
                 _RE,
             )
         except ImportError:
-            self.get_logger().info("vesc_msgs unavailable — battery voltage from JSON snapshot only")
+            self.get_logger().info(
+                "vesc_msgs unavailable — battery voltage from JSON snapshot only"
+            )
         self._latest_odom: Optional[Odometry] = None
         self._status = StatusAggregator()
         # AV-26: state для evaluate_alerts() — список Alert'ов, активных
@@ -1290,7 +1333,9 @@ class QuestNode(Node):
             set_voice_language_pub=self._set_voice_language_pub,
             set_voice_pub=self._set_voice_pub,
             preview_voice_pub=self._preview_voice_pub,
-            voices_cache_ttl_sec=float(self.get_parameter("voices_cache_ttl_sec").value),
+            voices_cache_ttl_sec=float(
+                self.get_parameter("voices_cache_ttl_sec").value
+            ),
             heartbeat_pub=self._heartbeat_pub,
             supervisor_acquire_client=self._srv_acquire,
             supervisor_release_client=self._srv_release,
@@ -1301,7 +1346,8 @@ class QuestNode(Node):
         self.ws_server.bridge = self.bridge
         if log_pin:
             self.get_logger().warning(
-                f"🔑 Quest PIN: {ACTIVE_PIN} " "(show this to operator — required to start a session)"
+                f"🔑 Quest PIN: {ACTIVE_PIN} "
+                "(show this to operator — required to start a session)"
             )
 
         # CameraProvider — capture-loop в отдельных потоках (depthai/OpenCV).
@@ -1515,7 +1561,9 @@ class QuestNode(Node):
         # Edge-triggered: один раз на trip → один WARNING + один emergency.
         # Повторные тики до feed()/reset() — no-op (анти-спам).
         if self.bridge.watchdog_consume_trip(time.monotonic()):
-            self.get_logger().warning("🛑 Watchdog tripped — emergency stop (Quest client silent)")
+            self.get_logger().warning(
+                "🛑 Watchdog tripped — emergency stop (Quest client silent)"
+            )
             self.bridge.publish_emergency()
             self.bridge.emergency_stop()
 
@@ -1580,17 +1628,24 @@ class QuestNode(Node):
         now_monotonic = time.monotonic()
         now_ms = int(now_monotonic * 1000)
         cmd_linear, cmd_angular = self.bridge.last_cmd_twist()
-        odom_motion_value = self._odom_motion_tracker.seconds_since_last_motion(now_monotonic)
+        odom_motion_value = self._odom_motion_tracker.seconds_since_last_motion(
+            now_monotonic
+        )
 
         new_alerts = evaluate_alerts(
             now_ms=now_ms,
             thresholds=self._alert_thresholds,
-            battery_pct=self._status.battery_pct
-            if self._status.battery_pct is not None and self._status.battery_pct >= 0
-            else None,
-            wifi_rssi=self._status.wifi_rssi
-            if self._status.wifi_rssi is not None and self._status.wifi_rssi != 0
-            else None,
+            battery_pct=(
+                self._status.battery_pct
+                if self._status.battery_pct is not None
+                and self._status.battery_pct >= 0
+                else None
+            ),
+            wifi_rssi=(
+                self._status.wifi_rssi
+                if self._status.wifi_rssi is not None and self._status.wifi_rssi != 0
+                else None
+            ),
             cmd_vel_linear=cmd_linear,
             cmd_vel_angular=cmd_angular,
             odom_motion_s=odom_motion_value,
@@ -1674,7 +1729,9 @@ class QuestNode(Node):
             finally:
                 self._aio_loop.run_until_complete(runner.cleanup())
 
-        self._aio_thread = threading.Thread(target=_runner, name="quest-aiohttp", daemon=True)
+        self._aio_thread = threading.Thread(
+            target=_runner, name="quest-aiohttp", daemon=True
+        )
         self._aio_thread.start()
 
     def shutdown(self) -> None:
