@@ -42,8 +42,12 @@ from rob_box_supervisor.supervisor_node import (
     REASON_HELD_BY_OTHER,
     REASON_MONITOR,
     REASON_RELEASED,
+    SET_VOICE_LANGUAGE_TOPIC,
     SET_VOICE_MODE_TOPIC,
+    SET_VOICE_PRESET_TOPIC,
     VOICE_INPUT_MODES,
+    VOICE_LANGUAGES,
+    VOICE_PRESET_IDS,
     WIRE_MODES,
     AvatarSupervisor,
 )
@@ -763,6 +767,114 @@ class TestAvatarSupervisorVoiceMode(unittest.TestCase):
         self.assertTrue(applied)
         self.assertEqual(reason, "applied")
         self.node._set_dialogue_param.assert_called_once_with("voice_input_mode", "off")
+
+
+class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
+    """AV-28 §P7 — супервизор владеет voice_preset + voice_output_language.
+
+    Маршрут: UI → ws_server.set_voice → Bridge → /avatar/set_voice_preset
+    (или _language) → supervisor → SetParameters на dialogue_node.
+    Симметрично TestAvatarSupervisorVoiceMode (выше), но для параметров
+    стиля речи и языка вывода, которые появились в Phase 3 (AV-28).
+    """
+
+    def setUp(self) -> None:
+        self.node = AvatarSupervisor()
+
+    def tearDown(self) -> None:
+        self.node.destroy_node()
+
+    def test_preset_topic_subscribed(self) -> None:
+        topics = [s.topic for s in self.node._subscriptions]
+        self.assertIn(SET_VOICE_PRESET_TOPIC, topics)
+        self.assertIn(SET_VOICE_LANGUAGE_TOPIC, topics)
+
+    def test_monitor_mode_does_not_apply_preset(self) -> None:
+        """В monitor супервизор принимает preset, но НЕ применяет (S12)."""
+        applied, reason = self.node._apply_voice_preset("lenin")
+        self.assertFalse(applied)
+        self.assertEqual(reason, MONITOR_MODE_REASON)
+
+    def test_monitor_mode_does_not_apply_language(self) -> None:
+        applied, reason = self.node._apply_voice_language("en")
+        self.assertFalse(applied)
+        self.assertEqual(reason, MONITOR_MODE_REASON)
+
+    def test_invalid_preset_rejected(self) -> None:
+        """Не-whitelisted preset отвергается — UI получит NACK на сервере,
+        а здесь на supervisor-стороне ловим как ``invalid_voice_preset``."""
+        self.node._mode = "active"
+        applied, reason = self.node._apply_voice_preset("not_a_preset")
+        self.assertFalse(applied)
+        self.assertIn("invalid_voice_preset", reason)
+
+    def test_invalid_language_rejected(self) -> None:
+        self.node._mode = "active"
+        applied, reason = self.node._apply_voice_language("de")
+        self.assertFalse(applied)
+        self.assertIn("invalid_voice_language", reason)
+
+    def test_empty_preset_rejected(self) -> None:
+        """Пустой payload — это битый UI; не пытаемся выставить
+        пустую строку параметром (dialogue_node упадёт)."""
+        self.node._mode = "active"
+        applied, reason = self.node._apply_voice_preset("")
+        self.assertFalse(applied)
+        self.assertEqual(reason, "empty_voice_preset")
+
+    def test_empty_language_rejected(self) -> None:
+        self.node._mode = "active"
+        applied, reason = self.node._apply_voice_language("")
+        self.assertFalse(applied)
+        self.assertEqual(reason, "empty_voice_language")
+
+    def test_active_mode_dispatches_preset(self) -> None:
+        """В active режиме валидный preset → SetParameters(voice_preset=...)."""
+        self.node._mode = "active"
+        self.node._set_dialogue_param = MagicMock()
+        applied, reason = self.node._apply_voice_preset("philosopher")
+        self.assertTrue(applied)
+        self.assertEqual(reason, "applied")
+        self.node._set_dialogue_param.assert_called_once_with(
+            "voice_preset", "philosopher"
+        )
+
+    def test_active_mode_dispatches_language(self) -> None:
+        self.node._mode = "active"
+        self.node._set_dialogue_param = MagicMock()
+        applied, reason = self.node._apply_voice_language("en")
+        self.assertTrue(applied)
+        self.assertEqual(reason, "applied")
+        self.node._set_dialogue_param.assert_called_once_with(
+            "voice_output_language", "en"
+        )
+
+    def test_on_set_voice_preset_feeds_apply(self) -> None:
+        """Топик → _apply_voice_preset; в monitor применяется=false."""
+        self.node._apply_voice_preset = MagicMock(
+            return_value=(False, MONITOR_MODE_REASON)
+        )
+        self.node._on_set_voice_preset(_make_string_msg("lenin"))
+        self.node._apply_voice_preset.assert_called_once_with("lenin")
+
+    def test_on_set_voice_language_feeds_apply(self) -> None:
+        self.node._apply_voice_language = MagicMock(
+            return_value=(False, MONITOR_MODE_REASON)
+        )
+        self.node._on_set_voice_language(_make_string_msg("ru"))
+        self.node._apply_voice_language.assert_called_once_with("ru")
+
+    def test_param_set_failure_reported(self) -> None:
+        """Ошибка RPC SetParameters должна отдаваться как param_set_failed,
+        а не валить ноду (BLE001-семейство ошибок)."""
+        self.node._mode = "active"
+        self.node._set_dialogue_param = MagicMock(
+            side_effect=RuntimeError("service unavailable")
+        )
+        applied, reason = self.node._apply_voice_preset("street")
+        self.assertFalse(applied)
+        self.assertIn("param_set_failed", reason)
+        self.assertIn("service unavailable", reason)
 
 
 class TestAcquireFloorTypedContract(unittest.TestCase):

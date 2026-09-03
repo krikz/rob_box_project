@@ -1,9 +1,39 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   createVoicePresetsPanel,
+  renderHud,
   type VoicePresetsPanel
 } from "../src/ui/voice_presets_panel";
 import type { VoicePresetInfo, VoiceLanguage } from "../src/wire/messages";
+
+describe("renderHud", () => {
+  // AV-28 §P7: HUD-метка должна быть стабильной и читабельной с
+  // расстояния. Тест контракта, не рендеринга — это pure-функция.
+  it("returns ST:-- when no preset selected", () => {
+    expect(renderHud(null, null)).toBe("ST:--");
+  });
+
+  it("renders just preset when language is null", () => {
+    expect(renderHud("lenin", null)).toBe("LENIN");
+    expect(renderHud("technical", null)).toBe("TECHNICAL");
+  });
+
+  it("renders preset@language when both provided", () => {
+    expect(renderHud("lenin", "ru")).toBe("LENIN@RU");
+    expect(renderHud("philosopher", "en")).toBe("PHILOSOPHER@EN");
+  });
+
+  it("is case-insensitive (input uppercased)", () => {
+    expect(renderHud("Lenin", "ru")).toBe("LENIN@RU");
+  });
+
+  it("ignores preset but renders language when preset is null", () => {
+    // (текущий контракт: без preset нет HUD-метки; язык показываем
+    // только при наличии пресета — иначе оператор не знает, к чему
+    // относится @RU).
+    expect(renderHud(null, "ru")).toBe("ST:--");
+  });
+});
 
 const PRESETS: VoicePresetInfo[] = [
   { id: "technical", name: "Технический" },
@@ -225,6 +255,42 @@ describe("createVoicePresetsPanel", () => {
     ) as HTMLButtonElement;
     expect(streetBtn.getAttribute("aria-pressed")).toBe("true");
     expect(onPresetChange).not.toHaveBeenCalled();
+  });
+
+  it("HUD element starts with ST:-- and updates on chip click", () => {
+    panel = createVoicePresetsPanel(parent, {
+      presets: PRESETS,
+      currentPreset: null,
+      currentLanguage: null
+    });
+    const root = parent.querySelector("[data-voice-presets-panel]") as HTMLElement;
+    const hud = root.querySelector(
+      '[data-testid="voice-presets-hud"]'
+    ) as HTMLElement;
+    expect(hud).toBeTruthy();
+    expect(hud.textContent).toBe("ST:--");
+    // Кликаем по чипу → HUD должен обновиться оптимистично.
+    const cavemanBtn = root.querySelector(
+      '[data-preset="caveman"]'
+    ) as HTMLButtonElement;
+    cavemanBtn.click();
+    expect(hud.textContent).toBe("CAVEMAN");
+  });
+
+  it("HUD includes language after setCurrentLanguage", () => {
+    panel = createVoicePresetsPanel(parent, {
+      presets: PRESETS,
+      languages: ["ru", "en"],
+      currentPreset: "lenin", // намеренно не в PRESETS — HUD рисуется отдельно
+      currentLanguage: "ru"
+    });
+    const root = parent.querySelector("[data-voice-presets-panel]") as HTMLElement;
+    const hud = root.querySelector(
+      '[data-testid="voice-presets-hud"]'
+    ) as HTMLElement;
+    expect(hud.textContent).toBe("LENIN@RU");
+    panel.setCurrentLanguage("en");
+    expect(hud.textContent).toBe("LENIN@EN");
   });
 
   it("setCurrentLanguage updates aria-checked without firing callback", () => {
