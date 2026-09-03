@@ -71,7 +71,6 @@ from rob_box_supervisor.core.state import (
     encode_for_ros_string,
 )
 
-
 # AV-14 (issue #1906) — ``/avatar/state`` wire format lives in
 # :mod:`rob_box_supervisor.core.state`. The supervisor here ONLY calls
 # :func:`encode_for_ros_string`; no local msgpack, no JSON fallback.
@@ -1243,9 +1242,10 @@ class _NoopLabelCounter:
     ничего не считает. Это позволяет ``self._agent_metrics`` быть
     всегда dict-ом, без ``if rob_box_voice is not None`` в каждом
     методе record_*.
-    """
 
-    __slots__ = ()
+    ``labels`` — обычный атрибут (не слот), чтобы unit-тесты могли
+    подменить его на spy и перехватить вызовы ``.inc()``.
+    """
 
     def labels(self, *args: Any, **kwargs: Any) -> "_NoopLabelCounter":
         return self
@@ -1255,9 +1255,11 @@ class _NoopLabelCounter:
 
 
 class _NoopHistogram:
-    """Заглушка для гистограммы latency при отсутствии ``rob_box_voice``."""
+    """Заглушка для гистограммы latency при отсутствии ``rob_box_voice``.
 
-    __slots__ = ()
+    Аналогично ``_NoopLabelCounter`` — ``labels`` не слот, чтобы тесты
+    могли его подменить.
+    """
 
     def observe(self, amount: float) -> None:
         return None

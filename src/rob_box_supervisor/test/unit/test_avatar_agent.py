@@ -447,11 +447,24 @@ class TestAgentMetrics(unittest.TestCase):
     инкрементнулись после одной успешной команды."""
 
     def setUp(self) -> None:
+        # Форсируем ``MetricsDisabled`` (singleton) — реальный
+        # prometheus_client.Counter не позволяет setattr на ``labels``
+        # (property без setter), поэтому spy на инстансе не сработает.
+        # Тест-инвариант: метрики best-effort и в CI-env (без prom-client)
+        # тесты должны работать над той же заглушкой, что и прод-код.
+        import unittest.mock as _mock
+
+        self._prom_patch = _mock.patch(
+            "rob_box_voice.observability.metrics.is_metrics_enabled",
+            return_value=False,
+        )
+        self._prom_patch.start()
         self.node = AvatarSupervisor()
         self.node._agent_enabled = True
 
     def tearDown(self) -> None:
         self.node.destroy_node()
+        self._prom_patch.stop()
 
     def test_metrics_incremented_on_say(self) -> None:
         """После «скажи привет» инкрементнулась и command, и tool_call."""
