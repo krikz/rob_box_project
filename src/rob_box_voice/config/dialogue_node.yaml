@@ -55,6 +55,18 @@ dialogue_node:
     # dialogue_node.parameters_callback и §3.5 docs/design/
     # dialogue-mode-spec-2026-08-28.md).
     voice_input_mode: respeaker
+    # AV-28 (P7-full голосового плана) — параметры формализации Quest-фраз
+    # при voice_input_mode=quest_llm_formalize. Дефолты подтягиваются из
+    # voice_presets.yaml (default_preset/default_language) на первый
+    # запрос — поэтому здесь пустые строки, а не «technical»/«ru».
+    # Пустой voice_presets_file → resolve на rob_box_voice/config/
+    # voice_presets.yaml через ROS-share.
+    voice_preset: ''
+    voice_output_language: ''
+    voice_presets_file: ''
+    # 0 → берётся llm_timeout_sec (одинаковый бюджет для формализатора и
+    # обычного диалога).
+    voice_formalize_timeout_sec: 0.0
     # Дополнительные ключи для переопределения оператором:
     # (все имеют default в коде — здесь выставляем «безопасные» значения)
     temperature: 0.7
