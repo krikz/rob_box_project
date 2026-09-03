@@ -48,12 +48,15 @@ from .core.safety import Watchdog
 from .core.teleop import TeleopController
 from .server.session import WATCHDOG_TIMEOUT_S as SESSION_WATCHDOG_TIMEOUT_S
 from .server.ws_server import NoOpBridge, WSSServer, build_app
+from .streams.alerts import Alert, AlertThresholds, evaluate_alerts
 from .streams.battery import parse_battery_json, voltage_to_pct
 from .streams.lidar import scan_to_payload
 from .streams.provider import CameraFrame, CameraProvider
 from .streams.registry import STREAM_CATALOG
 from .streams.status import StatusAggregator
+from .streams.voice_state import normalize_voice_state
 from .streams.wifi import read_wifi_rssi
+from .protocol.topics import encode_voice_state
 
 log = logging.getLogger(__name__)
 
@@ -121,6 +124,73 @@ def _string_msg(value: str) -> String:
     m = String()
     m.data = value
     return m
+
+
+def _read_alert_thresholds(node) -> AlertThresholds:
+    """Читает ROS-параметры в AlertThresholds. Выделено в функцию, чтобы
+    тесты могли использовать ту же логику без rclpy-ноды."""
+    return AlertThresholds(
+        battery_low_pct=int(node.get_parameter("alert_battery_low_pct").value),
+        battery_hysteresis_pct=int(node.get_parameter("alert_battery_hysteresis_pct").value),
+        wifi_weak_dbm=int(node.get_parameter("alert_wifi_weak_dbm").value),
+        wifi_hysteresis_dbm=int(node.get_parameter("alert_wifi_hysteresis_dbm").value),
+        stuck_timeout_s=float(node.get_parameter("alert_stuck_timeout_s").value),
+        stuck_cmd_eps=float(node.get_parameter("alert_stuck_cmd_eps").value),
+        hold_ms=int(node.get_parameter("alert_hold_ms").value),
+    )
+
+
+class OdomMotionTracker:
+    """Следит за движением робота по ``/odom`` для ROBOT_STUCK детектора.
+
+    Алгоритм:
+      - берём pose (x,y) из последнего /odom;
+      - сравниваем с прошлым — если дистанция > ``eps_m``, считаем что
+        робот реально двигался (сбрасываем счётчик);
+      - иначе накапливаем ``motion_s`` секунд (от monotonic).
+
+    Считаем по 2D-плоскости (x,y) потому что твист — плоский; z и
+    orientation используем только если 2D-плоскости нет (одометрия
+    в стартовом положении).
+
+    ``odom_motion_s`` сбрасывается в 0 при движении. Для
+    ROBOT_STUCK важно «сколько секунд не двигался» — это и есть
+    основное поле, передаваемое в ``evaluate_alerts``.
+    """
+
+    def __init__(self, eps_m: float = 0.01) -> None:
+        self._eps_m2 = eps_m * eps_m
+        self._last_x: Optional[float] = None
+        self._last_y: Optional[float] = None
+        self._last_motion_monotonic: Optional[float] = None
+
+    def update(self, x: float, y: float, now_monotonic: float) -> float:
+        """Обновить позицию, вернуть секунды с последнего видимого движения."""
+        if self._last_x is None or self._last_y is None:
+            self._last_x = float(x)
+            self._last_y = float(y)
+            self._last_motion_monotonic = now_monotonic
+            return 0.0
+        dx = float(x) - self._last_x
+        dy = float(y) - self._last_y
+        if (dx * dx + dy * dy) > self._eps_m2:
+            self._last_x = float(x)
+            self._last_y = float(y)
+            self._last_motion_monotonic = now_monotonic
+            return 0.0
+        if self._last_motion_monotonic is None:
+            self._last_motion_monotonic = now_monotonic
+            return 0.0
+        return float(now_monotonic - self._last_motion_monotonic)
+
+    def seconds_since_last_motion(self, now_monotonic: float) -> Optional[float]:
+        """Секунд с момента последнего видимого движения, ``None`` если
+        ещё ни одного /odom не приходило. Используется в
+        ``QuestNode._on_alert_timer`` для ROBOT_STUCK detector'а.
+        """
+        if self._last_motion_monotonic is None:
+            return None
+        return float(max(0.0, now_monotonic - self._last_motion_monotonic))
 
 
 class QuestBridge:
@@ -401,6 +471,18 @@ class QuestBridge:
         if self._ws_server.get_active_sessions() == 0:
             return "idle"
         return "teleop_active" if self._teleop.tick(now_monotonic) is not None else "idle"
+
+    def last_cmd_twist(self) -> tuple[float, float]:
+        """Последний non-zero (linear.x, angular.z) от teleop для ROBOT_STUCK.
+
+        Если клиент DISARMED / emergency / ничего не прислал — (0, 0).
+        caller'ы (QuestNode._on_alert_timer) сравнивают с ``stuck_cmd_eps``
+        и поднимают ROBOT_STUCK только при наличии значимой команды.
+        """
+        if self._teleop.is_emergency:
+            return 0.0, 0.0
+        twist = self._teleop.last_twist
+        return float(twist.linear_x), float(twist.angular_z)
 
     def watchdog_check(self, now_monotonic: float) -> bool:
         """True если watchdog trip → safe stop нужен."""
@@ -689,11 +771,23 @@ class QuestNode(Node):
         # Wi-Fi RSSI читаем локально на Vision Pi — это тот же линк, по
         # которому идёт WSS до Quest. Пустое имя = первый интерфейс в таблице.
         self.declare_parameter("wifi_iface", "")
+        # AV-26 / R7: robot_alert пороги (см. streams/alerts.py). Дефолты
+        # дублируют значения из webxr_client/src/scene/status_hud.ts — клиент
+        # и сервер не должны разъезжаться на «свечке» (acceptance: «в PR
+        # цитата обеих сторон рядом»).
+        self.declare_parameter("alert_battery_low_pct", 20)
+        self.declare_parameter("alert_battery_hysteresis_pct", 5)
+        self.declare_parameter("alert_wifi_weak_dbm", -75)
+        self.declare_parameter("alert_wifi_hysteresis_dbm", 5)
+        self.declare_parameter("alert_stuck_timeout_s", 3.0)
+        self.declare_parameter("alert_stuck_cmd_eps", 0.05)
+        self.declare_parameter("alert_hold_ms", 10_000)
 
         log_pin = bool(self.get_parameter("log_pin").value)
         self._battery_v_empty = float(self.get_parameter("battery_voltage_empty").value)
         self._battery_v_full = float(self.get_parameter("battery_voltage_full").value)
         self._wifi_iface = str(self.get_parameter("wifi_iface").value) or None
+        self._alert_thresholds = _read_alert_thresholds(self)
 
         # Publishers (см. twist_mux.yaml: priority 40 quest, 255 emergency).
         _RE = QoSProfile(
@@ -792,6 +886,21 @@ class QuestNode(Node):
             self._on_camera_image,
             _CAMERA_QOS,
         )
+        # voice_state (0x1202): /voice/dialogue/state (std_msgs/String) →
+        # нормализованный msgpack-фрейм → WS-подписчикам. Подписка
+        # RELIABLE — dialogue_node публикует так же (см.
+        # docs/recon/voice-dialogue-state-payload.md §1.1).
+        self._dialogue_state_sub = self.create_subscription(
+            String,
+            "/voice/dialogue/state",
+            self._on_dialogue_state,
+            _RE,
+        )
+        # Эх последнего state — для тестов моста без полного ROS-стека.
+        self._last_voice_state: dict[str, Any] = {
+            "state": "idle",
+            "detail": None,
+        }
         # Батарея (Wave 3.A): JSON-снапшот сенсор-борда + VESC-напряжение.
         # vesc_msgs есть не в каждом образе (пакет собирается на Main Pi),
         # поэтому подписка опциональная — без него остаётся JSON-путь.
@@ -811,6 +920,11 @@ class QuestNode(Node):
             self.get_logger().info("vesc_msgs unavailable — battery voltage from JSON snapshot only")
         self._latest_odom: Optional[Odometry] = None
         self._status = StatusAggregator()
+        # AV-26: state для evaluate_alerts() — список Alert'ов, активных
+        # на прошлом тике. Храним тут, не в Bridge, потому что Bridge живёт
+        # без ROS и не должен зависеть от WS-сессии.
+        self._active_alerts: list[Alert] = []
+        self._odom_motion_tracker = OdomMotionTracker()
 
         # WS server (инициализируем первым чтобы передать в Bridge).
         from .server.ws_server import ACTIVE_PIN
@@ -862,6 +976,10 @@ class QuestNode(Node):
         self._watchdog_timer = self.create_timer(0.1, self._on_watchdog_timer)
         # robot_status (1 Hz).
         self._status_timer = self.create_timer(1.0, self._on_status_timer)
+        # AV-26 / R7: robot_alert evaluation — 1 Hz, чтобы не было мигающего
+        # тоста на границе порога. Минимум, который нужен чтобы hold_ms=10 с
+        # отрабатывал с точностью до 1 с (10..11 с).
+        self._alert_timer = self.create_timer(1.0, self._on_alert_timer)
 
         # Запуск aiohttp отложен до first timer callback (rclpy init
         # уже произошёл к этому моменту).
@@ -880,6 +998,16 @@ class QuestNode(Node):
             )
         except Exception as e:  # noqa: BLE001
             self.get_logger().debug(f"status update failed: {e}")
+        # AV-26: обновить счётчик «сколько секунд робот не двигался»
+        # для ROBOT_STUCK detector.
+        try:
+            self._odom_motion_tracker.update(
+                float(msg.pose.pose.position.x),
+                float(msg.pose.pose.position.y),
+                time.monotonic(),
+            )
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().debug(f"odom motion tracker update failed: {e}")
 
     def _on_scan(self, msg: LaserScan) -> None:
         """ROS subscription /scan → WS-подписчикам (Phase 1.4 v2)."""
@@ -895,6 +1023,31 @@ class QuestNode(Node):
         if not msg.data:
             return
         self.bridge.publish_frame("camera_rear", bytes(msg.data))
+
+    def _on_dialogue_state(self, msg: String) -> None:
+        """ROS /voice/dialogue/state → msgpack voice_state (0x1202) → WS.
+
+        Шлём каждый переход FSM (event-driven, drop-newest — см.
+        meta-quest-api.md §4 frequency policy). Тело — простое:
+        нормализация (таблица DialogueStateKind → bridge state),
+        stamp server time, encode_voice_state, broadcast_frame.
+
+        Никаких проверок «не повторять тот же state» — ROS уже сам
+        не публикует дублей при неизменном состоянии, а если
+        upstream пришлёт — безопасно переслать (клиент сам
+        дедуплицирует по ts_ms+state).
+        """
+        normalized = normalize_voice_state(msg)
+        self._last_voice_state = normalized
+        payload = encode_voice_state(
+            state=normalized["state"],
+            ts_ms=int(time.time() * 1000),
+            detail=normalized["detail"],
+        )
+        try:
+            self.bridge.publish_frame("voice_state", payload)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().debug(f"voice_state publish failed: {e}")
 
     def _on_tick_timer(self) -> None:
         if not self._aio_started:
@@ -958,6 +1111,74 @@ class QuestNode(Node):
             self.bridge.publish_frame("robot_status", payload)
         except Exception as e:  # noqa: BLE001
             self.get_logger().debug(f"status publish failed: {e}")
+
+    def _on_alert_timer(self) -> None:
+        """1 Hz robot_alert evaluation → broadcast только на изменении
+        (acceptance: «60 одинаковых тиков → 1 событие»).
+
+        Контракт (meta-quest-api.md §6 + AV-26 acceptance):
+          - поднятие алёрта → ``JSON_EVENT{type:"robot_alert", active:true,
+            level, code, args, ts_ms}``;
+          - снятие → ``JSON_EVENT{type:"robot_alert", active:false,
+            level:"info", code, args:{...}, ts_ms}`` (тот же код, чтобы
+            клиент мог матчить без хранения prev state).
+
+        ``ts_ms`` в payload — wall-clock из ROS-таймера; ``since_ms``
+        у Alert'а (от evaluate_alerts) — внутреннее, для hold/hysteresis,
+        в payload не идёт (приватная деталь реализации).
+        """
+        now_monotonic = time.monotonic()
+        now_ms = int(now_monotonic * 1000)
+        cmd_linear, cmd_angular = self.bridge.last_cmd_twist()
+        odom_motion_value = self._odom_motion_tracker.seconds_since_last_motion(now_monotonic)
+
+        new_alerts = evaluate_alerts(
+            now_ms=now_ms,
+            thresholds=self._alert_thresholds,
+            battery_pct=self._status.battery_pct
+            if self._status.battery_pct is not None and self._status.battery_pct >= 0
+            else None,
+            wifi_rssi=self._status.wifi_rssi
+            if self._status.wifi_rssi is not None and self._status.wifi_rssi != 0
+            else None,
+            cmd_vel_linear=cmd_linear,
+            cmd_vel_angular=cmd_angular,
+            odom_motion_s=odom_motion_value,
+            prev_alerts=self._active_alerts,
+        )
+
+        # Diff new_alerts vs self._active_alerts: для поднятия — broadcast
+        # с active=True; для снятия — broadcast с active=False для тех, что
+        # были в prev но не попали в new. Симметричный контракт упрощает
+        # клиент (не нужен set-tracking).
+        prev_codes = {a.code for a in self._active_alerts}
+        new_codes = {a.code for a in new_alerts}
+        # Поднятия.
+        for alert in new_alerts:
+            self._send_alert_event(alert, active=True)
+        # Снятия.
+        prev_by_code = {a.code: a for a in self._active_alerts}
+        for code in prev_codes - new_codes:
+            cleared = prev_by_code[code]
+            self._send_alert_event(cleared, active=False)
+        self._active_alerts = new_alerts
+
+    def _send_alert_event(self, alert: Alert, *, active: bool) -> None:
+        """Сформировать JSON_EVENT для robot_alert и разослать всем сессиям."""
+        payload = {
+            "type": "robot_alert",
+            "code": alert.code,
+            "active": bool(active),
+            # При снятии шлём level="info" (мета-quest-api.md §6 — явный
+            # формат снятия через level). Поднятия — warn/error.
+            "level": alert.level if active else "info",
+            "args": dict(alert.args),
+            "ts_ms": int(time.time() * 1000),
+        }
+        try:
+            self.ws_server.broadcast_json_event(payload)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().debug(f"robot_alert broadcast failed: {e}")
 
     # --- aiohttp lifecycle ------------------------------------------------
 

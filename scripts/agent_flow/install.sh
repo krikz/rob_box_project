@@ -111,6 +111,13 @@ EXPECTED=(
     # не блокер CI — воркер видит actionable ошибку и сам переименовывает
     # в next-free slot (вычисляется из max(origin/develop ADR number) + 1).
     validate_adr_namespace.sh
+    # Pre-PR check на молчаливый контракт test_ws (ретро 03.09 t_cfa21388):
+    # G-Run Tests.yml копирует в test_ws/ только перечисленные в `for d in ...`
+    # корневые каталоги. Тест, читающий корневой каталог вне списка, локально
+    # зелёный, а на CI роняет ВЕСЬ батч пакета collect-error'ом. Так было с
+    # docker/ (t_29b9ce36 -> PR #1874) и scripts/ (t_cfa21388, develop RED ~9ч,
+    # 20+ PR). Guard сверяет список каждого job'а с реальными ссылками тестов.
+    validate_test_ws_dirs.py
     # Post-merge build trigger (issue #1475, ADR-0022 extension): после
     # MERGED PR в develop/main — запускает L-Build-All-Services чтобы
     # .image-versions.dev получил свежие dev-<sha> теги.
@@ -191,6 +198,15 @@ EXPECTED=(
     # task_comments). НЕ kill, НЕ reassign — Шифу принимает решение.
     # Регистрация cron-job делается в ensure_blocked_watchdog_scope_cron.
     agent-flow-blocked-watchdog-scope.sh
+    # Ночной ревью-цикл (ADR-0049): no-agent job, раз в ночь собирает
+    # дайджест за прошедшие сутки (merged PR / коммиты / issues /
+    # красный CI / kanban) и заводит ОДНУ карточку «ночной ревью <дата>»
+    # на architect + до COMPONENT_REVIEW_MAX карточек «ревью компонента:
+    # <comp>» на analyst для компонентов, которые за сутки меняли (дубли /
+    # глюки LLM / недоделки). Карточки создаются через
+    # kanban-retro-create.sh (дедуп по key). Регистрация cron-job —
+    # в ensure_nightly_review_cron ниже.
+    agent-flow-nightly-review.sh
 )
 
 # Режим --list-files: печатает EXPECTED по одному имени на строку и выходит.
@@ -798,6 +814,24 @@ sys.exit(1)
 ensure_blocked_watchdog_scope_cron
 
 echo
+echo "==> Ensure cron job registration: ночной ревью (ADR-0049)"
+# Проблема: весь надзор конвейера реактивный и поштучный — никто не смотрит на
+# день целиком и никто не перечитывает код, который воркеры за сутки написали.
+# ADR-0049 закрывает этот пробел ночным ревью-циклом.
+#
+# Решение: ensure_nightly_review_cron() — идемпотентная регистрация
+# interval-job (every 1h) в devops-профиле, no_agent. Час запуска НЕ зашит в
+# расписание крона: сам скрипт пропускает тик вне окна
+# [NIGHTLY_REVIEW_HOUR, +NIGHTLY_REVIEW_WINDOW_HOURS) и ставит sentinel на
+# ревью-сутки. Ежечасный тик поэтому дешёвый (99% тиков = один `date` + exit
+# 0), зато ревью не теряется, если хост лежал ровно в 02:00 или MAINTENANCE
+# висел первый час окна.
+ensure_nightly_review_cron() {
+    ensure_cron_job devops "Agent Flow Nightly Review (ADR-0049)" "agent-flow-nightly-review.sh" "every 1h" interval
+}
+ensure_nightly_review_cron
+
+echo
 echo "==> md5sum verify: 6 copies of process-launcher / watchdog scripts are byte-identical (retro 25.08 t_24e645e7, extended 01.09 t_a3ba921e)"
 # Проблема (ретро 25.08): agent-flow-*-launcher/watchdog раскладывается в N
 # копий (agent-flow/, devops/, architect/, backend/, analyst/, + legacy
@@ -857,6 +891,7 @@ _WATCHDOG_LAUNCHER_FILES=(
     agent-flow-e2e-fail-streak-watchdog.sh
     padavan-step4-voice-smoke.sh
     agent-flow-blocked-watchdog-scope.sh
+    agent-flow-nightly-review.sh
 )
 
 _md5_verify_fail=0
