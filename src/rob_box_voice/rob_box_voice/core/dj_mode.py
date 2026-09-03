@@ -106,11 +106,38 @@ class DJModeController:
             self._reset_state()
 
     def _apply_enable_payload(self, data: dict, *, is_fresh_start: bool) -> None:
+        # 🔴 FIX (live 03.09 07:58): тема обновлялась ТОЛЬКО на генуинном
+        # старте (``is_fresh_start or not self.state.theme``) — внутри
+        # идущего сета «теперь тема Изнанка» меняло персону (у неё такого
+        # гейта нет) и НЕ меняло тему. ``build_auto_prompt`` продолжал
+        # подставлять `Тема вечеринки: "<старая>"` в каждый переход, и сет
+        # уезжал обратно к прошлой теме. Асимметрия persona/theme ничем не
+        # оправдана — обновляем так же безусловно.
         theme = data.get("theme")
         if theme and isinstance(theme, str) and theme.strip():
-            if is_fresh_start or not self.state.theme:
-                self.state.theme = theme.strip()
+            new_theme = theme.strip()
+            if new_theme != self.state.theme:
+                theme_changed_midset = bool(
+                    self.state.theme and not is_fresh_start
+                )
+                self.state.theme = new_theme
                 self._logger.info(f"🎧 DJ theme: {self.state.theme!r}")
+                if theme_changed_midset and self.state.set_plan:
+                    # План прошлой темы («Трек 1: костры рябин...») в промпте
+                    # новой темы — тот же откат, только через plan_block.
+                    # Чистим ЗДЕСЬ, до разбора ``plan`` ниже: payload, где
+                    # тема и новый план пришли вместе, отработает штатно.
+                    #
+                    # transition_count НЕ трогаем сознательно: сброс счётчика
+                    # по содержимому payload — ровно та регрессия #992, из-за
+                    # которой каждый переход снова становился «СТАРТ
+                    # ВЕЧЕРИНКИ» (см. длинный комментарий ниже).
+                    self._logger.info(
+                        "🎧 DJ тема сменилась внутри сета — сбрасываю план "
+                        f"прошлой темы (прогресс сохранён на "
+                        f"#{self.state.transition_count})"
+                    )
+                    self.state.set_plan = ""
         # 🔴 FIX (live 10:13 DJ): персона юзера — «ты диджей Пёс» →
         # сохраняем, чтобы автопромпты использовали её вместо дефолта.
         persona = data.get("persona")
