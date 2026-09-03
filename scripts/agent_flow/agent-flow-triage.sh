@@ -69,6 +69,28 @@ DONE_LABEL="${DONE_LABEL:-e2e-done}"
 KANBAN_BOARD="${KANBAN_BOARD:-robbox}"
 MAINTENANCE_BRANCH="${MAINTENANCE_BRANCH:-develop}"
 MAINTENANCE_FILE="${MAINTENANCE_FILE:-MAINTENANCE}"
+
+# --- ADR-0045 §2.2 / issue #1887 / t_7255c811: fetch origin/develop ---
+# Best-effort, после defaults (нужен MAINTENANCE_BRANCH). Без этого main
+# worktree's HEAD может отставать от origin/develop на десятки коммитов →
+# следующий `hermes kanban create --workspace worktree` материализует
+# worktree от stale HEAD, PR уходит CONFLICTING (см. PR #1978 и #1979,
+# оба 12 webxr_client файлов не из своего эпика — drift затащил чужие
+# наработки).
+# Best-effort: если fetch падает (offline, нет remote), продолжаем на HEAD —
+# vendor-патч `_resolve_worktree_base_ref` в hermes-agent сам сделает
+# fallback на уровне dispatch. Если оба слоя дадут сбой, остаётся слой 3
+# (pre-PR hook validate_branch_freshness.sh) как последний рубеж.
+if [ "${SKIP_TRIAGE_FETCH:-}" != "true" ]; then
+    if [ -n "${REPO_DIR:-}" ] && [ -d "${REPO_DIR}/.git" ]; then
+        # fetch из основного репо (задаётся в env или в board metadata)
+        git -C "${REPO_DIR}" fetch origin "${MAINTENANCE_BRANCH}" --prune 2>&1 | head -5 || true
+        git -C "${REPO_DIR}" fetch origin 'refs/heads/z-{agent}/*:refs/remotes/origin/z-{agent}/*' --prune 2>&1 | head -3 || true
+    elif [ -d "/home/builder/hermes-share/rob_box_project/.git" ]; then
+        # fallback: local clone, упомянутый в sources_of_truth t_7255c811
+        git -C "/home/builder/hermes-share/rob_box_project" fetch origin "${MAINTENANCE_BRANCH}" --prune 2>&1 | head -5 || true
+    fi
+fi
 AGENT_FLOW_DEFAULT_ROLE="${AGENT_FLOW_DEFAULT_ROLE:-architect}"
 AGENT_FLOW_MAX_RUNTIME="${AGENT_FLOW_MAX_RUNTIME:-1800}"
 # Ретро-фикс (09.08 #2): крупные задачи (priority:P0 или объёмный body) получают
