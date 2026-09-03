@@ -245,7 +245,9 @@ export type TtsPickerTarget =
   | { kind: "preview"; voiceId: string }
   | { kind: "apply" }
   | { kind: "stop" }
-  | { kind: "close" };
+  | { kind: "close" }
+  /** Постоянная «вкладка» в сцене: открыть/закрыть меню (доступна в VR). */
+  | { kind: "launch" };
 
 export function selectTargetId(voiceId: string): string {
   return `${TTS_TARGET_PREFIX}voice:${voiceId}`;
@@ -258,6 +260,7 @@ export function previewTargetId(voiceId: string): string {
 export const APPLY_TARGET_ID = `${TTS_TARGET_PREFIX}apply`;
 export const STOP_TARGET_ID = `${TTS_TARGET_PREFIX}stop`;
 export const CLOSE_TARGET_ID = `${TTS_TARGET_PREFIX}close`;
+export const LAUNCH_TARGET_ID = `${TTS_TARGET_PREFIX}launch`;
 
 /**
  * Разобрать id цели указателя. `null` — цель не наша (панель, строка
@@ -269,6 +272,7 @@ export function parseTtsTargetId(id: string): TtsPickerTarget | null {
   if (rest === "apply") return { kind: "apply" };
   if (rest === "stop") return { kind: "stop" };
   if (rest === "close") return { kind: "close" };
+  if (rest === "launch") return { kind: "launch" };
   if (rest.startsWith("voice:")) {
     const voiceId = rest.slice("voice:".length);
     return voiceId ? { kind: "select", voiceId } : null;

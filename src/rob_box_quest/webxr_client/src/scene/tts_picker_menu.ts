@@ -23,6 +23,7 @@ import {
   APPLY_TARGET_ID,
   CLOSE_TARGET_ID,
   EMPTY_VOICES_TEXT,
+  LAUNCH_TARGET_ID,
   STOP_TARGET_ID,
   canApply,
   canStopPreview,
@@ -62,6 +63,14 @@ const COLOR_BAD = "#e01b24";
 
 export interface TtsPickerMenuHandle {
   readonly object: THREE.Group;
+  /**
+   * Постоянная «вкладка» VOICE: маленькая плашка, всегда видимая в сцене.
+   * По клику мостик открывает/закрывает меню. Отдельный объект, потому что
+   * `object` целиком скрывается вместе с меню.
+   */
+  readonly launchObject: THREE.Group;
+  /** Цель указателя для вкладки VOICE (регистрируется один раз, навсегда). */
+  launchTarget(): { id: string; object: THREE.Object3D };
   /** Цели для PointerSystem: только те, что сейчас видимы и активны. */
   targets(): Array<{ id: string; object: THREE.Object3D }>;
   /** Перерисовать под новое состояние (вызывать на каждое изменение стора). */
@@ -151,6 +160,23 @@ export function createTtsPickerMenu(): TtsPickerMenuHandle {
 
   const allTiles = [header, placeholder, footer, applyBtn, stopBtn, closeBtn, ...rowTiles, ...previewTiles];
   for (const t of allTiles) group.add(t.mesh);
+
+  // Вкладка VOICE: постоянная плашка на слое указателя (в VR клавиатуры
+  // нет, поэтому точка входа в меню должна быть кликабельным объектом).
+  const launchGroup = new THREE.Group();
+  launchGroup.renderOrder = 20;
+  const launchTile = createTile(0.34, 0.12, 256, 64);
+  launchGroup.add(launchTile.mesh);
+  function drawLaunch(open: boolean): void {
+    fillPlate(launchTile, open ? COLOR_BG_ACTIVE : COLOR_BG, null);
+    drawText(launchTile, open ? "▼ VOICE" : "▶ VOICE", {
+      color: open ? COLOR_TEXT_INVERT : COLOR_ACCENT,
+      font: "bold 24px monospace",
+      align: "center"
+    });
+    launchTile.texture.needsUpdate = true;
+  }
+  drawLaunch(false);
 
   // Текущий снимок состояния — targets() отдаёт только активные цели.
   let visibleRows: ReturnType<typeof ttsRowViews> = [];
@@ -299,6 +325,10 @@ export function createTtsPickerMenu(): TtsPickerMenuHandle {
 
   return {
     object: group,
+    launchObject: launchGroup,
+    launchTarget(): { id: string; object: THREE.Object3D } {
+      return { id: LAUNCH_TARGET_ID, object: launchTile.mesh };
+    },
     targets,
     render,
     show(position: THREE.Vector3, facingAngleY: number): void {
@@ -307,15 +337,17 @@ export function createTtsPickerMenu(): TtsPickerMenuHandle {
       group.position.set(position.x, position.y + 0.5, position.z);
       group.rotation.y = facingAngleY;
       group.visible = true;
+      drawLaunch(true);
     },
     hide(): void {
       group.visible = false;
+      drawLaunch(false);
     },
     isVisible(): boolean {
       return group.visible;
     },
     dispose(): void {
-      for (const t of allTiles) {
+      for (const t of [...allTiles, launchTile]) {
         t.mesh.geometry.dispose();
         (t.mesh.material as THREE.Material).dispose();
         t.texture.dispose();

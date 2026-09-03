@@ -17,6 +17,8 @@ import { createStatusHud, type RobotStatus, type StatusHud } from "./status_hud"
 import { PointerSystem, type PointerRay } from "../interaction/pointer";
 import { resizeSize } from "../interaction/pointer_math";
 import { createStreamMenu, topicFromTargetId, type StreamMenuHandle, type StreamMenuRow } from "./stream_menu";
+import { createTtsPickerMenu, type TtsPickerMenuHandle } from "./tts_picker_menu";
+import { parseTtsTargetId, type TtsPickerState, type TtsPickerTarget } from "../state/tts_picker_state";
 import {
   loadBridgeAssets,
   type BridgeAssetHandle,
@@ -46,6 +48,12 @@ export interface CaptainBridgeOptions {
    * решает, что делать с подписками: сцена про WSS ничего не знает.
    */
   onPanelTopicChange?(panelId: string, oldTopic: string, newTopic: string): void;
+  /**
+   * AV-27: оператор ткнул лучом в TTS picker (строку/PREVIEW/APPLY/STOP/
+   * CLOSE/вкладку VOICE). Сцена не знает ни про WSS, ни про состояние
+   * стора — она только сообщает, куда попал луч.
+   */
+  onTtsPickerAction?(action: TtsPickerTarget): void;
   /**
    * Optional override for the environment base URL. Defaults to
    * `/models/environment/`. Pass `null` to disable environment loading
@@ -114,6 +122,16 @@ export interface CaptainBridgeHandle {
    * стрима, которое всплывает по клику на панель.
    */
   setAvailableStreams(rows: StreamMenuRow[]): void;
+  /**
+   * AV-27: 3D-меню TTS picker'а. Сцена только рисует и ловит клики —
+   * состояние и WS-команды живут в `main.ts` (тот же контракт, что у
+   * `onPanelTopicChange`: сцена про WSS ничего не знает).
+   */
+  renderTtsPicker(state: TtsPickerState): void;
+  /** Открыть меню TTS picker'а (рядом с экраном-стеной). */
+  openTtsPicker(): void;
+  closeTtsPicker(): void;
+  isTtsPickerOpen(): boolean;
   start(): () => void;
   resize(): void;
   dispose(): void;
@@ -231,6 +249,14 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     handlers: {
       onHover: () => refreshHighlights(),
       onSelect: (id) => {
+        // AV-27: клик по TTS picker'у (вкладка VOICE, строка, PREVIEW,
+        // APPLY, STOP, CLOSE) — раньше всего остального: его цели живут
+        // на том же слое указателя, что панели и stream_menu.
+        const ttsTarget = parseTtsTargetId(id);
+        if (ttsTarget !== null) {
+          handleTtsTarget(ttsTarget);
+          return;
+        }
         // Клик по строке меню — смена стрима выбранной панели.
         const menuTopic = topicFromTargetId(id);
         if (menuTopic !== null) {
@@ -487,6 +513,72 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     pointer.update(ray);
   }
 
+  // ---------- AV-27: TTS picker (3D-меню выбора голоса) ----------
+  //
+  // Живёт рядом с экраном-стеной: оператор смотрит на видео, меню всплывает
+  // левее, на том же радиусе. Вкладка VOICE висит постоянно — в VR клавиш
+  // нет, точка входа обязана быть кликабельным объектом.
+
+  const ttsPicker: TtsPickerMenuHandle = createTtsPickerMenu();
+  scene.add(ttsPicker.object);
+  scene.add(ttsPicker.launchObject);
+  // Вкладка — левее и ниже экрана-стены, той же ориентации (facing +Z).
+  ttsPicker.launchObject.position.set(-1.35, 0.95, -3.85);
+
+  // Вкладка кликабельна всегда: цель регистрируется один раз.
+  {
+    const lt = ttsPicker.launchTarget();
+    pointer.addTarget({ id: lt.id, object: lt.object, draggable: false });
+  }
+
+  /** Пере-регистрация целей меню: только пока оно открыто. */
+  let ttsTargetIds: string[] = [];
+
+  function syncTtsTargets(): void {
+    for (const id of ttsTargetIds) pointer.removeTarget(id);
+    ttsTargetIds = [];
+    if (!ttsPicker.isVisible()) return;
+    for (const t of ttsPicker.targets()) {
+      pointer.addTarget({ id: t.id, object: t.object, draggable: false });
+      ttsTargetIds.push(t.id);
+    }
+  }
+
+  function renderTtsPicker(state: TtsPickerState): void {
+    ttsPicker.render(state);
+    // Набор активных целей зависит от состояния (APPLY/STOP гаснут,
+    // строки появляются) — держим PointerSystem в синхроне.
+    syncTtsTargets();
+  }
+
+  function openTtsPicker(): void {
+    if (ttsPicker.isVisible()) return;
+    // Ставим меню на позицию вкладки, чтобы оно оказалось на том же
+    // радиусе и повороте, что панели (глубина слоя как у stream_menu).
+    const p = ttsPicker.launchObject.position;
+    ttsPicker.show(new THREE.Vector3(p.x, p.y, p.z), 0);
+    syncTtsTargets();
+  }
+
+  function closeTtsPicker(): void {
+    if (!ttsPicker.isVisible()) return;
+    ttsPicker.hide();
+    syncTtsTargets();
+  }
+
+  function handleTtsTarget(action: TtsPickerTarget): void {
+    if (action.kind === "launch") {
+      if (ttsPicker.isVisible()) closeTtsPicker();
+      else openTtsPicker();
+    } else if (action.kind === "close") {
+      closeTtsPicker();
+    }
+    // Остальные действия (select / preview / apply / stop) — забота
+    // main.ts: только он знает про сокет и стор. Открытие/закрытие
+    // обрабатываем здесь, потому что это чистая геометрия сцены.
+    opts.onTtsPickerAction?.(action);
+  }
+
   function videoTopics(): string[] {
     const topics = new Set<string>([MAIN_SCREEN_TOPIC]);
     for (const s of panelMgr.list()) topics.add(s.topic);
@@ -603,6 +695,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     for (const vp of videoPanels.values()) vp.dispose();
     lidar.dispose();
     streamMenu?.dispose();
+    ttsPicker.dispose();
     environment?.dispose();
     armTexture.dispose();
     statusHud.dispose();
@@ -624,6 +717,10 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     updatePointer,
     pointer,
     setAvailableStreams,
+    renderTtsPicker,
+    openTtsPicker,
+    closeTtsPicker,
+    isTtsPickerOpen: () => ttsPicker.isVisible(),
     attachXrSession,
     setControllerActive,
     setArmState,
