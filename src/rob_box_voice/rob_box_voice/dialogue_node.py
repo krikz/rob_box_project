@@ -41,6 +41,12 @@ from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Bool, String
 from nav_msgs.msg import Odometry
 
+from rob_box_core.avatar_command import (
+    AVATAR_COMMAND_TOPIC,
+    build_command,
+    encode_command,
+    make_quest_client_id,
+)
 from rob_box_core.prompt_sections import (
     PromptMarkupError,
     merge_skill_prompts,
@@ -488,6 +494,14 @@ class DialogueNode(Node):
                            history=HistoryPolicy.KEEP_LAST, depth=10)
         self._response_pub = self.create_publisher(
             String, "/voice/dialogue/response", 10)
+        # AV-22 (Issue #1914) — producer /avatar/command для супервизор-агента.
+        # В режиме ``voice_input_mode="quest_command"`` (ADR-0027 §3.4) диалоговая
+        # нода не запускает LLM личности, а публикует распознанную фразу оператора
+        # в /avatar/command. Телеграм-бот публикует в тот же топик из handlers,
+        # поэтому контракт общий — см. rob_box_core.avatar_command и worker-brief
+        # §3.3. RELIABLE+KEEP_LAST depth=10 — на случай всплеска PTT-фраз.
+        self._avatar_command_pub = self.create_publisher(
+            String, AVATAR_COMMAND_TOPIC, 10)
         self._state_pub = self.create_publisher(String, "/voice/dialogue/state", 10)
         self._sound_trigger_pub = self.create_publisher(
             String, "/voice/sound/trigger", 10)
@@ -997,8 +1011,10 @@ class DialogueNode(Node):
         self.declare_parameter("metrics_port", 9100)
         # Issue #1601 / ADR-0027 §3.4 — режим захвата голоса. Используется
         # supervisor'ом (ADR-0028 S5, единственная точка смены) для
-        # переключения источника входа (respeaker | quest_passthrough |
-        # quest_ttts | quest_stt | quest_llm_formalize | off — W3-1).
+        # ADR-0027 §3.4 — ``voice_input_mode`` — единая точка переключения
+        # источника входа (respeaker | quest_passthrough |
+        # quest_ttts | quest_stt | quest_llm_formalize | quest_command |
+        # off — W3-1, AV-22 — Issue #1914).
         # ``_voice_input_mode`` — кэш последнего значения в поле ноды,
         # который обновляет ``parameters_callback`` и читают
         # ``_on_stt``/``_on_quest_stt``; до прихода первого SetParameters
@@ -2116,6 +2132,13 @@ class DialogueNode(Node):
         - ``quest_ttts`` → **повторить голосом робота дословно** (STT → TTS,
           без LLM — это не диалог, а «озвучка моих слов»);
         - ``quest_stt`` → LLM-диалог без wake-word (Phase 2, follow-up);
+        - ``quest_command`` (AV-22, Issue #1914) → **опубликовать** в
+          ``/avatar/command`` (``source="quest"``) и НЕ запускать LLM
+          личности. Личность «молчит» — гейт «личность не отвечает
+          параллельно» (worker-brief §3.3, ADR-0018). ``session_id``
+          берём из ``self._quest_session_id``, который выставляет
+          quest-сервер через ``/avatar/set_voice_mode`` (follow-up).
+          До его прихода используем дефолт ``unknown``;
         - ``quest_passthrough`` → не сюда (звук играет sound_node напрямую);
         - ``respeaker`` (default) → игнор: Quest-режим не активен.
         """
@@ -2123,8 +2146,8 @@ class DialogueNode(Node):
             mode = str(self.get_parameter("voice_input_mode").value or "respeaker")
         except Exception:  # noqa: BLE001 — голый объект в тестах без параметра
             mode = "respeaker"
+        text = (msg.data or "").strip()
         if mode == "quest_ttts":
-            text = (msg.data or "").strip()
             if text:
                 self.get_logger().info(f"🗣️ [quest] robot-voice repeat: {text[:80]!r}")
                 self._speak_direct(text)
@@ -2132,8 +2155,40 @@ class DialogueNode(Node):
         if mode == "quest_stt":
             self._on_stt(msg, from_quest=True)
             return
+        if mode == "quest_command":
+            # AV-22 (Issue #1914) — режим команды: в /avatar/command, не в LLM.
+            # Личность МОЛЧИТ — гейт именно здесь, не через voice_input_mode="off".
+            if not text:
+                return
+            self._publish_avatar_command_from_quest(text)
+            return
         self.get_logger().info(
             f"🔇 [quest] voice_input_mode={mode!r} — quest STT ignored"
+        )
+
+    def _publish_avatar_command_from_quest(self, text: str) -> None:
+        """AV-22 (Issue #1914) — публикация в ``/avatar/command`` из Quest.
+
+        ``client_id`` имеет форму ``quest:<session_id>``. ``session_id``
+        сейчас фиксируется атрибутом ``_quest_session_id`` (default
+        ``"unknown"``); quest-сервер будет его выставлять через
+        ``/avatar/set_voice_mode`` в одной из follow-up карточек (заморожено
+        в worker-brief §1.3 — клиент не формирует client_id сам). Метод
+        изолирован, чтобы тест мог подменить ``_avatar_command_pub``.
+        """
+        session_id = getattr(self, "_quest_session_id", "unknown") or "unknown"
+        payload = build_command(
+            source="quest",
+            client_id=make_quest_client_id(session_id),
+            text=text,
+        )
+        wire = encode_command(payload)
+        out = String()
+        out.data = wire
+        self._avatar_command_pub.publish(out)
+        self.get_logger().info(
+            f"🎮 [quest_command] → /avatar/command request_id={payload['request_id']} "
+            f"text={text[:80]!r}"
         )
 
     def _on_stt(self, msg: String, from_quest: bool = False) -> None:

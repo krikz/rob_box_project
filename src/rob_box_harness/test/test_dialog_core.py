@@ -38,6 +38,7 @@ from rob_box_harness.core.dialogue_state_machine import (
     DialogueStateKind,
     DialogueStateMachine,
 )
+from rob_box_harness.memory import Turn
 from rob_box_llm.errors import ProviderError
 from rob_box_llm.provider import LLMChunk, LLMMessage, LLMSettings, LLMResponse, ToolCall
 
@@ -2482,3 +2483,105 @@ def test_dialog_core_streams_settings_on_streaming_path(
     assert result.error is None
     assert streaming_llm.settings_calls
     assert streaming_llm.settings_calls[0] is settings
+
+
+# ---------------------------------------------------------------------------
+# Retracted reply must not take the user's request down with it
+# ---------------------------------------------------------------------------
+
+
+def test_retracted_reply_keeps_its_user_turn_for_the_synthetic_retry(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Ретрай обязан ВИДЕТЬ реплику, ради которой он запущен.
+
+    Живой лог vision 03.09 07:58. Юзер: «Ты диджей Векну и у нас сегодня
+    тема Изнанка». Модель ответила словами без музыкального тула →
+    music-guard отозвал ответ (``discard_last_reply``) и отправил
+    [CRITICAL]-ретрай. Отзыв сделал user-ход ХВОСТОВЫМ, а
+    ``_clean_history_turns`` выбрасывает хвостовой user-ход как сироту
+    после barge-in — и в промпте ретрая «Векны» не осталось. Зато в
+    истории дважды стояло «ты диджей Шафутинский»: модель пошла за
+    историей и вызвала ``set_dj_mode(persona='Диджей Шафутинский')``.
+    Юзер услышал, что робот «всё-таки Шафутинский».
+    """
+    obj = DialogCore(
+        llm=llm, tools=tools_provider, memory=memory, dsm=dsm,
+        system_prompt="БАЗОВЫЙ ПРОМПТ",
+    )
+    obj._turn_window.extend([
+        Turn(role="user", content="Ты диджей Шафутинский"),
+        Turn(role="assistant", content="С вами диджей Шафутинский!"),
+        Turn(role="user", content="Ты диджей Векна, тема Изнанка"),
+        Turn(role="assistant", content="Диджей Векна в студии!"),
+    ])
+
+    assert asyncio.run(obj.discard_last_reply()) is True
+
+    asyncio.run(obj.handle_wake_word(""))
+    asyncio.run(obj.process_input("[CRITICAL] вызови музыкальный тул", is_synthetic=True))
+
+    contents = [m.content for m in llm.calls[0][0]]
+    assert "Ты диджей Векна, тема Изнанка" in contents, contents
+
+
+def test_orphaned_user_turn_is_still_dropped_on_an_ordinary_turn(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Сирота после barge-in по-прежнему выбрасывается.
+
+    Хвостовой user-ход БЕЗ метки отзыва — реплика, на которую юзер уже не
+    ждёт ответа. Две подряд user-реплики заставляют модель отвечать на
+    СТАРУЮ, поэтому сужение ``keep_trailing_user`` до помеченных ходов
+    обязано остаться сужением.
+    """
+    obj = DialogCore(
+        llm=llm, tools=tools_provider, memory=memory, dsm=dsm,
+        system_prompt="БАЗОВЫЙ ПРОМПТ",
+    )
+    obj._turn_window.extend([
+        Turn(role="user", content="старая реплика"),
+        Turn(role="assistant", content="старый ответ"),
+        Turn(role="user", content="перебитая сирота"),
+    ])
+    asyncio.run(obj.handle_wake_word(""))
+    asyncio.run(obj.process_input("новая реплика"))
+
+    contents = [m.content for m in llm.calls[0][0]]
+    assert "перебитая сирота" not in contents, contents
+    assert "старая реплика" in contents, contents
+
+
+def test_pending_user_turn_is_not_resurrected_on_the_next_real_turn(
+    llm: _FakeLLMProvider,
+    tools_provider: _FakeToolProvider,
+    memory: _FakeMemoryStore,
+    dsm: DialogueStateMachine,
+) -> None:
+    """Метка работает ТОЛЬКО внутри синтетического ретрая.
+
+    Когда бюджет ретраев исчерпан, guard тоже отзывает ответ — но следом
+    идёт обычная реплика человека, и повисший запрос не должен конкурировать
+    с ней за внимание модели.
+    """
+    obj = DialogCore(
+        llm=llm, tools=tools_provider, memory=memory, dsm=dsm,
+        system_prompt="БАЗОВЫЙ ПРОМПТ",
+    )
+    obj._turn_window.extend([
+        Turn(role="user", content="Ты диджей Векна, тема Изнанка"),
+        Turn(role="assistant", content="Диджей Векна в студии!"),
+    ])
+    asyncio.run(obj.discard_last_reply())
+
+    asyncio.run(obj.handle_wake_word(""))
+    asyncio.run(obj.process_input("сколько времени"))
+
+    contents = [m.content for m in llm.calls[0][0]]
+    assert "Ты диджей Векна, тема Изнанка" not in contents, contents
