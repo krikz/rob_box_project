@@ -313,6 +313,79 @@ quest_ttts, quest_stt, quest_llm_formalize, quest_command, off}`. Это
   режимы. Переиспользование `quest_stt` сломало бы гейт «личность молчит»
   и перепутало бы два независимых потребителя одной фразы.
 
+#### 3.4.1. Стиль речи и язык вывода (AV-28 §P7, фаза P7-full)
+
+В режиме `quest_llm_formalize` оператор говорит в грип своими словами, а
+робот озвучивает их в выбранном **стиле речи** и на выбранном **языке
+вывода**. Это **не диалог** — LLM не отвечает оператору, не задаёт
+вопросов, не добавляет фактов. Она только переписывает реплику в стиле
+выбранного пресета. Жёсткие ограничения (`max_tokens`/`temperature`/
+no-tools/no-questions) — в спецификации PR #1952 §5.
+
+Два дополнительных параметра на `dialogue_node`:
+
+| Параметр | Допустимые значения | Где хранится |
+|---|---|---|
+| `voice_preset` | `technical` / `street` / `caveman` / `business` / `philosopher` / `lenin` | `src/rob_box_voice/config/voice_presets.yaml` (manifest) + `presets/<id>.txt` (system prompt, RU и EN в одном файле) |
+| `voice_output_language` | `ru` / `en` | тот же файл, поле `languages: [ru, en]` |
+
+**Тексты пресетов — данные, а не код**: добавление нового пресета =
+правка YAML + новый `.txt`, без правок Python (требование origin-карточки
+#1920). Контракт: «preserve meaning / no answering / no invented facts»
++ явная language-directive. Это no-dialog contract (см. PR #1952 §5).
+
+**Маршрутизация — через супервизор (ADR-0028 S5)**, как `voice_input_mode`:
+
+```
+клиент (WebXR) → ws_server.cmd=='set_voice'{preset?, language?}
+   → Bridge.set_voice_preset / set_voice_language
+   → /avatar/set_voice_preset | /avatar/set_voice_language
+   → avatar_supervisor → SetParameters(voice_preset=…) или
+                                      SetParameters(voice_output_language=…)
+   → dialogue_node (применяется к следующей фразе, без рестарта ноды)
+```
+
+Прямых `SetParameters` на `dialogue_node` из `rob_box_quest` нет — supervisor
+единственная точка записи для всех voice-параметров (ADR-0028 S5, в т.ч.
+`voice_input_mode` уже там). Whitelist пресетов и языков — единый на стороне
+ws_server (`VOICE_PRESET_IDS` / `VOICE_LANGUAGES`) и supervisor; невалидное
+значение → `voice_set_nack{reason:invalid_voice_preset|language}`, UI
+откатывает optimistic update.
+
+**HUD-индикатор** текущего пресета в WebXR-клиенте: короткая метка
+`ST:LENIN` / `ST:LENIN@RU` рядом с chip-кнопками стиля речи (чтобы оператор
+видел с расстояния, не всматриваясь в chip-надписи). Префикс `ST:`
+именно для **стиля речи**, чтобы не путать с `voice_id` (TTS picker,
+AV-27) — другой «слой», отдельный выбор голоса. Контракт рендера —
+pure-функция `renderHud(preset, language)` в
+`src/rob_box_quest/webxr_client/src/ui/voice_presets_panel.ts`; формат:
+
+```
+renderHud(null, null)             = "ST:--"
+renderHud("lenin", null)          = "ST:LENIN"
+renderHud("lenin", "ru")          = "ST:LENIN@RU"
+```
+
+HUD обновляется оптимистично при локальном клике (ещё до ack от
+сервера) и подтверждается через `voice_set_ack` (mode_manager). На
+невалидный preset/language → UI откатывает optimistic update по
+`voice_set_nack.reason` (UI-state хранится в mode_manager, см.
+`voice_presets_panel.ts:setCurrentPreset/setCurrentLanguage`).
+
+**Контракт клиент↔сервер** (см. `docs/architecture/meta-quest-api.md` §P7
++ `src/rob_box_quest/webxr_client/src/wire/messages.ts`):
+
+* CMD: `set_voice {voice_id?, preset?, language?}` — все поля опциональны,
+  клиент шлёт то, что реально поменялось.
+* ACK: `voice_set_ack {voice_id?, preset?, language?, ts_ms}` — UI синхронизирует
+  mode_manager.
+* NACK: `voice_set_nack {voice_id?, preset?, language?, reason, ts_ms}` — UI
+  откатывает optimistic update (mode_manager к предыдущему значению).
+
+`voice_id` (TTS picker, AV-27) — out of scope этой карточки: серверная
+часть маршрутизирует только `preset` + `language`. Расширение на
+`voice_id` — отдельная работа.
+
 ---
 
 ## 4. Решения по каждому подпункту acceptance

@@ -4,7 +4,7 @@ import {
   renderHud,
   type VoicePresetsPanel
 } from "../src/ui/voice_presets_panel";
-import type { VoicePresetInfo, VoiceLanguage } from "../src/wire/messages";
+import type { VoicePresetInfo, VoiceLanguage, VoicePreset } from "../src/wire/messages";
 
 describe("renderHud", () => {
   // AV-28 §P7: HUD-метка должна быть стабильной и читабельной с
@@ -13,18 +13,22 @@ describe("renderHud", () => {
     expect(renderHud(null, null)).toBe("ST:--");
   });
 
-  it("renders just preset when language is null", () => {
-    expect(renderHud("lenin", null)).toBe("LENIN");
-    expect(renderHud("technical", null)).toBe("TECHNICAL");
+  it("renders ST:PRESET when only preset provided", () => {
+    // ADR-0027 §3.4.1: префикс "ST:" обязателен, чтобы не путать стиль
+    // речи (AV-28) с voice_id (AV-27).
+    expect(renderHud("lenin", null)).toBe("ST:LENIN");
+    expect(renderHud("technical", null)).toBe("ST:TECHNICAL");
   });
 
-  it("renders preset@language when both provided", () => {
-    expect(renderHud("lenin", "ru")).toBe("LENIN@RU");
-    expect(renderHud("philosopher", "en")).toBe("PHILOSOPHER@EN");
+  it("renders ST:PRESET@LANG when both provided", () => {
+    expect(renderHud("lenin", "ru")).toBe("ST:LENIN@RU");
+    expect(renderHud("philosopher", "en")).toBe("ST:PHILOSOPHER@EN");
   });
 
   it("is case-insensitive (input uppercased)", () => {
-    expect(renderHud("Lenin", "ru")).toBe("LENIN@RU");
+    // VoicePreset допускает legacy ("Lenin") + AV-28 IDs ("lenin");
+    // берём legacy-капитализацию, чтобы проверить и uppercase.
+    expect(renderHud("Lenin" as VoicePreset, "ru")).toBe("ST:LENIN@RU");
   });
 
   it("ignores preset but renders language when preset is null", () => {
@@ -269,12 +273,13 @@ describe("createVoicePresetsPanel", () => {
     ) as HTMLElement;
     expect(hud).toBeTruthy();
     expect(hud.textContent).toBe("ST:--");
-    // Кликаем по чипу → HUD должен обновиться оптимистично.
+    // Кликаем по чипу → HUD должен обновиться оптимистично
+    // (префикс ST: обязателен по ADR-0027 §3.4.1).
     const cavemanBtn = root.querySelector(
       '[data-preset="caveman"]'
     ) as HTMLButtonElement;
     cavemanBtn.click();
-    expect(hud.textContent).toBe("CAVEMAN");
+    expect(hud.textContent).toBe("ST:CAVEMAN");
   });
 
   it("HUD includes language after setCurrentLanguage", () => {
@@ -288,9 +293,9 @@ describe("createVoicePresetsPanel", () => {
     const hud = root.querySelector(
       '[data-testid="voice-presets-hud"]'
     ) as HTMLElement;
-    expect(hud.textContent).toBe("LENIN@RU");
+    expect(hud.textContent).toBe("ST:LENIN@RU");
     panel.setCurrentLanguage("en");
-    expect(hud.textContent).toBe("LENIN@EN");
+    expect(hud.textContent).toBe("ST:LENIN@EN");
   });
 
   it("setCurrentLanguage updates aria-checked without firing callback", () => {
