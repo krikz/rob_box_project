@@ -20,6 +20,7 @@ from telegram.error import TimedOut, NetworkError
 from telegram.ext import ContextTypes
 
 from ..auth import authorized
+from ..radio import get_radio_mode
 from ..voice_processor import transcribe_voice
 
 logger = logging.getLogger(__name__)
@@ -148,11 +149,18 @@ async def _flush_buffer(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 @authorized
 async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle voice messages — transcribe and forward.
+    """Handle voice messages — transcribe and forward, or radio passthrough.
 
-    Two modes:
-    1. Normal: transcribe → forward to /voice/stt/result (same as text)
-    2. Playvoice: transcribe → robot speaks the text (TTS)
+    Three modes (AV-23 / issue #1915, P8):
+      1. ``/radio on`` (per-chat sticky) — OGG → PCM → ``/avatar/voice_in``
+         (рация, STT НЕ запускается).
+      2. ``/playvoice`` (one-shot) — STT → TTS (робот произносит
+         распознанный текст).
+      3. default — STT → forward to ``/voice/stt/result`` (как раньше).
+
+    Разделение ``playvoice`` vs ``radio`` см. в ``commands.playvoice_handler``
+    (ADR-0021 говорит не плодить механизмы, но это РАЗНЫЕ задачи: STT→TTS
+    echo vs raw passthrough).
     """
     node = _node(context)
     voice = update.message.voice
@@ -185,9 +193,19 @@ async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("⚠️ Не удалось загрузить голосовое сообщение.")
         return
 
+    ogg_bytes = bytes(ogg_bytes)
+
+    # ─── Mode 1: /radio on — рация (AV-23) ────────────────────────────────
+    # Per-chat sticky state; не ломаем playvoice/STT-пути.
+    if get_radio_mode(context.user_data or {}):
+        result = await node.radio.publish_radio(chat_id, ogg_bytes)
+        await _reply_radio_result(update, chat_id, result)
+        return
+
+    # ─── Mode 2/3: STT → playvoice / dialogue forward ─────────────────────
     # Transcribe
     text = await transcribe_voice(
-        bytes(ogg_bytes),
+        ogg_bytes,
         method=node.voice_stt_method,
         language=node.voice_stt_language,
     )
@@ -206,10 +224,7 @@ async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         result = node.publish_tts_with_floor(text)
         if not result.granted:
             held = result.held_by or "другим оператором"
-            await update.message.reply_text(
-                f"🚫 Голос удерживает {held}. "
-                "Дождитесь окончания текущего ответа."
-            )
+            await update.message.reply_text(f"🚫 Голос удерживает {held}. " "Дождитесь окончания текущего ответа.")
             return
         await update.message.reply_text(
             f"🎤 Распознано: _{text}_\n\n🗣 Робот произносит текст.",
@@ -221,3 +236,32 @@ async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         # LLM reply is routed back into this chat.
         await update.message.reply_text(f"🎤 Распознано: _{text}_", parse_mode="Markdown")
         node.forward_to_stt(text, chat_id=chat_id)
+
+
+async def _reply_radio_result(update: Update, chat_id: int, result) -> None:
+    """Сформировать ответ оператору по результату рации (AV-23)."""
+    from ..radio import RadioResult
+
+    if result.ok:
+        # Успех: короткий ACK с числом чанков, чтобы оператор видел,
+        # что голос дошёл.
+        await update.message.reply_text(
+            f"📻 Рация: {result.chunks} чанков ({result.duration_ms} мс).",
+        )
+        return
+
+    reason = result.reason
+    if reason == RadioResult.REASON_TOO_BIG:
+        text = f"📻 Слишком большой файл ({result.bytes_ // 1024} КБ)."
+    elif reason == RadioResult.REASON_TOO_LONG:
+        text = f"📻 Слишком длинное сообщение ({result.duration_ms / 1000:.1f} с). " "Укоротите запись."
+    elif reason == RadioResult.REASON_FLOOR_BUSY:
+        held = result.held_by or "другим оператором"
+        text = f"🚫 Голос удерживает {held}. Рация сейчас недоступна."
+    elif reason == RadioResult.REASON_TRANSCODE:
+        text = "⚠️ Не удалось декодировать голосовое (битый файл?)."
+    elif reason == RadioResult.REASON_NO_SUPERVISOR:
+        text = "⚠️ Внутренняя ошибка: нет клиента супервизора."
+    else:
+        text = f"⚠️ Рация не сработала: {reason}"
+    await update.message.reply_text(text)

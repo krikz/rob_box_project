@@ -16,6 +16,17 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+# AV-23 (issue #1915): ``audio_common_msgs`` — отдельный ROS-пакет, он есть
+# на роботе, но его нет в окружениях, где ``rob_box_telegram`` импортируют
+# без полного workspace (юнит-тесты, lint). Жёсткий top-level импорт ронял
+# весь модуль и уносил с собой тесты моста, не имеющие к рации отношения.
+# Держим его мягким: без пакета рация просто недоступна, остальной бот
+# работает. Ошибку не глотаем — она видна в WARNING при старте ноды.
+try:
+    from audio_common_msgs.msg import AudioData  # type: ignore
+except ImportError:  # pragma: no cover — окружение без audio_common_msgs
+    AudioData = None  # type: ignore[assignment]
+
 from rob_box_core.avatar_command import (
     AVATAR_COMMAND_TOPIC,
     build_command,
@@ -26,6 +37,10 @@ from .camera_cache import CameraCache
 from .handlers import commands as _cmds
 from .handlers.callbacks import callback_handler
 from .handlers.messages import text_message_handler, voice_message_handler
+
+# AV-23 (issue #1915, P8): per-chat /radio mode — голосовые из Telegram
+# как рация → /avatar/voice_in. См. radio.py + voice_transcode.py.
+from .radio import RadioPublisher
 
 # Issue #1160 — Prometheus metrics (этап 1 observability). Telegram-bot —
 # отдельный контейнер, поэтому у него свой лёгкий observability-модуль
@@ -52,6 +67,15 @@ _TL = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
     depth=1,
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
+# AV-23 (issue #1915, P8): рация из Telegram публикует в /avatar/voice_in.
+# best-effort + volatile — как делает quest_node (D7), чтобы sound_node не
+# доигрывал stale-чанки после потери соединения.
+_VOICE_IN_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
 )
 
 
@@ -85,6 +109,10 @@ class TelegramNode(Node):
         # Phase 1 — все floors выдаются локально) или ``active``
         # (Phase 2 — реальные service-calls в avatar_supervisor).
         self.declare_parameter(self.SUPERVISOR_MODE_PARAM, self.SUPERVISOR_DEFAULT_MODE)
+        # AV-23 (issue #1915, P8) — лимиты рации из Telegram.
+        self.declare_parameter("radio_max_duration_s", 30.0)
+        self.declare_parameter("radio_max_bytes", 5 * 1024 * 1024)
+        self.declare_parameter("radio_chunk_ms", 20)
         p = self.get_parameter
         self.camera_topic, self.camera_depth_topic, self.camera_up_topic = (
             p("camera_topic").value,
@@ -141,11 +169,32 @@ class TelegramNode(Node):
         # (см. ``publish_move_with_floor``/``publish_tts_with_floor``).
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel_web", _RE)
         self.tts_pub = self.create_publisher(String, "/voice/tts/request", _RE)
+        # AV-23 (issue #1915, P8) — рация из Telegram в /avatar/voice_in
+        # + явный STOP в /voice/sound/stop (закрыть stream после рации,
+        # barge-in уже использует тот же канал). best-effort + volatile
+        # — см. _VOICE_IN_QOS (как у quest_node, D7).
+        if AudioData is None:
+            # Честная деградация (ADR-0018): рация выключена, а не «работает
+            # вхолостую». publish_voice_audio_chunk увидит None и не упадёт.
+            self._voice_in_pub = None
+            self.get_logger().warning(
+                "audio_common_msgs недоступен — /radio выключен, "
+                "голосовые из Telegram публиковаться не будут"
+            )
+        else:
+            self._voice_in_pub = self.create_publisher(
+                AudioData, "/avatar/voice_in", _VOICE_IN_QOS
+            )
+        self._voice_stop_pub = self.create_publisher(String, "/voice/sound/stop", _RE)
+        self._radio = RadioPublisher(
+            self,
+            chunk_ms=int(p("radio_chunk_ms").value or 20),
+            max_duration_s=float(p("radio_max_duration_s").value or 30.0),
+            max_bytes=int(p("radio_max_bytes").value or 5 * 1024 * 1024),
+        )
         # AV-10 — клиент супервизора. Создаётся до старта telegram-loop,
         # чтобы handlers могли безопасно вызывать ``acquire_floor``.
-        supervisor_mode = str(
-            p(self.SUPERVISOR_MODE_PARAM).value or self.SUPERVISOR_DEFAULT_MODE
-        )
+        supervisor_mode = str(p(self.SUPERVISOR_MODE_PARAM).value or self.SUPERVISOR_DEFAULT_MODE)
         self.supervisor = SupervisorClient(
             node=self,
             client_id="telegram",
@@ -163,21 +212,16 @@ class TelegramNode(Node):
             # supervisor-ноды. _on_avatar_state сейчас только
             # логирует (когда supervisor-нода появится, тут будет
             # edit_message_text по сохранённым query_id).
-            self._avatar_state_unsubscribe = self.supervisor.subscribe_state(
-                self._on_avatar_state
-            )
+            self._avatar_state_unsubscribe = self.supervisor.subscribe_state(self._on_avatar_state)
         # Issue #1160 — Prometheus metrics server (этап 1).
         # Порт 9101 — стандартный для telegram-bot (см. observability).
         metrics_port = int(p("metrics_port").value or 0)
         if metrics_port > 0 and is_metrics_enabled():
             if start_metrics_server(metrics_port):
-                self.get_logger().info(
-                    f"📊 Telegram metrics server listening on :{metrics_port}/metrics"
-                )
+                self.get_logger().info(f"📊 Telegram metrics server listening on :{metrics_port}/metrics")
             else:
                 self.get_logger().warning(
-                    f"📊 Telegram metrics port {metrics_port} not bound "
-                    "(busy or prometheus_client missing)"
+                    f"📊 Telegram metrics port {metrics_port} not bound " "(busy or prometheus_client missing)"
                 )
         token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         if not token:
@@ -214,8 +258,7 @@ class TelegramNode(Node):
         """
         if state.teleop_floor and state.teleop_floor != "telegram":
             self.get_logger().info(
-                f"AV-10: teleop_floor у {state.teleop_floor}, "
-                "movement buttons дизейблятся (UI gate в _handle_move)"
+                f"AV-10: teleop_floor у {state.teleop_floor}, " "movement buttons дизейблятся (UI gate в _handle_move)"
             )
         else:
             self.get_logger().debug(
@@ -345,6 +388,36 @@ class TelegramNode(Node):
 
         return self.supervisor.with_floor(Floor.TELEOP, _do_publish)
 
+    def publish_voice_audio_chunk(self, pcm_bytes: bytes) -> None:
+        """AV-23: один PCM-чанк в /avatar/voice_in (radиo из Telegram).
+
+        ``msg.data`` — это ``list(uint8)``, как ожидает ``sound_node``
+        (он нормализует через ``bytes(msg.data)`` перед ``np.frombuffer``,
+        см. ``voice_in_callback``). Поэтому заворачиваем именно bytes.
+        """
+        if self._voice_in_pub is None:
+            return
+        msg = AudioData()
+        msg.data = list(pcm_bytes)
+        self._voice_in_pub.publish(msg)
+
+    def publish_voice_audio_stop(self) -> None:
+        """AV-23: явный STOP в /voice/sound/stop после рации.
+
+        ``sound_node.sound_stop_callback`` закрывает голосовой stream
+        (он же используется для barge-in). Без него sound_node ждёт
+        ``VOICE_SILENCE_TIMEOUT = 0.3 c`` — обычно ОК, но если оператор
+        шлёт голосовое каждые 250 мс, watchdog не успевает.
+        """
+        msg = String()
+        msg.data = "STOP"
+        self._voice_stop_pub.publish(msg)
+
+    @property
+    def radio(self) -> RadioPublisher:
+        """AV-23: per-chat /radio паблишер (handler'ы зовут его)."""
+        return self._radio
+
     def _on_response(self, msg: String) -> None:
         """Echo dialogue/TTS output back into the active Telegram chat.
 
@@ -407,9 +480,7 @@ class TelegramNode(Node):
                 try:
                     await app.bot.send_message(chat_id=chat_id, text=text)
                 except Exception as exc:  # noqa: BLE001
-                    self.get_logger().warning(
-                        f"Failed to echo LLM reply to chat {chat_id}: {exc!r}"
-                    )
+                    self.get_logger().warning(f"Failed to echo LLM reply to chat {chat_id}: {exc!r}")
         except asyncio.CancelledError:
             pass
 
@@ -463,9 +534,7 @@ class TelegramNode(Node):
         try:
             await app.updater.start_polling(poll_interval=1.0, timeout=30)
         except Exception as exc:
-            self.get_logger().warning(
-                f"start_polling failed: {exc!r}; outer loop will retry"
-            )
+            self.get_logger().warning(f"start_polling failed: {exc!r}; outer loop will retry")
             raise
         try:
             while rclpy.ok():
