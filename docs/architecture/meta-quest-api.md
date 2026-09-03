@@ -342,7 +342,10 @@ JSON-обёртка нужна для admin-панели и тестовых к�
 ```json
 { "type": "voice_mode_ack", "mode": "stt_llm", "ts_ms": 1234567890 }
 { "type": "safety_stop",    "reason": "controller_b" | "client_lost", "ts_ms": 1234567890 }
-{ "type": "robot_alert",    "level": "warn" | "error", "code": "BATTERY_LOW", "args": {"pct": 12}, "ts_ms": 1234567890 }
+{ "type": "robot_alert",    "active": true, "code": "BATTERY_LOW", "level": "warn",  "args": {"pct": 12},          "ts_ms": 1234567890 }
+{ "type": "robot_alert",    "active": false, "code": "BATTERY_LOW", "level": "info", "args": {},                 "ts_ms": 1234567890 }
+{ "type": "robot_alert",    "active": true, "code": "WIFI_WEAK",    "level": "warn",  "args": {"rssi_dbm": -78},   "ts_ms": 1234567890 }
+{ "type": "robot_alert",    "active": true, "code": "ROBOT_STUCK",  "level": "error", "args": {"cmd_linear":0.5, "cmd_angular":0.0, "odom_motion_s":4.2}, "ts_ms": 1234567890 }
 { "type": "subscribe_ack",  "topic": "camera_rear", "stream_id": 0x1001, "quality": "med" }
 { "type": "subscribe_nack", "topic": "lidar_3d", "reason": "topic_not_available_yet" }
 { "type": "heartbeat",      "ts_ms": 1234567890 }   // каждые 200 мс, см. §7
@@ -364,6 +367,44 @@ JSON-обёртка нужна для admin-панели и тестовых к�
 `robot_alert` codes (Phase 1): `BATTERY_LOW (<20%)`, `WIFI_WEAK (<-75 dBm)`,
 `ROBOT_STUCK (3 с нет cmd_vel)`, `OVER_TEMP`. Phase 3 — `KIDNAPPED` (twist_mux
 рапорт о внезапном отсутствии contact с роботом), `LIDAR_TIMEOUT`.
+
+**Edge semantics (AV-26 / R7, реализовано в `streams/alerts.py` +
+QuestNode alert timer 1 Гц):**
+
+- `active: true` — алёрт только что поднялся (или повторно подтверждён,
+  гистерезис ещё не сработал). `level ∈ {warn, error}`.
+- `active: false` — алёрт снят (порог + гистерезис + выдержка отпустили).
+  `level` всегда `"info"`, `args` остаются для аудита. `code` совпадает
+  с тем, что был в `active:true` — клиент матчит по коду.
+- Сервер шлёт событие **только на изменении** (60 одинаковых тиков → 1
+  событие; исчезновение алёрта — отдельное событие `active:false`).
+- **Гистерезис**: алёрт снимается только когда условие прошло через
+  порог с запасом (5% для батареи, 5 dBm для Wi-Fi). Без этого на
+  границе порога было бы мигание 1 Гц.
+- **Выдержка 10 с**: `BATTERY_LOW` / `WIFI_WEAK` не поднимаются
+  мгновенно — только если условие держится непрерывно 10 с. `ROBOT_STUCK`
+  выдержкой не ограничен: `stuck_timeout_s = 3 с` уже играет её роль.
+- **Отсутствие источника** (`battery_pct = -1`, `wifi_rssi = 0`,
+  `/odom` не приходил): алёрт НЕ выдумываем — клиент видит «—» в
+  status HUD. Принцип из `streams/battery.py` (честный FAIL лучше
+  красивого PASS): см. ADR-0018.
+
+**Пороги (ROS-параметры QuestNode, дублируют дефолты в
+`webxr_client/src/scene/status_hud.ts:31-33` для подсветки HUD-строк):**
+
+| Параметр | Дефолт | Где дублируется |
+|---|---|---|
+| `alert_battery_low_pct` | `20` | `status_hud.ts` `BATTERY_LOW_PCT = 20` |
+| `alert_battery_hysteresis_pct` | `5` | (только сервер) |
+| `alert_wifi_weak_dbm` | `-75` | `status_hud.ts` `WIFI_WEAK_DBM = -75` |
+| `alert_wifi_hysteresis_dbm` | `5` | (только сервер) |
+| `alert_stuck_timeout_s` | `3.0` | (только сервер) |
+| `alert_stuck_cmd_eps` | `0.05` | (только сервер) |
+| `alert_hold_ms` | `10000` | (только сервер) |
+
+Дефолт совпадает со значениями в `status_hud.ts:31-33` чтобы клиент и
+сервер не разъехались на «свежке» с пустыми параметрами ноды
+(см. acceptance AV-26: «в PR цитата обеих сторон рядом»).
 
 ## 7. Heartbeat, latency, reconnect
 

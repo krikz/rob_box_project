@@ -15,6 +15,7 @@
 import { Connection } from "./wire/connection";
 import { createCaptainBridge } from "./scene/captain_bridge";
 import { parseRobotStatus } from "./scene/status_hud";
+import { createAlertToast, alertText } from "./scene/alert_toast";
 import { TeleopFSM } from "./input/teleop_fsm";
 import { createDesktopTeleop } from "./input/desktop_teleop";
 import { createXrTeleop, pollXrInput } from "./input/xr_teleop";
@@ -64,6 +65,12 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   const help: HelpOverlay = createHelpOverlay(opts.body);
   const modeManager: ClientModeManager = createModeManager();
   const watchdog: DisconnectWatchdog = createDisconnectWatchdog(errorOverlay);
+  // AV-26: robot_alert toast + дублирование в status HUD как постоянная
+  // метка пока алёрт активен. Error-алёрты ещё и в errorOverlay.
+  const alertToast = createAlertToast({
+    parent: opts.body,
+    errorOverlay
+  });
 
   // HUD: подключаем help-toggle кнопку (если есть) к help overlay.
   if (opts.helpToggle) {
@@ -208,6 +215,8 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             // Disconnect-watchdog начинает отсчёт; если > 5s без успеха —
             // покажем error overlay (см. createDisconnectWatchdog).
             watchdog.markDisconnected();
+            // Сервер ещё может быть жив (например, Wi-Fi дёрнулся) → держим
+            // существующие alert'ы; они вернутся в onJsonEvent после reconnect.
           } else if (state === "connecting") {
             setStatus("CONNECTING…", "connecting");
           } else if (state === "closed") {
@@ -217,6 +226,10 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             // "closed" — окончательно (не reconnect). Прямо сейчас
             // показываем overlay без 5-секундного порога.
             errorOverlay.show("Disconnected", "Connection closed by server");
+            // Очищаем alert'ы — соединения нет, оператору не показываем
+            // устаревшие «Батарея 12%».
+            alertToast.clear();
+            bridge.statusHud.setAlert(null);
           }
         },
         onBinaryFrame: (streamId, payload) => {
@@ -240,6 +253,46 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
           bridge.setAvailableStreams(
             items.map((it) => ({ topic: it.topic, description: it.description }))
           );
+        },
+        onJsonEvent: (event) => {
+          // AV-26 / R7: robot_alert от сервера → toast + HUD-метка.
+          // Формат: { type:"robot_alert", code, level, active?, args, ts_ms }.
+          // active:true → поднятие; active:false или отсутствует +
+          // level:"info" → снятие (см. meta-quest-api.md §6 + наш серверный
+          // _send_alert_event, level="info" при снятии).
+          const ev = event as { type?: string; code?: string; level?: string; active?: boolean; args?: Record<string, unknown>; ts_ms?: number };
+          if (ev.type !== "robot_alert" || typeof ev.code !== "string") return;
+          const level: "warn" | "error" = ev.level === "error" ? "error" : "warn";
+          // Сервер шлёт active явно; старые клиенты могут не знать — считаем
+          // active отсутствующим с level=warn как поднятие (обратная совмест).
+          const isCleared = ev.active === false || ev.level === "info";
+          if (isCleared) {
+            alertToast.ingest({
+              code: ev.code,
+              active: false,
+              level: "info",
+              args: ev.args,
+              ts_ms: typeof ev.ts_ms === "number" ? ev.ts_ms : Date.now()
+            });
+          } else {
+            alertToast.ingest({
+              code: ev.code,
+              active: true,
+              level,
+              args: ev.args,
+              ts_ms: typeof ev.ts_ms === "number" ? ev.ts_ms : Date.now()
+            });
+          }
+          // HUD-метка: worst активного алёрта.
+          const worst = alertToast.worstActive;
+          if (worst) {
+            bridge.statusHud.setAlert({
+              text: alertText(worst),
+              level: worst.level === "error" ? "error" : "warn"
+            });
+          } else {
+            bridge.statusHud.setAlert(null);
+          }
         },
         onError: (code, message) => {
           if (code === "AUTH_FAIL") return;
@@ -470,6 +523,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       errorOverlay.dispose();
       help.dispose();
       watchdog.dispose();
+      alertToast.dispose();
     }
   };
 }
