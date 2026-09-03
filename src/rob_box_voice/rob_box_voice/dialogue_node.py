@@ -76,6 +76,7 @@ from rob_box_harness.providers import (
 )
 from rob_box_harness.tools import FakeToolProvider, ToolProvider
 from rob_box_llm.errors import ProviderError
+from rob_box_llm.provider import LLMMessage
 
 from rob_box_voice.core.command_parser import CommandParser, IntentType
 from rob_box_voice.core.dialogue_text import (
@@ -916,6 +917,32 @@ class DialogueNode(Node):
         # "respeaker" (обратная совместимость).
         self.declare_parameter("voice_input_mode", "respeaker")
         self._voice_input_mode: str = "respeaker"
+        # ── AV-28: режим формализации Quest-фраз (voice_input_mode=
+        # ``quest_llm_formalize``). Параметры приходят от супервизора или
+        # напрямую от фронт-клиента через SetParameters (см.
+        # src/rob_box_quest/webxr_client/src/wire/messages.ts — там
+        # currentPreset/currentLanguage приезжают в payload команды
+        # ``voice_mode``). Дефолты подтягиваются из voice_presets.yaml
+        # (default_preset/default_language) в _resolve_voice_preset /
+        # _resolve_voice_language при первом использовании, чтобы голосовой
+        # план не зависел от жёстко зашитых значений здесь.
+        self.declare_parameter("voice_preset", "")
+        self.declare_parameter("voice_output_language", "")
+        # Путь к voice_presets.yaml. Пусто → resolve относительно
+        # ROS-share voice-конфига (``rob_box_voice/config/voice_presets.yaml``,
+        # см. _DEFAULT_VOICE_PRESETS_FILE ниже). Переопределение полезно
+        # для тестов: подсунуть свой yaml в /tmp и убедиться, что
+        # формализатор видит новый пресет без рестарта ноды (хотя
+        # рестарт безопаснее — кэш инвалидируется на declare_parameter /
+        # yaml-файл на старте).
+        self.declare_parameter("voice_presets_file", "")
+        # Таймаут LLM-формализатора (в секундах). При превышении — fallback
+        # на дословный TTS (как в режиме quest_ttts). 0 → llm_timeout_sec.
+        self.declare_parameter("voice_formalize_timeout_sec", 0.0)
+        # Кэш пресетов: ленивая загрузка yaml + prompt_files на первый
+        # запрос формализации; ``None`` означает «ещё не грузили».
+        self._voice_presets_cache: Optional[dict] = None
+        self._voice_presets_cache_path: Optional[str] = None
 
     def parameters_callback(self, params):
         """Роутер runtime-изменений параметров (``ros2 param set``).
@@ -960,6 +987,35 @@ class DialogueNode(Node):
                 self.get_logger().info(
                     f"🔄 [issue 1734] barge_in_policy changed to {raw!r} "
                     f"(republished to stt_node)"
+                )
+            elif param.name == "voice_preset":
+                # AV-28: смена пресета через SetParameters от супервизора /
+                # фронта (UI-секция «Стиль речи» голосового плана). Кэш
+                # пресетов не инвалидируем — yaml+prompt_files статичны до
+                # рестарта; инвалидация тут создала бы лишний I/O на каждый
+                # клик по UI-кнопке. Если пресет не существует, метод
+                # _resolve_voice_preset() вернёт fallback на default_preset.
+                self.get_logger().info(
+                    f"🎙 [AV-28] voice_preset changed to {param.value!r}"
+                )
+            elif param.name == "voice_output_language":
+                self.get_logger().info(
+                    f"🌐 [AV-28] voice_output_language changed to {param.value!r}"
+                )
+            elif param.name == "voice_presets_file":
+                # AV-28: смена пути к yaml инвалидирует кэш — при следующем
+                # вызове _load_voice_presets() перечитается. Это безопаснее,
+                # чем молча оставлять старый кэш при ребрендинге пресетов.
+                self._voice_presets_cache = None
+                self._voice_presets_cache_path = None
+                self.get_logger().info(
+                    f"🗂 [AV-28] voice_presets_file changed to {param.value!r} "
+                    "(cache invalidated)"
+                )
+            elif param.name == "voice_formalize_timeout_sec":
+                self.get_logger().info(
+                    f"⏱ [AV-28] voice_formalize_timeout_sec changed to "
+                    f"{param.value!r}"
                 )
         return SetParametersResult(successful=True)
 
@@ -1091,6 +1147,11 @@ class DialogueNode(Node):
     _LLM_PROVIDER_REGISTRY: dict[str, dict[str, Any]] = LLM_PROVIDER_REGISTRY
 
     _BARGE_IN_POLICIES = ("replace", "classify")
+
+    # ── AV-28: дефолтный путь к voice_presets.yaml относительно ROS-share
+    # пакета rob_box_voice. Используется, когда параметр voice_presets_file
+    # не задан (типичный кейс на работающем роботе).
+    _DEFAULT_VOICE_PRESETS_FILE = "config/voice_presets.yaml"
 
     def _resolve_barge_in_policy(self) -> str:
         """Resolve ``barge_in_policy`` (S1, scheduler-segments-merge plan).
@@ -1594,6 +1655,351 @@ class DialogueNode(Node):
             return dict(data.get("event", data) or {})
         return {}
 
+    # ═══════════════════════════════════════════════════════════════════════
+    #  AV-28: voice_presets — режим формализации Quest-фраз
+    #  (voice_input_mode=quest_llm_formalize). Источник истины —
+    #  config/voice_presets.yaml (см. дочернюю карточку t_862ec1a2 / PR
+    #  #1931): ключ → prompt_file (RU+EN секции). Дефолты — в самом yaml.
+    #  Эти методы читают yaml лениво, кэшируют в self._voice_presets_cache
+    #  до смены параметра voice_presets_file.
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def _resolve_voice_presets_path(self) -> str:
+        """Абсолютный путь к voice_presets.yaml.
+
+        Приоритет:
+          1. Параметр ``voice_presets_file`` (если задан — абсолютный или
+             относительный путь от CWD).
+          2. ROS-share ``rob_box_voice`` + ``_DEFAULT_VOICE_PRESETS_FILE``
+             (типичный кейс на работающем роботе).
+          3. Путь относительно текущей директории пакета
+             (``src/rob_box_voice/config/voice_presets.yaml``) — fallback
+             для запуска вне ROS-share (юнит-тесты, локальная разработка).
+        """
+        try:
+            cfg_value = self.get_parameter("voice_presets_file").value
+        except Exception:  # noqa: BLE001 — голый объект в unit-тестах
+            cfg_value = ""
+        cfg_value = str(cfg_value or "").strip()
+        if cfg_value:
+            return cfg_value
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            pkg_share = get_package_share_directory("rob_box_voice")
+            return os.path.join(pkg_share, self._DEFAULT_VOICE_PRESETS_FILE)
+        except Exception:  # noqa: BLE001 — пакет не в окружении (тесты)
+            # Fallback: путь относительно репо — для запуска вне colcon
+            # install (юнит-тесты, локальный запуск, IDE).
+            repo_path = os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__), "..", "..", "config",
+                    "voice_presets.yaml",
+                )
+            )
+            return repo_path
+
+    def _load_voice_presets(self) -> dict:
+        """Загрузить voice_presets.yaml + лениво прочитать prompt_files.
+
+        Возвращает dict вида::
+
+            {
+                "presets": {
+                    "technical": {"name": "...", "prompt_text": "..."},
+                    ...
+                },
+                "languages": ["ru", "en"],
+                "default_preset": "technical",
+                "default_language": "ru",
+            }
+
+        При любой ошибке (yaml не найден, битый yaml, не заданы
+        default_*) возвращает ``{"presets": {}, "languages": [],
+        "default_preset": "technical", "default_language": "ru"}`` — это
+        безопасный минимум, чтобы методы ``_resolve_*`` могли отдать
+        «default» даже когда формализатор по сути выключен. В этом случае
+        ``_formalize_with_llm`` увидит отсутствие prompt_text и сразу
+        уйдёт в fallback на ``_speak_direct``.
+        """
+        path = self._resolve_voice_presets_path()
+        cached = getattr(self, "_voice_presets_cache", None)
+        if cached is not None and getattr(
+            self, "_voice_presets_cache_path", None
+        ) == path:
+            return cached
+
+        fallback: dict = {
+            "presets": {},
+            "languages": [],
+            "default_preset": "technical",
+            "default_language": "ru",
+            "_path": path,
+        }
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+        except FileNotFoundError:
+            self.get_logger().warning(
+                f"⚠️ [AV-28] voice_presets.yaml not found at {path} "
+                "— formalize mode will fall back to direct TTS"
+            )
+            self._voice_presets_cache = fallback
+            self._voice_presets_cache_path = path
+            return fallback
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(
+                f"⚠️ [AV-28] Failed to read voice_presets.yaml at {path}: "
+                f"{exc} — formalize mode disabled"
+            )
+            self._voice_presets_cache = fallback
+            self._voice_presets_cache_path = path
+            return fallback
+
+        presets_raw = data.get("presets") or {}
+        presets: dict = {}
+        for key, cfg in presets_raw.items():
+            if not isinstance(cfg, dict):
+                continue
+            prompt_file = cfg.get("prompt_file")
+            prompt_text = ""
+            if prompt_file:
+                prompt_path = self._resolve_prompt_path(path, prompt_file)
+                try:
+                    with open(prompt_path, "r", encoding="utf-8") as pf:
+                        prompt_text = pf.read()
+                except FileNotFoundError:
+                    self.get_logger().warning(
+                        f"⚠️ [AV-28] preset '{key}' prompt file missing: "
+                        f"{prompt_path}"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self.get_logger().error(
+                        f"⚠️ [AV-28] failed to read preset '{key}' prompt "
+                        f"({prompt_path}): {exc}"
+                    )
+            presets[str(key)] = {
+                "name": str(cfg.get("name") or key),
+                "prompt_file": str(prompt_file or ""),
+                "prompt_text": prompt_text,
+            }
+        languages = data.get("languages") or ["ru", "en"]
+        if not isinstance(languages, list):
+            languages = ["ru", "en"]
+        result = {
+            "presets": presets,
+            "languages": [str(x).lower() for x in languages],
+            "default_preset": str(data.get("default_preset") or "technical"),
+            "default_language": str(data.get("default_language") or "ru").lower(),
+            "_path": path,
+        }
+        self._voice_presets_cache = result
+        self._voice_presets_cache_path = path
+        self.get_logger().info(
+            f"📚 [AV-28] Loaded voice_presets: {len(presets)} presets "
+            f"(default: {result['default_preset']}/{result['default_language']}) "
+            f"from {path}"
+        )
+        return result
+
+    @staticmethod
+    def _resolve_prompt_path(yaml_path: str, prompt_file: str) -> str:
+        """Абсолютный путь к prompt_file (относительно директории yaml).
+
+        Конвенция voice_presets.yaml: ``prompt_file: presets/<key>.txt`` —
+        путь относительно директории с yaml. Абсолютные пути
+        поддерживаем как escape-hatch для нестандартной раскладки.
+        """
+        if os.path.isabs(prompt_file):
+            return prompt_file
+        return os.path.join(os.path.dirname(yaml_path), prompt_file)
+
+    def _resolve_voice_preset(self) -> str:
+        """Текущий пресет формализации: параметр voice_preset или default.
+
+        Возвращает ключ пресета (lower-snake, ASCII), НЕ его имя. Если
+        ключ не существует в yaml — тихо подменяет на default_preset
+        (нормализация: ручной ввод через ``ros2 param set`` может прийти
+        с любой раскладкой; yaml — единственный источник истины о
+        допустимых ключах).
+        """
+        data = self._load_voice_presets()
+        try:
+            raw = str(self.get_parameter("voice_preset").value or "").strip()
+        except Exception:  # noqa: BLE001
+            raw = ""
+        default = str(data.get("default_preset") or "technical")
+        if not raw:
+            return default
+        presets = data.get("presets") or {}
+        if raw in presets:
+            return raw
+        self.get_logger().warning(
+            f"⚠️ [AV-28] voice_preset={raw!r} not in yaml "
+            f"(allowed: {list(presets.keys())}) — falling back to {default!r}"
+        )
+        return default
+
+    def _resolve_voice_language(self) -> str:
+        """Текущий язык формализации: параметр voice_output_language или default.
+
+        Lower-case, валидация против ``languages:`` в yaml. Неизвестный
+        язык → warning + fallback на default_language.
+        """
+        data = self._load_voice_presets()
+        try:
+            raw = str(
+                self.get_parameter("voice_output_language").value or ""
+            ).strip()
+        except Exception:  # noqa: BLE001
+            raw = ""
+        default = str(data.get("default_language") or "ru").lower()
+        if not raw:
+            return default
+        normalized = raw.lower()
+        languages = [str(x).lower() for x in (data.get("languages") or [])]
+        if normalized in languages:
+            return normalized
+        self.get_logger().warning(
+            f"⚠️ [AV-28] voice_output_language={raw!r} not in yaml "
+            f"(allowed: {languages}) — falling back to {default!r}"
+        )
+        return default
+
+    def _get_formalize_timeout(self) -> float:
+        """Эффективный таймаут формализатора (секунды).
+
+        Параметр ``voice_formalize_timeout_sec`` (AV-28). ``0`` →
+        ``llm_timeout_sec`` (уже используется для основного диалога),
+        чтобы у формализатора был тот же бюджет, что и у обычной реплики.
+        """
+        try:
+            raw = float(
+                self.get_parameter("voice_formalize_timeout_sec").value or 0.0
+            )
+        except Exception:  # noqa: BLE001
+            raw = 0.0
+        if raw > 0.0:
+            return raw
+        try:
+            raw = float(self.get_parameter("llm_timeout_sec").value or 0.0)
+        except Exception:  # noqa: BLE001
+            raw = 0.0
+        return raw if raw > 0.0 else 30.0
+
+    async def _formalize_with_llm(
+        self,
+        text: str,
+        preset_key: str,
+        language: str,
+    ) -> None:
+        """Переписать фразу оператора в стиле пресета и озвучить.
+
+        Вызов идёт строго в обход DialogCore: это НЕ диалог, формализатор
+        не должен отвечать на user_input и использовать инструменты. Поэ-
+        тому ``tools=[]`` и messages из двух LLMMessage (system =
+        prompt_text пресета, user = исходная фраза). Стриминг не включаем
+        — для формализации нам нужен весь текст сразу, а
+        ``asyncio.wait_for(llm.complete(...), timeout=...)`` гарантирует,
+        что зависший upstream не заблокирует ROS-callback.
+
+        При ЛЮБОЙ ошибке (yaml не загрузился, prompt_text пустой,
+        ProviderError, asyncio.TimeoutError, пустой ответ LLM) —
+        fallback на ``_speak_direct(text)`` (дословный TTS, как в
+        ``quest_ttts``). Это соглашение body карточки: «если LLM
+        вернул пустоту или превысил timeout — fallback на дословный TTS».
+        """
+        start_ts = time.monotonic()
+        self.get_logger().info(
+            f"🚀 [quest/AV-28] formalize start: preset={preset_key} "
+            f"language={language} text={text[:60]!r}"
+        )
+        try:
+            presets = self._load_voice_presets().get("presets") or {}
+            preset_cfg = presets.get(preset_key)
+            prompt_text = (preset_cfg or {}).get("prompt_text") or ""
+            if not prompt_text:
+                self.get_logger().warning(
+                    f"⚠️ [quest/AV-28] preset {preset_key!r} has no "
+                    "prompt_text — fallback to direct TTS"
+                )
+                self._speak_direct(text)
+                return
+            messages = [
+                LLMMessage(role="system", content=prompt_text),
+                LLMMessage(role="user", content=text),
+            ]
+            timeout_s = self._get_formalize_timeout()
+            llm_obj = getattr(self, "_llm", None)
+            if llm_obj is None:
+                self.get_logger().warning(
+                    "⚠️ [quest/AV-28] self._llm is not initialised — "
+                    "fallback to direct TTS"
+                )
+                self._speak_direct(text)
+                return
+            try:
+                response = await asyncio.wait_for(
+                    llm_obj.complete(messages, tools=[]),
+                    timeout=timeout_s,
+                )
+            except asyncio.TimeoutError:
+                self.get_logger().warning(
+                    f"⏱ [quest/AV-28] LLM timeout after {timeout_s:.1f}s "
+                    f"(preset={preset_key}) — fallback to direct TTS"
+                )
+                self._speak_direct(text)
+                return
+            except ProviderError as exc:
+                self.get_logger().warning(
+                    f"⚠️ [quest/AV-28] LLM provider error: {exc} — "
+                    "fallback to direct TTS"
+                )
+                self._speak_direct(text)
+                return
+            except Exception as exc:  # noqa: BLE001 — network/HTTP/etc.
+                self.get_logger().warning(
+                    f"⚠️ [quest/AV-28] LLM call failed: {exc!r} — "
+                    "fallback to direct TTS"
+                )
+                self._speak_direct(text)
+                return
+
+            rewritten = (response.content or "").strip() if response else ""
+            if not rewritten:
+                self.get_logger().warning(
+                    f"⚠️ [quest/AV-28] LLM returned empty rewrite "
+                    f"(preset={preset_key}) — fallback to direct TTS"
+                )
+                self._speak_direct(text)
+                return
+
+            # Защита от prompt-leak: если модель вернула ровно исходную
+            # фразу, считаем это сбоем формализации (формализатор должен
+            # что-то изменить в стиле) — и тоже fallback. Это редкий
+            # кейс, но он лучше TTS-дословки, чем сломанный «режим»,
+            # который не делает ничего.
+            if rewritten == text:
+                self.get_logger().info(
+                    f"ℹ️ [quest/AV-28] LLM returned identical text "
+                    f"(preset={preset_key}) — fallback to direct TTS"
+                )
+                self._speak_direct(text)
+                return
+
+            elapsed = time.monotonic() - start_ts
+            self.get_logger().info(
+                f"✅ [quest/AV-28] formalize final: preset={preset_key} "
+                f"language={language} elapsed={elapsed:.2f}s "
+                f"rewritten={rewritten[:80]!r}"
+            )
+            self._speak_direct(rewritten)
+        except Exception as exc:  # noqa: BLE001 — last-resort guard
+            self.get_logger().error(
+                f"💥 [quest/AV-28] unexpected error in formalize: {exc!r} — "
+                "fallback to direct TTS"
+            )
+            self._speak_direct(text)
+
     def _render_event_instructions(self, base_prompt: str) -> str:
         """Render the full system prompt with role + event context applied."""
         profile = getattr(self, "_event_profile", None) or {}
@@ -1744,6 +2150,9 @@ class DialogueNode(Node):
 
         - ``quest_ttts`` → **повторить голосом робота дословно** (STT → TTS,
           без LLM — это не диалог, а «озвучка моих слов»);
+        - ``quest_llm_formalize`` → **переписать фразу через LLM в стиле
+          пресета** (AV-28 / P7-full голосового плана) и озвучить. При сбое
+          LLM — fallback на дословный TTS;
         - ``quest_stt`` → LLM-диалог без wake-word (Phase 2, follow-up);
         - ``quest_passthrough`` → не сюда (звук играет sound_node напрямую);
         - ``respeaker`` (default) → игнор: Quest-режим не активен.
@@ -1756,6 +2165,40 @@ class DialogueNode(Node):
             text = (msg.data or "").strip()
             if text:
                 self.get_logger().info(f"🗣️ [quest] robot-voice repeat: {text[:80]!r}")
+                self._speak_direct(text)
+            return
+        if mode == "quest_llm_formalize":
+            # AV-28 (P7-full): вместо дословного TTS прогоняем фразу через
+            # LLM с промптом пресета, чтобы робот произнёс её в выбранном
+            # стиле/языке (см. config/voice_presets.yaml + presets/*.txt).
+            # Сам LLM-вызов — async; запускаем через asyncio-цикл ноды,
+            # который создан в __init__ (``self._loop``) и используется
+            # остальной нодой для agent-loop / discard_last_reply (тот же
+            # паттерн). ROS2 callback остаётся неблокирующим: сразу
+            # возвращаемся, реальный TTS прилетит позже из _formalize_*
+            # через тот же _speak_direct-канал, что и quest_ttts.
+            text = (msg.data or "").strip()
+            if not text:
+                self.get_logger().info(
+                    "🔇 [quest/AV-28] empty STT in formalize mode — ignored"
+                )
+                return
+            preset_key = self._resolve_voice_preset()
+            language = self._resolve_voice_language()
+            self.get_logger().info(
+                f"🎙 [quest/AV-28] formalize: preset={preset_key} "
+                f"language={language} text={text[:80]!r}"
+            )
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._formalize_with_llm(text, preset_key, language),
+                    self._loop,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().error(
+                    f"⚠️ [quest/AV-28] failed to schedule formalize task: "
+                    f"{exc} — falling back to direct TTS"
+                )
                 self._speak_direct(text)
             return
         if mode == "quest_stt":
