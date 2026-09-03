@@ -68,7 +68,7 @@ jobs:
           # .github is here for .github/e2e/{scenarios,voice_commands}: six
           # tests in test_issue_1532_voice_multi_skazka.py read those fixtures
           # and had been failing on every push with FileNotFoundError.
-          for d in docker migrations docs .github; do
+          for d in docker migrations docs .github scripts; do
             [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
           done
 
@@ -286,7 +286,7 @@ jobs:
           # to find e.g. docker/vision/scripts/supercollider/metrics_server.py
           # raise FileNotFoundError at collection time
           # (test_supercollider_metrics_osc_status).
-          for d in docker migrations docs .github; do
+          for d in docker migrations docs .github scripts; do
             [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
           done
           cd ${{ github.workspace }}/test_ws
