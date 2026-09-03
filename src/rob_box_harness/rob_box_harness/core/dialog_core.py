@@ -27,7 +27,7 @@ import json
 import logging
 import re
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
 from rob_box_core.token_estimate import estimate_prompt_tokens
@@ -244,6 +244,23 @@ _SILENT_DONE_MARKERS: frozenset[str] = frozenset(
 #: Живая реплика целиком внутри ``<...>`` не встречается, а частичное
 #: совпадение («скажу <тихо> привет») трогать нельзя.
 _PSEUDO_TOOL_CALL_RE = re.compile(r"^<[^<>]{1,160}>$")
+
+#: Метка на user-ходе, чей ответ ассистента был отозван через
+#: :meth:`DialogCore.discard_last_reply`. Такой ход остаётся ПОСЛЕДНИМ в
+#: окне и внешне неотличим от сироты после barge-in, которую
+#: ``_clean_history_turns`` обязана выбросить. Разница принципиальная:
+#: сирота — реплика, на которую юзер уже не ждёт ответа, а помеченный ход —
+#: живой запрос, ради которого прямо сейчас идёт синтетический ретрай.
+#:
+#: 🔴 FIX (live 03.09 07:58, DJ): «Ты диджей Векну, тема Изнанка» → модель
+#: ответила словами без тула → music-guard отозвал ответ и отправил
+#: [CRITICAL]-ретрай. Отзыв сделал user-ход хвостовым, ``_clean_history_turns``
+#: снесла его как сироту — и в промпте ретрая от «Векны» не осталось ничего,
+#: кроме цитаты внутри самого гуардовского текста, зато история дважды
+#: говорила «ты диджей Шафутинский». Модель пошла за историей и вызвала
+#: ``set_dj_mode(persona='Диджей Шафутинский', theme='...Шафутинского')`` —
+#: юзер услышал, что робот «всё-таки Шафутинский».
+_PENDING_RETRY_KEY: str = "reply_retracted"
 
 
 def _is_pseudo_tool_call(text: str) -> bool:
@@ -760,7 +777,9 @@ class DialogCore:
                 # Resolve the history BEFORE we append the new turn —
                 # otherwise the window would echo the just-stored user
                 # message back into the prompt.
-                messages = await self._resolve_history(history)
+                messages = await self._resolve_history(
+                    history, keep_pending_user=is_synthetic
+                )
                 # Issue #1077 — контекст о спикере (профиль + факты из
                 # scope=speaker:<tag>). Вставляем system-сообщением сразу
                 # после основного системного промпта, чтобы LLM знала,
@@ -959,12 +978,35 @@ class DialogCore:
         it calls this to remove the unlabeled fake-confirmation turn
         before it becomes a few-shot example for the next similar
         request. Removed directly from the in-memory window.
+
+        The user turn the retracted reply answered is marked
+        ``_PENDING_RETRY_KEY`` so the follow-up retry can still see it —
+        without the mark it becomes a trailing orphan and
+        :meth:`_clean_history_turns` drops it (see the constant's comment).
         """
         for index in range(len(self._turn_window) - 1, -1, -1):
             if self._turn_window[index].role == "assistant":
                 del self._turn_window[index]
+                self._mark_pending_user_turn(index - 1)
                 return True
         return False
+
+    def _mark_pending_user_turn(self, index: int) -> None:
+        """Flag the user turn at ``index`` as «ответ отозван, ретрай идёт».
+
+        ``Turn`` is frozen, so the entry is replaced with a copy carrying
+        the extra metadata key. Silently does nothing when ``index`` is out
+        of range or does not point at a user turn — a retracted reply that
+        answered nothing (DJ-auto, synthetic) has no request to preserve.
+        """
+        if index < 0 or index >= len(self._turn_window):
+            return
+        turn = self._turn_window[index]
+        if turn.role != "user":
+            return
+        metadata = dict(turn.metadata or {})
+        metadata[_PENDING_RETRY_KEY] = True
+        self._turn_window[index] = replace(turn, metadata=metadata)
 
     def clear_history(self) -> None:
         """Drop all turns from the in-memory sliding window.
@@ -978,6 +1020,8 @@ class DialogCore:
     @staticmethod
     def _clean_history_turns(
         turns: Iterable[LLMMessage],
+        *,
+        keep_trailing_user: bool = False,
     ) -> list[LLMMessage]:
         """Collapse consecutive user turns and drop a trailing orphaned one.
 
@@ -986,7 +1030,12 @@ class DialogCore:
         stored history. Two consecutive user messages make the LLM answer the
         OLDER one instead of the current question. The current turn's user
         message is appended separately by ``process_input``, so a trailing
-        user turn here is always an orphan and must be dropped.
+        user turn here is normally an orphan and must be dropped.
+
+        ``keep_trailing_user`` is the one exception: the caller has
+        established (via ``_PENDING_RETRY_KEY``) that the trailing user turn
+        is the request a synthetic retry is running FOR, not an abandoned
+        one. Dropping it there erases the very words the retry must act on.
         """
         out: list[LLMMessage] = []
         for turn in turns:
@@ -994,7 +1043,7 @@ class DialogCore:
                 out[-1] = turn
             else:
                 out.append(turn)
-        if out and out[-1].role == "user":
+        if out and out[-1].role == "user" and not keep_trailing_user:
             out.pop()
         return out
 
@@ -1671,6 +1720,8 @@ class DialogCore:
     async def _resolve_history(
         self,
         history: Iterable[LLMMessage] | None,
+        *,
+        keep_pending_user: bool = False,
     ) -> list[LLMMessage]:
         """Build the LLM message list — from an explicit ``history`` or
         from the in-memory sliding window of turns.
@@ -1680,6 +1731,10 @@ class DialogCore:
         * When ``history`` is ``None``, the core's own in-memory turn
           window (a ``deque`` capped by ``history_trim_limit``) is used.
           Turns are NEVER persisted — only user facts reach the store.
+
+        ``keep_pending_user`` (set for synthetic retries) keeps a trailing
+        user turn whose reply was retracted by :meth:`discard_last_reply`
+        instead of treating it as a barge-in orphan.
         """
         if history is not None:
             return list(history)
@@ -1692,8 +1747,19 @@ class DialogCore:
         # в messages не было [0] system.
         if self._system_prompt:
             out.append(LLMMessage(role="system", content=self._system_prompt))
+        window = list(self._turn_window)
+        # Хвостовой user-ход сохраняем только когда он ПОМЕЧЕН отзывом
+        # ответа и мы действительно внутри синтетического ретрая: обычный
+        # ход про сироту после barge-in рассуждает по-прежнему.
+        keep_trailing_user = bool(
+            keep_pending_user
+            and window
+            and window[-1].role == "user"
+            and isinstance(window[-1].metadata, Mapping)
+            and window[-1].metadata.get(_PENDING_RETRY_KEY)
+        )
         history_messages: list[LLMMessage] = []
-        for turn in self._turn_window:
+        for turn in window:
             # 🔴 FIX (live 01.09): развернуть ``tools_called`` из metadata в
             # отдельное system-сообщение ПЕРЕД ответом ассистента. Без него
             # история — набор примеров «просьбу о музыке закрывают словами»
@@ -1718,7 +1784,11 @@ class DialogCore:
             history_messages.append(
                 LLMMessage(role=turn.role, content=turn.content)
             )
-        out.extend(self._clean_history_turns(history_messages))
+        out.extend(
+            self._clean_history_turns(
+                history_messages, keep_trailing_user=keep_trailing_user
+            )
+        )
         return out
 
     # ---- handle_* shortcuts used by the shell --------------------------
