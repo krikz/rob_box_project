@@ -1622,11 +1622,39 @@ class WSSServer:
             language = payload_obj.get("language")
             ts_ms = int(time.time() * 1000)
             # ── AV-28 §P7: style preset / language flow ────────────────────
-            # Если клиент прислал preset ИЛИ language — это AV-28 запрос
-            # (whitelist обязателен). Если оба None — fallback на AV-27.
-            av28_preset = preset if isinstance(preset, str) else None
+            # Развилка по ЗНАЧЕНИЮ, а не по наличию поля: имя `preset`
+            # делят две фичи. У AV-27 это пресет провайдера
+            # (standard|friendly|authoritative|whisper), у AV-28 — id стиля
+            # речи из VOICE_PRESET_IDS. Роутинг «есть preset → значит
+            # AV-28» отправлял легитимный запрос picker'а в whitelist
+            # стилей и отвечал NACK вместо ACK.
+            #
+            # Признак AV-28 — либо preset из списка стилей, либо language
+            # (у AV-27 такого поля нет вовсе). Всё прочее идёт в AV-27,
+            # где preset валидирует сам bridge.
             av28_language = language if isinstance(language, str) else None
-            is_av28_request = av28_preset is not None or av28_language is not None
+            av28_preset = (
+                preset
+                if isinstance(preset, str) and preset in VOICE_PRESET_IDS
+                else None
+            )
+            # Третий признак: preset без voice_id. У picker'а voice_id
+            # обязателен и непуст, у панели стилей он может быть пустым —
+            # значит запрос с preset, но без voice_id это AV-28 с
+            # неизвестным стилем, и ответить на него надо NACK
+            # invalid_voice_preset, а не BAD_PAYLOAD про voice_id.
+            style_without_voice = (
+                isinstance(preset, str)
+                and preset
+                and not (isinstance(voice_id, str) and voice_id)
+            )
+            is_av28_request = (
+                av28_preset is not None
+                or av28_language is not None
+                or bool(style_without_voice)
+            )
+            if style_without_voice and av28_preset is None:
+                av28_preset = preset
             if is_av28_request:
                 nack_reason = _validate_voice_set_payload(
                     preset=av28_preset, language=av28_language
