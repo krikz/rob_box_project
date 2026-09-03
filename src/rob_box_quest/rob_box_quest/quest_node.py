@@ -211,6 +211,7 @@ class QuestBridge:
         sound_stop_pub=None,
         stt_in_pub=None,
         set_voice_mode_pub=None,
+        heartbeat_pub=None,  # AV-19: publisher in /teleop_heartbeat
         supervisor_acquire_client=None,
         supervisor_release_client=None,
         supervisor_set_mode_client=None,
@@ -227,6 +228,9 @@ class QuestBridge:
         self._stt_in_pub = stt_in_pub
         # voice_mode → супервизор (ADR-0028 S5): /avatar/set_voice_mode.
         self._set_voice_mode_pub = set_voice_mode_pub
+        # AV-19: publisher в /teleop_heartbeat. None в unit-тестах —
+        # тогда relay_teleop_heartbeat будет no-op (см. его комментарий).
+        self._heartbeat_pub = heartbeat_pub
         # AV-16: supervisor service-clients (каждый — async call_service).
         # None в unit-тестах моста; реальные ROS-клиенты создаются на уровне
         # QuestNode (этот конструктор — DI). Sync-обёртки service calls
@@ -499,6 +503,60 @@ class QuestBridge:
         self._watchdog.reset()
         self._emergency_published = False
 
+    # --- AV-19 (ADR-0028 §4.4 S10) ---------------------------------------
+
+    def relay_teleop_heartbeat(self, client_id: str, ts_ms: int, seq: int) -> None:
+        """Опубликовать TeleopHeartbeat в ``/teleop_heartbeat`` от ``client_id``.
+
+        Контракт:
+        - topic: ``/teleop_heartbeat`` (``std_msgs/String``, msgpack-encoded
+          dict ``{client_id, ts_ms, seq}``).
+        - Источник живости — клиент (ADR-0028 §4.4 «Не слать heartbeat на
+          автомате»): мы только релеим, никогда не генерируем сами.
+        - ts_ms — клиентское локальное время, seq — монотонная
+          последовательность из TeleopFSM (используется для
+          дедупликации на стороне супервизора и метрик).
+        - ``self._heartbeat_pub`` может быть ``None`` в юнит-тестах —
+          это сознательно, чтобы ws_server тестировался без rclpy.
+        """
+        if self._heartbeat_pub is None:
+            return
+        # ``_heartbeat_pub`` уже лениво создан в __init__ только при наличии
+        # rclpy (см. _init_heartbeat_pub). Если телеоп-узел ещё не создал
+        # pub (тест-сценарий), выходим тихо — relay не критичен.
+        try:
+            from std_msgs.msg import String as RosString  # type: ignore
+            import json as _json
+
+            payload = {"client_id": client_id, "ts_ms": int(ts_ms), "seq": int(seq)}
+            msg = RosString()
+            # JSON вместо msgpack — supervisor_client.py из rob_box_telegram
+            # уже парсит оба (см. _on_state_msg), для единообразия Phase 1
+            # шлём JSON (msgpack потребует AV-5 IDL).
+            msg.data = _json.dumps(payload, ensure_ascii=False)
+            self._heartbeat_pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001 — relay не должен ронять ноду
+            self._node.get_logger().warning(f"quest: relay_teleop_heartbeat failed: {exc}")
+
+    def on_floor_lost(self, client_id: str) -> None:
+        """Fail-safe при потере teleop_floor (ADR-0028 §4.4).
+
+        Немедленно публикуем ``Twist(0,0)`` в ``cmd_vel_quest``,
+        чтобы робот не продолжал ехать по инерции последнего фрейма.
+        ``TeleopController.emergency_stop()`` здесь НЕ зовём — это
+        другая семантика (полный lock + WS close); мы лишь
+        «отрубаем подачу движения» и сбрасываем внутренний twist в
+        ноль, чтобы tick() начал возвращать None.
+        """
+        self._teleop.emergency_stop()  # consume/tick → None до reset()
+        self._publish_zero()
+        # Логируем на уровне warning — это важный safety-event, Шифу
+        # потом смотрит эти логи при разборе инцидентов «робот ехал
+        # когда не должен был».
+        self._node.get_logger().warning(
+            f"🛑 FLOOR LOST for client_id={client_id} — publishing zero Twist (AV-19 fail-safe)"
+        )
+
     # --- internal --------------------------------------------------------
 
     def _publish_zero(self) -> None:
@@ -764,6 +822,10 @@ class QuestNode(Node):
         # Wi-Fi RSSI читаем локально на Vision Pi — это тот же линк, по
         # которому идёт WSS до Quest. Пустое имя = первый интерфейс в таблице.
         self.declare_parameter("wifi_iface", "")
+        # AV-19 (issue #1911, ADR-0028 §4.4): гейт teleop_floor.
+        # Default=false чтобы не сломать текущий рабочий мостик; включается
+        # # отдельным коммитом после e2e (карточка явно просит).
+        self.declare_parameter("require_teleop_floor", False)
         # AV-26 / R7: robot_alert пороги (см. streams/alerts.py). Дефолты
         # дублируют значения из webxr_client/src/scene/status_hud.ts — клиент
         # и сервер не должны разъезжаться на «свечке» (acceptance: «в PR
@@ -780,6 +842,7 @@ class QuestNode(Node):
         self._battery_v_empty = float(self.get_parameter("battery_voltage_empty").value)
         self._battery_v_full = float(self.get_parameter("battery_voltage_full").value)
         self._wifi_iface = str(self.get_parameter("wifi_iface").value) or None
+        self._require_teleop_floor = bool(self.get_parameter("require_teleop_floor").value)
         self._alert_thresholds = _read_alert_thresholds(self)
 
         # Publishers (см. twist_mux.yaml: priority 40 quest, 255 emergency).
@@ -815,6 +878,10 @@ class QuestNode(Node):
         self._stt_in_pub = self.create_publisher(AudioData, "/audio/quest_in", _VOICE_QOS)
         # voice_mode → супервизор (ADR-0028 S5): /avatar/set_voice_mode.
         self._set_voice_mode_pub = self.create_publisher(String, "/avatar/set_voice_mode", _RE)
+        # AV-19 (issue #1911, ADR-0028 §4.4 S10): relay teleop_heartbeat.
+        # Сюда ws_server релеит клиентский teleop_heartbeat / teleop_twist
+        # от имени client_id (см. WSSServer._on_json_cmd).
+        self._heartbeat_pub = self.create_publisher(String, "/teleop_heartbeat", _RE)
 
         # AV-16: supervisor service-clients (sync-вызовы из WS-handler через
         # run_coroutine_threadsafe). std_srvs/Trigger — Phase 1 IDL; Supervisor
@@ -922,7 +989,11 @@ class QuestNode(Node):
         # WS server (инициализируем первым чтобы передать в Bridge).
         from .server.ws_server import ACTIVE_PIN
 
-        self.ws_server = WSSServer(bridge=NoOpBridge(), pin=ACTIVE_PIN)
+        self.ws_server = WSSServer(
+            bridge=NoOpBridge(),
+            pin=ACTIVE_PIN,
+            require_teleop_floor=self._require_teleop_floor,
+        )
         self.bridge = QuestBridge(
             node=self,
             cmd_vel_quest_pub=self._pub_quest,
@@ -933,6 +1004,7 @@ class QuestNode(Node):
             sound_stop_pub=self._sound_stop_pub,
             stt_in_pub=self._stt_in_pub,
             set_voice_mode_pub=self._set_voice_mode_pub,
+            heartbeat_pub=self._heartbeat_pub,
             supervisor_acquire_client=self._srv_acquire,
             supervisor_release_client=self._srv_release,
             supervisor_set_mode_client=self._srv_set_mode,

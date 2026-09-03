@@ -34,6 +34,13 @@ class ErrorCode:
     FLOOR_HELD = "FLOOR_HELD"  # AV-16: ACQUIRE_FLOOR / RELEASE_FLOOR (§8)
     MODE_CONFLICT = "MODE_CONFLICT"  # AV-16: SET_MODE отвергнут FSM (§8)
     INTERNAL = "INTERNAL"
+    # AV-19 (issue #1911, ADR-0028 §4.4, meta-quest-api.md §5/§8):
+    # запрошенный teleop_floor уже держит другой client_id. Сервер
+    # отдаёт эту ошибку только при ``require_teleop_floor=true`` и
+    # rate-limited (≤ 1 Гц на сессию), чтобы не заливать сокет.
+    FLOOR_HELD = "FLOOR_HELD"
+    # AV-19: FSM супервизора отклонила смену режима (Phase 2).
+    MODE_CONFLICT = "MODE_CONFLICT"
 
 
 # Поддерживаемые wire-subprotocol-версии (AV-16, docs §11.1).

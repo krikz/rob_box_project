@@ -22,6 +22,7 @@ import secrets
 import time
 from typing import Any, Optional, Protocol
 
+from ..core.floor import FLOOR_HELD_RATE_LIMIT_S, SupervisorFloorTracker
 from ..protocol.frame import FrameType, decode_frame, encode_frame
 from ..streams.registry import STREAM_CATALOG, get_stream
 from .session import (
@@ -93,6 +94,11 @@ class Bridge(Protocol):
 
     Все методы sync (rclpy thread-safe + capture-loop thread). Можно
     вызывать прямо из aiohttp event-loop без await.
+
+    AV-19 (issue #1911, ADR-0028 §4.4 S10): добавлены методы для
+    relay-логики teleop-heartbeat и обработки потери teleop_floor.
+    Это симметрично ``SupervisorClient`` из ``rob_box_telegram`` —
+    единая точка живости клиента для супервизора.
     """
 
     def publish_quest(self, linear: float, angular: float) -> None: ...
@@ -149,6 +155,38 @@ class Bridge(Protocol):
 
     def set_voice_mode(self, mode: str) -> None:
         """voice_mode cmd → сменить режим голоса (через супервизор, ADR-0028 S5)."""
+        ...
+
+    def relay_teleop_heartbeat(self, client_id: str, ts_ms: int, seq: int) -> None:
+        """Опубликовать TeleopHeartbeat в ``/teleop_heartbeat`` от ``client_id``.
+
+        Контракт (ADR-0028 §4.4 S10, meta-quest-api.md): payload —
+        msgpack-encoded dict ``{client_id, ts_ms, seq}`` в ``std_msgs/String``.
+        Вызывается из ws_server._on_json_cmd при получении
+        ``teleop_heartbeat`` или ``teleop_twist`` от клиента. Сервер НЕ
+        генерирует heartbeat-ы «на автомате» — это обнулит dead-man.
+
+        Параметр ``seq`` — монотонный sequence от клиента; ``ts_ms`` — его
+        локальное время (``Date.now()``). Это для диагностики и
+        метрик ``dead_man_trips_total``, но НЕ для синхронизации часов.
+        """
+        ...
+
+    def on_floor_lost(self, client_id: str) -> None:
+        """Уведомление: ``teleop_floor`` для ``client_id`` потерян.
+
+        Вызывается из ws_server:
+        1) При выходе из режима ``require_teleop_floor=true`` (например,
+           кончилось окно dead-man 500 мс — супервизор снял floor).
+        2) При явном release в результате FSM-перехода супервизора
+           (Telegram-клиент взял teleop_floor).
+        3) При рестарте супервизора.
+
+        Bridge обязан немедленно опубликовать ``Twist(0,0)`` в
+        ``cmd_vel_quest`` — робот не должен продолжать ехать по инерции
+        последнего фрейма. Это fail-safe из ADR-0028 §4.4 «если
+        клиент замолчал — супервизор снимет floor».
+        """
         ...
 
     # === AV-16: supervisor API (§3 строки 63-66 + §5.1 + §11). ===============
@@ -261,6 +299,13 @@ class NoOpBridge:
     def set_voice_mode(self, mode: str) -> None:
         return None
 
+    def relay_teleop_heartbeat(self, client_id: str, ts_ms: int, seq: int) -> None:
+        # NoOpBridge: ничего не публикуем, но логируем для тестов.
+        log.debug("NoOpBridge: relay_teleop_heartbeat client_id=%s seq=%d", client_id, seq)
+
+    def on_floor_lost(self, client_id: str) -> None:
+        # NoOpBridge: no-op для тестов; реальная реализация в QuestBridge.
+        log.debug("NoOpBridge: on_floor_lost client_id=%s", client_id)
     # === AV-16: supervisor API заглушки (для unit-тестов ws_server без ROS). ===
 
     def supervisor_acquire_floor(self, client_id: str, floor: str) -> dict:
@@ -314,9 +359,20 @@ def _consume_future_exception(fut: "asyncio.Future[Any]") -> None:
 
 
 class WSSServer:
-    """Серверная логика — собирает app + принимает aiohttp WS-коннекты."""
+    """Серверная логика — собирает app + принимает aiohttp WS-коннекты.
 
-    def __init__(self, bridge: Bridge, pin: Optional[str] = None) -> None:
+    AV-19 (issue #1911, ADR-0028 §4.4): добавлен локальный floor-tracker
+    и параметр ``require_teleop_floor`` — см. design meta-quest-api.md
+    §5 (gate teleop_twist + FLOOR_HELD + relay heartbeat + fail-safe).
+    """
+
+    def __init__(
+        self,
+        bridge: Bridge,
+        pin: Optional[str] = None,
+        require_teleop_floor: bool = False,
+        floor_tracker: Optional[SupervisorFloorTracker] = None,
+    ) -> None:
         self.bridge = bridge
         self.pin = pin or ACTIVE_PIN
         # Текущие сессии (session_id → ClientSession) для отладки/healthcheck.
@@ -330,6 +386,19 @@ class WSSServer:
         # loop — раньше кадр молча терялся (чёрный экран). Устанавливается
         # quest_node через set_send_loop().
         self._send_loop: Optional[asyncio.AbstractEventLoop] = None
+        # AV-19: gate teleop_floor (Phase 1 — локальный tracker; Phase 2 —
+        # proxy на avatar_supervisor service, ADR-0028 §4.4).
+        self._require_teleop_floor: bool = require_teleop_floor
+        self._floor_tracker: SupervisorFloorTracker = (
+            floor_tracker if floor_tracker is not None else SupervisorFloorTracker()
+        )
+        # client_id (= session_id) → True если ws_server уже сообщил
+        # клиенту о FLOOR_HELD-error в текущем окне rate-limit. Нужно,
+        # чтобы при HOLD-окне не слать ERROR повторно (rate-limit — на
+        # уровне tracker, но здесь дополнительно дедуплим, чтобы один
+        # клиент не получал > 1 ошибки в FLOOR_HELD_RATE_LIMIT_S даже
+        # если в ws_server прилетают разные teleop_twist-ы).
+        self._floor_held_warned_session: dict[str, float] = {}
 
     def get_active_sessions(self) -> int:
         return sum(1 for s in self._sessions.values() if s.is_open())
@@ -337,6 +406,75 @@ class WSSServer:
     def set_send_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Установить aiohttp-loop для потокобезопасной отправки кадров."""
         self._send_loop = loop
+
+    def _should_send_floor_held_error(self, session_id: str) -> bool:
+        """Обёртка над floor_tracker.should_send_floor_held_error.
+
+        Удобно иметь в одном месте, чтобы при смене стратегии
+        rate-limit (например, вынести в ROS-параметр) менять одну
+        функцию, а не искать по всем ``_on_json_cmd``.
+        """
+        return self._floor_tracker.should_send_floor_held_error(session_id)
+
+    def on_floor_lost_external(self, client_id: str) -> None:
+        """Внешнее уведомление (от Bridge/avatar_supervisor) о потере floor.
+
+        В Phase 2, когда avatar_supervisor будет публиковать
+        ``/avatar/state`` с ``teleop_floor != client_id``, эта точка
+        будет вызываться из подписки. Сейчас используется из
+        QuestBridge через Bridge.on_floor_lost (см. _unregister_session
+        для случая закрытия сессии).
+
+        Внутри:
+        1) Сбрасываем локальный tracker (если ещё держит — значит
+           состояния разошлись, но fail-safe приоритетнее).
+        2) Уведомляем Bridge — он опубликует Twist(0,0) в cmd_vel_quest.
+        3) Шлём клиенту JSON_EVENT{type:"floor_lost"} с held_by=None —
+           клиент DISARM-ит и показывает тост (teleop_fsm).
+        """
+        if not self._floor_tracker.is_held_by(client_id):
+            # Tracker уже не считает client_id держателем — likely двойной
+            # уведомление (release в _unregister_session + supervisor
+            # подтвердил). Ничего не делаем.
+            return
+        self._floor_tracker.force_release()
+        self._floor_tracker.reset_rate_limit(client_id)
+        self._floor_held_warned_session.pop(client_id, None)
+        # Уведомить Bridge (QuestBridge опубликует zero Twist).
+        self.bridge.on_floor_lost(client_id)
+        # Уведомить активные WS-сессии с этим client_id, если ещё открыты.
+        session = self._sessions.get(client_id)
+        if session is None or not session.is_open():
+            return
+        ws = self._ws_by_session.get(client_id)
+        if ws is None:
+            return
+        # JSON_EVENT шлём в event-loop (он же вызвал эту функцию).
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            return
+
+        async def _notify() -> None:
+            try:
+                payload = json.dumps(
+                    {
+                        "type": "floor_lost",
+                        "floor": "teleop",
+                        "reason": "external_supervisor_or_lost",
+                        "ts_ms": int(time.time() * 1000),
+                    },
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                await ws.send_bytes(encode_frame(FrameType.JSON_EVENT, 0, payload))
+            except Exception as exc:  # noqa: BLE001 — уведомление best-effort
+                log.warning("quest: floor_lost notify failed: %s", exc)
+
+        fut = asyncio.run_coroutine_threadsafe(_notify(), loop)
+        fut.add_done_callback(_consume_future_exception)
+        log.info("quest: floor_lost session_id=%s (external)", client_id)
 
     def broadcast_frame(self, ui_name: str, payload: bytes) -> int:
         """Слать BINARY_FRAME всем сессиям, подписанным на ui_name.
@@ -486,6 +624,15 @@ class WSSServer:
         # Освободить stream_id'ы этой сессии.
         for sid in session.subscribed.values():
             _stream_ids_in_use.discard(sid)
+        # AV-19: освободить teleop_floor, если эта сессия его держала.
+        # Это симметрично acquire в _on_hello. Если в Phase 2 этот код
+        # пойдёт через avatar_supervisor service — здесь будет
+        # release_floor service-call.
+        was_held = self._floor_tracker.release(session.session_id)
+        if was_held:
+            self._floor_tracker.reset_rate_limit(session.session_id)
+            self._floor_held_warned_session.pop(session.session_id, None)
+            log.info("quest: teleop_floor released session_id=%s", session.session_id)
         session.close()
         self._sessions.pop(session.session_id, None)
         self._ws_by_session.pop(session.session_id, None)
@@ -518,6 +665,23 @@ class WSSServer:
         self.bridge.reset()
         self.bridge.feed_client_alive()
 
+        # AV-19: попытаться взять teleop_floor от имени новой сессии.
+        # В Phase 1 локальный tracker; в Phase 2 тут будет service-call
+        # к /avatar_supervisor/acquire_floor (см. design.md, meta-quest-api.md
+        # §5 «Supervisor-команды Phase 2»). Сейчас — best-effort: если
+        # floor уже занят другой сессией — мы НЕ отказываем в WELCOME
+        # (это убьёт UX при попытке Telegram-op перехватить), но помечаем
+        # сессию «не держит» — teleop_twist гейт не пройдёт и шлёт
+        # ERROR{FLOOR_HELD} rate-limited (см. _on_json_cmd).
+        acquire = self._floor_tracker.acquire(session.session_id)
+        if not acquire.granted:
+            log.info(
+                "quest: HELLO session_id=%s teleop_floor held_by=%s — режим %s",
+                session.session_id,
+                acquire.held_by,
+                "read_only" if self._require_teleop_floor else "silent_gate",
+            )
+
         await self._send(
             ws,
             FrameType.WELCOME,
@@ -526,6 +690,10 @@ class WSSServer:
                 "server_version": "0.1.0",
                 "session_id": session.session_id,
                 "server_time_ms": int(time.time() * 1000),
+                # AV-19: подсказка клиенту о статусе floor (нужно для FSM,
+                # чтобы сразу отрисовать «возьми руль» без ожидания
+                # первого FLOOR_HELD).
+                "teleop_floor_held_by": acquire.held_by,
             },
         )
         log.info(
@@ -624,11 +792,87 @@ class WSSServer:
                 await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "teleop_twist: bad linear/angular")
                 return
             deadman = bool(payload_obj.get("deadman", False))
+            # AV-19: gate teleop_twist (ADR-0028 §4.4, meta-quest-api.md §5).
+            # Если включён require_teleop_floor и эта сессия НЕ держит
+            # teleop_floor — НЕ публикуем cmd_vel_quest и отдаём
+            # ERROR{FLOOR_HELD} (rate-limited, не чаще 1 раза в секунду;
+            # иначе на 30 Гц teleop_twist зальём сокет ошибками).
+            # stop_emergency (см. ниже) — ВСЕГДА в обход гейта, по
+            # ADR-0028 §4.4 / карточке: «аварийная остановка работает
+            # всегда, у кого бы ни был floor».
+            ts_ms_raw = payload_obj.get("ts_ms", int(time.time() * 1000))
+            seq_raw = payload_obj.get("seq", 0)
+            try:
+                ts_ms = int(ts_ms_raw) if isinstance(ts_ms_raw, (int, float)) else int(time.time() * 1000)
+                seq = int(seq_raw) if isinstance(seq_raw, (int, float)) else 0
+            except (TypeError, ValueError):
+                ts_ms, seq = int(time.time() * 1000), 0
+            if self._require_teleop_floor and not self._floor_tracker.is_held_by(
+                session.session_id
+            ):
+                if self._should_send_floor_held_error(session.session_id):
+                    await self._send_error(
+                        ws,
+                        0,
+                        ErrorCode.FLOOR_HELD,
+                        f"teleop_floor held by {self._floor_tracker.holder!r}",
+                    )
+                # НЕ публикуем cmd_vel_quest, но feed_client_alive всё
+                # равно вызываем — клиент жив, watchdog должен крутиться.
+                self.bridge.feed_client_alive()
+                _ = deadman  # намерение: deadman игнорируется пока gate закрыт.
+                return
+            # Floor наш (или gate выключен) — публикуем.
             self.bridge.publish_quest(linear, angular)
             self.bridge.feed_client_alive()
+            # AV-19: relay teleop_heartbeat (ADR-0028 §4.4 S10). Twist-фрейм
+            # — тоже живость клиента (он активен), шлём heartbeat-reley.
+            # Источник живости — клиент: сервер НЕ генерирует heartbeat-ы
+            # на автомате (см. design.md §4.4 «не обнулит dead-man»).
+            try:
+                self.bridge.relay_teleop_heartbeat(session.session_id, ts_ms, seq)
+            except Exception as exc:  # noqa: BLE001 — relay не должен ронять сессию
+                log.warning("quest: relay_teleop_heartbeat failed: %s", exc)
             _ = deadman  # Phase 1.5: telemetry через deadman-события
             return
+        if cmd == "teleop_heartbeat":
+            # AV-19: клиентский heartbeat (ADR-0028 §4.4 S10). Сервер
+            # релеит в /teleop_heartbeat от имени этой сессии. Это
+            # ВТОРОЙ источник живости (первый — teleop_twist); оба
+            # пробрасываются одинаково. Никакого периодического
+            # self-loop на сервере: dead-man ловит именно молчание
+            # клиента, поэтому heartbeat нельзя слать «на автомате».
+            ts_ms_raw = payload_obj.get("ts_ms", int(time.time() * 1000))
+            seq_raw = payload_obj.get("seq", 0)
+            try:
+                ts_ms = int(ts_ms_raw) if isinstance(ts_ms_raw, (int, float)) else int(time.time() * 1000)
+                seq = int(seq_raw) if isinstance(seq_raw, (int, float)) else 0
+            except (TypeError, ValueError):
+                ts_ms, seq = int(time.time() * 1000), 0
+            # Если gate включён и floor чужой — relay НЕ шлём (клиент
+            # не должен жить в логе супервизора как владелец floor).
+            # Можно было бы слать всё равно (heartbeat не вредный), но
+            # тогда супервизор может ошибочно «оживить» чужой сессии
+            # клиента, что противоречит §4.4 «источник живости — клиент».
+            if self._require_teleop_floor and not self._floor_tracker.is_held_by(
+                session.session_id
+            ):
+                # Тем не менее feed_client_alive — watchdog WSS-сессии
+                # крутится по любой живости клиента.
+                self.bridge.feed_client_alive()
+                return
+            try:
+                self.bridge.relay_teleop_heartbeat(session.session_id, ts_ms, seq)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("quest: relay_teleop_heartbeat failed: %s", exc)
+            self.bridge.feed_client_alive()
+            return
         if cmd == "stop_emergency":
+            # AV-19: stop_emergency ВСЕГДА в обход гейта (ADR-0028 §4.4,
+            # карточка: «аварийная остановка работает всегда, у кого бы
+            # ни был floor»). Это страховка от зависшего Quest-клиента
+            # в момент, когда floor держит Telegram-оператор: B-кнопка
+            # или UI-кнопка в очках ОБЯЗАНА остановить робота.
             self.bridge.publish_emergency()
             self.bridge.emergency_stop()
             return
