@@ -111,6 +111,13 @@ EXPECTED=(
     # не блокер CI — воркер видит actionable ошибку и сам переименовывает
     # в next-free slot (вычисляется из max(origin/develop ADR number) + 1).
     validate_adr_namespace.sh
+    # Pre-PR check на молчаливый контракт test_ws (ретро 03.09 t_cfa21388):
+    # G-Run Tests.yml копирует в test_ws/ только перечисленные в `for d in ...`
+    # корневые каталоги. Тест, читающий корневой каталог вне списка, локально
+    # зелёный, а на CI роняет ВЕСЬ батч пакета collect-error'ом. Так было с
+    # docker/ (t_29b9ce36 -> PR #1874) и scripts/ (t_cfa21388, develop RED ~9ч,
+    # 20+ PR). Guard сверяет список каждого job'а с реальными ссылками тестов.
+    validate_test_ws_dirs.py
     # Post-merge build trigger (issue #1475, ADR-0022 extension): после
     # MERGED PR в develop/main — запускает L-Build-All-Services чтобы
     # .image-versions.dev получил свежие dev-<sha> теги.
