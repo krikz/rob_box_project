@@ -31,9 +31,15 @@ import {
 } from "./ui/error_overlay";
 import { createHelpOverlay, type HelpOverlay } from "./ui/help_overlay";
 import { createModeManager, type ClientModeManager } from "./ui/mode_manager";
+import { createToast, type Toast } from "./ui/toast";
+import { floorLabel, type FloorLabel, type SupervisorState } from "./state/supervisor_state";
 
 const CLIENT_VERSION = "0.1.0";
-const SUBPROTOCOL = "robbox-quest-v1";
+// AV-17: subprotocol v2 по умолчанию. Если сервер на v1 — supervisor
+// не используется (Connection.canSendSupervisor → false), и HUD
+// показывает строку «SUPERVISOR: v1 (no coordination)». См.
+// docs/architecture/meta-quest-api.md §11 + docs/adr/0028 §4.4.
+const SUBPROTOCOL = "robbox-quest-v2";
 
 // Не-видео стримы. Список видео-топиков берём у сцены (`videoTopics()`),
 // чтобы подписка не разъезжалась с тем, что она реально умеет показать.
@@ -64,6 +70,10 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   const help: HelpOverlay = createHelpOverlay(opts.body);
   const modeManager: ClientModeManager = createModeManager();
   const watchdog: DisconnectWatchdog = createDisconnectWatchdog(errorOverlay);
+  // AV-17: короткие уведомления о supervisor-событиях (потерял руль,
+  // floor занят другим клиентом). Создаём сразу, чтобы не пропустить
+  // первый STATE_UPDATE в гонке с инициализацией UI.
+  const toast: Toast = createToast(opts.body);
 
   // HUD: подключаем help-toggle кнопку (если есть) к help overlay.
   if (opts.helpToggle) {
@@ -108,6 +118,16 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
 
   let conn: Connection | null = null;
   let disconnected = true;
+  // AV-17: avatar_supervisor state. `null` = STATE_UPDATE ещё не пришёл
+  // (или сервер на v1, тогда degraded=true). myClientId придёт в WELCOME,
+  // когда AV-16 добавит поле; пока WELCOME его не содержит — оставляем
+  // null и UI честно показывает «?».
+  let supervisorState: SupervisorState | null = null;
+  let supervisorMyClientId: string | null = null;
+  let supervisorDegraded = false;
+  // Кэш предыдущего floorLabel для teleop: чтобы зафиксировать переход
+  // «my → other» и снять ARM (только на этом переходе).
+  let prevTeleopLabel: FloorLabel = "unknown";
   let xrTeleopHandle: ReturnType<typeof createXrTeleop> | null = null;
   // Последний кэшированный inputSources; обновляется через inputsourceschange.
   let xrInputSources: XRInputSource[] = [];
@@ -173,6 +193,43 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
 
   // ---- Connection lifecycle -------------------------------------------------
 
+  /**
+   * Применить supervisor-state: HUD + дисарм на потере teleop-floor + тост.
+   * Вызывается из onSupervisorState и из onStateChange (reset при reconnect).
+   */
+  function applySupervisorState(next: SupervisorState | null): void {
+    supervisorState = next;
+    const teleopL = next === null ? "unknown" : floorLabel(next, "teleop", supervisorMyClientId);
+
+    // Реакция на потерю teleop-floor: «my → other» или «my → free».
+    // В обоих случаях супервизор снял с нас право руля — обязаны
+    // немедленно дизармиться (страховка от race, когда оператор уже
+    // отпустил grip, а twist_mux ещё хранит последнюю команду).
+    if (prevTeleopLabel === "my" && teleopL !== "my") {
+      armed = false;
+      xrArmWasPressed = false;
+      fsm.setDeadman(false);
+      fsm.reset();
+      bridge.setArmState(false);
+      bridge.setControllerActive(false);
+      modeManager.setTeleopState("disarmed");
+      // Имя держателя (если есть) — из state.teleopFloor.clientId,
+      // иначе generic «уже не наш».
+      const newHolder = next?.teleopFloor.clientId ?? null;
+      const msg = newHolder
+        ? `Руль забрал другой клиент (${newHolder.slice(0, 8)}…)`
+        : "Руль снят супервизором";
+      toast.show(msg, { level: "warn", autoHideMs: 5000 });
+      // eslint-disable-next-line no-console
+      console.warn("[quest] supervisor: teleop-floor revoked → DISARM", {
+        newHolder
+      });
+    }
+    prevTeleopLabel = teleopL;
+
+    bridge.statusHud.setSupervisor(next, supervisorMyClientId, { degraded: supervisorDegraded });
+  }
+
   function openConnection(): void {
     conn = new Connection(
       {
@@ -205,6 +262,12 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             setStatus("RECONNECTING…", "connecting");
             // Старый RTT после разрыва — враньё: обнуляем до первого pong.
             bridge.statusHud.setRtt(null);
+            // Аналогично supervisor-state: после разрыва мы не знаем, кто
+            // держит floor-ы → «неизвестно», не «свободно» (ADR-0018).
+            supervisorMyClientId = null;
+            supervisorDegraded = false;
+            prevTeleopLabel = "unknown";
+            applySupervisorState(null);
             // Disconnect-watchdog начинает отсчёт; если > 5s без успеха —
             // покажем error overlay (см. createDisconnectWatchdog).
             watchdog.markDisconnected();
@@ -240,6 +303,29 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
           bridge.setAvailableStreams(
             items.map((it) => ({ topic: it.topic, description: it.description }))
           );
+        },
+        onWelcome: (sessionId) => {
+          // AV-16 пока не отдаёт отдельный `client_id` в WELCOME; до тех пор
+          // используем session_id как идентификатор нашего клиента (сервер
+          // формирует его серверно — клиент ничего не выдумывает). Когда
+          // AV-16 добавит поле, здесь останется один переход.
+          supervisorMyClientId = sessionId || null;
+          // v1-сервер → supervisor-координации нет, HUD должен это показать.
+          supervisorDegraded = conn?.getNegotiatedVersion() === "v1";
+          applySupervisorState(supervisorState);
+        },
+        onSupervisorState: (state) => {
+          applySupervisorState(state);
+        },
+        onSupervisorError: (code, message, meta) => {
+          const holder = typeof meta?.held_by === "string" ? meta.held_by : null;
+          const text =
+            code === "FLOOR_HELD"
+              ? holder
+                ? `Занято другим оператором (${holder.slice(0, 8)}…)`
+                : "Руль/голос сейчас у другого оператора"
+              : `Режим не разрешён сейчас: ${message}`;
+          toast.show(text, { level: "warn", autoHideMs: 5000 });
         },
         onError: (code, message) => {
           if (code === "AUTH_FAIL") return;
