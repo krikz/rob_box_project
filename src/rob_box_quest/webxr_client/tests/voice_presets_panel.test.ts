@@ -1,9 +1,43 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   createVoicePresetsPanel,
+  renderHud,
   type VoicePresetsPanel
 } from "../src/ui/voice_presets_panel";
-import type { VoicePresetInfo, VoiceLanguage } from "../src/wire/messages";
+import type { VoicePresetInfo, VoiceLanguage, VoicePreset } from "../src/wire/messages";
+
+describe("renderHud", () => {
+  // AV-28 §P7: HUD-метка должна быть стабильной и читабельной с
+  // расстояния. Тест контракта, не рендеринга — это pure-функция.
+  it("returns ST:-- when no preset selected", () => {
+    expect(renderHud(null, null)).toBe("ST:--");
+  });
+
+  it("renders ST:PRESET when only preset provided", () => {
+    // ADR-0027 §3.4.1: префикс "ST:" обязателен, чтобы не путать стиль
+    // речи (AV-28) с voice_id (AV-27).
+    expect(renderHud("lenin", null)).toBe("ST:LENIN");
+    expect(renderHud("technical", null)).toBe("ST:TECHNICAL");
+  });
+
+  it("renders ST:PRESET@LANG when both provided", () => {
+    expect(renderHud("lenin", "ru")).toBe("ST:LENIN@RU");
+    expect(renderHud("philosopher", "en")).toBe("ST:PHILOSOPHER@EN");
+  });
+
+  it("is case-insensitive (input uppercased)", () => {
+    // VoicePreset допускает legacy ("Lenin") + AV-28 IDs ("lenin");
+    // берём legacy-капитализацию, чтобы проверить и uppercase.
+    expect(renderHud("Lenin" as VoicePreset, "ru")).toBe("ST:LENIN@RU");
+  });
+
+  it("ignores preset but renders language when preset is null", () => {
+    // (текущий контракт: без preset нет HUD-метки; язык показываем
+    // только при наличии пресета — иначе оператор не знает, к чему
+    // относится @RU).
+    expect(renderHud(null, "ru")).toBe("ST:--");
+  });
+});
 
 const PRESETS: VoicePresetInfo[] = [
   { id: "technical", name: "Технический" },
@@ -225,6 +259,43 @@ describe("createVoicePresetsPanel", () => {
     ) as HTMLButtonElement;
     expect(streetBtn.getAttribute("aria-pressed")).toBe("true");
     expect(onPresetChange).not.toHaveBeenCalled();
+  });
+
+  it("HUD element starts with ST:-- and updates on chip click", () => {
+    panel = createVoicePresetsPanel(parent, {
+      presets: PRESETS,
+      currentPreset: null,
+      currentLanguage: null
+    });
+    const root = parent.querySelector("[data-voice-presets-panel]") as HTMLElement;
+    const hud = root.querySelector(
+      '[data-testid="voice-presets-hud"]'
+    ) as HTMLElement;
+    expect(hud).toBeTruthy();
+    expect(hud.textContent).toBe("ST:--");
+    // Кликаем по чипу → HUD должен обновиться оптимистично
+    // (префикс ST: обязателен по ADR-0027 §3.4.1).
+    const cavemanBtn = root.querySelector(
+      '[data-preset="caveman"]'
+    ) as HTMLButtonElement;
+    cavemanBtn.click();
+    expect(hud.textContent).toBe("ST:CAVEMAN");
+  });
+
+  it("HUD includes language after setCurrentLanguage", () => {
+    panel = createVoicePresetsPanel(parent, {
+      presets: PRESETS,
+      languages: ["ru", "en"],
+      currentPreset: "lenin", // намеренно не в PRESETS — HUD рисуется отдельно
+      currentLanguage: "ru"
+    });
+    const root = parent.querySelector("[data-voice-presets-panel]") as HTMLElement;
+    const hud = root.querySelector(
+      '[data-testid="voice-presets-hud"]'
+    ) as HTMLElement;
+    expect(hud.textContent).toBe("ST:LENIN@RU");
+    panel.setCurrentLanguage("en");
+    expect(hud.textContent).toBe("ST:LENIN@EN");
   });
 
   it("setCurrentLanguage updates aria-checked without firing callback", () => {

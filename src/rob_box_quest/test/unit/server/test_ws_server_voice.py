@@ -37,11 +37,18 @@ class RecordingBridge(NoOpBridge):
         # AV-27 / issue #1919 — TTS picker state.
         self.voices_snapshots: list[dict[str, Any]] = []
         self.set_voice_calls: list[tuple[str, str | None]] = []
-        self.preview_voice_calls: list[tuple[str, str, str]] = []  # (request_id, voice_id, text)
+        self.preview_voice_calls: list[tuple[str, str, str]] = (
+            []
+        )  # (request_id, voice_id, text)
         # Параметры, задаваемые в каждом тесте:
         self.active_provider: str = "yandex"
         self.active_voice: str = "alena"
         self.voices_payload: list[dict[str, Any]] = []
+        # AV-28 §P7: дополнительные каналы для preset + language.
+        self.voice_presets: list[str] = []
+        self.voice_languages: list[str] = []
+        self.set_voice_preset_calls: int = 0
+        self.set_voice_language_calls: int = 0
 
     def publish_voice_barge_in(self) -> None:
         self.barge_in_calls += 1
@@ -80,13 +87,27 @@ class RecordingBridge(NoOpBridge):
         # Если active_provider пуст — tts_unreachable.
         if not self.active_provider:
             return False, None, "tts_unreachable", None
-        if voice_id not in self.voices_payload and voice_id not in [v.get("voice_id") for v in self.voices_payload]:
-            available = [v.get("voice_id") for v in self.voices_payload if isinstance(v, dict)]
+        if voice_id not in self.voices_payload and voice_id not in [
+            v.get("voice_id") for v in self.voices_payload
+        ]:
+            available = [
+                v.get("voice_id") for v in self.voices_payload if isinstance(v, dict)
+            ]
             return False, None, "voice_unavailable", available
         return True, voice_id, None, None
 
     def publish_preview_voice(self, request_id: str, voice_id: str, text: str) -> None:
         self.preview_voice_calls.append((request_id, voice_id, text))
+
+    # ── AV-28 §P7 stubs (issue #1920) ────────────────────────────────
+
+    def set_voice_preset(self, preset: str) -> None:
+        self.voice_presets.append(preset)
+        self.set_voice_preset_calls += 1
+
+    def set_voice_language(self, language: str) -> None:
+        self.voice_languages.append(language)
+        self.set_voice_language_calls += 1
 
 
 @pytest.fixture
@@ -102,20 +123,7 @@ def fixed_pin(monkeypatch) -> str:
 
 
 @pytest.fixture
-def long_watchdog(monkeypatch) -> None:
-    """Отключить watchdog для floor-тестов (они ждут ответ дольше 0.6 с).
-
-    В проде WATCHDOG_TIMEOUT_S = 0.6 (meta-quest-api.md §7 + ADR-0027 §3.3).
-    Здесь поднимаем до 30 с, чтобы тесты не зависели от реального RTT
-    event-loop'а. Поведение server-логики voice-floor не затронуто.
-    """
-    import rob_box_quest.server.session as _session_mod
-
-    monkeypatch.setattr(_session_mod, "WATCHDOG_TIMEOUT_S", 30.0)
-
-
-@pytest.fixture
-async def client(fixed_pin, long_watchdog, bridge):
+async def client(fixed_pin, bridge):
     server = WSSServer(bridge=bridge, pin=fixed_pin)
     app = build_app(server)
     async with TestClient(TestServer(app)) as client:
@@ -125,7 +133,9 @@ async def client(fixed_pin, long_watchdog, bridge):
 async def _open_and_hello(client, pin):
     """Открыть WS, HELLO, дождаться WELCOME."""
     ws = await client.ws_connect("/quest")
-    payload = json.dumps({"client_version": "0.1.0", "capabilities": ["webxr"], "session_pin": pin}).encode("utf-8")
+    payload = json.dumps(
+        {"client_version": "0.1.0", "capabilities": ["webxr"], "session_pin": pin}
+    ).encode("utf-8")
     await ws.send_bytes(encode_frame(FrameType.HELLO, 0, payload))
     deadline = time.monotonic() + 1.0
     while time.monotonic() < deadline:
@@ -183,7 +193,9 @@ async def test_voice_ptt_start_robot_mode(client, fixed_pin):
     http_client, _server, bridge = client
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
-        await _send_json_cmd(ws, {"cmd": "voice_ptt_start", "mode": "robot_voice", "ts_ms": 0})
+        await _send_json_cmd(
+            ws, {"cmd": "voice_ptt_start", "mode": "robot_voice", "ts_ms": 0}
+        )
         await asyncio.sleep(0.05)
         assert bridge.robot_start_calls == 1
         assert bridge.barge_in_calls == 0
@@ -196,7 +208,9 @@ async def test_voice_ptt_stop_robot_mode(client, fixed_pin):
     http_client, _server, bridge = client
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
-        await _send_json_cmd(ws, {"cmd": "voice_ptt_stop", "mode": "robot_voice", "ts_ms": 0})
+        await _send_json_cmd(
+            ws, {"cmd": "voice_ptt_stop", "mode": "robot_voice", "ts_ms": 0}
+        )
         await asyncio.sleep(0.05)
         assert bridge.robot_stop_calls == 1
         assert bridge.voice_stop_calls == 0
@@ -209,7 +223,9 @@ async def test_voice_mode_routes_to_bridge(client, fixed_pin):
     http_client, _server, bridge = client
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
-        await _send_json_cmd(ws, {"cmd": "voice_mode", "mode": "ttts_proxy", "ts_ms": 0})
+        await _send_json_cmd(
+            ws, {"cmd": "voice_mode", "mode": "ttts_proxy", "ts_ms": 0}
+        )
         await asyncio.sleep(0.05)
         assert bridge.voice_modes == ["ttts_proxy"]
     finally:
@@ -241,8 +257,18 @@ async def test_list_voices_returns_snapshot(client, fixed_pin):
     bridge.active_provider = "yandex"
     bridge.active_voice = "alena"
     bridge.voices_payload = [
-        {"voice_id": "alena", "display_name": "Алёна", "language": "ru-RU", "gender": "female"},
-        {"voice_id": "anton", "display_name": "Антон", "language": "ru-RU", "gender": "male"},
+        {
+            "voice_id": "alena",
+            "display_name": "Алёна",
+            "language": "ru-RU",
+            "gender": "female",
+        },
+        {
+            "voice_id": "anton",
+            "display_name": "Антон",
+            "language": "ru-RU",
+            "gender": "male",
+        },
     ]
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
@@ -287,7 +313,10 @@ async def test_set_voice_success_sends_ack(client, fixed_pin):
     bridge.voices_payload = [{"voice_id": "alena"}]
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
-        await _send_json_cmd(ws, {"cmd": "set_voice", "voice_id": "alena", "preset": "friendly", "ts_ms": 0})
+        await _send_json_cmd(
+            ws,
+            {"cmd": "set_voice", "voice_id": "alena", "preset": "friendly", "ts_ms": 0},
+        )
         body = await _wait_for_json_event(
             ws, lambda b: b.get("type") == "voice_set_ack", timeout=1.0
         )
@@ -382,13 +411,21 @@ async def test_preview_voice_deliver_error_clears_pending(client, fixed_pin):
     try:
         await _send_json_cmd(
             ws,
-            {"cmd": "preview_voice", "request_id": "req-err", "voice_id": "alena", "text": "x", "ts_ms": 0},
+            {
+                "cmd": "preview_voice",
+                "request_id": "req-err",
+                "voice_id": "alena",
+                "text": "x",
+                "ts_ms": 0,
+            },
         )
         await asyncio.sleep(0.05)
         assert "req-err" in server._preview_pending
         # Ставим _send_loop руками (в aiohttp test client он уже есть, но на всякий случай).
         server._send_loop = asyncio.get_event_loop()
-        delivered = server.deliver_preview_error("req-err", "preview_synthesis_not_implemented_in_mvp")
+        delivered = server.deliver_preview_error(
+            "req-err", "preview_synthesis_not_implemented_in_mvp"
+        )
         assert delivered is True
         body = await _wait_for_json_event(
             ws, lambda b: b.get("type") == "preview_voice_error", timeout=1.0
@@ -432,13 +469,169 @@ async def test_voice_rate_limit_drops_repeat(client, fixed_pin):
         await ws.close()
 
 
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------
 # Voice-floor: серверный mutex (двух квестов быть не должно).
 # Acceptance (t_3c27c1da):
 #  - при занятом floor второй voice_ptt_start → отказ + voice_state{denied};
 #  - при единственном клиенте поведение совпадает с до-изменения;
 #  - отвал клиента освобождает floor (force_release_for).
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------
+
+
+# === AV-28 §P7: set_voice {preset, language} → Bridge → supervisor === #
+
+
+async def _collect_events(ws, n: int = 1, timeout_s: float = 1.0) -> list[dict]:
+    """Собрать N JSON_EVENT-фреймов от сервера."""
+    events: list[dict] = []
+    deadline = time.monotonic() + timeout_s
+    while len(events) < n and time.monotonic() < deadline:
+        msg = await ws.receive()
+        if msg.type == WSMsgType.BINARY:
+            ftype, _sid, payload = decode_frame(msg.data)
+            if ftype == FrameType.JSON_EVENT:
+                events.append(json.loads(payload.decode("utf-8")))
+    return events
+
+
+async def test_set_voice_routes_preset_and_language_to_bridge(client, fixed_pin):
+    """Валидный set_voice {preset, language} → bridge.set_voice_preset +
+    set_voice_language + voice_set_ack."""
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(
+            ws, {"cmd": "set_voice", "ts_ms": 0, "preset": "lenin", "language": "en"}
+        )
+        events = await _collect_events(ws, n=1)
+        ack = next(e for e in events if e.get("type") == "voice_set_ack")
+        assert ack["preset"] == "lenin"
+        assert ack["language"] == "en"
+        await asyncio.sleep(0.02)
+        assert bridge.voice_presets == ["lenin"]
+        assert bridge.voice_languages == ["en"]
+    finally:
+        await ws.close()
+
+
+async def test_set_voice_preset_only_does_not_touch_language(client, fixed_pin):
+    """Только preset — language не меняется (Bridge-метод не вызывается)."""
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(
+            ws, {"cmd": "set_voice", "ts_ms": 0, "preset": "philosopher"}
+        )
+        events = await _collect_events(ws, n=1)
+        ack = next(e for e in events if e.get("type") == "voice_set_ack")
+        assert ack["preset"] == "philosopher"
+        assert ack["language"] is None
+        await asyncio.sleep(0.02)
+        assert bridge.voice_presets == ["philosopher"]
+        assert bridge.voice_languages == []
+    finally:
+        await ws.close()
+
+
+async def _wait_for_event_type(ws, event_type: str, timeout_s: float = 2.0):
+    """Ждать JSON_EVENT с type==event_type. Watchdog = 600 ms — периодически
+    шлём ping чтобы клиент не отвалился, пока ждём ответ. Возвращает decoded
+    payload или None по таймауту.
+    """
+    deadline = time.monotonic() + timeout_s
+    next_ping = time.monotonic() + 0.2
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        try:
+            msg = await asyncio.wait_for(ws.receive(), timeout=min(remaining, 0.5))
+        except asyncio.TimeoutError:
+            if time.monotonic() >= next_ping:
+                try:
+                    ping_payload = json.dumps({"type": "ping", "ts_ms": 0}).encode(
+                        "utf-8"
+                    )
+                    await ws.send_bytes(
+                        encode_frame(FrameType.JSON_EVENT, 0, ping_payload)
+                    )
+                except Exception:
+                    return None
+                next_ping = time.monotonic() + 0.2
+            continue
+        if msg.type == WSMsgType.BINARY:
+            ftype, _sid, payload = decode_frame(msg.data)
+            if ftype == FrameType.JSON_EVENT:
+                body = json.loads(payload.decode("utf-8"))
+                if body.get("type") == event_type:
+                    return body
+                # Сбросим next_ping чтобы тик watchdog не пришёл раньше.
+                next_ping = time.monotonic() + 0.2
+    return None
+
+
+async def test_set_voice_invalid_preset_sends_nack_no_bridge_call(
+    client, fixed_pin, monkeypatch
+):
+    """Не-whitelisted preset → voice_set_nack + bridge НЕ дёргается.
+
+    Rate-limit окно — общий на сервере для всего set_voice, и предыдущие
+    тесты в файлеле могут занять его. Отключаем rate-limit для теста, чтобы
+    изолировать логику whitelist от rate-limit.
+    """
+    monkeypatch.setattr("rob_box_quest.server.ws_server.VOICE_SET_MIN_INTERVAL_S", 0.0)
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(ws, {"cmd": "set_voice", "ts_ms": 0, "preset": "scammer"})
+        # Свежий watchdog=600ms — ждать долго не нужно, сервер отвечает сразу.
+        nack = await _wait_for_event_type(ws, "voice_set_nack", timeout_s=0.5)
+        assert nack is not None, "voice_set_nack not received"
+        assert "invalid_voice_preset" in nack["reason"]
+        assert nack["preset"] == "scammer"
+        await asyncio.sleep(0.02)
+        # Bridge не должен вызываться для невалидного preset.
+        assert bridge.voice_presets == []
+        assert bridge.voice_languages == []
+    finally:
+        await ws.close()
+
+
+async def test_set_voice_invalid_language_sends_nack(client, fixed_pin, monkeypatch):
+    monkeypatch.setattr("rob_box_quest.server.ws_server.VOICE_SET_MIN_INTERVAL_S", 0.0)
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(ws, {"cmd": "set_voice", "ts_ms": 0, "language": "de"})
+        nack = await _wait_for_event_type(ws, "voice_set_nack", timeout_s=0.5)
+        assert nack is not None, "voice_set_nack not received"
+        assert "invalid_voice_language" in nack["reason"]
+        assert nack["language"] == "de"
+        await asyncio.sleep(0.02)
+        assert bridge.voice_languages == []
+    finally:
+        await ws.close()
+
+
+async def test_validate_voice_set_payload_whitelist() -> None:
+    """Pure-функция _validate_voice_set_payload (тест без WS/Rclpy)."""
+    from rob_box_quest.server.ws_server import (
+        VOICE_LANGUAGES,
+        VOICE_PRESET_IDS,
+        _validate_voice_set_payload,
+    )
+
+    # Валидные комбинации.
+    assert _validate_voice_set_payload(None, None) is None
+    for preset in VOICE_PRESET_IDS:
+        assert _validate_voice_set_payload(preset, None) is None
+    for lang in VOICE_LANGUAGES:
+        assert _validate_voice_set_payload(None, lang) is None
+    assert _validate_voice_set_payload("lenin", "ru") is None
+    # Невалидный preset.
+    assert _validate_voice_set_payload("scammer", None) is not None
+    # Невалидный language.
+    assert _validate_voice_set_payload(None, "de") is not None
+    # Оба вместе — первый невалидный попадает в reason первой строкой.
+    assert _validate_voice_set_payload("scammer", "ru") is not None
 
 
 async def _next_voice_state_event(ws, timeout_s: float = 1.0):
@@ -616,9 +809,9 @@ async def test_voice_floor_disconnect_releases_floor(client, fixed_pin):
             ws2, {"cmd": "voice_ptt_start", "client_id": "tg", "ts_ms": 0}
         )
         ev_ok = await _next_voice_state_event(ws2)
-        assert ev_ok is not None, (
-            "ws2 должен получить voice_state после force_release_for(ws1)"
-        )
+        assert (
+            ev_ok is not None
+        ), "ws2 должен получить voice_state после force_release_for(ws1)"
         assert ev_ok["type"] == "voice_state"
         assert ev_ok["state"] == "listening"
         assert ev_ok["holder_id"].startswith("tg:")
@@ -627,7 +820,9 @@ async def test_voice_floor_disconnect_releases_floor(client, fixed_pin):
         await ws2.close()
 
 
-async def test_voice_floor_subscribe_to_voice_state_emits_idle_snapshot(client, fixed_pin):
+async def test_voice_floor_subscribe_to_voice_state_emits_idle_snapshot(
+    client, fixed_pin
+):
     """SUBSCRIBE voice_state без держателя → voice_state{idle} сразу."""
     http_client, _server, _bridge = client
     ws = await _open_and_hello(http_client, fixed_pin)
@@ -644,7 +839,9 @@ async def test_voice_floor_subscribe_to_voice_state_emits_idle_snapshot(client, 
         await ws.close()
 
 
-async def test_voice_floor_subscribe_to_voice_state_emits_listening_snapshot(client, fixed_pin):
+async def test_voice_floor_subscribe_to_voice_state_emits_listening_snapshot(
+    client, fixed_pin
+):
     """SUBSCRIBE voice_state при занятом floor → voice_state{listening} с holder_id."""
     http_client, _server, bridge = client
     ws1 = await _open_and_hello(http_client, fixed_pin)
