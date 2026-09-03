@@ -56,11 +56,14 @@ class _FakeServiceClient:
         self.calls: list = []
 
         class _Trigger:
+            # Поля типизированного IDL (AV-12): AcquireFloor/ReleaseFloor
+            # берут client_id+floor, SetAvatarMode — client_id+mode.
+            # event больше нет: маппинг режим→событие живёт в
+            # супервизоре, клиент шлёт целевой режим как есть.
             def __init__(self) -> None:
-                # Атрибуты, которые supervisor ищет через getattr().
                 self.client_id = None
                 self.floor = None
-                self.event = None
+                self.mode = None
 
         class _TriggerSrv:
             Request = _Trigger
@@ -73,7 +76,7 @@ class _FakeServiceClient:
                 {
                     "client_id": getattr(req, "client_id", None),
                     "floor": getattr(req, "floor", None),
-                    "event": getattr(req, "event", None),
+                    "mode": getattr(req, "mode", None),
                 }
             )
             if self._delay_s > 0:

@@ -539,31 +539,23 @@ class QuestBridge:
         return self._run_supervisor_service("release_floor", self._srv_release, client_id=client_id, floor=floor)
 
     def supervisor_set_mode(self, client_id: str, mode: str) -> dict:
+        """``SET_MODE`` (0x30) → сервис ``set_avatar_mode``.
+
+        Целевой режим уходит на провод КАК ЕСТЬ. Маппинг «режим → FSM-
+        событие» живёт только в супервизоре
+        (``supervisor_node.MODE_TRANSITIONS``, AV-12): одно событие значит
+        разные переходы из разных режимов, поэтому клиентская копия
+        таблицы обязана разъехаться. Здесь она и была неверной —
+        ``mixed`` жёстко маппился в ``quest_acquire_floor_teleop_only``,
+        что верно только из ``telegram_active``, а неизвестный режим по
+        умолчанию превращался в ``force_off``, то есть опечатка выключала
+        аватар.
+        """
         if self._srv_set_mode is None:
             return self._supervisor_unavailable("set_avatar_mode")
-        # ``set_avatar_mode`` ждёт ``event`` (FSM-edge), не ``mode`` —
-        # конвертируем per WS-API в event name (см. supervisor_node.py
-        # EVENT_* константы; см. ADR-0028 §4.1 mermaid).
-        event = self._wire_mode_to_fsm_event(mode)
-        return self._run_supervisor_service("set_avatar_mode", self._srv_set_mode, event=event, client_id=client_id)
-
-    @staticmethod
-    def _wire_mode_to_fsm_event(mode: str) -> str:
-        """Маппинг wire-режима (meta-quest-api.md §3) → FSM EVENT_* ADR-0028 §4.1.
-
-        ``SET_MODE`` клиента передаёт желаемый целевой режим. FSM
-        ModeManager ожидает имя event'а (переход по ребру mermaid). Здесь
-        только словарный маппинг; реальное решение о допустимости перехода
-        принимает supervisor (его же FSM может вернуть ``applied=false``).
-        """
-        return {
-            "off": "force_off",
-            "telegram_active": "telegram_acquire_floor",
-            "avatar_present": "quest_acquire_floor",
-            "mixed": "quest_acquire_floor_teleop_only",
-            "teleop_only": "quest_acquire_floor_teleop_only",
-            "voice_only": "telegram_acquire_voice_floor",
-        }.get(mode, "force_off")
+        return self._run_supervisor_service(
+            "set_avatar_mode", self._srv_set_mode, mode=mode, client_id=client_id
+        )
 
     @staticmethod
     def _supervisor_unavailable(name: str) -> dict:
@@ -584,7 +576,7 @@ class QuestBridge:
         *,
         client_id: Optional[str] = None,
         floor: Optional[str] = None,
-        event: Optional[str] = None,
+        mode: Optional[str] = None,
         # Таймаут sync-вызова из WS-handler-а (acceptance: < 100 мс при
         # «зависшем» сервисе). 50 мс — запас над обычным ROS round-trip;
         # если supervisor отвечает дольше — degradation на INTERNAL, не
@@ -596,12 +588,13 @@ class QuestBridge:
         Pattern: ``asyncio.run_coroutine_threadsafe(call_async(req),
         ros_loop).result(timeout=...)``.
         """
-        # Supervisor service contract (см. ADR-0028 §4.3, supervisor_node.py:180):
-        # client_id/floor/event лежат в ``request.client_id``/``request.floor``/
-        # ``request.event`` напрямую (через getattr, чтобы не ловить старый
-        # JSON-путь). Для Phase 1 idl — std_srvs/Trigger, у которого ВСЕ поля —
-        # атрибуты Python (новые добавляются ad-hoc), и Supervisor._extract_*
-        # делает ``getattr(request, 'client_id', None)``.
+        # Supervisor service contract (ADR-0028 §4.3 + типизированный IDL
+        # rob_box_supervisor_msgs, AV-12 #1904): поля запроса — ровно
+        # ``client_id`` + ``floor`` (AcquireFloor/ReleaseFloor) или
+        # ``client_id`` + ``mode`` (SetAvatarMode). Имена жёсткие: у
+        # сгенерированных rosidl-сообщений ``__slots__``, и setattr на
+        # поле, которого в .srv нет, бросит AttributeError. Поэтому
+        # никаких ad-hoc атрибутов вроде ``event`` здесь больше нет.
         ros_loop = getattr(self._node, "_ros_loop", None)
         if ros_loop is None:
             # rclpy.executors не разворачивает loop явно — попросим у самого Node.
@@ -623,8 +616,8 @@ class QuestBridge:
             setattr(request_obj, "client_id", client_id)
         if floor is not None:
             setattr(request_obj, "floor", floor)
-        if event is not None:
-            setattr(request_obj, "event", event)
+        if mode is not None:
+            setattr(request_obj, "mode", mode)
 
         async def _call() -> dict:
             fut = client.call_async(request_obj)
