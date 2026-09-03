@@ -3,7 +3,8 @@ import {
   TeleopFSM,
   MAX_LINEAR,
   MAX_ANGULAR,
-  THROTTLE_INTERVAL_MS
+  THROTTLE_INTERVAL_MS,
+  HEARTBEAT_INTERVAL_MS
 } from "../src/input/teleop_fsm";
 
 describe("TeleopFSM", () => {
@@ -100,5 +101,117 @@ describe("TeleopFSM", () => {
     fsm.reset();
     expect(fsm.getState()).toBe("idle");
     expect(fsm.tick(2000, true)).toBeNull();
+  });
+});
+
+// AV-19 (issue #1911, ADR-0028 §4.4): floor gate + heartbeat + DISARM на потерю.
+describe("TeleopFSM (AV-19 floor gate + heartbeat)", () => {
+  let fsm: TeleopFSM;
+  beforeEach(() => {
+    fsm = new TeleopFSM();
+  });
+
+  it("default hasFloor=true (optimistic before first WELCOME)", () => {
+    expect(fsm.hasFloor()).toBe(true);
+  });
+
+  it("deadman=true с hasFloor=true → state=armed, tick() шлёт twist", () => {
+    fsm.setLinear(0.5);
+    fsm.setDeadman(true);
+    expect(fsm.getState()).toBe("armed");
+    const out = fsm.tick(1000, true);
+    expect(out).not.toBeNull();
+    expect(out!.cmd.cmd).toBe("teleop_twist");
+  });
+
+  it("deadman=true с hasFloor=false → state=armed_no_floor, tick() = null", () => {
+    fsm.setHasFloor(false);
+    fsm.setLinear(0.5);
+    fsm.setDeadman(true);
+    expect(fsm.getState()).toBe("armed_no_floor");
+    expect(fsm.tick(1000, true)).toBeNull();
+    // И на forceSend=true всё равно null — gate абсолютный.
+    expect(fsm.tick(1000, true)).toBeNull();
+  });
+
+  it("setHasFloor(false) на ARMED → forceDisarm → state=idle мгновенно", () => {
+    fsm.setLinear(0.5);
+    fsm.setDeadman(true);
+    expect(fsm.getState()).toBe("armed");
+    fsm.setHasFloor(false);
+    expect(fsm.getState()).toBe("idle");
+    expect(fsm.tick(2000, true)).toBeNull();
+  });
+
+  it("setHasFloor(true) из armed_no_floor при deadman=true → state=armed", () => {
+    fsm.setHasFloor(false);
+    fsm.setDeadman(true);
+    expect(fsm.getState()).toBe("armed_no_floor");
+    fsm.setHasFloor(true);
+    expect(fsm.getState()).toBe("armed");
+  });
+
+  it("heartbeatCmd возвращает null в idle / armed_no_floor / stopping", () => {
+    // idle
+    expect(fsm.heartbeatCmd(1000)).toBeNull();
+    // armed_no_floor
+    fsm.setHasFloor(false);
+    fsm.setDeadman(true);
+    expect(fsm.heartbeatCmd(1000)).toBeNull();
+  });
+
+  it("heartbeatCmd возвращает cmd в armed и троттлит до 10 Hz", () => {
+    fsm.setLinear(0.5);
+    fsm.setDeadman(true);
+    expect(fsm.getState()).toBe("armed");
+    const t0 = 1000;
+    // Первый heartbeat — сразу проходит.
+    const hb1 = fsm.heartbeatCmd(t0);
+    expect(hb1).not.toBeNull();
+    expect(hb1!.seq).toBe(1);
+    expect(hb1!.cmd).toBe("teleop_heartbeat");
+    // Внутри окна HEARTBEAT_INTERVAL_MS — null.
+    expect(fsm.heartbeatCmd(t0 + 50)).toBeNull();
+    expect(fsm.heartbeatCmd(t0 + HEARTBEAT_INTERVAL_MS - 1)).toBeNull();
+    // На границе окна — снова проходит.
+    const hb2 = fsm.heartbeatCmd(t0 + HEARTBEAT_INTERVAL_MS);
+    expect(hb2).not.toBeNull();
+    expect(hb2!.seq).toBe(2);
+  });
+
+  it("forceDisarm сбрасывает state и deadman", () => {
+    fsm.setLinear(0.5);
+    fsm.setDeadman(true);
+    expect(fsm.getState()).toBe("armed");
+    fsm.forceDisarm("test");
+    expect(fsm.getState()).toBe("idle");
+    // После forceDisarm tick() ничего не шлёт.
+    expect(fsm.tick(2000, true)).toBeNull();
+    // heartbeatCmd тоже null — мы уже не в armed.
+    expect(fsm.heartbeatCmd(2000)).toBeNull();
+  });
+
+  it("reset() сохраняет optimistic hasFloor=true", () => {
+    fsm.setHasFloor(false);
+    fsm.reset();
+    expect(fsm.hasFloor()).toBe(true);
+  });
+
+  it("triggerEmergency работает вне зависимости от hasFloor", () => {
+    fsm.setHasFloor(false);
+    fsm.setDeadman(true); // armed_no_floor
+    const cmd = fsm.triggerEmergency("controller_b");
+    expect(cmd.cmd).toBe("stop_emergency");
+    // FSM после emergency → idle (тоже важно, чтобы не слать лишнее).
+    expect(fsm.getState()).toBe("idle");
+  });
+
+  it("setHasFloor(true) повторно — no-op (state не меняется)", () => {
+    fsm.setHasFloor(true); // уже true
+    fsm.setLinear(0.5);
+    fsm.setDeadman(true);
+    expect(fsm.getState()).toBe("armed");
+    fsm.setHasFloor(true); // повторно
+    expect(fsm.getState()).toBe("armed");
   });
 });
