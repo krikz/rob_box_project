@@ -36,6 +36,23 @@ export const WIFI_WEAK_DBM = -75;
 export const RTT_WARN_MS = 200;
 export const RTT_BAD_MS = 400;
 
+// AV-26 / R7: robot_alert метка в HUD. Когда алёрт активен, в нижней
+// части спрайта появляется красная строка с текстом. Показывается до тех
+// пор, пока сервер не пришлёт active:false (с явным code).
+// Текст приходит с сервера уже локализованный (alertText() в alert_toast.ts
+// использует ту же таблицу), но в HUD рисуем именно то, что сказал сервер
+// (server-side i18n согласован с клиентским).
+
+const ALERT_BG = "rgba(225, 27, 36, 0.92)";
+const ALERT_BG_WARN = "rgba(245, 194, 17, 0.92)";
+const ALERT_TEXT_COLOR = "#0a0d11";
+
+/** Размеры алёрт-строки (в px канваса 512×320). */
+const ALERT_LINE_HEIGHT = 56;
+const ALERT_PADDING_X = 16;
+const ALERT_PADDING_Y = 8;
+const ALERT_FONT = "bold 28px monospace";
+
 /**
  * Разобрать msgpack-payload robot_status. `null` — кадр битый или не map;
  * отсутствующие поля заполняются sentinel'ами сервера (-1 / 0), чтобы UI
@@ -60,8 +77,16 @@ export function parseRobotStatus(payload: Uint8Array): RobotStatus | null {
 /**
  * Строки HUD. Отсутствующий источник показывается прочерком, а не нулём —
  * «0%» и «нет данных о заряде» для оператора это разные вещи.
+ *
+ * `fps` — текущее значение FPS (или `null`, если данных ещё нет). По
+ * дизайну (AV-25 / B4) строка FPS идёт сразу после RTT: оператор
+ * читает «как идут кадры» рядом с «как идёт сеть».
  */
-export function formatStatusLines(status: RobotStatus | null, rttMs: number | null): StatusLine[] {
+export function formatStatusLines(
+  status: RobotStatus | null,
+  rttMs: number | null,
+  fps: number | null = null
+): StatusLine[] {
   const lines: StatusLine[] = [];
 
   // BAT: проценты, если источник есть; иначе вольты; иначе прочерк.
@@ -104,6 +129,18 @@ export function formatStatusLines(status: RobotStatus | null, rttMs: number | nu
     });
   }
 
+  // FPS (AV-25): рядом с RTT, обновляется реже (раз в 500мс), но строка
+  // живёт в том же формате. < 30 fps = жёлтый, < 15 = красный, иначе ok.
+  if (fps === null || !Number.isFinite(fps) || fps <= 0) {
+    lines.push({ label: "FPS", value: "—", level: "unknown" });
+  } else {
+    lines.push({
+      label: "FPS",
+      value: `${Math.round(fps)}`,
+      level: fps < 15 ? "bad" : fps < 30 ? "warn" : "ok"
+    });
+  }
+
   lines.push({
     label: "MODE",
     value: status ? status.mode : "—",
@@ -126,6 +163,10 @@ export interface StatusHud {
   setStatus(status: RobotStatus | null): void;
   /** RTT из ping/pong (`null` — pong ещё не приходил). */
   setRtt(rttMs: number | null): void;
+  /** FPS из scene loop (`null` — данных ещё нет). AV-25. */
+  setFps(fps: number | null): void;
+  /** AV-26: вывести плашку с активным robot_alert. `null` — скрыть. */
+  setAlert(alert: { text: string; level: "warn" | "error" } | null): void;
   dispose(): void;
 }
 
@@ -160,16 +201,37 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
 
   let status: RobotStatus | null = null;
   let rttMs: number | null = null;
+  let fps: number | null = null;
+  let alert: { text: string; level: "warn" | "error" } | null = null;
 
   function draw(): void {
-    const lines = formatStatusLines(status, rttMs);
+    // AV-25 (FPS): передаём fps в formatStatusLines.
+    // AV-26: если есть активный алёрт — перекрашиваем фон HUD плашкой,
+    // обычные строки рисуем поверх (они не гаснут, оператор всё ещё
+    // видит заряд/связь/RTT/FPS).
+    const lines = formatStatusLines(status, rttMs, fps);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "rgba(10, 13, 17, 0.72)";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (alert !== null) {
+      ctx.fillStyle = alert.level === "error" ? ALERT_BG : ALERT_BG_WARN;
+      ctx.fillRect(0, 0, canvas.width, ALERT_LINE_HEIGHT + ALERT_PADDING_Y * 2);
+      ctx.fillStyle = ALERT_TEXT_COLOR;
+      ctx.font = ALERT_FONT;
+      ctx.textBaseline = "middle";
+      // Простейший wrap по длине строки — без измерений ширины глифов
+      // (canvas.measureText дорого в каждом кадре). Текст на русском,
+      // ~30 символов обычно влезает; дальше оператор увидит toast-стек.
+      const text = alert.text;
+      ctx.fillText(text, ALERT_PADDING_X, ALERT_LINE_HEIGHT / 2 + ALERT_PADDING_Y);
+    } else {
+      ctx.fillStyle = "rgba(10, 13, 17, 0.72)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
     ctx.textBaseline = "middle";
-    const rowH = canvas.height / lines.length;
+    // Если алёрт активен — строки сдвигаем вниз, чтобы не перекрывать.
+    const topOffset = alert !== null ? ALERT_LINE_HEIGHT + ALERT_PADDING_Y * 2 : 0;
+    const rowH = (canvas.height - topOffset) / lines.length;
     lines.forEach((line, i) => {
-      const y = rowH * i + rowH / 2;
+      const y = topOffset + rowH * i + rowH / 2;
       ctx.fillStyle = "#8b98a5";
       ctx.font = "bold 32px monospace";
       ctx.fillText(line.label, 20, y);
@@ -190,6 +252,14 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
     },
     setRtt(next: number | null): void {
       rttMs = next;
+      draw();
+    },
+    setFps(next: number | null): void {
+      fps = next;
+      draw();
+    },
+    setAlert(next: { text: string; level: "warn" | "error" } | null): void {
+      alert = next;
       draw();
     },
     dispose(): void {

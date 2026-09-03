@@ -21,6 +21,12 @@ export interface PanelState {
   selected: boolean;
 }
 
+/** Минимально-разумные границы размера панели в метрах (см. AV-25 B2). */
+export const PANEL_DEFAULT_MIN_WIDTH_M = 0.4;
+export const PANEL_DEFAULT_MAX_WIDTH_M = 3.0;
+export const PANEL_DEFAULT_MIN_HEIGHT_M = 0.3;
+export const PANEL_DEFAULT_MAX_HEIGHT_M = 2.0;
+
 export interface PanelManagerOptions {
   radius?: number;       // радиус полукруга, дефолт 2.0 м
   panelWidth?: number;   // 1.2 м
@@ -33,6 +39,12 @@ export interface PanelManagerOptions {
    * занимает фронт, поэтому боковые панели уезжают к ±75°.
    */
   angles?: number[];
+  /** Границы resize. Дефолты — PANEL_DEFAULT_*_M, чтобы панель нельзя
+   * было схлопнуть в точку или растянуть на всю комнату. */
+  minWidthM?: number;
+  maxWidthM?: number;
+  minHeightM?: number;
+  maxHeightM?: number;
 }
 
 /** Углы дефолтной раскладки (дизайн §3, 4 панели полукругом). */
@@ -57,7 +69,11 @@ export class PanelManager {
       panelHeight: opts.panelHeight ?? 0.7,
       panelYOffset: opts.panelYOffset ?? 1.6,
       defaultTopics: opts.defaultTopics ?? [...DEFAULT_VIDEO_TOPICS],
-      angles: opts.angles ?? [...DEFAULT_PANEL_ANGLES_DEG]
+      angles: opts.angles ?? [...DEFAULT_PANEL_ANGLES_DEG],
+      minWidthM: opts.minWidthM ?? PANEL_DEFAULT_MIN_WIDTH_M,
+      maxWidthM: opts.maxWidthM ?? PANEL_DEFAULT_MAX_WIDTH_M,
+      minHeightM: opts.minHeightM ?? PANEL_DEFAULT_MIN_HEIGHT_M,
+      maxHeightM: opts.maxHeightM ?? PANEL_DEFAULT_MAX_HEIGHT_M
     };
   }
 
@@ -86,23 +102,56 @@ export class PanelManager {
     return ids;
   }
 
+  /**
+   * Перегрузка для двух вариантов вызова:
+   *   - старая: `createPanel(topic, position?, facing?)` — id генерируется;
+   *   - новая:  `createPanel(id, topic, position?, facing?)` — для layout-store.
+   *
+   * Различаем по типу ВТОРОГО аргумента: string = topic (новая сигнатура,
+   * id задан первым аргументом), object/undefined = position (старая).
+   */
   createPanel(
-    topic: string,
-    position?: { x: number; y: number; z: number },
-    facing?: { x: number; z: number }
+    topicOrId: string,
+    positionOrTopic?: { x: number; y: number; z: number } | string,
+    facingOrPosition?: { x: number; z: number } | { x: number; y: number; z: number },
+    maybeFacing?: { x: number; z: number }
   ): PanelId {
-    const id = `p${this.nextId}`;
+    let id: PanelId;
+    let topic: string;
+    let pos: { x: number; y: number; z: number } | undefined;
+    let face: { x: number; z: number } | undefined;
+    if (typeof positionOrTopic === "string") {
+      // (id, topic, pos?, facing?) — новая сигнатура для layout-store.
+      id = topicOrId;
+      topic = positionOrTopic;
+      pos = facingOrPosition as { x: number; y: number; z: number } | undefined;
+      face = maybeFacing;
+    } else {
+      // (topic, pos?, facing?) — старая сигнатура.
+      id = `p${this.nextId}`;
+      topic = topicOrId;
+      pos = positionOrTopic;
+      face = facingOrPosition as { x: number; z: number } | undefined;
+    }
+    if (this.panels.has(id)) return id;
     this.nextId += 1;
-    const pos = position ?? this.defaultPosition();
-    const face = facing ?? this.facingTowards(pos);
+    const finalPos = pos ?? this.defaultPosition();
+    const finalFace = face ?? this.facingTowards(finalPos);
     this.panels.set(id, {
       id,
       topic,
-      position: { ...pos },
-      facing: { ...face },
+      position: { ...finalPos },
+      facing: { ...finalFace },
       size: { width: this.opts.panelWidth, height: this.opts.panelHeight },
       selected: false
     });
+    // Поддерживаем nextId выше этого значения, чтобы автогенерация
+    // не пересеклась с явно заданными id.
+    const m = /^p(\d+)$/.exec(id);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (Number.isFinite(n) && n >= this.nextId) this.nextId = n + 1;
+    }
     return id;
   }
 
@@ -142,6 +191,22 @@ export class PanelManager {
     for (const p of this.panels.values()) p.selected = p.id === id;
   }
 
+  /**
+   * Изменить размер панели. Возвращает true, если что-то реально
+   * поменялось (после клампа) — нужно для дебаунса layout-store, чтобы
+   * он не дёргал localStorage из-за попыток сжать панель в ноль.
+   */
+  resize(id: PanelId, width: number, height: number): boolean {
+    const p = this.panels.get(id);
+    if (!p) return false;
+    const w = clamp(width, this.opts.minWidthM, this.opts.maxWidthM);
+    const h = clamp(height, this.opts.minHeightM, this.opts.maxHeightM);
+    if (w === p.size.width && h === p.size.height) return false;
+    p.size.width = w;
+    p.size.height = h;
+    return true;
+  }
+
   list(): PanelState[] {
     return [...this.panels.values()].map((p) => ({
       ...p,
@@ -179,4 +244,10 @@ export class PanelManager {
     if (len < 1e-6) return { x: 0, z: 1 };
     return { x: fx / len, z: fz / len };
   }
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  if (v < lo) return lo;
+  if (v > hi) return hi;
+  return v;
 }

@@ -648,11 +648,16 @@ class TestAvatarSupervisorDoesNotMutateExternalState(unittest.TestCase):
         )
         msg = call.args[0]
         self.assertIsInstance(msg, str)
-        # Сообщение содержит ключевые поля (mode/zenoh/msgpack/typed_services),
-        # которые раньше передавались как отдельные format-args.
+        # Сообщение содержит ключевые поля (mode/zenoh), которые раньше
+        # передавались как отдельные format-args. ``msgpack=…`` убрано в
+        # AV-14 (#1906) — msgpack стал hard dep в ``rob_box_supervisor``,
+        # смёржен на уровне ``core.state``, и эта diagnostics-строка
+        # больше не должна сообщать про его наличие (это уже не поле,
+        # которое варьируется на проде).
         self.assertIn("avatar_supervisor started", msg)
         self.assertIn(f"mode={self.node._mode}", msg)
-        self.assertIn("msgpack=", msg)
+        # ``msgpack=`` намеренно отсутствует — см. комментарий выше.
+        self.assertNotIn("msgpack=", msg)
         self.assertIn("typed_services=", msg)
         # Никаких kwargs %-форматирования быть не должно (kwargs в rclpy
         # info() не поддерживаются и упадут так же, как и >1 args).

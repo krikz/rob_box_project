@@ -48,15 +48,24 @@ dialogue_node:
     # Issue #1601 / ADR-0027 §3.4 — режим захвата голоса. supervisor
     # (ADR-0028 S5, единственная точка смены) переключает во время работы,
     # без рестарта ноды. Допустимые значения: respeaker | quest_passthrough |
-    # quest_ttts | quest_stt | quest_llm_formalize | off (W3-1 — «диалог
-    # off», блокирует ТОЛЬКО ReSpeaker-вход обычных людей; Telegram/Quest
-    # вход оператора продолжает работать, см. dialogue_node.parameters_callback
-    # и §3.5 docs/design/dialogue-mode-spec-2026-08-28.md).
+    # quest_ttts | quest_stt | quest_llm_formalize | quest_command (AV-22,
+    # Issue #1914 — STT → /avatar/command, личность молчит) | off (W3-1 —
+    # «диалог off», блокирует ТОЛЬКО ReSpeaker-вход обычных людей;
+    # Telegram/Quest вход оператора продолжает работать, см.
+    # dialogue_node.parameters_callback и §3.5 docs/design/
+    # dialogue-mode-spec-2026-08-28.md).
     voice_input_mode: respeaker
     # Дополнительные ключи для переопределения оператором:
     # (все имеют default в коде — здесь выставляем «безопасные» значения)
     temperature: 0.7
-    max_tokens: 500
+    # 🔴 3000, а не 500 (02.09.2026). До #1883 (fe35b448) значение из YAML
+    # до провайдера НЕ доезжало, и лимит был провайдерский. После фикса оно
+    # реально уходит в API — и 500 токенов перестало вмещать tool-call:
+    # аргументы execute_music_code / compose_music (код трека, progression,
+    # план сета на 4-8 треков) режутся на finish_reason='length', JSON
+    # приходит битым, ход уходит в корректирующий ретрай. На роботе за один
+    # вечер — 8 срезов подряд (TRUNCATED_TOOL_ARGS, len=616..704).
+    max_tokens: 3000
     agent_max_turns: 20
     enable_mcp_tools: true
     # Issue #1279 — command-intent gate: фразы-команды (NAVIGATE/STOP/STATUS/
