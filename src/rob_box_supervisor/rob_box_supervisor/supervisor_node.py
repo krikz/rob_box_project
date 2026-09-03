@@ -193,6 +193,12 @@ PREVIEW_VOICE_TOPIC: str = "/avatar/preview_voice"
 PREVIEW_VOICE_RESULT_TOPIC: str = "/avatar/preview_voice/result"
 PREVIEW_VOICE_AUDIO_TOPIC: str = "/avatar/preview_voice/audio"
 PREVIEW_VOICE_ERROR_TOPIC: str = "/avatar/preview_voice/error"
+# AV-28 §P7 (issue #1920) — voice style preset / language топики.
+# Симметрично /avatar/set_voice_mode и /avatar/set_voice: payload — String
+# с одним ID (preset|language) без JSON (для скорости и простоты парсинга).
+# Супервизор делает SetParameters на dialogue_node (см. ADR-0028 §S5).
+SET_VOICE_PRESET_TOPIC: str = "/avatar/set_voice_preset"
+SET_VOICE_LANGUAGE_TOPIC: str = "/avatar/set_voice_language"
 # AV-21 (issue #1913) — супервизор-агент «мозг оператора» (ADR-0028 §1.1).
 # Вход: ``/avatar/command`` (std_msgs/String, JSON), выход:
 # ``/avatar/command_result``. Полные JSON-схемы — в
@@ -541,6 +547,12 @@ class AvatarSupervisor(Node):
         # ADR-0028 S5 — супервизор единственный, кто меняет voice_input_mode
         # на dialogue_node. Phase 1 транспорт — топик (см. SET_VOICE_MODE_TOPIC).
         self.create_subscription(RosString, SET_VOICE_MODE_TOPIC, self._on_set_voice_mode, 10)
+        # AV-28 §P7 (issue #1920) — voice style preset / language топики.
+        # Валидируем ID по whitelist (тот же, что в ws_server.py) и выставляем
+        # SetParameters на dialogue_node (voice_preset / voice_output_language).
+        # Без рестарта dialogue_node — параметр подхватывается на следующей фразе.
+        self.create_subscription(RosString, SET_VOICE_PRESET_TOPIC, self._on_set_voice_preset, 10)
+        self.create_subscription(RosString, SET_VOICE_LANGUAGE_TOPIC, self._on_set_voice_language, 10)
         # AV-27 / issue #1919 — set_voice / preview_voice → супервизор.
         # Валидируем voice_id по реестру и выставляем параметр tts_node.
         self.create_subscription(RosString, SET_VOICE_TOPIC, self._on_set_voice, 10)
@@ -1049,6 +1061,62 @@ class AvatarSupervisor(Node):
             self._set_dialogue_param("voice_input_mode", mode)
         except Exception as exc:  # noqa: BLE001 — отказ не должен валить ноду
             self._log.warning(f"SetVoiceMode: failed to set dialogue param: {exc}")
+            return False, f"param_set_failed: {exc}"
+        return True, "applied"
+
+    # ── AV-28 §P7 (issue #1920) — voice style preset + language ─────────
+    # Симметрично ``_on_set_voice_mode``: супервизор единственный, кто
+    # выставляет ``voice_preset``/``voice_output_language`` на ``dialogue_node``
+    # (ADR-0028 §S5). Whitelist тот же, что в ws_server.VOICE_PRESET_IDS/
+    # VOICE_LANGUAGES — но supervisor не импортирует ws_server (цикл),
+    # поэтому держим локальный whitelist и доверяем ws_server'у первый
+    # уровень валидации. В monitor-режиме (S12) принимаем и логируем, но
+    # НЕ применяем.
+
+    _AV28_PRESET_IDS: frozenset[str] = frozenset(
+        {"technical", "street", "caveman", "business", "philosopher", "lenin"}
+    )
+    _AV28_LANGUAGES: frozenset[str] = frozenset({"ru", "en"})
+
+    def _on_set_voice_preset(self, msg: RosString) -> None:
+        """Обработка ``/avatar/set_voice_preset`` — запрос сменить стиль речи."""
+        preset = (msg.data or "").strip()
+        applied, reason = self._apply_voice_preset(preset)
+        self._log.info(f"SetVoicePreset: preset={preset} applied={applied} reason={reason}")
+
+    def _apply_voice_preset(self, preset: str) -> tuple[bool, str]:
+        """Чистая логика применения ``voice_preset`` (тестируется без rclpy)."""
+        if not preset:
+            return False, "empty_voice_preset"
+        if preset not in self._AV28_PRESET_IDS:
+            return False, f"invalid_voice_preset: {preset!r}"
+        if self._mode != "active":
+            return False, MONITOR_MODE_REASON
+        try:
+            self._set_dialogue_param("voice_preset", preset)
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(f"SetVoicePreset: failed to set dialogue param: {exc}")
+            return False, f"param_set_failed: {exc}"
+        return True, "applied"
+
+    def _on_set_voice_language(self, msg: RosString) -> None:
+        """Обработка ``/avatar/set_voice_language`` — запрос сменить язык вывода."""
+        language = (msg.data or "").strip()
+        applied, reason = self._apply_voice_language(language)
+        self._log.info(f"SetVoiceLanguage: language={language} applied={applied} reason={reason}")
+
+    def _apply_voice_language(self, language: str) -> tuple[bool, str]:
+        """Чистая логика применения ``voice_output_language`` (тестируется без rclpy)."""
+        if not language:
+            return False, "empty_voice_language"
+        if language not in self._AV28_LANGUAGES:
+            return False, f"invalid_voice_language: {language!r}"
+        if self._mode != "active":
+            return False, MONITOR_MODE_REASON
+        try:
+            self._set_dialogue_param("voice_output_language", language)
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(f"SetVoiceLanguage: failed to set dialogue param: {exc}")
             return False, f"param_set_failed: {exc}"
         return True, "applied"
 

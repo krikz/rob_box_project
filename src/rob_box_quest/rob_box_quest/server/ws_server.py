@@ -36,6 +36,21 @@ from .session import (
 )
 from .voice_floor import FloorHolder, FloorState, VoiceFloor
 
+# AV-28 §P7 (issue #1920): список допустимых voice-preset ID и языков вывода.
+# Синхронизирован с src/rob_box_voice/config/voice_presets.yaml (PR #1931)
+# и meta-quest-api.md §P7. Сервер не выдумывает — если клиент прислал
+# не-whitelisted preset/language → NACK (UI откатывает optimistic update).
+# Расширение списка = правка YAML + сюда, без правок dialogue_node.
+VOICE_PRESET_IDS: tuple[str, ...] = (
+    "technical",
+    "street",
+    "caveman",
+    "business",
+    "philosopher",
+    "lenin",
+)
+VOICE_LANGUAGES: tuple[str, ...] = ("ru", "en")
+
 # msgpack — payload supervisor-API (0x30..0x33). Импорт ленив: в некоторых
 # dev-env модуль может отсутствовать (как у нас на билд-машине для пары
 # тестов status). Бинарные фреймы с msgpack-payload идут через отдельный
@@ -83,6 +98,23 @@ STATE_UPDATE_KEEPALIVE_S: float = 1.0
 
 
 log = logging.getLogger(__name__)
+
+
+def _validate_voice_set_payload(
+    preset: Optional[str], language: Optional[str]
+) -> Optional[str]:
+    """Whitelist preset/language для AV-28 §P7 (тестируется без rclpy).
+
+    Возвращает ``None`` если payload валиден, иначе строку-причину для
+    ``voice_set_nack.reason``. Оба поля опциональны — пустой payload
+    (ничего не меняем) трактуется как валидный (UI получит ack с ``null``
+    в обеих позициях и mode_manager сохранит предыдущие значения).
+    """
+    if preset is not None and preset not in VOICE_PRESET_IDS:
+        return f"invalid_voice_preset: {preset!r}"
+    if language is not None and language not in VOICE_LANGUAGES:
+        return f"invalid_voice_language: {language!r}"
+    return None
 
 
 class Bridge(Protocol):
@@ -190,6 +222,31 @@ class Bridge(Protocol):
             * ok=False, reason="voice_unavailable"|"tts_unreachable"|..., available=[...]
               — для nack; available заполняется когда валидно провайдер не знает
               запрошенный голос (для UI-подсказки).
+        """
+        ...
+
+    # ── AV-28 §P7 (issue #1920) — voice style preset + language ──────────────
+    # Эти методы отвечают за смену СТИЛЯ речи (technical / street / caveman /
+    # business / philosopher / lenin) и языка вывода на ``dialogue_node``.
+    # ВНИМАНИЕ: «preset» здесь — это стиль речи (style preset), а НЕ
+    # TTS-вариант из ``set_voice(voice_id, preset)`` выше. Контракт
+    # разный: AV-27 «preset» — на стороне tts_node, AV-28 — на стороне
+    # dialogue_node. Никакого пересечения в рантайме.
+    def set_voice_preset(self, preset: str) -> None:
+        """AV-28 §P7: выставить ``voice_preset`` на ``dialogue_node``.
+
+        Публикует запрос в ``/avatar/set_voice_preset``; супервизор
+        делает ``SetParameters(voice_preset=<preset>)`` (ADR-0028 S5).
+        """
+        ...
+
+    def set_voice_language(self, language: str) -> None:
+        """AV-28 §P7: выставить ``voice_output_language`` на ``dialogue_node``.
+
+        Публикует запрос в ``/avatar/set_voice_language``; супервизор
+        делает ``SetParameters(voice_output_language=<language>)``
+        (ADR-0028 S5). Без рестарта dialogue_node — параметр
+        подхватывается на следующей фразе.
         """
         ...
 
@@ -359,6 +416,20 @@ class NoOpBridge:
         # Тестовая среда не публикует ничего; возвращаем nack чтобы WS-тесты
         # видели честный «no-op без моста».
         return False, None, "tts_unreachable", None
+
+    # ── AV-28 §P7 (issue #1920) — voice style stubs (NoOpBridge) ────────────
+    # Симметрично ``set_voice_preset``/``set_voice_language`` в Protocol:
+    # NoOpBridge для unit-тестов ws_server без ROS — ничего не публикует,
+    # но держит сигнатуру, чтобы isinstance(bridge, Bridge) работал.
+    def set_voice_preset(self, preset: str) -> None:
+        # NoOpBridge: см. set_voice_mode ниже — фиксируется в логе для теста.
+        log.debug("NoOpBridge: set_voice_preset preset=%s", preset)
+        return None
+
+    def set_voice_language(self, language: str) -> None:
+        # NoOpBridge: фиксируется в логе для теста.
+        log.debug("NoOpBridge: set_voice_language language=%s", language)
+        return None
 
     def publish_preview_voice(self, request_id: str, voice_id: str, text: str) -> None:
         # NoOpBridge: без ROS-стека preview-синтез невозможен. WS-тесты
@@ -1490,12 +1561,67 @@ class WSSServer:
             )
             return
         if cmd == "set_voice":
+            # ── AV-27 (TTS picker) + AV-28 (style preset + language) ─────
+            # Один cmd обслуживает обе фичи. Диспетчер:
+            # 1) если в payload есть preset ∈ VOICE_PRESET_IDS или
+            #    language ∈ VOICE_LANGUAGES — это AV-28 style/language
+            #    запрос → bridge.set_voice_preset / set_voice_language
+            #    → супервизор → SetParameters на dialogue_node
+            #    (см. ADR-0028 §S5, meta-quest-api.md §P7).
+            # 2) иначе (нет style-preset) — это AV-27 voice_id запрос
+            #    → bridge.set_voice(voice_id, preset) (TTS picker).
+            # Один rate-limit slot «set_voice» шарится между фичами — это
+            # сознательно, чтобы UI не мог flood-ить через разные поля.
             if not self._voice_rate_limit_check(ws, "set_voice", VOICE_SET_MIN_INTERVAL_S):
                 return
             voice_id = payload_obj.get("voice_id")
             preset = payload_obj.get("preset")
+            language = payload_obj.get("language")
+            ts_ms = int(time.time() * 1000)
+            # ── AV-28 §P7: style preset / language flow ────────────────────
+            av28_preset = preset if isinstance(preset, str) else None
+            av28_language = language if isinstance(language, str) else None
+            is_av28_request = av28_preset in VOICE_PRESET_IDS or av28_language in VOICE_LANGUAGES
+            if is_av28_request:
+                nack_reason = _validate_voice_set_payload(
+                    preset=av28_preset, language=av28_language
+                )
+                if nack_reason:
+                    await self._send(
+                        ws,
+                        FrameType.JSON_EVENT,
+                        0,
+                        {
+                            "type": "voice_set_nack",
+                            "preset": av28_preset,
+                            "language": av28_language,
+                            "reason": nack_reason,
+                            "ts_ms": ts_ms,
+                        },
+                    )
+                    return
+                # Применяем: preset → /avatar/set_voice_preset; language →
+                # /avatar/set_voice_language. Супервизор делает SetParameters
+                # на dialogue_node (см. supervisor_node.py _apply_voice_*).
+                if av28_preset is not None:
+                    self.bridge.set_voice_preset(av28_preset)
+                if av28_language is not None:
+                    self.bridge.set_voice_language(av28_language)
+                await self._send(
+                    ws,
+                    FrameType.JSON_EVENT,
+                    0,
+                    {
+                        "type": "voice_set_ack",
+                        "preset": av28_preset,
+                        "language": av28_language,
+                        "ts_ms": ts_ms,
+                    },
+                )
+                return
+            # ── AV-27 / issue #1919: TTS picker flow ───────────────────────
             if not isinstance(voice_id, str) or not voice_id:
-                await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "set_voice: voice_id required")
+                await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "set_voice: voice_id or preset/language required")
                 return
             if preset is not None and not isinstance(preset, str):
                 await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "set_voice: preset must be string")
@@ -1506,7 +1632,7 @@ class WSSServer:
                     "type": "voice_set_nack",
                     "voice_id": voice_id,
                     "reason": reason or "unknown",
-                    "ts_ms": int(time.time() * 1000),
+                    "ts_ms": ts_ms,
                 }
                 if available:
                     err_payload["available"] = available
@@ -1520,7 +1646,7 @@ class WSSServer:
                     "type": "voice_set_ack",
                     "voice_id": applied_voice or voice_id,
                     "preset": preset or "standard",
-                    "ts_ms": int(time.time() * 1000),
+                    "ts_ms": ts_ms,
                 },
             )
             return
