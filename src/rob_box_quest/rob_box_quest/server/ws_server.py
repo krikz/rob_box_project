@@ -105,6 +105,47 @@ class Bridge(Protocol):
         """voice_mode cmd → сменить режим голоса (через супервизор, ADR-0028 S5)."""
         ...
 
+    # ── TTS picker (AV-27 / issue #1919) ─────────────────────────────────
+    # Эти методы вызываются из JSON_CMD-хэндлеров. Контракт:
+    # - list_voices: вернуть (sync) последний кэш /voice/tts/voices + active provider/voice;
+    #   если кэш пуст — значит tts_node ещё ни разу не опубликовал latched-топик
+    #   (см. design t_5b9d5d0c §128-150), отдаём честно пустой список.
+    # - set_voice: синхронная валидация по текущему активному провайдеру (tts_node
+    #   уже держит его в кэше). Если валидно — публикуем запрос в /avatar/set_voice
+    #   и шлём ack; финальное подтверждение (или rollback) придёт через
+    #   /voice/tts/provider_state (republish tts_node на смену параметра).
+    # - preview_voice: публикуем в /avatar/preview_voice — supervisor гонит синтез
+    #   и публикует результат в /avatar/preview_voice/result + /avatar/preview_voice/audio.
+    # См. docs/architecture/tts-picker-ros-path.md.
+    def list_voices_snapshot(self) -> dict[str, Any]:
+        """Sync-снимок кэша: {voices:[VoiceInfo], active_provider, active_voice, ts_ms}.
+
+        QuestBridge сам решает, протух ли кэш (voices_cache_ttl_sec). WS-сервер
+        только форвардит: ни валидации, ни TTL тут нет.
+        """
+        ...
+
+    def set_voice(self, voice_id: str, preset: str | None) -> tuple[bool, str | None, str | None, list[str] | None]:
+        """Sync-валидация + публикация /avatar/set_voice.
+
+        Returns:
+            (ok, applied_voice_id, reason, available)
+            * ok=True, applied_voice_id=voice_id (фактически подтверждённый голос
+              у текущего активного провайдера), reason=None, available=None —
+              нормальный ack;
+            * ok=False, reason="voice_unavailable"|"tts_unreachable"|..., available=[...]
+              — для nack; available заполняется когда валидно провайдер не знает
+              запрошенный голос (для UI-подсказки).
+        """
+        ...
+
+    def publish_preview_voice(self, request_id: str, voice_id: str, text: str) -> None:
+        """Опубликовать запрос на синтез-preview. Ответ придёт асинхронно в
+        /avatar/preview_voice/{audio,result,error} → ws_server биндится на
+        request_id и шлёт клиенту preview_voice_{audio,done,error}.
+        """
+        ...
+
 
 class NoOpBridge:
     """Заглушка для тестов. Реальная реализация в quest_node.py."""
@@ -159,6 +200,30 @@ class NoOpBridge:
         return None
 
     def set_voice_mode(self, mode: str) -> None:
+        return None
+
+    # ── TTS picker stubs (AV-27) ────────────────────────────────────────
+    def list_voices_snapshot(self) -> dict[str, Any]:
+        # NoOpBridge: пустой кэш. UI получает voices_list с voices=[] и
+        # видит «провайдер не отдаёт список голосов» (issue #1919 acceptance).
+        return {
+            "voices": [],
+            "active_provider": "",
+            "active_voice": "",
+            "ts_ms": 0,
+        }
+
+    def set_voice(
+        self, voice_id: str, preset: str | None
+    ) -> tuple[bool, str | None, str | None, list[str] | None]:
+        # Тестовая среда не публикует ничего; возвращаем nack чтобы WS-тесты
+        # видели честный «no-op без моста».
+        return False, None, "tts_unreachable", None
+
+    def publish_preview_voice(self, request_id: str, voice_id: str, text: str) -> None:
+        # NoOpBridge: без ROS-стека preview-синтез невозможен. WS-тесты
+        # проверяют ack/nack через явные вызовы bridge — этот stub только
+        # обеспечивает совместимость сигнатуры.
         return None
 
 
