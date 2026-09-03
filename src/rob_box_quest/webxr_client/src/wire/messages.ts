@@ -90,12 +90,49 @@ export interface ListVoicesCmd {
 }
 
 // Phase 2 §4.3+§4.5: set_voice { voice_id, preset? }. preset ∈ standard|friendly|authoritative|whisper.
-export type VoicePreset = "standard" | "friendly" | "authoritative" | "whisper";
+//
+// AV-28 §P7 (formalize-режим): preset теперь ссылается на стиль речи
+// (technical/street/caveman/business/philosopher/lenin) из
+// src/rob_box_voice/config/voice_presets.yaml. Сервер мапит его на
+// конкретный промпт dialogue_node. Чтобы не ломать старый контракт
+// "standard|friendly|...", принимаемый сервером, расширяем тип через
+// литеральный union (полный список) — TS-strict его примет.
+export type VoicePresetLegacy = "standard" | "friendly" | "authoritative" | "whisper";
+/** AV-28 §P7: ID пресета стиля речи (voice_presets.yaml: presets.<id>). */
+export type VoicePresetId =
+  | "technical"
+  | "street"
+  | "caveman"
+  | "business"
+  | "philosopher"
+  | "lenin";
+/** Совместный тип — клиент шлёт либо старый, либо новый ID. */
+export type VoicePreset = VoicePresetLegacy | VoicePresetId;
+/** AV-28 §P7: ID языка из voice_presets.yaml: languages[]. */
+export type VoiceLanguage = "ru" | "en";
+
 export interface SetVoiceCmd {
   cmd: "set_voice";
   ts_ms: number;
   voice_id: string;
   preset?: VoicePreset;
+  /**
+   * AV-28 §P7: желаемый язык вывода. Сервер применяет его как
+   * voice_output_language на dialogue_node. Если поле отсутствует,
+   * сервер берёт default_language из voice_presets.yaml.
+   */
+  language?: VoiceLanguage;
+}
+
+/**
+ * AV-28 §P7: контракт-описание пресета (UI рисует кнопки из этого списка).
+ * Сервер шлёт его в JSON_EVENT{type:"voice_presets"} либо как часть
+ * voice_list.voices[].presets[] (см. VoiceInfo).
+ */
+export interface VoicePresetInfo {
+  id: VoicePresetId;
+  /** Локализованное имя для UI (русский). */
+  name: string;
 }
 
 // Phase 2 §4.2: preview_voice { voice_id, text } → сервер шлёт audio bytes обратно
@@ -153,8 +190,29 @@ export type JsonEvent =
   | { type: "stream_list"; items: Array<Record<string, unknown>>; ts_ms: number }
   | { type: "stream_select_ack"; topic: string; stream_id: number | null; kind?: string }
   | { type: "voice_list"; voices: VoiceInfo[]; ts_ms: number }
-  | { type: "voice_set_ack"; voice_id: string; preset: VoicePreset; ts_ms: number }
-  | { type: "voice_set_nack"; voice_id?: string; reason: string; ts_ms: number }
+  | {
+      type: "voice_presets";
+      presets: VoicePresetInfo[];
+      languages: VoiceLanguage[];
+      default_preset: VoicePresetId;
+      default_language: VoiceLanguage;
+      ts_ms: number;
+    }
+  | {
+      type: "voice_set_ack";
+      voice_id: string;
+      preset: VoicePreset;
+      language: VoiceLanguage;
+      ts_ms: number;
+    }
+  | {
+      type: "voice_set_nack";
+      voice_id?: string;
+      preset?: VoicePreset;
+      language?: VoiceLanguage;
+      reason: string;
+      ts_ms: number;
+    }
   | {
       type: "preview_voice_audio";
       request_id: string;

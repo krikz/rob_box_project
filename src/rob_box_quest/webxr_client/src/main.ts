@@ -31,7 +31,17 @@ import {
   type DisconnectWatchdog
 } from "./ui/error_overlay";
 import { createHelpOverlay, type HelpOverlay } from "./ui/help_overlay";
-import { createModeManager, type ClientModeManager } from "./ui/mode_manager";
+import {
+  createModeManager,
+  type ClientModeManager,
+  type ClientModeDefaults
+} from "./ui/mode_manager";
+import { createVoicePresetsPanel, type VoicePresetsPanel } from "./ui/voice_presets_panel";
+import type {
+  VoiceLanguage,
+  VoicePresetId,
+  VoicePresetInfo
+} from "./wire/messages";
 import { createToast, type Toast } from "./ui/toast";
 import { supervisorEffect, type FloorLabel, type SupervisorState } from "./state/supervisor_state";
 
@@ -41,6 +51,21 @@ const CLIENT_VERSION = "0.1.0";
 // показывает строку «SUPERVISOR: v1 (no coordination)». См.
 // docs/architecture/meta-quest-api.md §11 + docs/adr/0028 §4.4.
 const SUBPROTOCOL = "robbox-quest-v2";
+
+// AV-28 §P7: дефолты UI до ответа сервера. Должны совпадать с
+// default_preset / default_language в voice_presets.yaml.
+const DEFAULT_VOICE_PRESET: VoicePresetId = "technical";
+const DEFAULT_VOICE_LANGUAGE: VoiceLanguage = "ru";
+// Fallback-список пресетов до ответа сервера (см. voice_presets.yaml).
+// Если сервер пришлёт свой voice_presets event — этот список заменится.
+const FALLBACK_PRESETS: VoicePresetInfo[] = [
+  { id: "technical", name: "Технический" },
+  { id: "street", name: "По понятиям" },
+  { id: "caveman", name: "Пещерный" },
+  { id: "business", name: "Деловой" },
+  { id: "philosopher", name: "Философ" },
+  { id: "lenin", name: "Ленин" }
+];
 
 // Не-видео стримы. Список видео-топиков берём у сцены (`videoTopics()`),
 // чтобы подписка не разъезжалась с тем, что она реально умеет показать.
@@ -69,7 +94,12 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   const loading = createLoadingScreen(opts.body, "Loading environment…");
   const errorOverlay: ErrorOverlay = createErrorOverlay(opts.body);
   const help: HelpOverlay = createHelpOverlay(opts.body);
-  const modeManager: ClientModeManager = createModeManager();
+  // AV-28 §P7: defaults UI = voice_presets.yaml default_preset / default_language.
+  const voiceDefaults: ClientModeDefaults = {
+    preset: DEFAULT_VOICE_PRESET,
+    language: DEFAULT_VOICE_LANGUAGE
+  };
+  const modeManager: ClientModeManager = createModeManager(undefined, voiceDefaults);
   const watchdog: DisconnectWatchdog = createDisconnectWatchdog(errorOverlay);
   // AV-17: короткие уведомления о supervisor-событиях (потерял руль,
   // floor занят другим клиентом). Создаём сразу, чтобы не пропустить
@@ -80,6 +110,56 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   const alertToast = createAlertToast({
     parent: opts.body,
     errorOverlay
+  });
+
+  // Панель выбора пресета/языка (AV-28 §P7). До ответа сервера показывает
+  // fallback-список и дефолтную подсветку; setLoading(true) отключает
+  // кнопки. TODO: когда AV-18-якорь в 3D-сцене будет готов (R12 из
+  // task-graph), переместить эту панель в 3D-HUD; сейчас — DOM-overlay
+  // в нижнем-левом углу, проецируется в VR рядом с левым грипом.
+  const voicePanel: VoicePresetsPanel = createVoicePresetsPanel(opts.body, {
+    presets: FALLBACK_PRESETS,
+    languages: [DEFAULT_VOICE_LANGUAGE, "en"],
+    currentPreset: DEFAULT_VOICE_PRESET,
+    currentLanguage: DEFAULT_VOICE_LANGUAGE,
+    loading: true,
+    onPresetChange: (preset) => {
+      const c = conn;
+      if (!c || disconnected) return;
+      // Запоминаем желание → mode_manager уже синхронизирован panel'ом;
+      // шлём на сервер. ACK подтвердит, NACK откатит.
+      try {
+        c.send({
+          cmd: "set_voice",
+          ts_ms: Date.now(),
+          voice_id: modeManager.snapshot().currentVoice ?? "",
+          preset,
+          language: modeManager.snapshot().currentLanguage ?? DEFAULT_VOICE_LANGUAGE
+        });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn("[quest] set_voice send failed:", err);
+        // Откатываем UI к последнему известному состоянию.
+        voicePanel.setCurrentPreset(modeManager.snapshot().currentPreset);
+      }
+    },
+    onLanguageChange: (language) => {
+      const c = conn;
+      if (!c || disconnected) return;
+      try {
+        c.send({
+          cmd: "set_voice",
+          ts_ms: Date.now(),
+          voice_id: modeManager.snapshot().currentVoice ?? "",
+          preset: modeManager.snapshot().currentPreset ?? DEFAULT_VOICE_PRESET,
+          language
+        });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn("[quest] set_voice send failed:", err);
+        voicePanel.setCurrentLanguage(modeManager.snapshot().currentLanguage);
+      }
+    }
   });
 
   // HUD: подключаем help-toggle кнопку (если есть) к help overlay.
@@ -284,6 +364,10 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             }
             // Каталог стримов → меню выбора на панелях (R10).
             conn!.requestStreamList();
+            // AV-28 §P7: запросить список голосов для панели пресетов.
+            // Сервер ответит JSON_EVENT{type:"voice_list"} (voice_id+display_name)
+            // и/или {type:"voice_presets"} (список пресетов+языков+дефолты).
+            conn!.send({ cmd: "list_voices", ts_ms: Date.now() });
             opts.pinOverlay.classList.add("pin-overlay--hidden");
           } else if (state === "auth_failed") {
             setStatus("WRONG PIN", "lost");
@@ -393,6 +477,65 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
           toast.show(text, { level: "warn", autoHideMs: 5000 });
         },
         onJsonEvent: (event) => {
+          // AV-28 §P7: voice_presets / voice_set_ack / voice_set_nack.
+          // Свои типы событий, дальше по функции их уже не ждут.
+          const type = (event as { type?: string }).type;
+          if (type === "voice_presets" || type === "voice_set_ack" || type === "voice_set_nack") {
+          const type = (event as { type?: string }).type;
+          if (type === "voice_presets") {
+            // Сервер прислал канонический список пресетов + дефолты
+            // (AV-28 §P7). Заменяем fallback-список на серверный.
+            const p = event as {
+              presets?: VoicePresetInfo[];
+              languages?: VoiceLanguage[];
+              default_preset?: VoicePresetId;
+              default_language?: VoiceLanguage;
+            };
+            if (Array.isArray(p.presets) && p.presets.length > 0) {
+              voicePanel.setPresets(p.presets);
+            }
+            if (Array.isArray(p.languages) && p.languages.length > 0) {
+              voicePanel.setLanguages(p.languages);
+            }
+            // Дефолт сервера имеет приоритет над локальным fallback.
+            const srvPreset =
+              p.default_preset ?? modeManager.snapshot().currentPreset;
+            const srvLang =
+              p.default_language ?? modeManager.snapshot().currentLanguage;
+            if (srvPreset) {
+              voicePanel.setCurrentPreset(srvPreset);
+              modeManager.setCurrentPreset(srvPreset);
+            }
+            if (srvLang) {
+              voicePanel.setCurrentLanguage(srvLang);
+              modeManager.setCurrentLanguage(srvLang);
+            }
+            voicePanel.setLoading(false);
+          } else if (type === "voice_set_ack") {
+            const ack = event as {
+              voice_id?: string;
+              preset?: VoicePresetId;
+              language?: VoiceLanguage;
+            };
+            if (ack.voice_id) modeManager.setCurrentVoice(ack.voice_id);
+            if (ack.preset) modeManager.setCurrentPreset(ack.preset);
+            if (ack.language) modeManager.setCurrentLanguage(ack.language);
+          } else if (type === "voice_set_nack") {
+            // Сервер отказал — откатываем UI и mode_manager к последнему
+            // известному «хорошему» значению из snapshot.
+            const nack = event as { reason?: string };
+            // eslint-disable-next-line no-console
+            console.warn("[quest] voice_set_nack:", nack.reason ?? "(no reason)");
+            const snap = modeManager.snapshot();
+            voicePanel.setCurrentPreset(snap.currentPreset);
+            voicePanel.setCurrentLanguage(snap.currentLanguage);
+            errorOverlay.show(
+              "Не удалось сменить голос",
+              nack.reason ?? "Сервер отклонил запрос"
+            );
+            }
+            return;
+          }
           // AV-19: JSON_EVENT{type:"floor_lost"} → мгновенный DISARM.
           if ((event as { type?: string }).type === "floor_lost") {
             fsm.setHasFloor(false);
@@ -692,6 +835,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       errorOverlay.dispose();
       help.dispose();
       watchdog.dispose();
+      voicePanel.dispose();
       alertToast.dispose();
     }
   };

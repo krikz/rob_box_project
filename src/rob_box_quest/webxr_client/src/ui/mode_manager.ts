@@ -16,10 +16,12 @@
 //   mm.setCurrentVoice("alena");
 //   mm.currentPreset();                  // → VoicePreset | null
 //   mm.setPreset("friendly");
+//   mm.currentLanguage();                // → VoiceLanguage | null
+//   mm.setLanguage("ru");
 //
 // Подписки — observer pattern, listener'ы вызываются синхронно.
 
-import type { VoicePreset } from "../wire/messages";
+import type { VoicePreset, VoiceLanguage, VoicePresetId } from "../wire/messages";
 
 export type ClientVoiceMode = "off" | "radio" | "robot_voice";
 export type ClientTeleopState = "disarmed" | "armed";
@@ -29,6 +31,17 @@ export interface ClientModeSnapshot {
   teleopState: ClientTeleopState;
   currentVoice: string | null;
   currentPreset: VoicePreset | null;
+  currentLanguage: VoiceLanguage | null;
+}
+
+/**
+ * AV-28 §P7: дефолтные значения UI (отображаются до того, как сервер
+ * ответит списком пресетов). Совпадают с default_preset /
+ * default_language в src/rob_box_voice/config/voice_presets.yaml.
+ */
+export interface ClientModeDefaults {
+  preset?: VoicePresetId;
+  language?: VoiceLanguage;
 }
 
 export type ModeListener = (snap: ClientModeSnapshot) => void;
@@ -38,6 +51,7 @@ export interface ClientModeManager {
   setTeleopState(state: ClientTeleopState): void;
   setCurrentVoice(voiceId: string | null): void;
   setCurrentPreset(preset: VoicePreset | null): void;
+  setCurrentLanguage(language: VoiceLanguage | null): void;
   /** Записать факт WELCOME / STATE_UPDATE от сервера. */
   snapshot(): ClientModeSnapshot;
   /** Подписаться на изменения. Возвращает unsubscribe. */
@@ -50,11 +64,24 @@ const DEFAULT_SNAPSHOT: ClientModeSnapshot = Object.freeze({
   voiceMode: "off",
   teleopState: "disarmed",
   currentVoice: null,
-  currentPreset: null
+  currentPreset: null,
+  currentLanguage: null
 });
 
-export function createModeManager(initial?: Partial<ClientModeSnapshot>): ClientModeManager {
-  let snap: ClientModeSnapshot = { ...DEFAULT_SNAPSHOT, ...initial };
+export function createModeManager(
+  initial?: Partial<ClientModeSnapshot>,
+  defaults?: ClientModeDefaults
+): ClientModeManager {
+  // Дефолтный snapshot собирается из defaults (если переданы) — это
+  // позволяет UI до ответа сервера показать корректно подсвеченные
+  // кнопки (technical + ru, как в voice_presets.yaml).
+  const initialSnapshot: ClientModeSnapshot = {
+    ...DEFAULT_SNAPSHOT,
+    ...(defaults?.preset ? { currentPreset: defaults.preset } : {}),
+    ...(defaults?.language ? { currentLanguage: defaults.language } : {}),
+    ...initial
+  };
+  let snap: ClientModeSnapshot = initialSnapshot;
   const listeners = new Set<ModeListener>();
 
   function emit(prev: ClientModeSnapshot): void {
@@ -98,7 +125,14 @@ export function createModeManager(initial?: Partial<ClientModeSnapshot>): Client
     emit(prev);
   }
 
-  function snapshot(): ClientModeSnapshot {
+  function setCurrentLanguage(language: VoiceLanguage | null): void {
+    if (snap.currentLanguage === language) return;
+    const prev = snap;
+    snap = { ...snap, currentLanguage: language };
+    emit(prev);
+  }
+
+  function getSnapshot(): ClientModeSnapshot {
     return { ...snap };
   }
 
@@ -111,7 +145,7 @@ export function createModeManager(initial?: Partial<ClientModeSnapshot>): Client
 
   function reset(): void {
     const prev = snap;
-    snap = { ...DEFAULT_SNAPSHOT };
+    snap = { ...initialSnapshot };
     emit(prev);
   }
 
@@ -120,7 +154,8 @@ export function createModeManager(initial?: Partial<ClientModeSnapshot>): Client
     setTeleopState,
     setCurrentVoice,
     setCurrentPreset,
-    snapshot,
+    setCurrentLanguage,
+    snapshot: getSnapshot,
     on,
     reset
   };
