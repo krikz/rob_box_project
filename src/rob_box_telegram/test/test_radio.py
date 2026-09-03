@@ -38,6 +38,8 @@ _PKG_PARENT = _THIS_DIR.parent
 if str(_PKG_PARENT) not in sys.path:
     sys.path.insert(0, str(_PKG_PARENT))
 
+import shutil
+
 from rob_box_telegram.radio import (  # noqa: E402
     CHUNK_REALTIME_S,
     DEFAULT_CHUNK_MS,
@@ -52,6 +54,10 @@ from rob_box_telegram.supervisor_client import AcquireResult, Floor, SupervisorC
 
 FIXTURES_DIR = _THIS_DIR / "fixtures"
 VALID_OGG = FIXTURES_DIR / "voice_2s_440hz_opus.ogg"
+
+# Большинство тестов требует ffmpeg (транскод). В CI без ffmpeg —
+# пропускаем чисто (раньше были красные CI из-за окружения).
+FFMPEG_AVAILABLE = shutil.which("ffmpeg") is not None
 
 
 def _fake_pcm_bytes(duration_ms: int, fill: int = 0) -> bytes:
@@ -87,7 +93,8 @@ def _make_supervisor(mode: str = "monitor") -> SupervisorClient:
     )
 
 
-@unittest.skipUnless(VALID_OGG.exists(), f"fixture missing: {VALID_OGG}")
+@unittest.skipUnless(VALID_OGG.exists() and FFMPEG_AVAILABLE,
+                         f"fixture/ffmpeg missing: {VALID_OGG} / ffmpeg={FFMPEG_AVAILABLE}")
 class TestRadioPublisherHappyPath(unittest.IsolatedAsyncioTestCase):
     """Успешный путь: OGG → PCM → чанки в /avatar/voice_in."""
 
@@ -159,7 +166,11 @@ class TestRadioPublisherHappyPath(unittest.IsolatedAsyncioTestCase):
 
 
 class TestRadioPublisherRejections(unittest.IsolatedAsyncioTestCase):
-    """Негативные пути: файл слишком большой / длинный / битый / floor занят."""
+    """Негативные пути: файл слишком большой / длинный / битый / floor занят.
+
+    Некоторые тесты (too_long, transcode, floor) требуют ffmpeg и валидную
+    фикстуру — мы проверяем в начале каждого такого теста.
+    """
 
     async def asyncSetUp(self) -> None:
         self.supervisor = _make_supervisor()
@@ -189,6 +200,8 @@ class TestRadioPublisherRejections(unittest.IsolatedAsyncioTestCase):
         Чтобы попасть на эту ветку, надо чтобы файл прошёл size-check
         (≤ 5 МБ), но при транскоде дал PCM длиннее лимита.
         """
+        if not FFMPEG_AVAILABLE or not VALID_OGG.exists():
+            self.skipTest("нужны ffmpeg и валидная OGG-фикстура")
         # Отдельный радио с большим max_bytes и маленьким max_duration_s.
         radio = RadioPublisher(
             self.node,
@@ -196,8 +209,6 @@ class TestRadioPublisherRejections(unittest.IsolatedAsyncioTestCase):
             max_duration_s=1.0,  # 1 секунда
             max_bytes=5 * 1024 * 1024,
         )
-        if not VALID_OGG.exists():
-            self.skipTest("OGG fixture missing")
         # 2-секундный OGG → ~2 секунды PCM > 1 секунда лимита
         result = await radio.publish_radio(chat_id=42, ogg_bytes=VALID_OGG.read_bytes())
         self.assertFalse(result.ok)
@@ -206,6 +217,8 @@ class TestRadioPublisherRejections(unittest.IsolatedAsyncioTestCase):
 
     async def test_garbage_bytes_rejected_as_transcode_error(self):
         """Битый OGG → REASON_TRANSCODE, чанки НЕ публикуются, нода жива."""
+        if not FFMPEG_AVAILABLE:
+            self.skipTest("ffmpeg не установлен")
         # 100 байт мусора (меньше max_bytes=128) — должно дойти до транскода.
         result = await self.radio.publish_radio(chat_id=42, ogg_bytes=b"x" * 100 + b"\xff\xff\xff")
         self.assertFalse(result.ok)
@@ -219,6 +232,8 @@ class TestRadioPublisherRejections(unittest.IsolatedAsyncioTestCase):
         Чтобы дойти до floor-check, нужен валидный OGG и достаточно
         большие max_bytes / max_duration_s. Поднимаем их в этой рации.
         """
+        if not FFMPEG_AVAILABLE or not VALID_OGG.exists():
+            self.skipTest("нужны ffmpeg и валидная OGG-фикстура")
         radio = RadioPublisher(
             self.node,
             chunk_ms=DEFAULT_CHUNK_MS,
@@ -226,8 +241,6 @@ class TestRadioPublisherRejections(unittest.IsolatedAsyncioTestCase):
             max_bytes=5 * 1024 * 1024,
         )
         self.supervisor.set_test_mode("always_deny")
-        if not VALID_OGG.exists():
-            self.skipTest("OGG fixture missing")
         result = await radio.publish_radio(
             chat_id=42,
             ogg_bytes=VALID_OGG.read_bytes(),
@@ -240,18 +253,12 @@ class TestRadioPublisherRejections(unittest.IsolatedAsyncioTestCase):
     async def test_no_supervisor_node_returns_no_supervisor(self):
         """Узел без supervisor client → REASON_NO_SUPERVISOR, без падения.
 
-        Чтобы попасть на эту ветку, надо пройти size-check и duration-check
-        и транскод — падать только на supervisor. Для этого:
-        * max_bytes > len(valid OGG)
-        * max_duration_s < duration PCM (чтобы получить TOO_LONG до супервизора)
-        * нет — лучше пройти TOO_LONG+transcode+через супервизора, но
-          без супервизора. Самый чистый путь — подсунуть валидный OGG
-          с ОЧЕНЬ маленьким max_duration_s=0 (PCM > 0 мс → TOO_LONG
-          раньше supervisor) — нет, тогда тоже мимо. Тогда лучший
-          путь — реальный валидный OGG + большие лимиты + supervisor=None,
-          но тогда первое же что проверяется после транскода это
-          supervisor. Делаем так.
+        Требует валидный OGG + ffmpeg (чтобы пройти size/duration и дойти
+        до supervisor-check). Большие лимиты — чтобы duration_check тоже
+        прошёл.
         """
+        if not FFMPEG_AVAILABLE or not VALID_OGG.exists():
+            self.skipTest("нужны ffmpeg и валидная OGG-фикстура")
         node = _StubNode(supervisor=_make_supervisor())
         node.supervisor = None  # type: ignore[assignment]
         radio = RadioPublisher(
@@ -260,13 +267,13 @@ class TestRadioPublisherRejections(unittest.IsolatedAsyncioTestCase):
             max_duration_s=30.0,
             max_bytes=5 * 1024 * 1024,
         )
-        if not VALID_OGG.exists():
-            self.skipTest("OGG fixture missing")
         result = await radio.publish_radio(chat_id=42, ogg_bytes=VALID_OGG.read_bytes())
         self.assertFalse(result.ok)
         self.assertEqual(result.reason, RadioResult.REASON_NO_SUPERVISOR)
 
 
+@unittest.skipUnless(VALID_OGG.exists() and FFMPEG_AVAILABLE,
+                         f"fixture/ffmpeg missing: {VALID_OGG} / ffmpeg={FFMPEG_AVAILABLE}")
 class TestRadioPublisherPerChatLock(unittest.IsolatedAsyncioTestCase):
     """Per-chat lock: один чат — последовательно; разные чаты — параллельно."""
 
