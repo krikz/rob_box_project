@@ -130,6 +130,15 @@ fi
 HERMES_HOME=/home/builder/.hermes
 HERMES_BIN="${HERMES_BIN:-/home/builder/.hermes/hermes-agent/venv/bin/hermes}"
 export HOME=/home/builder
+# Retro 03.09 t_a2ce09f8 (issue #1973): cron per-profile sets HOME to
+# sandbox-profile-home (e.g. $HERMES_HOME/profiles/architect/home), and
+# gh auth status fails 3 times in a row ("not logged into any GitHub hosts")
+# because the sandbox-HOME has no valid ~/.config/gh/hosts.yml — the
+# hosts.yml with oauth_token lives in the real /home/builder/.config/gh/.
+# Force GH_CONFIG_DIR to the canonical shared config.
+# merge-gate shares the same issue (same `gh` binary); patch is there too.
+GH_CONFIG_DIR="${GH_CONFIG_DIR:-/home/builder/.config/gh}"
+export GH_CONFIG_DIR
 
 ISSUE_LABEL="${ISSUE_LABEL:-hermes}"
 NEEDS_E2E_LABEL="${NEEDS_E2E_LABEL:-needs-e2e}"
