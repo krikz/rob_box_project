@@ -38,7 +38,7 @@ const SUBPROTOCOL = "robbox-quest-v1";
 
 // Не-видео стримы. Список видео-топиков берём у сцены (`videoTopics()`),
 // чтобы подписка не разъезжалась с тем, что она реально умеет показать.
-const NON_VIDEO_TOPICS = ["lidar_2d", "robot_status"];
+const NON_VIDEO_TOPICS = ["lidar_2d", "robot_status", "voice_state"];
 
 interface BootstrapOptions {
   url?: string;
@@ -241,6 +241,12 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
           }
           if (topic === "robot_status") {
             bridge.setRobotStatus(parseRobotStatus(payload));
+            return;
+          }
+          if (topic === "voice_state") {
+            // AV-20: voice_state (0x1202) → центральный HUD-индикатор.
+            // Парсинг внутри bridge.setVoiceState — битый payload не падает.
+            bridge.setVoiceState(payload);
             return;
           }
           // Видео: экран-стена и боковые панели (Wave 3.A).
