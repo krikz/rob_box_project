@@ -65,6 +65,46 @@ DEFAULT_VOICES: dict[str, str] = {
     "silero": "aidar",
 }
 
+# AV-27 / issue #1919 — метаданные голосов для wire payload
+# (VoiceInfo в messages.ts:125-133). ``voice_id`` — ключ в PROVIDER_VOICES,
+# всё остальное — обогащение для отображения в UI Quest voice-picker.
+# Хранится ТАМ ЖЕ где PROVIDER_VOICES (один источник правды): при удалении
+# voice_id из PROVIDER_VOICES запись станет висячей — ниже в
+# ``voice_info_for`` есть явная проверка. Сознательно нет поля ``description``
+# (UI берёт display_name, ``description`` остаётся зарезервирован под
+# MCP-tool провайдерские метаданные в следующих карточках).
+VOICE_METADATA: dict[str, "VoiceInfo"] = {
+    # Yandex SpeechKit v3 (gRPC) — стандартные голоса API v3.
+    "yandex:anton":           {"display_name": "Антон",  "language": "ru-RU", "gender": "male",   "presets": ["standard", "friendly"]},
+    "yandex:alena":           {"display_name": "Алёна",  "language": "ru-RU", "gender": "female", "presets": ["standard", "friendly"]},
+    "yandex:filipp":          {"display_name": "Филипп", "language": "ru-RU", "gender": "male",   "presets": ["standard", "authoritative"]},
+    "yandex:jane":            {"display_name": "Джейн",  "language": "ru-RU", "gender": "female", "presets": ["standard", "friendly"]},
+    "yandex:omazh":           {"display_name": "Омаж",   "language": "ru-RU", "gender": "neutral", "presets": ["standard"]},
+    "yandex:zahar":           {"display_name": "Захар",  "language": "ru-RU", "gender": "male",   "presets": ["standard", "authoritative"]},
+    "yandex:ermil":           {"display_name": "Ермил",  "language": "ru-RU", "gender": "male",   "presets": ["standard"]},
+    "yandex:madirus":         {"display_name": "Мадирус","language": "ru-RU", "gender": "male",   "presets": ["standard", "whisper"]},
+    "yandex:arina":           {"display_name": "Арина",  "language": "ru-RU", "gender": "female", "presets": ["standard", "friendly"]},
+    "yandex:kostya":          {"display_name": "Костя",  "language": "ru-RU", "gender": "male",   "presets": ["standard"]},
+    "yandex:rush":            {"display_name": "Раш",    "language": "ru-RU", "gender": "neutral", "presets": ["standard"]},
+    # MiniMax T2A v2 — каталог FAQ 20.08.2026 (male_qn/female_shaonv — legacy).
+    "minimax:Russian_ReliableMan":         {"display_name": "Надёжный мужчина",     "language": "ru-RU", "gender": "male",   "presets": ["standard", "authoritative"]},
+    "minimax:Russian_HandsomeChildhoodFriend":{"display_name": "Красивый друг детства", "language": "ru-RU", "gender": "male", "presets": ["standard", "friendly"]},
+    "minimax:Russian_AttractiveGuy":       {"display_name": "Привлекательный парень", "language": "ru-RU", "gender": "male", "presets": ["standard", "friendly"]},
+    "minimax:Russian_Bad-temperedBoy":     {"display_name": "Вспыльчивый парень",   "language": "ru-RU", "gender": "male",   "presets": ["authoritative", "standard"]},
+    "minimax:Russian_BrightHeroine":       {"display_name": "Яркая героиня",         "language": "ru-RU", "gender": "female", "presets": ["standard", "friendly"]},
+    "minimax:Russian_AmbitiousWoman":      {"display_name": "Амбициозная женщина",   "language": "ru-RU", "gender": "female", "presets": ["standard", "authoritative"]},
+    "minimax:Russian_CrazyQueen":          {"display_name": "Безумная королева",     "language": "ru-RU", "gender": "female", "presets": ["authoritative"]},
+    "minimax:Russian_PessimisticGirl":     {"display_name": "Пессимистичная девушка","language": "ru-RU", "gender": "female", "presets": ["whisper", "standard"]},
+    "minimax:male-qn-qingse":              {"display_name": "Qingse (legacy)",       "language": "zh-CN", "gender": "male",   "presets": ["standard"]},
+    "minimax:female-shaonv":               {"display_name": "Shaonv (legacy)",       "language": "zh-CN", "gender": "female", "presets": ["standard"]},
+    # Silero v5 — speaker id (aidar/baya/kseniya/xenia/eugene).
+    "silero:aidar":   {"display_name": "Айдар (мужской)",     "language": "ru-RU", "gender": "male",   "presets": ["standard", "authoritative"]},
+    "silero:baya":    {"display_name": "Бая (женский)",       "language": "ru-RU", "gender": "female", "presets": ["standard", "friendly"]},
+    "silero:kseniya": {"display_name": "Ксения",              "language": "ru-RU", "gender": "female", "presets": ["standard", "friendly"]},
+    "silero:xenia":   {"display_name": "Ксения (v5)",         "language": "ru-RU", "gender": "female", "presets": ["standard", "friendly"]},
+    "silero:eugene":  {"display_name": "Евгений (v5)",        "language": "ru-RU", "gender": "male",   "presets": ["standard", "authoritative"]},
+}
+
 
 def voices_for(provider: str) -> list[str]:
     """Список голосов провайдера (пустой список для неизвестного)."""
@@ -74,6 +114,53 @@ def voices_for(provider: str) -> list[str]:
 def default_voice_for(provider: str) -> str:
     """Дефолтный голос провайдера; для неизвестного — пустая строка."""
     return DEFAULT_VOICES.get(provider, "")
+
+
+def voice_info_for(provider: str, voice_id: str) -> "VoiceInfo | None":
+    """Wire-payload ``VoiceInfo`` (meta-quest-api.md §4.1) для одного голоса.
+
+    Возвращает ``None`` если voice_id не в каталоге провайдера. Используется
+    и для UI-валидации set_voice (``voices_for(provider)`` для unknown
+    даст nack), и для публикации /voice/tts/voices из tts_node.
+
+    Условие «voice_id знает провайдер» двойное: id обязан быть и в
+    ``PROVIDER_VOICES[provider]`` (SoT списка голосов), и в ``VOICE_METADATA``
+    (обогащение). Если id есть в PROVIDER_VOICES но нет в метаданных —
+    fallback в display_name=voice_id, language="ru-RU", gender="neutral",
+    presets=[] (UI не сломается, но лучше так не оставлять — добавление
+    записи в VOICE_METADATA лучше).
+    """
+    voices = voices_for(provider)
+    if voice_id not in voices:
+        return None
+    meta = VOICE_METADATA.get(f"{provider}:{voice_id}")
+    if meta is None:
+        return {
+            "voice_id": voice_id,
+            "display_name": voice_id,
+            "language": "ru-RU",
+            "gender": "neutral",
+            "presets": [],
+        }
+    out = {"voice_id": voice_id, **meta}
+    return out
+
+
+def voices_info_for(provider: str) -> list["VoiceInfo"]:
+    """Полный список VoiceInfo для провайдера (для wire payload).
+
+    Возвращает ``[]`` если провайдер не знает ни одного голоса — это
+    ЧЕСТНЫЙ пустой список, который UI отрисует как «провайдер не отдаёт
+    список голосов» (issue #1919 acceptance, design t_5b9d5d0c §52-87).
+    Никаких хардкод-fallback'ов в вызывающем коде.
+    """
+    return [info for vid in voices_for(provider) if (info := voice_info_for(provider, vid)) is not None]
+
+
+# Late-import типа для typing-аннотаций (Python 3.11+ позволяет from __future__
+# import annotations, поэтому runtime-импорта VOICE_INFO_FIELDS не нужно —
+# только type-checker'у).
+VoiceInfo = dict  # noqa: E305 — зарезервировано под TypedDict в следующих карточках.
 
 
 def resolve_voice(provider: str, requested: str | None) -> tuple[str, bool]:
