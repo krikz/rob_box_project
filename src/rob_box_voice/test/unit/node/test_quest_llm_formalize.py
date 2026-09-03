@@ -140,12 +140,16 @@ def _write_minimal_yaml(tmpdir: Path, *, with_prompts: bool = True) -> str:
     """
     prompt_dir = tmpdir / "presets"
     prompt_dir.mkdir(parents=True, exist_ok=True)
-    prompt_path = prompt_dir / "technical.txt"
     if with_prompts:
-        prompt_path.write_text(
-            "===RU===\nRU prompt\n===EN===\nEN prompt\n",
-            encoding="utf-8",
-        )
+        # Файлы для ОБОИХ пресетов из yaml ниже. Раньше писался только
+        # technical.txt, а test_loads_yaml_and_prompts проверяет
+        # prompt_text у обоих — lenin честно приходил пустым, и тест
+        # падал на assert "===RU===" in "".
+        for _key in ("technical", "lenin"):
+            (prompt_dir / f"{_key}.txt").write_text(
+                "===RU===\nRU prompt\n===EN===\nEN prompt\n",
+                encoding="utf-8",
+            )
     yaml_path = tmpdir / "voice_presets.yaml"
     yaml_path.write_text(
         yaml.safe_dump(
