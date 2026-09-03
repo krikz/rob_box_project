@@ -26,6 +26,13 @@ class FrameType(IntEnum):
     # Рация (voice passthrough): голос оператора (client→server), payload = raw int16 PCM 16 kHz mono (D2).
     VOICE_AUDIO = 0x13
     GOODBYE = 0x20
+    # === Supervisor API (subprotocol `robbox-quest-v2`, docs §3/§5.1/§11) ===
+    # Все payload — msgpack, не JSON. v1-клиент шлёт 0x30..0x32 → ERROR{PROTOCOL_VERSION};
+    # STATE_UPDATE сервер шлёт ТОЛЬКО v2-сессиям.
+    SET_MODE = 0x30  # client → server(supervisor): {client_id, mode}
+    ACQUIRE_FLOOR = 0x31  # client → server(supervisor): {client_id, floor}
+    RELEASE_FLOOR = 0x32  # client → server(supervisor): {client_id, floor}
+    STATE_UPDATE = 0x33  # server → client: {state: <msgpack AvatarState>}
     ERROR = 0xFF
 
 

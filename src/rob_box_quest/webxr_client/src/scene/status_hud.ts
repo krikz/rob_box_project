@@ -38,6 +38,23 @@ export const WIFI_WEAK_DBM = -75;
 export const RTT_WARN_MS = 200;
 export const RTT_BAD_MS = 400;
 
+// AV-26 / R7: robot_alert метка в HUD. Когда алёрт активен, в нижней
+// части спрайта появляется красная строка с текстом. Показывается до тех
+// пор, пока сервер не пришлёт active:false (с явным code).
+// Текст приходит с сервера уже локализованный (alertText() в alert_toast.ts
+// использует ту же таблицу), но в HUD рисуем именно то, что сказал сервер
+// (server-side i18n согласован с клиентским).
+
+const ALERT_BG = "rgba(225, 27, 36, 0.92)";
+const ALERT_BG_WARN = "rgba(245, 194, 17, 0.92)";
+const ALERT_TEXT_COLOR = "#0a0d11";
+
+/** Размеры алёрт-строки (в px канваса 512×320). */
+const ALERT_LINE_HEIGHT = 56;
+const ALERT_PADDING_X = 16;
+const ALERT_PADDING_Y = 8;
+const ALERT_FONT = "bold 28px monospace";
+
 /**
  * Разобрать msgpack-payload robot_status. `null` — кадр битый или не map;
  * отсутствующие поля заполняются sentinel'ами сервера (-1 / 0), чтобы UI
@@ -246,6 +263,8 @@ export interface StatusHud {
     myClientId: string | null,
     options?: { degraded?: boolean }
   ): void;
+  /** AV-26: вывести плашку с активным robot_alert. `null` — скрыть. */
+  setAlert(alert: { text: string; level: "warn" | "error" } | null): void;
   dispose(): void;
 }
 
@@ -299,12 +318,30 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
     teleopLabel = floorLabel(supervisor, "teleop", supervisorMyClientId);
     voiceLabel = floorLabel(supervisor, "voice", supervisorMyClientId);
   }
+  let alert: { text: string; level: "warn" | "error" } | null = null;
 
   function draw(): void {
+    // AV-25 (FPS): передаём fps в formatStatusLines.
+    // AV-26: если есть активный алёрт — перекрашиваем фон HUD плашкой,
+    // обычные строки рисуем поверх (они не гаснут, оператор всё ещё
+    // видит заряд/связь/RTT/FPS).
     const lines = formatStatusLines(status, rttMs, fps);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "rgba(10, 13, 17, 0.72)";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (alert !== null) {
+      ctx.fillStyle = alert.level === "error" ? ALERT_BG : ALERT_BG_WARN;
+      ctx.fillRect(0, 0, canvas.width, ALERT_LINE_HEIGHT + ALERT_PADDING_Y * 2);
+      ctx.fillStyle = ALERT_TEXT_COLOR;
+      ctx.font = ALERT_FONT;
+      ctx.textBaseline = "middle";
+      // Простейший wrap по длине строки — без измерений ширины глифов
+      // (canvas.measureText дорого в каждом кадре). Текст на русском,
+      // ~30 символов обычно влезает; дальше оператор увидит toast-стек.
+      const text = alert.text;
+      ctx.fillText(text, ALERT_PADDING_X, ALERT_LINE_HEIGHT / 2 + ALERT_PADDING_Y);
+    } else {
+      ctx.fillStyle = "rgba(10, 13, 17, 0.72)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
     ctx.textBaseline = "middle";
 
     // AV-17: supervisor-строки идут ПЕРЕД robot_status — оператор хочет
@@ -316,9 +353,11 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
       for (let i = sup.length - 1; i >= 0; i -= 1) lines.unshift(sup[i]);
     }
 
-    const rowH = canvas.height / lines.length;
+    // Если алёрт активен — строки сдвигаем вниз, чтобы не перекрывать.
+    const topOffset = alert !== null ? ALERT_LINE_HEIGHT + ALERT_PADDING_Y * 2 : 0;
+    const rowH = (canvas.height - topOffset) / lines.length;
     lines.forEach((line, i) => {
-      const y = rowH * i + rowH / 2;
+      const y = topOffset + rowH * i + rowH / 2;
       ctx.fillStyle = "#8b98a5";
       ctx.font = "bold 28px monospace";
       ctx.fillText(line.label, 20, y);
@@ -359,6 +398,10 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
       supervisorMyClientId = myClientId;
       supervisorDegraded = options?.degraded ?? false;
       recomputeFloorLabels();
+      draw();
+    },
+    setAlert(next: { text: string; level: "warn" | "error" } | null): void {
+      alert = next;
       draw();
     },
     dispose(): void {

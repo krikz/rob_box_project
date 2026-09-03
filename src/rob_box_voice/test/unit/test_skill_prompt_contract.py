@@ -20,6 +20,8 @@ INVARIANTS и §2 ANTI-DUP остаются единственным канон�
 
 from __future__ import annotations
 
+import re
+
 from pathlib import Path
 
 import pytest
@@ -58,7 +60,22 @@ def _fragment_text(skill: str) -> str:
     return _fragment_path(skill).read_text(encoding="utf-8")
 
 
-# ── Требование: защита от расхождения скилла и каталога ──────────────────
+def _mentions_tool(text: str, name: str) -> bool:
+    """Упомянут ли инструмент ``name`` в ``text`` как отдельное слово.
+
+    Раньше здесь была голая подстрока ``name.lower() in text``. Она
+    работала, пока все имена были длинными и «своими» (``play_sound``,
+    ``execute_music_code``). AV-21 (#1956) добавил в каталог инструмент
+    ``say`` — три буквы, совпадающие с обычным английским глаголом. После
+    этого секция про Renardo, где написано «say ONE short accept via
+    speak_text», стала считаться рекламой чужого инструмента, и develop
+    покраснел на ровном месте.
+
+    Границы слова оставляют смысл проверки прежним (секция не должна
+    звать чужой инструмент), но перестают ловить текст, который просто
+    содержит эти буквы.
+    """
+    return re.search(rf"(?<![a-z0-9_]){re.escape(name.lower())}(?![a-z0-9_])", text) is not None
 
 
 @pytest.mark.parametrize("skill", _declared_skills())
@@ -72,6 +89,9 @@ def test_every_declared_skill_has_a_fragment(skill: str) -> None:
         f"нет файла prompts/skills/{skill}.txt для скилла, объявленного "
         f"в tools/gen_tool_catalog.py::SKILL_TOOLS"
     )
+
+
+# ── Требование: защита от расхождения скилла и каталога ──────────────────
 
 
 @pytest.mark.parametrize("skill", _declared_skills())
@@ -108,7 +128,7 @@ def test_fragment_does_not_name_tools_it_does_not_own(skill: str) -> None:
         e.name
         for other in skill_names()
         for e in tools_for_skill(other, include_core=False)
-        if e.name not in own and e.name.lower() in text
+        if e.name not in own and _mentions_tool(text, e.name)
     )
     assert not foreign, (
         f"prompts/skills/{skill}.txt называет чужие инструменты: "

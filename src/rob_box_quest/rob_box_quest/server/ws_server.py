@@ -23,15 +23,62 @@ import threading
 import time
 from typing import Any, Optional, Protocol
 
+from ..core.floor import FLOOR_HELD_RATE_LIMIT_S, SupervisorFloorTracker
 from ..protocol.frame import FrameType, decode_frame, encode_frame
 from ..streams.registry import STREAM_CATALOG, get_stream
 from .session import (
     ErrorCode,
     HEARTBEAT_INTERVAL_S,
+    SUPPORTED_SUBPROTOCOLS_V2,
     WATCHDOG_TIMEOUT_S,
     ClientSession,
     generate_pin,
 )
+
+# msgpack — payload supervisor-API (0x30..0x33). Импорт ленив: в некоторых
+# dev-env модуль может отсутствовать (как у нас на билд-машине для пары
+# тестов status). Бинарные фреймы с msgpack-payload идут через отдельный
+# encode_helpers.
+try:
+    import msgpack as _msgpack  # type: ignore[import-untyped]
+except ImportError:  # pragma: no cover — dev-env only
+    _msgpack = None
+
+
+# === AV-16: supervisor-API helpers =============================================
+# Эти helper-ы живут в ws_server потому что Bridge-supervisor-state snapshot
+# отдаётся через msgpack-encoded payload в STATE_UPDATE-фрейме (§3 строка 66).
+# Helper-ы — чистая логика, тестируются прямо в protocol/protocol/ тестах.
+
+VALID_FLOORS_V2: tuple[str, ...] = ("teleop", "voice")
+VALID_MODES_V2: tuple[str, ...] = (
+    "off",
+    "telegram_active",
+    "avatar_present",
+    "mixed",
+    "teleop_only",
+    "voice_only",
+)
+
+
+def _pack_msgpack(payload: dict) -> bytes:
+    """Serialize dict → msgpack bytes (bin-type=True для bytes-полей)."""
+    if _msgpack is None:
+        raise RuntimeError("msgpack not available — supervisor API requires python3-msgpack")
+    return _msgpack.packb(payload, use_bin_type=True)  # type: ignore[union-attr]
+
+
+def _unpack_msgpack(data: bytes) -> dict:
+    if _msgpack is None:
+        raise RuntimeError("msgpack not available — supervisor API requires python3-msgpack")
+    raw = _msgpack.unpackb(data, raw=False, strict_map_key=False)  # type: ignore[union-attr]
+    if not isinstance(raw, dict):
+        raise ValueError(f"supervisor payload: expected msgpack map, got {type(raw).__name__}")
+    return raw
+
+
+# Keep-alive STATE_UPDATE для v2-сессий (§3 строка 66: «1 Hz keep-alive»).
+STATE_UPDATE_KEEPALIVE_S: float = 1.0
 
 
 log = logging.getLogger(__name__)
@@ -48,6 +95,11 @@ class Bridge(Protocol):
 
     Все методы sync (rclpy thread-safe + capture-loop thread). Можно
     вызывать прямо из aiohttp event-loop без await.
+
+    AV-19 (issue #1911, ADR-0028 §4.4 S10): добавлены методы для
+    relay-логики teleop-heartbeat и обработки потери teleop_floor.
+    Это симметрично ``SupervisorClient`` из ``rob_box_telegram`` —
+    единая точка живости клиента для супервизора.
     """
 
     def publish_quest(self, linear: float, angular: float) -> None: ...
@@ -147,6 +199,92 @@ class Bridge(Protocol):
         """
         ...
 
+    def relay_teleop_heartbeat(self, client_id: str, ts_ms: int, seq: int) -> None:
+        """Опубликовать TeleopHeartbeat в ``/teleop_heartbeat`` от ``client_id``.
+
+        Контракт (ADR-0028 §4.4 S10, meta-quest-api.md): payload —
+        msgpack-encoded dict ``{client_id, ts_ms, seq}`` в ``std_msgs/String``.
+        Вызывается из ws_server._on_json_cmd при получении
+        ``teleop_heartbeat`` или ``teleop_twist`` от клиента. Сервер НЕ
+        генерирует heartbeat-ы «на автомате» — это обнулит dead-man.
+
+        Параметр ``seq`` — монотонный sequence от клиента; ``ts_ms`` — его
+        локальное время (``Date.now()``). Это для диагностики и
+        метрик ``dead_man_trips_total``, но НЕ для синхронизации часов.
+        """
+        ...
+
+    def on_floor_lost(self, client_id: str) -> None:
+        """Уведомление: ``teleop_floor`` для ``client_id`` потерян.
+
+        Вызывается из ws_server:
+        1) При выходе из режима ``require_teleop_floor=true`` (например,
+           кончилось окно dead-man 500 мс — супервизор снял floor).
+        2) При явном release в результате FSM-перехода супервизора
+           (Telegram-клиент взял teleop_floor).
+        3) При рестарте супервизора.
+
+        Bridge обязан немедленно опубликовать ``Twist(0,0)`` в
+        ``cmd_vel_quest`` — робот не должен продолжать ехать по инерции
+        последнего фрейма. Это fail-safe из ADR-0028 §4.4 «если
+        клиент замолчал — супервизор снимет floor».
+        """
+        ...
+
+    # === AV-16: supervisor API (§3 строки 63-66 + §5.1 + §11). ===============
+    # Все методы sync (требование соглашения с WS-handler: вызываются
+    # из aiohttp event-loop thread без await). Реализация в ``QuestBridge``
+    # (quest_node.py) использует run_coroutine_threadsafe на ROS-executor,
+    # чтобы НЕ блокировать event-loop aiohttp на синхронном ROS-сервисе.
+    #
+    # Контракты ответов — простые dict-ы в формате §5.1:
+    #   {"granted": bool, "applied": bool, "reason": str, "held_by"?: client_id}
+    # Никакой собственный msgpack-словарь — caller пакует payload сам.
+
+    def supervisor_acquire_floor(self, client_id: str, floor: str) -> dict:
+        """Запросить ``floor`` (teleop|voice) для ``client_id``.
+
+        Returns: dict с ключами granted/applied/reason (и опц. held_by).
+        Никогда НЕ блокирует aiohttp event-loop — реализация обязана
+        маршалить запрос в ROS-поток и вернуть управление мгновенно
+        (см. ws_server._on_supervisor_acquire_floor; см. acceptance
+        «< 100 мс при зависшем сервисе»).
+        """
+        ...
+
+    def supervisor_release_floor(self, client_id: str, floor: str) -> dict:
+        """Отпустить свой ``floor``. Идемпотентно для своего, иначе
+        ``applied=false/reason=permission_denied``.
+
+        Returns: dict с ключами applied/reason.
+        """
+        ...
+
+    def supervisor_set_mode(self, client_id: str, mode: str) -> dict:
+        """``SET_MODE`` через FSM ModeManager (§3/§4.1).
+
+        Returns: dict с ключами applied/reason/actual_mode (опц.).
+        """
+        ...
+
+    def supervisor_state(self) -> "object | None":
+        """Текущий снапшот ``/avatar/state`` (msgpack bytes или уже
+        распакованный dict — caller использует ; см. AV-16 §3 строка 66).
+
+        None если снапшота ещё нет (мост не подключился). Sync — никаких
+        await внутри.
+        """
+        ...
+
+    def on_supervisor_state(self, cb) -> None:
+        """Подписка на изменения ``/avatar/state``.
+
+        ``cb(statesnapshot)`` вызывается из ROS-callback-а (не из aiohttp);
+        реализация ``Bridge`` обязана маршалить ``cb`` в aiohttp-loop через
+        ``WSSServer._schedule_send_state`` (см. broadcast_frame паттерн).
+        """
+        ...
+
 
 class NoOpBridge:
     """Заглушка для тестов. Реальная реализация в quest_node.py."""
@@ -227,6 +365,45 @@ class NoOpBridge:
         # обеспечивает совместимость сигнатуры.
         return None
 
+    def relay_teleop_heartbeat(self, client_id: str, ts_ms: int, seq: int) -> None:
+        # NoOpBridge: ничего не публикуем, но логируем для тестов.
+        log.debug("NoOpBridge: relay_teleop_heartbeat client_id=%s seq=%d", client_id, seq)
+
+    def on_floor_lost(self, client_id: str) -> None:
+        # NoOpBridge: no-op для тестов; реальная реализация в QuestBridge.
+        log.debug("NoOpBridge: on_floor_lost client_id=%s", client_id)
+    # === AV-16: supervisor API заглушки (для unit-тестов ws_server без ROS). ===
+
+    def supervisor_acquire_floor(self, client_id: str, floor: str) -> dict:
+        # NoOpBridge: всегда «granted», без held_by — тестам нужны оба пути.
+        return {"granted": True, "applied": True, "reason": "noop_granted"}
+
+    def supervisor_release_floor(self, client_id: str, floor: str) -> dict:
+        return {"applied": True, "reason": "noop_released"}
+
+    def supervisor_set_mode(self, client_id: str, mode: str) -> dict:
+        return {
+            "applied": True,
+            "reason": "noop_mode_set",
+            "actual_mode": mode,
+        }
+
+    def supervisor_state(self):
+        """NoOpBridge: всегда возвращает минимальный вменяемый снапшот."""
+        return {
+            "mode": "off",
+            "teleop_floor": None,
+            "voice_floor": None,
+            "last_event": None,
+            "since_ms": 0,
+            "version": 1,
+        }
+
+    def on_supervisor_state(self, cb) -> None:
+        # NoOpBridge: подписки нет, тестовый WSSServer руками дёргает cb
+        # через subscribe_state-fake по сценарию в тестах.
+        return None
+
 
 # Текущий PIN — генерится один раз на старте контейнера, логируется.
 # Phase 1.6 в start_quest.sh выводит его в docker logs.
@@ -258,9 +435,20 @@ def _consume_future_exception(fut: "asyncio.Future[Any]") -> None:
 
 
 class WSSServer:
-    """Серверная логика — собирает app + принимает aiohttp WS-коннекты."""
+    """Серверная логика — собирает app + принимает aiohttp WS-коннекты.
 
-    def __init__(self, bridge: Bridge, pin: Optional[str] = None) -> None:
+    AV-19 (issue #1911, ADR-0028 §4.4): добавлен локальный floor-tracker
+    и параметр ``require_teleop_floor`` — см. design meta-quest-api.md
+    §5 (gate teleop_twist + FLOOR_HELD + relay heartbeat + fail-safe).
+    """
+
+    def __init__(
+        self,
+        bridge: Bridge,
+        pin: Optional[str] = None,
+        require_teleop_floor: bool = False,
+        floor_tracker: Optional[SupervisorFloorTracker] = None,
+    ) -> None:
         self.bridge = bridge
         self.pin = pin or ACTIVE_PIN
         # Текущие сессии (session_id → ClientSession) для отладки/healthcheck.
@@ -283,6 +471,19 @@ class WSSServer:
         # ws_id(id(ws)) → last-ts (монотонный) per cmd для rate-limit.
         # key = id(ws) (а не сам ws, потому что ws не hashable).
         self._last_voice_cmd_ts: dict[int, dict[str, float]] = {}
+        # AV-19: gate teleop_floor (Phase 1 — локальный tracker; Phase 2 —
+        # proxy на avatar_supervisor service, ADR-0028 §4.4).
+        self._require_teleop_floor: bool = require_teleop_floor
+        self._floor_tracker: SupervisorFloorTracker = (
+            floor_tracker if floor_tracker is not None else SupervisorFloorTracker()
+        )
+        # client_id (= session_id) → True если ws_server уже сообщил
+        # клиенту о FLOOR_HELD-error в текущем окне rate-limit. Нужно,
+        # чтобы при HOLD-окне не слать ERROR повторно (rate-limit — на
+        # уровне tracker, но здесь дополнительно дедуплим, чтобы один
+        # клиент не получал > 1 ошибки в FLOOR_HELD_RATE_LIMIT_S даже
+        # если в ws_server прилетают разные teleop_twist-ы).
+        self._floor_held_warned_session: dict[str, float] = {}
 
     def get_active_sessions(self) -> int:
         return sum(1 for s in self._sessions.values() if s.is_open())
@@ -450,6 +651,74 @@ class WSSServer:
         if ws.closed:
             return
         await ws.send_bytes(encode_frame(FrameType.BINARY_FRAME, 0, payload))
+    def _should_send_floor_held_error(self, session_id: str) -> bool:
+        """Обёртка над floor_tracker.should_send_floor_held_error.
+
+        Удобно иметь в одном месте, чтобы при смене стратегии
+        rate-limit (например, вынести в ROS-параметр) менять одну
+        функцию, а не искать по всем ``_on_json_cmd``.
+        """
+        return self._floor_tracker.should_send_floor_held_error(session_id)
+
+    def on_floor_lost_external(self, client_id: str) -> None:
+        """Внешнее уведомление (от Bridge/avatar_supervisor) о потере floor.
+
+        В Phase 2, когда avatar_supervisor будет публиковать
+        ``/avatar/state`` с ``teleop_floor != client_id``, эта точка
+        будет вызываться из подписки. Сейчас используется из
+        QuestBridge через Bridge.on_floor_lost (см. _unregister_session
+        для случая закрытия сессии).
+
+        Внутри:
+        1) Сбрасываем локальный tracker (если ещё держит — значит
+           состояния разошлись, но fail-safe приоритетнее).
+        2) Уведомляем Bridge — он опубликует Twist(0,0) в cmd_vel_quest.
+        3) Шлём клиенту JSON_EVENT{type:"floor_lost"} с held_by=None —
+           клиент DISARM-ит и показывает тост (teleop_fsm).
+        """
+        if not self._floor_tracker.is_held_by(client_id):
+            # Tracker уже не считает client_id держателем — likely двойной
+            # уведомление (release в _unregister_session + supervisor
+            # подтвердил). Ничего не делаем.
+            return
+        self._floor_tracker.force_release()
+        self._floor_tracker.reset_rate_limit(client_id)
+        self._floor_held_warned_session.pop(client_id, None)
+        # Уведомить Bridge (QuestBridge опубликует zero Twist).
+        self.bridge.on_floor_lost(client_id)
+        # Уведомить активные WS-сессии с этим client_id, если ещё открыты.
+        session = self._sessions.get(client_id)
+        if session is None or not session.is_open():
+            return
+        ws = self._ws_by_session.get(client_id)
+        if ws is None:
+            return
+        # JSON_EVENT шлём в event-loop (он же вызвал эту функцию).
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            return
+
+        async def _notify() -> None:
+            try:
+                payload = json.dumps(
+                    {
+                        "type": "floor_lost",
+                        "floor": "teleop",
+                        "reason": "external_supervisor_or_lost",
+                        "ts_ms": int(time.time() * 1000),
+                    },
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                await ws.send_bytes(encode_frame(FrameType.JSON_EVENT, 0, payload))
+            except Exception as exc:  # noqa: BLE001 — уведомление best-effort
+                log.warning("quest: floor_lost notify failed: %s", exc)
+
+        fut = asyncio.run_coroutine_threadsafe(_notify(), loop)
+        fut.add_done_callback(_consume_future_exception)
+        log.info("quest: floor_lost session_id=%s (external)", client_id)
 
     def broadcast_frame(self, ui_name: str, payload: bytes) -> int:
         """Слать BINARY_FRAME всем сессиям, подписанным на ui_name.
@@ -479,6 +748,36 @@ class WSSServer:
             count += 1
         return count
 
+    # === AV-16: STATE_UPDATE broadcast =========================================
+    # 0x33 STATE_UPDATE — broadcast для ВСЕХ v2-сессий (не stream: подписок
+    # не требуется). Подписки на состояние — на стороне Quest-клиента
+    # через WSS в handler-е on-message (см. §6). STATE_UPDATE — отдельный
+    # frame-type, чтобы клиент мог маршрутизировать по типу без SUBSCRIBE.
+    def broadcast_state_update(self, state_payload: bytes) -> int:
+        """Слать STATE_UPDATE (msgpack bytes) всем v2-сессиям с активным ws.
+
+        Returns: количество клиентов которым доставлено (v1 не получает).
+        Вызывается из Bridge-подписки на /avatar/state (ROS-callback-а);
+        потому вызов sync, а отправка — через _schedule_send (точно так же,
+        как broadcast_frame для BINARY).
+        """
+        if not self._sessions:
+            return 0
+        frame = encode_frame(FrameType.STATE_UPDATE, 0, state_payload)
+        count = 0
+        for sid, session in list(self._sessions.items()):
+            if not session.is_open():
+                continue
+            # v1-сессии STATE_UPDATE не получают (см. §11.1).
+            if session.protocol_version != 2:
+                continue
+            ws = self._ws_by_session.get(sid)
+            if ws is None:
+                continue
+            self._schedule_send(ws, frame)
+            count += 1
+        return count
+
     def _schedule_send(self, ws, frame: bytes) -> None:
         """Отправить frame в ws из любого потока.
 
@@ -499,6 +798,35 @@ class WSSServer:
         except RuntimeError:
             return  # loop закрыт/не запущен — кадр теряем, не роняем ноду
         fut.add_done_callback(_consume_future_exception)
+
+    def broadcast_json_event(self, payload_obj: dict[str, Any]) -> int:
+        """Слать JSON_EVENT (control notification) всем открытым сессиям.
+
+        В отличие от ``broadcast_frame`` (BINARY_FRAME, привязан к stream_id
+        через ``subscribed``), JSON_EVENT — control-frame (stream_id=0) и
+        не требует подписки: клиент видит все JSON_EVENT'ы потому что
+        соединён. Сейчас используется для ``robot_alert`` (AV-26 / R7);
+        ``safety_stop`` уже шлётся через ``_send`` напрямую в сессионном
+        цикле.
+
+        Sync (вызывается из ROS/capture-потоков). Возвращает количество
+        клиентов которым доставлено. Loop-потокобезопасность — как у
+        ``broadcast_frame``.
+        """
+        if not self._sessions:
+            return 0
+        raw = json.dumps(payload_obj, separators=(",", ":")).encode("utf-8")
+        frame = encode_frame(FrameType.JSON_EVENT, 0, raw)
+        count = 0
+        for sid, session in list(self._sessions.items()):
+            if not session.is_open():
+                continue
+            ws = self._ws_by_session.get(sid)
+            if ws is None:
+                continue
+            self._schedule_send(ws, frame)
+            count += 1
+        return count
 
     async def _send(
         self,
@@ -540,6 +868,15 @@ class WSSServer:
         # Освободить stream_id'ы этой сессии.
         for sid in session.subscribed.values():
             _stream_ids_in_use.discard(sid)
+        # AV-19: освободить teleop_floor, если эта сессия его держала.
+        # Это симметрично acquire в _on_hello. Если в Phase 2 этот код
+        # пойдёт через avatar_supervisor service — здесь будет
+        # release_floor service-call.
+        was_held = self._floor_tracker.release(session.session_id)
+        if was_held:
+            self._floor_tracker.reset_rate_limit(session.session_id)
+            self._floor_held_warned_session.pop(session.session_id, None)
+            log.info("quest: teleop_floor released session_id=%s", session.session_id)
         session.close()
         self._sessions.pop(session.session_id, None)
         self._ws_by_session.pop(session.session_id, None)
@@ -572,6 +909,23 @@ class WSSServer:
         self.bridge.reset()
         self.bridge.feed_client_alive()
 
+        # AV-19: попытаться взять teleop_floor от имени новой сессии.
+        # В Phase 1 локальный tracker; в Phase 2 тут будет service-call
+        # к /avatar_supervisor/acquire_floor (см. design.md, meta-quest-api.md
+        # §5 «Supervisor-команды Phase 2»). Сейчас — best-effort: если
+        # floor уже занят другой сессией — мы НЕ отказываем в WELCOME
+        # (это убьёт UX при попытке Telegram-op перехватить), но помечаем
+        # сессию «не держит» — teleop_twist гейт не пройдёт и шлёт
+        # ERROR{FLOOR_HELD} rate-limited (см. _on_json_cmd).
+        acquire = self._floor_tracker.acquire(session.session_id)
+        if not acquire.granted:
+            log.info(
+                "quest: HELLO session_id=%s teleop_floor held_by=%s — режим %s",
+                session.session_id,
+                acquire.held_by,
+                "read_only" if self._require_teleop_floor else "silent_gate",
+            )
+
         await self._send(
             ws,
             FrameType.WELCOME,
@@ -580,6 +934,10 @@ class WSSServer:
                 "server_version": "0.1.0",
                 "session_id": session.session_id,
                 "server_time_ms": int(time.time() * 1000),
+                # AV-19: подсказка клиенту о статусе floor (нужно для FSM,
+                # чтобы сразу отрисовать «возьми руль» без ожидания
+                # первого FLOOR_HELD).
+                "teleop_floor_held_by": acquire.held_by,
             },
         )
         log.info(
@@ -678,11 +1036,87 @@ class WSSServer:
                 await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, "teleop_twist: bad linear/angular")
                 return
             deadman = bool(payload_obj.get("deadman", False))
+            # AV-19: gate teleop_twist (ADR-0028 §4.4, meta-quest-api.md §5).
+            # Если включён require_teleop_floor и эта сессия НЕ держит
+            # teleop_floor — НЕ публикуем cmd_vel_quest и отдаём
+            # ERROR{FLOOR_HELD} (rate-limited, не чаще 1 раза в секунду;
+            # иначе на 30 Гц teleop_twist зальём сокет ошибками).
+            # stop_emergency (см. ниже) — ВСЕГДА в обход гейта, по
+            # ADR-0028 §4.4 / карточке: «аварийная остановка работает
+            # всегда, у кого бы ни был floor».
+            ts_ms_raw = payload_obj.get("ts_ms", int(time.time() * 1000))
+            seq_raw = payload_obj.get("seq", 0)
+            try:
+                ts_ms = int(ts_ms_raw) if isinstance(ts_ms_raw, (int, float)) else int(time.time() * 1000)
+                seq = int(seq_raw) if isinstance(seq_raw, (int, float)) else 0
+            except (TypeError, ValueError):
+                ts_ms, seq = int(time.time() * 1000), 0
+            if self._require_teleop_floor and not self._floor_tracker.is_held_by(
+                session.session_id
+            ):
+                if self._should_send_floor_held_error(session.session_id):
+                    await self._send_error(
+                        ws,
+                        0,
+                        ErrorCode.FLOOR_HELD,
+                        f"teleop_floor held by {self._floor_tracker.holder!r}",
+                    )
+                # НЕ публикуем cmd_vel_quest, но feed_client_alive всё
+                # равно вызываем — клиент жив, watchdog должен крутиться.
+                self.bridge.feed_client_alive()
+                _ = deadman  # намерение: deadman игнорируется пока gate закрыт.
+                return
+            # Floor наш (или gate выключен) — публикуем.
             self.bridge.publish_quest(linear, angular)
             self.bridge.feed_client_alive()
+            # AV-19: relay teleop_heartbeat (ADR-0028 §4.4 S10). Twist-фрейм
+            # — тоже живость клиента (он активен), шлём heartbeat-reley.
+            # Источник живости — клиент: сервер НЕ генерирует heartbeat-ы
+            # на автомате (см. design.md §4.4 «не обнулит dead-man»).
+            try:
+                self.bridge.relay_teleop_heartbeat(session.session_id, ts_ms, seq)
+            except Exception as exc:  # noqa: BLE001 — relay не должен ронять сессию
+                log.warning("quest: relay_teleop_heartbeat failed: %s", exc)
             _ = deadman  # Phase 1.5: telemetry через deadman-события
             return
+        if cmd == "teleop_heartbeat":
+            # AV-19: клиентский heartbeat (ADR-0028 §4.4 S10). Сервер
+            # релеит в /teleop_heartbeat от имени этой сессии. Это
+            # ВТОРОЙ источник живости (первый — teleop_twist); оба
+            # пробрасываются одинаково. Никакого периодического
+            # self-loop на сервере: dead-man ловит именно молчание
+            # клиента, поэтому heartbeat нельзя слать «на автомате».
+            ts_ms_raw = payload_obj.get("ts_ms", int(time.time() * 1000))
+            seq_raw = payload_obj.get("seq", 0)
+            try:
+                ts_ms = int(ts_ms_raw) if isinstance(ts_ms_raw, (int, float)) else int(time.time() * 1000)
+                seq = int(seq_raw) if isinstance(seq_raw, (int, float)) else 0
+            except (TypeError, ValueError):
+                ts_ms, seq = int(time.time() * 1000), 0
+            # Если gate включён и floor чужой — relay НЕ шлём (клиент
+            # не должен жить в логе супервизора как владелец floor).
+            # Можно было бы слать всё равно (heartbeat не вредный), но
+            # тогда супервизор может ошибочно «оживить» чужой сессии
+            # клиента, что противоречит §4.4 «источник живости — клиент».
+            if self._require_teleop_floor and not self._floor_tracker.is_held_by(
+                session.session_id
+            ):
+                # Тем не менее feed_client_alive — watchdog WSS-сессии
+                # крутится по любой живости клиента.
+                self.bridge.feed_client_alive()
+                return
+            try:
+                self.bridge.relay_teleop_heartbeat(session.session_id, ts_ms, seq)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("quest: relay_teleop_heartbeat failed: %s", exc)
+            self.bridge.feed_client_alive()
+            return
         if cmd == "stop_emergency":
+            # AV-19: stop_emergency ВСЕГДА в обход гейта (ADR-0028 §4.4,
+            # карточка: «аварийная остановка работает всегда, у кого бы
+            # ни был floor»). Это страховка от зависшего Quest-клиента
+            # в момент, когда floor держит Telegram-оператор: B-кнопка
+            # или UI-кнопка в очках ОБЯЗАНА остановить робота.
             self.bridge.publish_emergency()
             self.bridge.emergency_stop()
             return
@@ -740,6 +1174,171 @@ class WSSServer:
                     "topic": topic,
                     "stream_id": sid,  # может быть None → клиент делает SUBSCRIBE
                     "kind": spec.kind.value,
+                },
+            )
+            return
+        # === AV-16: supervisor_* JSON-эквиваленты (§5.1) =====================
+        # Доступно только v2-сессиям; v1 → ERROR{PROTOCOL_VERSION} тем же
+        # поведенческим контрактом, что и в _handle_supervisor_command.
+        if cmd in (
+            "supervisor_set_mode",
+            "supervisor_acquire_floor",
+            "supervisor_release_floor",
+            "supervisor_get_state",
+        ):
+            if session.protocol_version != 2:
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.PROTOCOL_VERSION,
+                    f"{cmd} requires subprotocol v2 (negotiated: {session.protocol_version}); "
+                    f"update client (docs §11)",
+                )
+                return
+            if session.server_client_id is None:
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.AUTH_FAIL,
+                    "session not authenticated",
+                )
+                return
+            client_id = session.server_client_id
+            # client-supplied client_id игнорируется точно так же как в
+            # бинарных фреймах (см. _handle_supervisor_command).
+            payload_client_id = payload_obj.get("client_id")
+            if payload_client_id is not None and payload_client_id != client_id:
+                log.warning(
+                    "supervisor_api (JSON): client_id mismatch session=%s " "payload=%s (ignored; using server-side)",
+                    session.session_id,
+                    payload_client_id,
+                )
+
+            if cmd == "supervisor_get_state":
+                # poll-эквивалент STATE_UPDATE (§5.1): синхронный ответ.
+                snapshot = self.bridge.supervisor_state()
+                if snapshot is None:
+                    await self._send(
+                        ws,
+                        FrameType.JSON_EVENT,
+                        0,
+                        {
+                            "type": "supervisor_state",
+                            "state": None,
+                            "ts_ms": int(time.time() * 1000),
+                        },
+                    )
+                    return
+                if isinstance(snapshot, (bytes, bytearray)):
+                    # bytes-форма от моста — отдаём как base64-meta в message.
+                    # Кандидат на AV-16+ streaming — пока упростим: маленький
+                    # inline msgpack через hex-строку в message не нужен,
+                    # у клиента есть бинарный STATE_UPDATE-фрейм.
+                    await self._send_error(
+                        ws,
+                        0,
+                        ErrorCode.INTERNAL,
+                        "supervisor_state snapshot is msgpack bytes; " "use binary STATE_UPDATE frame instead",
+                    )
+                    return
+                await self._send(
+                    ws,
+                    FrameType.JSON_EVENT,
+                    0,
+                    {
+                        "type": "supervisor_state",
+                        "state": snapshot,
+                        "ts_ms": int(time.time() * 1000),
+                    },
+                )
+                return
+
+            # supervisor_set_mode / supervisor_acquire_floor / supervisor_release_floor
+            if cmd == "supervisor_set_mode":
+                mode = payload_obj.get("mode")
+                if not isinstance(mode, str) or mode not in VALID_MODES_V2:
+                    await self._send_error(
+                        ws,
+                        0,
+                        ErrorCode.BAD_PAYLOAD,
+                        f"mode must be one of {list(VALID_MODES_V2)}; got {mode!r}",
+                    )
+                    return
+                try:
+                    body = self.bridge.supervisor_set_mode(client_id, mode)
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("supervisor_set_mode bridge crashed: %s", exc)
+                    await self._send_error(
+                        ws,
+                        0,
+                        ErrorCode.INTERNAL,
+                        f"supervisor_set_mode: {exc}",
+                    )
+                    return
+                if not body.get("applied"):
+                    await self._send_error(
+                        ws,
+                        0,
+                        ErrorCode.MODE_CONFLICT,
+                        str(body.get("reason", "refused")),
+                    )
+                    return
+                await self._send(
+                    ws,
+                    FrameType.JSON_EVENT,
+                    0,
+                    {
+                        "type": "supervisor_state",
+                        "state": self.bridge.supervisor_state(),
+                        "ts_ms": int(time.time() * 1000),
+                    },
+                )
+                return
+
+            # floor-операции
+            floor = payload_obj.get("floor")
+            if not isinstance(floor, str) or floor not in VALID_FLOORS_V2:
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.BAD_PAYLOAD,
+                    f"floor must be one of {list(VALID_FLOORS_V2)}; got {floor!r}",
+                )
+                return
+            try:
+                if cmd == "supervisor_acquire_floor":
+                    body = self.bridge.supervisor_acquire_floor(client_id, floor)
+                else:  # supervisor_release_floor
+                    body = self.bridge.supervisor_release_floor(client_id, floor)
+            except Exception as exc:  # noqa: BLE001
+                log.exception("supervisor_floor bridge crashed: %s", exc)
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.INTERNAL,
+                    f"supervisor floor: {exc}",
+                )
+                return
+            granted = bool(body.get("granted", body.get("applied")))
+            if not granted:
+                held_by = body.get("held_by")
+                reason = body.get("reason", "refused")
+                err_message = reason if held_by is None else f"{reason}; held_by={held_by}"
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.FLOOR_HELD,
+                    err_message,
+                )
+                return
+            await self._send(
+                ws,
+                FrameType.JSON_EVENT,
+                0,
+                {
+                    "type": "supervisor_state",
+                    "state": self.bridge.supervisor_state(),
+                    "ts_ms": int(time.time() * 1000),
                 },
             )
             return
@@ -878,11 +1477,25 @@ class WSSServer:
         # Chrome refuses the handshake with:
         #   "Sent non-empty 'Sec-WebSocket-Protocol' header but no response
         #    was received"
-        # Per docs/architecture/meta-quest-api.md §3, only "robbox-quest-v1"
-        # is supported; aiohttp will pick the first match from `protocols`.
-        ws = _aiohttp_web.WebSocketResponse(protocols=("robbox-quest-v1",))
+        # Per docs/architecture/meta-quest-api.md §11, после перехода на v2 мы
+        # поддерживаем ОБА варианта — aiohttp выберет первый совпавший из
+        # `protocols` (см. SUPPORTED_SUBPROTOCOLS_V2). Это даёт поэтапный
+        # rollout: новый клиент сразу подключается на v2, старый продолжает
+        # работать на v1 (monitor-only, см. §11.1).
+        ws = _aiohttp_web.WebSocketResponse(protocols=SUPPORTED_SUBPROTOCOLS_V2)
         await ws.prepare(request)
         session = ClientSession()
+        # Фиксируем согласованный subprotocol-version: client может прислать
+        # ``Sec-WebSocket-Protocol: v2`` или ``v1`` (или ничего — fallback v1).
+        # ``ws.ws_protocol`` доступен только ПОСЛЕ ws.prepare().
+        if ws.ws_protocol is not None:
+            session.apply_subprotocol(ws.ws_protocol)
+        else:
+            # Клиент не объявил subprotocol. Мы попросили v2/v1, aiohttp
+            # выбрал бы первый, но если клиент был без заголовка — оставляем
+            # None: ниже в handlers ветка «не v2 → PROTOCOL_VERSION» даст
+            # явный сигнал при попытке supervisor-команд.
+            session.protocol_version = 1
         self._register_session(session, ws)
         # Отправить heartbeat сразу для clock baseline.
         session.feed_heartbeat()
@@ -891,6 +1504,8 @@ class WSSServer:
         heartbeat_task = asyncio.create_task(self._heartbeat_loop(ws, session))
         # Watchdog loop.
         watchdog_task = asyncio.create_task(self._watchdog_loop(ws, session))
+        # STATE_UPDATE keep-alive 1 Hz (только для v2-сессий; для v1 — no-op).
+        state_update_task = asyncio.create_task(self._state_update_keepalive_loop(ws, session))
 
         try:
             async for msg in ws:
@@ -947,6 +1562,23 @@ class WSSServer:
                 elif ftype == FrameType.VOICE_AUDIO:
                     # Рация: голос оператора → /avatar/voice_in (int16 PCM 16 kHz).
                     self.bridge.publish_voice_audio(payload)
+                elif ftype in (
+                    FrameType.SET_MODE,
+                    FrameType.ACQUIRE_FLOOR,
+                    FrameType.RELEASE_FLOOR,
+                ):
+                    # Supervisor-API (§3 + §11 + AV-16). Только v2-сессии;
+                    # v1 присылает 0x30..0x32 → ERROR{PROTOCOL_VERSION}.
+                    await self._handle_supervisor_command(ws, session, ftype, payload)
+                elif ftype == FrameType.STATE_UPDATE:
+                    # Сервер-инициируемый frame; клиент НИКОГДА не должен
+                    # слать STATE_UPDATE → ERROR{BAD_PAYLOAD}.
+                    await self._send_error(
+                        ws,
+                        0,
+                        ErrorCode.BAD_PAYLOAD,
+                        "STATE_UPDATE is server→client only (§3)",
+                    )
                 else:
                     await self._send_error(
                         ws,
@@ -962,7 +1594,8 @@ class WSSServer:
         finally:
             heartbeat_task.cancel()
             watchdog_task.cancel()
-            for task in (heartbeat_task, watchdog_task):
+            state_update_task.cancel()
+            for task in (heartbeat_task, watchdog_task, state_update_task):
                 try:
                     await task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
@@ -1005,6 +1638,218 @@ class WSSServer:
                     return
         except asyncio.CancelledError:
             return
+
+    async def _state_update_keepalive_loop(self, ws, session: ClientSession) -> None:
+        """Для v2-сессий: каждые ``STATE_UPDATE_KEEPALIVE_S`` шлёт STATE_UPDATE.
+
+        Цель — keep-alive + сообщить клиенту «текущее состояние супервизора»
+        даже если FSM/floor-ы не менялись. Payload берётся из
+        ``Bridge.supervisor_state()`` (msgpack bytes), мост в quest_node.py
+        наполняет его через ROS-подписку на /avatar/state.
+
+        Для v1-сессий — no-op (STATE_UPDATE на v1 не идёт, см. §11.1).
+        """
+        try:
+            while session.is_open():
+                await asyncio.sleep(STATE_UPDATE_KEEPALIVE_S)
+                if not session.is_open():
+                    return
+                if session.protocol_version != 2:
+                    # v1 — намеренно молчим: STATE_UPDATE в v1 не поддержан.
+                    continue
+                snapshot = self.bridge.supervisor_state()
+                if snapshot is None:
+                    # Мост ещё не подключился к /avatar/state — снапшота нет.
+                    continue
+                # snapshot может быть dict (decoded) или bytes (raw msgpack).
+                # Bytes-форма предпочтительна (минуем re-pack overhead), но
+                # для совместимости с NoOpBridge (даёт dict) пакуем сами.
+                if isinstance(snapshot, (bytes, bytearray)):
+                    payload = bytes(snapshot)
+                elif isinstance(snapshot, dict):
+                    payload = _pack_msgpack({"state": snapshot})
+                else:
+                    continue
+                frame = encode_frame(FrameType.STATE_UPDATE, 0, payload)
+                try:
+                    await ws.send_bytes(frame)
+                except Exception as exc:  # noqa: BLE001
+                    # ws закрыт (watchdog-trip или close handshake) — выходим.
+                    log.debug("state_update_keepalive: send failed: %s", exc)
+                    return
+        except asyncio.CancelledError:
+            return
+        except Exception as e:  # noqa: BLE001
+            log.debug("state_update_keepalive ended: %s", e)
+
+    # === AV-16: supervisor-command handler =======================================
+    async def _handle_supervisor_command(
+        self,
+        ws,
+        session: ClientSession,
+        ftype: FrameType,
+        payload: bytes,
+    ) -> None:
+        """0x30/0x31/0x32 от клиента. Доступно только v2-сессиям.
+
+        v1 → ``ERROR{PROTOCOL_VERSION}`` (наш выбранный поведенческий контракт,
+        см. design.md / meta-quest-api.md §11 строки 451-462): молча игнорировать
+        — тот же механизм, что прятал баги в AV-14 («клиент шлёт лишнее —
+        сервер молча ест»), поэтому v1-клинт СРАЗУ получит явный сигнал
+        обновиться через ``ERROR{PROTOCOL_VERSION}`` (см. §8 коды).
+        """
+        if session.protocol_version != 2:
+            await self._send_error(
+                ws,
+                0,
+                ErrorCode.PROTOCOL_VERSION,
+                f"{ftype.name} requires subprotocol v2 (negotiated: "
+                f"{session.protocol_version}); update client (docs §11)",
+            )
+            return
+
+        if session.server_client_id is None:
+            # Пре-аутентификация, теоретически не должно случиться (выше в
+            # _ws_handler есть защита «session.state != authenticated»), но
+            # defensive: ошибка аутентификации, не падать.
+            await self._send_error(ws, 0, ErrorCode.AUTH_FAIL, "session not authenticated")
+            return
+
+        # unpack msgpack
+        try:
+            data = _unpack_msgpack(payload)
+        except (ValueError, Exception) as exc:
+            # msgpack.exceptions.* наследуются от Exception; не ввозим тип
+            # чтобы не ловить ImportError если msgpack-a нет в dev-env.
+            await self._send_error(
+                ws,
+                0,
+                ErrorCode.BAD_PAYLOAD,
+                f"supervisor payload: {exc}",
+            )
+            return
+
+        # Игнорируем client-supplied client_id (см. §11 + AV-16 «клиент не
+        # должен уметь представиться Telegram'ом»). Сервер подставляет свой
+        # server_client_id; расхождение — лог-warning.
+        client_id = session.server_client_id
+        payload_client_id = data.get("client_id")
+        if payload_client_id is not None and payload_client_id != client_id:
+            log.warning(
+                "supervisor_api: client_id mismatch session=%s payload=%s " "(ignored; using server-side)",
+                session.session_id,
+                payload_client_id,
+            )
+
+        if ftype == FrameType.SET_MODE:
+            mode = data.get("mode")
+            if not isinstance(mode, str) or mode not in VALID_MODES_V2:
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.BAD_PAYLOAD,
+                    f"mode must be one of {list(VALID_MODES_V2)}; got {mode!r}",
+                )
+                return
+            try:
+                body = self.bridge.supervisor_set_mode(client_id, mode)
+            except Exception as exc:  # noqa: BLE001
+                # Мост не должен валить event-loop; если падает — это баг
+                # реализации Bridge и его надо исправлять, но клиент получит
+                # INTERNAL и сможет retry.
+                log.exception("supervisor_set_mode bridge crashed: %s", exc)
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.INTERNAL,
+                    f"supervisor_set_mode: {exc}",
+                )
+                return
+            # Контракт: applied=False → FSM не пропустила → MODE_CONFLICT;
+            # иначе → успех → STATE_UPDATE со свежим снапшотом.
+            if not body.get("applied"):
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.MODE_CONFLICT,
+                    str(body.get("reason", "refused")),
+                )
+                return
+            # Успех: шлём клиенту свежий STATE_UPDATE с msgpack {state: ...}.
+            snapshot = self.bridge.supervisor_state()
+            if snapshot is None:
+                # мост ещё не подключился — клиент пусть ждёт keep-alive.
+                return
+            if isinstance(snapshot, (bytes, bytearray)):
+                payload_bytes = bytes(snapshot)
+            elif isinstance(snapshot, dict):
+                payload_bytes = _pack_msgpack({"state": snapshot})
+            else:
+                return
+            await ws.send_bytes(encode_frame(FrameType.STATE_UPDATE, 0, payload_bytes))
+            return
+
+        if ftype in (FrameType.ACQUIRE_FLOOR, FrameType.RELEASE_FLOOR):
+            floor = data.get("floor")
+            if not isinstance(floor, str) or floor not in VALID_FLOORS_V2:
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.BAD_PAYLOAD,
+                    f"floor must be one of {list(VALID_FLOORS_V2)}; got {floor!r}",
+                )
+                return
+            try:
+                if ftype == FrameType.ACQUIRE_FLOOR:
+                    body = self.bridge.supervisor_acquire_floor(client_id, floor)
+                else:
+                    body = self.bridge.supervisor_release_floor(client_id, floor)
+            except Exception as exc:  # noqa: BLE001
+                log.exception("supervisor_floor bridge crashed: %s", exc)
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.INTERNAL,
+                    f"supervisor floor: {exc}",
+                )
+                return
+
+            granted = bool(body.get("granted", body.get("applied")))
+            if not granted:
+                # Конфликт: floor занят другим client_id или другой
+                # permission_denied reason. Per §8 код FLOOR_HELD — единый
+                # код для обоих сценариев; ``held_by`` в message.
+                held_by = body.get("held_by")
+                reason = body.get("reason", "refused")
+                err_message = reason if held_by is None else f"{reason}; held_by={held_by}"
+                await self._send_error(
+                    ws,
+                    0,
+                    ErrorCode.FLOOR_HELD,
+                    err_message,
+                )
+                return
+
+            # Успех: STATE_UPDATE со свежим snapshot (аналогично SET_MODE).
+            snapshot = self.bridge.supervisor_state()
+            if snapshot is None:
+                return
+            if isinstance(snapshot, (bytes, bytearray)):
+                payload_bytes = bytes(snapshot)
+            elif isinstance(snapshot, dict):
+                payload_bytes = _pack_msgpack({"state": snapshot})
+            else:
+                return
+            await ws.send_bytes(encode_frame(FrameType.STATE_UPDATE, 0, payload_bytes))
+            return
+
+        # Unreachable: elif chain выше покрывает все три frame-type.
+        await self._send_error(
+            ws,
+            0,
+            ErrorCode.BAD_PAYLOAD,
+            f"unknown supervisor frame {ftype}",
+        )
 
 
 # Проверяем наличие aiohttp лениво, чтобы тесты могли мокать.
