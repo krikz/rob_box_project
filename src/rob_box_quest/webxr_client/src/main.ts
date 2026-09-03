@@ -243,10 +243,14 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   // STT/LLM (намерение оператора) и маппинг в wire-команды. Дефолт —
   // ttts_proxy (STT вкл, LLM выкл) — ровно то, что шлёт applyVoicePtt при
   // входе в робот-голос; voice_mode_ack синхронизирует состояние.
-  let pipelineSttOn: boolean | null = null;
-  let pipelineLlmOn: boolean | null = null;
-  // AV-28 §P7: пока не пришёл список пресетов — кнопки заблокированы.
-  let voicePresetsLoading = true;
+  let pipelineSttOn: boolean | null = true;
+  let pipelineLlmOn: boolean | null = false;
+
+  /** Текущие тумблеры панели → wire-режим `voice_mode` (WIRE_TO_VOICE_INPUT_MODE). */
+  function voiceModeForToggles(): string {
+    if (pipelineSttOn === false) return "passthrough";
+    return pipelineLlmOn ? "llm_formalize" : "ttts_proxy";
+  }
 
   /** Смена стиля речи / языка вывода → `set_voice` (AV-28 §P7). */
   function sendStyleChange(preset?: VoicePresetId, language?: VoiceLanguage): void {
@@ -340,27 +344,30 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       }
       switch (action.kind) {
         case "stt": {
-          const nextStt = !pipelineSttOn;
-          pipelineSttOn = nextStt;
-          const mode = !nextStt ? "passthrough" : pipelineLlmOn ? "llm_formalize" : "ttts_proxy";
-          bridge.voicePipeline.setSttOn(nextStt);
-          conn.send({ cmd: "voice_mode", ts_ms: Date.now(), mode });
+          pipelineSttOn = !pipelineSttOn;
+          bridge.voicePipeline.setSttOn(pipelineSttOn);
+          conn.send({ cmd: "voice_mode", ts_ms: Date.now(), mode: voiceModeForToggles() });
           return;
         }
         case "llm": {
-          const nextLlm = !pipelineLlmOn;
-          pipelineLlmOn = nextLlm;
-          const mode = nextLlm ? "llm_formalize" : "ttts_proxy";
-          bridge.voicePipeline.setLlmOn(nextLlm);
-          conn.send({ cmd: "voice_mode", ts_ms: Date.now(), mode });
+          pipelineLlmOn = !pipelineLlmOn;
+          bridge.voicePipeline.setLlmOn(pipelineLlmOn);
+          conn.send({ cmd: "voice_mode", ts_ms: Date.now(), mode: voiceModeForToggles() });
           return;
         }
         case "tts": {
-          toggleTtsPicker();
+          if (bridge.isTtsPickerOpen()) {
+            bridge.closeTtsPicker();
+            previewSink.stop();
+            dispatchTts({ kind: "close" });
+          } else {
+            bridge.openTtsPickerNearPipeline();
+            dispatchTts({ kind: "open" });
+            requestVoiceList();
+          }
           return;
         }
         case "preset": {
-          if (voicePresetsLoading) return;
           bridge.voicePipeline.setCurrentPreset(action.preset);
           modeManager.setCurrentPreset(action.preset);
           try {
@@ -373,7 +380,6 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
           return;
         }
         case "lang": {
-          if (voicePresetsLoading) return;
           bridge.voicePipeline.setCurrentLanguage(action.language);
           modeManager.setCurrentLanguage(action.language);
           try {
@@ -484,8 +490,9 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     if (voicePttMode !== "none" && send) {
       c!.send({ cmd: "voice_ptt_stop", mode: voicePttMode, ts_ms: Date.now() });
     }
-    // Режим голоса ПЕРСИСТЕНТНЫЙ: при входе в робот-голос ставим ttts_proxy
-    // (применяет супервизор, ADR-0028 S5) и НЕ сбрасываем на отпускание —
+    // Режим голоса ПЕРСИСТЕНТНЫЙ: при входе в робот-голос ставим режим из
+    // тумблеров панели пайплайна (применяет супервизор, ADR-0028 S5) и НЕ
+    // сбрасываем на отпускание —
     // иначе STT, дораспознающий уже после release, приходит при
     // voice_input_mode=respeaker и dialogue_node его игнорирует (гонка).
     voicePttMode = next;
@@ -496,7 +503,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       return;
     }
     if (next === "robot_voice" && send) {
-      c!.send({ cmd: "voice_mode", mode: "ttts_proxy", ts_ms: Date.now() });
+      c!.send({ cmd: "voice_mode", mode: voiceModeForToggles(), ts_ms: Date.now() });
     }
     if (send) {
       c!.send({ cmd: "voice_ptt_start", mode: next, ts_ms: Date.now() });
@@ -969,7 +976,6 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
               bridge.voicePipeline.setCurrentLanguage(srvLang);
               modeManager.setCurrentLanguage(srvLang);
             }
-            voicePresetsLoading = false;
             bridge.voicePipeline.setLoading(false);
             return;
           }

@@ -5,7 +5,9 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  FALLBACK_PRESETS,
   LLM_TARGET_ID,
+  PIPELINE_DRAG_TARGET_ID,
   STT_TARGET_ID,
   TTS_TARGET_ID,
   computePipelineLayout,
@@ -57,6 +59,25 @@ describe("parsePipelineTargetId", () => {
   it("пустой preset/lang → null", () => {
     expect(parsePipelineTargetId("vpl:preset:")).toBeNull();
     expect(parsePipelineTargetId("vpl:lang:")).toBeNull();
+  });
+  it("drag-ручка не является кнопкой", () => {
+    expect(PIPELINE_DRAG_TARGET_ID).toBe("vpl:drag");
+    expect(parsePipelineTargetId(PIPELINE_DRAG_TARGET_ID)).toBeNull();
+  });
+});
+
+describe("FALLBACK_PRESETS", () => {
+  it("6 пресетов с русскими именами", () => {
+    expect(FALLBACK_PRESETS).toHaveLength(6);
+    expect(FALLBACK_PRESETS.map((p) => p.id)).toEqual([
+      "technical",
+      "street",
+      "caveman",
+      "business",
+      "philosopher",
+      "lenin"
+    ]);
+    expect(FALLBACK_PRESETS.find((p) => p.id === "lenin")?.name).toBe("Ленин");
   });
 });
 

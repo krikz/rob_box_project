@@ -23,6 +23,7 @@ import { createSupervisorPanel, type SupervisorPanelHandle, PANEL_TARGET_PREFIX 
 import {
   createVoicePipelinePanel,
   parsePipelineTargetId,
+  PIPELINE_DRAG_TARGET_ID,
   type VoicePipelineAction,
   type VoicePipelinePanelHandle
 } from "./voice_pipeline_panel";
@@ -180,6 +181,8 @@ export interface CaptainBridgeHandle {
   renderTtsPicker(state: TtsPickerState): void;
   /** Открыть меню TTS picker'а (рядом с экраном-стеной). */
   openTtsPicker(): void;
+  /** Открыть меню TTS picker'а рядом с панелью голосового пайплайна. */
+  openTtsPickerNearPipeline(): void;
   closeTtsPicker(): void;
   isTtsPickerOpen(): boolean;
   start(): () => void;
@@ -335,6 +338,11 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
         refreshHighlights();
       },
       onDrag: (id, position) => {
+        // Фон панели голосового пайплайна — ручка перетаскивания.
+        if (id === PIPELINE_DRAG_TARGET_ID) {
+          voicePipeline.setPosition(position.x, position.y, position.z);
+          return;
+        }
         panelMgr.move(id, position.x, position.z, position.y);
         const s = panelMgr.get(id);
         if (s) videoPanels.get(id)?.setState(s);
@@ -343,6 +351,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
       onDragEnd: () => {
         refreshHighlights();
         flushLayoutSave();
+        savePipelinePos();
       },
       onResize: (id, corner, position) => {
         const s = panelMgr.get(id);
@@ -371,15 +380,17 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   }
 
   // 3D-панель голосового пайплайна (W6-2 / спека §3.6): оператор видит и
-  // настраивает путь «голос → STT → LLM → TTS → динамик». Стоит справа
-  // (+105°), симметрично supervisor-панели (−105°). Всегда видима — это
-  // панель на мостике, а не всплывающее меню. Кнопки — отдельные меши на
-  // слое указателя (prefix `vpl:`).
+  // настраивает путь «голос → STT → LLM → TTS → динамик». Всегда видима —
+  // это панель на мостике, а не всплывающее меню. Кнопки — отдельные меши
+  // на слое указателя (prefix `vpl:`), фон панели — ручка перетаскивания.
   const voicePipeline = createVoicePipelinePanel();
   scene.add(voicePipeline.object);
   for (const t of voicePipeline.targets()) {
     pointer.addTarget({ id: t.id, object: t.object, draggable: false });
   }
+  // Фон панели тащит всю панель по сфере вокруг оператора. Кнопки ловят
+  // луч первыми (они ближе к камере), поэтому перетаскивание не мешает клику.
+  pointer.addTarget({ id: PIPELINE_DRAG_TARGET_ID, object: voicePipeline.object, draggable: true });
 
   // Большой экран-стена перед оператором: на него выводим фронтальную
   // камеру. Стена мостика стоит на z = -4 (ROOM_D/2); экран висит чуть
@@ -524,6 +535,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
       panelMgr.resetLayout();
     }
     syncPanels();
+    restorePipelinePos();
   }
 
   // AV-25: дебаунс-сохранение раскладки (500мс после последнего
@@ -535,6 +547,41 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   }
   function flushLayoutSave(): void {
     layoutSaver?.flush(() => serializeLayout(panelMgr.list()));
+  }
+
+  // AV-25-расширение: позиция панели голосового пайплайна тоже переживает
+  // перезапуск клиента. Отдельный ключ — панель не видео-поток и живёт вне
+  // PanelManager. Битый JSON/чужой version → дефолт (молча не молчим: warn).
+  const PIPELINE_POS_STORAGE_KEY = "rob_box_quest.voice_pipeline_pos.v1";
+
+  function savePipelinePos(): void {
+    if (!layoutStorage) return;
+    const p = voicePipeline.getPosition();
+    layoutStorage.setItem(
+      PIPELINE_POS_STORAGE_KEY,
+      JSON.stringify({ version: 1, x: p.x, y: p.y, z: p.z })
+    );
+  }
+
+  function restorePipelinePos(): void {
+    if (!layoutStorage) return;
+    const raw = layoutStorage.getItem(PIPELINE_POS_STORAGE_KEY);
+    if (!raw) return;
+    try {
+      const d = JSON.parse(raw) as { version?: number; x?: number; y?: number; z?: number };
+      if (
+        d &&
+        d.version === 1 &&
+        typeof d.x === "number" &&
+        typeof d.y === "number" &&
+        typeof d.z === "number"
+      ) {
+        voicePipeline.setPosition(d.x, d.y, d.z);
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[captain_bridge] restorePipelinePos: invalid JSON, using default", err);
+    }
   }
 
   // AV-25: сброс к default по клавише R (desktop) или из help-overlay.
@@ -655,6 +702,16 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     // радиусе и повороте, что панели (глубина слоя как у stream_menu).
     const p = ttsPicker.launchObject.position;
     ttsPicker.show(new THREE.Vector3(p.x, p.y, p.z), 0);
+    syncTtsTargets();
+  }
+
+  function openTtsPickerNearPipeline(): void {
+    if (ttsPicker.isVisible()) return;
+    // Меню всплывает над панелью пайплайна и развёрнуто к оператору так же,
+    // как панель — иначе оператор, смотрящий на панель, не увидит меню
+    // (вкладка VOICE висит далеко слева у экрана-стены).
+    const p = voicePipeline.getPosition();
+    ttsPicker.show(new THREE.Vector3(p.x, p.y, p.z), voicePipeline.object.rotation.y);
     syncTtsTargets();
   }
 
@@ -836,6 +893,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     setAvailableStreams,
     renderTtsPicker,
     openTtsPicker,
+    openTtsPickerNearPipeline,
     closeTtsPicker,
     isTtsPickerOpen: () => ttsPicker.isVisible(),
     attachXrSession,

@@ -35,6 +35,8 @@ export const PIPELINE_TARGET_PREFIX = "vpl:";
 export const STT_TARGET_ID = `${PIPELINE_TARGET_PREFIX}stt`;
 export const LLM_TARGET_ID = `${PIPELINE_TARGET_PREFIX}llm`;
 export const TTS_TARGET_ID = `${PIPELINE_TARGET_PREFIX}tts`;
+/** id цели указателя для перетаскивания панели (весь фон, не кнопки). */
+export const PIPELINE_DRAG_TARGET_ID = `${PIPELINE_TARGET_PREFIX}drag`;
 
 export function presetTargetId(preset: VoicePresetId): string {
   return `${PIPELINE_TARGET_PREFIX}preset:${preset}`;
@@ -96,8 +98,8 @@ export const LANG_LABELS: Readonly<Record<VoiceLanguage, string>> = {
   en: "EN"
 };
 
-/** Геометрия панели: справа (+105°), симметрично supervisor-панели (−105°). */
-export const VOICE_PIPELINE_ANGLE_DEG = 105;
+/** Геометрия панели: спереди-справа (+60°) от оператора. */
+export const VOICE_PIPELINE_ANGLE_DEG = 60;
 export const VOICE_PIPELINE_RADIUS_M = 2.4;
 export const VOICE_PIPELINE_Y_M = 1.4;
 export const VOICE_PIPELINE_W_M = 0.95;
@@ -153,6 +155,20 @@ export const PRESET_ORDER: ReadonlyArray<VoicePresetId> = [
   "business",
   "philosopher",
   "lenin"
+];
+
+/**
+ * Fallback-список пресетов (имена из `voice_presets.yaml`). Сервер НЕ шлёт
+ * событие `voice_presets` — список статичен и известен клиенту; если сервер
+ * когда-нибудь пришлёт свой — `setPresets` его заменит.
+ */
+export const FALLBACK_PRESETS: ReadonlyArray<VoicePresetInfo> = [
+  { id: "technical", name: "Технический" },
+  { id: "street", name: "По понятиям" },
+  { id: "caveman", name: "Пещерный" },
+  { id: "business", name: "Деловой" },
+  { id: "philosopher", name: "Философ" },
+  { id: "lenin", name: "Ленин" }
 ];
 
 export function computePipelineLayout(canvasW: number): PipelineLayout {
@@ -255,11 +271,11 @@ export interface VoicePipelineView {
 }
 
 export const DEFAULT_VIEW: VoicePipelineView = {
-  presets: [],
+  presets: [...FALLBACK_PRESETS],
   languages: ["ru", "en"],
-  currentPreset: null,
-  currentLanguage: null,
-  loading: true,
+  currentPreset: "technical",
+  currentLanguage: "ru",
+  loading: false,
   sttOn: null,
   llmOn: null,
   currentVoice: null
@@ -279,6 +295,9 @@ export interface VoicePipelinePanelHandle {
   setCurrentVoice(voiceId: string | null): void;
   setVisible(visible: boolean): void;
   isVisible(): boolean;
+  /** Переместить панель и развернуть лицом к оператору (0, y, 0). */
+  setPosition(x: number, y: number, z: number): void;
+  getPosition(): { x: number; y: number; z: number };
   dispose(): void;
 }
 
@@ -364,7 +383,7 @@ export function createVoicePipelinePanel(): VoicePipelinePanelHandle {
     for (const b of layout.langButtons) add(b.id, b.rect);
   }
 
-  let view: VoicePipelineView = { ...DEFAULT_VIEW, presets: [], languages: ["ru", "en"] };
+  let view: VoicePipelineView = { ...DEFAULT_VIEW, presets: [...DEFAULT_VIEW.presets] };
   const layout = computePipelineLayout(CANVAS_W);
   rebuildButtonMeshes(layout);
 
@@ -545,6 +564,15 @@ export function createVoicePipelinePanel(): VoicePipelinePanelHandle {
     },
     isVisible(): boolean {
       return group.visible;
+    },
+    setPosition(x: number, y: number, z: number): void {
+      group.position.set(x, y, z);
+      // Нормаль к центру (оператор в 0,0): direction = normalize(-x, -z).
+      const len = Math.hypot(x, z) || 1;
+      group.rotation.y = Math.atan2(-x / len, -z / len);
+    },
+    getPosition(): { x: number; y: number; z: number } {
+      return { x: group.position.x, y: group.position.y, z: group.position.z };
     },
     dispose(): void {
       for (const [, m] of buttonMeshes) m.geometry.dispose();
