@@ -10,25 +10,33 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
-# Repo-rooted lookup: поднимаемся от __file__ достаточно высоко, чтобы
-# покрыть и обычный прогон (`src/.../test/.../file.py`, parents[4] = repo_root),
-# и CI-конфиг из G-Run Tests.yml (test_ws/src/.../test/.../file.py, где
-# parents[4] = test_ws и нужно ещё на уровень выше). Ищем первого предка,
-# у которого есть scripts/voice_bench/score.py.
-_BENCH: Path | None = None
-for _anc in Path(__file__).resolve().parents:
-    if (_anc / "scripts" / "voice_bench" / "score.py").is_file():
-        _BENCH = _anc / "scripts" / "voice_bench"
-        break
+# Repo-rooted lookup. Поддерживаем три layout'а, которые встречаются:
+#   1) Dev / worktree: src/.../test/.../file.py, parents[4] = repo_root.
+#   2) CI G-Run Tests.yml: test_ws/src/.../test/.../file.py, parents[4] = test_ws.
+#   3) colcon test build tree: build/<pkg>/... — нужен ROB_BOX_REPO_ROOT env var.
+#
+# Сначала пробуем env override (CI экспортирует ROB_BOX_REPO_ROOT=/test_ws);
+# затем walk-up по ancestors ищем scripts/voice_bench/score.py.
+_BENCH_CANDIDATES: list[Path] = []
+_override = os.environ.get("ROB_BOX_REPO_ROOT")
+if _override:
+    _BENCH_CANDIDATES.append(Path(_override) / "scripts" / "voice_bench")
+_BENCH_CANDIDATES.extend(
+    a / "scripts" / "voice_bench" for a in Path(__file__).resolve().parents
+)
+_BENCH: Path | None = next(
+    (c for c in _BENCH_CANDIDATES if (c / "score.py").is_file()), None
+)
 if _BENCH is None:
     raise RuntimeError(
         "test_voice_bench_scoring: scripts/voice_bench/score.py not found "
-        "in any ancestor of __file__"
+        "(set ROB_BOX_REPO_ROOT or run inside repo tree)"
     )
 sys.path.insert(0, str(_BENCH))
 
