@@ -136,9 +136,10 @@ class MetricsDisabled:
     тот же объект (или self), не падает и не считает. Это позволяет
     прод-коду вызывать ``counter.labels(...).inc()`` без
     ``if prometheus_client is not None`` в каждом месте.
-    """
 
-    __slots__ = ()
+    ``labels`` — обычный атрибут экземпляра (не слот), чтобы unit-тесты
+    могли подменять его на spy и перехватывать вызовы ``.inc()``.
+    """
 
     def labels(self, *args: Any, **kwargs: Any) -> "MetricsDisabled":
         return self
@@ -365,6 +366,81 @@ def record_voice_llm_request(
         labelnames=("provider",),
     )
     hist.labels(provider=provider).observe(duration_s)
+
+
+#: Бакеты для ``voice_llm_prompt_tokens``. Подобраны вокруг сегодняшнего
+#: фиксированного префикса (~27 100 токенов на 02.09.2026: 16 240 схемы
+#: инструментов + 10 838 мастер-промпт), чтобы сдвиг вниз от доменных
+#: скиллов был виден по перцентилям, а не тонул в одном бакете.
+PROMPT_TOKENS_BUCKETS: tuple[float, ...] = (
+    2000, 4000, 8000, 12000, 16000, 20000, 24000, 28000, 32000, 40000,
+    48000, 64000, float("inf"),
+)
+
+
+def record_llm_prompt_tokens(
+    provider: str,
+    *,
+    tokens: int,
+    skill: str = "none",
+    estimated: bool = True,
+) -> None:
+    """Учёт размера ОДНОГО запроса к LLM в токенах.
+
+    Зовётся на каждое обращение к провайдеру, включая каждую итерацию
+    тул-цикла: ход с восемью итерациями стоит восьми промптов.
+
+    :param provider: ``"minimax"`` / ``"deepseek"`` / ...
+    :param tokens: размер промпта. Неположительные значения игнорируются —
+        это признак того, что провайдер прислал мусор, и записывать его в
+        гистограмму значит испортить перцентили.
+    :param skill: имя активного доменного скилла (``"none"`` пока скиллы
+        не включены). Именно эта метка отвечает на вопрос «сколько стоит
+        ход композитора против хода плеера».
+    :param estimated: ``True`` — число получено клиентской эвристикой,
+        потому что провайдер не прислал usage. Метка позволяет не смешивать
+        точные и оценочные измерения в одной выборке.
+    """
+    if tokens <= 0:
+        return
+    hist = get_metric(
+        "histogram",
+        "voice_llm_prompt_tokens",
+        "Prompt size in tokens per LLM request, by provider, skill and source.",
+        labelnames=("provider", "skill", "estimated"),
+        buckets=PROMPT_TOKENS_BUCKETS,
+    )
+    hist.labels(
+        provider=provider,
+        skill=skill or "none",
+        estimated="true" if estimated else "false",
+    ).observe(tokens)
+
+
+def record_skill_activation(
+    skill: str,
+    *,
+    source: str,
+) -> None:
+    """Учёт одной активации доменного скилла.
+
+    :param skill: имя скилла (``"none"`` — активации не было).
+    :param source: ``"router"`` — сработал детерминированный
+        пред-роутер; ``"llm"`` — домен пришлось грузить вызовом
+        ``load_skill``, то есть роутер промахнулся; ``"miss"`` — LLM
+        запросила несуществующий домен.
+
+    Доля ``source="llm"`` и есть метрика промахов роутера (задача 3.7):
+    если она растёт, роутер не покрывает реальные формулировки, и
+    включать сужение каталога (Move B) рано.
+    """
+    counter = get_metric(
+        "counter",
+        "voice_skill_activation_total",
+        "Domain-skill activations, labelled by skill and how it was chosen.",
+        labelnames=("skill", "source"),
+    )
+    counter.labels(skill=skill or "none", source=source).inc()
 
 
 def record_fallback(

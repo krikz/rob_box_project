@@ -19,6 +19,7 @@ from .perception import *
 from .mapping import *
 from .animation import *
 from .sound import *
+from .say import *  # AV-21: operator-agent minimal TTS (no emotion/animation)
 from .dialogue import *
 from .memory import *
 from .music import *
@@ -60,6 +61,8 @@ __all__ = [
     "SpeakTextTool",
     "ListenForResponseTool",
     "SetVoiceTool",
+    # AV-21: minimal operator-voice TTS (каркас; полная интеграция — AV-27)
+    "SayTool",
     # Scheduler tools (issue #968, S6)
     "TaskDeltaTool",
     # Memory tools

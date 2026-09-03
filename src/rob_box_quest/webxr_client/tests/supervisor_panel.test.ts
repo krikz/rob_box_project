@@ -1,6 +1,6 @@
 // supervisor_panel (R14, ADR-0027 R14 + ADR-0028 §4): pure-логика и
 // формат-парсер. Только чистые функции: parseSupervisorState (msgpack),
-// canTransitionMode (локальная FSM), hitTest (геометрия без Three.js),
+// hitTest (геометрия без Three.js),
 // formatStateLine / formatDialogueToggle (UX-тексты).
 //
 // Render/Three.js не тестируем — jsdom не даёт WebGL, в остальных тестах
@@ -14,7 +14,6 @@ import {
   type AvatarMode,
   type Floor,
   UNKNOWN_STATE,
-  canTransitionMode,
   computeButtonLayout,
   formatStateLine,
   formatDialogueToggle,
@@ -164,10 +163,13 @@ describe("parseSupervisorState — well-formed msgpack", () => {
   });
 
   it("substitutes sentinels for missing fields", () => {
-    const payload = pack({ mode: "voice_only" });
+    // mixed — реальный режим core.fsm.Mode. Раньше здесь стоял
+    // voice_only: такого режима у автомата нет, и теперь он honestly
+    // деградирует в off (см. тест ниже про неизвестный режим).
+    const payload = pack({ mode: "mixed" });
     const s = parseSupervisorState(payload);
     expect(s).not.toBeNull();
-    expect(s!.mode).toBe("voice_only");
+    expect(s!.mode).toBe("mixed");
     expect(s!.teleop_floor.held_by).toBeNull();
     expect(s!.voice_floor.last_event).toBeNull();
     expect(s!.last_event).toBe("STATE_UPDATE");
@@ -187,36 +189,6 @@ describe("parseSupervisorState — well-formed msgpack", () => {
     });
     const s = parseSupervisorState(payload);
     expect(s!.mode).toBe("off");
-  });
-});
-
-// ───────────────────────────── canTransitionMode ─────────────────────────────
-
-describe("canTransitionMode (ADR-0028 §4.2)", () => {
-  it("allows off → avatar_present (operator joins)", () => {
-    expect(canTransitionMode("off", "avatar_present").applied).toBe(true);
-  });
-
-  it("forbids off → mixed (operator must enter avatar_present first)", () => {
-    expect(canTransitionMode("off", "mixed").applied).toBe(false);
-  });
-
-  it("allows avatar_present → teleop_only (FSM downshift)", () => {
-    expect(canTransitionMode("avatar_present", "teleop_only").applied).toBe(true);
-  });
-
-  it("forbids off → teleop_only (no operator in the bridge)", () => {
-    expect(canTransitionMode("off", "teleop_only").applied).toBe(false);
-  });
-
-  it("treats same mode as a no-op (applied=true)", () => {
-    expect(canTransitionMode("mixed", "mixed").applied).toBe(true);
-  });
-
-  it("rejection comes with a human-readable reason for the UI toast", () => {
-    const r = canTransitionMode("off", "mixed");
-    expect(r.applied).toBe(false);
-    expect(r.reason).toContain("запрещён");
   });
 });
 

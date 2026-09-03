@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>rob_box_supervisor_msgs</name>
+  <version>0.1.0</version>
+  <description>
+    ROS 2 IDL for Avatar Supervisor (ADR-0028).
+
+    Provides typed services (AcquireFloor, ReleaseFloor, SetAvatarMode)
+    and messages (TeleopHeartbeat, FloorState, AvatarStateMsg) so external
+    clients (rob_box_quest, rob_box_telegram) talk to avatar_supervisor
+    over a real wire contract instead of std_srvs/Trigger + JSON-in-data
+    (transition tech debt that motivated this package — see ADR-0028 §4.2).
+
+    Implemented as ament_cmake + rosidl_default_generators because the
+    parent package (rob_box_supervisor) is ament_python and cannot
+    generate rosidl interfaces on its own.
+  </description>
+  <maintainer email="kukoreken@rob-box.local">krikz</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+
+  <depend>std_msgs</depend>
+  <depend>builtin_interfaces</depend>
+
+  <exec_depend>rosidl_default_runtime</exec_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

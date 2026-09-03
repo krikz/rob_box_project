@@ -259,15 +259,11 @@ def _vibe_preset_description() -> str:
     for node in ast.walk(tree):
         if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", "") == "VIBE_PRESETS":
             presets = _literal(node.value)
-        elif isinstance(node, ast.Assign) and any(
-            getattr(t, "id", "") == "VIBE_PRESETS" for t in node.targets
-        ):
+        elif isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "VIBE_PRESETS" for t in node.targets):
             presets = _literal(node.value)
     if not isinstance(presets, dict):
         raise ToolSourceError("could not read MusicManager.VIBE_PRESETS from music.py")
-    presets_desc = ", ".join(
-        f"{name} (scale={p['scale']}, bpm={p['bpm']})" for name, p in presets.items()
-    )
+    presets_desc = ", ".join(f"{name} (scale={p['scale']}, bpm={p['bpm']})" for name, p in presets.items())
     return (
         "Применить вайб-пресет для быстрой настройки музыкального контекста. "
         "Устанавливает скейл, BPM и тонику в Renardo одной командой. "
@@ -293,9 +289,7 @@ def _sound_pack_triggers() -> list[str]:
     """
     import json
 
-    catalog = json.loads(
-        (REPO_ROOT / "sound_pack" / "sound_catalog.json").read_text(encoding="utf-8")
-    )
+    catalog = json.loads((REPO_ROOT / "sound_pack" / "sound_catalog.json").read_text(encoding="utf-8"))
     # Mirrors PlaySoundTool._load_sounds_from_catalog exactly: the enum is the
     # ``trigger`` names, NOT the ``.mp3`` filenames the dict is keyed by.
     triggers = sorted(
@@ -317,14 +311,7 @@ def _load_arranger():
     """
     import importlib.util
 
-    path = (
-        REPO_ROOT
-        / "src"
-        / "rob_box_mcp_tools"
-        / "rob_box_mcp_tools"
-        / "core"
-        / "arranger.py"
-    )
+    path = REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "core" / "arranger.py"
     spec = importlib.util.spec_from_file_location("_arranger_for_catalog", path)
     if spec is None or spec.loader is None:
         raise ToolSourceError(f"cannot load arranger module from {path}")
@@ -382,12 +369,8 @@ def _json_schema(param: dict[str, Any]) -> dict[str, Any]:
     if param.get("default") is not None:
         schema["default"] = param["default"]
     if param.get("type") == "object" and param.get("properties"):
-        schema["properties"] = {
-            name: _json_schema(sub) for name, sub in param["properties"].items()
-        }
-        schema["required"] = [
-            name for name, sub in param["properties"].items() if sub.get("required")
-        ]
+        schema["properties"] = {name: _json_schema(sub) for name, sub in param["properties"].items()}
+        schema["required"] = [name for name, sub in param["properties"].items() if sub.get("required")]
         schema["additionalProperties"] = False
     if param.get("type") == "array" and param.get("items"):
         schema["items"] = _json_schema(param["items"])
@@ -406,6 +389,147 @@ def _parameters_schema(params: list[dict[str, Any]]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Extraction
 # ---------------------------------------------------------------------------
+
+
+#: Доменные скиллы: имя скилла -> имена инструментов из этого же каталога.
+#:
+#: ЕДИНСТВЕННОЕ объявление принадлежности. Скилл ссылается на инструменты
+#: по имени и НЕ переобъявляет их контракт (описание, схему параметров) —
+#: именно второе объявление контракта убило предыдущую попытку скиллов
+#: (Compositor, e96b912d: navigate_to_waypoint рекламировал ``name`` при
+#: ``waypoint`` в execute(), 13 инструментов не доехали до LLM вообще).
+#:
+#: Инструмент может входить в несколько скиллов: ``stop_music`` нужен и
+#: композитору, и диджею, и плееру. Описание при этом одно — оно берётся
+#: из каталога, поэтому разойтись не может по построению.
+#:
+#: ``core`` предъявляется ВСЕГДА, независимо от активного скилла.
+SKILL_TOOLS: dict[str, tuple[str, ...]] = {
+    "core": (
+        "speak_text",
+        "get_robot_status",
+        "get_battery_level",
+        "get_current_time",
+        "get_perception_context",
+        "listen_for_response",
+    ),
+    "composer": (
+        "compose_music",
+        "execute_music_code",
+        "set_vibe_preset",
+        "search_samples",
+        "get_music_state",
+        "stop_music",
+    ),
+    "dj": (
+        "set_dj_mode",
+        "get_music_state",
+        "stop_music",
+    ),
+    "player": (
+        "gen_list_library",
+        "gen_play_from_library",
+        "gen_search_library",
+        "gen_get_track_info",
+        "gen_save_to_library",
+        "gen_delete_from_library",
+        "stop_music",
+    ),
+    "renardo-library": (
+        "save_track",
+        "list_tracks",
+        "load_track",
+        "delete_track",
+    ),
+    "navigation": (
+        "navigate_to_waypoint",
+        "navigate_to_coordinates",
+        "move_direction",
+        "stop_navigation",
+        "list_waypoints",
+        "save_waypoint",
+        "delete_waypoint",
+        "clear_waypoints",
+        "get_current_pose",
+    ),
+    "mapping": (
+        "start_mapping",
+        "continue_mapping",
+        "finish_mapping",
+        "optimize_map",
+        "load_map",
+    ),
+    "voice-tts": (
+        "set_voice",
+        "set_volume",
+        "set_pitch",
+        "set_speed",
+        "list_tts_voices",
+        "set_tts_provider",
+        "estimate_tts_duration",
+        "say",
+    ),
+    "memory": (
+        "memory_save",
+        "memory_search",
+        "memory_context",
+        "register_speaker",
+    ),
+    "expression": (
+        "play_animation",
+        "play_sound",
+        "get_sound_info",
+    ),
+    "knowledge": (
+        "search_web",
+        "faq_search",
+    ),
+    "scheduler": ("task_delta",),
+}
+
+
+def _assign_skills(entries: list[dict[str, Any]]) -> None:
+    """Проставить ``skill`` каждой записи и проверить обе стороны связи.
+
+    Падаем на:
+
+    * скилл ссылается на инструмент, которого нет в каталоге (опечатка,
+      переименование, удалённый инструмент) — иначе LLM получит скилл,
+      обещающий несуществующую функцию;
+    * llm_visible инструмент не попал ни в один скилл — при включённом
+      сужении каталога (Move B) такой инструмент стал бы невидимым молча.
+
+    Инструменты, скрытые от LLM (``llm_visible=False``), от второй
+    проверки освобождены: их всё равно никто не предъявляет.
+    """
+    by_name = {entry["name"]: entry for entry in entries}
+
+    unknown: list[str] = []
+    for skill, tool_names in sorted(SKILL_TOOLS.items()):
+        for tool_name in tool_names:
+            if tool_name not in by_name:
+                unknown.append(f"{skill} -> {tool_name}")
+    if unknown:
+        raise SystemExit(
+            "SKILL_TOOLS ссылается на инструменты, которых нет в каталоге:"
+            + "\n  "
+            + "\n  ".join(unknown)
+            + "\nПроверь имя в tools/gen_tool_catalog.py::SKILL_TOOLS."
+        )
+
+    for entry in entries:
+        entry["skill"] = tuple(
+            skill for skill, tool_names in sorted(SKILL_TOOLS.items()) if entry["name"] in tool_names
+        )
+
+    orphans = sorted(entry["name"] for entry in entries if entry.get("llm_visible", True) and not entry["skill"])
+    if orphans:
+        raise SystemExit(
+            f"{len(orphans)} llm_visible инструмент(ов) не отнесены "
+            + "ни к одному скиллу:\n  "
+            + "\n  ".join(orphans)
+            + "\nДобавь их в tools/gen_tool_catalog.py::SKILL_TOOLS."
+        )
 
 
 def extract_tools() -> list[dict[str, Any]]:
@@ -491,6 +615,10 @@ def extract_tools() -> list[dict[str, Any]]:
             entries.append(entry)
 
     entries.sort(key=lambda e: e["name"])
+    # Назначение скиллов — часть извлечения, а не отдельный шаг в main():
+    # иначе его можно забыть, и ``test_tool_catalog_is_current`` начнёт
+    # сравнивать каталог со скиллами против каталога без них.
+    _assign_skills(entries)
     return entries
 
 
@@ -532,9 +660,7 @@ def _extract_parameters(fn: ast.AST, cls_name: str, filename: str) -> list[dict[
             returned = node.value
             break
     if not isinstance(returned, (ast.List, ast.Tuple)):
-        raise ToolSourceError(
-            f"{cls_name} ({filename}): `parameters` must return a list literal"
-        )
+        raise ToolSourceError(f"{cls_name} ({filename}): `parameters` must return a list literal")
 
     params: list[dict[str, Any]] = []
     for element in returned.elts:
@@ -564,23 +690,15 @@ def _param_from_factory(factory: ast.FunctionDef, call: ast.Call) -> dict[str, A
     bare ``_prompt_param()`` yields the mandatory one.
     """
     inner = next(
-        n
-        for n in ast.walk(factory)
-        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "MCPToolParameter"
+        n for n in ast.walk(factory) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "MCPToolParameter"
     )
     param = _param_from_call(inner)
 
     # Factory defaults, then call-site overrides, for any field the factory
     # forwards from its own signature (`required=required`).
-    forwarded = {
-        kw.arg: kw.value.id
-        for kw in inner.keywords
-        if kw.arg and isinstance(kw.value, ast.Name)
-    }
+    forwarded = {kw.arg: kw.value.id for kw in inner.keywords if kw.arg and isinstance(kw.value, ast.Name)}
     arg_names = [a.arg for a in factory.args.args]
-    defaults = dict(
-        zip(arg_names[len(arg_names) - len(factory.args.defaults):], factory.args.defaults)
-    )
+    defaults = dict(zip(arg_names[len(arg_names) - len(factory.args.defaults) :], factory.args.defaults))
     supplied = {kw.arg: kw.value for kw in call.keywords if kw.arg}
     for positional_name, value in zip(arg_names, call.args):
         supplied[positional_name] = value
@@ -672,8 +790,7 @@ def main() -> int:
         current = OUT_FILE.read_text(encoding="utf-8") if OUT_FILE.exists() else ""
         if current != rendered:
             print(
-                f"{OUT_FILE.relative_to(REPO_ROOT)} is stale — "
-                "run `python tools/gen_tool_catalog.py`",
+                f"{OUT_FILE.relative_to(REPO_ROOT)} is stale — " "run `python tools/gen_tool_catalog.py`",
                 file=sys.stderr,
             )
             return 1

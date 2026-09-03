@@ -23,8 +23,9 @@ name: "G: Quest Caddyfile Contract"
 # Тесты чисто текстовые (парсинг Caddyfile + compose): без сети, Docker,
 # ROS2 и rclpy — поэтому ubuntu-latest + голый pytest, без ROS-контейнера.
 #
-# branches включает feature/** : ветка feature/avatar живёт долго, и Phase 1.6
-# quest-стек мёржится именно туда, а не сразу в develop.
+# branches включает feature/** : любая feature/* ветка с WebXR/glTF
+# изменениями получает проверку (avatar/wearable/...). Это покрывает
+# и feature/avatar (если когда-то оживёт), и feature/av-*.
 
 on:
   push:

@@ -26,13 +26,16 @@ import { decodeMsgpackMap } from "../wire/msgpack";
 
 // ───────────────────────── источник правды ─────────────────────────
 
-/** Режим аватара согласно ADR-0028 §4.1. */
+/** Режим аватара согласно ADR-0028 §4.1 — ровно значения `core.fsm.Mode`.
+ *
+ * `teleop_only` / `voice_only` здесь были, но в автомате их нет: панель
+ * рисовала две кнопки, на которые сервер всегда отвечает `bad_request`
+ * (см. `WIRE_MODES` в supervisor_node.py и тест
+ * `test_wire_modes_match_fsm_mode_enum`). */
 export type AvatarMode =
   | "off"
   | "telegram_active"
   | "avatar_present"
-  | "teleop_only"
-  | "voice_only"
   | "mixed";
 
 /** Детальная информация о владельце floor (кто и когда взял). */
@@ -135,8 +138,6 @@ const AVATAR_MODES: ReadonlyArray<AvatarMode> = [
   "off",
   "telegram_active",
   "avatar_present",
-  "teleop_only",
-  "voice_only",
   "mixed"
 ];
 
@@ -161,46 +162,6 @@ function parseFloor(v: unknown): Floor {
   const event: Floor["last_event"] = FLOOR_EVENTS.find((c) => c === ev) ?? null;
 
   return { held_by: held, last_event: event };
-}
-
-// ───────────────────────── локальная FSM (UX-уровень) ─────────────────────────
-
-/** Переходы режима согласно ADR-0028 §4.2. Запрещённые — `allowed=false`. */
-const MODE_TRANSITIONS: Record<AvatarMode, ReadonlyArray<AvatarMode>> = {
-  off: ["off", "avatar_present", "telegram_active"],
-  telegram_active: ["telegram_active", "off", "avatar_present"],
-  avatar_present: [
-    "avatar_present",
-    "off",
-    "telegram_active",
-    "teleop_only",
-    "voice_only",
-    "mixed"
-  ],
-  teleop_only: ["teleop_only", "avatar_present", "mixed", "off"],
-  voice_only: ["voice_only", "avatar_present", "mixed", "off"],
-  mixed: ["mixed", "avatar_present", "teleop_only", "voice_only", "off"]
-};
-
-export interface ModeTransitionResult {
-  applied: boolean;
-  /** Если applied=false, причина отказа FSM (например для UI-тоста). */
-  reason?: string;
-}
-
-/**
- * Проверяет, можно ли перейти `from → to`. Не отправляет ничего на сервер —
- * чистая функция для UX (UI блокирует переход, заранее зная, что
- * супервизор ответит MODE_CONFLICT).
- */
-export function canTransitionMode(from: AvatarMode, to: AvatarMode): ModeTransitionResult {
-  if (from === to) return { applied: true };
-  const allowed = MODE_TRANSITIONS[from];
-  if (allowed.includes(to)) return { applied: true };
-  return {
-    applied: false,
-    reason: `переход ${from} → ${to} запрещён FSM супервизора (ADR-0028 §4.2)`
-  };
 }
 
 // ───────────────────────── геометрия ─────────────────────────
@@ -477,10 +438,6 @@ export function humanMode(m: AvatarMode): string {
       return "telegram";
     case "avatar_present":
       return "вы — оператор";
-    case "teleop_only":
-      return "только рулю";
-    case "voice_only":
-      return "только голос";
     case "mixed":
       return "смешанный";
     default:

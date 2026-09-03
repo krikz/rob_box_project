@@ -16,11 +16,31 @@ dialogue_node:
     # дефолты dialogue_node и stt_node. Копия в YAML — это ровно то, что
     # разъехалось в #1252 и стоило #1734.
     dialogue_timeout: 300.0
-    llm_providers: "deepseek,minimax"   # issue #1089: первый = primary, остальные = fallbacks
+    # TODO(legacy-config): 2026-09-15 — отложенный rollout deepseek primary.
+    # Документация (docstring'и в src/rob_box_harness/rob_box_harness/providers/*.py,
+    # docs/guides/examples/minimax_llm.yaml) говорит [deepseek, minimax, mimo],
+    # runtime yaml оставлен на legacy [minimax, deepseek] намеренно (см. ADR-0043).
+    # При обновлении — синхронизировать test_both_voice_configs_route_dialogue_to_minimax
+    # (src/rob_box_voice/test/test_dialogue_shell.py) в том же коммите.
+    # issue #1089: первый = primary, остальные = fallbacks
+    llm_providers: "minimax,deepseek"
     # Issue #1219 — активный TTS-провайдер для LLM-контекста [TTS].
     # Должен совпадать с tts_node.yaml provider (minimax).
     tts_provider: minimax
     system_prompt_file: master_prompt_compact.txt
+    # Move A (change skill-scoped-dialogue-context): доменные фрагменты
+    # инструкций приезжают вплотную к текущему ходу, а не лежат на
+    # позиции 0 за двадцатью ходами истории. tools= при этом НЕ меняется,
+    # префикс провайдера остаётся кэшируемым.
+    # ВЫКЛЮЧЕНО: включать после сравнения voice_llm_prompt_tokens с
+    # baseline (Migration Plan change'а, шаг 2).
+    skills_enabled: true
+    # Move B — сузить tools= до core + активный скилл. Ломает
+    # кэшируемый префикс провайдера при каждой смене домена и
+    # добавляет отказ «роутер промахнулся -> LLM не видит нужный
+    # инструмент» (модель выкручивается через load_skill).
+    # ВЫКЛЮЧЕНО до подтверждённого выигрыша по метрикам.
+    skill_tool_narrowing: false
     history_max_turns: 20
     faq_mode_enabled: false
     faq_event_config_file: ''
@@ -28,15 +48,36 @@ dialogue_node:
     # Issue #1601 / ADR-0027 §3.4 — режим захвата голоса. supervisor
     # (ADR-0028 S5, единственная точка смены) переключает во время работы,
     # без рестарта ноды. Допустимые значения: respeaker | quest_passthrough |
-    # quest_ttts | quest_stt | quest_llm_formalize | off (W3-1 — «диалог
-    # off», блокирует ТОЛЬКО ReSpeaker-вход обычных людей; Telegram/Quest
-    # вход оператора продолжает работать, см. dialogue_node.parameters_callback
-    # и §3.5 docs/design/dialogue-mode-spec-2026-08-28.md).
+    # quest_ttts | quest_stt | quest_llm_formalize | quest_command (AV-22,
+    # Issue #1914 — STT → /avatar/command, личность молчит) | off (W3-1 —
+    # «диалог off», блокирует ТОЛЬКО ReSpeaker-вход обычных людей;
+    # Telegram/Quest вход оператора продолжает работать, см.
+    # dialogue_node.parameters_callback и §3.5 docs/design/
+    # dialogue-mode-spec-2026-08-28.md).
     voice_input_mode: respeaker
+    # AV-28 (P7-full голосового плана) — параметры формализации Quest-фраз
+    # при voice_input_mode=quest_llm_formalize. Дефолты подтягиваются из
+    # voice_presets.yaml (default_preset/default_language) на первый
+    # запрос — поэтому здесь пустые строки, а не «technical»/«ru».
+    # Пустой voice_presets_file → resolve на rob_box_voice/config/
+    # voice_presets.yaml через ROS-share.
+    voice_preset: ''
+    voice_output_language: ''
+    voice_presets_file: ''
+    # 0 → берётся llm_timeout_sec (одинаковый бюджет для формализатора и
+    # обычного диалога).
+    voice_formalize_timeout_sec: 0.0
     # Дополнительные ключи для переопределения оператором:
     # (все имеют default в коде — здесь выставляем «безопасные» значения)
     temperature: 0.7
-    max_tokens: 500
+    # 🔴 3000, а не 500 (02.09.2026). До #1883 (fe35b448) значение из YAML
+    # до провайдера НЕ доезжало, и лимит был провайдерский. После фикса оно
+    # реально уходит в API — и 500 токенов перестало вмещать tool-call:
+    # аргументы execute_music_code / compose_music (код трека, progression,
+    # план сета на 4-8 треков) режутся на finish_reason='length', JSON
+    # приходит битым, ход уходит в корректирующий ретрай. На роботе за один
+    # вечер — 8 срезов подряд (TRUNCATED_TOOL_ARGS, len=616..704).
+    max_tokens: 3000
     agent_max_turns: 20
     enable_mcp_tools: true
     # Issue #1279 — command-intent gate: фразы-команды (NAVIGATE/STOP/STATUS/

@@ -919,6 +919,12 @@ class TTSNode(Node):
         self.minimax_pronunciation_dict_raw = self.get_parameter(
             "minimax_pronunciation_dict"
         ).value
+        self.minimax_provider = None  # lazy: создаётся в _ensure_minimax_provider()
+        # Provider construction opens an httpx client and must be atomic with
+        # shutdown.  ROS callbacks can run on different executor threads.
+        self._minimax_provider_lock = threading.Lock()
+        self._minimax_provider_initialized = False
+        self._minimax_shutdown_requested = False
         # Typed-проекции для читаемости / unit-тестов:
         self.minimax_pitch = _parse_optional_int(self.minimax_pitch_raw)
         self.minimax_volume = _parse_optional_float(self.minimax_volume_raw)

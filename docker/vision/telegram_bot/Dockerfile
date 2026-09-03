@@ -15,8 +15,15 @@ LABEL org.opencontainers.image.description="Operator interface via Telegram for 
 LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 
 # Системные зависимости (минимум)
+# ffmpeg — AV-23 (issue #1915): voice_transcode.ogg_to_pcm16k гоняет
+# через него OGG/Opus из Telegram в PCM 16k. Базовый образ
+# rob_box_base:ros2-zenoh идёт от ros:humble-ros-base и ffmpeg не
+# содержит; ffmpeg стоит только в voice_base, от которого этот
+# контейнер НЕ наследуется. Без этой строки _find_ffmpeg() бросает
+# VoiceTranscodeError на первом же голосовом с робота.
 RUN apt-get update && apt-get install -y \
     python3-pip \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Python зависимости

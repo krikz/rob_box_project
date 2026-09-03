@@ -41,6 +41,18 @@ from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Bool, String
 from nav_msgs.msg import Odometry
 
+from rob_box_core.avatar_command import (
+    AVATAR_COMMAND_TOPIC,
+    build_command,
+    encode_command,
+    make_quest_client_id,
+)
+from rob_box_core.prompt_sections import (
+    PromptMarkupError,
+    merge_skill_prompts,
+    render_prompt,
+)
+from rob_box_core.tool_catalog import CORE_SKILL, skill_names, tools_for_skill
 from rob_box_harness.config import LLMConfig
 from rob_box_harness.core.dialog_core import DialogCore, DialogResult
 from rob_box_harness.core.dialogue_state_machine import (
@@ -76,8 +88,10 @@ from rob_box_harness.providers import (
 )
 from rob_box_harness.tools import FakeToolProvider, ToolProvider
 from rob_box_llm.errors import ProviderError
+from rob_box_llm.provider import LLMMessage, LLMSettings
 
 from rob_box_voice.core.command_parser import CommandParser, IntentType
+from rob_box_voice.core.skill_router import SkillRouter
 from rob_box_voice.core.dialogue_text import (
     DEFAULT_WAKE_WORDS, has_wake_word, is_silence_command, is_unsilence_command, strip_wake_word,
 )
@@ -89,6 +103,7 @@ from rob_box_voice.scheduler.quick_decide import QuickVerdict, quick_decide
 from rob_box_voice.core.dialogue_guards import (
     BABBLE_BANNED_OPENERS as BABBLE_BANNED_OPENERS,
     BABBLE_PERFORMANCE_KEYWORDS as BABBLE_PERFORMANCE_KEYWORDS,
+    GENERATED_MUSIC_TOOLS,
     MUSIC_GUARD_KEYWORDS,
     MUSIC_GUARD_VOCAL_KEYWORDS,
     MUSIC_MODE_TOOLS,
@@ -106,6 +121,7 @@ from rob_box_voice.core.dialogue_guards import (
     extract_renardo_code_lines,
     is_metalanguage_babble,
     is_music_stop_command,
+    is_planning_narration,
     user_wants_music,
     user_wants_performance,
 )
@@ -140,6 +156,8 @@ from rob_box_voice.speaker_profiles import (
     format_speaker_context,
 )
 from rob_box_voice.tts_voice_registry import format_tts_context
+# Issue #1787 — сборка промпта и валидация клички, придуманной LLM.
+from rob_box_voice.core import epithets
 
 # Issue #1160 — Prometheus metrics (этап 1 observability).
 # ``prometheus_client`` — optional dep; если её нет, всё превращается в
@@ -153,6 +171,8 @@ from rob_box_voice.observability import (
     record_quick_decide_verdict,
     record_session_duration,
     record_task_updated,
+    record_llm_prompt_tokens,
+    record_skill_activation,
     record_voice_llm_request,
     start_metrics_server,
     start_span,
@@ -313,6 +333,20 @@ class DialogueNode(Node):
         # confidently say «нет такой функции» (see issue #1403).
         self._mcp_tool_names: set[str] = self._collect_mcp_tool_names()
         self._system_prompt: str = self._load_system_prompt()
+        self._skill_prompts: dict[str, str] = self._load_skill_prompts()
+        # Фаза 5 change'а: §5 MUSIC и §6 WAYPOINTS размечены в мастер-промпте
+        # как секции скиллов. При skills_enabled=false остаются на месте
+        # (побайтово как раньше), при true — уезжают во фрагменты и едут
+        # вплотную к текущему ходу.
+        self._system_prompt, self._skill_prompts = self._split_skill_sections(
+            self._system_prompt, self._skill_prompts
+        )
+        self._validate_skill_fragments(self._skill_prompts)
+        #: Детерминированный пред-роутер домена. None — скиллы выключены.
+        self._skill_router: Any = None
+        #: Последние прочитанные счётчики load_skill из DialogCore — нужны,
+        #: чтобы публиковать ПРИРОСТ, а не абсолютное значение.
+        self._skill_load_seen: tuple[int, int] = (0, 0)
         self._verbose_llm: bool = bool(self.get_parameter("verbose_llm").value)
         self._wake_words: List[str] = list(self.get_parameter("wake_words").value)
         # Issue #1279 — gate команд движения/статуса: фразы, которые уже
@@ -330,6 +364,18 @@ class DialogueNode(Node):
             wake_words=["робот", "робокс", "робобокс"],
             confidence_base=0.8,
         )
+        # Пред-роутер домена переиспользует ТОТ ЖЕ CommandParser, что и
+        # command_intent_gate — второй классификатор не заводим.
+        if self._skill_prompts:
+            self._skill_router = SkillRouter(
+                self._command_parser,
+                known_skills=tuple(sorted(self._skill_prompts)),
+                confidence=self._command_intent_gate_confidence,
+            )
+            self.get_logger().info(
+                f"🧭 Пред-роутер скиллов включён: "
+                f"{', '.join(sorted(self._skill_prompts))}"
+            )
         # Issue #XXXX — «новая сессия» / «сбрось всё» / Telegram «/clear»:
         # сброс всего контекста текущего диалога. Фразы читаем из YAML,
         # дефолт — _DEFAULT_NEW_SESSION_PHRASES.
@@ -428,6 +474,19 @@ class DialogueNode(Node):
             inactivity_timeout=float(self.get_parameter("dialogue_timeout").value),
             system_prompt=self._system_prompt,
             use_streaming=bool(self.get_parameter("llm_streaming").value),
+            on_prompt=self._on_prompt_stats,
+            skill_prompts=self._skill_prompts,
+            narrow_tools_to_skill=bool(
+                self.get_parameter("skill_tool_narrowing").value
+            ),
+            # 🔴 FIX (issue #1883): forward the primary provider's
+            # ``LLMSettings`` so ``max_tokens`` / ``temperature`` from
+            # ``dialogue_node.yaml`` actually reach the wire request.
+            # Multi-provider chains get per-provider overrides via
+            # ``HealthAwareFallbackLLM.settings_for`` — the wrapper
+            # dispatches the right ``LLMSettings`` to whichever
+            # provider ends up answering.
+            llm_settings=getattr(self, "_llm_settings", None),
         )
 
         cbg = ReentrantCallbackGroup()
@@ -435,6 +494,14 @@ class DialogueNode(Node):
                            history=HistoryPolicy.KEEP_LAST, depth=10)
         self._response_pub = self.create_publisher(
             String, "/voice/dialogue/response", 10)
+        # AV-22 (Issue #1914) — producer /avatar/command для супервизор-агента.
+        # В режиме ``voice_input_mode="quest_command"`` (ADR-0027 §3.4) диалоговая
+        # нода не запускает LLM личности, а публикует распознанную фразу оператора
+        # в /avatar/command. Телеграм-бот публикует в тот же топик из handlers,
+        # поэтому контракт общий — см. rob_box_core.avatar_command и worker-brief
+        # §3.3. RELIABLE+KEEP_LAST depth=10 — на случай всплеска PTT-фраз.
+        self._avatar_command_pub = self.create_publisher(
+            String, AVATAR_COMMAND_TOPIC, 10)
         self._state_pub = self.create_publisher(String, "/voice/dialogue/state", 10)
         self._sound_trigger_pub = self.create_publisher(
             String, "/voice/sound/trigger", 10)
@@ -534,6 +601,20 @@ class DialogueNode(Node):
                 callback_group=cbg)
             self._speaker_register_pub = self.create_publisher(
                 String, "/voice/speaker/register", 10)
+            # Issue #1787 — реплики опознанного спикера уходят в
+            # speaker_id_node, который считает по ним темы и выбирает
+            # внутреннюю кличку (эпитет). Текст есть только здесь, БД
+            # спикеров — только там.
+            self._speaker_observe_pub = self.create_publisher(
+                String, "/voice/speaker/observe", 10)
+            # Issue #1787, слой 2 гибрида — speaker_id_node просит
+            # придумать кличку (LLM живёт только здесь), ответ уходит
+            # обратно на /voice/speaker/epithet.
+            self.create_subscription(
+                String, "/voice/speaker/epithet_request",
+                self._on_epithet_request, qos_r, callback_group=cbg)
+            self._speaker_epithet_pub = self.create_publisher(
+                String, "/voice/speaker/epithet", 10)
         self.create_subscription(
             Bool, "/audio/vad", self._on_vad, 10, callback_group=cbg)
         self.create_subscription(
@@ -707,6 +788,20 @@ class DialogueNode(Node):
         # Сбрасывается на новый user-initiated turn (см. _run_turn).
         self._tool_retry_used: bool = False
 
+        # Issue #1881 — общий бюджет СИНТЕТИЧЕСКИХ ретраев на user-turn.
+        # Раньше у каждого guard'а был свой одноразовый флаг
+        # (``_babble_retry_used`` / ``_action_claim_retry_used`` /
+        # ``_code_speech_retry_used`` / ``_tool_retry_used``), и каждый
+        # СВОЙ сбрасывал ЧУЖИЕ на следующем turn — ping-pong был неизбежен.
+        # Единый бюджет декрементируется любым guard'ом; на свежем
+        # user-initiated turn (или DJ-transition) — ресетится в
+        # ``_dispatch_turn`` / ``_run_turn``. Чтобы существующие
+        # поимённые флаги не разъехались с новым бюджетом (тесты читают
+        # их напрямую), все три guard'а синхронно выставляют и
+        # ``self._<name>_retry_used = True``, и декрементят
+        # ``_synthetic_retries_left`` через ``_consume_synthetic_retry``.
+        self._synthetic_retries_left: int = self.DEFAULT_SYNTHETIC_RETRIES
+
         # Issue #1160 — Prometheus metrics: длительность диалоговой
         # сессии. Фиксируем момент первого wake-word-диалога из IDLE;
         # при DIALOGUE_END / timeout пишем histogram.
@@ -800,6 +895,15 @@ class DialogueNode(Node):
         self.declare_parameter("temperature", 0.7)
         self.declare_parameter("max_tokens", 500)
         self.declare_parameter("system_prompt_file", "master_prompt_compact.txt")
+        # Move A (change skill-scoped-dialogue-context, фаза 2): доменные
+        # фрагменты инструкций, приезжающие вплотную к текущему ходу.
+        # ВЫКЛЮЧЕНО по умолчанию — включается решением Шифу по метрикам
+        # voice_llm_prompt_tokens, см. Migration Plan change'а.
+        self.declare_parameter("skills_enabled", False)
+        # Move B — сужение каталога до активного скилла. ВЫКЛЮЧЕНО:
+        # включать только после подтверждённого выигрыша по метрикам
+        # (Migration Plan change'а, шаг 3).
+        self.declare_parameter("skill_tool_narrowing", False)
         self.declare_parameter("history_max_turns", 20)
         self.declare_parameter("agent_max_turns", 20)
         self.declare_parameter("dialogue_timeout", 300.0)
@@ -907,8 +1011,10 @@ class DialogueNode(Node):
         self.declare_parameter("metrics_port", 9100)
         # Issue #1601 / ADR-0027 §3.4 — режим захвата голоса. Используется
         # supervisor'ом (ADR-0028 S5, единственная точка смены) для
-        # переключения источника входа (respeaker | quest_passthrough |
-        # quest_ttts | quest_stt | quest_llm_formalize | off — W3-1).
+        # ADR-0027 §3.4 — ``voice_input_mode`` — единая точка переключения
+        # источника входа (respeaker | quest_passthrough |
+        # quest_ttts | quest_stt | quest_llm_formalize | quest_command |
+        # off — W3-1, AV-22 — Issue #1914).
         # ``_voice_input_mode`` — кэш последнего значения в поле ноды,
         # который обновляет ``parameters_callback`` и читают
         # ``_on_stt``/``_on_quest_stt``; до прихода первого SetParameters
@@ -916,6 +1022,32 @@ class DialogueNode(Node):
         # "respeaker" (обратная совместимость).
         self.declare_parameter("voice_input_mode", "respeaker")
         self._voice_input_mode: str = "respeaker"
+        # ── AV-28: режим формализации Quest-фраз (voice_input_mode=
+        # ``quest_llm_formalize``). Параметры приходят от супервизора или
+        # напрямую от фронт-клиента через SetParameters (см.
+        # src/rob_box_quest/webxr_client/src/wire/messages.ts — там
+        # currentPreset/currentLanguage приезжают в payload команды
+        # ``voice_mode``). Дефолты подтягиваются из voice_presets.yaml
+        # (default_preset/default_language) в _resolve_voice_preset /
+        # _resolve_voice_language при первом использовании, чтобы голосовой
+        # план не зависел от жёстко зашитых значений здесь.
+        self.declare_parameter("voice_preset", "")
+        self.declare_parameter("voice_output_language", "")
+        # Путь к voice_presets.yaml. Пусто → resolve относительно
+        # ROS-share voice-конфига (``rob_box_voice/config/voice_presets.yaml``,
+        # см. _DEFAULT_VOICE_PRESETS_FILE ниже). Переопределение полезно
+        # для тестов: подсунуть свой yaml в /tmp и убедиться, что
+        # формализатор видит новый пресет без рестарта ноды (хотя
+        # рестарт безопаснее — кэш инвалидируется на declare_parameter /
+        # yaml-файл на старте).
+        self.declare_parameter("voice_presets_file", "")
+        # Таймаут LLM-формализатора (в секундах). При превышении — fallback
+        # на дословный TTS (как в режиме quest_ttts). 0 → llm_timeout_sec.
+        self.declare_parameter("voice_formalize_timeout_sec", 0.0)
+        # Кэш пресетов: ленивая загрузка yaml + prompt_files на первый
+        # запрос формализации; ``None`` означает «ещё не грузили».
+        self._voice_presets_cache: Optional[dict] = None
+        self._voice_presets_cache_path: Optional[str] = None
 
     def parameters_callback(self, params):
         """Роутер runtime-изменений параметров (``ros2 param set``).
@@ -961,6 +1093,35 @@ class DialogueNode(Node):
                     f"🔄 [issue 1734] barge_in_policy changed to {raw!r} "
                     f"(republished to stt_node)"
                 )
+            elif param.name == "voice_preset":
+                # AV-28: смена пресета через SetParameters от супервизора /
+                # фронта (UI-секция «Стиль речи» голосового плана). Кэш
+                # пресетов не инвалидируем — yaml+prompt_files статичны до
+                # рестарта; инвалидация тут создала бы лишний I/O на каждый
+                # клик по UI-кнопке. Если пресет не существует, метод
+                # _resolve_voice_preset() вернёт fallback на default_preset.
+                self.get_logger().info(
+                    f"🎙 [AV-28] voice_preset changed to {param.value!r}"
+                )
+            elif param.name == "voice_output_language":
+                self.get_logger().info(
+                    f"🌐 [AV-28] voice_output_language changed to {param.value!r}"
+                )
+            elif param.name == "voice_presets_file":
+                # AV-28: смена пути к yaml инвалидирует кэш — при следующем
+                # вызове _load_voice_presets() перечитается. Это безопаснее,
+                # чем молча оставлять старый кэш при ребрендинге пресетов.
+                self._voice_presets_cache = None
+                self._voice_presets_cache_path = None
+                self.get_logger().info(
+                    f"🗂 [AV-28] voice_presets_file changed to {param.value!r} "
+                    "(cache invalidated)"
+                )
+            elif param.name == "voice_formalize_timeout_sec":
+                self.get_logger().info(
+                    f"⏱ [AV-28] voice_formalize_timeout_sec changed to "
+                    f"{param.value!r}"
+                )
         return SetParametersResult(successful=True)
 
     def _load_system_prompt(self) -> str:
@@ -998,7 +1159,6 @@ class DialogueNode(Node):
             # registered but never mentioned, so the LLM kept using Renardo).
             # Other domain prompts (FAQ, navigation, web_search) stay
             # unchecked for now — TODO when their contracts harden.
-            self._validate_tools_in_prompt(prompt_file, prompt)
             return prompt
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(f"⚠️ Prompt not found ({exc})")
@@ -1022,41 +1182,243 @@ class DialogueNode(Node):
             )
             return set()
 
-    def _validate_tools_in_prompt(
-        self, prompt_file: str, prompt_text: str
-    ) -> None:
-        """Warn if MCP tools are missing from ``music_skill_prompt.txt``.
+    def _validate_skill_fragments(self, fragments: dict[str, str]) -> None:
+        """Предупредить, если инструмент скилла не назван в его тексте.
 
-        Music-domain only (per ARCH-review #1405 / #1409 / issue #1403
-        scope — the music prompt is a static contract the LLM reads
-        verbatim, so drift there is user-visible. Other domain prompts
-        stay unchecked; that's a future-cycle TODO).
+        Блокер живёт в тесте (``test_skill_prompt_contract.py``) — здесь
+        рантайм-страховка на случай, когда на робот приехал промпт из
+        другой сборки: контейнер поднимется и заговорит, но оператор
+        увидит в логе, какой именно скилл разъехался.
+
+        Раньше эта проверка (``_validate_tools_in_prompt``) смотрела
+        ТОЛЬКО музыкальный промпт и только предупреждением — а класс
+        расхождения общий: #1403 (``generate_music`` зарегистрирован, в
+        тексте не упомянут → LLM отвечает «нет такой функции»).
         """
-        # Match by filename stem — the prompt lives under prompts/skills/.
-        if "music_skill" not in prompt_file:
+        if not fragments:
             return
-        tool_names: set[str] = getattr(self, "_mcp_tool_names", set()) or set()
-        if not tool_names:
-            # Either ToolRegistry probe failed (already warned above) or
-            # the registry is empty — no point in spamming warnings.
-            return
-        prompt_lower = prompt_text.lower()
-        missing: list[str] = []
-        for tool_name in sorted(tool_names):
-            if tool_name.lower() not in prompt_lower:
-                missing.append(tool_name)
-        if missing:
+        for skill, text in sorted(fragments.items()):
+            lowered = text.lower()
+            try:
+                tools = tools_for_skill(
+                    skill, include_core=(skill == CORE_SKILL)
+                )
+            except KeyError:
+                self.get_logger().warning(
+                    f"⚠️ [skills] фрагмент {skill!r} не соответствует ни "
+                    "одному скиллу каталога — он не будет активирован"
+                )
+                continue
+            missing = sorted(
+                entry.name for entry in tools
+                if entry.name.lower() not in lowered
+            )
+            if missing:
+                self.get_logger().warning(
+                    f"⚠️ [skills] скилл {skill!r}: {len(missing)} "
+                    f"инструмент(ов) не описаны во фрагменте: "
+                    f"{', '.join(missing)}. LLM может ответить «нет такой "
+                    f"функции» (класс регрессии #1403)."
+                )
+            else:
+                self.get_logger().debug(
+                    f"[skills] {skill}: все {len(tools)} инструментов описаны ✓"
+                )
+
+    def _skills_enabled(self) -> bool:
+        """Значение параметра ``skills_enabled`` (Move A).
+
+        Отдельный метод, потому что параметр читают два места — загрузка
+        фрагментов и раскол мастер-промпта, — и они обязаны видеть одно и
+        то же значение. Старый yaml без параметра — это ``False``.
+        """
+        try:
+            return bool(self.get_parameter("skills_enabled").value)
+        except Exception:  # noqa: BLE001 — параметр не объявлен (старый yaml)
+            return False
+
+    def _split_skill_sections(
+        self, prompt: str, fragments: dict[str, str]
+    ) -> tuple[str, dict[str, str]]:
+        """Развернуть разметку доменных секций мастер-промпта (фаза 5).
+
+        При ``skills_enabled=false`` возвращает промпт БЕЗ изменений (только
+        без строк-маркеров) и фрагменты как есть — дефолтная конфигурация
+        обязана вести себя ровно как до change'а.
+
+        При ``true`` секции §5 MUSIC и §6 WAYPOINTS уезжают из системного
+        промпта во фрагменты своих скиллов: там они окажутся вплотную к
+        текущей реплике вместо позиции 0.
+
+        Сломанная разметка не роняет ноду и не теряет правила: остаёмся в
+        режиме выключенных скиллов, то есть текст секций остаётся в промпте.
+        """
+        enabled = self._skills_enabled()
+        try:
+            rendered = render_prompt(prompt, skills_enabled=enabled)
+        except PromptMarkupError as exc:
+            self.get_logger().error(
+                f"❌ Разметка секций мастер-промпта сломана: {exc}. "
+                f"Доменные секции остаются в системном промпте "
+                f"(поведение как при skills_enabled=false)."
+            )
+            try:
+                rendered = render_prompt(prompt, skills_enabled=False)
+            except PromptMarkupError:
+                return prompt, fragments
+            return rendered.system_prompt, fragments
+
+        if not enabled:
+            return rendered.system_prompt, fragments
+
+        merged = merge_skill_prompts(fragments, rendered)
+        moved = rendered.by_skill()
+        if moved:
+            self.get_logger().info(
+                "🧩 Доменные секции мастер-промпта уехали во фрагменты: "
+                + ", ".join(
+                    f"{skill} (+{len(text)} симв)"
+                    for skill, text in sorted(moved.items())
+                )
+                + f"; системный промпт {len(prompt)} → "
+                f"{len(rendered.system_prompt)} симв"
+            )
+        return rendered.system_prompt, merged
+
+    def _load_skill_prompts(self) -> dict[str, str]:
+        """Прочитать фрагменты доменных скиллов с диска.
+
+        Файлы читает нода, а не harness: harness обязан оставаться без
+        файловой системы и без ROS2 (он получает готовый словарь).
+
+        При ``skills_enabled=false`` возвращаем пустой словарь — тогда
+        DialogCore ведёт себя ровно как до скиллов, побайтово.
+
+        Имя файла = имя скилла из каталога. Отсутствие файла для
+        объявленного скилла — не ошибка старта: скилл останется без
+        текста, а его инструменты никуда не денутся. Ронять ноду из-за
+        промпта нельзя — робот должен подняться и говорить.
+        """
+        if not self._skills_enabled():
+            self.get_logger().info(
+                "ℹ️ skills_enabled=false — доменные скиллы выключены "
+                "(Move A не активен, поведение как до change'а)"
+            )
+            return {}
+
+        try:
+            from ament_index_python.packages import get_package_share_directory
+
+            skills_dir = os.path.join(
+                get_package_share_directory("rob_box_voice"), "prompts", "skills"
+            )
+            loaded: dict[str, str] = {}
+            absent: list[str] = []
+            for skill in skill_names():
+                path = os.path.join(skills_dir, f"{skill}.txt")
+                try:
+                    with open(path, "r", encoding="utf-8") as fh:
+                        text = fh.read().strip()
+                except OSError:
+                    absent.append(skill)
+                    continue
+                if text:
+                    loaded[skill] = text
+                else:
+                    absent.append(skill)
+            self.get_logger().info(
+                f"🧩 Загружено фрагментов скиллов: {len(loaded)} "
+                f"({', '.join(sorted(loaded)) or '—'})"
+            )
+            if absent:
+                self.get_logger().warning(
+                    f"⚠️ Без текста остались скиллы: {', '.join(sorted(absent))} "
+                    "— их инструменты работают, но доменных инструкций у LLM нет"
+                )
+            return loaded
+        except Exception as exc:  # noqa: BLE001 — промпт не роняет ноду
             self.get_logger().warning(
-                f"[issue 1409] {len(missing)} MCP tool(s) not described "
-                f"in {prompt_file}: {', '.join(missing)}. "
-                f"LLM may answer «нет такой функции» and fall back to "
-                f"a different tool (regression class of #1403)."
+                f"⚠️ Не удалось загрузить фрагменты скиллов ({exc}); "
+                "Move A остаётся выключенным"
             )
-        else:
-            self.get_logger().debug(
-                f"[issue 1409] All {len(tool_names)} MCP tools are "
-                f"mentioned in {prompt_file} ✓"
+            return {}
+
+    def _activate_skill_for(self, text: str) -> None:
+        """Активировать домен ДО обращения к LLM.
+
+        Промах роутера безвреден: при выключенном сужении каталога LLM
+        видит все инструменты и при необходимости позовёт ``load_skill``
+        сама. Поэтому здесь нет ни ретраев, ни исключений наружу —
+        только попытка и метрика.
+        """
+        # getattr, а не прямой доступ: юнит-тесты этого репо собирают ноду
+        # через object.__new__ и не исполняют __init__, поэтому атрибута
+        # может не быть. Телеметрия и активация не имеют права ронять ход
+        # ни в проде, ни в тестовом двойнике.
+        router = getattr(self, "_skill_router", None)
+        if router is None:
+            return
+        try:
+            skill = router.route(text)
+        except Exception as exc:  # noqa: BLE001 — роутер не роняет ход
+            self.get_logger().debug(f"⚠️ [skills] router failed: {exc}")
+            return
+        if not skill:
+            return
+        try:
+            self._core.set_active_skill(skill)
+            record_skill_activation(skill, source="router")
+            self.get_logger().debug(f"🧭 [skills] активирован {skill!r}")
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().debug(f"⚠️ [skills] activation failed: {exc}")
+
+    def _publish_skill_load_counters(self) -> None:
+        """Опубликовать прирост «домен пришлось грузить вызовом LLM».
+
+        Доля этого источника против ``router`` — метрика промахов
+        пред-роутера (задача 3.7).
+        """
+        core = getattr(self, "_core", None)
+        if core is None or getattr(self, "_skill_router", None) is None:
+            return
+        try:
+            loaded, misses = core.skill_load_counters
+        except Exception:  # noqa: BLE001
+            return
+        seen_loaded, seen_misses = getattr(self, "_skill_load_seen", (0, 0))
+        for _ in range(max(0, loaded - seen_loaded)):
+            record_skill_activation(core.active_skill, source="llm")
+        for _ in range(max(0, misses - seen_misses)):
+            record_skill_activation("none", source="miss")
+        self._skill_load_seen = (loaded, misses)
+
+    def _on_prompt_stats(self, stats: Any) -> None:
+        """Опубликовать размер промпта, посчитанный DialogCore.
+
+        Колбэк зовётся из harness на КАЖДОЕ обращение к LLM, включая
+        каждую итерацию тул-цикла. Harness намеренно ничего не знает про
+        Prometheus — он только считает, публикует нода.
+
+        Любое исключение здесь гасится: телеметрия не имеет права ронять
+        живой ход. DialogCore тоже глушит исключения наблюдателя — это
+        второй слой на случай прямого вызова из тестов.
+        """
+        try:
+            record_llm_prompt_tokens(
+                stats.provider,
+                tokens=stats.prompt_tokens,
+                skill=stats.skill,
+                estimated=stats.estimated,
             )
+            if self._verbose_llm:
+                self.get_logger().debug(
+                    f"[prompt] tokens={stats.prompt_tokens} "
+                    f"provider={stats.provider} skill={stats.skill} "
+                    f"estimated={stats.estimated}"
+                )
+        except Exception as exc:  # noqa: BLE001 — метрика не роняет ход
+            self.get_logger().debug(f"⚠️ [metrics] prompt stats failed: {exc}")
+
     def _build_memory(self) -> MemoryStore:
         try:
             store: MemoryStore = SQLiteVoiceMemory(
@@ -1091,6 +1453,11 @@ class DialogueNode(Node):
     _LLM_PROVIDER_REGISTRY: dict[str, dict[str, Any]] = LLM_PROVIDER_REGISTRY
 
     _BARGE_IN_POLICIES = ("replace", "classify")
+
+    # ── AV-28: дефолтный путь к voice_presets.yaml относительно ROS-share
+    # пакета rob_box_voice. Используется, когда параметр voice_presets_file
+    # не задан (типичный кейс на работающем роботе).
+    _DEFAULT_VOICE_PRESETS_FILE = "config/voice_presets.yaml"
 
     def _resolve_barge_in_policy(self) -> str:
         """Resolve ``barge_in_policy`` (S1, scheduler-segments-merge plan).
@@ -1203,19 +1570,16 @@ class DialogueNode(Node):
             if env_var:
                 api_key = os.environ.get(env_var) or None
 
-        # Timeout / temperature / max_tokens — only if YAML set non-zero
+        # Timeout — read here so the provider build can use it directly.
+        # ``temperature`` and ``max_tokens`` are read by ``_build_llm``
+        # (issue #1883) where they are assembled into a ``LLMSettings``
+        # object that flows into ``DialogCore``. Reading them here too
+        # would be a duplicate path that drifts silently — ``_build_llm``
+        # is the single owner.
         try:
             timeout_s = float(self.get_parameter(f"{name}.timeout_s").value or 0)
         except Exception:
             timeout_s = 0.0
-        try:
-            temperature = float(self.get_parameter(f"{name}.temperature").value or 0)
-        except Exception:
-            temperature = 0.0
-        try:
-            max_tokens = int(self.get_parameter(f"{name}.max_tokens").value or 0)
-        except Exception:
-            max_tokens = 0
 
         # ── Build ──────────────────────────────────────────────────
         try:
@@ -1278,12 +1642,26 @@ class DialogueNode(Node):
                 "Check API keys and environment variables."
             )
 
+        # ── Issue #1883: per-provider LLM settings (max_tokens / temperature)
+        # Build a {provider_name: LLMSettings} map from the YAML
+        # ``<name>.temperature`` / ``<name>.max_tokens`` params, falling
+        # back to the global ``temperature`` / ``max_tokens`` for that
+        # provider. The map is consumed by ``HealthAwareFallbackLLM`` so
+        # each provider in the chain actually receives its own settings
+        # on the wire (previously the values were logged and silently
+        # dropped). ``None`` for a field means "leave it to the provider
+        # default" — exactly the LLMSettings semantics.
+        settings_for: dict[str, LLMSettings] = {
+            name: self._build_llm_settings_for(name) for name in chain_display
+        }
+        primary_settings: LLMSettings = settings_for[chain_display[0]]
+
         # ── Start-up config log ─────────────────────────────────────────
-        temperature = float(self.get_parameter("temperature").value or 0.7)
-        max_tokens = int(self.get_parameter("max_tokens").value or 500)
         self.get_logger().info(
             f"⚙️ LLM CONFIG: chain={chain_display} "
-            f"temperature={temperature} max_tokens={max_tokens}"
+            f"primary.temperature={primary_settings.temperature} "
+            f"primary.max_tokens={primary_settings.max_tokens} "
+            f"per_provider={[f'{n}=({s.temperature},{s.max_tokens})' for n, s in settings_for.items()]}"
         )
 
         # ── Single provider — no fallback needed ────────────────────────
@@ -1294,6 +1672,10 @@ class DialogueNode(Node):
             self.get_logger().info(
                 f"[health] build_llm: provider_chain={chain_display} active={chain_display[0]} (single)",
             )
+            # Stash on the provider object so the node's __init__ can pick
+            # up the same LLMSettings when wiring DialogCore (single-provider
+            # path doesn't go through HealthAwareFallbackLLM).
+            self._llm_settings = primary_settings
             return built[0]
 
         # ── Multi-provider: HealthAwareFallbackLLM ──────────────────────
@@ -1334,12 +1716,77 @@ class DialogueNode(Node):
         self.get_logger().info(
             f"[health] build_llm: provider_chain={chain_display} active={chain_display[0]} (health-aware, TTL {health_ttl:.0f}s)",
         )
+        # Stash for the DialogCore wiring below — the fallback wrapper
+        # is the LLM that DialogCore talks to, but it will dispatch
+        # ``settings_for[name]`` to each provider on its own, so we pass
+        # the PRIMARY provider's settings as the DialogCore default and
+        # let ``HealthAwareFallbackLLM.settings_for`` do the per-provider
+        # rewrite on top.
+        self._llm_settings = primary_settings
         return HealthAwareFallbackLLM(
             built,
             cache=cache,
             balance_checkers=balance_checkers,
             logger=self.get_logger(),
+            settings_for=settings_for,
         )
+
+    def _build_llm_settings_for(self, name: str) -> LLMSettings:
+        """Build the ``LLMSettings`` for one provider in the chain.
+
+        Per-provider YAML (issue #1883) overrides the global values::
+
+            temperature: 0.7
+            max_tokens: 500
+            minimax:
+              temperature: 0.3        # only used when minimax is active
+              max_tokens: 250
+            deepseek:
+              max_tokens: 800         # deepseek has a longer context
+
+        The precedence:
+
+        1. ``<name>.temperature`` / ``<name>.max_tokens`` — per-provider.
+           ``0`` means "no override; fall back to global".
+        2. Global ``temperature`` / ``max_tokens``.
+
+        The result is forwarded to ``HealthAwareFallbackLLM`` via
+        ``settings_for=`` so each provider in the chain receives its
+        own ``LLMSettings`` on the wire.
+        """
+        try:
+            per_temperature = float(
+                self.get_parameter(f"{name}.temperature").value or 0.0
+            )
+        except Exception:
+            per_temperature = 0.0
+        try:
+            per_max_tokens = int(
+                self.get_parameter(f"{name}.max_tokens").value or 0
+            )
+        except Exception:
+            per_max_tokens = 0
+        try:
+            global_temperature = float(self.get_parameter("temperature").value or 0.0)
+        except Exception:
+            global_temperature = 0.0
+        try:
+            global_max_tokens = int(self.get_parameter("max_tokens").value or 0)
+        except Exception:
+            global_max_tokens = 0
+        temperature = per_temperature if per_temperature > 0 else global_temperature
+        max_tokens = per_max_tokens if per_max_tokens > 0 else global_max_tokens
+        # ``LLMSettings`` uses ``None`` to mean "leave it to the provider
+        # default"; we use ``0`` as "no override" because YAML params
+        # can't tell the difference between "0" and "unset" for the ROS
+        # double/int parameters. Translate 0 → None to keep the wire
+        # request clean (no ``temperature: 0`` shoved to MiniMax, which
+        # would override the model default and likely break responses).
+        return LLMSettings(
+            temperature=(temperature if temperature > 0 else None),
+            max_tokens=(max_tokens if max_tokens > 0 else None),
+        )
+
     def _build_tool_provider(self) -> ToolProvider:
         # W5a: wire the real ROSMCPToolProvider when ``tool_provider``
         # is the default ``"ros_mcp"``. The previous version silently
@@ -1594,6 +2041,351 @@ class DialogueNode(Node):
             return dict(data.get("event", data) or {})
         return {}
 
+    # ═══════════════════════════════════════════════════════════════════════
+    #  AV-28: voice_presets — режим формализации Quest-фраз
+    #  (voice_input_mode=quest_llm_formalize). Источник истины —
+    #  config/voice_presets.yaml (см. дочернюю карточку t_862ec1a2 / PR
+    #  #1931): ключ → prompt_file (RU+EN секции). Дефолты — в самом yaml.
+    #  Эти методы читают yaml лениво, кэшируют в self._voice_presets_cache
+    #  до смены параметра voice_presets_file.
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def _resolve_voice_presets_path(self) -> str:
+        """Абсолютный путь к voice_presets.yaml.
+
+        Приоритет:
+          1. Параметр ``voice_presets_file`` (если задан — абсолютный или
+             относительный путь от CWD).
+          2. ROS-share ``rob_box_voice`` + ``_DEFAULT_VOICE_PRESETS_FILE``
+             (типичный кейс на работающем роботе).
+          3. Путь относительно текущей директории пакета
+             (``src/rob_box_voice/config/voice_presets.yaml``) — fallback
+             для запуска вне ROS-share (юнит-тесты, локальная разработка).
+        """
+        try:
+            cfg_value = self.get_parameter("voice_presets_file").value
+        except Exception:  # noqa: BLE001 — голый объект в unit-тестах
+            cfg_value = ""
+        cfg_value = str(cfg_value or "").strip()
+        if cfg_value:
+            return cfg_value
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            pkg_share = get_package_share_directory("rob_box_voice")
+            return os.path.join(pkg_share, self._DEFAULT_VOICE_PRESETS_FILE)
+        except Exception:  # noqa: BLE001 — пакет не в окружении (тесты)
+            # Fallback: путь относительно репо — для запуска вне colcon
+            # install (юнит-тесты, локальный запуск, IDE).
+            repo_path = os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__), "..", "..", "config",
+                    "voice_presets.yaml",
+                )
+            )
+            return repo_path
+
+    def _load_voice_presets(self) -> dict:
+        """Загрузить voice_presets.yaml + лениво прочитать prompt_files.
+
+        Возвращает dict вида::
+
+            {
+                "presets": {
+                    "technical": {"name": "...", "prompt_text": "..."},
+                    ...
+                },
+                "languages": ["ru", "en"],
+                "default_preset": "technical",
+                "default_language": "ru",
+            }
+
+        При любой ошибке (yaml не найден, битый yaml, не заданы
+        default_*) возвращает ``{"presets": {}, "languages": [],
+        "default_preset": "technical", "default_language": "ru"}`` — это
+        безопасный минимум, чтобы методы ``_resolve_*`` могли отдать
+        «default» даже когда формализатор по сути выключен. В этом случае
+        ``_formalize_with_llm`` увидит отсутствие prompt_text и сразу
+        уйдёт в fallback на ``_speak_direct``.
+        """
+        path = self._resolve_voice_presets_path()
+        cached = getattr(self, "_voice_presets_cache", None)
+        if cached is not None and getattr(
+            self, "_voice_presets_cache_path", None
+        ) == path:
+            return cached
+
+        fallback: dict = {
+            "presets": {},
+            "languages": [],
+            "default_preset": "technical",
+            "default_language": "ru",
+            "_path": path,
+        }
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+        except FileNotFoundError:
+            self.get_logger().warning(
+                f"⚠️ [AV-28] voice_presets.yaml not found at {path} "
+                "— formalize mode will fall back to direct TTS"
+            )
+            self._voice_presets_cache = fallback
+            self._voice_presets_cache_path = path
+            return fallback
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(
+                f"⚠️ [AV-28] Failed to read voice_presets.yaml at {path}: "
+                f"{exc} — formalize mode disabled"
+            )
+            self._voice_presets_cache = fallback
+            self._voice_presets_cache_path = path
+            return fallback
+
+        presets_raw = data.get("presets") or {}
+        presets: dict = {}
+        for key, cfg in presets_raw.items():
+            if not isinstance(cfg, dict):
+                continue
+            prompt_file = cfg.get("prompt_file")
+            prompt_text = ""
+            if prompt_file:
+                prompt_path = self._resolve_prompt_path(path, prompt_file)
+                try:
+                    with open(prompt_path, "r", encoding="utf-8") as pf:
+                        prompt_text = pf.read()
+                except FileNotFoundError:
+                    self.get_logger().warning(
+                        f"⚠️ [AV-28] preset '{key}' prompt file missing: "
+                        f"{prompt_path}"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self.get_logger().error(
+                        f"⚠️ [AV-28] failed to read preset '{key}' prompt "
+                        f"({prompt_path}): {exc}"
+                    )
+            presets[str(key)] = {
+                "name": str(cfg.get("name") or key),
+                "prompt_file": str(prompt_file or ""),
+                "prompt_text": prompt_text,
+            }
+        languages = data.get("languages") or ["ru", "en"]
+        if not isinstance(languages, list):
+            languages = ["ru", "en"]
+        result = {
+            "presets": presets,
+            "languages": [str(x).lower() for x in languages],
+            "default_preset": str(data.get("default_preset") or "technical"),
+            "default_language": str(data.get("default_language") or "ru").lower(),
+            "_path": path,
+        }
+        self._voice_presets_cache = result
+        self._voice_presets_cache_path = path
+        self.get_logger().info(
+            f"📚 [AV-28] Loaded voice_presets: {len(presets)} presets "
+            f"(default: {result['default_preset']}/{result['default_language']}) "
+            f"from {path}"
+        )
+        return result
+
+    @staticmethod
+    def _resolve_prompt_path(yaml_path: str, prompt_file: str) -> str:
+        """Абсолютный путь к prompt_file (относительно директории yaml).
+
+        Конвенция voice_presets.yaml: ``prompt_file: presets/<key>.txt`` —
+        путь относительно директории с yaml. Абсолютные пути
+        поддерживаем как escape-hatch для нестандартной раскладки.
+        """
+        if os.path.isabs(prompt_file):
+            return prompt_file
+        return os.path.join(os.path.dirname(yaml_path), prompt_file)
+
+    def _resolve_voice_preset(self) -> str:
+        """Текущий пресет формализации: параметр voice_preset или default.
+
+        Возвращает ключ пресета (lower-snake, ASCII), НЕ его имя. Если
+        ключ не существует в yaml — тихо подменяет на default_preset
+        (нормализация: ручной ввод через ``ros2 param set`` может прийти
+        с любой раскладкой; yaml — единственный источник истины о
+        допустимых ключах).
+        """
+        data = self._load_voice_presets()
+        try:
+            raw = str(self.get_parameter("voice_preset").value or "").strip()
+        except Exception:  # noqa: BLE001
+            raw = ""
+        default = str(data.get("default_preset") or "technical")
+        if not raw:
+            return default
+        presets = data.get("presets") or {}
+        if raw in presets:
+            return raw
+        self.get_logger().warning(
+            f"⚠️ [AV-28] voice_preset={raw!r} not in yaml "
+            f"(allowed: {list(presets.keys())}) — falling back to {default!r}"
+        )
+        return default
+
+    def _resolve_voice_language(self) -> str:
+        """Текущий язык формализации: параметр voice_output_language или default.
+
+        Lower-case, валидация против ``languages:`` в yaml. Неизвестный
+        язык → warning + fallback на default_language.
+        """
+        data = self._load_voice_presets()
+        try:
+            raw = str(
+                self.get_parameter("voice_output_language").value or ""
+            ).strip()
+        except Exception:  # noqa: BLE001
+            raw = ""
+        default = str(data.get("default_language") or "ru").lower()
+        if not raw:
+            return default
+        normalized = raw.lower()
+        languages = [str(x).lower() for x in (data.get("languages") or [])]
+        if normalized in languages:
+            return normalized
+        self.get_logger().warning(
+            f"⚠️ [AV-28] voice_output_language={raw!r} not in yaml "
+            f"(allowed: {languages}) — falling back to {default!r}"
+        )
+        return default
+
+    def _get_formalize_timeout(self) -> float:
+        """Эффективный таймаут формализатора (секунды).
+
+        Параметр ``voice_formalize_timeout_sec`` (AV-28). ``0`` →
+        ``llm_timeout_sec`` (уже используется для основного диалога),
+        чтобы у формализатора был тот же бюджет, что и у обычной реплики.
+        """
+        try:
+            raw = float(
+                self.get_parameter("voice_formalize_timeout_sec").value or 0.0
+            )
+        except Exception:  # noqa: BLE001
+            raw = 0.0
+        if raw > 0.0:
+            return raw
+        try:
+            raw = float(self.get_parameter("llm_timeout_sec").value or 0.0)
+        except Exception:  # noqa: BLE001
+            raw = 0.0
+        return raw if raw > 0.0 else 30.0
+
+    async def _formalize_with_llm(
+        self,
+        text: str,
+        preset_key: str,
+        language: str,
+    ) -> None:
+        """Переписать фразу оператора в стиле пресета и озвучить.
+
+        Вызов идёт строго в обход DialogCore: это НЕ диалог, формализатор
+        не должен отвечать на user_input и использовать инструменты. Поэ-
+        тому ``tools=[]`` и messages из двух LLMMessage (system =
+        prompt_text пресета, user = исходная фраза). Стриминг не включаем
+        — для формализации нам нужен весь текст сразу, а
+        ``asyncio.wait_for(llm.complete(...), timeout=...)`` гарантирует,
+        что зависший upstream не заблокирует ROS-callback.
+
+        При ЛЮБОЙ ошибке (yaml не загрузился, prompt_text пустой,
+        ProviderError, asyncio.TimeoutError, пустой ответ LLM) —
+        fallback на ``_speak_direct(text)`` (дословный TTS, как в
+        ``quest_ttts``). Это соглашение body карточки: «если LLM
+        вернул пустоту или превысил timeout — fallback на дословный TTS».
+        """
+        start_ts = time.monotonic()
+        self.get_logger().info(
+            f"🚀 [quest/AV-28] formalize start: preset={preset_key} "
+            f"language={language} text={text[:60]!r}"
+        )
+        try:
+            presets = self._load_voice_presets().get("presets") or {}
+            preset_cfg = presets.get(preset_key)
+            prompt_text = (preset_cfg or {}).get("prompt_text") or ""
+            if not prompt_text:
+                self.get_logger().warning(
+                    f"⚠️ [quest/AV-28] preset {preset_key!r} has no "
+                    "prompt_text — fallback to direct TTS"
+                )
+                self._speak_direct(text)
+                return
+            messages = [
+                LLMMessage(role="system", content=prompt_text),
+                LLMMessage(role="user", content=text),
+            ]
+            timeout_s = self._get_formalize_timeout()
+            llm_obj = getattr(self, "_llm", None)
+            if llm_obj is None:
+                self.get_logger().warning(
+                    "⚠️ [quest/AV-28] self._llm is not initialised — "
+                    "fallback to direct TTS"
+                )
+                self._speak_direct(text)
+                return
+            try:
+                response = await asyncio.wait_for(
+                    llm_obj.complete(messages, tools=[]),
+                    timeout=timeout_s,
+                )
+            except asyncio.TimeoutError:
+                self.get_logger().warning(
+                    f"⏱ [quest/AV-28] LLM timeout after {timeout_s:.1f}s "
+                    f"(preset={preset_key}) — fallback to direct TTS"
+                )
+                self._speak_direct(text)
+                return
+            except ProviderError as exc:
+                self.get_logger().warning(
+                    f"⚠️ [quest/AV-28] LLM provider error: {exc} — "
+                    "fallback to direct TTS"
+                )
+                self._speak_direct(text)
+                return
+            except Exception as exc:  # noqa: BLE001 — network/HTTP/etc.
+                self.get_logger().warning(
+                    f"⚠️ [quest/AV-28] LLM call failed: {exc!r} — "
+                    "fallback to direct TTS"
+                )
+                self._speak_direct(text)
+                return
+
+            rewritten = (response.content or "").strip() if response else ""
+            if not rewritten:
+                self.get_logger().warning(
+                    f"⚠️ [quest/AV-28] LLM returned empty rewrite "
+                    f"(preset={preset_key}) — fallback to direct TTS"
+                )
+                self._speak_direct(text)
+                return
+
+            # Защита от prompt-leak: если модель вернула ровно исходную
+            # фразу, считаем это сбоем формализации (формализатор должен
+            # что-то изменить в стиле) — и тоже fallback. Это редкий
+            # кейс, но он лучше TTS-дословки, чем сломанный «режим»,
+            # который не делает ничего.
+            if rewritten == text:
+                self.get_logger().info(
+                    f"ℹ️ [quest/AV-28] LLM returned identical text "
+                    f"(preset={preset_key}) — fallback to direct TTS"
+                )
+                self._speak_direct(text)
+                return
+
+            elapsed = time.monotonic() - start_ts
+            self.get_logger().info(
+                f"✅ [quest/AV-28] formalize final: preset={preset_key} "
+                f"language={language} elapsed={elapsed:.2f}s "
+                f"rewritten={rewritten[:80]!r}"
+            )
+            self._speak_direct(rewritten)
+        except Exception as exc:  # noqa: BLE001 — last-resort guard
+            self.get_logger().error(
+                f"💥 [quest/AV-28] unexpected error in formalize: {exc!r} — "
+                "fallback to direct TTS"
+            )
+            self._speak_direct(text)
+
     def _render_event_instructions(self, base_prompt: str) -> str:
         """Render the full system prompt with role + event context applied."""
         profile = getattr(self, "_event_profile", None) or {}
@@ -1744,7 +2536,17 @@ class DialogueNode(Node):
 
         - ``quest_ttts`` → **повторить голосом робота дословно** (STT → TTS,
           без LLM — это не диалог, а «озвучка моих слов»);
+        - ``quest_llm_formalize`` → **переписать фразу через LLM в стиле
+          пресета** (AV-28 / P7-full голосового плана) и озвучить. При сбое
+          LLM — fallback на дословный TTS;
         - ``quest_stt`` → LLM-диалог без wake-word (Phase 2, follow-up);
+        - ``quest_command`` (AV-22, Issue #1914) → **опубликовать** в
+          ``/avatar/command`` (``source="quest"``) и НЕ запускать LLM
+          личности. Личность «молчит» — гейт «личность не отвечает
+          параллельно» (worker-brief §3.3, ADR-0018). ``session_id``
+          берём из ``self._quest_session_id``, который выставляет
+          quest-сервер через ``/avatar/set_voice_mode`` (follow-up).
+          До его прихода используем дефолт ``unknown``;
         - ``quest_passthrough`` → не сюда (звук играет sound_node напрямую);
         - ``respeaker`` (default) → игнор: Quest-режим не активен.
         """
@@ -1752,17 +2554,83 @@ class DialogueNode(Node):
             mode = str(self.get_parameter("voice_input_mode").value or "respeaker")
         except Exception:  # noqa: BLE001 — голый объект в тестах без параметра
             mode = "respeaker"
+        text = (msg.data or "").strip()
         if mode == "quest_ttts":
-            text = (msg.data or "").strip()
             if text:
                 self.get_logger().info(f"🗣️ [quest] robot-voice repeat: {text[:80]!r}")
+                self._speak_direct(text)
+            return
+        if mode == "quest_llm_formalize":
+            # AV-28 (P7-full): вместо дословного TTS прогоняем фразу через
+            # LLM с промптом пресета, чтобы робот произнёс её в выбранном
+            # стиле/языке (см. config/voice_presets.yaml + presets/*.txt).
+            # Сам LLM-вызов — async; запускаем через asyncio-цикл ноды,
+            # который создан в __init__ (``self._loop``) и используется
+            # остальной нодой для agent-loop / discard_last_reply (тот же
+            # паттерн). ROS2 callback остаётся неблокирующим: сразу
+            # возвращаемся, реальный TTS прилетит позже из _formalize_*
+            # через тот же _speak_direct-канал, что и quest_ttts.
+            text = (msg.data or "").strip()
+            if not text:
+                self.get_logger().info(
+                    "🔇 [quest/AV-28] empty STT in formalize mode — ignored"
+                )
+                return
+            preset_key = self._resolve_voice_preset()
+            language = self._resolve_voice_language()
+            self.get_logger().info(
+                f"🎙 [quest/AV-28] formalize: preset={preset_key} "
+                f"language={language} text={text[:80]!r}"
+            )
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._formalize_with_llm(text, preset_key, language),
+                    self._loop,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().error(
+                    f"⚠️ [quest/AV-28] failed to schedule formalize task: "
+                    f"{exc} — falling back to direct TTS"
+                )
                 self._speak_direct(text)
             return
         if mode == "quest_stt":
             self._on_stt(msg, from_quest=True)
             return
+        if mode == "quest_command":
+            # AV-22 (Issue #1914) — режим команды: в /avatar/command, не в LLM.
+            # Личность МОЛЧИТ — гейт именно здесь, не через voice_input_mode="off".
+            if not text:
+                return
+            self._publish_avatar_command_from_quest(text)
+            return
         self.get_logger().info(
             f"🔇 [quest] voice_input_mode={mode!r} — quest STT ignored"
+        )
+
+    def _publish_avatar_command_from_quest(self, text: str) -> None:
+        """AV-22 (Issue #1914) — публикация в ``/avatar/command`` из Quest.
+
+        ``client_id`` имеет форму ``quest:<session_id>``. ``session_id``
+        сейчас фиксируется атрибутом ``_quest_session_id`` (default
+        ``"unknown"``); quest-сервер будет его выставлять через
+        ``/avatar/set_voice_mode`` в одной из follow-up карточек (заморожено
+        в worker-brief §1.3 — клиент не формирует client_id сам). Метод
+        изолирован, чтобы тест мог подменить ``_avatar_command_pub``.
+        """
+        session_id = getattr(self, "_quest_session_id", "unknown") or "unknown"
+        payload = build_command(
+            source="quest",
+            client_id=make_quest_client_id(session_id),
+            text=text,
+        )
+        wire = encode_command(payload)
+        out = String()
+        out.data = wire
+        self._avatar_command_pub.publish(out)
+        self.get_logger().info(
+            f"🎮 [quest_command] → /avatar/command request_id={payload['request_id']} "
+            f"text={text[:80]!r}"
         )
 
     def _on_stt(self, msg: String, from_quest: bool = False) -> None:
@@ -2498,6 +3366,14 @@ class DialogueNode(Node):
             name = str(sp.get("name") or "")
             conf = float(sp.get("confidence") or 0.0)
             sid = str(sp.get("speaker_id") or "")[:8]
+            # Issue #1787 — отдаём реплику speaker_id_node: он копит по ней
+            # темы и подбирает внутреннюю кличку. Публикуем СЫРОЙ текст,
+            # до служебных префиксов ([Spkr:…] исказил бы подсчёт тем).
+            # Делается до проверки имени: эпитет нужен как раз тем, у кого
+            # имя мусорное или отсутствует.
+            self._publish_speaker_observation(
+                str(sp.get("speaker_id") or ""), user_input
+            )
             if name:
                 # 🔴 FIX (live 12.08): защита от мусорных имён в БД
                 # (resemblyzer может хранить "Null", "null", "None").
@@ -2527,6 +3403,130 @@ class DialogueNode(Node):
             if speaker_context is None:
                 user_input = f"[Speaker:unknown] {user_input}"
         return user_input
+
+    # Issue #1787 — сколько ждём LLM на выдумывание клички. Это фоновая
+    # задача, никто её не слушает в реальном времени: словарная кличка уже
+    # записана, и просрочка просто оставляет её в силе. Держим таймаут
+    # коротким, чтобы висящий запрос не занимал слот у провайдера.
+    EPITHET_LLM_TIMEOUT_S: float = 12.0
+
+    def _on_epithet_request(self, msg: String) -> None:
+        """Issue #1787 — speaker_id_node просит LLM придумать кличку.
+
+        JSON: ``{"speaker_id", "fallback", "cluster", "hints", "messages"}``.
+        Сам запрос уходит в фон: колбэк ROS не должен ждать сеть.
+        """
+        try:
+            data = json.loads(msg.data or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return
+        speaker_id = str(data.get("speaker_id", "")).strip()
+        if not speaker_id:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._generate_epithet(
+                    speaker_id,
+                    fallback=str(data.get("fallback") or ""),
+                    cluster=str(data.get("cluster") or "default"),
+                    hints=list(data.get("hints") or ()),
+                    messages=list(data.get("messages") or ()),
+                ),
+                self._loop,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [issue 1787] не удалось запустить генерацию эпитета: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    async def _generate_epithet(
+        self,
+        speaker_id: str,
+        *,
+        fallback: str,
+        cluster: str,
+        hints: list,
+        messages: list,
+    ) -> None:
+        """Спросить у LLM одно слово-кличку и вернуть его speaker_id_node.
+
+        Одноразовый запрос мимо диалогового цикла: история разговора сюда
+        не идёт (кличка не должна зависеть от текущего контекста робота),
+        инструменты не подключаются, ``max_tokens`` мал — нужно одно
+        слово. Любая ошибка провайдера тихо оставляет словарную кличку:
+        она уже записана в БД до этого вызова.
+
+        Ответ модели НЕ применяется здесь — он публикуется как
+        предложение, а решение принимает speaker_id_node, который один
+        владеет БД и знает, какие клички уже заняты.
+        """
+        llm = getattr(self, "_llm", None)
+        pub = getattr(self, "_speaker_epithet_pub", None)
+        if llm is None or pub is None:
+            return
+        prompt = epithets.build_llm_prompt(
+            messages, fallback=fallback, cluster=cluster, hints=hints
+        )
+        try:
+            response = await asyncio.wait_for(
+                llm.complete(
+                    [LLMMessage(role="user", content=prompt)],
+                    settings=LLMSettings(max_tokens=16, temperature=1.0),
+                ),
+                timeout=self.EPITHET_LLM_TIMEOUT_S,
+            )
+        except (asyncio.TimeoutError, ProviderError) as exc:
+            self.get_logger().info(
+                f"🔤 [issue 1787] LLM не придумала кличку "
+                f"({type(exc).__name__}) — остаётся {fallback!r}"
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"⚠️ [issue 1787] epithet LLM failed: {type(exc).__name__}: {exc}"
+            )
+            return
+
+        proposal = epithets.sanitize_llm_epithet(getattr(response, "content", ""))
+        if not proposal:
+            self.get_logger().info(
+                f"🔤 [issue 1787] ответ LLM не похож на кличку "
+                f"({str(getattr(response, 'content', ''))[:40]!r}) — "
+                f"остаётся {fallback!r}"
+            )
+            return
+        out = String()
+        out.data = json.dumps(
+            {"speaker_id": speaker_id, "epithet": proposal}, ensure_ascii=False
+        )
+        pub.publish(out)
+        self.get_logger().info(
+            f"🔤 [issue 1787] LLM предложила кличку {proposal!r} "
+            f"для {speaker_id[:8]} (словарная была {fallback!r})"
+        )
+
+    def _publish_speaker_observation(self, speaker_id: str, text: str) -> None:
+        """Issue #1787 — отдать реплику спикера в speaker_id_node.
+
+        Односторонний best-effort канал: если публикация не удалась (нода
+        не поднята, speaker_id_node выключен параметром), спикер просто
+        останется без обновления тем — на диалог это не влияет, поэтому
+        любое исключение здесь глушится в лог.
+        """
+        pub = getattr(self, "_speaker_observe_pub", None)
+        if pub is None or not speaker_id or not text.strip():
+            return
+        try:
+            msg = String()
+            msg.data = json.dumps(
+                {"speaker_id": speaker_id, "text": text}, ensure_ascii=False
+            )
+            pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().debug(
+                f"[issue 1787] observe publish failed: {type(exc).__name__}: {exc}"
+            )
 
     # ── Music state snapshot ───────────────────────────────────────────
     #
@@ -2676,6 +3676,21 @@ class DialogueNode(Node):
             lines.append(f"    <voice_confidence>{sp_conf:.2f}</voice_confidence>")
         if sp_id:
             lines.append(f"    <speaker_id>{sp_id[:8]}</speaker_id>")
+        # Issue #1787 — внутренняя кличка. Даёт LLM якорь, когда имён
+        # два одинаковых или имени нет вовсе. Research §5.3: озвучивать
+        # её НЕЛЬЗЯ — юзер этого слова никогда не слышал, «привет,
+        # Гроссмейстер» звучало бы как обращение к постороннему.
+        sp_epithet = str(sp.get("epithet") or "").strip()
+        if sp_epithet:
+            lines.append(
+                f"    <epithet internal=\"true\">{sp_epithet}</epithet>"
+            )
+            lines.append(
+                "    <epithet_rule>Внутренняя метка робота для различения "
+                "тёзок. НИКОГДА не произноси её вслух и не упоминай в "
+                "ответе — используй только как признак «это тот же "
+                "человек».</epithet_rule>"
+            )
         lines.append("  </user_profile>")
         lines.append("  <hardware>")
         lines.append(f"    <battery>{battery}</battery>")
@@ -2873,29 +3888,29 @@ class DialogueNode(Node):
         # :meth:`_check_babble_and_retry`, and the flag MUST stay True
         # so a still-babbling retry response is not escalated to a
         # second retry (which would loop forever).
-        if not is_babble_retry:
+        #
+        # Issue #1881 — общий budget ``_synthetic_retries_left`` сбрасывается
+        # ТОЛЬКО на user-initiated turn (is_synthetic=False) — синтетический
+        # ретрай не считается новым запросом юзера и не должен обнулять сам
+        # себе бюджет. Это закрывает ping-pong: раньше каждый guard сбрасывал
+        # ЧУЖИЕ поимённые флаги через ``if not is_<X>_retry`` —
+        # babble-retry → babble-budget сбрасывался → music-retry →
+        # music-budget сбрасывался → babble-retry снова мог выстрелить → 8
+        # вызовов на одну фразу (vision-pi 02.09, raw в карточке #1881).
+        if not is_synthetic:
             self._babble_retry_used = False
-        if not is_action_claim_retry:
             self._action_claim_retry_used = False
-        if not is_code_retry:
             self._code_speech_retry_used = False
-        # Issue #1777 / #1762 — сброс tool-retry budget на новый
-        # user-initiated turn. На babble-retry НЕ сбрасываем (как и
-        # babble-budget — см. issue #992 Bug D), иначе синтетический
-        # ретрай сам себе «обнулит» бюджет и при следующей такой же
-        # ошибке запустит второй ретрай → ping-pong.
-        if not is_babble_retry:
             self._tool_retry_used = False
-        # Bug C (юзер-музыка) — сброс бюджета на НОВЫЙ юзер-запрос,
-        # чтобы каждый запрос получал свежий retry (retry-промпт
-        # не должен считаться новым запросом и сбрасывать сам себя).
-        # DJ budget оставлен как есть — DJ-retry внутри DJ-transition
-        # живёт своей жизнью и ресетится в ``_dispatch_dj_turn``
-        # (``reset_for_new_dj_transition``) только при свежем тике.
-        if not is_babble_retry and not was_dj_auto and not user_input.startswith(
-            MUSIC_RETRY_PROMPT_PREFIX
-        ):
-            self._music_guard.reset_for_new_user_request()
+            self._synthetic_retries_left = self.DEFAULT_SYNTHETIC_RETRIES
+            # Bug C (юзер-музыка) — сброс user-budget тоже только на
+            # user-initiated turn; DJ-transition живёт своей жизнью и
+            # ресетится в ``_dispatch_dj_turn``
+            # (``reset_for_new_dj_transition``) только при свежем тике.
+            if not was_dj_auto and not user_input.startswith(
+                MUSIC_RETRY_PROMPT_PREFIX
+            ):
+                self._music_guard.reset_for_new_user_request()
         # Issue #992 Bug D — when the babble detector schedules a retry
         # we MUST NOT end the dialogue at the bottom of this turn. The
         # retry's ``_run_turn`` will run on the same DSM session and
@@ -2997,6 +4012,10 @@ class DialogueNode(Node):
                         or getattr(self._llm, "_model", ""),
                     },
                 ) as _llm_span:
+                    # Детерминированная активация домена ДО обращения к
+                    # LLM: фрагмент попадает уже в ПЕРВЫЙ запрос хода,
+                    # лишнего round-trip нет.
+                    self._activate_skill_for(user_input)
                     result: DialogResult = await self._core.process_input(
                         user_input,
                         is_dj_auto=was_dj_auto,
@@ -3006,6 +4025,9 @@ class DialogueNode(Node):
                         dynamic_system=dynamic_system,
                         preclassified_event=DialogueEvent.STT_RESULT,
                     )
+                    # Прирост «домен пришлось грузить вызовом LLM» —
+                    # это и есть метрика промахов пред-роутера.
+                    self._publish_skill_load_counters()
                     _llm_span.set_attribute(
                         "fallback",
                         _llm_provider_name == "HealthAwareFallbackLLM",
@@ -3047,8 +4069,18 @@ class DialogueNode(Node):
                             f"{_metric_exc!r}"
                         )
             self.get_logger().info(
+                # Issue #1899: include ``finish_reason`` on EVERY completed
+                # stream (was previously logged only when the response was
+                # empty). Together with the new ``truncated_tool_args`` flag
+                # this lets operators see WHY the agent loop burned ~6 s on
+                # a redundant tool-call retry — i.e. ``finish_reason='length'``
+                # + ``truncated_tool_args=True`` ⇒ the model hit max_tokens
+                # while still emitting arguments JSON.
                 f"✅ [turn] process_input returned: spoken={result.spoken_text!r}[:60] "
-                f"tools={list(result.tools_called or ())!r} error={result.error!r}"
+                f"tools={list(result.tools_called or ())!r} "
+                f"finish_reason={getattr(result, 'finish_reason', None)!r} "
+                f"truncated_tool_args={getattr(result, 'truncated_tool_args', None)!r} "
+                f"error={result.error!r}"
             )
             self._handle_result(
                 result,
@@ -3152,7 +4184,17 @@ class DialogueNode(Node):
                 # список имён теперь один на всю систему (dialogue_guards),
                 # чтобы следующий музыкальный инструмент не пришлось помнить
                 # добавить в двух местах.
-                _music_starters = RENARDO_MUSIC_TOOLS | MUSIC_MODE_TOOLS
+                # 🔴 FIX (live 02.09): та же авария в третий раз — теперь с
+                # ``gen_play_from_library`` (mp3 из AI-библиотеки). Live-кейс:
+                # «включи трек про весну» реально запустил mp3, но
+                # ``GENERATED_MUSIC_TOOLS`` тут не учитывался — флаг
+                # ``_track_mode_music_active`` не взводился, следующая
+                # реплика («ну вот ты включил уже») пришла из idle,
+                # ``_publish_music_cleanup(reason="new_dialogue")`` считал
+                # мёртвый воздух и профилактически глушил mp3 через ~14с
+                # после старта. Юзер слышал, как робот 3 хода подряд врал
+                # «уже играет» на самом деле остановленному треку.
+                _music_starters = RENARDO_MUSIC_TOOLS | MUSIC_MODE_TOOLS | GENERATED_MUSIC_TOOLS
                 # 🔴 FIX (live 31.08): stop_music не гасил флаг «играет», а
                 # снимался он только в _publish_music_cleanup. После «выключи
                 # музыку» флаг врал, и следующий Bug-C ретрай уходил в
@@ -3526,8 +4568,13 @@ class DialogueNode(Node):
             return False
         if not self._is_metalanguage_babble(spoken):
             return False
+        # 🔴 FIX (live 02.09): планирование модели вслух («Юзер просит...,
+        # запускаю через compose_music») — НИКОГДА не валидный ответ, что бы
+        # ни просил юзер. Гейт по user_wants_performance тут не нужен: в
+        # живом логе он и не сработал (юзер сказал «ебани ланудж», ни одного
+        # ключевого слова), и робот зачитал план вслух, не вызвав тулов.
         user_wants_perf = self._user_wants_performance(user_input or "")
-        if not user_wants_perf:
+        if not user_wants_perf and not is_planning_narration(spoken):
             # The promise-only subset always retries regardless of
             # user_input — these phrases are NEVER valid answers.
             promise_only = (
@@ -3557,6 +4604,11 @@ class DialogueNode(Node):
         # Mark the retry as used BEFORE dispatching so a re-entrant
         # call from the retry itself can never escalate to a second
         # retry.
+        # Issue #1881 — общий budget декрементится рядом с поимённым
+        # флагом. Если budget == 0, ретрай НЕ отправляется — и
+        # babble-текст публикуется как есть (см. live-логи 02.09).
+        if not self._consume_synthetic_retry(guard_name="babble"):
+            return False
         self._babble_retry_used = True
         self._mark_retry_dispatched()
         retry_prompt = self._build_babble_retry_prompt(user_input or "")
@@ -3634,6 +4686,10 @@ class DialogueNode(Node):
 
         # Помечаем ДО отправки — реентрантный вызов из самого ретрая не
         # должен уметь запустить второй.
+        # Issue #1881 — общий budget декрементится рядом с поимённым
+        # флагом. Если budget == 0, ретрай НЕ отправляется.
+        if not self._consume_synthetic_retry(guard_name="code_speech"):
+            return False
         self._code_speech_retry_used = True
         self._mark_retry_dispatched()
         self.get_logger().warning(
@@ -3693,6 +4749,10 @@ class DialogueNode(Node):
 
         # Помечаем ДО отправки — реентрантный вызов из самого ретрая
         # не должен уметь запустить второй.
+        # Issue #1881 — общий budget декрементится рядом с поимённым
+        # флагом. Если budget == 0, ретрай НЕ отправляется.
+        if not self._consume_synthetic_retry(guard_name="action_claim"):
+            return False
         self._action_claim_retry_used = True
         self._mark_retry_dispatched()
         self.get_logger().warning(
@@ -3743,6 +4803,34 @@ class DialogueNode(Node):
         tc12_delete_track и tc16_delete_waypoint в e2e 33251879328.
         """
         self._retry_dispatched_in_turn = True
+
+    def _consume_synthetic_retry(self, *, guard_name: str) -> bool:
+        """Issue #1881 — попытаться списать один синтетический ретрай.
+
+        Гарантирует, что общий бюджет ``_synthetic_retries_left`` и
+        поимённые флаги (``_babble_retry_used`` / ``_action_claim_retry_used``
+        / ``_code_speech_retry_used`` / ``_tool_retry_used``) синхронны
+        и не разъезжаются. Каждый guard, который собирается
+        задиспатчить ретрай, ОБЯЗАН сначала вызвать этот метод; если
+        он вернул ``False`` — ретрай отменяется, даже если поимённый
+        флаг ещё не взведён.
+
+        Returns:
+            ``True`` — ретрай разрешён (budget декрементнут), guard
+                может диспатчить.
+            ``False`` — budget исчерпан (== 0); guard должен
+                вернуть ``False`` из своего ``_check_*_and_retry``.
+                На этом ЛОГируется предупреждение, чтобы в логе
+                было видно, что цикл оборвали НАМЕРЕННО (не молча).
+        """
+        if self._synthetic_retries_left <= 0:
+            self.get_logger().warning(
+                f"🚦 [issue 1881 retry-budget] исчерпан на turn, отдаю как есть "
+                f"(guard={guard_name})"
+            )
+            return False
+        self._synthetic_retries_left -= 1
+        return True
 
     def _discard_last_music_reply(self) -> None:
         """Fire-and-forget: retract the last persisted assistant turn.
@@ -3838,17 +4926,54 @@ class DialogueNode(Node):
 
         if verdict.kind is MusicGuardVerdictKind.DJ_RETRY:
             assert verdict.prompt is not None  # build_dj_retry_prompt is wired
+            # Issue #1895 (follow-up to #1881): DJ_RETRY должен списывать
+            # общий budget `_synthetic_retries_left` иначе ping-pong
+            # DJ_RETRY ↔ babble/code/tool даёт до 9 LLM-вызовов на
+            # один переход без единого слова юзера (см. live-логи
+            # #1881). Декремент ДО диспатча, на исчерпании — spoken
+            # nudge, как в USER_RETRY ниже.
+            if not self._consume_synthetic_retry(guard_name="music_dj"):
+                self._discard_last_music_reply()
+                self._speak_direct(
+                    "Я тут растерялся — бит не запустился, попробуй ещё раз."
+                )
+                return False
+            # Помечаем «в этом ходе ретрай уже отправлен» — иначе
+            # babble-/tool-guards в следующем цикле guard'ов могут
+            # выстрелить ещё раз (см. ``_retry_dispatched_in_turn``
+            # гейт в начале ``_apply_music_guard``).
+            self._mark_retry_dispatched()
             self._dj.state.next_transition_at = (
                 time.time() + DJModeController.POSTPONE_INTERVAL_S
             )
             # Issue #1204: ретрай должен реально дойти до LLM —
             # переоткрываем DIALOGUE (process_input уже закрыл его).
             self._reopen_dialogue_for_retry()
-            self._dispatch_dj_turn(verdict.prompt)
+            # ``from_tick=False`` — это синхронный ретрай из music-guard,
+            # а не свежий DJ-transition; НЕ сбрасываем
+            # ``MusicGuard._dj_retry_count`` (внутренний счётчик
+            # guard'а). Общий budget уже декрементнут выше.
+            self._dispatch_dj_turn(verdict.prompt, from_tick=False)
             return True
 
         if verdict.kind is MusicGuardVerdictKind.USER_RETRY:
             assert verdict.prompt is not None
+            # Issue #1881 — общий budget декрементится здесь, ДО того
+            # как music-guard соберётся диспатчить ещё один ретрай.
+            # ``MusicGuard._user_retry_count`` остаётся как был (это
+            # внутренний счётчик «сколько раз guard уже ретраил»);
+            # новый общий budget страхует от кросс-guard ping-pong'а
+            # (babble → music → babble → music...), который раньше
+            # обходил поимённые флаги.
+            if not self._consume_synthetic_retry(guard_name="music_user"):
+                # Бюджет исчерпан — публикуем spoken nudge (как при
+                # budget_exhausted внутри ``MusicGuard``) и НЕ
+                # диспатчим второй ретрай.
+                self._discard_last_music_reply()
+                self._speak_direct(
+                    "Я тут растерялся — бит не запустился, попробуй ещё раз."
+                )
+                return False
             # Issue #992 — the attempt we just evaluated (tools_called
             # empty on a music request) already had its assistant reply
             # persisted by DialogCore as an ordinary successful turn (see
@@ -4014,6 +5139,12 @@ class DialogueNode(Node):
             # Defence-in-depth: build_tool_retry_prompt вернул "" —
             # tool_name не из allow-list (промпт-инъекция?). Не ретраим.
             return False
+        # Issue #1881 — общий budget декрементится здесь. Если
+        # budget == 0, ретрай НЕ отправляется — это закрывает кейс
+        # «babble → tool → babble → tool → ...» (vision-pi 02.09, raw в
+        # карточке #1881).
+        if not self._consume_synthetic_retry(guard_name="tool_skipped"):
+            return False
         # DSM reopen — нужен DIALOGUE state для retry-тура (см. issue #1204).
         self._reopen_dialogue_for_retry()
         # Mark budget BEFORE dispatch — защита от re-entrant эскалации.
@@ -4022,10 +5153,18 @@ class DialogueNode(Node):
             f"🛠 [issue 1777 / 1762] LLM skip non-music tool {tool_name!r} — "
             f"retrying once with CRITICAL reminder (user={user_input[:60]!r})"
         )
+        # Issue #1881 — tool-retry помечается ``is_synthetic=True``
+        # обязательно. Раньше он диспатчился как user-input, и
+        # следующий babble-guard мог считать его новым user-turn'ом и
+        # сбросить babble-budget → ping-pong. Сейчас
+        # ``_run_turn`` сбрасывает общий budget ТОЛЬКО на
+        # user-initiated turn (``is_synthetic=False``), так что
+        # tool-retry budget не обнулит сам себе.
         self._dispatch_turn(
             retry_prompt,
             was_idle=False,
             raw_user_command=user_input,
+            is_synthetic=True,
         )
         return True
 
@@ -4035,6 +5174,23 @@ class DialogueNode(Node):
 
     #: Maximum tool-call iterations before forced stop (agent loop guard).
     MAX_ITERATIONS: int = 30
+
+    #: Issue #1881 — лимит синтетических ретраев на ОДИН user-initiated turn.
+    #:
+    #: Раньше каждый guard (babble / action-claim / code-speech / tool /
+    #: music) имел собственный одноразовый флаг и при ретрае сбрасывал
+    #: чужие через ``if not is_<X>_retry: self._<Y>_retry_used = False``
+    # в ``_run_turn`` — это и был источник ping-pong'a на 8 LLM-вызовов.
+    #:
+    #: Теперь общий budget живёт в ``self._synthetic_retries_left`` и
+    #: декрементится через :meth:`_consume_synthetic_retry`; любой guard
+    #: может выстрелить, пока budget > 0. На свежем user-initiated turn
+    #: (или DJ-transition) — ресетится в :meth:`_dispatch_turn` /
+    #: ``_dispatch_dj_turn`` / :meth:`_run_turn`. 2 взято из live-логов:
+    #: babble-retry (1) → если и ретрай babble'нул → ещё 1 (music/babble
+    #: любой) → «растерялся». Больше 2 — уже деградация UX, как раз то,
+    #: что увидели 02.09 на 8 вызовах.
+    DEFAULT_SYNTHETIC_RETRIES: int = 2
 
     def _continue_after_tool_calls(
         self,
@@ -4561,6 +5717,53 @@ class DialogueNode(Node):
                     f"🔇 [issue 988] speak_text called — final text skipped "
                     f"(anti-duplicate): {spoken[:80]!r}"
                 )
+            return
+# 🔴 FIX (live 02.09): «во время сочинения музыки LLM много говорит».
+        # Промпт среднего DJ-перехода запрещает speak_text, но НЕ запрещал
+        # обычный текст ответа — а он тоже уходит в TTS. Живой лог: каждые
+        # 45 секунд поверх бита звучало «Переход номер два отыгран —
+        # нарастание с дропом в ре миноре фригийском, сто сорок ударов!».
+        # Юзер про такие переходы ничего не спрашивал: это тик таймера.
+        # Представление диджея (#1) и прощание (финальный трек) — говорят,
+        # см. DJModeController.is_music_only_transition.
+        if (
+            spoken
+            and is_dj_auto
+            and self._dj.is_music_only_transition(self._dj.state.transition_count)
+        ):
+            self.get_logger().info(
+                "🔇 [DJ] музыкальный переход #"
+                f"{self._dj.state.transition_count} — свободный текст НЕ "
+                f"озвучиваю (юзер ничего не спрашивал): {spoken[:120]!r}"
+            )
+            return
+        # Issue #1882 — planning-narration guard (hard-mute).
+        #
+        # Live 02.09 (Vision Pi): MiniMax-M3 при выключенном thinking
+        # выдаёт НЕ финальный ответ, а ВНУТРЕННИЙ МОНОЛОГ вида
+        # «Юзер Иван (65e62885) — оператор. ... [CRITICAL] говорит ...
+        # Решение: ... Аргументы для composemusic ...» — до 2.5 КБ
+        # символов, 16 TTS-чанков. Юзер слышит кухню модели.
+        #
+        # develop-ветка (78403dba) расширила babble-retry: planning тоже
+        # уходит в ретрай. Это работает, пока babble-бюджет НЕ потрачен.
+        # Когда babble уже потрачен — planning всё равно уходит в TTS.
+        # Этот guard закрывает дыру: planning НИКОГДА не валидный ответ,
+        # независимо от состояния retry-флагов. Гейт speak_text_real == 0
+        # и пустой tools_called обязателен, иначе guard сожжёт легитимный
+        # ответ вида «Юзер, а что умеет speak_text?» (там planning-маркеры
+        # есть, но speak_text_real > 0).
+        if (
+            spoken
+            and speak_text_real == 0
+            and not tools_called
+            and is_planning_narration(spoken)
+        ):
+            self.get_logger().warning(
+                "🤐 [issue 1882] planning-narration hard-mute: "
+                "spoken matches planning pattern, tools empty, "
+                f"speaking nothing (head={spoken[:120]!r})"
+            )
             return
         # Issue #992 Bug D — metalanguage / babble detector. Fires ONE
         # synchronous retry with a CRITICAL prompt reminder when the
@@ -5211,7 +6414,8 @@ class DialogueNode(Node):
 
         Полный сброс состояния текущего диалога: in-flight turn, DSM → IDLE,
         бэклог-аккумулятор, speaker-состояние, таймер сессии и история
-        (асинхронно через ``memory.clear_turns``). LLM не вызывается —
+        (in-memory окно ходов через ``DialogCore.clear_history``). LLM не
+        вызывается —
         вместо этого говорим детерминированное подтверждение.
 
         Issue #1563 — после ``_publish_response`` TTS должен успеть синтези-
@@ -5269,8 +6473,8 @@ class DialogueNode(Node):
             self._maybe_record_session_end(result="reset")
         except Exception:  # noqa: BLE001
             pass
-        # 6. История диалога (scope = DialogCore user_id "default") —
-        #    асинхронно, потому что SQLiteVoiceMemory работает через loop.
+        # 6. История диалога — in-memory окно ходов в DialogCore.
+        #    Обёртка остаётся async для совместимости с loop-диспетчером.
         loop = getattr(self, "_loop", None)
         if loop is not None:
             try:
@@ -5287,15 +6491,17 @@ class DialogueNode(Node):
         )
 
     async def _clear_session_turns(self) -> None:
-        """Асинхронно очистить историю диалога текущей сессии."""
+        """Очистить in-memory окно ходов текущей сессии."""
         try:
-            removed = await self._memory.clear_turns("default")
+            core = getattr(self, "_core", None)
+            if core is not None:
+                core.clear_history()
             self.get_logger().info(
-                f"🧹 [new-session] conversation history cleared ({removed} turns)"
+                "🧹 [new-session] in-memory turn window cleared"
             )
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
-                f"⚠️ [new-session] clear_turns failed: {exc}"
+                f"⚠️ [new-session] clear_history failed: {exc}"
             )
 
     def _maybe_log_skip_summary(self, window_s: float = 300.0) -> None:

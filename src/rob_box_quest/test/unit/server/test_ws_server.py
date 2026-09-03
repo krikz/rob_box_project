@@ -459,3 +459,99 @@ async def test_ping_gets_pong_with_echoed_ts(client, fixed_pin):
             await ws.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+# --- broadcast_json_event (robot_alert fan-out) ----------------------------
+
+
+async def test_broadcast_json_event_reaches_authenticated_session(client, fixed_pin):
+    """JSON_EVENT{type:robot_alert} → доставляется ВСЕМ открытым сессиям
+    без подписки на topic (control-frame, stream_id=0)."""
+    http_client, server = client
+    ws = await _open_ws(http_client)
+    try:
+        await _send_hello(ws, fixed_pin)
+        welcomed = False
+        deadline = time.monotonic() + 1.0
+        while not welcomed and time.monotonic() < deadline:
+            msg = await ws.receive()
+            if msg.type == WSMsgType.BINARY:
+                ftype, _sid, payload = decode_frame(msg.data)
+                if ftype == FrameType.WELCOME:
+                    welcomed = True
+        assert welcomed
+
+        # broadcast_json_event без подписки — control-frame.
+        server.broadcast_json_event({
+            "type": "robot_alert",
+            "code": "BATTERY_LOW",
+            "active": True,
+            "level": "warn",
+            "args": {"pct": 12},
+            "ts_ms": 1_700_000_000_000,
+        })
+
+        deadline = time.monotonic() + 1.0
+        got_alert = False
+        while not got_alert and time.monotonic() < deadline:
+            msg = await ws.receive(timeout=0.5)
+            if msg.type == WSMsgType.BINARY:
+                ftype, _sid, payload = decode_frame(msg.data)
+                if ftype == FrameType.JSON_EVENT:
+                    body = json.loads(payload.decode("utf-8"))
+                    if body.get("type") == "robot_alert":
+                        assert body["code"] == "BATTERY_LOW"
+                        assert body["active"] is True
+                        assert body["level"] == "warn"
+                        assert body["args"] == {"pct": 12}
+                        got_alert = True
+        assert got_alert, "robot_alert not delivered"
+    finally:
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def test_broadcast_json_event_uses_stream_id_zero(client, fixed_pin):
+    """JSON_EVENT от broadcast_json_event всегда stream_id=0 (control)."""
+    http_client, server = client
+    ws = await _open_ws(http_client)
+    try:
+        await _send_hello(ws, fixed_pin)
+        welcomed = False
+        deadline = time.monotonic() + 1.0
+        while not welcomed and time.monotonic() < deadline:
+            msg = await ws.receive()
+            if msg.type == WSMsgType.BINARY:
+                ftype, _sid, _ = decode_frame(msg.data)
+                if ftype == FrameType.WELCOME:
+                    welcomed = True
+        assert welcomed
+
+        server.broadcast_json_event({"type": "robot_alert", "code": "WIFI_WEAK"})
+
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            msg = await ws.receive(timeout=0.5)
+            if msg.type == WSMsgType.BINARY:
+                ftype, sid, payload = decode_frame(msg.data)
+                if ftype == FrameType.JSON_EVENT:
+                    body = json.loads(payload.decode("utf-8"))
+                    if body.get("type") == "robot_alert":
+                        assert sid == 0  # control-frame
+                        return
+        pytest.fail("robot_alert not received")
+    finally:
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def test_broadcast_json_event_no_sessions_returns_zero():
+    """Если никто не подключён — broadcast возвращает 0 и не падает."""
+    from rob_box_quest.server.ws_server import WSSServer
+    server = WSSServer(bridge=NoOpBridge(), pin="000000")
+    count = server.broadcast_json_event({"type": "robot_alert", "code": "X"})
+    assert count == 0
