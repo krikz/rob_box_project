@@ -22,7 +22,11 @@ on the typed `rob_box_supervisor_msgs` IDL:
   `Response {success, mode, reason, applied}`.
 
 `floor` MUST be one of `"teleop"` or `"voice"`. `mode` MUST be a
-known FSM event (see `core.fsm.EVENT_*`).
+target avatar mode — one of `"off"`, `"telegram_active"`,
+`"avatar_present"`, `"mixed"` (`core.fsm.Mode` values, mirrored on the
+wire as `meta-quest-api.md` §3 frame `0x30 SET_MODE`). FSM event names
+MUST NOT appear on the wire; the server maps target mode → event in
+`supervisor_node.MODE_TRANSITIONS`.
 
 #### Requirement: typed requests only
 
@@ -40,9 +44,12 @@ clients can switch on them without locale hazards:
 - `bad_request` — invalid input (empty client_id, unknown floor, etc.).
 - `released` — release succeeded for the holder.
 - `permission_denied` — release denied because caller is not the holder.
-- `conflict` — FSM rejected the transition (current FSM state does not
-  allow the requested event).
-- `invalid_event` — event name is not in `core.fsm.EVENT_*`.
+- `conflict` — the transition is refused: either it is unreachable from
+  the current mode in one step (`off → mixed`), or the FSM itself
+  rejected it because a floor is held by another client.
+- `invalid_event` — server-side bug only: `MODE_TRANSITIONS` produced an
+  event `core.fsm` does not know. Clients cannot trigger this; an
+  unknown `mode` on the wire is `bad_request`.
 - `applied` — set_avatar_mode succeeded.
 - `monitor` — server is in monitor mode; request accepted but not
   applied to LockManager/ModeManager.

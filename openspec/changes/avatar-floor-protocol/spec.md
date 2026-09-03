@@ -103,15 +103,21 @@ not.
 `set_avatar_mode` (`rob_box_supervisor_msgs/srv/SetAvatarMode.srv`)
 takes a `Request` with:
 
-- `client_id` — string (may be empty; FSM events without a holder e.g.
-  `force_off` are allowed)
-- `mode` — FSM event name (NOT target mode — see ADR-0028 §4.1 mermaid).
-  Allowed values mirror `core.fsm.EVENT_*` (see supervisor docstring):
-  `telegram_acquire_floor`, `quest_acquire_floor`,
-  `quest_acquire_floor_teleop_only`, `telegram_acquire_voice_floor`,
-  `quest_acquire_full_floor`, `telegram_release`, `quest_release`,
-  `quest_release_teleop`, `telegram_release_voice`, `both_release`,
-  `force_off`.
+- `client_id` — string (may be empty; `* → off` is an escape hatch that
+  needs no holder)
+- `mode` — the TARGET avatar mode, exactly one of `"off"`,
+  `"telegram_active"`, `"avatar_present"`, `"mixed"`. This is the wire
+  contract from `meta-quest-api.md` §3 (frame `0x30 SET_MODE`) and
+  ADR-0028 §4.3, whose response field is named `actual_mode`.
+
+FSM **event** names (`core.fsm.EVENT_*`) MUST NOT appear on the wire.
+The server maps `(current_mode, target_mode) → event` in
+`supervisor_node.MODE_TRANSITIONS` and feeds that to `ModeManager`,
+which stays an event automaton. The reason is that one event means
+different transitions from different modes — `quest_release` is
+`avatar_present → off` but `mixed → telegram_active` — so an event on
+the wire is ambiguous unless every client mirrors the server FSM, and
+such a mirror inevitably drifts.
 
 Response fields:
 
@@ -119,21 +125,41 @@ Response fields:
 - `mode` — current avatar mode after the transition (echoes
   `ModeManager.mode.value`). Lets clients observe FSM without
   subscribing to `/avatar/state`.
-- `reason` — `"applied"`, `"conflict"`, `"invalid_event"`,
-  `"bad_request"`, or `"monitor"` (in monitor mode).
+- `reason` — `"applied"`, `"conflict"`, `"bad_request"`, or `"monitor"`
+  (in monitor mode). `"invalid_event"` is reserved for a server-side
+  bug: `MODE_TRANSITIONS` yielding an event `core.fsm` does not know.
 - `applied` — false in monitor mode (`applied=false, reason="monitor"`).
 
-#### Scenario: valid FSM event in active mode
+#### Scenario: valid transition in active mode
 
 - GIVEN `avatar_supervisor` in `mode=active`, FSM starts at `off`
-- WHEN client calls `set_avatar_mode(client_id="telegram:1", mode="telegram_acquire_floor")`
+- WHEN client calls `set_avatar_mode(client_id="telegram:1", mode="telegram_active")`
 - THEN the response is `success=true, applied=true, mode="telegram_active", reason="applied"`
 - AND `ModeManager.mode == Mode.TELEGRAM_ACTIVE`.
 
-#### Scenario: invalid event name
+#### Scenario: requesting the current mode is an idempotent no-op
 
-- WHEN client calls `set_avatar_mode(client_id="x", mode="not_a_real_event")`
-- THEN the response is `success=true, applied=false, mode=<previous>, reason="invalid_event"`.
+- GIVEN the FSM is in `telegram_active`
+- WHEN client calls `set_avatar_mode(client_id="telegram:1", mode="telegram_active")`
+- THEN the response is `success=true, applied=true, mode="telegram_active", reason="applied"`
+- AND the FSM does not move. Clients re-send `SET_MODE` on reconnect, so
+  this MUST NOT be an error.
+
+#### Scenario: target unreachable in one step
+
+- GIVEN the FSM is in `off`
+- WHEN client calls `set_avatar_mode(client_id="quest:1", mode="mixed")`
+- THEN the response is `success=true, applied=false, mode="off", reason="conflict"`
+- AND the FSM does not move: `mixed` needs two clients, and the server
+  MUST NOT walk the FSM through an intermediate state on the client's
+  behalf.
+
+#### Scenario: unknown mode name
+
+- WHEN client calls `set_avatar_mode(client_id="x", mode="telegram_acquire_floor")`
+- THEN the response is `success=true, applied=false, mode=<previous>, reason="bad_request"`
+- AND this is precisely how a client still speaking the old event-name
+  contract fails: loudly, at the first call, not silently.
 
 ### Requirement: monitor mode MUST accept but NOT mutate
 

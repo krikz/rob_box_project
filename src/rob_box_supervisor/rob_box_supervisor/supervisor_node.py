@@ -40,12 +40,22 @@ W3-2 (issue #968 wave2, провалы G2/G3) — ``acquire_floor``/
 ADR-0028 §6 Q4). Контракт теперь — типизированный IDL (AV-12).
 
 W3-4 (issue #968 wave2) — ``set_avatar_mode`` тоже больше не
-заглушка: в ``active``-режиме реально прогоняет FSM-событие через
+заглушка: в ``active``-режиме реально меняет режим через
 :class:`~rob_box_supervisor.core.fsm.ModeManager` (переходы —
 ADR-0028 §4.1) и отвечает ``applied=true`` + текущим avatar-режимом
-в типизированном поле ``mode``. ``ModeManager`` остаётся событийным
-автоматом (ADR-0028 §4.1), поэтому ``request.mode`` — это имя
-FSM-события (``core.fsm.EVENT_*``), а не целевой режим напрямую.
+в типизированном поле ``mode``.
+
+``request.mode`` — это ЦЕЛЕВОЙ режим (``off``/``telegram_active``/
+``avatar_present``/``mixed``), а не имя FSM-события: так требует
+wire-контракт ``meta-quest-api.md`` §3 (фрейм ``0x30 SET_MODE``) и
+ADR-0028 §4.3, где поле ответа называется ``actual_mode``.
+``ModeManager`` при этом остаётся событийным автоматом — целевой
+режим превращается в событие таблицей :data:`MODE_TRANSITIONS`,
+и это единственное место, где такое превращение происходит.
+Клиенты имён событий не знают: одно событие значит разные переходы
+из разных режимов (``quest_release`` — это ``avatar_present → off``,
+но ``mixed → telegram_active``), поэтому событие на проводе
+неоднозначно без клиентской копии FSM, а копия разъедется.
 При уходе из активного avatar-режима (``*_release``/``force_off``/
 ``both_release``) floor-ы, которые ``ModeManager`` перестал считать
 занятыми, зеркально освобождаются и в ``LockManager`` — иначе
@@ -145,20 +155,76 @@ VOICE_INPUT_MODES: tuple[str, ...] = (
 SET_VOICE_MODE_TOPIC: str = "/avatar/set_voice_mode"
 
 
-# FSM-событийные имена (ADR-0028 §4.1 mermaid). Документируем здесь полный
-# реестр, чтобы клиентские сервисы/тесты могли импортировать тот же набор,
-# что и core.fsm — и не расходились имена.
+# FSM-событийные имена (ADR-0028 §4.1 mermaid). Это ВНУТРЕННИЙ словарь
+# супервизора: ровно ``core.fsm._ALL_EVENTS``, ни одного лишнего. Раньше
+# здесь лежали ещё ``quest_acquire_full_floor``/``quest_release_teleop``/
+# ``telegram_release_voice`` — имена рёбер из mermaid-диаграммы, которых
+# в ``core.fsm`` не существует; ``ModeManager.transition()`` отвечал на
+# них ``ValueError``. Держим список синхронным с автоматом, а не с
+# картинкой.
+#
+# На провод события НЕ выходят: клиент шлёт целевой режим (см.
+# ``MODE_TRANSITIONS`` ниже и ``SetAvatarMode.srv``).
 EVENT_TELEGRAM_ACQUIRE_FLOOR = "telegram_acquire_floor"
+EVENT_TELEGRAM_ACQUIRE_VOICE_FLOOR = "telegram_acquire_voice_floor"
+EVENT_TELEGRAM_RELEASE = "telegram_release"
 EVENT_QUEST_ACQUIRE_FLOOR = "quest_acquire_floor"
 EVENT_QUEST_ACQUIRE_FLOOR_TELEOP_ONLY = "quest_acquire_floor_teleop_only"
-EVENT_TELEGRAM_ACQUIRE_VOICE_FLOOR = "telegram_acquire_voice_floor"
-EVENT_QUEST_ACQUIRE_FULL_FLOOR = "quest_acquire_full_floor"
-EVENT_TELEGRAM_RELEASE = "telegram_release"
 EVENT_QUEST_RELEASE = "quest_release"
-EVENT_QUEST_RELEASE_TELEOP = "quest_release_teleop"
-EVENT_TELEGRAM_RELEASE_VOICE = "telegram_release_voice"
 EVENT_BOTH_RELEASE = "both_release"
 EVENT_FORCE_OFF = "force_off"
+
+
+# Wire-уровневые имена режимов (поле ``mode`` в SetAvatarMode и во фрейме
+# ``0x30 SET_MODE``, meta-quest-api.md §3). Совпадают со значениями
+# ``core.fsm.Mode``.
+WIRE_MODE_OFF = "off"
+WIRE_MODE_TELEGRAM_ACTIVE = "telegram_active"
+WIRE_MODE_AVATAR_PRESENT = "avatar_present"
+WIRE_MODE_MIXED = "mixed"
+
+WIRE_MODES: tuple = (
+    WIRE_MODE_OFF,
+    WIRE_MODE_TELEGRAM_ACTIVE,
+    WIRE_MODE_AVATAR_PRESENT,
+    WIRE_MODE_MIXED,
+)
+
+# (текущий режим, целевой режим) → FSM-событие, которым ModeManager этот
+# переход делает. Единственное место, где целевой режим превращается в
+# событие: клиенты этой таблицы не знают и знать не должны.
+#
+# Почему таблица, а не «событие на проводе»: одно и то же событие значит
+# разные переходы в зависимости от текущего режима (``quest_release`` —
+# это ``avatar_present → off``, но ``mixed → telegram_active``). Событие
+# на проводе поэтому неоднозначно, если клиент не держит у себя копию
+# FSM. Копия неизбежно разъедется — см. ADR-0028 §4.1.
+#
+# Отсутствие пары в таблице = переход недостижим за один шаг (например
+# ``off → mixed``: mixed требует ДВУХ клиентов). Такой запрос отклоняется
+# c ``reason="conflict"``; сами через промежуточное состояние не ходим.
+# Пара «режим сам в себя» отсутствует намеренно — идемпотентный no-op
+# обрабатывается до обращения к таблице.
+MODE_TRANSITIONS: dict = {
+    # * → off: escape hatch, всегда разрешён (ADR-0028 §4.1 + §6 Q1).
+    (WIRE_MODE_TELEGRAM_ACTIVE, WIRE_MODE_OFF): EVENT_FORCE_OFF,
+    (WIRE_MODE_AVATAR_PRESENT, WIRE_MODE_OFF): EVENT_FORCE_OFF,
+    (WIRE_MODE_MIXED, WIRE_MODE_OFF): EVENT_FORCE_OFF,
+    # off → *
+    (WIRE_MODE_OFF, WIRE_MODE_TELEGRAM_ACTIVE): EVENT_TELEGRAM_ACQUIRE_FLOOR,
+    (WIRE_MODE_OFF, WIRE_MODE_AVATAR_PRESENT): EVENT_QUEST_ACQUIRE_FLOOR,
+    # telegram_active → *
+    (WIRE_MODE_TELEGRAM_ACTIVE, WIRE_MODE_AVATAR_PRESENT): EVENT_QUEST_ACQUIRE_FLOOR,
+    (
+        WIRE_MODE_TELEGRAM_ACTIVE,
+        WIRE_MODE_MIXED,
+    ): EVENT_QUEST_ACQUIRE_FLOOR_TELEOP_ONLY,
+    # avatar_present → *
+    (WIRE_MODE_AVATAR_PRESENT, WIRE_MODE_MIXED): EVENT_TELEGRAM_ACQUIRE_VOICE_FLOOR,
+    # mixed → *
+    (WIRE_MODE_MIXED, WIRE_MODE_TELEGRAM_ACTIVE): EVENT_QUEST_RELEASE,
+    (WIRE_MODE_MIXED, WIRE_MODE_AVATAR_PRESENT): EVENT_TELEGRAM_RELEASE,
+}
 
 
 # Wire-уровневые имена floor-ов (поле ``floor`` в AcquireFloor/ReleaseFloor
@@ -862,29 +928,53 @@ class AvatarSupervisor(Node):
 
         AV-12: ``SetAvatarMode.Request`` из ``rob_box_supervisor_msgs``
         имеет typed-поля ``client_id: string`` и ``mode: string``.
-        ``mode`` — имя FSM-события (``core.fsm.EVENT_*`` из ADR-0028 §4.1
-        mermaid), а не целевой avatar-режим напрямую — ``ModeManager``
-        это событийный автомат, не setter состояния. Прошлый JSON-в-
-        ``data`` fallback УБРАН (карточка AV-12, W3-2/R13) по тем же
-        причинам, что и для floor-ов.
+        ``mode`` — ЦЕЛЕВОЙ avatar-режим (``off``/``telegram_active``/
+        ``avatar_present``/``mixed``), как требует wire-контракт
+        ``meta-quest-api.md`` §3 (фрейм ``0x30 SET_MODE``) и ADR-0028 §4.3
+        (поле ответа там называется ``actual_mode`` — значит в запросе
+        желаемый). Имя FSM-события на провод НЕ выходит: превращение
+        режима в событие живёт в ``MODE_TRANSITIONS``.
 
-        Возвращает ``(event, client_id)``.
+        Прошлый JSON-в-``data`` fallback УБРАН (карточка AV-12, W3-2/R13)
+        по тем же причинам, что и для floor-ов.
+
+        Возвращает ``(target_mode, client_id)``.
         """
-        event = getattr(request, "mode", None)
+        target_mode = getattr(request, "mode", None)
         client_id = getattr(request, "client_id", None)
-        if not event:
+        if not target_mode:
             return None, (str(client_id) if client_id else None)
-        return str(event), (str(client_id) if client_id else None)
+        return str(target_mode), (str(client_id) if client_id else None)
 
-    def _set_avatar_mode_logic(self, event: Optional[str], client_id: Optional[str]) -> dict:
+    @staticmethod
+    def _target_mode_to_event(current_mode: str, target_mode: str) -> Optional[str]:
+        """``(текущий режим, целевой режим)`` → имя FSM-события.
+
+        Чистая функция над :data:`MODE_TRANSITIONS` — тестируется без
+        rclpy и без ноды. Возвращает ``None``, если переход недостижим за
+        один шаг; вызывающий превращает это в ``reason="conflict"``.
+
+        Запрос текущего же режима сюда не доходит — идемпотентный no-op
+        разбирается выше по стеку (см. :py:meth:`_set_avatar_mode_logic`).
+        """
+        return MODE_TRANSITIONS.get((current_mode, target_mode))
+
+    def _set_avatar_mode_logic(
+        self, target_mode: Optional[str], client_id: Optional[str]
+    ) -> dict:
         """Чистая логика ``SetAvatarMode`` через ModeManager (W3-4, тестируется без rclpy).
+
+        Принимает ЦЕЛЕВОЙ режим (wire-контракт, см.
+        :py:meth:`_extract_avatar_mode_request`), переводит его в
+        FSM-событие через :data:`MODE_TRANSITIONS` и уже событие отдаёт
+        ``ModeManager``.
 
         В ``monitor`` — как раньше: ``applied=false``, avatar-режим не
         трогаем (ADR-0028 §4.5/S12). В ``active`` — реально прогоняем
         событие через :class:`~rob_box_supervisor.core.fsm.ModeManager`;
-        валидация переходов (``ConflictError``/``ValueError`` для
-        неизвестного события) уже внутри самого ModeManager, здесь только
-        маппинг в ``success``/``applied``/``reason``.
+        валидация самого перехода (``ConflictError``) остаётся внутри
+        ModeManager, здесь только маппинг в ``success``/``applied``/
+        ``reason``.
 
         Floor-синхронизация (решение W3-4, продолжение W3-2/ADR-0028 §4.2):
         ``ModeManager`` хранит ``voice_held_by``/``teleop_held_by`` ТОЛЬКО
@@ -917,12 +1007,39 @@ class AvatarSupervisor(Node):
                 "mode": self._mode_manager.mode.value,
                 "reason": MONITOR_MODE_REASON,
             }
-        if not event:
+        current = self._mode_manager.mode.value
+
+        # Пустой или неизвестный режим — bad_request. Проверяем ДО
+        # идемпотентной ветки, иначе опечатка молча выглядела бы как
+        # успешный no-op.
+        if not target_mode or target_mode not in WIRE_MODES:
             return {
                 "success": True,
                 "applied": False,
-                "mode": self._mode_manager.mode.value,
+                "mode": current,
                 "reason": REASON_BAD_REQUEST,
+            }
+
+        # Запросили режим, в котором уже находимся — идемпотентный no-op.
+        # Клиенты пере-отправляют SET_MODE на реконнекте, и падать на
+        # этом нельзя (ADR-0028 §4.1: повторный acquire — no-op).
+        if target_mode == current:
+            return {
+                "success": True,
+                "applied": True,
+                "mode": current,
+                "reason": REASON_APPLIED,
+            }
+
+        event = self._target_mode_to_event(current, target_mode)
+        if event is None:
+            # Переход недостижим за один шаг (``off → mixed`` требует двух
+            # клиентов). Через промежуточное состояние сами не ходим.
+            return {
+                "success": True,
+                "applied": False,
+                "mode": current,
+                "reason": REASON_CONFLICT,
             }
 
         from rob_box_supervisor.core import Floor, FSMConflictError  # noqa: PLC0415
@@ -933,8 +1050,15 @@ class AvatarSupervisor(Node):
         try:
             new_mode = self._mode_manager.transition(event, client_id)
         except ValueError:
+            # Сюда попасть можно, только если MODE_TRANSITIONS разъехался
+            # с ``core.fsm._ALL_EVENTS`` — это баг супервизора, а не
+            # клиента, поэтому success=False, а не тихий отказ.
+            self._log.error(
+                f"SetAvatarMode: MODE_TRANSITIONS отдал неизвестное событие "
+                f"{event!r} для перехода {current!r} -> {target_mode!r}"
+            )
             return {
-                "success": True,
+                "success": False,
                 "applied": False,
                 "mode": self._mode_manager.mode.value,
                 "reason": REASON_INVALID_EVENT,
@@ -976,10 +1100,10 @@ class AvatarSupervisor(Node):
 
     def _on_set_avatar_mode(self, request: Any, response: Any) -> Any:
         """``SetAvatarMode`` (типизированный IDL, ADR-0028 §4.3, AV-12)."""
-        event, client_id = self._extract_avatar_mode_request(request)
-        body = self._set_avatar_mode_logic(event, client_id)
+        target_mode, client_id = self._extract_avatar_mode_request(request)
+        body = self._set_avatar_mode_logic(target_mode, client_id)
         self._log.info(
-            f"SetAvatarMode: event={event} client_id={client_id} mode={self._mode} "
+            f"SetAvatarMode: target={target_mode} client_id={client_id} mode={self._mode} "
             f"applied={body['applied']} avatar_mode={body['mode']} reason={body['reason']}"
         )
         return self._fill_set_avatar_mode_response(response, body)

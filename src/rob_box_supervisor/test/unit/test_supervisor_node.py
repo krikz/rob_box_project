@@ -33,6 +33,7 @@ from unittest.mock import MagicMock
 
 from rob_box_supervisor.core.fsm import Mode, ModeManager
 from rob_box_supervisor.supervisor_node import (
+    MODE_TRANSITIONS,
     MONITOR_MODE_REASON,
     REASON_BAD_REQUEST,
     REASON_GRANTED,
@@ -41,6 +42,7 @@ from rob_box_supervisor.supervisor_node import (
     REASON_RELEASED,
     SET_VOICE_MODE_TOPIC,
     VOICE_INPUT_MODES,
+    WIRE_MODES,
     AvatarSupervisor,
 )
 
@@ -344,7 +346,7 @@ class TestAvatarSupervisorMonitorServices(unittest.TestCase):
 
     def test_set_avatar_mode_monitor_response(self) -> None:
         svc = next(s for s in self.node._services if s.name == "set_avatar_mode")
-        req = _make_typed_set_mode_request(client_id="telegram1", mode="telegram_acquire_floor")
+        req = _make_typed_set_mode_request(client_id="telegram1", mode="telegram_active")
         resp = _make_typed_response(_get_typed_set_mode_full_type())
         svc.callback(req, resp)
         body = _set_mode_response_to_dict(resp)
@@ -906,27 +908,107 @@ class TestSetAvatarModeTypedContract(unittest.TestCase):
 
     def test_valid_transition_applies_and_changes_mode(self) -> None:
         """``off → telegram_active``: applied=true, новый режим виден в ответе."""
-        body = self._set_mode("telegram1", "telegram_acquire_floor")
+        body = self._set_mode("telegram1", "telegram_active")
         self.assertTrue(body["applied"], body)
         self.assertEqual(body["mode"], "telegram_active")
         self.assertEqual(self.node._mode_manager.mode, Mode.TELEGRAM_ACTIVE)
 
-    def test_invalid_transition_refused_as_conflict(self) -> None:
-        """``quest_acquire_floor_teleop_only`` из ``off`` — переход невалиден
-        (годится только из ``telegram_active``, ADR-0028 §4.1) — отказ,
-        режим не меняется."""
-        body = self._set_mode("quest1", "quest_acquire_floor_teleop_only")
+    def test_unreachable_target_refused_as_conflict(self) -> None:
+        """``off → mixed`` недостижим за один шаг: ``mixed`` требует ДВУХ
+        клиентов (ADR-0028 §4.1). Отказ, режим не меняется — через
+        промежуточное состояние супервизор сам не ходит."""
+        body = self._set_mode("quest1", "mixed")
         self.assertFalse(body["applied"], body)
         self.assertEqual(body["reason"], "conflict")
         self.assertEqual(body["mode"], "off")
         self.assertEqual(self.node._mode_manager.mode, Mode.OFF)
 
-    def test_unknown_event_refused(self) -> None:
-        """Неизвестное имя события — отказ с внятной причиной, режим не меняется."""
-        body = self._set_mode("telegram1", "not_a_real_event")
+    def test_unknown_mode_refused_as_bad_request(self) -> None:
+        """Имя, которого нет среди режимов — ``bad_request``.
+
+        Отдельно от ``conflict``: клиент прислал мусор (или, что важнее,
+        имя FSM-события по старому контракту AV-12 — ``mode`` на проводе
+        теперь целевой режим). Это ошибка запроса, а не занятый floor.
+        """
+        body = self._set_mode("telegram1", "telegram_acquire_floor")
         self.assertFalse(body["applied"], body)
-        self.assertEqual(body["reason"], "invalid_event")
+        self.assertEqual(body["reason"], REASON_BAD_REQUEST)
         self.assertEqual(self.node._mode_manager.mode, Mode.OFF)
+
+    def test_same_mode_is_idempotent_noop(self) -> None:
+        """Запрос текущего режима — no-op с ``applied=true``.
+
+        Клиенты пере-отправляют SET_MODE на реконнекте (meta-quest-api.md
+        §3), и падать на этом нельзя.
+        """
+        self._set_mode("telegram1", "telegram_active")
+        body = self._set_mode("telegram1", "telegram_active")
+        self.assertTrue(body["applied"], body)
+        self.assertEqual(body["reason"], "applied")
+        self.assertEqual(body["mode"], "telegram_active")
+        self.assertEqual(self.node._mode_manager.mode, Mode.TELEGRAM_ACTIVE)
+
+    def test_off_is_always_reachable(self) -> None:
+        """``* → off`` — escape hatch (ADR-0028 §4.1 + §6 Q1 fail-safe):
+        из любого активного режима выключение проходит."""
+        for entry, client in (
+            ("telegram_active", "telegram1"),
+            ("avatar_present", "quest1"),
+        ):
+            with self.subTest(entry=entry):
+                self.node._mode_manager = ModeManager()
+                self._set_mode(client, entry)
+                body = self._set_mode(client, "off")
+                self.assertTrue(body["applied"], body)
+                self.assertEqual(body["mode"], "off")
+
+    def test_two_step_path_off_to_mixed(self) -> None:
+        """``off → telegram_active → mixed``: полный путь до ``mixed``
+        собирается из двух шагов ДВУХ клиентов, как в ADR-0028 §4.1."""
+        self._set_mode("telegram1", "telegram_active")
+        body = self._set_mode("quest1", "mixed")
+        self.assertTrue(body["applied"], body)
+        self.assertEqual(body["mode"], "mixed")
+        self.assertEqual(self.node._mode_manager.mode, Mode.MIXED)
+
+    def test_mixed_splits_back_by_target(self) -> None:
+        """Из ``mixed`` целевой режим однозначно выбирает, КТО уходит.
+
+        Это и есть причина, по которой на проводе режим, а не событие:
+        одно событие ``quest_release`` значит ``avatar_present → off``,
+        но ``mixed → telegram_active``.
+        """
+        self._set_mode("telegram1", "telegram_active")
+        self._set_mode("quest1", "mixed")
+        body = self._set_mode("quest1", "telegram_active")
+        self.assertTrue(body["applied"], body)
+        self.assertEqual(body["mode"], "telegram_active")
+
+    def test_mode_transitions_table_matches_core_fsm(self) -> None:
+        """Анти-дрейф: каждое событие из ``MODE_TRANSITIONS`` существует в
+        ``core.fsm``, и каждый ключ — пара валидных wire-режимов.
+
+        Ровно эта рассинхронизация и была багом: в супервизоре лежали
+        имена рёбер mermaid-диаграммы (``quest_acquire_full_floor`` и
+        др.), которых у автомата нет.
+        """
+        from rob_box_supervisor.core.fsm import _ALL_EVENTS
+
+        for (src, dst), event in MODE_TRANSITIONS.items():
+            with self.subTest(transition=f"{src}->{dst}"):
+                self.assertIn(src, WIRE_MODES)
+                self.assertIn(dst, WIRE_MODES)
+                self.assertNotEqual(src, dst, "no-op не должен быть в таблице")
+                self.assertIn(event, _ALL_EVENTS)
+
+    def test_wire_modes_match_fsm_mode_enum(self) -> None:
+        """Анти-дрейф: ``WIRE_MODES`` == значения ``core.fsm.Mode``.
+
+        Если в FSM появится пятый режим, а на проводе нет — запрос на него
+        будет отвергнут как ``bad_request``, и это надо заметить здесь, а
+        не на роботе.
+        """
+        self.assertEqual(set(WIRE_MODES), {m.value for m in Mode})
 
     def test_empty_mode_refused(self) -> None:
         """AV-12 acceptance: пустой mode → bad_request, режим не меняется."""
@@ -939,7 +1021,7 @@ class TestSetAvatarModeTypedContract(unittest.TestCase):
         """Регресс ADR-0028 §4.5: в ``monitor`` SetAvatarMode по-прежнему
         ``applied=false``, avatar-режим не трогается."""
         self.node._mode = "monitor"
-        body = self._set_mode("telegram1", "telegram_acquire_floor")
+        body = self._set_mode("telegram1", "telegram_active")
         self.assertFalse(body["applied"])
         self.assertEqual(body["reason"], MONITOR_MODE_REASON)
         self.assertEqual(self.node._mode_manager.mode, Mode.OFF)
@@ -957,10 +1039,10 @@ class TestSetAvatarModeTypedContract(unittest.TestCase):
         self.node._acquire_floor_logic("questA", LockFloor.TELEOP)
         self.node._acquire_floor_logic("questA", LockFloor.VOICE)
         # И тот же client_id зафиксирован в FSM как участник avatar_present.
-        entered = self._set_mode("questA", "quest_acquire_floor")
+        entered = self._set_mode("questA", "avatar_present")
         self.assertEqual(entered["mode"], "avatar_present")
 
-        result = self._set_mode("questA", "quest_release")
+        result = self._set_mode("questA", "off")
         self.assertTrue(result["applied"], result)
         self.assertEqual(result["mode"], "off")
 
@@ -970,7 +1052,7 @@ class TestSetAvatarModeTypedContract(unittest.TestCase):
     def test_no_phase2_warning_logged(self) -> None:
         """Регресс: вводящий в заблуждение warning «Phase 2 не реализован» убран."""
         self.node._log.reset_mock()
-        self._set_mode("telegram1", "telegram_acquire_floor")
+        self._set_mode("telegram1", "telegram_active")
         for call in self.node._log.warning.call_args_list:
             msg = call.args[0] if call.args else ""
             self.assertNotIn("Phase 2", msg)
@@ -979,7 +1061,7 @@ class TestSetAvatarModeTypedContract(unittest.TestCase):
         """Регресс #1644 (см. ``_log_startup_diagnostics``): ``info()`` должен
         получать РОВНО один позиционный ``msg``-аргумент."""
         self.node._log.reset_mock()
-        self._set_mode("telegram1", "telegram_acquire_floor")
+        self._set_mode("telegram1", "telegram_active")
         self.assertTrue(self.node._log.info.called)
         call = self.node._log.info.call_args
         self.assertEqual(len(call.args), 1, f"info() должен получить 1 positional arg, got {call.args!r}")
@@ -988,7 +1070,7 @@ class TestSetAvatarModeTypedContract(unittest.TestCase):
     def test_no_json_in_data_field_used(self) -> None:
         """Рергресс R13: _extract_avatar_mode_request НЕ парсит JSON из request.data."""
         legacy_req = MagicMock(spec=["data"])
-        legacy_req.data = json.dumps({"event": "telegram_acquire_floor", "client_id": "telegram1"})
+        legacy_req.data = json.dumps({"mode": "telegram_active", "client_id": "telegram1"})
 
         svc = next(s for s in self.node._services if s.name == "set_avatar_mode")
         resp = _make_typed_response(_get_typed_set_mode_full_type())
