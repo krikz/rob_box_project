@@ -88,7 +88,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import rclpy
 from rclpy.node import Node
@@ -363,6 +363,15 @@ class AvatarSupervisor(Node):
     RELEASE_FLOOR_SERVICE = "release_floor"
     SET_AVATAR_MODE_SERVICE = "set_avatar_mode"
 
+    # ── heartbeat (AV-13, ADR-0028 §4.4 S10) ──────────────────────────
+    TELEOP_HEARTBEAT_TOPIC = "/teleop_heartbeat"
+    # Best-effort: heartbeat терпит потери — важна свежесть, не доставка.
+    HEARTBEAT_QOS_DEPTH = 10
+    # Период проверки протухания floor-ов (10 Гц — половина от желаемой
+    # 10 Гц частоты heartbeat, чтобы пограничный кейс 500 мс не проскакивал
+    # мимо). ADR-0028 §4.4 S10 требует «не реже 10 Гц».
+    FLOOR_EXPIRY_CHECK_PERIOD_S = 0.1
+
     def __init__(self) -> None:
         super().__init__("avatar_supervisor")
 
@@ -370,6 +379,28 @@ class AvatarSupervisor(Node):
         # вмешиваемся. В active — Phase 2 (NOT_IMPLEMENTED в AV-6).
         self.declare_parameter("mode", "monitor")
         self._mode: str = str(self.get_parameter("mode").value or "monitor")
+
+        # AV-13: параметр dead_man_timeout_ms (default 500, ADR-0028 §6 Q4).
+        # Вынесен в параметр, чтобы можно было подкрутить на железе без пересборки
+        # (Phase 1 метрика — собрать dead_man_trips_total и посмотреть на
+        # практике, см. ADR-0028 §6 Q4).
+        self.declare_parameter("dead_man_timeout_ms", 500)
+        self._dead_man_timeout_ms: int = int(self.get_parameter("dead_man_timeout_ms").value or 500)
+
+        # AV-13: единственный источник времени ноды (для тестируемости).
+        # LockManager и watcher используют self._now_ms() вместо time.time() —
+        # тесты подменяют на fake clock через self._clock, нода в проде —
+        # оставляет default (time.monotonic).
+        self._clock: Callable[[], int] = lambda: int(time.monotonic() * 1000)
+        self._now_ms = self._clock
+
+        # AV-13: подписка на /teleop_heartbeat. В CI (mock-rclpy) пакета
+        # сообщений нет — импорт делаем лениво, при неудаче логируем WARN и
+        # остаёмся в monitor (dead-man enforcement недоступен, ADR-0028 §4.5).
+        # Сам факт отсутствия подписки — failure, который нужно задетектить
+        # сразу на старте, поэтому вызываем из __init__ (а не лениво в
+        # callback), и сохраняем тип в self._heartbeat_msg_type для тестов.
+        self._heartbeat_msg_type: Optional[Any] = self._try_import_heartbeat_msg()
 
         # Логгер ROS (не stdlib logging — для unified rclpy logging).
         self._log = self.get_logger()
@@ -388,8 +419,11 @@ class AvatarSupervisor(Node):
         self._aggregator = StateAggregator()
         self._dead_man = DeadManCounter()
         # LockManager — источник истины по voice_floor/teleop_floor (W3-2,
-        # ADR-0028 §4.2) для сервисов AcquireFloor/ReleaseFloor.
-        self._lock_manager = LockManager()
+        # ADR-0028 §4.2) для сервисов AcquireFloor/ReleaseFloor. AV-13:
+        # пробрасываем ``dead_man_timeout_ms`` (ROS-параметр) как
+        # конструкторский override, чтобы можно было тюнить порог на железе
+        # без пересборки. ``clock`` тоже инжектируем — для тестов с fake-clock.
+        self._lock_manager = LockManager(clock=self._now_ms, timeout_ms=self._dead_man_timeout_ms)
         # ModeManager — FSM avatar-режимов (off/telegram_active/
         # avatar_present/mixed, ADR-0028 §4.1), подключён в W3-4 под
         # SetAvatarMode. Его voice_held_by/teleop_held_by — ТОЛЬКО вход
@@ -427,6 +461,39 @@ class AvatarSupervisor(Node):
         # (в monitor супервизор НЕ трогает чужие параметры — S12).
         self._dialogue_param_client = None
 
+        # AV-13: подписка на /teleop_heartbeat (ADR-0028 §4.4 S10).
+        # QoS best-effort, depth=10 (heartbeat терпит потери — важна
+        # свежесть, не надёжная доставка). Если IDL-пакет не собран
+        # (CI, fresh clone без colcon build) — пропускаем подписку,
+        # логируем WARN, dead-man enforcement недоступен. Уже было
+        # сделано в self._try_import_heartbeat_msg() выше.
+        if self._heartbeat_msg_type is not None:
+            from rclpy.qos import ReliabilityPolicy  # noqa: PLC0415
+
+            heartbeat_qos = QoSProfile(
+                depth=self.HEARTBEAT_QOS_DEPTH,
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+            )
+            self.create_subscription(
+                self._heartbeat_msg_type,
+                self.TELEOP_HEARTBEAT_TOPIC,
+                self._on_teleop_heartbeat,
+                heartbeat_qos,
+            )
+        else:
+            self._log.warning(
+                "avatar_supervisor: TeleopHeartbeat IDL not importable; "
+                "/teleop_heartbeat subscription skipped, dead-man enforcement "
+                "disabled (monitor-safe, ADR-0028 §4.5)"
+            )
+
+        # AV-13: watcher-таймер для периодической проверки протухания floor-ов
+        # (ADR-0028 §4.4 S10, не реже 10 Гц). Этот таймер — отдельный от
+        # 1 Гц-таймера публикации /avatar/state, потому что при dead-man trip
+        # мы публикуем /avatar/state ВНЕОЧЕРЕДНО (см. _check_floor_expiry),
+        # а не ждём следующего 1 Гц-тика.
+        self._expiry_timer = self.create_timer(self.FLOOR_EXPIRY_CHECK_PERIOD_S, self._check_floor_expiry)
+
         # ── IDL-типы для типизированных сервисов (AV-12, ADR-0028 §4.3) ──
         # Пытаемся загрузить rob_box_supervisor_msgs. Если недоступен
         # (CI mock-rclpy, битая сборка), фолбэк на std_srvs/Trigger с
@@ -458,6 +525,164 @@ class AvatarSupervisor(Node):
 
         self._log_startup_diagnostics()
 
+    # ── heartbeat / dead-man (AV-13, ADR-0028 §4.4 S10) ────────────────
+    def _try_import_heartbeat_msg(self) -> Optional[Any]:
+        """Ленивый try-import :class:`TeleopHeartbeat` из IDL-пакета AV-12.
+
+        В CI (mock-rclpy) и fresh-clone без ``colcon build`` пакета
+        ``rob_box_supervisor_msgs`` нет — импорт падает, мы возвращаем
+        ``None``. В этом случае :py:meth:`__init__` пропускает
+        ``create_subscription``, логирует WARN и остаётся в monitor —
+        dead-man enforcement недоступен (ADR-0028 §4.5).
+
+        В проде после AV-12 (issue #1904, ветка
+        ``z-{agent}/1904-av-12-rob-box-supervisor-msgs-idl-floor-``)
+        IDL будет собран, импорт успешен, подписка зарегистрирована.
+        """
+        try:
+            from rob_box_supervisor_msgs.msg import TeleopHeartbeat  # noqa: PLC0415
+
+            return TeleopHeartbeat
+        except ImportError:
+            return None
+
+    def _on_teleop_heartbeat(self, msg: Any) -> None:
+        """Обработать ``/teleop_heartbeat`` от teleop-клиента (ADR-0028 §4.4 S10).
+
+        Поведение по :data:`_mode`:
+
+        - ``monitor`` — только считаем статистику (счётчик пришедших
+          heartbeat-ов), floor **не** трогаем (S12: monitor не вмешивается).
+          Если супервизор случайно держит floor по лени от прошлой
+          active-сессии — здесь не сбрасываем, иначе теряем state для
+          диагностики.
+        - ``active`` — зовём ``LockManager.heartbeat(...)``, который
+          продлевает ``last_heartbeat_ms`` для текущего holder-а
+          ``teleop_floor``. Heartbeat от клиента, который floor **не**
+          держит (state пуст или держит другой client_id) —
+          игнорируем, чтобы случайный клиент не смог «оживить» floor
+          за другого (LockManager бросает :class:`PermissionError` —
+          ловим и логируем WARN).
+
+        ``now_ms`` берём из :data:`_now_ms` (а не ``time.time()``) —
+        единственный источник времени ноды, чтобы тесты с fake-clock
+        могли контролировать часы. Это контрактное требование карточки
+        (acceptance «часы подменяемы в тестах»).
+        """
+        client_id = getattr(msg, "client_id", None) or ""
+        if not client_id:
+            self._log.warning("teleop_heartbeat: empty client_id, ignored")
+            return
+
+        if self._mode != "active":
+            # Monitor: считаем статистику, не вмешиваемся (S12).
+            self._aggregator.record_heartbeat_seen(client_id)
+            return
+
+        from rob_box_supervisor.core import Floor  # noqa: PLC0415
+
+        now_ms = self._now_ms()
+        try:
+            self._lock_manager.heartbeat(client_id, Floor.TELEOP, now_ms=now_ms)
+        except PermissionError as exc:
+            # Heartbeat от клиента, который НЕ держит teleop_floor (или
+            # держит другой) — это НЕ трип, это попытка heartbeat-а не туда.
+            # Контракт LockManager.heartbeat: PermissionError если нет
+            # holder-а или чужой client_id. Не валим ноду, логируем WARN —
+            # типичный случай race с release.
+            self._log.warning(f"teleop_heartbeat: rejected client_id={client_id} reason={exc}")
+            return
+        # Продлили — обновим снимок holder-ов, чтобы метрика trip
+        # (см. _check_floor_expiry) корректно отличала «клиент вышел»
+        # от «клиент тикает» в следующем тике.
+        self._known_floor_holders[Floor.TELEOP] = client_id
+
+    def _check_floor_expiry(self) -> None:
+        """Watcher-таймер 10 Гц: снимаем expired floor-ы + внеочередной publish.
+
+        AV-13, ADR-0028 §4.4 S10. Период 100 мс (см.
+        :data:`FLOOR_EXPIRY_CHECK_PERIOD_S`) — половина от желаемой
+        10 Гц частоты heartbeat, чтобы пограничный кейс 500 мс не
+        проскакивал мимо.
+
+        Алгоритм:
+
+        1. Для каждого floor-а (:data:`Floor.TELEOP`, :data:`Floor.VOICE`)
+           вызываем :py:meth:`LockManager.force_expire` — он активно
+           переводит expired floor в ``None`` (в отличие от ленивого
+           :py:meth:`LockManager.holder`).
+        2. Если floor действительно был снят (``expired_holder`` не
+           ``None``) — инкрементируем :class:`DeadManCounter` /
+           агрегатор-метрику, логируем WARN с фактическим возрастом
+           heartbeat-а в мс и **немедленно** публикуем ``/avatar/state``
+           вне очереди — клиенты должны узнать о снятии floor-а сразу,
+           а не через секунду (1 Гц-таймер ``_publish_avatar_state``).
+
+        При протухании нескольких floor-ов за один тик публикуем ОДИН
+        раз в конце (дешевле, чем публиковать на каждый trip).
+
+        Этот метод ЗАМЕНЯЕТ прежний ``_check_dead_man_trips`` (1 Гц,
+        ленивый, только метрика): watcher теперь единственный путь и для
+        enforcement, и для метрики (acceptance «двух путей снятия floor
+        быть не должно»).
+        """
+        from rob_box_supervisor.core import Floor  # noqa: PLC0415
+
+        now_ms = self._now_ms()
+        any_tripped = False
+
+        for floor in (Floor.TELEOP, Floor.VOICE):
+            expired_holder = self._lock_manager.force_expire(floor, now_ms=now_ms)
+            if expired_holder is None:
+                # Floor ещё живой / уже был свободен — обновим снимок
+                # для следующего тика (prev → current), чтобы метрика
+                # была согласована с LockManager.
+                self._known_floor_holders[floor] = self._lock_manager.holder(floor)
+                continue
+
+            # Trip: floor реально был снят.
+            new_count = self._aggregator.record_dead_man_trip(expired_holder)
+            self._known_floor_holders[floor] = None
+            self._log.warning(
+                f"dead_man_trip: client_id={expired_holder} floor={floor} "
+                f"timeout_ms={self._dead_man_timeout_ms} count={new_count}"
+            )
+            any_tripped = True
+
+        if any_tripped:
+            # Внеочередной publish — клиенты узнают о снятии floor-а сразу.
+            # Запускаем только в active (в monitor метрика trip-ов всё равно
+            # собирается, но /avatar/state и так публикуется каждую секунду
+            # — внеочередной там избыточен и шумит в логе).
+            if self._mode == "active":
+                self._publish_avatar_state_inline()
+
+    def _publish_avatar_state_inline(self) -> None:
+        """Внеочередная публикация ``/avatar/state`` после dead-man trip.
+
+        Отличие от 1 Гц-таймера только в том, кто её инициировал: тик
+        публикует по расписанию, а сюда приходят из
+        :py:meth:`_check_floor_expiry`, когда floor реально сняли и
+        клиентам надо узнать об этом сразу, а не через секунду.
+
+        Кодек — тот же :func:`encode_for_ros_string` (AV-14 #1906):
+        второй путь сериализации здесь недопустим, ровно на нём
+        издатель и потребитель однажды разошлись.
+        """
+        try:
+            state = self._build_published_avatar_state()
+            payload_str = encode_for_ros_string(state)
+        except (StateTransportError, StateVersionError) as exc:
+            self._log.warning(f"avatar_supervisor: внеочередной publish пропущен: {exc}")
+            return
+        except Exception as exc:  # noqa: BLE001 — не валить watcher
+            self._log.warning(
+                f"avatar_supervisor: unexpected encode failure: {type(exc).__name__}: {exc}"
+            )
+            return
+        msg = RosString()
+        msg.data = payload_str
+        self._state_pub.publish(msg)
     # ── service registration (типизированный IDL или fallback) ────────
     def _register_services(self) -> None:
         """Объявить ``acquire_floor`` / ``release_floor`` / ``set_avatar_mode``.
@@ -536,29 +761,6 @@ class AvatarSupervisor(Node):
             "reason": MONITOR_MODE_REASON,
         }
 
-    def _check_dead_man_trips(self) -> None:
-        """Периодически (1 Hz, из таймера) засечь dead-man авто-release floor-ов.
-
-        ``LockManager.holder()`` сам лениво чистит истёкшие floor-ы
-        (ADR-0028 §6 Q4, 500 мс), но не сообщает наружу, что именно
-        произошло. Здесь сравниваем со снимком прошлого тика: если
-        floor был занят client_id, а теперь свободен без явного
-        ``ReleaseFloor`` (мы бы уже обнулили ``_known_floor_holders`` в
-        :py:meth:`_release_floor_logic`) — это dead-man trip, инкрементируем
-        метрику ``dead_man_trips_total`` через агрегатор. Разрешение —
-        до 1с (период таймера), это метрика, а не enforcement (сам floor
-        снимается лениво и мгновенно при следующем acquire/holder()).
-        """
-        from rob_box_supervisor.core import Floor  # noqa: PLC0415
-
-        for floor in (Floor.TELEOP, Floor.VOICE):
-            prev = self._known_floor_holders.get(floor)
-            current = self._lock_manager.holder(floor)
-            if prev is not None and current is None:
-                new_count = self._aggregator.record_dead_man_trip(prev)
-                self._log.warning(f"dead_man_trip: client_id={prev} floor={floor} count={new_count}")
-            self._known_floor_holders[floor] = current
-
     def _build_published_avatar_state(self) -> AvatarState:
         """Build the wire-format :class:`AvatarState` from the canonical sources.
 
@@ -627,7 +829,6 @@ class AvatarSupervisor(Node):
         или отсутствующий msgpack) — пропускаем тик и шумим
         rate-limited WARN, чтобы не молча проглатывать (issue #1906).
         """
-        self._check_dead_man_trips()
         try:
             state = self._build_published_avatar_state()
             payload_str = encode_for_ros_string(state)
