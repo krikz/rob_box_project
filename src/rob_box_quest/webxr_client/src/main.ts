@@ -297,6 +297,24 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     bridge.voicePipeline.setLlmOn(pipelineLlmOn);
   }
 
+  /**
+   * Выбор стиля/языка — настройка LLM-ступени. Чтобы робот реально
+   * перефразировал (а не повторял дословно), включить STT+LLM и перевести
+   * диалоговую ноду в `quest_llm_formalize` (иначе `voice_preset`/`language`
+   * ни на что не влияют при `voice_input_mode=quest_ttts`).
+   */
+  function ensureLlmFormalize(): void {
+    const c = conn;
+    const wasLlmOn = pipelineLlmOn === true;
+    pipelineLlmOn = true;
+    pipelineSttOn = true;
+    bridge.voicePipeline.setLlmOn(true);
+    bridge.voicePipeline.setSttOn(true);
+    if (c && !disconnected && !wasLlmOn) {
+      c.send({ cmd: "voice_mode", ts_ms: Date.now(), mode: "llm_formalize" });
+    }
+  }
+
   // HUD: подключаем help-toggle кнопку (если есть) к help overlay.
   if (opts.helpToggle) {
     opts.helpToggle.addEventListener("click", () => help.toggle());
@@ -370,6 +388,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
         case "preset": {
           bridge.voicePipeline.setCurrentPreset(action.preset);
           modeManager.setCurrentPreset(action.preset);
+          ensureLlmFormalize();
           try {
             sendStyleChange(action.preset);
           } catch (err) {
@@ -382,6 +401,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
         case "lang": {
           bridge.voicePipeline.setCurrentLanguage(action.language);
           modeManager.setCurrentLanguage(action.language);
+          ensureLlmFormalize();
           try {
             sendStyleChange(undefined, action.language);
           } catch (err) {
