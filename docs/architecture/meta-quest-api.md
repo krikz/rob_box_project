@@ -131,7 +131,7 @@ stateDiagram-v2
 | `lidar_2d` | `0x1101` | little-endian float32: `[angle_min, angle_max, angle_inc, range_min, range_max, time_increment, scan_time, n_points]` + `n_points × float32 ranges` + `n_points × float32 intensities` (соответствует `sensor_msgs/LaserScan` ROS2 msg) |
 | `lidar_3d` | `0x1102` | zstd-compressed MessagePack: подвыборка PointCloud2 до 10k точек, `{n_points, frame_id, fields: ["x","y","z","intensity"], points: [[x,y,z,i], ...]}` |
 | `robot_status` | `0x1201` | MessagePack `{battery_pct, wifi_rssi, mode, vel_linear, vel_angular, ts_ms}` — 1 Hz |
-| `voice_state` | `0x1202` | MessagePack `{state: "idle"\|"listening"\|"thinking"\|"speaking", ts_ms, utterance_id?}` — event-driven |
+| `voice_state` | `0x1202` | MessagePack `{state: "idle"\|"listening"\|"thinking"\|"speaking"\|"denied", ts_ms, utterance_id?, holder_id?, detail?}` — event-driven. См. §6 `JSON_EVENT{type:voice_state}` для семантики `denied`/`holder_id`/`detail` (добавлены в PR #1930 + #1933 под аудит G8/G19, см. issue #1912). |
 | `person_detections` | `0x1301` | MessagePack `{ts_ms, detections: [{id, cls, x, y, z, w, h, conf}]}` — Phase 2 (R11) |
 
 **Frequency policy:**
@@ -389,6 +389,20 @@ JSON-обёртка нужна для admin-панели и тестовых к�
 { "type": "subscribe_nack", "topic": "lidar_3d", "reason": "topic_not_available_yet" }
 { "type": "heartbeat",      "ts_ms": 1234567890 }   // каждые 200 мс, см. §7
 { "type": "voice_state",    "state": "speaking", "ts_ms": 1234567890, "utterance_id": "..." }
+// state ∈ "idle"|"listening"|"thinking"|"speaking"|"denied".
+// Опциональные поля:
+//   holder_id — FloorHolder.label() держателя floor'а
+//               (формат "<client_id>:<session_id_short>"); присутствует в
+//               listening/speaking/denied, отсутствует в idle.
+//   detail    — человеко-читаемая подсказка для UI. Для state="denied"
+//               всегда имеет формат "busy: <holder_id>".
+// Семантика (см. issue #1912, G8/G19, rob_box_quest/server/voice_floor.py):
+//   idle      → floor свободен (никто не говорит).
+//   listening → клиент-держатель нажал PTT (push-to-talk активен).
+//   speaking  → робот озвучивает ответ (TTS фаза).
+//   thinking  → LLM обрабатывает (между STT и TTS).
+//   denied    → второй клиент попытался PTT, пока floor занят;
+//               отправляется ТОЛЬКО requester-у (не broadcast).
 { "type": "stream_list",    "topics": ["camera_rear", "camera_front", "lidar_2d"], "ts_ms": 1234567890 }
 { "type": "admin_logs_chunk", "service": "dialogue_node", "lines": ["..."], "ts_ms": 1234567890 }
 { "type": "admin_logs_end",   "service": "dialogue_node", "ts_ms": 1234567890 }
