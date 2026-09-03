@@ -53,21 +53,31 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any, Optional
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String as RosString
 
-# msgpack — Phase 1 wire-format для /avatar/state (см. ADR-0028 §4.3).
-# AV-5 даст полный IDL; пока Phase 1 совместим через dict→msgpack.
-try:  # pragma: no cover — на CI msgpack гарантированно есть (см. exec_depend)
-    import msgpack
+from rob_box_supervisor.core.state import (
+    AvatarEvent,
+    AvatarState,
+    StateTransportError,
+    StateVersionError,
+    encode_for_ros_string,
+)
 
-    _HAS_MSGPACK = True
-except ImportError:  # pragma: no cover — defensive: нода не падает на импорте
-    msgpack = None  # type: ignore[assignment]
-    _HAS_MSGPACK = False
+
+# AV-14 (issue #1906) — ``/avatar/state`` wire format lives in
+# :mod:`rob_box_supervisor.core.state`. The supervisor here ONLY calls
+# :func:`encode_for_ros_string`; no local msgpack, no JSON fallback.
+# See ``docs/plans/2026-09-02-avatar-epic-state-audit.md`` §1.2 G3 for the
+# silent-fail bug this prevents (msgpack publisher + JSON consumer = Telegram
+# never saw any state). The codec helper also handles the
+# ``forward-compat /msgpack absent`` defensive case via
+# :func:`is_ros_string_safe`, so this module does not need its own try/except
+# + JSON fallback — the bug we are closing lived precisely in that branch.
 
 
 # Default monitor-mode reason, который нода возвращает клиентам в Phase 1.
@@ -213,8 +223,11 @@ class AvatarSupervisor(Node):
         (issue #1644, run #32892615440). Тестировано в карточке t_369751b4.
         """
         zenoh = os.environ.get("ZENOH_SESSION_CONFIG_URI", "<unset>")
-        msgpack_state = "ok" if _HAS_MSGPACK else "MISSING"
-        self._log.info(f"avatar_supervisor started: mode={self._mode}, " f"zenoh={zenoh}, msgpack={msgpack_state}")
+        # AV-14: msgpack is a hard dep (declared in package.xml). Its
+        # availability is verified at import time by core.state; if the
+        # codec raises here it means the environment is genuinely broken
+        # (and we want a single loud failure, not a silent fallback to JSON).
+        self._log.info(f"avatar_supervisor started: mode={self._mode}, " f"zenoh={zenoh}")
 
     def _monitor_response(self) -> dict:
         """Стандартный ответ для всех сервисов в monitor-режиме."""
@@ -247,20 +260,89 @@ class AvatarSupervisor(Node):
                 self._log.warning(f"dead_man_trip: client_id={prev} floor={floor} count={new_count}")
             self._known_floor_holders[floor] = current
 
+    def _build_published_avatar_state(self) -> AvatarState:
+        """Build the wire-format :class:`AvatarState` from the canonical sources.
+
+        Sources of truth (per ADR-0028 §4.2, see audit §1.2 G3):
+          - avatar ``mode`` ← :py:attr:`ModeManager.mode`
+          - floors ownership ← :class:`LockManager` (dead-man aware)
+          - ``last_event`` ← last dead-man trip recorded on the local
+            :class:`StateAggregator` (Phase 1 metric) — None if no trip yet.
+
+        This deliberately does NOT pull ``pose_xy`` / ``battery_pct`` /
+        ``voice_state`` from :class:`StateAggregator`: those inputs are
+        Phase 1 telemetry (and remain in the aggregator for the local
+        metric path), but they do not belong in the ``/avatar/state``
+        schema (ADR-0028 §4.3). Including them would either force a
+        schema change (forbidden by AV-14 acceptance criterion #1:
+        "не менять схему AvatarState") or hand-roll a second codec
+        forbidden by criterion #2. Future consumers that need pose/battery
+        should subscribe to ``/odom`` / ``/device/snapshot`` directly.
+        """
+        from rob_box_supervisor.core import (  # noqa: PLC0415
+            Floor as FloorConst,
+            FloorState,
+        )
+
+        now_ms = int(time.time() * 1000)
+
+        teleop_holder = self._lock_manager.holder(FloorConst.TELEOP)
+        voice_holder = self._lock_manager.holder(FloorConst.VOICE)
+        teleop_floor = (
+            FloorState(
+                client_id=str(teleop_holder),
+                since_ms=now_ms,
+                last_heartbeat_ms=now_ms,
+            )
+            if teleop_holder is not None
+            else None
+        )
+        voice_floor = (
+            FloorState(
+                client_id=str(voice_holder),
+                since_ms=now_ms,
+                last_heartbeat_ms=now_ms,
+            )
+            if voice_holder is not None
+            else None
+        )
+
+        last_event = self._aggregator.last_event_as_avatar_event(now_ms)
+
+        return AvatarState(
+            mode=str(self._mode_manager.mode.value),
+            teleop_floor=teleop_floor,
+            voice_floor=voice_floor,
+            last_event=last_event,
+            since_ms=now_ms,
+        )
+
     def _publish_avatar_state(self) -> None:
-        """Timer-callback: публикует свежий snapshot агрегатора в /avatar/state."""
+        """Timer-callback: публикует свежий snapshot в /avatar/state.
+
+        AV-14: единственный кодек — :func:`encode_for_ros_string` из
+        :mod:`core.state`. Никакого локального ``msgpack.packb``, никакого
+        JSON-fallback'a — последний был именно тем путём, по которому
+        издатель (msgpack-as-latin-1) и потребитель (``json.loads`` в
+        ``supervisor_client``) разошлись. Если codec raise (битый state
+        или отсутствующий msgpack) — пропускаем тик и шумим
+        rate-limited WARN, чтобы не молча проглатывать (issue #1906).
+        """
         self._check_dead_man_trips()
-        snapshot = self._aggregator.snapshot()
-        if _HAS_MSGPACK:
-            try:
-                payload = msgpack.packb(snapshot.to_msgpack_dict(), use_bin_type=True)
-            except Exception as exc:  # noqa: BLE001
-                self._log.warning(f"avatar_supervisor: msgpack encode failed: {exc}")
-                payload = json.dumps(snapshot.to_msgpack_dict()).encode("utf-8")
-        else:  # pragma: no cover — defensive
-            payload = json.dumps(snapshot.to_msgpack_dict()).encode("utf-8")
+        try:
+            state = self._build_published_avatar_state()
+            payload_str = encode_for_ros_string(state)
+        except (StateTransportError, StateVersionError) as exc:
+            # Rate-limit: один WARN на тик максимум, чтобы не засорять лог
+            # при циклической ошибке (publisher 1 Hz, log-flooding = bad).
+            self._log.warning(f"avatar_supervisor: /avatar/state publish skipped: {exc}")
+            return
+        except Exception as exc:  # noqa: BLE001 — не валить таймер
+            self._log.warning(f"avatar_supervisor: unexpected encode failure: " f"{type(exc).__name__}: {exc}")
+            return
+
         msg = RosString()
-        msg.data = payload.decode("latin-1")  # ROS String — UTF-8 safe для bytes-as-text
+        msg.data = payload_str
         self._state_pub.publish(msg)
 
     # ── subscription callbacks (Phase 1: best-effort parse) ──────────

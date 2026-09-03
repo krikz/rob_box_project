@@ -197,6 +197,53 @@ LLM-кронов (архитектор-надзор 5c96a6eedf93 и т.п.). З�
   --key <стабильный-slug>
 ```
 
+### `agent-flow-nightly-review.sh` — ночной ревью-цикл (ADR-0049, 03.09.2026)
+
+`no_agent`, cron `every 1h` (профиль devops), но работает только внутри
+ночного окна `[NIGHTLY_REVIEW_HOUR, +NIGHTLY_REVIEW_WINDOW_HOURS)` —
+default `[02:00, 06:00)` по локальному времени хоста. Остальные тики стоят
+один `date` и `exit 0`.
+
+Закрывает два пробела, которых не покрывает ни один другой контур: (a) нет
+среза «что за сутки реально доехало и что осталось висеть»; (b) никто не
+перечитывает код, который воркеры за день влили (дубли, глюки LLM,
+недоделки, расхождение с ADR/README).
+
+Что делает за тик:
+
+1. Механически собирает дайджест за ревью-сутки (`REVIEW_DATE 00:00`
+   локально → now): merged PR, коммиты `origin/develop`, issues
+   open/closed, красные CI-прогоны, kanban (закрытые / упавшие / висящие
+   >6ч / ретро), churn по компонентам. Секция без данных печатает
+   `НЕТ ДАННЫХ (<причина>)`, а не пустой список.
+2. Создаёт ОДНУ карточку **«🌙 ночной ревью \<дата\>»** на `architect`
+   (key `nightly-review-<дата>`).
+3. Создаёт до `COMPONENT_REVIEW_MAX` (default 3) карточек
+   **«🔍 ревью компонента: \<comp\>»** на `analyst`
+   (key `component-review-<slug>-<дата>`) — по компонентам с наибольшим
+   churn, мимо `COMPONENT_REVIEW_EXCLUDE_RE` (`docs/`, `evidence/`, …) и
+   мимо компонентов на кулдауне (`COMPONENT_REVIEW_COOLDOWN_DAYS`,
+   default 7 дней).
+
+Обе карточки идут через `kanban-retro-create.sh` (три слоя дедупа), плюс
+sentinel `/tmp/agent-flow-nightly-review.<дата>.done` — «одна ночь = один
+комплект карточек». Скрипт НЕ чинит код, НЕ трогает метки/PR/issues и НЕ
+зовёт LLM: рассуждения живут внутри созданных карточек.
+
+```bash
+# сухой прогон в любое время суток (карточки не создаются):
+NIGHTLY_REVIEW_FORCE=true NIGHTLY_REVIEW_DRY_RUN=true bash scripts/agent_flow/agent-flow-nightly-review.sh
+
+# ревью за конкретные сутки:
+NIGHTLY_REVIEW_FORCE=true NIGHTLY_REVIEW_DATE=2026-09-02 bash scripts/agent_flow/agent-flow-nightly-review.sh
+
+# тест: bash scripts/agent_flow/tests/test_nightly_review.sh
+```
+
+Ночное окно НЕ должно попадать в PEAK-окна `agents_sleep_schedule.conf`
+(`04:00-07:00` и `09:00-13:00` MSK) — там висит MAINTENANCE и тик
+пропускается. Двигаете PEAK — двигайте `NIGHTLY_REVIEW_HOUR`.
+
 ### `validate_honesty.sh` — pre-PR check на «голословный PASS» (ADR-0018, 18.08.2026)
 
 Сканирует PR body (или файл / stdin) на claim-маркеры (`проверил`, `работает`,
@@ -257,6 +304,62 @@ bash scripts/agent_flow/tests/test_validate_adr_namespace.sh
 - `0` — нет коллизии (clean) или нет новых ADR-файлов в diff
 - `1` — ADR namespace collision (см. stderr для списка конфликтов и next-free)
 - `2` — usage error (неизвестный флаг, baseline не достижим)
+
+### `validate_test_ws_dirs.py` — pre-PR check на молчаливый контракт test_ws (ретро 03.09 t_cfa21388)
+
+`G-Run Tests.yml` собирает CI-workspace `test_ws/` из **подмножества** корня репо:
+
+```yaml
+rsync src/ -> test_ws/src/
+for d in docker migrations docs .github scripts; do rsync "$d" test_ws/; done
+```
+
+Список `for d in ...` — **молчаливый контракт**. Тест, который ходит walk-up'ом
+до корня репо и читает корневой каталог ВНЕ этого списка, локально зелёный, а
+на CI падает collect-error'ом — и роняет весь батч пакета, а не один тест.
+
+Баг случался дважды в одном файле:
+
+| Карточка | PR | Чего не было | Последствие |
+|----------|-----|--------------|-------------|
+| `t_29b9ce36` (02.09) | #1874 | `docker/` | `metrics_server.py not found` |
+| `t_cfa21388` (03.09) | #1958 | `scripts/` | `score.py not found`, develop RED ~9ч, 20+ PR заблокированы |
+
+Guard закрывает **класс**, а не третий экземпляр: сверяет rsync-список
+**каждого** job'а со всеми корневыми каталогами, на которые тесты ссылаются
+**от корня репо** (`Path(__file__).resolve().parents[N]` с N до корня, обход
+`parents`, или якорь `ROB_BOX_REPO_ROOT`). Package-local каталоги
+(`src/rob_box_animations/scripts/`) не считаются — иначе ложные срабатывания.
+
+**Severity:**
+- `FAIL` (exit 1) — каталог не скопирован и обращение не защищено `skipif` →
+  CI упадёт collect-error'ом. Блокирует.
+- `WARN` (exit 0) — обращение под `pytest.mark.skipif(...exists())` → тест
+  молча **скипается** на CI. Не блокирует, но это дыра в покрытии.
+  На 03.09 таких 4 (`tools/gen_tool_catalog.py`, `test_skill_catalog.py`) —
+  тех-долг, отдельной карточкой.
+
+```bash
+# Pre-PR (воркеры прогоняют локально перед `gh pr create`):
+cd /home/builder/rob_box_project
+python3 scripts/agent_flow/validate_test_ws_dirs.py
+# → exit 0 (clean / только WARN) или exit 1 (непокрытый каталог)
+
+# Строгий режим — WARN тоже валит (для аудита тех-долга):
+python3 scripts/agent_flow/validate_test_ws_dirs.py --strict
+
+# Тест:
+bash scripts/agent_flow/tests/test_validate_test_ws_dirs.sh
+```
+
+**Регистрация:** в `EXPECTED` `install.sh` → drift-detect контролирует.
+**НЕ вызывается из merge-gate** — запускается воркером вручную как часть
+локального pre-PR чек-листа (по аналогии с `validate_adr_namespace.sh`).
+
+**Exit codes:**
+- `0` — все читаемые тестами корневые каталоги покрыты во всех job'ах
+- `1` — есть непокрытый каталог (FAIL), либо WARN при `--strict`
+- `2` — usage error (workflow не найден / изменилась структура `for d in`)
 
 ### `round_ensure.sh` — ручной валидационный e2e-раунд (ретро 11.08 t_26a6d362)
 

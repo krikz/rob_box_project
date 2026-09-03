@@ -15,9 +15,11 @@
 
 import * as THREE from "three";
 import {
+  cornerFromUv,
   dragTargetPosition,
   horizontalRadius,
   isDrag,
+  type PanelCorner,
   type Vec3
 } from "./pointer_math";
 
@@ -44,6 +46,14 @@ export interface PointerHandlers {
   /** Новая позиция объекта на сфере вокруг оператора. */
   onDrag?(id: string, position: Vec3): void;
   onDragEnd?(id: string): void;
+  /**
+   * Луч попал в угловую «ручку» resize. Хендлер должен изменить
+   * размер панели; сигнатура аналогична onDrag — позиция луча на
+   * сфере вокруг оператора. `corner` — какой угол схватили.
+   */
+  onResizeStart?(id: string, corner: PanelCorner): void;
+  onResize?(id: string, corner: PanelCorner, position: Vec3): void;
+  onResizeEnd?(id: string, corner: PanelCorner): void;
 }
 
 export interface PointerSystemOptions {
@@ -63,7 +73,9 @@ export class PointerSystem {
   private hoveredId: string | null = null;
   private pressedId: string | null = null;
   private pressOrigin: Vec3 | null = null;
+  private pressCorner: PanelCorner | null = null;
   private dragging = false;
+  private resizing = false;
   private dragRadius = 2;
   private wasPressed = false;
 
@@ -109,11 +121,12 @@ export class PointerSystem {
       return;
     }
 
-    const hitId = this.pick(ray);
+    const pick = this.pick(ray);
+    const hitId = pick?.id ?? null;
 
-    // Во время драга наведение не переезжает на другие объекты — иначе
-    // панель «перепрыгивает» на соседнюю при пересечении лучом.
-    if (!this.dragging) this.setHover(hitId);
+    // Во время драга/ресайза наведение не переезжает на другие объекты —
+    // иначе панель «перепрыгивает» на соседнюю при пересечении лучом.
+    if (!this.dragging && !this.resizing) this.setHover(hitId);
 
     const justPressed = ray.pressed && !this.wasPressed;
     const justReleased = !ray.pressed && this.wasPressed;
@@ -122,12 +135,23 @@ export class PointerSystem {
     if (justPressed && hitId) {
       this.pressedId = hitId;
       this.pressOrigin = this.rayPoint(ray);
+      this.pressCorner = pick?.corner ?? null;
       this.dragRadius = this.radiusOf(hitId);
+      // Угловой «зажим» начинается сразу как resize (без CLICK_SLOP_M):
+      // оператор целился в угол, ждать порог — только мешать.
+      if (this.pressCorner !== null) {
+        this.resizing = true;
+        this.handlers.onResizeStart?.(hitId, this.pressCorner);
+      }
       return;
     }
 
     if (ray.pressed && this.pressedId) {
       const point = this.rayPoint(ray);
+      if (this.resizing && this.pressCorner) {
+        this.handlers.onResize?.(this.pressedId, this.pressCorner, point);
+        return;
+      }
       const target = this.targets.find((t) => t.id === this.pressedId);
       const canDrag = target?.draggable ?? false;
       if (!this.dragging && canDrag && this.pressOrigin && isDrag(this.pressOrigin, point)) {
@@ -146,8 +170,8 @@ export class PointerSystem {
     if (justReleased) this.finishPress(hitId);
   }
 
-  /** Луч попал в объект? Возвращает id ближайшего. */
-  private pick(ray: PointerRay): string | null {
+  /** Луч попал в объект? Возвращает id ближайшего + угол (если угловой хит). */
+  private pick(ray: PointerRay): { id: string; corner: PanelCorner | null } | null {
     if (this.targets.length === 0) return null;
     this.raycaster.set(
       new THREE.Vector3(ray.origin.x, ray.origin.y, ray.origin.z),
@@ -159,7 +183,9 @@ export class PointerSystem {
     // Ищем, какому таргету принадлежит попавшийся меш (может быть ребёнком).
     for (const hit of hits) {
       const id = this.ownerOf(hit.object);
-      if (id) return id;
+      if (!id) continue;
+      const corner = hit.uv ? cornerFromUv(hit.uv) : null;
+      return { id, corner };
     }
     return null;
   }
@@ -189,8 +215,11 @@ export class PointerSystem {
 
   private finishPress(hitId: string | null): void {
     const pressedId = this.pressedId;
+    const pressedCorner = this.pressCorner;
     if (pressedId) {
-      if (this.dragging) {
+      if (this.resizing && pressedCorner) {
+        this.handlers.onResizeEnd?.(pressedId, pressedCorner);
+      } else if (this.dragging) {
         this.handlers.onDragEnd?.(pressedId);
       } else if (hitId === pressedId) {
         // Отпустили на том же объекте и не тянули — это выбор.
@@ -199,7 +228,9 @@ export class PointerSystem {
     }
     this.pressedId = null;
     this.pressOrigin = null;
+    this.pressCorner = null;
     this.dragging = false;
+    this.resizing = false;
   }
 
   private setHover(id: string | null): void {
