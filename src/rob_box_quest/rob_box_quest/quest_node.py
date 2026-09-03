@@ -212,6 +212,8 @@ class QuestBridge:
         sound_stop_pub=None,
         stt_in_pub=None,
         set_voice_mode_pub=None,
+        set_voice_preset_pub=None,
+        set_voice_language_pub=None,
         set_voice_pub=None,
         preview_voice_pub=None,
         voices_cache_ttl_sec: float = 300.0,
@@ -232,6 +234,10 @@ class QuestBridge:
         self._stt_in_pub = stt_in_pub
         # voice_mode → супервизор (ADR-0028 S5): /avatar/set_voice_mode.
         self._set_voice_mode_pub = set_voice_mode_pub
+        # AV-28 §P7 (issue #1920) — voice style preset / language → супервизор.
+        # /avatar/set_voice_preset, /avatar/set_voice_language (см. meta-quest-api.md §P7).
+        self._set_voice_preset_pub = set_voice_preset_pub
+        self._set_voice_language_pub = set_voice_language_pub
         # AV-27 / issue #1919 — set_voice / preview_voice → супервизор.
         self._set_voice_pub = set_voice_pub
         self._preview_voice_pub = preview_voice_pub
@@ -444,6 +450,41 @@ class QuestBridge:
             self._node.get_logger().warning(f"quest: unknown voice_mode {mode!r}")
             return
         self._set_voice_mode_pub.publish(_string_msg(param_mode))
+
+    # ── AV-28 §P7 (issue #1920): voice style preset + language ──────────────
+    # Симметрично ``set_voice_mode``: ws_server вызывает → публикуем в
+    # /avatar/set_voice_preset или /avatar/set_voice_language → супервизор
+    # делает SetParameters(voice_preset=…) / SetParameters(voice_output_language=…)
+    # на dialogue_node (ADR-0028 §S5, meta-quest-api.md §P7).
+    # Сам quest_node НЕ трогает dialogue_node напрямую — единая точка записи
+    # для всех voice-параметров супервизор.
+    def set_voice_preset(self, preset: str) -> None:
+        """AV-28 §P7: запрос супервизору сменить стиль речи.
+
+        Публикует ``String`` с ``preset`` (один из VOICE_PRESET_IDS) в
+        ``/avatar/set_voice_preset``. Whitelist — на ws_server, но если
+        сюда дошёл неожиданный ID, пишем WARN и выходим.
+        """
+        if self._set_voice_preset_pub is None:
+            self._node.get_logger().warning(
+                "quest: set_voice_preset called but publisher not initialized"
+            )
+            return
+        self._set_voice_preset_pub.publish(_string_msg(preset))
+
+    def set_voice_language(self, language: str) -> None:
+        """AV-28 §P7: запрос супервизору сменить язык вывода.
+
+        Публикует ``String`` с ``language`` (один из VOICE_LANGUAGES: ru|en)
+        в ``/avatar/set_voice_language``. Без рестарта dialogue_node —
+        параметр подхватывается на следующей фразе.
+        """
+        if self._set_voice_language_pub is None:
+            self._node.get_logger().warning(
+                "quest: set_voice_language called but publisher not initialized"
+            )
+            return
+        self._set_voice_language_pub.publish(_string_msg(language))
 
     # ── AV-27 TTS picker (issue #1919) ────────────────────────────────────
 
@@ -1064,6 +1105,17 @@ class QuestNode(Node):
         self._stt_in_pub = self.create_publisher(AudioData, "/audio/quest_in", _VOICE_QOS)
         # voice_mode → супервизор (ADR-0028 S5): /avatar/set_voice_mode.
         self._set_voice_mode_pub = self.create_publisher(String, "/avatar/set_voice_mode", _RE)
+        # AV-28 §P7 (issue #1920) — voice style preset / language → супервизор.
+        # Топики /avatar/set_voice_preset, /avatar/set_voice_language
+        # (см. meta-quest-api.md §P7). Супервизор делает SetParameters на
+        # dialogue_node (voice_preset / voice_output_language). Без рестарта
+        # dialogue_node — параметр подхватывается на следующей фразе.
+        self._set_voice_preset_pub = self.create_publisher(
+            String, "/avatar/set_voice_preset", _RE
+        )
+        self._set_voice_language_pub = self.create_publisher(
+            String, "/avatar/set_voice_language", _RE
+        )
         # AV-27 / issue #1919 — TTS picker: set_voice / preview_voice →
         # супервизор (ADR-0028 S5/S12 — никаких прямых SetParameters из
         # quest_node на tts_node). Топики std_msgs/String (JSON payload),
@@ -1234,6 +1286,8 @@ class QuestNode(Node):
             sound_stop_pub=self._sound_stop_pub,
             stt_in_pub=self._stt_in_pub,
             set_voice_mode_pub=self._set_voice_mode_pub,
+            set_voice_preset_pub=self._set_voice_preset_pub,
+            set_voice_language_pub=self._set_voice_language_pub,
             set_voice_pub=self._set_voice_pub,
             preview_voice_pub=self._preview_voice_pub,
             voices_cache_ttl_sec=float(self.get_parameter("voices_cache_ttl_sec").value),
