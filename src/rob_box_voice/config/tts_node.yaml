@@ -108,6 +108,15 @@ tts_node:
     # реального провайдера (не номинального minimax). Пустая строка —
     # отключить персистентность.
     provider_state_file: /data/tts_provider_state.json
+    # Issue #1976 / t_b33bfee1 — цепочка fallback TTS-провайдеров.
+    # Дефолт — Yandex-first (Шифу: «если нет Яши то юзать миниакс если
+    # и миниакса нет то силеро»). Чтобы переопределить — измените порядок
+    # ниже ИЛИ задайте provider= в YAML (см. _chain_from_provider).
+    # Silero всегда последний (инвариант — сам tts_node гарантирует).
+    provider_chain:
+      - yandex
+      - minimax
+      - silero
     audio_topic: /voice/audio/speech
     audio_output_sample_rate: 16000
     audio_qos_reliability: best_effort
