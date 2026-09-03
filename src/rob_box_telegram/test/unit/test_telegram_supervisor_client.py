@@ -62,9 +62,7 @@ class TestSupervisorClientMonitor(unittest.TestCase):
 
     def setUp(self) -> None:
         self.node = _StubNode()
-        self.client = SupervisorClient(
-            node=self.node, client_id="telegram", mode="monitor"
-        )
+        self.client = SupervisorClient(node=self.node, client_id="telegram", mode="monitor")
 
     def tearDown(self) -> None:
         self.client.reset_test_hooks()
@@ -88,9 +86,7 @@ class TestSupervisorClientActiveMode(unittest.TestCase):
 
     def setUp(self) -> None:
         self.node = _StubNode()
-        self.client = SupervisorClient(
-            node=self.node, client_id="telegram", mode="active"
-        )
+        self.client = SupervisorClient(node=self.node, client_id="telegram", mode="active")
 
     def tearDown(self) -> None:
         self.client.reset_test_hooks()
@@ -183,9 +179,7 @@ class TestSupervisorClientActiveMode(unittest.TestCase):
             "acquire",
             lambda **kw: AcquireResult(granted=True, contacted_service=True),
         )
-        self.client.set_mock_response(
-            "release", lambda **kw: released.append(kw["floor"])
-        )
+        self.client.set_mock_response("release", lambda **kw: released.append(kw["floor"]))
 
         def _boom() -> None:
             raise RuntimeError("simulated publish failure")
@@ -200,9 +194,7 @@ class TestSupervisorClientStateSubscription(unittest.TestCase):
 
     def setUp(self) -> None:
         self.node = _StubNode()
-        self.client = SupervisorClient(
-            node=self.node, client_id="telegram", mode="monitor"
-        )
+        self.client = SupervisorClient(node=self.node, client_id="telegram", mode="monitor")
 
     def tearDown(self) -> None:
         self.client.reset_test_hooks()
@@ -242,9 +234,7 @@ class TestSupervisorClientShutdown(unittest.TestCase):
 
     def setUp(self) -> None:
         self.node = _StubNode()
-        self.client = SupervisorClient(
-            node=self.node, client_id="telegram", mode="monitor"
-        )
+        self.client = SupervisorClient(node=self.node, client_id="telegram", mode="monitor")
 
     def tearDown(self) -> None:
         self.client.reset_test_hooks()
@@ -257,6 +247,107 @@ class TestSupervisorClientShutdown(unittest.TestCase):
         self.client.shutdown()
         self.assertFalse(self.client._is_holding(Floor.TELEOP))
         self.assertFalse(self.client._is_holding(Floor.VOICE))
+
+
+# ---------------------------------------------------------------------------
+# AV-14 (issue #1906): wire-contract regression. The consumer's
+# ``_on_state_msg`` MUST accept what the supervisor's
+# ``encode_for_ros_string`` produces — and MUST NOT silently default on
+# a malformed payload (that was the original bug, see
+# docs/adr/0028-avatar-supervisor.md §4.7). These tests use ``monitor``
+# mode so they don't need rclpy; they exercise the production callback
+# directly with a fake ``std_msgs/String``-like object.
+# ---------------------------------------------------------------------------
+
+
+def _try_import_supervisor_codec():
+    """Return (encode, decode, AvatarState, FloorState, AvatarEvent) or skip."""
+    try:
+        from rob_box_supervisor.core.state import (  # noqa: PLC0415
+            AvatarEvent,
+            AvatarState,
+            FloorState,
+            decode_from_ros_string,
+            encode_for_ros_string,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    return (encode_for_ros_string, decode_from_ros_string, AvatarState, FloorState, AvatarEvent)
+
+
+class TestOnStateMsgDecodeContract(unittest.TestCase):
+    """Anti-regression: ``_on_state_msg`` must round-trip the real codec."""
+
+    def setUp(self) -> None:
+        self.node = _StubNode()
+        self.client = SupervisorClient(node=self.node, client_id="telegram", mode="monitor")
+        # Reset the module-level rate-limit clock so previous tests
+        # cannot suppress this test's WARN.
+        import rob_box_telegram.supervisor_client as sc
+
+        sc._decode_warn_last_ts = 0.0
+
+    def test_decodes_supervisor_wire_string_into_state(self) -> None:
+        codec = _try_import_supervisor_codec()
+        if codec is None:
+            self.skipTest("rob_box_supervisor.core.state not importable here")
+        encode, _decode, _AState, FloorState, AvatarEvent = codec
+        state = _AState(
+            mode="mixed",
+            teleop_floor=FloorState(client_id="квест-1", since_ms=10, last_heartbeat_ms=20),
+            voice_floor=None,
+            last_event=AvatarEvent(timestamp_ms=9, client_id="тест", kind="dead_man_trip", args={"n": 1}),
+            since_ms=7,
+        )
+        wire = encode(state)
+
+        class _Msg:
+            data = wire
+
+        self.client._on_state_msg(_Msg())
+        self.assertEqual(self.client.state.mode, "mixed")
+        # FloorState (dataclass) is bridged to str-client_id for the
+        # existing Telegram UI contract.
+        self.assertEqual(self.client.state.teleop_floor, "квест-1")
+        self.assertIsNone(self.client.state.voice_floor)
+        self.assertEqual(self.client.state.since_ms, 7)
+        self.assertEqual(self.client.state.raw["last_event"]["kind"], "dead_man_trip")
+        self.assertEqual(self.client.state.raw["last_event"]["client_id"], "тест")
+
+    def test_garbage_payload_does_not_corrupt_state(self) -> None:
+        codec = _try_import_supervisor_codec()
+        if codec is None:
+            self.skipTest("rob_box_supervisor.core.state not importable here")
+        encode, _decode, _AState, FloorState, _AEvent = codec
+        good = _AState(
+            mode="active",
+            teleop_floor=FloorState("quest", 1, 2),
+            voice_floor=None,
+            last_event=None,
+            since_ms=1,
+        )
+        good_wire = encode(good)
+
+        class _MsgGood:
+            data = good_wire
+
+        self.client._on_state_msg(_MsgGood())
+        self.assertEqual(self.client.state.teleop_floor, "quest")
+
+        class _MsgGarbage:
+            data = "this is not msgpack"
+
+        # Must not raise, must not reset state.
+        self.client._on_state_msg(_MsgGarbage())
+        self.assertEqual(self.client.state.teleop_floor, "quest")
+
+    def test_empty_payload_does_not_corrupt_state(self) -> None:
+        class _MsgEmpty:
+            data = ""
+
+        self.client._on_state_msg(_MsgEmpty())
+        self.assertIsNone(self.client.state.teleop_floor)
+        self.assertEqual(self.client.state.mode, "off")
 
 
 if __name__ == "__main__":

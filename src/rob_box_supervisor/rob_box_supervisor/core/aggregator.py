@@ -108,6 +108,41 @@ class StateAggregator:
         }
         return new_value
 
+    def last_event_as_avatar_event(self, now_ms: int) -> Optional[Any]:
+        """Return the last meaningful event as a wire-format ``AvatarEvent``.
+
+        AV-14 (issue #1906) — aggregator stays a Phase-1 metric holder
+        (``pose_xy`` / ``battery_pct`` / ``voice_state`` /
+        ``dead_man_trips_total``), but it no longer drives the
+        ``/avatar/state`` schema — ``encode_for_ros_string`` builds that
+        from ``core.state.AvatarState``. This helper bridges the two
+        layers cleanly: a single ``AvatarEvent`` if there is recorded
+        activity (right now: only ``dead_man_trip`` events), ``None``
+        otherwise.
+
+        Imported as ``Any`` to avoid a hard coupling between this module
+        and :class:`core.state.AvatarEvent` (which lives in a sibling
+        module imported by ``supervisor_node``, never by ``aggregator``).
+        """
+        if not self._last_event:
+            return None
+        if self._last_event.get("kind") != "dead_man_trip":
+            return None
+        cid = str(self._last_event.get("client_id", ""))
+        # Адресный контракт живёт в core.state.AvatarEvent (см. модуль
+        # core.state): kind/args — общие поля, которые мы заполняем из
+        # нашей dict-формы. Импортируем лениво, чтобы core/aggregator.py
+        # оставался импортируем без побочных эффектов (для unit-тестов
+        # в test_aggregator.py, где AvatarEvent не нужен).
+        from rob_box_supervisor.core.state import AvatarEvent as _AE  # noqa: PLC0415
+
+        return _AE(
+            timestamp_ms=int(now_ms),
+            client_id=cid,
+            kind="dead_man_trip",
+            args={"trip_count": int(self._last_event.get("trip_count", 0))},
+        )
+
     def dead_man_count(self, client_id: str) -> int:
         """Текущее значение счётчика (0 если ещё не было трипов)."""
         return self._dead_man.get(str(client_id), 0)
