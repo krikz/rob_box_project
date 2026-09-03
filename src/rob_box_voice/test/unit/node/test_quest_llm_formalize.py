@@ -141,13 +141,17 @@ def _write_minimal_yaml(tmpdir: Path, *, with_prompts: bool = True) -> str:
     prompt_dir = tmpdir / "presets"
     prompt_dir.mkdir(parents=True, exist_ok=True)
     if with_prompts:
-        # Файлы для ОБОИХ пресетов из yaml ниже. Раньше писался только
-        # technical.txt, а test_loads_yaml_and_prompts проверяет
-        # prompt_text у обоих — lenin честно приходил пустым, и тест
-        # падал на assert "===RU===" in "".
+        # Файлы для ОБОИХ пресетов из yaml ниже. Двуязычный формат как в
+        # реальных presets/*.txt: RU-часть сверху, EN-часть с маркера
+        # "EN version" (test_loads_yaml_and_prompts проверяет обе секции,
+        # а _formalize_with_llm разруливает их по этому маркеру).
         for _key in ("technical", "lenin"):
             (prompt_dir / f"{_key}.txt").write_text(
-                "===RU===\nRU prompt\n===EN===\nEN prompt\n",
+                "RU prompt\n"
+                "================================================================================\n"
+                "EN version (same rules, English output)\n"
+                "================================================================================\n"
+                "EN prompt\n",
                 encoding="utf-8",
             )
     yaml_path = tmpdir / "voice_presets.yaml"
@@ -318,7 +322,8 @@ class TestLoadVoicePresets:
         # Каждый пресет имеет name + prompt_text (не пустой).
         for key in ("technical", "lenin"):
             assert data["presets"][key]["name"]
-            assert "===RU===" in data["presets"][key]["prompt_text"]
+            assert "RU prompt" in data["presets"][key]["prompt_text"]
+            assert "EN version" in data["presets"][key]["prompt_text"]
         assert data["default_preset"] == "technical"
         assert data["default_language"] == "ru"
         assert set(data["languages"]) == {"ru", "en"}
@@ -480,11 +485,38 @@ class TestFormalizeWithLlm:
         args = n._llm.complete.call_args.args[0]
         assert args[0].role == "system"
         assert args[1].role == "user"
-        assert args[1].content == "привет как дела"
+        # RU-режим: system-промпт — только RU-секция (без EN-секции),
+        # user-сообщение — исходная фраза + языковая директива.
+        assert "RU prompt" in args[0].content
+        assert "EN version" not in args[0].content
+        assert "привет как дела" in args[1].content
+        assert "«русский»" in args[1].content
         assert n._llm.complete.call_args.kwargs.get("tools", []) == []
 
         # В итоге TTS получил переписанную фразу.
         n._speak_direct.assert_called_once_with("Технически выражаясь, привет.")
+
+    @pytest.mark.skipif(
+        _IS_PY_311_PLUS or not _DIALOGUE_NODE_IMPORT_OK,
+        reason=_SKIP_REASON,
+    )
+    def test_en_language_uses_en_prompt_section(self, tmp_path):
+        """voice_output_language=en → system-промпт = EN-секция, user — «английский»."""
+        n = _make_node()
+        _install_param_getter(n)
+        n._voice_presets_file = _write_minimal_yaml(tmp_path)
+
+        fake_response = MagicMock()
+        fake_response.content = "Hello."
+        n._llm.complete = MagicMock(side_effect=lambda *a, **k: _async_return(fake_response))
+
+        self._run(n._formalize_with_llm("привет", "technical", "en"))
+
+        args = n._llm.complete.call_args.args[0]
+        assert "EN prompt" in args[0].content
+        assert "RU prompt" not in args[0].content
+        assert "«английский»" in args[1].content
+        n._speak_direct.assert_called_once_with("Hello.")
 
     @pytest.mark.skipif(
         _IS_PY_311_PLUS or not _DIALOGUE_NODE_IMPORT_OK,

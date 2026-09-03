@@ -2310,9 +2310,30 @@ class DialogueNode(Node):
                 )
                 self._speak_direct(text)
                 return
+
+            # Промпт-файл двуязычный: RU-часть сверху, EN-часть с маркера
+            # "EN version". Передаём LLM только секцию нужного языка — иначе
+            # правило RU «только русский» конфликтует с EN «только английский»
+            # и модель отвечает по-русски даже при voice_output_language=en.
+            marker = "EN version"
+            marker_idx = prompt_text.find(marker)
+            if marker_idx != -1:
+                prompt_text = prompt_text[marker_idx:] if language == "en" else prompt_text[:marker_idx]
+
+            preset_name = (preset_cfg or {}).get("name") or preset_key
+            language_label = "английский" if language == "en" else "русский"
+            user_msg = (
+                "Исходная фраза оператора (дословно, без wake-word):\n\n"
+                '"""\n'
+                f"{text}\n"
+                '"""\n\n'
+                f"Перепиши её в стиле пресета «{preset_name}» на языке "
+                f"«{language_label}». Сохрани смысл, длину (±×2) и все факты "
+                "дословно. Не добавляй ничего от себя."
+            )
             messages = [
                 LLMMessage(role="system", content=prompt_text),
-                LLMMessage(role="user", content=text),
+                LLMMessage(role="user", content=user_msg),
             ]
             timeout_s = self._get_formalize_timeout()
             llm_obj = getattr(self, "_llm", None)
