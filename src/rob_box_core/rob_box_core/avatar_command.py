@@ -127,17 +127,13 @@ def build_command(
         ValueError: ``source`` или ``client_id`` некорректны.
     """
     if source not in SOURCES:
-        raise ValueError(
-            f"avatar_command: source={source!r} не в {SOURCES!r}"
-        )
+        raise ValueError(f"avatar_command: source={source!r} не в {SOURCES!r}")
     if not client_id or not isinstance(client_id, str):
         raise ValueError(
             f"avatar_command: client_id={client_id!r} должен быть непустой строкой"
         )
     if not text or not isinstance(text, str):
-        raise ValueError(
-            f"avatar_command: text={text!r} должен быть непустой строкой"
-        )
+        raise ValueError(f"avatar_command: text={text!r} должен быть непустой строкой")
     return {
         "request_id": request_id or new_request_id(),
         "source": source,
@@ -287,9 +283,7 @@ def _validate_command(payload: dict[str, Any]) -> None:
     required = ("request_id", "source", "client_id", "text", "ts_ms")
     missing = [k for k in required if k not in payload]
     if missing:
-        raise ValueError(
-            f"avatar_command: отсутствуют поля {missing!r}"
-        )
+        raise ValueError(f"avatar_command: отсутствуют поля {missing!r}")
     if payload["source"] not in SOURCES:
         raise ValueError(
             f"avatar_command: source={payload['source']!r} не в {SOURCES!r}"
@@ -297,13 +291,9 @@ def _validate_command(payload: dict[str, Any]) -> None:
     if not isinstance(payload["text"], str) or not payload["text"]:
         raise ValueError("avatar_command: text должен быть непустой строкой")
     if not isinstance(payload["client_id"], str) or not payload["client_id"]:
-        raise ValueError(
-            "avatar_command: client_id должен быть непустой строкой"
-        )
+        raise ValueError("avatar_command: client_id должен быть непустой строкой")
     if not isinstance(payload["request_id"], str) or not payload["request_id"]:
-        raise ValueError(
-            "avatar_command: request_id должен быть непустой строкой"
-        )
+        raise ValueError("avatar_command: request_id должен быть непустой строкой")
     if not isinstance(payload["ts_ms"], int):
         raise ValueError("avatar_command: ts_ms должен быть int")
 
@@ -312,22 +302,108 @@ def _validate_command_result(payload: dict[str, Any]) -> None:
     required = ("request_id", "ok", "summary", "tool_calls")
     missing = [k for k in required if k not in payload]
     if missing:
-        raise ValueError(
-            f"avatar_command_result: отсутствуют поля {missing!r}"
-        )
+        raise ValueError(f"avatar_command_result: отсутствуют поля {missing!r}")
     if not isinstance(payload["ok"], bool):
         raise ValueError("avatar_command_result: ok должен быть bool")
     if not isinstance(payload["summary"], str):
         raise ValueError("avatar_command_result: summary должен быть строкой")
     if not isinstance(payload["tool_calls"], list):
-        raise ValueError(
-            "avatar_command_result: tool_calls должен быть list[str]"
-        )
+        raise ValueError("avatar_command_result: tool_calls должен быть list[str]")
     if not all(isinstance(x, str) for x in payload["tool_calls"]):
-        raise ValueError(
-            "avatar_command_result: tool_calls должен быть list[str]"
-        )
+        raise ValueError("avatar_command_result: tool_calls должен быть list[str]")
     if not isinstance(payload["request_id"], str) or not payload["request_id"]:
         raise ValueError(
             "avatar_command_result: request_id должен быть непустой строкой"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Publishers (тонкие обёртки над ROS-publisher, чтобы unit-тесты могли
+#  работать без rclpy)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def publish_avatar_command_from_quest_via(
+    pub: Any,
+    *,
+    text: str,
+    session_id: str,
+) -> Optional[str]:
+    """AV-22 — публикация ``/avatar/command`` для Quest-источника.
+
+    Args:
+        pub: ROS-publisher (``std_msgs/String``), как ``self._avatar_command_pub``
+            в :class:`dialogue_node.DialogueNode``. Может быть моком в тестах —
+            контракт: ``pub.publish(msg)`` где ``msg.data`` это JSON-строка.
+        text: распознанная фраза оператора.
+        session_id: ``session_id`` от quest-сервера (default ``"unknown"``
+            до прихода ``/avatar/set_voice_mode``).
+
+    Returns:
+        ``request_id`` (UUID) для логов/observability, либо ``None`` если
+        ``text`` пустой — тогда публикация не делается (worker-brief §6.2,
+        no silent degradation).
+    """
+    if not text or not text.strip():
+        return None
+    payload = build_command(
+        source="quest",
+        client_id=make_quest_client_id(session_id),
+        text=text.strip(),
+    )
+    return _publish_via(pub, payload)
+
+
+def publish_avatar_command_via(
+    pub: Any,
+    *,
+    text: str,
+    chat_id: int,
+) -> Optional[str]:
+    """AV-22 — публикация ``/avatar/command`` для Telegram-источника.
+
+    Args:
+        pub: ROS-publisher (``std_msgs/String``), как ``self._avatar_command_pub``
+            в :class:`telegram_node.TelegramNode``.
+        text: команда оператора (``/cmd <text>`` или свободный текст в
+            режиме оператора).
+        chat_id: ``chat_id`` из Telegram; формируем ``client_id=telegram:<chat_id>``
+            на СЕРВЕРНОЙ стороне (worker-brief §1.3).
+
+    Returns:
+        ``request_id`` (UUID) для логов, либо ``None`` если ``text`` пустой.
+    """
+    if not text or not text.strip():
+        return None
+    payload = build_command(
+        source="telegram",
+        client_id=make_telegram_client_id(int(chat_id)),
+        text=text.strip(),
+    )
+    return _publish_via(pub, payload)
+
+
+def _publish_via(pub: Any, payload: dict[str, Any]) -> str:
+    """Собрать ``String``-msg, опубликовать через ``pub``, вернуть ``request_id``.
+
+    Без silent fallback (worker-brief §6.2) — если сериализация не удалась,
+    это исключение поднимается наверх. Если ``pub`` не имеет ``.publish`` —
+    тоже исключение (защита от регрессий).
+    """
+    wire = encode_command(payload)
+    # Lazy import std_msgs — необязательно для unit-тестов, которые мокают
+    # ``pub``. В проде rclpy подгружен до того, как мы сюда попали.
+    try:
+        from std_msgs.msg import String as _String  # type: ignore[import-not-found]
+    except ImportError:
+        # Unit-test path: pub — MagicMock, умеет принять что угодно с .data.
+        class _Stub:  # pragma: no cover — exercised только вне ROS
+            def __init__(self, data: str) -> None:
+                self.data = data
+
+        msg = _Stub(wire)
+    else:
+        msg = _String()
+        msg.data = wire
+    pub.publish(msg)
+    return str(payload["request_id"])

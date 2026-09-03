@@ -704,9 +704,12 @@ async def cmd_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """
     node = _node(context)
     chat_id = update.effective_chat.id
-    # ``update.message.text`` уже без префикса ``/cmd`` (PTB его срезает),
-    # но если шлют ``/cmd@botname`` — нужно ещё отрезать ``@<botname>``.
-    text = (update.message.text or "").strip()
+    # PTB ``CommandHandler`` срезает ``/cmd`` и кладёт остаток в
+    # ``context.args`` (как у /say, /goto, /volume и др. — см. этот же
+    # файл). ``update.message.text`` содержит ПОЛНЫЙ текст ``/cmd ...``
+    # — для команды он бесполезен. Если шлют ``/cmd@botname <text>`` —
+    # ``@botname`` уже отрезан PTB (он не попадает в args).
+    text = " ".join(context.args).strip() if context.args else ""
     if not text:
         await update.message.reply_text(
             "ℹ️ Использование: `/cmd <текст команды для агента>`",
