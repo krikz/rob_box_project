@@ -33,6 +33,7 @@
 
 import type {
   VoiceLanguage,
+  VoicePreset,
   VoicePresetId,
   VoicePresetInfo
 } from "../wire/messages";
@@ -42,7 +43,7 @@ export interface VoicePresetsPanelOptions {
   presets?: VoicePresetInfo[];
   /** Начальный список языков (дефолт, до ответа сервера). */
   languages?: VoiceLanguage[];
-  /** Текущий выбранный пресет. */
+  /** Текущий выбранный пресет (AV-28 ID из voice_presets.yaml). */
   currentPreset?: VoicePresetId | null;
   /** Текущий выбранный язык. */
   currentLanguage?: VoiceLanguage | null;
@@ -62,8 +63,13 @@ export interface VoicePresetsPanel {
   setPresets(presets: VoicePresetInfo[]): void;
   /** Полная замена списка языков. */
   setLanguages(languages: VoiceLanguage[]): void;
-  /** Подсветить выбранный пресет (без эмита callback'а). */
-  setCurrentPreset(preset: VoicePresetId | null): void;
+  /**
+   * Подсветить выбранный пресет (без эмита callback'а).
+   * Принимает любой VoicePreset (legacy + AV-28) — для совместимости
+   * с сервером, который может прислать старые ID через voice_set_ack.
+   * Если переданный пресет не в списке — подсветка сбрасывается в null.
+   */
+  setCurrentPreset(preset: VoicePreset | null): void;
   /** Подсветить выбранный язык (без эмита callback'а). */
   setCurrentLanguage(language: VoiceLanguage | null): void;
   /** Включить/выключить loading-state. */
@@ -135,7 +141,10 @@ export function createVoicePresetsPanel(
   // Mutable state -------------------------------------------------------
   let presets: VoicePresetInfo[] = options.presets ? [...options.presets] : [];
   let languages: VoiceLanguage[] = options.languages ? [...options.languages] : ["ru", "en"];
-  let currentPreset: VoicePresetId | null = options.currentPreset ?? null;
+  // currentPreset — широкого типа: клик шлёт VoicePresetId (AV-28),
+  // сервер через voice_set_ack может прислать любой VoicePreset (legacy).
+  // При рендере кнопок фильтруем — legacy-пресеты не имеют UI-кнопки.
+  let currentPreset: VoicePreset | null = options.currentPreset ?? null;
   let currentLanguage: VoiceLanguage | null = options.currentLanguage ?? null;
   let loading = options.loading ?? false;
   let visible = true;
@@ -236,7 +245,8 @@ export function createVoicePresetsPanel(
     if (disposed) return;
     presets = [...next];
     // Если текущий пресет отсутствует в новом списке — сбрасываем в null,
-    // чтобы UI не показывал подсветку несуществующего.
+    // чтобы UI не показывал подсветку несуществующего. Legacy-пресеты
+    // (standard/friendly/...) не имеют UI-кнопки — это валидно.
     if (currentPreset && !presets.some((p) => p.id === currentPreset)) {
       currentPreset = null;
     }
@@ -252,10 +262,13 @@ export function createVoicePresetsPanel(
     rebuildLanguages();
   }
 
-  function setCurrentPreset(preset: VoicePresetId | null): void {
+  function setCurrentPreset(preset: VoicePreset | null): void {
     if (disposed) return;
     if (currentPreset === preset) return;
     currentPreset = preset;
+    // Если переданный пресет не из текущего списка (legacy или просто
+    // неизвестный ID) — просто не подсвечиваем ничего, currentPreset
+    // оставляем чтобы вернуть его обратно при следующем sync от сервера.
     for (const child of Array.from(presetsGroup.children) as HTMLButtonElement[]) {
       child.setAttribute(
         "aria-pressed",
