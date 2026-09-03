@@ -167,10 +167,12 @@ class Bridge(Protocol):
         подписанных клиентов на стрим ui_name. Если никто не подписан — no-op.
 
         Вызывается из:
-        - ROS-подписок (lidar_2d, robot_status, voice_state) — payload из
-          protocol/topics.py.
-        - capture-loop'ов CameraProvider (camera_oak_*, camera_ceiling) —
-          payload это JPEG/H.264 bytes с камеры.
+        - ROS-подписок (lidar_2d, map_2d, robot_status, voice_state) — payload
+          из protocol/topics.py и streams/*.
+        - ROS-подписок на image_transport (camera_rear, camera_ceiling) —
+          payload это JPEG bytes, форвардятся as-is.
+        - capture-loop'ов CameraProvider (camera_oak_*) — payload это
+          JPEG/H.264 bytes с камеры.
         """
         ...
 

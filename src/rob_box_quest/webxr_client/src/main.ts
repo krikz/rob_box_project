@@ -84,7 +84,7 @@ const DEFAULT_VOICE_LANGUAGE: VoiceLanguage = "ru";
 
 // Не-видео стримы. Список видео-топиков берём у сцены (`videoTopics()`),
 // чтобы подписка не разъезжалась с тем, что она реально умеет показать.
-const NON_VIDEO_TOPICS = ["lidar_2d", "robot_status", "voice_state"];
+const NON_VIDEO_TOPICS = ["lidar_2d", "map_2d", "robot_status", "voice_state"];
 
 interface BootstrapOptions {
   url?: string;
@@ -1040,6 +1040,12 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
           if (!topic) return;
           if (topic === "lidar_2d") {
             bridge.lidar.ingestPayload(payload);
+            return;
+          }
+          if (topic === "map_2d") {
+            // SLAM-карта под ногами. Битый кадр (или кадр без позы робота)
+            // просто пропускается — карта декорация пола, не телеметрия.
+            bridge.ingestMapFrame(payload);
             return;
           }
           if (topic === "robot_status") {

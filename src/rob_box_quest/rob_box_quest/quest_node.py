@@ -27,13 +27,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import threading
 import time
 from typing import Any, Optional
 
 from audio_common_msgs.msg import AudioData
 from geometry_msgs.msg import Twist
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (
@@ -52,6 +53,7 @@ from .server.ws_server import NoOpBridge, WSSServer, build_app
 from .streams.alerts import Alert, AlertThresholds, evaluate_alerts
 from .streams.battery import parse_battery_json, voltage_to_pct
 from .streams.lidar import scan_to_payload
+from .streams.occupancy import encode_map_2d, grid_to_png
 from .streams.provider import CameraFrame, CameraProvider
 from .streams.registry import STREAM_CATALOG
 from .streams.status import StatusAggregator
@@ -67,6 +69,22 @@ log = logging.getLogger(__name__)
 # У нас — fixed-rate 30 Гц.
 PUBLISH_RATE_HZ: float = 30.0
 PUBLISH_PERIOD_S: float = 1.0 / PUBLISH_RATE_HZ
+
+# map_2d: минимальный интервал между PNG-кадрами карты. rtabmap
+# перепубликует /rtabmap/map чаще, чем решётка реально меняется, а кодирование
+# 958×744 в PNG на Pi стоит миллисекунды и сотни килобайт трафика. Поза робота
+# едет отдельным лёгким кадром (см. Bridge.publish_map_pose), так что карта под
+# ногами не отстаёт от движения даже при редком PNG.
+MAP_PNG_MIN_PERIOD_S: float = 5.0
+
+# map_2d: как часто перевысылать последний PNG, даже если карта не менялась.
+# Кадры — не история: клиент, подключившийся между двумя обновлениями
+# rtabmap, иначе остался бы вообще без карты (а rtabmap перепубликует её
+# только когда решётка выросла — это могут быть минуты). Перевысылка берёт
+# УЖЕ закодированный PNG из кэша, так что стоит она только трафика:
+# ~120 KB на реальной карте робота, то есть ~12 KB/с — на фоне 800 KB/с
+# одной потолочной камеры это шум.
+MAP_PNG_RESEND_PERIOD_S: float = 4.0
 
 # Wire-режим голоса (meta-quest-api.md §5) → voice_input_mode (ADR-0027 §3.4).
 # Маппинг живёт здесь, потому что quest-сервер — точка перевода wire→ROS.
@@ -274,6 +292,15 @@ class QuestBridge:
         self._emergency_published: bool = False
         # Маппинг camera ui_name → device_id (для on_frame callback из CameraProvider).
         self._camera_id_to_ui: dict[str, str] = {}
+        # map_2d: геометрия последней карты (res, w, h, origin_x, origin_y) —
+        # нужна, чтобы лёгкий кадр «только поза» нёс те же размеры, что PNG.
+        self._map_info: Optional[tuple[float, int, int, float, float]] = None
+        # Последний закодированный PNG + отметки времени: когда кодировали
+        # (дроссель на CPU) и когда в последний раз отправили (перевысылка
+        # для поздно подключившихся клиентов).
+        self._map_png: Optional[bytes] = None
+        self._map_png_encoded_ts: float = 0.0
+        self._map_png_sent_ts: float = 0.0
         # ── AV-27 voices-cache ────────────────────────────────────────────
         # Кэш последнего /voice/tts/voices (latched, TRANSIENT_LOCAL). tts_node
         # перепубликует на старт + каждый set_provider → мы не теряем свежести.
@@ -679,6 +706,78 @@ class QuestBridge:
             intensities=list(msg.intensities),
         )
         self.publish_frame("lidar_2d", payload)
+
+    def on_map(self, msg, pose: Optional[tuple[float, float, float]]) -> None:
+        """Hook из ROS subscription /rtabmap/map → map_2d (0x1103).
+
+        Кодирование решётки в PNG стоит несколько миллисекунд на 958×744,
+        а rtabmap перепубликует карту чаще, чем она реально меняется,
+        поэтому дросселируем: не чаще одного PNG в MAP_PNG_MIN_PERIOD_S.
+        Между полными кадрами позу везёт publish_map_pose.
+        """
+        now = time.monotonic()
+        if now - self._map_png_encoded_ts < MAP_PNG_MIN_PERIOD_S:
+            return
+        info = msg.info
+        try:
+            png = grid_to_png(msg.data, info.width, info.height)
+        except Exception as e:  # noqa: BLE001
+            # Нет cv2/numpy или битая решётка — карта просто не появится,
+            # ронять ноду из-за декорации пола нельзя.
+            logging.getLogger(__name__).warning("map_2d: grid encode failed: %s", e)
+            return
+        self._map_png_encoded_ts = now
+        self._map_png = png
+        self._map_info = (
+            float(info.resolution),
+            int(info.width),
+            int(info.height),
+            float(info.origin.position.x),
+            float(info.origin.position.y),
+        )
+        self._publish_map(png=png, pose=pose)
+
+    def publish_map_pose(self, pose: Optional[tuple[float, float, float]]) -> None:
+        """Лёгкий map_2d-кадр: та же карта, новая поза робота.
+
+        Раз в MAP_PNG_RESEND_PERIOD_S подмешивает в кадр закодированный
+        ранее PNG. Без этого оператор, надевший очки между двумя
+        обновлениями rtabmap, стоял бы на пустом полу: BINARY_FRAME —
+        не latched-топик, историю новому подписчику никто не отдаёт.
+        """
+        if self._map_info is None or pose is None:
+            return
+        now = time.monotonic()
+        resend = (
+            self._map_png is not None
+            and now - self._map_png_sent_ts >= MAP_PNG_RESEND_PERIOD_S
+        )
+        self._publish_map(png=self._map_png if resend else None, pose=pose)
+
+    def _publish_map(
+        self,
+        *,
+        png: Optional[bytes],
+        pose: Optional[tuple[float, float, float]],
+    ) -> None:
+        assert self._map_info is not None
+        resolution, width, height, origin_x, origin_y = self._map_info
+        rx, ry, ryaw = pose if pose is not None else (None, None, None)
+        if png is not None:
+            self._map_png_sent_ts = time.monotonic()
+        payload = encode_map_2d(
+            resolution=resolution,
+            width=width,
+            height=height,
+            origin_x=origin_x,
+            origin_y=origin_y,
+            robot_x=rx,
+            robot_y=ry,
+            robot_yaw=ryaw,
+            ts_ms=int(time.time() * 1000),
+            png=png,
+        )
+        self.publish_frame("map_2d", payload)
 
     # --- Periodic helpers (вызываются из QuestNode loop) -----------------
 
@@ -1267,6 +1366,28 @@ class QuestNode(Node):
             self._on_camera_image,
             _CAMERA_QOS,
         )
+        # camera_ceiling (0x1005): usb_cam публикует потолочную камеру в
+        # /ceiling_camera/image_raw/compressed. Форвардим JPEG as-is — тот
+        # же лёгкий путь, что у camera_rear.
+        self._camera_ceiling_sub = self.create_subscription(
+            CompressedImage,
+            "/ceiling_camera/image_raw/compressed",
+            self._on_ceiling_image,
+            _CAMERA_QOS,
+        )
+        # map_2d (0x1103): SLAM-карта rtabmap. Публикуется TRANSIENT_LOCAL
+        # (latched) — подписка обязана совпадать, иначе уже опубликованная
+        # карта не придёт до следующего обновления, а оно может быть через
+        # минуты.
+        _MAP_QOS = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self._map_sub = self.create_subscription(
+            OccupancyGrid, "/rtabmap/map", self._on_map, _MAP_QOS
+        )
         # voice_state (0x1202): /voice/dialogue/state (std_msgs/String) →
         # нормализованный msgpack-фрейм → WS-подписчикам. Подписка
         # RELIABLE — dialogue_node публикует так же (см.
@@ -1352,10 +1473,14 @@ class QuestNode(Node):
 
         # CameraProvider — capture-loop в отдельных потоках (depthai/OpenCV).
         # Пока не доступны в dev-env, на роботе (Phase 1.6) добавятся.
+        # camera_ceiling здесь больше нет: /dev/video0 держит контейнер
+        # `ceiling-camera` (usb_cam) и в этот контейнер устройство не
+        # прокинуто вовсе — capture-поток только писал в лог «cannot open
+        # /dev/video0» и умирал. Потолочная камера теперь ROS-стрим, см.
+        # `_on_ceiling_image` и streams/registry.py.
         cameras = [
             ("camera_oak_color", "oak:color", 15.0),
             ("camera_oak_depth", "oak:depth", 5.0),
-            ("camera_ceiling", "/dev/video0", 15.0),
         ]
         self._camera_provider = CameraProvider(cameras=cameras)
         for ui_name, source_id, _fps in cameras:
@@ -1378,6 +1503,25 @@ class QuestNode(Node):
         # тоста на границе порога. Минимум, который нужен чтобы hold_ms=10 с
         # отрабатывал с точностью до 1 с (10..11 с).
         self._alert_timer = self.create_timer(1.0, self._on_alert_timer)
+        # map_2d: поза робота на карте (5 Гц). Сама решётка приходит редко и
+        # едет в PNG (см. Bridge.on_map), а вот пол под оператором обязан
+        # ехать вместе с роботом — поэтому лёгкий кадр «только поза» шлём
+        # чаще карты. Он ~130 байт, это дешевле, чем гонять PNG.
+        self._map_pose_timer = self.create_timer(0.2, self._on_map_pose_timer)
+
+        # tf map → base_link: единственный источник позы робота на карте.
+        # /rtabmap/localization_pose для этого не годится — на роботе он
+        # объявлен сразу двумя типами (PoseStamped и PoseWithCovarianceStamped),
+        # подписка на такой топик неоднозначна.
+        try:
+            from tf2_ros import Buffer, TransformListener  # локальный импорт
+
+            self._tf_buffer = Buffer()
+            self._tf_listener = TransformListener(self._tf_buffer, self)
+        except Exception as e:  # noqa: BLE001  # pragma: no cover
+            self.get_logger().warning(f"tf2 unavailable — map_2d без позы: {e}")
+            self._tf_buffer = None
+            self._tf_listener = None
 
         # Запуск aiohttp отложен до first timer callback (rclpy init
         # уже произошёл к этому моменту).
@@ -1421,6 +1565,44 @@ class QuestNode(Node):
         if not msg.data:
             return
         self.bridge.publish_frame("camera_rear", bytes(msg.data))
+
+    def _on_ceiling_image(self, msg: CompressedImage) -> None:
+        """ROS /ceiling_camera/image_raw/compressed → WS (camera_ceiling)."""
+        if not msg.data:
+            return
+        self.bridge.publish_frame("camera_ceiling", bytes(msg.data))
+
+    def _on_map(self, msg: OccupancyGrid) -> None:
+        """ROS /rtabmap/map → map_2d (0x1103): PNG решётки + поза робота."""
+        self.bridge.on_map(msg, self._map_pose())
+
+    def _map_pose(self) -> Optional[tuple[float, float, float]]:
+        """Поза робота на карте из tf ``map → base_link``: (x, y, yaw).
+
+        ``None``, если tf ещё не собрался (карта тогда не показывается —
+        класть её «куда-нибудь» хуже, чем не класть вовсе).
+        """
+        if self._tf_buffer is None:
+            return None
+        try:
+            import rclpy.time
+
+            tr = self._tf_buffer.lookup_transform(
+                "map", "base_link", rclpy.time.Time()
+            ).transform
+        except Exception:  # noqa: BLE001 — TF ещё не готов / нет цепочки
+            return None
+        q = tr.rotation
+        # Плоский робот: берём только yaw из кватерниона.
+        yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+        )
+        return (tr.translation.x, tr.translation.y, yaw)
+
+    def _on_map_pose_timer(self) -> None:
+        """5 Гц: лёгкий map_2d-кадр «только поза» (без PNG)."""
+        self.bridge.publish_map_pose(self._map_pose())
 
     def _on_dialogue_state(self, msg: String) -> None:
         """ROS /voice/dialogue/state → msgpack voice_state (0x1202) → WS.

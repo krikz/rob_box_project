@@ -24,7 +24,10 @@ function buildScan(opts: {
   view.setFloat32(16, opts.range_max, true);
   view.setFloat32(20, opts.time_inc, true);
   view.setFloat32(24, opts.scan_time, true);
-  view.setUint32(28, n, true);
+  // n_points — float32, как его пишет сервер (protocol/topics.py:
+  // _LIDAR_HEADER_FMT = "<ffffffff"). Фикстура раньше клала сюда uint32 и
+  // тем самым повторяла баг парсера, из-за чего он не ловился тестами.
+  view.setFloat32(28, n, true);
   for (let i = 0; i < n; i += 1) {
     view.setFloat32(32 + i * 4, opts.ranges[i], true);
     view.setFloat32(32 + n * 4 + i * 4, intensities[i], true);
@@ -57,6 +60,25 @@ describe("parseLidar2d", () => {
     expect(out.intensities[3]).toBeCloseTo(0.4, 5);
   });
 
+  // Регрессия: байты, снятые с реального сервера (struct.pack("<ffffffff", ...)
+  // + ranges + intensities, n=3). Клиент читал n_points как uint32 и на этом
+  // payload'е получал 1 077 936 128 точек → LidarParseError → лидар не
+  // рисовался. Фикстура захардкожена намеренно: она ловит рассинхрон
+  // клиента с protocol/topics.py даже если хелпер buildScan снова уедет.
+  it("parses bytes produced by the Python server (n_points as float32)", () => {
+    const raw = new Uint8Array([
+      249, 15, 73, 192, 249, 15, 73, 64, 41, 92, 143, 60, 205, 204, 204, 61,
+      0, 0, 32, 65, 0, 0, 0, 0, 205, 204, 204, 61, 0, 0, 64, 64,
+      0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 64, 64,
+      0, 0, 0, 63, 0, 0, 0, 63, 0, 0, 0, 63
+    ]);
+    const out = parseLidar2d(raw);
+    expect(out.header.n_points).toBe(3);
+    expect(out.header.range_max).toBeCloseTo(10.0, 5);
+    expect(Array.from(out.ranges)).toEqual([1.0, 2.0, 3.0]);
+    expect(scanToFloorPoints(out)).toHaveLength(3);
+  });
+
   it("throws LidarParseError on too-short payload", () => {
     const tooShort = new Uint8Array(16);
     expect(() => parseLidar2d(tooShort)).toThrow(LidarParseError);
@@ -66,7 +88,7 @@ describe("parseLidar2d", () => {
     // header says n_points=10, but payload has only 4 ranges.
     const buf = new ArrayBuffer(32 + 4 * 4 * 2);
     const view = new DataView(buf);
-    view.setUint32(28, 10, true);
+    view.setFloat32(28, 10, true);
     expect(() => parseLidar2d(new Uint8Array(buf))).toThrow(/truncated/);
   });
 

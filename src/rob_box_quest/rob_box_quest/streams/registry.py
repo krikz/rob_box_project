@@ -5,11 +5,12 @@
 видео мимо ROS2, мульти-камера).
 
 Стримы делятся на 2 класса:
-- ROS2 стримы (lidar_2d, robot_status, voice_state, person_detections):
-  идут через Zenoh, payload формируется в protocol/topics.py.
-- Камеры (camera_oak_color, camera_oak_depth, camera_ceiling):
-  идут мимо ROS, читаются CameraProvider'ом в Vision Pi напрямую
-  (depthai SDK / OpenCV), payload = JPEG/H.264 bytes.
+- ROS2 стримы (lidar_2d, map_2d, robot_status, voice_state,
+  person_detections, camera_rear, camera_ceiling): идут через Zenoh,
+  payload формируется в protocol/topics.py и streams/*.
+- Камеры мимо ROS (camera_oak_color, camera_oak_depth): читаются
+  CameraProvider'ом в Vision Pi напрямую (depthai SDK), payload =
+  JPEG/H.264 bytes.
 """
 
 from __future__ import annotations
@@ -63,6 +64,30 @@ STREAM_CATALOG: dict[str, StreamSpec] = {
         default_quality="high",
         description="2D LiDAR (sensor_msgs/LaserScan)",
     ),
+    # Потолочная камера. Раньше стояла как CAMERA_DIRECT на /dev/video0 и
+    # никогда не отдавала ни кадра: устройство держит эксклюзивно контейнер
+    # `ceiling-camera` (usb_cam), а в `rob-box-quest` /dev/video0 вообще не
+    # прокинут (`docker inspect … .HostConfig.Devices` → null). В логах это
+    # видно как «cannot open /dev/video0 → camera camera_ceiling unavailable
+    # — thread exits» на каждом старте. Берём кадры оттуда, где они уже
+    # есть — из ROS-топика usb_cam'а, тем же лёгким путём, что camera_rear
+    # (JPEG от image_transport форвардится as-is, без перекодирования).
+    "camera_ceiling": StreamSpec(
+        ui_name="camera_ceiling",
+        topic_id=0x1005,
+        kind=StreamKind.ROS_TOPIC,
+        source="/ceiling_camera/image_raw/compressed",
+        default_quality="med",
+        description="USB ceiling camera (usb_cam → image_transport JPEG)",
+    ),
+    "map_2d": StreamSpec(
+        ui_name="map_2d",
+        topic_id=0x1103,
+        kind=StreamKind.ROS_TOPIC,
+        source="/rtabmap/map",
+        default_quality="low",
+        description="SLAM occupancy grid (RGBA PNG + поза робота)",
+    ),
     "robot_status": StreamSpec(
         ui_name="robot_status",
         topic_id=0x1201,
@@ -103,14 +128,6 @@ STREAM_CATALOG: dict[str, StreamSpec] = {
         source="oak:depth",
         default_quality="med",
         description="OAK-D depth (depthai SDK, colormapped)",
-    ),
-    "camera_ceiling": StreamSpec(
-        ui_name="camera_ceiling",
-        topic_id=0x1005,
-        kind=StreamKind.CAMERA_DIRECT,
-        source="/dev/video0",
-        default_quality="med",
-        description="USB ceiling camera (V4L2 /dev/video0)",
     ),
 }
 

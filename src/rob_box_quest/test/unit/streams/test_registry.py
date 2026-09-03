@@ -17,7 +17,19 @@ def test_catalog_has_core_streams():
 def test_kind_assignment():
     assert STREAM_CATALOG["lidar_2d"].kind == StreamKind.ROS_TOPIC
     assert STREAM_CATALOG["camera_oak_color"].kind == StreamKind.CAMERA_DIRECT
-    assert STREAM_CATALOG["camera_ceiling"].kind == StreamKind.CAMERA_DIRECT
+    # camera_ceiling — ROS-стрим, а не CAMERA_DIRECT: /dev/video0 держит
+    # эксклюзивно контейнер `ceiling-camera` (usb_cam) и в rob-box-quest
+    # устройство вообще не прокинуто, так что прямое чтение не давало ни
+    # одного кадра. Берём готовый JPEG из image_transport-топика.
+    assert STREAM_CATALOG["camera_ceiling"].kind == StreamKind.ROS_TOPIC
+    assert STREAM_CATALOG["camera_ceiling"].source == "/ceiling_camera/image_raw/compressed"
+
+
+def test_map_stream_is_registered():
+    spec = STREAM_CATALOG["map_2d"]
+    assert spec.kind == StreamKind.ROS_TOPIC
+    assert spec.source == "/rtabmap/map"
+    assert topic_id_for("map_2d") == 0x1103
 
 
 def test_topic_ids_match_protocol():

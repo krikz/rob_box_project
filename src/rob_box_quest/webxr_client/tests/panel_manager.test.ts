@@ -146,25 +146,26 @@ describe("captain bridge layout constants", () => {
     expect(CEILING_SCREEN_TOPIC).not.toBe(MAIN_SCREEN_TOPIC);
   });
 
-  it("потолочный экран висит над глазами и смотрит нормалью в оператора", async () => {
-    const { CEILING_SCREEN_POS, EYE_HEIGHT_M, ceilingScreenPitchRad } = await import(
-      "../src/scene/captain_bridge"
-    );
-    // Над головой и впереди — «поднял голову и увидел, что над роботом».
-    expect(CEILING_SCREEN_POS.y).toBeGreaterThan(EYE_HEIGHT_M);
-    expect(CEILING_SCREEN_POS.z).toBeLessThan(0);
-    // Тот же азимут, что у экрана-стены: на роботе обе камеры стоят на
-    // осевой линии и различаются только направлением взгляда.
+  it("потолочный экран висит ровно над головой и смотрит вниз", async () => {
+    const { CEILING_SCREEN_POS, CEILING_SCREEN_SIZE, EYE_HEIGHT_M, ceilingScreenPitchRad } =
+      await import("../src/scene/captain_bridge");
+    // Ровно над оператором. Раньше экран был сдвинут вперёд (z = −0.9) и
+    // читался как ещё одна наклонная панель над экраном-стеной: чтобы его
+    // увидеть, надо было смотреть вперёд-вверх. «Смотрю вверх — вижу, что
+    // над роботом» работает только если он ровно над головой.
     expect(CEILING_SCREEN_POS.x).toBe(0);
+    expect(CEILING_SCREEN_POS.z).toBe(0);
+    expect(CEILING_SCREEN_POS.y).toBeGreaterThan(EYE_HEIGHT_M);
     // Комната 3 м высотой — экран должен помещаться под потолок.
     expect(CEILING_SCREEN_POS.y).toBeLessThan(3);
+    // Потолочная камера отдаёт 640×480 — экран 4:3, иначе кадр растянут.
+    expect(CEILING_SCREEN_SIZE.width / CEILING_SCREEN_SIZE.height).toBeCloseTo(4 / 3, 5);
 
+    // Экран прямо над головой ⇒ плоскость горизонтальна, нормалью вниз.
     const pitch = ceilingScreenPitchRad();
-    // Наклон вниз-назад, к оператору, и не «плашмя в потолок».
-    expect(pitch).toBeGreaterThan(0);
-    expect(pitch).toBeLessThan(Math.PI / 2);
+    expect(pitch).toBeCloseTo(Math.PI / 2, 6);
 
-    // Нормаль плоскости после поворота вокруг X: (0, -sin φ, cos φ).
+    // Нормаль плоскости после поворота вокруг X: (0, −sin φ, cos φ).
     // Она обязана смотреть из центра экрана в глаза оператора.
     const nx = 0;
     const ny = -Math.sin(pitch);
@@ -177,6 +178,17 @@ describe("captain bridge layout constants", () => {
     const len = Math.hypot(toEye.x, toEye.y, toEye.z);
     const dot = (nx * toEye.x + ny * toEye.y + nz * toEye.z) / len;
     expect(dot).toBeCloseTo(1, 5);
+  });
+
+  it("наклон по-прежнему считается из позиции, а не захардкожен", async () => {
+    // Функция должна оставаться чистой: сдвинули экран — он доворачивается
+    // сам. Это страховка от «поправили позицию, забыли поправить угол».
+    const { ceilingScreenPitchRad, EYE_HEIGHT_M } = await import(
+      "../src/scene/captain_bridge"
+    );
+    const pos = { y: EYE_HEIGHT_M + 1, z: -1 };
+    const pitch = ceilingScreenPitchRad(pos);
+    expect(pitch).toBeCloseTo(Math.PI / 4, 6);
   });
 });
 

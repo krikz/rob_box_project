@@ -128,8 +128,10 @@ stateDiagram-v2
 |---|---|---|
 | `camera_rear` | `0x1001` | H.264 Annex-B NAL-units (один или несколько подряд; не Annex-B целиком, потому что клиент сам собирает Annex-B для MediaSource) |
 | `camera_front` | `0x1002` | (Phase 2) — панорамная передняя камера |
-| `lidar_2d` | `0x1101` | little-endian float32: `[angle_min, angle_max, angle_inc, range_min, range_max, time_increment, scan_time, n_points]` + `n_points × float32 ranges` + `n_points × float32 intensities` (соответствует `sensor_msgs/LaserScan` ROS2 msg) |
+| `camera_ceiling` | `0x1005` | JPEG bytes as-is из `/ceiling_camera/image_raw/compressed` (usb_cam → image_transport). ROS-стрим, НЕ прямое чтение `/dev/video0`: устройство держит контейнер `ceiling-camera` |
+| `lidar_2d` | `0x1101` | little-endian float32: `[angle_min, angle_max, angle_inc, range_min, range_max, time_increment, scan_time, n_points]` + `n_points × float32 ranges` + `n_points × float32 intensities` (соответствует `sensor_msgs/LaserScan` ROS2 msg). **`n_points` — тоже float32**, весь заголовок однороден: читать его как uint32 нельзя |
 | `lidar_3d` | `0x1102` | zstd-compressed MessagePack: подвыборка PointCloud2 до 10k точек, `{n_points, frame_id, fields: ["x","y","z","intensity"], points: [[x,y,z,i], ...]}` |
+| `map_2d` | `0x1103` | MessagePack `{resolution, width, height, origin_x, origin_y, robot_x, robot_y, robot_yaw, ts_ms, png?}` — SLAM-решётка `/rtabmap/map` как RGBA PNG + поза робота из tf `map → base_link`. Поле `png` необязательно: кадр БЕЗ него — лёгкое обновление позы (5 Гц, ~140 байт), кадр С ним — новая картинка карты. `robot_*` = `null`, если tf ещё не собрался |
 | `robot_status` | `0x1201` | MessagePack `{battery_pct, wifi_rssi, mode, vel_linear, vel_angular, ts_ms}` — 1 Hz |
 | `voice_state` | `0x1202` | MessagePack `{state: "idle"\|"listening"\|"thinking"\|"speaking"\|"denied", ts_ms, utterance_id?, holder_id?, detail?}` — event-driven. См. §6 `JSON_EVENT{type:voice_state}` для семантики `denied`/`holder_id`/`detail` (добавлены в PR #1930 + #1933 под аудит G8/G19, см. issue #1912). |
 | `person_detections` | `0x1301` | MessagePack `{ts_ms, detections: [{id, cls, x, y, z, w, h, conf}]}` — Phase 2 (R11) |
@@ -138,6 +140,11 @@ stateDiagram-v2
 
 - `camera_rear`: до 30 fps (CBR), quality=high; 15 fps при quality=med;
   10 fps при quality=low.
+- `map_2d`: поза — 5 Гц; PNG карты — не чаще 1 раза в 5 с (кодирование
+  решётки 958×744 стоит ~60 мс на Pi) и повторно раз в 4 с, даже если
+  карта не менялась. Повтор обязателен: BINARY_FRAME — не latched-топик,
+  и клиент, подключившийся между двумя обновлениями rtabmap, иначе
+  остался бы вообще без карты.
 - `lidar_2d`: 10 Hz всегда (LiDAR физически столько даёт).
 - `lidar_3d`: 2 Hz (тяжёлый, клиент может unsubscribe если не нужен).
 - `robot_status`: 1 Hz всегда (пока не unsubscribe).

@@ -7,6 +7,13 @@
 //                        time_increment, scan_time, n_points]
 //   [n_points × float32 ranges]
 //   [n_points × float32 intensities]
+//
+// ВНИМАНИЕ про n_points: заголовок целиком float32 — включая счётчик точек.
+// Сервер пишет его как `float(n)` (`protocol/topics.py: _LIDAR_HEADER_FMT =
+// "<ffffffff"`). Раньше клиент читал это поле как uint32 и получал битовое
+// представление float'а (для n=450 → 1 138 163 712), после чего проверка
+// длины payload'а всегда падала, parseLidar2d кидал LidarParseError, а
+// LidarOverlay.ingestPayload молча его глотал — лидар не рисовался вообще.
 
 export interface LidarHeader {
   angle_min: number;
@@ -43,8 +50,12 @@ export function parseLidar2d(payload: Uint8Array): LidarScan {
     range_max: view.getFloat32(16, true),
     time_increment: view.getFloat32(20, true),
     scan_time: view.getFloat32(24, true),
-    n_points: view.getUint32(28, true)
+    // float32, а не uint32 — см. шапку файла.
+    n_points: Math.round(view.getFloat32(28, true))
   };
+  if (!Number.isFinite(header.n_points) || header.n_points < 0) {
+    throw new LidarParseError(`bad n_points: ${header.n_points}`);
+  }
   const expected = HEADER_BYTES + header.n_points * 4 * 2;
   if (payload.length < expected) {
     throw new LidarParseError(

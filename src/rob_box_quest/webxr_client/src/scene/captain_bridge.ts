@@ -2,6 +2,7 @@
 
 import * as THREE from "three";
 import { LidarOverlay } from "./lidar_overlay";
+import { createFloorOverlay, type FloorOverlayHandle } from "./floor_overlay";
 import { VideoPanel } from "./video_panel";
 import { PanelManager } from "./panel_manager";
 import {
@@ -74,8 +75,17 @@ export const SIDE_PANEL_ANGLES_DEG = [-75];
 // голову — видишь, что над ним. Держать потолочный вид сбоку, на панели
 // рядом с depth, значит ломать эту связь: оператор не может «посмотреть
 // вверх», он должен вспомнить, на какой панели верх.
-export const CEILING_SCREEN_POS = { x: 0, y: 2.8, z: -0.9 };
-export const CEILING_SCREEN_SIZE = { width: 2.0, height: 1.125 };
+//
+// Экран стоит РОВНО над головой (x = z = 0), а не сдвинут вперёд: сдвиг
+// превращал его в ещё одну наклонную панель над экраном-стеной, и чтобы
+// её увидеть, надо было смотреть вперёд-вверх, а не вверх. Потолок
+// комнаты мостика на 3 м (bridge_scene_meta.json), экран висит на 2.7 —
+// под ним, но выше вытянутой руки.
+//
+// Размер 4:3 — потолочная камера отдаёт 640×480 (usb_cam), 16:9 растянул
+// бы кадр.
+export const CEILING_SCREEN_POS = { x: 0, y: 2.7, z: 0 };
+export const CEILING_SCREEN_SIZE = { width: 2.4, height: 1.8 };
 /** Высота глаз оператора — экран доворачивается нормалью именно в неё. */
 export const EYE_HEIGHT_M = 1.6;
 
@@ -94,6 +104,23 @@ export function ceilingScreenPitchRad(
 ): number {
   return Math.atan2(pos.y - eyeY, -pos.z);
 }
+
+/**
+ * Разворот кадра потолочной камеры вокруг нормали экрана (радианы).
+ *
+ * При нулевом значении «верх кадра» ложится на +Z сцены — то есть за
+ * спину оператора. Это верно, если камера смотрит вверх и её кадр
+ * развёрнут верхом назад по ходу робота. Реального крепления мы не
+ * знаем: в URDF (`rob_box.xacro:343`) потолочная камера объявлена
+ * обычным макросом `usb_camera` с `rpy="0 0 0"`, то есть её optical
+ * frame смотрит ВПЕРЁД, а не вверх — модель тут расходится с железом и
+ * ориентацию по ней не восстановить.
+ *
+ * Поэтому разворот вынесен сюда отдельной константой: увидев на потолке
+ * перевёрнутый или боком лежащий кадр, ставим π (перевернуть) или ±π/2
+ * (довернуть на четверть) — одно число, без правки геометрии.
+ */
+export const CEILING_SCREEN_ROLL_RAD = 0;
 
 export interface CaptainBridgeOptions {
   canvas: HTMLCanvasElement;
@@ -151,6 +178,11 @@ export interface CaptainBridgeHandle {
   renderer: THREE.WebGLRenderer;
   camera: THREE.PerspectiveCamera;
   lidar: LidarOverlay;
+  /**
+   * Пол мостика: SLAM-карта под ногами + логотип поверх неё. Карта
+   * кормится кадрами map_2d (0x1103) через `ingestMapFrame`.
+   */
+  floor: FloorOverlayHandle;
   panels: PanelManager;
   videoPanels: Map<string, VideoPanel>;
   /**
@@ -199,6 +231,11 @@ export interface CaptainBridgeHandle {
    * топиком в сцене нет (или кадр дропнут, GPU занят).
    */
   ingestPanelFrame(topic: string, jpeg: Uint8Array): boolean;
+  /**
+   * map_2d (0x1103) → карта на полу. `false` — кадр битый или в нём нет
+   * позы робота (карту тогда некуда класть).
+   */
+  ingestMapFrame(payload: Uint8Array): boolean;
   /** robot_status (0x1201) → HUD. */
   setRobotStatus(status: RobotStatus | null): void;
   /**
@@ -298,6 +335,12 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // настроек видимости — в lidar_overlay.ts.
   const lidar = new LidarOverlay({ center: { x: 0, y: 0, z: 0 } });
   scene.add(lidar.object);
+
+  // Пол: карта SLAM под ногами + логотип поверх неё. Тот же центр, что у
+  // лидара (начало координат = робот), поэтому карта и точки скана
+  // совмещены один-в-один.
+  const floorOverlay = createFloorOverlay();
+  scene.add(floorOverlay.object);
 
   // Panel manager + video panels: экран-стена спереди (mainScreen ниже)
   // + боковые панели с остальными камерами (Wave 3.A).
@@ -496,6 +539,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // вертикально). Наклон ставим сами — setState по этому экрану не
   // вызывается, так что перезатирания не будет.
   ceilingScreen.mesh.rotation.x = ceilingScreenPitchRad();
+  ceilingScreen.mesh.rotation.z = CEILING_SCREEN_ROLL_RAD;
   scene.add(ceilingScreen.mesh);
 
   // Arm-state HUD: справа вверху на стене, рядом с экраном камеры.
@@ -563,6 +607,9 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   async function loadEnvironment(): Promise<BridgeAssetHandle | null> {
     if (environment) return environment;
     if (environmentBaseUrl === null) return null;
+    // Логотип на палубу. Грузится параллельно окружению и намеренно НЕ
+    // ожидается: это декорация, из-за неё мостик не должен ждать.
+    void floorOverlay.loadLogo();
     try {
       environment = await loadBridgeAssets(scene, renderer, {
         baseUrl: environmentBaseUrl,
@@ -898,6 +945,10 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     return [...topics];
   }
 
+  function ingestMapFrame(payload: Uint8Array): boolean {
+    return floorOverlay.ingestMapPayload(payload);
+  }
+
   function ingestPanelFrame(topic: string, jpeg: Uint8Array): boolean {
     if (topic === MAIN_SCREEN_TOPIC) return mainScreen.ingestJpeg(jpeg);
     if (topic === CEILING_SCREEN_TOPIC) return ceilingScreen.ingestJpeg(jpeg);
@@ -1020,6 +1071,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     ceilingScreen.dispose();
     for (const vp of videoPanels.values()) vp.dispose();
     lidar.dispose();
+    floorOverlay.dispose();
     streamMenu?.dispose();
     ttsPicker.dispose();
     pointerBeam.dispose();
@@ -1039,6 +1091,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     renderer,
     camera,
     lidar,
+    floor: floorOverlay,
     panels: panelMgr,
     videoPanels,
     mainScreen,
@@ -1063,6 +1116,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     statusHud,
     videoTopics,
     ingestPanelFrame,
+    ingestMapFrame,
     setRobotStatus,
     setVoiceState,
     start,

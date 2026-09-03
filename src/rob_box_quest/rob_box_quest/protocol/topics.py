@@ -22,6 +22,7 @@ TOPIC_IDS: dict[str, int] = {
     "camera_front": 0x1002,
     "lidar_2d": 0x1101,
     "lidar_3d": 0x1102,
+    "map_2d": 0x1103,
     "robot_status": 0x1201,
     "voice_state": 0x1202,
     "person_detections": 0x1301,
