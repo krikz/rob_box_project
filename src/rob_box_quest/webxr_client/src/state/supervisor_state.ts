@@ -138,3 +138,41 @@ export function floorLabel(
   if (myClientId === null) return "unknown";
   return holder.clientId === myClientId ? "my" : "other";
 }
+
+/**
+ * Что должен сделать UI при очередном `STATE_UPDATE` (или при сбросе в
+ * `null` на reconnect). Чистая функция — вся связка «потеря teleop-floor
+ * → снять ARM + показать тост» тестируется без DOM/three.js
+ * (tests/supervisor_state.test.ts). `main.ts` только применяет результат.
+ *
+ * @param prevTeleopLabel  метка teleop-floor до этого обновления
+ * @param next             новое состояние; `null` = состояние неизвестно
+ *                         (reconnect / STATE_UPDATE ещё не приходил)
+ */
+export interface SupervisorEffect {
+  /** Новая метка teleop-floor — её надо закэшировать для следующего вызова. */
+  teleopLabel: FloorLabel;
+  /** true → немедленно снять ARM (супервизор забрал право руля). */
+  disarm: boolean;
+  /** Текст тоста, если пользователя надо уведомить; иначе null. */
+  toast: string | null;
+}
+
+export function supervisorEffect(
+  prevTeleopLabel: FloorLabel,
+  next: SupervisorState | null,
+  myClientId: string | null
+): SupervisorEffect {
+  const teleopLabel: FloorLabel =
+    next === null ? "unknown" : floorLabel(next, "teleop", myClientId);
+  // Дисармим ТОЛЬКО на переходе «руль был наш → уже не наш». Переходы
+  // free→other, unknown→other и т.п. нас не касаются: мы и не были armed.
+  if (prevTeleopLabel !== "my" || teleopLabel === "my") {
+    return { teleopLabel, disarm: false, toast: null };
+  }
+  const newHolder = next?.teleopFloor.clientId ?? null;
+  const toast = newHolder
+    ? `Руль забрал другой клиент (${newHolder.slice(0, 8)}…)`
+    : "Руль снят супервизором";
+  return { teleopLabel, disarm: true, toast };
+}

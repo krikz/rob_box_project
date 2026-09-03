@@ -9,7 +9,8 @@ import {
   parseSupervisorState,
   floorLabel,
   floorIsFree,
-  floorIsMine
+  floorIsMine,
+  supervisorEffect
 } from "../src/state/supervisor_state";
 
 const flat = (over: Record<string, unknown> = {}) => ({
@@ -106,5 +107,78 @@ describe("floorLabel / floorIsMine / floorIsFree", () => {
   it("myClientId неизвестен, floor занят → unknown, НЕ free и НЕ other", () => {
     expect(floorLabel(st, "teleop", null)).toBe("unknown");
     expect(floorIsMine(st, "teleop", null)).toBe(false);
+  });
+});
+
+describe("supervisorEffect — реакция UI на потерю teleop-floor", () => {
+  // Сборка типового «наш → забрали»-перехода.
+  const ourFloor = (): ReturnType<typeof parseSupervisorState> =>
+    parseSupervisorState(
+      flat({ teleop_floor: { client_id: "quest-1", since_ms: 1 } })
+    );
+  const otherClientTakes = (): ReturnType<typeof parseSupervisorState> =>
+    parseSupervisorState(
+      flat({ teleop_floor: { client_id: "telegram-42", since_ms: 2 } })
+    );
+  const freeFloor = (): ReturnType<typeof parseSupervisorState> =>
+    parseSupervisorState(flat({ teleop_floor: null }));
+
+  it("my → other (забрал Telegram-бот) → DISARM + тост с именем держателя", () => {
+    const prev = ourFloor()!;
+    expect(floorLabel(prev, "teleop", "quest-1")).toBe("my");
+    const eff = supervisorEffect("my", otherClientTakes(), "quest-1");
+    expect(eff.disarm).toBe(true);
+    expect(eff.teleopLabel).toBe("other");
+    expect(eff.toast).toMatch(/^Руль забрал другой клиент \(telegram…\)$/);
+  });
+
+  it("my → free (свободен, оператор отпустил) → DISARM + generic тост", () => {
+    const eff = supervisorEffect("my", freeFloor(), "quest-1");
+    expect(eff.disarm).toBe(true);
+    expect(eff.teleopLabel).toBe("free");
+    expect(eff.toast).toBe("Руль снят супервизором");
+  });
+
+  it("my → null (reconnect, STATE_UPDATE ещё не пришёл) → DISARM, метка unknown", () => {
+    const eff = supervisorEffect("my", null, "quest-1");
+    expect(eff.disarm).toBe(true);
+    expect(eff.teleopLabel).toBe("unknown");
+    // Без нового держателя (next=null) — generic «снят», не «забрал».
+    expect(eff.toast).toBe("Руль снят супервизором");
+  });
+
+  it("other → my (перехватили назад) → НЕ дисарм", () => {
+    const eff = supervisorEffect("other", ourFloor(), "quest-1");
+    expect(eff.disarm).toBe(false);
+    expect(eff.teleopLabel).toBe("my");
+    expect(eff.toast).toBeNull();
+  });
+
+  it("free → other (мы и не были armed) → НЕ дисарм", () => {
+    const eff = supervisorEffect("free", otherClientTakes(), "quest-1");
+    expect(eff.disarm).toBe(false);
+    expect(eff.teleopLabel).toBe("other");
+    expect(eff.toast).toBeNull();
+  });
+
+  it("my → my (стабильно наш) → НЕ дисарм, тоста нет", () => {
+    const eff = supervisorEffect("my", ourFloor(), "quest-1");
+    expect(eff.disarm).toBe(false);
+    expect(eff.teleopLabel).toBe("my");
+    expect(eff.toast).toBeNull();
+  });
+
+  it("двойной DISARM не срабатывает (после первого перехода prev становится other)", () => {
+    // Сценарий: бот забрал → отпустил → супервизор ещё не прислал ничего →
+    // мы опять на my. Второй эффект на «my → my» уже ничего не делает.
+    const afterTakeover = supervisorEffect("my", otherClientTakes(), "quest-1");
+    expect(afterTakeover.disarm).toBe(true);
+    expect(afterTakeover.teleopLabel).toBe("other");
+    // Аналогично для возврата: «other → my» — не дисарм (не «потеря»).
+    const regained = supervisorEffect("other", ourFloor(), "quest-1");
+    expect(regained.disarm).toBe(false);
+    // И повторный «my → other» — да, опять дисарм (правильно, руль только что забрали).
+    const takenAgain = supervisorEffect("my", otherClientTakes(), "quest-1");
+    expect(takenAgain.disarm).toBe(true);
   });
 });

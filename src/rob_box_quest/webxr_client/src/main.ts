@@ -32,7 +32,7 @@ import {
 import { createHelpOverlay, type HelpOverlay } from "./ui/help_overlay";
 import { createModeManager, type ClientModeManager } from "./ui/mode_manager";
 import { createToast, type Toast } from "./ui/toast";
-import { floorLabel, type FloorLabel, type SupervisorState } from "./state/supervisor_state";
+import { supervisorEffect, type FloorLabel, type SupervisorState } from "./state/supervisor_state";
 
 const CLIENT_VERSION = "0.1.0";
 // AV-17: subprotocol v2 по умолчанию. Если сервер на v1 — supervisor
@@ -199,13 +199,11 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
    */
   function applySupervisorState(next: SupervisorState | null): void {
     supervisorState = next;
-    const teleopL = next === null ? "unknown" : floorLabel(next, "teleop", supervisorMyClientId);
+    // Вся логика перехода — в чистом редьюсере (state/supervisor_state.ts),
+    // здесь только применение эффектов к железу UI.
+    const eff = supervisorEffect(prevTeleopLabel, next, supervisorMyClientId);
 
-    // Реакция на потерю teleop-floor: «my → other» или «my → free».
-    // В обоих случаях супервизор снял с нас право руля — обязаны
-    // немедленно дизармиться (страховка от race, когда оператор уже
-    // отпустил grip, а twist_mux ещё хранит последнюю команду).
-    if (prevTeleopLabel === "my" && teleopL !== "my") {
+    if (eff.disarm) {
       armed = false;
       xrArmWasPressed = false;
       fsm.setDeadman(false);
@@ -213,19 +211,13 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       bridge.setArmState(false);
       bridge.setControllerActive(false);
       modeManager.setTeleopState("disarmed");
-      // Имя держателя (если есть) — из state.teleopFloor.clientId,
-      // иначе generic «уже не наш».
-      const newHolder = next?.teleopFloor.clientId ?? null;
-      const msg = newHolder
-        ? `Руль забрал другой клиент (${newHolder.slice(0, 8)}…)`
-        : "Руль снят супервизором";
-      toast.show(msg, { level: "warn", autoHideMs: 5000 });
+      if (eff.toast) toast.show(eff.toast, { level: "warn", autoHideMs: 5000 });
       // eslint-disable-next-line no-console
       console.warn("[quest] supervisor: teleop-floor revoked → DISARM", {
-        newHolder
+        newHolder: next?.teleopFloor.clientId ?? null
       });
     }
-    prevTeleopLabel = teleopL;
+    prevTeleopLabel = eff.teleopLabel;
 
     bridge.statusHud.setSupervisor(next, supervisorMyClientId, { degraded: supervisorDegraded });
   }
