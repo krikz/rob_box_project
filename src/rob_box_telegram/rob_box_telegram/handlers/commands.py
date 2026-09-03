@@ -688,3 +688,80 @@ async def clear_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # (command intents must not be dropped by the wake-word gate).
     _forward(node, "/clear", chat_id=update.effective_chat.id)
     await update.message.reply_text("🧹 Запрос на очистку истории отправлен.")
+
+
+# ─── AV-22 (Issue #1914) — /cmd и /operator ──────────────────────────────
+
+
+@authorized
+async def cmd_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle ``/cmd <text>`` — операторская команда для супервизор-агента.
+
+    ВСЕГДА идёт в ``/avatar/command`` (worker-brief §3.3, ADR-0027 §3.4 +
+    ADR-0028), независимо от того, включён ли в чате «режим оператора»
+    (``/operator on|off``). Это явная команда — пользователь сознательно
+    нажал ``/cmd``, как нажимают ``/cmd`` в CLI.
+    """
+    node = _node(context)
+    chat_id = update.effective_chat.id
+    # PTB ``CommandHandler`` срезает ``/cmd`` и кладёт остаток в
+    # ``context.args`` (как у /say, /goto, /volume и др. — см. этот же
+    # файл). ``update.message.text`` содержит ПОЛНЫЙ текст ``/cmd ...``
+    # — для команды он бесполезен. Если шлют ``/cmd@botname <text>`` —
+    # ``@botname`` уже отрезан PTB (он не попадает в args).
+    text = " ".join(context.args).strip() if context.args else ""
+    if not text:
+        await update.message.reply_text(
+            "ℹ️ Использование: `/cmd <текст команды для агента>`",
+            parse_mode="Markdown",
+        )
+        return
+    request_id = node.publish_avatar_command(text=text, chat_id=chat_id)
+    if request_id is None:
+        await update.message.reply_text(
+            "⚠️ Не удалось отправить команду: пустой текст после ``/cmd``."
+        )
+        return
+    await update.message.reply_text(
+        f"🎮 Команда отправлена агенту.\n"
+        f"`request_id`: `{request_id}`\n"
+        f"Ждите ответа в этом чате.",
+        parse_mode="Markdown",
+    )
+
+
+@authorized
+async def operator_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle ``/operator on|off`` — per-chat переключатель «режима оператора».
+
+    * ``on`` — каждый СВОБОДНЫЙ текст (без команды) в этом чате идёт
+      прямиком в ``/avatar/command`` (а не в личность через ``forward_to_stt``).
+      Это «консоль оператора», когда оператор знает, что бот сейчас —
+      его инструмент.
+    * ``off`` (default) — стандартное поведение: свободный текст идёт в
+      личность (как было до AV-22).
+
+    Состояние per-chat: хранится в ``context.user_data["operator_mode"]``
+    (PTB user_data изолирован по user_id). При перезапуске бота —
+    сбрасывается в ``off``.
+    """
+    chat_id = update.effective_chat.id
+    raw = (update.message.text or "").strip()
+    # ``/operator on`` / ``/operator off``
+    parts = raw.split(maxsplit=1)
+    arg = parts[1].lower() if len(parts) > 1 else ""
+
+    if arg not in ("on", "off", "вкл", "выкл"):
+        await update.message.reply_text(
+            "ℹ️ Использование: `/operator on` или `/operator off`",
+            parse_mode="Markdown",
+        )
+        return
+
+    on = arg in ("on", "вкл")
+    context.user_data["operator_mode"] = on
+    label = "✅ Режим оператора **включён** — свободный текст идёт в агента." \
+        if on else \
+        "🟢 Режим оператора **выключен** — свободный текст идёт в личность (как раньше)."
+    await update.message.reply_text(label, parse_mode="Markdown")
+    logger.info("AV-22 /operator %s chat_id=%s", arg, chat_id)

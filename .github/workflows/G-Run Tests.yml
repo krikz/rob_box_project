@@ -81,7 +81,7 @@ jobs:
           # Build packages (use --packages-up-to to include dependencies)
           cd ${{ github.workspace }}/test_ws
           colcon build --symlink-install \
-            --packages-up-to rob_box_voice rob_box_animations rob_box_perception \
+            --packages-up-to rob_box_voice rob_box_animations rob_box_perception rob_box_core rob_box_telegram rob_box_teleop \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
 
       - name: Run unit tests
@@ -170,7 +170,7 @@ jobs:
             [ -f "$TG_TEST" ] || continue
             TG_NAME="$(basename "$TG_TEST")"
             echo "--- rob_box_telegram: $TG_NAME ---"
-            ( cd "$TG_DIR" && PYTHONPATH=. timeout 120 python3 -m pytest \
+            ( cd "$TG_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 120 python3 -m pytest \
                 -p no:launch_testing \
                 -p no:ament_flake8 -p no:ament_pep257 \
                 -p no:ament_copyright -p no:ament_xmllint \
@@ -190,7 +190,7 @@ jobs:
           # are self-contained (no cross-file pollution like telegram).
           echo "=== pytest: rob_box_teleop (issue #1344) ==="
           TELEOP_DIR="${{ github.workspace }}/test_ws/src/rob_box_teleop"
-          ( cd "$TELEOP_DIR" && PYTHONPATH=. timeout 120 python3 -m pytest \
+          ( cd "$TELEOP_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 120 python3 -m pytest \
               -p no:launch_testing \
               -p no:ament_flake8 -p no:ament_pep257 \
               -p no:ament_copyright -p no:ament_xmllint \
@@ -299,7 +299,7 @@ jobs:
           done
           cd ${{ github.workspace }}/test_ws
           colcon build --symlink-install \
-            --packages-up-to rob_box_voice rob_box_animations rob_box_perception \
+            --packages-up-to rob_box_voice rob_box_animations rob_box_perception rob_box_core rob_box_telegram rob_box_teleop \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
 
       - name: Run integration tests
