@@ -53,7 +53,9 @@ from .streams.lidar import scan_to_payload
 from .streams.provider import CameraFrame, CameraProvider
 from .streams.registry import STREAM_CATALOG
 from .streams.status import StatusAggregator
+from .streams.voice_state import normalize_voice_state
 from .streams.wifi import read_wifi_rssi
+from .protocol.topics import encode_voice_state
 
 log = logging.getLogger(__name__)
 
@@ -478,6 +480,21 @@ class QuestNode(Node):
             self._on_camera_image,
             _CAMERA_QOS,
         )
+        # voice_state (0x1202): /voice/dialogue/state (std_msgs/String) →
+        # нормализованный msgpack-фрейм → WS-подписчикам. Подписка
+        # RELIABLE — dialogue_node публикует так же (см.
+        # docs/recon/voice-dialogue-state-payload.md §1.1).
+        self._dialogue_state_sub = self.create_subscription(
+            String,
+            "/voice/dialogue/state",
+            self._on_dialogue_state,
+            _RE,
+        )
+        # Эх последнего state — для тестов моста без полного ROS-стека.
+        self._last_voice_state: dict[str, Any] = {
+            "state": "idle",
+            "detail": None,
+        }
         # Батарея (Wave 3.A): JSON-снапшот сенсор-борда + VESC-напряжение.
         # vesc_msgs есть не в каждом образе (пакет собирается на Main Pi),
         # поэтому подписка опциональная — без него остаётся JSON-путь.
@@ -577,6 +594,31 @@ class QuestNode(Node):
         if not msg.data:
             return
         self.bridge.publish_frame("camera_rear", bytes(msg.data))
+
+    def _on_dialogue_state(self, msg: String) -> None:
+        """ROS /voice/dialogue/state → msgpack voice_state (0x1202) → WS.
+
+        Шлём каждый переход FSM (event-driven, drop-newest — см.
+        meta-quest-api.md §4 frequency policy). Тело — простое:
+        нормализация (таблица DialogueStateKind → bridge state),
+        stamp server time, encode_voice_state, broadcast_frame.
+
+        Никаких проверок «не повторять тот же state» — ROS уже сам
+        не публикует дублей при неизменном состоянии, а если
+        upstream пришлёт — безопасно переслать (клиент сам
+        дедуплицирует по ts_ms+state).
+        """
+        normalized = normalize_voice_state(msg)
+        self._last_voice_state = normalized
+        payload = encode_voice_state(
+            state=normalized["state"],
+            ts_ms=int(time.time() * 1000),
+            detail=normalized["detail"],
+        )
+        try:
+            self.bridge.publish_frame("voice_state", payload)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().debug(f"voice_state publish failed: {e}")
 
     def _on_tick_timer(self) -> None:
         if not self._aio_started:

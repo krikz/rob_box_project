@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import struct
-from typing import Sequence
+from typing import Any, Sequence
 
 import msgpack
 
@@ -120,3 +120,33 @@ def encode_person_detections(
         },
         use_bin_type=True,
     )
+
+
+# --- voice_state payload (meta-quest-api.md §4: voice_state 0x1202) -------
+def encode_voice_state(
+    *,
+    state: str,
+    ts_ms: int,
+    detail: str | None = None,
+) -> bytes:
+    """Encode voice_state → MessagePack.
+
+    Контракт (meta-quest-api.md §4, voice_state 0x1202):
+        ``{state: "idle"|"listening"|"thinking"|"speaking",
+           ts_ms: int, detail?: str}``
+
+    ``state`` берётся из результата ``normalize_voice_state()``
+    (см. ``streams/voice_state.py``) — здесь никакой маппинг не
+    делаем, только сериализация. ``detail`` — опциональная строка для
+    UI-подсказок (``"silenced"`` для ``SILENCED``, ``"thinking"`` если
+    позже захотим разделить LLM-фазу и TTS-фазу). Кладём ключ только
+    если значение непустое, чтобы старые клиенты не ломались на лишних
+    полях.
+    """
+    body: dict[str, Any] = {
+        "state": str(state),
+        "ts_ms": int(ts_ms),
+    }
+    if detail:
+        body["detail"] = str(detail)
+    return msgpack.packb(body, use_bin_type=True)
