@@ -68,6 +68,12 @@ jobs:
           # .github is here for .github/e2e/{scenarios,voice_commands}: six
           # tests in test_issue_1532_voice_multi_skazka.py read those fixtures
           # and had been failing on every push with FileNotFoundError.
+          # scripts is here for scripts/voice_bench/score.py, imported by
+          # src/rob_box_voice/test/unit/test_voice_bench_scoring.py — without it
+          # that test raises RuntimeError at COLLECTION time, which fails the
+          # whole rob_box_voice batch (develop was RED ~9h on 03.09, blocking
+          # 20+ PRs). Guard against the next occurrence:
+          #   python3 scripts/agent_flow/validate_test_ws_dirs.py
           for d in docker migrations docs .github scripts; do
             [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
           done
@@ -286,6 +292,8 @@ jobs:
           # to find e.g. docker/vision/scripts/supercollider/metrics_server.py
           # raise FileNotFoundError at collection time
           # (test_supercollider_metrics_osc_status).
+          # scripts is here for the same reason as in unit-tests above
+          # (scripts/voice_bench/score.py, test_voice_bench_scoring.py).
           for d in docker migrations docs .github scripts; do
             [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
           done
