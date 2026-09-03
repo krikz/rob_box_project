@@ -31,6 +31,7 @@ from .session import (
     ClientSession,
     generate_pin,
 )
+from .voice_floor import FloorHolder, FloorState, VoiceFloor
 
 
 log = logging.getLogger(__name__)
@@ -198,6 +199,10 @@ class WSSServer:
         # loop — раньше кадр молча терялся (чёрный экран). Устанавливается
         # quest_node через set_send_loop().
         self._send_loop: Optional[asyncio.AbstractEventLoop] = None
+        # Voice floor — серверный mutex на голосовой поток (см. voice_floor.py).
+        # Один держатель на все WS-сессии, чтобы два квеста (оператор +
+        # AV-23 telegram-bridge) не микшировали голос в /avatar/voice_in.
+        self._voice_floor = VoiceFloor()
 
     def get_active_sessions(self) -> int:
         return sum(1 for s in self._sessions.values() if s.is_open())
@@ -287,6 +292,44 @@ class WSSServer:
     ) -> None:
         await ws.send_bytes(encode_frame(FrameType.BINARY_FRAME, stream_id, payload))
 
+    async def _send_voice_state(
+        self,
+        ws,
+        state: str,
+        ts_ms: int,
+        holder_id: Optional[str] = None,
+        detail: Optional[str] = None,
+    ) -> None:
+        """Эмиттить voice_state-событие через JSON_EVENT.
+
+        Формат совпадает с meta-quest-api.md §6 (voice_state JSON_EVENT):
+            {"type":"voice_state", "state":"<s>", "ts_ms":<n>, ...}
+
+        Доп. поля ``holder_id``/``detail`` — локальное расширение для
+        UI чтобы показать «у робота говорит <client>». Схема
+        meta-quest-api.md §4 их не запрещает (``utterance_id?`` уже
+        опциональный, паттерн тот же).
+
+        Args:
+            ws: получатель (обычно requester).
+            state: "idle" | "listening" | "speaking" | "denied".
+            ts_ms: server clock (мс, int).
+            holder_id: кто держит floor (``FloorHolder.label()``), None
+                если state == "idle".
+            detail: человеко-читаемая подсказка для UI (например,
+                "busy: operator-quest:abcd1234").
+        """
+        payload: dict[str, Any] = {
+            "type": "voice_state",
+            "state": state,
+            "ts_ms": ts_ms,
+        }
+        if holder_id is not None:
+            payload["holder_id"] = holder_id
+        if detail is not None:
+            payload["detail"] = detail
+        await self._send(ws, FrameType.JSON_EVENT, 0, payload)
+
     def _register_session(self, session: ClientSession, ws) -> None:
         self._sessions[session.session_id] = session
         self._ws_by_session[session.session_id] = ws
@@ -295,6 +338,13 @@ class WSSServer:
         # Освободить stream_id'ы этой сессии.
         for sid in session.subscribed.values():
             _stream_ids_in_use.discard(sid)
+        # Освободить voice floor, если эта сессия его держала
+        # (watchdog/GOODBYE/disconnect → без явного voice_ptt_stop).
+        if self._voice_floor.force_release_for(session.session_id):
+            log.info(
+                "quest: voice floor released by disconnect session=%s",
+                session.session_id,
+            )
         session.close()
         self._sessions.pop(session.session_id, None)
         self._ws_by_session.pop(session.session_id, None)
@@ -386,6 +436,26 @@ class WSSServer:
                 "kind": spec.kind.value,
             },
         )
+        # voice_state: эмитим актуальный snapshot floor-а сразу при подписке
+        # (а не ждём первого события) — UI должен сразу показать «робот
+        # говорит» если кто-то уже держит floor. meta-quest-api.md §4
+        # описывает voice_state как event-driven; snapshot — локальное
+        # расширение quest-сервера, дешевле (один event на SUBSCRIBE).
+        if topic == "voice_state":
+            floor_snap = self._voice_floor.snapshot()
+            await self._send_voice_state(
+                ws,
+                state=floor_snap["state"],
+                ts_ms=int(time.time() * 1000),
+                holder_id=(
+                    FloorHolder(
+                        session_id=floor_snap["holder"]["session_id"],
+                        client_id=floor_snap["holder"]["client_id"],
+                    ).label()
+                    if floor_snap["holder"] is not None
+                    else None
+                ),
+            )
 
     async def _on_json_cmd(
         self,
@@ -444,18 +514,76 @@ class WSSServer:
         if cmd == "voice_ptt_start":
             # PTT start: mode "robot_voice" (левый grip) → STT → LLM → TTS;
             # иначе "radio" (правый grip) → barge-in (прервать TTS + музыку).
+            #
+            # Voice-floor (server-side mutex): два квеста (оператор + AV-23
+            # telegram-bridge) НЕ должны одновременно публиковать PCM в
+            # /avatar/voice_in. При попытке второго voice_ptt_start шлём
+            # requester-у JSON_EVENT{type:"voice_state", state:"denied"} и
+            # НЕ вызываем bridge. Подробности см. voice_floor.py + план
+            # docs/plans/2026-08-27-quest-voice-passthrough-design.md §5.
+            client_id = payload_obj.get("client_id")
+            if not isinstance(client_id, str):
+                client_id = None
+            acquired, busy_holder, _new_state = self._voice_floor.try_acquire(
+                session.session_id, client_id
+            )
+            if not acquired:
+                busy_label = busy_holder.label() if busy_holder is not None else "unknown"
+                log.info(
+                    "quest: voice floor DENIED session=%s busy=%s",
+                    session.session_id,
+                    busy_label,
+                )
+                await self._send_voice_state(
+                    ws,
+                    state="denied",
+                    ts_ms=int(time.time() * 1000),
+                    holder_id=busy_label,
+                    detail=f"busy: {busy_label}",
+                )
+                return
+            log.info(
+                "quest: voice floor ACQUIRED session=%s client_id=%s",
+                session.session_id,
+                client_id or "anon",
+            )
             if payload_obj.get("mode") == "robot_voice":
                 self.bridge.publish_voice_robot_start()
             else:
                 self.bridge.publish_voice_barge_in()
+            await self._send_voice_state(
+                ws,
+                state="listening",
+                ts_ms=int(time.time() * 1000),
+                holder_id=self._voice_floor.holder.label()
+                if self._voice_floor.holder
+                else None,
+            )
             return
         if cmd == "voice_ptt_stop":
             # Правый grip (рация) → закрыть голосовой стрим; левый grip
             # (робот-голос) → вытолкнуть буфер PCM в STT.
+            #
+            # Voice-floor: если requester — текущий держатель, освобождаем
+            # и публикуем voice_state{idle}. Иначе — bridge-вызов как
+            # прежде (идемпотентен), но floor не трогаем (защита от
+            # двойного stop от не-держателя).
+            was_holder = self._voice_floor.release(session.session_id)[0]
+            if was_holder:
+                log.info(
+                    "quest: voice floor RELEASED session=%s",
+                    session.session_id,
+                )
             if payload_obj.get("mode") == "robot_voice":
                 self.bridge.publish_voice_robot_stop()
             else:
                 self.bridge.publish_voice_stop()
+            if was_holder:
+                await self._send_voice_state(
+                    ws,
+                    state="idle",
+                    ts_ms=int(time.time() * 1000),
+                )
             return
         if cmd == "voice_mode":
             # Смена режима голоса (off/passthrough/ttts_proxy/stt_llm/...).
