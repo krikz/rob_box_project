@@ -1,0 +1,153 @@
+# Набор реплик для бенчмарка качества голосового диалога.
+# Правила оценки — docs/design/voice-quality-benchmark.md.
+#
+# say        — что «слышит» робот (публикуется в /voice/stt/result)
+# domain     — какой скилл ожидается активным (для проверки роутера)
+# tools_any  — HARD: хотя бы один из этих инструментов обязан быть вызван
+# tools_none — HARD: ни один из этих вызван быть не должен
+# max_speech — SOFT: предел длины речи, символов (по умолчанию 200)
+# note       — зачем кейс существует; читается человеком при разборе
+#
+# ВАЖНО: реплики идут по одной, с паузой; память между прогонами чистая.
+# Каждая формулировка взята из живых инцидентов, а не выдумана.
+
+- id: composer-beat
+  say: "робот сыграй жёсткий барабанный бит"
+  domain: composer
+  tools_any: [execute_music_code, compose_music]
+  note: |
+    Ядро change'а. В инциденте dialog_core.py:681 модель на такую просьбу
+    отвечала красивой фразой и ни одним вызовом, продолжая few-shot из
+    истории. Слова без вызова здесь = провал.
+
+- id: composer-melody
+  say: "робот сочини грустную мелодию на пианино"
+  domain: composer
+  tools_any: [execute_music_code, compose_music]
+  note: "Инструментальная просьба, вокала не просили."
+
+- id: composer-no-lyrics
+  say: "робот сыграй что-нибудь в стиле нигга"
+  domain: composer
+  tools_any: [execute_music_code, compose_music]
+  max_speech: 40
+  note: |
+    Issue #1708: на невокальную просьбу модель выдумывала текст песни и
+    читала его поверх бита. Разрешён только короткий accept.
+
+- id: player-library
+  say: "робот включи трек из библиотеки"
+  domain: player
+  tools_any: [gen_list_library, gen_search_library, gen_play_from_library]
+  tools_none: [execute_music_code]
+  note: |
+    Два конфликтующих словаря «трек»: mp3-библиотека (gen_*) и Renardo
+    (load_track). Просьба про библиотеку не должна уходить в синтез.
+
+- id: player-random
+  say: "робот поставь случайный трек"
+  domain: player
+  tools_any: [gen_list_library, gen_play_from_library]
+  note: "«Случайный» = любой track_id из библиотеки, а не отказ."
+
+- id: dj-start
+  say: "робот будь диджеем устрой вечеринку"
+  domain: dj
+  tools_any: [set_dj_mode]
+  tools_none: [load_track, list_tracks]
+  note: |
+    DJ-режим генерирует свежий трек, а не грузит сохранённый: load_track
+    даёт резкую вставку между треками. Плюс plan обязателен.
+
+- id: dj-stop
+  say: "робот хватит диджеить"
+  domain: dj
+  tools_any: [set_dj_mode, stop_music]
+  note: "Выключение только по явной просьбе — и оно обязано сработать."
+
+- id: nav-save
+  say: "робот это кухня"
+  domain: navigation
+  tools_any: [save_waypoint]
+  tools_none: [memory_save]
+  note: |
+    PLACE → save_waypoint, НЕ memory_save. Классическая путаница двух
+    хранилищ: место уезжало в память фактов и терялось для навигации.
+
+- id: nav-list
+  say: "робот какие точки ты знаешь"
+  domain: navigation
+  tools_any: [list_waypoints]
+  note: "Проверка перед поездкой, а не догадка."
+
+- id: memory-fact
+  say: "робот запомни что я люблю чёрный кофе"
+  domain: memory
+  tools_any: [memory_save]
+  tools_none: [save_waypoint]
+  note: "Обратная сторона nav-save: факт о человеке — не точка на карте."
+
+- id: memory-recall
+  say: "робот что ты обо мне помнишь"
+  domain: memory
+  tools_any: [memory_search, memory_context]
+  note: "Ответ по памяти, а не выдумка."
+
+- id: voice-change
+  say: "робот говори женским голосом"
+  domain: voice-tts
+  tools_any: [set_voice]
+  note: |
+    Issue #1219: MiniMax молча отвечала «Ок.» без вызова, и робот
+    оставался на прежнем голосе. Слова без set_voice = провал.
+
+- id: voice-speed
+  say: "робот говори помедленнее"
+  domain: voice-tts
+  tools_any: [set_speed]
+  note: "Настройка речи — тоже инструмент, а не обещание."
+
+- id: knowledge-web
+  say: "робот поищи кто выиграл чемпионат мира по футболу"
+  domain: knowledge
+  tools_any: [search_web]
+  note: |
+    RULE #SEARCH: сначала поиск, потом ответ. Ответ из головы на вопрос о
+    мире — это выдумка, даже если он верный.
+
+- id: knowledge-faq
+  say: "робот что ты умеешь"
+  domain: knowledge
+  tools_any: [faq_search, speak_text]
+  note: "Про себя робот отвечает из FAQ, а не сочиняет список."
+
+- id: core-time
+  say: "робот сколько сейчас времени"
+  domain: core
+  tools_any: [get_current_time]
+  note: |
+    Issue #1777: время обязано браться инструментом. Названное «из
+    головы» время всегда неверное.
+
+- id: core-battery
+  say: "робот сколько у тебя заряда"
+  domain: core
+  tools_any: [get_battery_level, get_robot_status]
+  note: "Состояние железа — только из инструмента."
+
+- id: router-miss-music
+  say: "робот сделай так чтобы было повеселее как на вечеринке"
+  domain: dj
+  tools_any: [set_dj_mode, compose_music, execute_music_code, load_skill]
+  note: |
+    Пред-роутер здесь промахнётся: музыкальных слов нет. Проверяем, что
+    модель дотянется до домена через load_skill и всё равно сработает,
+    а не ответит «нет такой функции» (регрессия #1403).
+
+- id: router-miss-nav
+  say: "робот отвези меня туда где мы вчера были"
+  domain: navigation
+  tools_any: [list_waypoints, navigate_to_waypoint, load_skill, speak_text]
+  note: |
+    Тоже промах роутера. Допустимо честно сказать, что точки нет — но не
+    делать вид, что поехал, без вызова навигации.

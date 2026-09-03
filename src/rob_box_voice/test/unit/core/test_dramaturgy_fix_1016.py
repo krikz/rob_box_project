@@ -244,3 +244,126 @@ def test_fresh_start_resets_transition_count() -> None:
         "при генуинном старте (enabled False→True) счётчик сбрасывается "
         "в 0, даже если план уже был — is_fresh_start = not was_enabled"
     )
+
+
+def test_middle_transitions_are_music_only() -> None:
+    """🔴 Живой лог 02.09: на КАЖДОМ переходе поверх бита звучало
+    «Переход номер два отыгран — нарастание с дропом в ре миноре
+    фригийском, сто сорок ударов!». Промпт запрещал только ``speak_text``,
+    а свободный текст ответа тоже уходит в TTS. Юзер: «во время сочинения
+    музыки LLM много говорит».
+    """
+    ctrl = _build_controller()
+    ctrl.state.set_plan = "\n".join(
+        f"Трек {i}: {c}" for i, c in enumerate("abcd", start=1)
+    )
+
+    # #1 — представление диджея, говорить можно.
+    assert ctrl.is_music_only_transition(1) is False
+    # Середина сета — только музыка.
+    assert ctrl.is_music_only_transition(2) is True
+    assert ctrl.is_music_only_transition(3) is True
+    # Финальный трек плана — прощание, говорить можно.
+    assert ctrl.is_music_only_transition(4) is False
+
+
+def test_music_only_without_a_plan() -> None:
+    """Без плана финального трека не существует — молчат все переходы,
+    кроме первого."""
+    ctrl = _build_controller()
+    assert ctrl.is_music_only_transition(1) is False
+    assert ctrl.is_music_only_transition(7) is True
+
+
+def test_transition_prompt_asks_for_the_form_length() -> None:
+    """Форма compose_music играет 96-190 секунд, а промпт просил
+    ``next_transition_sec=45`` — дроп не звучал ни разу за 30 часов лога."""
+    ctrl = _build_controller()
+    for n in (1, 2):
+        prompt = ctrl.build_auto_prompt(n)
+        assert "next_transition_sec=45" not in prompt
+        assert "длительность" in prompt.lower()
+
+
+def test_theme_change_mid_session_is_applied() -> None:
+    """Смена темы внутри идущего сета обязана доехать до state.
+
+    🔴 Живой лог vision 03.09. Тема обновлялась только при
+    ``is_fresh_start or not self.state.theme``, а персона — безусловно.
+    «Теперь ты диджей Векна, тема Изнанка» посреди сета меняло персону и
+    НЕ меняло тему: ``build_auto_prompt`` продолжал подставлять
+    `Тема вечеринки: "<старая>"` в каждый переход, и сет уезжал обратно
+    к прошлой теме.
+    """
+    ctrl = _build_controller()
+    ctrl.state.enabled = True
+    ctrl.state.theme = "3 сентября — костры рябин"
+    ctrl.state.persona = "Диджей Шафутинский"
+    ctrl.state.transition_count = 3
+
+    ctrl.handle_message(json.dumps({
+        "enabled": True,
+        "theme": "Изнанка",
+        "persona": "Диджей Векна",
+    }))
+
+    assert ctrl.state.theme == "Изнанка"
+    assert ctrl.state.persona == "Диджей Векна"
+    assert 'Тема вечеринки: "Изнанка"' in ctrl.build_auto_prompt(4)
+    assert "костры рябин" not in ctrl.build_auto_prompt(4)
+
+
+def test_theme_change_mid_session_drops_the_previous_plan() -> None:
+    """План прошлой темы не должен ехать в промпт новой.
+
+    ``plan_block`` подставляется в каждый переход дословно — «Трек 1:
+    костры рябин…» под темой «Изнанка» тянет модель обратно ровно так же,
+    как сама тема. Прогресс (``transition_count``) при этом СОХРАНЯЕТСЯ:
+    сброс счётчика по содержимому payload — регрессия #992, из-за которой
+    каждый переход снова становился «СТАРТ ВЕЧЕРИНКИ».
+    """
+    ctrl = _build_controller()
+    ctrl.state.enabled = True
+    ctrl.state.theme = "костры рябин"
+    ctrl.state.set_plan = "Трек 1: костры рябин\nТрек 2: у огня"
+    ctrl.state.transition_count = 3
+
+    ctrl.handle_message(json.dumps({"enabled": True, "theme": "Изнанка"}))
+
+    assert ctrl.state.set_plan == ""
+    assert ctrl.state.transition_count == 3, (
+        "смена темы не сбрасывает прогресс сета — иначе возвращается #992"
+    )
+
+
+def test_theme_change_with_a_new_plan_keeps_the_new_plan() -> None:
+    """Тема и план в одном payload: чистка старого плана не должна съесть новый."""
+    ctrl = _build_controller()
+    ctrl.state.enabled = True
+    ctrl.state.theme = "костры рябин"
+    ctrl.state.set_plan = "Трек 1: костры рябин"
+
+    ctrl.handle_message(json.dumps({
+        "enabled": True,
+        "theme": "Изнанка",
+        "plan": "Трек 1: Демогоргон\nТрек 2: Одиннадцать",
+    }))
+
+    assert ctrl.state.theme == "Изнанка"
+    assert ctrl.state.set_plan == "Трек 1: Демогоргон\nТрек 2: Одиннадцать"
+
+
+def test_resent_identical_theme_does_not_touch_the_plan() -> None:
+    """Модель переприсылает ту же тему на переходах — план трогать нельзя."""
+    ctrl = _build_controller()
+    ctrl.state.enabled = True
+    ctrl.state.theme = "Изнанка"
+    ctrl.state.set_plan = "Трек 1: Демогоргон\nТрек 2: Одиннадцать"
+
+    ctrl.handle_message(json.dumps({
+        "enabled": True,
+        "theme": "Изнанка",
+        "next_transition_sec": 90,
+    }))
+
+    assert ctrl.state.set_plan == "Трек 1: Демогоргон\nТрек 2: Одиннадцать"

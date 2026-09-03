@@ -47,8 +47,24 @@ ISSUE_LABEL="${ISSUE_LABEL:-hermes}"
 NEEDS_E2E_LABEL="${NEEDS_E2E_LABEL:-needs-e2e}"
 NEEDS_REVIEW_LABEL="${NEEDS_REVIEW_LABEL:-needs-review}"
 DONE_LABEL="${DONE_LABEL:-e2e-done}"
+# Ретро 02.09 t_4869a1f7 / PR #1863: метка для needs-review + CONFLICTING
+# reconcile (ставится вместо needs-review когда PR стал CONFLICTING после
+# label-установки; снимается когда PR восстановится до MERGEABLE+CLEAN).
+MERGE_CONFLICT_LABEL="${MERGE_CONFLICT_LABEL:-merge-conflict}"
 REJECTED_LABEL="${REJECTED_LABEL:-e2e:rejected}"
 NO_E2E_LABEL="${NO_E2E_LABEL:-no-e2e-required}"
+# Ретро 02.09 t_a09e893a (orphan-needs-e2e-after-merge): audit-метка для
+# issue, у которой PR MERGED, но ветка жива >grace-часов → e2e-ротация
+# зависла. Merge-gate снимает `needs-e2e` и ставит эту метку вместо close
+# (Шифу решает закрывать или открывать follow-up). e2e-process должен
+# skip'ать issue с этой меткой — иначе трим бесполезен.
+MERGED_NO_E2E_STALE_LABEL="${MERGED_NO_E2E_STALE_LABEL:-merged-no-e2e-stale}"
+MERGED_LABELED_GRACE_HOURS="${MERGED_LABELED_GRACE_HOURS:-24}"
+# Список известных branch-prefix'ов для fallback-lookup PR (по issue number).
+# Ретро 02.09 t_a09e893a: канонический `z-{agent}/<n>-slug` НЕ покрывает
+# реальные ветки воркеров (`z-backend/<n>-...`, `z-developer/<n>-...`, ...).
+# Список пополняем по мере появления новых профилей в ~/.hermes/profiles/.
+AGENT_FLOW_BRANCH_PREFIXES="${AGENT_FLOW_BRANCH_PREFIXES:-z-backend z-developer z-llm-expert z-architect z-devops z-designer z-analyst z-tester}"
 BIG_BANG_OVERRIDE_LABEL="${BIG_BANG_OVERRIDE_LABEL:-big-bang-override}"
 # Ретро 31.08 t_04371252 (PR #1753): stale-branch scan ставит эту метку на
 # OPEN PR с уже влитой веткой + функциональным диффом, чтобы downstream
@@ -90,7 +106,22 @@ STALE_REBASE_REMINDER_COOLDOWN_SECONDS="${STALE_REBASE_REMINDER_COOLDOWN_SECONDS
 # created-ts) → scan-all-prs обнаруживает upstream-фикс (стратегии A/B/C)
 # и auto-block с kind=transient.
 STALE_AFTER_UPSTREAM_FIX_SCAN="${STALE_AFTER_UPSTREAM_FIX_SCAN:-true}"
-STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS="${STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS:-7200}"
+# ADR-0035 / task t_d83c9430: rate-limit 1 раз / 4ч (14400s) на одну карточку.
+# Body карточки явно требует 14400s — раньше стояло 7200 (2ч), но это
+# слишком часто: тот же diag-карточка может получить upstream-фикс
+# несколько раз за сутки при итеративных попытках, и 2ч не даёт
+# воркеру даже успеть заметить первый auto-block. 4ч — баланс между
+# "не спамим" и "не пропускаем критический fix".
+STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS="${STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS:-14400}"
+# State-файл для rate-limit (ADR-0035 / task t_d83c9430).
+# Default: $HOME/.hermes/state/merge-gate/auto-block-rate.json
+# (имя "auto-block-rate.json" — это спецификация из body карточки t_d83c9430).
+# Override: STALE_AUTO_BLOCK_STATE_DIR / STALE_AUTO_BLOCK_STATE_FILE.
+# Формат: {"<card_id>": <last_block_epoch>, ...}. JSON для атомарной
+# записи через python (не bash append — race condition при параллельных
+# тиках merge-gate, коих быть не должно, но flock иногда пропускает).
+STALE_AUTO_BLOCK_STATE_DIR="${STALE_AUTO_BLOCK_STATE_DIR:-$HOME/.hermes/state/merge-gate}"
+STALE_AUTO_BLOCK_STATE_FILE="${STALE_AUTO_BLOCK_STATE_FILE:-$STALE_AUTO_BLOCK_STATE_DIR/auto-block-rate.json}"
 # Ретро 15.08 t_238ff3f7: deploy-issue label-less orphan backstop. L-Deploy and
 # Verify создаёт deploy-issues с версией workflow-файла С ВЕТКИ e2e-раунда
 # (z-{e2e}/test-round-N). Если round-ветка ответвилась ДО фикса #1263
@@ -677,6 +708,196 @@ e2e-rotation каждый тик skip-ает round с reason «stale-conflicting
     return 0
 }
 
+# --- needs-review + CONFLICTING reconcile (ретро 02.09 t_4869a1f7 / PR #1863) -
+# Сценарий: merge-gate (lint path / e2e-done reconcile / clean-pr-sweep) ставит
+# метку `needs-review` когда PR = MERGEABLE + CLEAN. Дальше develop убегает
+# вперёд → PR становится CONFLICTING + DIRTY, но метка `needs-review` остаётся.
+# Шифу видит `needs-review` в review queue, открывает PR → merge button disabled
+# («Pull request is not mergeable: This branch has conflicts that must be
+# resolved»). Тратит время на разбор, потом пишет воркеру 'rebase'. PR не
+# вливается, лаг.
+#
+# `stale_conflicting_scan_all` выше ловит только PR с меткой `needs-e2e` —
+# `needs-review + CONFLICTING` остаётся серой зоной (PR #1863: ветка
+# `z-backend/t_ad97d944-fix-dramaturgy`, лаг 30+ минут, оверлапы с PR #1869,
+# который уже влит с тем же фиксом).
+#
+# Решение: НЕ ЖДАТЬ 24ч (как stale-conflicting) — для needs-review нужен
+# НЕМЕДЛЕННЫЙ reconcile, потому что Шифу видит метку в очереди ревью ПРЯМО
+# СЕЙЧАС. На каждый тик merge-gate сканирует OPEN PR с `needs-review`:
+#   - mergeable=MERGEABLE + mergeStateStatus=CLEAN → ok, ничего не делаем
+#     (PR в нормальном review-state). Если `merge-conflict` остался от прошлого
+#     CONFLICTING → снимаем и пишем recovery-коммент «rebase прошёл».
+#   - mergeable=CONFLICTING ИЛИ mergeStateStatus=DIRTY:
+#       1) `gh pr edit --remove-label needs-review` (PR выпадает из review queue
+#          Шифу, merge-ui не дёргает «merge»);
+#       2) `gh pr edit --add-label merge-conflict` (новая метка — сигнал
+#          воркеру и Шифу «rebase нужен до ревью»);
+#       3) PR-коммент «нужен rebase на develop» (24ч dedup).
+#   - mergeable=UNKNOWN (CI calc in progress) → skip, не дёргаем (false positive
+#     дороже чем пропуск).
+#
+# Не блокируем CI, не создаём recovery-карточек — `scan-all-prs` (CONFLICTING
+# ветка, стр. 3971) уже делает это для веток с распознанным task_id. Если
+# task_id не определился (как PR #1863 — ветка wt-style без issue-marker),
+# watch останется только в виде PR-коммента + label-swap.
+#
+# Идемпотентность:
+#   - remove-label / add-label — no-op при повторе.
+#   - коммент dedup 24ч (windowed по prefix «🟠 needs-review + CONFLICTING»).
+#   - cleanup-блок для восстановленного PR (MERGEABLE+CLEAN с merge-conflict):
+#     однократный swap обратно + recovery-коммент.
+#
+# Вызывается рядом со stale_conflicting_scan_all (scan-all-prs блок).
+needs_review_conflict_reconcile_all() {
+    local _nrc_dedup_since
+    _nrc_dedup_since="$(date -u -d "${NEEDS_REVIEW_CONFLICT_DEDUP_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # Берём open PR с needs-review + mergeable + mergeStateStatus + labels.
+    local _nrc_prs
+    _nrc_prs="$(gh pr list --repo "$GH_REPO" --state open --label "$NEEDS_REVIEW_LABEL" \
+        --json number,headRefName,mergeable,mergeStateStatus,labels 2>/dev/null || echo '[]')"
+    if [ -z "$_nrc_prs" ] || [ "$_nrc_prs" = "[]" ]; then
+        log "needs-review-conflict-reconcile: no needs-review PRs — nothing to do"
+        return 0
+    fi
+
+    printf '%s' "$_nrc_prs" | python3 -c '
+import json, sys, shlex
+data = json.load(sys.stdin)
+CONFLICT_LABEL = sys.argv[1]
+for pr in data:
+    pr_num = pr["number"]
+    head = pr.get("headRefName", "") or ""
+    mergeable = pr.get("mergeable", "") or ""
+    merge_state = pr.get("mergeStateStatus", "") or ""
+    labels = [l["name"] for l in (pr.get("labels") or [])]
+    has_review = "needs-review" in labels
+    has_conflict = CONFLICT_LABEL in labels
+    print("{}\t{}\t{}\t{}\t{}\t{}".format(
+        pr_num, head, mergeable, merge_state,
+        "yes" if has_review else "no",
+        "yes" if has_conflict else "no"))
+' "$MERGE_CONFLICT_LABEL" 2>/dev/null \
+    | while IFS=$'\t' read -r _nrc_pr_num _nrc_head _nrc_mergeable _nrc_merge_state _nrc_has_review _nrc_has_conflict; do
+        [ -z "$_nrc_pr_num" ] && continue
+
+        # Решение classify: PR сейчас MERGEABLE+CLEAN или нет?
+        # GitHub API: mergeable ∈ {MERGEABLE, CONFLICTING, UNKNOWN}; mergeStateStatus
+        # ∈ {BLOCKED, CLEAN, DIRTY, DRAFT, HAS_HOOKS, UNSTABLE, BEHIND}.
+        # Конфликт = mergeable=CONFLICTING OR mergeStateStatus=DIRTY (GitHub
+        # отдаёт их асинхронно — ретро 12.08 t_618208c0).
+        local _nrc_is_conflict=0
+        if [ "$_nrc_mergeable" = "CONFLICTING" ] || [ "$_nrc_merge_state" = "DIRTY" ]; then
+            _nrc_is_conflict=1
+        fi
+
+        # CLEAN-блок: PR восстановился до MERGEABLE+CLEAN. Если висит
+        # merge-conflict — снимаем (PR снова готов к ревью). needs-review
+        # обычно уже на месте; если Шифу её снял руками — НЕ возвращаем
+        # (user-unlabel guard, ретро 18.08 t_de6bea69).
+        if [ "$_nrc_is_conflict" = "0" ]; then
+            # UNKNOWN пропускаем (CI calc in progress) — не снимаем/не ставим.
+            if [ "$_nrc_mergeable" = "UNKNOWN" ]; then
+                log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} mergeable=UNKNOWN — skip (CI recalc)"
+                continue
+            fi
+            if [ "$_nrc_has_conflict" = "yes" ]; then
+                if [ "$DRY_RUN" = "true" ]; then
+                    log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} MERGEABLE+CLEAN, has ${MERGE_CONFLICT_LABEL} — DRY-RUN would remove + add needs-review (recovery)"
+                else
+                    gh pr edit "$_nrc_pr_num" --repo "$GH_REPO" --remove-label "$MERGE_CONFLICT_LABEL" >/dev/null 2>&1 \
+                        && log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} MERGEABLE+CLEAN — removed ${MERGE_CONFLICT_LABEL} (rebase прошёл)" \
+                        || log "needs-review-conflict-reconcile: WARNING remove ${MERGE_CONFLICT_LABEL} on PR #${_nrc_pr_num} failed (non-fatal)"
+                    # Если needs-review уже снята Шифу — не возвращаем.
+                    if [ "$_nrc_has_review" = "no" ] \
+                        && ! user_removed_label_recently "$_nrc_pr_num" "$NEEDS_REVIEW_LABEL"; then
+                        gh pr edit "$_nrc_pr_num" --repo "$GH_REPO" --add-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 \
+                            && log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} MERGEABLE+CLEAN — restored ${NEEDS_REVIEW_LABEL}" \
+                            || log "needs-review-conflict-reconcile: WARNING restore ${NEEDS_REVIEW_LABEL} on PR #${_nrc_pr_num} failed (non-fatal)"
+                    fi
+                    # Одноразовый recovery-коммент (24ч dedup).
+                    local _nrc_recover_dup
+                    _nrc_recover_dup="$(gh api "repos/${GH_REPO}/issues/${_nrc_pr_num}/comments?since=${_nrc_dedup_since}&per_page=100" \
+                        --jq '[.[] | select(.body | contains("✅ needs-review conflict RECOVERED"))] | length' 2>/dev/null \
+                        || echo 0)"
+                    if [ "${_nrc_recover_dup:-0}" -eq 0 ] && [ "$DRY_RUN" != "true" ]; then
+                        gh pr comment "$_nrc_pr_num" --repo "$GH_REPO" --body \
+"✅ **needs-review conflict RECOVERED (merge-gate needs-review-conflict-reconcile, $(date -u +%H:%M:%SZ), ретро 02.09 t_4869a1f7)**
+
+PR #${_nrc_pr_num} (\\\\\`${_nrc_head}\\\\\`) → develop = **MERGEABLE+ CLEAN** (был CONFLICTING+ DIRTY, rebase прошёл).
+- Метка \\\\\`${MERGE_CONFLICT_LABEL}\\\\\` снята.
+- Метка \\\\\`${NEEDS_REVIEW_LABEL}\\\\\` ${_nrc_has_review:+уже была}${_nrc_has_review:-восстановлена (раньше была снята автоматически)}.
+
+Шифу — PR снова в очереди ревью. Перед merge убедись что upstream develop не убежал вперёд (ahead-of-develop). Метка \\\\\`${MERGE_CONFLICT_LABEL}\\\\\` вернётся автоматически если PR снова станет CONFLICTING." >/dev/null 2>&1 || true
+                    fi
+                fi
+            else
+                log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} MERGEABLE+CLEAN — ok, без ${MERGE_CONFLICT_LABEL}"
+            fi
+            continue
+        fi
+
+        # CONFLICTING-блок. user-unlabel guard: если Шифу руками СНЯЛ
+        # needs-review после нашего auto-add — НЕ ставим merge-conflict
+        # (он уже решил проблему, не дёргаем его метками).
+        if user_removed_label_recently "$_nrc_pr_num" "$NEEDS_REVIEW_LABEL"; then
+            log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} CONFLICTING — needs-review был снят Шифу руками, не трогаю (ретро 18.08 t_de6bea69, Q22)"
+            continue
+        fi
+
+        # Снимаем needs-review (Шифу больше не видит PR в review queue).
+        if [ "$_nrc_has_review" = "yes" ] && [ "$DRY_RUN" != "true" ]; then
+            gh pr edit "$_nrc_pr_num" --repo "$GH_REPO" --remove-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1 \
+                && log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} CONFLICTING — removed ${NEEDS_REVIEW_LABEL} (merge-ui disabled)" \
+                || log "needs-review-conflict-reconcile: WARNING remove ${NEEDS_REVIEW_LABEL} on PR #${_nrc_pr_num} failed (non-fatal)"
+        fi
+
+        # Ставим merge-conflict (новая метка для воркера и Шифу).
+        if [ "$_nrc_has_conflict" = "no" ] && [ "$DRY_RUN" != "true" ]; then
+            whoami_add_label "$_nrc_pr_num" "$MERGE_CONFLICT_LABEL" \
+                "needs-review+CONFLICTING (merge-gate, ретро 02.09 t_4869a1f7): mergeable=${_nrc_mergeable} state=${_nrc_merge_state}" \
+                "pr=${_nrc_pr_num}" \
+                || log "needs-review-conflict-reconcile: WARNING add ${MERGE_CONFLICT_LABEL} on PR #${_nrc_pr_num} failed (non-fatal)"
+        fi
+
+        # PR-коммент с инструкцией rebase (24ч dedup).
+        local _nrc_dup
+        _nrc_dup="$(gh api "repos/${GH_REPO}/issues/${_nrc_pr_num}/comments?since=${_nrc_dedup_since}&per_page=100" \
+            --jq '[.[] | select(.body | startswith("🟠 needs-review + CONFLICTING"))] | length' 2>/dev/null \
+            || echo 0)"
+        if [ "${_nrc_dup:-0}" -eq 0 ] && [ "$DRY_RUN" != "true" ]; then
+            gh pr comment "$_nrc_pr_num" --repo "$GH_REPO" --body \
+"🟠 **needs-review + CONFLICTING (merge-gate, ретро 02.09 t_4869a1f7, $(date -u +%H:%M:%SZ))**
+
+PR #${_nrc_pr_num} (\\\\\`${_nrc_head}\\\\\`) → develop = **mergeable=${_nrc_mergeable} + mergeStateStatus=${_nrc_merge_state}**. Develop убежал вперёд после того как merge-gate поставил \\\\\`needs-review\\\\\` (PR был MERGEABLE+CLEAN на момент label).
+
+Сделано:
+- \\\\\`needs-review\\\\\` снят (PR выпал из очереди ревью; merge-ui показывает disabled «This branch has conflicts that must be resolved»).
+- \\\\\`${MERGE_CONFLICT_LABEL}\\\\\` поставлен (сигнал воркеру и Шифу — rebase нужен до ревью).
+
+**Что делать** (по процессу Шифу 10.08):
+1. **В той же ветке** \\\\\`${_nrc_head}\\\\\` — НЕ создавай новую ветку и НЕ новый PR.
+2. **rebase** на origin/develop:
+   \\\\\`\\\\\`\\\\\`bash
+   git fetch origin develop
+   git checkout ${_nrc_head}
+   git rebase origin/develop
+   # ... resolve conflicts ...
+   git add -A && git rebase --continue
+   git push --force-with-lease origin ${_nrc_head}
+   \\\\\`\\\\\`\\\\\`
+3. После force-push PR станет MERGEABLE+CLEAN → merge-gate автоматически снимет \\\\\`${MERGE_CONFLICT_LABEL}\\\\\` и (если needs-review был снят автоматически) восстановит.
+
+Метка \\\\\`${MERGE_CONFLICT_LABEL}\\\\\` снимается автоматически когда PR = MERGEABLE+CLEAN." >/dev/null 2>&1 || true
+            log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} CONFLICTING — comment posted"
+        else
+            log "needs-review-conflict-reconcile: PR #${_nrc_pr_num} CONFLICTING — comment dedup (есть < ${NEEDS_REVIEW_CONFLICT_DEDUP_HOURS}ч), skip"
+        fi
+    done
+    return 0
+}
+
 # --- duplicate-file scan для ВСЕХ open PR (ретро 15.08 t_20383d32) ----------
 # Сценарий: две ПАРАЛЛЕЛЬНЫЕ карточки пришли к одному корневому фиксу и каждая
 # добавила ОДИН И ТОТ ЖЕ файл с ИДЕНТИЧНЫМ содержимым (одинаковый blob sha):
@@ -759,7 +980,7 @@ for (fname, sha), prs in sorted(seen.items()):
 #
 # Кейсы:
 #   - PR #1623 / #1611 (25.08.2026): architect-worker открыл напрямую,
-#     base=feature/avatar, нет kanban-marker в issue #1600/#1597. CONFLICTING
+#     base=develop (пример), нет kanban-marker в issue #1600/#1597. CONFLICTING
 #     висит 5-8ч.
 #   - PR с label `agent-flow` / `agent-flow-error` / `needs-e2e` /
 #     `needs-review` но без marker'а — должен попасть под этот guard.
@@ -852,7 +1073,7 @@ PR имеет process-метку (agent-flow* / needs-e2e / needs-review), но 
 **Что делать (приоритет для шисюна/Шифу):**
 1. Связать PR ↔ kanban-карточку: добавить kanban-marker в issue #${_wm_issue} (комментарий \`kanban: t_xxxxxxxxxxxxx branch: ${_wm_head} role: <role>\`), затем \`hermes kanban --board robbox complete t_xxxxxxxxxxxxx\` с raw-evidence и тестами.
 2. Либо закрыть этот PR (если архитектура не предполагает его merge) и переоткрыть из новой kanban-карточки.
-3. Если PR нужен (например AV-6 / AV-3 в feature/avatar) — добавить kanban-card через \`hermes kanban create --assignee <agent>\` и привязать.
+3. Если PR нужен (например AV-6 / AV-3, base=develop) — добавить kanban-card через \`hermes kanban create --assignee <agent>\` и привязать.
 
 Merge-gate **НЕ блокирует** CI/e2e (alert, не gate). Решение за человеком (Шифу / шисюн)." >/dev/null 2>&1 || true
         fi
@@ -1116,6 +1337,200 @@ detect_stale_after_upstream_fix() {
     return 0
 }
 
+# stale_auto_block_state_dir — возвращает каталог для state-файла
+# (override через STALE_AUTO_BLOCK_STATE_DIR для тестов и custom deploy'ов).
+stale_auto_block_state_dir() {
+    printf '%s' "${STALE_AUTO_BLOCK_STATE_DIR:-$HOME/.hermes/state/merge-gate}"
+}
+
+# stale_auto_block_state_file — полный путь к state-файлу.
+stale_auto_block_state_file() {
+    printf '%s' "${STALE_AUTO_BLOCK_STATE_FILE:-$(stale_auto_block_state_dir)/stale-auto-block.json}"
+}
+
+# stale_auto_block_load — читает JSON state-файла в stdout (формат:
+# {"<card_id>": <epoch>, ...}). Если файл не существует или битый —
+# возвращает пустой JSON "{}". Не падает, всегда exit 0 (идемпотентно).
+stale_auto_block_load() {
+    local _file
+    _file="$(stale_auto_block_state_file)"
+    if [ ! -f "$_file" ]; then
+        printf '{}'
+        return 0
+    fi
+    python3 - "$_file" <<'PYEOF' 2>/dev/null || printf '{}'
+import json, sys, os
+p = sys.argv[1]
+try:
+    if not os.path.exists(p):
+        print("{}"); sys.exit(0)
+    with open(p, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        print("{}"); sys.exit(0)
+    # Фильтруем только int-значения (защита от мусорных ключей).
+    clean = {str(k): int(v) for k, v in data.items() if isinstance(v, (int, float))}
+    print(json.dumps(clean))
+except Exception:
+    print("{}")
+PYEOF
+}
+
+# stale_auto_block_save — атомарно записывает state-файл.
+# Использует python tempfile + os.replace для атомарности.
+# $1=JSON dict {"<card_id>": <epoch>, ...} — финальное содержимое.
+stale_auto_block_save() {
+    local _new_json="$1"
+    local _file _dir
+    _file="$(stale_auto_block_state_file)"
+    _dir="$(stale_auto_block_state_dir)"
+    mkdir -p "$_dir" 2>/dev/null || true
+    python3 - "$_file" "$_new_json" <<'PYEOF' 2>/dev/null || return 1
+import json, sys, os, tempfile
+path = sys.argv[1]
+new_data = sys.argv[2]
+try:
+    data = json.loads(new_data) if new_data else {}
+    if not isinstance(data, dict):
+        data = {}
+    parent = os.path.dirname(path)
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=parent, prefix=".stale-auto-block.", suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, sort_keys=True)
+    os.replace(tmp, path)
+except Exception:
+    sys.exit(1)
+PYEOF
+}
+
+# stale_auto_block_should_skip — primary rate-limit gate.
+# Возвращает 0 (skip = rate-limited), если state-файл содержит свежую запись
+# для card_id (NOW - last_block < cooldown). Иначе — 1 (block разрешён).
+# Это PRIMARY rate-limit (ADR-0035 / task t_d83c9430). FALLBACK на DB-комментарии
+# (kanban_last_reminder_ts) сохранён для backward compatibility со старыми
+# тиками — но если state-файл уже содержит свежую запись, DB-fallback не
+# проверяется (state-файл приоритетнее, иначе двойная проверка добавляет
+# лишний слой race condition).
+stale_auto_block_should_skip() {  # $1=card_id
+    local cid="$1"
+    local _state _last_ts _now_ts _cooldown
+    [ -z "$cid" ] && return 1
+    _state="$(stale_auto_block_load)"
+    _last_ts="$(printf '%s' "$_state" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    v = d.get('$cid')
+    print(int(v) if isinstance(v, (int, float)) else '')
+except Exception:
+    print('')
+" 2>/dev/null || true)"
+    if [ -n "$_last_ts" ]; then
+        _now_ts="$(date +%s)"
+        _cooldown="${STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS:-14400}"
+        if [ $(( _now_ts - _last_ts )) -lt "$_cooldown" ]; then
+            return 0  # skip
+        fi
+    fi
+    # PRIMARY state-файл свежей записи не нашёл → fallback на DB-комментарии
+    # (исторический rate-limit из D7, сохранён для backward compat).
+    local _marker _db_ts
+    _marker="stale-after-upstream-fix"
+    _db_ts="$(kanban_last_reminder_ts "$cid" "$_marker" 2>/dev/null || echo "")"
+    if [ -n "$_db_ts" ]; then
+        _now_ts="$(date +%s)"
+        _cooldown="${STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS:-14400}"
+        if [ $(( _now_ts - _db_ts )) -lt "$_cooldown" ]; then
+            return 0  # skip via DB fallback
+        fi
+    fi
+    return 1  # allow
+}
+
+# stale_auto_block_mark — записывает текущий timestamp в state-файл для card_id.
+stale_auto_block_mark() {  # $1=card_id
+    local cid="$1"
+    [ -z "$cid" ] && return 1
+    local _state _now_ts _new_json
+    _state="$(stale_auto_block_load)"
+    _now_ts="$(date +%s)"
+    _new_json="$(printf '%s' "$_state" | python3 -c "
+import json, sys
+cid = sys.argv[1]
+now = int(sys.argv[2])
+try:
+    data = json.load(sys.stdin)
+    if not isinstance(data, dict):
+        data = {}
+except Exception:
+    data = {}
+data[cid] = now
+print(json.dumps(data, sort_keys=True))
+" "$cid" "$_now_ts" 2>/dev/null)"
+    [ -z "$_new_json" ] && return 1
+    stale_auto_block_save "$_new_json"
+}
+
+# stale_auto_block_fetch_upstream_diff — формирует diff-строку для body patch:
+# `git log --oneline <created_ts>..origin/<base> | grep <sig>` (или tests).
+# Возвращает многострочный вывод (1+ строк), либо пустую строку если
+# ни одна стратегия не сработала. Использует REPO_DIR/git; на ошибке
+# (нет REPO_DIR / пустой git) — fallback на строку "(no diff available)".
+stale_auto_block_fetch_upstream_diff() {  # $1=created_ts $2=pr_base $3=sig_csv $4=tests_csv
+    local created_ts="$1" pr_base="$2" sig_csv="$3" tests_csv="$4"
+    local repo_dir="${REPO_DIR:-}"
+    [ -z "$repo_dir" ] || [ ! -d "$repo_dir" ] && {
+        echo "(no diff: REPO_DIR unavailable)"
+        return 0
+    }
+    local range
+    if [ -n "$created_ts" ] && [ "$created_ts" != "0" ]; then
+        range="@${created_ts}..origin/${pr_base}"
+    else
+        range="origin/${pr_base}"
+    fi
+    local out=""
+    # 1) Ищем по sig (стратегия B-attr).
+    if [ -n "$sig_csv" ]; then
+        local attr
+        attr="$(printf '%s' "$sig_csv" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | head -1)"
+        if [ -n "$attr" ]; then
+            out="$(git -C "$repo_dir" log "$range" --pretty=oneline 2>/dev/null \
+                | grep -F -- "$attr" || true)"
+        fi
+    fi
+    # 2) Fallback: ищем по tests файлам (стратегия B-tests).
+    if [ -z "$out" ] && [ -n "$tests_csv" ]; then
+        local test_file
+        test_file="$(printf '%s' "$tests_csv" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | head -1)"
+        if [ -n "$test_file" ]; then
+            out="$(git -C "$repo_dir" log "$range" --pretty=oneline -- "$test_file" 2>/dev/null || true)"
+        fi
+    fi
+    if [ -z "$out" ]; then
+        echo "(no upstream commits matched sig/tests in $range)"
+        return 0
+    fi
+    printf '%s\n' "$out" | head -10
+}
+
+# stale_auto_block_fetch_subject — возвращает subject upstream-коммита
+# (первая строка `git log -1 <sha> --pretty=%s`). Если sha пустой или
+# git/repo недоступен — возвращает пустую строку.
+stale_auto_block_fetch_subject() {  # $1=sha
+    local sha="$1"
+    local repo_dir="${REPO_DIR:-}"
+    [ -z "$sha" ] && return 0
+    [ -z "$repo_dir" ] || [ ! -d "$repo_dir" ] && {
+        # Fallback: REST API gh pr view <pr_num> не даёт subject напрямую,
+        # но для теста R4 этого достаточно — пустая строка не ломает reason,
+        # а просто оставляет sha без subject.
+        return 0
+    }
+    git -C "$repo_dir" log -1 "$sha" --pretty=format:'%s' 2>/dev/null | head -1 || true
+}
+
 stale_after_upstream_fix_scan_all() {
     # Orchestrator для auto-block + rate-limit (ADR-0035 §5.2). Сама detect
     # логика живёт в detect_stale_after_upstream_fix() — pure функция без
@@ -1141,14 +1556,19 @@ for t in data:
     title = t.get("title", "") or ""
     body = t.get("body", "") or ""
     status = t.get("status", "") or ""
-    # Сигнатура diagnostic-карточки из PR #1743 (ретро t_e00f448d):
-    # title начинается с "🐛 CI UNSTABLE DIAGNOSTIC #..." (НЕ с
-    # "🐛 CI UNSTABLE:" — в карточках нет двоеточия сразу после UNSTABLE;
-    # "🔀 rebase PR #..." — rebase reminder, тоже кандидат на маркеры).
+    # Сигнатуры diagnostic-карточек:
+    #   LEGACY (PR #1743 Этап 0, до введения маркеров): title
+    #     начинается с "🐛 CI UNSTABLE: ..." (с двоеточием сразу после
+    #     UNSTABLE). Карточки t_8f764875 / t_5c524b12 — именно LEGACY.
+    #     Без этого расширения фильтра они зависают в todo навсегда
+    #     (ретро t_beefef7a, 02.09.2026).
+    #   NEW (PR #1743 → develop, Этап 1): "🐛 CI UNSTABLE DIAGNOSTIC #...".
+    #   REBASE reminder: "🔀 rebase PR #..." — тоже кандидат на маркеры.
     # ADR-0035: не фильтруем по наличию маркера здесь — legacy-карточки
     # без маркеров должны попасть в скан, чтобы bash мог залогировать
     # "no diag-pr marker, skip (legacy)" (test D5).
     is_diag = (title.startswith("🐛 CI UNSTABLE DIAGNOSTIC") or
+               title.startswith("🐛 CI UNSTABLE:") or
                title.startswith("🔀 rebase PR #"))
     if is_diag and status not in ("done", "archived"):
         print(t.get("id", "") + "\t" + status)
@@ -1205,31 +1625,13 @@ except Exception:
         fi
         [ -z "$_pr_base" ] && _pr_base="$DEVELOP_BRANCH"
 
-        # 4. Rate-limit: ищем предыдущий block-комментарий с маркером.
-        # Используем GH_JOURNAL как fallback (для тестов, где KANBAN_DB
-        # недоступна) — production-путь остаётся kanban_last_reminder_ts.
-        _marker="stale-after-upstream-fix:${_pr_num}"
-        _last_ts="$(kanban_last_reminder_ts "$_card_id" "$_marker" 2>/dev/null || echo "")"
-        if [ -z "$_last_ts" ] && [ -n "${GH_JOURNAL:-}" ] && [ -f "${GH_JOURNAL:-/nonexistent}" ]; then
-            # ADR-0035 test fixture: pre-seeded journal entries simulating
-            # prior tick. Grep for the marker line and parse its timestamp.
-            _last_ts="$(grep -E "hermes .* block ${_card_id}.*${_marker}" "${GH_JOURNAL}" 2>/dev/null \
-                | head -1 | awk '{print $1}' \
-                | awk -F'T' '{print $1"T"$2}' \
-                | python3 -c '
-import sys, datetime
-try:
-    line = sys.stdin.read().strip()
-    if not line: sys.exit(0)
-    dt = datetime.datetime.fromisoformat(line.replace("Z", "+00:00"))
-    print(int(dt.timestamp()))
-except Exception:
-    pass
-' 2>/dev/null || echo "")"
-        fi
-        _now_ts="$(date +%s)"
-        if [ -n "$_last_ts" ] && [ $(( _now_ts - _last_ts )) -lt "$STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS" ]; then
-            log "stale-after-upstream-fix: ${_card_id} — rate-limited (last=${_last_ts})"
+        # 4. Rate-limit через state-файл $STATE_DIR/auto-block-rate.json
+        # (ADR-0035 / task t_d83c9430). PRIMARY: state-файл с last_block_ts
+        # по card_id. FALLBACK на DB-комментарии (kanban_last_reminder_ts)
+        # сохранён для backward compatibility со старыми тиками, но
+        # НЕ используется когда state-файл уже содержит свежую запись.
+        if stale_auto_block_should_skip "$_card_id"; then
+            log "stale-after-upstream-fix: ${_card_id} — rate-limited (state-file or DB fallback)"
             continue
         fi
 
@@ -1292,6 +1694,21 @@ print("_det_evidence=" + shlex.quote(parts[4]))
         _reason="$_det_reason"
         _commit_sha="$_det_sha"
 
+        # 6.5. ADR-0035 / task t_d83c9430: обогатить reason commit_subject'ом.
+        # Формат: `stale-after-upstream-fix: <sha> <commit_message_short>`.
+        # Subject получаем через `git log -1 <sha> --pretty=%s` (с fallback
+        # на REST gh api для случаев когда REPO_DIR недоступен — там subject
+        # просто отсутствует, reason остаётся без short-сообщения).
+        if [ -n "$_commit_sha" ]; then
+            _subject="$(stale_auto_block_fetch_subject "$_commit_sha" || true)"
+            # Добавляем subject ТОЛЬКО если (а) sha есть, (б) subject непустой,
+            # (в) reason ещё НЕ содержит subject (избегаем двойного append при
+            # повторных тиках). Format: <reason> — <subject>.
+            if [ -n "$_subject" ] && ! printf '%s' "$_reason" | grep -qF "$_subject"; then
+                _reason="${_reason} — ${_subject}"
+            fi
+        fi
+
         # 7. DRY_RUN: только лог.
         if [ "$DRY_RUN" = "true" ]; then
             log "DRY-RUN would: block ${_card_id} with reason: ${_reason}"
@@ -1302,15 +1719,30 @@ print("_det_evidence=" + shlex.quote(parts[4]))
         if hermes kanban --board "$KANBAN_BOARD" block --kind transient \
             "$_card_id" "$_reason" >/dev/null 2>&1; then
             log "stale-after-upstream-fix: ${_card_id} auto-blocked (PR #${_pr_num}, sha=${_commit_sha:-none})"
+            # ADR-0035 / task t_d83c9430: обновить state-файл ПОСЛЕ успешного
+            # block. Это PRIMARY rate-limit запись для следующего тика.
+            stale_auto_block_mark "$_card_id" || \
+                log "stale-after-upstream-fix: WARNING state-file mark failed for ${_card_id}"
         else
             log "stale-after-upstream-fix: WARNING block ${_card_id} failed"
             continue
         fi
 
         # 9. Patch body: добавить секцию "Upstream-фикс (auto-detected)".
+        # ADR-0035 / task t_d83c9430: теперь включает
+        #   (а) URL upstream-коммита (было в прошлом PR);
+        #   (б) diff `git log --oneline <created_ts>..origin/<base> | grep <sig>`
+        #       для визуального подтверждения upstream-фикса.
         if [ -n "$_commit_sha" ]; then
             _gh_url="https://github.com/${GH_REPO}/commit/${_commit_sha}"
-            _patch="$(printf '\n\n### ✅ Upstream-фикс уже в develop (auto-detected, merge-gate ADR-0035, %s)\n\n**Причина блокировки:** %s\n\n**Upstream-коммит:** [%s](%s)\n\n**Что делать:** карточка может быть закрыта как `done` (stale-diagnostic-after-upstream-fix). Воркеру не нужно ничего чинить — регрессия upstream-починена, тесты на develop уже зелёные.\n' "$(date -u +%H:%M:%SZ)" "$_reason" "${_commit_sha:0:8}" "$_gh_url")"
+            _diff_text="$(stale_auto_block_fetch_upstream_diff \
+                "$_created_ts" "$_pr_base" "$_sig_list" "$_tests_list" || true)"
+            _diff_section=""
+            if [ -n "$_diff_text" ]; then
+                # Оборачиваем diff в ```...``` для markdown-блока.
+                _diff_section="$(printf '\n\n**Upstream-фикс (diff):**\n\n\`\`\`\n%s\n\`\`\`\n' "$_diff_text")"
+            fi
+            _patch="$(printf '\n\n### ✅ Upstream-фикс уже в develop (auto-detected, merge-gate ADR-0035, %s)\n\n**Причина блокировки:** %s\n\n**Upstream-коммит:** [%s](%s)\n%s\n**Что делать:** карточка может быть закрыта как `done` (stale-diagnostic-after-upstream-fix). Воркеру не нужно ничего чинить — регрессия upstream-починена, тесты на develop уже зелёные.\n' "$(date -u +%H:%M:%SZ)" "$_reason" "${_commit_sha:0:8}" "$_gh_url" "$_diff_section")"
             hermes kanban --board "$KANBAN_BOARD" comment "$_card_id" "$_patch" >/dev/null 2>&1 \
                 || log "stale-after-upstream-fix: WARNING body patch comment failed for ${_card_id}"
         fi
@@ -1441,6 +1873,139 @@ archive_openspec_change_for_merge() {  # $1=cid $2=num $3=pr $4=branch
     else
         return 1
     fi
+}
+
+# --- pr_label_sweep_after_merge (ретро 01.09 t_fd604461) -------------------
+# Сценарий: PR смержен (state=MERGED, base=develop), но на нём всё ещё висят
+# process-метки (needs-e2e / needs-review / e2e-done / e2e:rejected /
+# no-e2e-required / agent-flow-error). Эти метки «залипают» после merge и
+# порождают хронические проблемы:
+#   - PR маячит в `gh pr list --label needs-e2e` → e2e-process может взять
+#     в ротацию уже влитую ветку и поставить e2e:rejected (лишний шум);
+#   - PR с needs-review после merge попадает в очередь ревью Шифу
+#     (повторный review того же кода);
+#   - dashboards по process-меткам показывают ложные срабатывания.
+#
+# Снимаем ТОЛЬКО с MERGED PR (state=MERGED) — для OPEN/CLOSED PR не трогаем
+# (там метки могут быть сигналом для других процессов). Идемпотентно:
+# remove-label на отсутствующей метке = no-op (gh exit 0).
+#
+# Аргументы: $1=pr_number. Опциональный $2=context (для лога, какой путь
+# закрытия вызвал sweep). Не фейлит: WARN на API-сбой, retry next tick.
+# ============================================================================
+pr_label_sweep_after_merge() {  # $1=pr_number [$2=context]
+    local pr_num="${1:?pr_label_sweep_after_merge: missing pr_number}"
+    local context="${2:-merge-gate auto-cleanup}"
+    [ "$pr_num" = "0" ] && return 0
+    # Re-read PR state — race с пользователем (юзер может re-open, тогда
+    # НЕ чистим: state перестанет быть MERGED).
+    local _pr_state _pr_labels_csv _pr_labels_norm
+    _pr_state="$(gh pr view "$pr_num" --repo "$GH_REPO" --json state --jq '.state' 2>/dev/null || echo "")"
+    if [ "$_pr_state" != "MERGED" ]; then
+        log "pr-label-sweep: PR #${pr_num} state=${_pr_state:-?} — skip (не MERGED)"
+        return 0
+    fi
+    _pr_labels_csv="$(gh pr view "$pr_num" --repo "$GH_REPO" --json labels \
+        --jq '[.labels[].name] | join(",")' 2>/dev/null || echo "")"
+    _pr_labels_norm="$(printf '%s' "$_pr_labels_csv" | tr '[:upper:]' '[:lower:]')"
+    # Process-метки, которые должны быть сняты с MERGED PR. Список
+    # фиксирован (как ADR-0022 §4.4 process-labels), иначе рискуем снять
+    # пользовательские метки (например `service:foo`, `infra:bar`).
+    local _to_remove=""
+    if has_label "$_pr_labels_norm" "$NEEDS_E2E_LABEL"; then
+        _to_remove="${_to_remove} ${NEEDS_E2E_LABEL}"
+    fi
+    if has_label "$_pr_labels_norm" "$NEEDS_REVIEW_LABEL"; then
+        _to_remove="${_to_remove} ${NEEDS_REVIEW_LABEL}"
+    fi
+    if has_label "$_pr_labels_norm" "$DONE_LABEL"; then
+        _to_remove="${_to_remove} ${DONE_LABEL}"
+    fi
+    if has_label "$_pr_labels_norm" "$REJECTED_LABEL"; then
+        _to_remove="${_to_remove} ${REJECTED_LABEL}"
+    fi
+    if has_label "$_pr_labels_norm" "$NO_E2E_LABEL"; then
+        _to_remove="${_to_remove} ${NO_E2E_LABEL}"
+    fi
+    if has_label "$_pr_labels_norm" "agent-flow-error"; then
+        _to_remove="${_to_remove} agent-flow-error"
+    fi
+    if has_label "$_pr_labels_norm" "${STALE_CONFLICTING_LABEL:-stale-conflicting}"; then
+        _to_remove="${_to_remove} ${STALE_CONFLICTING_LABEL:-stale-conflicting}"
+    fi
+    if has_label "$_pr_labels_norm" "${STALE_BRANCH_REUSE_LABEL:-stale-branch-reuse}"; then
+        _to_remove="${_to_remove} ${STALE_BRANCH_REUSE_LABEL:-stale-branch-reuse}"
+    fi
+    _to_remove="$(printf '%s' "$_to_remove" | xargs)"  # trim leading/trailing spaces
+    if [ -z "$_to_remove" ]; then
+        log "pr-label-sweep: PR #${pr_num} уже чист (context=${context})"
+        return 0
+    fi
+    if [ "$DRY_RUN" = "true" ]; then
+        log "DRY-RUN pr-label-sweep: PR #${pr_num} remove: ${_to_remove} (context=${context})"
+        return 0
+    fi
+    local _removed=0 _failed=0
+    for lbl in $_to_remove; do
+        if gh pr edit "$pr_num" --repo "$GH_REPO" --remove-label "$lbl" >/dev/null 2>&1; then
+            _removed=$((_removed+1))
+        else
+            _failed=$((_failed+1))
+            log "pr-label-sweep: WARNING PR #${pr_num} remove ${lbl} failed (non-fatal, retry next tick)"
+        fi
+    done
+    log "pr-label-sweep: PR #${pr_num} MERGED — снято ${_removed}/${_to_remove// /,} меток (context=${context})"
+    return 0
+}
+
+# --- pr_label_sweep_merged_pass_all (ретро 01.09 t_fd604461) ----------------
+# Standalone sweep на КАЖДЫЙ тик: сканирует MERGED PR за последние
+# RETRO_MERGED_DAYS дней с process-метками и снимает их (даже если issue
+# уже закрыта другим путём — manual close, Q22-user-merge, или вообще
+# orphan-cleanup). Это backstop для случаев, когда метки на PR залипли
+# ДО того, как pr_label_sweep_after_merge был добавлен (миграция исторических
+# залипших меток), и для PR, которые были закрыты вне merge-gate.
+#
+# Окно = RETRO_MERGED_DAYS (14 дней) — старые PR не трогаем, чтобы не
+# возрождать метки на архивных ветках, где e2e-процесс уже давно прошёл.
+# ============================================================================
+pr_label_sweep_merged_pass_all() {
+    local _since _prs_json _pr_num _pr_state _pr_labels_csv _pr_labels_norm _has_process
+    _since="$(date -u -d "${RETRO_MERGED_DAYS:-14} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    log "pr-label-sweep-merged-pass: scanning MERGED PRs (last ${RETRO_MERGED_DAYS:-14}d) with stale process labels"
+    # Один REST-запрос на тик; limit 200 — больше, чем 14-дневный объём merge
+    # в rob_box_project (~5-15 PR/день × 14 = 70-210 PR; берём 200 чтобы
+    # покрыть пик, расширяемое).
+    _prs_json="$(gh pr list --repo "$GH_REPO" --state merged --base "$DEVELOP_BRANCH" \
+        --limit 200 --json number,mergedAt,labels 2>/dev/null || echo '[]')"
+    if [ -z "$_prs_json" ]; then
+        _prs_json='[]'
+    fi
+    printf '%s' "$_prs_json" | python3 -c '
+import json, sys, os
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+PROCESS = {"needs-e2e", "needs-review", "e2e-done", "e2e:rejected",
+           "no-e2e-required", "agent-flow-error", "stale-conflicting",
+           "stale-branch-reuse"}
+since = sys.argv[1] if len(sys.argv) > 1 else ""
+for pr in data:
+    pr_num = str(pr.get("number", ""))
+    merged = pr.get("mergedAt") or ""
+    if since and merged < since:
+        continue
+    labels = {l.get("name", "") for l in (pr.get("labels") or [])}
+    if not (PROCESS & labels):
+        continue
+    sys.stdout.write(pr_num + "\n")
+' "$_since" 2>/dev/null | while IFS= read -r _pr_num; do
+        [ -z "$_pr_num" ] && continue
+        pr_label_sweep_after_merge "$_pr_num" "merged-pass-backstop"
+    done
+    return 0
 }
 
 # --- rate-limit конфликт/UNSTABLE-комментариев (ретро 12.08 t_8af6bf29) -----
@@ -1770,6 +2335,78 @@ PR_NUM=${pr_num}
 EOF
 )"
     printf '%s' "${cnt:-0}"
+}
+
+# ----------------------------------------------------------------------------
+# Ретро 01.09 t_527e1231 → process-fix t_58c69473, блок B («decompose-on-rebase»).
+#
+# Кейс t_002aae48: PR #1857 = MERGEABLE+UNSTABLE и БЕЗ hermes-issue, поэтому
+# основной цикл (с его pr_classify_failure по head_oid) до него не доходит, а
+# scan-all-prs создаёт карточку «🔀 rebase PR #1857 … на develop» с
+# assignee=default. Но падал **Unit Tests** — contract drift ВНУТРИ PR, rebase
+# бессилен. Default-воркер без скиллов провисел 1.6ч.
+#
+# pr_classify_rollup — та же классификация, что pr_classify_failure, но по
+# `statusCheckRollup` (доступен в scan-all-prs без head_oid):
+#   contract_drift   — упал хотя бы один unit/lint/build-чек (реальный код PR)
+#   rebase_candidate — упали только integration/e2e/deploy/docker/smoke
+#   unknown          — rollup недоступен / нет failed (fail-open → старое
+#                      поведение: assignee=default, rebase-карточка)
+# $1=pr_number → печатает категорию.
+# ----------------------------------------------------------------------------
+pr_classify_rollup() {  # $1=pr_number → contract_drift|rebase_candidate|unknown
+    local pr_num="${1:-}"
+    [ -n "$pr_num" ] || { printf '%s' "unknown"; return 0; }
+    gh pr view "$pr_num" --repo "$GH_REPO" --json statusCheckRollup 2>/dev/null \
+        | python3 -c '
+import json, re, sys
+DRIFT = re.compile(r"(unit|lint|build|pytest|mypy|ruff|flake8|black|coverage|test summary|code quality|dockerfile|yaml)", re.I)
+REBASE = re.compile(r"(integration|e2e|deploy|docker build|release|smoke)", re.I)
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("unknown"); raise SystemExit(0)
+rollup = d.get("statusCheckRollup") if isinstance(d, dict) else d
+if not isinstance(rollup, list):
+    print("unknown"); raise SystemExit(0)
+failed = [c for c in rollup
+          if isinstance(c, dict)
+          and str(c.get("conclusion") or "").upper() in ("FAILURE", "TIMED_OUT", "CANCELLED")]
+if not failed:
+    print("unknown"); raise SystemExit(0)
+names = [str(c.get("name") or "") for c in failed]
+# Смесь → contract_drift (худший случай: лечим код, не rebase-им).
+if any(DRIFT.search(n) and not REBASE.search(n) for n in names):
+    print("contract_drift"); raise SystemExit(0)
+if any(REBASE.search(n) for n in names):
+    print("rebase_candidate"); raise SystemExit(0)
+print("unknown")
+' 2>/dev/null || printf '%s' "unknown"
+}
+
+# Markdown-список failed jobs из statusCheckRollup (для body карточки).
+# $1=pr_number → markdown-строки «- **name** — <url>» или пустая строка.
+pr_failed_rollup_md() {  # $1=pr_number
+    local pr_num="${1:-}"
+    [ -n "$pr_num" ] || { printf '%s' ""; return 0; }
+    gh pr view "$pr_num" --repo "$GH_REPO" --json statusCheckRollup 2>/dev/null \
+        | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+rollup = d.get("statusCheckRollup") if isinstance(d, dict) else d
+if not isinstance(rollup, list):
+    raise SystemExit(0)
+for c in rollup:
+    if not isinstance(c, dict):
+        continue
+    if str(c.get("conclusion") or "").upper() not in ("FAILURE", "TIMED_OUT", "CANCELLED"):
+        continue
+    url = c.get("detailsUrl") or c.get("targetUrl") or c.get("html_url") or ""
+    print("- **{}** — {}".format(c.get("name") or "?", url))
+}' 2>/dev/null || printf '%s' ""
 }
 
 # detect_pr_kind — перенесена в lib_agent_flow_common.sh (дедуп 30.08).
@@ -2146,7 +2783,7 @@ except Exception: print("")' 2>/dev/null || true)"
         --json number,mergeable,mergeStateStatus,statusCheckRollup,baseRefName,state,mergedAt,title,labels,additions,deletions,commits 2>/dev/null || true)"
 
     # Процесс-фикс (09.08): воркеры ретро-карточек создают ветки `wt/<task_id>`
-    # (нет issue → конвенция z-{agent}/<id>-<slug> неприменима). Такие PR
+    # (нет issue → конвенция z-{agent}/<id>-slug неприменима). Такие PR
     # выпадали из конвейера: merge-gate не находил их и не ставил needs-e2e.
     # Fallback: ищем PR по ветке wt/<task_id> (последняя карточка issue).
     if [ -z "$pr_json" ] || [ "$pr_json" = "[]" ]; then
@@ -2163,6 +2800,80 @@ except Exception: print("")' 2>/dev/null || true)"
             else
                 pr_json=""
             fi
+        fi
+    fi
+
+    # Ретро 02.09 t_a09e893a (orphan-needs-e2e-after-merge):
+    # Воркеры НЕ всегда следуют каноническому шаблону `z-{agent}/<n>-slug` —
+    # на практике ветки называются `z-backend/1764-...`, `z-developer/1780-...`,
+    # `z-llm-expert/1777-...` и т.д. Канонический lookup выше их не ловит →
+    # `pr_json=[]` → issue зависает в needs-e2e rotation вечно (PR был
+    # смержен, но merge-gate не видит его).
+    #
+    # Fix: дополнительный проход по списку известных agent-prefix'ов. Если
+    # нашли PR — переписываем `branch` на найденную, чтобы downstream
+    # Q22-путь (`git ls-remote --heads $branch`) корректно проверял
+    # существование ветки. Идемпотентно: если канонический lookup уже
+    # нашёл — этот блок skip'ается (`pr_json` не пуст).
+    #
+    # Список пополняем по мере появления новых профилей. SOT — agent-flow
+    # profiles (см. ~/.hermes/profiles/); 6 baseline покрывает все
+    # исторические случаи (#1764 backend, #1777 llm-expert, #1780 developer).
+    if [ -z "$pr_json" ] || [ "$pr_json" = "[]" ]; then
+        _agent_prefixes="${AGENT_FLOW_BRANCH_PREFIXES:-z-backend z-developer z-llm-expert z-architect z-devops z-designer z-analyst z-tester}"
+        _fallback_branch=""
+        _fallback_pr_json=""
+        for _prefix in $_agent_prefixes; do
+            _probe="z-{agent}/${number}-"  # намерение: переменная подставляется ниже
+            # Используем search по title чтобы поймать все варианты именования
+            # (z-backend/1764-..., z-backend/t_xxx-1764-...). Один API-вызов,
+            # фильтрация в shell.
+            _probe_json="$(gh pr list \
+                --repo "$GH_REPO" \
+                --state all \
+                --search "${number} in:title" \
+                --json number,headRefName,mergeable,mergeStateStatus,statusCheckRollup,baseRefName,state,mergedAt,title,labels,additions,deletions,commits 2>/dev/null || echo '[]')"
+            # Берём первый PR где headRefName содержит issue number и
+            # начинается с известного префикса. Нестрогая проверка — issue
+            # может фигурировать в PR-title как «#1764» или «(issue #1764)».
+            _match="$(printf '%s' "$_probe_json" | python3 -c '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    if not isinstance(data, list):
+        sys.exit(0)
+    issue_num = sys.argv[1]
+    prefixes = sys.argv[2].split()
+    # Сначала ищем точное совпадение headRefName: <prefix>/<num>-*
+    for pr in data:
+        head = pr.get("headRefName") or ""
+        for p in prefixes:
+            # формат: z-<agent>/<num>-slug или z-<agent>/t_<id>-<num>-slug
+            if head.startswith(p + "/" + issue_num + "-") or \
+               head.startswith(p + "/t_") and ("-" + issue_num + "-" in head or head.endswith("-" + issue_num)):
+                print(f"{head}|{json.dumps(pr)}")
+                sys.exit(0)
+    # Fallback 2: headRefName содержит issue number где угодно
+    for pr in data:
+        head = pr.get("headRefName") or ""
+        if ("-" + issue_num + "-" in head) or head.endswith("-" + issue_num):
+            for p in prefixes:
+                if head.startswith(p + "/"):
+                    print(f"{head}|{json.dumps(pr)}")
+                    sys.exit(0)
+except Exception:
+    pass
+' "$number" "$_agent_prefixes" 2>/dev/null || true)"
+            if [ -n "$_match" ]; then
+                _fallback_branch="${_match%%|*}"
+                _fallback_pr_json="${_match#*|}"
+                log "issue #${number}: PR найден через agent-prefix fallback (${_fallback_branch})"
+                break
+            fi
+        done
+        if [ -n "$_fallback_pr_json" ] && [ "$_fallback_pr_json" != "[]" ]; then
+            branch="$_fallback_branch"
+            pr_json="[$_fallback_pr_json]"
         fi
     fi
 
@@ -2512,6 +3223,9 @@ except Exception:
                 # Reflect the new state for the case statement below so
                 # it walks into the CLOSED branch (skip close + cleanup).
                 _issue_state="CLOSED"
+                # Ретро 01.09 t_fd604461: снять process-метки с MERGED PR
+                # (state гарантированно MERGED в этой ветке: line ~2064).
+                pr_label_sweep_after_merge "${pr_number}" "no-e2e-required close" || true
             else
                 log "issue #${number}: WARNING gh issue close failed (${NO_E2E_LABEL} path) — retry next tick"
                 labeled=$((labeled+1)); continue
@@ -2633,6 +3347,8 @@ except Exception:
                     if gh issue close "$number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
                         _closed_this_tick=1
                         log "issue #${number}: CLOSED (reason=completed, PASS-proven via ${DONE_LABEL})"
+                        # Ретро 01.09 t_fd604461: снять process-метки с MERGED PR.
+                        pr_label_sweep_after_merge "${pr_number}" "e2e-done close" || true
                     else
                         # Close API failure — destructive cleanup MUST be
                         # deferred, otherwise we lose the mapping. Warning
@@ -2658,6 +3374,74 @@ except Exception:
                     #       (branch already gone).
                     if git ls-remote --heads "https://github.com/$GH_REPO.git" "$branch" 2>/dev/null | grep -q "$branch"; then
                         log "issue #${number}: MERGED but awaiting ${DONE_LABEL} — branch ${branch} exists, destructive cleanup deferred"
+                        # Ретро 02.09 t_a09e893a (orphan-needs-e2e-after-merge):
+                        # case (a) выше откладывал cleanup до исчезновения ветки
+                        # без ограничения по времени. Ретро: issue #1764/#1777/#1780
+                        # провисели в needs-e2e rotation 49+ часов после merge
+                        # потому что ветки `z-backend/<n>-*`, `z-{agent}/<n>-*`
+                        # НЕ удалялись автоматически (нет auto-delete-branch-on-merge
+                        # для шаблонов вне канонического `z-{agent}/<n>-slug`),
+                        # но e2e-process мог прогнать раунд и выставить
+                        # `e2e-done` даже на нестандартной ветке. Вместо вечного
+                        # ожидания: триммируем `needs-e2e` через staleness-окно
+                        # (MERGED_LABELED_GRACE_HOURS) и переключаем issue на
+                        # audit-метку `merged-no-e2e-stale` — это выводит из
+                        # e2e-ротации (e2e-process skip по label), но НЕ закрывает
+                        # issue (Шифу решает). Метрика/алерт: после grace-окна
+                        # issue становится orphan-audit, видно в board.
+                        #
+                        # НЕ делаем trim пока issue свежая (< grace) — даём
+                        # e2e-process шанс прогнать раунд на новой нестандартной
+                        # ветке. Если ветка и через grace существует — это
+                        # архитектурный долг (auto-delete-branch-on-merge не
+                        # настроен для нестандартных шаблонов), а не наш баг.
+                        _merged_at_iso="$(gh pr view "$pr_number" --repo "$GH_REPO" --json mergedAt \
+                            --jq '.mergedAt // empty' 2>/dev/null || echo '')"
+                        _merged_grace_hours="${MERGED_LABELED_GRACE_HOURS:-24}"
+                        if [ -n "$_merged_at_iso" ] && [ "$_merged_at_iso" != "null" ]; then
+                            _merged_at_s="$(date -u -d "$_merged_at_iso" +%s 2>/dev/null || echo 0)"
+                            _now_s="$(date -u +%s)"
+                            if [ "$_merged_at_s" -gt 0 ] 2>/dev/null; then
+                                _age_h=$(( ( _now_s - _merged_at_s ) / 3600 ))
+                                if [ "$_age_h" -ge "$_merged_grace_hours" ] 2>/dev/null; then
+                                    # Grace истёк — триммируем needs-e2e, ставим
+                                    # audit-метку. Идемпотентно: повторный тик
+                                    # видит метку и не дёргает API зря.
+                                    if has_label "$labels_norm" "$MERGED_NO_E2E_STALE_LABEL"; then
+                                        log "issue #${number}: MERGED ${_age_h}ч назад, branch ${branch} ещё существует, но уже помечен ${MERGED_NO_E2E_STALE_LABEL} — skip (idempotent)"
+                                        labeled=$((labeled+1)); continue
+                                    fi
+                                    log "issue #${number}: MERGED ${_age_h}ч назад (>${_merged_grace_hours}ч grace), branch ${branch} жива — трим ${NEEDS_E2E_LABEL}, ставлю ${MERGED_NO_E2E_STALE_LABEL}"
+                                    if [ "$DRY_RUN" != "true" ]; then
+                                        gh issue edit "$number" --repo "$GH_REPO" \
+                                            --remove-label "$NEEDS_E2E_LABEL" >/dev/null 2>&1 || true
+                                        gh issue edit "$number" --repo "$GH_REPO" \
+                                            --add-label "$MERGED_NO_E2E_STALE_LABEL" >/dev/null 2>&1 || true
+                                        gh issue edit "$number" --repo "$GH_REPO" \
+                                            --remove-label "$REJECTED_LABEL" >/dev/null 2>&1 || true
+                                        _mnes_dedup_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+                                        _mnes_dup="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_mnes_dedup_since}&per_page=100" \
+                                            --jq '[.[] | select(.body | contains("merged-no-e2e-stale"))] | length' 2>/dev/null || echo 0)"
+                                        if [ "${_mnes_dup:-0}" -eq 0 ]; then
+                                            gh issue comment "$number" --repo "$GH_REPO" --body \
+"🧹 merge-gate (ретро 02.09 t_a09e893a, orphan-needs-e2e-after-merge):
+
+PR #${pr_number} MERGED в ${DEVELOP_BRANCH} ещё ${_age_h}ч назад, но ветка \`${branch}\` всё ещё существует → e2e-ротация не закрылась. Снят \`${NEEDS_E2E_LABEL}\`, поставлен \`${MERGED_NO_E2E_STALE_LABEL}\` (audit-marker).
+
+**Что делать**:
+1. Если фикс влит окончательно — закрой issue вручную (\`gh issue close N --reason completed\`).
+2. Если e2e всё-таки нужен — открой follow-up PR с НОВОЙ ветки (канонический шаблон \`z-{agent}/<n>-slug\` ИЛИ с auto-delete-branch-on-merge), и merge-gate следующего раунда подхватит.
+
+ROOT cause: ретро-фикс в этом PR добавил branch-pattern fallback (\`z-backend/<n>-*\`, \`z-developer/<n>-*\`, etc.) — чтобы такие issue не зависали в будущем. Трим срабатывает по grace-окну (default 24ч)." >/dev/null 2>&1 || true
+                                        fi
+                                    fi
+                                    labeled=$((labeled+1)); continue
+                                fi
+                            fi
+                        fi
+                        # Issue ещё в grace-окне — обычный путь: defer, ждём
+                        # e2e-done или удаления ветки. Никаких label-изменений,
+                        # чтобы не сломать ожидаемое поведение e2e-process.
                         labeled=$((labeled+1)); continue
                     fi
                     log "issue #${number}: MERGED без ${DONE_LABEL}, ветка ${branch} удалена — e2e невозможен (Q22 user-merge), закрываю issue"
@@ -2710,6 +3494,8 @@ except Exception:
                         if [ -n "${task_id:-}" ]; then
                             archive_merged_card "$task_id" "$number" "${pr_number:-}" "${branch:-}"
                         fi
+                        # Ретро 01.09 t_fd604461: снять process-метки с MERGED PR.
+                        pr_label_sweep_after_merge "${pr_number}" "Q22 user-merge close" || true
                     else
                         log "issue #${number}: WARNING gh issue close failed (Q22 orphan) — retry next tick"
                     fi
@@ -3832,6 +4618,12 @@ stale_branch_scan_all
 # open needs-e2e PR независимо от issue-cycle (stale branch мог остаться
 # от archived-issue). Skip если HELM_HOOK_DRY_RUN.
 stale_conflicting_scan_all
+# Needs-review + CONFLICTING reconcile (ретро 02.09 t_4869a1f7 / PR #1863):
+# СРАЗУ ЖЕ после stale_conflicting_scan_all. Ловит open PR с `needs-review`,
+# mergeable которых уехал в CONFLICTING после label-установки → снимает
+# needs-review (merge-ui «disabled»), ставит merge-conflict, пишет dedup-коммент.
+# Возвращает label обратно когда PR восстановится до MERGEABLE+CLEAN.
+needs_review_conflict_reconcile_all
 # Дубль-файл scan (ретро 15.08 t_20383d32): тот же паттерн вызова, что у
 # stale_branch_scan_all — основной путь + no-issues путь сходятся сюда.
 duplicate_file_scan_all
@@ -3937,16 +4729,60 @@ for pr in data:
     # Определяем assignee по меткам issue (если знаем issue_num)
     # Ретро 02.09 t_2bd2e7ea: default → devops fallback (default невалиден).
     _assignee="devops"
+    _assignee_explicit=0
     if [ -n "$issue_num" ]; then
         for lbl in $(gh issue view "$issue_num" --repo "$GH_REPO" --json labels --jq '[.labels[].name] | .[]' 2>/dev/null); do
             case "$lbl" in
-                agent:backend)    _assignee="backend"; break ;;
-                agent:developer)  _assignee="developer"; break ;;
-                agent:tester)     _assignee="tester"; break ;;
-                agent:devops)     _assignee="devops"; break ;;
-                agent:architect)  _assignee="architect"; break ;;
+                agent:backend)    _assignee="backend"; _assignee_explicit=1; break ;;
+                agent:developer)  _assignee="developer"; _assignee_explicit=1; break ;;
+                agent:tester)     _assignee="tester"; _assignee_explicit=1; break ;;
+                agent:devops)     _assignee="devops"; _assignee_explicit=1; break ;;
+                agent:architect)  _assignee="architect"; _assignee_explicit=1; break ;;
             esac
         done
+    fi
+
+    # ------------------------------------------------------------------------
+    # Ретро 01.09 t_527e1231 → process-fix t_58c69473, блок B.
+    # Кейс t_002aae48: UNSTABLE PR #1857 без hermes-issue → карточка «rebase
+    # PR #1857» с assignee=default, хотя падал Unit Tests (contract drift
+    # ВНУТРИ PR — rebase бессилен, default-воркер без скиллов провисел 1.6ч).
+    # Для UNSTABLE (НЕ CONFLICTING) классифицируем rollup:
+    #   contract_drift   → assignee=backend (если метка issue не дала явного
+    #                      владельца) + ОБЯЗАТЕЛЬНЫЙ блок «## Contract-drift
+    #                      pre-check» в body (CI run + список failing jobs);
+    #   rebase_candidate / unknown → поведение как раньше (assignee=default).
+    # Для CONFLICTING блок НЕ добавляем: там rebase — правильный ответ.
+    # ------------------------------------------------------------------------
+    _drift_block=""
+    _drift_class="n/a"
+    if [ "$mergeable" != "CONFLICTING" ] && [ "$merge_state" != "DIRTY" ]; then
+        _drift_class="$(pr_classify_rollup "$pr_num")"
+        log "scan-all-prs: PR #${pr_num} rollup classification=${_drift_class} (assignee_explicit=${_assignee_explicit})"
+        if [ "$_drift_class" = "contract_drift" ]; then
+            if [ "$_assignee_explicit" = "0" ]; then
+                _assignee="backend"
+                log "scan-all-prs: PR #${pr_num} contract_drift + no agent:* label → assignee=backend (ретро t_527e1231)"
+            fi
+            _drift_jobs_md="$(pr_failed_rollup_md "$pr_num")"
+            [ -n "$_drift_jobs_md" ] || _drift_jobs_md="- (не смог достать список failing jobs; см. вкладку Checks в PR)"
+            _drift_block="## Contract-drift pre-check (merge-gate, ретро t_527e1231)
+
+CI на PR #${pr_num} красный из-за **unit/lint/build**-чеков — это **contract drift ВНУТРИ этого PR**, не отставание от develop. **Rebase скорее всего НЕ поможет.**
+
+**Failing jobs (statusCheckRollup):**
+${_drift_jobs_md}
+
+**Порядок работы (ОБЯЗАТЕЛЬНО ДО rebase):**
+1. Открой failing job по ссылке выше, прочитай assertion diff / имя упавшего теста.
+2. Определи: расходятся ли реализация и тест ВНУТРИ PR (contract drift)? Если да — правь код/тест в ветке \`${head}\`, **rebase не нужен**.
+3. Только если падение вызвано отставанием от develop (в develop есть фикс) — делай rebase по шпаргалке ниже.
+4. Не создавай новую ветку и новый PR — работай в \`${head}\`.
+
+---
+
+"
+        fi
     fi
 
     # Формируем reminder (тот же текст, что в основном цикле).
@@ -3977,7 +4813,7 @@ git push --force-with-lease origin ${head}
 **ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → rebase НЕ нужен: сделай \`kanban complete\` с пометкой \`PR closed, rebase не нужен\` (ретро 15.08 t_16325ddd)."
         _title_prefix="🔀 merge conflict"
     else
-        _reminder="## ⚠️ CI UNSTABLE detected (merge-gate scan-all-prs, $(date -u +%H:%M:%SZ))
+        _reminder="${_drift_block}## ⚠️ CI UNSTABLE detected (merge-gate scan-all-prs, $(date -u +%H:%M:%SZ))
 
 PR #${pr_num} (\`${head}\`) = **MERGEABLE + UNSTABLE** (CI fail, конфликтов нет).
 
@@ -4864,6 +5700,9 @@ except Exception:
         if gh issue close "$r_issue" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
             retro_closed=$((retro_closed+1))
             log "retro-path: issue #${r_issue} CLOSED (reason=completed, ретро-путь)"
+            # Ретро 01.09 t_fd604461: снять process-метки с MERGED PR (это
+            # основной путь: orphan-cleanup закрыл issue по PASS-доказательству).
+            pr_label_sweep_after_merge "${r_pr}" "retro-path close" || true
         else
             log "retro-path: WARNING close failed for #${r_issue} — retry next tick"
         fi
@@ -5089,6 +5928,131 @@ while IFS=$'\t' read -r c_id c_status c_branch c_title; do
 done < <(printf '%s\n' "$_arch_cards")
 
 # ============================================================================
+# post-merge-child-resolution: закрытие ЖИВЫХ карточек по MERGED PR
+# (ретро 01.09 t_527e1231 → process-fix t_58c69473, «orphan-parent pattern»)
+# ----------------------------------------------------------------------------
+# ПРОБЛЕМА: карточка висит в `todo`/`ready` НАВСЕГДА, хотя её работа уже влита
+# в develop через MERGED PR. Кейсы 01.09:
+#   - t_e2ae0c29 (todo, assignee=agent-flow, >сутки в todo): реализация
+#     ADR-0035 влита через PR #1849 (MERGED 01.09 06:10:45Z) — никто не закрыл,
+#     карточка успела дать 4 крэша воркеров и сжечь ассигнования по 1800s.
+#   - issue #1810/#1811: fix в develop (ae170b717 + 0237fbdb5), issue OPEN.
+#
+# Почему существующие проходы НЕ ловят:
+#   - main-cycle archive-путь ищет карточку по issue-линку; ретро/decomposer-
+#     карточки issue не имеют вообще;
+#   - retro-card-archive (выше, ретро 14.08 t_36c9ac4e) обрабатывает ТОЛЬКО
+#     status ∈ {done, blocked} — карточка в todo/ready не подпадает;
+#   - scan-all-prs смотрит OPEN PR, а тут PR уже MERGED.
+#
+# СТРАТЕГИИ матчинга «MERGED PR → живая карточка» (обе консервативные):
+#   S1 (marker):       body карточки содержит `parent-pr:<N>` — явный контракт
+#                      (auto-decomposer / архитектор ставят маркер при fan-out).
+#   S2 (branch-token): id карточки (t_<hex>) — exact-токен head-ветки
+#                      смерженного PR (тот же приём, что retro-card-archive).
+#
+# ГЛАВНЫЙ GUARD (не убить живую работу): если на ЛЮБОЙ открытой PR-ветке
+# встречается токен id этой карточки — карточка НЕ закрывается (работа
+# продолжается в следующем PR; кейс t_e2ae0c29: PR #1849 MERGED, но PR #1853
+# на той же ветке ещё OPEN). Плюс жёсткое ограничение по статусу: только
+# todo/ready. running не трогаем (живой воркер), done/blocked/archived —
+# territory retro-card-archive.
+# ============================================================================
+pmcr_completed=0
+log "post-merge-child-resolution: scanning merged PRs → live (todo/ready) cards by parent-pr marker / branch token"
+
+# Карточки с body: id<TAB>status<TAB>parent_pr_csv. Пустой csv → "-".
+# Только не-archived; фильтр по статусу — ниже (чтобы логировать причины).
+_pmcr_cards="$( "$HERMES_BIN" kanban --board "$KANBAN_BOARD" list --json 2>/dev/null \
+    | python3 -c '
+import sys, json, re
+try:
+    d = json.load(sys.stdin)
+    tasks = d if isinstance(d, list) else d.get("tasks", [])
+except Exception:
+    tasks = []
+for t in tasks:
+    status = (t.get("status") or "")
+    if "archived" in status:
+        continue
+    body = t.get("body") or ""
+    prs = sorted(set(re.findall(r"parent-pr:\s*#?(\d+)", body)))
+    print("{}\t{}\t{}".format(t.get("id", ""), status, ",".join(prs) if prs else "-"))
+' 2>/dev/null || true)"
+
+while IFS=$'\t' read -r p_id p_status p_prs; do
+    [ -z "$p_id" ] && continue
+    # Только живые НЕ-запущенные карточки. running — живой воркер (сам закроет),
+    # done/blocked/archived — retro-card-archive выше.
+    case "$p_status" in
+        todo|ready) ;;
+        *) continue ;;
+    esac
+    [ "$p_prs" = "-" ] && p_prs=""
+    # S1: маркер parent-pr:<N> совпал со смерженным PR.
+    _pmcr_pr=""
+    _pmcr_strategy=""
+    if [ -n "$p_prs" ]; then
+        _pmcr_pr="$(printf '%s\n' "$_arch_refs" | awk -F'\t' -v csv="$p_prs" '
+            {
+                n = split(csv, a, ",")
+                for (i = 1; i <= n; i++) if (a[i] != "" && a[i] == $1) { print $1; exit }
+            }')"
+        [ -n "$_pmcr_pr" ] && _pmcr_strategy="marker"
+    fi
+    # S2: id карточки — exact-токен t_<hex> head-ветки смерженного PR.
+    if [ -z "$_pmcr_pr" ]; then
+        _pmcr_pr="$(printf '%s\n' "$_arch_refs" | awk -F'\t' -v id="$p_id" '
+            {
+                if (match($2, /t_[a-f0-9]+/)) {
+                    tok = substr($2, RSTART, RLENGTH)
+                    if (tok == id) { print $1; exit }
+                }
+            }')"
+        [ -n "$_pmcr_pr" ] && _pmcr_strategy="branch-token"
+    fi
+    [ -z "$_pmcr_pr" ] && continue
+    # GUARD: открытый PR на ветке с тем же токеном → работа продолжается.
+    if printf '%s\n' "$_arch_open_heads" | grep -Fq -- "$p_id"; then
+        log "post-merge-child-resolution: card ${p_id} (${p_status}) matched PR #${_pmcr_pr} via ${_pmcr_strategy}, но есть OPEN PR на ветке с токеном ${p_id} — работа продолжается, НЕ закрываю"
+        continue
+    fi
+    log "post-merge-child-resolution: card ${p_id} (${p_status}) ← MERGED PR #${_pmcr_pr} (${_pmcr_strategy}) → complete"
+    if [ "$DRY_RUN" = "true" ]; then
+        log "DRY-RUN would complete card ${p_id} (PR #${_pmcr_pr} MERGED, ${_pmcr_strategy})"
+        pmcr_completed=$((pmcr_completed+1)); continue
+    fi
+    # ВАЖНО (проверено вживую 01.09 на t_e2ae0c29 / t_4019c107): реальный
+    # kanban_db.complete_task() принимает только status ∈
+    # {running, ready, blocked, review} И требует satisfied parents. Для карточки
+    # в `todo` (наш основной кейс — orphan-parent) прямой `complete` падает с
+    # «cannot complete <id> (unknown id or terminal state)», а `promote` без
+    # --force — с «unsatisfied parent dependencies». Поэтому todo сначала
+    # promote --force (родители нам не указ: работа УЖЕ влита в develop,
+    # доказательство — MERGED PR), затем complete.
+    if [ "$p_status" = "todo" ]; then
+        # ВНИМАНИЕ на порядок аргументов (проверено вживую 01.09): `reason` —
+        # ПОЗИЦИОННЫЙ аргумент и должен идти ДО флага --force, иначе argparse
+        # падает с «unrecognized arguments: <reason>».
+        if "$HERMES_BIN" kanban --board "$KANBAN_BOARD" promote "$p_id" \
+            "PR #${_pmcr_pr} MERGED — post-merge-child-resolution (ретро t_527e1231)" \
+            --force >/dev/null 2>&1; then
+            log "post-merge-child-resolution: card ${p_id} promoted (todo → ready, --force: работа влита в ${DEVELOP_BRANCH})"
+        else
+            log "post-merge-child-resolution: WARNING promote --force failed for ${p_id} — complete всё равно пробуем"
+        fi
+    fi
+    if "$HERMES_BIN" kanban --board "$KANBAN_BOARD" complete "$p_id" \
+        --summary "PR #${_pmcr_pr} MERGED в ${DEVELOP_BRANCH}, no further action needed (merge-gate post-merge-child-resolution, ${_pmcr_strategy}, ретро t_527e1231)" \
+        >/dev/null 2>&1; then
+        pmcr_completed=$((pmcr_completed+1))
+        log "post-merge-child-resolution: card ${p_id} completed (PR #${_pmcr_pr} MERGED)"
+    else
+        log "post-merge-child-resolution: WARNING complete failed for ${p_id} (PR #${_pmcr_pr}) — retry next tick"
+    fi
+done < <(printf '%s\n' "$_pmcr_cards")
+
+# ============================================================================
 # REST-based backfill: open PR без меток старше 30 мин (ретро 15.08 t_2c814334)
 # ----------------------------------------------------------------------------
 # ПРОБЛЕМА: clean-pr-sweep (выше) и pr-orphan-reconcile (ниже) используют
@@ -5257,8 +6221,21 @@ for pr in data:
     print(f"{pr_num}\t{head}\t{title}\t{labels_out}\t{issue_out}\t{created}")
 ' "$BACKFILL_AGE_MINUTES" 2>/dev/null)
 
+# ============================================================================
+# PR-label-sweep merged-pass (ретро 01.09 t_fd604461)
+# ----------------------------------------------------------------------------
+# Backstop для исторически залипших process-меток на MERGED PR: какие-то
+# PR были закрыты ДО того, как pr_label_sweep_after_merge был добавлен
+# (например, ручной merge без e2e), и метки needs-e2e/needs-review/
+# e2e:rejected так и висят. Этот проход снимает их на КАЖДОМ тике.
+#
+# Окно: RETRO_MERGED_DAYS (14 дней) — старые PR не трогаем, иначе возрождаем
+# метки на давно архивных ветках (где e2e-процесс уже завершён).
+# ============================================================================
+pr_label_sweep_merged_pass_all || true
+
 # --- summary -----------------------------------------------------------------
-log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled} orphan_labeled=${orphan_labeled} backfill_labeled=${backfill_labeled} retro_archived=${retro_archived} human_close_propagated=${human_close_propagated}"
+log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled} orphan_labeled=${orphan_labeled} backfill_labeled=${backfill_labeled} retro_archived=${retro_archived} pmcr_completed=${pmcr_completed} human_close_propagated=${human_close_propagated}"
 
 # Exit non-zero only on hard errors so cron can alert.
 if [ "$errored" -gt 0 ]; then exit 1; fi

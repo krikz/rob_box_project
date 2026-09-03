@@ -26,12 +26,6 @@ MASTER_PROMPT = (
     / "master_prompt_compact.txt"
 )
 
-COMPOSITOR_PROMPT = (
-    Path(__file__).resolve().parents[2]
-    / "prompts"
-    / "compositor_prompt.txt"
-)
-
 
 def _read(prompt_path: Path) -> str:
     return prompt_path.read_text(encoding="utf-8")
@@ -87,24 +81,8 @@ def test_master_prompt_no_old_crutch_mechanisms() -> None:
     assert "debounce" not in content
 
 
-# ── compositor_prompt.txt ─────────────────────────────────────────────
+# ── compositor_prompt.txt удалён (change skill-scoped-dialogue-context,
+#    задача 6.3): он маршрутизировал на фасады handle_music /
+#    handle_navigation, которых нет с e96b912d. Проверки не потеряны —
+#    у каждой есть близнец выше, на master_prompt_compact.txt. ──────
 
-
-def test_compositor_prompt_never_stops_music_after_rap() -> None:
-    """Compositor must not call handle_music(stop all music) after a performance."""
-    content = _read(COMPOSITOR_PROMPT)
-    assert (
-        "NEVER call `handle_music(\"stop all music\")` after rap/poem"
-        in content
-    )
-    assert "tts_batch_complete" in content
-    # The only allowed stop_music case is the explicit DJ-mode exit.
-    assert "Stop DJ mode" in content
-    assert "This is the ONLY case where stop_music is allowed" in content
-
-
-def test_compositor_prompt_stop_music_only_on_explicit_request() -> None:
-    """Compositor stops music only on an explicit user request (DJ off / stop)."""
-    content = _read(COMPOSITOR_PROMPT)
-    assert "ONLY on explicit user request" in content
-    assert "after rap/poem/singing NEVER stop music yourself" in content

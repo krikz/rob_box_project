@@ -408,6 +408,154 @@ def _parameters_schema(params: list[dict[str, Any]]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+#: Доменные скиллы: имя скилла -> имена инструментов из этого же каталога.
+#:
+#: ЕДИНСТВЕННОЕ объявление принадлежности. Скилл ссылается на инструменты
+#: по имени и НЕ переобъявляет их контракт (описание, схему параметров) —
+#: именно второе объявление контракта убило предыдущую попытку скиллов
+#: (Compositor, e96b912d: navigate_to_waypoint рекламировал ``name`` при
+#: ``waypoint`` в execute(), 13 инструментов не доехали до LLM вообще).
+#:
+#: Инструмент может входить в несколько скиллов: ``stop_music`` нужен и
+#: композитору, и диджею, и плееру. Описание при этом одно — оно берётся
+#: из каталога, поэтому разойтись не может по построению.
+#:
+#: ``core`` предъявляется ВСЕГДА, независимо от активного скилла.
+SKILL_TOOLS: dict[str, tuple[str, ...]] = {
+    "core": (
+        "speak_text",
+        "get_robot_status",
+        "get_battery_level",
+        "get_current_time",
+        "get_perception_context",
+        "listen_for_response",
+    ),
+    "composer": (
+        "compose_music",
+        "execute_music_code",
+        "set_vibe_preset",
+        "search_samples",
+        "get_music_state",
+        "stop_music",
+    ),
+    "dj": (
+        "set_dj_mode",
+        "get_music_state",
+        "stop_music",
+    ),
+    "player": (
+        "gen_list_library",
+        "gen_play_from_library",
+        "gen_search_library",
+        "gen_get_track_info",
+        "gen_save_to_library",
+        "gen_delete_from_library",
+        "stop_music",
+    ),
+    "renardo-library": (
+        "save_track",
+        "list_tracks",
+        "load_track",
+        "delete_track",
+    ),
+    "navigation": (
+        "navigate_to_waypoint",
+        "navigate_to_coordinates",
+        "move_direction",
+        "stop_navigation",
+        "list_waypoints",
+        "save_waypoint",
+        "delete_waypoint",
+        "clear_waypoints",
+        "get_current_pose",
+    ),
+    "mapping": (
+        "start_mapping",
+        "continue_mapping",
+        "finish_mapping",
+        "optimize_map",
+        "load_map",
+    ),
+    "voice-tts": (
+        "set_voice",
+        "set_volume",
+        "set_pitch",
+        "set_speed",
+        "list_tts_voices",
+        "set_tts_provider",
+        "estimate_tts_duration",
+    ),
+    "memory": (
+        "memory_save",
+        "memory_search",
+        "memory_context",
+        "register_speaker",
+    ),
+    "expression": (
+        "play_animation",
+        "play_sound",
+        "get_sound_info",
+    ),
+    "knowledge": (
+        "search_web",
+        "faq_search",
+    ),
+    "scheduler": (
+        "task_delta",
+    ),
+}
+
+
+def _assign_skills(entries: list[dict[str, Any]]) -> None:
+    """Проставить ``skill`` каждой записи и проверить обе стороны связи.
+
+    Падаем на:
+
+    * скилл ссылается на инструмент, которого нет в каталоге (опечатка,
+      переименование, удалённый инструмент) — иначе LLM получит скилл,
+      обещающий несуществующую функцию;
+    * llm_visible инструмент не попал ни в один скилл — при включённом
+      сужении каталога (Move B) такой инструмент стал бы невидимым молча.
+
+    Инструменты, скрытые от LLM (``llm_visible=False``), от второй
+    проверки освобождены: их всё равно никто не предъявляет.
+    """
+    by_name = {entry["name"]: entry for entry in entries}
+
+    unknown: list[str] = []
+    for skill, tool_names in sorted(SKILL_TOOLS.items()):
+        for tool_name in tool_names:
+            if tool_name not in by_name:
+                unknown.append(f"{skill} -> {tool_name}")
+    if unknown:
+        raise SystemExit(
+            "SKILL_TOOLS ссылается на инструменты, которых нет в каталоге:"
+            + "\n  "
+            + "\n  ".join(unknown)
+            + "\nПроверь имя в tools/gen_tool_catalog.py::SKILL_TOOLS."
+        )
+
+    for entry in entries:
+        entry["skill"] = tuple(
+            skill
+            for skill, tool_names in sorted(SKILL_TOOLS.items())
+            if entry["name"] in tool_names
+        )
+
+    orphans = sorted(
+        entry["name"]
+        for entry in entries
+        if entry.get("llm_visible", True) and not entry["skill"]
+    )
+    if orphans:
+        raise SystemExit(
+            f"{len(orphans)} llm_visible инструмент(ов) не отнесены "
+            + "ни к одному скиллу:\n  "
+            + "\n  ".join(orphans)
+            + "\nДобавь их в tools/gen_tool_catalog.py::SKILL_TOOLS."
+        )
+
+
 def extract_tools() -> list[dict[str, Any]]:
     """Read every ``MCPTool`` subclass under ``tools/`` into catalog entries."""
     global _MODULE_CONSTANTS, _CLASS_CONSTANTS, _CURRENT_CLASS, _PARAM_FACTORIES
@@ -491,6 +639,10 @@ def extract_tools() -> list[dict[str, Any]]:
             entries.append(entry)
 
     entries.sort(key=lambda e: e["name"])
+    # Назначение скиллов — часть извлечения, а не отдельный шаг в main():
+    # иначе его можно забыть, и ``test_tool_catalog_is_current`` начнёт
+    # сравнивать каталог со скиллами против каталога без них.
+    _assign_skills(entries)
     return entries
 
 

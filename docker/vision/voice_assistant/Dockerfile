@@ -30,7 +30,7 @@ LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 
 # Рабочая директория
 WORKDIR /ws
-RUN mkdir -p src/rob_box_core src/rob_box_voice src/rob_box_animations src/rob_box_mcp_tools src/rob_box_perception_msgs src/rob_box_harness src/rob_box_llm
+RUN mkdir -p src/rob_box_core src/rob_box_voice src/rob_box_animations src/rob_box_mcp_tools src/rob_box_perception_msgs src/rob_box_harness src/rob_box_llm src/rob_box_supervisor_msgs
 
 # ============================================================
 # ОПТИМИЗАЦИЯ СЛОЕВ ДЛЯ КЕШИРОВАНИЯ (dependencies → config → code)
@@ -44,13 +44,16 @@ COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
 COPY src/rob_box_mcp_tools/package.xml /ws/src/rob_box_mcp_tools/
 COPY src/rob_box_harness/package.xml /ws/src/rob_box_harness/
 COPY src/rob_box_llm/package.xml /ws/src/rob_box_llm/
+# IDL пакет для avatar_supervisor (AV-12 / AV-5): собирается раньше
+# rob_box_supervisor, потому что тот на нём зависит.
+COPY src/rob_box_supervisor_msgs/package.xml /ws/src/rob_box_supervisor_msgs/
 
 # Шаг 2: Установка ROS зависимостей через rosdep
 # Этот слой кешируется пока package.xml не изменяется
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     . /ws/install/setup.sh && \
     rosdep update && \
-    rosdep install --from-paths src/rob_box_core src/rob_box_voice src/rob_box_animations src/rob_box_perception_msgs src/rob_box_mcp_tools src/rob_box_harness src/rob_box_llm --ignore-src -r -y || true
+    rosdep install --from-paths src/rob_box_core src/rob_box_voice src/rob_box_animations src/rob_box_perception_msgs src/rob_box_mcp_tools src/rob_box_harness src/rob_box_llm src/rob_box_supervisor_msgs --ignore-src -r -y || true
 
 # Шаг 3: Копируем setup.py и CMakeLists.txt (структура пакета меняется редко)
 COPY src/rob_box_core/setup.py /ws/src/rob_box_core/

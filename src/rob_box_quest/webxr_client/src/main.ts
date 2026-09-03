@@ -15,6 +15,7 @@
 import { Connection } from "./wire/connection";
 import { createCaptainBridge } from "./scene/captain_bridge";
 import { parseRobotStatus } from "./scene/status_hud";
+import { createAlertToast, alertText } from "./scene/alert_toast";
 import { TeleopFSM } from "./input/teleop_fsm";
 import { createDesktopTeleop } from "./input/desktop_teleop";
 import { createXrTeleop, pollXrInput } from "./input/xr_teleop";
@@ -31,13 +32,19 @@ import {
 } from "./ui/error_overlay";
 import { createHelpOverlay, type HelpOverlay } from "./ui/help_overlay";
 import { createModeManager, type ClientModeManager } from "./ui/mode_manager";
+import { createToast, type Toast } from "./ui/toast";
+import { supervisorEffect, type FloorLabel, type SupervisorState } from "./state/supervisor_state";
 
 const CLIENT_VERSION = "0.1.0";
-const SUBPROTOCOL = "robbox-quest-v1";
+// AV-17: subprotocol v2 по умолчанию. Если сервер на v1 — supervisor
+// не используется (Connection.canSendSupervisor → false), и HUD
+// показывает строку «SUPERVISOR: v1 (no coordination)». См.
+// docs/architecture/meta-quest-api.md §11 + docs/adr/0028 §4.4.
+const SUBPROTOCOL = "robbox-quest-v2";
 
 // Не-видео стримы. Список видео-топиков берём у сцены (`videoTopics()`),
 // чтобы подписка не разъезжалась с тем, что она реально умеет показать.
-const NON_VIDEO_TOPICS = ["lidar_2d", "robot_status"];
+const NON_VIDEO_TOPICS = ["lidar_2d", "robot_status", "voice_state"];
 
 interface BootstrapOptions {
   url?: string;
@@ -64,6 +71,16 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   const help: HelpOverlay = createHelpOverlay(opts.body);
   const modeManager: ClientModeManager = createModeManager();
   const watchdog: DisconnectWatchdog = createDisconnectWatchdog(errorOverlay);
+  // AV-17: короткие уведомления о supervisor-событиях (потерял руль,
+  // floor занят другим клиентом). Создаём сразу, чтобы не пропустить
+  // первый STATE_UPDATE в гонке с инициализацией UI.
+  const toast: Toast = createToast(opts.body);
+  // AV-26: robot_alert toast + дублирование в status HUD как постоянная
+  // метка пока алёрт активен. Error-алёрты ещё и в errorOverlay.
+  const alertToast = createAlertToast({
+    parent: opts.body,
+    errorOverlay
+  });
 
   // HUD: подключаем help-toggle кнопку (если есть) к help overlay.
   if (opts.helpToggle) {
@@ -118,6 +135,16 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   // AV-19: текст тоста «возьми руль», показывается когда ARM заблокирован
   // из-за чужого floor. Снимается когда floor снова наш.
   let floorBlockToast: { show(): void; hide(): void } | null = null;
+  // AV-17: avatar_supervisor state. `null` = STATE_UPDATE ещё не пришёл
+  // (или сервер на v1, тогда degraded=true). myClientId придёт в WELCOME,
+  // когда AV-16 добавит поле; пока WELCOME его не содержит — оставляем
+  // null и UI честно показывает «?».
+  let supervisorState: SupervisorState | null = null;
+  let supervisorMyClientId: string | null = null;
+  let supervisorDegraded = false;
+  // Кэш предыдущего floorLabel для teleop: чтобы зафиксировать переход
+  // «my → other» и снять ARM (только на этом переходе).
+  let prevTeleopLabel: FloorLabel = "unknown";
   let xrTeleopHandle: ReturnType<typeof createXrTeleop> | null = null;
   // Последний кэшированный inputSources; обновляется через inputsourceschange.
   let xrInputSources: XRInputSource[] = [];
@@ -207,6 +234,35 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
 
   // ---- Connection lifecycle -------------------------------------------------
 
+  /**
+   * Применить supervisor-state: HUD + дисарм на потере teleop-floor + тост.
+   * Вызывается из onSupervisorState и из onStateChange (reset при reconnect).
+   */
+  function applySupervisorState(next: SupervisorState | null): void {
+    supervisorState = next;
+    // Вся логика перехода — в чистом редьюсере (state/supervisor_state.ts),
+    // здесь только применение эффектов к железу UI.
+    const eff = supervisorEffect(prevTeleopLabel, next, supervisorMyClientId);
+
+    if (eff.disarm) {
+      armed = false;
+      xrArmWasPressed = false;
+      fsm.setDeadman(false);
+      fsm.reset();
+      bridge.setArmState(false);
+      bridge.setControllerActive(false);
+      modeManager.setTeleopState("disarmed");
+      if (eff.toast) toast.show(eff.toast, { level: "warn", autoHideMs: 5000 });
+      // eslint-disable-next-line no-console
+      console.warn("[quest] supervisor: teleop-floor revoked → DISARM", {
+        newHolder: next?.teleopFloor.clientId ?? null
+      });
+    }
+    prevTeleopLabel = eff.teleopLabel;
+
+    bridge.statusHud.setSupervisor(next, supervisorMyClientId, { degraded: supervisorDegraded });
+  }
+
   function openConnection(): void {
     conn = new Connection(
       {
@@ -245,9 +301,17 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             mySessionId = null;
             fsm.setHasFloor(true);
             setFloorBlocked(false);
+            // Аналогично supervisor-state: после разрыва мы не знаем, кто
+            // держит floor-ы → «неизвестно», не «свободно» (ADR-0018).
+            supervisorMyClientId = null;
+            supervisorDegraded = false;
+            prevTeleopLabel = "unknown";
+            applySupervisorState(null);
             // Disconnect-watchdog начинает отсчёт; если > 5s без успеха —
             // покажем error overlay (см. createDisconnectWatchdog).
             watchdog.markDisconnected();
+            // Сервер ещё может быть жив (например, Wi-Fi дёрнулся) → держим
+            // существующие alert'ы; они вернутся в onJsonEvent после reconnect.
           } else if (state === "connecting") {
             setStatus("CONNECTING…", "connecting");
           } else if (state === "closed") {
@@ -261,6 +325,10 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             // "closed" — окончательно (не reconnect). Прямо сейчас
             // показываем overlay без 5-секундного порога.
             errorOverlay.show("Disconnected", "Connection closed by server");
+            // Очищаем alert'ы — соединения нет, оператору не показываем
+            // устаревшие «Батарея 12%».
+            alertToast.clear();
+            bridge.statusHud.setAlert(null);
           }
         },
         onWelcome: (sessionId, _serverTimeMs, teleopFloorHeldBy) => {
@@ -275,6 +343,13 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             fsm.setHasFloor(weHold);
             setFloorBlocked(!weHold);
           }
+          // AV-17: тот же session_id — наш client_id для supervisor-HUD.
+          // Отдельного поля client_id в WELCOME нет; сервер формирует
+          // session_id сам, клиент ничего не выдумывает.
+          supervisorMyClientId = sessionId || null;
+          // v1-сервер → supervisor-координации нет, HUD это показывает.
+          supervisorDegraded = conn?.getNegotiatedVersion() === "v1";
+          applySupervisorState(supervisorState);
         },
         onBinaryFrame: (streamId, payload) => {
           const topic = conn!.getTopicForStream(streamId);
@@ -285,6 +360,12 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
           }
           if (topic === "robot_status") {
             bridge.setRobotStatus(parseRobotStatus(payload));
+            return;
+          }
+          if (topic === "voice_state") {
+            // AV-20: voice_state (0x1202) → центральный HUD-индикатор.
+            // Парсинг внутри bridge.setVoiceState — битый payload не падает.
+            bridge.setVoiceState(payload);
             return;
           }
           // Видео: экран-стена и боковые панели (Wave 3.A).
@@ -298,17 +379,69 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             items.map((it) => ({ topic: it.topic, description: it.description }))
           );
         },
-        onJsonEvent: (ev) => {
+        onSupervisorState: (state) => {
+          applySupervisorState(state);
+        },
+        onSupervisorError: (code, message, meta) => {
+          const holder = typeof meta?.held_by === "string" ? meta.held_by : null;
+          const text =
+            code === "FLOOR_HELD"
+              ? holder
+                ? `Занято другим оператором (${holder.slice(0, 8)}…)`
+                : "Руль/голос сейчас у другого оператора"
+              : `Режим не разрешён сейчас: ${message}`;
+          toast.show(text, { level: "warn", autoHideMs: 5000 });
+        },
+        onJsonEvent: (event) => {
           // AV-19: JSON_EVENT{type:"floor_lost"} → мгновенный DISARM.
-          if ((ev as { type?: string }).type === "floor_lost") {
+          if ((event as { type?: string }).type === "floor_lost") {
             fsm.setHasFloor(false);
             setFloorBlocked(true);
             // eslint-disable-next-line no-console
             console.warn(
               "[quest] floor_lost (reason=%s) — DISARM, toast shown. my_session_id=%s",
-              (ev as { reason?: string }).reason ?? "n/a",
+              (event as { reason?: string }).reason ?? "n/a",
               mySessionId ?? "unknown"
             );
+            return;
+          }
+          // AV-26 / R7: robot_alert от сервера → toast + HUD-метка.
+          // Формат: { type:"robot_alert", code, level, active?, args, ts_ms }.
+          // active:true → поднятие; active:false или отсутствует +
+          // level:"info" → снятие (см. meta-quest-api.md §6 + наш серверный
+          // _send_alert_event, level="info" при снятии).
+          const ev = event as { type?: string; code?: string; level?: string; active?: boolean; args?: Record<string, unknown>; ts_ms?: number };
+          if (ev.type !== "robot_alert" || typeof ev.code !== "string") return;
+          const level: "warn" | "error" = ev.level === "error" ? "error" : "warn";
+          // Сервер шлёт active явно; старые клиенты могут не знать — считаем
+          // active отсутствующим с level=warn как поднятие (обратная совмест).
+          const isCleared = ev.active === false || ev.level === "info";
+          if (isCleared) {
+            alertToast.ingest({
+              code: ev.code,
+              active: false,
+              level: "info",
+              args: ev.args,
+              ts_ms: typeof ev.ts_ms === "number" ? ev.ts_ms : Date.now()
+            });
+          } else {
+            alertToast.ingest({
+              code: ev.code,
+              active: true,
+              level,
+              args: ev.args,
+              ts_ms: typeof ev.ts_ms === "number" ? ev.ts_ms : Date.now()
+            });
+          }
+          // HUD-метка: worst активного алёрта.
+          const worst = alertToast.worstActive;
+          if (worst) {
+            bridge.statusHud.setAlert({
+              text: alertText(worst),
+              level: worst.level === "error" ? "error" : "warn"
+            });
+          } else {
+            bridge.statusHud.setAlert(null);
           }
         },
         onError: (code, message) => {
@@ -342,6 +475,22 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     // WebXR requestSession требует user-activation — вызываем сразу из submit,
     // пока активация ещё действительна.
     void autoEnterVr();
+  });
+
+  // ---- AV-25: глобальные хоткеи мостика ----
+  //
+  // R — сброс раскладки панелей к default (стирает localStorage и
+  // пересоздаёт панели). Слушаем на document, чтобы работало и в VR
+  // (XR-сессия не глушит document keydown), и в desktop-режиме.
+  document.addEventListener("keydown", (ev) => {
+    if (ev.repeat) return;
+    const target = ev.target as HTMLElement | null;
+    const tag = target?.tagName?.toLowerCase();
+    if (tag === "input" || tag === "textarea" || target?.isContentEditable) return;
+    if (ev.key === "r" || ev.key === "R") {
+      ev.preventDefault();
+      bridge.resetPanelLayout();
+    }
   });
 
   // ---- Teleop loop -----------------------------------------------------------
@@ -543,6 +692,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       errorOverlay.dispose();
       help.dispose();
       watchdog.dispose();
+      alertToast.dispose();
     }
   };
 }

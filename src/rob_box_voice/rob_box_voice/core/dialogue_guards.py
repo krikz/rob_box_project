@@ -157,6 +157,71 @@ BABBLE_BANNED_OPENERS: tuple = (
     "переключ",
 )
 
+# 🔴 FIX (live 02.09): «робот говорит, что запускает музыку, а ничего не
+# запускается» + «LLM много говорит во время музыки».
+#
+# Живой лог робота, 06:58:01 UTC:
+#   spoken='Юзер явно просит «ебани лаундж» (лоундж запрошен снова).
+#           DJ уже выключен в прошлом ходе. Запускаю расслабленную
+#           лоундж-композицию через compose_music.' tools=[]
+# и следом TTS честно зачитал это вслух. Модель отдала своё планирование
+# вместо ответа и не вызвала ни одного тула.
+#
+# Ни один существующий детектор это не ловил: BABBLE_BANNED_OPENERS ищет
+# обещания («зачитаю», «погнали»), а тут рассуждение; music-гуард смотрел
+# на реплику ЮЗЕРА («ебани ланудж») и не нашёл там ключевых слов.
+# Расширять словари бесполезно — их не хватит никогда.
+#
+# Надёжный признак другой и от словаря не зависит:
+#   * в тексте назван ИНСТРУМЕНТ (compose_music и т.п.). Идентификатор в
+#     snake_case, прочитанный вслух, — всегда баг, что бы ни просил юзер;
+#   * реплика начинается с рассказа о собеседнике в ТРЕТЬЕМ лице («Юзер
+#     просит...», «Пользователь спрашивает...»). Ответ, адресованный
+#     человеку, так не начинается — так начинается план.
+PLANNING_NARRATION_TOOL_NAMES: tuple = (
+    "compose_music",
+    "execute_music_code",
+    "speak_text",
+    "set_dj_mode",
+    "search_samples",
+    "stop_music",
+    "load_track",
+    "list_tracks",
+    "save_track",
+    "gen_play_from_library",
+    "gen_search_library",
+    "set_vibe_preset",
+    "play_animation",
+    "play_sound",
+    "memory_save",
+    "memory_search",
+    "search_web",
+    "listen_for_response",
+    "navigate_to_waypoint",
+)
+
+#: Начала реплики, где модель говорит о собеседнике в третьем лице.
+PLANNING_NARRATION_OPENERS: tuple = (
+    "юзер",
+    "пользовател",
+    "user ",
+)
+
+
+def is_planning_narration(spoken_text: str) -> bool:
+    """Похоже ли на внутреннее планирование модели, а не на ответ человеку?
+
+    Признаки и причина, по которой они именно такие, — в комментарии выше.
+    """
+    if not spoken_text:
+        return False
+    low = spoken_text.lower()
+    if any(name in low for name in PLANNING_NARRATION_TOOL_NAMES):
+        return True
+    head = low.lstrip(" \t*#>-—«\"'")[:40]
+    return any(head.startswith(opener) for opener in PLANNING_NARRATION_OPENERS)
+
+
 # Issue #992 Bug D — keywords that mark the user request as a
 # performance command. When the LLM babbles on a performance request
 # we *must* retry, because the alternative is the user hearing nothing
@@ -658,6 +723,8 @@ def is_metalanguage_babble(spoken_text: str) -> bool:
     """
     if not spoken_text:
         return False
+    if is_planning_narration(spoken_text):
+        return True
     head = spoken_text[:80].lower().lstrip(" \t*#>-")
     # Match the opener only at the START of the head or inside the
     # first 30 chars (after stripping). 30 chars is enough to cover
@@ -669,6 +736,14 @@ def is_metalanguage_babble(spoken_text: str) -> bool:
         opener_zone.startswith(opener) or f" {opener}" in opener_zone
         for opener in BABBLE_BANNED_OPENERS
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #1882 — hard-mute для planning-narration жильёт в dialogue_node.py
+# (`_handle_result`, ветка ПЕРЕД babble-retry). Сам детектор `is_planning_narration`
+# определён выше в этом файле (введён в 78403dba), тут дублировать его не надо —
+# иначе будет две функции с одним именем.
+# ---------------------------------------------------------------------------
 
 
 def user_wants_performance(user_input: str) -> bool:
@@ -962,6 +1037,42 @@ def detect_unbacked_action_claim(
 MUSIC_RETRY_PROMPT_PREFIX: str = "[CRITICAL] В прошлом цикле ты НЕ вызвал"
 
 
+CRITICAL_BLOCK_MARKER = "[CRITICAL]"
+CRITICAL_BLOCK_MARKER_LEN = len(CRITICAL_BLOCK_MARKER)
+
+
+def _strip_trailing_critical_block(user_input: str) -> str:
+    """Issue #1881 — убрать последний ``[CRITICAL]``-блок из ``user_input``.
+
+    На babble-retry ``user_input`` уже содержит прошлый CRITICAL-блок
+    (от прошлого ретрая этого же turn'а). Если просто склеить его с
+    НОВЫМ блоком — модель видит два ПРОТИВОРЕЧИВЫХ требования
+    («вызови tool» vs «вызови music-tool») и начинает мешать их в
+    ответе (vision-pi 02.09: «однако другой [CRITICAL] говорит...»).
+
+    Решение: если input заканчивается на блок, начинающийся с
+    ``[CRITICAL]`` — обрезаем до его начала. Юзер-фраза остаётся;
+    старый блок заменяется новым.
+
+    Edge cases:
+    * Без маркера — возвращаем ``user_input`` as-is.
+    * Маркер в самом начале (user_input="[CRITICAL]...") — возвращаем
+      пустую строку (нет юзер-фразы для сохранения). Это безопасно:
+      даже пустой входной текст + новый блок = «без исходного
+      запроса». LLM выдаст инструментальный ответ или пустоту, что
+      лучше, чем два конфликтующих CRITICAL'a.
+    """
+    if not user_input:
+        return user_input
+    idx = user_input.rfind(CRITICAL_BLOCK_MARKER)
+    if idx <= 0:
+        # Нет маркера вообще, или маркер в самом начале (idx==0).
+        # В обоих случаях склеивать не с чем — возвращаем as-is.
+        return user_input
+    # ``idx > 0``: маркер где-то внутри. Обрезаем всё от него до конца.
+    return user_input[:idx].rstrip()
+
+
 def build_babble_retry_prompt(user_input: str) -> str:
     """Issue #992 Bug D — synthetic follow-up prompt for babble retry.
 
@@ -969,9 +1080,26 @@ def build_babble_retry_prompt(user_input: str) -> str:
     in context, then appends a CRITICAL instruction that names the
     babble pattern and demands a tool-call reply (no plain text
     promises).
+
+🔴 FIX (live 02.09, "включи трек про весну"): этот список не называл
+    вариант «уже существующий трек» вовсе — только «мелодия →
+    execute_music_code(...)». Bug C (``build_music_retry_prompt``) корректно
+    вёл модель в библиотеку (gen_search_library → gen_play_from_library), но
+    когда следом срабатывал Bug D babble-ретрай на ТОМ ЖЕ запросе, его
+    промпт не упоминал библиотеку вовсе — и модель, уже нашедшая правильный
+    трек через gen_search_library в прошлом ходе, сочиняла новую мелодию
+    через compose_music вместо gen_play_from_library(track_id=...) найденного
+    трека. Юзер попросил «Весна пришла», получил синт.
+
+    Issue #1881 — если ``user_input`` уже содержит предыдущий
+    ``[CRITICAL]``-блок (от прошлого ретрая этого же turn'а), он
+    обрезается перед склейкой, чтобы НЕ накапливать противоречивые
+    инструкции. Иначе модель читает «вызови tool» + «вызови
+    music-tool» и в каждом ответе спорит сама с собой.
     """
+    cleaned = _strip_trailing_critical_block(user_input)
     return (
-        f"{user_input}\n\n"
+        f"{cleaned}\n\n"
         "[CRITICAL] Твой предыдущий ответ был метатекст "
         "(начинался с «зачит», «могу», «хочешь», «сейчас», "
         "«устроим», «погнали», «слушай», «давай», «так» или "
@@ -981,8 +1109,14 @@ def build_babble_retry_prompt(user_input: str) -> str:
         "✅ ОБЯЗАТЕЛЬНО: вызови нужный tool в ЭТОМ же turn:\n"
         "  • rap/песня → execute_music_code + speak_text(lyrics),\n"
         "  • поэзия → speak_text(...) × N строк,\n"
-        "  • мелодия → execute_music_code(...),\n"
-        "  • анекдот → speak_text(...) × N.\n"
+        "  • новая мелодия/бит с нуля → execute_music_code(...),\n"
+        "  • анекдот → speak_text(...) × N,\n"
+        "  • уже существующий/сохранённый трек по имени или теме — "
+        "НЕ сочиняй новый: если в этом диалоге уже был вызов "
+        "gen_search_library/gen_list_library/list_tracks с подходящим "
+        "результатом, возьми его track_id/name и вызови "
+        "gen_play_from_library(track_id=...) или load_track(name=...); "
+        "иначе вызови поиск сейчас, а не execute_music_code/compose_music.\n"
         "После последнего speak_text верни 'done'. Никаких "
         "мета-фраз, никаких 'Слушай, сейчас...', 'Зачитаю...', "
         "'Могу бит добавить, хочешь?' — это BUG."

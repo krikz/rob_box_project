@@ -43,9 +43,6 @@ _REPO_ROOT = _resolve_repo_root(Path(__file__).resolve())
 MASTER_PROMPT_PATH = (
     _REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "master_prompt_compact.txt"
 )
-COMPOSITOR_PROMPT_PATH = (
-    _REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "compositor_prompt.txt"
-)
 
 
 def test_master_prompt_has_explicit_anti_duplicate_rule() -> None:
@@ -77,16 +74,6 @@ def test_master_prompt_has_few_shot_correct_and_wrong_examples() -> None:
     assert "← ДУБЛЬ! Весь текст уже озвучен." in content
     # The music section repeats the same anti-duplicate for BACKING.
     assert "NO \"Повторю слова:\" / \"Вот и песенка!\" post-ambles!" in content
-
-
-def test_compositor_prompt_has_anti_duplicate_rule() -> None:
-    """The compositor (skills orchestration) also forbids lyrics echo."""
-    content = COMPOSITOR_PROMPT_PATH.read_text(encoding="utf-8")
-
-    assert "ANTI-DUPLICATE" in content
-    assert "no \"Вот и песенка!\"" in content
-    assert "no \"Повторю слова:\"" in content
-    assert "never echo or summarize the lyrics in your final response" in content
 
 
 def test_master_prompt_done_marker_rule_is_adjacent_to_speak_text() -> None:

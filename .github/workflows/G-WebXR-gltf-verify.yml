@@ -18,7 +18,7 @@ on:
     branches:
       - develop
       - main
-      - feature/avatar
+      - 'feature/**'
     paths:
       - 'src/rob_box_quest/webxr_client/**'
       - 'src/rob_box_quest/webxr_client/public/models/**/*.glb'
@@ -28,7 +28,7 @@ on:
     branches:
       - develop
       - main
-      - feature/avatar
+      - 'feature/**'
     paths:
       - 'src/rob_box_quest/webxr_client/**'
       - 'src/rob_box_quest/webxr_client/public/models/**/*.glb'

@@ -14,10 +14,10 @@ conftest ставит минимальные заглушки, чтобы мод
 import types
 from unittest.mock import MagicMock
 
-import sys as _sys
+import sys
 from pathlib import Path as _Path
 
-_sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 from ros_stubs import install_ros_stubs  # noqa: E402
 
 _INSTALLED = False
@@ -44,6 +44,23 @@ def _install_all_mocks():
 
     pydub = types.ModuleType("pydub")
     pydub.AudioSegment = type("AudioSegment", (), {})
+
+    # --- Defensive: issue #1879 -------------------------------------------
+    # ``install_ros_stubs()`` is additive — if a *prior* conftest (e.g.
+    # unit/tts/conftest.py's ``sys.modules.setdefault(..., Mock())`` chain)
+    # already placed a non-class stub for ``audio_common_msgs.msg``, the
+    # shared helper will not overwrite it. Force-replace ``AudioData``
+    # with a real class so the subscription recorded by
+    # ``SoundNode.__init__`` carries a class whose ``__name__`` is
+    # ``"AudioData"`` (not ``"MagicMock"`` or absent).
+    existing_audio_msg = sys.modules.get("audio_common_msgs.msg")
+    existing_audio_data = getattr(existing_audio_msg, "AudioData", None)
+    if not isinstance(existing_audio_data, type) or existing_audio_data.__name__ != "AudioData":
+        if existing_audio_msg is None:
+            existing_audio_msg = types.ModuleType("audio_common_msgs.msg")
+            sys.modules["audio_common_msgs.msg"] = existing_audio_msg
+        existing_audio_msg.AudioData = audio_msg.AudioData
+    # ----------------------------------------------------------------------
 
     install_ros_stubs(extra={
         "audio_common_msgs": types.ModuleType("audio_common_msgs"),

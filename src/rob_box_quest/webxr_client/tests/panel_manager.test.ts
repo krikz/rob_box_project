@@ -137,3 +137,101 @@ describe("captain bridge layout constants", () => {
     }
   });
 });
+
+// --- AV-25: resize + createPanelWithId ---
+
+describe("PanelManager.resize (AV-25)", () => {
+  it("changes width/height", () => {
+    const mgr = new PanelManager();
+    const [id] = mgr.resetLayout();
+    const ok = mgr.resize(id, 1.6, 0.9);
+    expect(ok).toBe(true);
+    expect(mgr.get(id)?.size.width).toBe(1.6);
+    expect(mgr.get(id)?.size.height).toBe(0.9);
+  });
+
+  it("clamps to minWidthM / minHeightM (panel can't shrink to a dot)", () => {
+    const mgr = new PanelManager();
+    const [id] = mgr.resetLayout();
+    mgr.resize(id, 0.01, 0.01);
+    const p = mgr.get(id)!;
+    expect(p.size.width).toBe(0.4); // PANEL_DEFAULT_MIN_WIDTH_M
+    expect(p.size.height).toBe(0.3); // PANEL_DEFAULT_MIN_HEIGHT_M
+  });
+
+  it("clamps to maxWidthM / maxHeightM (panel can't fill the room)", () => {
+    const mgr = new PanelManager();
+    const [id] = mgr.resetLayout();
+    mgr.resize(id, 99, 99);
+    const p = mgr.get(id)!;
+    expect(p.size.width).toBe(3.0); // PANEL_DEFAULT_MAX_WIDTH_M
+    expect(p.size.height).toBe(2.0); // PANEL_DEFAULT_MAX_HEIGHT_M
+  });
+
+  it("returns false when value didn't change (caller's debounce-friendly)", () => {
+    const mgr = new PanelManager();
+    const [id] = mgr.resetLayout();
+    // После resetLayout размеры = дефолт (1.2 × 0.7). Резайз в те же — false.
+    expect(mgr.resize(id, 1.2, 0.7)).toBe(false);
+  });
+
+  it("returns false for unknown id", () => {
+    expect(new PanelManager().resize("nope", 1, 1)).toBe(false);
+  });
+
+  it("respects custom min/max bounds from opts", () => {
+    const mgr = new PanelManager({ minWidthM: 1.0, maxWidthM: 2.0, minHeightM: 0.5, maxHeightM: 1.0 });
+    const [id] = mgr.resetLayout();
+    mgr.resize(id, 0.1, 0.1);
+    expect(mgr.get(id)?.size.width).toBe(1.0);
+    expect(mgr.get(id)?.size.height).toBe(0.5);
+    mgr.resize(id, 9, 9);
+    expect(mgr.get(id)?.size.width).toBe(2.0);
+    expect(mgr.get(id)?.size.height).toBe(1.0);
+  });
+});
+
+describe("PanelManager.createPanel — overload with id (AV-25)", () => {
+  it("creates a panel with the requested id", () => {
+    const mgr = new PanelManager();
+    const id = mgr.createPanel("p100", "camera_rear");
+    expect(id).toBe("p100");
+    expect(mgr.get("p100")?.topic).toBe("camera_rear");
+    expect(mgr.list().length).toBe(1);
+  });
+
+  it("returns existing id without mutation if id already taken", () => {
+    const mgr = new PanelManager();
+    const first = mgr.createPanel("p100", "camera_rear");
+    expect(first).toBe("p100");
+    // Повторный вызов с тем же id — тихий no-op, не дубликат.
+    const second = mgr.createPanel("p100", "camera_ceiling");
+    expect(second).toBe("p100");
+    expect(mgr.list().length).toBe(1);
+    // topic не поменялся (потому что это no-op).
+    expect(mgr.get("p100")?.topic).toBe("camera_rear");
+  });
+
+  it("bumps nextId above restored id so autogeneration does not collide", () => {
+    const mgr = new PanelManager();
+    mgr.createPanel("p50", "camera_rear");
+    const fresh = mgr.createPanel("camera_oak_color");
+    expect(fresh).not.toBe("p50");
+    // Свежесозданная должна иметь id выше, чем p50.
+    expect(parseInt(fresh.slice(1), 10)).toBeGreaterThan(50);
+  });
+
+  it("honours position and facing when id overload is used", () => {
+    const mgr = new PanelManager();
+    const pos = { x: 1.2, y: 1.5, z: -0.8 };
+    const facing = { x: -1, z: 0.5 };
+    const id = mgr.createPanel("p7", "camera_oak_color", pos, facing);
+    expect(id).toBe("p7");
+    const p = mgr.get("p7")!;
+    expect(p.position.x).toBe(1.2);
+    expect(p.position.y).toBe(1.5);
+    expect(p.position.z).toBe(-0.8);
+    expect(p.facing.x).toBe(-1);
+    expect(p.facing.z).toBe(0.5);
+  });
+});

@@ -31,7 +31,11 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable, Mapping
 
-from rob_box_core.tool_catalog import ToolCatalogEntry, llm_visible_tools
+from rob_box_core.tool_catalog import (
+    ToolCatalogEntry,
+    llm_visible_tools,
+    tools_for_skill,
+)
 from rob_box_harness.tools import ToolHandler, ToolSpec
 
 __all__ = ["ToolRegistry", "ToolSpec", "ToolHandler", "spec_from_catalog"]
@@ -88,9 +92,32 @@ class ToolRegistry:
 
     # ---- read API -------------------------------------------------------
 
-    def list_tools(self) -> tuple[ToolSpec, ...]:
-        """Return every registered tool's spec."""
-        return tuple(spec for spec, _ in self._tools.values())
+    def list_tools(
+        self,
+        *,
+        skills: "tuple[str, ...] | None" = None,
+    ) -> tuple[ToolSpec, ...]:
+        """Return registered tool specs.
+
+        ``skills=None`` (default) returns everything, which is today's
+        behaviour and what the LLM sees while tool-narrowing is off.
+
+        Passing ``skills`` narrows the result to the tools of those
+        domain skills plus ``core`` — the Move B path. Only tools that are
+        actually registered here are returned, so a handler replaced via
+        :meth:`register` keeps working.
+
+        :raises KeyError: on an unknown skill name (never silently empty —
+            an empty tool list reaches the LLM as "нет такой функции").
+        """
+        if skills is None:
+            return tuple(spec for spec, _ in self._tools.values())
+        wanted = {entry.name for entry in tools_for_skill(*skills)}
+        return tuple(
+            spec
+            for name, (spec, _) in self._tools.items()
+            if name in wanted
+        )
 
     def get(self, name: str) -> ToolSpec:
         """Return the spec for ``name``.

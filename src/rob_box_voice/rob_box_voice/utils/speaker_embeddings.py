@@ -68,6 +68,11 @@ class SpeakerMatch:
     name: str
     confidence: float  # 0.0–1.0 (cosine similarity)
     is_known: bool = True
+    # Issue #1787 — внутренняя кличка робота («Гроссмейстер»). Живёт
+    # ПАРАЛЛЕЛЬНО с ``name``: name — что говорит юзер, epithet — чем робот
+    # различает тёзок. None, пока профиль её не получил (старые записи до
+    # миграции + спикеры, зарегистрированные вне speaker_id_node).
+    epithet: Optional[str] = None
 
 
 # ── Lazy import of resemblyzer (not available at build time on CI) ────────────
@@ -111,6 +116,19 @@ CREATE TABLE IF NOT EXISTS embeddings (
 CREATE INDEX IF NOT EXISTS idx_emb_speaker ON embeddings(speaker_id);
 """
 
+# Issue #1787 — колонки эпитета. Добавляются миграцией, а не в _CREATE_SQL:
+# на роботе уже лежит /data/speakers.db с 42 профилями, и CREATE TABLE
+# IF NOT EXISTS для существующей таблицы — no-op, новые колонки в ней сами
+# не появятся. Все — nullable, backfill не нужен (research §5.5): старый
+# профиль получит эпитет при первой же реплике после апдейта.
+_EPITHET_COLUMNS: Tuple[Tuple[str, str], ...] = (
+    ("epithet", "TEXT"),              # текущая кличка
+    ("epithet_history", "TEXT"),      # JSON: [{ts, old, new, reason}]
+    ("tags", "TEXT"),                 # CSV кластеров: «шахматы,техно»
+    ("sentiment_score", "REAL"),      # лексическая валентность [-1, 1]
+    ("last_epithet_review", "REAL"),  # unix ts последнего пересмотра
+)
+
 
 class SpeakerDatabase:
     """SQLite-backed speaker embedding store."""
@@ -121,7 +139,31 @@ class SpeakerDatabase:
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.executescript(_CREATE_SQL)
         self._conn.commit()
+        self._migrate_epithet_columns()
         logger.info(f"SpeakerDatabase opened: {db_path}")
+
+    # ── Migrations ────────────────────────────────────────────────────────────
+
+    def _migrate_epithet_columns(self) -> None:
+        """Issue #1787 — добить недостающие колонки эпитета в ``speakers``.
+
+        Идемпотентно: смотрит PRAGMA table_info и добавляет только то,
+        чего нет. SQLite не умеет ``ADD COLUMN IF NOT EXISTS``, а падать
+        на втором старте нельзя — это путь запуска ноды, не миграционный
+        скрипт.
+        """
+        existing = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(speakers)")
+        }
+        added = []
+        for column, sql_type in _EPITHET_COLUMNS:
+            if column in existing:
+                continue
+            self._conn.execute(f"ALTER TABLE speakers ADD COLUMN {column} {sql_type}")
+            added.append(column)
+        if added:
+            self._conn.commit()
+            logger.info(f"🔤 speakers: добавлены колонки эпитета {added}")
 
     # ── Serialisation ─────────────────────────────────────────────────────────
 
@@ -233,7 +275,12 @@ class SpeakerDatabase:
             logger.debug(f"Best match {best_name!r} score={best_score:.3f} below threshold {thr}")
             return None
 
-        return SpeakerMatch(speaker_id=best_id, name=best_name, confidence=best_score)
+        return SpeakerMatch(
+            speaker_id=best_id,
+            name=best_name,
+            confidence=best_score,
+            epithet=self.get_epithet(best_id),
+        )
 
     def identify_candidates(
         self, embedding: np.ndarray, top_n: int = 2
@@ -371,14 +418,27 @@ class SpeakerDatabase:
         return cur.rowcount > 0
 
     def list_speakers(self) -> List[dict]:
-        """Return all registered speakers with embedding count."""
+        """Return all registered speakers with embedding count.
+
+        Issue #1787 — в выдаче есть ``epithet``/``tags``: без них список
+        спикеров бесполезен ровно в том сценарии, ради которого эпитет
+        заводился (два одинаковых ``name`` в таблице неразличимы глазом).
+        """
         rows = self._conn.execute(
-            "SELECT s.speaker_id, s.name, s.created_at, COUNT(e.id) AS emb_count "
+            "SELECT s.speaker_id, s.name, s.created_at, COUNT(e.id) AS emb_count, "
+            "s.epithet, s.tags "
             "FROM speakers s LEFT JOIN embeddings e USING (speaker_id) "
             "GROUP BY s.speaker_id ORDER BY s.created_at"
         ).fetchall()
         return [
-            {"id": r[0], "name": r[1], "created_at": r[2], "embeddings": r[3]}
+            {
+                "id": r[0],
+                "name": r[1],
+                "created_at": r[2],
+                "embeddings": r[3],
+                "epithet": r[4],
+                "tags": _split_tags(r[5]),
+            }
             for r in rows
         ]
 
@@ -419,5 +479,155 @@ class SpeakerDatabase:
         logger.info(f"Renamed speaker '{old_name}' → '{new_name}' (id={speaker_id[:8]})")
         return speaker_id
 
+    # ── Эпитеты (issue #1787) ─────────────────────────────────────────────────
+
+    def get_epithet(self, speaker_id: str) -> Optional[str]:
+        """Текущая кличка спикера (``None``, если ещё не назначена)."""
+        row = self._conn.execute(
+            "SELECT epithet FROM speakers WHERE speaker_id=?", (speaker_id,)
+        ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def get_speaker_profile(self, speaker_id: str) -> Optional[dict]:
+        """Полный профиль спикера, включая эпитет, теги и историю.
+
+        Возвращает ``None``, если спикера нет. ``epithet_history`` всегда
+        list (битый/пустой JSON → ``[]``: история — диагностика, а не
+        источник истины, ронять из-за неё диалог нельзя).
+        """
+        row = self._conn.execute(
+            "SELECT speaker_id, name, created_at, epithet, epithet_history, "
+            "tags, sentiment_score, last_epithet_review "
+            "FROM speakers WHERE speaker_id=?",
+            (speaker_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "speaker_id": row[0],
+            "name": row[1],
+            "created_at": row[2],
+            "epithet": row[3],
+            "epithet_history": _load_history(row[4]),
+            "tags": _split_tags(row[5]),
+            "sentiment_score": row[6],
+            "last_epithet_review": row[7],
+        }
+
+    def taken_epithets(self, exclude_speaker_id: Optional[str] = None) -> List[str]:
+        """Все занятые клички — вход для ``epithets.choose_epithet(taken=…)``.
+
+        Без этого списка словарный слой снова начал бы выдавать одинаковые
+        клички тёзкам с общей темой (research §4.2) — именно ради этого
+        аргумента там предлагался LLM. ``exclude_speaker_id`` — чтобы при
+        ПЕРЕсмотре спикер не считал занятой собственную текущую кличку.
+        """
+        rows = self._conn.execute(
+            "SELECT speaker_id, epithet FROM speakers WHERE epithet IS NOT NULL"
+        ).fetchall()
+        return [
+            r[1] for r in rows if r[1] and r[0] != exclude_speaker_id
+        ]
+
+    def set_epithet(self, speaker_id: str, epithet: str, reason: str) -> bool:
+        """Назначить кличку и дописать переход в ``epithet_history``.
+
+        Историю ведём всегда (research §4.1: «эпитет версионируется —
+        можно откатить и видеть эволюцию»), поэтому здесь же обновляется
+        ``last_epithet_review`` — таймер антидребезга пересмотра.
+
+        Возвращает ``False``, если спикер не найден или ``epithet`` пуст.
+        """
+        epithet = (epithet or "").strip()
+        if not speaker_id or not epithet:
+            return False
+        profile = self.get_speaker_profile(speaker_id)
+        if profile is None:
+            logger.warning(f"set_epithet: спикер {speaker_id[:8]} не найден")
+            return False
+        if profile["epithet"] == epithet:
+            # Идемпотентность: та же кличка — не плодим записи в истории,
+            # но таймер пересмотра сдвигаем (решение «оставить как есть»
+            # тоже является пересмотром).
+            self._conn.execute(
+                "UPDATE speakers SET last_epithet_review=? WHERE speaker_id=?",
+                (time.time(), speaker_id),
+            )
+            self._conn.commit()
+            return True
+
+        now = time.time()
+        history = profile["epithet_history"]
+        history.append(
+            {
+                "ts": now,
+                "old": profile["epithet"],
+                "new": epithet,
+                "reason": reason,
+            }
+        )
+        self._conn.execute(
+            "UPDATE speakers SET epithet=?, epithet_history=?, "
+            "last_epithet_review=? WHERE speaker_id=?",
+            (epithet, json.dumps(history, ensure_ascii=False), now, speaker_id),
+        )
+        self._conn.commit()
+        logger.info(
+            f"🔤 epithet {speaker_id[:8]}: {profile['epithet']!r} → {epithet!r} "
+            f"({reason})"
+        )
+        return True
+
+    def update_speaker_stats(
+        self,
+        speaker_id: str,
+        tags: Optional[List[str]] = None,
+        sentiment_score: Optional[float] = None,
+    ) -> bool:
+        """Обновить темы и валентность речи спикера.
+
+        Метаданные профиля, на которых строится выбор эпитета. Оба поля
+        опциональны — вызов без обоих ничего не делает и возвращает
+        ``False`` (нет смысла ходить в БД).
+        """
+        sets: List[str] = []
+        params: List[object] = []
+        if tags is not None:
+            sets.append("tags=?")
+            params.append(",".join(t for t in tags if t))
+        if sentiment_score is not None:
+            sets.append("sentiment_score=?")
+            params.append(float(sentiment_score))
+        if not sets or not speaker_id:
+            return False
+        params.append(speaker_id)
+        cur = self._conn.execute(
+            f"UPDATE speakers SET {', '.join(sets)} WHERE speaker_id=?", params
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
     def close(self) -> None:
         self._conn.close()
+
+
+# ── Хелперы сериализации профиля (issue #1787) ───────────────────────────────
+
+
+def _split_tags(raw: Optional[str]) -> List[str]:
+    """CSV-строка тегов → список (пустая/``None`` → ``[]``)."""
+    if not raw:
+        return []
+    return [t.strip() for t in str(raw).split(",") if t.strip()]
+
+
+def _load_history(raw: Optional[str]) -> List[dict]:
+    """JSON-история эпитетов → список dict-ов, толерантно к мусору."""
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("epithet_history: битый JSON — читаю как пустую историю")
+        return []
+    return data if isinstance(data, list) else []
