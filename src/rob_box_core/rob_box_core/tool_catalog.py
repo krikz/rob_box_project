@@ -22,7 +22,7 @@ entirely, and had degraded 29 of 38 shared descriptions to one-line stubs.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -68,7 +68,7 @@ class ToolCatalogEntry:
     skill: tuple[str, ...] = ()
     #: What ``execute()`` accepts, recorded so tests can prove the advertised
     #: schema and the runtime signature still agree.
-    signature: Mapping[str, Any] = MappingProxyType({})
+    signature: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
 
     def to_openai_tool(self) -> dict[str, Any]:
         """Render this entry in OpenAI / DeepSeek / Qwen tool-call format."""
