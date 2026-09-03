@@ -20,6 +20,12 @@
 
 import * as THREE from "three";
 import { panelGeometry } from "./supervisor_panel";
+import {
+  PROGRESS_STEPS,
+  type ProgressStep,
+  type StepStatus,
+  type UtteranceProgressView
+} from "../state/utterance_progress";
 import type {
   VoiceLanguage,
   VoicePreset,
@@ -35,6 +41,12 @@ export const PIPELINE_TARGET_PREFIX = "vpl:";
 export const STT_TARGET_ID = `${PIPELINE_TARGET_PREFIX}stt`;
 export const LLM_TARGET_ID = `${PIPELINE_TARGET_PREFIX}llm`;
 export const TTS_TARGET_ID = `${PIPELINE_TARGET_PREFIX}tts`;
+/**
+ * «Без стиля»: реплика уходит дословно, LLM-ступень выключается. Это не
+ * седьмой пресет (в voice_presets.yaml его нет и быть не должно), а выход
+ * из режима переписывания — поэтому отдельный id, а не `preset:none`.
+ */
+export const STYLE_OFF_TARGET_ID = `${PIPELINE_TARGET_PREFIX}style_off`;
 /** id цели указателя для перетаскивания панели (весь фон, не кнопки). */
 export const PIPELINE_DRAG_TARGET_ID = `${PIPELINE_TARGET_PREFIX}drag`;
 
@@ -52,7 +64,9 @@ export type VoicePipelineAction =
   | { kind: "llm" }
   | { kind: "tts" }
   | { kind: "preset"; preset: VoicePresetId }
-  | { kind: "lang"; language: VoiceLanguage };
+  | { kind: "lang"; language: VoiceLanguage }
+  /** Выключить переписывание: робот произносит сказанное дословно. */
+  | { kind: "style_off" };
 
 /**
  * Разобрать id цели указателя. `null` — цель не наша, обработчик должен
@@ -64,6 +78,7 @@ export function parsePipelineTargetId(id: string): VoicePipelineAction | null {
   if (rest === "stt") return { kind: "stt" };
   if (rest === "llm") return { kind: "llm" };
   if (rest === "tts") return { kind: "tts" };
+  if (rest === "style_off") return { kind: "style_off" };
   if (rest.startsWith("preset:")) {
     const preset = rest.slice("preset:".length);
     return preset ? { kind: "preset", preset: preset as VoicePresetId } : null;
@@ -93,17 +108,39 @@ export function renderHud(
   return language ? `ST:${st}@${String(language).toUpperCase()}` : `ST:${st}`;
 }
 
+/**
+ * Порядок языков вывода = порядок кнопок. Совпадает с ключами `languages`
+ * в src/rob_box_voice/config/voice_presets.yaml и с VOICE_LANGUAGES в
+ * ws_server.py: расширение языка — правка всех трёх мест, иначе кнопка
+ * будет ловить NACK.
+ */
+export const LANG_ORDER: ReadonlyArray<VoiceLanguage> = [
+  "ru",
+  "en",
+  "fr",
+  "de",
+  "zh",
+  "hi"
+];
+
+/** Короткая подпись кнопки языка (ISO-код: влезает в узкую кнопку). */
 export const LANG_LABELS: Readonly<Record<VoiceLanguage, string>> = {
   ru: "RU",
-  en: "EN"
+  en: "EN",
+  fr: "FR",
+  de: "DE",
+  zh: "ZH",
+  hi: "HI"
 };
+
+/** Ширина канваса-текстуры панели. Высота считается из раскладки (ниже). */
+export const CANVAS_W = 512;
 
 /** Геометрия панели: спереди-справа (+60°) от оператора. */
 export const VOICE_PIPELINE_ANGLE_DEG = 60;
 export const VOICE_PIPELINE_RADIUS_M = 2.4;
 export const VOICE_PIPELINE_Y_M = 1.4;
 export const VOICE_PIPELINE_W_M = 0.95;
-export const VOICE_PIPELINE_H_M = 1.15;
 
 export interface Rect {
   x: number;
@@ -122,11 +159,14 @@ export interface ButtonRect {
 
 export interface PipelineLayout {
   header: Rect;
-  chain: Rect;
+  /** Строка «где сейчас моя реплика» — статус + 4 ступени пути. */
+  progress: Rect;
   stt: Rect;
   llm: Rect;
   tts: Rect;
   sectionLabel: Rect;
+  /** Кнопка «Без стиля» — отдельной строкой над чипами пресетов. */
+  noStyle: ButtonRect;
   presetChips: ButtonRect[];
   langButtons: ButtonRect[];
   loading: Rect;
@@ -137,7 +177,13 @@ export interface PipelineLayout {
 const PAD_X = 24;
 const PAD_Y = 20;
 const HEADER_H = 56;
-const CHAIN_H = 52;
+/**
+ * Прогресс-строка — самый крупный элемент панели. Она отвечает на вопрос
+ * «я сказал, и что дальше?», ради которого оператор вообще смотрит на
+ * панель во время разговора, поэтому места ей отдано больше, чем любой
+ * настройке: крупный статус + подсказка + 4 ступени.
+ */
+const PROGRESS_H = 124;
 const TOGGLE_H = 44;
 const TOGGLE_GAP = 8;
 const SECTION_LABEL_H = 28;
@@ -149,6 +195,9 @@ const LOADING_H = 28;
 const PRESETS_PER_ROW = 3;
 
 export const PRESET_ORDER: ReadonlyArray<VoicePresetId> = [
+  // «Перевод» первым: это самый частый выбор оператора, которому нужен не
+  // характер, а просто другой язык. Стилизующие пресеты — дальше.
+  "translate",
   "technical",
   "street",
   "caveman",
@@ -163,6 +212,7 @@ export const PRESET_ORDER: ReadonlyArray<VoicePresetId> = [
  * когда-нибудь пришлёт свой — `setPresets` его заменит.
  */
 export const FALLBACK_PRESETS: ReadonlyArray<VoicePresetInfo> = [
+  { id: "translate", name: "Перевод" },
   { id: "technical", name: "Технический" },
   { id: "street", name: "По понятиям" },
   { id: "caveman", name: "Пещерный" },
@@ -171,6 +221,9 @@ export const FALLBACK_PRESETS: ReadonlyArray<VoicePresetInfo> = [
   { id: "lenin", name: "Ленин" }
 ];
 
+/** Сколько кнопок языка в строке (6 языков → 2 строки по 3). */
+const LANGS_PER_ROW = 3;
+
 export function computePipelineLayout(canvasW: number): PipelineLayout {
   const usableW = canvasW - 2 * PAD_X;
   let y = PAD_Y;
@@ -178,8 +231,8 @@ export function computePipelineLayout(canvasW: number): PipelineLayout {
   const header: Rect = { x: PAD_X, y, w: usableW, h: HEADER_H };
   y += HEADER_H + TOGGLE_GAP;
 
-  const chain: Rect = { x: PAD_X, y, w: usableW, h: CHAIN_H };
-  y += CHAIN_H + TOGGLE_GAP;
+  const progress: Rect = { x: PAD_X, y, w: usableW, h: PROGRESS_H };
+  y += PROGRESS_H + TOGGLE_GAP;
 
   const stt: Rect = { x: PAD_X, y, w: usableW, h: TOGGLE_H };
   y += TOGGLE_H + TOGGLE_GAP;
@@ -191,7 +244,17 @@ export function computePipelineLayout(canvasW: number): PipelineLayout {
   const sectionLabel: Rect = { x: PAD_X, y, w: usableW, h: SECTION_LABEL_H };
   y += SECTION_LABEL_H + TOGGLE_GAP;
 
-  // Два ряда чипов по 3.
+  // «Без стиля» — во всю ширину над чипами: это не один из стилей, а
+  // выход из режима переписывания, и визуально он не должен читаться
+  // как седьмой равноправный чип.
+  const noStyle: ButtonRect = {
+    id: STYLE_OFF_TARGET_ID,
+    buttonId: "style_off",
+    rect: { x: PAD_X, y, w: usableW, h: CHIP_H }
+  };
+  y += CHIP_H + CHIP_GAP;
+
+  // Чипы стилей — сеткой по 3 в ряд, в порядке PRESET_ORDER.
   const chipW = (usableW - (PRESETS_PER_ROW - 1) * CHIP_GAP) / PRESETS_PER_ROW;
   const presetChips: ButtonRect[] = [];
   PRESET_ORDER.forEach((preset, i) => {
@@ -205,20 +268,42 @@ export function computePipelineLayout(canvasW: number): PipelineLayout {
     };
     presetChips.push({ id: presetTargetId(preset), buttonId: `preset:${preset}`, rect });
   });
-  y += 2 * CHIP_H + CHIP_GAP + TOGGLE_GAP;
+  const presetRows = Math.ceil(PRESET_ORDER.length / PRESETS_PER_ROW);
+  y += presetRows * CHIP_H + (presetRows - 1) * CHIP_GAP + TOGGLE_GAP;
 
-  // Язык: RU / EN.
-  const langW = (usableW - CHIP_GAP) / 2;
-  const langButtons: ButtonRect[] = (["ru", "en"] as const).map((lang, i) => ({
-    id: langTargetId(lang),
-    buttonId: `lang:${lang}`,
-    rect: { x: PAD_X + i * (langW + CHIP_GAP), y, w: langW, h: LANG_H }
-  }));
-  y += LANG_H + TOGGLE_GAP;
+  // Язык вывода — та же сетка по 3 в ряд, в порядке LANG_ORDER.
+  const langW = (usableW - (LANGS_PER_ROW - 1) * CHIP_GAP) / LANGS_PER_ROW;
+  const langButtons: ButtonRect[] = LANG_ORDER.map((lang, i) => {
+    const row = Math.floor(i / LANGS_PER_ROW);
+    const col = i % LANGS_PER_ROW;
+    return {
+      id: langTargetId(lang),
+      buttonId: `lang:${lang}`,
+      rect: {
+        x: PAD_X + col * (langW + CHIP_GAP),
+        y: y + row * (LANG_H + CHIP_GAP),
+        w: langW,
+        h: LANG_H
+      }
+    };
+  });
+  const langRows = Math.ceil(LANG_ORDER.length / LANGS_PER_ROW);
+  y += langRows * LANG_H + (langRows - 1) * CHIP_GAP + TOGGLE_GAP;
 
   const loading: Rect = { x: PAD_X, y, w: usableW, h: LOADING_H };
 
-  return { header, chain, stt, llm, tts, sectionLabel, presetChips, langButtons, loading };
+  return {
+    header,
+    progress,
+    stt,
+    llm,
+    tts,
+    sectionLabel,
+    noStyle,
+    presetChips,
+    langButtons,
+    loading
+  };
 }
 
 /**
@@ -249,10 +334,30 @@ export function hitTest(
   if (inRect(layout.stt)) return STT_TARGET_ID;
   if (inRect(layout.llm)) return LLM_TARGET_ID;
   if (inRect(layout.tts)) return TTS_TARGET_ID;
+  if (inRect(layout.noStyle.rect)) return layout.noStyle.id;
   for (const b of layout.presetChips) if (inRect(b.rect)) return b.id;
   for (const b of layout.langButtons) if (inRect(b.rect)) return b.id;
   return null;
 }
+
+/**
+ * Высота канваса под раскладку: нижний край последнего элемента + отступ.
+ * Считается, а не задаётся числом, — иначе добавление седьмого пресета или
+ * четвёртого языка молча уводило бы кнопки за край текстуры (а вместе с
+ * ними и hit-test, который живёт в тех же координатах).
+ */
+export function pipelineCanvasHeight(layout: PipelineLayout): number {
+  return Math.ceil(layout.loading.y + layout.loading.h + PAD_Y);
+}
+
+export const CANVAS_H = pipelineCanvasHeight(computePipelineLayout(CANVAS_W));
+
+/**
+ * Высота панели держится в аспекте канваса — иначе текст и кнопки
+ * растягиваются, а hit-test (нормированные UV → пиксели канваса) начинает
+ * промахиваться мимо того, что оператор видит.
+ */
+export const VOICE_PIPELINE_H_M = (VOICE_PIPELINE_W_M * CANVAS_H) / CANVAS_W;
 
 // ───────────────────────── состояние для отрисовки ─────────────────────────
 
@@ -268,17 +373,23 @@ export interface VoicePipelineView {
   llmOn: boolean | null;
   /** Активный голос TTS (voice_id из voice_list / voice_set_ack). */
   currentVoice: string | null;
+  /**
+   * Где сейчас реплика оператора (`state/utterance_progress.ts`).
+   * null — прогресс ещё не считался ни разу (панель показывает покой).
+   */
+  progress: UtteranceProgressView | null;
 }
 
 export const DEFAULT_VIEW: VoicePipelineView = {
   presets: [...FALLBACK_PRESETS],
-  languages: ["ru", "en"],
+  languages: [...LANG_ORDER],
   currentPreset: "technical",
   currentLanguage: "ru",
   loading: false,
   sttOn: null,
   llmOn: null,
-  currentVoice: null
+  currentVoice: null,
+  progress: null
 };
 
 export interface VoicePipelinePanelHandle {
@@ -293,6 +404,8 @@ export interface VoicePipelinePanelHandle {
   setSttOn(on: boolean | null): void;
   setLlmOn(on: boolean | null): void;
   setCurrentVoice(voiceId: string | null): void;
+  /** Обновить прогресс реплики (вызывается на каждое изменение стадии). */
+  setProgress(progress: UtteranceProgressView | null): void;
   setVisible(visible: boolean): void;
   isVisible(): boolean;
   /** Переместить панель и развернуть лицом к оператору (0, y, 0). */
@@ -303,9 +416,6 @@ export interface VoicePipelinePanelHandle {
 
 // ───────────────────────── three.js рендер ─────────────────────────
 
-const CANVAS_W = 512;
-const CANVAS_H = 528;
-
 const COLORS = {
   bg: "rgba(10, 13, 17, 0.92)",
   accent: "#2ec27e",
@@ -314,8 +424,37 @@ const COLORS = {
   mute: "#8b98a5",
   text: "#d6dde5",
   panelBtn: "rgba(28, 33, 39, 0.92)",
-  panelBtnBlocked: "#1c2127"
+  panelBtnBlocked: "#1c2127",
+  /** Фон прогресс-строки: чуть светлее панели, чтобы читалась как «табло». */
+  progressBg: "rgba(20, 25, 32, 0.95)",
+  /** Ступень, которую эта реплика уже прошла. */
+  stepDone: "#1f6f4a",
+  /** Ступень, которая идёт прямо сейчас. */
+  stepActive: "#2ec27e",
+  stepIdle: "#242b33"
 };
+
+/** Подписи колонок прогресс-строки. */
+const STEP_LABELS: Readonly<Record<ProgressStep, string>> = {
+  voice: "ГОЛОС",
+  stt: "STT",
+  llm: "LLM",
+  tts: "TTS"
+};
+
+function stepFill(status: StepStatus): string {
+  if (status === "active") return COLORS.stepActive;
+  if (status === "done") return COLORS.stepDone;
+  if (status === "bad") return COLORS.bad;
+  return COLORS.stepIdle;
+}
+
+function levelColor(level: UtteranceProgressView["level"]): string {
+  if (level === "bad") return COLORS.bad;
+  if (level === "warn") return COLORS.warn;
+  if (level === "idle") return COLORS.mute;
+  return COLORS.accent;
+}
 
 function toggleStateLabel(on: boolean | null): string {
   if (on === null) return "…";
@@ -379,6 +518,7 @@ export function createVoicePipelinePanel(): VoicePipelinePanelHandle {
     add(STT_TARGET_ID, layout.stt);
     add(LLM_TARGET_ID, layout.llm);
     add(TTS_TARGET_ID, layout.tts);
+    add(layout.noStyle.id, layout.noStyle.rect);
     for (const b of layout.presetChips) add(b.id, b.rect);
     for (const b of layout.langButtons) add(b.id, b.rect);
   }
@@ -421,28 +561,52 @@ export function createVoicePipelinePanel(): VoicePipelinePanelHandle {
     }
   }
 
-  function drawChain(rect: Rect): void {
-    // "🎤 → STT → LLM → TTS → 🔊" — ступени с цветом состояния.
-    const sttOn = view.sttOn;
-    const llmOn = view.llmOn;
-    const ttsOn = view.currentVoice !== null;
-    const stage = (label: string, on: boolean | null): string => {
-      if (on === null) return label;
-      return on ? label : `${label}✕`;
-    };
-    const stages: Array<{ text: string; color: string }> = [
-      { text: "🎤", color: COLORS.text },
-      { text: stage("STT", sttOn), color: sttOn === false ? COLORS.warn : COLORS.accent },
-      { text: stage("LLM", llmOn), color: llmOn === false ? COLORS.warn : COLORS.accent },
-      { text: stage("TTS", ttsOn), color: COLORS.accent },
-      { text: "🔊", color: COLORS.text }
-    ];
-    const step = rect.w / stages.length;
-    stages.forEach((s, i) => {
-      drawText(s.text, rect.x + step * i + step / 2, rect.y + rect.h / 2, s.color, 18, "center");
-      if (i < stages.length - 1) {
-        drawText("→", rect.x + step * (i + 1), rect.y + rect.h / 2, COLORS.mute, 14, "center");
-      }
+  /**
+   * Прогресс-строка: крупный статус + счётчик ожидания + 4 ступени пути.
+   *
+   * Читается за один взгляд и отвечает ровно на один вопрос: «я сказал —
+   * где сейчас моя реплика». Пока прогресс не считался (progress === null)
+   * показываем покой, а не выдуманную стадию.
+   */
+  function drawProgress(rect: Rect): void {
+    const p = view.progress;
+    ctx.fillStyle = COLORS.progressBg;
+    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+
+    const color = p ? levelColor(p.level) : COLORS.mute;
+    // Цветная полоса слева — тот же приём, что в status HUD: уровень
+    // видно боковым зрением, не вчитываясь в текст.
+    ctx.fillStyle = color;
+    ctx.fillRect(rect.x, rect.y, 6, rect.h);
+
+    const label = p?.label ?? "ГОТОВ";
+    const hint = p?.hint ?? "зажми грипп и говори";
+    drawText(label, rect.x + 18, rect.y + 26, color, 26);
+    if (p?.elapsedS !== null && p?.elapsedS !== undefined) {
+      drawText(`${p.elapsedS}s`, rect.x + rect.w - 12, rect.y + 26, color, 22, "right");
+    }
+    drawText(hint, rect.x + 18, rect.y + 52, COLORS.mute, 14, "left", rect.w - 30);
+
+    // Ступени: 4 равных сегмента со стрелками между ними.
+    const steps = p?.steps;
+    const barY = rect.y + 72;
+    const barH = 34;
+    const gap = 6;
+    const segW = (rect.w - 12 - gap * (PROGRESS_STEPS.length - 1)) / PROGRESS_STEPS.length;
+    PROGRESS_STEPS.forEach((step, i) => {
+      const status: StepStatus = steps?.[step] ?? "idle";
+      const x = rect.x + 6 + i * (segW + gap);
+      ctx.fillStyle = stepFill(status);
+      ctx.fillRect(x, barY, segW, barH);
+      drawText(
+        STEP_LABELS[step],
+        x + segW / 2,
+        barY + barH / 2,
+        status === "active" || status === "bad" ? "#0a0d11" : COLORS.text,
+        14,
+        "center",
+        segW - 6
+      );
     });
   }
 
@@ -456,8 +620,9 @@ export function createVoicePipelinePanel(): VoicePipelinePanelHandle {
     const hud = renderHud(view.currentPreset, view.currentLanguage);
     drawText(hud, layout.header.x + layout.header.w - 8, layout.header.y + 20, COLORS.text, 18, "right");
 
-    // Chain.
-    drawChain(layout.chain);
+    // «Где моя реплика» — раньше настроек: во время разговора оператор
+    // смотрит именно сюда.
+    drawProgress(layout.progress);
 
     // Тумблеры STT / LLM.
     drawButtonRect(
@@ -482,13 +647,29 @@ export function createVoicePipelinePanel(): VoicePipelinePanelHandle {
     // Секция стиля речи.
     drawText("СТИЛЬ РЕЧИ", layout.sectionLabel.x + 8, layout.sectionLabel.y + layout.sectionLabel.h / 2, COLORS.mute, 14);
 
-    // Чипы пресетов.
+    // «Без стиля» — активна, когда LLM-ступень выключена: тогда робот
+    // произносит сказанное дословно и ни один стиль не применяется.
+    const styleOff = view.llmOn === false;
+    drawButtonRect(
+      layout.noStyle.rect,
+      "Без стиля",
+      styleOff ? "робот говорит дословно" : "выключить переписывание",
+      view.loading ? "blocked" : styleOff ? "active" : "idle"
+    );
+
+    // Чипы пресетов. При выключенном LLM ни один стиль не применяется —
+    // показываем их приглушёнными, чтобы подсветка не врала.
     for (const chip of layout.presetChips) {
       const preset = chip.buttonId.slice("preset:".length) as VoicePresetId;
       const info = view.presets.find((p) => p.id === preset);
       const label = info?.name ?? preset;
-      const active = view.currentPreset === preset;
-      drawButtonRect(chip.rect, label, "", view.loading ? "blocked" : active ? "active" : "idle");
+      const active = !styleOff && view.currentPreset === preset;
+      drawButtonRect(
+        chip.rect,
+        label,
+        "",
+        view.loading || styleOff ? "blocked" : active ? "active" : "idle"
+      );
     }
 
     // Язык.
@@ -557,6 +738,10 @@ export function createVoicePipelinePanel(): VoicePipelinePanelHandle {
     setCurrentVoice(voiceId: string | null): void {
       if (view.currentVoice === voiceId) return;
       view = { ...view, currentVoice: voiceId };
+      commit();
+    },
+    setProgress(progress: UtteranceProgressView | null): void {
+      view = { ...view, progress };
       commit();
     },
     setVisible(visible: boolean): void {

@@ -600,11 +600,14 @@ async def test_set_voice_invalid_language_sends_nack(client, fixed_pin, monkeypa
     http_client, _server, bridge = client
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
-        await _send_json_cmd(ws, {"cmd": "set_voice", "ts_ms": 0, "language": "de"})
+        # "eo" (эсперанто) — заведомо вне VOICE_LANGUAGES. Раньше здесь
+        # стоял "de", но немецкий с расширением списка языков стал
+        # валидным, и тест перестал проверять то, ради чего написан.
+        await _send_json_cmd(ws, {"cmd": "set_voice", "ts_ms": 0, "language": "eo"})
         nack = await _wait_for_event_type(ws, "voice_set_nack", timeout_s=0.5)
         assert nack is not None, "voice_set_nack not received"
         assert "invalid_voice_language" in nack["reason"]
-        assert nack["language"] == "de"
+        assert nack["language"] == "eo"
         await asyncio.sleep(0.02)
         assert bridge.voice_languages == []
     finally:
@@ -629,9 +632,15 @@ async def test_validate_voice_set_payload_whitelist() -> None:
     # Невалидный preset.
     assert _validate_voice_set_payload("scammer", None) is not None
     # Невалидный language.
-    assert _validate_voice_set_payload(None, "de") is not None
+    assert _validate_voice_set_payload(None, "eo") is not None
     # Оба вместе — первый невалидный попадает в reason первой строкой.
     assert _validate_voice_set_payload("scammer", "ru") is not None
+
+    # Языки и пресеты обязаны совпадать с voice_presets.yaml: клиент
+    # рисует кнопки по своему списку, и разъезд означал бы NACK на
+    # кнопку, которую оператор видит активной.
+    assert set(VOICE_LANGUAGES) == {"ru", "en", "fr", "de", "zh", "hi"}
+    assert "translate" in VOICE_PRESET_IDS
 
 
 async def _next_voice_state_event(ws, timeout_s: float = 1.0):

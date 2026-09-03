@@ -105,11 +105,17 @@ export type VoicePresetId =
   | "caveman"
   | "business"
   | "philosopher"
-  | "lenin";
+  | "lenin"
+  /**
+   * Нейтральный пресет: не накладывает свой стиль, только убирает оговорки
+   * и переводит реплику на выбранный язык. Не путать с выключенной
+   * LLM-ступенью — там реплика уходит дословно и на исходном языке.
+   */
+  | "translate";
 /** Совместный тип — клиент шлёт либо старый, либо новый ID. */
 export type VoicePreset = VoicePresetLegacy | VoicePresetId;
-/** AV-28 §P7: ID языка из voice_presets.yaml: languages[]. */
-export type VoiceLanguage = "ru" | "en";
+/** AV-28 §P7: ID языка из voice_presets.yaml: ключи languages. */
+export type VoiceLanguage = "ru" | "en" | "fr" | "de" | "zh" | "hi";
 
 export interface SetVoiceCmd {
   cmd: "set_voice";

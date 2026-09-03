@@ -56,6 +56,23 @@ export interface PointerHandlers {
   onResizeEnd?(id: string, corner: PanelCorner): void;
 }
 
+/**
+ * Куда именно смотрит луч в этом кадре. Нужен визуализации указателя:
+ * без расстояния до цели луч приходится рисовать фиксированной длины, и
+ * он либо не достаёт до панели, либо протыкает её насквозь — оператор в
+ * обоих случаях не видит, куда он целится.
+ */
+export interface PointerHit {
+  /** id цели под лучом, либо `null` — луч в пустоту. */
+  id: string | null;
+  /** Расстояние до попадания в метрах; `null` — попадания нет. */
+  distanceM: number | null;
+  /** Точка попадания в мировых координатах; `null` — попадания нет. */
+  point: Vec3 | null;
+  /** Зажат ли сейчас trigger / кнопка мыши. */
+  pressed: boolean;
+}
+
 export interface PointerSystemOptions {
   /** Центр сферы перетаскивания — оператор. Default (0, 1.6, 0). */
   center?: Vec3;
@@ -78,6 +95,7 @@ export class PointerSystem {
   private resizing = false;
   private dragRadius = 2;
   private wasPressed = false;
+  private lastHit: PointerHit = { id: null, distanceM: null, point: null, pressed: false };
 
   constructor(opts: PointerSystemOptions = {}) {
     this.center = opts.center ?? DEFAULT_CENTER;
@@ -101,8 +119,22 @@ export class PointerSystem {
     this.targets = [];
   }
 
+  /** Зарегистрированная цель по id (для подсветки наведения). */
+  getTarget(id: string): PointerTarget | null {
+    return this.targets.find((t) => t.id === id) ?? null;
+  }
+
   getHovered(): string | null {
     return this.hoveredId;
+  }
+
+  /**
+   * Последний посчитанный кадр указателя. Луч и курсор рисуются из него,
+   * поэтому визуализация показывает ровно то, во что попадёт клик, — а не
+   * приблизительную оценку, посчитанную вторым raycast'ом.
+   */
+  getHit(): PointerHit {
+    return this.lastHit;
   }
 
   isDragging(): boolean {
@@ -118,11 +150,18 @@ export class PointerSystem {
       this.finishPress(null);
       this.setHover(null);
       this.wasPressed = false;
+      this.lastHit = { id: null, distanceM: null, point: null, pressed: false };
       return;
     }
 
     const pick = this.pick(ray);
     const hitId = pick?.id ?? null;
+    this.lastHit = {
+      id: hitId,
+      distanceM: pick?.distance ?? null,
+      point: pick?.point ?? null,
+      pressed: ray.pressed
+    };
 
     // Во время драга/ресайза наведение не переезжает на другие объекты —
     // иначе панель «перепрыгивает» на соседнюю при пересечении лучом.
@@ -171,7 +210,9 @@ export class PointerSystem {
   }
 
   /** Луч попал в объект? Возвращает id ближайшего + угол (если угловой хит). */
-  private pick(ray: PointerRay): { id: string; corner: PanelCorner | null } | null {
+  private pick(
+    ray: PointerRay
+  ): { id: string; corner: PanelCorner | null; distance: number; point: Vec3 } | null {
     if (this.targets.length === 0) return null;
     this.raycaster.set(
       new THREE.Vector3(ray.origin.x, ray.origin.y, ray.origin.z),
@@ -185,7 +226,12 @@ export class PointerSystem {
       const id = this.ownerOf(hit.object);
       if (!id) continue;
       const corner = hit.uv ? cornerFromUv(hit.uv) : null;
-      return { id, corner };
+      return {
+        id,
+        corner,
+        distance: hit.distance,
+        point: { x: hit.point.x, y: hit.point.y, z: hit.point.z }
+      };
     }
     return null;
   }

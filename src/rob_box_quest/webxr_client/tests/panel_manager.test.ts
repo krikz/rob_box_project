@@ -136,6 +136,48 @@ describe("captain bridge layout constants", () => {
       expect(Math.abs(a)).toBeGreaterThan(60);
     }
   });
+
+  it("потолочная камера — на потолочном экране, а не на боковой панели", async () => {
+    const { CEILING_SCREEN_TOPIC, SIDE_PANEL_TOPICS, MAIN_SCREEN_TOPIC } = await import(
+      "../src/scene/captain_bridge"
+    );
+    // Иначе один и тот же поток показывался бы дважды.
+    expect(SIDE_PANEL_TOPICS).not.toContain(CEILING_SCREEN_TOPIC);
+    expect(CEILING_SCREEN_TOPIC).not.toBe(MAIN_SCREEN_TOPIC);
+  });
+
+  it("потолочный экран висит над глазами и смотрит нормалью в оператора", async () => {
+    const { CEILING_SCREEN_POS, EYE_HEIGHT_M, ceilingScreenPitchRad } = await import(
+      "../src/scene/captain_bridge"
+    );
+    // Над головой и впереди — «поднял голову и увидел, что над роботом».
+    expect(CEILING_SCREEN_POS.y).toBeGreaterThan(EYE_HEIGHT_M);
+    expect(CEILING_SCREEN_POS.z).toBeLessThan(0);
+    // Тот же азимут, что у экрана-стены: на роботе обе камеры стоят на
+    // осевой линии и различаются только направлением взгляда.
+    expect(CEILING_SCREEN_POS.x).toBe(0);
+    // Комната 3 м высотой — экран должен помещаться под потолок.
+    expect(CEILING_SCREEN_POS.y).toBeLessThan(3);
+
+    const pitch = ceilingScreenPitchRad();
+    // Наклон вниз-назад, к оператору, и не «плашмя в потолок».
+    expect(pitch).toBeGreaterThan(0);
+    expect(pitch).toBeLessThan(Math.PI / 2);
+
+    // Нормаль плоскости после поворота вокруг X: (0, -sin φ, cos φ).
+    // Она обязана смотреть из центра экрана в глаза оператора.
+    const nx = 0;
+    const ny = -Math.sin(pitch);
+    const nz = Math.cos(pitch);
+    const toEye = {
+      x: -CEILING_SCREEN_POS.x,
+      y: EYE_HEIGHT_M - CEILING_SCREEN_POS.y,
+      z: -CEILING_SCREEN_POS.z
+    };
+    const len = Math.hypot(toEye.x, toEye.y, toEye.z);
+    const dot = (nx * toEye.x + ny * toEye.y + nz * toEye.z) / len;
+    expect(dot).toBeCloseTo(1, 5);
+  });
 });
 
 // --- AV-25: resize + createPanelWithId ---

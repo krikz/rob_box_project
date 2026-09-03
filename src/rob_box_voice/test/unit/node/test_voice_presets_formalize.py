@@ -4,9 +4,11 @@
 
 Закрывает четыре пункта acceptance карточки t_dbae4b34:
 
-  1. unit: загрузка ``voice_presets.yaml`` — список из 6 пресетов
-     (technical/street/caveman/business/philosopher/lenin), оба языка
-     (ru/en) и дефолты (technical/ru).
+  1. unit: загрузка ``voice_presets.yaml`` — список пресетов
+     (technical/street/caveman/business/philosopher/lenin + нейтральный
+     translate), языки вывода (ru/en/fr/de/zh/hi) и дефолты (technical/ru).
+     Плюс сверка списков с whitelist'ами в ws_server.py: разъезд означал
+     бы кнопку, которую оператор видит, но которая ловит NACK.
   2. unit: промпт-композиция — для каждой комбинации preset+language
      существует файл ``presets/<key>.txt`` (или эквивалент), и он
      содержит непустой промпт с явным «no-dialog» контрактом.
@@ -108,13 +110,89 @@ class TestVoicePresetsYaml:
         assert isinstance(data["presets"], dict), "voice_presets.yaml: 'presets' — это dict"
 
     def test_yaml_has_languages_block(self):
-        """Ключ ``languages`` — список (минимум ru, en)."""
+        """Ключ ``languages`` — коды языков (минимум ru, en).
+
+        Формат исторически был списком кодов; сейчас это map
+        код → {name, label, prompt_section}, потому что языку нужны ещё
+        русская подпись для директивы LLM и выбор секции промпт-файла.
+        Оба формата валидны: ``in`` работает и по списку, и по ключам map.
+        """
         with VOICE_PRESETS_YAML.open(encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
         assert "languages" in data
-        assert isinstance(data["languages"], list)
+        assert isinstance(data["languages"], (list, dict))
         assert "ru" in data["languages"], "voice_presets.yaml: язык 'ru' обязателен"
         assert "en" in data["languages"], "voice_presets.yaml: язык 'en' обязателен"
+
+    def test_every_language_has_label_and_prompt_section(self):
+        """У каждого языка есть русская подпись и секция промпта.
+
+        ``label`` уходит в директиву формализатору («на языке
+        «французский»»), ``prompt_section`` выбирает половину
+        двуязычного prompt-файла. Пропущенное поле означало бы, что
+        dialogue_node молча свалится на дефолт и оператор получит
+        реплику не на том языке.
+        """
+        with VOICE_PRESETS_YAML.open(encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+        languages = data["languages"]
+        if not isinstance(languages, dict):
+            pytest.skip("languages в списочном формате — описаний нет")
+        for code, meta in languages.items():
+            assert isinstance(meta, dict), f"language '{code}': ожидается map"
+            assert meta.get("label"), f"language '{code}': нет 'label'"
+            assert meta.get("name"), f"language '{code}': нет 'name'"
+            assert meta.get("prompt_section") in ("ru", "en"), (
+                f"language '{code}': prompt_section должен быть 'ru' или 'en'"
+            )
+
+    def test_language_list_matches_quest_server_whitelist(self):
+        """Языки yaml == VOICE_LANGUAGES в ws_server.py.
+
+        Разъезд списков означает кнопку языка, которую оператор видит в
+        панели, но которая ловит NACK от сервера.
+        """
+        with VOICE_PRESETS_YAML.open(encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+        ws_server = (
+            REPO_ROOT
+            / "src"
+            / "rob_box_quest"
+            / "rob_box_quest"
+            / "server"
+            / "ws_server.py"
+        )
+        src = ws_server.read_text(encoding="utf-8")
+        match = re.search(r"VOICE_LANGUAGES: tuple\[str, \.\.\.\] = \(([^)]*)\)", src)
+        assert match, "ws_server.py: VOICE_LANGUAGES не найден"
+        server_langs = set(re.findall(r'"([a-z-]+)"', match.group(1)))
+        assert server_langs == set(data["languages"]), (
+            f"yaml={sorted(data['languages'])} vs ws_server={sorted(server_langs)}"
+        )
+
+    def test_preset_list_matches_quest_server_whitelist(self):
+        """Пресеты yaml == VOICE_PRESET_IDS в ws_server.py (та же причина)."""
+        with VOICE_PRESETS_YAML.open(encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+        ws_server = (
+            REPO_ROOT
+            / "src"
+            / "rob_box_quest"
+            / "rob_box_quest"
+            / "server"
+            / "ws_server.py"
+        )
+        src = ws_server.read_text(encoding="utf-8")
+        # До закрывающей скобки в начале строки: внутри кортежа есть
+        # комментарии со своими скобками, и non-greedy `\)` обрывался на них.
+        match = re.search(
+            r"VOICE_PRESET_IDS: tuple\[str, \.\.\.\] = \((.*?)\n\)", src, re.S
+        )
+        assert match, "ws_server.py: VOICE_PRESET_IDS не найден"
+        server_presets = set(re.findall(r'"([a-z_]+)"', match.group(1)))
+        assert server_presets == set(data["presets"]), (
+            f"yaml={sorted(data['presets'])} vs ws_server={sorted(server_presets)}"
+        )
 
     def test_yaml_has_default_preset(self):
         """``default_preset`` существует и указывает на реальный пресет."""
@@ -151,10 +229,18 @@ class TestVoicePresetsYaml:
 
     @pytest.mark.parametrize(
         "preset_key",
-        ["technical", "street", "caveman", "business", "philosopher", "lenin"],
+        [
+            "technical",
+            "street",
+            "caveman",
+            "business",
+            "philosopher",
+            "lenin",
+            "translate",
+        ],
     )
     def test_each_preset_has_required_fields(self, preset_key: str):
-        """Каждый из 6 пресетов имеет ``name`` (русское UI-название) и
+        """Каждый пресет имеет ``name`` (русское UI-название) и
         ``prompt_file`` (путь относительно ``config/``)."""
         with VOICE_PRESETS_YAML.open(encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
@@ -353,6 +439,78 @@ def _make_node() -> "DialogueNode":  # type: ignore[name-defined]
     n._logger = logger
     n.get_logger = lambda: logger
     return n
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Языки формализатора: подпись для директивы + секция промпт-файла
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestLanguageMetadata:
+    """``_language_label`` / ``_language_prompt_section`` берут данные из yaml.
+
+    Раньше и то и другое было захардкожено парой ``ru``/``en``:
+    ``language_label = "английский" if language == "en" else "русский"``.
+    С добавлением fr/de/zh/hi этот код молча превращал любой третий язык
+    в русский вывод — оператор жал FR и слышал русскую речь.
+    """
+
+    def _node(self):
+        with VOICE_PRESETS_YAML.open(encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+        n = _make_node()
+        n._load_voice_presets = lambda: data  # type: ignore[method-assign]
+        return n
+
+    @pytest.mark.parametrize(
+        ("code", "label"),
+        [
+            ("ru", "русский"),
+            ("en", "английский"),
+            ("fr", "французский"),
+            ("de", "немецкий"),
+            ("zh", "китайский"),
+            ("hi", "хинди"),
+        ],
+    )
+    def test_label_comes_from_yaml(self, code: str, label: str):
+        assert self._node()._language_label(code) == label
+
+    def test_unknown_language_is_not_silently_russian(self):
+        """Незнакомый код возвращает сам себя, а не «русский».
+
+        Честнее отдать LLM странную директиву и увидеть это в логах, чем
+        тихо подменить язык на дефолтный.
+        """
+        assert self._node()._language_label("eo") == "eo"
+
+    @pytest.mark.parametrize(
+        ("code", "section"),
+        [
+            ("ru", "ru"),
+            ("en", "en"),
+            ("fr", "en"),
+            ("de", "en"),
+            ("zh", "en"),
+            ("hi", "en"),
+        ],
+    )
+    def test_prompt_section_comes_from_yaml(self, code: str, section: str):
+        """Только русскому нужна RU-секция: в ней правило «отвечай
+        по-русски», которое конфликтует с любой другой целью."""
+        assert self._node()._language_prompt_section(code) == section
+
+    def test_unknown_language_falls_back_to_en_section(self):
+        """EN-секция не требует русского вывода — она безопасный дефолт."""
+        assert self._node()._language_prompt_section("eo") == "en"
+
+    def test_list_format_yaml_still_works(self):
+        """Старый формат ``languages: [ru, en]`` не должен ронять ноду."""
+        n = _make_node()
+        n._load_voice_presets = lambda: {"languages": ["ru", "en"]}  # type: ignore[method-assign]
+        assert n._language_prompt_section("ru") == "ru"
+        assert n._language_prompt_section("en") == "en"
+        assert n._language_label("ru") == "ru"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

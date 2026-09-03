@@ -14,17 +14,22 @@ import {
   EMPTY_VOICES_TEXT,
   INITIAL_TTS_PICKER_STATE,
   LAUNCH_TARGET_ID,
+  NEXT_PAGE_TARGET_ID,
+  PAGE_SIZE,
+  PREV_PAGE_TARGET_ID,
   STOP_TARGET_ID,
   TTS_TARGET_PREFIX,
   canApply,
   canStopPreview,
   isInteractive,
   newPreviewRequestId,
+  pageCount,
   parseTtsTargetId,
   previewTargetId,
   selectTargetId,
   ttsFooterText,
   ttsHeaderText,
+  ttsPageInfo,
   ttsPickerReducer,
   ttsRowViews,
   type TtsPickerAction,
@@ -441,5 +446,91 @@ describe("footer подсказки в обычном состоянии", () =>
       populated()
     );
     expect(ttsFooterText(st).level).toBe("bad");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Листание списка голосов.
+//
+// У yandex 11 голосов, у minimax 10 (tts_voice_registry.PROVIDER_VOICES), а в
+// меню помещается 8. До листания последние просто не отображались, и выбрать
+// их было нечем — меню молча врало, что голосов ровно восемь.
+// ---------------------------------------------------------------------------
+
+describe("листание списка голосов", () => {
+  const many = (n: number): VoiceInfo[] =>
+    Array.from({ length: n }, (_, i) => ({
+      voice_id: `v${i}`,
+      display_name: `Voice ${i}`,
+      language: "ru",
+      gender: "male" as const
+    }));
+
+  function ready(n: number): TtsPickerState {
+    return [
+      { kind: "open" } as TtsPickerAction,
+      { kind: "voice_list", voices: many(n) } as TtsPickerAction
+    ].reduce(ttsPickerReducer, INITIAL_TTS_PICKER_STATE);
+  }
+
+  it("первая страница — ровно PAGE_SIZE строк", () => {
+    const s = ready(11);
+    expect(ttsRowViews(s)).toHaveLength(PAGE_SIZE);
+    expect(ttsRowViews(s)[0].voiceId).toBe("v0");
+  });
+
+  it("вторая страница показывает остаток, а не обрезает список", () => {
+    const s = ttsPickerReducer(ready(11), { kind: "page", delta: 1 });
+    const rows = ttsRowViews(s);
+    expect(rows).toHaveLength(3);
+    expect(rows.map((r) => r.voiceId)).toEqual(["v8", "v9", "v10"]);
+  });
+
+  it("каждый голос достижим хотя бы на одной странице", () => {
+    let s = ready(11);
+    const seen = new Set<string>();
+    for (let i = 0; i < pageCount(11); i++) {
+      for (const r of ttsRowViews(s)) seen.add(r.voiceId);
+      s = ttsPickerReducer(s, { kind: "page", delta: 1 });
+    }
+    expect(seen.size).toBe(11);
+  });
+
+  it("за границы списка не уходит", () => {
+    const first = ready(11);
+    expect(ttsPickerReducer(first, { kind: "page", delta: -1 })).toBe(first);
+    const last = ttsPickerReducer(first, { kind: "page", delta: 1 });
+    expect(ttsPickerReducer(last, { kind: "page", delta: 1 })).toBe(last);
+  });
+
+  it("короткий список — одна страница, стрелки не нужны", () => {
+    const info = ttsPageInfo(ready(5));
+    expect(info.pages).toBe(1);
+    expect(info.hasPrev).toBe(false);
+    expect(info.hasNext).toBe(false);
+  });
+
+  it("укоротившийся список не оставляет страницу за своим концом", () => {
+    const s = ttsPickerReducer(ready(11), { kind: "page", delta: 1 });
+    expect(s.page).toBe(1);
+    const shrunk = ttsPickerReducer(s, { kind: "voice_list", voices: many(3) });
+    expect(shrunk.page).toBe(0);
+    expect(ttsRowViews(shrunk)).toHaveLength(3);
+  });
+
+  it("во время apply листать нельзя — UI залочен", () => {
+    const locked = ttsPickerReducer(ready(11), { kind: "apply_sent", voiceId: "v0" });
+    expect(ttsPickerReducer(locked, { kind: "page", delta: 1 })).toBe(locked);
+  });
+
+  it("id стрелок разбираются в действие листания", () => {
+    expect(parseTtsTargetId(PREV_PAGE_TARGET_ID)).toEqual({ kind: "page", delta: -1 });
+    expect(parseTtsTargetId(NEXT_PAGE_TARGET_ID)).toEqual({ kind: "page", delta: 1 });
+  });
+
+  it("футер сообщает, что список длиннее страницы", () => {
+    const text = ttsFooterText(ready(11)).text;
+    expect(text).toContain("11");
+    expect(text).toContain("листать");
   });
 });

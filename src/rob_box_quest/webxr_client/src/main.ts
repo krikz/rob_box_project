@@ -28,7 +28,7 @@ import { createXrTeleop, pollXrInput } from "./input/xr_teleop";
 import { createVoiceCapture } from "./input/voice_capture";
 import { createXrBootstrap, type XrBootstrap } from "./xr_bootstrap";
 import { createDesktopPointer } from "./interaction/desktop_pointer";
-import { xrPointerRay } from "./interaction/xr_pointer";
+import { createXrPointerSource, type XrPointerSource } from "./interaction/xr_pointer";
 import { createLoadingScreen } from "./ui/loading_screen";
 import {
   createErrorOverlay,
@@ -43,6 +43,13 @@ import {
   type ClientModeDefaults
 } from "./ui/mode_manager";
 import { PRESET_ORDER } from "./scene/voice_pipeline_panel";
+import {
+  INITIAL_UTTERANCE_PROGRESS,
+  utteranceProgressReducer,
+  utteranceProgressView,
+  type UtteranceProgressAction,
+  type UtteranceProgressState
+} from "./state/utterance_progress";
 import type {
   VoiceLanguage,
   VoicePresetId,
@@ -252,7 +259,16 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     return pipelineLlmOn ? "llm_formalize" : "ttts_proxy";
   }
 
-  /** Смена стиля речи / языка вывода → `set_voice` (AV-28 §P7). */
+  /**
+   * Смена стиля речи / языка вывода → `set_voice` (AV-28 §P7).
+   *
+   * ВАЖНО: `voice_id` здесь НЕ шлём. Сервер (ws_server.py, cmd set_voice)
+   * разводит две фичи, делящие одно имя `preset`, по значению поля:
+   * preset ∈ VOICE_PRESET_IDS (стиль речи) или наличие language → это
+   * AV-28-запрос, и `voice_id` в нём игнорируется. Отправлять сюда
+   * реальный voice_id — врать оператору: он бы увидел ack, а голос
+   * не сменился бы. Выбор голоса живёт только в TTS picker'е (apply).
+   */
   function sendStyleChange(preset?: VoicePresetId, language?: VoiceLanguage): void {
     const c = conn;
     if (!c || disconnected) return;
@@ -260,7 +276,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     c.send({
       cmd: "set_voice",
       ts_ms: Date.now(),
-      voice_id: snap.currentVoice ?? "",
+      voice_id: "",
       preset: preset ?? snap.currentPreset ?? DEFAULT_VOICE_PRESET,
       language: language ?? snap.currentLanguage ?? DEFAULT_VOICE_LANGUAGE
     });
@@ -353,7 +369,9 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     onPipelineAction: (action) => {
       if (!conn || disconnected) {
         // Нет соединения: оптимистичную подсветку откатываем к стора.
-        if (action.kind === "preset") {
+        if (action.kind === "style_off") {
+          bridge.voicePipeline.setLlmOn(pipelineLlmOn);
+        } else if (action.kind === "preset") {
           bridge.voicePipeline.setCurrentPreset(modeManager.snapshot().currentPreset);
         } else if (action.kind === "lang") {
           bridge.voicePipeline.setCurrentLanguage(modeManager.snapshot().currentLanguage);
@@ -383,6 +401,16 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             dispatchTts({ kind: "open" });
             requestVoiceList();
           }
+          return;
+        }
+        case "style_off": {
+          // «Без стиля» = выключить LLM-ступень: реплика уходит дословно,
+          // как сказал оператор. Это выход из режима переписывания, а не
+          // ещё один стиль — поэтому set_voice здесь не шлём вовсе.
+          if (pipelineLlmOn === false) return;
+          pipelineLlmOn = false;
+          bridge.voicePipeline.setLlmOn(false);
+          conn.send({ cmd: "voice_mode", ts_ms: Date.now(), mode: voiceModeForToggles() });
           return;
         }
         case "preset": {
@@ -429,6 +457,9 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   const fsm = new TeleopFSM();
   const desktopTeleop = createDesktopTeleop({ fsm });
   const xr: XrBootstrap = createXrBootstrap();
+  // Источник XR-луча: держит активную руку и гистерезис trigger'а между
+  // кадрами (см. interaction/xr_pointer.ts — оба против ложных кликов).
+  const xrPointer: XrPointerSource = createXrPointerSource();
 
   let conn: Connection | null = null;
   let disconnected = true;
@@ -500,15 +531,51 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     }
   }
 
+  // ---- «Где сейчас моя реплика» (state/utterance_progress.ts) ----------
+  //
+  // Мост знает только idle/listening/speaking, а стадии «отправлено» и
+  // «обрабатываю» знает клиент — он сам зажимал грипп. Сводим оба
+  // источника в один стор и отдаём его панели пайплайна.
+  let utterance: UtteranceProgressState = INITIAL_UTTERANCE_PROGRESS;
+
+  function pushUtteranceView(): void {
+    bridge.voicePipeline.setProgress(utteranceProgressView(utterance, Date.now()));
+  }
+
+  function dispatchUtterance(action: UtteranceProgressAction): void {
+    const next = utteranceProgressReducer(utterance, action);
+    if (next === utterance) return;
+    utterance = next;
+    pushUtteranceView();
+  }
+
+  // Тик раз в секунду: крутит счётчик ожидания, гасит «✓ готово» и
+  // переводит зависшую реплику в «нет ответа». Секунды достаточно —
+  // счётчик показывается с точностью до секунды.
+  const utteranceTicker = setInterval(() => {
+    dispatchUtterance({ kind: "tick", atMs: Date.now() });
+    // Даже без смены стадии счётчик секунд должен идти.
+    if (utterance.stage !== "idle") pushUtteranceView();
+  }, 1000);
+
+  pushUtteranceView();
+
   function applyVoicePtt(radio: boolean, robot: boolean): void {
     const next: "none" | "radio" | "robot_voice" = robot ? "robot_voice" : radio ? "radio" : "none";
     if (next === voicePttMode) return;
+    const prevMode = voicePttMode;
     const c = conn;
     const send = c !== null && !disconnected;
 
     // Закрыть предыдущий PTT-режим.
     if (voicePttMode !== "none" && send) {
       c!.send({ cmd: "voice_ptt_stop", mode: voicePttMode, ts_ms: Date.now() });
+    }
+    // Отпустили грипп робот-голоса — реплика ушла, дальше её ведёт робот
+    // (стадия «отправлено» → «обрабатываю»). Рацию не трекаем: там нет ни
+    // STT, ни LLM, и стадию целиком описывает voice_state моста.
+    if (prevMode === "robot_voice") {
+      dispatchUtterance({ kind: "ptt_stop", atMs: Date.now() });
     }
     // Режим голоса ПЕРСИСТЕНТНЫЙ: при входе в робот-голос ставим режим из
     // тумблеров панели пайплайна (применяет супервизор, ADR-0028 S5) и НЕ
@@ -522,8 +589,13 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       modeManager.setVoiceMode("off");
       return;
     }
-    if (next === "robot_voice" && send) {
-      c!.send({ cmd: "voice_mode", mode: voiceModeForToggles(), ts_ms: Date.now() });
+    if (next === "robot_voice") {
+      // Стадия «запись»: панель показывает её сразу, не дожидаясь моста —
+      // это единственный момент пути, о котором клиент знает точно.
+      dispatchUtterance({ kind: "ptt_start", atMs: Date.now() });
+      if (send) {
+        c!.send({ cmd: "voice_mode", mode: voiceModeForToggles(), ts_ms: Date.now() });
+      }
     }
     if (send) {
       c!.send({ cmd: "voice_ptt_start", mode: next, ts_ms: Date.now() });
@@ -555,6 +627,36 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     if (next === ttsState) return;
     ttsState = next;
     bridge.renderTtsPicker(ttsState);
+  }
+
+  // APPLY лочит picker до ack/nack. Если ответа нет вовсе (сервер молчит,
+  // ветка команды сменилась, кадр потерян) — оператор остался бы навсегда
+  // в «APPLYING …» без единой кнопки. Ставим честный таймаут: показываем
+  // ошибку и разблокируем, а не притворяемся, что голос применён.
+  const APPLY_TIMEOUT_MS = 6000;
+  let applyTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearApplyTimeout(): void {
+    if (applyTimer === null) return;
+    clearTimeout(applyTimer);
+    applyTimer = null;
+  }
+
+  function armApplyTimeout(voiceId: string): void {
+    clearApplyTimeout();
+    applyTimer = setTimeout(() => {
+      applyTimer = null;
+      if (ttsState.applyingVoiceId !== voiceId) return;
+      dispatchTts({
+        kind: "voice_set_nack",
+        voiceId,
+        reason: "нет ответа от робота"
+      });
+      toast.show("Голос не применён: нет ответа от робота", {
+        level: "warn",
+        autoHideMs: 5000
+      });
+    }, APPLY_TIMEOUT_MS);
   }
 
   /** Отправить команду, если сокет жив. `false` — не отправили. */
@@ -614,6 +716,10 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       case "select":
         dispatchTts({ kind: "select", voiceId: action.voiceId });
         return;
+      case "page":
+        // Чисто локально: список уже у клиента, второй list_voices не нужен.
+        dispatchTts({ kind: "page", delta: action.delta });
+        return;
       case "preview": {
         const requestId = newPreviewRequestId();
         const ok = sendCmd({
@@ -635,16 +741,21 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       case "apply": {
         const voiceId = ttsState.selectedVoiceId;
         if (!voiceId) return;
-        const preset: VoicePreset | undefined = modeManager.snapshot().currentPreset ?? undefined;
+        // preset НЕ шлём. Это поле делят две фичи: у picker'а (AV-27) это
+        // пресет провайдера (standard|friendly|…), у панели стилей (AV-28)
+        // — id стиля речи (technical|lenin|…). Сервер разводит их по
+        // ЗНАЧЕНИЮ: любой стиль речи в `preset` уводит запрос в AV-28-ветку,
+        // где voice_id игнорируется, — и голос молча не менялся, хотя ack
+        // приходил. Picker меняет только голос; стиль — отдельные чипы.
         const ok = sendCmd({
           cmd: "set_voice",
           ts_ms: Date.now(),
-          voice_id: voiceId,
-          ...(preset ? { preset } : {})
+          voice_id: voiceId
         });
         if (!ok) return;
         // Лочим UI до ack/nack — второй set_voice до ответа не отправить.
         dispatchTts({ kind: "apply_sent", voiceId });
+        armApplyTimeout(voiceId);
         return;
       }
       default:
@@ -673,14 +784,38 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
         return true;
       }
       case "voice_set_ack": {
-        const e = ev as { voice_id: string; preset?: VoicePreset };
-        dispatchTts({ kind: "voice_set_ack", voiceId: e.voice_id, preset: e.preset });
-        modeManager.setCurrentVoice(e.voice_id);
-        if (e.preset) modeManager.setCurrentPreset(e.preset);
+        // Один тип события обслуживает обе фичи (см. sendStyleChange):
+        //   • AV-27 (picker) — ack с `voice_id`;
+        //   • AV-28 (стиль/язык) — ack с `preset`/`language`, БЕЗ voice_id.
+        // Раньше обработчик безусловно писал `e.voice_id` в mode_manager, и
+        // style-ack затирал активный голос `undefined`. Разводим явно.
+        const e = ev as {
+          voice_id?: string;
+          preset?: VoicePreset;
+          language?: VoiceLanguage;
+        };
+        const voiceId = typeof e.voice_id === "string" && e.voice_id ? e.voice_id : null;
+        if (voiceId !== null) {
+          clearApplyTimeout();
+          dispatchTts({ kind: "voice_set_ack", voiceId, preset: e.preset });
+          modeManager.setCurrentVoice(voiceId);
+          // Панель пайплайна показывает активный голос в строке «ГОЛОС:» —
+          // без этого applied-голос был виден только после нового voice_list.
+          bridge.voicePipeline.setCurrentVoice(voiceId);
+        }
+        if (e.preset) {
+          modeManager.setCurrentPreset(e.preset);
+          bridge.voicePipeline.setCurrentPreset(e.preset);
+        }
+        if (e.language) {
+          modeManager.setCurrentLanguage(e.language);
+          bridge.voicePipeline.setCurrentLanguage(e.language);
+        }
         return true;
       }
       case "voice_set_nack": {
         const e = ev as { voice_id?: string; reason: string; available?: string[] };
+        clearApplyTimeout();
         dispatchTts({
           kind: "voice_set_nack",
           voiceId: e.voice_id ?? null,
@@ -845,6 +980,10 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             // (ADR-0018). Picker уходит в loading, preview обрывается.
             previewSink.stop();
             dispatchTts({ kind: "disconnected" });
+            clearApplyTimeout();
+            // Стадия реплики после разрыва — тоже не факт: висящее
+            // «обрабатываю…» соврало бы, что робот ещё работает над ней.
+            dispatchUtterance({ kind: "disconnected" });
             // Disconnect-watchdog начинает отсчёт; если > 5s без успеха —
             // покажем error overlay (см. createDisconnectWatchdog).
             watchdog.markDisconnected();
@@ -910,7 +1049,15 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
           if (topic === "voice_state") {
             // AV-20: voice_state (0x1202) → центральный HUD-индикатор.
             // Парсинг внутри bridge.setVoiceState — битый payload не падает.
-            bridge.setVoiceState(payload);
+            const frame = bridge.setVoiceState(payload);
+            if (frame) {
+              dispatchUtterance({
+                kind: "voice_state",
+                state: frame.state,
+                detail: frame.detail,
+                atMs: Date.now()
+              });
+            }
             return;
           }
           // Видео: экран-стена и боковые панели (Wave 3.A).
@@ -1297,7 +1444,9 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
         if (!xr.isActive()) return;
         tickTeleop();
         // Луч указателя — из targetRaySpace активного контроллера.
-        bridge.updatePointer(refSpace ? xrPointerRay(frame, refSpace, xrInputSources) : null);
+        bridge.updatePointer(
+          refSpace ? xrPointer.ray(frame, refSpace, xrInputSources) : null
+        );
         xrRafId = session.requestAnimationFrame(xrFrame);
       };
       xrRafId = session.requestAnimationFrame(xrFrame);
@@ -1317,6 +1466,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       xrRafSession = null;
       xrRafId = 0;
       xrEmergencyWasPressed = false;
+      xrPointer.reset();
       armed = false;
       xrArmWasPressed = false;
       bridge.setArmState(false);
@@ -1357,6 +1507,8 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       xrTeleopHandle?.destroy();
       desktopPointer.destroy();
       voiceCapture.stop();
+      clearInterval(utteranceTicker);
+      clearApplyTimeout();
       previewSink.dispose();
       conn?.close();
       bridge.dispose();

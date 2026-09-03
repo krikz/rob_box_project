@@ -48,8 +48,13 @@ VOICE_PRESET_IDS: tuple[str, ...] = (
     "business",
     "philosopher",
     "lenin",
+    # «Перевод» — нейтральный пресет: не стилизует, только чистит оговорки
+    # и переводит на выбранный язык (voice_presets.yaml → presets.translate).
+    "translate",
 )
-VOICE_LANGUAGES: tuple[str, ...] = ("ru", "en")
+# Языки вывода. Ключи languages: в voice_presets.yaml — источник истины;
+# здесь тот же список, потому что сервер валидирует запрос до ROS.
+VOICE_LANGUAGES: tuple[str, ...] = ("ru", "en", "fr", "de", "zh", "hi")
 
 # msgpack — payload supervisor-API (0x30..0x33). Импорт ленив: в некоторых
 # dev-env модуль может отсутствовать (как у нас на билд-машине для пары

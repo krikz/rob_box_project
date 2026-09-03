@@ -12,6 +12,7 @@
 //   [header]                 — фаза + активный провайдер/голос
 //   [row + PREVIEW] × N      — строки голосов; строка = select, кнопка = preview
 //   [placeholder]            — в loading/empty вместо строк
+//   [◀] [N–M из K] [▶]       — листание, если голосов больше страницы
 //   [APPLY] [STOP] [CLOSE]   — панель кнопок
 //   [footer]                 — прогресс preview / ошибка / подсказка
 //
@@ -24,6 +25,8 @@ import {
   CLOSE_TARGET_ID,
   EMPTY_VOICES_TEXT,
   LAUNCH_TARGET_ID,
+  NEXT_PAGE_TARGET_ID,
+  PREV_PAGE_TARGET_ID,
   STOP_TARGET_ID,
   canApply,
   canStopPreview,
@@ -31,7 +34,9 @@ import {
   selectTargetId,
   ttsFooterText,
   ttsHeaderText,
+  ttsPageInfo,
   ttsRowViews,
+  type TtsPageInfo,
   type TtsPickerState
 } from "../state/tts_picker_state";
 
@@ -46,6 +51,10 @@ const FOOTER_H = 0.12;
 const BUTTON_H = 0.14;
 /** Сколько строк рисуем максимум: дальше меню выше человека. */
 export const MAX_VISIBLE_ROWS = 8;
+/** Высота строки листания (◀ / счётчик / ▶). */
+const PAGER_H = 0.12;
+/** Доля ширины под каждую стрелку листания. */
+const PAGER_ARROW_FRAC = 0.2;
 
 const TEX_ROW_W = 512;
 const TEX_ROW_H = 72;
@@ -147,6 +156,9 @@ export function createTtsPickerMenu(): TtsPickerMenuHandle {
   const header = createTile(MENU_W, HEADER_H, TEX_ROW_W, 64);
   const placeholder = createTile(MENU_W, ROW_H, TEX_ROW_W, TEX_ROW_H);
   const footer = createTile(MENU_W, FOOTER_H, TEX_ROW_W, 56);
+  const pagerPrev = createTile(MENU_W * PAGER_ARROW_FRAC, PAGER_H, 128, 56);
+  const pagerNext = createTile(MENU_W * PAGER_ARROW_FRAC, PAGER_H, 128, 56);
+  const pagerLabel = createTile(MENU_W * (1 - 2 * PAGER_ARROW_FRAC) - 2 * ROW_GAP, PAGER_H, 320, 56);
   const applyBtn = createTile(buttonW, BUTTON_H, 256, 64);
   const stopBtn = createTile(buttonW, BUTTON_H, 256, 64);
   const closeBtn = createTile(buttonW, BUTTON_H, 256, 64);
@@ -158,7 +170,19 @@ export function createTtsPickerMenu(): TtsPickerMenuHandle {
     previewTiles.push(createTile(previewW, ROW_H, 192, TEX_ROW_H));
   }
 
-  const allTiles = [header, placeholder, footer, applyBtn, stopBtn, closeBtn, ...rowTiles, ...previewTiles];
+  const allTiles = [
+    header,
+    placeholder,
+    footer,
+    pagerPrev,
+    pagerNext,
+    pagerLabel,
+    applyBtn,
+    stopBtn,
+    closeBtn,
+    ...rowTiles,
+    ...previewTiles
+  ];
   for (const t of allTiles) group.add(t.mesh);
 
   // Вкладка VOICE: постоянная плашка на слое указателя (в VR клавиатуры
@@ -182,9 +206,12 @@ export function createTtsPickerMenu(): TtsPickerMenuHandle {
   let visibleRows: ReturnType<typeof ttsRowViews> = [];
   let applyEnabled = false;
   let stopEnabled = false;
+  let pagerVisible = false;
+  let prevEnabled = false;
+  let nextEnabled = false;
 
-  /** Раскладка: header сверху, строки вниз, кнопки и footer под ними. */
-  function layout(rowCount: number): void {
+  /** Раскладка: header сверху, строки вниз, листание, кнопки и footer. */
+  function layout(rowCount: number, showPager: boolean): void {
     let y = 0;
     header.mesh.position.set(0, y, 0);
     y -= HEADER_H / 2 + ROW_GAP;
@@ -208,6 +235,20 @@ export function createTtsPickerMenu(): TtsPickerMenuHandle {
       rowTiles[i].mesh.position.set(-(MENU_W - rowW) / 2, rowY, 0);
       previewTiles[i].mesh.position.set((MENU_W - previewW) / 2, rowY, 0);
       y -= ROW_H + ROW_GAP;
+    }
+
+    // Строка листания — сразу под списком: она относится к нему, а не к
+    // кнопкам применения.
+    pagerPrev.mesh.visible = showPager;
+    pagerNext.mesh.visible = showPager;
+    pagerLabel.mesh.visible = showPager;
+    if (showPager) {
+      const pagerY = y - PAGER_H / 2;
+      const arrowW = MENU_W * PAGER_ARROW_FRAC;
+      pagerPrev.mesh.position.set(-(MENU_W - arrowW) / 2, pagerY, 0);
+      pagerNext.mesh.position.set((MENU_W - arrowW) / 2, pagerY, 0);
+      pagerLabel.mesh.position.set(0, pagerY, 0);
+      y -= PAGER_H + ROW_GAP;
     }
 
     const btnY = y - BUTTON_H / 2;
@@ -276,6 +317,29 @@ export function createTtsPickerMenu(): TtsPickerMenuHandle {
     });
   }
 
+  /**
+   * Строка листания. Рисуется только когда голосов больше страницы —
+   * бесполезные стрелки на списке из трёх голосов только ловили бы луч.
+   */
+  function drawPager(info: TtsPageInfo, locked: boolean): void {
+    const arrow = (tile: Tile, label: string, enabled: boolean) => {
+      fillPlate(tile, enabled ? COLOR_BG : COLOR_BG_DISABLED, null);
+      drawText(tile, label, {
+        color: enabled ? COLOR_ACCENT : COLOR_TEXT_DIM,
+        font: "bold 26px monospace",
+        align: "center"
+      });
+    };
+    arrow(pagerPrev, "◀", info.hasPrev && !locked);
+    arrow(pagerNext, "▶", info.hasNext && !locked);
+    fillPlate(pagerLabel, COLOR_BG, null);
+    drawText(pagerLabel, `${info.from}–${info.to} из ${info.total}`, {
+      color: COLOR_TEXT_DIM,
+      font: "bold 22px monospace",
+      align: "center"
+    });
+  }
+
   function drawFooter(state: TtsPickerState): void {
     const { text, level } = ttsFooterText(state);
     fillPlate(footer, COLOR_BG, level === "bad" ? COLOR_BAD : level === "warn" ? COLOR_WARN : COLOR_ACCENT);
@@ -294,7 +358,13 @@ export function createTtsPickerMenu(): TtsPickerMenuHandle {
     applyEnabled = canApply(state);
     stopEnabled = canStopPreview(state);
 
-    layout(rows.length);
+    const pageInfo = ttsPageInfo(state);
+    pagerVisible = state.phase === "ready" && pageInfo.pages > 1;
+    prevEnabled = pagerVisible && pageInfo.hasPrev && !locked;
+    nextEnabled = pagerVisible && pageInfo.hasNext && !locked;
+
+    layout(rows.length, pagerVisible);
+    if (pagerVisible) drawPager(pageInfo, locked);
     drawHeader(state);
     if (rows.length === 0) drawPlaceholder(state);
     for (let i = 0; i < rows.length; i++) {
@@ -317,6 +387,10 @@ export function createTtsPickerMenu(): TtsPickerMenuHandle {
     }
     // APPLY/STOP регистрируем только когда они реально что-то делают:
     // мёртвая кнопка, которая ловит луч, — обман оператора.
+    // Стрелки регистрируем только пока они реально листают: мёртвая
+    // стрелка, ловящая луч, — тот же обман, что мёртвый APPLY.
+    if (prevEnabled) out.push({ id: PREV_PAGE_TARGET_ID, object: pagerPrev.mesh });
+    if (nextEnabled) out.push({ id: NEXT_PAGE_TARGET_ID, object: pagerNext.mesh });
     if (applyEnabled) out.push({ id: APPLY_TARGET_ID, object: applyBtn.mesh });
     if (stopEnabled) out.push({ id: STOP_TARGET_ID, object: stopBtn.mesh });
     out.push({ id: CLOSE_TARGET_ID, object: closeBtn.mesh });

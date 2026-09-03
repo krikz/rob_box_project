@@ -43,9 +43,22 @@ export interface TtsPreviewProgress {
   done: boolean;
 }
 
+/**
+ * Сколько строк голосов помещается в меню за раз. Больше не влезает: меню
+ * растёт вниз и уходит оператору под ноги.
+ *
+ * У провайдеров голосов БОЛЬШЕ (yandex — 11, minimax — 10, см.
+ * tts_voice_registry.PROVIDER_VOICES), поэтому список листается. До этого
+ * список просто обрезался на восьмом голосе, и оставшиеся выбрать было
+ * нечем — оператор видел меню, но не видел половину голосов.
+ */
+export const PAGE_SIZE = 8;
+
 export interface TtsPickerState {
   phase: TtsPickerPhase;
   voices: ReadonlyArray<VoiceInfo>;
+  /** Текущая страница списка (0-based). */
+  page: number;
   /** Активный голос по данным сервера (voice_list.active_voice / voice_set_ack). */
   currentVoiceId: string | null;
   /** Активный провайдер (voice_list.active_provider). null — сервер не сказал. */
@@ -63,6 +76,7 @@ export interface TtsPickerState {
 export const INITIAL_TTS_PICKER_STATE: TtsPickerState = Object.freeze({
   phase: "closed",
   voices: Object.freeze([]) as ReadonlyArray<VoiceInfo>,
+  page: 0,
   currentVoiceId: null,
   activeProvider: null,
   selectedVoiceId: null,
@@ -75,6 +89,8 @@ export type TtsPickerAction =
   | { kind: "open" }
   | { kind: "close" }
   | { kind: "select"; voiceId: string }
+  /** Листание списка: +1 / −1 страницы (за границы не уходит). */
+  | { kind: "page"; delta: number }
   | {
       kind: "voice_list";
       voices: ReadonlyArray<VoiceInfo>;
@@ -99,6 +115,13 @@ export type TtsPickerAction =
  */
 export function ttsPickerReducer(state: TtsPickerState, action: TtsPickerAction): TtsPickerState {
   switch (action.kind) {
+    case "page": {
+      if (!isInteractive(state)) return state;
+      const next = clampPage(state.page + action.delta, state.voices.length);
+      if (next === state.page) return state;
+      return { ...state, page: next };
+    }
+
     case "open":
       if (state.phase !== "closed") return state;
       // Открытие всегда идёт через loading: список запрашиваем заново
@@ -131,6 +154,8 @@ export function ttsPickerReducer(state: TtsPickerState, action: TtsPickerAction)
         ...state,
         phase: voices.length === 0 ? "empty" : "ready",
         voices,
+        // Список пришёл заново — страница могла уехать за его конец.
+        page: clampPage(state.page, voices.length),
         currentVoiceId: activeVoice ?? state.currentVoiceId,
         activeProvider: activeProvider ?? state.activeProvider,
         selectedVoiceId: selected,
@@ -221,6 +246,16 @@ export function ttsPickerReducer(state: TtsPickerState, action: TtsPickerAction)
   }
 }
 
+/** Сколько всего страниц в списке (минимум одна, даже если он пуст). */
+export function pageCount(voiceCount: number): number {
+  return Math.max(1, Math.ceil(voiceCount / PAGE_SIZE));
+}
+
+function clampPage(page: number, voiceCount: number): number {
+  if (!Number.isFinite(page)) return 0;
+  return Math.min(Math.max(0, Math.trunc(page)), pageCount(voiceCount) - 1);
+}
+
 /** Меню открыто и не залочено (не идёт apply) — можно жать строки/кнопки. */
 export function isInteractive(state: TtsPickerState): boolean {
   return state.phase !== "closed" && state.applyingVoiceId === null;
@@ -243,6 +278,7 @@ export function canStopPreview(state: TtsPickerState): boolean {
 export type TtsPickerTarget =
   | { kind: "select"; voiceId: string }
   | { kind: "preview"; voiceId: string }
+  | { kind: "page"; delta: number }
   | { kind: "apply" }
   | { kind: "stop" }
   | { kind: "close" }
@@ -257,6 +293,8 @@ export function previewTargetId(voiceId: string): string {
   return `${TTS_TARGET_PREFIX}preview:${voiceId}`;
 }
 
+export const PREV_PAGE_TARGET_ID = `${TTS_TARGET_PREFIX}page:prev`;
+export const NEXT_PAGE_TARGET_ID = `${TTS_TARGET_PREFIX}page:next`;
 export const APPLY_TARGET_ID = `${TTS_TARGET_PREFIX}apply`;
 export const STOP_TARGET_ID = `${TTS_TARGET_PREFIX}stop`;
 export const CLOSE_TARGET_ID = `${TTS_TARGET_PREFIX}close`;
@@ -269,6 +307,8 @@ export const LAUNCH_TARGET_ID = `${TTS_TARGET_PREFIX}launch`;
 export function parseTtsTargetId(id: string): TtsPickerTarget | null {
   if (!id.startsWith(TTS_TARGET_PREFIX)) return null;
   const rest = id.slice(TTS_TARGET_PREFIX.length);
+  if (rest === "page:prev") return { kind: "page", delta: -1 };
+  if (rest === "page:next") return { kind: "page", delta: 1 };
   if (rest === "apply") return { kind: "apply" };
   if (rest === "stop") return { kind: "stop" };
   if (rest === "close") return { kind: "close" };
@@ -302,10 +342,44 @@ export interface TtsRowView {
   previewing: boolean;
 }
 
-/** Строки списка для рендера. Пустой массив в состояниях loading/empty. */
+/** Границы текущей страницы + счётчики для футера. */
+export interface TtsPageInfo {
+  page: number;
+  pages: number;
+  /** Номер первого голоса страницы (1-based); 0 — список пуст. */
+  from: number;
+  /** Номер последнего голоса страницы (1-based); 0 — список пуст. */
+  to: number;
+  total: number;
+  hasPrev: boolean;
+  hasNext: boolean;
+}
+
+export function ttsPageInfo(state: TtsPickerState): TtsPageInfo {
+  const total = state.voices.length;
+  const pages = pageCount(total);
+  const page = clampPage(state.page, total);
+  const start = page * PAGE_SIZE;
+  const end = Math.min(start + PAGE_SIZE, total);
+  return {
+    page,
+    pages,
+    from: total === 0 ? 0 : start + 1,
+    to: end,
+    total,
+    hasPrev: page > 0,
+    hasNext: end < total
+  };
+}
+
+/**
+ * Строки ТЕКУЩЕЙ страницы для рендера. Пустой массив в loading/empty.
+ */
 export function ttsRowViews(state: TtsPickerState): TtsRowView[] {
   if (state.phase !== "ready") return [];
-  return state.voices.map((v) => ({
+  const { from, to } = ttsPageInfo(state);
+  const slice = from === 0 ? [] : state.voices.slice(from - 1, to);
+  return slice.map((v) => ({
     voiceId: v.voice_id,
     title: `${v.display_name || v.voice_id}${v.language ? ` · ${v.language}` : ""}`,
     subtitle: rowSubtitle(v),
@@ -352,6 +426,15 @@ export function ttsFooterText(state: TtsPickerState): { text: string; level: "ok
   if (state.phase === "empty") return { text: EMPTY_VOICES_TEXT, level: "warn" };
   if (state.phase === "loading") return { text: "waiting for voice_list…", level: "warn" };
   if (state.selectedVoiceId) return { text: `selected ${state.selectedVoiceId} → APPLY`, level: "ok" };
+  const page = ttsPageInfo(state);
+  if (page.total > PAGE_SIZE) {
+    // Явно говорим, что список длиннее экрана: без этого оператор
+    // не знает, что за восьмым голосом есть ещё.
+    return {
+      text: `голоса ${page.from}–${page.to} из ${page.total} · ◀ ▶ листать`,
+      level: "ok"
+    };
+  }
   return { text: "pick a voice · PREVIEW / APPLY", level: "ok" };
 }
 

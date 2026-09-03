@@ -2251,6 +2251,45 @@ class DialogueNode(Node):
         )
         return default
 
+    def _language_meta(self, language: str) -> dict:
+        """Описание языка из yaml (`languages.<код>`) или пустой dict.
+
+        Формат ``languages`` исторически был списком кодов; сейчас это map
+        код → {name, label, prompt_section}. Поддерживаем оба: у списка
+        описания нет, и вызывающий свалится на дефолты.
+        """
+        languages = self._load_voice_presets().get("languages")
+        if isinstance(languages, dict):
+            meta = languages.get(str(language).lower())
+            if isinstance(meta, dict):
+                return meta
+        return {}
+
+    def _language_label(self, language: str) -> str:
+        """Как назвать язык в директиве для LLM («на языке «французский»»).
+
+        Берём из yaml; для неизвестного языка возвращаем сам код — это
+        честнее, чем молча подставить «русский», как делал старый хардкод
+        (он превращал любой третий язык в русский вывод).
+        """
+        label = self._language_meta(language).get("label")
+        if isinstance(label, str) and label.strip():
+            return label.strip()
+        return str(language).lower() or "русский"
+
+    def _language_prompt_section(self, language: str) -> str:
+        """Какую секцию двуязычного prompt-файла отдать модели: "ru" | "en".
+
+        Дефолт для незнакомого языка — "en": EN-секция не требует русского
+        вывода, поэтому директива на нужный язык не конфликтует с промптом.
+        """
+        section = self._language_meta(language).get("prompt_section")
+        if isinstance(section, str) and section.strip().lower() == "ru":
+            return "ru"
+        if isinstance(section, str) and section.strip().lower() == "en":
+            return "en"
+        return "ru" if str(language).lower() == "ru" else "en"
+
     def _get_formalize_timeout(self) -> float:
         """Эффективный таймаут формализатора (секунды).
 
@@ -2315,13 +2354,22 @@ class DialogueNode(Node):
             # "EN version". Передаём LLM только секцию нужного языка — иначе
             # правило RU «только русский» конфликтует с EN «только английский»
             # и модель отвечает по-русски даже при voice_output_language=en.
+            #
+            # Секцию выбирает yaml (`languages.<код>.prompt_section`), а не
+            # код: языков больше двух (ru/en/fr/de/zh/hi), а секций в файле
+            # по-прежнему две. Для всех целей кроме русского берём EN-секцию —
+            # в ней нет правила «отвечай по-русски», а нужный язык задаёт
+            # директива в user-сообщении ниже.
             marker = "EN version"
             marker_idx = prompt_text.find(marker)
             if marker_idx != -1:
-                prompt_text = prompt_text[marker_idx:] if language == "en" else prompt_text[:marker_idx]
+                section = self._language_prompt_section(language)
+                prompt_text = (
+                    prompt_text[marker_idx:] if section == "en" else prompt_text[:marker_idx]
+                )
 
             preset_name = (preset_cfg or {}).get("name") or preset_key
-            language_label = "английский" if language == "en" else "русский"
+            language_label = self._language_label(language)
             user_msg = (
                 "Исходная фраза оператора (дословно, без wake-word):\n\n"
                 '"""\n'

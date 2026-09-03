@@ -15,6 +15,7 @@ import {
 import { FpsMeter } from "./fps_meter";
 import { createStatusHud, type RobotStatus, type StatusHud } from "./status_hud";
 import { PointerSystem, type PointerRay } from "../interaction/pointer";
+import { createPointerBeam, type PointerBeamHandle } from "../interaction/pointer_beam";
 import { resizeSize } from "../interaction/pointer_math";
 import { createStreamMenu, topicFromTargetId, type StreamMenuHandle, type StreamMenuRow } from "./stream_menu";
 import { createTtsPickerMenu, type TtsPickerMenuHandle } from "./tts_picker_menu";
@@ -44,15 +45,55 @@ import {
 // (та же, что в Telegram: /camera/camera/color/image_raw).
 export const MAIN_SCREEN_TOPIC = "camera_rear";
 
-// Боковые панели (Wave 3.A). Экран-стена занимает фронт, поэтому на
-// панели уходят стримы, которых на нём нет: OAK-D depth и потолочная
-// камера. `camera_oak_color` сюда не берём — это тот же сенсор, что и
-// на экране-стене (registry: 0x1001 через ROS vs 0x1003 через depthai).
-export const SIDE_PANEL_TOPICS = ["camera_oak_depth", "camera_ceiling"] as const;
+// Потолочная камера робота (USB /dev/video0, registry: camera_ceiling).
+// Смотрит вверх — и в сцене её экран висит над оператором (см. ниже,
+// CEILING_SCREEN_*).
+export const CEILING_SCREEN_TOPIC = "camera_ceiling";
+
+// Боковые панели (Wave 3.A). Экран-стена занимает фронт, потолочная
+// камера — верх, поэтому на свободную панель остаётся OAK-D depth.
+// `camera_oak_color` сюда не берём — это тот же сенсор, что и на
+// экране-стене (registry: 0x1001 через ROS vs 0x1003 через depthai).
+export const SIDE_PANEL_TOPICS = ["camera_oak_depth"] as const;
 
 // Углы боковых панелей: шире дефолтного полукруга (дизайн §3), чтобы
 // не перекрывать экран-стену во фронтальном секторе обзора.
-export const SIDE_PANEL_ANGLES_DEG = [-75, 75];
+export const SIDE_PANEL_ANGLES_DEG = [-75];
+
+// ── Потолочный экран ────────────────────────────────────────────────────
+//
+// Раскладка экранов повторяет геометрию камер на роботе. В URDF
+// (rob_box.xacro) обе камеры стоят практически в одной точке на осевой
+// линии: OAK-D на xyz=(-0.1158, -0.0002, 0.4595), потолочная на
+// xyz=(-0.1707, 0.065, 0.4615) — на 55 мм позади и 65 мм левее, на той
+// же высоте. Различаются они только направлением взгляда: OAK-D вперёд,
+// потолочная вверх.
+//
+// Значит в сцене они обязаны делить азимут и различаться только
+// наклоном: смотришь прямо — видишь, что перед роботом; поднимаешь
+// голову — видишь, что над ним. Держать потолочный вид сбоку, на панели
+// рядом с depth, значит ломать эту связь: оператор не может «посмотреть
+// вверх», он должен вспомнить, на какой панели верх.
+export const CEILING_SCREEN_POS = { x: 0, y: 2.8, z: -0.9 };
+export const CEILING_SCREEN_SIZE = { width: 2.0, height: 1.125 };
+/** Высота глаз оператора — экран доворачивается нормалью именно в неё. */
+export const EYE_HEIGHT_M = 1.6;
+
+/**
+ * Наклон потолочного экрана: нормаль плоскости смотрит из центра экрана
+ * в глаза оператора. Чистая функция — считается из позиции, а не задана
+ * числом, чтобы сдвиг экрана не оставил его смотрящим мимо.
+ *
+ * Плоскость по умолчанию смотрит в +Z; поворот вокруг X на угол φ уводит
+ * её нормаль в (0, −sin φ, cos φ). Нужна нормаль вдоль вектора
+ * «экран → глаза», отсюда φ = atan2(y − eyeY, z_eye − z).
+ */
+export function ceilingScreenPitchRad(
+  pos: { y: number; z: number } = CEILING_SCREEN_POS,
+  eyeY: number = EYE_HEIGHT_M
+): number {
+  return Math.atan2(pos.y - eyeY, -pos.z);
+}
 
 export interface CaptainBridgeOptions {
   canvas: HTMLCanvasElement;
@@ -112,6 +153,11 @@ export interface CaptainBridgeHandle {
   lidar: LidarOverlay;
   panels: PanelManager;
   videoPanels: Map<string, VideoPanel>;
+  /**
+   * Потолочный экран над оператором (CEILING_SCREEN_TOPIC): смотришь
+   * вверх — видишь, что над роботом.
+   */
+  ceilingScreen: VideoPanel;
   /** Большой экран-стена с фронтальной камерой (MAIN_SCREEN_TOPIC). */
   mainScreen: VideoPanel;
   /**
@@ -160,7 +206,12 @@ export interface CaptainBridgeHandle {
    * и обновляет визуальное состояние + a11y live-region. Если payload
    * битый — кадр пропускается (молча, без падения).
    */
-  setVoiceState(payload: Uint8Array | null): void;
+  /**
+   * Возвращает распарсенный кадр (или `null`, если payload битый/пустой) —
+   * чтобы `main.ts` кормил им трекер стадий реплики, не парся msgpack
+   * второй раз.
+   */
+  setVoiceState(payload: Uint8Array | null): VoiceStateFrame | null;
   /**
    * Кадр указателя (мышь на десктопе, луч контроллера в VR). `null` —
    * указателя нет: наведение снимается, начатый драг корректно закрывается.
@@ -271,7 +322,11 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // setAvailableStreams ниже). До первого ответа сервера — содержит
   // дефолтные топики панелей и mainScreen, чтобы parseLayout мог
   // принять сохранённую раскладку сразу после старта.
-  const knownTopics = new Set<string>([MAIN_SCREEN_TOPIC, ...SIDE_PANEL_TOPICS]);
+  const knownTopics = new Set<string>([
+    MAIN_SCREEN_TOPIC,
+    CEILING_SCREEN_TOPIC,
+    ...SIDE_PANEL_TOPICS
+  ]);
 
   /**
    * Восстановить раскладку из store. Возвращает true, если что-то
@@ -289,7 +344,20 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     const raw = layoutStorage.getItem(PANEL_LAYOUT_STORAGE_KEY);
     const parsed = parseLayout(raw, knownTopics);
     if (!parsed) return false;
-    applyLayout(parsed, panelMgr);
+    // Потолочная камера переехала со боковой панели на собственный экран
+    // над оператором. У тех, кто уже летал на мостике, в localStorage
+    // лежит старая раскладка с панелью camera_ceiling — восстановив её,
+    // мы показали бы один и тот же поток дважды. Панель отбрасываем,
+    // остальную раскладку оператора сохраняем.
+    const panels = parsed.panels.filter((p) => p.topic !== CEILING_SCREEN_TOPIC);
+    if (panels.length !== parsed.panels.length) {
+      // eslint-disable-next-line no-console
+      console.info(
+        "[captain_bridge] dropped stored camera_ceiling panel — поток теперь на потолочном экране"
+      );
+    }
+    if (panels.length === 0) return false;
+    applyLayout({ ...parsed, panels }, panelMgr);
     return true;
   }
 
@@ -408,6 +476,28 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   );
   scene.add(mainScreen.mesh);
 
+  // Потолочный экран: тот же азимут, что у экрана-стены, но над головой —
+  // «смотрю прямо» / «смотрю вверх» повторяет пару камер на роботе.
+  // Это фиксированный экран, а не панель PanelManager: панели живут на
+  // горизонтальной окружности вокруг оператора (facing только в XZ) и
+  // наклон по определению не умеют.
+  const ceilingScreen = new VideoPanel(
+    {
+      id: "ceiling_screen",
+      topic: CEILING_SCREEN_TOPIC,
+      position: { ...CEILING_SCREEN_POS },
+      facing: { x: 0, z: 1 },
+      size: { ...CEILING_SCREEN_SIZE },
+      selected: false
+    },
+    { showLabel: false, canvasWidth: 960, canvasHeight: 540 }
+  );
+  // VideoPanel.applyTransform умеет только rotation.y (панели стоят
+  // вертикально). Наклон ставим сами — setState по этому экрану не
+  // вызывается, так что перезатирания не будет.
+  ceilingScreen.mesh.rotation.x = ceilingScreenPitchRad();
+  scene.add(ceilingScreen.mesh);
+
   // Arm-state HUD: справа вверху на стене, рядом с экраном камеры.
   // Sprite всегда повёрнут к камере — читается из любой позы оператора.
   const armCanvas = document.createElement("canvas");
@@ -522,10 +612,71 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     return pointer.getHovered() === id ? "hover" : "none";
   }
 
+  // Рамка наведения для КНОПОК. Видео-панели умеют подсвечиваться сами
+  // (VideoPanel.setHighlight), а кнопки меню и панелей — это прозрачные
+  // меши (opacity 0) поверх canvas-текстуры: попал в них луч или прошёл в
+  // сантиметре мимо, картинка была одна и та же. Отсюда и «ложные
+  // срабатывания»: промах оператор замечал только по результату клика.
+  //
+  // Рамка — один меш на всю сцену: он переезжает на наведённую цель,
+  // повторяя её позу и размер. Дешевле, чем держать по подсветке на
+  // каждую из десятков кнопок.
+  const hoverFrame = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({
+      color: 0x8fd4ff,
+      transparent: true,
+      opacity: 0.22,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    })
+  );
+  hoverFrame.visible = false;
+  hoverFrame.renderOrder = 29;
+  scene.add(hoverFrame);
+
+  const hoverBox = new THREE.Box3();
+  const hoverSize = new THREE.Vector3();
+
+  /** Поставить рамку на цель под лучом (или спрятать, если цели нет). */
+  function updateHoverFrame(): void {
+    const id = pointer.getHovered();
+    // Панели подсвечиваются своим тоном — рамка им не нужна и только
+    // перекрывала бы кадр видео.
+    if (id === null || videoPanels.has(id) || id === PIPELINE_DRAG_TARGET_ID) {
+      hoverFrame.visible = false;
+      return;
+    }
+    const target = pointer.getTarget(id);
+    if (!target) {
+      hoverFrame.visible = false;
+      return;
+    }
+    const obj = target.object;
+    obj.updateWorldMatrix(true, false);
+    // Локальный bbox + мировая матрица цели: рамка совпадает с кнопкой,
+    // как бы ни была повёрнута панель.
+    hoverBox.setFromObject(obj, true);
+    hoverBox.getSize(hoverSize);
+    if (hoverSize.x <= 0 || hoverSize.y <= 0) {
+      hoverFrame.visible = false;
+      return;
+    }
+    obj.getWorldPosition(hoverFrame.position);
+    obj.getWorldQuaternion(hoverFrame.quaternion);
+    // Чуть больше кнопки — рамка читается как обводка, а не как заливка.
+    hoverFrame.scale.set(hoverSize.x * 1.04 + 0.012, hoverSize.y * 1.04 + 0.012, 1);
+    // Выносим на волос к оператору, чтобы не тонуть в текстуре панели.
+    hoverFrame.translateZ(0.004);
+    hoverFrame.visible = true;
+  }
+
   function refreshHighlights(): void {
     for (const s of panelMgr.list()) {
       videoPanels.get(s.id)?.setHighlight(highlightFor(s.id, s.selected));
     }
+    updateHoverFrame();
   }
 
   function initLayout(): void {
@@ -654,8 +805,15 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     opts.onPanelTopicChange?.(panelId, oldTopic, topic);
   }
 
+  // Видимый луч + курсор в точке попадания. Держим на уровне сцены, а не
+  // как child контроллера: PointerSystem считает попадание в мировых
+  // координатах, и рисовать надо ровно то, что он посчитал.
+  const pointerBeam: PointerBeamHandle = createPointerBeam();
+  scene.add(pointerBeam.object);
+
   function updatePointer(ray: PointerRay | null): void {
     pointer.update(ray);
+    pointerBeam.update(ray, pointer.getHit());
   }
 
   // ---------- AV-27: TTS picker (3D-меню выбора голоса) ----------
@@ -735,13 +893,14 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   }
 
   function videoTopics(): string[] {
-    const topics = new Set<string>([MAIN_SCREEN_TOPIC]);
+    const topics = new Set<string>([MAIN_SCREEN_TOPIC, CEILING_SCREEN_TOPIC]);
     for (const s of panelMgr.list()) topics.add(s.topic);
     return [...topics];
   }
 
   function ingestPanelFrame(topic: string, jpeg: Uint8Array): boolean {
     if (topic === MAIN_SCREEN_TOPIC) return mainScreen.ingestJpeg(jpeg);
+    if (topic === CEILING_SCREEN_TOPIC) return ceilingScreen.ingestJpeg(jpeg);
     for (const vp of videoPanels.values()) {
       if (vp.topic === topic) return vp.ingestJpeg(jpeg);
     }
@@ -757,13 +916,14 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
    * (parseVoiceState) — битый payload не падает, мы просто его пропускаем.
    * До первого кадра показываем «—» (state="unknown").
    */
-  function setVoiceState(payload: Uint8Array | null): void {
+  function setVoiceState(payload: Uint8Array | null): VoiceStateFrame | null {
     if (!payload) {
       voiceIndicator.setState(null);
-      return;
+      return null;
     }
     const frame: VoiceStateFrame | null = parseVoiceState(payload);
     if (frame) voiceIndicator.setState(frame);
+    return frame;
   }
 
   // ---------- render loop ----------
@@ -811,7 +971,6 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // Визуализация XR-контроллеров: ray из targetRaySpace + маркер grip.
   // Позиции/ориентацию подставляет three.js из XR-кадров автоматически.
   const controllerGrips: THREE.Mesh[] = [];
-  const CONTROLLER_RAY_LENGTH = 1.5;
   const GRIP_IDLE_COLOR = 0x556677;
   const GRIP_ACTIVE_COLOR = 0x2ec27e;
 
@@ -833,14 +992,11 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     for (let i = 0; i < 2; i++) {
       if (controllerGrips[i]) continue;
       const root = renderer.xr.getController(i);
-      const ray = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints([
-          new THREE.Vector3(0, 0, 0),
-          new THREE.Vector3(0, 0, -CONTROLLER_RAY_LENGTH)
-        ]),
-        new THREE.LineBasicMaterial({ color: 0x2ec27e, transparent: true, opacity: 0.75 })
-      );
-      root.add(ray);
+      // Луч НЕ рисуем здесь: раньше на каждый контроллер вешалась Line
+      // фиксированной длины 1.5 м, которая не доставала до панелей (они
+      // на 2.4–4 м) и была того же цвета, что подсветка кнопок. Теперь
+      // луч один, общий, и рисует его pointerBeam — по реальному
+      // попаданию активной руки (см. interaction/pointer_beam.ts).
       const grip = new THREE.Mesh(
         new THREE.CylinderGeometry(0.02, 0.02, 0.14, 12),
         new THREE.MeshBasicMaterial({ color: GRIP_IDLE_COLOR })
@@ -861,10 +1017,14 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     window.removeEventListener("resize", resize);
     layoutSaver?.cancel();
     mainScreen.dispose();
+    ceilingScreen.dispose();
     for (const vp of videoPanels.values()) vp.dispose();
     lidar.dispose();
     streamMenu?.dispose();
     ttsPicker.dispose();
+    pointerBeam.dispose();
+    hoverFrame.geometry.dispose();
+    (hoverFrame.material as THREE.Material).dispose();
     environment?.dispose();
     armTexture.dispose();
     statusHud.dispose();
@@ -882,6 +1042,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     panels: panelMgr,
     videoPanels,
     mainScreen,
+    ceilingScreen,
     environment,
     loadEnvironment,
     initLayout,
