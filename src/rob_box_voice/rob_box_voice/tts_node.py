@@ -1146,6 +1146,23 @@ class TTSNode(Node):
         self.provider_state_pub = self.create_publisher(
             String, "/voice/tts/provider_state", 10
         )
+        # AV-27 / issue #1919 — latched-каталог голосов для wire-payload
+        # ``voice_list`` (см. design t_5b9d5d0c §128-150). Публикуется на
+        # startup + каждый раз после ``_publish_provider_state``. TRANSIENT_LOCAL
+        # обязателен — без него quest_node, подключившийся ПОСЛЕ tts_node,
+        # не увидит ни одного payload и UI останется без голосов.
+        from rclpy.qos import DurabilityPolicy as _DP  # noqa: PLC0415
+
+        self.voices_catalog_pub = self.create_publisher(
+            String,
+            "/voice/tts/voices",
+            QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+                durability=_DP.TRANSIENT_LOCAL,
+            ),
+        )
         # Issue #980 — single event per multi-chunk TTS batch (rap, poetry).
         # tts_node publishes one ``/voice/tts/batch_complete`` after the last
         # chunk lands so dialogue_node can fire ``music_cleanup`` exactly once.
@@ -2365,6 +2382,49 @@ class TTSNode(Node):
         self._persist_provider_state(
             {"provider": eff, "dead_providers": dead_payload}
         )
+        # AV-27 / issue #1919 — latched-каталог голосов. Публикуется
+        # ВСЕГДА после provider_state (на startup, на set_provider, на
+        # provider_dead). Никаких x-check что голоса изменились: payload
+        # дешёвый (≤30 dict'ов), а latched QoS гарантирует что новый
+        # подписчик получит САМЫЙ ПОСЛЕДНИЙ (TRANSIENT_LOCAL depth=1).
+        self._publish_voices_catalog(eff, used_voice, default_voice)
+
+    def _publish_voices_catalog(
+        self,
+        provider: str,
+        used_voice: str,
+        default_voice: str,
+    ) -> None:
+        """AV-27 — опубликовать каталог VoiceInfo для активного провайдера.
+
+        Источник — :func:`voices_info_for` из ``tts_voice_registry``. Если
+        провайдер неизвестен реестру — публикуем честно пустой список
+        (``voices=[]``), UI отрисует «провайдер не отдаёт список голосов»
+        (acceptance issue #1919). Никаких хардкод-fallback'ов: «active
+        provider менялся, но реестр про него не знает» — это сам по себе
+        bug, который должен всплыть в UI как пустой список.
+        """
+        pub = getattr(self, "voices_catalog_pub", None)
+        if pub is None:
+            return  # тестовый stub без топика
+        from .tts_voice_registry import voices_info_for as _voices_info
+
+        voices = _voices_info(provider)
+        payload = {
+            "provider": provider,
+            "voice": used_voice,
+            "default_voice": default_voice,
+            "voices": voices,
+            "ts": time.time(),
+        }
+        try:
+            msg = String()
+            msg.data = json.dumps(payload, ensure_ascii=False)
+            pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(
+                f"⚠️ [av-27] voices_catalog publish failed: {exc}"
+            )
 
     def _synthesize_and_play(
         self, ssml: str, text: str, dialogue_id: str = None, ssml_attributes: dict = None, speech_id: str = None,
