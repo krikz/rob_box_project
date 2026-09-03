@@ -72,9 +72,13 @@ jobs:
           # src/rob_box_voice/test/unit/test_voice_bench_scoring.py — without it
           # that test raises RuntimeError at COLLECTION time, which fails the
           # whole rob_box_voice batch (develop was RED ~9h on 03.09, blocking
-          # 20+ PRs). Guard against the next occurrence:
+          # 20+ PRs). tools is here for tools/gen_tool_catalog.py, imported by
+          # src/rob_box_harness/test/test_skill_catalog.py — without it those
+          # tests silently SKIP (skipif(not _GENERATOR.exists())), masking a
+          # real contract regression as a green CI. Guard against the next
+          # occurrence:
           #   python3 scripts/agent_flow/validate_test_ws_dirs.py
-          for d in docker migrations docs .github scripts; do
+          for d in docker migrations docs .github scripts tools; do
             [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
           done
 
@@ -294,7 +298,9 @@ jobs:
           # (test_supercollider_metrics_osc_status).
           # scripts is here for the same reason as in unit-tests above
           # (scripts/voice_bench/score.py, test_voice_bench_scoring.py).
-          for d in docker migrations docs .github scripts; do
+          # tools is here for the same reason as in unit-tests above
+          # (tools/gen_tool_catalog.py, test_skill_catalog.py).
+          for d in docker migrations docs .github scripts tools; do
             [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
           done
           cd ${{ github.workspace }}/test_ws
