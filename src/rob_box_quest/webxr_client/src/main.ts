@@ -50,6 +50,17 @@ import type {
 } from "./wire/messages";
 import { createToast, type Toast } from "./ui/toast";
 import { supervisorEffect, type FloorLabel, type SupervisorState } from "./state/supervisor_state";
+import { createPreviewAudioSink, type PreviewAudioSink } from "./ui/preview_audio_sink";
+import {
+  INITIAL_TTS_PICKER_STATE,
+  PREVIEW_TEXT,
+  newPreviewRequestId,
+  ttsPickerReducer,
+  type TtsPickerAction,
+  type TtsPickerState,
+  type TtsPickerTarget
+} from "./state/tts_picker_state";
+import type { JsonEvent, VoiceInfo, VoicePreset } from "./wire/messages";
 import type { JsonCmd } from "./wire/messages";
 
 const CLIENT_VERSION = "0.1.0";
@@ -311,6 +322,9 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       const stillUsed = bridge.videoTopics().includes(oldTopic);
       if (!stillUsed) conn.unsubscribe(oldTopic);
     },
+    // AV-27: клик по TTS picker'у. Сцена уже открыла/закрыла меню сама,
+    // здесь остаётся то, что требует сокета и стора.
+    onTtsPickerAction: (action) => handleTtsPickerAction(action),
     // Клик по кнопке панели супервизора (R14): маппим action → JSON_CMD.
     onSupervisorAction: (action) => {
       if (!conn || disconnected) return;
@@ -437,6 +451,188 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     void voiceCapture.start();
   }
 
+  // ---- AV-27: TTS picker (list_voices / set_voice / preview_voice) ----------
+  //
+  // Стор — чистый редьюсер (`state/tts_picker_state.ts`), сцена — только
+  // отрисовка (`scene/tts_picker_menu.ts`). Здесь связка с сокетом:
+  //   open        → JSON_CMD{list_voices}
+  //   select      → локально
+  //   preview     → JSON_CMD{preview_voice, request_id}
+  //   apply       → JSON_CMD{set_voice}
+  // и обратно: voice_list / voice_set_ack / voice_set_nack /
+  // preview_voice_audio+BINARY_FRAME / preview_voice_done / _error.
+
+  let ttsState: TtsPickerState = INITIAL_TTS_PICKER_STATE;
+  const previewSink: PreviewAudioSink = createPreviewAudioSink();
+  // Первая отрисовка: меню скрыто, но текстуры готовы — при открытии не
+  // будет кадра с пустыми плашками.
+  bridge.renderTtsPicker(ttsState);
+
+  function dispatchTts(action: TtsPickerAction): void {
+    const next = ttsPickerReducer(ttsState, action);
+    if (next === ttsState) return;
+    ttsState = next;
+    bridge.renderTtsPicker(ttsState);
+  }
+
+  /** Отправить команду, если сокет жив. `false` — не отправили. */
+  function sendCmd(cmd: Parameters<Connection["send"]>[0]): boolean {
+    if (!conn || disconnected) return false;
+    try {
+      conn.send(cmd);
+      return true;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[quest] send failed:", (err as Error).message, cmd);
+      return false;
+    }
+  }
+
+  function requestVoiceList(): void {
+    if (!sendCmd({ cmd: "list_voices", ts_ms: Date.now() })) {
+      // Честно: не смогли спросить — не показываем «пусто», показываем
+      // ошибку (пустой список означал бы «провайдер без голосов»).
+      dispatchTts({ kind: "preview_error", requestId: "", reason: "not connected" });
+    }
+  }
+
+  /**
+   * Открыть/закрыть picker из кода (клавиша V на десктопе). Видимость
+   * держит сцена, поэтому синхронизируем её и стор в одном месте.
+   */
+  function toggleTtsPicker(): void {
+    if (bridge.isTtsPickerOpen()) {
+      bridge.closeTtsPicker();
+      previewSink.stop();
+      dispatchTts({ kind: "close" });
+      return;
+    }
+    bridge.openTtsPicker();
+    dispatchTts({ kind: "open" });
+    requestVoiceList();
+  }
+
+  function handleTtsPickerAction(action: TtsPickerTarget): void {
+    switch (action.kind) {
+      case "launch":
+        // Сцена уже переключила видимость по клику: синхронизируем стор и,
+        // если открылись, запрашиваем свежий список.
+        if (bridge.isTtsPickerOpen()) {
+          dispatchTts({ kind: "open" });
+          requestVoiceList();
+        } else {
+          previewSink.stop();
+          dispatchTts({ kind: "close" });
+        }
+        return;
+      case "close":
+        previewSink.stop();
+        dispatchTts({ kind: "close" });
+        return;
+      case "select":
+        dispatchTts({ kind: "select", voiceId: action.voiceId });
+        return;
+      case "preview": {
+        const requestId = newPreviewRequestId();
+        const ok = sendCmd({
+          cmd: "preview_voice",
+          ts_ms: Date.now(),
+          voice_id: action.voiceId,
+          text: PREVIEW_TEXT,
+          request_id: requestId
+        });
+        if (!ok) return;
+        previewSink.stop();
+        dispatchTts({ kind: "preview_sent", requestId, voiceId: action.voiceId });
+        return;
+      }
+      case "stop":
+        previewSink.stop();
+        dispatchTts({ kind: "preview_stopped" });
+        return;
+      case "apply": {
+        const voiceId = ttsState.selectedVoiceId;
+        if (!voiceId) return;
+        const preset: VoicePreset | undefined = modeManager.snapshot().currentPreset ?? undefined;
+        const ok = sendCmd({
+          cmd: "set_voice",
+          ts_ms: Date.now(),
+          voice_id: voiceId,
+          ...(preset ? { preset } : {})
+        });
+        if (!ok) return;
+        // Лочим UI до ack/nack — второй set_voice до ответа не отправить.
+        dispatchTts({ kind: "apply_sent", voiceId });
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  /** Голосовые JSON_EVENT'ы TTS picker'а. `true` — событие обработано здесь. */
+  function handleVoiceEvent(ev: JsonEvent): boolean {
+    const type = (ev as { type?: string }).type;
+    switch (type) {
+      case "voice_list": {
+        const e = ev as { voices?: VoiceInfo[]; active_voice?: string; active_provider?: string };
+        dispatchTts({
+          kind: "voice_list",
+          voices: Array.isArray(e.voices) ? e.voices : [],
+          activeVoice: e.active_voice ?? null,
+          activeProvider: e.active_provider ?? null
+        });
+        // Активный голос сервера — единственный источник истины для
+        // mode_manager (клиент своё значение не выдумывает).
+        if (typeof e.active_voice === "string") modeManager.setCurrentVoice(e.active_voice);
+        return true;
+      }
+      case "voice_set_ack": {
+        const e = ev as { voice_id: string; preset?: VoicePreset };
+        dispatchTts({ kind: "voice_set_ack", voiceId: e.voice_id, preset: e.preset });
+        modeManager.setCurrentVoice(e.voice_id);
+        if (e.preset) modeManager.setCurrentPreset(e.preset);
+        return true;
+      }
+      case "voice_set_nack": {
+        const e = ev as { voice_id?: string; reason: string; available?: string[] };
+        dispatchTts({
+          kind: "voice_set_nack",
+          voiceId: e.voice_id ?? null,
+          reason: e.reason,
+          available: e.available
+        });
+        toast.show(`Голос не применён: ${e.reason}`, { level: "warn", autoHideMs: 5000 });
+        return true;
+      }
+      case "preview_voice_audio": {
+        const e = ev as { request_id: string; content_type?: string; seq: number; total: number };
+        previewSink.onMeta(e.request_id, e.content_type ?? "audio/mpeg", e.seq, e.total);
+        dispatchTts({
+          kind: "preview_audio",
+          requestId: e.request_id,
+          seq: e.seq,
+          total: e.total
+        });
+        return true;
+      }
+      case "preview_voice_done": {
+        const e = ev as { request_id: string };
+        dispatchTts({ kind: "preview_done", requestId: e.request_id });
+        void previewSink.play(e.request_id);
+        return true;
+      }
+      case "preview_voice_error": {
+        const e = ev as { request_id: string; reason: string };
+        previewSink.stop();
+        dispatchTts({ kind: "preview_error", requestId: e.request_id, reason: e.reason });
+        return true;
+      }
+      default:
+        return false;
+    }
+  }
+
   // ---- HUD helpers ----------------------------------------------------------
 
   function setStatus(text: string, cls: "connected" | "connecting" | "lost"): void {
@@ -529,6 +725,10 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             }
             // Каталог стримов → меню выбора на панелях (R10).
             conn!.requestStreamList();
+            // AV-27: если picker открыт (например, разрыв случился при
+            // открытом меню) — перезапрашиваем список: провайдер мог
+            // смениться, а старый список после реконнекта не факт.
+            if (bridge.isTtsPickerOpen()) requestVoiceList();
             // AV-28 §P7: запросить список голосов для панели пресетов.
             // Сервер ответит JSON_EVENT{type:"voice_list"} (voice_id+display_name)
             // и/или {type:"voice_presets"} (список пресетов+языков+дефолты).
@@ -556,6 +756,10 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             supervisorDegraded = false;
             prevTeleopLabel = "unknown";
             applySupervisorState(null);
+            // AV-27: активный голос/список после разрыва — не факт
+            // (ADR-0018). Picker уходит в loading, preview обрывается.
+            previewSink.stop();
+            dispatchTts({ kind: "disconnected" });
             // Disconnect-watchdog начинает отсчёт; если > 5s без успеха —
             // покажем error overlay (см. createDisconnectWatchdog).
             watchdog.markDisconnected();
@@ -601,6 +805,13 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
           applySupervisorState(supervisorState);
         },
         onBinaryFrame: (streamId, payload) => {
+          // AV-27: preview-аудио приходит с stream_id = 0 (control), у него
+          // нет topic'а в subscribe_ack — маршрутизируем в preview-sink по
+          // последней пришедшей мете preview_voice_audio.
+          if (streamId === 0) {
+            previewSink.onChunk(payload);
+            return;
+          }
           const topic = conn!.getTopicForStream(streamId);
           if (!topic) return;
           if (topic === "lidar_2d") {
@@ -642,6 +853,12 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
           toast.show(text, { level: "warn", autoHideMs: 5000 });
         },
         onJsonEvent: (event) => {
+          // AV-27: voice_list / voice_set_ack / voice_set_nack /
+          // preview_voice_audio / _done / _error → TTS picker.
+          // Диспетчер сам игнорирует чужие типы, поэтому зовём его
+          // первым и не мешаем обработчикам ниже: voice_set_ack нужен
+          // обоим — picker'у и панели пресетов AV-28.
+          handleVoiceEvent(event as JsonEvent);
           // AV-18: ack/nack панели режимов — у них свои типы событий,
           // ниже по функции их уже не ждут.
           const t = (event as { type?: string }).type;
@@ -818,6 +1035,12 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
     if (ev.key === "r" || ev.key === "R") {
       ev.preventDefault();
       bridge.resetPanelLayout();
+    }
+    // AV-27: V — открыть/закрыть TTS picker на десктопе. В VR та же
+    // операция делается кликом по вкладке VOICE (клавиатуры там нет).
+    if (ev.key === "v" || ev.key === "V") {
+      ev.preventDefault();
+      toggleTtsPicker();
     }
   });
 
@@ -1031,6 +1254,7 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
       xrTeleopHandle?.destroy();
       desktopPointer.destroy();
       voiceCapture.stop();
+      previewSink.dispose();
       conn?.close();
       bridge.dispose();
       // Phase 2.3 overlays cleanup.

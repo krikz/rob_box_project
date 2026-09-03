@@ -199,6 +199,13 @@ export interface VoiceInfo {
   description?: string;
   // Доступные пресеты (subset of VoicePreset).
   presets?: VoicePreset[];
+  // AV-27 / issue #1919 — провайдер, у которого этот голос есть
+  // (yandex | minimax | silero). Опциональное поле: для cross-provider UI
+  // (например, фильтр по провайдеру) — сервер присылает его в voice_list;
+  // до AV-27 голоса в LLM-контексте уже различались по провайдеру, но wire
+  // был без provider. Добавляется как minor type-bump (см. design
+  // t_5b9d5d0c §89-114 «Adding provider to the existing client VoiceInfo type»).
+  provider?: string;
 }
 
 export type JsonEvent =
@@ -211,7 +218,14 @@ export type JsonEvent =
   | { type: "robot_alert"; code: string; level: "warn" | "error" | "info"; active?: boolean; args?: Record<string, unknown>; ts_ms: number }
   | { type: "stream_list"; items: Array<Record<string, unknown>>; ts_ms: number }
   | { type: "stream_select_ack"; topic: string; stream_id: number | null; kind?: string }
-  | { type: "voice_list"; voices: VoiceInfo[]; ts_ms: number }
+  | {
+      type: "voice_list";
+      voices: VoiceInfo[];
+      /** AV-27: подсветить активный голос в picker'е без доп. запроса. */
+      active_provider?: string;
+      active_voice?: string;
+      ts_ms: number;
+    }
   | {
       type: "voice_presets";
       presets: VoicePresetInfo[];
@@ -233,6 +247,8 @@ export type JsonEvent =
       preset?: VoicePreset;
       language?: VoiceLanguage;
       reason: string;
+      /** AV-27: чем можно заменить — для подсказки в UI. */
+      available?: string[];
       ts_ms: number;
     }
   | { type: "avatar_state_ack"; state: Record<string, unknown>; ts_ms: number }

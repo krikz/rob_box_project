@@ -45,6 +45,7 @@ src/
 │   ├── lidar_overlay.ts        LiDAR points on the floor
 │   ├── lidar_payload.ts        LiDAR wire-format decoder
 │   ├── status_hud.ts           robot_status HUD (BAT/WIFI/SPD/RTT/MODE)
+│   ├── tts_picker_menu.ts      TTS picker: 3D-меню голосов (AV-27)
 │   └── bridge_assets.ts        CC0 GLB + HDR loader (DRACO + KTX2 + Meshopt)
 ├── input/
 │   ├── teleop_fsm.ts           FSM: idle → armed → emergency
@@ -144,7 +145,10 @@ THREE.Scene
 │      y=0.4765 м + вертикальный «занавес» до пола)
 ├── VR controller visuals (только в WebXR)
 ├── Arm-state HUD (text-sprite справа вверху на стене)
-└── Status HUD (text-sprite слева вверху: BAT / WIFI / SPD / RTT / MODE)
+├── Status HUD (text-sprite слева вверху: BAT / WIFI / SPD / RTT / MODE)
+├── TTS picker launch tab (AV-27: плашка VOICE, (-1.35, 0.95, -3.85))
+└── TTS picker menu (AV-27: header + строки голосов + APPLY/STOP/CLOSE + footer,
+       renderOrder 20 — тот же слой глубины, что у stream_menu)
 ```
 
 LiDAR строится от начала координат сцены — это `base_link` робота, то есть
@@ -337,10 +341,47 @@ overlay вообще не появляется. Это снижает «flapping
 - `currentPreset: VoicePreset | null`
 
 Используется в `main.ts` для синхронизации UI-state с реальным
-arm-стейтом и voice-режимом. **Сейчас** не показывается в HUD напрямую
-(Phase 2.3 не делал voice picker UI — голос управляется XR-grip'ами).
-**В Phase 3** будет использоваться для отображения текущего голоса
-и подсветки активной кнопки voice picker.
+arm-стейтом и voice-режимом. `currentVoice` / `currentPreset` наполняются
+из серверных `voice_list.active_voice` и `voice_set_ack` (AV-27) — клиент
+своё значение не выдумывает; до ответа сервера там `null`, и picker
+показывает прочерк.
+
+### 7.6 TTS picker (AV-27, 3D-меню выбора голоса)
+
+Точка входа — плашка **VOICE** на слое указателя (левее экрана-стены). В VR
+клавиатуры нет, поэтому вход обязан быть кликабельным объектом; на десктопе
+дополнительно работает клавиша **V**.
+
+Пять состояний (`state/tts_picker_state.ts`, чистый редьюсер):
+
+| Состояние | Когда | Что видно |
+|---|---|---|
+| `loading` | открыли меню → отправили `list_voices` | плашка `◐ loading voices…`, footer `waiting for voice_list…` |
+| `empty` | сервер ответил `{voices: []}` | дословно `Provider does not expose a voice list` — голоса НЕ выдумываем |
+| `ready` | список пришёл | строки `{display_name · language}` + `{provider · gender · presets}`, активный голос подсвечен `ACTIVE` |
+| previewing | нажали `PREVIEW` строки | footer `PREVIEW <voice>: chunk N/total…` + активная кнопка `STOP` |
+| applying | нажали `APPLY` | header `APPLYING <voice>…`, строки и кнопки залочены до `voice_set_ack`/`_nack` |
+
+Отрисовка — `scene/tts_picker_menu.ts`: каждая интерактивная зона это
+отдельный меш с canvas-текстурой и целью указателя `tts:*` (`voice:<id>`,
+`preview:<id>`, `apply`, `stop`, `close`, `launch`) — тот же приём, что в
+`stream_menu.ts`, включая `renderOrder = 20`. Мёртвые кнопки (`APPLY` без
+выбора, `STOP` без preview) в PointerSystem не регистрируются: кнопка,
+которая ловит луч и ничего не делает, обманывает оператора.
+
+Аудио preview — `ui/preview_audio_sink.ts`. Сервер шлёт
+`JSON_EVENT{preview_voice_audio, request_id, content_type, seq, total}`, а
+следом `BINARY_FRAME` **со `stream_id = 0`** (control): у него нет топика в
+`subscribe_ack`, поэтому `main.ts` роутит нулевой stream в sink, а не в
+видео-панели. Чанки копятся под `request_id` (лимит 4 МБ), на
+`preview_voice_done` склеиваются и играются через `decodeAudioData` +
+`AudioBufferSourceNode` (в immersive-vr автоплей media-элементов режется,
+WebAudio — единственный надёжный путь). `preview_voice_error` показывается
+инлайном как `ERROR: <reason>`.
+
+Разрыв связи → `disconnected`: активный голос обнуляется, picker уходит в
+`loading`, preview обрывается. После реконнекта `list_voices` уходит
+заново, если меню открыто (провайдер мог смениться, а старый список — не факт).
 
 ---
 
@@ -360,10 +401,14 @@ Captain Bridge использует subprotocol `robbox-quest-v1`. Полная 
 Голосовой канал (`voice_ptt_start`) публикуется в бинарный поток
 `VOICE_AUDIO` (PCM 16 kHz int16) — см. `wire/protocol.ts`.
 
-**TTS picker (`list_voices` / `set_voice` / `preview_voice`) и
-`set_panel_topic` НЕ реализованы** — в клиенте есть только TypeScript-типы
-(`wire/messages.ts`), сервер этих команд не знает. Контракт зафиксирован,
-реализация — Wave 3.C (см. `docs/plans/2026-08-30-captain-bridge-feature-audit.md`).
+**TTS picker (`list_voices` / `set_voice` / `preview_voice`)** реализован:
+сервер — AV-27 (`ws_server.py` + supervisor + `tts_voice_registry`), клиент —
+`state/tts_picker_state.ts` + `scene/tts_picker_menu.ts` + `ui/preview_audio_sink.ts`
+(см. §7.6). Синтез самого preview на сервере в MVP ещё не сделан — сервер
+честно отвечает `preview_voice_error{preview_synthesis_not_implemented_in_mvp}`,
+и picker показывает это как `ERROR: …`, а не как «сыграло».
+**`set_panel_topic` НЕ реализован** — в клиенте есть только TypeScript-тип
+(`wire/messages.ts`), сервер этой команды не знает.
 `voice_state` (0x1202) есть в registry, но публикатора на сервере нет.
 
 ---
