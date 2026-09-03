@@ -115,6 +115,27 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
             return t
 
         def create_service(self, srv_type: Any, name: str, callback: Any) -> FakeService:
+            # Зеркалим rclpy.Node.create_service(): требует ПОЛНЫЙ srv-класс
+            # с nested .Request / .Response. Передача «голого» .Request /
+            # .Response-объекта приводит к
+            # ``RuntimeError: The service type provided is not valid``
+            # в реальном ROS 2 (см. issue #1904, e2e-раунды 337..341,
+            # карточка t_979f0cb2). До этого фикса mock-rclpy тихо
+            # принимал ЛЮБОЙ srv_type, и регрессия «create_service() с
+            # AcquireFloor.Request» проскакивала через unit-тесты прямо в
+            # прод — нода падала в __init__, docker restart-policy
+            # зацикливал её, и e2e не запускался пять раундов подряд.
+            # Это структурный test-fidelity guard: однажды вернувшись
+            # к передаче ``AcquireFloor.Request`` — любой тест,
+            # импортирующий ``AvatarSupervisor``, упадёт с этим же
+            # RuntimeError в setUp.
+            req_attr = getattr(srv_type, "Request", None)
+            resp_attr = getattr(srv_type, "Response", None)
+            if req_attr is None or resp_attr is None:
+                raise RuntimeError(
+                    f"The service type provided is not valid "
+                    f"({srv_type!r}), this might be a message or action"
+                )
             svc = FakeService(name, srv_type, callback)
             self._services.append(svc)
             return svc
@@ -254,17 +275,23 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
     _DEFAULT_FOR_FIELD = _default_for_field
 
     # srv-types
+    # NB: AcquireFloor / ReleaseFloor / SetAvatarMode — ПОЛНЫЕ srv-классы
+    # с nested .Request / .Response, как их генерирует rosidl и как их
+    # требует rclpy.Node.create_service(). До фикса карточки t_979f0cb2
+    # (issue #1904) supervisor_node регистрировал сервисы через
+    # ``self._msgs_types["AcqReq"]`` (= AcquireFloor.Request), и нода
+    # падала в ``__init__`` с ``RuntimeError: The service type provided
+    # is not valid``. Теперь нода передаёт AcquireFloor (целиком), а
+    # mock ``FakeNode.create_service`` (см. выше) валидирует наличие
+    # nested .Request / .Response — иначе raise того же RuntimeError,
+    # как в реальном rclpy. Это закрывает test-fidelity gap: регрессия
+    # «create_service() с .Request вместо полного srv-класса» теперь
+    # ловится в unit-тестах, а не в проде после деплоя.
     AcquireFloor = _make_srv_type(
         "AcquireFloor",
         request_fields=("client_id", "floor"),
         response_fields=("granted", "held_by", "reason", "applied"),
     )
-    # NB: имя класса AcquireFloor, у него есть .Request/.Response;
-    # но mock-rclpy supervisor_node вызывает .create_service(<AcquireFloor>,
-    # name, callback) — create_service в FakeNode сохраняет srv_type как
-    # объект, так что сохранение через ``AcquireFloor`` ок.
-    # Чтобы ``_try_load_supervisor_msgs`` импортировал ровно эти имена,
-    # обернём через ``as`` ниже.
     ReleaseFloor = _make_srv_type(
         "ReleaseFloor",
         request_fields=("client_id", "floor"),

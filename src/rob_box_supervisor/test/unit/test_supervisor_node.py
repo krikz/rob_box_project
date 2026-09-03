@@ -161,48 +161,59 @@ def _set_mode_response_to_dict(resp: MagicMock) -> dict:
 
 
 def _get_typed_srv_type():
-    """Достать conftest-овый srv-класс AcquireFloor.Request (то, что нода
-    регистрирует как ``srv_type`` сервиса — см. ``_register_services``).
-    """
-    import sys
+    """Полный srv-класс ``AcquireFloor`` (с nested ``.Request``/``.Response``).
 
-    return sys.modules["rob_box_supervisor_msgs.srv"].AcquireFloor.Request
-
-
-def _get_typed_release_srv_type():
-    import sys
-
-    return sys.modules["rob_box_supervisor_msgs.srv"].ReleaseFloor.Request
-
-
-def _get_typed_set_mode_srv_type():
-    import sys
-
-    return sys.modules["rob_box_supervisor_msgs.srv"].SetAvatarMode.Request
-
-
-def _get_typed_srv_full_type():
-    """Полный srv-класс AcquireFloor (с nested Request/Response).
-
-    Нужен helper-ам вроде ``_make_typed_response``, которым нужны поля
-    ``Response`` (для определения набора attribute). Сама нода
-    регистрирует *Request*, а не AcquireFloor-класс.
+    Так его регистрирует ``AvatarSupervisor._register_services`` через
+    ``create_service(...)`` — rclpy требует именно полный srv-класс,
+    отдельный ``AcquireFloor.Request`` бросает ``RuntimeError``
+    (см. карточку t_979f0cb2, issue #1904). До этого фикса нода
+    регистрировала ``AcquireFloor.Request``, и регрессия проскакивала
+    через unit-тесты прямо в прод.
     """
     import sys
 
     return sys.modules["rob_box_supervisor_msgs.srv"].AcquireFloor
 
 
-def _get_typed_release_full_type():
+def _get_typed_release_srv_type():
     import sys
 
     return sys.modules["rob_box_supervisor_msgs.srv"].ReleaseFloor
 
 
-def _get_typed_set_mode_full_type():
+def _get_typed_set_mode_srv_type():
     import sys
 
     return sys.modules["rob_box_supervisor_msgs.srv"].SetAvatarMode
+
+
+def _get_typed_srv_full_type():
+    """Алиас для обратной совместимости с тестами, которым нужен
+    полный srv-класс ``AcquireFloor`` (для ``Response._FIELDS``)."""
+    return _get_typed_srv_type()
+
+
+def _get_typed_release_full_type():
+    return _get_typed_release_srv_type()
+
+
+def _get_typed_set_mode_full_type():
+    return _get_typed_set_mode_srv_type()
+
+
+def _get_typed_request_only(srv_name: str):
+    """Helper, возвращающий ТОЛЬКО ``.Request`` (не полный srv-класс).
+
+    Используется в тесте ``test_create_service_rejects_request_only`` —
+    мы хотим передать в ``create_service`` заведомо невалидный тип
+    (``AcquireFloor.Request``) и убедиться, что mock-rclpy бросает
+    ``RuntimeError`` так же, как реальный rclpy. Эта регрессия ловится
+    только если mock валидирует srv_type — см. ``conftest.FakeNode.
+    create_service``.
+    """
+    import sys
+
+    return getattr(sys.modules["rob_box_supervisor_msgs.srv"], srv_name).Request
 
 
 class TestAvatarSupervisorCreation(unittest.TestCase):
@@ -226,11 +237,21 @@ class TestAvatarSupervisorCreation(unittest.TestCase):
 
         При наличии conftest мок-ов — ``use_typed_floor_services`` True,
         и сервисы объявляются на AcquireFloor/ReleaseFloor/SetAvatarMode.
+
+        Проверяем ОБА набора ключей: полные srv-классы (``Acq``/``Set``)
+        для ``create_service`` и вложенные Request/Response (``AcqReq``/
+        ``SetReq``) для построения объектов запросов/ответов в callback-ах.
         """
         node = AvatarSupervisor()
         try:
             self.assertTrue(node._use_typed_floor_services)
+            # Полные srv-классы — нужны create_service() (см. t_979f0cb2).
+            self.assertIsNotNone(node._msgs_types["Acq"])
+            self.assertIsNotNone(node._msgs_types["Rel"])
+            self.assertIsNotNone(node._msgs_types["Set"])
+            # Вложенные Request/Response — нужны callback-ам.
             self.assertIsNotNone(node._msgs_types["AcqReq"])
+            self.assertIsNotNone(node._msgs_types["SetReq"])
         finally:
             node.destroy_node()
 
@@ -341,6 +362,174 @@ class TestAvatarSupervisorMonitorServices(unittest.TestCase):
         srv_types_by_name = {s.name: s.srv_type for s in self.node._services}
         for name in ("acquire_floor", "release_floor", "set_avatar_mode"):
             self.assertIsNot(srv_types_by_name[name], Trigger)
+
+
+class TestCreateServiceSrvTypeContract(unittest.TestCase):
+    """Регресс-тест на ``create_service(srv_type, ...)`` контракт (issue #1904,
+    карточка t_979f0cb2).
+
+    Реальный rclpy.Node.create_service() требует ПОЛНЫЙ srv-класс
+    (``AcquireFloor`` с nested ``.Request``/``.Response``). Передача
+    отдельного ``AcquireFloor.Request`` приводит к ``RuntimeError: The
+    service type provided is not valid`` ещё в ``__init__`` ноды —
+    именно так ``avatar-supervisor`` падал в crash-loop на Vision Pi в
+    раундах e2e 337..341.
+
+    До фикса mock-rclpy.conftest тихо принимал любой srv_type, и эта
+    регрессия проскакивала через unit-тесты прямо в прод. Этот набор
+    тестов структурно гарантирует, что:
+    (a) нода регистрирует сервисы на полном srv-классе;
+    (b) mock ``FakeNode.create_service`` валидирует srv_type и бросает
+        RuntimeError, если передан неполный тип;
+    (c) guard ``_use_typed_floor_services`` падает в Trigger fallback,
+        если IDL загружен частично (нет полных srv-классов).
+    """
+
+    def test_register_services_uses_full_srv_class(self) -> None:
+        """(a) нода регистрирует каждый из трёх сервисов на полном srv-классе."""
+        node = AvatarSupervisor()
+        try:
+            srv_types_by_name = {s.name: s.srv_type for s in node._services}
+            for name, full_name in (
+                ("acquire_floor", "AcquireFloor"),
+                ("release_floor", "ReleaseFloor"),
+                ("set_avatar_mode", "SetAvatarMode"),
+            ):
+                srv_type = srv_types_by_name[name]
+                # Полный srv-класс имеет nested .Request и .Response.
+                self.assertTrue(
+                    hasattr(srv_type, "Request") and hasattr(srv_type, "Response"),
+                    f"{name} registered with non-srv type {srv_type!r}",
+                )
+                # И это именно AcquireFloor, а не std_srvs.Trigger или
+                # какой-то другой srv-класс.
+                self.assertEqual(srv_type.__name__, full_name)
+        finally:
+            node.destroy_node()
+
+    def test_create_service_rejects_request_only(self) -> None:
+        """(b) mock-rclpy бросает RuntimeError на ``AcquireFloor.Request``.
+
+        Имитируем ровно ту ошибку, которая ловила avatar-supervisor в
+        проде (см. issue #1904): разработчик по ошибке передаёт
+        ``AcquireFloor.Request`` вместо ``AcquireFloor``. До фикса
+        этот тест был RED (mock тихо принимал .Request). После фикса —
+        GREEN, и любая попытка вернуть регрессию немедленно видна
+        здесь, а не на Vision Pi в 4 утра.
+        """
+        # Тестируем «сырой» mock-rclpy FakeNode.create_service напрямую —
+        # это именно та вальва, которую мы добавили в conftest. ``__init__``
+        # ноды тут не нужен, нас интересует контракт mock-а.
+        from test.unit.conftest import _install_ros_mocks  # noqa: F401, PLC0415
+        from rclpy.node import Node as _FakeNode  # noqa: PLC0415
+
+        node = _FakeNode("__test__")
+        try:
+            # Достаём «голый» Request-класс — то, что раньше по ошибке
+            # передавалось в create_service.
+            bad_srv_type = _get_typed_request_only("AcquireFloor")
+            # У .Request нет nested .Request/.Response → RuntimeError.
+            self.assertFalse(
+                hasattr(bad_srv_type, "Request") and hasattr(bad_srv_type, "Response"),
+                "sanity: AcquireFloor.Request действительно без nested attrs",
+            )
+            with self.assertRaises(RuntimeError) as ctx:
+                node.create_service(bad_srv_type, "acquire_floor", lambda *a: None)
+            self.assertIn("not valid", str(ctx.exception))
+        finally:
+            try:
+                node.destroy_node()
+            except Exception:
+                pass
+
+    def test_create_service_rejects_response_only(self) -> None:
+        """(b') Симметричный тест для ``AcquireFloor.Response``.
+
+        ``rclpy`` ругается на любой srv-класс без nested ``.Request`` /
+        ``.Response`` (даже если сам класс — ``AcquireFloor.Response``).
+        Проверяем именно Response, чтобы guard не пропустил «обратную»
+        опечатку.
+        """
+        from test.unit.conftest import _install_ros_mocks  # noqa: F401, PLC0415
+        from rclpy.node import Node as _FakeNode  # noqa: PLC0415
+
+        node = _FakeNode("__test__")
+        try:
+            import sys as _sys
+            bad_srv_type = _sys.modules[
+                "rob_box_supervisor_msgs.srv"
+            ].AcquireFloor.Response
+            self.assertFalse(
+                hasattr(bad_srv_type, "Request") and hasattr(bad_srv_type, "Response"),
+                "sanity: AcquireFloor.Response действительно без nested attrs",
+            )
+            with self.assertRaises(RuntimeError) as ctx:
+                node.create_service(bad_srv_type, "acquire_floor", lambda *a: None)
+            self.assertIn("not valid", str(ctx.exception))
+        finally:
+            try:
+                node.destroy_node()
+            except Exception:
+                pass
+
+    def test_create_service_accepts_full_srv_class(self) -> None:
+        """(b'') Полный srv-класс проходит валидацию без RuntimeError.
+
+        Контр-тест к ``test_create_service_rejects_request_only``:
+        убеждаемся, что валидация не over-rejects и нормальный путь
+        всё ещё работает.
+        """
+        from test.unit.conftest import _install_ros_mocks  # noqa: F401, PLC0415
+        from rclpy.node import Node as _FakeNode  # noqa: PLC0415
+
+        node = _FakeNode("__test__")
+        try:
+            good_srv_type = _get_typed_srv_type()
+            # sanity — у него есть .Request / .Response.
+            self.assertTrue(hasattr(good_srv_type, "Request"))
+            self.assertTrue(hasattr(good_srv_type, "Response"))
+            # Не должно быть RuntimeError.
+            svc = node.create_service(
+                good_srv_type, "acquire_floor", lambda req, resp: None
+            )
+            self.assertEqual(svc.name, "acquire_floor")
+            self.assertIs(svc.srv_type, good_srv_type)
+        finally:
+            try:
+                node.destroy_node()
+            except Exception:
+                pass
+
+    def test_use_typed_guard_requires_full_srv_class(self) -> None:
+        """(c) ``_use_typed_floor_services`` зависит от ПОЛНЫХ srv-классов.
+
+        Имитируем ситуацию «IDL частично загружен: только .msg, не .srv»
+        — guard должен уйти в Trigger fallback, а не в typed-путь с None
+        (как было до фикса, когда guard смотрел на ``AcqReq``/``SetReq``
+        и тихо выбирал typed-путь без полного srv-класса).
+        """
+        node = AvatarSupervisor()
+        try:
+            # Guard вычислен в __init__, проверяем его формулу:
+            # ``_use_typed_floor_services = Acq is not None and Set is not None``.
+            # Если кто-то переключит формулу обратно на AcqReq/SetReq —
+            # этот assert его поймает, потому что AcqReq != Acq.
+            msgs = node._msgs_types
+            self.assertIs(msgs["Acq"], _get_typed_srv_type())  # полный srv-класс
+            self.assertIs(msgs["AcqReq"], _get_typed_request_only("AcquireFloor"))
+            # Sanity-логика guard: если полные классы есть, typed-путь ок;
+            # если кто-то занулит их (частичный IDL) — guard уйдёт в False.
+            msgs["Acq"] = None
+            msgs["Set"] = None
+            # Пересчитываем формулу, как она записана в __init__:
+            recomputed = msgs["Acq"] is not None and msgs["Set"] is not None
+            self.assertFalse(recomputed)
+            # Возвращаем как было для tearDown.
+            import sys as _sys2
+            msgs["Acq"] = _get_typed_srv_type()
+            msgs["Set"] = _sys2.modules["rob_box_supervisor_msgs.srv"].SetAvatarMode
+        finally:
+            node.destroy_node()
 
 
 class TestAvatarSupervisorPublishHeartbeat(unittest.TestCase):

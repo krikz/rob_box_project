@@ -200,18 +200,38 @@ def _try_load_supervisor_msgs() -> dict:
     mock-rclpy этого пакета нет, и статический импорт уронит весь test
     suite. Паттерн взят из ``quest_node.py`` (``vesc_msgs`` try-import).
 
-    Возвращает dict с ключами ``AcqReq``/``AcqResp``/``RelReq``/``RelResp``/
-    ``SetReq``/``SetResp``/``TeleopHeartbeat``/``FloorState``/``AvatarState``
-    (Python-классы из сгенерированных ``rob_box_supervisor_msgs.srv`` /
-    ``.msg``). Если модуль недоступен — каждый ключ равен ``None``;
-    вызывающий код обязан это обработать (см. ``__init__`` и сервисные
-    callback-и).
+    Возвращает dict с ключами ``Acq``/``AcqReq``/``AcqResp``/``Rel``/``RelReq``/
+    ``RelResp``/``Set``/``SetReq``/``SetResp``/``TeleopHeartbeat``/``FloorState``/
+    ``AvatarState`` (Python-классы из сгенерированных
+    ``rob_box_supervisor_msgs.srv`` / ``.msg``).
+
+    ``Acq``/``Rel``/``Set`` — ПОЛНЫЕ srv-классы (``AcquireFloor`` /
+    ``ReleaseFloor`` / ``SetAvatarMode``) с nested ``.Request``/``.Response``.
+    Они используются в :py:meth:`AvatarSupervisor._register_services` для
+    ``create_service()`` — rclpy требует полный srv-класс, иначе бросает
+    ``RuntimeError: The service type provided is not valid``
+    (см. issue #1904, раунды e2e 337..341, карточка t_979f0cb2). До этого
+    фикса нода передавала ``AcquireFloor.Request`` и падала в
+    ``__init__`` ещё до публикации сервисов → docker restart-policy →
+    crash-loop, который блокировал все пять подряд e2e-раундов.
+
+    ``*Req``/``*Resp`` — вложенные ``.Request``/``.Response``-классы.
+    Нужны для построения объектов запросов/ответов из логики ноды
+    (LockManager/StateAggregator — см. callback-и сервисов и
+    ``_fill_*_response``). Сами по себе они НЕ валидный аргумент
+    ``create_service()`` (см. выше).
+
+    Если модуль недоступен — каждый ключ равен ``None``; вызывающий код
+    обязан это обработать (см. ``__init__`` и сервисные callback-и).
     """
     types_map: dict = {  # noqa: WPS234 — инициализация «пустого» dict'a перед try
+        "Acq": None,
         "AcqReq": None,
         "AcqResp": None,
+        "Rel": None,
         "RelReq": None,
         "RelResp": None,
+        "Set": None,
         "SetReq": None,
         "SetResp": None,
         "AvatarState": None,
@@ -225,6 +245,11 @@ def _try_load_supervisor_msgs() -> dict:
             SetAvatarMode,
         )
 
+        # Полные srv-классы — ОБЯЗАТЕЛЬНО для create_service() (см. docstring).
+        types_map["Acq"] = AcquireFloor
+        types_map["Rel"] = ReleaseFloor
+        types_map["Set"] = SetAvatarMode
+        # Вложенные Request/Response — для построения объектов в callback-ах.
         types_map["AcqReq"] = AcquireFloor.Request
         types_map["AcqResp"] = AcquireFloor.Response
         types_map["RelReq"] = ReleaseFloor.Request
@@ -331,8 +356,13 @@ class AvatarSupervisor(Node):
         # (CI mock-rclpy, битая сборка), фолбэк на std_srvs/Trigger с
         # JSON-в-message — прежний W3-2 контракт, и нода остаётся в monitor.
         self._msgs_types = _try_load_supervisor_msgs()
+        # Проверяем именно ПОЛНЫЕ srv-классы (Acq/Set), а не вложенные
+        # Request/Response — create_service() требует полный srv-класс
+        # (см. ``_try_load_supervisor_msgs`` docstring и карточку t_979f0cb2).
+        # Если IDL загружен частично (например, только .msg, но не .srv),
+        # typed-путь недоступен и мы уходим в std_srvs/Trigger fallback.
         self._use_typed_floor_services: bool = (
-            self._msgs_types["AcqReq"] is not None and self._msgs_types["SetReq"] is not None
+            self._msgs_types["Acq"] is not None and self._msgs_types["Set"] is not None
         )
 
         if not self._use_typed_floor_services:
@@ -365,18 +395,24 @@ class AvatarSupervisor(Node):
         workspace, оставаясь безопасным наблюдателем.
         """
         if self._use_typed_floor_services:
+            # ВАЖНО: create_service() требует ПОЛНЫЙ srv-класс (с nested
+            # .Request/.Response), а не отдельный .Request/.Response-класс.
+            # Передача ``AcquireFloor.Request`` приводит к
+            # ``RuntimeError: The service type provided is not valid``
+            # ещё в ``__init__`` ноды → docker restart policy → crash-loop
+            # (issue #1904, e2e-раунды 337..341, карточка t_979f0cb2).
             self._srv_acquire = self.create_service(
-                self._msgs_types["AcqReq"],
+                self._msgs_types["Acq"],
                 self.ACQUIRE_FLOOR_SERVICE,
                 self._on_acquire_floor,
             )
             self._srv_release = self.create_service(
-                self._msgs_types["RelReq"],
+                self._msgs_types["Rel"],
                 self.RELEASE_FLOOR_SERVICE,
                 self._on_release_floor,
             )
             self._srv_set_mode = self.create_service(
-                self._msgs_types["SetReq"],
+                self._msgs_types["Set"],
                 self.SET_AVATAR_MODE_SERVICE,
                 self._on_set_avatar_mode,
             )
