@@ -246,29 +246,6 @@ class TestToolDispatch:
         assert isinstance(result, str)
 
 
-class TestMemoryPersistence:
-    """Memory store tracking of conversation turns."""
-
-    def test_turns_saved(self) -> None:
-        memory = InMemoryStore()
-        harness = _make_harness(memory=memory)
-        _run(harness.init())
-        _run(harness.step(_WAKE))
-        _run(harness.step(_HELLO))
-        turns = _run(memory.load_recent("test_dialog"))
-        assert len(turns) >= 2  # user + assistant from at least one full turn
-
-    def test_multiple_turns(self) -> None:
-        memory = InMemoryStore()
-        harness = _make_harness(memory=memory)
-        _run(harness.init())
-        _run(harness.step(_WAKE))
-        _run(harness.step(_HELLO))
-        _run(harness.step("как дела"))
-        turns = _run(memory.load_recent("test_dialog"))
-        assert len(turns) >= 3
-
-
 class TestSideEffects:
     """Side-effect bus captures dispatched effects."""
 

@@ -143,6 +143,22 @@ def _music_tools() -> FakeToolProvider:
         },
     )
     tools.register(compose_spec, _music_handler)
+
+    # gen_play_from_library — AI-библиотека mp3 (issue #1392). Registered
+    # alongside execute_music_code/compose_music so the TRACK test below
+    # can assert it keeps playback alive exactly like the Renardo tools do.
+    gen_play_spec = ToolSpec(
+        name="gen_play_from_library",
+        description="Play an mp3 track from the generated-music library.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "track_id": {"type": "string"},
+            },
+            "required": ["track_id"],
+        },
+    )
+    tools.register(gen_play_spec, _music_handler)
     return tools
 
 
@@ -714,6 +730,63 @@ class TestIssue992BatchCleanup:
             _complete_batch(node, "track-1", chunks_total=1)
             assert _music_cleanup_payloads(node) == [], (
                 "compose_music: music_cleanup must not fire after the accept"
+            )
+        finally:
+            node.close()
+
+    def test_track_gen_play_from_library_single_accept_no_cleanup(self):
+        """gen_play_from_library must live as long as execute_music_code does.
+
+        Live 02.09.2026, "включи трек про весну": the robot correctly called
+        gen_search_library + gen_play_from_library and the mp3 genuinely
+        started playing, but ``gen_play_from_library`` was missing from
+        ``_music_starters`` (only Renardo tools were listed there,
+        ``GENERATED_MUSIC_TOOLS`` was defined in dialogue_guards but never
+        wired in). The turn never armed ``_track_mode_music_active``, so the
+        very next reply from idle (unrelated to music) fired
+        ``music_cleanup(reason="new_dialogue")`` and killed the track ~14s
+        after it started. The LLM, unaware, kept claiming "уже играет" for
+        several turns.
+        """
+        llm = _ScriptedLLMProvider([
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="music-1",
+                        name="gen_play_from_library",
+                        arguments={"track_id": "94aa7ddf259847debbf602f573cfb0ee"},
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="speak_text",
+                        arguments={"text": "Запускаю «До первых дней весны»."},
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(content="done", finish_reason="stop"),
+        ])
+        node = _TestableDialogueNode(llm=llm, tools=_music_tools())
+        try:
+            _register_batch(node, "track-1", chunks_total=1)
+            self._drive(node)
+            assert node._pending_music_cleanup is False, (
+                "gen_play_from_library must NOT schedule cleanup on tts_batch_complete"
+            )
+            _complete_batch(node, "track-1", chunks_total=1)
+            assert _music_cleanup_payloads(node) == [], (
+                "gen_play_from_library: music_cleanup must not fire after the accept"
+            )
+            assert node._track_mode_music_active is True, (
+                "gen_play_from_library must arm TRACK mode so the next "
+                "unrelated turn does not kill the mp3 (live 02.09 regression)"
             )
         finally:
             node.close()

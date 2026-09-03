@@ -381,6 +381,182 @@ def test_complete_swallows_bad_tool_json():
     assert resp.tool_calls[0].arguments == {}
 
 
+# ---------------------------------------------------------------------
+# Issue #1899 — tool-call arguments JSON cut off mid-stream
+# ---------------------------------------------------------------------
+def _import_safe_json():
+    """Re-import the module-level ``_safe_json`` helper + its sibling flag.
+
+    The flag is a plain ``bool`` module attribute, so a test must read it
+    via ``getattr`` on every check — capturing the value at import would
+    freeze the snapshot and defeat the purpose of the test.
+    """
+    from rob_box_llm.providers import deepseek as ds
+
+    return ds._safe_json, lambda: getattr(ds, "_LAST_SAFE_JSON_TRUNCATED")
+
+
+def _flag() -> bool:
+    """Snapshot of ``_LAST_SAFE_JSON_TRUNCATED`` at call time."""
+    from rob_box_llm.providers import deepseek as ds
+
+    return getattr(ds, "_LAST_SAFE_JSON_TRUNCATED")
+
+
+def test_safe_json_valid_input_returns_parsed_dict():
+    safe, _flag = _import_safe_json()
+    assert safe('{"x": 1, "y": "hi"}') == {"x": 1, "y": "hi"}
+
+
+def test_safe_json_truncated_object_sets_flag_and_returns_empty():
+    """The exact live shape from issue #1899: stream cut on ``max_tokens``
+    while the model was still emitting arguments JSON. The opening brace
+    is there, the closing one is NOT.
+    """
+    safe, _ = _import_safe_json()
+    raw = '{"enabled": true, "next_transition_sec": 75, "theme": "3 сентября'
+    # Baseline: no truncation has been observed YET in this test (other
+    # tests may have set the flag in the same process; ``_safe_json``
+    # resets it on entry so we only need to verify the AFTER state).
+    parsed = safe(raw)
+    assert parsed == {}
+    assert _flag() is True
+
+
+def test_safe_json_truncated_array_sets_flag():
+    safe, _ = _import_safe_json()
+    raw = '[{"name": "play_sound"}, {"name": "speak_text", "args": {"tex'
+    parsed = safe(raw)
+    assert parsed == {}
+    assert _flag() is True
+
+
+def test_safe_json_unrelated_garbage_does_not_set_flag():
+    """Random garbage is structurally not 'a JSON object that got cut'. We
+    keep the OLD warning path here — the truncation verdict is reserved
+    for shapes that LOOK like a truncated payload, otherwise the LLM
+    might never get flagged on the real culprit (truncation) and we'd
+    just spam 'TRUNCATED_TOOL_ARGS' on every bad model output.
+    """
+    safe, _ = _import_safe_json()
+    parsed = safe("not-json-at-all")
+    assert parsed == {}
+    assert _flag() is False
+
+
+def test_safe_json_valid_then_truncated_does_not_leak_flag():
+    """A successful parse must NOT inherit ``True`` from a previous
+    truncation in the same process. Without the reset, every subsequent
+    turn would be marked as truncated and the agent would loop forever
+    asking the model to shorten args that are already short.
+    """
+    safe, _ = _import_safe_json()
+    # First call: truncated.
+    safe('{"enabled": true, "x": "val')
+    assert _flag() is True
+    # Second call: well-formed JSON — flag must reset.
+    safe('{"x": 1}')
+    assert _flag() is False
+
+
+def test_complete_marks_truncated_tool_args_when_arguments_cut_off():
+    """Regression: ``finish_reason="length"`` + unparseable arguments →
+    the LLMResponse surfaces ``truncated_tool_args=True`` so dialog_core
+    can ask the model for a tighter retry.
+    """
+    p, c = _make_deepseek()
+    tc = _ToolCallObj(
+        id="call_1",
+        function=_FunctionObj(
+            name="set_dj_mode",
+            # Exact issue #1899 shape: starts with ``{`` but never closes.
+            arguments='{"enabled": true, "theme": "3 сентября',
+        ),
+    )
+    c.chat.completions.next_response = _ok_response(
+        tool_calls=[tc], finish_reason="length"
+    )
+    resp = asyncio.run(p.complete([LLMMessage(role="user", content="x")]))
+    assert resp.finish_reason == "length"
+    assert resp.truncated_tool_args is True
+    # Empty arguments — the parser's last resort. The executor would
+    # crash on validation; dialog_core now catches the flag BEFORE
+    # execution and asks for a retry.
+    assert resp.tool_calls[0].arguments == {}
+
+
+def test_complete_does_not_set_truncated_flag_on_clean_tool_call():
+    p, c = _make_deepseek()
+    tc = _ToolCallObj(
+        id="call_1",
+        function=_FunctionObj(name="play_sound", arguments='{"name": "beep"}'),
+    )
+    c.chat.completions.next_response = _ok_response(tool_calls=[tc], finish_reason="tool_calls")
+    resp = asyncio.run(p.complete([LLMMessage(role="user", content="x")]))
+    assert resp.truncated_tool_args is False
+    assert resp.tool_calls[0].arguments == {"name": "beep"}
+
+
+def test_stream_marks_truncated_tool_args_in_final_chunk():
+    """Streaming version: the truncation verdict lands on the final
+    chunk (the one carrying ``finish_reason``). Earlier chunks — the
+    ones that emit each tool-call — are unaffected so a consumer can
+    still inspect them; the verdict is aggregated by ``_stream_response``
+    in dialog_core into ``LLMResponse.truncated_tool_args``.
+    """
+    p, c = _make_deepseek()
+    c.chat.completions.next_stream = [
+        _stream_chunk(tool_call=_ToolCallDelta(
+            index=0,
+            id="call_abc",
+            name="set_dj_mode",
+            # Same truncated JSON shape as the live bug.
+            arguments='{"enabled": true, "theme": "3 сентября',
+        )),
+        _stream_chunk(finish_reason="length"),
+    ]
+
+    collected: list = []
+
+    async def drain():
+        async for ch in p.stream(
+            [LLMMessage(role="user", content="hi")],
+            tools=({"type": "function", "function": {"name": "set_dj_mode"}},),
+        ):
+            collected.append(ch)
+
+    asyncio.run(drain())
+    final = collected[-1]
+    assert final.finish_reason == "length"
+    assert final.truncated_tool_args is True
+
+
+def test_stream_does_not_set_truncated_flag_when_args_close_cleanly():
+    p, c = _make_deepseek()
+    c.chat.completions.next_stream = [
+        _stream_chunk(tool_call=_ToolCallDelta(
+            index=0,
+            id="call_abc",
+            name="set_dj_mode",
+            arguments='{"enabled": true}',
+        )),
+        _stream_chunk(finish_reason="tool_calls"),
+    ]
+
+    collected: list = []
+
+    async def drain():
+        async for ch in p.stream(
+            [LLMMessage(role="user", content="hi")],
+            tools=({"type": "function", "function": {"name": "set_dj_mode"}},),
+        ):
+            collected.append(ch)
+
+    asyncio.run(drain())
+    assert collected[-1].truncated_tool_args is False
+    assert collected[-1].finish_reason == "tool_calls"
+
+
 def test_complete_round_trips_assistant_tool_calls_with_frozen_arguments():
     """Issue #917 regression: ``ToolCall.arguments`` is a ``MappingProxyType``
     after ``__post_init__`` (immutability invariant), but

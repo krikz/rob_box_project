@@ -4,8 +4,9 @@ Implements the MemoryStore ABC from ``rob_box_harness.memory`` with
 a local SQLite database. Uses ``asyncio.to_thread`` to avoid blocking
 the event loop on synchronous sqlite3 I/O.
 
-Per ADR-0001 §2.4.3: scoped conversation history and facts, with
-idempotent turn appends and best-effort semantic search.
+Per ADR-0001 §2.4.3: scoped facts and robot-global state (waypoints,
+FAQ, event profile). Conversation turns are NOT persisted (Shifu
+Directive 2026-09-02) — they live in an in-memory sliding window.
 
 Thread safety
 -------------
@@ -34,7 +35,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Callable
 
-from rob_box_harness.memory import Fact, FAQItem, MemoryStore, Turn, Waypoint
+from rob_box_harness.memory import Fact, FAQItem, MemoryStore, Waypoint
 
 _logger = logging.getLogger(__name__)
 
@@ -47,19 +48,6 @@ _MAX_TXN_RETRIES = 2
 _TXN_RETRY_DELAY_S = 0.05
 
 # ── SQL table DDL ──────────────────────────────────────────────
-
-_TURNS_DDL = """
-CREATE TABLE IF NOT EXISTS turns (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    scope       TEXT    NOT NULL,
-    role        TEXT    NOT NULL,
-    content     TEXT    NOT NULL,
-    name        TEXT,
-    tool_call_id TEXT,
-    metadata_json TEXT,
-    created_at  REAL    NOT NULL DEFAULT (strftime('%s', 'now'))
-);
-"""
 
 _FACTS_DDL = """
 CREATE TABLE IF NOT EXISTS facts (
@@ -104,7 +92,6 @@ CREATE TABLE IF NOT EXISTS event_profile (
 """
 
 _INDEXES_DDL = [
-    "CREATE INDEX IF NOT EXISTS idx_turns_scope ON turns(scope, created_at);",
     "CREATE INDEX IF NOT EXISTS idx_facts_scope_key ON facts(scope, key);",
     "CREATE INDEX IF NOT EXISTS idx_faq_event ON faq_items(event_id);",
 ]
@@ -160,7 +147,6 @@ class SQLiteVoiceMemory(MemoryStore):
         await self._run_sync(lambda conn: conn.execute("PRAGMA journal_mode=WAL;"))
 
         # Create schema
-        await self._run_sync(lambda conn: conn.execute(_TURNS_DDL))
         await self._run_sync(lambda conn: conn.execute(_FACTS_DDL))
         await self._run_sync(lambda conn: conn.execute(_WAYPOINTS_DDL))
         await self._run_sync(lambda conn: conn.execute(_FAQ_ITEMS_DDL))
@@ -237,105 +223,6 @@ class SQLiteVoiceMemory(MemoryStore):
             pass
 
     # ── MemoryStore ABC ─────────────────────────────────────────
-
-    async def load_recent(
-        self,
-        scope: str,
-        *,
-        limit: int = 20,
-    ) -> list[Turn]:
-        """Return the most recent ``limit`` turns for ``scope`` in chronological order."""
-        if limit <= 0:
-            raise ValueError(f"limit must be positive, got {limit}")
-
-        def _load(conn: sqlite3.Connection) -> list[Turn]:
-            cursor = conn.execute(
-                "SELECT role, content, name, tool_call_id, metadata_json "
-                "FROM turns WHERE scope = ? ORDER BY created_at DESC LIMIT ?",
-                (scope, limit),
-            )
-            rows = cursor.fetchall()
-            # Reverse DESC result to chronological order
-            turns = []
-            for row in reversed(rows):
-                metadata = (
-                    json.loads(row["metadata_json"]) if row["metadata_json"] else {}
-                )
-                turns.append(
-                    Turn(
-                        role=row["role"],
-                        content=row["content"],
-                        name=row["name"],
-                        tool_call_id=row["tool_call_id"],
-                        metadata=metadata,
-                    )
-                )
-            return turns
-
-        return await self._run_sync(_load)
-
-    async def append_turn(self, scope: str, turn: Turn) -> bool:
-        """Append ``turn`` to ``scope``. Idempotent on (scope, role, content) within ~5 sec.
-
-        Duplicates within the dedup window are silently skipped (debug-
-        logged) so callers can safely re-append the same user turn
-        after a partial-failure recovery without producing duplicate
-        history rows.
-
-        Returns ``True`` if a new row was inserted, ``False`` if a
-        duplicate was detected within the 5-second dedup window.
-
-        The duplicate-check + INSERT + COMMIT run as a single locked
-        unit in one worker thread, so concurrent appends cannot
-        interleave and corrupt each other's transaction.
-        """
-
-        def _append(conn: sqlite3.Connection) -> bool:
-            # Duplicate detection: check same scope+role+content within last 5 seconds
-            cutoff = time.time() - 5.0
-            cursor = conn.execute(
-                "SELECT id FROM turns "
-                "WHERE scope = ? AND role = ? AND content = ? AND created_at > ? "
-                "LIMIT 1",
-                (scope, turn.role, turn.content, cutoff),
-            )
-            if cursor.fetchone() is not None:
-                _logger.debug(
-                    "Duplicate turn detected for scope=%s role=%s", scope, turn.role
-                )
-                return False
-
-            metadata_json = (
-                json.dumps(dict(turn.metadata), ensure_ascii=False)
-                if turn.metadata
-                else None
-            )
-            conn.execute(
-                "INSERT INTO turns (scope, role, content, name, tool_call_id, metadata_json) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    scope,
-                    turn.role,
-                    turn.content,
-                    turn.name,
-                    turn.tool_call_id,
-                    metadata_json,
-                ),
-            )
-            conn.commit()
-            return True
-
-        return await self._run_sync(_append)
-
-    async def clear_turns(self, scope: str) -> int:
-        """Remove every turn for ``scope``; returns the number of rows removed."""
-
-        def _clear(conn: sqlite3.Connection) -> int:
-            cursor = conn.execute("DELETE FROM turns WHERE scope = ?", (scope,))
-            conn.commit()
-            return cursor.rowcount
-
-        return await self._run_sync(_clear)
 
     async def save_fact(self, scope: str, fact: Fact) -> None:
         """Persist ``fact`` under ``scope``, replacing existing fact with the same key.

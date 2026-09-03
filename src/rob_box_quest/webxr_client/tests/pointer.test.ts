@@ -4,6 +4,7 @@
 import { describe, it, expect, vi } from "vitest";
 import * as THREE from "three";
 import {
+  cornerFromUv,
   dragTargetPosition,
   intersectRaySphere,
   facingToward,
@@ -11,7 +12,9 @@ import {
   isDrag,
   clampPanelY,
   PANEL_MIN_Y,
-  PANEL_MAX_Y
+  PANEL_MAX_Y,
+  RESIZE_CORNER_UV_FRACTION,
+  resizeSize
 } from "../src/interaction/pointer_math";
 import { PointerSystem } from "../src/interaction/pointer";
 import { pickSource, isPointerPressed, POINTER_BUTTON } from "../src/interaction/xr_pointer";
@@ -96,7 +99,10 @@ describe("PointerSystem", () => {
       onSelect: vi.fn(),
       onDragStart: vi.fn(),
       onDrag: vi.fn(),
-      onDragEnd: vi.fn()
+      onDragEnd: vi.fn(),
+      onResizeStart: vi.fn(),
+      onResize: vi.fn(),
+      onResizeEnd: vi.fn()
     };
     const sys = new PointerSystem({ center: CENTER, handlers });
     const mesh = panel(0, 1.6, -2);
@@ -205,6 +211,177 @@ describe("PointerSystem", () => {
     sys.addTarget({ id: "near", object: panel(0, 1.6, -2) });
     sys.update(forward(false));
     expect(handlers.onHover).toHaveBeenLastCalledWith("near");
+  });
+});
+
+describe("PointerSystem — resize via corner UV", () => {
+  /**
+   * Создаёт Object3D, чей raycast всегда сообщает нужный UV в точке
+   * пересечения — без подмены private API PointerSystem. Это позволяет
+   * тестировать cornerFromUv-ветку в update() без настоящего рейкаста
+   * по углам.
+   */
+  function meshWithUv(uv: { x: number; y: number }): THREE.Object3D {
+    const obj = new THREE.Object3D();
+    obj.position.set(0, 1.6, -2);
+    obj.updateMatrixWorld(true);
+    obj.raycast = (
+      _raycaster: THREE.Raycaster,
+      intersects: THREE.Intersection[]
+    ): void => {
+      intersects.push({
+        distance: 2,
+        point: new THREE.Vector3(0, 1.6, -2),
+        object: obj,
+        uv: new THREE.Vector2(uv.x, uv.y)
+      } as THREE.Intersection);
+    };
+    return obj;
+  }
+
+  function setupAt(uv: { x: number; y: number }) {
+    const handlers = {
+      onHover: vi.fn(),
+      onSelect: vi.fn(),
+      onDragStart: vi.fn(),
+      onDrag: vi.fn(),
+      onDragEnd: vi.fn(),
+      onResizeStart: vi.fn(),
+      onResize: vi.fn(),
+      onResizeEnd: vi.fn()
+    };
+    const sys = new PointerSystem({ center: CENTER, handlers });
+    sys.addTarget({ id: "p1", object: meshWithUv(uv), draggable: true });
+    return { sys, handlers };
+  }
+
+  const forward = (pressed: boolean) => ({
+    origin: CENTER,
+    direction: { x: 0, y: 0, z: -1 },
+    pressed
+  });
+
+  it("press in br corner starts resize, not drag", () => {
+    const { sys, handlers } = setupAt({ x: 1, y: 0 });
+    sys.update(forward(false));
+    sys.update(forward(true));
+    expect(handlers.onResizeStart).toHaveBeenCalledWith("p1", "br");
+    expect(handlers.onDragStart).not.toHaveBeenCalled();
+  });
+
+  it("resize follows the ray on subsequent frames", () => {
+    const { sys, handlers } = setupAt({ x: 1, y: 0 });
+    sys.update(forward(false));
+    sys.update(forward(true));
+    sys.update(forward(true));
+    sys.update(forward(true));
+    expect(handlers.onResize).toHaveBeenCalledTimes(2); // два кадра после start
+    expect(handlers.onDrag).not.toHaveBeenCalled();
+  });
+
+  it("release on corner ends resize with the corner", () => {
+    const { sys, handlers } = setupAt({ x: 0, y: 1 });
+    sys.update(forward(false));
+    sys.update(forward(true));
+    sys.update(forward(false));
+    expect(handlers.onResizeEnd).toHaveBeenCalledWith("p1", "tl");
+    expect(handlers.onSelect).not.toHaveBeenCalled();
+  });
+
+  it("press in center is a drag, not a resize", () => {
+    const { sys, handlers } = setupAt({ x: 0.5, y: 0.5 });
+    sys.update(forward(false));
+    sys.update(forward(true));
+    expect(handlers.onResizeStart).not.toHaveBeenCalled();
+    // Move sideways to trigger drag.
+    sys.update({
+      origin: CENTER,
+      direction: { x: 1, y: 0, z: -0.2 },
+      pressed: true
+    });
+    expect(handlers.onDragStart).toHaveBeenCalledWith("p1");
+  });
+});
+
+describe("pointer_math — cornerFromUv (resize hit-test)", () => {
+  it("returns null for non-finite UV", () => {
+    expect(cornerFromUv({ x: NaN, y: 0 })).toBeNull();
+    expect(cornerFromUv({ x: 0.5, y: NaN })).toBeNull();
+  });
+
+  it("detects each of the four corners within the configured fraction", () => {
+    const f = RESIZE_CORNER_UV_FRACTION;
+    // Bottom-left
+    expect(cornerFromUv({ x: 0, y: 0 })).toBe("bl");
+    expect(cornerFromUv({ x: f / 2, y: f / 2 })).toBe("bl");
+    // Bottom-right
+    expect(cornerFromUv({ x: 1, y: 0 })).toBe("br");
+    expect(cornerFromUv({ x: 1 - f / 2, y: f / 2 })).toBe("br");
+    // Top-right
+    expect(cornerFromUv({ x: 1, y: 1 })).toBe("tr");
+    expect(cornerFromUv({ x: 1 - f / 2, y: 1 - f / 2 })).toBe("tr");
+    // Top-left
+    expect(cornerFromUv({ x: 0, y: 1 })).toBe("tl");
+    expect(cornerFromUv({ x: f / 2, y: 1 - f / 2 })).toBe("tl");
+  });
+
+  it("returns null for the panel center (drag zone, not resize)", () => {
+    expect(cornerFromUv({ x: 0.5, y: 0.5 })).toBeNull();
+    expect(cornerFromUv({ x: 0.3, y: 0.7 })).toBeNull();
+  });
+});
+
+describe("pointer_math — resizeSize", () => {
+  // Панель pos=(0, 1.6, -2), size 1.2×0.7, facing=(0, 1) → оператор в (0,0,0)
+  // смотрит на -z, его «право» = +x. Старые углы: tl=(-0.6, 1.95, -2),
+  // tr=(+0.6, 1.95, -2), bl=(-0.6, 1.25, -2), br=(+0.6, 1.25, -2).
+  // Семантика: противоположный угол фиксирован, схваченный переезжает.
+  const pos = { x: 0, y: 1.6, z: -2 };
+  const size = { width: 1.2, height: 0.7 };
+  const facing = { x: 0, z: 1 };
+
+  it("br corner: tl stays, br moves → new size = |br - tl|", () => {
+    // Тянем br на (1.0, 0.9, -2). tl остаётся на (-0.6, 1.95, -2).
+    // Новая ширина = |1.0 - (-0.6)| = 1.6, высота = |0.9 - 1.95| = 1.05.
+    const cornerPos = { x: 1.0, y: 0.9, z: -2 };
+    const next = resizeSize(pos, size, cornerPos, facing, "br");
+    expect(next.width).toBeCloseTo(1.6, 4);
+    expect(next.height).toBeCloseTo(1.05, 4);
+  });
+
+  it("bl corner: tr stays, bl moves", () => {
+    // Тянем bl на (-1.5, 0.9, -2). tr фиксирован на (0.6, 1.95, -2).
+    const cornerPos = { x: -1.5, y: 0.9, z: -2 };
+    const next = resizeSize(pos, size, cornerPos, facing, "bl");
+    expect(next.width).toBeCloseTo(2.1, 4);
+    expect(next.height).toBeCloseTo(1.05, 4);
+  });
+
+  it("tr corner: bl stays, tr moves", () => {
+    // Тянем tr на (1.0, 2.6, -2). bl фиксирован на (-0.6, 1.25, -2).
+    const cornerPos = { x: 1.0, y: 2.6, z: -2 };
+    const next = resizeSize(pos, size, cornerPos, facing, "tr");
+    expect(next.width).toBeCloseTo(1.6, 4);
+    expect(next.height).toBeCloseTo(1.35, 4);
+  });
+
+  it("no-op when corner returns to its original position", () => {
+    // Угол br в исходной точке (+0.6, 1.25, -2) → размер не меняется.
+    const cornerPos = { x: 0.6, y: 1.25, z: -2 };
+    const next = resizeSize(pos, size, cornerPos, facing, "br");
+    expect(next.width).toBeCloseTo(1.2, 4);
+    expect(next.height).toBeCloseTo(0.7, 4);
+  });
+
+  it("returns non-negative sizes (clamping happens in PanelManager.resize)", () => {
+    // Угол br в центре панели — вектор короче старой диагонали,
+    // ширина/высота меньше старых но >=0.
+    const cornerPos = { x: 0, y: 1.6, z: -2 };
+    const next = resizeSize(pos, size, cornerPos, facing, "br");
+    expect(next.width).toBeGreaterThanOrEqual(0);
+    expect(next.height).toBeGreaterThanOrEqual(0);
+    expect(next.width).toBeLessThan(1.2);
+    expect(next.height).toBeLessThan(0.7);
   });
 });
 

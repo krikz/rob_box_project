@@ -139,7 +139,7 @@ export type JsonEvent =
   | { type: "voice_state"; state: string; ts_ms: number; utterance_id?: string }
   | { type: "voice_mode_ack"; mode: string; ts_ms: number }
   | { type: "safety_stop"; reason: string; ts_ms: number }
-  | { type: "robot_alert"; level: "warn" | "error"; code: string; args?: Record<string, unknown>; ts_ms: number }
+  | { type: "robot_alert"; code: string; level: "warn" | "error" | "info"; active?: boolean; args?: Record<string, unknown>; ts_ms: number }
   | { type: "stream_list"; items: Array<Record<string, unknown>>; ts_ms: number }
   | { type: "stream_select_ack"; topic: string; stream_id: number | null; kind?: string }
   | { type: "voice_list"; voices: VoiceInfo[]; ts_ms: number }

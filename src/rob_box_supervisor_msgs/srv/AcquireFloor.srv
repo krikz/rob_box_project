@@ -1,0 +1,38 @@
+# AcquireFloor.srv — typed floor acquire (ADR-0028 §4.2 / §4.3)
+#
+# Replaces the previous std_srvs/Trigger hack that smuggled client_id /
+# floor through request.data as a JSON string (see supervisor_node.py
+# `_extract_floor_request` docstring — the transition tech debt this IDL
+# retires).
+#
+# Field names mirror meta-quest-api.md §3 frame type 0x31 (ACQUIRE_FLOOR):
+#   {"client_id": "<session>", "floor": "teleop"|"voice"}
+
+# Caller identity. Conventionally "<transport>:<session>", e.g.
+# "quest:<uuid>", "telegram:<chat_id>". Empty -> server rejects as bad_request.
+string client_id
+
+# Which floor to acquire: "teleop" (cmd_vel_* dispatch) or "voice" (TTS + voice_input_mode).
+# Server treats any other value as bad_request.
+string floor
+
+---
+
+# Whether the floor is now granted to this caller. True on first acquire
+# AND on idempotent re-acquire by the same client_id.
+bool   granted
+
+# client_id of the current holder (empty string if floor is free). Lets
+# clients display "Floor held by <client>" without a separate state query.
+string held_by
+
+# Machine-readable reason. Empty on success. Non-empty values:
+#   - "held_by_other"     — another client_id already owns this floor
+#   - "mode_conflict"     — FSM rejected because of avatar-mode state
+#   - "bad_request"       — empty client_id, unknown floor, etc.
+#   - "monitor"           — supervisor is in monitor mode (ADR-0028 §4.5)
+string reason
+
+# False in monitor mode (supervisor accepts but does not mutate LockManager).
+# True when the request reached the LockManager and was applied (granted or not).
+bool   applied
