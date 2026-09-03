@@ -15,7 +15,21 @@ from pathlib import Path
 
 import pytest
 
-_BENCH = Path(__file__).resolve().parents[4] / "scripts" / "voice_bench"
+# Repo-rooted lookup: поднимаемся от __file__ достаточно высоко, чтобы
+# покрыть и обычный прогон (`src/.../test/.../file.py`, parents[4] = repo_root),
+# и CI-конфиг из G-Run Tests.yml (test_ws/src/.../test/.../file.py, где
+# parents[4] = test_ws и нужно ещё на уровень выше). Ищем первого предка,
+# у которого есть scripts/voice_bench/score.py.
+_BENCH: Path | None = None
+for _anc in Path(__file__).resolve().parents:
+    if (_anc / "scripts" / "voice_bench" / "score.py").is_file():
+        _BENCH = _anc / "scripts" / "voice_bench"
+        break
+if _BENCH is None:
+    raise RuntimeError(
+        "test_voice_bench_scoring: scripts/voice_bench/score.py not found "
+        "in any ancestor of __file__"
+    )
 sys.path.insert(0, str(_BENCH))
 
 from score import (  # noqa: E402
