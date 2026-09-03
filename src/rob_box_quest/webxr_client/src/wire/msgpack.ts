@@ -221,3 +221,211 @@ export function decodeMsgpackMap(bytes: Uint8Array): { [key: string]: MsgpackVal
     return null;
   }
 }
+
+// =====================================================================
+// Encoder (минимальный, зеркало server-side msgpack.packb с теми же
+// типами, что покрывает декодер выше: map / array / str / uint / int /
+// bool / null). Поддержка ext / bin / float намеренно НЕ добавляется:
+// клиент AV-17 не отправляет такие поля в payload'ах supervisor-
+// команд (msgpack `{client_id, mode/floor}`), а добавлять «запас на
+// будущее» = лишний код без покрытия тестами.
+//
+// Совместим с `msgpack.packb(..., use_bin_type=True)` на стороне сервера
+// (см. `src/rob_box_quest/rob_box_quest/protocol/topics.py`). Round-trip
+// покрыт в tests/msgpack.test.ts ("encode/decode round-trip" suite).
+// =====================================================================
+
+export type MsgpackInput =
+  | null
+  | boolean
+  | number
+  | string
+  | MsgpackInput[]
+  | { [key: string]: MsgpackInput };
+
+class Writer {
+  private readonly chunks: number[] = [];
+
+  push(bytes: Uint8Array | number[]): void {
+    if (bytes instanceof Uint8Array) {
+      for (let i = 0; i < bytes.length; i += 1) this.chunks.push(bytes[i]);
+    } else {
+      for (const b of bytes) this.chunks.push(b);
+    }
+  }
+
+  u8(v: number): void {
+    this.chunks.push(v & 0xff);
+  }
+
+  u16(v: number): void {
+    // msgpack — big-endian (декодер читает через DataView.getUint16 без LE-флага).
+    this.chunks.push((v >>> 8) & 0xff, v & 0xff);
+  }
+
+  u32(v: number): void {
+    this.chunks.push((v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff);
+  }
+
+  u64(v: number): void {
+    // BigInt не нужен: ts_ms укладывается в 2^53 до 287396 года.
+    const hi = Math.floor(v / 0x1_0000_0000);
+    const lo = v >>> 0;
+    this.u32(hi);
+    this.u32(lo);
+  }
+
+  i64(v: number): void {
+    // Двух-комплемент big-endian через DataView — без new ArrayBuffer в hot-path.
+    const view = new DataView(new ArrayBuffer(8));
+    view.setBigInt64(0, BigInt(Math.trunc(v)));
+    for (let i = 0; i < 8; i += 1) this.chunks.push(view.getUint8(i));
+  }
+
+  toBytes(): Uint8Array {
+    return new Uint8Array(this.chunks);
+  }
+}
+
+function writeStr(w: Writer, s: string): void {
+  // UTF-8 length может быть > char count — замеряем байты.
+  const bytes = new TextEncoder().encode(s);
+  const len = bytes.length;
+  if (len <= 31) {
+    w.u8(0xa0 | len);
+  } else if (len <= 0xff) {
+    w.u8(0xd9);
+    w.u8(len);
+  } else if (len <= 0xffff) {
+    w.u8(0xda);
+    w.u16(len);
+  } else {
+    w.u8(0xdb);
+    w.u32(len);
+  }
+  w.push(bytes);
+}
+
+function writeUint(w: Writer, v: number): void {
+  if (!Number.isInteger(v) || v < 0) {
+    throw new RangeError(`msgpack encode: unsigned integer expected, got ${v}`);
+  }
+  if (v <= 0x7f) {
+    w.u8(v); // positive fixint
+  } else if (v <= 0xff) {
+    w.u8(0xcc);
+    w.u8(v);
+  } else if (v <= 0xffff) {
+    w.u8(0xcd);
+    w.u16(v);
+  } else if (v <= 0xffffffff) {
+    w.u8(0xce);
+    w.u32(v);
+  } else {
+    w.u8(0xcf);
+    w.u64(v);
+  }
+}
+
+function writeInt(w: Writer, v: number): void {
+  if (!Number.isInteger(v)) {
+    throw new RangeError(`msgpack encode: integer expected, got ${v}`);
+  }
+  if (v >= 0) return writeUint(w, v);
+  if (v >= -32) {
+    w.u8(v & 0xff); // negative fixint
+    return;
+  }
+  if (v >= -0x80) {
+    w.u8(0xd0);
+    w.u8(v & 0xff);
+  } else if (v >= -0x8000) {
+    w.u8(0xd1);
+    w.u16(v & 0xffff);
+  } else if (v >= -0x8000_0000) {
+    w.u8(0xd2);
+    w.u32(v >>> 0);
+  } else {
+    w.u8(0xd3);
+    w.i64(v);
+  }
+}
+
+function writeValue(w: Writer, v: unknown): void {
+  if (v === null) {
+    w.u8(0xc0);
+    return;
+  }
+  if (v === false) {
+    w.u8(0xc2);
+    return;
+  }
+  if (v === true) {
+    w.u8(0xc3);
+    return;
+  }
+  if (typeof v === "number") {
+    if (Number.isInteger(v)) {
+      writeInt(w, v);
+    } else {
+      // float64 — для ts_ms/length мы integer, но encode-функция
+      // остаётся полной (на случай будущих команд с float-полями).
+      w.u8(0xcb);
+      const view = new DataView(new ArrayBuffer(8));
+      view.setFloat64(0, v);
+      for (let i = 0; i < 8; i += 1) w.u8(view.getUint8(i));
+    }
+    return;
+  }
+  if (typeof v === "string") {
+    writeStr(w, v);
+    return;
+  }
+  if (Array.isArray(v)) {
+    if (v.length <= 15) {
+      w.u8(0x90 | v.length);
+    } else if (v.length <= 0xffff) {
+      w.u8(0xdc);
+      w.u16(v.length);
+    } else {
+      w.u8(0xdd);
+      w.u32(v.length);
+    }
+    for (const item of v) writeValue(w, item);
+    return;
+  }
+  if (typeof v === "object") {
+    // Plain object → map. Uint8Array и массивы уже обработаны выше.
+    const entries = Object.entries(v as Record<string, MsgpackInput>);
+    if (entries.length <= 15) {
+      w.u8(0x80 | entries.length);
+    } else if (entries.length <= 0xffff) {
+      w.u8(0xde);
+      w.u16(entries.length);
+    } else {
+      w.u8(0xdf);
+      w.u32(entries.length);
+    }
+    for (const [k, val] of entries) {
+      writeStr(w, k);
+      writeValue(w, val);
+    }
+    return;
+  }
+  throw new TypeError(`msgpack encode: unsupported value ${typeof v}`);
+}
+
+/** Закодировать значение в msgpack. */
+export function encodeMsgpack(value: MsgpackInput): Uint8Array {
+  const w = new Writer();
+  writeValue(w, value);
+  return w.toBytes();
+}
+
+/**
+ * Удобный хелпер: map → msgpack. В AV-17 это payload для supervisor-
+ * команд (`{client_id, floor}`, `{client_id, mode}`).
+ */
+export function encodeMsgpackMap(map: { [key: string]: MsgpackInput }): Uint8Array {
+  return encodeMsgpack(map);
+}

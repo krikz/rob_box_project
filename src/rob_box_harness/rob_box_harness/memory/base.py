@@ -1,14 +1,14 @@
-"""MemoryStore port — per-scope conversation history and facts.
+"""MemoryStore port — scoped facts plus robot-global state.
 
-The contract covers the core operations every concrete memory
-(``SQLiteVoiceMemory``, ``RedisStore``, ``fake.InMemoryStore``) MUST
-expose (ADR-0001 §2.4.3 + Phase 6 v2 W4):
+Turns are intentionally NOT part of the store: dialogue turns live in an
+in-memory sliding window owned by ``DialogCore`` (Shifu directive
+2026-09-02) and are never persisted. The contract covers:
 
-Conversation + facts (scoped):
-* ``load_recent`` — fetch the last N turns for a given scope.
-* ``append_turn``  — append a single turn (idempotent).
+Facts (scoped):
 * ``save_fact``    — persist a structured fact (e.g. "user likes jazz").
 * ``search_facts`` — best-effort semantic search over stored facts.
+* ``list_facts``   — list facts for a scope.
+* ``clear_facts``  — remove facts for a scope.
 
 Waypoints (global navigation memory):
 * ``save_waypoint(name, x, y, theta)`` — store a named pose.
@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import abc
 import time
-from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
@@ -119,61 +118,6 @@ class MemoryStore(abc.ABC):
     """Abstract memory store."""
 
     name: str = "abstract"
-
-    @abc.abstractmethod
-    async def load_recent(
-        self,
-        scope: str,
-        *,
-        limit: int = 20,
-    ) -> list[Turn]:
-        """Return the most recent ``limit`` turns for ``scope``."""
-
-    @abc.abstractmethod
-    async def append_turn(self, scope: str, turn: Turn) -> None:
-        """Append ``turn`` to ``scope``. Idempotent on (role, content)."""
-
-    @abc.abstractmethod
-    async def clear_turns(self, scope: str) -> int:
-        """Remove every turn stored under ``scope``.
-
-        Returns the number of turns removed (0 if the scope was empty or
-        unknown). Used by the voice shell to reset a dialogue session.
-        """
-
-    async def delete_last_turn(self, scope: str, *, role: str) -> bool:
-        """Retract the most recent ``role`` turn from ``scope``'s history.
-
-        Issue #992 — a turn can look like a normal, persistable reply
-        (non-empty text, not a bare "done" marker) and still be a
-        confirmed lie: the LLM claimed an action ("Сыграю его по нотам!")
-        without calling any tool, a guard caught it after the fact, and
-        the retry/nudge already told the user the truth. Left in history,
-        that unlabeled "successful-sounding" turn becomes a few-shot
-        example the model imitates on the next similar request — the
-        longer the session, the more its own context teaches it to lie
-        (see :meth:`DialogCore._is_silent_spoken`). Callers use this to
-        retract exactly that turn once a guard confirms the failure.
-
-        Generic default: reload the scope, drop the most recent turn
-        matching ``role``, replay everything else. Correct for any
-        :class:`MemoryStore` without requiring a new abstract method;
-        concrete stores may override with a targeted single-row delete.
-        Returns ``True`` if a turn was found and removed.
-        """
-        turns = await self.load_recent(scope, limit=1000)
-        idx = None
-        for i in range(len(turns) - 1, -1, -1):
-            if turns[i].role == role:
-                idx = i
-                break
-        if idx is None:
-            return False
-        del turns[idx]
-        await self.clear_turns(scope)
-        for turn in turns:
-            await self.append_turn(scope, turn)
-        return True
 
     @abc.abstractmethod
     async def save_fact(self, scope: str, fact: Fact) -> None:
@@ -307,21 +251,17 @@ class InMemoryStore(MemoryStore):
 
     Thread-unsafe by design — single event loop, single scope access.
     Used by tests and the dummy harnesses to keep the smoke path
-    dependency-free.
-
-    The recent-turn buffer is a ``deque`` with a hard cap so a
-    runaway test doesn't blow out memory.
+    dependency-free. Stores facts and robot-global state only; turns are
+    never persisted.
     """
 
     name = "in_memory"
 
-    def __init__(self, *, max_recent: int = 1000) -> None:
-        self._turns: dict[str, deque[Turn]] = {}
+    def __init__(self) -> None:
         self._facts: dict[str, list[Fact]] = {}
         self._waypoints: dict[str, Waypoint] = {}
         self._faq: dict[str, list[FAQItem]] = {}
         self._event_profile: dict[str, Any] | None = None
-        self._max_recent = max_recent
 
     async def init(self) -> None:
         """No-op for in-memory store.
@@ -333,29 +273,6 @@ class InMemoryStore(MemoryStore):
         run migrations; in-memory has nothing to do.
         """
         return None
-
-    async def load_recent(
-        self,
-        scope: str,
-        *,
-        limit: int = 20,
-    ) -> list[Turn]:
-        """Return the most recent ``limit`` turns for ``scope`` (newest first)."""
-        if limit <= 0:
-            raise ValueError(f"limit must be positive, got {limit}")
-        bucket = self._turns.get(scope, ())
-        # Return most-recent first; tests assert ordering.
-        return list(reversed(list(bucket)[-limit:]))
-
-    async def append_turn(self, scope: str, turn: Turn) -> None:
-        """Append ``turn`` to ``scope``; oldest are dropped at the deque cap."""
-        bucket = self._turns.setdefault(scope, deque(maxlen=self._max_recent))
-        bucket.append(turn)
-
-    async def clear_turns(self, scope: str) -> int:
-        """Remove every turn for ``scope``; returns the count removed."""
-        bucket = self._turns.pop(scope, None)
-        return len(bucket) if bucket is not None else 0
 
     async def save_fact(self, scope: str, fact: Fact) -> None:
         """Persist ``fact`` under ``scope``, replacing any same-key fact."""

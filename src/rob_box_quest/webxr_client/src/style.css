@@ -421,3 +421,73 @@ body {
   color: var(--fg);
 }
 
+
+/* ---------------------------------------------------------------- */
+/* Toast (AV-17) — non-modal короткие уведомления                   */
+/* ---------------------------------------------------------------- */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 64px;
+  transform: translateX(-50%);
+  z-index: 60;
+  pointer-events: auto;
+  max-width: min(640px, calc(100vw - 32px));
+}
+
+.toast--hidden {
+  display: none;
+}
+
+.toast__card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: rgba(10, 13, 17, 0.86);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  color: var(--fg);
+  font-size: 14px;
+  line-height: 1.4;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.toast--warn .toast__card {
+  border-color: #f5c211;
+}
+.toast--error .toast__card {
+  border-color: #e01b24;
+}
+.toast--info .toast__card {
+  border-color: var(--accent);
+}
+
+.toast__icon {
+  font-size: 18px;
+  flex: 0 0 auto;
+}
+.toast--warn .toast__icon {
+  color: #f5c211;
+}
+.toast--error .toast__icon {
+  color: #e01b24;
+}
+.toast--info .toast__icon {
+  color: var(--accent);
+}
+
+.toast__text {
+  flex: 1 1 auto;
+}
+
+.toast__dismiss {
+  background: transparent;
+  border: 0;
+  color: var(--fg);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}

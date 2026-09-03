@@ -98,13 +98,8 @@ async def test_minimax_fixture_drives_real_harness_without_network() -> None:
 
     async with harness:
         result = await harness.run("hello MiniMax")
-        turns = await harness.memory.load_recent("recorded-session", limit=10)
 
     assert result.output == "fixture says hello"
-    assert [turn.content for turn in turns] == [
-        "fixture says hello",
-        "hello MiniMax",
-    ]
     assert [effect.text for effect in effects.effects] == ["fixture says hello"]
     assert len(client.chat.completions.calls) == 1
     assert client.close_count == 1

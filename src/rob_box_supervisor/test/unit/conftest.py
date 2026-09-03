@@ -23,7 +23,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 
-def _install_ros_mocks() -> None:
+def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with IDL mocks
     # ── rclpy package + sub-modules ───────────────────────────────────
     mock_rclpy = MagicMock()
     mock_rclpy.ok = MagicMock(return_value=True)
@@ -115,6 +115,27 @@ def _install_ros_mocks() -> None:
             return t
 
         def create_service(self, srv_type: Any, name: str, callback: Any) -> FakeService:
+            # Зеркалим rclpy.Node.create_service(): требует ПОЛНЫЙ srv-класс
+            # с nested .Request / .Response. Передача «голого» .Request /
+            # .Response-объекта приводит к
+            # ``RuntimeError: The service type provided is not valid``
+            # в реальном ROS 2 (см. issue #1904, e2e-раунды 337..341,
+            # карточка t_979f0cb2). До этого фикса mock-rclpy тихо
+            # принимал ЛЮБОЙ srv_type, и регрессия «create_service() с
+            # AcquireFloor.Request» проскакивала через unit-тесты прямо в
+            # прод — нода падала в __init__, docker restart-policy
+            # зацикливал её, и e2e не запускался пять раундов подряд.
+            # Это структурный test-fidelity guard: однажды вернувшись
+            # к передаче ``AcquireFloor.Request`` — любой тест,
+            # импортирующий ``AvatarSupervisor``, упадёт с этим же
+            # RuntimeError в setUp.
+            req_attr = getattr(srv_type, "Request", None)
+            resp_attr = getattr(srv_type, "Response", None)
+            if req_attr is None or resp_attr is None:
+                raise RuntimeError(
+                    f"The service type provided is not valid "
+                    f"({srv_type!r}), this might be a message or action"
+                )
             svc = FakeService(name, srv_type, callback)
             self._services.append(svc)
             return svc
@@ -185,6 +206,128 @@ def _install_ros_mocks() -> None:
     mock_std_srvs_srv = types.SimpleNamespace(Trigger=FakeTrigger)
     mock_std_srvs = types.SimpleNamespace(srv=mock_std_srvs_srv)
 
+    # ── rob_box_supervisor_msgs (AV-12) ────────────────────────────────
+    # mock-rclpy CI не имеет собранного IDL-пакета; без этого mock нода
+    # откатится на Trigger fallback и потеряет coverage типизированного
+    # контракта (см. supervisor_node._try_load_supervisor_msgs).
+    #
+    # Типы выровнены с src/rob_box_supervisor_msgs/{srv,msg}/*.{srv,msg}:
+    #   srv.AcquireFloor.{Request, Response}
+    #   srv.ReleaseFloor.{Request, Response}
+    #   srv.SetAvatarMode.{Request, Response}
+    #   msg.{TeleopHeartbeat, FloorState, AvatarStateMsg}
+    # Объект Request — пустой конструктор + атрибуты после .set_fields()-стиля
+    # (в коде нода читает request.client_id / request.floor / request.mode).
+    # Объект Response — конструктор без args, поля как bool/string с дефолтами.
+
+    class _SrvRequest:  # noqa: WPS431 — базовый класс
+        def __init__(self) -> None:
+            for name in getattr(self, "_FIELDS", ()):
+                setattr(self, name, _DEFAULT_FOR_FIELD(name))
+
+    class _SrvResponse:  # noqa: WPS431 — базовый класс
+        def __init__(self) -> None:
+            for name in getattr(self, "_FIELDS", ()):
+                setattr(self, name, _DEFAULT_FOR_FIELD(name))
+
+    def _make_srv_type(
+        class_name: str,
+        request_fields: tuple[str, ...],
+        response_fields: tuple[str, ...],
+    ) -> Any:
+        """Создать пару (Request, Response) + ``srv``-класс под mock-rclpy.
+
+        Каждый Request/Response — простой класс с ``__init__`` без args
+        и атрибутами-полями. Используем ``type(name, bases, dict)``, а
+        не ``types.new_class`` (последний хочет callable exec_body).
+        """
+
+        class _Req(_SrvRequest):
+            _FIELDS = request_fields
+
+        class _Resp(_SrvResponse):
+            _FIELDS = response_fields
+
+        cls_dict = {"Request": _Req, "Response": _Resp}
+        return type(class_name, (object,), cls_dict)
+
+    def _make_msg_type(class_name: str, fields: tuple[str, ...]) -> Any:
+        """Создать msg-класс с конструктором без args + полями."""
+
+        class _Msg(_SrvResponse):
+            _FIELDS = fields
+
+        return type(class_name, (object,), {})
+
+    def _default_for_field(name: str) -> Any:
+        """Дефолт по типичному IDL-имени: bool → False, uint → 0, string → ""."""
+        if name in ("client_id", "floor", "mode", "held_by", "reason", "message", "last_event"):
+            return ""
+        if name in ("granted", "success", "applied"):
+            return False
+        if name in ("ts_ms", "since_ms", "last_heartbeat_ms"):
+            return 0
+        if name in ("seq", "version"):
+            return 0
+        return ""
+
+    global _DEFAULT_FOR_FIELD  # noqa: PLW0603 — глобалка для вложенных классов
+    _DEFAULT_FOR_FIELD = _default_for_field
+
+    # srv-types
+    # NB: AcquireFloor / ReleaseFloor / SetAvatarMode — ПОЛНЫЕ srv-классы
+    # с nested .Request / .Response, как их генерирует rosidl и как их
+    # требует rclpy.Node.create_service(). До фикса карточки t_979f0cb2
+    # (issue #1904) supervisor_node регистрировал сервисы через
+    # ``self._msgs_types["AcqReq"]`` (= AcquireFloor.Request), и нода
+    # падала в ``__init__`` с ``RuntimeError: The service type provided
+    # is not valid``. Теперь нода передаёт AcquireFloor (целиком), а
+    # mock ``FakeNode.create_service`` (см. выше) валидирует наличие
+    # nested .Request / .Response — иначе raise того же RuntimeError,
+    # как в реальном rclpy. Это закрывает test-fidelity gap: регрессия
+    # «create_service() с .Request вместо полного srv-класса» теперь
+    # ловится в unit-тестах, а не в проде после деплоя.
+    AcquireFloor = _make_srv_type(
+        "AcquireFloor",
+        request_fields=("client_id", "floor"),
+        response_fields=("granted", "held_by", "reason", "applied"),
+    )
+    ReleaseFloor = _make_srv_type(
+        "ReleaseFloor",
+        request_fields=("client_id", "floor"),
+        response_fields=("success", "reason", "applied"),
+    )
+    SetAvatarMode = _make_srv_type(
+        "SetAvatarMode",
+        request_fields=("client_id", "mode"),
+        response_fields=("success", "mode", "reason", "applied"),
+    )
+
+    mock_rob_box_supervisor_msgs_srv = types.SimpleNamespace(
+        AcquireFloor=AcquireFloor,
+        ReleaseFloor=ReleaseFloor,
+        SetAvatarMode=SetAvatarMode,
+    )
+
+    # msg-types (для Phase 2 / teleop heartbeat / floor state — нужны только
+    # для импорта, в Phase 1 не используются, но mock на месте для полноты
+    # и под future-тестов AV-13/AV-14).
+    TeleopHeartbeat = _make_msg_type("TeleopHeartbeat", ("client_id", "ts_ms", "seq"))
+    FloorState = _make_msg_type("FloorState", ("client_id", "since_ms", "last_heartbeat_ms"))
+    AvatarStateMsg = _make_msg_type(
+        "AvatarStateMsg",
+        ("mode", "teleop_floor", "voice_floor", "last_event", "since_ms", "version"),
+    )
+    mock_rob_box_supervisor_msgs_msg = types.SimpleNamespace(
+        TeleopHeartbeat=TeleopHeartbeat,
+        FloorState=FloorState,
+        AvatarStateMsg=AvatarStateMsg,
+    )
+    mock_rob_box_supervisor_msgs = types.SimpleNamespace(
+        srv=mock_rob_box_supervisor_msgs_srv,
+        msg=mock_rob_box_supervisor_msgs_msg,
+    )
+
     # ── register all mocks ────────────────────────────────────────────
     mocks = {
         "rclpy": mock_rclpy,
@@ -194,6 +337,9 @@ def _install_ros_mocks() -> None:
         "std_msgs.msg": mock_std_msgs_msg,
         "std_srvs": mock_std_srvs,
         "std_srvs.srv": mock_std_srvs_srv,
+        "rob_box_supervisor_msgs": mock_rob_box_supervisor_msgs,
+        "rob_box_supervisor_msgs.srv": mock_rob_box_supervisor_msgs_srv,
+        "rob_box_supervisor_msgs.msg": mock_rob_box_supervisor_msgs_msg,
     }
     for name, mock in mocks.items():
         sys.modules.setdefault(name, mock)

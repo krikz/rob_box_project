@@ -112,6 +112,45 @@ ROLE_PROFILE: Dict[str, Tuple[str, int, float]] = {
 #: Роли, которые играют сэмплами через ``play(...)``, а не синтом.
 DRUM_ROLES = frozenset({"drums", "hats", "perc"})
 
+#: Полутоновые интервалы ладов, которые предъявляет схема ``compose_music``.
+#:
+#: Нужны ровно для одного: перевести ``progression`` (ступени лада) в сдвиг
+#: ``Root.default`` (полутоны). Держать здесь копию таблицы дешевле, чем
+#: тянуть в этот модуль зависимость от Renardo: он остаётся чистым и
+#: тестируемым без звукового стека.
+SCALE_INTERVALS: Dict[str, Tuple[int, ...]] = {
+    "minor":           (0, 2, 3, 5, 7, 8, 10),
+    "major":           (0, 2, 4, 5, 7, 9, 11),
+    "dorian":          (0, 2, 3, 5, 7, 9, 10),
+    "phrygian":        (0, 1, 3, 5, 7, 8, 10),
+    "lydian":          (0, 2, 4, 6, 7, 9, 11),
+    "mixolydian":      (0, 2, 4, 5, 7, 9, 10),
+    "harmonicMinor":   (0, 2, 3, 5, 7, 8, 11),
+    "majorPentatonic": (0, 2, 4, 7, 9),
+    "minorPentatonic": (0, 3, 5, 7, 10),
+}
+
+#: Сколько тактов держится одна ступень прогрессии.
+#:
+#: Четыре такта — квадрат, на котором построена почти вся танцевальная и
+#: песенная музыка. Гармония, меняющаяся раз в 19 тактов (столько давал
+#: прежний расчёт «одна прогрессия на всю форму»), на слух не читается как
+#: гармония вообще: слушатель слышит не смену аккорда, а сбой.
+BARS_PER_CHORD = 4
+
+
+def _degree_to_semitones(degree: float, intervals: Sequence[int]) -> int:
+    """Ступень лада -> полутоны, с переносом по октавам.
+
+    Ступень может быть отрицательной («на секунду вниз») или больше длины
+    лада («октавой выше») — обе формы встречаются в живых вызовах, и обе
+    должны давать ноту того же лада, а не хроматический сдвиг.
+    """
+    size = len(intervals)
+    index = int(degree)
+    octave, step = divmod(index, size)
+    return octave * 12 + intervals[step]
+
 #: Формы: имя -> список секций ``(имя, тактов, {роль: интенсивность 0..1})``.
 #:
 #: Интенсивность умножается на базовую амплитуду роли. 0.0 = слой молчит
@@ -256,6 +295,28 @@ def _fmt(value: float) -> str:
 
 def _fmt_list(values: Sequence[float]) -> str:
     return "[" + ", ".join(_fmt(v) for v in values) + "]"
+
+
+def _fmt_chord(values: Sequence[float]) -> str:
+    """Отформатировать ступени как ОДНОВРЕМЕННО звучащий аккорд.
+
+    🔴 FIX (live 02.09, «какофония»): в Renardo квадратные скобки — это
+    Pattern, то есть ПОСЛЕДОВАТЕЛЬНОСТЬ, а одновременное звучание даёт
+    только PGroup — круглые скобки (renardo_lib/Patterns/Main.py::PGroup,
+    ``bracket_style = "()"``). Пэд рендерился как ``p3 >> warmpad([0, 4,
+    7], dur=4, oct=4)`` и играл арпеджио по одной ноте за такт. Гармони-
+    ческой подкладки в треке не было НИ РАЗУ: бас, лид и «пэд» звучали
+    как три независимых одноголосных линии, и на каждом их расхождении в
+    секунду слышался диссонанс, который нечем было связать. Отсюда и
+    «инструменты как будто сбиты» при формально верных ступенях.
+
+    Соседний код это уже предполагал: docstring :func:`_motif_variants`
+    описывает пэд как «широкий аккорд (0, 4, 7, 11)» и специально не даёт
+    ему транспозиций, «чтобы он держал гармонию». Держать её он не мог.
+    """
+    if len(values) == 1:
+        return _fmt(values[0])
+    return "(" + ", ".join(_fmt(v) for v in values) + ")"
 
 
 def _fmt_nested_list(values: Sequence[Sequence[float]]) -> str:
@@ -561,6 +622,9 @@ def _render_layer(
                 f"{_fmt_list(variant_durs)})"
             )
             head = f"{layer.synth}({motif_name}"
+        elif layer.role == "pad":
+            # Пэд держит гармонию — все его ступени звучат одновременно.
+            head = f"{layer.synth}({_fmt_chord(layer.degrees)}"
         else:
             head = f"{layer.synth}({_fmt_list(layer.degrees)}"
 
@@ -598,7 +662,8 @@ def render(spec: CompositionSpec) -> str:
     bpm = max(BPM_RANGE[0], min(BPM_RANGE[1], float(spec.bpm)))
     root = spec.root if spec.root in VALID_ROOTS else "C"
     plan = resolve_form(spec.form)
-    total_beats = sum(int(bars) for _n, bars, _i in plan) * BEATS_PER_BAR
+    total_bars = sum(int(bars) for _n, bars, _i in plan)
+    total_beats = total_bars * BEATS_PER_BAR
 
     lines: List[str] = ["Clock.clear()", f"Clock.bpm = {_fmt(bpm)}"]
 
@@ -611,12 +676,37 @@ def render(spec: CompositionSpec) -> str:
         lines.append(f"Clock.swing({_fmt(swing)})")
 
     if spec.progression:
-        # Один проход прогрессии растягивается ровно на одну форму, чтобы
-        # гармония и аранжировка не разъезжались.
-        step = max(1, total_beats // len(spec.progression))
-        lines.append(
-            f"Root.default = var({_fmt_list(spec.progression)}, {_fmt(step)})"
-        )
+        # 🔴 FIX (live 02.09, «какофония») — здесь было три бага сразу:
+        #
+        # 1. ТОНИКА ТЕРЯЛАСЬ. ``Root.default = var([0, 0, 5, 3], ...)`` —
+        #    Renardo трактует Root как ХРОМАТИЧЕСКИЙ номер ноты (Root.py:
+        #    ``CHROMATIC_NOTES``, 0 = C), поэтому запрошенный root просто
+        #    не доезжал: 91 из 99 живых вызовов шли с progression, и все
+        #    они звучали в до, какую бы тонику модель ни выбрала. Заодно
+        #    это съедало разнообразие — тональный центр у всех треков сета
+        #    был один и тот же.
+        # 2. СТУПЕНИ ЧИТАЛИСЬ КАК ПОЛУТОНА. И схема тула, и промпт, и
+        #    docstring ``CompositionSpec.progression`` говорят «ступени
+        #    лада», а Root складывается в полутонах: «5» вместо V ступени
+        #    (7 полутонов в миноре) давала сдвиг на кварту, «3» вместо IV
+        #    (5 полутонов) — на малую терцию. Гармония уезжала не туда,
+        #    куда её вела мелодия, написанная в ступенях того же лада.
+        # 3. СМЕНА ГАРМОНИИ НЕ ПОПАДАЛА В СЕТКУ. ``total_beats //
+        #    len(progression)`` на форме buildup (76 тактов) давало шаг в
+        #    76 БИТОВ — 19 тактов. Тоника менялась посреди фразы и посреди
+        #    секции, под держащейся нотой пэда. Теперь шаг — целое число
+        #    тактов (кратно 4 тактам, как в обычной квадратной форме), а
+        #    прогрессия просто прокручивается по кругу до конца формы.
+        root_semitone = VALID_ROOTS.index(root)
+        intervals = SCALE_INTERVALS.get(spec.scale, SCALE_INTERVALS["minor"])
+        roots = [
+            root_semitone + _degree_to_semitones(degree, intervals)
+            for degree in spec.progression
+        ]
+        # Прогрессия прокручивается по кругу столько раз, сколько уложится
+        # в форму: ``var`` в Renardo зацикливается сам.
+        step = BARS_PER_CHORD * BEATS_PER_BAR
+        lines.append(f"Root.default = var({_fmt_list(roots)}, {_fmt(step)})")
     else:
         lines.append(f'Root.default = "{root}"')
 

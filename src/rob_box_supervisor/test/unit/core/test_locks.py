@@ -198,5 +198,72 @@ class TestLockManagerValidation(unittest.TestCase):
         self.assertIn(FLOOR_VOICE, Floor.values())
 
 
+class TestLockManagerTimeoutOverride(unittest.TestCase):
+    """AV-13: ``timeout_ms`` конструктора позволяет тюнить dead-man на железе.
+
+    Module-level :data:`DEAD_MAN_TIMEOUT_MS` остаётся 500 мс (регресс-тест
+    :py:meth:`TestLockManagerDeadMan.test_deadman_timeout_constant_is_500ms`)
+    для контракта ADR-0028 §6 Q4; override живёт в instance.
+    """
+
+    def test_override_extends_timeout(self):
+        clock = [1000]
+        lm = LockManager(clock=lambda: clock[0], timeout_ms=2000)
+
+        lm.acquire("telegram", FLOOR_TELEOP, now_ms=clock[0])
+        # Через 1000 мс — стандартный timeout уже истёк бы, override держит
+        clock[0] += 1000
+        self.assertEqual(lm.holder(FLOOR_TELEOP), "telegram")
+
+    def test_override_shortens_timeout(self):
+        clock = [1000]
+        lm = LockManager(clock=lambda: clock[0], timeout_ms=100)
+
+        lm.acquire("telegram", FLOOR_TELEOP, now_ms=clock[0])
+        clock[0] += 200
+        self.assertIsNone(lm.holder(FLOOR_TELEOP))
+
+
+class TestLockManagerForceExpire(unittest.TestCase):
+    """AV-13: ``force_expire`` для watcher-а — активно снимает expired floor."""
+
+    def test_force_expire_returns_holder_and_clears(self):
+        clock = [1000]
+        lm = LockManager(clock=lambda: clock[0])
+
+        lm.acquire("telegram", FLOOR_TELEOP, now_ms=clock[0])
+        clock[0] += 501
+        expired = lm.force_expire(FLOOR_TELEOP, now_ms=clock[0])
+        self.assertEqual(expired, "telegram")
+        # После force_expire floor реально None
+        self.assertIsNone(lm.holder(FLOOR_TELEOP))
+
+    def test_force_expire_on_alive_floor_returns_none(self):
+        clock = [1000]
+        lm = LockManager(clock=lambda: clock[0])
+
+        lm.acquire("telegram", FLOOR_TELEOP, now_ms=clock[0])
+        # Ещё живой floor
+        expired = lm.force_expire(FLOOR_TELEOP, now_ms=clock[0])
+        self.assertIsNone(expired)
+        self.assertEqual(lm.holder(FLOOR_TELEOP), "telegram")
+
+    def test_force_expire_on_empty_floor_is_idempotent(self):
+        lm = LockManager()
+        self.assertIsNone(lm.force_expire(FLOOR_TELEOP))
+        self.assertIsNone(lm.force_expire(FLOOR_VOICE))
+
+    def test_force_expire_at_exact_boundary_returns_none(self):
+        """На ровно self._timeout_ms — ещё не expired (>timeout, не >=)."""
+        clock = [1000]
+        lm = LockManager(clock=lambda: clock[0])
+
+        lm.acquire("telegram", FLOOR_TELEOP, now_ms=clock[0])
+        clock[0] += 500  # ровно 500 мс — alive
+        self.assertIsNone(lm.force_expire(FLOOR_TELEOP, now_ms=clock[0]))
+        clock[0] += 1  # 501 — expired
+        self.assertEqual(lm.force_expire(FLOOR_TELEOP, now_ms=clock[0]), "telegram")
+
+
 if __name__ == "__main__":
     unittest.main()

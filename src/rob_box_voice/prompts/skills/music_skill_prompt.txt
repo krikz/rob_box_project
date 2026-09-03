@@ -292,14 +292,24 @@ The user MUST hear sound within 3-5 seconds of their request!
   a ```renardo / ```python block in your reply. A code block in your text
   gets READ OUT LOUD by TTS instead of played. That is a BUG.
 
-QUICK START EXAMPLE (one call, sound in ~2 sec):
+QUICK START — THE SHAPE OF THE CALL (one call, sound in ~2 sec):
 ```
-compose_music(bpm=128, root="A", scale="minor", form="arc",
-  drums="X..X.o..", drums_sample=1, hats="--.-",
-  bass_synth="dub", bass_notes="0, 0, 4, 5",
-  lead_synth="arpy", lead_notes="0, 2, 0, 1, 3, 1",
-  pad_synth="warmpad", pad_notes="0, 2, 4", progression="0, 0, 5, 3")
+compose_music(bpm=<60-180>, root=<C..B>, scale=<minor|major|dorian|...>,
+  form=<arc|verse_chorus|buildup|ambient>,
+  drums="<X/o/n/. pattern, 4|8|16 chars>", drums_sample=<0-40>,
+  hats="<-/. pattern>", hats_sample=<0-9>,
+  bass_synth=<...>, bass_notes="<2-5 scale degrees>",
+  lead_synth=<...>, lead_notes="<4-8 scale degrees, a motif>",
+  pad_synth=<...>, pad_notes="<3-4 scale degrees>",
+  progression="<3-4 scale degrees>")
 ```
+⚠️ THE PLACEHOLDERS ARE DELIBERATE. This block used to carry a filled-in
+example, and the robot then played that example forever: over 30 hours of
+production logs, 56% of all compose_music calls arrived with the literal
+progression from this file, 47% with its pad chord, and the single most
+common root/scale pair was the one written here. The material was never
+the model's — it was this paragraph's. Choose every value from the genre,
+the mood and the request in front of you.
 
 Your music tools (issue #1371 — namespaced into two families, see DISPATCH below):
 
@@ -316,21 +326,25 @@ RENARDO LIVE-ENGINE (live Python code → SuperCollider):
   develops over 2-3 minutes instead of looping the same 4 bars forever.
   - form: arc (universal), verse_chorus (song), buildup (club, with a drop),
     ambient (no drums — for calm, lyrical, "for the soul" requests).
-  - progression: root movement in scale degrees, e.g. "0, 0, 5, 3". Adding it
-    makes the track noticeably more alive. Prefer to pass it.
+  - progression: root movement in scale degrees, 3-4 numbers, one per section.
+    Adding it makes the track noticeably more alive. Prefer to pass it — and
+    pick a movement that fits THIS track's genre, not the previous track's.
   - repeat=true for DJ mode / background; repeat=false for a track that ends.
   - ALWAYS give at least 3 layers (drums + bass + lead, or bass + lead + pad
     for ambient). Two layers sound empty over a 3-minute form.
   - Levels, octaves and the mix are NOT your problem — a master limiter and
     per-role registers handle them. Do not try to control volume here.
-  Example: compose_music(bpm=104, root="D", scale="dorian", form="arc",
-    drums="X..o.X.o", drums_sample=2, hats="--.-", bass_synth="dub",
-    bass_notes="0, 0, 3, -2", lead_synth="blip", lead_notes="0, 7, 5, 4, 2, 0",
-    pad_synth="warmpad", pad_notes="0, 4, 7", progression="0, 0, 5, 3")
-  ⚠️ The lead here is a LEAP (0→7) answered by a stepwise descent — see
-  technique 9 (A MOTIF IS NOT A SCALE RUN). Copy its SHAPE, not the literal
-  list. This example used to read "0, 2, 4, 7, 4, 2" — the exact scale arc
-  issue #1810 was filed about, so the canonical example was teaching the bug.
+  - drums_sample / hats_sample / perc_sample: the pack holds 43 kicks, 58
+    snares, 56 percussion hits and 10 hi-hats. The index wraps, so any number
+    0-40 is safe. The tool descriptions used to say "0-4" and the robot spent
+    months playing five kicks out of forty-three — that is the "same samples
+    every time" complaint, and it is fixed by passing a wider index, nothing
+    else. search_samples() shows what actually sits at an index.
+  ⚠️ A LEAD IS A MOTIF, NOT A SCALE RUN (technique 9): it needs a leap and an
+  answer to that leap, not a walk up and back down the neighbouring degrees.
+  No literal note list is given here on purpose — issue #1810 was filed about
+  the exact arc that the canonical example used to spell out, because the
+  example WAS the bug: the model copied it instead of composing.
 - search_samples(query, pack, case): filesystem sample search (Renardo sample packs)
   Call it to pick drums_sample / letters. Repeating the same query now returns
   DIFFERENT samples each time — use that instead of reusing what you used last.

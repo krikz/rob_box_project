@@ -568,6 +568,9 @@ class TelegramHarness(Harness[TelegramState]):
         # Initialize state
         self.state = TelegramState()
 
+        # In-memory per-chat history (turns are NOT persisted to the store).
+        self._chat_history: dict[str, list[Turn]] = {}
+
         logger.info(
             "TelegramHarness: %d commands registered, auth=%s",
             len(self._registry),
@@ -618,12 +621,12 @@ class TelegramHarness(Harness[TelegramState]):
             outcome = await self._registry.dispatch(command, args, self.state)
             return await self._dispatch_outcome(outcome)
 
-        # Text message → LLM chat
+        # Text message → LLM chat (in-memory per-chat history)
         text = str(update.get("text", ""))
         if text:
             scope = f"tg:{self.state.chat_id}"
             try:
-                history = await self.memory.load_recent(scope, limit=20)
+                history = list(self._chat_history.get(scope, ()))[-20:]
                 messages = [
                     {"role": t.role, "content": t.content} for t in history
                 ]
@@ -631,11 +634,9 @@ class TelegramHarness(Harness[TelegramState]):
 
                 response = await self.llm.complete(messages, tools=[])
 
-                await self.memory.append_turn(
-                    scope, Turn(role="user", content=text)
-                )
-                await self.memory.append_turn(
-                    scope,
+                bucket = self._chat_history.setdefault(scope, [])
+                bucket.append(Turn(role="user", content=text))
+                bucket.append(
                     Turn(
                         role="assistant",
                         content=str(response.content),

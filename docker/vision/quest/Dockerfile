@@ -9,10 +9,9 @@
 # Зависимость от webxr_client: Phase 1.4/1.5 должны быть merged в
 # текущую ветку ДО сборки этого образа (build контекст — корень репо,
 # см. docker/vision/supervisor/Dockerfile как эталон по структуре).
-# Когда Phase 1.5 в feature/avatar попадёт в develop — этот Dockerfile
-# начнёт собираться «как есть». До тех пор CI на нём даст ошибку COPY
-# про отсутствующий путь — это явный сигнал зависимости, не silent
-# degradation.
+# Когда Phase 1.5 приедет в develop — этот Dockerfile начнёт собираться
+# «как есть». До тех пор CI на нём даст ошибку COPY про отсутствующий
+# путь — это явный сигнал зависимости, не silent degradation.
 #
 # Trade-off (см. kanban t_8539461e, вопрос Q1): могли бы наследоваться
 # от voice-assistant (там уже собран rob_box_quest), но это утянет pytorch

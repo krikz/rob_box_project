@@ -108,16 +108,10 @@ class _FakeToolProvider:
 
 
 class _FakeMemoryStore:
-    """Пишет ходы в список, отдаёт хвост окна — контракт MemoryStore."""
+    """Пустая память фактов — ходы DialogCore держит в in-memory окне."""
 
     def __init__(self) -> None:
-        self.turns: list[Turn] = []
-
-    async def append_turn(self, scope: str, turn: Any) -> None:
-        self.turns.append(turn)
-
-    async def load_recent(self, scope: str, limit: int = 10) -> list[Any]:
-        return list(self.turns[-limit:])
+        pass
 
     async def save_fact(self, scope: str, fact: Any) -> None:
         return None
@@ -163,7 +157,7 @@ def test_assistant_turn_records_called_tools() -> None:
     result = asyncio.run(core.process_input("сыграй жесткий барабанный бит"))
 
     assert "echo" in result.tools_called
-    assistant_turns = [t for t in memory.turns if t.role == "assistant"]
+    assistant_turns = [t for t in core._turn_window if t.role == "assistant"]
     assert assistant_turns, "ассистентский ход не сохранён"
     assert assistant_turns[-1].metadata.get("tools_called") == ["echo"]
 
@@ -174,14 +168,16 @@ def test_turn_without_tools_stores_no_evidence() -> None:
 
     asyncio.run(core.process_input("который час"))
 
-    assistant_turns = [t for t in memory.turns if t.role == "assistant"]
+    assistant_turns = [t for t in core._turn_window if t.role == "assistant"]
     assert assistant_turns
     assert "tools_called" not in assistant_turns[-1].metadata
 
 
 def test_evidence_reaches_the_prompt_before_the_assistant_reply() -> None:
     memory = _FakeMemoryStore()
-    memory.turns.extend([
+    llm = _FakeLLMProvider(response_text="ок")
+    core = _core(llm, memory, system_prompt="ПРОМПТ", history_trim_limit=20)
+    core._turn_window.extend([
         Turn(role="user", content="сыграй жесткий барабанный бит"),
         Turn(
             role="assistant",
@@ -189,8 +185,6 @@ def test_evidence_reaches_the_prompt_before_the_assistant_reply() -> None:
             metadata={"tools_called": ["compose_music", "speak_text"]},
         ),
     ])
-    llm = _FakeLLMProvider(response_text="ок")
-    core = _core(llm, memory, system_prompt="ПРОМПТ", history_trim_limit=20)
 
     asyncio.run(core.process_input("играем легкий джаз"))
 
@@ -207,12 +201,12 @@ def test_evidence_reaches_the_prompt_before_the_assistant_reply() -> None:
 
 def test_plain_history_gets_no_extra_system_messages() -> None:
     memory = _FakeMemoryStore()
-    memory.turns.extend([
+    llm = _FakeLLMProvider(response_text="ок")
+    core = _core(llm, memory, system_prompt="ПРОМПТ", history_trim_limit=20)
+    core._turn_window.extend([
         Turn(role="user", content="привет"),
         Turn(role="assistant", content="здорово"),
     ])
-    llm = _FakeLLMProvider(response_text="ок")
-    core = _core(llm, memory, system_prompt="ПРОМПТ", history_trim_limit=20)
 
     asyncio.run(core.process_input("как дела"))
 
@@ -232,12 +226,12 @@ def test_plain_history_gets_no_extra_system_messages() -> None:
 )
 def test_malformed_metadata_does_not_break_the_turn(broken: dict) -> None:
     memory = _FakeMemoryStore()
-    memory.turns.extend([
+    llm = _FakeLLMProvider(response_text="ок")
+    core = _core(llm, memory, system_prompt="ПРОМПТ", history_trim_limit=20)
+    core._turn_window.extend([
         Turn(role="user", content="сыграй"),
         Turn(role="assistant", content="ответ", metadata=broken),
     ])
-    llm = _FakeLLMProvider(response_text="ок")
-    core = _core(llm, memory, system_prompt="ПРОМПТ", history_trim_limit=20)
 
     result = asyncio.run(core.process_input("играем легкий джаз"))
 
@@ -312,7 +306,7 @@ def test_placeholder_turn_is_not_persisted() -> None:
 
     asyncio.run(core.process_input("развивай мелодию"))
 
-    assistant_turns = [t for t in memory.turns if t.role == "assistant"]
+    assistant_turns = [t for t in core._turn_window if t.role == "assistant"]
     assert assistant_turns == [], (
         "псевдо-вызов сохранён в историю — следующий ход модель его скопирует"
     )

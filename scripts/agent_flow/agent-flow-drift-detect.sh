@@ -4,12 +4,23 @@
 #
 # Source of truth: ветка origin/develop репозитория (после `git fetch origin`),
 # файлы <repo>/scripts/agent_flow/*.sh на origin/develop.
-# Проверяет, что md5sum между origin/develop и 4 хостами-копиями одинаковые:
+# Проверяет, что **md5 И размер** между origin/develop и 6 хостами-копиями
+# одинаковые:
 #   - /home/builder/hermes-share/rob_box_project/scripts/agent_flow/<file>
 #   - /home/builder/.hermes/profiles/agent-flow/scripts/<file>
 #   - /home/builder/.hermes/profiles/architect/scripts/<file>
 #   - /home/builder/.hermes/profiles/devops/scripts/<file>
-#   - /home/builder/.hermes/scripts/<file>
+#   - /home/builder/.hermes/profiles/backend/scripts/<file>
+#   - /home/builder/.hermes/profiles/analyst/scripts/<file>
+#   - /home/builder/.hermes/scripts/<file>                 (legacy)
+#
+# Зачем проверяем ОБА — md5 И size — (ретро 01.09 t_a3ba921e):
+#   - md5 ловит любое изменение содержимого, включая partial-copy;
+#   - size ловит race-кейсы, когда файл изменился между md5 одной копии и
+#     другой (in-flight write). Размер — быстрый guard (stat -c %s) и в
+#     alert.log выводится сразу, чтобы оператор видел масштаб расхождения
+#     без сравнения 32-char hex'ов;
+#   - размер ≠ md5: только при совпадении обоих копия считается «in sync».
 #
 # Ретро 12.08 t_24054f6c: install.sh не донёс обновлённый merge-gate/triage
 # в 4 host-копии → cron дрифтанулся → ADR-0014 post-merge не работал
@@ -45,6 +56,10 @@
 #   REPO_DIR=<wt> bash <wt>/scripts/agent_flow/install.sh
 #   git worktree remove --force <wt>
 # Карточка создаётся ТОЛЬКО если и этот путь не помог (md5-сверка после).
+#
+# Ретро 01.09 t_a3ba921e: dual md5+size, TARGETS расширен с 4 до 6 (добавлены
+# backend/scripts и analyst/scripts). Если файл отсутствует хоть в одном
+# TARGET — это DRIFT (не WARN как раньше). См. compute_drift() ниже.
 #
 # Теперь перед сверкой:
 #   1) `git fetch origin develop` (таймаут 30s); при недоступности origin —
@@ -83,8 +98,13 @@
 #       автофикс ff-only невозможен/не помог — нужен ручной pull)
 #
 # Переменные окружения (оператор/тесты):
-#   REPO_DIR        — путь к репо (по умолчанию dev-машина; как в install.sh)
-#   DRIFT_DRY_RUN=1 — только детект, без auto-fix (как install.sh --dry-run)
+#   REPO_DIR              — путь к репо (по умолчанию dev-машина; как в install.sh)
+#   DRIFT_DRY_RUN=1       — только детект, без auto-fix (как install.sh --dry-run)
+#   DRIFT_TARGETS=p1:p2   — colon-separated список путей для override (тесты).
+#                           По умолчанию — все 6 TARGETS (см. шапку). Отличие
+#                           от INSTALL_TARGET_DIRS (install.sh): имена env-переменных
+#                           специально разные, чтобы тесты могли прогонять
+#                           drift-detect с одной подмножиной путей независимо.
 #
 # Используется cron'ом `Agent Flow Scripts Drift` (no_agent=True, every 30m)
 # в профиле devops. Cron scheduler выводит stdout, если непустой — это
@@ -162,13 +182,21 @@ fi
 TARGETS=()
 if [ -n "${DRIFT_TARGETS:-}" ]; then
     # Тесты/hermetic прогоны: DRIFT_TARGETS — colon-separated список путей.
+    # Отличие от INSTALL_TARGET_DIRS (install.sh): имена env разные, чтобы
+    # тесты могли изолированно гонять drift-detect на подмножестве путей.
     IFS=':' read -r -a TARGETS <<< "$DRIFT_TARGETS"
 else
+    # Ретро 01.09 t_a3ba921e: TARGETS расширен с 4 до 6 (backend/scripts и
+    # analyst/scripts добавлены, иначе drift-detect не видел бы host-drift
+    # на профилях, чьи скрипты раскладываются через install.sh, но не
+    # учитываются drift-detect'ом).
     TARGETS=(
         "$REPO_DIR/scripts/agent_flow"
         "/home/builder/.hermes/profiles/agent-flow/scripts"
         "/home/builder/.hermes/profiles/architect/scripts"
         "/home/builder/.hermes/profiles/devops/scripts"
+        "/home/builder/.hermes/profiles/backend/scripts"
+        "/home/builder/.hermes/profiles/analyst/scripts"
         "/home/builder/.hermes/scripts"
     )
 fi
@@ -188,15 +216,24 @@ if [ ! -d "$SCRIPT_DIR" ]; then
     exit 1
 fi
 
-# get_origin_md5 <file> — md5 файла на origin/develop (пусто, если недоступен)
-get_origin_md5() {
+# get_origin_meta <file> -> "<md5prefix>|<size>" или пусто, если недоступен.
+# Ретро 01.09 t_a3ba921e: возвращает И md5-prefix И размер в байтах через
+# pipe-delimited string — вызывающий парсит через IFS='|'. Размер пишем
+# рядом с md5 в alert.log, чтобы оператор сразу видел масштаб расхождения
+# (например, «size differs by 24771 bytes» — это и есть 24KB drift из t_a3ba921e).
+get_origin_meta() {
     local f="$1"
     if [ "$FETCH_OK" != "1" ]; then
         echo ""
         return
     fi
     if git -C "$REPO_DIR" cat-file -e "$REF_BRANCH:scripts/agent_flow/$f" 2>/dev/null; then
-        git -C "$REPO_DIR" show "$REF_BRANCH:scripts/agent_flow/$f" 2>/dev/null | md5sum | cut -c1-12
+        local blob
+        blob="$(git -C "$REPO_DIR" show "$REF_BRANCH:scripts/agent_flow/$f" 2>/dev/null)"
+        local md5 size
+        md5="$(printf '%s' "$blob" | md5sum | cut -c1-12)"
+        size="$(printf '%s' "$blob" | wc -c | tr -d ' ')"
+        printf '%s|%s\n' "$md5" "$size"
     fi
 }
 
@@ -207,40 +244,62 @@ get_origin_md5() {
 # устаревшим local, считались «в синхроне» → дрейф host↔origin оставался
 # слепым (t_20775d14 не дочинен). LOCAL используется ТОЛЬКО как fallback,
 # когда origin недоступен (fetch не удался).
+#
+# Ретро 01.09 t_a3ba921e: dual md5+size check; файл отсутствует на host —
+# это DRIFT (а не WARN как раньше). Это и был основной баг ретро: install.sh
+# не раскладывал EXPECTED на backend/analyst, а compute_drift'у было всё
+# равно (только md5 сверено с существующих). Теперь для каждого TARGET_DIR
+# отсутствие файла = DRIFT.
 DRIFT=0
 DRIFT_FILES=()
 compute_drift() {
     DRIFT=0
     DRIFT_FILES=()
-    local f t CUR_MD5 ORIGIN_MD5 LOCAL_MD5 REF_MD5 HAS_MISMATCH
+    local f t CUR_MD5 CUR_SIZE ORIGIN_META ORIGIN_MD5 ORIGIN_SIZE LOCAL_MD5 LOCAL_SIZE REF_MD5 REF_SIZE HAS_MISMATCH MISMATCH_REASON
     for f in "${FILES[@]}"; do
         if [ ! -f "$SCRIPT_DIR/$f" ]; then
             continue
         fi
         LOCAL_MD5="$(md5sum "$SCRIPT_DIR/$f" | cut -c1-12)"
-        ORIGIN_MD5="$(get_origin_md5 "$f")"
-        if [ -n "$ORIGIN_MD5" ]; then
+        LOCAL_SIZE="$(stat -c '%s' "$SCRIPT_DIR/$f" 2>/dev/null || echo 0)"
+        ORIGIN_META="$(get_origin_meta "$f")"
+        if [ -n "$ORIGIN_META" ]; then
+            ORIGIN_MD5="${ORIGIN_META%%|*}"
+            ORIGIN_SIZE="${ORIGIN_META##*|}"
             REF_MD5="$ORIGIN_MD5"
+            REF_SIZE="$ORIGIN_SIZE"
         else
             REF_MD5="$LOCAL_MD5"
+            REF_SIZE="$LOCAL_SIZE"
         fi
         HAS_MISMATCH=0
+        MISMATCH_REASON=""
         for t in "${TARGETS[@]}"; do
             if [ "$t" = "$SCRIPT_DIR" ]; then
                 continue  # эталон не сравниваем сам с собой
             fi
-            if [ -f "$t/$f" ]; then
-                CUR_MD5="$(md5sum "$t/$f" | cut -c1-12)"
-                if [ "$CUR_MD5" != "$REF_MD5" ]; then
-                    HAS_MISMATCH=1
-                    break
-                fi
+            if [ ! -f "$t/$f" ]; then
+                # Ретро 01.09 t_a3ba921e: отсутствующий файл = DRIFT (а не
+                # WARN как раньше). Именно так прошёл 24KB drift на
+                # backend/analyst в августе — drift-detect проглядел.
+                HAS_MISMATCH=1
+                MISMATCH_REASON="missing"
+                break
+            fi
+            CUR_MD5="$(md5sum "$t/$f" | cut -c1-12)"
+            CUR_SIZE="$(stat -c '%s' "$t/$f" 2>/dev/null || echo 0)"
+            # dual check: оба должны совпадать для «in sync»
+            if [ "$CUR_MD5" != "$REF_MD5" ] || [ "$CUR_SIZE" != "$REF_SIZE" ]; then
+                HAS_MISMATCH=1
+                MISMATCH_REASON="md5=${CUR_MD5}@${CUR_SIZE}b vs ref=${REF_MD5}@${REF_SIZE}b"
+                break
             fi
         done
         if [ "$HAS_MISMATCH" = "1" ]; then
             DRIFT=1
             DRIFT_FILES+=("$f")
         fi
+        unset MISMATCH_REASON
     done
 }
 
@@ -299,7 +358,7 @@ fi
 
 # --- git fetch origin (эталон — origin/develop) ---
 # Выполняем ДО ветвления по BRANCH_ACTIVE: fetch не меняет рабочую ветку,
-# а get_origin_md5 (git show origin/develop:...) нужен и в z-ветке.
+# а get_origin_meta (git show origin/develop:...) нужен и в z-ветке.
 FETCH_OK=0
 if timeout "$FETCH_TIMEOUT" git -C "$REPO_DIR" fetch origin develop >/dev/null 2>&1; then
     FETCH_OK=1
@@ -435,20 +494,31 @@ fi
 log "DRIFT detected in ${#DRIFT_FILES[@]} file(s): ${DRIFT_FILES[*]}"
 for f in "${DRIFT_FILES[@]}"; do
     LOCAL_MD5="$(md5sum "$SCRIPT_DIR/$f" | cut -c1-12)"
-    ORIGIN_MD5="$(get_origin_md5 "$f")"
+    LOCAL_SIZE="$(stat -c '%s' "$SCRIPT_DIR/$f" 2>/dev/null || echo 0)"
+    ORIGIN_META="$(get_origin_meta "$f")"
+    if [ -n "$ORIGIN_META" ]; then
+        ORIGIN_MD5="${ORIGIN_META%%|*}"
+        ORIGIN_SIZE="${ORIGIN_META##*|}"
+    else
+        ORIGIN_MD5=""
+        ORIGIN_SIZE=""
+    fi
     PEND=""
     if [ -n "$ORIGIN_MD5" ] && [ "$ORIGIN_MD5" != "$LOCAL_MD5" ]; then
         PEND=" [local blob != origin/develop]"
     fi
-    log "  $f:$PEND origin=${ORIGIN_MD5:-n/a} local=$LOCAL_MD5"
+    # Ретро 01.09 t_a3ba921e: добавлен size в байтах рядом с md5 — оператор
+    # сразу видит масштаб расхождения (24KB drift как раз = 24771 bytes).
+    log "  $f:$PEND origin=${ORIGIN_MD5:-n/a}@${ORIGIN_SIZE:-n/a}b local=${LOCAL_MD5}@${LOCAL_SIZE}b"
     for t in "${TARGETS[@]}"; do
         if [ "$t" = "$SCRIPT_DIR" ]; then
             continue
         fi
         if [ -f "$t/$f" ]; then
             MD="$(md5sum "$t/$f" | cut -c1-12)"
+            SZ="$(stat -c '%s' "$t/$f" 2>/dev/null || echo 0)"
             INO="$(stat -c '%i' "$t/$f" 2>/dev/null || echo '?')"
-            log "    $MD  inode=$INO  $t/$f"
+            log "    $MD@${SZ}b  inode=$INO  $t/$f"
         else
             log "    MISSING  $t/$f"
         fi
@@ -471,31 +541,38 @@ fi
 
 log "Auto-fix: bash $INSTALL_SH"
 if REPO_DIR="$REPO_DIR" bash "$INSTALL_SH" >> "$ALERT_LOG" 2>&1; then
-    log "Auto-fix OK. Re-checking drift..."
+    log "Auto-fix OK. Re-checking drift (dual md5+size)..."
     STILL_DRIFT=0
     for f in "${DRIFT_FILES[@]}"; do
         LOCAL_MD5="$(md5sum "$SCRIPT_DIR/$f" | cut -c1-12)"
-        ORIGIN_MD5="$(get_origin_md5 "$f")"
-        if [ -n "$ORIGIN_MD5" ]; then
-            REF_MD5="$ORIGIN_MD5"
+        LOCAL_SIZE="$(stat -c '%s' "$SCRIPT_DIR/$f" 2>/dev/null || echo 0)"
+        ORIGIN_META="$(get_origin_meta "$f")"
+        if [ -n "$ORIGIN_META" ]; then
+            REF_MD5="${ORIGIN_META%%|*}"
+            REF_SIZE="${ORIGIN_META##*|}"
         else
             REF_MD5="$LOCAL_MD5"
+            REF_SIZE="$LOCAL_SIZE"
         fi
         for t in "${TARGETS[@]}"; do
             if [ "$t" = "$SCRIPT_DIR" ]; then
                 continue
             fi
-            if [ -f "$t/$f" ]; then
-                CUR_MD5="$(md5sum "$t/$f" | cut -c1-12)"
-                if [ "$CUR_MD5" != "$REF_MD5" ]; then
-                    STILL_DRIFT=1
-                    break 2
-                fi
+            if [ ! -f "$t/$f" ]; then
+                # Ретро 01.09 t_a3ba921e: missing после install.sh = drift не вылечен.
+                STILL_DRIFT=1
+                break 2
+            fi
+            CUR_MD5="$(md5sum "$t/$f" | cut -c1-12)"
+            CUR_SIZE="$(stat -c '%s' "$t/$f" 2>/dev/null || echo 0)"
+            if [ "$CUR_MD5" != "$REF_MD5" ] || [ "$CUR_SIZE" != "$REF_SIZE" ]; then
+                STILL_DRIFT=1
+                break 2
             fi
         done
     done
     if [ "$STILL_DRIFT" = "0" ]; then
-        log "FIXED — drift resolved"
+        log "FIXED — drift resolved (md5+size match for all ${#TARGETS[@]} targets)"
         exit 0
     else
         log "FIX FAILED — drift still present after install.sh"

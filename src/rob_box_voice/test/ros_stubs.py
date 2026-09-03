@@ -236,6 +236,22 @@ def _build_stubs() -> dict[str, object]:
     mock_std_msgs = MagicMock()
     mock_std_msgs.msg = mock_std_msgs_msg
 
+    # audio_common_msgs / audio_common_msgs.msg: класс ``AudioData`` должен быть
+    # реальным классом (не MagicMock-инстансом), потому что sound_node.py
+    # делает ``create_subscription(AudioData, ...)`` и тест проверяет
+    # ``msg_type.__name__ == "AudioData"``. MagicMock-инстанс либо бросит
+    # ``AttributeError: __name__`` (атрибут не настроен), либо вернёт строку
+    # ``"MagicMock"`` через ``type(msg_type).__name__`` — оба варианта ломают
+    # ``test_sound_voice_passthrough::test_subscribes_to_avatar_voice_in_best_effort``
+    # при порядке загрузки conftests, когда более ранний conftest поставил
+    # ``audio_common_msgs.msg = Mock()``/``MagicMock()`` (issue #1879, ADR-0023,
+    # см. test_tts_finished_duration.py:32-42 — module-level ``sys.modules
+    # .setdefault(..., Mock())``). Установка здесь гарантирует, что оба имени
+    # доступны ДО любого conftest-а и ``AudioData`` — настоящий класс.
+    mock_audio_msg = types.ModuleType("audio_common_msgs.msg")
+    mock_audio_msg.AudioData = type("AudioData", (), {})
+    mock_audio_pkg = types.ModuleType("audio_common_msgs")
+
     return {
         "rclpy": MagicMock(),
         "rclpy.node": mock_rclpy_node,
@@ -249,6 +265,8 @@ def _build_stubs() -> dict[str, object]:
         "rclpy.executors": MagicMock(),
         "std_msgs": mock_std_msgs,
         "std_msgs.msg": mock_std_msgs_msg,
+        "audio_common_msgs": mock_audio_pkg,
+        "audio_common_msgs.msg": mock_audio_msg,
     }
 
 
