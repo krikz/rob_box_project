@@ -335,7 +335,8 @@ class WSSServer:
 
         Returns True если request_id был зарегистрирован и ws ещё живой.
         Sync; работает как из aiohttp-loop, так и из ROS-thread (через
-        _send_loop.call_soon_threadsafe)."""
+        _send_loop.call_soon_threadsafe — fire-and-forget, не блокирует loop).
+        """
         with self._voice_state_lock:
             entry = self._preview_pending.get(request_id)
             if entry is None:
@@ -346,30 +347,18 @@ class WSSServer:
                 self._preview_pending.pop(request_id, None)
             return False
         ts_ms = int(time.time() * 1000)
-        # JSON_EVENT с метаданными.
-        asyncio.run_coroutine_threadsafe(
-            self._send(
-                ws,
-                FrameType.JSON_EVENT,
-                0,
-                {
-                    "type": "preview_voice_audio",
-                    "request_id": request_id,
-                    "format": audio_format,
-                    "content_type": content_type,
-                    "seq": seq,
-                    "total": total,
-                    "ts_ms": ts_ms,
-                },
-            ),
-            self._send_loop,
-        ).result()
-        # BINARY_FRAME с самим audio (если есть что слать; seq=0/total=1 = один чанк).
+        meta = {
+            "type": "preview_voice_audio",
+            "request_id": request_id,
+            "format": audio_format,
+            "content_type": content_type,
+            "seq": seq,
+            "total": total,
+            "ts_ms": ts_ms,
+        }
+        self._schedule_ws_send(ws, meta)
         if audio_bytes:
-            asyncio.run_coroutine_threadsafe(
-                self._send_binary(ws, audio_bytes),
-                self._send_loop,
-            ).result()
+            self._schedule_ws_send_binary(ws, audio_bytes)
         return True
 
     def deliver_preview_done(self, request_id: str) -> bool:
@@ -381,19 +370,12 @@ class WSSServer:
             ws, _ = entry
         if ws.closed:
             return False
-        asyncio.run_coroutine_threadsafe(
-            self._send(
-                ws,
-                FrameType.JSON_EVENT,
-                0,
-                {
-                    "type": "preview_voice_done",
-                    "request_id": request_id,
-                    "ts_ms": int(time.time() * 1000),
-                },
-            ),
-            self._send_loop,
-        ).result()
+        body = {
+            "type": "preview_voice_done",
+            "request_id": request_id,
+            "ts_ms": int(time.time() * 1000),
+        }
+        self._schedule_ws_send(ws, body)
         return True
 
     def deliver_preview_error(self, request_id: str, reason: str) -> bool:
@@ -405,21 +387,60 @@ class WSSServer:
             ws, _ = entry
         if ws.closed:
             return False
-        asyncio.run_coroutine_threadsafe(
-            self._send(
-                ws,
-                FrameType.JSON_EVENT,
-                0,
-                {
-                    "type": "preview_voice_error",
-                    "request_id": request_id,
-                    "reason": reason,
-                    "ts_ms": int(time.time() * 1000),
-                },
-            ),
-            self._send_loop,
-        ).result()
+        body = {
+            "type": "preview_voice_error",
+            "request_id": request_id,
+            "reason": reason,
+            "ts_ms": int(time.time() * 1000),
+        }
+        self._schedule_ws_send(ws, body)
         return True
+
+    def _schedule_ws_send(self, ws: Any, body: dict[str, Any]) -> None:
+        """Потокобезопасно запланировать отправку JSON_EVENT в aiohttp-loop.
+
+        Fire-and-forget: в ROS-потоке зовём ``_send_loop.call_soon_threadsafe``,
+        из aiohttp-loop (тесты) — планируем через ``loop.call_soon``. Если
+        loop'а нет (юнит-тесты ws_server без aiohttp) — drop + debug-лог.
+        """
+        loop = self._send_loop
+        if loop is None or not loop.is_running():
+            log.debug("ws_server: no event loop; deliver dropped (test_voice=%s)", body.get("type"))
+            return
+        try:
+            loop.call_soon_threadsafe(self._send_async, ws, body)
+        except RuntimeError as exc:  # loop closed
+            log.debug("ws_server: schedule failed: %s", exc)
+
+    def _schedule_ws_send_binary(self, ws: Any, payload: bytes) -> None:
+        loop = self._send_loop
+        if loop is None or not loop.is_running():
+            return
+        try:
+            loop.call_soon_threadsafe(self._send_binary_async, ws, payload)
+        except RuntimeError:  # noqa: BLE001
+            return
+
+    def _send_async(self, ws: Any, body: dict[str, Any]) -> None:
+        """Алиас над ``_send`` для call_soon_threadsafe (loop уже наш)."""
+        loop = self._send_loop
+        if loop is None:
+            return
+        try:
+            coro = self._send(ws, FrameType.JSON_EVENT, 0, body)
+            # В loop'е можно прямо awaitить через create_task.
+            loop.create_task(coro)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("ws_server: _send_async failed: %s", exc)
+
+    def _send_binary_async(self, ws: Any, payload: bytes) -> None:
+        loop = self._send_loop
+        if loop is None:
+            return
+        try:
+            loop.create_task(self._send_binary(ws, payload))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("ws_server: _send_binary_async failed: %s", exc)
 
     async def _send_binary(self, ws: Any, payload: bytes) -> None:
         """Sync-wrapper для отправки raw bytes в WS (для preview-аудио).
