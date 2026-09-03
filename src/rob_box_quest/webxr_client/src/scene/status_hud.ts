@@ -1,4 +1,5 @@
 // Status HUD (Wave 3.A / ADR-0027 R8): battery, Wi-Fi, скорость, режим, RTT.
+// + AV-17: MODE (avatar_supervisor), FLOOR T / FLOOR V.
 //
 // Живёт слева вверху на стене мостика — зеркально ARM-индикатору справа.
 // Sprite всегда повёрнут к оператору, поэтому читается из любой позы.
@@ -9,6 +10,7 @@
 
 import * as THREE from "three";
 import { decodeMsgpackMap } from "../wire/msgpack";
+import { floorLabel, type FloorLabel, type SupervisorState } from "../state/supervisor_state";
 
 /** robot_status (0x1201), meta-quest-api.md §4 + поле battery_v (Wave 3.A). */
 export interface RobotStatus {
@@ -141,14 +143,101 @@ export function formatStatusLines(
     });
   }
 
+  // MODE/Teleop (robot_status.mode — старая семантика, см. ADR-0027 R8):
+  // отражает teleop-состояние ЭТОГО клиента (idle/teleop_active/emergency),
+  // а не FSM аватара. До AV-17 HUD показывал именно его как «MODE»; после
+  // AV-17 эта строка переименована в «TELEOP», чтобы не путать с
+  // avatar_supervisor.mode (formatSupervisorLines ниже).
   lines.push({
-    label: "MODE",
+    label: "TELEOP",
     value: status ? status.mode : "—",
     level: status && status.mode === "emergency" ? "bad" : status ? "ok" : "unknown"
   });
 
   return lines;
 }
+
+/**
+ * Строки HUD по avatar_supervisor (AV-17): MODE (режим аватара), FLOOR T
+ * (teleop-floor), FLOOR V (voice-floor). Если `state === null` — STATE_UPDATE
+ * ещё не пришёл: показываем `?` (ADR-0018 «неизвестно ≠ свободно»).
+ *
+ * `floorLabel` — результат `floorLabel()`: `"my"` / `"other"` / `"free"` /
+ * `"unknown"`. В цвете: «my» = ok, «free» = ok, «other» = warn, «unknown»
+ * = unknown. Дополнительно: если `state` показывает `"avatar_present"` и
+ * другой клиент держит teleop-floor — это тоже «bad» для нас.
+ */
+export function formatSupervisorLines(
+  state: SupervisorState | null,
+  _myClientId: string | null,
+  teleopLabel: FloorLabel,
+  voiceLabel: FloorLabel
+): StatusLine[] {
+  const lines: StatusLine[] = [];
+  // MODE (avatar_supervisor)
+  if (state === null) {
+    lines.push({ label: "MODE", value: "?", level: "unknown" });
+  } else {
+    const level: StatusLine["level"] =
+      state.mode === "off" ? "warn" : state.mode === "avatar_present" ? "ok" : "ok";
+    lines.push({ label: "MODE", value: state.mode, level });
+  }
+
+  // FLOOR T (teleop)
+  lines.push({
+    label: "FLOOR T",
+    value: state === null ? "?" : floorLabelText(teleopLabel),
+    level:
+      state === null
+        ? "unknown"
+        : teleopLabel === "my"
+        ? "ok"
+        : teleopLabel === "free"
+        ? "ok"
+        : teleopLabel === "other"
+        ? "warn"
+        : "unknown"
+  });
+
+  // FLOOR V (voice)
+  lines.push({
+    label: "FLOOR V",
+    value: state === null ? "?" : floorLabelText(voiceLabel),
+    level:
+      state === null
+        ? "unknown"
+        : voiceLabel === "my"
+        ? "ok"
+        : voiceLabel === "free"
+        ? "ok"
+        : voiceLabel === "other"
+        ? "warn"
+        : "unknown"
+  });
+
+  return lines;
+}
+
+function floorLabelText(label: FloorLabel): string {
+  switch (label) {
+    case "my":
+      return "my";
+    case "other":
+      return "other";
+    case "free":
+      return "free";
+    case "unknown":
+    default:
+      return "?";
+  }
+}
+
+/**
+ * Деградация: сервер на v1 subprotocol, supervisor-API недоступно.
+ * Одна строка-плашка: «SUPERVISOR: v1 (no coordination)». UI должен
+ * показывать её явно, чтобы оператор знал, что floor-ов сейчас нет.
+ */
+export const SUPERVISOR_DEGRADED_NOTE = "SUPERVISOR: v1 (no coordination)";
 
 const LEVEL_COLORS: Record<StatusLine["level"], string> = {
   ok: "#2ec27e",
@@ -165,6 +254,15 @@ export interface StatusHud {
   setRtt(rttMs: number | null): void;
   /** FPS из scene loop (`null` — данных ещё нет). AV-25. */
   setFps(fps: number | null): void;
+  /**
+   * Supervisor-state (AV-17). `null` = STATE_UPDATE ещё не пришёл
+   * (или сервер на v1 — тогда `degraded=true`).
+   */
+  setSupervisor(
+    state: SupervisorState | null,
+    myClientId: string | null,
+    options?: { degraded?: boolean }
+  ): void;
   /** AV-26: вывести плашку с активным robot_alert. `null` — скрыть. */
   setAlert(alert: { text: string; level: "warn" | "error" } | null): void;
   dispose(): void;
@@ -202,6 +300,24 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
   let status: RobotStatus | null = null;
   let rttMs: number | null = null;
   let fps: number | null = null;
+  // AV-17: supervisor-state. `null` = неизвестно (STATE_UPDATE ещё не пришёл).
+  let supervisor: SupervisorState | null = null;
+  let supervisorMyClientId: string | null = null;
+  let supervisorDegraded = false;
+  // Кэш последних floorLabel'ов (зависят от myClientId). Пересчитываем
+  // только при изменении state или myClientId, не на каждый draw().
+  let teleopLabel: FloorLabel = "unknown";
+  let voiceLabel: FloorLabel = "unknown";
+
+  function recomputeFloorLabels(): void {
+    if (supervisor === null) {
+      teleopLabel = "unknown";
+      voiceLabel = "unknown";
+      return;
+    }
+    teleopLabel = floorLabel(supervisor, "teleop", supervisorMyClientId);
+    voiceLabel = floorLabel(supervisor, "voice", supervisorMyClientId);
+  }
   let alert: { text: string; level: "warn" | "error" } | null = null;
 
   function draw(): void {
@@ -227,17 +343,32 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
       ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
     ctx.textBaseline = "middle";
+
+    // AV-17: supervisor-строки идут ПЕРЕД robot_status — оператор хочет
+    // видеть «кто сейчас рулит» сверху (самый важный индикатор).
+    if (supervisorDegraded) {
+      lines.unshift({ label: "SUP", value: SUPERVISOR_DEGRADED_NOTE, level: "warn" });
+    } else {
+      const sup = formatSupervisorLines(supervisor, supervisorMyClientId, teleopLabel, voiceLabel);
+      for (let i = sup.length - 1; i >= 0; i -= 1) lines.unshift(sup[i]);
+    }
+
     // Если алёрт активен — строки сдвигаем вниз, чтобы не перекрывать.
     const topOffset = alert !== null ? ALERT_LINE_HEIGHT + ALERT_PADDING_Y * 2 : 0;
     const rowH = (canvas.height - topOffset) / lines.length;
     lines.forEach((line, i) => {
       const y = topOffset + rowH * i + rowH / 2;
       ctx.fillStyle = "#8b98a5";
-      ctx.font = "bold 32px monospace";
+      ctx.font = "bold 28px monospace";
       ctx.fillText(line.label, 20, y);
       ctx.fillStyle = LEVEL_COLORS[line.level];
-      ctx.font = "bold 36px monospace";
-      ctx.fillText(line.value, 180, y);
+      ctx.font = "bold 28px monospace";
+      // Длинный текст (SUPERVISOR: v1 …) чуть сжимаем, чтобы влез.
+      const fontPx = ctx.measureText(line.value).width;
+      if (fontPx > canvas.width - 130) {
+        ctx.font = "bold 22px monospace";
+      }
+      ctx.fillText(line.value, 130, y);
     });
     texture.needsUpdate = true;
   }
@@ -256,6 +387,17 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
     },
     setFps(next: number | null): void {
       fps = next;
+      draw();
+    },
+    setSupervisor(
+      next: SupervisorState | null,
+      myClientId: string | null,
+      options?: { degraded?: boolean }
+    ): void {
+      supervisor = next;
+      supervisorMyClientId = myClientId;
+      supervisorDegraded = options?.degraded ?? false;
+      recomputeFloorLabels();
       draw();
     },
     setAlert(next: { text: string; level: "warn" | "error" } | null): void {

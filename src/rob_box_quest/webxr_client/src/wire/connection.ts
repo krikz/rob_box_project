@@ -28,6 +28,9 @@ import type {
   SubscribeMsg,
   UnsubscribeMsg
 } from "./messages";
+import { decodeMsgpackMap, encodeMsgpackMap } from "./msgpack";
+import { parseSupervisorState } from "../state/supervisor_state";
+import type { SupervisorState } from "../state/supervisor_state";
 
 export type ConnectionState =
   | "idle"
@@ -38,6 +41,9 @@ export type ConnectionState =
   | "closed"
   | "auth_failed";
 
+/** Какая версия subprotocol реально выбрана сервером. */
+export type NegotiatedSubprotocol = "v1" | "v2";
+
 export interface ConnectionListeners {
   onStateChange?: (state: ConnectionState, info?: string) => void;
   onBinaryFrame?: (streamId: number, payload: Uint8Array) => void;
@@ -46,12 +52,33 @@ export interface ConnectionListeners {
   onRtt?: (rttMs: number) => void;
   onStreamList?: (items: StreamMeta[]) => void;
   onWelcome?: (sessionId: string, serverTimeMs: number) => void;
+  /**
+   * Сервер прислал `STATE_UPDATE` (frame 0x33). Если сервер на v1 —
+   * колбэк никогда не сработает (подробности в `meta-quest-api.md`
+   * §11: v1 клиент `STATE_UPDATE` не получает).
+   */
+  onSupervisorState?: (state: SupervisorState) => void;
+  /**
+   * Сервер ответил `ERROR{FLOOR_HELD}` / `MODE_CONFLICT` на supervisor-
+   * команду. Подробности в `meta-quest-api.md` §8.
+   */
+  onSupervisorError?: (code: "FLOOR_HELD" | "MODE_CONFLICT", message: string, meta?: Record<string, unknown>) => void;
   onError?: (code: string, message: string) => void;
 }
 
 export interface ConnectionOptions {
   url: string;
-  subprotocol?: string; // "robbox-quest-v1" (Phase 1)
+  /**
+   * Subprotocol по умолчанию `"robbox-quest-v2"` (AV-17). Сервер на
+   * v1 может быть принудительно выбран через опцию ниже — нужно для
+   * отладки старого rob_box_quest без avatar_supervisor.
+   */
+  subprotocol?: string; // "robbox-quest-v1" | "robbox-quest-v2"
+  /**
+   * Если true — откатиться на v1 даже если subprotocol явно не задан.
+   * Полезно для e2e со старым сервером; прод-код пусть оставляет false.
+   */
+  forceV1?: boolean;
   clientVersion: string;
   capabilities?: string[];
   pin: string;
@@ -98,12 +125,25 @@ export class Connection {
   private topicToStreamId = new Map<string, number>();
   // topic → quality
   private topicToQuality = new Map<string, string>();
+  /**
+   * Какая версия subprotocol реально выбрана сервером. До открытия
+   * сокета = `null`; после — `"v1"` (наш v1 fallback) или `"v2"`.
+   * Используется в guard'ах supervisor-методов: `sendAcquireFloor` etc.
+   * работают только если `negotiatedVersion === "v2"`.
+   */
+  private negotiatedVersion: NegotiatedSubprotocol | null = null;
 
   constructor(opts: ConnectionOptions, listeners: ConnectionListeners = {}) {
     this.listeners = listeners;
+    // По умолчанию — v2 (Phase 2). v1 — только если явно через forceV1
+    // (e2e со старым rob_box_quest) или subprotocol=...v1.
+    const requestedSubprotocol = opts.forceV1
+      ? "robbox-quest-v1"
+      : opts.subprotocol ?? "robbox-quest-v2";
     this.opts = {
       url: opts.url,
-      subprotocol: opts.subprotocol ?? "robbox-quest-v1",
+      subprotocol: requestedSubprotocol,
+      forceV1: opts.forceV1 ?? false,
       clientVersion: opts.clientVersion,
       capabilities: opts.capabilities ?? ["webxr"],
       pin: opts.pin,
@@ -124,6 +164,15 @@ export class Connection {
   /** Последний RTT в мс (ping → pong), `null` пока pong не приходил. */
   getRttMs(): number | null {
     return this.rttMs;
+  }
+
+  /**
+   * Версия subprotocol, выбранная сервером после open. `null` до open.
+   * Если клиент запрашивал v2, а сервер ответил v1 (Phase 1 fallback) —
+   * вернётся `"v1"`, и supervisor-команды будут no-op.
+   */
+  getNegotiatedVersion(): NegotiatedSubprotocol | null {
+    return this.negotiatedVersion;
   }
 
   // map доступен только для чтения (снаружи — для панелей / lidar).
@@ -178,6 +227,60 @@ export class Connection {
     this.ws.send(bytes as unknown as ArrayBuffer);
   }
 
+  // ----------------------------------------------------------------
+  // Supervisor-команды (Phase 2, subprotocol robbox-quest-v2).
+  // API: meta-quest-api.md §3 (0x30–0x32) + ADR-0028 §4.4.
+  //
+  // Все три — no-op, если сервер не выбрал v2 (`negotiatedVersion`).
+  // Это graceful degradation: v1 сервер (Phase 1 rob_box_quest без
+  // avatar_supervisor) не понимает эти frame-типы, слать 0x30..0x32 —
+  // шум в его логе + риск гонок.
+  // ----------------------------------------------------------------
+
+  /**
+   * @returns `true` если команда реально отправлена; `false` если
+   * сервер на v1 / сокет не открыт / state не готов.
+   */
+  private canSendSupervisor(): boolean {
+    return (
+      this.negotiatedVersion === "v2" &&
+      this.ws !== null &&
+      this.ws.readyState === WebSocket.OPEN
+    );
+  }
+
+  /** `SET_MODE` (0x30). @returns true если отправлено. */
+  sendSetMode(clientId: string, mode: string): boolean {
+    if (!this.canSendSupervisor()) return false;
+    const payload = encodeMsgpackMap({ client_id: clientId, mode });
+    const bytes = encodeFrame(FrameType.SET_MODE, 0, payload);
+    this.ws!.send(bytes as unknown as ArrayBuffer);
+    return true;
+  }
+
+  /** `ACQUIRE_FLOOR` (0x31). @returns true если отправлено. */
+  sendAcquireFloor(clientId: string, floor: "teleop" | "voice"): boolean {
+    if (!this.canSendSupervisor()) return false;
+    const payload = encodeMsgpackMap({ client_id: clientId, floor });
+    const bytes = encodeFrame(FrameType.ACQUIRE_FLOOR, 0, payload);
+    this.ws!.send(bytes as unknown as ArrayBuffer);
+    return true;
+  }
+
+  /** `RELEASE_FLOOR` (0x32). @returns true если отправлено. */
+  sendReleaseFloor(clientId: string, floor: "teleop" | "voice"): boolean {
+    if (!this.canSendSupervisor()) return false;
+    const payload = encodeMsgpackMap({ client_id: clientId, floor });
+    const bytes = encodeFrame(FrameType.RELEASE_FLOOR, 0, payload);
+    this.ws!.send(bytes as unknown as ArrayBuffer);
+    return true;
+  }
+
+  // expose для тестов: getter последней применённой negotiated-версии.
+  _peekNegotiatedVersion(): NegotiatedSubprotocol | null {
+    return this.negotiatedVersion;
+  }
+
   private openSocket(): void {
     this.clearTimers();
     // Сброс подписок на новый сокет: после reconnect сервер создаёт НОВУЮ
@@ -187,6 +290,10 @@ export class Connection {
     this.streamIdToTopic.clear();
     this.topicToStreamId.clear();
     this.topicToQuality.clear();
+    // После разрыва связи STATE_UPDATE мы больше не получали → supervisor-
+    // state неизвестен (UI должен показать `?`, не выдумывать). Новый
+    // сокет = новый серверный цикл STATE_UPDATE → неизвестно сброшено.
+    this.negotiatedVersion = null;
     this.setState(this.reconnectAttempt > 0 ? "reconnecting" : "connecting");
 
     let ws: WebSocket;
@@ -200,7 +307,19 @@ export class Connection {
     this.ws = ws;
 
     ws.addEventListener("open", () => {
-      console.log("[quest] WS open: sending HELLO", { url: this.opts.url });
+      // Сервер выбирает subprotocol через Sec-WebSocket-Protocol; клиент
+      // читает факт выбора из `ws.protocol` (MDN: «the name of the sub-
+      // protocol the server selected»). Если сервер ответил v1, а мы
+      // просили v2 — supervisor-команды (0x30–0x33) в этом сокете не
+      // работают, см. meta-quest-api.md §11.
+      const negotiatedRaw = ws.protocol ?? "";
+      const negotiated: NegotiatedSubprotocol =
+        negotiatedRaw === "robbox-quest-v1" ? "v1" : negotiatedRaw === "robbox-quest-v2" ? "v2" : this.negotiatedVersion ?? "v1";
+      this.negotiatedVersion = negotiated;
+      console.log("[quest] WS open: negotiated subprotocol =", negotiated, {
+        url: this.opts.url,
+        requested: this.opts.subprotocol
+      });
       this.setState("authenticating");
       const hello: HelloMsg = {
         client_version: this.opts.clientVersion,
@@ -270,8 +389,36 @@ export class Connection {
       this.listeners.onBinaryFrame?.(frame.streamId, frame.payload);
       return;
     }
+    if (frame.type === FrameType.STATE_UPDATE) {
+      this.handleSupervisorState(frame.payload);
+      return;
+    }
     // SUBSCRIBE / UNSUBSCRIBE / JSON_CMD от сервера не ожидаются в Phase 1.
+    // SET_MODE / ACQUIRE_FLOOR / RELEASE_FLOOR — это client→server
+    // команды; если сервер прислал их обратно, это баг протокола.
+    if (
+      frame.type === FrameType.SET_MODE ||
+      frame.type === FrameType.ACQUIRE_FLOOR ||
+      frame.type === FrameType.RELEASE_FLOOR
+    ) {
+      this.listeners.onError?.("BAD_PAYLOAD", `unexpected server→client supervisor frame 0x${frame.type.toString(16)}`);
+      return;
+    }
     this.listeners.onError?.("BAD_PAYLOAD", `unexpected server frame type ${frame.type}`);
+  }
+
+  private handleSupervisorState(payload: Uint8Array): void {
+    const map = decodeMsgpackMap(payload);
+    if (!map) {
+      this.listeners.onError?.("BAD_PAYLOAD", "STATE_UPDATE not a msgpack map");
+      return;
+    }
+    const state = parseSupervisorState(map);
+    if (!state) {
+      this.listeners.onError?.("BAD_PAYLOAD", "STATE_UPDATE missing required fields");
+      return;
+    }
+    this.listeners.onSupervisorState?.(state);
   }
 
   private handleWelcome(frame: DecodedFrame): void {
@@ -289,7 +436,7 @@ export class Connection {
   }
 
   private handleError(frame: DecodedFrame): void {
-    let obj: { code?: string; message?: string } = {};
+    let obj: { code?: string; message?: string; [k: string]: unknown } = {};
     try {
       obj = JSON.parse(new TextDecoder().decode(frame.payload));
     } catch {
@@ -297,6 +444,17 @@ export class Connection {
     }
     const code = obj.code ?? "INTERNAL";
     const msg = obj.message ?? "unknown error";
+    // Supervisor-ошибки — отдельный канал, чтобы UI мог показать
+    // тост «руль сейчас у оператора Telegram», не путая с обычным
+    // серверным error (meta-quest-api.md §8).
+    if (code === "FLOOR_HELD" || code === "MODE_CONFLICT") {
+      const meta: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(obj)) {
+        if (k !== "code" && k !== "message") meta[k] = v;
+      }
+      this.listeners.onSupervisorError?.(code, msg, meta);
+      return;
+    }
     this.listeners.onError?.(code, msg);
     if (code === "AUTH_FAIL") {
       this.closedByUser = true;

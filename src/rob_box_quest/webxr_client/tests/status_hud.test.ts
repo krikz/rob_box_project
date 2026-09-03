@@ -5,12 +5,15 @@ import { describe, it, expect } from "vitest";
 import {
   parseRobotStatus,
   formatStatusLines,
+  formatSupervisorLines,
+  SUPERVISOR_DEGRADED_NOTE,
   BATTERY_LOW_PCT,
   WIFI_WEAK_DBM,
   RTT_WARN_MS,
   RTT_BAD_MS,
   type RobotStatus
 } from "../src/scene/status_hud";
+import { parseSupervisorState } from "../src/state/supervisor_state";
 
 const hex = (s: string) => new Uint8Array(s.match(/../g)!.map((b) => parseInt(b, 16)));
 
@@ -125,8 +128,8 @@ describe("formatStatusLines — mode and speed", () => {
     expect(valueOf(formatStatusLines(status({ vel_linear: 0.4242 }), null), "SPD").value).toBe("0.42 m/s");
   });
 
-  it("marks emergency mode bad", () => {
-    expect(valueOf(formatStatusLines(status({ mode: "emergency" }), null), "MODE").level).toBe("bad");
+  it("marks emergency mode bad (строка переименована в TELEOP, AV-17)", () => {
+    expect(valueOf(formatStatusLines(status({ mode: "emergency" }), null), "TELEOP").level).toBe("bad");
   });
 
   it("renders every row as unknown before the first status frame", () => {
@@ -173,12 +176,64 @@ describe("formatStatusLines — fps (AV-25)", () => {
     expect(valueOf(formatStatusLines(status(), null, 90), "FPS").level).toBe("ok");
   });
 
-  it("FPS row appears after RTT and before MODE", () => {
+  it("FPS row appears after RTT and before TELEOP (AV-17: MODE → TELEOP)", () => {
     const labels = formatStatusLines(status(), 50, 72).map((l) => l.label);
     const rtt = labels.indexOf("RTT");
     const fps = labels.indexOf("FPS");
-    const mode = labels.indexOf("MODE");
+    const teleop = labels.indexOf("TELEOP");
     expect(fps).toBe(rtt + 1);
-    expect(mode).toBe(fps + 1);
+    expect(teleop).toBe(fps + 1);
+    expect(labels).not.toContain("MODE");
+  });
+});
+// ---------------------------------------------------------------------------
+// AV-17: supervisor-строки HUD (MODE аватара + FLOOR T / FLOOR V).
+// ---------------------------------------------------------------------------
+
+describe("formatSupervisorLines (AV-17)", () => {
+  const st = (over: Record<string, unknown> = {}) =>
+    parseSupervisorState({
+      mode: "avatar_present",
+      teleop_floor: { client_id: "quest-1", since_ms: 1 },
+      voice_floor: null,
+      since_ms: 5,
+      ...over
+    })!;
+
+  it("до первого STATE_UPDATE все три строки = «?» / unknown", () => {
+    const lines = formatSupervisorLines(null, null, "unknown", "unknown");
+    expect(lines.map((l) => l.label)).toEqual(["MODE", "FLOOR T", "FLOOR V"]);
+    expect(lines.every((l) => l.value === "?" && l.level === "unknown")).toBe(true);
+  });
+
+  it("MODE берётся из supervisor-режима, а не из robot_status", () => {
+    const lines = formatSupervisorLines(st({ mode: "mixed" }), "quest-1", "my", "free");
+    expect(valueOf(lines, "MODE").value).toBe("mixed");
+  });
+
+  it("свой teleop-floor → my/ok, чужой voice-floor → other/warn", () => {
+    const lines = formatSupervisorLines(st(), "quest-1", "my", "other");
+    expect(valueOf(lines, "FLOOR T")).toMatchObject({ value: "my", level: "ok" });
+    expect(valueOf(lines, "FLOOR V")).toMatchObject({ value: "other", level: "warn" });
+  });
+
+  it("свободный floor → free/ok (это знание, не догадка)", () => {
+    const lines = formatSupervisorLines(st(), "quest-1", "free", "free");
+    expect(valueOf(lines, "FLOOR T")).toMatchObject({ value: "free", level: "ok" });
+  });
+
+  it("floor занят, но myClientId неизвестен → «?»/unknown, не free", () => {
+    const lines = formatSupervisorLines(st(), null, "unknown", "unknown");
+    expect(valueOf(lines, "FLOOR T")).toMatchObject({ value: "?", level: "unknown" });
+  });
+
+  it("mode=off помечается warn (аватар выключен)", () => {
+    const lines = formatSupervisorLines(st({ mode: "off" }), "quest-1", "free", "free");
+    expect(valueOf(lines, "MODE").level).toBe("warn");
+  });
+
+  it("degraded-плашка про v1 явно называет отсутствие координации", () => {
+    expect(SUPERVISOR_DEGRADED_NOTE).toMatch(/v1/);
+    expect(SUPERVISOR_DEGRADED_NOTE.toLowerCase()).toContain("no coordination");
   });
 });
