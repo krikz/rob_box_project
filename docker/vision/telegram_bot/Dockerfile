@@ -35,14 +35,18 @@ RUN pip3 install --no-cache-dir \
     prometheus_client>=0.20.0 \
     && pip3 cache purge
 
-# Копируем ROS 2 пакет
+# Копируем ROS 2 пакеты
+# rob_box_core — AV-13/AV-28 (avatar_command): telegram_node импортирует
+# rob_box_core.avatar_command, без сборки пакета в образе падает
+# ModuleNotFoundError на старте контейнера.
 WORKDIR /ws/src
+COPY src/rob_box_core /ws/src/rob_box_core
 COPY src/rob_box_telegram /ws/src/rob_box_telegram
 
-# Собираем ROS 2 пакет
+# Собираем ROS 2 пакеты
 WORKDIR /ws
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    colcon build --packages-select rob_box_telegram && \
+    colcon build --packages-select rob_box_core rob_box_telegram && \
     rm -rf /ws/log
 
 WORKDIR /ws
