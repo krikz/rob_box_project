@@ -131,7 +131,54 @@ describe("formatStatusLines — mode and speed", () => {
 
   it("renders every row as unknown before the first status frame", () => {
     const lines = formatStatusLines(null, null);
-    expect(lines).toHaveLength(5);
+    // BAT, WIFI, SPD, RTT, FPS, MODE = 6 строк.
+    expect(lines).toHaveLength(6);
     expect(lines.every((l) => l.level === "unknown" && l.value === "—")).toBe(true);
+  });
+});
+
+describe("formatStatusLines — fps (AV-25)", () => {
+  it("renders dash and unknown before the first frame sample", () => {
+    const line = valueOf(formatStatusLines(status(), null, null), "FPS");
+    expect(line.value).toBe("—");
+    expect(line.level).toBe("unknown");
+  });
+
+  it("treats 0 / negative fps as 'no data' (unknown)", () => {
+    expect(valueOf(formatStatusLines(status(), null, 0), "FPS").level).toBe("unknown");
+    expect(valueOf(formatStatusLines(status(), null, -1), "FPS").level).toBe("unknown");
+  });
+
+  it("treats non-finite fps as 'no data'", () => {
+    expect(valueOf(formatStatusLines(status(), null, NaN), "FPS").level).toBe("unknown");
+    expect(valueOf(formatStatusLines(status(), null, Infinity), "FPS").level).toBe("unknown");
+  });
+
+  it("rounds fps to integer for display", () => {
+    expect(valueOf(formatStatusLines(status(), null, 89.6), "FPS").value).toBe("90");
+    expect(valueOf(formatStatusLines(status(), null, 60.4), "FPS").value).toBe("60");
+  });
+
+  it("marks fps below 15 as bad (red)", () => {
+    expect(valueOf(formatStatusLines(status(), null, 14), "FPS").level).toBe("bad");
+  });
+
+  it("marks fps 15..29 as warn (yellow)", () => {
+    expect(valueOf(formatStatusLines(status(), null, 15), "FPS").level).toBe("warn");
+    expect(valueOf(formatStatusLines(status(), null, 29), "FPS").level).toBe("warn");
+  });
+
+  it("marks fps >= 30 as ok (green)", () => {
+    expect(valueOf(formatStatusLines(status(), null, 30), "FPS").level).toBe("ok");
+    expect(valueOf(formatStatusLines(status(), null, 90), "FPS").level).toBe("ok");
+  });
+
+  it("FPS row appears after RTT and before MODE", () => {
+    const labels = formatStatusLines(status(), 50, 72).map((l) => l.label);
+    const rtt = labels.indexOf("RTT");
+    const fps = labels.indexOf("FPS");
+    const mode = labels.indexOf("MODE");
+    expect(fps).toBe(rtt + 1);
+    expect(mode).toBe(fps + 1);
   });
 });

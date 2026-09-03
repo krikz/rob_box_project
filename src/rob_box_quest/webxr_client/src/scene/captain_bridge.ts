@@ -4,8 +4,18 @@ import * as THREE from "three";
 import { LidarOverlay } from "./lidar_overlay";
 import { VideoPanel } from "./video_panel";
 import { PanelManager } from "./panel_manager";
+import {
+  applyLayout,
+  createLayoutSaver,
+  parseLayout,
+  serializeLayout,
+  PANEL_LAYOUT_STORAGE_KEY,
+  type LayoutStorage
+} from "./panel_layout_store";
+import { FpsMeter } from "./fps_meter";
 import { createStatusHud, type RobotStatus, type StatusHud } from "./status_hud";
 import { PointerSystem, type PointerRay } from "../interaction/pointer";
+import { resizeSize } from "../interaction/pointer_math";
 import { createStreamMenu, topicFromTargetId, type StreamMenuHandle, type StreamMenuRow } from "./stream_menu";
 import {
   loadBridgeAssets,
@@ -42,6 +52,16 @@ export interface CaptainBridgeOptions {
    * (e.g. unit tests that only exercise panels/LiDAR).
    */
   environmentBaseUrl?: string | null;
+  /**
+   * AV-25: layout-store. Если не передавать — используется window.localStorage.
+   * Для unit-тестов инжектится in-memory store. `null` отключает persist
+   * (например, для тестов, которые не должны трогать реальный storage).
+   */
+  layoutStorage?: LayoutStorage | null;
+  /**
+   * AV-25: дебаунс записи layout (мс). Дефолт 500. `0` — синхронно.
+   */
+  layoutSaveDebounceMs?: number;
 }
 
 export interface CaptainBridgeHandle {
@@ -61,6 +81,8 @@ export interface CaptainBridgeHandle {
   /** Async-load the Phase 2.1 Captain Bridge environment (GLB + HDR). */
   loadEnvironment(): Promise<BridgeAssetHandle | null>;
   initLayout(): void;
+  /** AV-25: сброс раскладки панелей к default + стирание localStorage. */
+  resetPanelLayout(): void;
   attachXrSession(session: XRSession): Promise<void>;
   /** Visual feedback: подсветить grip контроллеров (deadman зажат). */
   setControllerActive(active: boolean): void;
@@ -163,6 +185,43 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   });
   const videoPanels = new Map<string, VideoPanel>();
 
+  // AV-25: layout-store (localStorage) + дебаунс-запись. Если opts
+  // выставил layoutStorage === null, persist отключён (для тестов).
+  const layoutStorage: LayoutStorage | null =
+    opts.layoutStorage === null
+      ? null
+      : opts.layoutStorage ?? (typeof window !== "undefined" && window.localStorage
+        ? (window.localStorage as LayoutStorage)
+        : null);
+  const layoutSaver = layoutStorage
+    ? createLayoutSaver(layoutStorage, opts.layoutSaveDebounceMs ?? 500)
+    : null;
+  // Реестр известных топиков: наполняется из stream_list (см.
+  // setAvailableStreams ниже). До первого ответа сервера — содержит
+  // дефолтные топики панелей и mainScreen, чтобы parseLayout мог
+  // принять сохранённую раскладку сразу после старта.
+  const knownTopics = new Set<string>([MAIN_SCREEN_TOPIC, ...SIDE_PANEL_TOPICS]);
+
+  /**
+   * Восстановить раскладку из store. Возвращает true, если что-то
+   * применили; false — store пуст / битый / отключён (тогда мостик
+   * остаётся на дефолтной раскладке, как до AV-25).
+   *
+   * applyLayout сам создаёт недостающие панели через
+   * `state.createPanel(id, topic, ...)` с id из saved state. В
+   * production PanelManager.createPanelWithId реализует именно эту
+   * сигнатуру; обычный `createPanel(topic, ...)` (без id) используется
+   * для пользовательских панелей, не приходящих из store.
+   */
+  function applyStoredLayout(): boolean {
+    if (!layoutStorage) return false;
+    const raw = layoutStorage.getItem(PANEL_LAYOUT_STORAGE_KEY);
+    const parsed = parseLayout(raw, knownTopics);
+    if (!parsed) return false;
+    applyLayout(parsed, panelMgr);
+    return true;
+  }
+
   // Указатель: наведение / клик / перетаскивание панелей лучом.
   // Центр сферы драга — голова оператора (панели катаются вокруг него,
   // расстояние не меняется, facing всегда в центр). Сюда же потом
@@ -189,8 +248,24 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
         panelMgr.move(id, position.x, position.z, position.y);
         const s = panelMgr.get(id);
         if (s) videoPanels.get(id)?.setState(s);
+        scheduleLayoutSave();
       },
-      onDragEnd: () => refreshHighlights()
+      onDragEnd: () => {
+        refreshHighlights();
+        flushLayoutSave();
+      },
+      onResize: (id, corner, position) => {
+        const s = panelMgr.get(id);
+        if (!s) return;
+        const next = resizeSize(s.position, s.size, position, s.facing, corner);
+        const changed = panelMgr.resize(id, next.width, next.height);
+        if (changed) {
+          const updated = panelMgr.get(id);
+          if (updated) videoPanels.get(id)?.setState(updated);
+          scheduleLayoutSave();
+        }
+      },
+      onResizeEnd: () => flushLayoutSave()
     }
   });
 
@@ -319,6 +394,30 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   }
 
   function initLayout(): void {
+    // AV-25: пробуем восстановить сохранённую раскладку; если в
+    // localStorage пусто/битый JSON/чужой version — берём дефолт.
+    if (!applyStoredLayout()) {
+      panelMgr.resetLayout();
+    }
+    syncPanels();
+  }
+
+  // AV-25: дебаунс-сохранение раскладки (500мс после последнего
+  // изменения). На каждый кадр драга писать в localStorage — слишком
+  // дорого; на отпускание делаем flush, чтобы схваченный layout не
+  // потерялся при экстренном закрытии страницы.
+  function scheduleLayoutSave(): void {
+    layoutSaver?.schedule(() => serializeLayout(panelMgr.list()));
+  }
+  function flushLayoutSave(): void {
+    layoutSaver?.flush(() => serializeLayout(panelMgr.list()));
+  }
+
+  // AV-25: сброс к default по клавише R (desktop) или из help-overlay.
+  // Стираем сохранённое и пересоздаём панели.
+  function resetPanelLayout(): void {
+    layoutStorage?.removeItem(PANEL_LAYOUT_STORAGE_KEY);
+    layoutSaver?.cancel();
     panelMgr.resetLayout();
     syncPanels();
   }
@@ -336,6 +435,11 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     const videoRows = rows.filter((r) => r.topic.startsWith("camera_"));
     streamMenu = videoRows.length > 0 ? createStreamMenu(videoRows) : null;
     if (streamMenu) scene.add(streamMenu.object);
+    // AV-25: пополняем реестр известных топиков — теперь parseLayout
+    // примет сохранённую раскладку, даже если в ней ещё незнакомый
+    // серверу топик (например, добавленная камера между стартом и
+    // приходом stream_list).
+    for (const r of rows) knownTopics.add(r.topic);
   }
 
   function openStreamMenu(panelId: string): void {
@@ -405,9 +509,20 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
 
   let running = false;
   let raf = 0;
+  // AV-25 / B4: FPS-счётчик. Скользящее среднее по 60 кадрам,
+  // значение в HUD обновляется раз в 500мс (а не на каждый кадр —
+  // иначе цифра дрожит, а текстура перерисовывается 90 раз/сек).
+  const fpsMeter = new FpsMeter({ windowSize: 60 });
   function loop(): void {
     if (!running) return;
     raf = requestAnimationFrame(loop);
+    const now = performance.now();
+    fpsMeter.push(now);
+    if (fpsMeter.shouldUpdate(500, now)) {
+      const v = fpsMeter.value();
+      statusHud.setFps(v > 0 ? v : null);
+      fpsMeter.markUpdated(now);
+    }
     renderer.render(scene, camera);
   }
 
@@ -483,6 +598,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
 
   function dispose(): void {
     window.removeEventListener("resize", resize);
+    layoutSaver?.cancel();
     mainScreen.dispose();
     for (const vp of videoPanels.values()) vp.dispose();
     lidar.dispose();
@@ -504,6 +620,7 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     environment,
     loadEnvironment,
     initLayout,
+    resetPanelLayout,
     updatePointer,
     pointer,
     setAvailableStreams,

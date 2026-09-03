@@ -60,8 +60,16 @@ export function parseRobotStatus(payload: Uint8Array): RobotStatus | null {
 /**
  * Строки HUD. Отсутствующий источник показывается прочерком, а не нулём —
  * «0%» и «нет данных о заряде» для оператора это разные вещи.
+ *
+ * `fps` — текущее значение FPS (или `null`, если данных ещё нет). По
+ * дизайну (AV-25 / B4) строка FPS идёт сразу после RTT: оператор
+ * читает «как идут кадры» рядом с «как идёт сеть».
  */
-export function formatStatusLines(status: RobotStatus | null, rttMs: number | null): StatusLine[] {
+export function formatStatusLines(
+  status: RobotStatus | null,
+  rttMs: number | null,
+  fps: number | null = null
+): StatusLine[] {
   const lines: StatusLine[] = [];
 
   // BAT: проценты, если источник есть; иначе вольты; иначе прочерк.
@@ -104,6 +112,18 @@ export function formatStatusLines(status: RobotStatus | null, rttMs: number | nu
     });
   }
 
+  // FPS (AV-25): рядом с RTT, обновляется реже (раз в 500мс), но строка
+  // живёт в том же формате. < 30 fps = жёлтый, < 15 = красный, иначе ok.
+  if (fps === null || !Number.isFinite(fps) || fps <= 0) {
+    lines.push({ label: "FPS", value: "—", level: "unknown" });
+  } else {
+    lines.push({
+      label: "FPS",
+      value: `${Math.round(fps)}`,
+      level: fps < 15 ? "bad" : fps < 30 ? "warn" : "ok"
+    });
+  }
+
   lines.push({
     label: "MODE",
     value: status ? status.mode : "—",
@@ -126,6 +146,8 @@ export interface StatusHud {
   setStatus(status: RobotStatus | null): void;
   /** RTT из ping/pong (`null` — pong ещё не приходил). */
   setRtt(rttMs: number | null): void;
+  /** FPS из scene loop (`null` — данных ещё нет). AV-25. */
+  setFps(fps: number | null): void;
   dispose(): void;
 }
 
@@ -160,9 +182,10 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
 
   let status: RobotStatus | null = null;
   let rttMs: number | null = null;
+  let fps: number | null = null;
 
   function draw(): void {
-    const lines = formatStatusLines(status, rttMs);
+    const lines = formatStatusLines(status, rttMs, fps);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "rgba(10, 13, 17, 0.72)";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -190,6 +213,10 @@ export function createStatusHud(opts: StatusHudOptions = {}): StatusHud {
     },
     setRtt(next: number | null): void {
       rttMs = next;
+      draw();
+    },
+    setFps(next: number | null): void {
+      fps = next;
       draw();
     },
     dispose(): void {
