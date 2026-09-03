@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import re
+
 from pathlib import Path
 
 import pytest
@@ -267,6 +269,24 @@ def test_effective_fragment_keeps_the_tool_contract(enabled) -> None:
 #: каталог и упоминание безобидно. При включённом сужении каждая строка
 #: отсюда — потенциальный #1403 («нет такой функции»), поэтому список
 #: явный: новое упоминание чужого инструмента обязано быть осознанным.
+def _mentions_tool(text: str, name: str) -> bool:
+    """Упомянут ли инструмент ``name`` в ``text`` как отдельное слово.
+
+    Раньше здесь была голая подстрока ``name.lower() in text``. Она
+    работала, пока все имена были длинными и «своими» (``play_sound``,
+    ``execute_music_code``). AV-21 (#1956) добавил в каталог инструмент
+    ``say`` — три буквы, совпадающие с обычным английским глаголом. После
+    этого секция про Renardo, где написано «say ONE short accept via
+    speak_text», стала считаться рекламой чужого инструмента, и develop
+    покраснел на ровном месте.
+
+    Границы слова оставляют смысл проверки прежним (секция не должна
+    звать чужой инструмент), но перестают ловить текст, который просто
+    содержит эти буквы.
+    """
+    return re.search(rf"(?<![a-z0-9_]){re.escape(name.lower())}(?![a-z0-9_])", text) is not None
+
+
 _KNOWN_FOREIGN_MENTIONS: dict[str, dict[str, str]] = {
     "### Renardo (execute_music_code) — local synth, ~1s start": {
         "play_sound": "контраст: «play_sound только для эффектов <5s»",
@@ -309,7 +329,7 @@ def test_foreign_tool_mentions_in_moved_sections_are_declared(enabled) -> None:
             for entry in tools_for_skill(skill, include_core=True)
         }
         lowered = section.text.lower()
-        foreign = {name for name in catalog - own if name.lower() in lowered}
+        foreign = {name for name in catalog - own if _mentions_tool(lowered, name)}
         anchor = section.text.splitlines()[0].strip()
         declared = set(_KNOWN_FOREIGN_MENTIONS.get(anchor, {}))
         assert foreign == declared, (

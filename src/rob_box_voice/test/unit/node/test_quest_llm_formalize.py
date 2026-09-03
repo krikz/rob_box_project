@@ -98,15 +98,30 @@ def _make_node(*, voice_preset: str = "",
 
 
 def _install_param_getter(n: DialogueNode) -> None:
-    """self.get_parameter(name) → _Param(value) с маршрутизацией по имени."""
-    state = {
-        "voice_preset": n._voice_preset,
-        "voice_output_language": n._voice_output_language,
-        "voice_presets_file": n._voice_presets_file,
-        "voice_formalize_timeout_sec": n._voice_formalize_timeout_sec,
-        "llm_timeout_sec": getattr(n, "_llm_timeout_sec", 12.0),
+    """self.get_parameter(name) → _Param(value) с маршрутизацией по имени.
+
+    Читаем атрибуты ноды ЛЕНИВО, на каждый вызов. Снимок, снятый здесь,
+    был бы неверен: тесты присваивают ``n._voice_presets_file`` уже
+    после установки геттера, и ``_resolve_voice_presets_path`` получал
+    пустую строку → уходил на репозиторный config/voice_presets.yaml
+    вместо временного файла теста.
+    """
+    attr_of = {
+        "voice_preset": "_voice_preset",
+        "voice_output_language": "_voice_output_language",
+        "voice_presets_file": "_voice_presets_file",
+        "voice_formalize_timeout_sec": "_voice_formalize_timeout_sec",
+        "llm_timeout_sec": "_llm_timeout_sec",
     }
-    n.get_parameter = lambda name: _Param(state.get(name))
+    defaults = {"llm_timeout_sec": 12.0}
+
+    def _get(name):
+        attr = attr_of.get(name)
+        if attr is None:
+            return _Param(None)
+        return _Param(getattr(n, attr, defaults.get(name)))
+
+    n.get_parameter = _get
 
 
 def _make_stt_msg(data: str):
@@ -449,9 +464,10 @@ class TestFormalizeWithLlm:
         # Фейковый LLM: complete(messages, tools=[]) → response с переписанной фразой.
         fake_response = MagicMock()
         fake_response.content = "Технически выражаясь, привет."
-        n._llm.complete = MagicMock(
-            return_value=self._run(_async_return(fake_response))
-        )
+        # side_effect, а не return_value: ``complete`` вызывается внутри
+        # ``asyncio.wait_for`` и обязана вернуть НОВУЮ корутину на каждый
+        # вызов. return_value=self._run(...) выполнил бы её здесь же.
+        n._llm.complete = MagicMock(side_effect=lambda *a, **k: _async_return(fake_response))
 
         self._run(n._formalize_with_llm("привет как дела", "technical", "ru"))
 
@@ -479,7 +495,7 @@ class TestFormalizeWithLlm:
             await asyncio.sleep(5.0)
             return MagicMock(content="too late")
 
-        n._llm.complete = MagicMock(return_value=self._run(slow()))
+        n._llm.complete = MagicMock(side_effect=lambda *a, **k: slow())
 
         self._run(n._formalize_with_llm("привет", "technical", "ru"))
 
@@ -497,9 +513,7 @@ class TestFormalizeWithLlm:
 
         fake_response = MagicMock()
         fake_response.content = ""
-        n._llm.complete = MagicMock(
-            return_value=self._run(_async_return(fake_response))
-        )
+        n._llm.complete = MagicMock(side_effect=lambda *a, **k: _async_return(fake_response))
 
         self._run(n._formalize_with_llm("привет", "technical", "ru"))
 
@@ -517,9 +531,7 @@ class TestFormalizeWithLlm:
 
         fake_response = MagicMock()
         fake_response.content = "привет как дела"
-        n._llm.complete = MagicMock(
-            return_value=self._run(_async_return(fake_response))
-        )
+        n._llm.complete = MagicMock(side_effect=lambda *a, **k: _async_return(fake_response))
 
         self._run(n._formalize_with_llm("привет как дела", "technical", "ru"))
 
@@ -540,7 +552,9 @@ class TestFormalizeWithLlm:
         async def fail():
             raise ProviderError("upstream down")
 
-        n._llm.complete = MagicMock(return_value=self._run(fail()))
+        # Без side_effect ProviderError вылетал бы прямо здесь, в теле
+        # теста, и до _formalize_with_llm дело бы не дошло.
+        n._llm.complete = MagicMock(side_effect=lambda *a, **k: fail())
 
         self._run(n._formalize_with_llm("привет", "technical", "ru"))
 
