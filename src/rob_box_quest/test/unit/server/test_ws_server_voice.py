@@ -34,7 +34,7 @@ class RecordingBridge(NoOpBridge):
         self.robot_start_calls = 0
         self.robot_stop_calls = 0
         self.voice_modes: list[str] = []
-        # AV-27 / issue #1919 — TTS picker state.
+# AV-27 / issue #1919 — TTS picker state.
         self.voices_snapshots: list[dict[str, Any]] = []
         self.set_voice_calls: list[tuple[str, str | None]] = []
         self.preview_voice_calls: list[tuple[str, str, str]] = []  # (request_id, voice_id, text)
@@ -66,7 +66,7 @@ class RecordingBridge(NoOpBridge):
     def set_voice_mode(self, mode: str) -> None:
         self.voice_modes.append(mode)
 
-    # ── AV-27 / issue #1919 — TTS picker stubs ────────────────────────
+# ── AV-27 / issue #1919 — TTS picker stubs ────────────────────────
 
     def list_voices_snapshot(self) -> dict[str, Any]:
         snap = {
@@ -434,13 +434,13 @@ async def test_voice_rate_limit_drops_repeat(client, fixed_pin):
         await ws.close()
 
 
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------
 # Voice-floor: серверный mutex (двух квестов быть не должно).
 # Acceptance (t_3c27c1da):
 #  - при занятом floor второй voice_ptt_start → отказ + voice_state{denied};
 #  - при единственном клиенте поведение совпадает с до-изменения;
 #  - отвал клиента освобождает floor (force_release_for).
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------
 
 
 # === AV-28 §P7: set_voice {preset, language} → Bridge → supervisor === #
