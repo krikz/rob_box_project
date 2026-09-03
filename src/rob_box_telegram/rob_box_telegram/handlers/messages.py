@@ -53,6 +53,15 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     (e.g. Telegram splits a long message), they are merged before
     forwarding. The dialogue_node (downstream) decides what to do with
     the text — chat with LLM, run a tool, or ignore.
+
+    AV-22 (Issue #1914) — ГЕЙТ ``/operator``:
+      * Если в этом чате включён «режим оператора»
+        (``context.user_data["operator_mode"]`` is True), свободный текст
+        идёт в ``/avatar/command`` (а не в личность). Это «консоль
+        оператора» — оператор сознательно перевёл чат в режим, в котором
+        все сообщения идут супервизор-агенту.
+      * Если НЕ включён (default) — стандартное поведение: текст
+        уходит в ``forward_to_stt`` → личность (как было до AV-22).
     """
     chat_id = update.effective_chat.id
     user_text = update.message.text.strip()
@@ -62,6 +71,25 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # React with 👀 to indicate we received the message
     await _react_eyes(update)
+
+    # ── AV-22: гейт «режим оператора» ──────────────────────────────────
+    # По умолчанию off (worker-brief §4 — все новые гейты по умолчанию
+    # выключены, чтобы не сломать существующий UX бота).
+    if context.user_data.get("operator_mode") is True:
+        node = _node(context)
+        # Прямая публикация в /avatar/command, минуя forward_to_stt,
+        # чтобы личность НЕ получила этот текст. Гейт «личность молчит»
+        # именно здесь — не через voice_input_mode=off.
+        request_id = node.publish_avatar_command(text=user_text, chat_id=chat_id)
+        if request_id:
+            logger.info(
+                "AV-22 operator-mode → /avatar/command request_id=%s chat_id=%s",
+                request_id, chat_id,
+            )
+        # Дальше debounce НЕ делаем: в режиме оператора каждое сообщение
+        # — отдельная команда. Если оператор шлёт абзац — пусть шлёт
+        # одним сообщением (или использует /cmd).
+        return
 
     # ── Debounce: buffer split messages ──
     # 🔴 FIX (issue #1195): раньше таймер создавался через

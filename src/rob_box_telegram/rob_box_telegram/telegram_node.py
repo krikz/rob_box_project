@@ -6,11 +6,33 @@ from geometry_msgs.msg import Twist
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from audio_common_msgs.msg import AudioData
 from sensor_msgs.msg import CompressedImage
 from nav_msgs.msg import OccupancyGrid
 from std_msgs.msg import String
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    MessageHandler,
+    filters,
+)
+# AV-23 (issue #1915): ``audio_common_msgs`` — отдельный ROS-пакет, он есть
+# на роботе, но его нет в окружениях, где ``rob_box_telegram`` импортируют
+# без полного workspace (юнит-тесты, lint). Жёсткий top-level импорт ронял
+# весь модуль и уносил с собой тесты моста, не имеющие к рации отношения.
+# Держим его мягким: без пакета рация просто недоступна, остальной бот
+# работает. Ошибку не глотаем — она видна в WARNING при старте ноды.
+try:
+    from audio_common_msgs.msg import AudioData  # type: ignore
+except ImportError:  # pragma: no cover — окружение без audio_common_msgs
+    AudioData = None  # type: ignore[assignment]
+
+from rob_box_core.avatar_command import (
+    AVATAR_COMMAND_TOPIC,
+    build_command,
+    encode_command,
+    make_telegram_client_id,
+)
 from .camera_cache import CameraCache
 from .handlers import commands as _cmds
 from .handlers.callbacks import callback_handler
@@ -34,8 +56,12 @@ from .observability import (
 # переключается параметром ``supervisor_mode=active``.
 from .supervisor_client import Floor, SupervisorClient
 
-_BE = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1)
-_RE = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
+_BE = QoSProfile(
+    reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1
+)
+_RE = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10
+)
 _TL = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
     history=HistoryPolicy.KEEP_LAST,
@@ -67,9 +93,15 @@ class TelegramNode(Node):
 
     def __init__(self):
         super().__init__("telegram_node")
-        self.declare_parameter("camera_topic", "/camera/camera/color/image_raw/compressed")
-        self.declare_parameter("camera_depth_topic", "/camera/camera/depth/image_rect_raw/compressedDepth")
-        self.declare_parameter("camera_up_topic", "/ceiling_camera/image_raw/compressed")
+        self.declare_parameter(
+            "camera_topic", "/camera/camera/color/image_raw/compressed"
+        )
+        self.declare_parameter(
+            "camera_depth_topic", "/camera/camera/depth/image_rect_raw/compressedDepth"
+        )
+        self.declare_parameter(
+            "camera_up_topic", "/ceiling_camera/image_raw/compressed"
+        )
         self.declare_parameter("camera_cache_ttl", 5.0)
         # Issue #1160 — Prometheus metrics endpoint. 9101 — telegram-bot.
         self.declare_parameter("metrics_port", 9101)
@@ -105,9 +137,20 @@ class TelegramNode(Node):
             (self.camera_up_topic, self._on_camera_up),
         ):
             self.create_subscription(CompressedImage, topic, cb, _BE, callback_group=g)
-        self.create_subscription(OccupancyGrid, "/rtabmap/grid_prob_map", self._on_map, _TL, callback_group=g)
+        self.create_subscription(
+            OccupancyGrid, "/rtabmap/grid_prob_map", self._on_map, _TL, callback_group=g
+        )
         self._stt_pub = self.create_publisher(String, "/voice/stt/result", _RE)
-        self._response_pub = self.create_publisher(String, "/voice/dialogue/response", _RE)
+        self._response_pub = self.create_publisher(
+            String, "/voice/dialogue/response", _RE
+        )
+        # AV-22 (Issue #1914) — producer /avatar/command для супервизор-агента.
+        # Тот же топик, что и quest-нода, единый контракт
+        # (worker-brief §3.3, rob_box_core.avatar_command). RELIABLE depth=10 —
+        # оператор не должен потерять команду при всплеске трафика.
+        self._avatar_command_pub = self.create_publisher(
+            String, AVATAR_COMMAND_TOPIC, _RE
+        )
         # Issue #1195 — restore the echo path: dialogue/TTS output is
         # duplicated into the active Telegram chat so the operator sees
         # what the robot says (removed in 88cecc91 because of the
@@ -130,7 +173,18 @@ class TelegramNode(Node):
         # + явный STOP в /voice/sound/stop (закрыть stream после рации,
         # barge-in уже использует тот же канал). best-effort + volatile
         # — см. _VOICE_IN_QOS (как у quest_node, D7).
-        self._voice_in_pub = self.create_publisher(AudioData, "/avatar/voice_in", _VOICE_IN_QOS)
+        if AudioData is None:
+            # Честная деградация (ADR-0018): рация выключена, а не «работает
+            # вхолостую». publish_voice_audio_chunk увидит None и не упадёт.
+            self._voice_in_pub = None
+            self.get_logger().warning(
+                "audio_common_msgs недоступен — /radio выключен, "
+                "голосовые из Telegram публиковаться не будут"
+            )
+        else:
+            self._voice_in_pub = self.create_publisher(
+                AudioData, "/avatar/voice_in", _VOICE_IN_QOS
+            )
         self._voice_stop_pub = self.create_publisher(String, "/voice/sound/stop", _RE)
         self._radio = RadioPublisher(
             self,
@@ -174,7 +228,10 @@ class TelegramNode(Node):
             self.get_logger().error("TELEGRAM_BOT_TOKEN not set")
             return
         self._start_telegram_bot(token)
-        self.get_logger().info("TelegramNode: thin ROS 2 bridge (W8), supervisor_mode=" f"{supervisor_mode} (AV-10)")
+        self.get_logger().info(
+            "TelegramNode: thin ROS 2 bridge (W8), supervisor_mode="
+            f"{supervisor_mode} (AV-10)"
+        )
 
     def _on_camera_front(self, m):
         self.camera_cache.update(self.camera_topic, bytes(m.data))
@@ -230,6 +287,36 @@ class TelegramNode(Node):
         m.data = text
         self._stt_pub.publish(m)
 
+    def publish_avatar_command(self, text: str, chat_id: int) -> Optional[str]:
+        """AV-22 (Issue #1914) — публикация команды оператора в ``/avatar/command``.
+
+        Возвращает ``request_id`` (UUID) для логов/observability, либо
+        ``None`` если ``text`` пустой (тогда публикация не делается).
+        ``chat_id`` обязателен — формируем ``client_id=telegram:<chat_id>``
+        на СЕРВЕРНОЙ стороне, как требует worker-brief §1.3.
+        """
+        if not text or not text.strip():
+            return None
+        try:
+            payload = build_command(
+                source="telegram",
+                client_id=make_telegram_client_id(int(chat_id)),
+                text=text,
+            )
+        except ValueError as exc:
+            self.get_logger().warning(
+                f"⚠️ [AV-22] publish_avatar_command: невалидный payload: {exc}"
+            )
+            return None
+        m = String()
+        m.data = encode_command(payload)
+        self._avatar_command_pub.publish(m)
+        self.get_logger().info(
+            f"🎮 [telegram/cmd] → /avatar/command request_id={payload['request_id']} "
+            f"chat_id={chat_id} text={text[:80]!r}"
+        )
+        return payload["request_id"]
+
     def publish_tts(self, text: str) -> None:
         """AV-10 backward-compat shim.
 
@@ -245,7 +332,12 @@ class TelegramNode(Node):
             record_telegram_message("out", message_type="voice")
         m = String()
         m.data = json.dumps(
-            {"ssml": f"<speak>{text}</speak>", "speech_id": str(uuid.uuid4()), "emotion": "neutral"}, ensure_ascii=False
+            {
+                "ssml": f"<speak>{text}</speak>",
+                "speech_id": str(uuid.uuid4()),
+                "emotion": "neutral",
+            },
+            ensure_ascii=False,
         )
         self._response_pub.publish(m)
 
@@ -276,7 +368,9 @@ class TelegramNode(Node):
             # оставлена оригинальная семантика.
             if is_metrics_enabled():
                 record_telegram_message("out", message_type="voice")
-            target = self.tts_pub if self.supervisor.mode != "active" else self._response_pub
+            target = (
+                self.tts_pub if self.supervisor.mode != "active" else self._response_pub
+            )
             target.publish(m)
 
         return self.supervisor.with_floor(Floor.VOICE, _do_publish)
@@ -301,6 +395,8 @@ class TelegramNode(Node):
         (он нормализует через ``bytes(msg.data)`` перед ``np.frombuffer``,
         см. ``voice_in_callback``). Поэтому заворачиваем именно bytes.
         """
+        if self._voice_in_pub is None:
+            return
         msg = AudioData()
         msg.data = list(pcm_bytes)
         self._voice_in_pub.publish(msg)
@@ -361,7 +457,9 @@ class TelegramNode(Node):
             # Loop closed underneath us (bot crashed, outer loop is between
             # attempts). Drop rather than crash the ROS executor — the next
             # valid response will be picked up after the loop is restored.
-            self.get_logger().error(f"Failed to schedule TG echo (loop closed?): {exc!r}")
+            self.get_logger().error(
+                f"Failed to schedule TG echo (loop closed?): {exc!r}"
+            )
 
     async def _chat_echo_worker(self) -> None:
         """Consume dialogue responses and send them into the chat.
@@ -387,7 +485,12 @@ class TelegramNode(Node):
             pass
 
     def _start_telegram_bot(self, token: str) -> None:
-        threading.Thread(target=self._run_telegram_loop, args=(token,), daemon=True, name="telegram-bot").start()
+        threading.Thread(
+            target=self._run_telegram_loop,
+            args=(token,),
+            daemon=True,
+            name="telegram-bot",
+        ).start()
 
     def _run_telegram_loop(self, token: str) -> None:
         attempt, delay = 0, 5.0
@@ -401,7 +504,9 @@ class TelegramNode(Node):
             except Exception as e:
                 attempt += 1
                 d = min(delay * attempt, 60.0)
-                self.get_logger().error(f"Bot crashed ({attempt}): {e}. Retry in {d:.0f}s")
+                self.get_logger().error(
+                    f"Bot crashed ({attempt}): {e}. Retry in {d:.0f}s"
+                )
                 loop.close()
                 time.sleep(d)
 
@@ -421,7 +526,9 @@ class TelegramNode(Node):
                 app.add_handler(CommandHandler(name[:-8], getattr(_cmds, name)))
         app.add_handler(CallbackQueryHandler(callback_handler))
         app.add_handler(MessageHandler(filters.VOICE, voice_message_handler))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
+        app.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler)
+        )
         await app.initialize()
         await app.start()
         try:

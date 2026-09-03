@@ -24,6 +24,12 @@ export enum FrameType {
   // Рация (voice passthrough): голос оператора → сервер, payload = raw int16 PCM 16 kHz mono (D2).
   VOICE_AUDIO = 0x13,
   GOODBYE = 0x20,
+  // Supervisor-команды (Phase 2, subprotocol `robbox-quest-v2`).
+  // Payload — msgpack, см. meta-quest-api.md §3 / docs/adr/0028-avatar-supervisor.md §4.4.
+  SET_MODE = 0x30,
+  ACQUIRE_FLOOR = 0x31,
+  RELEASE_FLOOR = 0x32,
+  STATE_UPDATE = 0x33,
   ERROR = 0xff
 }
 

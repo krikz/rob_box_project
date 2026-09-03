@@ -84,6 +84,11 @@ def _install_fake_rclpy() -> None:
 
     class _Durability:
         TRANSIENT_LOCAL = "transient_local"
+        # AV-23 (issue #1915): _VOICE_IN_QOS у рации — volatile, чтобы
+        # sound_node не доигрывал stale-чанки после разрыва. Заглушка
+        # обязана знать оба значения, иначе импорт telegram_node падает
+        # здесь, а не в рации.
+        VOLATILE = "volatile"
 
     class QoSProfile:
         def __init__(self, reliability=None, history=None, depth=10, durability=None):

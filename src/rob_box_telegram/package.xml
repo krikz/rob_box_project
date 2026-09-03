@@ -21,6 +21,7 @@
        (no rclpy transitively required), but ament still needs the
        package to be a build/run-time peer of rob_box_telegram. -->
   <exec_depend>rob_box_supervisor</exec_depend>
+  <exec_depend>audio_common_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

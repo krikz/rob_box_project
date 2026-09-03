@@ -31,6 +31,15 @@ export interface TeleopTwistCmd {
   deadman: boolean;
 }
 
+// AV-19 (issue #1911, ADR-0028 §4.4 S10): клиентский heartbeat.
+// Шлётся 10 Гц пока ARM+floor, релеится ws_server в /teleop_heartbeat.
+// Супервизор снимает floor через 500 мс если heartbeat не пришёл.
+export interface TeleopHeartbeatCmd {
+  cmd: "teleop_heartbeat";
+  ts_ms: number;
+  seq: number;
+}
+
 export interface StopEmergencyCmd {
   cmd: "stop_emergency";
   ts_ms: number;
@@ -109,6 +118,7 @@ export interface SetPanelTopicCmd {
 
 export type JsonCmd =
   | TeleopTwistCmd
+  | TeleopHeartbeatCmd
   | StopEmergencyCmd
   | VoicePttStartCmd
   | VoicePttStopCmd
@@ -139,7 +149,7 @@ export type JsonEvent =
   | { type: "voice_state"; state: string; ts_ms: number; utterance_id?: string }
   | { type: "voice_mode_ack"; mode: string; ts_ms: number }
   | { type: "safety_stop"; reason: string; ts_ms: number }
-  | { type: "robot_alert"; level: "warn" | "error"; code: string; args?: Record<string, unknown>; ts_ms: number }
+  | { type: "robot_alert"; code: string; level: "warn" | "error" | "info"; active?: boolean; args?: Record<string, unknown>; ts_ms: number }
   | { type: "stream_list"; items: Array<Record<string, unknown>>; ts_ms: number }
   | { type: "stream_select_ack"; topic: string; stream_id: number | null; kind?: string }
   | { type: "voice_list"; voices: VoiceInfo[]; ts_ms: number }
@@ -158,6 +168,15 @@ export type JsonEvent =
   | { type: "preview_voice_error"; request_id: string; reason: string; ts_ms: number }
   | { type: "ping"; ts_ms: number; nonce?: string }
   | { type: "pong"; ts_ms: number; nonce?: string }
+  // AV-19 (issue #1911, ADR-0028 §4.4): сервер сообщает клиенту, что
+  // его teleop_floor больше не наш. Клиент обязан мгновенно DISARM-нуться
+  // (см. teleop_fsm.setHasFloor(false)) и показать тост «возьми руль».
+  | {
+      type: "floor_lost";
+      floor: "teleop" | "voice";
+      reason?: string;
+      ts_ms: number;
+    }
   | { type: string; [k: string]: unknown };
 
 export interface ErrorMsg {
