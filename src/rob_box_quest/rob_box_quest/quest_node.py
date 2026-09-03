@@ -107,6 +107,10 @@ class _AlwaysActiveWSServer:
     def get_active_sessions(self) -> int:
         return 1
 
+    # AV-16: broadcast_state_update — no-op в заглушке (Bridge без ws_server).
+    def broadcast_state_update(self, payload: bytes) -> int:  # noqa: ARG002
+        return 0
+
 
 def _stop_msg() -> String:
     """String("STOP") — команда остановки воспроизведения/стрима."""
@@ -207,6 +211,10 @@ class QuestBridge:
         sound_stop_pub=None,
         stt_in_pub=None,
         set_voice_mode_pub=None,
+        supervisor_acquire_client=None,
+        supervisor_release_client=None,
+        supervisor_set_mode_client=None,
+        avatar_state_subscription=None,
     ) -> None:
         self._node = node
         self._pub_quest = cmd_vel_quest_pub
@@ -219,6 +227,20 @@ class QuestBridge:
         self._stt_in_pub = stt_in_pub
         # voice_mode → супервизор (ADR-0028 S5): /avatar/set_voice_mode.
         self._set_voice_mode_pub = set_voice_mode_pub
+        # AV-16: supervisor service-clients (каждый — async call_service).
+        # None в unit-тестах моста; реальные ROS-клиенты создаются на уровне
+        # QuestNode (этот конструктор — DI). Sync-обёртки service calls
+        # живут ниже (supervisor_acquire_floor / _release_floor / _set_mode).
+        self._srv_acquire = supervisor_acquire_client
+        self._srv_release = supervisor_release_client
+        self._srv_set_mode = supervisor_set_mode_client
+        self._state_sub = avatar_state_subscription
+        # Локальный кеш последнего /avatar/state snapshot (msgpack bytes).
+        # None до первого прихода callback-а; Bridge.supervisor_state() → None.
+        self._avatar_state_cache: Optional[bytes] = None
+        # Lock для cache update — не rclpy-thread-safe, ROS-callback-и
+        # и WS-handler-ы (aiohttp loop) пишут/читают параллельно.
+        self._avatar_state_lock = threading.Lock()
         # Текущий голосовой режим: "radio" (рация, default) | "robot_voice".
         self._voice_mode: str = "radio"
         self._voice_buffer: list[bytes] = []
@@ -233,6 +255,20 @@ class QuestBridge:
         self._emergency_published: bool = False
         # Маппинг camera ui_name → device_id (для on_frame callback из CameraProvider).
         self._camera_id_to_ui: dict[str, str] = {}
+        # Сохраняем loop aiohttp для отправки STATE_UPDATE из ROS-callback-а.
+        # None до тех пор, пока ``QuestNode._start_aiohttp()`` не сходится.
+        self._aio_send_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def set_aio_send_loop(self, loop: Optional[asyncio.AbstractEventLoop]) -> None:
+        """Запомнить aiohttp-loop для потокобезопасной отправки STATE_UPDATE.
+
+        Вызывается из :py:meth:`QuestNode._start_aiohttp` (раньше аналогичный
+        hook уже был у ``WSSServer.set_send_loop`` — теперь и Bridge, потому
+        что supervisor-* callbacks на Bridge идут ВНЕ aiohttp thread (ROS
+        executor), а ``broadcast_state_update`` в WSSServer — это send_bytes,
+        требующий async-loop.
+        """
+        self._aio_send_loop = loop
 
     # --- Bridge Protocol -------------------------------------------------
 
@@ -479,6 +515,226 @@ class QuestBridge:
         # остаётся приоритетом; cmd_vel_quest публикует нули.
         self._pub_quest.publish(msg)
 
+    # --- AV-16: supervisor API (bridge реализация) ------------------------
+
+    def supervisor_acquire_floor(self, client_id: str, floor: str) -> dict:
+        """Sync-обёртка: ``AcquireFloor`` сервис supervisor-а.
+
+        Контракт см. ws_server.Bridge.supervisor_acquire_floor (Protocol).
+        Реализация: ``asyncio.run_coroutine_threadsafe(call_service, loop)``
+        на ROS-executor — критично, потому что ``client.call_async(req)
+        .call_service`` — async и блокирует aiohttp event-loop.
+
+        Если ROS-клиент недоступен (dev-env без rclpy, или supervisor ещё не
+        задеплоен) → возвращаем ``applied=False/reason=service_unavailable``
+        и логируем warning один раз.
+        """
+        if self._srv_acquire is None:
+            return self._supervisor_unavailable("acquire_floor")
+        return self._run_supervisor_service("acquire_floor", self._srv_acquire, client_id=client_id, floor=floor)
+
+    def supervisor_release_floor(self, client_id: str, floor: str) -> dict:
+        if self._srv_release is None:
+            return self._supervisor_unavailable("release_floor")
+        return self._run_supervisor_service("release_floor", self._srv_release, client_id=client_id, floor=floor)
+
+    def supervisor_set_mode(self, client_id: str, mode: str) -> dict:
+        """``SET_MODE`` (0x30) → сервис ``set_avatar_mode``.
+
+        Целевой режим уходит на провод КАК ЕСТЬ. Маппинг «режим → FSM-
+        событие» живёт только в супервизоре
+        (``supervisor_node.MODE_TRANSITIONS``, AV-12): одно событие значит
+        разные переходы из разных режимов, поэтому клиентская копия
+        таблицы обязана разъехаться. Здесь она и была неверной —
+        ``mixed`` жёстко маппился в ``quest_acquire_floor_teleop_only``,
+        что верно только из ``telegram_active``, а неизвестный режим по
+        умолчанию превращался в ``force_off``, то есть опечатка выключала
+        аватар.
+        """
+        if self._srv_set_mode is None:
+            return self._supervisor_unavailable("set_avatar_mode")
+        return self._run_supervisor_service(
+            "set_avatar_mode", self._srv_set_mode, mode=mode, client_id=client_id
+        )
+
+    @staticmethod
+    def _supervisor_unavailable(name: str) -> dict:
+        # «applied=False» + reason — клиент получит MODE_CONFLICT/FLOOR_HELD,
+        # что совпадает с поведением supervisor в monitor-режиме. Если бы
+        # возвращали INTERNAL, дев-сессии и монитор-развёртывания не смогли бы
+        # тестировать WS-контракт без полного supervisor'а.
+        return {
+            "applied": False,
+            "granted": False,
+            "reason": f"supervisor_service_unavailable:{name}",
+        }
+
+    def _run_supervisor_service(
+        self,
+        service_name: str,
+        client,
+        *,
+        client_id: Optional[str] = None,
+        floor: Optional[str] = None,
+        mode: Optional[str] = None,
+        # Таймаут sync-вызова из WS-handler-а (acceptance: < 100 мс при
+        # «зависшем» сервисе). 50 мс — запас над обычным ROS round-trip;
+        # если supervisor отвечает дольше — degradation на INTERNAL, не
+        # блокировать event-loop aiohttp.
+        timeout_s: float = 0.05,
+    ) -> dict:
+        """Маршалит async call_service в ROS-executor и ждёт ответ sync.
+
+        Pattern: ``asyncio.run_coroutine_threadsafe(call_async(req),
+        ros_loop).result(timeout=...)``.
+        """
+        # Supervisor service contract (ADR-0028 §4.3 + типизированный IDL
+        # rob_box_supervisor_msgs, AV-12 #1904): поля запроса — ровно
+        # ``client_id`` + ``floor`` (AcquireFloor/ReleaseFloor) или
+        # ``client_id`` + ``mode`` (SetAvatarMode). Имена жёсткие: у
+        # сгенерированных rosidl-сообщений ``__slots__``, и setattr на
+        # поле, которого в .srv нет, бросит AttributeError. Поэтому
+        # никаких ad-hoc атрибутов вроде ``event`` здесь больше нет.
+        ros_loop = getattr(self._node, "_ros_loop", None)
+        if ros_loop is None:
+            # rclpy.executors не разворачивает loop явно — попросим у самого Node.
+            # Внутри rclpy-spin-callback-а ``asyncio.get_event_loop()`` бросит
+            # ``RuntimeError`` (есть running-loop уже у rclpy). В этом случае
+            # Sync-вызов через ``run_coroutine_threadsafe`` не пройдёт: spin_once
+            # не обработает наш future, ws-handler ждать не может. Возвращаемся
+            # к fallback — service_unavailable (см. монитор-режим supervisor-а).
+            try:
+                ros_loop = asyncio.get_event_loop()  # noqa: F841 — defensive
+            except RuntimeError:
+                return self._supervisor_unavailable(service_name)
+
+        # Формируем request через ``client.cli_type.Request()`` — это
+        # конкретный srv-тип (Trigger в Phase 1), атрибуты ставятся ad-hoc.
+        request_cls = client.srv_type.Request
+        request_obj = request_cls()
+        if client_id is not None:
+            setattr(request_obj, "client_id", client_id)
+        if floor is not None:
+            setattr(request_obj, "floor", floor)
+        if mode is not None:
+            setattr(request_obj, "mode", mode)
+
+        async def _call() -> dict:
+            fut = client.call_async(request_obj)
+            result = await fut
+            return _trigger_response_to_dict(result)
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_call(), ros_loop)
+            return future.result(timeout=timeout_s)
+        except (asyncio.TimeoutError, TimeoutError):
+            self._node.get_logger().warning(
+                f"supervisor_service:{service_name} timeout after {timeout_s * 1000:.0f} мс"
+            )
+            return {
+                "applied": False,
+                "granted": False,
+                "reason": f"supervisor_service_timeout:{service_name}",
+            }
+        except Exception as exc:  # noqa: BLE001
+            self._node.get_logger().warning(f"supervisor_service:{service_name} failed: {exc}")
+            return {
+                "applied": False,
+                "granted": False,
+                "reason": f"supervisor_service_failed:{service_name}:{exc}",
+            }
+
+    def supervisor_state(self) -> Optional[bytes]:
+        """Текущий ``/avatar/state`` снапшот (msgpack bytes) или None."""
+        with self._avatar_state_lock:
+            return self._avatar_state_cache
+
+    def on_supervisor_state(self, cb) -> None:
+        # Реализация по контракту: callback подписки на изменения /avatar/state.
+        # В QuestNode уже есть ``self._on_avatar_state_msg`` (ниже), который
+        # обновляет cache И дёргает внешний cb, зарегистрированный через
+        # ``on_supervisor_state``. Сейчас WSSServer нами не пользуется через
+        # этот hook (вместо него делает broadcast через ``broadcast_state_update``
+        # из QuestNode ROS-callback-а), но сигнатура нужна для Protocol.
+        # Здесь — простая внутренняя защёлка: тесты могут её переопределить.
+        self._external_state_cb = cb
+
+    # --- /avatar/state ROS subscription callback ---------------------------
+
+    def on_avatar_state(self, msg) -> None:
+        """ROS subscription /avatar/state (transient_local, depth 1).
+
+        Payload — ``std_msgs/String``, декодированный supervisor'ом как
+        latin-1-mapped msgpack bytes (см. supervisor_node._publish_avatar_state).
+        Декодируем **только** через ``rob_box_supervisor.core.state.unpack``
+        (AV-14), сохраняем bytes в cache и пушим в WS через ws_server.
+        """
+        raw_text = getattr(msg, "data", None)
+        if not isinstance(raw_text, str):
+            return
+        try:
+            raw_bytes = raw_text.encode("latin-1")
+        except UnicodeEncodeError:
+            return
+        # Валидация через единый decoder (запрет собственного парсера).
+        try:
+            from rob_box_supervisor.core.state import unpack as _state_unpack  # noqa: WPS433
+
+            _state_unpack(raw_bytes)
+        except Exception as exc:  # noqa: BLE001
+            # Schema-version mismatch или мусор — не падаем, лог + пропуск.
+            self._node.get_logger().debug(f"avatar/state decode skipped: {exc}")
+            return
+
+        with self._avatar_state_lock:
+            self._avatar_state_cache = raw_bytes
+
+        # WS broadcast в v2-сессии (потокобезопасно через run_coroutine_threadsafe).
+        if self._aio_send_loop is None:
+            return
+        loop = self._aio_send_loop
+        try:
+            asyncio.run_coroutine_threadsafe(self._dispatch_state_update(raw_bytes), loop)
+        except RuntimeError:
+            pass  # loop уже закрыт
+
+    async def _dispatch_state_update(self, raw_bytes: bytes) -> None:
+        """Async coroutine для ``broadcast_state_update``.
+
+        Выполняется в aiohttp-loop thread; никакого rclpy внутри.
+        """
+        try:
+            self._ws_server.broadcast_state_update(raw_bytes)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("dispatch_state_update failed: %s", exc)
+
+
+def _trigger_response_to_dict(response: Any) -> dict:
+    """std_srvs/Trigger response (success + message) → dict для ws_server.
+
+    ``response.message`` несёт JSON с полями ``applied/granted/reason`` —
+    см. supervisor_node._fill_floor_response. Парсим без жёсткой зависимости
+    от её содержимого: всё, что в response.success — флаг, остальное парсим.
+    """
+    import json as _json
+
+    success = bool(getattr(response, "success", False))
+    message_raw = getattr(response, "message", "")
+    out: dict = {"success": success}
+    if isinstance(message_raw, str) and message_raw:
+        try:
+            parsed = _json.loads(message_raw)
+        except (TypeError, ValueError):
+            parsed = {}
+        if isinstance(parsed, dict):
+            # НЕ пробрасываем False на «granted» если success=False но ключ
+            # отсутствует — supervisor никогда не пишет «granted=True» если
+            # сервис не сработал; фронт принимает ``applied/reason`` без
+            # «granted» как «refused».
+            for key, value in parsed.items():
+                out[key] = value
+    return out
+
 
 class QuestNode(Node):
     """Главная ROS2-нода rob_box_quest.
@@ -559,6 +815,57 @@ class QuestNode(Node):
         self._stt_in_pub = self.create_publisher(AudioData, "/audio/quest_in", _VOICE_QOS)
         # voice_mode → супервизор (ADR-0028 S5): /avatar/set_voice_mode.
         self._set_voice_mode_pub = self.create_publisher(String, "/avatar/set_voice_mode", _RE)
+
+        # AV-16: supervisor service-clients (sync-вызовы из WS-handler через
+        # run_coroutine_threadsafe). std_srvs/Trigger — Phase 1 IDL; Supervisor
+        # принимает client_id/floor/event через getattr-атрибуты запроса
+        # (см. supervisor_node._extract_*). Сервисы могут отсутствовать
+        # в dev-env / на старте supervisor-а → QuestBridge получает None и
+        # отвечает ``service_unavailable`` (см. _supervisor_unavailable).
+        from std_srvs.srv import Trigger  # noqa: PLC0415 — локальный импорт
+
+        try:
+            self._srv_acquire = self.create_client(
+                Trigger,
+                "acquire_floor",
+            )
+        except Exception:  # pragma: no cover — rclpy без executor
+            self._srv_acquire = None
+        try:
+            self._srv_release = self.create_client(
+                Trigger,
+                "release_floor",
+            )
+        except Exception:  # pragma: no cover
+            self._srv_release = None
+        try:
+            self._srv_set_mode = self.create_client(
+                Trigger,
+                "set_avatar_mode",
+            )
+        except Exception:  # pragma: no cover
+            self._srv_set_mode = None
+
+        # /avatar/state подписка для STATE_UPDATE broadcast (транзент_локал,
+        # depth 1 = «latched» по ADR-0028 §4.3 + supervisor_node:153-162).
+        # QoS — те же параметры, что и у publisher'а супервизора; иначе
+        # подписка не увидит late-joining snapshot.
+        from rclpy.qos import DurabilityPolicy as _DPolicy, ReliabilityPolicy as _RPolicy  # noqa: PLC0415
+
+        _STATE_QOS = QoSProfile(
+            depth=1,
+            durability=_DPolicy.TRANSIENT_LOCAL,
+            reliability=_RPolicy.RELIABLE,
+        )
+        try:
+            self._avatar_state_sub = self.create_subscription(
+                String,
+                "/avatar/state",
+                self._on_avatar_state_msg,
+                _STATE_QOS,
+            )
+        except Exception:  # pragma: no cover
+            self._avatar_state_sub = None
         # Подписки для стримов (Phase 1.4 v2: lidar + camera_rear-фолбэк через
         # ROS; остальные камеры — мимо ROS через CameraProvider).
         self._odom_sub = self.create_subscription(Odometry, "/odom", self._on_odom, _RE)
@@ -626,6 +933,10 @@ class QuestNode(Node):
             sound_stop_pub=self._sound_stop_pub,
             stt_in_pub=self._stt_in_pub,
             set_voice_mode_pub=self._set_voice_mode_pub,
+            supervisor_acquire_client=self._srv_acquire,
+            supervisor_release_client=self._srv_release,
+            supervisor_set_mode_client=self._srv_set_mode,
+            avatar_state_subscription=self._avatar_state_sub,
         )
         # Replace NoOpBridge на реальный (после создания обоих).
         self.ws_server.bridge = self.bridge
@@ -774,6 +1085,16 @@ class QuestNode(Node):
         pct = voltage_to_pct(float(volts), self._battery_v_empty, self._battery_v_full)
         self._status.update_battery(pct=pct, volts=float(volts))
 
+    def _on_avatar_state_msg(self, msg: String) -> None:
+        """ROS subscription /avatar/state → Bridge.on_avatar_state.
+
+        Делегируем в Bridge, который:
+        1) Валидирует msgpack-формат через rob_box_supervisor.core.state.unpack (AV-14).
+        2) Обновляет cache для ``Bridge.supervisor_state()``.
+        3) Broadcast STATE_UPDATE в v2-сессии (через run_coroutine_threadsafe).
+        """
+        self.bridge.on_avatar_state(msg)
+
     def _on_status_timer(self) -> None:
         """1 Hz robot_status broadcast."""
         self._status.update_wifi(read_wifi_rssi(iface=self._wifi_iface))
@@ -868,6 +1189,9 @@ class QuestNode(Node):
             # Потокобезопасная отправка BINARY_FRAME: ROS-поток шлёт кадры
             # через этот loop (иначе _schedule_send молча теряет их).
             self.ws_server.set_send_loop(self._aio_loop)
+            # AV-16: тот же loop для STATE_UPDATE broadcast из
+            # Bridge.on_avatar_state (см. supervisor-N-callback → ws).
+            self.bridge.set_aio_send_loop(self._aio_loop)
             runner = _aiohttp_web.AppRunner(app)
             self._aio_loop.run_until_complete(runner.setup())
             # reuse_port=True — устойчивость к stale-процессам в host-network
