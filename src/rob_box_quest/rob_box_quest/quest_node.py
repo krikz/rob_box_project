@@ -659,6 +659,21 @@ class QuestNode(Node):
         # симметрично /avatar/set_voice_mode.
         self._set_voice_pub = self.create_publisher(String, "/avatar/set_voice", _RE)
         self._preview_voice_pub = self.create_publisher(String, "/avatar/preview_voice", _RE)
+        # Ответы preview_voice (String JSON):
+        # /avatar/preview_voice/result — done/error с request_id;
+        # /avatar/preview_voice/audio  — metaданные аудио (String JSON);
+        # /avatar/preview_voice/error  — error напрямую.
+        # payload для audio — JSON с audio_b64 (base64-encoded bytes);
+        # BINARY-топик пока не используется (MVP — base64 внутри String).
+        self._preview_result_sub = self.create_subscription(
+            String, "/avatar/preview_voice/result", self._on_preview_result, 10
+        )
+        self._preview_audio_sub = self.create_subscription(
+            String, "/avatar/preview_voice/audio", self._on_preview_audio, 10
+        )
+        self._preview_error_sub = self.create_subscription(
+            String, "/avatar/preview_voice/error", self._on_preview_error, 10
+        )
         # Подписка на /voice/tts/voices (TRANSIENT_LOCAL depth=1) — это
         # первый TRANSIENT_LOCAL publisher tts_node (см. design t_5b9d5d0c
         # §47-49). RELIABLE обязательно — TRANSIENT_LOCAL «latched» semantics
@@ -853,6 +868,88 @@ class QuestNode(Node):
         если провайдер сменился (см. design t_5b9d5d0c §128-150).
         """
         self.bridge.on_provider_state_message(msg)
+
+    def _on_preview_result(self, msg: String) -> None:
+        """ROS /avatar/preview_voice/result (String JSON) → ws_server.deliver_preview_done.
+
+        ``done`` — финальный preview_voice_done для клиента. Чистим
+        pending и шлём JSON_EVENT. В MVP supervisor никогда не публикует
+        done (только error) — но контракт есть, и через этот канал
+        будущие карточки добавят success-путь.
+        """
+        try:
+            data = json.loads(msg.data) if msg.data else None
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        request_id = data.get("request_id")
+        if not isinstance(request_id, str):
+            return
+        # WS-серверный поток: ws_server уже зарегистрировал request_id в
+        # start_preview_session → здесь просто достаём и шлём done.
+        try:
+            self.ws_server.deliver_preview_done(request_id)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(f"preview_result deliver failed: {exc}")
+
+    def _on_preview_audio(self, msg: String) -> None:
+        """ROS /avatar/preview_voice/audio (String JSON, audio_b64) → WS audio.
+
+        payload: ``{request_id, format, content_type, audio_b64, seq, total}``.
+        audio_b64 декодируется в raw bytes и отправляется отдельным
+        BINARY_FRAME после JSON_EVENT-метаданных. В MVP не используется
+        (supervisor отвечает только error) — канал готов для followup.
+        """
+        try:
+            data = json.loads(msg.data) if msg.data else None
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        request_id = data.get("request_id")
+        if not isinstance(request_id, str):
+            return
+        audio_format = data.get("format") or "mp3"
+        content_type = data.get("content_type") or f"audio/{audio_format}"
+        seq = int(data.get("seq") or 0)
+        total = int(data.get("total") or 1)
+        b64 = data.get("audio_b64") or ""
+        try:
+            import base64
+
+            audio_bytes = base64.b64decode(b64) if b64 else b""
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(f"preview_audio decode failed: {exc}")
+            audio_bytes = b""
+        try:
+            self.ws_server.deliver_preview_audio(
+                request_id=request_id,
+                audio_bytes=audio_bytes,
+                audio_format=str(audio_format),
+                content_type=str(content_type),
+                seq=seq,
+                total=total,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(f"preview_audio deliver failed: {exc}")
+
+    def _on_preview_error(self, msg: String) -> None:
+        """ROS /avatar/preview_voice/error → ws_server.deliver_preview_error."""
+        try:
+            data = json.loads(msg.data) if msg.data else None
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        request_id = data.get("request_id")
+        reason = data.get("reason") or "preview_error"
+        if not isinstance(request_id, str):
+            return
+        try:
+            self.ws_server.deliver_preview_error(request_id, str(reason))
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(f"preview_error deliver failed: {exc}")
 
     def _on_tick_timer(self) -> None:
         if not self._aio_started:
