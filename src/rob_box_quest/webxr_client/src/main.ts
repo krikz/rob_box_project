@@ -252,6 +252,12 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   // входе в робот-голос; voice_mode_ack синхронизирует состояние.
   let pipelineSttOn: boolean | null = true;
   let pipelineLlmOn: boolean | null = false;
+  // Последние стиль/язык, ПОДТВЕРЖДЁННЫЕ сервером (voice_set_ack). Клик по
+  // чипу подсвечивает выбор оптимистично, до ответа робота; на nack панель
+  // обязана вернуться сюда, иначе оператор смотрит на ST:STREET@FR, которого
+  // на роботе нет (ADR-0018 — не показывать желаемое за действительное).
+  let ackedPreset: VoicePreset | null = null;
+  let ackedLanguage: VoiceLanguage | null = null;
 
   /** Текущие тумблеры панели → wire-режим `voice_mode` (WIRE_TO_VOICE_INPUT_MODE). */
   function voiceModeForToggles(): string {
@@ -804,18 +810,42 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
           bridge.voicePipeline.setCurrentVoice(voiceId);
         }
         if (e.preset) {
+          ackedPreset = e.preset;
           modeManager.setCurrentPreset(e.preset);
           bridge.voicePipeline.setCurrentPreset(e.preset);
         }
         if (e.language) {
+          ackedLanguage = e.language;
           modeManager.setCurrentLanguage(e.language);
           bridge.voicePipeline.setCurrentLanguage(e.language);
         }
         return true;
       }
       case "voice_set_nack": {
-        const e = ev as { voice_id?: string; reason: string; available?: string[] };
+        const e = ev as {
+          voice_id?: string;
+          preset?: VoicePreset | null;
+          language?: VoiceLanguage | null;
+          reason: string;
+          available?: string[];
+        };
         clearApplyTimeout();
+        // AV-28-nack (стиль/язык) отличается от AV-27-nack (голос) полем
+        // `language`: ws_server кладёт его всегда, даже пустым. Голос при
+        // этом никто не отклонял — сообщение про «голос не применён» тут
+        // соврало бы оператору.
+        const isStyleNack = "language" in e;
+        if (isStyleNack) {
+          bridge.voicePipeline.setCurrentPreset(ackedPreset);
+          bridge.voicePipeline.setCurrentLanguage(ackedLanguage);
+          modeManager.setCurrentPreset(ackedPreset);
+          modeManager.setCurrentLanguage(ackedLanguage);
+          toast.show(`Стиль/язык не применён: ${e.reason}`, {
+            level: "warn",
+            autoHideMs: 5000
+          });
+          return true;
+        }
         dispatchTts({
           kind: "voice_set_nack",
           voiceId: e.voice_id ?? null,

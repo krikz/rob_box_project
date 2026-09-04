@@ -509,13 +509,24 @@ _stream_ids_in_use: set[int] = set()
 
 
 # AV-27 / issue #1919 — rate-limit policy (docs/architecture/meta-quest-api.md §9):
-# list_voices ≤ 1/10s, set_voice ≤ 1/2s, preview_voice ≤ 1/5s + ≤3 параллельных.
+# list_voices ≤ 1/10s, set_voice ≤ 1/2s, preview_voice ≤ 1/5s + ≤3 параллельных;
+# AV-28 (стиль/язык) — свой слот set_voice_style ≤ 1/0.5s.
 # Реализуется через in-memory last-ts per ws (не per session) — соединение
 # одно, но политика прибита к клиенту.
 VOICE_LIST_MIN_INTERVAL_S: float = 10.0
 VOICE_SET_MIN_INTERVAL_S: float = 2.0
 VOICE_PREVIEW_MIN_INTERVAL_S: float = 5.0
 VOICE_PREVIEW_MAX_CONCURRENT: int = 3
+
+# AV-28 (стиль речи + язык вывода) считает СВОЙ слот, а не делит слот с
+# AV-27. Раньше слот был общий, и это ломало обычную работу оператора:
+# выбрал стиль в панели пайплайна → через секунду выбрал язык (или
+# применил голос в picker'е) → второй запрос молча падал в rate-limit, а
+# UI уже показывал новое значение. Два клика подряд — это не флуд, это
+# нормальный сценарий; флуд по-прежнему режется, но по каждой фиче
+# отдельно. Интервал меньше: AV-28 — это SetParameters на dialogue_node,
+# без синтеза и без похода к TTS-провайдеру.
+VOICE_STYLE_MIN_INTERVAL_S: float = 0.5
 
 
 def _consume_future_exception(fut: "asyncio.Future[Any]") -> None:
@@ -589,7 +600,12 @@ class WSSServer:
     # ── AV-27 / issue #1919 — TTS picker helpers ────────────────────────
 
     def _voice_rate_limit_check(self, ws: Any, cmd: str, min_interval_s: float) -> bool:
-        """True если cmd разрешён (лимит не превышен). False = drop + log."""
+        """True если cmd разрешён (лимит не превышен), иначе False.
+
+        Логирует и решает, что делать с отказом, ВЫЗЫВАЮЩИЙ: у каждой
+        команды свой честный ответ (voice_set_nack / ответ из кэша), а
+        молчание — не ответ (ADR-0018).
+        """
         ws_id = id(ws)
         now = time.monotonic()
         with self._voice_state_lock:
@@ -1590,10 +1606,16 @@ class WSSServer:
 
         # ── AV-27 / issue #1919 — TTS picker ──────────────────────────
         if cmd == "list_voices":
+            # Лимит здесь только логируем: list_voices — чтение локального
+            # кэша (list_voices_snapshot), наверх он не ходит и стоить
+            # роботу ничего не может. Молчаливый дроп зато стоил дорого:
+            # оператор закрывал и в те же 10 с открывал TTS picker, и меню
+            # навсегда оставалось в «loading…», потому что ответа не было
+            # вовсе. Отвечаем снимком в любом случае.
             if not self._voice_rate_limit_check(
                 ws, "list_voices", VOICE_LIST_MIN_INTERVAL_S
             ):
-                return  # drop + log внутри
+                log.debug("list_voices rate-limited — отвечаем из кэша")
             snap = self.bridge.list_voices_snapshot()
             await self._send(
                 ws,
@@ -1618,12 +1640,11 @@ class WSSServer:
             #    (см. ADR-0028 §S5, meta-quest-api.md §P7).
             # 2) иначе (нет style-preset) — это AV-27 voice_id запрос
             #    → bridge.set_voice(voice_id, preset) (TTS picker).
-            # Один rate-limit slot «set_voice» шарится между фичами — это
-            # сознательно, чтобы UI не мог flood-ить через разные поля.
-            if not self._voice_rate_limit_check(
-                ws, "set_voice", VOICE_SET_MIN_INTERVAL_S
-            ):
-                return
+            # Rate-limit считается ПОСЛЕ развилки: у AV-27 и AV-28 свои
+            # слоты (см. VOICE_STYLE_MIN_INTERVAL_S). И дропа молча тут
+            # больше нет — на превышение уходит voice_set_nack, иначе UI
+            # остаётся с оптимистично подсвеченным выбором, которого на
+            # роботе не случилось.
             voice_id = payload_obj.get("voice_id")
             preset = payload_obj.get("preset")
             language = payload_obj.get("language")
@@ -1663,6 +1684,27 @@ class WSSServer:
             if style_without_voice and av28_preset is None:
                 av28_preset = preset
             if is_av28_request:
+                if not self._voice_rate_limit_check(
+                    ws, "set_voice_style", VOICE_STYLE_MIN_INTERVAL_S
+                ):
+                    log.info(
+                        "set_voice(AV-28) rate-limited: preset=%r language=%r",
+                        av28_preset,
+                        av28_language,
+                    )
+                    await self._send(
+                        ws,
+                        FrameType.JSON_EVENT,
+                        0,
+                        {
+                            "type": "voice_set_nack",
+                            "preset": av28_preset,
+                            "language": av28_language,
+                            "reason": "rate_limited",
+                            "ts_ms": ts_ms,
+                        },
+                    )
+                    return
                 nack_reason = _validate_voice_set_payload(
                     preset=av28_preset, language=av28_language
                 )
@@ -1700,6 +1742,22 @@ class WSSServer:
                 )
                 return
             # ── AV-27 / issue #1919: TTS picker flow ───────────────────────
+            if not self._voice_rate_limit_check(
+                ws, "set_voice", VOICE_SET_MIN_INTERVAL_S
+            ):
+                log.info("set_voice(AV-27) rate-limited: voice_id=%r", voice_id)
+                await self._send(
+                    ws,
+                    FrameType.JSON_EVENT,
+                    0,
+                    {
+                        "type": "voice_set_nack",
+                        "voice_id": voice_id if isinstance(voice_id, str) else "",
+                        "reason": "rate_limited",
+                        "ts_ms": ts_ms,
+                    },
+                )
+                return
             if not isinstance(voice_id, str) or not voice_id:
                 await self._send_error(
                     ws,

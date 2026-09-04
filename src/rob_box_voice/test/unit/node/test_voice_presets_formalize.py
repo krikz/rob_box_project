@@ -513,6 +513,54 @@ class TestLanguageMetadata:
         assert n._language_label("ru") == "ru"
 
 
+class TestLoadedLanguagesReachLanguageMeta:
+    """То же самое, но ЧЕРЕЗ настоящий ``_load_voice_presets``.
+
+    TestLanguageMetadata подменяет ``_load_voice_presets`` сырым yaml —
+    и потому проходил, пока в бою всё было сломано: настоящий загрузчик
+    делал ``if not isinstance(languages, list): languages = ["ru", "en"]``
+    и выбрасывал map целиком. В итоге ``_language_meta`` не находил ни
+    label, ни prompt_section (он читает их только из dict'а), а
+    ``_resolve_voice_language`` отвергал fr/de/zh/hi и молча откатывал
+    язык на дефолтный ru — оператор жал FR и слышал русский.
+
+    Здесь фикстур нет: читаем тот же yaml, что уезжает на робота.
+    """
+
+    def _node(self):
+        n = _make_node()
+        n._voice_presets_cache = None
+        n._voice_presets_cache_path = None
+        n._resolve_voice_presets_path = lambda: str(VOICE_PRESETS_YAML)  # type: ignore[method-assign]
+        return n
+
+    def test_map_form_survives_the_loader(self):
+        data = self._node()._load_voice_presets()
+        languages = data["languages"]
+        assert isinstance(languages, dict), (
+            "загрузчик расплющил map языков — label/prompt_section потеряны"
+        )
+        assert set(languages) == {"ru", "en", "fr", "de", "zh", "hi"}
+        assert languages["fr"]["label"] == "французский"
+        assert languages["fr"]["prompt_section"] == "en"
+
+    @pytest.mark.parametrize("code", ["ru", "en", "fr", "de", "zh", "hi"])
+    def test_every_yaml_language_resolves_to_itself(self, code: str):
+        """Ни один язык из yaml не должен молча стать дефолтным."""
+        n = self._node()
+        n.get_parameter = lambda name: types.SimpleNamespace(  # type: ignore[method-assign]
+            value=code if name == "voice_output_language" else ""
+        )
+        assert n._resolve_voice_language() == code
+
+    def test_label_and_section_after_real_load(self):
+        n = self._node()
+        n._load_voice_presets()
+        assert n._language_label("fr") == "французский"
+        assert n._language_prompt_section("fr") == "en"
+        assert n._language_prompt_section("ru") == "ru"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Тест (3) — интеграционный: _on_quest_stt в quest_llm_formalize
 # ─────────────────────────────────────────────────────────────────────────────

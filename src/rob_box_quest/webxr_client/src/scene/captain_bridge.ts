@@ -79,13 +79,17 @@ export const SIDE_PANEL_ANGLES_DEG = [-75];
 // Экран стоит РОВНО над головой (x = z = 0), а не сдвинут вперёд: сдвиг
 // превращал его в ещё одну наклонную панель над экраном-стеной, и чтобы
 // её увидеть, надо было смотреть вперёд-вверх, а не вверх. Потолок
-// комнаты мостика на 3 м (bridge_scene_meta.json), экран висит на 2.7 —
-// под ним, но выше вытянутой руки.
+// комнаты мостика на 3 м (bridge_scene_meta.json), экран висит на 2.85 —
+// под ним, но заметно выше вытянутой руки: на 2.7 он висел почти на
+// голове.
 //
 // Размер 4:3 — потолочная камера отдаёт 640×480 (usb_cam), 16:9 растянул
-// бы кадр.
-export const CEILING_SCREEN_POS = { x: 0, y: 2.7, z: 0 };
-export const CEILING_SCREEN_SIZE = { width: 2.4, height: 1.8 };
+// бы кадр. 3.2×2.4 вместо 2.4×1.8: подъём с 2.7 до 2.85 уводит экран от
+// глаз (1.10 м → 1.25 м, −12% видимого размера), и без увеличения он бы
+// стал МЕНЬШЕ, а не больше. Множитель 4/3 перекрывает этот минус и
+// добавляет сверху.
+export const CEILING_SCREEN_POS = { x: 0, y: 2.85, z: 0 };
+export const CEILING_SCREEN_SIZE = { width: 3.2, height: 2.4 };
 /** Высота глаз оператора — экран доворачивается нормалью именно в неё. */
 export const EYE_HEIGHT_M = 1.6;
 
@@ -985,27 +989,38 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   // значение в HUD обновляется раз в 500мс (а не на каждый кадр —
   // иначе цифра дрожит, а текстура перерисовывается 90 раз/сек).
   const fpsMeter = new FpsMeter({ windowSize: 60 });
+
+  function tickFps(now: number): void {
+    fpsMeter.push(now);
+    if (!fpsMeter.shouldUpdate(500, now)) return;
+    const v = fpsMeter.value();
+    statusHud.setFps(v > 0 ? v : null);
+    fpsMeter.markUpdated(now);
+  }
+
   function loop(): void {
     if (!running) return;
     raf = requestAnimationFrame(loop);
-    const now = performance.now();
-    fpsMeter.push(now);
-    if (fpsMeter.shouldUpdate(500, now)) {
-      const v = fpsMeter.value();
-      statusHud.setFps(v > 0 ? v : null);
-      fpsMeter.markUpdated(now);
-    }
+    tickFps(performance.now());
     renderer.render(scene, camera);
+  }
+
+  function startDesktopLoop(): void {
+    if (running) return;
+    running = true;
+    loop();
+  }
+
+  function stopDesktopLoop(): void {
+    if (!running) return;
+    running = false;
+    cancelAnimationFrame(raf);
   }
 
   function start(): () => void {
     if (running) return () => undefined;
-    running = true;
-    loop();
-    return () => {
-      running = false;
-      cancelAnimationFrame(raf);
-    };
+    startDesktopLoop();
+    return stopDesktopLoop;
   }
 
   function resize(): void {
@@ -1059,13 +1074,36 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
       controllerGrips[i] = grip;
     }
 
+    // Десктопный цикл ОБЯЗАН остановиться: с этого момента кадры рисует
+    // XR-цикл рендерера, и второй render() в тот же canvas — это лишний
+    // проход по уже привязанному XR-фреймбуферу. Три.js в xr.enabled
+    // рисует через ArrayCamera и оставляет viewport последнего глаза, так
+    // что чужой кадр попадает в ОДИН глаз — оператор видит периодическую
+    // рябь слева (или справа). window.requestAnimationFrame в immersive-vr
+    // браузер обычно тормозит, но «обычно» — не гарантия: на Quest он
+    // просыпается (смена фокуса, системный оверлей, выход в 2D), и рябь
+    // приходит ровно этими всплесками.
+    stopDesktopLoop();
     renderer.setAnimationLoop(() => {
+      // FPS считаем и в VR: HUD должен показывать частоту XR-кадров, а не
+      // замороженную цифру от последнего десктопного кадра.
+      tickFps(performance.now());
       renderer.render(scene, camera);
+    });
+
+    // Вышли из VR — десктопный цикл поднимаем обратно, иначе на странице
+    // остаётся мёртвая картинка.
+    session.addEventListener("end", () => {
+      renderer.setAnimationLoop(null);
+      renderer.xr.enabled = false;
+      startDesktopLoop();
     });
   }
 
   function dispose(): void {
     window.removeEventListener("resize", resize);
+    stopDesktopLoop();
+    renderer.setAnimationLoop(null);
     layoutSaver?.cancel();
     mainScreen.dispose();
     ceilingScreen.dispose();

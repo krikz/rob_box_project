@@ -200,8 +200,15 @@ PREVIEW_VOICE_ERROR_TOPIC: str = "/avatar/preview_voice/error"
 SET_VOICE_PRESET_TOPIC: str = "/avatar/set_voice_preset"
 SET_VOICE_LANGUAGE_TOPIC: str = "/avatar/set_voice_language"
 # Whitelist preset/language для AV-28 §P7. Должен совпадать с ws_server.
-# (Мы не импортируем ws_server — цикл. Источник и правы — voice_presets.yaml;
-# здесь — копия для runtime-валидации.)
+# (Мы не импортируем ws_server — цикл. Источник правды — voice_presets.yaml;
+# здесь — копия для runtime-валидации, её сверяет тест
+# test_whitelists_match_ws_server_and_yaml.)
+#
+# Копия была ДВЕ: эта и приватная _AV28_* внутри класса, валидировала
+# вторая. Разъехавшись с yaml, они дали молчаливый отказ: ws_server
+# отвечал Quest'у voice_set_ack (UI показывал «применилось»), а
+# супервизор ронял запрос в applied=False, и оператор об этом не узнавал.
+# Так выпали пресет `translate` и языки fr/de/zh/hi. Теперь копия одна.
 VOICE_PRESET_IDS: tuple[str, ...] = (
     "technical",
     "street",
@@ -209,8 +216,9 @@ VOICE_PRESET_IDS: tuple[str, ...] = (
     "business",
     "philosopher",
     "lenin",
+    "translate",
 )
-VOICE_LANGUAGES: tuple[str, ...] = ("ru", "en")
+VOICE_LANGUAGES: tuple[str, ...] = ("ru", "en", "fr", "de", "zh", "hi")
 # AV-21 (issue #1913) — супервизор-агент «мозг оператора» (ADR-0028 §1.1).
 # Вход: ``/avatar/command`` (std_msgs/String, JSON), выход:
 # ``/avatar/command_result``. Полные JSON-схемы — в
@@ -1140,10 +1148,10 @@ class AvatarSupervisor(Node):
     # уровень валидации. В monitor-режиме (S12) принимаем и логируем, но
     # НЕ применяем.
 
-    _AV28_PRESET_IDS: frozenset[str] = frozenset(
-        {"technical", "street", "caveman", "business", "philosopher", "lenin"}
-    )
-    _AV28_LANGUAGES: frozenset[str] = frozenset({"ru", "en"})
+    # Валидируем по модульным VOICE_PRESET_IDS / VOICE_LANGUAGES — второй
+    # копии списка здесь больше нет (см. комментарий у констант).
+    _AV28_PRESET_IDS: frozenset[str] = frozenset(VOICE_PRESET_IDS)
+    _AV28_LANGUAGES: frozenset[str] = frozenset(VOICE_LANGUAGES)
 
     def _on_set_voice_preset(self, msg: RosString) -> None:
         """Обработка ``/avatar/set_voice_preset`` — запрос сменить стиль речи."""

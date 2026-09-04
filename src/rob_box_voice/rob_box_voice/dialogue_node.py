@@ -2094,7 +2094,9 @@ class DialogueNode(Node):
                     "technical": {"name": "...", "prompt_text": "..."},
                     ...
                 },
-                "languages": ["ru", "en"],
+                # map код → {name, label, prompt_section} (как в yaml);
+                # старая списочная форма ["ru", "en"] тоже поддержана.
+                "languages": {"ru": {...}, "en": {...}},
                 "default_preset": "technical",
                 "default_language": "ru",
             }
@@ -2168,12 +2170,28 @@ class DialogueNode(Node):
                 "prompt_file": str(prompt_file or ""),
                 "prompt_text": prompt_text,
             }
-        languages = data.get("languages") or ["ru", "en"]
-        if not isinstance(languages, list):
+        # `languages` в yaml — map код → {name, label, prompt_section}.
+        # Раньше здесь стояло `if not isinstance(languages, list): ["ru","en"]`,
+        # и map молча превращался в двухэлементный список: fr/de/zh/hi
+        # выпадали из валидации `_resolve_voice_language` (говорить на них
+        # было нельзя), а `_language_meta` не находил ни label, ни
+        # prompt_section — обе он читает только из dict'а. Сохраняем ту
+        # форму, что дал yaml; списочная форма остаётся рабочей ради
+        # старых конфигов (обе итерируются по кодам одинаково).
+        languages_raw = data.get("languages")
+        languages: dict | list
+        if isinstance(languages_raw, dict):
+            languages = {
+                str(code).lower(): (meta if isinstance(meta, dict) else {})
+                for code, meta in languages_raw.items()
+            }
+        elif isinstance(languages_raw, list) and languages_raw:
+            languages = [str(x).lower() for x in languages_raw]
+        else:
             languages = ["ru", "en"]
         result = {
             "presets": presets,
-            "languages": [str(x).lower() for x in languages],
+            "languages": languages,
             "default_preset": str(data.get("default_preset") or "technical"),
             "default_language": str(data.get("default_language") or "ru").lower(),
             "_path": path,
@@ -2181,7 +2199,8 @@ class DialogueNode(Node):
         self._voice_presets_cache = result
         self._voice_presets_cache_path = path
         self.get_logger().info(
-            f"📚 [AV-28] Loaded voice_presets: {len(presets)} presets "
+            f"📚 [AV-28] Loaded voice_presets: {len(presets)} presets, "
+            f"{len(languages)} languages ({list(languages)}) "
             f"(default: {result['default_preset']}/{result['default_language']}) "
             f"from {path}"
         )

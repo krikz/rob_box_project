@@ -531,14 +531,28 @@ QuestNode alert timer 1 Гц):**
 | `ui_button` | 5 Hz | drop |
 | `voice_ptt_start` / `voice_ptt_stop` | edge-triggered, max 2 start/s | drop |
 | `voice_mode` | 1 per 5 s | drop |
-| `set_voice` | 1 per 2 s | drop |
-| `list_voices` | 1 per 10 s | drop |
+| `set_voice` (AV-27, `voice_id`) | 1 per 2 s | `voice_set_nack{reason: "rate_limited"}` |
+| `set_voice` (AV-28, `preset`/`language`) | 1 per 0.5 s, **свой слот** | `voice_set_nack{reason: "rate_limited"}` |
+| `list_voices` | 1 per 10 s | ответ из кэша (не drop) |
 | `preview_voice` | 1 per 5 s, max 3 concurrent `request_id` | drop |
 | `set_panel_topic` | 5 Hz per panel | drop |
 | `stop_emergency` | 1 per 100 ms | drop |
 | `ping` | 1 per 5 s | drop |
 
 Server-side enforcement — token bucket per client; reset при reconnect.
+
+Два уточнения к таблице (обе строки — исправление живого бага, из-за
+которого оператор терял выбор молча):
+
+- **AV-27 и AV-28 не делят слот.** Обе фичи ездят одним `cmd: set_voice`,
+  но это разные действия: выбор голоса у TTS-провайдера и выбор
+  стиля/языка (SetParameters на `dialogue_node`). На общем слоте выбрать
+  стиль в панели пайплайна и через секунду применить голос в picker'е
+  было нельзя — второй запрос пропадал.
+- **Молчаливого дропа у voice-команд нет.** На превышение уходит
+  `voice_set_nack{reason: "rate_limited"}`, и UI откатывает оптимистичную
+  подсветку. `list_voices` вообще не дропается: он читает локальный кэш,
+  а без ответа TTS picker навсегда остаётся в `loading…`.
 
 ## 10. Пример полного handshake (Phase 1, MVP)
 

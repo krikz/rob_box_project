@@ -438,33 +438,91 @@ async def test_preview_voice_deliver_error_clears_pending(client, fixed_pin):
         await ws.close()
 
 
-async def test_voice_rate_limit_drops_repeat(client, fixed_pin):
-    """list_voices подряд 2 раза за <10s — второй cmd дропается."""
+async def test_list_voices_repeat_answers_from_cache(client, fixed_pin):
+    """list_voices подряд 2 раза за <10s — второй тоже получает ответ.
+
+    Раньше второй молча дропался, и оператор, закрывший и тут же снова
+    открывший TTS picker, навсегда оставался в «loading…»: меню ждёт
+    voice_list, а его не будет. list_voices читает локальный кэш и наверх
+    не ходит, поэтому честный ответ из кэша ничего не стоит.
+    """
     http_client, _server, bridge = client
     bridge.active_provider = "yandex"
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
         await _send_json_cmd(ws, {"cmd": "list_voices", "ts_ms": 0})
-        # Первый должен дойти.
         body1 = await _wait_for_json_event(
             ws, lambda b: b.get("type") == "voice_list", timeout=1.0
         )
         assert body1 is not None
-        # Второй в течение лимита — должен быть drop (rate-limit), не должно быть второго voice_list.
         await _send_json_cmd(ws, {"cmd": "list_voices", "ts_ms": 0})
-        # Дренируем очередь сообщений.
-        drain_start = time.monotonic()
-        second_count = 0
-        while time.monotonic() - drain_start < 0.3:
-            msg = await ws.receive()
-            if msg.type == WSMsgType.BINARY:
-                ftype, _sid, payload = decode_frame(msg.data)
-                if ftype == FrameType.JSON_EVENT:
-                    body = json.loads(payload)
-                    if body.get("type") == "voice_list":
-                        second_count += 1
-        # Должен быть только первый (rate-limit не пускает второй).
-        assert second_count == 0, "rate-limit failed: second list_voices delivered"
+        body2 = await _wait_for_json_event(
+            ws, lambda b: b.get("type") == "voice_list", timeout=1.0
+        )
+        assert body2 is not None
+        assert body2["voices"] == body1["voices"]
+    finally:
+        await ws.close()
+
+
+async def test_set_voice_rate_limit_sends_nack(client, fixed_pin):
+    """Два set_voice (picker) за <2s — второй получает nack, а не тишину."""
+    http_client, _server, bridge = client
+    bridge.active_provider = "yandex"
+    bridge.voices_payload = [{"voice_id": "alena"}]
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(
+            ws, {"cmd": "set_voice", "ts_ms": 0, "voice_id": "alena"}
+        )
+        ack = await _wait_for_json_event(
+            ws, lambda b: b.get("type") == "voice_set_ack", timeout=1.0
+        )
+        assert ack is not None
+        await _send_json_cmd(
+            ws, {"cmd": "set_voice", "ts_ms": 0, "voice_id": "alena"}
+        )
+        nack = await _wait_for_json_event(
+            ws, lambda b: b.get("type") == "voice_set_nack", timeout=1.0
+        )
+        assert nack is not None
+        assert nack["reason"] == "rate_limited"
+        assert nack["voice_id"] == "alena"
+    finally:
+        await ws.close()
+
+
+async def test_style_change_not_blocked_by_voice_apply(client, fixed_pin):
+    """AV-28 (стиль/язык) не делит rate-limit слот с AV-27 (голос).
+
+    Оператор выбирает стиль в панели пайплайна и через секунду применяет
+    голос в picker'е — оба запроса обязаны дойти. На общем слоте второй
+    молча пропадал, а UI показывал выбор как применённый.
+    """
+    http_client, _server, bridge = client
+    bridge.active_provider = "yandex"
+    bridge.voices_payload = [{"voice_id": "alena"}]
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(
+            ws,
+            {"cmd": "set_voice", "ts_ms": 0, "voice_id": "", "preset": "lenin"},
+        )
+        style_ack = await _wait_for_json_event(
+            ws, lambda b: b.get("type") == "voice_set_ack", timeout=1.0
+        )
+        assert style_ack is not None
+        assert style_ack["preset"] == "lenin"
+        # Сразу следом — применение голоса из picker'а (свой слот).
+        await _send_json_cmd(
+            ws, {"cmd": "set_voice", "ts_ms": 0, "voice_id": "alena"}
+        )
+        voice_ack = await _wait_for_json_event(
+            ws, lambda b: b.get("type") == "voice_set_ack" and b.get("voice_id"),
+            timeout=1.0,
+        )
+        assert voice_ack is not None
+        assert voice_ack["voice_id"] == "alena"
     finally:
         await ws.close()
 

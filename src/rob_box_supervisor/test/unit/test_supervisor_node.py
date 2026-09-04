@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import pathlib
 import types
 import unittest
 from typing import Any
@@ -810,9 +811,35 @@ class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
 
     def test_invalid_language_rejected(self) -> None:
         self.node._mode = "active"
-        applied, reason = self.node._apply_voice_language("de")
+        applied, reason = self.node._apply_voice_language("xx")
         self.assertFalse(applied)
         self.assertIn("invalid_voice_language", reason)
+
+    def test_whitelists_match_ws_server_and_yaml(self) -> None:
+        """Whitelist'ы супервизора = ws_server.VOICE_* = voice_presets.yaml.
+
+        Разъехавшись, они дают молчаливый отказ: ws_server отвечает
+        Quest'у ack, а супервизор роняет запрос в applied=False. Так уехали
+        `translate` и языки fr/de/zh/hi — оператор жал кнопку, UI
+        подсвечивал выбор, робот его не получал.
+        """
+        import yaml
+
+        yaml_path = (
+            pathlib.Path(__file__).resolve().parents[3]
+            / "rob_box_voice"
+            / "config"
+            / "voice_presets.yaml"
+        )
+        data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+        self.assertEqual(set(data["presets"].keys()), set(VOICE_PRESET_IDS))
+        self.assertEqual(
+            {str(code).lower() for code in data["languages"]},
+            set(VOICE_LANGUAGES),
+        )
+        # Класс валидирует ровно этими списками (второй копии больше нет).
+        self.assertEqual(set(self.node._AV28_PRESET_IDS), set(VOICE_PRESET_IDS))
+        self.assertEqual(set(self.node._AV28_LANGUAGES), set(VOICE_LANGUAGES))
 
     def test_empty_preset_rejected(self) -> None:
         """Пустой payload — это битый UI; не пытаемся выставить
