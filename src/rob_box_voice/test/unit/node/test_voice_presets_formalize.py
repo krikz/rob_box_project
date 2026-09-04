@@ -380,6 +380,59 @@ class TestPromptComposition:
 
     @pytest.mark.parametrize(
         "preset_key",
+        [
+            "technical",
+            "street",
+            "caveman",
+            "business",
+            "philosopher",
+            "lenin",
+            "translate",
+        ],
+    )
+    def test_non_ru_section_does_not_hardcode_english(self, preset_key: str):
+        """Не-русская секция промпта обслуживает ВСЕ языки, не только en.
+
+        Секций в файле две (RU и «EN version»), а языков вывода шесть:
+        _language_prompt_section отдаёт вторую секцию для en, fr, de, zh и
+        hi. Пока в ней стояло «Output MUST be English regardless of source
+        language», system-промпт спорил с директивой «на языке
+        «французский»» из user-сообщения — и выигрывал: оператор жал FR и
+        слышал английский. Именно поэтому «работали только русский и
+        английский».
+        """
+        with VOICE_PRESETS_YAML.open(encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+        prompt_rel = data["presets"][preset_key]["prompt_file"]
+        prompt_path = REPO_ROOT / "src" / "rob_box_voice" / "config" / prompt_rel
+        text = prompt_path.read_text(encoding="utf-8")
+        marker_idx = text.find("EN version")
+        assert marker_idx != -1, (
+            f"preset '{preset_key}': нет маркера 'EN version' — "
+            f"_formalize_with_llm не сможет отрезать не-русскую секцию и "
+            f"отдаст модели RU-правило «отвечай по-русски»"
+        )
+        section = text[marker_idx:]
+        forbidden = [
+            "MUST be English",
+            "Output MUST be English",
+            "must be english",
+        ]
+        for phrase in forbidden:
+            assert phrase.lower() not in section.lower(), (
+                f"preset '{preset_key}': не-русская секция требует "
+                f"английский вывод ({phrase!r}) — fr/de/zh/hi будут "
+                f"звучать по-английски"
+            )
+        # И наоборот: секция обязана сослаться на директиву, иначе модель
+        # не узнает, какой язык от неё хотят.
+        assert "directive" in section.lower(), (
+            f"preset '{preset_key}': не-русская секция не ссылается на "
+            f"директиву языка из user-сообщения"
+        )
+
+    @pytest.mark.parametrize(
+        "preset_key",
         ["technical", "street", "caveman", "business", "philosopher", "lenin"],
     )
     def test_prompt_has_style_marker(self, preset_key: str):

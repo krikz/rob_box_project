@@ -506,7 +506,8 @@ class QuestBridge:
     def set_voice_language(self, language: str) -> None:
         """AV-28 §P7: запрос супервизору сменить язык вывода.
 
-        Публикует ``String`` с ``language`` (один из VOICE_LANGUAGES: ru|en)
+        Публикует ``String`` с ``language`` (один из VOICE_LANGUAGES:
+        ru|en|fr|de|zh|hi)
         в ``/avatar/set_voice_language``. Без рестарта dialogue_node —
         параметр подхватывается на следующей фразе.
         """

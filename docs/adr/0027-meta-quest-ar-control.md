@@ -326,8 +326,14 @@ no-tools/no-questions) — в спецификации PR #1952 §5.
 
 | Параметр | Допустимые значения | Где хранится |
 |---|---|---|
-| `voice_preset` | `technical` / `street` / `caveman` / `business` / `philosopher` / `lenin` | `src/rob_box_voice/config/voice_presets.yaml` (manifest) + `presets/<id>.txt` (system prompt, RU и EN в одном файле) |
-| `voice_output_language` | `ru` / `en` | тот же файл, поле `languages: [ru, en]` |
+| `voice_preset` | `technical` / `street` / `caveman` / `business` / `philosopher` / `lenin` / `translate` | `src/rob_box_voice/config/voice_presets.yaml` (manifest) + `presets/<id>.txt` (system prompt: RU-секция и общая не-русская секция в одном файле) |
+| `voice_output_language` | `ru` / `en` / `fr` / `de` / `zh` / `hi` | тот же файл, поле `languages:` (map код → `{name, label, prompt_section}`) |
+
+> Секций в `.txt` две, а языков шесть: RU-секция обслуживает только
+> русский, вторая («EN version») — все остальные, и конкретный язык ей
+> задаёт директива в user-сообщении, а не сам промпт. Хардкод «Output MUST
+> be English» в этой секции означал бы, что fr/de/zh/hi звучат
+> по-английски.
 
 **Тексты пресетов — данные, а не код**: добавление нового пресета =
 правка YAML + новый `.txt`, без правок Python (требование origin-карточки

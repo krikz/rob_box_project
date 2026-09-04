@@ -62,7 +62,7 @@ Failure modes to AVOID
 - ❌ «I'm heading to the gate.» — wrong language.
 
 ================================================================================
-EN version (same rules, English output)
+EN version (same rules, non-Russian output — language from the directive)
 ================================================================================
 
 You are the РОББОКС speech rewriter for the «Перевод» preset.
