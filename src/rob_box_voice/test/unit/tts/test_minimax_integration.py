@@ -297,7 +297,7 @@ class TestRetryClassification:
         """2 timeout failures then success → 3 attempts, exp backoff."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None):
+        async def fake_async(text, ssml_attributes, voice=None, language=None):
             call_count[0] += 1
             if call_count[0] < 3:
                 raise TTSTimeoutError("net down")
@@ -312,7 +312,7 @@ class TestRetryClassification:
         """TTSAuthError → raised without retry."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None):
+        async def fake_async(text, ssml_attributes, voice=None, language=None):
             call_count[0] += 1
             raise TTSAuthError("bad key", provider="minimax")
 
@@ -326,7 +326,7 @@ class TestRetryClassification:
         """TTSBadRequestError → raised without retry."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None):
+        async def fake_async(text, ssml_attributes, voice=None, language=None):
             call_count[0] += 1
             raise TTSBadRequestError("invalid voice", provider="minimax")
 
@@ -339,7 +339,7 @@ class TestRetryClassification:
         """TTSRateLimitError → at most one retry, regardless of generic budget."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None):
+        async def fake_async(text, ssml_attributes, voice=None, language=None):
             call_count[0] += 1
             raise TTSRateLimitError("429", provider="minimax")
 
@@ -353,7 +353,7 @@ class TestRetryClassification:
         """After max_retries exhausted, propagate the last error."""
         call_count = [0]
 
-        async def fake_async(text, ssml_attributes, voice=None):
+        async def fake_async(text, ssml_attributes, voice=None, language=None):
             call_count[0] += 1
             raise TTSTimeoutError("timeout", provider="minimax")
 
@@ -415,7 +415,7 @@ class TestStreamingHook:
             ),
         ]
 
-        async def fake_stream(text, ssml_attrs, voice=None):
+        async def fake_stream(text, ssml_attrs, voice=None, language=None):
             for c in chunks:
                 yield c
 
@@ -436,7 +436,7 @@ class TestStreamingHook:
         node = self._make_node()
         pcm = _make_pcm_bytes([100, -100, 50, -50])
 
-        async def fake_stream(text, ssml_attrs, voice=None):
+        async def fake_stream(text, ssml_attrs, voice=None, language=None):
             yield TTSChunk(samples=pcm[:4], sample_rate=16000, format=TTSFormat.PCM)
             assert node.audio_pub.publish.call_count == 1
             yield TTSChunk(
@@ -456,7 +456,7 @@ class TestStreamingHook:
         node = self._make_node()
         pcm = _make_pcm_bytes([100, -100, 50, -50])
 
-        async def fake_stream(text, ssml_attrs, voice=None):
+        async def fake_stream(text, ssml_attrs, voice=None, language=None):
             yield TTSChunk(
                 samples=pcm,
                 sample_rate=32000,
@@ -481,7 +481,7 @@ class TestStreamingHook:
         bound_publish = tts_node.TTSNode._publish_audio.__get__(node, type(node))
         node._publish_audio = bound_publish
 
-        async def fake_stream(text, ssml_attrs, voice=None):
+        async def fake_stream(text, ssml_attrs, voice=None, language=None):
             yield TTSChunk(
                 samples=b"",
                 sample_rate=32000,
@@ -504,7 +504,7 @@ class TestStreamingHook:
         bound_publish = tts_node.TTSNode._publish_audio.__get__(node, type(node))
         node._publish_audio = bound_publish
 
-        async def fake_stream(text, ssml_attrs, voice=None):
+        async def fake_stream(text, ssml_attrs, voice=None, language=None):
             if False:
                 yield
 
@@ -523,7 +523,7 @@ class TestStreamingHook:
         node = self._make_node()
         pcm = _make_pcm_bytes([100, -100])
 
-        async def fake_stream(text, ssml_attrs, voice=None):
+        async def fake_stream(text, ssml_attrs, voice=None, language=None):
             yield TTSChunk(samples=pcm, sample_rate=16000, format=TTSFormat.PCM)
             yield TTSChunk(
                 samples=b"",

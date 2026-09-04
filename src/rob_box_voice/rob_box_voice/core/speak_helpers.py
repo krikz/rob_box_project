@@ -223,6 +223,71 @@ def split_into_chunks(text: str, max_len: int = 200) -> List[str]:
     return [c for c in chunks if c.strip()] or [text]
 
 
+# ── AV-28: язык произношения (per-utterance override) ──────────────────
+#
+# `ros2-audio-contract-spec.md` §2.2 объявляет `language` варьирующимся
+# параметром («ROS-param minimax_language ИЛИ override»), но override
+# никогда не был реализован: dialogue_node переписывал реплику на
+# французский, а tts_node синтезировал её со статическим
+# `minimax_language="ru"`. Здесь — недостающее поле payload'а.
+#
+# Кто какой язык умеет:
+#   minimax — любой из `_LANGUAGE_ALIASES` (minimax_tts.py), язык задаёт
+#             `language_boost`, голос при этом остаётся тем же → ограничений нет;
+#   yandex  — весь наш каталог голосов ru-RU (tts_voice_registry.py);
+#   silero  — загружена модель `v5_ru`, она умеет ТОЛЬКО русский.
+#
+# `None` в таблице = ограничений нет.
+TTS_PROVIDER_LANGUAGES: Dict[str, Optional[frozenset]] = {
+    "minimax": None,
+    "yandex": frozenset({"ru"}),
+    "silero": frozenset({"ru"}),
+}
+
+# Как назвать язык в честной фразе-отказе.
+_LANGUAGE_NAMES_RU: Dict[str, str] = {
+    "ru": "русском",
+    "en": "английском",
+    "fr": "французском",
+    "de": "немецком",
+    "zh": "китайском",
+    "hi": "хинди",
+}
+
+
+def unsupported_language_notice(
+    provider: str, language: Optional[str]
+) -> Optional[str]:
+    """Фраза-отказ, если ``provider`` не умеет ``language``; иначе ``None``.
+
+    Зачем отказ, а не транслит: Silero с моделью ``v5_ru`` читает по
+    русским правилам, и «beaucoup», переписанное кириллицей, звучит
+    «беаукоуп», а не «боку». Это молчаливая деградация — оператор слышит
+    речь, считает, что робот говорит по-французски, и узнаёт правду от
+    собеседника. Честная короткая фраза лучше (ADR-0018).
+
+    Правильное решение для offline — своя модель Silero на язык
+    (``v3_fr``, ``v3_de``, …); это отдельная карточка: модели качаются на
+    Pi поштучно, а китайского у Silero нет вовсе.
+
+    ``language=None`` (обычный диалог робота) ограничений не имеет — эта
+    функция для него всегда возвращает ``None``.
+    """
+    if not language:
+        return None
+    lang = str(language).strip().lower()
+    if not lang:
+        return None
+    allowed = TTS_PROVIDER_LANGUAGES.get(str(provider).strip().lower())
+    if allowed is None or lang in allowed:
+        return None
+    name = _LANGUAGE_NAMES_RU.get(lang, lang)
+    return (
+        f"Не могу сказать это на {name}: сейчас работает голосовой движок "
+        f"{provider}, он умеет только русский."
+    )
+
+
 def build_ssml_payload(
     text: str,
     animation: str = "neutral",
@@ -232,6 +297,7 @@ def build_ssml_payload(
     batch_total: Optional[int] = None,
     tg_chat_id: Optional[int] = None,
     voice: Optional[str] = None,
+    language: Optional[str] = None,
 ) -> str:
     """Build the JSON string consumed by ``tts_node`` on ``/voice/dialogue/response``.
 
@@ -263,6 +329,8 @@ def build_ssml_payload(
         payload["tg_chat_id"] = int(tg_chat_id)
     if voice is not None:
         payload["voice"] = voice
+    if language is not None:
+        payload["language"] = language
     return json.dumps(payload, ensure_ascii=False)
 
 

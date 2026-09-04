@@ -145,7 +145,7 @@
 |---|---|---|---|---|
 | `voice_id` | ROS-param `minimax_voice` ИЛИ override в `/voice/dialogue/response` (если поддерживается) | оператор / dialogue_node | ~40 ID + клоны | какой MiniMax-голос |
 | `model` | ROS-param `minimax_model` ИЛИ override в `/voice/dialogue/response` | оператор | 8 моделей | качество / латентность / эмоции |
-| `language` | ROS-param `minimax_language` ИЛИ override | оператор | `ru/en/zh/...` | язык произношения |
+| `language` | ROS-param `minimax_language` ИЛИ override в `/voice/dialogue/response` (поле `language`, AV-28) | оператор | `ru/en/fr/de/zh/hi` | язык произношения |
 | `speed` | ROS-param `minimax_speed` ИЛИ SSML `<prosody rate>` в диалоге | оператор / SSML | [0.5, 2] | темп |
 | `volume` (`vol`) | производный от `volume_db` + runtime gain | dialogue_node | (0, 10] | громкость синтеза |
 | `pitch` | (не вынесено в ROS-параметр; только через `settings.extra` или SSML) | SSML | [-12, 12] semitones | высота голоса |
@@ -153,6 +153,20 @@
 | `text` (utterance) | payload `/voice/dialogue/response` | dialogue_node | ≤ 10000 симв | **собственно текст для синтеза** |
 | `actual_sample_rate` (MiniMax-выход) | `extra_info.audio_sample_rate` | MiniMax API | 8000–44100 | **фактический SR**, всегда требует проверки |
 | `audio_length` | `extra_info.audio_length` | MiniMax API | ms | длительность utterance |
+
+> **Не каждый провайдер умеет каждый язык.** `language` в payload'е —
+> это язык, на котором НАПИСАН текст (его выставляет AV-28-формализатор
+> `dialogue_node`), а не пожелание. MiniMax принимает все шесть через
+> `language_boost` (`_LANGUAGE_ALIASES` в `minimax_tts.py`), а Yandex и
+> Silero в нашей раскладке умеют только русский: весь каталог
+> Yandex-голосов `ru-RU` (`tts_voice_registry.py`), Silero загружен
+> моделью `v5_ru`. Им вместо чужого текста уходит короткая фраза-отказ
+> (`speak_helpers.unsupported_language_notice`) — читать французский по
+> русским правилам значит молча деградировать: оператор слышит речь и
+> считает, что робот говорит по-французски. Транслит кириллицей эту
+> проблему не решает, он её маскирует. Правильное offline-решение —
+> своя модель Silero на язык (`v3_fr`, `v3_de`, …); отдельная карточка,
+> у Silero нет китайского вовсе.
 
 > **Правило варьирования**: всё, что касается **содержания** голоса
 > (кто говорит, как, на каком языке, что говорит) — варьируется.

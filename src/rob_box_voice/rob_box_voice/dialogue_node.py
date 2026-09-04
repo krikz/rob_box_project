@@ -2466,7 +2466,10 @@ class DialogueNode(Node):
                 f"language={language} elapsed={elapsed:.2f}s "
                 f"rewritten={rewritten[:80]!r}"
             )
-            self._speak_direct(rewritten)
+            # Язык передаём только для переписанного текста: во всех
+            # fallback-ветках выше звучит ИСХОДНАЯ реплика оператора, она
+            # на его языке, и помечать её выбранным языком — соврать TTS.
+            self._speak_direct(rewritten, language=language)
         except Exception as exc:  # noqa: BLE001 — last-resort guard
             self.get_logger().error(
                 f"💥 [quest/AV-28] unexpected error in formalize: {exc!r} — "
@@ -6164,7 +6167,9 @@ class DialogueNode(Node):
                 pass
             self._greeting_timer = None
 
-    def _publish_response(self, text: str, animation: str = "neutral") -> None:
+    def _publish_response(
+        self, text: str, animation: str = "neutral", *, language: str | None = None
+    ) -> None:
         """Single-chunk publish — kept for backwards compatibility.
 
         For multi-chunk turns prefer :meth:`_publish_response_batch` which
@@ -6181,6 +6186,7 @@ class DialogueNode(Node):
             animation,
             tg_chat_id=self._active_tg_chat_id,
             voice=getattr(self, "_current_tts_voice", None),
+            language=language,
         )
         self._response_pub.publish(msg)
 
@@ -6268,9 +6274,17 @@ class DialogueNode(Node):
             self.get_logger().warning(
                 f"⚠️ Не удалось опубликовать /mcp/music_fallback: {exc}"
             )
-    def _speak_direct(self, text: str) -> None:
+    def _speak_direct(self, text: str, language: str | None = None) -> None:
+        """Озвучить текст напрямую (без DialogCore).
+
+        ``language`` (AV-28) — язык, на котором НАПИСАН ``text``. Уходит в
+        payload и дальше в TTS: без него формализатор переписывал реплику
+        на французский, а tts_node синтезировал её со статическим
+        ``minimax_language="ru"``. ``None`` — обычная русская реплика
+        робота, поведение прежнее.
+        """
         for chunk in split_into_chunks(text):
-            self._publish_response(chunk)
+            self._publish_response(chunk, language=language)
 
     # ═══════════════════════════════════════════════════════════════════════
     #  Pure helper methods (unit-test contracts for issue #968 / #980)

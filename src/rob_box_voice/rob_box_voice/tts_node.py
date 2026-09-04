@@ -81,7 +81,7 @@ from .audio_playback_manager import AudioPlaybackManager
 from .utils.stderr_silence import ignore_stderr
 
 # Markdown sanitisation for TTS (issue #988) — shared with dialogue_node.
-from .core.speak_helpers import strip_markdown
+from .core.speak_helpers import strip_markdown, unsupported_language_notice
 
 # Issue #1709 — Unicode-script guard: не отправляем в TTS текст, который
 # в основном состоит из букв неподдерживаемых письменностей (CJK,
@@ -636,6 +636,30 @@ def _run_in_tts_loop(coro) -> Any:
     loop = _ensure_tts_loop()
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     return future.result()
+
+
+def _text_or_language_notice(
+    logger, provider: str, text: str, language: str = None
+) -> str:
+    """Текст для синтеза: либо исходный, либо честная фраза-отказ (AV-28).
+
+    ``provider`` берётся ПО ФАКТУ (после цепочки фолбэков, а не из
+    ``self.provider``): именно так сегодня и вышло — оператор выбирал язык
+    при живом minimax, а синтезировал в итоге Silero.
+
+    Функция модульная, а не метод: ``_synthesize_and_play`` в тестах
+    вызывается на bare-стабе без методов ноды (см.
+    test/unit/tts/test_voice_selection.py::_playback_node), и метод здесь
+    молча ронял бы весь провайдерский бранч в AttributeError.
+    """
+    notice = unsupported_language_notice(provider, language)
+    if notice is None:
+        return text
+    logger.warning(
+        f"🌐 [AV-28] {provider} не умеет язык {language!r} — вместо текста "
+        f"произношу отказ (текст был: {text[:60]!r})"
+    )
+    return notice
 
 
 class TTSNode(Node):
@@ -1813,12 +1837,17 @@ class TTSNode(Node):
             # Пробрасывается через kwargs (не позиционно — канонический
             # positional arity защищён test_speech_id_arg_chain).
             voice = chunk_data.get("voice")
+            # AV-28 — язык произношения на эту реплику (ros2-audio-contract-spec
+            # §2.2 «ROS-param minimax_language ИЛИ override»). None — обычная
+            # русская реплика робота, поведение прежнее.
+            language = chunk_data.get("language")
 
             self.get_logger().info(
                 f'🔊 TTS: speech_id={speech_id[:8]}, '
                 f'dialogue_id={dialogue_id[:8] if dialogue_id else "None"}, '
                 f'batch={(batch_id or "None")[:8]} {batch_index}/{batch_total}, '
                 f'voice={voice or "default"}, '
+                f'lang={language or "default"}, '
                 # Issue #1709 — ПОЛНЫЙ текст (было text[:50]): лог должен
                 # позволять восстановить любую произнесённую фразу.
                 f'text={text!r}'
@@ -1857,6 +1886,7 @@ class TTSNode(Node):
                 batch_index,
                 batch_total,
                 voice=voice,
+                language=language,
             )
 
         except json.JSONDecodeError as e:
@@ -2093,6 +2123,9 @@ class TTSNode(Node):
         # (передан через kwargs, чтобы не ломать канонический positional
         # arity, см. test_speech_id_arg_chain).
         voice = kwargs.get("voice", None)
+        # AV-28 — язык произношения (тем же путём, что voice: через kwargs,
+        # чтобы канонический positional arity остался прежним).
+        language = kwargs.get("language", None)
         self._synthesize_and_play(
             ssml,
             text,
@@ -2104,6 +2137,7 @@ class TTSNode(Node):
             batch_total,
             play_seq=play_seq,
             voice=voice,
+            language=language,
         )
 
     def _release_play_seq(self, play_seq: int | None) -> None:
@@ -2437,6 +2471,7 @@ class TTSNode(Node):
         batch_id: str = None, batch_index: int = None, batch_total: int = None,
         play_seq: int = None,  # FIFO-gate slot, keyword-only at the call site
         voice: str = None,  # Issue #1219 — запрошенный LLM голос (Q6)
+        language: str = None,  # AV-28 — язык произношения этой реплики
     ):
         """Синтез речи и воспроизведение.
 
@@ -2450,6 +2485,14 @@ class TTSNode(Node):
         отдельно для КАЖДОГО фактического провайдера в цепочке: если
         голос недоступен у провайдера (фолбек), используется дефолт
         этого провайдера, а voice_used логируется (Q6/Q11).
+
+        ``language`` — язык, на котором написан ``text`` (AV-28). Тоже
+        резолвится на КАЖДОМ провайдере цепочки, потому что провайдер
+        меняется на лету: minimax отдаёт его в ``language_boost`` и умеет
+        все шесть языков, а yandex и silero в нашей раскладке умеют
+        только русский — им вместо чужого текста уходит честная фраза
+        (``unsupported_language_notice``), а не кириллический транслит,
+        который звучал бы неправильно и молча.
         """
         # Issue #980 — ``batch_started_at`` measures the wall-clock span between
         # the first and last chunk of a single TTS batch. We start a fresh
@@ -2564,10 +2607,14 @@ class TTSNode(Node):
                     try:
                         if self.minimax_streaming:
                             self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (streaming mode)...")
-                            result = self._synthesize_minimax_streaming_publish(text, ssml_attributes, voice=_mm_voice)
+                            result = self._synthesize_minimax_streaming_publish(
+                                text, ssml_attributes, voice=_mm_voice, language=language
+                            )
                         else:
                             self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (HTTP)...")
-                            result = self._synthesize_minimax(text, ssml_attributes, voice=_mm_voice)
+                            result = self._synthesize_minimax(
+                                text, ssml_attributes, voice=_mm_voice, language=language
+                            )
                         audio_np = result["audio_np"]
                         sample_rate = result["sample_rate"]
                         used_provider = "minimax"
@@ -2630,10 +2677,13 @@ class TTSNode(Node):
                             f"⚠️ [issue 1219] Голос '{voice}' недоступен у Yandex — "
                             f"использую дефолтный '{_yandex_voice}'"
                         )
+                    _yandex_text = _text_or_language_notice(
+                        self.get_logger(), "yandex", text, language
+                    )
                     try:
                         self.publish_state("synthesizing")
                         self.get_logger().info(f"🔊 Синтез через Yandex Cloud TTS gRPC v3 ({_yandex_voice})...")
-                        audio_np = self._synthesize_yandex(text, ssml_attributes, voice=_yandex_voice)
+                        audio_np = self._synthesize_yandex(_yandex_text, ssml_attributes, voice=_yandex_voice)
                         sample_rate = 22050  # Yandex обычно возвращает 22050 Hz или 48000 Hz
                         used_provider = "yandex"
                         used_voice = _yandex_voice
@@ -2757,8 +2807,11 @@ class TTSNode(Node):
                         f"⚠️ [issue 1219] Голос '{voice}' недоступен у Silero — "
                         f"использую дефолтный '{_silero_voice}'"
                     )
+                _silero_text = _text_or_language_notice(
+                    self.get_logger(), "silero", text, language
+                )
                 try:
-                    audio_np = self._synthesize_silero(text, ssml_attributes, voice=_silero_voice)
+                    audio_np = self._synthesize_silero(_silero_text, ssml_attributes, voice=_silero_voice)
                     _silero_succeeded = True
                     used_provider = "silero"
                     used_voice = _silero_voice
@@ -3532,7 +3585,10 @@ class TTSNode(Node):
             return normalized
         return ""
 
-    async def _synthesize_minimax_async(self, text: str, ssml_attributes: dict = None, voice: str = None) -> dict:
+    async def _synthesize_minimax_async(
+        self, text: str, ssml_attributes: dict = None, voice: str = None,
+        language: str = None,
+    ) -> dict:
         """Асинхронный синтез через MiniMax T2A v2 HTTP API.
 
         Поддерживает все 4 контейнера (``PCM``/``WAV``/``MP3``/``OGG``) —
@@ -3574,7 +3630,10 @@ class TTSNode(Node):
         settings = TTSSettings(
             voice=voice or self.minimax_voice,
             model=self.minimax_model,
-            language=self.minimax_language,
+            # AV-28: язык этой реплики (language_boost) важнее
+            # статического ROS-параметра — иначе французский текст
+            # синтезировался бы с language_boost=Russian.
+            language=language or self.minimax_language,
             speed=speed,
             sample_rate=self.minimax_sample_rate,
             format=fmt,
@@ -3621,7 +3680,10 @@ class TTSNode(Node):
 
         return {"audio_np": audio_np, "sample_rate": decoded_sample_rate}
 
-    async def _synthesize_minimax_with_retry(self, text: str, ssml_attributes: dict = None, voice: str = None) -> dict:
+    async def _synthesize_minimax_with_retry(
+        self, text: str, ssml_attributes: dict = None, voice: str = None,
+        language: str = None,
+    ) -> dict:
         """Обёртка с retry-loop над :meth:`_synthesize_minimax_async`.
 
         Реализует политику retry из ADR-0003 §2.6:
@@ -3648,7 +3710,9 @@ class TTSNode(Node):
 
         for attempt in range(max_attempts):
             try:
-                return await self._synthesize_minimax_async(text, ssml_attributes, voice=voice)
+                return await self._synthesize_minimax_async(
+                    text, ssml_attributes, voice=voice, language=language
+                )
             except Exception as exc:
                 # Классифицируем — некоторые ошибки ретраить нельзя.
                 if isinstance(exc, MiniMaxTTSAuthError):
@@ -3680,7 +3744,10 @@ class TTSNode(Node):
         assert last_exc is not None
         raise last_exc
 
-    def _synthesize_minimax_streaming_publish(self, text: str, ssml_attributes: dict = None, voice: str = None) -> dict:
+    def _synthesize_minimax_streaming_publish(
+        self, text: str, ssml_attributes: dict = None, voice: str = None,
+        language: str = None,
+    ) -> dict:
         """Sync-обёртка над :meth:`_stream_minimax_chunks` для streaming-режима MiniMax.
 
         Публикует каждый :class:`TTSChunk` как отдельный ``AudioData`` msg
@@ -3699,7 +3766,9 @@ class TTSNode(Node):
 
         async def _consume_and_publish():
             nonlocal sample_rate
-            async for chunk in self._stream_minimax_chunks(text, ssml_attributes, voice=voice):
+            async for chunk in self._stream_minimax_chunks(
+                text, ssml_attributes, voice=voice, language=language
+            ):
                 if chunk.finish_reason == "error":
                     raise Exception("MiniMax stream reported error: finish_reason=error")
 
@@ -3741,7 +3810,10 @@ class TTSNode(Node):
             "already_published": True,
         }
 
-    def _synthesize_minimax(self, text: str, ssml_attributes: dict = None, voice: str = None) -> dict:
+    def _synthesize_minimax(
+        self, text: str, ssml_attributes: dict = None, voice: str = None,
+        language: str = None,
+    ) -> dict:
         """Sync-обёртка над :meth:`_synthesize_minimax_with_retry`.
 
         🔴 FIX (live 16:xx «Event loop is closed»): раньше оборачивали
@@ -3751,10 +3823,15 @@ class TTSNode(Node):
         (``_run_in_tts_loop``) — retry внутри одного синтеза и
         последующие синтезы переиспользуют тот же loop.
         """
-        coro = self._synthesize_minimax_with_retry(text, ssml_attributes, voice=voice)
+        coro = self._synthesize_minimax_with_retry(
+            text, ssml_attributes, voice=voice, language=language
+        )
         return _run_in_tts_loop(coro)
 
-    async def _stream_minimax_chunks(self, text: str, ssml_attributes: dict = None, voice: str = None):
+    async def _stream_minimax_chunks(
+        self, text: str, ssml_attributes: dict = None, voice: str = None,
+        language: str = None,
+    ):
         """Стриминг MiniMax через ``provider.stream()`` для chunk-per-frame.
 
         Провайдер сейчас возвращает один ``TTSChunk(finish_reason="stop")``
@@ -3774,7 +3851,10 @@ class TTSNode(Node):
         settings = TTSSettings(
             voice=voice or self.minimax_voice,
             model=self.minimax_model,
-            language=self.minimax_language,
+            # AV-28: язык этой реплики (language_boost) важнее
+            # статического ROS-параметра — иначе французский текст
+            # синтезировался бы с language_boost=Russian.
+            language=language or self.minimax_language,
             speed=speed,
             sample_rate=self.minimax_sample_rate,
             format=self.minimax_format if MINIMAX_AVAILABLE else TTSFormat.PCM,
