@@ -41,6 +41,13 @@ PROVIDER_VOICES: dict[str, list[str]] = {
     "yandex": [
         "anton", "alena", "filipp", "jane", "omazh", "zahar",
         "ermil", "madirus", "arina", "kostya", "rush",
+        # Не-русские голоса SpeechKit. У Yandex язык прибит к ГОЛОСУ (в
+        # отличие от MiniMax, где язык задаёт language_boost при любом
+        # голосе), поэтому «сказать по-немецки» = «взять lea». Каталог
+        # aistudio.yandex.ru/docs/en/speechkit/tts/voices: кроме ru есть
+        # en-US (john), de-DE (lea), he-IL, kk, uz. Французского,
+        # китайского и хинди у Yandex нет вовсе.
+        "john", "lea",
     ],
     "minimax": [
         # текущие русские системные голоса (FAQ, 20.08.2026):
@@ -86,6 +93,8 @@ VOICE_METADATA: dict[str, "VoiceInfo"] = {
     "yandex:arina":           {"display_name": "Арина",  "language": "ru-RU", "gender": "female", "presets": ["standard", "friendly"]},
     "yandex:kostya":          {"display_name": "Костя",  "language": "ru-RU", "gender": "male",   "presets": ["standard"]},
     "yandex:rush":            {"display_name": "Раш",    "language": "ru-RU", "gender": "neutral", "presets": ["standard"]},
+    "yandex:john":            {"display_name": "John (English)", "language": "en-US", "gender": "male",   "presets": ["standard"]},
+    "yandex:lea":             {"display_name": "Lea (Deutsch)",  "language": "de-DE", "gender": "female", "presets": ["standard"]},
     # MiniMax T2A v2 — каталог FAQ 20.08.2026 (male_qn/female_shaonv — legacy).
     "minimax:Russian_ReliableMan":         {"display_name": "Надёжный мужчина",     "language": "ru-RU", "gender": "male",   "presets": ["standard", "authoritative"]},
     "minimax:Russian_HandsomeChildhoodFriend":{"display_name": "Красивый друг детства", "language": "ru-RU", "gender": "male", "presets": ["standard", "friendly"]},
@@ -104,6 +113,56 @@ VOICE_METADATA: dict[str, "VoiceInfo"] = {
     "silero:xenia":   {"display_name": "Ксения (v5)",         "language": "ru-RU", "gender": "female", "presets": ["standard", "friendly"]},
     "silero:eugene":  {"display_name": "Евгений (v5)",        "language": "ru-RU", "gender": "male",   "presets": ["standard", "authoritative"]},
 }
+
+
+def language_of(provider: str, voice_id: str) -> str:
+    """Короткий код языка голоса ("ru", "en", "de"); "" если голос неизвестен.
+
+    В метаданных язык лежит в BCP-47 ("ru-RU"), а ROS-параметр
+    ``voice_output_language`` и wire-поле ``language`` — двухбуквенные
+    (meta-quest-api.md §P7). Режем до первого дефиса.
+    """
+    meta = VOICE_METADATA.get(f"{provider}:{voice_id}")
+    if not meta:
+        return ""
+    return str(meta.get("language") or "").split("-")[0].lower()
+
+
+def languages_for(provider: str) -> set[str]:
+    """Какие языки провайдер реально умеет — ПО КАТАЛОГУ ГОЛОСОВ.
+
+    Источник правды один — ``VOICE_METADATA``: отдельной таблицы
+    «провайдер → языки» нет и быть не должно, она бы разъехалась с
+    каталогом ровно так же, как разъехались whitelist'ы AV-28.
+
+    Осторожно: для MiniMax этот ответ НЕ полон. Там язык задаёт
+    ``language_boost`` при любом голосе, поэтому MiniMax умеет всё из
+    ``minimax_tts._LANGUAGE_ALIASES``, а не только языки своих голосов
+    (в каталоге у него ru и zh). Вызывающий обязан учесть это отдельно —
+    см. ``speak_helpers.unsupported_language_notice``.
+    """
+    langs = {language_of(provider, voice_id) for voice_id in voices_for(provider)}
+    langs.discard("")
+    return langs
+
+
+def voice_for_language(provider: str, language: str) -> str:
+    """Голос провайдера, говорящий на ``language``; "" если такого нет.
+
+    Нужен там, где язык прибит к голосу (Yandex): просить у ``anton``
+    немецкий бесполезно — надо брать ``lea``. Порядок обхода —
+    ``PROVIDER_VOICES``, то есть первый подходящий голос каталога.
+    """
+    lang = str(language or "").split("-")[0].lower()
+    if not lang:
+        return ""
+    default = default_voice_for(provider)
+    if default and language_of(provider, default) == lang:
+        return default
+    for voice_id in voices_for(provider):
+        if language_of(provider, voice_id) == lang:
+            return voice_id
+    return ""
 
 
 def voices_for(provider: str) -> list[str]:

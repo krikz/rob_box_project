@@ -229,20 +229,19 @@ def split_into_chunks(text: str, max_len: int = 200) -> List[str]:
 # параметром («ROS-param minimax_language ИЛИ override»), но override
 # никогда не был реализован: dialogue_node переписывал реплику на
 # французский, а tts_node синтезировал её со статическим
-# `minimax_language="ru"`. Здесь — недостающее поле payload'а.
+# `minimax_language="ru"`. Здесь — недостающее поле payload'а плюс ответ
+# на вопрос «а этот провайдер вообще так умеет?».
 #
-# Кто какой язык умеет:
-#   minimax — любой из `_LANGUAGE_ALIASES` (minimax_tts.py), язык задаёт
-#             `language_boost`, голос при этом остаётся тем же → ограничений нет;
-#   yandex  — весь наш каталог голосов ru-RU (tts_voice_registry.py);
-#   silero  — загружена модель `v5_ru`, она умеет ТОЛЬКО русский.
-#
-# `None` в таблице = ограничений нет.
-TTS_PROVIDER_LANGUAGES: Dict[str, Optional[frozenset]] = {
-    "minimax": None,
-    "yandex": frozenset({"ru"}),
-    "silero": frozenset({"ru"}),
-}
+# Кто какой язык умеет — считается ПО КАТАЛОГУ ГОЛОСОВ
+# (`tts_voice_registry.languages_for`), а не по отдельной таблице:
+# вторая таблица разъехалась бы с каталогом ровно так же, как разъехались
+# whitelist'ы AV-28. Исключение ровно одно и оно явное — MiniMax.
+
+# MiniMax задаёт язык полем `language_boost`, а не выбором голоса, поэтому
+# он умеет ВСЁ из `minimax_tts._LANGUAGE_ALIASES` независимо от того, на
+# каком языке говорят голоса каталога (там ru и zh). Дублировать сюда весь
+# список смысла нет — достаточно знать, что ограничений по каталогу нет.
+LANGUAGE_AGNOSTIC_PROVIDERS: frozenset = frozenset({"minimax"})
 
 # Как назвать язык в честной фразе-отказе.
 _LANGUAGE_NAMES_RU: Dict[str, str] = {
@@ -255,36 +254,58 @@ _LANGUAGE_NAMES_RU: Dict[str, str] = {
 }
 
 
+def provider_speaks(provider: str, language: Optional[str]) -> bool:
+    """Умеет ли ``provider`` говорить на ``language``.
+
+    ``language`` пустой/``None`` (обычный диалог робота) — всегда ``True``.
+    """
+    if not language:
+        return True
+    lang = str(language).strip().lower().split("-")[0]
+    if not lang:
+        return True
+    prov = str(provider).strip().lower()
+    if prov in LANGUAGE_AGNOSTIC_PROVIDERS:
+        return True
+    from ..tts_voice_registry import languages_for  # локально: избегаем цикла
+
+    known = languages_for(prov)
+    # Неизвестный провайдер не ограничиваем: пустой каталог — это «мы про
+    # него ничего не знаем», а не «он ничего не умеет».
+    return not known or lang in known
+
+
 def unsupported_language_notice(
     provider: str, language: Optional[str]
 ) -> Optional[str]:
     """Фраза-отказ, если ``provider`` не умеет ``language``; иначе ``None``.
 
-    Зачем отказ, а не транслит: Silero с моделью ``v5_ru`` читает по
-    русским правилам, и «beaucoup», переписанное кириллицей, звучит
-    «беаукоуп», а не «боку». Это молчаливая деградация — оператор слышит
-    речь, считает, что робот говорит по-французски, и узнаёт правду от
-    собеседника. Честная короткая фраза лучше (ADR-0018).
+    Зачем отказ, а не транслит кириллицей: Silero с моделью ``v5_ru``
+    читает по русским правилам, и «beaucoup», переписанное кириллицей,
+    звучит «беаукоуп», а не «боку». Это молчаливая деградация — оператор
+    слышит речь, считает, что робот говорит по-французски, и узнаёт правду
+    от собеседника. Честная короткая фраза лучше (ADR-0018).
 
-    Правильное решение для offline — своя модель Silero на язык
-    (``v3_fr``, ``v3_de``, …); это отдельная карточка: модели качаются на
-    Pi поштучно, а китайского у Silero нет вовсе.
+    Правильное решение — не транслит, а НАСТОЯЩИЙ голос на этом языке;
+    из шести языков UI он есть почти везде:
+      * MiniMax — все шесть (`language_boost`);
+      * Yandex  — ru, en (`john`), de (`lea`); fr/zh/hi у него нет вовсе;
+      * Silero  — сейчас загружена только `v5_ru`, но upstream отдаёт
+        `v3_en`, `v3_de`, `v3_fr` и indic (`hindi_male`/`hindi_female`).
+        Догрузить их — отдельная карточка (модели качаются на Pi
+        поштучно); китайского у Silero нет.
 
-    ``language=None`` (обычный диалог робота) ограничений не имеет — эта
-    функция для него всегда возвращает ``None``.
+    То есть транслит нужен ровно для одного пересечения — китайский
+    офлайн, — и именно там он бесполезнее всего: палладица, прочитанная
+    русским голосом, китайцу непонятна.
     """
-    if not language:
+    if provider_speaks(provider, language):
         return None
-    lang = str(language).strip().lower()
-    if not lang:
-        return None
-    allowed = TTS_PROVIDER_LANGUAGES.get(str(provider).strip().lower())
-    if allowed is None or lang in allowed:
-        return None
+    lang = str(language).strip().lower().split("-")[0]
     name = _LANGUAGE_NAMES_RU.get(lang, lang)
     return (
         f"Не могу сказать это на {name}: сейчас работает голосовой движок "
-        f"{provider}, он умеет только русский."
+        f"{provider}, у него нет голоса на этом языке."
     )
 
 

@@ -2677,6 +2677,33 @@ class TTSNode(Node):
                             f"⚠️ [issue 1219] Голос '{voice}' недоступен у Yandex — "
                             f"использую дефолтный '{_yandex_voice}'"
                         )
+                    # AV-28: у Yandex язык прибит к ГОЛОСУ (в отличие от
+                    # MiniMax с language_boost). Просить у Антона немецкий
+                    # бесполезно — берём голос нужного языка (lea для de,
+                    # john для en). Если такого голоса у Yandex нет
+                    # (fr/zh/hi), ниже уйдёт честный отказ.
+                    if language:
+                        try:
+                            from .tts_voice_registry import (
+                                language_of as _language_of,
+                                voice_for_language as _voice_for_language,
+                            )
+
+                            if _language_of("yandex", _yandex_voice) != str(
+                                language
+                            ).split("-")[0].lower():
+                                _lang_voice = _voice_for_language("yandex", language)
+                                if _lang_voice:
+                                    self.get_logger().info(
+                                        f"🌐 [AV-28] язык {language!r} → голос Yandex "
+                                        f"'{_lang_voice}' (вместо '{_yandex_voice}')"
+                                    )
+                                    _yandex_voice = _lang_voice
+                        except Exception as exc:  # noqa: BLE001 — registry недоступен
+                            self.get_logger().warn(
+                                f"⚠️ [AV-28] не смог подобрать Yandex-голос под "
+                                f"{language!r}: {exc}"
+                            )
                     _yandex_text = _text_or_language_notice(
                         self.get_logger(), "yandex", text, language
                     )
