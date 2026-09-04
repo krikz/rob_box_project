@@ -55,6 +55,7 @@ class AudioNode(Node):
         self.declare_parameter('vad_threshold', 3.5)
         self.declare_parameter('publish_rate', 10)
         self.declare_parameter('device_index', -1)  # -1 = auto-detect
+        self.declare_parameter('audio_retry_period', 5.0)  # сек между попытками открыть захват
         self.declare_parameter('device_name', 'ReSpeaker 4 Mic Array')
 
         # Issue 989 Fix B: grace period после окончания TTS — не начинать
@@ -136,6 +137,20 @@ class AudioNode(Node):
         # PyAudio
         self.pyaudio_instance: Optional[pyaudio.PyAudio] = None
         self.stream: Optional[pyaudio.Stream] = None
+
+        # Ретрай открытия захвата (см. open_audio_stream). Исходный
+        # device_index держим отдельно: после неудачного open индекс
+        # сбрасывается к нему, чтобы авто-поиск прошёл заново.
+        self._device_index_param = self.device_index
+        self._audio_retry_count: int = 0
+        self._audio_retry_timer = None
+        self._audio_retry_period: float = float(
+            self.get_parameter('audio_retry_period').value or 5.0
+        )
+        # Раз в сколько попыток печатать ERROR после третьей неудачи.
+        self._audio_retry_quiet_every: int = max(
+            1, int(60.0 / self._audio_retry_period)
+        )
 
         # Состояние
         self.is_running = False
@@ -255,6 +270,11 @@ class AudioNode(Node):
         else:
             self.get_logger().warn('⚠ ReSpeaker USB не найден для VAD/DoA')
 
+        # Захват аудио запускаем ВСЕГДА и отдельно от DSP: раньше открытие
+        # потока лежало внутри _apply_dsp и пропадало при dsp_apply_on_start=
+        # False либо при неподключённом USB HID.
+        self.open_audio_stream()
+
     def _apply_dsp(self) -> None:
         """Применить настройки DSP XVF-3000 (issue #1117 round-2).
 
@@ -295,18 +315,43 @@ class AudioNode(Node):
                 f'  HPFONOFF: ошибка записи ({e!r}). Используется дефолт firmware.'
             )
 
-        # Инициализация PyAudio (теперь ReSpeaker должен быть виден как аудио устройство)
+    def open_audio_stream(self) -> None:
+        """Открыть PyAudio-поток захвата с ReSpeaker.
+
+        Вызывается при старте и повторно из _retry_audio_stream, пока
+        устройство не найдётся. Разовая попытка не годится: ReSpeaker
+        появляется в перечислении PortAudio позже остальных USB-карт, и
+        когда на шине есть вторая USB-аудио-карта (потолочная камера),
+        5-секундного ожидания стабилизации USB не хватает. Нода при этом
+        оставалась живой — VAD/DoA идут по USB HID и продолжали работать, —
+        но каждая фраза уходила в «Речь отклонена: 0.00с», потому что
+        буфер захвата не наполнялся.
+        """
+        if self.stream is not None:
+            return
+
+        # Перечисление устройств PortAudio делает в момент инициализации,
+        # поэтому на каждую попытку нужен свежий инстанс.
+        if self.pyaudio_instance is not None:
+            try:
+                self.pyaudio_instance.terminate()
+            except Exception:  # noqa: BLE001 — освобождение best-effort
+                pass
+            self.pyaudio_instance = None
+
         # Глушим ALSA ошибки как в jsk-ros-pkg
         with ignore_stderr(enable=True):
             self.pyaudio_instance = pyaudio.PyAudio()
 
         # Найти устройство
-        if self.device_index < 0:
+        if self.device_index is None or self.device_index < 0:
             self.device_index = find_respeaker_device(self.pyaudio_instance)
             if self.device_index is None:
-                self.get_logger().error('❌ ReSpeaker аудио устройство не найдено!')
-                self.list_available_devices()
+                self._log_stream_failure('❌ ReSpeaker аудио устройство не найдено!')
+                if self._audio_retry_count == 0:
+                    self.list_available_devices()
                 self.publish_state('error_no_device')
+                self._schedule_audio_retry()
                 return
 
         self.get_logger().info(f'✓ Используется аудио устройство index={self.device_index}')
@@ -333,15 +378,65 @@ class AudioNode(Node):
             self.publish_state('ready')
 
         except Exception as e:
-            self.get_logger().error(f'❌ Ошибка открытия аудио потока: {e}')
+            self.stream = None
+            # Индекс мог устареть (карта переехала) — ищем заново на ретрае.
+            self.device_index = self._device_index_param
+            self._log_stream_failure(f'❌ Ошибка открытия аудио потока: {e}')
             self.publish_state('error_stream')
+            self._schedule_audio_retry()
             return
 
         # Запустить поток
         self.is_running = True
         self.stream.start_stream()
-        self.get_logger().info('▶ Захват аудио запущен')
+        if self._audio_retry_count:
+            self.get_logger().info(
+                f'▶ Захват аудио запущен (устройство найдено с '
+                f'{self._audio_retry_count + 1}-й попытки)'
+            )
+        else:
+            self.get_logger().info('▶ Захват аудио запущен')
+        self._audio_retry_count = 0
+        if self._audio_retry_timer is not None:
+            self._audio_retry_timer.cancel()
+            self._audio_retry_timer = None
         self.publish_state('running')
+
+    def _log_stream_failure(self, message: str) -> None:
+        """Лог неудачи захвата: первые попытки громко, дальше раз в минуту.
+
+        Ретрай бесконечный (устройство могут воткнуть в любой момент), а
+        ERROR каждые 5с забил бы docker logs.
+        """
+        quiet = (
+            self._audio_retry_count >= 3
+            and self._audio_retry_count % self._audio_retry_quiet_every != 0
+        )
+        if quiet:
+            self.get_logger().debug(f'{message} (попытка {self._audio_retry_count + 1})')
+        elif self._audio_retry_count == 0:
+            self.get_logger().error(message)
+        else:
+            self.get_logger().error(
+                f'{message} (попытка {self._audio_retry_count + 1}, '
+                f'повтор каждые {self._audio_retry_period}с)'
+            )
+
+    def _schedule_audio_retry(self) -> None:
+        """Поставить одноразовый таймер на следующую попытку открыть поток."""
+        self._audio_retry_count += 1
+        if self._audio_retry_timer is not None:
+            self._audio_retry_timer.cancel()
+        self._audio_retry_timer = self.create_timer(
+            self._audio_retry_period, self._on_audio_retry
+        )
+
+    def _on_audio_retry(self) -> None:
+        """Callback одноразового retry-таймера."""
+        if self._audio_retry_timer is not None:
+            self._audio_retry_timer.cancel()
+            self._audio_retry_timer = None
+        self.open_audio_stream()
 
     def audio_callback(self, in_data, frame_count, time_info, status):
         """Callback для PyAudio stream."""
