@@ -1,3 +1,7 @@
+# .claude/skills/ — локальные junction/symlink на .agents/skills/ (Windows/Linux),
+# в git не коммитим: единственный SOT скиллов — .agents/skills/.
+.claude/skills/
+
 # Python
 __pycache__/
 *.py[cod]

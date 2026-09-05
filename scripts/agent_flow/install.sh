@@ -207,6 +207,12 @@ EXPECTED=(
     # kanban-retro-create.sh (дедуп по key). Регистрация cron-job —
     # в ensure_nightly_review_cron ниже.
     agent-flow-nightly-review.sh
+    # Доставка repo-скиллов (.agents/skills) в профили воркеров (ретро
+    # 05.09): af_skill_for_profile() маппит тип задачи (bug/feature/refactor)
+    # на repo-скиллы, но без доставки профили их не видят. Вызывается из
+    # install.sh best-effort после раскладки скриптов; идемпотентен.
+    # Drift-detect контролирует наличие файла во всех профилях (EXPECTED).
+    sync-skills.sh
 )
 
 # Режим --list-files: печатает EXPECTED по одному имени на строку и выходит.
@@ -1020,6 +1026,20 @@ echo
 echo "==> kanban MAINTENANCE probe config (retro t_1d467636)"
 ensure_kanban_maintenance_probe
 
+echo
+echo "==> Sync repo skills to worker profiles (retro 05.09)"
+# af_skill_for_profile() маппит тип задачи на repo-скиллы (systematic-
+# debugging / test-driven-development / codebase-design / agent-flow).
+# Без доставки в профили воркеров эти скиллы невидимы — sync-skills.sh
+# раскладывает их hardlink-ами в skills/repo/<skill>/ (см. sync-skills.sh).
+# Best-effort: сбой доставки НЕ валит install.sh (exit-код sync-skills.sh
+# логируется отдельно; drift-detect тоже контролирует наличие файла).
+if [ -f "$SCRIPT_DIR/sync-skills.sh" ]; then
+    REPO_DIR="$REPO_DIR" HERMES_HOME="${HERMES_HOME:-/home/builder/.hermes}" \
+        bash "$SCRIPT_DIR/sync-skills.sh" || echo "  WARN skills sync failed (non-fatal, see output above)"
+else
+    echo "  SKIP sync-skills.sh not present in $SCRIPT_DIR"
+fi
 
 echo
 echo "==> Done. Verify:"

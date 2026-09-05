@@ -1323,16 +1323,18 @@ Triage **НЕ создал** kanban-карточку для этого issue, ч
 
     # Ретро t_b3476561: без --skill воркер либо крашится rc=0 сразу, либо
     # висит timeout 30/30 (не знает что делать). af_skill_for_profile()
-    # даёт детерминированный skill по assignee + проверяет, что он реально
-    # установлен в профиле (fail-OPEN если нет — карточка создаётся без
-    # skill, как раньше, лучше так чем fail-fast над process-скриптом).
-    skill_for_card="$(af_skill_for_profile "$role")"
+    # даёт детерминированный skill по assignee + типу задачи (label) +
+    # проверяет, что он реально установлен в профиле (fail-OPEN если нет —
+    # карточка создаётся без skill, как раньше, лучше так чем fail-fast
+    # над process-скриптом). Ретро 05.09: передаём $labels вторым аргументом,
+    # чтобы bug/feature/refactor получали repo-скилл по типу, а не роль.
+    skill_for_card="$(af_skill_for_profile "$role" "$labels")"
     skill_args=()
     if [ -n "$skill_for_card" ]; then
         skill_args=(--skill "$skill_for_card")
-        log "  skill-inference: role=${role} -> skill=${skill_for_card}"
+        log "  skill-inference: role=${role} labels=${labels} -> skill=${skill_for_card}"
     else
-        log "  skill-inference: role=${role} → нет валидного skill в профиле, --skill не передаём"
+        log "  skill-inference: role=${role} labels=${labels} → нет валидного skill в профиле, --skill не передаём"
     fi
 
     if [ "$DRY_RUN" = "true" ]; then

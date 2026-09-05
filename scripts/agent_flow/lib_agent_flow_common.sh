@@ -255,7 +255,7 @@ print(json.dumps(keep, ensure_ascii=False))
 }
 
 # ---------------------------------------------------------------------------
-# af_skill_for_profile <assignee> → печатает skill (или пусто).
+# af_skill_for_profile <assignee> [labels_csv] → печатает skill (или пусто).
 #
 # Ретро t_b3476561: agent-flow-triage.sh создавал kanban-карточки БЕЗ
 # `--skill`, и они либо падали в «worker exited cleanly (rc=0) without
@@ -271,74 +271,106 @@ print(json.dumps(keep, ensure_ascii=False))
 # профиле — fail-OPEN: печатаем пусто (карточка создастся без skill, как
 # раньше — лучше «нет skill» чем fail-fast над process-скриптом).
 #
+# Ретро 05.09: добавлено второе измерение — тип задачи по label issue.
+# Раньше bug и feature у backend/devops получали один и тот же git-workflow
+# (скилл был привязан к роли, а не к задаче). Теперь label переопределяет
+# роль: bug → systematic-debugging, functional/feature → test-driven-
+# development, refactor/tech-debt → codebase-design, process → agent-flow.
+# Repo-скиллы доставляются в профиль через sync-skills.sh (skills/repo/<skill>/).
+#
 # Контракт:
 #   $1 = assignee (profile id, например "devops", "backend", ...)
+#   $2 = labels_csv (опционально, "a,b,c") — для маппинга по типу задачи
 #   stdout = один skill name (если найден в профиле) или пустая строка
 #   exit = 0 всегда (fail-OPEN)
 #
-# Mapping (выбирался так, чтобы каждое значение было реально установлено
-# хотя бы у одного профиля и НЕ ломалось vendor-патчем
-# hermes-agent-skill-validation.patch::_validate_skills_for_assignee):
+# Mapping по роли (база; срабатывает, когда нет type-label или task-скилл
+# не установлен в профиле):
 #
 #   backend       → git-workflow            (CI/CD/process задачи backend)
 #   devops        → git-workflow            (CI/CD/process задачи devops)
 #   tester        → sdlc-review             (process-ревью в SDLC цикле)
 #   agent-flow    → agent-flow-merge-gate   (специфический для agent-flow)
 #   architect     → agent-flow-pipeline-ops (pipeline-проектирование)
-#   pr-reviewer   → sdlc-review             (ревью PR в SDLC)
+#   pr-reviewer   → code-review             (двухосевое ревью diff: Standards+Spec)
 #   default       → simplify-code           (shared через symlink, всегда есть)
 #
 # Проверка наличия: walk <PROFILE>/skills/SKILL.md (symlink-following),
-# grep «<skill>/SKILL.md» → если да — печатаем, иначе пусто.
+# включая категорию repo/ (куда кладёт sync-skills.sh), grep «<skill>/SKILL.md»
+# → если да — печатаем, иначе пусто.
 #
 # Путь к профилям берём из HERMES_HOME (default /home/builder/.hermes),
 # как и весь остальной код agent-flow. _profile_skill_names в hermes-agent
 # использует тот же источник (get_profile_dir()).
 # ---------------------------------------------------------------------------
-af_skill_for_profile() {  # $1=assignee
-    local _assignee="${1:-}" _hermes_home _skills_dir _candidate
+af_skill_for_profile() {  # $1=assignee  $2=labels_csv (optional)
+    local _assignee="${1:-}" _labels="${2:-}" _hermes_home _skills_dir _cand
+    local _role_candidate _task_candidate _labels_lower
     [ -n "$_assignee" ] || { return 0; }
     _hermes_home="${HERMES_HOME:-/home/builder/.hermes}"
     _skills_dir="${_hermes_home}/profiles/${_assignee}/skills"
     if [ ! -d "$_skills_dir" ]; then
         return 0
     fi
-    # Mapping присваиваем через case (быстрее и проще, чем ассоц. массив).
+    # Роль → skill (backward-compatible база, ретро t_b3476561).
     case "$_assignee" in
-        backend)        _candidate="git-workflow" ;;
-        devops)         _candidate="git-workflow" ;;
-        tester)         _candidate="sdlc-review" ;;
-        agent-flow)     _candidate="agent-flow-merge-gate" ;;
-        architect)      _candidate="agent-flow-pipeline-ops" ;;
-        pr-reviewer)    _candidate="sdlc-review" ;;
-        default)        _candidate="simplify-code" ;;
-        *)              _candidate="simplify-code" ;;  # shared default fallback
+        backend)        _role_candidate="git-workflow" ;;
+        devops)         _role_candidate="git-workflow" ;;
+        tester)         _role_candidate="sdlc-review" ;;
+        agent-flow)     _role_candidate="agent-flow-merge-gate" ;;
+        architect)      _role_candidate="agent-flow-pipeline-ops" ;;
+        pr-reviewer)    _role_candidate="code-review" ;;
+        default)        _role_candidate="simplify-code" ;;
+        *)              _role_candidate="simplify-code" ;;  # shared default fallback
     esac
-    # Проверяем, что skill реально установлен в профиле (symlink-following
-    # walk, как _profile_skill_names в hermes-agent). Используем `find -L`
-    # вместо iter_skill_index_files (тот внутри Python), чтобы остаться
-    # в bash-контексте скрипта.
-    if [ -f "$_skills_dir/${_candidate}/SKILL.md" ] \
-        || [ -f "$_skills_dir/bundled/${_candidate}/SKILL.md" ] \
-        || [ -f "$_skills_dir/devops/${_candidate}/SKILL.md" ] \
-        || [ -f "$_skills_dir/autonomous-ai-agents/${_candidate}/SKILL.md" ] \
-        || [ -f "$_skills_dir/software-development/${_candidate}/SKILL.md" ] \
-        || [ -f "$_skills_dir/productivity/${_candidate}/SKILL.md" ] \
-        || [ -f "$_skills_dir/research/${_candidate}/SKILL.md" ] \
-        || [ -f "$_skills_dir/process/${_candidate}/SKILL.md" ]; then
-        printf '%s' "$_candidate"
-        return 0
+
+    # Тип задачи (label issue) переопределяет роль (ретро 05.09). Repo-скиллы
+    # доставляются в профиль через sync-skills.sh (skills/repo/<skill>/).
+    _labels_lower="$(printf '%s' "$_labels" | tr '[:upper:]' '[:lower:]')"
+    _task_candidate=""
+    if [ -n "$_labels_lower" ]; then
+        case ",${_labels_lower}," in
+            *",bug,"*|*",type:bug,"*)
+                _task_candidate="systematic-debugging" ;;
+            *",type:functional,"*|*",type:feature,"*|*",feature,"*)
+                _task_candidate="test-driven-development" ;;
+            *",type:refactor,"*|*",type:tech-debt,"*|*",type:stub,"*)
+                _task_candidate="codebase-design" ;;
+            *",type:process,"*)
+                _task_candidate="agent-flow" ;;
+        esac
     fi
-    # Fallback: walk все категории (slow path, но бывает при свежей
-    # раскладке профиля — категория может быть ещё не symlink). Это тот
-    # же алгоритм что и _profile_skill_names, но средствами bash.
-    if find -L "$_skills_dir" -maxdepth 4 -path '*/_org' -prune -o \
-        -type f -name SKILL.md -print 2>/dev/null \
-        | grep -q "/${_candidate}/SKILL.md$"; then
-        printf '%s' "$_candidate"
-        return 0
-    fi
-    _af_log "af_skill_for_profile(${_assignee}): candidate '${_candidate}' not installed in profile — falling back (no --skill)"
+
+    # Пробуем сперва task-кандидат, затем роль-кандидат. Проверка установлен-
+    # ности — symlink-following walk (как _profile_skill_names в hermes-agent):
+    # плоский skills/<skill>/ + категории repo/bundled/devops/... (repo/ кладёт
+    # sync-skills.sh). `find -L` — медленный fallback для свежей раскладки
+    # профиля, где категория ещё не symlink.
+    for _cand in "$_task_candidate" "$_role_candidate"; do
+        [ -n "$_cand" ] || continue
+        if [ -f "$_skills_dir/${_cand}/SKILL.md" ] \
+            || [ -f "$_skills_dir/repo/${_cand}/SKILL.md" ] \
+            || [ -f "$_skills_dir/bundled/${_cand}/SKILL.md" ] \
+            || [ -f "$_skills_dir/devops/${_cand}/SKILL.md" ] \
+            || [ -f "$_skills_dir/autonomous-ai-agents/${_cand}/SKILL.md" ] \
+            || [ -f "$_skills_dir/software-development/${_cand}/SKILL.md" ] \
+            || [ -f "$_skills_dir/productivity/${_cand}/SKILL.md" ] \
+            || [ -f "$_skills_dir/research/${_cand}/SKILL.md" ] \
+            || [ -f "$_skills_dir/process/${_cand}/SKILL.md" ]; then
+            printf '%s' "$_cand"
+            return 0
+        fi
+        # Fallback: walk все категории (slow path, но бывает при свежей
+        # раскладке профиля — категория может быть ещё не symlink). Это тот
+        # же алгоритм что и _profile_skill_names, но средствами bash.
+        if find -L "$_skills_dir" -maxdepth 4 -path '*/_org' -prune -o \
+            -type f -name SKILL.md -print 2>/dev/null \
+            | grep -q "/${_cand}/SKILL.md$"; then
+            printf '%s' "$_cand"
+            return 0
+        fi
+    done
+    _af_log "af_skill_for_profile(${_assignee}): no installed skill for task='${_task_candidate}' role='${_role_candidate}' — falling back (no --skill)"
     return 0
 }
 

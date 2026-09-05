@@ -136,8 +136,8 @@ t1_pr_reviewer() {
     local actual
     actual="$(af_skill_for_profile pr-reviewer)"
     log "pr-reviewer → $actual"
-    [ "$actual" = "sdlc-review" ] || { fail "T1_pr-reviewer" "got '$actual'"; return 1; }
-    pass "T1_pr-reviewer → sdlc-review"
+    [ "$actual" = "code-review" ] || { fail "T1_pr-reviewer" "got '$actual'"; return 1; }
+    pass "T1_pr-reviewer → code-review"
 }
 
 run_t1; t1_backend; t1_tester; t1_agent_flow; t1_architect; t1_pr_reviewer
@@ -197,7 +197,7 @@ check_installed backend         git-workflow          T3_backend
 check_installed tester          sdlc-review           T3_tester
 check_installed agent-flow      agent-flow-merge-gate T3_agent-flow
 check_installed architect       agent-flow-pipeline-ops T3_architect
-check_installed pr-reviewer     sdlc-review           T3_pr-reviewer
+check_installed pr-reviewer     code-review           T3_pr-reviewer
 
 # =============================================================================
 echo "=== T4: agent-flow-triage.sh script invokes af_skill_for_profile before kanban create ==="

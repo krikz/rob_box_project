@@ -162,6 +162,11 @@ test_C_too_many_lines_blocks() {
     local bb_blocked_label
     bb_blocked_label="$(printf '%s\n' "$journal" | grep -c 'agent-flow:big-bang-blocked' || true)"
     assert_eq "1" "$bb_blocked_label" "big-bang-blocked label added to issue"
+
+    # Декомпозиция: architect-карточка со скиллом to-tickets (ретро 05.09).
+    local bb_decomp_card
+    bb_decomp_card="$(printf '%s\n' "$journal" | grep -c 'hermes kanban --board robbox create .*--skill to-tickets' || true)"
+    assert_eq "1" "$bb_decomp_card" "big-bang decomposition card created (architect + to-tickets)"
 }
 
 # ===========================================================================
@@ -217,6 +222,11 @@ test_E_big_bang_comment_dedup() {
     local total_issue_bb
     total_issue_bb="$(printf '%s\n' "$second_journal" | grep -c 'gh issue comment 3009' | head -1 || true)"
     assert_eq "1" "$total_issue_bb" "tick 2: big-bang comment NOT re-posted (dedup)"
+
+    # Декомпозиция-карточка тоже не должна пересоздаваться на тике 2.
+    local total_decomp
+    total_decomp="$(printf '%s\n' "$second_journal" | grep -c 'hermes kanban --board robbox create .*--skill to-tickets' || true)"
+    assert_eq "1" "$total_decomp" "tick 2: decomposition card NOT re-created (dedup)"
 }
 
 # ===========================================================================

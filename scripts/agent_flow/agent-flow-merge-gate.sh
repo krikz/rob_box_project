@@ -4540,6 +4540,35 @@ Merge-gate блокирует e2e-ротацию: ${NEEDS_E2E_LABEL} не буд
             whoami_add_label "$number" "agent-flow:big-bang-blocked" \
                 "big-bang threshold violation: PR #${pr_number} превышает лимит (merge-gate ждёт ${BIG_BANG_OVERRIDE_LABEL} от Шифу)"
             gh issue edit "$number" --repo "$GH_REPO" --add-label "agent-flow:big-bang-blocked" >/dev/null 2>&1 || true
+            # --- декомпозиция вместо «блокирую, разбивайте сами» (ретро 05.09,
+            # план «big-bang guard → architect + to-tickets») ----------------
+            # Вместо голого «split» в комменте заводим architect-карточку со
+            # скиллом to-tickets, которая сама декомпозирует большой PR на
+            # tracer-bullet тикеты. Идемпотентно: карточка создаётся только
+            # когда big-bang-коммент постится впервые (та же 24h-дедупликация
+            # выше), повторные тики до истечения 24h дубль не плодят.
+            _bb_card_body="Ретро: big-bang gate (ADR-0013) заблокировал PR #${pr_number} на issue #${number}.
+
+Причина: ${_bb_reasons% ;} (лимиты: ${BIG_BANG_MAX_COMMITS} коммитов / ${BIG_BANG_MAX_LINES} строк).
+
+Задача (скилл to-tickets): декомпозируй этот большой PR на набор инкрементальных tracer-bullet тикетов — по одному эпику на issue, каждый вертикальный срез, который можно заверить отдельно. См. ADR-0013 и CONTRIBUTING.md §69-71.
+
+Исходные данные:
+- issue: #${number}
+- PR: #${pr_number}"
+            if hermes kanban --board "$KANBAN_BOARD" create \
+                --assignee architect \
+                --skill to-tickets \
+                --priority 70 \
+                --max-runtime 1800 \
+                --body "$_bb_card_body" \
+                --created-by "agent-flow-merge-gate" \
+                "🔪 split PR #${pr_number} — big-bang декомпозиция (ADR-0013)" \
+                >/dev/null 2>&1; then
+                log "issue #${number}: big-bang decomposition card created (architect + to-tickets) for PR #${pr_number}"
+            else
+                log "issue #${number}: WARNING big-bang decomposition card create failed for PR #${pr_number} (не блокируем — коммент/label уже выставлены)"
+            fi
             labeled=$((labeled+1)); continue
         fi
     fi
