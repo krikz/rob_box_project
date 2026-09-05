@@ -31,7 +31,8 @@ pass() { echo "  PASS: $*"; }
 REPO="$WORK/repo"
 mkdir -p "$REPO/.agents/skills"
 for s in systematic-debugging test-driven-development codebase-design \
-         verification-before-completion agent-flow; do
+         verification-before-completion agent-flow \
+         code-review to-tickets resolving-merge-conflicts ponytail; do
     mkdir -p "$REPO/.agents/skills/$s"
     printf -- '---\nname: %s\n---\n# %s body\n' "$s" "$s" > "$REPO/.agents/skills/$s/SKILL.md"
 done
@@ -52,6 +53,8 @@ echo "TEST1 (--list-skills):"; echo "$OUT1"
 echo "$OUT1" | grep -q "systematic-debugging" || fail "allowlist missing systematic-debugging"
 echo "$OUT1" | grep -q "test-driven-development" || fail "allowlist missing test-driven-development"
 echo "$OUT1" | grep -q "codebase-design" || fail "allowlist missing codebase-design"
+echo "$OUT1" | grep -q "code-review" || fail "allowlist missing code-review"
+echo "$OUT1" | grep -q "ponytail" || fail "allowlist missing ponytail"
 pass "list-skills"
 
 # TEST 2: dry-run не создаёт файлов -----------------------------------------
@@ -69,6 +72,10 @@ echo "TEST3 (real run):"; echo "$OUT3"
     || fail "backend: agent-flow not delivered"
 [ -f "$HERMES/profiles/devops/skills/repo/codebase-design/SKILL.md" ] \
     || fail "devops: codebase-design not delivered"
+[ -f "$HERMES/profiles/backend/skills/repo/code-review/SKILL.md" ] \
+    || fail "backend: code-review not delivered"
+[ -f "$HERMES/profiles/devops/skills/repo/ponytail/SKILL.md" ] \
+    || fail "devops: ponytail not delivered"
 cmp -s "$HERMES/profiles/backend/skills/repo/systematic-debugging/SKILL.md" \
        "$REPO/.agents/skills/systematic-debugging/SKILL.md" \
     || fail "delivered SKILL.md differs from source"

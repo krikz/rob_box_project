@@ -292,7 +292,7 @@ print(json.dumps(keep, ensure_ascii=False))
 #   tester        → sdlc-review             (process-ревью в SDLC цикле)
 #   agent-flow    → agent-flow-merge-gate   (специфический для agent-flow)
 #   architect     → agent-flow-pipeline-ops (pipeline-проектирование)
-#   pr-reviewer   → sdlc-review             (ревью PR в SDLC)
+#   pr-reviewer   → code-review             (двухосевое ревью diff: Standards+Spec)
 #   default       → simplify-code           (shared через symlink, всегда есть)
 #
 # Проверка наличия: walk <PROFILE>/skills/SKILL.md (symlink-following),
@@ -319,7 +319,7 @@ af_skill_for_profile() {  # $1=assignee  $2=labels_csv (optional)
         tester)         _role_candidate="sdlc-review" ;;
         agent-flow)     _role_candidate="agent-flow-merge-gate" ;;
         architect)      _role_candidate="agent-flow-pipeline-ops" ;;
-        pr-reviewer)    _role_candidate="sdlc-review" ;;
+        pr-reviewer)    _role_candidate="code-review" ;;
         default)        _role_candidate="simplify-code" ;;
         *)              _role_candidate="simplify-code" ;;  # shared default fallback
     esac

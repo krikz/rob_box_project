@@ -114,6 +114,12 @@ repo-скилл (`.agents/skills/<skill>`): `bug`/`type:bug` →
 `codebase-design`, `type:process` → `agent-flow`. Если type-label нет или
 task-скилл не установлен в профиле — fallback на роль (как раньше).
 
+Роль-маппинг (база): `pr-reviewer` → `code-review` (двухосевое ревью diff),
+`tester` → `sdlc-review`, `backend`/`devops` → `git-workflow`,
+`architect` → `agent-flow-pipeline-ops`. Дополнительно доставляются, но НЕ
+являются первичным `--skill`: `to-tickets` (его явно передаёт big-bang guard
+architect-карточке), `resolving-merge-conflicts`, `ponytail`.
+
 Но repo-скиллы живут в репо, а профили воркеров их не видят — раньше
 доставки не было, и любой скилл из репо улучшал только сессии Шифу.
 `sync-skills.sh` закрывает дыру: раскладывает allowlist-скиллы hardlink-ами
@@ -127,7 +133,10 @@ bash <repo>/scripts/agent_flow/sync-skills.sh             # реальная р�
 ```
 
 - **Allowlist** — `SKILL_SYNC_ALLOWLIST` в `sync-skills.sh` (владелец списка —
-  этот файл; `af_skill_for_profile` маппит только на скиллы отсюда).
+  этот файл; `af_skill_for_profile` маппит только на скиллы отсюда):
+  `systematic-debugging`, `test-driven-development`, `codebase-design`,
+  `verification-before-completion`, `agent-flow`, `code-review`, `to-tickets`,
+  `resolving-merge-conflicts`, `ponytail`.
 - **Профили** — `SKILL_TARGET_PROFILES` (backend/devops/tester/pr-reviewer/
   architect/agent-flow/analyst); override через `SKILL_SYNC_PROFILES`.
 - **Вызывается** install.sh best-effort (после раскладки скриптов) — сбой

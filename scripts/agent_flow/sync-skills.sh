@@ -79,6 +79,11 @@ SKILL_SYNC_ALLOWLIST=(
     codebase-design
     verification-before-completion
     agent-flow
+    # Вторая волна (05.09, план «4 скилла mattpocock»):
+    code-review               # первичный для pr-reviewer (двухосевое ревью diff)
+    to-tickets                # явно передаётся big-bang guard'ом (architect-карточка)
+    resolving-merge-conflicts # доступен всем профилям на merge/rebase конфликтах
+    ponytail                  # доступен backend/devops (YAGNI-лестница, DRY)
 )
 
 if [ "${1:-}" = "--list-skills" ]; then
