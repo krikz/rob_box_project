@@ -909,19 +909,21 @@ class QuestBridge:
         # остаётся приоритетом; cmd_vel_quest публикует нули.
         self._pub_quest.publish(msg)
 
-    # --- AV-16: supervisor API (bridge реализация) ------------------------
+    # --- AV-16/#1987: avatar_arbiter API (bridge реализация) -----------
 
     def supervisor_acquire_floor(self, client_id: str, floor: str) -> dict:
-        """Sync-обёртка: ``AcquireFloor`` сервис supervisor-а.
+        """Sync-обёртка: ``AcquireFloor`` сервис avatar_arbiter-а.
 
         Контракт см. ws_server.Bridge.supervisor_acquire_floor (Protocol).
         Реализация: ``asyncio.run_coroutine_threadsafe(call_service, loop)``
         на ROS-executor — критично, потому что ``client.call_async(req)
         .call_service`` — async и блокирует aiohttp event-loop.
 
-        Если ROS-клиент недоступен (dev-env без rclpy, или supervisor ещё не
-        задеплоен) → возвращаем ``applied=False/reason=service_unavailable``
-        и логируем warning один раз.
+        Арбитраж floor вынесен из супервизора в отдельную ноду
+        ``avatar_arbiter`` (ADR-0051 §2.2, issue #1987). Если ROS-клиент
+        недоступен (dev-env без rclpy, или арбитр ещё не задеплоен) →
+        возвращаем ``applied=False/reason=service_unavailable`` и логируем
+        warning один раз.
         """
         if self._srv_acquire is None:
             return self._supervisor_unavailable("acquire_floor")
@@ -940,8 +942,8 @@ class QuestBridge:
         """``SET_MODE`` (0x30) → сервис ``set_avatar_mode``.
 
         Целевой режим уходит на провод КАК ЕСТЬ. Маппинг «режим → FSM-
-        событие» живёт только в супервизоре
-        (``supervisor_node.MODE_TRANSITIONS``, AV-12): одно событие значит
+        событие» живёт только в арбитре
+        (``arbiter_node.MODE_TRANSITIONS``, AV-12): одно событие значит
         разные переходы из разных режимов, поэтому клиентская копия
         таблицы обязана разъехаться. Здесь она и была неверной —
         ``mixed`` жёстко маппился в ``quest_acquire_floor_teleop_only``,
@@ -1064,8 +1066,9 @@ class QuestBridge:
     def on_avatar_state(self, msg) -> None:
         """ROS subscription /avatar/state (transient_local, depth 1).
 
-        Payload — ``std_msgs/String``, декодированный supervisor'ом как
-        latin-1-mapped msgpack bytes (см. supervisor_node._publish_avatar_state).
+        Payload — ``std_msgs/String``, декодированный avatar_arbiter-ом как
+        latin-1-mapped msgpack bytes (см. arbiter_node._publish_avatar_state;
+        арбитраж floor вынесен из supervisor_node, issue #1987).
         Декодируем **только** через ``rob_box_supervisor.core.state.unpack``
         (AV-14), сохраняем bytes в cache и пушим в WS через ws_server.
         """
@@ -1117,8 +1120,9 @@ def _trigger_response_to_dict(response: Any) -> dict:
     """std_srvs/Trigger response (success + message) → dict для ws_server.
 
     ``response.message`` несёт JSON с полями ``applied/granted/reason`` —
-    см. supervisor_node._fill_floor_response. Парсим без жёсткой зависимости
-    от её содержимого: всё, что в response.success — флаг, остальное парсим.
+    см. arbiter_node._fill_floor_response (арбитр, #1987). Парсим без
+    жёсткой зависимости от её содержимого: всё, что в response.success —
+    флаг, остальное парсим.
     """
     import json as _json
 
@@ -1299,32 +1303,35 @@ class QuestNode(Node):
         # от имени client_id (см. WSSServer._on_json_cmd).
         self._heartbeat_pub = self.create_publisher(String, "/teleop_heartbeat", _RE)
 
-        # AV-16: supervisor service-clients (sync-вызовы из WS-handler через
-        # run_coroutine_threadsafe). std_srvs/Trigger — Phase 1 IDL; Supervisor
-        # принимает client_id/floor/event через getattr-атрибуты запроса
-        # (см. supervisor_node._extract_*). Сервисы могут отсутствовать
-        # в dev-env / на старте supervisor-а → QuestBridge получает None и
+        # AV-16/#1987: supervisor service-clients (sync-вызовы из WS-handler
+        # через run_coroutine_threadsafe). std_srvs/Trigger — Phase 1 IDL;
+        # avatar_arbiter (новая нода без LLM, ADR-0051 §2.2) принимает
+        # client_id/floor/mode через getattr-атрибуты запроса (см.
+        # arbiter_node._extract_*). Абсолютные имена /avatar_arbiter/*:
+        # нода больше НЕ у супервизора (арбитраж floor вынесен из
+        # supervisor_node, issue #1987). Сервисы могут отсутствовать в
+        # dev-env / на старте арбитра → QuestBridge получает None и
         # отвечает ``service_unavailable`` (см. _supervisor_unavailable).
         from std_srvs.srv import Trigger  # noqa: PLC0415 — локальный импорт
 
         try:
             self._srv_acquire = self.create_client(
                 Trigger,
-                "acquire_floor",
+                "/avatar_arbiter/acquire_floor",
             )
         except Exception:  # pragma: no cover — rclpy без executor
             self._srv_acquire = None
         try:
             self._srv_release = self.create_client(
                 Trigger,
-                "release_floor",
+                "/avatar_arbiter/release_floor",
             )
         except Exception:  # pragma: no cover
             self._srv_release = None
         try:
             self._srv_set_mode = self.create_client(
                 Trigger,
-                "set_avatar_mode",
+                "/avatar_arbiter/set_avatar_mode",
             )
         except Exception:  # pragma: no cover
             self._srv_set_mode = None

@@ -382,6 +382,49 @@ services:
     labels:
       logging: "promtail"
 
+  # ============ Avatar Arbiter (ADR-0051 §2.2, issue #1987) ============
+  # Отдельная нода без LLM: арбитр floor/FSM (LockManager, ModeManager,
+  # агрегатор), сервисы /avatar_arbiter/{acquire_floor,release_floor,
+  # set_avatar_mode}, публикация /avatar/state. Арбитраж вынесен из
+  # supervisor (там остались голос + супервизор-агент оператора).
+  #
+  # Переиспользует supervisor-образ: тот собирает ВЕСЬ пакет
+  # rob_box_supervisor (console_scripts: supervisor_node + avatar_arbiter).
+  avatar-arbiter:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:supervisor-${ROS_DISTRO:-humble}-${SUPERVISOR_TAG:-${IMAGE_TAG}}
+    container_name: avatar-arbiter
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - ROS_DISTRO=humble
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - PYTHONUNBUFFERED=1
+      # Арбитр по умолчанию в active-режиме — это его единственная роль
+      # (он не monitor-нода). Захват/освобождение floor + FSM работают.
+      - AVATAR_ARBITER_MODE=active
+    volumes:
+      - ./config:/config:ro
+      - ./scripts:/ros_scripts:ro
+      - ./scripts/supervisor:/scripts:ro
+    command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_arbiter.sh"]
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'avatar_arbiter' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    labels:
+      logging: "promtail"
+
   # ============ Meta Quest WebXR-консоль (Phase 1.6, ADR-0027) ============
   # Лёгкий лёгкий сервис (caddy:2-alpine + aiohttp): статика WebXR-клиента +
   # reverse_proxy на rob_box_quest. Self-signed TLS, без certbot.

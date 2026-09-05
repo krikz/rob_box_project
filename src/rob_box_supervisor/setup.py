@@ -23,6 +23,8 @@ setup(
     entry_points={
         "console_scripts": [
             "supervisor_node = rob_box_supervisor.supervisor_node:main",
+            # ADR-0051 §2.2 / issue #1987 — арбитр floor/FSM без LLM.
+            "avatar_arbiter = rob_box_supervisor.arbiter_node:main",
         ],
     },
 )
