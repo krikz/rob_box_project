@@ -28,6 +28,7 @@ except ImportError:  # pragma: no cover — окружение без audio_comm
     AudioData = None  # type: ignore[assignment]
 
 from rob_box_core.avatar_command import (
+    AVATAR_COMMAND_RESULT_TOPIC,
     AVATAR_COMMAND_TOPIC,
     build_command,
     encode_command,
@@ -157,6 +158,16 @@ class TelegramNode(Node):
         # оператор не должен потерять команду при всплеске трафика.
         self._avatar_command_pub = self.create_publisher(
             String, AVATAR_COMMAND_TOPIC, _RE
+        )
+        # issue #1988 — consumer /avatar/command_result: ответ ТАРС уходит
+        # оператору в исходный чат (см. _on_avatar_command_result).
+        # QoS = publisher'а супервизора (RELIABLE/KEEP_LAST/volatile).
+        self._avatar_command_result_sub = self.create_subscription(
+            String,
+            AVATAR_COMMAND_RESULT_TOPIC,
+            self._on_avatar_command_result,
+            _RE,
+            callback_group=g,
         )
         # Issue #1195 — restore the echo path: dialogue/TTS output is
         # duplicated into the active Telegram chat so the operator sees
@@ -424,6 +435,61 @@ class TelegramNode(Node):
     def radio(self) -> RadioPublisher:
         """AV-23: per-chat /radio паблишер (handler'ы зовут его)."""
         return self._radio
+
+    def _on_avatar_command_result(self, msg: String) -> None:
+        """Relay /avatar/command_result into the originating Telegram chat.
+
+        issue #1988 (шаг 4а): Telegram шлёт команду в /avatar/command с
+        ``client_id='telegram:<chat_id>'``; супервизор (ТАРС) отвечает в
+        /avatar/command_result с ``request_id='telegram:<chat_id>:<ts_ms>'``.
+        Здесь извлекаем chat_id из request_id и уводим summary оператору
+        тем же echo-путём, что диалоговые ответы (_response_queue →
+        _chat_echo_worker). Несводимый request_id (uuid4 — malformed_input)
+        → fallback на active-чат, иначе drop.
+        """
+        try:
+            payload = json.loads(msg.data or "")
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        summary = str(payload.get("summary", "") or "").strip()
+        if not summary:
+            return
+        ok = bool(payload.get("ok"))
+        chat_id = self._resolve_avatar_result_chat(
+            str(payload.get("request_id", "") or "")
+        ) or self._active_chat_id
+        loop, queue = self._telegram_loop, self._response_queue
+        if not (loop and queue and chat_id):
+            self.get_logger().debug(
+                "Dropping avatar command_result (bot not ready / no chat)"
+            )
+            return
+        text = summary if ok else f"⚠️ {summary}"
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, (int(chat_id), text))
+        except (RuntimeError, TypeError) as exc:
+            # Loop closed underneath us — drop rather than crash the executor.
+            self.get_logger().error(
+                f"Failed to schedule TG avatar result: {exc!r}"
+            )
+
+    @staticmethod
+    def _resolve_avatar_result_chat(request_id: str) -> Optional[int]:
+        """'telegram:<chat_id>:<ts_ms>' → int(chat_id); иначе None."""
+        if not request_id:
+            return None
+        try:
+            prefix, _ts = request_id.rsplit(":", 1)
+        except (ValueError, AttributeError):
+            return None
+        if not prefix.startswith("telegram:"):
+            return None
+        try:
+            return int(prefix[len("telegram:") :])
+        except (TypeError, ValueError):
+            return None
 
     def _on_response(self, msg: String) -> None:
         """Echo dialogue/TTS output back into the active Telegram chat.

@@ -9,8 +9,9 @@
   * voice-управление ``dialogue_node``/``tts_node``: ``/avatar/set_voice_mode``,
     ``/avatar/set_voice_preset``, ``/avatar/set_voice_language``,
     ``/avatar/set_voice``, ``/avatar/preview_voice*`` (ADR-0028 S5, AV-27/28);
-  * супервизор-агент оператора (AV-21): ``/avatar/command`` →
-    ``/avatar/command_result`` через OperatorHarness + voice-mode swap.
+  * супервизор-агент оператора (ТАРС, issue #1988): ``/avatar/command`` и
+    ``/avatar/stt/result`` → ``AgentCore`` (промпт оператора) →
+    ``/avatar/command_result`` + voice-mode swap.
 
 Параметр ``mode`` (default ``"monitor"``) остаётся гейтом применения
 voice-параметров: в ``monitor`` супервизор не трогает чужие параметры
@@ -162,6 +163,11 @@ VOICE_LANGUAGES: tuple[str, ...] = ("ru", "en", "fr", "de", "zh", "hi")
 # будут карточки-после (AV-22: Quest STT, Telegram-текст).
 AVATAR_COMMAND_TOPIC: str = "/avatar/command"
 AVATAR_COMMAND_RESULT_TOPIC: str = "/avatar/command_result"
+# Вейк-вход оператора (шаг 05, issue #1990). Топик создаёт stt_node
+# (wake-роутер); пока шаг 05 не смержен — подписка дремлет (в ROS
+# подписка на несуществующий топик безвредна). Payload v1 — как
+# /avatar/command, поэтому обработчик тот же (_on_avatar_command).
+AGENT_STT_RESULT_TOPIC: str = "/avatar/stt/result"
 
 # Какой ``voice_input_mode`` выставлять на ``dialogue_node`` пока супервизор
 # обрабатывает команду оператора. ``"off"`` — «диалог off» (W3-1, полное
@@ -175,7 +181,7 @@ AGENT_DURING_VOICE_MODE_DEFAULT: str = "off"
 # (расширяемость — future: ``"web"``, ``"admin"``).
 AGENT_COMMAND_SOURCES: tuple[str, ...] = ("quest", "telegram")
 
-# Timeout ожидания ответа от OperatorHarness при обработке команды
+# Timeout ожидания ответа операторского агента при обработке команды
 # (защита от зависшего LLM, который отправил запрос и не вернул
 # ответ). В текущем PR — без жёсткого таймаута, но константа здесь,
 # чтобы Phase 2 не пришлось переписывать.
@@ -188,7 +194,7 @@ AGENT_COMMAND_TIMEOUT_S: float = 30.0
 # переехало в rob_box_supervisor/arbiter_node.py (AvatarArbiter), который
 # владеет LockManager/FSM и /avatar/state. Этот модуль (AvatarSupervisor)
 # остаётся за голосом (voice-параметры dialogue_node/tts_node) и
-# супервизор-агентом (/avatar/command → OperatorHarness).
+# супервизор-агентом ТАРС (/avatar/command + /avatar/stt/result → AgentCore).
 
 
 class AvatarSupervisor(Node):
@@ -197,18 +203,17 @@ class AvatarSupervisor(Node):
     Арбитраж floor/FSM + /avatar/state вынесены в отдельную ноду
     ``avatar_arbiter`` (ADR-0051 §2.2, issue #1987): здесь остаются
     voice-параметры (``/avatar/set_voice_mode``, preset/language,
-    ``/avatar/set_voice``, preview) и агент оператора (``/avatar/command``
-    → OperatorHarness). Клиент floor-сервисов теперь ходит на
-    ``/avatar_arbiter/*``.
+    ``/avatar/set_voice``, preview) и агент оператора ТАРС
+    (``/avatar/command`` + ``/avatar/stt/result`` → ``AgentCore``).
+    Клиент floor-сервисов ходит на ``/avatar_arbiter/*``.
     """
 
-    # ── AGENT_* параметры (AV-21) ────────────────────────────────────
-    # ``agent_enabled`` гейт всего agent-прохода (default false — без
-    # включения нода ведёт себя как сегодня). ``system_prompt_file`` —
-    # имя файла в ``rob_box_harness/prompts/`` (см. _load_system_prompt).
-    # ``agent_during_voice_mode`` — какой voice_input_mode выставлять на
-    # dialogue_node на время обработки команды (default "off" —
-    # "диалог off", полное управление оператора).
+    # ── AGENT_* параметры (AV-21, ТАРС / issue #1988) ───────────────
+    # ``agent_enabled`` гейт всего agent-прохода (default true — ТАРС
+    # работает сразу). ``system_prompt_file`` — имя файла в
+    # ``rob_box_supervisor/prompts/``. ``agent_during_voice_mode`` — какой
+    # voice_input_mode выставлять на dialogue_node на время обработки
+    # команды (default "off" — "диалог off", полное управление оператора).
     AGENT_ENABLED_PARAM = "agent_enabled"
     SYSTEM_PROMPT_FILE_PARAM = "system_prompt_file"
     AGENT_DURING_VOICE_MODE_PARAM = "agent_during_voice_mode"
@@ -264,20 +269,36 @@ class AvatarSupervisor(Node):
         # (минимальный контакт с tts_node, в monitor — не создаётся).
         self._tts_param_client = None
 
-        # ── AV-21: супервизор-агент «мозг оператора» ────────────────
-        # Параметры (см. ``AGENT_*_PARAM`` выше). ``agent_enabled`` —
-        # мастер-гейт: при false нода ведёт себя как сегодня, никаких
-        # tool-каллов и свапов голоса. ``system_prompt_file`` —
-        # override имени файла в rob_box_harness/prompts/. ``agent_during_voice_mode``
-        # — какой voice_input_mode ставить на время обработки команды
-        # (default "off" — полное управление оператора).
-        self.declare_parameter(self.AGENT_ENABLED_PARAM, False)
+        # ── AV-21/ТАРС (issue #1988): супервизор-агент оператора ────
+        # ``agent_enabled`` default true — мастер-гейт всего agent-прохода;
+        # при false нода ведёт себя как до 4а (никаких tool-каллов/свапов
+        # голоса). Движок создаётся ЛЕНИВО (см. _ensure_agent_core) — при
+        # enabled=false нода не инстанцирует LLM / Tools / Memory и не
+        # делает лишнего ввода-вывода. Инвариант тестов: enabled=false →
+        # core не создаётся.
+        self.declare_parameter(self.AGENT_ENABLED_PARAM, True)
         self.declare_parameter(
             self.SYSTEM_PROMPT_FILE_PARAM, "operator_system_prompt.txt"
         )
         self.declare_parameter(
             self.AGENT_DURING_VOICE_MODE_PARAM, AGENT_DURING_VOICE_MODE_DEFAULT
         )
+        # ── LLM / tools / память оператора (issue #1988) ─────────────
+        # Дефолты повторяют dialogue_node (один провайдер — deepseek из
+        # env). Полный health-fallback chain — отдельная карточка позже.
+        self.declare_parameter("llm_providers", "deepseek")
+        self.declare_parameter("temperature", 0.0)
+        self.declare_parameter("max_tokens", 0)
+        self.declare_parameter("llm_streaming", False)
+        self.declare_parameter("history_max_turns", 10)
+        # tool_provider: "ros_mcp" (реальные MCP-инструменты через
+        # LLMToolCallAdapter → /mcp/execute), "fake"/"none" — тесты/smoke.
+        self.declare_parameter("tool_provider", "ros_mcp")
+        # Память оператора — ОТДЕЛЬНАЯ база (не пересекается с личностью;
+        # namespace-ы — шаг 10, #2000). Журнал ТАРС — JSONL со
+        # схлопыванием повторов (§5.4).
+        self.declare_parameter("operator_db_path", "/data/operator_memory.db")
+        self.declare_parameter("journal_path", "/data/operator_journal.jsonl")
         self._agent_enabled: bool = bool(
             self.get_parameter(self.AGENT_ENABLED_PARAM).value
         )
@@ -290,12 +311,14 @@ class AvatarSupervisor(Node):
             or AGENT_DURING_VOICE_MODE_DEFAULT
         )
 
-        # OperatorHarness создаётся ЛЕНИВО (см. _ensure_agent_harness):
-        # при ``agent_enabled=false`` мы не должны инстанцировать LLM /
-        # Tools / Memory, чтобы нода в monitor-режиме не делала лишнего
-        # ввода-вывода. Инвариант тестов: enabled=false → harness не
-        # создаётся.
-        self._agent_harness: Any = None
+        # AgentCore создаётся ЛЕНИВО (см. _ensure_agent_core): при
+        # ``agent_enabled=false`` мы не должны инстанцировать LLM /
+        # Tools / Memory. DSM оператора держим рядом с core — перед
+        # каждым входом гоним его в DIALOGUE (см. _run_agent_sync).
+        self._agent_core: Any = None
+        self._operator_dsm: Any = None
+        # Журнал ТАРС (§5.4) — тоже лениво, персист по journal_path.
+        self._operator_journal: Any = None
         # Текущий ``voice_input_mode`` dialogue_node — нужен для
         # _voice_mode_swap (восстановить прежнее значение в finally).
         # ``None`` = мы не знаем (первый swap после старта) → в finally
@@ -313,6 +336,11 @@ class AvatarSupervisor(Node):
         # Подписка /avatar/command — JSON с командой оператора.
         self.create_subscription(
             RosString, AVATAR_COMMAND_TOPIC, self._on_avatar_command, 10
+        )
+        # Подписка /avatar/stt/result — вейк-вход оператора (шаг 05,
+        # #1990). Дремлющая: до появления публикатора безвредна.
+        self.create_subscription(
+            RosString, AGENT_STT_RESULT_TOPIC, self._on_avatar_command, 10
         )
 
         # Метрики (см. rob_box_voice.observability.metrics). Регистрируются
@@ -820,85 +848,514 @@ class AvatarSupervisor(Node):
         """
         return None
 
-    # ── helpers: harness ─────────────────────────────────────────────────────────────
+    # ── helpers: AgentCore (issue #1988, шаг 4а) ───────────────────────
+    # OperatorHarness заменён на AgentCore: промпт оператора, реальный
+    # ROSMCPToolProvider, память namespace operator (отдельная БД) и
+    # журнал ТАРС (§5.4, operator_journal.py). Сборка ленивая — только
+    # при agent_enabled=true и первом входе.
 
-    def _build_agent_harness_sync(self) -> Any:
-        """Создать и ``init()``-нуть OperatorHarness.
+    def _param_str(self, name: str, default: str = "") -> str:
+        """Прочитать string-параметр с защитой от необъявленного (rclpy)."""
+        try:
+            return str(self.get_parameter(name).value or default)
+        except Exception:  # noqa: BLE001 — необъявленный/битый параметр
+            return default
 
-        Импорт ленивый: ``rob_box_harness`` — opt dep для
-        ``rob_box_supervisor``, в минимальном CI-env может отсутствовать.
-        При отсутствии — публикуем ``ok=false, summary="harness_unavailable"``
-        в /avatar/command_result (а не валим ноду).
+    def _param_int(self, name: str, default: int = 0) -> int:
+        try:
+            return int(self.get_parameter(name).value or default)
+        except Exception:  # noqa: BLE001
+            return default
 
-        ``init()`` асинхронный, дрок-вызываем в новом asyncio-цикле
-        (см. _run_harness_sync). Это безопасно для тестов с FakeLLMProvider
-        (он sync-friendly) и для прод-вызовов в ROS callback (rclpy.spin
-        блокирует основной поток; asyncio.run в callback создаёт свой
-        loop, отрабатывает, закрывает — но конфликта с rclpy-loop нет,
-        т.к. rclpy использует свой собственный event loop в C).
+    def _param_bool(self, name: str, default: bool = False) -> bool:
+        try:
+            return bool(self.get_parameter(name).value or default)
+        except Exception:  # noqa: BLE001
+            return default
+
+    def _ensure_agent_core(self) -> Any:
+        """Ленивая сборка операторского AgentCore (один раз на ноду).
+
+        Тест-инвариант: ``agent_enabled=false`` → core НЕ создаётся
+        (в _on_avatar_command _ensure_agent_core не вызывается). Кеш в
+        ``self._agent_core`` — чтобы на каждый /avatar/command не
+        пересобирать AgentCore (там LLM/Tools/Memory init дорого).
+        """
+        if self._agent_core is None:
+            core, dsm = self._build_agent_core_sync()
+            if core is not None:
+                self._agent_core = core
+                self._operator_dsm = dsm
+        return self._agent_core
+
+    def _build_agent_core_sync(self) -> tuple[Any, Any]:
+        """Собрать ``(AgentCore, DialogueStateMachine)`` оператора.
+
+        Импорты ленивые: ``rob_box_harness`` — opt dep для
+        ``rob_box_supervisor``. Любой сбой сборки логируем и возвращаем
+        ``(None, None)`` — нода публикует ``agent_unavailable`` и
+        продолжает жить (ADR-0018: честный FAIL, а не падение ноды).
         """
         try:
-            from rob_box_harness.config import HarnessConfig  # noqa: PLC0415
-            from rob_box_harness.harnesses.operator import (
-                OperatorHarness,
-            )  # noqa: PLC0415
+            from rob_box_harness.core.agent_core import AgentCore  # noqa: PLC0415
+            from rob_box_harness.core.dialogue_state_machine import (  # noqa: PLC0415
+                DialogueStateMachine,
+            )
         except ImportError as exc:
-            self._log.warning(f"_build_agent_harness_sync: import failed: {exc}")
-            return None
+            self._log.warning(f"_build_agent_core_sync: import failed: {exc}")
+            return (None, None)
 
-        config = HarnessConfig(harness="operator", name="operator_agent")
-        harness = OperatorHarness(config, prompt_file=self._system_prompt_file)
+        llm = self._build_operator_llm()
+        if llm is None:
+            return (None, None)
+        tools = self._build_operator_tools()
+        if tools is None:
+            return (None, None)
+        memory = self._build_operator_memory()
+        system_prompt = self._load_operator_system_prompt()
+        if not system_prompt:
+            self._log.warning("_build_agent_core_sync: operator system prompt empty")
+            return (None, None)
+        skill_prompts = self._load_operator_skill_prompts()
+        dsm = DialogueStateMachine()
         try:
-            asyncio.run(harness.init())
-        except Exception as exc:  # noqa: BLE001 — ленивый init падать не должен
+            core = AgentCore(
+                llm=llm,
+                tools=tools,
+                memory=memory,
+                dsm=dsm,
+                system_prompt=system_prompt,
+                skill_prompts=skill_prompts,
+                narrow_tools_to_skill=False,
+                use_streaming=self._param_bool("llm_streaming", False),
+                history_trim_limit=self._param_int("history_max_turns", 10),
+                llm_settings=self._build_operator_llm_settings(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(f"_build_agent_core_sync: AgentCore build failed: {exc}")
+            return (None, None)
+        try:
+            core.set_active_skill("operator.speech")
+        except Exception:  # noqa: BLE001 — срез опционален
+            pass
+        # Журнал ТАРС создаём вместе с core (персист — best-effort).
+        self._operator_journal = self._build_operator_journal()
+        return (core, dsm)
+
+    def _build_operator_llm(self) -> Any:
+        """Построить LLM-провайдер оператора (дефолт — deepseek из env).
+
+        Single-provider достаточно для 4а (решение Шифу). Полный
+        health-fallback chain как у dialogue_node — отдельная карточка.
+        """
+        try:
+            from rob_box_harness.providers import (  # noqa: PLC0415
+                DEEPSEEK_DEFAULT_BASE_URL,
+                DEEPSEEK_DEFAULT_MODEL,
+                LLM_PROVIDER_REGISTRY,
+                build_deepseek_provider,
+            )
+        except ImportError as exc:
+            self._log.warning(f"_build_operator_llm: providers import failed: {exc}")
+            return None
+        chain_raw = self._param_str("llm_providers", "deepseek")
+        names = [p.strip().lower() for p in chain_raw.split(",") if p.strip()] or [
+            "deepseek"
+        ]
+        built: list[Any] = []
+        for name in names:
+            entry = LLM_PROVIDER_REGISTRY.get(name)
+            if entry is None:
+                self._log.warning(
+                    f"_build_operator_llm: unknown provider {name!r} skipped"
+                )
+                continue
+            api_key = os.environ.get(str(entry.get("env_key_var", "") or "")) or None
+            base_url = str(
+                entry.get("default_base_url", "") or DEEPSEEK_DEFAULT_BASE_URL
+            )
+            model = str(entry.get("default_model", "") or DEEPSEEK_DEFAULT_MODEL)
+            try:
+                if name == "minimax":
+                    from rob_box_harness.config import LLMConfig  # noqa: PLC0415
+                    from rob_box_harness.providers import (  # noqa: PLC0415
+                        build_minimax_provider,
+                    )
+
+                    provider = build_minimax_provider(
+                        LLMConfig(
+                            provider="minimax",
+                            model=model,
+                            api_key=api_key,
+                            timeout_s=90.0,
+                        )
+                    )
+                else:
+                    provider = build_deepseek_provider(
+                        api_key=api_key, base_url=base_url, model=model
+                    )
+                built.append(provider)
+            except Exception as exc:  # noqa: BLE001 — один провайдер не валит цепочку
+                self._log.warning(f"_build_operator_llm: {name} build failed: {exc}")
+        if not built:
             self._log.warning(
-                f"_build_agent_harness_sync: harness.init() failed: {exc}"
+                f"_build_operator_llm: no LLM provider built (chain={names!r})"
             )
             return None
-        return harness
-
-    def _ensure_agent_harness(self) -> Any:
-        """Ленивая инициализация harness (один раз на ноду).
-
-        Тест-инвариант: ``agent_enabled=false`` → harness НЕ создаётся
-        (см. _on_avatar_command, где _ensure_agent_harness не
-        вызывается). Высжим ``self._agent_harness`` кешем, чтобы на
-        каждый /avatar/command не пересоздавать OperatorHarness (это
-        дорого — там Tools/LLM/Memory init).
-        """
-        if self._agent_harness is None:
-            self._agent_harness = self._build_agent_harness_sync()
-        return self._agent_harness
-
-    def _run_harness_sync(
-        self, harness: Any, payload: Mapping[str, Any]
-    ) -> dict[str, Any]:
-        """Дрок-вызов async ``harness.step(payload)`` в новом loop.
-
-        Возвращает mapping из ``OperatorHarness.step``. Ошибки harness-а
-        (например, LLM exception) превращаем в ``ok=False`` с внятным
-        ``summary`` — ADR-0018 в рантайме: лучше честный FAIL, чем
-        придуманное действие.
-
-        ``step()`` сам по себе async — оператор HARNESS.step
-        (``rob_box_harness/harnesses/operator.py:183``) уже ловит
-        LLM-исключения и возвращает ``ok=False, summary="llm_error: ..."``.
-        Здесь ловим только исключения самого ``asyncio.run`` (не
-        запустился loop) или init-ошибки выше по стеку.
-        """
+        if len(built) == 1:
+            return built[0]
         try:
-            result = asyncio.run(harness.run(payload))
+            from rob_box_harness.health import (  # noqa: PLC0415
+                HealthAwareFallbackLLM,
+                HealthCache,
+            )
+
+            return HealthAwareFallbackLLM(built, cache=HealthCache(), logger=self._log)
         except Exception as exc:  # noqa: BLE001
+            self._log.warning(f"_build_operator_llm: fallback wrap failed: {exc}")
+            return built[0]
+
+    def _build_operator_llm_settings(self) -> Any:
+        """``LLMSettings`` для AgentCore оператора (temperature/max_tokens)."""
+        try:
+            from rob_box_llm.provider import LLMSettings  # noqa: PLC0415
+        except ImportError:
+            return None
+        try:
+            temperature = float(self.get_parameter("temperature").value or 0.0)
+        except Exception:  # noqa: BLE001
+            temperature = 0.0
+        try:
+            max_tokens = int(self.get_parameter("max_tokens").value or 0)
+        except Exception:  # noqa: BLE001
+            max_tokens = 0
+        return LLMSettings(
+            temperature=(temperature if temperature > 0 else None),
+            max_tokens=(max_tokens if max_tokens > 0 else None),
+        )
+
+    def _build_operator_tools(self) -> Any:
+        """Реальный ToolProvider оператора (ROSMCPToolProvider поверх /mcp).
+
+        ``tool_provider=ros_mcp`` (default) — LLMToolCallAdapter → /mcp/execute
+        + манифесты ToolRegistry → адаптер legacy-контракта AgentCore.
+        ``fake``/``none`` — тесты/smoke (0 инструментов, chat-only).
+        """
+        backend = self._param_str("tool_provider", "ros_mcp").strip().lower()
+        if backend in ("fake", "none"):
+            try:
+                from rob_box_harness.tools import FakeToolProvider  # noqa: PLC0415
+            except ImportError:
+                return None
+            self._log.info(
+                f"operator tool_provider={backend}: FakeToolProvider (chat-only)"
+            )
+            return FakeToolProvider()
+        if backend != "ros_mcp":
+            self._log.warning(
+                f"unknown operator tool_provider {backend!r}; falling back to fake"
+            )
+            try:
+                from rob_box_harness.tools import FakeToolProvider  # noqa: PLC0415
+
+                return FakeToolProvider()
+            except ImportError:
+                return None
+        try:
+            from rob_box_harness.core.tool_registry import ToolRegistry  # noqa: PLC0415
+            from rob_box_harness.executors import (  # noqa: PLC0415
+                ROSMCPToolProvider,
+                adapt_tool_provider,
+            )
+            from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter  # noqa: PLC0415
+        except ImportError as exc:
+            self._log.warning(f"_build_operator_tools: MCP import failed: {exc}")
+            return None
+        try:
+            bridge = LLMToolCallAdapter(self)
+            provider = ROSMCPToolProvider(bridge)
+            registry = ToolRegistry()
+            provider.update_tools(
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": spec.name,
+                            "description": spec.description,
+                            "parameters": dict(spec.parameters),
+                        },
+                    }
+                    for spec in registry.list_tools()
+                ]
+            )
+            catalogue = provider.list_tools()
+            if not catalogue:
+                self._log.warning("_build_operator_tools: empty MCP catalogue")
+                return None
+            self._log.info(
+                f"operator tools: {len(catalogue)} MCP tools via ROSMCPToolProvider"
+            )
+            return adapt_tool_provider(provider)
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(f"_build_operator_tools: build failed: {exc}")
+            return None
+
+    def _build_operator_memory(self) -> Any:
+        """Память оператора — отдельная SQLite-база (не пересекается с
+        личностью). При сбое — InMemoryStore (нода живёт)."""
+        db = self._param_str("operator_db_path", "") or "~/.rob_box/operator_memory.db"
+        try:
+            from rob_box_harness.memory import SQLiteVoiceMemory  # noqa: PLC0415
+
+            store = SQLiteVoiceMemory(db_path=db)
+            asyncio.run(store.init())
+            return store
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(f"operator memory init failed ({exc}); InMemoryStore")
+            try:
+                from rob_box_harness.memory import InMemoryStore  # noqa: PLC0415
+
+                store = InMemoryStore()
+                try:
+                    asyncio.run(store.init())
+                except Exception:  # noqa: BLE001
+                    pass
+                return store
+            except ImportError:
+                return None
+
+    @staticmethod
+    def _resolve_prompts_dir() -> Any:
+        """Каталог ``rob_box_supervisor/prompts`` (источник истины).
+
+        Порядок: ament share (установленный пакет) → source-tree
+        (colcon symlink / unit-тесты). Возвращает ``Path`` или ``None``.
+        """
+        from pathlib import Path  # noqa: PLC0415
+
+        try:
+            from ament_index_python.packages import (  # noqa: PLC0415
+                get_package_share_directory,
+            )
+
+            share = Path(get_package_share_directory("rob_box_supervisor")) / "prompts"
+            if share.is_dir():
+                return share
+        except Exception:  # noqa: BLE001 — нет ament (unit-тесты)
+            pass
+        # Source-tree: <repo>/src/rob_box_supervisor/prompts
+        source = Path(__file__).resolve().parents[1] / "prompts"
+        return source if source.is_dir() else None
+
+    def _load_operator_system_prompt(self) -> str:
+        """Прочитать ``operator_system_prompt.txt`` (rob_box_supervisor/prompts).
+
+        Пустой/нет файла → ``""`` (сборка core честно откажется).
+        """
+        prompts_dir = self._resolve_prompts_dir()
+        if prompts_dir is None:
+            self._log.warning("operator prompts dir not found (no ament, no source)")
+            return ""
+        path = prompts_dir / (self._system_prompt_file or "operator_system_prompt.txt")
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            self._log.warning(f"operator system prompt unreadable: {path} ({exc})")
+            return ""
+
+    def _load_operator_skill_prompts(self) -> dict[str, str]:
+        """Фрагменты срезов оператора + полный каталог личности (best-effort).
+
+        Срезы ``operator.speech``/``operator.control`` — из пакета
+        supervisor (prompts/skills). Фрагменты полного каталога личности —
+        из ``rob_box_voice`` (prompts/skills), best-effort: нет пакета /
+        файла → просто нет фрагмента, инструменты из каталога остаются.
+        """
+        from pathlib import Path  # noqa: PLC0415
+
+        loaded: dict[str, str] = {}
+        prompts_dir = self._resolve_prompts_dir()
+        if prompts_dir is not None:
+            # (1) Собственные срезы оператора.
+            for name in ("operator.speech", "operator.control"):
+                path = prompts_dir / "skills" / f"{name}.txt"
+                try:
+                    text = path.read_text(encoding="utf-8").strip()
+                except OSError:
+                    continue
+                if text:
+                    loaded[name] = text
+        # (2) Полный каталог личности — best-effort.
+        try:
+            from rob_box_core.tool_catalog import skill_names  # noqa: PLC0415
+
+            try:
+                from ament_index_python.packages import (  # noqa: PLC0415
+                    get_package_share_directory,
+                )
+
+                voice_skills = (
+                    Path(get_package_share_directory("rob_box_voice"))
+                    / "prompts"
+                    / "skills"
+                )
+            except Exception:  # noqa: BLE001 — source-tree fallback (unit-тесты)
+                voice_skills = (
+                    Path(__file__).resolve().parents[2]
+                    / "rob_box_voice"
+                    / "prompts"
+                    / "skills"
+                )
+            for skill in skill_names():
+                path = voice_skills / f"{skill}.txt"
+                try:
+                    text = path.read_text(encoding="utf-8").strip()
+                except OSError:
+                    continue
+                if text:
+                    loaded[skill] = text
+        except Exception as exc:  # noqa: BLE001
+            self._log.debug(
+                f"_load_operator_skill_prompts: personality fragments skipped: {exc}"
+            )
+        if loaded:
+            self._log.info(f"operator skill fragments: {sorted(loaded)}")
+        return loaded
+
+    def _build_operator_journal(self) -> Any:
+        """Журнал ТАРС (§5.4): лог изменений со схлопыванием повторов."""
+        from rob_box_supervisor.operator_journal import OperatorJournal  # noqa: PLC0415
+
+        return OperatorJournal(
+            path=self._param_str("journal_path", "/data/operator_journal.jsonl")
+        )
+
+    def _render_journal_context(self) -> str:
+        """Свежие записи журнала для ``dynamic_system`` (AgentCore)."""
+        journal = getattr(self, "_operator_journal", None)
+        if journal is None:
+            return ""
+        try:
+            return journal.render(limit=8)
+        except Exception:  # noqa: BLE001 — журнал не роняет ход
+            return ""
+
+    def _record_operator_journal(
+        self, source: str, summary: str, tool_names: list[str]
+    ) -> None:
+        """Записать исход команды в журнал ТАРС (best-effort)."""
+        journal = getattr(self, "_operator_journal", None)
+        if journal is None:
+            return
+        try:
+            if tool_names:
+                action = "выполнил: " + ", ".join(tool_names)
+            else:
+                action = "ответил оператору"
+            outcome = (summary or "")[:80]
+            journal.record(action, outcome=outcome)
+        except Exception as exc:  # noqa: BLE001
+            self._log.debug(f"_record_operator_journal: {exc}")
+
+    def _run_agent_sync(self, core: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Один turn оператора: ``AgentCore.process_input`` → mapping.
+
+        DSM оператора гоним в DIALOGUE (зеркало dialogue_node._on_stt,
+        фикс #1217) и зовём ``process_input`` с
+        ``preclassified_event=STT_RESULT`` — прямой команде вейк-слово не
+        нужно, повторная классификация навредит (wake-слово внутри текста).
+        Журнал инжектим через ``dynamic_system``.
+
+        Mapping DialogResult → ``{ok, summary, tool_calls, error, source,
+        client_id}``: ``ok`` — агент ответил (текстом или инструментом);
+        ``summary`` — оператор-видимый текст ответа; ``tool_calls`` — имена
+        реально исполненных инструментов.
+        """
+        text = str(payload.get("text", "") or "").strip()
+        source = str(payload.get("source", "") or "")
+        client_id = str(payload.get("client_id", "") or "")
+        if not text:
+            return {
+                "ok": False,
+                "summary": "empty_input",
+                "tool_calls": [],
+                "error": "empty text",
+                "source": source,
+                "client_id": client_id,
+            }
+        try:
+            from rob_box_harness.core.dialogue_state_machine import (  # noqa: PLC0415
+                DialogueEvent,
+                DialogueStateKind,
+            )
+        except ImportError as exc:
+            return {
+                "ok": False,
+                "summary": f"agent_unavailable: {type(exc).__name__}",
+                "tool_calls": [],
+                "source": source,
+                "client_id": client_id,
+            }
+
+        # DSM-пре-драйв в DIALOGUE.
+        dsm = self._operator_dsm
+        if dsm is not None:
+            state = getattr(dsm, "current_state", None)
+            if state != DialogueStateKind.DIALOGUE:
+                if state == DialogueStateKind.IDLE:
+                    try:
+                        dsm.on_event(DialogueEvent.WAKE_WORD)
+                    except Exception:  # noqa: BLE001
+                        pass
+                try:
+                    dsm.on_event(DialogueEvent.STT_RESULT)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        journal_text = self._render_journal_context()
+        try:
+            result = asyncio.run(
+                core.process_input(
+                    text,
+                    dynamic_system=journal_text or None,
+                    preclassified_event=DialogueEvent.STT_RESULT,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — AgentCore не должен, но страхуемся
             return {
                 "ok": False,
                 "summary": f"llm_error: {type(exc).__name__}",
                 "tool_calls": [],
                 "error": str(exc),
-                "source": payload.get("source", ""),
-                "client_id": payload.get("client_id", ""),
+                "source": source,
+                "client_id": client_id,
             }
-        # HarnessRunResult.output — это mapping из step.
-        return result.output if hasattr(result, "output") else result
+
+        if getattr(result, "error", None) is not None:
+            return {
+                "ok": False,
+                "summary": f"llm_error: {type(result.error).__name__}",
+                "tool_calls": [],
+                "error": str(result.error),
+                "source": source,
+                "client_id": client_id,
+            }
+
+        spoken = (getattr(result, "spoken_text", "") or "").strip()
+        tool_names = list(getattr(result, "tools_called", None) or [])
+        if spoken:
+            ok, summary = True, spoken
+        elif tool_names:
+            ok, summary = True, "ok"
+        else:
+            ok, summary = False, "no_tool"
+        return {
+            "ok": ok,
+            "summary": summary,
+            "tool_calls": [{"name": name} for name in tool_names],
+            "source": source,
+            "client_id": client_id,
+        }
 
     # ── /avatar/command processing ─────────────────────────────────────────────────
 
@@ -976,22 +1433,22 @@ class AvatarSupervisor(Node):
         self._agent_result_pub.publish(msg)
 
     # Функция by-design ветвится на: malformed_input / agent_disabled /
-    # harness_unavailable / ok / no_tool / llm_error / outer_error.
+    # agent_unavailable / ok / no_tool / llm_error / outer_error.
     # Каждая ветка — короткий блок с побочкой (publish + metric).
     # Извлечение в helper-ы увеличит indirection без выигрыша по
     # читаемости (флоу плоский, не цикл).
     def _on_avatar_command(self, msg: RosString) -> None:  # noqa: C901
-        """ROS-callback ``/avatar/command`` — главная точка входа супервизор-агента.
+        """ROS-callback ``/avatar/command`` (и ``/avatar/stt/result``, шаг 05).
 
-        Поток (см. design.md §5.3):
+        Главная точка входа супервизор-агента (ТАРС). Поток:
           1. Парсинг JSON. Битый → публикуем ``malformed_input``, выходим.
           2. Гейт ``agent_enabled``. False → публикуем ``agent_disabled``.
-          3. Ленивая инициализация harness (один раз).
+          3. Ленивая инициализация AgentCore (один раз).
           4. ``_voice_mode_swap()`` (try/finally) — личность молчит
              пока мы работаем.
-          5. ``harness.step(payload)`` → результат.
+          5. ``AgentCore.process_input(payload)`` → результат.
           6. Публикация результата в ``/avatar/command_result``.
-          7. Метрики.
+          7. Метрики + запись в журнал ТАРС.
         """
         started_ns = time.monotonic_ns()
         raw = msg.data or ""
@@ -1025,13 +1482,13 @@ class AvatarSupervisor(Node):
                 f"{AGENT_COMMAND_SOURCES}); processing anyway"
             )
 
-        harness = self._ensure_agent_harness()
-        if harness is None:
+        core = self._ensure_agent_core()
+        if core is None:
             self._publish_command_result(
                 request_id=request_id,
-                body={"ok": False, "summary": "harness_unavailable", "tool_calls": []},
+                body={"ok": False, "summary": "agent_unavailable", "tool_calls": []},
             )
-            self._record_agent_command(source=source, result="harness_unavailable")
+            self._record_agent_command(source=source, result="agent_unavailable")
             return
 
         # Снимок «текущего» voice_input_mode ДО swap.apply — нужно
@@ -1042,7 +1499,7 @@ class AvatarSupervisor(Node):
 
         try:
             with self._voice_mode_swap():
-                result = self._run_harness_sync(harness, payload)
+                result = self._run_agent_sync(core, payload)
         except Exception as exc:  # noqa: BLE001 — НЕ ДОЛЖНО сбежать из swap
             # ``_voice_mode_swap`` имеет try/finally, но защищаемся от
             # ошибок ВНЕ swap (publish, метрики). Сам swap уже
@@ -1054,12 +1511,14 @@ class AvatarSupervisor(Node):
                 "tool_calls": [],
             }
 
-        # Нормализуем tool_calls (OperatorHarness.step уже возвращает
-        # dict-ы; дополнительно — записываем метрики на каждый tool).
+        # Нормализуем tool_calls (_run_agent_sync возвращает dict-ы вида
+        # {"name": ...}; записываем метрики на каждый tool).
         tool_calls = result.get("tool_calls", []) or []
+        tool_names: list[str] = []
         for tc in tool_calls:
             name = tc.get("name") if isinstance(tc, dict) else None
             if isinstance(name, str) and name:
+                tool_names.append(name)
                 self._record_agent_tool_call(name)
 
         latency_ms = int((time.monotonic_ns() - started_ns) / 1_000_000)
@@ -1071,6 +1530,10 @@ class AvatarSupervisor(Node):
                 "tool_calls": tool_calls,
                 "latency_ms": latency_ms,
             },
+        )
+        # Журнал ТАРС (§5.4): что сделал, когда, чем кончилось.
+        self._record_operator_journal(
+            source, str(result.get("summary", "")), tool_names
         )
 
         result_label = "ok" if result.get("ok", False) else "error"
@@ -1087,47 +1550,6 @@ class AvatarSupervisor(Node):
             result=result_label,
             latency_s=(time.monotonic_ns() - started_ns) / 1_000_000_000.0,
         )
-
-    # ── /avatar/command: pure-logic wrapper (тестируется без rclpy) ─────────
-
-    def _handle_avatar_command_logic(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        harness_factory: Any = None,
-    ) -> dict[str, Any]:
-        """Pure-логика «получили payload → вернули result».
-
-        Без side-effects (не публикует в ROS, не меняет voice_mode,
-        не дёргает метрики — это делает _on_avatar_command в
-        try/finally-disciplined fashion). Используется для unit-тестов
-        с подменой harness через ``harness_factory``.
-
-        ``harness_factory`` — callable(payload) → mapping c
-        ``ok``/``summary``/``tool_calls``. По умолчанию используется
-        ``self._agent_harness`` (если уже создан) или возвращается
-        ``ok=False, summary="harness_unavailable"``.
-
-        Тест-инвариант: если harness.step бросит исключение —
-        возвращаем ``ok=False, summary="llm_error: <type>"`` вместо
-        propagate (см. AC #7 — не выдумываем действий).
-        """
-        if not self._agent_enabled:
-            return {"ok": False, "summary": "agent_disabled", "tool_calls": []}
-        if harness_factory is not None:
-            try:
-                return harness_factory(payload)
-            except Exception as exc:  # noqa: BLE001
-                return {
-                    "ok": False,
-                    "summary": f"llm_error: {type(exc).__name__}",
-                    "tool_calls": [],
-                    "error": str(exc),
-                }
-        harness = self._agent_harness
-        if harness is None:
-            return {"ok": False, "summary": "harness_unavailable", "tool_calls": []}
-        return self._run_harness_sync(harness, payload)
 
 
 class _NoopLabelCounter:
