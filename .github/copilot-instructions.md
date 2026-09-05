@@ -232,6 +232,13 @@ docs(readme): update hardware specs
 | `writing-skills` | Написание качественных скилов |
 | `senior-devops` | CI/CD pipelines, IaC (Terraform), контейнеры, облака (AWS/GCP/Azure), оптимизация деплоя |
 | `python-expert` | Senior Python: clean code, type hints, PEP 8, оптимизация, дебаггинг, алгоритмы |
+| `grilling` | Стресс-тест идеи/плана: relentless-интервью до общего понимания (design tree) |
+| `grill-me` | Обёртка: вызывает `grilling` (стартовая точка) |
+| `grill-with-docs` | Обёртка: `grilling` + `domain-modeling` — фиксирует ADR/глоссарий по ходу |
+| `domain-modeling` | Доменная модель: CONTEXT.md, термины, ADR (формат — `CONTRIBUTING.md` §ADR-процесс) |
+| `codebase-design` | Проектирование deep modules: интерфейсы, seams, тестируемость |
+| `improve-codebase-architecture` | Скан архитектурных проблем → HTML-отчёт → grilling по выбранной |
+| `handoff` | Handoff-документ для следующей сессии в `docs/plans/YYYY-MM-DD-*-handoff.md` |
 
 ## 📖 Расширенная документация
 
