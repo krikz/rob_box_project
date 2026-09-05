@@ -105,6 +105,40 @@ host↔origin автофикс выполняется из ВРЕМЕННОГО 
 blocked-watchdog-scope), зарегистрированный на backend и analyst, теперь
 получает свежие EXPECTED-скрипты.
 
+## Скиллы воркеров: `sync-skills.sh` (ретро 05.09)
+
+`af_skill_for_profile()` в `lib_agent_flow_common.sh` маппит тип задачи на
+repo-скилл (`.agents/skills/<skill>`): `bug`/`type:bug` →
+`systematic-debugging`, `type:functional`/`type:feature` →
+`test-driven-development`, `type:refactor`/`type:tech-debt` →
+`codebase-design`, `type:process` → `agent-flow`. Если type-label нет или
+task-скилл не установлен в профиле — fallback на роль (как раньше).
+
+Но repo-скиллы живут в репо, а профили воркеров их не видят — раньше
+доставки не было, и любой скилл из репо улучшал только сессии Шифу.
+`sync-skills.sh` закрывает дыру: раскладывает allowlist-скиллы hardlink-ами
+в `skills/repo/<skill>/` каждого профиля (категория `repo/` — валидатор
+`_validate_skills_for_assignee` ходит рекурсивно и видит её так же, как
+runtime skill-loader).
+
+```bash
+bash <repo>/scripts/agent_flow/sync-skills.sh --dry-run   # только посмотреть
+bash <repo>/scripts/agent_flow/sync-skills.sh             # реальная раскладка
+```
+
+- **Allowlist** — `SKILL_SYNC_ALLOWLIST` в `sync-skills.sh` (владелец списка —
+  этот файл; `af_skill_for_profile` маппит только на скиллы отсюда).
+- **Профили** — `SKILL_TARGET_PROFILES` (backend/devops/tester/pr-reviewer/
+  architect/agent-flow/analyst); override через `SKILL_SYNC_PROFILES`.
+- **Вызывается** install.sh best-effort (после раскладки скриптов) — сбой
+  доставки НЕ валит install.sh. Дрифт контролируется через EXPECTED:
+  `sync-skills.sh` в списке → `install.sh --list-files` + drift-detect
+  следят, что файл не пропал.
+- **Идемпотентен** + post-sync md5-verify (exit 3 при расхождении с SOT).
+
+Тесты: `tests/test_sync_skills.sh` (доставка/идемпотентность/exit-коды) и
+`tests/test_af_skill_task_type.sh` (маппинг тип→скилл + роль-fallback).
+
 ## Скрипты
 
 ### `agent-flow-triage.sh` — no_agent=true, every 1m
