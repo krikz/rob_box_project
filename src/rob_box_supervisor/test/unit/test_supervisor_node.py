@@ -87,10 +87,15 @@ class TestAvatarSupervisorDoesNotMutateExternalState(unittest.TestCase):
             self.assertNotIn("twist_mux", t)
 
     def test_no_set_parameter_calls_for_dialogue_via_pubs(self) -> None:
-        """Нет publisher-ов на /voice/ или /dialogue/ (голос-параметры —
-        через параметр-клиенты под mode=active, не топики)."""
+        """Нет publisher-ов на /dialogue/ или лишних /voice/ (голос-параметры —
+        через параметр-клиенты под mode=active, не топики).
+
+        Единственное исключение — /voice/tts/request (шаг 4б, issue #1989):
+        пайплайн грипа публикует туда текст оператора (динамики робота).
+        """
+        voice_pubs = [t for t in self.node._publishers if t.startswith("/voice/")]
+        self.assertEqual(voice_pubs, ["/voice/tts/request"])
         for topic in self.node._publishers:
-            self.assertFalse(topic.startswith("/voice/"))
             self.assertFalse(topic.startswith("/dialogue/"))
 
     def test_log_startup_diagnostics_uses_single_msg_arg(self) -> None:
