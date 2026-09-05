@@ -87,7 +87,7 @@ def test_perfect_turn_scores_one() -> None:
 def test_words_without_any_tool_is_the_harshest_penalty() -> None:
     """«Красиво описал бит, который не играет» — провал хода, не стиль.
 
-    Это инцидент из dialog_core.py:681: модель отвечала фразой и ни одним
+    Это инцидент из agent_core.py:681: модель отвечала фразой и ни одним
     вызовом, продолжая few-shot из истории.
     """
     result = score_turn(_CASE, _turn(tools=[], spoken="Бит уже качает, лови грув!"))

@@ -1,6 +1,6 @@
-"""Tests for the harness-side ``DialogCore``.
+"""Tests for the harness-side ``AgentCore``.
 
-``DialogCore`` is the high-level facade that wraps the four core
+``AgentCore`` is the high-level facade that wraps the four core
 ports (``LLMProvider``, ``ToolProvider``, ``MemoryStore``,
 ``DialogueStateMachine``) into a single object the dialogue shell can
 call. It owns no ROS2 state — all transport lives in the shell.
@@ -18,7 +18,8 @@ Coverage:
 * Construction accepts the four ports
 * ``process_input(text, history)`` returns a DialogResult
 * Result carries the new state, spoken text, and tools called
-* Silence / wake-word / timeout paths delegate to the DSM
+* Wake/silence/timeout routing is the shell's job (issue #1986 §5.3) —
+  AgentCore exposes the 7 agent methods, not the removed facades
 * Turns are kept in an in-memory sliding window (never persisted)
 * Errors in the LLM are wrapped into DialogResult.error (not raised)
 """
@@ -31,7 +32,7 @@ from typing import Any
 
 import pytest
 
-from rob_box_harness.core.dialog_core import DialogCore, DialogResult
+from rob_box_harness.core.agent_core import AgentCore, DialogResult
 from rob_box_harness.core.dialogue_state_machine import (
     DialogState,
     DialogueEvent,
@@ -177,7 +178,7 @@ class _FakeToolProvider:
         # A handler may return a full ToolResult (e.g. is_error=True) —
         # respect it verbatim instead of stringifying it into a
         # non-error result (issue #1253 babble filter depends on
-        # is_error reaching DialogCore).
+        # is_error reaching AgentCore).
         if isinstance(result, ToolResult):
             return result
         return ToolResult(
@@ -232,19 +233,30 @@ def core(
     tools_provider: _FakeToolProvider,
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
-) -> DialogCore:
-    obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+) -> AgentCore:
+    obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
     # Drive DSM into LISTENING — most tests below assume the wake
-    # word has already fired.
-    asyncio.run(obj.handle_wake_word(""))
+    # word has already fired. (AgentCore no longer owns wake routing —
+    # issue #1986 §5.3 — the shell/test drives the injected DSM.)
+    _wake(obj)
     return obj
 
 
-def _prime_listening(core: DialogCore) -> None:
+def _wake(core: AgentCore) -> None:
+    """Drive the injected DSM to LISTENING (``IDLE --WAKE_WORD--> LISTENING``).
+
+    Replaces the removed ``AgentCore.handle_wake_word`` facade: wake-word
+    routing is the shell's job now (§5.3), and the test drives the DSM it
+    constructed directly — exactly what ``dialogue_node._on_stt`` does.
+    """
+    core._dsm.on_event(DialogueEvent.WAKE_WORD)
+
+
+def _prime_listening(core: AgentCore) -> None:
     """Drive the DSM into LISTENING so a subsequent STT_RESULT.
     transitions into DIALOGUE. Mirrors what the shell does when the
     wake-word detector fires."""
-    asyncio.run(core.handle_wake_word(""))
+    _wake(core)
 
 
 # ---------------------------------------------------------------------------
@@ -258,8 +270,8 @@ def test_construction_accepts_all_four_ports(
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """DialogCore accepts the four ports without errors."""
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    """AgentCore accepts the four ports without errors."""
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
     assert core_obj is not None
 
 
@@ -268,9 +280,9 @@ def test_construction_rejects_missing_llm(
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """DialogCore must refuse to construct without an LLM."""
+    """AgentCore must refuse to construct without an LLM."""
     with pytest.raises(TypeError):
-        DialogCore(llm=None, tools=tools_provider, memory=memory, dsm=dsm)
+        AgentCore(llm=None, tools=tools_provider, memory=memory, dsm=dsm)
 
 
 def test_construction_rejects_missing_tools(
@@ -278,13 +290,13 @@ def test_construction_rejects_missing_tools(
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """DialogCore must refuse to construct without a ToolProvider.
+    """AgentCore must refuse to construct without a ToolProvider.
 
     Without tools the model can never see ``memory_context`` and
     issue #916 regresses.
     """
     with pytest.raises(TypeError):
-        DialogCore(llm=llm, tools=None, memory=memory, dsm=dsm)
+        AgentCore(llm=llm, tools=None, memory=memory, dsm=dsm)
 
 
 def test_construction_rejects_missing_memory(
@@ -292,9 +304,9 @@ def test_construction_rejects_missing_memory(
     tools_provider: _FakeToolProvider,
     dsm: DialogueStateMachine,
 ) -> None:
-    """DialogCore must refuse to construct without a MemoryStore."""
+    """AgentCore must refuse to construct without a MemoryStore."""
     with pytest.raises(TypeError):
-        DialogCore(llm=llm, tools=tools_provider, memory=None, dsm=dsm)
+        AgentCore(llm=llm, tools=tools_provider, memory=None, dsm=dsm)
 
 
 def test_construction_rejects_missing_dsm(
@@ -302,9 +314,9 @@ def test_construction_rejects_missing_dsm(
     tools_provider: _FakeToolProvider,
     memory: _FakeMemoryStore,
 ) -> None:
-    """DialogCore must refuse to construct without a DSM."""
+    """AgentCore must refuse to construct without a DSM."""
     with pytest.raises(TypeError):
-        DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=None)
+        AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=None)
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +324,7 @@ def test_construction_rejects_missing_dsm(
 # ---------------------------------------------------------------------------
 
 
-def test_process_input_returns_dialog_result(core: DialogCore) -> None:
+def test_process_input_returns_dialog_result(core: AgentCore) -> None:
     """process_input returns a DialogResult with state + spoken text."""
     result = asyncio.run(core.process_input("hello", history=[]))
     assert isinstance(result, DialogResult)
@@ -320,7 +332,7 @@ def test_process_input_returns_dialog_result(core: DialogCore) -> None:
     assert result.error is None
 
 
-def test_process_input_records_turns_in_window(core: DialogCore) -> None:
+def test_process_input_records_turns_in_window(core: AgentCore) -> None:
     """User turn + assistant turn land in the in-memory sliding window."""
     asyncio.run(core.process_input("hello", history=[]))
     # 2 turns: user + assistant
@@ -328,14 +340,14 @@ def test_process_input_records_turns_in_window(core: DialogCore) -> None:
     assert roles == ["user", "assistant"]
 
 
-def test_process_input_invokes_llm(core: DialogCore, llm: _FakeLLMProvider) -> None:
+def test_process_input_invokes_llm(core: AgentCore, llm: _FakeLLMProvider) -> None:
     """process_input calls llm.complete() with at least the user turn."""
     asyncio.run(core.process_input("hello", history=[]))
     assert len(llm.calls) == 1
 
 
 def test_process_input_includes_history_in_llm_messages(
-    core: DialogCore, llm: _FakeLLMProvider
+    core: AgentCore, llm: _FakeLLMProvider
 ) -> None:
     """History turns are prepended to the LLM call's message list."""
     history = [
@@ -359,19 +371,19 @@ def test_system_prompt_is_prepended_when_configured(
     """System prompt must reach the LLM as the first message.
 
     Regression: dialogue_node loaded _system_prompt but never passed it
-    to DialogCore — deepseek was running WITHOUT a system prompt, so
+    to AgentCore — deepseek was running WITHOUT a system prompt, so
     every rule (ALWAYS execute_music_code, NO METALANGUAGE, ...) was
     silently dropped. Found via verbose LLM trace: messages had no
     [0] system entry. (#992)
     """
-    obj = DialogCore(
+    obj = AgentCore(
         llm=llm,
         tools=tools_provider,
         memory=memory,
         dsm=dsm,
         system_prompt="ТЫ ДИДЖЕЙ. ВСЕГДА вызывай execute_music_code.",
     )
-    asyncio.run(obj.handle_wake_word(""))
+    _wake(obj)
     asyncio.run(obj.process_input("сыграй баха"))
     sent = llm.calls[0][0]
     assert sent[0].role == "system"
@@ -381,7 +393,7 @@ def test_system_prompt_is_prepended_when_configured(
     assert sent[1].content == "сыграй баха"
 
 
-def test_process_input_wraps_llm_errors(core: DialogCore, llm: _FakeLLMProvider) -> None:
+def test_process_input_wraps_llm_errors(core: AgentCore, llm: _FakeLLMProvider) -> None:
     """LLM exceptions are surfaced via DialogResult.error, not raised."""
     llm.error = ProviderError("boom")
     result = asyncio.run(core.process_input("hello", history=[]))
@@ -402,14 +414,14 @@ def test_speaker_context_inserted_after_system_prompt(
 ) -> None:
     """speaker_context (профиль спикера из scope=speaker:<tag>) вставляется
     system-сообщением сразу после основного системного промпта."""
-    obj = DialogCore(
+    obj = AgentCore(
         llm=llm,
         tools=tools_provider,
         memory=memory,
         dsm=dsm,
         system_prompt="БАЗОВЫЙ ПРОМПТ",
     )
-    asyncio.run(obj.handle_wake_word(""))
+    _wake(obj)
     asyncio.run(obj.process_input(
         "привет",
         speaker_context="Контекст о собеседнике:\nСобеседника зовут Саша.",
@@ -429,8 +441,8 @@ def test_speaker_context_without_system_prompt_is_first(
     dsm: DialogueStateMachine,
 ) -> None:
     """Если system_prompt не задан, speaker_context становится messages[0]."""
-    obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(obj.handle_wake_word(""))
+    obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(obj)
     asyncio.run(obj.process_input(
         "привет",
         speaker_context="Контекст о собеседнике:\nСобеседника зовут Пётр.",
@@ -455,14 +467,14 @@ def test_dynamic_system_sits_last_before_the_user_turn(
     не по чему. Порядок сообщений — единственный сигнал времени, который у
     неё есть, поэтому снапшот теперь последний перед user.
     """
-    obj = DialogCore(
+    obj = AgentCore(
         llm=llm,
         tools=tools_provider,
         memory=memory,
         dsm=dsm,
         system_prompt="БАЗОВЫЙ ПРОМПТ",
     )
-    asyncio.run(obj.handle_wake_word(""))
+    _wake(obj)
     asyncio.run(obj.process_input(
         "привет",
         speaker_context="Контекст о собеседнике:\nСобеседника зовут Саша.",
@@ -489,7 +501,7 @@ def test_dynamic_system_stays_after_history(
     """С непустой историей снапшот всё равно оказывается ПОСЛЕ неё."""
     from rob_box_harness.memory import Turn
 
-    obj = DialogCore(
+    obj = AgentCore(
         llm=llm,
         tools=tools_provider,
         memory=memory,
@@ -501,7 +513,7 @@ def test_dynamic_system_stays_after_history(
         Turn(role="user", content="старая реплика"),
         Turn(role="assistant", content="старый ответ"),
     ])
-    asyncio.run(obj.handle_wake_word(""))
+    _wake(obj)
     asyncio.run(obj.process_input(
         "привет",
         dynamic_system="<system_context>СВЕЖЕЕ</system_context>",
@@ -537,11 +549,11 @@ def test_synthetic_input_is_not_persisted_as_a_user_turn(
     где её отчитывают за невызванные тулы, и на следующих ходах отвечала
     «Менеджер не отвечает» вместо того чтобы вызвать тул.
     """
-    obj = DialogCore(
+    obj = AgentCore(
         llm=llm, tools=tools_provider, memory=memory, dsm=dsm,
         system_prompt="БАЗОВЫЙ ПРОМПТ",
     )
-    asyncio.run(obj.handle_wake_word(""))
+    _wake(obj)
     asyncio.run(obj.process_input(
         "[CRITICAL] В прошлом цикле ты НЕ вызвал ни один музыкальный тул",
         is_synthetic=True,
@@ -558,11 +570,11 @@ def test_synthetic_turn_still_persists_what_the_user_heard(
 ) -> None:
     """Ответ на ретрай сохраняется: его человек действительно услышал."""
     llm.response_text = "Ок, играю бит."
-    obj = DialogCore(
+    obj = AgentCore(
         llm=llm, tools=tools_provider, memory=memory, dsm=dsm,
         system_prompt="БАЗОВЫЙ ПРОМПТ",
     )
-    asyncio.run(obj.handle_wake_word(""))
+    _wake(obj)
     asyncio.run(obj.process_input("[CRITICAL] вызови тул", is_synthetic=True))
     roles = [(t.role, t.content) for t in obj._turn_window]
     assert ("assistant", "Ок, играю бит.") in roles, roles
@@ -576,11 +588,11 @@ def test_ordinary_input_is_still_persisted(
     dsm: DialogueStateMachine,
 ) -> None:
     """Обычная реплика пишется как раньше — гейт узкий, не задевает её."""
-    obj = DialogCore(
+    obj = AgentCore(
         llm=llm, tools=tools_provider, memory=memory, dsm=dsm,
         system_prompt="БАЗОВЫЙ ПРОМПТ",
     )
-    asyncio.run(obj.handle_wake_word(""))
+    _wake(obj)
     asyncio.run(obj.process_input("сыграй бит"))
     assert ("user", "сыграй бит") in [(t.role, t.content) for t in obj._turn_window]
 
@@ -591,17 +603,17 @@ def test_preclassified_event_skips_double_classification(
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """preclassified_event=STT_RESULT — DialogCore НЕ переклассифицирует
+    """preclassified_event=STT_RESULT — AgentCore НЕ переклассифицирует
     текст (в котором может быть 'робот' внутри) и НЕ делает повторный
     DSM-переход; LLM вызывается, результат DIALOGUE."""
     from rob_box_harness.core.dialogue_state_machine import DialogueEvent
 
-    obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
     # _on_stt в dialogue_node делает IDLE→LISTENING (WAKE_WORD) →
     # LISTENING→DIALOGUE (STT_RESULT) ДО вызова process_input, и передаёт
-    # preclassified_event=STT_RESULT чтобы DialogCore не повторял
+    # preclassified_event=STT_RESULT чтобы AgentCore не повторял
     # классификацию (текст «робот меня зовут...» содержит wake-word внутри).
-    asyncio.run(obj.handle_wake_word(""))
+    _wake(obj)
     dsm.on_event(DialogueEvent.STT_RESULT)
     assert dsm.current_state == DialogueStateKind.DIALOGUE
     result = asyncio.run(obj.process_input(
@@ -621,8 +633,8 @@ def test_speaker_tag_persisted_in_turn_metadata(
     dsm: DialogueStateMachine,
 ) -> None:
     """Turn.metadata['speaker_tag'] проставляется для user и assistant ходов."""
-    obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(obj.handle_wake_word(""))
+    obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(obj)
     asyncio.run(obj.process_input("привет", speaker_tag="0"))
     user_turn = obj._turn_window[-2]
     assistant_turn = obj._turn_window[-1]
@@ -640,15 +652,15 @@ def test_speaker_tag_none_means_empty_metadata(
 ) -> None:
     """Без speaker_tag (Vosk fallback) metadata остаётся пустым — инвариант
     «каждый ход имеет metadata.speaker_tag (или None)»."""
-    obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(obj.handle_wake_word(""))
+    obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(obj)
     asyncio.run(obj.process_input("привет"))
     user_turn = obj._turn_window[-2]
     assert user_turn.metadata == {}
 
 
 def test_process_input_error_does_not_persist_assistant_turn(
-    core: DialogCore, memory: _FakeMemoryStore, llm: _FakeLLMProvider
+    core: AgentCore, memory: _FakeMemoryStore, llm: _FakeLLMProvider
 ) -> None:
     """When the LLM fails, only the user turn lands in the window."""
     llm.error = ProviderError("boom")
@@ -665,7 +677,7 @@ def test_process_input_error_does_not_persist_assistant_turn(
 
 
 def test_process_input_updates_state_to_dialogue_then_idle(
-    core: DialogCore, dsm: DialogueStateMachine
+    core: AgentCore, dsm: DialogueStateMachine
 ) -> None:
     """Successful input drives IDLE → DIALOGUE → IDLE."""
     asyncio.run(core.process_input("hello", history=[]))
@@ -673,115 +685,103 @@ def test_process_input_updates_state_to_dialogue_then_idle(
     assert dsm.state == DialogueStateKind.IDLE
 
 
-def test_process_input_result_reports_final_state(core: DialogCore) -> None:
+def test_process_input_result_reports_final_state(core: AgentCore) -> None:
     """DialogResult.new_state reflects the DSM after the turn."""
     result = asyncio.run(core.process_input("hello", history=[]))
     assert result.new_state == DialogueStateKind.IDLE
 
 
 # ---------------------------------------------------------------------------
-# Wake-word / silence shortcuts (W3 plan §3 short hooks)
+# AgentCore interface (issue #1986 §5.3): the 4 non-agent wake/timeout
+# methods were removed — routing is the shell's job now.
 # ---------------------------------------------------------------------------
 
 
-def test_is_wake_word_returns_bool_for_wake_text(dsm: DialogueStateMachine) -> None:
-    """is_wake_word matches the W3 plan signature ``→ bool``."""
-    core_obj = DialogCore(
-        llm=_FakeLLMProvider(),
+def test_agent_core_has_seven_method_interface() -> None:
+    """DoD #1986: AgentCore exposes 7 agent methods and NOT the four
+    wake/silence/timeout facades (``is_wake_word`` / ``handle_wake_word`` /
+    ``handle_silence`` / ``check_timeout``)."""
+
+    def public_members(cls: type) -> set[str]:
+        out: set[str] = set()
+        for name, member in vars(cls).items():
+            if name.startswith("_"):  # private + dunder
+                continue
+            if isinstance(member, (classmethod, staticmethod)) or callable(member):
+                out.add(name)
+            elif isinstance(member, property):
+                out.add(name)
+        return out
+
+    methods = public_members(AgentCore)
+
+    expected = {
+        "process_input",
+        "discard_last_reply",
+        "clear_history",
+        "active_skill",
+        "set_active_skill",
+        "skill_load_counters",
+        "known_skills",
+    }
+    removed = {"is_wake_word", "handle_wake_word", "handle_silence", "check_timeout"}
+
+    assert methods == expected, f"unexpected public surface: {methods ^ expected}"
+    assert not (removed & methods), f"non-agent methods still present: {removed & methods}"
+
+
+def test_two_agent_configs_one_engine() -> None:
+    """DoD #1986 — «один движок, два агента».
+
+    Две конфигурации :class:`AgentCore` (разные ``system_prompt`` + срез /
+    ``skill_prompts``) на одном и том же классе дают РАЗНОЕ поведение на
+    одном стимуле. Личность и оператор (ТАРС) — это не два движка, а две
+    конфигурации одного ``AgentCore`` (target-arch §5.1).
+    """
+    persona_llm = _FakeLLMProvider(response_text="Сыграю бит.")
+    operator_llm = _FakeLLMProvider(response_text="Выполню команду оператора.")
+
+    # Конфиг «личность»: personality system_prompt + музыкальный срез.
+    core_persona = AgentCore(
+        llm=persona_llm,
         tools=_FakeToolProvider(),
         memory=_FakeMemoryStore(),
-        dsm=dsm,
+        dsm=DialogueStateMachine(),
+        system_prompt="Ты РОББОКС — автономный робот-компаньон.",
+        skill_prompts={"player": "ПЛЕЕР: сначала gen_list_library, потом gen_play_from_library."},
     )
-    assert core_obj.is_wake_word("роббокс") is True
-    assert core_obj.is_wake_word("привет") is False
-
-
-def test_handle_wake_word_transitions_idle_to_listening(
-    llm: _FakeLLMProvider,
-    tools_provider: _FakeToolProvider,
-    memory: _FakeMemoryStore,
-    dsm: DialogueStateMachine,
-) -> None:
-    """handle_wake_word drives IDLE → LISTENING."""
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    assert dsm.current_state == DialogueStateKind.IDLE
-    result = asyncio.run(core_obj.handle_wake_word("роббокс"))
-    assert dsm.current_state == DialogueStateKind.LISTENING
-    assert result.new_state == DialogueStateKind.LISTENING
-
-
-def test_handle_silence_transitions_to_silenced(
-    llm: _FakeLLMProvider,
-    tools_provider: _FakeToolProvider,
-    memory: _FakeMemoryStore,
-    dsm: DialogueStateMachine,
-) -> None:
-    """handle_silence drives any state → SILENCED."""
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    # Wake up first so we're in LISTENING, not IDLE.
-    asyncio.run(core_obj.handle_wake_word("роббокс"))
-    assert dsm.current_state == DialogueStateKind.LISTENING
-
-    result = asyncio.run(core_obj.handle_silence())
-    assert dsm.current_state == DialogueStateKind.SILENCED
-    assert result.new_state == DialogueStateKind.SILENCED
-
-
-def test_handle_silence_from_dialogue(
-    llm: _FakeLLMProvider,
-    tools_provider: _FakeToolProvider,
-    memory: _FakeMemoryStore,
-    dsm: DialogueStateMachine,
-) -> None:
-    """handle_silence works from DIALOGUE too (mid-flow interrupt)."""
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    dsm.transition(DialogueStateKind.LISTENING)
-    dsm.transition(DialogueStateKind.DIALOGUE)
-    asyncio.run(core_obj.handle_silence())
-    assert dsm.current_state == DialogueStateKind.SILENCED
-
-
-# ---------------------------------------------------------------------------
-# check_timeout / inactivity
-# ---------------------------------------------------------------------------
-
-
-def test_check_timeout_with_inactivity_drops_listening_to_idle(
-    llm: _FakeLLMProvider,
-    tools_provider: _FakeToolProvider,
-    memory: _FakeMemoryStore,
-    dsm: DialogueStateMachine,
-) -> None:
-    """When ``inactivity_timeout`` is set, check_timeout drops LISTENING→IDLE."""
-    core_obj = DialogCore(
-        llm=llm,
-        tools=tools_provider,
-        memory=memory,
-        dsm=dsm,
-        inactivity_timeout=0.001,  # 1 ms — will fire immediately
+    # Конфиг «оператор»: operator system_prompt + операторский срез.
+    core_operator = AgentCore(
+        llm=operator_llm,
+        tools=_FakeToolProvider(),
+        memory=_FakeMemoryStore(),
+        dsm=DialogueStateMachine(),
+        system_prompt="Ты ТАРС — оператор-супервизор робота.",
+        skill_prompts={"operator.speech": "ОПЕРАТОР: для озвучки роботом вызывай say."},
     )
-    dsm.transition(DialogueStateKind.LISTENING)
-    assert dsm.current_state == DialogueStateKind.LISTENING
-    # Force the activity clock to look old.
-    dsm._last_activity_at -= 10.0  # type: ignore[attr-defined]
-    fired = core_obj.check_timeout()
-    assert fired is True
-    assert dsm.current_state == DialogueStateKind.IDLE
+    core_persona.set_active_skill("player")
+    core_operator.set_active_skill("operator.speech")
+    _wake(core_persona)
+    _wake(core_operator)
 
+    # Один и тот же стимул — разный состав промпта.
+    asyncio.run(core_persona.process_input("поставь музыку"))
+    asyncio.run(core_operator.process_input("поставь музыку"))
 
-def test_check_timeout_legacy_event_path(
-    llm: _FakeLLMProvider,
-    tools_provider: _FakeToolProvider,
-    memory: _FakeMemoryStore,
-    dsm: DialogueStateMachine,
-) -> None:
-    """Without ``inactivity_timeout``, check_timeout drives a TIMEOUT event."""
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    dsm.transition(DialogueStateKind.LISTENING)
-    fired = core_obj.check_timeout()
-    # LISTENING + TIMEOUT → IDLE (per on_event semantics).
-    assert fired is True
-    assert dsm.current_state == DialogueStateKind.IDLE
+    persona_msgs = [(m.role, m.content) for m in persona_llm.calls[0][0]]
+    operator_msgs = [(m.role, m.content) for m in operator_llm.calls[0][0]]
+
+    # Системный промпт на позиции 0 — свой у каждого агента.
+    assert persona_msgs[0][0] == "system"
+    assert "РОББОКС" in persona_msgs[0][1]
+    assert "ТАРС" in operator_msgs[0][1]
+    # Срез доезжает последним системным сообщением перед репликой.
+    assert persona_msgs[-2] == ("system", "ПЛЕЕР: сначала gen_list_library, потом gen_play_from_library.")
+    assert operator_msgs[-2] == ("system", "ОПЕРАТОР: для озвучки роботом вызывай say.")
+    # Поведение разное.
+    assert persona_msgs != operator_msgs
+    assert core_persona.known_skills() == ("player",)
+    assert core_operator.known_skills() == ("operator.speech",)
 
 
 # ---------------------------------------------------------------------------
@@ -803,7 +803,7 @@ def test_in_memory_window_used_when_history_none(
         Turn(role="assistant", content="earlier answer"),
     ]
 
-    core_obj = DialogCore(
+    core_obj = AgentCore(
         llm=llm,
         tools=tools_provider,
         memory=memory,
@@ -812,7 +812,7 @@ def test_in_memory_window_used_when_history_none(
     )
     core_obj._turn_window.extend(prior)
     # Drive to LISTENING so the next STT_RESULT transitions into DIALOGUE.
-    asyncio.run(core_obj.handle_wake_word(""))
+    _wake(core_obj)
     asyncio.run(core_obj.process_input("now question", history=None))
 
     sent = llm.calls[0][0]
@@ -830,14 +830,14 @@ def test_explicit_history_overrides_memory_trim(
     dsm: DialogueStateMachine,
 ) -> None:
     """When the caller passes history, the in-memory window is NOT consulted."""
-    core_obj = DialogCore(
+    core_obj = AgentCore(
         llm=llm,
         tools=tools_provider,
         memory=memory,
         dsm=dsm,
         history_trim_limit=10,
     )
-    asyncio.run(core_obj.handle_wake_word(""))
+    _wake(core_obj)
     history = [LLMMessage(role="user", content="explicit")]
     asyncio.run(core_obj.process_input("now", history=history))
     sent = llm.calls[0][0]
@@ -853,8 +853,8 @@ def test_history_none_with_empty_window_yields_just_user_turn(
     dsm: DialogueStateMachine,
 ) -> None:
     """history=None with an empty window → only the current user turn."""
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
     asyncio.run(core_obj.process_input("now", history=None))
     sent = llm.calls[0][0]
     # Only the user turn we just appended.
@@ -866,7 +866,7 @@ def test_history_none_with_empty_window_yields_just_user_turn(
 # Tool-loop behaviour — issue #916
 # ---------------------------------------------------------------------------
 #
-# These tests cover the fix for krikz/rob_box_project#916: DialogCore
+# These tests cover the fix for krikz/rob_box_project#916: AgentCore
 # never forwarded ``tools=`` to ``LLMProvider.complete()``, so the
 # model never saw ``memory_context`` and memory-dependent scenarios
 # (barge_in_joke_then_memory Step 6) failed. The fix passes the
@@ -881,13 +881,13 @@ def test_process_input_passes_tools_to_llm(
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """DialogCore forwards tools.discover() to llm.complete().
+    """AgentCore forwards tools.discover() to llm.complete().
 
     Regression for issue #916: the model needs to *see* the tool
     schema in order to ever invoke memory_context.
     """
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     asyncio.run(core_obj.process_input("hi", history=[]))
 
@@ -904,8 +904,8 @@ def test_process_input_passes_openai_wire_shape(
     dsm: DialogueStateMachine,
 ) -> None:
     """Each tool dict is in the OpenAI Chat-Completions shape."""
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     asyncio.run(core_obj.process_input("hi", history=[]))
 
@@ -926,8 +926,8 @@ def test_process_input_records_tools_called_on_plain_reply(
     dsm: DialogueStateMachine,
 ) -> None:
     """When the LLM returns plain text, tools_called is empty."""
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("hi", history=[]))
     assert result.tools_called == []
@@ -943,7 +943,7 @@ def test_process_input_runs_tool_loop_and_records_names(
     """Tool-loop happy path — reproduces barge_in_joke_then_memory Step 6.
 
     The scripted LLM returns a tool_call on the first turn, then a
-    plain-text reply after seeing the tool result. DialogCore must
+    plain-text reply after seeing the tool result. AgentCore must
     execute the tool, feed the result back, and report the tool
     name on DialogResult.
     """
@@ -970,8 +970,8 @@ def test_process_input_runs_tool_loop_and_records_names(
         return "recent turns: ..."
     tools_provider._handler_map = {"memory_context": memory_handler}
 
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("о чём мы говорили?", history=[]))
 
@@ -1022,8 +1022,8 @@ def test_process_input_tool_loop_dedupes_repeated_tool_names(
         "echo": echo,
     }
 
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("q", history=[]))
     # Ordered by first appearance; deduped across iterations.
@@ -1039,10 +1039,10 @@ def test_process_input_tool_loop_caps_at_max_iterations(
     """A runaway tool loop is bounded by _MAX_TOOL_ITERATIONS.
 
     Each scripted response asks for one more tool. After the cap is
-    hit DialogCore returns the last spoken text and stops issuing
+    hit AgentCore returns the last spoken text and stops issuing
     further complete() calls.
     """
-    from rob_box_harness.core import dialog_core as dc
+    from rob_box_harness.core import agent_core as dc
 
     # 1 initial + cap more turns.
     iterations = dc._MAX_TOOL_ITERATIONS + 1
@@ -1060,8 +1060,8 @@ def test_process_input_tool_loop_caps_at_max_iterations(
         return f"e:{args.get('text')}"
     tools_provider._handler_map = {"echo": echo}
 
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("q", history=[]))
 
@@ -1106,8 +1106,8 @@ def test_process_input_tool_loop_survives_tool_level_error(
         )
     tools_provider._handler_map = {"memory_context": broken_handler}
 
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("о чём?", history=[]))
     assert result.error is None
@@ -1125,7 +1125,7 @@ def test_silent_done_first_response_triggers_corrective_retry(
 
     deepseek-v4-flash intermittently answers with the completion marker
     'done' as its FIRST response and no tool calls — the user hears
-    nothing and nothing happens. DialogCore must inject a corrective
+    nothing and nothing happens. AgentCore must inject a corrective
     user message and ask the LLM once more; the retry's real answer
     then reaches the user instead of the silent 'done'.
     """
@@ -1133,8 +1133,8 @@ def test_silent_done_first_response_triggers_corrective_retry(
         LLMResponse(content="done", tool_calls=()),
         LLMResponse(content="Привет, Саша!", tool_calls=()),
     ]
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("привет", history=[]))
 
@@ -1167,8 +1167,8 @@ def test_empty_first_response_triggers_corrective_retry(
         LLMResponse(content="", tool_calls=()),
         LLMResponse(content="ok", tool_calls=()),
     ]
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("привет", history=[]))
 
@@ -1202,8 +1202,8 @@ def test_empty_finish_reason_none_triggers_corrective_retry(
         LLMResponse(content="", tool_calls=(), finish_reason=None),
         LLMResponse(content="Сейчас пять часов", tool_calls=()),
     ]
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("который час", history=[]))
 
@@ -1237,8 +1237,8 @@ def test_finish_reason_insufficient_system_resource_triggers_retry(
         ),
         LLMResponse(content="Сейчас пять часов", tool_calls=()),
     ]
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("который час", history=[]))
 
@@ -1269,8 +1269,8 @@ def test_finish_reason_content_filter_triggers_retry(
         ),
         LLMResponse(content="Извини, я не могу это сделать", tool_calls=()),
     ]
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("расскажи анекдот", history=[]))
 
@@ -1290,7 +1290,7 @@ def test_tool_error_babble_is_suppressed_system_transition(
     A tool returned ``is_error=True`` and the LLM answered with ONLY a
     bare completion marker ('done') — no retry tool-call, no speak_text.
     Voicing that would make the robot say «дан» while nothing happened.
-    DialogCore returns empty spoken (system transition) so dialogue_node
+    AgentCore returns empty spoken (system transition) so dialogue_node
     moves to the next round instead of parroting the babble.
     """
     from rob_box_llm.provider import ToolResult
@@ -1315,8 +1315,8 @@ def test_tool_error_babble_is_suppressed_system_transition(
         )
     tools_provider._handler_map = {"memory_context": broken_handler}
 
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("о чём?", history=[]))
 
@@ -1361,8 +1361,8 @@ def test_tool_error_substantive_answer_not_suppressed(
         )
     tools_provider._handler_map = {"memory_context": broken_handler}
 
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("о чём?", history=[]))
 
@@ -1403,7 +1403,7 @@ def test_dj_auto_with_preclassified_event_reaches_llm_from_idle(
         return f"e:{args.get('text')}"
     tools_provider._handler_map = {"echo": echo}
 
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
     # DSM starts in IDLE (default) — no wake word fired for a DJ tick.
     assert dsm.current_state == DialogueStateKind.IDLE
 
@@ -1431,7 +1431,7 @@ def test_silent_done_retry_does_not_loop(
     """Issue #1217 — a second silent 'done' is accepted, not retried again.
 
     The corrective retry is one-shot: if the model STILL returns a bare
-    marker, DialogCore returns it as-is so the shell's existing
+    marker, AgentCore returns it as-is so the shell's existing
     empty-response fallback (e.g. «Принял.») can handle it. No infinite
     LLM ping-pong.
     """
@@ -1439,8 +1439,8 @@ def test_silent_done_retry_does_not_loop(
         LLMResponse(content="done", tool_calls=()),
         LLMResponse(content="done", tool_calls=()),
     ]
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("привет", history=[]))
 
@@ -1475,8 +1475,8 @@ def test_tool_then_done_does_not_retry(
         return f"e:{args.get('text')}"
     tools_provider._handler_map = {"echo": echo}
 
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("привет", history=[]))
 
@@ -1490,7 +1490,7 @@ def test_tool_then_done_does_not_retry(
 
 
 def test_normal_plain_reply_does_not_retry(
-    core: DialogCore,
+    core: AgentCore,
     llm: _FakeLLMProvider,
 ) -> None:
     """A substantive plain-text reply must NOT trigger the silent-retry."""
@@ -1505,7 +1505,7 @@ def test_normal_plain_reply_does_not_retry(
 #
 # When the LLM stream is cut on ``max_tokens`` while still inside
 # arguments JSON, the provider surfaces ``truncated_tool_args=True``.
-# ``DialogCore._run_with_tools`` must NOT execute the broken call —
+# ``AgentCore._run_with_tools`` must NOT execute the broken call —
 # it asks the model to redo with shorter arguments instead, single-shot.
 # ---------------------------------------------------------------------
 def test_truncated_tool_args_triggers_retry_with_shorter_args_prompt(
@@ -1515,7 +1515,7 @@ def test_truncated_tool_args_triggers_retry_with_shorter_args_prompt(
     dsm: DialogueStateMachine,
 ) -> None:
     """First LLM call returns a tool-call whose args JSON was truncated
-    by the stream cutoff. DialogCore must:
+    by the stream cutoff. AgentCore must:
       * NOT execute the broken call (no ToolValidationError in the
         executor — but more importantly, the user would never hear the
         intended action);
@@ -1556,8 +1556,8 @@ def test_truncated_tool_args_triggers_retry_with_shorter_args_prompt(
         return f"e:{args.get('text')}"
     tools_provider._handler_map = {"echo": echo}
 
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("поставь музыку", history=[]))
 
@@ -1596,7 +1596,7 @@ def test_truncated_tool_args_retry_is_one_shot(
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """If the model ALSO truncates the retry, DialogCore must NOT loop.
+    """If the model ALSO truncates the retry, AgentCore must NOT loop.
 
     Mirror of ``test_silent_done_retry_does_not_loop`` — the corrective
     retry fires exactly once. After that the response is accepted as-is
@@ -1623,8 +1623,8 @@ def test_truncated_tool_args_retry_is_one_shot(
         return f"e:{args.get('text')}"
     tools_provider._handler_map = {"echo": echo}
 
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("hi", history=[]))
 
@@ -1635,7 +1635,7 @@ def test_truncated_tool_args_retry_is_one_shot(
 
 
 def test_clean_tool_args_does_not_retry(
-    core: DialogCore,
+    core: AgentCore,
     llm: _FakeLLMProvider,
     tools_provider: _FakeToolProvider,
 ) -> None:
@@ -1702,8 +1702,8 @@ def test_dialog_result_carries_truncated_tool_args(
         return f"e:{args.get('text')}"
     tools_provider._handler_map = {"echo": echo}
 
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("hi", history=[]))
 
@@ -1728,8 +1728,8 @@ def test_silent_failure_turn_not_persisted_to_memory(
         LLMResponse(content="done", tool_calls=()),
         LLMResponse(content="done", tool_calls=()),
     ]
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("привет", history=[]))
     assert result.spoken_text == "done"
@@ -1740,7 +1740,7 @@ def test_silent_failure_turn_not_persisted_to_memory(
 
 
 def test_normal_turn_still_persisted_to_memory(
-    core: DialogCore,
+    core: AgentCore,
     memory: _FakeMemoryStore,
 ) -> None:
     """A healthy turn (real reply) is still persisted as user+assistant."""
@@ -1772,8 +1772,8 @@ def test_process_input_tool_loop_aborts_on_transport_error(
         raise ToolExecutionError("bridge down", provider="ros_mcp")
     tools_provider._handler_map = {"memory_context": raise_exec}
 
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("о чём?", history=[]))
     assert isinstance(result.error, ToolExecutionError)
@@ -1791,8 +1791,8 @@ def test_process_input_tool_loop_keeps_user_turn_once_on_error(
     """User turn is persisted before the LLM call and never re-added on error."""
     llm.responses = [ProviderError("network down")]
 
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("hello", history=[]))
     assert isinstance(result.error, ProviderError)
@@ -1811,7 +1811,7 @@ def test_process_input_tool_loop_keeps_user_turn_once_on_error(
 # rejects the call and NOTHING is voiced. dialogue_node's issue-988
 # anti-duplicate guard must skip auto-TTS only when speech REALLY happened
 # (``speak_text_real_count > 0``); a phantom call must NOT silence the final
-# text. These tests verify DialogCore computes the real count correctly.
+# text. These tests verify AgentCore computes the real count correctly.
 
 
 def test_speak_text_real_count_counts_nonempty_text_calls(
@@ -1839,8 +1839,8 @@ def test_speak_text_real_count_counts_nonempty_text_calls(
 
     tools_provider._handler_map = {"speak_text": speak_handler}
 
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     # NOTE: no wake word in the input — «робот» would classify as
     # WAKE_WORD and skip the LLM gate (see process_input docstring).
@@ -1877,8 +1877,8 @@ def test_speak_text_real_count_zero_for_all_phantom_calls(
 
     tools_provider._handler_map = {"speak_text": speak_handler}
 
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("это иван а теперь пожалуйста мне на денчика", history=[]))
 
@@ -1916,8 +1916,8 @@ def test_assistant_turn_persists_actual_spoken_text(
 
     tools_provider._handler_map = {"speak_text": speak_handler}
 
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
     asyncio.run(core_obj.process_input("расскажи сказку", history=[]))
 
     assert len(core_obj._turn_window) == 2
@@ -1939,8 +1939,8 @@ def test_silent_done_turn_is_not_persisted(
         LLMResponse(content="done", tool_calls=()),
     ]
 
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
     asyncio.run(core_obj.process_input("расскажи анекдот", history=[]))
 
     # Only the user turn is stored — no "done" assistant turn.
@@ -1963,7 +1963,7 @@ def test_orphaned_user_turn_collapsed_before_llm(
 
     llm.responses = [LLMResponse(content="новый ответ", tool_calls=())]
 
-    core_obj = DialogCore(
+    core_obj = AgentCore(
         llm=llm,
         tools=tools_provider,
         memory=memory,
@@ -1973,7 +1973,7 @@ def test_orphaned_user_turn_collapsed_before_llm(
     core_obj._turn_window.append(
         Turn(role="user", content="старый вопрос без ответа")
     )
-    asyncio.run(core_obj.handle_wake_word(""))
+    _wake(core_obj)
     asyncio.run(core_obj.process_input("новый вопрос"))
 
     sent = llm.calls[-1][0]
@@ -1993,7 +1993,7 @@ def _call(cid: str, name: str) -> ToolCall:
 
 def test_order_tool_calls_puts_stop_music_after_speak_text() -> None:
     """[speak_text, stop_music] keeps order but flags stop as deferred."""
-    from rob_box_harness.core.dialog_core import _order_tool_calls
+    from rob_box_harness.core.agent_core import _order_tool_calls
 
     ordered, deferred = _order_tool_calls(
         [_call("c1", "speak_text"), _call("c2", "stop_music")]
@@ -2005,7 +2005,7 @@ def test_order_tool_calls_puts_stop_music_after_speak_text() -> None:
 
 def test_order_tool_calls_music_prelude_before_speak_text() -> None:
     """Music tools run before voice; destructive tools run last."""
-    from rob_box_harness.core.dialog_core import _order_tool_calls
+    from rob_box_harness.core.agent_core import _order_tool_calls
 
     ordered, deferred = _order_tool_calls(
         [
@@ -2024,7 +2024,7 @@ def test_order_tool_calls_music_prelude_before_speak_text() -> None:
 
 def test_order_tool_calls_stop_music_alone_not_deferred() -> None:
     """A lone stop_music has no voice to wait for — not deferred."""
-    from rob_box_harness.core.dialog_core import _order_tool_calls
+    from rob_box_harness.core.agent_core import _order_tool_calls
 
     ordered, deferred = _order_tool_calls([_call("c1", "stop_music")])
     assert [c.name for c in ordered] == ["stop_music"]
@@ -2033,7 +2033,7 @@ def test_order_tool_calls_stop_music_alone_not_deferred() -> None:
 
 def test_order_tool_calls_independent_tools_keep_relative_order() -> None:
     """Bypass tools (memory_save etc.) keep their original relative order."""
-    from rob_box_harness.core.dialog_core import _order_tool_calls
+    from rob_box_harness.core.agent_core import _order_tool_calls
 
     ordered, deferred = _order_tool_calls(
         [
@@ -2052,7 +2052,7 @@ def test_order_tool_calls_independent_tools_keep_relative_order() -> None:
 
 def test_order_tool_calls_stop_navigation_is_destructive_too() -> None:
     """stop_navigation is treated like stop_music (defer to end)."""
-    from rob_box_harness.core.dialog_core import _order_tool_calls
+    from rob_box_harness.core.agent_core import _order_tool_calls
 
     ordered, deferred = _order_tool_calls(
         [_call("c1", "stop_navigation"), _call("c2", "speak_text")]
@@ -2063,7 +2063,7 @@ def test_order_tool_calls_stop_navigation_is_destructive_too() -> None:
 
 def test_run_with_tools_executes_in_safe_order_but_returns_original_order() -> None:
     """Execution re-orders, but tool-result messages keep the LLM's order."""
-    from rob_box_harness.core.dialog_core import _order_tool_calls
+    from rob_box_harness.core.agent_core import _order_tool_calls
 
     calls = [
         _call("c1", "stop_music"),
@@ -2077,13 +2077,13 @@ def test_run_with_tools_executes_in_safe_order_but_returns_original_order() -> N
 
 # ---------------------------------------------------------------------------
 # S2.3/S2.4 (scheduler-segments-merge, issue #968) — wire
-# SchedulerToolExecutor.begin_group() into DialogCore's batch loop.
+# SchedulerToolExecutor.begin_group() into AgentCore's batch loop.
 #
 # begin_group() (rob_box_voice/scheduler/tool_executor.py, commit
 # 2585cc8e) has existed since S2.3 but nothing calls it — every
 # channel-routed task keeps group_id=None forever and [SEGMENT PLAN]
 # (S5) never appears. The docstring says it must be called "right
-# before dialog_core processes one LLM batch of tool_calls (the same
+# before agent_core processes one LLM batch of tool_calls (the same
 # re-ordering point W7a already hooks into)" — i.e. once per iteration
 # of the tool loop that has tool_calls, right by _order_tool_calls().
 #
@@ -2134,8 +2134,8 @@ def test_begin_group_called_once_per_tool_batch(
         ),
         LLMResponse(content="done", tool_calls=()),
     ]
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     asyncio.run(core_obj.process_input("спой про комара", history=[]))
 
@@ -2150,8 +2150,8 @@ def test_begin_group_not_called_when_no_tool_calls(
     """A plain-text turn (no tool_calls at all) never opens a group."""
     tools_provider = _GroupTrackingToolProvider()
     llm.response_text = "hello back"  # default, no tool_calls
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     asyncio.run(core_obj.process_input("hi", history=[]))
 
@@ -2179,8 +2179,8 @@ def test_process_input_works_without_begin_group_on_tool_provider(
         return f"echo:{args.get('text')}"
     tools_provider._handler_map = {"echo": echo}
 
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    asyncio.run(core_obj.handle_wake_word(""))
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("q", history=[]))
     assert result.error is None
@@ -2197,7 +2197,7 @@ class _TrackedStreamIterator:
 
     The real production stream (OpenAI SDK ``AsyncStream``) is not an
     async generator — cancelling the consuming task does NOT close it
-    automatically. ``DialogCore._stream_response`` must call
+    automatically. ``AgentCore._stream_response`` must call
     ``aclose()`` explicitly in its ``finally`` (issue #1280), otherwise
     the HTTP request to the LLM provider keeps running to the end of
     generation (wasted quota, "robot finishes the old topic").
@@ -2246,7 +2246,7 @@ class _FakeStreamingLLM:
         tools: Any = (),
         settings: Any = None,
     ) -> _TrackedStreamIterator:
-        # Issue #1883 — ``settings=`` is plumbed through by ``DialogCore``
+        # Issue #1883 — ``settings=`` is plumbed through by ``AgentCore``
         # on every call; this fake ignores it (we only care about the
         # aclose/cancel contract for the barge-in tests below).
         del settings
@@ -2271,14 +2271,14 @@ def test_stream_response_aborts_and_closes_stream_on_barge_in() -> None:
     llm = _FakeStreamingLLM()
 
     async def scenario() -> None:
-        core_obj = DialogCore(
+        core_obj = AgentCore(
             llm=llm,
             tools=_FakeToolProvider(),
             memory=_FakeMemoryStore(),
             dsm=DialogueStateMachine(),
             use_streaming=True,
         )
-        await core_obj.handle_wake_word("")
+        _wake(core_obj)
         task = asyncio.create_task(core_obj.process_input("hello", history=[]))
         # Let the task reach the stream and suspend inside __anext__.
         await asyncio.sleep(0)
@@ -2305,14 +2305,14 @@ def test_stream_response_cancelled_task_does_not_return_partial_answer() -> None
     llm = _FakeStreamingLLM()
 
     async def scenario() -> None:
-        core_obj = DialogCore(
+        core_obj = AgentCore(
             llm=llm,
             tools=_FakeToolProvider(),
             memory=_FakeMemoryStore(),
             dsm=DialogueStateMachine(),
             use_streaming=True,
         )
-        await core_obj.handle_wake_word("")
+        _wake(core_obj)
         task = asyncio.create_task(core_obj.process_input("hello", history=[]))
         await asyncio.sleep(0)
         await asyncio.sleep(0)
@@ -2350,7 +2350,7 @@ def test_run_with_tools_returns_named_outcome(
 
     Именованные поля убирают и распаковку, и возможность разъехаться.
     """
-    core_obj = DialogCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
+    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
     messages = [LLMMessage(role="user", content="привет")]
 
     outcome = asyncio.run(core_obj._run_with_tools(messages))
@@ -2364,7 +2364,7 @@ def test_run_with_tools_returns_named_outcome(
 
 
 # ---------------------------------------------------------------------------
-# Issue #1883 — DialogCore forwards LLMSettings to the LLM provider
+# Issue #1883 — AgentCore forwards LLMSettings to the LLM provider
 # ---------------------------------------------------------------------------
 
 
@@ -2374,17 +2374,17 @@ def test_dialog_core_propagates_llm_settings_to_provider(
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """``DialogCore(llm_settings=...)`` forwards the ``LLMSettings`` to
+    """``AgentCore(llm_settings=...)`` forwards the ``LLMSettings`` to
     every ``complete()`` / ``stream()`` call.
 
-    Regression test for issue #1883. Before the fix, ``DialogCore``
+    Regression test for issue #1883. Before the fix, ``AgentCore``
     called ``self._llm.complete(messages, tools=tools)`` WITHOUT
     ``settings=`` — so ``max_tokens`` and ``temperature`` from
     ``dialogue_node.yaml`` died in the logger and the robot answered
     with ~2500 chars regardless of the configured cap.
     """
     settings = LLMSettings(temperature=0.3, max_tokens=250)
-    core_obj = DialogCore(
+    core_obj = AgentCore(
         llm=llm,
         tools=tools_provider,
         memory=memory,
@@ -2393,7 +2393,7 @@ def test_dialog_core_propagates_llm_settings_to_provider(
     )
     # Drive the DSM into LISTENING so ``process_input`` actually invokes
     # the LLM (the DSM starts in IDLE and STT_RESULT is a no-op there).
-    asyncio.run(core_obj.handle_wake_word(""))
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("hi", history=[]))
 
@@ -2414,18 +2414,18 @@ def test_dialog_core_without_llm_settings_passes_none(
 ) -> None:
     """Legacy behaviour: no ``llm_settings=`` → ``settings=None`` on the wire.
 
-    Every existing test that builds ``DialogCore(llm=..., tools=...,
+    Every existing test that builds ``AgentCore(llm=..., tools=...,
     memory=..., dsm=...)`` without an explicit ``llm_settings`` kwarg
     must keep working unchanged. The provider still receives a kwarg
     named ``settings``, just with the value ``None``.
     """
-    core_obj = DialogCore(
+    core_obj = AgentCore(
         llm=llm,
         tools=tools_provider,
         memory=memory,
         dsm=dsm,
     )
-    asyncio.run(core_obj.handle_wake_word(""))
+    _wake(core_obj)
 
     asyncio.run(core_obj.process_input("hi", history=[]))
 
@@ -2447,7 +2447,7 @@ def test_dialog_core_streams_settings_on_streaming_path(
     """
     # Replace the synchronous _FakeLLMProvider with one that exposes
     # both ``complete`` and ``stream`` so we can drive the streaming
-    # code path in DialogCore.
+    # code path in AgentCore.
     class _StreamingFakeLLM(_FakeLLMProvider):
         async def stream(
             self,
@@ -2459,13 +2459,13 @@ def test_dialog_core_streams_settings_on_streaming_path(
         ) -> Any:
             self.calls.append((list(messages or []), tools))
             self.settings_calls.append(settings)
-            # Emit one terminal chunk so DialogCore's stream aggregator
+            # Emit one terminal chunk so AgentCore's stream aggregator
             # exits its loop.
             yield LLMChunk(content_delta="hello back", finish_reason="stop")
 
     streaming_llm = _StreamingFakeLLM()
     settings = LLMSettings(temperature=0.1, max_tokens=123)
-    core_obj = DialogCore(
+    core_obj = AgentCore(
         llm=streaming_llm,
         tools=tools_provider,
         memory=memory,
@@ -2476,7 +2476,7 @@ def test_dialog_core_streams_settings_on_streaming_path(
     # Drive the DSM into LISTENING → the next ``process_input`` transitions
     # into DIALOGUE and actually invokes the LLM. Without this the DSM
     # is still in IDLE and the test silently returns a no-op result.
-    asyncio.run(core_obj.handle_wake_word(""))
+    _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("hi", history=[]))
 
@@ -2508,7 +2508,7 @@ def test_retracted_reply_keeps_its_user_turn_for_the_synthetic_retry(
     историей и вызвала ``set_dj_mode(persona='Диджей Шафутинский')``.
     Юзер услышал, что робот «всё-таки Шафутинский».
     """
-    obj = DialogCore(
+    obj = AgentCore(
         llm=llm, tools=tools_provider, memory=memory, dsm=dsm,
         system_prompt="БАЗОВЫЙ ПРОМПТ",
     )
@@ -2521,7 +2521,7 @@ def test_retracted_reply_keeps_its_user_turn_for_the_synthetic_retry(
 
     assert asyncio.run(obj.discard_last_reply()) is True
 
-    asyncio.run(obj.handle_wake_word(""))
+    _wake(obj)
     asyncio.run(obj.process_input("[CRITICAL] вызови музыкальный тул", is_synthetic=True))
 
     contents = [m.content for m in llm.calls[0][0]]
@@ -2541,7 +2541,7 @@ def test_orphaned_user_turn_is_still_dropped_on_an_ordinary_turn(
     СТАРУЮ, поэтому сужение ``keep_trailing_user`` до помеченных ходов
     обязано остаться сужением.
     """
-    obj = DialogCore(
+    obj = AgentCore(
         llm=llm, tools=tools_provider, memory=memory, dsm=dsm,
         system_prompt="БАЗОВЫЙ ПРОМПТ",
     )
@@ -2550,7 +2550,7 @@ def test_orphaned_user_turn_is_still_dropped_on_an_ordinary_turn(
         Turn(role="assistant", content="старый ответ"),
         Turn(role="user", content="перебитая сирота"),
     ])
-    asyncio.run(obj.handle_wake_word(""))
+    _wake(obj)
     asyncio.run(obj.process_input("новая реплика"))
 
     contents = [m.content for m in llm.calls[0][0]]
@@ -2570,7 +2570,7 @@ def test_pending_user_turn_is_not_resurrected_on_the_next_real_turn(
     идёт обычная реплика человека, и повисший запрос не должен конкурировать
     с ней за внимание модели.
     """
-    obj = DialogCore(
+    obj = AgentCore(
         llm=llm, tools=tools_provider, memory=memory, dsm=dsm,
         system_prompt="БАЗОВЫЙ ПРОМПТ",
     )
@@ -2580,7 +2580,7 @@ def test_pending_user_turn_is_not_resurrected_on_the_next_real_turn(
     ])
     asyncio.run(obj.discard_last_reply())
 
-    asyncio.run(obj.handle_wake_word(""))
+    _wake(obj)
     asyncio.run(obj.process_input("сколько времени"))
 
     contents = [m.content for m in llm.calls[0][0]]

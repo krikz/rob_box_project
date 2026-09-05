@@ -21,7 +21,7 @@ Components
   CANCELLED`` state machine.
 * :class:`AcceptanceGate` — the orchestrator-facing façade. Its
   :meth:`submit` is the single entry point that any caller
-  (currently :class:`rob_box_harness.core.dialog_core.DialogCore`)
+  (currently :class:`rob_box_harness.core.agent_core.AgentCore`)
   uses to dispatch a tool call.
 * :class:`AwaitingFeedbackFormatter` — turns the live segment set
   into the §7 ``[AWAITING]`` block that is injected into the LLM
@@ -35,7 +35,7 @@ the hot path. The single lock inside :class:`AcceptanceGate` is a
 ``threading.Lock``; the awaiting-confirmation timer is driven by an
 ``asyncio`` event-loop callback the caller passes in via
 ``timeout_scheduler``. This keeps the module usable both from
-``DialogCore`` (which already owns an asyncio loop) and from the
+``AgentCore`` (which already owns an asyncio loop) and from the
 future :class:`TaskScheduler` (which has its own event loop).
 
 The state machine inside :class:`PendingSegment` is intentionally

@@ -22,7 +22,7 @@ from typing import Any, AsyncIterator, Iterable, Mapping
 import pytest
 
 from rob_box_core.token_estimate import estimate_prompt_tokens, estimate_tokens
-from rob_box_harness.core.dialog_core import DialogCore, PromptStats
+from rob_box_harness.core.agent_core import AgentCore, PromptStats
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
     DialogueStateMachine,
@@ -83,8 +83,8 @@ def _core(
     observed: list[PromptStats] | None = None,
     *,
     streaming: bool,
-) -> DialogCore:
-    return DialogCore(
+) -> AgentCore:
+    return AgentCore(
         llm=provider,
         tools=FakeToolProvider(),
         memory=InMemoryStore(),
@@ -155,7 +155,7 @@ def test_observer_exception_does_not_break_the_turn() -> None:
     def _boom(_stats: PromptStats) -> None:
         raise RuntimeError("метрика упала")
 
-    core = DialogCore(
+    core = AgentCore(
         llm=_RecordingProvider({"prompt_tokens": 10}),
         tools=FakeToolProvider(),
         memory=InMemoryStore(),

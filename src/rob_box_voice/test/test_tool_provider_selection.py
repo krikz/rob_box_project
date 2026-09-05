@@ -258,7 +258,7 @@ def test_build_tool_provider_returns_ros_mcp_when_mcp_available(
     # adapter. The shell wraps ``ROSMCPToolProvider`` in a
     # ``LegacyToolProviderAdapter`` whose observable surface is
     # ``discover()`` (async) returning a tuple of ``ToolSpec``
-    # objects — that is the contract ``DialogCore`` consumes, so
+    # objects — that is the contract ``AgentCore`` consumes, so
     # we exercise the same path here.
     import asyncio
 

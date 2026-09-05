@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """dialogue_node.py — Voice dialogue ROS2 shell (Phase 6 v2 / W5).
 
-Thin ROS2 shell that composes DialogCore over the harness ports
+Thin ROS2 shell that composes AgentCore over the harness ports
 (LLMProvider, ToolProvider, MemoryStore, DSM). Owns only ROS2 pub/sub,
 the asyncio loop driver, DJ-mode hook, barge-in/cancel, TTS/sound
 awaiter release, and lifecycle. Wake-word / silence classification
@@ -54,7 +54,7 @@ from rob_box_core.prompt_sections import (
 )
 from rob_box_core.tool_catalog import CORE_SKILL, skill_names, tools_for_skill
 from rob_box_harness.config import LLMConfig
-from rob_box_harness.core.dialog_core import DialogCore, DialogResult
+from rob_box_harness.core.agent_core import AgentCore, DialogResult
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
     DialogueStateKind,
@@ -309,7 +309,7 @@ class _FallbackLLM:
 
 
 class DialogueNode(Node):
-    """ROS2 shell that composes DialogCore over the harness ports."""
+    """ROS2 shell that composes AgentCore over the harness ports."""
     def __init__(self) -> None:  # noqa: D401 — ROS2 ctor signature
         super().__init__("dialogue_node")
         # Issue #1234 — OpenTelemetry traces (этап 2). ВАЖНО: вызываем
@@ -344,7 +344,7 @@ class DialogueNode(Node):
         self._validate_skill_fragments(self._skill_prompts)
         #: Детерминированный пред-роутер домена. None — скиллы выключены.
         self._skill_router: Any = None
-        #: Последние прочитанные счётчики load_skill из DialogCore — нужны,
+        #: Последние прочитанные счётчики load_skill из AgentCore — нужны,
         #: чтобы публиковать ПРИРОСТ, а не абсолютное значение.
         self._skill_load_seen: tuple[int, int] = (0, 0)
         self._verbose_llm: bool = bool(self.get_parameter("verbose_llm").value)
@@ -447,10 +447,16 @@ class DialogueNode(Node):
         self._dsm: DialogueStateMachine = DialogueStateMachine(
             silence_timeout=float(self.get_parameter("dialogue_timeout").value),
         )
+        # Issue #1986 §5.3 — inactivity timeout ушёл из AgentCore (ядро не
+        # владеет таймаутом; это забота оболочки). Нода хранит значение и
+        # сама гонит DSM в ``_on_inactivity_check``.
+        self._dialogue_timeout_s: float = float(
+            self.get_parameter("dialogue_timeout").value
+        )
         # Issue #1160 — LLM держим и в атрибуте ноды: метрики
         # (``record_voice_llm_request``) и future OTel spans берут имя
         # провайдера из ``self._llm.name``, а не из ``self._core._llm``
-        # (private-атрибут DialogCore). Раньше ``_build_llm()`` вызывался
+        # (private-атрибут AgentCore). Раньше ``_build_llm()`` вызывался
         # inline и нода теряла ссылку — обращение ``self._llm`` падало
         # AttributeError в ``_run_turn``.
         self._llm = self._build_llm()
@@ -465,13 +471,12 @@ class DialogueNode(Node):
         # _build_dynamic_system_context can render the [ACTIVE TASKS]
         # block for the LLM. None when scheduler is disabled/failed.
         self._scheduler_executor: Any = None
-        self._core: DialogCore = DialogCore(
+        self._core: AgentCore = AgentCore(
             llm=self._llm,
             tools=self._build_tool_provider(),
             memory=self._memory,
             dsm=self._dsm,
             history_trim_limit=int(self.get_parameter("history_max_turns").value),
-            inactivity_timeout=float(self.get_parameter("dialogue_timeout").value),
             system_prompt=self._system_prompt,
             use_streaming=bool(self.get_parameter("llm_streaming").value),
             on_prompt=self._on_prompt_stats,
@@ -867,7 +872,7 @@ class DialogueNode(Node):
                     f"📊 Metrics port {self._metrics_port} not bound "
                     "(busy or prometheus_client missing)"
                 )
-        self.get_logger().info("✅ DialogueNode shell ready (DialogCore wired)")
+        self.get_logger().info("✅ DialogueNode shell ready (AgentCore wired)")
     def _declare_params(self) -> None:
         # 🔴 FIX (live 18:00): MiniMax Token Plan кончился (429 rate_limit
         # 'Token Plan usage limit reached'). YAML мёртв (#1004) — дефолт
@@ -1292,7 +1297,7 @@ class DialogueNode(Node):
         файловой системы и без ROS2 (он получает готовый словарь).
 
         При ``skills_enabled=false`` возвращаем пустой словарь — тогда
-        DialogCore ведёт себя ровно как до скиллов, побайтово.
+        AgentCore ведёт себя ровно как до скиллов, побайтово.
 
         Имя файла = имя скилла из каталога. Отсутствие файла для
         объявленного скилла — не ошибка старта: скилл останется без
@@ -1393,14 +1398,14 @@ class DialogueNode(Node):
         self._skill_load_seen = (loaded, misses)
 
     def _on_prompt_stats(self, stats: Any) -> None:
-        """Опубликовать размер промпта, посчитанный DialogCore.
+        """Опубликовать размер промпта, посчитанный AgentCore.
 
         Колбэк зовётся из harness на КАЖДОЕ обращение к LLM, включая
         каждую итерацию тул-цикла. Harness намеренно ничего не знает про
         Prometheus — он только считает, публикует нода.
 
         Любое исключение здесь гасится: телеметрия не имеет права ронять
-        живой ход. DialogCore тоже глушит исключения наблюдателя — это
+        живой ход. AgentCore тоже глушит исключения наблюдателя — это
         второй слой на случай прямого вызова из тестов.
         """
         try:
@@ -1573,7 +1578,7 @@ class DialogueNode(Node):
         # Timeout — read here so the provider build can use it directly.
         # ``temperature`` and ``max_tokens`` are read by ``_build_llm``
         # (issue #1883) where they are assembled into a ``LLMSettings``
-        # object that flows into ``DialogCore``. Reading them here too
+        # object that flows into ``AgentCore``. Reading them here too
         # would be a duplicate path that drifts silently — ``_build_llm``
         # is the single owner.
         try:
@@ -1673,7 +1678,7 @@ class DialogueNode(Node):
                 f"[health] build_llm: provider_chain={chain_display} active={chain_display[0]} (single)",
             )
             # Stash on the provider object so the node's __init__ can pick
-            # up the same LLMSettings when wiring DialogCore (single-provider
+            # up the same LLMSettings when wiring AgentCore (single-provider
             # path doesn't go through HealthAwareFallbackLLM).
             self._llm_settings = primary_settings
             return built[0]
@@ -1716,10 +1721,10 @@ class DialogueNode(Node):
         self.get_logger().info(
             f"[health] build_llm: provider_chain={chain_display} active={chain_display[0]} (health-aware, TTL {health_ttl:.0f}s)",
         )
-        # Stash for the DialogCore wiring below — the fallback wrapper
-        # is the LLM that DialogCore talks to, but it will dispatch
+        # Stash for the AgentCore wiring below — the fallback wrapper
+        # is the LLM that AgentCore talks to, but it will dispatch
         # ``settings_for[name]`` to each provider on its own, so we pass
-        # the PRIMARY provider's settings as the DialogCore default and
+        # the PRIMARY provider's settings as the AgentCore default and
         # let ``HealthAwareFallbackLLM.settings_for`` do the per-provider
         # rewrite on top.
         self._llm_settings = primary_settings
@@ -1803,7 +1808,7 @@ class DialogueNode(Node):
         # 3. Construct the bridge + ``ROSMCPToolProvider`` and feed
         #    it the 34 manifests from ``ToolRegistry``.
         # 4. Wrap with ``LegacyToolProviderAdapter`` so the legacy
-        #    ``discover/execute`` contract that ``DialogCore`` accepts
+        #    ``discover/execute`` contract that ``AgentCore`` accepts
         #    is satisfied.
         # 5. Assert ``list_tools()`` is non-empty — silent regression
         #    guard against the W5a mismatch re-appearing.
@@ -1907,7 +1912,7 @@ class DialogueNode(Node):
             f"wired via LLMToolCallAdapter → ROSMCPToolProvider "
             f"(first: {catalogue[0].name!r})."
         )
-        # DialogCore consumes the legacy ``discover/execute`` port
+        # AgentCore consumes the legacy ``discover/execute`` port
         # contract; adapt the core provider so the harness's
         # orchestration layer stays unchanged.
         provider_adapter = adapt_tool_provider(provider)
@@ -2338,7 +2343,7 @@ class DialogueNode(Node):
     ) -> None:
         """Переписать фразу оператора в стиле пресета и озвучить.
 
-        Вызов идёт строго в обход DialogCore: это НЕ диалог, формализатор
+        Вызов идёт строго в обход AgentCore: это НЕ диалог, формализатор
         не должен отвечать на user_input и использовать инструменты. Поэ-
         тому ``tools=[]`` и messages из двух LLMMessage (system =
         prompt_text пресета, user = исходная фраза). Стриминг не включаем
@@ -2989,7 +2994,7 @@ class DialogueNode(Node):
         # Wake-word gate: when we cross from IDLE the wake-word itself
         # has to drive IDLE → LISTENING, then the speech below drives
         # LISTENING → DIALOGUE. Without the WAKE_WORD event the strip
-        # above hides the trigger from DialogCore's on_user_input and
+        # above hides the trigger from AgentCore's on_user_input and
         # the DSM gets stuck in IDLE. (W6 integration tests caught
         # this regression in the W5 shell rewrite.)
         if state == DialogueStateKind.IDLE:
@@ -4066,7 +4071,7 @@ class DialogueNode(Node):
             dynamic_system = self._build_dynamic_system_context()
             # 🔴 FIX (issue #1101): _on_stt уже сделал DSM-переход
             # IDLE→LISTENING→DIALOGUE через WAKE_WORD+STT_RESULT. Передаём
-            # preclassified_event=STT_RESULT чтобы DialogCore НЕ
+            # preclassified_event=STT_RESULT чтобы AgentCore НЕ
             # переклассифицировал user-text (где может быть 'робот' внутри)
             # и не сломал guard.
             self.get_logger().info(
@@ -4212,7 +4217,7 @@ class DialogueNode(Node):
                 pass
             try:
                 self.get_logger().error(
-                    f"❌ DialogCore error: {exc}\n{_tb_str[-500:]}"
+                    f"❌ AgentCore error: {exc}\n{_tb_str[-500:]}"
                 )
             except Exception:
                 pass
@@ -4420,7 +4425,7 @@ class DialogueNode(Node):
                 # Issue #1160 — Prometheus metrics: сессия закрылась
                 # штатно (DIALOGUE_END) — пишем duration histogram.
                 self._maybe_record_session_end(result="success")
-            # DialogCore completes the DIALOGUE → IDLE transition itself.
+            # AgentCore completes the DIALOGUE → IDLE transition itself.
             # Publish the resulting state even when no transition is needed
             # here; otherwise the ROS state topic remains stuck at the
             # earlier DIALOGUE notification and scenario runners wait forever.
@@ -4677,7 +4682,7 @@ class DialogueNode(Node):
                 return False
         # Issue #992 Bug D — the retry turn needs the same DSM state
         # transitions as a real STT input (IDLE → LISTENING → DIALOGUE)
-        # — otherwise DialogCore's process_input sees IDLE and returns
+        # — otherwise AgentCore's process_input sees IDLE and returns
         # an empty result, which trips the
         # "Что-то я задумался, повтори пожалуйста" fallback. This is
         # exactly the wake-word gate logic from ``_on_stt``.
@@ -4864,7 +4869,7 @@ class DialogueNode(Node):
     def _reopen_dialogue_for_retry(self) -> None:
         """Re-drive the DSM to DIALOGUE before a synchronous retry dispatch.
 
-        ``dialog_core.process_input`` gates the LLM on
+        ``agent_core.process_input`` gates the LLM on
         ``current_state == DIALOGUE``. The parent turn's ``process_input``
         already fired ``DIALOGUE_END``, so by the time the post-turn guard
         runs the state is IDLE — a retry dispatched from here would
@@ -4928,7 +4933,7 @@ class DialogueNode(Node):
 
         Issue #992 — called from :meth:`_apply_music_guard` the moment a
         guard has CONFIRMED a music request got no tool call (its own
-        retry included). ``DialogCore.discard_last_reply`` is a coroutine
+        retry included). ``AgentCore.discard_last_reply`` is a coroutine
         and this method runs on the ROS2 callback thread, so it is
         scheduled on the asyncio loop the same way ``_dispatch_turn``
         schedules ``_run_turn`` — fire-and-forget, with a done-callback
@@ -5067,7 +5072,7 @@ class DialogueNode(Node):
                 return False
             # Issue #992 — the attempt we just evaluated (tools_called
             # empty on a music request) already had its assistant reply
-            # persisted by DialogCore as an ordinary successful turn (see
+            # persisted by AgentCore as an ordinary successful turn (see
             # ``discard_last_reply`` docstring). Retract it BEFORE
             # dispatching the retry so the next LLM call — and every
             # later turn — doesn't read its own unlabeled false
@@ -5667,7 +5672,7 @@ class DialogueNode(Node):
             # 🔴 FIX (live 12.08): безопасный лог ошибки — если логгер
             # упадёт, мы НЕ теряем fallback-ответ пользователю.
             try:
-                self.get_logger().warning(f"⚠️ DialogCore error: {result.error}")
+                self.get_logger().warning(f"⚠️ AgentCore error: {result.error}")
             except Exception:
                 pass
             # 🔴 FIX (issue #1278): когда ВСЕ LLM-провайдеры недоступны
@@ -5757,19 +5762,19 @@ class DialogueNode(Node):
         # lands in ``tools_called`` but the call is rejected by
         # validation and NOTHING is voiced (no ``/voice/tts/request``).
         # Skipping auto-TTS in that case leaves the user with the
-        # accept sound and then silence. DialogCore now tracks
+        # accept sound and then silence. AgentCore now tracks
         # ``speak_text_real_count`` (calls with non-empty ``text``) and
         # we skip only when speech REALLY happened.
         speak_text_real = int(getattr(result, "speak_text_real_count", 0) or 0)
         # Issue #1708 — hallucinated-lyrics guard diagnostic. When the
         # LLM called BOTH a music tool AND ``speak_text`` in the same
-        # cycle, DialogCore's heuristic may have suppressed the
+        # cycle, AgentCore's heuristic may have suppressed the
         # ``speak_text`` call (replaced with a sentinel error). If it
         # did, ``speak_text_real_count`` was decremented to zero, but
         # ``tools_called`` still lists both names so operators can see
         # the suppression happened. Log a one-line diagnostic so the
         # live log makes the pattern obvious without grepping.
-        # Mirrors dialog_core._MUSIC_LAUNCH_TOOLS — keep the two lists
+        # Mirrors agent_core._MUSIC_LAUNCH_TOOLS — keep the two lists
         # in sync if a new music tool is added to the manifest.
         _music_tool_names = {
             "execute_music_code", "generate_music",
@@ -5781,7 +5786,7 @@ class DialogueNode(Node):
         _has_speak_text = "speak_text" in tools_called
         if _has_music_tool and _has_speak_text:
             # If speak_text_real==0 BUT tools_called still contains
-            # speak_text, the dialog_core guard dropped the call.
+            # speak_text, the agent_core guard dropped the call.
             # Otherwise (speak_text_real>0), BACKING mode ran normally
             # — only log at debug to avoid noise.
             if speak_text_real == 0:
@@ -6004,10 +6009,10 @@ class DialogueNode(Node):
                     # историю из десятков «done» — и МИМИКИРОВАЛА этот
                     # паттерн, возвращая «done» без tool-вызовов (memory DB
                     # показывала 15+ подряд assistant 'done'). Корректирующий
-                    # retry теперь живёт ВНУТРИ DialogCore._run_with_tools
+                    # retry теперь живёт ВНУТРИ AgentCore._run_with_tools
                     # (issue #1217) и учит модель в том же turn; служебные
                     # записи в диалоговую память не нужны (правило control
-                    # traffic — как для DJ-auto в dialog_core.process_input).
+                    # traffic — как для DJ-auto в agent_core.process_input).
                 except Exception as _empty_fallback_exc:
                     # 🔴 КРИТИЧНО: даже если ВСЁ внутри блока упало
                     # (логгер, память, etc.), пользователь НЕ должен
@@ -6275,7 +6280,7 @@ class DialogueNode(Node):
                 f"⚠️ Не удалось опубликовать /mcp/music_fallback: {exc}"
             )
     def _speak_direct(self, text: str, language: str | None = None) -> None:
-        """Озвучить текст напрямую (без DialogCore).
+        """Озвучить текст напрямую (без AgentCore).
 
         ``language`` (AV-28) — язык, на котором НАПИСАН ``text``. Уходит в
         payload и дальше в TTS: без него формализатор переписывал реплику
@@ -6319,7 +6324,7 @@ class DialogueNode(Node):
             return False
         if isinstance(error, ProviderError):
             return True
-        # ``DialogCore`` used to wrap LLM exceptions into a plain
+        # ``AgentCore`` used to wrap LLM exceptions into a plain
         # ``Exception`` carrying the traceback text (4ba16f23), which threw
         # the ``ProviderError`` type away and left only this substring
         # match. It now keeps the exception itself (traceback goes to
@@ -6516,7 +6521,7 @@ class DialogueNode(Node):
 
         Полный сброс состояния текущего диалога: in-flight turn, DSM → IDLE,
         бэклог-аккумулятор, speaker-состояние, таймер сессии и история
-        (in-memory окно ходов через ``DialogCore.clear_history``). LLM не
+        (in-memory окно ходов через ``AgentCore.clear_history``). LLM не
         вызывается —
         вместо этого говорим детерминированное подтверждение.
 
@@ -6575,7 +6580,7 @@ class DialogueNode(Node):
             self._maybe_record_session_end(result="reset")
         except Exception:  # noqa: BLE001
             pass
-        # 6. История диалога — in-memory окно ходов в DialogCore.
+        # 6. История диалога — in-memory окно ходов в AgentCore.
         #    Обёртка остаётся async для совместимости с loop-диспетчером.
         loop = getattr(self, "_loop", None)
         if loop is not None:
@@ -6663,7 +6668,10 @@ class DialogueNode(Node):
         self._session_started_at = None
         self._session_end_reason = result
     def _on_inactivity_check(self) -> None:
-        if self._core.check_timeout():
+        # Issue #1986 §5.3: AgentCore больше не владеет таймаутом — нода
+        # сама гонит DSM (ровно то, что делал удалённый ``check_timeout``:
+        # ``DialogueStateMachine.check_inactivity_timeout``).
+        if self._dsm.check_inactivity_timeout(self._dialogue_timeout_s):
             self.get_logger().info("⏰ Dialogue timeout → IDLE")
             # Issue #1160 — Prometheus metrics: таймаут диалога = сессия
             # закрылась с result=fail (не штатный DIALOGUE_END).

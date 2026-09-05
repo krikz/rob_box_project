@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, AsyncIterator, Iterable, Mapping
 
-from rob_box_harness.core.dialog_core import LOAD_SKILL_TOOL, DialogCore
+from rob_box_harness.core.agent_core import LOAD_SKILL_TOOL, AgentCore
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
     DialogueStateMachine,
@@ -71,8 +71,8 @@ def _dsm() -> DialogueStateMachine:
     return dsm
 
 
-def _core(provider: _ScriptedProvider, prompts=None) -> DialogCore:
-    return DialogCore(
+def _core(provider: _ScriptedProvider, prompts=None) -> AgentCore:
+    return AgentCore(
         llm=provider,
         tools=FakeToolProvider(),
         memory=InMemoryStore(),
@@ -83,7 +83,7 @@ def _core(provider: _ScriptedProvider, prompts=None) -> DialogCore:
     )
 
 
-def _run(core: DialogCore, text: str = "сыграй что-нибудь") -> Any:
+def _run(core: AgentCore, text: str = "сыграй что-нибудь") -> Any:
     return asyncio.run(
         core.process_input(text, preclassified_event=DialogueEvent.STT_RESULT)
     )
@@ -253,7 +253,7 @@ def test_load_skill_never_reaches_the_tool_provider() -> None:
         _load_call("composer"),
         LLMResponse(content="ок", finish_reason="stop"),
     )
-    core = DialogCore(
+    core = AgentCore(
         llm=provider,
         tools=_Watching(),
         memory=InMemoryStore(),

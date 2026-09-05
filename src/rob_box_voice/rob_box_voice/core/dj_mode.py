@@ -10,7 +10,7 @@ Extracted from the legacy ``dialogue_node.py`` so the ROS2 shell stays
 * Prompt builders for the first transition (``start of party``) and
   every subsequent track.
 
-The actual LLM turn runs through :class:`DialogCore.process_input` —
+The actual LLM turn runs through :class:`AgentCore.process_input` —
 DJ-mode just produces the prompt the shell hands to it. A
 :class:`DJHook` carries the three shell-side callbacks the controller
 needs (``dispatch``, ``is_active``, ``is_dialogue_active``).

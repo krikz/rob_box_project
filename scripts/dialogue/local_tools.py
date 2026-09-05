@@ -1,6 +1,6 @@
 """Simulated tool provider for the local (ROS2-free) dialogue chat.
 
-On the robot the LLM's tool calls travel ``DialogCore → LLMToolCallAdapter
+On the robot the LLM's tool calls travel ``AgentCore → LLMToolCallAdapter
 → /mcp/execute → MCPServer``, which needs a ROS2 graph, a motor bus, a
 speaker and a LED matrix. None of that exists on a laptop, but the *tool
 catalog* does: :mod:`rob_box_core.tool_catalog` is generated from the very
@@ -13,7 +13,7 @@ fakes ``execute()``:
 * ``speak_text`` is surfaced to the terminal — it is how РОББОКС talks,
   so in a text chat it *is* the reply,
 * the memory tools run for real against the same
-  :class:`~rob_box_harness.memory.MemoryStore` ``DialogCore`` is using,
+  :class:`~rob_box_harness.memory.MemoryStore` ``AgentCore`` is using,
   so «запомни, что…» → «что ты обо мне помнишь?» works across restarts,
 * ``get_current_time`` returns the real clock,
 * everything else returns ``{"status": "ok", "simulated": true}`` with a

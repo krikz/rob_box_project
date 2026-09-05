@@ -50,7 +50,7 @@ from test_dialogue_shell import (  # noqa: E402
     _TestableDialogueNode,
 )
 from rob_box_harness.core.dialogue_state_machine import DialogueEvent  # noqa: E402
-from rob_box_harness.core.dialog_core import DialogResult  # noqa: E402
+from rob_box_harness.core.agent_core import DialogResult  # noqa: E402
 from rob_box_harness.core.tool_registry import ToolSpec  # noqa: E402
 from rob_box_harness.tools import FakeToolProvider  # noqa: E402
 from rob_box_llm.provider import LLMResponse  # noqa: E402

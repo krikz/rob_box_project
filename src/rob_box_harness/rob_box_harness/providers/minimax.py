@@ -304,7 +304,7 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         """
         # 🔴 FIX (live 06.08): MiniMax API режет ответ на своём дефолте
         # 256 токенов, когда max_tokens не задан — робот отвечал
-        # обрывками («[INSTR», пустота). dialog_core зовёт
+        # обрывками («[INSTR», пустота). agent_core зовёт
         # complete(messages, tools=...) без settings → здесь ставим
         # разумный дефолт 4096 для голоса (промпт 39K символов,
         # музыкальный код + речь не влезают в 256).

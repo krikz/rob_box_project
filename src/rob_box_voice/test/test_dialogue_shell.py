@@ -182,7 +182,7 @@ sys.modules["std_msgs.msg"] = _std_msgs_msg
 # keep this block after the rclpy shim.
 from std_msgs.msg import Bool, String  # noqa: E402
 
-from rob_box_harness.core.dialog_core import DialogCore  # noqa: E402
+from rob_box_harness.core.agent_core import AgentCore  # noqa: E402
 from rob_box_harness.core.dialogue_state_machine import (  # noqa: E402
     DialogueStateKind,
 )
@@ -300,7 +300,7 @@ class _TestableDialogueNode(DialogueNode):
         # but InMemoryStore doesn't expose that method (only the
         # SQLite implementation does). The shell's InMemoryStore
         # fallback path is therefore broken; we sidestep it here so
-        # the tests exercise the upstream wiring (DialogCore ↔
+        # the tests exercise the upstream wiring (AgentCore ↔
         # MemoryStore) without the in-memory init dance.
         return self._test_memory
 
@@ -573,7 +573,7 @@ class TestDialogueShell(unittest.TestCase):
     # was not republished, so scenario_runner's ``wait_for_idle`` polled
     # the last ``DIALOGUE`` notification for 45 s and timed out.
     #
-    # DialogCore now drives DIALOGUE → IDLE on its own; the shell must
+    # AgentCore now drives DIALOGUE → IDLE on its own; the shell must
     # publish the resulting state regardless of whether the legacy
     # ``if DIALOGUE: on_event(DIALOGUE_END)`` path fired.
 
@@ -594,7 +594,7 @@ class TestDialogueShell(unittest.TestCase):
     def test_tool_call_turn_publishes_idle_state(self):
         """A tool-call turn (issue #918) must also publish the final IDLE.
 
-        DialogCore now drives the full ``DIALOGUE → IDLE`` transition
+        AgentCore now drives the full ``DIALOGUE → IDLE`` transition
         internally; the shell must publish the resulting state even
         when no additional ``DIALOGUE_END`` event is needed in the
         finally clause. Without the fix, scenario_runner
@@ -727,8 +727,9 @@ class TestDialogueShell(unittest.TestCase):
 
         We can't rely on wall-clock waits, so we patch
         ``DialogueStateMachine.check_inactivity_timeout`` to fire on
-        the first tick. The shell's ``_on_inactivity_check`` calls
-        ``self._core.check_timeout()`` which delegates there.
+        the first tick. The shell's ``_on_inactivity_check`` drives the
+        DSM directly (issue #1986 §5.3 — AgentCore no longer owns
+        timeout).
         """
         # Wake into LISTENING. We can't drive the full STT path
         # because the shell immediately fires STT_RESULT → DIALOGUE
@@ -742,7 +743,7 @@ class TestDialogueShell(unittest.TestCase):
         self.assertEqual(_state_name(self.node), "LISTENING")
 
         # Patch the DSM's check_inactivity_timeout to always fire.
-        from rob_box_harness.core import dialog_core as _dc_mod
+        from rob_box_harness.core import agent_core as _dc_mod
 
         original = self.node._dsm.check_inactivity_timeout
         self.node._dsm.check_inactivity_timeout = lambda _t: (

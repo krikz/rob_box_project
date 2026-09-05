@@ -795,7 +795,7 @@ def test_task_created_carries_group_and_segment_index() -> None:
     которого зависит вся сегментная модель: приезжает выступление одним
     батчем или по куску за итерацию тул-цикла.
 
-    ``begin_group()`` вызывается ``dialog_core`` на КАЖДЫЙ батч
+    ``begin_group()`` вызывается ``agent_core`` на КАЖДЫЙ батч
     (``tool_executor.begin_group``), поэтому число разных ``group_id`` за
     тёрн = числу итераций, а ``seg_idx`` внутри группы = размеру батча.
     Оба поля у задачи уже есть (``SchedulerTask.group_id``/``seg_idx``),
