@@ -110,7 +110,7 @@ def strip_wake_word(text: str, wake_words: Sequence[str] | None = None) -> str:
 
     🔴 FIX (live 10.08): regex was anchored ``^`` — пропускал wake-word
     в середине фразы (напр. «денчик ой фу робот меня зовут...»).
-    ``on_user_input()`` в DialogCore видел «робот» → WAKE_WORD вместо
+    ``on_user_input()`` в AgentCore видел «робот» → WAKE_WORD вместо
     STT_RESULT → guard ``event==STT_RESULT`` пропускал LLM → тишина.
     Теперь удаляем из ЛЮБОГО места в тексте.
 

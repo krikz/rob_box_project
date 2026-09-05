@@ -4,7 +4,7 @@ handlers/messages.py — Handlers for text messages and voice messages.
 
 After Phase 6 v2 / W7 this module is a *thin transport*: every text and
 voice message is forwarded to ``/voice/stt/result`` so the unified
-DialogCore/harness pipeline (in ``dialogue_node``) can decide what to
+AgentCore/harness pipeline (in ``dialogue_node``) can decide what to
 do with it. There is no LLM call here.
 
 Features:

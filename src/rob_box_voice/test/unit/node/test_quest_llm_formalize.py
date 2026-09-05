@@ -27,7 +27,7 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-# rob_box_voice.dialogue_node → rob_box_harness.core.dialog_core →
+# rob_box_voice.dialogue_node → rob_box_harness.core.agent_core →
 # rob_box_core.tool_catalog.ToolCatalogEntry: тот использует
 # ``MappingProxyType({})`` как dataclass default — в Python 3.11+ это
 # raise'ит ``ValueError: mutable default <class 'mappingproxy'>``,

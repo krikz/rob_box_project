@@ -8,7 +8,7 @@
 tools_called`) считал это «LLM уже озвучила» и СКИПАЛ auto-TTS
 финального текста → юзер слышал только акцепт и тишину.
 
-Фикс (#1343): DialogCore считает ``speak_text_real_count`` — сколько
+Фикс (#1343): AgentCore считает ``speak_text_real_count`` — сколько
 speak_text-вызовов пришли с НЕПУСТЫМ ``text``. Guard скипает auto-TTS
 только когда реальных вызовов > 0.
 
@@ -21,7 +21,7 @@ speak_text-вызовов пришли с НЕПУСТЫМ ``text``. Guard ск�
 
 from unittest.mock import MagicMock
 
-from rob_box_harness.core.dialog_core import DialogResult
+from rob_box_harness.core.agent_core import DialogResult
 from rob_box_voice.dialogue_node import DialogueNode
 
 

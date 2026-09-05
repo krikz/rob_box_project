@@ -36,8 +36,11 @@ from typing import Any
 
 import pytest
 
-from rob_box_harness.core.dialog_core import DialogCore
-from rob_box_harness.core.dialogue_state_machine import DialogueStateMachine
+from rob_box_harness.core.agent_core import AgentCore
+from rob_box_harness.core.dialogue_state_machine import (
+    DialogueEvent,
+    DialogueStateMachine,
+)
 from rob_box_harness.memory import Turn
 from rob_box_llm.provider import LLMResponse, ToolCall
 
@@ -108,7 +111,7 @@ class _FakeToolProvider:
 
 
 class _FakeMemoryStore:
-    """Пустая память фактов — ходы DialogCore держит в in-memory окне."""
+    """Пустая память фактов — ходы AgentCore держит в in-memory окне."""
 
     def __init__(self) -> None:
         pass
@@ -138,15 +141,21 @@ def _music_llm() -> _FakeLLMProvider:
     )
 
 
-def _core(llm: Any, memory: _FakeMemoryStore, **kwargs: Any) -> DialogCore:
-    obj = DialogCore(
+def _wake(core: AgentCore) -> None:
+    """Drive the injected DSM to LISTENING (issue #1986 §5.3 — AgentCore no
+    longer owns wake routing; the shell/test drives the DSM directly)."""
+    core._dsm.on_event(DialogueEvent.WAKE_WORD)
+
+
+def _core(llm: Any, memory: _FakeMemoryStore, **kwargs: Any) -> AgentCore:
+    obj = AgentCore(
         llm=llm,
         tools=_FakeToolProvider(),
         memory=memory,
         dsm=DialogueStateMachine(),
         **kwargs,
     )
-    asyncio.run(obj.handle_wake_word(""))
+    _wake(obj)
     return obj
 
 
@@ -265,7 +274,7 @@ class TestPseudoToolCall:
         ],
     )
     def test_placeholder_is_a_silent_turn(self, text: str) -> None:
-        assert DialogCore._is_silent_spoken(text, ()) is True
+        assert AgentCore._is_silent_spoken(text, ()) is True
 
     @pytest.mark.parametrize(
         "text",
@@ -277,16 +286,16 @@ class TestPseudoToolCall:
         ],
     )
     def test_real_speech_survives(self, text: str) -> None:
-        assert DialogCore._is_silent_spoken(text, ()) is False
+        assert AgentCore._is_silent_spoken(text, ()) is False
 
     def test_placeholder_with_a_real_tool_call_is_not_silent(self) -> None:
         # Тул отработал — ход настоящий, каким бы ни был текст.
-        assert DialogCore._is_silent_spoken(
+        assert AgentCore._is_silent_spoken(
             "<compose_music composition here>", ("compose_music",)
         ) is False
 
     def test_response_with_placeholder_triggers_the_corrective_retry(self) -> None:
-        assert DialogCore._is_silent_response(
+        assert AgentCore._is_silent_response(
             LLMResponse(content="<compose_music composition here>", tool_calls=())
         ) is True
 

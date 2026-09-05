@@ -10,7 +10,7 @@ Issue #1101 (live 11.08) — оператор видит «робот молчи
 4. Метод не падает, если ``_llm_skipped_counter`` пуст (первый цикл).
 
 Тест pure-Python: ``DialogueNode.__init__`` не вызывается, используется
-``object.__new__`` + подмена ``get_logger`` (как в test_dialog_core.py).
+``object.__new__`` + подмена ``get_logger`` (как в test_agent_core.py).
 На dev-машине rclpy не установлен — изолируемся через sys.modules stub,
 как в test_dialogue_register_speaker.py.
 """

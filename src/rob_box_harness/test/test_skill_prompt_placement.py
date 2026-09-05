@@ -6,7 +6,7 @@
 
 Ради чего: инструкция на позиции 0 проигрывает двадцати ходам истории,
 которые демонстрируют обратное поведение. Тот же принцип уже применён в
-этом файле к ``<system_context>`` (dialog_core: «волатильный runtime-стейт
+этом файле к ``<system_context>`` (agent_core: «волатильный runtime-стейт
 должен стоять там, где он и по времени — рядом с последним user-ходом»).
 """
 
@@ -17,7 +17,7 @@ from typing import Any, AsyncIterator, Iterable, Mapping
 
 import pytest
 
-from rob_box_harness.core.dialog_core import DialogCore
+from rob_box_harness.core.agent_core import AgentCore
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
     DialogueStateMachine,
@@ -72,8 +72,8 @@ def _core(
     skill_prompts: Mapping[str, str] | None = None,
     memory: InMemoryStore | None = None,
     dsm: DialogueStateMachine | None = None,
-) -> DialogCore:
-    return DialogCore(
+) -> AgentCore:
+    return AgentCore(
         llm=provider,
         tools=FakeToolProvider(),
         memory=memory or InMemoryStore(),
@@ -86,7 +86,7 @@ def _core(
 
 
 def _run(
-    core: DialogCore,
+    core: AgentCore,
     text: str = "сыграй бит",
     dsm: DialogueStateMachine | None = None,
 ) -> None:
@@ -119,7 +119,7 @@ def test_skill_text_lands_after_the_history() -> None:
     """Задача 2.4 — фрагмент ПОСЛЕ последнего сообщения истории."""
     provider = _CapturingProvider()
     core = _core(provider, skill_prompts={"composer": _COMPOSER_TEXT})
-    # История живёт в окне DialogCore, а не в MemoryStore (b5cf5daf:
+    # История живёт в окне AgentCore, а не в MemoryStore (b5cf5daf:
     # «turns live in memory only, never in SQLite»).
     core._turn_window.extend([
         Turn(role="user", content="старый вопрос"),
@@ -272,7 +272,7 @@ def test_active_skill_labels_the_prompt_metric() -> None:
     """Метка ``skill`` метрики берётся из активного скилла (фаза 0 + 2)."""
     observed: list[Any] = []
     provider = _CapturingProvider()
-    core = DialogCore(
+    core = AgentCore(
         llm=provider,
         tools=FakeToolProvider(),
         memory=InMemoryStore(),

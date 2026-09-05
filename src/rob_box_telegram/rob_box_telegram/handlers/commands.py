@@ -8,7 +8,7 @@ After Phase 6 v2 / W7 this module is a *thin transport*:
   here because they are direct ROS callbacks — no LLM, no tool bridge.
 * Status / navigation / volume / music / mapping handlers used to call the
   ToolProvider through ``_invoke_tool``. They now forward the command
-  intent to ``/voice/stt/result`` so the unified DialogCore/harness
+  intent to ``/voice/stt/result`` so the unified AgentCore/harness
   pipeline (``dialogue_node``) can decide what to do with it.
 
 All handlers receive ``context.bot_data["node"]`` — our TelegramNode
@@ -739,7 +739,7 @@ async def stopmusic_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def clear_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /clear — clear LLM chat history.
 
-    After W7 the chat history lives in the dialogue pipeline (DialogCore),
+    After W7 the chat history lives in the dialogue pipeline (AgentCore),
     not in the Telegram node. Forward the intent as plain text so the
     dialogue manager can drop the session.
     """

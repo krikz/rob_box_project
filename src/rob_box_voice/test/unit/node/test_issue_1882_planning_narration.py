@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from rob_box_harness.core.dialog_core import DialogResult
+from rob_box_harness.core.agent_core import DialogResult
 from rob_box_voice.dialogue_node import DialogueNode
 
 

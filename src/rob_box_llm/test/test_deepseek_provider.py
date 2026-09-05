@@ -461,7 +461,7 @@ def test_safe_json_valid_then_truncated_does_not_leak_flag():
 
 def test_complete_marks_truncated_tool_args_when_arguments_cut_off():
     """Regression: ``finish_reason="length"`` + unparseable arguments →
-    the LLMResponse surfaces ``truncated_tool_args=True`` so dialog_core
+    the LLMResponse surfaces ``truncated_tool_args=True`` so agent_core
     can ask the model for a tighter retry.
     """
     p, c = _make_deepseek()
@@ -480,7 +480,7 @@ def test_complete_marks_truncated_tool_args_when_arguments_cut_off():
     assert resp.finish_reason == "length"
     assert resp.truncated_tool_args is True
     # Empty arguments — the parser's last resort. The executor would
-    # crash on validation; dialog_core now catches the flag BEFORE
+    # crash on validation; agent_core now catches the flag BEFORE
     # execution and asks for a retry.
     assert resp.tool_calls[0].arguments == {}
 
@@ -502,7 +502,7 @@ def test_stream_marks_truncated_tool_args_in_final_chunk():
     chunk (the one carrying ``finish_reason``). Earlier chunks — the
     ones that emit each tool-call — are unaffected so a consumer can
     still inspect them; the verdict is aggregated by ``_stream_response``
-    in dialog_core into ``LLMResponse.truncated_tool_args``.
+    in agent_core into ``LLMResponse.truncated_tool_args``.
     """
     p, c = _make_deepseek()
     c.chat.completions.next_stream = [
@@ -562,7 +562,7 @@ def test_complete_round_trips_assistant_tool_calls_with_frozen_arguments():
     after ``__post_init__`` (immutability invariant), but
     ``_json_dumps`` must still serialise it when the caller feeds the
     previous assistant turn back into the model — exactly what
-    ``dialog_core._run_with_tools`` does on every tool-loop iteration.
+    ``agent_core._run_with_tools`` does on every tool-loop iteration.
     Before the fix this raised
     ``TypeError: Object of type MappingProxyType is not JSON serializable``
     and broke the entire tool loop.

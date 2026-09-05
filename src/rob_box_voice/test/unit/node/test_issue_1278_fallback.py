@@ -85,7 +85,7 @@ class TestIsLlmUnavailableError:
         assert n._is_llm_unavailable_error(err) is True
 
     def test_wrapped_exception_with_marker_is_unavailable(self):
-        # DialogCore оборачивает LLM-исключение в plain Exception с
+        # AgentCore оборачивает LLM-исключение в plain Exception с
         # traceback (4ba16f23) — тип ProviderError теряется, маркер
         # остаётся в сообщении.
         n = _make_node()

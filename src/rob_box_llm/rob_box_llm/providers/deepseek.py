@@ -361,7 +361,7 @@ class _OpenAICompatibleProvider(LLMProvider):
             kwargs["tool_choice"] = s.tool_choice
         # 🔴 FIX (live 06.08): кастомные поля провайдеров — через extra_body,
         # НЕ в kwargs! OpenAI SDK строго типизирован: create(thinking=...) →
-        # TypeError → DialogCore error → «задумался» (коммит b5879b79).
+        # TypeError → AgentCore error → «задумался» (коммит b5879b79).
         # DeepSeek V4 думает по умолчанию (thinking mode) — отключаем.
         extra_body: dict[str, Any] = {}
         if self.name == "deepseek":
@@ -555,7 +555,7 @@ class _OpenAICompatibleProvider(LLMProvider):
                 finish_reason=finish_reason,
                 usage=usage or None,
                 # Issue #1899: surface the truncation verdict on the
-                # terminal chunk so ``dialog_core._stream_response`` can
+                # terminal chunk so ``agent_core._stream_response`` can
                 # aggregate it into ``LLMResponse.truncated_tool_args``.
                 # Without this, the broken ``{}`` arguments would reach
                 # the executor and trigger ``ToolValidationError`` plus
@@ -610,7 +610,7 @@ def _safe_json(raw: Any) -> dict[str, Any]:
     ``_safe_json`` and propagate the flag into the public
     ``LLMResponse``/``LLMChunk`` payload via ``truncated_tool_args``.
     This is intentionally narrow: only ONE thread/process hits the
-    provider at a time per dialog_core turn, and the verdict is read
+    provider at a time per agent_core turn, and the verdict is read
     immediately after parsing on the same line.
     """
     # Issue #1899 — clear the verdict on every entry so a successful

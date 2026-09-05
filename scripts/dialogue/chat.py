@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Local text chat with the robot's dialogue system — no ROS2 required.
 
-The dialogue brain (``DialogCore`` + the LLM provider chain + the tool
+The dialogue brain (``AgentCore`` + the LLM provider chain + the tool
 catalog + SQLite memory) lives in ``rob_box_harness``, which is
 deliberately ROS2-free: ``dialogue_node.py`` is only the shell that wires
 it to topics. This script is a second shell — a terminal REPL — around
@@ -440,7 +440,7 @@ def build_system_context(speaker_name: str) -> str:
 
 
 class ChatSession:
-    """One REPL session over a live :class:`DialogCore`."""
+    """One REPL session over a live :class:`AgentCore`."""
 
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -457,7 +457,7 @@ class ChatSession:
     # ── lifecycle ────────────────────────────────────────────────────
 
     async def start(self) -> None:
-        from rob_box_harness.core.dialog_core import DialogCore
+        from rob_box_harness.core.agent_core import AgentCore
         from rob_box_harness.core.dialogue_state_machine import DialogueStateMachine
         from rob_box_harness.tools import FakeToolProvider
 
@@ -492,14 +492,13 @@ class ChatSession:
             _load_skill_prompts(REPO_ROOT) if getattr(self.args, "skills", False) else {}
         )
         self.skill_router = _build_skill_router(tuple(sorted(self.skill_prompts)))
-        self.core = DialogCore(
+        self.core = AgentCore(
             llm=self.llm,
             tools=self.tools,
             memory=self.memory,
             dsm=self.dsm,
             user_id=self.args.user_id,
             history_trim_limit=self.args.history_max_turns,
-            inactivity_timeout=300.0,
             system_prompt=system_prompt,
             use_streaming=not self.args.no_stream,
             skill_prompts=self.skill_prompts,
@@ -600,7 +599,7 @@ class ChatSession:
 
         # dialogue_node._on_stt: из IDLE переход делает сам wake-word,
         # затем речь двигает LISTENING → DIALOGUE. Передаём готовый
-        # event, чтобы DialogCore не переклассифицировал текст (слово
+        # event, чтобы AgentCore не переклассифицировал текст (слово
         # «робот» внутри фразы иначе вернёт WAKE_WORD и ход потеряется —
         # issue #1101).
         if self.dsm.current_state == DialogueStateKind.IDLE:

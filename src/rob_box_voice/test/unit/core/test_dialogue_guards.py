@@ -297,11 +297,11 @@ def test_harness_vocal_keywords_are_a_strict_superset() -> None:
     нет execute_music_code».
 
     Тест держит инвариант с обеих сторон, потому что комментарий в
-    ``dialog_core`` называл свою копию «mirrors rob_box_voice…» и обещал,
+    ``agent_core`` называл свою копию «mirrors rob_box_voice…» и обещал,
     что списки «stay in sync» — прочитав это, легко «починить» расхождение
     слиянием и молча снять требование бита с рэпа.
     """
-    from rob_box_harness.core.dialog_core import _VOCAL_REQUEST_KEYWORDS
+    from rob_box_harness.core.agent_core import _VOCAL_REQUEST_KEYWORDS
 
     harness_words = set(_VOCAL_REQUEST_KEYWORDS)
     voice_words = set(MUSIC_GUARD_VOCAL_KEYWORDS)

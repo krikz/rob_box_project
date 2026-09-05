@@ -201,7 +201,7 @@ class LLMChunk:
     inside the arguments payload). Callers MUST then treat the
     ``tool_call_delta`` for that index as unreliable — its ``arguments`` may
     be ``{}`` or partial, and the tool would crash on validation. The
-    canonical use is for ``dialog_core`` to retry the request once instead
+    canonical use is for ``agent_core`` to retry the request once instead
     of feeding a broken tool-call into the executor.
     """
 

@@ -134,7 +134,7 @@ class SchedulerToolExecutor:
 
     Implements the same structural port as
     :class:`rob_box_harness.tools.ToolProvider` (``discover`` /
-    ``execute`` / ``aclose``) so it can be dropped into ``DialogCore``
+    ``execute`` / ``aclose``) so it can be dropped into ``AgentCore``
     in place of the plain adapter. The underlying provider is invoked
     verbatim for the actual ROS side effects.
     """
@@ -162,7 +162,7 @@ class SchedulerToolExecutor:
     def begin_group(self) -> str:
         """Start a new segment group (issue #968, S2.3).
 
-        Called by ``dialog_core`` right before it processes one LLM
+        Called by ``agent_core`` right before it processes one LLM
         batch of tool_calls (the same re-ordering point W7a already
         hooks into). Every channel-routed task :meth:`execute` submits
         afterwards gets this call's ``group_id`` and a ``seg_idx``

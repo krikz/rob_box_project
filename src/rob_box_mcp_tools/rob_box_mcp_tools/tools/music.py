@@ -436,7 +436,7 @@ class MusicManager:
         # form-end protection (repeat=True composition, or raw
         # execute_music_code — the idle TTL alone governs those).
         self._music_form_deadline_at: Optional[float] = None
-        # stats — surfaced via get_state() for the DialogCore safety-net
+        # stats — surfaced via get_state() for the AgentCore safety-net
         self._auto_stop_count: int = 0
         # ------------------------------------------------------------------
         # Issue #1000 — DJ mode flag. When True, ``execute_code`` strips
@@ -2132,7 +2132,7 @@ class MusicManager:
     ) -> Dict[str, Any]:
         """Auto-stop music if no activity for ``ttl_seconds``.
 
-        The DialogCore / watchdog should call this periodically (e.g. once
+        The AgentCore / watchdog should call this periodically (e.g. once
         per second, or once per turn boundary). If music is currently
         active AND the time since the last ``execute_code`` exceeds the
         configured TTL, this method calls ``stop_all()`` and increments
@@ -2221,7 +2221,7 @@ class MusicManager:
     def stop_music_on_session_end(self) -> Dict[str, Any]:
         """Force-stop all music when the dialogue ends.
 
-        Convenience hook for DialogCore / dialogue_node to call on
+        Convenience hook for AgentCore / dialogue_node to call on
         DIALOGUE_END. Always calls ``stop_all()`` unconditionally — the
         LLM may have started music without a ``pattern_name``, in which
         case ``_active_patterns`` is empty but music IS playing (issue #935

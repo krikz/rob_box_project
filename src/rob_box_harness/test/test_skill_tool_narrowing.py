@@ -23,7 +23,7 @@ from typing import Any, AsyncIterator, Iterable, Mapping
 import pytest
 
 from rob_box_core.tool_catalog import llm_visible_tools, tools_for_skill
-from rob_box_harness.core.dialog_core import LOAD_SKILL_TOOL, DialogCore
+from rob_box_harness.core.agent_core import LOAD_SKILL_TOOL, AgentCore
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
     DialogueStateMachine,
@@ -86,8 +86,8 @@ def _dsm() -> DialogueStateMachine:
     return dsm
 
 
-def _core(provider, *, narrow: bool, tools=None) -> DialogCore:
-    return DialogCore(
+def _core(provider, *, narrow: bool, tools=None) -> AgentCore:
+    return AgentCore(
         llm=provider,
         tools=tools or _CatalogProvider(),
         memory=InMemoryStore(),
@@ -99,7 +99,7 @@ def _core(provider, *, narrow: bool, tools=None) -> DialogCore:
     )
 
 
-def _run(core: DialogCore, text: str = "сыграй бит") -> Any:
+def _run(core: AgentCore, text: str = "сыграй бит") -> Any:
     return asyncio.run(
         core.process_input(text, preclassified_event=DialogueEvent.STT_RESULT)
     )
@@ -122,7 +122,7 @@ def test_narrowing_off_offers_the_whole_catalog() -> None:
 def test_narrowing_defaults_to_off() -> None:
     """Флаг не передан — значит выключено."""
     provider = _Scripted()
-    core = DialogCore(
+    core = AgentCore(
         llm=provider,
         tools=_CatalogProvider(),
         memory=InMemoryStore(),

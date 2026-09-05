@@ -397,7 +397,7 @@ def test_thinking_policy_still_applied_when_caller_sets_only_max_tokens(
 ) -> None:
     """Issue #1883 regression: caller passes ``LLMSettings(max_tokens=500)``.
 
-    Before the fix, ``DialogCore`` never forwarded ``settings=`` to the
+    Before the fix, ``AgentCore`` never forwarded ``settings=`` to the
     provider, so this scenario could never arise in production. After
     the fix, the voice node sends ``LLMSettings(temperature=0.7,
     max_tokens=500)`` on every call. That ``LLMSettings`` has no

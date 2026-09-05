@@ -156,7 +156,7 @@ class TestOnSttNewSession:
 
 
 class TestClearSessionTurns:
-    """Очистка in-memory окна ходов через DialogCore.clear_history."""
+    """Очистка in-memory окна ходов через AgentCore.clear_history."""
 
     def test_clear_session_turns_calls_core_clear_history(self):
         n = _make_node()

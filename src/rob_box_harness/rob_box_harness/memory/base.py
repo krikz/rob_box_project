@@ -1,7 +1,7 @@
 """MemoryStore port — scoped facts plus robot-global state.
 
 Turns are intentionally NOT part of the store: dialogue turns live in an
-in-memory sliding window owned by ``DialogCore`` (Shifu directive
+in-memory sliding window owned by ``AgentCore`` (Shifu directive
 2026-09-02) and are never persisted. The contract covers:
 
 Facts (scoped):

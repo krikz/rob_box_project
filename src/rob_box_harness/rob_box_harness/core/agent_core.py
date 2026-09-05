@@ -1,4 +1,4 @@
-"""``DialogCore`` — high-level facade over the four dialogue ports.
+"""``AgentCore`` — high-level facade over the four dialogue ports.
 
 Composes:
 
@@ -16,7 +16,7 @@ returned :class:`DialogResult` to ``/voice/dialogue/response``.
 
 Per ``.planning/06-01-PLAN.md`` §W3, the class composes the ports
 without absorbing their responsibilities. Tool dispatch and state
-transitions still go through the existing port APIs — DialogCore is
+transitions still go through the existing port APIs — AgentCore is
 the *orchestrator*, not a duplicate of the ports.
 """
 
@@ -200,7 +200,7 @@ def _order_tool_calls(
 
     The re-ordering changes execution order ONLY. Tool results are still
     returned to the LLM in the model's original order (see
-    :meth:`DialogCore._run_with_tools`), so the OpenAI-style conversation
+    :meth:`AgentCore._run_with_tools`), so the OpenAI-style conversation
     history stays valid.
     """
     ordered = list(calls)
@@ -246,7 +246,7 @@ _SILENT_DONE_MARKERS: frozenset[str] = frozenset(
 _PSEUDO_TOOL_CALL_RE = re.compile(r"^<[^<>]{1,160}>$")
 
 #: Метка на user-ходе, чей ответ ассистента был отозван через
-#: :meth:`DialogCore.discard_last_reply`. Такой ход остаётся ПОСЛЕДНИМ в
+#: :meth:`AgentCore.discard_last_reply`. Такой ход остаётся ПОСЛЕДНИМ в
 #: окне и внешне неотличим от сироты после barge-in, которую
 #: ``_clean_history_turns`` обязана выбросить. Разница принципиальная:
 #: сирота — реплика, на которую юзер уже не ждёт ответа, а помеченный ход —
@@ -337,7 +337,7 @@ _MUSIC_LAUNCH_TOOLS: frozenset[str] = frozenset({
 
 @dataclass
 class DialogResult:
-    """Outcome of a single :meth:`DialogCore.process_input` call.
+    """Outcome of a single :meth:`AgentCore.process_input` call.
 
     The shell consumes these fields to decide what to publish on
     ``/voice/dialogue/response`` / ``/voice/dialogue/state``.
@@ -352,7 +352,7 @@ class DialogResult:
         successful turn).
     tools_called:
         Names of tools the LLM invoked during this turn — populated
-        by the in-core tool loop (see :meth:`DialogCore.process_input`
+        by the in-core tool loop (see :meth:`AgentCore.process_input`
         for the full contract). Empty when the model answered in
         plain text or the tool loop did not run.
     error:
@@ -396,7 +396,7 @@ class DialogResult:
     # ── LLM diagnostics (live 16:58) ────────────────────────────────────
     # When the LLM returns empty content (MiniMax M3 Interleaved Thinking
     # compaction, timeouts, finish_reason='length'), we want to know WHY
-    # in the debug log. Populated by DialogCore from the last LLMResponse
+    # in the debug log. Populated by AgentCore from the last LLMResponse
     # and consumed by dialogue_node when spoken_text is empty.
     finish_reason: str | None = None
     raw_response: Any | None = None
@@ -405,14 +405,14 @@ class DialogResult:
     # was cut off mid-stream (most often ``finish_reason='length'``).
     # dialogue_node surfaces this in the per-turn info log so operators
     # can correlate the +6 s retry with the upstream token-budget
-    # exhaustion. DialogCore itself ALSO uses the flag (see
+    # exhaustion. AgentCore itself ALSO uses the flag (see
     # ``_run_with_tools``) to ask the model for a shorter retry.
     truncated_tool_args: bool = False
 
 
 @dataclass(frozen=True)
 class _ToolLoopOutcome:
-    """Что вернул тул-цикл :meth:`DialogCore._run_with_tools`.
+    """Что вернул тул-цикл :meth:`AgentCore._run_with_tools`.
 
     Раньше это был безымянный кортеж, который вызывающая сторона
     распаковывала одной строкой в 118 символов. Аннотация при этом
@@ -462,12 +462,20 @@ class _ToolLoopOutcome:
 
 
 # ---------------------------------------------------------------------------
-# DialogCore
+# AgentCore
 # ---------------------------------------------------------------------------
 
 
-class DialogCore:
-    """Orchestrator for a single conversation turn.
+class AgentCore:
+    """Shared agent engine — one behaviour, many configurations.
+
+    ``AgentCore`` is the generalisation of the former ``DialogCore`` (issue
+    #1986, target-arch §5). It is a pure Python orchestrator over the four
+    dialogue ports, deliberately carrying NO persona: personality and the
+    skill slice arrive as configuration (``system_prompt`` /
+    ``skill_prompts`` / ``narrow_tools_to_skill``) from the shell. Two
+    agents (личность, оператор/ТАРС) are two configurations of this one
+    engine.
 
     The shell drives the loop:
 
@@ -491,7 +499,6 @@ class DialogCore:
         dsm: DialogueStateMachine,
         user_id: str = "default",
         history_trim_limit: int | None = None,
-        inactivity_timeout: float | None = None,
         acceptance_gate: "AcceptanceGate | None" = None,
         system_prompt: str | None = None,
         use_streaming: bool = False,
@@ -504,7 +511,7 @@ class DialogCore:
 
         Args:
             llm: LLM client — required.
-            tools: Tool dispatch port — required. DialogCore uses
+            tools: Tool dispatch port — required. AgentCore uses
                 ``tools.discover()`` to fetch the OpenAI-style schema
                 for ``llm.complete(messages, tools=...)`` and runs
                 the tool loop in-process when the LLM asks for a
@@ -523,12 +530,6 @@ class DialogCore:
                 turns. When the caller passes ``history=None`` to
                 :meth:`process_input`, the core uses its own window
                 (never the memory port) and this value bounds its size.
-            inactivity_timeout: When set, ``check_timeout()`` drops
-                out of ``LISTENING`` after this many seconds of
-                silence (forwarded to
-                :meth:`DialogueStateMachine.check_inactivity_timeout`).
-                ``None`` disables the inactivity check; the shell is
-                then expected to drive ``TIMEOUT`` events manually.
             narrow_tools_to_skill: Move B. When ``True`` and a skill is
                 active, the LLM is offered only ``core`` plus that skill's
                 tools instead of the whole catalog. Default ``False`` —
@@ -570,13 +571,13 @@ class DialogCore:
                 the wire request and let the model use its default).
         """
         if llm is None:
-            raise TypeError("DialogCore: llm is required")
+            raise TypeError("AgentCore: llm is required")
         if tools is None:
-            raise TypeError("DialogCore: tools is required")
+            raise TypeError("AgentCore: tools is required")
         if memory is None:
-            raise TypeError("DialogCore: memory is required")
+            raise TypeError("AgentCore: memory is required")
         if dsm is None:
-            raise TypeError("DialogCore: dsm is required")
+            raise TypeError("AgentCore: dsm is required")
         self._llm = llm
         self._tools = tools
         self._memory = memory
@@ -596,7 +597,6 @@ class DialogCore:
         # 🔴 FIX (live 06.08): стриминг управляется конфигом (dialogue_node.yaml
         # → llm_streaming). Дефолт False — консервативно, без стриминга.
         self._use_streaming = use_streaming
-        self._inactivity_timeout = inactivity_timeout
         self._acceptance_gate = acceptance_gate
         self._on_prompt = on_prompt
         #: Имя активного скилла. Проставляется активацией (фаза 3);
@@ -657,7 +657,7 @@ class DialogCore:
         ``WAKE_WORD`` → guard ``event == STT_RESULT`` ломается → LLM не
         вызывается → «акцепт есть, робот не отвечает».
 
-        Без этого параметра (None) DialogCore сам вызывает
+        Без этого параметра (None) AgentCore сам вызывает
         ``dsm.on_user_input(text)`` и ``dsm.on_event(event)`` — backward
         compatible для тестов / DJ-auto / harness-вызовов.
 
@@ -971,7 +971,7 @@ class DialogCore:
         pseudo-call text at persist-time; a confident, well-formed
         "Сыграю его по нотам!" with ``tools_called=[]`` sails through as a
         normal successful turn (see :meth:`_is_silent_spoken` docstring).
-        A domain-specific guard living above ``DialogCore`` (e.g. the
+        A domain-specific guard living above ``AgentCore`` (e.g. the
         voice shell's music guard) is what actually knows a given request
         was action-flavoured and got no tool call — once THAT guard
         confirms the failure (its own retry also produced no tool call),
@@ -1144,7 +1144,7 @@ class DialogCore:
                 _truncated_tool_args_retried = True
                 _names = sorted({c.name for c in response.tool_calls})
                 logging.getLogger(__name__).warning(
-                    "DialogCore [issue 1899]: tool-call arguments JSON cut "
+                    "AgentCore [issue 1899]: tool-call arguments JSON cut "
                     "off mid-stream (finish_reason=%r). Asking model to "
                     "retry with shorter args. tools=%s",
                     response.finish_reason,
@@ -1363,7 +1363,7 @@ class DialogCore:
                     user_input=_current_user_input,
                 ):
                     logging.getLogger(__name__).warning(
-                        "DialogCore [issue 1708]: suppressing "
+                        "AgentCore [issue 1708]: suppressing "
                         "speak_text in batch with %s — hallucinated "
                         "lyrics would override music. text=%r user_input=%r",
                         sorted(same_batch_music_calls),
@@ -1425,7 +1425,7 @@ class DialogCore:
 
         else:  # for-else: loop exhausted without breaking
             logging.getLogger(__name__).warning(
-                "DialogCore: tool loop hit _MAX_TOOL_ITERATIONS=%d; "
+                "AgentCore: tool loop hit _MAX_TOOL_ITERATIONS=%d; "
                 "returning the last spoken text as-is.",
                 _MAX_TOOL_ITERATIONS,
             )
@@ -1445,7 +1445,7 @@ class DialogCore:
             and self._is_silent_response(response)
         ):
             logging.getLogger(__name__).warning(
-                "DialogCore: tool error + babble-only final answer — "
+                "AgentCore: tool error + babble-only final answer — "
                 f"suppressing spoken text {response.content[:80]!r} "
                 "(system transition)"
             )
@@ -1663,7 +1663,7 @@ class DialogCore:
         ]
         if not narrowed:
             logging.getLogger(__name__).warning(
-                "DialogCore: narrowing to skill %r left no tools; "
+                "AgentCore: narrowing to skill %r left no tools; "
                 "falling back to the full catalog",
                 skill,
             )
@@ -1714,7 +1714,7 @@ class DialogCore:
             observer(stats)
         except Exception:  # noqa: BLE001 — телеметрия не роняет ход
             logging.getLogger(__name__).debug(
-                "DialogCore: prompt observer failed", exc_info=True
+                "AgentCore: prompt observer failed", exc_info=True
             )
 
     async def _resolve_history(
@@ -1791,66 +1791,6 @@ class DialogCore:
         )
         return out
 
-    # ---- handle_* shortcuts used by the shell --------------------------
-
-    def is_wake_word(self, text: str) -> bool:
-        """Return ``True`` if ``text`` looks like a wake-word utterance.
-
-        Convenience for the shell's STT callback — the bool return
-        matches the W3 plan §3 signature for ``handle_wake_word``
-        even though the facade-level ``handle_wake_word`` below
-        still returns a full :class:`DialogResult` for callers
-        that want the new state too.
-        """
-        return self._dsm.on_user_input(text) == DialogueEvent.WAKE_WORD
-
-    async def handle_silence(self) -> DialogResult:
-        """Apply a ``SILENCE_COMMAND`` event to the DSM.
-
-        The DSM now tracks both the silence deadline and the
-        activity timestamp; this method just drives the
-        ``SILENCE_COMMAND`` event and reports the resulting state.
-        """
-        self._dsm.on_event(DialogueEvent.SILENCE_COMMAND)
-        return DialogResult(new_state=self._dsm.current_state)
-
-    async def handle_wake_word(self, text: str) -> DialogResult:
-        """Apply a ``WAKE_WORD`` event to the DSM.
-
-        The text parameter is the raw STT transcript that triggered
-        the wake word — useful for callers that want to log it.
-        Returns a :class:`DialogResult` reporting the new state.
-
-        Callers that only need the bool from the W3 plan §3
-        signature should use :meth:`is_wake_word` instead.
-        """
-        del text  # currently unused; reserved for logging
-        self._dsm.on_event(DialogueEvent.WAKE_WORD)
-        return DialogResult(new_state=self._dsm.current_state)
-
-    def check_timeout(self) -> bool:
-        """Drive a ``TIMEOUT`` event into the DSM if appropriate.
-
-        Two paths:
-
-        * If ``inactivity_timeout`` was set at construction,
-          forward to :meth:`DialogueStateMachine.check_inactivity_timeout`
-          so ``LISTENING → IDLE`` after the configured silence.
-        * Otherwise, fall back to the legacy ``TIMEOUT`` event
-          — keeps the original behaviour for callers that don't
-          opt in to the inactivity-tracking API.
-
-        Returns:
-            ``True`` if the state changed (i.e. a timeout fired).
-        """
-        if self._inactivity_timeout is not None:
-            return self._dsm.check_inactivity_timeout(
-                self._inactivity_timeout,
-            )
-        before = self._dsm.current_state
-        self._dsm.on_event(DialogueEvent.TIMEOUT)
-        return self._dsm.current_state != before
-
 
 # --------------------------------------------------------------------------
 # Helpers
@@ -1861,7 +1801,7 @@ def _is_vocal_request(user_input: str) -> bool:
     """Issue #1708 — does the user request contain a vocal cue?
 
     Mirrors ``rob_box_voice.core.dialogue_guards.is_vocal_request``
-    without importing it (dialog_core lives in ``rob_box_harness`` and
+    without importing it (agent_core lives in ``rob_box_harness`` and
     cannot depend on ``rob_box_voice``). Kept deliberately narrow: the
     hallucinated-lyrics guard must only fire on NON-vocal requests
     («сыграй бит», «включи трек»), never on legitimate rap/poem
@@ -1984,4 +1924,4 @@ def _tool_spec_to_openai(spec: ToolSpec) -> dict[str, Any]:
     }
 
 
-__all__ = ["DialogCore", "DialogResult"]
+__all__ = ["AgentCore", "DialogResult"]
