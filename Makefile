@@ -9,8 +9,9 @@
 #                           with the 85% coverage gate (mirrors CI).
 #   make test-tts-fast    — same suite, no coverage gate (faster local loop).
 #   make test-tts-verbose — same suite with ``-vv`` and stdout-captured logs.
+#   make lint-cc          — run the ADR-0021 CC-budget guard locally (CI mirror).
 
-.PHONY: test-tts test-tts-fast test-tts-verbose help
+.PHONY: test-tts test-tts-fast test-tts-verbose lint-cc help
 
 # Include the cross-provider conformance module explicitly: ``-k minimax``
 # selects only the MiniMax parametrisations and silently drops the
@@ -27,6 +28,14 @@ help:
 	@echo "  make test-tts           Run MiniMax TTS conformance + unit tests (85% coverage gate, mirrors CI)"
 	@echo "  make test-tts-fast      Same suite, no coverage gate (faster local feedback loop)"
 	@echo "  make test-tts-verbose   Same suite with -vv and captured stdout"
+	@echo "  make lint-cc            Run ADR-0021 CC-budget guard (dialogue_node.py + new voice nodes)"
+
+# ADR-0021 R1 (issue #1984): CC<=15 for methods, CC<=20 for __init__.
+# Baseline exemptions live in scripts/lint/cc_budget_baseline.json; run
+# ``python scripts/lint/cc_budget.py --update-baseline`` after a refactor
+# that shrinks a grandfathered method.
+lint-cc:
+	python scripts/lint/cc_budget.py
 
 # Run from the package directory so the local pytest.ini (testpaths = test,
 # asyncio_mode = auto, coverage config) is picked up. PYTHONPATH=. is the

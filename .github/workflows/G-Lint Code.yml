@@ -50,6 +50,12 @@ jobs:
         run: |
           PYTHONPATH=src/rob_box_voice python scripts/lint/dialogue_skip_reasons.py
 
+      # ADR-0021 R1 / issue #1984: CC-budget guard. Hard gate (no
+      # continue-on-error) — new code with CC>15 must fail the lint.
+      - name: CC-budget guard (ADR-0021)
+        run: |
+          python scripts/lint/cc_budget.py
+
       - name: Check code formatting with Black
         run: |
           echo "::group::Black formatting check"
