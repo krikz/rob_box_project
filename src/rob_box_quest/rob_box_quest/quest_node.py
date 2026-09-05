@@ -46,6 +46,9 @@ from rclpy.qos import (
 from sensor_msgs.msg import CompressedImage, LaserScan
 from std_msgs.msg import String
 
+# issue #1988 — константа топика ответа ТАРС (единый источник правды).
+from rob_box_core.avatar_command import AVATAR_COMMAND_RESULT_TOPIC
+
 from .core.safety import Watchdog
 from .core.teleop import TeleopController
 from .server.session import WATCHDOG_TIMEOUT_S as SESSION_WATCHDOG_TIMEOUT_S
@@ -1275,6 +1278,16 @@ class QuestNode(Node):
         self._preview_error_sub = self.create_subscription(
             String, "/avatar/preview_voice/error", self._on_preview_error, 10
         )
+        # issue #1988 (шаг 4а) — consumer /avatar/command_result: ответ ТАРС
+        # (summary) транслируется всем WS-сессиям JSON_EVENT-ом
+        # (type="avatar_command_result"). Поверхность на клиенте (панель
+        # Quest) — шаг 05b; здесь ROS→WS-relay.
+        self._avatar_command_result_sub = self.create_subscription(
+            String,
+            AVATAR_COMMAND_RESULT_TOPIC,
+            self._on_avatar_command_result,
+            10,
+        )
         # Подписка на /voice/tts/voices (TRANSIENT_LOCAL depth=1) — это
         # первый TRANSIENT_LOCAL publisher tts_node (см. design t_5b9d5d0c
         # §47-49). RELIABLE обязательно — TRANSIENT_LOCAL «latched» semantics
@@ -1857,6 +1870,34 @@ class QuestNode(Node):
             cleared = prev_by_code[code]
             self._send_alert_event(cleared, active=False)
         self._active_alerts = new_alerts
+
+    def _on_avatar_command_result(self, msg: String) -> None:
+        """ROS /avatar/command_result → JSON_EVENT всем WS-сессиям.
+
+        issue #1988: супервизор (ТАРС) отвечает оператору текстом в
+        /avatar/command_result (String JSON: request_id/ok/summary/tool_calls).
+        Роут до конкретного шлема по request_id ("quest:<sid>:<ts>") —
+        поверхность шага 05b; здесь broadcast всем активным сессиям,
+        зеркало ``_send_alert_event``.
+        """
+        try:
+            payload = json.loads(msg.data or "")
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        event = {
+            "type": "avatar_command_result",
+            "request_id": str(payload.get("request_id", "") or ""),
+            "ok": bool(payload.get("ok")),
+            "summary": str(payload.get("summary", "") or ""),
+            "tool_calls": list(payload.get("tool_calls", []) or []),
+            "ts_ms": int(time.time() * 1000),
+        }
+        try:
+            self.ws_server.broadcast_json_event(event)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().debug(f"avatar_command_result broadcast failed: {e}")
 
     def _send_alert_event(self, alert: Alert, *, active: bool) -> None:
         """Сформировать JSON_EVENT для robot_alert и разослать всем сессиям."""

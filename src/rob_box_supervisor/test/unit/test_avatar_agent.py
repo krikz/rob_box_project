@@ -1,10 +1,11 @@
-"""Unit-тесты для супервизор-агента AV-21 (issue #1913).
+"""Unit-тесты супервизор-агента ТАРС (issue #1988, шаг 4а; AV-21/issue #1913).
 
-Покрывает acceptance-критерии из docs/plans/2026-09-02-avatar-supervisor-agent-design.md §6:
+Покрывает acceptance-критерии из docs/plans/2026-09-02-avatar-supervisor-agent-design.md §6
+(движок с issue #1988 — AgentCore вместо OperatorHarness):
 
 1. **AC #3** agent_enabled=false → /avatar/command_result{ok=false,
-   summary="agent_disabled"}, LLM НЕ вызван (``agent_harness is None``
-   после отправки команды).
+   summary="agent_disabled"}, LLM НЕ вызван (``agent_core is None``
+   после отправки команды). Default параметра — **true** (решение Шифу).
 2. **AC #6** «скажи привет» + agent_enabled=true → ok=true,
    summary="ok", tool_calls=[{name="say", ...}].
 3. **AC #7** команда без инструмента → ok=false, summary="no_tool:*",
@@ -17,16 +18,12 @@
 7. **AC #8 + infra** swap.apply+exit последовательность: _apply_voice_mode
    вызывается для обоих концов, и в finally НЕ происходит «лишнего»
    restore когда prev_mode=None.
-8. **AC #infra** agent_enabled=false → НЕ вызывается ``_ensure_agent_harness``
+8. **AC #infra** agent_enabled=false → НЕ вызывается ``_ensure_agent_core``
    (нет лишних импортов/LLM-init-ов в monitor-режиме).
 
-Используем mock-rclpy из conftest.py. ``OperatorHarness`` подменяется
-через ``harness_factory`` в pure-логике ``_handle_avatar_command_logic``
-(см. supervisor_node.py), чтобы не дёргать реальный LLM и не требовать
-полного async-loop-а в тестах.
-
-Mock-LLM обязателен (требование карточки + AGENTS.md). Реальных вызовов
-провайдера в тестах нет.
+Используем mock-rclpy из conftest.py. Реального AgentCore/LLM в тестах НЕТ:
+``_agent_core``/``_run_agent_sync`` подменяются (см. ``_stub_agent_core``),
+чтобы не дёргать LLM и не требовать async-loop-а / ключей API.
 """
 
 from __future__ import annotations
@@ -58,31 +55,45 @@ def _published_results(node: AvatarSupervisor) -> list[dict]:
     return [json.loads(m.data) for m in pub.published]
 
 
+def _stub_agent_core(node: AvatarSupervisor) -> None:
+    """Заглушить сборку реального AgentCore (нет ключей/ROS в unit-тестах).
+
+    ``_ensure_agent_core`` возвращает готовый ``_agent_core``, реальная
+    сборка (LLM/Tools/Memory) не запускается. ``_run_agent_sync`` тесты
+    подменяют отдельно (scripted-mapping результата).
+    """
+    node._agent_core = object()
+    node._operator_dsm = None
+    node._operator_journal = None
+
+
 # ─────────────────────────────────────────────────────────────────────
 # AC #3: agent_enabled gate
 # ─────────────────────────────────────────────────────────────────────
 
 
 class TestAgentEnabledGate(unittest.TestCase):
-    """При agent_enabled=false нода ведёт себя как сегодня — НЕ
-    инстанцирует harness, НЕ вызывает LLM, публикует agent_disabled."""
+    """При agent_enabled=false нода ведёт себя как до 4а — НЕ
+    инстанцирует AgentCore, НЕ вызывает LLM, публикует agent_disabled.
+    Default параметра — true (issue #1988, решение Шифу)."""
 
     def setUp(self) -> None:
         self.node = AvatarSupervisor()
-        # По умолчанию agent_enabled=false (AC #3).
-        self.assertFalse(self.node._agent_enabled)
-        self.assertIsNone(self.node._agent_harness)
+        # Default agent_enabled=true (шаг 4а).
+        self.assertTrue(self.node._agent_enabled)
+        self.assertIsNone(self.node._agent_core)
 
     def tearDown(self) -> None:
         self.node.destroy_node()
 
-    def test_agent_enabled_default_false(self) -> None:
-        """Параметр agent_enabled default false."""
-        self.assertFalse(self.node.get_parameter("agent_enabled").value)
-        self.assertFalse(self.node._agent_enabled)
+    def test_agent_enabled_default_true(self) -> None:
+        """Параметр agent_enabled default true."""
+        self.assertTrue(self.node.get_parameter("agent_enabled").value)
+        self.assertTrue(self.node._agent_enabled)
 
     def test_command_with_disabled_agent_publishes_agent_disabled(self) -> None:
         """AC #3: enabled=false → /avatar/command_result{ok=false, summary='agent_disabled'}."""
+        self.node._agent_enabled = False
         msg = _make_string_msg(
             json.dumps(
                 {
@@ -102,9 +113,10 @@ class TestAgentEnabledGate(unittest.TestCase):
         self.assertEqual(results[0]["tool_calls"], [])
         self.assertEqual(results[0]["request_id"], "test-client:1234567890")
 
-    def test_disabled_agent_does_not_instantiate_harness(self) -> None:
-        """AC #3 (negative): enabled=false → _ensure_agent_harness НЕ вызван,
-        ``_agent_harness`` остаётся None."""
+    def test_disabled_agent_does_not_instantiate_core(self) -> None:
+        """AC #3 (negative): enabled=false → _ensure_agent_core НЕ вызван,
+        ``_agent_core`` остаётся None."""
+        self.node._agent_enabled = False
         msg = _make_string_msg(
             json.dumps(
                 {
@@ -117,8 +129,8 @@ class TestAgentEnabledGate(unittest.TestCase):
         )
         self.node._on_avatar_command(msg)
 
-        # Harness не создан.
-        self.assertIsNone(self.node._agent_harness)
+        # Core не создан.
+        self.assertIsNone(self.node._agent_core)
         # Результат — agent_disabled, не попытка вызвать LLM.
         results = _published_results(self.node)
         self.assertEqual(len(results), 1)
@@ -149,6 +161,12 @@ class TestAvatarAgentTopology(unittest.TestCase):
         self.assertIn(AVATAR_COMMAND_RESULT_TOPIC, self.node._publishers)
         self.assertEqual(AVATAR_COMMAND_RESULT_TOPIC, "/avatar/command_result")
 
+    def test_avatar_stt_result_subscription_dormant(self) -> None:
+        """Шаг 4а: подписка на /avatar/stt/result (вейк-вход, шаг 05/#1990)
+        объявлена. Топик появится после #1990; сейчас подписка дремлет."""
+        topics = [s.topic for s in self.node._subscriptions]
+        self.assertIn("/avatar/stt/result", topics)
+
     def test_agent_parameters_declared(self) -> None:
         """Параметры agent_enabled / system_prompt_file / agent_during_voice_mode
         объявлены через declare_parameter."""
@@ -172,29 +190,24 @@ class TestAvatarAgentTopology(unittest.TestCase):
 
 
 class TestSayCommandExecutes(unittest.TestCase):
-    """Команда «скажи привет» через mock-harness → tool-call say → ok=true.
+    """Команда «скажи привет» → tool-call say → ok=true.
 
-    Чтобы обойтись без реального OperatorHarness (async init/step),
-    подменяем ``_handle_avatar_command_logic`` через monkey-patch —
-    factory возвращает scripted-mapping как если бы это был harness.step.
+    Реальный AgentCore не строится (_stub_agent_core); ``_run_agent_sync``
+    подменяется scripted-mapping — эквивалент mock-LLM без async-loop-а.
     """
 
     def setUp(self) -> None:
         self.node = AvatarSupervisor()
         self.node._agent_enabled = True
+        _stub_agent_core(self.node)
 
     def tearDown(self) -> None:
         self.node.destroy_node()
 
     def test_say_command_returns_ok(self) -> None:
-        """AC #6: «скажи привет» → один tool-call say → ok=true.
+        """AC #6: «скажи привет» → один tool-call say → ok=true."""
 
-        Подменяем ``_run_harness_sync`` (вызывается из ``_on_avatar_command``
-        внутри voice_mode_swap) на scripted-mapping — это эквивалент
-        mock-LLM для end-to-end теста без настоящего async-loop-а.
-        """
-
-        def fake_run(harness, payload):
+        def fake_run(core, payload):
             return {
                 "ok": True,
                 "summary": "ok",
@@ -213,12 +226,12 @@ class TestSayCommandExecutes(unittest.TestCase):
                 }
             )
         )
-        original = self.node._run_harness_sync
-        self.node._run_harness_sync = fake_run
+        original = self.node._run_agent_sync
+        self.node._run_agent_sync = fake_run
         try:
             self.node._on_avatar_command(msg)
         finally:
-            self.node._run_harness_sync = original
+            self.node._run_agent_sync = original
 
         results = _published_results(self.node)
         self.assertEqual(len(results), 1)
@@ -241,6 +254,7 @@ class TestNoToolReturnsNoTool(unittest.TestCase):
     def setUp(self) -> None:
         self.node = AvatarSupervisor()
         self.node._agent_enabled = True
+        _stub_agent_core(self.node)
 
     def tearDown(self) -> None:
         self.node.destroy_node()
@@ -248,7 +262,7 @@ class TestNoToolReturnsNoTool(unittest.TestCase):
     def test_no_tool_call_returns_no_tool_summary(self) -> None:
         """AC #7: LLM вернул 0 tool_calls → ok=false, summary='no_tool:*'."""
 
-        def fake_run(harness, payload):
+        def fake_run(core, payload):
             return {
                 "ok": False,
                 "summary": "no_tool: unknown_action",
@@ -266,12 +280,12 @@ class TestNoToolReturnsNoTool(unittest.TestCase):
                 }
             )
         )
-        original = self.node._run_harness_sync
-        self.node._run_harness_sync = fake_run
+        original = self.node._run_agent_sync
+        self.node._run_agent_sync = fake_run
         try:
             self.node._on_avatar_command(msg)
         finally:
-            self.node._run_harness_sync = original
+            self.node._run_agent_sync = original
 
         results = _published_results(self.node)
         self.assertEqual(len(results), 1)
@@ -287,13 +301,14 @@ class TestNoToolReturnsNoTool(unittest.TestCase):
 
 class TestVoiceModeSwapTryFinally(unittest.TestCase):
     """AC #8: try/finally _voice_mode_swap корректно отрабатывает
-    даже если harness/step бросает исключение. Свап вызывает
+    даже если core/agent бросает исключение. Свап вызывает
     _apply_voice_mode для apply+exit, и prev_mode=None НЕ вызывает
     лишнего restore."""
 
     def setUp(self) -> None:
         self.node = AvatarSupervisor()
         self.node._agent_enabled = True
+        _stub_agent_core(self.node)
 
     def tearDown(self) -> None:
         self.node.destroy_node()
@@ -401,11 +416,11 @@ class TestVoiceModeSwapTryFinally(unittest.TestCase):
 
         self.node._apply_voice_mode = spy_apply
 
-        def exploding_run(harness, payload):
+        def exploding_run(core, payload):
             raise RuntimeError("simulated LLM crash")
 
-        original = self.node._run_harness_sync
-        self.node._run_harness_sync = exploding_run
+        original = self.node._run_agent_sync
+        self.node._run_agent_sync = exploding_run
         try:
             msg = _make_string_msg(
                 json.dumps(
@@ -419,14 +434,14 @@ class TestVoiceModeSwapTryFinally(unittest.TestCase):
             )
             self.node._on_avatar_command(msg)
         finally:
-            self.node._run_harness_sync = original
+            self.node._run_agent_sync = original
             self.node._apply_voice_mode = original_apply
 
         # _apply_voice_mode был вызван минимум 1 раз (apply на входе).
         # Если finally не отработал — будет 0.
         self.assertGreaterEqual(len(calls), 1)
         # Публикация — ok=False, summary указывает на llm_error (через
-        # try/except в _on_avatar_command — exception из _run_harness_sync
+        # try/except в _on_avatar_command — exception из _run_agent_sync
         # ловится там).
         results = _published_results(self.node)
         self.assertEqual(len(results), 1)
@@ -461,6 +476,7 @@ class TestAgentMetrics(unittest.TestCase):
         self._prom_patch.start()
         self.node = AvatarSupervisor()
         self.node._agent_enabled = True
+        _stub_agent_core(self.node)
 
     def tearDown(self) -> None:
         self.node.destroy_node()
@@ -500,7 +516,7 @@ class TestAgentMetrics(unittest.TestCase):
         commands_counter.labels = spy_commands_labels
         tools_counter.labels = spy_tool_labels
 
-        def fake_run(harness, payload):
+        def fake_run(core, payload):
             return {
                 "ok": True,
                 "summary": "ok",
@@ -509,8 +525,8 @@ class TestAgentMetrics(unittest.TestCase):
                 ],
             }
 
-        original = self.node._run_harness_sync
-        self.node._run_harness_sync = fake_run
+        original = self.node._run_agent_sync
+        self.node._run_agent_sync = fake_run
         try:
             msg = _make_string_msg(
                 json.dumps(
@@ -524,7 +540,7 @@ class TestAgentMetrics(unittest.TestCase):
             )
             self.node._on_avatar_command(msg)
         finally:
-            self.node._run_harness_sync = original
+            self.node._run_agent_sync = original
             commands_counter.labels = original_commands_labels
             tools_counter.labels = original_tool_labels
 
@@ -544,15 +560,15 @@ class TestAgentMetrics(unittest.TestCase):
 
         commands_counter.labels = spy_labels
 
-        def fake_run(harness, payload):
+        def fake_run(core, payload):
             return {
                 "ok": False,
                 "summary": "no_tool: unknown",
                 "tool_calls": [],
             }
 
-        original = self.node._run_harness_sync
-        self.node._run_harness_sync = fake_run
+        original = self.node._run_agent_sync
+        self.node._run_agent_sync = fake_run
         try:
             msg = _make_string_msg(
                 json.dumps(
@@ -566,7 +582,7 @@ class TestAgentMetrics(unittest.TestCase):
             )
             self.node._on_avatar_command(msg)
         finally:
-            self.node._run_harness_sync = original
+            self.node._run_agent_sync = original
             commands_counter.labels = original_labels
 
         no_tool_labels = [

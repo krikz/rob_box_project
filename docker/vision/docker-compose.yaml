@@ -368,6 +368,10 @@ services:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
       - ./scripts/supervisor:/scripts:ro
+      # issue #1988 — память оператора (/data/operator_memory.db) и журнал
+      # ТАРС (/data/operator_journal.jsonl): переживают рестарт контейнера.
+      # Тот же host-path, что у voice-assistant (./data/voice → /data).
+      - ./data/voice:/data
     command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_supervisor.sh"]
     depends_on:
       zenoh-router:

@@ -9,6 +9,20 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
+        # issue #1988 — промпт оператора (ТАРС) + фрагменты срезов
+        # operator.speech / operator.control. Читаются через ament share
+        # (supervisor_node._resolve_prompts_dir).
+        (
+            "share/" + package_name + "/prompts",
+            ["prompts/operator_system_prompt.txt"],
+        ),
+        (
+            "share/" + package_name + "/prompts/skills",
+            [
+                "prompts/skills/operator.speech.txt",
+                "prompts/skills/operator.control.txt",
+            ],
+        ),
     ],
     install_requires=["setuptools", "msgpack>=1.0"],
     zip_safe=True,
