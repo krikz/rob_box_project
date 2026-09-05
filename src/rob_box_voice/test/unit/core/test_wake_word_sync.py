@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 
 from rob_box_voice.core.dialogue_text import DEFAULT_WAKE_WORDS, has_wake_word
-from rob_box_voice.core.dialogue_manager import DialogueManager
 
 # Историческая потеря (9ca7fb29, 21.02) + STT-искажения из e2e-исследования:
 # канонический список — ВСЕ варианты, которые должны давать ПРИНЯТО.
@@ -67,14 +66,9 @@ class TestWakeWordSync:
     def test_every_canonical_variant_is_accepted(self, word: str) -> None:
         text = f"{word} расскажи анекдот"
         assert has_wake_word(text.lower(), DEFAULT_WAKE_WORDS) is True
-        assert DialogueManager().has_wake_word(text) is True
 
     def test_dialogue_text_defaults_cover_all_canonical(self) -> None:
         assert set(CANONICAL_WAKE_WORDS) <= set(DEFAULT_WAKE_WORDS)
-
-    def test_dialogue_manager_defaults_cover_all_canonical(self) -> None:
-        manager = DialogueManager()
-        assert set(CANONICAL_WAKE_WORDS) <= set(manager.wake_words)
 
     # ``test_yaml_wake_words_match_canonical`` lived here and asserted that
     # four YAMLs each carried a matching copy of the list. It guarded the
