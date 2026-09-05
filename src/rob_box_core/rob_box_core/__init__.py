@@ -16,11 +16,6 @@ from rob_box_core.avatar_command import (
     now_ts_ms,
 )
 from rob_box_core.clock import Clock, MockClock, SystemClock
-from rob_box_core.dialogue_state import (
-    DialogueState,
-    DialogueStateMachine,
-    IllegalTransitionError,
-)
 from rob_box_core.memory import Fact, InMemoryStore, MemoryHit, MemoryStore, Turn
 from rob_box_core.ports import (
     ToolContext,
@@ -45,9 +40,6 @@ __all__ = [
     "Turn",
     "Fact",
     "MemoryHit",
-    "DialogueState",
-    "DialogueStateMachine",
-    "IllegalTransitionError",
     "ToolProvider",
     "ToolDescriptor",
     "ToolResult",
