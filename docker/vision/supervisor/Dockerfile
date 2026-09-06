@@ -63,6 +63,14 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
 COPY src/rob_box_supervisor/rob_box_supervisor /ws/src/rob_box_supervisor/rob_box_supervisor
 
 # ============================================================
+# Шаг 3а: промпты оператора (issue #1988) — setup.py включает их в
+# data_files (share/.../prompts{,/skills}). Без этой копии colcon build
+# падает: "can't copy 'prompts/operator_system_prompt.txt': doesn't exist".
+# Как в perception/voice_assistant Dockerfile (промпты копируются в образ).
+# ============================================================
+COPY src/rob_box_supervisor/prompts /ws/src/rob_box_supervisor/prompts
+
+# ============================================================
 # Шаг 4: scripts (start_supervisor.sh)
 # ============================================================
 COPY docker/vision/scripts/supervisor/start_supervisor.sh /scripts/start_supervisor.sh
