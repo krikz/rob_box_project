@@ -93,7 +93,13 @@ from rob_box_llm.provider import LLMMessage, LLMSettings
 from rob_box_voice.core.command_parser import CommandParser, IntentType
 from rob_box_voice.core.skill_router import SkillRouter
 from rob_box_voice.core.dialogue_text import (
-    DEFAULT_WAKE_WORDS, has_wake_word, is_silence_command, is_unsilence_command, strip_wake_word,
+    DEFAULT_OPERATOR_WAKE_WORDS,
+    DEFAULT_WAKE_WORDS,
+    has_wake_word,
+    is_silence_command,
+    is_unsilence_command,
+    resolve_wake_word_namespaces,
+    strip_wake_word,
 )
 from rob_box_voice.core.llm_skip_reasons import (
     LLMSkipReason,
@@ -348,7 +354,17 @@ class DialogueNode(Node):
         #: чтобы публиковать ПРИРОСТ, а не абсолютное значение.
         self._skill_load_seen: tuple[int, int] = (0, 0)
         self._verbose_llm: bool = bool(self.get_parameter("verbose_llm").value)
-        self._wake_words: List[str] = list(self.get_parameter("wake_words").value)
+        # #1990 — SSoT wake-слов (config/wake_words.yaml, docker). Файл
+        # (wake_words_file) — источник personality в проде; параметр wake_words
+        # остаётся фолбеком для dev-env/юнит-тестов без файла (список тот же,
+        # байт-в-байт — см. test_wake_word_sync / #1252).
+        self._wake_words: List[str] = list(
+            resolve_wake_word_namespaces(
+                str(self.get_parameter("wake_words_file").value or ""),
+                personality_fallback=list(self.get_parameter("wake_words").value),
+                operator_fallback=DEFAULT_OPERATOR_WAKE_WORDS,
+            )[0]
+        )
         # Issue #1279 — gate команд движения/статуса: фразы, которые уже
         # распознаны command_node (NAVIGATE/STOP/STATUS/MAP), НЕ должны
         # дублироваться через LLM (LLM интерпретирует «вперёд» как музыку).
@@ -575,12 +591,13 @@ class DialogueNode(Node):
             )
         self.create_subscription(
             String, "/voice/stt/result", self._on_stt, qos_r, callback_group=cbg)
-        # ADR-0027 §3.4 — Quest robot-voice: stt_node публикует распознанную
-        # фразу с микрофона Quest в отдельный топик /voice/stt/quest (чтобы
-        # не ломать plain-text контракт /voice/stt/result). Маршрутизация —
-        # по voice_input_mode (см. _on_quest_stt).
-        self.create_subscription(
-            String, "/voice/stt/quest", self._on_quest_stt, qos_r, callback_group=cbg)
+        # #1990 (оператор-agent 05): подписка на /voice/stt/quest УДАЛЕНА.
+        # Маршрут речи оператора уехал из dialogue_node: stt_node публикует
+        # фразу с левого грипа в /avatar/ptt/result (пайплайн грипа в
+        # avatar_supervisor, #1989), wake-поток — в /avatar/stt/result (#1988).
+        # _on_quest_stt и voice_input_mode (quest_*) остаются мёртвым кодом до
+        # шага 6 миграции (целевая §7.3 «Что уходит»), который выпилит их
+        # вместе с параметром. Личность больше не знает о Quest.
         # Issue #1279 — command_node публикует feedback («Двигаюсь вперёд»,
         # «Останавливаюсь») на /voice/command/feedback после выполнения
         # команды движения/статуса. dialogue_node озвучивает его через TTS,
@@ -925,6 +942,9 @@ class DialogueNode(Node):
         # e2e-конфиге — те же 13. Тот самый класс ошибки, из-за которого
         # завели #1252 и заплатили #1734.
         self.declare_parameter("wake_words", list(DEFAULT_WAKE_WORDS))
+        # #1990 (оператор-agent 05) — SSoT wake-слов: config/wake_words.yaml
+        # (docker, монтируется в /config). Пусто в dev-env → кодовый фолбек.
+        self.declare_parameter("wake_words_file", "")
         self.declare_parameter("enable_mcp_tools", True)
         self.declare_parameter("llm_timeout_sec", 90.0)
         self.declare_parameter("verbose_llm", True)
