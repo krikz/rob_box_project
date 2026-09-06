@@ -13,10 +13,10 @@ stt_node:
     metrics_port: 9111  # issue #1160 — Prometheus metrics endpoint
     model_path: /models/vosk-model-small-ru-0.22
     sample_rate: 16000
-    # wake_words намеренно НЕ здесь: единственное объявление —
-    # rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS, откуда его берут
-    # дефолты dialogue_node и stt_node. Копия в YAML — это ровно то, что
-    # разъехалось в #1252 и стоило #1734.
+    # wake_words намеренно НЕ здесь: списки — в docker/vision/config/wake_words.yaml
+    # (SSoT, issue #1990). Нода читает его через wake_words_file; пусто здесь =
+    # dev-env без файла → кодовый фолбек DEFAULT_WAKE_WORDS (байт-в-байт тот же).
+    wake_words_file: ""
     # ===== Fallback/retry/short-phrase (issue #979) =====
     yandex_timeout_s: 5.0
     yandex_max_retries: 1

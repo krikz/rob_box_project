@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
 """
 STTNode - Speech-to-Text с Yandex STT gRPC v3 (primary) + Vosk (fallback)
-Подписывается: /audio/speech_audio (AudioData)
-Публикует: /voice/stt/result (String)
+
+Единственная точка маршрутизации речи (целевая §7, issue #1990):
+
+| вход | выход |
+|---|---|
+| ``/audio/speech_audio`` (ReSpeaker, люди рядом) | ``/voice/stt/result`` → личность |
+| ``/audio/quest_in`` (левый грип, PTT robot-voice) | ``/avatar/ptt/result`` → пайплайн грипа |
+| ``/audio/quest_wake`` (wake-поток шлема, вейк «ТАРС») | ``/avatar/stt/result`` → агент оператора |
+
+Namespace вейк-слов привязан к источнику аудио, а не только к тексту
+(``config/wake_words.yaml`` — SSoT, см. ``core.dialogue_text``): «ТАРС» из
+ReSpeaker игнорируется, вейк личности из микрофона шлема игнорируется.
 """
 
 import json
@@ -56,18 +66,46 @@ from rob_box_voice.observability import (
     start_span,
 )
 
+# #1990 (оператор-agent 05) — источники аудио для wake-роутера (_process_audio).
+# Namespace вейк-слов привязан к источнику, а не только к тексту (целевая §7.1).
+_SRC_RESPEAKER = "respeaker"  # /audio/speech_audio → /voice/stt/result (личность)
+_SRC_PTT = "ptt"  # /audio/quest_in (левый грип) → /avatar/ptt/result (пайплайн грипа)
+_SRC_WAKE = "wake"  # /audio/quest_wake → /avatar/stt/result (агент оператора)
+
 try:
-    from rob_box_voice.core.dialogue_text import DEFAULT_WAKE_WORDS, has_wake_word
+    from rob_box_voice.core.dialogue_text import (
+        DEFAULT_OPERATOR_WAKE_WORDS,
+        DEFAULT_WAKE_WORDS,
+        has_wake_word,
+        resolve_wake_word_namespaces,
+        strip_wake_word,
+    )
 
     _HAS_WAKE_WORD_AVAILABLE = True
 except ImportError:  # pragma: no cover — защита для standalone-запуска
     _HAS_WAKE_WORD_AVAILABLE = False
     DEFAULT_WAKE_WORDS = ()
+    DEFAULT_OPERATOR_WAKE_WORDS = ()
 
     def has_wake_word(text_lower: str, wake_words: list) -> bool:  # type: ignore[no-redef]
         if not wake_words:
             return True
         return any(w in text_lower for w in wake_words)
+
+    def strip_wake_word(text: str, wake_words: list | None = None) -> str:  # type: ignore[no-redef]
+        if not wake_words:
+            return text.strip()
+        text_lower = text.lower()
+        for word in sorted(wake_words, key=len, reverse=True):
+            if word in text_lower:
+                idx = text_lower.find(word)
+                return (text[:idx] + text[idx + len(word) :]).strip()
+        return text.strip()
+
+    def resolve_wake_word_namespaces(  # type: ignore[no-redef]
+        path=None, personality_fallback=DEFAULT_WAKE_WORDS, operator_fallback=DEFAULT_OPERATOR_WAKE_WORDS
+    ):
+        return list(personality_fallback), list(operator_fallback)
 
 try:
     from rob_box_voice.core.speak_helpers import build_ssml_payload
@@ -133,6 +171,11 @@ class STTNode(Node):
         # e2e-конфиге — те же 13. Тот самый класс ошибки, из-за которого
         # завели #1252 и заплатили #1734.
         self.declare_parameter("wake_words", list(DEFAULT_WAKE_WORDS))
+        # #1990 (оператор-agent 05) — SSoT wake-слов: config/wake_words.yaml
+        # (docker, монтируется в /config). Ключ wake_words остаётся фолбеком
+        # для dev-env/юнит-тестов без файла; wake_words_file при наличии
+        # переопределяет personality из файла (см. self.wake_words ниже).
+        self.declare_parameter("wake_words_file", "")
 
         # Параметры fallback/retry (issue #979): единое место для таймаутов,
         # retry и правила коротких фраз. См. rob_box_voice/stt_fallback.py.
@@ -180,6 +223,19 @@ class STTNode(Node):
             self.get_logger().warning(f"⚠️ Неизвестный aec_mode '{self.aec_mode}', используется 'software'")
             self.aec_mode = "software"
         self.wake_words: list = list(self.get_parameter("wake_words").value)
+        # #1990 — разделяем namespace: personality (ReSpeaker, /voice/stt/result)
+        # и operator (wake-поток шлема, /avatar/stt/result). Источник — файл
+        # wake_words_file (SSoT); без файла — кодовые фолбеки (тот же список).
+        _wake_file = str(self.get_parameter("wake_words_file").value or "")
+        self.wake_words, self.operator_wake_words = resolve_wake_word_namespaces(
+            _wake_file,
+            personality_fallback=self.wake_words or list(DEFAULT_WAKE_WORDS),
+            operator_fallback=DEFAULT_OPERATOR_WAKE_WORDS,
+        )
+        self.wake_words = list(self.wake_words)
+        self.operator_wake_words = list(self.operator_wake_words)
+        # #1990 — источник текущей обрабатываемой фразы (для boop/barge-гейтов).
+        self._active_source: str = _SRC_RESPEAKER
         # Issue #1734 — barge_in_policy НЕ читаем как свой параметр (это
         # был бы второй YAML-источник для того же значения — ровно класс
         # ошибки, который уже случился с wake_words выше, issue #1252, и
@@ -251,13 +307,18 @@ class STTNode(Node):
         self.audio_sub = self.create_subscription(
             AudioData, "/audio/speech_audio", self.speech_audio_callback, audio_qos
         )
-        # Issue #XXXX / ADR-0027 §3.4 — голос с микрофона Quest (PTT robot-voice).
-        # quest-сервер публикует сюда готовую фразу (буфер за время PTT);
-        # результат уходит в отдельный топик /voice/stt/quest (см. result_pub
-        # ниже) — без префиксов в тексте, маршрутизацию делает dialogue_node
-        # по voice_input_mode.
+        # #1990 (оператор-agent 05): /audio/quest_in — ЛЕВЫЙ ГРИП (PTT
+        # robot-voice). quest-сервер публикует сюда готовую фразу (буфер за
+        # время PTT); результат — /avatar/ptt/result → пайплайн грипа (§7.5).
+        # Отдельного топика /voice/stt/quest больше НЕТ (заменён на /avatar/*).
         self.quest_audio_sub = self.create_subscription(
             AudioData, "/audio/quest_in", self.quest_audio_callback, audio_qos
+        )
+        # #1990: /audio/quest_wake — ВСЕГДА-ВКЛЮЧЁННЫЙ wake-поток микрофона
+        # шлема (шаг 5а). Дремлющая подписка: до появления публикатора
+        # (quest_node, шаг 5а) безвредна, в ROS пустой топик не создаёт.
+        self.quest_wake_audio_sub = self.create_subscription(
+            AudioData, "/audio/quest_wake", self.quest_wake_audio_callback, audio_qos
         )
 
         # Подписка на состояние TTS (чтобы не слышать себя)
@@ -284,10 +345,13 @@ class STTNode(Node):
 
         # Publishers
         self.result_pub = self.create_publisher(String, "/voice/stt/result", 10)
-        # ADR-0027 §3.4 — результат STT для источника Quest (robot-voice):
-        # отдельный топик, чтобы НЕ ломать plain-text контракт /voice/stt/result
-        # (его читают telegram/perception/transport). dialogue_node подписывается.
-        self.quest_result_pub = self.create_publisher(String, "/voice/stt/quest", 10)
+        # #1990 (оператор-agent 05) — wake-роутер. /voice/stt/quest удалён:
+        # маршрут оператора уезжает в /avatar/* (см. docstring модуля).
+        # /avatar/ptt/result — пайплайн грипа (супервизор, #1989), plain text;
+        # /avatar/stt/result — агент оператора (супервизор, #1988), JSON v1
+        # (source/client_id/text/ts_ms, как /avatar/command).
+        self.avatar_ptt_result_pub = self.create_publisher(String, "/avatar/ptt/result", 10)
+        self.avatar_stt_result_pub = self.create_publisher(String, "/avatar/stt/result", 10)
         self.state_pub = self.create_publisher(String, "/voice/stt/state", 10)
         self.tts_control_pub = self.create_publisher(String, "/voice/tts/control", 10)  # Для прерывания TTS
         # Issue #1077 — speaker_analysis (speaker_tag) от Yandex SpeechKit v3.
@@ -449,16 +513,42 @@ class STTNode(Node):
                     self.get_logger().debug("🎙️ [hardware AEC] Робот замолчал")
                 self.is_robot_speaking = False
 
-    def speech_audio_callback(self, msg: AudioData, result_pub=None):
-        """
-        Обработка готовых фраз от audio_node
-        Пробуем Yandex STT → если не работает, используем Vosk
+    def speech_audio_callback(self, msg: AudioData) -> None:
+        """Фраза от audio_node (ReSpeaker) → /voice/stt/result (личность)."""
+        self._process_audio(msg, source=_SRC_RESPEAKER)
 
-        ``result_pub`` — куда публиковать результат. По умолчанию None =
-        ReSpeaker-путь (``/voice/stt/result``). Для источника Quest
-        (``/audio/quest_in``) передаётся ``self.quest_result_pub``
-        (``/voice/stt/quest``) — тогда AEC/grace-фильтры ReSpeaker не
-        применяются: оператор явно зажал PTT, а микрофон — на шлеме.
+    def quest_audio_callback(self, msg: AudioData) -> None:
+        """Фраза с микрофона Quest (левый грип, PTT robot-voice).
+
+        Маршрут пайплайна грипа (§7.5, #1990): распознаём и публикуем как есть
+        (вейк не нужен — грип сам является вейком); результат — в
+        ``/avatar/ptt/result`` (его читает avatar_supervisor, шаг 4б/#1989).
+        """
+        self._process_audio(msg, source=_SRC_PTT)
+
+    def quest_wake_audio_callback(self, msg: AudioData) -> None:
+        """Всегда-включённый wake-поток микрофона шлема (шаг 5а, #1990).
+
+        Вейк-поиск: распознаём VAD-сегмент (клиент гейтит локальным VAD) и
+        публикуем в ``/avatar/stt/result`` ТОЛЬКО если в тексте есть operator-
+        вейк («ТАРС», namespace operator из wake_words.yaml) — сам вейк при
+        этом вырезается. Фоновая речь без вейка молча отбрасывается.
+        """
+        self._process_audio(msg, source=_SRC_WAKE)
+
+    def _process_audio(self, msg: AudioData, source: str) -> None:
+        """
+        Общий пайплайн распознавания (Yandex STT → Vosk fallback) + маршрутизация.
+
+        ``source`` — откуда пришёл аудио (см. ``_SRC_*``). Единственная точка
+        маршрутизации речи (целевая §7, #1990). От источника зависит:
+
+          * ``respeaker`` — AEC/grace-фильтры, speaker-профиль, ранний «бульк»,
+            wake-word barge-in; результат → ``/voice/stt/result`` (личность).
+          * ``ptt`` — фильтры/бульк/barge не нужны (оператор зажал грип, barge
+            уже сделан quest-сервером); результат → ``/avatar/ptt/result``.
+          * ``wake`` — фильтры не нужны; публикуем в ``/avatar/stt/result``
+            только при operator-вейке («ТАРС»), иначе молча отбрасываем.
         """
         import time
 
@@ -466,8 +556,8 @@ class STTNode(Node):
         audio_bytes = bytes(msg.data)
         duration = len(audio_bytes) / (self.sample_rate * 2)  # 16-bit = 2 bytes
 
-        if result_pub is not None:
-            # Quest-источник: AEC/grace не нужны (см. docstring выше).
+        if source != _SRC_RESPEAKER:
+            # Источник шлема: AEC/grace не нужны (см. docstring выше).
             pass
         elif self.aec_mode == "software":
             # Программная подавление эха: дропаем всё пока робот говорит
@@ -504,7 +594,12 @@ class STTNode(Node):
         # silence_to_phrase_s (audio_node, включает speech_continuation)
         # + phrase_to_accept_ms (здесь).
         _phrase_received_at = time.monotonic()
-        self.publish_state("recognizing")
+        # #1990 — источник активной фразы (boop/barge гейтятся по respeaker).
+        self._active_source = source
+        # wake-поток — фоновый слушатель: стейт /voice/stt/state не дёргаем
+        # (иначе спамили бы recognizing/ready на каждый VAD-сегмент).
+        if source != _SRC_WAKE:
+            self.publish_state("recognizing")
 
         # Issue #1077 — сбрасываем speaker_tag на старте каждой фразы.
         # _recognize_yandex заполнит его из speaker_analysis; Vosk fallback
@@ -568,7 +663,7 @@ class STTNode(Node):
             text = self._recognize_legacy(audio_bytes)
             attempts = []
 
-        # Публикация результата
+        # Публикация результата по источнику (wake-роутер, #1990)
         if text and not is_short_phrase(text, min_chars=self.min_text_chars):
             # Issue 1076 (телеметрия): честный «фраза → ПРИНЯТО» (STT-часть).
             _accept_ms = int((time.monotonic() - _phrase_received_at) * 1000)
@@ -576,15 +671,23 @@ class STTNode(Node):
                 f"📊 [telemetry] phrase_to_accept_ms={_accept_ms} "
                 f"(text={text!r})"
             )
-            self.get_logger().info(f"✅ ПРИНЯТО: {text}")
-            # Issue #1077 — speaker публикуем ПЕРЕД результатом: dialogue_node
-            # хранит tag по тексту и забирает его в _on_stt. Если бы speaker
-            # шёл после result, гонка топиков могла бы потерять корреляцию.
-            # Для источника Quest speaker-профиль не нужен (это оператор).
-            if result_pub is None:
+            self.get_logger().info(f"✅ ПРИНЯТО ({source}): {text}")
+            if source == _SRC_RESPEAKER:
+                # Issue #1077 — speaker публикуем ПЕРЕД результатом: dialogue_node
+                # хранит tag по тексту и забирает его в _on_stt. Если бы speaker
+                # шёл после result, гонка топиков могла бы потерять корреляцию.
+                # Для источника шлема speaker-профиль не нужен (это оператор).
                 self._publish_speaker(text, duration)
-            self.publish_result(text, result_pub=result_pub)
-            self.publish_state("ready")
+                self.publish_result(text)
+                self.publish_state("ready")
+            elif source == _SRC_PTT:
+                # PTT-поток: вейк не нужен (грип сам вейк), текст «как есть»
+                # → пайплайн грипа в супервизоре (/avatar/ptt/result, #1989).
+                self._publish_ptt_result(text)
+                self.publish_state("ready")
+            else:  # wake
+                self._route_wake_result(text)
+            self._active_source = _SRC_RESPEAKER
         else:
             if text:
                 self.get_logger().warning(f'❌ ОТКЛОНЕНО (короткое, <{self.min_text_chars} chars): "{text}"')
@@ -596,20 +699,62 @@ class STTNode(Node):
             # говорит фразу → её эхо снова ловится → снова empty → бесконечный цикл.
             # rejected(short) — Vosk/Yandex вернули что-то (например «не»/«пути»),
             # т.е. был реальный речевой ввод, но слишком короткий — можно переспросить.
-            if text:
+            # wake-поток: фон/ложное VAD-срабатывание — молчим, робот не должен
+            # «переспрашивать» на каждый сегмент без operator-вейка.
+            if source == _SRC_WAKE:
+                self.get_logger().info("🔇 [wake] Сегмент без operator-вейка/отклонён — молчу")
+            elif text:
                 self._maybe_speak_unclear()
             else:
                 self.get_logger().info("🔇 [issue 989] Пустой STT (эхо/музыка) — молчу, без «не расслышал»")
-            self.publish_state("ready")
+            if source != _SRC_WAKE:
+                self.publish_state("ready")
+            self._active_source = _SRC_RESPEAKER
 
-    def quest_audio_callback(self, msg: AudioData):
-        """Фраза с микрофона Quest (PTT robot-voice).
+    def _publish_ptt_result(self, text: str) -> None:
+        """Опубликовать распознанную PTT-фразу в ``/avatar/ptt/result``.
 
-        Тот же пайплайн распознавания, но результат публикуется в отдельный
-        топик ``/voice/stt/quest`` (без префиксов в тексте) — dialogue_node
-        маршрутизирует его по ``voice_input_mode`` (ADR-0027 §3.4).
+        Plain text (канонический payload, супервизор._extract_grip_ptt_text
+        принимает и голый String, и ``{"text": ...}``).
         """
-        self.speech_audio_callback(msg, result_pub=self.quest_result_pub)
+        msg = String()
+        msg.data = text
+        self.avatar_ptt_result_pub.publish(msg)
+        self.get_logger().info(f"📤 [ptt] /avatar/ptt/result: {text}")
+
+    def _route_wake_result(self, text: str) -> None:
+        """Wake-ветка: оператор-вейк («ТАРС») → /avatar/stt/result, иначе drop.
+
+        Проверяем operator-namespace (не personality — «роббокс» из микрофона
+        шлема не адресует агента). Вейк вырезаем из текста ПЕРЕД публикацией
+        (как ``remove_wake_word`` у личности). Payload — JSON v1 как
+        /avatar/command (source/client_id/text/ts_ms): обработчик супервизора
+        на /avatar/stt/result — тот же, что на /avatar/command (04a §3.5).
+        client_id сессии шлема stt_node не знает — привяжет шаг 5а/quest-слой.
+        """
+        text_lower = text.lower()
+        if not has_wake_word(text_lower, self.operator_wake_words):
+            self.get_logger().info(
+                f"🔇 [wake] Нет operator-вейка в {text[:40]!r} — не маршрутизирую"
+            )
+            return
+        stripped = strip_wake_word(text, self.operator_wake_words)
+        payload = json.dumps(
+            {
+                "source": "quest",
+                "client_id": "",
+                "text": stripped,
+                "ts_ms": int(time.time() * 1000),
+            },
+            ensure_ascii=False,
+        )
+        msg = String()
+        msg.data = payload
+        self.avatar_stt_result_pub.publish(msg)
+        self.get_logger().info(
+            f"🎯 [wake] Operator wake → /avatar/stt/result: {stripped!r}"
+            f" (was {text[:40]!r})"
+        )
 
     def _maybe_speak_unclear(self) -> None:
         """Проговорить «Не расслышал, скажи ещё раз» при неясном результате.
@@ -708,6 +853,11 @@ class STTNode(Node):
         (у него свой is_playing guard и AudioPlaybackManager); если юзер
         начал говорить — звук просто пропустится или прервётся.
         """
+        # #1990: бульк — сигнал личности (ReSpeaker). На потоках шлема
+        # (ptt/wake) не играем: оператор и так слышит себя, а wake-поток —
+        # фоновый слушатель.
+        if getattr(self, "_active_source", _SRC_RESPEAKER) != _SRC_RESPEAKER:
+            return
         if not self.early_boop_enabled or self._boop_fired:
             return
         if not text or not text.strip():
@@ -1047,13 +1197,13 @@ class STTNode(Node):
             )
         self._barge_in_policy = value
 
-    def publish_result(self, text: str, result_pub=None):
-        """Публикация финального результата распознавания.
+    def publish_result(self, text: str) -> None:
+        """Публикация финального результата распознавания (ReSpeaker-путь).
 
-        ``result_pub`` — целевой publisher. None = ReSpeaker-путь
-        (``/voice/stt/result``); иначе — Quest-путь (``/voice/stt/quest``).
-        Wake-word barge-in делаем только для ReSpeaker-пути: на Quest-пути
-        barge-in уже выполнен quest-сервером при PTT start.
+        Публикуем в ``/voice/stt/result`` (личность). Wake-word barge-in
+        (немедленный STOP TTS) делаем ТОЛЬКО здесь: на потоках шлема
+        (ptt/wake) barge уже выполнен quest-сервером при PTT start / его
+        решает агент оператора.
 
         Issue #1734 — немедленный STOP на wake-word публикуется ТОЛЬКО
         при ``barge_in_policy="replace"`` (дефолт, issue #993 — робот
@@ -1068,11 +1218,11 @@ class STTNode(Node):
         обрывался на «и ещё про енота», хотя quick_decide должен был
         смёржить сегменты).
         """
-        pub = result_pub if result_pub is not None else self.result_pub
+        pub = self.result_pub
         text_lower = text.lower()
 
         # Если фраза начинается с wake word — сработал wake-word barge-in.
-        if result_pub is None and any(text_lower.startswith(word) for word in self.wake_words):
+        if any(text_lower.startswith(word) for word in self.wake_words):
             if self._barge_in_policy == "classify":
                 self.get_logger().info(
                     f'🎯 [issue 1734] Wake word detected: "{text[:30]}" → '

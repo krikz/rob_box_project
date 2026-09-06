@@ -10,10 +10,12 @@
 
 dialogue_node:
   ros__parameters:
-    # wake_words намеренно НЕ здесь: единственное объявление —
-    # rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS, откуда его берут
-    # дефолты dialogue_node и stt_node. Копия в YAML — это ровно то, что
-    # разъехалось в #1252 и стоило #1734.
+    # wake_words намеренно НЕ здесь: списки — в docker/vision/config/wake_words.yaml
+    # (SSoT, issue #1990). Нода читает его через wake_words_file: namespace
+    # personality — единственный источник вейк-слов личности (ReSpeaker →
+    # /voice/stt/result). Кодовая DEFAULT_WAKE_WORDS — фолбек для dev-env без
+    # файла (список байт-в-байт тот же).
+    wake_words_file: /config/wake_words.yaml
     dialogue_timeout: 300.0
     # S1 (scheduler-segments-merge) — "replace" = сегодняшнее поведение
     # (STOP на любой новый STT-ввод). "classify" включается в S8.3 после

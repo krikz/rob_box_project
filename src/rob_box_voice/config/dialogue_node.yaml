@@ -11,10 +11,10 @@
 dialogue_node:
   ros__parameters:
     metrics_port: 9100  # issue #1160 — Prometheus metrics endpoint
-    # wake_words намеренно НЕ здесь: единственное объявление —
-    # rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS, откуда его берут
-    # дефолты dialogue_node и stt_node. Копия в YAML — это ровно то, что
-    # разъехалось в #1252 и стоило #1734.
+    # wake_words намеренно НЕ здесь: списки — в docker/vision/config/wake_words.yaml
+    # (SSoT, issue #1990). Нода читает его через wake_words_file; пусто здесь =
+    # dev-env без файла → кодовый фолбек DEFAULT_WAKE_WORDS (байт-в-байт тот же).
+    wake_words_file: ""
     dialogue_timeout: 300.0
     # TODO(legacy-config): 2026-09-15 — отложенный rollout deepseek primary.
     # Документация (docstring'и в src/rob_box_harness/rob_box_harness/providers/*.py,
