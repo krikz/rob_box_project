@@ -11,7 +11,11 @@
     ``/avatar/set_voice``, ``/avatar/preview_voice*`` (ADR-0028 S5, AV-27/28);
   * супервизор-агент оператора (ТАРС, issue #1988): ``/avatar/command`` и
     ``/avatar/stt/result`` → ``AgentCore`` (промпт оператора) →
-    ``/avatar/command_result`` + voice-mode swap.
+    ``/avatar/command_result`` + voice-mode swap;
+  * пайплайн грипа (issue #1989, шаг 4б): ``/avatar/ptt/result`` +
+    ``/avatar/voice_pipeline`` → transform (0|1 LLM, pure-логика в
+    ``grip_pipeline.py``) → ``/voice/tts/request``. Прямоточный путь, НЕ
+    агентский цикл: без AgentCore / ToolProvider / памяти (§7.5, инвариант 6c).
 
 Параметр ``mode`` (default ``"monitor"``) остаётся гейтом применения
 voice-параметров: в ``monitor`` супервизор не трогает чужие параметры
@@ -169,6 +173,25 @@ AVATAR_COMMAND_RESULT_TOPIC: str = "/avatar/command_result"
 # /avatar/command, поэтому обработчик тот же (_on_avatar_command).
 AGENT_STT_RESULT_TOPIC: str = "/avatar/stt/result"
 
+# ── Шаг 4б (issue #1989): пайплайн грипа (§7.5 target-operator-agent-and-dialogue.md) ──
+# Прямоточный путь речи оператора с левого грипа: /avatar/ptt/result + конфиг
+# /avatar/voice_pipeline → transform (0 или 1 вызов LLM) → /voice/tts/request.
+# Оба входа создают другие ноды (ptt/result — stt_node, шаг 05/#1990;
+# voice_pipeline — quest_node/панель); пока их нет — подписки дремлют.
+# Никакого AgentCore / ToolProvider / памяти на этом пути (инвариант 6c).
+GRIP_PTT_RESULT_TOPIC: str = "/avatar/ptt/result"
+GRIP_VOICE_PIPELINE_TOPIC: str = "/avatar/voice_pipeline"
+# Выход пайплайна — динамики робота (тот же топик, что у инструмента say).
+GRIP_TTS_REQUEST_TOPIC: str = "/voice/tts/request"
+# source в /voice/tts/request от пайплайна грипа (для метрик tts_node).
+GRIP_TTS_SOURCE: str = "operator"
+# Значения preset, означающие «без стиля» (0 вызовов LLM) даже при
+# llm_enabled=true — семантика ``preset=none`` из карточки #1989.
+GRIP_OFF_PRESETS: frozenset[str] = frozenset({"", "none", "off"})
+# Default конфигурации пайплайна до первого /avatar/voice_pipeline:
+# «Без стиля» — грип произносит дословно, без LLM.
+GRIP_DEFAULT_LANGUAGE: str = "ru"
+
 # Какой ``voice_input_mode`` выставлять на ``dialogue_node`` пока супервизор
 # обрабатывает команду оператора. ``"off"`` — «диалог off» (W3-1, полное
 # управление оператора; см. dialogue-mode-spec-2026-08-28.md §3.5).
@@ -204,7 +227,9 @@ class AvatarSupervisor(Node):
     ``avatar_arbiter`` (ADR-0051 §2.2, issue #1987): здесь остаются
     voice-параметры (``/avatar/set_voice_mode``, preset/language,
     ``/avatar/set_voice``, preview) и агент оператора ТАРС
-    (``/avatar/command`` + ``/avatar/stt/result`` → ``AgentCore``).
+    (``/avatar/command`` + ``/avatar/stt/result`` → ``AgentCore``) плюс
+    пайплайн грипа (issue #1989: ``/avatar/ptt/result`` +
+    ``/avatar/voice_pipeline`` → ``/voice/tts/request``).
     Клиент floor-сервисов ходит на ``/avatar_arbiter/*``.
     """
 
@@ -342,6 +367,31 @@ class AvatarSupervisor(Node):
         self.create_subscription(
             RosString, AGENT_STT_RESULT_TOPIC, self._on_avatar_command, 10
         )
+
+        # ── Шаг 4б (issue #1989): пайплайн грипа (§7.5) ──────────────
+        # Прямоточный путь, НЕ агентский цикл: ptt/result + конфиг панели →
+        # transform (0|1 LLM) → /voice/tts/request. Состояние конфигурации —
+        # «одна точка правды на ноде оператора»; default — «Без стиля»
+        # (llm_enabled=False), пока панель не пришлёт /avatar/voice_pipeline.
+        self._pipeline_llm_enabled: bool = False
+        self._pipeline_preset: str = ""
+        self._pipeline_language: str = GRIP_DEFAULT_LANGUAGE
+        # LLM грипа — лениво, отдельно от агента (см. _grip_transform_once).
+        # Грип НЕ строит AgentCore / ToolProvider / Memory.
+        self._grip_llm: Any = None
+        self._tts_request_pub = self.create_publisher(
+            RosString, GRIP_TTS_REQUEST_TOPIC, 10
+        )
+        self.create_subscription(
+            RosString, GRIP_PTT_RESULT_TOPIC, self._on_grip_ptt_result, 10
+        )
+        self.create_subscription(
+            RosString,
+            GRIP_VOICE_PIPELINE_TOPIC,
+            self._on_grip_voice_pipeline,
+            10,
+        )
+        self._grip_metrics = self._build_grip_metrics()
 
         # Метрики (см. rob_box_voice.observability.metrics). Регистрируются
         # лениво через get_metric — если prometheus_client недоступен,
@@ -1550,6 +1600,264 @@ class AvatarSupervisor(Node):
             result=result_label,
             latency_s=(time.monotonic_ns() - started_ns) / 1_000_000_000.0,
         )
+
+    # ── Шаг 4б (issue #1989): пайплайн грипа ─────────────────────────
+    # Прямоточный путь (§7.5): /avatar/ptt/result + /avatar/voice_pipeline →
+    # transform(text, preset, language) → /voice/tts/request. Без AgentCore,
+    # ToolProvider, памяти и истории (инвариант 6c). Pure-логика
+    # (классификация, загрузка пресетов, сборка сообщений) — в
+    # :mod:`rob_box_supervisor.grip_pipeline`.
+
+    def _build_grip_metrics(self) -> dict[str, Any]:
+        """Зарегистрировать / достать метрики пайплайна грипа.
+
+        Паттерн — как ``_build_agent_metrics``: no-op, если rob_box_voice /
+        prometheus_client недоступны.
+        """
+        try:
+            from rob_box_voice.observability.metrics import get_metric  # noqa: PLC0415
+        except ImportError:
+            get_metric = None  # type: ignore[assignment]
+        if get_metric is None:
+            return {
+                "utterances": _NoopLabelCounter(),
+                "llm_calls": _NoopLabelCounter(),
+                "enabled": False,
+            }
+        return {
+            "utterances": get_metric(
+                "counter",
+                "avatar_grip_utterances_total",
+                "Grip pipeline utterances, labelled by transform mode.",
+                labelnames=("mode",),
+            ),
+            "llm_calls": get_metric(
+                "counter",
+                "avatar_grip_llm_calls_total",
+                "Grip pipeline single-shot LLM calls, labelled by mode.",
+                labelnames=("mode",),
+            ),
+            "enabled": True,
+        }
+
+    def _record_grip_utterance(self, mode: str) -> None:
+        """Инкрементить ``avatar_grip_utterances_total{mode}``."""
+        metrics = self._grip_metrics
+        if not metrics.get("enabled", False):
+            return
+        try:
+            metrics["utterances"].labels(mode=mode).inc()
+        except Exception as exc:  # noqa: BLE001 — метрики best-effort
+            self._log.warning(f"grip_metrics: utterance record failed: {exc}")
+
+    def _record_grip_llm_call(self, mode: str) -> None:
+        """Инкрементить ``avatar_grip_llm_calls_total{mode}`` (0|1 на фразу)."""
+        metrics = self._grip_metrics
+        if not metrics.get("enabled", False):
+            return
+        try:
+            metrics["llm_calls"].labels(mode=mode).inc()
+        except Exception as exc:  # noqa: BLE001 — метрики best-effort
+            self._log.warning(f"grip_metrics: llm_call record failed: {exc}")
+
+    def _on_grip_voice_pipeline(self, msg: RosString) -> None:
+        """ROS-callback ``/avatar/voice_pipeline`` — конфиг из панели шлема.
+
+        Payload — JSON ``{llm_enabled: bool, preset: str, language: str}``.
+        Валидируем и кладём в состояние пайплайна (одна точка правды на
+        ноде оператора). Битый/неизвестный ввод не валит ноду и не меняет
+        предыдущую конфигурацию — только warning.
+        """
+        raw = (msg.data or "").strip()
+        if not raw:
+            self._log.warning("GripPipeline: empty voice_pipeline config")
+            return
+        data = self._try_parse_json(raw)
+        if not isinstance(data, dict):
+            self._log.warning("GripPipeline: voice_pipeline config not a JSON object")
+            return
+        llm_enabled = bool(data.get("llm_enabled", False))
+        preset = str(data.get("preset", "") or "").strip().lower()
+        language = str(data.get("language", "") or "").strip().lower()
+        if language and language not in VOICE_LANGUAGES:
+            self._log.warning(
+                f"GripPipeline: unknown language {language!r} — default {GRIP_DEFAULT_LANGUAGE!r}"
+            )
+            language = GRIP_DEFAULT_LANGUAGE
+        if preset and preset not in VOICE_PRESET_IDS and preset not in GRIP_OFF_PRESETS:
+            self._log.warning(
+                f"GripPipeline: unknown preset {preset!r} — treated as no-style"
+            )
+            preset = ""
+        self._pipeline_llm_enabled = llm_enabled
+        self._pipeline_preset = preset
+        self._pipeline_language = language or GRIP_DEFAULT_LANGUAGE
+        self._log.info(
+            f"GripPipeline: config llm_enabled={llm_enabled} preset={preset!r} "
+            f"language={self._pipeline_language!r}"
+        )
+
+    @staticmethod
+    def _extract_grip_ptt_text(raw: str) -> str:
+        """Извлечь STT-текст из ``/avatar/ptt/result`` (pure).
+
+        Канонический payload — голый String с распознанным текстом. Допускаем
+        и JSON ``{"text": ...}`` (симметрия с /avatar/stt/result) — на случай,
+        если шаг 05 (stt-роутер) решит слать обёртку. Битый JSON → сам raw.
+        """
+        if not raw:
+            return ""
+        stripped = raw.strip()
+        data = AvatarSupervisor._try_parse_json(stripped)
+        if isinstance(data, dict):
+            text = data.get("text")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+            return ""
+        return stripped
+
+    def _on_grip_ptt_result(self, msg: RosString) -> None:
+        """ROS-callback ``/avatar/ptt/result`` — фраза с левого грипа.
+
+        Запускает прямоточную трансформацию по текущей конфигурации панели
+        и публикует результат в ``/voice/tts/request`` (динамики робота).
+        """
+        text = self._extract_grip_ptt_text(msg.data or "")
+        if not text:
+            self._log.debug("GripPipeline: empty ptt result — ignored")
+            return
+        self._log.info(f"GripPipeline: ptt text={text[:80]!r}")
+        self._run_grip_pipeline(text)
+
+    @staticmethod
+    def _classify_grip_preset(preset: str, llm_enabled: bool) -> str:
+        """Классифицировать выбор панели в режим трансформации (pure).
+
+        ``direct`` → 0 вызовов LLM (дословно); ``translate`` / ``style`` →
+        1 вызов. Неизвестный пресет при включённом LLM не стилизуем молча —
+        дословный TTS честнее (ADR-0018).
+        """
+        from rob_box_supervisor.grip_pipeline import classify_preset  # noqa: PLC0415
+
+        return classify_preset(preset, llm_enabled, VOICE_PRESET_IDS)
+
+    def _run_grip_pipeline(self, text: str) -> None:
+        """Прямоточная трансформация фразы грипа.
+
+        Решает по конфигурации: дословно (0 вызовов) или ровно один LLM-вызов
+        (перевод/стиль). При любом сбое LLM — честный fallback на дословный
+        TTS (0 доп. вызовов).
+        """
+        mode = self._classify_grip_preset(
+            self._pipeline_preset, self._pipeline_llm_enabled
+        )
+        if mode == "direct":
+            self._publish_grip_tts(text)
+            self._record_grip_utterance(mode)
+            return
+        rewritten = self._grip_transform_once(
+            text, self._pipeline_preset, self._pipeline_language
+        )
+        if rewritten is None:
+            self._log.info("GripPipeline: LLM transform unavailable — direct TTS")
+            self._publish_grip_tts(text)
+            self._record_grip_utterance(f"{mode}_fallback")
+            return
+        # Текст переписан LLM — язык override, чтобы tts_node говорил на
+        # выбранном языке (AV-28). Дословные ветки выше язык НЕ трогают.
+        self._publish_grip_tts(rewritten, language=self._pipeline_language)
+        self._record_grip_utterance(mode)
+
+    def _grip_transform_once(
+        self, text: str, preset_key: str, language: str
+    ) -> Optional[str]:
+        """Ровно один LLM-вызов трансформации текста пресетом.
+
+        Возвращает переписанный текст или ``None`` (нет провайдера / промпта,
+        ошибка, пустой или байт-в-байт идентичный ответ) — вызывающий код
+        тогда уходит в дословный TTS. ``tool_calls`` ответа игнорируются: у
+        этого пути нет ToolProvider (инвариант 6c), и ``complete`` вызывается
+        с ``tools=()``.
+        """
+        from rob_box_supervisor.grip_pipeline import (  # noqa: PLC0415
+            build_messages,
+            language_label,
+            language_prompt_section,
+            load_voice_presets,
+            select_prompt_section,
+        )
+
+        data = load_voice_presets()
+        preset_cfg = (data.get("presets") or {}).get(preset_key) or {}
+        prompt_text = preset_cfg.get("prompt_text") or ""
+        if not prompt_text:
+            self._log.warning(
+                f"GripPipeline: preset {preset_key!r} has no prompt_text — direct TTS"
+            )
+            return None
+        languages = data.get("languages") or {}
+        section = language_prompt_section(languages, language)
+        system_prompt = select_prompt_section(prompt_text, section)
+        messages = build_messages(
+            system_prompt=system_prompt,
+            preset_name=str(preset_cfg.get("name") or preset_key),
+            target_language_label=language_label(languages, language),
+            user_text=text,
+        )
+        llm = self._grip_llm
+        if llm is None:
+            llm = self._build_operator_llm()
+            if llm is None:
+                self._log.warning("GripPipeline: no LLM provider — direct TTS")
+                return None
+            self._grip_llm = llm
+        mode = "translate" if preset_key == "translate" else "style"
+        self._record_grip_llm_call(mode)
+        try:
+            response = asyncio.run(self._grip_complete_once(llm, messages))
+        except Exception as exc:  # noqa: BLE001 — LLM не должен валить ноду
+            self._log.warning(f"GripPipeline: LLM call failed ({exc!r}) — direct TTS")
+            return None
+        rewritten = (response.content or "").strip()
+        if not rewritten or rewritten == text:
+            self._log.info("GripPipeline: empty/identical LLM result — direct TTS")
+            return None
+        return rewritten
+
+    async def _grip_complete_once(self, llm: Any, messages: list[Any]) -> Any:
+        """Один вызов LLM грипа: ``tools=()`` (нет ToolProvider) + таймаут.
+
+        Отдельная async-обёртка, чтобы ``_grip_transform_once`` был простым и
+        таймаут висел сверху над сетью, не блокируя ROS-callback навсегда.
+        """
+        timeout_s = 30.0
+        return await asyncio.wait_for(
+            llm.complete(messages, tools=()), timeout=timeout_s
+        )
+
+    def _publish_grip_tts(
+        self, text: str, language: Optional[str] = None
+    ) -> None:
+        """Опубликовать текст в ``/voice/tts/request`` (динамики робота).
+
+        Payload — тот же контракт, что у speak_text/say: ``ssml`` обязателен
+        (tts_node.dialogue_callback читает его), ``source=operator`` — для
+        метрик. ``language`` передаём ТОЛЬКО когда текст переписан LLM и
+        должен звучать на выбранном языке; дословный текст остаётся на языке
+        оператора без override (AV-28).
+        """
+        payload = {
+            "ssml": f"<speak>{text}</speak>",
+            "source": GRIP_TTS_SOURCE,
+        }
+        if language:
+            payload["language"] = language
+        try:
+            msg = RosString()
+            msg.data = json.dumps(payload, ensure_ascii=False)
+            self._tts_request_pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(f"GripPipeline: tts publish failed: {exc}")
 
 
 class _NoopLabelCounter:
