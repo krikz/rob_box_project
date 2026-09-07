@@ -6,9 +6,9 @@ plus the harness-side **wrappers** that bind
 :class:`rob_box_llm.providers` providers to the
 :class:`rob_box_harness.config.LLMConfig` schema.
 
-Real-world network providers (DeepSeek, MiniMax, MiMo, ROS2Transport,
-…) live in their own packages and are wired in via the
-:class:`HarnessRegistry`.
+Real-world network providers (DeepSeek, MiniMax, MiMo, …) live in
+their own packages and are wired in by the caller that builds
+:class:`~rob_box_harness.core.agent_core.AgentCore`.
 
 Sub-modules
 -----------

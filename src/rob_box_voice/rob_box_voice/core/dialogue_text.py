@@ -1,11 +1,10 @@
 """Pure helpers for wake-word / silence-command text classification.
 
-Extracted from :class:`DialogueManager` and the per-method regex in
-:mod:`rob_box_harness.harnesses.dialog` so the same logic can be used
+Extracted from :class:`DialogueManager` so the same logic can be used
 by:
 
 * the legacy ``DialogueNode`` (OpenAI Agents SDK pipeline)
-* the new ``DialogHarness`` (harness framework)
+* ``stt_node``'s wake-word gate
 * unit tests that don't want to spin up the full state machine
 
 Everything in this module is **pure**: no I/O, no ROS2, no time
@@ -112,8 +111,8 @@ def has_wake_word(text_lower: str, wake_words: Sequence[str]) -> bool:
 def strip_wake_word(text: str, wake_words: Sequence[str] | None = None) -> str:
     """Remove the *first* matching wake word from ``text`` (any position).
 
-    Used by the harness wake-word gate (``DialogHarness._strip_wake_word``)
-    AND by the legacy node's ``DialogueManager.remove_wake_word``.
+    Used by ``stt_node``'s wake-word gate AND by the legacy node's
+    ``DialogueManager.remove_wake_word``.
 
     🔴 FIX (live 10.08): regex was anchored ``^`` — пропускал wake-word
     в середине фразы (напр. «денчик ой фу робот меня зовут...»).
