@@ -32,6 +32,14 @@ import threading
 import time
 from typing import Any, Optional
 
+# Phase 2 (issue #2002, ADR-0051 §2.1): kind-значения для
+# ``Command.msg`` (должны совпадать с
+# ``rob_box_supervisor_msgs/msg/Command.msg`` — uint8). Дублируем как
+# int-константы, чтобы quest_node не зависел от IDL на mock-стенде.
+_KIND_ACQUIRE_FLOOR: int = 1
+_KIND_RELEASE_FLOOR: int = 2
+_KIND_SET_AVATAR_MODE: int = 3
+
 from audio_common_msgs.msg import AudioData
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import OccupancyGrid, Odometry
@@ -242,6 +250,10 @@ class QuestBridge:
         preview_voice_pub=None,
         voices_cache_ttl_sec: float = 300.0,
         heartbeat_pub=None,  # AV-19: publisher in /teleop_heartbeat
+        # Phase 2 (issue #2002): QuestNode теперь шлёт всё через ЕДИНЫЙ
+        # /supervisor/execute (ExecuteCommand.srv). Старые 3 Trigger-клиента
+        # оставлены для backward-compat с тестами (Phase 3 удалит).
+        supervisor_execute_client=None,
         supervisor_acquire_client=None,
         supervisor_release_client=None,
         supervisor_set_mode_client=None,
@@ -276,6 +288,11 @@ class QuestBridge:
         # None в unit-тестах моста; реальные ROS-клиенты создаются на уровне
         # QuestNode (этот конструктор — DI). Sync-обёртки service calls
         # живут ниже (supervisor_acquire_floor / _release_floor / _set_mode).
+        # Phase 2: prefer единый execute_client; fallback на legacy 3.
+        self._srv_execute = (
+            supervisor_execute_client
+            or supervisor_acquire_client  # legacy fallback (Phase 3 удалит)
+        )
         self._srv_acquire = supervisor_acquire_client
         self._srv_release = supervisor_release_client
         self._srv_set_mode = supervisor_set_mode_client
@@ -957,34 +974,52 @@ class QuestBridge:
     # --- AV-16/#1987: avatar_arbiter API (bridge реализация) -----------
 
     def supervisor_acquire_floor(self, client_id: str, floor: str) -> dict:
-        """Sync-обёртка: ``AcquireFloor`` сервис avatar_arbiter-а.
+        """Sync-обёртка: ``execute(KIND_ACQUIRE_FLOOR)`` → ``/supervisor/execute``.
+
+        Phase 2 (issue #2002): вместо прямого вызова
+        ``/avatar_arbiter/acquire_floor`` (Trigger) клиент идёт через
+        ``/supervisor/execute`` (ExecuteCommand), supervisor.execute()
+        проксирует в arbiter (ADR-0051 §2.2). Если execute-клиент
+        недоступен (dev-env без IDL, или supervisor не задеплоен) →
+        возвращаем ``applied=False/reason=service_unavailable``.
 
         Контракт см. ws_server.Bridge.supervisor_acquire_floor (Protocol).
         Реализация: ``asyncio.run_coroutine_threadsafe(call_service, loop)``
-        на ROS-executor — критично, потому что ``client.call_async(req)
-        .call_service`` — async и блокирует aiohttp event-loop.
+        на ROS-executor — критично, потому что ``client.call_async(req)``
+        блокирует aiohttp event-loop.
 
         Арбитраж floor вынесен из супервизора в отдельную ноду
-        ``avatar_arbiter`` (ADR-0051 §2.2, issue #1987). Если ROS-клиент
+        ``avatar_arbiter`` (ADR-0051 §2.2, issue #1987). arbiter
+        принимает ``client_id``/``floor`` через Command-fields (Phase 2),
+        а не через Trigger ``request.data`` JSON (Phase 1). Если ROS-клиент
         недоступен (dev-env без rclpy, или арбитр ещё не задеплоен) →
-        возвращаем ``applied=False/reason=service_unavailable`` и логируем
-        warning один раз.
+        возвращаем ``applied=False/reason=service_unavailable``.
         """
-        if self._srv_acquire is None:
+        if self._srv_execute is None:
             return self._supervisor_unavailable("acquire_floor")
-        return self._run_supervisor_service(
-            "acquire_floor", self._srv_acquire, client_id=client_id, floor=floor
+        return self._run_supervisor_execute(
+            "acquire_floor",
+            kind=_KIND_ACQUIRE_FLOOR,
+            client_id=client_id,
+            floor=floor,
         )
 
     def supervisor_release_floor(self, client_id: str, floor: str) -> dict:
-        if self._srv_release is None:
+        if self._srv_execute is None:
             return self._supervisor_unavailable("release_floor")
-        return self._run_supervisor_service(
-            "release_floor", self._srv_release, client_id=client_id, floor=floor
+        return self._run_supervisor_execute(
+            "release_floor",
+            kind=_KIND_RELEASE_FLOOR,
+            client_id=client_id,
+            floor=floor,
         )
 
     def supervisor_set_mode(self, client_id: str, mode: str) -> dict:
-        """``SET_MODE`` (0x30) → сервис ``set_avatar_mode``.
+        """``SET_MODE`` (0x30) → ``execute(KIND_SET_AVATAR_MODE)``.
+
+        Phase 2 (issue #2002): клиент шлёт ExecuteCommand с
+        ``Command(avatar_event=mode)`` на /supervisor/execute.
+        Supervisor проксирует в avatar_arbiter.SetAvatarMode.
 
         Целевой режим уходит на провод КАК ЕСТЬ. Маппинг «режим → FSM-
         событие» живёт только в арбитре
@@ -996,10 +1031,13 @@ class QuestBridge:
         умолчанию превращался в ``force_off``, то есть опечатка выключала
         аватар.
         """
-        if self._srv_set_mode is None:
+        if self._srv_execute is None:
             return self._supervisor_unavailable("set_avatar_mode")
-        return self._run_supervisor_service(
-            "set_avatar_mode", self._srv_set_mode, mode=mode, client_id=client_id
+        return self._run_supervisor_execute(
+            "set_avatar_mode",
+            kind=_KIND_SET_AVATAR_MODE,
+            client_id=client_id,
+            avatar_event=mode,
         )
 
     @staticmethod
@@ -1014,67 +1052,61 @@ class QuestBridge:
             "reason": f"supervisor_service_unavailable:{name}",
         }
 
-    def _run_supervisor_service(
+    def _run_supervisor_execute(
         self,
         service_name: str,
-        client,
         *,
+        kind: int,
         client_id: Optional[str] = None,
         floor: Optional[str] = None,
-        mode: Optional[str] = None,
+        avatar_event: Optional[str] = None,
         # Таймаут sync-вызова из WS-handler-а (acceptance: < 100 мс при
         # «зависшем» сервисе). 50 мс — запас над обычным ROS round-trip;
         # если supervisor отвечает дольше — degradation на INTERNAL, не
         # блокировать event-loop aiohttp.
         timeout_s: float = 0.05,
     ) -> dict:
-        """Маршалит async call_service в ROS-executor и ждёт ответ sync.
+        """Sync-вызов /supervisor/execute (ExecuteCommand.srv) для QuestBridge.
 
-        Pattern: ``asyncio.run_coroutine_threadsafe(call_async(req),
-        ros_loop).result(timeout=...)``.
+        Phase 2 (issue #2002): формирует ``Command(kind=..., client_id=...,
+        floor=...)`` и шлёт ``ExecuteCommand.Request(command=cmd)`` через
+        ``asyncio.run_coroutine_threadsafe(call_async, ros_loop)``,
+        pattern идентичен Phase 1 (только payload-формат изменился).
+
+        Парсит ``ExecuteCommand.Response.response.{accepted, applied,
+        reason, held_by, actual_mode}`` обратно в dict, совместимый
+        со старым форматом (``applied``,/ applied``,``reason``,``held_by``).
         """
-        # Supervisor service contract (ADR-0028 §4.3 + типизированный IDL
-        # rob_box_supervisor_msgs, AV-12 #1904): поля запроса — ровно
-        # ``client_id`` + ``floor`` (AcquireFloor/ReleaseFloor) или
-        # ``client_id`` + ``mode`` (SetAvatarMode). Имена жёсткие: у
-        # сгенерированных rosidl-сообщений ``__slots__``, и setattr на
-        # поле, которого в .srv нет, бросит AttributeError. Поэтому
-        # никаких ad-hoc атрибутов вроде ``event`` здесь больше нет.
         ros_loop = getattr(self._node, "_ros_loop", None)
         if ros_loop is None:
-            # rclpy.executors не разворачивает loop явно — попросим у самого Node.
-            # Внутри rclpy-spin-callback-а ``asyncio.get_event_loop()`` бросит
-            # ``RuntimeError`` (есть running-loop уже у rclpy). В этом случае
-            # Sync-вызов через ``run_coroutine_threadsafe`` не пройдёт: spin_once
-            # не обработает наш future, ws-handler ждать не может. Возвращаемся
-            # к fallback — service_unavailable (см. монитор-режим supervisor-а).
             try:
                 ros_loop = asyncio.get_event_loop()  # noqa: F841 — defensive
             except RuntimeError:
                 return self._supervisor_unavailable(service_name)
 
-        # Формируем request через ``client.cli_type.Request()`` — это
-        # конкретный srv-тип (Trigger в Phase 1), атрибуты ставятся ad-hoc.
-        request_cls = client.srv_type.Request
+        # Формируем request через ``client.srv_type.Request()`` — ExecuteCommand.
+        request_cls = self._srv_execute.srv_type.Request
         request_obj = request_cls()
+        command_obj = request_obj.command  # nested Command.msg
+        command_obj.kind = kind
         if client_id is not None:
-            setattr(request_obj, "client_id", client_id)
+            command_obj.client_id = client_id
         if floor is not None:
-            setattr(request_obj, "floor", floor)
-        if mode is not None:
-            setattr(request_obj, "mode", mode)
+            command_obj.floor = floor
+        if avatar_event is not None:
+            command_obj.avatar_event = avatar_event
 
         async def _call() -> dict:
-            fut = client.call_async(request_obj)
+            fut = self._srv_execute.call_async(request_obj)
             result = await fut
-            return _trigger_response_to_dict(result)
+            return _execute_response_to_dict(result)
 
         try:
             future = asyncio.run_coroutine_threadsafe(_call(), ros_loop)
             return future.result(timeout=timeout_s)
         except (asyncio.TimeoutError, TimeoutError):
             self._node.get_logger().warning(
-                f"supervisor_service:{service_name} timeout after {timeout_s * 1000:.0f} мс"
+                f"supervisor_execute:{service_name} timeout after {timeout_s * 1000:.0f} мс"
             )
             return {
                 "applied": False,
@@ -1083,7 +1115,7 @@ class QuestBridge:
             }
         except Exception as exc:  # noqa: BLE001
             self._node.get_logger().warning(
-                f"supervisor_service:{service_name} failed: {exc}"
+                f"supervisor_execute:{service_name} failed: {exc}"
             )
             return {
                 "applied": False,
@@ -1187,6 +1219,55 @@ def _trigger_response_to_dict(response: Any) -> dict:
             for key, value in parsed.items():
                 out[key] = value
     return out
+
+
+def _execute_response_to_dict(response: Any) -> dict:
+    """Phase 2 (issue #2002): ExecuteCommand.Response → dict для ws_server.
+
+    Контракт ExecuteCommand.srv (см. rob_box_supervisor_msgs/srv/ExecuteCommand.srv):
+    ``response.response`` — nested Response.msg с полями
+    ``accepted/applied/reason/held_by/actual_mode/contacted_service``.
+
+    Возвращает dict, совместимый со старым Trigger-форматом (ws_server
+    ожидает ключи ``applied``/``granted``/``reason``/``held_by``):
+
+    * ``applied``  ← Response.applied
+    * ``granted``  ← Response.applied (для acquire; для release это
+                       означает «release принят»)
+    * ``reason``   ← Response.reason
+    * ``held_by``  ← Response.held_by (для acquire/release)
+    * ``mode``     ← Response.actual_mode (для set_avatar_mode)
+    * ``contacted_service`` ← Response.contacted_service
+    * ``success``  ← True если applied=True
+    """
+    outer = getattr(response, "response", response)
+    applied = bool(getattr(outer, "applied", False))
+    granted = applied  # arbiter: applied AND granted = applied (одно и то же)
+    reason_raw = getattr(outer, "reason", "")
+    reason = str(reason_raw) if isinstance(reason_raw, str) else ""
+    held_by_raw = getattr(outer, "held_by", "")
+    held_by = (
+        str(held_by_raw)
+        if isinstance(held_by_raw, str) and held_by_raw
+        else ""
+    )
+    mode_raw = getattr(outer, "actual_mode", "")
+    mode = str(mode_raw) if isinstance(mode_raw, str) and mode_raw else ""
+    contacted_raw = getattr(outer, "contacted_service", "")
+    contacted_service = (
+        str(contacted_raw)
+        if isinstance(contacted_raw, str) and contacted_raw
+        else ""
+    )
+    return {
+        "success": applied,
+        "applied": applied,
+        "granted": granted,
+        "reason": reason,
+        "held_by": held_by,
+        "mode": mode,
+        "contacted_service": contacted_service,
+    }
 
 
 class QuestNode(Node):
@@ -1406,15 +1487,28 @@ class QuestNode(Node):
         # от имени client_id (см. WSSServer._on_json_cmd).
         self._heartbeat_pub = self.create_publisher(String, "/teleop_heartbeat", _RE)
 
-        # AV-16/#1987: supervisor service-clients (sync-вызовы из WS-handler
-        # через run_coroutine_threadsafe). std_srvs/Trigger — Phase 1 IDL;
-        # avatar_arbiter (новая нода без LLM, ADR-0051 §2.2) принимает
-        # client_id/floor/mode через getattr-атрибуты запроса (см.
-        # arbiter_node._extract_*). Абсолютные имена /avatar_arbiter/*:
-        # нода больше НЕ у супервизора (арбитраж floor вынесен из
-        # supervisor_node, issue #1987). Сервисы могут отсутствовать в
-        # dev-env / на старте арбитра → QuestBridge получает None и
-        # отвечает ``service_unavailable`` (см. _supervisor_unavailable).
+        # Phase 2 (issue #2002): supervisor service-clients (sync-вызовы из
+        # WS-handler через run_coroutine_threadsafe). В Phase 2 клиент
+        # ходит через ЕДИНЫЙ /supervisor/execute (ExecuteCommand.srv,
+        # ADR-0051 §2.1) — supervisor.execute(Command) реально
+        # проксирует в avatar_arbiter. avatar_arbiter владеет
+        # LockManager/FSM (ADR-0051 §2.2), supervisor только мост.
+        #
+        # Старые Trigger-клиенты на /avatar_arbiter/{acquire_floor,
+        # release_floor, set_avatar_mode} оставлены для fallback в
+        # старых тестах; в Phase 3 arbiter-сервисы будут удалены и
+        # клиенты перестанут создаваться.
+        from rob_box_supervisor_msgs.srv import ExecuteCommand as _Exc  # noqa: PLC0415
+        from rob_box_supervisor_msgs.msg import Command as _Cmd  # noqa: PLC0415
+
+        try:
+            self._srv_execute = self.create_client(
+                _Exc,
+                "/supervisor/execute",
+            )
+        except Exception:  # pragma: no cover — rclpy без executor
+            self._srv_execute = None
+        # Legacy: arbiter Trigger-сервисы (Phase 3 удалит).
         from std_srvs.srv import Trigger  # noqa: PLC0415 — локальный импорт
 
         try:
@@ -1570,6 +1664,11 @@ class QuestNode(Node):
                 self.get_parameter("voices_cache_ttl_sec").value
             ),
             heartbeat_pub=self._heartbeat_pub,
+            # Phase 2 (issue #2002): QuestBridge теперь ходит через
+            # ЕДИНЫЙ /supervisor/execute. Старые 3 клиента прокинуты для
+            # fallback в дев-env, где IDL ExecuteCommand недоступен
+            # (см. QuestBridge.__init__ fallback-логика).
+            supervisor_execute_client=self._srv_execute,
             supervisor_acquire_client=self._srv_acquire,
             supervisor_release_client=self._srv_release,
             supervisor_set_mode_client=self._srv_set_mode,
