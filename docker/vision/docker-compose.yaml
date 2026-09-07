@@ -364,6 +364,17 @@ services:
       # (PR #1618) → включаем active, чтобы супервизор применял voice_input_mode
       # (SetVoiceMode). Teleop-FSM/floors остаются Phase 2 (NOT_IMPLEMENTED).
       - AVATAR_SUPERVISOR_MODE=active
+    # issue #2111 — БЕЗ ЭТОГО У ТАРС НЕТ LLM ВООБЩЕ.
+    # avatar_supervisor._build_operator_llm строит провайдеров из ключей в
+    # окружении (MINIMAX_API_KEY / DEEPSEEK_API_KEY). У сервиса не было
+    # env_file, поэтому в контейнере не было НИ ОДНОГО *_API_KEY, и на
+    # роботе 2026-09-08 в логах висело:
+    #   _build_operator_llm: deepseek build failed: missing API key
+    #   _build_operator_llm: no LLM provider built (chain=['deepseek'])
+    # Агент оператора принимал фразы из шлема и молча не мог ответить.
+    # Тот же файл уже подключён у voice-assistant (см. ниже) и telegram-bot.
+    env_file:
+      - .env.secrets  # MINIMAX_API_KEY, DEEPSEEK_API_KEY — операторский LLM (ТАРС)
     volumes:
       - ./config:/config:ro
       - ./scripts:/ros_scripts:ro
