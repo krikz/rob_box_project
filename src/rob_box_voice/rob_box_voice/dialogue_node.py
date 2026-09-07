@@ -322,7 +322,7 @@ class DialogueNode(Node):
         # Если opentelemetry-пакетов нет — no-op (см. observability.tracing).
         init_tracing("dialogue_node")
         self._declare_params()
-        # ADR-0054 §6.3 — ``voice_input_mode`` УДАЛЁН. Runtime-параметры
+        # ADR-0066 §6.3 — ``voice_input_mode`` УДАЛЁН. Runtime-параметры
         # (barge_in_policy, voice_preset, voice_output_language) логируются
         # в parameters_callback без рестарта ноды.
         self.add_on_set_parameters_callback(self.parameters_callback)
@@ -513,7 +513,7 @@ class DialogueNode(Node):
                            history=HistoryPolicy.KEEP_LAST, depth=10)
         self._response_pub = self.create_publisher(
             String, "/voice/dialogue/response", 10)
-        # ADR-0054 §6.3 — публикация /avatar/command сохранена как legacy
+        # ADR-0066 §6.3 — публикация /avatar/command сохранена как legacy
         # fallback. Телеграм-бот публикует в тот же топик из handlers, и
         # супервизор может использовать этот publisher для собственных
         # команд (контракт общий — см. rob_box_core.avatar_command и
@@ -588,7 +588,7 @@ class DialogueNode(Node):
             )
         self.create_subscription(
             String, "/voice/stt/result", self._on_stt, qos_r, callback_group=cbg)
-        # ADR-0054 §6.1 — единственная связь с агентом оператора:
+        # ADR-0066 §6.1 — единственная связь с агентом оператора:
         # sub /dialogue/control (String JSON {action: pause|resume}),
         # pub /dialogue/control_ack (String JSON {state, since_ms, ts_s, reason}).
         # Без TTL — личность выходит из паузы только по явному resume.
@@ -1039,7 +1039,7 @@ class DialogueNode(Node):
         # latency / fallback). 0 = отключить старт сервера (полезно для
         # юнит-тестов и CI, где рконфликтует с другими тестами).
         self.declare_parameter("metrics_port", 9100)
-        # ADR-0054 §6.3 — `voice_input_mode` УДАЛЁН. Единственная связь
+        # ADR-0066 §6.3 — `voice_input_mode` УДАЛЁН. Единственная связь
         # оператора с личностью — топик /dialogue/control (sub выше, в
         # __init__). Параметры voice_preset / voice_output_language
         # сохранены (стиль речи и язык для LLM формализации через
@@ -1050,7 +1050,7 @@ class DialogueNode(Node):
     def parameters_callback(self, params):
         """Роутер runtime-изменений параметров (``ros2 param set``).
 
-        ADR-0054 §6.3 — ``voice_input_mode`` УДАЛЁН. Единственный канал
+        ADR-0066 §6.3 — ``voice_input_mode`` УДАЛЁН. Единственный канал
         оператора — ``/dialogue/control``. Параметры ``voice_preset`` /
         ``voice_output_language`` сохранены: это стиль речи и язык для
         LLM-формализации в ``grip_pipeline`` супервизора (ADR-0028 §S5),
@@ -1082,7 +1082,7 @@ class DialogueNode(Node):
                     f"(republished to stt_node)"
                 )
             elif param.name == "voice_preset":
-                # ADR-0054 §6.3 — смена пресета через SetParameters от
+                # ADR-0066 §6.3 — смена пресета через SetParameters от
                 # супервизора / фронта (UI-секция «Стиль речи» голосового
                 # плана). Сам резолв пресета теперь в ``grip_pipeline``
                 # супервизора (см. ``src/rob_box_supervisor/.../
@@ -1426,7 +1426,7 @@ class DialogueNode(Node):
 
     _BARGE_IN_POLICIES = ("replace", "classify")
 
-    # ADR-0054 §6.3 — ``_DEFAULT_VOICE_PRESETS_FILE`` УДАЛЁН вместе с
+    # ADR-0066 §6.3 — ``_DEFAULT_VOICE_PRESETS_FILE`` УДАЛЁН вместе с
     # AV-28 (формализация пресета переехала в grip_pipeline супервизора).
 
     def _resolve_barge_in_policy(self) -> str:
@@ -2014,7 +2014,7 @@ class DialogueNode(Node):
             return dict(data.get("event", data) or {})
         return {}
 
-    # ADR-0054 §6.3 — AV-28: voice_presets (формализация Quest-фраз через
+    # ADR-0066 §6.3 — AV-28: voice_presets (формализация Quest-фраз через
     # LLM) и весь блок ``_resolve_voice_presets_path`` /
     # ``_load_voice_presets`` / ``_resolve_voice_preset`` /
     # ``_resolve_voice_language`` / ``_language_meta`` /
@@ -2166,9 +2166,9 @@ class DialogueNode(Node):
             )
 
     def _on_dialogue_control(self, msg: String) -> None:
-        """ADR-0054 — обработчик ``/dialogue/control`` от avatar_supervisor.
+        """ADR-0066 — обработчик ``/dialogue/control`` от avatar_supervisor.
 
-        Контракт (ADR-0054 §2.1):
+        Контракт (ADR-0066 §2.1):
 
         ::
 
@@ -2186,7 +2186,7 @@ class DialogueNode(Node):
             reason = str(payload.get("reason") or "")
         except (json.JSONDecodeError, TypeError):
             self.get_logger().warning(
-                f"⚠️ [ADR-0054] /dialogue/control: invalid JSON {msg.data!r}"
+                f"⚠️ [ADR-0066] /dialogue/control: invalid JSON {msg.data!r}"
             )
             return
         if action == "pause":
@@ -2195,13 +2195,13 @@ class DialogueNode(Node):
             self._apply_operator_resume()
         else:
             self.get_logger().warning(
-                f"⚠️ [ADR-0054] /dialogue/control: unknown action {action!r}"
+                f"⚠️ [ADR-0066] /dialogue/control: unknown action {action!r}"
             )
             return
         self._publish_control_ack()
 
     def _apply_operator_pause(self, reason: str) -> None:
-        """ADR-0054 — перевести FSM в SILENCED по команде оператора.
+        """ADR-0066 — перевести FSM в SILENCED по команде оператора.
 
         Идемпотентно: повторный pause, когда FSM уже в SILENCED,
         не меняет ``_paused_at_ms`` (чтобы напоминание в супервизоре
@@ -2215,11 +2215,11 @@ class DialogueNode(Node):
         self._pause_reason = reason
         self._publish_state()
         self.get_logger().info(
-            f"⏸️ [ADR-0054] pause reason={reason!r} (was {state.name})"
+            f"⏸️ [ADR-0066] pause reason={reason!r} (was {state.name})"
         )
 
     def _apply_operator_resume(self) -> None:
-        """ADR-0054 — вывести FSM из SILENCED в IDLE по команде оператора.
+        """ADR-0066 — вывести FSM из SILENCED в IDLE по команде оператора.
 
         Resume из любого другого состояния — no-op + ack с текущим
         состоянием (защита от гонок, §2.5).
@@ -2231,10 +2231,10 @@ class DialogueNode(Node):
         self._paused_at_ms = None
         self._pause_reason = ""
         self._publish_state()
-        self.get_logger().info("▶️ [ADR-0054] resume")
+        self.get_logger().info("▶️ [ADR-0066] resume")
 
     def _publish_control_ack(self) -> None:
-        """ADR-0054 — публикация ack на ``/dialogue/control_ack``.
+        """ADR-0066 — публикация ack на ``/dialogue/control_ack``.
 
         Поля: ``state`` (``paused`` для SILENCED, иначе ``state.name.lower()``),
         ``since_ms`` (``_paused_at_ms`` для паузы, иначе monotonic() * 1000),
@@ -2275,7 +2275,7 @@ class DialogueNode(Node):
                 if tg_chat_id is not None:
                     self._active_tg_chat_id = tg_chat_id
                     text = text[marker_end + 1:].strip()
-        # ADR-0054 §6.3 — `voice_input_mode="off"` УДАЛЁН. Гейт паузы
+        # ADR-0066 §6.3 — `voice_input_mode="off"` УДАЛЁН. Гейт паузы
         # теперь = DSM=SILENCED (см. §2.5 «Что НЕ делает pause»): пауза
         # не глушит ReSpeaker, она переводит FSM в SILENCED, который
         # обрабатывается ниже на 2804 (`if tg_chat_id is None and state
@@ -2332,7 +2332,7 @@ class DialogueNode(Node):
         # печатаем сводку ``llm_skipped_total``.
         # Issue #1195 — для текста из Telegram-чата ([TG:...]) wake-gate
         # пропускается: обращение в чате очевидно, нечего фильтровать.
-        # ADR-0054 §6.3 — Quest robot-voice ушёл из dialogue_node, поэтому
+        # ADR-0066 §6.3 — Quest robot-voice ушёл из dialogue_node, поэтому
         # ``from_quest`` маршрута больше нет.
         if tg_chat_id is None and not has_wake_word(text_lower, self._wake_words):
             accumulator = getattr(self, "_speech_accumulator", None)

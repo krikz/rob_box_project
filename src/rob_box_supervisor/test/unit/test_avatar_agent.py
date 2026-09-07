@@ -12,7 +12,7 @@
    tool_calls=[] (НЕ выдумываем действие).
 4. **AC #8** LLM исключение → dialogue_control_swap НЕ блокирует
    последующие команды (try/finally восстанавливает личность через
-   ``resume`` в ``/dialogue/control``, ADR-0054 §6.7).
+   ``resume`` в ``/dialogue/control``, ADR-0066 §6.7).
 5. **AC #9** метрики инкрементнулись после успешной команды.
 6. **AC #3 (negative)** невалидный JSON → ok=false,
    summary="malformed_input".
@@ -174,7 +174,7 @@ class TestAvatarAgentTopology(unittest.TestCase):
         через ``declare_parameter``.
 
         Параметр ``agent_during_voice_mode`` удалён вместе с
-        ``voice_input_mode`` (ADR-0054 §6.7): пауза личности теперь
+        ``voice_input_mode`` (ADR-0066 §6.7): пауза личности теперь
         жёстко зашита в ``_dialogue_control_swap`` (pause на входе,
         resume в finally), переопределение через параметр больше не нужно.
         """
@@ -182,7 +182,7 @@ class TestAvatarAgentTopology(unittest.TestCase):
         self.assertTrue(self.node.has_parameter("system_prompt_file"))
         self.assertFalse(
             self.node.has_parameter("agent_during_voice_mode"),
-            "agent_during_voice_mode удалён (ADR-0054 §6.7)",
+            "agent_during_voice_mode удалён (ADR-0066 §6.7)",
         )
         # default
         self.assertEqual(
@@ -307,7 +307,7 @@ class TestNoToolReturnsNoTool(unittest.TestCase):
 
 
 class TestDialogueControlSwapTryFinally(unittest.TestCase):
-    """AC #8 (ADR-0054 §6.7): try/finally ``_dialogue_control_swap``
+    """AC #8 (ADR-0066 §6.7): try/finally ``_dialogue_control_swap``
     корректно отрабатывает даже если core/agent бросает исключение.
 
     Swap публикует ``pause`` на входе и ``resume`` в finally — личность
@@ -360,7 +360,7 @@ class TestDialogueControlSwapTryFinally(unittest.TestCase):
         self.assertEqual(actions[1], DIALOGUE_CONTROL_RESUME)
 
     def test_swap_payload_format(self) -> None:
-        """Payload соответствует wire-контракту (ADR-0054 §2.1):
+        """Payload соответствует wire-контракту (ADR-0066 §2.1):
         ``{action, reason, ts_s}``, причём ``ts_s`` — float."""
         with self.node._dialogue_control_swap():
             pass
@@ -704,7 +704,7 @@ class TestDialogueControlSwapPayload(unittest.TestCase):
     корректные ``ts_s`` (float > 0) и reason с человекочитаемой подсказкой.
 
     ``_capture_current_voice_mode`` удалён вместе с ``voice_input_mode``
-    (ADR-0054 §6.7): новая модель — pause↔resume через
+    (ADR-0066 §6.7): новая модель — pause↔resume через
     ``_publish_dialogue_control``, snapshot предыдущего состояния не
     нужен (dialogue_node сам хранит FSM-стейт).
     """

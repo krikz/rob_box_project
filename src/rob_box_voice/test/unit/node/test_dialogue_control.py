@@ -1,5 +1,5 @@
 """
-test_dialogue_control.py — ADR-0054 §6.5 unit-тесты для sub
+test_dialogue_control.py — ADR-0066 §6.5 unit-тесты для sub
 ``/dialogue/control`` (String JSON) и pub ``/dialogue/control_ack``.
 
 Покрывает:
@@ -53,7 +53,7 @@ def _make_idle_node():
 
 
 class TestDialogueControl:
-    """ADR-0054 — sub /dialogue/control + pub /dialogue/control_ack."""
+    """ADR-0066 — sub /dialogue/control + pub /dialogue/control_ack."""
 
     def _ack(self, n):
         """Последний опубликованный ack на /dialogue/control_ack."""
@@ -81,7 +81,7 @@ class TestDialogueControl:
         assert n._pause_reason == "operator"
 
     def test_pause_is_idempotent_does_not_reset_since_ms(self):
-        """ADR-0054 §2.5 — повторный pause НЕ обновляет since_ms
+        """ADR-0066 §2.5 — повторный pause НЕ обновляет since_ms
         (чтобы напоминание в супервизоре не сбивалось)."""
         n = _make_idle_node()
         # Первый pause переводит FSM в SILENCED через side_effect
@@ -124,7 +124,7 @@ class TestDialogueControl:
         assert n._pause_reason == ""
 
     def test_resume_when_not_silenced_is_noop(self):
-        """ADR-0054 §2.5 — resume из IDLE/LISTENING/DIALOGUE = no-op + ack
+        """ADR-0066 §2.5 — resume из IDLE/LISTENING/DIALOGUE = no-op + ack
         с текущим состоянием (защита от гонок)."""
         for st in (DialogueStateKind.IDLE, DialogueStateKind.LISTENING):
             n = _make_node()
@@ -139,7 +139,7 @@ class TestDialogueControl:
             assert ack["state"] == st.name.lower()
 
     def test_invalid_json_does_not_change_fsm_and_does_not_publish_ack(self):
-        """ADR-0054 §2.5 + решение t_d058dc6f: невалидный JSON → ack НЕ шлём."""
+        """ADR-0066 §2.5 + решение t_d058dc6f: невалидный JSON → ack НЕ шлём."""
         n = _make_node()
         n._dsm.current_state = DialogueStateKind.IDLE
         n._publish_state = MagicMock()
@@ -172,7 +172,7 @@ class TestDialogueControl:
         assert ack["reason"] == ""
 
     def test_publish_state_before_ack(self):
-        """ADR-0054 инвариант 3: /voice/dialogue/state публикуется ДО ack."""
+        """ADR-0066 инвариант 3: /voice/dialogue/state публикуется ДО ack."""
         n = _make_node()
         n._dsm.current_state = DialogueStateKind.IDLE
 
@@ -195,10 +195,10 @@ class TestDialogueControl:
 
 
 class TestDialogueControlNoAutoResume:
-    """ADR-0054 инвариант 8: без TTL — pause без resume держит FSM=SILENCED."""
+    """ADR-0066 инвариант 8: без TTL — pause без resume держит FSM=SILENCED."""
 
     def test_fsm_stays_silenced_after_long_pause(self):
-        """ADR-0054 инвариант 8: pause без resume держит FSM=SILENCED
+        """ADR-0066 инвариант 8: pause без resume держит FSM=SILENCED
         бесконечно (нет TTL). После второго pause FSM не должен двинуться."""
         n = _make_idle_node()
         # Первый pause — FSM → SILENCED через side_effect.

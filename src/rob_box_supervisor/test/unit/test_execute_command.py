@@ -245,7 +245,7 @@ class TestExecuteAcquisitionCommands(unittest.TestCase):
 class TestExecuteVoiceMode(unittest.TestCase):
     """SET_VOICE_MODE → локально через :py:meth:`_apply_voice_mode`.
 
-    После удаления ``voice_input_mode`` (ADR-0054 §6.7) legacy-контракт
+    После удаления ``voice_input_mode`` (ADR-0066 §6.7) legacy-контракт
     маппит ``respeaker`` → ``resume``, ``off`` → ``pause``. Остальные
     значения (quest_*, etc) — отвергаются как ``voice_mode_deprecated``.
     """
@@ -445,7 +445,7 @@ class TestExecuteRobustness(unittest.TestCase):
         """Не-строковый voice_mode (например, MagicMock или None)
         нормализуется и не валит ноду.
 
-        После ADR-0054 §6.7 None нормализуется в ``""``, что не является
+        После ADR-0066 §6.7 None нормализуется в ``""``, что не является
         ни ``respeaker`` ни ``off`` → отвергается как ``voice_mode_rejected``.
         """
         self.node._mode = "active"
