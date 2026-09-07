@@ -1,7 +1,14 @@
 // src/input/voice_capture.ts
 //
 // Рация (voice passthrough): захват микрофона → int16 PCM 16 kHz mono.
-// getUserMedia + ScriptProcessorNode → resample 48k→16k → чанки ~20 мс.
+// getUserMedia + AudioWorklet (real-time audio thread) → resample 48k→16k →
+// чанки ~20 мс.
+//
+// Почему AudioWorklet, а не ScriptProcessorNode:
+//   ScriptProcessorNode — deprecated и бежит В MAIN-THREAD. Раньше это
+//   конкурировало с three.js render loop → дропы кадров в VR. AudioWorklet
+//   исполняется в отдельном audio rendering thread (см. ADR-0051 §2.7 и
+//   target-operator-agent-and-dialogue §7.2 "Технический долг").
 //
 // PTT-семантика: start() при зажатом grip, stop() при отпускании. Пока
 // захват активен, чанки идут непрерывно (включая тишину-нули), поэтому
@@ -10,19 +17,60 @@
 export const VOICE_SAMPLE_RATE = 16000;
 export const VOICE_CHUNK_SAMPLES = 320; // 20 мс @ 16 kHz
 
-// Буфер ScriptProcessorNode: 4096 @ 48 kHz ≈ 85 мс, после resample ≈ 1365 семплов.
-const PROCESSOR_BUFFER = 4096;
+export interface AudioWorkletLike {
+  addModule(url: string): Promise<void>;
+}
+
+export interface AudioWorkletNodeLike {
+  port: {
+    postMessage(message: unknown, transfer?: Transferable[]): void;
+    onmessage: ((ev: { data: unknown }) => void) | null;
+    close?: () => void;
+  };
+  connect(dest: unknown): void;
+  disconnect(): void;
+}
 
 export interface VoiceCaptureDeps {
   getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
   AudioContextCtor: new () => AudioContext;
+  /** URL модуля worklet'а (в проде — blob URL из WORKLET_SOURCE). */
+  audioWorkletModuleUrl: string;
 }
+
+/**
+ * Исходник AudioWorkletProcessor'а. Заворачивается в Blob URL на лету и
+ * загружается через `audioWorklet.addModule()` — без отдельного bundler-шага.
+ *
+ * Контракт процессора: на вход 1 канал Float32 (любой sampleRate AudioContext),
+ * на выход — port.postMessage({ type: "chunk", pcm: Float32Array }).
+ */
+export const WORKLET_SOURCE = `
+class VoiceCaptureProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const input = inputs[0];
+    if (!input || input.length === 0) return true;
+    const channel = input[0];
+    // Копируем: AudioWorklet переиспользует входные буферы между вызовами.
+    const out = new Float32Array(channel.length);
+    out.set(channel);
+    this.port.postMessage({ type: "chunk", pcm: out }, [out.buffer]);
+    return true;
+  }
+}
+registerProcessor("voice-capture-processor", VoiceCaptureProcessor);
+`;
 
 export interface VoiceCaptureOptions {
   onChunk: (pcm: Int16Array) => void;
   onError?: (err: Error) => void;
   /** Внедряемые зависимости — для unit-тестов без реального микрофона. */
   deps?: Partial<VoiceCaptureDeps>;
+  /**
+   * Фабрика AudioWorkletNode (тесты подменяют на fake). В проде не нужна —
+   * берётся прямо с audioCtx.
+   */
+  createAudioWorkletNode?: (ctx: AudioContext, name: string) => AudioWorkletNodeLike;
 }
 
 export interface VoiceCapture {
@@ -56,16 +104,31 @@ export function resampleToInt16(input: Float32Array, inputRate: number, outputRa
 }
 
 export function createVoiceCapture(opts: VoiceCaptureOptions): VoiceCapture {
+  // Дефолтный фабричный путь: берём AudioWorkletNode прямо с контекста.
+  // Тесты подменяют через opts.createAudioWorkletNode.
+  const defaultCreateNode = (ctx: AudioContext, name: string): AudioWorkletNodeLike =>
+    new AudioWorkletNode(ctx, name) as unknown as AudioWorkletNodeLike;
+  const createNode = opts.createAudioWorkletNode ?? defaultCreateNode;
+
+  // Дефолтный URL — blob с inline-исходником worklet'а. В jsdom URL.createObjectURL
+  // недоступен, поэтому берём дефолт лениво и даём тестам возможность
+  // переопределить через opts.deps.audioWorkletModuleUrl.
+  const defaultModuleUrl =
+    typeof URL !== "undefined" && typeof URL.createObjectURL === "function"
+      ? URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: "application/javascript" }))
+      : "";
+
   const deps: VoiceCaptureDeps = {
     getUserMedia: (constraints) => navigator.mediaDevices.getUserMedia(constraints),
     AudioContextCtor: (globalThis as unknown as { AudioContext: new () => AudioContext }).AudioContext,
+    audioWorkletModuleUrl: defaultModuleUrl,
     ...opts.deps
   };
 
   let ctx: AudioContext | null = null;
   let stream: MediaStream | null = null;
   let source: MediaStreamAudioSourceNode | null = null;
-  let processor: ScriptProcessorNode | null = null;
+  let workletNode: AudioWorkletNodeLike | null = null;
   let capturing = false;
   // Остаток после нарезки на VOICE_CHUNK_SAMPLES (int16 семплы).
   let pending = new Int16Array(0);
@@ -88,18 +151,24 @@ export function createVoiceCapture(opts: VoiceCaptureOptions): VoiceCapture {
     try {
       const s = await deps.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
       const c = new deps.AudioContextCtor();
+      const aw = (c as unknown as { audioWorklet: AudioWorkletLike }).audioWorklet;
+      await aw.addModule(deps.audioWorkletModuleUrl);
       const src = c.createMediaStreamSource(s);
-      const proc = c.createScriptProcessor(PROCESSOR_BUFFER, 1, 1);
-      proc.onaudioprocess = (ev) => {
-        const input = ev.inputBuffer.getChannelData(0);
-        push(resampleToInt16(input, c.sampleRate, VOICE_SAMPLE_RATE));
+      const node = createNode(c, "voice-capture-processor");
+      node.port.onmessage = (ev: { data: unknown }) => {
+        const data = ev.data as { type?: string; pcm?: Float32Array };
+        if (!data || data.type !== "chunk" || !(data.pcm instanceof Float32Array)) return;
+        push(resampleToInt16(data.pcm, c.sampleRate, VOICE_SAMPLE_RATE));
       };
-      src.connect(proc);
-      proc.connect(c.destination);
+      src.connect(node as unknown as AudioNode);
+      // Worklet-node НЕ подключаем к destination: иначе в VR-ушах звучит
+      // собственный голос с микрофона (эхо-петля). ScriptProcessor раньше
+      // подключался к destination только потому, что иначе onaudioprocess
+      // не вызывался. У AudioWorklet такой зависимости нет.
       stream = s;
       ctx = c;
       source = src;
-      processor = proc;
+      workletNode = node;
       capturing = true;
     } catch (err) {
       opts.onError?.(err instanceof Error ? err : new Error(String(err)));
@@ -109,8 +178,12 @@ export function createVoiceCapture(opts: VoiceCaptureOptions): VoiceCapture {
   function stop(): void {
     if (!capturing) return;
     capturing = false;
+    if (workletNode) {
+      workletNode.port.onmessage = null;
+      workletNode.port.close?.();
+    }
     try {
-      processor?.disconnect();
+      workletNode?.disconnect();
     } catch {
       // ignore
     }
@@ -126,7 +199,7 @@ export function createVoiceCapture(opts: VoiceCaptureOptions): VoiceCapture {
     stream = null;
     ctx = null;
     source = null;
-    processor = null;
+    workletNode = null;
     pending = new Int16Array(0);
   }
 
