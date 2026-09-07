@@ -760,6 +760,44 @@ def test_quest_node_imports_voices_for_from_voice_registry():
     )
 
 
+def test_voices_for_import_is_guarded():
+    """Регресс деплоя 2026-09-07: жёсткий импорт ронял quest_node на роботе.
+
+    Образ ``rob-box-quest`` не содержит ``rob_box_voice.tts_voice_registry``.
+    PR #2105 добавил импорт на уровне модуля БЕЗ ``try/except`` — нода легла
+    в Restarting loop с ``ModuleNotFoundError`` сразу после деплоя, вместе
+    с ней ушли ВСЕ топики квеста (``/audio/quest_in``, ``/audio/quest_wake``,
+    телеоп). Конвенция репозитория — защищённый импорт с fallback, см.
+    ``rob_box_mcp_tools/tools/dialogue.py`` и ``rob_box_mcp_tools/voice_state.py``.
+
+    Проверяем структурно (AST): импорт ``tts_voice_registry`` обязан лежать
+    внутри ``ast.Try``. Ловится именно причина падения, а не симптом.
+    """
+    import ast
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[4]  # test/unit/... → repo root
+    quest_node_path = repo_root / "src" / "rob_box_quest" / "rob_box_quest" / "quest_node.py"
+    tree = ast.parse(quest_node_path.read_text(encoding="utf-8"))
+
+    guarded = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        for stmt in node.body:
+            if (
+                isinstance(stmt, ast.ImportFrom)
+                and stmt.module == "rob_box_voice.tts_voice_registry"
+            ):
+                guarded = True
+
+    assert guarded, (
+        "импорт rob_box_voice.tts_voice_registry в quest_node.py обязан быть "
+        "внутри try/except ImportError — образ rob-box-quest не содержит этот "
+        "модуль, жёсткий импорт кладёт ноду в Restarting loop (деплой 2026-09-07)"
+    )
+
+
 def test_quest_node_module_exposes_voices_for_alias():
     """Runtime регресс: при импорте ``rob_box_node`` алиас ``_voices_for`` доступен.
 
