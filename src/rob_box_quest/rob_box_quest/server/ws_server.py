@@ -112,6 +112,13 @@ def _unpack_msgpack(data: bytes) -> dict:
 # Keep-alive STATE_UPDATE для v2-сессий (§3 строка 66: «1 Hz keep-alive»).
 STATE_UPDATE_KEEPALIVE_S: float = 1.0
 
+# issue #1992 observability: до этой правки приём VOICE_AUDIO не логировался
+# вовсе — «клиент не шлёт» и «мост не публикует» выглядели на сервере
+# одинаково (тишина в обоих случаях). Первый пакет per stream_id — сразу
+# INFO, дальше сводка раз в это окно (поток ~16 кГц / чанк 20мс = до 50
+# пакетов/сек — без троттлинга лог захлебнётся).
+VOICE_AUDIO_LOG_INTERVAL_S: float = 10.0
+
 
 log = logging.getLogger(__name__)
 
@@ -673,6 +680,13 @@ class WSSServer:
         # чтобы один клиент не получал > 1 ошибки в FLOOR_HELD_RATE_LIMIT_S
         # даже если в ws_server прилетают разные teleop_twist-ы).
         self._floor_held_warned_session: dict[str, float] = {}
+        # issue #1992 observability: счётчики приёма VOICE_AUDIO по
+        # stream_id (1=ptt/radio, 2=wake). См. _note_voice_audio_rx().
+        self._voice_audio_rx_count: dict[int, int] = {}
+        self._voice_audio_rx_bytes: dict[int, int] = {}
+        self._voice_audio_rx_window_count: dict[int, int] = {}
+        self._voice_audio_rx_window_bytes: dict[int, int] = {}
+        self._voice_audio_rx_last_log_ts: dict[int, float] = {}
 
     def get_active_sessions(self) -> int:
         return sum(1 for s in self._sessions.values() if s.is_open())
@@ -680,6 +694,57 @@ class WSSServer:
     def set_send_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Установить aiohttp-loop для потокобезопасной отправки кадров."""
         self._send_loop = loop
+
+    def _note_voice_audio_rx(self, sid: int, nbytes: int, session_id: str) -> None:
+        """issue #1992 observability — приём VOICE_AUDIO по ``stream_id``.
+
+        До этой правки приём кадра ничем не логировался: если шлем не
+        шлёт wake-канал (``stream_id=2``), в логах моста ровно та же
+        тишина, что и при живом потоке, который просто некуда
+        публиковать. Считает пакеты/байты per stream_id и логирует:
+        первый принятый пакет — сразу (подтверждает, что WS вообще что-то
+        получил), дальше — сводка не чаще раза в
+        :data:`VOICE_AUDIO_LOG_INTERVAL_S` секунд, чтобы не забить лог на
+        потоке ~16 кГц (чанк 20 мс -> до 50 пакетов/сек).
+        """
+        now = time.monotonic()
+        count = self._voice_audio_rx_count.get(sid, 0) + 1
+        self._voice_audio_rx_count[sid] = count
+        self._voice_audio_rx_bytes[sid] = self._voice_audio_rx_bytes.get(sid, 0) + nbytes
+        window_count = self._voice_audio_rx_window_count.get(sid, 0) + 1
+        self._voice_audio_rx_window_count[sid] = window_count
+        window_bytes = self._voice_audio_rx_window_bytes.get(sid, 0) + nbytes
+        self._voice_audio_rx_window_bytes[sid] = window_bytes
+
+        last_log = self._voice_audio_rx_last_log_ts.get(sid)
+        if last_log is None:
+            self._voice_audio_rx_last_log_ts[sid] = now
+            self._voice_audio_rx_window_count[sid] = 0
+            self._voice_audio_rx_window_bytes[sid] = 0
+            log.info(
+                "VOICE_AUDIO stream_id=%d first packet received "
+                "(session=%s, %d bytes)",
+                sid,
+                session_id,
+                nbytes,
+            )
+            return
+
+        elapsed = now - last_log
+        if elapsed >= VOICE_AUDIO_LOG_INTERVAL_S:
+            log.info(
+                "VOICE_AUDIO stream_id=%d rx summary: %d packets / %d bytes "
+                "in %.1fs (session=%s, total %d packets)",
+                sid,
+                window_count,
+                window_bytes,
+                elapsed,
+                session_id,
+                count,
+            )
+            self._voice_audio_rx_last_log_ts[sid] = now
+            self._voice_audio_rx_window_count[sid] = 0
+            self._voice_audio_rx_window_bytes[sid] = 0
 
     # ── AV-27 / issue #1919 — TTS picker helpers ────────────────────────
 
@@ -2287,6 +2352,11 @@ class WSSServer:
                         # (publish_voice_audio, текущее поведение).
                         # Back-compat: stream_id==0 тоже идёт в radio-канал
                         # (исторически клиенты слали sid=0).
+                        # issue #1992 observability: см. _note_voice_audio_rx —
+                        # без этого приём молчит одинаково что при живом
+                        # потоке без подписчика, что при клиенте, который
+                        # вообще ничего не шлёт.
+                        self._note_voice_audio_rx(sid, len(payload), session.session_id)
                         if sid == 2:
                             self.bridge.publish_quest_wake_audio(payload)
                         else:

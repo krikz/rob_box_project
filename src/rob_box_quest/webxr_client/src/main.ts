@@ -521,6 +521,14 @@ export function bootstrap(opts: BootstrapOptions): {
       // channel: 'ptt' → stream_id=1, 'wake' → stream_id=2.
       const streamId: 1 | 2 = channel === "wake" ? 2 : 1;
       conn.sendVoiceAudio(bytes, streamId);
+    },
+    // issue #1992: getUserMedia/AudioWorklet failure (permission denied,
+    // no mic, immersive-session quirk — гипотеза владельца #4) раньше
+    // проглатывалась молча: onError не был подключён вовсе, поэтому даже
+    // при открытой консоли шлема не было ни строки. Теперь хотя бы
+    // видно, что capture не поднялся и почему.
+    onError: (err) => {
+      console.warn("[quest] voiceCapture start failed:", err.message);
     }
   });
   // ADR-0054 §2.2: wake-канал включается автоматически при создании
@@ -528,6 +536,19 @@ export function bootstrap(opts: BootstrapOptions): {
   // в панель каждый раз — микрофон «всегда слышит», wake-фильтр гонит
   // только речь через VAD.
   voiceCapture.setWakeGate({ enabled: true, suppressed: false });
+  // issue #1992 — БАГ: до этой правки этот комментарий был неправдой.
+  // "Включается автоматически" описывало намерение, а единственный вызов
+  // voiceCapture.start() во всём файле жил внутри applyVoicePtt() и
+  // срабатывал только на зажатие грипа (PTT) — т.е. ИМЕННО тогда, когда
+  // wake ниже принудительно подавляется setWakeGate({suppressed:true})
+  // (см. applyVoicePtt). Итог: capturing никогда не был true одновременно
+  // с !suppressed, поэтому push() в voice_capture.ts никогда не пропускал
+  // wake-чанк — VOICE_AUDIO(stream_id=2) не отправлялся НИ РАЗУ ни при
+  // каких обстоятельствах. Здесь — реальный старт единого mic-захвата,
+  // независимый от грипа. applyVoicePtt() больше не глушит capture на
+  // отпускание (см. комментарий там) — вместо этого только выключает
+  // ptt-канал и снимает wake-suppression.
+  void voiceCapture.start();
   // Edge-состояние PTT. Робот-голос приоритетнее рации, если зажаты оба.
   let voicePttMode: "none" | "radio" | "robot_voice" = "none";
   // ADR-0054 §2.2: панель тумблера управляет wake-каналом (UI — отдельная
@@ -622,7 +643,14 @@ export function bootstrap(opts: BootstrapOptions): {
     // voice_input_mode=respeaker и dialogue_node его игнорирует (гонка).
     voicePttMode = next;
     if (next === "none") {
-      voiceCapture.stop();
+      // issue #1992 — раньше здесь стоял stop() у voiceCapture. ptt и wake
+      // делят ОДИН mic-захват (см. комментарий у createVoiceCapture выше);
+      // тот вызов рвал getUserMedia-стрим целиком, а значит убивал и wake —
+      // ровно в момент, когда wake должен снова заработать (следующая
+      // строка снимает suppression). Итог был: wake физически не мог
+      // слать ничего никогда — либо capture не запущен (нет грипа), либо
+      // запущен, но wake принудительно suppressed (грип зажат). Капчур
+      // теперь живёт от boot до dispose(); здесь только гасим ptt-канал.
       voiceCapture.setPttEnabled(false);
       // ADR-0054 §2.3: после отпускания грипа wake снова разрешён (если
       // panel-toggle включён). Не сбрасываем enabled — это стирает
@@ -655,6 +683,11 @@ export function bootstrap(opts: BootstrapOptions): {
     voiceCapture.setPttEnabled(true);
     // Mode-manager: клиентский UI-state — текущий voice mode.
     modeManager.setVoiceMode(next);
+    // issue #1992: capture теперь запускается один раз при создании
+    // voiceCapture (см. выше), это — защитный повторный вызов, не
+    // основной путь. start() idempotent (no-op если уже capturing), так
+    // что это лишь ретрай на случай, если самый первый start() не удался
+    // (напр. permission dialog ещё не был подтверждён на момент boot).
     void voiceCapture.start();
   }
 
