@@ -64,7 +64,22 @@ from rob_box_core.avatar_command import AVATAR_COMMAND_RESULT_TOPIC
 # то же имя (см. supervisor_node.py:53), quest просто отстал — после
 # рефакторинга ``Bridge.execute(Command)`` (PR #2056/#2086) call site в
 # ``set_voice`` остался, а символ в namespace модуля не подтянулся.
-from rob_box_voice.tts_voice_registry import voices_for as _voices_for
+# ВАЖНО: импорт ЗАЩИЩЁННЫЙ, а не жёсткий. Образ ``rob-box-quest`` не
+# содержит ``rob_box_voice.tts_voice_registry`` — жёсткий импорт уронил
+# quest_node в Restarting loop на роботе (``ModuleNotFoundError`` на старте,
+# деплой 2026-09-07, регресс PR #2105). Это конвенция репозитория для всех
+# потребителей реестра: см. ``mcp_tools/tools/dialogue.py`` и
+# ``mcp_tools/voice_state.py`` — «пакет должен оставаться импортируемым без
+# rob_box_voice». Деградация осмысленная: пустой список голосов →
+# ``set_voice`` отдаёт ``tts_unreachable`` в UI шлема вместо падения ноды.
+try:
+    from rob_box_voice.tts_voice_registry import voices_for as _voices_for
+except ImportError:  # pragma: no cover — образы без rob_box_voice
+
+    def _voices_for(provider: str) -> list:
+        """Fallback: реестр голосов недоступен в этом образе."""
+        return []
+
 
 from .core.safety import Watchdog
 from .core.teleop import TeleopController
