@@ -474,6 +474,34 @@ def _parse_pronunciation_dict(value: object) -> dict | None:
     return dict(parsed)
 
 
+# Issue #1996 / operator-agent step 7a — allowed values for the top-level
+# ``priority`` field of ``/voice/tts/request``. Only "operator" makes the
+# FIFO-gate insert the request right behind the currently playing chunk
+# (see ``TTSNode._assign_priority_play_seq``); every other value behaves
+# exactly like the legacy FIFO path. Kept as a 2-value whitelist per the
+# issue's DoD and its test suite — NOT the 3-value
+# ``{"normal", "operator", "personality"}`` set that ADR-0056 validates
+# for the *nested* ``pregenerate.priority`` hint (a different field, a
+# different payload location, describing the *next* chunk rather than
+# the current one). See the tts_node priority-queue PR description for
+# the open question this leaves.
+_TTS_PRIORITY_VALUES = frozenset({"operator", "normal"})
+
+
+def _normalize_tts_priority(raw: object) -> str:
+    """Whitelist-normalize the ``priority`` field of ``/voice/tts/request``.
+
+    Backward-compat contract (issue #1996 DoD): the field is optional,
+    and anything other than the literal string ``"operator"`` — missing,
+    ``None``, wrong case (``"OPERATOR"``), or garbage — is treated as
+    ``"normal"``. A malformed payload must never raise or drop the
+    request; it just loses the priority bump.
+    """
+    if raw in _TTS_PRIORITY_VALUES:
+        return raw  # type: ignore[return-value]
+    return "normal"
+
+
 # Yandex Cloud TTS API v3 (gRPC)
 try:
     from yandex.cloud.ai.tts.v3 import tts_pb2, tts_service_pb2_grpc
@@ -1306,6 +1334,18 @@ class TTSNode(Node):
         self._next_play_seq = 1           # какой seq сейчас можно играть
         self._play_order_cond = threading.Condition()
 
+        # Issue #1996 / operator-agent step 7a — приоритетная очередь перед
+        # динамиком. ``_pending_seqs`` хранит текущий назначенный ``play_seq``
+        # для каждого ``speech_id`` в очереди; слот может быть переназначен
+        # под ``_play_order_cond``, если позже придёт ``operator``-запрос и
+        # «вклинится» сразу за активным чанком (см. ``_assign_priority_play_seq``).
+        # ``_play_active_seq`` — seq чанка, который СЕЙЧАС внутри
+        # ``play_audio`` (``None``, если ничего не играет) — это и есть
+        # «активный чанк», за которым должен встать operator (инвариант 8a:
+        # врезка ≠ прерывание — активный чанк никогда не трогается).
+        self._pending_seqs: Dict[str, int] = {}
+        self._play_active_seq: Optional[int] = None
+
         # (The synthesis executor block itself was moved earlier in
         # ``__init__`` so that ``_start_silero_warm_load`` does not
         # accidentally become ``recordings[0]`` when unit tests
@@ -1983,6 +2023,11 @@ class TTSNode(Node):
             # §2.2 «ROS-param minimax_language ИЛИ override»). None — обычная
             # русская реплика робота, поведение прежнее.
             language = chunk_data.get("language")
+            # Issue #1996 / operator-agent step 7a — top-level ``priority``
+            # поле /voice/tts/request. Whitelist-нормализация вынесена в
+            # ``_normalize_tts_priority`` (см. её докстринг про 2-значный
+            # набор vs 3-значный ADR-0056 ``pregenerate.priority``).
+            priority = _normalize_tts_priority(chunk_data.get("priority"))
 
             self.get_logger().info(
                 f'🔊 TTS: speech_id={speech_id[:8]}, '
@@ -2063,6 +2108,10 @@ class TTSNode(Node):
                 voice=voice,
                 language=language,
                 prebaked_audio=prebaked_audio,
+                # Issue #1996 — forwarded via kwargs so the canonical
+                # positional arity of ``_run_synthesis_worker`` stays
+                # intact (see test_speech_id_arg_chain.py).
+                priority=priority,
             )
 
         except json.JSONDecodeError as e:
@@ -2346,6 +2395,11 @@ class TTSNode(Node):
         не входящие в канонический positional arity (например ``voice``).
         Пробрасываются в ``executor.submit`` как keyword-аргументы —
         ``_run_synthesis_worker(**kwargs)`` достаёт их из ``**kwargs``.
+
+        ``priority`` (issue #1996, optional kwarg, НЕ извлекается из
+        ``**kwargs`` — остаётся в них и летит дальше воркеру) — влияет
+        ТОЛЬКО на то, какой ``play_seq`` достанется этому запросу; см.
+        ``_assign_priority_play_seq``.
         """
         if self._synthesis_executor_shutdown:
             self.get_logger().warning(
@@ -2360,12 +2414,20 @@ class TTSNode(Node):
             )
             return
         self._synthesis_in_flight += 1
+        priority = _normalize_tts_priority(kwargs.get("priority"))
+        if priority == "operator":
+            # ADR-0056 §3.5 — REPLACE-priority: an operator-priority
+            # request re-orders the FIFO-gate, so any in-flight
+            # speculative pre-gen (which assumed the *old* ordering) is
+            # invalidated. Best-effort / never blocks the submit path.
+            self._cancel_pregen_for_priority_replace(speech_id)
         # 🔴 FIX (12:02 FIFO): выдаём play_seq в порядке submit — это
         # порядок приёма запросов из ROS-callback = порядок LLM tool_calls.
-        # Worker будет ждать своей очереди перед play_audio.
+        # Worker будет ждать своей очереди перед play_audio. Issue #1996 —
+        # ``operator``-приоритет вставляет запрос сразу за активным чанком
+        # вместо хвоста очереди (см. ``_assign_priority_play_seq``).
         with self._play_order_cond:
-            self._play_seq_counter += 1
-            play_seq = self._play_seq_counter
+            play_seq = self._assign_priority_play_seq(speech_id, priority)
         try:
             # 🔴 FIX (live 06.08): play_seq ТОЛЬКО через kwargs! Воркер e65a6e5d
             # убрал позиционный play_seq из _run_synthesis_worker (→ **kwargs),
@@ -2406,6 +2468,93 @@ class TTSNode(Node):
         # The counter is monotonic-ish under CPython GIL; the racy
         # underflow on rare shutdown race is acceptable for diagnostics.
         self._synthesis_in_flight = max(0, self._synthesis_in_flight - 1)
+
+    # ── Issue #1996 / operator-agent step 7a — priority-aware FIFO-gate ──
+
+    def _assign_priority_play_seq(self, speech_id: str, priority: str) -> int:
+        """Assign a ``play_seq`` slot, honouring ``priority`` (issue #1996).
+
+        MUST be called while holding ``self._play_order_cond`` — it reads
+        and mutates ``_play_seq_counter`` / ``_pending_seqs`` /
+        ``_next_play_seq`` without its own locking.
+
+        * ``normal`` (default) — legacy behaviour: next free slot at the
+          tail of the FIFO (``_play_seq_counter + 1``).
+        * ``operator`` — jumps to ``_play_active_seq + 1`` (right behind
+          the chunk currently in ``play_audio``), or to the head of the
+          gate (``_next_play_seq``) if nothing is playing. Any pending
+          ``normal`` request already sitting on that slot is cascaded
+          forward by :meth:`_resolve_operator_priority_slot` — the
+          active chunk itself is never touched (invariant 8a: врезка ≠
+          прерывание).
+
+        Every assigned slot is recorded in ``_pending_seqs[speech_id]``
+        (even for ``normal``) so a later ``operator`` insertion can
+        re-number it, and so the FIFO-gate in ``_synthesize_and_play``
+        can read the live (possibly re-numbered) seq instead of a stale
+        local copy.
+        """
+        if priority == "operator" and speech_id:
+            target = (
+                self._play_active_seq + 1
+                if self._play_active_seq is not None
+                else self._next_play_seq
+            )
+            play_seq = self._resolve_operator_priority_slot(target)
+        else:
+            self._play_seq_counter += 1
+            play_seq = self._play_seq_counter
+        if speech_id:
+            self._pending_seqs[speech_id] = play_seq
+        # The cascade in ``_resolve_operator_priority_slot`` can push a
+        # pending ``normal`` seq ABOVE the current counter (e.g. counter=2,
+        # operator claims slot 2, the normal that was there gets bumped to
+        # 3) — sync against every pending value, not just ``play_seq``,
+        # or the next plain ``normal`` submit would reuse an already-taken
+        # slot and the gate would hang forever waiting for a duplicate.
+        highest_pending = max(self._pending_seqs.values(), default=play_seq)
+        self._play_seq_counter = max(self._play_seq_counter, play_seq, highest_pending)
+        return play_seq
+
+    def _resolve_operator_priority_slot(self, target: int) -> int:
+        """Cascade-shift pending seqs so ``target`` is free for an operator.
+
+        If ``target`` is already taken by another pending ``speech_id``,
+        every pending seq ``>= target`` is bumped by +1 (their relative
+        FIFO order among themselves is preserved — they just all move
+        one slot back to make room). Repeats until ``target`` is free.
+        Must be called under ``self._play_order_cond`` (see caller).
+        """
+        taken = set(self._pending_seqs.values())
+        while target in taken:
+            for sid, seq in list(self._pending_seqs.items()):
+                if seq >= target:
+                    self._pending_seqs[sid] = seq + 1
+            taken = set(self._pending_seqs.values())
+        return target
+
+    def _cancel_pregen_for_priority_replace(self, speech_id: str) -> None:
+        """ADR-0056 §3.5 trigger #4 — REPLACE via the issue #1996 priority flag.
+
+        An ``operator``-priority submit re-orders the FIFO-gate (it can
+        push an already-pregenerated ``normal`` chunk one slot back).
+        Any in-flight speculative pre-gen was kicked off assuming the
+        *old* ordering, so it is cancelled here rather than risking a
+        stale ``prebaked_audio`` downstream. Best-effort: swallow every
+        error so a pre-gen hiccup never blocks an operator interjection
+        from being scheduled — that would defeat the whole point of the
+        priority queue.
+        """
+        cancel = getattr(self, "cancel_pregen", None)
+        if not callable(cancel):
+            return
+        try:
+            cancel(reason="REPLACE-priority")
+        except Exception as exc:  # noqa: BLE001 — never block the submit path
+            self.get_logger().debug(
+                f"cancel_pregen(REPLACE-priority) failed for "
+                f"speech_id={speech_id[:8] if speech_id else 'None'}: {exc!r}"
+            )
 
     def _run_synthesis_worker(
         self,
@@ -2480,17 +2629,34 @@ class TTSNode(Node):
             prebaked_audio=prebaked_audio,
         )
 
-    def _release_play_seq(self, play_seq: int | None) -> None:
+    def _release_play_seq(
+        self, play_seq: int | None, speech_id: str | None = None
+    ) -> None:
         """Освободить FIFO-очередь воспроизведения (безопасно для None).
 
         Вызывается при ЛЮБОМ выходе из _synthesize_and_play после синтеза:
         после play_audio (finally), при dialogue-check, при STOP-check.
         Без этого _next_play_seq застревает и все следующие фразы ждут
         очередь вечно (live 12:28 «робот замолчал после barge-in»).
+
+        ``speech_id`` (issue #1996, optional keyword — backward-compat
+        with old positional-only callers/tests): when given, also drops
+        ``_pending_seqs[speech_id]`` unconditionally (this request's
+        synthesis/playback is over, whatever slot it currently holds —
+        the key is unique per ``speech_id`` so there is no risk of
+        stomping someone else's entry). ``_play_active_seq`` is a
+        single shared value, though, so it is only cleared when it
+        still equals the ``play_seq`` being released — otherwise we'd
+        risk erasing the active-seq marker of a *different* chunk that
+        started playing after this one failed/was cancelled.
         """
         if play_seq is not None:
             with self._play_order_cond:
                 self._next_play_seq += 1
+                if speech_id is not None:
+                    self._pending_seqs.pop(speech_id, None)
+                if self._play_active_seq == play_seq:
+                    self._play_active_seq = None
                 self._play_order_cond.notify_all()
 
     # ── Issue #2003 / ADR-0056 — speculative pre-generation API ─────────
@@ -3632,7 +3798,20 @@ class TTSNode(Node):
             # (seq 2,3,4...) ждали очередь ВЕЧНО → робот молчал после
             # barge-in. Теперь gate стоит сразу после синтеза, а каждый
             # ранний return освобождает seq через _release_play_seq.
-            if play_seq is not None:
+            #
+            # Issue #1996 — ``_submit_synthesis`` может переназначить наш
+            # seq под ``_play_order_cond``, если позже придёт operator-
+            # запрос и «вклинится» сразу за активным чанком (каскадный
+            # сдвиг всех pending normal'ов). Поэтому gate читает АКТУАЛЬНЫЙ
+            # seq из ``_pending_seqs[speech_id]``, а не застывший локальный
+            # ``play_seq`` — переназначение под тем же lock'ом безопасно.
+            if play_seq is not None and speech_id:
+                with self._play_order_cond:
+                    while self._next_play_seq != self._pending_seqs.get(speech_id, play_seq):
+                        self._play_order_cond.wait()
+                    play_seq = self._pending_seqs.get(speech_id, play_seq)
+            elif play_seq is not None:
+                # Legacy/test path без speech_id — старый статический gate.
                 with self._play_order_cond:
                     while self._next_play_seq != play_seq:
                         self._play_order_cond.wait()
@@ -3647,7 +3826,7 @@ class TTSNode(Node):
                 self.processing_dialogue_id = None
                 release = getattr(self, "_release_play_seq", None)
                 if release is not None:
-                    release(play_seq)
+                    release(play_seq, speech_id=speech_id)
                 return
 
             # ADR-0055 / issue #1993 — sink="headset" пропускает локальное
@@ -3681,7 +3860,7 @@ class TTSNode(Node):
                 # release FIFO — на headset-пути мы тоже прогнали gate.
                 release = getattr(self, "_release_play_seq", None)
                 if release is not None:
-                    release(play_seq)
+                    release(play_seq, speech_id=speech_id)
                 return
 
             # Воспроизводим локально
@@ -3751,9 +3930,18 @@ class TTSNode(Node):
                 self.get_logger().warn("🔇 STOP: отменено ДО воспроизведения")
                 self.publish_state("stopped")
                 # 🔴 FIX (12:28): без release следующий seq ждал бы вечно
-                self._release_play_seq(play_seq)
+                self._release_play_seq(play_seq, speech_id=speech_id)
                 return
 
+            # Issue #1996 — помечаем этот seq как «активный чанк» ПЕРЕД
+            # play_audio: дальнейшие operator-запросы должны вставать
+            # сразу за ним (``_play_active_seq + 1``), см.
+            # ``_assign_priority_play_seq``. Под тем же cond-lock'ом, что
+            # и FIFO-gate/insertion, чтобы вставка не увидела устаревшее
+            # значение. Снимается в ``_release_play_seq`` (finally ниже).
+            if play_seq is not None:
+                with self._play_order_cond:
+                    self._play_active_seq = play_seq
             try:
                 # Блокирующее воспроизведение через менеджер (защита от ALSA конфликтов)
                 with ignore_stderr(enable=True):
@@ -3772,9 +3960,11 @@ class TTSNode(Node):
                 # Пропускаем следующую фразу (всегда, даже при исключении).
                 # ``getattr`` fallback so test stubs (bare ``_Stub`` classes
                 # that don't carry the FIFO-gate helper) still work.
+                # Issue #1996 — ``speech_id`` передан, чтобы release снял
+                # ``_play_active_seq``/``_pending_seqs`` для этого чанка.
                 release = getattr(self, "_release_play_seq", None)
                 if release is not None:
-                    release(play_seq)
+                    release(play_seq, speech_id=speech_id)
 
             if not success:
                 self.get_logger().warn("⚠️  Аудио устройство занято, пропуск воспроизведения")
@@ -3927,7 +4117,7 @@ class TTSNode(Node):
             # this method; the production TTSNode class always does.
             release = getattr(self, "_release_play_seq", None)
             if release is not None:
-                release(play_seq)
+                release(play_seq, speech_id=speech_id)
             # Публикуем ошибку для MCP tools (#980: also fires batch_complete if applicable)
             _publish_finished = getattr(self, "_publish_tts_finished", None)
             if _publish_finished is not None:
