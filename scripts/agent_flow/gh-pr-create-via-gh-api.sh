@@ -152,17 +152,26 @@ if [ $APPLY -eq 1 ]; then
         exit 1
     fi
 
-    # Идемпотентность: проверить существующий PR для head+base
-    _head_qs="$(printf '%s' "$HEAD_BRANCH" | sed 's|/|%2F|g')"
-    _base_qs="$BASE"
-    _existing_json="$(gh api "repos/${GH_REPO}/pulls?head=${_head_qs}&base=${_base_qs}&state=all&per_page=10" 2>/dev/null || echo '[]')"
+    # Идемпотентность: проверить существующий PR для head+base.
+    # ВАЖНО: GitHub REST API `?head=...` использует PREFIX match (документировано
+    # в /rest/pos/{owner}/{repo}/pulls). Например `?head=wt/t_fe8facbe` матчит
+    # `wt/t_fe8facbe`, `wt/t_fe8facbe-rb`, `wt/t_fe8facbe-cleanup`. Поэтому
+    # фильтруем вручную через python: exact `head.ref == HEAD_BRANCH`.
+    _existing_json="$(gh api "repos/${GH_REPO}/pulls?state=all&per_page=100" 2>/dev/null || echo '[]')"
 
-    # python парсинг через stdout — НЕ через -c (terminal-guard блокирует)
-    _existing_pnrs="$(printf '%s' "$_existing_json" | python3 -c "
-import json, sys
+    # python парсинг через stdout — НЕ через -c (terminal-guard блокирует).
+    # Filter: exact head.ref == HEAD_BRANCH + base.ref == BASE (prefix match
+    # GitHub API даёт false positives — см. комментарий выше).
+    _existing_pnrs="$(printf '%s' "$_existing_json" | _HEAD_BRANCH="$HEAD_BRANCH" _BASE="$BASE" python3 -c "
+import json, sys, os
 data = json.load(sys.stdin)
+target_head = os.environ['_HEAD_BRANCH']
+target_base = os.environ['_BASE']
 for pr in data:
-    print(f'{pr[\"number\"]} {pr[\"state\"]}')
+    head_ref = pr.get('head',{}).get('ref','')
+    base_ref = pr.get('base',{}).get('ref','')
+    if head_ref == target_head and base_ref == target_base:
+        print(f'{pr[\"number\"]} {pr[\"state\"]}')
 " 2>/dev/null || true)"
 
     if [ -n "$_existing_pnrs" ]; then
