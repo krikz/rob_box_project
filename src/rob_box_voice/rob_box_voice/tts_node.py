@@ -781,6 +781,13 @@ class TTSNode(Node):
         self.declare_parameter("audio_output_sample_rate", 16000)
         self.declare_parameter("audio_qos_reliability", "best_effort")
         self.declare_parameter("audio_qos_depth", 10)
+        # ADR-0055 / issue #1993 — обратный канал ТАРС в шлем.
+        # Параметризуем имя топика для тестов и чтобы шов с ``audio_topic``
+        # остался единственной параметризацией.
+        self.declare_parameter("headset_audio_topic", "/avatar/tts/audio")
+        self.declare_parameter("avatar_request_topic", "/avatar/tts/request")
+        self.declare_parameter("avatar_error_topic", "/avatar/tts/error")
+        self.declare_parameter("avatar_control_topic", "/avatar/tts/control")
 
         # Synthesis worker pool (BLK-9 fix).
         #
@@ -972,6 +979,21 @@ class TTSNode(Node):
         ).lower()
         self.audio_qos_depth = max(1, int(self.get_parameter("audio_qos_depth").value))
         self.audio_channels = 1
+        # ADR-0055 / issue #1993 — параметры обратного канала ТАРС в шлем.
+        # Те же параметры, что у audio_topic/... — единственный шов в одном
+        # месте для forward-compat тестов и override'ов через launch-файлы.
+        self.headset_audio_topic = str(
+            self.get_parameter("headset_audio_topic").value
+        )
+        self.avatar_request_topic = str(
+            self.get_parameter("avatar_request_topic").value
+        )
+        self.avatar_error_topic = str(
+            self.get_parameter("avatar_error_topic").value
+        )
+        self.avatar_control_topic = str(
+            self.get_parameter("avatar_control_topic").value
+        )
 
         # Общие
         self.chipmunk_mode = self.get_parameter("chipmunk_mode").value
@@ -1129,6 +1151,27 @@ class TTSNode(Node):
         # Подписка на control commands (STOP)
         self.control_sub = self.create_subscription(String, "/voice/tts/control", self.control_callback, 10)
 
+        # ADR-0055 / issue #1993 — подписка на запросы ТАРС в шлем.
+        # Контракт String JSON повторяет /voice/tts/request (см. dialogue_callback)
+        # плюс обязательное поле ``sink=="headset"``. Невалидный sink →
+        # self._avatar_tts_error_pub.publish({request_id, error:"invalid_sink"})
+        # и DROP (ADR-0055 §tts_node). Контроль (STOP / IGNORE_STOP_MS) —
+        # общий с /voice/tts/control, формат команды совпадает (тот же
+        # control_callback, см. C2 impl-plan §5).
+        self._avatar_tts_request_sub = self.create_subscription(
+            String, self.avatar_request_topic, self._on_avatar_tts_request, 10
+        )
+        self._avatar_tts_error_pub = self.create_publisher(
+            String, self.avatar_error_topic, 10
+        )
+        self._avatar_tts_control_sub = self.create_subscription(
+            String, self.avatar_control_topic, self.control_callback, 10
+        )
+        # Текущий avatar-request_id (один активный). Используется в
+        # control_callback для отсечения устаревших запросов от старого
+        # avatar-запроса при barge-in / STOP.
+        self._avatar_tts_request_id: Optional[str] = None
+
         # Подписка на новый dialogue_id от dialogue_node.
         # Позволяет отбрасывать устаревшие TTS-запросы от старого диалога после barge-in.
         self._new_dialogue_id_sub = self.create_subscription(
@@ -1164,6 +1207,13 @@ class TTSNode(Node):
             durability=DurabilityPolicy.VOLATILE,
         )
         self.audio_pub = self.create_publisher(AudioData, self.audio_topic, audio_qos)
+        # ADR-0055 / issue #1993 — обратный канал ТАРС в шлем.
+        # Тот же формат (int16 LE PCM), та же QoS, что у ``audio_topic``
+        # (см. meta spec). Подписчик (quest_node) ожидает эти параметры
+        # байт-в-байт, иначе не сможет декодировать чанк.
+        self._avatar_audio_pub = self.create_publisher(
+            AudioData, self.headset_audio_topic, audio_qos
+        )
         self.state_pub = self.create_publisher(String, "/voice/tts/state", 10)
         self.finished_pub = self.create_publisher(
             String, "/voice/tts/finished", 10
@@ -1910,6 +1960,156 @@ class TTSNode(Node):
         text = re.sub(r"<[^>]+>", "", ssml)
         return strip_markdown(text).strip()
 
+    def _on_avatar_tts_request(self, msg: String) -> None:
+        """ADR-0055 / issue #1993 — обработка запроса ТАРС в шлем.
+
+        Контракт сообщения — копия ``/voice/tts/request`` плюс обязательное
+        ``sink == "headset"``. Любой другой sink → ``_avatar_tts_error_pub``
+        с ``error="invalid_sink"`` и DROP (ADR-0055 §tts_node).
+
+        Дальше — почти полная копия ``dialogue_callback``: защита от
+        устаревшего dialogue_id (barge-in), Unicode-script guard (issue 1709),
+        генерация speech_id если не задан, передача в тот же bounded
+        ThreadPoolExecutor с дополнительным kwarg ``sink="headset"``.
+
+        Различия от ``dialogue_callback``:
+        * ``_avatar_tts_request_id`` обновляется при старте — для control_callback
+          (STOP через /avatar/tts/control видит, что есть активный запрос).
+        * Нет ``_on_set_provider`` / state-паблиша — это НЕ ``/voice/tts/*``,
+          для контроля провайдера есть существующий /voice/tts/set_provider.
+        * ``/voice/tts/finished`` всё равно публикуется (тот же топик) —
+          те же ``speech_id/dialogue_id/batch_*``, метрики и music_cleanup.
+        """
+        try:
+            chunk_data = json.loads(msg.data)
+        except (json.JSONDecodeError, TypeError) as exc:
+            self.get_logger().warn(
+                f"⚠️ [ADR-0055] /avatar/tts/request: bad JSON: {exc}"
+            )
+            return
+
+        # ADR-0055 §tts_node: единственный валидный sink на этом канале — headset.
+        sink = chunk_data.get("sink", "")
+        if sink != "headset":
+            self.get_logger().warn(
+                f"⚠️ [ADR-0055] /avatar/tts/request: invalid sink={sink!r} "
+                "(expected 'headset'), DROP"
+            )
+            self._publish_avatar_tts_error(
+                request_id=chunk_data.get("request_id", ""),
+                error="invalid_sink",
+            )
+            return
+
+        if "ssml" not in chunk_data:
+            self.get_logger().warn("⚠️ [ADR-0055] avatar chunk без SSML")
+            return
+
+        import uuid as _uuid
+
+        speech_id = chunk_data.get("speech_id", str(_uuid.uuid4()))
+
+        dialogue_id = chunk_data.get("dialogue_id", None)
+        # Защита от устаревшего dialogue (barge-in) — общий шаблон с
+        # dialogue_callback, см. там комментарий про issue #1563.
+        if dialogue_id and self.current_dialogue_id and dialogue_id != self.current_dialogue_id:
+            self.get_logger().warning(
+                f"❌ [ADR-0055] Отбрасываем устаревший avatar chunk "
+                f"dialogue_id={dialogue_id[:8]} (текущий: {self.current_dialogue_id[:8]})"
+            )
+            self._publish_tts_finished(
+                speech_id,
+                success=False,
+                error="stale_dialogue",
+                batch_id=chunk_data.get("batch_id"),
+                batch_index=chunk_data.get("batch_index"),
+                batch_total=chunk_data.get("batch_total"),
+                dialogue_id=dialogue_id,
+            )
+            return
+
+        if dialogue_id:
+            if self.current_dialogue_id and dialogue_id != self.current_dialogue_id:
+                self._interrupt_playback()
+            self.current_dialogue_id = dialogue_id
+
+        # Unicode-script guard (issue 1709) — общий с dialogue_callback.
+        if _tts_guard_should_skip(chunk_data.get("ssml", "")):
+            _report = _tts_guard_analyze(chunk_data.get("ssml", ""))
+            self.get_logger().warn(
+                f"🚫 [ADR-0055] avatar TTS пропущен — неподдерж. письменность: "
+                f"{_tts_guard_describe(_report)}, request_id="
+                f"{chunk_data.get('request_id', '')[:8]}"
+            )
+            self._publish_avatar_tts_error(
+                request_id=chunk_data.get("request_id", ""),
+                error="unsupported_script",
+            )
+            self._publish_tts_finished(
+                speech_id,
+                success=False,
+                error="unsupported_script",
+                batch_id=chunk_data.get("batch_id"),
+                batch_index=chunk_data.get("batch_index"),
+                batch_total=chunk_data.get("batch_total"),
+                dialogue_id=dialogue_id,
+            )
+            return
+
+        ssml = chunk_data.get("ssml", "")
+        ssml_attributes = self._parse_ssml_attributes(ssml)
+        batch_id = chunk_data.get("batch_id")
+        batch_index = chunk_data.get("batch_index")
+        batch_total = chunk_data.get("batch_total")
+        voice = chunk_data.get("voice")
+        language = chunk_data.get("language")
+
+        self.get_logger().info(
+            f"🎧 [ADR-0055] avatar TTS request: request_id="
+            f"{(chunk_data.get('request_id', '') or '')[:8]}, "
+            f"speech_id={speech_id[:8]}, voice={voice or 'default'}, "
+            f"text={chunk_data.get('text', '')!r}"
+        )
+        # Запоминаем текущий avatar-request_id — control_callback использует
+        # его, чтобы сбрасывать синтезирующийся worker при STOP.
+        self._avatar_tts_request_id = chunk_data.get("request_id")
+
+        # Тот же slot pool, что и для /voice/tts/request (BLK-9 fix).
+        self._submit_synthesis(
+            self._run_synthesis_worker,
+            speech_id,
+            ssml,
+            chunk_data.get("text", ""),
+            dialogue_id,
+            ssml_attributes,
+            speech_id,
+            batch_id,
+            batch_index,
+            batch_total,
+            voice=voice,
+            language=language,
+            sink="headset",
+        )
+
+    def _publish_avatar_tts_error(self, request_id: str, error: str) -> None:
+        """ADR-0055 / issue #1993 — публикация ошибки в ``/avatar/tts/error``.
+
+        Вызывается из ``_on_avatar_tts_request`` при DROP'е (invalid_sink,
+        unsupported_script и т.п.). Формат — тот же String JSON, что и
+        ``/voice/tts/finished`` для корреляции с request_id'ом.
+        """
+        try:
+            err_msg = String()
+            err_msg.data = json.dumps(
+                {"request_id": request_id, "error": error},
+                ensure_ascii=False,
+            )
+            self._avatar_tts_error_pub.publish(err_msg)
+        except Exception as exc:  # noqa: BLE001 — диагностика не должна падать
+            self.get_logger().warn(
+                f"⚠️ [ADR-0055] /avatar/tts/error publish failed: {exc}"
+            )
+
     def _parse_ssml_attributes(self, ssml: str) -> dict:
         """
         Извлекает атрибуты из SSML тегов (pitch, rate/speed, volume)
@@ -2126,6 +2326,12 @@ class TTSNode(Node):
         # AV-28 — язык произношения (тем же путём, что voice: через kwargs,
         # чтобы канонический positional arity остался прежним).
         language = kwargs.get("language", None)
+        # ADR-0055 / issue #1993 — sink маршрут аудио. "speaker" → ALSA-
+        # воспроизведение + /voice/audio/speech (старый путь, по умолчанию).
+        # "headset" → без ALSA, без /voice/audio/speech, только
+        # /avatar/tts/audio (ТАРС в шлем). Ключевое слово передаётся через
+        # kwargs, чтобы не ломать test_speech_id_arg_chain.
+        sink = kwargs.get("sink", "speaker")
         self._synthesize_and_play(
             ssml,
             text,
@@ -2138,6 +2344,7 @@ class TTSNode(Node):
             play_seq=play_seq,
             voice=voice,
             language=language,
+            sink=sink,
         )
 
     def _release_play_seq(self, play_seq: int | None) -> None:
@@ -2472,6 +2679,7 @@ class TTSNode(Node):
         play_seq: int = None,  # FIFO-gate slot, keyword-only at the call site
         voice: str = None,  # Issue #1219 — запрошенный LLM голос (Q6)
         language: str = None,  # AV-28 — язык произношения этой реплики
+        sink: str = "speaker",  # ADR-0055 / issue #1993 — "speaker"|"headset"
     ):
         """Синтез речи и воспроизведение.
 
@@ -2608,7 +2816,8 @@ class TTSNode(Node):
                         if self.minimax_streaming:
                             self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (streaming mode)...")
                             result = self._synthesize_minimax_streaming_publish(
-                                text, ssml_attributes, voice=_mm_voice, language=language
+                                text, ssml_attributes, voice=_mm_voice, language=language,
+                                sink=sink,
                             )
                         else:
                             self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (HTTP)...")
@@ -2865,9 +3074,15 @@ class TTSNode(Node):
             # опубликован до чтения следующего, поэтому полный буфер повторно
             # не отправляем. used_provider фиксирует, кто реально синтезировал
             # (после цепочки fallback'ов это может быть не self.provider).
+            # ADR-0055 / issue #1993 — sink="headset" → /avatar/tts/audio
+            # (ТАРС в шлем), без публикации в /voice/audio/speech. Иначе —
+            # старый путь в динамики робота через /voice/audio/speech.
             if not (used_provider == "minimax" and result.get("already_published", False)):
                 topic_audio = self._prepare_audio_for_topic(audio_np, sample_rate)
-                self._publish_audio(topic_audio)
+                if sink == "headset":
+                    self._publish_headset_audio(topic_audio)
+                else:
+                    self._publish_audio(topic_audio)
 
             # Issue #1229 — после успешного синтеза публикуем фактического
             # провайдера и голос: dialogue_node/mcp_server обновят контекст
@@ -2906,6 +3121,40 @@ class TTSNode(Node):
                     f"(было: {dialogue_id[:8]}..., сейчас: {self.current_dialogue_id[:8]}...)"
                 )
                 self.processing_dialogue_id = None
+                release = getattr(self, "_release_play_seq", None)
+                if release is not None:
+                    release(play_seq)
+                return
+
+            # ADR-0055 / issue #1993 — sink="headset" пропускает локальное
+            # ALSA-воспроизведение: оператор слышит аудио через шлем по
+            # /avatar/tts/audio. /voice/tts/finished всё равно публикуем
+            # (метрики/корреляция, тот же speech_id/dialogue_id/batch_*).
+            # STOP-check, dialogue-check и FIFO-gate выше — УЖЕ отработали.
+            if sink == "headset":
+                # Перед finished — сбросить processing_dialogue_id, иначе
+                # следующая реплика будет ждать вечно (как и для speaker-пути).
+                if dialogue_id and self.processing_dialogue_id == dialogue_id:
+                    self.processing_dialogue_id = None
+                self.get_logger().info(
+                    f"🎧 [ADR-0055] headset: TTS chunk готов "
+                    f"(оператор услышит через шлем), "
+                    f"speech_id={(speech_id or '')[:8]}, "
+                    f"duration={raw_duration_sec}s"
+                )
+                _publish_finished = getattr(self, "_publish_tts_finished", None)
+                if _publish_finished is not None:
+                    _publish_finished(
+                        speech_id,
+                        success=True,
+                        duration_sec=raw_duration_sec,
+                        batch_id=batch_id,
+                        batch_index=batch_index,
+                        batch_total=batch_total,
+                        batch_started_at=batch_started_at,
+                        dialogue_id=dialogue_id,
+                    )
+                # release FIFO — на headset-пути мы тоже прогнали gate.
                 release = getattr(self, "_release_play_seq", None)
                 if release is not None:
                     release(play_seq)
@@ -3774,6 +4023,7 @@ class TTSNode(Node):
     def _synthesize_minimax_streaming_publish(
         self, text: str, ssml_attributes: dict = None, voice: str = None,
         language: str = None,
+        sink: str = "speaker",  # ADR-0055 / issue #1993 — headset маршрут
     ) -> dict:
         """Sync-обёртка над :meth:`_stream_minimax_chunks` для streaming-режима MiniMax.
 
@@ -3818,7 +4068,12 @@ class TTSNode(Node):
                         audio_np,
                         chunk_sample_rate,
                     )
-                    self._publish_audio(topic_audio)
+                    # ADR-0055 / issue #1993 — headset маршрут: вместо
+                    # /voice/audio/speech публикуем в /avatar/tts/audio.
+                    if sink == "headset":
+                        self._publish_headset_audio(topic_audio)
+                    else:
+                        self._publish_audio(topic_audio)
 
                 if chunk.finish_reason == "stop":
                     break
@@ -3926,6 +4181,24 @@ class TTSNode(Node):
         msg.data = list(audio_int16.tobytes())
 
         self.audio_pub.publish(msg)
+
+    def _publish_headset_audio(self, audio_np: np.ndarray):
+        """ADR-0055 / issue #1993 — публикация синтезированной реплики ТАРС
+        в ``/avatar/tts/audio`` (int16 LE PCM, тот же SR, что ``/voice/audio/speech``).
+
+        Подписчик (quest_node) заберёт чанк и через
+        ``ws_server.deliver_audio(stream="operator_tts", ...)`` доставит
+        в шлем оператора. Динамики робота НЕ играют (sink=headset → ALSA
+        path skipped в ``_synthesize_and_play``).
+        """
+        audio_int16 = (
+            np.clip(audio_np, -1.0, 1.0) * 32767
+        ).astype("<i2", copy=False)
+
+        msg = AudioData()
+        msg.data = list(audio_int16.tobytes())
+
+        self._avatar_audio_pub.publish(msg)
 
     def _ensure_minimax_provider(self):
         """Return the MiniMax provider, constructing it exactly once.
