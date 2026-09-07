@@ -413,22 +413,32 @@ class TestCancellation:
             sched.shutdown()
 
     @pytest.mark.asyncio
-    async def test_cancel_running_task_is_noop_in_mvp(self):
-        """MVP cannot preempt a running task — it must run to completion.
+    async def test_cancel_running_task_preempts_via_event_bus(self):
+        """C2 (#1995): a RUNNING task is preempted via EventBus cancel.
 
-        This documents the Phase 1 limitation. Phase 2 wires the
-        :class:`SchedulerEventBus` for proper preemption. C2
-        (#1995, operator-agent 07) is the commit that flips this
-        test to ``test_cancel_running_task_preempts_via_event_bus``.
+        Phase 1 MVP returned ``False`` and let the executor run to
+        completion. Phase 2 (issue #968 §11.6, realised here in C2)
+        uses the scheduler-owned :class:`EventBus`: cancelling the
+        executor's :class:`asyncio.Task` raises
+        ``asyncio.CancelledError`` inside the coroutine, ``_pump``'s
+        existing handler flips the status to CANCELLED, and the
+        scheduler publishes a ``scheduler.cancel`` envelope on
+        :attr:`TaskScheduler.event_bus`.
         """
         sched = _make_scheduler()
         try:
             started = threading.Event()
 
-            async def slow(task: SchedulerTask) -> TaskResult:
+            async def slow(task: SchedulerTask) -> TaskResult:  # noqa: ARG001
                 started.set()
-                await asyncio.sleep(0.05)
-                return TaskResult(payload="ran")
+                try:
+                    await asyncio.sleep(0.5)
+                    return TaskResult(payload="ran")
+                except asyncio.CancelledError:
+                    # Realistic executor: honour cancellation, do not
+                    # swallow it; re-raise so _pump sees the right
+                    # status transition.
+                    raise
 
             t1 = sched.submit(SchedulerTask(
                 task_id="t1", tool="speak_text",
@@ -437,12 +447,28 @@ class TestCancellation:
             # Wait until the executor is in flight.
             while not started.is_set():
                 await asyncio.sleep(0.001)
+            assert t1.status is TaskStatus.RUNNING
+
+            # Subscribe to the EventBus BEFORE cancelling — we need to
+            # observe the scheduler.cancel envelope.
+            sub = sched.event_bus.subscribe("scheduler.cancel")
+
             cancelled = sched.cancel("t1")
-            assert cancelled is False, (
-                "MVP must not claim to have cancelled a running task"
+            assert cancelled is True, (
+                "Phase 2 (C2 #1995) must claim cancel of a RUNNING task"
             )
+
+            # _pump's CancelledError handler is async; let the loop
+            # settle.
             await sched.wait_all()
-            assert t1.status is TaskStatus.COMPLETED
+            assert t1.status is TaskStatus.CANCELLED
+
+            # Verify the cancel-event envelope was published.
+            envelope = await asyncio.wait_for(sub.get(), timeout=1.0)
+            assert envelope.topic == "scheduler.cancel"
+            assert envelope.payload["task_id"] == "t1"
+            assert envelope.payload["reason"] == "cancelled mid-flight"
+            sub.close()
         finally:
             sched.shutdown()
 

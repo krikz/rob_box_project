@@ -82,15 +82,13 @@ async def main() -> None:
   `stop_music` не может «обогнать» голос.
 - **Ошибка executor'а не роняет pump.** Исключение становится
   `FAILED` + `task.error`, следующая задача канала исполняется.
-- **Cancel для QUEUED.** Задача, которая ещё не попала в lock,
-  снимается через `sched.cancel(task_id)`. RUNNING-задачу MVP
-  не прерывает — это будет Phase 2 (`SchedulerEventBus`).
-- **EventBus на init.** Начиная с C1 (#1995, operator-agent 07),
-  `TaskScheduler.__init__` создаёт и экспонирует свой
-  `EventBus` как `sched.event_bus`. Шина живая, но пока
-  пустая — `cancel()` ещё не публикует туда события. C2
-  (#1995) превратит cancel() в preempt и начнёт слать
-  envelope `scheduler.cancel` в эту шину.
+- **Cancel QUEUED и RUNNING.** `sched.cancel(task_id)` снимает
+  ещё не стартовавшую задачу из очереди и **прерывает**
+  RUNNING-задачу через `EventBus` (Phase 2, #968 §11.6,
+  реализовано в C2 #1995): executor'у шлётся
+  `asyncio.CancelledError`, статус → CANCELLED, на шину
+  публикуется envelope `scheduler.cancel` для подписчиков
+  (reflex bridge, observability).
 - **`[CHANNELS]` snapshot.** `sched.channel_status(kind)` /
   `sched.all_statuses()` возвращают `ChannelStatus` с полями
   `queue_depth`, `current_task_id`, `current_tool`, `eta_s`. Phase 3
