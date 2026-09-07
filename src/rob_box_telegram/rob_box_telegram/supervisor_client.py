@@ -159,12 +159,29 @@ class Floor(str, Enum):
 
 
 # Имена сервисов/топиков. Должны совпадать с константами в rob_box_supervisor.
-# Сервисы объявлены без ведущего "/", потому что нода supervisor сидит в
-# namespace "/supervisor" (см. conftest supervisor-пакета + AV-12).
-SERVICE_ACQUIRE = "/supervisor/acquire_floor"
-SERVICE_RELEASE = "/supervisor/release_floor"
+#
+# Phase 2 (issue #2002): клиент ходит через ЕДИНЫЙ ``/supervisor/execute``
+# (ADR-0051 §2.1, ExecuteCommand.srv) и больше НЕ дёргает отдельные
+# ``AcquireFloor``/``ReleaseFloor`` сервисы — avatar_supvisor.execute()
+# проксирует их в avatar_arbiter (issue #1987, ADR-0051 §2.2).
+#
+# Старые ``/supervisor/acquire_floor`` / ``/supervisor/release_floor``
+# НЕ зарегистрированы (после Phase 1 split — avatar_arbiter владеет
+# LockManager, supervisor только execute) — клиент ТАМ висит на
+# ``wait_for_service`` timeout → ``supervisor_unavailable`` fallback.
+# Новая версия шлёт Command в ExecuteCommand и читает Response.
+SERVICE_ACQUIRE_LEGACY = "/supervisor/acquire_floor"  # НЕ зарегистрирован
+SERVICE_RELEASE_LEGACY = "/supervisor/release_floor"  # НЕ зарегистрирован
+# Актуальный шов (Phase 2 / issue #2002): rob_box_supervisor_msgs.srv.ExecuteCommand.
+SERVICE_EXECUTE = "/supervisor/execute"
 TOPIC_STATE = "/avatar/state"
 TOPIC_HEARTBEAT = "/teleop_heartbeat"
+
+# kind-значения для Command.msg (должны совпадать с
+# rob_box_supervisor_msgs/msg/Command.msg — uint8). Дублируем как
+# int-константы, чтобы supervisor_client.py не зависел от IDL на mock-стенде.
+_KIND_ACQUIRE_FLOOR: int = 1
+_KIND_RELEASE_FLOOR: int = 2
 
 
 # JSON-ключи ответа сервиса (W3-2 fix-shape, см. _acquire_floor_logic в
@@ -235,6 +252,45 @@ def _try_import_trigger():
         return None
 
 
+def _try_import_execute_command() -> Any:
+    """Ленивый импорт ``rob_box_supervisor_msgs.srv.ExecuteCommand``.
+
+    Возвращает ``None`` если IDL не собран / недоступен (CI mock-stend
+    без workspace). Клиент supervisor-а в этом случае работает в
+    fallback-режиме (``supervisor_unavailable`` → grant local, ADR-0018).
+    """
+    try:
+        from rob_box_supervisor_msgs.srv import ExecuteCommand as _Exc  # noqa: PLC0415
+
+        return _Exc
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _try_import_command_msg() -> Any:
+    """Ленивый импорт ``rob_box_supervisor_msgs.msg.Command``.
+
+    Используется для построения Command-payload в Phase 2 (issue #2002).
+    Если IDL недоступен, клиент падает в fallback (см. ADR-0018).
+    """
+    try:
+        from rob_box_supervisor_msgs.msg import Command as _Cmd  # noqa: PLC0415
+
+        return _Cmd
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _try_import_response_msg() -> Any:
+    """Ленивый импорт ``rob_box_supervisor_msgs.msg.Response``."""
+    try:
+        from rob_box_supervisor_msgs.msg import Response as _Resp  # noqa: PLC0415
+
+        return _Resp
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # ── Метрики (опциональные, см. observability.py) ──────────────────────
 def _record_metric(metric_id: str, **labels: str) -> None:
     """Один счётчик = одна функция-обёртка в observability.
@@ -265,9 +321,14 @@ class SupervisorClient:
     DEFAULT_MODE = "monitor"  # Phase 1 default — без active-супервизора
     DEFAULT_ACQUIRE_TIMEOUT_S = 0.5
     DEFAULT_HEARTBEAT_PERIOD_S = 0.1  # 10 Гц (ADR-0028 §4.4)
-    # Алиасы для обратной совместимости (SupervisorClient.SERVICE_ACQUIRE и т.п.)
-    SERVICE_ACQUIRE = SERVICE_ACQUIRE
-    SERVICE_RELEASE = SERVICE_RELEASE
+    # Алиасы для обратной совместимости (SupervisorClient.SERVICE_ACQUIRE и т.п.).
+    # ВНИМАНИЕ: ``SERVICE_ACQUIRE`` / ``SERVICE_RELEASE`` теперь указывают
+    # на LEGACY-имена, которые avatar_supervisor НЕ регистрирует после
+    # Phase 1 split (ADR-0051 §2.2) — клиент больше их НЕ использует.
+    # Реальный шов: ``SERVICE_EXECUTE`` (= ``/supervisor/execute``).
+    SERVICE_ACQUIRE = SERVICE_ACQUIRE_LEGACY
+    SERVICE_RELEASE = SERVICE_RELEASE_LEGACY
+    SERVICE_EXECUTE = SERVICE_EXECUTE
     TOPIC_STATE = TOPIC_STATE
     TOPIC_HEARTBEAT = TOPIC_HEARTBEAT
     SUPERVISOR_REQUIRED_DEFAULT = DEFAULT_SUPERVISOR_REQUIRED
@@ -302,8 +363,13 @@ class SupervisorClient:
         self._heartbeat_pub: Optional[Any] = None
 
         # ROS-клиенты сервисов (создаются лениво в active-режиме).
+        # Phase 2 (issue #2002): реально используем ТОЛЬКО _execute_client
+        # (ExecuteCommand.srv на /supervisor/execute) — supervisor.execute()
+        # проксирует в avatar_arbiter. Старые _acquire_client/_release_client
+        # оставлены для backward-compat в тестах (Phase 3 удалит).
         self._acquire_client: Optional[Any] = None
         self._release_client: Optional[Any] = None
+        self._execute_client: Optional[Any] = None
         self._client_lock = threading.Lock()
 
         # State subscribers
@@ -622,69 +688,63 @@ class SupervisorClient:
         # Heartbeat создаётся только когда держим teleop (см. start_heartbeat).
 
     def _ensure_clients(self) -> bool:
-        """Ленивое создание service-clients. Возвращает True если готовы.
+            """Ленивое создание service-clients. Возвращает True если готовы.
 
-        Если клиенты не удалось создать (нет rclpy, нет ``create_client``
-        у ноды, нет Trigger-типа) — возвращает ``False`` и caller должен
-        выбрать fallback/monitor-reжим через ``_supervisor_required``.
-        """
-        with self._client_lock:
-            if (
-                self._acquire_client is not None
-                and self._release_client is not None
-            ):
-                return True
+            Phase 2 (issue #2002): создаём ЕДИНЫЙ ``_execute_client`` для
+            ``/supervisor/execute`` (ExecuteCommand.srv). Старые
+            ``_acquire_client`` / ``_release_client`` для Trigger-сервисов
+            НЕ создаём — supervisor их больше не регистрирует (после
+            ADR-0051 §2.2 split — avatar_arbiter владеет LockManager,
+            supervisor только проксирует через execute).
 
-            Trigger = _try_import_trigger()
-            if Trigger is None:
-                # std_srvs недоступен — без Trigger-типа клиент
-                # не сможет сделать service-call. Это типичная ситуация
-                # для юнит-тестов вне CI-образа; в прод-коде std_srvs
-                # есть всегда.
-                return False
+            Если клиент не удалось создать (нет rclpy, нет IDL) — возвращает
+            ``False`` и caller должен выбрать fallback/monitor-режим через
+            ``_supervisor_required``.
+            """
+            with self._client_lock:
+                if self._execute_client is not None:
+                    return True
 
-            try:
-                if self._acquire_client is None:
-                    self._acquire_client = self._node.create_client(
-                        Trigger, self.SERVICE_ACQUIRE
+                ExecuteCommand = _try_import_execute_command()
+                if ExecuteCommand is None:
+                    # IDL не собран / не в PYTHONPATH — клиент не может
+                    # сделать service-call. Типичная ситуация для
+                    # юнит-тестов вне CI-образа; в прод-коде IDL есть всегда.
+                    return False
+
+                try:
+                    self._execute_client = self._node.create_client(
+                        ExecuteCommand, self.SERVICE_EXECUTE
                     )
-                if self._release_client is None:
-                    self._release_client = self._node.create_client(
-                        Trigger, self.SERVICE_RELEASE
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "SupervisorClient[%s] create_client(ExecuteCommand) failed: %r",
+                        self._client_id,
+                        exc,
                     )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "SupervisorClient[%s] create_client failed: %r",
-                    self._client_id,
-                    exc,
-                )
-                return False
-        return True
+                    return False
+            return True
 
     def _wait_for_services(self, timeout_s: float) -> bool:
-        """Подождать готовности обоих сервисов. Не блокирует executor.
+        """Подождать готовности единого ``/supervisor/execute`` сервиса.
 
-        Использует ``wait_for_service(timeout)`` — это polling-loop
-        внутри rclpy, который проверяет discovery-graph, **но не
-        вызывает** ``spin_until_future_complete`` на чужом executor.
-        Это та же стратегия, что в ``supervisor_node._set_dialogue_param``
-        (см. ADR-0028 §4.4 для wire-контракта).
+        Не блокирует executor: ``wait_for_service(timeout)`` — это
+        polling-loop внутри rclpy, который проверяет discovery-graph,
+        **но не вызывает** ``spin_until_future_complete`` на чужом
+        executor. Та же стратегия, что в
+        ``supervisor_node._set_dialogue_param`` (ADR-0028 §4.4).
         """
         try:
-            acquire_ok = bool(
-                self._acquire_client
-                and self._acquire_client.wait_for_service(timeout_s)
-            )
-            release_ok = bool(
-                self._release_client
-                and self._release_client.wait_for_service(timeout_s)
+            execute_ok = bool(
+                self._execute_client
+                and self._execute_client.wait_for_service(timeout_s)
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "SupervisorClient[%s] wait_for_service raised: %r", self._client_id, exc
             )
             return False
-        return acquire_ok and release_ok
+        return execute_ok
 
     def _on_state_msg(self, msg: Any) -> None:
         """Decode ``/avatar/state`` via the single codec in rob_box_supervisor.
@@ -782,19 +842,25 @@ class SupervisorClient:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("State listener raised: %r", exc)
 
-    # ── Service-call: acquire (Phase 2 / AV-15) ──────────────────────
+    # ── Service-call: acquire через /supervisor/execute (Phase 2, issue #2002) ──
+    #
+    # После ADR-0051 §2.2 avatar_supervisor.execute(Command) — единая
+    # точка входа; legacy ``/supervisor/acquire_floor`` НЕ зарегистрирован
+    # (avatar_arbiter владеет LockManager, supervisor только проксирует).
+    # Клиент шлёт ExecuteCommand с kind=KIND_ACQUIRE_FLOOR и читает
+    # Response{accepted, applied, reason, held_by}.
 
     def _acquire_via_service(
         self, floor: Floor, timeout_s: float
     ) -> AcquireResult:
-        """Реальный service-call ``AcquireFloor``.
+        """Sync-вызов ``/supervisor/execute`` (ExecuteCommand.srv).
 
-        Контракт вызова (W3-2, техдолг AV-5):
-        * ``Trigger.Request`` — пустой по стандарту, но мы кладём
-          ``client_id``/``floor`` в атрибуты **и** дублируем JSON-строкой
-          в ``request.data`` как fallback.
-        * ``Trigger.Response`` — ``success: bool``, ``message: JSON({...})``
-          с полями ``applied``, ``granted``, ``reason``, ``held_by``.
+        Контракт (issue #2002 ADR):
+        * ``ExecuteCommand.Request.command`` — Command.msg с
+          ``kind=KIND_ACQUIRE_FLOOR``, ``client_id``, ``floor``.
+        * ``ExecuteCommand.Response.response`` — Response.msg с полями
+          ``accepted``, ``applied``, ``reason``, ``held_by``,
+          ``contacted_service``, ``actual_mode``.
 
         Возврат соответствует ``AcquireResult`` (см. dataclass).
         """
@@ -813,31 +879,43 @@ class SupervisorClient:
             )
             return self._degrade_on_unavailable(floor, reason="wait_for_service_timeout")
 
-        Trigger = _try_import_trigger()
-        assert Trigger is not None  # иначе _ensure_clients вернул бы False
+        ExecuteCommand = _try_import_execute_command()
+        Command = _try_import_command_msg()
+        if ExecuteCommand is None or Command is None:
+            return self._degrade_on_unavailable(
+                floor, reason="execute_idl_unavailable"
+            )
 
-        request = Trigger.Request()
-        # Атрибуты — для будущего IDL (AV-5).
-        request.client_id = self._client_id  # type: ignore[attr-defined]
-        request.floor = floor.value  # type: ignore[attr-defined]
-        # Fallback JSON в request.data — для актуального сервера Trigger.
-        request.data = json.dumps(  # type: ignore[attr-defined]
-            {"client_id": self._client_id, "floor": floor.value},
-            ensure_ascii=False,
-        )
+        try:
+            command_obj = Command()
+            command_obj.kind = _KIND_ACQUIRE_FLOOR  # type: ignore[attr-defined]
+            command_obj.client_id = self._client_id  # type: ignore[attr-defined]
+            command_obj.floor = floor.value  # type: ignore[attr-defined]
+
+            request = ExecuteCommand.Request()
+            request.command = command_obj  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SupervisorClient[%s] build ExecuteCommand(acquire) failed: %r",
+                self._client_id,
+                exc,
+            )
+            return self._degrade_on_unavailable(
+                floor, reason="execute_request_build_failed"
+            )
 
         # Делаем call_async и ждём через Event.wait — handler-поток
         # (asyncio-loop telegram) не блокирует rclpy executor другой ноды,
         # потому что callback-и rclpy ставят Event из своего потока, а
-        # мы ждём в asyncio-loop, не в rclpy. Это та же стратегия,
-        # что supervisor_node._set_dialogue_param (ADR-0028 §4.4).
+        # мы ждём в asyncio-loop, не в rclpy. Та же стратегия, что в
+        # supervisor_node._set_dialogue_param (ADR-0028 §4.4).
         event = threading.Event()
 
         try:
-            future = self._acquire_client.call_async(request)
+            future = self._execute_client.call_async(request)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "SupervisorClient[%s] call_async(acquire) raised: %r",
+                "SupervisorClient[%s] call_async(execute) raised: %r",
                 self._client_id,
                 exc,
             )
@@ -876,7 +954,7 @@ class SupervisorClient:
             )
 
         resp = local_result["resp"]
-        result, granted = self._parse_acquire_response(resp, floor)
+        result, granted = self._parse_execute_response(resp, floor, kind_hint="acquire")
         # В ответе сервиса есть granted → обновляем метрику и состояние.
         if granted:
             self._record_held(floor)
@@ -894,48 +972,90 @@ class SupervisorClient:
             )
         return result
 
-    def _parse_acquire_response(
-        self, resp: Any, floor: Floor
+    def _parse_execute_response(
+        self, resp: Any, floor: Floor, *, kind_hint: str
     ) -> tuple[AcquireResult, bool]:
-        """Парсит Trigger.Response в ``AcquireResult``. Возвращает (result, granted).
+        """Парсит ``ExecuteCommand.Response`` в ``AcquireResult``.
 
-        Совместим со всеми вариантами ответа серверной стороны
-        (см. rob_box_supervisor.supervisor_node._on_acquire_floor /
-        _fill_floor_response):
-        * ``response.success=False`` — service вообще не пришёл / упал;
-        * ``response.message`` — JSON со всеми или частью ключей
-          ``granted``/``applied``/``reason``/``held_by``.
+        Возвращает ``(result, granted)`` — семантика ``granted`` теперь
+        означает «arbiter реально выдал floor клиенту» (для acquire) или
+        «release принят» (для release; granted=True здесь отражает
+        applied=True без ошибки).
+
+        Для ``kind_hint="acquire"`` — granted=true если ``response.applied
+        AND response.held_by == client_id``. Для ``kind_hint="release"`` —
+        granted=true если ``response.applied``.
+
+        Структура ответа (rob_box_supervisor_msgs/msg/Response.msg):
+        * ``accepted: bool`` — supervisor принял запрос (true даже в monitor)
+        * ``applied: bool`` — реально выполнено (false в monitor)
+        * ``reason: string`` — машинный код причины
+        * ``held_by: string`` — текущий держатель (для acquire/release)
+        * ``contacted_service: string`` — имя arbiter-сервиса
+        * ``actual_mode: string`` — текущий режим (для set_avatar_mode)
         """
-        success = bool(getattr(resp, "success", False))
-        raw_message = getattr(resp, "message", "") or ""
+        # ExecuteCommand.Response.response — nested Response-msg.
+        # На IDL — ``response.response.accepted``; на mock-stend — то же.
+        outer = getattr(resp, "response", resp)
+        accepted = bool(getattr(outer, "accepted", False))
+        applied = bool(getattr(outer, "applied", False))
+        reason_raw = getattr(outer, "reason", "") or ""
+        reason = str(reason_raw) if isinstance(reason_raw, str) else ""
+        held_by_raw = getattr(outer, "held_by", "") or ""
+        held_by = (
+            str(held_by_raw) if isinstance(held_by_raw, str) and held_by_raw else ""
+        )
 
-        body: Dict[str, Any] = {}
-        if raw_message:
-            try:
-                parsed = json.loads(raw_message)
-                if isinstance(parsed, dict):
-                    body = parsed
-            except (json.JSONDecodeError, TypeError):
-                # Серверная сторона может положить в message что угодно
-                # (например, упрощённый Trigger-ответ для совместимости);
-                # не валим, продолжаем с пустым body.
-                pass
-
-        granted = bool(body.get(_RESP_GRANTED, success))
-        applied = body.get(_RESP_APPLIED, granted)
-        reason = str(body.get(_RESP_REASON, "") or "")
-        held_by = body.get(_RESP_HELD_BY)
-
-        if not applied and not success:
-            # Сервис сообщил «не применил» (например, supervisor в monitor-режиме).
+        if not accepted:
             return (
                 AcquireResult(
                     granted=False,
-                    denied_reason=REASON_MONITOR,
+                    denied_reason=reason or "execute_rejected",
                     contacted_service=True,
                 ),
                 False,
             )
+
+        if not applied:
+            # Supervisor принял, но не применил (монитор-режим,
+            # arbiter_unavailable, mode_conflict и т.п.).
+            return (
+                AcquireResult(
+                    granted=False,
+                    denied_reason=reason or REASON_MONITOR,
+                    held_by=held_by or None,
+                    contacted_service=True,
+                ),
+                False,
+            )
+
+        # applied=True → granted-семантика зависит от kind.
+        if kind_hint == "release":
+            return (
+                AcquireResult(
+                    granted=True,
+                    denied_reason=reason or "released",
+                    contacted_service=True,
+                ),
+                True,
+            )
+        # acquire: granted=true если held_by совпадает с нашим client_id
+        # (arbiter реально выдал floor нам) или если reason содержит
+        # «granted». Иначе (held_by=другой) — это «уже держит другой».
+        acquire_granted = (
+            held_by == self._client_id
+            or "granted" in reason.lower()
+            or not held_by
+        )
+        return (
+            AcquireResult(
+                granted=acquire_granted,
+                denied_reason="" if acquire_granted else reason,
+                held_by=held_by or None,
+                contacted_service=True,
+            ),
+            acquire_granted,
+        )
 
         if granted:
             return (
@@ -965,26 +1085,42 @@ class SupervisorClient:
         )
 
     def _release_via_service(self, floor: Floor) -> None:
-        """Реальный release через service. Best-effort, ошибку логируем."""
+        """Release через ``/supervisor/execute`` (Phase 2, issue #2002).
+
+        Best-effort: ошибку логируем. Если клиент или IDL недоступны —
+        тихо выходим (release в fallback-режиме означает «локально
+        забыли», что supervisor позже всё равно увидит по
+        истечению heartbeat-dead-man).
+        """
         if _try_import_rclpy() is None or not self._ensure_clients():
             return
 
-        Trigger = _try_import_trigger()
-        assert Trigger is not None
-
-        request = Trigger.Request()
-        request.client_id = self._client_id  # type: ignore[attr-defined]
-        request.floor = floor.value  # type: ignore[attr-defined]
-        request.data = json.dumps(  # type: ignore[attr-defined]
-            {"client_id": self._client_id, "floor": floor.value},
-            ensure_ascii=False,
-        )
+        ExecuteCommand = _try_import_execute_command()
+        Command = _try_import_command_msg()
+        if ExecuteCommand is None or Command is None:
+            return
 
         try:
-            future = self._release_client.call_async(request)
+            command_obj = Command()
+            command_obj.kind = _KIND_RELEASE_FLOOR  # type: ignore[attr-defined]
+            command_obj.client_id = self._client_id  # type: ignore[attr-defined]
+            command_obj.floor = floor.value  # type: ignore[attr-defined]
+
+            request = ExecuteCommand.Request()
+            request.command = command_obj  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "SupervisorClient[%s] build ExecuteCommand(release) failed: %r",
+                self._client_id,
+                exc,
+            )
+            return
+
+        try:
+            future = self._execute_client.call_async(request)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "SupervisorClient[%s] release call_async failed: %r",
+                "SupervisorClient[%s] release call_async(execute) failed: %r",
                 self._client_id,
                 exc,
             )
