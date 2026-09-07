@@ -890,7 +890,10 @@ class TTSNode(Node):
         # Контракт: String JSON {request_id, text, streaming:bool, done:bool}.
         # streaming=true пока TTS ещё не закончил, done=true при публикации
         # последнего чанка. TARS 1 на клиенте склеивает чанки в строки.
-        self.declare_parameter("tars1_text_topic", "/tars1/text")
+        # Топик зашит константой (не параметром) — чтобы не плодить
+        # CC-budget-нагрузку на __init__ (ADR-0021): смена топика
+        # не предполагается, dispatch делается через топик-неймспейс ROS.
+        self._tars1_text_topic: str = "/tars1/text"
 
         # Synthesis worker pool (BLK-9 fix).
         #
@@ -1310,13 +1313,7 @@ class TTSNode(Node):
         # текстовая панель в Captain Bridge показывала тот же текст, что
         # идёт в динамик шлема.
         self._tars1_text_pub = self.create_publisher(
-            String, self.tars1_text_topic, 10
-        )
-        # Привязка параметра к атрибуту (см. паттерн для остальных
-        # avatar_*-topic параметров выше: они читаются через
-        # self.<attr> напрямую).
-        self.tars1_text_topic: str = str(
-            self.get_parameter("tars1_text_topic").value or "/tars1/text"
+            String, self._tars1_text_topic, 10
         )
         self._avatar_tts_control_sub = self.create_subscription(
             String, self.avatar_control_topic, self.control_callback, 10

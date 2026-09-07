@@ -137,7 +137,6 @@ export function createTars2MetricsPanel(
       ctx!.fillStyle = "#e6edf3";
       ctx!.font = `${fontSize}px monospace`;
       const urlY = 48;
-      const maxWidth = canvasWidth - 16;
       const host = parseUrlHost(currentUrl);
       const path = parseUrlPath(currentUrl);
       ctx!.fillText(host, 8, urlY);
