@@ -207,6 +207,15 @@ EXPECTED=(
     # kanban-retro-create.sh (дедуп по key). Регистрация cron-job —
     # в ensure_nightly_review_cron ниже.
     agent-flow-nightly-review.sh
+    # Decomposed-children wake-up watchdog (ADR-0052, nightly-review
+    # t_bfd19ffb): no-agent job, каждые 4ч сканирует task_events.kind=
+    # 'decomposed' и для детей со started_at=NULL, status ∈ {todo,triage},
+    # decomposed >24ч назад — пишет ОДИН marker-коммент + priority += 1
+    # (компенсирует баг «17/20 decomposed-рутов без task_links», из-за
+    # которого dispatcher не поднимает детей). НЕ reassign, НЕ unblock,
+    # НЕ создаёт карточки. Регистрация cron-job — в
+    # ensure_decomposed_watchdog_cron ниже.
+    agent-flow-decomposed-watchdog.sh
     # Доставка repo-скиллов (.agents/skills) в профили воркеров (ретро
     # 05.09): af_skill_for_profile() маппит тип задачи (bug/feature/refactor)
     # на repo-скиллы, но без доставки профили их не видят. Вызывается из
@@ -838,6 +847,26 @@ ensure_nightly_review_cron() {
 ensure_nightly_review_cron
 
 echo
+echo "==> Ensure cron job registration: decomposed-children wake-up watchdog (ADR-0052, ретро t_bfd19ffb)"
+# Проблема (ADR-0052 §1.1): декомпозиция эпика через kanban create оставляет
+# детей со started_at=NULL, status=todo/triage, и dispatcher их не поднимает
+# (17/20 последних decomposed-рутов не имеют записей в task_links — системный
+# баг). Эпики висят мёртвым грузом (232ч на AV-11, 100ч на AV-27), Шифу
+# узнаёт только из ретро.
+#
+# Решение: ensure_decomposed_watchdog_cron() — идемпотентная функция,
+# регистрирующая interval-job (every 4h — компромисс между свежестью и
+# нагрузкой; decomposed-алерт не hot-path) в devops-профиле, no_agent
+# (скрипт = watchdog). Дубль-guard по (script + interval + enabled).
+# Каждый тик сканирует все kanban-доски, для match'нутых детей пишет ОДИН
+# marker-коммент в task_comments (idempotent через today_start_utc) и
+# делает priority += 1 через прямой UPDATE.
+ensure_decomposed_watchdog_cron() {
+    ensure_cron_job devops "Agent Flow Decomposed Watchdog (ADR-0052)" "agent-flow-decomposed-watchdog.sh" "every 4h" interval
+}
+ensure_decomposed_watchdog_cron
+
+echo
 echo "==> md5sum verify: 6 copies of process-launcher / watchdog scripts are byte-identical (retro 25.08 t_24e645e7, extended 01.09 t_a3ba921e)"
 # Проблема (ретро 25.08): agent-flow-*-launcher/watchdog раскладывается в N
 # копий (agent-flow/, devops/, architect/, backend/, analyst/, + legacy
@@ -898,6 +927,7 @@ _WATCHDOG_LAUNCHER_FILES=(
     padavan-step4-voice-smoke.sh
     agent-flow-blocked-watchdog-scope.sh
     agent-flow-nightly-review.sh
+    agent-flow-decomposed-watchdog.sh
 )
 
 _md5_verify_fail=0
