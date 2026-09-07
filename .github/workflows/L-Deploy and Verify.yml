@@ -408,10 +408,7 @@ jobs:
              docker rm -f voice-resources-init 2>/dev/null || true; \
              docker network rm vision_default 2>/dev/null || true; \
              docker container prune -f 2>/dev/null || true; \
-             docker compose up -d --force-recreate --pull never && \
-             echo '>> retro t_6392542c #2095: voice_init_wait — fix race after Exit voice-resources-init' && \
-             bash ~/rob_box_project/scripts/agent_flow/voice_init_wait.sh --wait 10 || \
-                echo '!! voice_init_wait failed — race may re-occur (deploy still considered successful at this point)'"
+             docker compose up -d --force-recreate --pull never"
 
       # ==================== MAIN PI DEPLOYMENT ====================
 
