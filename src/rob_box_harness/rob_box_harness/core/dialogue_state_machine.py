@@ -7,8 +7,8 @@ The state machine tracks voice-dialogue lifecycle:
 
 It is **pure** — no I/O, no ROS2, no LLM, no async. Immediately
 testable with plain pytest. Designed as a composable building block
-that :class:`DialogHarness` owns and drives via ``on_event`` /
-``on_user_input``.
+that :class:`~rob_box_harness.core.agent_core.AgentCore` owns and
+drives via ``on_event`` / ``on_user_input``.
 
 The existing ``rob_box_voice.core.dialogue_manager.DialogueManager``
 is NOT modified — this is a parallel implementation for the harness
@@ -79,11 +79,10 @@ class DialogueEvent(Enum):
 class DialogState:
     """Runtime state bag for the dialog harness.
 
-    This is the ``StateT`` parameter passed to ``Harness[DialogState]``.
-    It holds all the mutable fields that ``DialogHarness.step()``
-    reads and writes during a single conversation turn.
+    It holds all the mutable fields that ``AgentCore`` reads and writes
+    during a single conversation turn.
 
-    The fields are intentionally flat — the harness can snapshot
+    The fields are intentionally flat — the caller can snapshot
     and restore these easily. Do NOT store ROS2 handles, LLM clients,
     or other I/O objects here.
     """
