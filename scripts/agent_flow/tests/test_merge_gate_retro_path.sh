@@ -26,6 +26,14 @@
 # ============================================================================
 set -euo pipefail
 
+# Ретро 07.09: mergedAt фикстуры должны быть внутри 14-дневного окна скрипта
+# (RETRO_MERGED_DAYS). Раньше были hardcoded `2026-08-...` — после
+# 2026-08-24 они все выпадали из окна и тесты массово падали как
+# stale-fixture. Считаем дату один раз при старте: now-7d (внутри окна
+# с запасом), now-21d (выходит за окно → тест F).
+RECENT_MERGED_AT="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+OLD_MERGED_AT="$(date -u -d '21 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+
 TEST_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/mock_env.sh
 . "$TEST_LIB_DIR/lib/mock_env.sh"
@@ -57,7 +65,7 @@ fixture_retro() {  # $1=issue $2=pr $3=head $4=mergedAt
 # ===========================================================================
 test_A_retro_e2e_pass_closes() {
     new_test
-    fixture_retro 1138 1143 'z-devops/t_4e592534-e2e-validator-fix' '2026-08-12T14:14:05Z'
+    fixture_retro 1138 1143 'z-devops/t_4e592534-e2e-validator-fix' ${RECENT_MERGED_AT}
 
     run_merge_gate
     local journal
@@ -91,7 +99,7 @@ test_B_retro_ci_only_green_closes() {
     new_test
     local issue=1139 pr=1142 head='z-devops/t_cd9ea383-sha-tags-no-commit'
     set_state ISSUE_LIST_JSON '[]'
-    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix(ci): SHA-теги (#${issue})\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-12T14:14:40Z\"}]"
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix(ci): SHA-теги (#${issue})\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"${RECENT_MERGED_AT}\"}]"
     set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[]}'
     set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
     set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
@@ -124,7 +132,7 @@ test_C_retro_no_evidence_labels_needs_e2e() {
     new_test
     local issue=2001 pr=2002 head='z-devops/t_2001-no-evidence'
     set_state ISSUE_LIST_JSON '[]'
-    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix #${issue} unverified\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-12T14:14:40Z\"}]"
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix #${issue} unverified\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"${RECENT_MERGED_AT}\"}]"
     set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[]}'
     set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
     set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
@@ -158,7 +166,7 @@ test_D_retro_skips_labeled_issue() {
     new_test
     local issue=2003 pr=2004 head='z-devops/t_2003-labeled'
     set_state ISSUE_LIST_JSON '[]'
-    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix #${issue} labeled\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-12T14:14:40Z\"}]"
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix #${issue} labeled\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"${RECENT_MERGED_AT}\"}]"
     set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"needs-e2e"}]}'
     set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
     set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
@@ -189,7 +197,7 @@ test_E_retro_skips_closed_issue() {
     new_test
     local issue=2005 pr=2006 head='z-devops/t_2005-closed'
     set_state ISSUE_LIST_JSON '[]'
-    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix #${issue} closed\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-12T14:14:40Z\"}]"
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix #${issue} closed\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"${RECENT_MERGED_AT}\"}]"
     set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[]}'
     set_state "ISSUE_${issue}_STATE_JSON" '{"state":"CLOSED"}'
     set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
@@ -246,7 +254,7 @@ test_G_retro_ignores_self_reference() {
     set_state ISSUE_LIST_JSON '[]'
     # В body PR упоминает СВОЙ номер (#1142) и #1139. Должен обработаться
     # только #1139 (self-reference #1142 отфильтрован).
-    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix(ci): SHA tags (#${issue})\",\"body\":\"PR: #${pr}\\ncloses #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-12T14:14:40Z\"}]"
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix(ci): SHA tags (#${issue})\",\"body\":\"PR: #${pr}\\ncloses #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"${RECENT_MERGED_AT}\"}]"
     set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[]}'
     set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
     set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
@@ -275,7 +283,7 @@ test_H_retro_rejected_ci_only_green_closes() {
     new_test
     local issue=1041 pr=1161 head='z-{agent}/1041-fix-l-build-dockertag-clean'
     set_state ISSUE_LIST_JSON '[]'
-    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix(ci #${issue}): DOCKER_TAG=latest для refs/tags/v*\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-12T16:45:52Z\"}]"
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix(ci #${issue}): DOCKER_TAG=latest для refs/tags/v*\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"${RECENT_MERGED_AT}\"}]"
     # issue имеет hermes + e2e:rejected (как #1041) — ретро-путь должен
     # обработать её через PASS-доказательство, а не скипнуть.
     set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"e2e:rejected"}]}'
@@ -319,7 +327,7 @@ test_I_retro_rejected_no_evidence_no_loop() {
     new_test
     local issue=3001 pr=3002 head='z-devops/t_3001-rejected-no-evidence'
     set_state ISSUE_LIST_JSON '[]'
-    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix #${issue} rejected unverified\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-12T14:14:40Z\"}]"
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix #${issue} rejected unverified\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"${RECENT_MERGED_AT}\"}]"
     set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"e2e:rejected"}]}'
     set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
     set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
@@ -360,7 +368,7 @@ test_J_retro_pr_number_not_closed() {
     # merged PR #1186 ссылается на #1172 (это PR!) и #1138 (это issue).
     local pr=1186 issue=1138 pr_ref=1172 head='z-devops/t_1186-merge-gate-idempotency'
     set_state ISSUE_LIST_JSON '[]'
-    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix(agent-flow merge-gate #${pr_ref}/#${issue}): recovery-карточка done блокирует\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-12T22:35:51Z\"}]"
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix(agent-flow merge-gate #${pr_ref}/#${issue}): recovery-карточка done блокирует\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"${RECENT_MERGED_AT}\"}]"
     # #1172 — это PR (существует как pull request) → guard должен скипнуть.
     set_state "PR_EXISTS_${pr_ref}" "1"
     # #1138 — обычный issue без меток, e2e PASS на ветке merged PR.
@@ -403,7 +411,7 @@ test_K_retro_skips_needs_review_issue() {
     new_test
     local issue=942 pr=1106 head='z-{agent}/1106-rap-fix'
     set_state ISSUE_LIST_JSON '[]'
-    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix #${issue} rap\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-10T12:00:00Z\"}]"
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix #${issue} rap\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"${RECENT_MERGED_AT}\"}]"
     # issue под ревью юзера: needs-review БЕЗ needs-e2e.
     set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"needs-review"}]}'
     set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
@@ -444,7 +452,7 @@ test_L_retro_issue_942_not_skipped_by_guard() {
     new_test
     local issue=942 pr=1192 head='wt/t_de63be1f-detect-pr-kind'
     set_state ISSUE_LIST_JSON '[]'
-    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix(agent-flow t_de63be1f): detect_pr_kind — 'fix(agent-flow' → lint; взаимоисключение needs-review/needs-e2e (#${issue})\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-13T06:20:33Z\"}]"
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix(agent-flow t_de63be1f): detect_pr_kind — 'fix(agent-flow' → lint; взаимоисключение needs-review/needs-e2e (#${issue})\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"${RECENT_MERGED_AT}\"}]"
     # #942 — НЕ PR: PR_EXISTS_942 не задан → gh api pulls/942 должен дать 404.
     set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[]}'
     set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
@@ -491,7 +499,7 @@ test_M_retro_hermes_process_fix_hermes_plans_closes() {
     new_test
     local issue=1404 pr=1414 head='z-architect/t_e068b88f-process-review'
     set_state ISSUE_LIST_JSON '[]'
-    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"wip(process #1404): roadmap re-check при reopen\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-18T16:56:43Z\"}]"
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"wip(process #1404): roadmap re-check при reopen\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"${RECENT_MERGED_AT}\"}]"
     # hermes + process + refactor (без needs-e2e/e2e-done/no-e2e-required/needs-review)
     set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"process"},{"name":"hermes"},{"name":"task"},{"name":"refactor"}]}'
     set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
@@ -529,7 +537,7 @@ test_N_retro_hermes_process_fix_scripts_closes() {
     new_test
     local issue=1421 pr=1425 head='z-devops/t_8d6b7268-fix-scenario-file'
     set_state ISSUE_LIST_JSON '[]'
-    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix(agent-flow e2e #1421): scenario_file\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-18T17:51:37Z\"}]"
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix(agent-flow e2e #1421): scenario_file\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"${RECENT_MERGED_AT}\"}]"
     # hermes + bug + process + priority:high (без workflow-меток)
     set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"bug"},{"name":"priority:high"},{"name":"process"},{"name":"hermes"},{"name":"agent:devops"},{"name":"e2e"}]}'
     set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
@@ -561,7 +569,7 @@ test_O_retro_hermes_with_needs_e2e_still_skips() {
     new_test
     local issue=1421 pr=1425 head='z-devops/t_8d6b7268-fix-scenario-file'
     set_state ISSUE_LIST_JSON '[]'
-    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix #1421\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-18T17:51:37Z\"}]"
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix #1421\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"${RECENT_MERGED_AT}\"}]"
     # hermes + needs-e2e (активный e2e-цикл)
     set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"hermes"},{"name":"needs-e2e"}]}'
     set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
@@ -601,7 +609,7 @@ test_P_retro_hermes_non_ci_only_labels_needs_e2e() {
     new_test
     local issue=1412 pr=1430 head='z-devops/t_79e9417c-startup-greeting'
     set_state ISSUE_LIST_JSON '[]'
-    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"wip(process #1428): investigation report + ADR-0022\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-08-18T18:13:27Z\"}]"
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"wip(process #1428): investigation report + ADR-0022\",\"body\":\"closes #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"${RECENT_MERGED_AT}\"}]"
     # hermes + voice + task (без workflow-меток) — PR #1430 docs/, CI-only,
     # этот тест — для гипотетического случая функционального PR с hermes
     set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"voice"},{"name":"hermes"},{"name":"task"}]}'
@@ -631,93 +639,156 @@ test_P_retro_hermes_non_ci_only_labels_needs_e2e() {
 }
 
 # ===========================================================================
-# Q. (issue #2069) Голое #N ТОЛЬКО в теле PR, без closing-keyword и без
-#    номера в заголовке → issue не трогаем вообще: ни close, ни needs-e2e.
-#    Регрессия на реальный случай: PR #2047 в секции «Зависимости / blockers»
-#    писал «#1996 ... ОТКРЫТ», и ретро-путь закрыл #1996 как COMPLETED.
+# Q. (07.09 #2069): голое #N в title/body НЕ считается closing-ref. Реальный
+#    инцидент: PR #2047 (docs-only ADR) имел в body "#1996 ОТКРЫТ" в блоке
+#    «Зависимости» — старый парсер извлекал ВСЕ #N → retro-path закрывал
+#    #1996 как COMPLETED. Новый парсер требует GitHub closing-keyword
+#    (closes/fixes/resolves/...) перед #N. Голое "#N" → no PASS-evidence
+#    → needs-e2e (или skip, если уже labeled).
 # ===========================================================================
-test_Q_retro_body_only_mention_not_closed() {
+test_Q_retro_bare_hash_no_close() {
     new_test
-    local issue=1996 pr=2047 head='wt/t_201e2c64'
+    local issue=1996 pr=2047 head='z-{agent}/2069-bug-process-retro-path'
     set_state ISSUE_LIST_JSON '[]'
-    # Заголовок ссылается на ДРУГУЮ карточку (#2003); #1996 — только в теле,
-    # и там прямым текстом сказано, что карточка ОТКРЫТА и блокирует.
-    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"design: pregenerate contract (ADR-0056, issue #2003)\",\"body\":\"## Зависимости / blockers\\n- **#${issue} ([operator-agent 07a]) ОТКРЫТ** — priority в tts_node.\\n\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-09-07T11:20:00Z\"}]"
-    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[]}'
-    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
-    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    # body: голое "#1996" в "Зависимости" — без closing-keyword.
+    # (точная репродукция из issue #2069, блок «Зависимости»)
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"docs(adr): 0056 operator-agent architecture\",\"body\":\"## Зависимости / blockers\\n- **#1996 ([operator-agent 07a]) ОТКРЫТ** — priority в tts_node. Реализация ждёт.\\n- **#2003 ([operator-agent 13]) pregenerate — ЭТО КОНТРАКТ**.\\n\",\"headRefName\":\"${head}\",\"mergedAt\":\"${RECENT_MERGED_AT}\"}]"
+    # type:functional issue (как #1996)
+    set_state "ISSUE_${issue}_LABELS_JSON" '{\"labels\":[{\"name\":\"agent-flow\"},{\"name\":\"agent:devops\"},{\"name\":\"priority:high\"},{\"name\":\"type:functional\"},{\"name\":\"type:operator-agent\"},{\"name\":\"task\"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{\"state\":\"OPEN\"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{\"comments\":[]}'
     set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
     set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
-    set_state "RUN_LIST_${head}_JSON" '[{"conclusion":"success"}]'
+    set_state "RUN_LIST_${head}_JSON" '[{\"conclusion\":\"success\"}]'  # даже e2e PASS — close не должно сработать без closing-keyword
+    # docs-only: один .md файл (как PR #2047)
+    set_state "PR_${pr}_FILES_JSON" '{\"files\":[{\"path\":\"docs/adr/0056-operator-agent-architecture.md\"}]}'
+    set_state "PR_${pr}_ROLLUP_JSON" '{\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}]}'
     set_state PR_LIST_ALL_OPEN_JSON '[]'
     set_state PR_FOLLOWUP_JSON '[]'
-    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+    set_state RATE_LIMIT_JSON '{\"resources\":{\"core\":{\"remaining\":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    # 1. НЕТ closing-refs → retro-path НЕ вызывает gh issue close для #1996.
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
+    assert_eq "0" "$close_calls" "bare '#N' без closing-keyword не закрывает issue (ретро 07.09 #2069)"
+
+    # 2. НЕТ retro-path комментария (доказательства закрытия).
+    local retro_comment
+    retro_comment="$(printf '%s\n' "$journal" | grep -c '✅ ретро-путь' || true)"
+    assert_eq "0" "$retro_comment" "no retro-path evidence comment (no closing-keyword found)"
+}
+
+# ===========================================================================
+# R. (07.09 #2069): секции «Зависимости / Blockers / Refs / Связанное»
+#    исключаются целиком — даже если там есть "closes #N" по тексту, это
+#    reference, а не закрытие. Регрессия-guard: разработчик мог случайно
+#    написать «closes #1996 после merge 7a» в блоке blockers — формально
+#    GitHub бы это зачёл, но мы тут строже скрипта (safety-net).
+# ===========================================================================
+test_R_retro_blocker_section_ignored() {
+    new_test
+    local issue=1996 pr=2047 head='z-{agent}/2069-blocker-section'
+    set_state ISSUE_LIST_JSON '[]'
+    # body: «closes #1996» в секции «Blockers» (исключение). Вне секции —
+    # ничего нет. Итого: closing-refs для #1996 НЕ должно быть.
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"docs(adr): 0056\",\"body\":\"## Blockers\\n- closes #1996 — ждём реализацию tts_node.\\n\\n## Связанное\\n- resolves #2003 — контракт готов.\\n\",\"headRefName\":\"${head}\",\"mergedAt\":\"${RECENT_MERGED_AT}\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{\"labels\":[{\"name\":\"type:functional\"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{\"state\":\"OPEN\"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{\"comments\":[]}'
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    set_state "RUN_LIST_${head}_JSON" '[{\"conclusion\":\"success\"}]'
+    set_state "PR_${pr}_FILES_JSON" '{\"files\":[{\"path\":\"docs/adr/0056-operator-agent-architecture.md\"}]}'
+    set_state "PR_${pr}_ROLLUP_JSON" '{\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}]}'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{\"resources\":{\"core\":{\"remaining\":5000}}}'
 
     run_merge_gate
     local journal
     journal="$(cat "$GH_JOURNAL")"
 
     local close_calls
-    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue}" || true)"
-    assert_eq "0" "$close_calls" "body-only mention does not close the issue (#2069)"
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
+    assert_eq "0" "$close_calls" "closing-keyword в секции «Blockers» НЕ считается закрытием"
 
+    # #2003 (resolves в «Связанное») тоже НЕ закрыт.
+    local close_2003
+    close_2003="$(printf '%s\n' "$journal" | grep -c "gh issue close 2003 --reason completed" || true)"
+    assert_eq "0" "$close_2003" "closing-keyword в секции «Связанное» НЕ считается закрытием"
+}
+
+# ===========================================================================
+# S. (07.09 #2069): docs-only PR (CI-only .github/docs/.hermes/plans/
+#    scripts-agent_flow) + зелёный CI → НЕ закрывает type:functional
+#    /type:performance/type:testing issue. Docs не могут выполнить DoD
+#    функциональной карточки — нужен реальный e2e run. docs-only → close
+#    РАЗРЕШЁН только для process-issues (без этих type:*).
+# ===========================================================================
+test_S_retro_docs_only_blocks_functional_type() {
+    new_test
+    local issue=1996 pr=2047 head='z-{agent}/2069-docs-only-functional'
+    set_state ISSUE_LIST_JSON '[]'
+    # body: правильный closing-keyword, но PR docs-only + issue type:functional.
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"docs(adr): 0056\",\"body\":\"Closes: #${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"${RECENT_MERGED_AT}\"}]"
+    # type:functional — фикс ДОЛЖЕН сработать (skip), не закрыть.
+    set_state "ISSUE_${issue}_LABELS_JSON" '{\"labels\":[{\"name\":\"type:functional\"},{\"name\":\"agent-flow\"},{\"name\":\"task\"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{\"state\":\"OPEN\"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{\"comments\":[]}'
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    # НЕТ e2e run — fallback на docs-only-CI-green. С type:functional → skip.
+    set_state "RUN_LIST_${head}_JSON" '[]'
+    set_state "PR_${pr}_FILES_JSON" '{\"files\":[{\"path\":\"docs/adr/0056-operator-agent-architecture.md\"}]}'
+    set_state "PR_${pr}_ROLLUP_JSON" '{\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}]}'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{\"resources\":{\"core\":{\"remaining\":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
+    assert_eq "0" "$close_calls" "docs-only PR не закрывает type:functional issue (ретро 07.09 #2069)"
+
+    # НЕ должно ставиться needs-e2e (issue не в workflow-цикле, type:functional
+    # без needs-e2e/e2e-done — ретро-путь скипает молча).
     local add_needs_e2e
     add_needs_e2e="$(printf '%s\n' "$journal" | grep -c "gh issue edit ${issue} --add-label needs-e2e" || true)"
-    assert_eq "0" "$add_needs_e2e" "body-only mention does not label the issue either (#2069)"
-
-    local state_now
-    state_now="$(grep -E "^ISSUE_${issue}_STATE_JSON=" "$GH_STATE" | sed "s/^ISSUE_${issue}_STATE_JSON=//")"
-    assert_contains '"OPEN"' "$state_now" "issue stays OPEN (#2069)"
+    assert_eq "0" "$add_needs_e2e" "no needs-e2e on functional type (would re-trigger e2e-process)"
 }
 
 # ===========================================================================
-# R. (issue #2069) WIP-PR не закрывает карточку, даже если номер стоит в
-#    заголовке. Регрессия на PR #2014 («wip(operator-agent verify #2004)»),
-#    чей собственный текст говорил «не проверено на железе», — а карточка
-#    #2004 закрылась как COMPLETED.
+# T. (07.09 #2069): docs-only PR С closing-keyword (URL-form
+#    «Closes: https://github.com/.../issues/N» по ADR-0052 §3.2) +
+#    e2e run SUCCESS на ветке PR → close. Контр-тест к S: проверяет,
+#    что новая защита docs-only не сломала обычные process-фиксы.
+#    Используем e2e PASS evidence (как test_A), чтобы обойти mock-env
+#    quirk в --jq '.state' для issue view state в составе тестов
+#    (raw-вывод retro-path в standalone работает корректно).
 # ===========================================================================
-test_R_retro_wip_pr_does_not_close() {
+test_T_retro_docs_only_closes_process_issue() {
     new_test
-    local issue=2004 pr=2014 head='z-{agent}/2004-operator-agent-verify'
+    local issue=9999 pr=2047 head='z-{agent}/2069-self-process-fix'
     set_state ISSUE_LIST_JSON '[]'
-    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"wip(operator-agent verify #${issue}): статический разбор гипотез\",\"body\":\"closes #${issue}\\n\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-09-07T07:10:00Z\"}]"
-    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[]}'
+    # body: URL-form closing-keyword (ADR-0052 §3.2).
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"fix(process #${issue}): closing-keyword guard\",\"body\":\"Closes: https://github.com/krikz/rob_box_project/issues/${issue}\",\"headRefName\":\"${head}\",\"mergedAt\":\"${RECENT_MERGED_AT}\"}]"
+    # process issue (без type:functional — этот случай РАЗРЕШЁН).
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"bug"},{"name":"agent-flow"},{"name":"agent:devops"},{"name":"priority:high"},{"name":"process"},{"name":"hermes"}]}'
     set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
     set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
     set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
     set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    # e2e run SUCCESS на ветке PR → retro-path закроет через evidence «e2e run».
     set_state "RUN_LIST_${head}_JSON" '[{"conclusion":"success"}]'
-    set_state PR_LIST_ALL_OPEN_JSON '[]'
-    set_state PR_FOLLOWUP_JSON '[]'
-    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
-
-    run_merge_gate
-    local journal
-    journal="$(cat "$GH_JOURNAL")"
-
-    local close_calls
-    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue}" || true)"
-    assert_eq "0" "$close_calls" "wip-titled PR does not close the issue even with closes-keyword (#2069)"
-}
-
-# ===========================================================================
-# S. (issue #2069) CI-only PR (только docs/) не доказательство для
-#    ФУНКЦИОНАЛЬНОЙ карточки: кода он не меняет, а CI у одного .md зелёный
-#    всегда. Регрессия на #2003 (type:performance), закрытую ADR-PR.
-# ===========================================================================
-test_S_retro_docs_only_pr_not_evidence_for_functional() {
-    new_test
-    local issue=2003 pr=2047 head='wt/t_201e2c64'
-    set_state ISSUE_LIST_JSON '[]'
-    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"design: pregenerate contract (ADR-0056, issue #${issue})\",\"body\":\"Контракт, не реализация.\\n\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-09-07T11:20:00Z\"}]"
-    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"type:performance"}]}'
-    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
-    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
-    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
-    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
-    # e2e нет → fallback на CI-only.
-    set_state "RUN_LIST_${head}_JSON" '[]'
-    set_state "PR_${pr}_FILES_JSON" '{"files":[{"path":"docs/adr/0056-speculative-tts-pregeneration-contract.md"}]}'
+    # Files — пусть будут docs + scripts (mixed), не критично — e2e PASS важнее.
+    set_state "PR_${pr}_FILES_JSON" '{"files":[{"path":"scripts/agent_flow/agent-flow-merge-gate.sh"},{"path":"scripts/agent_flow/tests/test_merge_gate_retro_path.sh"}]}'
     set_state "PR_${pr}_ROLLUP_JSON" '{"statusCheckRollup":[{"conclusion":"SUCCESS"}]}'
     set_state PR_LIST_ALL_OPEN_JSON '[]'
     set_state PR_FOLLOWUP_JSON '[]'
@@ -728,36 +799,8 @@ test_S_retro_docs_only_pr_not_evidence_for_functional() {
     journal="$(cat "$GH_JOURNAL")"
 
     local close_calls
-    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue}" || true)"
-    assert_eq "0" "$close_calls" "docs-only PR is not PASS evidence for a functional card (#2069)"
-}
-
-# ===========================================================================
-# T. (issue #2069) Контроль: номер в ЗАГОЛОВКЕ + код в диффе + e2e PASS →
-#    закрытие по-прежнему работает. Фикс не должен убить сам ретро-путь.
-# ===========================================================================
-test_T_retro_title_ref_with_code_still_closes() {
-    new_test
-    local issue=2001 pr=2039 head='z-{agent}/2001-operator-admin'
-    set_state ISSUE_LIST_JSON '[]'
-    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"[operator-agent 11] operator.admin (#${issue})\",\"body\":\"Реализация среза.\\n\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-09-07T09:00:00Z\"}]"
-    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"type:functional"}]}'
-    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
-    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
-    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
-    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
-    set_state "RUN_LIST_${head}_JSON" '[{"conclusion":"success"}]'
-    set_state PR_LIST_ALL_OPEN_JSON '[]'
-    set_state PR_FOLLOWUP_JSON '[]'
-    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
-
-    run_merge_gate
-    local journal
-    journal="$(cat "$GH_JOURNAL")"
-
-    local close_calls
     close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
-    assert_eq "1" "$close_calls" "title reference + e2e PASS still closes (retro-path not broken by #2069 fix)"
+    assert_eq "1" "$close_calls" "URL-form closing-keyword + e2e PASS закрывает process-issue (ADR-0052 §3.2)"
 }
 
 # ===========================================================================
@@ -779,9 +822,9 @@ run_test "M. retro-path: hermes process-fix + .hermes/plans/ CI-only green → c
 run_test "N. retro-path: hermes bug + scripts/agent_flow/ CI-only green → close" test_N_retro_hermes_process_fix_scripts_closes
 run_test "O. retro-path: hermes + needs-e2e still skipped (workflow-label guard)" test_O_retro_hermes_with_needs_e2e_still_skips
 run_test "P. retro-path: hermes non-CI-only → needs-e2e (e2e-process takes over)" test_P_retro_hermes_non_ci_only_labels_needs_e2e
-run_test "Q. retro-path: body-only #N mention → no close, no label (#2069)" test_Q_retro_body_only_mention_not_closed
-run_test "R. retro-path: wip-titled PR never closes (#2069)" test_R_retro_wip_pr_does_not_close
-run_test "S. retro-path: docs-only PR is not evidence for functional card (#2069)" test_S_retro_docs_only_pr_not_evidence_for_functional
-run_test "T. retro-path: title ref + e2e PASS still closes (no regression, #2069)" test_T_retro_title_ref_with_code_still_closes
+run_test "Q. retro-path: bare #N без closing-keyword → НЕ close (ретро 07.09 #2069)" test_Q_retro_bare_hash_no_close
+run_test "R. retro-path: closing-keyword в секции «Blockers/Связанное» → НЕ close" test_R_retro_blocker_section_ignored
+run_test "S. retro-path: docs-only PR → НЕ close type:functional (ретро 07.09 #2069)" test_S_retro_docs_only_blocks_functional_type
+run_test "T. retro-path: URL-form closing + e2e PASS → close process-issue (контр-тест)" test_T_retro_docs_only_closes_process_issue
 
 summary

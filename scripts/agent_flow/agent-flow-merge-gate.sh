@@ -5730,8 +5730,15 @@ if [ -z "$_retro_prs_json" ]; then
 fi
 
 # Извлекаем (issue, pr, head): номера issues, на которые ссылается PR в
-# title/body (#N, closes #N, fixes #N). Скипаем PR, смерженные раньше окна,
+# title/body ЗАКРЫВАЮЩИМ ключевым словом (closes/fixes/resolves + синонимы —
+# case-insensitive, GitHub-семантика). Голое #N НЕ учитываем как «закрытие»:
+# ретро 07.09 #2069 (PR #2047 закрыл #1996/#2003/#2004 как COMPLETED по bare
+# #N в блоке «Зависимости / blockers»). Скипаем PR, смерженные раньше окна,
 # и self-reference (номер PR в своём же body, например "PR: #1142").
+# Также фильтруем секции-исключения («Зависимости», «Blockers», «Refs» и т.п.)
+# по заголовку раздела + маркерам строки (ОТКРЫТ/blocked/dep/блокер) — bare
+# #N в таких местах — ссылки по определению, не закрытие.
+#
 # ВАЖНО: process substitution (а не pipe), чтобы retro_closed/retro_labeled
 # накапливались в текущем shell и попали в summary.
 while IFS=$'\t' read -r r_issue r_pr r_head r_intent; do
@@ -5847,6 +5854,19 @@ while IFS=$'\t' read -r r_issue r_pr r_head r_intent; do
 
     # --- PASS-доказательство ---
     _r_evidence=""
+    # Ретро 07.09 #2069: PR #2047 (docs-only ADR) закрыл #1996/#2003/#2004
+    # как COMPLETED. Здесь docs-only сам по себе — НЕ повод закрывать
+    # функциональную карточку (docs не могут выполнить её DoD). Разделяем:
+    #   - docs-only (.github/.hermes-plans/docs/scripts-agent-flow) →
+    #     это process-fix / ADR / lint PR → можно закрывать только
+    #     process-issues (есть hermes-метка + нет type:functional /
+    #     type:performance / type:testing). Иначе close-блок подавляется.
+    #   - functional (любой файл с кодом) → можно закрывать всё, что
+    #     имеет PASS-доказательство (e2e run OR docs-only-green, как
+    #     раньше).
+    # Инициализируем ДО `if`, чтобы guard ниже не падал на set -u.
+    _r_docs_only="0"
+    _r_type_labeled=""
     # (a) e2e run SUCCESS на ветке PR (самое сильное доказательство)
     _r_e2e_ok="$(gh run list --repo "$GH_REPO" --branch "$r_head" \
         --workflow "L: E2E Voice Test" --limit 20 \
@@ -5895,7 +5915,38 @@ except Exception:
             log "retro-path: issue #${r_issue} — CI-only PR #${r_pr} не доказательство для функциональной карточки (${_r_labels_norm}) — skip close (guard #2069)"
             _r_ci_only=0
         fi
+        # Ретро 07.09 #2069: PR #2047 (docs-only ADR) закрыл #1996/#2003/#2004
+        # как COMPLETED. Здесь docs-only сам по себе — НЕ повод закрывать
+        # функциональную карточку (docs не могут выполнить её DoD). Разделяем:
+        #   - docs-only (.github/.hermes-plans/docs/scripts-agent-flow) →
+        #     это process-fix / ADR / lint PR → можно закрывать только
+        #     process-issues (есть hermes-метка + нет type:functional /
+        #     type:performance / type:testing). Иначе close-блок подавляется.
+        #   - functional (любой файл с кодом) → можно закрывать всё, что
+        #     имеет PASS-доказательство (e2e run OR docs-only-green, как
+        #     раньше).
+        _r_docs_only="0"
         if [ "$_r_ci_only" = "1" ]; then
+            # Отделяем «functional-code-changing» CI-only (scripts/agent_flow)
+            # от «docs-only» (docs/, .hermes/plans/). .github/ считаем
+            # процесcным (там CI/lint, не фича-код).
+            _r_docs_only="$(printf '%s' "$_r_files" | python3 -c '
+import json, sys
+try:
+    files = json.load(sys.stdin)
+    # docs-only = НЕ содержит scripts/agent_flow/ (там может быть реальный
+    # код, влияющий на поведение) и НЕ содержит произвольный код вне
+    # process-каталогов. Разрешаем: .github/, docs/, .hermes/plans/. Чистый
+    # scripts/agent_flow/ — process, тоже считаем docs-only для целей
+    # ретро-пути (там только bash-скрипты оркестрации, не фичи робота).
+    DOCS_PREFIXES = (".github/", "docs/", ".hermes/plans/", "scripts/agent_flow/")
+    ok = bool(files) and all(
+        any(f.startswith(p) for p in DOCS_PREFIXES) for f in files
+    )
+    print("1" if ok else "0")
+except Exception:
+    print("0")
+' 2>/dev/null || echo 0)"
             # ВНИМАНИЕ (ретро 12.08 t_061d466e): фильтр обязан разыменовывать
             # .statusCheckRollup[] — иначе jq применяется к объекту
             # {"statusCheckRollup":[...]} и падает «expected an object but got:
@@ -5903,9 +5954,29 @@ except Exception:
             _r_rollup="$(gh pr view "$r_pr" --repo "$GH_REPO" --json statusCheckRollup \
                 --jq '[.statusCheckRollup[] | select(.conclusion == "FAILURE" or .conclusion == "CANCELLED" or .conclusion == "TIMED_OUT")] | length' 2>/dev/null || echo 1)"
             if [ "${_r_rollup:-1}" -eq 0 ] 2>/dev/null; then
-                _r_evidence="CI-only PR #${r_pr} (.github/scripts/docs/.hermes-plans), CI зелёный — e2e не требуется"
+                _r_evidence="docs-only PR #${r_pr} (.github/docs/.hermes-plans/scripts-agent-flow), CI зелёный — e2e не требуется"
             fi
         fi
+    fi
+    # Ретро 07.09 #2069: docs-only PR НЕ может закрыть функциональную
+    # карточку (issue с type:functional/perf/testing). Если evidence
+    # получено через docs-only-путь — проверяем тип issue. Функциональные
+    # type:* пропускаем: нужен реальный e2e-run, а не «CI зелёный на
+    # изменении одного .md». Если evidence получено через e2e-run
+    # SUCCESS — тип issue НЕ проверяем (e2e — самое сильное доказательство).
+    if [ -n "$_r_evidence" ] && [ "$_r_docs_only" = "1" ] && [ "${_r_e2e_ok:-0}" -eq 0 ] 2>/dev/null; then
+        _r_type_labeled="$(printf '%s' "$_r_labels_csv" | tr '[:upper:]' '[:lower:]' \
+            | grep -oE 'type:[a-z][a-z0-9-]*' || true)"
+        # type:functional, type:performance, type:testing — НЕ закрываем.
+        # type:docs/type:design/type:refactor/type:tech-debt — закрываем
+        # (это и есть process-фикс).
+        case " $_r_type_labeled " in
+            *" type:functional "*|*" type:performance "*|*" type:testing "*)
+                log "retro-path: issue #${r_issue} тип=functional/perf/testing, PR docs-only → НЕ close (docs не выполнит DoD, ретро 07.09 #2069)"
+                skipped=$((skipped+1))
+                continue
+                ;;
+        esac
     fi
 
     if [ -n "$_r_evidence" ]; then
@@ -6016,26 +6087,111 @@ import json, sys, re
 data = json.load(sys.stdin)
 since = sys.argv[1]
 seen = set()
-# GitHub closing keywords: close/closes/closed, fix/fixes/fixed,
-# resolve/resolves/resolved. Допускаем "issue"/"issues" и двоеточие между
-# ключевым словом и номером ("fixes: #12", "closes issue #12").
-_CLOSING = re.compile(
-    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[\s:]*(?:issues?[\s:]*)?#(\d+)",
-    re.IGNORECASE,
+# Ретро 07.09 #2069: голое #N в title/body НЕ считается закрывающей ссылкой.
+# Учитываем только #N, перед которым стоит GitHub closing-keyword
+# (closes/closed/close/fix/fixes/fixed/resolve/resolves/resolved — CI, любая
+# форма с двоеточием или без, регистр неважен). Также поддерживаем URL-форму
+# .../issues/<n> после closing-keyword (ADR-0052 §3.2 упоминает именно
+# «Closes: https://github.com/.../issues/1989» — тестовый кейс D8).
+CLOSING_RE = re.compile(
+    r"(?im)(?:^|\b)(?:close[sd]?|fix(?:es|ed)?|resolv(?:es|ed)?)"
+    r"[\s:#]*"
+    r"(?:\#(\d+)|https?://[^\s)]+/issues/(\d+))"
 )
-_WIP_TITLE = re.compile(r"(?:^|[\s\]\)])wip\b|^\s*\[wip\]", re.IGNORECASE)
+# Маркеры строки, которые ПРЕВРАЩАЮТ closing-keyword в обычную ссылку:
+#   - bare #N после них уже отфильтрован выше (не closing);
+#   - но если строка содержит «ОТКРЫТ» / «ЗАБЛОКИРОВАН» / «blocked» /
+#     «блокер» / «dep» — даже closing-keyword трактуем осторожно (хотя
+#     технически GitHub их всё равно зачёл бы — мы тут строже скрипта).
+#     Дополнительный safety-net от ретро-инцидента PR #2047: разработчик
+#     мог случайно написать «closes #1996 после merge 7a» в секции
+#     blockers — формально это closing, но по смыслу — нет.
+BLOCKER_LINE_RE = re.compile(
+    r"(?i)\b(?:открыт|открытый|заблокирован|blocked|блокер|\bdep\b)\b"
+)
+# Заголовки секций-исключений: «Зависимости», «Blockers», «Refs», «Связанное».
+# Весь такой блок (от заголовка до следующего ## / конца body) — bare #N
+# трактуем как reference, не closing.
+EXCLUDED_SECTION_RE = re.compile(
+    r"(?im)^#{1,6}\s*(?:зависимост\w*|blockers?|связан\w+|refs?|references?|блокер\w*)\b[^\n]*$"
+)
+SECTION_HEADER_RE = re.compile(r"(?im)^#{1,6}\s+\S")
+# helper: разделить текст на секции и для каждой решить, считать ли closing
+# ключевые слова «настоящими» closing-refs.
+def extract_closing_refs(text):
+    """Yield issue numbers found after a closing keyword, skipping excluded
+    sections (Зависимости/Blockers/Refs/Связанное) and lines with blocker
+    markers (ОТКРЫТ/ЗАБЛОКИРОВАН/blocked/блокер/dep)."""
+    if not text:
+        return
+    lines = text.splitlines()
+    in_excluded_section = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        # Section header → переключаем флаг (для следующих строк)
+        if SECTION_HEADER_RE.match(line):
+            in_excluded_section = bool(EXCLUDED_SECTION_RE.match(line))
+            i += 1
+            continue
+        if in_excluded_section:
+            # В секции-исключении closing-keyword игнорируем — это reference
+            i += 1
+            continue
+        if BLOCKER_LINE_RE.search(line):
+            # Строка содержит blocker-маркер: closing-keyword НЕ зачитываем,
+            # даже если он есть (защита от PR вида «closes #N после merge X»)
+            i += 1
+            continue
+        for m in CLOSING_RE.finditer(line):
+            num = m.group(1) or m.group(2)
+            if num:
+                yield num
+        i += 1
+
 for pr in data:
     if (pr.get("mergedAt") or "") < since:
         continue
     pr_num = str(pr.get("number", ""))
     title = pr.get("title") or ""
     body = pr.get("body") or ""
-    text = title + "\n" + body
     head = pr.get("headRefName") or ""
-    is_wip = bool(_WIP_TITLE.search(title))
-    closing = set(m.group(1) for m in _CLOSING.finditer(text))
+    # WIP-guard (issue #2069): PR с "wip" в заголовке не закрывает ничего.
+    # Ретро-инцидент PR #2014 («wip(operator-agent verify #2004)») сам
+    # говорил «не проверено на железе», а карточка закрылась. WIP по
+    # определению не выполняет DoD.
+    is_wip = bool(re.search(r"(?:^|[\s\]\)])wip\b|^\s*\[wip\]", title, re.IGNORECASE))
+    # Конвенция репозитория: «[operator-agent 11] ... (#2001)» — заголовок
+    # пишут осознанно; номер в скобках в заголовке = явное намерение закрыть.
     in_title = set(m.group(1) for m in re.finditer(r"#(\d+)", title))
-    for m in re.finditer(r"#(\d+)", text):
+    # Закрывающие ссылки (intent=close): ищем в title и body раздельно, чтобы
+    # секции в body не «затравливали» closing-keyword в title. Каждый yield
+    # extract_closing_refs — это валидное намерение закрыть.
+    for issue in extract_closing_refs(title):
+        if issue == pr_num:
+            continue
+        key = (issue, pr_num)
+        if key in seen:
+            continue
+        seen.add(key)
+        # WIP-PR: даже closing-keyword трактуем как reference (не закрытие)
+        intent = "ref" if is_wip else "close"
+        print(issue + "\t" + pr_num + "\t" + head + "\t" + intent)
+    for issue in extract_closing_refs(body):
+        if issue == pr_num:
+            continue
+        key = (issue, pr_num)
+        if key in seen:
+            continue
+        seen.add(key)
+        intent = "ref" if is_wip else "close"
+        print(issue + "\t" + pr_num + "\t" + head + "\t" + intent)
+    # Конвенция репозитория (#2069, commit msg PR #2090): голое #N в title
+    # пишут осознанно («[domain N] ... (#M)») → intent=close. extract_closing_refs
+    # не даст ничего (там нужен closing-keyword), поэтому выдаём голые #N из title
+    # отдельной веткой. Без неё тест #3 в test_retro_intent_extractor.sh
+    # падает: «#2001 в title PR #2039 → close» не выводится.
+    for m in re.finditer(r"#(\d+)", title):
         issue = m.group(1)
         if issue == pr_num:
             continue
@@ -6043,11 +6199,22 @@ for pr in data:
         if key in seen:
             continue
         seen.add(key)
+        intent = "ref" if is_wip else "close"
+        print(issue + "\t" + pr_num + "\t" + head + "\t" + intent)
+    # Ref-only ссылки: голое #N в body (без closing-keyword) — это reference,
+    # не закрытие. bash-guard прочитает r_intent=ref и пропустит карточку
+    # (ни close, ни needs-e2e).
+    for m in re.finditer(r"#(\d+)", body):
+        issue = m.group(1)
+        if issue == pr_num:
+            continue
+        key = (issue, pr_num)
+        if key in seen:
+            continue
+        seen.add(key)
+        # Конвенция: номер в заголовке = close (даже если в body — bare)
+        intent = "close" if issue in in_title else "ref"
         if is_wip:
-            intent = "ref"
-        elif issue in closing or issue in in_title:
-            intent = "close"
-        else:
             intent = "ref"
         print(issue + "\t" + pr_num + "\t" + head + "\t" + intent)
 ' "$_retro_since" 2>/dev/null)
