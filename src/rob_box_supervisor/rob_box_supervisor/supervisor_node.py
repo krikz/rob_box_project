@@ -494,9 +494,13 @@ class AvatarSupervisor(Node):
         # «pause личности на время обработки команды» теперь жёстко
         # зашито в ``_dialogue_control_swap`` (см. ниже).
         # ── LLM / tools / память оператора (issue #1988) ─────────────
-        # Дефолты повторяют dialogue_node (один провайдер — deepseek из
-        # env). Полный health-fallback chain — отдельная карточка позже.
-        self.declare_parameter("llm_providers", "deepseek")
+        # Issue #2111: default chain должен совпадать с dialogue_node
+        # (`minimax,deepseek`) — иначе supervisor поднимается с одним
+        # провайдером без API-ключа и agent не отвечает. Полный
+        # health-fallback chain — отдельная карточка позже.
+        # ADR-0043 §3.2: runtime yaml (когда он появится для supervisor)
+        # должен быть синхронизирован с этим значением в том же коммите.
+        self.declare_parameter("llm_providers", "minimax,deepseek")
         self.declare_parameter("temperature", 0.0)
         self.declare_parameter("max_tokens", 0)
         self.declare_parameter("llm_streaming", False)
@@ -1904,10 +1908,11 @@ class AvatarSupervisor(Node):
         return (core, dsm)
 
     def _build_operator_llm(self) -> Any:
-        """Построить LLM-провайдер оператора (дефолт — deepseek из env).
+        """Построить LLM-провайдер оператора (issue #2111: default chain ``minimax,deepseek``).
 
-        Single-provider достаточно для 4а (решение Шифу). Полный
-        health-fallback chain как у dialogue_node — отдельная карточка.
+        Default повторяет ``dialogue_node`` — иначе supervisor поднимается
+        с одним провайдером без API-ключа, и agent не отвечает.
+        Полный health-fallback chain — отдельная карточка.
         """
         try:
             from rob_box_harness.providers import (  # noqa: PLC0415
