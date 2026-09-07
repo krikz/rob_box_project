@@ -601,7 +601,7 @@ jobs:
           sample_containers() {
             sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
               'cd ~/rob_box_project/docker/vision && for cid in $(docker compose ps -aq); do docker inspect --format "{{json .}}" "$cid"; done' \
-            | jq -c '{name: (.Name | ltrimstr("/")), status: .State.Status, restarting: .State.Restarting, health: (.State.Health.Status // "none"), restarts: .RestartCount}'
+            | jq -c '{name: (.Name | ltrimstr("/")), status: .State.Status, restarting: .State.Restarting, health: (.State.Health.Status // "none"), restarts: .RestartCount, exitcode: .State.ExitCode}'
           }
 
           echo "📸 Sample #1 (t=0s)..."
@@ -635,8 +635,16 @@ jobs:
             RC2=$(echo "$S2" | jq -r '.restarts')
 
             REASON=""
-            if [ "$ST2" = "exited" ] || [ "$ST2" = "dead" ]; then
-              REASON="State.Status=$ST2"
+            EC2=$(echo "$S2" | jq -r '.exitcode // 0')
+            # One-shot init-контейнеры (voice-resources-init и подобные)
+            # штатно заканчивают работу с кодом 0 и остаются в `exited` на
+            # ЗДОРОВОМ роботе — проверено после успешного деплоя 2026-09-07.
+            # Валить деплой по факту `exited` без разбора кода возврата —
+            # значит валить КАЖДЫЙ деплой. Провал только при ненулевом коде.
+            if [ "$ST2" = "exited" ] && [ "$EC2" != "0" ]; then
+              REASON="State.Status=exited (ExitCode=$EC2)"
+            elif [ "$ST2" = "dead" ]; then
+              REASON="State.Status=dead"
             elif [ "$ST1" = "restarting" ] && [ "$ST2" = "restarting" ]; then
               REASON="State.Status=restarting (confirmed at t=0s and t=${CONFIRM_INTERVAL}s)"
             elif [ "$HE2" = "unhealthy" ] || [ "$HE1" = "unhealthy" ]; then
@@ -698,7 +706,7 @@ jobs:
           sample_containers() {
             sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
               'cd ~/rob_box_project/docker/main && for cid in $(docker compose ps -aq); do docker inspect --format "{{json .}}" "$cid"; done' \
-            | jq -c '{name: (.Name | ltrimstr("/")), status: .State.Status, restarting: .State.Restarting, health: (.State.Health.Status // "none"), restarts: .RestartCount}'
+            | jq -c '{name: (.Name | ltrimstr("/")), status: .State.Status, restarting: .State.Restarting, health: (.State.Health.Status // "none"), restarts: .RestartCount, exitcode: .State.ExitCode}'
           }
 
           echo "📸 Sample #1 (t=0s)..."
@@ -732,8 +740,16 @@ jobs:
             RC2=$(echo "$S2" | jq -r '.restarts')
 
             REASON=""
-            if [ "$ST2" = "exited" ] || [ "$ST2" = "dead" ]; then
-              REASON="State.Status=$ST2"
+            EC2=$(echo "$S2" | jq -r '.exitcode // 0')
+            # One-shot init-контейнеры (voice-resources-init и подобные)
+            # штатно заканчивают работу с кодом 0 и остаются в `exited` на
+            # ЗДОРОВОМ роботе — проверено после успешного деплоя 2026-09-07.
+            # Валить деплой по факту `exited` без разбора кода возврата —
+            # значит валить КАЖДЫЙ деплой. Провал только при ненулевом коде.
+            if [ "$ST2" = "exited" ] && [ "$EC2" != "0" ]; then
+              REASON="State.Status=exited (ExitCode=$EC2)"
+            elif [ "$ST2" = "dead" ]; then
+              REASON="State.Status=dead"
             elif [ "$ST1" = "restarting" ] && [ "$ST2" = "restarting" ]; then
               REASON="State.Status=restarting (confirmed at t=0s and t=${CONFIRM_INTERVAL}s)"
             elif [ "$HE2" = "unhealthy" ] || [ "$HE1" = "unhealthy" ]; then
