@@ -119,12 +119,27 @@ except ImportError:
     _FAQStore = None
     _load_event_profile = None
 
-# Issue #2000 / ADR-0055 — Phase 1 path consolidation. MCP tools and
-# WaypointStore share /data/harness_voice.db with the dialogue node via
-# VoiceMemoryAdapter (sync facade over SQLiteVoiceMemory). Gate the
-# switch on an env var so production can roll back to the legacy
-# VoiceMemory without code edits: set ``MCP_USE_HARNESS_VOICE_MEMORY=1``
-# after the marker migration has run on prod.
+# Issue #2000 / ADR-0055 — Phase 1 path consolidation. ONLY ``self.voice_memory``
+# (long-term facts, see ``_init_voice_memory`` below) can share
+# /data/harness_voice.db with the dialogue node, via VoiceMemoryAdapter (sync
+# facade over SQLiteVoiceMemory) — gated by this env var so production can
+# roll back to the legacy VoiceMemory without code edits.
+#
+# WaypointStore, FAQStore and TrackLibrary (tools/music.py) are NOT part of
+# this switch and stay on ``VOICE_MEMORY_DB_PATH`` (default
+# /data/voice_memory.db) regardless of this flag. Investigated for Phase 2
+# (issue #2000) and rejected as a plain path swap: SQLiteVoiceMemory already
+# defines its own ``waypoints`` (name TEXT PRIMARY KEY) and ``faq_items``
+# (created_at, no FTS5) tables in harness_voice.db, which collide by name
+# with incompatible schemas against WaypointStore's ``waypoints`` (id,
+# map_id NOT NULL FK -> maps) and the legacy FAQStore's ``faq_items``
+# (indexed_at, FTS5 triggers). ``CREATE TABLE IF NOT EXISTS`` would silently
+# keep whichever schema got created first and every write from the other
+# store would then fail with "no such column". See the comment on
+# ``sqlite_db_path`` in docker/vision/config/voice_assistant/dialogue_node.yaml
+# and docs/adr/0055-voice-memory-db-unify-with-harness.md (§1.3, §3) for the
+# full analysis. Merging them needs a schema-reconciling adapter (like this
+# one, but for waypoints/faq), not a default-value edit.
 _USE_HARNESS_VOICE_MEMORY = os.getenv("MCP_USE_HARNESS_VOICE_MEMORY", "0").strip().lower() in (
     "1",
     "true",
@@ -717,7 +732,13 @@ class MCPServer(Node):
         pub.publish(msg)
 
     def _init_waypoint_store(self) -> WaypointStore:
-        """Инициализация WaypointStore (SQLite для вейпоинтов)."""
+        """Инициализация WaypointStore (SQLite для вейпоинтов).
+
+        Остаётся на ``VOICE_MEMORY_DB_PATH`` / ``/data/voice_memory.db``,
+        а не на ``/data/harness_voice.db`` — там таблица ``waypoints`` уже
+        занята несовместимой схемой ``SQLiteVoiceMemory`` (см. комментарий
+        над ``_USE_HARNESS_VOICE_MEMORY`` выше и ADR-0055).
+        """
         import os
 
         db_path = os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
@@ -1017,6 +1038,13 @@ class MCPServer(Node):
         ``/data/harness_voice.db`` (same file the dialogue node uses).
         Otherwise we fall back to the legacy ``VoiceMemory`` →
         ``/data/voice_memory.db``.
+
+        This flag only affects ``self.voice_memory`` (facts). It does
+        NOT unify ``self.waypoint_store`` or ``self.faq_store`` — those
+        stay on ``/data/voice_memory.db`` either way (see the module-level
+        comment above ``_USE_HARNESS_VOICE_MEMORY`` for why: their table
+        names collide with incompatible schemas already living in
+        harness_voice.db).
         """
         if _USE_HARNESS_VOICE_MEMORY and _VoiceMemoryAdapter is not None:
             import os
@@ -1065,7 +1093,13 @@ class MCPServer(Node):
             self.voice_memory = None
 
     def _init_faq_store(self) -> None:
-        """Инициализация FAQStore и загрузка event profile (режим мероприятия)."""
+        """Инициализация FAQStore и загрузка event profile (режим мероприятия).
+
+        Остаётся на ``VOICE_MEMORY_DB_PATH`` / ``/data/voice_memory.db``:
+        ``faq_items`` в ``/data/harness_voice.db`` уже создаётся
+        ``SQLiteVoiceMemory`` с другой схемой (``created_at`` вместо
+        ``indexed_at``, без FTS5-триггеров) — см. ADR-0055.
+        """
         if _FAQStore is None or _load_event_profile is None:
             self.get_logger().info(
                 "ℹ️ FAQ-модуль не загружен — faq_search будет возвращать 'недоступен'."

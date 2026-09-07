@@ -1,12 +1,30 @@
 """VoiceMemoryAdapter — sync API shim from ``VoiceMemory`` to ``SQLiteVoiceMemory``.
 
-ADR-0055 Phase 1 (path consolidation): MCP server (``mcp_server.py``),
-``WaypointStore`` and the voice tools (``tools/memory.py``) used to
-instantiate ``VoiceMemory`` (in ``rob_box_voice.core.voice_memory``) and
-write to ``/data/voice_memory.db``. After this adapter is in place, those
-callers write to the same SQLite file the dialogue node uses —
+ADR-0055 Phase 1 (path consolidation): ``mcp_server.py`` used to
+instantiate ``VoiceMemory`` (in ``rob_box_voice.core.voice_memory``) for
+long-term facts and write to ``/data/voice_memory.db``. When
+``MCP_USE_HARNESS_VOICE_MEMORY=1``, ``mcp_server.py`` instead builds this
+adapter and writes facts to the same SQLite file the dialogue node uses —
 ``/data/harness_voice.db`` — via the existing ``SQLiteVoiceMemory``
-(harness) implementation. This kills the silent two-writer situation
+(harness) implementation.
+
+Scope note (issue #2000 Phase 2, investigated and NOT done here):
+``WaypointStore`` and the voice tools (``tools/memory.py`` FAQ/TrackLibrary
+paths) still write to ``/data/voice_memory.db`` and are **not** wired to
+this adapter. ``SQLiteVoiceMemory`` already defines its own ``waypoints``
+(``name`` PRIMARY KEY) and ``faq_items`` (``created_at``, no FTS5) tables
+in ``harness_voice.db``, with schemas incompatible with WaypointStore's
+``waypoints`` (``id`` PK, ``map_id`` NOT NULL FK -> ``maps``) and the
+legacy FAQStore's ``faq_items`` (``indexed_at``, FTS5 triggers) — pointing
+either store at ``harness_voice.db`` today would silently keep whichever
+schema was created first and break every write from the other. See the
+``sqlite_db_path`` comment in
+``docker/vision/config/voice_assistant/dialogue_node.yaml`` and
+``docs/adr/0055-voice-memory-db-unify-with-harness.md`` (§1.3, §3) for the
+full analysis. Unifying those needs a schema-reconciling adapter of their
+own, not a change of this one's scope.
+
+This adapter still kills the silent two-writer situation for *facts*
 flagged in ``dialogue_node.yaml:97-103``.
 
 API surface — sync, matches ``VoiceMemory`` 1:1 (so mcp_server.py does
