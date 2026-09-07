@@ -2,6 +2,20 @@ name: "L: Build Single Service"
 
 # Локальная сборка одного выбранного сервиса на self-hosted runner
 # Позволяет оперативно собрать конкретный образ без сборки всех сервисов
+#
+# ВАЖНО: список `service` ниже (per pi_type) и `case "$SERVICE"` в job
+# `prepare` обязаны оставаться зеркалом сервисов, которые собирает
+# "L: Build Vision Pi Services" (job-ы build-*) / "L: Build Main Pi
+# Services". Если там появляется новый build-* job — добавь сюда
+# соответствующий пункт в choice-список И ветку case, иначе пересборка
+# этого сервиса в одиночку невозможна и разработчик вынужден гонять
+# весь набор из ~11 сервисов ради одной правки (см. docs/guides/
+# SINGLE_SERVICE_BUILD.md — держи список сервисов там тоже синхронным).
+# Особое внимание: имя тега (IMAGE_NAME) должно совпадать с именем
+# компонента, которое ждёт deploy (docker/vision/docker-compose.yaml
+# image: ...:<component>-${ROS_DISTRO}-<tag>), а не с container_name —
+# разъедешься здесь и deploy молча возьмёт старый образ (см. quest:
+# container_name=rob-box-quest, но тег компонента — "quest").
 on:
   workflow_dispatch:  # Ручной запуск
     inputs:
@@ -43,6 +57,8 @@ on:
           - telegram-bot
           - supercollider
           - apriltag
+          - supervisor
+          - quest
           # Common to both
           - zenoh-router
           # Base images
@@ -253,6 +269,35 @@ jobs:
                   BUILD_CONTEXT="docker/vision/zenoh-router"
                   BASE_IMAGE="eclipse/zenoh:1.6.2"
                   ;;
+                "supervisor")
+                  # AV-9 (ADR-0028): наследует voice-assistant image (см.
+                  # docker/vision/supervisor/Dockerfile) — BASE_IMAGE-механизм
+                  # ниже (build-service) подставляет его как обычный build-arg.
+                  SERVICE_NAME="supervisor"
+                  IMAGE_NAME="supervisor"
+                  DOCKERFILE="docker/vision/supervisor/Dockerfile"
+                  BUILD_CONTEXT="."
+                  BASE_IMAGE="localhost:5000/krikz/rob_box:voice-assistant-${ROS_DISTRO}-${DOCKER_TAG}"
+                  ;;
+                "quest")
+                  # Phase 1.6 (ADR-0027): Meta Quest WebXR-консоль. Тег
+                  # компонента в реестре/деплое — "quest" (см.
+                  # docker/vision/docker-compose.yaml: image: ...:quest-${ROS_DISTRO}-...),
+                  # НЕ "rob-box-quest" (это только container_name). Разъедешься
+                  # в имени тега здесь — deploy молча возьмёт старый образ.
+                  #
+                  # Dockerfile quest НЕ принимает BASE_IMAGE (в отличие от
+                  # остальных сервисов) — вместо этого он сам вычисляет
+                  # RUNTIME_IMAGE из ARG IMAGE_TAG (ghcr.io/.../voice-assistant-
+                  # humble-${IMAGE_TAG}). Поэтому BASE_IMAGE тут пуст, а
+                  # IMAGE_TAG докидывается отдельным build-arg в build-service
+                  # (см. блок ниже, как для VESC_NEXUS_SHA/ROS2LEDS_SHA).
+                  SERVICE_NAME="quest"
+                  IMAGE_NAME="quest"
+                  DOCKERFILE="docker/vision/quest/Dockerfile"
+                  BUILD_CONTEXT="."
+                  BASE_IMAGE=""
+                  ;;
                 *)
                   echo "❌ Unknown Vision Pi service: $SERVICE"
                   exit 1
@@ -385,6 +430,36 @@ jobs:
             ROS2LEDS_SHA=$(git submodule status src/ros2leds | awk '{print $1}' | sed 's/^[+-]//')
             BUILD_ARGS="${BUILD_ARGS} --build-arg=ROS2LEDS_SHA=${ROS2LEDS_SHA}"
             echo "  ROS2LEDS_SHA: ${ROS2LEDS_SHA}"
+          fi
+
+          # quest (ADR-0027): Dockerfile вычисляет RUNTIME_IMAGE из ARG
+          # IMAGE_TAG (не BASE_IMAGE) — см. комментарий в job prepare.
+          # Совпадает с build-quest в L-Build Vision Pi Services.yml.
+          if [ "${{ needs.prepare.outputs.service_name }}" = "quest" ]; then
+            BUILD_ARGS="${BUILD_ARGS} --build-arg=IMAGE_TAG=${{ needs.prepare.outputs.docker_tag }}"
+            echo "  IMAGE_TAG: ${{ needs.prepare.outputs.docker_tag }}"
+          fi
+
+          # quest: hash Python-исходников rob_box_quest И TS/JSON/HTML
+          # исходников webxr_client (шлем-клиент — часть образа, копируется
+          # Dockerfile'ом на стадии webxr-builder). Хэш ОБЯЗАН покрывать обе
+          # директории — иначе правка webxr_client не инвалидирует кэш и не
+          # пересоберёт образ. Совпадает 1:1 с build-quest в
+          # L-Build Vision Pi Services.yml.
+          if [ "${{ needs.prepare.outputs.service_name }}" = "quest" ]; then
+            SOURCE_HASH=$( (find src/rob_box_quest/rob_box_quest -type f -name "*.py"; \
+                            find src/rob_box_quest/webxr_client -type f \( -name "*.ts" -o -name "*.json" -o -name "*.html" \)) \
+                          | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')
+            BUILD_ARGS="${BUILD_ARGS} --build-arg=SOURCE_HASH=${SOURCE_HASH}"
+            echo "  SOURCE_HASH (quest, rob_box_quest+webxr_client): ${SOURCE_HASH}"
+          fi
+
+          # supervisor (AV-9): hash Python-исходников rob_box_supervisor.
+          # Совпадает с build-supervisor в L-Build Vision Pi Services.yml.
+          if [ "${{ needs.prepare.outputs.service_name }}" = "supervisor" ]; then
+            SOURCE_HASH=$(find src/rob_box_supervisor/rob_box_supervisor -type f -name "*.py" | sort | xargs sha256sum | sha256sum | awk '{print $1}')
+            BUILD_ARGS="${BUILD_ARGS} --build-arg=SOURCE_HASH=${SOURCE_HASH}"
+            echo "  SOURCE_HASH (supervisor): ${SOURCE_HASH}"
           fi
 
           # Сборка образа
@@ -546,6 +621,8 @@ jobs:
           echo "  - voice-assistant (voice_assistant)"
           echo "  - supercollider"
           echo "  - apriltag"
+          echo "  - supervisor"
+          echo "  - quest"
           echo "  - zenoh-router"
           echo ""
           echo "Base images:"

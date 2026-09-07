@@ -113,10 +113,25 @@ zenoh-router
 oak-d
 led-matrix              (led_matrix)
 ceiling-camera
+voice-base              (voice_base)
+voice-resources         (voice_resources)
 voice-assistant         (voice_assistant)
+telegram-bot            (telegram_bot)
+supercollider
 apriltag
+supervisor
+quest
 zenoh-router
 ```
+
+> `quest` and `supervisor` build the same way `L: Build Vision Pi Services`
+> does (job `build-quest` / `build-supervisor`) — same Dockerfile, same
+> `SOURCE_HASH` cache-busting inputs, same `quest-`/`supervisor-` image tag
+> component name. Keep this list in sync with the `service` choice options
+> in `.github/workflows/L-Build Single Service.yml` whenever a Vision Pi
+> service is added there — this doc has drifted before (this file didn't
+> even list `voice-base`/`voice-resources`/`telegram-bot`/`supercollider`
+> until `quest`/`supervisor` were added here).
 
 ### Base Images
 
