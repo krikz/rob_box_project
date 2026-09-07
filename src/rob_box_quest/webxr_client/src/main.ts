@@ -252,6 +252,14 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
   // входе в робот-голос; voice_mode_ack синхронизирует состояние.
   let pipelineSttOn: boolean | null = true;
   let pipelineLlmOn: boolean | null = false;
+  // ADR-0054 (issue #1992, шаг 5a-impl): тумблер always-on wake-потока.
+  // `null` = до первого ответа сервера (показываем «…»); true/false —
+  // подтверждённое состояние. Команды voice_listen {on} идемпотентны:
+  // повторный start/stop = no-op. Дефолт (до HELLO/ack) — null, чтобы UI
+  // не врал «вкл/выкл», пока сервер не подтвердил (ADR-0018).
+  let voiceListenOn: boolean | null = null;
+  // Кэш последней ПРИЧИНЫ для тостов (на случай nack/«нельзя вкл»).
+  let voiceListenLastReason: string | null = null;
   // Последние стиль/язык, ПОДТВЕРЖДЁННЫЕ сервером (voice_set_ack). Клик по
   // чипу подсвечивает выбор оптимистично, до ответа робота; на nack панель
   // обязана вернуться сюда, иначе оператор смотрит на ST:STREET@FR, которого
@@ -417,6 +425,18 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
           pipelineLlmOn = false;
           bridge.voicePipeline.setLlmOn(false);
           conn.send({ cmd: "voice_mode", ts_ms: Date.now(), mode: voiceModeForToggles() });
+          return;
+        }
+        case "voice_listen": {
+          // ADR-0054 (issue #1992, шаг 5a-impl): тумблер wake-потока.
+          // Идемпотентная команда — повтор с тем же значением не шлём.
+          // Оптимистичной подсветки нет (в отличие от STT/LLM): UI должен
+          // показывать «…» пока сервер не подтвердил (ADR-0018). Поэтому
+          // сразу НЕ обновляем voiceListenOn — только после voice_listen_ack.
+          // UI сцены сам держит «идёт запрос» через bridge.voicePipeline.
+          const target = action.on;
+          if (voiceListenOn === target) return;
+          sendCmd({ cmd: "voice_listen", ts_ms: Date.now(), on: target, reason: "ui_panel" });
           return;
         }
         case "preset": {
@@ -1145,6 +1165,24 @@ export function bootstrap(opts: BootstrapOptions): { dispose(): void } {
             voiceOffCached = mode === "off";
             bridge.supervisorPanel.setVoiceOff(voiceOffCached);
             applyVoiceModeToPipeline(mode);
+            return;
+          }
+          // ADR-0054 (issue #1992, шаг 5a-impl): подтверждение тумблера
+          // always-on wake. Только после ack переключаем клиентский стор
+          // и подсвечиваем UI; до этого момента UI показывает «…»/«идёт
+          // запрос». Если сервер прислал on=false с reason — покажем
+          // тост с причиной (например wake-источник не сконфигурирован).
+          if (t === "voice_listen_ack") {
+            const e = event as { on?: boolean; reason?: string };
+            voiceListenOn = typeof e.on === "boolean" ? e.on : voiceListenOn;
+            voiceListenLastReason = typeof e.reason === "string" ? e.reason : null;
+            bridge.voicePipeline.setVoiceListenOn(voiceListenOn);
+            if (voiceListenLastReason && voiceListenOn === false) {
+              toast.show(`Wake-поток выключен: ${voiceListenLastReason}`, {
+                level: "info",
+                autoHideMs: 4000
+              });
+            }
             return;
           }
 

@@ -178,6 +178,21 @@ export interface AvatarReleaseFloorCmd {
   kind: "teleop" | "voice";
 }
 
+// ADR-0054 (issue #1992, шаг 5a-impl): always-on wake stream (шлем-микрофон
+// гонит int16 PCM 16 kHz в server с stream_id=2, гейт на VAD, тумблер
+// в панели). Команда `voice_listen` с {on: true|false} — control-фрейм
+// (stream_id=0, не BINARY), идемпотентная: повторный start = no-op,
+// start после start = ack{nothing_changed}, stop после stop = то же.
+// Сервер НЕ переспрашивает вейк-стор; он принимает флаг и применяет.
+// (Forward-compat поле `reason` — если когда-нибудь понадобится логгировать
+// источник переключения, минуя UI: 'ui_panel' | 'auto_default' | ...).
+export interface VoiceListenCmd {
+  cmd: "voice_listen";
+  ts_ms: number;
+  on: boolean;
+  reason?: string;
+}
+
 export type JsonCmd =
   | TeleopTwistCmd
   | TeleopHeartbeatCmd
@@ -185,6 +200,7 @@ export type JsonCmd =
   | VoicePttStartCmd
   | VoicePttStopCmd
   | VoiceModeCmd
+  | VoiceListenCmd
   | StreamSelectCmd
   | StreamListCmd
   | ListVoicesCmd
@@ -278,6 +294,17 @@ export type JsonEvent =
   | {
       type: "floor_lost";
       floor: "teleop" | "voice";
+      reason?: string;
+      ts_ms: number;
+    }
+  // ADR-0054 (issue #1992, шаг 5a-impl): сервер подтверждает смену
+  // voice_listen. `on` — фактическое состояние wake-потока на сервере
+  // (может отличаться от запрошенного, например если wake-источник не
+  // сконфигурирован → on=false с reason='no_wake_source'). `reason`
+  // опционально — для логов.
+  | {
+      type: "voice_listen_ack";
+      on: boolean;
       reason?: string;
       ts_ms: number;
     }

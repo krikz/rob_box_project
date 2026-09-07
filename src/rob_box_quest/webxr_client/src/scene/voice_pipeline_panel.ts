@@ -66,7 +66,13 @@ export type VoicePipelineAction =
   | { kind: "preset"; preset: VoicePresetId }
   | { kind: "lang"; language: VoiceLanguage }
   /** Выключить переписывание: робот произносит сказанное дословно. */
-  | { kind: "style_off" };
+  | { kind: "style_off" }
+  // ADR-0054 (issue #1992, шаг 5a-impl): тумблер always-on wake-потока.
+  // В UI живёт рядом с STT/LLM как отдельная кнопка «LISTEN», потому что
+  // концептуально это режим клиента, не ступень пайплайна: шлем сам гонит
+  // PCM на wake-роутер сервера, до STT-ступени. UI-path такой же, как у
+  // STT: panel.id → parsePipelineTargetId → action → bootstrap.
+  | { kind: "voice_listen"; on: boolean };
 
 /**
  * Разобрать id цели указателя. `null` — цель не наша, обработчик должен
@@ -87,6 +93,12 @@ export function parsePipelineTargetId(id: string): VoicePipelineAction | null {
     const language = rest.slice("lang:".length);
     return language ? { kind: "lang", language: language as VoiceLanguage } : null;
   }
+  // ADR-0054: voice_listen:on / voice_listen:off — тумблер wake-потока.
+  // Формат с явным значением (а не просто `voice_listen`), чтобы парсер
+  // не возвращал true-action без указания состояния: выключение — это
+  // тоже явный выбор пользователя, а не отсутствие события.
+  if (rest === "voice_listen:on") return { kind: "voice_listen", on: true };
+  if (rest === "voice_listen:off") return { kind: "voice_listen", on: false };
   return null;
 }
 
@@ -373,6 +385,8 @@ export interface VoicePipelineView {
   llmOn: boolean | null;
   /** Активный голос TTS (voice_id из voice_list / voice_set_ack). */
   currentVoice: string | null;
+  /** ADR-0054 (issue #1992): always-on wake-поток вкл/выкл. null — до ack. */
+  voiceListenOn: boolean | null;
   /**
    * Где сейчас реплика оператора (`state/utterance_progress.ts`).
    * null — прогресс ещё не считался ни разу (панель показывает покой).
@@ -389,6 +403,7 @@ export const DEFAULT_VIEW: VoicePipelineView = {
   sttOn: null,
   llmOn: null,
   currentVoice: null,
+  voiceListenOn: null,
   progress: null
 };
 
@@ -404,6 +419,8 @@ export interface VoicePipelinePanelHandle {
   setSttOn(on: boolean | null): void;
   setLlmOn(on: boolean | null): void;
   setCurrentVoice(voiceId: string | null): void;
+  /** ADR-0054: подсветка тумблера always-on wake. null — до ack сервера. */
+  setVoiceListenOn(on: boolean | null): void;
   /** Обновить прогресс реплики (вызывается на каждое изменение стадии). */
   setProgress(progress: UtteranceProgressView | null): void;
   setVisible(visible: boolean): void;
@@ -738,6 +755,14 @@ export function createVoicePipelinePanel(): VoicePipelinePanelHandle {
     setCurrentVoice(voiceId: string | null): void {
       if (view.currentVoice === voiceId) return;
       view = { ...view, currentVoice: voiceId };
+      commit();
+    },
+    // ADR-0054 (issue #1992, шаг 5a-impl): UI-стейт тумблера always-on
+    // wake. Симметрично setSttOn: null = «до ack сервера», true/false =
+    // подтверждённое состояние.
+    setVoiceListenOn(on: boolean | null): void {
+      if (view.voiceListenOn === on) return;
+      view = { ...view, voiceListenOn: on };
       commit();
     },
     setProgress(progress: UtteranceProgressView | null): void {

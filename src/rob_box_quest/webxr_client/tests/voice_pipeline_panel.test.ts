@@ -58,6 +58,21 @@ describe("parsePipelineTargetId", () => {
   it("lang", () => {
     expect(parsePipelineTargetId(langTargetId("en"))).toEqual({ kind: "lang", language: "en" });
   });
+  it("voice_listen:on / voice_listen:off (ADR-0054, issue #1992)", () => {
+    expect(parsePipelineTargetId("vpl:voice_listen:on")).toEqual({
+      kind: "voice_listen",
+      on: true
+    });
+    expect(parsePipelineTargetId("vpl:voice_listen:off")).toEqual({
+      kind: "voice_listen",
+      on: false
+    });
+  });
+  it("voice_listen без on/off → null (защита от регрессии формата)", () => {
+    // Голое `vpl:voice_listen` без значения — невалидно: парсер не должен
+    // возвращать action без состояния (тогда невозможно отличить вкл от выкл).
+    expect(parsePipelineTargetId("vpl:voice_listen")).toBeNull();
+  });
   it("чужие id → null", () => {
     expect(parsePipelineTargetId("sup:mode:mixed")).toBeNull();
     expect(parsePipelineTargetId("tts:launch")).toBeNull();
