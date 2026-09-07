@@ -12,4 +12,6 @@
 # стабильности).
 
 Command  command
+---
+
 Response response
