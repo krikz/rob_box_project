@@ -106,7 +106,7 @@ EOF
 )
 OUT_A="$(run_validate "$A_DIR")"
 RC_A=$?
-GOT_FREE="$(printf '%s' "$OUT_A" | grep -c 'Next free slot:' || true)"
+GOT_FREE="$(printf '%s' "$OUT_A" | grep -cE 'Next free (slot|в [A-Z]+-домене)' || true)"
 GOT_COLLIDE_MSG="$(printf '%s' "$OUT_A" | grep -c 'ADR namespace collision detected' || true)"
 # Slug извлекается sed'ом до первого `-` после номера. Файл 0040-e2e-process.md
 # → slug = "e2e-process" (полный kebab до конца имени, без .md).
@@ -317,7 +317,7 @@ EOF
 )
 OUT_I="$(run_validate "$I_DIR")"
 RC_I=$?
-GOT_BOTH="$(printf '%s' "$OUT_I" | grep -cE '^  (40|42) ' || true)"
+GOT_BOTH="$(printf '%s' "$OUT_I" | grep -cE '^  RT:(40|42) ' || true)"
 if [ "$RC_I" -ne 1 ] || [ "${GOT_BOTH:-0}" -lt 2 ]; then
     fail_count=$((fail_count + 1))
     fail_log="${fail_log}FAIL [I: multi-collision]: expected rc=1 + обе collision-линии.
@@ -355,6 +355,120 @@ $OUT_J
 else
     pass_count=$((pass_count + 1))
     echo "PASS [J: --strict-on-clean] (rc=$RC_J)"
+fi
+
+# --- K. AF-домен: collision в AF (issue #2076, Phase 2) ---
+# Baseline: AF-0052-watchdog.md. New: AF-0052-dedup.md → collision в AF-домене.
+# ВАЖНО: watchdog добавляется в baseline (push в origin/develop), dedup — в новый коммит.
+K_DIR="$WORK/K"
+mkdir -p "$K_DIR/docs/adr"
+cd "$K_DIR" || exit 2
+git init -q -b main
+git config user.email "test@test"
+git config user.name "test"
+git remote add origin "$K_DIR"
+# Baseline: один ADR в AF
+cat > docs/adr/AF-0052-watchdog.md <<'EOF'
+# ADR-AF-0052: watchdog
+EOF
+git add . >/dev/null
+git commit -q -m "baseline AF"
+git checkout -q -b develop
+git push -q origin develop
+# Новый файл с тем же AF-номером
+cat > docs/adr/AF-0052-dedup.md <<'EOF'
+# ADR-AF-0052: dedup
+EOF
+(
+    cd "$K_DIR" || exit 2
+    git add . >/dev/null
+    git commit -q -m "AF-domain collision"
+)
+OUT_K="$(run_validate "$K_DIR")"
+RC_K=$?
+GOT_K="$(printf '%s' "$OUT_K" | grep -cE '^  AF:52 ' || true)"
+GOT_K_FREE="$(printf '%s' "$OUT_K" | grep -c 'Next free в AF-домене' || true)"
+if [ "$RC_K" -ne 1 ] || [ "${GOT_K:-0}" -lt 1 ] || [ "${GOT_K_FREE:-0}" -lt 1 ]; then
+    fail_count=$((fail_count + 1))
+    fail_log="${fail_log}FAIL [K: af-domain-collision]: expected rc=1 + AF:52 line + AF next-free hint.
+  rc=$RC_K
+  af-line-matches=$GOT_K
+  af-next-free-matches=$GOT_K_FREE
+  output:
+$OUT_K
+"
+else
+    pass_count=$((pass_count + 1))
+    echo "PASS [K: af-domain-collision] (rc=$RC_K)"
+fi
+
+# --- L. Cross-domain: AF-0052 при RT-0052 в baseline → clean (разные домены) ---
+L_DIR="$WORK/L"
+mkdir -p "$L_DIR/docs/adr"
+cd "$L_DIR" || exit 2
+git init -q -b main
+git config user.email "test@test"
+git config user.name "test"
+git remote add origin "$L_DIR"
+echo "# ADR-0052: mcp slice" > docs/adr/0052-mcp-slice.md
+git add . >/dev/null
+git commit -q -m baseline
+git checkout -q -b develop
+git push -q origin develop
+cat > docs/adr/AF-0052-watchdog.md <<'EOF'
+# ADR-AF-0052: watchdog
+EOF
+(
+    cd "$L_DIR" || exit 2
+    git add . >/dev/null
+    git commit -q -m "AF file, no collision expected"
+)
+OUT_L="$(run_validate "$L_DIR")"
+RC_L=$?
+GOT_L_CLEAN="$(printf '%s' "$OUT_L" | grep -c '^validate_adr_namespace: clean' || true)"
+if [ "$RC_L" -ne 0 ] || [ "${GOT_L_CLEAN:-0}" -lt 1 ]; then
+    fail_count=$((fail_count + 1))
+    fail_log="${fail_log}FAIL [L: cross-domain-no-collision]: AF-0052 при RT-0052 в baseline → clean.
+  rc=$RC_L
+  clean-matches=$GOT_L_CLEAN
+  output:
+$OUT_L
+"
+else
+    pass_count=$((pass_count + 1))
+    echo "PASS [L: cross-domain-no-collision] (rc=$RC_L)"
+fi
+
+# --- M. AF fresh: AF-0053 в baseline пустом → clean ---
+M_DIR="$WORK/M"
+mkdir -p "$M_DIR/docs/adr"
+cd "$M_DIR" || exit 2
+git init -q -b main
+git config user.email "test@test"
+git config user.name "test"
+git remote add origin "$M_DIR"
+echo "no adr" > README.md
+git add . >/dev/null
+git commit -q -m empty
+cat > docs/adr/AF-0001-fresh.md <<'EOF'
+# ADR-AF-0001: fresh
+EOF
+git add . >/dev/null
+git commit -q -m fresh
+OUT_M="$(run_validate "$M_DIR" --ref HEAD~1)"
+RC_M=$?
+GOT_M_CLEAN="$(printf '%s' "$OUT_M" | grep -c '^validate_adr_namespace: clean' || true)"
+if [ "$RC_M" -ne 0 ] || [ "${GOT_M_CLEAN:-0}" -lt 1 ]; then
+    fail_count=$((fail_count + 1))
+    fail_log="${fail_log}FAIL [M: af-fresh-empty-baseline]: AF-0001 при пустом baseline → clean.
+  rc=$RC_M
+  clean-matches=$GOT_M_CLEAN
+  output:
+$OUT_M
+"
+else
+    pass_count=$((pass_count + 1))
+    echo "PASS [M: af-fresh-empty-baseline] (rc=$RC_M)"
 fi
 
 # --- Итог ---
