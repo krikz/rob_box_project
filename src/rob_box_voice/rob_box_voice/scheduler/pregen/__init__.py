@@ -50,6 +50,7 @@ from __future__ import annotations
 
 from .pre_gen import (
     DEFAULT_NEXT_PRIORITY,
+    PreGenTask,
     build_pregen_task,
 )
 from .estimator import (
@@ -78,6 +79,7 @@ from .speculative_executor import (
 __all__ = [
     # data classes
     "SegmentEstimate",
+    "PreGenTask",
     "PreGenResult",
     "QualityVerdict",
     "Decision",
