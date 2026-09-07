@@ -118,6 +118,14 @@ EXPECTED=(
     # docker/ (t_29b9ce36 -> PR #1874) и scripts/ (t_cfa21388, develop RED ~9ч,
     # 20+ PR). Guard сверяет список каждого job'а с реальными ссылками тестов.
     validate_test_ws_dirs.py
+    # Post-PR gate на scope-drift (issue #2038, ADR-0055): блокирует push если
+    # PR содержит файлы вне PR_ALLOWED_PREFIXES. Дополняет validate_branch_freshness.sh
+    # (ADR-0045 freshness — commits behind): freshness ОК не спасает от scope-drift,
+    # потому что base sha уже содержит «правильные» файлы — drift идёт через rebase
+    # на старую ветку (ретро PR #1978/#1979/#2036: каждый раз тянули 12 файлов
+    # webxr_client/* от AV-17). Воркер указывает scope в карточке; gate fail
+    # → `kanban_block kind=drift-detected`, как требует acceptance в #2038.
+    validate_pr_scope.sh
     # Post-merge build trigger (issue #1475, ADR-0022 extension): после
     # MERGED PR в develop/main — запускает L-Build-All-Services чтобы
     # .image-versions.dev получил свежие dev-<sha> теги.
