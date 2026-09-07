@@ -807,6 +807,14 @@ voice-канал (ACTIVE: чанк k «…и поэтому я предлага�
 который кладёт сегмент в голосовой канал робота с `priority=operator`.
 ТАРС не договаривается с планировщиком личности, он просто говорит роботом.
 
+**Набор значений `priority`** — `operator` \| `personality` \| `normal`,
+тот же, что у вложенного `pregenerate.priority` в ADR-0056 (issue #1996).
+Врезку даёт только `operator`; `personality` и `normal` идут в хвост
+очереди и по порядку сегодня не различаются — значение сохраняется, чтобы
+его видели планировщик предгенерации и метрики. Изначально здесь
+предполагались два значения; третье добавлено решением владельца, чтобы
+контракт не расходился с ADR-0056 и `personality` не терялась молча.
+
 **Следствие, которое надо реализовать.** Чтобы «сразу после текущего чанка»
 работало, очередь перед динамиком должна уметь приоритет. Сегодня очередь живёт
 в процессе `dialogue_node`, а ТАРС публикует в `tts_node` напрямую — приоритет
@@ -899,7 +907,7 @@ voice-канал (ACTIVE: чанк k «…и поэтому я предлага�
 | топик | тип | pub | sub | |
 |---|---|---|---|---|
 | `/voice/dialogue/response` | `String` | `dialogue_node` | `tts_node` | = голос личности → динамики |
-| `/voice/tts/request` | `String` JSON | `avatar_supervisor` | `tts_node` | ~ **только инструмент `say`** → динамики робота; добавляется поле `priority` (`operator` \| `normal`), см. §8а.3 |
+| `/voice/tts/request` | `String` JSON | `avatar_supervisor` | `tts_node` | ~ **только инструмент `say`** → динамики робота; добавляется поле `priority` (`operator` \| `personality` \| `normal`), см. §8а.3 |
 | `/avatar/tts/request` | `String` JSON | `avatar_supervisor` | `tts_node` | **+** собственный ответ ТАРС → **в шлем**; поле `sink:"headset"` |
 | `/voice/tts/finished` | `String` | `tts_node` | оба агента | = |
 | `/voice/tts/batch_registered`, `/voice/tts/batch_complete` | `String` | `tts_node` | `dialogue_node` | = |

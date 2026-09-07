@@ -225,19 +225,68 @@ def test_priority_field_default_normal(node):
 def test_normalize_tts_priority_whitelist():
     """Прямая проверка whitelist-хелпера (issue #1996).
 
-    2-значный набор (``operator``/``normal``) — НЕ 3-значный
-    ``{"normal", "operator", "personality"}`` из ADR-0056
-    ``pregenerate.priority`` (другое поле, другое место в payload,
-    описывает СЛЕДУЮЩИЙ чанк, а не текущий запрос). См. модульный
-    докстринг ``_normalize_tts_priority`` в tts_node.py.
+    Набор выровнен с ADR-0056: те же три значения, что валидирует
+    ``scheduler/pregen/pre_gen.py`` для вложенного
+    ``pregenerate.priority``. Мусор по-прежнему схлопывается в
+    ``"normal"`` — запрос не должен падать из-за кривого payload.
     """
     assert _normalize_tts_priority("operator") == "operator"
+    assert _normalize_tts_priority("personality") == "personality"
     assert _normalize_tts_priority("normal") == "normal"
     assert _normalize_tts_priority(None) == "normal"
     assert _normalize_tts_priority("") == "normal"
     assert _normalize_tts_priority("OPERATOR") == "normal"
-    assert _normalize_tts_priority("personality") == "normal"
     assert _normalize_tts_priority(123) == "normal"
+
+
+def test_normalize_whitelist_matches_adr_0056_pregen():
+    """Регрессия: два контракта не должны снова разъехаться.
+
+    ``priority`` (верхнеуровневое поле ``/voice/tts/request``, issue
+    #1996) и ``pregenerate.priority`` (вложенное, ADR-0056) — разные
+    поля, но набор значений у них общий. Пока он общий, продюсеру не
+    нужно помнить, какое из двух полей что принимает; разъедутся —
+    вернётся молчаливая потеря значения, из-за которой этот тест и
+    заведён.
+    """
+    from rob_box_voice.tts_node import _TTS_PRIORITY_VALUES
+
+    assert set(_TTS_PRIORITY_VALUES) == {"normal", "operator", "personality"}
+
+
+def test_personality_does_not_preempt_and_keeps_its_value():
+    """``personality`` доезжает как есть, но очередь не прыгает.
+
+    Прецеденция по целевой архитектуре §8а.3: врезку («сразу за
+    текущим чанком») даёт только ``operator``; речь личности — обычный
+    хвост очереди. Важно, что при этом значение НЕ схлопывается в
+    ``"normal"``: его читает планировщик предгенерации и метрики.
+    """
+    assert _normalize_tts_priority("personality") == "personality"
+
+    from rob_box_voice.tts_node import _TTS_PRIORITY_PREEMPTS
+
+    assert "operator" in _TTS_PRIORITY_PREEMPTS
+    assert "personality" not in _TTS_PRIORITY_PREEMPTS
+    assert "normal" not in _TTS_PRIORITY_PREEMPTS
+
+
+def test_personality_goes_to_queue_tail_like_normal(node):
+    """``personality`` встаёт в хвост, как ``normal`` — не врезается.
+
+    Три запроса подряд: ``normal``, ``personality``, ``operator``.
+    Первые два сохраняют порядок поступления, третий прыгает вперёд.
+    """
+    seq_a = _submit(node, "A", "normal")
+    seq_b = _submit(node, "B", "personality")
+    assert seq_a < seq_b, (
+        f"personality не должна обгонять normal: A={seq_a}, B={seq_b}"
+    )
+
+    seq_c = _submit(node, "C", "operator")
+    assert seq_c < seq_b, (
+        f"operator обязан врезаться перед хвостом: C={seq_c}, B={seq_b}"
+    )
 
 
 # ── 6. AST-regression: priority не добавлен как позиционный параметр ──────
