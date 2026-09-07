@@ -128,6 +128,32 @@ STALE_AFTER_UPSTREAM_FIX_SCAN="${STALE_AFTER_UPSTREAM_FIX_SCAN:-true}"
 # воркеру даже успеть заметить первый auto-block. 4ч — баланс между
 # "не спамим" и "не пропускаем критический fix".
 STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS="${STALE_AFTER_UPSTREAM_FIX_COOLDOWN_SECONDS:-14400}"
+# Issue #2063 / ретро t_6127fb86: pr-reviewer оставил содержательный review
+# (не approve, не request-changes) → merge-gate должен явно перевести PR в
+# режим follow-up (метка + kanban-карточка), а не просто молча ставить
+# `needs-review` и уходить. Иначе: review был → никто не знает что нужно
+# фиксить → PR стоит (см. PR #2058).
+NEEDS_FOLLOWUP_LABEL="${NEEDS_FOLLOWUP_LABEL:-needs-followup}"
+# Review-handling scan включён по умолчанию; OFF — для emergency disable.
+REVIEW_HANDLING_SCAN="${REVIEW_HANDLING_SCAN:-true}"
+# Cooldown для повторного срабатывания scan на одном PR (секунды).
+# По умолчанию 6ч — больше типичного времени между review-events, но
+# достаточно часто для re-trigger если Шифу руками снимет метку и снова
+# появится новый review (например, после rebase и нового review pass).
+REVIEW_HANDLING_COOLDOWN_SECONDS="${REVIEW_HANDLING_COOLDOWN_SECONDS:-21600}"
+# Минимальный возраст review-event (секунды) — пропускаем свежие review
+# (< 1 мин), которые ещё могут обрабатываться e2e-process или pr-reviewer
+# (он же иногда догоняет дополнительные комментарии). Дефолт 60s.
+REVIEW_HANDLING_MIN_AGE_SECONDS="${REVIEW_HANDLING_MIN_AGE_SECONDS:-60}"
+# Mapping reviewer-login → assignee. Если ревьюер — наш агент (Hermes
+# воркер), назначаем карточку прямо на него. Иначе fallback на devops
+# (он же triage-воркер, который переназначит после разбора).
+# Список расширяем по мере появления новых reviewer-логинов.
+REVIEWER_AGENT_MAP="${REVIEWER_AGENT_MAP:-devops:devops backend:backend developer:developer tester:tester architect:architect llm-expert:llm-expert designer:designer analyst:analyst}"
+# Idempotency-key для kanban create — чтобы повторный тик не плодил
+# дубликаты карточек на тот же PR+review-batch. Включает reviewer-login
+# + submitted_at первого сработавшего review.
+REVIEW_HANDLING_IDEMPOTENCY_PREFIX="${REVIEW_HANDLING_IDEMPOTENCY_PREFIX:-pr-review-handling}"
 # State-файл для rate-limit (ADR-0035 / task t_d83c9430).
 # Default: $HOME/.hermes/state/merge-gate/auto-block-rate.json
 # (имя "auto-block-rate.json" — это спецификация из body карточки t_d83c9430).
@@ -191,6 +217,10 @@ af_load_profile_env "$PROFILE_ENV"
 : "${BIG_BANG_OVERRIDE_LABEL:=big-bang-override}"
 : "${BIG_BANG_MAX_COMMITS:=50}"
 : "${BIG_BANG_MAX_LINES:=3000}"
+: "${NEEDS_FOLLOWUP_LABEL:=needs-followup}"
+: "${REVIEW_HANDLING_SCAN:=true}"
+: "${REVIEW_HANDLING_COOLDOWN_SECONDS:=21600}"
+: "${REVIEW_HANDLING_MIN_AGE_SECONDS:=60}"
 : "${DEVELOP_BRANCH:=develop}"
 : "${STALE_REBASE_AHEAD_THRESHOLD:=30}"
 : "${STALE_REBASE_COMMENT_DEDUP_HOURS:=24}"
@@ -6413,6 +6443,333 @@ for pr in data:
 ' "$BACKFILL_AGE_MINUTES" 2>/dev/null)
 
 # ============================================================================
+# Review-handling scan (issue #2063 / ретро t_6127fb86)
+# ----------------------------------------------------------------------------
+# ПРОБЛЕМА (PR #2058): pr-reviewer оставил содержательный разбор (3 проблемы,
+# запрос тестов) — НО не сделал `gh pr review --request-changes`. Merge-gate
+# видит наличие review и ставит `needs-review`. Но Шифу в review queue видит
+# «review был», входит в PR — а там НЕ approve. Никто не создал kanban-карточку
+# с разбором → воркер-автор PR не знает что фиксить → PR стоит.
+#
+# Сценарий (восстановлено из PR #2058):
+#   1. Backend открывает PR #2058 (ADR-0055 step 05b)
+#   2. GOODWORKRINKZ (pr-reviewer) оставляет комментарий с 3 проблемами + запрос
+#      Docker-тестов
+#   3. merge-gate видит review, ставит `needs-review` и уходит
+#   4. PR стоит — никто не движет, воркер не знает что должен гонять Docker-тесты
+#
+# РЕШЕНИЕ: новый scan в merge-gate, который после обнаружения review-event
+# (не approve/reject, а COMMENTED — текстовый комментарий с конкретными
+# требованиями) переводит PR в явный follow-up режим:
+#   1. Ставит `needs-followup` метку на PR (новая, signal для воркера/Шифу)
+#   2. Снимает `needs-review` (он означал «ревью ещё не было» — теперь это неправда)
+#   3. Создаёт kanban-карточку на разбор review с assignee = ревьюер (если наш
+#      агент) или fallback на devops
+#   4. Дедупликация: idempotency-key на основе PR+reviewer+first-trigger-time
+#      + проверка что метка `needs-followup` ещё не стоит + уже-существующая
+#      kanban-карточка с тем же prefix в title
+#
+# Триггер: review-event в state COMMENTED (не APPROVED, не DISMISSED, не CHANGES_REQUESTED)
+# от ревьюера ≠ self (чтобы не реагировать на собственные whoami-комменты).
+# Минимальный возраст review (60s) — пропускаем свежие, ещё не «устаканенные».
+#
+# Не триггерим:
+#   - APPROVED → merge-gate уже знает что approve, ничего делать не надо
+#   - CHANGES_REQUESTED → GitHub сам блокирует merge button; ставить follow-up
+#     карточку поверх — двойная работа. Оставляем на needs-review пути.
+#   - DISMISSED → ревьюер сам отозвал, не нужно триггерить
+#   - review от merge-gate own login (whoami) — это сам процесс, не реальный review
+#
+# Cooldown: REVIEW_HANDLING_COOLDOWN_SECONDS (6ч по умолчанию) между
+# повторными trigger-ами на одном PR — на случай если Шифу руками снял метку
+# и появился новый review pass.
+#
+# ADR-0018: честный FAIL — comment на PR содержит reviewer-login + submitted_at
+# + превью review body (первые 500 символов). Полный body — в kanban-карточке.
+# ============================================================================
+review_handling_processed=0
+review_handling_skipped=0
+review_handling_errored=0
+
+if [ "$REVIEW_HANDLING_SCAN" = "true" ]; then
+    log "review-handling-scan: scanning OPEN PRs with recent review events (state=COMMENTED, age>=${REVIEW_HANDLING_MIN_AGE_SECONDS}s)"
+    # Сканируем только PR base=develop, OPEN, draft=false — чтобы не трогать
+    # экспериментальные ветки и draft-WIP.
+    _rha_prs_json="$(gh pr list --repo "$GH_REPO" --state open --base "$DEVELOP_BRANCH" \
+        --json number,title,headRefName,isDraft,labels 2>/dev/null || echo '[]')"
+    if [ -z "$_rha_prs_json" ]; then _rha_prs_json='[]'; fi
+
+    # Self-id (login merge-gate own user) — пропускаем review от себя.
+    # В dry-run окружениях (тесты) может быть пустым — fallback пустой login.
+    _rha_self_login="$(gh api user --jq '.login' 2>/dev/null || echo '')"
+
+    while IFS=$'\t' read -r rha_pr rha_head rha_title rha_is_draft rha_labels; do
+        [ -z "$rha_pr" ] && continue
+        case "$rha_is_draft" in
+            true|True|1) log "review-handling-scan: PR #${rha_pr} — draft, skip"; review_handling_skipped=$((review_handling_skipped+1)); continue ;;
+        esac
+
+        # Idempotency: если `needs-followup` уже стоит — skip (карточка уже создана).
+        if has_label "$(printf '%s' "$rha_labels" | tr '[:upper:]' '[:lower:]')" "$NEEDS_FOLLOWUP_LABEL"; then
+            log "review-handling-scan: PR #${rha_pr} — ${NEEDS_FOLLOWUP_LABEL} уже стоит, skip (idempotency)"
+            review_handling_skipped=$((review_handling_skipped+1)); continue
+        fi
+
+        # Тянем reviews. GitHub REST: repos/{owner}/{repo}/pulls/{n}/reviews
+        # Возвращает массив {user:{login}, state, submitted_at, body}.
+        _rha_reviews_json="$(gh api "repos/${GH_REPO}/pulls/${rha_pr}/reviews?per_page=100" 2>/dev/null || echo '[]')"
+        if [ -z "$_rha_reviews_json" ] || [ "$_rha_reviews_json" = "[]" ]; then
+            log "review-handling-scan: PR #${rha_pr} — reviews API empty/failed, skip"
+            review_handling_skipped=$((review_handling_skipped+1)); continue
+        fi
+
+        # Извлекаем последний COMMENTED review (от не-self ревьюера, возраст ≥ MIN_AGE).
+        # Выбираем COMMENTED, не APPROVED/CHANGES_REQUESTED/DISMISSED, потому что:
+        #   - APPROVED → воркер уже знает, идём в merge
+        #   - CHANGES_REQUESTED → GitHub сам блокирует merge-ui, дополнительный
+        #     follow-up создаст дубль (см. ADR-0018 honest-Fail)
+        #   - DISMISSED → ревьюер отозвал, реагировать не нужно
+        # COMMENTED = текстовый комментарий с конкретными требованиями — наш кейс.
+        # Передаём переменные через environment — python читает через
+        # os.environ.get. export обязателен: без него дочерний процесс
+        # python не видит эти переменные (positional args — это sys.argv,
+        # не env).
+        export _RHA_SELF_LOGIN="$_rha_self_login"
+        export _RHA_MIN_AGE="$REVIEW_HANDLING_MIN_AGE_SECONDS"
+        export _RHA_COOLDOWN="$REVIEW_HANDLING_COOLDOWN_SECONDS"
+        _rha_relevant="$(printf '%s' "$_rha_reviews_json" | _RHA_SELF_LOGIN="$_rha_self_login" _RHA_MIN_AGE="$REVIEW_HANDLING_MIN_AGE_SECONDS" _RHA_COOLDOWN="$REVIEW_HANDLING_COOLDOWN_SECONDS" python3 -c '
+import json, sys, os
+from datetime import datetime, timezone, timedelta
+try:
+    reviews = json.loads(sys.stdin.read() or "[]")
+except Exception:
+    print(""); sys.exit(0)
+if not isinstance(reviews, list):
+    print(""); sys.exit(0)
+self_login = os.environ.get("_RHA_SELF_LOGIN", "") or ""
+min_age_s = int(os.environ.get("_RHA_MIN_AGE", "60") or "60")
+cooldown_s = int(os.environ.get("_RHA_COOLDOWN", "21600") or "21600")
+now = datetime.now(timezone.utc)
+# Берём последний COMMENTED review от не-self ревьюера, который
+# старше min_age_s (свежие ещё могут дописываться).
+candidates = []
+for r in reviews:
+    if not isinstance(r, dict): continue
+    if r.get("state") != "COMMENTED": continue
+    user = r.get("user") or {}
+    if user.get("login") == self_login: continue
+    submitted = r.get("submitted_at") or ""
+    try:
+        sub_dt = datetime.fromisoformat(submitted.replace("Z", "+00:00"))
+    except Exception:
+        continue
+    age = (now - sub_dt).total_seconds()
+    if age < min_age_s: continue
+    candidates.append((sub_dt, r))
+if not candidates:
+    print(""); sys.exit(0)
+candidates.sort(key=lambda x: x[0], reverse=True)
+latest_dt, latest = candidates[0]
+# Output TSV: login<TAB>submitted_at<TAB>body<TAB>id
+login = (latest.get("user") or {}).get("login", "")
+body = latest.get("body") or ""
+rid = latest.get("id") or ""
+print("%s\t%s\t%s\t%s" % (login, latest_dt.isoformat(), body, rid))
+' 2>/dev/null || true)"
+        unset _RHA_SELF_LOGIN _RHA_MIN_AGE _RHA_COOLDOWN
+
+        if [ -z "$_rha_relevant" ]; then
+            log "review-handling-scan: PR #${rha_pr} — нет подходящих COMMENTED reviews (age>=${REVIEW_HANDLING_MIN_AGE_SECONDS}s, ≠self), skip"
+            review_handling_skipped=$((review_handling_skipped+1)); continue
+        fi
+
+        _rha_reviewer="$(printf '%s' "$_rha_relevant" | cut -f1)"
+        _rha_submitted="$(printf '%s' "$_rha_relevant" | cut -f2)"
+        _rha_body="$(printf '%s' "$_rha_relevant" | cut -f3)"
+        _rha_review_id="$(printf '%s' "$_rha_relevant" | cut -f4)"
+
+        # Rate-limit / cooldown: проверяем наш state-файл (как STALE_AUTO_BLOCK_STATE_DIR)
+        _rha_state_dir="$STALE_AUTO_BLOCK_STATE_DIR"
+        _rha_state_file="${_rha_state_dir}/review-handling-state.json"
+        _rha_last_trigger_epoch=""
+        if [ -f "$_rha_state_file" ]; then
+            _rha_last_trigger_epoch="$(python3 -c '
+import json, sys, os
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print(""); sys.exit(0)
+pr = sys.argv[2]
+v = d.get(pr)
+print(v if v else "")
+' "$_rha_state_file" "$rha_pr" 2>/dev/null || echo '')"
+        fi
+        _rha_now_epoch="$(date +%s)"
+        if [ -n "$_rha_last_trigger_epoch" ] \
+            && [ $(( _rha_now_epoch - _rha_last_trigger_epoch )) -lt "$REVIEW_HANDLING_COOLDOWN_SECONDS" ]; then
+            log "review-handling-scan: PR #${rha_pr} — cooldown active (last=${_rha_last_trigger_epoch}, now=${_rha_now_epoch}), skip"
+            review_handling_skipped=$((review_handling_skipped+1)); continue
+        fi
+
+        # Определяем assignee по reviewer-login → agent mapping.
+        _rha_assignee=""
+        for pair in $REVIEWER_AGENT_MAP; do
+            _rha_map_login="${pair%%:*}"
+            _rha_map_ag="${pair#*:}"
+            if [ "$_rha_map_login" = "$_rha_reviewer" ]; then
+                _rha_assignee="$_rha_map_ag"
+                break
+            fi
+        done
+        if [ -z "$_rha_assignee" ]; then
+            # Не наш агент — fallback на devops (он же triage, переназначит).
+            _rha_assignee="devops"
+            log "review-handling-scan: PR #${rha_pr} reviewer=${_rha_reviewer} — внешний ревьюер, assignee=devops (fallback)"
+        else
+            log "review-handling-scan: PR #${rha_pr} reviewer=${_rha_reviewer} — наш агент, assignee=${_rha_assignee}"
+        fi
+
+        # Truncate body для комментария (полный — в kanban body).
+        _rha_body_preview="$(printf '%s' "$_rha_body" | head -c 500)"
+        [ "${#_rha_body}" -gt 500 ] && _rha_body_preview="${_rha_body_preview}…"
+
+        # Idempotency-key: PR + reviewer + submitted_at.
+        _rha_idem_key="${REVIEW_HANDLING_IDEMPOTENCY_PREFIX}-pr${rha_pr}-${_rha_reviewer}-$(printf '%s' "$_rha_submitted" | tr -cd '0-9')"
+
+        # Title для kanban-карточки.
+        _rha_card_title="🔍 PR #${rha_pr} review разбор: ${rha_title}"
+
+        # Body — полный review + ссылки + контекст.
+        _rha_card_body="## Review от ${_rha_reviewer} (submitted ${_rha_submitted})
+
+PR: #${rha_pr} — ${rha_title}
+Branch: \`${rha_head}\`
+Reviewer: @${_rha_reviewer}
+
+### Что сказал ревьюер
+
+\`\`\`
+${_rha_body}
+\`\`\`
+
+---
+
+## Что нужно сделать
+
+1. **Прочитать review полностью** и проверить каждое требование.
+2. **Если требования валидны** — внести правки в код/тесты, обновить PR.
+3. **Если есть несогласие** — ответить комментарием в PR с обоснованием.
+4. **После фикса** — снять \`needs-followup\` через \`gh pr edit ${rha_pr} --remove-label needs-followup\`.
+
+---
+
+> Автоматически создано merge-gate (review-handling-scan, issue #2063, ретро t_6127fb86). Cooldown: ${REVIEW_HANDLING_COOLDOWN_SECONDS}s. Триггер: COMMENTED review от не-self ревьюера, age>=${REVIEW_HANDLING_MIN_AGE_SECONDS}s."
+
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would: gh pr edit ${rha_pr} --add-label ${NEEDS_FOLLOWUP_LABEL} + remove ${NEEDS_REVIEW_LABEL} + hermes kanban create '${_rha_card_title}' --assignee=${_rha_assignee}"
+            review_handling_processed=$((review_handling_processed+1)); continue
+        fi
+
+        # 1) whoami-comment BEFORE label flip (issue #1534).
+        post_whoami_comment pr "$rha_pr" "adding-label:${NEEDS_FOLLOWUP_LABEL}" \
+            "review-handling-scan: PR #${rha_pr} — COMMENTED review от ${_rha_reviewer} (${_rha_submitted}) → перевод в follow-up, kanban-карточка для разбора (issue #2063, ретро t_6127fb86)" \
+            "review_id=${_rha_review_id}" "branch=${rha_head}" 2>/dev/null || true
+
+        # 2) Ставим needs-followup (idempotent — add-label на существующей no-op).
+        if gh pr edit "$rha_pr" --repo "$GH_REPO" --add-label "$NEEDS_FOLLOWUP_LABEL" >/dev/null 2>&1; then
+            log "review-handling-scan: PR #${rha_pr} → ${NEEDS_FOLLOWUP_LABEL}"
+        else
+            log "review-handling-scan: WARNING add ${NEEDS_FOLLOWUP_LABEL} on PR #${rha_pr} failed (non-fatal, kanban create всё равно попробуем)"
+        fi
+
+        # 3) Снимаем needs-review — он означал «ревью ещё не было», а оно БЫЛО.
+        # Идемпотентно — remove-label на отсутствующей метке — no-op.
+        if has_label "$(printf '%s' "$rha_labels" | tr '[:upper:]' '[:lower:]')" "$NEEDS_REVIEW_LABEL"; then
+            if gh pr edit "$rha_pr" --repo "$GH_REPO" --remove-label "$NEEDS_REVIEW_LABEL" >/dev/null 2>&1; then
+                log "review-handling-scan: PR #${rha_pr} — снят ${NEEDS_REVIEW_LABEL} (review был, follow-up активен)"
+            else
+                log "review-handling-scan: WARNING remove ${NEEDS_REVIEW_LABEL} on PR #${rha_pr} failed (non-fatal)"
+            fi
+        fi
+
+        # 4) Создаём kanban-карточку.
+        _rha_card_id=""
+        if _rha_create_out="$("$HERMES_BIN" kanban --board "$KANBAN_BOARD" create \
+            --title "$_rha_card_title" \
+            --assignee "$_rha_assignee" \
+            --idempotency-key "$_rha_idem_key" \
+            --priority 60 \
+            --max-runtime 1800 \
+            --body "$_rha_card_body" 2>/dev/null)"; then
+            _rha_card_id="$(printf '%s' "$_rha_create_out" | sed -nE 's/.*Created[[:space:]]+(t_[A-Za-z0-9]+).*/\1/p' | head -n1)"
+            if [ -n "$_rha_card_id" ]; then
+                log "review-handling-scan: PR #${rha_pr} — kanban-карточка ${_rha_card_id} создана (assignee=${_rha_assignee}, reviewer=${_rha_reviewer})"
+            else
+                log "review-handling-scan: PR #${rha_pr} — kanban create succeeded but id parse failed (raw=${_rha_create_out:-empty})"
+            fi
+        else
+            log "review-handling-scan: WARNING hermes kanban create failed for PR #${rha_pr} (non-fatal — PR помечен, Шифу увидит)"
+            review_handling_errored=$((review_handling_errored+1))
+        fi
+
+        # 5) Comment на PR — для трейла и чтобы Шифу видел в PR timeline.
+        _rha_pr_comment_body="🤖 **review-handling-scan (merge-gate, issue #2063 / ретро t_6127fb86)**
+
+PR #${rha_pr} получил содержательный review от @${_rha_reviewer} (submitted ${_rha_submitted}, state=COMMENTED).
+
+- Поставлен \`${NEEDS_FOLLOWUP_LABEL}\`
+- Снят \`${NEEDS_REVIEW_LABEL}\` (ревью было, переходим в follow-up)
+- Создана kanban-карточка: ${_rha_card_id:-FAILED (см. warning)} (assignee=${_rha_assignee})
+
+Превью review (первые 500 символов):
+\`\`\`
+${_rha_body_preview}
+\`\`\`
+
+Полный текст — в kanban-карточке."
+        if [ -n "$_rha_card_id" ] || [ "$DRY_RUN" = "true" ]; then
+            gh pr comment "$rha_pr" --repo "$GH_REPO" --body "$_rha_pr_comment_body" >/dev/null 2>&1 \
+                && log "review-handling-scan: PR #${rha_pr} — comment posted" \
+                || log "review-handling-scan: WARNING comment on PR #${rha_pr} failed (non-fatal)"
+        fi
+
+        # 6) Update state-file (cooldown) — atomic write через python.
+        mkdir -p "$_rha_state_dir" 2>/dev/null || true
+        _rha_now_ts="$(date +%s)"
+        python3 -c '
+import json, sys, os
+state_file = sys.argv[1]
+pr = sys.argv[2]
+ts = sys.argv[3]
+try:
+    d = json.load(open(state_file)) if os.path.exists(state_file) else {}
+except Exception:
+    d = {}
+d[pr] = int(ts)
+tmp = state_file + ".tmp." + str(os.getpid())
+with open(tmp, "w") as f:
+    json.dump(d, f)
+os.replace(tmp, state_file)
+' "$_rha_state_file" "$rha_pr" "$_rha_now_ts" 2>/dev/null \
+            && log "review-handling-scan: PR #${rha_pr} — cooldown state updated (ts=${_rha_now_ts})" \
+            || log "review-handling-scan: WARNING state-file update for PR #${rha_pr} failed (non-fatal, защиты через метку достаточно)"
+
+        review_handling_processed=$((review_handling_processed+1))
+    done < <(printf '%s' "$_rha_prs_json" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+for pr in data:
+    if pr.get("isDraft"): continue
+    num = str(pr.get("number", ""))
+    head = pr.get("headRefName") or ""
+    title = pr.get("title") or ""
+    draft = str(pr.get("isDraft", False))
+    labels = ",".join(sorted({l.get("name","") for l in (pr.get("labels") or []) if isinstance(l, dict)}))
+    print("%s\t%s\t%s\t%s\t%s" % (num, head, title, draft, labels))
+' 2>/dev/null)
+fi
+
+# ============================================================================
 # PR-label-sweep merged-pass (ретро 01.09 t_fd604461)
 # ----------------------------------------------------------------------------
 # Backstop для исторически залипших process-меток на MERGED PR: какие-то
@@ -6426,7 +6783,7 @@ for pr in data:
 pr_label_sweep_merged_pass_all || true
 
 # --- summary -----------------------------------------------------------------
-log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled} orphan_labeled=${orphan_labeled} backfill_labeled=${backfill_labeled} retro_archived=${retro_archived} pmcr_completed=${pmcr_completed} human_close_propagated=${human_close_propagated}"
+log "tick done: considered=${considered} labeled=${labeled} skipped=${skipped} errored=${errored} retro_closed=${retro_closed} retro_labeled=${retro_labeled} clean_labeled=${clean_labeled} orphan_labeled=${orphan_labeled} backfill_labeled=${backfill_labeled} retro_archived=${retro_archived} pmcr_completed=${pmcr_completed} human_close_propagated=${human_close_propagated} review_handling_processed=${review_handling_processed} review_handling_skipped=${review_handling_skipped} review_handling_errored=${review_handling_errored}"
 
 # Exit non-zero only on hard errors so cron can alert.
 if [ "$errored" -gt 0 ]; then exit 1; fi

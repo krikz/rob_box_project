@@ -669,6 +669,22 @@ case "$subcmd" in
                 _data="$(get_state RATE_LIMIT_JSON)"
                 apply_jq "$_data" "$_jq_filter"
                 ;;
+            # Issue #2063 / ретро t_6127fb86 (review-handling-scan):
+            # merge-gate вызывает `gh api user --jq .login` чтобы узнать own
+            # login и пропустить свои же whoami-комменты. Fixture:
+            # GH_USER_LOGIN_JSON (default "krikz-bot"). Tests которые хотят
+            # симулировать «review от самого merge-gate» (тот же login) задают
+            # GH_USER_LOGIN_JSON=<login ревьюера>.
+            user)
+                journal "gh api user"
+                _data="$(get_state GH_USER_LOGIN_JSON)"
+                if [ -n "$_data" ]; then
+                    # С поддержкой --jq .login — apply_jq умеет .field.
+                    apply_jq "{\"login\":\"$_data\"}" "$_jq_filter"
+                else
+                    apply_jq '{"login":"krikz-bot"}' "$_jq_filter"
+                fi
+                ;;
             repos/*/issues/*/comments*)
                 issue_num="$(printf '%s' "$path" | sed -nE 's#.*/issues/([0-9]+)/comments.*#\1#p')"
                 journal "gh api $path"
@@ -697,6 +713,20 @@ case "$subcmd" in
                 pr_num="$(printf '%s' "$path" | sed -nE 's#.*/pulls/([0-9]+)/files.*#\1#p')"
                 journal "gh api $path (files)"
                 _data="$(get_state PR_${pr_num}_FILES_JSON)"
+                apply_jq "$_data" "$_jq_filter"
+                ;;
+            # Issue #2063 / ретро t_6127fb86 (review-handling-scan):
+            # merge-gate вызывает `gh api repos/.../pulls/N/reviews` чтобы
+            # получить список review-events. Fixture:
+            # PR_<n>_REVIEWS_JSON = JSON-массив [{user:{login}, state,
+            # submitted_at, body, id}, ...]. merge-gate парсит через python
+            # — apply_jq passthrough вернёт данные как есть (default
+            # без --jq). Tests могут задать любой набор reviews.
+            repos/*/pulls/*/reviews*)
+                pr_num="$(printf '%s' "$path" | sed -nE 's#.*/pulls/([0-9]+)/reviews.*#\1#p')"
+                journal "gh api $path (reviews)"
+                _data="$(get_state PR_${pr_num}_REVIEWS_JSON)"
+                if [ -z "$_data" ]; then _data='[]'; fi
                 apply_jq "$_data" "$_jq_filter"
                 ;;
             repos/*/pulls?state=open*)
