@@ -1,0 +1,14 @@
+# rob_box_supervisor_msgs/ExecuteCommand.srv
+#
+# Единая типизированная точка входа в avatar_supervisor
+# (ADR-0051 §2.1, §2.2). Маршрутизация по ``Command.kind`` —
+# внутри ``AvatarSupervisor._dispatch``.
+#
+# В Phase 1 (t_2da4b2b4): сервис работает ПАРАЛЛЕЛЬНО с legacy
+# (``/acquire_floor``, ``/release_floor``, ``/set_avatar_mode``,
+# ``/avatar/set_voice_mode``); никаких breaking changes. Миграция
+# клиентов (``quest_node``, ``telegram_node``) — Phase 2.
+
+rob_box_supervisor_msgs/Command command
+---
+rob_box_supervisor_msgs/Response response
