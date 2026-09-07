@@ -2545,13 +2545,18 @@ class TTSNode(Node):
         from being scheduled — that would defeat the whole point of the
         priority queue.
         """
-        cancel = getattr(self, "cancel_pregen", None)
-        if not callable(cancel):
-            return
+        # Зовём напрямую, а не через getattr: ``cancel_pregen`` — метод
+        # этого же класса (см. ниже по файлу). Защита через
+        # getattr никогда бы не сработала, зато при переименовании
+        # метода тихо превратила бы триггер ADR-0056 §3.5 в no-op — это
+        # ровно тот fail-open, о котором предупреждает §4.3 хендоффа
+        # (docs/plans/2026-09-05-operator-agent-architecture-handoff.md).
         try:
-            cancel(reason="REPLACE-priority")
+            self.cancel_pregen(reason="REPLACE-priority")
         except Exception as exc:  # noqa: BLE001 — never block the submit path
-            self.get_logger().debug(
+            # warning, а не debug: если триггер сломан, это должно
+            # быть видно в обычных логах робота, а не только под debug.
+            self.get_logger().warning(
                 f"cancel_pregen(REPLACE-priority) failed for "
                 f"speech_id={speech_id[:8] if speech_id else 'None'}: {exc!r}"
             )
