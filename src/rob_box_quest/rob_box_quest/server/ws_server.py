@@ -185,7 +185,32 @@ class Bridge(Protocol):
         ...
 
     def publish_voice_audio(self, payload: bytes) -> None:
-        """VOICE_AUDIO: publish AudioData в /avatar/voice_in (int16 PCM 16 kHz)."""
+        """VOICE_AUDIO (stream_id=1, PTT): publish AudioData в /avatar/voice_in
+        (int16 PCM 16 kHz)."""
+        ...
+
+    def publish_quest_wake_audio(self, payload: bytes) -> None:
+        """VOICE_AUDIO (stream_id=2, wake-channel): always-on микрофон с
+        client-side RMS VAD (ADR-0054 step 5а).
+
+        Сейчас — no-op stub (реальная маршрутизация wake → stt_node появится
+        в шаге 5 impl-плана ADR-0054). Сейчас задача — только прокинуть
+        payload в мост, чтобы unit-тесты на routing stream_id могли писать
+        ожидаемый receiver без участия ROS-стека.
+        """
+        ...
+
+    def set_wake_stream_state(self, active: bool) -> None:
+        """JSON_CMD {cmd: voice_listen_start/stop} → синхронизировать
+        серверный флаг wake-канала.
+
+        Поведение реализации:
+        - Запоминает ``_wake_active = active`` (для diagnostic/observability).
+        - Опционально публикует latched-топик ``/avatar/wake_stream{state}``
+          для дашборда и e2e-наблюдателей (ADR-0054 §2.4).
+
+        Контракт идемпотентен: повторный start при уже активном — no-op.
+        """
         ...
 
     def publish_voice_stop(self) -> None:
@@ -400,6 +425,16 @@ class NoOpBridge:
         return None
 
     def publish_voice_audio(self, payload: bytes) -> None:
+        return None
+
+    def publish_quest_wake_audio(self, payload: bytes) -> None:
+        # NoOpBridge: ADR-0054 step 5a, stream_id=2 → wake-канал.
+        # Реальная маршрутизация в stt_node — шаг 5 impl-плана.
+        return None
+
+    def set_wake_stream_state(self, active: bool) -> None:
+        # NoOpBridge: фиксируем в логе для unit-тестов.
+        log.debug("NoOpBridge: set_wake_stream_state active=%s", active)
         return None
 
     def publish_voice_stop(self) -> None:
@@ -1406,6 +1441,28 @@ class WSSServer:
                 },
             )
             return
+        if cmd in ("voice_listen_start", "voice_listen_stop"):
+            # ADR-0054 step 5a: панельный тумблер «всегда слушать».
+            # Клиент шлёт это при включении/выключении wake-канала в UI
+            # (UI — отдельная карточка, здесь только серверная сторона).
+            # Сервер фиксирует состояние и публикует /avatar/wake_stream
+            # для наблюдателей (дашборд, e2e). Идемпотентно.
+            active = cmd == "voice_listen_start"
+            try:
+                self.bridge.set_wake_stream_state(active)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("quest: set_wake_stream_state failed: %s", exc)
+            await self._send(
+                ws,
+                FrameType.JSON_EVENT,
+                0,
+                {
+                    "type": "voice_listen_ack",
+                    "active": active,
+                    "ts_ms": int(time.time() * 1000),
+                },
+            )
+            return
         if cmd == "stream_select":
             # Meta-command: UI запросил смену активного стрима.
             # Сервер подтверждает что стрим есть в registry, и возвращает
@@ -1979,8 +2036,15 @@ class WSSServer:
                     await ws.close(code=1000, message=b"goodbye")
                     return ws
                 elif ftype == FrameType.VOICE_AUDIO:
-                    # Рация: голос оператора → /avatar/voice_in (int16 PCM 16 kHz).
-                    self.bridge.publish_voice_audio(payload)
+                    # ADR-0054 step 5a: stream_id==2 → wake-канал
+                    # (publish_quest_wake_audio), иначе — PTT/radio
+                    # (publish_voice_audio, текущее поведение).
+                    # Back-compat: stream_id==0 тоже идёт в radio-канал
+                    # (исторически клиенты слали sid=0).
+                    if sid == 2:
+                        self.bridge.publish_quest_wake_audio(payload)
+                    else:
+                        self.bridge.publish_voice_audio(payload)
                 elif ftype in (
                     FrameType.SET_MODE,
                     FrameType.ACQUIRE_FLOOR,

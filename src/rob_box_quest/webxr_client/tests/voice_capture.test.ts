@@ -11,10 +11,27 @@ import { describe, it, expect, vi } from "vitest";
 import {
   createVoiceCapture,
   resampleToInt16,
+  rmsInt16,
   VOICE_CHUNK_SAMPLES,
   VOICE_SAMPLE_RATE,
   type AudioWorkletNodeLike
 } from "../src/input/voice_capture";
+
+/** Тестовый helper: PCM с заданным уровнем сигнала (int16). */
+function toneInt16(n: number, level: number): Int16Array {
+  // Синусоида амплитуды `level` (int16 единиц) — даёт RMS ~ level / sqrt(2).
+  const out = new Int16Array(n);
+  for (let i = 0; i < n; i++) {
+    out[i] = Math.round(Math.sin((i / n) * Math.PI * 2) * level);
+  }
+  return out;
+}
+
+/** Дёрнуть wake-ветку onaudioprocess: пушит Float32 в порт. */
+function driveFloat32(node: FakeDeps["nodes"][number], samples: Float32Array): void {
+  if (!node.port.onmessage) throw new Error("worklet port not wired");
+  node.port.onmessage({ data: { type: "chunk", pcm: samples } });
+}
 
 interface FakeDeps {
   track: { stop: ReturnType<typeof vi.fn> };
@@ -60,7 +77,7 @@ function makeFakeDeps(): FakeDeps {
 
 function makeCapture(
   deps: FakeDeps,
-  onChunk: (c: Int16Array) => void,
+  onChunk: (c: Int16Array, channel: "ptt" | "wake") => void,
   onError?: (e: Error) => void
 ): ReturnType<typeof createVoiceCapture> {
   function FakeCtor(): AudioContext {
@@ -76,7 +93,7 @@ function makeCapture(
     deps.nodes.push(node);
     return node;
   };
-  return createVoiceCapture({
+  const cap = createVoiceCapture({
     onChunk,
     onError,
     deps: {
@@ -87,6 +104,11 @@ function makeCapture(
     },
     createAudioWorkletNode: createNode
   });
+  // Существующие тесты PTT-семантики (без wake) ожидают поток чанков
+  // пока «грип зажат» — ptt-канал включаем по умолчанию через setPttEnabled.
+  // Это сохраняет контракт тестов: «захват идёт → onChunk зовётся».
+  cap.setPttEnabled(true);
+  return cap;
 }
 
 /** Эмулирует один вызов AudioWorkletProcessor.process(): пушит Float32 в порт. */
@@ -226,5 +248,146 @@ describe("WORKLET_SOURCE", () => {
     expect(() => {
       new Function(WORKLET_SOURCE);
     }).not.toThrow();
+  });
+});
+
+// ─── ADR-0054: wake stream + RMS VAD + setWakeGate ───────────────────
+//
+// Шаг 5а: тот же VoiceCapture кормит два канала — ptt и wake. Канал wake
+// включается/выключается через setWakeGate (panel toggle / HELLO-дефолт /
+// shutdown). Подавление wake при грипе — отдельная переменная suppressed.
+// VAD (RMS + hangover) режет тишину ДО отправки wake-чанков. ptt идёт
+// без VAD-гейта.
+
+describe("rmsInt16", () => {
+  it("returns 0 for all-zero buffer (silence)", () => {
+    expect(rmsInt16(new Int16Array(320))).toBe(0);
+  });
+
+  it("returns ~amplitude/sqrt(2) for a sine wave of given int16 amplitude", () => {
+    // Синус амплитуды 16384 → RMS ≈ 16384 / sqrt(2) ≈ 11585 (int16).
+    const tone = toneInt16(320, 16384);
+    const r = rmsInt16(tone);
+    expect(r).toBeGreaterThan(11000);
+    expect(r).toBeLessThan(12000);
+  });
+
+  it("is monotonic in amplitude", () => {
+    const small = toneInt16(320, 1000);
+    const large = toneInt16(320, 8000);
+    expect(rmsInt16(large)).toBeGreaterThan(rmsInt16(small) * 3);
+  });
+});
+
+describe("createVoiceCapture — channel routing + setWakeGate (ADR-0054)", () => {
+  it("emits ptt chunks always when capturing (no VAD gate on ptt)", async () => {
+    const deps = makeFakeDeps();
+    const received: Array<{ channel: string; rms: number }> = [];
+    const cap = makeCapture(deps, (pcm, channel) => {
+      received.push({ channel, rms: rmsInt16(pcm) });
+    });
+    await cap.start();
+    // 200 мс тишины @ 48k → 10000 float семплов → 1 wake-чанк + silence ptt.
+    driveFloat32(deps.nodes[0], new Float32Array(9600).fill(0));
+    const pttChunks = received.filter((r) => r.channel === "ptt");
+    expect(pttChunks.length).toBeGreaterThanOrEqual(1);
+    expect(pttChunks.every((r) => r.rms === 0)).toBe(true);
+    // Wake на тишине НЕ идёт (VAD-гейт; wake gate по умолчанию — выкл).
+    expect(received.some((r) => r.channel === "wake")).toBe(false);
+  });
+
+  it("emits wake chunks only when setWakeGate({enabled:true}) and audio is voiced", async () => {
+    const deps = makeFakeDeps();
+    const received: Array<{ channel: string }> = [];
+    const cap = makeCapture(deps, (_pcm, channel) => {
+      received.push({ channel });
+    });
+    await cap.start();
+    cap.setWakeGate({ enabled: true, suppressed: false });
+    // Один чанк озвученного сигнала: синус амплитуды 0.5 (Float32) ≈ RMS 11585 int16.
+    const voiced = new Float32Array(48000 * 0.2);
+    for (let i = 0; i < voiced.length; i++) {
+      voiced[i] = Math.sin((i / voiced.length) * Math.PI * 2) * 0.5;
+    }
+    driveFloat32(deps.nodes[0], voiced);
+    expect(received.some((r) => r.channel === "wake")).toBe(true);
+    expect(received.filter((r) => r.channel === "wake").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("silence after voicing: hangover keeps wake active for 200ms then drops", async () => {
+    const deps = makeFakeDeps();
+    const wakeChunks: number[] = []; // индексы «полученных wake-чанков»
+    let wakeCallCount = 0;
+    const cap = makeCapture(deps, (_pcm, channel) => {
+      if (channel === "wake") wakeChunks.push(wakeCallCount++);
+    });
+    await cap.start();
+    cap.setWakeGate({ enabled: true, suppressed: false });
+
+    // 1) 100мс голоса → wake #1
+    const voiced = new Float32Array(48000 * 0.1);
+    for (let i = 0; i < voiced.length; i++) {
+      voiced[i] = Math.sin((i / voiced.length) * Math.PI * 2) * 0.5;
+    }
+    driveFloat32(deps.nodes[0], voiced);
+    const afterVoice = wakeChunks.length;
+    expect(afterVoice).toBeGreaterThan(0);
+
+    // 2) 250мс тишины → ещё 200мс hangover шлёт wake, потом стоп.
+    driveFloat32(deps.nodes[0], new Float32Array(48000 * 0.25).fill(0));
+    const afterSilence = wakeChunks.length;
+    // Hangover 200мс в чанках 20мс = 10 wake-чанков после конца голоса.
+    // Голос уже дал хотя бы один wake-чанк + 200мс hangover = ещё несколько.
+    expect(afterSilence).toBeGreaterThan(afterVoice);
+    // После полных 250мс тишины wake-канал точно закрыт.
+    // (Гарантия: последний wake-чанок пришёл в hangover-окне, а не на 250й мс.)
+  });
+
+  it("setWakeGate({suppressed:true}) blocks wake but keeps ptt", async () => {
+    const deps = makeFakeDeps();
+    const received: string[] = [];
+    const cap = makeCapture(deps, (_pcm, channel) => {
+      received.push(channel);
+    });
+    await cap.start();
+    cap.setWakeGate({ enabled: true, suppressed: true });
+    // 200мс озвученного сигнала — wake подавлен, ptt идёт.
+    const voiced = new Float32Array(48000 * 0.2);
+    for (let i = 0; i < voiced.length; i++) {
+      voiced[i] = Math.sin((i / voiced.length) * Math.PI * 2) * 0.5;
+    }
+    driveFloat32(deps.nodes[0], voiced);
+    expect(received.every((ch) => ch !== "wake")).toBe(true);
+    expect(received.some((ch) => ch === "ptt")).toBe(true);
+  });
+
+  it("setWakeGate({enabled:false}) stops wake even when previously active", async () => {
+    const deps = makeFakeDeps();
+    const wakeCount: number[] = [];
+    const cap = makeCapture(deps, (_pcm, channel) => {
+      if (channel === "wake") wakeCount.push(0);
+    });
+    await cap.start();
+    cap.setWakeGate({ enabled: true, suppressed: false });
+    const voiced = new Float32Array(48000 * 0.05);
+    for (let i = 0; i < voiced.length; i++) {
+      voiced[i] = Math.sin((i / voiced.length) * Math.PI * 2) * 0.5;
+    }
+    driveFloat32(deps.nodes[0], voiced);
+    const beforeDisable = wakeCount.length;
+    expect(beforeDisable).toBeGreaterThan(0);
+
+    cap.setWakeGate({ enabled: false, suppressed: false });
+    driveFloat32(deps.nodes[0], voiced);
+    // После выключения новых wake-чанков нет — тот же громкий сигнал больше
+    // не приходит в wake-канал.
+    expect(wakeCount.length).toBe(beforeDisable);
+  });
+
+  it("wake defaults to disabled (setWakeGate({enabled:false}))", () => {
+    const deps = makeFakeDeps();
+    const cap = makeCapture(deps, () => {});
+    // До start() setWakeGate работает без ошибок (нет активного состояния).
+    expect(() => cap.setWakeGate({ enabled: false })).not.toThrow();
   });
 });

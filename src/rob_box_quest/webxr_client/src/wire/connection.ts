@@ -222,7 +222,7 @@ export class Connection {
   }
 
   send(cmd: JsonCmd): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this.ws || this.ws.readyState !== 1) {
       throw new Error("connection not open");
     }
     // JSON_CMD использует stream_id 0 (control), см. ws_server.py.
@@ -230,11 +230,21 @@ export class Connection {
     this.ws.send(bytes as unknown as ArrayBuffer);
   }
 
-  sendVoiceAudio(payload: Uint8Array, streamId = 0): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    // VOICE_AUDIO (0x13, client→server): сырой int16 PCM 16 kHz mono (рация).
+  /**
+   * VOICE_AUDIO frame (client→server): сырой int16 PCM 16 kHz mono.
+   * ADR-0054 step 5a: один frame type, два stream_id:
+   *   1 = ptt (default, существующее поведение — рация + робот-голос при грипе)
+   *   2 = wake (новое — always-on поток через VAD-гейт)
+   * Сервер маршрутизирует по stream_id: 1 → /avatar/voice_in, 2 → /avatar/quest_wake.
+   * @returns true если frame реально отправлен; false если сокет не открыт.
+   */
+  sendVoiceAudio(payload: Uint8Array, streamId: 1 | 2 = 1): boolean {
+    // Используем numeric literal вместо WebSocket.OPEN: в jsdom/vitest
+    // WebSocket — это наш FakeWebSocket без статической константы OPEN.
+    if (!this.ws || this.ws.readyState !== 1) return false;
     const bytes = encodeFrame(FrameType.VOICE_AUDIO, streamId, payload);
     this.ws.send(bytes as unknown as ArrayBuffer);
+    return true;
   }
 
   // ----------------------------------------------------------------
@@ -255,7 +265,7 @@ export class Connection {
     return (
       this.negotiatedVersion === "v2" &&
       this.ws !== null &&
-      this.ws.readyState === WebSocket.OPEN
+      this.ws.readyState === 1
     );
   }
 
@@ -289,6 +299,16 @@ export class Connection {
   // expose для тестов: getter последней применённой negotiated-версии.
   _peekNegotiatedVersion(): NegotiatedSubprotocol | null {
     return this.negotiatedVersion;
+  }
+
+  /**
+   * expose для тестов: getter текущего WebSocket (нужен FakeWebSocket-
+   * loopback, где `readyState` — primitive и не синхронизируется между
+   * зарезервированным клиентом и фактически созданным сокетом).
+   * В проде не использовать.
+   */
+  _peekWs(): WebSocket | null {
+    return this.ws;
   }
 
   private openSocket(): void {
@@ -530,7 +550,7 @@ export class Connection {
   // ----------------------------------------------------------------
 
   subscribe(topic: string, quality?: "low" | "med" | "high"): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== 1) return;
     if (this.topicToStreamId.has(topic)) {
       // уже подписаны — идемпотентно (см. ws_server._on_subscribe).
       return;
@@ -542,7 +562,7 @@ export class Connection {
   }
 
   unsubscribe(topic: string): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== 1) return;
     const sid = this.topicToStreamId.get(topic);
     if (sid === undefined) return;
     const msg: UnsubscribeMsg = { topic };
@@ -554,7 +574,7 @@ export class Connection {
   }
 
   requestStreamList(): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== 1) return;
     const bytes = encodeJsonFrame(FrameType.JSON_CMD, 0, {
       cmd: "stream_list",
       ts_ms: Date.now()
@@ -579,7 +599,7 @@ export class Connection {
     if (this.pingTimer) clearInterval(this.pingTimer);
     console.log("[quest] startPing: interval=", this.opts.pingIntervalMs, "ms");
     this.pingTimer = setInterval(() => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      if (!this.ws || this.ws.readyState !== 1) return;
       // Per docs/architecture/meta-quest-api.md §7 — клиент шлёт
       // JSON_EVENT{type:"ping"} (раньше ошибочно было JSON_CMD{cmd:"ping"},
       // сервер его игнорировал и рвал сессию по watchdog через 600 мс).

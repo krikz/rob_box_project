@@ -113,4 +113,14 @@ describe("VOICE_AUDIO frame", () => {
     expect(decoded.streamId).toBe(0);
     expect(Array.from(decoded.payload)).toEqual(Array.from(pcm));
   });
+
+  // ADR-0054 step 5a: stream_id=2 (wake) — same FrameType, другой stream_id.
+  it("round-trips VOICE_AUDIO with stream_id=2 (wake stream)", () => {
+    const pcm = new Uint8Array([0x01, 0x02, 0x03, 0x04]);
+    const bytes = encodeFrame(FrameType.VOICE_AUDIO, 2, pcm);
+    const decoded = decodeFrame(bytes);
+    expect(decoded.type).toBe(FrameType.VOICE_AUDIO);
+    expect(decoded.streamId).toBe(2);
+    expect(Array.from(decoded.payload)).toEqual(Array.from(pcm));
+  });
 });

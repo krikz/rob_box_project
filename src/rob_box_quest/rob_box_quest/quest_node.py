@@ -234,6 +234,7 @@ class QuestBridge:
         tts_control_pub=None,
         sound_stop_pub=None,
         stt_in_pub=None,
+        wake_stream_pub=None,  # ADR-0054 step 5a: /avatar/wake_stream observability
         set_voice_mode_pub=None,
         set_voice_preset_pub=None,
         set_voice_language_pub=None,
@@ -255,6 +256,10 @@ class QuestBridge:
         self._sound_stop_pub = sound_stop_pub
         # Робот-голос (P7): буфер PCM → /audio/quest_in (STT).
         self._stt_in_pub = stt_in_pub
+        # ADR-0054 step 5a: wake-channel observability.
+        # None в unit-тестах моста → set_wake_stream_state no-op.
+        self._wake_stream_pub = wake_stream_pub
+        self._wake_active = False
         # voice_mode → супервизор (ADR-0028 S5): /avatar/set_voice_mode.
         self._set_voice_mode_pub = set_voice_mode_pub
         # AV-28 §P7 (issue #1920) — voice style preset / language → супервизор.
@@ -412,7 +417,7 @@ class QuestBridge:
         self._sound_stop_pub.publish(_stop_msg())
 
     def publish_voice_audio(self, payload: bytes) -> None:
-        """VOICE_AUDIO: radio → /avatar/voice_in; robot_voice → EOU-детекция.
+        """VOICE_AUDIO (stream_id=1, PTT): radio → /avatar/voice_in; robot_voice → EOU-детекция.
 
         В robot_voice PCM НЕ стримим в динамик, а буферизуем. По тишине
         (конец фразы, пока грип ещё зажат) буфер уходит одним AudioData в
@@ -435,6 +440,43 @@ class QuestBridge:
         msg = AudioData()
         msg.data = list(payload)
         self._voice_in_pub.publish(msg)
+
+    def publish_quest_wake_audio(self, payload: bytes) -> None:
+        """VOICE_AUDIO (stream_id=2, wake-channel, ADR-0054 step 5а).
+
+        Клиент уже отфильтровал silence через RMS VAD с hangover 200 мс
+        (voice_capture.ts), здесь payload всегда содержит речь. Сейчас —
+        no-op stub (реальная маршрутизация в stt_node появится в шаге 5
+        impl-плана ADR-0054). Метод существует, чтобы серверный routing
+        stream_id==2 не падал и unit-тесты могли писать ожидаемый receiver.
+        """
+        # TODO(step-5 ADR-0054): публиковать AudioData в /avatar/quest_wake
+        # (новый топик), который читает stt_node и гонит wake-word detector.
+        return None
+
+    def set_wake_stream_state(self, active: bool) -> None:
+        """JSON_CMD {cmd: voice_listen_start/stop} (ADR-0054 step 5а).
+
+        Обновляет серверный флаг wake-канала и публикует latched-событие
+        /avatar/wake_stream{state:active|paused} для наблюдателей
+        (дашборд, e2e-тесты). Идемпотентно.
+        """
+        prev = getattr(self, "_wake_active", False)
+        if prev == active:
+            return
+        self._wake_active = active
+        if self._wake_stream_pub is not None:
+            msg = String()
+            msg.data = json.dumps(
+                {
+                    "state": "active" if active else "paused",
+                    "ts_ms": int(time.time() * 1000),
+                }
+            )
+            self._wake_stream_pub.publish(msg)
+        self._node.get_logger().info(
+            f"quest: wake stream {'active' if active else 'paused'}"
+        )
 
     def _flush_voice_buffer(self) -> None:
         """Накопленный PCM → один AudioData в /audio/quest_in (STT)."""
@@ -1240,6 +1282,12 @@ class QuestNode(Node):
         self._stt_in_pub = self.create_publisher(
             AudioData, "/audio/quest_in", _VOICE_QOS
         )
+        # ADR-0054 step 5a: wake-channel (stream_id=2) observability.
+        # Latched-событие {state: active|paused} для дашборда и e2e-тестов.
+        # Публикуется из set_wake_stream_state (JSON_CMD voice_listen_*).
+        self._wake_stream_pub = self.create_publisher(
+            String, "/avatar/wake_stream", _RE
+        )
         # voice_mode → супервизор (ADR-0028 S5): /avatar/set_voice_mode.
         self._set_voice_mode_pub = self.create_publisher(
             String, "/avatar/set_voice_mode", _RE
@@ -1470,6 +1518,7 @@ class QuestNode(Node):
             tts_control_pub=self._tts_control_pub,
             sound_stop_pub=self._sound_stop_pub,
             stt_in_pub=self._stt_in_pub,
+            wake_stream_pub=self._wake_stream_pub,
             set_voice_mode_pub=self._set_voice_mode_pub,
             set_voice_preset_pub=self._set_voice_preset_pub,
             set_voice_language_pub=self._set_voice_language_pub,

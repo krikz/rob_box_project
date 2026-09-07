@@ -340,3 +340,97 @@ describe("Connection RTT (ping → pong)", () => {
     expect(conn.getRttMs()).toBeNull();
   });
 });
+
+// ─── ADR-0054 step 5a: sendVoiceAudio streamId (1|2) ─────────────────────
+//
+// Один VOICE_AUDIO frame type, два stream_id: 1 = ptt (default, текущее
+// поведение), 2 = wake (новое — always-on поток через VAD-gate).
+
+describe("Connection.sendVoiceAudio streamId (ADR-0054)", () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    FakeWebSocket.nextInstance = null;
+  });
+
+  /**
+   * Открыть сокет И завершить HELLO/WELCOME (state=connected), чтобы
+   * клиент реально мог слать фреймы. После WELCOME state становится
+   * 'connected', и `this.ws.readyState` всё ещё 0 (FakeWebSocket не
+   * синхронизирует primitive readyState между экземплярами) — поэтому
+   * дополнительно форсим `readyState=1` на сокете, который Connection
+   * реально хранит (`_peekWs()`).
+   */
+  async function connect(): Promise<{ conn: Connection; client: FakeWebSocket }> {
+    const server = FakeWebSocket.makeServer();
+    const client = FakeWebSocket.reserveClient();
+    FakeWebSocket.link(client, server);
+    const conn = new Connection({
+      url: "ws://test",
+      clientVersion: "0.1.0",
+      pin: "123456",
+      autoReconnect: false,
+      pingIntervalMs: 100_000,
+      WebSocketCtor: FakeWebSocket as unknown as new (url: string, protocols?: string | string[]) => WebSocket
+    });
+    conn.connect();
+    client.dispatchOpen();
+    server.dispatchOpen();
+    // Сервер отвечает WELCOME → state=connected.
+    const welcomeBytes = encodeJsonFrame(FrameType.WELCOME, 0, {
+      server_version: "0.1.0",
+      session_id: "test-session",
+      server_time_ms: 12345
+    });
+    server.send(welcomeBytes as unknown as ArrayBuffer);
+    // Дать микротаскам отработать: server.send() асинхронно доставляет
+    // WELCOME → connection обрабатывает → startPing.
+    await new Promise<void>((r) => queueMicrotask(() => queueMicrotask(r)));
+    // Форсим readyState=1 на сокете, который Connection реально хранит
+    // (loopback не синхронизирует это автоматически, см. FakeWebSocket).
+    const ws = conn._peekWs() as unknown as { readyState: number } | null;
+    if (ws) ws.readyState = 1;
+    return { conn, client };
+  }
+
+  it("default streamId=1 (back-compat with current PTT behavior)", async () => {
+    const { conn, client } = await connect();
+    const pcm = new Uint8Array([0x00, 0x00, 0xff, 0x7f]);
+    const sent = conn.sendVoiceAudio(pcm); // no streamId arg → default = 1
+    expect(sent).toBe(true);
+    expect(client.sentFrames.length).toBeGreaterThanOrEqual(1);
+    const last = client.sentFrames[client.sentFrames.length - 1];
+    const dec = decodeFrame(last);
+    expect(dec.type).toBe(FrameType.VOICE_AUDIO);
+    expect(dec.streamId).toBe(1);
+    expect(Array.from(dec.payload)).toEqual([0x00, 0x00, 0xff, 0x7f]);
+  });
+
+  it("streamId=2 marks the chunk as wake (ADR-0054 §2.1)", async () => {
+    const { conn, client } = await connect();
+    const pcm = new Uint8Array([0x01, 0x02, 0x03, 0x04]);
+    conn.sendVoiceAudio(pcm, 2);
+    const last = client.sentFrames[client.sentFrames.length - 1];
+    const dec = decodeFrame(last);
+    expect(dec.type).toBe(FrameType.VOICE_AUDIO);
+    expect(dec.streamId).toBe(2);
+    expect(Array.from(dec.payload)).toEqual([0x01, 0x02, 0x03, 0x04]);
+  });
+
+  it("returns false when socket is not open (no spurious send)", () => {
+    const server = FakeWebSocket.makeServer();
+    const client = FakeWebSocket.reserveClient();
+    FakeWebSocket.link(client, server);
+    const conn = new Connection({
+      url: "ws://test",
+      clientVersion: "0.1.0",
+      pin: "123456",
+      autoReconnect: false,
+      pingIntervalMs: 100_000,
+      WebSocketCtor: FakeWebSocket as unknown as new (url: string, protocols?: string | string[]) => WebSocket
+    });
+    conn.connect();
+    // НЕ дёргаем dispatchOpen — сокет в CONNECTING.
+    const sent = conn.sendVoiceAudio(new Uint8Array([0]), 2);
+    expect(sent).toBe(false);
+  });
+});
