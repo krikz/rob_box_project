@@ -1,4 +1,4 @@
-# ADR-0026 — Voice e2e «topic-injection test path»: голосовые фичи можно валидировать БЕЗ физического аудио-bridge 249↔21
+# ADR-RT-0069 — Voice e2e «topic-injection test path»: голосовые фичи можно валидировать БЕЗ физического аудио-bridge 249↔21
 
 | Поле | Значение |
 |---|---|
@@ -71,7 +71,7 @@
 
 ### 1.4 Бизнес-ценность
 
-| Что | Сейчас | С ADR-0026 |
+| Что | Сейчас | С ADR-RT-0069 |
 |---|---|---|
 | Hardware-зависимость e2e | 249↔21 audio bridge обязателен | Только SSH к voice-assistant (уже работает) |
 | Время на fix | Дней/недель (купить кабель, настроить pulseaudio-tcp) | Часы (PR с новым harness-режимом) |
@@ -146,7 +146,7 @@ for step in scenario.steps:
   "name": "voice_core_e2e_topic_injection_v1",
   "schema_version": 1,
   "_comment": [
-    "Альтернативный acceptance для topic-injection mode (ADR-0026).",
+    "Альтернативный acceptance для topic-injection mode (ADR-RT-0069).",
     "Тот же список expected_tool_calls, что и в voice_core_acceptance_v1.json.",
     "Дополнительно: validate_no_audio_paplay_marker — проверяет, что harness",
     "использовал INJECT_VIA_TOPIC (НЕ paplay). Это защищает от случайного",
@@ -186,7 +186,7 @@ for step in scenario.steps:
 | **E. Topic-injection (этот ADR)** | Не нужен hardware-bridge, fast feedback, дифференцируемо в артефактах, существующий pipeline уже его поддерживает | Не валидирует audio capture/STT/wake-word | ✅ **Выбрано** — закрывает 8/8 acceptance без hardware-tied зависимостей |
 | **F. Bypass dialogue_node → тестировать только LLM-инструменты** | Самое быстрое | Не валидирует весь pipeline (wake-gate, command-intent, backlog-accumulator) | ❌ Не покрывает acceptance |
 
-### 3.2 Что ADR-0026 НЕ заменяет
+### 3.2 Что ADR-RT-0069 НЕ заменяет
 
 1. **Issue #1077 (multi-speaker diarization)** — по-прежнему через unit/integration (как сейчас).
 2. **Music API generate_music** — по-прежнему ИСКЛЮЧЕНО (MiniMax Music API недоступен).
@@ -221,11 +221,11 @@ for step in scenario.steps:
 
 1. E2E-process запускает раунд с `--inject-via-topic=true`
 2. Если PASS → issue #1506 закрыт (audio-bridge-bypass acceptance)
-3. Шифу одобряет ADR-0026 → status = Accepted
+3. Шифу одобряет ADR-RT-0069 → status = Accepted
 
 ---
 
-## 5. Verification (как проверить, что ADR-0026 работает)
+## 5. Verification (как проверить, что ADR-RT-0069 работает)
 
 1. **Локально (без робота, в docker)**: поднять voice-assistant контейнер, выполнить
    `bash e2e_voice_test.sh --inject-via-topic --scenario /tmp/cc.json --steps cc01_status_gate`.
@@ -256,16 +256,16 @@ for step in scenario.steps:
 
 **С момента verdict v3 (PR #1559, `ec42ea87`) в develop ушло ещё 7 коммитов** — все `ci: main/vision SHA tags [skip ci]`, **0 non-CI**. Verdict v3 остаётся в силе.
 
-**Расширение v3 → v3.1**: добавлен ADR-0026 (этот документ) — **альтернативный путь тестирования**, который НЕ зависит от сломанного audio-bridge 249↔21. Это **не отменяет** существующий paplay-mode, а **дополняет** его.
+**Расширение v3 → v3.1**: добавлен ADR-RT-0069 (этот документ) — **альтернативный путь тестирования**, который НЕ зависит от сломанного audio-bridge 249↔21. Это **не отменяет** существующий paplay-mode, а **дополняет** его.
 
-**Архитектурный долг по issue #1506 = 0** (verdict v3 + ADR-0026).
+**Архитектурный долг по issue #1506 = 0** (verdict v3 + ADR-RT-0069).
 
 **Финальные блокеры** (НЕ архитектурные, требуют действия Шифу/вверх):
-1. Approval этого ADR-0026 → status = Accepted
+1. Approval этого ADR-RT-0069 → status = Accepted
 2. Реализация Phase 1+2 (2 PR)
 3. Live-прогон через topic-injection-mode → e2e PASS → issue #1506 закрыт
 
-**Hardware-bridge 249↔21** (paplay→ReSpeaker) — **НЕ блокер** для закрытия issue #1506 при ADR-0026.
+**Hardware-bridge 249↔21** (paplay→ReSpeaker) — **НЕ блокер** для закрытия issue #1506 при ADR-RT-0069.
 
 ---
 

@@ -1,13 +1,13 @@
-# ADR-0027: Системный wake-gate no_wake_word blocker в e2e — наблюдаемое поведение и его отличие от stale-PR / dj02-race
+# ADR-RT-0070: Системный wake-gate no_wake_word blocker в e2e — наблюдаемое поведение и его отличие от stale-PR / dj02-race
 
 | Поле | Значение |
 |---|---|
 | Статус | Proposed |
 | Дата | 2026-08-23 |
 | Автор | architect (Hermes Agent), kanban t_d9e70587 |
-| Контекст | E2E Voice Test: fail-streak round-215/216/217 (3 подряд, 23.08 18:40–19:50 UTC), signature = `TRANSCRIPT[ww01/mv02]: ожидалось «<wake> …», распознано «…»` — wake-word теряется STT'ом на первом слове фразы. Робот жив, контейнеры healthy, develop свежий (содержит fix #1546). Это **отдельный** failure-mode, не покрытый ни ADR-0024 (music-aware), ни t_fb037ed1 (stale-PR). |
+| Контекст | E2E Voice Test: fail-streak round-215/216/217 (3 подряд, 23.08 18:40–19:50 UTC), signature = `TRANSCRIPT[ww01/mv02]: ожидалось «<wake> …», распознано «…»` — wake-word теряется STT'ом на первом слове фразы. Робот жив, контейнеры healthy, develop свежий (содержит fix #1546). Это **отдельный** failure-mode, не покрытый ни ADR-RT-0068 (music-aware), ни t_fb037ed1 (stale-PR). |
 | Затрагивает | наблюдательное знание для будущих ретро; голосовой wake-gate в `audio_node`/Yandex STT pipeline; e2e-harness (нет pre-flight diagnostic) |
-| Родители | ADR-0024 (music-aware intent priority gate — закрывает только music-context); ADR-0025 (stale-PR detection — закрывает другой класс проблемы) |
+| Родители | ADR-RT-0068 (music-aware intent priority gate — закрывает только music-context); ADR-0025 (stale-PR detection — закрывает другой класс проблемы) |
 | Связанные | issue #1525 (CLOSED, про wake-word под играющей музыкой, PR #1547 в работе), issue #1117 (CLOSED, про wake_word теряется в audio_node), PR #1547 (needs-review, MERGEABLE), PR #1546 (MERGED 22.08 — fix #1546), t_fb037ed1 (done 22.08 — stale-PR verdict), t_9d229634 (blocked — dj02 LLM race), t_7dbd1bd1 (ready — archive parent после merge #1547), t_d9e70587 (running — это retro) |
 
 ## 1. Контекст и бизнес-проблема
@@ -101,7 +101,7 @@ gh pr view 1547 --repo krikz/rob_box_project --json state,mergeable,statusCheckR
 - `reviewDecision`: пусто (Шифу ещё не ревьюил)
 - `head`: `z-{agent}/1546-fix-voice-1544-dialogue-node-music-state`
 
-PR **ждёт Шифу merge**. ADR-0027 фиксирует: **пока PR #1547 не влит, root cause из issue #1525 (wake-word теряется под играющей музыкой) остаётся активным**, но это объясняет только dj02_stop_music, не массовый no_wake_word на тишине.
+PR **ждёт Шифу merge**. ADR-RT-0070 фиксирует: **пока PR #1547 не влит, root cause из issue #1525 (wake-word теряется под играющей музыкой) остаётся активным**, но это объясняет только dj02_stop_music, не массовый no_wake_word на тишине.
 
 ### 2.4 Робот жив (проверено в task body)
 
@@ -184,7 +184,7 @@ voice-assistant `Up About an hour (healthy)`
 
 ## 9. Связь с существующими механизмами
 
-- **ADR-0024** (music-aware intent priority gate): закрывает dj02 (музыка играет + команда стоп). **Не** закрывает cold-start wake-gate на тишине.
+- **ADR-RT-0068** (music-aware intent priority gate): закрывает dj02 (музыка играет + команда стоп). **Не** закрывает cold-start wake-gate на тишине.
 - **ADR-0022** (process e2e done gates): GATE-1 acceptance contract. Wake-gate фейл не нарушает GATE-1 (он идёт до acceptance), но помечает раунд как FAIL на step-level.
 - **ADR-0025** (stale-PR detection): закрывает stale-PR tip → старый harness/scenario. **Не** закрывает свежий develop с wake-gate regression.
 - **t_fb037ed1** (stale-PR verdict, done 22.08): объясняет fail-streak **ДО** merge #1546.
@@ -205,9 +205,9 @@ voice-assistant `Up About an hour (healthy)`
    - cold-start wake-gate не зависит от music-state, но возможно обновится стейт машина wake-gate (побочный эффект).
 4. **Если после merge #1547 fail-streak сохраняется**: подтверждается H1/H2, нужен backend-issue «wake-word detector calibration post-deploy».
 
-## Приложение B: различия с ADR-0024
+## Приложение B: различия с ADR-RT-0068
 
-| Параметр | ADR-0024 (music-aware) | ADR-0027 (systemic no_wake_word) |
+| Параметр | ADR-RT-0068 (music-aware) | ADR-RT-0070 (systemic no_wake_word) |
 |---|---|---|
 | Контекст | Музыка играет (dj01 → dj02) | Cold start, тишина |
 | Root cause | dialogue_guards не пробрасывает music_state | STT теряет wake-слово на первом слове |
