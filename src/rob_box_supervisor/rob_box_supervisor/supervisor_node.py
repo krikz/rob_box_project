@@ -319,6 +319,12 @@ GRIP_PTT_RESULT_TOPIC: str = "/avatar/ptt/result"
 GRIP_VOICE_PIPELINE_TOPIC: str = "/avatar/voice_pipeline"
 # Выход пайплайна — динамики робота (тот же топик, что у инструмента say).
 GRIP_TTS_REQUEST_TOPIC: str = "/voice/tts/request"
+# ADR-0055 / issue #1993 — обратный канал ТАРС в шлем. Старый grip pipeline
+# публиковал в /voice/tts/request (этот топик оставлен ТОЛЬКО для инструмента
+# ``say``, см. ADR-0055 §Чего не делаем). Все собственные реплики
+# avatar_supervisor'а и грип-пайплайна идут в /avatar/tts/request (sink="headset"),
+# tts_node шлёт синтез в /avatar/tts/audio, quest_node доставляет в шлем.
+AVATAR_TTS_REQUEST_TOPIC: str = "/avatar/tts/request"
 # source в /voice/tts/request от пайплайна грипа (для метрик tts_node).
 GRIP_TTS_SOURCE: str = "operator"
 # Значения preset, означающие «без стиля» (0 вызовов LLM) даже при
@@ -517,6 +523,15 @@ class AvatarSupervisor(Node):
         self._grip_llm: Any = None
         self._tts_request_pub = self.create_publisher(
             RosString, GRIP_TTS_REQUEST_TOPIC, 10
+        )
+        # ADR-0055 / issue #1993 — обратный канал ТАРС в шлем. Publisher
+        # /avatar/tts/request для СОБСТВЕННЫХ реплик supervisor'а и пайплайна
+        # грипа. Контракт String JSON (см. ADR-0055 §tts_node):
+        # ``{request_id, ssml, sink:\"headset\", voice?, language?}``.
+        # ``/voice/tts/request`` остаётся ТОЛЬКО для инструмента ``say``
+        # (там ALSA-путь + динамики робота, НЕ шлем).
+        self._avatar_tts_request_pub = self.create_publisher(
+            RosString, AVATAR_TTS_REQUEST_TOPIC, 10
         )
         self.create_subscription(
             RosString, GRIP_PTT_RESULT_TOPIC, self._on_grip_ptt_result, 10
@@ -2199,26 +2214,77 @@ class AvatarSupervisor(Node):
     def _publish_grip_tts(
         self, text: str, language: Optional[str] = None
     ) -> None:
-        """Опубликовать текст в ``/voice/tts/request`` (динамики робота).
+        """Опубликовать текст в ``/avatar/tts/request`` (ТАРС в шлем, ADR-0055).
 
-        Payload — тот же контракт, что у speak_text/say: ``ssml`` обязателен
-        (tts_node.dialogue_callback читает его), ``source=operator`` — для
-        метрик. ``language`` передаём ТОЛЬКО когда текст переписан LLM и
-        должен звучать на выбранном языке; дословный текст остаётся на языке
-        оператора без override (AV-28).
+        Раньше это был ``/voice/tts/request`` (динамики робота). Теперь
+        все реплики пайплайна грипа идут в шлем через
+        ``/avatar/tts/request`` (sink="headset"): грип говорит голосом
+        оператора (прямоточный пайплайн — ``/avatar/ptt/result`` →
+        ``/avatar/voice_pipeline`` → ``transform`` → ЭТО), и для
+        аудио-канала шлем — естественный получатель.
+
+        Payload — JSON ``{request_id, ssml, sink:"headset", language?}``:
+        ``ssml`` обязателен (tts_node читает его в _on_avatar_tts_request),
+        ``language`` передаём ТОЛЬКО когда текст переписан LLM и должен
+        звучать на выбранном языке (AV-28); дословный текст остаётся на
+        языке оператора без override.
+
+        Динамики робота (``/voice/tts/request``) теперь зарезервированы
+        за инструментом ``say`` (см. ADR-0055 §Чего не делаем).
         """
+        import uuid as _uuid
+
+        request_id = _uuid.uuid4().hex[:8]  # см. ADR-0055 §tts_node
         payload = {
+            "request_id": request_id,
             "ssml": f"<speak>{text}</speak>",
-            "source": GRIP_TTS_SOURCE,
+            "sink": "headset",
         }
         if language:
             payload["language"] = language
         try:
             msg = RosString()
             msg.data = json.dumps(payload, ensure_ascii=False)
-            self._tts_request_pub.publish(msg)
+            self._avatar_tts_request_pub.publish(msg)
         except Exception as exc:  # noqa: BLE001
-            self._log.warning(f"GripPipeline: tts publish failed: {exc}")
+            self._log.warning(f"GripPipeline: avatar_tts_request publish failed: {exc}")
+
+    def _publish_avatar_tts(
+        self, text: str, language: Optional[str] = None, voice: Optional[str] = None
+    ) -> str:
+        """ADR-0055 / issue #1993 — публикация собственной реплики ТАРС в шлем.
+
+        Используется для всех supervisor-ответов вида «принял», «не умею»,
+        «камера повёрнута», «не понял» и т.п. — раньше они ходили в
+        ``/voice/tts/request`` (если вообще ходили), теперь строго в
+        ``/avatar/tts/request`` с ``sink="headset"``, чтобы попасть в шлем
+        оператора через новый обратный канал (ADR-0055).
+
+        Returns:
+            request_id (uuid hex8), чтобы caller мог логировать/коррелировать
+            с /avatar/tts/error и /voice/tts/finished от tts_node.
+        """
+        import uuid as _uuid
+
+        request_id = _uuid.uuid4().hex[:8]
+        payload = {
+            "request_id": request_id,
+            "ssml": f"<speak>{text}</speak>",
+            "sink": "headset",
+        }
+        if language:
+            payload["language"] = language
+        if voice:
+            payload["voice"] = voice
+        try:
+            msg = RosString()
+            msg.data = json.dumps(payload, ensure_ascii=False)
+            self._avatar_tts_request_pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(
+                f"avatar_supervisor: avatar_tts_request publish failed: {exc}"
+            )
+        return request_id
 
 
 class _NoopLabelCounter:
