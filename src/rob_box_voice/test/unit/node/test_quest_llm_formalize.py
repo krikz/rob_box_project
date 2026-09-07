@@ -168,7 +168,7 @@ def _write_minimal_yaml(tmpdir: Path, *, with_prompts: bool = True) -> str:
                         "prompt_file": "presets/lenin.txt",
                     },
                 },
-                # dict-формат как в prod src/rob_box_voice/config/voice_presets.yaml —
+# dict-формат как в prod src/rob_box_voice/config/voice_presets.yaml —
                 # dialogue_node._language_meta() читает именно его, иначе
                 # _language_label() свалится в fallback «ru» / «en» вместо «русский» /
                 # «английский», и тесты на «языке «русский»» в user-директиве упадут.
