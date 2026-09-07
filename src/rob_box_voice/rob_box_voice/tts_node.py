@@ -145,6 +145,18 @@ except ImportError:  # pragma: no cover — only triggered if rob_box_llm not bu
     MiniMaxTTSRateLimitError = Exception  # type: ignore[assignment,misc]
 
 
+class _TTSEmptyTextError(Exception):
+    """Issue #2096 — пустой ``text`` дошёл до ``_synthesize_and_play``.
+
+    Дефект ВЫЗЫВАЮЩЕГО (пустой ``text``/``ssml``), а не провайдера — см.
+    guard в начале ``_synthesize_and_play``. Отдельный класс (не голый
+    ``Exception``) нужен, чтобы исключение поднималось ДО входа в
+    ``_sap_run_provider_chain``/``_sap_silero_fallback`` — минимакс/yandex/
+    silero никогда его не видят, и ``_mark_provider_dead`` никогда не
+    вызывается по этой причине.
+    """
+
+
 # Issue #1160 — Prometheus metrics (этап 1 observability).
 # ``prometheus_client`` — optional dep; если её нет, всё превращается в
 # no-op и старт сервера тихо возвращает ``False``.
@@ -2221,13 +2233,25 @@ class TTSNode(Node):
         весёлый,*``); TTS would read the literal ``*`` as «звёздочка».
         Strip the markers here — this is the single chokepoint through
         which *all* TTS requests pass (``/voice/dialogue/response`` from
-        dialogue_node AND ``/voice/tts/request`` from the ``speak_text``
-        MCP tool), so both voice paths get the same sanitisation.
+        dialogue_node, ``/voice/tts/request`` from the ``speak_text`` MCP
+        tool, AND ``/avatar/tts/request`` — issue #2096 — from
+        ``supervisor_node``), so all voice paths get the same sanitisation.
+
+        Issue #2096 — also unescapes XML entities (``&amp;``, ``&lt;``,
+        ``&gt;``, ``&quot;``, ``&apos;``, numeric ``&#160;`` etc.) left in
+        the text after tag-stripping: an SSML producer that escapes ``&``/
+        ``<`` when building ``<speak>...</speak>`` (e.g. text containing a
+        literal ``&``) would otherwise make TTS read the literal entity
+        name instead of the character.
         """
+        import html
         import re
 
-        # Убираем все XML теги
+        # Убираем все XML теги (включая вложенные <prosody>/<break> и их
+        # атрибуты — вместе с тегом уходят и entity внутри атрибутов).
         text = re.sub(r"<[^>]+>", "", ssml)
+        # Раскрываем entity, оставшиеся в текстовом содержимом.
+        text = html.unescape(text)
         return strip_markdown(text).strip()
 
     def _on_avatar_tts_request(self, msg: String) -> None:
@@ -2336,11 +2360,28 @@ class TTSNode(Node):
         voice = chunk_data.get("voice")
         language = chunk_data.get("language")
 
+        # Issue #2096 — ADR-0055 / supervisor_node докстринг (``_publish_grip_tts``,
+        # ``_publish_avatar_tts``) объявляют ``ssml`` ОБЯЗАТЕЛЬНЫМ, а ``text`` —
+        # НЕТ: оба публикатора шлют payload {request_id, ssml, sink, ...} БЕЗ
+        # поля ``text`` вовсе. До этого фикса ``chunk_data.get("text", "")``
+        # был пустым для КАЖДОГО запроса от этих публикаторов (весь голос ТАРС
+        # в шлем + grip-пайплайн), а на синтез уходил именно этот пустой text
+        # (``ssml`` использовался только для ``_parse_ssml_attributes`` —
+        # просодия), что давало MiniMax bad-request "text is empty" на
+        # НЕПУСТОЙ реплике (см. live-лог voice-assistant, 2026-09-07).
+        # Делаем ``ssml`` самодостаточным, как обещано в контракте: если
+        # ``text`` отсутствует/пуст — извлекаем его из ``ssml`` тем же
+        # чокпоинтом, что и ``dialogue_callback`` (issue #988) — снимает XML
+        # теги, чистит markdown.
+        avatar_text = chunk_data.get("text", "")
+        if not avatar_text or not avatar_text.strip():
+            avatar_text = self._extract_text_from_ssml(ssml)
+
         self.get_logger().info(
             f"🎧 [ADR-0055] avatar TTS request: request_id="
             f"{(chunk_data.get('request_id', '') or '')[:8]}, "
             f"speech_id={speech_id[:8]}, voice={voice or 'default'}, "
-            f"text={chunk_data.get('text', '')!r}"
+            f"text={avatar_text!r}"
         )
         # Запоминаем текущий avatar-request_id — control_callback использует
         # его, чтобы сбрасывать синтезирующийся worker при STOP.
@@ -2351,7 +2392,7 @@ class TTSNode(Node):
             self._run_synthesis_worker,
             speech_id,
             ssml,
-            chunk_data.get("text", ""),
+            avatar_text,
             dialogue_id,
             ssml_attributes,
             speech_id,
@@ -3497,6 +3538,30 @@ class TTSNode(Node):
             "result": {},  # последний result от MiniMax (already_published etc.)
         }
         try:
+            # Issue #2096 — единый choke-point: ЛЮБОЙ TTS-путь (dialogue_
+            # callback, /avatar/tts/request, /voice/tts/request) проходит
+            # через ``_synthesize_and_play``. Пустой/whitespace ``text``
+            # раньше мог дойти сюда (см. ``_on_avatar_tts_request`` до
+            # фикса) и попасть в MiniMax → ``TTSBadRequestError("text is
+            # empty")`` → ``_sap_synthesize_minimax`` вызывал
+            # ``_mark_provider_dead("minimax", ...)`` → каскад помечал
+            # yandex/silero мёртвыми на 30s (см. live-лог voice-assistant,
+            # 2026-09-07: 3 реплики grip-пайплайна подряд положили всю
+            # цепочку). Пустой text — дефект ВЫЗЫВАЮЩЕГО, не провайдера:
+            # не даём ему даже достичь цепочки провайдеров, поэтому НИКТО
+            # не помечается мёртвым, и следующий (непустой!) запрос от
+            # ЛЮБОГО caller'а (включая голос личности ТАРС) не молчит.
+            # ``prebaked_audio`` (ADR-0056) — исключение: pregen-кэш
+            # ключуется по РЕАЛЬНОМУ тексту фразы и уже несёт готовое
+            # аудио, блокировать воспроизведение тут незачем.
+            if prebaked_audio is None and (not text or not text.strip()):
+                self.get_logger().warn(
+                    "⚠️ [issue 2096] TTS: пустой text — provider chain "
+                    "пропущен целиком, провайдеры НЕ помечаются мёртвыми "
+                    f"(speech_id={(speech_id or '')[:8]}, sink={sink})"
+                )
+                raise _TTSEmptyTextError("empty_text")
+
             # 1) Pre-gen cache short-circuit (ADR-0056 / issue #2003).
             if self._sap_consume_prefetch(prebaked_audio, voice, speech_id, ctx):
                 # Prefetch отработал — цепочка синтеза не нужна, всё остальное

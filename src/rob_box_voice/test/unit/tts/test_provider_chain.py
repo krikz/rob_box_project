@@ -19,6 +19,7 @@ just the attributes the hot path reads (same contract as
 """
 from __future__ import annotations
 
+import json
 import sys
 import threading
 import time
@@ -345,3 +346,88 @@ def test_chain_ttl_expiry_retries_minimax_first() -> None:
     # MiniMax is tried first again (and succeeds).
     node._synthesize_minimax.assert_called_once()
     node._synthesize_yandex.assert_not_called()
+
+
+# ── Issue #2096 — empty text must never mark a provider dead ─────────────────
+#
+# Live incident (voice-assistant, 2026-09-07): ``_on_avatar_tts_request``
+# passed ``chunk_data.get("text", "")`` (always empty for payloads built by
+# ``supervisor_node._publish_grip_tts``/``_publish_avatar_tts``, which only
+# send ``ssml``) straight into the synthesis chain. MiniMax raised
+# ``TTSBadRequestError("text is empty")`` — a defect of the *caller*, not the
+# provider — but ``_sap_synthesize_minimax`` marked MiniMax dead for 30s
+# regardless, cascading the same fate onto Yandex (and exhausting Silero),
+# so the NEXT (non-empty!) TTS request from ANY caller — including TARS's
+# own personality voice — went silent for 30 seconds. These tests pin the
+# fix at the single choke-point ``_synthesize_and_play`` uses for every
+# caller (dialogue_callback / /avatar/tts/request / /voice/tts/request):
+# an empty/whitespace ``text`` must short-circuit BEFORE any provider is
+# touched, and must never populate ``_provider_dead_until``.
+
+
+def test_chain_empty_text_never_calls_a_provider_or_marks_dead() -> None:
+    node = _playback_node()
+    _bind_dead_cache(node)
+    node.yandex_stub = object()
+    node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+    # Canary: if the guard regresses, calling ANY provider fails the test
+    # loudly instead of quietly cascading into a 30s dead-mark.
+    node._synthesize_minimax = MagicMock(
+        side_effect=AssertionError("minimax MUST NOT be called for empty text (#2096)")
+    )
+    # ``_publish_tts_finished`` no-ops on a falsy speech_id — bind the real
+    # method and give it one so we can assert the caller-visible signal.
+    node._publish_tts_finished = TTSNode._publish_tts_finished.__get__(node, type(node))  # type: ignore[attr-defined]
+
+    TTSNode._synthesize_and_play(
+        node, "<speak></speak>", "", None, {}, "sid-empty-1"
+    )
+
+    node._synthesize_minimax.assert_not_called()
+    node._synthesize_yandex.assert_not_called()
+    node._synthesize_silero.assert_not_called()
+    assert node._provider_dead_until == {}, (
+        f"empty text must not mark any provider dead: {node._provider_dead_until}"
+    )
+    # Caller still gets a finished(success=False) — it must not hang.
+    node.finished_pub.publish.assert_called_once()
+    finished_msg = node.finished_pub.publish.call_args[0][0]
+    finished_payload = json.loads(finished_msg.data)
+    assert finished_payload["speech_id"] == "sid-empty-1"
+    assert finished_payload["success"] is False
+    assert finished_payload["error"] == "empty_text"
+
+
+def test_chain_whitespace_only_text_never_calls_a_provider_or_marks_dead() -> None:
+    node = _playback_node()
+    _bind_dead_cache(node)
+    node.yandex_stub = object()
+    node._synthesize_yandex = MagicMock(
+        side_effect=AssertionError("yandex MUST NOT be called for whitespace-only text (#2096)")
+    )
+    node._synthesize_minimax = MagicMock(
+        side_effect=AssertionError("minimax MUST NOT be called for whitespace-only text (#2096)")
+    )
+
+    TTSNode._synthesize_and_play(
+        node, "<speak>   \n\t  </speak>", "   \n\t  ", None, {}, None
+    )
+
+    node._synthesize_minimax.assert_not_called()
+    node._synthesize_yandex.assert_not_called()
+    node._synthesize_silero.assert_not_called()
+    assert node._provider_dead_until == {}
+
+
+def test_chain_nonempty_text_after_empty_guard_still_uses_minimax() -> None:
+    """Sanity: the empty-text guard must not swallow real requests."""
+    node = _playback_node()
+    _bind_dead_cache(node)
+    node.yandex_stub = object()
+    node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+
+    _run_and_play(node)  # text="hello" — non-empty
+
+    node._synthesize_minimax.assert_called_once()
+    node._synthesize_yandex.assert_not_called()
+    assert node._provider_dead_until == {}
