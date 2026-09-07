@@ -52,7 +52,7 @@ from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Protocol, runtime_checkable
 
 from .delta import DeltaOp, DeltaOpKind, TaskDelta
-from .event_bus import EventEnvelope
+from .event_bus import EventBus, EventEnvelope
 
 _LOG = logging.getLogger(__name__)
 
@@ -604,6 +604,15 @@ class TaskScheduler:
             )
         self._lock = threading.Lock()
         self._tasks: Dict[str, SchedulerTask] = {}
+        # C1 (#1995, operator-agent 07) — Phase 2 EventBus is created at
+        # TaskScheduler init time so cancel/preempt can fan out through a
+        # pub/sub surface. The bus is constructed synchronously here
+        # because TaskScheduler itself is built inside an asyncio loop
+        # (enforced above by the ``_loop`` resolution). The bus exposes
+        # sync ``subscribe`` so callers (reflex layer, command bridge)
+        # can register handlers from non-async code paths; ``publish``
+        # is async because EventSubscription queues are asyncio.Queue.
+        self.event_bus: EventBus = EventBus()
         # S2.2 (scheduler-segments-merge) — group_id → ordered task_ids.
         # Populated in submit(); cleared lazily in segments() once every
         # segment of the group has reached a terminal status (§2.2).

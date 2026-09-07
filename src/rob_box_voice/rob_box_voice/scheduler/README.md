@@ -85,6 +85,12 @@ async def main() -> None:
 - **Cancel для QUEUED.** Задача, которая ещё не попала в lock,
   снимается через `sched.cancel(task_id)`. RUNNING-задачу MVP
   не прерывает — это будет Phase 2 (`SchedulerEventBus`).
+- **EventBus на init.** Начиная с C1 (#1995, operator-agent 07),
+  `TaskScheduler.__init__` создаёт и экспонирует свой
+  `EventBus` как `sched.event_bus`. Шина живая, но пока
+  пустая — `cancel()` ещё не публикует туда события. C2
+  (#1995) превратит cancel() в preempt и начнёт слать
+  envelope `scheduler.cancel` в эту шину.
 - **`[CHANNELS]` snapshot.** `sched.channel_status(kind)` /
   `sched.all_statuses()` возвращают `ChannelStatus` с полями
   `queue_depth`, `current_task_id`, `current_tool`, `eta_s`. Phase 3

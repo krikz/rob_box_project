@@ -417,7 +417,9 @@ class TestCancellation:
         """MVP cannot preempt a running task — it must run to completion.
 
         This documents the Phase 1 limitation. Phase 2 wires the
-        :class:`SchedulerEventBus` for proper preemption.
+        :class:`SchedulerEventBus` for proper preemption. C2
+        (#1995, operator-agent 07) is the commit that flips this
+        test to ``test_cancel_running_task_preempts_via_event_bus``.
         """
         sched = _make_scheduler()
         try:
