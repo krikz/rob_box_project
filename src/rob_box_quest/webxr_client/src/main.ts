@@ -58,6 +58,7 @@ import type {
 import { createToast, type Toast } from "./ui/toast";
 import { supervisorEffect, type FloorLabel, type SupervisorState } from "./state/supervisor_state";
 import { createPreviewAudioSink, type PreviewAudioSink } from "./ui/preview_audio_sink";
+import { createOperatorAudioSink, type OperatorAudioSink } from "./ui/operator_audio_sink";
 import {
   INITIAL_TTS_PICKER_STATE,
   PREVIEW_TEXT,
@@ -642,6 +643,12 @@ export function bootstrap(opts: BootstrapOptions): {
     if (send) {
       c!.send({ cmd: "voice_ptt_start", mode: next, ts_ms: Date.now() });
     }
+    // ADR-0055 / issue #1993 — локальный barge-in: обрываем проигрывание
+    // ТАРС в шлем ДО отправки команды на сервер. Оператор должен услышать
+    // тишину раньше, чем сервер обработает STOP и перестанет слать чанки
+    // в /avatar/tts/audio → ws_server.deliver_audio(stream="operator_tts").
+    // Динамики робота (say) это не трогает — они живут на /voice/tts/*.
+    operatorAudioSink.stop();
     // ADR-0054 §2.3: пока грип зажат — wake подавлен (одна фраза — один
     // маршрут). enabled остаётся true; gate прокидывается внутрь.
     voiceCapture.setWakeGate({ suppressed: true });
@@ -664,6 +671,11 @@ export function bootstrap(opts: BootstrapOptions): {
 
   let ttsState: TtsPickerState = INITIAL_TTS_PICKER_STATE;
   const previewSink: PreviewAudioSink = createPreviewAudioSink();
+  // ADR-0055 / issue #1993 — обратный канал ТАРС в шлем. Симметричен
+  // previewSink, но БЕЗ UI-стейта (речь в шлем, не picker). Barge-in:
+  // ``stop()`` зовётся на voice_ptt_start ДО отправки на сервер
+  // (оператор должен услышать тишину раньше, чем сервер обработает STOP).
+  const operatorAudioSink: OperatorAudioSink = createOperatorAudioSink();
   // Первая отрисовка: меню скрыто, но текстуры готовы — при открытии не
   // будет кадра с пустыми плашками.
   bridge.renderTtsPicker(ttsState);
@@ -918,6 +930,26 @@ export function bootstrap(opts: BootstrapOptions): {
         dispatchTts({ kind: "preview_error", requestId: e.request_id, reason: e.reason });
         return true;
       }
+      // ADR-0055 / issue #1993 — обратный канал ТАРС в шлем. Те же
+      // события, что у preview, но без UI-pipeline: чанки в
+      // operatorAudioSink, на _done → play(), на _error → drop. _done
+      // и _error сейчас не публикуются сервером (ADR-0055 §ws_server),
+      // но client-типы уже заведены — обрабатываем на всякий случай.
+      case "operator_tts_audio": {
+        const e = ev as { request_id: string; content_type?: string; seq: number; total: number };
+        operatorAudioSink.onMeta(e.request_id, e.content_type ?? "audio/pcm", e.seq, e.total);
+        return true;
+      }
+      case "operator_tts_done": {
+        const e = ev as { request_id: string };
+        void operatorAudioSink.play(e.request_id);
+        return true;
+      }
+      case "operator_tts_error": {
+        const e = ev as { request_id: string; reason: string };
+        operatorAudioSink.error(e.reason);
+        return true;
+      }
       default:
         return false;
     }
@@ -1102,8 +1134,12 @@ export function bootstrap(opts: BootstrapOptions): {
           // AV-27: preview-аудио приходит с stream_id = 0 (control), у него
           // нет topic'а в subscribe_ack — маршрутизируем в preview-sink по
           // последней пришедшей мете preview_voice_audio.
+          // ADR-0055: оператор-канал ТАРС идёт через тот же stream_id=0;
+          // каждый sink знает свой currentRequestId, поэтому «чужие»
+          // чанки просто отбрасываются (sink.onChunk вернёт false).
           if (streamId === 0) {
             previewSink.onChunk(payload);
+            operatorAudioSink.onChunk(payload);
             return;
           }
           const topic = conn!.getTopicForStream(streamId);

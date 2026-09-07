@@ -259,17 +259,17 @@ export type JsonEvent =
     }
   | { type: "avatar_state_ack"; state: Record<string, unknown>; ts_ms: number }
   | { type: "avatar_state_nack"; reason: string; ts_ms: number }
-  | {
-      type: "preview_voice_audio";
-      request_id: string;
-      format: "mp3" | "opus" | "wav";
-      content_type: string;
-      seq: number;
-      total: number;
-      ts_ms: number;
-    }
+  | { type: "preview_voice_audio"; request_id: string; format: "mp3" | "opus" | "wav"; content_type: string; seq: number; total: number; ts_ms: number }
   | { type: "preview_voice_done"; request_id: string; ts_ms: number }
   | { type: "preview_voice_error"; request_id: string; reason: string; ts_ms: number }
+  // ADR-0055 / issue #1993 — обратный канал ТАРС в шлем. Сервер шлёт
+  // синтезированные чанки через тот же BINARY_FRAME (stream_id=0) и
+  // отдельную JSON_EVENT-ленту. ``_done/_error`` пока не публикуются
+  // сервером (см. ADR-0055 §ws_server), но типы заведены для
+  // forward-compat с приоритетной очередью (шаг 07a).
+  | { type: "operator_tts_audio"; request_id: string; format: "pcm_s16le" | "mp3" | "opus" | "wav"; content_type: string; seq: number; total: number; ts_ms: number }
+  | { type: "operator_tts_done"; request_id: string; ts_ms: number }
+  | { type: "operator_tts_error"; request_id: string; reason: string; ts_ms: number }
   | { type: "ping"; ts_ms: number; nonce?: string }
   | { type: "pong"; ts_ms: number; nonce?: string }
   // AV-19 (issue #1911, ADR-0028 §4.4): сервер сообщает клиенту, что
