@@ -601,6 +601,25 @@ class AvatarSupervisor(Node):
         )
         self._grip_metrics = self._build_grip_metrics()
 
+        # Issue #2113 (quest #2112) — TARS 2 panel dispatcher. Превращает
+        # LLM tool call ``show_metrics(query)`` в URL Grafana-панели и
+        # публикует его в ``/avatar/tars/panel_url`` (на этот топик уже
+        # подписан Quest-клиент). Регистрация tool'а — в ``_build_operator_tools``
+        # ниже, после инициализации AgentCore/registry (tars_panel.register_tool
+        # дёргается в той же фазе, что и MCP-tools).
+        try:
+            from rob_box_supervisor.tars_panel import (  # noqa: PLC0415
+                TarsPanelDispatcher,
+            )
+
+            self._tars_panel_dispatcher = TarsPanelDispatcher(self)
+        except Exception as exc:  # noqa: BLE001
+            # Не валим supervisor из-за optional фичи: warn и идём дальше.
+            self.get_logger().warning(
+                f"[issue #2113] TarsPanelDispatcher init failed: {exc}"
+            )
+            self._tars_panel_dispatcher = None
+
         # Метрики (см. rob_box_voice.observability.metrics). Регистрируются
         # лениво через get_metric — если prometheus_client недоступен,
         # это no-op (см. там же is_metrics_enabled). Метрики-объекты
@@ -2041,6 +2060,19 @@ class AvatarSupervisor(Node):
             bridge = LLMToolCallAdapter(self)
             provider = ROSMCPToolProvider(bridge)
             registry = ToolRegistry()
+            # Issue #2113 (quest #2112) — TARS 2 tool: ``show_metrics``.
+            # Регистрируется ДО ``provider.update_tools``, чтобы у LLM
+            # уже была актуальная спецификация. Dispatcher уже создан в
+            # ``__init__``; если он упал там (например, тест без ROS) —
+            # пропускаем регистрацию без exception.
+            if getattr(self, "_tars_panel_dispatcher", None) is not None:
+                try:
+                    self._tars_panel_dispatcher.register_tool(registry)
+                except Exception as exc:  # noqa: BLE001
+                    self._log.warning(
+                        f"[issue #2113] show_metrics tool registration "
+                        f"failed: {exc}"
+                    )
             provider.update_tools(
                 [
                     {
