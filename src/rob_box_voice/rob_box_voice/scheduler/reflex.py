@@ -51,7 +51,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Deque, Mapping, Optional, Sequence
 
-from .event_bus import EventBus, EventEnvelope
+from .event_bus import (
+    BackpressurePolicy,
+    EventBus,
+    EventBusClosedError,
+    EventEnvelope,
+    EventSubscription,
+)
 from .task_scheduler import (
     SchedulerTask,
     TaskScheduler,
@@ -334,6 +340,28 @@ class ReflexLayer:
     TOPIC: str = "/reflex/events"
     """Topic the layer publishes on. Matches §8.10.2 / §11.3."""
 
+    SUBSCRIBE_TOPIC: str = "/command/parsed"
+    """Topic the layer subscribes to for parsed voice commands.
+
+    The :class:`ReflexLayer` is a passive consumer of parsed
+    commands — the :class:`rob_box_voice.command_node.CommandNode`
+    publishes each parsed :class:`~rob_box_voice.core.command_parser.Command`
+    here and the layer reacts. The wire format is a plain JSON-friendly
+    dict so the bridge does not need a rclpy dependency inside the
+    scheduler package; the parser dataclass is reconstructed by the
+    bus consumer (see :meth:`attach`).
+
+    Matches ``SCHEDULER_DESIGN.md`` §8.10.4 step 1: ``command_node``
+    publishes the parsed command and the scheduler subscribes.
+    Stays in-process — no ROS round-trip, no double ``/mcp/tools``.
+    """
+
+    #: Maximum queue size for the layer's subscription on
+    # :attr:`SUBSCRIBE_TOPIC`. The 64-slot buffer matches the bus
+    # default; reflex rates are tiny (≪ 5/hour per SCHEDULER_DESIGN §14
+    # Q6) so 64 is plenty of headroom for an STT burst.
+    _SUBSCRIBE_QUEUE_SIZE: int = 64
+
     def __init__(
         self,
         scheduler: TaskScheduler,
@@ -359,6 +387,12 @@ class ReflexLayer:
         self._last_stop_at: Optional[float] = None
         self._lock = asyncio.Lock()
         self.metrics = ReflexMetrics()
+        # Subscription is created lazily by :meth:`attach` so the
+        # layer remains usable from pure unit tests that only call
+        # :meth:`handle` directly (no bus subscription required).
+        self._subscription: Optional[EventSubscription] = None
+        self._consumer_task: Optional[asyncio.Task[None]] = None
+        self._closed = False
 
     # ----- public surface ------------------------------------------------
 
@@ -608,6 +642,178 @@ class ReflexLayer:
             payload=event.to_payload(),
             correlation_id=event.correlation_id or event.event_id,
         )
+
+    # ----- bus subscription (command_node → ReflexLayer) ---------------
+    #
+    # The scheduler package is pure Python + asyncio. ``command_node``
+    # is a rclpy node that runs in its own callback loop. To bridge the
+    # two without a ROS round-trip (see SCHEDULER_DESIGN §1 "Чего НЕ
+    # хотим": the scheduler must NOT live on a ROS topic), ``command_node``
+    # publishes parsed commands on a shared in-process ``EventBus``
+    # under :attr:`SUBSCRIBE_TOPIC`, and the layer consumes them via
+    # :meth:`attach`. ``command_node`` constructs the bus (or is handed
+    # one by a node-builder), the reflex layer subscribes, and the
+    # existing Nav2 path keeps working unchanged — the only new code
+    # path is the publish + the consumer coroutine.
+
+    def attach(
+        self,
+        event_bus: EventBus,
+        *,
+        max_queue_size: int = 64,
+    ) -> EventSubscription:
+        """Subscribe the layer to parsed-command events on the bus.
+
+        Idempotent: calling :meth:`attach` more than once closes the
+        previous subscription and replaces it. ``max_queue_size``
+        defaults to 64 (same as :meth:`EventBus.subscribe`) — the
+        parser only fires per-STT-utterance so 64 is many minutes of
+        headroom.
+
+        Parameters
+        ----------
+        event_bus:
+            The shared in-process :class:`EventBus`. Must outlive the
+            layer; typically owned by ``command_node`` (see ADR-0054).
+        max_queue_size:
+            Bounded queue for the subscription. Past this size the
+            default :class:`BackpressurePolicy.BLOCK` policy applies,
+            which is what we want — the parser is backpressured rather
+            than dropping reflex events.
+
+        Returns
+        -------
+        EventSubscription
+            The live subscription handle. Tests use it to assert
+            publish/subscribe round-trips.
+        """
+
+        if self._closed:
+            raise RuntimeError("ReflexLayer is closed; create a new instance")
+        if self._subscription is not None:
+            self.detach()
+        self._subscription = event_bus.subscribe(
+            self.SUBSCRIBE_TOPIC,
+            max_queue_size=max_queue_size,
+            policy=BackpressurePolicy.BLOCK,
+        )
+        # Start the consumer lazily — the caller may schedule it on a
+        # different loop (e.g. command_node drives rclpy on the main
+        # thread, the bus lives on a worker thread's loop).
+        self._consumer_task = asyncio.create_task(
+            self._consume(self._subscription),
+            name="reflex-layer-consumer",
+        )
+        return self._subscription
+
+    def detach(self) -> None:
+        """Cancel the consumer task and close the subscription.
+
+        Safe to call from a different loop than the one that created
+        the subscription — the underlying
+        :meth:`EventSubscription.close` is sync and the consumer task
+        cancellation is fire-and-forget.
+        """
+
+        if self._subscription is not None:
+            self._subscription.close()
+            self._subscription = None
+        if self._consumer_task is not None and not self._consumer_task.done():
+            self._consumer_task.cancel()
+        self._consumer_task = None
+
+    async def aclose(self) -> None:
+        """Async counterpart to :meth:`detach` for ``await``-style teardown."""
+
+        self.detach()
+        self._closed = True
+
+    async def _consume(self, subscription: EventSubscription) -> None:
+        """Consumer loop: every parsed command → :meth:`handle`.
+
+        Exceptions in :meth:`handle` are logged but DO NOT stop the
+        loop — a single bad envelope must not silently kill the
+        reflex path. The loop exits cleanly only when the
+        subscription is closed (the bus raises
+        :class:`EventBusClosedError` from :meth:`EventSubscription.get`).
+        """
+
+        try:
+            while True:
+                envelope = await subscription.get()
+                command = self._envelope_to_command(envelope)
+                if command is None:
+                    continue
+                try:
+                    await self.handle(command)
+                except Exception as exc:  # noqa: BLE001 — boundary
+                    _LOG.warning(
+                        "reflex: handle() raised %s: %s (envelope_id=%s)",
+                        type(exc).__name__,
+                        exc,
+                        envelope.event_id,
+                    )
+        except asyncio.CancelledError:
+            # detach() asked us to stop; let the cancellation propagate.
+            raise
+        except EventBusClosedError:
+            # Subscription closed (detach or bus shutdown) — clean exit.
+            return
+
+    @staticmethod
+    def _envelope_to_command(envelope: EventEnvelope) -> Optional[Any]:
+        """Reconstruct a command-like object from a bus envelope.
+
+        ``command_node`` publishes a JSON-friendly dict on
+        :attr:`SUBSCRIBE_TOPIC` (see ADR-0054 for the wire contract).
+        The minimal surface the layer needs is ``intent``, ``text``,
+        ``entities``, ``confidence`` — :func:`command_to_view` already
+        duck-types on it, so a small :class:`_BusCommand` shim is
+        enough.
+        """
+
+        payload = envelope.payload
+        if not isinstance(payload, Mapping):
+            _LOG.warning(
+                "reflex: dropping non-mapping payload on %s: %r",
+                ReflexLayer.SUBSCRIBE_TOPIC,
+                type(payload).__name__,
+            )
+            return None
+
+        class _BusIntent:
+            __slots__ = ("value",)
+
+            def __init__(self, value: str) -> None:
+                self.value = str(value)
+
+        class _BusCommand:
+            __slots__ = ("intent", "text", "entities", "confidence")
+
+            def __init__(self, intent: str, text: str, entities: Mapping[str, Any], confidence: float) -> None:
+                self.intent = _BusIntent(intent)
+                self.text = str(text)
+                self.entities = entities
+                self.confidence = float(confidence)
+
+        try:
+            intent = payload["intent"]
+            text = payload.get("text", "")
+            entities = payload.get("entities") or {}
+            confidence = payload.get("confidence", 0.0)
+        except KeyError:
+            _LOG.warning(
+                "reflex: dropping envelope missing 'intent' key: %r",
+                sorted(payload.keys()) if isinstance(payload, Mapping) else payload,
+            )
+            return None
+        if not isinstance(entities, Mapping):
+            _LOG.warning(
+                "reflex: dropping envelope with non-mapping entities: %r",
+                type(entities).__name__,
+            )
+            return None
+        return _BusCommand(intent, text, entities, confidence)
 
     # ----- helpers for tests --------------------------------------------
 
