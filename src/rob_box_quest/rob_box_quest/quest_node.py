@@ -250,13 +250,12 @@ class QuestBridge:
         preview_voice_pub=None,
         voices_cache_ttl_sec: float = 300.0,
         heartbeat_pub=None,  # AV-19: publisher in /teleop_heartbeat
-        # Phase 2 (issue #2002): QuestNode теперь шлёт всё через ЕДИНЫЙ
-        # /supervisor/execute (ExecuteCommand.srv). Старые 3 Trigger-клиента
-        # оставлены для backward-compat с тестами (Phase 3 удалит).
+        # Phase 2 (issue #2002): QuestNode шлёт supervisor-API команды
+        # через ЕДИНЫЙ /supervisor/execute (ExecuteCommand.srv,
+        # ADR-0051 §2.1). supervisor.execute(Command) реально
+        # проксирует в avatar_arbiter (LockManager/FSM), supervisor
+        # только мост.
         supervisor_execute_client=None,
-        supervisor_acquire_client=None,
-        supervisor_release_client=None,
-        supervisor_set_mode_client=None,
         avatar_state_subscription=None,
     ) -> None:
         self._node = node
@@ -284,18 +283,15 @@ class QuestBridge:
         # AV-19: publisher в /teleop_heartbeat. None в unit-тестах —
         # тогда relay_teleop_heartbeat будет no-op (см. его комментарий).
         self._heartbeat_pub = heartbeat_pub
-        # AV-16: supervisor service-clients (каждый — async call_service).
-        # None в unit-тестах моста; реальные ROS-клиенты создаются на уровне
-        # QuestNode (этот конструктор — DI). Sync-обёртки service calls
-        # живут ниже (supervisor_acquire_floor / _release_floor / _set_mode).
-        # Phase 2: prefer единый execute_client; fallback на legacy 3.
-        self._srv_execute = (
-            supervisor_execute_client
-            or supervisor_acquire_client  # legacy fallback (Phase 3 удалит)
-        )
-        self._srv_acquire = supervisor_acquire_client
-        self._srv_release = supervisor_release_client
-        self._srv_set_mode = supervisor_set_mode_client
+        # Phase 2 (issue #2002): supervisor service-client — ЕДИНЫЙ
+        # /supervisor/execute (ExecuteCommand). Legacy Trigger-клиенты
+        # на /avatar_arbiter/{acquire_floor,release_floor,set_avatar_mode}
+        # удалены в Phase 2 C3 (см. ADR-0013 — incremental delivery).
+        # None в unit-тестах моста; реальный клиент создаётся в QuestNode
+        # и прокидывается через ``supervisor_execute_client=``. Sync-обёртки
+        # supervisor_acquire_floor / supervisor_release_floor /
+        # supervisor_set_mode живут ниже и идут через _srv_execute.
+        self._srv_execute = supervisor_execute_client
         self._state_sub = avatar_state_subscription
         # Локальный кеш последнего /avatar/state snapshot (msgpack bytes).
         # None до первого прихода callback-а; Bridge.supervisor_state() → None.
@@ -1487,17 +1483,12 @@ class QuestNode(Node):
         # от имени client_id (см. WSSServer._on_json_cmd).
         self._heartbeat_pub = self.create_publisher(String, "/teleop_heartbeat", _RE)
 
-        # Phase 2 (issue #2002): supervisor service-clients (sync-вызовы из
-        # WS-handler через run_coroutine_threadsafe). В Phase 2 клиент
-        # ходит через ЕДИНЫЙ /supervisor/execute (ExecuteCommand.srv,
-        # ADR-0051 §2.1) — supervisor.execute(Command) реально
-        # проксирует в avatar_arbiter. avatar_arbiter владеет
-        # LockManager/FSM (ADR-0051 §2.2), supervisor только мост.
-        #
-        # Старые Trigger-клиенты на /avatar_arbiter/{acquire_floor,
-        # release_floor, set_avatar_mode} оставлены для fallback в
-        # старых тестах; в Phase 3 arbiter-сервисы будут удалены и
-        # клиенты перестанут создаваться.
+        # Phase 2 (issue #2002, ADR-0013): supervisor service-client —
+        # ЕДИНЫЙ /supervisor/execute (ExecuteCommand.srv, ADR-0051 §2.1).
+        # supervisor.execute(Command) реально проксирует в avatar_arbiter
+        # (LockManager/FSM, ADR-0051 §2.2). Старые Trigger-клиенты
+        # на /avatar_arbiter/{acquire_floor,release_floor,set_avatar_mode}
+        # удалены в Phase 2 C3 — клиент ходит только через execute.
         from rob_box_supervisor_msgs.srv import ExecuteCommand as _Exc  # noqa: PLC0415
         from rob_box_supervisor_msgs.msg import Command as _Cmd  # noqa: PLC0415
 
@@ -1508,30 +1499,6 @@ class QuestNode(Node):
             )
         except Exception:  # pragma: no cover — rclpy без executor
             self._srv_execute = None
-        # Legacy: arbiter Trigger-сервисы (Phase 3 удалит).
-        from std_srvs.srv import Trigger  # noqa: PLC0415 — локальный импорт
-
-        try:
-            self._srv_acquire = self.create_client(
-                Trigger,
-                "/avatar_arbiter/acquire_floor",
-            )
-        except Exception:  # pragma: no cover — rclpy без executor
-            self._srv_acquire = None
-        try:
-            self._srv_release = self.create_client(
-                Trigger,
-                "/avatar_arbiter/release_floor",
-            )
-        except Exception:  # pragma: no cover
-            self._srv_release = None
-        try:
-            self._srv_set_mode = self.create_client(
-                Trigger,
-                "/avatar_arbiter/set_avatar_mode",
-            )
-        except Exception:  # pragma: no cover
-            self._srv_set_mode = None
 
         # /avatar/state подписка для STATE_UPDATE broadcast (транзент_локал,
         # depth 1 = «latched» по ADR-0028 §4.3 + supervisor_node:153-162).
@@ -1665,13 +1632,9 @@ class QuestNode(Node):
             ),
             heartbeat_pub=self._heartbeat_pub,
             # Phase 2 (issue #2002): QuestBridge теперь ходит через
-            # ЕДИНЫЙ /supervisor/execute. Старые 3 клиента прокинуты для
-            # fallback в дев-env, где IDL ExecuteCommand недоступен
-            # (см. QuestBridge.__init__ fallback-логика).
+            # ЕДИНЫЙ /supervisor/execute (ExecuteCommand.srv). Legacy
+            # Trigger-клиенты на /avatar_arbiter/* удалены (ADR-0013).
             supervisor_execute_client=self._srv_execute,
-            supervisor_acquire_client=self._srv_acquire,
-            supervisor_release_client=self._srv_release,
-            supervisor_set_mode_client=self._srv_set_mode,
             avatar_state_subscription=self._avatar_state_sub,
         )
         # Replace NoOpBridge на реальный (после создания обоих).
