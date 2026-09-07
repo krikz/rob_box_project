@@ -2770,8 +2770,22 @@ class AvatarSupervisor(Node):
 
         Динамики робота (``/voice/tts/request``) теперь зарезервированы
         за инструментом ``say`` (см. ADR-0055 §Чего не делаем).
+
+        Issue #2096 — drop при пустом text (раньше публиковали
+        ``<speak></speak>``, tts_node получал пустой SSML и райзил
+        MiniMax "text is empty" → CRITICAL в deploy-логе).
         """
         import uuid as _uuid
+
+        # Issue #2096 — пустой text → DROP (warning). Раньше уходило в
+        # /avatar/tts/request, tts_node ловил MiniMax bad-request, лог
+        # CRITICAL в deploy-issue (см. PR #NNNN).
+        if not text or not text.strip():
+            self._log.warning(
+                f"GripPipeline: avatar_tts_request skipped — empty text "
+                f"(language={language!r})"
+            )
+            return
 
         request_id = _uuid.uuid4().hex[:8]  # см. ADR-0055 §tts_node
         payload = {
@@ -2802,8 +2816,22 @@ class AvatarSupervisor(Node):
         Returns:
             request_id (uuid hex8), чтобы caller мог логировать/коррелировать
             с /avatar/tts/error и /voice/tts/finished от tts_node.
+
+        Issue #2096 — drop при пустом text. Возвращает пустую строку
+        request_id, чтобы caller не пытался коррелировать несуществующий
+        запрос.
         """
         import uuid as _uuid
+
+        # Issue #2096 — пустой text → DROP (warning) + возврат пустого
+        # request_id. Зеркальная защита к _on_avatar_tts_request в tts_node:
+        # upstream не должен слать в /avatar/tts/request нечего синтезировать.
+        if not text or not text.strip():
+            self._log.warning(
+                f"avatar_supervisor: avatar_tts_request skipped — empty text "
+                f"(language={language!r}, voice={voice!r})"
+            )
+            return ""
 
         request_id = _uuid.uuid4().hex[:8]
         payload = {

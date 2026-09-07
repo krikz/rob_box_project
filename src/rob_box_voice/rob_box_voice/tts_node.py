@@ -2305,6 +2305,37 @@ class TTSNode(Node):
                 self._interrupt_playback()
             self.current_dialogue_id = dialogue_id
 
+        # Issue #2096 — guard пустого text/ssml для /avatar/tts/request
+        # (ADR-0055, sink="headset"). По образцу dialogue_callback (line 2063-2069):
+        # _on_avatar_tts_request НЕ имел защиты, и пустой SSML/text уходил в
+        # _synthesize_minimax_with_retry → MiniMax райзил TTSBadRequestError
+        # "text is empty" → CRITICAL в deploy-логе. Защищаемся:
+        # извлекаем text через _extract_text_from_ssml (та же нормализация, что
+        # для основного канала), при пустом — DROP + finished(error=empty_text)
+        # + avatar_error(error=empty_text), чтобы caller (operator-agent / grip
+        # pipeline) не зависал в ожидании speech_id.
+        ssml = chunk_data.get("ssml", "")
+        avatar_text = self._extract_text_from_ssml(ssml)
+        if not avatar_text.strip():
+            self.get_logger().warn(
+                f"⚠️ [ADR-0055] /avatar/tts/request: empty text/ssml, "
+                f"DROP request_id={chunk_data.get('request_id', '')[:8]}"
+            )
+            self._publish_avatar_tts_error(
+                request_id=chunk_data.get("request_id", ""),
+                error="empty_text",
+            )
+            self._publish_tts_finished(
+                speech_id,
+                success=False,
+                error="empty_text",
+                batch_id=chunk_data.get("batch_id"),
+                batch_index=chunk_data.get("batch_index"),
+                batch_total=chunk_data.get("batch_total"),
+                dialogue_id=dialogue_id,
+            )
+            return
+
         # Unicode-script guard (issue 1709) — общий с dialogue_callback.
         if _tts_guard_should_skip(chunk_data.get("ssml", "")):
             _report = _tts_guard_analyze(chunk_data.get("ssml", ""))
