@@ -186,7 +186,9 @@ class Ros2NodeStatusTool(MCPTool):
                 data=monitor_state,
                 message=(
                     f"Статус ROS2-нод из локального кеша monitor'а: "
-                    f"{monitor_state['summary']}"
+                    f"active={monitor_state['active']}/{monitor_state['total']}, "
+                    f"missing={monitor_state['missing']}, "
+                    f"failed={monitor_state['failed']}"
                 ),
             )
 
@@ -535,12 +537,13 @@ class ContainerStatusTool(MCPTool):
             )
 
         # Сливаем метрики по имени контейнера.
+        # ``cast(value_raw)`` всегда float; имя ключа в bucket живёт отдельно.
         by_name: Dict[str, Dict[str, Any]] = {}
-        for label, body, key, cast in (
-            ("restart_count", restart_body, float, float),
-            ("cpu_rate_per_sec", cpu_body, float, float),
-            ("memory_bytes", mem_body, float, float),
-            ("start_time_unix", start_body, float, float),
+        for metric_key, body in (
+            ("restart_count", restart_body),
+            ("cpu_rate_per_sec", cpu_body),
+            ("memory_bytes", mem_body),
+            ("start_time_unix", start_body),
         ):
             if body is None:
                 continue
@@ -549,9 +552,9 @@ class ContainerStatusTool(MCPTool):
                 bucket = by_name.setdefault(metric_name, {"name": metric_name})
                 value_raw = series.get("value", [None, "0"])[1]
                 try:
-                    bucket[key] = cast(value_raw)
+                    bucket[metric_key] = float(value_raw)
                 except (TypeError, ValueError):
-                    bucket[key] = None
+                    bucket[metric_key] = None
 
         now = time.time()
         containers: List[Dict[str, Any]] = []

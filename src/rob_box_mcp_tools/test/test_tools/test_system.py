@@ -148,7 +148,9 @@ class TestGetRobotStatusTool:
         assert result.data["position"]["y"] == -2.25
         assert abs(result.data["position"]["theta"] - (3.141592653589793 / 2.0)) < 1e-6
         assert result.data["battery_level"] == 42.0
-        assert result.data["systems"]["navigation"] == "active"
+        # ADR-0051 §6: 'systems' больше не захардкожен в 'active'.
+        # Если оператору нужен статус нод — это ros2_node_status, не get_robot_status.
+        assert result.data["systems"] == {}
 
     def test_battery_unknown_percentage(self, mock_node):
         """percentage == -1.0 (неизвестно по ROS-конвенции) — батарея считается недоступной."""
