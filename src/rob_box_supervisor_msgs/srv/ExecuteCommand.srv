@@ -1,0 +1,15 @@
+# ExecuteCommand.srv — единый типизированный шов «клиент ↔ avatar_supervisor»
+# (ADR-0051 §2.1, issue #2002).
+#
+# Заменяет разрозненные ``AcquireFloor`` / ``ReleaseFloor`` /
+# ``SetAvatarMode`` сервисы + топик ``/avatar/set_voice_mode`` единым
+# контрактом. Клиенты после миграции (Phase 2) дёргают только его;
+# Phase 1 (эта карточка) — execute() работает ПАРАЛЛЕЛЬНО с legacy,
+# никаких breaking changes (ADR-0013 incremental delivery).
+#
+# Полная миграция клиентов ``quest_node`` и ``telegram_node`` — отдельные
+# карточки. Полное удаление legacy-сервисов — Phase 3 (после 1+ недели
+# стабильности).
+
+Command  command
+Response response

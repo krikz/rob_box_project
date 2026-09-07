@@ -39,6 +39,7 @@ import contextlib
 import json
 import os
 import time
+import types
 import uuid
 from typing import Any, Iterator, Mapping, Optional
 
@@ -134,6 +135,141 @@ PREVIEW_VOICE_TOPIC: str = "/avatar/preview_voice"
 PREVIEW_VOICE_RESULT_TOPIC: str = "/avatar/preview_voice/result"
 PREVIEW_VOICE_AUDIO_TOPIC: str = "/avatar/preview_voice/audio"
 PREVIEW_VOICE_ERROR_TOPIC: str = "/avatar/preview_voice/error"
+
+# ── Bridge.execute(Command) — ADR-0051 §2.1, §2.2, issue #2002 ───────
+# kind-enum зеркалит rob_box_supervisor_msgs/msg/Command.msg (uint8-значения
+# ОБЯЗАНЫ совпадать с .msg — фиксируем строкой-константой, чтобы и
+# unit-тесты, и реальные сервисные ответы матчились без магических
+# литералов). Допустимые значения: 0 (UNKNOWN — для отказа/невалидного
+# запроса) и 1..6 для нормальных команд.
+KIND_UNKNOWN: int = 0
+KIND_ACQUIRE_FLOOR: int = 1
+KIND_RELEASE_FLOOR: int = 2
+KIND_SET_AVATAR_MODE: int = 3
+KIND_SET_VOICE_MODE: int = 4
+KIND_EMERGENCY_STOP: int = 5
+KIND_HEARTBEAT: int = 6
+
+# Имя единого сервиса для всего шва «клиент ↔ supervisor». Клиенты
+# (Quest, Telegram, будущий web-admin) после миграции (Phase 2) будут
+# дёргать только его; в Phase 1 legacy-сервисы остаются и продолжают
+# работать — никаких breaking changes (ADR-0013 incremental delivery).
+EXECUTE_COMMAND_SERVICE: str = "/supervisor/execute"
+
+# Reason-коды для Response.msg (должны совпадать со списком в
+# rob_box_supervisor_msgs/msg/Response.msg — фиксируем явно, чтобы
+# регрессия «новый код, но reason другой» ловилась grep'ом).
+EXEC_REASON_UNKNOWN_KIND: str = "unknown_kind"
+EXEC_REASON_MONITOR_MODE: str = "monitor_mode"
+EXEC_REASON_HELD_BY_OTHER: str = "held_by_other"
+EXEC_REASON_MODE_CONFLICT: str = "mode_conflict"
+EXEC_REASON_BAD_REQUEST: str = "bad_request"
+EXEC_REASON_NOT_IMPLEMENTED: str = "not_implemented"
+EXEC_REASON_VOICE_MODE_REJECTED: str = "voice_mode_rejected"
+EXEC_REASON_EMERGENCY_OFF: str = "emergency_off"
+EXEC_REASON_HEARTBEAT_REFRESHED: str = "heartbeat_refreshed"
+EXEC_REASON_WRONG_CLIENT: str = "wrong_client"
+EXEC_REASON_HEARTBEAT_NOOP: str = "heartbeat_no_op"
+
+# Имена arbiter-сервисов (фaсадируются через execute). Импорт ленивый:
+# arbiter_node не импортируется в supervisor_node (разные ноды, разные
+# процессы), но имена должны совпадать с AvatarArbiter.ACQUIRE_FLOOR_SERVICE
+# и т.п. (ADR-0051 §2.2).
+ARBITER_ACQUIRE_FLOOR: str = "/avatar_arbiter/acquire_floor"
+ARBITER_RELEASE_FLOOR: str = "/avatar_arbiter/release_floor"
+ARBITER_SET_AVATAR_MODE: str = "/avatar_arbiter/set_avatar_mode"
+
+
+def _normalize_voice_mode(value: Any) -> str:
+    """Привести значение ``voice_mode`` из ``Command`` к ``str``.
+
+    ROS 2 ``string``-поля на mock-стенде могут приходить как ``str``, так и
+    как ``MagicMock``/просто ``None`` (если клиент не заполнил). Здесь
+    нормализуем к ``str`` без падения, чтобы :py:meth:`AvatarSupervisor.execute`
+    мог отдать внятный ``reason="voice_mode_rejected: ..."`` вместо
+    ``TypeError`` при битом payload (ADR-0018 — не молчим на отказе).
+    """
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _coerce_kind(value: Any) -> int:
+    """Безопасно достать ``Command.kind`` как ``int``.
+
+    MagicMock на mock-стенде без ``__int__`` отдаёт repr при попытке
+    сравнения — падаем в TypeError. Здесь нормализуем к ``int`` через
+    ребро ``isinstance(value, bool) → int`` (bool — подкласс int) и
+    ``int(value)`` с fallback на 0 (=KIND_UNKNOWN).
+    """
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return KIND_UNKNOWN
+
+
+def _make_execute_response(
+    *,
+    accepted: bool,
+    applied: bool,
+    reason: str,
+    held_by: str = "",
+    actual_mode: str = "",
+    contacted_service: str = "",
+) -> Any:
+    """Собрать :class:`rob_box_supervisor_msgs.msg.Response` без зависимости
+    от реального IDL на mock-стенде.
+
+    Причины (ADR-0051 §2.1, ADR-0018 — «не молчим на отказе»):
+
+    * IDL-сборка ``rob_box_supervisor_msgs`` доступна только при полной
+      пересборке workspace (ament_cmake). На unit-стенде (CI без ROS) и
+      в dev-режиме без пересборки модуль не подгружается — нужен
+      fallback. Контракт Response.msg — фиксированный набор bool/string
+      полей, см. ``rob_box_supervisor_msgs/msg/Response.msg``.
+    * Возвращаем **экземпляр**, а не класс — клиентский код
+      (Future.result(), mock-тесты) ожидает готовый объект с полями.
+
+    Приоритет источника типа:
+
+    1. ``rob_box_supervisor_msgs.msg.Response`` (нормальный путь).
+    2. ``mock_rob_box_supervisor_msgs_msg.Response`` (unit-стенд,
+       conftest ставит его в ``sys.modules`` ДО импорта ноды).
+    3. ``types.SimpleNamespace(**kwargs)`` — самый слабый fallback,
+       чтобы :py:meth:`AvatarSupervisor.execute` не падал на отсутствии
+       типа в неожиданных окружениях (например, скрипт-генератор без
+       conftest). Достаточно для ``response.accepted = True`` и т.п.
+    """
+    fields = {
+        "accepted": bool(accepted),
+        "applied": bool(applied),
+        "reason": str(reason or ""),
+        "held_by": str(held_by or ""),
+        "actual_mode": str(actual_mode or ""),
+        "contacted_service": str(contacted_service or ""),
+    }
+    try:
+        from rob_box_supervisor_msgs.msg import Response as _IdlResponse  # noqa: PLC0415
+
+        resp = _IdlResponse()
+    except Exception:  # noqa: BLE001 — IDL может быть недоступен в dev/test
+        try:
+            from mock_rob_box_supervisor_msgs_msg import (  # type: ignore[import-not-found]  # noqa: PLC0415
+                Response as _MockResponse,
+            )
+
+            resp = _MockResponse()
+        except Exception:  # noqa: BLE001
+            resp = types.SimpleNamespace()
+    for name, value in fields.items():
+        setattr(resp, name, value)
+    return resp
 # AV-28 §P7 (issue #1920) — voice style preset / language топики.
 # Симметрично /avatar/set_voice_mode и /avatar/set_voice: payload — String
 # с одним ID (preset|language) без JSON (для скорости и простоты парсинга).
@@ -398,9 +534,94 @@ class AvatarSupervisor(Node):
         # это no-op (см. там же is_metrics_enabled). Метрики-объекты
         # кладём в self один раз (lazy init в __init__, не в каждом
         # callback — иначе на каждое сообщение новый Counter).
-        self._agent_metrics = self._build_agent_metrics()
+        self._grip_metrics = self._build_grip_metrics()
+
+        # ── Bridge.execute(Command) — единый шов «клиент ↔ supervisor»
+        # (ADR-0051 §2.1, issue #2002). В Phase 1 фасад работает ПАРАЛЛЕЛЬНО
+        # с legacy сервисами (``/avatar_arbiter/*``): никаких breaking changes
+        # (ADR-0013). Полная миграция клиентов — отдельная карточка Phase 2.
+        #
+        # Регистрация ``/supervisor/execute`` через IDL-тип
+        # ``ExecuteCommand`` (из rob_box_supervisor_msgs). На mock-стенде
+        # (conftest) тот же тип уже есть, без пересборки IDL — fallback на
+        # ``mock_rob_box_supervisor_msgs_srv.ExecuteCommand``. В обоих
+        # случаях ``create_service`` проверяет наличие nested
+        # ``.Request``/``.Response`` (issue #1904, t_979f0cb2) — поэтому
+        # передаём ПОЛНЫЙ srv-класс, а не ``.Request``.
+        self._srv_execute: Any = None
+        try:
+            from rob_box_supervisor_msgs.srv import (  # noqa: PLC0415
+                ExecuteCommand as _IdlExecuteCommand,
+            )
+
+            execute_srv_type: Any = _IdlExecuteCommand
+        except Exception:  # noqa: BLE001 — IDL недоступен в dev-режиме
+            try:
+                from mock_rob_box_supervisor_msgs_srv import (  # type: ignore[import-not-found]  # noqa: PLC0415
+                    ExecuteCommand as _MockExecuteCommand,
+                )
+
+                execute_srv_type = _MockExecuteCommand
+            except Exception:  # noqa: BLE001
+                execute_srv_type = None
+        if execute_srv_type is not None:
+            # create_service требует ``.Request``/``.Response`` — иначе
+            # RuntimeError «The service type provided is not valid»
+            # (issue #1904). Проверяем до вызова, чтобы в unit-стенде
+            # без нормального IDL мы не словили ту же ошибку, что и в проде.
+            req_attr = getattr(execute_srv_type, "Request", None)
+            resp_attr = getattr(execute_srv_type, "Response", None)
+            if req_attr is not None and resp_attr is not None:
+                self._srv_execute = self.create_service(
+                    execute_srv_type,
+                    EXECUTE_COMMAND_SERVICE,
+                    self._on_execute_command,
+                )
 
         self._log_startup_diagnostics()
+
+    def _on_execute_command(
+        self, request: Any, response: Any
+    ) -> Any:
+        """Callback сервиса ``/supervisor/execute`` (ADR-0051 §2.1).
+
+        ``ExecuteCommand.Request.command`` — :class:`Command`; ``Response``
+        — :class:`Response` с полями ``accepted/applied/reason/held_by/
+        actual_mode/contacted_service``. Заполняем ``response.response``
+        (вложенное поле srv-контракта) результатом
+        :py:meth:`AvatarSupervisor.execute` и возвращаем тот же объект —
+        это контракт rclpy ``Service.callback``.
+        """
+        command = getattr(request, "command", None)
+        result = self.execute(command)
+        # ``response.response`` — поле srv ``ExecuteCommand.Response``.
+        # Если клиентский mock-сгенерённый класс не имеет этого поля
+        # (например, очень старый fallback) — пишем напрямую в response.
+        nested = getattr(response, "response", None)
+        if nested is None:
+            for name in (
+                "accepted",
+                "applied",
+                "reason",
+                "held_by",
+                "actual_mode",
+                "contacted_service",
+            ):
+                if hasattr(response, name) and not hasattr(response, "response"):
+                    setattr(response, name, getattr(result, name, ""))
+            return response
+        # Нормальный путь: response.response — отдельный объект.
+        for name in (
+            "accepted",
+            "applied",
+            "reason",
+            "held_by",
+            "actual_mode",
+            "contacted_service",
+        ):
+            if hasattr(nested, name):
+                setattr(nested, name, getattr(result, name, ""))
+        return response
 
     @staticmethod
     def _try_parse_json(text: Optional[str]) -> Any:
@@ -454,6 +675,146 @@ class AvatarSupervisor(Node):
             self._log.warning(f"SetVoiceMode: failed to set dialogue param: {exc}")
             return False, f"param_set_failed: {exc}"
         return True, "applied"
+
+    # ── Bridge.execute(Command) — ADR-0051 §2.1, issue #2002 ──────────
+    def execute(self, command: Any) -> Any:
+        """Единый фасад «клиент ↔ supervisor» через :class:`Command`.
+
+        Phase 1 (эта карточка) делает **только диспетчеризацию** по
+        ``command.kind`` + честный FAIL/OK по reason-кодам; **никаких**
+        side-effects на floor/avatar-mode (это удел avatar_arbiter, ADR-0051
+        §2.2). Для команд, которые исторически жили в arbiter
+        (ACQUIRE/RELEASE_FLOOR, SET_AVATAR_MODE), supervisor в Phase 1
+        возвращает ``accepted=true, applied=false, reason="facade_only"`` —
+        клиенту это явный сигнал «фасад есть, логика ещё у arbiter; иди
+        к нему». Полная миграция — Phase 2 отдельной карточкой.
+
+        Карта ``kind → поведение`` (Phase 1):
+
+        * ``KIND_ACQUIRE_FLOOR`` / ``KIND_RELEASE_FLOOR`` /
+          ``KIND_SET_AVATAR_MODE`` → facade_only (см. выше).
+        * ``KIND_SET_VOICE_MODE`` → локально через :py:meth:`_apply_voice_mode`.
+        * ``KIND_EMERGENCY_STOP`` → not_implemented (Phase 1). В Phase 2
+          добавим публикацию на ``/avatar/emergency_stop`` + лок-стейт
+          LockManager. Пока честный FAIL (ADR-0018): приняли — но не
+          сделали; emergency=true → emergency=false различимы по
+          ``accepted/applied``.
+        * ``KIND_HEARTBEAT`` → accepted=true applied=true reason="noop"
+          (Phase 1). arbiter уже публикует FloorState через Legacy,
+          supervisor heartbeat в Phase 1 просто подтверждает приём.
+          Phase 2 заменит на полноценный floor-refresh.
+        * ``KIND_UNKNOWN`` (kind вне [1..6] или битый payload) →
+          accepted=false reason="unknown_kind".
+
+        Параметр ``command`` — любой объект с атрибутами ``kind``,
+        ``client_id``, ``floor``, ``avatar_event``, ``voice_mode``,
+        ``emergency``. На mock-стенде conftest подсовывает SimpleNamespace
+        или MagicMock — читаем через ``getattr`` с дефолтом, чтобы
+        не падать на отсутствующих полях.
+        """
+        kind = _coerce_kind(getattr(command, "kind", KIND_UNKNOWN))
+
+        # ── ACQUIRE/RELEASE_FLOOR и SET_AVATAR_MODE: facade-only (Phase 1)
+        if kind in (KIND_ACQUIRE_FLOOR, KIND_RELEASE_FLOOR, KIND_SET_AVATAR_MODE):
+            client_id = getattr(command, "client_id", "") or ""
+            if not client_id:
+                return _make_execute_response(
+                    accepted=False,
+                    applied=False,
+                    reason=EXEC_REASON_BAD_REQUEST,
+                )
+            # В monitor supervisor принимает, но не делает (S12):
+            # accepted=true applied=false reason=monitor_mode.
+            # В active — фасад ещё не подключён к arbiter (Phase 2):
+            # accepted=true applied=false reason="facade_only".
+            #
+            # avatar_event из payload-а НЕ отдаём в actual_mode
+            # (клиент не должен думать, что мы применили режим):
+            # applied=false → actual_mode="" (ADR-0018 — честный FAIL).
+            if self._mode != "active":
+                return _make_execute_response(
+                    accepted=True,
+                    applied=False,
+                    reason=EXEC_REASON_MONITOR_MODE,
+                )
+            return _make_execute_response(
+                accepted=True,
+                applied=False,
+                reason="facade_only",
+                held_by=str(client_id),
+            )
+
+        # ── SET_VOICE_MODE: локально через _apply_voice_mode ─────────
+        if kind == KIND_SET_VOICE_MODE:
+            voice_mode = _normalize_voice_mode(
+                getattr(command, "voice_mode", "")
+            )
+            applied, sub_reason = self._apply_voice_mode(voice_mode)
+            if applied:
+                return _make_execute_response(
+                    accepted=True,
+                    applied=True,
+                    reason="applied",
+                    actual_mode=voice_mode,
+                )
+            # _apply_voice_mode уже отдаёт внятные reason:
+            # invalid_voice_mode / monitor_mode / param_set_failed
+            # Маппим на уровень фасада:
+            if sub_reason == MONITOR_MODE_REASON:
+                facade_reason = EXEC_REASON_MONITOR_MODE
+            elif sub_reason.startswith("invalid_voice_mode"):
+                facade_reason = EXEC_REASON_VOICE_MODE_REJECTED
+            else:
+                facade_reason = EXEC_REASON_BAD_REQUEST
+            return _make_execute_response(
+                accepted=False,
+                applied=False,
+                reason=facade_reason,
+                actual_mode=voice_mode,
+            )
+
+        # ── EMERGENCY_STOP: not_implemented (Phase 1, ADR-0018) ────────
+        if kind == KIND_EMERGENCY_STOP:
+            emergency = bool(getattr(command, "emergency", False))
+            # emergency=false («снять стоп») — accepted=true, applied=false
+            # (нет стопа, который нужно снимать) → reason=emergency_off.
+            # Это НЕ ошибка: клиент мог честно думать, что стоп активен.
+            # emergency=true — accepted=true, applied=false,
+            # reason=not_implemented (Phase 2).
+            if not emergency:
+                return _make_execute_response(
+                    accepted=True,
+                    applied=False,
+                    reason=EXEC_REASON_EMERGENCY_OFF,
+                )
+            return _make_execute_response(
+                accepted=True,
+                applied=False,
+                reason=EXEC_REASON_NOT_IMPLEMENTED,
+            )
+
+        # ── HEARTBEAT: noop в Phase 1 ─────────────────────────────────
+        if kind == KIND_HEARTBEAT:
+            client_id = getattr(command, "client_id", "") or ""
+            if not client_id:
+                return _make_execute_response(
+                    accepted=False,
+                    applied=False,
+                    reason=EXEC_REASON_BAD_REQUEST,
+                )
+            return _make_execute_response(
+                accepted=True,
+                applied=True,
+                reason=EXEC_REASON_HEARTBEAT_NOOP,
+                held_by=str(client_id),
+            )
+
+        # ── unknown_kind (включая KIND_UNKNOWN=0 и битый payload) ────
+        return _make_execute_response(
+            accepted=False,
+            applied=False,
+            reason=EXEC_REASON_UNKNOWN_KIND,
+        )
 
     # ── AV-28 §P7 (issue #1920) — voice style preset + language ─────────
     # Симметрично ``_on_set_voice_mode``: супервизор единственный, кто

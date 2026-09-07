@@ -230,16 +230,40 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
             for name in getattr(self, "_FIELDS", ()):
                 setattr(self, name, _DEFAULT_FOR_FIELD(name))
 
+    class _NestedResponse:  # ExecuteCommand.Response.response — вложенный msg
+        """Nested Response внутри ``ExecuteCommand.Response``.
+
+        rosidl-сгенерённый код даёт поле ``response`` как экземпляр
+        ``Response``-msg, у которого есть свои bool/string-поля. Здесь
+        воспроизводим именно эту форму: ``response.response`` — объект
+        с атрибутами ``accepted/applied/reason/held_by/actual_mode/
+        contacted_service``. Без этого :py:meth:`AvatarSupervisor._on_execute_command`
+        упадёт на ``setattr(nested, 'accepted', ...)`` (nested — строка).
+        """
+
+        def __init__(self) -> None:
+            self.accepted = False
+            self.applied = False
+            self.reason = ""
+            self.held_by = ""
+            self.actual_mode = ""
+            self.contacted_service = ""
+
     def _make_srv_type(
         class_name: str,
         request_fields: tuple[str, ...],
         response_fields: tuple[str, ...],
+        nested_response_type: Any = None,
     ) -> Any:
         """Создать пару (Request, Response) + ``srv``-класс под mock-rclpy.
 
         Каждый Request/Response — простой класс с ``__init__`` без args
         и атрибутами-полями. Используем ``type(name, bases, dict)``, а
         не ``types.new_class`` (последний хочет callable exec_body).
+
+        ``nested_response_type`` — если задан, используется как класс
+        поля ``response`` в Response (для ExecuteCommand, где response —
+        это вложенный msg). Иначе — строка-дефолт.
         """
 
         class _Req(_SrvRequest):
@@ -247,6 +271,11 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
 
         class _Resp(_SrvResponse):
             _FIELDS = response_fields
+
+            def __init__(self) -> None:
+                super().__init__()
+                if nested_response_type is not None and "response" in response_fields:
+                    self.response = nested_response_type()
 
         cls_dict = {"Request": _Req, "Response": _Resp}
         return type(class_name, (object,), cls_dict)
@@ -261,13 +290,13 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
 
     def _default_for_field(name: str) -> Any:
         """Дефолт по типичному IDL-имени: bool → False, uint → 0, string → ""."""
-        if name in ("client_id", "floor", "mode", "held_by", "reason", "message", "last_event"):
+        if name in ("client_id", "floor", "mode", "held_by", "reason", "message", "last_event", "avatar_event", "voice_mode", "contacted_service", "actual_mode"):
             return ""
-        if name in ("granted", "success", "applied"):
+        if name in ("granted", "success", "applied", "accepted", "emergency"):
             return False
         if name in ("ts_ms", "since_ms", "last_heartbeat_ms"):
             return 0
-        if name in ("seq", "version"):
+        if name in ("seq", "version", "kind"):
             return 0
         return ""
 
@@ -318,10 +347,57 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
         "AvatarStateMsg",
         ("mode", "teleop_floor", "voice_floor", "last_event", "since_ms", "version"),
     )
+
+    # msg-types Phase 1 / issue #2002: Command.msg (union-команда) + Response.msg.
+    # Поля и типы выровнены с src/rob_box_supervisor_msgs/{msg,srv}/*.{msg,srv}.
+    # ``kind`` приходит как uint8 → дефолт int=0 (см. _default_for_field).
+    Command = _make_msg_type(
+        "Command",
+        (
+            "kind",
+            "client_id",
+            "floor",
+            "avatar_event",
+            "voice_mode",
+            "emergency",
+        ),
+    )
+    Response = _make_msg_type(
+        "Response",
+        (
+            "accepted",
+            "applied",
+            "reason",
+            "held_by",
+            "actual_mode",
+            "contacted_service",
+        ),
+    )
+
+    # srv Phase 1: ExecuteCommand — Bridge.execute(Command) (ADR-0051 §2.1).
+    # ``response`` — вложенный msg-тип, конструируем через ``_NestedResponse``
+    # (выше), чтобы ``response.response.accepted = True`` не падало на
+    # ``setattr(str, ...)`` (issue #2002).
+    ExecuteCommand = _make_srv_type(
+        "ExecuteCommand",
+        request_fields=("command",),
+        response_fields=("response",),
+        nested_response_type=_NestedResponse,
+    )
+
+    mock_rob_box_supervisor_msgs_srv = types.SimpleNamespace(
+        AcquireFloor=AcquireFloor,
+        ReleaseFloor=ReleaseFloor,
+        SetAvatarMode=SetAvatarMode,
+        ExecuteCommand=ExecuteCommand,
+    )
+
     mock_rob_box_supervisor_msgs_msg = types.SimpleNamespace(
         TeleopHeartbeat=TeleopHeartbeat,
         FloorState=FloorState,
         AvatarStateMsg=AvatarStateMsg,
+        Command=Command,
+        Response=Response,
     )
     mock_rob_box_supervisor_msgs = types.SimpleNamespace(
         srv=mock_rob_box_supervisor_msgs_srv,
