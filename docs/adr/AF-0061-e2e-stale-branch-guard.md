@@ -1,4 +1,4 @@
-# ADR-0030: e2e stale-branch guard — false-positive rate и ремедиация
+# ADR-AF-0061: e2e stale-branch guard — false-positive rate и ремедиация
 
 - **Статус:** PROPOSED (2026-08-25)
 - **Ретро-карточка:** t_336de9df

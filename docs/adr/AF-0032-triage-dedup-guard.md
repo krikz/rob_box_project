@@ -1,4 +1,4 @@
-# ADR-0032: agent-flow-triage dedup-guard G9 — intra-tick + race-window
+# ADR-AF-0032: agent-flow-triage dedup-guard G9 — intra-tick + race-window
 
 | Поле | Значение |
 |---|---|
@@ -96,7 +96,7 @@ Helper-функция `branch_exists_in_remote <branch>`:
 Для каждого skipped-issue:
 1. **Comment** с телом:
    ```
-   agent-flow:dedup-skip (intra-tick, ретро t_dfd3d19d, ADR-0032)
+   agent-flow:dedup-skip (intra-tick, ретро t_dfd3d19d, ADR-AF-0032)
    Triage определил этот issue как дубликат #<leader_n> в текущем тике — оба
    имеют идентичный набор меток и совпадающее начало заголовка («<prefix>»).
    ...
@@ -155,7 +155,7 @@ tick done: created=N skipped=N errored=N dedup-skipped: N (intra-tick), M (race)
 - [ ] DRY-RUN реальный прогон `agent-flow-triage.sh`: `tick done: created=N skipped=N errored=N dedup-skipped: N (intra-tick), M (race)` появляется в логе.
 - [ ] shellcheck: NO new warnings vs `origin/develop`.
 - [ ] Regress-check на ретро-наборе #1477/#1478/#1506/#1562 (фикстура с одинаковыми labels + повторяющимся title-prefix): при следующем тике создаётся ≤ 1 kanban-карточка на группу, остальные skipped через G9a.
-- [ ] ADR-0032 в `docs/adr/` с уникальным номером (проверено через `git ls-tree -r origin/develop --name-only | grep -oE 'docs/adr/[0-9]{4}' | sort -u | tail -1`, must be 0032 or later).
+- [ ] ADR-AF-0032 в `docs/adr/` с уникальным номером (проверено через `git ls-tree -r origin/develop --name-only | grep -oE 'docs/adr/[0-9]{4}' | sort -u | tail -1`, must be 0032 or later).
 
 ## 6. Не делаем
 
@@ -174,7 +174,7 @@ tick done: created=N skipped=N errored=N dedup-skipped: N (intra-tick), M (race)
 
 ## 8. Следующие шаги
 
-1. **agent-flow** (этот PR) — реализует G9a + G9b, добавляет test, ADR-0032, push в `z-agent-flow/t_dfd3d19d-dedup-guard`, открывает PR в `develop`.
+1. **agent-flow** (этот PR) — реализует G9a + G9b, добавляет test, ADR-AF-0032, push в `z-agent-flow/t_dfd3d19d-dedup-guard`, открывает PR в `develop`.
 2. **merge-gate** проверяет: ADR-номер 0032 уникален (`ADR-collision-guard` ADR-0030 / test_merge_gate_adr_collision.sh) — должно проходить.
 3. **e2e-process** на следующий раунд проверяет, что `agent-flow-triage` запускается без падений (как cron, так и под DRY-RUN).
 4. **Шифу** мержит PR после green CI + ADR-collision-check.

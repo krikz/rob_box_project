@@ -1,4 +1,4 @@
-# ADR-0016: Nav2 critical_log "frame odom does not exist" — startup race + stale detector FP rule
+# ADR-AF-0058: Nav2 critical_log "frame odom does not exist" — startup race + stale detector FP rule
 
 Status: accepted (deployment-critical fix, issue #774)
 Date: 2026-08-12

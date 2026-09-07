@@ -1,4 +1,4 @@
-# ADR-0024: cross-task archive sweeper — workaround для kernel worker-scope-limit
+# ADR-AF-0060: cross-task archive sweeper — workaround для kernel worker-scope-limit
 
 | Поле | Значение |
 |---|---|

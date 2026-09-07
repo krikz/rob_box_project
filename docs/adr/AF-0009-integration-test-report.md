@@ -1,4 +1,4 @@
-# ADR-0009: A-card — integration test report (harness + MiniMax LLM + MiniMax TTS)
+# ADR-AF-0009: A-card — integration test report (harness + MiniMax LLM + MiniMax TTS)
 
 | Поле         | Значение                                                                  |
 |--------------|---------------------------------------------------------------------------|

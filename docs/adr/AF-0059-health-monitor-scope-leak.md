@@ -1,4 +1,4 @@
-# ADR-0016: health_monitor cross-container scope leak — stop-gap dedup exclusion, defer container-scoped refactor
+# ADR-AF-0059: health_monitor cross-container scope leak — stop-gap dedup exclusion, defer container-scoped refactor
 
 | Поле         | Значение                                                                |
 |--------------|-------------------------------------------------------------------------|

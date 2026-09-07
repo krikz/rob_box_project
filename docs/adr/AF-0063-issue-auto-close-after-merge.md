@@ -1,4 +1,4 @@
-# ADR-0052: auto-close issue after merge — инвариант, fallback и squash-loss восстановление
+# ADR-AF-0063: auto-close issue after merge — инвариант, fallback и squash-loss восстановление
 
 | Поле | Значение |
 |---|---|
@@ -158,7 +158,7 @@ issue state transitions after PR MERGE into develop:
 1. Если issue имеет label `e2e-done`              → close через whoami_close_issue (ADR-0014, уже есть).
 2. Если issue имеет label `no-e2e-required`       → close через whoami_close_issue (retro 19.08, уже есть).
 3. Если PR body содержит `Closes #N` / `Fixes #N` / `Resolves #N`
-   для issue, у которого НЕТ process-меток        → close как fallback (NEW, ADR-0052 §4.1/4.2).
+   для issue, у которого НЕТ process-меток        → close как fallback (NEW, ADR-AF-0063 §4.1/4.2).
 4. Иначе                                          → leave OPEN, defer до появления e2e-done
                                                      (или ручной close Шифу — это легитимный путь
                                                      для архитектурных PR, не прошедших e2e-rotation).
@@ -182,7 +182,7 @@ issue state transitions after PR MERGE into develop:
 Минимальный код (для добавления в completion-check):
 
 ```bash
-# ADR-0052 §4.0: keyword-loss warning для squash-merge.
+# ADR-AF-0063 §4.0: keyword-loss warning для squash-merge.
 # Парсим PR-body напрямую (не squash-commit body), т.к. squash теряет body.
 _keyword_pat='(?im)(?:closes|fixes|resolves)\s+#(\d+)\b'
 _pr_body="$(gh pr view "$pr" --repo "$GH_REPO" --json body --jq '.body' 2>/dev/null || echo '')"
@@ -198,7 +198,7 @@ fi
 **Изменения в `agent-flow-merge-gate.sh`** (после строки 3248, после `no-e2e-required` блока, перед основным case):
 
 ```bash
-# ADR-0052 §4.1: fallback auto-close для issue без process-меток.
+# ADR-AF-0063 §4.1: fallback auto-close для issue без process-меток.
 # Trigger: PR MERGED, issue OPEN, нет ни e2e-done, ни no-e2e-required,
 # но PR-body содержит Closes/Fixes/Resolves keyword для этого issue.
 # Это архитектурный/docs/lint PR — e2e-rotation не запускался, но PR
@@ -214,13 +214,13 @@ if [ "$pr_state" = "MERGED" ] && [ "$pr_base" = "$DEVELOP_BRANCH" ] \
     _pr_body="$(gh pr view "$pr_number" --repo "$GH_REPO" --json body --jq '.body' 2>/dev/null || echo '')"
     _kw_pat="(?im)(?:closes|fixes|resolves)\\s+#${number}\\b"
     if printf '%s' "$_pr_body" | grep -qE "$_kw_pat"; then
-        log "issue #${number}: PR #${pr_number} body has Closes/Fixes/Resolves keyword → fallback auto-close (ADR-0052 §4.1)"
-        whoami_close_issue "$number" "fallback auto-close: PR #${pr_number} MERGED into ${DEVELOP_BRANCH} with Closes keyword (ADR-0052)"
+        log "issue #${number}: PR #${pr_number} body has Closes/Fixes/Resolves keyword → fallback auto-close (ADR-AF-0063 §4.1)"
+        whoami_close_issue "$number" "fallback auto-close: PR #${pr_number} MERGED into ${DEVELOP_BRANCH} with Closes keyword (ADR-AF-0063)"
         if gh issue close "$number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
-            log "issue #${number}: CLOSED via fallback path (reason=completed, ADR-0052 §4.1)"
+            log "issue #${number}: CLOSED via fallback path (reason=completed, ADR-AF-0063 §4.1)"
             _issue_state="CLOSED"  # отражаем для case ниже → skip-close + cleanup
         else
-            log "issue #${number}: WARNING gh issue close failed (fallback path, ADR-0052 §4.1) — retry next tick"
+            log "issue #${number}: WARNING gh issue close failed (fallback path, ADR-AF-0063 §4.1) — retry next tick"
         fi
     fi
 fi
@@ -244,7 +244,7 @@ fi
 
 ```bash
 #!/usr/bin/env bash
-# ADR-0052 §4.2: fallback cron для auto-close issue без process-меток.
+# ADR-AF-0063 §4.2: fallback cron для auto-close issue без process-меток.
 # Trigger: every 5m (идентично merge-gate).
 # Action: для каждого MERGED PR за последние 24ч → проверить PR-body
 # на Closes/Fixes/Resolves keyword → если issue OPEN без e2e-done →
@@ -291,7 +291,7 @@ while IFS=' ' read -r pr issue; do
                     *)
                             echo "issue-close-fallback: closing #${issue} (PR #${pr} merged, Closes keyword, no process-label)"
                             gh issue close "$issue" --repo "$GH_REPO" --reason completed \
-                                --comment "auto-closed by issue-close-fallback cron (ADR-0052 §4.2): PR #${pr} MERGED into develop with Closes keyword" \
+                                --comment "auto-closed by issue-close-fallback cron (ADR-AF-0063 §4.2): PR #${pr} MERGED into develop with Closes keyword" \
                                 >/dev/null 2>&1 || true
                             ;;
                 esac
@@ -324,7 +324,7 @@ done <<< "$merged_prs"
 - Доп. нагрузка на `gh api` (лимит 5000 req/hour): `gh pr list --limit 200` ≈ 1 req / 5min = 12 req/час, `gh issue view` × N issues = ≤50 req/час — пренебрежимо.
 - Логика дублируется с вариантом A (две точки кода для одной задачи).
 
-### 4.3 Вариант C — ADR-0052 как формализация
+### 4.3 Вариант C — ADR-AF-0063 как формализация
 
 Этот документ. Фиксирует контракт и trade-off'ы. **Не предлагает реализацию** — это выбор Шифу (Q22).
 
@@ -341,12 +341,12 @@ done <<< "$merged_prs"
 
 **Вариант B оправдан, если**: в течение 90 дней после merge варианта A всплывёт случай, когда merge-gate не был активен в момент merge и orphan-issue провисел >5 мин. На текущем бэклоге таких случаев не зафиксировано.
 
-## 6. Что НЕ покрывает ADR-0052
+## 6. Что НЕ покрывает ADR-AF-0063
 
-- **`closedByPullRequestsReferences` остаётся пустым** при fallback close через `gh issue close`. Это поле GitHub обновляет **только** при native keyword-trigger (когда PR-body или merge-commit body содержит `Closes/Fixes/Resolves`). Наш fallback использует explicit `gh issue close` API, который это поле НЕ заполняет. **Implication**: если acceptance #2 карточки #2017 требует именно заполнения этого поля, то фикс требует **также** починки squash-template (`squash_merge_commit_message: COMMIT_MESSAGES → PR_BODY`, см. settings §1.2) или добавления keyword в commit-body воркерами. Оба варианта — **отдельные задачи** (squash-template — это настройка repo, commit-body — это воркер-инструкция), не входят в scope ADR-0052.
+- **`closedByPullRequestsReferences` остаётся пустым** при fallback close через `gh issue close`. Это поле GitHub обновляет **только** при native keyword-trigger (когда PR-body или merge-commit body содержит `Closes/Fixes/Resolves`). Наш fallback использует explicit `gh issue close` API, который это поле НЕ заполняет. **Implication**: если acceptance #2 карточки #2017 требует именно заполнения этого поля, то фикс требует **также** починки squash-template (`squash_merge_commit_message: COMMIT_MESSAGES → PR_BODY`, см. settings §1.2) или добавления keyword в commit-body воркерами. Оба варианта — **отдельные задачи** (squash-template — это настройка repo, commit-body — это воркер-инструкция), не входят в scope ADR-AF-0063.
 - **Issue, у которых PR-body содержит только reference `#N` без keyword** — fallback не сработает (по design). Если Шифу хочет, чтобы такие issue тоже закрывались автоматически, это отдельный ADR (расширение keyword-parsing).
 - **Issue, у которых e2e-done label снят воркером после merge** (теоретический случай) — fallback не сработает (т.к. keyword-path требует «нет process-меток»). Шифу может re-merge фикс, но это вне scope.
-- **Cross-board cleanup** (если у Шифу появится второй board) — ADR-0052 покрывает только `krikz/rob_box_project`. Для других boards — повторить.
+- **Cross-board cleanup** (если у Шифу появится второй board) — ADR-AF-0063 покрывает только `krikz/rob_box_project`. Для других boards — повторить.
 
 ## 7. Verification — как проверить, что фикс работает
 
@@ -386,7 +386,7 @@ done <<< "$merged_prs"
 - [ ] **Шифу решает** (Q22): какой вариант (A, B, оба, ничего).
 - [ ] Если выбран A или A+B — assignee=devops, max_runtime=1800s.
 - [ ] Sync 3 копий скрипта через `bash <repo>/scripts/agent_flow/install.sh` + `md5sum` проверка (текущая процедура Шифу от 14.08).
-- [ ] После фикса — **никакого** retroactive cleanup вручную: ADR-0052 защищает **только новые** merge. Существующие #1989/#1990 уже закрыты Шифу, orphan-pattern не активен.
+- [ ] После фикса — **никакого** retroactive cleanup вручную: ADR-AF-0063 защищает **только новые** merge. Существующие #1989/#1990 уже закрыты Шифу, orphan-pattern не активен.
 
 ## 9. Источники истины
 
@@ -403,4 +403,4 @@ done <<< "$merged_prs"
 Метод: прямой `gh api` к events/timeline/labels для issue #1989/#1990 + `gh pr view` для #2010/#2011 + `gh api repos/...` для repo settings + `git log --format=%b` для merge-commit body.
 Результат: гипотеза (A) подтверждена частично (squash-loss), (B) опровергнута (формат keyword не причина), (C) дублирует (A). Реальный root cause — комбинация squash-loss + contract mismatch (ADR-0014 invariant требует e2e-done, которого не было).
 
-Рекомендация по re-verification: через 30 дней после merge ADR-0052 — повторить §7.1-7.3, убедиться, что для всех merged-PR с `Closes/Fixes/Resolves` в body issue закрыты в течение ≤5 мин (тик merge-gate). Если >2 orphan — открыть новую ретро-карточку `issue-close-fallback-recurring` и эскалировать.
+Рекомендация по re-verification: через 30 дней после merge ADR-AF-0063 — повторить §7.1-7.3, убедиться, что для всех merged-PR с `Closes/Fixes/Resolves` в body issue закрыты в течение ≤5 мин (тик merge-gate). Если >2 orphan — открыть новую ретро-карточку `issue-close-fallback-recurring` и эскалировать.

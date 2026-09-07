@@ -1,4 +1,4 @@
-# ADR-0026: recovery-card contract — обязательство закрыть parent
+# ADR-AF-0026: recovery-card contract — обязательство закрыть parent
 
 | Поле | Значение |
 |---|---|
@@ -149,6 +149,6 @@ When this skill is used by a recovery-card worker:
   архитектурный review.
 - ❌ Не удаляем `cross-task-archive-sweeper.sh` (ADR-0024) — это
   safety-net для случаев, когда worker-обязательство не выполнено.
-- 🔄 Если в kernel добавят `kanban_archive` tool — ADR-0026 §3 можно
+- 🔄 Если в kernel добавят `kanban_archive` tool — ADR-AF-0026 §3 можно
   упростить, разрешив worker-tool archive вместо CLI. Зависит от
   hermes-agent maintainer'а.

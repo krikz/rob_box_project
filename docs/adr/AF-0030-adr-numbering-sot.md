@@ -1,4 +1,4 @@
-# ADR-0030: ADR-нумерация — single source of truth, pre-merge guard, ручной коммит запрещён
+# ADR-AF-0030: ADR-нумерация — single source of truth, pre-merge guard, ручной коммит запрещён
 
 | Поле | Значение |
 |---|---|
@@ -191,7 +191,7 @@ Cleanup **не входит в этот PR** — он требует решен�
 | # | Действие                                                                                                | Кто         | Acceptance |
 |---|----------------------------------------------------------------------------------------------------------|-------------|------------|
 | 1 | Этот ADR смержен в `develop`                                                                            | architect   | PR открыт, base=develop, CI зелёный |
-| 2 | `CONTRIBUTING.md` дополнен § ADR-нумерация (ссылка на ADR-0030 + §2.4 + §2.5)                            | architect   | в этом же PR |
+| 2 | `CONTRIBUTING.md` дополнен § ADR-нумерация (ссылка на ADR-AF-0030 + §2.4 + §2.5)                            | architect   | в этом же PR |
 | 3 | Pre-merge guard реализован в `agent-flow-merge-gate.sh` + unit-тесты                                      | devops      | см. child `t_45db74ad-d` |
 | 4 | Cleanup 5 существующих коллизий по решению Шифу                                                          | devops (после Шифу) | см. child `t_45db74ad-c` |
 | 5 | `docs/adr/0030` → Accepted после merge                                                                   | (авто)      | merge commit переключает статус |

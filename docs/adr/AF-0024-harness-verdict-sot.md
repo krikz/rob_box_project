@@ -1,4 +1,4 @@
-# ADR-0024: `OUT_DIR/verdict.txt` — single source of truth для harness verdict (pull, не tee-race)
+# ADR-AF-0024: `OUT_DIR/verdict.txt` — single source of truth для harness verdict (pull, не tee-race)
 
 | Поле | Значение |
 |---|---|
@@ -71,7 +71,7 @@ if sshpass -e scp ... "ros2@10.1.1.249:/tmp/e2e_v2_${RID}/verdict.txt" "$VERDICT
     # Подмешиваем в VERDICT_LOG, чтобы дальнейшая цепочка grep'ов
     # использовала оба канала (а не падала в harness-output-missing).
     if [ -s "$VERDICT_LOG" ]; then
-      printf '\n--- VERDICT_PULL (ADR-0024 fallback, %s bytes) ---\n' "$(stat -c %s $VERDICT_TXT_LOCAL)" >> "$VERDICT_LOG"
+      printf '\n--- VERDICT_PULL (ADR-AF-0024 fallback, %s bytes) ---\n' "$(stat -c %s $VERDICT_TXT_LOCAL)" >> "$VERDICT_LOG"
       cat "$VERDICT_TXT_LOCAL" >> "$VERDICT_LOG"
     else
       cp "$VERDICT_TXT_LOCAL" "$VERDICT_LOG"     # VERDICT_LOG потерян → verdict.txt это SoT

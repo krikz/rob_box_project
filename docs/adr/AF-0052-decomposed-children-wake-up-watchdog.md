@@ -1,4 +1,4 @@
-# ADR-0052: decomposed-children wake-up watchdog — будить детей, которых dispatcher не видит
+# ADR-AF-0052: decomposed-children wake-up watchdog — будить детей, которых dispatcher не видит
 
 | Поле | Значение |
 |---|---|
@@ -153,7 +153,7 @@ scripts/agent_flow/install.sh            ← +1 строка в EXPECTED, +ensur
 
 | Вариант | Почему не он |
 |---|---|
-| **Лечить баг в dispatcher / `kanban create` (заполнять `task_links`)** | Правильно, но это отдельная задача с другим профилем (backend). Watchdog компенсирует симптом СЕЙЧАС, фиксим баг — потом. ADR-0052 не блокирует этот фикс, оба живут параллельно. |
+| **Лечить баг в dispatcher / `kanban create` (заполнять `task_links`)** | Правильно, но это отдельная задача с другим профилем (backend). Watchdog компенсирует симптом СЕЙЧАС, фиксим баг — потом. ADR-AF-0052 не блокирует этот фикс, оба живут параллельно. |
 | **Расширить существующий `blocked-watchdog-scope`** | Другой горизонт (running-карточки vs todo/triage-карточки), другой marker, разные критерии. Смешивание сделало бы оба скрипта нечитаемыми (ретро-мотив из ADR-0049 §4). |
 | **Передать responsibility падаван-вахте (`night_padawan_tick`)** | Падаван-вахта — LLM-агент, тикает каждый час, но: (a) «никогда не merge'ить руками» — LLM может нечаянно сделать reassign; (b) LLM стоит токенов, mechanical cron — нет; (c) «честный FAIL» — LLM может пропустить алерт, mechanical cron — гарантированно проходит по всему списку. |
 | **Каждые 5 минут вместо 4ч** | Шум. 4ч — компромисс: даёт свежесть, не создаёт лог-спам. Если эпик провисит 25ч — это всё равно «надо будить», а 4-часовой тик даст 1 алерт (следующий поймает idempotency-guard). |
@@ -175,10 +175,10 @@ scripts/agent_flow/install.sh            ← +1 строка в EXPECTED, +ensur
 |---|---|---|---|
 | 1 | `bash scripts/agent_flow/tests/test_decomposed_watchdog.sh` — 5/5 pass | воркер | raw-вывод теста в PR |
 | 2 | `bash scripts/agent_flow/install.sh --list-files` содержит `agent-flow-decomposed-watchdog.sh` | воркер | вывод команды |
-| 3 | На хосте после `install.sh` есть cron-job «Agent Flow Decomposed Watchdog (ADR-0052)» в devops-профиле, every 4h, no_agent | devops | `cat /home/builder/.hermes/profiles/devops/cron/jobs.json` |
+| 3 | На хосте после `install.sh` есть cron-job «Agent Flow Decomposed Watchdog (ADR-AF-0052)» в devops-профиле, every 4h, no_agent | devops | `cat /home/builder/.hermes/profiles/devops/cron/jobs.json` |
 | 4 | Backlog sweep: для 8 мёртвых детей из таблицы в карточке `t_a054d54c` — manual `kanban_comment` с marker'ом `decomposed-Nd-no-pickup` | воркер (backlog sweep) | `SELECT task_id, body FROM task_comments WHERE body LIKE '%decomposed-%-no-pickup%'` — должно быть 8 строк |
 | 5 | Первый боевой тик `agent-flow-decomposed-watchdog.sh` с live-БД не падает (exit 0 или 2) | devops | лог `/tmp/agent-flow-decomposed-watchdog.log` |
-| 6 | ADR-0052 в `docs/adr/` | воркер | `ls docs/adr/0052-*` |
+| 6 | ADR-AF-0052 в `docs/adr/` | воркер | `ls docs/adr/0052-*` |
 
 ## 7. Что НЕ покрывает
 

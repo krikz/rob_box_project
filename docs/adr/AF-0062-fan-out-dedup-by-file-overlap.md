@@ -1,4 +1,4 @@
-# ADR-0052: fan-out race dedup — pre-create guard по file:line overlap + merge-gate competing-PRs block
+# ADR-AF-0062: fan-out race dedup — pre-create guard по file:line overlap + merge-gate competing-PRs block
 
 | Поле | Значение |
 |---|---|
@@ -22,7 +22,7 @@
 5. G9b (race-window, remote branch existence) — разные ветки, не ловит.
 6. G8 (fingerprint dedup, t_b0fe4398) — срабатывает только на whitelist-файлы (`docker-compose/package.xml/setup.py/Dockerfile/install/setup`). Тестовый файл `test_quest_llm_formalize.py` — НЕ в whitelist.
 
-G10 закрывает дыру **pre-create guard по file-overlap с OPEN PR**: для каждого issue, в чьём body есть glob-путь (например, `test/unit/node/test_quest_llm_formalize.py`), проверяем — есть ли в OPEN PR (любая ветка, любой воркер) правка того же файла в overlap'нутых строках (line-range `additions`). Если есть — skip создание kanban-карточки, comment + label `agent-flow-error` + dedup-marker `agent-flow:file-overlap-skip (ретро t_50a18fa9, ADR-0052)`.
+G10 закрывает дыру **pre-create guard по file-overlap с OPEN PR**: для каждого issue, в чьём body есть glob-путь (например, `test/unit/node/test_quest_llm_formalize.py`), проверяем — есть ли в OPEN PR (любая ветка, любой воркер) правка того же файла в overlap'нутых строках (line-range `additions`). Если есть — skip создание kanban-карточки, comment + label `agent-flow-error` + dedup-marker `agent-flow:file-overlap-skip (ретро t_50a18fa9, ADR-AF-0062)`.
 
 **Merge-time guard** (`competing_prs_block_scan_all` в merge-gate) — для `needs-e2e`/`needs-review` PR при merge-time: если есть ≥2 PR с пересекающимися `file:line-additions` — блокируем merge через label `agent-flow-block` + comment с инструкцией для Шифу (выбрать canonical-PR, остальное закрыть). Это закрывает случай, когда race-12-сек проскочил pre-create guard (например, оба worker'а стартовали до применения G10), и теперь оба PR уже открыты.
 
@@ -92,7 +92,7 @@ Fan-out НЕ через «разные issue с одинаковым конте�
 3. Для каждого PR через `gh api repos/${GH_REPO}/pulls/<N>/files?per_page=100` получить список файлов с `additions_start_line`/`additions_lines`.
 4. Найти **overlap**: для issue-file=F и PR-file=G если basename(F) ∈ basename(G) (или совпадают ≥50% path-segment'ов), и в обоих есть правки в overlap-диапазоне строк (если указан line-range в issue, проверяем intersection; если не указан — overlap по любой addition в файле).
 5. Если найден ≥1 OPEN PR с overlap → skip (counter `file_overlap_skipped++`):
-   - Comment с телом `agent-flow:file-overlap-skip (ретро t_50a18fa9, ADR-0052) — файл <F> уже правится в OPEN PR #<N> (ветка <branch>)...`
+   - Comment с телом `agent-flow:file-overlap-skip (ретро t_50a18fa9, ADR-AF-0062) — файл <F> уже правится в OPEN PR #<N> (ветка <branch>)...`
    - Label `agent-flow-error` (existing fallback).
    - Counter в summary: `dedup-skipped: N (intra-tick), M (race), K (file-overlap)`.
 
@@ -180,7 +180,7 @@ merge-gate: scanned=N prs, competing-prs: K (blocked=X), duplicate-file: M, ...
 - [ ] DRY-RUN реальный прогон `agent-flow-merge-gate.sh`: `competing-prs blocked=K` появляется в логе.
 - [ ] shellcheck: NO new warnings vs `origin/develop`.
 - [ ] Regress-check на fan-out-наборе (PR #2015 / #2016 / `t_e5720945`): при следующем тике после merge G10 → создаётся ≤ 1 kanban-карточка на file-overlap-группу, остальные skipped через G10a.
-- [ ] ADR-0052 в `docs/adr/` с уникальным номером (проверено через `git ls-tree -r origin/develop --name-only | grep -oE 'docs/adr/[0-9]{4}' | sort -u | tail -1`, must be 0052 or later).
+- [ ] ADR-AF-0062 в `docs/adr/` с уникальным номером (проверено через `git ls-tree -r origin/develop --name-only | grep -oE 'docs/adr/[0-9]{4}' | sort -u | tail -1`, must be 0052 or later).
 
 ## 6. Не делаем
 
@@ -203,7 +203,7 @@ merge-gate: scanned=N prs, competing-prs: K (blocked=X), duplicate-file: M, ...
 
 ## 8. Следующие шаги
 
-1. **architect** (этот PR) — реализует G10a + G10b + G10c, добавляет 2 test, ADR-0052, push в `z-{agent}/2018-hermes-fan-out-race-pr-2015-vs-2016`, открывает PR в `develop`.
+1. **architect** (этот PR) — реализует G10a + G10b + G10c, добавляет 2 test, ADR-AF-0062, push в `z-{agent}/2018-hermes-fan-out-race-pr-2015-vs-2016`, открывает PR в `develop`.
 2. **merge-gate** проверяет: ADR-номер 0052 уникален (`ADR-collision-guard` ADR-0030 / test_merge_gate_adr_collision.sh) — должно проходить.
 3. **e2e-process** на следующий раунд проверяет, что `agent-flow-triage` и `agent-flow-merge-gate` запускаются без падений (как cron, так и под DRY-RUN).
 4. **Шифу** мержит PR после green CI + ADR-collision-check.
