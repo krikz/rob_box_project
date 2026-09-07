@@ -168,7 +168,18 @@ def _write_minimal_yaml(tmpdir: Path, *, with_prompts: bool = True) -> str:
                         "prompt_file": "presets/lenin.txt",
                     },
                 },
-                "languages": ["ru", "en"],
+                "languages": {
+                    "ru": {
+                        "name": "Русский",
+                        "label": "русский",
+                        "prompt_section": "ru",
+                    },
+                    "en": {
+                        "name": "English",
+                        "label": "английский",
+                        "prompt_section": "en",
+                    },
+                },
                 "default_preset": "technical",
                 "default_language": "ru",
             },
