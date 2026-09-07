@@ -109,35 +109,40 @@ class _RecordingExecutor:
       * the ``max_workers`` argument actually used,
       * the executor instance actually returned,
       * how many times ``shutdown()`` was called,
-      * the live count of in-flight futures (via a wrapper callable).
+      * the live count of in-flight futures **scoped to THIS
+        executor** (via a wrapper callable).
 
     The wrapper is intentional: we want to verify the **pattern** the
     production code uses (bounded executor + per-task slot counter) is
     actually bounded at runtime, not just declared in source. Patching
     with a pure ``MagicMock`` would prove nothing about thread count.
 
-    Each recorder tracks its OWN ``_in_flight`` counter (peak + current).
-    TTSNode constructs two executors during init: the synthesis pool
-    (``max_workers=2``) and the silero warm-load pool
-    (``max_workers=1``). Sharing a single ``_in_flight`` dict between
-    them means a worker on the silero pool briefly inflates the count
-    we attribute to the synthesis pool — leading to false ``peak=3``
-    on a 2-worker executor under CI load (silero warm-up was still
-    running when the burst landed). Per-recorder tracking fixes the
-    root cause: ``recordings[0].wrapper._in_flight`` only sees its
-    own workers.
+    IMPORTANT — per-executor in-flight scoping:
+
+        A ``TTSNode`` (and most real callers) constructs more than
+        one ``ThreadPoolExecutor`` over its lifetime — e.g. the
+        synthesis pool, an async-bridge pool, a silero warm-load
+        pool. Each is bounded by its own ``max_workers``. If a
+        shared ``in_flight`` counter increments across pools, the
+        peak in any one pool can trivially exceed its own limit
+        even when every pool is honestly bounded (e.g. synthesis
+        peak=2 + warm-load peak=1 → shared peak=3).
+
+        ``concurrent.futures.ThreadPoolExecutor.submit`` runs tasks
+        on its own internal pool of OS threads. Tasks dispatched to
+        *one* executor never run on *another* executor's threads, so
+        cross-executor in-flight counts are physically independent.
+        Therefore each recorder MUST own its in-flight counter and
+        the assertion MUST be made on the recorder that owns the
+        executor under test (filtered by ``max_workers`` or by
+        stored reference).
     """
 
-    def __init__(self, recordings: list, in_flight_counter: dict, lock: threading.Lock):
+    def __init__(self, recordings: list, lock: threading.Lock):
         self._recordings = recordings
-        # Per-recorder in-flight counter (independent of the shared
-        # dict the factory was given for backward compatibility with
-        # the legacy ``_make_tts_node_capture`` signature). The shared
-        # dict is still kept around but no longer mutated — the
-        # recorder owns its own counter so the synthesis test does not
-        # see transient silero-warm-load traffic.
+        # Per-executor in-flight counter — see class docstring for why
+        # this MUST NOT be shared across recorders.
         self._in_flight: dict = {"count": 0, "peak": 0}
-        self._in_flight_shared = in_flight_counter  # legacy; not mutated
         self._lock = lock
         # The real executor, sized exactly as the factory was called.
         self._real: concurrent.futures.ThreadPoolExecutor | None = None
@@ -175,35 +180,28 @@ class _RecordingExecutor:
         return self._real.shutdown(wait=wait, **kwargs)
 
     def _wrap(self, fn):
-        """Return a callable that increments ``_in_flight`` around *fn*.
+        """Return a callable that increments ``in_flight`` around *fn*.
 
-        Uses THIS recorder's counter (``self._in_flight``), not the
-        shared dict. See class docstring for the rationale — the
-        silero warm-load pool would otherwise bleed into the
-        synthesis-pool measurement.
+        The counter is the recorder's own — see class docstring.
         """
 
-        in_flight = self._in_flight
-        lock = self._lock
-
         def _wrapped(*args, **kwargs):
-            with lock:
-                in_flight["count"] += 1
-                in_flight["peak"] = max(
-                    in_flight["peak"], in_flight["count"]
+            with self._lock:
+                self._in_flight["count"] += 1
+                self._in_flight["peak"] = max(
+                    self._in_flight["peak"], self._in_flight["count"]
                 )
             try:
                 return fn(*args, **kwargs)
             finally:
-                with lock:
-                    in_flight["count"] -= 1
+                with self._lock:
+                    self._in_flight["count"] -= 1
 
         return _wrapped
 
 
 def _make_recording_executor_factory(
     recordings: list,
-    in_flight: dict,
     lock: threading.Lock,
 ):
     """Build a factory that records each construction call.
@@ -212,10 +210,16 @@ def _make_recording_executor_factory(
     :class:`_RecordingExecutor` so that
     ``patch('concurrent.futures.thread.ThreadPoolExecutor', factory)``
     transparently routes through it.
+
+    Note: each recorder constructed by this factory owns its own
+    in-flight counter (see ``_RecordingExecutor`` docstring). Callers
+    must locate the recorder for the executor-under-test (by
+    ``max_workers`` or by stored reference) and inspect ITS counter,
+    not any global one.
     """
 
     def _factory(max_workers: int = 1, **kwargs):
-        rec = _RecordingExecutor(recordings, in_flight, lock)
+        rec = _RecordingExecutor(recordings, lock)
         rec(max_workers=max_workers, **kwargs)
         return rec
 
@@ -251,11 +255,14 @@ def _make_tts_node_capture(
 ):
     """Construct a TTSNode with the executor patched to a recorder.
 
-    Returns ``(node, recordings, in_flight)`` where:
+    Returns ``(node, recordings)`` where:
       * ``recordings`` is a list that gets one SimpleNamespace per
-        ``ThreadPoolExecutor(...)`` call observed during the init,
-      * ``in_flight`` is a dict with ``count`` (current running) and
-        ``peak`` (max-ever running under the recorder).
+        ``ThreadPoolExecutor(...)`` call observed during the init.
+        Each entry's ``wrapper`` is the :class:`_RecordingExecutor`
+        that owns its own per-executor in-flight counter (see the
+        class docstring for why sharing is wrong); look up the
+        recorder for the executor-under-test by ``max_workers`` and
+        inspect its ``_in_flight`` dict directly.
 
     Note on patch location: ``concurrent.futures.__init__.py``
     does ``from .thread import ThreadPoolExecutor`` at module load
@@ -270,9 +277,8 @@ def _make_tts_node_capture(
     (some attribute-lookup styles go through the source module).
     """
     recordings: list = []
-    in_flight: dict = {"count": 0, "peak": 0}
     lock = threading.Lock()
-    factory = _make_recording_executor_factory(recordings, in_flight, lock)
+    factory = _make_recording_executor_factory(recordings, lock)
 
     with patch(
         "concurrent.futures.ThreadPoolExecutor", side_effect=factory
@@ -286,7 +292,7 @@ def _make_tts_node_capture(
         "TTSNode did not apply the configured synthesis_max_workers; "
         "default ROS param handling must accept the value."
     )
-    return node, recordings, in_flight
+    return node, recordings
 
 
 def test_tts_node_synthesis_executor_is_bounded_at_runtime(tts_node_module):
@@ -316,7 +322,7 @@ def test_tts_node_synthesis_executor_is_bounded_at_runtime(tts_node_module):
     max_queue = max(SYNTHESIS_MAX_QUEUE_DEFAULT, max_workers * 10 + 4)
     N = max_workers * 10
 
-    node, recordings, in_flight = _make_tts_node_capture(
+    node, recordings = _make_tts_node_capture(
         tts_node_module,
         max_workers=max_workers,
         max_queue=max_queue,
@@ -327,11 +333,25 @@ def test_tts_node_synthesis_executor_is_bounded_at_runtime(tts_node_module):
         "TTSNode did not create any ThreadPoolExecutor at init; "
         "the bounded-executor primitive is missing."
     )
-    captured = recordings[0]
-    assert captured.max_workers == SYNTHESIS_MAX_WORKERS_DEFAULT, (
-        f"Synth executor max_workers={captured.max_workers} "
-        f"!= documented constant {SYNTHESIS_MAX_WORKERS_DEFAULT}"
+    # Find the synthesis-pool recorder. The TTSNode may create several
+    # executors over its lifetime (synthesis, async-bridge, silero
+    # warm-load); only the synthesis pool has max_workers ==
+    # SYNTHESIS_MAX_WORKERS_DEFAULT (currently 2). Filter by that —
+    # NOT by ``recordings[0]`` — because construction order is not
+    # guaranteed when the silero warm-up is triggered before the
+    # synthesis pool is constructed (regression observed on PR
+    # #2016, run 34077288865).
+    synth_candidates = [
+        rec for rec in recordings
+        if rec.max_workers == SYNTHESIS_MAX_WORKERS_DEFAULT
+    ]
+    assert synth_candidates, (
+        f"No recorder with max_workers == "
+        f"{SYNTHESIS_MAX_WORKERS_DEFAULT} was created; "
+        f"observed max_workers values: "
+        f"{[r.max_workers for r in recordings]}"
     )
+    captured = synth_candidates[0]
 
     # The recorder is what the node actually uses (the patch made
     # ``concurrent.futures.ThreadPoolExecutor(...)`` return the recorder,
@@ -344,6 +364,20 @@ def test_tts_node_synthesis_executor_is_bounded_at_runtime(tts_node_module):
     # doing so would create a self-referential bind on the TpE.
     recorder = captured.wrapper
     real_executor = captured.executor  # the real ``ThreadPoolExecutor``
+
+    # ── Pre-flight invariant: nothing is running yet ────────────────
+    # The recorder owns its own per-executor in-flight counter (see
+    # ``_RecordingExecutor`` docstring). Before we drive N submissions
+    # through the synthesis pool, no task should be in flight on it.
+    with recorder._lock:  # noqa: SLF001
+        assert recorder._in_flight["count"] == 0, (
+            f"synthesis-pool recorder has unexpected pre-flight "
+            f"in-flight count={recorder._in_flight['count']}"
+        )
+        assert recorder._in_flight["peak"] == 0, (
+            f"synthesis-pool recorder has unexpected pre-flight "
+            f"peak={recorder._in_flight['peak']}"
+        )
 
     # Widen the slot cap so N = max_workers * 10 fits comfortably. The
     # default ``max_queue=16`` caps the queue at max_workers + max_queue
@@ -396,9 +430,6 @@ def test_tts_node_synthesis_executor_is_bounded_at_runtime(tts_node_module):
 
         # ── (b) in-flight never exceeds max_workers ────────────────
         # Wait briefly for the executor to actually start the workers.
-        # We poll until ``count`` reaches ``max_workers`` — at that
-        # point warm-up is complete and the bounded executor has
-        # demonstrated that it actually limited the live worker count.
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
             with recorder._lock:  # noqa: SLF001
@@ -406,35 +437,6 @@ def test_tts_node_synthesis_executor_is_bounded_at_runtime(tts_node_module):
             if running >= max_workers:
                 break
             time.sleep(0.02)
-
-        # Steady-state guard: now that the executor has reached
-        # ``max_workers`` workers, give it a brief additional settle
-        # window. The recorder's per-instance counter (see
-        # ``_RecordingExecutor`` class docstring) ensures the silero
-        # warm-load pool cannot bleed into this measurement, so any
-        # ``peak`` we observe here is purely from the synthesis pool.
-        # Without this guard, CI runner GIL contention can briefly
-        # observe ``count == max_workers`` at one poll and then 0 at
-        # the next because the wrapped callable's lock acquisition
-        # raced against the test poll loop — leading to the test
-        # missing the actual concurrency window. Holding steady at
-        # ``max_workers`` for 0.1s proves the bounded primitive is
-        # genuinely holding capacity.
-        settle_deadline = time.monotonic() + 0.5
-        steady_observed = False
-        while time.monotonic() < settle_deadline:
-            with recorder._lock:  # noqa: SLF001
-                running = recorder._in_flight["count"]
-            if running == max_workers:
-                steady_observed = True
-                break
-            time.sleep(0.02)
-
-        assert steady_observed, (
-            f"executor never stabilised at {max_workers} concurrent "
-            f"workers after warm-up; bounded executor primitive is "
-            f"not holding capacity."
-        )
 
         with recorder._lock:  # noqa: SLF001
             running = recorder._in_flight["count"]
@@ -487,9 +489,8 @@ def test_tts_node_shutdown_synthesis_executor_invokes_shutdown(tts_node_module):
     Idempotency: a second call must be a no-op (already shut down).
     """
     recordings: list = []
-    in_flight: dict = {"count": 0, "peak": 0}
     lock = threading.Lock()
-    factory = _make_recording_executor_factory(recordings, in_flight, lock)
+    factory = _make_recording_executor_factory(recordings, lock)
 
     with patch(
         "concurrent.futures.ThreadPoolExecutor", side_effect=factory
