@@ -4,12 +4,42 @@
 // Three.js Mesh мы не проверяем — он уже покрыт в других тестах
 // (status_hud.test.ts, voice_state_indicator.test.ts), и jsdom не даёт
 // WebGL. Здесь — только контракт handle'а.
+//
+// ``HTMLCanvasElement.prototype.getContext`` в jsdom не реализован
+// (см. jsdom/lib/jsdom/browser/not-implemented.js) — ставим минимальный
+// mock, чтобы ``canvas.getContext('2d')`` возвращал объект-заглушку. Без
+// этого createTars1TextPanel падает на первом же canvas-вызове (issue
+// #2113, vitest-job fail был именно на этом).
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import {
   createTars1TextPanel,
   type Tars1TextPanelHandle
 } from "../src/scene/tars1_text_panel";
+
+beforeAll(() => {
+  // jsdom: getContext не реализован по умолчанию. Заменяем на stub с
+  // минимумом методов, которые дёргает наш canvas-рендер.
+  const stubCtx = {
+    fillStyle: "",
+    font: "",
+    textBaseline: "",
+    fillRect: () => {},
+    fillText: () => {},
+    measureText: (text: string) => ({
+      width: text.length * 7 // грубая оценка, для тестов достаточно
+    }),
+    clearRect: () => {},
+    get fillStyle_(): string {
+      return "";
+    }
+  } as unknown as CanvasRenderingContext2D;
+  HTMLCanvasElement.prototype.getContext = function (
+    _type: string
+  ): CanvasRenderingContext2D | null {
+    return stubCtx;
+  };
+});
 
 describe("tars1_text_panel", () => {
   let panel: Tars1TextPanelHandle;

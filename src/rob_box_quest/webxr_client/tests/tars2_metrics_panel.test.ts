@@ -3,13 +3,36 @@
 //
 // Three.js Mesh мы не проверяем — он покрыт другими тестами, jsdom не
 // даёт WebGL. Здесь — контракт handle'а и триггеры колбэков.
+//
+// ``HTMLCanvasElement.prototype.getContext`` в jsdom не реализован —
+// ставим mock в beforeAll (см. tars1_text_panel.test.ts: комментарий).
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, vi } from "vitest";
 import {
   createTars2MetricsPanel,
   type Tars2MetricsPanelHandle,
   type Tars2UrlListener
 } from "../src/scene/tars2_metrics_panel";
+
+beforeAll(() => {
+  const stubCtx = {
+    fillStyle: "",
+    font: "",
+    textBaseline: "",
+    fillRect: () => {},
+    fillText: () => {},
+    measureText: (text: string) => ({ width: text.length * 7 }),
+    clearRect: () => {},
+    get fillStyle_(): string {
+      return "";
+    }
+  } as unknown as CanvasRenderingContext2D;
+  HTMLCanvasElement.prototype.getContext = function (
+    _type: string
+  ): CanvasRenderingContext2D | null {
+    return stubCtx;
+  };
+});
 
 describe("tars2_metrics_panel", () => {
   let panel: Tars2MetricsPanelHandle;
