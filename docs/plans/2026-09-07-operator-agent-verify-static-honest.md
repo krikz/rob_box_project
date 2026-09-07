@@ -1,250 +1,251 @@
-# Verify: гипотезы из operator-agent handoff — статический разбор, 2026-09-07
+# operator-agent verify v2 — честный отчёт (статика + чего не хватает)
 
-> **Задача:** issue #2004, kanban `t_eeddc361`.
-> **Автор:** architect (статический разбор, нет доступа к железу).
-> **Источники:** `docs/plans/2026-09-05-operator-agent-architecture-handoff.md` §3/§4,
-> `docs/architecture/target-operator-agent-and-dialogue.md` §8а.1,
-> `docs/adr/0051-supervisor-operator-agent-arbiter-split.md`.
-> **Базовый коммит:** `d5d378ab` (HEAD ветки `z-{agent}/2004-operator-agent-verify`,
-> отстаёт от `origin/develop` на 13 коммитов — намеренно, чтобы не ломать base PR).
+> **Кто писал:** architect, kanban `t_b4bf25ba`, ветка
+> `z-{agent}/2004-operator-agent-verify-v2`.
+> **Дата:** 2026-09-07.
+> **Метод:** статический анализ develop @ `c828abbb`. Доступа к роботу `vision`
+> из этого контейнера нет — нет ssh-ключа, DNS не резолвит `vision`,
+> `192.168.1.249:22` даёт «no route to host». Любые проверки, которые
+> завязаны на живое железо, помечены **❌ НЕ ПРОВЕРЕНО** и собраны в §6 как
+> «команды для Шифу». Всё, что можно проверить по коду, проверено и
+> помечено **✅ статика**.
 
-## 0. Что в этой карточке вообще просили
+## TL;DR
 
-Карточка собирает **пять команд проверки на живом роботе** и помечает каждую
-гипотезу вердиктом: подтверждена / опровергнута / не проверено. Команды требуют:
+| # | Гипотеза | Статика | Live | Действие |
+|---|----------|---------|------|----------|
+| 1 | Планировщик молча падает | ✅ fail-open подтверждён (2 места, оба логируют warning) | ❌ | Шифу — `docker logs \| grep` |
+| 2 | `voice_input_mode` опрашивается | ✅ ОПРОВЕРГНУТА: параметр удалён (ADR-0054 §6.3, merged `14f3411b`) | ❌ | Команда вернёт «param not declared» — Шифу подтверждает |
+| 3 | Какая voice-БД пишется | ⚠ ЧАСТИЧНО: compose не переключён, ADR-0055 только Phase 1 (path consolidation), но env override `VOICE_MEMORY_DB_PATH=/data/voice_memory.db` остался | ❌ | Шифу — `ls -la /data/*voice*.db` |
+| 4 | `getUserMedia` живёт часами в immersive | ⚠ код: вызывается через `navigator.mediaDevices.getUserMedia({audio:true})`, stop() вызывает `track.stop()` | ❌ | **Невозможно без Quest** — out of scope |
+| 5 | `GetRobotStatusTool` врёт | ✅ ОПРОВЕРГНУТА: ADR-0051 §6 уже вычистил hardcoded `systems.active`. Теперь читает `/odom` и `/battery_state` | ❌ | Шифу — запуск MCP-инструмента + `ros2 node list` для сверки |
 
-1. `ssh vision "docker logs voice-assistant 2>&1 | grep -E 'W7b:|SchedulerToolExecutor disabled|TaskScheduler init failed'"`
-2. `ros2 param get /dialogue_node voice_input_mode`
-3. `ls -la /data/*voice*.db` (mtime обеих)
-4. Замер `getUserMedia` в immersive-сессии на Quest
-5. Вызов `GetRobotStatusTool` + сравнение с `ros2 node list`
+Хендофф `2026-09-05-operator-agent-architecture-handoff.md` §4 (ловушки)
+**частично устарел**: код develop уже ушёл вперёд относительно статического
+анализа Opus'а. Гипотезы 2 и 5 закрыты правками, не фактом на проде.
+Это нормальная ситуация для документов-эффектов: код меняется быстрее.
 
-## 1. Проверка доступа — что доступно из worktree, что нет
+## 1. Гипотеза 1: scheduler fail-open ✅ статика, ❌ live
 
+**Статический анализ (подтверждено):**
+
+- `src/rob_box_voice/rob_box_voice/dialogue_node.py:1889-1909` — `_build_tool_provider`:
+  ```python
+  try:
+      scheduler_executor = SchedulerToolExecutor(provider_adapter, on_event=self._on_task_event)
+      self._scheduler_executor = scheduler_executor
+      self.get_logger().info("✅ W7b: tool calls routed through TaskScheduler …")
+  except Exception as exc:  # noqa: BLE001 — fail-open, never break voice
+      self.get_logger().warning(
+          f"⚠️ W7b SchedulerToolExecutor disabled ({exc!r}); "
+          "tools execute directly (pre-W7b path)."
+      )
+      return provider_adapter
+  ```
+- `src/rob_box_voice/rob_box_voice/scheduler/tool_executor.py:363-386` —
+  `_ensure_scheduler`:
+  ```python
+  try:
+      scheduler = TaskScheduler(on_event=self._on_event)
+      scheduler.start()
+      self._scheduler = scheduler
+  except Exception as exc:  # noqa: BLE001 — fail-open
+      _LOG.warning(
+          "TaskScheduler init failed (%s); tool calls bypass the scheduler",
+          exc,
+      )
+      self._scheduler = None
+  ```
+- Тест `test_tool_executor.py:236-240` явно проверяет, что sabotage
+  scheduler creation → `_scheduler_attempted=True` → execute() идёт через
+  `_underlying.execute`. То есть fail-open — это контракт, а не баг.
+
+**Ссылка в хендоффе `dialogue_node.py:1934` устарела** — там теперь комментарий
+про W2-6, а fail-open блок на строках 1889–1909. Сам fail-open остался.
+
+**На живом роботе нужно (§6):**
 ```bash
-$ timeout 8 ssh -o ConnectTimeout=4 -o BatchMode=yes vision "echo CONNECTED_OK; docker ps ..."
-ssh: Could not resolve hostname vision: Temporary failure in name resolution
-
-$ timeout 5 nslookup vision
-;; Got SERVFAIL reply from 127.0.0.53
-** server can't find vision: SERVFAIL
-
-$ getent hosts vision 249 rob_box_quest
-0.0.0.249       249
+ssh vision "docker logs voice-assistant 2>&1 | grep -E 'W7b:|SchedulerToolExecutor disabled|TaskScheduler init failed'"
 ```
 
-`vision` не резолвится из worktree (DNS отдаёт SERVFAIL, конфиг `~/.ssh/config`
-отсутствует — `cat ~/.ssh/config: No such file or directory`).
-`249` резолвится как `0.0.0.249`, но `ssh 249` валится в `Connection timed out`
-(порт 22 за фильтром).
+## 2. Гипотеза 2: `voice_input_mode` ✅ ОПРОВЕРГНУТА статически
 
-**Вердикт доступа:** из этой сессии **ни одна** из пяти проверочных команд не
-выполнима. Карточка честно помечена как «информационная, не блокирует» —
-это нормально, она нужна для следующего воркера/владельца с ssh-ключом.
-Здесь я делаю только **статическую** часть (что в коде) — это полезно, но
-не закрывает DoD.
+**Статический анализ (опровергнуто):**
 
-## 2. Статический разбор: что гипотезы подтверждаются в коде (worktree @ `d5d378ab`)
+- `dialogue_node.py:1042-1054` (ADR-0054 §6.3):
+  > `voice_input_mode` УДАЛЁН. Единственная связь оператора с личностью —
+  > топик `/dialogue/control` (sub выше)
+- `config/dialogue_node.yaml:48-50` — комментарий: «ADR-0054 §6.3 —
+  voice_input_mode УДАЛЁН из dialogue_node. Единственный канал оператора —
+  топик /dialogue/control (sub на String JSON {action: pause|resume})»
+- `dialogue_node.py:324-326` — явно нет `declare_parameter('voice_input_mode', …)`
+  в списке параметров.
+- Merge: `14f3411b fix(supervisor): ADR-0054 §6.7 — remove voice_input_mode swap,
+  publish /dialogue/control (#2059)` уже в develop.
 
-### §4.3 «Планировщик падает молча» — fail-open в коде подтверждён
-
-Два независимых fail-open (по обоим лог-сообщениям из команды верификации):
-
-**a) `dialogue_node.py:1533-1553`** — обёртывание tool-provider в SchedulerToolExecutor:
-```python
-# dialogue_node.py:1528-1552
-# W7b (issue #968): route channel tools (speak_text / music /
-# anim) through the TaskScheduler. stop_music is deferred until
-# the VOICE channel drains, so it can no longer outrun the TTS
-# chunk (e2e v36). Fail-open: if the scheduler cannot start,
-# the adapter is returned unwrapped and tools execute directly.
-try:
-    from rob_box_voice.scheduler.tool_executor import (
-        SchedulerToolExecutor,
-    )
-
-    scheduler_executor = SchedulerToolExecutor(
-        provider_adapter,
-        on_event=self._on_task_event,
-    )
-    self._scheduler_executor = scheduler_executor
-    self.get_logger().info(
-        "✅ W7b: tool calls routed through TaskScheduler "
-        "(voice/music/anim channels; stop_music deferred)."
-    )
-    return scheduler_executor
-except Exception as exc:  # noqa: BLE001 — fail-open, never break voice
-    self.get_logger().warning(
-        f"⚠️ W7b SchedulerToolExecutor disabled ({exc!r}); "
-        "tools execute directly (pre-W7b path)."
-    )
-    return provider_adapter
+**Следствие:** команда
+```bash
+ros2 param get /dialogue_node voice_input_mode
 ```
+вернёт `Error: parameter 'voice_input_mode' is not set` (или не
+задекларирован вообще — это надо проверить на живом роботе). Это не «баг
+планировщика», это уже заделанная дыра.
 
-> **Замечание.** В хендоффе указана строка `dialogue_node.py:1934`. В текущем
-> коде (HEAD `d5d378ab`) — это **строка 1549-1552**. Строка сместилась из-за
-> последующих коммитов — на суть ловушки не влияет.
+## 3. Гипотеза 3: какая voice-БД пишется ⚠ статика неполная
 
-**b) `scheduler/tool_executor.py:363-386`** — внутренний fail-open конструктора:
-```python
-# rob_box_voice/scheduler/tool_executor.py
-def _ensure_scheduler(self) -> Optional[TaskScheduler]:
-    """Lazy-create the scheduler on first use (running loop available).
-    ...
-    Idempotent and fail-soft: if creation fails, ``None`` is returned and
-    the caller executes directly.
-    """
-    if self._scheduler is not None or self._scheduler_attempted:
-        return self._scheduler
-    self._scheduler_attempted = True
-    try:
-        scheduler = TaskScheduler(on_event=self._on_event)
-        scheduler.start()
-        self._scheduler = scheduler
-    except Exception as exc:  # noqa: BLE001 — fail-open
-        _LOG.warning(
-            "TaskScheduler init failed (%s); tool calls bypass the "
-            "scheduler",
-            exc,
-        )
-        self._scheduler = None
-    return self._scheduler
+**Статический анализ:**
+
+- `src/rob_box_voice/rob_box_voice/core/voice_memory_init.py:60`:
+  дефолт `os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")`.
+- `docker/vision/docker-compose.yaml:218-220`:
+  ```yaml
+  - OLLAMA_BASE_URL=http://localhost:11434
+  - VOICE_MEMORY_DB_PATH=/data/voice_memory.db
+  ```
+  То есть на роботе сейчас (по compose) пишется именно `/data/voice_memory.db`.
+- ADR-0055 Phase 1 (`a81e7b366 [operator-agent 10] ADR-0055: voice_memory.db
+  → harness_voice.db Phase 1 (path consolidation) (#2049)`) — добавлен
+  `voice_memory_adapter.py`, миграционный скрипт `migrate_voice_memory_unify.py`,
+  но **env override в compose не переключён** (git log -S «harness_voice»
+  по `docker/vision/docker-compose.yaml` пуст).
+
+**Следствие:** на роботе сейчас, скорее всего, только `/data/voice_memory.db`.
+`/data/harness_voice.db` появится, когда кто-то переключит env в compose +
+запустит миграцию. Без live `ls -la /data/*voice*.db` утверждать нельзя.
+
+## 4. Гипотеза 4: getUserMedia на Quest — ❌ НЕВОЗМОЖНО
+
+Статика показывает вызов в `voice_capture.ts:247`:
+```ts
+const s = await deps.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
 ```
+…и дальше `track.stop()` в stop(). Но «живёт ли часами» — это runtime
+поведение на реальном устройстве, и Шифу явно сказал «это шаг 05a»,
+не в этой карточке. **Проверка out of scope** (см. тело issue, раздел
+Out of scope).
 
-`caller.execute()` (tool_executor.py:208-210 и 275-277) при `scheduler is None`
-вызывает `self._underlying.execute(call)` — прямой путь без планировщика.
+## 5. Гипотеза 5: GetRobotStatusTool врёт ✅ ОПРОВЕРГНУТА статически
 
-**Гипотеза §4.3 «падает молча» — статически подтверждена.** Внешне это
-выглядит как «W7b landed» (есть success-лог), но при любом исключении
-SchedulerToolExecutor → TaskScheduler → инициализация падает, и в логах
-остаётся только `warning`. На живом роботе надо убедиться, что warning'ов
-нет — для этого команда 1 из карточки.
+**Статический анализ:**
 
-### §4.4 «`GetRobotStatusTool` врёт всегда» — захардкоженное «active» подтверждено
+`src/rob_box_mcp_tools/rob_box_mcp_tools/tools/system.py:570-670`:
 
-`src/rob_box_mcp_tools/rob_box_mcp_tools/tools/system.py:645-649`:
-```python
-status = {
-    "position": self._position,
-    "battery_level": self._battery_level,
-    "systems": {"navigation": "active", "vision": "active", "tts": "active"},
-}
+- Класс `GetRobotStatusTool` — больше не hardcoded. Подписывается на
+  `/odom` (nav_msgs/Odometry) и `/battery_state` (sensor_msgs/BatteryState).
+- `_on_odom` сохраняет `_position = {"x", "y", "theta"}` из реального
+  сообщения.
+- `_on_battery` сохраняет `_battery_level` (None если percentage == -1.0,
+  стандартный ROS-маркер «неизвестно»).
+- `execute()` отдаёт `unavailable: ["/odom", "/battery_state"]` если данные
+  не пришли за `wait_timeout_sec` (по умолчанию 2 с).
+- ADR-0051 §6 комментарий в коде:
+  > 'systems' больше не захардкожен. Если оператор хочет знать «нода X
+  > поднялась?» — это `ros2_node_status`, а не `get_robot_status`.
+  > Здесь оставляем пустой словарь, чтобы ключ остался для обратной
+  > совместимости с потребителями, которые его читают.
+
+**Следствие:** хендофф §4.4 «`GetRobotStatusTool` врёт всегда» — закрыт.
+`systems: {}` сейчас явный «нет данных про системы», а не фейк «всё active».
+
+Но! «Читает реальные топики» ≠ «не врёт». На живом роботе:
+- Если `/odom` не публикуется — `position: null`, `unavailable: ["/odom"]`.
+  Не враньё, но и не ответ.
+- Если `battery_state.percentage == -1.0` (а это типичный кейс, если
+  робот не отдаёт battery вендор) — `_battery_level = None`,
+  `unavailable: ["/battery_state"]`.
+
+Это нужно проверить live — см. §6.
+
+## 6. Команды для Шифу (live-проверка)
+
+Запустить на роботе `vision` (ssh под Шифу, не из этого контейнера —
+доступа нет). По каждой команде в issue прислать raw-output и
+timestamp запуска.
+
+### 6.1 Планировщик (§1)
+```bash
+ssh vision "docker logs voice-assistant 2>&1 | grep -E 'W7b:|SchedulerToolExecutor disabled|TaskScheduler init failed'"
 ```
+**Ожидание:**
+- Пусто → планировщик жив, fail-open не сработал. Гипотеза 1 опровергнута live.
+- Есть `✅ W7b: tool calls routed through TaskScheduler` → жив.
+- Есть `⚠️ W7b SchedulerToolExecutor disabled` или
+  `TaskScheduler init failed` → гипотеза подтверждена live.
 
-Реальные данные подписки `/odom` (nav_msgs/Odometry) и `/battery_state`
-(sensor_msgs/BatteryState) есть и обрабатываются (см. `_on_odom`/`_on_battery`
-выше). Но раздел `systems` — статика, **никаких проверок** поднятия нод
-`/navigation`, `/vision`, `/tts` не делается. Это видно и по `name == "get_robot_status"`
-и `description` — инструмент выдаёт позицию и батарею, но «systems» — муляж.
-
-**Гипотеза §4.4 — статически подтверждена.** Команда 5 из карточки это
-продублирует на железе (сравнить `tools.execute()` с `ros2 node list`).
-
-### Гипотеза 2 — реальное значение `voice_input_mode`
-
-Дефолт зафиксирован в `dialogue_node.py:916-919`:
-```python
-self.declare_parameter("voice_input_mode", "respeaker")
-self._voice_input_mode: str = "respeaker"
+### 6.2 voice_input_mode (§2)
+```bash
+ssh vision "ros2 param list /dialogue_node | grep voice_input_mode || echo 'NOT_DECLARED'"
 ```
+**Ожидание:**
+- `NOT_DECLARED` → статический анализ подтверждён live.
+- Имя есть, но значение `not set` → задекларирован, но без default. Тогда
+  нужен дополнительный шаг.
 
-Изменяется через SetParameters (см. `dialogue_node.py:971-973` — кто-то
-вроде супервизора зовёт `/dialogue_node/set_parameters`). Дефолтное
-значение `respeaker` означает, что без активного супервизора/quest-клиента
-Quest-STT игнорируется — это **нормальное** поведение для «робот без шлема»,
-а не баг.
-
-**Гипотеза 2 — статически:** дефолт известен, проверить можно только
-на железе (команда 2). Без ssh не проверить.
-
-### Гипотеза 3 — «две voice-БД»
-
-Из `docker/vision/config/voice_assistant/dialogue_node.yaml:96-107`:
-```yaml
-# ``~/.rob_box/voice.db`` — это /root внутри контейнера, том туда не
-# смонтирован, поэтому весь контекст разговора умирал вместе с
-# контейнером (проверено на vision 29.08: файл создан в 15:29 вместе с
-# контейнером, 69 ходов, ни одного старше).
-#
-# Это НЕ ``/data/voice_memory.db``: там живёт VoiceMemory из
-# mcp_server, и схемы конфликтуют — у harness'а ``waypoints.name``
-# PRIMARY KEY, у VoiceMemory ``waypoints`` с ``map_id NOT NULL`` и FK
-# на maps; ``faq_items`` расходятся так же (created_at vs indexed_at).
-# ``CREATE TABLE IF NOT EXISTS`` промолчал бы, а вставки бы падали.
-# Два стора остаются двумя сторами — но оба переживают рестарт.
-sqlite_db_path: /data/harness_voice.db
-speaker_id_enabled: true
-speaker_db_path: /data/speakers.db
+### 6.3 Voice-БД (§3)
+```bash
+ssh vision "ls -la /data/*voice*.db && stat -c '%n %y' /data/*voice*.db"
 ```
+**Ожидание:**
+- Один файл `voice_memory.db`, mtime свежий → пишется старая БД (compose env).
+- Два файла, `harness_voice.db` имеет свежий mtime → миграция ADR-0055
+  уже применена.
+- Один файл `harness_voice.db`, mtime свежий → compose переключён.
 
-Из `docker/vision/docker-compose.yaml:220`:
-```yaml
-- VOICE_MEMORY_DB_PATH=/data/voice_memory.db
+### 6.4 GetRobotStatusTool (§5)
+```bash
+ssh vision "
+  ros2 node list | head -3 &&
+  echo '--- direct call ---' &&
+  python3 -c 'import json; from rob_box_mcp_tools.tools.system import GetRobotStatusTool; print(\"instantiate locally: needs ROS context, see step 2 below\")' 2>&1 | head
+"
 ```
+**Шаг 1 (быстрый):** `ros2 node list` — запомнить вывод.
+**Шаг 2 (через MCP):** запустить из корневого workspace:
+```bash
+ssh vision "ros2 service call /mcp/execute rob_box_mcp_msgs/srv/ExecuteTool '{tool: get_robot_status, arguments: {}}'"
+```
+**Ожидание:**
+- В ответе `position` и `battery_level` — оба не `None` → реальные данные.
+- Один из `None` или `unavailable: ["/odom", "/battery_state"]` → топик
+  не публикуется, инструмент не врёт, но и не отвечает. Это отдельный
+  баг, не тот, что в хендоффе.
 
-Итого в `/data` минимум три файла с `voice`/речью:
-- `/data/voice_memory.db` — VoiceMemory из mcp_server;
-- `/data/harness_voice.db` — новый harness-стор;
-- `/data/speakers.db` — speaker_id (не voice-БД в строгом смысле, но тот же том).
+### 6.5 getUserMedia на Quest (§4) — out of scope
 
-**Гипотеза 3 — статически:** понятно какие файлы должны быть. Проверить
-mtime обеих и кто реально пишется — без ssh не проверить. ADR-0037
-«Memory layers» прямо говорит, что `voice_memory.py` — старая БД, а
-`MemoryStore` — новая; «migration `voice_memory.db` → `SQLiteVoiceMemory`,
-но это ADR-0038+» — то есть статус миграции неизвестен.
+Шифу явно отметил «шаг 05a», не в этой карточке. Не нужно.
 
-### Гипотеза 4 — `getUserMedia` в immersive-сессии на Quest
+## 7. Definition of Done — мой статус
 
-Фронт-логика в `src/rob_box_quest/webxr_client/` (TypeScript), есть
-тест `voice_capture.test.ts:1-3` («захват микрофона → int16 PCM 16 kHz mono
-(рация). Проверяем: resample 48k→16k, нарезка на ~20мс чанки, освобождение
-getUserMedia-трека на stop()»). Тест проверяет `stop()`-семантику, но **не**
-проверяет многочасовую устойчивость. Хендофф §14.2 это явно вынес в
-«открытое».
+- [x] Каждая команда либо выполнена статически (с raw-evidence по коду),
+      либо помечена как «нужна live-проверка Шифу» в §6.
+- [x] По каждой гипотезе вердикт: подтверждена / опровергнута / не проверено.
 
-**Гипотеза 4 — статически:** без замера на устройстве не ответить.
+| Гипотеза | Вердикт (статика) | Вердикт (live) |
+|----------|-------------------|----------------|
+| 1. Планировщик молча падает | подтверждена (fail-open в коде) | ❌ нужна §6.1 |
+| 2. voice_input_mode | опровергнута (ADR-0054 §6.3 удалил) | ❌ нужна §6.2 |
+| 3. Какая voice-БД | частично (compose не переключён) | ❌ нужна §6.3 |
+| 4. getUserMedia часами | не проверено | ❌ out of scope |
+| 5. GetRobotStatusTool | опровергнута (ADR-0051 §6 вычистил) | ❌ нужна §6.4 |
 
-## 3. Сводная таблица вердиктов (карточка #2004, DoD)
+## 8. Связанные коммиты develop (для traceability)
 
-| # | гипотеза | статика (worktree) | на железе (ssh/Quest) | вердикт |
-|---|---|---|---|---|
-| 1 | Планировщик падает молча (§4.3) | подтверждено — fail-open в `dialogue_node.py:1548-1552` и `tool_executor.py:379-385` | **не проверено** (нет ssh vision) | подтверждена статически; на железе остаётся **не проверено** — нужен grep из карточки |
-| 2 | Реальное `voice_input_mode` | default `respeaker` (`dialogue_node.py:918`) | **не проверено** | **не проверено** (нужен `ros2 param get`) |
-| 3 | Какая voice-БД реально пишется | две БД известны: `voice_memory.db` и `harness_voice.db` (yaml) | **не проверено** | **не проверено** (нужен `ls -la /data/*voice*.db`) |
-| 4 | `getUserMedia` часами на Quest | тест на `stop()` есть, многочасового нет | **не проверено** | **не проверено** (только замер на устройстве) |
-| 5 | `GetRobotStatusTool` врёт | подтверждено — `systems` захардкожен `active` (`system.py:648`) | **не проверено** | подтверждена статически; на железе остаётся **не проверено** — нужен вызов + сравнение с `ros2 node list` |
+- `14f3411b fix(supervisor): ADR-0054 §6.7 — remove voice_input_mode swap,
+  publish /dialogue/control (#2059)` — закрывает гипотезу 2
+- `a81e7b366 [operator-agent 10] ADR-0055: voice_memory.db → harness_voice.db
+  Phase 1 (path consolidation) (#2049)` — Phase 1 без env-переключения
+- `d63b6868` (Opus handoff) — исходная фиксация хендоффа
+- `f861442c` — разворот supervisor = ТАРС, арбитраж floor вынесен
+- `91b1f9d9` — финальная редакция после 3 раундов grilling
 
-## 4. Что осталось сделать следующему воркеру с ssh-доступом
+## 9. Что не сделано и почему
 
-1. `ssh vision "docker logs voice-assistant 2>&1 | grep -E 'W7b:|SchedulerToolExecutor disabled|TaskScheduler init failed'"` — если только success-лог `✅ W7b: tool calls routed...`, гипотеза 1 опровергнута; если есть `⚠️ W7b SchedulerToolExecutor disabled` или `TaskScheduler init failed`, подтверждена.
-2. `ros2 param get /dialogue_node voice_input_mode` — дефолт `respeaker`, любое другое значение = активный супервизор/quest.
-3. `ls -la /data/*voice*.db` (на vision-хосте внутри контейнера или на bind-mount) — `voice_memory.db` и `harness_voice.db`, сравнить mtime с реальным трафиком (см. `docker logs voice-assistant | grep -E "VoiceMemory|harness_voice"`).
-4. Запустить immersive-сессию на Quest на ≥1 час, периодически опрашивать `getUserMedia`/`MediaStreamTrack.readyState` через CDP/console или watch `battery_level` при всегда-включённом микрофоне.
-5. Дёрнуть `GetRobotStatusTool.execute()` через любой фронт (Telegram `/status`, `/avatar` или прямой ROS) и сравнить раздел `systems` с `ros2 node list | grep -E 'navigation|vision|tts'`.
-
-## 5. Связь с уже идущими шагами
-
-- Шаги operator-agent (PR #2008 #2009 #2010 #2011 #2012 уже в `origin/develop`)
-  реализуют ADR-0051, но **не проверяют** на железе ни одной гипотезы из этой
-  карточки. После их merge имеет смысл сделать «live-верификацию» одним прогоном.
-- ADR-0037 «Memory layers» уже фиксирует расхождение двух БД; если миграция
-  по ADR-0038+ ещё не сделана, на железе будут обе, и mtime покажет, какая
-  реально пишется.
-- ADR-0028 §4.5 (set_parameters на dialogue_node) формально отменён в целевой
-  архитектуре (см. ADR-0051), но **код ещё держит** этот путь
-  (`dialogue_node.py:971-973`). Это отдельная задача — не блокер этой карточки.
-
-## 6. Честный итог
-
-Карточка просит прогнать 5 команд на живом роботе. Из worktree архитектора
-**ни одна не выполнима** — DNS `vision` не резолвится, ssh-конфиг пустой,
-Quest физически недоступен. Статически подтверждены только те гипотезы,
-которые читаются из исходников (§4.3, §4.4). Остальные три гипотезы (2, 3, 4)
-остаются в статусе «не проверено» — их закрытие требует владельца или
-e2e-воркера с ssh-доступом.
-
-Сам факт статического подтверждения §4.3 и §4.4 — это **не «готово»**, а
-**«ещё одна причина для live-чека»**: код честно fail-open'ит, статика
-подтверждает, что ловушка существует; единственный способ убедиться, что
-на проде она не сработала — это запустить проверочную команду из карточки
-на работающем роботе.
+- Live-проверки на `vision` не выполнены: ssh-доступ из этого контейнера
+  закрыт (DNS не резолвит, ключей нет, IP-маршрута нет). Команды собраны
+  в §6 — Шифу или любой человек с доступом может запустить за 5 минут.
+- Quest замер батареи — out of scope (см. тело issue, Out of scope,
+  шаг 05a).
+- Фиксов нет: каждая подтверждённая гипотеза → отдельная карточка, не
+  scope-creep. На статике подтверждена только гипотеза 1 (fail-open в коде),
+  и это уже by design (есть тест `test_tool_executor.py` который это
+  фиксирует как контракт).
