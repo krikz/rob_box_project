@@ -389,6 +389,137 @@ def test_sink_kwarg_in_synthesize_and_play_signature():
         )
 
 
+# ── Issue #2096 — ssml→text fallback (ADR-0055 contract) ────────────────
+#
+# ``supervisor_node._publish_grip_tts`` / ``_publish_avatar_tts`` send
+# payloads that carry ONLY ``request_id``/``ssml``/``sink`` (+ optional
+# ``language``/``voice``) — NO ``text`` field at all (see their docstrings:
+# "ssml обязателен ... tts_node читает его в _on_avatar_tts_request"). Before
+# this fix ``_on_avatar_tts_request`` passed ``chunk_data.get("text", "")``
+# (always ``""`` for these payloads) to ``_submit_synthesis`` while ``ssml``
+# was used ONLY for ``_parse_ssml_attributes`` (prosody) — the actual words
+# were silently dropped, so MiniMax got an empty-text bad-request for a
+# perfectly normal, non-empty reply. This is the live incident from
+# voice-assistant (2026-09-07): 3 grip-pipeline replies in a row with real
+# text still produced ``text=''`` in the tts_node log and killed
+# minimax→yandex→silero.
+
+
+def _submitted_text(node) -> str:
+    """Extract the ``text`` positional arg passed to ``_submit_synthesis``.
+
+    Call shape (see ``_on_avatar_tts_request``):
+    ``_submit_synthesis(self._run_synthesis_worker, speech_id, ssml, text,
+    dialogue_id, ssml_attributes, speech_id, batch_id, batch_index,
+    batch_total, voice=..., language=..., sink="headset")``
+    """
+    args = node._submit_synthesis.call_args.args
+    return args[3]
+
+
+def test_avatar_tts_request_extracts_text_from_ssml_when_text_field_absent():
+    """Exact payload shape of ``_publish_grip_tts`` — no ``text`` key at all."""
+    node = _make_request_node()
+    node._on_avatar_tts_request(
+        _msg({
+            "request_id": "3a48862f",
+            "ssml": "<speak>Мы начинаем осмотр</speak>",
+            "sink": "headset",
+        })
+    )
+    assert node._submit_synthesis.call_count == 1
+    assert _submitted_text(node) == "Мы начинаем осмотр"
+
+
+def test_avatar_tts_request_extracts_text_from_ssml_when_text_field_empty():
+    """``text`` key present but ``""`` (exact shape of ``_publish_avatar_tts``
+    if it ever added an explicit empty ``text``) — same fallback applies."""
+    node = _make_request_node()
+    node._on_avatar_tts_request(
+        _msg({
+            "request_id": "req-empty-text-field",
+            "ssml": "<speak>Принял</speak>",
+            "text": "",
+            "sink": "headset",
+        })
+    )
+    assert node._submit_synthesis.call_count == 1
+    assert _submitted_text(node) == "Принял"
+
+
+def test_avatar_tts_request_ssml_fallback_strips_nested_prosody_and_break():
+    """Nested ``<prosody>``/``<break>`` tags — text-only content survives."""
+    node = _make_request_node()
+    node._on_avatar_tts_request(
+        _msg({
+            "request_id": "req-nested",
+            "ssml": (
+                "<speak>Внимание<break time=\"300ms\"/>"
+                "<prosody rate=\"1.2\" pitch=\"high\">осмотр начат</prosody></speak>"
+            ),
+            "sink": "headset",
+        })
+    )
+    assert node._submit_synthesis.call_count == 1
+    assert _submitted_text(node) == "Вниманиеосмотр начат"
+
+
+def test_avatar_tts_request_ssml_fallback_unescapes_xml_entities():
+    """``&amp;``/``&lt;``/``&gt;`` in the SSML text content are unescaped,
+    not read aloud literally as "amp"/"lt"/"gt" (issue #2096 review note)."""
+    node = _make_request_node()
+    node._on_avatar_tts_request(
+        _msg({
+            "request_id": "req-entities",
+            "ssml": "<speak>Батарея &lt; 20% &amp; сигнал &gt; нормы</speak>",
+            "sink": "headset",
+        })
+    )
+    assert node._submit_synthesis.call_count == 1
+    assert _submitted_text(node) == "Батарея < 20% & сигнал > нормы"
+
+
+def test_avatar_tts_request_prefers_explicit_nonempty_text_over_ssml():
+    """Backward-compat: an explicit non-empty ``text`` field wins over
+    re-deriving it from ``ssml`` (matches dialogue_callback semantics for
+    payloads that DO carry a distinct plain-text field)."""
+    node = _make_request_node()
+    node._on_avatar_tts_request(
+        _msg({
+            "request_id": "req-explicit-text",
+            "ssml": "<speak>текст с разметкой</speak>",
+            "text": "явный текст без разметки",
+            "sink": "headset",
+        })
+    )
+    assert node._submit_synthesis.call_count == 1
+    assert _submitted_text(node) == "явный текст без разметки"
+
+
+def test_avatar_tts_request_grip_pipeline_payload_end_to_end():
+    """End-to-end on the EXACT payload ``_publish_grip_tts`` constructs
+    (mirrors ``supervisor_node._publish_grip_tts``'s own
+    ``payload = {"request_id": ..., "ssml": f"<speak>{text}</speak>",
+    "sink": "headset"}`` — no ``text`` key, no ``language``)."""
+    import uuid as _uuid
+
+    original_text = "Мы начинаем"
+    request_id = _uuid.uuid4().hex[:8]
+    payload = {
+        "request_id": request_id,
+        "ssml": f"<speak>{original_text}</speak>",
+        "sink": "headset",
+    }
+
+    node = _make_request_node()
+    node._on_avatar_tts_request(_msg(payload))
+
+    assert node._submit_synthesis.call_count == 1
+    assert _submitted_text(node) == original_text
+    call_kwargs = node._submit_synthesis.call_args.kwargs
+    assert call_kwargs.get("sink") == "headset"
+
+
 def test_sink_kwarg_in_run_synthesis_worker_signature():
     """``_run_synthesis_worker(sink=...)`` тоже keyword-only через **kwargs."""
     import inspect
