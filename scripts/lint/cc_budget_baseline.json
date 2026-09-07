@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-09-07",
-  "base_sha": "84be7a640b005c008092958694fc3e9b3c943fd1",
+  "base_sha": "789892bc6d8b6923704b98f15257ac907003be2d",
   "limits": {
     "method": 15,
     "init": 20
@@ -52,7 +52,6 @@
       "TTSNode.__init__": 28,
       "TTSNode._on_set_provider": 18,
       "TTSNode._parse_ssml_attributes": 17,
-      "TTSNode._synthesize_and_play": 124,
       "TTSNode._synthesize_silero": 23,
       "TTSNode._synthesize_yandex": 18,
       "TTSNode.dialogue_callback": 25

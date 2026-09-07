@@ -139,10 +139,22 @@ def test_fallback_to_silero_preserved() -> None:
     src = _parse_module(_TTS_NODE)
     fn = _find_class_member(src, "TTSNode", "_synthesize_and_play")
     fn_src = ast.unparse(fn)
-    # The except clause must set audio_np=None and the subsequent code
-    # must switch to silero_model.apply_tts(...)
-    assert "silero_model.apply_tts" in fn_src, "Silero fallback path must be intact"
-    assert "Yandex gRPC отвалился" in fn_src, "Yandex failure log message must be present"
+    # Issue #2078 decomposition: silero fallback helper now owns the
+    # ``silero_model.apply_tts(...)`` call (was inline in this method).
+    # Search across the whole module so the contract survives extraction.
+    module_src = _TTS_NODE.read_text(encoding="utf-8")
+    assert "silero_model.apply_tts" in module_src, (
+        "Silero fallback path must be intact (search across module after "
+        "issue #2078 decomposition)"
+    )
+    # The Yandex-failure log message MUST stay somewhere in the high-level
+    # orchestrator or its helpers (per-issue #1083 acceptance:
+    # «переключаюсь на Silero»).  Issue #2078 moved it to
+    # ``_sap_synthesize_yandex``; search across the module.
+    assert "Yandex gRPC отвалился" in module_src, (
+        "Yandex failure log message must be present (module-wide after "
+        "issue #2078 decomposition)"
+    )
 
 
 # ── Behavioural tests for _chunk_text (pure Python) ─────────────────────────
