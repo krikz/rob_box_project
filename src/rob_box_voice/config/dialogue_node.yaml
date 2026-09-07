@@ -45,9 +45,9 @@ dialogue_node:
     faq_mode_enabled: false
     faq_event_config_file: ''
     tool_provider: ros_mcp
-    # ADR-0054 §6.3 — ``voice_input_mode`` УДАЛЁН из dialogue_node.
+    # ADR-0066 §6.3 — ``voice_input_mode`` УДАЛЁН из dialogue_node.
     # Единственный канал оператора — топик /dialogue/control (sub на
-    # String JSON {action: pause|resume}). См. ADR-0054 §2.1.
+    # String JSON {action: pause|resume}). См. ADR-0066 §2.1.
     # voice_preset / voice_output_language сохранены (стиль речи и язык
     # для LLM-формализации в grip_pipeline супервизора, ADR-0028 §S5).
     voice_preset: ''

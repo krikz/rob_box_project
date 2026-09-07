@@ -6,7 +6,7 @@
 что осталось в этой ноде:
 
 - Нода создаётся с name="avatar_supervisor" и параметром mode="monitor".
-- Voice-управление dialogue_node (ADR-0028 S5 / ADR-0054 §6.7): после
+- Voice-управление dialogue_node (ADR-0028 S5 / ADR-0066 §6.7): после
   удаления ``voice_input_mode`` супервизор управляет личностью через
   топик ``/dialogue/control``. ``/avatar/set_voice_mode`` остался для
   legacy-контракта (UI Quest, web-admin) — маппится на pause/resume.
@@ -116,7 +116,7 @@ class TestAvatarSupervisorDoesNotMutateExternalState(unittest.TestCase):
 
     def test_no_set_parameter_calls_for_dialogue_via_pubs(self) -> None:
         """Нет publisher-ов на /voice/ (кроме /voice/tts/request, шаг 4б) +
-        в /dialogue/ — только ``/dialogue/control`` (ADR-0054 §6.7,
+        в /dialogue/ — только ``/dialogue/control`` (ADR-0066 §6.7,
         pause/resume для личности). Голос-параметры — через параметр-клиенты
         под mode=active, не топики.
         """
@@ -148,9 +148,9 @@ class TestAvatarSupervisorDoesNotMutateExternalState(unittest.TestCase):
 
 
 class TestAvatarSupervisorVoiceMode(unittest.TestCase):
-    """ADR-0054 §6.7 — супервизор управляет личностью через ``/dialogue/control``.
+    """ADR-0066 §6.7 — супервизор управляет личностью через ``/dialogue/control``.
 
-    После удаления ``voice_input_mode`` (ADR-0054 §6) параметр
+    После удаления ``voice_input_mode`` (ADR-0066 §6) параметр
     ``voice_input_mode`` на dialogue_node больше не существует, и супервизор
     вместо ``_set_dialogue_param`` публикует JSON в ``/dialogue/control``.
     Тесты проверяют:
@@ -174,7 +174,7 @@ class TestAvatarSupervisorVoiceMode(unittest.TestCase):
         self.assertIn(SET_VOICE_MODE_TOPIC, topics)
 
     def test_dialogue_control_publisher_declared(self) -> None:
-        """ADR-0054 §6.7 — супервизор публикует в ``/dialogue/control``."""
+        """ADR-0066 §6.7 — супервизор публикует в ``/dialogue/control``."""
         self.assertIn(DIALOGUE_CONTROL_TOPIC, self.node._publishers)
         self.assertEqual(DIALOGUE_CONTROL_TOPIC, "/dialogue/control")
 

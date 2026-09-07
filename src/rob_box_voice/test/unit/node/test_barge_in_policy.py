@@ -465,7 +465,7 @@ class TestParametersCallbackBargeInPolicy:
         n._barge_in_policy_pub.publish.assert_not_called()
 
     def test_unrelated_param_does_not_touch_barge_in_policy(self, n):
-        # ADR-0054 §6.3 — ``voice_input_mode`` УДАЛЁН. Проверяем что
+        # ADR-0066 §6.3 — ``voice_input_mode`` УДАЛЁН. Проверяем что
         # ``voice_preset`` (который остался для LLM-формализации в
         # grip_pipeline супервизора) не трогает barge_in_policy.
         n.parameters_callback([self._param("voice_preset", "technical")])

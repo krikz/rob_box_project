@@ -193,7 +193,7 @@ Pub `/avatar/command` (`self._avatar_command_pub`) **сохраняется** �
 В `dialogue_node.DialogueNode.__init__` после блока про `create_subscription(String, "/voice/tts/provider_state", ...)` (около строки 658) добавить:
 
 ```python
-# ADR-0054 — единственная связь с агентом оператора: /dialogue/control.
+# ADR-0066 — единственная связь с агентом оператора: /dialogue/control.
 # Sub: pause/resume от avatar_supervisor (String JSON).
 # Pub: ack с текущим состоянием DSM после применения команды.
 self._dialogue_control_pub = self.create_publisher(
