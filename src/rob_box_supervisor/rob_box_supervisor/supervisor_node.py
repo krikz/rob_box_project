@@ -52,6 +52,16 @@ from std_msgs.msg import String as RosString
 # _on_preview_voice для валидации voice_id.
 from rob_box_voice.tts_voice_registry import voices_for as _voices_for
 
+# Issue #2081 — единый источник истины для топиков avatar/command*.
+# До этого PR константы дублировались локально (см. ниже старые
+# AVATAR_COMMAND_TOPIC/AVATAR_COMMAND_RESULT_TOPIC) — это и было причиной
+# регрессии: rob_box_core.avatar_command содержит актуальные значения
+# контракта, а supervisor импортирует старые. Теперь импортируем SoT.
+from rob_box_core.avatar_command import (
+    AVATAR_COMMAND_RESULT_TOPIC,
+    AVATAR_COMMAND_TOPIC,
+)
+
 
 def _voice_param_key_for(provider: str) -> str:
     """Целевой параметр tts_node для голоса активного провайдера.
@@ -308,8 +318,10 @@ VOICE_LANGUAGES: tuple[str, ...] = ("ru", "en", "fr", "de", "zh", "hi")
 # ``/avatar/command_result``. Полные JSON-схемы — в
 # ``docs/architecture/avatar-supervisor-agent.md``. Наполнять вход
 # будут карточки-после (AV-22: Quest STT, Telegram-текст).
-AVATAR_COMMAND_TOPIC: str = "/avatar/command"
-AVATAR_COMMAND_RESULT_TOPIC: str = "/avatar/command_result"
+#
+# Issue #2081: константы AVATAR_COMMAND_TOPIC / AVATAR_COMMAND_RESULT_TOPIC
+# теперь импортируются из rob_box_core.avatar_command (см. imports выше) —
+# это единый SoT, чтобы quest/supervisor/telegram не разъезжались.
 # Вейк-вход оператора (шаг 05, issue #1990). Топик создаёт stt_node
 # (wake-роутер); пока шаг 05 не смержен — подписка дремлет (в ROS
 # подписка на несуществующий топик безвредна). Payload v1 — как
