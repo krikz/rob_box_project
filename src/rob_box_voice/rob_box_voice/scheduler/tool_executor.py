@@ -206,7 +206,13 @@ class SchedulerToolExecutor:
             return await self._underlying.execute(call)
 
         scheduler = self._ensure_scheduler()
-        if scheduler is None:
+        # C3 (#1995): when the scheduler raises (no loop, init failed)
+        # _ensure_scheduler() propagates the exception; we only get
+        # here when the scheduler is alive. The ``if scheduler is None``
+        # guard below is now defensive-only (kept to satisfy static
+        # type checkers) — the silent bypass to underlying.execute()
+        # has been removed.
+        if scheduler is None:  # pragma: no cover — C3 fail-loud path
             return await self._underlying.execute(call)
 
         deferred = call.name in _DEFERRED_DESTRUCTIVE_TOOLS
@@ -273,7 +279,13 @@ class SchedulerToolExecutor:
         fabricated one from here.
         """
         scheduler = self._ensure_scheduler()
-        if scheduler is None:
+        # C3 (#1995): when the scheduler raises (no loop, init failed)
+        # _ensure_scheduler() propagates the exception; we only get
+        # here when the scheduler is alive. The ``if scheduler is None``
+        # guard below is now defensive-only (kept to satisfy static
+        # type checkers) — the silent bypass to underlying.execute()
+        # has been removed.
+        if scheduler is None:  # pragma: no cover — C3 fail-loud path
             return await self._underlying.execute(call)
 
         args = call.arguments or {}
@@ -366,23 +378,37 @@ class SchedulerToolExecutor:
         ``_build_tool_provider`` runs in the ROS2 node constructor where
         there is no running asyncio loop; the scheduler is therefore
         created on the first ``execute`` (which runs inside the dialogue
-        turn's async context). Idempotent and fail-soft: if creation
-        fails, ``None`` is returned and the caller executes directly.
+        turn's async context).
+
+        C3 (#1995, operator-agent 07): fail-LOUD, not fail-open. If
+        scheduler construction raises (no loop, loop closed, scheduler
+        bug), the caller MUST see a ``RuntimeError`` rather than a
+        silent fallback to direct execution — otherwise the voice
+        pipeline silently degrades to the pre-W7b path and the
+        operator never learns the scheduler is broken. The previous
+        ``except Exception`` here caught every misbehaviour and
+        returned ``None``; combined with the dialogue_node's own
+        fail-open that meant ``stop_music`` could outrun ``speak_text``
+        again (e2e v36 regression), «Стой!» через планировщик не
+        работало и в логах был только тихий warning.
+
+        The lazy ``_scheduler_attempted`` guard remains so we don't
+        spin retrying on every tool call after a permanent failure;
+        the first error raises once and stays raised.
         """
-        if self._scheduler is not None or self._scheduler_attempted:
+        if self._scheduler is not None:
             return self._scheduler
-        self._scheduler_attempted = True
-        try:
-            scheduler = TaskScheduler(on_event=self._on_event)
-            scheduler.start()
-            self._scheduler = scheduler
-        except Exception as exc:  # noqa: BLE001 — fail-open
-            _LOG.warning(
-                "TaskScheduler init failed (%s); tool calls bypass the "
-                "scheduler",
-                exc,
+        if self._scheduler_attempted:
+            raise RuntimeError(
+                "TaskScheduler is unavailable (previous init failed); "
+                "refusing to execute tool calls on a degraded path. "
+                "Check the dialogue_node logs for the original "
+                "TaskScheduler init failure and fix the wiring."
             )
-            self._scheduler = None
+        self._scheduler_attempted = True
+        scheduler = TaskScheduler(on_event=self._on_event)
+        scheduler.start()
+        self._scheduler = scheduler
         return self._scheduler
 
     def _make_executor(

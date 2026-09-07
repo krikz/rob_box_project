@@ -1884,29 +1884,32 @@ class DialogueNode(Node):
         # W7b (issue #968): route channel tools (speak_text / music /
         # anim) through the TaskScheduler. stop_music is deferred until
         # the VOICE channel drains, so it can no longer outrun the TTS
-        # chunk (e2e v36). Fail-open: if the scheduler cannot start,
-        # the adapter is returned unwrapped and tools execute directly.
-        try:
-            from rob_box_voice.scheduler.tool_executor import (
-                SchedulerToolExecutor,
-            )
+        # chunk (e2e v36).
+        #
+        # C3 (#1995, operator-agent 07): fail-LOUD, not fail-open. If
+        # the scheduler cannot be wired at startup, raising here turns
+        # a silent "tools work but skip the queue" regression into an
+        # immediate, visible failure — the dialogue node won't start,
+        # the operator notices, and the missing wiring gets fixed
+        # instead of silently degrading voice quality. Previously the
+        # bare ``except Exception`` returned ``provider_adapter`` and
+        # logged a warning, which let a broken scheduler ride along
+        # unnoticed (see §8а.1 honest status: «живая часть падает
+        # молча»).
+        from rob_box_voice.scheduler.tool_executor import (
+            SchedulerToolExecutor,
+        )
 
-            scheduler_executor = SchedulerToolExecutor(
-                provider_adapter,
-                on_event=self._on_task_event,
-            )
-            self._scheduler_executor = scheduler_executor
-            self.get_logger().info(
-                "✅ W7b: tool calls routed through TaskScheduler "
-                "(voice/music/anim channels; stop_music deferred)."
-            )
-            return scheduler_executor
-        except Exception as exc:  # noqa: BLE001 — fail-open, never break voice
-            self.get_logger().warning(
-                f"⚠️ W7b SchedulerToolExecutor disabled ({exc!r}); "
-                "tools execute directly (pre-W7b path)."
-            )
-            return provider_adapter
+        scheduler_executor = SchedulerToolExecutor(
+            provider_adapter,
+            on_event=self._on_task_event,
+        )
+        self._scheduler_executor = scheduler_executor
+        self.get_logger().info(
+            "✅ W7b: tool calls routed through TaskScheduler "
+            "(voice/music/anim channels; stop_music deferred)."
+        )
+        return scheduler_executor
 
     def _on_task_event(self, event: str, payload: dict) -> None:
         """W7c: publish scheduler lifecycle events to /harness/task_events.

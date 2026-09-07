@@ -230,17 +230,29 @@ def test_stop_music_without_voice_fires_immediately() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_scheduler_init_failure_falls_back_to_direct_execution() -> None:
+def test_scheduler_init_failure_raises_runtime_error() -> None:
+    """C3 (#1995): fail-LOUD, not fail-open.
+
+    When :class:`TaskScheduler` cannot be created (sabotaged via
+    ``_scheduler_attempted`` in this test), ``execute`` MUST
+    raise :class:`RuntimeError` rather than silently bypass the
+    queue. The previous behaviour (catch init failure, run tool
+    direct) regressed the v36 fix and let ``stop_music`` outrun
+    ``speak_text`` again — see
+    ``docs/architecture/target-operator-agent-and-dialogue.md``
+    §8а.1 honest status.
+    """
     underlying = _FakeUnderlying()
 
     async def _run() -> None:
         executor = SchedulerToolExecutor(underlying, scheduler=None)
-        # Sabotage scheduler creation → _ensure_scheduler() returns None.
+        # Sabotage scheduler creation → _ensure_scheduler() raises.
         executor._scheduler_attempted = True  # noqa: SLF001 — test escape hatch
-        result = await executor.execute(_call("c1", "speak_text"))
-        # Fail-open: direct execution, real result, not "queued".
-        assert underlying.executed == [_call("c1", "speak_text")]
-        assert json.loads(result.content)["ok"] is True
+        with pytest.raises(RuntimeError, match="previous init failed"):
+            await executor.execute(_call("c1", "speak_text"))
+        # Bypass must NOT have happened — the underlying provider
+        # never saw the call.
+        assert underlying.executed == []
 
     asyncio.run(_run())
 
@@ -727,20 +739,25 @@ def test_task_delta_unknown_group_returns_honest_error() -> None:
     asyncio.run(_run())
 
 
-def test_task_delta_falls_back_to_underlying_when_scheduler_unavailable() -> None:
-    """Fail-open, same pattern as every other bypass path in this module:
-    a dead scheduler must not silence task_delta — it goes to mcp_server's
-    own capability-honest ``scheduler_unavailable`` failure instead."""
+def test_task_delta_raises_when_scheduler_unavailable() -> None:
+    """C3 (#1995): fail-LOUD on task_delta too.
+
+    The previous test documented the old fail-open contract
+    (delegate to underlying.mcp_server.TaskDeltaTool for an
+    honest ``scheduler_unavailable`` failure). After C3 the
+    executor must raise :class:`RuntimeError` from
+    ``_ensure_scheduler`` instead — mcp_server never sees the
+    tool call at all.
+    """
     underlying = _FakeUnderlying()
 
     async def _run() -> None:
         executor = SchedulerToolExecutor(underlying, scheduler=None)
         executor._scheduler_attempted = True  # noqa: SLF001 — test escape hatch
-        result = await executor.execute(_delta_call("g1", [{"kind": "drop", "seg_idx": 0}]))
-        assert underlying.executed == [_delta_call("g1", [{"kind": "drop", "seg_idx": 0}])]
-        # Delegated verbatim to the underlying provider (mcp_server's
-        # TaskDeltaTool), not fabricated here.
-        assert json.loads(result.content)["ok"] is True
+        with pytest.raises(RuntimeError, match="previous init failed"):
+            await executor.execute(_delta_call("g1", [{"kind": "drop", "seg_idx": 0}]))
+        # Bypass must NOT have happened.
+        assert underlying.executed == []
 
     asyncio.run(_run())
 
