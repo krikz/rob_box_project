@@ -19,26 +19,30 @@ import {
 
 beforeAll(() => {
   // jsdom: getContext не реализован по умолчанию. Заменяем на stub с
-  // минимумом методов, которые дёргает наш canvas-рендер.
-  const stubCtx = {
+  // минимумом методов, которые дёргает наш canvas-рендер. TS-сигнатура
+  // ``getContext`` — overload по contextId ("2d"/"bitmaprenderer"/"webgl");
+  // наш stub обслуживает только "2d", остальные возвращают null (как и
+  // делает браузер, если соответствующий контекст недоступен).
+  type AnyCtx2D = CanvasRenderingContext2D;
+  const stubCtx: AnyCtx2D = {
     fillStyle: "",
     font: "",
     textBaseline: "",
     fillRect: () => {},
     fillText: () => {},
     measureText: (text: string) => ({
-      width: text.length * 7 // грубая оценка, для тестов достаточно
+      width: text.length * 7, // грубая оценка, для тестов достаточно
     }),
     clearRect: () => {},
-    get fillStyle_(): string {
-      return "";
-    }
-  } as unknown as CanvasRenderingContext2D;
+  } as unknown as AnyCtx2D;
+  // Переписываем на узкий overload — только 2D-context, остальные null.
+  // Этого достаточно: наш код вызывает getContext только с "2d".
   HTMLCanvasElement.prototype.getContext = function (
-    _type: string
-  ): CanvasRenderingContext2D | null {
+    _contextId: "2d",
+    _options?: CanvasRenderingContext2DSettings
+  ): AnyCtx2D | null {
     return stubCtx;
-  };
+  } as typeof HTMLCanvasElement.prototype.getContext;
 });
 
 describe("tars1_text_panel", () => {

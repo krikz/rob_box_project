@@ -15,7 +15,8 @@ import {
 } from "../src/scene/tars2_metrics_panel";
 
 beforeAll(() => {
-  const stubCtx = {
+  type AnyCtx2D = CanvasRenderingContext2D;
+  const stubCtx: AnyCtx2D = {
     fillStyle: "",
     font: "",
     textBaseline: "",
@@ -23,15 +24,13 @@ beforeAll(() => {
     fillText: () => {},
     measureText: (text: string) => ({ width: text.length * 7 }),
     clearRect: () => {},
-    get fillStyle_(): string {
-      return "";
-    }
-  } as unknown as CanvasRenderingContext2D;
+  } as unknown as AnyCtx2D;
   HTMLCanvasElement.prototype.getContext = function (
-    _type: string
-  ): CanvasRenderingContext2D | null {
+    _contextId: "2d",
+    _options?: CanvasRenderingContext2DSettings
+  ): AnyCtx2D | null {
     return stubCtx;
-  };
+  } as typeof HTMLCanvasElement.prototype.getContext;
 });
 
 describe("tars2_metrics_panel", () => {
