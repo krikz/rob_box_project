@@ -631,6 +631,136 @@ test_P_retro_hermes_non_ci_only_labels_needs_e2e() {
 }
 
 # ===========================================================================
+# Q. (issue #2069) Голое #N ТОЛЬКО в теле PR, без closing-keyword и без
+#    номера в заголовке → issue не трогаем вообще: ни close, ни needs-e2e.
+#    Регрессия на реальный случай: PR #2047 в секции «Зависимости / blockers»
+#    писал «#1996 ... ОТКРЫТ», и ретро-путь закрыл #1996 как COMPLETED.
+# ===========================================================================
+test_Q_retro_body_only_mention_not_closed() {
+    new_test
+    local issue=1996 pr=2047 head='wt/t_201e2c64'
+    set_state ISSUE_LIST_JSON '[]'
+    # Заголовок ссылается на ДРУГУЮ карточку (#2003); #1996 — только в теле,
+    # и там прямым текстом сказано, что карточка ОТКРЫТА и блокирует.
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"design: pregenerate contract (ADR-0056, issue #2003)\",\"body\":\"## Зависимости / blockers\\n- **#${issue} ([operator-agent 07a]) ОТКРЫТ** — priority в tts_node.\\n\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-09-07T11:20:00Z\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    set_state "RUN_LIST_${head}_JSON" '[{"conclusion":"success"}]'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue}" || true)"
+    assert_eq "0" "$close_calls" "body-only mention does not close the issue (#2069)"
+
+    local add_needs_e2e
+    add_needs_e2e="$(printf '%s\n' "$journal" | grep -c "gh issue edit ${issue} --add-label needs-e2e" || true)"
+    assert_eq "0" "$add_needs_e2e" "body-only mention does not label the issue either (#2069)"
+
+    local state_now
+    state_now="$(grep -E "^ISSUE_${issue}_STATE_JSON=" "$GH_STATE" | sed "s/^ISSUE_${issue}_STATE_JSON=//")"
+    assert_contains '"OPEN"' "$state_now" "issue stays OPEN (#2069)"
+}
+
+# ===========================================================================
+# R. (issue #2069) WIP-PR не закрывает карточку, даже если номер стоит в
+#    заголовке. Регрессия на PR #2014 («wip(operator-agent verify #2004)»),
+#    чей собственный текст говорил «не проверено на железе», — а карточка
+#    #2004 закрылась как COMPLETED.
+# ===========================================================================
+test_R_retro_wip_pr_does_not_close() {
+    new_test
+    local issue=2004 pr=2014 head='z-{agent}/2004-operator-agent-verify'
+    set_state ISSUE_LIST_JSON '[]'
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"wip(operator-agent verify #${issue}): статический разбор гипотез\",\"body\":\"closes #${issue}\\n\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-09-07T07:10:00Z\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    set_state "RUN_LIST_${head}_JSON" '[{"conclusion":"success"}]'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue}" || true)"
+    assert_eq "0" "$close_calls" "wip-titled PR does not close the issue even with closes-keyword (#2069)"
+}
+
+# ===========================================================================
+# S. (issue #2069) CI-only PR (только docs/) не доказательство для
+#    ФУНКЦИОНАЛЬНОЙ карточки: кода он не меняет, а CI у одного .md зелёный
+#    всегда. Регрессия на #2003 (type:performance), закрытую ADR-PR.
+# ===========================================================================
+test_S_retro_docs_only_pr_not_evidence_for_functional() {
+    new_test
+    local issue=2003 pr=2047 head='wt/t_201e2c64'
+    set_state ISSUE_LIST_JSON '[]'
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"design: pregenerate contract (ADR-0056, issue #${issue})\",\"body\":\"Контракт, не реализация.\\n\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-09-07T11:20:00Z\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"type:performance"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    # e2e нет → fallback на CI-only.
+    set_state "RUN_LIST_${head}_JSON" '[]'
+    set_state "PR_${pr}_FILES_JSON" '{"files":[{"path":"docs/adr/0056-speculative-tts-pregeneration-contract.md"}]}'
+    set_state "PR_${pr}_ROLLUP_JSON" '{"statusCheckRollup":[{"conclusion":"SUCCESS"}]}'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue}" || true)"
+    assert_eq "0" "$close_calls" "docs-only PR is not PASS evidence for a functional card (#2069)"
+}
+
+# ===========================================================================
+# T. (issue #2069) Контроль: номер в ЗАГОЛОВКЕ + код в диффе + e2e PASS →
+#    закрытие по-прежнему работает. Фикс не должен убить сам ретро-путь.
+# ===========================================================================
+test_T_retro_title_ref_with_code_still_closes() {
+    new_test
+    local issue=2001 pr=2039 head='z-{agent}/2001-operator-admin'
+    set_state ISSUE_LIST_JSON '[]'
+    set_state PR_LIST_MERGED_JSON "[{\"number\":${pr},\"title\":\"[operator-agent 11] operator.admin (#${issue})\",\"body\":\"Реализация среза.\\n\",\"headRefName\":\"${head}\",\"mergedAt\":\"2026-09-07T09:00:00Z\"}]"
+    set_state "ISSUE_${issue}_LABELS_JSON" '{"labels":[{"name":"type:functional"}]}'
+    set_state "ISSUE_${issue}_STATE_JSON" '{"state":"OPEN"}'
+    set_state "ISSUE_${issue}_COMMENTS_JSON" '{"comments":[]}'
+    set_state "ISSUE_${issue}_COMMENTS_SINCE_JSON" '[]'
+    set_state "ISSUE_${issue}_TIMELINE_JSON" '[]'
+    set_state "RUN_LIST_${head}_JSON" '[{"conclusion":"success"}]'
+    set_state PR_LIST_ALL_OPEN_JSON '[]'
+    set_state PR_FOLLOWUP_JSON '[]'
+    set_state RATE_LIMIT_JSON '{"resources":{"core":{"remaining":5000}}}'
+
+    run_merge_gate
+    local journal
+    journal="$(cat "$GH_JOURNAL")"
+
+    local close_calls
+    close_calls="$(printf '%s\n' "$journal" | grep -c "gh issue close ${issue} --reason completed" || true)"
+    assert_eq "1" "$close_calls" "title reference + e2e PASS still closes (retro-path not broken by #2069 fix)"
+}
+
+# ===========================================================================
 # Run
 # ===========================================================================
 run_test "A. retro-path: e2e PASS evidence → close unlabeled issue" test_A_retro_e2e_pass_closes
@@ -649,5 +779,9 @@ run_test "M. retro-path: hermes process-fix + .hermes/plans/ CI-only green → c
 run_test "N. retro-path: hermes bug + scripts/agent_flow/ CI-only green → close" test_N_retro_hermes_process_fix_scripts_closes
 run_test "O. retro-path: hermes + needs-e2e still skipped (workflow-label guard)" test_O_retro_hermes_with_needs_e2e_still_skips
 run_test "P. retro-path: hermes non-CI-only → needs-e2e (e2e-process takes over)" test_P_retro_hermes_non_ci_only_labels_needs_e2e
+run_test "Q. retro-path: body-only #N mention → no close, no label (#2069)" test_Q_retro_body_only_mention_not_closed
+run_test "R. retro-path: wip-titled PR never closes (#2069)" test_R_retro_wip_pr_does_not_close
+run_test "S. retro-path: docs-only PR is not evidence for functional card (#2069)" test_S_retro_docs_only_pr_not_evidence_for_functional
+run_test "T. retro-path: title ref + e2e PASS still closes (no regression, #2069)" test_T_retro_title_ref_with_code_still_closes
 
 summary

@@ -214,6 +214,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y shellcheck
 
+      # ADR-0021-паттерн / issue #2069: сторож ретро-пути merge-gate. Hard gate
+      # (без continue-on-error) — этот экстрактор решает, закрывать ли карточку
+      # как COMPLETED, и однажды уже закрыл три карточки с отсутствующим кодом.
+      # Тесты scripts/agent_flow/tests/ целиком в CI не поднять: merge-gate
+      # форсит HOME=/home/builder и требует моков gh/hermes. Этот тест
+      # изолирован от такого окружения и потому запускается здесь.
+      - name: Retro-path intent extractor (issue #2069)
+        run: |
+          bash scripts/agent_flow/tests/test_retro_intent_extractor.sh
+
       - name: Lint shell scripts
         run: |
           echo "::group::ShellCheck"
