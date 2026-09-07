@@ -634,7 +634,17 @@ class TestFormalizeWithLlm:
                         # Нет prompt_file → prompt_text пустой.
                         "void": {"name": "Пустой"},
                     },
-                    "languages": ["ru"],
+                    # dict-формат как в prod src/rob_box_voice/config/voice_presets.yaml —
+                    # единый контракт для всех фикстур в этом файле, чтобы
+                    # dialogue_node._language_meta() / _language_label() не свалились
+                    # в fallback «ru» / «en» вместо «русский» / «английский».
+                    "languages": {
+                        "ru": {
+                            "name": "Русский",
+                            "label": "русский",
+                            "prompt_section": "ru",
+                        },
+                    },
                     "default_preset": "void",
                     "default_language": "ru",
                 },
