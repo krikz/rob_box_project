@@ -475,27 +475,46 @@ def _parse_pronunciation_dict(value: object) -> dict | None:
 
 
 # Issue #1996 / operator-agent step 7a — allowed values for the top-level
-# ``priority`` field of ``/voice/tts/request``. Only "operator" makes the
-# FIFO-gate insert the request right behind the currently playing chunk
-# (see ``TTSNode._assign_priority_play_seq``); every other value behaves
-# exactly like the legacy FIFO path. Kept as a 2-value whitelist per the
-# issue's DoD and its test suite — NOT the 3-value
-# ``{"normal", "operator", "personality"}`` set that ADR-0056 validates
-# for the *nested* ``pregenerate.priority`` hint (a different field, a
-# different payload location, describing the *next* chunk rather than
-# the current one). See the tts_node priority-queue PR description for
-# the open question this leaves.
-_TTS_PRIORITY_VALUES = frozenset({"operator", "normal"})
+# ``priority`` field of ``/voice/tts/request``.
+#
+# Набор ВЫРОВНЕН с ADR-0056: те же три значения, что валидирует
+# ``scheduler/pregen/pre_gen.py`` для вложенного ``pregenerate.priority``.
+# Раньше здесь был двухзначный набор, и top-level ``priority="personality"``
+# молча превращался в ``"normal"`` — молчаливая потеря значения на границе
+# двух контрактов. Решение владельца: держать полный набор.
+#
+# Прецеденция в FIFO-gate (см. ``TTSNode._assign_priority_play_seq``):
+#
+#   operator     — врезка: запрос встаёт сразу за играющим чанком.
+#                  Целевая архитектура §8а.3: «ТАРС не договаривается с
+#                  планировщиком личности, он просто говорит роботом».
+#   personality  — речь личности, хвост очереди.
+#   normal       — немаркированный / legacy-трафик, хвост очереди.
+#
+# ``personality`` и ``normal`` сегодня по порядку НЕ различаются — обоих
+# кладём в хвост. Значение сохраняется отдельно намеренно: оно доезжает до
+# планировщика предгенерации и метрик, которым важно, чья это реплика.
+# Если появится своя прецеденция у личности — менять здесь, тесты на
+# порядок уже есть.
+_TTS_PRIORITY_VALUES = frozenset({"operator", "personality", "normal"})
+
+#: Значения, дающие врезку. Отдельная константа, чтобы «кто прыгает
+#: очередь» читалось в одном месте, а не выводилось из сравнения строк.
+_TTS_PRIORITY_PREEMPTS = frozenset({"operator"})
 
 
 def _normalize_tts_priority(raw: object) -> str:
     """Whitelist-normalize the ``priority`` field of ``/voice/tts/request``.
 
-    Backward-compat contract (issue #1996 DoD): the field is optional,
-    and anything other than the literal string ``"operator"`` — missing,
-    ``None``, wrong case (``"OPERATOR"``), or garbage — is treated as
-    ``"normal"``. A malformed payload must never raise or drop the
-    request; it just loses the priority bump.
+    Backward-compat contract (issue #1996 DoD): the field is optional, and
+    anything outside the whitelist — missing, ``None``, wrong case
+    (``"OPERATOR"``), or garbage — is treated as ``"normal"``. A malformed
+    payload must never raise or drop the request; it just loses the
+    priority bump.
+
+    Whitelist — ``{"operator", "personality", "normal"}``, тот же, что у
+    вложенного ``pregenerate.priority`` в ADR-0056. Значение возвращается
+    как есть, без схлопывания ``personality`` в ``normal``.
     """
     if raw in _TTS_PRIORITY_VALUES:
         return raw  # type: ignore[return-value]
@@ -2415,7 +2434,7 @@ class TTSNode(Node):
             return
         self._synthesis_in_flight += 1
         priority = _normalize_tts_priority(kwargs.get("priority"))
-        if priority == "operator":
+        if priority in _TTS_PRIORITY_PREEMPTS:
             # ADR-0056 §3.5 — REPLACE-priority: an operator-priority
             # request re-orders the FIFO-gate, so any in-flight
             # speculative pre-gen (which assumed the *old* ordering) is
@@ -2494,7 +2513,7 @@ class TTSNode(Node):
         can read the live (possibly re-numbered) seq instead of a stale
         local copy.
         """
-        if priority == "operator" and speech_id:
+        if priority in _TTS_PRIORITY_PREEMPTS and speech_id:
             target = (
                 self._play_active_seq + 1
                 if self._play_active_seq is not None
