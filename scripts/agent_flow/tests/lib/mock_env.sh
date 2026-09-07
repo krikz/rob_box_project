@@ -89,6 +89,12 @@ assert_not_contains() {  # $1=needle $2=haystack $3=msg
     return 0
 }
 
+# pass — explicit unconditional pass with note (e.g. для SKIPPED сценариев).
+pass() {  # $1=msg
+    printf '  %sskipped:%s %s\n' "$YEL" "$END" "$1" >&2
+    return 0
+}
+
 # --- Install mocks ----------------------------------------------------------
 # Creates $TEST_TMP/bin with stubs for `gh` and `hermes` that read state
 # from $TEST_TMP/gh_state and append every invocation to $TEST_TMP/journal.

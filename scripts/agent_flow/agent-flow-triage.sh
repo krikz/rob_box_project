@@ -316,25 +316,32 @@ extract_file_paths_from_body() {  # $1=body
     [ -n "$body" ] || return 0
     # Ловим .py/.yaml/.yml/.json/.md/.cpp/.c/.h/.rs/.go/.sh/.xml/.cfg/.ini/.toml
     # и backticked `path` тоже (issue bodies часто в backticks).
+    # Note: GNU grep -oE возвращает токен ВЕСЬ включая `:line-lo:line-hi` в одном
+    # матче (regex non-overlapping). Чтобы корректно разобрать диапазон
+    # `path:170-180` на (path, lo=170, hi=180), сплитим по ':' и '-' отдельно.
     printf '%s' "$body" \
         | grep -oE '`?[A-Za-z0-9_./-]+\.(py|yaml|yml|json|md|cpp|c|h|rs|go|sh|xml|cfg|ini|toml)(:[0-9]+(-[0-9]+)?)?`?' \
         | tr -d '`' \
-        | awk -F: '
-            NF == 3 {
-                # path:line-lo:line-hi
-                split($2, lr, "-")
-                lo = lr[1]; hi = (lr[2] != "") ? lr[2] : lr[1]
-                printf "%s\t%s\t%s\n", $1, lo, hi
-                next
-            }
-            NF == 2 {
-                # path:line
-                printf "%s\t%s\t%s\n", $1, $2, $2
-                next
-            }
+        | awk '
             {
-                # path only
-                printf "%s\t\t\n", $1
+                # POSIX-portable split: сначала по ":", потом по "-".
+                # (gawk-only match(str, re, arr) не работает на mawk/BusyBox awk.)
+                n = split($0, parts, ":")
+                path = parts[1]
+                if (n == 1) {
+                    # path only (без :line)
+                    printf "%s\t\t\n", path
+                } else {
+                    rest = parts[2]
+                    if (index(rest, "-") > 0) {
+                        # line-lo-line-hi
+                        split(rest, lr, "-")
+                        printf "%s\t%s\t%s\n", path, lr[1], lr[2]
+                    } else {
+                        # single line
+                        printf "%s\t%s\t%s\n", path, rest, rest
+                    }
+                }
             }
         ' \
         | sort -u \
