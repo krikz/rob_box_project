@@ -749,3 +749,91 @@ class TestAgentCommandSources(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# issue #2116: ответ агента озвучивается в шлем, а не только в текст
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _published_avatar_tts(node: AvatarSupervisor) -> list[dict]:
+    """Достать всё опубликованное в /avatar/tts/request (parsed JSON)."""
+    return [json.loads(m.data) for m in node._avatar_tts_request_pub.published]
+
+
+class TestAgentReplyIsSpoken(unittest.TestCase):
+    """Регресс #2116: ТАРС думал и молчал.
+
+    ``_publish_avatar_tts`` был написан по ADR-0055 («все supervisor-ответы
+    строго в /avatar/tts/request»), покрыт целым файлом тестов — и не имел
+    НИ ОДНОГО вызова в проде. Замер на роботе 2026-09-08: агент вернул
+    ``content='ТАРС, агент оператора.'``, а ``/avatar/tts/request`` остался
+    пуст, ``/avatar/tts/audio`` отдал 0 байт. Ответ упирался в текстовый
+    ``/avatar/command_result`` и умирал там.
+    """
+
+    def setUp(self) -> None:
+        self.node = AvatarSupervisor()
+        self.node._agent_enabled = True
+        _stub_agent_core(self.node)
+
+    def tearDown(self) -> None:
+        self.node.destroy_node()
+
+    def _run(self, source: str, summary: str = "ТАРС, агент оператора.") -> None:
+        def fake_run(core, payload):
+            return {"ok": True, "summary": summary, "tool_calls": []}
+
+        msg = _make_string_msg(
+            json.dumps(
+                {
+                    "source": source,
+                    "client_id": "quest-1",
+                    "text": "ты здесь?",
+                    "ts_ms": 100,
+                }
+            )
+        )
+        original = self.node._run_agent_sync
+        self.node._run_agent_sync = fake_run
+        try:
+            self.node._on_avatar_command(msg)
+        finally:
+            self.node._run_agent_sync = original
+
+    def test_quest_reply_goes_to_headset_tts(self) -> None:
+        """Голосовой вход → ответ уходит в /avatar/tts/request, sink=headset."""
+        self._run("quest")
+        spoken = _published_avatar_tts(self.node)
+        self.assertEqual(len(spoken), 1, "ответ агента не был озвучен")
+        self.assertEqual(spoken[0]["sink"], "headset")
+        self.assertIn("ТАРС, агент оператора.", spoken[0]["ssml"])
+
+    def test_text_result_is_still_published(self) -> None:
+        """Озвучка НЕ заменяет /avatar/command_result — текст нужен UI шлема."""
+        self._run("quest")
+        results = _published_results(self.node)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["summary"], "ТАРС, агент оператора.")
+
+    def test_telegram_reply_is_not_spoken(self) -> None:
+        """Текстовый вход → речи нет: оператор ждёт текст, а не звук в ушах."""
+        self._run("telegram")
+        self.assertEqual(_published_avatar_tts(self.node), [])
+
+    def test_speak_agent_replies_false_disables_speech(self) -> None:
+        """Параметр speak_agent_replies=false выключает озвучку (стенд)."""
+        original = self.node._param_bool
+        self.node._param_bool = lambda name, default=False: (
+            False if name == "speak_agent_replies" else original(name, default)
+        )
+        try:
+            self._run("quest")
+        finally:
+            self.node._param_bool = original
+        self.assertEqual(_published_avatar_tts(self.node), [])
+
+    def test_empty_summary_is_not_spoken(self) -> None:
+        """Пустой summary не уходит в синтез (иначе провайдеры мрут, #2096)."""
+        self._run("quest", summary="")
+        self.assertEqual(_published_avatar_tts(self.node), [])

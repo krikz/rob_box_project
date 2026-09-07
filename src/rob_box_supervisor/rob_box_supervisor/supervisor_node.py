@@ -501,6 +501,9 @@ class AvatarSupervisor(Node):
         # ADR-0043 §3.2: runtime yaml (когда он появится для supervisor)
         # должен быть синхронизирован с этим значением в том же коммите.
         self.declare_parameter("llm_providers", "minimax,deepseek")
+        # issue #2116 — озвучивать ли ответ агента в шлем. Выключается
+        # на стенде, где синтез не нужен (тесты тракта по топикам).
+        self.declare_parameter("speak_agent_replies", True)
         self.declare_parameter("temperature", 0.0)
         self.declare_parameter("max_tokens", 0)
         self.declare_parameter("llm_streaming", False)
@@ -2501,6 +2504,23 @@ class AvatarSupervisor(Node):
                 "latency_ms": latency_ms,
             },
         )
+        # issue #2116 — ТАРС обязан ОТВЕЧАТЬ ГОЛОСОМ В ШЛЕМ, а не только
+        # класть текст в /avatar/command_result. Это решение владельца №12
+        # хендоффа и ADR-0055: «все supervisor-ответы строго в
+        # /avatar/tts/request с sink=headset».
+        #
+        # ``_publish_avatar_tts`` существовал, был покрыт целым файлом тестов
+        # (test_supervisor_avatar_tts.py) — и НЕ ИМЕЛ НИ ОДНОГО вызова в
+        # проде. Замер на роботе 2026-09-08: агент отвечал
+        # `content='ТАРС, агент оператора.'`, а /avatar/tts/request оставался
+        # пуст и /avatar/tts/audio отдавал 0 байт. Ответ упирался в текстовый
+        # топик и умирал там.
+        #
+        # Озвучиваем только голосовой вход: на текстовую команду из Telegram
+        # оператор ждёт текст, а не речь в наушниках.
+        if self._param_bool("speak_agent_replies", True) and source == "quest":
+            self._publish_avatar_tts(str(result.get("summary", "")))
+
         # Журнал ТАРС (§5.4): что сделал, когда, чем кончилось.
         self._record_operator_journal(
             source, str(result.get("summary", "")), tool_names
