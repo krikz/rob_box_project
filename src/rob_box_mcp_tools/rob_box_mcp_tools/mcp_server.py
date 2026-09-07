@@ -276,13 +276,26 @@ class MCPServer(Node):
         try:
             self.slice_authority: ToolSliceAuthority = load_default_authority()
         except Exception as exc:  # ConfigError / yaml YAMLError / etc.
+            # ADR-0018 (честный отказ): поведение здесь — **fail-closed**.
+            # Пустая политика (senders={}) означает, что is_allowed() откажет
+            # ЛЮБОМУ sender'у на ЛЮБОЙ инструмент — голосовой стек
+            # останется без инструментов целиком. Это сознательный выбор
+            # (срез — граница безопасности, открывать её при сломанном конфиге
+            # нельзя), но диагностически это тихая смерть: снаружи выглядит
+            # как «агент перестал уметь всё», поэтому лог обязан называть
+            # и причину, и самую вероятную поломку (упаковка).
             self.get_logger().error(
                 f"❌ Не удалось загрузить slice_policy.yaml: {exc}. "
-                "mcp_server стартует БЕЗ slice-гарда — все sender'ы смогут "
-                "звать любые инструменты. Это fail-open, оператор должен "
-                "починить YAML перед деплоем."
+                "mcp_server стартует с ПУСТОЙ политикой — это FAIL-CLOSED: "
+                "НИ ОДИН sender не сможет вызвать НИ ОДИН инструмент, "
+                "весь tool-слой агента мёртв. Самая частая причина — сломанная "
+                "упаковка: rob_box_mcp_tools/setup.py обязан объявлять "
+                "package_data={'rob_box_mcp_tools.data': ['*.yaml']}, иначе YAML не "
+                "попадает в install-дерево (прод-образ собирается без "
+                "--symlink-install). Проверка на роботе: python3 -c "
+                "'from rob_box_mcp_tools.slice_authority import load_default_authority; "
+                "load_default_authority()'"
             )
-            # fail-open с пустой политикой = никто ничего не может (fail-closed).
             self.slice_authority = ToolSliceAuthority.from_mapping(
                 {"senders": {}, "slices": {"_noop": []}}
             )
