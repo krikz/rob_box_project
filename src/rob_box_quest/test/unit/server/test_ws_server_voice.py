@@ -34,6 +34,9 @@ class RecordingBridge(NoOpBridge):
         self.robot_start_calls = 0
         self.robot_stop_calls = 0
         self.voice_modes: list[str] = []
+        # ADR-0054 step 5a: wake stream (stream_id=2) routing.
+        self.wake_audio_payloads: list[bytes] = []
+        self.wake_stream_state_changes: list[bool] = []  # True=active, False=paused
         # AV-27 / issue #1919 — TTS picker state.
         self.voices_snapshots: list[dict[str, Any]] = []
         self.set_voice_calls: list[tuple[str, str | None]] = []
@@ -55,6 +58,16 @@ class RecordingBridge(NoOpBridge):
 
     def publish_voice_audio(self, payload: bytes) -> None:
         self.voice_audio_payloads.append(payload)
+
+    def publish_quest_wake_audio(self, payload: bytes) -> None:
+        # ADR-0054 step 5a: stream_id=2 → отдельный канал (потом шаг 5
+        # подключит /avatar/quest_wake_audio и стт_node). Сейчас — только
+        # записываем для теста маршрутизации.
+        self.wake_audio_payloads.append(payload)
+
+    def set_wake_stream_state(self, active: bool) -> None:
+        # Меняется при JSON_CMD{cmd: voice_listen_start/stop}.
+        self.wake_stream_state_changes.append(active)
 
     def publish_voice_stop(self) -> None:
         self.voice_stop_calls += 1
@@ -958,5 +971,137 @@ async def test_voice_floor_baseline_single_client_unchanged(client, fixed_pin):
         ev_stop = await _next_voice_state_event(ws)
         assert ev_stop is not None and ev_stop["state"] == "idle"
         assert bridge.voice_stop_calls == 1
+    finally:
+        await ws.close()
+
+
+# ------------------------------------------------------------------------
+# ADR-0054 step 5a: wake-channel (stream_id=2) routing + voice_listen_*
+# ------------------------------------------------------------------------
+
+
+async def test_voice_audio_stream_id_2_routes_to_wake(client, fixed_pin):
+    """VOICE_AUDIO с stream_id=2 → publish_quest_wake_audio (НЕ в radio)."""
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        pcm = b"\x00\x00\xff\x7f\x00\x80"
+        await ws.send_bytes(encode_frame(FrameType.VOICE_AUDIO, 2, pcm))
+        await asyncio.sleep(0.05)
+        assert bridge.wake_audio_payloads == [pcm]
+        assert bridge.voice_audio_payloads == []
+    finally:
+        await ws.close()
+
+
+async def test_voice_audio_stream_id_0_back_compat_to_radio(client, fixed_pin):
+    """VOICE_AUDIO с stream_id=0 (исторические клиенты) → radio-канал.
+
+    Back-compat: до ADR-0054 клиент слал sid=0, и весь VOICE_AUDIO шёл в
+    bridge.publish_voice_audio. Сохраняем это поведение.
+    """
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        pcm = b"\x00\x00\xff\x7f"
+        await ws.send_bytes(encode_frame(FrameType.VOICE_AUDIO, 0, pcm))
+        await asyncio.sleep(0.05)
+        assert bridge.voice_audio_payloads == [pcm]
+        assert bridge.wake_audio_payloads == []
+    finally:
+        await ws.close()
+
+
+async def test_voice_audio_stream_id_1_routes_to_radio(client, fixed_pin):
+    """VOICE_AUDIO с stream_id=1 (PTT после ADR-0054) → radio-канал."""
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        pcm = b"\x00\x00\xff\x7f"
+        await ws.send_bytes(encode_frame(FrameType.VOICE_AUDIO, 1, pcm))
+        await asyncio.sleep(0.05)
+        assert bridge.voice_audio_payloads == [pcm]
+        assert bridge.wake_audio_payloads == []
+    finally:
+        await ws.close()
+
+
+async def test_voice_listen_start_toggles_wake_stream_state(client, fixed_pin):
+    """voice_listen_start → bridge.set_wake_stream_state(True) + ack."""
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(ws, {"cmd": "voice_listen_start", "ts_ms": 0})
+        body = await _wait_for_json_event(
+            ws, lambda b: b.get("type") == "voice_listen_ack", timeout=1.0
+        )
+        assert body is not None
+        assert body["active"] is True
+        assert isinstance(body["ts_ms"], int) and body["ts_ms"] > 0
+        assert bridge.wake_stream_state_changes == [True]
+    finally:
+        await ws.close()
+
+
+async def test_voice_listen_stop_toggles_wake_stream_state(client, fixed_pin):
+    """voice_listen_stop → bridge.set_wake_stream_state(False) + ack."""
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(ws, {"cmd": "voice_listen_stop", "ts_ms": 0})
+        body = await _wait_for_json_event(
+            ws, lambda b: b.get("type") == "voice_listen_ack", timeout=1.0
+        )
+        assert body is not None
+        assert body["active"] is False
+        assert bridge.wake_stream_state_changes == [False]
+    finally:
+        await ws.close()
+
+
+async def test_voice_listen_toggle_idempotent_in_bridge(client, fixed_pin):
+    """Повторный voice_listen_start при уже активном — record всё равно.
+
+    Серверная сторона идемпотентна (set_wake_stream_state короткозамыкает
+    на совпадении), но RecordingBridge записывает все вызовы — это
+    позволяет тесту проверить, что сервер действительно вызывает bridge
+    при каждом cmd. Идемпотентность проверяется в QuestBridge отдельно.
+    """
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        await _send_json_cmd(ws, {"cmd": "voice_listen_start", "ts_ms": 0})
+        await _wait_for_json_event(
+            ws, lambda b: b.get("type") == "voice_listen_ack", timeout=1.0
+        )
+        await _send_json_cmd(ws, {"cmd": "voice_listen_start", "ts_ms": 0})
+        await _wait_for_json_event(
+            ws, lambda b: b.get("type") == "voice_listen_ack", timeout=1.0
+        )
+        # Сервер вызвал bridge дважды — idempotency реализуется внутри
+        # QuestBridge (production). RecordingBridge честно пишет всё.
+        assert bridge.wake_stream_state_changes == [True, True]
+    finally:
+        await ws.close()
+
+
+async def test_voice_listen_does_not_affect_voice_floor(client, fixed_pin):
+    """voice_listen_* — wake-канал, НЕ должен трогать voice-floor (PTT).
+
+    Приём: wake-stream живёт независимо от PTT-floor. Это разделение
+    критично (ADR-0054 §2.3): грип (PTT) и always-on mic (wake) — разные
+    потоки с разными state-машинами.
+    """
+    http_client, _server, bridge = client
+    ws = await _open_and_hello(http_client, fixed_pin)
+    try:
+        # wake включён.
+        await _send_json_cmd(ws, {"cmd": "voice_listen_start", "ts_ms": 0})
+        await _wait_for_json_event(
+            ws, lambda b: b.get("type") == "voice_listen_ack", timeout=1.0
+        )
+        # PTT не активен — barge_in не вызывался.
+        assert bridge.barge_in_calls == 0
+        assert bridge.wake_stream_state_changes == [True]
     finally:
         await ws.close()
