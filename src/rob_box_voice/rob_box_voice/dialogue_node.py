@@ -2309,17 +2309,37 @@ class DialogueNode(Node):
                 return meta
         return {}
 
+    # Built-in fallback для ``_language_label``: коды языков, которые мы
+    # поддерживаем «из коробки», даже если yaml их не описал. Совпадает с
+    # prod-словарём (config/voice_presets.yaml). Дубликат намеренный —
+    # иначе старый list-формат yaml (``languages: [ru, en]``) подмешал
+    # бы LLM директиву «на языке «ru»» вместо человекочитаемой «на
+    # языке «русский»». Словарь остаётся SSoT — см. yaml prod-файла.
+    _BUILTIN_LANGUAGE_LABELS: dict[str, str] = {
+        "ru": "русский",
+        "en": "английский",
+        "fr": "французский",
+        "de": "немецкий",
+        "zh": "китайский",
+        "hi": "хинди",
+    }
+
     def _language_label(self, language: str) -> str:
         """Как назвать язык в директиве для LLM («на языке «французский»»).
 
-        Берём из yaml; для неизвестного языка возвращаем сам код — это
-        честнее, чем молча подставить «русский», как делал старый хардкод
-        (он превращал любой третий язык в русский вывод).
+        Приоритет: yaml (``languages.<код>.label``) → built-in таблица →
+        сам код. Возврат самого кода для неизвестного языка честнее, чем
+        молча подставить «русский», как делал старый хардкод (он превращал
+        любой третий язык в русский вывод).
         """
         label = self._language_meta(language).get("label")
         if isinstance(label, str) and label.strip():
             return label.strip()
-        return str(language).lower() or "русский"
+        normalized = str(language).lower()
+        builtin = self._BUILTIN_LANGUAGE_LABELS.get(normalized)
+        if builtin:
+            return builtin
+        return normalized or "русский"
 
     def _language_prompt_section(self, language: str) -> str:
         """Какую секцию двуязычного prompt-файла отдать модели: "ru" | "en".
