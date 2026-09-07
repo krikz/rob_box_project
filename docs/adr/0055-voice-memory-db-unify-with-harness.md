@@ -113,11 +113,12 @@
 Модуль: `src/rob_box_harness/rob_box_harness/memory/voice_memory_adapter.py`.
 
 ```python
-"""Adapter: rob_box_voice.core.voice_memory.VoiceMemory API → MemoryStore.
+"""Adapter: rob_box_voice.core.voice_memory.VoiceMemory API → SQLiteVoiceMemory.
 
 Sync facade. Persists facts via SQLiteVoiceMemory (harness). ``save_turn``
 is a deprecated stub (Shifu directive 2026-09-02 forbids persisting
-turns). ADR-0055 Phase 1.
+turns). Search/get_context/format_facts_for_prompt go through
+``search_facts`` (facts only, no turns). ADR-0055 Phase 1.
 """
 from rob_box_harness.memory import Fact
 from rob_box_harness.memory.sqlite_voice import SQLiteVoiceMemory
@@ -135,7 +136,7 @@ class VoiceMemoryAdapter:
     def save_turn(self, role, content, *, speaker_id=None,
                   session_id=None, timestamp=None) -> int:
         """DEPRECATED no-op + WARN log. Returns -1."""
-        log.warning("save_turn is no-op (ADR-0055)")
+        _logger.warning("save_turn is no-op (ADR-0055)")
         return -1
 
     def save_fact(self, fact, *, category="general",
@@ -143,7 +144,9 @@ class VoiceMemoryAdapter:
         """Persist into ``facts`` (SQLiteVoiceMemory) under mcp:legacy."""
         ...
 
-    def search(self, query, limit=5) -> list[dict]: ...
+    def search(self, query, limit=5, speaker_id=None) -> list[dict]: ...
+    def get_context(self, limit=10, query=None, speaker_id=None) -> dict: ...
+    def format_facts_for_prompt(self, speaker_id=None) -> str: ...
     def get_stats(self) -> dict: ...
     def teardown(self) -> None: ...
 ```
@@ -290,7 +293,7 @@ Usage:
 
 ### 6.1 Контрактные (до merge)
 
-- [ ] `src/rob_box_harness/rob_box_harness/memory/voice_memory_adapter.py` создан, экспортирует `VoiceMemoryAdapter` с API: `save_turn / save_fact / search / get_stats / teardown`. `save_turn` — DEPRECATED no-op (WARN лог). ~120 LOC.
+- [ ] `src/rob_box_harness/rob_box_harness/memory/voice_memory_adapter.py` создан, экспортирует `VoiceMemoryAdapter` с API 1:1 к `VoiceMemory`: `save_turn / save_fact / search / get_context / format_facts_for_prompt / get_stats / teardown`. `save_turn` — DEPRECATED no-op (WARN лог). ~280 LOC.
 - [ ] `src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py:113,957,1012` использует `VoiceMemoryAdapter(db_path="/data/harness_voice.db")` вместо `VoiceMemory`.
 - [ ] `src/rob_box_mcp_tools/rob_box_mcp_tools/waypoint_store.py:66` использует ту же БД (через адаптер или прямой `SQLiteVoiceMemory` — TBD по согласованию с `waypoint_store` maintainer).
 - [ ] `migrations/010_voice_memory_unify.sql` создан с маркерной записью.
