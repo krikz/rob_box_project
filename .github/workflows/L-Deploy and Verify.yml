@@ -565,35 +565,125 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "🔍 Checking Vision Pi container status..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          # Ретро fail-open (run 34153246013, 2026-09-07):
+          # старая проверка сравнивала `docker compose ps --format json`
+          # .State В ОДНОЙ точке времени сразу после "Wait for Container
+          # Initialization". Контейнер под restart-policy (rob-box-quest:
+          # restart: unless-stopped) в активном crash-loop периодически
+          # МЕЖДУ падениями легитимно отдаёт State=="running" на доли
+          # секунды, пока новый процесс не успел упасть повторно —
+          # единичный снимок это ловит как "здоров". Эмпирический repro
+          # (busybox crash-loop с ~1s "работой" перед exit 1, локально):
+          # 9 из 20 снятых раз в 400ms единичный снимок докладывал
+          # "running", хотя контейнер непрерывно падал. Тем самым run
+          # 34153246013 отрапортовал success с rob-box-quest в
+          # бесконечном "Restarting (1)".
+          #
+          # Фикс: два замера через `docker inspect` (не человекочитаемый
+          # `docker compose ps`/`docker ps` Status-текст — он локализуем и
+          # меняется между версиями docker, см. .State.Status/.State.Health
+          # напрямую) с интервалом CONFIRM_INTERVAL секунд:
+          #  - status exited/dead                          → провал сразу
+          #  - status restarting, подтверждён ОБОИМИ замерами → провал
+          #  - Health.Status == unhealthy (docker сам применил свои
+          #    retries из healthcheck) в любом замере            → провал
+          #  - RestartCount вырос между замерами → контейнер падал ПРЯМО
+          #    ВО ВРЕМЯ проверки, даже если оба снимка попали на
+          #    "running" (та самая гонка выше)                   → провал
+          # CONFIRM_INTERVAL=15 не новая константа: это уже принятое в
+          # этом workflow значение SSH keepalive (ServerAliveInterval=5 ×
+          # ServerAliveCountMax=3, см. "Setup SSH and Environment") и
+          # совпадает с interval: 15s healthcheck самого quest-сервиса
+          # (docker/vision/docker-compose.yaml).
+          CONFIRM_INTERVAL=15
 
-          STATUS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
-            'cd ~/rob_box_project/docker/vision && docker compose ps --format json')
+          sample_containers() {
+            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
+              'cd ~/rob_box_project/docker/vision && for cid in $(docker compose ps -aq); do docker inspect --format "{{json .}}" "$cid"; done' \
+            | jq -c '{name: (.Name | ltrimstr("/")), status: .State.Status, restarting: .State.Restarting, health: (.State.Health.Status // "none"), restarts: .RestartCount, exitcode: .State.ExitCode}'
+          }
 
-          echo "$STATUS" | jq -r '"  \(.Name): \(.State)"'
+          echo "📸 Sample #1 (t=0s)..."
+          SAMPLE1=$(sample_containers)
+          echo "$SAMPLE1" | jq -r '"  \(.name): status=\(.status) restarting=\(.restarting) health=\(.health) restarts=\(.restarts)"'
 
-          # Проверяем наличие падших контейнеров
-          FAILED_COUNT=$(echo "$STATUS" | jq -r 'select(.State != "running") | .Name' | wc -l)
-          echo "failed_count=$FAILED_COUNT" >> $GITHUB_OUTPUT
+          echo ""
+          echo "⏳ Waiting ${CONFIRM_INTERVAL}s before confirming (avoid a mid-crash-loop 'running' snapshot)..."
+          sleep "$CONFIRM_INTERVAL"
 
-          if [ "$FAILED_COUNT" -gt 0 ]; then
-            echo "❌ $FAILED_COUNT container(s) not running on Vision Pi"
-            echo "vision_healthy=false" >> $GITHUB_OUTPUT
-            echo "$STATUS" | jq -c 'select(.State != "running") | {container: .Name, state: .State}' | while read -r item; do
-              CONTAINER_NAME=$(echo "$item" | jq -r '.container')
-              CONTAINER_STATE=$(echo "$item" | jq -r '.state')
+          echo "📸 Sample #2 (t=${CONFIRM_INTERVAL}s)..."
+          SAMPLE2=$(sample_containers)
+          echo "$SAMPLE2" | jq -r '"  \(.name): status=\(.status) restarting=\(.restarting) health=\(.health) restarts=\(.restarts)"'
+          echo ""
+
+          FAILED_COUNT=0
+          : > vision_status_summary.txt
+
+          NAMES=$(echo "$SAMPLE2" | jq -r '.name' | sort -u)
+          for name in $NAMES; do
+            S1=$(echo "$SAMPLE1" | jq -c --arg n "$name" 'select(.name==$n)')
+            S2=$(echo "$SAMPLE2" | jq -c --arg n "$name" 'select(.name==$n)')
+            [ -z "$S2" ] && continue
+            [ -z "$S1" ] && S1='{}'
+
+            ST1=$(echo "$S1" | jq -r '.status // "unknown"')
+            ST2=$(echo "$S2" | jq -r '.status')
+            HE1=$(echo "$S1" | jq -r '.health // "none"')
+            HE2=$(echo "$S2" | jq -r '.health')
+            RC1=$(echo "$S1" | jq -r '.restarts // empty')
+            RC2=$(echo "$S2" | jq -r '.restarts')
+
+            REASON=""
+            EC2=$(echo "$S2" | jq -r '.exitcode // 0')
+            # One-shot init-контейнеры (voice-resources-init и подобные)
+            # штатно заканчивают работу с кодом 0 и остаются в `exited` на
+            # ЗДОРОВОМ роботе — проверено после успешного деплоя 2026-09-07.
+            # Валить деплой по факту `exited` без разбора кода возврата —
+            # значит валить КАЖДЫЙ деплой. Провал только при ненулевом коде.
+            if [ "$ST2" = "exited" ] && [ "$EC2" != "0" ]; then
+              REASON="State.Status=exited (ExitCode=$EC2)"
+            elif [ "$ST2" = "dead" ]; then
+              REASON="State.Status=dead"
+            elif [ "$ST1" = "restarting" ] && [ "$ST2" = "restarting" ]; then
+              REASON="State.Status=restarting (confirmed at t=0s and t=${CONFIRM_INTERVAL}s)"
+            elif [ "$HE2" = "unhealthy" ] || [ "$HE1" = "unhealthy" ]; then
+              REASON="Health.Status=unhealthy"
+            elif [ -n "$RC1" ] && [ "$RC2" -gt "$RC1" ] 2>/dev/null; then
+              REASON="RestartCount grew during the ${CONFIRM_INTERVAL}s confirmation window: $RC1 -> $RC2 (container crashed while being checked)"
+            fi
+
+            if [ -n "$REASON" ]; then
+              FAILED_COUNT=$((FAILED_COUNT + 1))
+              echo "❌ $name: $REASON"
+              {
+                echo "=== $name ==="
+                echo "Reason: $REASON"
+                echo "State.Status: sample1=${ST1:-unknown} sample2=$ST2"
+                echo "Health.Status: sample1=${HE1:-none} sample2=$HE2"
+                echo "RestartCount: sample1=${RC1:-unknown} sample2=$RC2"
+                echo ""
+              } >> vision_status_summary.txt
               jq -nc \
                 --arg environment "${{ inputs.environment }}" \
                 --arg scope "vision" \
-                --arg container "$CONTAINER_NAME" \
+                --arg container "$name" \
                 --arg kind "container_status" \
                 --arg severity "critical" \
-                --arg summary "Container is not running" \
-                --arg raw_text "Container state: $CONTAINER_STATE" \
+                --arg summary "Container is unhealthy or restart-looping" \
+                --arg raw_text "$REASON (State.Status: sample1=${ST1:-unknown} sample2=$ST2, Health.Status: sample1=${HE1:-none} sample2=$HE2, RestartCount: sample1=${RC1:-unknown} sample2=$RC2)" \
                 '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
                 >> "$VISION_FINDINGS_FILE"
-            done
+            fi
+          done
+
+          echo "failed_count=$FAILED_COUNT" >> $GITHUB_OUTPUT
+
+          if [ "$FAILED_COUNT" -gt 0 ]; then
+            echo "❌ $FAILED_COUNT container(s) unhealthy on Vision Pi"
+            echo "vision_healthy=false" >> $GITHUB_OUTPUT
           else
-            echo "✅ All Vision Pi containers running"
+            echo "✅ All Vision Pi containers running and confirmed stable"
             echo "vision_healthy=true" >> $GITHUB_OUTPUT
           fi
 
@@ -604,35 +694,101 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "🔍 Checking Main Pi container status..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          # Тот же фикс, что и на Vision Pi (см. комментарий в
+          # "[Vision Pi] Check Container Status" — ретро run 34153246013,
+          # 2026-09-07): единичный снимок `docker compose ps` .State ловит
+          # контейнер в активном restart-loop на легитимно-мимолётном
+          # "running" между падениями. Два замера через `docker inspect`
+          # (не человекочитаемый Status-текст) с интервалом CONFIRM_INTERVAL.
+          CONFIRM_INTERVAL=15
 
-          STATUS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
-            'cd ~/rob_box_project/docker/main && docker compose ps --format json')
+          sample_containers() {
+            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+              'cd ~/rob_box_project/docker/main && for cid in $(docker compose ps -aq); do docker inspect --format "{{json .}}" "$cid"; done' \
+            | jq -c '{name: (.Name | ltrimstr("/")), status: .State.Status, restarting: .State.Restarting, health: (.State.Health.Status // "none"), restarts: .RestartCount, exitcode: .State.ExitCode}'
+          }
 
-          echo "$STATUS" | jq -r '"  \(.Name): \(.State)"'
+          echo "📸 Sample #1 (t=0s)..."
+          SAMPLE1=$(sample_containers)
+          echo "$SAMPLE1" | jq -r '"  \(.name): status=\(.status) restarting=\(.restarting) health=\(.health) restarts=\(.restarts)"'
 
-          # Проверяем наличие падших контейнеров
-          FAILED_COUNT=$(echo "$STATUS" | jq -r 'select(.State != "running") | .Name' | wc -l)
-          echo "failed_count=$FAILED_COUNT" >> $GITHUB_OUTPUT
+          echo ""
+          echo "⏳ Waiting ${CONFIRM_INTERVAL}s before confirming (avoid a mid-crash-loop 'running' snapshot)..."
+          sleep "$CONFIRM_INTERVAL"
 
-          if [ "$FAILED_COUNT" -gt 0 ]; then
-            echo "❌ $FAILED_COUNT container(s) not running on Main Pi"
-            echo "main_healthy=false" >> $GITHUB_OUTPUT
-            echo "$STATUS" | jq -c 'select(.State != "running") | {container: .Name, state: .State}' | while read -r item; do
-              CONTAINER_NAME=$(echo "$item" | jq -r '.container')
-              CONTAINER_STATE=$(echo "$item" | jq -r '.state')
+          echo "📸 Sample #2 (t=${CONFIRM_INTERVAL}s)..."
+          SAMPLE2=$(sample_containers)
+          echo "$SAMPLE2" | jq -r '"  \(.name): status=\(.status) restarting=\(.restarting) health=\(.health) restarts=\(.restarts)"'
+          echo ""
+
+          FAILED_COUNT=0
+          : > main_status_summary.txt
+
+          NAMES=$(echo "$SAMPLE2" | jq -r '.name' | sort -u)
+          for name in $NAMES; do
+            S1=$(echo "$SAMPLE1" | jq -c --arg n "$name" 'select(.name==$n)')
+            S2=$(echo "$SAMPLE2" | jq -c --arg n "$name" 'select(.name==$n)')
+            [ -z "$S2" ] && continue
+            [ -z "$S1" ] && S1='{}'
+
+            ST1=$(echo "$S1" | jq -r '.status // "unknown"')
+            ST2=$(echo "$S2" | jq -r '.status')
+            HE1=$(echo "$S1" | jq -r '.health // "none"')
+            HE2=$(echo "$S2" | jq -r '.health')
+            RC1=$(echo "$S1" | jq -r '.restarts // empty')
+            RC2=$(echo "$S2" | jq -r '.restarts')
+
+            REASON=""
+            EC2=$(echo "$S2" | jq -r '.exitcode // 0')
+            # One-shot init-контейнеры (voice-resources-init и подобные)
+            # штатно заканчивают работу с кодом 0 и остаются в `exited` на
+            # ЗДОРОВОМ роботе — проверено после успешного деплоя 2026-09-07.
+            # Валить деплой по факту `exited` без разбора кода возврата —
+            # значит валить КАЖДЫЙ деплой. Провал только при ненулевом коде.
+            if [ "$ST2" = "exited" ] && [ "$EC2" != "0" ]; then
+              REASON="State.Status=exited (ExitCode=$EC2)"
+            elif [ "$ST2" = "dead" ]; then
+              REASON="State.Status=dead"
+            elif [ "$ST1" = "restarting" ] && [ "$ST2" = "restarting" ]; then
+              REASON="State.Status=restarting (confirmed at t=0s and t=${CONFIRM_INTERVAL}s)"
+            elif [ "$HE2" = "unhealthy" ] || [ "$HE1" = "unhealthy" ]; then
+              REASON="Health.Status=unhealthy"
+            elif [ -n "$RC1" ] && [ "$RC2" -gt "$RC1" ] 2>/dev/null; then
+              REASON="RestartCount grew during the ${CONFIRM_INTERVAL}s confirmation window: $RC1 -> $RC2 (container crashed while being checked)"
+            fi
+
+            if [ -n "$REASON" ]; then
+              FAILED_COUNT=$((FAILED_COUNT + 1))
+              echo "❌ $name: $REASON"
+              {
+                echo "=== $name ==="
+                echo "Reason: $REASON"
+                echo "State.Status: sample1=${ST1:-unknown} sample2=$ST2"
+                echo "Health.Status: sample1=${HE1:-none} sample2=$HE2"
+                echo "RestartCount: sample1=${RC1:-unknown} sample2=$RC2"
+                echo ""
+              } >> main_status_summary.txt
               jq -nc \
                 --arg environment "${{ inputs.environment }}" \
                 --arg scope "main" \
-                --arg container "$CONTAINER_NAME" \
+                --arg container "$name" \
                 --arg kind "container_status" \
                 --arg severity "critical" \
-                --arg summary "Container is not running" \
-                --arg raw_text "Container state: $CONTAINER_STATE" \
+                --arg summary "Container is unhealthy or restart-looping" \
+                --arg raw_text "$REASON (State.Status: sample1=${ST1:-unknown} sample2=$ST2, Health.Status: sample1=${HE1:-none} sample2=$HE2, RestartCount: sample1=${RC1:-unknown} sample2=$RC2)" \
                 '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
                 >> "$MAIN_FINDINGS_FILE"
-            done
+            fi
+          done
+
+          echo "failed_count=$FAILED_COUNT" >> $GITHUB_OUTPUT
+
+          if [ "$FAILED_COUNT" -gt 0 ]; then
+            echo "❌ $FAILED_COUNT container(s) unhealthy on Main Pi"
+            echo "main_healthy=false" >> $GITHUB_OUTPUT
           else
-            echo "✅ All Main Pi containers running"
+            echo "✅ All Main Pi containers running and confirmed stable"
             echo "main_healthy=true" >> $GITHUB_OUTPUT
           fi
 
@@ -1155,6 +1311,41 @@ jobs:
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           MARKER="deploy-fail:${BRANCH}:${ENV_NAME}:$(date -u +%Y-%m-%d)"
 
+          # DoD (branch z-{agent}/deploy-verify-catch-restarting): issue должен
+          # содержать имя контейнера, его State.Status и хвост логов, а не только
+          # ссылку на run. vision_status_summary.txt/main_status_summary.txt
+          # (из "[Vision/Main Pi] Check Container Status") и
+          # vision_logs.txt/main_logs.txt (из "[Vision/Main Pi] Check Container
+          # Logs") — файлы в рабочей директории джобы, живут между шагами одного
+          # job на self-hosted runner (checkout --clean был только один раз в
+          # начале job).
+          DIAGNOSTICS_FILE="$(mktemp)"
+          : > "$DIAGNOSTICS_FILE"
+          for f in vision_status_summary.txt main_status_summary.txt; do
+            if [ -s "$f" ]; then
+              SCOPE_LABEL="Vision Pi"; [ "$f" = "main_status_summary.txt" ] && SCOPE_LABEL="Main Pi"
+              {
+                echo "### ${SCOPE_LABEL}: unhealthy/restart-looping containers"
+                echo '```'
+                cat "$f"
+                echo '```'
+                echo ''
+              } >> "$DIAGNOSTICS_FILE"
+            fi
+          done
+          for f in vision_logs.txt main_logs.txt; do
+            if [ -s "$f" ]; then
+              SCOPE_LABEL="Vision Pi"; [ "$f" = "main_logs.txt" ] && SCOPE_LABEL="Main Pi"
+              {
+                echo "### ${SCOPE_LABEL}: log tail (critical/warning findings)"
+                echo '```'
+                tail -c 4000 "$f"
+                echo '```'
+                echo ''
+              } >> "$DIAGNOSTICS_FILE"
+            fi
+          done
+
           # Дедуп: открытый issue с тем же маркером уже есть → не плодим дубликат,
           # только комментируем новый run (ретро 14.08: старый шаг был отключён
           # именно из-за дубликатов).
@@ -1165,24 +1356,34 @@ jobs:
             # не имеют hermes-метки → триаж их не видит. Догоняем метки здесь,
             # чтобы существующий issue тоже стал kanban-карточкой.
             gh issue edit "$EXISTING" --repo "${{ github.repository }}" --add-label hermes --add-label agent:devops >/dev/null 2>&1 || true
-            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body \
-              "Ещё один failing deploy run: $RUN_URL" >/dev/null 2>&1 || true
+            COMMENT_FILE="$(mktemp)"
+            {
+              echo "Ещё один failing deploy run: $RUN_URL"
+              echo ''
+              cat "$DIAGNOSTICS_FILE"
+            } > "$COMMENT_FILE"
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body-file "$COMMENT_FILE" >/dev/null 2>&1 || true
+            rm -f "$COMMENT_FILE" "$DIAGNOSTICS_FILE"
             exit 0
           fi
 
           BODY_FILE="$(mktemp)"
-          printf '%s\n' \
-            '## 🚨 Deployment Completed With Issues' \
-            '' \
-            "<!-- deploy-signature: ${MARKER} -->" \
-            '' \
-            "**Branch:** \`${BRANCH}\`" \
-            "**Environment:** \`${ENV_NAME}\`" \
-            "**Timestamp:** ${TS}" \
-            "**Workflow Run:** ${RUN_URL}" \
-            '' \
-            'Deployment completed with issues (non-success status). See the workflow log for details.' \
-            > "$BODY_FILE"
+          {
+            printf '%s\n' \
+              '## 🚨 Deployment Completed With Issues' \
+              '' \
+              "<!-- deploy-signature: ${MARKER} -->" \
+              '' \
+              "**Branch:** \`${BRANCH}\`" \
+              "**Environment:** \`${ENV_NAME}\`" \
+              "**Timestamp:** ${TS}" \
+              "**Workflow Run:** ${RUN_URL}" \
+              '' \
+              'Deployment completed with issues (non-success status). See details below and the workflow log.' \
+              ''
+            cat "$DIAGNOSTICS_FILE"
+          } > "$BODY_FILE"
+          rm -f "$DIAGNOSTICS_FILE"
 
           gh issue create \
             --repo "${{ github.repository }}" \
