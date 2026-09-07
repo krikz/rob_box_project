@@ -124,6 +124,68 @@ def test_avatar_tts_request_invalid_sink_published_error():
     assert errs[0]["error"] == "invalid_sink"
 
 
+def test_avatar_tts_request_empty_ssml_dropped_with_empty_text_error():
+    """Issue #2096 — пустой SSML → DROP + empty_text error (без _submit_synthesis).
+
+    До фикса ``_on_avatar_tts_request`` не имел защиты для пустого SSML/text:
+    payload ``<speak></speak>`` уходил в ``_submit_synthesis`` →
+    ``_synthesize_and_play`` → ``_synthesize_minimax_with_retry`` →
+    MiniMax райзил ``TTSBadRequestError("text is empty")`` → CRITICAL
+    в deploy-логе (run #34144712828).
+
+    Теперь: DROP + ``/avatar/tts/error{error="empty_text"}`` +
+    ``/voice/tts/finished{success=False, error="empty_text"}``.
+    Caller (operator-agent / grip-pipeline) получает сигнал, что синтеза
+    не будет, и не зависает в ожидании speech_id.
+    """
+    node = _make_request_node()
+    node._on_avatar_tts_request(
+        _msg({
+            "request_id": "req-empty-1",
+            "speech_id": "sid-empty-1",
+            "ssml": "<speak></speak>",  # пустой SSML
+            "text": "",
+            "sink": "headset",
+        })
+    )
+    # Синтез НЕ стартовал (раньше уходил в MiniMax bad-request).
+    node._submit_synthesis.assert_not_called()
+    # Avatar-error уведомил caller'а.
+    errs = _error_payloads(node)
+    assert errs, "avatar_tts_error_pub получил 0 сообщений"
+    assert errs[0]["request_id"] == "req-empty-1"
+    assert errs[0]["error"] == "empty_text"
+    # /voice/tts/finished с success=False + empty_text (чтобы speak_text не висел).
+    finished = _finished_payloads(node)
+    assert finished, "finished_pub получил 0 сообщений"
+    assert finished[0]["success"] is False
+    assert finished[0]["error"] == "empty_text"
+    assert finished[0]["speech_id"] == "sid-empty-1"
+
+
+def test_avatar_tts_request_whitespace_only_ssml_dropped():
+    """Issue #2096 — SSML из одних пробелов/переносов → DROP.
+
+    ``_extract_text_from_ssml`` нормализует текст через ``strip_markdown().strip()``,
+    поэтому ``"   \n  "`` после извлечения даёт пустую строку → тот же
+    guard. Это покрывает кейс, когда LLM или grip-pipeline мог прислать
+    «пустой по сути» SSML с whitespace.
+    """
+    node = _make_request_node()
+    node._on_avatar_tts_request(
+        _msg({
+            "request_id": "req-ws-1",
+            "speech_id": "sid-ws-1",
+            "ssml": "<speak>   \n\t  </speak>",
+            "text": "   \n\t  ",
+            "sink": "headset",
+        })
+    )
+    node._submit_synthesis.assert_not_called()
+    errs = _error_payloads(node)
+    assert errs[0]["error"] == "empty_text"
+
+
 def test_avatar_tts_request_no_sink_defaults_to_invalid():
     """sink отсутствует → тоже DROP (только "headset" допустим)."""
     node = _make_request_node()
