@@ -139,6 +139,12 @@ VOICE_BYTES_PER_MS: float = VOICE_SAMPLE_RATE_HZ * 2 / 1000.0  # 32 байта/�
 VOICE_SILENCE_THRESHOLD: int = 500  # пик int16 ниже → считаем тишиной
 VOICE_SILENCE_TIMEOUT_MS: float = 300.0  # тишина дольше → конец фразы
 
+# issue #1992 observability: публикация в /audio/quest_wake раньше не
+# логировалась вовсе — «клиент не шлёт wake» и «мост не публикует»
+# выглядели в docker logs одинаково (тишина). Первый пакет — сразу INFO,
+# дальше сводка раз в это окно (см. QuestBridge._note_wake_audio_publish).
+WAKE_AUDIO_LOG_INTERVAL_S: float = 10.0
+
 
 def _chunk_is_silent(payload: bytes, threshold: int = VOICE_SILENCE_THRESHOLD) -> bool:
     """True если int16 LE PCM-чанк — тишина (пик |сэмпла| < threshold)."""
@@ -301,6 +307,13 @@ class QuestBridge:
         # None в unit-тестах моста → set_wake_stream_state no-op.
         self._wake_stream_pub = wake_stream_pub
         self._wake_active = False
+        # issue #1992 observability: счётчики публикации в /audio/quest_wake.
+        # См. publish_quest_wake_audio / _note_wake_audio_publish.
+        self._wake_audio_publish_count = 0
+        self._wake_audio_publish_bytes = 0
+        self._wake_audio_window_count = 0
+        self._wake_audio_window_bytes = 0
+        self._wake_audio_last_log_ts: Optional[float] = None
         # voice_mode → супервизор (ADR-0028 S5): /avatar/set_voice_mode.
         self._set_voice_mode_pub = set_voice_mode_pub
         # AV-28 §P7 (issue #1920) — voice style preset / language → супервизор.
@@ -497,9 +510,51 @@ class QuestBridge:
         """
         if self._quest_wake_pub is None:
             return
+        self._note_wake_audio_publish(len(payload))
         msg = AudioData()
         msg.data = list(payload)
         self._quest_wake_pub.publish(msg)
+
+    def _note_wake_audio_publish(self, nbytes: int) -> None:
+        """issue #1992 observability — публикация в /audio/quest_wake.
+
+        До этой правки ``publish_quest_wake_audio`` не оставляло следа в
+        логах вообще: и «клиент шлёт, мост публикует» и «клиент ничего не
+        шлёт» выглядели в ``docker logs rob-box-quest`` одинаково —
+        тишина по ``wake``/``voice_listen``/``VOICE_AUDIO``. Первый
+        опубликованный пакет — сразу INFO (подтверждает, что мост хотя бы
+        раз получил и передал payload дальше в ROS), дальше — сводка не
+        чаще раза в :data:`WAKE_AUDIO_LOG_INTERVAL_S` секунд (поток
+        ~16 кГц, чанк 20мс -> до 50 публикаций/сек — без троттлинга лог
+        захлебнётся).
+        """
+        now = time.monotonic()
+        self._wake_audio_publish_count += 1
+        self._wake_audio_publish_bytes += nbytes
+        self._wake_audio_window_count += 1
+        self._wake_audio_window_bytes += nbytes
+
+        if self._wake_audio_last_log_ts is None:
+            self._wake_audio_last_log_ts = now
+            self._wake_audio_window_count = 0
+            self._wake_audio_window_bytes = 0
+            self._node.get_logger().info(
+                f"quest: wake audio first packet published to "
+                f"/audio/quest_wake ({nbytes} bytes)"
+            )
+            return
+
+        elapsed = now - self._wake_audio_last_log_ts
+        if elapsed >= WAKE_AUDIO_LOG_INTERVAL_S:
+            self._node.get_logger().info(
+                "quest: wake audio publish summary: "
+                f"{self._wake_audio_window_count} packets / "
+                f"{self._wake_audio_window_bytes} bytes in {elapsed:.1f}s "
+                f"(total {self._wake_audio_publish_count} packets)"
+            )
+            self._wake_audio_last_log_ts = now
+            self._wake_audio_window_count = 0
+            self._wake_audio_window_bytes = 0
 
     def set_wake_stream_state(self, active: bool) -> None:
         """JSON_CMD {cmd: voice_listen_start/stop} (ADR-0054 step 5а).
