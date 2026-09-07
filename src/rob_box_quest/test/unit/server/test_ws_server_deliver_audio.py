@@ -363,6 +363,52 @@ def test_audio_streams_whitelist_is_static():
     assert isinstance(_AUDIO_STREAMS, frozenset)
 
 
+@pytest.mark.asyncio
+async def test_register_audio_session_acceptance_default_limit(fixed_pin):
+    """Acceptance #2100: ровно три точки контракта на дефолтном лимите 3.
+
+    Регресс по issue #2100: «register_audio_session(operator_tts) возвращает
+    False — реплики ТАРС теряются». Контракт, который должен держаться
+    на **дефолтном** ``VOICE_PREVIEW_MAX_CONCURRENT = 3``:
+
+    * ``register_audio_session(operator_tts, ws, req1)`` → ``True``
+    * ``register_audio_session(invalid_stream, ws, req2)`` → ``False``
+      (UNKNOWN_STREAM, регистрация не происходит)
+    * ``register_audio_session(operator_tts, ws, req3)`` после лимита
+      (две предыдущие + ещё одна заняли слот) → ``False`` (лимит)
+
+    Используем **дефолтный** лимит (не подменяем), чтобы зафиксировать
+    реальное прод-значение; подмена ``VOICE_PREVIEW_MAX_CONCURRENT``
+    тестируется отдельно в ``test_register_audio_session_too_many``.
+    """
+    from rob_box_quest.server import ws_server as ws_mod
+
+    server = WSSServer(bridge=NoOpBridge(), pin=fixed_pin)
+    # 1) operator_tts на пустом слоте → True (whitelist принял).
+    mock_ws = MagicMock()
+    mock_ws.closed = False
+    assert server.register_audio_session("operator_tts", "req1", mock_ws) is True
+    # 2) Неизвестный stream → False, в реестре записи НЕТ.
+    assert server.register_audio_session("bogus", "req2", mock_ws) is False
+    assert "req2" not in server._audio_pending.get("bogus", {})
+    # 3) После заполнения слота до дефолтного лимита — следующая регистрация False.
+    limit = ws_mod.VOICE_PREVIEW_MAX_CONCURRENT
+    # Заполняем оставшиеся слоты до потолка (req1 уже занят 1).
+    for i in range(2, limit + 1):
+        assert (
+            server.register_audio_session("operator_tts", f"fill-{i}", mock_ws)
+            is True
+        ), f"лимит {limit!r}: не удалось заполнить слот {i}"
+    # (limit+1)-я регистрация должна вернуть False.
+    overflow_req = f"overflow-{limit + 1}"
+    assert (
+        server.register_audio_session("operator_tts", overflow_req, mock_ws)
+        is False
+    ), f"лимит {limit!r}: ожидался отказ на {overflow_req}"
+    # Реестр не должен содержать overflow-запись.
+    assert overflow_req not in server._audio_pending["operator_tts"]
+
+
 def test_register_audio_session_rejects_unknown_stream(fixed_pin):
     """register_audio_session(stream="bogus", ...) → False (no side effects)."""
     server = WSSServer(bridge=NoOpBridge(), pin=fixed_pin)
