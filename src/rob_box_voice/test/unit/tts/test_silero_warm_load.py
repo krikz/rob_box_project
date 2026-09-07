@@ -190,19 +190,24 @@ def test_hot_path_wait_timeout_below_cold_load() -> None:
     hot-path wait timeout must be strictly less than this so the
     skip-on-timeout path actually triggers (otherwise the user
     still hears the hang we're trying to eliminate).
+
+    Issue #2078 decomposition: the wait+timeout live in
+    :meth:`TTSNode._sap_silero_fallback` rather than the orchestrator.
+    The contract is the same — assert against the helper that owns it
+    today.
     """
     tree = _parse_module(_TTS_NODE_SRC)
     cls = _find_class(tree, "TTSNode")
-    synth = _find_method(cls, "_synthesize_and_play")
+    synth = _find_method(cls, "_sap_silero_fallback")
     src = ast.unparse(synth)
     # We accept either a literal 1.5 or a named constant; the literal
     # is fine because the body of the docstring documents the choice.
     assert "1.5" in src, (
-        "_synthesize_and_play must explicitly wait 1.5 s on _silero_loaded "
+        "_sap_silero_fallback must explicitly wait 1.5 s on _silero_loaded "
         "(< observed cold-load of 2.7 s in voice_v3_postdeploy.log)"
     )
     assert "self._silero_loaded.wait(timeout=" in src, (
-        "_synthesize_and_play must wait on self._silero_loaded (threading.Event) "
+        "_sap_silero_fallback must wait on self._silero_loaded (threading.Event) "
         "with a timeout, not block indefinitely"
     )
 
