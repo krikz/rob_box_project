@@ -297,6 +297,207 @@ branch_label_override() {  # $1=labels_json
         || true
 }
 
+# extract_file_paths_from_body — ADR-0052 / ретро t_50a18fa9 / issue #2018.
+# Извлекает список "<path>[:line[-line2]]" из issue body. Используется для
+# pre-create guard по file-overlap (G10a): если в body указан glob-путь к файлу
+# (например, test_quest_llm_formalize.py:171) и в OPEN PR этот же файл правится —
+# карточка-дубль не нужна.
+#
+# Регексы (без external deps, чистый bash + grep -oE):
+#   1. `<word/dpath>.<ext>:<line>` — например `test_quest_llm_formalize.py:171`
+#   2. `<word/dpath>.<ext>:<line>-<line2>` — диапазон (редко в issue, но бывает)
+#   3. `<word/dpath>.<ext>` без :line — общий случай
+#
+# Возвращает на stdout через NUL separator список "<path>\t<line_lo>\t<line_hi>"
+# (line_lo/line_hi пустые, если :line не указан). Если ничего не найдено —
+# пустой stdout (т.е. guard полностью пропускается, backward-compat).
+extract_file_paths_from_body() {  # $1=body
+    local body="$1"
+    [ -n "$body" ] || return 0
+    # Ловим .py/.yaml/.yml/.json/.md/.cpp/.c/.h/.rs/.go/.sh/.xml/.cfg/.ini/.toml
+    # и backticked `path` тоже (issue bodies часто в backticks).
+    printf '%s' "$body" \
+        | grep -oE '`?[A-Za-z0-9_./-]+\.(py|yaml|yml|json|md|cpp|c|h|rs|go|sh|xml|cfg|ini|toml)(:[0-9]+(-[0-9]+)?)?`?' \
+        | tr -d '`' \
+        | awk -F: '
+            NF == 3 {
+                # path:line-lo:line-hi
+                split($2, lr, "-")
+                lo = lr[1]; hi = (lr[2] != "") ? lr[2] : lr[1]
+                printf "%s\t%s\t%s\n", $1, lo, hi
+                next
+            }
+            NF == 2 {
+                # path:line
+                printf "%s\t%s\t%s\n", $1, $2, $2
+                next
+            }
+            {
+                # path only
+                printf "%s\t\t\n", $1
+            }
+        ' \
+        | sort -u \
+        | awk '
+            # Дедуп: если один файл упомянут в нескольких вариантах, берём самый широкий line-range
+            {
+                file = $1; lo = ($2 == "" ? "" : $2); hi = ($3 == "" ? "" : $3)
+                if (!(file in seen) || (lo != "" && (best_lo[file] == "" || lo+0 < best_lo[file]+0))) {
+                    seen[file] = 1; best_lo[file] = lo; best_hi[file] = hi
+                }
+            }
+            END {
+                for (f in seen) printf "%s\t%s\t%s\n", f, best_lo[f], best_hi[f]
+            }
+        ' \
+        | sort -u \
+        || true
+}
+
+# file_overlap_with_open_pr — ADR-0052 / ретро t_50a18fa9 / issue #2018.
+# Pre-create guard по file-overlap с OPEN PR (любая ветка, любой воркер).
+# Используется в process_issues_json ПОСЛЕ existing_by_issue и ДО branch_for.
+#
+# Логика:
+#   1. Извлечь пути из body (extract_file_paths_from_body).
+#   2. Если пусто — guard полностью пропускается (backward-compat).
+#   3. Иначе — загрузить open PRs (один запрос, кэш на тик через $OPEN_PRS_JSON).
+#   4. Для каждого PR получить список файлов с additions (через gh api pulls/N/files).
+#   5. Найти overlap по basename/path. Если есть — skip + comment + label.
+#
+# Возвращает 0 = overlap найден (skip), 1 = overlap нет (продолжаем).
+# Fail-OPEN на сетевых/CLI ошибках (чтобы cron не ломался на временных сбоях).
+OPEN_PRS_JSON_CACHE=""
+file_overlap_with_open_pr() {  # $1=body  $2=issue_number
+    local body="$1" number="$2"
+    [ "${AGENT_FLOW_FILE_OVERLAP_GUARD:-true}" = "true" ] || return 1
+    [ -n "$GH_REPO" ] || return 1
+    local file_paths
+    file_paths="$(extract_file_paths_from_body "$body")"
+    [ -n "$file_paths" ] || return 1
+
+    # Кэш OPEN PRs на тик. Один для всех issues в process_issues_json.
+    if [ -z "$OPEN_PRS_JSON_CACHE" ]; then
+        OPEN_PRS_JSON_CACHE="$(gh pr list --repo "$GH_REPO" --state open --limit 100 \
+            --json number,headRefName 2>/dev/null || echo '[]')"
+        [ -n "$OPEN_PRS_JSON_CACHE" ] || OPEN_PRS_JSON_CACHE='[]'
+    fi
+
+    # Если 0 open PR — точно нет overlap
+    local pr_count
+    pr_count="$(printf '%s' "$OPEN_PRS_JSON_CACHE" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(len(d) if isinstance(d, list) else 0)
+except Exception:
+    print(0)
+' 2>/dev/null)"
+    [ "${pr_count:-0}" -gt 0 ] || return 1
+
+    # Ищем overlap: file (basename) ∈ issue-file-path ∩ PR-file-path.
+    # Output: "<pr_num>\t<pr_head>\t<issue_file>\t<pr_file>" per overlap row.
+    # Note: line-range overlap проверяется в merge-gate (G10c), здесь достаточно
+    # basename-match (file-level overlap — уже strong signal, race-window между
+    # двумя worker'ами на одном файле = почти наверняка дубликат).
+    local overlap_results
+    overlap_results="$(GH_REPO_OVERLAP="$GH_REPO" OPEN_PRS_FILE_PATHS="$file_paths" \
+        printf '%s' "$OPEN_PRS_JSON_CACHE" | GH_REPO_OVERLAP="$GH_REPO" OPEN_PRS_FILE_PATHS="$file_paths" \
+        python3 -c '
+import json, os, sys, re
+
+GH_REPO = os.environ.get("GH_REPO_OVERLAP", "")
+PR_LIST = json.load(sys.stdin)
+file_paths_str = os.environ.get("OPEN_PRS_FILE_PATHS", "")
+# file_paths формат: "<path>\t<line_lo>\t<line_hi>\n" per row
+issue_files = {}
+for line in file_paths_str.splitlines():
+    if not line.strip(): continue
+    parts = line.split("\t")
+    if len(parts) >= 1 and parts[0]:
+        issue_files.setdefault(parts[0], (parts[1] if len(parts) > 1 else "",
+                                          parts[2] if len(parts) > 2 else ""))
+
+import subprocess
+results = []
+for pr in PR_LIST:
+    pr_num = pr.get("number")
+    pr_head = pr.get("headRefName", "")
+    if not pr_num:
+        continue
+    try:
+        r = subprocess.run(
+            ["gh", "api", f"repos/{GH_REPO}/pulls/{pr_num}/files?per_page=100"],
+            capture_output=True, text=True, timeout=15)
+        if r.returncode != 0:
+            continue
+        try:
+            files = json.loads(r.stdout or "[]")
+        except Exception:
+            continue
+    except Exception:
+        continue
+    for f in files:
+        pf = f.get("filename", "")
+        if not pf:
+            continue
+        # Match by basename overlap (issue может указать «test_quest_llm_formalize.py»
+        # без полного path, а PR содержит «src/rob_box_voice/test/unit/node/test_quest_llm_formalize.py»)
+        pbase = os.path.basename(pf)
+        for ifpath, (ilo, ihi) in issue_files.items():
+            ibase = os.path.basename(ifpath)
+            if not ibase:
+                continue
+            if ibase == pbase or ibase in pf or pbase in ifpath:
+                # Line-range: PR patch может содержать @@ -A,B +C,D @@, но API
+                # возвращает только filename+status+additions+deletions+changes (без
+                # номеров строк в старых версиях gh). Используем как fallback:
+                # если issue не указал :line — overlap по любой правке в файле.
+                # Если issue указал :line — мы не можем строго сравнить без
+                # patch-content; принимаем overlap « найден (ниниторичный сигнал),
+                # см. ADR-0052 §4 tolerance=5 строк.
+                results.append((pr_num, pr_head, ifpath, pf))
+                break
+for r in results:
+    print("%d\t%s\t%s\t%s" % r)
+' 2>/dev/null)" || true
+    # Не нашли overlap — продолжаем
+    [ -n "$overlap_results" ] || return 1
+
+    # Overlap найден. Side-effects (comment + label).
+    local first_overlap
+    first_overlap="$(printf '%s\n' "$overlap_results" | head -n1)"
+    local _fo_pr _fo_head _fo_ifile _fo_pfile
+    IFS=$'\t' read -r _fo_pr _fo_head _fo_ifile _fo_pfile <<< "$first_overlap"
+
+    log "🚨 issue #${number}: G10a file-overlap — файл ${_fo_ifile} уже правится в OPEN PR #${_fo_pr} (${_fo_head}) — карточку НЕ создаём (ретро t_50a18fa9, ADR-0052)"
+
+    if [ "$DRY_RUN" != "true" ]; then
+        local overlap_list
+        overlap_list="$(printf '%s\n' "$overlap_results" | awk -F'\t' '{print "- PR #"$1" ("$2") правит "$4}' | sort -u | head -10)"
+        gh issue comment "$number" --repo "$GH_REPO" --body \
+            "🚨 **agent-flow-triage: G10a file-overlap-skip (ретро t_50a18fa9, ADR-0052)**
+
+Triage **НЕ создал** kanban-карточку для этого issue — обнаружен file-overlap с уже открытым PR, который правит тот же файл (\`${_fo_ifile}\`).
+
+OPEN PR, которые уже правят этот файл (${PR_COUNT:-0} обнаруженно):
+${overlap_list}
+
+**Почему так:** race-window между воркерами — несколько worker'ов увидели один и тот же root-cause-defect в develop и стартанули каждый свою карточку. Per-branch OPEN-PR guard (G5/G6b) не ловит (разные ветки), G9a intra-tick не ловит (разные заголовки), G8 fingerprint не ловит (\`${_fo_ifile}\` не в whitelist). Новый G10a ловит cross-branch дубль по file-overlap.
+
+**Что делать (товарищ Шифу):**
+1. Закрыть этот issue как дубликат одного из найденных PR, ИЛИ
+2. Смержить один из найденных PR (предпочтительно более широкий — он закроет все связанные баги), ИЛИ
+3. Если этот issue про ДРУГОЙ фикс (не пересекается с уже идущим) — переформулировать body, чтобы glob-path не совпадал с уже открытыми PR (например, добавь distinguishing context в описание файла), тогда G10a не сматчит.
+
+После того как Шифу закроет/смержит дубликаты, повторный тик triage создаст карточку (если body больше не указывает на уже закрытые/merged PR)." >/dev/null 2>&1 || true
+        gh issue edit "$number" --repo "$GH_REPO" --add-label "agent-flow-error" >/dev/null 2>&1 || true
+    fi
+
+    dedup_file_overlap_skipped=$((dedup_file_overlap_skipped+1))
+    return 0
+}
+
 role_for() {  # $1=labels_json
     printf '%s' "$1" \
         | grep -oE 'agent:[a-z0-9_-]+' \
@@ -938,6 +1139,21 @@ process_issues_json() {
         esac
     fi
 
+    # Ретро-фикс (07.09 t_50a18fa9, ADR-0052): G10a file-overlap dedup.
+    # Если в issue body есть glob-путь к файлу, и этот файл уже правится в
+    # OPEN PR (любая ветка, любой воркер) — карточка-дубль не нужна.
+    # Это закрывает race-window, когда несколько worker'ов независимо увидели
+    # один defect в develop и стартанули каждый свою kanban-карточку
+    # (issue #2018: PR #2015 + #2016 + t_e5720945 на одном
+    # test_quest_llm_formalize.py).
+    #
+    # Backward-compat: если body не содержит извлекаемых glob-путей — guard
+    # полностью пропускается (existing happy path не ломаем).
+    # Fail-OPEN: сетевые/gh-ошибки не блокируют cron (только warning-лог).
+    if file_overlap_with_open_pr "$body" "$number"; then
+        skipped=$((skipped+1)); continue
+    fi
+
     role="$(role_for "$labels")"
     branch="$(branch_for "$labels" "$number" "$title")"
     max_runtime="$(runtime_for "$labels" "$body")"
@@ -1436,6 +1652,9 @@ errored=0
 # в общем «skipped»). summary печатает «dedup-skipped: N (intra-tick), M (race)».
 dedup_intra_skipped=0
 dedup_race_skipped=0
+# Ретро-фикс (07.09 t_50a18fa9, ADR-0052): третий счётчик для G10a file-overlap.
+# summary печатает «dedup-skipped: N (intra-tick), M (race), K (file-overlap)».
+dedup_file_overlap_skipped=0
 # Ретро-фикс (01.09, t_e1a9613d, issue #1824): массив для unknown-assignee
 # records (number, role, title_prefix), собирается в `process_issues_json`,
 # обрабатывается в _emit_unknown_assignee_rollup после Phase 1+2.
@@ -1769,7 +1988,7 @@ fi
 _emit_unknown_assignee_rollup || true
 
 # --- summary -----------------------------------------------------------------
-log "tick done: created=${created} skipped=${skipped} errored=${errored} dedup-skipped: ${dedup_intra_skipped} (intra-tick), ${dedup_race_skipped} (race), unknown-assignee: rollup-emitted=${unknown_assignee_rollup_emitted} (dedup-hit=${unknown_assignee_rollup_dedup_hit})"
+log "tick done: created=${created} skipped=${skipped} errored=${errored} dedup-skipped: ${dedup_intra_skipped} (intra-tick), ${dedup_race_skipped} (race), ${dedup_file_overlap_skipped} (file-overlap), unknown-assignee: rollup-emitted=${unknown_assignee_rollup_emitted} (dedup-hit=${unknown_assignee_rollup_dedup_hit})"
 
 # Exit non-zero only on hard errors (G4/G5) so cron can alert.
 if [ "$errored" -gt 0 ]; then exit 1; fi
