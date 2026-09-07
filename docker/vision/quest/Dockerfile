@@ -93,29 +93,55 @@ COPY --from=webxr-builder /build/dist /srv/quest_static
 # ============================================================
 # Сборка rob_box_quest (ament_python) — образец supervisor/Dockerfile
 # ============================================================
+# Issue #2081 (регрессия quest: ModuleNotFoundError rob_box_core.avatar_command):
+# --packages-select был только rob_box_quest → rob_box_core брался из
+# закешированного слоя базового voice-assistant image. Когда avatar_command.py
+# добавили в rob_box_core, voice-assistant пересобрали ПОЗЖЕ quest → quest
+# унаследовал старый rob_box_core без avatar_command.py → restart loop на
+# /ws/install/rob_box_core/lib/.../avatar_command.py.
+#
+# Лечение:
+#   1) COPY src/rob_box_core/* в /ws/src/rob_box_core/* (согласовано с
+#      voice-assistant/Dockerfile шаги 1+3+8) — инвалидирует кеш слоя
+#      при изменениях в rob_box_core.
+#   2) colcon build теперь собирает rob_box_core + rob_box_quest — даже
+#      если базовый voice-assistant image отстаёт, свежий rob_box_core
+#      гарантированно попадает в /ws/install.
+#
+# rob_box_core — лёгкий pure-Python (нет torch/Renardo), его пересборка
+# в quest image НЕ инвалидирует тяжёлый кеш pytorch из voice-base.
 # Шаг 1: package.xml + setup.py + setup.cfg (структура, кешируется)
 COPY src/rob_box_quest/package.xml /ws/src/rob_box_quest/
 COPY src/rob_box_quest/setup.py   /ws/src/rob_box_quest/
 COPY src/rob_box_quest/setup.cfg  /ws/src/rob_box_quest/
+
+# Issue #2081: rob_box_core package.xml/setup.py тоже нужны на этом слое,
+# чтобы следующий COPY ресурсов нашёл директорию и setup.py.
+COPY src/rob_box_core/package.xml /ws/src/rob_box_core/
+COPY src/rob_box_core/setup.py   /ws/src/rob_box_core/
 
 # Шаг 2: ament_index marker. setup.py ищет ФАЙЛ 'resource/<package_name>'
 # (data_files copy), не директорию (raw-evidence #32900725289 step:25:
 # error: can't copy 'resource/rob_box_quest': doesn't exist or not a regular file).
 # Образец — src/rob_box_supervisor/resource/rob_box_supervisor (0 байт).
 COPY src/rob_box_quest/resource/rob_box_quest /ws/src/rob_box_quest/resource/rob_box_quest
+COPY src/rob_box_core/resource/rob_box_core   /ws/src/rob_box_core/resource/rob_box_core
 
 # Шаг 3: исходный код Python (самый горячий слой, последний)
 COPY src/rob_box_quest/rob_box_quest /ws/src/rob_box_quest/rob_box_quest
+# Issue #2081: rob_box_core — иначе avatar_command.py не попадёт в образ.
+COPY src/rob_box_core/rob_box_core /ws/src/rob_box_core/rob_box_core
 
-# Шаг 4: пересборка ТОЛЬКО rob_box_quest (pytorch/renardo из base не трогаем).
-# WORKDIR=/ws обязателен — colcon ищет пакеты в $PWD/src, а после
+# Шаг 4: пересборка rob_box_core + rob_box_quest (pytorch/renardo из base
+# не трогаем — пересобирается только pure-Python слой). WORKDIR=/ws
+# обязателен — colcon ищет пакеты в $PWD/src, а после
 # 'source /opt/ros/.../setup.sh' WORKDIR не меняется, но нам нужно
 # явно стартануть из /ws.
 WORKDIR /ws
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     . /ws/install/setup.sh && \
     colcon build \
-        --packages-select rob_box_quest \
+        --packages-select rob_box_core rob_box_quest \
         --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 # Caddyfile + entry-script
