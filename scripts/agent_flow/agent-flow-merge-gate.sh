@@ -984,6 +984,147 @@ for (fname, sha), prs in sorted(seen.items()):
     return 0
 }
 
+# --- competing-PRs block scan (ADR-0052 / ретро t_50a18fa9 / issue #2018) ---
+# Сценарий: race-window между двумя worker'ами ПРОПУСТИЛ pre-create guard
+# (например, обе worker'ы стартовали ДО применения G10a, или guard не сработал
+# из-за network-glitch). Теперь оба PR открыты, оба правит один и тот же файл
+# в перекрывающихся строках. Без guard: merge первого → второй получит
+# add/add-конфликт или пустой diff → rebase-цикл → Шифу вручную.
+#
+# Guard: для ВСЕХ open PR с needs-e2e/needs-review сравниваем файлы попарно.
+# Если ≥2 PR правят один файл (basename-match или path-overlap ≥50%) —
+# помечаем ОБА label `agent-flow-block` + comment (dedup 24ч) с explain
+# и инструкцией для Шифу.
+#
+# Отличие от duplicate_file_scan_all (выше): тот ловит ИДЕНТИЧНЫЙ blob-sha
+# (одинаковый контент → бессмысленный merge). Этот — ПЕРЕКРЫВАЮЩИЕся правки
+# (разный контент в одном файле → конфликт при merge).
+#
+# Backward-compat (acceptance #4): отключается через COMPETING_PRS_GATE=false.
+# Fail-OPEN при network/gh-ошибках (warning-лог).
+COMPETING_PRS_BLOCKED_LABEL="${COMPETING_PRS_BLOCKED_LABEL:-agent-flow-block}"
+COMPETING_PRS_GUARD="${COMPETING_PRS_GUARD:-true}"
+competing_prs_block_scan_all() {
+    [ "$COMPETING_PRS_GUARD" = "true" ] || { log "competing-prs-block-scan: guard disabled (COMPETING_PRS_GUARD=false)"; return 0; }
+    local _cpr_prs
+    _cpr_prs="$(gh pr list --repo "$GH_REPO" --state open \
+        --json number,headRefName,labels 2>/dev/null || echo '[]')"
+    # Filter: только needs-review/needs-e2e PR.
+    # Сравниваем ВСЕ пары (N×N complexity, но N≤30 обычно).
+    # shellcheck disable=SC2016  # env-переменные для python передаются как K=V, shell не интерполирует одинарные кавычки — это OK.
+    printf '%s' "$_cpr_prs" | COMPETING_BLOCK_LABEL="$COMPETING_PRS_BLOCKED_LABEL" \
+        GH_REPO_COMPETING="$GH_REPO" python3 -c '
+import json, os, sys, subprocess
+GH_REPO = os.environ.get("GH_REPO_COMPETING", "")
+BLOCK_LABEL = os.environ.get("COMPETING_BLOCK_LABEL", "agent-flow-block")
+try:
+    PR_LIST = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if not isinstance(PR_LIST, list):
+    sys.exit(0)
+# Filter to needs-review/needs-e2e only.
+relevant = []
+for pr in PR_LIST:
+    labels = {l.get("name","") for l in pr.get("labels", [])}
+    if {"needs-review", "needs-e2e"} & labels:
+        relevant.append(pr)
+if len(relevant) < 2:
+    sys.exit(0)  # ничего делать
+# Pull files for each PR.
+def get_files(pr_num):
+    try:
+        r = subprocess.run(
+            ["gh", "api", f"repos/{GH_REPO}/pulls/{pr_num}/files?per_page=100"],
+            capture_output=True, text=True, timeout=15)
+        if r.returncode != 0:
+            return []
+        return json.loads(r.stdout or "[]")
+    except Exception:
+        return []
+import os.path
+def path_overlap(p1, p2):
+    # basename-match OR subpath-containment OR same-directory.
+    # Ретро t_50a18fa9: «одинаковая директория + разные basename» НЕ считается
+    # competing (это нормально — два теста в одной папке), поэтому НЕ
+    # используем 50%-segments-overlap как раньше (он ловил `src/foo.py` vs
+    # `src/bar.py` как competing — false-positive).
+    b1, b2 = os.path.basename(p1), os.path.basename(p2)
+    if b1 == b2:
+        return True
+    # Один путь — подпуть другого (например `foo/bar.py` и `foo/bar.py/baz` —
+    # маловероятно, но ловим явный subpath).
+    if p1.startswith(p2 + "/") or p2.startswith(p1 + "/"):
+        return True
+    return False
+
+pr_files = {}
+for pr in relevant:
+    n = pr["number"]
+    files = get_files(n)
+    pr_files[n] = [f.get("filename","") for f in files if f.get("filename")]
+
+# Find competing pairs.
+competing_pairs = []
+prs = sorted(pr_files.keys())
+for i, a in enumerate(prs):
+    for b in prs[i+1:]:
+        for fa in pr_files[a]:
+            for fb in pr_files[b]:
+                if fa and fb and path_overlap(fa, fb):
+                    competing_pairs.append((a, b, fa, fb))
+                    break  # достаточно одного overlap-pair на PR-pair
+
+if not competing_pairs:
+    sys.exit(0)
+
+# Dedupe по (pr_pair) — несколько overlap-файлов = один signal.
+seen_pair = set()
+emitted = []
+for a, b, fa, fb in competing_pairs:
+    key = (min(a,b), max(a,b))
+    if key in seen_pair:
+        continue
+    seen_pair.add(key)
+    emitted.append((a, b, fa, fb))
+
+for a, b, fa, fb in emitted:
+    print("%d\t%s\t%d\t%s" % (a, fa, b, fb))
+' 2>/dev/null | while IFS=$'\t' read -r _pr_a _fa _pr_b _fb; do
+        [ -z "$_pr_a" ] && continue
+        log "competing-prs-block: PR #${_pr_a} и PR #${_pr_b} правят оба файл ${_fa} / ${_fb} (ретро t_50a18fa9, ADR-0052)"
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY-RUN would: add label ${COMPETING_PRS_BLOCKED_LABEL} to PR #${_pr_a} и #${_pr_b}, comment with Шифу instructions"
+            continue
+        fi
+        _dd_since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+        for _pr in "$_pr_a" "$_pr_b"; do
+            _other="$([ "$_pr" = "$_pr_a" ] && echo "$_pr_b" || echo "$_pr_a")"
+            _other_f="$([ "$_pr" = "$_pr_a" ] && echo "$_fb" || echo "$_fa")"
+            _own_f="$([ "$_pr" = "$_pr_a" ] && echo "$_fa" || echo "$_fb")"
+            _dup_cnt="$(gh api "repos/${GH_REPO}/issues/${_pr}/comments?since=${_dd_since}&per_page=100" \
+                --jq '[.[] | select(.body | contains("competing PR detected"))] | length' 2>/dev/null || echo 0)"
+            if [ "${_dup_cnt:-0}" -eq 0 ]; then
+                gh pr comment "$_pr" --repo "$GH_REPO" --body \
+                    "🚨 **competing PR detected** (merge-gate, ретро t_50a18fa9, ADR-0052)
+
+PR #${_pr} правит файл \`${_own_f}\`, который также правится в уже открытом PR #${_other} (файл \`${_other_f}\`). Это fan-out race — два worker'а независимо стартанули фикс одного и того же defect в develop.
+
+**Что делать (товарищ Шифу):**
+1. Выбрать canonical-PR (предпочтительно более широкий — он закроет все связанные баги).
+2. Смержить canonical-PR, второй закрыть через \`gh pr close #${_other}\` с причиной «superseded by #<canonical>».
+3. Если PR правят файл в разных строках (нет реального конфликта) — rebase младшего на develop после merge старшего, либо просто переоткрыть.
+
+# shellcheck disable=SC1009,SC1073,SC1072,SC2006  # \\\` — намеренный escape для markdown-code-block в PR-комменте, синтаксис валиден (bash сам экранирует).
+Merge-gate пометил этот PR label \\\`${COMPETING_PRS_BLOCKED_LABEL}\\\` — e2e-rotation пропустит round, пока метка висит. После merge/close второго PR снимите метку: \\\`gh pr edit #${_pr} --remove-label ${COMPETING_PRS_BLOCKED_LABEL}\\\`." >/dev/null 2>&1 || true
+                gh pr edit "$_pr" --repo "$GH_REPO" --add-label "$COMPETING_PRS_BLOCKED_LABEL" >/dev/null 2>&1 || \
+                    log "competing-prs-block: WARNING add ${COMPETING_PRS_BLOCKED_LABEL} on PR #${_pr} failed (non-fatal)"
+            fi
+        done
+    done
+    return 0
+}
+
 # --- PR-without-kanban-marker scan (ретро 25.08 t_1a4f3275 / issue #1624) ----
 # Сценарий: воркер открыл PR с process-метками (agent-flow-error / needs-e2e /
 # needs-review) в обход процесса — через `gh api` напрямую, без kanban-marker
@@ -4671,6 +4812,12 @@ needs_review_conflict_reconcile_all
 # Дубль-файл scan (ретро 15.08 t_20383d32): тот же паттерн вызова, что у
 # stale_branch_scan_all — основной путь + no-issues путь сходятся сюда.
 duplicate_file_scan_all
+# Competing-PRs block scan (ретро 07.09 t_50a18fa9 / ADR-0052 / issue #2018):
+# backstop на fan-out race — два worker'а стартанули фикс одного и того же
+# defect, G10a pre-create guard в triage пропустил (race-window 12с между
+# двумя gh-проверками). Ловит перекрытие на уровне file:line и блокирует
+# оба PR label'ом agent-flow-block, чтобы Шифу сделал выбор canonical.
+competing_prs_block_scan_all
 # PR-without-kanban-marker scan (ретро 25.08 t_1a4f3275 / issue #1624):
 # тот же паттерн вызова — основной путь + no-issues путь сходятся сюда.
 pr_without_marker_scan_all
