@@ -558,12 +558,23 @@ class TestLanguageMetadata:
         assert self._node()._language_prompt_section("eo") == "en"
 
     def test_list_format_yaml_still_works(self):
-        """Старый формат ``languages: [ru, en]`` не должен ронять ноду."""
+        """Старый формат ``languages: [ru, en]`` не должен ронять ноду.
+
+        Секция промпта определяется из самого кода (русский → ru, прочие
+        → en), а label берётся из built-in таблицы в коде, потому что в
+        list-формате у языка нет описания. Раньше этот тест ожидал
+        ``_language_label("ru") == "ru"`` — но это была регрессия из
+        прошлого коммита: формализатор подсовывал LLM директиву «на языке
+        «ru»» вместо «на языке «русский»», что ломало рерайт на других
+        языках. Сейчас label всегда человекочитаемый.
+        """
         n = _make_node()
         n._load_voice_presets = lambda: {"languages": ["ru", "en"]}  # type: ignore[method-assign]
         assert n._language_prompt_section("ru") == "ru"
         assert n._language_prompt_section("en") == "en"
-        assert n._language_label("ru") == "ru"
+        # Label в list-формате — built-in fallback в коде, а не yaml.
+        assert n._language_label("ru") == "русский"
+        assert n._language_label("en") == "английский"
 
 
 class TestLoadedLanguagesReachLanguageMeta:
