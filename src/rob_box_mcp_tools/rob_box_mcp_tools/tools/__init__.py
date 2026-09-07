@@ -25,6 +25,7 @@ from .memory import *
 from .music import *
 from .scheduler import *
 from .web_search import *
+from .operator_admin import *  # ADR-0051 §6: operator.admin slice (ТАРС diagnostics)
 
 __all__ = [
     # Navigation tools
@@ -86,4 +87,8 @@ __all__ = [
     "FaqSearchTool",
     # Web search tools (issue #1101)
     "SearchWebTool",
+    # Operator admin tools (ADR-0051 §6 — operator.admin slice)
+    "Ros2NodeStatusTool",
+    "ReadLogsTool",
+    "ContainerStatusTool",
 ]

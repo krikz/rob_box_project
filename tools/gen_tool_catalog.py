@@ -485,6 +485,11 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "faq_search",
     ),
     "scheduler": ("task_delta",),
+    "operator.admin": (  # ADR-0051 §6 — ТАРС diagnostics (issue #2001)
+        "ros2_node_status",
+        "read_logs",
+        "container_status",
+    ),
 }
 
 

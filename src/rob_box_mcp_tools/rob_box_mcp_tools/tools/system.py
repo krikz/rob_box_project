@@ -645,7 +645,12 @@ class GetRobotStatusTool(MCPTool):
         status = {
             "position": self._position,
             "battery_level": self._battery_level,
-            "systems": {"navigation": "active", "vision": "active", "tts": "active"},
+            # ADR-0051 §6: 'systems' больше не захардкожен. Если оператор
+            # хочет знать «нода X поднялась?» — это ros2_node_status,
+            # а не get_robot_status. Здесь оставляем пустой словарь,
+            # чтобы ключ остался для обратной совместимости с потребителями,
+            # которые его читают.
+            "systems": {},
         }
 
         if unavailable:
