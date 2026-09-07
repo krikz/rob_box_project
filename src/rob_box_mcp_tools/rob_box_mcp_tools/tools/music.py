@@ -2982,6 +2982,14 @@ class TrackLibrary:
     Миграция ``004_music_library.sql`` применяется идемпотентно при инициализации
     (CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE для bootstrap-трека).
 
+    НЕ на ``/data/harness_voice.db`` (issue #2000 / ADR-0055): её таблицы
+    (``music_tracks``, ``generated_tracks``) сами по себе не конфликтуют со
+    схемой ``SQLiteVoiceMemory``, но ``WaypointStore``/``FAQStore`` — да
+    (см. их докстринги), а все три стора делят один и тот же
+    ``VOICE_MEMORY_DB_PATH``. Переносить музыку в одиночку значило бы
+    расщепить единый файл ещё сильнее, а не объединить. См.
+    ``docs/adr/0055-voice-memory-db-unify-with-harness.md`` (anti-goal §5.6).
+
     Thread-safe: все публичные методы используют ``self._lock``.
 
     Args:
