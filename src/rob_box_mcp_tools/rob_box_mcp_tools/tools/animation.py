@@ -72,6 +72,11 @@ class PlayAnimationTool(MCPTool):
         return ToolExecutionType.INSTANT
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: LED-анимации. personality.
+        return "personality"
+
+    @property
     def blocking(self) -> bool:
         """Анимации не блокируют диалог."""
         return False

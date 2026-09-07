@@ -82,6 +82,15 @@ class SayTool(MCPTool):
         """Fire-and-forget: текст ушёл в топик — LLM может продолжать."""
         return ToolExecutionType.INSTANT
 
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: ``say`` — это голосовой канал
+        # оператора (ТАРС), LLM-личность его НЕ зовёт. Срез фиксируется
+        # тут, в slice_policy.yaml — список для ``operator.speech``
+        # (один из четырёх operator-тулов, которые dialogue_node не может
+        # звать, даже если бы LLM попросил).
+        return "operator.speech"
+
     def execute(self, text: str) -> MCPToolResult:
         """Опубликовать текст в TTS-канал.
 

@@ -92,6 +92,11 @@ class StartMappingTool(MCPTool):
             ),
         ]
 
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: SLAM, personality.
+        return "personality"
+
     def execute(self, map_name: str = "", new_location: Optional[bool] = None) -> MCPToolResult:
         """Начать картографирование."""
         # Если new_location не указан явно — выводим из map_name
@@ -206,6 +211,11 @@ class ContinueMappingTool(MCPTool):
     def execution_type(self) -> ToolExecutionType:
         return ToolExecutionType.MEDIUM  # Переключение режима 2-10s
 
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: SLAM, personality.
+        return "personality"
+
     def execute(self) -> MCPToolResult:
         """Продолжить картографирование."""
         self.log_info("Продолжение картографирования")
@@ -272,6 +282,11 @@ class FinishMappingTool(MCPTool):
     @property
     def execution_type(self) -> ToolExecutionType:
         return ToolExecutionType.MEDIUM
+
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: SLAM, personality.
+        return "personality"
 
     def execute(self, map_name: str = "") -> MCPToolResult:
         """Завершить картографирование."""

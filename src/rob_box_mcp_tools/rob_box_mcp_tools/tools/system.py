@@ -66,6 +66,11 @@ class SetVolumeTool(MCPTool):
         ]
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: громкость TTS. personality.
+        return "personality"
+
+    @property
     def execution_type(self) -> ToolExecutionType:
         """Set volume - FAST операция < 2s (ROS service call)."""
         return ToolExecutionType.FAST
@@ -175,6 +180,11 @@ class SetPitchTool(MCPTool):
         """Set pitch - FAST операция < 2s (ROS service call)."""
         return ToolExecutionType.FAST
 
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: pitch TTS. personality.
+        return "personality"
+
     def execute(self, action: str) -> MCPToolResult:
         """Установить высоту голоса."""
         # Динамический импорт во время выполнения
@@ -274,6 +284,11 @@ class SetSpeedTool(MCPTool):
     def execution_type(self) -> ToolExecutionType:
         """Set speed - FAST операция < 2s (ROS service call)."""
         return ToolExecutionType.FAST
+
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: speed TTS. personality.
+        return "personality"
 
     def execute(self, action: str) -> MCPToolResult:
         """Установить скорость речи."""
