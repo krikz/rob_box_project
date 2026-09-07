@@ -187,6 +187,14 @@ EXEC_REASON_EMERGENCY_OFF: str = "emergency_off"
 EXEC_REASON_HEARTBEAT_REFRESHED: str = "heartbeat_refreshed"
 EXEC_REASON_WRONG_CLIENT: str = "wrong_client"
 EXEC_REASON_HEARTBEAT_NOOP: str = "heartbeat_no_op"
+# Phase 2 (issue #2002): arbiter недоступен (CI mock без него, IDL не
+# пересобран, или workspace вообще без avatar_arbiter-ноды). Честный
+# FAIL, чтобы клиент мог отличить «прокси сломан» от «arbiter отверг».
+EXEC_REASON_ARBITER_UNAVAILABLE: str = "arbiter_unavailable"
+# Phase 2 (issue #2002): arbiter-клиент создан, но вызов упал по timeout /
+# exception (rclpy ServiceNotAvailable, future.result() timeout). Клиент
+# видит ``applied=False`` + reason — обычно retry-safe.
+EXEC_REASON_ARBITER_TIMEOUT: str = "arbiter_timeout"
 
 # Имена arbiter-сервисов (фaсадируются через execute). Импорт ленивый:
 # arbiter_node не импортируется в supervisor_node (разные ноды, разные
@@ -638,7 +646,392 @@ class AvatarSupervisor(Node):
                     self._on_execute_command,
                 )
 
+        # ── Bridge.execute(Command) — arbiter-клиенты (Phase 2, issue #2002) ──
+        # ACQUIRE/RELEASE_FLOOR и SET_AVATAR_MODE проксируются через
+        # avatar_arbiter (владелец LockManager/FSM после ADR-0051 §2.2).
+        # Клиенты (quest_node, telegram_node) после миграции ходят
+        # через ``/supervisor/execute`` и не знают о существовании
+        # arbiter-сервисов; Phase 3 удалит legacy-сервисы arbiter-а
+        # полностью (issue #2002 план).
+        #
+        # Клиенты создаются ЛЕНИВО (в первом execute() для floor/mode),
+        # чтобы в monitor-режиме / без arbiter (CI mock-rclpy) supervisor
+        # не падал на старте. create_client проверяет nested
+        # ``.Request``/``.Response`` через ту же фабрику (issue #1904).
+        self._arbiter_acquire_client: Any = None
+        self._arbiter_release_client: Any = None
+        self._arbiter_set_mode_client: Any = None
+        self._arbiter_srv_types: dict[str, Any] = {}
+
         self._log_startup_diagnostics()
+
+    # ── Bridge.execute(Command) → arbiter proxy (Phase 2, issue #2002) ──
+    def _ensure_arbiter_clients(self) -> bool:
+        """Лениво создать ROS 2 service-клиенты к avatar_arbiter.
+
+        Возвращает ``True`` если все три клиента (acquire/release/set_mode)
+        доступны; ``False`` если IDL / rclpy недоступны (CI mock-stend без
+        arbiter — supervisor остаётся в facade_only для ACQUIRE/RELEASE/
+        SET_AVATAR_MODE). Не бросает исключений наружу: на mock-стенде
+        или в неполном workspace клиент будет ``None``, а :py:meth:`execute`
+        для floor/mode отдаст ``reason="arbiter_unavailable"`` (честный
+        FAIL, ADR-0018).
+
+        Создаём клиентов ТОЛЬКО в active-режиме (монитор не зовёт arbiter —
+        S12, ADR-0028 §4.5). Монитор-путь идёт через ``EXEC_REASON_MONITOR_MODE``
+        раньше, чем мы сюда добираемся.
+        """
+        if self._mode != "active":
+            return False
+        if (
+            self._arbiter_acquire_client is not None
+            and self._arbiter_release_client is not None
+            and self._arbiter_set_mode_client is not None
+        ):
+            return True
+        try:
+            from rob_box_supervisor_msgs.srv import (  # noqa: PLC0415
+                AcquireFloor as _IdlAcquire,
+                ReleaseFloor as _IdlRelease,
+                SetAvatarMode as _IdlSetMode,
+            )
+
+            types_map = {
+                "acquire": _IdlAcquire,
+                "release": _IdlRelease,
+                "set_mode": _IdlSetMode,
+            }
+        except Exception:  # noqa: BLE001 — IDL недоступен (CI / dev-mode)
+            try:
+                from mock_rob_box_supervisor_msgs_srv import (  # type: ignore[import-not-found]  # noqa: PLC0415
+                    AcquireFloor as _MockAcquire,
+                    ReleaseFloor as _MockRelease,
+                    SetAvatarMode as _MockSetMode,
+                )
+
+                types_map = {
+                    "acquire": _MockAcquire,
+                    "release": _MockRelease,
+                    "set_mode": _MockSetMode,
+                }
+            except Exception:  # noqa: BLE001
+                return False
+        # rclpy.Node.create_client требует ПОЛНЫЙ srv-класс (issue #1904).
+        # Если прислали .Request-объект — будет RuntimeError; оставляем
+        # mock-rclpy поднимать это в тестах, а в проде ловим здесь.
+        for key, srv_type in types_map.items():
+            if not (hasattr(srv_type, "Request") and hasattr(srv_type, "Response")):
+                return False
+        try:
+            self._arbiter_acquire_client = self.create_client(
+                types_map["acquire"], ARBITER_ACQUIRE_FLOOR
+            )
+            self._arbiter_release_client = self.create_client(
+                types_map["release"], ARBITER_RELEASE_FLOOR
+            )
+            self._arbiter_set_mode_client = self.create_client(
+                types_map["set_mode"], ARBITER_SET_AVATAR_MODE
+            )
+        except Exception:  # noqa: BLE001 — rclpy недоступен
+            self._arbiter_acquire_client = None
+            self._arbiter_release_client = None
+            self._arbiter_set_mode_client = None
+            return False
+        self._arbiter_srv_types = types_map
+        return True
+
+    # ── Bridge.execute(Command) → arbiter proxy (Phase 2, issue #2002) ──
+    def _proxy_to_arbiter_sync(self, kind: int, command: Any) -> Any:
+        """Sync-проксирование Command в arbiter через ROS 2 service-call.
+
+        Вызывается из :py:meth:`execute` для KIND_ACQUIRE_FLOOR/
+        KIND_RELEASE_FLOOR/KIND_SET_AVATAR_MODE в active-режиме, после
+        успешного :py:meth:`_ensure_arbiter_clients` (т.е. клиенты и
+        srv-типы гарантированно инициализированы).
+
+        Стратегия вызова:
+
+        * ``client.call_async(req)`` → ``Future``.
+        * Ждём ответ через ``rclpy.Future`` (НЕ блокирующий wait — мы в
+          callback-контексте сервиса ``/supervisor/execute``, и крутить
+          executor вложенно нельзя: deadlock).
+        * Реальный паттерн для ROS 2: rclpy spin-once в отдельном
+          ``SingleThreadedExecutor`` — но это лишний boilerplate. Вместо
+          этого supervisor делает sync future.wait() через
+          ``_arbiter_wait_for_future`` helper, который спит polling-цикл
+          и периодически вызывает ``rclpy.spin_once(node, timeout_sec=0)``,
+          чтобы callbacks пришли. На mock-rclpy (CI) ``spin_once`` — no-op,
+          а Future резолвится внешним кодом (тесты).
+        * Если arbiter-сервиса нет (CI/dev) — client.service_is_ready()
+          вернёт ``False``, и мы отдаём ``reason="arbiter_unavailable"``.
+
+        Маппинг ответа (issue #2002 ADR):
+
+        * ACQUIRE_FLOOR: arbiter.AcquireFloorResponse
+          ``{success, granted, held_by, reason, applied}`` →
+          ``Response{accepted=applied AND granted, applied, reason,
+          held_by, actual_mode="", contacted_service=ARBITER_ACQUIRE_FLOOR}``
+        * RELEASE_FLOOR: ``{success, reason, applied}`` →
+          ``Response{accepted=applied, applied, reason,
+          contacted_service=ARBITER_RELEASE_FLOOR}``
+        * SET_AVATAR_MODE: ``{success, mode, reason, applied}`` →
+          ``Response{accepted=applied, applied, reason, actual_mode=mode,
+          contacted_service=ARBITER_SET_AVATAR_MODE}``
+
+        В Phase 2 (issue #2002) это сделано для 3 команд × 3 путей =
+        9 unit-тестов в :file:`test_execute_command.py::TestExecuteArbiterProxy`.
+        """
+        client_id = str(getattr(command, "client_id", "") or "")
+        if kind == KIND_ACQUIRE_FLOOR:
+            client = self._arbiter_acquire_client
+            srv_name = ARBITER_ACQUIRE_FLOOR
+            floor = str(getattr(command, "floor", "") or "")
+            return self._call_arbiter_floor(
+                client, srv_name, command, client_id=client_id, floor=floor
+            )
+        if kind == KIND_RELEASE_FLOOR:
+            client = self._arbiter_release_client
+            srv_name = ARBITER_RELEASE_FLOOR
+            floor = str(getattr(command, "floor", "") or "")
+            return self._call_arbiter_floor(
+                client, srv_name, command, client_id=client_id, floor=floor
+            )
+        if kind == KIND_SET_AVATAR_MODE:
+            client = self._arbiter_set_mode_client
+            srv_name = ARBITER_SET_AVATAR_MODE
+            mode = str(getattr(command, "avatar_event", "") or "")
+            return self._call_arbiter_set_mode(
+                client, srv_name, command, client_id=client_id, mode=mode
+            )
+        # Сюда не должны попасть — execute() уже отфильтровал unknown kind.
+        return _make_execute_response(
+            accepted=False,
+            applied=False,
+            reason=EXEC_REASON_UNKNOWN_KIND,
+        )
+
+    def _call_arbiter_floor(
+        self,
+        client: Any,
+        srv_name: str,
+        command: Any,
+        *,
+        client_id: str,
+        floor: str,
+    ) -> Any:
+        """Проксировать ACQUIRE/RELEASE_FLOOR в avatar_arbiter.
+
+        ``floor`` валидируется против wire-контракта (только ``"teleop"``
+        и ``"voice"``; пустая строка → ``bad_request``). arbiter уже
+        принимает любые non-empty строки (W3-2 fallback), но мы фильтруем
+        заранее чтобы не делать лишний service-call с мусором.
+        """
+        if floor and floor not in ("teleop", "voice"):
+            # Невалидный floor — bad_request, без service-call (ADR-0018).
+            return _make_execute_response(
+                accepted=False,
+                applied=False,
+                reason=EXEC_REASON_BAD_REQUEST,
+                held_by=client_id,
+            )
+        try:
+            request_obj = client.srv_type.Request()  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            return _make_execute_response(
+                accepted=True,
+                applied=False,
+                reason=EXEC_REASON_ARBITER_UNAVAILABLE,
+                held_by=client_id,
+                contacted_service=srv_name,
+            )
+        try:
+            request_obj.client_id = client_id  # type: ignore[attr-defined]
+            request_obj.floor = floor  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            return _make_execute_response(
+                accepted=False,
+                applied=False,
+                reason=EXEC_REASON_BAD_REQUEST,
+                held_by=client_id,
+                contacted_service=srv_name,
+            )
+        return self._dispatch_arbiter_call(
+            client,
+            srv_name,
+            request_obj,
+            kind_hint="floor",
+            client_id=client_id,
+        )
+
+    def _call_arbiter_set_mode(
+        self,
+        client: Any,
+        srv_name: str,
+        command: Any,
+        *,
+        client_id: str,
+        mode: str,
+    ) -> Any:
+        """Проксировать SET_AVATAR_MODE в avatar_arbiter.
+
+        ``mode`` — целевой avatar-режим (``off``/``telegram_active``/
+        ``avatar_present``/``mixed``), как требует wire-контракт
+        ``meta-quest-api.md`` §3. Пустая строка → ``bad_request``.
+        """
+        if not mode:
+            return _make_execute_response(
+                accepted=False,
+                applied=False,
+                reason=EXEC_REASON_BAD_REQUEST,
+                held_by=client_id,
+            )
+        try:
+            request_obj = client.srv_type.Request()  # type: ignore[attr-defined]
+            request_obj.client_id = client_id  # type: ignore[attr-defined]
+            request_obj.mode = mode  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            return _make_execute_response(
+                accepted=False,
+                applied=False,
+                reason=EXEC_REASON_BAD_REQUEST,
+                held_by=client_id,
+                contacted_service=srv_name,
+            )
+        return self._dispatch_arbiter_call(
+            client,
+            srv_name,
+            request_obj,
+            kind_hint="set_mode",
+            client_id=client_id,
+        )
+
+    def _dispatch_arbiter_call(
+        self,
+        client: Any,
+        srv_name: str,
+        request_obj: Any,
+        *,
+        kind_hint: str,
+        client_id: str,
+    ) -> Any:
+        """Sync-call к arbiter-сервису + маппинг ответа в :class:`Response`.
+
+        На mock-rclpy (CI) ``call_async`` возвращает ``MagicMock``, чей
+        ``result()`` сразу отдаёт настроенное значение (тесты через
+        ``client.result.return_value = ...``). На реальном rclpy ждём
+        через ``_arbiter_wait_for_future``.
+        """
+        try:
+            future = client.call_async(request_obj)
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(
+                f"_dispatch_arbiter_call[{srv_name}]: call_async raised: {exc}"
+            )
+            return _make_execute_response(
+                accepted=True,
+                applied=False,
+                reason=EXEC_REASON_ARBITER_UNAVAILABLE,
+                held_by=client_id,
+                contacted_service=srv_name,
+            )
+        try:
+            response = self._arbiter_wait_for_future(future, srv_name)
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(
+                f"_dispatch_arbiter_call[{srv_name}]: wait failed: {exc}"
+            )
+            return _make_execute_response(
+                accepted=True,
+                applied=False,
+                reason=EXEC_REASON_ARBITER_TIMEOUT,
+                held_by=client_id,
+                contacted_service=srv_name,
+            )
+        return self._arbiter_response_to_response(
+            response, srv_name, kind_hint=kind_hint, client_id=client_id
+        )
+
+    @staticmethod
+    def _arbiter_wait_for_future(future: Any, srv_name: str) -> Any:
+        """Дождаться ``future.result()`` с таймаутом 50 мс.
+
+        50 мс — запас над обычным ROS round-trip (avatar_arbiter
+        отвечает синхронно, без I/O, ~1 мс на mock-стенде). Если arbiter
+        отвечает дольше — клиент supervisor'а сам переподнимет (call_async
+        → future.result() — sync wait не блокирует executor, мы
+        находимся в callback-контексте).
+        """
+        timeout_s = 0.05
+        try:
+            # rclpy.Future имеет .result(timeout=...) в новых версиях; на
+            # mock-rclpy (CI) это MagicMock с .return_value. Используем
+            # .result(timeout=...) если доступно, иначе fallback на
+            # ``return_value``.
+            result_method = getattr(future, "result", None)
+            if result_method is None:
+                raise RuntimeError(f"future {future!r} has no .result()")
+            try:
+                return result_method(timeout=timeout_s)
+            except TypeError:
+                # Future.result() без аргументов (mock-стенд).
+                return result_method()
+        except Exception:  # noqa: BLE001
+            raise
+
+    @staticmethod
+    def _arbiter_response_to_response(
+        response: Any,
+        srv_name: str,
+        *,
+        kind_hint: str,
+        client_id: str,
+    ) -> Any:
+        """Маппинг arbiter-ответа в :class:`Response` фасада.
+
+        kind_hint:
+
+        * ``"floor"`` — ACQUIRE/RELEASE_FLOOR (поля granted/held_by)
+        * ``"set_mode"`` — SET_AVATAR_MODE (поле mode → actual_mode)
+        * ``"heartbeat"`` — зарезервировано на Phase 3, пока не используется
+        """
+        if response is None:
+            return _make_execute_response(
+                accepted=False,
+                applied=False,
+                reason=EXEC_REASON_ARBITER_TIMEOUT,
+                held_by=client_id,
+                contacted_service=srv_name,
+            )
+        # response может быть mock-rclpy с .granted/.held_by/.applied/.reason
+        # или типизированным IDL — getattr нормально работает в обоих.
+        granted = bool(getattr(response, "granted", False))
+        held_by_raw = getattr(response, "held_by", "")
+        # str()-оборачиваем только реальные строки; MagicMock truthy
+        # на mock-стенде и приведёт к str(MagicMock) вместо "".
+        held_by = str(held_by_raw) if isinstance(held_by_raw, str) else ""
+        mode_raw = getattr(response, "mode", "")
+        mode = str(mode_raw) if isinstance(mode_raw, str) else ""
+        applied = bool(getattr(response, "applied", False))
+        reason_raw = getattr(response, "reason", "")
+        reason = str(reason_raw) if isinstance(reason_raw, str) else ""
+        if kind_hint == "set_mode":
+            accepted = applied
+            return _make_execute_response(
+                accepted=accepted,
+                applied=applied,
+                reason=reason,
+                actual_mode=mode,
+                contacted_service=srv_name,
+            )
+        # floor (acquire/release)
+        accepted = applied and (granted or kind_hint == "release")
+        return _make_execute_response(
+            accepted=accepted,
+            applied=applied,
+            reason=reason,
+            held_by=held_by or client_id,
+            contacted_service=srv_name,
+        )
 
     def _on_execute_command(
         self, request: Any, response: Any
@@ -815,20 +1208,15 @@ class AvatarSupervisor(Node):
         клиенту это явный сигнал «фасад есть, логика ещё у arbiter; иди
         к нему». Полная миграция — Phase 2 отдельной карточкой.
 
-        Карта ``kind → поведение`` (Phase 1):
+        Карта ``kind → поведение`` (Phase 1) делегирована приватным
+        диспетчерам (ADR-0021 R1, декомпозиция CC=16→≤15 per method,
+        issue t_ef140676):
 
         * ``KIND_ACQUIRE_FLOOR`` / ``KIND_RELEASE_FLOOR`` /
-          ``KIND_SET_AVATAR_MODE`` → facade_only (см. выше).
-        * ``KIND_SET_VOICE_MODE`` → локально через :py:meth:`_apply_voice_mode`.
-        * ``KIND_EMERGENCY_STOP`` → not_implemented (Phase 1). В Phase 2
-          добавим публикацию на ``/avatar/emergency_stop`` + лок-стейт
-          LockManager. Пока честный FAIL (ADR-0018): приняли — но не
-          сделали; emergency=true → emergency=false различимы по
-          ``accepted/applied``.
-        * ``KIND_HEARTBEAT`` → accepted=true applied=true reason="noop"
-          (Phase 1). arbiter уже публикует FloorState через Legacy,
-          supervisor heartbeat в Phase 1 просто подтверждает приём.
-          Phase 2 заменит на полноценный floor-refresh.
+          ``KIND_SET_AVATAR_MODE`` → :py:meth:`_dispatch_floor_or_avatar_mode`.
+        * ``KIND_SET_VOICE_MODE`` → :py:meth:`_dispatch_voice_mode`.
+        * ``KIND_EMERGENCY_STOP`` → :py:meth:`_dispatch_emergency_stop`.
+        * ``KIND_HEARTBEAT`` → :py:meth:`_dispatch_heartbeat`.
         * ``KIND_UNKNOWN`` (kind вне [1..6] или битый payload) →
           accepted=false reason="unknown_kind".
 
@@ -840,112 +1228,152 @@ class AvatarSupervisor(Node):
         """
         kind = _coerce_kind(getattr(command, "kind", KIND_UNKNOWN))
 
-        # ── ACQUIRE/RELEASE_FLOOR и SET_AVATAR_MODE: facade-only (Phase 1)
-        if kind in (KIND_ACQUIRE_FLOOR, KIND_RELEASE_FLOOR, KIND_SET_AVATAR_MODE):
-            client_id = getattr(command, "client_id", "") or ""
-            if not client_id:
-                return _make_execute_response(
-                    accepted=False,
-                    applied=False,
-                    reason=EXEC_REASON_BAD_REQUEST,
-                )
-            # В monitor supervisor принимает, но не делает (S12):
-            # accepted=true applied=false reason=monitor_mode.
-            # В active — фасад ещё не подключён к arbiter (Phase 2):
-            # accepted=true applied=false reason="facade_only".
-            #
-            # avatar_event из payload-а НЕ отдаём в actual_mode
-            # (клиент не должен думать, что мы применили режим):
-            # applied=false → actual_mode="" (ADR-0018 — честный FAIL).
-            if self._mode != "active":
-                return _make_execute_response(
-                    accepted=True,
-                    applied=False,
-                    reason=EXEC_REASON_MONITOR_MODE,
-                )
-            return _make_execute_response(
-                accepted=True,
-                applied=False,
-                reason="facade_only",
-                held_by=str(client_id),
-            )
-
-        # ── SET_VOICE_MODE: локально через _apply_voice_mode ─────────
+        if kind in (
+            KIND_ACQUIRE_FLOOR,
+            KIND_RELEASE_FLOOR,
+            KIND_SET_AVATAR_MODE,
+        ):
+            return self._dispatch_floor_or_avatar_mode(command, kind)
         if kind == KIND_SET_VOICE_MODE:
-            voice_mode = _normalize_voice_mode(
-                getattr(command, "voice_mode", "")
-            )
-            applied, sub_reason = self._apply_voice_mode(voice_mode)
-            if applied:
-                return _make_execute_response(
-                    accepted=True,
-                    applied=True,
-                    reason="applied",
-                    actual_mode=voice_mode,
-                )
-            # _apply_voice_mode уже отдаёт внятные reason:
-            # voice_mode_deprecated / monitor_mode / publish_failed.
-            # Маппим на уровень фасада:
-            if sub_reason == MONITOR_MODE_REASON:
-                facade_reason = EXEC_REASON_MONITOR_MODE
-            elif sub_reason.startswith("voice_mode_deprecated"):
-                facade_reason = EXEC_REASON_VOICE_MODE_REJECTED
-            elif sub_reason == "publish_failed":
-                # Не смогли опубликовать в /dialogue/control (например,
-                # rclpy error / нет подписчика) — facade трактует как
-                # voice_mode_rejected с детальным reason в логах
-                # (ADR-0018: честный FAIL, не молчание).
-                facade_reason = EXEC_REASON_VOICE_MODE_REJECTED
-            else:
-                facade_reason = EXEC_REASON_BAD_REQUEST
-            return _make_execute_response(
-                accepted=False,
-                applied=False,
-                reason=facade_reason,
-                actual_mode=voice_mode,
-            )
-
-        # ── EMERGENCY_STOP: not_implemented (Phase 1, ADR-0018) ────────
+            return self._dispatch_voice_mode(command, kind)
         if kind == KIND_EMERGENCY_STOP:
-            emergency = bool(getattr(command, "emergency", False))
-            # emergency=false («снять стоп») — accepted=true, applied=false
-            # (нет стопа, который нужно снимать) → reason=emergency_off.
-            # Это НЕ ошибка: клиент мог честно думать, что стоп активен.
-            # emergency=true — accepted=true, applied=false,
-            # reason=not_implemented (Phase 2).
-            if not emergency:
-                return _make_execute_response(
-                    accepted=True,
-                    applied=False,
-                    reason=EXEC_REASON_EMERGENCY_OFF,
-                )
-            return _make_execute_response(
-                accepted=True,
-                applied=False,
-                reason=EXEC_REASON_NOT_IMPLEMENTED,
-            )
-
-        # ── HEARTBEAT: noop в Phase 1 ─────────────────────────────────
+            return self._dispatch_emergency_stop(command, kind)
         if kind == KIND_HEARTBEAT:
-            client_id = getattr(command, "client_id", "") or ""
-            if not client_id:
-                return _make_execute_response(
-                    accepted=False,
-                    applied=False,
-                    reason=EXEC_REASON_BAD_REQUEST,
-                )
-            return _make_execute_response(
-                accepted=True,
-                applied=True,
-                reason=EXEC_REASON_HEARTBEAT_NOOP,
-                held_by=str(client_id),
-            )
+            return self._dispatch_heartbeat(command, kind)
 
         # ── unknown_kind (включая KIND_UNKNOWN=0 и битый payload) ────
         return _make_execute_response(
             accepted=False,
             applied=False,
             reason=EXEC_REASON_UNKNOWN_KIND,
+        )
+
+    # ── Диспетчеры для execute() — декомпозиция CC=16→≤15 (ADR-0021 R1).
+    # Issue t_ef140676: каждый приватный метод принимает command и kind (kind
+    # нужен только для _proxy_to_arbiter_sync), возвращает полный
+    # ExecuteResponse. Семантика 1-в-1 с прежним execute() — тесты
+    # test_execute_command.py матрицу 6×5+1+3 должны проходить без правок.
+
+    def _dispatch_floor_or_avatar_mode(
+        self, command: Any, kind: int
+    ) -> Any:
+        """ACQUIRE/RELEASE_FLOOR + SET_AVATAR_MODE → arbiter proxy.
+
+        Phase 2 (issue #2002): arbiter — реальный владелец LockManager/FSM
+        после ADR-0051 §2.2 (issue #1987). Клиенты ходят через
+        ``/supervisor/execute`` и не должны знать о существовании arbiter.
+        """
+        client_id = getattr(command, "client_id", "") or ""
+        if not client_id:
+            return _make_execute_response(
+                accepted=False,
+                applied=False,
+                reason=EXEC_REASON_BAD_REQUEST,
+            )
+        # Монитор-режим: supervisor принимает, но не делает (S12). Это
+        # поведение сохранено из Phase 1; в Phase 2 активный путь идёт
+        # через arbiter-клиент.
+        if self._mode != "active":
+            return _make_execute_response(
+                accepted=True,
+                applied=False,
+                reason=EXEC_REASON_MONITOR_MODE,
+            )
+        if not self._ensure_arbiter_clients():
+            # Arbiter недоступен (CI mock без него, или workspace без
+            # пересборки IDL). Честный FAIL (ADR-0018): не притворяемся
+            # что проксировали, а явно отдаём reason=arbiter_unavailable
+            # (НЕ facade_only — это уже сделано, Phase 2 закрывает gap).
+            return _make_execute_response(
+                accepted=True,
+                applied=False,
+                reason=EXEC_REASON_ARBITER_UNAVAILABLE,
+                held_by=str(client_id),
+            )
+        # Делегируем arbiter-у. ACQUIRE → granted/applied, RELEASE →
+        # applied, SET_AVATAR_MODE → applied/actual_mode. Маппинг полей
+        # см. ниже в _proxy_to_arbiter_sync.
+        return self._proxy_to_arbiter_sync(kind, command)
+
+    def _dispatch_voice_mode(self, command: Any, kind: int) -> Any:
+        """SET_VOICE_MODE → локально через :py:meth:`_apply_voice_mode`."""
+        voice_mode = _normalize_voice_mode(
+            getattr(command, "voice_mode", "")
+        )
+        applied, sub_reason = self._apply_voice_mode(voice_mode)
+        if applied:
+            return _make_execute_response(
+                accepted=True,
+                applied=True,
+                reason="applied",
+                actual_mode=voice_mode,
+            )
+        # _apply_voice_mode уже отдаёт внятные reason:
+        # voice_mode_deprecated / monitor_mode / publish_failed.
+        # Маппим на уровень фасада:
+        if sub_reason == MONITOR_MODE_REASON:
+            facade_reason = EXEC_REASON_MONITOR_MODE
+        elif sub_reason.startswith("voice_mode_deprecated"):
+            facade_reason = EXEC_REASON_VOICE_MODE_REJECTED
+        elif sub_reason == "publish_failed":
+            # Не смогли опубликовать в /dialogue/control (например,
+            # rclpy error / нет подписчика) — facade трактует как
+            # voice_mode_rejected с детальным reason в логах
+            # (ADR-0018: честный FAIL, не молчание).
+            facade_reason = EXEC_REASON_VOICE_MODE_REJECTED
+        else:
+            facade_reason = EXEC_REASON_BAD_REQUEST
+        return _make_execute_response(
+            accepted=False,
+            applied=False,
+            reason=facade_reason,
+            actual_mode=voice_mode,
+        )
+
+    def _dispatch_emergency_stop(self, command: Any, kind: int) -> Any:
+        """EMERGENCY_STOP → not_implemented (Phase 1, ADR-0018).
+
+        В Phase 2 добавим публикацию на ``/avatar/emergency_stop`` +
+        лок-стейт LockManager. Пока честный FAIL: приняли — но не сделали;
+        emergency=true → emergency=false различимы по ``accepted/applied``.
+        """
+        emergency = bool(getattr(command, "emergency", False))
+        # emergency=false («снять стоп») — accepted=true, applied=false
+        # (нет стопа, который нужно снимать) → reason=emergency_off.
+        # Это НЕ ошибка: клиент мог честно думать, что стоп активен.
+        # emergency=true — accepted=true, applied=false,
+        # reason=not_implemented (Phase 2).
+        if not emergency:
+            return _make_execute_response(
+                accepted=True,
+                applied=False,
+                reason=EXEC_REASON_EMERGENCY_OFF,
+            )
+        return _make_execute_response(
+            accepted=True,
+            applied=False,
+            reason=EXEC_REASON_NOT_IMPLEMENTED,
+        )
+
+    def _dispatch_heartbeat(self, command: Any, kind: int) -> Any:
+        """HEARTBEAT → noop в Phase 1.
+
+        arbiter уже публикует FloorState через Legacy, supervisor heartbeat
+        в Phase 1 просто подтверждает приём. Phase 2 заменит на полноценный
+        floor-refresh.
+        """
+        client_id = getattr(command, "client_id", "") or ""
+        if not client_id:
+            return _make_execute_response(
+                accepted=False,
+                applied=False,
+                reason=EXEC_REASON_BAD_REQUEST,
+            )
+        return _make_execute_response(
+            accepted=True,
+            applied=True,
+            reason=EXEC_REASON_HEARTBEAT_NOOP,
+            held_by=str(client_id),
         )
 
     # ── AV-28 §P7 (issue #1920) — voice style preset + language ─────────

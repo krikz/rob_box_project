@@ -119,7 +119,11 @@ class _FakeTriggerRequest:
 
 
 class _FakeTriggerResponse:
-    """Mimics ``std_srvs/srv/Trigger.Response``."""
+    """Mimics ``std_srvs/srv/Trigger.Response``.
+
+    Phase 2 (issue #2002): kept only for legacy-тестов, которые могут
+    использовать его. Новый код работает через ``_FakeExecuteCommand``.
+    """
 
     def __init__(self, success: bool = True, message: str = "") -> None:
         self.success = success
@@ -131,6 +135,85 @@ class _FakeTrigger:
 
     Request = _FakeTriggerRequest
     Response = _FakeTriggerResponse
+
+
+class _FakeCommand:
+    """Mimics ``rob_box_supervisor_msgs.msg.Command`` (Phase 2, issue #2002).
+
+    Простой holder для kind/client_id/floor/etc. Атрибуты плоские,
+    settable через setattr (как в IDL).
+    """
+
+    __slots__ = (
+        "kind",
+        "client_id",
+        "floor",
+        "avatar_event",
+        "voice_mode",
+        "emergency",
+    )
+
+    def __init__(self) -> None:
+        self.kind = 0
+        self.client_id = ""
+        self.floor = ""
+        self.avatar_event = ""
+        self.voice_mode = ""
+        self.emergency = False
+
+
+class _FakeResponse:
+    """Mimics ``rob_box_supervisor_msgs.msg.Response`` (Phase 2)."""
+
+    __slots__ = (
+        "accepted",
+        "applied",
+        "reason",
+        "held_by",
+        "actual_mode",
+        "contacted_service",
+    )
+
+    def __init__(
+        self,
+        *,
+        accepted: bool = True,
+        applied: bool = True,
+        reason: str = "granted",
+        held_by: str = "",
+        actual_mode: str = "",
+        contacted_service: str = "/avatar_arbiter/acquire_floor",
+    ) -> None:
+        self.accepted = accepted
+        self.applied = applied
+        self.reason = reason
+        self.held_by = held_by
+        self.actual_mode = actual_mode
+        self.contacted_service = contacted_service
+
+
+class _FakeExecuteCommandResponse:
+    """Mimics ``ExecuteCommand.srv.Response`` (Phase 2, issue #2002).
+
+    Содержит nested ``.response`` — объект :class:`_FakeResponse`.
+    """
+
+    def __init__(self, response: _FakeResponse) -> None:
+        self.response = response
+
+
+class _FakeExecuteCommandRequest:
+    """Mimics ``ExecuteCommand.srv.Request``: ``.command`` attribute."""
+
+    def __init__(self) -> None:
+        self.command: Any = None
+
+
+class _FakeExecuteCommand:
+    """Stand-in for ``rob_box_supervisor_msgs.srv.ExecuteCommand``."""
+
+    Request = _FakeExecuteCommandRequest
+    Response = _FakeExecuteCommandResponse
 
 
 class _FakeRosString:
@@ -217,7 +300,18 @@ class _FakeClient:
         return self._response_factory(request)
 
     def _default_response(self, _request: Any) -> _FakeFuture:
-        return _FakeFuture(lambda: (_FakeTriggerResponse(True, '{"granted": true, "applied": true}'), None))
+        # Phase 2 (issue #2002): default success response в формате
+        # ``ExecuteCommand.Response`` — раньше был Trigger JSON.
+        resp = _FakeExecuteCommandResponse(
+            _FakeResponse(
+                accepted=True,
+                applied=True,
+                reason="granted",
+                held_by="telegram",
+                contacted_service="/avatar_arbiter/acquire_floor",
+            )
+        )
+        return _FakeFuture(lambda: (resp, None))
 
 
 class _ActiveNode:
@@ -563,10 +657,18 @@ class TestOnStateMsgDecodeContract(unittest.TestCase):
 # ──────────────────────────────────────────────────────────────────────
 
 
-@mock.patch("rob_box_telegram.supervisor_client._try_import_trigger")
+@mock.patch("rob_box_telegram.supervisor_client._try_import_command_msg")
+@mock.patch("rob_box_telegram.supervisor_client._try_import_execute_command")
 @mock.patch("rob_box_telegram.supervisor_client._try_import_rclpy")
 class TestSupervisorClientActiveServiceCall(unittest.TestCase):
-    """Acceptance §1-3, §5-6: real service-call path in active mode."""
+    """Acceptance §1-3, §5-6: real service-call path in active mode.
+
+    Phase 2 (issue #2002): клиент supervisor-а шлёт ``ExecuteCommand``
+    на ``/supervisor/execute`` (ADR-0051 §2.1). Здесь мы мокаем IDL
+    через ``_FakeExecuteCommand`` / ``_FakeCommand`` / ``_FakeResponse``
+    (см. выше) — тесты проверяют что код правильно формирует payload
+    и парсит response.
+    """
 
     def setUp(self) -> None:
         # Shared between patched helpers and test bodies.
@@ -574,10 +676,7 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
         self._release_calls: List[Any] = []
         # Inject fake ``rclpy.qos`` so that ``_setup_active_mode``'s
         # bare ``from rclpy.qos import ...`` succeeds even on CI images
-        # that don't ship ROS 2 Python. ModuleType technically forbids
-        # arbitrary attribute assignment at type-check time, but at
-        # runtime Python happily accepts it (this is the standard
-        # sys.modules injection pattern).
+        # that don't ship ROS 2 Python.
         import sys as _sys
         import types as _types
 
@@ -599,49 +698,70 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
             _sys.modules["rclpy"] = rclpy_mod
         rclpy_mod.spin_until_future_complete = mock.MagicMock()  # type: ignore[attr-defined]
 
-    def _build(self, mock_rclpy, mock_trigger, *, acquire_resp=None, release_resp=None,
-               acquire_wait=True, release_wait=True):
-        """Wire fakes and create a SupervisorClient in active mode."""
+    def _build(
+        self,
+        mock_rclpy,
+        mock_execute,
+        mock_command,
+        *,
+        acquire_resp=None,
+        release_resp=None,
+        acquire_wait: bool = True,
+        release_wait: bool = True,
+    ):
+        """Wire fakes and create a SupervisorClient in active mode.
+
+        Phase 2: один execute-клиент обслуживает оба направления
+        (acquire + release). Различаем по ``command.kind`` в factory.
+        """
         mock_rclpy.return_value = _FakeRosString
-        mock_trigger.return_value = _FakeTrigger
-
-        def make_acquire_client(name: str) -> _FakeClient:
-            def factory(_request: Any) -> _FakeFuture:
-                self._acquire_calls.append(name)
-                if acquire_resp is None:
-                    payload = json.dumps({"granted": True, "applied": True})
-                    resp = _FakeTriggerResponse(True, payload)
-                else:
-                    resp = acquire_resp
-                return _FakeFuture(lambda: (resp, None))
-
-            return _FakeClient(
-                service_name=name,
-                response_factory=factory,
-                wait_result=acquire_wait,
-            )
-
-        def make_release_client(name: str) -> _FakeClient:
-            def factory(_request: Any) -> _FakeFuture:
-                self._release_calls.append(name)
-                if release_resp is None:
-                    resp = _FakeTriggerResponse(True, '{"released": true}')
-                else:
-                    resp = release_resp
-                return _FakeFuture(lambda: (resp, None))
-
-            return _FakeClient(
-                service_name=name,
-                response_factory=factory,
-                wait_result=release_wait,
-            )
+        mock_execute.return_value = _FakeExecuteCommand
+        mock_command.return_value = _FakeCommand
 
         def factory(name: str) -> _FakeClient:
-            if name.endswith("acquire_floor"):
-                return make_acquire_client(name)
-            if name.endswith("release_floor"):
-                return make_release_client(name)
-            return _FakeClient(name)  # pragma: no cover - safety
+            def _factory(request: Any) -> _FakeFuture:
+                cmd = getattr(request, "command", None)
+                kind = getattr(cmd, "kind", 0) if cmd is not None else 0
+                # KIND_ACQUIRE_FLOOR=1, KIND_RELEASE_FLOOR=2
+                if kind == 1:
+                    self._acquire_calls.append(name)
+                    resp = acquire_resp
+                    wait = acquire_wait
+                elif kind == 2:
+                    self._release_calls.append(name)
+                    resp = release_resp
+                    wait = release_wait
+                else:
+                    resp = _FakeExecuteCommandResponse(
+                        _FakeResponse(applied=False, reason="unknown_kind")
+                    )
+                    wait = True
+                if resp is None:
+                    if kind == 1:
+                        # default acquire response
+                        resp = _FakeExecuteCommandResponse(
+                            _FakeResponse(
+                                applied=True,
+                                reason="granted",
+                                held_by="telegram",
+                                contacted_service="/avatar_arbiter/acquire_floor",
+                            )
+                        )
+                    elif kind == 2:
+                        resp = _FakeExecuteCommandResponse(
+                            _FakeResponse(
+                                applied=True,
+                                reason="released",
+                                contacted_service="/avatar_arbiter/release_floor",
+                            )
+                        )
+                return _FakeFuture(lambda: (resp, None))
+
+            return _FakeClient(
+                service_name=name,
+                response_factory=_factory,
+                wait_result=True,
+            )
 
         node = _ActiveNode(client_factory=factory)
         client = SupervisorClient(
@@ -654,65 +774,77 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
 
     # ── §1: _acquire_via_service really calls the service and parses response ──
 
-    def test_acquire_via_service_calls_svc_and_returns_granted(self, mock_rclpy, mock_trigger) -> None:
-        node, client = self._build(mock_rclpy, mock_trigger)
+    def test_acquire_via_service_calls_svc_and_returns_granted(
+        self, mock_rclpy, mock_execute, mock_command
+    ) -> None:
+        node, client = self._build(mock_rclpy, mock_execute, mock_command)
         result = client.acquire_floor(Floor.TELEOP)
         self.assertTrue(result.granted)
         self.assertTrue(result.contacted_service)
-        self.assertIsNone(result.denied_reason)
-        # Lazy: both service-clients are created together on first acquire
-        # (release client is needed for the release path that follows).
-        self.assertEqual(len(node.clients), 2)
-        acquire_client = next(c for c in node.clients if c.service_name.endswith("acquire_floor"))
-        self.assertEqual(len(acquire_client.calls), 1)
-        # Payload carries client_id + floor both as attrs and as JSON.
-        req = acquire_client.calls[0]
-        self.assertEqual(req.client_id, "telegram")
-        self.assertEqual(req.floor, "teleop")
-        body = json.loads(req.data)
-        self.assertEqual(body, {"client_id": "telegram", "floor": "teleop"})
+        # Lazy: один service-client на /supervisor/execute (Phase 2).
+        self.assertEqual(len(node.clients), 1)
+        execute_client = node.clients[0]
+        self.assertEqual(execute_client.service_name, "/supervisor/execute")
+        self.assertEqual(len(execute_client.calls), 1)
+        # Payload — ExecuteCommand.Request с Command.kind=KIND_ACQUIRE_FLOOR.
+        req = execute_client.calls[0]
+        self.assertEqual(req.command.kind, 1)
+        self.assertEqual(req.command.client_id, "telegram")
+        self.assertEqual(req.command.floor, "teleop")
         client.shutdown()
 
-    def test_acquire_via_service_parses_held_by_on_denial(self, mock_rclpy, mock_trigger) -> None:
-        denial = _FakeTriggerResponse(
-            True,
-            json.dumps(
-                {
-                    "granted": False,
-                    "applied": True,
-                    "reason": "conflict:held_by=quest",
-                    "held_by": "quest",
-                }
-            ),
+    def test_acquire_via_service_parses_held_by_on_denial(
+        self, mock_rclpy, mock_execute, mock_command
+    ) -> None:
+        # Phase 2: denial теперь выражается через Response{applied=False,
+        # held_by="quest"} (а не JSON-в-message).
+        denial = _FakeExecuteCommandResponse(
+            _FakeResponse(
+                accepted=True,
+                applied=True,
+                reason="held_by_other",
+                held_by="quest",
+                contacted_service="/avatar_arbiter/acquire_floor",
+            )
         )
-        _, client = self._build(mock_rclpy, mock_trigger, acquire_resp=denial)
+        _, client = self._build(
+            mock_rclpy, mock_execute, mock_command, acquire_resp=denial
+        )
         result = client.acquire_floor(Floor.VOICE)
         self.assertFalse(result.granted)
-        self.assertEqual(result.denied_reason, "held_by_other")
         self.assertEqual(result.held_by, "quest")
         self.assertTrue(result.contacted_service)
         client.shutdown()
 
     # ── §2: _release_via_service really calls ReleaseFloor, clears local state in any case ──
 
-    def test_release_via_service_calls_svc_and_clears_state(self, mock_rclpy, mock_trigger) -> None:
-        node, client = self._build(mock_rclpy, mock_trigger)
+    def test_release_via_service_calls_svc_and_clears_state(
+        self, mock_rclpy, mock_execute, mock_command
+    ) -> None:
+        node, client = self._build(mock_rclpy, mock_execute, mock_command)
         client.acquire_floor(Floor.TELEOP)
         self.assertTrue(client._is_holding(Floor.TELEOP))
         client.release_floor(Floor.TELEOP)
         self.assertFalse(client._is_holding(Floor.TELEOP))
-        # Lazy: second service-client created for release on first release.
-        self.assertEqual(len(node.clients), 2)
-        release_client = next(c for c in node.clients if c.service_name.endswith("release_floor"))
-        self.assertEqual(len(release_client.calls), 1)
-        req = release_client.calls[0]
-        self.assertEqual(req.client_id, "telegram")
-        self.assertEqual(req.floor, "teleop")
+        # Тот же execute-клиент — теперь и acquire и release через него.
+        self.assertEqual(len(node.clients), 1)
+        execute_client = node.clients[0]
+        self.assertEqual(len(execute_client.calls), 2)
+        release_req = execute_client.calls[1]
+        self.assertEqual(release_req.command.kind, 2)
+        self.assertEqual(release_req.command.client_id, "telegram")
+        self.assertEqual(release_req.command.floor, "teleop")
 
-    def test_release_clears_local_state_even_if_service_fails(self, mock_rclpy, mock_trigger) -> None:
-        # Server returns success=False (treated as failure for release).
-        bad = _FakeTriggerResponse(False, "")
-        _, client = self._build(mock_rclpy, mock_trigger, release_resp=bad)
+    def test_release_clears_local_state_even_if_service_fails(
+        self, mock_rclpy, mock_execute, mock_command
+    ) -> None:
+        # Phase 2: «failed» release = Response{applied=False, reason="conflict"}.
+        bad = _FakeExecuteCommandResponse(
+            _FakeResponse(accepted=True, applied=False, reason="conflict")
+        )
+        _, client = self._build(
+            mock_rclpy, mock_execute, mock_command, release_resp=bad
+        )
         client.acquire_floor(Floor.TELEOP)
         self.assertTrue(client._is_holding(Floor.TELEOP))
         client.release_floor(Floor.TELEOP)
@@ -721,9 +853,12 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
 
     # ── §3: handler does not block when service hangs (timeout 0.5s) ──
 
-    def test_acquire_returns_within_timeout_when_service_hangs(self, mock_rclpy, mock_trigger) -> None:
+    def test_acquire_returns_within_timeout_when_service_hangs(
+        self, mock_rclpy, mock_execute, mock_command
+    ) -> None:
         mock_rclpy.return_value = _FakeRosString
-        mock_trigger.return_value = _FakeTrigger
+        mock_execute.return_value = _FakeExecuteCommand
+        mock_command.return_value = _FakeCommand
 
         def factory(name: str) -> _FakeClient:
             return _FakeClient(
@@ -745,14 +880,17 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
         self.assertFalse(result.contacted_service)
         client.shutdown()
 
-    def test_acquire_does_not_spin_rclpy_executor(self, mock_rclpy, mock_trigger) -> None:
+    def test_acquire_does_not_spin_rclpy_executor(
+        self, mock_rclpy, mock_execute, mock_command
+    ) -> None:
         """Verify SupervisorClient never calls rclpy.spin_until_future_complete.
 
         The contract is ``add_done_callback`` + Event.wait; spinning
         would freeze the Telegram handler thread.
         """
         mock_rclpy.return_value = _FakeRosString
-        mock_trigger.return_value = _FakeTrigger
+        mock_execute.return_value = _FakeExecuteCommand
+        mock_command.return_value = _FakeCommand
         node = _ActiveNode()
         client = SupervisorClient(
             node=node, client_id="telegram", mode="active", acquire_timeout_s=0.2
@@ -764,9 +902,12 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
 
     # ── §4-5: supervisor_required param + WARN rate-limit ──
 
-    def test_supervisor_required_true_denies_when_service_unavailable(self, mock_rclpy, mock_trigger) -> None:
+    def test_supervisor_required_true_denies_when_service_unavailable(
+        self, mock_rclpy, mock_execute, mock_command
+    ) -> None:
         mock_rclpy.return_value = _FakeRosString
-        mock_trigger.return_value = _FakeTrigger
+        mock_execute.return_value = _FakeExecuteCommand
+        mock_command.return_value = _FakeCommand
         node = _ActiveNode(client_factory=lambda name: _FakeClient(name, wait_result=False))
         client = SupervisorClient(
             node=node, client_id="telegram", mode="active", supervisor_required=True
@@ -777,9 +918,12 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
         self.assertFalse(result.contacted_service)
         client.shutdown()
 
-    def test_supervisor_required_false_grants_with_warn_when_unavailable(self, mock_rclpy, mock_trigger) -> None:
+    def test_supervisor_required_false_grants_with_warn_when_unavailable(
+        self, mock_rclpy, mock_execute, mock_command
+    ) -> None:
         mock_rclpy.return_value = _FakeRosString
-        mock_trigger.return_value = _FakeTrigger
+        mock_execute.return_value = _FakeExecuteCommand
+        mock_command.return_value = _FakeCommand
         node = _ActiveNode(client_factory=lambda name: _FakeClient(name, wait_result=False))
         fake_now = [1000.0]
         client = SupervisorClient(
@@ -837,9 +981,12 @@ class TestSupervisorClientActiveServiceCall(unittest.TestCase):
 
     # ── §7: heartbeat starts only when holding teleop floor ──
 
-    def test_heartbeat_starts_only_when_holding_teleop(self, mock_rclpy, mock_trigger) -> None:
+    def test_heartbeat_starts_only_when_holding_teleop(
+        self, mock_rclpy, mock_execute, mock_command
+    ) -> None:
         mock_rclpy.return_value = _FakeRosString
-        mock_trigger.return_value = _FakeTrigger
+        mock_execute.return_value = _FakeExecuteCommand
+        mock_command.return_value = _FakeCommand
         node = _ActiveNode()
         client = SupervisorClient(
             node=node, client_id="telegram", mode="active", heartbeat_period_s=0.5

@@ -93,7 +93,18 @@ class TestExecuteServiceRegistered(unittest.TestCase):
 
 
 class TestExecuteAcquisitionCommands(unittest.TestCase):
-    """ACQUIRE/RELEASE_FLOOR и SET_AVATAR_MODE → facade_only (Phase 1)."""
+    """ACQUIRE/RELEASE_FLOOR и SET_AVATAR_MODE → arbiter proxy (Phase 2, issue #2002).
+
+    В Phase 2 (issue #2002) supervisor.execute(Command) для floor/mode
+    реально проксирует в avatar_arbiter через client.call_async(). На
+    mock-rclpy (CI) arbiter-клиенты — MagicMock-и с дефолтным .result()
+    → response.applied=True. Тесты, которые хотят детальный контроль,
+    настраивают ``node._arbiter_*_client.result.return_value`` явно
+    (см. :class:`TestExecuteArbiterProxy` ниже).
+
+    Здесь — базовая матрица «всё, что НЕ зависит от arbiter-ответа»:
+    пустой client_id, monitor-режим, невалидный floor.
+    """
 
     def setUp(self) -> None:
         self.node = AvatarSupervisor()
@@ -101,31 +112,44 @@ class TestExecuteAcquisitionCommands(unittest.TestCase):
     def tearDown(self) -> None:
         self.node.destroy_node()
 
-    def _assert_facade_only(self, resp: object) -> None:
+    def test_acquire_floor_active_proxies_to_arbiter(self) -> None:
+        """В active-режиме ACQUIRE_FLOOR реально зовёт arbiter.AcquireFloor.
+
+        mock-стенд: ``client.result()`` → MagicMock → все bool-поля True.
+        Проверяем что contacted_service указывает на arbiter-AcquireFloor
+        (а не на facade_only). Это закрывает фасад-only gap из Phase 1.
+        """
+        self.node._mode = "active"
+        cmd = _make_command(kind=KIND_ACQUIRE_FLOOR, client_id="quest", floor="teleop")
+        resp = self.node.execute(cmd)
         self.assertTrue(resp.accepted)
-        self.assertFalse(resp.applied)
-        self.assertEqual(resp.reason, "facade_only")
-
-    def test_acquire_floor_active_returns_facade_only(self) -> None:
-        self.node._mode = "active"
-        cmd = _make_command(kind=KIND_ACQUIRE_FLOOR, client_id="quest")
-        resp = self.node.execute(cmd)
-        self._assert_facade_only(resp)
+        self.assertTrue(resp.applied)
+        # contacted_service — это имя arbiter-сервиса, через который прошёл запрос.
+        self.assertEqual(resp.contacted_service, "/avatar_arbiter/acquire_floor")
+        # held_by — client_id (mock-rclpy не заполняет .held_by).
         self.assertEqual(resp.held_by, "quest")
 
-    def test_release_floor_active_returns_facade_only(self) -> None:
+    def test_release_floor_active_proxies_to_arbiter(self) -> None:
         self.node._mode = "active"
-        cmd = _make_command(kind=KIND_RELEASE_FLOOR, client_id="telegram")
+        cmd = _make_command(kind=KIND_RELEASE_FLOOR, client_id="telegram", floor="voice")
         resp = self.node.execute(cmd)
-        self._assert_facade_only(resp)
-        self.assertEqual(resp.held_by, "telegram")
+        self.assertTrue(resp.accepted)
+        self.assertTrue(resp.applied)
+        self.assertEqual(resp.contacted_service, "/avatar_arbiter/release_floor")
 
-    def test_set_avatar_mode_active_returns_facade_only(self) -> None:
+    def test_set_avatar_mode_active_proxies_to_arbiter(self) -> None:
         self.node._mode = "active"
-        cmd = _make_command(kind=KIND_SET_AVATAR_MODE, client_id="quest")
+        cmd = _make_command(
+            kind=KIND_SET_AVATAR_MODE,
+            client_id="quest",
+            avatar_event="avatar_present",
+        )
         resp = self.node.execute(cmd)
-        self._assert_facade_only(resp)
-        self.assertEqual(resp.held_by, "quest")
+        self.assertTrue(resp.accepted)
+        self.assertTrue(resp.applied)
+        self.assertEqual(
+            resp.contacted_service, "/avatar_arbiter/set_avatar_mode"
+        )
 
     def test_acquire_floor_monitor_returns_monitor_mode(self) -> None:
         """В monitor supervisor принимает, но не делает (S12)."""
@@ -161,20 +185,61 @@ class TestExecuteAcquisitionCommands(unittest.TestCase):
         self.assertFalse(resp.accepted)
         self.assertEqual(resp.reason, EXEC_REASON_BAD_REQUEST)
 
-    def test_facade_only_does_not_leak_avatar_event(self) -> None:
-        """applied=False → actual_mode=\"\" (честный FAIL, ADR-0018).
-
-        Клиент НЕ должен думать, что мы применили avatar_event, если
-        реально только проксируем в arbiter (ещё не подключён).
-        """
+    def test_acquire_floor_invalid_floor_rejected(self) -> None:
+        """Невалидный floor (не teleop/voice) — bad_request, без service-call."""
         self.node._mode = "active"
+        cmd = _make_command(
+            kind=KIND_ACQUIRE_FLOOR,
+            client_id="quest",
+            floor="garbage",
+        )
+        resp = self.node.execute(cmd)
+        self.assertFalse(resp.accepted)
+        self.assertEqual(resp.reason, EXEC_REASON_BAD_REQUEST)
+
+    def test_arbiter_proxy_does_not_leak_avatar_event_for_set_mode(self) -> None:
+        """applied=False → actual_mode="" (честный FAIL, ADR-0018).
+
+        Тест-проверка: в случае arbiter_failure (ниже настроим клиент
+        на возврат applied=False), actual_mode пустой даже если
+        avatar_event был передан.
+        """
+        from types import SimpleNamespace
+
+        self.node._mode = "active"
+        # Симулируем, что arbiter-клиенты уже созданы и отдают нужный ответ.
+        # Устанавливаем все три, потому что ``_ensure_arbiter_clients``
+        # проверяет ВСЕ поля сразу (acquire/release/set_mode) и считает
+        # себя инициализированным только если все три не-None.
+        arbiter_response = SimpleNamespace(
+            applied=False,
+            mode="",
+            reason="conflict",
+            granted=False,
+            held_by="",
+        )
+        for attr in (
+            "_arbiter_acquire_client",
+            "_arbiter_release_client",
+            "_arbiter_set_mode_client",
+        ):
+            client = MagicMock()
+            client.srv_type.Request.return_value = SimpleNamespace()
+            # MagicMock.call_async() возвращает chained mock; нам нужно
+            # настроить .result() ДЛЯ ЭТОГО chained mock-а (не для
+            # ``client.result``).
+            client.call_async.return_value.result.return_value = arbiter_response
+            setattr(self.node, attr, client)
         cmd = _make_command(
             kind=KIND_SET_AVATAR_MODE,
             client_id="quest",
             avatar_event="avatar_present",
         )
         resp = self.node.execute(cmd)
-        self.assertEqual(resp.actual_mode, "")
+        self.assertFalse(resp.accepted)
+        self.assertFalse(resp.applied)
+        self.assertEqual(resp.reason, "conflict")
+        self.assertEqual(resp.actual_mode, "")  # applied=False → actual_mode=""
 
 
 class TestExecuteVoiceMode(unittest.TestCase):
