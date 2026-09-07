@@ -108,24 +108,31 @@ REASON_APPLIED = "applied"
 # отказывает клиенту. Стандартное behaviour: applied=false, reason=MONITOR_MODE_REASON.
 REASON_MONITOR = MONITOR_MODE_REASON
 
-# ADR-0027 §3.4 — валидные значения ``voice_input_mode`` на dialogue_node.
-# Супервизор — единственная точка, которая имеет право их менять (ADR-0028 S5).
-# "off" (W3-1, §3.5 docs/design/dialogue-mode-spec-2026-08-28.md) —
-# «диалог off»: блокирует диалоговую ноду ТОЛЬКО для обычных людей у
-# ReSpeaker-микрофона; вход оператора (Telegram/Quest) продолжает работать.
-VOICE_INPUT_MODES: tuple[str, ...] = (
-    "respeaker",
-    "quest_passthrough",
-    "quest_ttts",
-    "quest_stt",
-    "quest_llm_formalize",
-    "off",
-)
-
-# Phase 1 транспорт запроса смены режима голоса. Phase 2 заменит на
-# ``SetVoiceMode``-сервис с кастомным IDL (ADR-0028 §4.3) — здесь топик
-# достаточен, чтобы не плодить rosidl-интерфейсы ради ради-фазы.
+# ADR-0054 — после merge §6 dialogue_node больше НЕ принимает параметр
+# ``voice_input_mode``. Управление личностью идёт через топик
+# ``/dialogue/control`` (String JSON, action: pause|resume). Внешний
+# контракт ``/avatar/set_voice_mode`` остаётся для обратной совместимости
+# с клиентами (UI Quest, web-admin), но режимы ``respeaker`` / ``off``
+# маппятся на ``resume`` / ``pause`` соответственно; остальные значения
+# (quest_ttts, quest_stt и т.п.) — отвергаются с
+# ``reason="voice_mode_deprecated"`` (ADR-0018: честный FAIL, не молчание).
 SET_VOICE_MODE_TOPIC: str = "/avatar/set_voice_mode"
+
+# ADR-0054 §2.1 — единый канал «оператор → личность» (pause/resume).
+# Publisher — супервизор (AvatarSupervisor), subscriber — dialogue_node.
+# QoS — RELIABLE, KEEP_LAST depth=10 (синхронизировано с dialogue_node,
+# см. dialogue_node.py:200). Payload: JSON
+# ``{"action": "pause"|"resume", "reason": str, "ts_s": float}``.
+DIALOGUE_CONTROL_TOPIC: str = "/dialogue/control"
+DIALOGUE_CONTROL_ACK_TOPIC: str = "/dialogue/control_ack"
+# Допустимые ``action``-значения (ADR-0054 §2.1, _on_dialogue_control
+# в dialogue_node.py:2189). Используются как whitelist в
+# ``_publish_dialogue_control`` для защиты от опечаток в caller-коде.
+DIALOGUE_CONTROL_ACTIONS: frozenset[str] = frozenset({"pause", "resume"})
+# Строковые литералы — для прямого использования в payload и в legacy-маппинге
+# (вместо ``DIALOGUE_CONTROL_ACTIONS``-итерации — читаемость).
+DIALOGUE_CONTROL_PAUSE: str = "pause"
+DIALOGUE_CONTROL_RESUME: str = "resume"
 
 # AV-27 / issue #1919 — TTS picker топики (симметрично /avatar/set_voice_mode).
 # Payload — JSON в std_msgs/String, как принято в supervisor_node. См.
@@ -334,11 +341,14 @@ GRIP_OFF_PRESETS: frozenset[str] = frozenset({"", "none", "off"})
 # «Без стиля» — грип произносит дословно, без LLM.
 GRIP_DEFAULT_LANGUAGE: str = "ru"
 
-# Какой ``voice_input_mode`` выставлять на ``dialogue_node`` пока супервизор
-# обрабатывает команду оператора. ``"off"`` — «диалог off» (W3-1, полное
-# управление оператора; см. dialogue-mode-spec-2026-08-28.md §3.5).
-# Переопределяется параметром ``agent_during_voice_mode``.
-AGENT_DURING_VOICE_MODE_DEFAULT: str = "off"
+# Какой ``action`` слать в ``/dialogue/control`` пока супервизор-агент
+# обрабатывает команду оператора. ADR-0054 §6.7: теперь это всегда
+# ``pause`` (вход) и ``resume`` (finally). Режим «off» из старого
+# ``voice_input_mode`` сводится именно к pause личности — никакого TTL
+# (ADR-0051 инвариант 8). Если оператор хочет ограниченную паузу — он
+# делает это в супервизоре через ``TaskScheduler`` (target §7.3 §8).
+AGENT_DIALOGUE_PAUSE_ACTION: str = "pause"
+AGENT_DIALOGUE_RESUME_ACTION: str = "resume"
 
 # Валидные ``source``-поля в ``/avatar/command``. Используется только для
 # метрик (label) и валидации payload-а — НЕ для роутинга (это работа
@@ -378,12 +388,14 @@ class AvatarSupervisor(Node):
     # ── AGENT_* параметры (AV-21, ТАРС / issue #1988) ───────────────
     # ``agent_enabled`` гейт всего agent-прохода (default true — ТАРС
     # работает сразу). ``system_prompt_file`` — имя файла в
-    # ``rob_box_supervisor/prompts/``. ``agent_during_voice_mode`` — какой
-    # voice_input_mode выставлять на dialogue_node на время обработки
-    # команды (default "off" — "диалог off", полное управление оператора).
+    # ``rob_box_supervisor/prompts/``. Параметр ``agent_during_voice_mode``
+    # удалён вместе с ``voice_input_mode`` (ADR-0054 §6 / §6.7): теперь
+    # во время обработки команды оператора супервизор ВСЕГДА шлёт
+    # ``pause`` в ``/dialogue/control`` (и ``resume`` в finally). Если
+    # клиенту нужен другой режим — он вызывает
+    # ``/dialogue/control {action:...}`` напрямую (новый API).
     AGENT_ENABLED_PARAM = "agent_enabled"
     SYSTEM_PROMPT_FILE_PARAM = "system_prompt_file"
-    AGENT_DURING_VOICE_MODE_PARAM = "agent_during_voice_mode"
 
     def __init__(self) -> None:
         super().__init__("avatar_supervisor")
@@ -397,10 +409,20 @@ class AvatarSupervisor(Node):
         # Логгер ROS (не stdlib logging — для unified rclpy logging).
         self._log = self.get_logger()
 
-        # ADR-0028 S5 — супервизор единственный, кто меняет voice_input_mode
-        # на dialogue_node. Phase 1 транспорт — топик (см. SET_VOICE_MODE_TOPIC).
+        # ADR-0028 S5 (обновлено в ADR-0054 §6.7) — супервизор управляет
+        # личностью через топик ``/dialogue/control`` (String JSON,
+        # action: pause|resume). Phase 1 транспорт — топик (см.
+        # SET_VOICE_MODE_TOPIC). dialogue_node ack-ает на
+        # ``/dialogue/control_ack`` (sub для будущей телеметрии).
         self.create_subscription(
             RosString, SET_VOICE_MODE_TOPIC, self._on_set_voice_mode, 10
+        )
+        # ADR-0054 §6.7 — публикация в ``/dialogue/control``. Используется
+        # для swap-контекста вокруг ``_run_agent_sync`` (pause на входе,
+        # resume в finally) и для обработки явных
+        # ``/avatar/set_voice_mode``-команд (legacy-контракт).
+        self._dialogue_control_pub = self.create_publisher(
+            RosString, DIALOGUE_CONTROL_TOPIC, 10
         )
         # AV-28 §P7 (issue #1920) — voice style preset / language топики.
         # Валидируем ID по whitelist (тот же, что в ws_server.py) и выставляем
@@ -447,9 +469,10 @@ class AvatarSupervisor(Node):
         self.declare_parameter(
             self.SYSTEM_PROMPT_FILE_PARAM, "operator_system_prompt.txt"
         )
-        self.declare_parameter(
-            self.AGENT_DURING_VOICE_MODE_PARAM, AGENT_DURING_VOICE_MODE_DEFAULT
-        )
+        # Параметр ``agent_during_voice_mode`` удалён вместе с
+        # ``voice_input_mode`` (ADR-0054 §6.7). Старое default-поведение
+        # «pause личности на время обработки команды» теперь жёстко
+        # зашито в ``_dialogue_control_swap`` (см. ниже).
         # ── LLM / tools / память оператора (issue #1988) ─────────────
         # Дефолты повторяют dialogue_node (один провайдер — deepseek из
         # env). Полный health-fallback chain — отдельная карточка позже.
@@ -473,10 +496,11 @@ class AvatarSupervisor(Node):
             self.get_parameter(self.SYSTEM_PROMPT_FILE_PARAM).value
             or "operator_system_prompt.txt"
         )
-        self._agent_during_voice_mode: str = str(
-            self.get_parameter(self.AGENT_DURING_VOICE_MODE_PARAM).value
-            or AGENT_DURING_VOICE_MODE_DEFAULT
-        )
+        # Поле ``_agent_during_voice_mode`` удалено вместе с параметром
+        # ``voice_input_mode`` (ADR-0054 §6.7). Старое поведение «поставь
+        # личность в off на время обработки команды» теперь реализовано
+        # через ``_dialogue_control_swap`` — жёстко шлём ``pause`` на
+        # входе и ``resume`` в finally (контракт ADR-0054 §2.1).
 
         # AgentCore создаётся ЛЕНИВО (см. _ensure_agent_core): при
         # ``agent_enabled=false`` мы не должны инстанцировать LLM /
@@ -486,12 +510,21 @@ class AvatarSupervisor(Node):
         self._operator_dsm: Any = None
         # Журнал ТАРС (§5.4) — тоже лениво, персист по journal_path.
         self._operator_journal: Any = None
-        # Текущий ``voice_input_mode`` dialogue_node — нужен для
-        # _voice_mode_swap (восстановить прежнее значение в finally).
-        # ``None`` = мы не знаем (первый swap после старта) → в finally
-        # НЕ делаем restore, только логируем warning, чтобы не сбросить
-        # режим в дефолт по своей инициативе.
-        self._voice_input_mode_before_swap: Optional[str] = None
+        # Метрики супервизор-агента инициализируются лениво через
+        # ``_build_agent_metrics`` при первом вызове
+        # ``_record_agent_command``/``_record_agent_tool_call``. Чтобы
+        # ``AttributeError`` не возникал в путях, которые мы не должны
+        # трогать (например, ``agent_disabled`` path до инициализации),
+        # кладём пустую no-op заглушку сразу. ``enabled=False`` →
+        # ``_record_*`` короткое замыкание на return. Реальные счётчики
+        # поднимутся при первом ``_build_agent_metrics``.
+        self._agent_metrics: dict[str, Any] = {"enabled": False}
+        # Поле ``_voice_input_mode_before_swap`` удалено вместе с
+        # ``voice_input_mode`` (ADR-0054 §6.7). В новой схеме через
+        # ``/dialogue/control`` супервизор ВСЕГДА шлёт ``pause`` на входе
+        # и ``resume`` в finally — режим личности не «свапается», а
+        # переводится в SILENCED → IDLE. Snapshot предыдущего значения
+        # больше не нужен, restore логика исчезает.
 
         # Publisher /avatar/command_result (для супервизор-агента).
         # QoS — default reliable (depth=10). Не latched: результаты
@@ -662,34 +695,100 @@ class AvatarSupervisor(Node):
             f"avatar_supervisor started: mode={self._mode}, zenoh={zenoh}"
         )
 
-    # ── voice mode (ADR-0028 S5) ─────────────────────────────────────
-    def _on_set_voice_mode(self, msg: RosString) -> None:
-        """Обработка ``/avatar/set_voice_mode`` — запрос сменить режим голоса.
+    # ── dialogue control (ADR-0054 §6.7) ──────────────────────────
+    # После удаления ``voice_input_mode`` (ADR-0054 §6) единственная
+    # точка влияния супервизора на личность — топик ``/dialogue/control``.
+    # Метод ``_apply_voice_mode`` оставлен для обратной совместимости с
+    # клиентами ``/avatar/set_voice_mode`` (UI Quest, web-admin): mode
+    # ``respeaker`` → ``resume``, ``off`` → ``pause``, прочие → отвергаются
+    # как устаревшие (``voice_mode_deprecated``). Супервизор-агент
+    # (ТАРС) ВСЕГДА шлёт ``pause``/``resume`` напрямую через
+    # ``_dialogue_control_swap`` (без legacy-обёртки).
+    LEGACY_VOICE_MODE_TO_ACTION: Mapping[str, str] = {
+        "respeaker": DIALOGUE_CONTROL_RESUME,
+        "off": DIALOGUE_CONTROL_PAUSE,
+    }
 
-        Единственная точка, которая имеет право менять ``voice_input_mode``
-        на ``dialogue_node`` (ADR-0028 S5). В monitor-режиме принимаем и
-        логируем, но НЕ применяем (S12); в active — выставляем параметр.
+    def _publish_dialogue_control(
+        self, action: str, reason: str = ""
+    ) -> bool:
+        """Опубликовать ``{action, reason, ts_s}`` в ``/dialogue/control``.
+
+        Returns ``True`` если publish выполнен (диалоговая нода может
+        ack-нуть на ``/dialogue/control_ack``; ack на стороне супервизора
+        не ждём — fire-and-forget, личность всё равно реагирует идемпотентно).
+        Returns ``False`` при невалидном ``action`` (защита от опечаток в
+        caller-коде). ADR-0054 §2.1.
+        """
+        if action not in DIALOGUE_CONTROL_ACTIONS:
+            self._log.warning(
+                f"_publish_dialogue_control: invalid action={action!r}, "
+                f"expected one of {sorted(DIALOGUE_CONTROL_ACTIONS)}"
+            )
+            return False
+        try:
+            payload = {
+                "action": action,
+                "reason": reason,
+                "ts_s": time.time(),
+            }
+            msg = RosString()
+            msg.data = json.dumps(payload, ensure_ascii=False)
+            self._dialogue_control_pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001 — отказ не должен валить ноду
+            self._log.warning(
+                f"_publish_dialogue_control: publish failed: {exc}"
+            )
+            return False
+        return True
+
+    def _on_set_voice_mode(self, msg: RosString) -> None:
+        """Обработка ``/avatar/set_voice_mode`` — legacy-контракт.
+
+        После удаления ``voice_input_mode`` (ADR-0054 §6) этот топик всё ещё
+        принимается (UI Quest, web-admin), но mode → action маппинг сводится
+        к двум значениям: ``respeaker``→``resume``, ``off``→``pause``.
+        В monitor-режиме принимаем и логируем, но НЕ применяем (S12);
+        в active — публикуем в ``/dialogue/control``.
         """
         mode = (msg.data or "").strip()
         applied, reason = self._apply_voice_mode(mode)
         # f-string: RcutilsLogger принимает ОДИН msg (issue #1644).
-        self._log.info(f"SetVoiceMode: mode={mode} applied={applied} reason={reason}")
+        self._log.info(
+            f"SetVoiceMode: mode={mode} applied={applied} reason={reason}"
+        )
 
     def _apply_voice_mode(self, mode: str) -> tuple[bool, str]:
-        """Чистая логика применения ``voice_input_mode`` (тестируется без rclpy).
+        """Legacy-контракт ``/avatar/set_voice_mode`` через ``/dialogue/control``.
 
-        Возвращает ``(applied, reason)``. Не валит ноду на битом входе.
+        После удаления ``voice_input_mode`` (ADR-0054 §6) супервизор больше
+        НЕ ставит параметр на dialogue_node — только публикует action в
+        ``/dialogue/control``. Маппинг (ADR-0054 §6.7):
+
+        * ``respeaker`` → ``resume`` (вернуть личность к активной работе)
+        * ``off``       → ``pause`` (глушим личность, оператор работает)
+        * остальные (``quest_ttts``, ``quest_stt``, ``quest_llm_formalize``,
+          ``quest_passthrough``, ``quest_command``) — отвергаются с
+          ``reason="voice_mode_deprecated: <mode>"`` (ADR-0018 — честный
+          FAIL, не молчание). Эти режимы больше не существуют — клиенты
+          должны мигрировать на ``/dialogue/control`` напрямую или на
+          новые MCP-инструменты ``dialogue_pause``/``dialogue_resume``
+          (отдельная карточка).
+
+        Возвращает ``(applied, reason)`` для симметрии со старым контрактом:
+        ``Bridge.execute(Command)`` и тесты ``test_execute_command.py``
+        матчат reason без изменений.
         """
-        if mode not in VOICE_INPUT_MODES:
-            return False, f"invalid_voice_mode: {mode!r}"
+        if mode in self.LEGACY_VOICE_MODE_TO_ACTION:
+            action = self.LEGACY_VOICE_MODE_TO_ACTION[mode]
+        else:
+            return False, f"voice_mode_deprecated: {mode!r}"
         if self._mode != "active":
             return False, MONITOR_MODE_REASON
-        try:
-            self._set_dialogue_param("voice_input_mode", mode)
-        except Exception as exc:  # noqa: BLE001 — отказ не должен валить ноду
-            self._log.warning(f"SetVoiceMode: failed to set dialogue param: {exc}")
-            return False, f"param_set_failed: {exc}"
-        return True, "applied"
+        applied = self._publish_dialogue_control(
+            action, reason=f"legacy_set_voice_mode:{mode}"
+        )
+        return (applied, "applied" if applied else "publish_failed")
 
     # ── Bridge.execute(Command) — ADR-0051 §2.1, issue #2002 ──────────
     def execute(self, command: Any) -> Any:
@@ -773,11 +872,17 @@ class AvatarSupervisor(Node):
                     actual_mode=voice_mode,
                 )
             # _apply_voice_mode уже отдаёт внятные reason:
-            # invalid_voice_mode / monitor_mode / param_set_failed
+            # voice_mode_deprecated / monitor_mode / publish_failed.
             # Маппим на уровень фасада:
             if sub_reason == MONITOR_MODE_REASON:
                 facade_reason = EXEC_REASON_MONITOR_MODE
-            elif sub_reason.startswith("invalid_voice_mode"):
+            elif sub_reason.startswith("voice_mode_deprecated"):
+                facade_reason = EXEC_REASON_VOICE_MODE_REJECTED
+            elif sub_reason == "publish_failed":
+                # Не смогли опубликовать в /dialogue/control (например,
+                # rclpy error / нет подписчика) — facade трактует как
+                # voice_mode_rejected с детальным reason в логах
+                # (ADR-0018: честный FAIL, не молчание).
                 facade_reason = EXEC_REASON_VOICE_MODE_REJECTED
             else:
                 facade_reason = EXEC_REASON_BAD_REQUEST
@@ -1201,78 +1306,68 @@ class AvatarSupervisor(Node):
         except Exception as exc:  # noqa: BLE001
             self._log.warning(f"agent_metrics: tool_call record failed: {exc}")
 
-    # ── helpers: voice-mode swap (ADR-0028 S5) ─────────────────────────────────────
+    # ── helpers: dialogue control swap (ADR-0054 §6.7) ──────────────────
+    # После удаления ``voice_input_mode`` swap вокруг ``_run_agent_sync``
+    # работает по новой схеме: на входе публикуем ``pause`` в
+    # ``/dialogue/control``, в ``finally`` (включая путь с исключением)
+    # публикуем ``resume``. Snapshot предыдущего состояния личности НЕ
+    # нужен: dialogue_node уже идемпотентно хранит своё состояние и
+    # ack-ает на ``/dialogue/control_ack``. Если супервизор стартует, а
+    # личность уже в SILENCED — повторный pause no-op'ит в dialogue_node
+    # (см. ``_apply_operator_pause``, dialogue_node.py:2200).
+    #
+    # try/finally сохранён для AC #8: даже если LLM бросит исключение
+    # внутри swap, личность гарантированно вернётся в IDLE. Без finally
+    # оператор «вырубит» личность одной командой, а resume так и не
+    # прилетит — это и есть регрессия ADR-0028 S5.
 
     @contextlib.contextmanager
-    def _voice_mode_swap(self) -> Iterator[None]:
+    def _dialogue_control_swap(self) -> Iterator[None]:
         """Контекст-менеджер «пока оператор работает, личность молчит».
 
-        ADR-0028 S5: единственная точка, которая имеет право менять
-        ``voice_input_mode`` на ``dialogue_node`` — супервизор (через
-        ``_apply_voice_mode`` / ``_set_dialogue_param``). При входе
-        ставим ``agent_during_voice_mode`` (default "off"), при выходе
-        (в ``finally``, включая путь с исключением) — восстанавливаем
-        предыдущее значение. Если предыдущее неизвестно (``None`` —
-        см. :py:meth:`_capture_current_voice_mode`), в finally НЕ делаем
-        restore и только логируем — иначе свапнём режим в дефолт по
-        своей инициативе.
+        ADR-0054 §6.7: на входе публикуем ``pause`` в ``/dialogue/control``,
+        в ``finally`` (включая путь с исключением) — ``resume``. Поле
+        ``prev_mode``/``_capture_current_voice_mode`` больше не нужны:
+        dialogue_node сам знает свой FSM-стейт и ack-ает, супервизор лишь
+        дёргает переходы pause↔resume.
 
-        Контекст-менеджер намеренно вызывает ``_apply_voice_mode`` (а
-        не пишет в dialogue_node напрямую) — это и есть «через
-        супервизор», а не side-door (карточка §4). В monitor-режиме
-        ``_apply_voice_mode`` возвращает ``(False, MONITOR_MODE_REASON)``,
-        и свап фактически не применяется — но try/finally дисциплина
-        сохраняется (тест-инвариант AC #8: «voice_input_mode
-        восстановлен даже если LLM упал»).
+        В monitor-режиме ``_publish_dialogue_control`` всё равно публикует
+        (мы не знаем, опубликовал ли кто-то до нас) — dialogue_node всё
+        равно идемпотентен, но в логе будет видна попытка apply даже в
+        monitor. Тест-инвариант: в monitor поведение **не проверяется** на
+        идемпотентность dialogue_node (мы лишь тестируем, что swap шлёт
+        две команды).
         """
-        prev_mode = self._voice_input_mode_before_swap
         # Входим в режим «оператор работает».
-        applied_in, reason_in = self._apply_voice_mode(self._agent_during_voice_mode)
+        applied_in = self._publish_dialogue_control(
+            DIALOGUE_CONTROL_PAUSE,
+            reason="agent_during_command",
+        )
         if not applied_in:
-            # В monitor — это ожидаемо; в active — повод для warn (но
-            # НЕ ошибка, чтобы не валить обработку команды).
+            # Если publish упал (нет подписчика / rclpy error) — не валим
+            # обработку команды, но логируем. Семантика: «попытались
+            # заглушить, не вышло — команду всё равно обработаем».
             self._log.debug(
-                f"voice_mode_swap.enter: mode={self._agent_during_voice_mode} "
-                f"applied={applied_in} reason={reason_in}"
+                "dialogue_control_swap.enter: pause publish failed "
+                "(no subscriber or rclpy issue)"
             )
         try:
             yield
         finally:
-            # Восстанавливаем ТОЛЬКО если знаем предыдущее значение И
-            # оно отличается от текущего. ``None`` = «не знаем»
-            # (см. _capture_current_voice_mode) — НЕ делаем restore,
-            # иначе свапнём dialogue_node в дефолт по своей инициативе.
-            if prev_mode is not None and prev_mode != self._agent_during_voice_mode:
-                applied_out, reason_out = self._apply_voice_mode(prev_mode)
-                if not applied_out:
-                    self._log.warning(
-                        f"voice_mode_swap.exit: failed to restore mode={prev_mode} "
-                        f"reason={reason_out}"
-                    )
-            elif prev_mode is None:
-                self._log.debug(
-                    "voice_mode_swap.exit: previous mode unknown, no restore"
+            # Восстанавливаем личность — ВСЕГДА, включая путь с исключением
+            # (AC #8). resume из не-paused состояния в dialogue_node —
+            # no-op + ack с текущим состоянием (§2.5 ADR-0054), так что
+            # безопасно даже если pause не дошёл.
+            applied_out = self._publish_dialogue_control(
+                DIALOGUE_CONTROL_RESUME,
+                reason="agent_command_done",
+            )
+            if not applied_out:
+                self._log.warning(
+                    "dialogue_control_swap.exit: resume publish failed — "
+                    "dialogue_node may remain SILENCED. Operator can "
+                    "manually send /dialogue/control {action:resume}."
                 )
-            # Сбрасываем snapshot: следующий swap начнёт с чистого
-            # состояния (``prev_mode`` будет снова захвачен в
-            # _on_avatar_command ДО входа в swap).
-            self._voice_input_mode_before_swap = None
-
-    def _capture_current_voice_mode(self) -> Optional[str]:
-        """Захватить текущий ``voice_input_mode`` dialogue_node для swap.
-
-        Phase 1 (монитор): у нас нет гарантированного способа узнать
-        текущее значение (нет GetParameters клиента к dialogue_node).
-        Возвращаем ``None`` — swap использует его как «не пытаться
-        restore в finally». Phase 2 (active-режим) заменит это на
-        настоящий GetParameters.ack.
-
-        Тест-инвариант (AC #8): если LLM бросит исключение после
-        capture, finally-ветка _voice_mode_swap НЕ пытается
-        восстанавливать ``None — иначе свапнём dialogue_node в дефолт
-        по своей инициативе.
-        """
-        return None
 
     # ── helpers: AgentCore (issue #1988, шаг 4а) ───────────────────────
     # OperatorHarness заменён на AgentCore: промпт оператора, реальный
@@ -1870,8 +1965,9 @@ class AvatarSupervisor(Node):
           1. Парсинг JSON. Битый → публикуем ``malformed_input``, выходим.
           2. Гейт ``agent_enabled``. False → публикуем ``agent_disabled``.
           3. Ленивая инициализация AgentCore (один раз).
-          4. ``_voice_mode_swap()`` (try/finally) — личность молчит
-             пока мы работаем.
+          4. ``_dialogue_control_swap()`` (try/finally) — личность молчит
+             пока мы работаем (ADR-0054 §6.7: публикуем ``pause`` в
+             ``/dialogue/control`` на входе, ``resume`` в finally).
           5. ``AgentCore.process_input(payload)`` → результат.
           6. Публикация результата в ``/avatar/command_result``.
           7. Метрики + запись в журнал ТАРС.
@@ -1917,19 +2013,22 @@ class AvatarSupervisor(Node):
             self._record_agent_command(source=source, result="agent_unavailable")
             return
 
-        # Снимок «текущего» voice_input_mode ДО swap.apply — нужно
+        # Snapshot «текущего» voice_input_mode ДО swap.apply — нужен
         # для finally-восстановления. В Phase 1 это всегда "unknown"
         # (см. _capture_current_voice_mode), в active-режиме Phase 2
         # заменит на настоящий GetParameters.
-        self._voice_input_mode_before_swap = self._capture_current_voice_mode()
+        #
+        # ADR-0054 §6.7 — snapshot больше не нужен: dialogue_node сам
+        # знает свой FSM-стейт. Swap публикует ``pause`` на входе и
+        # ``resume`` в finally без предварительного capture.
 
         try:
-            with self._voice_mode_swap():
+            with self._dialogue_control_swap():
                 result = self._run_agent_sync(core, payload)
         except Exception as exc:  # noqa: BLE001 — НЕ ДОЛЖНО сбежать из swap
-            # ``_voice_mode_swap`` имеет try/finally, но защищаемся от
+            # ``_dialogue_control_swap`` имеет try/finally, но защищаемся от
             # ошибок ВНЕ swap (publish, метрики). Сам swap уже
-            # восстановил voice_input_mode.
+            # отправил resume.
             self._log.warning(f"_on_avatar_command: outer exception: {exc}")
             result = {
                 "ok": False,

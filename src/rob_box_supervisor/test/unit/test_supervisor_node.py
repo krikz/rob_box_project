@@ -6,9 +6,10 @@
 что осталось в этой ноде:
 
 - Нода создаётся с name="avatar_supervisor" и параметром mode="monitor".
-- Voice-управление dialogue_node (ADR-0028 S5): /avatar/set_voice_mode,
-  preset/language (AV-28), set_voice/preview (AV-27) — в monitor применяется
-  false (S12), в active — SetParameters на dialogue_node.
+- Voice-управление dialogue_node (ADR-0028 S5 / ADR-0054 §6.7): после
+  удаления ``voice_input_mode`` супервизор управляет личностью через
+  топик ``/dialogue/control``. ``/avatar/set_voice_mode`` остался для
+  legacy-контракта (UI Quest, web-admin) — маппится на pause/resume.
 - Нода НЕ регистрирует floor-сервисы и НЕ публикует /avatar/state
   (арбитраж — в avatar_arbiter), НЕ правит twist_mux.
 
@@ -16,16 +17,20 @@
 """
 from __future__ import annotations
 
+import json
 import pathlib
 import unittest
 from unittest.mock import MagicMock
 
 from rob_box_supervisor.supervisor_node import (
+    DIALOGUE_CONTROL_ACTIONS,
+    DIALOGUE_CONTROL_PAUSE,
+    DIALOGUE_CONTROL_RESUME,
+    DIALOGUE_CONTROL_TOPIC,
     MONITOR_MODE_REASON,
     SET_VOICE_LANGUAGE_TOPIC,
     SET_VOICE_MODE_TOPIC,
     SET_VOICE_PRESET_TOPIC,
-    VOICE_INPUT_MODES,
     VOICE_LANGUAGES,
     VOICE_PRESET_IDS,
     AvatarSupervisor,
@@ -87,16 +92,17 @@ class TestAvatarSupervisorDoesNotMutateExternalState(unittest.TestCase):
             self.assertNotIn("twist_mux", t)
 
     def test_no_set_parameter_calls_for_dialogue_via_pubs(self) -> None:
-        """Нет publisher-ов на /dialogue/ или лишних /voice/ (голос-параметры —
-        через параметр-клиенты под mode=active, не топики).
-
-        Единственное исключение — /voice/tts/request (шаг 4б, issue #1989):
-        пайплайн грипа публикует туда текст оператора (динамики робота).
+        """Нет publisher-ов на /voice/ (кроме /voice/tts/request, шаг 4б) +
+        в /dialogue/ — только ``/dialogue/control`` (ADR-0054 §6.7,
+        pause/resume для личности). Голос-параметры — через параметр-клиенты
+        под mode=active, не топики.
         """
         voice_pubs = [t for t in self.node._publishers if t.startswith("/voice/")]
         self.assertEqual(voice_pubs, ["/voice/tts/request"])
-        for topic in self.node._publishers:
-            self.assertFalse(topic.startswith("/dialogue/"))
+        dialogue_pubs = [
+            t for t in self.node._publishers if t.startswith("/dialogue/")
+        ]
+        self.assertEqual(dialogue_pubs, ["/dialogue/control"])
 
     def test_log_startup_diagnostics_uses_single_msg_arg(self) -> None:
         """Регресс #1644: ``_log.info`` получает ОДИН строковый msg.
@@ -119,7 +125,19 @@ class TestAvatarSupervisorDoesNotMutateExternalState(unittest.TestCase):
 
 
 class TestAvatarSupervisorVoiceMode(unittest.TestCase):
-    """ADR-0028 S5 — супервизор владеет voice_input_mode (Phase 1)."""
+    """ADR-0054 §6.7 — супервизор управляет личностью через ``/dialogue/control``.
+
+    После удаления ``voice_input_mode`` (ADR-0054 §6) параметр
+    ``voice_input_mode`` на dialogue_node больше не существует, и супервизор
+    вместо ``_set_dialogue_param`` публикует JSON в ``/dialogue/control``.
+    Тесты проверяют:
+      * Legacy-контракт ``/avatar/set_voice_mode`` маппится на
+        ``resume`` (``respeaker``) / ``pause`` (``off``).
+      * Все остальные режимы (quest_*, …) — отвергаются с
+        ``reason="voice_mode_deprecated: ..."`` (ADR-0018 — честный FAIL).
+      * В monitor-режиме ничего не публикуется (S12).
+      * Publisher ``/dialogue/control`` объявлен и используется.
+    """
 
     def setUp(self) -> None:
         self.node = AvatarSupervisor()
@@ -127,51 +145,124 @@ class TestAvatarSupervisorVoiceMode(unittest.TestCase):
     def tearDown(self) -> None:
         self.node.destroy_node()
 
+    # ── topology ─────────────────────────────────────────────────────
     def test_set_voice_mode_topic_subscribed(self) -> None:
         topics = [s.topic for s in self.node._subscriptions]
         self.assertIn(SET_VOICE_MODE_TOPIC, topics)
 
-    def test_monitor_mode_does_not_apply(self) -> None:
-        """В monitor супервизор принимает режим, но НЕ применяет (S12)."""
-        applied, reason = self.node._apply_voice_mode("quest_ttts")
+    def test_dialogue_control_publisher_declared(self) -> None:
+        """ADR-0054 §6.7 — супервизор публикует в ``/dialogue/control``."""
+        self.assertIn(DIALOGUE_CONTROL_TOPIC, self.node._publishers)
+        self.assertEqual(DIALOGUE_CONTROL_TOPIC, "/dialogue/control")
+
+    def test_legacy_mode_mapping(self) -> None:
+        """``LEGACY_VOICE_MODE_TO_ACTION`` — маппинг ``respeaker→resume``,
+        ``off→pause``. Тест-инвариант: словарь полный, ключи только эти два."""
+        self.assertEqual(
+            set(self.node.LEGACY_VOICE_MODE_TO_ACTION.keys()),
+            {"respeaker", "off"},
+        )
+        self.assertEqual(
+            self.node.LEGACY_VOICE_MODE_TO_ACTION["respeaker"],
+            DIALOGUE_CONTROL_RESUME,
+        )
+        self.assertEqual(
+            self.node.LEGACY_VOICE_MODE_TO_ACTION["off"],
+            DIALOGUE_CONTROL_PAUSE,
+        )
+
+    # ── monitor-mode: legacy contract accepted, but NO publish (S12) ──
+    def test_monitor_mode_respeaker_publishes_nothing(self) -> None:
+        """S12: monitor-режим принимает команду, но НЕ публикует в
+        ``/dialogue/control`` — мы не вмешиваемся в чужие параметры/топики."""
+        pub = self.node._dialogue_control_pub
+        published_before = len(pub.published)
+        applied, reason = self.node._apply_voice_mode("respeaker")
         self.assertFalse(applied)
         self.assertEqual(reason, MONITOR_MODE_REASON)
+        self.assertEqual(len(pub.published), published_before)
 
-    def test_invalid_mode_rejected(self) -> None:
-        applied, reason = self.node._apply_voice_mode("not_a_mode")
-        self.assertFalse(applied)
-        self.assertIn("invalid_voice_mode", reason)
+    # ── active-mode: legacy contract → publish pause/resume ─────────
+    def _published_pauses(self, node) -> list[dict]:
+        """Достать все ``pause``-payload из опубликованного в ``/dialogue/control``."""
+        pub = node._dialogue_control_pub
+        out = []
+        for msg in pub.published:
+            payload = json.loads(msg.data)
+            if payload.get("action") == DIALOGUE_CONTROL_PAUSE:
+                out.append(payload)
+        return out
 
-    def test_active_mode_dispatches_param_set(self) -> None:
-        """В active режиме валидный режим → _set_dialogue_param вызывается."""
+    def _published_resumes(self, node) -> list[dict]:
+        pub = node._dialogue_control_pub
+        out = []
+        for msg in pub.published:
+            payload = json.loads(msg.data)
+            if payload.get("action") == DIALOGUE_CONTROL_RESUME:
+                out.append(payload)
+        return out
+
+    def test_active_mode_respeaker_publishes_resume(self) -> None:
+        """``respeaker`` в active → publish ``resume`` на ``/dialogue/control``."""
         self.node._mode = "active"
-        self.node._set_dialogue_param = MagicMock()
-        applied, reason = self.node._apply_voice_mode("quest_ttts")
-        self.assertTrue(applied)
+        applied, reason = self.node._apply_voice_mode("respeaker")
+        self.assertTrue(applied, f"expected applied=True, got reason={reason!r}")
         self.assertEqual(reason, "applied")
-        self.node._set_dialogue_param.assert_called_once_with("voice_input_mode", "quest_ttts")
+        resumes = self._published_resumes(self.node)
+        self.assertEqual(len(resumes), 1)
+        self.assertEqual(resumes[0]["action"], DIALOGUE_CONTROL_RESUME)
+        self.assertIn("legacy_set_voice_mode:respeaker", resumes[0]["reason"])
+        self.assertIn("ts_s", resumes[0])
+        # Никаких pause-ов для respeaker.
+        self.assertEqual(len(self._published_pauses(self.node)), 0)
 
-    def test_on_set_voice_mode_feeds_apply(self) -> None:
-        """Топик → _apply_voice_mode; в monitor применяется=false."""
-        self.node._apply_voice_mode = MagicMock(return_value=(False, MONITOR_MODE_REASON))
-        self.node._on_set_voice_mode(_make_string_msg("quest_ttts"))
-        self.node._apply_voice_mode.assert_called_once_with("quest_ttts")
-
-    def test_off_mode_is_valid(self) -> None:
-        """W3-1 — "off" ("диалог off", §3.5 dialogue-mode-spec) в списке
-        допустимых режимов voice_input_mode (ADR-0027 §3.4)."""
-        self.assertIn("off", VOICE_INPUT_MODES)
-
-    def test_active_mode_dispatches_off(self) -> None:
-        """В active режиме "off" применяется так же, как остальные режимы —
-        супервизор не отличает "off" от прочих значений на своей стороне,
-        вся логика блокировки ReSpeaker — в dialogue_node."""
+    def test_active_mode_off_publishes_pause(self) -> None:
+        """``off`` в active → publish ``pause`` (W3-1 эквивалент)."""
         self.node._mode = "active"
-        self.node._set_dialogue_param = MagicMock()
         applied, reason = self.node._apply_voice_mode("off")
-        self.assertTrue(applied)
+        self.assertTrue(applied, f"expected applied=True, got reason={reason!r}")
         self.assertEqual(reason, "applied")
-        self.node._set_dialogue_param.assert_called_once_with("voice_input_mode", "off")
+        pauses = self._published_pauses(self.node)
+        self.assertEqual(len(pauses), 1)
+        self.assertEqual(pauses[0]["action"], DIALOGUE_CONTROL_PAUSE)
+        self.assertIn("legacy_set_voice_mode:off", pauses[0]["reason"])
+
+    # ── removed legacy values → reject with voice_mode_deprecated ────
+    def test_quest_ttts_rejected_as_deprecated(self) -> None:
+        """``quest_ttts`` (и прочие quest_*) — больше не поддерживаются.
+        Отвергаем с ``reason="voice_mode_deprecated: ..."`` без публикации.
+        """
+        self.node._mode = "active"
+        pub = self.node._dialogue_control_pub
+        published_before = len(pub.published)
+        applied, reason = self.node._apply_voice_mode("quest_ttts")
+        self.assertFalse(applied)
+        self.assertIn("voice_mode_deprecated", reason)
+        self.assertIn("quest_ttts", reason)
+        # Ничего не опубликовано.
+        self.assertEqual(len(pub.published), published_before)
+
+    def test_quest_stt_rejected_as_deprecated(self) -> None:
+        self.node._mode = "active"
+        applied, reason = self.node._apply_voice_mode("quest_stt")
+        self.assertFalse(applied)
+        self.assertIn("voice_mode_deprecated", reason)
+
+    def test_unknown_mode_rejected_as_deprecated(self) -> None:
+        """Произвольный мусор — отвергаем с тем же reason."""
+        self.node._mode = "active"
+        applied, reason = self.node._apply_voice_mode("totally_made_up")
+        self.assertFalse(applied)
+        self.assertIn("voice_mode_deprecated", reason)
+
+    # ── /avatar/set_voice_mode topic handler ─────────────────────────
+    def test_on_set_voice_mode_feeds_apply(self) -> None:
+        """Топик → ``_apply_voice_mode``; в monitor отдаёт monitor_reason."""
+        self.node._apply_voice_mode = MagicMock(
+            return_value=(False, MONITOR_MODE_REASON)
+        )
+        self.node._on_set_voice_mode(_make_string_msg("respeaker"))
+        self.node._apply_voice_mode.assert_called_once_with("respeaker")
 
 
 class TestAvatarSupervisorVoicePresetsAndLanguage(unittest.TestCase):
