@@ -60,6 +60,29 @@ class TestAvatarSupervisorCreation(unittest.TestCase):
         finally:
             node.destroy_node()
 
+    def test_llm_providers_defaults_minimax_deepseek(self) -> None:
+        """Issue #2111: дефолт ``llm_providers`` = ``minimax,deepseek``.
+
+        Исторически был ``"deepseek"`` — и supervisor поднимался с одним
+        провайдером без API-ключа, agent не отвечал. После фикса дефолт
+        повторяет ``dialogue_node`` (там тот же CSV зашит в
+        ``declare_parameter`` + runtime yaml). Тест ловит регрессию при
+        следующем «sync chain ordering» PR, чтобы не пришлось снова
+        ловить через e2e.
+
+        ADR-0043 §3.2: если кто-то меняет default chain — этот тест и
+        ``test_dialogue_node.py::test_resolve_provider_chain_parses_csv``
+        должны обновляться в одном коммите.
+        """
+        node = AvatarSupervisor()
+        try:
+            self.assertTrue(node.has_parameter("llm_providers"))
+            self.assertEqual(
+                node.get_parameter("llm_providers").value, "minimax,deepseek"
+            )
+        finally:
+            node.destroy_node()
+
 
 class TestAvatarSupervisorDoesNotMutateExternalState(unittest.TestCase):
     """После #1987 супервизор (голос+агент) НЕ трогает floor/твист-мукс/аватар-состояние."""
