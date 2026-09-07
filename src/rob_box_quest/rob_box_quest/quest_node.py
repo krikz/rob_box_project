@@ -1326,6 +1326,48 @@ class QuestNode(Node):
         self._preview_error_sub = self.create_subscription(
             String, "/avatar/preview_voice/error", self._on_preview_error, 10
         )
+        # ADR-0055 / issue #1993 — обратный канал ТАРС в шлем (шаг 5б):
+        # /avatar/tts/audio (AudioData int16 LE PCM) → ws_server.deliver_audio(
+        # stream="operator_tts", ...) для воспроизведения в шлеме. Тот же
+        # формат и QoS, что у /voice/audio/speech (см. tts_node audio_qos).
+        # Side-channel /avatar/tts/request (String JSON) даёт ДЕТЕРМИНИРОВАННУЮ
+        # привязку request_id → ws ДО прихода первого аудио-чанка (без
+        # race «request ушёл, ws ещё не зарегистрирован»).
+        # Параметры вынесены: forward-compat тесты + override через launch.
+        from rclpy.qos import (  # noqa: PLC0415
+            DurabilityPolicy as _Durability,
+            HistoryPolicy as _History,
+            QoSProfile as _Qos,
+            ReliabilityPolicy as _Reliability,
+        )
+        _avatar_audio_qos = _Qos(
+            reliability=_Reliability.BEST_EFFORT,
+            history=_History.KEEP_LAST,
+            depth=10,
+            durability=_Durability.VOLATILE,
+        )
+        # Параметры: ADR-0055 §quest_node.
+        self.declare_parameter("avatar_tts_audio_topic", "/avatar/tts/audio")
+        self.declare_parameter("avatar_tts_request_topic", "/avatar/tts/request")
+        self._avatar_tts_audio_topic = str(
+            self.get_parameter("avatar_tts_audio_topic").value
+        )
+        self._avatar_tts_request_topic = str(
+            self.get_parameter("avatar_tts_request_topic").value
+        )
+        # Текущий avatar-request-id и привязанный ws. Обновляются в
+        # ``_on_avatar_tts_request_meta`` (side-channel). Используются в
+        # ``_on_avatar_tts_audio`` для маршрутизации чанков в шлем.
+        self._current_avatar_request_id: Optional[str] = None
+        self._current_avatar_ws: Optional[Any] = None
+        self._avatar_audio_sub = self.create_subscription(
+            AudioData, self._avatar_tts_audio_topic,
+            self._on_avatar_tts_audio, _avatar_audio_qos,
+        )
+        self._avatar_tts_request_sub = self.create_subscription(
+            String, self._avatar_tts_request_topic,
+            self._on_avatar_tts_request_meta, 10,
+        )
         # issue #1988 (шаг 4а) — consumer /avatar/command_result: ответ ТАРС
         # (summary) транслируется всем WS-сессиям JSON_EVENT-ом
         # (type="avatar_command_result"). Поверхность на клиенте (панель
@@ -1796,6 +1838,129 @@ class QuestNode(Node):
             self.ws_server.deliver_preview_error(request_id, str(reason))
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(f"preview_error deliver failed: {exc}")
+
+    # ── ADR-0055 / issue #1993 — обратный канал ТАРС в шлем ────────────
+
+    def _on_avatar_tts_request_meta(self, msg: String) -> None:
+        """Side-channel: /avatar/tts/request (String JSON) → register ws.
+
+        avatar_supervisor и tts_node оба подписаны на одно и то же сообщение.
+        На стороне quest_node мы достаём request_id и СРАЗУ регистрируем
+        request_id → ws через ``ws_server.register_audio_session`` ДО
+        прихода первого AudioData-чанка. Устраняет race «request ушёл,
+        ws ещё не зарегистрирован».
+
+        sink != "headset" → игнор (это tts_node-канал; контракт ADR-0055 —
+        tts_node сам публикует /avatar/tts/error при invalid_sink).
+        """
+        try:
+            data = json.loads(msg.data) if msg.data else None
+        except (TypeError, ValueError) as exc:
+            self.get_logger().warning(f"avatar_tts_request_meta bad JSON: {exc}")
+            return
+        if not isinstance(data, dict):
+            return
+        # Если sink не headset — это не наш канал. ADR-0055 §tts_node сам
+        # отвечает за /avatar/tts/error. Нам делать нечего.
+        if data.get("sink") != "headset":
+            return
+        request_id = data.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            return
+
+        # Определяем целевой ws (детерминированная привязка).
+        # ADR-0055 §quest_node: на Quest один оператор → активная WS-сессия
+        # единственная; выбираем её (или самую свежую при >1).
+        ws = self._pick_active_operator_ws()
+        if ws is None:
+            self.get_logger().warning(
+                "🎧 [ADR-0055] avatar TTS request, но нет активной WS-сессии — "
+                f"DROP (request_id={request_id[:8]})"
+            )
+            return
+
+        # Регистрируем request_id → ws в ws_server (per-stream, ADR-0055 C1).
+        ok = self.ws_server.register_audio_session(
+            "operator_tts", request_id, ws,
+        )
+        if not ok:
+            self.get_logger().warning(
+                "🎧 [ADR-0055] register_audio_session(operator_tts) вернул False "
+                f"(лимит/UNKNOWN_STREAM), request_id={request_id[:8]} — "
+                "реплика ТАРС потеряется (supervisor увидит finished(Fail))"
+            )
+            return
+
+        self._current_avatar_request_id = request_id
+        self._current_avatar_ws = ws
+        self.get_logger().debug(
+            f"🎧 [ADR-0055] avatar TTS request зарегистрирован: "
+            f"request_id={request_id[:8]}, ws={id(ws)}"
+        )
+
+    def _on_avatar_tts_audio(self, msg: AudioData) -> None:
+        """ROS /avatar/tts/audio (AudioData int16 LE PCM) → ws_server.deliver_audio.
+
+        Маршрут в шлем оператора через ``ws_server.deliver_audio(
+        stream="operator_tts", request_id=current, ws=current, ...)``.
+        ``ws`` достаётся из side-channel registry (см.
+        ``_on_avatar_tts_request_meta``).
+        """
+        request_id = self._current_avatar_request_id
+        ws = self._current_avatar_ws
+        if request_id is None or ws is None:
+            # Race: первый аудио-чанк пришёл ДО side-channel сообщения.
+            # В норме этого не бывает (tts_node публикует request синхронно
+            # ПЕРЕД стартом синтеза, а ws-сторона подписана на оба канала
+            # через один и тот же rclpy-экзекутор). На этот случай — DROP
+            # + warning; supervisor увидит finished(Fail) и не будет
+            # переспрашивать.
+            self.get_logger().warning(
+                "🎧 [ADR-0055] /avatar/tts/audio без предрегистрации "
+                "(request_id/ws None) — DROP"
+            )
+            return
+        try:
+            self.ws_server.deliver_audio(
+                stream="operator_tts",
+                request_id=request_id,
+                audio_bytes=bytes(msg.data) if isinstance(msg.data, (bytes, bytearray)) else b"",
+                audio_format="pcm_s16le",
+                content_type="audio/pcm",
+                seq=0,
+                total=0,
+                ws=ws,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(
+                f"🎧 [ADR-0055] deliver_audio(operator_tts) failed: {exc}"
+            )
+
+    def _pick_active_operator_ws(self) -> Optional[Any]:
+        """Возвращает ws текущей активной операторской WS-сессии.
+
+        ADR-0055 §quest_node: на Quest один оператор → активная WS-сессия
+        единственная. ``ws_server.get_active_sessions() == 1`` → этот ws.
+        Иначе (теоретический случай: >1 сессии) — самая свежая
+        (последняя в ``ws_server._sessions`` по insertion order).
+        """
+        try:
+            active = self.ws_server.get_active_sessions()
+        except AttributeError:
+            return None
+        if active == 0:
+            return None
+        try:
+            sessions = list(self.ws_server._sessions.keys())
+        except AttributeError:
+            return None
+        if not sessions:
+            return None
+        if active == 1:
+            # Единственная активная — берём первый ключ (insertion order).
+            return self.ws_server._ws_by_session.get(sessions[0])
+        # >1 активных — берём самую свежую (последнюю).
+        return self.ws_server._ws_by_session.get(sessions[-1])
 
     def _on_tick_timer(self) -> None:
         if not self._aio_started:

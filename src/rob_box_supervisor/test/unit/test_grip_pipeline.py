@@ -52,8 +52,21 @@ def _pipeline_config_msg(
     )
 
 
-def _published_tts(node: AvatarSupervisor) -> list[dict]:
-    """Достать все опубликованные /voice/tts/request payloads (parsed JSON)."""
+def _published_avatar_tts(node: AvatarSupervisor) -> list[dict]:
+    """ADR-0055 #1993: грип теперь шлёт в ``/avatar/tts/request``.
+
+    Раньше хелпер читал ``_tts_request_pub`` (``/voice/tts/request``),
+    но ADR-0055 перевёл грип-реплики на новый обратный канал шлема.
+    Поле ``source`` заменено на ``sink=\"headset\"`` + ``request_id``.
+    Старый ``_tts_request_pub`` остаётся только для инструмента ``say``
+    (под этот канал тестов нет).
+    """
+    pub = node._avatar_tts_request_pub
+    return [json.loads(m.data) for m in pub.published]
+
+
+def _published_voice_tts(node: AvatarSupervisor) -> list[dict]:
+    """Для тестов: ``/voice/tts/request`` (say-канал) — сейчас всегда []. """
     pub = node._tts_request_pub
     return [json.loads(m.data) for m in pub.published]
 
@@ -140,12 +153,17 @@ class TestGripNoStyleDirect(unittest.TestCase):
         self.node._grip_llm = stub
         self._send_ptt()
 
-        pub = _published_tts(self.node)
+        pub = _published_avatar_tts(self.node)
         self.assertEqual(len(pub), 1)
         self.assertEqual(pub[0]["ssml"], "<speak>мы начинаем</speak>")
-        self.assertEqual(pub[0]["source"], "operator")
+        # ADR-0055 #1993: грип-реплики идут в шлем через /avatar/tts/request,
+        # помечены sink="headset" и request_id (uuid hex8).
+        self.assertEqual(pub[0]["sink"], "headset")
+        self.assertTrue(len(pub[0]["request_id"]) >= 8)
         # Дословный текст — без language-override (язык оператора).
         self.assertNotIn("language", pub[0])
+        # /voice/tts/request не должен был ничего получить (грип-канал ADR-0055).
+        self.assertEqual(_published_voice_tts(self.node), [])
         # Замер счётчика: 0 LLM-вызовов.
         self.assertEqual(stub.call_count, 0)
 
@@ -156,7 +174,7 @@ class TestGripNoStyleDirect(unittest.TestCase):
         self.node._on_grip_voice_pipeline(_pipeline_config_msg(False, "technical", "ru"))
         self._send_ptt("дословно")
 
-        pub = _published_tts(self.node)
+        pub = _published_avatar_tts(self.node)
         self.assertEqual(len(pub), 1)
         self.assertEqual(pub[0]["ssml"], "<speak>дословно</speak>")
         self.assertNotIn("language", pub[0])
@@ -169,7 +187,7 @@ class TestGripNoStyleDirect(unittest.TestCase):
         self.node._on_grip_voice_pipeline(_pipeline_config_msg(True, "none", "ru"))
         self._send_ptt("просто фраза")
 
-        pub = _published_tts(self.node)
+        pub = _published_avatar_tts(self.node)
         self.assertEqual(len(pub), 1)
         self.assertEqual(pub[0]["ssml"], "<speak>просто фраза</speak>")
         self.assertEqual(stub.call_count, 0)
@@ -179,7 +197,7 @@ class TestGripNoStyleDirect(unittest.TestCase):
         self.node._grip_llm = stub
         self._send_ptt("")
         self._send_ptt("   ")
-        self.assertEqual(_published_tts(self.node), [])
+        self.assertEqual(_published_avatar_tts(self.node), [])
         self.assertEqual(stub.call_count, 0)
 
 
@@ -200,10 +218,11 @@ class TestGripTranslateOneCall(unittest.TestCase):
         stub = self.node._grip_llm
         # Замер счётчика: ровно один вызов.
         self.assertEqual(stub.call_count, 1)
-        pub = _published_tts(self.node)
+        pub = _published_avatar_tts(self.node)
         self.assertEqual(len(pub), 1)
         self.assertEqual(pub[0]["ssml"], "<speak>We are starting now.</speak>")
-        self.assertEqual(pub[0]["source"], "operator")
+        self.assertEqual(pub[0]["sink"], "headset")
+        self.assertTrue(len(pub[0]["request_id"]) >= 8)
         # Текст на целевом языке + language-override для tts_node (AV-28).
         self.assertEqual(pub[0]["language"], "en")
 
@@ -216,7 +235,7 @@ class TestGripTranslateOneCall(unittest.TestCase):
         stub = self.node._grip_llm
         self.assertEqual(stub.call_count, 1)
         # Заглушка вернула content="We are starting now." — см. setUp.
-        pub = _published_tts(self.node)
+        pub = _published_avatar_tts(self.node)
         self.assertEqual(pub[0]["ssml"], "<speak>We are starting now.</speak>")
 
     def test_memory_and_history_untouched(self) -> None:
@@ -257,7 +276,7 @@ class TestGripToolCallsIgnored(unittest.TestCase):
         stub = self.node._grip_llm
         self.assertEqual(stub.call_count, 1)
         # Полный ответ модели содержал tool_call — в TTS ушёл только content.
-        pub = _published_tts(self.node)
+        pub = _published_avatar_tts(self.node)
         self.assertEqual(len(pub), 1)
         self.assertEqual(pub[0]["ssml"], "<speak>переписанная фраза</speak>")
         # complete вызван без инструментов (нет ToolProvider).
@@ -280,7 +299,7 @@ class TestGripStyleSingleCall(unittest.TestCase):
 
         stub = self.node._grip_llm
         self.assertEqual(stub.call_count, 1)
-        pub = _published_tts(self.node)
+        pub = _published_avatar_tts(self.node)
         self.assertEqual(len(pub), 1)
         self.assertEqual(pub[0]["ssml"], "<speak>фраза в стиле</speak>")
 
@@ -299,7 +318,7 @@ class TestGripStyleSingleCall(unittest.TestCase):
         self.node._on_grip_ptt_result(_make_string_msg("исходная фраза"))
 
         self.assertEqual(_FailingLLM.call_count, 1)
-        pub = _published_tts(self.node)
+        pub = _published_avatar_tts(self.node)
         self.assertEqual(len(pub), 1)
         # Дословный текст без language-override.
         self.assertEqual(pub[0]["ssml"], "<speak>исходная фраза</speak>")
