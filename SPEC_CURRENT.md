@@ -130,10 +130,10 @@ graph TB
 
 | # | Задача | Исполнитель | Критерий | ADR |
 |---|---|---|---|---|
-| B1 | `DialogHarness` поверх `DialogueNode` | `backend` | Тесты >= 80%, `run_harness("dialog", input)` end-to-end | ✅ Done | ADR-0001 §2.7.1 |
-| B2 | `PersistentHarness` (audio/stt/tts/sound/led/cmd) | `backend` | Один харнес драйвит все 6 persistent-нод | ✅ Done | ADR-0001 §2.7.2 |
-| B3 | `TelegramHarness` поверх `TelegramNode` | `backend` | Тесты >= 50%, мост к voice через skill | ✅ Done | ADR-0001 §2.7.3 |
-| B4 | `ROS2Transport` (реальный) | `backend` | `Transport` interface реализован для ROS2-топиков | ✅ Done | ADR-0001 §2.4.5 |
+| B1 | `DialogHarness` поверх `DialogueNode` | `backend` | Тесты >= 80%, `run_harness("dialog", input)` end-to-end | ✅ Done | ADR-0001 §2.7.1 (снято по ADR-0051 §3.2 — каркас Harness удалён, issue #1985) |
+| B2 | `PersistentHarness` (audio/stt/tts/sound/led/cmd) | `backend` | Один харнес драйвит все 6 persistent-нод | ✅ Done | ADR-0001 §2.7.2 (снято по ADR-0051 §3.2 — каркас Harness удалён, issue #1985) |
+| B3 | `TelegramHarness` поверх `TelegramNode` | `backend` | Тесты >= 50%, мост к voice через skill | ✅ Done | ADR-0001 §2.7.3 (снято по ADR-0051 §3.2 — каркас Harness удалён, issue #1985) |
+| B4 | `ROS2Transport` (реальный) | `backend` | `Transport` interface реализован для ROS2-топиков | ✅ Done | ADR-0001 §2.4.5 (снято по ADR-0051 §3.2 — каркас Harness удалён, issue #1985) |
 | B5 | `SQLiteVoiceMemory` / `RedisStore` | `backend` | `MemoryStore` interface для persistent history | ✅ Done | ADR-0001 §2.4.3 |
 
 ### Этап C: Покрытие тестами (ADR-0001 §5)

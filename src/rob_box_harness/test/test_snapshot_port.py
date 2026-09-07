@@ -13,9 +13,9 @@ import pytest
 from rob_box_harness.snapshot_store import (
     InMemorySnapshotStore,
     SnapshotStore,
+    TelegramUpdate,
     parse_telegram_update,
 )
-from rob_box_harness.transport import TelegramUpdate
 
 
 def _run(coro):

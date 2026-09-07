@@ -32,7 +32,20 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
-from rob_box_harness.transport import TelegramUpdate
+
+@dataclass(frozen=True)
+class TelegramUpdate:
+    """Raw payload from the Telegram ``Update`` object.
+
+    Was re-exported from the (now removed) ``rob_box_harness.transport``
+    Harness-framework port (ADR-0051 §3.2); the dataclass itself has no
+    framework dependency, so it now lives directly next to its only
+    remaining user, :func:`parse_telegram_update`.
+    """
+
+    update_id: int
+    kind: str  # "message" | "callback" | "edited" | "inline_query" | ...
+    payload: Mapping[str, Any]
 
 
 @dataclass(frozen=True)
@@ -144,9 +157,8 @@ def parse_telegram_update(value: Any) -> TelegramUpdate:
         * :class:`TelegramUpdate` — returned as-is (identity).
         * ``str`` — wrapped as a message update with ``payload = {"text": value}``.
         * ``Mapping`` — copied into a new ``payload`` dict, ``kind`` defaults
-          to ``"message"`` (the only kind the TelegramHarness cares about
-          today; callback/edited/inline kinds will be added when the harness
-          grows).
+          to ``"message"`` (the only kind the telegram integration cares
+          about today; callback/edited/inline kinds may be added later).
         * anything else — :class:`TypeError`.
 
     The parser is intentionally tiny: the harness-side
@@ -173,6 +185,7 @@ def parse_telegram_update(value: Any) -> TelegramUpdate:
 
 
 __all__ = [
+    "TelegramUpdate",
     "SnapshotEntry",
     "SnapshotStore",
     "InMemorySnapshotStore",

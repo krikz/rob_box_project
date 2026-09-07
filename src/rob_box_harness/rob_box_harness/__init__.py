@@ -1,15 +1,15 @@
-"""rob_box_harness — the Harness Framework (ADR-0001 P0).
+"""rob_box_harness — agent core, config and supporting ports.
 
-The framework is the thin layer that sits on top of ``rob_box_llm``
-and gives every concrete ROS2-node-adjacent workflow (Dialog,
-Persistent, Telegram) a uniform set of contracts:
+The Harness Framework scaffolding (``Harness``, ``HarnessRegistry``/
+``HarnessFactory``, ``run_harness``/``run_harness_sync``, the
+``Transport`` port and the concrete Dialog/Persistent/Telegram/Echo/
+Upper harnesses) was removed as dead code — ADR-0051 §3.2 (closes
+ADR-0001 §2.7.1); see issue #1985. Production code runs on
+:class:`~rob_box_harness.core.agent_core.AgentCore` instead.
 
-  * :class:`Harness` — the lifecycle contract.
+What remains here:
+
   * :class:`HarnessConfig` / :func:`load_config` — YAML + env config.
-  * :class:`HarnessRegistry` / :class:`HarnessFactory` — name →
-    builder registry and cached instantiation.
-  * :func:`run_harness` / :func:`run_harness_sync` — the single
-    entry point everyone calls.
 
 Ports (provider contracts):
 
@@ -18,7 +18,6 @@ Ports (provider contracts):
   * :class:`MemoryStore` / :class:`InMemoryStore` — per-scope history.
   * :class:`SideEffectBus` / :class:`NoopBus` / :class:`RecordingBus` /
     :class:`CompositeBus` — fan-out of side-effects.
-  * :class:`Transport` / :class:`FakeTransport` — input source.
   * :class:`Clock` / :class:`SystemClock` / :class:`MockClock` — DI
     for time.
 
@@ -29,22 +28,15 @@ errors are :class:`HarnessError`, :class:`ConfigError`,
 
 Public surface organised by concern:
 
-Harness & lifecycle:
-    Harness, HarnessRunResult, LifecycleHooks, SessionSnapshot
+Lifecycle:
+    LifecycleHooks, Hook, SessionSnapshot
 
 Config:
     HarnessConfig, LLMConfig, ToolsConfig, MemoryConfig,
     EffectsConfig, TransportConfig, LoggingConfig, load_config
 
-Registry & runner:
-    HarnessRegistry, HarnessFactory, register_builtin_harnesses,
-    run_harness, run_harness_sync, get_default_registry,
-    reset_default_registry
-
 Ports:
     Clock, SystemClock, MockClock,
-    Transport, FakeTransport, BaseTransport, EventHandler,
-    VadEvent, KeyEvent, TelegramUpdate,
     ToolProvider, FakeToolProvider, ToolSpec, ToolExecutionError,
     MemoryStore, InMemoryStore, Turn, Fact,
     SideEffectBus, NoopBus, RecordingBus, CompositeBus, Effect,
@@ -54,8 +46,8 @@ Ports:
     :class:`MoveEffect` / :class:`TelegramBus` /
     :class:`TelegramFilteredBus` — telegram-side extensions (P1.4).
   * :class:`SnapshotStore` / :class:`InMemorySnapshotStore` /
-    :func:`parse_telegram_update` — port for camera/frame caches
-    plus update-parsing helper (P1.4).
+    :class:`TelegramUpdate` / :func:`parse_telegram_update` — port
+    for camera/frame caches plus update-parsing helper (P1.4).
 
 Built-in providers (for tests / smoke):
     DummyLLMProvider, HarnessFakeLLMProvider (= FakeLLMProvider)
@@ -107,7 +99,6 @@ from rob_box_harness.errors import (
     HookError,
     ProviderNotFoundError,
 )
-from rob_box_harness.harness import Harness, HarnessRunResult
 from rob_box_harness.health import (
     DEFAULT_HEALTH_TTL_S,
     HealthAwareFallbackLLM,
@@ -122,23 +113,12 @@ from rob_box_harness.health import (
 from rob_box_harness.lifecycle import Hook, LifecycleHooks
 from rob_box_harness.memory import Fact, InMemoryStore, MemoryStore, Turn
 from rob_box_harness.providers import DummyLLMProvider, HarnessFakeLLMProvider
-from rob_box_harness.registry import (
-    HarnessBuilder,
-    HarnessFactory,
-    HarnessRegistry,
-    register_builtin_harnesses,
-)
-from rob_box_harness.runner import (
-    get_default_registry,
-    reset_default_registry,
-    run_harness,
-    run_harness_sync,
-)
 from rob_box_harness.snapshot import SessionSnapshot
 from rob_box_harness.snapshot_store import (
     InMemorySnapshotStore,
     SnapshotEntry,
     SnapshotStore,
+    TelegramUpdate,
     parse_telegram_update,
 )
 from rob_box_harness.tools import (
@@ -148,20 +128,9 @@ from rob_box_harness.tools import (
     ToolProvider,
     ToolSpec,
 )
-from rob_box_harness.transport import (
-    BaseTransport,
-    EventHandler,
-    FakeTransport,
-    KeyEvent,
-    TelegramUpdate,
-    Transport,
-    VadEvent,
-)
 
 __all__ = [
-    # Harness & lifecycle
-    "Harness",
-    "HarnessRunResult",
+    # Lifecycle
     "LifecycleHooks",
     "Hook",
     "SessionSnapshot",
@@ -175,25 +144,10 @@ __all__ = [
     "TransportConfig",
     "LoggingConfig",
     "load_config",
-    # Registry & runner
-    "HarnessBuilder",
-    "HarnessRegistry",
-    "HarnessFactory",
-    "register_builtin_harnesses",
-    "run_harness",
-    "run_harness_sync",
-    "get_default_registry",
-    "reset_default_registry",
     # Ports
     "Clock",
     "SystemClock",
     "MockClock",
-    "Transport",
-    "BaseTransport",
-    "FakeTransport",
-    "EventHandler",
-    "VadEvent",
-    "KeyEvent",
     "TelegramUpdate",
     "ToolProvider",
     "FakeToolProvider",
