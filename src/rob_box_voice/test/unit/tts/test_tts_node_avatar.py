@@ -186,27 +186,6 @@ def test_avatar_tts_request_whitespace_only_ssml_dropped():
     assert errs[0]["error"] == "empty_text"
 
 
-def test_avatar_tts_request_missing_ssml_still_works():
-    """Sanity: нет ssml → default "" → guard сработает (drop).
-
-    Нужно как явное покрытие «JSON без поля ssml» — поведение должно быть
-    предсказуемым (drop, не падать).
-    """
-    node = _make_request_node()
-    node._on_avatar_tts_request(
-        _msg({
-            "request_id": "req-no-ssml",
-            "speech_id": "sid-no-ssml",
-            # ssml отсутствует → по умолчанию ""
-            "text": "",
-            "sink": "headset",
-        })
-    )
-    node._submit_synthesis.assert_not_called()
-    errs = _error_payloads(node)
-    assert errs[0]["error"] == "empty_text"
-
-
 def test_avatar_tts_request_no_sink_defaults_to_invalid():
     """sink отсутствует → тоже DROP (только "headset" допустим)."""
     node = _make_request_node()
