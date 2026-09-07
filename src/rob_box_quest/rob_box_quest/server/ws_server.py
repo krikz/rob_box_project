@@ -23,7 +23,12 @@ import threading
 import time
 from typing import Any, Optional, Protocol
 
-from ..core.floor import FLOOR_HELD_RATE_LIMIT_S, SupervisorFloorTracker
+from ..core.avatar_arbiter import (
+    FLOOR_HELD_RATE_LIMIT_S,
+    AcquireResult,
+    LocalAvatarArbiterClient,
+)
+from ..core.floor import AvatarFloorSnapshot, AvatarStateFloorCache
 from ..protocol.frame import FrameType, decode_frame, encode_frame
 from ..streams.registry import STREAM_CATALOG, get_stream
 from .session import (
@@ -34,7 +39,7 @@ from .session import (
     ClientSession,
     generate_pin,
 )
-from .voice_floor import FloorHolder, FloorState, VoiceFloor
+from .voice_floor import FloorHolder, FloorState, VoiceFloorCache
 
 # AV-28 §P7 (issue #1920): список допустимых voice-preset ID и языков вывода.
 # Синхронизирован с src/rob_box_voice/config/voice_presets.yaml (PR #1931)
@@ -593,7 +598,9 @@ class WSSServer:
         bridge: Bridge,
         pin: Optional[str] = None,
         require_teleop_floor: bool = False,
-        floor_tracker: Optional[SupervisorFloorTracker] = None,
+        avatar_arbiter: Optional[LocalAvatarArbiterClient] = None,
+        floor_cache: Optional[AvatarStateFloorCache] = None,
+        voice_cache: Optional[VoiceFloorCache] = None,
     ) -> None:
         self.bridge = bridge
         self.pin = pin or ACTIVE_PIN
@@ -623,22 +630,43 @@ class WSSServer:
         # ws_id(id(ws)) → last-ts (монотонный) per cmd для rate-limit.
         # key = id(ws) (а не сам ws, потому что ws не hashable).
         self._last_voice_cmd_ts: dict[int, dict[str, float]] = {}
-        # Voice floor — серверный mutex на голосовой поток (см. voice_floor.py).
-        # Один держатель на все WS-сессии, чтобы два квеста (оператор +
-        # AV-23 telegram-bridge) не микшировали голос в /avatar/voice_in.
-        self._voice_floor = VoiceFloor()
-        # AV-19: gate teleop_floor (Phase 1 — локальный tracker; Phase 2 —
-        # proxy на avatar_supervisor service, ADR-0028 §4.4).
-        self._require_teleop_floor: bool = require_teleop_floor
-        self._floor_tracker: SupervisorFloorTracker = (
-            floor_tracker if floor_tracker is not None else SupervisorFloorTracker()
+        # ADR-0051 §2.2 (issue #1999, C2): avatar_arbiter service client
+        # (локальный stub на Phase 1) + два read-only кэша для UI/логов.
+        # Tracker-объекты (``SupervisorFloorTracker`` / ``VoiceFloor``)
+        # удалены — вместо них ``LocalAvatarArbiterClient`` (mutex + cache
+        # push) и ``AvatarStateFloorCache`` / ``VoiceFloorCache`` (read-only
+        # mirror из /avatar/state). Когда avatar_arbiter service будет
+        # подключён через ROS 2 client, заменится только avatar_arbiter —
+        # ws_server код не поменяется.
+        self._floor_cache: AvatarStateFloorCache = (
+            floor_cache if floor_cache is not None else AvatarStateFloorCache()
         )
+        self._voice_cache: VoiceFloorCache = (
+            voice_cache if voice_cache is not None else VoiceFloorCache()
+        )
+        if avatar_arbiter is not None:
+            self._avatar_arbiter: LocalAvatarArbiterClient = avatar_arbiter
+        else:
+            self._avatar_arbiter = LocalAvatarArbiterClient(
+                cache=self._floor_cache,
+            )
+        # AV-19: gate teleop_floor (Phase 1 — локальный tracker; Phase 2 —
+        # proxy на avatar_supervisor service, ADR-0028 §4.4). После
+        # #1999 / C2 — через LocalAvatarArbiterClient.
+        self._require_teleop_floor: bool = require_teleop_floor
+        # Backward-compat alias для ws_server кода, который исторически
+        # обращался к ``_floor_tracker`` / ``_voice_floor``. Эти алиасы
+        # указывают на один и тот же объект (avatar_arbiter client) —
+        # упрощает миграцию call-sites без семантики-потери. После
+        # #1999 follow-up будут удалены.
+        self._floor_tracker = self._avatar_arbiter
+        self._voice_floor = self._avatar_arbiter
         # client_id (= session_id) → True если ws_server уже сообщил
         # клиенту о FLOOR_HELD-error в текущем окне rate-limit. Нужно,
         # чтобы при HOLD-окне не слать ERROR повторно (rate-limit — на
-        # уровне tracker, но здесь дополнительно дедуплим, чтобы один
-        # клиент не получал > 1 ошибки в FLOOR_HELD_RATE_LIMIT_S даже
-        # если в ws_server прилетают разные teleop_twist-ы).
+        # уровне avatar_arbiter клиента, но здесь дополнительно дедуплим,
+        # чтобы один клиент не получал > 1 ошибки в FLOOR_HELD_RATE_LIMIT_S
+        # даже если в ws_server прилетают разные teleop_twist-ы).
         self._floor_held_warned_session: dict[str, float] = {}
 
     def get_active_sessions(self) -> int:
@@ -989,7 +1017,7 @@ class WSSServer:
         rate-limit (например, вынести в ROS-параметр) менять одну
         функцию, а не искать по всем ``_on_json_cmd``.
         """
-        return self._floor_tracker.should_send_floor_held_error(session_id)
+        return self._avatar_arbiter.should_send_floor_held_error(session_id)
 
     def on_floor_lost_external(self, client_id: str) -> None:
         """Внешнее уведомление (от Bridge/avatar_supervisor) о потере floor.
@@ -1007,13 +1035,16 @@ class WSSServer:
         3) Шлём клиенту JSON_EVENT{type:"floor_lost"} с held_by=None —
            клиент DISARM-ит и показывает тост (teleop_fsm).
         """
-        if not self._floor_tracker.is_held_by(client_id):
-            # Tracker уже не считает client_id держателем — likely двойной
-            # уведомление (release в _unregister_session + supervisor
-            # подтвердил). Ничего не делаем.
+        # ADR-0051 §2.2 (issue #1999, C2): проверяем avatar_arbiter
+        # (источник истины по floor-ам) напрямую. Раньше это был
+        # tracker.is_held_by — теперь его роль исполняет клиент.
+        if self._avatar_arbiter.floor_holder != client_id:
+            # avatar_arbiter уже не считает client_id держателем —
+            # likely двойное уведомление (release в _unregister_session
+            # + supervisor подтвердил). Ничего не делаем.
             return
-        self._floor_tracker.force_release()
-        self._floor_tracker.reset_rate_limit(client_id)
+        self._avatar_arbiter.force_release_floor()
+        self._avatar_arbiter.reset_floor_held_rate_limit(client_id)
         self._floor_held_warned_session.pop(client_id, None)
         # Уведомить Bridge (QuestBridge опубликует zero Twist).
         self.bridge.on_floor_lost(client_id)
@@ -1231,18 +1262,22 @@ class WSSServer:
             _stream_ids_in_use.discard(sid)
         # Освободить voice floor, если эта сессия его держала
         # (watchdog/GOODBYE/disconnect → без явного voice_ptt_stop).
-        if self._voice_floor.force_release_for(session.session_id):
+        # ADR-0051 §2.2: avatar_arbiter.release_voice() — теперь
+        # единственная точка освобождения voice_floor.
+        if self._avatar_arbiter.release_voice(session.session_id):
+            # mirror в кэше: UI-подписчики должны сразу увидеть IDLE.
+            self._voice_cache.update(FloorState.IDLE, None)
             log.info(
                 "quest: voice floor released by disconnect session=%s",
                 session.session_id,
             )
         # AV-19: освободить teleop_floor, если эта сессия его держала.
-        # Это симметрично acquire в _on_hello. Если в Phase 2 этот код
-        # пойдёт через avatar_supervisor service — здесь будет
+        # Это симметрично try_acquire_floor в _on_hello. В Phase 2
+        # этот код пойдёт через avatar_supervisor service — здесь будет
         # release_floor service-call.
-        was_held = self._floor_tracker.release(session.session_id)
+        was_held = self._avatar_arbiter.release_floor(session.session_id)
         if was_held:
-            self._floor_tracker.reset_rate_limit(session.session_id)
+            self._avatar_arbiter.reset_floor_held_rate_limit(session.session_id)
             self._floor_held_warned_session.pop(session.session_id, None)
             log.info("quest: teleop_floor released session_id=%s", session.session_id)
         session.close()
@@ -1278,14 +1313,17 @@ class WSSServer:
         self.bridge.feed_client_alive()
 
         # AV-19: попытаться взять teleop_floor от имени новой сессии.
-        # В Phase 1 локальный tracker; в Phase 2 тут будет service-call
-        # к /avatar_supervisor/acquire_floor (см. design.md, meta-quest-api.md
-        # §5 «Supervisor-команды Phase 2»). Сейчас — best-effort: если
-        # floor уже занят другой сессией — мы НЕ отказываем в WELCOME
-        # (это убьёт UX при попытке Telegram-op перехватить), но помечаем
-        # сессию «не держит» — teleop_twist гейт не пройдёт и шлёт
-        # ERROR{FLOOR_HELD} rate-limited (см. _on_json_cmd).
-        acquire = self._floor_tracker.acquire(session.session_id)
+        # ADR-0051 §2.2 (issue #1999, C2): вместо локального tracker-а
+        # — ``avatar_arbiter.try_acquire_floor()``. В Phase 2 тут будет
+        # service-call к ``/avatar_arbiter/acquire_floor`` (avatar_arbiter
+        # клиент уже сейчас подменяется ``LocalAvatarArbiterClient``,
+        # заменяется на ROS 2 клиент без правок ws_server). Сейчас —
+        # best-effort: если floor уже занят другой сессией — мы НЕ
+        # отказываем в WELCOME (это убьёт UX при попытке Telegram-op
+        # перехватить), но помечаем сессию «не держит» — teleop_twist
+        # гейт не пройдёт и шлёт ERROR{FLOOR_HELD} rate-limited
+        # (см. _on_json_cmd).
+        acquire = self._avatar_arbiter.try_acquire_floor(session.session_id)
         if not acquire.granted:
             log.info(
                 "quest: HELLO session_id=%s teleop_floor held_by=%s — режим %s",
@@ -1365,19 +1403,15 @@ class WSSServer:
         # описывает voice_state как event-driven; snapshot — локальное
         # расширение quest-сервера, дешевле (один event на SUBSCRIBE).
         if topic == "voice_state":
-            floor_snap = self._voice_floor.snapshot()
+            # ADR-0051 §2.2: voice floor живёт в avatar_arbiter; здесь —
+            # только snapshot из read-only кэша (mirror /avatar/state).
+            voice_state_str = self._voice_cache.state.value
+            voice_holder = self._voice_cache.holder
             await self._send_voice_state(
                 ws,
-                state=floor_snap["state"],
+                state=voice_state_str,
                 ts_ms=int(time.time() * 1000),
-                holder_id=(
-                    FloorHolder(
-                        session_id=floor_snap["holder"]["session_id"],
-                        client_id=floor_snap["holder"]["client_id"],
-                    ).label()
-                    if floor_snap["holder"] is not None
-                    else None
-                ),
+                holder_id=(voice_holder.label() if voice_holder is not None else None),
             )
 
     async def _on_json_cmd(
@@ -1447,7 +1481,9 @@ class WSSServer:
                 seq = int(seq_raw) if isinstance(seq_raw, (int, float)) else 0
             except (TypeError, ValueError):
                 ts_ms, seq = int(time.time() * 1000), 0
-            if self._require_teleop_floor and not self._floor_tracker.is_held_by(
+            # ADR-0051 §2.2: gate через avatar_arbiter (источник истины
+            # по floor-ам). tracker больше не используется.
+            if self._require_teleop_floor and self._avatar_arbiter.floor_holder != (
                 session.session_id
             ):
                 if self._should_send_floor_held_error(session.session_id):
@@ -1455,7 +1491,7 @@ class WSSServer:
                         ws,
                         0,
                         ErrorCode.FLOOR_HELD,
-                        f"teleop_floor held by {self._floor_tracker.holder!r}",
+                        f"teleop_floor held by {self._avatar_arbiter.floor_holder!r}",
                     )
                 # НЕ публикуем cmd_vel_quest, но feed_client_alive всё
                 # равно вызываем — клиент жив, watchdog должен крутиться.
@@ -1498,7 +1534,8 @@ class WSSServer:
             # Можно было бы слать всё равно (heartbeat не вредный), но
             # тогда супервизор может ошибочно «оживить» чужой сессии
             # клиента, что противоречит §4.4 «источник живости — клиент».
-            if self._require_teleop_floor and not self._floor_tracker.is_held_by(
+            # ADR-0051 §2.2: gate через avatar_arbiter.
+            if self._require_teleop_floor and self._avatar_arbiter.floor_holder != (
                 session.session_id
             ):
                 # Тем не менее feed_client_alive — watchdog WSS-сессии
@@ -1530,15 +1567,22 @@ class WSSServer:
             # requester-у JSON_EVENT{type:"voice_state", state:"denied"} и
             # НЕ вызываем bridge. Подробности см. voice_floor.py + план
             # docs/plans/2026-08-27-quest-voice-passthrough-design.md §5.
+            # ADR-0051 §2.2: avatar_arbiter — источник истины по
+            # voice_floor. Попытка занять через avatar_arbiter.try_acquire_voice().
             client_id = payload_obj.get("client_id")
             if not isinstance(client_id, str):
                 client_id = None
-            acquired, busy_holder, _new_state = self._voice_floor.try_acquire(
-                session.session_id, client_id
+            voice_result = self._avatar_arbiter.try_acquire_voice(
+                session.session_id, client_id or ""
             )
-            if not acquired:
+            if not voice_result.granted:
+                # ``busy_holder`` — FloorHolder текущего держателя (Phase 1
+                # avatar_arbiter клиент его собирает сам; Phase 2 вернётся
+                # сервисом напрямую).
                 busy_label = (
-                    busy_holder.label() if busy_holder is not None else "unknown"
+                    voice_result.busy_holder.label()
+                    if voice_result.busy_holder is not None
+                    else "unknown"
                 )
                 log.info(
                     "quest: voice floor DENIED session=%s busy=%s",
@@ -1553,6 +1597,15 @@ class WSSServer:
                     detail=f"busy: {busy_label}",
                 )
                 return
+            # voice floor успешно взят — обновить voice cache (mirror из
+            # avatar_arbiter), чтобы UI-подписчики видели LISTENING.
+            self._voice_cache.update(
+                FloorState.LISTENING,
+                FloorHolder(
+                    session_id=session.session_id,
+                    client_id=client_id or "anon",
+                ),
+            )
             log.info(
                 "quest: voice floor ACQUIRED session=%s client_id=%s",
                 session.session_id,
@@ -1566,11 +1619,9 @@ class WSSServer:
                 ws,
                 state="listening",
                 ts_ms=int(time.time() * 1000),
-                holder_id=(
-                    self._voice_floor.holder.label()
-                    if self._voice_floor.holder
-                    else None
-                ),
+                holder_id=self._voice_cache.holder.label()
+                if self._voice_cache.holder
+                else None,
             )
             return
         if cmd == "voice_ptt_stop":
@@ -1581,8 +1632,12 @@ class WSSServer:
             # и публикуем voice_state{idle}. Иначе — bridge-вызов как
             # прежде (идемпотентен), но floor не трогаем (защита от
             # двойного stop от не-держателя).
-            was_holder = self._voice_floor.release(session.session_id)[0]
+            # ADR-0051 §2.2: avatar_arbiter.release_voice() — единственная
+            # точка освобождения voice_floor.
+            was_holder = self._avatar_arbiter.release_voice(session.session_id)
             if was_holder:
+                # mirror в кэше: UI должен видеть IDLE сразу.
+                self._voice_cache.update(FloorState.IDLE, None)
                 log.info(
                     "quest: voice floor RELEASED session=%s",
                     session.session_id,

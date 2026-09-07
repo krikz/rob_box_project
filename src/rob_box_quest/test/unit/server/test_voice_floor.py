@@ -1,123 +1,131 @@
-"""Unit-тесты VoiceFloor — чистая логика, без aiohttp/ROS."""
+"""Unit-тесты VoiceFloorCache — чистая логика, без aiohttp/ROS.
+
+После ADR-0051 §2.2 (issue #1999) VoiceFloor больше **не** имеет
+try_acquire/release/force_release_for — это зона LockManager. Этот
+модуль — read-only кэш голосового floor-а, обновляемый из
+/avatar/state.
+"""
 
 from __future__ import annotations
 
-from rob_box_quest.server.voice_floor import FloorHolder, FloorState, VoiceFloor
+from rob_box_quest.server.voice_floor import FloorHolder, FloorState, VoiceFloorCache
 
 
 def test_initial_state_is_idle():
-    floor = VoiceFloor()
+    floor = VoiceFloorCache()
     assert floor.state == FloorState.IDLE
     assert floor.holder is None
 
 
-def test_acquire_from_idle_returns_listening_and_holder():
-    floor = VoiceFloor()
-    ok, busy, new_state = floor.try_acquire(session_id="s1", client_id="operator-quest")
-    assert ok is True
-    assert busy is None
-    assert new_state == FloorState.LISTENING
+def test_update_state_listening_with_holder():
+    """avatar_arbiter пушит LISTENING + holder — кэш отражает."""
+    floor = VoiceFloorCache()
+    holder = FloorHolder(session_id="s1", client_id="operator-quest")
+    floor.update(FloorState.LISTENING, holder)
     assert floor.state == FloorState.LISTENING
     assert floor.holder is not None
     assert floor.holder.session_id == "s1"
     assert floor.holder.client_id == "operator-quest"
 
 
-def test_acquire_when_busy_returns_denied_with_busy_holder():
-    floor = VoiceFloor()
-    floor.try_acquire("s1", "operator")
-    ok, busy, new_state = floor.try_acquire("s2", "telegram-bridge")
-    assert ok is False
-    assert busy == FloorHolder(session_id="s1", client_id="operator")
-    assert new_state == FloorState.DENIED
-    # Floor остался у первого.
-    assert floor.state == FloorState.LISTENING
+def test_update_state_denied_with_busy_holder():
+    """avatar_arbiter отдал DENIED — busy_holder показывает, кто держит."""
+    floor = VoiceFloorCache()
+    busy = FloorHolder(session_id="s1", client_id="operator")
+    floor.update(FloorState.DENIED, busy)
+    assert floor.state == FloorState.DENIED
+    assert floor.holder == busy
+
+
+def test_update_state_idle_clears_holder():
+    """После release в LockManager → avatar_arbiter пушит IDLE → кэш чист."""
+    floor = VoiceFloorCache()
+    floor.update(
+        FloorState.LISTENING,
+        FloorHolder(session_id="s1", client_id="operator"),
+    )
     assert floor.holder is not None
-    assert floor.holder.session_id == "s1"
 
-
-def test_release_by_holder_returns_idle():
-    floor = VoiceFloor()
-    floor.try_acquire("s1", "operator")
-    released, new_state = floor.release("s1")
-    assert released is True
-    assert new_state == FloorState.IDLE
+    floor.update(FloorState.IDLE, None)
     assert floor.state == FloorState.IDLE
     assert floor.holder is None
 
 
-def test_release_by_non_holder_is_noop():
-    floor = VoiceFloor()
-    floor.try_acquire("s1", "operator")
-    released, new_state = floor.release("s2")
-    assert released is False
-    assert new_state == FloorState.LISTENING
-    assert floor.holder is not None
-    assert floor.holder.session_id == "s1"
-
-
-def test_release_when_idle_is_idempotent_true():
-    floor = VoiceFloor()
-    released, new_state = floor.release("s1")
-    assert released is True
-    assert new_state == FloorState.IDLE
-
-
-def test_force_release_for_owner_returns_true():
-    floor = VoiceFloor()
-    floor.try_acquire("s1", "operator")
-    assert floor.force_release_for("s1") is True
-    assert floor.state == FloorState.IDLE
-
-
-def test_force_release_for_stranger_returns_false():
-    floor = VoiceFloor()
-    floor.try_acquire("s1", "operator")
-    assert floor.force_release_for("s2") is False
-    assert floor.state == FloorState.LISTENING
-
-
-def test_after_release_next_acquire_succeeds():
-    floor = VoiceFloor()
-    floor.try_acquire("s1", "operator")
-    floor.release("s1")
-    ok, _, _ = floor.try_acquire("s2", "telegram-bridge")
-    assert ok is True
-    assert floor.holder is not None
+def test_update_state_speaking():
+    """speaking state используется для TTS-канала — кэш отражает."""
+    floor = VoiceFloorCache()
+    floor.update(
+        FloorState.SPEAKING,
+        FloorHolder(session_id="s2", client_id="tts-bridge"),
+    )
+    assert floor.state == FloorState.SPEAKING
     assert floor.holder.session_id == "s2"
 
 
-def test_acquire_without_client_id_generates_anon_label():
-    floor = VoiceFloor()
-    ok, _, _ = floor.try_acquire(session_id="s1")
-    assert ok is True
-    assert floor.holder.client_id.startswith("anon-")
-    assert floor.holder.session_id == "s1"
+def test_is_held_by_session_when_idle_returns_false():
+    floor = VoiceFloorCache()
+    assert floor.is_held_by_session("s1") is False
+    assert floor.is_held_by_session(None) is False
 
 
-def test_snapshot_shape():
-    floor = VoiceFloor()
-    snap_idle = floor.snapshot()
-    assert snap_idle == {"state": "idle", "holder": None}
+def test_is_held_by_session_returns_true_for_current_holder():
+    floor = VoiceFloorCache()
+    floor.update(
+        FloorState.LISTENING,
+        FloorHolder(session_id="s1", client_id="operator"),
+    )
+    assert floor.is_held_by_session("s1") is True
+    assert floor.is_held_by_session("s2") is False
 
-    floor.try_acquire("s1", "operator")
-    snap_busy = floor.snapshot()
-    assert snap_busy["state"] == "listening"
-    assert snap_busy["holder"]["session_id"] == "s1"
-    assert snap_busy["holder"]["client_id"] == "operator"
-    assert snap_busy["holder"]["held_for_s"] >= 0.0
+
+def test_held_by_other_session_when_idle_returns_false():
+    floor = VoiceFloorCache()
+    assert floor.held_by_other_session("s1") is False
+
+
+def test_held_by_other_session_distinguishes_self_vs_other():
+    floor = VoiceFloorCache()
+    floor.update(
+        FloorState.LISTENING,
+        FloorHolder(session_id="s1", client_id="operator"),
+    )
+    assert floor.held_by_other_session("s1") is False
+    assert floor.held_by_other_session("s2") is True
+
+
+def test_initial_holder_constructor():
+    """Можно сразу инициализировать с готовым holder (latched /avatar/state)."""
+    holder = FloorHolder(session_id="s1", client_id="operator")
+    floor = VoiceFloorCache(
+        initial_state=FloorState.LISTENING,
+        initial_holder=holder,
+    )
+    assert floor.state == FloorState.LISTENING
+    assert floor.holder == holder
+
+
+def test_reset_returns_to_idle():
+    floor = VoiceFloorCache()
+    floor.update(
+        FloorState.LISTENING,
+        FloorHolder(session_id="s1", client_id="operator"),
+    )
+    floor.reset()
+    assert floor.state == FloorState.IDLE
+    assert floor.holder is None
 
 
 def test_holder_label_is_short_and_unique():
+    """FloorHolder.label() остался без изменений — это просто форматтер."""
     h = FloorHolder(session_id="abcdef1234567890", client_id="operator-quest")
     assert h.label() == "operator-quest:abcdef12"
 
 
-def test_simulated_voice_mode_speaking_returns_speaking_state():
-    """robot_voice mode → state=speaking (Phase 2 hook, форма зарезервирована)."""
-    floor = VoiceFloor()
-    # Прямо сейчас ws_server.py не различает listening/speaking в try_acquire
-    # (Phase 2.1+ добавит mode-aware). Поведение по умолчанию — LISTENING.
-    ok, _, new_state = floor.try_acquire("s1", "robot-voice-client")
-    assert ok is True
-    assert new_state == FloorState.LISTENING
+def test_update_is_idempotent():
+    floor = VoiceFloorCache()
+    holder = FloorHolder(session_id="s1", client_id="operator")
+    floor.update(FloorState.LISTENING, holder)
+    floor.update(FloorState.LISTENING, holder)
+    floor.update(FloorState.LISTENING, holder)
+    assert floor.state == FloorState.LISTENING
+    assert floor.holder == holder

@@ -372,13 +372,15 @@ async def test_unknown_voice_state_value_in_msgpack_normalized_to_idle():
     любой «новый» клиент, который приходит с неизвестным state, получает
     idle-семантику (state не null, не error, не crash).
     """
-    from rob_box_quest.server.voice_floor import FloorState, VoiceFloor
+    from rob_box_quest.server.voice_floor import FloorState, VoiceFloorCache
 
-    floor = VoiceFloor()
-    # Нормальное состояние: try_acquire → LISTENING.
-    ok, _, new_state = floor.try_acquire("s1", "operator")
-    assert ok is True
-    assert new_state == FloorState.LISTENING
+    floor = VoiceFloorCache()
+    # Нормальное состояние: avatar_arbiter пушит LISTENING + holder —
+    # кэш это отражает (mirror-only API после ADR-0051 §2.2).
+    from rob_box_quest.server.voice_floor import FloorHolder
+
+    floor.update(FloorState.LISTENING, FloorHolder(session_id="s1", client_id="operator"))
+    assert floor.state == FloorState.LISTENING
 
     # Симулируем «recon-клиент сообщает unknown state»: флор сам по себе
     # не принимает external state (он server-authoritative), но FloorState
@@ -392,6 +394,5 @@ async def test_unknown_voice_state_value_in_msgpack_normalized_to_idle():
             f"voice_state JSON_EVENT схему"
         )
 
-    # snapshot() всегда возвращает один из этих state'ов.
-    snap = floor.snapshot()
-    assert snap["state"] in valid_states
+    # Кэш возвращает FloorState (mirror-only); значение входит в JSON_EVENT схему.
+    assert floor.state.value in valid_states

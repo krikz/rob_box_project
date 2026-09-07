@@ -1,147 +1,286 @@
-"""SupervisorFloorTracker — локальный учёт teleop-floor-ов для ws_server.
+"""AvatarStateFloorCache + VoiceFloorCache — read-only кэши floor-ов из /avatar/state.
 
-Источник истины: docs/adr/0028 §4.2 (floor-ы), §4.4 (heartbeat), §6 Q4 (dead-man 500мс).
+ADR-0051 §2.2 (issue #1999) — единственный владелец floor-ов это
+:class:`rob_box_supervisor.core.locks.LockManager`. Quest больше **не
+имеет своего состояния** floor-ов (раньше ``SupervisorFloorTracker``
+вел локальный учёт teleop_floor и был вторым источником истины — отсюда
+росли гонки вида «FSM говорит conflict, tracker говорит granted»).
 
-Контекст (AV-19, issue #1911):
-- В Phase 1 ``avatar_supervisor`` задеплоен в ``monitor``-режиме и НЕ
-  рулит twist_mux/dialogue_node параметрами (ADR-0028 §4.5).
-- Кастомный IDL для ``AcquireFloor``/``ReleaseFloor`` (AV-5, AV-12)
-  ещё не готов, поэтому полноценный service-call на
-  ``/avatar_supervisor/acquire_floor`` через ROS 2 из ws_server
-  невозможен без ломки существующих unit-тестов (которые бегут без
-  rclpy).
-- Поэтому ws_server ведёт **локальный** floor-tracker: кто из
-  client_id сейчас держит ``teleop``. Это согласуется с мотивом
-  ADR-0028 §1.1 — «пока один источник голоса — floor всегда свободен»:
-  в Phase 1 (только Quest) tracker-а достаточно, чтобы гейтить
-  ``teleop_twist`` без разрешения супервизора.
-- Когда supervisor-сервисы станут доступны (AV-12), tracker
-  превращается в тонкий proxy: тот же публичный API, но ``acquire``
-  дёргает ``/avatar_supervisor/acquire_floor`` через
-  ``Bridge.acquire_teleop_floor``. В PR это явно отмечено в
-  ``meta-quest-api.md`` и design.md.
+Этот модуль — **только отображение**:
 
-Контракт:
-- Floor-ы — исключительно ``teleop`` (AV-19 фокус). ``voice`` живёт в
-  supervisor-клиенте (VoiceFloor), см. rob_box_telegram/.../supervisor_client.py.
-- ``acquire(client_id)`` — попытка взять floor. Возвращает
-  ``AcquireResult(granted, held_by, reason)``.
-- ``release(client_id)`` — отпустить; идемпотентно, ошибки нет если
-  клиент не держал.
-- ``holder()`` — текущий держатель (client_id) или ``None``.
-- ``is_held_by(client_id)`` — True если client_id == holder().
-- ``FLOOR_HELD_RATE_LIMIT_S`` — минимальный интервал между двумя
-  ошибками ``FLOOR_HELD`` для одной сессии (anti-spam: Quest шлёт
-  ``teleop_twist`` 30 Гц; если floor держит Telegram, ws_server не
-  должен заливать сокет ошибками).
+  - WS-сервер получает ``/avatar/state`` (msgpack/JSON из avatar_arbiter),
+    декодирует в :class:`AvatarFloorSnapshot` и пушит в
+    :class:`AvatarStateFloorCache` (для teleop) и
+    :class:`VoiceFloorCache` (для voice);
+  - :py:meth:`AvatarStateFloorCache.is_held_by` отвечает на вопрос
+    «quest-сессия сейчас держит teleop?» — ws_server гейтит
+    ``teleop_twist`` на основе этого ответа;
+  - :py:meth:`VoiceFloorCache.is_held_by_session` гейтит
+    ``voice_ptt_start/stop`` и VOICE_AUDIO фреймы — пропускаем только
+    если наша сессия — текущий holder.
 
-Используется в ws_server._on_json_cmd (gate teleop_twist +
-rate-limited FLOOR_HELD) и WSSServer._unregister_session (release
-на закрытии).
+Контракт (ADR-0051 §2.2, шаг 9 «один владелец floor»):
+
+  - **никаких** ``acquire`` / ``release`` / ``force_release``: всё это
+    теперь живёт в LockManager и зовётся через avatar_arbiter service.
+    Кэш тут — только mirror последнего увиденного состояния;
+  - ``holder`` / ``state`` — read-only свойства;
+  - :py:meth:`update` — единственный мутирующий метод, вызывается из
+    ws_server по приходу ``/avatar/state``.
+
+Контекст миграции (было в ``SupervisorFloorTracker`` и ``VoiceFloor``,
+удалено в #1999 / C2):
+
+  - Раньше ``acquire(client_id)`` локально проверял, свободен ли
+    floor, и выставлял ``_holder``. Теперь это целиком зона
+    ответственности LockManager — ws_server не зовёт ``acquire``,
+    только смотрит кэш;
+  - Раньше ``should_send_floor_held_error`` rate-limit'ил FLOOR_HELD
+    ошибки. Теперь FLOOR_HELD отдаёт сам avatar_arbiter (reason в
+    ответе сервиса), и rate-limit переехал на сторону сервиса —
+    quest-кэш не нужен;
+  - ``is_held_by(client_id)`` остался — это единственное, что нужно
+    ws_server-у для гейта ``teleop_twist``.
 """
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
+from enum import Enum
 from typing import Optional
 
 
-# Anti-spam для ERROR{FLOOR_HELD}: на 30 Гц teleop_twist при свободном
-# holder-сессии не должны получать по 30 ошибок в секунду. Раз в 1 с — норма.
-FLOOR_HELD_RATE_LIMIT_S: float = 1.0
+# Клиент-id, который считается «quest-сессией» по умолчанию для
+# fallback-сравнений, если в snapshot явно не передан.
+QUEST_DEFAULT_CLIENT_ID: str = "quest"
 
 
-@dataclass
-class AcquireResult:
-    """Ответ на ``acquire(client_id)``."""
+@dataclass(frozen=True)
+class AvatarFloorSnapshot:
+    """Снимок состояния floor-ов из /avatar/state (AV-14, ADR-0051 §2.2).
 
-    granted: bool
-    held_by: Optional[str] = None
-    reason: str = ""
-
-
-class SupervisorFloorTracker:
-    """Локальный учёт teleop-floor-ов для ws_server (AV-19).
-
-    Single-thread: все вызовы из aiohttp event-loop. Никаких блокировок.
+    Attributes:
+        teleop_holder: client_id держателя teleop_floor или None.
+        voice_holder: client_id держателя voice_floor или None.
+        avatar_mode: текущий режим FSM ("off" / "telegram_active" /
+            "avatar_present" / "mixed"). Используется только для
+            информационных сообщений в логах и UI — решения о гейтах
+            принимаются по ``teleop_holder``.
+        schema_version: версия схемы /avatar/state (AV-14). Если
+            None — мы не знаем версию и считаем snapshot сырым.
     """
 
-    __slots__ = (
-        "_holder",
-        "_last_error_monotonic",
-        "_now_fn",
-    )
+    teleop_holder: Optional[str] = None
+    voice_holder: Optional[str] = None
+    avatar_mode: str = "off"
+    schema_version: Optional[int] = None
 
-    def __init__(self, now_fn=None) -> None:
-        self._holder: Optional[str] = None
-        self._last_error_monotonic: dict[str, float] = {}
-        # Injectable clock для тестов с fake-clock.
-        self._now_fn = now_fn if now_fn is not None else time.monotonic
+
+class AvatarStateFloorCache:
+    """Read-only кэш floor-ов из /avatar/state (ADR-0051 §2.2).
+
+    Single-thread: все вызовы из aiohttp event-loop. Никаких блокировок
+    и никаких блокирующих I/O — обновление синхронное.
+    """
+
+    __slots__ = ("_snapshot",)
+
+    def __init__(
+        self,
+        initial_snapshot: Optional[AvatarFloorSnapshot] = None,
+    ) -> None:
+        self._snapshot: AvatarFloorSnapshot = (
+            initial_snapshot
+            if initial_snapshot is not None
+            else AvatarFloorSnapshot()
+        )
 
     @property
     def holder(self) -> Optional[str]:
         """client_id текущего держателя teleop_floor или None."""
-        return self._holder
+        return self._snapshot.teleop_holder
+
+    @property
+    def voice_holder(self) -> Optional[str]:
+        """client_id текущего держателя voice_floor или None."""
+        return self._snapshot.voice_holder
+
+    @property
+    def avatar_mode(self) -> str:
+        """Текущий режим FSM (для логов и UI)."""
+        return self._snapshot.avatar_mode
 
     def is_held_by(self, client_id: Optional[str]) -> bool:
-        return client_id is not None and self._holder == client_id
+        """True если ``client_id`` держит teleop_floor прямо сейчас.
 
-    def acquire(self, client_id: str) -> AcquireResult:
-        """Попытка взять teleop_floor от имени ``client_id``.
-
-        Идемпотентно: если уже держит тот же client_id — granted=True.
-        Иначе: granted=False, ``held_by`` — текущий держатель.
+        Используется ws_server-ом для гейта ``teleop_twist``: если
+        ``client_id`` (наша сессия) держит floor — пропускаем твист;
+        если держит кто-то другой — гейтим и шлём FLOOR_HELD.
         """
-        if not client_id:
-            return AcquireResult(granted=False, held_by=self._holder, reason="invalid_client_id")
-        if self._holder == client_id:
-            return AcquireResult(granted=True, held_by=client_id, reason="already_held")
-        if self._holder is None:
-            self._holder = client_id
-            return AcquireResult(granted=True, held_by=client_id, reason="granted")
-        return AcquireResult(granted=False, held_by=self._holder, reason="held_by_other")
+        return client_id is not None and self._snapshot.teleop_holder == client_id
 
-    def release(self, client_id: str) -> bool:
-        """Отпустить floor. True если клиент реально держал его.
+    def held_by_other(self, client_id: Optional[str]) -> bool:
+        """True если floor держит кто-то, но не ``client_id``.
 
-        Идемпотентно: если client_id не держит — False, но без raise.
-        Используется в _unregister_session — клиент мог и не взять floor.
+        Разница с ``not is_held_by(client_id)``: возвращает False, если
+        floor свободен (нет holder-а). Удобно для различения
+        «не твой» vs «никого нет».
         """
-        if self._holder == client_id:
-            self._holder = None
-            return True
-        return False
+        holder = self._snapshot.teleop_holder
+        if holder is None:
+            return False
+        return holder != client_id
 
-    def force_release(self) -> Optional[str]:
-        """Снять floor (используется при shutdown/reset). Возвращает бывшего holder."""
-        prev = self._holder
+    def update(self, snapshot: AvatarFloorSnapshot) -> None:
+        """Положить новый снимок из /avatar/state.
+
+        Единственный мутирующий метод класса. Вызывается из
+        ws_server-овского подписчика на ``/avatar_state_topic``.
+
+        Idempotent: повторный update с тем же snapshot — no-op по
+        смыслу (мы только перезаписываем, side-effect-ов нет).
+        """
+        self._snapshot = snapshot
+
+    def reset(self) -> None:
+        """Очистить кэш (используется при reset/shutdown).
+
+        В AvatarStateFloorCache нет «освобождения» floor-а (это
+        решает LockManager по факту release-вызова). Здесь —
+        только сброс локального зеркала, чтобы в UI/логах после
+        reset не висел старый holder.
+        """
+        self._snapshot = AvatarFloorSnapshot()
+
+
+# === Voice floor (read-only cache) =============================================
+# Раньше жил в ``server/voice_floor.py`` вместе с mutex-логикой. После
+# ADR-0051 §2.2 muteх ушёл в avatar_arbiter, и ``VoiceFloorCache``
+# переехал в ``core/floor.py`` — чтобы ``LocalAvatarArbiterClient``
+# (тоже в core/) мог импортировать ``FloorHolder`` без циркулярной
+# зависимости через ``server/__init__.py`` → ``ws_server`` →
+# ``core.avatar_arbiter`` → ``server.voice_floor``.
+
+class FloorState(str, Enum):
+    """Состояния voice floor.
+
+    Значения совпадают со схемой ``voice_state`` в meta-quest-api.md §4,
+    кроме ``DENIED`` (локальное расширение для UI Quest-сервера).
+
+    После ADR-0051 §2.2 это read-only enum — мутации состояния
+    делает avatar_arbiter; здесь мы только зеркалим.
+    """
+
+    IDLE = "idle"
+    LISTENING = "listening"
+    SPEAKING = "speaking"
+    DENIED = "denied"
+
+
+@dataclass(frozen=True)
+class FloorHolder:
+    """Идентификатор держателя voice floor (mirror из /avatar/state).
+
+    До ADR-0051 §2.2 holder был «локальной» сущностью Quest-WS
+    (создавался на try_acquire). Теперь avatar_arbiter публикует
+    фактического holder-а в /avatar_state, и мы просто зеркалим
+    сюда для UI-логики Quest-клиента.
+
+    Attributes:
+        session_id: id WS-сессии (зеркало из arbiter-а).
+        client_id: id клиента из HELLO payload, либо серверный fallback.
+    """
+
+    session_id: str
+    client_id: str
+
+    def label(self) -> str:
+        """Короткая метка для логов и voice_state.detail (≤ ~32 символа)."""
+        sid = self.session_id[:8] if len(self.session_id) >= 8 else self.session_id
+        return f"{self.client_id}:{sid}"
+
+
+class VoiceFloorCache:
+    """Read-only кэш voice floor-а (ADR-0051 §2.2).
+
+    Single-thread: все вызовы из aiohttp event-loop. Никаких
+    блокировок — обновление синхронное, как и в
+    :class:`AvatarStateFloorCache`.
+    """
+
+    __slots__ = ("_state", "_holder")
+
+    def __init__(
+        self,
+        initial_state: FloorState = FloorState.IDLE,
+        initial_holder: Optional[FloorHolder] = None,
+    ) -> None:
+        self._state: FloorState = initial_state
+        self._holder: Optional[FloorHolder] = initial_holder
+
+    @property
+    def state(self) -> FloorState:
+        """Текущее состояние voice floor (idle / listening / speaking / denied)."""
+        return self._state
+
+    @property
+    def holder(self) -> Optional[FloorHolder]:
+        """Текущий держатель voice floor (mirror из /avatar_state) или None."""
+        return self._holder
+
+    def is_held_by_session(self, session_id: Optional[str]) -> bool:
+        """True если ``session_id`` держит voice floor прямо сейчас.
+
+        Используется ws_server-ом для гейта voice_ptt_start/stop и
+        VOICE_AUDIO фреймов: пропускаем только если наша сессия —
+        текущий holder.
+        """
+        return (
+            session_id is not None
+            and self._holder is not None
+            and self._holder.session_id == session_id
+        )
+
+    def held_by_other_session(self, session_id: Optional[str]) -> bool:
+        """True если voice floor держит другая сессия (не наша)."""
+        if self._holder is None or self._state == FloorState.IDLE:
+            return False
+        return self._holder.session_id != session_id
+
+    def update(
+        self,
+        state: FloorState,
+        holder: Optional[FloorHolder],
+    ) -> None:
+        """Положить новый снимок voice floor-а из /avatar_state.
+
+        Единственный мутирующий метод класса. Вызывается из
+        ws_server-овского подписчика на ``/avatar_state_topic``.
+
+        Контракт: avatar_arbiter присылает ``state`` и ``holder``
+        вместе; ``DENIED`` (локальное расширение) ставится самим
+        ws_server-ом в момент отказа клиенту, чтобы UI мог показать
+        «у робота говорит другой» — это единственный путь, где
+        ``state != holder``, и обрабатывается он явно в ws_server.
+        """
+        self._state = state
+        self._holder = holder
+
+    def reset(self) -> None:
+        """Очистить кэш (используется при reset/shutdown).
+
+        Реальное освобождение voice floor-а — зона LockManager; здесь
+        только сброс зеркала.
+        """
+        self._state = FloorState.IDLE
         self._holder = None
-        return prev
-
-    def should_send_floor_held_error(self, client_id: str) -> bool:
-        """Rate-limit для ERROR{FLOOR_HELD} на одного клиента.
-
-        True если можно слать ошибку (прошло >= FLOOR_HELD_RATE_LIMIT_S
-        с последней ошибки для этого client_id). Сбрасывает таймер после
-        True (вызывающий код СРАЗУ шлёт ошибку и больше не повторяет до
-        истечения окна).
-        """
-        now = self._now_fn()
-        last = self._last_error_monotonic.get(client_id, 0.0)
-        if (now - last) >= FLOOR_HELD_RATE_LIMIT_S:
-            self._last_error_monotonic[client_id] = now
-            return True
-        return False
-
-    def reset_rate_limit(self, client_id: Optional[str]) -> None:
-        """Сбросить rate-limit окно для client_id (вызывается на release)."""
-        if client_id is not None:
-            self._last_error_monotonic.pop(client_id, None)
 
 
 __all__ = [
-    "SupervisorFloorTracker",
-    "AcquireResult",
-    "FLOOR_HELD_RATE_LIMIT_S",
+    "AvatarStateFloorCache",
+    "AvatarFloorSnapshot",
+    "QUEST_DEFAULT_CLIENT_ID",
+    "FloorState",
+    "FloorHolder",
+    "VoiceFloorCache",
 ]

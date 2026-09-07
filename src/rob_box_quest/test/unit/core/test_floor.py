@@ -1,25 +1,29 @@
-"""Unit-тесты SupervisorFloorTracker (core/floor.py).
+"""Unit-тесты AvatarStateFloorCache (core/floor.py).
+
+После ADR-0051 §2.2 (issue #1999) tracker больше **не** имеет
+acquire/release — это зона LockManager. Этот модуль — read-only
+кэш, обновляемый из /avatar/state.
 
 Покрывает:
-- acquire free / занято чужим / идемпотентно свой;
-- release — освобождает, чужой release no-op;
-- rate-limit ERROR{FLOOR_HELD} с fake-clock (1 с интервал);
-- force_release для reset/shutdown;
-- is_held_by / holder.
+- начальное состояние (пустое);
+- update snapshot-а из /avatar/state;
+- read-only свойства holder / voice_holder / avatar_mode;
+- is_held_by / held_by_other — основной gate для teleop_twist;
+- reset — очистка кэша при shutdown.
 """
 
 from __future__ import annotations
 
-import pytest
-
 from rob_box_quest.core.floor import (
-    FLOOR_HELD_RATE_LIMIT_S,
-    AcquireResult,
-    SupervisorFloorTracker,
+    AvatarFloorSnapshot,
+    AvatarStateFloorCache,
+    QUEST_DEFAULT_CLIENT_ID,
 )
 
 
 class _FakeClock:
+    """Не используется — оставлен чтобы pytest не падал на conftest-импортах."""
+
     def __init__(self, t: float = 0.0) -> None:
         self.t = t
 
@@ -30,140 +34,111 @@ class _FakeClock:
         self.t += dt
 
 
-def test_acquire_when_free_grants():
-    clk = _FakeClock(0.0)
-    tr = SupervisorFloorTracker(now_fn=clk)
-    res = tr.acquire("client-a")
-    assert res.granted is True
-    assert res.held_by == "client-a"
-    assert tr.holder == "client-a"
-    assert tr.is_held_by("client-a") is True
+def test_initial_state_is_empty():
+    cache = AvatarStateFloorCache()
+    assert cache.holder is None
+    assert cache.voice_holder is None
+    assert cache.avatar_mode == "off"
+    assert cache.is_held_by("anyone") is False
+    assert cache.is_held_by(None) is False
+    assert cache.held_by_other("anyone") is False
 
 
-def test_acquire_by_other_returns_held_by_other():
-    clk = _FakeClock(0.0)
-    tr = SupervisorFloorTracker(now_fn=clk)
-    tr.acquire("client-a")
-    res = tr.acquire("client-b")
-    assert res.granted is False
-    assert res.held_by == "client-a"
-    assert tr.holder == "client-a"  # a не потерял
+def test_update_holder():
+    cache = AvatarStateFloorCache()
+    cache.update(AvatarFloorSnapshot(teleop_holder="questA", avatar_mode="avatar_present"))
+    assert cache.holder == "questA"
+    assert cache.is_held_by("questA") is True
+    assert cache.is_held_by("questB") is False
+    assert cache.held_by_other("questB") is True
+    # questA видит floor как свой, не как чужой.
+    assert cache.held_by_other("questA") is False
 
 
-def test_acquire_is_idempotent_for_same_client():
-    clk = _FakeClock(0.0)
-    tr = SupervisorFloorTracker(now_fn=clk)
-    tr.acquire("client-a")
-    res = tr.acquire("client-a")
-    assert res.granted is True
-    assert res.held_by == "client-a"
-    assert tr.holder == "client-a"
+def test_update_clears_holder_on_none():
+    """После release в LockManager → avatar_arbiter пушит snapshot с
+    teleop_holder=None → кэш должен отражать это."""
+    cache = AvatarStateFloorCache()
+    cache.update(AvatarFloorSnapshot(teleop_holder="questA"))
+    assert cache.holder == "questA"
+
+    cache.update(AvatarFloorSnapshot(teleop_holder=None))
+    assert cache.holder is None
+    assert cache.is_held_by("questA") is False
 
 
-def test_acquire_empty_client_id_rejected():
-    tr = SupervisorFloorTracker()
-    res = tr.acquire("")
-    assert res.granted is False
-    assert "invalid_client_id" in res.reason
-    assert tr.holder is None
+def test_update_voice_holder_independent():
+    """Кэш хранит voice_floor holder-а отдельно от teleop — они независимы."""
+    cache = AvatarStateFloorCache()
+    cache.update(
+        AvatarFloorSnapshot(
+            teleop_holder="questA",
+            voice_holder="telegram",
+            avatar_mode="mixed",
+        )
+    )
+    assert cache.holder == "questA"
+    assert cache.voice_holder == "telegram"
+    assert cache.avatar_mode == "mixed"
 
 
-def test_release_returns_true_for_holder():
-    tr = SupervisorFloorTracker()
-    tr.acquire("client-a")
-    assert tr.release("client-a") is True
-    assert tr.holder is None
+def test_held_by_other_when_free_returns_false():
+    """Когда floor свободен, ``held_by_other`` должен возвращать False
+    (а не True по умолчанию) — иначе ws_server будет гейтить
+    teleop_twist когда никто не держит."""
+    cache = AvatarStateFloorCache()
+    assert cache.held_by_other("questA") is False
+    # Не-зависит от client_id.
+    assert cache.held_by_other(None) is False
 
 
-def test_release_returns_false_for_non_holder():
-    tr = SupervisorFloorTracker()
-    tr.acquire("client-a")
-    assert tr.release("client-b") is False
-    assert tr.holder == "client-a"
+def test_held_by_other_distinguishes_self_vs_other():
+    cache = AvatarStateFloorCache()
+    cache.update(AvatarFloorSnapshot(teleop_holder="questA"))
+    assert cache.held_by_other("questA") is False
+    assert cache.held_by_other("questB") is True
+    assert cache.held_by_other(None) is True
 
 
-def test_release_is_idempotent_for_non_holder():
-    tr = SupervisorFloorTracker()
-    assert tr.release("client-b") is False  # никогда не держал
-    assert tr.release("client-b") is False
+def test_initial_snapshot_constructor():
+    """Можно сразу инициализировать кэш с готовым snapshot (например,
+    latched /avatar/state в startup)."""
+    snap = AvatarFloorSnapshot(
+        teleop_holder="questA",
+        voice_holder="telegram",
+        avatar_mode="mixed",
+        schema_version=2,
+    )
+    cache = AvatarStateFloorCache(initial_snapshot=snap)
+    assert cache.holder == "questA"
+    assert cache.voice_holder == "telegram"
+    assert cache.avatar_mode == "mixed"
 
 
-def test_after_release_other_can_acquire():
-    tr = SupervisorFloorTracker()
-    tr.acquire("client-a")
-    tr.release("client-a")
-    res = tr.acquire("client-b")
-    assert res.granted is True
-    assert tr.holder == "client-b"
+def test_reset_clears_snapshot():
+    cache = AvatarStateFloorCache()
+    cache.update(AvatarFloorSnapshot(teleop_holder="questA"))
+    cache.reset()
+    assert cache.holder is None
+    assert cache.is_held_by("questA") is False
+    assert cache.held_by_other("anyone") is False
 
 
-def test_force_release_returns_prev_holder_and_clears():
-    tr = SupervisorFloorTracker()
-    tr.acquire("client-a")
-    prev = tr.force_release()
-    assert prev == "client-a"
-    assert tr.holder is None
-    # Повторный force без holder — None.
-    assert tr.force_release() is None
+def test_update_is_idempotent():
+    """Повторный update с тем же snapshot — корректное состояние без
+    побочных эффектов."""
+    cache = AvatarStateFloorCache()
+    snap = AvatarFloorSnapshot(teleop_holder="questA")
+    cache.update(snap)
+    cache.update(snap)
+    cache.update(snap)
+    assert cache.holder == "questA"
 
 
-def test_floor_held_error_rate_limit_first_call_allowed():
-    clk = _FakeClock(100.0)
-    tr = SupervisorFloorTracker(now_fn=clk)
-    tr.acquire("client-a")
-    # client-b пытается — получает ошибку; первая попытка ВСЕГДА проходит.
-    assert tr.should_send_floor_held_error("client-b") is True
-
-
-def test_floor_held_error_rate_limit_blocks_within_window():
-    clk = _FakeClock(100.0)
-    tr = SupervisorFloorTracker(now_fn=clk)
-    tr.acquire("client-a")
-    assert tr.should_send_floor_held_error("client-b") is True
-    # +0.5 с — внутри окна, блокируем.
-    clk.advance(0.5)
-    assert tr.should_send_floor_held_error("client-b") is False
-    # + ещё 0.4 с (всего 0.9 с) — всё ещё внутри окна.
-    clk.advance(0.4)
-    assert tr.should_send_floor_held_error("client-b") is False
-
-
-def test_floor_held_error_rate_limit_resets_after_window():
-    clk = _FakeClock(100.0)
-    tr = SupervisorFloorTracker(now_fn=clk)
-    tr.acquire("client-a")
-    assert tr.should_send_floor_held_error("client-b") is True
-    clk.advance(FLOOR_HELD_RATE_LIMIT_S + 0.1)  # > 1 с
-    assert tr.should_send_floor_held_error("client-b") is True
-
-
-def test_floor_held_error_rate_limit_is_per_client():
-    """Два разных client_id не делят одно rate-limit окно."""
-    clk = _FakeClock(100.0)
-    tr = SupervisorFloorTracker(now_fn=clk)
-    tr.acquire("client-x")  # holder
-    # client-y шлёт → True (его первое окно).
-    assert tr.should_send_floor_held_error("client-y") is True
-    # client-z (тоже не держит) тут же → True (независимое окно).
-    assert tr.should_send_floor_held_error("client-z") is True
-    # client-y повторно через 0 с — False (его окно уже открыто).
-    assert tr.should_send_floor_held_error("client-y") is False
-
-
-def test_reset_rate_limit_clears_window():
-    clk = _FakeClock(100.0)
-    tr = SupervisorFloorTracker(now_fn=clk)
-    tr.acquire("client-a")
-    assert tr.should_send_floor_held_error("client-b") is True
-    # Сразу повторно — False.
-    assert tr.should_send_floor_held_error("client-b") is False
-    tr.reset_rate_limit("client-b")
-    # После сброса — снова True (окно очищено).
-    assert tr.should_send_floor_held_error("client-b") is True
-
-
-def test_holder_returns_none_initially():
-    tr = SupervisorFloorTracker()
-    assert tr.holder is None
-    assert tr.is_held_by(None) is False
-    assert tr.is_held_by("anyone") is False
+def test_is_held_by_with_none_client_id_returns_false():
+    """Если кто-то вызывает is_held_by(None) — никогда не True."""
+    cache = AvatarStateFloorCache()
+    cache.update(AvatarFloorSnapshot(teleop_holder=QUEST_DEFAULT_CLIENT_ID))
+    assert cache.is_held_by(None) is False
+    # Телеграм не держит:
+    assert cache.held_by_other(None) is True
