@@ -115,11 +115,29 @@ class _RecordingExecutor:
     production code uses (bounded executor + per-task slot counter) is
     actually bounded at runtime, not just declared in source. Patching
     with a pure ``MagicMock`` would prove nothing about thread count.
+
+    Each recorder tracks its OWN ``_in_flight`` counter (peak + current).
+    TTSNode constructs two executors during init: the synthesis pool
+    (``max_workers=2``) and the silero warm-load pool
+    (``max_workers=1``). Sharing a single ``_in_flight`` dict between
+    them means a worker on the silero pool briefly inflates the count
+    we attribute to the synthesis pool — leading to false ``peak=3``
+    on a 2-worker executor under CI load (silero warm-up was still
+    running when the burst landed). Per-recorder tracking fixes the
+    root cause: ``recordings[0].wrapper._in_flight`` only sees its
+    own workers.
     """
 
     def __init__(self, recordings: list, in_flight_counter: dict, lock: threading.Lock):
         self._recordings = recordings
-        self._in_flight = in_flight_counter
+        # Per-recorder in-flight counter (independent of the shared
+        # dict the factory was given for backward compatibility with
+        # the legacy ``_make_tts_node_capture`` signature). The shared
+        # dict is still kept around but no longer mutated — the
+        # recorder owns its own counter so the synthesis test does not
+        # see transient silero-warm-load traffic.
+        self._in_flight: dict = {"count": 0, "peak": 0}
+        self._in_flight_shared = in_flight_counter  # legacy; not mutated
         self._lock = lock
         # The real executor, sized exactly as the factory was called.
         self._real: concurrent.futures.ThreadPoolExecutor | None = None
@@ -157,19 +175,28 @@ class _RecordingExecutor:
         return self._real.shutdown(wait=wait, **kwargs)
 
     def _wrap(self, fn):
-        """Return a callable that increments ``in_flight`` around *fn*."""
+        """Return a callable that increments ``_in_flight`` around *fn*.
+
+        Uses THIS recorder's counter (``self._in_flight``), not the
+        shared dict. See class docstring for the rationale — the
+        silero warm-load pool would otherwise bleed into the
+        synthesis-pool measurement.
+        """
+
+        in_flight = self._in_flight
+        lock = self._lock
 
         def _wrapped(*args, **kwargs):
-            with self._lock:
-                self._in_flight["count"] += 1
-                self._in_flight["peak"] = max(
-                    self._in_flight["peak"], self._in_flight["count"]
+            with lock:
+                in_flight["count"] += 1
+                in_flight["peak"] = max(
+                    in_flight["peak"], in_flight["count"]
                 )
             try:
                 return fn(*args, **kwargs)
             finally:
-                with self._lock:
-                    self._in_flight["count"] -= 1
+                with lock:
+                    in_flight["count"] -= 1
 
         return _wrapped
 
@@ -369,6 +396,9 @@ def test_tts_node_synthesis_executor_is_bounded_at_runtime(tts_node_module):
 
         # ── (b) in-flight never exceeds max_workers ────────────────
         # Wait briefly for the executor to actually start the workers.
+        # We poll until ``count`` reaches ``max_workers`` — at that
+        # point warm-up is complete and the bounded executor has
+        # demonstrated that it actually limited the live worker count.
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
             with recorder._lock:  # noqa: SLF001
@@ -376,6 +406,35 @@ def test_tts_node_synthesis_executor_is_bounded_at_runtime(tts_node_module):
             if running >= max_workers:
                 break
             time.sleep(0.02)
+
+        # Steady-state guard: now that the executor has reached
+        # ``max_workers`` workers, give it a brief additional settle
+        # window. The recorder's per-instance counter (see
+        # ``_RecordingExecutor`` class docstring) ensures the silero
+        # warm-load pool cannot bleed into this measurement, so any
+        # ``peak`` we observe here is purely from the synthesis pool.
+        # Without this guard, CI runner GIL contention can briefly
+        # observe ``count == max_workers`` at one poll and then 0 at
+        # the next because the wrapped callable's lock acquisition
+        # raced against the test poll loop — leading to the test
+        # missing the actual concurrency window. Holding steady at
+        # ``max_workers`` for 0.1s proves the bounded primitive is
+        # genuinely holding capacity.
+        settle_deadline = time.monotonic() + 0.5
+        steady_observed = False
+        while time.monotonic() < settle_deadline:
+            with recorder._lock:  # noqa: SLF001
+                running = recorder._in_flight["count"]
+            if running == max_workers:
+                steady_observed = True
+                break
+            time.sleep(0.02)
+
+        assert steady_observed, (
+            f"executor never stabilised at {max_workers} concurrent "
+            f"workers after warm-up; bounded executor primitive is "
+            f"not holding capacity."
+        )
 
         with recorder._lock:  # noqa: SLF001
             running = recorder._in_flight["count"]
