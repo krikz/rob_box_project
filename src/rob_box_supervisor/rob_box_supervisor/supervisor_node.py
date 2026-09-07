@@ -1208,20 +1208,15 @@ class AvatarSupervisor(Node):
         клиенту это явный сигнал «фасад есть, логика ещё у arbiter; иди
         к нему». Полная миграция — Phase 2 отдельной карточкой.
 
-        Карта ``kind → поведение`` (Phase 1):
+        Карта ``kind → поведение`` (Phase 1) делегирована приватным
+        диспетчерам (ADR-0021 R1, декомпозиция CC=16→≤15 per method,
+        issue t_ef140676):
 
         * ``KIND_ACQUIRE_FLOOR`` / ``KIND_RELEASE_FLOOR`` /
-          ``KIND_SET_AVATAR_MODE`` → facade_only (см. выше).
-        * ``KIND_SET_VOICE_MODE`` → локально через :py:meth:`_apply_voice_mode`.
-        * ``KIND_EMERGENCY_STOP`` → not_implemented (Phase 1). В Phase 2
-          добавим публикацию на ``/avatar/emergency_stop`` + лок-стейт
-          LockManager. Пока честный FAIL (ADR-0018): приняли — но не
-          сделали; emergency=true → emergency=false различимы по
-          ``accepted/applied``.
-        * ``KIND_HEARTBEAT`` → accepted=true applied=true reason="noop"
-          (Phase 1). arbiter уже публикует FloorState через Legacy,
-          supervisor heartbeat в Phase 1 просто подтверждает приём.
-          Phase 2 заменит на полноценный floor-refresh.
+          ``KIND_SET_AVATAR_MODE`` → :py:meth:`_dispatch_floor_or_avatar_mode`.
+        * ``KIND_SET_VOICE_MODE`` → :py:meth:`_dispatch_voice_mode`.
+        * ``KIND_EMERGENCY_STOP`` → :py:meth:`_dispatch_emergency_stop`.
+        * ``KIND_HEARTBEAT`` → :py:meth:`_dispatch_heartbeat`.
         * ``KIND_UNKNOWN`` (kind вне [1..6] или битый payload) →
           accepted=false reason="unknown_kind".
 
@@ -1233,119 +1228,152 @@ class AvatarSupervisor(Node):
         """
         kind = _coerce_kind(getattr(command, "kind", KIND_UNKNOWN))
 
-        # ── ACQUIRE/RELEASE_FLOOR и SET_AVATAR_MODE: проксируем через arbiter
-        # (Phase 2, issue #2002). Arbiter — реальный владелец LockManager/FSM
-        # после ADR-0051 §2.2 (issue #1987). Клиенты теперь ходят через
-        # ``/supervisor/execute`` и не должны знать о существовании arbiter.
-        if kind in (KIND_ACQUIRE_FLOOR, KIND_RELEASE_FLOOR, KIND_SET_AVATAR_MODE):
-            client_id = getattr(command, "client_id", "") or ""
-            if not client_id:
-                return _make_execute_response(
-                    accepted=False,
-                    applied=False,
-                    reason=EXEC_REASON_BAD_REQUEST,
-                )
-            # Монитор-режим: supervisor принимает, но не делает (S12). Это
-            # поведение сохранено из Phase 1 (см. ниже facade_only); в Phase 2
-            # активный путь идёт через arbiter-клиент.
-            if self._mode != "active":
-                return _make_execute_response(
-                    accepted=True,
-                    applied=False,
-                    reason=EXEC_REASON_MONITOR_MODE,
-                )
-            if not self._ensure_arbiter_clients():
-                # Arbiter недоступен (CI mock без него, или workspace без
-                # пересборки IDL). Честный FAIL (ADR-0018): не притворяемся
-                # что проксировали, а явно отдаём reason=arbiter_unavailable
-                # (НЕ facade_only — это уже сделано, Phase 2 закрывает gap).
-                return _make_execute_response(
-                    accepted=True,
-                    applied=False,
-                    reason=EXEC_REASON_ARBITER_UNAVAILABLE,
-                    held_by=str(client_id),
-                )
-            # Делегируем arbiter-у. ACQUIRE → granted/applied, RELEASE →
-            # applied, SET_AVATAR_MODE → applied/actual_mode. Маппинг полей
-            # см. ниже в _proxy_to_arbiter_sync.
-            return self._proxy_to_arbiter_sync(kind, command)
-
-        # ── SET_VOICE_MODE: локально через _apply_voice_mode ─────────
+        if kind in (
+            KIND_ACQUIRE_FLOOR,
+            KIND_RELEASE_FLOOR,
+            KIND_SET_AVATAR_MODE,
+        ):
+            return self._dispatch_floor_or_avatar_mode(command, kind)
         if kind == KIND_SET_VOICE_MODE:
-            voice_mode = _normalize_voice_mode(
-                getattr(command, "voice_mode", "")
-            )
-            applied, sub_reason = self._apply_voice_mode(voice_mode)
-            if applied:
-                return _make_execute_response(
-                    accepted=True,
-                    applied=True,
-                    reason="applied",
-                    actual_mode=voice_mode,
-                )
-            # _apply_voice_mode уже отдаёт внятные reason:
-            # voice_mode_deprecated / monitor_mode / publish_failed.
-            # Маппим на уровень фасада:
-            if sub_reason == MONITOR_MODE_REASON:
-                facade_reason = EXEC_REASON_MONITOR_MODE
-            elif sub_reason.startswith("voice_mode_deprecated"):
-                facade_reason = EXEC_REASON_VOICE_MODE_REJECTED
-            elif sub_reason == "publish_failed":
-                # Не смогли опубликовать в /dialogue/control (например,
-                # rclpy error / нет подписчика) — facade трактует как
-                # voice_mode_rejected с детальным reason в логах
-                # (ADR-0018: честный FAIL, не молчание).
-                facade_reason = EXEC_REASON_VOICE_MODE_REJECTED
-            else:
-                facade_reason = EXEC_REASON_BAD_REQUEST
-            return _make_execute_response(
-                accepted=False,
-                applied=False,
-                reason=facade_reason,
-                actual_mode=voice_mode,
-            )
-
-        # ── EMERGENCY_STOP: not_implemented (Phase 1, ADR-0018) ────────
+            return self._dispatch_voice_mode(command, kind)
         if kind == KIND_EMERGENCY_STOP:
-            emergency = bool(getattr(command, "emergency", False))
-            # emergency=false («снять стоп») — accepted=true, applied=false
-            # (нет стопа, который нужно снимать) → reason=emergency_off.
-            # Это НЕ ошибка: клиент мог честно думать, что стоп активен.
-            # emergency=true — accepted=true, applied=false,
-            # reason=not_implemented (Phase 2).
-            if not emergency:
-                return _make_execute_response(
-                    accepted=True,
-                    applied=False,
-                    reason=EXEC_REASON_EMERGENCY_OFF,
-                )
-            return _make_execute_response(
-                accepted=True,
-                applied=False,
-                reason=EXEC_REASON_NOT_IMPLEMENTED,
-            )
-
-        # ── HEARTBEAT: noop в Phase 1 ─────────────────────────────────
+            return self._dispatch_emergency_stop(command, kind)
         if kind == KIND_HEARTBEAT:
-            client_id = getattr(command, "client_id", "") or ""
-            if not client_id:
-                return _make_execute_response(
-                    accepted=False,
-                    applied=False,
-                    reason=EXEC_REASON_BAD_REQUEST,
-                )
-            return _make_execute_response(
-                accepted=True,
-                applied=True,
-                reason=EXEC_REASON_HEARTBEAT_NOOP,
-                held_by=str(client_id),
-            )
+            return self._dispatch_heartbeat(command, kind)
 
         # ── unknown_kind (включая KIND_UNKNOWN=0 и битый payload) ────
         return _make_execute_response(
             accepted=False,
             applied=False,
             reason=EXEC_REASON_UNKNOWN_KIND,
+        )
+
+    # ── Диспетчеры для execute() — декомпозиция CC=16→≤15 (ADR-0021 R1).
+    # Issue t_ef140676: каждый приватный метод принимает command и kind (kind
+    # нужен только для _proxy_to_arbiter_sync), возвращает полный
+    # ExecuteResponse. Семантика 1-в-1 с прежним execute() — тесты
+    # test_execute_command.py матрицу 6×5+1+3 должны проходить без правок.
+
+    def _dispatch_floor_or_avatar_mode(
+        self, command: Any, kind: int
+    ) -> Any:
+        """ACQUIRE/RELEASE_FLOOR + SET_AVATAR_MODE → arbiter proxy.
+
+        Phase 2 (issue #2002): arbiter — реальный владелец LockManager/FSM
+        после ADR-0051 §2.2 (issue #1987). Клиенты ходят через
+        ``/supervisor/execute`` и не должны знать о существовании arbiter.
+        """
+        client_id = getattr(command, "client_id", "") or ""
+        if not client_id:
+            return _make_execute_response(
+                accepted=False,
+                applied=False,
+                reason=EXEC_REASON_BAD_REQUEST,
+            )
+        # Монитор-режим: supervisor принимает, но не делает (S12). Это
+        # поведение сохранено из Phase 1; в Phase 2 активный путь идёт
+        # через arbiter-клиент.
+        if self._mode != "active":
+            return _make_execute_response(
+                accepted=True,
+                applied=False,
+                reason=EXEC_REASON_MONITOR_MODE,
+            )
+        if not self._ensure_arbiter_clients():
+            # Arbiter недоступен (CI mock без него, или workspace без
+            # пересборки IDL). Честный FAIL (ADR-0018): не притворяемся
+            # что проксировали, а явно отдаём reason=arbiter_unavailable
+            # (НЕ facade_only — это уже сделано, Phase 2 закрывает gap).
+            return _make_execute_response(
+                accepted=True,
+                applied=False,
+                reason=EXEC_REASON_ARBITER_UNAVAILABLE,
+                held_by=str(client_id),
+            )
+        # Делегируем arbiter-у. ACQUIRE → granted/applied, RELEASE →
+        # applied, SET_AVATAR_MODE → applied/actual_mode. Маппинг полей
+        # см. ниже в _proxy_to_arbiter_sync.
+        return self._proxy_to_arbiter_sync(kind, command)
+
+    def _dispatch_voice_mode(self, command: Any, kind: int) -> Any:
+        """SET_VOICE_MODE → локально через :py:meth:`_apply_voice_mode`."""
+        voice_mode = _normalize_voice_mode(
+            getattr(command, "voice_mode", "")
+        )
+        applied, sub_reason = self._apply_voice_mode(voice_mode)
+        if applied:
+            return _make_execute_response(
+                accepted=True,
+                applied=True,
+                reason="applied",
+                actual_mode=voice_mode,
+            )
+        # _apply_voice_mode уже отдаёт внятные reason:
+        # voice_mode_deprecated / monitor_mode / publish_failed.
+        # Маппим на уровень фасада:
+        if sub_reason == MONITOR_MODE_REASON:
+            facade_reason = EXEC_REASON_MONITOR_MODE
+        elif sub_reason.startswith("voice_mode_deprecated"):
+            facade_reason = EXEC_REASON_VOICE_MODE_REJECTED
+        elif sub_reason == "publish_failed":
+            # Не смогли опубликовать в /dialogue/control (например,
+            # rclpy error / нет подписчика) — facade трактует как
+            # voice_mode_rejected с детальным reason в логах
+            # (ADR-0018: честный FAIL, не молчание).
+            facade_reason = EXEC_REASON_VOICE_MODE_REJECTED
+        else:
+            facade_reason = EXEC_REASON_BAD_REQUEST
+        return _make_execute_response(
+            accepted=False,
+            applied=False,
+            reason=facade_reason,
+            actual_mode=voice_mode,
+        )
+
+    def _dispatch_emergency_stop(self, command: Any, kind: int) -> Any:
+        """EMERGENCY_STOP → not_implemented (Phase 1, ADR-0018).
+
+        В Phase 2 добавим публикацию на ``/avatar/emergency_stop`` +
+        лок-стейт LockManager. Пока честный FAIL: приняли — но не сделали;
+        emergency=true → emergency=false различимы по ``accepted/applied``.
+        """
+        emergency = bool(getattr(command, "emergency", False))
+        # emergency=false («снять стоп») — accepted=true, applied=false
+        # (нет стопа, который нужно снимать) → reason=emergency_off.
+        # Это НЕ ошибка: клиент мог честно думать, что стоп активен.
+        # emergency=true — accepted=true, applied=false,
+        # reason=not_implemented (Phase 2).
+        if not emergency:
+            return _make_execute_response(
+                accepted=True,
+                applied=False,
+                reason=EXEC_REASON_EMERGENCY_OFF,
+            )
+        return _make_execute_response(
+            accepted=True,
+            applied=False,
+            reason=EXEC_REASON_NOT_IMPLEMENTED,
+        )
+
+    def _dispatch_heartbeat(self, command: Any, kind: int) -> Any:
+        """HEARTBEAT → noop в Phase 1.
+
+        arbiter уже публикует FloorState через Legacy, supervisor heartbeat
+        в Phase 1 просто подтверждает приём. Phase 2 заменит на полноценный
+        floor-refresh.
+        """
+        client_id = getattr(command, "client_id", "") or ""
+        if not client_id:
+            return _make_execute_response(
+                accepted=False,
+                applied=False,
+                reason=EXEC_REASON_BAD_REQUEST,
+            )
+        return _make_execute_response(
+            accepted=True,
+            applied=True,
+            reason=EXEC_REASON_HEARTBEAT_NOOP,
+            held_by=str(client_id),
         )
 
     # ── AV-28 §P7 (issue #1920) — voice style preset + language ─────────
