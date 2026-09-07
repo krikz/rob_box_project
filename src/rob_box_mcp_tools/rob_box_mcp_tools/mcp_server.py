@@ -107,6 +107,7 @@ except ImportError as _exc:  # noqa: BLE001
 from .mcp_auth import RequestAuthenticator
 from .slice_authority import ToolSliceAuthority, load_default_authority
 from .waypoint_store import WaypointStore
+from .waypoint_adapter import WaypointAdapter
 from .mapping_state import MappingState
 from .voice_state import VoiceStateStore
 
@@ -731,33 +732,52 @@ class MCPServer(Node):
         msg.data = "playing" if playing else "idle"
         pub.publish(msg)
 
-    def _init_waypoint_store(self) -> WaypointStore:
-        """Инициализация WaypointStore (SQLite для вейпоинтов).
+    def _init_waypoint_store(self) -> WaypointAdapter:
+        """Инициализация адаптера для вейпоинтов.
 
-        Остаётся на ``VOICE_MEMORY_DB_PATH`` / ``/data/voice_memory.db``,
-        а не на ``/data/harness_voice.db`` — там таблица ``waypoints`` уже
-        занята несовместимой схемой ``SQLiteVoiceMemory`` (см. комментарий
-        над ``_USE_HARNESS_VOICE_MEMORY`` выше и ADR-0055).
+        ADR-0055 Phase 2 v2 (issue #2000): ``WaypointAdapter`` —
+        schema-reconciling facade over ``WaypointStore``. Остаётся на
+        ``VOICE_MEMORY_DB_PATH`` / ``/data/voice_memory.db``; DDL
+        ``harness_voice.db.waypoints`` НЕ трогается (ADR-0055 §3).
+        Адаптер отдаёт:
+
+        * MCP-вью (pass-through): ``list_waypoints`` / ``get_waypoint``
+          / ``save_waypoint`` / ``delete_waypoint`` / ``clear_waypoints``
+          / ``get_active_map`` / ``list_maps`` / ``create_map``.
+          Все эти методы удовлетворяют ранее подписанному контракту
+          ``WaypointStore``, поэтому ``tools/navigation.py``
+          (NavigateToWaypointTool, ListWaypointsTool, …) продолжают
+          работать без правок кода, принимая ``WaypointAdapter``
+          (duck-type = ``WaypointStore``).
+        * Harness-вью (для AgentCore step 03): ``*_harness``-методы,
+          ``map_id`` по умолчанию ``"default"``.
+
+        Обёртка ``WaypointAdapter`` — единственная точка контакта
+        для всех MCP-инструментов по вейпоинтам, чтобы Phase 2 v3
+        (data-migration) могла сменить бэкенд «под ковром» без
+        затрагивания вызывающего кода.
         """
         import os
 
         db_path = os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
         try:
             store = WaypointStore(db_path=db_path)
-            active = store.get_active_map()
+            adapter = WaypointAdapter(store=store)
+            active = adapter.get_active_map()
             if active:
-                wp_count = len(store.list_waypoints())
+                wp_count = len(adapter.list_waypoints())
                 self.get_logger().info(
-                    f"📍 WaypointStore: карта '{active['name'] or active['map_id'][:8]}', "
+                    f"📍 WaypointAdapter: карта '{active['name'] or active['map_id'][:8]}', "
                     f"{wp_count} точек"
                 )
             else:
-                self.get_logger().info("📍 WaypointStore: активная карта не задана (будет создана при первом сохранении)")
-            return store
+                self.get_logger().info("📍 WaypointAdapter: активная карта не задана (будет создана при первом сохранении)")
+            return adapter
         except Exception as exc:
-            self.get_logger().error(f"❌ Ошибка инициализации WaypointStore: {exc}")
-            # Fallback — create in-memory so tools don't crash
-            return WaypointStore(db_path=":memory:")
+            self.get_logger().error(f"❌ Ошибка инициализации WaypointAdapter: {exc}")
+            # Fallback — in-memory adapter so tools don't crash
+            fallback_store = WaypointStore(db_path=":memory:")
+            return WaypointAdapter(store=fallback_store)
 
     def _init_pose_subscription(self) -> None:
         """Подписка на /odom для лёгкого снимка позиции (без tf2_ros.Buffer).
