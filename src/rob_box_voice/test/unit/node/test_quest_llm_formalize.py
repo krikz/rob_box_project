@@ -504,9 +504,13 @@ class TestFormalizeWithLlm:
         assert "«русский»" in args[1].content
         assert n._llm.complete.call_args.kwargs.get("tools", []) == []
 
-        # В итоге TTS получил переписанную фразу + явный язык (issue #1990):
+# В итоге TTS получил переписанную фразу + явный язык (issue #1990):
         # tts_node синтезирует на выбранном языке, ru-only провайдеры
         # честно отказывают, если попросили не-русский.
+        # (синхронизировано с prod 276ae305 — _speak_direct пробрасывает
+        # выбранный язык, чтобы tts_node не синтезировал со статическим
+        # ru-only провайдером. Fallback-ветки выше зовут без language= —
+        # там звучит исходная реплика оператора, она на его языке.)
         n._speak_direct.assert_called_once_with(
             "Технически выражаясь, привет.", language="ru",
         )
@@ -531,7 +535,7 @@ class TestFormalizeWithLlm:
         assert "EN prompt" in args[0].content
         assert "RU prompt" not in args[0].content
         assert "«английский»" in args[1].content
-        # Переписанный текст уходит в TTS с явным языком (issue #1990):
+# Переписанный текст уходит в TTS с явным языком (issue #1990):
         # не-русские языки требуют мультиязычного провайдера, иначе
         # tts_node отказывает.
         n._speak_direct.assert_called_once_with("Hello.", language="en")
