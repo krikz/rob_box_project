@@ -105,7 +105,7 @@ def _install_ros_mocks():
         AsyncOpenAI=MagicMock,
     )
 
-    # ── rcl_interfaces (для issue #1601 / ADR-0027 §3.4 — voice_input_mode) ─
+    # ── rcl_interfaces (для issue #1601 / ADR-0027 §3.4 — SetParametersResult) ─
     mock_rcl_interfaces = MagicMock()
     mock_rcl_interfaces_msg = MagicMock()
     # SetParametersResult должен быть callable-классом (конструктор без

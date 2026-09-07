@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-09-05",
-  "base_sha": "bc39192829b20b76125c527ca57d3ba562148a5c",
+  "created": "2026-09-07",
+  "base_sha": "c0dace5ae482cae98c1536c6c1b0b2e5fe0ea78c",
   "limits": {
     "method": 15,
     "init": 20
@@ -13,10 +13,8 @@
       "DialogueNode._continue_after_tool_calls": 22,
       "DialogueNode._do_recursive_streaming": 22,
       "DialogueNode._execute_tool_calls": 18,
-      "DialogueNode._formalize_with_llm": 18,
       "DialogueNode._handle_result": 62,
-      "DialogueNode._load_voice_presets": 24,
-      "DialogueNode._on_stt": 59,
+      "DialogueNode._on_stt": 54,
       "DialogueNode._run_turn": 57
     }
   }
