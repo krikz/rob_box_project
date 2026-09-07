@@ -90,9 +90,10 @@ class ToolSliceAuthority:
     классификаторы immutable: для слоёного override есть
     :meth:`extended_with`.
 
-    Атрибуты:
-        senders: ``sender → frozenset(slice)``. Read-only view.
-        slices: ``slice → frozenset(tool_name)``. Read-only view.
+    Публичные аксессоры (сами маппинги приватные, ``__slots__``):
+        known_senders: ``frozenset`` имён sender'ов.
+        known_slices: ``frozenset`` имён срезов.
+        is_allowed(sender, tool_name): единственная точка решения.
     """
 
     __slots__ = ("_senders", "_slices")
