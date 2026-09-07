@@ -105,6 +105,8 @@ from rob_box_supervisor.core.state import (
     StateVersionError,
     encode_for_ros_string,
 )
+from rob_box_supervisor.core.fsm import Mode  # noqa: WPS433 — для статической таблицы переходов в _floors_to_release_after_transition
+from rob_box_supervisor.core.locks import Floor  # noqa: WPS433 — для статической таблицы release в _floors_to_release_after_transition
 
 
 # AV-14 (issue #1906) — ``/avatar/state`` wire format lives in
@@ -415,6 +417,7 @@ class AvatarArbiter(Node):
             DeadManCounter,
             Floor,
             LockManager,
+            Mode,
             ModeManager,
             StateAggregator,
         )
@@ -431,11 +434,11 @@ class AvatarArbiter(Node):
         )
         # ModeManager — FSM avatar-режимов (off/telegram_active/
         # avatar_present/mixed, ADR-0028 §4.1), подключён в W3-4 под
-        # SetAvatarMode. Его voice_held_by/teleop_held_by — ТОЛЬКО вход
-        # для собственных решений о переходах (см. core/__init__.py
-        # docstring), НЕ источник истины по floor-ам — им остаётся
-        # LockManager. _set_avatar_mode_logic зеркалит releases между
-        # ними best-effort (см. её docstring).
+        # SetAvatarMode. С ADR-0051 §2.2 FSM хранит ТОЛЬКО ``mode`` —
+        # никаких holder-полей; единственный владелец floor-ов это
+        # :class:`LockManager` (см. ``core.fsm`` docstring).
+        # ``_set_avatar_mode_logic`` зеркалит releases из FSM в
+        # LockManager best-effort (см. её docstring).
         self._mode_manager = ModeManager()
         # Снимок последних известных holder-ов — нужен только чтобы отличить
         # "floor освободился через dead-man" от "floor и так был свободен"
@@ -1138,19 +1141,16 @@ class AvatarArbiter(Node):
         ModeManager, здесь только маппинг в ``success``/``applied``/
         ``reason``.
 
-        Floor-синхронизация (решение W3-4, продолжение W3-2/ADR-0028 §4.2):
-        ``ModeManager`` хранит ``voice_held_by``/``teleop_held_by`` ТОЛЬКО
-        как вход для собственных решений о переходах — источник истины по
-        floor-ам для клиентов остаётся :class:`LockManager`. Но если
-        переход СНИМАЕТ holder-а в ``ModeManager`` (уход из активного
-        avatar-режима — ``*_release``/``force_off``/``both_release``), а
-        тот же floor всё ещё числится за тем же ``client_id`` в
-        ``LockManager`` — оставлять его висеть нельзя: FSM уже решила, что
-        клиент вышел, и достучаться до floor-а через ``ReleaseFloor``
-        больше некому. Поэтому здесь же best-effort зеркально освобождаем
-        такие floor-ы и в ``LockManager`` (idempotent — no-op, если там и
-        так уже свободно; не валит переход, если floor неожиданно занят
-        другим client_id — состояния разошлись, это отдельный инцидент).
+        Floor-синхронизация (ADR-0051 §2.2, продолжение W3-2/ADR-0028 §4.2):
+        ``ModeManager`` хранит **только режим** — единственный
+        владелец floor-ов это :class:`LockManager`. После перехода
+        режима арбитр зеркально освобождает в LockManager те floor-ы,
+        которые по новому режиму стали «недостижимы»
+        (:py:meth:`_floors_to_release_after_transition`) — owner-а
+        берём прямо из ``LockManager.holder()``, не из FSM. Если
+        holder-а нет (dead-man уже сработал) или это уже другой
+        client_id (состояния разошлись) — это отдельный инцидент,
+        не валим переход.
 
         Возвращает dict для адаптера ``_fill_set_avatar_mode_response``:
 
@@ -1206,8 +1206,7 @@ class AvatarArbiter(Node):
 
         from rob_box_supervisor.core import Floor, FSMConflictError  # noqa: PLC0415
 
-        prev_voice = self._mode_manager.voice_held_by()
-        prev_teleop = self._mode_manager.teleop_held_by()
+        prev_mode = self._mode_manager.mode
 
         try:
             new_mode = self._mode_manager.transition(event, client_id)
@@ -1233,10 +1232,14 @@ class AvatarArbiter(Node):
                 "reason": REASON_CONFLICT,
             }
 
-        if prev_voice is not None and self._mode_manager.voice_held_by() is None:
-            self._release_lock_manager_floor(prev_voice, Floor.VOICE)
-        if prev_teleop is not None and self._mode_manager.teleop_held_by() is None:
-            self._release_lock_manager_floor(prev_teleop, Floor.TELEOP)
+        # Floor-синхронизация (ADR-0051 §2.2): после перехода режима
+        # отпускаем те floor-ы в LockManager, которые стали «висячими»
+        # (по новому режиму их никто не держит). Owner-а берём из
+        # самого LockManager — это единственный источник истины.
+        for floor in self._floors_to_release_after_transition(prev_mode, new_mode):
+            holder = self._lock_manager.holder(floor)
+            if holder is not None:
+                self._release_lock_manager_floor(holder, floor)
 
         return {
             "success": True,
@@ -1244,6 +1247,39 @@ class AvatarArbiter(Node):
             "mode": new_mode.value,
             "reason": REASON_APPLIED,
         }
+
+    @staticmethod
+    def _floors_to_release_after_transition(prev_mode: Mode, new_mode: Mode) -> tuple:
+        """Какие floor-ы в LockManager надо зеркально освободить после FSM-перехода.
+
+        Это статическая (mode-only) функция: по паре ``(prev_mode,
+        new_mode)`` мы знаем, какие floor-ы по новому режиму никем не
+        должны быть заняты. Owner-а ищем через :py:meth:`LockManager.holder`
+        — FSM-у про holder-ов ничего знать не надо (ADR-0051 §2.2,
+        второй инвариант «один владелец floor»).
+
+        Таблица (ADR-0028 §4.1, ровно та же что и в
+        ``MODE_TRANSITIONS``):
+
+          - в ``off`` оба floor-а свободны (escape hatch);
+          - ``telegram_active → avatar_present``: телеграм отдал
+            voice_floor квесту, освобождаем voice (teleop уже занят
+            квестом — не трогаем, LockManager хранит это);
+          - ``avatar_present → mixed``: телеграм взял voice, квест
+            держит teleop; ни один из ранее занятых floor-ов не
+            освобождается;
+          - ``telegram_active → mixed``: квест взял teleop; ничего
+            не освобождаем (телеграм продолжает держать voice);
+          - ``mixed → telegram_active``: квест ушёл, освобождаем teleop;
+          - ``mixed → avatar_present``: телеграм ушёл, освобождаем voice;
+          - ``mixed → off``: оба ушли, освобождаем оба;
+          - ``* → off`` (force_off): оба.
+        """
+        del prev_mode  # Переходы out→off и mixed→* уже выражены через new_mode.
+
+        if new_mode == Mode.OFF:
+            return (Floor.VOICE, Floor.TELEOP)
+        return ()
 
     def _release_lock_manager_floor(self, client_id: str, floor: str) -> None:
         """Зеркально отпустить ``floor`` в ``LockManager`` вслед за ModeManager (W3-4).

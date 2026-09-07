@@ -13,14 +13,15 @@ AV-6 (issue #1600) — Phase 1 monitor helpers used by
 - :class:`DeadManCounter` — ``dead_man_trips_total{client_id}`` counter
   (ADR-0028 §6 Q4, Phase 1 metric).
 
-W3-2 (issue #968 wave2 gap G2/G3) — резолвит дубликат floor-логики
-между :mod:`core.fsm` и :mod:`core.locks` (ADR-0028 §4.2): реальная
-выдача ``voice_floor``/``teleop_floor`` идёт через :class:`LockManager`
-(dead-man 500 мс, независимые floor-ы). :class:`ModeManager` остаётся
-только за режимами аватара (``off``/``telegram_active``/... ) и
-использует свои ``voice_held_by``/``teleop_held_by`` лишь как вход для
-решений о переходах — это НЕ источник истины по floor-ам для сервисов
-``acquire_floor``/``release_floor``.
+W3-2 (issue #968 wave2 gap G2/G3) + ADR-0051 §2.2 — резолвит
+дубликат floor-логики между :mod:`core.fsm` и :mod:`core.locks`
+(ADR-0028 §4.2): реальная выдача ``voice_floor``/``teleop_floor``
+идёт через :class:`LockManager` (dead-man 500 мс, независимые
+floor-ы). :class:`ModeManager` остаётся только за режимами
+аватара (``off``/``telegram_active``/... ) и с ADR-0051 §2.2
+**не хранит holder-ов floor-ов вообще** — ``voice_held_by`` /
+``teleop_held_by`` удалены из FSM. Источник истины по floor-ам
+единственный — :class:`LockManager`.
 
 AV-14 (issue #1906) — :mod:`core.state` is the **single source of truth**
 for the ``/avatar/state`` wire format: ``AvatarState`` dataclass +

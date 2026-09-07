@@ -25,7 +25,8 @@ import pytest
 from aiohttp import WSMsgType
 from aiohttp.test_utils import TestClient, TestServer
 
-from rob_box_quest.core.floor import SupervisorFloorTracker
+from rob_box_quest.core.avatar_arbiter import LocalAvatarArbiterClient
+from rob_box_quest.core.floor import AvatarStateFloorCache
 from rob_box_quest.protocol.frame import FrameType, decode_frame, encode_frame
 from rob_box_quest.server.session import ErrorCode
 from rob_box_quest.server.ws_server import NoOpBridge, WSSServer, build_app
@@ -208,8 +209,11 @@ async def test_gate_blocks_twist_when_floor_held_by_other(fixed_pin):
         ws_b, sid_b = await _authenticate(client, fixed_pin)
         assert ws_b is not None
         assert sid_a != sid_b
-        assert server._floor_tracker.is_held_by(sid_a) is True
-        assert server._floor_tracker.is_held_by(sid_b) is False
+        # ADR-0051 §2.2: avatar_arbiter — единственный источник истины
+        # по floor-ам; cache — только mirror. Проверяем клиент и кэш.
+        assert server._avatar_arbiter.floor_holder == sid_a
+        assert server._floor_cache.is_held_by(sid_a) is True
+        assert server._floor_cache.is_held_by(sid_b) is False
 
         # B шлёт twist — должна прийти ERROR{FLOOR_HELD}.
         await _send_teleop_twist(ws_b, seq=1)
@@ -256,12 +260,16 @@ async def test_floor_held_error_is_rate_limited(fixed_pin):
     """На 30 Гц twist — НЕ более 1 ERROR{FLOOR_HELD} в секунду."""
     bridge = SpyBridge()
     fake_now = [1_000_000.0]
-    tracker = SupervisorFloorTracker(now_fn=lambda: fake_now[0])
+    floor_cache = AvatarStateFloorCache()
+    avatar_arbiter = LocalAvatarArbiterClient(
+        cache=floor_cache, now_fn=lambda: fake_now[0]
+    )
     server = WSSServer(
         bridge=bridge,
         pin=fixed_pin,
         require_teleop_floor=True,
-        floor_tracker=tracker,
+        avatar_arbiter=avatar_arbiter,
+        floor_cache=floor_cache,
     )
     app = build_app(server)
     async with TestClient(TestServer(app)) as client:
@@ -302,17 +310,19 @@ async def test_floor_released_on_unregister(fixed_pin):
     async with TestClient(TestServer(app)) as client:
         ws_a, sid_a = await _authenticate(client, fixed_pin)
         ws_b, sid_b = await _authenticate(client, fixed_pin)
-        assert server._floor_tracker.is_held_by(sid_a) is True
-        assert server._floor_tracker.is_held_by(sid_b) is False
+        assert server._avatar_arbiter.floor_holder == sid_a
+        assert server._floor_cache.is_held_by(sid_a) is True
+        assert server._floor_cache.is_held_by(sid_b) is False
 
         await ws_a.close()
         # Дать event-loop отработать unregister.
         await asyncio.sleep(0.1)
-        assert server._floor_tracker.is_held_by(sid_a) is False
+        assert server._avatar_arbiter.floor_holder is None
+        assert server._floor_cache.is_held_by(sid_a) is False
         # B всё ещё без floor — нужно re-acquire, который произойдёт
-        # через FSM-механизм Phase 2; в Phase 1 B остаётся без floor
-        # до выхода. Это явно задокументировано: см. design.md.
-        assert server._floor_tracker.holder is None
+        # через avatar_arbiter service в Phase 2; в Phase 1 B остаётся
+        # без floor до выхода. Это явно задокументировано: см. design.md.
+        assert server._avatar_arbiter.floor_holder is None
         try:
             await ws_b.close()
         except Exception:  # noqa: BLE001
@@ -356,7 +366,7 @@ async def test_floor_lost_external_notifies_bridge_and_client(fixed_pin):
     app = build_app(server)
     async with TestClient(TestServer(app)) as client:
         ws_a, sid_a = await _authenticate(client, fixed_pin)
-        assert server._floor_tracker.is_held_by(sid_a) is True
+        assert server._avatar_arbiter.floor_holder == sid_a
 
         # Имитируем внешний сигнал потери floor (Telegram-оператор взял его).
         server.on_floor_lost_external(sid_a)
@@ -367,7 +377,7 @@ async def test_floor_lost_external_notifies_bridge_and_client(fixed_pin):
             f"bridge.on_floor_lost not called; got={bridge.floor_lost_clients}"
         )
         # 2) Floor снят в tracker.
-        assert server._floor_tracker.is_held_by(sid_a) is False
+        assert server._avatar_arbiter.floor_holder is None
         # 3) Клиент получил JSON_EVENT{type:"floor_lost"}.
         evt = await _read_frame(ws_a, type_filter=FrameType.JSON_EVENT, timeout=0.5)
         assert evt is not None, "JSON_EVENT{floor_lost} не пришёл клиенту"
