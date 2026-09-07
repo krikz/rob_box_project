@@ -105,6 +105,43 @@ VOICE_INPUT_MODES: tuple[str, ...] = (
 SET_VOICE_MODE_TOPIC: str = "/avatar/set_voice_mode"
 
 
+# ── Bridge.execute(Command) — ADR-0051 §2.1, §2.2 ──────────────────────
+# kind-enum зеркалит rob_box_supervisor_msgs/msg/Command.msg (uint8-значения
+# обязаны совпадать с .msg — фиксируем строкой, чтобы и unit-тесты, и
+# реальные сервисные ответы матчились без магических литералов).
+# Допустимые значения: 0 (UNKNOWN — для отказа/невалидного запроса) и
+# 1..6 для нормальных команд.
+KIND_UNKNOWN: int = 0
+KIND_ACQUIRE_FLOOR: int = 1
+KIND_RELEASE_FLOOR: int = 2
+KIND_SET_AVATAR_MODE: int = 3
+KIND_SET_VOICE_MODE: int = 4
+KIND_EMERGENCY_STOP: int = 5
+KIND_HEARTBEAT: int = 6
+
+# Имя единого сервиса для всего шва «клиент ↔ supervisor». Клиенты
+# (Quest, Telegram, будущий web-admin) после миграции (Phase 2) будут
+# дёргать только его; в Phase 1 legacy-сервисы остаются и продолжают
+# работать — никаких breaking changes (ADR-0013 incremental delivery).
+EXECUTE_COMMAND_SERVICE: str = "/supervisor/execute"
+
+
+def _normalize_voice_mode(value: Any) -> str:
+    """Привести значение ``voice_mode`` из ``Command`` к ``str``.
+
+    ROS 2 ``string``-поля на mock-стенде могут приходить как ``str``, так и
+    как ``MagicMock``/просто ``None`` (если клиент не заполнил). Здесь
+    нормализуем к ``str`` без падения, чтобы :py:meth:`AvatarSupervisor.execute`
+    мог отдать внятный ``reason="invalid_voice_mode: ..."`` вместо
+    ``TypeError`` при битом payload (ADR-0018 — не молчим на отказе).
+    """
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    return str(value)
+
+
 class AvatarSupervisor(Node):
     """ROS 2 нода ``avatar_supervisor`` (Vision Pi, Phase 1 monitor)."""
 
@@ -204,6 +241,41 @@ class AvatarSupervisor(Node):
             self.SET_AVATAR_MODE_SERVICE,
             self._on_set_avatar_mode,
         )
+
+        # ADR-0051 §2.2 — единый типизированный шов «клиент ↔ supervisor»:
+        # ``/supervisor/execute``. Phase 1: работает ПАРАЛЛЕЛЬНО с legacy
+        # сервисами ``acquire_floor``/``release_floor``/``set_avatar_mode``
+        # и топиком ``/avatar/set_voice_mode`` — никаких breaking changes
+        # (ADR-0013). Phase 2 (отдельные карточки) переведёт ``quest_node``
+        # и ``telegram_node`` на этот сервис; Phase 3 (после 1+ недели
+        # стабильности) удалит legacy.
+        # Импорт IDL ленивый: на mock-rclpy стенде (CI) IDL-пакет
+        # ``rob_box_supervisor_msgs`` не собран, поэтому conftest подсовывает
+        # минимальный fake (``request.command = SimpleNamespace(...)``,
+        # ``response.response = SimpleNamespace(...)`` — см. conftest).
+        # Это держит unit-тесты без зависимости на colcon build.
+        try:
+            from rob_box_supervisor_msgs.srv import ExecuteCommand  # noqa: PLC0415
+
+            execute_srv_type = ExecuteCommand
+        except ImportError:  # pragma: no cover — covered by mock-rclpy path
+            execute_srv_type = None  # type: ignore[assignment]
+
+        if execute_srv_type is not None:
+            self._srv_execute = self.create_service(
+                execute_srv_type,
+                EXECUTE_COMMAND_SERVICE,
+                self._on_execute_command,
+            )
+        else:
+            # Mock-стенд: conftest подсовывает FakeService при регистрации
+            # сервиса с произвольным srv-типом. Метрика — наличие записи
+            # в ``self._services``, не тип.
+            self._srv_execute = self.create_service(
+                type("ExecuteCommand", (), {"Request": object, "Response": object}),
+                EXECUTE_COMMAND_SERVICE,
+                self._on_execute_command,
+            )
 
         # Периодическая публикация /avatar/state — 1 Hz достаточно для
         # monitor (Phase 2 увеличит частоту / сделает event-driven).
@@ -699,6 +771,255 @@ class AvatarSupervisor(Node):
         response.success = bool(body["success"])
         payload = {k: v for k, v in body.items() if k != "success"}
         response.message = json.dumps(payload)
+        return response
+
+    # ── Bridge.execute(Command) — ADR-0051 §2.2 ───────────────────────
+    # Единая типизированная точка входа в supervisor. Маршрутизация по
+    # ``Command.kind`` (uint8, см. ``Command.msg``). Возвращает
+    # dataclass-shaped ``Response`` (поля см. ``Response.msg``):
+    # ``accepted/applied/reason/held_by/actual_mode/contacted_service``.
+    #
+    # **Дизайн-контракт:**
+    # - Pure-Python, без зависимости на rclpy-типы (``Command`` duck-typed
+    #   по ``kind`` + опциональные строковые поля). Это позволяет
+    #   unit-тестить без реального IDL-пакета (mock-rclpy CI).
+    # - ``accepted`` ≠ ``applied``: первое — «сервис принял запрос»,
+    #   второе — «состояние реально изменилось». В monitor-режиме
+    #   всегда ``accepted=true, applied=false`` (как и legacy-сервисы).
+    # - ``reason`` всегда заполнен (ADR-0018 — не молчим на отказе).
+    # - ``contacted_service=False`` означает fallback / monitor-режим
+    #   (т.е. решение принималось локально, без реального применения).
+    #
+    # **Phase 1 vs Phase 2:**
+    # Phase 1 — внутренняя маршрутизация на существующие ``_*_logic``
+    # методы (которые и так уже unit-тестятся). Phase 2 (отдельные
+    # карточки) добавит прямой вызов через IDL и IDL-сервис-клиент для
+    # remote-клиентов; в Phase 1 — локальная фасад-функция.
+    def execute(self, command: Any) -> Any:
+        """``Bridge.execute(Command)`` → ``Response`` (ADR-0051 §2.2).
+
+        Принимает объект ``Command`` (duck-typed: ``.kind`` + опциональные
+        строковые/булевые поля). Возвращает объект ``Response`` с полями
+        ``accepted`` / ``applied`` / ``reason`` / ``held_by`` /
+        ``actual_mode`` / ``contacted_service`` (см.
+        ``rob_box_supervisor_msgs/msg/Response.msg``).
+
+        Никогда не поднимает исключений на бизнес-отказах (невалидный
+        ``kind``, пустой ``client_id``, и т.п.) — отдаёт ``Response`` с
+        ``accepted=False`` и понятным ``reason`` (ADR-0018). Исключения
+        возможны только при реальных багах (``AttributeError`` на
+        неправильной форме объекта).
+        """
+        kind = getattr(command, "kind", KIND_UNKNOWN)
+        client_id = getattr(command, "client_id", "") or ""
+        floor = getattr(command, "floor", "") or ""
+        avatar_event = getattr(command, "avatar_event", "") or ""
+        voice_mode = _normalize_voice_mode(getattr(command, "voice_mode", None))
+        # ``emergency`` поле из ``Command.msg`` — на случай, если будущий
+        # KIND_EMERGENCY_STOP-маршрут захочет различать «активировать стоп»
+        # от «снять стоп». В Phase 1 supervisor сам решает «стоп»,
+        # клиент присылает только kind; поле читаем, но не используем.
+        _ = bool(getattr(command, "emergency", False))
+
+        if kind == KIND_ACQUIRE_FLOOR:
+            body = self._acquire_floor_logic(client_id, floor)
+            held_by = self._lock_manager.holder(floor) if floor else None
+            return self._make_response(
+                accepted=True,
+                applied=bool(body.get("applied")),
+                reason=str(body.get("reason", "")),
+                held_by=str(held_by) if held_by else "",
+                actual_mode="",
+                contacted_service=(self._mode == "active"),
+            )
+        if kind == KIND_RELEASE_FLOOR:
+            body = self._release_floor_logic(client_id, floor)
+            held_by = self._lock_manager.holder(floor) if floor else None
+            return self._make_response(
+                accepted=True,
+                applied=bool(body.get("applied")),
+                reason=str(body.get("reason", "")),
+                held_by=str(held_by) if held_by else "",
+                actual_mode="",
+                contacted_service=(self._mode == "active"),
+            )
+        if kind == KIND_SET_AVATAR_MODE:
+            body = self._set_avatar_mode_logic(avatar_event, client_id)
+            return self._make_response(
+                accepted=True,
+                applied=bool(body.get("applied")),
+                reason=str(body.get("reason", "")),
+                held_by="",
+                actual_mode=str(body.get("actual_mode", "off")),
+                contacted_service=(self._mode == "active"),
+            )
+        if kind == KIND_SET_VOICE_MODE:
+            applied, reason = self._apply_voice_mode(voice_mode)
+            return self._make_response(
+                accepted=True,
+                applied=applied,
+                reason=reason,
+                held_by="",
+                actual_mode="",
+                # ADR-0028 S5: voice_mode реально применяется только в
+                # active-режиме (через ``_set_dialogue_param``).
+                contacted_service=(self._mode == "active"),
+            )
+        if kind == KIND_EMERGENCY_STOP:
+            # Phase 1: emergency-stop через supervisor — pure-marker
+            # (Phase 2 будет публиковать ``cmd_vel_emergency=0`` через
+            # IDL, см. ADR-0051 §6 / target-operator-agent-and-dialogue
+            # §6). Сейчас отдаём ``applied=true`` всегда — emergency
+            # в принципе не может быть отвергнут, иначе теряется смысл
+            # команды. Hold: ``reason`` отличает фактическую публикацию
+            # (``cmd_emergency_published``) от no-op (``monitor_mode``).
+            applied = self._mode == "active"
+            reason = "applied" if applied else MONITOR_MODE_REASON
+            return self._make_response(
+                accepted=True,
+                applied=applied,
+                reason=reason,
+                held_by="",
+                actual_mode="",
+                contacted_service=applied,
+            )
+        if kind == KIND_HEARTBEAT:
+            # Phase 1: heartbeat — no-op кроме инкремента счётчика в
+            # LockManager (если передан floor). Это «лёгкий» маркер,
+            # который клиент шлёт раз в ~100 мс пока держит teleop_floor
+            # (см. ``SupervisorClient.start_heartbeat``, ADR-0028 §4.4).
+            # В monitor — no-op полностью (нет LockManager-а, который
+            # надо обновлять — мы ж не выдали floor).
+            if self._mode != "active" or not floor:
+                return self._make_response(
+                    accepted=True,
+                    applied=False,
+                    reason=MONITOR_MODE_REASON if self._mode != "active" else "no_op",
+                    held_by="",
+                    actual_mode="",
+                    contacted_service=False,
+                )
+            try:
+                self._lock_manager.heartbeat(client_id, floor)
+            except (PermissionError, ValueError) as exc:
+                return self._make_response(
+                    accepted=True,
+                    applied=False,
+                    reason=f"heartbeat_rejected: {exc}",
+                    held_by="",
+                    actual_mode="",
+                    contacted_service=True,
+                )
+            return self._make_response(
+                accepted=True,
+                applied=True,
+                reason="heartbeat_refreshed",
+                held_by=self._lock_manager.holder(floor) or "",
+                actual_mode="",
+                contacted_service=True,
+            )
+
+        # Unknown / 0 / future kinds — НЕ молчим (ADR-0018), отдаём
+        # внятный reason. Никаких 500-ошибок в сторону клиента.
+        return self._make_response(
+            accepted=False,
+            applied=False,
+            reason=f"unknown_kind: {kind}",
+            held_by="",
+            actual_mode="",
+            contacted_service=False,
+        )
+
+    @staticmethod
+    def _make_response(
+        accepted: bool,
+        applied: bool,
+        reason: str,
+        held_by: str,
+        actual_mode: str,
+        contacted_service: bool,
+    ) -> Any:
+        """Собрать ``Response``-объект с полями ``Response.msg``.
+
+        На real-rclpy пути это ``rob_box_supervisor_msgs.msg.Response``.
+        На mock-rclpy пути (CI, conftest) — ``SimpleNamespace`` с теми же
+        полями. Эта функция возвращает ``SimpleNamespace``, потому что:
+        (а) она используется только в :py:meth:`execute` (pure-Python,
+        нет rclpy); (б) сервис-callback ``_on_execute_command`` дальше
+        копирует поля в ``response.response.<field>`` явно, а не
+        целиком — и это работает для обоих путей одинаково.
+        """
+        from types import SimpleNamespace  # noqa: PLC0415
+
+        return SimpleNamespace(
+            accepted=bool(accepted),
+            applied=bool(applied),
+            reason=str(reason),
+            held_by=str(held_by),
+            actual_mode=str(actual_mode),
+            contacted_service=bool(contacted_service),
+        )
+
+    def _on_execute_command(self, request: Any, response: Any) -> Any:
+        """ROS-сервис-callback для ``/supervisor/execute`` (ADR-0051 §2.2).
+
+        На real-rclpy пути ``request.command`` — это
+        ``rob_box_supervisor_msgs.msg.Command`` (msg-объект), а
+        ``response.response`` — ``rob_box_supervisor_msgs.msg.Response``.
+        На mock-rclpy пути это ``SimpleNamespace`` с теми же атрибутами
+        (conftest). Здесь копируем поля поэлементно — это работает для
+        обоих путей одинаково (duck-typed), и не зависит от того,
+        собран ли ``rob_box_supervisor_msgs`` (colcon) на текущем
+        окружении.
+
+        Логируем ОДИН info() с результатом, как и остальные сервис-
+        колбэки (issue #1644 — single-msg).
+        """
+        cmd = getattr(request, "command", request)
+        result = self.execute(cmd)
+
+        resp_msg = getattr(response, "response", response)
+        # Копируем поля по одному — никакого ``setattr(response, ...,
+        # result)``, чтобы случайно не подменить объект и не сломать
+        # rclpy reply-validation.
+        for field_name in (
+            "accepted",
+            "applied",
+            "reason",
+            "held_by",
+            "actual_mode",
+            "contacted_service",
+        ):
+            try:
+                setattr(resp_msg, field_name, getattr(result, field_name))
+            except AttributeError:
+                # Если mock-стенд не дал поле — это уже не наш баг.
+                pass
+
+        # Если response-объект сам не имеет ``response``-атрибута
+        # (например, conftest-смоук) — копируем поля прямо в response.
+        if not hasattr(response, "response"):
+            for field_name in (
+                "accepted",
+                "applied",
+                "reason",
+                "held_by",
+                "actual_mode",
+                "contacted_service",
+            ):
+                try:
+                    setattr(response, field_name, getattr(result, field_name))
+                except AttributeError:
+                    pass
+
+        # Issue #1644: один msg-аргумент в info(), иначе рантайм-падение.
+        kind = getattr(cmd, "kind", KIND_UNKNOWN)
+        client_id = getattr(cmd, "client_id", "") or ""
+        self._log.info(
+            f"ExecuteCommand: kind={kind} client_id={client_id} "
+            f"accepted={result.accepted} applied={result.applied} "
+            f"reason={result.reason}"
+        )
         return response
 
 

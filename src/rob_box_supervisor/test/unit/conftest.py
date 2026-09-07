@@ -185,6 +185,60 @@ def _install_ros_mocks() -> None:
     mock_std_srvs_srv = types.SimpleNamespace(Trigger=FakeTrigger)
     mock_std_srvs = types.SimpleNamespace(srv=mock_std_srvs_srv)
 
+    # ── rob_box_supervisor_msgs.srv.ExecuteCommand (ADR-0051 §2.1) ────
+    # Mock-стенд: IDL-пакет не собран через colcon на Debian CI. Подсовываем
+    # минимальный fake c теми же атрибутами, что и реальный
+    # ``ExecuteCommand.srv`` (``Request.command`` → ``Response.response``).
+    # ``Command`` и ``Response`` — SimpleNamespace-совместимые (тесты
+    # в ``test_bridge_execute_command_matrix.py`` заполняют их явно).
+    class FakeCommandMsg:
+        """Минимальный fake ``Command.msg`` — duck-typed (поля по умолчанию)."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.kind = 0
+            self.client_id = ""
+            self.floor = ""
+            self.avatar_event = ""
+            self.voice_mode = ""
+            self.emergency = False
+
+    class FakeResponseMsg:
+        """Минимальный fake ``Response.msg`` — duck-typed."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.accepted = False
+            self.applied = False
+            self.reason = ""
+            self.held_by = ""
+            self.actual_mode = ""
+            self.contacted_service = False
+
+    class FakeExecuteCommandRequest:
+        """``ExecuteCommand.Request`` — обёртка над ``command``."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.command = FakeCommandMsg()
+
+    class FakeExecuteCommandResponse:
+        """``ExecuteCommand.Response`` — обёртка над ``response``."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.response = FakeResponseMsg()
+
+    class FakeExecuteCommand:
+        Request = FakeExecuteCommandRequest
+        Response = FakeExecuteCommandResponse
+
+    mock_supervisor_msgs_srv = types.SimpleNamespace(ExecuteCommand=FakeExecuteCommand)
+    mock_supervisor_msgs_msg = types.SimpleNamespace(
+        Command=FakeCommandMsg,
+        Response=FakeResponseMsg,
+    )
+    mock_supervisor_msgs = types.SimpleNamespace(
+        srv=mock_supervisor_msgs_srv,
+        msg=mock_supervisor_msgs_msg,
+    )
+
     # ── register all mocks ────────────────────────────────────────────
     mocks = {
         "rclpy": mock_rclpy,
@@ -194,6 +248,9 @@ def _install_ros_mocks() -> None:
         "std_msgs.msg": mock_std_msgs_msg,
         "std_srvs": mock_std_srvs,
         "std_srvs.srv": mock_std_srvs_srv,
+        "rob_box_supervisor_msgs": mock_supervisor_msgs,
+        "rob_box_supervisor_msgs.srv": mock_supervisor_msgs_srv,
+        "rob_box_supervisor_msgs.msg": mock_supervisor_msgs_msg,
     }
     for name, mock in mocks.items():
         sys.modules.setdefault(name, mock)

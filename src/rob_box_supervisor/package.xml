@@ -20,6 +20,9 @@
   <exec_depend>python3-msgpack</exec_depend>
   <exec_depend>rob_box_core</exec_depend>
 
+  <!-- ADR-0051 §2.1: typed IDL for Bridge.execute(Command). -->
+  <exec_depend>rob_box_supervisor_msgs</exec_depend>
+
   <test_depend>ament_copyright</test_depend>
   <test_depend>python3-pytest</test_depend>
 
