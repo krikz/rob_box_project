@@ -590,12 +590,28 @@ class ContainerStatusTool(MCPTool):
 
 
 def _sanitize_text(text: str) -> str:
-    """Прогнать текст через redact_upstream_body, fallback на regex passthrough."""
+    """Прогнать текст через redact-цепочку, fallback на regex passthrough.
+
+    Issue #1998 §6.3: даже /rosout и Loki-контейнерные логи могут
+    нести ``DEEPSEEK_API_KEY=...`` / ``Authorization: Bearer ...`` /
+    bare JWT. Поэтому прогоняем **обе** функции:
+
+    1. :func:`redact_upstream_body` — заголовки и JSON-поля (LLM-стек).
+    2. :func:`redact_log_text` — env-var ``KEY=VALUE`` / CLI ``--flag=``
+       / bare JWT и vendor-prefixed токены (``sk-``, ``ghp_``, ``xoxb-``).
+
+    Идемпотентно: повторный прогон по уже реднутому тексту даёт тот же
+    результат (важно — некоторые upstream-и уже маскируют часть полей
+    сами, наш слой должен быть устойчив к этому).
+    """
     try:
         # Локальный импорт — утилита живёт в rob_box_voice, чтобы не
         # зависеть от него жёстко на уровне тула.
-        from rob_box_voice.utils.redact import redact_upstream_body
-        return redact_upstream_body(text)
+        from rob_box_voice.utils.redact import (
+            redact_log_text,
+            redact_upstream_body,
+        )
+        return redact_log_text(redact_upstream_body(text))
     except ImportError:
         return text
 
