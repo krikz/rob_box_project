@@ -20,6 +20,7 @@ except ImportError:
 # Ленивый импорт ROS 2 модулей для поддержки unit тестов
 if TYPE_CHECKING:
     from std_srvs.srv import Empty
+    from ..waypoint_adapter import WaypointAdapter
     from ..waypoint_store import WaypointStore
     from ..mapping_state import MappingState
 
@@ -35,7 +36,7 @@ def _create_service_client(node, srv_type, srv_name, callback_group):
 class StartMappingTool(MCPTool):
     """Инструмент для начала нового картографирования."""
 
-    def __init__(self, node, waypoint_store: Optional["WaypointStore"] = None, mapping_state=None):
+    def __init__(self, node, waypoint_store: Optional["WaypointAdapter"] = None, mapping_state=None):
         super().__init__(node)
         self.waypoint_store = waypoint_store
         self.mapping_state = mapping_state
@@ -235,7 +236,7 @@ class ContinueMappingTool(MCPTool):
 class FinishMappingTool(MCPTool):
     """Инструмент для завершения картографирования."""
 
-    def __init__(self, node, waypoint_store: Optional["WaypointStore"] = None, mapping_state=None):
+    def __init__(self, node, waypoint_store: Optional["WaypointAdapter"] = None, mapping_state=None):
         super().__init__(node)
         self.waypoint_store = waypoint_store
         self.mapping_state = mapping_state
@@ -489,7 +490,7 @@ class OptimizeMapTool(MCPTool):
 class LoadMapTool(MCPTool):
     """Загрузить существующую карту и перейти в режим локализации."""
 
-    def __init__(self, node, waypoint_store: Optional["WaypointStore"] = None, mapping_state=None):
+    def __init__(self, node, waypoint_store: Optional["WaypointAdapter"] = None, mapping_state=None):
         super().__init__(node)
         self.waypoint_store = waypoint_store
         self.mapping_state = mapping_state

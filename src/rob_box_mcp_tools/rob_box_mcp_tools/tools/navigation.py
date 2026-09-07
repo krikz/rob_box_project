@@ -23,6 +23,7 @@ from action_msgs.srv import CancelGoal
 from action_msgs.msg import GoalInfo
 
 if TYPE_CHECKING:
+    from ..waypoint_adapter import WaypointAdapter
     from ..waypoint_store import WaypointStore
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, wait_future
@@ -83,7 +84,7 @@ def _lookup_pose(pose_getter, logger) -> Optional[Dict[str, float]]:
 class NavigateToWaypointTool(MCPTool):
     """Навигация к именованной точке из базы данных вейпоинтов."""
 
-    def __init__(self, node, waypoint_store: "WaypointStore"):
+    def __init__(self, node, waypoint_store: "WaypointAdapter"):
         super().__init__(node)
         self.nav_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
         self.waypoint_store = waypoint_store
@@ -333,7 +334,7 @@ class StopNavigationTool(MCPTool):
 class ListWaypointsTool(MCPTool):
     """Список доступных точек из базы данных."""
 
-    def __init__(self, node, waypoint_store: "WaypointStore"):
+    def __init__(self, node, waypoint_store: "WaypointAdapter"):
         super().__init__(node)
         self.waypoint_store = waypoint_store
 
@@ -380,7 +381,7 @@ class ListWaypointsTool(MCPTool):
 class SaveWaypointTool(MCPTool):
     """Сохранить текущую позицию робота как именованную точку."""
 
-    def __init__(self, node, waypoint_store: "WaypointStore", pose_getter, mapping_state=None):
+    def __init__(self, node, waypoint_store: "WaypointAdapter", pose_getter, mapping_state=None):
         super().__init__(node)
         self.waypoint_store = waypoint_store
         self._pose_getter = pose_getter
@@ -455,7 +456,7 @@ class SaveWaypointTool(MCPTool):
 class DeleteWaypointTool(MCPTool):
     """Удалить именованную точку."""
 
-    def __init__(self, node, waypoint_store: "WaypointStore"):
+    def __init__(self, node, waypoint_store: "WaypointAdapter"):
         super().__init__(node)
         self.waypoint_store = waypoint_store
 
@@ -511,7 +512,7 @@ class DeleteWaypointTool(MCPTool):
 class ClearWaypointsTool(MCPTool):
     """Удалить все точки текущей карты."""
 
-    def __init__(self, node, waypoint_store: "WaypointStore"):
+    def __init__(self, node, waypoint_store: "WaypointAdapter"):
         super().__init__(node)
         self.waypoint_store = waypoint_store
 
