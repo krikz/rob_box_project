@@ -110,6 +110,30 @@ COPY --from=webxr-builder /build/dist /srv/quest_static
 #
 # rob_box_core — лёгкий pure-Python (нет torch/Renardo), его пересборка
 # в quest image НЕ инвалидирует тяжёлый кеш pytorch из voice-base.
+#
+# Issue #2089 (регрессия quest restart loop v2: ModuleNotFoundError
+# rob_box_supervisor_msgs): rob_box_quest.quest_node импортирует
+#   from rob_box_supervisor_msgs.srv import ExecuteCommand
+#   from rob_box_supervisor_msgs.msg import Command
+# (Bridge.execute(Command), issue #2002, ADR-0051 §2.1). Пакет — ament_cmake,
+# IDL генерируется rosidl_default_generators на colcon build. Если он не
+# скопирован и не пересобран в quest image — quest не получает свежие
+# Python-типы (ExecuteCommand/Command) из локального colcon workspace,
+# и падает на старте с ModuleNotFoundError → Restarting loop.
+#
+# Базовый voice-assistant image эти IDL содержит (он собирает supervisor_msgs
+# как зависимость rob_box_supervisor), НО как только там что-то поменяется,
+# а quest пересоберётся раньше — снова race condition. Поэтому копируем
+# supervisor_msgs в образ явно (Шаг 0, до ament_python-пакетов), чтобы
+# colcon build quest'а собирал его из локального src/, а не из базового слоя.
+# rosdep не нужен: std_msgs и builtin_interfaces уже стоят в voice-assistant
+# (они нужны rob_box_supervisor, который там собран).
+# Шаг 0: IDL-пакет (ament_cmake) — структура пакета, кешируется отдельно.
+COPY src/rob_box_supervisor_msgs/package.xml  /ws/src/rob_box_supervisor_msgs/
+COPY src/rob_box_supervisor_msgs/CMakeLists.txt /ws/src/rob_box_supervisor_msgs/
+COPY src/rob_box_supervisor_msgs/srv /ws/src/rob_box_supervisor_msgs/srv
+COPY src/rob_box_supervisor_msgs/msg /ws/src/rob_box_supervisor_msgs/msg
+
 # Шаг 1: package.xml + setup.py + setup.cfg (структура, кешируется)
 COPY src/rob_box_quest/package.xml /ws/src/rob_box_quest/
 COPY src/rob_box_quest/setup.py   /ws/src/rob_box_quest/
@@ -132,16 +156,20 @@ COPY src/rob_box_quest/rob_box_quest /ws/src/rob_box_quest/rob_box_quest
 # Issue #2081: rob_box_core — иначе avatar_command.py не попадёт в образ.
 COPY src/rob_box_core/rob_box_core /ws/src/rob_box_core/rob_box_core
 
-# Шаг 4: пересборка rob_box_core + rob_box_quest (pytorch/renardo из base
-# не трогаем — пересобирается только pure-Python слой). WORKDIR=/ws
-# обязателен — colcon ищет пакеты в $PWD/src, а после
-# 'source /opt/ros/.../setup.sh' WORKDIR не меняется, но нам нужно
-# явно стартануть из /ws.
+# Шаг 4: пересборка rob_box_supervisor_msgs (IDL) + rob_box_core +
+# rob_box_quest (pytorch/renardo из base не трогаем — пересобирается
+# только pure-Python + IDL-слой). WORKDIR=/ws обязателен — colcon
+# ищет пакеты в $PWD/src, а после 'source /opt/ros/.../setup.sh'
+# WORKDIR не меняется, но нам нужно явно стартануть из /ws.
+# Порядок пакетов в --packages-select важен: supervisor_msgs собирается
+# первым, чтобы его сгенерированные Python-типы были доступны при
+# сборке rob_box_core/rob_box_quest (на практике colcon сам разруливает
+# graph-build-order, но явный порядок оставляем для воспроизводимости).
 WORKDIR /ws
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     . /ws/install/setup.sh && \
     colcon build \
-        --packages-select rob_box_core rob_box_quest \
+        --packages-select rob_box_supervisor_msgs rob_box_core rob_box_quest \
         --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 # Caddyfile + entry-script
