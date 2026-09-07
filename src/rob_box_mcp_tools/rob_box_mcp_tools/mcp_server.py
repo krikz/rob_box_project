@@ -118,6 +118,27 @@ except ImportError:
     _FAQStore = None
     _load_event_profile = None
 
+# Issue #2000 / ADR-0055 — Phase 1 path consolidation. MCP tools and
+# WaypointStore share /data/harness_voice.db with the dialogue node via
+# VoiceMemoryAdapter (sync facade over SQLiteVoiceMemory). Gate the
+# switch on an env var so production can roll back to the legacy
+# VoiceMemory without code edits: set ``MCP_USE_HARNESS_VOICE_MEMORY=1``
+# after the marker migration has run on prod.
+_USE_HARNESS_VOICE_MEMORY = os.getenv("MCP_USE_HARNESS_VOICE_MEMORY", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+try:
+    if _USE_HARNESS_VOICE_MEMORY:
+        from rob_box_harness.memory.voice_memory_adapter import (
+            VoiceMemoryAdapter as _VoiceMemoryAdapter,
+        )
+    else:
+        _VoiceMemoryAdapter = None  # type: ignore[assignment,misc]
+except ImportError:
+    _VoiceMemoryAdapter = None  # type: ignore[assignment,misc]
+
 
 class MCPServer(Node):
     """
@@ -955,7 +976,36 @@ class MCPServer(Node):
         )
 
     def _init_voice_memory(self) -> None:
-        """Инициализация VoiceMemory (долгосрочная память). Не падает при ошибках."""
+        """Инициализация VoiceMemory (долгосрочная память). Не падает при ошибках.
+
+        ADR-0055 Phase 1 — when ``MCP_USE_HARNESS_VOICE_MEMORY=1`` the
+        adapter over ``SQLiteVoiceMemory`` is used so writes go to
+        ``/data/harness_voice.db`` (same file the dialogue node uses).
+        Otherwise we fall back to the legacy ``VoiceMemory`` →
+        ``/data/voice_memory.db``.
+        """
+        if _USE_HARNESS_VOICE_MEMORY and _VoiceMemoryAdapter is not None:
+            import os
+
+            # Default to the unified DB on /data/ but allow override for
+            # staging / test environments.
+            db_path = os.getenv(
+                "HARNESS_VOICE_DB", "/data/harness_voice.db"
+            )
+            try:
+                self.voice_memory = _VoiceMemoryAdapter(db_path=db_path)
+                stats = self.voice_memory.get_stats()
+                self.get_logger().info(
+                    f"🧠 VoiceMemoryAdapter (ADR-0055 Phase 1): {db_path} "
+                    f"(facts={stats.get('fact_count', 0)})"
+                )
+            except Exception as exc:
+                self.get_logger().error(
+                    f"❌ Ошибка инициализации VoiceMemoryAdapter: {exc}"
+                )
+                self.voice_memory = None
+            return
+
         if _VoiceMemory is None:
             self.get_logger().warning(
                 "⚠️ rob_box_voice не найден — VoiceMemory отключена. "
