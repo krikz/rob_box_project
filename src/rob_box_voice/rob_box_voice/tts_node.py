@@ -885,6 +885,15 @@ class TTSNode(Node):
         self.declare_parameter("avatar_request_topic", "/avatar/tts/request")
         self.declare_parameter("avatar_error_topic", "/avatar/tts/error")
         self.declare_parameter("avatar_control_topic", "/avatar/tts/control")
+        # Issue #2113 (quest #2112) — echo of TTS-текста на отдельный
+        # топик для боковой текстовой панели TARS 1 в Captain Bridge.
+        # Контракт: String JSON {request_id, text, streaming:bool, done:bool}.
+        # streaming=true пока TTS ещё не закончил, done=true при публикации
+        # последнего чанка. TARS 1 на клиенте склеивает чанки в строки.
+        # Топик зашит константой (не параметром) — чтобы не плодить
+        # CC-budget-нагрузку на __init__ (ADR-0021): смена топика
+        # не предполагается, dispatch делается через топик-неймспейс ROS.
+        self._tars1_text_topic: str = "/tars1/text"
 
         # Synthesis worker pool (BLK-9 fix).
         #
@@ -1297,6 +1306,14 @@ class TTSNode(Node):
         )
         self._avatar_tts_error_pub = self.create_publisher(
             String, self.avatar_error_topic, 10
+        )
+        # Issue #2113 (quest #2112) — TARS 1 echo publisher. Подписка на
+        # этот топик делает Quest-клиент; mirror ровно того, что TARS
+        # сейчас озвучивает (text + streaming flag), чтобы боковая
+        # текстовая панель в Captain Bridge показывала тот же текст, что
+        # идёт в динамик шлема.
+        self._tars1_text_pub = self.create_publisher(
+            String, self._tars1_text_topic, 10
         )
         self._avatar_tts_control_sub = self.create_subscription(
             String, self.avatar_control_topic, self.control_callback, 10
@@ -2414,6 +2431,18 @@ class TTSNode(Node):
             f"speech_id={speech_id[:8]}, voice={voice or 'default'}, "
             f"text={avatar_text!r}"
         )
+        # Issue #2113 (quest #2112) — зеркалим avatar_text в /tars1/text,
+        # чтобы боковая текстовая панель в Captain Bridge показала то же,
+        # что TARS говорит в шлем. ``streaming=true`` потому что avatar-
+        # запрос целостный (не дробный, в отличие от /voice/tts/request);
+        # done=true — это последний чанк в этой реплике. Публикация
+        # fire-and-forget: ошибки ROS-сокета не должны ломать синтез.
+        self._publish_tars1_text(
+            request_id=chunk_data.get("request_id", ""),
+            text=avatar_text,
+            streaming=True,
+            done=True,
+        )
         # Запоминаем текущий avatar-request_id — control_callback использует
         # его, чтобы сбрасывать синтезирующийся worker при STOP.
         self._avatar_tts_request_id = chunk_data.get("request_id")
@@ -2452,6 +2481,47 @@ class TTSNode(Node):
         except Exception as exc:  # noqa: BLE001 — диагностика не должна падать
             self.get_logger().warn(
                 f"⚠️ [ADR-0055] /avatar/tts/error publish failed: {exc}"
+            )
+
+    def _publish_tars1_text(
+        self,
+        *,
+        request_id: str,
+        text: str,
+        streaming: bool,
+        done: bool,
+    ) -> None:
+        """Issue #2113 / quest #2112 — echo of TTS-текста в ``/tars1/text``.
+
+        Captain Bridge в Quest-клиенте подписан на этот топик и дописывает
+        текст в боковую панель TARS 1, чтобы оператор видел то же, что
+        TARS озвучивает в шлем. Контракт:
+
+        * ``request_id`` — корреляция с ``/avatar/tts/request``;
+        * ``text``     — нормализованный plain-text (как уходит в синтез);
+        * ``streaming`` — ``true`` пока TTS ещё не закончил реплику
+          (для одной реплики avatar-text не дробный — сейчас всегда
+          ``True``; поле оставлено под чанковый сценарий, если в
+          будущем avatar-pipeline начнёт стримить);
+        * ``done``     — ``true`` если это последний чанк реплики.
+
+        Метод не должен падать: ошибки сокета/сериализации — только WARN.
+        """
+        try:
+            payload = String()
+            payload.data = json.dumps(
+                {
+                    "request_id": request_id,
+                    "text": text,
+                    "streaming": bool(streaming),
+                    "done": bool(done),
+                },
+                ensure_ascii=False,
+            )
+            self._tars1_text_pub.publish(payload)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(
+                f"⚠️ [issue #2113] /tars1/text publish failed: {exc}"
             )
 
     def _parse_ssml_attributes(self, ssml: str) -> dict:

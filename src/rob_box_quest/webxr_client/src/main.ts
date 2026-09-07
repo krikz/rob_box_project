@@ -1345,6 +1345,40 @@ export function bootstrap(opts: BootstrapOptions): {
             );
             return;
           }
+          // issue #2113 (quest #2112, Captain Bridge) — TARS 1 text echo.
+          // Формат: {type:"tars1_text", request_id, text, streaming, done,
+          // ts_ms} (см. quest_node._on_tars1_text, зеркало
+          // tts_node._publish_tars1_text). append() сам склеивает чанки по
+          // \n; setStreaming только когда состояние меняется (см.
+          // tars1_text_panel.ts).
+          if ((event as { type?: string }).type === "tars1_text") {
+            const t = event as {
+              text?: string;
+              streaming?: boolean;
+              done?: boolean;
+            };
+            if (typeof t.text === "string" && t.text.length > 0) {
+              bridge.tars1Panel.append(t.text);
+            }
+            bridge.tars1Panel.setStreaming(
+              typeof t.streaming === "boolean" ? t.streaming && !t.done : false
+            );
+            return;
+          }
+          // issue #2113 — TARS 2 panel URL от avatar_supervisor
+          // (tars_panel.py, show_metrics tool). Формат:
+          // {type:"tars_panel_url", request_id, url, status, error, ts_ms}.
+          // status="error" → url пуст: показываем честное состояние
+          // (setState("error")), а не пытаемся грузить пустой URL.
+          if ((event as { type?: string }).type === "tars_panel_url") {
+            const p = event as { url?: string; status?: string };
+            if (p.status === "ok" && typeof p.url === "string" && p.url) {
+              bridge.tars2Panel.setPanelUrl(p.url);
+            } else {
+              bridge.tars2Panel.setState("error");
+            }
+            return;
+          }
           // AV-26 / R7: robot_alert от сервера → toast + HUD-метка.
           // Формат: { type:"robot_alert", code, level, active?, args, ts_ms }.
           // active:true → поднятие; active:false или отсутствует +

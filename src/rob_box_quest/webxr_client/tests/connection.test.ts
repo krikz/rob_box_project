@@ -434,3 +434,118 @@ describe("Connection.sendVoiceAudio streamId (ADR-0054)", () => {
     expect(sent).toBe(false);
   });
 });
+
+// ─── issue #2113 (quest #2112, Captain Bridge): TARS1/TARS2 transport шов ──
+//
+// quest_node.py релеит /tars1/text и /avatar/tars/panel_url в
+// JSON_EVENT(type="tars1_text"|"tars_panel_url") — см.
+// QuestNode._on_tars1_text / _on_tars_panel_url и их unit-тесты
+// (src/rob_box_quest/test/unit/test_quest_tars_transport.py). Этот блок
+// проверяет вторую половину того же шва: что декодер клиента
+// (wire/connection.ts) корректно доносит эти события до `onJsonEvent`
+// колбэка нетронутыми — именно оттуда main.ts зовёт
+// `bridge.tars1Panel.append()` / `bridge.tars2Panel.setPanelUrl()`
+// (см. main.ts, ветки `type === "tars1_text"` / `type === "tars_panel_url"`).
+describe("Connection JSON_EVENT relay: TARS1/TARS2 (issue #2113)", () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    FakeWebSocket.nextInstance = null;
+  });
+
+  function connectWithJsonEvents(onJsonEvent: (event: unknown) => void) {
+    const server = FakeWebSocket.makeServer();
+    const client = FakeWebSocket.reserveClient();
+    FakeWebSocket.link(client, server);
+    const conn = new Connection(
+      {
+        url: "ws://test",
+        clientVersion: "0.1.0",
+        pin: "123456",
+        autoReconnect: false,
+        pingIntervalMs: 100_000,
+        WebSocketCtor: FakeWebSocket as unknown as new (url: string, protocols?: string | string[]) => WebSocket
+      },
+      { onJsonEvent: onJsonEvent as (event: import("../src/wire/messages").JsonEvent) => void }
+    );
+    conn.connect();
+    client.dispatchOpen();
+    server.dispatchOpen();
+    return { conn, server };
+  }
+
+  it("delivers tars1_text payload unchanged to onJsonEvent", async () => {
+    const seen: unknown[] = [];
+    const { server } = connectWithJsonEvents((ev) => seen.push(ev));
+
+    server.send(
+      encodeJsonFrame(FrameType.JSON_EVENT, 0, {
+        type: "tars1_text",
+        request_id: "abc123",
+        text: "Привет, оператор",
+        streaming: true,
+        done: false,
+        ts_ms: 1234
+      }) as unknown as ArrayBuffer
+    );
+
+    await new Promise<void>((r) => queueMicrotask(() => queueMicrotask(() => r())));
+    expect(seen.length).toBe(1);
+    expect(seen[0]).toMatchObject({
+      type: "tars1_text",
+      request_id: "abc123",
+      text: "Привет, оператор",
+      streaming: true,
+      done: false
+    });
+  });
+
+  it("delivers tars_panel_url ok status unchanged to onJsonEvent", async () => {
+    const seen: unknown[] = [];
+    const { server } = connectWithJsonEvents((ev) => seen.push(ev));
+
+    server.send(
+      encodeJsonFrame(FrameType.JSON_EVENT, 0, {
+        type: "tars_panel_url",
+        request_id: "req1",
+        url: "http://prometheus.lan/grafana/d/prometheus-overview?query=cpu",
+        status: "ok",
+        error: "",
+        ts_ms: 5678
+      }) as unknown as ArrayBuffer
+    );
+
+    await new Promise<void>((r) => queueMicrotask(() => queueMicrotask(() => r())));
+    expect(seen.length).toBe(1);
+    expect(seen[0]).toMatchObject({
+      type: "tars_panel_url",
+      request_id: "req1",
+      url: "http://prometheus.lan/grafana/d/prometheus-overview?query=cpu",
+      status: "ok"
+    });
+  });
+
+  it("delivers tars_panel_url error status with empty url unchanged", async () => {
+    const seen: unknown[] = [];
+    const { server } = connectWithJsonEvents((ev) => seen.push(ev));
+
+    server.send(
+      encodeJsonFrame(FrameType.JSON_EVENT, 0, {
+        type: "tars_panel_url",
+        request_id: "req2",
+        url: "",
+        status: "error",
+        error: "empty query",
+        ts_ms: 9999
+      }) as unknown as ArrayBuffer
+    );
+
+    await new Promise<void>((r) => queueMicrotask(() => queueMicrotask(() => r())));
+    expect(seen.length).toBe(1);
+    expect(seen[0]).toMatchObject({
+      type: "tars_panel_url",
+      status: "error",
+      url: "",
+      error: "empty query"
+    });
+  });
+});

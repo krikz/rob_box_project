@@ -341,6 +341,74 @@ def test_publish_avatar_tts_error_writes_json_with_request_id():
     assert body == {"request_id": "req-x", "error": "synthesis_failed"}
 
 
+# ── _publish_tars1_text (issue #2113, quest #2112) ──────────────────────
+
+
+def test_publish_tars1_text_writes_json_with_request_id_and_text():
+    """``_publish_tars1_text(request_id, text, streaming, done)`` → JSON.
+
+    Проверяем, что text, request_id, streaming, done попадают в payload —
+    это контракт, на который подписан Captain Bridge в Quest-клиенте.
+    """
+    n = object.__new__(TTSNode)
+    n._tars1_text_pub = _CapturingPublisher()
+    n.get_logger = lambda: MagicMock()
+
+    TTSNode._publish_tars1_text(
+        n,
+        request_id="req-y",
+        text="Привет, мир",
+        streaming=True,
+        done=True,
+    )
+    msgs = n._tars1_text_pub.messages
+    assert len(msgs) == 1
+    body = json.loads(msgs[0].data)
+    assert body == {
+        "request_id": "req-y",
+        "text": "Привет, мир",
+        "streaming": True,
+        "done": True,
+    }
+
+
+def test_publish_tars1_text_handles_empty_text():
+    """Пустой text — публикуется как есть (UI сам решит, что показать)."""
+    n = object.__new__(TTSNode)
+    n._tars1_text_pub = _CapturingPublisher()
+    n.get_logger = lambda: MagicMock()
+
+    TTSNode._publish_tars1_text(
+        n,
+        request_id="req-z",
+        text="",
+        streaming=False,
+        done=True,
+    )
+    body = json.loads(n._tars1_text_pub.messages[0].data)
+    assert body["text"] == ""
+    assert body["streaming"] is False
+
+
+def test_publish_tars1_text_swallows_publisher_errors():
+    """Если publish() бросает — метод не падает, только WARN."""
+    n = object.__new__(TTSNode)
+    broken_pub = MagicMock()
+    broken_pub.publish.side_effect = RuntimeError("ros socket closed")
+    n._tars1_text_pub = broken_pub
+    n.get_logger = lambda: MagicMock()
+
+    # Должно пройти без exception.
+    TTSNode._publish_tars1_text(
+        n,
+        request_id="req-w",
+        text="text",
+        streaming=True,
+        done=True,
+    )
+    broken_pub.publish.assert_called_once()
+
+
 # ── параметры ноды (forward-compat тест) ───────────────────────────────
 
 

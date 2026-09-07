@@ -39,6 +39,14 @@ import {
   type VoiceStateFrame,
   type VoiceStateIndicator
 } from "../ui/voice_state_indicator";
+import {
+  createTars1TextPanel,
+  type Tars1TextPanelHandle
+} from "./tars1_text_panel";
+import {
+  createTars2MetricsPanel,
+  type Tars2MetricsPanelHandle
+} from "./tars2_metrics_panel";
 
 // Фронтальная камера робота — выводится на большой экран-стену перед
 // оператором. Это OAK-D color (0x1001), которая в protocol/topics.py
@@ -225,6 +233,24 @@ export interface CaptainBridgeHandle {
    * Всегда видима (это не HUD-оверлей, а панель на мостике).
    */
   voicePipeline: VoicePipelinePanelHandle;
+  /**
+   * TARS 1 — текстовое полотно (issue #2113, quest #2112). Слева от
+   * FRONT CAM, лицом к оператору. Показывает текст, который TARS
+   * произносит (mirror `/avatar/tts/request`). API: append / clear /
+   * setStreaming (см. tars1_text_panel.ts).
+   */
+  tars1Panel: Tars1TextPanelHandle;
+  /**
+   * TARS 2 — дашборд метрик (issue #2113, quest #2112). Справа от
+   * FRONT CAM, симметрично TARS 1. URL Grafana-панели (Prometheus /
+   * Loki) приходит через `/avatar/tars/panel_url` и рисуется ТЕКСТОМ на
+   * canvas-preview (host/path) — реального рендера Grafana-контента в
+   * immersive-WebXR нет и в этой карточке не появился (DOM/iframe не
+   * проецируется в VR-сцену; см. tars2_metrics_panel.ts, шапка файла, и
+   * PR #2114 "TARS2 — честное инженерное решение"). API: setPanelUrl /
+   * clear / setState (см. tars2_metrics_panel.ts).
+   */
+  tars2Panel: Tars2MetricsPanelHandle;
   /**
    * Топики, которые сцена умеет показывать — на них клиент подписывается
    * после WELCOME (main screen + боковые панели).
@@ -545,6 +571,53 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
   ceilingScreen.mesh.rotation.x = ceilingScreenPitchRad();
   ceilingScreen.mesh.rotation.z = CEILING_SCREEN_ROLL_RAD;
   scene.add(ceilingScreen.mesh);
+
+  // TARS 1 + TARS 2 (issue #2113, quest #2112): Captain Bridge — два новых
+  // экрана по бокам от FRONT CAM, лицом к оператору. FRONT CAM стоит на
+  // z=-3.9, ширина 4.8 м. Берём те же размеры, что у camera_oak_depth
+  // side panel (1.6 × 1.2 м) — это достаточно крупно, чтобы текст и
+  // метрики читались, и при этом панели не налезают на экран-стену.
+  // Позиция — симметрично слева/справа, чуть ближе к стене, чтобы
+  // back-tilt (поворот лицом к оператору) давал нормаль, попадающую в
+  // голову оператора (0, 1.6, 0).
+  const TARS_PANEL_SIZE = { width: 1.6, height: 1.2 };
+  const TARS_PANEL_Y = 1.5;
+  const TARS_PANEL_Z = -3.6;
+  const TARS_PANEL_X = 2.7;
+  const tars1Panel = createTars1TextPanel();
+  tars1Panel.mesh.position.set(-TARS_PANEL_X, TARS_PANEL_Y, TARS_PANEL_Z);
+  tars1Panel.mesh.scale.set(TARS_PANEL_SIZE.width, TARS_PANEL_SIZE.height, 1);
+  // Back-tilt: нормаль направлена из центра экрана в оператора
+  // (0, 1.6, 0). Разница по y: 1.6 - 1.5 = 0.1, по z: -3.6 - 0 = -3.6.
+  // Плоскость по умолчанию смотрит в +Z, rotateY на atan2(x, z) даёт
+  // нормаль в плоскости XZ. Здесь нужно ещё немного наклонить по X —
+  // поднимаем низ экрана к оператору, верх — от него.
+  {
+    const dx = -tars1Panel.mesh.position.x; // 2.7 (положительный X)
+    const dz = -tars1Panel.mesh.position.z; // 3.6 (положительный Z)
+    tars1Panel.mesh.rotation.y = Math.atan2(dx, dz);
+    // Наклон вверх (верх экрана чуть к стене): небольшой, чтобы текст
+    // читался без запрокидывания головы.
+    const dy = EYE_HEIGHT_M - TARS_PANEL_Y;
+    const horizDist = Math.hypot(dx, dz);
+    tars1Panel.mesh.rotation.x = -Math.atan2(dy, horizDist);
+  }
+  scene.add(tars1Panel.mesh);
+
+  const tars2Panel = createTars2MetricsPanel();
+  tars2Panel.mesh.position.set(TARS_PANEL_X, TARS_PANEL_Y, TARS_PANEL_Z);
+  tars2Panel.mesh.scale.set(TARS_PANEL_SIZE.width, TARS_PANEL_SIZE.height, 1);
+  // Симметричный back-tilt: оператор слева от FRONT CAM не появляется,
+    // правый экран смотрит на него так же.
+  {
+    const dx = -tars2Panel.mesh.position.x; // -2.7
+    const dz = -tars2Panel.mesh.position.z; // 3.6
+    tars2Panel.mesh.rotation.y = Math.atan2(dx, dz);
+    const dy = EYE_HEIGHT_M - TARS_PANEL_Y;
+    const horizDist = Math.hypot(dx, dz);
+    tars2Panel.mesh.rotation.x = -Math.atan2(dy, horizDist);
+  }
+  scene.add(tars2Panel.mesh);
 
   // Arm-state HUD: справа вверху на стене, рядом с экраном камеры.
   // Sprite всегда повёрнут к камере — читается из любой позы оператора.
@@ -1121,6 +1194,8 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     supervisorPanel.dispose();
     voicePipeline.dispose();
     voiceIndicator.dispose();
+    tars1Panel.dispose();
+    tars2Panel.dispose();
     renderer.dispose();
   }
 
@@ -1142,6 +1217,8 @@ export function createCaptainBridge(opts: CaptainBridgeOptions): CaptainBridgeHa
     pointer,
     supervisorPanel,
     voicePipeline,
+    tars1Panel,
+    tars2Panel,
     setAvailableStreams,
     renderTtsPicker,
     openTtsPicker,
