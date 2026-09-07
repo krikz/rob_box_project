@@ -5,7 +5,10 @@ import {
   encodeLeb128,
   decodeLeb128,
   encodeJsonFrame,
-  FrameType
+  FrameType,
+  VOICE_STREAM_ID_RADIO,
+  VOICE_STREAM_ID_RADIO_ALIAS,
+  VOICE_STREAM_ID_WAKE
 } from "../src/wire/protocol";
 
 describe("LEB128 varint", () => {
@@ -112,5 +115,30 @@ describe("VOICE_AUDIO frame", () => {
     expect(decoded.type).toBe(FrameType.VOICE_AUDIO);
     expect(decoded.streamId).toBe(0);
     expect(Array.from(decoded.payload)).toEqual(Array.from(pcm));
+  });
+});
+
+describe("VOICE_STREAM_ID constants (ADR-0054 / issue #1992)", () => {
+  it("RADIO = 0 (current radio PTT path)", () => {
+    expect(VOICE_STREAM_ID_RADIO).toBe(0);
+  });
+
+  it("RADIO_ALIAS = 1 (legacy radio-passthrough alias, server still treats as radio)", () => {
+    expect(VOICE_STREAM_ID_RADIO_ALIAS).toBe(1);
+  });
+
+  it("WAKE = 2 (always-on wake stream → /avatar/wake_in)", () => {
+    expect(VOICE_STREAM_ID_WAKE).toBe(2);
+  });
+
+  it("VOICE_AUDIO frame round-trips wake stream_id without payload mutation", () => {
+    // Один wake-чанк (320 int16 == 640 bytes), stream_id=2.
+    // Никакой доп. маркировки в payload — только stream_id в header.
+    const pcm = new Uint8Array(640).fill(0);
+    const bytes = encodeFrame(FrameType.VOICE_AUDIO, VOICE_STREAM_ID_WAKE, pcm);
+    const decoded = decodeFrame(bytes);
+    expect(decoded.type).toBe(FrameType.VOICE_AUDIO);
+    expect(decoded.streamId).toBe(VOICE_STREAM_ID_WAKE);
+    expect(decoded.payload.length).toBe(640);
   });
 });

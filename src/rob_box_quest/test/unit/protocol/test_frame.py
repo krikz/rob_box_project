@@ -12,6 +12,9 @@ from rob_box_quest.protocol.frame import (
     encode_frame,
     encode_leb128,
     decode_leb128,
+    VOICE_STREAM_ID_RADIO,
+    VOICE_STREAM_ID_RADIO_ALIAS,
+    VOICE_STREAM_ID_WAKE,
 )
 
 
@@ -69,6 +72,53 @@ class TestFrame:
         ftype, sid, got = decode_frame(raw)
         assert ftype == FrameType.VOICE_AUDIO
         assert sid == 0
+        assert got == pcm
+
+
+class TestVoiceStreamIds:
+    """ADR-0054 / issue #1992: stream_id в HEADER_STRUCT VOICE_AUDIO (0x13).
+
+    Контракт (синхронно с webxr_client/src/wire/protocol.ts):
+      0  → /avatar/voice_in (radio, PTT правого грипа);
+      1  → /avatar/voice_in (legacy alias, ws_server.py трактует как radio);
+      2  → /avatar/wake_in  (всегда-включённый wake-поток шлема).
+
+    Любые правки — синхронно в обоих зеркалах + ADR-0054.
+    """
+
+    def test_radio(self):
+        assert VOICE_STREAM_ID_RADIO == 0
+
+    def test_radio_alias(self):
+        assert VOICE_STREAM_ID_RADIO_ALIAS == 1
+
+    def test_wake(self):
+        assert VOICE_STREAM_ID_WAKE == 2
+
+    def test_distinct(self):
+        # Все три значения различны — защита от случайного «съезжания».
+        assert len({VOICE_STREAM_ID_RADIO, VOICE_STREAM_ID_RADIO_ALIAS, VOICE_STREAM_ID_WAKE}) == 3
+
+    def test_voice_audio_frame_roundtrips_wake_stream_id(self):
+        # Один wake-чанк (320 int16 = 640 байт) с stream_id=2 — wake-поток.
+        # Никакой маркировки в payload нет, только stream_id в header.
+        pcm = b"\x00" * 640
+        raw = encode_frame(FrameType.VOICE_AUDIO, stream_id=VOICE_STREAM_ID_WAKE, payload=pcm)
+        ftype, sid, got = decode_frame(raw)
+        assert ftype == FrameType.VOICE_AUDIO
+        assert sid == VOICE_STREAM_ID_WAKE
+        assert got == pcm
+
+    def test_voice_audio_frame_roundtrips_radio_alias_stream_id(self):
+        pcm = b"\x00\x00\xff\x7f"
+        raw = encode_frame(
+            FrameType.VOICE_AUDIO,
+            stream_id=VOICE_STREAM_ID_RADIO_ALIAS,
+            payload=pcm,
+        )
+        ftype, sid, got = decode_frame(raw)
+        assert ftype == FrameType.VOICE_AUDIO
+        assert sid == VOICE_STREAM_ID_RADIO_ALIAS
         assert got == pcm
 
 

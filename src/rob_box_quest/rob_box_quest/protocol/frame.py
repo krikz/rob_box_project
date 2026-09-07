@@ -40,6 +40,21 @@ class FrameType(IntEnum):
 HEADER_STRUCT = struct.Struct("<BI")  # total 5 bytes
 
 
+# Stream-id для VOICE_AUDIO (0x13, ADR-0054 / issue #1992).
+#
+# Контракт:
+#   0 / 1 → /avatar/voice_in  (radio: PTT правого грипа, оператор → динамик
+#                              робота / STT);
+#   2     → /avatar/wake_in   (wake: всегда-включённый поток шлема, оператор
+#                              → wake-роутер в stt_node).
+#
+# Зеркало webxr_client/src/wire/protocol.ts (VOICE_STREAM_ID_*).
+# Любые изменения — синхронно оба файла + ADR-0054.
+VOICE_STREAM_ID_RADIO = 0
+VOICE_STREAM_ID_RADIO_ALIAS = 1
+VOICE_STREAM_ID_WAKE = 2
+
+
 def encode_leb128(value: int) -> bytes:
     """Unsigned LEB128 (Little Endian Base 128) — varint encoding.
 

@@ -12,6 +12,15 @@
 // из заголовка + маппингу stream_id→topic из `subscribe_ack`.
 // TODO(future-proof): если api.md когда-нибудь вернёт 4-byte topic_id префикс —
 // добавить условный парсинг здесь, см. meta-quest-api.md §4.
+//
+// Контракт stream_id для VOICE_AUDIO (0x13, ADR-0054 / issue #1992):
+//   0  — рация (radio, PTT правого грипа) → /avatar/voice_in;
+//   2  — wake (всегда-включённый поток шлема) → /avatar/wake_in.
+// stream_id=1 зарезервирован (legacy radio-passthrough alias, см. ws_server.py).
+// Значения лежат в payload_encoded int16 PCM 16 kHz mono; различает только
+// stream_id в HEADER_STRUCT — никакой дополнительной маркировки в payload нет.
+// Серверная сторона (ws_server.py → Bridge.publish_voice_audio) роутит по
+// stream_id: 0/1 → /avatar/voice_in (radio), 2 → /avatar/wake_in (wake).
 
 export enum FrameType {
   HELLO = 0x01,
@@ -32,6 +41,28 @@ export enum FrameType {
   STATE_UPDATE = 0x33,
   ERROR = 0xff
 }
+
+/**
+ * Stream-id для VOICE_AUDIO (0x13, ADR-0054 / issue #1992).
+ *
+ * 0  — radio (PTT правого грипа, оператор → динамик робота / STT);
+ * 1  — legacy alias radio-passthrough (оставлен для совместимости с
+ *      уже-залитыми build'ами Quest, сервер ws_server.py оба значения
+ *      считает радио);
+ * 2  — wake (всегда-включённый поток шлема, оператор → STT wake-роутер).
+ *
+ * Контракт: stream_id в HEADER_STRUCT VOICE_AUDIO-фрейма однозначно
+ * определяет получателя на сервере. Сервер роутит:
+ *   0 / 1 → /avatar/voice_in (radio);
+ *   2     → /avatar/wake_in  (wake, новый топик, см. ws_server.py).
+ *
+ * Для control frames (HELLO/WELCOME/SUBSCRIBE/JSON_CMD/JSON_EVENT/
+ * SET_MODE/ACQUIRE_FLOOR/RELEASE_FLOOR/STATE_UPDATE/ERROR/GOODBYE)
+ * stream_id == 0 (см. ws_server.py §2).
+ */
+export const VOICE_STREAM_ID_RADIO = 0;
+export const VOICE_STREAM_ID_RADIO_ALIAS = 1;
+export const VOICE_STREAM_ID_WAKE = 2;
 
 // ------------------------------------------------------------------
 // LEB128 unsigned varint (mirror encode_leb128 / decode_leb128).
