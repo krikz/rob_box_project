@@ -5734,8 +5734,16 @@ fi
 # и self-reference (номер PR в своём же body, например "PR: #1142").
 # ВАЖНО: process substitution (а не pipe), чтобы retro_closed/retro_labeled
 # накапливались в текущем shell и попали в summary.
-while IFS=$'\t' read -r r_issue r_pr r_head; do
+while IFS=$'\t' read -r r_issue r_pr r_head r_intent; do
     [ -z "$r_issue" ] && continue
+    # Guard (issue #2069): голое #N в ТЕЛЕ PR — это ссылка, а не намерение
+    # закрыть. Пропускаем полностью: ни close, ни needs-e2e. Ставить метку
+    # тоже нельзя — иначе e2e-process утащит в ротацию чужую карточку,
+    # упомянутую в разделе «Связанное».
+    if [ "${r_intent:-close}" != "close" ]; then
+        log "retro-path: #${r_issue} упомянут в PR #${r_pr} как ссылка (intent=${r_intent:-?}: нет closing-keyword и нет номера в заголовке, либо PR — wip) — skip (guard #2069)"
+        continue
+    fi
     # Guard (ретро 13.08, надзор): извлечённый номер может оказаться ПРИН-номером,
     # а не issue — PR #1186 (сам фикс merge-gate) ссылался в title на #1172/#1173
     # (реальные кодовые PR), ретро-путь принял их за issues, нашёл e2e-PASS на их
@@ -5868,6 +5876,25 @@ try:
 except Exception:
     print("0")
 ' 2>/dev/null || echo 0)"
+        # Guard (issue #2069, слой 3): CI-only PR — это PR, у которого ВСЕ
+        # файлы лежат в .github/ / scripts/agent_flow/ / docs/ / .hermes/plans/.
+        # Для процессной или docs-карточки такой PR действительно и есть
+        # deliverable — сценарий B в test_merge_gate_retro_path.sh. Но для
+        # ФУНКЦИОНАЛЬНОЙ карточки он выполнить DoD не может физически: кода
+        # он не меняет. А CI у PR из одного .md зелёный ВСЕГДА, поэтому
+        # условие «CI-only + зелёный CI» для таких карточек тавтологично —
+        # чем меньше PR делает, тем легче ему закрыть чужую карточку.
+        # Ровно так ADR-PR #2047 закрыл #2003 (type:performance), а
+        # WIP-документ PR #2014 — #2004 (type:testing).
+        # Для этих типов CI-only доказательством не считается: карточка
+        # остаётся OPEN и уходит в обычный e2e/ручной разбор.
+        if [ "$_r_ci_only" = "1" ] \
+            && { has_label "$_r_labels_norm" "type:functional" \
+                || has_label "$_r_labels_norm" "type:performance" \
+                || has_label "$_r_labels_norm" "type:testing"; }; then
+            log "retro-path: issue #${r_issue} — CI-only PR #${r_pr} не доказательство для функциональной карточки (${_r_labels_norm}) — skip close (guard #2069)"
+            _r_ci_only=0
+        fi
         if [ "$_r_ci_only" = "1" ]; then
             # ВНИМАНИЕ (ретро 12.08 t_061d466e): фильтр обязан разыменовывать
             # .statusCheckRollup[] — иначе jq применяется к объекту
@@ -5964,16 +5991,50 @@ except Exception:
         retro_labeled=$((retro_labeled+1))
     fi
 done < <(printf '%s' "$_retro_prs_json" | python3 -c '
+# Ретро 07.09 (issue #2069): раньше здесь стоял голый re.finditer(r"#(\d+)")
+# по title+body, и КАЖДОЕ упоминание номера становилось основанием для
+# gh issue close --reason completed. Дымящийся пистолет — PR #2047: в его
+# теле есть секция «Зависимости / blockers» со строкой
+#     - **#1996 ([operator-agent 07a]) ОТКРЫТ** — priority в tts_node
+# то есть PR прямым текстом говорит «карточка открыта и блокирует», а
+# ретро-путь прочитал это как «закрыть #1996». Так же закрылись #2003
+# (тем же PR) и #2004 (по WIP-документу PR #2014). Все три — с кодом,
+# которого в develop нет.
+#
+# Теперь номер получает намерение (intent), и закрывать можно только по
+# intent=close:
+#   close — есть closing-keyword GitHub (closes/fixes/resolves #N) ИЛИ
+#           номер стоит в ЗАГОЛОВКЕ PR (конвенция репозитория:
+#           "[operator-agent 11] ... (#2001)" — заголовок пишут осознанно);
+#   ref   — голое #N только в теле. Тело PR — это проза: блокеры,
+#           «связанное», ссылки на соседние карточки. Закрывать по ней нельзя.
+#
+# Плюс WIP-guard: PR с "wip" в заголовке не закрывает ничего. WIP по
+# определению не выполняет DoD — оба ложных закрытия (#2047, #2014) были
+# именно wip-PR. intent такого PR принудительно = ref.
 import json, sys, re
 data = json.load(sys.stdin)
 since = sys.argv[1]
 seen = set()
+# GitHub closing keywords: close/closes/closed, fix/fixes/fixed,
+# resolve/resolves/resolved. Допускаем "issue"/"issues" и двоеточие между
+# ключевым словом и номером ("fixes: #12", "closes issue #12").
+_CLOSING = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[\s:]*(?:issues?[\s:]*)?#(\d+)",
+    re.IGNORECASE,
+)
+_WIP_TITLE = re.compile(r"(?:^|[\s\]\)])wip\b|^\s*\[wip\]", re.IGNORECASE)
 for pr in data:
     if (pr.get("mergedAt") or "") < since:
         continue
     pr_num = str(pr.get("number", ""))
-    text = (pr.get("title") or "") + "\n" + (pr.get("body") or "")
+    title = pr.get("title") or ""
+    body = pr.get("body") or ""
+    text = title + "\n" + body
     head = pr.get("headRefName") or ""
+    is_wip = bool(_WIP_TITLE.search(title))
+    closing = set(m.group(1) for m in _CLOSING.finditer(text))
+    in_title = set(m.group(1) for m in re.finditer(r"#(\d+)", title))
     for m in re.finditer(r"#(\d+)", text):
         issue = m.group(1)
         if issue == pr_num:
@@ -5982,7 +6043,13 @@ for pr in data:
         if key in seen:
             continue
         seen.add(key)
-        print(issue + "\t" + pr_num + "\t" + head)
+        if is_wip:
+            intent = "ref"
+        elif issue in closing or issue in in_title:
+            intent = "close"
+        else:
+            intent = "ref"
+        print(issue + "\t" + pr_num + "\t" + head + "\t" + intent)
 ' "$_retro_since" 2>/dev/null)
 
 # ============================================================================
