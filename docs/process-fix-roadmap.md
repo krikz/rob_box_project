@@ -255,7 +255,7 @@ grep '| devops ' docs/process-fix-roadmap.md
 | 22.08 | `t_9e61d788` | `agent-flow-merge-gate.sh:2338` |
 | 22.08 | `t_a24ffe39` | `agent-flow-triage.sh:1216` |
 | 22.08 | `t_a2cd5753` | `agent-flow-e2e-process.sh:2251` (stale-branch блокировка PR) |
-| 22.08 | `t_d9b4c600` | `install.sh:95` (ADR-0024, cross-task archive sweeper) |
+| 22.08 | `t_d9b4c600` | `install.sh:95` (ADR-AF-0024, cross-task archive sweeper) |
 | 22.08 | `t_deba66ef` | `agent-flow-cleanup-249.sh:32` |
 | 22.08 | `t_e8d52cb7` | `agent-flow-merge-gate.sh:186` |
 | 23.08 | `t_8abada71` | `push-via-gh-api.sh:12` |

@@ -4,7 +4,7 @@
 - **Date:** 2026-08-31
 - **Deciders:** Товарищ Шифу (владелец репо)
 - **Supersedes:** none
-- **Related:** ADR-AF-0030 (нумерация), ADR-0026 (recovery card), PR #1798 (research), issue #1813
+- **Related:** ADR-AF-0030 (нумерация), ADR-AF-0026 (recovery card), PR #1798 (research), issue #1813
 
 ## Context
 

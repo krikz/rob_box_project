@@ -172,7 +172,7 @@ CI (`G-Run Tests.yml` → colcon test) запускает этот тест по
 - [x] Lazy kept (justified): skills.*, ament_index_python.*,
       rob_box_mcp_tools.*, rob_box_voice.scheduler.*.
 - [x] Регресс-тест `test_dialogue_node_imports.py` (8 кейсов).
-- [x] ADR-0060 (этот документ).
+- [x] ADR-0064 (этот документ).
 
 ## See also
 

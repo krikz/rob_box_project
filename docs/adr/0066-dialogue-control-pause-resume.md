@@ -7,7 +7,7 @@
 | Автор | architect по карточке `#1994` (operator-agent 06, шаг 6 из целевой §13) |
 | Контекст | Закрывает шаг 6 целевой миграции `docs/architecture/target-operator-agent-and-dialogue.md` §13: добавить топик `/dialogue/control {pause\|resume}` на стороне `dialogue_node` без TTL, с подтверждением `/dialogue/control_ack`. Удалить `voice_input_mode` со всеми шестью значениями и quest-маршруты из `dialogue_node` (`_on_quest_stt`, `_publish_avatar_command_from_quest`, `_formalize_with_llm`, упоминания `/voice/stt/quest` в коде). Подписка на `/voice/stt/quest` уже удалена в рамках карточки #1990 (PR #2011). |
 | Затрагивает | `src/rob_box_voice/rob_box_voice/dialogue_node.py` (новые sub/pub + удаление); `src/rob_box_voice/test/unit/node/test_dialogue_node.py` + `test_quest_stt_source.py` + `test_voice_presets_formalize.py` (тесты на удалённый код); связанные тесты `test_voice_input_mode_param.py` если остались; ADR-0027 §3.4 (отменяется в части quest-режимов `dialogue_node`); ADR-0028 §4.5 (отменяется, как уже зафиксировано в ADR-0051 §3.1) |
-| Родители | ADR-0051 (агентский цикл оператора, инвариант 3 «одна связь агентов», инвариант 8 «пауза без авто-resume»), ADR-0021 (CC-бюджет), ADR-0018 (честность), `docs/architecture/target-operator-agent-and-dialogue.md` §7.3, §8, §10.3, §13 |
+| Родители | ADR-0051 (агентский цикл оператора, инвариант 3 «одна связь агентов», инвариант 8 «пауза без авто-resume»), ADR-0064 (CC-бюджет), ADR-0018 (честность), `docs/architecture/target-operator-agent-and-dialogue.md` §7.3, §8, §10.3, §13 |
 | Блок-зависимости | Зависит от шага 01 (сторож CC — **зелёный**, `scripts/lint/cc_budget.py` существует, baseline актуален) и шага 03 (`AgentCore` — ADR-0051 §2.4, код `agent_core` уже в репо через `DialogCore` переименование). Разблокирует шаг 07a (приоритет в `tts_node`) и e2e-сценарий паузы. |
 
 > **TL;DR.** Агент оператора (`avatar_supervisor`) влияет на личность **ровно одним** способом: топиком `/dialogue/control` со значением `pause` или `resume`. На стороне `dialogue_node` это означает sub на `/dialogue/control`, pub на `/dialogue/control_ack`, переход `DSM → SILENCED` (уже существует) и **отсутствие** авто-возврата. Из `dialogue_node` удаляются `voice_input_mode`, `_on_quest_stt`, `_publish_avatar_command_from_quest`, `_formalize_with_llm` — личность больше не знает о Quest.
@@ -211,7 +211,7 @@ self._pause_reason: str = ""
 
 ```python
 def _on_dialogue_control(self, msg: String) -> None:
-    """ADR-0060 — pause/resume от avatar_supervisor.
+    """ADR-0066 — pause/resume от avatar_supervisor.
 
     JSON: {"action": "pause"|"resume", "reason": str, "ts_s": float}.
     Любое другое значение action — warning + no-op (ack НЕ шлём,
@@ -223,7 +223,7 @@ def _on_dialogue_control(self, msg: String) -> None:
         reason = str(payload.get("reason") or "")
     except (json.JSONDecodeError, TypeError):
         self.get_logger().warning(
-            f"⚠️ [ADR-0060] /dialogue/control: invalid JSON {msg.data!r}")
+            f"⚠️ [ADR-0066] /dialogue/control: invalid JSON {msg.data!r}")
         return
     if action == "pause":
         self._apply_operator_pause(reason)
@@ -231,7 +231,7 @@ def _on_dialogue_control(self, msg: String) -> None:
         self._apply_operator_resume()
     else:
         self.get_logger().warning(
-            f"⚠️ [ADR-0060] /dialogue/control: unknown action {action!r}")
+            f"⚠️ [ADR-0066] /dialogue/control: unknown action {action!r}")
         return
     self._publish_control_ack()
 
@@ -245,7 +245,7 @@ def _apply_operator_pause(self, reason: str) -> None:
     self._pause_reason = reason
     self._publish_state()
     self.get_logger().info(
-        f"⏸️ [ADR-0060] pause reason={reason!r} (was {state.name})")
+        f"⏸️ [ADR-0066] pause reason={reason!r} (was {state.name})")
 
 def _apply_operator_resume(self) -> None:
     state = self._dsm.current_state
@@ -256,7 +256,7 @@ def _apply_operator_resume(self) -> None:
     self._paused_at_ms = None
     self._pause_reason = ""
     self._publish_state()
-    self.get_logger().info("▶️ [ADR-0060] resume")
+    self.get_logger().info("▶️ [ADR-0066] resume")
 
 def _publish_control_ack(self) -> None:
     state = self._dsm.current_state

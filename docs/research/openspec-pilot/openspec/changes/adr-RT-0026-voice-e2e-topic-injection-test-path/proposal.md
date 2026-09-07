@@ -1,4 +1,4 @@
-# Proposal: ADR-0026 (ADR-0026 — Voice e2e «topic-injection test path»: голосовые фичи можно валидировать БЕЗ физического аудио-bridge 249↔21)
+# Proposal: ADR-AF-0026 (ADR-AF-0026 — Voice e2e «topic-injection test path»: голосовые фичи можно валидировать БЕЗ физического аудио-bridge 249↔21)
 
 ## Why
 

@@ -7,7 +7,7 @@
 | Автор | architect, по инициативе товарища Шифу |
 | Контекст | Расширение фичи #1576 (Meta Quest / WebXR-аватар). Telegram-бот (`rob_box_telegram`) сейчас работает автономно, минуя общий state — отсюда race conditions (Quest едет, а Telegram шлёт `/forward`) и дублирование логики режимов |
 | Затрагивает | новый docker-сервис `rob_box_supervisor` на Vision Pi; рефакторинг `rob_box_telegram` (становится клиентом супервизора); расширение `rob_box_quest` (тоже клиент); точечные правки `rob_box_voice` (`dialogue_node` остаётся владельцем голосового пайплайна, см. ADR-0027 §3.4) |
-| Родители | ADR-0021 (dialogue_node discipline), ADR-0027 (Meta Quest / WebXR), ADR-0018 (honesty), ADR-0026 (recovery-contract) |
+| Родители | ADR-0021 (dialogue_node discipline), ADR-0027 (Meta Quest / WebXR), ADR-0018 (honesty), ADR-AF-0026 (recovery-contract) |
 | Связанные | issue #1576; ADR-0027 (особенно §3.4 voice modes); `docs/architecture/meta-quest-api.md` (wire-протокол Quest); будущий ADR по auth-эволюции (Phase 3) |
 
 > **TL;DR.** Заводим отдельную ROS 2 ноду `avatar_supervisor` — единый

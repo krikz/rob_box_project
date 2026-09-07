@@ -7,7 +7,7 @@
 | Автор | architect (Hermes Agent), kanban t_cc707248 (issue #1579) |
 | Контекст | Запрос товарища Шифу: проанализировать ~50 мин видео по построению AI-harness, вытянуть идеи, предложить 3-5 конкретных улучшений rob_box harness. Тезисы видео из транскрибации ~4590 слов — в issue body, повторять здесь не будем. |
 | Затрагивает | `scripts/agent_flow/*`, `.github/ISSUE_TEMPLATE/`, `.agents/skills/dispatching-parallel-agents/`, `.agents/skills/requesting-code-review/`, `.github/workflows/` (Playwright), `docs/process/*` |
-| Родители | ADR-0014 (issue closure), ADR-0018 (honest FAIL), ADR-0022 (GATE-1/2/3), ADR-0025 (stale-PR detection), ADR-0026 (recovery-card contract, in flight) |
+| Родители | ADR-0014 (issue closure), ADR-0018 (honest FAIL), ADR-0022 (GATE-1/2/3), ADR-0025 (stale-PR detection), ADR-AF-0026 (recovery-card contract, in flight) |
 | Связанные | issue #1579 (этот ADR), issue #1553, #1560, #1571 (process improvements cluster) |
 
 ## 1. Контекст и бизнес-проблема
@@ -23,7 +23,7 @@
    `scripts/agent_flow/`, `.agents/skills/`).
 3. Предложить **3-5 конкретных улучшений**, которые:
    - **решают измеримую проблему** (R1-R7 из ADR-0022, fail-streak 22.08 из
-     ADR-0025, «ложный PASS» из ADR-0018, recovery-контракт из ADR-0026);
+     ADR-0025, «ложный PASS» из ADR-0018, recovery-контракт из ADR-AF-0026);
    - имеют понятный **где жить** (конкретный файл/профиль/skill);
    - могут быть реализованы **отдельным воркером** в отдельной карточке kanban;
    - проверяемы (CI-тест, raw-вывод, e2e-сценарий).
@@ -358,7 +358,7 @@ incremental verification.
 - ADR-0022 (GATE-1/2/3)
 - ADR-AF-0024 (architect verdict SOT)
 - ADR-0025 (stale-PR detection)
-- ADR-0026 (recovery-card contract, готовится отдельной карточкой t_1dd950ff)
+- ADR-AF-0026 (recovery-card contract, готовится отдельной карточкой t_1dd950ff)
 - issue #1579 (этот ADR)
 - issue #1553, #1560, #1571 (process improvements cluster)
 

@@ -765,7 +765,7 @@ chore(docker): update base images to latest versions
 - `docs/adr/0018-agent-honesty-culture.md` — обоснование, trade-offs.
 - `scripts/agent_flow/validate_honesty.sh` + `tests/test_validate_honesty.sh` — tooling.
 
-## 🩹 Recovery cards (ADR-0026, 23.08.2026)
+## 🩹 Recovery cards (ADR-AF-0026, 23.08.2026)
 
 Recovery-карточка (создаётся orchestrator'ом или nadzor'ом, когда
 исходная карточка stuck'нулась — crash-loop, blocked-on-outside,

@@ -123,7 +123,7 @@ def resolve_wake_word_namespaces(
     """personality — ВСЕГДА из personality_fallback (SSoT в коде).
     operator — из YAML, если файл есть и namespace непуст; иначе fallback.
 
-    Секция ``personality:`` в YAML ЗАПРЕЩЕНА (ADR-0060): если она объявлена,
+    Секция ``personality:`` в YAML ЗАПРЕЩЕНА (ADR-0065): если она объявлена,
     выводим WARNING в лог ноды и игнорируем — порядок списка критичен
     (regex leftmost-first), и редактировать его безопаснее в коде, чем в YAML,
     который рассинхронизируется между контурами (issue #2022).
@@ -133,7 +133,7 @@ def resolve_wake_word_namespaces(
         # WARNING через rob_box_core.logging — personality в YAML запрещена.
         _log.warning(
             "wake_words.yaml содержит секцию `personality:` — игнорируется "
-            "(ADR-0060: SSoT — rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS)"
+            "(ADR-0065: SSoT — rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS)"
         )
     operator = loaded.get("operator") or list(operator_fallback)
     personality = list(personality_fallback)
@@ -160,10 +160,10 @@ def resolve_wake_word_namespaces(
 Содержимое обоих файлов:
 
 ```yaml
-# wake_words.yaml — override operator namespace для wake-роутера (ADR-0052).
+# wake_words.yaml — override operator namespace для wake-роутера (ADR-0065).
 # Секция `personality:` ЗАПРЕЩЕНА: SSoT личности —
 # rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS
-# (issue #2022, ADR-0052). Правка списка личности — в коде, не здесь.
+# (issue #2022, ADR-0065). Правка списка личности — в коде, не здесь.
 #
 # `operator:` — STT-искажения «ТАРС», наполняем по логам e2e (целевая §14.1).
 # Без файла нода использует DEFAULT_OPERATOR_WAKE_WORDS = ("тарс", "tars").
@@ -197,7 +197,7 @@ operator:
 
 ```yaml
 # wake_words намеренно НЕ здесь: список личности —
-# rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS (SSoT, ADR-0052).
+# rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS (SSoT, ADR-0065).
 # Секция `personality:` в wake_words.yaml запрещена.
 # wake_words_file указывает на override operator namespace (SSoT = код).
 ```

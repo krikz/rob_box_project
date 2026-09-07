@@ -7,7 +7,7 @@
 | Автор | architect, kanban t_cc7e4481 (verdict v3.1 по issue #1506) |
 | Контекст | E2E-прогон voice_core_suite_v1 не зеленеет 7 дней — физика аудио-bridge 249↔21 не позволяет `paplay` на 249 долететь до USB-ReSpeaker на 21. Шифу в issue #1506 (комменты 22.08 11:19/12:31, 23.08 08:15/17:15): «Задача не была доведена до конца, е2е тест не позеленел!» |
 | Closes | (не закрывает issue #1506 — закрытие требует реального e2e-PASS, ADR предлагает путь как его получить) |
-| Родители | ADR-0001 (harness architecture), ADR-0022 (process e2e done gates), ADR-0024 (verdict SOT), ADR-0025 (stale-PR detection) |
+| Родители | ADR-0001 (harness architecture), ADR-0022 (process e2e done gates), ADR-AF-0024 (verdict SOT), ADR-0025 (stale-PR detection) |
 | Связанные | issue #1506 (voice_core_suite), PR #1555/1556/1557/1559 (verdict v1/v2/v3 + pre-flight + e2e-push-fix), `src/rob_box_voice/docs/PHASE2_IMPLEMENTATION.md:217` (доказанный `ros2 topic pub /voice/stt/result`), `.github/workflows/scripts/e2e_voice_test.sh:1287` (уже работающий `docker exec voice-assistant bash -c '...'`) |
 
 ---
@@ -247,7 +247,7 @@ for step in scenario.steps:
 - **PR #1557** (e2e-push credential regression, OPEN, MERGEABLE — закрывает round-173 build fail).
 - **PR #1558** (sweep stale skill `.bak` dirs, OPEN, MERGEABLE — предотвращает рецидивы stale-worktree).
 - **ADR-0022** (process e2e done gates) — GATE-1 здесь остаётся в силе (aggregate AND + per-step).
-- **ADR-0024** (verdict SOT, `OUT_DIR/verdict.txt`) — topic-injection пишет verdict.txt так же, как paplay-mode.
+- **ADR-AF-0024** (verdict SOT, `OUT_DIR/verdict.txt`) — topic-injection пишет verdict.txt так же, как paplay-mode.
 - **Анализ-док**: `docs/analysis/voice-features-e2e-validation-2026-08-22.md` (контекст фичи и стратегия).
 
 ---

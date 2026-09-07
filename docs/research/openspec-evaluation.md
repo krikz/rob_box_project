@@ -146,8 +146,8 @@ Available schemas:
 | **Нет единой timeline-вьюхи** для всех changes | LOW | `openspec list` показывает активные; архив — отдельно. Достаточно для нашего масштаба |
 | **Двойной ввод при фиксе**: правишь spec.md И потом code** | MEDIUM | OpenSpec явно говорит: "specs описывают behavior, не implementation". Spec — single source of truth, code — производная |
 | **Привычка команды к ADR-формату** | LOW | ADR ≠ openSpec spec. ADR — это "почему мы решили так", openSpec spec — "что система должна делать". Они дополняют друг друга |
-| **Recovery-card contract (ADR-0026) не покрывает OpenSpec flow** | MEDIUM | Если OpenSpec внедряется — добавить новую секцию в CONTRIBUTING.md про "OpenSpec changes" |
-| **OpenSpec не умеет ссылаться на `docs/adr/NNNN-*.md` напрямую** — нужно вручную | LOW | Proposal.md может содержать текстовую ссылку "См. ADR-0026 (recovery card)" |
+| **Recovery-card contract (ADR-AF-0026) не покрывает OpenSpec flow** | MEDIUM | Если OpenSpec внедряется — добавить новую секцию в CONTRIBUTING.md про "OpenSpec changes" |
+| **OpenSpec не умеет ссылаться на `docs/adr/NNNN-*.md` напрямую** — нужно вручную | LOW | Proposal.md может содержать текстовую ссылку "См. ADR-AF-0026 (recovery card)" |
 
 ## 4. Совместимость с нашим стеком
 
@@ -158,7 +158,7 @@ Available schemas:
 | **Slash-commands** | ✅ | `/openspec-propose`, `/openspec-apply-change`, `/openspec-archive-change` готовы |
 | **Hermes skills** | ⚠️ | Skills сгенерированы в `.hermes/skills/`, но Hermes их НЕ подхватит без `external_dirs` в config |
 | **Branching Q20** (`z-{agent}/<id>-slug`) | ✅ | Никак не пересекается с `openspec/changes/<name>/` — это разные сущности |
-| **Recovery-card (ADR-0026)** | ⚠️ | Нужно дополнить — добавить, что OpenSpec change folder имеет свой lifecycle (`propose → apply → archive`), и recovery-worker должен проверить его статус |
+| **Recovery-card (ADR-AF-0026)** | ⚠️ | Нужно дополнить — добавить, что OpenSpec change folder имеет свой lifecycle (`propose → apply → archive`), и recovery-worker должен проверить его статус |
 | **Merge-gate (pre-merge)** | ✅ | `openspec validate --all --strict --json` готов как pre-merge gate (24 ms, можно блокером для PR с `openspec/changes/*`) |
 | **E2E voice test** | ✅ | Spec-driven scenarios (WHEN/THEN) могут стать источником для e2e harness'а — но это уже далеко за пределами research |
 
@@ -217,7 +217,7 @@ OpenSpec "built for brownfield" — подходит. **Если** в будущ
 ```markdown
 ## Why
 
-См. [ADR-0026 (recovery card)](../../../docs/adr/0026-recovery-card-contract.md)
+См. [ADR-AF-0026 (recovery card)](../../../docs/adr/0026-recovery-card-contract.md)
 — этот change реализует contract worker'а для recovery-карточек.
 
 [собственно Why текст...]
@@ -230,7 +230,7 @@ OpenSpec "built for brownfield" — подходит. **Если** в будущ
 | Шаг | Объём | Риски |
 |---|---|---|
 | 1. `openspec init` в корне | 1 команда | — |
-| 2. Переписать каждый из 35+ ADR в proposal+spec+design+tasks | ~5-7 дней | потеря контекста ADR; некоторые ADR — про решения, а не про behavior (например, ADR-0026) |
+| 2. Переписать каждый из 35+ ADR в proposal+spec+design+tasks | ~5-7 дней | потеря контекста ADR; некоторые ADR — про решения, а не про behavior (например, ADR-AF-0026) |
 | 3. Обновить все cross-ref в коде и docs | ~2 дня | grep-замены, regression risk |
 | 4. Удалить `docs/adr/` | 1 команда | необратимо; сломает любую ссылку "см. ADR-NNNN" в issue/PR/комментариях |
 
@@ -266,7 +266,7 @@ proposal → specs → design → tasks" не критична (recovery-card у
    skills из `.hermes/skills/` через `external_dirs`.
 5. **Добавить pre-merge gate** в `scripts/agent_flow/agent-flow-merge-gate.sh`:
    `openspec validate --all --strict --json` для PR с `openspec/changes/*`.
-6. **Дополнить recovery-card contract (ADR-0026)** — recovery-worker
+6. **Дополнить recovery-card contract (ADR-AF-0026)** — recovery-worker
    должен проверить состояние OpenSpec change folder.
 7. **Пилотная имплементация**: первый worker, который получит карточку
    на новую фичу, пишет её через `openspec-propose` skill. Несколько
@@ -308,7 +308,7 @@ openspec archive <name>
 | 30+ AI tools | ✅ | `--tools all` при init |
 | GitHub Actions CI | ✅ | один новый step в `.github/workflows/` |
 | ADR-AF-0030 нумерация | ✅ | нет пересечения |
-| Recovery-card (ADR-0026) | ⚠️ | дополнить CONTRACT для openspec changes |
+| Recovery-card (ADR-AF-0026) | ⚠️ | дополнить CONTRACT для openspec changes |
 | CONTRIBUTING.md | ⚠️ | добавить секцию "OpenSpec changes" |
 | AGENTS.md | ⚠️ | добавить инструкцию про `external_dirs` |
 | Существующие 35+ ADR | ✅ | НЕ трогаем (HYBRID) |
@@ -348,7 +348,7 @@ openspec archive <name>
 - ADR-0018 (agent-honesty-culture) — culture of raw-evidence применима
   к OpenSpec: каждый proposal должен ссылаться на конкретный issue
   или требование.
-- ADR-0026 (recovery-card-contract) — нужно дополнить для OpenSpec
+- ADR-AF-0026 (recovery-card-contract) — нужно дополнить для OpenSpec
   changes (recovery-worker должен проверить change folder).
 - ADR-AF-0030 (adr-numbering-sot) — продолжает действовать для
   legacy `docs/adr/`, OpenSpec не конфликтует.

@@ -311,7 +311,7 @@ hermes kanban --board X ready --unresolved-assignee
 | ADR-0036 | scope-hint для known profiles. ADR-0041 — расширение на уровень «профиль существует» |
 | ADR-0023 | `_validate_skills_for_assignee` — pre-existing pattern, DRY через тот же vendor-патч |
 | ADR-0018 | honesty culture: silent drop нарушает — ADR-0041 устраняет |
-| ADR-0026 | recovery contract: triaging-карточка от watchdog использует тот же формат |
+| ADR-AF-0026 | recovery contract: triaging-карточка от watchdog использует тот же формат |
 | ADR-0040 | триггер ретро: 22-часовая задержка реализации ADR-0040 = прямое бизнес-последствие |
 
 ---

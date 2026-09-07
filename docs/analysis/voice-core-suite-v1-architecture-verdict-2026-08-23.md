@@ -4,7 +4,7 @@
 |------|----------|
 | Автор | architect |
 | Цель | Дать архитектурный verdict по сценарию `.github/e2e/scenarios/voice_core_suite_v1.json` + `voice_core_acceptance_v1.json` (issue #1506), после их мержа в develop через PR #1517 |
-| Связано | issue #1506, PR #1517 (merged 22.08 19:52 UTC), PR #1526 (merged 22.08 18:31 — ADR-0024 design), PR #1555 (verdict, MERGEABLE), PR #1556 (OPEN, pre-flight sanity-check), ADR-0022 §4.6 (window semantics), ADR-0024 (music-aware intent priority gate, issue #1525), анализ-док `voice-features-e2e-validation-2026-08-22.md` |
+| Связано | issue #1506, PR #1517 (merged 22.08 19:52 UTC), PR #1526 (merged 22.08 18:31 — ADR-RT-0068 design), PR #1555 (verdict, MERGEABLE), PR #1556 (OPEN, pre-flight sanity-check), ADR-0022 §4.6 (window semantics), ADR-RT-0068 (music-aware intent priority gate, issue #1525), анализ-док `voice-features-e2e-validation-2026-08-22.md` |
 | Вердикт | **APPROVE** (с замечаниями для e2e-process; см. §9 re-validation 23.08 12:30) |
 | Re-validation | **APPROVE** подтверждён 23.08 12:30 после retry-карточки t_00752a4d; см. §9 |
 
@@ -14,7 +14,7 @@
 полностью покрывают 8 шагов из acceptance-criteria issue #1506
 (command gate / new-session / альтернативный wake word / multi-voice ×3 /
 music start+stop). Дизайн соответствует ADR-0022 GATE-1 (per-step +
-aggregate AND-семантика) и ADR-0024 (music-aware priority gate,
+aggregate AND-семантика) и ADR-RT-0068 (music-aware priority gate,
 защищающему dj02_stop_music от Nav2-коллизии). После merge в develop
 через PR #1517 (22.08 19:52 UTC) и серии стабилизирующих коммитов
 (db84ff59, 04d4ba2f, 1b87e460, #1533 mv03-fix) — набор артефактов
@@ -35,7 +35,7 @@ aggregate AND-семантика) и ADR-0024 (music-aware priority gate,
 | 4a | mv01 «говори голосом Алены» → `set_voice` | `mv01_set_voice_alena` | `patterns=["set_voice"]` + per-step `expected_tool_calls=["set_voice"]` | issue #1219, `test_issue_1219_set_voice_rule.py` |
 | 4b | mv02 «скажи привет» → ответ голосом alena | `mv02_speak_alena` | `patterns=["current_voice"]` | issue #1219, тест voice-persistence |
 | 4c | mv03 «сказку разными голосами» → несколько голосов | `mv03_skazka_raznymi_golosami` | `expected_tool_calls=["set_voice"]` + `expected_keywords=["Красная"]` | issue #1532, `test_issue_1532_voice_multi_skazka.py` |
-| 5 | Music: «renardo бит» → `execute_music_code` → «стоп музыку» → `stop_music` | `dj01_start_renardo` + `dj02_stop_music` | per-step `expected_tool_calls` + `dj01.must_not_call=["generate_music"]` | issue #1358, ADR-0024 (dj02) |
+| 5 | Music: «renardo бит» → `execute_music_code` → «стоп музыку» → `stop_music` | `dj01_start_renardo` + `dj02_stop_music` | per-step `expected_tool_calls` + `dj01.must_not_call=["generate_music"]` | issue #1358, ADR-RT-0068 (dj02) |
 | — (бонус) | Спор→арбитр через backlog | `ds01/ds02/ds03` | `expect="backlog"` для ds01/ds02 + `patterns=["flushed to LLM"]` для ds03 | issue #979 (backlog), `test_speech_backlog_accumulator.py` |
 
 **Все 8 шагов покрыты + 1 backlog-сценарий в нагрузку.** Полнота соответствия
@@ -96,26 +96,26 @@ ADR-0022 §4.6.3 — aggregate check корректно использует о�
 поскольку текст лога voice-assistant выводится именно так
 (`🎯 [issue 1279] … LLM dispatch skipped`).
 
-## 4. Соответствие ADR-0024 (music-aware priority gate)
+## 4. Соответствие ADR-RT-0068 (music-aware priority gate)
 
-`dj02_stop_music` — наиболее рискованный шаг. Без ADR-0024:
+`dj02_stop_music` — наиболее рискованный шаг. Без ADR-RT-0068:
 - «стоп музыку» без wake-слова → wake-gate отбрасывает, музыка играет
 - «стоп» с wake-словом, но command_parser матчит `IntentType.STOP` →
   Nav2 cancel вместо `stop_music`
 
-ADR-0024 (proposed, issue #1525) вводит двуxслойный gate:
+ADR-RT-0068 (proposed, issue #1525) вводит двуxслойный gate:
 1. `MUSIC_STOP_OVERRIDES` в `dialogue_guards.py` (диалоговый gate)
 2. `is_music_stop_command()` — single source of truth для детекта
 
-**Вердикт по dj02:** архитектурно защищён ADR-0024, **но ADR-0024 имеет
+**Вердикт по dj02:** архитектурно защищён ADR-RT-0068, **но ADR-RT-0068 имеет
 статус `proposed` на момент verdict**. Если фикс ещё не в develop —
 прогон `dj02_stop_music` закономерно провалится с теми же симптомами,
 что и e2e run 32573773556 (22.08). e2e-process должен:
 
-1. Проверить наличие коммита ADR-0024-fix в develop (`git log --grep
+1. Проверить наличие коммита ADR-RT-0068-fix в develop (`git log --grep
    "music-aware intent priority"` или issue #1525).
 2. Если нет — это **expected FAIL**, не bug. Завести issue-bug по
-   шаблону, в `## description` указать «блокируется ADR-0024 (proposed)».
+   шаблону, в `## description` указать «блокируется ADR-RT-0068 (proposed)».
 
 ## 5. Голосовые команды (block `## e2e` в issue)
 
@@ -195,9 +195,9 @@ ds01-ds03 используют **разные Yandex TTS-голоса** (anton/e
    --acceptance voice_core_acceptance_v1.json` (команды из scenario.steps[].text,
    НЕ из блока `## e2e` issue — scenario уже включает тексты).
 2. TTS = Yandex (как в acceptance.voice_provenance).
-3. Проверить наличие ADR-0024-fix в develop (commit hash по issue #1525).
+3. Проверить наличие ADR-RT-0068-fix в develop (commit hash по issue #1525).
    Если нет — `dj02_stop_music` ожидаемо упадёт → `e2e:rejected`,
-   завести issue-bug с блокером «blocked by ADR-0024 (proposed)».
+   завести issue-bug с блокером «blocked by ADR-RT-0068 (proposed)».
 4. Pre-flight: `sclang` running.
 5. При PASS поставить `e2e-done`, по истечении 24h stale-candidate
    закрыть issue #1506 (ADR-0022 §5.1).
@@ -209,16 +209,16 @@ ds01-ds03 используют **разные Yandex TTS-голоса** (anton/e
 - Acceptance issue #1506 — 11/11 (100%) покрыто.
 - Соответствие ADR-0022 GATE-1 — корректно (aggregate + per-step,
   без race).
-- Соответствие ADR-0024 — dj02_stop_music архитектурно защищён, но
-  зависит от принятия ADR-0024-fix в develop.
+- Соответствие ADR-RT-0068 — dj02_stop_music архитектурно защищён, но
+  зависит от принятия ADR-RT-0068-fix в develop.
 - Голосовые команды — scenario.json содержит тексты, TTS-цепочка
   Yandex → ReSpeaker → Yandex, проверена в `VOICE_COMMANDS_RESEARCH.md`.
 - Архитектурных блокеров для e2e-прогона **нет**.
 
-**Открытый вопрос для Шифу:** принять ADR-0024 (status=proposed →
+**Открытый вопрос для Шифу:** принять ADR-RT-0068 (status=proposed →
 accepted) до прогона e2e или параллельно (если хочется быстрее)?
 
-**Альтернативный план Б (если ADR-0024 ещё не в develop):**
+**Альтернативный план Б (если ADR-RT-0068 ещё не в develop):**
 - Запустить прогон как есть.
 - `dj02_stop_music` ожидаемо упадёт → issue-bug по шаблону, не блок
   для остальных шагов.
@@ -252,16 +252,16 @@ functional (CI green + MERGEABLE) и валидирует сценарий ка�
 | PR / commit | Что | Состояние | Влияние на verdict |
 |-------------|-----|-----------|--------------------|
 | #1556 (OPEN) | `scripts/agent_flow/tests/test_voice_core_suite_vad_max.sh` — pre-flight sanity-check (75/75 checks локально у автора) | **OPEN**, не merged | ⚠️ Pre-flight есть как PR, но в develop ещё не попал. После merge — укрепит контракт (VAD-max, wake-word presence, label format) |
-| ADR-0024 (status=proposed) | DOC-only merge через PR #1526 | merged 22.08 18:31 | ⚠️ **Design есть, implementation отсутствует** |
+| ADR-RT-0068 (status=proposed) | DOC-only merge через PR #1526 | merged 22.08 18:31 | ⚠️ **Design есть, implementation отсутствует** |
 | Развитие #1248/#1252/#1219/#1358 фиксы (commits в develop) | speech backlog, session reset, set_voice | merged | ✅ Целевые шаги cc01/ns01/ww01/mv01-mv03 защищены unit-тестами в `test/unit/node/`, `test/unit/core/` |
 
-### 9.3 Ревизия ADR-0024 — критический gap
+### 9.3 Ревизия ADR-RT-0068 — критический gap
 
 `git grep` по develop показывает:
 
 - ✅ `MUSIC_STOP_OVERRIDES` и `is_music_stop_command()` уже есть в
   `src/rob_box_voice/rob_box_voice/core/dialogue_guards.py:161,275`
-  (issue #992 fix от 06.08, не зависит от ADR-0024).
+  (issue #992 fix от 06.08, не зависит от ADR-RT-0068).
 - ❌ `entities={'music_stop': True}` в `command_parser.py:186
   (classify_intent)` — **отсутствует** (теста `test_command_parser.py`
   в develop **нет вообще**).
@@ -272,12 +272,12 @@ functional (CI green + MERGEABLE) и валидирует сценарий ка�
   (строка 126) — **отсутствует** (текущая логика уходит в
   Nav2 cancel при `IntentType.STOP`).
 
-**Вывод: ADR-0024 (proposed) описывает дизайн, но два маленьких
+**Вывод: ADR-RT-0068 (proposed) описывает дизайн, но два маленьких
 implementation-PR-а из его плана §"План реализации" не выполнены.**
 
 Это **архитектурно не меняет verdict** — дизайн валиден, контракт
 dj02_stop_music остаётся правильным. Но **план А (прогнать e2e
-после merge ADR-0024-fix) не достижим прямо сейчас** — потому что
+после merge ADR-RT-0068-fix) не достижим прямо сейчас** — потому что
 merge-кандидата нет.
 
 ### 9.4 Обновлённый verdict
@@ -292,12 +292,12 @@ merge-кандидата нет.
   VAD-max, wake-word presence, label format ДО реального прогона →
   меньше false-positive раундов. До merge — scenario защищён
   review прошлого PR #1517 и юнит-тестами в develop (см. §9.2).
-- ADR-0024 **не является архитектурным блокером** для verdict;
+- ADR-RT-0068 **не является архитектурным блокером** для verdict;
   это **execution gap** (нужны 2 implementation-PR-а, не ADR-правки).
 
 ### 9.5 Обновлённый план для e2e-process
 
-С учётом §9.3 (ADR-0024 implementation не готова), рекомендация
+С учётом §9.3 (ADR-RT-0068 implementation не готова), рекомендация
 меняется:
 
 1. **Прогнать e2e прямо сейчас (Plan Б из §8).** dj01 (start)
@@ -306,19 +306,19 @@ merge-кандидата нет.
    теми же симптомами, что и run 32573773556 (22.08) — это
    **expected FAIL**, не bug в сценарии.
 2. **Не блокировать** cc01/ns01/ww01/mv01/mv02/mv03/ds01-03 на
-   ожидании ADR-0024-fix.
-3. **Завести issue-bug** на dj02 с явной ссылкой на ADR-0024
+   ожидании ADR-RT-0068-fix.
+3. **Завести issue-bug** на dj02 с явной ссылкой на ADR-RT-0068
    (proposed) и blocker-тегом «blocked by implementation gap».
    Это **новая задача** для backend-воркера, не architect — добавить
    в карточку явный scope: 2 implementation-PR-а по плану из
-   ADR-0024 §"План реализации".
-4. После merge реализации ADR-0024-fix → перепрогон dj02
+   ADR-RT-0068 §"План реализации".
+4. После merge реализации ADR-RT-0068-fix → перепрогон dj02
    standalone (`e2e_voice_test.sh --scenario ...` с фильтром
    только на dj01+dj02) → e2e-done.
 
 ### 9.6 Что архитектор НЕ делает в этой карточке
 
-Соблазн «по-быстрому запилить реализацию ADR-0024» — **out of role**.
+Соблазн «по-быстрому запилить реализацию ADR-RT-0068» — **out of role**.
 Это:
 
 - cc-budget > 15 (ADR-0021 R1) — риск для `dialogue_node._on_stt`
@@ -339,9 +339,9 @@ merge-кандидата нет.
 |---|---------|--------------|
 | 1 | Мердж PR #1556 (pre-flight) — OPEN, CI зелёный 8/8, MERGEABLE | Шифу (только он, политика агента) |
 | 2 | Мердж PR #1555 (verdict) — MERGEABLE, +231/-0, CI зелёный | Шифу (только он, политика агента) |
-| 3 | Открыть **новую карточку**: «реализация ADR-0024 (2 implementation-PR-а по плану)» — assignee=backend | agent-flow-triage (через issue-bug на dj02) |
+| 3 | Открыть **новую карточку**: «реализация ADR-RT-0068 (2 implementation-PR-а по плану)» — assignee=backend | agent-flow-triage (через issue-bug на dj02) |
 | 4 | Запустить e2e на текущем develop через Plan Б из §9.5 (dj02 ожидаемо FAIL — это норма) | e2e-process |
-| 5 | После п.3 (merge реализации ADR-0024-fix) → standalone-перепрогон dj02 → e2e-done | e2e-process |
+| 5 | После п.3 (merge реализации ADR-RT-0068-fix) → standalone-перепрогон dj02 → e2e-done | e2e-process |
 
 ### 9.8 Итог re-validation
 
@@ -349,7 +349,7 @@ merge-кандидата нет.
 в compare с verdict 12:00 23.08. Дополнительно подтверждено:
 
 - pre-flight sanity-check (PR #1556) сужает пространство ложных FAIL;
-- ADR-0024 design валиден, но execution-gap явно зафиксирован и
+- ADR-RT-0068 design валиден, но execution-gap явно зафиксирован и
   передан в план §9.5 как scope для backend-воркера;
 - Plan Б (прогнать сейчас, не ждать) — архитектурно корректен:
   dj02_stop_music исключается из acceptance как blocked, остальные
@@ -363,6 +363,6 @@ merge-кандидата нет.
 как и положено по процессу из анализ-дока §5.*
 
 *Re-validation 23.08 12:30 (карточка t_00752a4d): подтверждён APPROVE,
-добавлен §9 с новым состоянием develop (PR #1556 OPEN, ADR-0024
+добавлен §9 с новым состоянием develop (PR #1556 OPEN, ADR-RT-0068
 implementation-gap зафиксирован), план для e2e-process обновлён
 до Plan Б из §9.5 (dj02 ожидаемо FAIL, не блок).*

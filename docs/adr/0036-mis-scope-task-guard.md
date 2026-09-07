@@ -7,7 +7,7 @@
 | Автор | architect (Hermes Agent); ретро-карточка `t_da8bf7cd` |
 | Контекст | Ретро-карточка `t_da8bf7cd` «mis-scoped архитектурная карточка (assignee=backend, skill=TDD) ворчит 5ч+»: `t_e2ae0c29` (реализация ADR-0035 auto-detect для merge-gate) висит в running 5ч31м при `max_runtime_seconds=1800` (полчаса). Worker жив, шлёт heartbeat каждые ~60 сек, поэтому watchdog (stale-heartbeat 600 сек) не классифицирует её как stuck. |
 | Затрагивает | (a) `scripts/agent_flow/watchdog.sh` — новый detection «runtime-overshoot»; (b) `scripts/agent_flow/agent-flow-merge-gate.sh` — новый pre-merge gate на architectural-process vs implementation-mis-scope; (c) `CONTRIBUTING.md` §2f — правило «архитектурные изменения → assignee=architect, skill из профиля architect»; (d) `hermes_cli/kanban_db.py::create_task` (vendor-патч расширение — `_validate_skills_for_assignee` уже есть, добавляется `architect_scope_check`); (e) cron-надзор watchdog-shared. |
-| Родители | ADR-0023 (skill-discovery recursive + `_validate_skills_for_assignee`), ADR-0026 (recovery contract), ADR-AF-0030 (ADR numbering SOT) |
+| Родители | ADR-0023 (skill-discovery recursive + `_validate_skills_for_assignee`), ADR-AF-0026 (recovery contract), ADR-AF-0030 (ADR numbering SOT) |
 | Связанные | `t_da8bf7cd` (эта), `t_e2ae0c29` (stuck-карточка — НЕ трогаем, ждём её TDD-завершения), `t_8fdc62ee` (ADR-0035 plan, открыт PR #1751), `t_6c6c98fb` (скилл чужого профиля — прецедент того же класса), `scripts/agent_flow/vendor/hermes-agent-skill-validation.patch` |
 
 ## 1. Контекст и бизнес-проблема
@@ -297,7 +297,7 @@ Backlog: реализация в `agent-flow-blocked-watchdog-scope.sh` (см. A
 - `t_8fdc62ee` — ADR-0035 plan (PR #1751, base=develop, CI 8/8 зелёный).
 - `t_6c6c98fb` — прецедент того же класса (скилл чужого профиля).
 - ADR-0023 — skill-discovery recursive, `_validate_skills_for_assignee` (SOT для §4.1).
-- ADR-0026 — recovery contract (worker отвечает за последствия).
+- ADR-AF-0026 — recovery contract (worker отвечает за последствия).
 - ADR-AF-0030 — ADR numbering SOT (этот ADR = 0036 по правилу ADR-AF-0030 §2.1–2.3).
 - ADR-0035 — auto-detect stale-after-upstream-fix (реализация = `t_e2ae0c29`).
 - `scripts/agent_flow/vendor/hermes-agent-skill-validation.patch` — расширяется в §4.1.

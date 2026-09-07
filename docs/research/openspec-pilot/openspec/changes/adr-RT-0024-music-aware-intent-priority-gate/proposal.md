@@ -1,4 +1,4 @@
-# Proposal: ADR-0024 (ADR-0024 — music-aware intent priority gate: «стоп музыку» не должен идти в Nav2 даже при потерянном wake-слове)
+# Proposal: ADR-RT-0068 (ADR-RT-0068 — music-aware intent priority gate: «стоп музыку» не должен идти в Nav2 даже при потерянном wake-слове)
 
 ## Why
 

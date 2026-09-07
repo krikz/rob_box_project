@@ -7,12 +7,12 @@
 | Автор | architect (Hermes Agent), kanban t_e70b638b (issue #1579) |
 | Контекст | Запрос товарища Шифу (24.08.2026): по итогам внешнего анализа предложить 3-5 конкретных улучшений rob_box harness. **Без ссылки на источник** (только наши домен и процесс). |
 | Затрагивает | `scripts/agent_flow/*`, `.github/ISSUE_TEMPLATE/` (новый), `.agents/skills/*`, `docs/process/*` |
-| Родители | ADR-0014 (issue closure), ADR-0018 (honest FAIL), ADR-0022 (GATE-1/2/3), ADR-0025 (stale-PR detection), ADR-0026 (recovery-card contract) |
+| Родители | ADR-0014 (issue closure), ADR-0018 (honest FAIL), ADR-0022 (GATE-1/2/3), ADR-0025 (stale-PR detection), ADR-AF-0026 (recovery-card contract) |
 | Связанные | issue #1579, kanban t_e70b638b, ADR-0027 (отменён — wip-черновик в другой ветке, не мержен) |
 
 ## 1. Бизнес-проблема
 
-У нас есть зрелый harness (ADR-0014, ADR-0022, ADR-AF-0024, ADR-0025, ADR-0026), но
+У нас есть зрелый harness (ADR-0014, ADR-0022, ADR-AF-0024, ADR-0025, ADR-AF-0026), но
 есть 5 устойчивых проблем, которые он не решает:
 
 1. **Worker = reviewer.** Сейчас архитектурный вердикт (ADR-AF-0024) делает
@@ -373,7 +373,7 @@ REQUEST_CHANGES» в первую неделю. Правильный rollout: sh
 - ADR-0022 (GATE-1/2/3)
 - ADR-AF-0024 (architect verdict SOT)
 - ADR-0025 (stale-PR detection)
-- ADR-0026 (recovery-card contract)
+- ADR-AF-0026 (recovery-card contract)
 - ADR-0027 (отменён — wip-черновик в другой ветке)
 - issue #1579 (этот ADR)
 - kanban t_e70b638b (этот ADR)

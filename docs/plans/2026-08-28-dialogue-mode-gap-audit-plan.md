@@ -129,7 +129,7 @@
 | Renardo/FoxDot + SuperCollider | ✅ | `tools/music.py` (`execute_music_code`), `renardo_synthdef_patches.py`, `sc_only_custom_synthdefs.py` |
 | `generate_music` отключён | ✅ | `mcp_server.py:704,754` — не регистрируется с 20.08.2026 |
 | Библиотека `gen_*` | ✅ | `tools/minimax_music.py` (`gen_list_library`, `gen_search_library`, `gen_play_from_library`, …) |
-| **Wake-word под музыкой (ADR-0024)** | 🟡 | **ADR в статусе `proposed`, не accepted** (`docs/adr/0024-music-aware-intent-priority-gate.md:5`). Частично закрыто: `_MUSIC_STOP_OVERRIDES` в intent-gate (`dialogue_node.py:1778-1784`) + strict-VAD под музыку (`audio_node.py:564-573`). |
+| **Wake-word под музыкой (ADR-RT-0068)** | 🟡 | **ADR в статусе `proposed`, не accepted** (`docs/adr/0024-music-aware-intent-priority-gate.md:5`). Частично закрыто: `_MUSIC_STOP_OVERRIDES` в intent-gate (`dialogue_node.py:1778-1784`) + strict-VAD под музыку (`audio_node.py:564-573`). |
 | `set_voice` / `speak_text(voice)` | ✅ | см. §2.3 |
 | **Смена TTS-провайдера тулом** | ❌ | Такого тула нет (полный список — `tools/*.py`, 51 тул). Провайдер меняется только ROS-параметром `provider` (`tts_node.py:393`). |
 | **Голос/TTS персонально по пользователю** | ⚠️ | `VoiceStateStore` — **чистый in-memory dict** (`rob_box_mcp_tools/voice_state.py:39-50`). Ключ — `speaker_id`, но в БД ничего не пишется → при рестарте всё теряется. «Восстанавливает при следующем контакте» не выполняется. |
@@ -196,7 +196,7 @@
 - **Ф1.2** §2.1 — описать выход из «помолчи» (по решению Q2); если таймер не нужен — завести задачу на удаление `silence_until`.
 - **Ф1.3** §3 — переставить «робот-голос» из «позже» в «частично: транспорт готов, нет пресета/языка» (см. §3 аудита).
 - **Ф1.4** §4.1 — привести `amp ≤ 0.8` в соответствие с кодом (`max_amp = 0.7`) либо поднять код до 0.8. Рекомендация: править спек — 0.7 выбран по живым прогонам.
-- **Ф1.5** §4.1/§5 — снять ссылку «(ADR-0024)» как на решённое: ADR в статусе `proposed`. Либо принять ADR (отдельная задача), либо переформулировать как цель.
+- **Ф1.5** §4.1/§5 — снять ссылку «(ADR-RT-0068)» как на решённое: ADR в статусе `proposed`. Либо принять ADR (отдельная задача), либо переформулировать как цель.
 - **Ф1.6** §5 — переформулировать пункт про рацию/`voice_floor` по решению Q8.
 - **Ф1.7** §8 — добавить недостающие связанные документы: `docs/design/W7_INTEGRATION_PLAN.md`, `docs/adr/0013`, `docs/adr/0018`.
 
@@ -285,7 +285,7 @@
 - **Ф8.1** Тул `save_dj_set_plan(theme, persona, tracks[])` — которого сейчас нет, из-за чего авто-стоп по плану не работает (`dj_mode.py:72-78,178-187`).
 - **Ф8.2** Завершение сета финальным треком + прощанием вместо выключения по счётчику `DJ_AUTO_MAX_TRANSITIONS = 24`.
 - **Ф8.3** Кодифицировать гвардрейлы §4.1, которых нет в коде: «≤6 паттернов», «dur ≥ 0.5», «BPM ≥ 60», «`Clock.clear()` первой строкой» — в `music_stack_validation.py` рядом с существующей проверкой `chop=`.
-- **Ф8.4** Довести ADR-0024 до `accepted` либо закрыть (см. Ф1.5).
+- **Ф8.4** Довести ADR-RT-0068 до `accepted` либо закрыть (см. Ф1.5).
 
 ---
 
