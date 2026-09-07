@@ -13,9 +13,20 @@
 // PTT-семантика: start() при зажатом grip, stop() при отпускании. Пока
 // захват активен, чанки идут непрерывно (включая тишину-нули), поэтому
 // sound_node не рвёт стрим своим 300мс watchdog'ом посреди разговора.
+//
+// Wake-поток (ADR-0054, issue #1992): same capture, но чанки проходят
+// через VAD-гейт ДО onChunk-коллбэка (см. opts.vad). Гейт дропает тишину,
+// чтобы не тратить канал на фоновый шум шлема; см. ./vad_gate.ts.
+//
+// Wake-stream подаётся через onChunk напрямую (без voicePttMode), чтобы
+// оператор не нажимал grip. Wake-capture подключается поверх обычного PTT
+// (если жест зажат — рация/робот-голос имеют приоритет, wake подавляется
+// в supervisor_state — отдельный commit, см. ADR-0054 шаг 4).
 
 export const VOICE_SAMPLE_RATE = 16000;
 export const VOICE_CHUNK_SAMPLES = 320; // 20 мс @ 16 kHz
+
+import { createVadGateState, type VadGateState } from "./vad_gate";
 
 export interface AudioWorkletLike {
   addModule(url: string): Promise<void>;
@@ -71,6 +82,27 @@ export interface VoiceCaptureOptions {
    * берётся прямо с audioCtx.
    */
   createAudioWorkletNode?: (ctx: AudioContext, name: string) => AudioWorkletNodeLike;
+  /**
+   * ADR-0054 (issue #1992): VAD-гейт для wake-потока. Если задано, чанки
+   * пропускаются через гейт ДО onChunk — тишина дропается, голос проходит
+   * + hangover 200 мс удерживает гейт между словами. Для рации/PTT НЕ
+   * задаётся: там нужна непрерывная стрим (sound_node 300 мс watchdog).
+   *
+   * Контракт коллбэка: чистая функция, возвращает `{send, next}` (см.
+   * vad_gate.ts). Коллбэк получает владение state (наш push крутит
+   * `next` обратно в state). Если коллбэк не передан — wake-capture
+   * деградирует до «всё шлём» (forward-compat, pre-ADR-0054 поведение).
+   */
+  vad?: (state: VadGateState, pcm: Int16Array) => {
+    send: boolean;
+    next: VadGateState;
+  };
+  /**
+   * ADR-0054: если задан — гейт-стейт создаётся через эту фабрику.
+   * По умолчанию createVadGateState() из vad_gate.ts. Используется тестами
+   * для подмены (короткий hangover и т.п.).
+   */
+  vadInit?: () => VadGateState;
 }
 
 export interface VoiceCapture {
@@ -132,6 +164,20 @@ export function createVoiceCapture(opts: VoiceCaptureOptions): VoiceCapture {
   let capturing = false;
   // Остаток после нарезки на VOICE_CHUNK_SAMPLES (int16 семплы).
   let pending = new Int16Array(0);
+  // ADR-0054 (issue #1992): гейт-стейт для wake-потока. Создаётся
+  // лениво в start() (или в первом push(), если capture был активен)
+  // через opts.vadInit или createVadGateState(). В stop() сбрасывается —
+  // каждый capture начинается с «чистого» гейта (иначе hangover
+  // предыдущей сессии протек бы в новую).
+  let vadState: VadGateState | null = null;
+
+  function resetVadState(): void {
+    if (opts.vadInit) {
+      vadState = opts.vadInit();
+      return;
+    }
+    vadState = createVadGateState();
+  }
 
   function push(pcm: Int16Array): void {
     if (pcm.length === 0) return;
@@ -140,7 +186,20 @@ export function createVoiceCapture(opts: VoiceCaptureOptions): VoiceCapture {
     merged.set(pcm, pending.length);
     let off = 0;
     while (merged.length - off >= VOICE_CHUNK_SAMPLES) {
-      opts.onChunk(merged.slice(off, off + VOICE_CHUNK_SAMPLES));
+      const chunk = merged.slice(off, off + VOICE_CHUNK_SAMPLES);
+      // ADR-0054: если wake-capture сконфигурирован с vad-гейтом,
+      // пропускаем чанк через него. Иначе шлём всегда (pre-ADR-0054
+      // поведение — рация/PTT, у неё своя логика и VAD не нужен).
+      if (opts.vad) {
+        if (vadState === null) resetVadState();
+        const result = opts.vad(vadState!, chunk);
+        vadState = result.next;
+        if (!result.send) {
+          off += VOICE_CHUNK_SAMPLES;
+          continue;
+        }
+      }
+      opts.onChunk(chunk);
       off += VOICE_CHUNK_SAMPLES;
     }
     pending = merged.slice(off);
@@ -201,6 +260,9 @@ export function createVoiceCapture(opts: VoiceCaptureOptions): VoiceCapture {
     source = null;
     workletNode = null;
     pending = new Int16Array(0);
+    // ADR-0054: при stop() гейт-стейт сбрасывается, чтобы при следующем
+    // start() не унаследовать hangover прежней сессии.
+    vadState = null;
   }
 
   return { start, stop, isCapturing: () => capturing };

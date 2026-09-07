@@ -15,6 +15,11 @@ import {
   VOICE_SAMPLE_RATE,
   type AudioWorkletNodeLike
 } from "../src/input/voice_capture";
+import {
+  createVadGateState,
+  shouldSendChunk,
+  DEFAULT_VAD_THRESHOLD
+} from "../src/input/vad_gate";
 
 interface FakeDeps {
   track: { stop: ReturnType<typeof vi.fn> };
@@ -226,5 +231,131 @@ describe("WORKLET_SOURCE", () => {
     expect(() => {
       new Function(WORKLET_SOURCE);
     }).not.toThrow();
+  });
+});
+
+// ADR-0054 (issue #1992, шаг 5a-impl): VAD-гейт встроен в voice_capture.
+// Push прогоняет каждый чанк через opts.vad ДО onChunk; если vad-функция
+// вернула send=false — onChunk НЕ вызывается (чанк дропнут). Это
+// интеграционный smoke-тест: vad-логика покрыта детерминированными
+// unit-тестами в tests/vad_gate.test.ts; здесь — что voice_capture
+// корректно её подключает и сбрасывает стейт в stop().
+describe("VAD gate integration (ADR-0054)", () => {
+  it("wake-capture: drop silence, pass voice chunks through vad gate", async () => {
+    const deps = makeFakeDeps();
+    const chunks: Int16Array[] = [];
+    const capWithVad = createVoiceCapture({
+      onChunk: (c) => chunks.push(c),
+      deps: {
+        getUserMedia: deps.getUserMedia,
+        AudioContextCtor: (function FakeCtor(this: unknown) {
+          return deps.audioCtx;
+        } as unknown) as new () => AudioContext,
+        audioWorkletModuleUrl: "blob:fake-worklet-url"
+      },
+      createAudioWorkletNode: (_ctx, _name) => {
+        const port = {
+          onmessage: null as ((ev: { data: unknown }) => void) | null,
+          postMessage: vi.fn(),
+          close: vi.fn()
+        };
+        const node = { port, connect: vi.fn(), disconnect: vi.fn() };
+        deps.nodes.push(node);
+        return node;
+      },
+      vad: (s, pcm) => {
+        const r = shouldSendChunk(s, pcm);
+        return r;
+      },
+      vadInit: () => createVadGateState()
+    });
+
+    await capWithVad.start();
+    const node = deps.nodes[0];
+    // Прогоняем 1 секунду тишины: 0 чанков должно дойти до onChunk.
+    drive(node, 48000, 1, 0);
+    expect(chunks.length).toBe(0);
+    // Прогоняем 1 секунду громкого звука: 50 чанков должно дойти.
+    drive(node, 48000, 1, 0.5); // 0.5 → int16 ≈ 16384, RMS выше порога
+    expect(chunks.length).toBe(50);
+    // chunk[0] — int16 sample, не нулевой (голос).
+    expect(chunks[0][0]).not.toBe(0);
+    capWithVad.stop();
+  });
+
+  it("wake-capture без vad-опции: всё шлём как раньше (pre-ADR-0054)", async () => {
+    const deps = makeFakeDeps();
+    const chunks: Int16Array[] = [];
+    const cap = makeCapture(deps, (c) => chunks.push(c));
+    await cap.start();
+    // Тишина: шлём всё (pre-ADR-0054 поведение для PTT-рации).
+    drive(deps.nodes[0], 48000, 1, 0);
+    expect(chunks.length).toBe(50);
+    cap.stop();
+  });
+
+  it("wake-capture: state сбрасывается при stop() — hangover не утекает между сессиями", async () => {
+    const deps = makeFakeDeps();
+    const chunks: Int16Array[] = [];
+    const statesSeen: number[] = [];
+    const cap = createVoiceCapture({
+      onChunk: (c) => chunks.push(c),
+      deps: {
+        getUserMedia: deps.getUserMedia,
+        AudioContextCtor: (function FakeCtor(this: unknown) {
+          return deps.audioCtx;
+        } as unknown) as new () => AudioContext,
+        audioWorkletModuleUrl: "blob:fake-worklet-url"
+      },
+      createAudioWorkletNode: (_ctx, _name) => {
+        const port = {
+          onmessage: null as ((ev: { data: unknown }) => void) | null,
+          postMessage: vi.fn(),
+          close: vi.fn()
+        };
+        const node = { port, connect: vi.fn(), disconnect: vi.fn() };
+        deps.nodes.push(node);
+        return node;
+      },
+      vad: (s, pcm) => {
+        statesSeen.push(s.hangover);
+        return shouldSendChunk(s, pcm);
+      },
+      vadInit: () => {
+        // Возвращаем гейт с hangover=5 — как будто предыдущая сессия
+        // умерла посреди фразы. Если voice_capture правильно сбрасывает
+        // state в stop(), при следующем start() этот hangover НЕ
+        // унаследуется (vadInit() вызовется заново и вернёт 5).
+        return { ...createVadGateState(), hangover: 5 };
+      }
+    });
+
+    await cap.start();
+    // Один тихий чанк проходит через vad с hangover=5 → на выходе 1 чанк.
+    drive(deps.nodes[0], 48000, 0.02, 0);
+    expect(chunks.length).toBe(1);
+    // Первый vad-вызов увидел hangover=5 (свежий vadInit).
+    expect(statesSeen[0]).toBe(5);
+    // А теперь stop() → start() должен сбросить state → первый push снова
+    // увидит hangover=5 (НЕ унаследованный).
+    cap.stop();
+    chunks.length = 0;
+    statesSeen.length = 0;
+
+    await cap.start();
+    // Используем последнюю ноду (start() создал новую).
+    const freshNode = deps.nodes[deps.nodes.length - 1];
+    drive(freshNode, 48000, 0.02, 0);
+    expect(chunks.length).toBe(1);
+    // Критическая проверка: первый push во второй сессии видит hangover=5,
+    // а НЕ hangover=3 (что было бы, если бы state утёк из первой сессии).
+    expect(statesSeen[0]).toBe(5);
+    cap.stop();
+  });
+
+  it("ensure VAD gate const exports exist (sanity, защита от рефакторинга)", () => {
+    // Sanity-тест на дефолтные константы: порог 300 — magic number из ADR-0054.
+    // Если кто-то его сменит, должен обновить и ADR.
+    expect(DEFAULT_VAD_THRESHOLD).toBe(300);
   });
 });
