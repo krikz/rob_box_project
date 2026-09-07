@@ -85,6 +85,13 @@ tts_node:
     # реального провайдера (не номинального minimax). Пустая строка —
     # отключить персистентность.
     provider_state_file: /data/tts_provider_state.json
+    # Issue #1976 / t_b33bfee1 — цепочка fallback TTS-провайдеров
+    # (см. также src/rob_box_voice/config/tts_node.yaml и ADR-0044).
+    # Дефолт — Yandex-first, синхронно с src/.
+    provider_chain:
+      - yandex
+      - minimax
+      - silero
     audio_topic: /voice/audio/speech
     audio_output_sample_rate: 16000
     audio_qos_reliability: best_effort

@@ -2159,12 +2159,18 @@ class TTSNode(Node):
     def _default_provider_chain() -> list[str]:
         """Дефолтная цепочка приоритетов TTS-провайдеров.
 
-        Порядок: MiniMax (HTTP) → Yandex (gRPC v3) → Silero (офлайн).
+        Порядок: Yandex (gRPC v3) → MiniMax (HTTP) → Silero (офлайн).
         Silero всегда последний — это последний рубеж, он работает без
         сети. Цепочка конфигурируется через ROS-параметр ``provider_chain``;
         здесь — значение по умолчанию (не хардкод в hot-path).
+
+        См. issue #1976 / карточка ``t_b33bfee1``: Шифу явно требует
+        Yandex-first («если нет Яши то юзать миниакс если и миниакса нет
+        то силеро»). Предыдущая цепочка minimax-first была попыткой
+        приоритизировать новый HTTP-провайдер, но в проде (Vision Pi)
+        голос робота исторически Yandex-anton — отсюда фикс.
         """
-        return ["minimax", "yandex", "silero"]
+        return ["yandex", "minimax", "silero"]
 
     @staticmethod
     def _chain_from_provider(provider: str) -> list[str]:
@@ -2174,19 +2180,21 @@ class TTSNode(Node):
         дефолтным порядком (``_default_provider_chain``), Silero всегда
         последний. Примеры:
 
-        * provider=minimax → [minimax, yandex, silero] (дефолт, фикс #1083:
-          при квоте MiniMax идём на Yandex, а не сразу на Silero);
-        * provider=yandex  → [yandex, silero] (back-compat: e2e ``tts: yandex``
-          проверяет именно Yandex-голос, MiniMax не подмешиваем);
+        * provider=yandex  → [yandex, minimax, silero] (issue #1976 / t_b33bfee1:
+          Yandex-first; при недоступности Yandex идём на MiniMax, потом Silero);
+        * provider=minimax → [minimax, yandex, silero] (back-compat: пользователь
+          явно попросил MiniMax первым, см. также fix #1083 — MiniMax-квота не
+          сразу валится на Silero, а пробует Yandex);
         * provider=silero  → [silero] (только офлайн).
         """
         if provider == "silero":
             return ["silero"]
-        if provider == "yandex":
-            # Back-compat: provider=yandex остаётся yandex → silero,
-            # без MiniMax (см. историческое поведение tts_node).
-            return ["yandex", "silero"]
-        return TTSNode._default_provider_chain()  # minimax → yandex → silero
+        if provider == "minimax":
+            # Back-compat от #1083: provider=minimax → MiniMax первый,
+            # дальше Yandex, потом Silero. Это легитимный выбор, не дефолт.
+            return ["minimax", "yandex", "silero"]
+        # provider=yandex и любой другой → дефолт (Yandex-first, см. #1976).
+        return TTSNode._default_provider_chain()
 
     def _effective_provider_chain(self) -> list[str]:
         """Цепочка, по которой реально идёт синтез в ``_synthesize_and_play``.
@@ -2207,10 +2215,10 @@ class TTSNode(Node):
         """Привести цепочку к инвариантам: только известные провайдеры,
         без дубликатов, Silero — всегда последний.
 
-        Edge cases (issue #1083):
+        Edge cases (issue #1083 + #1976 / t_b33bfee1):
         * цепочка без Silero → Silero добавляется в конец;
         * Silero в середине → переносится в конец;
-        * пустая/битая цепочка → дефолтная minimax → yandex → silero.
+        * пустая/битая цепочка → дефолтная yandex → minimax → silero.
         """
         known = {"minimax", "yandex", "silero"}
         deduped: list[str] = []
