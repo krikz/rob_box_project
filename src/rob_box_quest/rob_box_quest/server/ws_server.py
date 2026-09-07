@@ -196,12 +196,15 @@ class Bridge(Protocol):
 
     def publish_quest_wake_audio(self, payload: bytes) -> None:
         """VOICE_AUDIO (stream_id=2, wake-channel): always-on микрофон с
-        client-side RMS VAD (ADR-0054 step 5а).
+        client-side RMS VAD (ADR-0054 step 5а) → AudioData в /audio/quest_wake.
 
-        Сейчас — no-op stub (реальная маршрутизация wake → stt_node появится
-        в шаге 5 impl-плана ADR-0054). Сейчас задача — только прокинуть
-        payload в мост, чтобы unit-тесты на routing stream_id могли писать
-        ожидаемый receiver без участия ROS-стека.
+        Реализация (QuestBridge, issue #1992): публикует в ROS-топик
+        /audio/quest_wake, который читает stt_node.quest_wake_audio_callback
+        и маршрутизирует в /avatar/stt/result только при вейке «ТАРС»
+        (целевая §7.1/§9.1). Тестовая реализация — NoOpBridge — остаётся
+        no-op: unit-тесты на routing stream_id проверяют только то, что
+        WS-сервер вызывает этот метод с правильным payload, без участия
+        ROS-стека.
         """
         ...
 
@@ -434,7 +437,9 @@ class NoOpBridge:
 
     def publish_quest_wake_audio(self, payload: bytes) -> None:
         # NoOpBridge: ADR-0054 step 5a, stream_id=2 → wake-канал.
-        # Реальная маршрутизация в stt_node — шаг 5 impl-плана.
+        # Реальная маршрутизация в /audio/quest_wake → stt_node реализована
+        # в QuestBridge (quest_node.py, issue #1992). NoOpBridge — тестовый
+        # ROS-free double, остаётся no-op намеренно.
         return None
 
     def set_wake_stream_state(self, active: bool) -> None:
