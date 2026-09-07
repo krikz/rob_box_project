@@ -131,21 +131,58 @@ class TestModeManagerIdleTimeout(unittest.TestCase):
 
 
 class TestModeManagerConflict(unittest.TestCase):
-    """Case 7: Conflict when target floor is held by another client."""
+    """Case 7: Conflict when target transition is impossible from current mode.
 
-    def test_off_to_avatar_present_blocked_when_voice_floor_held(self):
+    После ADR-0051 §2.2 FSM перестало знать о holder-ах floor-ов —
+    конфликты «кто держит voice_floor» теперь решаются в
+    ``avatar_arbiter`` через ``LockManager.holder()``. На уровне FSM
+    остаётся только режимная проверка: «из ``mixed`` нельзя взять
+    ``quest_acquire_floor`` full — это требует сначала
+    ``telegram_release``».
+    """
+
+    def test_quest_acquire_floor_in_mixed_is_conflict(self):
         fsm = ModeManager()
-        # Telegram зашёл и держит voice_floor.
+        # Привести FSM в mixed: telegram full → quest teleop-only.
         fsm.transition(EVENT_TELEGRAM_ACQUIRE_FLOOR, client_id=CLIENT_TELEGRAM)
-        self.assertEqual(fsm.mode, Mode.TELEGRAM_ACTIVE)
+        fsm.transition(EVENT_QUEST_ACQUIRE_FLOOR_TELEOP_ONLY, client_id=CLIENT_QUEST)
+        self.assertEqual(fsm.mode, Mode.MIXED)
 
-        # Quest пытается взять «полный» floor, пока Telegram держит voice —
-        # FSM должен отклонить с ConflictError.
+        # Из mixed «quest_acquire_floor» (full) — семантический
+        # конфликт: переход mixed → avatar_present требует сначала
+        # telegram_release. FSM отдаёт ConflictError с
+        # current/target_mode (без holder-полей — это знает
+        # LockManager).
         with self.assertRaises(ConflictError) as ctx:
             fsm.transition(EVENT_QUEST_ACQUIRE_FLOOR, client_id=CLIENT_QUEST)
-        self.assertEqual(fsm.mode, Mode.TELEGRAM_ACTIVE)
-        self.assertEqual(ctx.exception.requested_by, CLIENT_QUEST)
-        self.assertEqual(ctx.exception.held_by, CLIENT_TELEGRAM)
+        self.assertEqual(fsm.mode, Mode.MIXED)
+        self.assertEqual(ctx.exception.current_mode, Mode.MIXED)
+        self.assertEqual(ctx.exception.target_mode, Mode.AVATAR_PRESENT)
+
+    def test_telegram_acquire_voice_in_off_is_conflict(self):
+        # ADR-0028 §4.1: ``telegram_acquire_voice_floor`` имеет смысл
+        # только из ``avatar_present``; из ``off`` это семантический
+        # конфликт (телеграм не держит никакого floor).
+        fsm = ModeManager()
+        with self.assertRaises(ConflictError) as ctx:
+            fsm.transition(EVENT_TELEGRAM_ACQUIRE_VOICE_FLOOR, client_id=CLIENT_TELEGRAM)
+        self.assertEqual(fsm.mode, Mode.OFF)
+        self.assertEqual(ctx.exception.current_mode, Mode.OFF)
+        self.assertEqual(ctx.exception.target_mode, Mode.MIXED)
+
+    def test_quest_acquire_teleop_only_in_off_is_conflict(self):
+        # ADR-0028 §4.1: ``quest_acquire_floor_teleop_only`` имеет
+        # смысл только из ``telegram_active``; из ``off`` это
+        # семантический конфликт (quest teleop-only требует уже
+        # активного telegram-voice).
+        fsm = ModeManager()
+        with self.assertRaises(ConflictError) as ctx:
+            fsm.transition(
+                EVENT_QUEST_ACQUIRE_FLOOR_TELEOP_ONLY, client_id=CLIENT_QUEST
+            )
+        self.assertEqual(fsm.mode, Mode.OFF)
+        self.assertEqual(ctx.exception.current_mode, Mode.OFF)
+        self.assertEqual(ctx.exception.target_mode, Mode.MIXED)
 
 
 class TestModeManagerEscapeHatch(unittest.TestCase):
