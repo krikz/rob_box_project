@@ -6,7 +6,20 @@ CommandNode - распознавание голосовых команд для 
 Action Clients: NavigateToPose, FollowPath
 
 REFACTORED: Now uses CommandParser from core module for intent classification
+
+Phase 2.5 (operator-agent 07b, issue #1997): the parsed command is
+also published to an in-process ``EventBus`` (topic
+``/command/parsed``) so the ``ReflexLayer`` can consume it and emit
+``ReflexEvent``s on ``/reflex/events``. The existing Nav2 path is
+**additive** — the bus is opt-in via the ``enable_reflex_layer``
+parameter and is wired in a background thread (the bus is async;
+rclpy is not). See ``docs/adr/0054-...`` and
+``docs/design/SCHEDULER_DESIGN.md`` §8.10.4 for the wire contract.
 """
+
+import asyncio
+import threading
+from typing import Any, Optional
 
 import rclpy
 from rclpy.node import Node
@@ -33,11 +46,17 @@ class CommandNode(Node):
         self.declare_parameter('enable_navigation', True)
         self.declare_parameter('enable_follow', False)  # TODO: Phase 6
         self.declare_parameter('enable_vision', False)  # TODO: Phase 6
+        # Phase 2.5 (operator-agent 07b, #1997): opt-in to the
+        # in-process EventBus bridge to ReflexLayer. Off by default
+        # so existing test/e2e harnesses (which create CommandNode
+        # without expecting a bus) keep working unchanged.
+        self.declare_parameter('enable_reflex_layer', False)
 
         self.confidence_threshold = self.get_parameter('confidence_threshold').value
         self.enable_navigation = self.get_parameter('enable_navigation').value
         self.enable_follow = self.get_parameter('enable_follow').value
         self.enable_vision = self.get_parameter('enable_vision').value
+        self.enable_reflex_layer = self.get_parameter('enable_reflex_layer').value
 
         # Subscribers
         self.stt_sub = self.create_subscription(
@@ -84,9 +103,192 @@ class CommandNode(Node):
         # handles all waypoint CRUD.
         self.waypoints = {}
 
+        # ----- Phase 2.5: in-process EventBus bridge to ReflexLayer -----
+        # Imported lazily so unit tests that build CommandNode without
+        # the bridge (enable_reflex_layer=False) don't pay the import
+        # cost of the scheduler package.
+        self._event_bus: Optional[Any] = None
+        self._reflex_layer: Optional[Any] = None
+        self._bus_thread: Optional[threading.Thread] = None
+        self._bus_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._bus_loop_ready = threading.Event()
+        self._bus_shutdown = threading.Event()
+        if self.enable_reflex_layer:
+            self._start_reflex_bridge()
+
         self.get_logger().info('✅ CommandNode инициализирован (using CommandParser from core)')
         self.get_logger().info(f'  Navigation: {"✓" if self.enable_navigation else "✗"}')
         self.get_logger().info(f'  Waypoints: динамические (через MCP tools)')
+        if self.enable_reflex_layer:
+            self.get_logger().info('  ReflexLayer bridge: ✓ (/command/parsed → /reflex/events)')
+        else:
+            self.get_logger().debug('  ReflexLayer bridge: disabled (set enable_reflex_layer:=true to enable)')
+
+    # ----- Phase 2.5: in-process EventBus bridge ----------------------
+    #
+    # Why a background thread + asyncio loop? ``command_node`` is a
+    # rclpy node: callbacks run on the rclpy executor thread, which
+    # does NOT own an asyncio loop. The scheduler package is
+    # pure-Python + asyncio. To bridge the two without a ROS topic
+    # (the bus is intentionally in-process per
+    # ``SCHEDULER_DESIGN.md`` §1 "Чего НЕ хотим") we run a tiny
+    # asyncio loop on a daemon thread, build the ``EventBus`` +
+    # ``ReflexLayer`` there, and ``publish_parsed_command`` (called
+    # from the rclpy callback) submits work to that loop via
+    # ``run_coroutine_threadsafe``. The wiring is identical to the
+    # ``RobustAudioBridge`` pattern in ``audio_playback_manager.py``:
+    # single event-loop owner, sync-side submission, no nested
+    # asyncio.run() calls.
+
+    def _start_reflex_bridge(self) -> None:
+        """Build the in-process bus + ReflexLayer on a worker thread.
+
+        Safe to call once at node construction. The thread runs
+        forever (or until :meth:`destroy_node` signals shutdown via
+        :attr:`_bus_shutdown`).
+        """
+
+        from rob_box_voice.scheduler import EventBus, ReflexLayer, TaskScheduler
+
+        # 1) start the worker thread
+        self._bus_thread = threading.Thread(
+            target=self._bus_thread_main,
+            name="command-node-reflex-bus",
+            daemon=True,
+        )
+        self._bus_thread.start()
+        # 2) wait until the loop is up
+        if not self._bus_loop_ready.wait(timeout=5.0):
+            self.get_logger().error(
+                '❌ ReflexLayer bus thread failed to start within 5s — bridge disabled'
+            )
+            self._bus_shutdown.set()
+            return
+
+        # 3) build the bus + layer (must be done on the loop owner)
+        future = asyncio.run_coroutine_threadsafe(
+            self._init_bus(),
+            self._bus_loop,
+        )
+        try:
+            self._event_bus, self._reflex_layer = future.result(timeout=5.0)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(
+                f'❌ Failed to construct EventBus/ReflexLayer: {exc!r}'
+            )
+            self._event_bus = None
+            self._reflex_layer = None
+            self._bus_shutdown.set()
+            return
+
+    def _bus_thread_main(self) -> None:
+        """Body of the bus worker thread: own an asyncio loop forever."""
+
+        self._bus_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._bus_loop)
+        self._bus_loop_ready.set()
+        try:
+            self._bus_loop.run_forever()
+        finally:
+            try:
+                pending = asyncio.all_tasks(loop=self._bus_loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    self._bus_loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True)
+                    )
+            finally:
+                self._bus_loop.close()
+
+    async def _init_bus(self) -> tuple[Any, Any]:
+        """Construct the bus + layer and wire them up.
+
+        Runs on the bus worker thread (the loop owner). Returns the
+        live (bus, layer) pair so the rclpy side can submit publishes
+        via :meth:`_publish_parsed_async`.
+        """
+
+        from rob_box_voice.scheduler import EventBus, ReflexLayer, TaskScheduler
+
+        bus = EventBus()
+        scheduler = TaskScheduler()
+        scheduler.start()
+        layer = ReflexLayer(scheduler, bus)
+        layer.attach(bus)
+        self.get_logger().info(
+            f'🔌 ReflexLayer attached: subscribes to {ReflexLayer.SUBSCRIBE_TOPIC}, '
+            f'publishes to {ReflexLayer.TOPIC}'
+        )
+        return bus, layer
+
+    @staticmethod
+    def build_parsed_envelope(command: Command) -> Any:
+        """Build the :class:`EventEnvelope` for a parsed command (issue #1997).
+
+        Pure function: takes a :class:`Command` (or any object that
+        duck-types ``.intent.value``/``.text``/``.entities``/
+        ``.confidence``), returns an :class:`EventEnvelope` ready to be
+        published on :attr:`ReflexLayer.SUBSCRIBE_TOPIC` (``/command/parsed``).
+
+        Pulled out of :meth:`_publish_parsed_async` so the wire format
+        is testable without standing up an rclpy executor / a bus
+        worker thread. The contract is documented in ADR-0054 / §8.10.4
+        of ``SCHEDULER_DESIGN.md``.
+        """
+
+        from rob_box_voice.scheduler import EventEnvelope, ReflexLayer
+
+        entities = command.entities
+        # The parser occasionally produces ``entities=None`` (no regex
+        # hit, no NLP slot filled) — the wire contract is "always a
+        # mapping" so the bus subscriber's :func:`_envelope_to_command`
+        # duck-type check does not reject the envelope with a warning.
+        # See ADR-0054 §\"wire contract\" and
+        # ``tests/test_reflex_layer.py::test_command_to_view_rejects_non_mapping_entities``.
+        if entities is None:
+            entities = {}
+        payload = {
+            'intent': command.intent.value,
+            'text': command.text,
+            'entities': dict(entities),
+            'confidence': float(command.confidence),
+        }
+        return EventEnvelope(
+            topic=ReflexLayer.SUBSCRIBE_TOPIC,
+            payload=payload,
+        )
+
+    def _publish_parsed_async(self, command: Command) -> None:
+        """Submit the parsed command to the bus loop (fire-and-forget).
+
+        Called from :meth:`stt_callback` (rclpy executor thread). If
+        the bus is not up (initialisation failed, or it shut down),
+        this is a silent no-op so the existing Nav2 path is unaffected.
+        """
+
+        if self._event_bus is None or self._bus_loop is None:
+            return
+        # After the wait above _bus_loop is guaranteed non-None;
+        # the type-checker cannot follow the threading.Event
+        # synchronisation, so we assert for it.
+        assert self._bus_loop is not None
+        try:
+            envelope = self.build_parsed_envelope(command)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().debug(f'ReflexLayer bridge build failed: {exc!r}')
+            return
+        # Cross-thread submission: rclpy callback → bus loop. The
+        # bus is built with the default BLOCK backpressure so the
+        # publish awaits if the layer is slow (which it never is).
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._event_bus.publish(envelope),
+                self._bus_loop,
+            )
+        except RuntimeError as exc:
+            # Loop is closed (during shutdown) — silent no-op.
+            self.get_logger().debug(f'ReflexLayer publish skipped (loop closed): {exc!r}')
 
     def dialogue_state_callback(self, msg: String):
         """Callback для состояния dialogue_node."""
@@ -103,6 +305,13 @@ class CommandNode(Node):
 
         # Use CommandParser to parse command (includes wake word removal)
         command = self.command_parser.parse(text)
+
+        # Phase 2.5: forward the parsed command onto the in-process
+        # EventBus so the ReflexLayer can react (cancel-all on STOP,
+        # submit direction tasks for MOVE_DIRECTION, etc.). No-op when
+        # the bridge is disabled — the existing Nav2 path stays
+        # exactly as it was.
+        self._publish_parsed_async(command)
 
         # Всегда публиковать intent (даже UNKNOWN) для dialogue_node
         self.publish_intent(command)
@@ -391,6 +600,38 @@ class CommandNode(Node):
         msg.data = text
         self.feedback_pub.publish(msg)
         self.get_logger().info(f'💬 Feedback: {text}')
+
+    def destroy_node(self):
+        """Phase 2.5 teardown: stop the bus worker thread + close the bus.
+
+        Called by rclpy when the node is destroyed (spin exits,
+        Ctrl-C, test teardown). The shutdown is best-effort: if the
+        bus is not up we just skip. The thread is daemon, so even
+        an unclean shutdown will not block process exit.
+        """
+
+        if self._bus_loop is not None and self._event_bus is not None and self._reflex_layer is not None:
+            try:
+                # Schedule bus close on the loop owner, then stop the loop.
+                future = asyncio.run_coroutine_threadsafe(
+                    self._event_bus.close(),
+                    self._bus_loop,
+                )
+                future.result(timeout=2.0)
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().debug(f'ReflexLayer bus close error: {exc!r}')
+            try:
+                self._bus_loop.call_soon_threadsafe(self._bus_loop.stop)
+            except RuntimeError:
+                pass
+        if self._bus_thread is not None and self._bus_thread.is_alive():
+            self._bus_thread.join(timeout=2.0)
+        # Reset handles so destroy_node is idempotent.
+        self._event_bus = None
+        self._reflex_layer = None
+        self._bus_thread = None
+        self._bus_loop = None
+        super().destroy_node()
 
 
 def main(args=None):
