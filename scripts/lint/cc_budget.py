@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CC-budget guard (ADR-0021 R1) for ``dialogue_node.py`` and new voice nodes.
+"""CC-budget guard (ADR-0021 R1) for active voice/harness/supervisor/mcp packages.
 
 Cyclomatic complexity budget:
   * regular methods  -> CC <= 15
@@ -10,9 +10,17 @@ Current over-limit methods are grandfathered via ``cc_budget_baseline.json``
 fails only on *new* violations: a method that exceeds the limit and is either
 not in the baseline or has grown past its recorded grandfather value.
 
+Scope: every Python module under the active development packages
+(``src/rob_box_voice/rob_box_voice``, ``src/rob_box_supervisor/rob_box_supervisor``,
+``src/rob_box_harness/rob_box_harness``, ``src/rob_box_mcp_tools/rob_box_mcp_tools``).
+ADR-0021 explicitly applies the rule to "``dialogue_node.py`` and any new voice
+nodes in ``rob_box_voice``"; extending it to the three sibling packages is the
+least-surprise scope: these are where active development is happening, and any
+new method added there must respect the budget.
+
 Usage:
-  python scripts/lint/cc_budget.py                     # check (default)
-  python scripts/lint/cc_budget.py <file> [<file>...]  # check given files
+  python scripts/lint/cc_budget.py                     # check (default scope)
+  python scripts/lint/cc_budget.py <path> [<path>...]  # check given files/dirs
   python scripts/lint/cc_budget.py --update-baseline   # rewrite baseline
 """
 
@@ -28,10 +36,21 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_FILE = REPO_ROOT / "scripts" / "lint" / "cc_budget_baseline.json"
-DEFAULT_TARGET = REPO_ROOT / "src" / "rob_box_voice" / "rob_box_voice" / "dialogue_node.py"
+
+# Active packages whose modules are subject to R1. Paths are repo-relative
+# strings so they survive worktree moves and so baseline keys stay stable.
+_PACKAGE_ROOTS = (
+    "src/rob_box_voice/rob_box_voice",
+    "src/rob_box_supervisor/rob_box_supervisor",
+    "src/rob_box_harness/rob_box_harness",
+    "src/rob_box_mcp_tools/rob_box_mcp_tools",
+)
+DEFAULT_TARGETS: tuple[Path, ...] = tuple(REPO_ROOT / p for p in _PACKAGE_ROOTS)
 
 METHOD_LIMIT = 15  # ADR-0021 R1
 INIT_LIMIT = 20  # ADR-0021 R1, __init__ exemption
+
+_SKIP_DIR_NAMES = {"__pycache__", ".git"}
 
 _DECISION_NODES = (
     ast.If,
@@ -76,8 +95,34 @@ def _collect_functions(body: list[ast.stmt], owner: str = "") -> list[tuple[str,
 
 def measure_file(path: Path) -> dict[str, int]:
     """Map qualified function names -> cyclomatic complexity for one file."""
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    # utf-8-sig silently strips a leading BOM if present so we can lint files
+    # authored on Windows without choking. Valid Python (ASCII/UTF-8) is
+    # untouched, so this is a safe widening of the previous strict decoder.
+    tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
     return {name: cyclomatic_complexity(node) for name, node in _collect_functions(tree.body)}
+
+
+def _expand_targets(targets: list[Path]) -> list[Path]:
+    """Resolve a mix of files and package directories to a flat list of .py files.
+
+    Directories are walked recursively; ``__pycache__``/``.git`` are skipped.
+    Order is stable (sorted) so baseline keys and CI output stay reproducible.
+    """
+    resolved: list[Path] = []
+    for target in targets:
+        if target.is_file():
+            resolved.append(target)
+            continue
+        if not target.is_dir():
+            print(f"cc_budget: no such path: {target}")
+            sys.exit(2)
+        for path in sorted(target.rglob("*.py")):
+            if any(part in _SKIP_DIR_NAMES for part in path.parts):
+                continue
+            if path.name == "__init__.py":
+                continue
+            resolved.append(path)
+    return resolved
 
 
 def _limit_for(name: str) -> int:
@@ -168,11 +213,14 @@ def cmd_check(files: list[Path], baseline: dict) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "files",
+        "paths",
         nargs="*",
         type=Path,
-        default=[DEFAULT_TARGET],
-        help="Python files to scan (default: dialogue_node.py)",
+        default=list(DEFAULT_TARGETS),
+        help=(
+            "Python files or package directories to scan "
+            "(default: the four active packages under src/)"
+        ),
     )
     parser.add_argument(
         "--update-baseline",
@@ -182,11 +230,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-sha", default="", help="Override base commit SHA in baseline")
     args = parser.parse_args(argv)
 
-    files = [path if path.is_absolute() else REPO_ROOT / path for path in args.files]
-    for path in files:
-        if not path.exists():
-            print(f"cc_budget: no such file: {path}")
-            return 2
+    raw_targets = [path if path.is_absolute() else REPO_ROOT / path for path in args.paths]
+    files = _expand_targets(raw_targets)
+    if not files:
+        print("cc_budget: no Python files found under the given targets")
+        return 2
 
     if args.update_baseline:
         return cmd_update_baseline(files, args.base_sha)

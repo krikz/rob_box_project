@@ -1,12 +1,27 @@
 {
   "version": 1,
   "created": "2026-09-07",
-  "base_sha": "c0dace5ae482cae98c1536c6c1b0b2e5fe0ea78c",
+  "base_sha": "84be7a640b005c008092958694fc3e9b3c943fd1",
   "limits": {
     "method": 15,
     "init": 20
   },
   "exemptions": {
+    "src/rob_box_voice/rob_box_voice/audio_node.py": {
+      "AudioNode.check_vad_and_doa": 19
+    },
+    "src/rob_box_voice/rob_box_voice/core/dj_mode.py": {
+      "DJModeController._apply_enable_payload": 18
+    },
+    "src/rob_box_voice/rob_box_voice/core/music_guard.py": {
+      "MusicGuard.evaluate": 16
+    },
+    "src/rob_box_voice/rob_box_voice/core/music_stack_validation.py": {
+      "classify_sclang_log": 19
+    },
+    "src/rob_box_voice/rob_box_voice/core/sample_search.py": {
+      "search_renardo_samples": 31
+    },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py": {
       "DialogueNode._build_dynamic_system_context": 24,
       "DialogueNode._build_single_provider": 23,
@@ -16,6 +31,84 @@
       "DialogueNode._handle_result": 62,
       "DialogueNode._on_stt": 54,
       "DialogueNode._run_turn": 57
+    },
+    "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py": {
+      "build_pregen_task": 22
+    },
+    "src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py": {
+      "TaskScheduler.update": 26
+    },
+    "src/rob_box_voice/rob_box_voice/stt_fallback.py": {
+      "select_recognition": 18
+    },
+    "src/rob_box_voice/rob_box_voice/stt_node.py": {
+      "STTNode._process_audio": 24,
+      "STTNode._recognize_yandex_phase": 26
+    },
+    "src/rob_box_voice/rob_box_voice/tts_chunking.py": {
+      "split_text": 20
+    },
+    "src/rob_box_voice/rob_box_voice/tts_node.py": {
+      "TTSNode.__init__": 28,
+      "TTSNode._on_set_provider": 18,
+      "TTSNode._parse_ssml_attributes": 17,
+      "TTSNode._synthesize_and_play": 124,
+      "TTSNode._synthesize_silero": 23,
+      "TTSNode._synthesize_yandex": 18,
+      "TTSNode.dialogue_callback": 25
+    },
+    "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py": {
+      "AvatarSupervisor._build_operator_llm": 16,
+      "AvatarSupervisor._on_avatar_command": 17,
+      "AvatarSupervisor._on_preview_voice": 17,
+      "AvatarSupervisor._run_agent_sync": 19
+    },
+    "src/rob_box_harness/rob_box_harness/config.py": {
+      "_parse_tts": 17
+    },
+    "src/rob_box_harness/rob_box_harness/core/agent_core.py": {
+      "AgentCore._run_with_tools": 48,
+      "AgentCore.process_input": 23
+    },
+    "src/rob_box_harness/rob_box_harness/core/confirmation_policy.py": {
+      "ToolConfirmationPolicy.from_mapping": 16
+    },
+    "src/rob_box_harness/rob_box_harness/providers/minimax.py": {
+      "HarnessMiniMaxProvider.stream": 22
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/async_executor.py": {
+      "AsyncToolExecutor.execute_tools_parallel": 22
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/core/arranger.py": {
+      "spec_from_flat": 19
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/core/minimax_music_client.py": {
+      "MinimaxMusicClient.generate": 25
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/slice_authority.py": {
+      "ToolSliceAuthority.extended_with": 16,
+      "ToolSliceAuthority.from_mapping": 21
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/dialogue.py": {
+      "SpeakTextTool._split_sentences": 18,
+      "SpeakTextTool.execute": 22
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/mapping.py": {
+      "StartMappingTool.execute": 18
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/minimax_music.py": {
+      "GenSaveToLibraryTool.execute": 18
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py": {
+      "MusicManager.execute_code": 23,
+      "MusicManager.stop_all": 16,
+      "SetDjModeTool.execute": 18
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/sound.py": {
+      "GetSoundInfoTool.execute": 19
+    },
+    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/web_search.py": {
+      "SearchWebTool.execute": 18
     }
   }
 }
