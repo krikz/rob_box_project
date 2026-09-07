@@ -1,8 +1,8 @@
-# Proposal: ADR-0030 (ADR-0030: e2e stale-branch guard — false-positive rate и ремедиация)
+# Proposal: ADR-AF-0026 (ADR-AF-0026: recovery-card contract — обязательство закрыть parent)
 
 ## Why
 
-Imported from [docs/adr/0030-e2e-stale-branch-guard.md](docs/adr/0030-e2e-stale-branch-guard.md) for tracking in OpenSpec.
+Imported from [docs/adr/0026-recovery-card-contract.md](docs/adr/0026-recovery-card-contract.md) for tracking in OpenSpec.
 
 Status: see original ADR.
 

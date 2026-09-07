@@ -255,7 +255,7 @@ while IFS= read -r line; do
         if [ "$DRY_RUN" = "1" ]; then
             log "DRY   $cid WOULD ARCHIVE — $archive_reason title=$title"
         else
-            # Прямой SQL UPDATE — bypass worker-scope (см. ADR-0024).
+            # Прямой SQL UPDATE — bypass worker-scope (см. ADR-AF-0060).
             # Этот же row-update делает hermes_cli.kanban_db.archive_task.
             if arch_out="$(python3 "$_LIB_DIR_HERE/_cross_task_archive_sweeper_archive.py" \
                     "$KANBAN_DB" "$cid" 2>&1)"; then

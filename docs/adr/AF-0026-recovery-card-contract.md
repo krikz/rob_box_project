@@ -5,9 +5,9 @@
 | Статус | Accepted |
 | Дата | 2026-08-23 |
 | Автор | architect (Hermes Agent); ретро-карточка t_1dd950ff |
-| Контекст | Карточки t_507b0474 / t_976a5c0c — процесс-bag: recovery-worker полностью отрабатывает ретро и завершается, **но** исходный parent остаётся в `blocked`. ADR-0024 уже формализовал workaround для archive (cross-task-archive-sweeper); этот ADR формализует **обязательство** самого recovery-worker'а |
+| Контекст | Карточки t_507b0474 / t_976a5c0c — процесс-bag: recovery-worker полностью отрабатывает ретро и завершается, **но** исходный parent остаётся в `blocked`. ADR-AF-0060 уже формализовал workaround для archive (cross-task-archive-sweeper); этот ADR формализует **обязательство** самого recovery-worker'а |
 | Затрагивает | `CONTRIBUTING.md` (новая секция "Recovery cards"), skill `sdlc-review` (acceptance criterion), процессная ответственность worker'а |
-| Родители | ADR-0024 (cross-task-archive-sweeper — fallback для cron-sweep), ADR-0018 (честность) |
+| Родители | ADR-AF-0060 (cross-task-archive-sweeper — fallback для cron-sweep), ADR-0018 (честность) |
 | Связанные | t_507b0474 (это), t_976a5c0c (root cause — recovery t_43d5e94e, t_cf3d17a0), t_8c8c7c69 (earlier spike-skill issue), t_1dd950ff (этот архитектурный fix) |
 
 ## 1. Контекст и бизнес-проблема
@@ -63,11 +63,11 @@ Recovery-worker **обязан** до завершения собственно�
 **Механизм — CLI, не worker-tool.** Причина:
 
 - Worker-tools `kanban_complete` / `kanban_block` / `kanban_archive`
-  (`kanban_archive` вообще не существует как Hermes tool — см. ADR-0024)
+  (`kanban_archive` вообще не существует как Hermes tool — см. ADR-AF-0060)
   ограничены scope'ом текущего worker'а.
 - CLI-команды `hermes kanban {complete,block,archive}` — операторские,
   worker-lock не наследуется, scope-guard не применяется (raw-SQL bypass).
-- ADR-0024 cross-task-archive-sweeper — fallback для cron-cleanup,
+- ADR-AF-0060 cross-task-archive-sweeper — fallback для cron-cleanup,
   **не замена** worker-обязательству.
 
 ## 4. Альтернативы, которые НЕ были выбраны
@@ -76,9 +76,9 @@ Recovery-worker **обязан** до завершения собственно�
   Архитектурный change, cross-profile запрет, нужен accept от товарища
   Шифу и отдельный ADR. **out-of-scope** для этой карточки —
   архитектурная реформа владения, не процесс-fix.
-- **Оставить только sweeper (ADR-0024) как единственный механизм**.
+- **Оставить только sweeper (ADR-AF-0060) как единственный механизм**.
   Уже работает, но перекладывает cleanup на cron. Worker при этом
-  формально не несёт ответственности за parent'а — этот пробел ADR-0024
+  формально не несёт ответственности за parent'а — этот пробел ADR-AF-0060
   признаёт, но не закрывает.
 - **Worker-tool добавить без CLI bypass**. Невозможно без правки kernel.
 - **Делать recovery-card без `parents=`**. Теряется декларативная связь,
@@ -91,7 +91,7 @@ Recovery-worker **обязан** до завершения собственно�
 2. **Skill `sdlc-review`** (`~/.hermes/profiles/devops/skills/devops/sdlc-review/SKILL.md`) —
    новый acceptance criterion: parent state MUST change до recovery →
    done; evidence обязан присутствовать в recovery-handoff.
-3. **Сам процесс не меняется** — sweeper (ADR-0024) остаётся
+3. **Сам процесс не меняется** — sweeper (ADR-AF-0060) остаётся
    safety-net для случаев, когда worker этого не сделал.
 
 ## 6. Контрактный текст для CONTRIBUTING.md
@@ -147,7 +147,7 @@ When this skill is used by a recovery-card worker:
 - ❌ Не правим hermes-agent sources (`kanban_complete --allow-cross-task`
   или `kanban_archive` tool) — out-of-scope, нужен отдельный
   архитектурный review.
-- ❌ Не удаляем `cross-task-archive-sweeper.sh` (ADR-0024) — это
+- ❌ Не удаляем `cross-task-archive-sweeper.sh` (ADR-AF-0060) — это
   safety-net для случаев, когда worker-обязательство не выполнено.
 - 🔄 Если в kernel добавят `kanban_archive` tool — ADR-AF-0026 §3 можно
   упростить, разрешив worker-tool archive вместо CLI. Зависит от

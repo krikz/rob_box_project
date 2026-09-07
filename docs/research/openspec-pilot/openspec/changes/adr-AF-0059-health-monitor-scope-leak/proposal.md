@@ -1,8 +1,8 @@
-# Proposal: ADR-0028 (ADR-0028: Пять улучшений harness — subagent-review, контекст от Шифу, домен-маппинг, декомпозиция, DRY)
+# Proposal: ADR-AF-0059 (ADR-AF-0059: health_monitor cross-container scope leak — stop-gap dedup exclusion, defer container-scoped refactor)
 
 ## Why
 
-Imported from [docs/adr/0028-harness-5-improvements.md](docs/adr/0028-harness-5-improvements.md) for tracking in OpenSpec.
+Imported from [docs/adr/0016-health-monitor-scope-leak.md](docs/adr/0016-health-monitor-scope-leak.md) for tracking in OpenSpec.
 
 Status: see original ADR.
 

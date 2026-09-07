@@ -44,11 +44,11 @@
 | 6 | «декомпозиция больших задач» | Частично (subtasks в GitHub) | Нет явного чеклиста декомпозиции в skill |
 | 7a | «дешёвые автопроверки» | ОК | `agent-flow-completion-check.sh`, ADR-0022 §4.3 GATE-3 |
 | 7b | «independent subagent-review без контекста реализации» | **Нет** | `find scripts/agent_flow -name '*review*'` → 0 hits. `find .agents/skills -name 'review*'` → `requesting-code-review/SKILL.md`, но это инструкция **как попросить** review у человека, не как его автоматизировать между воркерами |
-| 7c | «архитектурное соответствие» | Частично (CI gate + ADR-0024 verdict) | `scripts/agent_flow/agent-flow-merge-gate.sh` — но без отдельной роли `architect-reviewer` |
+| 7c | «архитектурное соответствие» | Частично (CI gate + ADR-AF-0024 verdict) | `scripts/agent_flow/agent-flow-merge-gate.sh` — но без отдельной роли `architect-reviewer` |
 | 8 | «та же модель не ревьюит свой код» | Микс | Worker ≠ reviewer **в одном процессе**, но `kanban complete` сейчас не запускает отдельного subagent |
 | 9 | «browser-based e2e через Chrome DevTools MCP» | **Нет** | `find . -name 'playwright*' -o -name 'chrome-devtools*'` → 0 hits |
 | 10 | «Postman/Playwright пропускают нюансы» | **Нет** | см. #9 |
-| 11 | «качество кода не читают построчно» | Частично (skills) | Architect-verdict проверяет **дизайн** через files-list (ADR-0024 §3), не diff |
+| 11 | «качество кода не читают построчно» | Частично (skills) | Architect-verdict проверяет **дизайн** через files-list (ADR-AF-0024 §3), не diff |
 | 12 | «RAG/wiki/spec → вайпкодинг» | ОК | Нет RAG-инфраструктуры |
 | 13 | «рабочий стек: Superpowers + Ponytail + code index + Chrome DevTools MCP» | Частично | Есть skills, нет browser-MCP |
 | 14 | «скилы под проект» | ОК | `.agents/skills/` обширны |
@@ -167,7 +167,7 @@ body при создании kanban-карточки.
 | voice_pipeline | `src/rob_box_voice/`, `dialogue_node`, `tts_node`, `stt_node` | ADR-0003, ADR-0004, ADR-0009, #1506, #1398 |
 | agent_flow_process | `scripts/agent_flow/`, `docs/adr/0014-0026` | ADR-0014, 0018, 0022, 0025, 0026 |
 | ros2_navigation | `src/rob_box_navigation/`, URDF | ADR-0010, 0012 |
-| voice_browser_console | `.github/e2e/`, voice_assistant web | #1506, ADR-0024 |
+| voice_browser_console | `.github/e2e/`, voice_assistant web | #1506, ADR-AF-0024 |
 | docker_registry | `docker/`, registry 249 | ADR-0025, ADR-0017 |
 
 **Trade-off:**
@@ -356,7 +356,7 @@ incremental verification.
 - ADR-0014 (issue closure на merge)
 - ADR-0018 (честный FAIL лучше красивого PASS)
 - ADR-0022 (GATE-1/2/3)
-- ADR-0024 (architect verdict SOT)
+- ADR-AF-0024 (architect verdict SOT)
 - ADR-0025 (stale-PR detection)
 - ADR-0026 (recovery-card contract, готовится отдельной карточкой t_1dd950ff)
 - issue #1579 (этот ADR)

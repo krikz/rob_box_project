@@ -388,7 +388,7 @@ jobs:
           RID="${{ github.run_id }}"
           LOCAL_ART_DIR="/tmp/e2e_artifacts_${RID}"
           mkdir -p "$LOCAL_ART_DIR"
-          # ADR-0024 (harness-verdict-sot): сначала ищем канонический каталог
+          # ADR-AF-0024 (harness-verdict-sot): сначала ищем канонический каталог
           # текущего run'а /tmp/e2e_v2_<RID>. Харнесс пишет OUT_DIR по GITHUB_RUN_ID
           # (issue #1353), и этот путь — single source of truth для verdict.txt.
           # Только если его нет (harness упал до ensure_outdir), берём самый свежий
@@ -471,13 +471,13 @@ jobs:
         run: |
           RID="${{ github.run_id }}"
           LOG="/tmp/voice_e2e_${RID}.log"
-          # ADR-0024 (harness-verdict-sot): источник истины — ВЫВОД ХАРНЕССА.
+          # ADR-AF-0024 (harness-verdict-sot): источник истины — ВЫВОД ХАРНЕССА.
           # Шаг "Verdict from atomic harness" сохранил stdout харнесса
           # (e2e_atomic_out.log с 249) в /tmp/e2e_verdict.log. Харнесс сам
           # пишет verdict-маркеры в stdout (E2E_REACTION_OK / E2E_NO_REACTION
           # / E2E_FEATURE_FAIL и т.п.) И в OUT_DIR/verdict.txt на 249. Один
           # из двух каналов может пострадать от tee-race / ssh-флапа; используем
-          # ОБА и приоритизируем verdict.txt (single source of truth, см. ADR-0024).
+          # ОБА и приоритизируем verdict.txt (single source of truth, см. ADR-AF-0024).
           VERDICT_LOG="/tmp/e2e_verdict.log"
           # verdict.txt лежит в /tmp/e2e_v2_<RID>/verdict.txt на 249 — там же,
           # где его положил ensure_outdir в harness (e2e_voice_test.sh:1054 / :1100).
@@ -497,7 +497,7 @@ jobs:
               if [ -s "$VERDICT_LOG" ]; then
                 # Tee-race: stdout-tee записался, но неполный (обрезан/буферизован).
                 # Конкатим harness verdict.txt в конец, чтобы маркеры E2E_* нашлись.
-                printf '\n--- VERDICT_PULL (ADR-0024 fallback, %s bytes) ---\n' "$V_BYTES" >> "$VERDICT_LOG"
+                printf '\n--- VERDICT_PULL (ADR-AF-0024 fallback, %s bytes) ---\n' "$V_BYTES" >> "$VERDICT_LOG"
                 cat "$VERDICT_TXT_LOCAL" >> "$VERDICT_LOG"
               else
                 echo "WARN: $VERDICT_LOG пустой/потерян → используем verdict.txt напрямую"

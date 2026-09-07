@@ -2,7 +2,7 @@
 # ============================================================================
 # validate_adr_namespace.sh — pre-PR check на ADR namespace collision.
 #
-# Принцип (ADR-0030, ретро 01.09 t_debcb647):
+# Принцип (ADR-AF-0030, ретро 01.09 t_debcb647):
 #   ADR-номера (NNNN в `docs/adr/NNNN-*.md`) — global monotonic counter,
 #   unique в origin/develop. Любой новый файл с занятым номером ломает
 #   cross-references и ADR-First поиск. Merge-gate уже ловит коллизию
@@ -161,7 +161,7 @@ NEXT_FREE_PADDED="$(printf '%04d' "$NEXT_FREE" 2>/dev/null || echo "$NEXT_FREE")
     echo ""
     echo "  Что делать:"
     echo "    1. Переименуй файл(ы) в collisions → $NEXT_FREE_PADDED-<новый-slug>.md"
-    echo "    2. Поправь внутренний H1 «# ADR-NNNN: ...» — он обязан совпадать с именем файла (ADR-0030 §2.1)."
+    echo "    2. Поправь внутренний H1 «# ADR-NNNN: ...» — он обязан совпадать с именем файла (ADR-AF-0030 §2.1)."
     echo "    3. Перепрогон: bash scripts/agent_flow/validate_adr_namespace.sh"
     echo ""
     echo "  Если $NEXT_FREE_PADDED занят И в $REF (race condition: параллельный PR с тем же номером) —"

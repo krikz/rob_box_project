@@ -48,7 +48,7 @@ $ git log --oneline 85ca425b..origin/develop --no-merges | grep -v '^.\{8\} ci:'
 | 1 | Сценарий `voice_core_suite_v1.json` валиден (структура, 11 шагов, voice whitelist, expect∈{cycle,backlog}, wake-word правила) | ✅ PASS | pre-flight test `test_voice_core_suite_vad_max.sh` (PR #1556, merged 23.08 13:32, commit `25085f45`) — **75/75 checks PASSED** |
 | 2 | Acceptance `voice_core_acceptance_v1.json` пересекается с шагами | ✅ PASS | pre-flight test (acceptance cross-check: `set_voice` покрыт mv01+mv03, `execute_music_code` = dj01, `stop_music` = dj02) |
 | 3 | ADR-0022 GATE-1 (aggregate AND-semantics + per-step) — корректно | ✅ APPROVED | verdict v2 §3 + ADR-0022 §4.6 (window semantics fix `db84ff59`) |
-| 4 | ADR-0024 (music-aware intent priority gate) — accepted в develop | ✅ ACCEPTED | `docs/adr/0024-harness-verdict-sot.md` — статус Accepted, 22.08 |
+| 4 | ADR-0024 (music-aware intent priority gate) — accepted в develop | ✅ ACCEPTED | `docs/adr/0024-music-aware-intent-priority-gate.md` — статус Accepted, 22.08 |
 | 5 | dj02_stop_music защищён ADR-0024 (Nav2-коллизия) | ✅ COVERED | verdict v2 §3.1 «архитектурное замечание» — dj02 chain-failure валиден и наблюдаем |
 | 6 | Pre-flight regression suite (75 negative-checks: VAD max, cycle wake-word, backlog no-wake) | ✅ COMMITTED | PR #1556 — шаблон для будущих CI-проверок |
 
@@ -159,7 +159,7 @@ STT injection через `/voice/stt/result` (доказано в
 - `gh pr view 1559` = OPEN, MERGEABLE, CI 8/8 (verdict v3.1 + ADR-0026)
 - `docs/analysis/voice-core-suite-v1-architecture-verdict-2026-08-23.md` = 368 строк (verdict v2)
 - `docs/adr/0022-process-e2e-done-gates.md` §4.6 = window semantics (addendum `db84ff59`)
-- `docs/adr/0024-harness-verdict-sot.md` = status **Accepted**, 22.08
+- `docs/adr/0024-music-aware-intent-priority-gate.md` = status **Accepted**, 22.08
 - **`docs/adr/0026-voice-e2e-topic-injection-test-path.md` = status Proposed, 23.08 (этот PR)**
 - `scripts/agent_flow/tests/test_voice_core_suite_vad_max.sh` = 75/75 PASS (PR #1556)
 - Issue #1506 comment-thread: Шифу 22.08 11:19/12:31, 23.08 08:15/17:15 — hardware-blockers, не код

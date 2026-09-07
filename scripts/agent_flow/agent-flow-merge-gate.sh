@@ -1014,7 +1014,7 @@ for (fname, sha), prs in sorted(seen.items()):
     return 0
 }
 
-# --- competing-PRs block scan (ADR-0052 / ретро t_50a18fa9 / issue #2018) ---
+# --- competing-PRs block scan (ADR-AF-0062 / ретро t_50a18fa9 / issue #2018) ---
 # Сценарий: race-window между двумя worker'ами ПРОПУСТИЛ pre-create guard
 # (например, обе worker'ы стартовали ДО применения G10a, или guard не сработал
 # из-за network-glitch). Теперь оба PR открыты, оба правит один и тот же файл
@@ -1122,7 +1122,7 @@ for a, b, fa, fb in emitted:
     print("%d\t%s\t%d\t%s" % (a, fa, b, fb))
 ' 2>/dev/null | while IFS=$'\t' read -r _pr_a _fa _pr_b _fb; do
         [ -z "$_pr_a" ] && continue
-        log "competing-prs-block: PR #${_pr_a} и PR #${_pr_b} правят оба файл ${_fa} / ${_fb} (ретро t_50a18fa9, ADR-0052)"
+        log "competing-prs-block: PR #${_pr_a} и PR #${_pr_b} правят оба файл ${_fa} / ${_fb} (ретро t_50a18fa9, ADR-AF-0062)"
         if [ "$DRY_RUN" = "true" ]; then
             log "DRY-RUN would: add label ${COMPETING_PRS_BLOCKED_LABEL} to PR #${_pr_a} и #${_pr_b}, comment with Шифу instructions"
             continue
@@ -1136,7 +1136,7 @@ for a, b, fa, fb in emitted:
                 --jq '[.[] | select(.body | contains("competing PR detected"))] | length' 2>/dev/null || echo 0)"
             if [ "${_dup_cnt:-0}" -eq 0 ]; then
                 gh pr comment "$_pr" --repo "$GH_REPO" --body \
-                    "🚨 **competing PR detected** (merge-gate, ретро t_50a18fa9, ADR-0052)
+                    "🚨 **competing PR detected** (merge-gate, ретро t_50a18fa9, ADR-AF-0062)
 
 PR #${_pr} правит файл \`${_own_f}\`, который также правится в уже открытом PR #${_other} (файл \`${_other_f}\`). Это fan-out race — два worker'а независимо стартанули фикс одного и того же defect в develop.
 
@@ -4842,7 +4842,7 @@ needs_review_conflict_reconcile_all
 # Дубль-файл scan (ретро 15.08 t_20383d32): тот же паттерн вызова, что у
 # stale_branch_scan_all — основной путь + no-issues путь сходятся сюда.
 duplicate_file_scan_all
-# Competing-PRs block scan (ретро 07.09 t_50a18fa9 / ADR-0052 / issue #2018):
+# Competing-PRs block scan (ретро 07.09 t_50a18fa9 / ADR-AF-0062 / issue #2018):
 # backstop на fan-out race — два worker'а стартанули фикс одного и того же
 # defect, G10a pre-create guard в triage пропустил (race-window 12с между
 # двумя gh-проверками). Ловит перекрытие на уровне file:line и блокирует

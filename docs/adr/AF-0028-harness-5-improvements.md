@@ -12,10 +12,10 @@
 
 ## 1. Бизнес-проблема
 
-У нас есть зрелый harness (ADR-0014, ADR-0022, ADR-0024, ADR-0025, ADR-0026), но
+У нас есть зрелый harness (ADR-0014, ADR-0022, ADR-AF-0024, ADR-0025, ADR-0026), но
 есть 5 устойчивых проблем, которые он не решает:
 
-1. **Worker = reviewer.** Сейчас архитектурный вердикт (ADR-0024) делает
+1. **Worker = reviewer.** Сейчас архитектурный вердикт (ADR-AF-0024) делает
    architect-profile через `kanban_request_review`, но это **тот же класс
    моделей**, что и воркер, и он видит полный transcript реализации. ADR-0022
    R5 («лгущий воркер, archive как done») показывает, что такая схема
@@ -97,7 +97,7 @@ Subagent **НЕ получает**:
 
 - Юнит-тест: `scripts/agent_flow/tests/test_review_subagent_red_flags.sh` —
   синтетический PR с 3 типичными багами (e2e-done без raw-evidence,
-  принятый acceptance не покрыт тестом, нарушение ADR-0024 verdict-rule);
+  принятый acceptance не покрыт тестом, нарушение ADR-AF-0024 verdict-rule);
   reviewer должен вернуть `REQUEST_CHANGES` со всеми тремя.
 - Метрика через 2 недели: `false_positive_rate` (APPROVE → red на e2e) и
   `false_negative_rate` (REQUEST_CHANGES → superseded by Шифу direct merge).
@@ -156,7 +156,7 @@ Subagent **НЕ получает**:
 | `voice_pipeline` | `src/rob_box_voice/`, `dialogue_node`, `tts_node`, `stt_node`, `harness_node` | ADR-0003, 0004, 0009, 0024; #1506, #1398 |
 | `agent_flow_process` | `scripts/agent_flow/`, `docs/adr/0014-0028`, `.agents/skills/` | ADR-0014, 0018, 0022, 0025, 0026; #1579, #1553, #1560, #1571 |
 | `ros2_navigation` | `src/rob_box_navigation/`, `src/rob_box_perception/`, URDF | ADR-0010, 0012 |
-| `voice_browser_console` | `.github/e2e/`, voice_assistant web, admin panel | #1506, ADR-0024 |
+| `voice_browser_console` | `.github/e2e/`, voice_assistant web, admin panel | #1506, ADR-AF-0024 |
 | `docker_registry` | `docker/`, registry 249, build infra | ADR-0025, 0017 |
 
 `SKILL.md` описывает, как воркер использует INDEX: «принял карточку →
@@ -371,7 +371,7 @@ REQUEST_CHANGES» в первую неделю. Правильный rollout: sh
 - ADR-0014 (issue closure на merge)
 - ADR-0018 (честный FAIL лучше красивого PASS)
 - ADR-0022 (GATE-1/2/3)
-- ADR-0024 (architect verdict SOT)
+- ADR-AF-0024 (architect verdict SOT)
 - ADR-0025 (stale-PR detection)
 - ADR-0026 (recovery-card contract)
 - ADR-0027 (отменён — wip-черновик в другой ветке)

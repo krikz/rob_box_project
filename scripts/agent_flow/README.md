@@ -313,7 +313,7 @@ bash scripts/agent_flow/tests/test_validate_honesty.sh
 
 ### `validate_adr_namespace.sh` — pre-PR check на ADR namespace collision (ретро 01.09 t_debcb647)
 
-Дополняет `validate_honesty.sh` функцией проверки ADR-нумерации (ADR-0030).
+Дополняет `validate_honesty.sh` функцией проверки ADR-нумерации (ADR-AF-0030).
 Сравнивает номера **новых** ADR-файлов в diff `origin/develop...HEAD` с
 **существующими** номерами в `origin/develop docs/adr/`. Если номер занят
 → exit 1 + actionable сообщение со списком коллизий, slug'ом файла в

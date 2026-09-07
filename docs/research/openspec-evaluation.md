@@ -20,7 +20,7 @@
   устоявшийся, перенос создаст шум без выигрыша.
 - **Рекомендую** новое поведение (changes, specs, design, tasks) писать
   в `openspec/changes/`, legacy ADR оставить как есть в `docs/adr/`.
-- ADR-0030 (нумерация) совместима: `openspec/changes/<name>/` не
+- ADR-AF-0030 (нумерация) совместима: `openspec/changes/<name>/` не
   конкурирует с `docs/adr/NNNN-*.md` numbering.
 - **Ничего не ломаем в текущей работе** — это только research.
 
@@ -175,12 +175,12 @@ Available schemas:
 `npx @fission-ai/openspec validate ...` через `package.json` (но
 `npx` для global-пакета медленнее).
 
-### 4.3 ADR-нумерация (ADR-0030)
+### 4.3 ADR-нумерация (ADR-AF-0030)
 
 **Не конфликтует.** OpenSpec использует `openspec/changes/<kebab-name>/`
 как папки, ADR используют `docs/adr/NNNN-<slug>.md` как файлы.
 Разные namespace, разные правила нумерации (kebab-case для change,
-NNN для ADR). Pre-merge guard ADR-0030 продолжает работать
+NNN для ADR). Pre-merge guard ADR-AF-0030 продолжает работать
 независимо.
 
 ### 4.4 CONTRIBUTING.md / AGENTS.md
@@ -206,7 +206,7 @@ OpenSpec "built for brownfield" — подходит. **Если** в будущ
 
 | Категория | Где живёт | Кто пишет | Кто валидирует |
 |---|---|---|---|
-| **Архитектурное решение (WHY)** | `docs/adr/NNNN-<slug>.md` | architect / senior | merge-gate (ADR-0030) |
+| **Архитектурное решение (WHY)** | `docs/adr/NNNN-<slug>.md` | architect / senior | merge-gate (ADR-AF-0030) |
 | **Новое поведение / требование** | `openspec/changes/<name>/specs/<cap>/spec.md` | worker / agent-flow | `openspec validate --strict` |
 | **Дизайн новой фичи** | `openspec/changes/<name>/design.md` | worker / agent-flow | `openspec validate --strict` |
 | **Чеклист имплементации** | `openspec/changes/<name>/tasks.md` | worker / agent-flow | `openspec validate --strict` (для pre-apply), `openspec archive` (после) |
@@ -239,7 +239,7 @@ OpenSpec "built for brownfield" — подходит. **Если** в будущ
 ### 5.3 NO-GO (отвергнут)
 
 Если решите не внедрять — **ничего не делаем**. Текущий ADR-формат
-работает, ADR-0030 формализовал нумерацию, проблема "нет формата
+работает, ADR-AF-0030 формализовал нумерацию, проблема "нет формата
 proposal → specs → design → tasks" не критична (recovery-card уже
 пробрасывает contract, остальные ADR'ы описывают решения по мере
 надобности).
@@ -307,7 +307,7 @@ openspec archive <name>
 | merge-gate pre-merge | ✅ | ~5 строк в `agent-flow-merge-gate.sh` |
 | 30+ AI tools | ✅ | `--tools all` при init |
 | GitHub Actions CI | ✅ | один новый step в `.github/workflows/` |
-| ADR-0030 нумерация | ✅ | нет пересечения |
+| ADR-AF-0030 нумерация | ✅ | нет пересечения |
 | Recovery-card (ADR-0026) | ⚠️ | дополнить CONTRACT для openspec changes |
 | CONTRIBUTING.md | ⚠️ | добавить секцию "OpenSpec changes" |
 | AGENTS.md | ⚠️ | добавить инструкцию про `external_dirs` |
@@ -350,7 +350,7 @@ openspec archive <name>
   или требование.
 - ADR-0026 (recovery-card-contract) — нужно дополнить для OpenSpec
   changes (recovery-worker должен проверить change folder).
-- ADR-0030 (adr-numbering-sot) — продолжает действовать для
+- ADR-AF-0030 (adr-numbering-sot) — продолжает действовать для
   legacy `docs/adr/`, OpenSpec не конфликтует.
 - `docs/design/AGENT_FLOW_PROPOSAL.md` — OpenSpec встраивается в
   agent-flow как опциональный шаг "spec phase" перед "tasks phase".

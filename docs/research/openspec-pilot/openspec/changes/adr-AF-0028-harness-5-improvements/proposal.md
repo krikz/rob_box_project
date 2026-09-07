@@ -1,8 +1,8 @@
-# Proposal: ADR-0032 (ADR-0032: agent-flow-triage dedup-guard G9 — intra-tick + race-window)
+# Proposal: ADR-AF-0028 (ADR-AF-0028: Пять улучшений harness — subagent-review, контекст от Шифу, домен-маппинг, декомпозиция, DRY)
 
 ## Why
 
-Imported from [docs/adr/0032-triage-dedup-guard.md](docs/adr/0032-triage-dedup-guard.md) for tracking in OpenSpec.
+Imported from [docs/adr/0028-harness-5-improvements.md](docs/adr/0028-harness-5-improvements.md) for tracking in OpenSpec.
 
 Status: see original ADR.
 

@@ -1,8 +1,8 @@
-# Proposal: ADR-0024 (ADR-0024: `OUT_DIR/verdict.txt` — single source of truth для harness verdict (pull, не tee-race))
+# Proposal: ADR-AF-0016 (ADR-AF-0016: .ОТКЛОНЕНО (пустое)` — известный шум STT, исключён из deploy-problem отчёта)
 
 ## Why
 
-Imported from [docs/adr/0024-harness-verdict-sot.md](docs/adr/0024-harness-verdict-sot.md) for tracking in OpenSpec.
+Imported from [docs/adr/0016-stt-empty-rejection-known-noise.md](docs/adr/0016-stt-empty-rejection-known-noise.md) for tracking in OpenSpec.
 
 Status: see original ADR.
 

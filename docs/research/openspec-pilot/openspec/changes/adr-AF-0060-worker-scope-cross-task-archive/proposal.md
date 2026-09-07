@@ -1,8 +1,8 @@
-# Proposal: ADR-0030 (ADR-0030: ADR-нумерация — single source of truth, pre-merge guard, ручной коммит запрещён)
+# Proposal: ADR-AF-0060 (ADR-AF-0060: cross-task archive sweeper — workaround для kernel worker-scope-limit)
 
 ## Why
 
-Imported from [docs/adr/0030-adr-numbering-sot.md](docs/adr/0030-adr-numbering-sot.md) for tracking in OpenSpec.
+Imported from [docs/adr/0024-worker-scope-cross-task-archive.md](docs/adr/0024-worker-scope-cross-task-archive.md) for tracking in OpenSpec.
 
 Status: see original ADR.
 

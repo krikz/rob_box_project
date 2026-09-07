@@ -1,8 +1,8 @@
-# Proposal: ADR-0026 (ADR-0026: recovery-card contract — обязательство закрыть parent)
+# Proposal: ADR-AF-0024 (ADR-AF-0024: .OUT_DIR/verdict.txt` — single source of truth для harness verdict (pull, не tee-race))
 
 ## Why
 
-Imported from [docs/adr/0026-recovery-card-contract.md](docs/adr/0026-recovery-card-contract.md) for tracking in OpenSpec.
+Imported from [docs/adr/0024-harness-verdict-sot.md](docs/adr/0024-harness-verdict-sot.md) for tracking in OpenSpec.
 
 Status: see original ADR.
 

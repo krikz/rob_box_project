@@ -1,8 +1,8 @@
-# Proposal: ADR-0024 (ADR-0024: cross-task archive sweeper — workaround для kernel worker-scope-limit)
+# Proposal: ADR-AF-0032 (ADR-AF-0032: agent-flow-triage dedup-guard G9 — intra-tick + race-window)
 
 ## Why
 
-Imported from [docs/adr/0024-worker-scope-cross-task-archive.md](docs/adr/0024-worker-scope-cross-task-archive.md) for tracking in OpenSpec.
+Imported from [docs/adr/0032-triage-dedup-guard.md](docs/adr/0032-triage-dedup-guard.md) for tracking in OpenSpec.
 
 Status: see original ADR.
 

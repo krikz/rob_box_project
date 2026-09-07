@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# test_merge_gate_competing_prs.sh — ретро 07.09 t_50a18fa9 / ADR-0052 acceptance tests
+# test_merge_gate_competing_prs.sh — ретро 07.09 t_50a18fa9 / ADR-AF-0062 acceptance tests
 #
 # Verifies the competing-PRs block guard in agent-flow-merge-gate.sh:
 #   Сценарий: race-window между двумя worker'ами ПРОПУСТИЛ pre-create guard

@@ -1,8 +1,8 @@
-# Proposal: ADR-0016 (ADR-0016: health_monitor cross-container scope leak — stop-gap dedup exclusion, defer container-scoped refactor)
+# Proposal: ADR-AF-0030 (ADR-AF-0030: ADR-нумерация — single source of truth, pre-merge guard, ручной коммит запрещён)
 
 ## Why
 
-Imported from [docs/adr/0016-health-monitor-scope-leak.md](docs/adr/0016-health-monitor-scope-leak.md) for tracking in OpenSpec.
+Imported from [docs/adr/0030-adr-numbering-sot.md](docs/adr/0030-adr-numbering-sot.md) for tracking in OpenSpec.
 
 Status: see original ADR.
 

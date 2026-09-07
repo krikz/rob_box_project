@@ -560,7 +560,7 @@ def maybe_re_evaluate(speaker: SpeakerProfile, recent_messages: list[str], now: 
 Это **research**-документ, не ADR. По результатам обсуждения с Шифу
 — либо:
 - превращаем в ADR (формат `NNNN-voice-epithet-design.md` в
-  `docs/adr/`, по правилам ADR-0030 — следующий свободный номер),
+  `docs/adr/`, по правилам ADR-AF-0030 — следующий свободный номер),
 - либо оставляем как `docs/research/` и архивируем после согласования
   дизайна.
 

@@ -1,8 +1,8 @@
-# Proposal: ADR-0016 (ADR-0016: `ОТКЛОНЕНО (пустое)` — известный шум STT, исключён из deploy-problem отчёта)
+# Proposal: ADR-AF-0061 (ADR-AF-0061: e2e stale-branch guard — false-positive rate и ремедиация)
 
 ## Why
 
-Imported from [docs/adr/0016-stt-empty-rejection-known-noise.md](docs/adr/0016-stt-empty-rejection-known-noise.md) for tracking in OpenSpec.
+Imported from [docs/adr/0030-e2e-stale-branch-guard.md](docs/adr/0030-e2e-stale-branch-guard.md) for tracking in OpenSpec.
 
 Status: see original ADR.
 

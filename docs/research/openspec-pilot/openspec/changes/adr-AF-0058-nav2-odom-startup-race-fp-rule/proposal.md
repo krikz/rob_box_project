@@ -1,4 +1,4 @@
-# Proposal: ADR-0016 (ADR-0016: Nav2 critical_log "frame odom does not exist" — startup race + stale detector FP rule)
+# Proposal: ADR-AF-0058 (ADR-AF-0058: Nav2 critical_log "frame odom does not exist" — startup race + stale detector FP rule)
 
 ## Why
 

@@ -168,7 +168,7 @@ EXPECTED=(
     # `gh pr create` и его terminal-guard --body flag). Идемпотентен:
     # если PR для head+base уже OPEN — возвращает его номер.
     gh-pr-create-via-gh-api.sh
-    # Cross-task archive sweeper (ADR-0024 / ретро 22.08 t_d9b4c600): watchdog,
+    # Cross-task archive sweeper (ADR-AF-0060 / ретро 22.08 t_d9b4c600): watchdog,
     # архивирующий blocked-карточки devops после успешного PR/issue.
     # Зависит от python3 helper'ов _cross_task_archive_sweeper_{scan,archive}.py
     # (должны лежать рядом — install.sh раскладывает только .sh, поэтому
@@ -231,7 +231,7 @@ EXPECTED=(
     # kanban-retro-create.sh (дедуп по key). Регистрация cron-job —
     # в ensure_nightly_review_cron ниже.
     agent-flow-nightly-review.sh
-    # Decomposed-children wake-up watchdog (ADR-0052, nightly-review
+    # Decomposed-children wake-up watchdog (ADR-AF-0052, nightly-review
     # t_bfd19ffb): no-agent job, каждые 4ч сканирует task_events.kind=
     # 'decomposed' и для детей со started_at=NULL, status ∈ {todo,triage},
     # decomposed >24ч назад — пишет ОДИН marker-коммент + priority += 1
@@ -871,8 +871,8 @@ ensure_nightly_review_cron() {
 ensure_nightly_review_cron
 
 echo
-echo "==> Ensure cron job registration: decomposed-children wake-up watchdog (ADR-0052, ретро t_bfd19ffb)"
-# Проблема (ADR-0052 §1.1): декомпозиция эпика через kanban create оставляет
+echo "==> Ensure cron job registration: decomposed-children wake-up watchdog (ADR-AF-0052, ретро t_bfd19ffb)"
+# Проблема (ADR-AF-0052 §1.1): декомпозиция эпика через kanban create оставляет
 # детей со started_at=NULL, status=todo/triage, и dispatcher их не поднимает
 # (17/20 последних decomposed-рутов не имеют записей в task_links — системный
 # баг). Эпики висят мёртвым грузом (232ч на AV-11, 100ч на AV-27), Шифу
@@ -886,7 +886,7 @@ echo "==> Ensure cron job registration: decomposed-children wake-up watchdog (AD
 # marker-коммент в task_comments (idempotent через today_start_utc) и
 # делает priority += 1 через прямой UPDATE.
 ensure_decomposed_watchdog_cron() {
-    ensure_cron_job devops "Agent Flow Decomposed Watchdog (ADR-0052)" "agent-flow-decomposed-watchdog.sh" "every 4h" interval
+    ensure_cron_job devops "Agent Flow Decomposed Watchdog (ADR-AF-0052)" "agent-flow-decomposed-watchdog.sh" "every 4h" interval
 }
 ensure_decomposed_watchdog_cron
 
