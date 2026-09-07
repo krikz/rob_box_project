@@ -178,7 +178,12 @@ class TestExecuteAcquisitionCommands(unittest.TestCase):
 
 
 class TestExecuteVoiceMode(unittest.TestCase):
-    """SET_VOICE_MODE → локально через :py:meth:`_apply_voice_mode`."""
+    """SET_VOICE_MODE → локально через :py:meth:`_apply_voice_mode`.
+
+    После удаления ``voice_input_mode`` (ADR-0054 §6.7) legacy-контракт
+    маппит ``respeaker`` → ``resume``, ``off`` → ``pause``. Остальные
+    значения (quest_*, etc) — отвергаются как ``voice_mode_deprecated``.
+    """
 
     def setUp(self) -> None:
         self.node = AvatarSupervisor()
@@ -187,21 +192,58 @@ class TestExecuteVoiceMode(unittest.TestCase):
         self.node.destroy_node()
 
     def test_set_voice_mode_active_applied(self) -> None:
+        """``respeaker`` в active → applied=true (publish на /dialogue/control)."""
         self.node._mode = "active"
-        self.node._set_dialogue_param = MagicMock()
-        cmd = _make_command(kind=KIND_SET_VOICE_MODE, voice_mode="quest_ttts")
+        # Spy publish: applied=True → publish должен сработать.
+        self.node._publish_dialogue_control = MagicMock(return_value=True)
+        cmd = _make_command(kind=KIND_SET_VOICE_MODE, voice_mode="respeaker")
         resp = self.node.execute(cmd)
         self.assertTrue(resp.accepted)
         self.assertTrue(resp.applied)
         self.assertEqual(resp.reason, "applied")
-        self.assertEqual(resp.actual_mode, "quest_ttts")
+        self.assertEqual(resp.actual_mode, "respeaker")
+        # Publish вызван с action=resume (respeaker→resume mapping).
+        self.node._publish_dialogue_control.assert_called_once()
+        args, kwargs = self.node._publish_dialogue_control.call_args
+        # Сигнатура ``_publish_dialogue_control(action, reason="")`` —
+        # вызов внутри supervisor через keyword arg ``reason=...``, поэтому
+        # action приходит позиционно (args[0]), reason — в kwargs.
+        self.assertEqual(args[0], "resume")
+        self.assertIn("respeaker", kwargs.get("reason", ""))
 
     def test_set_voice_mode_monitor_rejected_monitor_reason(self) -> None:
-        cmd = _make_command(kind=KIND_SET_VOICE_MODE, voice_mode="quest_ttts")
+        """monitor-режим → reason=MONITOR_MODE_REASON (S12)."""
+        # mode=monitor по умолчанию
+        cmd = _make_command(kind=KIND_SET_VOICE_MODE, voice_mode="respeaker")
         resp = self.node.execute(cmd)
         self.assertFalse(resp.accepted)
         self.assertFalse(resp.applied)
         self.assertEqual(resp.reason, EXEC_REASON_MONITOR_MODE)
+
+    def test_set_voice_mode_off_active_applied(self) -> None:
+        """``off`` в active → publish pause, applied=true."""
+        self.node._mode = "active"
+        self.node._publish_dialogue_control = MagicMock(return_value=True)
+        cmd = _make_command(kind=KIND_SET_VOICE_MODE, voice_mode="off")
+        resp = self.node.execute(cmd)
+        self.assertTrue(resp.accepted)
+        self.assertTrue(resp.applied)
+        self.assertEqual(resp.reason, "applied")
+        self.node._publish_dialogue_control.assert_called_once()
+        args, kwargs = self.node._publish_dialogue_control.call_args
+        self.assertEqual(args[0], "pause")
+        self.assertIn("off", kwargs.get("reason", ""))
+
+    def test_set_voice_mode_legacy_quest_rejected(self) -> None:
+        """``quest_ttts`` (и прочие устаревшие) → ``voice_mode_rejected``.
+        Подробности (какой именно mode отвергнут) — в логах супервизора,
+        facade отдаёт единый reason-код клиенту. Никакого publish."""
+        self.node._mode = "active"
+        self.node._publish_dialogue_control = MagicMock()
+        cmd = _make_command(kind=KIND_SET_VOICE_MODE, voice_mode="quest_ttts")
+        resp = self.node.execute(cmd)
+        self.assertEqual(resp.reason, EXEC_REASON_VOICE_MODE_REJECTED)
+        self.node._publish_dialogue_control.assert_not_called()
 
     def test_set_voice_mode_invalid_mode_rejected(self) -> None:
         self.node._mode = "active"
@@ -336,13 +378,19 @@ class TestExecuteRobustness(unittest.TestCase):
 
     def test_voice_mode_non_string_normalized(self) -> None:
         """Не-строковый voice_mode (например, MagicMock или None)
-        нормализуется и не валит ноду."""
+        нормализуется и не валит ноду.
+
+        После ADR-0054 §6.7 None нормализуется в ``""``, что не является
+        ни ``respeaker`` ни ``off`` → отвергается как ``voice_mode_rejected``.
+        """
         self.node._mode = "active"
-        self.node._set_dialogue_param = MagicMock()
+        self.node._publish_dialogue_control = MagicMock()
         cmd = _make_command(kind=KIND_SET_VOICE_MODE, voice_mode=None)
         resp = self.node.execute(cmd)
         # None нормализуется в "", это невалидный mode → voice_mode_rejected
         self.assertEqual(resp.reason, EXEC_REASON_VOICE_MODE_REJECTED)
+        # Никакого publish не было (None не маппится в legacy).
+        self.node._publish_dialogue_control.assert_not_called()
 
 
 class TestOnExecuteCommandCallback(unittest.TestCase):
@@ -378,8 +426,9 @@ class TestOnExecuteCommandCallback(unittest.TestCase):
         self.assertEqual(response.response.reason, EXEC_REASON_UNKNOWN_KIND)
 
     def test_callback_voice_mode_applied_propagates(self) -> None:
+        """``respeaker`` через сервисный callback → applied=true, actual_mode=respeaker."""
         self.node._mode = "active"
-        self.node._set_dialogue_param = MagicMock()
+        self.node._publish_dialogue_control = MagicMock(return_value=True)
         request = self._make_request(
             kind=KIND_SET_VOICE_MODE, client_id="ignored"
         )

@@ -10,14 +10,15 @@
    summary="ok", tool_calls=[{name="say", ...}].
 3. **AC #7** команда без инструмента → ok=false, summary="no_tool:*",
    tool_calls=[] (НЕ выдумываем действие).
-4. **AC #8** LLM исключение → voice_input_mode swap НЕ блокирует
-   последующие команды (try/finally возвращает в исходное состояние).
+4. **AC #8** LLM исключение → dialogue_control_swap НЕ блокирует
+   последующие команды (try/finally восстанавливает личность через
+   ``resume`` в ``/dialogue/control``, ADR-0054 §6.7).
 5. **AC #9** метрики инкрементнулись после успешной команды.
 6. **AC #3 (negative)** невалидный JSON → ok=false,
    summary="malformed_input".
-7. **AC #8 + infra** swap.apply+exit последовательность: _apply_voice_mode
-   вызывается для обоих концов, и в finally НЕ происходит «лишнего»
-   restore когда prev_mode=None.
+7. **AC #8 + infra** swap.apply+exit последовательность:
+   ``_publish_dialogue_control`` вызывается дважды (pause на входе,
+   resume в finally).
 8. **AC #infra** agent_enabled=false → НЕ вызывается ``_ensure_agent_core``
    (нет лишних импортов/LLM-init-ов в monitor-режиме).
 
@@ -34,9 +35,10 @@ from unittest.mock import MagicMock
 
 from rob_box_supervisor.supervisor_node import (
     AGENT_COMMAND_SOURCES,
-    AGENT_DURING_VOICE_MODE_DEFAULT,
     AVATAR_COMMAND_RESULT_TOPIC,
     AVATAR_COMMAND_TOPIC,
+    DIALOGUE_CONTROL_PAUSE,
+    DIALOGUE_CONTROL_RESUME,
     MONITOR_MODE_REASON,
     AvatarSupervisor,
 )
@@ -168,19 +170,24 @@ class TestAvatarAgentTopology(unittest.TestCase):
         self.assertIn("/avatar/stt/result", topics)
 
     def test_agent_parameters_declared(self) -> None:
-        """Параметры agent_enabled / system_prompt_file / agent_during_voice_mode
-        объявлены через declare_parameter."""
+        """Параметры ``agent_enabled`` / ``system_prompt_file`` объявлены
+        через ``declare_parameter``.
+
+        Параметр ``agent_during_voice_mode`` удалён вместе с
+        ``voice_input_mode`` (ADR-0054 §6.7): пауза личности теперь
+        жёстко зашита в ``_dialogue_control_swap`` (pause на входе,
+        resume в finally), переопределение через параметр больше не нужно.
+        """
         self.assertTrue(self.node.has_parameter("agent_enabled"))
         self.assertTrue(self.node.has_parameter("system_prompt_file"))
-        self.assertTrue(self.node.has_parameter("agent_during_voice_mode"))
-        # defaults
+        self.assertFalse(
+            self.node.has_parameter("agent_during_voice_mode"),
+            "agent_during_voice_mode удалён (ADR-0054 §6.7)",
+        )
+        # default
         self.assertEqual(
             self.node.get_parameter("system_prompt_file").value,
             "operator_system_prompt.txt",
-        )
-        self.assertEqual(
-            self.node.get_parameter("agent_during_voice_mode").value,
-            AGENT_DURING_VOICE_MODE_DEFAULT,
         )
 
 
@@ -299,11 +306,13 @@ class TestNoToolReturnsNoTool(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────
 
 
-class TestVoiceModeSwapTryFinally(unittest.TestCase):
-    """AC #8: try/finally _voice_mode_swap корректно отрабатывает
-    даже если core/agent бросает исключение. Свап вызывает
-    _apply_voice_mode для apply+exit, и prev_mode=None НЕ вызывает
-    лишнего restore."""
+class TestDialogueControlSwapTryFinally(unittest.TestCase):
+    """AC #8 (ADR-0054 §6.7): try/finally ``_dialogue_control_swap``
+    корректно отрабатывает даже если core/agent бросает исключение.
+
+    Swap публикует ``pause`` на входе и ``resume`` в finally — личность
+    гарантированно возвращается в IDLE после обработки команды.
+    """
 
     def setUp(self) -> None:
         self.node = AvatarSupervisor()
@@ -313,113 +322,82 @@ class TestVoiceModeSwapTryFinally(unittest.TestCase):
     def tearDown(self) -> None:
         self.node.destroy_node()
 
-    def test_swap_calls_apply_voice_mode(self) -> None:
-        """Свап.enter вызывает _apply_voice_mode(agent_during_voice_mode)."""
-        calls: list[str] = []
-        original_apply = self.node._apply_voice_mode
+    def _published_actions(self) -> list[str]:
+        """Достать последовательность ``action``-значений из опубликованного
+        в ``/dialogue/control``. Удобно для проверки порядка pause→resume.
+        """
+        pub = self.node._dialogue_control_pub
+        return [json.loads(m.data)["action"] for m in pub.published]
 
-        def spy_apply(mode):
-            calls.append(("apply", mode))
-            return (False, MONITOR_MODE_REASON)
+    def test_swap_publishes_pause_then_resume(self) -> None:
+        """Свап.enter публикует ``pause``, swap.exit — ``resume``."""
+        with self.node._dialogue_control_swap():
+            pass
+        actions = self._published_actions()
+        self.assertEqual(
+            actions, [DIALOGUE_CONTROL_PAUSE, DIALOGUE_CONTROL_RESUME]
+        )
 
-        self.node._apply_voice_mode = spy_apply
-        try:
-            with self.node._voice_mode_swap():
-                pass
-        finally:
-            self.node._apply_voice_mode = original_apply
+    def test_swap_resume_always_runs_on_normal_exit(self) -> None:
+        """После нормального yield в swap последовательность строго
+        pause→resume, даже если внутри ничего не делали."""
+        with self.node._dialogue_control_swap():
+            _ = 1 + 1  # yield без побочек
+        actions = self._published_actions()
+        self.assertEqual(len(actions), 2)
+        self.assertEqual(actions[0], DIALOGUE_CONTROL_PAUSE)
+        self.assertEqual(actions[1], DIALOGUE_CONTROL_RESUME)
 
-        # Должен быть минимум один вызов apply для входа (apply=off).
-        applied_modes = [m for tag, m in calls if tag == "apply"]
-        self.assertIn(self.node._agent_during_voice_mode, applied_modes)
+    def test_swap_resume_always_runs_on_exception(self) -> None:
+        """AC #8: исключение внутри swap → finally всё равно шлёт resume."""
+        with self.assertRaises(RuntimeError):
+            with self.node._dialogue_control_swap():
+                raise RuntimeError("simulated LLM crash")
+        actions = self._published_actions()
+        # Два publish'а даже при исключении: pause на входе, resume в finally.
+        self.assertEqual(len(actions), 2)
+        self.assertEqual(actions[0], DIALOGUE_CONTROL_PAUSE)
+        self.assertEqual(actions[1], DIALOGUE_CONTROL_RESUME)
 
-    def test_swap_no_restore_when_prev_unknown(self) -> None:
-        """AC #8 (negative): prev_mode=None → в finally НЕ делаем restore."""
-        # _voice_input_mode_before_swap is None by default.
-        self.assertIsNone(self.node._voice_input_mode_before_swap)
-        calls: list[str] = []
-        original_apply = self.node._apply_voice_mode
+    def test_swap_payload_format(self) -> None:
+        """Payload соответствует wire-контракту (ADR-0054 §2.1):
+        ``{action, reason, ts_s}``, причём ``ts_s`` — float."""
+        with self.node._dialogue_control_swap():
+            pass
+        pub = self.node._dialogue_control_pub
+        for msg in pub.published:
+            payload = json.loads(msg.data)
+            self.assertIn("action", payload)
+            self.assertIn("reason", payload)
+            self.assertIn("ts_s", payload)
+            self.assertIsInstance(payload["ts_s"], float)
+            # reason содержит диагностическую подсказку.
+            self.assertTrue(payload["reason"])
+        # reason для pause и resume разный (чтобы логи dialogue_node
+        # отличали «оператор начал работать» от «оператор закончил»).
+        pause_payload = json.loads(pub.published[0].data)
+        resume_payload = json.loads(pub.published[1].data)
+        self.assertIn("agent_during_command", pause_payload["reason"])
+        self.assertIn("agent_command_done", resume_payload["reason"])
 
-        def spy_apply(mode):
-            calls.append(mode)
-            return (False, MONITOR_MODE_REASON)
+    def test_llm_exception_swap_finally_publishes_resume(self) -> None:
+        """AC #8 end-to-end: исключение из ``_run_agent_sync`` →
+        ``/dialogue/control`` всё равно получает resume, и результат
+        публикуется с ``ok=False, summary="outer_error: ..."``.
+        """
+        original_publish = self.node._publish_dialogue_control
+        published_actions: list[str] = []
 
-        self.node._apply_voice_mode = spy_apply
-        try:
-            with self.node._voice_mode_swap():
-                pass
-        finally:
-            self.node._apply_voice_mode = original_apply
+        def spy_publish(action: str, reason: str = "") -> bool:
+            published_actions.append(action)
+            return True
 
-        # Только ОДИН вызов apply (на входе). Restore НЕ вызван.
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0], self.node._agent_during_voice_mode)
-        # Snapshot очищен.
-        self.assertIsNone(self.node._voice_input_mode_before_swap)
-
-    def test_swap_restores_when_prev_known_and_different(self) -> None:
-        """Когда знаем prev_mode и он != agent_during_voice_mode →
-        в finally вызываем restore."""
-        self.node._voice_input_mode_before_swap = "respeaker"
-        # Чтобы apply отличался, agent_during_voice_mode должен быть != "respeaker".
-        # Default "off" != "respeaker" → restore будет вызван.
-        calls: list[tuple[str, str]] = []
-        original_apply = self.node._apply_voice_mode
-
-        def spy_apply(mode):
-            calls.append(("apply", mode))
-            return (False, MONITOR_MODE_REASON)
-
-        self.node._apply_voice_mode = spy_apply
-        try:
-            with self.node._voice_mode_swap():
-                pass
-        finally:
-            self.node._apply_voice_mode = original_apply
-
-        applied_modes = [m for tag, m in calls if tag == "apply"]
-        self.assertEqual(len(applied_modes), 2)
-        # Первый — apply=off (вход), второй — restore=respeaker (выход).
-        self.assertEqual(applied_modes[0], "off")
-        self.assertEqual(applied_modes[1], "respeaker")
-
-    def test_swap_skips_restore_when_prev_equals_current(self) -> None:
-        """Если prev_mode == agent_during_voice_mode → restore не нужен (noop)."""
-        self.node._agent_during_voice_mode = "off"
-        self.node._voice_input_mode_before_swap = "off"
-        calls: list[str] = []
-        original_apply = self.node._apply_voice_mode
-
-        def spy_apply(mode):
-            calls.append(mode)
-            return (False, MONITOR_MODE_REASON)
-
-        self.node._apply_voice_mode = spy_apply
-        try:
-            with self.node._voice_mode_swap():
-                pass
-        finally:
-            self.node._apply_voice_mode = original_apply
-
-        # Один вызов (на входе). Restore пропущен.
-        self.assertEqual(calls, ["off"])
-
-    def test_llm_exception_swap_finally_runs(self) -> None:
-        """AC #8: исключение внутри swap → finally всё равно выполняется.
-        Outer-error catch возвращает ok=False, summary='outer_error: <type>'."""
-        calls: list[str] = []
-        original_apply = self.node._apply_voice_mode
-
-        def spy_apply(mode):
-            calls.append(mode)
-            return (False, MONITOR_MODE_REASON)
-
-        self.node._apply_voice_mode = spy_apply
+        self.node._publish_dialogue_control = spy_publish
 
         def exploding_run(core, payload):
             raise RuntimeError("simulated LLM crash")
 
-        original = self.node._run_agent_sync
+        original_run = self.node._run_agent_sync
         self.node._run_agent_sync = exploding_run
         try:
             msg = _make_string_msg(
@@ -434,21 +412,23 @@ class TestVoiceModeSwapTryFinally(unittest.TestCase):
             )
             self.node._on_avatar_command(msg)
         finally:
-            self.node._run_agent_sync = original
-            self.node._apply_voice_mode = original_apply
+            self.node._run_agent_sync = original_run
+            self.node._publish_dialogue_control = original_publish
 
-        # _apply_voice_mode был вызван минимум 1 раз (apply на входе).
-        # Если finally не отработал — будет 0.
-        self.assertGreaterEqual(len(calls), 1)
-        # Публикация — ok=False, summary указывает на llm_error (через
-        # try/except в _on_avatar_command — exception из _run_agent_sync
-        # ловится там).
+        # Pause+resume произошли (порядок важен — pause до resume).
+        self.assertIn(DIALOGUE_CONTROL_PAUSE, published_actions)
+        self.assertIn(DIALOGUE_CONTROL_RESUME, published_actions)
+        pause_idx = published_actions.index(DIALOGUE_CONTROL_PAUSE)
+        resume_idx = published_actions.index(DIALOGUE_CONTROL_RESUME)
+        self.assertLess(pause_idx, resume_idx)
+        # Публикация — ok=False, summary указывает на outer_error
+        # (try/except в _on_avatar_command ловит исключение из swap).
         results = _published_results(self.node)
         self.assertEqual(len(results), 1)
         self.assertFalse(results[0]["ok"])
         self.assertTrue(
-            "llm_error" in results[0]["summary"] or "outer_error" in results[0]["summary"],
-            f"expected llm_error or outer_error summary, got {results[0]['summary']!r}",
+            "outer_error" in results[0]["summary"],
+            f"expected outer_error summary, got {results[0]['summary']!r}",
         )
 
 
@@ -719,9 +699,15 @@ class TestGenerateRequestId(unittest.TestCase):
         self.assertNotEqual(rid1, rid2)
 
 
-class TestCaptureCurrentVoiceMode(unittest.TestCase):
-    """В Phase 1 (без GetParameters клиента) capture возвращает None —
-    swap НЕ делает restore в finally."""
+class TestDialogueControlSwapPayload(unittest.TestCase):
+    """Дополнительный sanity-чек: payload ``/dialogue/control`` содержит
+    корректные ``ts_s`` (float > 0) и reason с человекочитаемой подсказкой.
+
+    ``_capture_current_voice_mode`` удалён вместе с ``voice_input_mode``
+    (ADR-0054 §6.7): новая модель — pause↔resume через
+    ``_publish_dialogue_control``, snapshot предыдущего состояния не
+    нужен (dialogue_node сам хранит FSM-стейт).
+    """
 
     def setUp(self) -> None:
         self.node = AvatarSupervisor()
@@ -729,8 +715,28 @@ class TestCaptureCurrentVoiceMode(unittest.TestCase):
     def tearDown(self) -> None:
         self.node.destroy_node()
 
-    def test_capture_returns_none_phase1(self) -> None:
-        self.assertIsNone(self.node._capture_current_voice_mode())
+    def test_publish_pause_payload(self) -> None:
+        """Прямой вызов ``_publish_dialogue_control('pause', ...)`` → JSON
+        с ``action=='pause'`` и ``ts_s`` (float)."""
+        ok = self.node._publish_dialogue_control(
+            DIALOGUE_CONTROL_PAUSE, reason="test"
+        )
+        self.assertTrue(ok)
+        pub = self.node._dialogue_control_pub
+        self.assertEqual(len(pub.published), 1)
+        payload = json.loads(pub.published[0].data)
+        self.assertEqual(payload["action"], DIALOGUE_CONTROL_PAUSE)
+        self.assertEqual(payload["reason"], "test")
+        self.assertIsInstance(payload["ts_s"], float)
+        self.assertGreater(payload["ts_s"], 0)
+
+    def test_publish_invalid_action_returns_false(self) -> None:
+        """Защита от опечаток: ``action='bogus'`` → False, ничего не публикуется."""
+        pub = self.node._dialogue_control_pub
+        published_before = len(pub.published)
+        ok = self.node._publish_dialogue_control("bogus", reason="x")
+        self.assertFalse(ok)
+        self.assertEqual(len(pub.published), published_before)
 
 
 class TestAgentCommandSources(unittest.TestCase):
