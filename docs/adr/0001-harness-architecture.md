@@ -2,14 +2,14 @@
 
 | Поле         | Значение                                                                  |
 |--------------|---------------------------------------------------------------------------|
-| Статус       | **Accepted**                                                              |
-| Дата         | 2026-07-24 (обновлён 2026-07-24, исходно 2026-07-18)                      |
+| Статус       | **Accepted** (частично закрыт ADR-0051 §3.2 — §2.7.1/§2.7.2/§2.7.3/§2.4.5; см. ниже) |
+| Дата         | 2026-07-24 (обновлён 2026-09-07 — отметка о закрытии §2.7.1/§2.7.2/§2.7.3/§2.4.5 по ADR-0051, исходно 2026-07-18) |
 | Автор        | architect (Hermes Agent)                                                  |
 | Формат       | MADR (Markdown Any Decision Record)                                       |
-| Контекст     | refactoring task `t_8c0ae7dd`; Kanban `t_04c1b342`                        |
+| Контекст     | refactoring task `t_8c0ae7dd`; Kanban `t_04c1b342`; обновление t_f83e9cf9 |
 | Родители     | `t_0f7b815c` (as-is анализ), `t_ebdc4c99` (best-practices research)       |
 | Потомки      | `t_ace66f51` (implementation), `t_2bf98118`, `t_35cfe938`, `t_a701d101`   |
-| Связанные ADR | [ADR-0002](0002-minimax-provider.md) (MiniMax + LLMProvider), [ADR-0007](0007-minimax-tts-integration-final.md) (TTS), [ADR-0008](0008-tts-provider-extension-points-landed.md) (TTS extension points) |
+| Связанные ADR | [ADR-0002](0002-minimax-provider.md) (MiniMax + LLMProvider), [ADR-0007](0007-minimax-tts-integration-final.md) (TTS), [ADR-0008](0008-tts-provider-extension-points-landed.md) (TTS extension points), [ADR-0051](0051-supervisor-operator-agent-arbiter-split.md) (закрывает §2.7.1/§2.7.2/§2.7.3/§2.4.5 — каркас Harness удалён, миграция развёрнута `Harness` ← `DialogCore`/`AgentCore`) |
 
 ---
 
@@ -318,6 +318,8 @@ class Effect(ABC, Generic[T]):
 
 #### 2.4.5 Transport (источник событий)
 
+> **Фактическое состояние (2026-09-07, ADR-0051 §3.2).** `Transport` интерфейс не выделен; события приходят в `AgentSession` напрямую из ROS2-subscriber'ов `dialogue_node`. `FakeTransport` для тестов не существует. См. ADR-0051 §3.3 — каркас Harness удалён, миграция от `DialogCore` к `AgentCore`. Спецификация ниже — архивная.
+
 ```python
 class Transport(ABC):
     """Нормализует 'как событие попадает в сессию' (STT / TG / keyboard)."""
@@ -505,6 +507,8 @@ MiniMax выбран первым production-бэкендом для `LLMProvide
 - **Не выбран дефолтом продового провайдера** — `llm.provider: deepseek` остаётся дефолтом до явного opt-in по конфигу (см. ADR-0002 §4 «TTS меняет голос по умолчанию» — тот же принцип).
 
 ### 2.7 Целевой вид трёх харнесов
+
+> **Закрыто ADR-0051 §3.2 (2026-09-07).** Все три харнеса (§2.7.1, §2.7.2, §2.7.3) и `Transport` из §2.4.5 фактически не реализованы как отдельные классы над каркасом `Harness[StateT]`: `DialogHarness` (428 LOC) конструируется только в тестах, переключатель `harness.kind` не подключён; `PersistentHarness` и `TelegramHarness` не выделены, hardware-ноды и telegram-бот живут как самостоятельные ROS2-ноды/боты. Каркас Harness удалён в issue #1985 (PR #2075 b091c61a). Миграция развёрнута — не «ноды → Harness», а «`DialogCore` → `AgentCore`» (см. ADR-0051 §3.3). Разделы ниже сохраняются как архивная фактура исходного дизайна; правки сюда больше не вносятся, кроме отметок о фактическом состоянии.
 
 #### 2.7.1 `DialogHarness` (вокруг `DialogueNode`)
 
@@ -949,6 +953,7 @@ sequenceDiagram
 - Реализация `LLMProvider`: `src/rob_box_llm/rob_box_llm/provider.py`
 - Реализация `MiniMaxProvider`: `src/rob_box_llm/rob_box_llm/providers/minimax.py` (см. ADR-0002)
 - Реализация `TTSProvider`: `src/rob_box_llm/rob_box_llm/tts.py` (см. ADR-0003, ADR-0008)
+- Преемник для §2.7.1/§2.7.2/§2.7.3/§2.4.5: [ADR-0051](0051-supervisor-operator-agent-arbiter-split.md) (статус Accepted, миграция `Harness` ← `DialogCore`/`AgentCore`; см. issue #1985 — PR #2075 b091c61a удаление каркаса Harness)
 - Формат ADR: MADR (https://adr.github.io/madr/), подобран как более структурированная альтернатива Nygard; базовая ссылка — https://github.com/joelparkerhenderson/architecture_decision_records
 
 ---
