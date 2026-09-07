@@ -6,21 +6,32 @@
 // публикует при LLM tool call `show_metrics(query)` (см. ADR-0060 и
 // `tars_panel.py` в rob_box_supervisor).
 //
-// Технический компромисс: настоящий `<iframe>` внутри Three.js сцены не
-// рендерится (Three.js не владеет DOM-3D-контекстом iframe). Поэтому
-// подход такой:
-//   - Plane + MeshBasicMaterial + CanvasTexture, на которой рисуется
-//     preview (текущий URL, host, состояние «loading/ok/error»);
-//   - Реальный iframe создаётся в DOM и проецируется на panel через
-//     CSS2DRenderer / отдельный overlay слой, НЕ внутри THREE-сцены;
-//     для Quest в VR overlay не работает (immersive-vr не даёт обычный
-//     DOM), поэтому в VR показывается только preview, а iframe живёт в
-//     desktop-окне параллельно. Это by-design: «side panel» в VR vs
-//     «side panel в desktop» имеют разные носители.
+// Технический компромисс (решение зафиксировано в PR #2114/issue #2113,
+// см. "TARS2 — честное инженерное решение" в описании PR): настоящий
+// `<iframe>` внутри immersive-WebXR НЕ рендерится вообще — Three.js не
+// владеет DOM-3D-контекстом iframe, а в immersive-режиме браузер не
+// проецирует DOM/overlay на плоскость в мире (DOM-оверлей работает только
+// в inline/2D-режиме, не в VR-сессии). «TARS 2 показывает iframe с
+// Grafana» в 3D-сцене поэтому недостижимо в принципе, не только сейчас.
 //
-// Здесь делаем только Three.js-сторону: mesh с preview, API
-// `setPanelUrl/refresh/clear`. DOM-iframe создаётся в main.ts и
-// синхронизируется через колбэк `onUrlChanged`.
+// Рабочая альтернатива — та же, что уже используют камерные панели
+// (video_panel.ts + CompressedImage-тракт): растровое изображение на
+// текстуре плоскости. Grafana умеет отдавать PNG панели через
+// `/render/d-solo/...` (image-renderer plugin), что можно было бы
+// прокачивать тем же путём, что и camera_rear/camera_ceiling. На момент
+// этой карточки renderer-plugin на Grafana (katana) не установлен, а
+// анонимный доступ выключен (проверено с робота: `/api/health` отвечает,
+// но `/api/search` — 401, `GF_AUTH_ANONYMOUS_ENABLED` не задан) — поэтому
+// PNG-путь не собран, чтобы не изобретать хождение с чужими кредами.
+// Список того, что нужно настроить, — в PR.
+//
+// Что сделано здесь и сейчас: URL долетает до клиента честно (см.
+// main.ts: JSON_EVENT{type:"tars_panel_url"} → setPanelUrl/setState), а
+// panel рисует host/path текстом на canvas-preview — это единственный
+// рендер, который есть, и он не притворяется живой Grafana-панелью.
+// Никакого DOM-iframe эта карточка не создаёт: `onUrlChanged` остаётся
+// заведённым API для будущего PNG-тракта (или desktop-only overlay), но
+// в main.ts на него ничего не подписано.
 
 import * as THREE from "three";
 
@@ -36,8 +47,11 @@ export interface Tars2MetricsPanelOptions {
 export type Tars2PanelState = "idle" | "loading" | "ok" | "error";
 
 /**
- * Callback, который main.ts вешает на panel: при смене URL надо
- * переключить iframe (или обновить его src), при clear — закрыть.
+ * Не используется в main.ts на момент issue #2113 (нет DOM-iframe и
+ * нет собранного PNG-тракта — см. комментарий в шапке файла). API
+ * оставлен как точка расширения для будущего PNG/desktop-overlay пути:
+ * при смене URL сюда прилетит `{kind:'url', url}`, при clear — `{kind:
+ * 'clear'}`.
  */
 export interface Tars2UrlListener {
   (event: { kind: "url"; url: string } | { kind: "clear" }): void;
@@ -125,7 +139,20 @@ export function createTars2MetricsPanel(
     const labelX = 8 + ctx!.measureText("TARS 2 ▸ ").width;
     ctx!.fillText(state.toUpperCase(), labelX, 14);
 
-    if (currentUrl === null) {
+    if (currentUrl === null && state === "error") {
+      // issue #2113: честное состояние вместо пустоты. avatar_supervisor
+      // (tars_panel.py) публикует status="error" на пустой query/
+      // неизвестный datasource — url в этом случае пуст, main.ts зовёт
+      // setState("error") без setPanelUrl. Показываем это явно, а не
+      // молчим и не притворяемся, что панель просто пустая/idle.
+      ctx!.fillStyle = "#e64568";
+      ctx!.font = `${fontSize}px monospace`;
+      ctx!.fillText("Нет доступа к Grafana /", 8, 48);
+      ctx!.fillText("ошибка запроса.", 8, 48 + Math.round(fontSize * 1.4));
+      ctx!.fillStyle = "#8b98a5";
+      ctx!.font = `${Math.round(fontSize * 0.85)}px monospace`;
+      ctx!.fillText("Спроси ТАРС ещё раз.", 8, 48 + Math.round(fontSize * 3.0));
+    } else if (currentUrl === null) {
       // Пустое состояние: подсказка оператору.
       ctx!.fillStyle = "#8b98a5";
       ctx!.font = `${fontSize}px monospace`;
@@ -143,11 +170,13 @@ export function createTars2MetricsPanel(
       ctx!.fillStyle = "#8b98a5";
       ctx!.font = `${Math.round(fontSize * 0.85)}px monospace`;
       ctx!.fillText(truncate(path, 64), 8, urlY + Math.round(fontSize * 1.3));
-      // Подсказка: «iframe активен в desktop-окне».
+      // Честная подсказка (issue #2113): это текстовый preview URL, не
+      // живая Grafana-панель — реального рендера в immersive-WebXR нет
+      // (см. комментарий в шапке файла).
       ctx!.fillStyle = "#444a52";
       ctx!.font = `${Math.round(fontSize * 0.75)}px monospace`;
       ctx!.fillText(
-        "preview only · iframe синхронизирован в DOM",
+        "preview only · рендер Grafana не подключён",
         8,
         canvasHeight - 24
       );

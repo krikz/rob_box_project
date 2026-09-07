@@ -1551,6 +1551,28 @@ class QuestNode(Node):
             self._on_avatar_command_result,
             10,
         )
+        # issue #2113 (quest #2112, Captain Bridge) — consumer /tars1/text:
+        # tts_node зеркалит avatar_text сюда на каждый /avatar/tts/request
+        # (см. tts_node._publish_tars1_text). Тот же relay-паттерн, что у
+        # avatar_command_result чуть выше: String JSON → JSON_EVENT всем
+        # WS-сессиям (type="tars1_text"). Поверхность на клиенте —
+        # tars1Panel.append/setStreaming в main.ts.
+        self._tars1_text_sub = self.create_subscription(
+            String,
+            "/tars1/text",
+            self._on_tars1_text,
+            10,
+        )
+        # issue #2113 — consumer /avatar/tars/panel_url: avatar_supervisor
+        # (tars_panel.py) публикует URL Grafana-панели после LLM tool call
+        # show_metrics(query). Relay в JSON_EVENT (type="tars_panel_url");
+        # клиент — tars2Panel.setPanelUrl/setState в main.ts.
+        self._tars_panel_url_sub = self.create_subscription(
+            String,
+            "/avatar/tars/panel_url",
+            self._on_tars_panel_url,
+            10,
+        )
         # Подписка на /voice/tts/voices (TRANSIENT_LOCAL depth=1) — это
         # первый TRANSIENT_LOCAL publisher tts_node (см. design t_5b9d5d0c
         # §47-49). RELIABLE обязательно — TRANSIENT_LOCAL «latched» semantics
@@ -2271,6 +2293,67 @@ class QuestNode(Node):
             self.ws_server.broadcast_json_event(event)
         except Exception as e:  # noqa: BLE001
             self.get_logger().debug(f"avatar_command_result broadcast failed: {e}")
+
+    def _on_tars1_text(self, msg: String) -> None:
+        """ROS /tars1/text → JSON_EVENT (type=tars1_text) всем WS-сессиям.
+
+        issue #2113 (quest #2112, Captain Bridge): tts_node зеркалит
+        avatar_text сюда на каждый /avatar/tts/request (см.
+        ``tts_node._publish_tars1_text``). Контракт входа — String JSON
+        ``{request_id, text, streaming, done}``. Битый JSON молча дропаем:
+        это зеркало best-effort для UI-панели, не должно ронять ноду.
+        Зеркало ``_on_avatar_command_result`` — тот же relay-паттерн
+        (parse → broadcast_json_event).
+        """
+        try:
+            payload = json.loads(msg.data or "")
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        event = {
+            "type": "tars1_text",
+            "request_id": str(payload.get("request_id", "") or ""),
+            "text": str(payload.get("text", "") or ""),
+            "streaming": bool(payload.get("streaming", False)),
+            "done": bool(payload.get("done", False)),
+            "ts_ms": int(time.time() * 1000),
+        }
+        try:
+            self.ws_server.broadcast_json_event(event)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().debug(f"tars1_text broadcast failed: {e}")
+
+    def _on_tars_panel_url(self, msg: String) -> None:
+        """ROS /avatar/tars/panel_url → JSON_EVENT (type=tars_panel_url).
+
+        issue #2113: ``tars_panel.py`` (avatar_supervisor) публикует URL
+        Grafana-панели после LLM tool call ``show_metrics(query)``.
+        Контракт входа — String JSON
+        ``{request_id, url, status, error}``. ``status="error"`` → ``url``
+        пуст — клиент обязан показать честное состояние (см.
+        ``tars2_metrics_panel.ts`` ``setState("error")``), а не пустую
+        панель. Битый JSON молча дропаем (тот же best-effort relay, что у
+        ``_on_avatar_command_result``/``_on_tars1_text``).
+        """
+        try:
+            payload = json.loads(msg.data or "")
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        event = {
+            "type": "tars_panel_url",
+            "request_id": str(payload.get("request_id", "") or ""),
+            "url": str(payload.get("url", "") or ""),
+            "status": str(payload.get("status", "") or ""),
+            "error": str(payload.get("error", "") or ""),
+            "ts_ms": int(time.time() * 1000),
+        }
+        try:
+            self.ws_server.broadcast_json_event(event)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().debug(f"tars_panel_url broadcast failed: {e}")
 
     def _send_alert_event(self, alert: Alert, *, active: bool) -> None:
         """Сформировать JSON_EVENT для robot_alert и разослать всем сессиям."""

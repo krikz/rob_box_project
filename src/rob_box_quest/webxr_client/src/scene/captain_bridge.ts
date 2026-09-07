@@ -242,8 +242,12 @@ export interface CaptainBridgeHandle {
   tars1Panel: Tars1TextPanelHandle;
   /**
    * TARS 2 — дашборд метрик (issue #2113, quest #2112). Справа от
-   * FRONT CAM, симметрично TARS 1. iframe c Grafana-панелью (Prometheus /
-   * Loki), URL приходит через `/avatar/tars/panel_url`. API: setPanelUrl /
+   * FRONT CAM, симметрично TARS 1. URL Grafana-панели (Prometheus /
+   * Loki) приходит через `/avatar/tars/panel_url` и рисуется ТЕКСТОМ на
+   * canvas-preview (host/path) — реального рендера Grafana-контента в
+   * immersive-WebXR нет и в этой карточке не появился (DOM/iframe не
+   * проецируется в VR-сцену; см. tars2_metrics_panel.ts, шапка файла, и
+   * PR #2114 "TARS2 — честное инженерное решение"). API: setPanelUrl /
    * clear / setState (см. tars2_metrics_panel.ts).
    */
   tars2Panel: Tars2MetricsPanelHandle;

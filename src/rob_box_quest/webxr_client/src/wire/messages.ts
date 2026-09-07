@@ -281,6 +281,30 @@ export type JsonEvent =
       reason?: string;
       ts_ms: number;
     }
+  // issue #2113 (quest #2112, Captain Bridge) — TARS 1 text panel echo.
+  // Сервер зеркалит /tars1/text (tts_node._publish_tars1_text) в
+  // JSON_EVENT; relay в quest_node._on_tars1_text (см. meta-quest-api.md
+  // не обновлён — контракт зафиксирован тут + в PR #2114 описании).
+  | {
+      type: "tars1_text";
+      request_id: string;
+      text: string;
+      streaming: boolean;
+      done: boolean;
+      ts_ms: number;
+    }
+  // issue #2113 — TARS 2 metrics panel: URL Grafana-панели от
+  // avatar_supervisor (tars_panel.py) после show_metrics tool call.
+  // status="error" → url пуст, error содержит причину (empty query /
+  // unknown datasource); клиент показывает честное состояние, не пустоту.
+  | {
+      type: "tars_panel_url";
+      request_id: string;
+      url: string;
+      status: "ok" | "error" | string;
+      error: string;
+      ts_ms: number;
+    }
   | { type: string; [k: string]: unknown };
 
 export interface ErrorMsg {
