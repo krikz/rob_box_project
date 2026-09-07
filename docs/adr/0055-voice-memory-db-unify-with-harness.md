@@ -115,136 +115,49 @@
 ```python
 """Adapter: rob_box_voice.core.voice_memory.VoiceMemory API → MemoryStore.
 
-Цель — дать MCP-серверу (mcp_server.py:113) и WaypointStore писать в
-/data/harness_voice.db через существующий SQLiteVoiceMemory без
-переписывания call-sites. ADR-0055 Фаза 1.
-
-Не делает data-migration; только переключает путь.
+Sync facade. Persists facts via SQLiteVoiceMemory (harness). ``save_turn``
+is a deprecated stub (Shifu directive 2026-09-02 forbids persisting
+turns). ADR-0055 Phase 1.
 """
-from __future__ import annotations
-import asyncio
-import json
-import time
-from typing import Any, Dict, List, Optional
-
-from rob_box_harness.memory import Fact, Turn
+from rob_box_harness.memory import Fact
 from rob_box_harness.memory.sqlite_voice import SQLiteVoiceMemory
+
+LEGACY_FACTS_SCOPE = "mcp:legacy"
 
 
 class VoiceMemoryAdapter:
-    """API-совместимый фасад для MCP-инструментов.
-
-    Совпадает по сигнатурам с rob_box_voice.core.voice_memory.VoiceMemory,
-    но персистит всё в /data/harness_voice.db (та же БД, что и
-    dialogue_node), а не в /data/voice_memory.db.
-
-    Turn-ы пишутся в ``turns`` со ``scope="default"`` (Шифу директива
-    02.09.2026: turn-ы НЕ персистятся в production, но для MCP-инструментов
-    делаем исключение через явный scope="mcp:legacy" — это уже не in-RAM).
-    """
-
-    # Scope-префиксы до merge шага 03 (AgentCore namespace).
-    TURN_SCOPE = "mcp:legacy"
-    FACT_SCOPE = "mcp:legacy"
+    """Sync API matching ``VoiceMemory`` 1:1."""
 
     def __init__(self, db_path: str) -> None:
-        self._db = SQLiteVoiceMemory(db_path=db_path)
-        # NOTE: SQLiteVoiceMemory.init() — async, вызываем при первом use
-        # через ``_ensure_init``. Конструктор sync (как у VoiceMemory).
+        self._db_path = db_path
+        self._store: SQLiteVoiceMemory | None = None
 
-    async def _ensure_init(self) -> None:
-        if not self._db._initialized:
-            await self._db.init()
+    def save_turn(self, role, content, *, speaker_id=None,
+                  session_id=None, timestamp=None) -> int:
+        """DEPRECATED no-op + WARN log. Returns -1."""
+        log.warning("save_turn is no-op (ADR-0055)")
+        return -1
 
-    def save_turn(self, role: str, content: str, *,
-                  speaker_id: Optional[str] = None,
-                  session_id: Optional[str] = None,
-                  timestamp: Optional[float] = None) -> int:
-        """Sync-обёртка над async append_turn.
+    def save_fact(self, fact, *, category="general",
+                  speaker_id=None, timestamp=None) -> int:
+        """Persist into ``facts`` (SQLiteVoiceMemory) under mcp:legacy."""
+        ...
 
-        MCP-сервер однопоточный → блокировка ок. Создаём короткоживущий
-        event loop на каждый вызов (используется редко).
-        """
-        ts = timestamp if timestamp is not None else time.time()
-        meta = {}
-        if session_id is not None:
-            meta["legacy_session_id"] = session_id
-        if speaker_id is not None:
-            meta["legacy_speaker_id"] = speaker_id
-        meta["legacy_source"] = "voice_memory"
-
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(self._save_turn_async(
-                role=role, content=content, ts=ts, meta=meta))
-        finally:
-            loop.close()
-
-    async def _save_turn_async(self, *, role, content, ts, meta):
-        await self._ensure_init()
-        return await self._db.append_turn(
-            scope=self.TURN_SCOPE,
-            turn=Turn(role=role, content=content, metadata=meta),
-            timestamp=ts,
-        )
-
-    def save_fact(self, fact: str, *, category: str = "general",
-                  speaker_id: Optional[str] = None,
-                  timestamp: Optional[float] = None) -> int:
-        ts = timestamp if timestamp is not None else time.time()
-        meta = {"legacy_speaker_id": speaker_id} if speaker_id else {}
-        meta["legacy_source"] = "voice_memory"
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(self._save_fact_async(
-                fact=fact, category=category, ts=ts, meta=meta))
-        finally:
-            loop.close()
-
-    async def _save_fact_async(self, *, fact, category, ts, meta):
-        await self._ensure_init()
-        return await self._db.save_fact(
-            scope=self.FACT_SCOPE,
-            fact=Fact(key=category, value=fact, tags=[category]),
-        )
-
-    def search(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
-        """Compatibility: возвращает list of dicts, как VoiceMemory.search."""
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(
-                self._db.search(query=query, limit=limit)
-            )
-        finally:
-            loop.close()
-
-    def get_stats(self) -> Dict[str, Any]:
-        """Минимальный stub — реальная статистика через SQLiteVoiceMemory."""
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(self._get_stats_async())
-        finally:
-            loop.close()
-
-    async def _get_stats_async(self) -> Dict[str, Any]:
-        await self._ensure_init()
-        # Простой SELECT — тривиальный, без list comprehension
-        def _stats(conn):
-            cur = conn.execute(
-                "SELECT COUNT(*) FROM turns WHERE scope = ?",
-                (self.TURN_SCOPE,),
-            )
-            turn_count = cur.fetchone()[0]
-            cur = conn.execute(
-                "SELECT COUNT(*) FROM facts WHERE scope = ?",
-                (self.FACT_SCOPE,),
-            )
-            fact_count = cur.fetchone()[0]
-            return {"turns": turn_count, "facts": fact_count}
-        return await self._db._run_sync(_stats)
+    def search(self, query, limit=5) -> list[dict]: ...
+    def get_stats(self) -> dict: ...
+    def teardown(self) -> None: ...
 ```
 
-**Важно:** SQLiteVoiceMemory **не персистит turn-ы в проде** (`base.py:5-7`), но **поддерживает таблицу `turns`** (см. метод `all_turns` в `base.py:435` — она там зачем-то есть). Реальная проверка: DDL `sqlite_voice.py` **не содержит** `CREATE TABLE turns`. Это потенциальная дыра в схеме адаптера. Решение — расширить DDL `_TURNS_DDL` в **отдельном** коммите после verify в Phase 1 PR (issue: `turns` нужно создавать перед INSERT, иначе FK не пройдёт).
+**Контрактные границы:**
+- Использует **существующие** методы `SQLiteVoiceMemory` (`save_fact`, `search`).
+- API соответствует `VoiceMemory` 1:1 (mcp_server.py не меняется, кроме импорта).
+- `asyncio.run` на каждый вызов (sub-Hz rate для MCP-write, допустимо).
+- `save_turn` — **DEPRECATED no-op + WARN** (не `raise`, не `silent` — честный FAIL по ADR-0018). Turn-ы не персистятся ни в проде (директива Шифу 02.09), ни в адаптере. Когда шаг 03 (AgentCore) добавит `turns` в DDL, Фаза 2 введёт **новый метод** `save_turn(scope="personality", ...)` — текущий stub останется deprecated, чтобы старые call-site не сломались.
+
+**Что НЕ делает адаптер (по дизайну):**
+- Не переносит данные (это Фаза 2).
+- Не добавляет таблицу `turns` (нарушит директиву 02.09).
+- Не удаляет `voice_memory.db` (Шифу решает вручную).
 
 ### 2.4 Маппинг таблиц при консолидации
 
@@ -357,7 +270,7 @@ Usage:
 | **Схема больше не дублируется** для `waypoints` и `faq_items` | `voice_memory.py` остаётся жить в `rob_box_voice` (никто не использует после merge — зачистка в Фазе 2) |
 | **Готовая точка для Фазы 2** (одна колонка `agent` сразу работает для обоих источников) | Ждём шаг 03 (AgentCore) |
 | **Read-only файл** `/data/voice_memory.db` сохраняется для forensic | +1 файл на томе — незначительно |
-| **`SQLiteVoiceMemory` уже не персистит turn-ы** — адаптер добавляет turn-ы в `turns` со scope=`mcp:legacy`, что **нарушает** Шифу директиву 02.09.2026 для MCP-источника | Требует явного решения Шифу: либо MCP turn-ы тоже in-RAM (тогда и адаптер не нужен — закрываем issue), либо это исключение для MCP. **Запрашиваем в issue-комментарии.** |
+| **`SQLiteVoiceMemory` уже не персистит turn-ы** — адаптер также не пишет turn-ы (DEPRECATED no-op + WARN), что **соблюдает** директиву Шифу 02.09.2026 | Если в будущем шаг 03 захочет персистить turn-ы для MCP-источника, нужен явный re-approval — адаптер это задел, не автомат |
 
 ---
 
@@ -377,13 +290,12 @@ Usage:
 
 ### 6.1 Контрактные (до merge)
 
-- [ ] `src/rob_box_harness/rob_box_harness/memory/voice_memory_adapter.py` создан, экспортирует `VoiceMemoryAdapter` с API: `save_turn / save_fact / search / get_stats`. ~120 LOC.
-- [ ] DDL `memory/sqlite_voice.py:52-91` расширен `_TURNS_DDL` (если отсутствует). Адаптер пишет turn-ы в `turns` со `scope="mcp:legacy"`.
+- [ ] `src/rob_box_harness/rob_box_harness/memory/voice_memory_adapter.py` создан, экспортирует `VoiceMemoryAdapter` с API: `save_turn / save_fact / search / get_stats / teardown`. `save_turn` — DEPRECATED no-op (WARN лог). ~120 LOC.
 - [ ] `src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py:113,957,1012` использует `VoiceMemoryAdapter(db_path="/data/harness_voice.db")` вместо `VoiceMemory`.
 - [ ] `src/rob_box_mcp_tools/rob_box_mcp_tools/waypoint_store.py:66` использует ту же БД (через адаптер или прямой `SQLiteVoiceMemory` — TBD по согласованию с `waypoint_store` maintainer).
 - [ ] `migrations/010_voice_memory_unify.sql` создан с маркерной записью.
 - [ ] `scripts/migrations/migrate_voice_memory_unify.py` создан: dry-run by default, `--apply` для прода, exit 0 без изменений.
-- [ ] Юнит-тесты `src/rob_box_harness/test/test_voice_memory_adapter.py` (≥6 тестов): save_turn / save_fact / search / get_stats / idempotency / multi-instance / sync API совместим со старым `VoiceMemory`.
+- [ ] Юнит-тесты `src/rob_box_harness/test/test_voice_memory_adapter.py` (≥6 тестов): save_turn returns -1 + WARN / save_fact persists to facts table / search returns list-of-dicts / get_stats shape / idempotency / teardown.
 - [ ] Юнит-тесты `src/rob_box_mcp_tools/test/test_mcp_server_unify.py` (≥3 теста): init использует адаптер; turn из MCP-инструмента виден через `MemoryStore.search` в `harness_voice.db`.
 - [ ] Юнит-тесты `scripts/agent_flow/tests/test_migrate_voice_memory_unify.sh` (≥3 теста): dry-run показывает diff; `--apply` идемпотентен; exit code корректный.
 - [ ] ADR-0055 уникален (ADR-0030 / ADR-collision-guard → exit 0).
@@ -439,10 +351,9 @@ Usage:
 
 ## 8. Следующие шаги
 
-**Шаг 0 (до merge): architect пишет issue-комментарий с тремя вопросами Шифу:**
-1. **Turn-ы для MCP:** Шифу директива 02.09.2026 запрещает персистить turn-ы диалоговой ноды. Применимо ли это к MCP-инструментам? Если да — адаптер тривиальный (только facts + waypoints). Если нет — адаптер пишет turn-ы в `turns` со scope `mcp:legacy` (явное исключение).
-2. **Данные `voice_memory.db`:** их переносить или «просто удалить»? (Старый handoff Q3 говорит «просто удалить», карточка говорит «перенести».) Зафиксировать в issue-комментарии + ADR.
-3. **`music_tracks`:** включаем в эту карточку или отдельная? (Текущий ADR — отдельная; нужно подтверждение.)
+**Шаг 0 (до merge): architect пишет issue-комментарий с двумя вопросами Шифу:**
+1. **Данные `voice_memory.db`:** их переносить или «просто удалить»? (Старый handoff Q3 говорит «просто удалить», карточка говорит «перенести».) Зафиксировать в issue-комментарии + ADR.
+2. **`music_tracks`:** включаем в эту карточку или отдельная? (Текущий ADR — отдельная; нужно подтверждение.)
 
 **Шаг 1 (этот PR):** architect коммитит `voice_memory_adapter.py`, `mcp_server.py` патч, миграционный скрипт, юнит-тесты. Push в `z-{agent}/t_7a03364a-...`, открывает PR в `develop`.
 
