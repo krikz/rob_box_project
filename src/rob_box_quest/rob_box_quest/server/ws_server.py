@@ -553,6 +553,16 @@ VOICE_SET_MIN_INTERVAL_S: float = 2.0
 VOICE_PREVIEW_MIN_INTERVAL_S: float = 5.0
 VOICE_PREVIEW_MAX_CONCURRENT: int = 3
 
+# ADR-0055 / issue #1993 — два стрима аудио-WS-канала делят один приватный
+# канал сессии, но считают слоты НЕЗАВИСИМО (preview и operator_tts). Whitelist
+# в deliver_audio() / register_audio_session() статичный — расширение = правка
+# тут, ADR и ws_server-тестов; «широким швом» канал делать нельзя.
+_AUDIO_STREAMS: frozenset[str] = frozenset({"preview", "operator_tts"})
+
+# Сколько секунд считать request_id «зависшим» (для чистки реестра).
+# Один и тот же потолок для preview и operator_tts — на Quest один оператор.
+_AUDIO_PENDING_STALE_S: float = 60.0
+
 # AV-28 (стиль речи + язык вывода) считает СВОЙ слот, а не делит слот с
 # AV-27. Раньше слот был общий, и это ломало обычную работу оператора:
 # выбрал стиль в панели пайплайна → через секунду выбрал язык (или
@@ -599,10 +609,16 @@ class WSSServer:
         # quest_node через set_send_loop().
         self._send_loop: Optional[asyncio.AbstractEventLoop] = None
         # AV-27 / issue #1919 — state для preview_voice + rate-limit.
-        # request_id → (ws, opened_at) — отдаём клиенту ТОЛЬКО если ws ещё
-        # живой; иначе дропаем ответ. lock — потому что ROS callback'и
-        # зовут deliver_* из другого потока, а cmd-handler — из aiohttp-loop.
-        self._preview_pending: dict[str, tuple[Any, float]] = {}
+        # ADR-0055 / issue #1993: общий per-stream реестр активных audio-запросов.
+        # Внутри: stream → {request_id: (ws, opened_at)}. Два стрима
+        # (``preview`` и ``operator_tts``) считают слоты НЕЗАВИСИМО — голос
+        # оператора в шлем не должен конкурировать с превью в picker'е.
+        # request_id → ws — отдаём клиенту ТОЛЬКО если ws ещё живой; иначе
+        # дропаем ответ. lock — потому что ROS callback'и зовут deliver_* из
+        # другого потока, а cmd-handler — из aiohttp-loop.
+        self._audio_pending: dict[str, dict[str, tuple[Any, float]]] = {
+            stream: {} for stream in _AUDIO_STREAMS
+        }
         self._voice_state_lock = threading.Lock()
         # ws_id(id(ws)) → last-ts (монотонный) per cmd для rate-limit.
         # key = id(ws) (а не сам ws, потому что ws не hashable).
@@ -652,20 +668,134 @@ class WSSServer:
         return True
 
     def start_preview_session(self, request_id: str, ws: Any) -> bool:
-        """Зарегистрировать request_id → ws для preview.
+        """Тонкая обёртка: зарегистрировать request_id → ws для preview.
 
-        Returns False если уже есть `VOICE_PREVIEW_MAX_CONCURRENT` активных
-        request_id'ов — клиент получит preview_voice_error{reason: "too_many"}.
+        Реализация — общий ``register_audio_session(stream="preview", ...)``.
+        Returns False если уже есть ``VOICE_PREVIEW_MAX_CONCURRENT``
+        активных preview-request_id'ов — клиент получит
+        ``preview_voice_error{reason: "too_many"}``.
         """
+        return self.register_audio_session("preview", request_id, ws)
+
+    def register_audio_session(
+        self, stream: str, request_id: str, ws: Any
+    ) -> bool:
+        """Зарегистрировать request_id → ws для ``stream``.
+
+        Per-stream лимит (``VOICE_PREVIEW_MAX_CONCURRENT`` для каждого
+        стрима — на Quest один оператор, стримы не делят слот). Неизвестный
+        stream → логируем WARNING и возвращаем ``False`` (защита от
+        «широкого шва» — канал не должен стать open-endpoint'ом).
+
+        Returns False если для этого stream уже лимит активных request_id'ов
+        — supervisor/quest_node увидит ``/voice/tts/finished{success=False}``
+        и реплика ТАРС честно теряется (без спама retry).
+        """
+        if stream not in _AUDIO_STREAMS:
+            log.warning(
+                "ws_server.register_audio_session: unknown stream=%r "
+                    "(allowed=%s)",
+                stream,
+                sorted(_AUDIO_STREAMS),
+            )
+            return False
         with self._voice_state_lock:
-            # Чистим зависшие (старше 60 с) — на случай если supervisor упал.
-            now = time.monotonic()
-            stale = [k for k, (_, t) in self._preview_pending.items() if now - t > 60.0]
-            for k in stale:
-                self._preview_pending.pop(k, None)
-            if len(self._preview_pending) >= VOICE_PREVIEW_MAX_CONCURRENT:
+            per_stream = self._audio_pending.get(stream)
+            if per_stream is None:
+                # Stream не из числа whitelisted — допустимо только если
+                # реестр ещё не инициализирован в __init__ (защита от
+                # гонки на старте; на практике всегда присутствует).
+                log.warning(
+                    "ws_server.register_audio_session: stream=%r "
+                        "отсутствует в _audio_pending",
+                    stream,
+                )
                 return False
-            self._preview_pending[request_id] = (ws, now)
+            # Чистим зависшие (старше _AUDIO_PENDING_STALE_S) — на случай
+            # если supervisor упал. Per-stream чистка (preview/operator_tts
+            # не делят слот, но «зависшие» друг друга не касаются).
+            now = time.monotonic()
+            stale = [
+                k for k, (_, t) in per_stream.items()
+                if now - t > _AUDIO_PENDING_STALE_S
+            ]
+            for k in stale:
+                per_stream.pop(k, None)
+            if len(per_stream) >= VOICE_PREVIEW_MAX_CONCURRENT:
+                return False
+            per_stream[request_id] = (ws, now)
+        return True
+
+    def deliver_audio(
+        self,
+        *,
+        stream: str,
+        request_id: str,
+        audio_bytes: bytes,
+        audio_format: str,
+        content_type: str,
+        seq: int,
+        total: int,
+        ws: Optional[Any] = None,
+    ) -> bool:
+        """Обобщённая доставка аудио в WS клиента (ADR-0055, issue #1993).
+
+        Контракт сообщения:
+          * ``meta["type"]`` — ``preview_voice_audio`` для ``stream="preview"``,
+            ``operator_tts_audio`` для ``stream="operator_tts"``.
+          * ``meta`` шлётся через ``_schedule_ws_send`` (JSON_EVENT),
+            аудио-байты — через ``_schedule_ws_send_binary`` (BINARY_FRAME,
+            stream_id=0).
+          * Unknown stream → log.warning + ``False``, без побочных эффектов.
+
+        Args:
+            stream: один из ``_AUDIO_STREAMS``. Иначе — дроп.
+            request_id: должен быть зарегистрирован через
+                ``register_audio_session(stream, request_id, ws)`` или
+                ``start_preview_session(request_id, ws)`` ДО ``deliver_audio``.
+                ``ws`` можно передать явно (для path ``operator_tts``: quest_node
+                сам достаёт ws из реестра по сессии). Если ``ws`` не передан —
+                достаём из ``_audio_pending[stream][request_id]``.
+
+        Returns:
+            True если request_id был зарегистрирован и ws ещё живой;
+            False если stream неизвестен, request_id не зарегистрирован или
+            ws закрыт. В False-ветке реестр чистится от зависшего request_id.
+        """
+        if stream not in _AUDIO_STREAMS:
+            log.warning(
+                "ws_server.deliver_audio: unknown stream=%r (allowed=%s)",
+                stream,
+                sorted(_AUDIO_STREAMS),
+            )
+            return False
+        with self._voice_state_lock:
+            per_stream = self._audio_pending.get(stream)
+            if per_stream is None:
+                return False
+            entry = per_stream.get(request_id)
+            if entry is None:
+                return False
+            ws_resolved = ws if ws is not None else entry[0]
+        if ws_resolved is None or getattr(ws_resolved, "closed", False):
+            with self._voice_state_lock:
+                per_stream = self._audio_pending.get(stream)
+                if per_stream is not None:
+                    per_stream.pop(request_id, None)
+            return False
+        ts_ms = int(time.time() * 1000)
+        meta = {
+            "type": "preview_voice_audio" if stream == "preview" else "operator_tts_audio",
+            "request_id": request_id,
+            "format": audio_format,
+            "content_type": content_type,
+            "seq": seq,
+            "total": total,
+            "ts_ms": ts_ms,
+        }
+        self._schedule_ws_send(ws_resolved, meta)
+        if audio_bytes:
+            self._schedule_ws_send_binary(ws_resolved, audio_bytes)
         return True
 
     def deliver_preview_audio(
@@ -677,70 +807,117 @@ class WSSServer:
         seq: int,
         total: int,
     ) -> bool:
-        """Опубликовать audio preview в WS клиента + JSON_EVENT{type:preview_voice_audio}.
+        """Тонкая обёртка для AV-27 preview-канала (обратная совместимость).
 
-        Returns True если request_id был зарегистрирован и ws ещё живой.
-        Sync; работает как из aiohttp-loop, так и из ROS-thread (через
-        _send_loop.call_soon_threadsafe — fire-and-forget, не блокирует loop).
+        Реализация — ``deliver_audio(stream="preview", ...)``. Сигнатура
+        и поведение НЕ меняются (тесты AV-19/AV-27 остаются зелёными без
+        правок); ADR-0055 ввёл обобщённый канал, а preview — первый стрим
+        на нём.
         """
-        with self._voice_state_lock:
-            entry = self._preview_pending.get(request_id)
-            if entry is None:
-                return False
-            ws, _ = entry
-        if ws.closed:
-            with self._voice_state_lock:
-                self._preview_pending.pop(request_id, None)
-            return False
-        ts_ms = int(time.time() * 1000)
-        meta = {
-            "type": "preview_voice_audio",
-            "request_id": request_id,
-            "format": audio_format,
-            "content_type": content_type,
-            "seq": seq,
-            "total": total,
-            "ts_ms": ts_ms,
-        }
-        self._schedule_ws_send(ws, meta)
-        if audio_bytes:
-            self._schedule_ws_send_binary(ws, audio_bytes)
-        return True
+        return self.deliver_audio(
+            stream="preview",
+            request_id=request_id,
+            audio_bytes=audio_bytes,
+            audio_format=audio_format,
+            content_type=content_type,
+            seq=seq,
+            total=total,
+        )
 
     def deliver_preview_done(self, request_id: str) -> bool:
-        """Финальный preview_voice_done → клиенту. Чистит pending."""
+        """Финальный preview_voice_done → клиенту. Чистит preview-pending.
+
+        Тонкая обёртка над ``_send_audio_done("preview", "preview_voice_done")``.
+        """
+        return self._send_audio_done("preview", "preview_voice_done", request_id)
+
+    def deliver_preview_error(self, request_id: str, reason: str) -> bool:
+        """Ошибка preview → preview_voice_error. Чистит preview-pending.
+
+        Тонкая обёртка над ``_send_audio_error("preview", ...)``.
+        """
+        return self._send_audio_error(
+            "preview", "preview_voice_error", request_id, reason
+        )
+
+    def _send_audio_done(
+        self, stream: str, type_name: str, request_id: str
+    ) -> bool:
+        """Обобщённый «done»: достаём ws из ``_audio_pending[stream]``,
+        шлём ``{type, request_id, ts_ms}`` и чистим pending.
+
+        Для preview (``type="preview_voice_done"``) — финал синтеза.
+        Для operator_tts (``type="operator_tts_done"``, ADR-0055 — пока
+        не шлётся сервером, но метод готов для follow-up) — финал
+        реплики ТАРС в шлем. Неизвестный stream → False.
+        """
+        if stream not in _AUDIO_STREAMS:
+            log.warning(
+                "ws_server._send_audio_done: unknown stream=%r", stream
+            )
+            return False
         with self._voice_state_lock:
-            entry = self._preview_pending.pop(request_id, None)
+            per_stream = self._audio_pending.get(stream)
+            if per_stream is None:
+                return False
+            entry = per_stream.pop(request_id, None)
             if entry is None:
                 return False
             ws, _ = entry
-        if ws.closed:
+        if ws is None or getattr(ws, "closed", False):
             return False
         body = {
-            "type": "preview_voice_done",
+            "type": type_name,
             "request_id": request_id,
             "ts_ms": int(time.time() * 1000),
         }
         self._schedule_ws_send(ws, body)
         return True
 
-    def deliver_preview_error(self, request_id: str, reason: str) -> bool:
-        """Ошибка preview → preview_voice_error. Чистит pending."""
+    def _send_audio_error(
+        self, stream: str, type_name: str, request_id: str, reason: str
+    ) -> bool:
+        """Обобщённый «error»: достаём ws из ``_audio_pending[stream]``,
+        шлём ``{type, request_id, reason, ts_ms}`` и чистим pending.
+
+        Используется и для ``preview_voice_error`` (синтез preview'а упал),
+        и для ``operator_tts_error`` (синтез реплики ТАРС упал;
+        ADR-0055 — пока не шлётся сервером, но метод готов).
+        """
+        if stream not in _AUDIO_STREAMS:
+            log.warning(
+                "ws_server._send_audio_error: unknown stream=%r", stream
+            )
+            return False
         with self._voice_state_lock:
-            entry = self._preview_pending.pop(request_id, None)
+            per_stream = self._audio_pending.get(stream)
+            if per_stream is None:
+                return False
+            entry = per_stream.pop(request_id, None)
             if entry is None:
                 return False
             ws, _ = entry
-        if ws.closed:
+        if ws is None or getattr(ws, "closed", False):
             return False
         body = {
-            "type": "preview_voice_error",
+            "type": type_name,
             "request_id": request_id,
             "reason": reason,
             "ts_ms": int(time.time() * 1000),
         }
         self._schedule_ws_send(ws, body)
         return True
+
+    # Backward-compat alias для тестов AV-19/AV-27, которые читают
+    # ``server._preview_pending`` напрямую. По завершении тестов можно
+    # удалить (коммит-фикс).
+    @property
+    def _preview_pending(self) -> dict[str, tuple[Any, float]]:
+        """Back-compat: ``server._preview_pending`` → ``_audio_pending["preview"]``.
+
+        Удалить после миграции существующих тестов на ``_audio_pending``.
+        """
+        return self._audio_pending.get("preview", {})
 
     def _schedule_ws_send(self, ws: Any, body: dict[str, Any]) -> None:
         """Потокобезопасно запланировать отправку JSON_EVENT в aiohttp-loop.
@@ -764,10 +941,15 @@ class WSSServer:
     def _schedule_ws_send_binary(self, ws: Any, payload: bytes) -> None:
         loop = self._send_loop
         if loop is None or not loop.is_running():
+            log.debug(
+                "ws_server._schedule_ws_send_binary: no loop; payload (%d bytes) dropped",
+                len(payload),
+            )
             return
         try:
             loop.call_soon_threadsafe(self._send_binary_async, ws, payload)
-        except RuntimeError:  # noqa: BLE001
+        except RuntimeError as exc:  # noqa: BLE001
+            log.debug("ws_server._schedule_ws_send_binary failed: %s", exc)
             return
 
     def _send_async(self, ws: Any, body: dict[str, Any]) -> None:
@@ -1000,14 +1182,6 @@ class WSSServer:
             stream_id,
             {"code": code, "message": message},
         )
-
-    async def _send_binary(
-        self,
-        ws,
-        stream_id: int,
-        payload: bytes,
-    ) -> None:
-        await ws.send_bytes(encode_frame(FrameType.BINARY_FRAME, stream_id, payload))
 
     async def _send_voice_state(
         self,
