@@ -1,6 +1,6 @@
 // src/input/voice_capture.ts
 //
-// Два канала с одного mic-захвата (ADR-0054, шаг 5а — wake stream):
+// Два канала с одного mic-захвата (ADR-0071, шаг 5а — wake stream):
 //   - ptt: включается при зажатом грипе (applyVoicePtt в main.ts),
 //          шлёт непрерывный поток int16 PCM 16 kHz mono в VOICE_AUDIO/stream_id=1.
 //          Без VAD — sound_node не рвёт стрим своим 300мс watchdog'ом.
@@ -76,7 +76,7 @@ export interface VoiceCaptureOptions {
    */
   createAudioWorkletNode?: (ctx: AudioContext, name: string) => AudioWorkletNodeLike;
   /**
-   * VAD-параметры для wake-канала (ADR-0054 §2.1).
+   * VAD-параметры для wake-канала (ADR-0071 §2.1).
    * rmsThreshold — int16 единицы (~ 0.0061 = 200 в диапазоне [-32768..32767]).
    * hangoverMs — после последнего голоса шлём ещё N мс (200 мс по умолчанию).
    * ptt-канал VAD НЕ гейтится — там нужен непрерывный поток для sound_node.
@@ -89,7 +89,7 @@ export interface VoiceCapture {
   stop(): void;
   isCapturing(): boolean;
   /**
-   * ADR-0054 §2.2 + §2.3: управление wake-каналом.
+   * ADR-0071 §2.2 + §2.3: управление wake-каналом.
    *   enabled=true   → wake-канал активен (после VAD-gate).
    *   suppressed=true → wake подавлен при зажатом грипе (gate до VAD).
    * Вызывается из main.ts: HELLO-дефолт → {enabled:true, suppressed:false};
@@ -112,7 +112,7 @@ export function floatToInt16(v: number): number {
 }
 
 /**
- * RMS int16 PCM (ADR-0054 §2.1).
+ * RMS int16 PCM (ADR-0071 §2.1).
  *   r = sqrt( sum(pcm[i]^2) / N )
  * Pure function (exported для unit-тестов). Возвращает 0..32767.
  * Синус амплитуды A даёт RMS ≈ A / sqrt(2) — поэтому порог 200 ≈ 0.0061 от
@@ -167,7 +167,7 @@ export function createVoiceCapture(opts: VoiceCaptureOptions): VoiceCapture {
     ...opts.deps
   };
 
-  // ── VAD-параметры (ADR-0054 §2.1) ────────────────────────────────────────
+  // ── VAD-параметры (ADR-0071 §2.1) ────────────────────────────────────────
   // rmsThreshold — стартовая точка (200 инт16 единиц ≈ 0.0061); на замере
   // шлема подбирается. hangoverMs 200мс — компромисс «не рвать слоги».
   // ptt-канал гейтится по VOICE_PTT_ENABLED (при грипе).
@@ -187,7 +187,7 @@ export function createVoiceCapture(opts: VoiceCaptureOptions): VoiceCapture {
   // Остаток после нарезки на VOICE_CHUNK_SAMPLES (int16 семплы).
   let pending = new Int16Array(0);
 
-  // ── Gate state (ADR-0054 §2.2, §2.3) ─────────────────────────────────────
+  // ── Gate state (ADR-0071 §2.2, §2.3) ─────────────────────────────────────
   // enabled   — wake-канал разрешён (panel / HELLO-дефолт).
   // suppressed — wake подавлен при зажатом грипе (gate ДО VAD).
   // voicePttEnabled — грип зажат (ptt-канал активен). Не путать с gate.enabled!
@@ -303,7 +303,7 @@ export function createVoiceCapture(opts: VoiceCaptureOptions): VoiceCapture {
   }
 
   /**
-   * ADR-0054 §2.2/§2.3. Idempotent — повторный вызов с теми же значениями
+   * ADR-0071 §2.2/§2.3. Idempotent — повторный вызов с теми же значениями
    * ничего не делает. Поддерживает частичные апдейты (только enabled / только
    * suppressed). Дёргать можно до start() (gate просто запоминается) и
    * после — применяется к следующим чанкам.

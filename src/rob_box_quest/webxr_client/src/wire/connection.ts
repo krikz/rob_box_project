@@ -232,7 +232,7 @@ export class Connection {
 
   /**
    * VOICE_AUDIO frame (client→server): сырой int16 PCM 16 kHz mono.
-   * ADR-0054 step 5a: один frame type, два stream_id:
+   * ADR-0071 step 5a: один frame type, два stream_id:
    *   1 = ptt (default, существующее поведение — рация + робот-голос при грипе)
    *   2 = wake (новое — always-on поток через VAD-гейт)
    * Сервер маршрутизирует по stream_id: 1 → /avatar/voice_in, 2 → /audio/quest_wake.

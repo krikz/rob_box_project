@@ -341,12 +341,12 @@ describe("Connection RTT (ping → pong)", () => {
   });
 });
 
-// ─── ADR-0054 step 5a: sendVoiceAudio streamId (1|2) ─────────────────────
+// ─── ADR-0071 step 5a: sendVoiceAudio streamId (1|2) ─────────────────────
 //
 // Один VOICE_AUDIO frame type, два stream_id: 1 = ptt (default, текущее
 // поведение), 2 = wake (новое — always-on поток через VAD-gate).
 
-describe("Connection.sendVoiceAudio streamId (ADR-0054)", () => {
+describe("Connection.sendVoiceAudio streamId (ADR-0071)", () => {
   beforeEach(() => {
     FakeWebSocket.instances = [];
     FakeWebSocket.nextInstance = null;
@@ -405,7 +405,7 @@ describe("Connection.sendVoiceAudio streamId (ADR-0054)", () => {
     expect(Array.from(dec.payload)).toEqual([0x00, 0x00, 0xff, 0x7f]);
   });
 
-  it("streamId=2 marks the chunk as wake (ADR-0054 §2.1)", async () => {
+  it("streamId=2 marks the chunk as wake (ADR-0071 §2.1)", async () => {
     const { conn, client } = await connect();
     const pcm = new Uint8Array([0x01, 0x02, 0x03, 0x04]);
     conn.sendVoiceAudio(pcm, 2);

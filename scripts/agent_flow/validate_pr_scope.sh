@@ -3,7 +3,7 @@
 # validate_pr_scope.sh — post-PR gate: блокирует push/PR если в diff vs
 # BASE_REF (default origin/develop) есть файлы вне allowed prefixes.
 #
-# Issue #2038 (повтор #1978/#1979/#2036, ADR-0054 wake stream): воркеры
+# Issue #2038 (повтор #1978/#1979/#2036, ADR-0071 wake stream): воркеры
 # притаскивают в PR застрявшие коммиты прошлых эпиков (msgpack encoder
 # AV-17, supervisor_state, status_hud, tests) — 12 «чужих» файлов. Юзер
 # просит post-flight gate: «после того как они завершили работу тоже
@@ -164,7 +164,7 @@ printf '%s\n' "$OUT_OF_SCOPE" | sed '/^$/d' | sed 's/^/    /' >&2
 echo "" >&2
 echo "  Why this matters (issue #2038, ADR-0055):" >&2
 echo "    PR #2036 притащил 12 файлов webxr_client/* + style.css от эпика AV-17," >&2
-echo "    которые не относились к ADR-0054 wake stream — drift." >&2
+echo "    которые не относились к ADR-0071 wake stream — drift." >&2
 echo "" >&2
 echo "  Fix path:" >&2
 echo "    1) Если чужие файлы реально нужны — cherry-pick нужные коммиты" >&2

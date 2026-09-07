@@ -251,7 +251,7 @@ describe("WORKLET_SOURCE", () => {
   });
 });
 
-// ─── ADR-0054: wake stream + RMS VAD + setWakeGate ───────────────────
+// ─── ADR-0071: wake stream + RMS VAD + setWakeGate ───────────────────
 //
 // Шаг 5а: тот же VoiceCapture кормит два канала — ptt и wake. Канал wake
 // включается/выключается через setWakeGate (panel toggle / HELLO-дефолт /
@@ -279,7 +279,7 @@ describe("rmsInt16", () => {
   });
 });
 
-describe("createVoiceCapture — channel routing + setWakeGate (ADR-0054)", () => {
+describe("createVoiceCapture — channel routing + setWakeGate (ADR-0071)", () => {
   it("emits ptt chunks always when capturing (no VAD gate on ptt)", async () => {
     const deps = makeFakeDeps();
     const received: Array<{ channel: string; rms: number }> = [];
