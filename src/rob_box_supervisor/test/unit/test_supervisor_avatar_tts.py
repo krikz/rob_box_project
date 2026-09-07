@@ -140,5 +140,75 @@ class TestSupervisorOwnLinesUseAvatarChannel(unittest.TestCase):
         self.assertEqual(_published_voice_tts(self.node), [])
 
 
+class TestPublishAvatarTtsEmptyTextDrop(unittest.TestCase):
+    """Issue #2096 — guard пустого text в ``_publish_avatar_tts``.
+
+    До фикса ``_publish_avatar_tts("")`` слал ``<speak></speak>`` в
+    /avatar/tts/request → tts_node ловил MiniMax bad-request "text is empty"
+    → CRITICAL в deploy-логе (run #34144712828). Теперь:
+    * пустой/whitespace text → DROP (ничего в /avatar/tts/request)
+    * возвращается пустой request_id (caller знает, что синтеза не будет).
+    """
+
+    def setUp(self) -> None:
+        self.node = AvatarSupervisor()
+
+    def tearDown(self) -> None:
+        self.node.destroy_node()
+
+    def test_empty_string_drops_request(self) -> None:
+        rid = self.node._publish_avatar_tts("")
+        self.assertEqual(rid, "")
+        self.assertEqual(_published_avatar_tts(self.node), [])
+
+    def test_whitespace_only_drops_request(self) -> None:
+        rid = self.node._publish_avatar_tts("   \n\t  ")
+        self.assertEqual(rid, "")
+        self.assertEqual(_published_avatar_tts(self.node), [])
+
+    def test_empty_text_does_not_touch_voice_tts_request(self) -> None:
+        # Дополнительно: drop не должен «утекать» в /voice/tts/request
+        # (say-канал) — ни при каких условиях.
+        self.node._publish_avatar_tts("")
+        self.assertEqual(_published_voice_tts(self.node), [])
+
+    def test_non_empty_text_still_publishes(self) -> None:
+        # Sanity: guard не должен сломать happy-path. Тест идёт после
+        # test_empty_*, чтобы при падении guard'а видеть, что контракт
+        # для непустого text по-прежнему работает.
+        rid = self.node._publish_avatar_tts("готово")
+        self.assertNotEqual(rid, "")
+        self.assertEqual(len(_published_avatar_tts(self.node)), 1)
+
+
+class TestPublishGripTtsEmptyTextDrop(unittest.TestCase):
+    """Issue #2096 — guard пустого text в ``_publish_grip_tts``.
+
+    Зеркальная защита к ``_publish_avatar_tts``: пустой text из грип-пайплайна
+    (после LLM-transform мог вернуть ``""``) тоже не должен уходить в
+    /avatar/tts/request.
+    """
+
+    def setUp(self) -> None:
+        self.node = AvatarSupervisor()
+
+    def tearDown(self) -> None:
+        self.node.destroy_node()
+
+    def test_empty_string_drops_request(self) -> None:
+        self.node._publish_grip_tts("")
+        self.assertEqual(_published_avatar_tts(self.node), [])
+
+    def test_whitespace_only_drops_request(self) -> None:
+        self.node._publish_grip_tts("   \n\t  ")
+        self.assertEqual(_published_avatar_tts(self.node), [])
+
+    def test_non_empty_text_still_publishes(self) -> None:
+        self.node._publish_grip_tts("мы начинаем")
+        pub = _published_avatar_tts(self.node)
+        self.assertEqual(len(pub), 1)
+        self.assertEqual(pub[0]["ssml"], "<speak>мы начинаем</speak>")
+
+
 if __name__ == "__main__":
     unittest.main()
