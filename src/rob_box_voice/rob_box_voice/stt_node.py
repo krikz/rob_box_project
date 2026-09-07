@@ -11,8 +11,11 @@ STTNode - Speech-to-Text с Yandex STT gRPC v3 (primary) + Vosk (fallback)
 | ``/audio/quest_wake`` (wake-поток шлема, вейк «ТАРС») | ``/avatar/stt/result`` → агент оператора |
 
 Namespace вейк-слов привязан к источнику аудио, а не только к тексту
-(``config/wake_words.yaml`` — SSoT, см. ``core.dialogue_text``): «ТАРС» из
-ReSpeaker игнорируется, вейк личности из микрофона шлема игнорируется.
+(``config/wake_words.yaml`` — SSoT, см. ``core.dialogue_text``): вейк-слово
+личности из микрофона шлема игнорируется. Исключение issue #2097: «ТАРС»
+присутствует в ОБОИХ namespace — в ReSpeaker это wake-word личности
+(диалог с «роботом ТАРС»), в шлеме — wake-word агента оператора
+(маршрутизация в /avatar/stt/result через wake-поток).
 """
 
 import json

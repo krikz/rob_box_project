@@ -57,6 +57,23 @@ class TestWakeWordsSSoT:
         assert personality == list(DEFAULT_WAKE_WORDS)
         assert operator == list(DEFAULT_OPERATOR_WAKE_WORDS)
 
+    def test_personality_contains_tars_wake_word(self):
+        """Issue #2097: «ТАРС» принимается в ReSpeaker как wake-word личности.
+
+        Регрессионная защита: если кто-то «урежет» список до канонических
+        «роб*»-вариантов, Шифу снова услышит «ТАРС молчит» из динамика робота.
+        """
+        data = _load_ssot()
+        assert "тарс" in data["personality"], (
+            "issue #2097: «ТАРС» обязан быть в personality (ReSpeaker wake-word)"
+        )
+        assert "tars" in data["personality"], (
+            "issue #2097: «tars» (латиницей) — тоже в personality"
+        )
+        # Канонические «роб*»-варианты не должны пропасть при добавлении «ТАРС»
+        assert "робот" in data["personality"]
+        assert "роб" in data["personality"]
+
 
 class TestWakeWordsLoaderFallback:
     def test_load_missing_file_returns_empty(self, tmp_path):

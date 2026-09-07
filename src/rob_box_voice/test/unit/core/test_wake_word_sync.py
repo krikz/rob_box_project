@@ -42,6 +42,11 @@ CANONICAL_WAKE_WORDS = [
     "робо",
     "роб",
     "робик",
+    # wake-имя личности «ТАРС» (issue #2097): «Пикник на обочине».
+    # Теперь принимается в ReSpeaker-канале как wake-word личности;
+    # STT-искажения для оператора собираются отдельно (operator namespace).
+    "тарс",
+    "tars",
 ]
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
