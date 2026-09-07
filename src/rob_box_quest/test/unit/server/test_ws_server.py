@@ -555,3 +555,194 @@ async def test_broadcast_json_event_no_sessions_returns_zero():
     server = WSSServer(bridge=NoOpBridge(), pin="000000")
     count = server.broadcast_json_event({"type": "robot_alert", "code": "X"})
     assert count == 0
+
+
+# ── issue #2099/#2100 — один упавший cmd-хендлер НЕ должен убивать сессию ──
+#
+# Диагностика (2026-09-07): гипотеза issue #2100 «register_audio_session
+# (operator_tts) возвращает False на дефолтном лимите» ОПРОВЕРГНУТА —
+# ``test_register_audio_session_acceptance_default_limit`` в
+# ``test_ws_server_deliver_audio.py`` зелёный на дефолтном
+# ``VOICE_PREVIEW_MAX_CONCURRENT``. Реальный разрыв обратного канала —
+# в ``_ws_handler`` (этот файл, было: строки 2216-2300 одним большим
+# if/elif БЕЗ try/except вокруг диспетчера, весь блок ловился только
+# внешним ``except Exception`` вместе с ``finally: self._unregister_session``).
+# Любое необработанное исключение внутри ЛЮБОГО cmd-хендлера — например,
+# ``NameError: name '_voices_for' is not defined`` из issue #2099
+# (``bridge.set_voice``, реальный траблшут с робота) — убивало ВСЮ
+# WS-сессию, а не только упавшую команду. ``deliver_audio(stream=
+# "operator_tts", ...)`` адресуется по ``ws``, зарегистрированному ЗА ЭТУ
+# сессию (``register_audio_session``) — если сессия умерла, реплика ТАРС
+# в шлем пропадает без единого предупреждения выше по стеку супервизора.
+#
+# Фикс — ``ws_server.py:_ws_handler``: try/except обёрнут вокруг ОДНОГО
+# кадра (не вокруг всего ``async for``), так что кривой cmd логируется,
+# клиенту уходит ``ERROR{INTERNAL}``, но сессия и все её audio-регистрации
+# остаются живы.
+
+
+async def _send_set_voice_cmd(ws, voice_id: str = "ru-RU-voice") -> None:
+    payload = json.dumps({"cmd": "set_voice", "voice_id": voice_id}).encode("utf-8")
+    await ws.send_bytes(encode_frame(FrameType.JSON_CMD, 0, payload))
+
+
+async def _wait_for_welcome(ws) -> None:
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        msg = await ws.receive()
+        if msg.type == WSMsgType.BINARY:
+            ftype, _sid, _payload = decode_frame(msg.data)
+            if ftype == FrameType.WELCOME:
+                return
+    pytest.fail("WELCOME not received")
+
+
+async def _drain_until(ws, want_ftype, timeout: float = 2.0, body_type: str = None):
+    """Читает кадры пока не встретит ``want_ftype`` (или CLOSE → fail).
+
+    Если ``body_type`` задан — для ``FrameType.JSON_EVENT`` фильтрует ещё и
+    по ``body["type"]`` (иначе наши собственные keep-alive ``pong``,
+    которые шлёт этот же helper, ложно совпали бы по ftype).
+
+    Шлёт ping каждые ~150 мс, чтобы долгое ожидание в тесте (под pytest +
+    aiohttp TestServer это иногда медленнее, чем 0.6с) не словило
+    watchdog (``WATCHDOG_TIMEOUT_S``) и не закрыло сессию по ПОСТОРОННЕЙ
+    для теста причине. Возвращает декодированный payload (dict).
+    """
+    deadline = time.monotonic() + timeout
+    last_ping = time.monotonic()
+    while time.monotonic() < deadline:
+        now = time.monotonic()
+        if now - last_ping > 0.15:
+            await _send_ping_event(ws)
+            last_ping = now
+        try:
+            msg = await ws.receive(timeout=0.1)
+        except asyncio.TimeoutError:
+            continue
+        if msg.type == WSMsgType.CLOSE:
+            pytest.fail(f"socket closed while waiting for ftype={want_ftype}")
+        if msg.type != WSMsgType.BINARY:
+            continue
+        ftype, _sid, payload = decode_frame(msg.data)
+        if ftype != want_ftype:
+            continue
+        body = {}
+        if payload:
+            try:
+                body = json.loads(payload.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                body = {}
+        if body_type is not None and body.get("type") != body_type:
+            continue
+        return body
+    pytest.fail(f"ftype={want_ftype} (type={body_type}) not received within {timeout}s")
+
+
+async def test_crashing_cmd_handler_does_not_kill_ws_session(
+    client, fixed_pin, monkeypatch
+):
+    """Issue #2099 regression: NameError в bridge.set_voice не рвёт сессию.
+
+    До фикса это ронялось в ``ws_handler crashed`` (внешний except) и
+    ``_unregister_session`` закрывал сокет — ровно траблшут с робота
+    (2026-09-07, 16:48 и 16:55).
+    """
+    http_client, server = client
+    ws = await _open_ws(http_client)
+    try:
+        await _send_hello(ws, fixed_pin)
+        await _wait_for_welcome(ws)
+        assert server.get_active_sessions() == 1
+
+        # Симулируем ровно баг issue #2099.
+        def _boom(voice_id, preset):
+            raise NameError("name '_voices_for' is not defined")
+
+        monkeypatch.setattr(server.bridge, "set_voice", _boom)
+        await _send_set_voice_cmd(ws)
+
+        err_body = await _drain_until(ws, FrameType.ERROR)
+        assert err_body.get("code") == "INTERNAL"
+
+        # Сессия осталась зарегистрированной и живой...
+        assert server.get_active_sessions() == 1
+
+        # ...и продолжает обслуживать дальнейшие кадры как ни в чём не бывало.
+        pong_body = await _drain_until(ws, FrameType.JSON_EVENT, body_type="pong")
+        assert "ts_ms" in pong_body
+    finally:
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def test_operator_tts_audio_survives_unrelated_crashing_cmd(
+    client, fixed_pin, monkeypatch
+):
+    """Issue #2100 — операторский аудиоканал переживает баг issue #2099.
+
+    Прямой сквозной регресс-тест на связку #2099→#2100: регистрируем
+    ``operator_tts`` request_id → ws (как это делает
+    ``quest_node._on_avatar_tts_request_meta``), затем ломаем сессию
+    падающим ``set_voice`` (issue #2099), и проверяем, что
+    ``deliver_audio(stream="operator_tts", ...)`` для РАНЕЕ
+    зарегистрированного request_id всё ещё долетает клиенту — сессия и
+    её audio-регистрация не были стёрты падением постороннего cmd.
+    """
+    http_client, server = client
+    ws = await _open_ws(http_client)
+    try:
+        await _send_hello(ws, fixed_pin)
+        await _wait_for_welcome(ws)
+        assert server.get_active_sessions() == 1
+
+        # deliver_audio шлёт fire-and-forget через _send_loop (в проде
+        # quest_node зовёт set_send_loop() на старте — deliver_audio
+        # вызывается из ROS-потока, не из aiohttp-loop). Тестовый клиент
+        # это не делает сам — воспроизводим ту же проводку явно.
+        server.set_send_loop(asyncio.get_running_loop())
+
+        # ws_server-сторонний объект ws (тот самый, что видит deliver_audio).
+        server_ws = next(iter(server._ws_by_session.values()))
+        assert server.register_audio_session("operator_tts", "req-tars-1", server_ws)
+
+        # Ломаем сессию не связанным с TTS багом (issue #2099).
+        def _boom(voice_id, preset):
+            raise NameError("name '_voices_for' is not defined")
+
+        monkeypatch.setattr(server.bridge, "set_voice", _boom)
+        await _send_set_voice_cmd(ws)
+
+        # Дренируем ERROR{INTERNAL} — не требуем его в этом тесте, фокус
+        # на том, что audio-регистрация не пострадала. Хелпер сам держит
+        # watchdog живым пингами, так что дальнейшее ожидание безопасно.
+        await _drain_until(ws, FrameType.ERROR)
+
+        assert server.get_active_sessions() == 1
+
+        delivered = server.deliver_audio(
+            stream="operator_tts",
+            request_id="req-tars-1",
+            audio_bytes=b"\x01\x02\x03\x04",
+            audio_format="pcm_s16le",
+            content_type="audio/pcm",
+            seq=0,
+            total=0,
+        )
+        assert delivered, (
+            "deliver_audio(operator_tts) failed for a request_id registered "
+            "BEFORE the crashing cmd — the session/registry must survive an "
+            "unrelated command's exception (issue #2100 regression)"
+        )
+
+        audio_body = await _drain_until(
+            ws, FrameType.JSON_EVENT, body_type="operator_tts_audio"
+        )
+        assert audio_body.get("request_id") == "req-tars-1"
+    finally:
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass

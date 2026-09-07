@@ -651,3 +651,96 @@ def test_publish_preview_voice_without_provider_still_emits():
     parsed = json.loads(pvp.published[0])
     assert parsed["provider"] == ""
     assert parsed["request_id"] == "req-x"
+
+
+# ── issue #2099 — регресс NameError: '_voices_for' is not defined ────────────
+#
+# До фикса ``QuestBridge.set_voice`` падал с NameError при КАЖДОЙ попытке
+# UI Quest поставить голос через WS — ws_handler крашился, ws-сессия ломалась.
+# Supervisor импортирует ``voices_for as _voices_for`` корректно (см.
+# supervisor_node.py:53), а вот quest — отстал после рефакторинга
+# ``Bridge.execute(Command)`` (PR #2056/#2086): call site в ``set_voice``
+# остался, но символ в namespace модуля не подтянулся.
+#
+# Тесты ниже НЕ требуют rclpy/audio_common_msgs — они работают и на
+# dev-env, и в Docker image.
+
+
+def test_quest_node_imports_voices_for_from_voice_registry():
+    """Source-level регресс: ``quest_node.py`` должен импортировать ``_voices_for``.
+
+    Парсим исходник текстом (AST) — это работает в любом окружении, без
+    тяжёлых зависимостей. Если кто-то снова отстанет от supervisor при
+    рефакторинге registry, этот тест сразу укажет на проблему.
+    """
+    import ast
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[4]  # test/unit/... → repo root
+    quest_node_path = repo_root / "src" / "rob_box_quest" / "rob_box_quest" / "quest_node.py"
+    assert quest_node_path.exists(), f"quest_node.py not found at {quest_node_path}"
+
+    source = quest_node_path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    found = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.module != "rob_box_voice.tts_voice_registry":
+            continue
+        for alias in node.names:
+            # ``voices_for as _voices_for`` ИЛИ ``voices_for`` без alias —
+            # нас интересует оба варианта, но call site в set_voice ждёт
+            # именно ``_voices_for``.
+            target = alias.asname or alias.name
+            if target == "_voices_for":
+                found = True
+                break
+
+    assert found, (
+        "quest_node.py должен импортировать "
+        "`from rob_box_voice.tts_voice_registry import voices_for as _voices_for` "
+        "(issue #2099, ws_handler крашился с NameError без этого импорта)"
+    )
+
+
+def test_quest_node_module_exposes_voices_for_alias():
+    """Runtime регресс: при импорте ``rob_box_node`` алиас ``_voices_for`` доступен.
+
+    Это ловит случай, когда import-line есть в исходнике, но модуль не
+    импортируется (например, синтаксическая ошибка или пропавший
+    rob_box_voice в sys.path).
+
+    Тест skip'ается, если ``audio_common_msgs`` недоступен — quest_node
+    тянет rclpy/audio_common_msgs на верхнем уровне (только в Docker).
+    """
+    pytest.importorskip(
+        "audio_common_msgs",
+        reason="QuestBridge/quest_node требует rclpy/audio_common_msgs (только в Docker image)",
+    )
+    import importlib
+
+    # Принудительно импортируем зависимости, чтобы ``from rob_box_voice...``
+    # в quest_node.py мог резолвиться.
+    pytest.importorskip("rob_box_voice", reason="rob_box_voice не в sys.path")
+    import rob_box_quest.quest_node as qn  # noqa: E402
+
+    # Ре-импорт через importlib на случай уже загруженной версии модуля
+    # в этом pytest-сеансе (тесты выше могли уже затянуть quest_node).
+    importlib.reload(qn)
+
+    assert hasattr(qn, "_voices_for"), (
+        "quest_node должен экспортировать алиас ``_voices_for`` "
+        "после рефакторинга Bridge.execute(Command) (issue #2099)"
+    )
+    assert callable(qn._voices_for), (
+        "``_voices_for`` должен быть callable (тот же ``voices_for`` "
+        "из rob_box_voice.tts_voice_registry)"
+    )
+    # Smoke: на известном провайдере возвращается список строк.
+    yandex_voices = qn._voices_for("yandex")
+    assert isinstance(yandex_voices, list)
+    assert all(isinstance(v, str) for v in yandex_voices), (
+        f"yandex voices должны быть list[str], получили {yandex_voices!r}"
+    )

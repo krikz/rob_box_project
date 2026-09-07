@@ -57,6 +57,15 @@ from std_msgs.msg import String
 # issue #1988 — константа топика ответа ТАРС (единый источник правды).
 from rob_box_core.avatar_command import AVATAR_COMMAND_RESULT_TOPIC
 
+# issue #2099 — AV-27 / issue #1919: единый SoT списка голосов TTS-провайдера.
+# До этого импорта вызов ``QuestBridge.set_voice`` падал с
+# ``NameError: name '_voices_for' is not defined`` (ws_handler крашился при
+# каждой попытке UI Quest поставить голос через WS). Supervisor импортирует
+# то же имя (см. supervisor_node.py:53), quest просто отстал — после
+# рефакторинга ``Bridge.execute(Command)`` (PR #2056/#2086) call site в
+# ``set_voice`` остался, а символ в namespace модуля не подтянулся.
+from rob_box_voice.tts_voice_registry import voices_for as _voices_for
+
 from .core.safety import Watchdog
 from .core.teleop import TeleopController
 from .server.session import WATCHDOG_TIMEOUT_S as SESSION_WATCHDOG_TIMEOUT_S

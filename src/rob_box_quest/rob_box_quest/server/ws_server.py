@@ -2213,91 +2213,113 @@ class WSSServer:
                 except ValueError as e:
                     await self._send_error(ws, 0, ErrorCode.BAD_PAYLOAD, str(e))
                     continue
-                if ftype == FrameType.HELLO:
-                    try:
-                        payload_obj = json.loads(payload.decode("utf-8"))
-                    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                # issue #2100/#2099 — один кривой КАДР (баг конкретного
+                # cmd-хендлера, напр. NameError в bridge.set_voice) НЕ должен
+                # убивать всю WS-сессию. До этой правки исключение здесь
+                # улетало в внешний except (см. ниже) → _unregister_session →
+                # вся сессия закрывалась, и operator_tts audio, летящий в ЭТУ
+                # же сессию (deliver_audio привязан к ws через
+                # register_audio_session), терял получателя без единого
+                # предупреждения на стороне supervisor/tts_node — реплика
+                # ТАРС в шлем просто пропадала. Теперь один упавший frame
+                # логируется, клиенту уходит ERROR{INTERNAL}, и цикл
+                # продолжается — сессия и все её audio-регистрации живы.
+                try:
+                    if ftype == FrameType.HELLO:
+                        try:
+                            payload_obj = json.loads(payload.decode("utf-8"))
+                        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                            await self._send_error(
+                                ws, 0, ErrorCode.BAD_PAYLOAD, f"bad HELLO json: {e}"
+                            )
+                            continue
+                        if not await self._on_hello(ws, session, payload_obj):
+                            # AUTH_FAIL → закрыть сокет после отправки ERROR.
+                            await ws.close(code=4001, message=b"auth_fail")
+                            return ws
+                        continue
+                    if session.state.value != "authenticated":
                         await self._send_error(
-                            ws, 0, ErrorCode.BAD_PAYLOAD, f"bad HELLO json: {e}"
+                            ws, 0, ErrorCode.BAD_PAYLOAD, "HELLO required first"
                         )
                         continue
-                    if not await self._on_hello(ws, session, payload_obj):
-                        # AUTH_FAIL → закрыть сокет после отправки ERROR.
-                        await ws.close(code=4001, message=b"auth_fail")
+                    if ftype == FrameType.SUBSCRIBE:
+                        try:
+                            payload_obj = json.loads(payload.decode("utf-8"))
+                        except (UnicodeDecodeError, json.JSONDecodeError):
+                            await self._send_error(
+                                ws, 0, ErrorCode.BAD_PAYLOAD, "bad SUBSCRIBE json"
+                            )
+                            continue
+                        await self._on_subscribe(ws, session, payload_obj)
+                    elif ftype == FrameType.UNSUBSCRIBE:
+                        try:
+                            payload_obj = json.loads(payload.decode("utf-8"))
+                        except (UnicodeDecodeError, json.JSONDecodeError):
+                            continue
+                        await self._on_unsubscribe(ws, session, payload_obj)
+                    elif ftype == FrameType.JSON_EVENT:
+                        try:
+                            payload_obj = json.loads(payload.decode("utf-8"))
+                        except (UnicodeDecodeError, json.JSONDecodeError):
+                            continue
+                        await self._on_json_event(ws, session, payload_obj)
+                    elif ftype == FrameType.JSON_CMD:
+                        try:
+                            payload_obj = json.loads(payload.decode("utf-8"))
+                        except (UnicodeDecodeError, json.JSONDecodeError):
+                            await self._send_error(
+                                ws, 0, ErrorCode.BAD_PAYLOAD, "bad JSON_CMD json"
+                            )
+                            continue
+                        await self._on_json_cmd(ws, session, payload_obj)
+                    elif ftype == FrameType.GOODBYE:
+                        await ws.close(code=1000, message=b"goodbye")
                         return ws
-                    continue
-                if session.state.value != "authenticated":
-                    await self._send_error(
-                        ws, 0, ErrorCode.BAD_PAYLOAD, "HELLO required first"
-                    )
-                    continue
-                if ftype == FrameType.SUBSCRIBE:
-                    try:
-                        payload_obj = json.loads(payload.decode("utf-8"))
-                    except (UnicodeDecodeError, json.JSONDecodeError):
-                        await self._send_error(
-                            ws, 0, ErrorCode.BAD_PAYLOAD, "bad SUBSCRIBE json"
+                    elif ftype == FrameType.VOICE_AUDIO:
+                        # ADR-0054 step 5a: stream_id==2 → wake-канал
+                        # (publish_quest_wake_audio), иначе — PTT/radio
+                        # (publish_voice_audio, текущее поведение).
+                        # Back-compat: stream_id==0 тоже идёт в radio-канал
+                        # (исторически клиенты слали sid=0).
+                        if sid == 2:
+                            self.bridge.publish_quest_wake_audio(payload)
+                        else:
+                            self.bridge.publish_voice_audio(payload)
+                    elif ftype in (
+                        FrameType.SET_MODE,
+                        FrameType.ACQUIRE_FLOOR,
+                        FrameType.RELEASE_FLOOR,
+                    ):
+                        # Supervisor-API (§3 + §11 + AV-16). Только v2-сессии;
+                        # v1 присылает 0x30..0x32 → ERROR{PROTOCOL_VERSION}.
+                        await self._handle_supervisor_command(
+                            ws, session, ftype, payload
                         )
-                        continue
-                    await self._on_subscribe(ws, session, payload_obj)
-                elif ftype == FrameType.UNSUBSCRIBE:
-                    try:
-                        payload_obj = json.loads(payload.decode("utf-8"))
-                    except (UnicodeDecodeError, json.JSONDecodeError):
-                        continue
-                    await self._on_unsubscribe(ws, session, payload_obj)
-                elif ftype == FrameType.JSON_EVENT:
-                    try:
-                        payload_obj = json.loads(payload.decode("utf-8"))
-                    except (UnicodeDecodeError, json.JSONDecodeError):
-                        continue
-                    await self._on_json_event(ws, session, payload_obj)
-                elif ftype == FrameType.JSON_CMD:
-                    try:
-                        payload_obj = json.loads(payload.decode("utf-8"))
-                    except (UnicodeDecodeError, json.JSONDecodeError):
+                    elif ftype == FrameType.STATE_UPDATE:
+                        # Сервер-инициируемый frame; клиент НИКОГДА не должен
+                        # слать STATE_UPDATE → ERROR{BAD_PAYLOAD}.
                         await self._send_error(
-                            ws, 0, ErrorCode.BAD_PAYLOAD, "bad JSON_CMD json"
+                            ws,
+                            0,
+                            ErrorCode.BAD_PAYLOAD,
+                            "STATE_UPDATE is server→client only (§3)",
                         )
-                        continue
-                    await self._on_json_cmd(ws, session, payload_obj)
-                elif ftype == FrameType.GOODBYE:
-                    await ws.close(code=1000, message=b"goodbye")
-                    return ws
-                elif ftype == FrameType.VOICE_AUDIO:
-                    # ADR-0054 step 5a: stream_id==2 → wake-канал
-                    # (publish_quest_wake_audio), иначе — PTT/radio
-                    # (publish_voice_audio, текущее поведение).
-                    # Back-compat: stream_id==0 тоже идёт в radio-канал
-                    # (исторически клиенты слали sid=0).
-                    if sid == 2:
-                        self.bridge.publish_quest_wake_audio(payload)
                     else:
-                        self.bridge.publish_voice_audio(payload)
-                elif ftype in (
-                    FrameType.SET_MODE,
-                    FrameType.ACQUIRE_FLOOR,
-                    FrameType.RELEASE_FLOOR,
-                ):
-                    # Supervisor-API (§3 + §11 + AV-16). Только v2-сессии;
-                    # v1 присылает 0x30..0x32 → ERROR{PROTOCOL_VERSION}.
-                    await self._handle_supervisor_command(ws, session, ftype, payload)
-                elif ftype == FrameType.STATE_UPDATE:
-                    # Сервер-инициируемый frame; клиент НИКОГДА не должен
-                    # слать STATE_UPDATE → ERROR{BAD_PAYLOAD}.
-                    await self._send_error(
-                        ws,
-                        0,
-                        ErrorCode.BAD_PAYLOAD,
-                        "STATE_UPDATE is server→client only (§3)",
+                        await self._send_error(
+                            ws,
+                            0,
+                            ErrorCode.BAD_PAYLOAD,
+                            f"frame type {ftype} not supported in Phase 1.2",
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001 — один cmd не рвёт сессию
+                    log.exception(
+                        "quest: frame handler crashed (ftype=%s): %s", ftype, e
                     )
-                else:
-                    await self._send_error(
-                        ws,
-                        0,
-                        ErrorCode.BAD_PAYLOAD,
-                        f"frame type {ftype} not supported in Phase 1.2",
-                    )
+                    await self._send_error(ws, 0, ErrorCode.INTERNAL, str(e))
+                    continue
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 — логируем и рвём сокет
