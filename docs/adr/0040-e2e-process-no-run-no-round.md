@@ -7,7 +7,7 @@
 | Автор | architect (Hermes Agent); карточка `t_a0890749`, issue #1831 |
 | Контекст | `agent-flow-e2e-process.sh` циклически создаёт round-ветки (`round-279…round-308` за день, `round-counter = 311`) потому что `gh workflow run` для `L: E2E Voice Test` либо не возвращает run-id, либо возвращает ошибку — а следующий тик всё равно видит `needs-e2e` issue и стартует round заново, инкрементируя счётчик. CI spam → лишние workflow runs → зашумлённый аудит trail. |
 | Затрагивает | `scripts/agent_flow/agent-flow-e2e-process.sh` (`_trigger_workflow_with_retry`, `wait_workflow`, основной цикл `process_issue`, post-tick cleanup, `round_ensure`), `~/.hermes/state/agent-flow-e2e-round-counter`, `~/.hermes/state/agent-flow-e2e-run-state` (новый), label `e2e:infra-fail` (расширение контракта). |
-| Родители | ADR-0013 (incremental delivery — узкая правка, не переписывать процесс), ADR-0018 (honesty culture — голословное «e2e прошёл» карается), ADR-0022 (e2e done gates — этот ADR уточняет один gap), ADR-0025 (stale-PR detection — у нас другая root cause, но архитектурный стиль похож), ADR-0026 (recovery card contract — `infra-fail` теперь идёт через тот же канал). |
+| Родители | ADR-0013 (incremental delivery — узкая правка, не переписывать процесс), ADR-0018 (honesty culture — голословное «e2e прошёл» карается), ADR-0022 (e2e done gates — этот ADR уточняет один gap), ADR-0025 (stale-PR detection — у нас другая root cause, но архитектурный стиль похож), ADR-AF-0026 (recovery card contract — `infra-fail` теперь идёт через тот же канал). |
 | Связанные | issue #1831 (эта задача), issue #1826 (loop on rounds — частично fix в PR #1828, skip SHA-tags), issue #1825 (round cleanup), issue #1707 (worktree cleanup), PR #1828 (skip SHA-tags), agent-flow-install-daily cron (workaround до merge этого фикса). |
 
 ---
@@ -274,10 +274,10 @@ fi
 | Какая самая простая альтернатива? | Удалять round-ветки cron'ом каждые 5 мин (workaround). Не лечит root cause. |
 | Какой trade-off (complexity vs benefit)? | +1 state-файл, +~30 строк bash, +3 коммита. Benefit: counter отражает реальность, automatic infra-fail, можно отличить real CI от retry-loop. |
 | Что будет, если НЕ делать это сейчас? | Counter drift продолжит расти (311 → 312 → …). Расследование regress'ов будет требовать ручной проверки «этот round — фантом или реальный прогон?» в каждом случае. |
-| Почему ADR, а не сразу фикс? | Юзер явно сказал: «Просто фиксирую в issue. agent-flow developer починит.» Архитектурное решение (контракт «run → counter», state-файл, lock recovery) — мой артефакт. Имплементация (3 коммита bash) — делегируется developer-карточкой. ADR-0030 §4 требует pre-merge guard на уникальность номера; этот ADR — формальная фиксация решения до написания кода. |
+| Почему ADR, а не сразу фикс? | Юзер явно сказал: «Просто фиксирую в issue. agent-flow developer починит.» Архитектурное решение (контракт «run → counter», state-файл, lock recovery) — мой артефакт. Имплементация (3 коммита bash) — делегируется developer-карточкой. ADR-AF-0030 §4 требует pre-merge guard на уникальность номера; этот ADR — формальная фиксация решения до написания кода. |
 | Совместимо с ADR-0022 (e2e done gates)? | Да. ADR-0022 говорит, какие labels в каких случаях ставятся. Этот ADR уточняет **новый** label `e2e:infra-fail` (уже существовал, но без формального триггера) и state-машину для `consecutive_fails`. |
 | Совместимо с ADR-0025 (stale-PR detection)? | Да. ADR-0025 защищает от stale-PR-tip (PR отстал от develop). Этот ADR защищает от «trigger не сработал» (run не появился на round-ветке). Независимые failure modes, оба нужны. |
-| Совместимо с ADR-0026 (recovery card contract)? | Да. Если `consecutive_fails ≥ 3`, скрипт создаёт recovery-карточку devops'у (как в line 3111 для build-failed). Этот ADR уточняет, что `e2e:infra-fail` — это label + comment, recovery-card — отдельный канал (если run так и не стартанул после devops intervention). |
+| Совместимо с ADR-AF-0026 (recovery card contract)? | Да. Если `consecutive_fails ≥ 3`, скрипт создаёт recovery-карточку devops'у (как в line 3111 для build-failed). Этот ADR уточняет, что `e2e:infra-fail` — это label + comment, recovery-card — отдельный канал (если run так и не стартанул после devops intervention). |
 
 ---
 
@@ -354,5 +354,5 @@ fi
 **Не делать (out of scope):**
 
 - Не рефакторить весь `agent-flow-e2e-process.sh` (4033 строк). Менять ТОЛЬКО 4 точки: `_trigger_workflow_with_retry` (line 2007), `process_issue` non-zero branch (line 3396-3398), lock init (line 580), verdict handler (line ~3520).
-- Не менять label `e2e:infra-fail` definition (уже правильный, ADR-0026 совместим).
+- Не менять label `e2e:infra-fail` definition (уже правильный, ADR-AF-0026 совместим).
 - Не менять `wait_workflow` (line 2992) — он продолжает работать с тем же контрактом.

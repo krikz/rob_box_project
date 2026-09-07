@@ -297,7 +297,7 @@ branch_label_override() {  # $1=labels_json
         || true
 }
 
-# extract_file_paths_from_body — ADR-0052 / ретро t_50a18fa9 / issue #2018.
+# extract_file_paths_from_body — ADR-AF-0062 / ретро t_50a18fa9 / issue #2018.
 # Извлекает список "<path>[:line[-line2]]" из issue body. Используется для
 # pre-create guard по file-overlap (G10a): если в body указан glob-путь к файлу
 # (например, test_quest_llm_formalize.py:171) и в OPEN PR этот же файл правится —
@@ -361,7 +361,7 @@ extract_file_paths_from_body() {  # $1=body
         || true
 }
 
-# file_overlap_with_open_pr — ADR-0052 / ретро t_50a18fa9 / issue #2018.
+# file_overlap_with_open_pr — ADR-AF-0062 / ретро t_50a18fa9 / issue #2018.
 # Pre-create guard по file-overlap с OPEN PR (любая ветка, любой воркер).
 # Используется в process_issues_json ПОСЛЕ existing_by_issue и ДО branch_for.
 #
@@ -462,7 +462,7 @@ for pr in PR_LIST:
                 # если issue не указал :line — overlap по любой правке в файле.
                 # Если issue указал :line — мы не можем строго сравнить без
                 # patch-content; принимаем overlap « найден (ниниторичный сигнал),
-                # см. ADR-0052 §4 tolerance=5 строк.
+                # см. ADR-AF-0062 §4 tolerance=5 строк.
                 results.append((pr_num, pr_head, ifpath, pf))
                 break
 for r in results:
@@ -477,13 +477,13 @@ for r in results:
     local _fo_pr _fo_head _fo_ifile _fo_pfile
     IFS=$'\t' read -r _fo_pr _fo_head _fo_ifile _fo_pfile <<< "$first_overlap"
 
-    log "🚨 issue #${number}: G10a file-overlap — файл ${_fo_ifile} уже правится в OPEN PR #${_fo_pr} (${_fo_head}) — карточку НЕ создаём (ретро t_50a18fa9, ADR-0052)"
+    log "🚨 issue #${number}: G10a file-overlap — файл ${_fo_ifile} уже правится в OPEN PR #${_fo_pr} (${_fo_head}) — карточку НЕ создаём (ретро t_50a18fa9, ADR-AF-0062)"
 
     if [ "$DRY_RUN" != "true" ]; then
         local overlap_list
         overlap_list="$(printf '%s\n' "$overlap_results" | awk -F'\t' '{print "- PR #"$1" ("$2") правит "$4}' | sort -u | head -10)"
         gh issue comment "$number" --repo "$GH_REPO" --body \
-            "🚨 **agent-flow-triage: G10a file-overlap-skip (ретро t_50a18fa9, ADR-0052)**
+            "🚨 **agent-flow-triage: G10a file-overlap-skip (ретро t_50a18fa9, ADR-AF-0062)**
 
 Triage **НЕ создал** kanban-карточку для этого issue — обнаружен file-overlap с уже открытым PR, который правит тот же файл (\`${_fo_ifile}\`).
 
@@ -1146,7 +1146,7 @@ process_issues_json() {
         esac
     fi
 
-    # Ретро-фикс (07.09 t_50a18fa9, ADR-0052): G10a file-overlap dedup.
+    # Ретро-фикс (07.09 t_50a18fa9, ADR-AF-0062): G10a file-overlap dedup.
     # Если в issue body есть glob-путь к файлу, и этот файл уже правится в
     # OPEN PR (любая ветка, любой воркер) — карточка-дубль не нужна.
     # Это закрывает race-window, когда несколько worker'ов независимо увидели
@@ -1659,7 +1659,7 @@ errored=0
 # в общем «skipped»). summary печатает «dedup-skipped: N (intra-tick), M (race)».
 dedup_intra_skipped=0
 dedup_race_skipped=0
-# Ретро-фикс (07.09 t_50a18fa9, ADR-0052): третий счётчик для G10a file-overlap.
+# Ретро-фикс (07.09 t_50a18fa9, ADR-AF-0062): третий счётчик для G10a file-overlap.
 # summary печатает «dedup-skipped: N (intra-tick), M (race), K (file-overlap)».
 dedup_file_overlap_skipped=0
 # Ретро-фикс (01.09, t_e1a9613d, issue #1824): массив для unknown-assignee

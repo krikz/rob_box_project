@@ -53,7 +53,7 @@
       "acceptance": {
         "expected_tool_calls": ["get_current_time"],
         "must_not_call": ["navigate_to_coordinates", "move_direction"],
-        "_comment": "ЗОНД ADR-0024 (статус proposed, не accepted): «wake-word под играющей музыкой не теряется». Заодно проверяем intent-gate: под музыку фраза не должна уехать в Nav2. Падение = ADR-0024 закрыт не полностью."
+        "_comment": "ЗОНД ADR-RT-0068 (статус proposed, не accepted): «wake-word под играющей музыкой не теряется». Заодно проверяем intent-gate: под музыку фраза не должна уехать в Nav2. Падение = ADR-RT-0068 закрыт не полностью."
       }
     },
     {

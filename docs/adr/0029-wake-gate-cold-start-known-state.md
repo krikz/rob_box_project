@@ -7,8 +7,8 @@
 | Автор | architect (Hermes Agent), kanban t_4ab74fb7 |
 | Контекст | После слияния voice-pipeline фиксов (PR #1547, PR #1546, PR #1558 #1571 #1573) первые 2-3 e2e-раунда **системно** фейлят на `no_wake_word` из-за cold-start race между deploy и audio_node wake-detector. Это наблюдаемое поведение робота 10.1.1.21, не flaky acceptance тестов. Без формализации архитектор тратит ~30 мин на каждый инцидент, диагностируя уже диагностированное. |
 | Затрагивает | e2e-harness (`scripts/agent_flow/agent-flow-e2e-process.sh`), документация процесс-протокола, retro-карточки архитектора |
-| Родители | ADR-0024 (music-aware intent priority gate), ADR-0027 (systemic wake-gate no_wake_word blocker — наблюдение), ADR-0022 §4.7 (retro-card completion protocol) |
-| Связанные | PR #1547 (needs-review, wake-gate music_state fix), PR #1577 (ADR-0027, MERGEABLE), issue #1525 (CLOSED, wake-word под музыкой), issue #1117 (CLOSED, wake_word в audio_node), kanban t_d9e70587 (done), kanban t_4ab74fb7 (running), kanban t_73b0b4b8 (blocked, kind=transient), kanban t_9d229634 (blocked, dj02 parent), kanban t_7dbd1bd1 (ready, archive parent) |
+| Родители | ADR-RT-0068 (music-aware intent priority gate), ADR-RT-0070 (systemic wake-gate no_wake_word blocker — наблюдение), ADR-0022 §4.7 (retro-card completion protocol) |
+| Связанные | PR #1547 (needs-review, wake-gate music_state fix), PR #1577 (ADR-RT-0070, MERGEABLE), issue #1525 (CLOSED, wake-word под музыкой), issue #1117 (CLOSED, wake_word в audio_node), kanban t_d9e70587 (done), kanban t_4ab74fb7 (running), kanban t_73b0b4b8 (blocked, kind=transient), kanban t_9d229634 (blocked, dj02 parent), kanban t_7dbd1bd1 (ready, archive parent) |
 
 ## 1. Контекст и бизнес-проблема
 
@@ -43,7 +43,7 @@ H1 (network/Yandex): возможно, но не подтверждено — п
 
 H2 (VAD calibration drift): **подтверждено** — `audio_node` логирует
 `VAD re-calibrated` через ~3 мин после старта, и после этого раунды
-проходят. ADR-0027 §1.3 фиксирует это.
+проходят. ADR-RT-0070 §1.3 фиксирует это.
 
 **Не подтверждено как flaky:** стабильный signature (wake-слово
 теряется на первом слове, остаток фразы распознаётся), reproducibility
@@ -64,7 +64,7 @@ H2 (VAD calibration drift): **подтверждено** — `audio_node` лог
 Без формализации cold-start known-state каждая ретро-карточка архитектора
 тратит ~30 мин на повторную диагностику:
 
-- 23.08 23:14 → t_d9e70587 создан (диагностика, ADR-0027).
+- 23.08 23:14 → t_d9e70587 создан (диагностика, ADR-RT-0070).
 - 24.08 00:23 → t_e70b638b создан (Issue #1579 — harness improvements).
 - 24.08 00:57 → t_5b31f61b создан (e2e-fail #1576 — «проверь свою вину»).
 - 24.08 01:46 → t_73b0b4b8 создан (e2e-fail #1576 round-220, blocked).
@@ -92,7 +92,7 @@ voice-pipeline на роботе 10.1.1.21 после merge. Окно:
 **Признаки** (все три одновременно):
 
 1. **Fail-streak ≥ 3 подряд** на `L: E2E Voice Test` в окне
-   **после merge** voice-pipeline PR (см. ADR-0024 / ADR-0027 / новые).
+   **после merge** voice-pipeline PR (см. ADR-RT-0068 / ADR-RT-0070 / новые).
 2. **Signature** содержит `TRANSCRIPT[<step>]: ожидалось «<wake>` без
    wake-слова в `распознано`.
 3. **Git log origin/develop** содержит merge voice-pipeline PR за
@@ -211,7 +211,7 @@ sequenceDiagram
 | Вариант | Benefit | Cost | Вердикт |
 |---|---|---|---|
 | **A. Этот ADR** (formalize known-state + protocol) | Экономит ~150 мин/неделю архитектурного времени, минимальный diff (только docs) | Без enforcement — следующий архитектор может нарушить | **Выбрано** |
-| B. Только комментарий в ADR-0027 | Минимальный diff | ADR-0027 уже большой, размывается focus | Отклонено |
+| B. Только комментарий в ADR-RT-0070 | Минимальный diff | ADR-RT-0070 уже большой, размывается focus | Отклонено |
 | C. Скрипт `agent-flow-cold-start-detector.sh` в merge-gate | Автоматический enforcement | +1 скрипт, отдельный профиль devops, over-engineering для текущего масштаба | Отложено до M3 |
 | D. e2e-harness change (см. §2.3) | Реальный fix, не docs | Требует devops-ресурс, отдельная карточка | **Отдельный follow-up** |
 
@@ -219,7 +219,7 @@ sequenceDiagram
 
 ### 6.1 Для этого ADR (после merge PR)
 
-- ADR-0029 живёт в `docs/adr/`, ссылка на него из ADR-0027 и ADR-0022 §4.7.
+- ADR-0029 живёт в `docs/adr/`, ссылка на него из ADR-RT-0070 и ADR-0022 §4.7.
 - Минимум 2 ретро-карточки архитектора после merge ссылаются на
   этот ADR в `kind=transient` reason (доказательство, что протокол
   прочитан).
@@ -240,16 +240,16 @@ sequenceDiagram
 
 ## 8. Связанные
 
-- ADR-0024 (music-aware intent priority gate) — фикс #1547 закрывает
+- ADR-RT-0068 (music-aware intent priority gate) — фикс #1547 закрывает
   один класс wake-gate flake.
-- ADR-0027 (systemic wake-gate no_wake_word blocker) — наблюдение,
+- ADR-RT-0070 (systemic wake-gate no_wake_word blocker) — наблюдение,
   ставит signature. Этот ADR расширяет как «нормальное окно после merge».
 - ADR-0022 §4.7 (retro-card completion protocol) — формализует, как
   архитектор должен использовать этот ADR при следующем cold-start
   инциденте.
 - PR #1547 (needs-review 22.08, MERGEABLE) — wake-gate fix под музыкой,
   источник fail-streak 215-221.
-- PR #1577 (ADR-0027, MERGEABLE) — фиксирует наблюдение, на которое
+- PR #1577 (ADR-RT-0070, MERGEABLE) — фиксирует наблюдение, на которое
   опирается этот ADR.
 - Kanban t_d9e70587 (done 23.08) — первая ретро cold-start known-state.
 - Kanban t_4ab74fb7 (running 24.08) — эта ретро, источник ADR.
@@ -263,7 +263,7 @@ sequenceDiagram
 
 Следующий voice-pipeline merge вызовет ещё одну ретро-карточку
 (~30 мин архитектурного времени), и через месяц у нас будет
-ещё 4-5 ретро на ту же проблему, и ADR-0027 разрастётся до
+ещё 4-5 ретро на ту же проблему, и ADR-RT-0070 разрастётся до
 нечитаемого размера. Этот ADR — **инвестиция в будущие ретро**:
 один раз написать, потом 5 минут на ссылку.
 

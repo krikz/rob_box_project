@@ -225,7 +225,7 @@ grep '| devops ' docs/process-fix-roadmap.md
 | [ADR-0018](adr/0018-agent-honesty-culture.md) | «Честный FAIL лучше красивого PASS» — R1, R5, R14 |
 | [ADR-0019](adr/0019-agent-flow-triage-already-live.md) | Triage cron investigation (B2, R9) |
 | [ADR-0021](adr/0021-dialogue-node-decomposition-discipline.md) | CC-budget, per-bag workflow, lazy-import ceiling, issue-link required (R12) |
-| [ADR-0021-lazy](adr/0021-lazy-import-ceiling.md) | Lazy-import ceiling (для R12) |
+| [ADR-0021-lazy](adr/0064-lazy-import-ceiling.md) | Lazy-import ceiling (для R12) |
 | [ADR-0022](adr/0022-process-e2e-done-gates.md) | GATE-1 acceptance.json, GATE-2 two-stage closer, GATE-3 CI-blocking (R1, R4, R5, R6) |
 | [AGENT_FLOW_PROPOSAL](design/AGENT_FLOW_PROPOSAL.md) | Общий process design |
 | [PROCESS_RETRO_2026-08-09](design/PROCESS_RETRO_2026-08-09.md) | Ретро 09.08 (15 аномалий) |
@@ -255,7 +255,7 @@ grep '| devops ' docs/process-fix-roadmap.md
 | 22.08 | `t_9e61d788` | `agent-flow-merge-gate.sh:2338` |
 | 22.08 | `t_a24ffe39` | `agent-flow-triage.sh:1216` |
 | 22.08 | `t_a2cd5753` | `agent-flow-e2e-process.sh:2251` (stale-branch блокировка PR) |
-| 22.08 | `t_d9b4c600` | `install.sh:95` (ADR-0024, cross-task archive sweeper) |
+| 22.08 | `t_d9b4c600` | `install.sh:95` (ADR-AF-0024, cross-task archive sweeper) |
 | 22.08 | `t_deba66ef` | `agent-flow-cleanup-249.sh:32` |
 | 22.08 | `t_e8d52cb7` | `agent-flow-merge-gate.sh:186` |
 | 23.08 | `t_8abada71` | `push-via-gh-api.sh:12` |

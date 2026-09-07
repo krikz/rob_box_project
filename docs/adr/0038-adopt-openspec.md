@@ -4,7 +4,7 @@
 - **Date:** 2026-08-31
 - **Deciders:** Товарищ Шифу (владелец репо)
 - **Supersedes:** none
-- **Related:** ADR-0030 (нумерация), ADR-0026 (recovery card), PR #1798 (research), issue #1813
+- **Related:** ADR-AF-0030 (нумерация), ADR-AF-0026 (recovery card), PR #1798 (research), issue #1813
 
 ## Context
 
@@ -35,7 +35,7 @@ legacy 35+ ADR оставить как есть в `docs/adr/`.
 
 - Единый источник правды для будущих изменений (OpenSpec как authoritative)
 - 45 импортированных спеков дают AI-агентам контекст об истории решений
-- Совместимо с ADR-0030 (нумерация: `docs/adr/NNNN-*.md` не конкурирует с
+- Совместимо с ADR-AF-0030 (нумерация: `docs/adr/NNNN-*.md` не конкурирует с
   `openspec/changes/adr-NNNN-name/`)
 - Скрипт идемпотентный — повторный прогон безопасен
 

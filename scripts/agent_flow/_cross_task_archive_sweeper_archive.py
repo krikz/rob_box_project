@@ -9,7 +9,7 @@ hermes_cli.kanban_db.archive_task:
         claim_lock=NULL, claim_expires=NULL, worker_pid=NULL
     WHERE id = ? AND status != 'archived'
 
-Это намеренный BYPASS worker-scope-limit (см. ADR-0024 / ретро 22.08
+Это намеренный BYPASS worker-scope-limit (см. ADR-AF-0060 / ретро 22.08
 t_d9b4c600): вызывающий скрипт запускается от операторского cron-процесса,
 НЕ от worker с claim_lock, поэтому kernel-scope не применяется.
 

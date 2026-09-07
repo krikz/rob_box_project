@@ -1,14 +1,14 @@
 #!/bin/bash
 # ============================================================================
 # test_decomposed_watchdog.sh — регресс-гард для
-# agent-flow-decomposed-watchdog.sh (ADR-0052, nightly-review t_bfd19ffb).
+# agent-flow-decomposed-watchdog.sh (ADR-AF-0052, nightly-review t_bfd19ffb).
 #
 # Тестируем чистую логику (без hermes CLI side-effects) через PATH-hijack:
 # подставляем mock-hermes, который пишет в JOURNAL и обновляет task_comments
 # через sqlite. SQLite DB — настоящая (через python sqlite3 модуль), чтобы
 # тест работал с реальным контрактом схемы (task_events + tasks + task_comments).
 #
-# Scenarios (acceptance criteria ADR-0052 §6 #1):
+# Scenarios (acceptance criteria ADR-AF-0052 §6 #1):
 #   T1 criteria_match:       decomposed 30ч назад, child started_at=NULL,
 #                            status=todo, root live → comment + priority++
 #   T2 idempotency:          2 тика подряд → один comment в task_comments,

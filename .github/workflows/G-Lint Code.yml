@@ -60,14 +60,15 @@ jobs:
         run: |
           python scripts/lint/cc_budget.py
 
-      # ADR-0030 §2.4 / issue #2072: ADR-namespace collision guard.
-      # Hard gate (no continue-on-error) — PR с новым docs/adr/NNNN-*.md
-      # на занятом номере должен фейлить lint ещё до merge-gate.
-      # Скрипт локальный, 10/10 регресс-тестов зелёные
-      # (scripts/agent_flow/tests/test_validate_adr_namespace.sh).
+      # ADR-AF-0030 §2.4 / issue #2076 Phase 2: ADR-namespace collision guard
+      # с поддержкой двух доменов (AF для agent-flow, RT для рантайма).
+      # Hard gate (no continue-on-error) — PR с новым docs/adr/(AF-)?NNNN-*.md
+      # на занятом в своём домене номере должен фейлить lint ещё до merge-gate.
+      # Скрипт локальный, 13/13 регресс-тестов зелёные
+      # (scripts/agent_flow/tests/test_validate_adr_namespace.sh, +3 для AF).
       # Сам скрипт ждёт git fetch origin develop (на runner checkout
       # без push контекста — нужна явная выборка ref'а).
-      - name: ADR-namespace collision guard (ADR-0030)
+      - name: ADR-namespace collision guard (ADR-AF-0030)
         run: |
           git fetch --no-tags origin develop
           bash scripts/agent_flow/validate_adr_namespace.sh --ref origin/develop

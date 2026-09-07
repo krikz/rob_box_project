@@ -5,7 +5,7 @@
 | Статус | Proposed (после merge → Accepted) |
 | Дата | 2026-09-01 |
 | Автор | devops (Hermes Agent); ретро-карточка `t_527e1231`, process-fix `t_58c69473` |
-| Родители | ADR-0035 (stale-after-upstream-fix auto-detect), ADR-0036 (mis-scope task guard), ADR-0030 (ADR-нумерация SOT) |
+| Родители | ADR-0035 (stale-after-upstream-fix auto-detect), ADR-0036 (mis-scope task guard), ADR-AF-0030 (ADR-нумерация SOT) |
 | Затрагивает | (a) `.github/workflows/G-PR-Contract-Drift-Bot.yml` (новый); (b) `scripts/agent_flow/agent-flow-merge-gate.sh` (`pr_classify_rollup` / `pr_failed_rollup_md`, блок B этой же ретро); (c) карточки-«rebase PR #N» — их body и assignee |
 | Связанные | `t_002aae48` (mis-scope: rebase-карточка вместо fix-карточки), `t_0fb7ac48` (правильное описание фикса, но assignee=default), `t_6d19aace` (ретро «contract drift после 9 rebase-циклов»), PR #1857, PR #1849, issue #1810/#1811 |
 
@@ -143,7 +143,7 @@ merge по no-e2e-пути.
 - [x] `.github/workflows/G-PR-Contract-Drift-Bot.yml` с дедупом по маркеру.
 - [x] Этот документ (`docs/adr/0044-pr-comment-bot-contract-drift.md`).
 - [x] Номер 0044 не коллизирует: в `origin/develop` максимум 0042, 0043 занят
-      открытым PR #1857 (ADR-0030 §ADR-нумерация SOT).
+      открытым PR #1857 (ADR-AF-0030 §ADR-нумерация SOT).
 
 ## 6. Что осталось за рамками
 

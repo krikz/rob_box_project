@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # agent-flow-decomposed-watchdog.sh — cron-надзор за детьми, которых dispatcher
-# не поднимает после декомпозиции эпика (ADR-0052, nightly-review t_bfd19ffb).
+# не поднимает после декомпозиции эпика (ADR-AF-0052, nightly-review t_bfd19ffb).
 #
 # SOT (source-of-truth): <repo>/scripts/agent_flow/agent-flow-decomposed-watchdog.sh
 # Copies are laid down by install.sh into:
@@ -12,7 +12,7 @@
 #   - ~/.hermes/profiles/analyst/scripts/
 #   - ~/.hermes/scripts/
 #
-# Контекст (ADR-0052 §1, ретро t_bfd19ffb):
+# Контекст (ADR-AF-0052 §1, ретро t_bfd19ffb):
 #   Декомпозиция эпика через kanban create иногда создаёт child-задачи со
 #   started_at=NULL, status=todo (или status=triage), и dispatcher их не
 #   поднимает: у этих детей нет parent_id в task_links (системный баг — 17
@@ -22,7 +22,7 @@
 #   узнаёт только из ретро.
 #
 #   Этот cron — компенсирующий надзор: каждые 4ч сканирует task_events
-#   kind='decomposed', для каждого ребёнка проверяет criteria (см. ADR-0052
+#   kind='decomposed', для каждого ребёнка проверяет criteria (см. ADR-AF-0052
 #   §2.2) и для match'нутых пишет ОДИН marker-комментарий в task_comments
 #   ребёнка (idempotent в сутки) + делает priority += 1.
 #
@@ -83,7 +83,7 @@
 #     если конкуренция с dispatcher'ом — last-write-wins, обе записи
 #     монотонны (priority += 1), поэтому idempotency не ломается.
 #   - priority-bump +1 может «перебить» ручной priority — допустимо, ребёнок-то
-#     спит. ADR-0052 §5.
+#     спит. ADR-AF-0052 §5.
 # ============================================================================
 set -euo pipefail
 
@@ -258,7 +258,7 @@ for ev in decomposed_events:
     payload_raw  = ev["payload"] or "{}"
     decomposed_at = int(ev["created_at"])
 
-    # 2a. Парсим payload — может быть битым JSON (см. ADR-0052 §8 pitfalls).
+    # 2a. Парсим payload — может быть битым JSON (см. ADR-AF-0052 §8 pitfalls).
     try:
         payload = json.loads(payload_raw)
     except (json.JSONDecodeError, TypeError) as e:
@@ -314,7 +314,7 @@ for ev in decomposed_events:
         child_started  = child_row["started_at"]
         child_priority = child_row["priority"] or 0
 
-        # Criteria (ADR-0052 §2.2):
+        # Criteria (ADR-AF-0052 §2.2):
         # 1. started_at IS NULL — ребёнок ни разу не был поднят
         if child_started is not None:
             continue
@@ -349,7 +349,7 @@ for ev in decomposed_events:
             f"child status={child_status} started_at=NULL.\n"
             f"priority bump: {child_priority} → {child_priority + priority_bump}.\n"
             f"Watchdog компенсирует симптом (17/20 decomposed-рутов без task_links — "
-            f"см. ADR-0052 §1.2). Шифу / agent-flow — оцени."
+            f"см. ADR-AF-0052 §1.2). Шифу / agent-flow — оцени."
         )
 
         if dry_run:

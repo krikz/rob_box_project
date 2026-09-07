@@ -5,7 +5,7 @@
 | Статус | Proposed (после merge → Accepted) |
 | Дата | 2026-09-02 |
 | Автор | architect (Hermes Agent); ретро-карточка `t_5e3c3e09`, issue #1887 |
-| Родители | RECON-1571 (разведка и черновик воркера devops от 23.08), ADR-0030 (ADR numbering SOT — этот ADR = `0045` по правилу §2.2), ADR-0013 (incremental delivery — этот фикс ≤ 30 коммитов чтобы PR был mergeable), ADR-0018 (честный FAIL — никаких голословных «CI зелёный» без raw-вывода) |
+| Родители | RECON-1571 (разведка и черновик воркера devops от 23.08), ADR-AF-0030 (ADR numbering SOT — этот ADR = `0045` по правилу §2.2), ADR-0013 (incremental delivery — этот фикс ≤ 30 коммитов чтобы PR был mergeable), ADR-0018 (честный FAIL — никаких голословных «CI зелёный» без raw-вывода) |
 | Контекст | Issue #1887: «2/3 свежих PR воркеров backend ушли с конфликтами (28 commits behind develop)». PR #1885 (`max_tokens/temp`) mergeable (0 commits behind), PR #1884 (`budget ретраи`) и PR #1886 (`planning-narration`) — оба `CONFLICTING`, 28 commits behind. Симптом повторяется уже третий раз за два месяца: RECON-1571 (23.08, 48–50 коммитов), ADR-0045 повтор #2 (02.09, 28 коммитов). Root cause НЕ изменился: `_ensure_git_worktree` берёт base из локального `HEAD` главного worktree, который отстаёт от `origin/develop`. Vendor-патч `hermes-agent-z-spawn-base-origin-develop.patch` лежит в репо с 23.08, но `git apply --check` отказывает на актуальном upstream `hermes-agent` → регресс бесшумный, никем не ловится. |
 | Затрагивает | (a) `scripts/agent_flow/vendor/hermes-agent-z-spawn-base-origin-develop.patch` — **regen** под текущий `kanban_db.py` (anchor `@@ -7781` сместился из-за других воркеров); (b) `scripts/agent_flow/agent-flow-triage.sh` — добавить `git fetch origin develop --prune` в начале main (как у соседей `agent-flow-e2e-process.sh`, `agent-flow-merge-gate.sh`, `agent-flow-drift-detect.sh`); (c) `scripts/agent_flow/validate_branch_freshness.sh` — новый pre-PR hook (block если `git rev-list --count HEAD..origin/develop > 30`); (d) `scripts/agent_flow/install.sh` — добавить вызов validate_branch_freshness.sh в pre-PR секцию; (e) `docs/process-fix-roadmap.md` — фиксируем этот класс багов в roadmap. |
 | Связанные | `t_5e3c3e09` (эта ретро-карточка), issue #1887 (репортёр), issue #1571 (первый репорт 23.08), PR #1573 (первый фикс 23.08 — `556ecc8c`), `RECON-1571-worktree-stale-base.md` (разведка), `scripts/agent_flow/vendor/hermes-agent-z-spawn-base-origin-develop.patch` (готовый, но не apply'имый патч), `scripts/agent_flow/tests/test_spawn_worktree_origin_develop_base.sh` (готовый регресс-тест), `t_07799ca7` (первый фикс воркером devops), `t_ecd43187` (ретро аналогичной серии 01.09 — triple-block), `t_62447edc` (ретро #1872/#1873 02.09) |
@@ -52,7 +52,7 @@ Upstream `kanban_db.py` ушёл вперёд: параллельные ворк
 |---|---|---|
 | **Vendor-патч drift**: `install.sh` применяет все `vendor/hermes-agent-*.patch` через `git apply --check` | Патч не apply'ится к upstream | `git apply --check` возвращает `error: patch failed` — `install.sh` его НЕ проглатывает, а выводит `ERROR patch does not apply cleanly — upstream moved`. **Но никто это не мониторит** в автоматическом режиме: `agent-flow-drift-detect.sh` сверяет только раскладку `EXPECTED` файлов (46 шт), не состояние applied-патчей. |
 | **`agent-flow-triage.sh` без fetch**: создаёт карточки, не подтянув `origin/develop` | Воркер стартует на свежем develop | В отличие от `agent-flow-e2e-process.sh:2466`, `agent-flow-merge-gate.sh:573`, `agent-flow-drift-detect.sh:300` — в `agent-flow-triage.sh` нет `git fetch origin develop` в начале. **Это единственный из 4 cron-скриптов без fetch.** |
-| **Pre-PR hook отсутствует**: PR может уйти с 28 коммитов behind | block до rebase | Нет `validate_branch_freshness.sh`. merge-gate ловит только E2E gates, honesty-claim, ADR-namespace (ADR-0030/0043); **freshness ветки — не его зона** (комина отвечает за merge-decision, а не за pre-PR quality-of-life воркера). |
+| **Pre-PR hook отсутствует**: PR может уйти с 28 коммитов behind | block до rebase | Нет `validate_branch_freshness.sh`. merge-gate ловит только E2E gates, honesty-claim, ADR-namespace (ADR-AF-0030/0043); **freshness ветки — не его зона** (комина отвечает за merge-decision, а не за pre-PR quality-of-life воркера). |
 
 ### 1.4 Бизнес-последствие (если не чинить)
 
@@ -328,7 +328,7 @@ done
 - `scripts/agent_flow/vendor/hermes-agent-z-spawn-base-origin-develop.patch` — готовый патч (нужен regen).
 - `scripts/agent_flow/tests/test_spawn_worktree_origin_develop_base.sh` — готовый регресс-тест (нужна адаптация под regen).
 - `scripts/agent_flow/agent-flow-regen-vendor-patch.sh` — утилита для regen vendor-патчей (ADR-0042 §2.2).
-- ADR-0030 — ADR numbering SOT (этот ADR = `0045` по правилу §2.2).
+- ADR-AF-0030 — ADR numbering SOT (этот ADR = `0045` по правилу §2.2).
 - ADR-0036 — mis-scope guard, §4.3 cron-надзор (расширяется для мониторинга vendor-патчей в backlog).
 - ADR-0042 — пример того, как правильно фиксить regression в process-скриптах (DRY через shared lib + env-vars).
 - ADR-0013 — incremental delivery (PR ≤ 30 коммитов — именно этот порог выбран для `MAX_BRANCH_BEHIND`).

@@ -318,7 +318,7 @@ Issue #1770 (memory_context не фильтрует по speaker_id) — это 
 - [ ] `test_sqlite_voice_memory.py`: интеграционные тесты для `episodes` table на реальном SQLite.
 - [ ] `test_per_scope_isolation.py`: НЕ существующий файл; добавить тест «scope=speaker:42 facts не видны из scope=user:7».
 - [ ] `test_prune_expired_cron.py`: добавлен, проверяет «через 25ч turns с metadata.ttl_seconds=86400 удаляются».
-- [ ] `bash scripts/agent_flow/tests/test_adr_collision.sh` → exit 0 (ADR-0037 уникален, проверка по ADR-0030).
+- [ ] `bash scripts/agent_flow/tests/test_adr_collision.sh` → exit 0 (ADR-0037 уникален, проверка по ADR-AF-0030).
 
 #### 2.9.3 Поведенческие (e2e, через 1 раунд после merge)
 
@@ -392,7 +392,7 @@ Issue #1770 (memory_context не фильтрует по speaker_id) — это 
   - ADR-0001 §2.4.3 (MemoryStore port — этот ADR его расширяет)
   - ADR-0018 (честный FAIL лучше красивого PASS — никаких silent restore)
   - ADR-0013 (incremental delivery — этот шаг описывает контракт, реализация — следующая карточка для backend)
-  - ADR-0030 (ADR numbering — этот = 0037, проверка через test_adr_collision)
+  - ADR-AF-0030 (ADR numbering — этот = 0037, проверка через test_adr_collision)
 - **CONTRIBUTING.md §2f** (ADR-review rules) — этот ADR следует формату MADR (Markdown Any Decision Record).
 
 ---
@@ -400,7 +400,7 @@ Issue #1770 (memory_context не фильтрует по speaker_id) — это 
 ## 7. Следующие шаги
 
 1. **architect (этот PR)** — коммитит ADR-0037, push в `z-{agent}/t_6f5ddb67-...`, открывает PR в `develop`.
-2. **merge-gate** проверяет: ADR-номер 0037 уникален (`ADR-collision-guard` ADR-0030 / test_merge_gate_adr_collision.sh) — должно проходить.
+2. **merge-gate** проверяет: ADR-номер 0037 уникален (`ADR-collision-guard` ADR-AF-0030 / test_merge_gate_adr_collision.sh) — должно проходить.
 3. **reviewer** (от Шифу) — approve / request changes.
 4. **Шифу** мержит PR после green CI + review.
 5. **backend (следующая карточка)** — реализует `create_episode` / `close_episode` / `prune_expired` + DDL миграцию + тесты per §2.9.

@@ -2,7 +2,7 @@
 # ============================================================================
 # test_triage_file_overlap_dedup.sh — модульный тест G10a file-overlap dedup-guard
 #                                      в agent-flow-triage.sh
-#                                      (ретро t_50a18fa9 / ADR-0052 / issue #2018).
+#                                      (ретро t_50a18fa9 / ADR-AF-0062 / issue #2018).
 #
 # Проверяет, что:
 #   T1: extract_file_paths_from_body — пустое body → пустой stdout.
@@ -21,7 +21,7 @@
 #         - 'AGENT_FLOW_FILE_OVERLAP_GUARD'
 #         - 'dedup_file_overlap_skipped'
 #         - 'file-overlap' (в summary log)
-#         - 'ADR-0052'
+#         - 'ADR-AF-0062'
 #         - 't_50a18fa9'
 #   T10: process_issues_json подключает file_overlap_with_open_pr ПОСЛЕ existing_by_issue
 #        и ДО branch_for.
@@ -228,7 +228,7 @@ test_T9_presence_markers() {
     assert_contains "AGENT_FLOW_FILE_OVERLAP_GUARD" "$code" "T9.3: env-var AGENT_FLOW_FILE_OVERLAP_GUARD упомянута"
     assert_contains "dedup_file_overlap_skipped" "$code" "T9.4: counter dedup_file_overlap_skipped"
     assert_contains "file-overlap" "$code" "T9.5: marker 'file-overlap' в summary log"
-    assert_contains "ADR-0052" "$code" "T9.6: ADR-0052 ссылка в комментариях"
+    assert_contains "ADR-AF-0062" "$code" "T9.6: ADR-AF-0062 ссылка в комментариях"
     assert_contains "t_50a18fa9" "$code" "T9.7: ссылка на ретро-карточку t_50a18fa9"
 }
 

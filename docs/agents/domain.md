@@ -7,7 +7,7 @@
 - **`CONTEXT.md`** (корень репо) — глоссарий домена (термины + `_Avoid_`).
 - **`docs/adr/`** — ADR в зоне работы. Формат: `NNNN-<slug>.md` (4 цифры,
   следующий свободный после максимума в `origin/develop`). См.
-  `CONTRIBUTING.md` §«ADR-процесс» и ADR-0030.
+  `CONTRIBUTING.md` §«ADR-процесс» и ADR-AF-0030.
 - **`SPEC_CURRENT.md`**, **`docs/architecture/`** — если задача про системную
   архитектуру.
 - **`README.md`** / `docs/development/` — если про процессы сборки/тестов.

@@ -202,7 +202,7 @@ sqlite3 ~/.hermes/kanban/boards/robbox/kanban.db \
 | Документ | Связь |
 |---|---|
 | `docs/adr/ADR-0013-incremental-delivery.md` | Quick-fix (PR #1609) → recovery (этот runbook) → close retro — инкрементальная поставка |
-| `docs/adr/ADR-0026-recovery-card-contract.md` | Этот runbook — конкретное наполнение «recovery-card-contract» для сценария provider-exhaustion |
+| `docs/adr/ADR-AF-0026-recovery-card-contract.md` | Этот runbook — конкретное наполнение «recovery-card-contract» для сценария provider-exhaustion |
 | `scripts/agent_flow/README.md` (раздел hardlink-sync) | Шаг 3 ссылается на SOT-контракт hardlink в 4 профилях |
 | `scripts/agent_flow/tests/test_watchdog_provider_exhaustion.sh` | Регресс-тест для provider-exhaustion секции watchdog.sh (предыдущий watchdog) |
 | `tests/agent_flow/test_watchdog_provider_quick_guard.py` (из PR #1609) | Новые 9 pytest-тестов — покрывают оба ветки (gave_up unblock + capability no-touch) |

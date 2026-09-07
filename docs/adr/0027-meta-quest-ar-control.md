@@ -7,7 +7,7 @@
 | Автор | architect (Hermes Agent), kanban t_77f08bb8 |
 | Контекст | Issue #1576 (LOW priority, design-only) — Meta Quest 2 / 3 / Pro как нативный WebXR-клиент к роботу: passthrough + camera stream + LiDAR overlay + teleop + микрофон очков |
 | Затрагивает | (будущее) новый docker-сервис `rob_box_quest` в `docker/vision/`; companion-документ `docs/architecture/meta-quest-api.md` (HTTP/WS контракт) |
-| Родители | ADR-0017 (Zenoh router SPOF), ADR-0018 (honesty), ADR-0026 (recovery-contract) |
+| Родители | ADR-0017 (Zenoh router SPOF), ADR-0018 (honesty), ADR-AF-0026 (recovery-contract) |
 | Связанные | issue #1576; ADR-0021 (dialogue_node discipline — точка входа для voice-mode bypass) |
 
 > **TL;DR.** Поднимаем на Vision Pi лёгкий WebSocket-шлюз с самоподписанным TLS,

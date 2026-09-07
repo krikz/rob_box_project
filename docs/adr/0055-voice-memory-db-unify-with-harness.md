@@ -301,7 +301,7 @@ Usage:
 - [ ] Юнит-тесты `src/rob_box_harness/test/test_voice_memory_adapter.py` (≥6 тестов): save_turn returns -1 + WARN / save_fact persists to facts table / search returns list-of-dicts / get_stats shape / idempotency / teardown.
 - [ ] Юнит-тесты `src/rob_box_mcp_tools/test/test_mcp_server_unify.py` (≥3 теста): init использует адаптер; turn из MCP-инструмента виден через `MemoryStore.search` в `harness_voice.db`.
 - [ ] Юнит-тесты `scripts/agent_flow/tests/test_migrate_voice_memory_unify.sh` (≥3 теста): dry-run показывает diff; `--apply` идемпотентен; exit code корректный.
-- [ ] ADR-0055 уникален (ADR-0030 / ADR-collision-guard → exit 0).
+- [ ] ADR-0055 уникален (ADR-AF-0030 / ADR-collision-guard → exit 0).
 - [ ] `mypy --strict src/rob_box_harness/rob_box_harness/memory/voice_memory_adapter.py` → exit 0.
 - [ ] **Issue-комментарий задан** с тремя вопросами Шифу (см. §8 шаг 0).
 
@@ -347,7 +347,7 @@ Usage:
   - ADR-0018 (честный FAIL, никаких silent dual-write / silent data loss)
   - ADR-0013 (incremental delivery — Фаза 1 сейчас, Фаза 2 отдельно)
   - ADR-0051 §5.2 (operator-agent namespace — придёт с шагом 03)
-  - ADR-0030 (ADR-numbering — этот = 0055, проверка через test_adr_collision)
+  - ADR-AF-0030 (ADR-numbering — этот = 0055, проверка через test_adr_collision)
 - **Документация-внешняя**: `docs/architecture/target-operator-agent-and-dialogue.md` §2.5/§5.2/§12 (карточка ссылается, но файла ещё нет в репо — это часть handoff'а Шифу, который будет коммититься в шаге 03).
 
 ---

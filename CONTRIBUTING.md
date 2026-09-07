@@ -273,54 +273,81 @@ git push origin feature/my-awesome-feature
 **Никогда, ни при каких условиях не выполнять `gh pr merge` самому.** Даже если CI зелёный, фича очевидно нужная, e2e прошёл, юзер «наверное согласен». Merge — точка принятия решения юзера. Нарушение 09.08: PR #1079 смёржен без ОК → юзер: «как пёс смёрзлил непроверенное, пошёл мимо процесса».
 Правильно: выложить доказательства → needs-review → ждать решения юзера. Не «угадывать» его решение.
 
-### 2e. ADR-нумерация: глобальный счётчик + запрет ручного коммита в develop (ADR-0030, 25.08.2026)
+### 2e. ADR-нумерация: два независимых домена AF/RT (ADR-AF-0030, 25.08.2026 Phase 1 + 07.09.2026 Phase 2)
 
-> Ретро `t_45db74ad`: в `origin/develop` обнаружены 5 файлов под 3 номерами (`0027×3`, `0028×2`). Cross-reference вроде «см. ADR-0027 §3.4» потерял однозначность — невозможно понять, какой из трёх 0027 имеется в виду. Полное обоснование и cleanup-план — в `docs/adr/0030-adr-numbering-sot.md`.
+> Ретро `t_45db74ad` (Phase 1): в `origin/develop` обнаружены 5 файлов под 3 номерами (`0027×3`, `0028×2`). Cross-reference вроде «см. ADR-0027 §3.4» потерял однозначность.
+> Ретро `t_5055c13c` (Phase 2): в репо обнаружены **13 коллизий** в 9 номерах, плюс выяснилось, что под одним номером могут жить РАЗНЫЕ решения — про процесс (agent-flow) и про рантайм робота. Принятая схема — **два независимых домена** с префиксом. Полное обоснование — в `docs/adr/AF-0030-adr-numbering-sot.md`.
 
-#### Правило именования
+#### Правило именования (Phase 2)
 
-ADR-файл имеет вид:
+ADR-файл живёт в **одном из двух доменов**:
 
 ```
-docs/adr/NNNN-<kebab-case-slug>.md
+docs/adr/AF-NNNN-<kebab-case-slug>.md   → agent-flow: процесс, воркеры, AI-харнес агентов
+docs/adr/NNNN-<slug>.md                  → рантайм робота: голос, Quest, perception, supervisor
 ```
 
-Где `NNNN` — 4-значный zero-padded номер, **уникальный** в пределах `origin/develop` на момент merge. Внутри файла первый H1 и frontmatter-таблица используют **тот же** `NNNN`.
+- `NNNN` ∈ `[0001, 9999]`, **уникален внутри своего домена** в `origin/develop` на момент merge.
+- AF-NNNN vs NNNN — **разные** домены, коллизия между ними не считается.
+- Внутри файла первый H1 и frontmatter-таблица используют **тот же** `<домен>-<NNNN>`.
+- Заголовок: `# ADR-AF-NNNN: <slug>` или `# ADR-NNNN: <slug>`.
 
-#### Как выбрать NNNN перед созданием
+#### Как выбрать домен и NNNN перед созданием
 
 Обязательно перед `git add`:
 
 ```bash
 git fetch origin develop
 
-# Какие номера заняты
+# AF-домен — какие номера заняты
 git ls-tree -r origin/develop --name-only \
-  | grep -oE 'docs/adr/[0-9]{4}' \
-  | sort -u
+  | grep -oE 'docs/adr/AF-[0-9]{4}' | sort -u
 
-# Следующий свободный
+# RT-домен — какие номера заняты
+git ls-tree -r origin/develop --name-only \
+  | grep -oE 'docs/adr/[0-9]{4}' | grep -v '/AF-' | sort -u
+
+# Следующий свободный в нужном домене
 NEXT=$(( $(git ls-tree -r origin/develop --name-only \
-            | grep -oE 'docs/adr/[0-9]{4}' \
-            | sort -u | tail -1 | grep -oE '[0-9]{4}') + 1 ))
+            | grep -E "docs/adr/${MY_DOMAIN}[0-9]+" \
+            | sed -E "s|docs/adr/${MY_DOMAIN}([0-9]+).*|\1|" \
+            | sort -n | tail -1) + 1 ))
 printf '%04d\n' "$NEXT"
 ```
+
+`MY_DOMAIN` — `AF-` для agent-flow, пустая строка для рантайма.
+
+**Какой домен выбрать:**
+
+| Если ADR описывает... | Домен |
+|---|---|
+| triage / merge-gate / e2e / воркеры / kanban / AI-харнес агентов | AF |
+| голос / Quest / perception / supervisor / `rob_box_harness` (рантайм) / navigation | RT |
+
+**Классификация — по содержанию**, не по слову в имени. Слово `harness` в этом репо неоднозначно (рантайм-пакет vs AI-харнес).
 
 **Запрещено:**
 
 - Использовать номер, не сверившись с `origin/develop` (даже «по аналогии» с соседним ADR).
+- Использовать номер, занятый **в твоём домене** (даже если «логичный»).
 - Сокращать (`27` вместо `0027`) — ломает grep-инвариант.
-- Ссылаться в cross-ref на ADR, указывая только `ADR-NNNN` без slug — пишите `[ADR-NNNN](../NNNN-slug.md)`.
+- Путать домена: AF-0052 (decomposed-watchdog) ≠ 0052 (mcp-slice-guard).
+- Ссылаться в cross-ref на ADR без указания slug — пишите `[ADR-AF-NNNN](../AF-NNNN-slug.md)` или `[ADR-NNNN](../NNNN-slug.md)`.
 
 #### Ручной коммит в develop запрещён
 
-Любой коммит в `develop` (включая ручной от Шифу, **даже если коммит единственный**) идёт через `feature/<name>` (или `hotfix/<name>`) → PR. Никаких прямых push'ей в `develop`. Причина: pre-merge guard (§2.5 ADR-0030) срабатывает только на PR; ручной коммит проходит мимо всех gate'ов — это и привело к коллизии `0028-avatar-supervisor.md` 24.08 23:40.
+Любой коммит в `develop` (включая ручной от Шифу, **даже если коммит единственный**) идёт через `feature/<name>` (или `hotfix/<name>`) → PR. Никаких прямых push'ей в `develop`. Причина: pre-merge guard (§2.5 ADR-AF-0030) срабатывает только на PR; ручной коммит проходит мимо всех gate'ов — это и привело к коллизии `0028-avatar-supervisor.md` 24.08 23:40.
 
 Срочные правки — через `hotfix/*` → PR в `develop`. Audit-trail и откат в один клик сохраняются.
 
 #### Pre-merge guard (механизм)
 
-В `scripts/agent_flow/agent-flow-merge-gate.sh` есть проверка: если PR создаёт файл `docs/adr/NNNN-*.md`, то `NNNN` сверяется с `origin/develop`. При коллизии — reject с инструкцией «выберите следующий свободный номер». Реализация — child-задача devops (`t_45db74ad-d`).
+`scripts/agent_flow/validate_adr_namespace.sh` (Phase 2 — поддержка AF/RT) + `.github/workflows/G-Lint Code.yml` (hard gate в job `python-lint`):
+
+- Для PR, создающих новый `docs/adr/(AF-)?NNNN-*.md`, скрипт извлекает ключ `<домен>:<NNNN>` и сверяет с `origin/develop`.
+- Коллизия внутри одного домена → reject с указанием next free slot **в затронутом домене**.
+- AF-NNNN vs NNNN — **разные домены**, коллизия не считается.
+- 13/13 регресс-тестов (`scripts/agent_flow/tests/test_validate_adr_namespace.sh`).
 
 ### 2f. Diagnostic-карточки merge-gate: маркеры `<!-- diag-* -->` в body (ADR-0035, 31.08.2026)
 
@@ -738,7 +765,7 @@ chore(docker): update base images to latest versions
 - `docs/adr/0018-agent-honesty-culture.md` — обоснование, trade-offs.
 - `scripts/agent_flow/validate_honesty.sh` + `tests/test_validate_honesty.sh` — tooling.
 
-## 🩹 Recovery cards (ADR-0026, 23.08.2026)
+## 🩹 Recovery cards (ADR-AF-0026, 23.08.2026)
 
 Recovery-карточка (создаётся orchestrator'ом или nadzor'ом, когда
 исходная карточка stuck'нулась — crash-loop, blocked-on-outside,
@@ -773,7 +800,7 @@ parent'а**. Worker **не может** считать recovery-карточку
 
 Если parent остаётся в `blocked` без нового reason → `request_changes`.
 
-**Safety net:** `cross-task-archive-sweeper.sh` (ADR-0024) раз в час
+**Safety net:** `cross-task-archive-sweeper.sh` (ADR-AF-0060) раз в час
 архивирует stale blocked-карточки по критериям PR MERGED + remote-ветка
 удалена. Это fallback, **не замена** worker-обязательству.
 

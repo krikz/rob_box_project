@@ -7,7 +7,7 @@
 | Автор | architect (Hermes Agent), kanban t_2be7ef6f (re-issue от feature/avatar после архива t_280ca547, базовый PR #1679 был закрыт из-за base=develop), issue #1677 |
 | Контекст | Phase 2+ Captain Bridge требует hand-tracking, UI panels, environment — после Phase 1.5 (минимальный Three.js WebXR клиент из #1639). Нужно зафиксировать стек (Three.js vs Babylon / R3F), asset pipeline (glTF + Draco + Meshopt + KTX2), debug workflow, perf targets до начала implementation. |
 | Затрагивает | (будущее) новый client-package `rob_box_quest_client` или доработка существующего в Phase 1.5; `docker/vision/` сервис `rob_box_quest` (уже частично в Phase 1.4–1.6); новый pipeline `gltf-transform` в `package.json`; WSS-схема telemetry (см. `docs/architecture/meta-quest-api.md`) |
-| Родители | ADR-0018 (honesty), ADR-0027 (Meta Quest AR — Phase 1), ADR-0028 (Avatar Supervisor), ADR-0030 (ADR-numbering SOT) |
+| Родители | ADR-0018 (honesty), ADR-0027 (Meta Quest AR — Phase 1), ADR-0028 (Avatar Supervisor), ADR-AF-0030 (ADR-numbering SOT) |
 | Связанные | `docs/research/2026-08-26-meta-quest-webxr-best-practices.md` (детальный research); issue #1576, #1639, #1677; `docs/architecture/meta-quest-api.md`; `docs/plans/2026-08-25-webxr-captain-bridge-design.md` |
 | Целевые устройства | Meta Quest 2 / 3 / 3S / Pro |
 | Заменяет | Черновые предположения в ADR-0027 §3.2 (stack), §4.2 (assets) — для Phase 2+ |
