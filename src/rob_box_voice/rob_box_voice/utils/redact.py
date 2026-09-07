@@ -162,24 +162,43 @@ _ENV_SECRET_RE = re.compile(
     r"""
     (?P<name>
         \b[A-Z][A-Z0-9_]*(?:_API_KEY|_SECRET|_TOKEN|_PASSWORD|_PASSWD|
-                          _PRIVATE_KEY|_ACCESS_KEY|_SESSION_KEY)
+                          _PRIVATE_KEY|_ACCESS_KEY|_SESSION_KEY|_KEY)
     )
     \s*=\s*
-    (?P<value>[^\s'"\]\)]+)
+    (?P<value>[^\s'"\])]+)
     """,
     re.VERBOSE,
 )
 
-# Lowercase variant of the same: ``deepseek_api_key=sk-live-abc123`` —
+# Lowercase variant of the same: ``deepseek_api_key=***`` —
 # happens in YAML / JSON-stringified env files.
 _ENV_SECRET_LC_RE = re.compile(
     r"""
     (?P<name>
         \b[a-z][a-z0-9_]*(?:_api_key|_secret|_token|_password|_passwd|
-                          _private_key|_access_key|_session_key)
+                          _private_key|_access_key|_session_key|_key)
     )
     \s*=\s*
-    (?P<value>[^\s'"\]\)]+)
+    (?P<value>[^\s'"\])]+)
+    """,
+    re.VERBOSE,
+)
+
+# YAML / JSON-map colon form: ``deepseek_api_key: «redacted:sk-…»`` — no
+# ``=`` sign, the separator is a colon. Common in docker-compose
+# ``environment:`` blocks rendered as a flat dict for ``docker inspect``
+# (each entry is ``KEY: value``). The class excludes ``}`` so we don't
+# accidentally swallow a closing JSON brace from the outer envelope.
+_ENV_SECRET_COLON_RE = re.compile(
+    r"""
+    (?P<name>
+        \b[A-Za-z][A-Za-z0-9_]*(?:_api_key|_secret|_token|_password|_passwd|
+                                _private_key|_access_key|_session_key|_key|
+                                _API_KEY|_SECRET|_TOKEN|_PASSWORD|_PASSWD|
+                                _PRIVATE_KEY|_ACCESS_KEY|_SESSION_KEY|_KEY)
+    )
+    \s*:\s*
+    (?P<value>[^\s'"\])}]+)
     """,
     re.VERBOSE,
 )
@@ -207,9 +226,18 @@ _BARE_JWT_RE = re.compile(
 # ``sk-…`` style OpenAI-compatible API keys; ``xoxb-…`` Slack; ``ghp_…`` GitHub.
 # These vendors publish the prefix as part of the secret, so it is safe to
 # match on the prefix and the fact that the rest is alphanumeric/dash.
+#
+# Length thresholds are deliberately loose (≥8 for sk-/xox, ≥12 for ghp_/gho_)
+# to catch already-redacted placeholders like ``sk-***REDACTED***`` (12 chars
+# after the prefix) and synthetic fixtures. The sk-/xox char class includes
+# ``*`` so that already-redacted placeholders mask through the rest of the
+# redactor — without it, ``sk-***REDACTED***`` would survive because ``*``
+# is not alphanumeric. False positives are acceptable — the cost of a missed
+# real secret outweighs masking a non-credential that happens to look like
+# a vendor prefix.
 _VENDOR_PREFIX_RE = re.compile(
-    r"\b(?:sk-[A-Za-z0-9_-]{16,}|sk_live_[A-Za-z0-9]{16,}|sk_test_[A-Za-z0-9]{16,}"
-    r"|xox[baprs]-[A-Za-z0-9-]{16,}|ghp_[A-Za-z0-9]{30,}|gho_[A-Za-z0-9]{30,})\b"
+    r"(?:sk-[A-Za-z0-9*_-]{8,}|sk_live_[A-Za-z0-9_-]{12,}|sk_test_[A-Za-z0-9_-]{12,}"
+    r"|xox[baprs]-[A-Za-z0-9*_-]{8,}|ghp_[A-Za-z0-9_-]{12,}|gho_[A-Za-z0-9_-]{12,})"
 )
 
 
@@ -236,8 +264,18 @@ def redact_log_text(text: str) -> str:
         return text
 
     # Env-var assignments, UPPER_CASE first (covers the common .env case
-    # before we get to the lower-case heuristic).
+    # before we get to the lower-case heuristic). YAML / JSON-map colon form
+    # runs before the lowercase regex because its name class also matches
+    # upper-case names (``DEEPSEEK_API_KEY: …``); running it later would leave
+    # upper-case matches un-redacted.
     text = _ENV_SECRET_RE.sub(lambda m: f"{m.group('name')}={_MASK}", text)
+    # YAML / JSON-map colon form is normalized to ``KEY=*** to keep the
+    # masked shape uniform regardless of the source format — the agent
+    # never has to special-case ``.env`` (``=``) vs ``docker-compose``
+    # ``environment:`` block (``:``) at read time.
+    text = _ENV_SECRET_COLON_RE.sub(
+        lambda m: f"{m.group('name')}={_MASK}", text
+    )
     text = _ENV_SECRET_LC_RE.sub(lambda m: f"{m.group('name')}={_MASK}", text)
 
     # CLI flags — drop everything after the ``=``.
