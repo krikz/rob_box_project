@@ -104,7 +104,7 @@ interface BootstrapOptions {
 
 export function bootstrap(opts: BootstrapOptions): {
   /**
-   * ADR-0054 §2.2: панельный тумблер «всегда слушать» управляет
+   * ADR-0071 §2.2: панельный тумблер «всегда слушать» управляет
    * wake-каналом (true = слушаем, false = подавлено).
    */
   setWakeListen(on: boolean): void;
@@ -509,7 +509,7 @@ export function bootstrap(opts: BootstrapOptions): {
   // Guard: авто-вход в VR — не более одной сессии на submit PIN.
   let vrRequested = false;
   // Голос: рация/робот-голос (грип → PTT, stream_id=1) и wake-канал
-  // (always-on, stream_id=2) делят один mic-захват (ADR-0054 step 5а).
+  // (always-on, stream_id=2) делят один mic-захват (ADR-0071 step 5а).
   // ptt идёт БЕЗ VAD (sound_node не рвёт стрим watchdog'ом); wake — через
   // RMS-VAD + hangover 200мс + подавление при грипе (одна фраза — один
   // маршрут). Сервер маршрутизирует по stream_id: 1 → /avatar/voice_in,
@@ -531,7 +531,7 @@ export function bootstrap(opts: BootstrapOptions): {
       console.warn("[quest] voiceCapture start failed:", err.message);
     }
   });
-  // ADR-0054 §2.2: wake-канал включается автоматически при создании
+  // ADR-0071 §2.2: wake-канал включается автоматически при создании
   // voiceCapture (см. setWakeGate ниже). Это позволяет оператору не лезть
   // в панель каждый раз — микрофон «всегда слышит», wake-фильтр гонит
   // только речь через VAD.
@@ -551,7 +551,7 @@ export function bootstrap(opts: BootstrapOptions): {
   void voiceCapture.start();
   // Edge-состояние PTT. Робот-голос приоритетнее рации, если зажаты оба.
   let voicePttMode: "none" | "radio" | "robot_voice" = "none";
-  // ADR-0054 §2.2: панель тумблера управляет wake-каналом (UI — отдельная
+  // ADR-0071 §2.2: панель тумблера управляет wake-каналом (UI — отдельная
   // маленькая карточка; здесь — связка). По умолчанию включён (set выше).
   let wakeListenEnabled = true;
   function setWakeListen(on: boolean): void {
@@ -652,7 +652,7 @@ export function bootstrap(opts: BootstrapOptions): {
       // запущен, но wake принудительно suppressed (грип зажат). Капчур
       // теперь живёт от boot до dispose(); здесь только гасим ptt-канал.
       voiceCapture.setPttEnabled(false);
-      // ADR-0054 §2.3: после отпускания грипа wake снова разрешён (если
+      // ADR-0071 §2.3: после отпускания грипа wake снова разрешён (если
       // panel-toggle включён). Не сбрасываем enabled — это стирает
       // пользовательский выбор панели.
       voiceCapture.setWakeGate({ suppressed: false });
@@ -677,7 +677,7 @@ export function bootstrap(opts: BootstrapOptions): {
     // в /avatar/tts/audio → ws_server.deliver_audio(stream="operator_tts").
     // Динамики робота (say) это не трогает — они живут на /voice/tts/*.
     operatorAudioSink.stop();
-    // ADR-0054 §2.3: пока грип зажат — wake подавлен (одна фраза — один
+    // ADR-0071 §2.3: пока грип зажат — wake подавлен (одна фраза — один
     // маршрут). enabled остаётся true; gate прокидывается внутрь.
     voiceCapture.setWakeGate({ suppressed: true });
     voiceCapture.setPttEnabled(true);
@@ -1677,7 +1677,7 @@ export function bootstrap(opts: BootstrapOptions): {
 
   return {
     /**
-     * ADR-0054 §2.2: панельный тумблер «всегда слушать» управляет
+     * ADR-0071 §2.2: панельный тумблер «всегда слушать» управляет
      * wake-каналом. UI-карточка (отдельная) вызывает это и клиент
      * шлёт `voice_listen_start/stop` на сервер + переключает gate
      * локально. Idempotent.
@@ -1693,7 +1693,7 @@ export function bootstrap(opts: BootstrapOptions): {
       xrTeleopHandle?.destroy();
       desktopPointer.destroy();
       voiceCapture.stop();
-      // ADR-0054: при выходе из сессии — wake выключаем, чтобы не лить
+      // ADR-0071: при выходе из сессии — wake выключаем, чтобы не лить
       // PCM в мост после dispose.
       voiceCapture.setWakeGate({ enabled: false, suppressed: true });
       clearInterval(utteranceTicker);

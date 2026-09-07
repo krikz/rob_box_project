@@ -34,7 +34,7 @@ class RecordingBridge(NoOpBridge):
         self.robot_start_calls = 0
         self.robot_stop_calls = 0
         self.voice_modes: list[str] = []
-        # ADR-0054 step 5a: wake stream (stream_id=2) routing.
+        # ADR-0071 step 5a: wake stream (stream_id=2) routing.
         self.wake_audio_payloads: list[bytes] = []
         self.wake_stream_state_changes: list[bool] = []  # True=active, False=paused
         # AV-27 / issue #1919 — TTS picker state.
@@ -60,7 +60,7 @@ class RecordingBridge(NoOpBridge):
         self.voice_audio_payloads.append(payload)
 
     def publish_quest_wake_audio(self, payload: bytes) -> None:
-        # ADR-0054 step 5a: stream_id=2 → wake-канал, публикуется в
+        # ADR-0071 step 5a: stream_id=2 → wake-канал, публикуется в
         # /audio/quest_wake (issue #1992, реализация в QuestBridge). Здесь —
         # NoOpBridge-стаб для теста маршрутизации sid==2 на уровне WS-сервера,
         # ROS-публикация не участвует.
@@ -977,7 +977,7 @@ async def test_voice_floor_baseline_single_client_unchanged(client, fixed_pin):
 
 
 # ------------------------------------------------------------------------
-# ADR-0054 step 5a: wake-channel (stream_id=2) routing + voice_listen_*
+# ADR-0071 step 5a: wake-channel (stream_id=2) routing + voice_listen_*
 # ------------------------------------------------------------------------
 
 
@@ -998,7 +998,7 @@ async def test_voice_audio_stream_id_2_routes_to_wake(client, fixed_pin):
 async def test_voice_audio_stream_id_0_back_compat_to_radio(client, fixed_pin):
     """VOICE_AUDIO с stream_id=0 (исторические клиенты) → radio-канал.
 
-    Back-compat: до ADR-0054 клиент слал sid=0, и весь VOICE_AUDIO шёл в
+    Back-compat: до ADR-0071 клиент слал sid=0, и весь VOICE_AUDIO шёл в
     bridge.publish_voice_audio. Сохраняем это поведение.
     """
     http_client, _server, bridge = client
@@ -1014,7 +1014,7 @@ async def test_voice_audio_stream_id_0_back_compat_to_radio(client, fixed_pin):
 
 
 async def test_voice_audio_stream_id_1_routes_to_radio(client, fixed_pin):
-    """VOICE_AUDIO с stream_id=1 (PTT после ADR-0054) → radio-канал."""
+    """VOICE_AUDIO с stream_id=1 (PTT после ADR-0071) → radio-канал."""
     http_client, _server, bridge = client
     ws = await _open_and_hello(http_client, fixed_pin)
     try:
@@ -1090,7 +1090,7 @@ async def test_voice_listen_does_not_affect_voice_floor(client, fixed_pin):
     """voice_listen_* — wake-канал, НЕ должен трогать voice-floor (PTT).
 
     Приём: wake-stream живёт независимо от PTT-floor. Это разделение
-    критично (ADR-0054 §2.3): грип (PTT) и always-on mic (wake) — разные
+    критично (ADR-0071 §2.3): грип (PTT) и always-on mic (wake) — разные
     потоки с разными state-машинами.
     """
     http_client, _server, bridge = client
