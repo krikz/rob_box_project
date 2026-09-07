@@ -307,6 +307,61 @@ def test_voice_robot_stop_with_empty_buffer_publishes_nothing():
     assert len(voice_in.published) == 0
 
 
+# --- Wake-канал (stream_id=2): буфер PCM → /audio/quest_wake (issue #1992) ---
+
+
+def _make_wake_bridge():
+    """QuestBridge с mock-паблишером wake-канала (/audio/quest_wake)."""
+    pytest.importorskip("geometry_msgs", reason="QuestBridge требует rclpy/geometry_msgs (только в Docker image)")
+    from rob_box_quest.quest_node import QuestBridge
+
+    node = _MockNode()
+    quest_wake = _MockPublisher()
+    bridge = QuestBridge(
+        node=node,
+        cmd_vel_quest_pub=_MockPublisher(),
+        cmd_vel_emergency_pub=_MockPublisher(),
+        quest_wake_pub=quest_wake,
+    )
+    return bridge, quest_wake
+
+
+def test_publish_quest_wake_audio_publishes_to_quest_wake_pub():
+    """publish_quest_wake_audio публикует ровно тот payload, что пришёл,
+    одним AudioData — без буферизации/EOU-логики (в отличие от robot_voice
+    на PTT-канале: клиент уже отфильтровал тишину через RMS VAD)."""
+    bridge, quest_wake = _make_wake_bridge()
+    payload = _pcm_chunk(4000, 4000)
+    bridge.publish_quest_wake_audio(payload)
+    assert len(quest_wake.published) == 1
+    # rclpy AudioData.data — array.array('B', ...) под настоящим сообщением
+    # (uint8[] сериализуется так), list() приводит к сравнимому виду.
+    assert list(quest_wake.published[0].data) == [0xA0, 0x0F, 0xA0, 0x0F]
+
+
+def test_publish_quest_wake_audio_multiple_chunks_publish_individually():
+    bridge, quest_wake = _make_wake_bridge()
+    bridge.publish_quest_wake_audio(_pcm20ms(4000))
+    bridge.publish_quest_wake_audio(_pcm20ms(-4000))
+    assert len(quest_wake.published) == 2
+    assert quest_wake.published[0].data != quest_wake.published[1].data
+
+
+def test_publish_quest_wake_audio_none_publisher_is_noop():
+    """Юнит-тесты моста конструируют QuestBridge без ROS (quest_wake_pub=None
+    по умолчанию) — publish_quest_wake_audio обязан молчать, а не падать."""
+    pytest.importorskip("geometry_msgs", reason="QuestBridge требует rclpy/geometry_msgs (только в Docker image)")
+    from rob_box_quest.quest_node import QuestBridge
+
+    bridge = QuestBridge(
+        node=_MockNode(),
+        cmd_vel_quest_pub=_MockPublisher(),
+        cmd_vel_emergency_pub=_MockPublisher(),
+    )
+    # Не должно бросить исключение.
+    bridge.publish_quest_wake_audio(_pcm_chunk(4000, 4000))
+
+
 def test_chunk_is_silent_threshold():
     pytest.importorskip("geometry_msgs", reason="QuestBridge требует rclpy/geometry_msgs (только в Docker image)")
     from rob_box_quest.quest_node import _chunk_is_silent

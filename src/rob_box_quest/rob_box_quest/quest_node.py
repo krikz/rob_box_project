@@ -242,6 +242,7 @@ class QuestBridge:
         tts_control_pub=None,
         sound_stop_pub=None,
         stt_in_pub=None,
+        quest_wake_pub=None,  # issue #1992: /audio/quest_wake (wake-канал → stt_node)
         wake_stream_pub=None,  # ADR-0054 step 5a: /avatar/wake_stream observability
         set_voice_mode_pub=None,
         set_voice_preset_pub=None,
@@ -267,6 +268,11 @@ class QuestBridge:
         self._sound_stop_pub = sound_stop_pub
         # Робот-голос (P7): буфер PCM → /audio/quest_in (STT).
         self._stt_in_pub = stt_in_pub
+        # issue #1992: wake-канал (stream_id=2) → /audio/quest_wake, читает
+        # stt_node.quest_wake_audio_callback (маршрутизатор в /avatar/stt/result
+        # при вейке «ТАРС», целевая §7.1/§9.1). None в unit-тестах моста →
+        # publish_quest_wake_audio no-op.
+        self._quest_wake_pub = quest_wake_pub
         # ADR-0054 step 5a: wake-channel observability.
         # None в unit-тестах моста → set_wake_stream_state no-op.
         self._wake_stream_pub = wake_stream_pub
@@ -455,17 +461,21 @@ class QuestBridge:
         self._voice_in_pub.publish(msg)
 
     def publish_quest_wake_audio(self, payload: bytes) -> None:
-        """VOICE_AUDIO (stream_id=2, wake-channel, ADR-0054 step 5а).
+        """VOICE_AUDIO (stream_id=2, wake-channel) → AudioData в /audio/quest_wake.
 
         Клиент уже отфильтровал silence через RMS VAD с hangover 200 мс
-        (voice_capture.ts), здесь payload всегда содержит речь. Сейчас —
-        no-op stub (реальная маршрутизация в stt_node появится в шаге 5
-        impl-плана ADR-0054). Метод существует, чтобы серверный routing
-        stream_id==2 не падал и unit-тесты могли писать ожидаемый receiver.
+        (voice_capture.ts), здесь payload всегда содержит речь. Публикует в
+        /audio/quest_wake, который слушает stt_node.quest_wake_audio_callback
+        и маршрутизирует в /avatar/stt/result только при вейке «ТАРС»
+        (целевая §7.1/§9.1, issue #1992). ``self._quest_wake_pub`` — None в
+        unit-тестах моста (конструируются без ROS) → no-op, как
+        publish_voice_audio.
         """
-        # TODO(step-5 ADR-0054): публиковать AudioData в /avatar/quest_wake
-        # (новый топик), который читает stt_node и гонит wake-word detector.
-        return None
+        if self._quest_wake_pub is None:
+            return
+        msg = AudioData()
+        msg.data = list(payload)
+        self._quest_wake_pub.publish(msg)
 
     def set_wake_stream_state(self, active: bool) -> None:
         """JSON_CMD {cmd: voice_listen_start/stop} (ADR-0054 step 5а).
@@ -1359,6 +1369,13 @@ class QuestNode(Node):
         self._stt_in_pub = self.create_publisher(
             AudioData, "/audio/quest_in", _VOICE_QOS
         )
+        # issue #1992: wake-канал (stream_id=2, always-on, VAD-гейт на
+        # клиенте) → /audio/quest_wake. QoS обязан совпадать с подпиской
+        # stt_node (rob_box_voice/stt_node.py: audio_qos = BEST_EFFORT,
+        # VOLATILE, depth=10) — переиспользуем _VOICE_QOS.
+        self._quest_wake_pub = self.create_publisher(
+            AudioData, "/audio/quest_wake", _VOICE_QOS
+        )
         # ADR-0054 step 5a: wake-channel (stream_id=2) observability.
         # Latched-событие {state: active|paused} для дашборда и e2e-тестов.
         # Публикуется из set_wake_stream_state (JSON_CMD voice_listen_*).
@@ -1621,6 +1638,7 @@ class QuestNode(Node):
             tts_control_pub=self._tts_control_pub,
             sound_stop_pub=self._sound_stop_pub,
             stt_in_pub=self._stt_in_pub,
+            quest_wake_pub=self._quest_wake_pub,
             wake_stream_pub=self._wake_stream_pub,
             set_voice_mode_pub=self._set_voice_mode_pub,
             set_voice_preset_pub=self._set_voice_preset_pub,

@@ -235,7 +235,7 @@ export class Connection {
    * ADR-0054 step 5a: один frame type, два stream_id:
    *   1 = ptt (default, существующее поведение — рация + робот-голос при грипе)
    *   2 = wake (новое — always-on поток через VAD-гейт)
-   * Сервер маршрутизирует по stream_id: 1 → /avatar/voice_in, 2 → /avatar/quest_wake.
+   * Сервер маршрутизирует по stream_id: 1 → /avatar/voice_in, 2 → /audio/quest_wake.
    * @returns true если frame реально отправлен; false если сокет не открыт.
    */
   sendVoiceAudio(payload: Uint8Array, streamId: 1 | 2 = 1): boolean {

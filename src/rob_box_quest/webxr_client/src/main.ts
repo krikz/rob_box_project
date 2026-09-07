@@ -513,7 +513,7 @@ export function bootstrap(opts: BootstrapOptions): {
   // ptt идёт БЕЗ VAD (sound_node не рвёт стрим watchdog'ом); wake — через
   // RMS-VAD + hangover 200мс + подавление при грипе (одна фраза — один
   // маршрут). Сервер маршрутизирует по stream_id: 1 → /avatar/voice_in,
-  // 2 → /avatar/quest_wake.
+  // 2 → /audio/quest_wake.
   const voiceCapture = createVoiceCapture({
     onChunk: (pcm, channel) => {
       if (!conn || disconnected) return;

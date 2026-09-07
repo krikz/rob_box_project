@@ -60,9 +60,10 @@ class RecordingBridge(NoOpBridge):
         self.voice_audio_payloads.append(payload)
 
     def publish_quest_wake_audio(self, payload: bytes) -> None:
-        # ADR-0054 step 5a: stream_id=2 → отдельный канал (потом шаг 5
-        # подключит /avatar/quest_wake_audio и стт_node). Сейчас — только
-        # записываем для теста маршрутизации.
+        # ADR-0054 step 5a: stream_id=2 → wake-канал, публикуется в
+        # /audio/quest_wake (issue #1992, реализация в QuestBridge). Здесь —
+        # NoOpBridge-стаб для теста маршрутизации sid==2 на уровне WS-сервера,
+        # ROS-публикация не участвует.
         self.wake_audio_payloads.append(payload)
 
     def set_wake_stream_state(self, active: bool) -> None:
