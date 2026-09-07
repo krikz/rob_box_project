@@ -113,6 +113,11 @@ class NavigateToWaypointTool(MCPTool):
         ]
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: navigation, personality.
+        return "personality"
+
+    @property
     def execution_type(self) -> ToolExecutionType:
         return ToolExecutionType.LONG
 
@@ -178,6 +183,11 @@ class NavigateToCoordinatesTool(MCPTool):
         ]
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: navigation, personality.
+        return "personality"
+
+    @property
     def execution_type(self) -> ToolExecutionType:
         return ToolExecutionType.LONG
 
@@ -239,6 +249,11 @@ class MoveDirectionTool(MCPTool):
         ]
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: navigation, personality.
+        return "personality"
+
+    @property
     def execution_type(self) -> ToolExecutionType:
         return ToolExecutionType.LONG
 
@@ -286,6 +301,11 @@ class StopNavigationTool(MCPTool):
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return []
+
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: stop, personality.
+        return "personality"
 
     @property
     def execution_type(self) -> ToolExecutionType:
@@ -391,6 +411,11 @@ class SaveWaypointTool(MCPTool):
         ]
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: save waypoint, personality.
+        return "personality"
+
+    @property
     def execution_type(self) -> ToolExecutionType:
         return ToolExecutionType.FAST
 
@@ -457,6 +482,11 @@ class DeleteWaypointTool(MCPTool):
         ]
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: delete waypoint, personality.
+        return "personality"
+
+    @property
     def execution_type(self) -> ToolExecutionType:
         return ToolExecutionType.INSTANT
 
@@ -499,6 +529,11 @@ class ClearWaypointsTool(MCPTool):
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return []
+
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: clear waypoints, personality.
+        return "personality"
 
     @property
     def execution_type(self) -> ToolExecutionType:

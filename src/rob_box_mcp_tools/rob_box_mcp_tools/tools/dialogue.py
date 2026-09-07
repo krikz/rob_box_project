@@ -300,6 +300,14 @@ class SpeakTextTool(MCPTool):
         )
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: голосовая реплика от ЛИЧНОСТИ
+        # робота (TTS). Срез ``personality`` — dialogue_node и
+        # avatar_supervisor оба имеют его; оператор (ТАРС) зовёт
+        # ``say`` (slice=operator.speech) вместо ``speak_text``.
+        return "personality"
+
+    @property
     def parameters(self) -> List[MCPToolParameter]:
         return [
             MCPToolParameter(
@@ -693,6 +701,11 @@ class ListenForResponseTool(MCPTool):
         )
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: STT-gate. Срез ``personality``.
+        return "personality"
+
+    @property
     def parameters(self) -> List[MCPToolParameter]:
         return [
             MCPToolParameter(
@@ -758,6 +771,11 @@ class EstimateTtsDurationTool(MCPTool):
             "Используется для планирования аранжировки музыки под длительность рэпа/стиха. "
             "Возвращает estimate_sec (float) — примерное время звучания с учётом chipmunk-ускорения."
         )
+
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: TTS-budget evaluation. personality.
+        return "personality"
 
     @property
     def parameters(self) -> list:
@@ -882,6 +900,12 @@ class RegisterSpeakerTool(MCPTool):
                 required=False,
             ),
         ]
+
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: speaker-id registration (d-vector).
+        # personality.
+        return "personality"
 
     @property
     def destructive(self) -> bool:
@@ -1137,6 +1161,16 @@ class SetVoiceTool(MCPTool):
         ]
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: выбор голоса TTS. В slice_policy.yaml
+        # tool ``set_voice`` принадлежит ОБОИМ срезам ``personality`` и
+        # ``operator.speech`` (намеренное пересечение: и личность, и
+        # оператор используют один и тот же туул). Здесь фиксируем
+        # ``personality`` как «домашний» срез — sender-ы сами проверяются
+        # в ToolSliceAuthority.is_allowed.
+        return "personality"
+
+    @property
     def execution_type(self):
         from ..base import ToolExecutionType
 
@@ -1340,6 +1374,12 @@ class SetTtsProviderTool(MCPTool):
         ]
 
     @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: см. SetVoiceTool — пересечение
+        # ``personality`` / ``operator.speech``. Фиксируем ``personality``.
+        return "personality"
+
+    @property
     def execution_type(self):
         from ..base import ToolExecutionType
 
@@ -1489,6 +1529,11 @@ class ListTtsVoicesTool(MCPTool):
                 enum=list(SUPPORTED_TTS_PROVIDERS),
             ),
         ]
+
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2: см. SetVoiceTool — пересечение.
+        return "personality"
 
     @property
     def execution_type(self):

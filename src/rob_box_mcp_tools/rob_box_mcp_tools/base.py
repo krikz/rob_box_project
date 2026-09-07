@@ -187,6 +187,22 @@ class MCPTool(ABC):
         pass
 
     @property
+    def slice(self) -> str:
+        """Срез каталога, которому принадлежит инструмент (ADR-0052, issue #1998 §6.2).
+
+        Дефолт — ``"core"`` (узкий read-only срез: батарея, поза, время,
+        статус). Подклассы, доступные LLM-личности, обязаны переопределить
+        на ``"personality"`` (музыка, память, навигация, mapping). Тулы
+        оператора (ТАРС) — ``"operator.speech"`` / ``"operator.control"`` /
+        ``"operator.admin"``.
+
+        Проверяется на регистрации (``mcp_server._register_tools`` ловит
+        пустой/неизвестный ``slice`` и отказывает старту) и на каждом
+        запросе ``/mcp/execute`` через ``ToolSliceAuthority.is_allowed``.
+        """
+        return "core"
+
+    @property
     def execution_type(self) -> ToolExecutionType:
         """
         Тип выполнения инструмента (по умолчанию MEDIUM)

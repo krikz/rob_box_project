@@ -105,6 +105,7 @@ except ImportError as _exc:  # noqa: BLE001
     _MINIMAX_MUSIC_AVAILABLE = False
     _MINIMAX_MUSIC_IMPORT_ERROR = str(_exc)
 from .mcp_auth import RequestAuthenticator
+from .slice_authority import ToolSliceAuthority, load_default_authority
 from .waypoint_store import WaypointStore
 from .mapping_state import MappingState
 from .voice_state import VoiceStateStore
@@ -265,6 +266,26 @@ class MCPServer(Node):
         # проверки любой пир исполняет инструменты в обход LLM и
         # confirmation gate. См. mcp_auth.py.
         self.authenticator = RequestAuthenticator.from_env(logger=self.get_logger())
+
+        # Issue #1998 §6.2 — sender → slice → tool allowlist (ADR-0052).
+        # Стоит после auth (HMAC подпись) и до FSM-гарда картографирования:
+        # каждый гард отвечает за свой инвариант и не знает про остальные,
+        # чтобы лог отказа был однозначным. Политика загружается из
+        # bundled YAML (data/slice_policy.yaml); тесты могут подменить
+        # через ``self.slice_authority = ...`` (атрибут публичный).
+        try:
+            self.slice_authority: ToolSliceAuthority = load_default_authority()
+        except Exception as exc:  # ConfigError / yaml YAMLError / etc.
+            self.get_logger().error(
+                f"❌ Не удалось загрузить slice_policy.yaml: {exc}. "
+                "mcp_server стартует БЕЗ slice-гарда — все sender'ы смогут "
+                "звать любые инструменты. Это fail-open, оператор должен "
+                "починить YAML перед деплоем."
+            )
+            # fail-open с пустой политикой = никто ничего не может (fail-closed).
+            self.slice_authority = ToolSliceAuthority.from_mapping(
+                {"senders": {}, "slices": {"_noop": []}}
+            )
 
         # Подписка на perception context для обновления инструментов
         try:
@@ -1117,6 +1138,35 @@ class MCPServer(Node):
             if not tool_name:
                 self._publish_error("Не указано имя инструмента", request_id)
                 return
+
+            # ── Slice Guard: sender → slice → tool (ADR-0052, issue #1998 §6.2) ──
+            # Стоит после auth (нам нужен подписанный ``auth.sender``) и
+            # до FSM-гарда картографирования: каждый гард отвечает за свой
+            # инвариант и не знает про остальные, чтобы лог отказа был
+            # однозначным. Sender берём из подписанного блока auth —
+            # провалидированного HMAC'ом, так что подменить нельзя.
+            sender = (
+                (request.get("auth") or {}).get("sender")
+                if isinstance(request.get("auth"), dict)
+                else None
+            ) or "unknown"
+            slice_decision = self.slice_authority.is_allowed(sender, tool_name)
+            if not slice_decision.allowed:
+                self.get_logger().warning(
+                    f"🚫 Slice blocked '{tool_name}' для sender='{sender}': "
+                    f"{slice_decision.reason}"
+                )
+                from .base import MCPToolResult
+                _slice_msg = (
+                    f"Инструмент '{tool_name}' недоступен: {slice_decision.reason}"
+                )
+                _result = MCPToolResult(success=False, error=_slice_msg)
+                _resp = {"tool_name": tool_name, "request_id": request_id, "result": _result.to_dict()}
+                _msg_out = String()
+                _msg_out.data = json.dumps(_resp, ensure_ascii=False)
+                self.result_pub.publish(_msg_out)
+                return
+            # ────────────────────────────────────────────────────────────
 
             # ── FSM Guard: block disallowed tools during active mapping ──
             if not self.mapping_state.is_tool_allowed(tool_name):
