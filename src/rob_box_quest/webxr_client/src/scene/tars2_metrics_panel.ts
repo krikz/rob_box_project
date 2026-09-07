@@ -129,9 +129,9 @@ export function createTars2MetricsPanel(
       // Пустое состояние: подсказка оператору.
       ctx!.fillStyle = "#8b98a5";
       ctx!.font = `${fontSize}px monospace`;
-      ctx!.fillText("Idle.", 8, 48);
+      ctx!.fillText('Idle.', 8, 48);
       ctx!.fillText('Скажи: "TARS, покажи', 8, 48 + Math.round(fontSize * 1.4));
-      ctx!.fillText("  дрейф CPU".', 8, 48 + Math.round(fontSize * 2.8));
+      ctx!.fillText('  дрейф CPU".', 8, 48 + Math.round(fontSize * 2.8));
     } else {
       // URL — большими буквами, моноширинно, чтобы помещался.
       ctx!.fillStyle = "#e6edf3";

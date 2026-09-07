@@ -40,11 +40,17 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from std_msgs.msg import String
 
-from rob_box_harness.tools import ToolHandler, ToolSpec
+if TYPE_CHECKING:
+    # Импорт отложен до момента register_tool(): при импорте модуля
+    # ``rob_box_harness`` тянет ``rob_box_llm`` и другие зависимости,
+    # которые на CI-стенде без ROS могут быть недоступны. Сторонний код
+    # dispatcher'а (build_panel_url, _on_panel_request) от этих импортов
+    # не зависит.
+    from rob_box_harness.tools import ToolHandler, ToolSpec
 
 # Дефолтный базовый URL Grafana. В production обычно закрыт за reverse-proxy:
 # см. ``docker/vision/Caddyfile`` (``/grafana/* → grafana:3000``). Параметр
@@ -86,6 +92,9 @@ class TarsPanelDispatcher:
         self._request_topic = panel_request_topic
         self._url_topic = panel_url_topic
         self._log = logger or node.get_logger() if hasattr(node, "get_logger") else logging.getLogger(__name__)
+        # Отдельные publisher'ы: «запросы от LLM tool call» и «ответы
+        # для Quest-клиента». В ROS оба — String JSON, но разные топики.
+        self._panel_request_pub = node.create_publisher(String, panel_request_topic, 10)
         self._panel_url_pub = node.create_publisher(String, panel_url_topic, 10)
         node.create_subscription(
             String,
@@ -208,7 +217,22 @@ class TarsPanelDispatcher:
         оператору («Готово, открыл дрейф CPU на TARS 2»). ``spec``
         фиксирует JSON Schema для параметра ``query`` (обязательный) и
         ``datasource`` (опциональный, default ``prometheus``).
+
+        Импорт ``ToolSpec`` отложен внутрь метода: ``rob_box_harness``
+        тянет ``rob_box_llm`` через ``health.py``, и при cold-import
+        на CI без ROS падает ``ModuleNotFoundError``. Dispatcher сам по
+        себе (build_panel_url, _on_panel_request) от ``ToolSpec`` не
+        зависит — поэтому импорт тут, а не на уровне модуля.
         """
+        try:
+            from rob_box_harness.tools import ToolSpec  # noqa: PLC0415
+        except ImportError as exc:  # noqa: BLE001
+            self._log.warning(
+                f"[tars_panel] cannot import ToolSpec, show_metrics "
+                f"tool not registered: {exc}"
+            )
+            return
+
         spec = ToolSpec(
             name=self.SHOW_METRICS_TOOL_NAME,
             description=(
@@ -272,7 +296,11 @@ class TarsPanelDispatcher:
                     },
                     ensure_ascii=False,
                 )
-                self._panel_url_pub.publish(payload)
+                # Шлём в /avatar/tars/panel_request — там же, где висит
+                # subscription ``_on_panel_request``. _on_panel_request
+                # парсит, строит URL и публикует ответ в
+                # /avatar/tars/panel_url (на него подписан Quest).
+                self._panel_request_pub.publish(payload)
             except Exception as exc:  # noqa: BLE001
                 return {
                     "status": "error",
