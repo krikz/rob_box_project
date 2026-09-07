@@ -2,7 +2,7 @@
 
 | Поле | Значение |
 |---|---|
-| Статус | Proposed (после merge → Accepted) |
+| Статус | **Accepted** (смержен в develop коммитом `bc391928`, 2026-09-05) |
 | Дата | 2026-09-05 |
 | Автор | Copilot по хендоффу `docs/plans/2026-09-05-operator-agent-architecture-handoff.md` (база `develop` @ `91b1f9d9`) |
 | Контекст | У оператора нет своего агента: `OperatorHarness` делает один вызов LLM без цикла, собирается с `DummyLLMProvider` + `FakeToolProvider` и по контракту не может получить инструменты. Решение: `avatar_supervisor` становится агентским циклом оператора (ТАРС), арбитраж floor/FSM выносится в отдельную ноду без LLM (`avatar_arbiter`), направление миграции разворачивается — `OperatorHarness` → `DialogCore` (= `AgentCore`). |
