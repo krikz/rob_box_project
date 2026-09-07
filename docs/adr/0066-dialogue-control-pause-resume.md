@@ -1,4 +1,4 @@
-# ADR-0054: `/dialogue/control` pause/resume — единственная связь оператора и личности
+# ADR-0066: `/dialogue/control` pause/resume — единственная связь оператора и личности
 
 | Поле | Значение |
 |---|---|
@@ -211,7 +211,7 @@ self._pause_reason: str = ""
 
 ```python
 def _on_dialogue_control(self, msg: String) -> None:
-    """ADR-0054 — pause/resume от avatar_supervisor.
+    """ADR-0060 — pause/resume от avatar_supervisor.
 
     JSON: {"action": "pause"|"resume", "reason": str, "ts_s": float}.
     Любое другое значение action — warning + no-op (ack НЕ шлём,
@@ -223,7 +223,7 @@ def _on_dialogue_control(self, msg: String) -> None:
         reason = str(payload.get("reason") or "")
     except (json.JSONDecodeError, TypeError):
         self.get_logger().warning(
-            f"⚠️ [ADR-0054] /dialogue/control: invalid JSON {msg.data!r}")
+            f"⚠️ [ADR-0060] /dialogue/control: invalid JSON {msg.data!r}")
         return
     if action == "pause":
         self._apply_operator_pause(reason)
@@ -231,7 +231,7 @@ def _on_dialogue_control(self, msg: String) -> None:
         self._apply_operator_resume()
     else:
         self.get_logger().warning(
-            f"⚠️ [ADR-0054] /dialogue/control: unknown action {action!r}")
+            f"⚠️ [ADR-0060] /dialogue/control: unknown action {action!r}")
         return
     self._publish_control_ack()
 
@@ -245,7 +245,7 @@ def _apply_operator_pause(self, reason: str) -> None:
     self._pause_reason = reason
     self._publish_state()
     self.get_logger().info(
-        f"⏸️ [ADR-0054] pause reason={reason!r} (was {state.name})")
+        f"⏸️ [ADR-0060] pause reason={reason!r} (was {state.name})")
 
 def _apply_operator_resume(self) -> None:
     state = self._dsm.current_state
@@ -256,7 +256,7 @@ def _apply_operator_resume(self) -> None:
     self._paused_at_ms = None
     self._pause_reason = ""
     self._publish_state()
-    self.get_logger().info("▶️ [ADR-0054] resume")
+    self.get_logger().info("▶️ [ADR-0060] resume")
 
 def _publish_control_ack(self) -> None:
     state = self._dsm.current_state

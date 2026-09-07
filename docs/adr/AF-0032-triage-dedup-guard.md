@@ -7,7 +7,7 @@
 | Автор | agent-flow (Hermes Agent); ретро-карточка `t_dfd3d19d`, родительская `t_0159af2d` |
 | Контекст | 4-я повторяющаяся серия дубль-карточек от `agent-flow-triage cron`: #1477/#1478 (STT empty on echo), #1506 (DJ-mode music-mutex), #1562/#1563 (session TTS bug), #1650/#1653/#1655/#1658 (4 devops-workers открыли 4 разных PR с одним fix-fingerprint). Каждая итерация ретро приводила к точечному фиксу, но root cause оставался: triage не имеет GROUP-LEVEL dedup на уровне issues и RACE-LEVEL dedup на уровне remote branch. |
 | Затрагивает | `scripts/agent_flow/agent-flow-triage.sh` (новые helpers `branch_exists_in_remote`, `dedup_intra_filter` + 2 invocation points в Phase 1/2 + 1 race-skip в `process_issues_json`), `scripts/agent_flow/tests/test_triage_dedup_intra.sh` (новый, 24 теста), `docs/adr/0030-adr-numbering-sot.md` (правила именования ADR). |
-| Родители | ADR-0018 (честный FAIL лучше красивого PASS), ADR-0013 (incremental-delivery), ADR-0030 (ADR-нумерация), ретро `t_a0fac345` (idempotency-v2 — по issue#N в body), ретро `t_8cde8449` (`branch:` label override), ретро `t_b0fe4398` (G8 fingerprint dedup). |
+| Родители | ADR-0018 (честный FAIL лучше красивого PASS), ADR-0013 (incremental-delivery), ADR-AF-0030 (ADR-нумерация), ретро `t_a0fac345` (idempotency-v2 — по issue#N в body), ретро `t_8cde8449` (`branch:` label override), ретро `t_b0fe4398` (G8 fingerprint dedup). |
 | Связанные | issues #1477, #1478, #1506, #1562, #1563, #1650, #1653, #1655, #1658; PR #1572, #1577, #1578, #1580, #1581, #1584 (target dup-series of the retro); ретро-карточка `t_dfd3d19d` (эта реализация). |
 
 ## TL;DR
@@ -39,7 +39,7 @@
 
 1. **Resource waste.** 9+ kanban-карточек в running/archived на одну причину = 9 спавнов воркеров, 9 worktree-clones, 9 PR или abort-циклов, 9 файловых системных операций. Доходит до 30+ минут CPU-time и 5+ GB tmp-disk на единичный crash-loop.
 2. **Signal-noise в Kanban UI.** Шифу видит 8 «почти одинаковых» карточек в ready — тратит 5–10 мин на их разбор при triage. Психологический долг.
-3. **Race-condition e2e-rotation.** e2e-rotation берёт needs-e2e карточки по приоритету (oldest first). 8 одинаковых карточек в ready → 8 одинаковых PR с одним fix → 8 e2e-раундов впустую. ADR-0030 (e2e stale-branch guard) на это уже ругается.
+3. **Race-condition e2e-rotation.** e2e-rotation берёт needs-e2e карточки по приоритету (oldest first). 8 одинаковых карточек в ready → 8 одинаковых PR с одним fix → 8 e2e-раундов впустую. ADR-AF-0030 (e2e stale-branch guard) на это уже ругается.
 4. **Скрытый root cause.** Каждое ретро добавляло один guard. 4 серии = 4 разных guards (idempotency-v1, -v2, throttle v3, G8 fingerprint). Между guards остаются 2 щели:
    - **Content-similarity** (одинаковые labels + title-prefix) — **не** покрыт ни одним guard до G9a.
    - **Branch-already-in-remote** (ветка в refs/heads/, но без PR) — **не** покрыт (G5 видит merged-PR, G6b — open-PR; оба не видят «ветка есть, PR нет»).
@@ -169,13 +169,13 @@ tick done: created=N skipped=N errored=N dedup-skipped: N (intra-tick), M (race)
 - **Ретро-карточка** `t_dfd3d19d` (эта реализация, дочерняя к `t_0159af2d`).
 - **Issue-series**: #1477, #1478, #1506, #1562, #1563, #1650, #1653, #1655, #1658.
 - **Ретро-связи**: `t_a0fac345` (idempotency-v2), `t_8cde8449` (branch_label_override), `t_dd7a5749` (assignee-existence), `t_a24ffe39` (throttle v3.1), `t_b0fe4398` (G8 fingerprint).
-- **ADR-связи**: ADR-0013 (incremental delivery), ADR-0018 (честный FAIL > красивый PASS), ADR-0030 (ADR нумерация + e2e stale-branch).
+- **ADR-связи**: ADR-0013 (incremental delivery), ADR-0018 (честный FAIL > красивый PASS), ADR-AF-0030 (ADR нумерация + e2e stale-branch).
 - **CONTRIBUTING.md** §2d: запрет ручного merge — G9 никаких PR не создаёт руками.
 
 ## 8. Следующие шаги
 
 1. **agent-flow** (этот PR) — реализует G9a + G9b, добавляет test, ADR-AF-0032, push в `z-agent-flow/t_dfd3d19d-dedup-guard`, открывает PR в `develop`.
-2. **merge-gate** проверяет: ADR-номер 0032 уникален (`ADR-collision-guard` ADR-0030 / test_merge_gate_adr_collision.sh) — должно проходить.
+2. **merge-gate** проверяет: ADR-номер 0032 уникален (`ADR-collision-guard` ADR-AF-0030 / test_merge_gate_adr_collision.sh) — должно проходить.
 3. **e2e-process** на следующий раунд проверяет, что `agent-flow-triage` запускается без падений (как cron, так и под DRY-RUN).
 4. **Шифу** мержит PR после green CI + ADR-collision-check.
 5. **Мониторинг**: первые 24ч после merge — следить за `dedup-skipped (intra-tick)` счётчиком. Если > 5/day — большинство issues попадают в группы → возможно, стоит уменьшить TITLE_PREFIX_WORDS до 5 или пересмотреть сценарии создания issues.

@@ -1,8 +1,8 @@
-# Proposal: ADR-0027 (ADR-0027: Улучшения harness по итогам анализа внешнего опыта построения AI-harness)
+# Proposal: ADR-AF-0027 (ADR-AF-0027: Улучшения harness по итогам анализа внешнего опыта построения AI-harness)
 
 ## Why
 
-Imported from [docs/adr/0027-harness-improvements-from-external-talk.md](docs/adr/0027-harness-improvements-from-external-talk.md) for tracking in OpenSpec.
+Imported from [docs/adr/AF-0027-harness-improvements-from-external-talk.md](docs/adr/AF-0027-harness-improvements-from-external-talk.md) for tracking in OpenSpec.
 
 Status: see original ADR.
 

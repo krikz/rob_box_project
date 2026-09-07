@@ -307,7 +307,7 @@ stale_after_upstream_fix_scan_all
 | Dead-content guard (line 2675+) | Отдельная забота (retro `t_e8d52cb7` / `t_944df2c5`), другой failure mode. |
 | Clean-PR sweep (line 3421+) | CLEAN/MERGEABLE PR — успешный путь, не наш случай. |
 | Stale-branch re-commit scan (`stale_branch_scan_all`) | Retro `t_d3aeaa9b` — другая проблема (z-{agent}/... ветки с устаревшим PR). |
-| Throttle / idempotency guards | ADR-0030, ADR-0032 — другая семантика. |
+| Throttle / idempotency guards | ADR-AF-0030, ADR-0032 — другая семантика. |
 | Rate-limit 2ч | Унаследован от UNSTABLE-reminder rate-limit (line 2517). |
 
 ### 2.5 Graceful degradation (legacy diagnostic без маркеров)

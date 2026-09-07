@@ -7,7 +7,7 @@
 | Автор | devops (Hermes Agent), issue #2072 / ретро audit operator-agent-хендоффа |
 | Контекст | `docs/adr/` на `origin/develop` — 13 номеров заняты более чем одним файлом (0052×5, 0055×3, 0027×3, 0028×2, 0030×2 и т.д.). Guard `validate_adr_namespace.sh` написан и покрыт 10/10 регресс-тестами, но в CI **не подключён** — запускался только вручную и post-factum в `agent-flow-merge-gate.sh` (откуда его можно обойти rebase'ом или service-action merge'ом, как показывают свежие коллизии `0052-mcp-slice-guard-on-transport.md` (PR #2064, a35c5088) и `0054-operator-agent-step-7b-eventbus-bridge.md` (PR #2048, 6fe87180)) |
 | Затрагивает | `.github/workflows/G-Lint Code.yml` (новый шаг в `python-lint`), `scripts/agent_flow/validate_adr_namespace.sh` (без изменений — только регистрация в CI), `docs/adr/0030` (ссылка как на родительское решение) |
-| Родители | ADR-0030 §2.4 (pre-merge guard), ADR-0018 (честный FAIL), ADR-0013 (incremental delivery), ADR-0021 (hard gate pattern через `cc_budget.py`) |
+| Родители | ADR-AF-0030 §2.4 (pre-merge guard), ADR-0018 (честный FAIL), ADR-0013 (incremental delivery), ADR-0021 (hard gate pattern через `cc_budget.py`) |
 | Связанные | issue #2072 (эта ретро), #1984 (прецедент «скрипт написан, но не в CI»), #2069 (соседний сбой merge-gate), PR `#2064`, `#2048`, `#2049`, `#2042` (свежие bypass'ы merge-gate) |
 
 ## 1. Контекст
@@ -21,7 +21,7 @@
 | **0052** | **5** | `decomposed-children-wake-up-watchdog`, `fan-out-dedup-by-file-overlap`, `issue-auto-close-after-merge`, `mcp-slice-guard-on-transport`, `wake-words-ssot-code-with-yaml-operator-override` |
 | **0055** | 3 | `operator-tts-headset-channel`, `operator-tts-headset-channel-impl-plan`, `voice-memory-db-unify-with-harness` |
 | 0027 | 3 | (исторические — ретро 25.08) |
-| 0028, 0030, 0032, 0054 | 2 | (включая `0030-adr-numbering-sot.md` соседствует с `0030-e2e-stale-branch-guard.md` — **ADR-0030 нарушен сам собой**) |
+| 0028, 0030, 0032, 0054 | 2 | (включая `0030-adr-numbering-sot.md` соседствует с `0030-e2e-stale-branch-guard.md` — **ADR-AF-0030 нарушен сам собой**) |
 | 0009, 0013, 0016, 0021, 0024, 0026 | 2-3 | — |
 
 Ссылка «ADR-0052» перестала означать что-либо: 4 из 5 файлов под этим номером — про agent-flow (watchdog, dedup, auto-close, wake-words) и **ни один** из них не про срезы (`slice`), кроме пятого (`mcp-slice-guard-on-transport.md`). Живой пример — `src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py:270`:
@@ -50,7 +50,7 @@
 
 ### 1.3 Гипотеза (root cause)
 
-Параллельные ветки воркеров выбирают ADR-номера, не сверяясь с `origin/develop`. ADR-0030 §2.2 требует `git fetch origin develop` + ручной проверки через `git ls-tree`, но это **неформализованная** процедура, которая ломается на:
+Параллельные ветки воркеров выбирают ADR-номера, не сверяясь с `origin/develop`. ADR-AF-0030 §2.2 требует `git fetch origin develop` + ручной проверки через `git ls-tree`, но это **неформализованная** процедура, которая ломается на:
 - агентах, которые коммитят «из HEAD» (не знают, что в develop за это время появились соседи),
 - маршрутах merge'а, минующих `merge-gate.sh`,
 - срочных правках (hotfix ветки), где экономия минуты важнее review-процесса.
@@ -64,10 +64,10 @@
 В `.github/workflows/G-Lint Code.yml`, в job `python-lint` (рядом с уже существующим `cc_budget.py` — **тот же паттерн**):
 
 ```yaml
-# ADR-0030 §2.4 / issue #2072: ADR-namespace collision guard.
+# ADR-AF-0030 §2.4 / issue #2072: ADR-namespace collision guard.
 # Hard gate (no continue-on-error) — PR с новым docs/adr/NNNN-*.md
 # на занятом номере должен фейлить lint ещё до merge-gate.
-- name: ADR-namespace collision guard (ADR-0030)
+- name: ADR-namespace collision guard (ADR-AF-0030)
   run: |
     git fetch --no-tags origin develop
     bash scripts/agent_flow/validate_adr_namespace.sh --ref origin/develop
@@ -128,10 +128,10 @@ rc=1
 
 ### 2.3 Что **не** делаем в этом PR
 
-- **Не разрешаем 13 существующих коллизий.** Это требует решения владельца по схеме: сквозная перенумерация или доменные неймспейсы (`ADR-AF-0052` для agent-flow против `ADR-0052` для рантайма). ADR-0030 §«Затрагивает» явно оставил этот выбор за Шифу — до сих пор не сделан. Это отдельная карточка.
+- **Не разрешаем 13 существующих коллизий.** Это требует решения владельца по схеме: сквозная перенумерация или доменные неймспейсы (`ADR-AF-0052` для agent-flow против `ADR-0052` для рантайма). ADR-AF-0030 §«Затрагивает» явно оставил этот выбор за Шифу — до сих пор не сделан. Это отдельная карточка.
 - **Не правим существующие ADR-файлы** — только регистрируем CI-шаг.
 - **Не трогаем `agent-flow-merge-gate.sh`** — там уже есть `check_adr_number_collision()`, и после этого ADR merge-gate становится вторым рубежом (хорошо — defence-in-depth), а не единственным.
-- **Не вводим ADR-bot / external counter** — overkill (см. ADR-0030 §3).
+- **Не вводим ADR-bot / external counter** — overkill (см. ADR-AF-0030 §3).
 
 ## 3. Альтернативы, которые мы отвергли
 
@@ -139,7 +139,7 @@ rc=1
 |---|---|
 | Только в merge-gate, не в CI | Уже там есть (`check_adr_number_collision`) — но 4 свежие коллизии зашли мимо merge-gate. CI обязан быть первым рубежом. |
 | External ADR-counter bot / PR-bot | Overkill для проекта. Guard в `G-Lint Code` дешевле (1 шаг в существующем workflow). |
-| Переписать все существующие ADR сразу (через этот PR) | Нарушает ADR-0013 (incremental delivery, ≤300 строк) и требует решения Шифу по §2.6 ADR-0030. Отдельная карточка. |
+| Переписать все существующие ADR сразу (через этот PR) | Нарушает ADR-0013 (incremental delivery, ≤300 строк) и требует решения Шифу по §2.6 ADR-AF-0030. Отдельная карточка. |
 | Soft-warning в PR-comment (continue-on-error) | Ровно то, что есть сейчас — неэффективно. Воркеры читают `gh pr checks`, но не `gh pr view --comments` (если CI не красный). |
 | Отдельный job `adr-namespace-collision` | Дублирует `python-lint.result` агрегацию. cc_budget уже там — последовательность. |
 
@@ -156,21 +156,21 @@ rc=1
 
 | # | Действие | Кто | Acceptance |
 |---|---|---|---|
-| 1 | `.github/workflows/G-Lint Code.yml` — добавлен шаг `ADR-namespace collision guard (ADR-0030)` в `python-lint`, hard gate | devops (эта карточка) | PR открыт, base=develop, CI зелёный |
+| 1 | `.github/workflows/G-Lint Code.yml` — добавлен шаг `ADR-namespace collision guard (ADR-AF-0030)` в `python-lint`, hard gate | devops (эта карточка) | PR открыт, base=develop, CI зелёный |
 | 2 | Локальная проверка: dry-run с фиктивным 0052-* → exit 1; с 0057-* → exit 0 | devops | raw-вывод в комментарии PR |
 | 3 | Этот ADR смержен в `develop` | architect (после Шифу merge) | PR смержен, статус → Accepted |
 | 4 | Cleanup 13 существующих коллизий по решению Шифу | devops (после Шифу) | отдельная карточка, **не** эта |
-| 5 | ADR-0030 перевести из `Proposed` в `Accepted` после успешного rollout guard'а | (авто при merge ADR-0057) | статус в frontmatter обновлён |
+| 5 | ADR-AF-0030 перевести из `Proposed` в `Accepted` после успешного rollout guard'а | (авто при merge ADR-0057) | статус в frontmatter обновлён |
 
 ## 6. Что **не** делаем
 
-- Не авто-merge этого ADR — Шифу мержит сам (правило §2.5 ADR-0030: ручной коммит запрещён, manual merge — за Шифу).
-- Не разрешаем существующие 13 коллизий в этом PR — отдельная карточка, требует §2.6 ADR-0030.
+- Не авто-merge этого ADR — Шифу мержит сам (правило §2.5 ADR-AF-0030: ручной коммит запрещён, manual merge — за Шифу).
+- Не разрешаем существующие 13 коллизий в этом PR — отдельная карточка, требует §2.6 ADR-AF-0030.
 - Не вводим ADR-bot — overkill.
 
 ## 8. Ссылки
 
-- ADR-0030 §2.4 (pre-merge guard), §2.5 (запрет ручного коммита), §2.6 (cleanup коллизий)
+- ADR-AF-0030 §2.4 (pre-merge guard), §2.5 (запрет ручного коммита), §2.6 (cleanup коллизий)
 - ADR-0021 R1 (hard gate через cc_budget — паттерн для этой карточки)
 - ADR-0018 (честный FAIL лучше красивого PASS)
 - ADR-0013 (incremental delivery — почему cleanup отдельной карточкой)

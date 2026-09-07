@@ -1,4 +1,4 @@
-# ADR-0052: `wake_words.yaml` — override operator namespace, а не SSoT; SSoT в коде
+# ADR-0065: `wake_words.yaml` — override operator namespace, а не SSoT; SSoT в коде
 
 | Поле | Значение |
 |---|---|
@@ -123,7 +123,7 @@ def resolve_wake_word_namespaces(
     """personality — ВСЕГДА из personality_fallback (SSoT в коде).
     operator — из YAML, если файл есть и namespace непуст; иначе fallback.
 
-    Секция ``personality:`` в YAML ЗАПРЕЩЕНА (ADR-0052): если она объявлена,
+    Секция ``personality:`` в YAML ЗАПРЕЩЕНА (ADR-0060): если она объявлена,
     выводим WARNING в лог ноды и игнорируем — порядок списка критичен
     (regex leftmost-first), и редактировать его безопаснее в коде, чем в YAML,
     который рассинхронизируется между контурами (issue #2022).
@@ -133,7 +133,7 @@ def resolve_wake_word_namespaces(
         # WARNING через rob_box_core.logging — personality в YAML запрещена.
         _log.warning(
             "wake_words.yaml содержит секцию `personality:` — игнорируется "
-            "(ADR-0052: SSoT — rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS)"
+            "(ADR-0060: SSoT — rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS)"
         )
     operator = loaded.get("operator") or list(operator_fallback)
     personality = list(personality_fallback)

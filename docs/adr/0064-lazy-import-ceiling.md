@@ -1,4 +1,4 @@
-# ADR-0021: Lazy-import ceiling — обязательные зависимости на top-of-file
+# ADR-0064: Lazy-import ceiling — обязательные зависимости на top-of-file
 
 Status: accepted (refactor, ARCH-review #1405)
 Date: 2026-08-18
@@ -172,7 +172,7 @@ CI (`G-Run Tests.yml` → colcon test) запускает этот тест по
 - [x] Lazy kept (justified): skills.*, ament_index_python.*,
       rob_box_mcp_tools.*, rob_box_voice.scheduler.*.
 - [x] Регресс-тест `test_dialogue_node_imports.py` (8 кейсов).
-- [x] ADR-0021 (этот документ).
+- [x] ADR-0060 (этот документ).
 
 ## See also
 

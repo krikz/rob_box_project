@@ -7,7 +7,7 @@
 | Автор | agent-flow (Hermes Agent); ретро-карточка `t_50a18fa9`, родительская issue #2018 (nightly-review `t_bfd19ffb` 2026-09-06, develop HEAD `07d33d20`) |
 | Контекст | Один и тот же defect в develop порождает несколько независимых PR от разных воркеров, потому что ни один существующий guard (G4-G8, G9a/b, branch-guard, OPEN-PR-per-branch) не ловит случай **«разные kanban-card, разные ветки, разные issue-anchor, но перекрывающиеся file:line»**. Acceptance для Шифу: один issue → максимум один PR в OPEN в любой момент времени, при попытке создать второй — explicit-skip с comment + label `agent-flow-error` + dedup-marker. |
 | Затрагивает | `scripts/agent_flow/agent-flow-triage.sh` (новый guard `file_overlap_with_open_pr` + `existing_active_card_for_issue`), `scripts/agent_flow/agent-flow-merge-gate.sh` (новый `competing_prs_block_scan_all`), `docs/adr/0032-triage-dedup-guard.md` (указать G10 как расширение), `scripts/agent_flow/tests/test_triage_file_overlap_dedup.sh`, `scripts/agent_flow/tests/test_merge_gate_competing_prs.sh` |
-| Родители | ADR-0018 (честный FAIL > красивый PASS), ADR-0013 (incremental delivery), ADR-0030 (ADR-нумерация), ADR-0031 (gsd-orphan-triage), ADR-0032 §G9a/b (intra-tick + race-window dedup), ADR-0045 (worker-worktree-base-ref-origin-develop), ADR-0046/47 (orphan-cleanup), `t_b0fe4398` (G8 fingerprint dedup) |
+| Родители | ADR-0018 (честный FAIL > красивый PASS), ADR-0013 (incremental delivery), ADR-AF-0030 (ADR-нумерация), ADR-0031 (gsd-orphan-triage), ADR-0032 §G9a/b (intra-tick + race-window dedup), ADR-0045 (worker-worktree-base-ref-origin-develop), ADR-0046/47 (orphan-cleanup), `t_b0fe4398` (G8 fingerprint dedup) |
 | Связанные | issue #2018 (this), PR #2015 (developer), PR #2016 (developer), PR #1978 (TTS chain), PR #1979 (synth fallback) — обе PR-серии заблокированы на одном и том же `_write_minimal_yaml` bug. Карточки `t_d17eb047`/`t_29fbabaa`/`t_e5720945`. |
 
 ## TL;DR
@@ -198,13 +198,13 @@ merge-gate: scanned=N prs, competing-prs: K (blocked=X), duplicate-file: M, ...
 - **Cascade-blocked PR**: #1978 (TTS provider chain), #1979 (synth fallback).
 - **CI-failure URLs**: https://github.com/krikz/rob_box_project/actions/runs/34071048402, /runs/34071039295.
 - **Ретро-связи**: `t_a0fac345` (idempotency-v2), `t_8cde8449` (branch_label_override), `t_dd7a5749` (assignee-existence), `t_a24ffe39` (throttle v3.1), `t_b0fe4398` (G8 fingerprint), `t_dfd3d19d` (G9a intra-tick + G9b race-window), `t_360dc1a4` (Phase 2 GSD-orphans), `t_bfd19ffb` (nightly-review 2026-09-06).
-- **ADR-связи**: ADR-0013 (incremental delivery), ADR-0018 (честный FAIL > красивого PASS), ADR-0030 (ADR нумерация + e2e stale-branch), ADR-0032 (G9a/b), ADR-0045 (worker-worktree-base-ref-origin-develop), ADR-0046/47 (orphan-cleanup).
+- **ADR-связи**: ADR-0013 (incremental delivery), ADR-0018 (честный FAIL > красивого PASS), ADR-AF-0030 (ADR нумерация + e2e stale-branch), ADR-0032 (G9a/b), ADR-0045 (worker-worktree-base-ref-origin-develop), ADR-0046/47 (orphan-cleanup).
 - **CONTRIBUTING.md** §2d: запрет ручного merge — G10 никаких PR не создаёт руками.
 
 ## 8. Следующие шаги
 
 1. **architect** (этот PR) — реализует G10a + G10b + G10c, добавляет 2 test, ADR-AF-0062, push в `z-{agent}/2018-hermes-fan-out-race-pr-2015-vs-2016`, открывает PR в `develop`.
-2. **merge-gate** проверяет: ADR-номер 0052 уникален (`ADR-collision-guard` ADR-0030 / test_merge_gate_adr_collision.sh) — должно проходить.
+2. **merge-gate** проверяет: ADR-номер 0052 уникален (`ADR-collision-guard` ADR-AF-0030 / test_merge_gate_adr_collision.sh) — должно проходить.
 3. **e2e-process** на следующий раунд проверяет, что `agent-flow-triage` и `agent-flow-merge-gate` запускаются без падений (как cron, так и под DRY-RUN).
 4. **Шифу** мержит PR после green CI + ADR-collision-check.
 5. **Мониторинг**: первые 24ч после merge — следить за `dedup-skipped (file-overlap)` и `competing-prs (blocked)` счётчиками. Если > 5/day — большинство issue'ов перекрываются → стоит расширить whitelist G8 или пересмотреть fan-out-триггеры в cron'ах.

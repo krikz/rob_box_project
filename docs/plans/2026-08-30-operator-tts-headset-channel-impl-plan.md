@@ -1,8 +1,8 @@
-# ADR-0055 implementation plan: обратный канал ТАРС в шлем (issue #1993, карточка t_dce67f3f)
+# ADR-0067 implementation plan: обратный канал ТАРС в шлем (issue #1993, карточка t_dce67f3f)
 
 > Это **implementation plan** для backend-воркера. Дизайн/контракты —
-> в `0055-operator-tts-headset-channel.md`. Этот файл — последовательность
-> коммитов, тестов и регрессий, которая превращает ADR-0055 в код
+> в `0067-operator-tts-headset-channel.md`. Этот файл — последовательность
+> коммитов, тестов и регрессий, которая превращает ADR-0067 в код
 > без пересечения с шagaми 04а, 5а (PR #2013 / #2037) и 07а (PR #2041).
 
 ## Что в итоге появится в коде
@@ -200,7 +200,7 @@
    seq заведён в типе для forward-compat с приоритетной очередью 07а).
 4. Подписка `String, self.avatar_tts_request_topic,
    self._on_avatar_tts_request_meta, 10` — **side-channel** для
-   детерминированной сессионной привязки (ADR-0055 §quest_node).
+   детерминированной сессионной привязки (ADR-0067 §quest_node).
    Внутри: парсим JSON, проверяем `sink == "headset"` (иначе игнор —
    это tts_node канал, не quest), берём **активную** ws-сессию:
    - `ws_server.get_active_sessions() == 1` → этот единственный ws;
@@ -232,7 +232,7 @@
 - `pytest -q src/rob_box_quest/test/unit/test_quest_node.py
   src/rob_box_quest/test/unit/test_quest_node_avatar.py` — зелёное.
 - `rg -n "avatar_tts_audio_topic" src/rob_box_quest/` — параметр
-  объявлен, default совпадает с ADR-0055.
+  объявлен, default совпадает с ADR-0067.
 
 **Acceptance:** юнит-тесты зелёные, ws_server-регрессии (коммит 1)
   не сломаны.
@@ -303,7 +303,7 @@
    | { type: "operator_tts_error"; request_id: string; reason: string;
        ts_ms: number }
    ```
-   (`_done`/`_error` пока не шлются сервером — ADR-0055 — но типы
+   (`_done`/`_error` пока не шлются сервером — ADR-0067 — но типы
    заведены для forward-compat.)
 2. `operator_audio_sink.ts` — симметричный `preview_audio_sink.ts`,
    но без `dispatchTts` (это речь в шлем, не превью-UI) и без
@@ -350,7 +350,7 @@
 - AudioWorklet — шаг 5а-0, PR #2013 (merged, уже в develop).
 - Wake-маршрутизация в `stt_node` — шаг 5.
 - Реальный e2e на железе (Quest, TARS на шлеме) — отдельная
-  карточка после merge всех 5 коммитов (см. ADR-0055 DoD).
+  карточка после merge всех 5 коммитов (см. ADR-0067 DoD).
 
 ## Definition of Done (5 коммитов вместе)
 
@@ -380,10 +380,10 @@
 
 ## Связанные ADR
 
-- ADR-0055 (этот шаг) — основной дизайн-документ.
+- ADR-0067 (этот шаг) — основной дизайн-документ.
 - ADR-0051 (supervisor/operator-agent/arbiter split, §2.9) — родитель.
 - ADR-0054 (wake stream, шаг 5а) — параллельный шаг, не пересекается.
-- ADR-0052 (wake_words.yaml SSoT) — личность wake живёт в коде.
+- ADR-0065 (wake_words.yaml SSoT) — личность wake живёт в коде.
 - ADR-0013 (incremental delivery) — поэтому 5 коммитов, не один big-bang.
 - ADR-0018 (honest FAIL) — DoD требует raw-цифры и grep-evidence, без
   голословных «проверил».

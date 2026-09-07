@@ -1,4 +1,4 @@
-# ADR-0055: Обратный канал звука ТАРС в шлем (operator-agent шаг 5б, issue #1993)
+# ADR-0067: Обратный канал звука ТАРС в шлем (operator-agent шаг 5б, issue #1993)
 
 - Статус: **Принят** (2026-09-07, architect, карточка t_dce67f3f)
 - Контекст: target-operator-agent-and-dialogue.md §7.4, §9.1, §9.5, §10.1; ADR-0051 §2.9
