@@ -7,7 +7,7 @@
 
 tts_node:
   ros__parameters:
-    provider: minimax
+    provider: yandex  # issue #1976 / t_b33bfee1 — Yandex-first (см. provider_chain ниже)
     silero_speaker: aidar
     silero_sample_rate: 48000
     synthesis_max_workers: 2

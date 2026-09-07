@@ -676,11 +676,14 @@ class TTSNode(Node):
 
         # Параметры
         # yandex (primary) | silero (fallback) | minimax (HTTP, opt-in)
-        self.declare_parameter("provider", "minimax")
+        self.declare_parameter("provider", "yandex")
 
-        # Issue #1083: цепочка приоритетов TTS (minimax → yandex → silero).
+        # Issue #1976 / t_b33bfee1 — цепочка приоритетов TTS по Шифу:
+        # «если нет Яши то юзать миниакс если и миниакса нет то силеро».
         # Пустой список → выводится из ``provider`` (см. _chain_from_provider).
-        # Silero всегда последний в цепочке (офлайн fallback).
+        # Дефолт ``provider=yandex`` даёт [yandex, minimax, silero].
+        # Back-compat от #1083: ``provider=minimax`` → [minimax, yandex, silero].
+        # Silero всегда последний (офлайн fallback).
         self.declare_parameter("provider_chain", [])
         # TTL кэша «мёртвых» провайдеров (сек): квота/auth (2056 Token Plan)
         # → длинный TTL, transient (сеть/timeout) → короткий. Пока провайдер
@@ -2153,7 +2156,10 @@ class TTSNode(Node):
                 self._next_play_seq += 1
                 self._play_order_cond.notify_all()
 
-    # ── Issue #1083: цепочка приоритетов TTS (minimax → yandex → silero) ────
+    # ── Issue #1976 / t_b33bfee1: цепочка приоритетов TTS по Шифу:
+    #    «если нет Яши то юзать миниакс если и миниакса нет то силеро».
+    #    Дефолт — Yandex-first. Back-compat от #1083 (provider=minimax)
+    #    сохранён — см. ``_chain_from_provider``. ───────────────
 
     @staticmethod
     def _default_provider_chain() -> list[str]:
@@ -2344,8 +2350,10 @@ class TTSNode(Node):
     def _effective_provider(self) -> str | None:
         """Фактический провайдер TTS: первый «живой» в цепочке (issue #1229).
 
-        Цепочка minimax → yandex → silero; провайдеры в кэше «мёртвых»
-        (квота/сеть) пропускаются. Если все мёртвы — последний (silero).
+        Цепочка yandex → minimax → silero (issue #1976 / t_b33bfee1 —
+        Шифу: «если нет Яши то юзать миниакс если и миниакса нет то силеро»);
+        провайдеры в кэше «мёртвых» (квота/сеть) пропускаются. Если все
+        мёртвы — последний (silero).
         """
         chain = getattr(self, "provider_chain", None)
         if not chain:
@@ -2545,9 +2553,10 @@ class TTSNode(Node):
 
         # Issue #1234 — OpenTelemetry span ``tts.synthesize`` (этап 2).
         # Открываем ДО try и закрываем в finally: покрывает всю цепочку
-        # синтеза (minimax → yandex → silero) + fallback. Атрибуты provider/
-        # fallback/duration проставляем в finally (provider известен только
-        # после цепочки). ``start_span_handle`` — no-op без OTel.
+        # синтеза (yandex → minimax → silero, issue #1976) + fallback.
+        # Атрибуты provider/fallback/duration проставляем в finally
+        # (provider известен только после цепочки).
+        # ``start_span_handle`` — no-op без OTel.
         _tts_trace_start = time.monotonic()
         _tts_trace = start_span_handle(
             "tts.synthesize",
@@ -2557,12 +2566,12 @@ class TTSNode(Node):
             },
         )
         try:
-            # Issue #1083: цепочка приоритетов TTS — minimax → yandex → silero.
-            # Раньше при provider=minimax ошибка MiniMax (в т.ч. 2056 Token
-            # Plan limit) вела СРАЗУ на Silero, пропуская рабочий Yandex
-            # (лог 09.08: MiniMax 2056 → «переключаюсь на Silero»). Теперь
-            # идём по цепочке: упал один провайдер → следующий по приоритету;
-            # Silero всегда последний (офлайн, работает всегда).
+            # Issue #1976 / t_b33bfee1: цепочка приоритетов TTS по Шифу —
+            # «если нет Яши то юзать миниакс если и миниакса нет то силеро».
+            # Дефолт: yandex → minimax → silero. Back-compat от #1083
+            # (provider=minimax → [minimax, yandex, silero]) сохранён через
+            # ``_chain_from_provider`` — MiniMax-квота не сразу валится на
+            # Silero, а пробует Yandex (лог 09.08). Silero всегда последний.
             audio_np = None
             sample_rate = 16000  # Yandex возвращает 16kHz
             result = {}
@@ -2637,10 +2646,14 @@ class TTSNode(Node):
                         if mark_dead is not None:
                             mark_dead("minimax", e)
                         # Честный лог: называем РЕАЛЬНОГО следующего в цепочке
-                        # (для дефолтной minimax → yandex → silero это Yandex —
-                        # ровно тот лог, который ждёт acceptance #1083).
-                        _next_provider = next(
-                            (p for p in provider_chain if p != "minimax"), "silero"
+                        # ПОСЛЕ текущего «minimax», а не первого не-minimax
+                        # (для дефолтной [yandex, minimax, silero] — Silero;
+                        # для back-compat [minimax, yandex, silero] — Yandex).
+                        _cur_idx = provider_chain.index("minimax")
+                        _next_provider = (
+                            provider_chain[_cur_idx + 1]
+                            if _cur_idx + 1 < len(provider_chain)
+                            else provider_chain[-1]
                         )
                         _display = {
                             "minimax": "MiniMax",
@@ -2727,7 +2740,24 @@ class TTSNode(Node):
                         mark_dead = getattr(self, "_mark_provider_dead", None)
                         if mark_dead is not None:
                             mark_dead("yandex", e)
-                        self.get_logger().warn(f"⚠️  Yandex gRPC отвалился: {e}, переключаюсь на Silero fallback")
+                        # Честный лог: называем РЕАЛЬНОГО следующего в цепочке
+                        # ПОСЛЕ текущего «yandex» (для дефолтной [yandex,
+                        # minimax, silero] — MiniMax; для [minimax, yandex,
+                        # silero] — Silero).
+                        _cur_idx = provider_chain.index("yandex")
+                        _next_provider = (
+                            provider_chain[_cur_idx + 1]
+                            if _cur_idx + 1 < len(provider_chain)
+                            else provider_chain[-1]
+                        )
+                        _display = {
+                            "minimax": "MiniMax",
+                            "yandex": "Yandex",
+                            "silero": "Silero",
+                        }.get(_next_provider, _next_provider)
+                        self.get_logger().warn(
+                            f"⚠️  Yandex gRPC отвалился ({e}), переключаюсь на {_display}"
+                        )
                         audio_np = None
                     finally:
                         if is_metrics_enabled():

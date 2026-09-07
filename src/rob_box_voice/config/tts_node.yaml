@@ -13,7 +13,7 @@
 tts_node:
   ros__parameters:
     metrics_port: 9110  # issue #1160 — Prometheus metrics endpoint
-    provider: minimax
+    provider: yandex  # issue #1976 / t_b33bfee1 — Yandex-first (см. provider_chain ниже)
     # Issue #929 (OOM kill tts_node): фоновый warm-load Silero держит
     # ~700 MB-1 GB RSS постоянно (PyTorch + модель), даже когда Silero —
     # только fallback и Yandex/MiniMax работают. Контейнер voice-assistant
@@ -111,8 +111,10 @@ tts_node:
     # Issue #1976 / t_b33bfee1 — цепочка fallback TTS-провайдеров.
     # Дефолт — Yandex-first (Шифу: «если нет Яши то юзать миниакс если
     # и миниакса нет то силеро»). Чтобы переопределить — измените порядок
-    # ниже ИЛИ задайте provider= в YAML (см. _chain_from_provider).
-    # Silero всегда последний (инвариант — сам tts_node гарантирует).
+    # ниже. Silero всегда последний (инвариант — сам tts_node гарантирует).
+    # Номинальный провайдер (``provider:``) объявлен выше и согласован с
+    # цепочкой. ``provider_chain`` задан явно для читаемости и для обхода
+    # ``_chain_from_provider`` (полезно в тестах/симуляторах).
     provider_chain:
       - yandex
       - minimax

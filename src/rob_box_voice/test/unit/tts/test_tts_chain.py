@@ -319,6 +319,56 @@ def test_chain_from_yaml_rejects_missing_provider() -> None:
         chain_from_yaml_config(cfg, lambda n: lambda t, s, v: None)
 
 
+def test_chain_from_yaml_accepts_flat_strings() -> None:
+    """Flat-string YAML shape (current tts_node.yaml SSoT, issue #1976)."""
+    cfg = ["yandex", "minimax", "silero"]
+
+    def lookup(name: str):
+        return lambda t, s, v: f"{name}".encode()
+
+    chain = chain_from_yaml_config(cfg, lookup)
+    assert chain.names == ("yandex", "minimax", "silero")
+    # priority auto-assigned by index (1-based).
+    assert [s.priority for s in chain.providers] == [1, 2, 3]
+    # voice defaults to None when caller uses flat shape.
+    assert all(s.voice is None for s in chain.providers)
+
+
+def test_chain_from_yaml_flat_two_providers() -> None:
+    """Flat shape with a single provider (silero-only mode)."""
+    cfg = ["silero"]
+    chain = chain_from_yaml_config(cfg, lambda n: lambda t, s, v: b"")
+    assert chain.names == ("silero",)
+    assert chain.providers[0].priority == 1
+
+
+def test_chain_from_yaml_empty_config_rejected() -> None:
+    """Empty config rejected with a clear hint — TTSProviderChain invariant."""
+    with pytest.raises(ValueError, match="config is empty"):
+        chain_from_yaml_config([], lambda n: lambda t, s, v: b"")
+
+
+def test_chain_from_yaml_rejects_mixed_shapes() -> None:
+    """Mixing flat strings and dicts is a footgun — reject explicitly."""
+    cfg = ["yandex", {"provider": "minimax", "priority": 2}]
+    with pytest.raises(ValueError, match="mixed shape at index 1"):
+        chain_from_yaml_config(cfg, lambda n: lambda t, s, v: b"")
+
+
+def test_chain_from_yaml_flat_rejects_unknown_provider() -> None:
+    """Flat shape still validates known-provider set."""
+    cfg = ["yandex", "elevenlabs"]
+    with pytest.raises(ValueError, match="unknown provider 'elevenlabs'"):
+        chain_from_yaml_config(cfg, lambda n: lambda t, s, v: b"")
+
+
+def test_chain_from_yaml_rejects_non_string_non_mapping_entry() -> None:
+    """Integers, None etc. are rejected with a clear error."""
+    cfg = [42]
+    with pytest.raises(ValueError, match="must be str or Mapping"):
+        chain_from_yaml_config(cfg, lambda n: lambda t, s, v: b"")
+
+
 # ── Voice propagation ──────────────────────────────────────────────────────
 
 

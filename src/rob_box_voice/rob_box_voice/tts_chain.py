@@ -332,29 +332,43 @@ class TTSProviderChain:
 
 
 def chain_from_yaml_config(
-    config: Iterable[Mapping[str, Any]],
+    config: Iterable[Any],
     synthesize_lookup: Callable[[str], SynthesizeFn],
 ) -> TTSProviderChain:
     """Build a :class:`TTSProviderChain` from a YAML list of providers.
 
-    Expected shape (per карточка, voice_node.yaml / tts_node.yaml)::
+    Accepts **two** shapes (auto-detected per entry):
 
-        tts:
-          provider_chain:
-            - provider: yandex
-              voice: anton
-              priority: 1
-            - provider: minimax
-              voice: minimax-male-qn-qingse
-              priority: 2
-            - provider: silero
-              voice: silero_ru
-              priority: 3
+    1. **Flat strings** (current ``tts_node.yaml`` SSoT, issue #1976)::
+
+        provider_chain:
+          - yandex
+          - minimax
+          - silero
+
+       Priority = list index (1-based). Voice = ``None`` (resolved by
+       caller via ``voice=`` kwarg or registry default).
+
+    2. **Dicts** (forward-compat / explicit-shape)::
+
+        provider_chain:
+          - provider: yandex
+            voice: anton
+            priority: 1
+          - provider: minimax
+            voice: minimax-male-qn-qingse
+            priority: 2
+
+       Priority and voice come from the entry.
+
+    Per карточка (voice_node.yaml / tts_node.yaml) — оба формата
+    допустимы; формат №1 совпадает с runtime-конфигом, формат №2 —
+    явный (с голосом/приоритетом). Микс не поддерживается — все
+    entries одного типа или ValueError.
 
     Args:
-        config: iterable of provider entries. Each entry must have at
-            least ``provider`` (str) and ``priority`` (int). Unknown
-            provider names raise :class:`ValueError`.
+        config: iterable of provider entries. Each entry must be either
+            ``str`` (flat) or ``Mapping[str, Any]`` (dict). See above.
         synthesize_lookup: callable that resolves a provider name to its
             synthesize function. Lets the caller inject production
             callables (e.g. ``lambda name: {"yandex": self._synthesize_yandex,
@@ -362,27 +376,65 @@ def chain_from_yaml_config(
             coupling this module to ROS2 / :class:`TTSNode`.
 
     Raises:
-        ValueError: on unknown provider, missing key, or duplicate
-            priority among live (non-Silero) providers.
+        ValueError: on unknown provider, missing key, duplicate
+            priority, or mixed flat/dict entries.
     """
     slots: list[TTSProviderSlot] = []
     seen_priorities: set[int] = set()
-    for entry in config:
-        name = entry.get("provider")
-        if not name:
+    # Auto-detect shape: peek first entry to decide flat vs dict mode.
+    entries = list(config)
+    if not entries:
+        # Consistent with TTSProviderChain's "needs at least one provider"
+        # invariant — fail loudly rather than return an empty chain that
+        # will explode at synthesize() with a confusing message.
+        raise ValueError(
+            "chain_from_yaml_config: config is empty — chain must have "
+            "at least one provider (use ['silero'] for offline-only mode)"
+        )
+    first = entries[0]
+    if isinstance(first, str):
+        shape = "flat"
+    elif isinstance(first, Mapping):
+        shape = "dict"
+    else:
+        raise ValueError(
+            f"chain_from_yaml_config: entries must be str or Mapping, "
+            f"got {type(first).__name__}: {first!r}"
+        )
+    # Reject mixed shapes — silently accepting either is a footgun.
+    for i, entry in enumerate(entries):
+        if shape == "flat" and not isinstance(entry, str):
             raise ValueError(
-                f"provider_chain entry missing 'provider': {entry!r}"
+                f"chain_from_yaml_config: mixed shape at index {i}: "
+                f"expected str (flat mode), got {type(entry).__name__}: {entry!r}"
             )
+        if shape == "dict" and not isinstance(entry, Mapping):
+            raise ValueError(
+                f"chain_from_yaml_config: mixed shape at index {i}: "
+                f"expected Mapping (dict mode), got {type(entry).__name__}: {entry!r}"
+            )
+    for index, entry in enumerate(entries):
+        if shape == "flat":
+            name = entry
+            priority = index + 1
+            voice: Any = None
+        else:
+            name = entry.get("provider")
+            if not name:
+                raise ValueError(
+                    f"provider_chain entry missing 'provider': {entry!r}"
+                )
+            priority = entry.get("priority")
+            if not isinstance(priority, int):
+                raise ValueError(
+                    f"provider_chain[{name}] 'priority' must be int (got "
+                    f"{type(priority).__name__}: {priority!r})"
+                )
+            voice = entry.get("voice")
         if name not in _KNOWN_PROVIDERS:
             raise ValueError(
                 f"provider_chain: unknown provider '{name}' "
                 f"(known: {sorted(_KNOWN_PROVIDERS)})"
-            )
-        priority = entry.get("priority")
-        if not isinstance(priority, int):
-            raise ValueError(
-                f"provider_chain[{name}] 'priority' must be int (got "
-                f"{type(priority).__name__}: {priority!r})"
             )
         if priority in seen_priorities:
             raise ValueError(
@@ -395,7 +447,7 @@ def chain_from_yaml_config(
                 name=name,
                 synthesize=synthesize_lookup(name),
                 priority=priority,
-                voice=entry.get("voice"),
+                voice=voice,
             )
         )
     return TTSProviderChain(slots)

@@ -268,6 +268,138 @@ class TestDefaultProviderPath:
         node.playback_manager.play_audio.assert_called_once()
 
 
+class TestFallbackLogMessage:
+    """Issue #1976 / t_b33bfee1 (re-review) — log must name the real next provider.
+
+    Раньше лог MiniMax-фейла искал «первый не-minimax» в цепочке:
+        next(p for p in chain if p != "minimax")
+    При дефолтной [yandex, minimax, silero] это давало Yandex, хотя
+    фактический следующий — Silero (Yandex уже отработал выше по циклу).
+    Аналогично Yandex-фейл хардкодил «Silero fallback», хотя следующий
+    за Yandex — MiniMax.
+
+    Тесты проверяют, что логи называют РЕАЛЬНОГО следующего по позиции.
+    """
+
+    def _setup_node(self, provider_chain, *, fail_providers):
+        """Build a node that fails the given provider(s), succeeds at Silero.
+
+        ``fail_providers`` is a tuple — if a provider later in the chain
+        must fire its failure log, every earlier provider must also fail
+        (or be cached as dead). The test for "minimax fail logs Silero
+        in yandex-first chain" needs both yandex and minimax to fail.
+        """
+        node = _make_fake_node()
+        node.provider = "yandex"
+        node.provider_chain = provider_chain
+        node.normalize_text = False
+        node.stop_requested = False
+        node.processing_dialogue_id = None
+        node.current_dialogue_id = None
+        # Yandex setup.
+        node.yandex_stub = object()
+        node.yandex_speed = 1.0
+        if "yandex" in fail_providers:
+            node._synthesize_yandex = MagicMock(side_effect=RuntimeError("yandex-grpc-down"))
+        else:
+            node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+        # MiniMax setup.
+        node.minimax_streaming = False
+        if "minimax" in fail_providers:
+            node._synthesize_minimax = MagicMock(side_effect=RuntimeError("minimax-quota"))
+        else:
+            node._synthesize_minimax = MagicMock(
+                return_value={"audio_np": np.zeros(1600, dtype=np.float32), "sample_rate": 16000}
+            )
+        node.publish_state = MagicMock()
+        node._publish_audio = MagicMock()
+        node.get_logger = MagicMock()
+        node.chipmunk_mode = False
+        node.pitch_shift = 1.0
+        node.volume_gain = 1.0
+        node.device_index = None
+        node.current_stream = None
+        node.playback_manager = MagicMock()
+        node.playback_manager.play_audio.return_value = True
+        node.cleanup_playback_noise = MagicMock()
+        node.finished_pub = MagicMock()
+        # Silero path is the ultimate fallback — set minimal attrs.
+        node.silero_model = object()  # any truthy value bypasses lazy-load.
+        node._silero_loaded = MagicMock()
+        node._silero_loaded.wait.return_value = True
+        node.silero_warm_load_enabled = False  # skip warm-load wait
+        return node
+
+    def _warn_texts(self, node):
+        return [
+            call.args[0] if call.args else call.kwargs.get("msg", "")
+            for call in node.get_logger.return_value.warn.call_args_list
+        ]
+
+    def test_yandex_fail_logs_minimax_not_silero_yandex_first_chain(self):
+        """Default chain [yandex, minimax, silero] → Yandex fail → log says MiniMax."""
+        node = self._setup_node(
+            ["yandex", "minimax", "silero"], fail_providers=("yandex",)
+        )
+        tts_node.TTSNode._synthesize_and_play(
+            node, "<speak>x</speak>", "x", None, {}, None,
+        )
+        joined = "\n".join(self._warn_texts(node))
+        assert "Yandex gRPC отвалился" in joined
+        # Issue: previous hardcoded log said "переключаюсь на Silero fallback",
+        # but next in chain is MiniMax.
+        assert "переключаюсь на MiniMax" in joined
+        assert "переключаюсь на Silero fallback" not in joined
+
+    def test_yandex_fail_logs_silero_in_minimax_first_chain(self):
+        """Back-compat [minimax, yandex, silero] → Yandex fail → log says Silero.
+
+        Need to also fail MiniMax so chain reaches Yandex.
+        """
+        node = self._setup_node(
+            ["minimax", "yandex", "silero"], fail_providers=("minimax", "yandex")
+        )
+        tts_node.TTSNode._synthesize_and_play(
+            node, "<speak>x</speak>", "x", None, {}, None,
+        )
+        joined = "\n".join(self._warn_texts(node))
+        assert "Yandex gRPC отвалился" in joined
+        assert "переключаюсь на Silero" in joined
+
+    def test_minimax_fail_logs_silero_not_yandex_in_yandex_first_chain(self):
+        """[yandex, minimax, silero] → MiniMax fail → log says Silero (not Yandex).
+
+        Раньше log искал "first non-minimax" = Yandex, что вводило в
+        заблуждение: Yandex уже отработал и упал выше по циклу.
+
+        Need to also fail Yandex so chain reaches MiniMax.
+        """
+        node = self._setup_node(
+            ["yandex", "minimax", "silero"], fail_providers=("yandex", "minimax")
+        )
+        tts_node.TTSNode._synthesize_and_play(
+            node, "<speak>x</speak>", "x", None, {}, None,
+        )
+        joined = "\n".join(self._warn_texts(node))
+        assert "MiniMax T2A отвалился" in joined
+        # Issue fix: prev code said "переключаюсь на Yandex" (wrong — Yandex
+        # already failed above). Now it should name the real next: Silero.
+        assert "переключаюсь на Silero" in joined
+        assert "переключаюсь на Yandex" not in joined
+
+    def test_minimax_fail_logs_yandex_in_minimax_first_chain(self):
+        """Back-compat [minimax, yandex, silero] → MiniMax fail → log says Yandex."""
+        node = self._setup_node(
+            ["minimax", "yandex", "silero"], fail_providers=("minimax",)
+        )
+        tts_node.TTSNode._synthesize_and_play(
+            node, "<speak>x</speak>", "x", None, {}, None,
+        )
+        joined = "\n".join(self._warn_texts(node))
+        assert "MiniMax T2A отвалился" in joined
+        assert "переключаюсь на Yandex" in joined
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # retry classification
 # ─────────────────────────────────────────────────────────────────────────────
