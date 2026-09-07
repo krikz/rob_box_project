@@ -21,8 +21,9 @@ setup(
         # Config files
         (os.path.join('share', package_name, 'config'),
             glob('config/*.yaml') + glob('config/*.json')),
-        # AV-28: voice style presets (config/presets/*.txt) — dialogue_node
-        # читает их из ROS-share при voice_input_mode=quest_llm_formalize.
+        # ADR-0054 §6.3 — voice style presets (config/presets/*.txt) теперь
+        # читаются ``grip_pipeline`` супервизора (а не dialogue_node), но
+        # install-share нужен — оставляем шаг data_files для ROS-share.
         (os.path.join('share', package_name, 'config', 'presets'),
             glob('config/presets/*.txt')),
         # Prompts

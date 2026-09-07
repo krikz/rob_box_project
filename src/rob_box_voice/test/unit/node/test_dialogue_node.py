@@ -69,6 +69,8 @@ def _make_node(parameters: dict | None = None) -> DialogueNode:
     n._sound_trigger_pub = MagicMock()
     n._tts_control_pub = MagicMock()
     n._music_cleanup_pub = MagicMock()
+    # ADR-0054 — pub для /dialogue/control_ack (тест-dialogue_control).
+    n._dialogue_control_pub = MagicMock()
 
     # State attrs
     n._wake_words = ["робок", "робот", "роббокс"]
@@ -116,6 +118,9 @@ def _make_node(parameters: dict | None = None) -> DialogueNode:
     n._faq_store = None
     n._event_profile = None
     n._startup_greeting_fired = False
+    # ADR-0054 — кэш паузы (для тестов test_dialogue_control).
+    n._paused_at_ms = None
+    n._pause_reason = ""
     return n
 
 

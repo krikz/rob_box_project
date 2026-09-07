@@ -442,7 +442,6 @@ class TestParametersCallbackBargeInPolicy:
         node.get_logger = lambda: MagicMock()
         node._barge_in_policy = "replace"
         node._barge_in_policy_pub = MagicMock()
-        node._voice_input_mode = "on"
         return node
 
     @staticmethod
@@ -466,7 +465,9 @@ class TestParametersCallbackBargeInPolicy:
         n._barge_in_policy_pub.publish.assert_not_called()
 
     def test_unrelated_param_does_not_touch_barge_in_policy(self, n):
-        n.parameters_callback([self._param("voice_input_mode", "off")])
+        # ADR-0054 §6.3 — ``voice_input_mode`` УДАЛЁН. Проверяем что
+        # ``voice_preset`` (который остался для LLM-формализации в
+        # grip_pipeline супервизора) не трогает barge_in_policy.
+        n.parameters_callback([self._param("voice_preset", "technical")])
         assert n._barge_in_policy == "replace"
         n._barge_in_policy_pub.publish.assert_not_called()
-        assert n._voice_input_mode == "off"
