@@ -1,4 +1,89 @@
-// Типы сообщений JSON_CMD / JSON_EVENT (docs/architecture/meta-quest-api.md §5, §6).
+// Ручные типы сообщений JSON_CMD / JSON_EVENT (docs/architecture/meta-quest-api.md §5, §6).
+//
+// Сгенерированная часть контракта (XxxCmd / XxxEvent интерфейсы для
+// admin_logs, teleop_twist, voice_pipeline, …, и discriminated union-ы
+// JsonCmdGenerated / JsonEventGenerated) живёт в `protocol_generated.ts` —
+// это машинное отражение `rob_box_core._bridge_protocol_data` (ADR-0080 §2.2).
+//
+// Здесь остаётся только то, что либо ещё НЕ внесено в каталог, либо
+// несёт UI-специфику (helper-типы для picker'ов и панелей):
+//
+//   * HelloMsg / WelcomeMsg / SubscribeMsg / UnsubscribeMsg — control-frame
+//     shapes. Они в CONTROL_FRAMES каталога, но c per-field комментариями,
+//     которые генератор не повторяет.
+//   * VoiceInfo / VoicePresetInfo — DTO, в wire уходит как part of
+//     voice_list/voice_presets events. Каталог ссылается на них по имени
+//     (list[VoiceInfo], list[VoicePresetInfo]) — TS-определения обязаны
+//     жить где-то; UI импортирует отсюда.
+//   * VoicePttMode / VoiceWireMode — клиентские helper-типы для UI-кода,
+//     которых нет в каталоге (там это inline-литералы внутри payload).
+//   * VoicePresetLegacy / VoicePresetId / VoicePreset / VoiceLanguage —
+//     старые ID пресетов (Phase 1/2.0), AV-28 §P7 новые стили речи.
+//   * ErrorMsg — структура ERROR-frame payload (UI его рисует как toast).
+//   * StreamMeta — клиентская нормализация подписки.
+//   * Fallback-вариант `{ cmd: string; ts_ms: number; [k: string]: unknown }`
+//     для forward-compat с неизвестными payload'ами от старого сервера.
+
+import type {
+  JsonCmdGenerated,
+  JsonEventGenerated,
+  TeleopTwistCmd,
+  TeleopHeartbeatCmd,
+  StopEmergencyCmd,
+  VoicePttStartCmd,
+  VoicePttStopCmd,
+  VoiceModeCmd,
+  StreamSelectCmd,
+  StreamListCmd,
+  ListVoicesCmd,
+  SetVoiceCmd,
+  PreviewVoiceCmd,
+  SetPanelTopicCmd,
+  PingCmd,
+  AdminLogsCmd,
+  AdminLogsStopCmd,
+  UiButtonCmd,
+  VoicePipelineCmd,
+  VoiceListenStartCmd,
+  VoiceListenStopCmd,
+  // Supervisor v2 (msgpack JSON-equivalent — meta-quest-api.md §5.1)
+  SupervisorSetModeCmd,
+  SupervisorAcquireFloorCmd,
+  SupervisorReleaseFloorCmd,
+  SupervisorGetStateCmd,
+} from "./protocol_generated";
+
+// Re-export generated interfaces under their old names so existing
+// `import type { TeleopTwistCmd } from "../wire/messages"` keep working.
+export type {
+  TeleopTwistCmd,
+  TeleopHeartbeatCmd,
+  StopEmergencyCmd,
+  VoicePttStartCmd,
+  VoicePttStopCmd,
+  VoiceModeCmd,
+  StreamSelectCmd,
+  StreamListCmd,
+  ListVoicesCmd,
+  SetVoiceCmd,
+  PreviewVoiceCmd,
+  SetPanelTopicCmd,
+  PingCmd,
+  AdminLogsCmd,
+  AdminLogsStopCmd,
+  UiButtonCmd,
+  VoicePipelineCmd,
+  VoiceListenStartCmd,
+  VoiceListenStopCmd,
+  SupervisorSetModeCmd,
+  SupervisorAcquireFloorCmd,
+  SupervisorReleaseFloorCmd,
+  SupervisorGetStateCmd,
+  JsonCmdGenerated,
+  JsonEventGenerated,
+};
+
+// ──────────────────── Control frames (HELLO / WELCOME / SUBSCRIBE / …) ────────────────────
 
 export interface HelloMsg {
   client_version: string;
@@ -13,6 +98,8 @@ export interface WelcomeMsg {
   robot_status?: Record<string, unknown>;
 }
 
+// ──────────────────── Subscribe / Unsubscribe (control frames) ────────────────────
+
 export interface SubscribeMsg {
   topic: string;
   quality?: "low" | "med" | "high";
@@ -22,72 +109,16 @@ export interface UnsubscribeMsg {
   topic: string;
 }
 
-export interface TeleopTwistCmd {
-  cmd: "teleop_twist";
-  ts_ms: number;
-  seq: number;
-  linear: { x: number; y: number; z: number };
-  angular: { x: number; y: number; z: number };
-  deadman: boolean;
-}
-
-// AV-19 (issue #1911, ADR-0028 §4.4 S10): клиентский heartbeat.
-// Шлётся 10 Гц пока ARM+floor, релеится ws_server в /teleop_heartbeat.
-// Супервизор снимает floor через 500 мс если heartbeat не пришёл.
-export interface TeleopHeartbeatCmd {
-  cmd: "teleop_heartbeat";
-  ts_ms: number;
-  seq: number;
-}
-
-export interface StopEmergencyCmd {
-  cmd: "stop_emergency";
-  ts_ms: number;
-  source: "controller_b" | "ui_button" | "client_lost";
-}
+// ──────────────────── Voice helper types (UI-only) ────────────────────
 
 // Голос: режим PTT. "radio" = голос оператора → динамик робота (рация);
 // "robot_voice" = голос оператора → STT → LLM → TTS голосом робота.
 export type VoicePttMode = "radio" | "robot_voice";
 
-export interface VoicePttStartCmd {
-  cmd: "voice_ptt_start";
-  ts_ms: number;
-  mode?: VoicePttMode;
-}
-
-export interface VoicePttStopCmd {
-  cmd: "voice_ptt_stop";
-  ts_ms: number;
-  mode?: VoicePttMode;
-}
-
-// Смена режима голоса (meta-quest-api §5). Супервизор применяет его как
-// voice_input_mode на dialogue_node (ADR-0028 S5).
+// Клиентский режим voice_input_mode (UI/логика сцены). В payload'е
+// voice_mode это литеральный union внутри JsonEventGenerated, но
+// scene-код предпочитает именованный type для narrowing.
 export type VoiceWireMode = "off" | "passthrough" | "ttts_proxy" | "stt_llm" | "llm_formalize";
-
-export interface VoiceModeCmd {
-  cmd: "voice_mode";
-  ts_ms: number;
-  mode: VoiceWireMode;
-}
-
-export interface StreamSelectCmd {
-  cmd: "stream_select";
-  ts_ms: number;
-  topic: string;
-}
-
-export interface StreamListCmd {
-  cmd: "stream_list";
-  ts_ms: number;
-}
-
-// Phase 2 §4.1: список голосов через `list_voices` (запрашивается из voice-pipeline).
-export interface ListVoicesCmd {
-  cmd: "list_voices";
-  ts_ms: number;
-}
 
 // Phase 2 §4.3+§4.5: set_voice { voice_id, preset? }. preset ∈ standard|friendly|authoritative|whisper.
 //
@@ -117,19 +148,6 @@ export type VoicePreset = VoicePresetLegacy | VoicePresetId;
 /** AV-28 §P7: ID языка из voice_presets.yaml: ключи languages. */
 export type VoiceLanguage = "ru" | "en" | "fr" | "de" | "zh" | "hi";
 
-export interface SetVoiceCmd {
-  cmd: "set_voice";
-  ts_ms: number;
-  voice_id: string;
-  preset?: VoicePreset;
-  /**
-   * AV-28 §P7: желаемый язык вывода. Сервер применяет его как
-   * voice_output_language на dialogue_node. Если поле отсутствует,
-   * сервер берёт default_language из voice_presets.yaml.
-   */
-  language?: VoiceLanguage;
-}
-
 /**
  * AV-28 §P7: контракт-описание пресета (UI рисует кнопки из этого списка).
  * Сервер шлёт его в JSON_EVENT{type:"voice_presets"} либо как часть
@@ -140,61 +158,6 @@ export interface VoicePresetInfo {
   /** Локализованное имя для UI (русский). */
   name: string;
 }
-
-// Phase 2 §4.2: preview_voice { voice_id, text } → сервер шлёт audio bytes обратно
-// через JSON_EVENT{type:"preview_voice_audio", format, seq} + BINARY_FRAME.
-export interface PreviewVoiceCmd {
-  cmd: "preview_voice";
-  ts_ms: number;
-  voice_id: string;
-  text: string;
-  request_id: string;
-}
-
-// Phase 2 §6.2: drag-from-gui → drop-on-panel: set_panel_topic { panel_id, topic }.
-export interface SetPanelTopicCmd {
-  cmd: "set_panel_topic";
-  ts_ms: number;
-  panel_id: string;
-  topic: string;
-}
-
-// Avatar supervisor panel (R14, ADR-0027 §2 R14 + ADR-0028 §4):
-// Клиент-управляемые режимы/floor. Идемпотентные на стороне супервизора.
-export interface AvatarSetModeCmd {
-  cmd: "avatar_set_mode";
-  ts_ms: number;
-  mode: "off" | "telegram_active" | "avatar_present" | "teleop_only" | "voice_only" | "mixed";
-  reason?: string;
-}
-export interface AvatarAcquireFloorCmd {
-  cmd: "avatar_acquire_floor";
-  ts_ms: number;
-  kind: "teleop" | "voice";
-}
-export interface AvatarReleaseFloorCmd {
-  cmd: "avatar_release_floor";
-  ts_ms: number;
-  kind: "teleop" | "voice";
-}
-
-export type JsonCmd =
-  | TeleopTwistCmd
-  | TeleopHeartbeatCmd
-  | StopEmergencyCmd
-  | VoicePttStartCmd
-  | VoicePttStopCmd
-  | VoiceModeCmd
-  | StreamSelectCmd
-  | StreamListCmd
-  | ListVoicesCmd
-  | SetVoiceCmd
-  | PreviewVoiceCmd
-  | SetPanelTopicCmd
-  | AvatarSetModeCmd
-  | AvatarAcquireFloorCmd
-  | AvatarReleaseFloorCmd
-  | { cmd: string; ts_ms: number; [k: string]: unknown };
 
 // Структура описания голоса из voice-pipeline.
 export interface VoiceInfo {
@@ -214,97 +177,14 @@ export interface VoiceInfo {
   provider?: string;
 }
 
+// ──────────────────── Discriminated unions (hand-written fallback + generated) ────────────────────
+
+export type JsonCmd = JsonCmdGenerated | { cmd: string; ts_ms: number; [k: string]: unknown };
 export type JsonEvent =
-  | { type: "subscribe_ack"; topic: string; stream_id: number; quality: string; kind?: string }
-  | { type: "subscribe_nack"; topic: string; reason: string }
-  | { type: "heartbeat"; ts_ms: number }
-  | { type: "voice_state"; state: string; ts_ms: number; utterance_id?: string }
-  | { type: "voice_mode_ack"; mode: string; ts_ms: number }
-  | { type: "safety_stop"; reason: string; ts_ms: number }
-  | { type: "robot_alert"; code: string; level: "warn" | "error" | "info"; active?: boolean; args?: Record<string, unknown>; ts_ms: number }
-  | { type: "stream_list"; items: Array<Record<string, unknown>>; ts_ms: number }
-  | { type: "stream_select_ack"; topic: string; stream_id: number | null; kind?: string }
-  | {
-      type: "voice_list";
-      voices: VoiceInfo[];
-      /** AV-27: подсветить активный голос в picker'е без доп. запроса. */
-      active_provider?: string;
-      active_voice?: string;
-      ts_ms: number;
-    }
-  | {
-      type: "voice_presets";
-      presets: VoicePresetInfo[];
-      languages: VoiceLanguage[];
-      default_preset: VoicePresetId;
-      default_language: VoiceLanguage;
-      ts_ms: number;
-    }
-  | {
-      type: "voice_set_ack";
-      voice_id: string;
-      preset: VoicePreset;
-      language: VoiceLanguage;
-      ts_ms: number;
-    }
-  | {
-      type: "voice_set_nack";
-      voice_id?: string;
-      preset?: VoicePreset;
-      language?: VoiceLanguage;
-      reason: string;
-      /** AV-27: чем можно заменить — для подсказки в UI. */
-      available?: string[];
-      ts_ms: number;
-    }
-  | { type: "avatar_state_ack"; state: Record<string, unknown>; ts_ms: number }
-  | { type: "avatar_state_nack"; reason: string; ts_ms: number }
-  | { type: "preview_voice_audio"; request_id: string; format: "mp3" | "opus" | "wav"; content_type: string; seq: number; total: number; ts_ms: number }
-  | { type: "preview_voice_done"; request_id: string; ts_ms: number }
-  | { type: "preview_voice_error"; request_id: string; reason: string; ts_ms: number }
-  // ADR-0055 / issue #1993 — обратный канал ТАРС в шлем. Сервер шлёт
-  // синтезированные чанки через тот же BINARY_FRAME (stream_id=0) и
-  // отдельную JSON_EVENT-ленту. ``_done/_error`` пока не публикуются
-  // сервером (см. ADR-0055 §ws_server), но типы заведены для
-  // forward-compat с приоритетной очередью (шаг 07a).
-  | { type: "operator_tts_audio"; request_id: string; format: "pcm_s16le" | "mp3" | "opus" | "wav"; content_type: string; seq: number; total: number; ts_ms: number }
-  | { type: "operator_tts_done"; request_id: string; ts_ms: number }
-  | { type: "operator_tts_error"; request_id: string; reason: string; ts_ms: number }
-  | { type: "ping"; ts_ms: number; nonce?: string }
-  | { type: "pong"; ts_ms: number; nonce?: string }
-  // AV-19 (issue #1911, ADR-0028 §4.4): сервер сообщает клиенту, что
-  // его teleop_floor больше не наш. Клиент обязан мгновенно DISARM-нуться
-  // (см. teleop_fsm.setHasFloor(false)) и показать тост «возьми руль».
-  | {
-      type: "floor_lost";
-      floor: "teleop" | "voice";
-      reason?: string;
-      ts_ms: number;
-    }
-  // issue #2113 (quest #2112, Captain Bridge) — TARS 1 text panel echo.
-  // Сервер зеркалит /tars1/text (tts_node._publish_tars1_text) в
-  // JSON_EVENT; relay в quest_node._on_tars1_text (см. meta-quest-api.md
-  // не обновлён — контракт зафиксирован тут + в PR #2114 описании).
-  | {
-      type: "tars1_text";
-      request_id: string;
-      text: string;
-      streaming: boolean;
-      done: boolean;
-      ts_ms: number;
-    }
-  // issue #2113 — TARS 2 metrics panel: URL Grafana-панели от
-  // avatar_supervisor (tars_panel.py) после show_metrics tool call.
-  // status="error" → url пуст, error содержит причину (empty query /
-  // unknown datasource); клиент показывает честное состояние, не пустоту.
-  | {
-      type: "tars_panel_url";
-      request_id: string;
-      url: string;
-      status: "ok" | "error" | string;
-      error: string;
-      ts_ms: number;
-    }
+  // Сгенерированный union покрывает большинство событий (см. protocol_generated.ts).
+  // Ряд типов, добавленных позже (#2184 и т.п.), пока не заехали в каталог —
+  // докидываем их руками до следующего regen (tools/gen_bridge_protocol_ts.py).
+  | JsonEventGenerated
   // issue #2184 — TARS 2 metrics panel: РЯДЫ ТОЧЕК из Prometheus (series)
   // или строки из Loki (lines). Именно это клиент рисует на экране TARS 2;
   // tars_panel_url выше остался ссылкой «доглядеть с десктопа».
@@ -324,7 +204,9 @@ export type JsonEvent =
       error: string;
       ts_ms: number;
     }
-  | { type: string; [k: string]: unknown };
+  | { type: string; ts_ms?: number; [k: string]: unknown };
+
+// ──────────────────── Error frame + stream metadata ────────────────────
 
 /** Один ряд Prometheus: точки ``[unix_seconds, value]`` по возрастанию ts. */
 export interface TarsPanelSeries {
