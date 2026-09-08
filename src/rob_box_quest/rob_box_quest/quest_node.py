@@ -257,6 +257,7 @@ class QuestBridge:
         set_voice_language_pub=None,
         set_voice_pub=None,
         preview_voice_pub=None,
+        voice_pipeline_pub=None,  # Шаг 4б (t_80e7aa1e): /avatar/voice_pipeline (grip cfg)
         voices_cache_ttl_sec: float = 300.0,
         heartbeat_pub=None,  # AV-19: publisher in /teleop_heartbeat
         # Phase 2 (issue #2002): QuestNode шлёт supervisor-API команды
@@ -307,6 +308,11 @@ class QuestBridge:
         # AV-27 / issue #1919 — set_voice / preview_voice → супервизор.
         self._set_voice_pub = set_voice_pub
         self._preview_voice_pub = preview_voice_pub
+        # Шаг 4б (issue #1989, t_80e7aa1e) — конфиг пайплайна грипа →
+        # супервизор (отдельный топик от AV-28 set_voice_preset/language).
+        # /avatar/voice_pipeline, payload JSON {llm_enabled, preset, language}.
+        # None в unit-тестах моста → publish_voice_pipeline no-op + warn.
+        self._voice_pipeline_pub = voice_pipeline_pub
         # AV-19: publisher в /teleop_heartbeat. None в unit-тестах —
         # тогда relay_teleop_heartbeat будет no-op (см. его комментарий).
         self._heartbeat_pub = heartbeat_pub
@@ -706,6 +712,36 @@ class QuestBridge:
             )
             return
         self._set_voice_language_pub.publish(_string_msg(language))
+
+    # ── Шаг 4б (issue #1989, t_80e7aa1e): конфиг пайплайна грипа ───────
+    # Отдельный канал от AV-28 set_voice_preset/language: те меняют
+    # voice_preset на dialogue_node (личность), этот меняет _pipeline_*
+    # на супервизоре (грип-трансформация, см. supervisor_node.py:2634).
+    #
+    # ws_server уже провалидировал whitelist preset/language, поэтому
+    # здесь — только JSON-сериализация под supervisor. Никакого
+    # переименования/нормализации: supervisor ждёт строки из
+    # GRIP_OFF_PRESETS = {"", "none", "off"} и из VOICE_LANGUAGES
+    # 1:1, и тест test_publish_voice_pipeline_style_off_payload это
+    # прибивает как регрессию.
+    def publish_voice_pipeline(
+        self, llm_enabled: bool, preset: str, language: str
+    ) -> None:
+        """Шаг 4б: конфиг пайплайна грипа → /avatar/voice_pipeline."""
+        if self._voice_pipeline_pub is None:
+            self._node.get_logger().warning(
+                "quest: publish_voice_pipeline called but publisher not initialized"
+            )
+            return
+        payload = json.dumps(
+            {
+                "llm_enabled": bool(llm_enabled),
+                "preset": str(preset),
+                "language": str(language),
+            },
+            ensure_ascii=False,
+        )
+        self._voice_pipeline_pub.publish(_string_msg(payload))
 
     # ── AV-27 TTS picker (issue #1919) ────────────────────────────────────
 
@@ -1554,6 +1590,16 @@ class QuestNode(Node):
         self._preview_voice_pub = self.create_publisher(
             String, "/avatar/preview_voice", _RE
         )
+        # Шаг 4б (issue #1989, t_80e7aa1e): конфиг пайплайна грипа →
+        # супервизор. std_msgs/String с JSON {llm_enabled, preset, language}.
+        # supervisor (_on_grip_voice_pipeline, supervisor_node.py:2634)
+        # валидирует whitelist ещё раз и кладёт в self._pipeline_*.
+        # Это ОТДЕЛЬНЫЙ топик от /avatar/set_voice_{preset,language} —
+        # те меняют voice_preset на dialogue_node (личность), этот —
+        # _pipeline_* на супервизоре (грип-трансформация).
+        self._voice_pipeline_pub = self.create_publisher(
+            String, "/avatar/voice_pipeline", _RE
+        )
         # Ответы preview_voice (String JSON):
         # /avatar/preview_voice/result — done/error с request_id;
         # /avatar/preview_voice/audio  — metaданные аудио (String JSON);
@@ -1830,6 +1876,7 @@ class QuestNode(Node):
             set_voice_language_pub=self._set_voice_language_pub,
             set_voice_pub=self._set_voice_pub,
             preview_voice_pub=self._preview_voice_pub,
+            voice_pipeline_pub=self._voice_pipeline_pub,
             voices_cache_ttl_sec=float(
                 self.get_parameter("voices_cache_ttl_sec").value
             ),

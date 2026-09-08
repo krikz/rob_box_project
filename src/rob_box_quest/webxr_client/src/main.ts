@@ -70,6 +70,7 @@ import {
 } from "./state/tts_picker_state";
 import type { JsonEvent, VoiceInfo, VoicePreset } from "./wire/messages";
 import type { JsonCmd } from "./wire/messages";
+import { buildVoicePipelineCmd } from "./wire/voice_pipeline_cmd";
 
 const CLIENT_VERSION = "0.1.0";
 // AV-17: subprotocol v2 по умолчанию. Если сервер на v1 — supervisor
@@ -306,6 +307,48 @@ export function bootstrap(opts: BootstrapOptions): {
   }
 
   /**
+   * Шаг 4б (t_80e7aa1e, issue #1989): синхронизировать конфиг пайплайна
+   * грипа на супервизоре. ОТДЕЛЬНЫЙ канал от `set_voice` (тот меняет
+   * voice_preset на dialogue_node, ЛИЧНОСТЬ), этот — _pipeline_* на
+   * супервизоре (грип-трансформация).
+   *
+   * Что отправляется (см. buildVoicePipelineCmd): {llm_enabled, preset,
+   * language} — точно та полезная нагрузка, что парсит
+   * supervisor._on_grip_voice_pipeline. Сервер валидирует whitelist и
+   * публикует в /avatar/voice_pipeline.
+   *
+   * Зовётся из всех веток onPipelineAction, где меняется любое из
+   * (stt, llm, preset, language) — чтобы супервизор всегда имел
+   * актуальный snapshot панели. До этой правки (t_80e7aa1e) канал
+   * /avatar/voice_pipeline не имел автора и супервизор сидел на default
+   * «Без стиля», поэтому грип повторял дословно при любом выборе
+   * оператора.
+   */
+  function sendVoicePipeline(): void {
+    const c = conn;
+    if (!c || disconnected) return;
+    // Снимок состояния панели для buildVoicePipelineCmd:
+    //   * llm_enabled = pipelineLlmOn (true=стилизуем, false=дословно);
+    //   * preset = modeManager.snapshot().currentPreset, причём если
+    //     llm=false — preset="" (грип не стилизует, см. supervisor_node.py:359);
+    //   * language = modeManager.snapshot().currentLanguage;
+    //   * sttOn идёт только в voice_pipeline cmd как «не трогает» —
+    //     этот канал про грип, STT-ступень управляется через voice_mode.
+    const snap = modeManager.snapshot();
+    const preset = pipelineLlmOn === false
+      ? ""
+      : (snap.currentPreset ?? DEFAULT_VOICE_PRESET);
+    const language = snap.currentLanguage ?? DEFAULT_VOICE_LANGUAGE;
+    const cmd = buildVoicePipelineCmd({
+      sttOn: pipelineSttOn === true,
+      llmOn: pipelineLlmOn === true,
+      preset: preset as VoicePresetId | "",
+      language: language as VoiceLanguage
+    });
+    c.send(cmd);
+  }
+
+  /**
    * WIRE_TO_VOICE_INPUT_MODE (quest_node.py) → тумблеры панели пайплайна:
    *   passthrough → STT выкл (рация);
    *   ttts_proxy → STT вкл, LLM выкл (STT→TTS дословно);
@@ -406,12 +449,17 @@ export function bootstrap(opts: BootstrapOptions): {
           pipelineSttOn = !pipelineSttOn;
           bridge.voicePipeline.setSttOn(pipelineSttOn);
           conn.send({ cmd: "voice_mode", ts_ms: Date.now(), mode: voiceModeForToggles() });
+          // Шаг 4б (t_80e7aa1e): грип-пайплайн тоже должен знать про
+          // STT-тумблер. llm_enabled идёт от pipelineLlmOn, не от sttOn —
+          // см. сужение «стиль/язык грипа не зависят от STT» в buildVoicePipelineCmd.
+          sendVoicePipeline();
           return;
         }
         case "llm": {
           pipelineLlmOn = !pipelineLlmOn;
           bridge.voicePipeline.setLlmOn(pipelineLlmOn);
           conn.send({ cmd: "voice_mode", ts_ms: Date.now(), mode: voiceModeForToggles() });
+          sendVoicePipeline();
           return;
         }
         case "tts": {
@@ -434,6 +482,8 @@ export function bootstrap(opts: BootstrapOptions): {
           pipelineLlmOn = false;
           bridge.voicePipeline.setLlmOn(false);
           conn.send({ cmd: "voice_mode", ts_ms: Date.now(), mode: voiceModeForToggles() });
+          // Шаг 4б: уведомить супервизор, что пайплайн переведён в «Без стиля».
+          sendVoicePipeline();
           return;
         }
         case "preset": {
@@ -447,6 +497,8 @@ export function bootstrap(opts: BootstrapOptions): {
             console.warn("[quest] set_voice preset send failed:", err);
             bridge.voicePipeline.setCurrentPreset(modeManager.snapshot().currentPreset);
           }
+          // Шаг 4б: новый пресет → новый llm_enabled=true + preset=<X>.
+          sendVoicePipeline();
           return;
         }
         case "lang": {
@@ -460,6 +512,8 @@ export function bootstrap(opts: BootstrapOptions): {
             console.warn("[quest] set_voice lang send failed:", err);
             bridge.voicePipeline.setCurrentLanguage(modeManager.snapshot().currentLanguage);
           }
+          // Шаг 4б: новый язык → новый language=<Y>, llm_enabled/preset не трогаем.
+          sendVoicePipeline();
           return;
         }
       }
@@ -1103,6 +1157,13 @@ export function bootstrap(opts: BootstrapOptions): {
             // Сервер ответит JSON_EVENT{type:"voice_list"} (voice_id+display_name)
             // и/или {type:"voice_presets"} (список пресетов+языков+дефолты).
             conn!.send({ cmd: "list_voices", ts_ms: Date.now() });
+            // Шаг 4б (t_80e7aa1e): первичная синхронизация конфига
+            // пайплайна грипа с супервизором. До этой правки канал
+            // /avatar/voice_pipeline не имел автора, и супервизор сидел
+            // на default «Без стиля» — грип повторял дословно при любом
+            // выборе оператора (см. карточку t_80e7aa1e). После
+            // подключения шлём текущее состояние панели.
+            sendVoicePipeline();
             opts.pinOverlay.classList.add("pin-overlay--hidden");
           } else if (state === "auth_failed") {
             setStatus("WRONG PIN", "lost");
@@ -1344,6 +1405,60 @@ export function bootstrap(opts: BootstrapOptions): {
             bridge.voicePipeline.setCurrentLanguage(snap.currentLanguage);
             errorOverlay.show(
               "Не удалось сменить голос",
+              nack.reason ?? "Сервер отклонил запрос"
+            );
+            return;
+          }
+          // Шаг 4б (t_80e7aa1e): подтверждение конфига пайплайна грипа.
+          // ack → синхронизируем modeManager/UI с тем, что супервизор
+          // реально применил (полезно, если сервер дропнул/изменил поля).
+          if (type === "voice_pipeline_ack") {
+            const ack = event as {
+              llm_enabled?: boolean;
+              preset?: string;
+              language?: string;
+            };
+            // llm_enabled false → панель должна показать «Без стиля».
+            // Меняем только LLM-тумблер; preset/language обрабатываются
+            // симметрично voice_set_ack выше.
+            if (typeof ack.llm_enabled === "boolean") {
+              pipelineLlmOn = ack.llm_enabled;
+              bridge.voicePipeline.setLlmOn(ack.llm_enabled);
+            }
+            // preset: только если пришёл whitelist-валидный (пустая строка
+            // для «Без стиля» — допустима).
+            if (typeof ack.preset === "string") {
+              const stylePreset =
+                ack.preset === "" || (PRESET_ORDER as readonly string[]).includes(ack.preset)
+                  ? (ack.preset as "" | VoicePresetId)
+                  : null;
+              if (stylePreset !== null) {
+                modeManager.setCurrentPreset(stylePreset as VoicePreset);
+                bridge.voicePipeline.setCurrentPreset(stylePreset as VoicePreset);
+              }
+            }
+            if (typeof ack.language === "string") {
+              modeManager.setCurrentLanguage(ack.language as VoiceLanguage);
+              bridge.voicePipeline.setCurrentLanguage(ack.language as VoiceLanguage);
+            }
+            return;
+          }
+          // Шаг 4б: сервер отказал в конфиге пайплайна → откатываем
+          // оптимистичный апдейт UI к последнему snapshot'у modeManager.
+          // Это симметрично voice_set_nack (см. блок выше).
+          if (type === "voice_pipeline_nack") {
+            const nack = event as { reason?: string };
+            // eslint-disable-next-line no-console
+            console.warn(
+              "[quest] voice_pipeline_nack:",
+              nack.reason ?? "(no reason)"
+            );
+            const snap = modeManager.snapshot();
+            bridge.voicePipeline.setCurrentPreset(snap.currentPreset);
+            bridge.voicePipeline.setCurrentLanguage(snap.currentLanguage);
+            bridge.voicePipeline.setLlmOn(pipelineLlmOn);
+            errorOverlay.show(
+              "Не удалось обновить пайплайн",
               nack.reason ?? "Сервер отклонил запрос"
             );
             return;

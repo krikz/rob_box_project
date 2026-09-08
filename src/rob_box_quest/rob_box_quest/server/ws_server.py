@@ -140,6 +140,34 @@ def _validate_voice_set_payload(
     return None
 
 
+# Шаг 4б (t_80e7aa1e): дефолтный язык пайплайна грипа до первой
+# синхронизации с панели. Должен совпадать с ``GRIP_DEFAULT_LANGUAGE``
+# в supervisor_node.py:362 — иначе оптимистичная подсветка клиента
+# разъедется с тем, что реально применилось.
+VOICE_PIPELINE_DEFAULT_LANGUAGE: str = "ru"
+
+
+def _validate_voice_pipeline_payload(
+    llm_enabled: bool, preset: str, language: str
+) -> Optional[str]:
+    """Whitelist для voice_pipeline (тестируется без rclpy/WS).
+
+    Возвращает ``None`` если payload валиден, иначе строку-причину для
+    ``voice_pipeline_nack.reason``.
+
+    Семантика «без стиля» = ``llm_enabled=False`` ИЛИ ``preset in
+    {"", "none", "off"}`` — грип идёт в TTS дословно, 0 вызовов LLM
+    (см. supervisor_node.classify_preset). Сервер не выдумывает
+    экзотические комбинации: пустой preset при llm_enabled=True — это
+    явный сигнал «не стилизуем» (id «none»), и он валиден.
+    """
+    if preset and preset not in VOICE_PRESET_IDS:
+        return f"invalid_voice_pipeline_preset: {preset!r}"
+    if language and language not in VOICE_LANGUAGES:
+        return f"invalid_voice_pipeline_language: {language!r}"
+    return None
+
+
 class Bridge(Protocol):
     """Контракт между WS-сервером и capture/ROS-источниками (Phase 1.4 v2).
 
@@ -315,6 +343,20 @@ class Bridge(Protocol):
         делает ``SetParameters(voice_output_language=<language>)``
         (ADR-0028 S5). Без рестарта dialogue_node — параметр
         подхватывается на следующей фразе.
+        """
+        ...
+
+    def publish_voice_pipeline(
+        self, llm_enabled: bool, preset: str, language: str
+    ) -> None:
+        """Шаг 4б (issue #1989): опубликовать конфиг пайплайна грипа в /avatar/voice_pipeline.
+
+        Отдельный канал от AV-28 set_voice_preset/language: те меняют
+        voice_preset на dialogue_node (личность), а этот меняет _pipeline_*
+        на СУПЕРВИЗОРЕ (грип-трансформация, см. supervisor_node.py:2634).
+        Если ``llm_enabled=False`` или ``preset=""`` — грип произносит
+        дословно (0 вызовов LLM). Сервер уже провалидировал whitelist (см.
+        ``_validate_voice_pipeline_payload``); здесь — только публикация.
         """
         ...
 
@@ -514,6 +556,23 @@ class NoOpBridge:
     def set_voice_language(self, language: str) -> None:
         # NoOpBridge: фиксируется в логе для теста.
         log.debug("NoOpBridge: set_voice_language language=%s", language)
+        return None
+
+    # ── Шаг 4б grip-pipeline config (t_80e7aa1e) ────────────────────────
+    # Симметрично ``set_voice_preset``/``set_voice_language``: в Protocol
+    # описана как ``publish_voice_pipeline``. NoOpBridge нужен, чтобы WS-тесты
+    # без ROS (test_ws_server_voice.py и др.) видели NoOpBridge-совместимый
+    # контракт — иначе isinstance(bridge, Bridge) падает и unit-тесты роняются.
+    def publish_voice_pipeline(
+        self, llm_enabled: bool, preset: str, language: str
+    ) -> None:
+        # NoOpBridge: ничего не публикуем, только лог для отладки теста.
+        log.debug(
+            "NoOpBridge: publish_voice_pipeline llm_enabled=%s preset=%r language=%r",
+            llm_enabled,
+            preset,
+            language,
+        )
         return None
 
     def publish_preview_voice(self, request_id: str, voice_id: str, text: str) -> None:
@@ -2172,6 +2231,103 @@ class WSSServer:
                     "voice_id": applied_voice or voice_id,
                     "preset": preset or "standard",
                     "ts_ms": ts_ms,
+                },
+            )
+            return
+        if cmd == "voice_pipeline":
+            # ── Шаг 4б (issue #1989, t_80e7aa1e): конфиг пайплайна грипа ──
+            # Отдельный канал от AV-28 set_voice (см. main.ts:295 +
+            # sendStyleChange) — тот меняет voice_preset на dialogue_node
+            # (личность), этот — _pipeline_* на супервизоре (грип-трансформация).
+            # Серверная валидация (whitelist preset/language) → если плохо,
+            # voice_pipeline_nack без вызова bridge. Иначе bridge
+            # публикует JSON в /avatar/voice_pipeline → supervisor
+            # (_on_grip_voice_pipeline, supervisor_node.py:2634) валидирует
+            # ещё раз и кладёт в self._pipeline_*. Двойная валидация
+            # намеренная: сервер режет мусор ДО ROS (быстро, NACK'ает UI),
+            # supervisor — последний рубеж на случай рассинхрона whitelist'ов.
+            #
+            # Rate-limit шарим со slot'ом set_voice_style (VOICE_STYLE_*):
+            # та же UI-зона (выбор стиля/языка оператором). Превышение →
+            # voice_pipeline_nack{reason: rate_limited}, иначе UI остаётся
+            # с оптимистичной подсветкой, которой на роботе нет (ADR-0018).
+            #
+            # Намеренно НЕ ломаем существующий «оптимистичный UI с
+            # откатом по nack» — здесь работает та же логика, что и в
+            # set_voice (см. ветку is_av28_request выше).
+            if not self._voice_rate_limit_check(
+                ws, "voice_pipeline", VOICE_STYLE_MIN_INTERVAL_S
+            ):
+                log.info(
+                    "voice_pipeline rate-limited: llm_enabled=%r preset=%r language=%r",
+                    payload_obj.get("llm_enabled"),
+                    payload_obj.get("preset"),
+                    payload_obj.get("language"),
+                )
+                await self._send(
+                    ws,
+                    FrameType.JSON_EVENT,
+                    0,
+                    {
+                        "type": "voice_pipeline_nack",
+                        "preset": payload_obj.get("preset"),
+                        "language": payload_obj.get("language"),
+                        "reason": "rate_limited",
+                        "ts_ms": int(time.time() * 1000),
+                    },
+                )
+                return
+            # payload — dict всегда (JSON_CMD frame, payload_obj — dict).
+            # Лишние поля (forward-compat) сервер игнорирует и берёт только
+            # whitelist (см. test_voice_pipeline_unknown_fields_ignored).
+            raw_llm = payload_obj.get("llm_enabled") if payload_obj else None
+            llm_enabled = bool(raw_llm) if raw_llm is not None else False
+            preset_raw = payload_obj.get("preset") if payload_obj else None
+            preset = (
+                str(preset_raw).strip().lower() if isinstance(preset_raw, str) else ""
+            )
+            language_raw = payload_obj.get("language") if payload_obj else None
+            language = (
+                str(language_raw).strip().lower()
+                if isinstance(language_raw, str)
+                else ""
+            )
+            # Пустой language — default «ru». Семантика панели: язык всегда
+            # выбран, но при первичной синхронизации шлём «минимальный»
+            # payload (см. карточку §5 контракта), и сервер дозаполняет.
+            if not language:
+                language = VOICE_PIPELINE_DEFAULT_LANGUAGE
+            nack_reason = _validate_voice_pipeline_payload(
+                llm_enabled=llm_enabled, preset=preset, language=language
+            )
+            if nack_reason:
+                await self._send(
+                    ws,
+                    FrameType.JSON_EVENT,
+                    0,
+                    {
+                        "type": "voice_pipeline_nack",
+                        "preset": preset,
+                        "language": language,
+                        "reason": nack_reason,
+                        "ts_ms": int(time.time() * 1000),
+                    },
+                )
+                return
+            # Валидно → публикация в ROS. Bridge хранит свой формат под
+            # supervisor (см. QuestBridge.publish_voice_pipeline + тест
+            # test_voice_pipeline_payload_matches_supervisor_contract).
+            self.bridge.publish_voice_pipeline(llm_enabled, preset, language)
+            await self._send(
+                ws,
+                FrameType.JSON_EVENT,
+                0,
+                {
+                    "type": "voice_pipeline_ack",
+                    "llm_enabled": llm_enabled,
+                    "preset": preset,
+                    "language": language,
+                    "ts_ms": int(time.time() * 1000),
                 },
             )
             return

@@ -404,6 +404,86 @@ def test_set_voice_mode_unknown_ignored():
     assert len(set_voice_mode.published) == 0
 
 
+# ── Шаг 4б grip-pipeline config (t_80e7aa1e) ──────────────────────────
+# Контракт: ws_server → QuestBridge.publish_voice_pipeline → ROS String в
+# /avatar/voice_pipeline → supervisor._on_grip_voice_pipeline.
+# Тест проверяет, что JSON, который supervisor реально распарсит,
+# содержит именно {llm_enabled: bool, preset: str, language: str}.
+
+
+def _make_voice_pipeline_only_bridge(quest_node_mod):
+    """QuestBridge с mock-publisher'ом для /avatar/voice_pipeline.
+
+    Использует фикстуру ``quest_node_mod`` из conftest.py — она подменяет
+    ROS-пакеты (rclpy, audio_common_msgs) заглушками. Без этого фикстура
+    падает ``ModuleNotFoundError: No module named 'audio_common_msgs'``
+    на dev-env без ROS (§4.3 ловушка из operator-handoff).
+    """
+    QuestBridge = quest_node_mod.QuestBridge
+
+    node = _MockNode()
+    voice_pipeline_pub = _MockPublisher()
+    bridge = QuestBridge(
+        node=node,
+        cmd_vel_quest_pub=_MockPublisher(),
+        cmd_vel_emergency_pub=_MockPublisher(),
+        voice_pipeline_pub=voice_pipeline_pub,
+    )
+    return bridge, voice_pipeline_pub
+
+
+def test_publish_voice_pipeline_publishes_json_to_ros(quest_node_mod):
+    """publish_voice_pipeline → 1 String в /avatar/voice_pipeline."""
+    bridge, voice_pipeline_pub = _make_voice_pipeline_only_bridge(quest_node_mod)
+    bridge.publish_voice_pipeline(True, "translate", "en")
+    assert len(voice_pipeline_pub.published) == 1
+    msg = voice_pipeline_pub.published[0]
+    # Payload — String.data, формат сериализации делает bridge, не ws_server.
+    data = msg.data
+    # Проверяем: это JSON-строка с ровно тремя контрактными полями.
+    parsed = json.loads(data)
+    assert parsed == {"llm_enabled": True, "preset": "translate", "language": "en"}
+
+
+def test_publish_voice_pipeline_style_off_payload(quest_node_mod):
+    """«Без стиля»: llm_enabled=False + preset='' → payload с пустым preset.
+
+    Supervisor трактует preset='' как «Без стиля» (GRIP_OFF_PRESETS, см.
+    supervisor_node.py:359). Важно, чтобы bridge не дропал пустой
+    preset и не нормализовал в «none» — supervisor ждёт строку из
+    списка GRIP_OFF_PRESETS = {"", "none", "off"}.
+    """
+    bridge, voice_pipeline_pub = _make_voice_pipeline_only_bridge(quest_node_mod)
+    bridge.publish_voice_pipeline(False, "", "ru")
+    assert len(voice_pipeline_pub.published) == 1
+    parsed = json.loads(voice_pipeline_pub.published[0].data)
+    assert parsed == {"llm_enabled": False, "preset": "", "language": "ru"}
+
+
+def test_publish_voice_pipeline_missing_publisher_logs_and_silently_drops(
+    quest_node_mod,
+):
+    """Если publisher не сконфигурирован — no-op + warning, не exception.
+
+    Мост создаётся раньше publisher'а (см. quest_node.py — set_voice_*
+    публикаторы тоже None до конструктора ноды). Чтобы ws_server мог
+    жить, мост должен корректно падать в no-op, иначе первый
+    voice_pipeline cmd отвалит handler.
+    """
+    QuestBridge = quest_node_mod.QuestBridge
+
+    node = _MockNode()
+    bridge = QuestBridge(
+        node=node,
+        cmd_vel_quest_pub=_MockPublisher(),
+        cmd_vel_emergency_pub=_MockPublisher(),
+        # voice_pipeline_pub явно не передаём → None
+    )
+    bridge.publish_voice_pipeline(True, "translate", "en")
+    # Никаких exceptions. Warning залогирован.
+    assert any("voice_pipeline" in w for w in node.warnings)
+
+
 # --- voice_state (AV-20, 0x1202) --------------------------------------------
 #
 # Тесты callback'а ``QuestNode._on_dialogue_state``. Чтобы не поднимать
