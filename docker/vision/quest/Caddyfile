@@ -49,8 +49,19 @@
     # PASS даже когда quest_node лежал — классический «красивый PASS»
     # (ADR-0018). Правильный ответ содержит status/sessions_active/
     # server_version. Коммит f9bf3f68 перевёл WS на 8766, но /healthz забыл.
+    #
+    # Regression (issue #2138, runtime-sniff 10.1.1.21 2026-09-08): `localhost`
+    # резолвится Go в [::1] ДО 127.0.0.1, а WS-сервер биндит только IPv4
+    # (aoihttp TCPSite(host="0.0.0.0", port=8766) — quest_node.py:1371, 2402-2407).
+    # `cat /proc/net/tcp6 | grep 223E` пусто, и caddy-quest.log сыплет
+    # `dial tcp [::1]:8766: connect: connection refused` (status=502) на
+    # КАЖДЫЙ WS-handshake от шлема (10.1.1.59, OculusBrowser/150.1.0.24).
+    # Внешний симптом: picker apply в шлеме не доходит до set_voice cmd,
+    # `docker logs avatar-supervisor | grep SetVoice` — 0 строк за 20 мин,
+    # `docker logs rob-box-quest | grep voice` — 0 строк. Фикс: явно
+    # 127.0.0.1 — IPv4-loopback, не оставляем резолв на милость getaddrinfo.
     handle /healthz {
-        reverse_proxy localhost:8766
+        reverse_proxy 127.0.0.1:8766
     }
 
     # WebSocket-канал: flush_interval -1 — без буферизации, иначе JPEG/LiDAR
@@ -62,8 +73,11 @@
     # ломается ("http2: invalid Upgrade request header: [websocket]"),
     # отдавая 502 на каждый handshake. С чистым HTTP/1.1 upgrade проходит
     # штатно (aiohttp aiohttp WS-роутер принимает соединение).
+    #
+    # IPv4-loopback (см. regression #2138 в /healthz выше) — иначе Caddy
+    # пробует [::1] и получает connection refused, а шлем — 502 на апгрейд.
     handle /quest {
-        reverse_proxy localhost:8766 {
+        reverse_proxy 127.0.0.1:8766 {
             flush_interval -1
             transport http {
                 versions 1.1
