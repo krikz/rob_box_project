@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 from pathlib import Path
 
 import pytest
@@ -128,18 +127,36 @@ class TestAppendEnabled:
     def test_readonly_filesystem_does_not_raise(self, tmp_path, monkeypatch):
         """ADR-0076 §2.2: side-channel не должен ронять STT-ноду.
 
-        На read-only FS append_sample возвращает False, не бросает OSError.
+        Любой OSError на записи (read-only FS, EROFS, ENOSPC, EPERM...)
+        приводит к возврату False, а не к исключению.
+
+        В CI pytest крутится от ``--user root`` (см. .github/workflows/
+        G-Run Tests.yml unit-tests job), и root на Linux игнорирует
+        read-only биты. Поэтому вместо ``chmod 0o444`` подменяем
+        ``builtins.open`` на версию, которая кидает OSError для нашего
+        целевого файла — детерминированно в любых условиях.
         """
         monkeypatch.setenv("ROBBOX_STT_COLLECT", "1")
-        readonly_dir = tmp_path / "ro"
-        readonly_dir.mkdir()
-        # Делаем каталог read-only после создания — child-файлы писать
-        # нельзя, но добавить файл через mkdir() родителя нельзя.
-        # Используем уже существующий read-only файл в качестве пути.
-        target = readonly_dir / "log.jsonl"
-        target.write_text("")  # create
-        os.chmod(target, stat.S_IRUSR)  # read-only
-        # append требует write — должно вернуть False без raise.
+        target = tmp_path / "log.jsonl"
+
+        import builtins as _bi
+        original_open = _bi.open
+
+        def boom_open(*a, **kw):
+            # Блокируем запись только для нашего целевого файла; всё
+            # остальное (включая чтение) пробрасываем в оригинал, чтобы
+            # не сломать internals pytest.
+            if (
+                a
+                and len(a) >= 1
+                and isinstance(a[0], (str, os.PathLike))
+                and str(a[0]) == str(target)
+            ):
+                raise OSError(30, "Read-only file system (simulated)")
+            return original_open(*a, **kw)
+
+        monkeypatch.setattr(_bi, "open", boom_open)
+
         out = append_sample(
             raw_text="арс",
             has_operator_wake=False,
@@ -149,8 +166,8 @@ class TestAppendEnabled:
             path=target,
         )
         assert out is False
-        # Restore чтобы tmp_path мог быть очищен pytest'ом.
-        os.chmod(target, stat.S_IRUSR | stat.S_IWUSR)
+        # target НЕ должен появиться на диске.
+        assert not target.exists()
 
 
 class TestSnapshotBuilder:
