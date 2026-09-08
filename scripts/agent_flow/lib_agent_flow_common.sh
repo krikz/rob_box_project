@@ -517,13 +517,19 @@ parse_body_skills_section() {  # $1=body
     local _body="${1:-}"
     [ -n "$_body" ] || return 0
 
-    # Выделяем блок от `## Skills` до следующего `## ` (любой другой heading)
-    # или конца body. AWK — потому что bash regex для многострочных
-    # секций read-only через grep -A и обрезается на первой строке.
+    # Выделяем блок от `## Skills` (case-insensitive, допускает 0+ пробелов
+    # между ## и Skills) до следующего `## ` (любой другой heading) или
+    # конца body. AWK — потому что bash regex для многострочных секций
+    # read-only через grep -A и обрезается на первой строке. mawk (системный
+    # awk на Ubuntu) не поддерживает IGNORECASE built-in — поэтому
+    # сравниваем через lc = tolower($0) в match().
     local _section
     _section="$(printf '%s\n' "$_body" | awk '
         BEGIN { in_section = 0; }
-        /^##[[:space:]]+Skills/ { in_section = 1; next; }
+        {
+            lc = tolower($0)
+        }
+        lc ~ /^##[[:space:]]*skills([[:space:]]|$)/ { in_section = 1; next; }
         /^##[[:space:]]+/ {
             if (in_section) { in_section = 0; exit; }
             next;
@@ -595,13 +601,17 @@ parse_body_skills_section() {  # $1=body
 af_card_defaults_for() {  # $1=assignee  $2=labels_csv
     local _assignee="${1:-}" _labels="${2:-}"
     local _group=""
-    local _yaml="${CARD_DEFAULTS_YAML:-}"
-
-    # По умолчанию — рядом с самим lib_agent_flow_common.sh.
-    if [ -z "$_yaml" ]; then
+    # Resolve _yaml по приоритету:
+    #   1. CARD_DEFAULTS_YAML из env (если выставлен И файл существует)
+    #   2. <dir-of-this-lib>/card_defaults.yaml (SOT по умолчанию)
+    #   3. (no fallback в yaml) → fail-OPEN на verification-only
+    local _yaml=""
+    if [ -n "${CARD_DEFAULTS_YAML:-}" ] && [ -f "${CARD_DEFAULTS_YAML:-}" ]; then
+        _yaml="${CARD_DEFAULTS_YAML}"
+    else
         local _lib_dir
         _lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-/dev/null}")" 2>/dev/null && pwd || echo "")"
-        if [ -n "$_lib_dir" ]; then
+        if [ -n "$_lib_dir" ] && [ -f "$_lib_dir/card_defaults.yaml" ]; then
             _yaml="$_lib_dir/card_defaults.yaml"
         fi
     fi
@@ -616,7 +626,7 @@ af_card_defaults_for() {  # $1=assignee  $2=labels_csv
         architect)                           _group="architect_cards" ;;
         analyst)                             _group="analyst_cards" ;;
         agent-flow)                          _group="agent_flow_cards" ;;
-        *)                                   _group="default_cards" ;;
+        ""|*)                                _group="default_cards" ;;
     esac
     # Label-based override (например, agent:pr-reviewer на backend карточке
     # всё равно должна идти с review_cards).
@@ -702,8 +712,9 @@ af_card_defaults_for() {  # $1=assignee  $2=labels_csv
 ensure_skills_block() {  # $1=body  $2=assignee  $3=labels_csv
     local _body="${1:-}" _assignee="${2:-}" _labels="${3:-}"
 
-    # Если секция ## Skills уже есть — ничего не делаем.
-    if [ -n "$_body" ] && printf '%s' "$_body" | grep -qE '^##[[:space:]]+Skills\b'; then
+    # Если секция ## Skills уже есть — ничего не делаем
+    # (case-insensitive, допускает 0+ пробелов между ## и Skills).
+    if [ -n "$_body" ] && printf '%s' "$_body" | grep -qiE '^##[[:space:]]*Skills\b'; then
         return 0
     fi
 
