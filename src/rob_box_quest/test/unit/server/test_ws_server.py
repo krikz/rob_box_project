@@ -582,7 +582,7 @@ async def test_broadcast_json_event_no_sessions_returns_zero():
 
 
 async def _send_set_voice_cmd(ws, voice_id: str = "ru-RU-voice") -> None:
-    payload = json.dumps({"cmd": "set_voice", "voice_id": voice_id}).encode("utf-8")
+    payload = json.dumps({"cmd": "set_voice", "mode": "voice", "voice_id": voice_id}).encode("utf-8")
     await ws.send_bytes(encode_frame(FrameType.JSON_CMD, 0, payload))
 
 
