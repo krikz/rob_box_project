@@ -2972,15 +2972,27 @@ class _NoopHistogram:
 
 
 def main(args: Optional[list] = None) -> None:
-    """Console-script entry point: ``ros2 run rob_box_supervisor supervisor_node``."""
+    """Console-script entry point: ``ros2 run rob_box_supervisor supervisor_node``.
+
+    Issue #2131: ``rclpy.spin(node)`` (= ``SingleThreadedExecutor``) приводил к
+    deadlock-голоду subscriber'а ``/mcp/result``: пока основной поток блокирован
+    в ``LLMToolCallAdapter.execute_tool_call_sync.result_event.wait()``,
+    callback ``on_result`` не мог быть доставлен → стабильный таймаут 10 с.
+    Решение — ``MultiThreadedExecutor`` (как в ``dialogue_node.main``): тогда
+    ``ReentrantCallbackGroup`` адаптера реально диспетчеризует callback в
+    фоновом потоке. См. ADR-0072.
+    """
     if not rclpy.ok():
         rclpy.init(args=args)
     node = AvatarSupervisor()
+    executor = rclpy.executors.MultiThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
