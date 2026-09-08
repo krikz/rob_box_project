@@ -852,7 +852,7 @@ voice-канал (ACTIVE: чанк k «…и поэтому я предлага�
 |---|---|---|---|---|
 | `/audio/speech_audio` | `AudioData` | `audio_node` | `stt_node` | = ReSpeaker → **только личность** |
 | `/audio/quest_in` | `AudioData` | `quest_node` | `stt_node` | = левый грип (PTT robot-voice), без вейка, в `stt_node` распознаётся → `/avatar/ptt/result` (пайплайн грипа, §7.5) |
-| `/audio/quest_wake` | `AudioData` | `quest_node` (шаг 5а) | `stt_node` | **+** wake-поток шлема (всегда-включённый, локальный VAD-гейт на клиенте); распознаётся в `stt_node` → `/avatar/stt/result` **только** при operator-вейке («ТАРС»), иначе drop. **Промежуточный контракт — см. §7.2 «расхождение с шагом 5а»** |
+| `/audio/quest_wake` | `AudioData` | `quest_node` (шаг 5а) | `stt_node` | **+** wake-поток шлема (всегда-включённый, локальный VAD-гейт на клиенте). **Одно сообщение = одна фраза**, а не 20мс-кадр: кадры собирает `QuestBridge` (`core/wake_segmenter.py`, issue #2135) — `stt_node` гоняет распознавание на каждое сообщение целиком. Распознаётся → `/avatar/stt/result` **только** при operator-вейке («ТАРС»), иначе drop. **Промежуточный контракт — см. §7.2 «расхождение с шагом 5а»** |
 | `/audio/vad` | `Bool` | `audio_node` | `dialogue_node` | = ReSpeaker-VAD, оператора не касается |
 | `/avatar/voice_in` | `AudioData` | `quest_node` | `sound_node` | = рация, динамики робота |
 | `/avatar/tts/audio` | `AudioData` | `tts_node` | `quest_node` | **+** голос ТАРС **в шлем**, не в динамики |

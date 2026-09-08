@@ -83,6 +83,7 @@ except ImportError:  # pragma: no cover — образы без rob_box_voice
 
 from .core.safety import Watchdog
 from .core.teleop import TeleopController
+from .core.wake_segmenter import WakePhraseSegmenter
 from .server.session import WATCHDOG_TIMEOUT_S as SESSION_WATCHDOG_TIMEOUT_S
 from .server.ws_server import NoOpBridge, WSSServer, build_app
 from .streams.alerts import Alert, AlertThresholds, evaluate_alerts
@@ -307,6 +308,12 @@ class QuestBridge:
         # None в unit-тестах моста → set_wake_stream_state no-op.
         self._wake_stream_pub = wake_stream_pub
         self._wake_active = False
+        # issue #2135: сегментатор wake-потока. До него мост публиковал
+        # КАЖДЫЙ 20мс-кадр отдельным AudioData, а stt_node распознаёт каждое
+        # сообщение целиком — на 640 байтах распознавание всегда пусто, вейк
+        # «ТАРС» из шлема не мог сработать в принципе. Теперь кадры копятся и
+        # уходят одной фразой (см. core/wake_segmenter.py).
+        self._wake_segmenter = WakePhraseSegmenter()
         # issue #1992 observability: счётчики публикации в /audio/quest_wake.
         # См. publish_quest_wake_audio / _note_wake_audio_publish.
         self._wake_audio_publish_count = 0
@@ -498,21 +505,71 @@ class QuestBridge:
         self._voice_in_pub.publish(msg)
 
     def publish_quest_wake_audio(self, payload: bytes) -> None:
-        """VOICE_AUDIO (stream_id=2, wake-channel) → AudioData в /audio/quest_wake.
+        """VOICE_AUDIO (stream_id=2, wake-channel) → ОДНА AudioData на фразу.
 
         Клиент уже отфильтровал silence через RMS VAD с hangover 200 мс
-        (voice_capture.ts), здесь payload всегда содержит речь. Публикует в
-        /audio/quest_wake, который слушает stt_node.quest_wake_audio_callback
-        и маршрутизирует в /avatar/stt/result только при вейке «ТАРС»
-        (целевая §7.1/§9.1, issue #1992). ``self._quest_wake_pub`` — None в
-        unit-тестах моста (конструируются без ROS) → no-op, как
-        publish_voice_audio.
+        (voice_capture.ts), здесь payload всегда содержит речь — но это
+        отдельный кадр 20 мс / 640 байт, а не фраза.
+
+        issue #2135: раньше каждый такой кадр уходил в /audio/quest_wake
+        отдельным сообщением, а stt_node.quest_wake_audio_callback гоняет
+        полный цикл распознавания на КАЖДОЕ сообщение — распознавание 20 мс
+        всегда возвращает пусто, поэтому вейк «ТАРС» из шлема не мог
+        сработать никогда (лог робота 2026-09-08: «Получена фраза: 0.02с
+        (640 bytes)» → «ОТКЛОНЕНО (пустое)» на каждом кадре). Теперь кадры
+        копятся в :class:`WakePhraseSegmenter` и уходят одной AudioData на
+        фразу — то есть тот контракт топика, который stt_node и так
+        предполагает в своём докстринге («распознаём VAD-сегмент»).
+
+        Фразу закрывает пауза в потоке кадров; закрыть её по паузе может
+        только :meth:`tick_wake_audio` (кадры перестали приходить →
+        publish_quest_wake_audio больше не вызывается). Здесь фраза
+        отдаётся, только если кадр открыл новую (пауза перед ним) или буфер
+        упёрся в потолок.
+
+        ``self._quest_wake_pub`` — None в unit-тестах моста (конструируются
+        без ROS) → no-op, как publish_voice_audio.
         """
         if self._quest_wake_pub is None:
             return
-        self._note_wake_audio_publish(len(payload))
+        phrase = self._wake_segmenter.add_frame(payload, time.monotonic())
+        if phrase is not None:
+            self._publish_wake_phrase(phrase)
+
+    def tick_wake_audio(self, now_monotonic: float) -> None:
+        """Таймерный тик (30 Гц): закрыть wake-фразу по паузе в потоке кадров.
+
+        issue #2135: оператор договорил → клиентский VAD отпустил → кадры
+        кончились. Никакой WS-фрейм больше не придёт, поэтому закрыть фразу
+        и отдать её в STT может только таймер. Вызывается из
+        ``QuestNode._on_tick_timer`` рядом с ``tick_publish``.
+        """
+        if self._quest_wake_pub is None:
+            return
+        phrase = self._wake_segmenter.tick(now_monotonic)
+        if phrase is not None:
+            self._publish_wake_phrase(phrase)
+
+    def reset_wake_audio(self) -> None:
+        """WS-сессия оборвалась → выбросить недособранную wake-фразу.
+
+        issue #2135: без этого половина фразы ушедшего оператора склеится с
+        первыми кадрами следующей сессии и уедет в STT одним куском.
+        Вызывается из ``WSSServer._unregister_session`` (disconnect,
+        watchdog, GOODBYE) и при ``voice_listen_stop``.
+        """
+        dropped = self._wake_segmenter.reset()
+        if dropped:
+            self._node.get_logger().info(
+                f"quest: wake audio buffer dropped ({dropped} bytes, "
+                "session end / listen stop)"
+            )
+
+    def _publish_wake_phrase(self, phrase: bytes) -> None:
+        """Готовая фраза → AudioData в /audio/quest_wake (+ observability)."""
+        self._note_wake_audio_publish(len(phrase))
         msg = AudioData()
-        msg.data = list(payload)
+        msg.data = list(phrase)
         self._quest_wake_pub.publish(msg)
 
     def _note_wake_audio_publish(self, nbytes: int) -> None:
@@ -522,11 +579,15 @@ class QuestBridge:
         логах вообще: и «клиент шлёт, мост публикует» и «клиент ничего не
         шлёт» выглядели в ``docker logs rob-box-quest`` одинаково —
         тишина по ``wake``/``voice_listen``/``VOICE_AUDIO``. Первый
-        опубликованный пакет — сразу INFO (подтверждает, что мост хотя бы
+        опубликованная фраза — сразу INFO (подтверждает, что мост хотя бы
         раз получил и передал payload дальше в ROS), дальше — сводка не
-        чаще раза в :data:`WAKE_AUDIO_LOG_INTERVAL_S` секунд (поток
-        ~16 кГц, чанк 20мс -> до 50 публикаций/сек — без троттлинга лог
-        захлебнётся).
+        чаще раза в :data:`WAKE_AUDIO_LOG_INTERVAL_S` секунд.
+
+        issue #2135: «packets» здесь теперь = ФРАЗЫ, а не 20мс-кадры. До
+        сегментатора сюда прилетало до 50 вызовов/сек (кадр = публикация) и
+        троттлинг был обязателен, чтобы лог не захлебнулся; сейчас темп на
+        два порядка ниже, но троттлинг оставлен — он же защищает от
+        «залипшего» клиентского VAD, режущего поток по потолку буфера.
         """
         now = time.monotonic()
         self._wake_audio_publish_count += 1
@@ -567,6 +628,10 @@ class QuestBridge:
         if prev == active:
             return
         self._wake_active = active
+        if not active:
+            # issue #2135: тумблер выключен — недособранная фраза больше
+            # никому не адресована, иначе она склеится со следующим start.
+            self.reset_wake_audio()
         if self._wake_stream_pub is not None:
             msg = String()
             msg.data = json.dumps(
@@ -2168,7 +2233,12 @@ class QuestNode(Node):
                 self._camera_started = True
             except Exception as e:  # noqa: BLE001
                 self.get_logger().warning(f"camera provider start failed: {e}")
-        self.bridge.tick_publish(time.monotonic())
+        now = time.monotonic()
+        self.bridge.tick_publish(now)
+        # issue #2135: wake-фраза закрывается по паузе в потоке кадров, а
+        # «пауза» — это отсутствие вызовов publish_quest_wake_audio. Заметить
+        # её может только таймер.
+        self.bridge.tick_wake_audio(now)
 
     def _on_watchdog_timer(self) -> None:
         # Edge-triggered: один раз на trip → один WARNING + один emergency.

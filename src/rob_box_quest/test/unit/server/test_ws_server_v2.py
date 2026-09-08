@@ -161,6 +161,12 @@ class _ConfigurableBridge:
     def publish_voice_robot_stop(self):
         pass
 
+    def reset_wake_audio(self):
+        # issue #2135: _unregister_session сбрасывает буфер wake-фразы
+        # у любого моста — этот double не наследует NoOpBridge, поэтому
+        # метод нужен явно.
+        pass
+
     def set_voice_mode(self, mode):
         pass
 

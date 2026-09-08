@@ -205,13 +205,26 @@ class Bridge(Protocol):
         """VOICE_AUDIO (stream_id=2, wake-channel): always-on микрофон с
         client-side RMS VAD (ADR-0071 step 5а) → AudioData в /audio/quest_wake.
 
-        Реализация (QuestBridge, issue #1992): публикует в ROS-топик
-        /audio/quest_wake, который читает stt_node.quest_wake_audio_callback
-        и маршрутизирует в /avatar/stt/result только при вейке «ТАРС»
-        (целевая §7.1/§9.1). Тестовая реализация — NoOpBridge — остаётся
-        no-op: unit-тесты на routing stream_id проверяют только то, что
-        WS-сервер вызывает этот метод с правильным payload, без участия
-        ROS-стека.
+        ``payload`` — один кадр 20 мс / 640 байт, НЕ фраза. Реализация
+        (QuestBridge, issue #2135) копит кадры и публикует ОДНУ AudioData на
+        фразу, закрывая её по паузе в потоке (см. `core/wake_segmenter.py`):
+        stt_node гоняет полный цикл распознавания на каждое сообщение, и на
+        20 мс оно всегда возвращает пусто. Дальше stt_node маршрутизирует в
+        /avatar/stt/result только при вейке «ТАРС» (целевая §7.1/§9.1).
+
+        Тестовая реализация — NoOpBridge — остаётся no-op: unit-тесты на
+        routing stream_id проверяют только то, что WS-сервер вызывает этот
+        метод с правильным payload, без участия ROS-стека.
+        """
+        ...
+
+    def reset_wake_audio(self) -> None:
+        """WS-сессия закончилась → выбросить недособранную wake-фразу.
+
+        issue #2135: сегментатор wake-канала (QuestBridge) держит буфер
+        кадров между вызовами ``publish_quest_wake_audio``. Буфер принадлежит
+        сессии: без сброса хвост фразы ушедшего оператора склеится с первыми
+        кадрами следующей. NoOpBridge — no-op (буфера нет).
         """
         ...
 
@@ -452,6 +465,11 @@ class NoOpBridge:
     def set_wake_stream_state(self, active: bool) -> None:
         # NoOpBridge: фиксируем в логе для unit-тестов.
         log.debug("NoOpBridge: set_wake_stream_state active=%s", active)
+        return None
+
+    def reset_wake_audio(self) -> None:
+        # NoOpBridge: буфера wake-фразы нет (сегментация живёт в QuestBridge,
+        # issue #2135) — сбрасывать нечего.
         return None
 
     def publish_voice_stop(self) -> None:
@@ -1330,6 +1348,10 @@ class WSSServer:
         # Освободить stream_id'ы этой сессии.
         for sid in session.subscribed.values():
             _stream_ids_in_use.discard(sid)
+        # issue #2135: буфер wake-фразы принадлежит сессии. Оборвался WS
+        # (disconnect/watchdog/GOODBYE) — недособранную фразу выбрасываем,
+        # иначе она склеится с речью следующего оператора.
+        self.bridge.reset_wake_audio()
         # Освободить voice floor, если эта сессия его держала
         # (watchdog/GOODBYE/disconnect → без явного voice_ptt_stop).
         # ADR-0051 §2.2: avatar_arbiter.release_voice() — теперь
