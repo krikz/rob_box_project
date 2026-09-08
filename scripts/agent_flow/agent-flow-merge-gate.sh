@@ -3418,6 +3418,115 @@ except Exception:
             fi
         fi
 
+        # 0.1b) ADR-AF-0063 §4.1 — fallback auto-close by PR-body keyword.
+        # Сценарий: PR MERGED into develop, issue OPEN, нет ни e2e-done,
+        # ни no-e2e-required, ни needs-e2e/не в retro-path (выше 0.1a не
+        # сработал). Squash-merge commit-message теряет PR-body
+        # (`squash_merge_commit_message: COMMIT_MESSAGES`), поэтому
+        # GitHub native auto-close НЕ срабатывает (ADR-AF-0063 §1.4).
+        # Fallback: парсим PR-body напрямую через `gh pr view --json body`
+        # на keyword `closes|fixes|resolves #N` для ЭТОГО issue#N.
+        # Reference (`#N` без keyword) НЕ считается — защита от ложных
+        # срабатываний (см. ADR-AF-0063 §6: «reference-only не покрывается»).
+        #
+        # Контракт: только когда issue НЕ имеет process-меток (e2e-done /
+        # no-e2e-required / e2e:rejected). Worker мог обойти e2e-rotation
+        # для архитектурного / docs / ADR PR (ADR-0014 §out-of-scope),
+        # но PR-body явно сигналит «closes this issue» через keyword.
+        #
+        # Idempotent: повторный тик видит state=CLOSED → case ниже →
+        # idempotent skip-close + cleanup. Уже внесённая запись в state
+        # гарантирует, что destructive-cleanup отработает ровно один раз.
+        #
+        # User-reopen guard: если Шифу переоткрыл issue ПОСЛЕ merge —
+        # fallback НЕ сработает (как Q22-orphan и e2e-done пути).
+        # Whitelist label `user-reopened-this` тоже блокирует (явный сигнал).
+        if [ "$pr_state" = "MERGED" ] && [ "$pr_base" = "$DEVELOP_BRANCH" ] \
+            && [ "$_issue_state" = "OPEN" ] \
+            && [ "$_has_e2e_done" = "0" ] \
+            && [ "$_has_no_e2e" = "0" ]; then
+            # Scope-guard (issue #2123): если ветка PR УЖЕ удалена с remote,
+            # это territory Q22-orphan (case OPEN ниже). Q22 путь закроет
+            # issue по своей логике (unlabel orphan + close + comment) —
+            # fallback НЕ должен срабатывать первым, иначе теряется
+            # unlabel-orphan-эффект (L/M tests post-merge). Если ветка
+            # жива → e2e-rotation физически возможна, но worker не
+            # использовал её (архитектурный / docs / ADR PR) → fallback
+            # оправдан. В branch-deleted случае просто выходим из if —
+            # выполнение упадёт в case OPEN ниже, где Q22 отработает штатно.
+            if ! git ls-remote --heads "https://github.com/$GH_REPO.git" "$branch" 2>/dev/null | grep -q "$branch"; then
+                log "issue #${number}: fallback path (ADR-AF-0063 §4.1) — branch ${branch} deleted on remote, defer to Q22-orphan path"
+            else
+                # === Ветка жива → собственно fallback-путь ===
+                # Whitelist label — manual override Шифу: «не закрывать».
+                if [ -n "${USER_REOPEN_AUDIT_LABEL:-}" ] \
+                    && has_label "${_current_labels_norm:-}" "$USER_REOPEN_AUDIT_LABEL"; then
+                    log "issue #${number}: fallback path (ADR-AF-0063 §4.1), whitelist ${USER_REOPEN_AUDIT_LABEL} → skip auto-close"
+                    labeled=$((labeled+1)); continue
+                fi
+                # Q22-style user-reopen guard: если Шифу недавно переоткрыл —
+                # fallback не должен тиранить его волю (issue #1391 supplement).
+                if _issue_reopened_recently "$number"; then
+                    log "issue #${number}: fallback path (ADR-AF-0063 §4.1), recent user-reopen → skip auto-close (issue #1391 supplement)"
+                    labeled=$((labeled+1)); continue
+                fi
+                # Парсим PR-body напрямую. SQUASH-LOSS обходится тем, что
+                # `gh pr view` возвращает ОРИГИНАЛЬНЫЙ body PR (из issue
+                # template), а не squash-commit-message (ADR-AF-0063 §4.0).
+                # gh может fail (rate-limit / transient) — conservative: skip
+                # (повторный тик попробует снова).
+                _fb_pr_body="$(gh pr view "$pr_number" --repo "$GH_REPO" --json body \
+                    --jq '.body // ""' 2>/dev/null || echo '')"
+                if [ -z "$_fb_pr_body" ]; then
+                    log "issue #${number}: fallback path (ADR-AF-0063 §4.1), WARNING gh pr view body failed — retry next tick"
+                    labeled=$((labeled+1)); continue
+                fi
+                # Keyword regex — case-insensitive (через `grep -i`, не
+                # `(?i)` — последнее PCRE-only, не работает в `grep -E`).
+                # Matches «Closes», «closes», «FIXES», «Resolves», etc.
+                # Boundary `\b#${number}\b` предотвращает match на похожих
+                # номерах (#1234 vs #123).
+                _fb_kw_pat="(closes|fixes|resolves)[[:space:]]+#${number}\b"
+                if ! printf '%s' "$_fb_pr_body" | grep -qiE "$_fb_kw_pat"; then
+                    # Нет keyword для ЭТОГО issue в PR-body → fallback не для нас.
+                    # Это reference-only PR (issue упомянута без intent close)
+                    # или другой-issue PR. По дизайну (§6) оставляем OPEN.
+                    log "issue #${number}: fallback path (ADR-AF-0063 §4.1) — PR-body has no Closes/Fixes/Resolves keyword for #${number}, no auto-close (likely reference-only)"
+                    labeled=$((labeled+1)); continue
+                fi
+                # Audit-коммент (6h dedup). Маркер «🔁 fallback auto-close
+                # (ADR-AF-0063 §4.1)» уникален — не путаем с «✅ ретро-путь»
+                # или «🛠 merge-gate (ретро 13.08)».
+                _fb_dedup_since="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+                _fb_dup_count="$(gh api "repos/${GH_REPO}/issues/${number}/comments?since=${_fb_dedup_since}&per_page=100" \
+                    --jq '[.[] | select(.body | contains("🔁 fallback auto-close (ADR-AF-0063 §4.1)"))] | length' 2>/dev/null || echo 0)"
+                if [ "${_fb_dup_count:-0}" -eq 0 ] && [ "$DRY_RUN" != "true" ]; then
+                    gh issue comment "$number" --repo "$GH_REPO" --body \
+"🔁 fallback auto-close (ADR-AF-0063 §4.1): PR #${pr_number} смержен в ${DEVELOP_BRANCH}, PR-body содержит keyword \`Closes/Fixes/Resolves #${number}\`, но squash-merge commit-message потерял body (\`squash_merge_commit_message: COMMIT_MESSAGES\`). Issue закрыта как fallback — основной путь по \`e2e-done\`/\`no-e2e-required\` не сработал, потому что worker обошёл e2e-rotation (архитектурный / docs / ADR PR)." >/dev/null 2>&1 || true
+                fi
+                # issue #1534: self-id whoami BEFORE close — helper
+                # идемпотентный (2h окно, skip если уже публиковал такой же
+                # marker для этого issue). Записываем audit-маркер.
+                whoami_close_issue "$number" "fallback auto-close (ADR-AF-0063 §4.1): PR #${pr_number} MERGED into ${DEVELOP_BRANCH} with Closes keyword in PR-body"
+                if [ "$DRY_RUN" = "true" ]; then
+                    log "DRY-RUN would auto-close issue #${number} via fallback path (ADR-AF-0063 §4.1)"
+                    _closed_this_tick=1
+                    _issue_state="CLOSED"
+                elif gh issue close "$number" --repo "$GH_REPO" --reason completed >/dev/null 2>&1; then
+                    _closed_this_tick=1
+                    log "issue #${number}: CLOSED (reason=completed, fallback path ADR-AF-0063 §4.1)"
+                    # Reflect state для case ниже → CLOSED-ветка →
+                    # idempotent skip-close + destructive cleanup.
+                    _issue_state="CLOSED"
+                    # Ретро 01.09 t_fd604461: снять process-метки с MERGED PR.
+                    pr_label_sweep_after_merge "${pr_number}" "fallback auto-close (ADR-AF-0063 §4.1)" || true
+                else
+                    log "issue #${number}: WARNING gh issue close failed (fallback path, ADR-AF-0063 §4.1) — retry next tick"
+                    labeled=$((labeled+1)); continue
+                fi
+            fi
+        fi
+
         # 0.2) Close only when invariant holds. Four branches:
         #   (a) already CLOSED → idempotent skip, proceed to cleanup
         #   (b) e2e-done present, OPEN → close with reason=completed

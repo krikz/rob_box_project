@@ -571,7 +571,30 @@ case "$subcmd" in
                 ;;
             view)
                 pr_num="$1"; shift || true
-                if printf '%s' "$*" | grep -q -- '--json files'; then
+                # ADR-AF-0063 §4.1 (issue #2123): merge-gate fallback path calls
+                # `gh pr view N --json body --jq '.body // ""'`. Fixture shape:
+                # `{"body": "..."}`. Mock must return the body string (or empty),
+                # matching real-gh semantics — otherwise the keyword regex
+                # against PR-body never matches.
+                if printf '%s' "$*" | grep -q -- '--json body'; then
+                    journal "gh pr view $pr_num --json body"
+                    _data="$(get_state PR_${pr_num}_VIEW_JSON)"
+                    # Strip wrapper JSON, leave body text. If fixture empty,
+                    # return "" (real gh via `// ""` default).
+                    if [ -z "$_data" ]; then
+                        printf ''
+                    else
+                        printf '%s' "$_data" | python3 -c '
+import sys, json
+try:
+    d = json.loads(sys.stdin.read())
+    b = d.get("body") if isinstance(d, dict) else None
+    print(b if b is not None else "")
+except Exception:
+    print("")
+'
+                    fi
+                elif printf '%s' "$*" | grep -q -- '--json files'; then
                     journal "gh pr view $pr_num --json files"
                     _data="$(get_state PR_${pr_num}_FILES_JSON)"
                     apply_jq "$_data" "$_jq_filter"

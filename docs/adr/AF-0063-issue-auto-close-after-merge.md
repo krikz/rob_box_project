@@ -2,7 +2,7 @@
 
 | Поле | Значение |
 |---|---|
-| Статус | Proposed (после merge → Accepted) |
+| Статус | **Accepted** (после merge PR #<TBD> → Implemented; 2026-09-08) |
 | Дата | 2026-09-07 |
 | Автор | architect (Hermes Agent); карточка `t_fe771303` |
 | Контекст | Ночной обзор 2026-09-06 (`t_bfd19ffb`) выявил recurring-баг: после merge PR в develop issue остаётся OPEN и Шифу закрывает вручную в течение ≤94 секунд (через свой GH token). 2/2 merged PR за сутки = 100% ручной close, что подрывает гарантии ADR-0014 и наблюдаемый contract «issue закрывается по факту merge». Acceptance criteria карточки #2017 требует: auto-close в ≤30 секунд + `closedByPullRequestsReferences` заполнен + idempotent fallback в merge-gate / orphan-watchdog в ≤5 минут. |
@@ -399,8 +399,32 @@ done <<< "$merged_prs"
 
 ## 10. Verification log (для будущего надзора)
 
-Дата верификации: 2026-09-07 (карточка t_fe771303).
+Дата верификации: 2026-09-07 (карточка t_fe771303, ADR draft).
 Метод: прямой `gh api` к events/timeline/labels для issue #1989/#1990 + `gh pr view` для #2010/#2011 + `gh api repos/...` для repo settings + `git log --format=%b` для merge-commit body.
 Результат: гипотеза (A) подтверждена частично (squash-loss), (B) опровергнута (формат keyword не причина), (C) дублирует (A). Реальный root cause — комбинация squash-loss + contract mismatch (ADR-0014 invariant требует e2e-done, которого не было).
+
+Дата верификации: 2026-09-08 (карточка t_e3b5be96, issue #2123, Variant A implemented).
+Метод: 6 unit-тестов `scripts/agent_flow/tests/test_merge_gate_fallback_keyword.sh` через mock gh/hermes/git окружение + raw stderr merge-gate лог каждого сценария + проверка переходов `ISSUE_<N>_STATE_JSON` через `grep -E "^ISSUE_<N>_STATE_JSON=" "$GH_STATE"`.
+Результат: **6/6 PASS**.
+
+| Тест | Сценарий | Ожидание | Факт |
+|---|---|---|---|
+| F1 | PR-body `closes #N` + branch жива + no process-labels | `gh issue close N --reason completed` вызван; state flip → CLOSED; audit-коммент «🔁 fallback auto-close (ADR-AF-0063 §4.1)» опубликован | ✅ |
+| F2 | PR-body только `#N` reference (без keyword) | fallback НЕ вызван (ADR §6); issue остаётся OPEN | ✅ |
+| F3 | PR-body keyword + branch УДАЛЕНА с remote | log «branch deleted, defer to Q22-orphan path»; fallback НЕ закрывает | ✅ |
+| F4 | `user-reopened-this` whitelist label | log «whitelist user-reopened-this → skip auto-close»; close не вызван | ✅ |
+| F5 | `e2e-done` label | е2е-путь закрывает (не fallback); fallback audit НЕ публикуется | ✅ |
+| F6 | issue уже CLOSED | outer guard `_issue_state != OPEN` → fallback не запускается; idempotent | ✅ |
+
+Также проверена регрессия по смежным тест-сюитам: `post_merge 17/17`, `user_reopen 8/8`, `retro_path 20/20`, `stale_branch 7/7`, `human_close 4/4`, `pr_label_sweep 6/6`, `review_handling 8/8`, `stale_rebase 6/6`, `pr_backfill 5/5`, `post_merge_child_resolution 9/9`, `pr_orphan_needs_e2e 6/6`, `retro_path_orphan_needs_e2e 4/4`, `stale_after_upstream_fix 15/15`, `type_testing 2/2`. Итого: 121/121 PASS для непересекающихся тестов + 6/6 для нового fallback-набора.
+
+Pre-existing красные тесты (НЕ регрессия от этого PR, проверено `git stash` baseline):
+- `test_merge_gate_pr_without_marker.sh`: 4/5 fail (задевает scan-all-prs paths, которые этот PR не трогает).
+- `test_merge_gate_rebase_card_contract_drift.sh`: 4/5 fail (задевает unit-tests-detection path).
+
+**Что осталось вне scope этого PR (явные отдельные карточки по acceptance карточки #2123):**
+- Acceptance #2: `squash_merge_commit_message: PR_BODY` в `.github/workflows/L-auto-merge-to-main.yml` → нужен отдельный PR, чтобы `closedByPullRequestsReferences` начал заполняться (без этого fallback close через `gh issue close` НЕ заполняет поле — by-design §6).
+- Acceptance #3: drift-guard cron для отлова open issues с merged-PR cross-ref за 24ч.
+- Acceptance #4: backfill к 4 чистым drift-issue (#2000, #1999, #2002, #2096) — только после squash-template fix (Acceptance #2), иначе `closedByPullRequestsReferences` не заполнится.
 
 Рекомендация по re-verification: через 30 дней после merge ADR-AF-0063 — повторить §7.1-7.3, убедиться, что для всех merged-PR с `Closes/Fixes/Resolves` в body issue закрыты в течение ≤5 мин (тик merge-gate). Если >2 orphan — открыть новую ретро-карточку `issue-close-fallback-recurring` и эскалировать.
