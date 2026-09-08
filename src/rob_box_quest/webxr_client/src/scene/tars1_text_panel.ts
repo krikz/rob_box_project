@@ -78,12 +78,18 @@ export function createTars1TextPanel(
 
   // Соотношение сторон canvas и плоскости — 16:9 (ADR-0074 §4.0, вариант E:
   // все три экрана Captain Bridge должны быть одного aspect ratio, как
-  // основной 4.8 × 2.7). Плоскость по умолчанию 1.6 × 0.9 м; фактический
-  // размер задаётся снаружи через mesh.scale (см. captain_bridge.ts:
-  // TARS_PANEL_SIZE). Если ширину панели меняет архитектор (ADR §4.0,
-  // диапазон 2.4–3.2 м), PlaneGeometry оставляем 1.6 × 0.9 — это лишь
-  // отношение сторон, реальный размер идёт через mesh.scale.
-  const geometry = new THREE.PlaneGeometry(1.6, 0.9);
+  // основной 4.8 × 2.7). Геометрия — ЕДИНИЧНЫЙ план (1×1): фактический
+  // размер в метрах задаётся снаружи через mesh.scale.set(width, height, 1)
+  // (см. captain_bridge.ts: TARS_PANEL_SIZE). ВАЖНО: если тут поставить
+  // не-единичный размер (было 1.6×0.9 до bugfix #2142-B), итоговый мировой
+  // размер меша станет geometry-size × scale, а не scale — двойное
+  // масштабирование. Ровно это раздувало панель до 4.8×1.52 м вместо
+  // заявленных 3.0×1.69 м и гнало её в главный экран (issue #2142-B,
+  // раскопано nightly-review-fix: bug существовал с самого fa5854fd, стал
+  // заметнее после ресайза W=1.6→3.0 в e17e5bca). Aspect ratio 16:9 теперь
+  // держит сам TARS_PANEL_SIZE (width, width*9/16) в captain_bridge.ts —
+  // геометрии он не касается.
+  const geometry = new THREE.PlaneGeometry(1, 1);
   const material = new THREE.MeshBasicMaterial({
     map: texture,
     side: THREE.DoubleSide,

@@ -100,12 +100,17 @@ export function createTars2MetricsPanel(
   texture.colorSpace = THREE.SRGBColorSpace;
 
   // 16:9 — по ADR-0074 §4.0 (вариант E: все три экрана Captain Bridge
-  // одного aspect ratio, как основной 4.8 × 2.7). Плоскость по умолчанию
-  // 1.6 × 0.9 м; реальный размер задаётся снаружи через mesh.scale
-  // (см. captain_bridge.ts: TARS_PANEL_SIZE). При смене ширины панели
-  // архитектором (диапазон 2.4–3.2 м) PlaneGeometry не меняется — здесь
-  // только отношение сторон.
-  const geometry = new THREE.PlaneGeometry(1.6, 0.9);
+  // одного aspect ratio, как основной 4.8 × 2.7). Геометрия — ЕДИНИЧНЫЙ
+  // план (1×1): реальный размер в метрах задаётся снаружи через
+  // mesh.scale.set(width, height, 1) (см. captain_bridge.ts:
+  // TARS_PANEL_SIZE). ВАЖНО: не-единичная геометрия здесь (было 1.6×0.9 до
+  // bugfix #2142-B) даёт двойное масштабирование — итоговый мировой размер
+  // = geometry-size × scale, а не просто scale. Это раздувало панель до
+  // 4.8×1.52 м вместо заявленных 3.0×1.69 м и гнало её в главный экран
+  // (issue #2142-B; bug существовал с fa5854fd, усилился после ресайза
+  // W=1.6→3.0 в e17e5bca). Aspect ratio 16:9 держит TARS_PANEL_SIZE
+  // (width, width*9/16) в captain_bridge.ts — геометрии он не касается.
+  const geometry = new THREE.PlaneGeometry(1, 1);
   const material = new THREE.MeshBasicMaterial({
     map: texture,
     side: THREE.DoubleSide,
