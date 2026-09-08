@@ -327,6 +327,92 @@ describe("ttsPickerReducer — состояние 5: applying", () => {
       "ERROR: voice_unavailable (доступно: alena, filipp, ermil, jane)"
     );
   });
+
+  // UX-honesty (ADR-0018, issue #2138.B): после nack picker не залипает
+  // в applying — оператор должен видеть ошибку И иметь возможность
+  // сразу попробовать снова (тот же голос или другой), не переоткрывая
+  // меню. Без этого теста любой рефакторинг reducer'а мог бы «починить»
+  // лок и оставить оператора с дохлой кнопкой APPLY.
+  it("после nack picker возвращается в интерактивное состояние (UX-honesty)", () => {
+    const st = run(
+      [
+        { kind: "select", voiceId: "male-qn-qingse" },
+        { kind: "apply_sent", voiceId: "male-qn-qingse" },
+        {
+          kind: "voice_set_nack",
+          voiceId: "male-qn-qingse",
+          reason: "voice_unavailable"
+        }
+      ],
+      populated()
+    );
+    expect(st.applyingVoiceId).toBeNull();
+    expect(isInteractive(st)).toBe(true);
+    // Тот же голос остался выбран — APPLY снова активен, можно
+    // ретрайнуть без переоткрытия меню.
+    expect(st.selectedVoiceId).toBe("male-qn-qingse");
+    expect(canApply(st)).toBe(true);
+    // Header уже не в «APPLYING…».
+    expect(ttsHeaderText(st)).not.toContain("APPLYING");
+  });
+
+  it("после nack можно перевыбрать другой голос и снова жать APPLY", () => {
+    const base = run(
+      [
+        { kind: "select", voiceId: "male-qn-qingse" },
+        { kind: "apply_sent", voiceId: "male-qn-qingse" },
+        {
+          kind: "voice_set_nack",
+          voiceId: "male-qn-qingse",
+          reason: "voice_unavailable"
+        }
+      ],
+      populated()
+    );
+    const next = ttsPickerReducer(base, { kind: "select", voiceId: "alena" });
+    expect(next.selectedVoiceId).toBe("alena");
+    expect(canApply(next)).toBe(true);
+  });
+
+  it("повторный apply_sent после nack снова лочит UI (nack не оставил лок-блок)", () => {
+    const base = run(
+      [
+        { kind: "apply_sent", voiceId: "alena" },
+        { kind: "voice_set_nack", voiceId: "alena", reason: "voice_unavailable" }
+      ],
+      populated()
+    );
+    expect(base.applyingVoiceId).toBeNull();
+    const retried = ttsPickerReducer(base, { kind: "apply_sent", voiceId: "alena" });
+    expect(retried.applyingVoiceId).toBe("alena");
+    expect(isInteractive(retried)).toBe(false);
+  });
+
+  // Симуляция applyTimeout (main.ts: armApplyTimeout, 6с без ответа):
+  // таймер шлёт `voice_set_nack` с reason="нет ответа от робота". Тот же
+  // reducer-путь, что и серверный nack — тест гарантирует, что footer
+  // рисует именно этот текст (а не выдуманный «применилось»).
+  it("applyTimeout: nack('нет ответа от робота') рисуется честно в footer", () => {
+    const st = run(
+      [
+        { kind: "apply_sent", voiceId: "alena" },
+        {
+          kind: "voice_set_nack",
+          voiceId: "alena",
+          reason: "нет ответа от робота"
+        }
+      ],
+      populated()
+    );
+    expect(st.applyingVoiceId).toBeNull();
+    expect(isInteractive(st)).toBe(true);
+    expect(ttsFooterText(st)).toEqual({
+      text: "ERROR: нет ответа от робота",
+      level: "bad"
+    });
+    // Header не в «APPLYING» — оператор видит, что действие отменилось.
+    expect(ttsHeaderText(st)).not.toContain("APPLYING");
+  });
 });
 
 describe("ttsPickerReducer — close / disconnect", () => {
