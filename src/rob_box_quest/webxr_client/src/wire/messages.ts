@@ -305,7 +305,40 @@ export type JsonEvent =
       error: string;
       ts_ms: number;
     }
+  // issue #2184 — TARS 2 metrics panel: РЯДЫ ТОЧЕК из Prometheus (series)
+  // или строки из Loki (lines). Именно это клиент рисует на экране TARS 2;
+  // tars_panel_url выше остался ссылкой «доглядеть с десктопа».
+  // status="empty" — запрос корректен, но данных нет: панель обязана
+  // сказать это словами, а не показать пустой график.
+  | {
+      type: "tars_panel_data";
+      request_id: string;
+      status: "ok" | "empty" | "error" | string;
+      datasource: string;
+      query: string;
+      note: string;
+      summary: string;
+      series: TarsPanelSeries[];
+      lines: TarsPanelLogLine[];
+      url: string;
+      error: string;
+      ts_ms: number;
+    }
   | { type: string; [k: string]: unknown };
+
+/** Один ряд Prometheus: точки ``[unix_seconds, value]`` по возрастанию ts. */
+export interface TarsPanelSeries {
+  name: string;
+  labels: Record<string, string>;
+  points: [number, number][];
+}
+
+/** Одна строка Loki (новые — первыми). */
+export interface TarsPanelLogLine {
+  ts: number;
+  line: string;
+  labels: Record<string, string>;
+}
 
 export interface ErrorMsg {
   code: string;

@@ -78,6 +78,10 @@ from .tools import (
     SearchSamplesTool,
     FaqSearchTool,
     SearchWebTool,
+    # Issue #2113 — TARS 2 metrics panel (operator.admin). Публикует
+    # запрос в /avatar/tars/panel_request; URL собирает TarsPanelDispatcher
+    # в rob_box_supervisor и публикует в /avatar/tars/panel_url.
+    ShowMetricsTool,
 )
 
 # Issue #1392 — MiniMax music generation + generated-music library tools.
@@ -880,6 +884,14 @@ class MCPServer(Node):
         # via MCP. speaker_id_node binds d-vector to name in /data/speakers.db.
         self.registry.register(RegisterSpeakerTool(self))
         self.registry.register(SearchWebTool(self))
+        # Issue #2113 — TARS 2 metrics panel. ``show_metrics`` публикует
+        # запрос в /avatar/tars/panel_request; TarsPanelDispatcher
+        # (rob_box_supervisor.tars_panel) подписан на этот топик, парсит
+        # запрос и публикует собранный URL Grafana-панели в
+        # /avatar/tars/panel_url (на этот топик уже подписан Quest-клиент).
+        # Без этой регистрации mcp_server отвечал бы «unknown tool» на
+        # show_metrics — даже если срез-гард пропускал avatar_supervisor.
+        self.registry.register(ShowMetricsTool(self))
         # Issue #968 (S6) — task_delta: schema-only registration so the
         # LLM sees the tool. Real execution is intercepted in-process by
         # SchedulerToolExecutor (rob_box_voice, S6.2) before it ever

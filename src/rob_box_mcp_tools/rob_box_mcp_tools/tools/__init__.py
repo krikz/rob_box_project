@@ -98,4 +98,8 @@ __all__ = [
     "Ros2NodeStatusTool",
     "ReadLogsTool",
     "ContainerStatusTool",
+    # Issue #2113 — TARS 2 metrics panel (operator.admin). Публикует
+    # запрос в /avatar/tars/panel_request; URL собирает TarsPanelDispatcher
+    # в rob_box_supervisor и публикует в /avatar/tars/panel_url.
+    "ShowMetricsTool",
 ]

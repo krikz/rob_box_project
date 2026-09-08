@@ -3,7 +3,9 @@
 operator_admin.py - Операторские инструменты супервизора (ТАРС).
 
 Срез ``operator.admin`` в каталоге — диагностика ROS-системы и контейнеров
-без ``docker.sock`` (см. ADR-0051 §6 + docs/architecture/target-operator-agent-and-dialogue.md §6).
+без ``docker.sock`` (см. ADR-0051 §6 + docs/architecture/target-operator-agent-and-dialogue.md §6),
+а также «межпроцессные» тулзы, которые прокидывают запрос оператора
+в другие ноды (issue #2113, TARS 2 metrics panel).
 
 Инструменты:
 
@@ -18,8 +20,15 @@ operator_admin.py - Операторские инструменты суперв
   обязательная санитизация перед выдачей агенту.
 * :class:`ContainerStatusTool` — restart-count/CPU/RAM/uptime контейнеров
   через Prometheus ``/api/v1/query`` (cAdvisor уже отдаёт метрики).
+* :class:`ShowMetricsTool` (issue #2113, #2184) — публикует запрос в топик
+  ``/avatar/tars/panel_request``, на который подписан
+  :class:`rob_box_supervisor.tars_panel.TarsPanelDispatcher`, и ЖДЁТ ответа
+  в ``/avatar/tars/panel_data``: dispatcher выполняет запрос в
+  Prometheus/Loki и отдаёт реальные ряды точек (их же рисует Quest-клиент
+  на экране TARS 2). Тул возвращает LLM последние значения, чтобы ТАРС
+  называл числа, а не рапортовал об открытии панели.
 
-Все три ``execution_type = ToolExecutionType.MEDIUM`` (2-10s): зависят от
+Все четыре ``execution_type = ToolExecutionType.MEDIUM`` (2-10s): зависят от
 сетевых вызовов и ROS-discovery. ``read_only=True``.
 """
 
@@ -28,13 +37,24 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Any, Dict, List, Optional
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+
+# Локальный TYPE_CHECKING-импорт ROS-типов, чтобы unit-тесты на CI без
+# rclpy не падали на этапе импорта модуля. Сам импорт для создания
+# publisher'а / String() сообщения делается в ``__init__`` и ``execute``
+# соответственно.
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from std_msgs.msg import String
 
 # ----------------------------------------------------------------------------
 # Module-level logger (не зависит от ROS 2 — грейсфул degrade в юнит-тестах).
@@ -47,8 +67,17 @@ _LOG = logging.getLogger(__name__)
 # Defaults — overridable через env / конфиг.
 # ----------------------------------------------------------------------------
 
-_DEFAULT_LOKI_URL = os.environ.get("LOKI_URL", "http://loki:3100")
-_DEFAULT_PROM_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090")
+# Стек мониторинга (docker/monitoring/docker-compose.yaml) живёт НЕ рядом с
+# нодами: Prometheus/Loki/Grafana подняты на build-машине katana (10.1.1.249)
+# в host-сети, а voice-assistant / avatar-supervisor крутятся на Vision Pi
+# тоже в host-сети. Docker-DNS между ними нет — старые дефолты
+# ``http://prometheus:9090`` / ``http://loki:3100`` с робота не резолвились
+# вообще (проверено 08.09.2026: env PROMETHEUS_URL/LOKI_URL в контейнерах не
+# задан ни одной строкой compose), из-за чего молча не работали ещё
+# ``container_status`` и ``read_logs(source=loki)``. Прямой адрес katana
+# отвечает из контейнера avatar-supervisor: /-/healthy → 200.
+_DEFAULT_LOKI_URL = os.environ.get("LOKI_URL", "http://10.1.1.249:3100")
+_DEFAULT_PROM_URL = os.environ.get("PROMETHEUS_URL", "http://10.1.1.249:9090")
 # Таймаут HTTP-запросов — на Pi4 локальные сервисы отвечают <200ms,
 # ставим 2s (запас на cold-cache PromQL и медленный Loki).
 _HTTP_TIMEOUT_SEC = float(os.environ.get("OPERATOR_ADMIN_HTTP_TIMEOUT", "2.0"))
@@ -622,3 +651,369 @@ def _sanitize_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
     if "msg" in out and isinstance(out["msg"], str):
         out["msg"] = _sanitize_text(out["msg"])
     return out
+
+
+# ----------------------------------------------------------------------------
+# show_metrics (issue #2113 / TARS 2 metrics panel)
+# ----------------------------------------------------------------------------
+#
+# Контракт входа/выхода зафиксирован в
+# ``rob_box_supervisor.tars_panel.TarsPanelDispatcher`` (issue #2113):
+#
+# * ``/avatar/tars/panel_request`` (sub) — JSON ``{"request_id": str,
+#   "query": str, "datasource": "prometheus"|"loki"}``;
+# * ``/avatar/tars/panel_url`` (pub) — JSON ``{"request_id": str,
+#   "url": str, "status": "ok"|"error", "error": str?}``.
+#
+# Этот тул — MCP-обёртка первой части конвейера: публикует запрос, и
+# сразу возвращает LLM короткий текстовый статус («Опубликовал запрос»).
+# Сам URL собирает ``TarsPanelDispatcher`` и публикует в ``/avatar/tars/panel_url``
+# отдельно — Quest-клиент уже подписан на этот топик.
+#
+# Грейсфул degrade: если нода не ROS (юнит-тесты без rclpy) —
+# ``execute()`` возвращает ``success=False`` с понятным сообщением,
+# вместо AttributeError. Это согласуется с ADR-0018 (честный FAIL).
+
+
+# Поддерживаемые datasource'ы — те же, что и в TarsPanelDispatcher
+# (см. _DATASOURCE_PATH в ``rob_box_supervisor.tars_panel``). Дублируем
+# список здесь, чтобы тул умел валидировать ``datasource`` ДО публикации
+# (TARS panel dispatcher всё равно их проверит и опубликует status=error
+# при неизвестном — но мы экономим round-trip и не шумим в логе
+# ``/avatar/tars/panel_request`` с заведомо битыми запросами).
+_SHOW_METRICS_DATASOURCES = ("prometheus", "loki")
+
+# Сколько ждём ответ супервизора на ``/avatar/tars/panel_data``.
+# TarsPanelDispatcher ходит в Prometheus по HTTP (таймаут 5s) в отдельном
+# потоке, так что 8s покрывают худший случай с запасом на ROS-доставку.
+# Ожидание — не роскошь: без него LLM получал «опубликовал запрос» и бодро
+# сообщал оператору «открыл дрейф CPU», даже когда метрики не существует и
+# панель оставалась пустой (issue #2184, ADR-0018).
+_SHOW_METRICS_TIMEOUT_SEC = float(
+    os.environ.get("SHOW_METRICS_TIMEOUT", "8.0")
+)
+
+
+def _latest_values(series: Any) -> Dict[str, Any]:
+    """Последнее значение каждого ряда — то, что ТАРС называет голосом.
+
+    Для Loki рядов нет, есть строки: тогда отдаём пусто, а LLM опирается на
+    ``message``. Формат ряда — контракт ``/avatar/tars/panel_data``
+    (``{"name", "labels", "points": [[ts, value], …]}``).
+    """
+    out: Dict[str, Any] = {}
+    if not isinstance(series, list):
+        return out
+    for item in series[:6]:
+        if not isinstance(item, dict):
+            continue
+        points = item.get("points")
+        if not isinstance(points, list) or not points:
+            continue
+        last = points[-1]
+        try:
+            out[str(item.get("name") or "series")] = float(last[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+    return out
+
+
+class ShowMetricsTool(MCPTool):
+    """Публикация LLM tool-call ``show_metrics`` в ``/avatar/tars/panel_request``.
+
+    Используется оператором (ТАРС, через ``/mcp/execute``) — показать
+    операторский мониторинг (Grafana) на боковом экране TARS 2
+    (Captain Bridge в Quest-клиенте). Тонкая обёртка над двумя топиками:
+
+    * in:  ``query`` (PromQL/LogQL) + опциональный ``datasource``;
+    * out: запрос в ``/avatar/tars/panel_request``, ответ с URL — в
+      ``/avatar/tars/panel_url`` (в Quest).
+
+    Сама сборка URL — в :class:`rob_box_supervisor.tars_panel.TarsPanelDispatcher`
+    (его публикация в ``/avatar/tars/panel_url`` уже подписана
+    Quest-клиентом, см. ADR-0060). Этот тул ничего не знает про
+    Grafana/Prometheus — только шлёт запрос и ждёт ответа через ROS-шину.
+    """
+
+    @property
+    def name(self) -> str:
+        return "show_metrics"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Показать телеметрию робота на боковом экране TARS 2 "
+            "(Captain Bridge) и получить её значения. Тул выполняет запрос "
+            "в Prometheus (метрики) или Loki (логи) и возвращает последние "
+            "значения — отвечай оператору ИМИ, а не фразой «открыл панель». "
+            "Используй когда просят показать графики, метрики, логи, CPU, "
+            "память, latency, ошибки ('покажи дрейф CPU', 'открой ошибки "
+            "stt_node'). Рабочие запросы: "
+            "'rate(process_cpu_seconds_total[5m])' — CPU, "
+            "'process_resident_memory_bytes' — RAM, 'up' — живость "
+            "экспортеров, 'rate(voice_llm_request_duration_seconds_sum[5m]) "
+            "/ rate(voice_llm_request_duration_seconds_count[5m])' — "
+            "задержка LLM. Простые слова ('cpu', 'память', 'latency') тоже "
+            "принимаются — они резолвятся по живому каталогу метрик."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(
+                name="query",
+                type="string",
+                description=(
+                    "PromQL-выражение (напр. "
+                    "'rate(process_cpu_seconds_total[5m])'), LogQL-запрос "
+                    "(напр. '{job=\"voice\"}') или простое слово-метрика "
+                    "('cpu', 'память', 'latency'). Обязательный."
+                ),
+                required=True,
+            ),
+            MCPToolParameter(
+                name="datasource",
+                type="string",
+                description=(
+                    "Источник телеметрии: 'prometheus' (default) или 'loki'."
+                ),
+                required=False,
+                enum=list(_SHOW_METRICS_DATASOURCES),
+                default="prometheus",
+            ),
+        ]
+
+    @property
+    def slice(self) -> str:
+        # ADR-0052 / issue #1998 §6.2 + issue #2113 (TARS 2 metrics).
+        # Диагностика/визуализация для оператора — operator.admin.
+        return "operator.admin"
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        # Не FAST: тул ждёт, пока супервизор реально сходит в Prometheus/Loki
+        # и вернёт данные в ``/avatar/tars/panel_data`` (до
+        # _SHOW_METRICS_TIMEOUT_SEC). Это цена честного ответа оператору.
+        return ToolExecutionType.MEDIUM
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    def __init__(self, node: Optional[Any] = None) -> None:
+        super().__init__(node)
+        # Publisher создаём ТОЛЬКО если есть ROS-нода. В юнит-тестах
+        # передают ``node=Mock()`` без ``create_publisher`` — поэтому
+        # сначала проверяем, что у node есть соответствующий атрибут.
+        # Если нет — ``self._panel_request_pub`` останется ``None``,
+        # и ``execute()`` вернёт честный ``success=False`` вместо
+        # падения (ADR-0018).
+        self._panel_request_pub: Optional[Any] = None
+        # request_id → результат из /avatar/tars/panel_data. Ключи чистим
+        # сразу после чтения — словарь не растёт (одна запись на вызов).
+        self._pending: Dict[str, Dict[str, Any]] = {}
+        self._pending_events: Dict[str, threading.Event] = {}
+        self._pending_lock = threading.Lock()
+        if node is not None and hasattr(node, "create_publisher"):
+            from std_msgs.msg import String  # noqa: PLC0415 — локальный импорт
+
+            self._panel_request_pub = node.create_publisher(
+                String, "/avatar/tars/panel_request", 10
+            )
+            # Обратный канал: супервизор публикует сюда данные, которые
+            # реально приехали из Prometheus/Loki. Подписка — в СВОЕЙ
+            # ReentrantCallbackGroup: execute() блокируется на Event, и с
+            # MultiThreadedExecutor (см. mcp_server._make_executor) callback
+            # должен уметь отработать в другом потоке, иначе получим дедлок.
+            if hasattr(node, "create_subscription"):
+                try:
+                    group = None
+                    try:
+                        from rclpy.callback_groups import (  # noqa: PLC0415
+                            ReentrantCallbackGroup,
+                        )
+
+                        group = ReentrantCallbackGroup()
+                    except ImportError:
+                        pass  # стенд без rclpy — подписка всё равно нужна
+                    kwargs = {"callback_group": group} if group is not None else {}
+                    node.create_subscription(
+                        String,
+                        "/avatar/tars/panel_data",
+                        self._on_panel_data,
+                        10,
+                        **kwargs,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # Без обратного канала тул продолжает работать — просто
+                    # честно сообщит о таймауте вместо конкретных чисел.
+                    _LOG.warning(
+                        f"show_metrics: panel_data subscription failed: {exc}"
+                    )
+
+    def _on_panel_data(self, msg: Any) -> None:
+        """Результат от TarsPanelDispatcher → разбудить ждущий execute()."""
+        try:
+            payload = json.loads(msg.data)
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        request_id = str(payload.get("request_id") or "")
+        if not request_id:
+            return
+        with self._pending_lock:
+            event = self._pending_events.get(request_id)
+            if event is None:
+                return  # чужой/протухший запрос — не наш вызов
+            self._pending[request_id] = payload
+        event.set()
+
+    def _arm_panel_data(self, request_id: str) -> "threading.Event":
+        """Подписаться на свой ``request_id`` ДО публикации запроса.
+
+        Порядок важен: супервизор на быстром кэше отвечает раньше, чем
+        execute() успевает дойти до ожидания, — если регистрировать Event
+        после publish, ответ уходит в никуда и тул врёт про таймаут.
+        """
+        event = threading.Event()
+        with self._pending_lock:
+            self._pending_events[request_id] = event
+        return event
+
+    def _await_panel_data(
+        self, request_id: str, event: "threading.Event", timeout: float
+    ) -> Optional[Dict[str, Any]]:
+        """Дождаться ``panel_data`` с нашим ``request_id`` (или None)."""
+        try:
+            if not event.wait(timeout):
+                return None
+            with self._pending_lock:
+                return self._pending.get(request_id)
+        finally:
+            with self._pending_lock:
+                self._pending_events.pop(request_id, None)
+                self._pending.pop(request_id, None)
+
+    def execute(
+        self,
+        query: str,
+        datasource: str = "prometheus",
+    ) -> MCPToolResult:
+        """Опубликовать запрос в ``/avatar/tars/panel_request``.
+
+        Возвращает короткий статус — LLM проговорит его оператору
+        («Готово, открыл панель на TARS 2»). Сам URL собирает
+        ``TarsPanelDispatcher`` в ``rob_box_supervisor.tars_panel``
+        и публикует в ``/avatar/tars/panel_url`` (на этот топик уже
+        подписан Quest-клиент).
+        """
+        query = (query or "").strip()
+        datasource = (datasource or "prometheus").strip().lower() or "prometheus"
+
+        # Валидация — ДО публикации, чтобы не зашумлять шину заведомо
+        # битыми запросами. TarsPanelDispatcher их всё равно отвергнет,
+        # но мы экономим round-trip и держим поведение консистентным
+        # с ``MCPTool.validate_parameters`` (тул уже проверил, что
+        # ``query`` непустой).
+        if not query:
+            return MCPToolResult(
+                success=False,
+                error="query is required",
+            )
+        if datasource not in _SHOW_METRICS_DATASOURCES:
+            return MCPToolResult(
+                success=False,
+                error=f"unsupported datasource: {datasource!r}",
+            )
+
+        self.log_info(
+            f"show_metrics: datasource={datasource}, query={query[:64]!r}"
+        )
+
+        # 8-hex request_id — совпадает с TarsPanelDispatcher (uuid4 hex).
+        # Корреляция между запросом и публикацией URL в
+        # ``/avatar/tars/panel_url`` нужна только для дедупа в
+        # Quest-клиенте (issue #2113 §«request_id»).
+        request_id = uuid.uuid4().hex[:8]
+        if self._panel_request_pub is None:
+            # Нода без ROS (юнит-тест без rclpy.create_publisher) — честный
+            # отказ вместо AttributeError. ADR-0018: «честный FAIL лучше
+            # красивого PASS».
+            return MCPToolResult(
+                success=False,
+                data={"request_id": request_id},
+                error=(
+                    "ROS publisher недоступен: /avatar/tars/panel_request "
+                    "не опубликован (node без create_publisher)"
+                ),
+            )
+
+        event = self._arm_panel_data(request_id)
+        try:
+            from std_msgs.msg import String  # noqa: PLC0415 — локальный импорт
+
+            payload = String()
+            payload.data = json.dumps(
+                {
+                    "request_id": request_id,
+                    "query": query,
+                    "datasource": datasource,
+                },
+                ensure_ascii=False,
+            )
+            self._panel_request_pub.publish(payload)
+        except Exception as exc:  # noqa: BLE001
+            self._await_panel_data(request_id, event, 0.0)  # снять регистрацию
+            return MCPToolResult(
+                success=False,
+                data={"request_id": request_id},
+                error=f"publish failed: {exc}",
+            )
+
+        result = self._await_panel_data(
+            request_id, event, _SHOW_METRICS_TIMEOUT_SEC
+        )
+        if result is None:
+            # Супервизор не ответил: либо avatar-supervisor лежит, либо
+            # TarsPanelDispatcher не поднялся. Врать «открыл» нельзя —
+            # оператор будет смотреть в пустой экран (ADR-0018).
+            return MCPToolResult(
+                success=False,
+                data={
+                    "request_id": request_id,
+                    "datasource": datasource,
+                    "query": query,
+                },
+                error=(
+                    f"avatar_supervisor не ответил за {_SHOW_METRICS_TIMEOUT_SEC:.0f}s "
+                    "(/avatar/tars/panel_data). Панель TARS 2 не обновилась."
+                ),
+            )
+
+        status = str(result.get("status") or "error")
+        summary = str(result.get("summary") or "")
+        series = result.get("series") or result.get("lines") or []
+        data = {
+            "request_id": request_id,
+            "datasource": datasource,
+            "query": result.get("query") or query,
+            "status": status,
+            "series_count": len(series) if isinstance(series, list) else 0,
+            "url": result.get("url", ""),
+            "note": result.get("note", ""),
+            "available": result.get("available", []),
+            # Последние значения — чтобы LLM мог назвать числа голосом, а не
+            # пересказывать факт открытия панели.
+            "latest": _latest_values(series),
+        }
+        if status == "error":
+            return MCPToolResult(
+                success=False,
+                data=data,
+                error=str(result.get("error") or summary or "unknown error"),
+            )
+        # status == "empty" — это не сбой тракта, а честный «данных нет»:
+        # success=True, но message прямо говорит об этом, чтобы LLM не
+        # придумал цифры.
+        return MCPToolResult(success=True, data=data, message=summary)
