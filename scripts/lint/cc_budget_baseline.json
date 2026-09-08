@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-09-07",
-  "base_sha": "789892bc6d8b6923704b98f15257ac907003be2d",
+  "created": "2026-09-08",
+  "base_sha": "20baf70125fc03b53d0c811dd4f95918cfe25217",
   "limits": {
     "method": 15,
     "init": 20
@@ -61,7 +61,6 @@
     "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py": {
       "AvatarSupervisor._build_operator_llm": 16,
       "AvatarSupervisor._on_avatar_command": 17,
-      "AvatarSupervisor._on_preview_voice": 17,
       "AvatarSupervisor._run_agent_sync": 19
     },
     "src/rob_box_harness/rob_box_harness/config.py": {
