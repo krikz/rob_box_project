@@ -21,6 +21,9 @@
 #   G. Деградация: нет gh → секции печатают «НЕТ ДАННЫХ», тик не падает.
 #   H. DRY_RUN → ни одного `kanban create`, дайджест на stdout есть.
 #   I. Исключения: docs/ в компонентную таблицу не попадает.
+#   J. Idempotency-key дедупа = ISO-неделя, а не голая дата (фикс #2159).
+#   K. Карточка создаётся ВСЕГДА (нечего условно пропускать — outcome
+#      известен только ПОСЛЕ ревью, см. nightly-review-record.sh / ADR-0079).
 #
 # Invocation:
 #   bash scripts/agent_flow/tests/test_nightly_review.sh
@@ -370,81 +373,20 @@ test_J_iso_week_key() {
 }
 
 # ---------------------------------------------------------------------------
-# K. outcome=no-real-defect → карточка НЕ создаётся, JSONL записан.
-#
-#    Воркер-ревьюер имеет право сказать «находок нет» (контракт §3.2 ADR-0049).
-#    Сейчас механический скрипт ВСЕГДА создаёт карточку; это впустую жжёт
-#    токены и плодит архив. После follow-up: карточка создаётся только при
-#    outcome=open-issue-N или outcome=duplicate-suppressed-с-новыми-находками.
+# K. Карточка создаётся ВСЕГДА (не зависит от несуществующего в проде
+#    NIGHTLY_REVIEW_OUTCOME). Ревью 08.09 (до мержа #2177): первая версия
+#    ADR-0079 пыталась условно пропускать создание по этой переменной, но
+#    её физически некому выставить ДО того, как ревьюер посмотрел на код —
+#    dead branch, тесты были зелёными, потому что сами же его и выставляли.
+#    Персистентность находок теперь — nightly-review-record.sh, вызываемый
+#    самим ревьюером (см. test_nightly_review_persistence.sh).
 # ---------------------------------------------------------------------------
-test_K_no_real_defect_no_card() {
+test_K_card_always_created() {
     reset_state
-    local rc journal jsonl_file
-    rc="$(run_nightly NIGHTLY_REVIEW_FORCE=true NIGHTLY_REVIEW_OUTCOME=no-real-defect \
-        NIGHTLY_REVIEW_JSONL="$TEST_TMP/state/nightly-review.jsonl" \
-        COMPONENT_REVIEW_MAX=0)"
-    assert_eq "0" "$rc" "K: exit 0 при no-real-defect" || return 1
-    journal="$(cat "$KANBAN_JOURNAL")"
-    assert_eq "0" "$(journal_creates)" "K: kanban-карточка НЕ создана (no-real-defect)" || return 1
-    # Sentinel всё равно пишется (одна ночь = один тик).
-    [ -f "$TEST_TMP/state/agent-flow-nightly-review.${REVIEW_DATE}.done" ] || {
-        printf '  assert fail: K: sentinel записан даже без карточки\n' >&2; return 1; }
-}
-
-# ---------------------------------------------------------------------------
-# L. JSONL append-only: каждая строка валидна, формат стабильный.
-#
-#    Файл <docs-root>/reports/nightly-review/<YYYY-MM-DD>.jsonl
-#    Каждая строка — JSON: ts, task_id, component, files_changed,
-#    findings[{type, severity, fingerprint, raw}], outcome.
-# ---------------------------------------------------------------------------
-test_L_jsonl_valid() {
-    reset_state
-    local rc jsonl_file
-    jsonl_file="$TEST_TMP/state/nightly-review.jsonl"
-    rc="$(run_nightly NIGHTLY_REVIEW_FORCE=true \
-        NIGHTLY_REVIEW_OUTCOME=open-issue-9999 \
-        NIGHTLY_REVIEW_JSONL="$jsonl_file" \
-        COMPONENT_REVIEW_MAX=0)"
-    assert_eq "0" "$rc" "L: exit 0" || return 1
-    [ -f "$jsonl_file" ] || { printf '  assert fail: L: JSONL не создан\n' >&2; return 1; }
-    # Каждая строка — валидный JSON с обязательными полями.
-    python3 - "$jsonl_file" <<'PY'
-import json, sys
-path = sys.argv[1]
-required = {"ts", "task_id", "component", "files_changed", "findings", "outcome"}
-with open(path) as f:
-    for i, line in enumerate(f, 1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except Exception as e:
-            print(f"  L: строка {i} не JSON: {e}"); sys.exit(1)
-        missing = required - set(rec.keys())
-        if missing:
-            print(f"  L: строка {i} без полей {missing}"); sys.exit(1)
-PY
-    local py_rc=$?
-    assert_eq "0" "$py_rc" "L: каждая строка JSONL валидна и имеет обязательные поля" || return 1
-}
-
-# ---------------------------------------------------------------------------
-# M. Fingerprint dedup: находка с тем же fingerprint за ту же неделю
-#     → подавляется (outcome=duplicate-suppressed), карточка НЕ создаётся.
-# ---------------------------------------------------------------------------
-test_M_fingerprint_dedup() {
-    reset_state
-    local rc journal fingerprint
-    fingerprint="a3f4b9c0d1e2-test-dedup"
-    rc="$(run_nightly NIGHTLY_REVIEW_FORCE=true \
-        NIGHTLY_REVIEW_OUTCOME="duplicate-suppressed:${fingerprint}" \
-        COMPONENT_REVIEW_MAX=0)"
-    assert_eq "0" "$rc" "M: exit 0 при duplicate-suppressed" || return 1
-    journal="$(cat "$KANBAN_JOURNAL")"
-    assert_eq "0" "$(journal_creates)" "M: kanban-карточка НЕ создана (dedup)" || return 1
-    assert_contains "duplicate-suppressed" "$(cat "$STDERR_FILE")" "M: причина в логе" || return 1
+    local rc
+    rc="$(run_nightly NIGHTLY_REVIEW_FORCE=true COMPONENT_REVIEW_MAX=0)"
+    assert_eq "0" "$rc" "K: exit 0" || return 1
+    assert_eq "1" "$(journal_creates)" "K: kanban-карточка создаётся независимо от NIGHTLY_REVIEW_OUTCOME (её никто не задаёт в проде)" || return 1
 }
 
 run_test "A: вне ночного окна → skip"                     test_A_outside_window
@@ -457,9 +399,7 @@ run_test "G: деградация без gh"                           test_G_no
 run_test "H: dry-run"                                     test_H_dry_run
 run_test "I: EXCLUDE_RE (docs/)"                          test_I_exclude_docs
 run_test "J: dedup-ключ = ISO-неделя (фикс #2159)"        test_J_iso_week_key
-run_test "K: outcome=no-real-defect → нет kanban-карточки" test_K_no_real_defect_no_card
-run_test "L: JSONL append-only валиден"                   test_L_jsonl_valid
-run_test "M: outcome=duplicate-suppressed → нет kanban-карточки" test_M_fingerprint_dedup
+run_test "K: карточка создаётся всегда (не зависит от NIGHTLY_REVIEW_OUTCOME)" test_K_card_always_created
 
 printf '\n[==========] %d tests, %d passed, %d failed\n' \
     "$TESTS_TOTAL" "$TESTS_PASSED" "$TESTS_FAILED"

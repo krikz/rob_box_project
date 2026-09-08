@@ -280,20 +280,30 @@ Fail-open (если `gh` недоступен / нет issue с label — про
 карточек». Скрипт НЕ чинит код, НЕ трогает метки/PR/issues и НЕ зовёт
 LLM: рассуждения живут внутри созданных карточек.
 
-**Outcome-based создание карточки.** Воркер-ревьюер задаёт
-`NIGHTLY_REVIEW_OUTCOME`:
-- `open-issue-<N>` (default) — есть реальная находка, kanban-карточка
-  создаётся;
-- `no-real-defect` — находок нет, kanban-карточка НЕ создаётся (Шифу не
-  видит пустой дайджест в архиве), sentinel и JSONL всё равно пишутся;
-- `duplicate-suppressed:<fingerprint>` — находка подавлена по
-  fingerprint за текущую неделю (SARIF partialFingerprints аналог).
+**Персистентность находок (ADR-0079) — пишет ревьюер, не этот скрипт.**
+`agent-flow-nightly-review.sh` создаёт карточку ДО того, как кто-либо
+посмотрел на код — он физически не знает, найдёт ли ревьюер дефект.
+Поэтому запись находок сделана отдельным шагом ревьюера: тело каждой
+карточки требует перед `kanban_complete` вызвать
 
-**Append-only JSONL.** Если задан `NIGHTLY_REVIEW_JSONL=<path>`, каждый
-тик дописывает одну строку: `{ts, review_date, iso_week, task_id,
-component, files_changed, findings, outcome, fingerprint}`. Переживает
-merge в git-истории — Шифу видит «тик прошёл, находок нет, что
-проверил» даже после архивирования kanban-карточки.
+```bash
+scripts/agent_flow/nightly-review-record.sh \
+    --task-id t_<id> --component <slug> --outcome <outcome> \
+    [--finding '{"type":...,"file":...,"line":...,"symbol":...,"raw":...}']... \
+    [--files-changed a.py,b.py]
+git add docs/reports/nightly-review/*.jsonl && git commit ... && git push
+```
+
+`--outcome` ∈ `open-issue-<N>` | `no-real-defect` | `duplicate-suppressed:<fp>`
+(последние два не требуют `--finding`). Скрипт сам считает fingerprint
+находки (`sha1(type:file:line:symbol)[:12]`, калька SARIF
+`partialFingerprints`) и предупреждает (WARNING, fail-open), если такая
+же находка уже трекается открытым issue за последние 30 дней. Пишет ОДНУ
+строку в `docs/reports/nightly-review/<review-date>.jsonl`:
+`{ts, review_date, iso_week, task_id, component, files_changed,
+findings[{type, severity, file, line, symbol, fingerprint, raw}], outcome}`
+— переживает merge в git-истории и архивирование kanban-карточки. Скрипт
+НЕ коммитит и НЕ пушит — это делает воркер, как и в ADR-0077.
 
 ```bash
 # сухой прогон в любое время суток (карточки не создаются):

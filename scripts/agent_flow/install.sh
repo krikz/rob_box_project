@@ -231,6 +231,11 @@ EXPECTED=(
     # kanban-retro-create.sh (дедуп по key). Регистрация cron-job —
     # в ensure_nightly_review_cron ниже.
     agent-flow-nightly-review.sh
+    # Персистентность находок ночного ревью (ADR-0079, issue #2159):
+    # НЕ cron-job — вызывается САМИМ LLM-ревьюером перед kanban_complete
+    # (инструкция в теле карточки, см. agent-flow-nightly-review.sh),
+    # тем же паттерном, что kanban-report-write.sh для ADR-0077.
+    nightly-review-record.sh
     # Decomposed-children wake-up watchdog (ADR-AF-0052, nightly-review
     # t_bfd19ffb): no-agent job, каждые 4ч сканирует task_events.kind=
     # 'decomposed' и для детей со started_at=NULL, status ∈ {todo,triage},

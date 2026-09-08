@@ -180,29 +180,35 @@ LLM вызывал `kanban create` без механической провер�
    для `nightly-review-*` дополнительно проверяем, есть ли **открытый
    GitHub issue с label `nightly-review`** в текущей ISO-неделе. Если есть
    → SKIP: дайджест уже ушёл через issue, читать удобнее там.
-3. **Conditional kanban card creation по outcome.** Воркер передаёт
-   `NIGHTLY_REVIEW_OUTCOME` (`open-issue-<N>` | `no-real-defect` |
-   `duplicate-suppressed:<fingerprint>`). Скрипт создаёт kanban-карточку
-   ТОЛЬКО при `open-issue-*` — то есть когда есть реальная находка. На
-   «находок нет» / «всё dedup» карточка не создаётся (Шифу не видит
-   пустые дайджесты в архиве), но sentinel и JSONL пишутся как обычно.
-4. **Append-only JSONL.** Каждый тик при `NIGHTLY_REVIEW_JSONL=<path>`
-   дописывает одну строку: `{ts, review_date, iso_week, task_id, component,
-   files_changed, findings, outcome, fingerprint}`. Переживает merge в
-   git-истории: файл коммитится в репо, не теряется при архивировании
-   карточки. **Поведение «записывать ВСЕГДА при исходе»** = честный
-   append-only журнал, как `partialFingerprints` в SARIF.
+3. **Карточка создаётся безусловно, как и раньше.** Первая версия этого
+   follow-up (см. история ADR-0079) пробовала условное создание по
+   переменной `NIGHTLY_REVIEW_OUTCOME`, читаемой ТЕМ ЖЕ скриптом, который
+   и создаёт карточку — то есть ДО того, как ревьюер посмотрел на код.
+   Нереализуемо (переменную некому выставить в бою) — исправлено на
+   ревью 08.09, см. ADR-0079 §2.3/§9.
+4. **Append-only JSONL — пишет ревьюер, не cron.** Персистентность
+   находок перенесена в отдельный скрипт `nightly-review-record.sh`,
+   который вызывает ревьюер своим последним шагом перед
+   `kanban_complete` (инструкция — в теле карточки). Формат строки:
+   `{ts, review_date, iso_week, task_id, component, files_changed,
+   findings[{type, severity, file, line, symbol, fingerprint, raw}],
+   outcome}`. Переживает merge в git-истории: файл коммитится воркером в
+   его же ветку, не теряется при архивировании карточки. Fingerprint
+   находки — `sha1(type:file:line:symbol)[:12]`, калька с SARIF
+   `partialFingerprints`; скрипт сам предупреждает (WARNING, fail-open),
+   если такая же находка уже трекается открытым issue за последние 30
+   дней. См. ADR-0079.
 5. **GH_BIN guard.** `agent-flow-nightly-review.sh` экспортирует
    `GH_BIN="${GH_BIN:-gh}"`, чтобы слой 4 в `kanban-retro-create.sh` не
    падал на `set -u` при cron-вызове без явного GH_BIN.
 
 Тесты (acceptance):
-- `tests/test_nightly_review.sh`: 9 → 13 (добавлены J/K/L/M — ISO-week
-  ключ, no-real-defect без карточки, JSONL валидация,
-  duplicate-suppressed без карточки).
-- `tests/test_nightly_review_persistence.sh` (ADR-0079 follow-up): 6 тестов
-  (P1-P6) на JSONL создание, no-real-defect / duplicate-suppressed без
-  карточки, ISO-week ключ, fingerprint sha1[:12] стабильность.
+- `tests/test_nightly_review.sh`: 9 → 11 (добавлены J — ISO-week ключ,
+  K — карточка создаётся всегда независимо от NIGHTLY_REVIEW_OUTCOME).
+- `tests/test_nightly_review_persistence.sh` (ADR-0079): 9 тестов (P1-P9)
+  на `nightly-review-record.sh` напрямую — запись, обязательность
+  `--finding` при реальном outcome, fingerprint sha1[:12] стабильность,
+  files-changed парсинг, append-only, dedup-warning, валидация.
 - `tests/test_kanban_retro_create.sh`: 10 → 15 (добавлены K/L/M/N/O — слой
   4 issue-label guard: skip на открытом issue текущей ISO-недели, ignore
   issue из прошлой недели, fail-open при gh недоступен, prefix
@@ -213,7 +219,7 @@ LLM вызывал `kanban create` без механической провер�
 
 | # | Критерий | Кто | Как проверить |
 |---|---|---|---|
-| 1 | `bash scripts/agent_flow/tests/test_nightly_review.sh` — 13/13 pass + `test_nightly_review_persistence.sh` 6/6 + `test_kanban_retro_create.sh` 15/15 (после follow-up #2159/ADR-0079) | воркер | raw-вывод тестов в PR |
+| 1 | `bash scripts/agent_flow/tests/test_nightly_review.sh` — 11/11 pass + `test_nightly_review_persistence.sh` 9/9 + `test_kanban_retro_create.sh` 15/15 (после follow-up #2159/ADR-0079) | воркер | raw-вывод тестов в PR |
 | 2 | `bash scripts/agent_flow/install.sh --list-files` содержит `agent-flow-nightly-review.sh` | воркер | вывод команды |
 | 3 | На хосте после `install.sh` есть cron-job «Agent Flow Nightly Review (ADR-0049)» | devops | `hermes cron list` |
 | 4 | Первый боевой тик создал ровно одну карточку `nightly-review-<YYYY-WW>` | Шифу | `hermes kanban list` + `t_<id>` |
@@ -225,9 +231,14 @@ LLM вызывал `kanban create` без механической провер�
 - 03.09.2026 — `test_nightly_review.sh`: 9 tests, 9 passed, 0 failed
   (dev-машина, git-bash; `flock`/`python3` подменены шимами теста —
   на Linux-хосте шимы не создаются).
-- 08.09.2026 (ADR-0079 follow-up) — `test_nightly_review.sh` 13/13 +
-  `test_nightly_review_persistence.sh` 6/6 + `test_kanban_retro_create.sh`
-  15/15 (включая слой 4 issue-label guard K/L/M/N/O). Все 34 теста PASS.
+- 08.09.2026 (ADR-0079 follow-up) — `test_nightly_review.sh` 11/11 +
+  `test_nightly_review_persistence.sh` 9/9 + `test_kanban_retro_create.sh`
+  15/15 (включая слой 4 issue-label guard K/L/M/N/O). Все 35 тестов PASS.
+  Ревизия: первая версия follow-up пыталась условно создавать карточку по
+  переменной, которую в бою некому было выставить (найдено на ревью
+  08.09, до мержа) — persistence перенесена в отдельный worker-скрипт
+  `nightly-review-record.sh`, карточка снова создаётся безусловно. Детали
+  — ADR-0079 §2.3/§9.
 - Боевой прогон на хосте — **не выполнялся** на момент написания ADR
   (нужен `hermes` + `gh` на build-хосте). До первого боевого тика статус
   «работает» ставить нельзя.

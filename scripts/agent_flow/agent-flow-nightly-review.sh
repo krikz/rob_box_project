@@ -28,13 +28,12 @@
 #      kanban (done / failed / всё ещё висящие), ретро-карточки за сутки.
 #   3. Создаёт ОДНУ карточку «🌙 ночной ревью <REVIEW_DATE>» на
 #      NIGHTLY_REVIEW_ASSIGNEE (default architect) через kanban-retro-create.sh
-#      с key `nightly-review-<REVIEW_DATE>` (дедуп: один тик = одна карточка,
-#      повторный тик той же ночью → SKIP).
+#      с key `nightly-review-<ISO-неделя>` (дедуп: см. ADR-0049 §6.1/ADR-0079).
 #   4. Считает churn по компонентам (первые два сегмента пути), берёт top-N
 #      кодовых компонентов и на каждый создаёт карточку
 #      «🔍 ревью компонента: <comp> (<REVIEW_DATE>)» на
 #      COMPONENT_REVIEW_ASSIGNEE (default analyst) с key
-#      `component-review-<slug>-<REVIEW_DATE>`.
+#      `component-review-<slug>-<ISO-неделя>`.
 #
 # ЧТО НЕ ДЕЛАЕТ (явно):
 #   - НЕ чинит код и НЕ трогает метки/PR/issues. Только читает и создаёт
@@ -42,8 +41,19 @@
 #   - НЕ вызывает LLM сам (no_agent job). LLM работает ВНУТРИ созданной
 #     карточки — так дайджест остаётся механическим (raw evidence), а
 #     рассуждения живут там, где их видно и можно откатить.
+#   - НЕ решает outcome карточки заранее. Этот скрипт создаёт карточку ДО
+#     того, как кто-либо посмотрел на код — он физически не может знать,
+#     найдёт ли ревьюер дефект. (ADR-0079 ревизия 08.09: первая версия
+#     пыталась читать NIGHTLY_REVIEW_OUTCOME из своего же окружения на
+#     этом самом шаге — мёртвый код, переменную некому было выставить до
+#     запуска ревьюера. См. nightly-review-record.sh.)
 #   - НЕ создаёт карточку на компонент, который ревьюили < COOLDOWN дней
 #     назад (иначе src/rob_box_voice получал бы карточку каждую ночь).
+#   - НЕ пишет находки в JSONL сам. Дайджест механический (что произошло),
+#     а находки появляются только после того, как ревьюер посмотрел на
+#     код — это его работа, и запись делает ОН, вызовом
+#     `nightly-review-record.sh` перед `kanban_complete` (тот же паттерн,
+#     что ADR-0077 для обычных worker-отчётов).
 #
 # ENV:
 #   REPO_DIR                        — клон репо (default hermes-share путь)
@@ -60,14 +70,6 @@
 #   NIGHTLY_REVIEW_DRY_RUN=true     — всё посчитать, карточки НЕ создавать
 #   NIGHTLY_REVIEW_FORCE=true       — игнорировать ночное окно и sentinel
 #   NIGHTLY_REVIEW_DATE=YYYY-MM-DD  — переопределить ревью-сутки (для тестов)
-#   NIGHTLY_REVIEW_OUTCOME=         — open-issue-<N> | no-real-defect |
-#                                     duplicate-suppressed:<fingerprint>
-#                                     (default open-issue-unknown — для
-#                                     совместимости; реальный воркер должен
-#                                     передать явный outcome)
-#   NIGHTLY_REVIEW_JSONL=path       — append-only JSONL с записью тика;
-#                                     пишется ВСЕГДА при исходе (даже если
-#                                     карточка не создана)
 #   NIGHTLY_REVIEW_STATE_DIR        — где лежит sentinel (default /tmp)
 #   NIGHTLY_REVIEW_TEST_MODE=1      — пропустить MAINTENANCE-гейт (сетевой
 #                                     ls-remote); только для юнит-тестов
@@ -130,16 +132,9 @@ FORCE="${NIGHTLY_REVIEW_FORCE:-false}"
 SECTION_LIMIT="${NIGHTLY_REVIEW_SECTION_LIMIT:-40}"
 MAX_RUNTIME_NIGHTLY="${NIGHTLY_REVIEW_MAX_RUNTIME:-3600}"
 MAX_RUNTIME_COMPONENT="${COMPONENT_REVIEW_MAX_RUNTIME:-2700}"
-# ADR-0049 follow-up (issue #2159): dedup-ключ БЕЗ даты. Используем ISO-неделю
-# (`%G-W%V` → `2026-W37`). Если вызывающий хочет явный ключ — NIGHTLY_REVIEW_KEY.
-NIGHTLY_REVIEW_OUTCOME="${NIGHTLY_REVIEW_OUTCOME:-open-issue-unknown}"
-# Если воркер сказал «находок нет» / «всё dedup» — карточка не создаётся, но
-# JSONL пишется. Это контракт §3.2 ADR-0049 в действии: честный пустой отчёт.
-# Авто-дефолт JSONL (ADR-0079): `<reports_dir>/nightly-review/<DATE>.jsonl`.
-# Реальный путь собирается ПОСЛЕ секции gates (там известна REVIEW_DATE с
-# учётом NIGHTLY_REVIEW_DATE override); здесь только объявляем переменную.
-NIGHTLY_REVIEW_JSONL="${NIGHTLY_REVIEW_JSONL:-}"
-export COMPONENT_REVIEW_EXCLUDE_RE NIGHTLY_REVIEW_OUTCOME NIGHTLY_REVIEW_JSONL
+# ADR-0049 §6.1 follow-up (issue #2159): dedup-ключ БЕЗ голой даты. Используем
+# ISO-неделю (`%G-W%V` → `2026-W37`) — см. NIGHTLY_KEY / comp_key ниже.
+export COMPONENT_REVIEW_EXCLUDE_RE
 # Cron может звать нас с POSIX-локалью, а секции дайджеста печатают
 # кириллицу. Без этого python падает с UnicodeEncodeError и тик умирает.
 export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
@@ -195,16 +190,6 @@ NOW_EPOCH="$(date +%s)"
 NOW_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 export WIN_START_EPOCH WIN_START_UTC NOW_EPOCH SECTION_LIMIT
 
-# --- JSONL путь (ADR-0079, после gates — REVIEW_DATE уже с override) -------
-# Если вызывающий не задал NIGHTLY_REVIEW_JSONL — собираем дефолт:
-# `<reports_dir>/nightly-review/<REVIEW_DATE>.jsonl`. Так тесты с явным
-# NIGHTLY_REVIEW_DATE могут рассчитывать на конкретный JSONL-файл.
-if [ -z "$NIGHTLY_REVIEW_JSONL" ]; then
-    _nr_reports_root="${NIGHTLY_REVIEW_REPORTS_DIR:-${REPO_DIR:-.}/docs/reports}"
-    NIGHTLY_REVIEW_JSONL="${_nr_reports_root}/nightly-review/${REVIEW_DATE}.jsonl"
-    export NIGHTLY_REVIEW_JSONL
-    unset _nr_reports_root
-fi
 log "ревью-сутки ${REVIEW_DATE}: окно ${WIN_START_UTC} → ${NOW_UTC} (UTC), dry_run=${DRY_RUN}"
 
 # --- data collectors ---------------------------------------------------------
@@ -636,6 +621,26 @@ trap 'rm -f "$DIGEST_FILE"' EXIT
   подхватил триаж. НЕ чинить руками в этой карточке.
 - Если находок нет — так и напиши: «находок нет», с перечислением того, что
   проверил. Честный пустой отчёт лучше выдуманного списка.
+
+### Персистентность (ADR-0079, ОБЯЗАТЕЛЬНО перед `kanban_complete`)
+
+Эта карточка будет заархивирована и убрана — комментарий выше исчезнет.
+Прежде чем звать `kanban_complete`, запусти в своём worktree:
+
+```bash
+scripts/agent_flow/nightly-review-record.sh \
+    --task-id t_<id_этой_карточки> \
+    --component nightly \
+    --outcome no-real-defect              # или open-issue-<N> / duplicate-suppressed:<fp>
+    # на каждую реальную находку — свой --finding (см. --help скрипта)
+git add docs/reports/nightly-review/*.jsonl
+git commit -m "report(nightly-review): <дата карточки>"
+git push
+```
+
+Скрипт сам посчитает fingerprint находки и предупредит, если такая же
+находка уже трекается открытым issue за последние 30 дней — тогда ссылайся
+на существующий issue, новый не заводи.
 TASK_EOF
 } > "$DIGEST_FILE"
 
@@ -650,35 +655,29 @@ ISO_WEEK="$(date -d "$REVIEW_DATE" +%G-W%V 2>/dev/null || date +%Y-W%V)"
 NIGHTLY_KEY="nightly-review-${ISO_WEEK}"
 created_nightly=""
 
-# ADR-0049 follow-up: outcome определяет, нужна ли kanban-карточка.
-# Карточка нужна ТОЛЬКО когда воркер нашёл что-то реальное (issue или
-# подтверждённую находку). «Находок нет» / «всё dedup» → карточка не
-# создаётся, JSONL всё равно пишется (для отладки и для архива).
-# (контракт §3.2 ADR-0049: «находок нет → так и напиши, честный пустой
-# отчёт лучше выдуманного списка».)
-case "$NIGHTLY_REVIEW_OUTCOME" in
-    no-real-defect|duplicate-suppressed:*)
-        log "nightly: outcome=${NIGHTLY_REVIEW_OUTCOME} → kanban-карточка НЕ создаётся (sentinel всё равно пишется)"
-        created_nightly="SKIPPED outcome=${NIGHTLY_REVIEW_OUTCOME}"
-        ;;
-    open-issue-*|*)
-        if [ "$DRY_RUN" = "true" ]; then
-            log "DRY-RUN: карточка '${NIGHTLY_TITLE}' (key=${NIGHTLY_KEY}, assignee=${NIGHTLY_REVIEW_ASSIGNEE}) НЕ создаётся"
-        else
-            if created_nightly="$(bash "$RETRO_CREATE" \
-                --board "$KANBAN_BOARD" \
-                --title "$NIGHTLY_TITLE" \
-                --body "$(cat "$DIGEST_FILE")" \
-                --assignee "$NIGHTLY_REVIEW_ASSIGNEE" \
-                --key "$NIGHTLY_KEY" \
-                --max-runtime "$MAX_RUNTIME_NIGHTLY" 2>&1)"; then
-                log "nightly card: ${created_nightly}"
-            else
-                log "nightly card: ОШИБКА создания — ${created_nightly}"
-            fi
-        fi
-        ;;
-esac
+# Карточка создаётся ВСЕГДА — этот скрипт работает ДО того, как кто-либо
+# посмотрел на код (no_agent, ADR-0049 §2.2), поэтому не может знать заранее,
+# найдёт ли ревьюер реальный дефект. Раньше (ADR-0079, первая версия) здесь
+# стояла попытка условного создания по NIGHTLY_REVIEW_OUTCOME — переменная,
+# которую в проде некому было выставить до запуска ревьюера (dead branch,
+# найдено на ревью 08.09). Дедуп даёт ISO-week ключ + layer-4 guard в
+# kanban-retro-create.sh; персистентность находок — nightly-review-record.sh,
+# который запускает сам ревьюер (см. §7 задания карточки выше).
+if [ "$DRY_RUN" = "true" ]; then
+    log "DRY-RUN: карточка '${NIGHTLY_TITLE}' (key=${NIGHTLY_KEY}, assignee=${NIGHTLY_REVIEW_ASSIGNEE}) НЕ создаётся"
+else
+    if created_nightly="$(bash "$RETRO_CREATE" \
+        --board "$KANBAN_BOARD" \
+        --title "$NIGHTLY_TITLE" \
+        --body "$(cat "$DIGEST_FILE")" \
+        --assignee "$NIGHTLY_REVIEW_ASSIGNEE" \
+        --key "$NIGHTLY_KEY" \
+        --max-runtime "$MAX_RUNTIME_NIGHTLY" 2>&1)"; then
+        log "nightly card: ${created_nightly}"
+    else
+        log "nightly card: ОШИБКА создания — ${created_nightly}"
+    fi
+fi
 
 # --- create component review cards -------------------------------------------
 _comp_created=0
@@ -742,6 +741,22 @@ CI ловит падения, но не ловит четыре вещи — и�
 - **НЕ чинить в этой карточке.** Ревью не открывает PR с фиксами: работа
   ревью — найти и описать. Исключение — Шифу явно попросил в комментарии.
 - Находок нет → напиши «находок нет» и перечисли, что именно проверил.
+
+### Персистентность (ADR-0079, ОБЯЗАТЕЛЬНО перед `kanban_complete`)
+
+Эта карточка будет заархивирована — комментарий выше исчезнет. Перед
+`kanban_complete` запусти в своём worktree:
+
+```bash
+scripts/agent_flow/nightly-review-record.sh \
+    --task-id t_<id_этой_карточки> \
+    --component <slug_компонента> \
+    --outcome no-real-defect              # или open-issue-<N> / duplicate-suppressed:<fp>
+    # на каждую реальную находку — свой --finding (см. --help скрипта)
+git add docs/reports/nightly-review/*.jsonl
+git commit -m "report(component-review): <дата карточки>"
+git push
+```
 COMP_TASK_EOF
         )"
 
@@ -775,44 +790,9 @@ if [ "$DRY_RUN" != "true" ]; then
     : > "$SENTINEL" 2>/dev/null || log "не смог записать sentinel ${SENTINEL} (не фатально)"
 fi
 
-# --- JSONL append (ADR-0049 follow-up) ---------------------------------------
-# Append-only лог тика: одна строка JSON, стабильный формат. Переживает merge
-# в git-истории (после merge в develop — коммит с файлом попадает в основной
-# репо). Даже если kanban-карточка не создана (outcome=no-real-defect) —
-# строка пишется: Шифу видит «тик прошёл, находок нет, что проверил».
-if [ -n "$NIGHTLY_REVIEW_JSONL" ]; then
-    _jsonl_dir="$(dirname "$NIGHTLY_REVIEW_JSONL")"
-    mkdir -p "$_jsonl_dir" 2>/dev/null || true
-    # Вытаскиваем fingerprint из outcome, если это duplicate-suppressed:<fp>
-    _fingerprint=""
-    case "$NIGHTLY_REVIEW_OUTCOME" in
-        duplicate-suppressed:*) _fingerprint="${NIGHTLY_REVIEW_OUTCOME#duplicate-suppressed:}" ;;
-    esac
-    # Безопасная JSON-сериализация значений (python3 json по дефолту экранирует).
-    _jsonl_line="$(NOW_UTC="$NOW_UTC" NIGHTLY_REVIEW_OUTCOME="$NIGHTLY_REVIEW_OUTCOME" \
-        NIGHTLY_REVIEW_FINGERPRINT="$_fingerprint" REVIEW_DATE="$REVIEW_DATE" \
-        ISO_WEEK="$ISO_WEEK" CHURN_FILES="$(printf '%s\n' "$CHURN" | head -c 200)" \
-        python3 -c '
-import json, os, sys
-rec = {
-    "ts": os.environ["NOW_UTC"],
-    "review_date": os.environ["REVIEW_DATE"],
-    "iso_week": os.environ["ISO_WEEK"],
-    "task_id": "agent-flow-nightly-review",
-    "component": "agent_flow_process",
-    "files_changed": [],
-    "findings": [],
-    "outcome": os.environ["NIGHTLY_REVIEW_OUTCOME"],
-    "fingerprint": os.environ.get("NIGHTLY_REVIEW_FINGERPRINT", ""),
-}
-print(json.dumps(rec, ensure_ascii=False))
-')"
-    if printf '%s\n' "$_jsonl_line" >> "$NIGHTLY_REVIEW_JSONL" 2>/dev/null; then
-        log "jsonl: append → ${NIGHTLY_REVIEW_JSONL} (outcome=${NIGHTLY_REVIEW_OUTCOME})"
-    else
-        log "jsonl: не смог записать ${NIGHTLY_REVIEW_JSONL} (не фатально)"
-    fi
-fi
+# Находки персистятся ревьюером через nightly-review-record.sh (ADR-0079,
+# см. §7 текста карточки выше) — не этим скриптом. На момент этого тика
+# ни один воркер ещё не смотрел на код, писать JSONL здесь нечего.
 
-log "итог: nightly='${created_nightly:-dry-run}' component_cards=${_comp_created} skipped_cooldown=${_comp_skipped_cooldown} skipped_small=${_comp_skipped_small} outcome=${NIGHTLY_REVIEW_OUTCOME}"
+log "итог: nightly='${created_nightly:-dry-run}' component_cards=${_comp_created} skipped_cooldown=${_comp_skipped_cooldown} skipped_small=${_comp_skipped_small}"
 exit 0
