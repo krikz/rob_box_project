@@ -164,11 +164,50 @@ LLM вызывал `kanban create` без механической провер�
   — это ловится тем же способом, что и любое другое враньё в этом репо
   (Шифу + `validate_honesty.sh`).
 
+### 6.1 Follow-up (ADR-0078 + commit `z-{devops}/nightly-review-persistence`)
+
+Изначальная §6 описывает то, что ночной ревью НЕ ДЕЛАЕТ. После follow-up
+поведение расширено **на сохранение находок между сессиями** (issue #2159
+«жжёт токены и не оставляет артефактов»):
+
+1. **Dedup-ключ БЕЗ даты.** Вместо `nightly-review-<YYYY-MM-DD>` —
+   `nightly-review-<YYYY-WW>` (ISO-неделя). Компонентный ключ аналогично
+   `component-review-<slug>-<YYYY-WW>`. Две параллельные тики в одном окне
+   получают **один и тот же** idempotency-key → слой 2 dedup срабатывает.
+   Кулдаун-guard (`component_on_cooldown`) уже искал по substring, так что
+   перешёл на ISO-неделю без изменений.
+2. **Issue-label guard (слой 4 в `kanban-retro-create.sh`).** Перед create
+   для `nightly-review-*` дополнительно проверяем, есть ли **открытый
+   GitHub issue с label `nightly-review`** в текущей ISO-неделе. Если есть
+   → SKIP: дайджест уже ушёл через issue, читать удобнее там.
+3. **Conditional kanban card creation по outcome.** Воркер передаёт
+   `NIGHTLY_REVIEW_OUTCOME` (`open-issue-<N>` | `no-real-defect` |
+   `duplicate-suppressed:<fingerprint>`). Скрипт создаёт kanban-карточку
+   ТОЛЬКО при `open-issue-*` — то есть когда есть реальная находка. На
+   «находок нет» / «всё dedup» карточка не создаётся (Шифу не видит
+   пустые дайджесты в архиве), но sentinel и JSONL пишутся как обычно.
+4. **Append-only JSONL.** Каждый тик при `NIGHTLY_REVIEW_JSONL=<path>`
+   дописывает одну строку: `{ts, review_date, iso_week, task_id, component,
+   files_changed, findings, outcome, fingerprint}`. Переживает merge в
+   git-истории: файл коммитится в репо, не теряется при архивировании
+   карточки. **Поведение «записывать ВСЕГДА при исходе»** = честный
+   append-only журнал, как `partialFingerprints` в SARIF.
+5. **GH_BIN guard.** `agent-flow-nightly-review.sh` экспортирует
+   `GH_BIN="${GH_BIN:-gh}"`, чтобы слой 4 в `kanban-retro-create.sh` не
+   падал на `set -u` при cron-вызове без явного GH_BIN.
+
+Тесты (acceptance):
+- `tests/test_nightly_review.sh`: 9 → 13 (добавлены J/K/L/M — ISO-week
+  ключ, no-real-defect без карточки, JSONL валидация,
+  duplicate-suppressed без карточки).
+- `tests/test_nightly_review_persistence.sh` (ADR-0078 follow-up,
+  параллельная работа): отдельные тесты слоя 4 issue-label guard.
+
 ## 7. Acceptance
 
 | # | Критерий | Кто | Как проверить |
 |---|---|---|---|
-| 1 | `bash scripts/agent_flow/tests/test_nightly_review.sh` — 9/9 pass | воркер | raw-вывод теста в PR |
+| 1 | `bash scripts/agent_flow/tests/test_nightly_review.sh` — 13/13 pass (после follow-up #2159) | воркер | raw-вывод теста в PR |
 | 2 | `bash scripts/agent_flow/install.sh --list-files` содержит `agent-flow-nightly-review.sh` | воркер | вывод команды |
 | 3 | На хосте после `install.sh` есть cron-job «Agent Flow Nightly Review (ADR-0049)» | devops | `hermes cron list` |
 | 4 | Первый боевой тик создал ровно одну карточку `nightly-review-<дата>` | Шифу | `hermes kanban list` + `t_<id>` |

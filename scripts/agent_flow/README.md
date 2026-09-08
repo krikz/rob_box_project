@@ -260,18 +260,35 @@ default `[02:00, 06:00)` по локальному времени хоста. О
    >6ч / ретро), churn по компонентам. Секция без данных печатает
    `НЕТ ДАННЫХ (<причина>)`, а не пустой список.
 2. Создаёт ОДНУ карточку **«🌙 ночной ревью \<дата\>»** на `architect`
-   (key `nightly-review-<дата>`).
+   (key `nightly-review-<ISO-неделя>`, см. ADR-0049 §6.1 — issue #2159).
 3. Создаёт до `COMPONENT_REVIEW_MAX` (default 3) карточек
-   **«🔍 ревью компонента: \<comp\>»** на `analyst`
-   (key `component-review-<slug>-<дата>`) — по компонентам с наибольшим
-   churn, мимо `COMPONENT_REVIEW_EXCLUDE_RE` (`docs/`, `evidence/`, …) и
-   мимо компонентов на кулдауне (`COMPONENT_REVIEW_COOLDOWN_DAYS`,
-   default 7 дней).
+   **«🔍 ревью компонента: \<comp\>** на `analyst`
+   (key `component-review-<slug>-<ISO-неделя>`) — по компонентам с
+   наибольшим churn, мимо `COMPONENT_REVIEW_EXCLUDE_RE` (`docs/`,
+   `evidence/`, …) и мимо компонентов на кулдауне
+   (`COMPONENT_REVIEW_COOLDOWN_DAYS`, default 7 дней).
 
-Обе карточки идут через `kanban-retro-create.sh` (три слоя дедупа), плюс
-sentinel `/tmp/agent-flow-nightly-review.<дата>.done` — «одна ночь = один
-комплект карточек». Скрипт НЕ чинит код, НЕ трогает метки/PR/issues и НЕ
-зовёт LLM: рассуждения живут внутри созданных карточек.
+Обе карточки идут через `kanban-retro-create.sh` (4 слоя дедупа: pre-check
+по маркеру, idempotency-key, маркер в body, **issue-label guard для
+nightly-review-*** — issue #2159), плюс sentinel
+`/tmp/agent-flow-nightly-review.<дата>.done` — «одна ночь = один комплект
+карточек». Скрипт НЕ чинит код, НЕ трогает метки/PR/issues и НЕ зовёт
+LLM: рассуждения живут внутри созданных карточек.
+
+**Outcome-based создание карточки.** Воркер-ревьюер задаёт
+`NIGHTLY_REVIEW_OUTCOME`:
+- `open-issue-<N>` (default) — есть реальная находка, kanban-карточка
+  создаётся;
+- `no-real-defect` — находок нет, kanban-карточка НЕ создаётся (Шифу не
+  видит пустой дайджест в архиве), sentinel и JSONL всё равно пишутся;
+- `duplicate-suppressed:<fingerprint>` — находка подавлена по
+  fingerprint за текущую неделю (SARIF partialFingerprints аналог).
+
+**Append-only JSONL.** Если задан `NIGHTLY_REVIEW_JSONL=<path>`, каждый
+тик дописывает одну строку: `{ts, review_date, iso_week, task_id,
+component, files_changed, findings, outcome, fingerprint}`. Переживает
+merge в git-истории — Шифу видит «тик прошёл, находок нет, что
+проверил» даже после архивирования kanban-карточки.
 
 ```bash
 # сухой прогон в любое время суток (карточки не создаются):
