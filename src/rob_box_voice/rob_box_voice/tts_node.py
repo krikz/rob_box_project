@@ -4365,15 +4365,33 @@ class TTSNode(Node):
         # Issue #1219 — голос LLM резолвим для РЕАЛЬНОГО провайдера:
         # если запрошенный голос недоступен у MiniMax — дефолт
         # MiniMax (voice_used фиксируется для лога/метрик).
+        #
+        # bug(#2183) — приоритет: явный voice в запросе (LLM/DJ-персона,
+        # напр. zahar через set_voice tool) > настроенный параметр ноды
+        # (self.minimax_voice, живой через parameters_callback) > дефолт
+        # реестра (DEFAULT_VOICES). Раньше voice=None шёл в resolve_voice
+        # напрямую и ловил ЖЁСТКУЮ константу реестра, полностью игнорируя
+        # оператора. ``resolve_voice`` намеренно не знает о состоянии
+        # ноды (чистая registry-функция со своими тестами в
+        # test_voice_registry.py) — приоритет между "запрошено явно" и
+        # "настроено на ноде" решаем здесь, на вызывающей стороне.
+        _mm_requested = voice or getattr(self, "minimax_voice", None)
         try:
             from .tts_voice_registry import resolve_voice as _resolve_voice
 
-            _mm_voice, _mm_fell = _resolve_voice("minimax", voice)
+            _mm_voice, _mm_fell = _resolve_voice("minimax", _mm_requested)
         except Exception:  # noqa: BLE001 — registry недоступен
-            _mm_voice, _mm_fell = voice or self.minimax_voice, False
-        if _mm_fell and voice:
+            _mm_voice, _mm_fell = (
+                _mm_requested or getattr(self, "minimax_voice", None) or "male-qn-qingse"
+            ), False
+        if _mm_fell and _mm_requested:
+            # Логируем ВСЕГДА, когда действительно произошла деградация
+            # (запрошенный ЛИБО настроенный голос не найден у провайдера),
+            # а не только для явно переданного в запросе voice — иначе
+            # неправильный/устаревший self.minimax_voice фоллбечится тихо
+            # (issue #2183, причина 3 — "no silent degradation").
             self.get_logger().warn(
-                f"⚠️ [issue 1219] Голос '{voice}' недоступен у MiniMax — "
+                f"⚠️ [issue 1219] Голос '{_mm_requested}' недоступен у MiniMax — "
                 f"использую дефолтный '{_mm_voice}'"
             )
         try:
@@ -4449,15 +4467,34 @@ class TTSNode(Node):
         _yandex_succeeded = False
         # Issue #1219 — голос LLM резолвим для Yandex; если запрошенный
         # голос недоступен — дефолт yandex (anton).
+        #
+        # bug(#2183) — приоритет: явный voice в запросе > настроенный
+        # параметр ноды (self.yandex_voice, живой через
+        # parameters_callback) > дефолт реестра. ЭТО и была причина
+        # молчаливой деградации alena→anton: voice=None шёл в
+        # resolve_voice("yandex", None) напрямую и всегда возвращал
+        # DEFAULT_VOICES["yandex"]="anton", полностью игнорируя
+        # self.yandex_voice, даже когда оператор только что поставил
+        # alena через SetVoice/ros2 param. См. подробности выбора места
+        # фикса в _sap_synthesize_minimax выше (тот же паттерн).
+        _yandex_requested = voice or getattr(self, "yandex_voice", None)
         try:
             from .tts_voice_registry import resolve_voice as _resolve_voice
 
-            _yandex_voice, _yandex_fell = _resolve_voice("yandex", voice)
+            _yandex_voice, _yandex_fell = _resolve_voice("yandex", _yandex_requested)
         except Exception:  # noqa: BLE001 — registry недоступен
-            _yandex_voice, _yandex_fell = voice or self.yandex_voice, False
-        if _yandex_fell and voice:
+            _yandex_voice, _yandex_fell = (
+                _yandex_requested or getattr(self, "yandex_voice", None) or "anton"
+            ), False
+        if _yandex_fell and _yandex_requested:
+            # Логируем ВСЕГДА при реальной деградации (запрошенный ИЛИ
+            # настроенный голос не найден у провайдера) — раньше условие
+            # было "and voice", т.е. voice=None (обычная реплика без
+            # LLM-override) никогда не логировалось, и подмена
+            # alena→anton проходила без единой строки в логах
+            # (issue #2183, причина 3).
             self.get_logger().warn(
-                f"⚠️ [issue 1219] Голос '{voice}' недоступен у Yandex — "
+                f"⚠️ [issue 1219] Голос '{_yandex_requested}' недоступен у Yandex — "
                 f"использую дефолтный '{_yandex_voice}'"
             )
         # AV-28: у Yandex язык прибит к ГОЛОСУ (в отличие от MiniMax
@@ -4584,15 +4621,23 @@ class TTSNode(Node):
         # Issue #1160 — Prometheus metrics: замер Silero-synthesis.
         _silero_metric_start = time.monotonic()
         _silero_succeeded = False
+        # bug(#2183) — тот же приоритет, что и в _sap_synthesize_minimax /
+        # _sap_synthesize_yandex: явный voice в запросе > self.silero_speaker
+        # (живой через parameters_callback) > дефолт реестра.
+        _silero_requested = voice or getattr(self, "silero_speaker", None)
         try:
             from .tts_voice_registry import resolve_voice as _resolve_voice
 
-            _silero_voice, _silero_fell = _resolve_voice("silero", voice)
+            _silero_voice, _silero_fell = _resolve_voice("silero", _silero_requested)
         except Exception:  # noqa: BLE001 — registry недоступен
-            _silero_voice, _silero_fell = voice or self.silero_speaker, False
-        if _silero_fell and voice:
+            _silero_voice, _silero_fell = (
+                _silero_requested or getattr(self, "silero_speaker", None) or "aidar"
+            ), False
+        if _silero_fell and _silero_requested:
+            # Логируем ВСЕГДА при реальной деградации, не только для
+            # явно запрошенного voice (issue #2183, причина 3).
             self.get_logger().warn(
-                f"⚠️ [issue 1219] Голос '{voice}' недоступен у Silero — "
+                f"⚠️ [issue 1219] Голос '{_silero_requested}' недоступен у Silero — "
                 f"использую дефолтный '{_silero_voice}'"
             )
         _silero_text = _text_or_language_notice(
@@ -6312,6 +6357,33 @@ class TTSNode(Node):
             # on ``batch_complete``.)
             self.finished_pub.publish(finished_msg)
 
+    def _log_voice_param_applied(
+        self, display_name: str, provider: str, voice: str
+    ) -> None:
+        """Лог применения живого voice-параметра (yandex_voice /
+        minimax_voice / silero_speaker) из ``parameters_callback``.
+
+        Предупреждает, если новый голос не найден в реестре провайдера —
+        такой голос всё равно применяется к атрибуту ноды (оператор мог
+        целенаправленно выставить экспериментальный id), но следующий
+        синтез уйдёт в fallback реестра, и это НЕ должно быть тихим
+        (issue #2183, причина 3 — "no silent degradation").
+        """
+        try:
+            from .tts_voice_registry import voices_for as _voices_for
+
+            _known = voice in _voices_for(provider)
+        except Exception:  # noqa: BLE001 — registry недоступен
+            _known = True
+        if _known:
+            self.get_logger().info(f"🗣️ {display_name} voice изменён: {voice}")
+        else:
+            self.get_logger().warn(
+                f"🗣️ {display_name} voice изменён: {voice} — ВНИМАНИЕ: "
+                f"этого голоса нет в реестре {display_name}, следующий "
+                f"синтез без явного voice в запросе уйдёт в fallback"
+            )
+
     def parameters_callback(self, params):
         """Callback для изменения параметров во время работы."""
         from rcl_interfaces.msg import SetParametersResult
@@ -6334,6 +6406,25 @@ class TTSNode(Node):
                 self.get_logger().info(
                     f"🎵 Yandex speed (pitch) изменён: {self.yandex_speed}"
                 )
+            elif param.name == "yandex_voice":
+                # bug(#2183): раньше этой ветки не было — параметр менялся
+                # (ros2 param get подтверждал новое значение), но
+                # self.yandex_voice, однократно прочитанный в __init__
+                # (см. строку ~1134), никогда не обновлялся, поэтому синтез
+                # молча продолжал использовать голос, прочитанный при старте
+                # ноды. Живой repro: SetVoice ставит yandex_voice=alena,
+                # ``ros2 param get /tts_node yandex_voice`` подтверждает
+                # alena, а следующий синтез всё равно идёт голосом anton.
+                self.yandex_voice = param.value
+                self._log_voice_param_applied("Yandex", "yandex", self.yandex_voice)
+            elif param.name == "minimax_voice":
+                # bug(#2183) — та же дыра, что и yandex_voice выше.
+                self.minimax_voice = param.value
+                self._log_voice_param_applied("MiniMax", "minimax", self.minimax_voice)
+            elif param.name == "silero_speaker":
+                # bug(#2183) — та же дыра, что и yandex_voice выше.
+                self.silero_speaker = param.value
+                self._log_voice_param_applied("Silero", "silero", self.silero_speaker)
             elif param.name == "minimax_max_retries":
                 self.minimax_max_retries = min(3, max(0, int(param.value)))
                 self.get_logger().info(
