@@ -2644,10 +2644,10 @@ class TTSNode(Node):
                 f"⚠️ [ADR-0055] /avatar/tts/error publish failed: {exc}"
             )
 
-    # ── Preview-канал (ADR-0077 / issue #2138.A.3) ─────────────────────
+    # ── Preview-канал (ADR-0079 / issue #2138.A.3) ─────────────────────
     # picker'у голосов нужны «прослушиваемые образцы». Канал
     # ``/avatar/tts/request`` (sink="preview") → ``synthesize_preview``
-    # → ``/avatar/preview_voice/{audio,result,error}``. см. ADR-0078.
+    # → ``/avatar/preview_voice/{audio,result,error}``. см. ADR-0079.
 
     def _dispatch_avatar_tts_sink(self, chunk_data: dict, sink: str) -> bool:
         # Вынесено из ``_on_avatar_tts_request`` чтобы не раздувать CC

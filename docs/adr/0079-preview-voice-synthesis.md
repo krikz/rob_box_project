@@ -1,4 +1,4 @@
-# ADR-0078: preview-voice synthesis — канал picker'а голосов от supervisor'а до шлема
+# ADR-0079: preview-voice synthesis — канал picker'а голосов от supervisor'а до шлема
 
 | Поле | Значение |
 |---|---|
@@ -43,7 +43,7 @@ ADR-0055 ввёл `/avatar/tts/request` с `sink="headset"` для шлема Т
 {request_id: string, ssml: string, sink: "headset", voice?: string, language?: string}
 ```
 
-Расширенный контракт (ADR-0078):
+Расширенный контракт (ADR-0079):
 
 ```
 {request_id: string, ssml: string, sink: "headset" | "preview", voice?: string, language?: string}
@@ -290,7 +290,7 @@ ws_server `preview_audio_sink.ts` уже ждал mp3/wav контейнер (AD
 
 2. **CC-budget**: новый код (preview publishers + switch + helpers) добавляет < 100 строк в каждый из tts_node/supervisor_node, в пределах `scripts/lint/cc_budget_baseline.json` (ADR-0021).
 
-3. **ADR-нумерация**: ADR-0078 (0077 уже занят `multi-skill-per-profile` и `stt-distortion-collection-tars-helmet`).
+3. **ADR-нумерация**: ADR-0079 (0077 уже занят `multi-skill-per-profile` и `stt-distortion-collection-tars-helmet`).
 
 4. **e2e** (отдельный процесс после merge): ws_server принимает preview_voice_audio и форвардит в Quest-клиент, picker играет образец через `preview_audio_sink.ts`. **Только после merge в develop** — не блокер для этой карточки.
 
