@@ -1551,13 +1551,21 @@ Triage **НЕ создал** kanban-карточку для этого issue, ч
     # карточка создаётся без skill, как раньше, лучше так чем fail-fast
     # над process-скриптом). Ретро 05.09: передаём $labels вторым аргументом,
     # чтобы bug/feature/refactor получали repo-скилл по типу, а не роль.
-    skill_for_card="$(af_skill_for_profile "$role" "$labels")"
+    #
+    # Ретро t_aafad606 / issue #2160 / ADR-0077: воркеры не делают self-
+    # review, потому что получают ОДИН skill. af_skills_for_profile
+    # возвращает multi-line список: ОБЯЗАТЕЛЬНЫЙ verification-before-
+    # completion + primary (task/role) + code-review (для PR-порождающих
+    # профилей). Дедупликация встроена.
+    mapfile -t skills_for_card < <(af_skills_for_profile "$role" "$labels" "")
     skill_args=()
-    if [ -n "$skill_for_card" ]; then
-        skill_args=(--skill "$skill_for_card")
-        log "  skill-inference: role=${role} labels=${labels} -> skill=${skill_for_card}"
+    if [ "${#skills_for_card[@]}" -gt 0 ] && [ -n "${skills_for_card[0]}" ]; then
+        for s in "${skills_for_card[@]}"; do
+            [ -n "$s" ] && skill_args+=(--skill "$s")
+        done
+        log "  skill-inference: role=${role} labels=${labels} -> skills=[${skills_for_card[*]}]"
     else
-        log "  skill-inference: role=${role} labels=${labels} → нет валидного skill в профиле, --skill не передаём"
+        log "  skill-inference: role=${role} labels=${labels} → нет валидных skills в профиле, --skill не передаём"
     fi
 
     if [ "$DRY_RUN" = "true" ]; then
