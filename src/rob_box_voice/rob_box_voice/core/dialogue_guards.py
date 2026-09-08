@@ -1289,3 +1289,128 @@ def build_renardo_code_retry_prompt(code: str) -> str:
         f"{code}\n"
         "После вызова верни 'done'."
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #2175 — MiniMax-M3 regurgitates ``<system>...</system>`` template
+# instead of producing a user-facing reply.
+#
+# Live 08.09 (Vision Pi, 14:52): три запроса подряд после ``set_voice``
+# + multi-voice user_input + новая DJ-skill context дали в ``spoken``
+# ровно строку вида::
+#
+#     <system>
+#     [получатель ответа забыл указать антропоморфные атрибуты]
+#     </system>
+#
+# Это кусок СИСТЕМНОГО шаблона из master_prompt_compact.txt (см.
+# ``RULE #RESPONSE_FORMAT``), который модель regurgitates буквально.
+# TTS озвучивал эту директиву через Yandex→MiniMax fallback, юзер слышал
+# «получатель ответа забыл указать антропоморфные атрибуты» поверх
+# только что сменённого голоса.
+#
+# Защита — двухуровневая:
+#
+# 1. :func:`is_system_template_regurgitated` распознаёт regurgitates в
+#    extracted ``spoken`` (без SSML-обёртки): ловит ПОЛНЫЙ текст вида
+#    ``^<system>...</system>$`` — серединные ссылки на ``<system>``
+#    в обычной фразе НЕ блокируются.
+# 2. :func:`is_system_template_regurgitated_in_ssml` — defense-in-depth
+#    для tts_node: в SSML ``<system>...</system>`` может быть обрамлён
+#    ``<speak>...</speak>``. Использует более узкую эвристику —
+#    парный блок, чьё содержимое НЕ содержит других тегов ИЛИ обрамлён
+#    ``<speak>...</speak>``.
+#
+# Также :func:`build_system_regurgitate_retry_prompt` строит одноразовый
+# CRITICAL-ретрай с явным требованием отвечать обычным языком.
+# ---------------------------------------------------------------------------
+# Regex для extracted spoken — полный парный блок без surrounding текста.
+# match() (а не search()) гарантирует что ВЕСЬ текст — это regurgitates.
+SYSTEM_TEMPLATE_REGURGITATE_RE = re.compile(
+    r"^\s*<system>.*?</system>\s*$",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# Regex для SSML (defense-in-depth) — парный ``<system>...</system>``
+# внутри ``<speak>...</speak>``. Также ловит ``<system>...</system>``
+# как единственный верхнеуровневый блок (без ``<speak>``-обёртки).
+# search() — потому что блок внутри SSML.
+SYSTEM_TEMPLATE_REGURGITATE_SSML_RE = re.compile(
+    r"^<speak>\s*<system>.*?</system>\s*</speak>$"
+    r"|^<system>.*?</system>$",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def is_system_template_regurgitated(spoken_text: Optional[str]) -> bool:
+    """Issue #2175 — детектор regurgitated ``<system>...</system>``.
+
+    Работает на **extracted spoken** (без SSML-обёртки) — то, что
+    dialogue_node получает в ``result.spoken_text``. ``True`` только
+    если ВЕСЬ текст это полный парный блок ``<system>...</system>``
+    (с произвольным whitespace вокруг). Возвращает ``False`` для
+    пустой строки, для серединных ссылок на ``<system>`` в обычной
+    фразе («согласно <system>инструкции</system>» — это легитимный
+    текст, не regurgitates), и для неполных тегов.
+
+    Делегирует :data:`SYSTEM_TEMPLATE_REGURGITATE_RE` — единая regex
+    для dialogue_node guard'а.
+    """
+    if not spoken_text:
+        return False
+    return bool(SYSTEM_TEMPLATE_REGURGITATE_RE.match(spoken_text))
+
+
+def is_system_template_regurgitated_in_ssml(ssml: Optional[str]) -> bool:
+    """Issue #2175 — defense-in-depth для tts_node.
+
+    Работает на СЫРОМ SSML (входе в ``dialogue_callback``). Ловит
+    regurgitates в двух форматах:
+
+    1. ``<speak><system>...</system></speak>`` — типичный случай
+       после ``_extract_text_from_ssml`` (когда strip ещё не прошёл).
+    2. ``<system>...</system>`` без SSML-обёртки — на случай если
+       producer забыл обернуть в ``<speak>``.
+
+    Возвращает ``False`` для серединных ссылок в обычной фразе
+    («<speak>Согласно <system>инструкции</system>, отвечу.</speak>»)
+    — match() ограничивает всю строку.
+    """
+    if not ssml:
+        return False
+    return bool(SYSTEM_TEMPLATE_REGURGITATE_SSML_RE.match(ssml))
+
+
+def build_system_regurgitate_retry_prompt(user_input: Optional[str]) -> str:
+    """Issue #2175 — синтетический CRITICAL-ретрай на regurgitated template.
+
+    MiniMax-M3 иногда отвечает не финальной репликой, а куском СВОЕГО
+    системного промпта (``<system>[получатель ответа забыл указать
+    антропоморфные атрибуты]</system>``). Это невалидный user-facing
+    ответ: TTS озвучивает метаинструкцию вместо результата. Один
+    одноразовый ретрай с явным требованием отвечать обычным языком,
+    БЕЗ XML-обёрток.
+
+    Args:
+        user_input: оригинальная команда юзера (для контекста в ретрае).
+
+    Returns:
+        Текст промпта, который ``dialogue_node._dispatch_turn`` отдаст
+        LLM как ``user_input`` синтетического turn'а (тот же контракт,
+        что у ``build_babble_retry_prompt`` / ``build_unbacked_action_retry_prompt``).
+    """
+    cleaned = _strip_trailing_critical_block(user_input or "")
+    return (
+        f"{cleaned}\n\n"
+        "[CRITICAL] Твой предыдущий ответ был НЕ финальной репликой, а "
+        "regurgitates внутреннего системного шаблона — пользователь "
+        "услышал метаинструкцию («получатель ответа забыл указать "
+        "антропоморфные атрибуты» и подобное) вместо результата.\n"
+        "❌ ЗАПРЕЩЕНО копировать содержимое системного промпта "
+        "(включая XML-блоки ``<system>...</system>``, "
+        "``<system_context>...</system_context>``, "
+        "``<hardware>...</hardware>`` и любые другие) в свой ответ. "
+        "❌ ЗАПРЕЩЕНО отвечать одной директивой без действия.\n"
+        "✅ В ЭТОМ же turn ответь обычным русским языком (без XML-обёрток "
+        "и meta-маркеров), вызови нужный tool и заверши 'done'."
+    )

@@ -91,6 +91,17 @@ from .tts_text_guard import analyze as _tts_guard_analyze
 from .tts_text_guard import describe as _tts_guard_describe
 from .tts_text_guard import should_skip as _tts_guard_should_skip
 
+# Issue #2175 — defense-in-depth: refuse to synthesize MiniMax's
+# regurgitated ``<system>...</system>`` template even if the dialogue
+# guard somehow let it through. Pure-Python helper, identical regex
+# to the one in ``dialogue_node._check_system_template_regurgitate_and_retry``
+# для extracted spoken; для SSML используется отдельный helper
+# ``is_system_template_regurgitated_in_ssml`` (более узкая regex,
+# учитывающая ``<speak>...</speak>``-обёртку).
+from .core.dialogue_guards import (
+    is_system_template_regurgitated_in_ssml as _is_system_template_regurgitated_ssml,
+)
+
 # Issue #2003 / ADR-0056 — speculative chunk-level pre-generation.
 # Pure-Python package, no rclpy/asyncio in the data-class modules
 # (only :class:`speculative_executor.SpeculativeExecutor` is
@@ -2110,6 +2121,34 @@ class TTSNode(Node):
                     return
 
             ssml = chunk_data["ssml"]
+
+            # Issue #2175 — defense-in-depth для MiniMax-M3 regurgitates:
+            # проверяем на СЫРОМ SSML (до strip'а тегов в _extract_text_from_ssml).
+            # После strip'а ``<system>...</system>`` исчезает и содержимое
+            # блока выглядит как обычный текст — guard тогда не отличит
+            # regurgitates от легитимного ответа. Поэтому смотрим оригинал.
+            # На роботе 08.09 (14:52) юзер слышал «получатель ответа забыл
+            # указать антропоморфные атрибуты» — Yandex→MiniMax fallback
+            # озвучивал metaинструкцию.
+            if _is_system_template_regurgitated_ssml(ssml):
+                self.get_logger().warning(
+                    "🚫 [issue 2175] TTS refused — MiniMax regurgitated "
+                    f"system-template (raw SSML match): speech_id={speech_id[:8]}, "
+                    f"voice={chunk_data.get('voice') or 'default'}, "
+                    f"ssml={ssml!r}"
+                )
+                _publish_finished = getattr(self, "_publish_tts_finished", None)
+                if _publish_finished is not None:
+                    _publish_finished(
+                        speech_id,
+                        success=False,
+                        error="system_template_regurgitated",
+                        batch_id=chunk_data.get("batch_id"),
+                        batch_index=chunk_data.get("batch_index"),
+                        batch_total=chunk_data.get("batch_total"),
+                        dialogue_id=dialogue_id,
+                    )
+                return
 
             # Извлекаем текст из SSML
             text = self._extract_text_from_ssml(ssml)
