@@ -862,6 +862,7 @@ worker_contract_block() {  # $1=max_runtime
 - **Одна карточка = одна сессия.** Не продолжай «отравленную» сессию на новой итерации этой карточки — начни новую, handoff через коммент в issue.
 - **Читай точечно.** Начинай с sources_of_truth из блока Context карточки; разведку («где обрабатывается X») отдавай сабагенту, в сессию — только вывод «файл:строка».
 - **В issue — релевантные куски, не полные логи.** Raw-вывод обязателен (ADR-0018), но прикладывай нужный фрагмент, не весь дамп.
+- **Skills (ADR-0080, issue #2162):** секция \`## Skills\` в body карточки — список skills для **явного вызова** через skill_loader по порядку. Если секции нет — это баг dispatcher'а, зафлажь в комментарии issue. После kanban_complete приложи: какие skills реально загрузил и где применил.
 
 EOF
 }
@@ -1648,6 +1649,21 @@ Triage **НЕ создал** kanban-карточку для этого issue, ч
     # between the contract block and the issue body.
     full_body=$(printf 'Source\n  repo: %s\n  issue: #%s\n  labels: %s\n\n%s%s\n\n%s' \
         "$GH_REPO" "$number" "$labels_block" "$sources_block" "$contract_block" "$body_block")
+
+    # ADR-0080 / issue #2162: если в body карточки НЕТ секции `## Skills`,
+    # dispatcher добавляет дефолт по assignee + labels из card_defaults.yaml.
+    # Это гарантирует, что воркер сам загрузит нужные skills (через
+    # parse_body_skills_section), даже если --skill CLI потерялся (баг
+    # t_aafad606). Если секция есть — НЕ перезаписываем (явное > дефолт).
+    skills_block="$(ensure_skills_block "$full_body" "$role" "$labels")"
+    if [ -n "$skills_block" ]; then
+        full_body="${full_body}
+
+${skills_block}"
+        log "  skills-block: appended (role=${role} labels=${labels})"
+    else
+        log "  skills-block: existing section in body, keeping it"
+    fi
 
     log "creating card: issue=#${number} role=${role} branch=${branch} max_runtime=${max_runtime}"
 

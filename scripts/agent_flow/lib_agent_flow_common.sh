@@ -675,6 +675,67 @@ af_card_defaults_for() {  # $1=assignee  $2=labels_csv
 }
 
 # ---------------------------------------------------------------------------
+# ensure_skills_block <body> <assignee> <labels_csv>
+#   → печатает блок `## Skills (порядок)` (только если его НЕТ в body).
+#
+# ADR-0080 / issue #2162: используется в agent-flow-triage.sh при создании
+# карточки. Если в body уже есть секция `## Skills` — ничего не делаем
+# (явное > дефолт). Иначе добавляем дефолт по assignee из card_defaults.yaml
+# (af_card_defaults_for) с человеческим форматированием (нумерация + описание).
+#
+# Контракт:
+#   $1 = body (полный текст карточки)
+#   $2 = assignee (profile id)
+#   $3 = labels_csv (CSV меток issue, опционально)
+#   stdout = блок для аппенда в body, или пустая строка если нечего добавлять
+#   exit = 0 всегда
+#
+# Блок форматируется как:
+#   ## Skills (порядок)
+#
+#   1. <skill-1>
+#   2. <skill-2>
+#   ...
+#
+# с короткой шапкой-комментарием для воркера.
+# ---------------------------------------------------------------------------
+ensure_skills_block() {  # $1=body  $2=assignee  $3=labels_csv
+    local _body="${1:-}" _assignee="${2:-}" _labels="${3:-}"
+
+    # Если секция ## Skills уже есть — ничего не делаем.
+    if [ -n "$_body" ] && printf '%s' "$_body" | grep -qE '^##[[:space:]]+Skills\b'; then
+        return 0
+    fi
+
+    # Достаём дефолтный набор.
+    local _skills_list=""
+    _skills_list="$(af_card_defaults_for "$_assignee" "$_labels")"
+    if [ -z "$_skills_list" ]; then
+        return 0
+    fi
+
+    # Форматируем как markdown с номерами + пояснениями.
+    local _block="## Skills (порядок вызова воркером)
+
+Создатель карточки не указал skills явно — dispatcher добавил дефолт по
+\`assignee=${_assignee}\` + labels из issue. Воркер **сам вызывает**
+skill_loader для каждого skill по порядку (см. \`scripts/agent_flow/
+lib_agent_flow_common.sh:parse_body_skills_section\`).
+
+"
+    local _i=1 _s=""
+    while IFS= read -r _s; do
+        [ -n "$_s" ] || continue
+        _block="${_block}${_i}. \`${_s}\`
+"
+        _i=$((_i+1))
+    done <<< "$_skills_list"
+
+    printf '%s' "$_block"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # detect_pr_kind <pr_labels_csv> <pr_title> → печатает "lint" | "functional"
 #
 # "lint" = e2e на железе не нужен, зелёного CI достаточно.
